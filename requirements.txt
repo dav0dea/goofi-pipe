@@ -31,3 +31,12 @@ usearch
 gdown
 neurodsp
 safetensors
+powerlaw
+neurokit2
+pywavelets
+feat
+py-feat
+torch
+transformers
+accelerate
+
