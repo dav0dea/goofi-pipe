@@ -1,7 +1,6 @@
 import time
 
 import numpy as np
-from scipy.signal import sawtooth, square
 
 from goofi.data import DataType
 from goofi.node import Node
@@ -66,5 +65,5 @@ class Oscillator(Node):
                     data[i] = 1.0
                 else:
                     data[i] = 0.0
-        
+
         return {"out": (data, meta)}
