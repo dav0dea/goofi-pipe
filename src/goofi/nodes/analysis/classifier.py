@@ -30,10 +30,9 @@ class Classifier(Node):
                     "SVM", options=["NaiveBayes", "SVM", "RandomForest", "LogisticRegression", "KNeighbors"]
                 ),
                 "clear_training": BoolParam(False, trigger=True, doc="Clear the training set"),
-                "loadname": StringParam("datafile"),
                 "load_data": BoolParam(False, trigger=True),
-                "savename": StringParam("savename"),
                 "save_data": BoolParam(False, trigger=True),
+                "data_file": StringParam("goofi_clf_data", doc="File name for saving/loading training data"),
             },
             "NaiveBayes": {"var_smoothing": FloatParam(1e-9, 1e-12, 1e-6)},
             "SVM": {
@@ -79,26 +78,32 @@ class Classifier(Node):
     def process(self, data: Data):
         if data is None:
             return None
-        self.loadname = self.params.classification["loadname"].value
-        self.savename = self.params.classification["savename"].value
-        self.loadpath = join(self.assets_path, self.loadname)
-        self.savepath = join(self.assets_path, self.savename)
+
+        flattened = False
+        if data.data.ndim > 1:
+            flattened = True
+        flat_data = data.data.flatten()
+
+        self.data_file_path = join(self.assets_path, self.params.classification.data_file.value)
 
         if self.params.classification.add_to_training.value:
-            transposed_data = data.data.T
-            self.training_data.extend(transposed_data)
-            self.training_labels.extend([self.params.classification.current_state.value] * transposed_data.shape[0])
+            if len(self.training_data) > 0 and len(flat_data) != len(self.training_data[0]):
+                raise ValueError(
+                    f"Incoming data size {len(flat_data)} does not match training data size {len(self.training_data[0])}."
+                )
+            self.training_data.append(flat_data)
+            self.training_labels.append(self.params.classification.current_state.value)
             self.classifier = None
             self.classifier_trained = False
-            # print("Added to training set.")  # Debug statement
+            print("Added to training set.")  # Debug statement
             return None
 
         if self.params.classification.load_data.value:
             try:
-                loaded_data = np.load(self.loadpath + ".npz")
+                loaded_data = np.load(self.data_file_path + (".npz" if not self.data_file_path.endswith(".npz") else ""))
                 self.training_data = loaded_data["training_data"].tolist()
                 self.training_labels = loaded_data["training_labels"].tolist()
-                print(f"Loaded training data from {self.loadpath}.")  # Debug statement
+                print(f"Loaded training data from {self.data_file_path}.")  # Debug statement
             except Exception as e:
                 print(f"Error during loading data: {e}")  # Debug statement
                 return None
@@ -108,8 +113,8 @@ class Classifier(Node):
 
         if self.params.classification.save_data.value:
             try:
-                np.savez(self.savepath, training_data=self.training_data, training_labels=self.training_labels)
-                print(f"Saved training data to {self.savepath}.")  # Debug statement
+                np.savez(self.data_file_path, training_data=self.training_data, training_labels=self.training_labels)
+                print(f"Saved training data to {self.data_file_path}.")  # Debug statement
             except Exception as e:
                 print(f"Error during saving data: {e}")  # Debug statement
                 return None
@@ -119,14 +124,6 @@ class Classifier(Node):
             self.training_labels = []
             self.classifier = None
             self.classifier_trained = False
-            print("Training set cleared.")
-
-        if self.params.classification.clear_training.value:
-            self.training_data = []
-            self.training_labels = []
-            self.classifier = None
-            self.classifier_trained = False
-            print("Training set cleared.")
 
         if len(self.training_data) == 0:
             print("No training data.")
@@ -175,21 +172,22 @@ class Classifier(Node):
             print("Classifier not trained.")
             return None
 
-        transposed_data = data.data.T
-        probs = self.classifier.predict_proba(transposed_data)
+        probs = self.classifier.predict_proba(flat_data[None])
 
         # After the classifier has been trained
         feature_importances = self.get_feature_importances()
-        # if feature_importances is not None:
-        # print("Feature Importances:", feature_importances)
 
         # create metadata including the classifier, the size of the training set for each class, and the number of features
         meta = {"classifier": self.params.classification.classifier_choice.value}
         for i in range(1, self.params.classification.n_states.value + 1):
             meta[f"training_set_size_{i}"] = self.training_labels.count(i)
         meta["n_features"] = len(self.training_data[0]) if self.training_data else 0
+
+        if feature_importances is None:
+            return {"probs": (probs, meta), "feature_importances": None}
+
         meta_features = {}
-        if "channels" in data.meta:
+        if "channels" in data.meta and not flattened:
             meta_features["channels"] = data.meta["channels"]
         if "sfreq" in data.meta:
             meta["sfreq"] = data.meta["sfreq"]
