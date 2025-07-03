@@ -551,7 +551,7 @@ class Manager:
             )
 
         # convert the manager instance into yaml format
-        manager_yaml = yaml.dump({"nodes": serialized_nodes, "links": links})
+        manager_yaml = yaml.dump({"nodes": serialized_nodes, "links": links}, sort_keys=False)
 
         # write the yaml to the file
         with open(filepath, "w") as f:

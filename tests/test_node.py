@@ -316,7 +316,7 @@ def test_serialize_yaml():
 
     # make sure the serialized parameters can be converted to YAML (except out_conns, which are removed in the manager)
     result.pop("out_conns")
-    serialized = yaml.dump(result)
+    serialized = yaml.dump(result, sort_keys=False)
     reconstructed = yaml.load(serialized, Loader=yaml.FullLoader)
 
     assert reconstructed == result, "Serialized parameters are not valid YAML."

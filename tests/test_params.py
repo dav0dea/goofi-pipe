@@ -165,7 +165,7 @@ def test_serialize():
 
     # make sure the serialized data can be converted to YAML
     serialized = p.serialize()
-    serialized_str = yaml.dump(serialized)
+    serialized_str = yaml.dump(serialized, sort_keys=False)
 
     # reconstruct from the serialized data
     reconstructed = yaml.load(serialized_str, Loader=yaml.FullLoader)
