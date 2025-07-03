@@ -1,4 +1,5 @@
 import pickle
+import platform
 import queue
 import tempfile
 import threading
@@ -44,13 +45,19 @@ class Connection(ABC):
 
         ### Parameters
         `backend` : str
-            The backend to use. Choose from "zmq-tcp", "zmq-ipc" or "mp".
+            The backend to use. Choose from "auto", "zmq-tcp", "zmq-ipc" or "mp".
         `mp_manager` : multiprocessing.Manager
             The multiprocessing manager to use for creating shared objects.
         """
         # initialize a shared set of connection ids
         assert Connection._CONNECTION_IDS is None, "Connection._CONNECTION_IDS is not None."
         Connection._CONNECTION_IDS = mp_manager.list()
+
+        if backend == "auto":
+            if platform.system() == "Windows":
+                backend = "mp"
+            else:
+                backend = "zmq-tcp"
 
         # set the backend if discovering connection IDs was successful (prevents overwriting the backend)
         assert (

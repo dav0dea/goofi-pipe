@@ -115,7 +115,7 @@ class Manager:
     `duration` : float
         The duration to run the manager for. If `0`, runs indefinitely.
     `communication_backend` : str
-        The communication backend to use for node communication. Default is "mp" (multiprocessing).
+        The communication backend to use for node communication. Default is "auto" (platform-dependent).
     """
 
     def __init__(
@@ -124,7 +124,7 @@ class Manager:
         headless: bool = True,
         use_multiprocessing: bool = True,
         duration: float = 0,
-        communication_backend: str = "mp",
+        communication_backend: str = "auto",
     ) -> None:
         # create a multiprocessing manager
         self._mp_manager = MPManager()
@@ -617,7 +617,7 @@ def main(duration: float = 0, args=None):
     parser.add_argument("filepath", nargs="?", help="path to the file to load from")
     parser.add_argument("--headless", action="store_true", help="run in headless mode")
     parser.add_argument("--no-multiprocessing", action="store_true", help="disable multiprocessing")
-    parser.add_argument("--comm", choices=comm_choices, default="mp", help="node communication backend")
+    parser.add_argument("--comm", choices=["auto"] + comm_choices, default="auto", help="node communication backend")
     parser.add_argument("--build-docs", action="store_true", help="update the node list in the README")
     parser.add_argument("--example", nargs="?", const="", help="run example files instead of starting the manager")
     args = parser.parse_args(args)
