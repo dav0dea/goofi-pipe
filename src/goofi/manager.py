@@ -150,6 +150,7 @@ class Manager:
         # TODO: add proper logging
         mp_state = "enabled" if use_multiprocessing else "disabled"
         print(f"Initializing goofi-pipe manager (multiprocessing {mp_state}).")
+        print(f"Using communication backend: {Connection._BACKEND}.")
 
         self._headless = headless
         self._use_multiprocessing = use_multiprocessing
