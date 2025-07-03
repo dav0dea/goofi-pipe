@@ -134,8 +134,13 @@ class Manager:
             Connection.set_backend(communication_backend, self._mp_manager)
         except AssertionError:
             print("Connection backend already set. Skipping.")
-        # make sure the connection backend is set correctly
-        assert Connection._BACKEND == communication_backend
+
+        if communication_backend == "auto":
+            # make sure a backend was selected
+            assert Connection._BACKEND is not None
+        else:
+            # make sure the connection backend is set correctly
+            assert Connection._BACKEND == communication_backend
 
         # TODO: add proper logging
         print("Starting goofi-pipe...")
