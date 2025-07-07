@@ -1,264 +1,225 @@
-links:
-- node_in: buffer0
-  node_out: audiostream0
-  slot_in: val
-  slot_out: out
-- node_in: classifier0
-  node_out: buffer0
-  slot_in: data
-  slot_out: out
-- node_in: reduce0
-  node_out: classifier0
-  slot_in: array
-  slot_out: probs
-- node_in: buffer1
-  node_out: reduce0
-  slot_in: val
-  slot_out: out
-- node_in: smooth0
-  node_out: buffer1
-  slot_in: data
-  slot_out: out
 nodes:
-  audiostream0:
-    _type: AudioStream
-    category: inputs
-    gui_kwargs:
-      pos:
-      - -60
-      - 16
-    params:
-      audio:
-        convert_to_mono:
-          _value: false
-          trigger: false
-        device:
-          _value: Mappeur de sons Microsoft - Input
-          options:
-          - Mappeur de sons Microsoft - Input
-          - Microphone Array (Realtek Audio
-          - Pilote de capture audio principal
-          - Microphone Array (Realtek Audio)
-          - ASIO4ALL v2
-          - Realtek ASIO
-          - Microphone Array (Realtek Audio)
-          - "Headset (@System32\\drivers\\bthhfenum.sys,#2;%1 Hands-Free%0\r\n;(Uolo\
-            \ Pulse Mini Speaker))"
-          - "Headset Microphone (@System32\\drivers\\bthhfenum.sys,#2;%1 Hands-Free%0\r\
-            \n;(SoundCore 2))"
-          - Jack Mic (Realtek HD Audio Front Mic input)
-          - Stereo Mix (Realtek HD Audio Stereo input)
-          - Microphone Array 1 (Realtek HD Audio Mic input with SST)
-          - Microphone Array 2 (Realtek HD Audio Mic input with SST)
-          - Microphone Array 3 (Realtek HD Audio Mic input with SST)
-          - "Headset (@System32\\drivers\\bthhfenum.sys,#2;%1 Hands-Free%0\r\n;(LE-Bose\
-            \ QC35 II))"
-          - "Headset Microphone (@System32\\drivers\\bthhfenum.sys,#2;%1 Hands-Free%0\r\
-            \n;(Bose Mini II SE SoundLink))"
-        sampling_rate:
-          _value: '44100'
-          options:
-          - '44100'
-          - '48000'
-      common:
-        autotrigger:
-          _value: true
-          trigger: false
-        max_frequency:
-          _value: 30.0
-          vmax: 60.0
-          vmin: 0.0
   buffer0:
     _type: Buffer
     category: signal
-    gui_kwargs:
-      pos:
-      - 142
-      - 17
     params:
       buffer:
-        axis:
-          _value: -1
-          vmax: 3
-          vmin: -1
-        reset:
-          _value: false
-          trigger: true
-        size:
-          _value: 100
-          vmax: 5000
-          vmin: 1
+        size: 44100.0
+        axis: -1
+        unit: samples
+        reset: false
       common:
-        autotrigger:
-          _value: false
-          trigger: false
-        max_frequency:
-          _value: 44100.0
-          vmax: 60.0
-          vmin: 0.0
+        autotrigger: false
+        max_frequency: 44100.0
+        frequency_mode: updates-per-second
+    gui_kwargs:
+      pos:
+      - -66
+      - 25
+      viewers:
+        out:
+          viewer_idx: 0
+          width: 175
+          height: 100
+          collapsed: false
+          log_scale_x: false
+          log_scale_y: false
   buffer1:
     _type: Buffer
     category: signal
-    gui_kwargs:
-      pos:
-      - 753
-      - 16
     params:
       buffer:
-        axis:
-          _value: 1
-          vmax: 3
-          vmin: -1
-        reset:
-          _value: false
-          trigger: true
-        size:
-          _value: 500
-          vmax: 5000
-          vmin: 1
+        size: 500.0
+        axis: 1
+        unit: samples
+        reset: false
       common:
-        autotrigger:
-          _value: false
-          trigger: false
-        max_frequency:
-          _value: 30.0
-          vmax: 60.0
-          vmin: 0.0
+        autotrigger: false
+        max_frequency: 30.0
+        frequency_mode: updates-per-second
+    gui_kwargs:
+      pos:
+      - 743
+      - 27
+      viewers:
+        out:
+          viewer_idx: 0
+          width: 175
+          height: 100
+          collapsed: false
+          log_scale_x: false
+          log_scale_y: false
   classifier0:
     _type: Classifier
     category: analysis
+    params:
+      classification:
+        n_states: 3
+        current_state: 1
+        add_to_training: false
+        train: true
+        classifier_choice: SVM
+        clear_training: false
+        load_data: false
+        save_data: false
+        data_file: goofi_clf_data
+      NaiveBayes:
+        var_smoothing: 1.0e-09
+      SVM:
+        C: 1.0
+        kernel: rbf
+        gamma: scale
+      RandomForest:
+        n_estimators: 100
+        max_depth: 3
+        min_samples_split: 10
+      LogisticRegression:
+        C: 1.0
+      KNeighbors:
+        n_neighbors: 5
+      common:
+        autotrigger: false
+        max_frequency: 30.0
+        frequency_mode: updates-per-second
     gui_kwargs:
       pos:
-      - 345
-      - 15
-    params:
-      KNeighbors:
-        n_neighbors:
-          _value: 5
-          vmax: 20
-          vmin: 1
-      LogisticRegression:
-        C:
-          _value: 1.0
-          vmax: 10.0
-          vmin: 0.1
-      NaiveBayes:
-        var_smoothing:
-          _value: 1.0e-09
-          vmax: 1.0e-06
-          vmin: 1.0e-12
-      RandomForest:
-        max_depth:
-          _value: 3
-          vmax: 100
-          vmin: 1
-        min_samples_split:
-          _value: 10
-          vmax: 100
-          vmin: 2
-        n_estimators:
-          _value: 100
-          vmax: 1000
-          vmin: 10
-      SVM:
-        C:
-          _value: 1.0
-          vmax: 10.0
-          vmin: 0.1
-        gamma:
-          _value: scale
-          options:
-          - scale
-          - auto
-        kernel:
-          _value: rbf
-          options:
-          - linear
-          - poly
-          - rbf
-          - sigmoid
-      classification:
-        add_to_training:
-          _value: false
-          trigger: false
-        classifier_choice:
-          _value: SVM
-          options:
-          - NaiveBayes
-          - SVM
-          - RandomForest
-          - LogisticRegression
-          - KNeighbors
-        clear_training:
-          _value: false
-          trigger: true
-        current_state:
-          _value: 3
-          vmax: 10
-          vmin: 1
-        n_states:
-          _value: 3
-          vmax: 10
-          vmin: 1
-      common:
-        autotrigger:
-          _value: false
-          trigger: false
-        max_frequency:
-          _value: 30.0
-          vmax: 60.0
-          vmin: 0.0
+      - 341
+      - 28
+      viewers:
+        probs:
+          viewer_idx: 0
+          width: 175
+          height: 100
+          collapsed: false
+          log_scale_x: false
+          log_scale_y: false
+        feature_importances:
+          viewer_idx: 0
+          width: 175
+          height: 100
+          collapsed: false
+          log_scale_x: false
+          log_scale_y: false
   reduce0:
     _type: Reduce
     category: array
+    params:
+      reduce:
+        method: mean
+        axis: 0
+      common:
+        autotrigger: false
+        max_frequency: 30.0
+        frequency_mode: updates-per-second
     gui_kwargs:
       pos:
-      - 547
-      - 14
-    params:
-      common:
-        autotrigger:
-          _value: false
-          trigger: false
-        max_frequency:
-          _value: 30.0
-          vmax: 60.0
-          vmin: 0.0
-      reduce:
-        axis:
-          _value: 0
-          vmax: 3
-          vmin: -1
-        method:
-          _value: mean
-          options:
-          - mean
-          - median
-          - min
-          - max
-          - std
+      - 541
+      - 32
+      viewers:
+        out:
+          viewer_idx: 0
+          width: 175
+          height: 100
+          collapsed: false
+          log_scale_x: false
+          log_scale_y: false
   smooth0:
     _type: Smooth
     category: signal
+    params:
+      smooth:
+        sigma: 5.0
+        axis: -1
+      common:
+        autotrigger: false
+        max_frequency: 30.0
+        frequency_mode: updates-per-second
     gui_kwargs:
       pos:
-      - 752
-      - 204
+      - 745
+      - 219
+      viewers:
+        out:
+          viewer_idx: 0
+          width: 175
+          height: 100
+          collapsed: false
+          log_scale_x: false
+          log_scale_y: false
+  audiostream0:
+    _type: AudioStream
+    category: inputs
     params:
+      audio:
+        sampling_rate: '44100'
+        device: Microsoft Sound Mapper - Input
+        convert_to_mono: true
       common:
-        autotrigger:
-          _value: false
-          trigger: false
-        max_frequency:
-          _value: 30.0
-          vmax: 60.0
-          vmin: 0.0
-      smooth:
-        axis:
-          _value: -1
-          vmax: 2
-          vmin: 0
-        sigma:
-          _value: 5.0
-          vmax: 20.0
-          vmin: 0.1
+        autotrigger: true
+        max_frequency: 30.0
+        frequency_mode: updates-per-second
+    gui_kwargs:
+      pos:
+      - -271
+      - 23
+      viewers:
+        out:
+          viewer_idx: 0
+          width: 175
+          height: 100
+          collapsed: false
+          log_scale_x: false
+          log_scale_y: false
+  psd0:
+    _type: PSD
+    category: signal
+    params:
+      psd:
+        method: welch
+        f_min: 20.0
+        f_max: 5000.0
+        axis: -1
+      welch:
+        nperseg: -1
+        noverlap: -1
+      common:
+        autotrigger: false
+        max_frequency: 30.0
+        frequency_mode: updates-per-second
+    gui_kwargs:
+      pos:
+      - 137
+      - 26
+      viewers:
+        psd:
+          viewer_idx: 0
+          width: 175
+          height: 100
+          collapsed: false
+          log_scale_x: true
+          log_scale_y: true
+links:
+- node_out: buffer0
+  node_in: psd0
+  slot_out: out
+  slot_in: data
+- node_out: buffer1
+  node_in: smooth0
+  slot_out: out
+  slot_in: data
+- node_out: classifier0
+  node_in: reduce0
+  slot_out: probs
+  slot_in: array
+- node_out: reduce0
+  node_in: buffer1
+  slot_out: out
+  slot_in: val
+- node_out: audiostream0
+  node_in: buffer0
+  slot_out: out
+  slot_in: val
+- node_out: psd0
+  node_in: classifier0
+  slot_out: psd
+  slot_in: data
