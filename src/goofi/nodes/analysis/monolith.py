@@ -293,7 +293,14 @@ def phiid_pairwise_metrics(x, sfreq, tau=5, kind="gaussian", redundancy="MMI"):
     Compute all PhiID atom metrics for all pairs of channels (asymmetric, src->tgt and tgt->src).
     Returns a flattened array of all atom means for each channel pair and direction.
     """
-    from phyid.calculate import calc_PhiID
+
+    try:
+        from phyid.calculate import calc_PhiID
+    except ImportError:
+        raise ImportError(
+            "The phyid package is not installed. Please install it with the following command:\n"
+            "pip install git+https://github.com/Imperial-MIND-lab/integrated-info-decomp.git"
+        )
 
     data = np.atleast_2d(x)
     n_channels, n_time = data.shape
