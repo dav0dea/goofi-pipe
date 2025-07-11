@@ -1,0 +1,519 @@
+nodes:
+  audiostream0:
+    _type: AudioStream
+    category: inputs
+    params:
+      audio:
+        sampling_rate: '44100'
+        device: Microsoft Sound Mapper - Input
+        convert_to_mono: true
+      common:
+        autotrigger: true
+        max_frequency: 30.0
+        frequency_mode: updates-per-second
+    gui_kwargs:
+      pos:
+      - 209
+      - 704
+      viewers:
+        out:
+          viewer_idx: 0
+          width: 175
+          height: 100
+          collapsed: false
+          log_scale_x: false
+          log_scale_y: false
+  buffer1:
+    _type: Buffer
+    category: signal
+    params:
+      buffer:
+        size: 100.0
+        axis: 1
+        unit: samples
+        reset: false
+      common:
+        autotrigger: false
+        max_frequency: 30.0
+        frequency_mode: updates-per-second
+    gui_kwargs:
+      pos:
+      - 721
+      - 101
+      viewers:
+        out:
+          viewer_idx: 0
+          width: 175
+          height: 100
+          collapsed: false
+          log_scale_x: false
+          log_scale_y: false
+  buffer3:
+    _type: Buffer
+    category: signal
+    params:
+      buffer:
+        size: 100.0
+        axis: 1
+        unit: samples
+        reset: false
+      common:
+        autotrigger: false
+        max_frequency: 30.0
+        frequency_mode: updates-per-second
+    gui_kwargs:
+      pos:
+      - 717
+      - -95
+      viewers:
+        out:
+          viewer_idx: 0
+          width: 175
+          height: 100
+          collapsed: false
+          log_scale_x: false
+          log_scale_y: false
+  correlation1:
+    _type: Correlation
+    category: analysis
+    params:
+      correlation:
+        axis: -1
+      common:
+        autotrigger: false
+        max_frequency: 30.0
+        frequency_mode: updates-per-second
+    gui_kwargs:
+      pos:
+      - 1499
+      - -310
+      viewers:
+        pearson:
+          viewer_idx: 0
+          width: 175
+          height: 100
+          collapsed: false
+          log_scale_x: false
+          log_scale_y: false
+        pval:
+          viewer_idx: 0
+          width: 175
+          height: 100
+          collapsed: false
+          log_scale_x: false
+          log_scale_y: false
+  eegrecording0:
+    _type: EEGRecording
+    category: inputs
+    params:
+      recording:
+        use_example_data: true
+        file_path: ''
+        file_sfreq: 256.0
+        source_name: goofi
+        stream_name: recording
+        loop: true
+        reset: false
+      common:
+        autotrigger: false
+        max_frequency: 30.0
+        frequency_mode: updates-per-second
+    gui_kwargs:
+      pos:
+      - -514
+      - -209
+      viewers: {}
+  lslclient0:
+    _type: LSLClient
+    category: inputs
+    params:
+      lsl_stream:
+        source_name: goofi
+        stream_name: ''
+        refresh: false
+      common:
+        autotrigger: true
+        max_frequency: 30.0
+        frequency_mode: updates-per-second
+    gui_kwargs:
+      pos:
+      - -515
+      - -150
+      viewers:
+        out:
+          viewer_idx: 0
+          width: 175
+          height: 100
+          collapsed: false
+          log_scale_x: false
+          log_scale_y: false
+  phiid0:
+    _type: PhiID
+    category: analysis
+    params:
+      PhiID:
+        tau: 5.0
+        kind: gaussian
+        redudancy: MMI
+        mode: pairwise
+        tgt_index: 0
+      common:
+        autotrigger: false
+        max_frequency: 30.0
+        frequency_mode: updates-per-second
+    gui_kwargs:
+      pos:
+      - 107
+      - -144
+      viewers:
+        PhiID:
+          viewer_idx: 1
+          width: 175
+          height: 100
+          collapsed: false
+          log_scale_x: false
+          log_scale_y: false
+        inf_dyn:
+          viewer_idx: 1
+          width: 175
+          height: 100
+          collapsed: false
+          log_scale_x: false
+          log_scale_y: false
+        IIT:
+          viewer_idx: 1
+          width: 175
+          height: 100
+          collapsed: false
+          log_scale_x: false
+          log_scale_y: false
+  select1:
+    _type: Select
+    category: array
+    params:
+      select:
+        axis: 0
+        include: Integrated information
+        exclude: ''
+        expand_asterisk: false
+      common:
+        autotrigger: false
+        max_frequency: 30.0
+        frequency_mode: updates-per-second
+    gui_kwargs:
+      pos:
+      - 328
+      - 101
+      viewers:
+        out:
+          viewer_idx: 0
+          width: 175
+          height: 100
+          collapsed: false
+          log_scale_x: false
+          log_scale_y: false
+  select2:
+    _type: Select
+    category: array
+    params:
+      select:
+        axis: 0
+        include: AF8, AF7, O1,O2, C1, C2
+        exclude: ''
+        expand_asterisk: false
+      common:
+        autotrigger: false
+        max_frequency: 30.0
+        frequency_mode: updates-per-second
+    gui_kwargs:
+      pos:
+      - -114
+      - -141
+      viewers:
+        out:
+          viewer_idx: 0
+          width: 175
+          height: 100
+          collapsed: false
+          log_scale_x: false
+          log_scale_y: false
+  select3:
+    _type: Select
+    category: array
+    params:
+      select:
+        axis: 0
+        include: Storage
+        exclude: ''
+        expand_asterisk: false
+      common:
+        autotrigger: false
+        max_frequency: 30.0
+        frequency_mode: updates-per-second
+    gui_kwargs:
+      pos:
+      - 328
+      - -94
+      viewers:
+        out:
+          viewer_idx: 0
+          width: 175
+          height: 100
+          collapsed: false
+          log_scale_x: false
+          log_scale_y: false
+  smooth0:
+    _type: Smooth
+    category: signal
+    params:
+      smooth:
+        sigma: 4.5970001220703125
+        axis: -1
+      common:
+        autotrigger: false
+        max_frequency: 30.0
+        frequency_mode: updates-per-second
+    gui_kwargs:
+      pos:
+      - 964
+      - 196
+      viewers:
+        out:
+          viewer_idx: 0
+          width: 455
+          height: 380
+          collapsed: false
+          log_scale_x: false
+          log_scale_y: false
+  smooth1:
+    _type: Smooth
+    category: signal
+    params:
+      smooth:
+        sigma: 3.4730000495910645
+        axis: -1
+      common:
+        autotrigger: false
+        max_frequency: 30.0
+        frequency_mode: updates-per-second
+    gui_kwargs:
+      pos:
+      - 966
+      - -280
+      viewers:
+        out:
+          viewer_idx: 0
+          width: 455
+          height: 380
+          collapsed: false
+          log_scale_x: false
+          log_scale_y: false
+  timedelayembedding0:
+    _type: TimeDelayEmbedding
+    category: signal
+    params:
+      embedding:
+        delay: 1000
+        embedding_dimension: 2
+        moire_embedding: false
+        exponent: 1.0
+      common:
+        autotrigger: false
+        max_frequency: 30.0
+        frequency_mode: updates-per-second
+    gui_kwargs:
+      pos:
+      - 295
+      - 908
+      viewers:
+        embedded_array:
+          viewer_idx: 0
+          width: 175
+          height: 100
+          collapsed: false
+          log_scale_x: false
+          log_scale_y: false
+  buffer0:
+    _type: Buffer
+    category: signal
+    params:
+      buffer:
+        size: 1000.0
+        axis: -1
+        unit: samples
+        reset: false
+      common:
+        autotrigger: false
+        max_frequency: 30.0
+        frequency_mode: updates-per-second
+    gui_kwargs:
+      pos:
+      - -313
+      - -141
+      viewers:
+        out:
+          viewer_idx: 0
+          width: 175
+          height: 100
+          collapsed: false
+          log_scale_x: false
+          log_scale_y: false
+  reduce0:
+    _type: Reduce
+    category: array
+    params:
+      reduce:
+        method: mean
+        axis: 0
+      common:
+        autotrigger: false
+        max_frequency: 30.0
+        frequency_mode: updates-per-second
+    gui_kwargs:
+      pos:
+      - 523
+      - -94
+      viewers:
+        out:
+          viewer_idx: 0
+          width: 175
+          height: 100
+          collapsed: false
+          log_scale_x: false
+          log_scale_y: false
+  reduce1:
+    _type: Reduce
+    category: array
+    params:
+      reduce:
+        method: mean
+        axis: 0
+      common:
+        autotrigger: false
+        max_frequency: 30.0
+        frequency_mode: updates-per-second
+    gui_kwargs:
+      pos:
+      - 528
+      - 101
+      viewers:
+        out:
+          viewer_idx: 0
+          width: 175
+          height: 100
+          collapsed: false
+          log_scale_x: false
+          log_scale_y: false
+  buffer2:
+    _type: Buffer
+    category: signal
+    params:
+      buffer:
+        size: 200.0
+        axis: 1
+        unit: samples
+        reset: false
+      common:
+        autotrigger: false
+        max_frequency: 30.0
+        frequency_mode: updates-per-second
+    gui_kwargs:
+      pos:
+      - 1702
+      - -305
+      viewers:
+        out:
+          viewer_idx: 0
+          width: 175
+          height: 100
+          collapsed: false
+          log_scale_x: false
+          log_scale_y: false
+  smooth2:
+    _type: Smooth
+    category: signal
+    params:
+      smooth:
+        sigma: 2.0
+        axis: -1
+      common:
+        autotrigger: false
+        max_frequency: 30.0
+        frequency_mode: updates-per-second
+    gui_kwargs:
+      pos:
+      - 1905
+      - -307
+      viewers:
+        out:
+          viewer_idx: 0
+          width: 295
+          height: 220
+          collapsed: false
+          log_scale_x: false
+          log_scale_y: false
+links:
+- node_out: audiostream0
+  node_in: timedelayembedding0
+  slot_out: out
+  slot_in: input_array
+- node_out: buffer1
+  node_in: smooth0
+  slot_out: out
+  slot_in: data
+- node_out: buffer1
+  node_in: correlation1
+  slot_out: out
+  slot_in: data2
+- node_out: buffer3
+  node_in: correlation1
+  slot_out: out
+  slot_in: data1
+- node_out: buffer3
+  node_in: smooth1
+  slot_out: out
+  slot_in: data
+- node_out: correlation1
+  node_in: buffer2
+  slot_out: pearson
+  slot_in: val
+- node_out: lslclient0
+  node_in: buffer0
+  slot_out: out
+  slot_in: val
+- node_out: phiid0
+  node_in: select3
+  slot_out: inf_dyn
+  slot_in: data
+- node_out: phiid0
+  node_in: select1
+  slot_out: IIT
+  slot_in: data
+- node_out: select1
+  node_in: reduce1
+  slot_out: out
+  slot_in: array
+- node_out: select2
+  node_in: phiid0
+  slot_out: out
+  slot_in: matrix
+- node_out: select3
+  node_in: reduce0
+  slot_out: out
+  slot_in: array
+- node_out: buffer0
+  node_in: select2
+  slot_out: out
+  slot_in: data
+- node_out: reduce0
+  node_in: buffer3
+  slot_out: out
+  slot_in: val
+- node_out: reduce1
+  node_in: buffer1
+  slot_out: out
+  slot_in: val
+- node_out: buffer2
+  node_in: smooth2
+  slot_out: out
+  slot_in: data

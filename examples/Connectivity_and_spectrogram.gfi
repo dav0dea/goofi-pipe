@@ -100,7 +100,7 @@ nodes:
       - 173
       viewers:
         matrix:
-          viewer_idx: 0
+          viewer_idx: 1
           width: 175
           height: 100
           collapsed: false
@@ -158,7 +158,7 @@ nodes:
       psd:
         method: welch
         f_min: 1.0
-        f_max: 20.0
+        f_max: 40.0
         axis: -1
       welch:
         nperseg: -1
@@ -177,8 +177,8 @@ nodes:
           width: 175
           height: 100
           collapsed: false
-          log_scale_x: false
-          log_scale_y: false
+          log_scale_x: true
+          log_scale_y: true
   reduce0:
     _type: Reduce
     category: array
@@ -209,7 +209,7 @@ nodes:
       normalization:
         method: minmax
         buffer_size: 1024
-        reset: false
+        reset: true
         axis: 0
       quantile:
         n_quantiles: 1000
@@ -227,13 +227,13 @@ nodes:
         frequency_mode: updates-per-second
     gui_kwargs:
       pos:
-      - 1170
-      - 372
+      - 1164
+      - 374
       viewers:
         normalized:
           viewer_idx: 1
-          width: 175
-          height: 100
+          width: 315
+          height: 240
           collapsed: false
           log_scale_x: false
           log_scale_y: false

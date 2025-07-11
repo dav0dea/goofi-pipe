@@ -1,293 +1,151 @@
-links:
-- node_in: select1
-  node_out: buffer0
-  slot_in: data
-  slot_out: out
-- node_in: select2
-  node_out: buffer0
-  slot_in: data
-  slot_out: out
-- node_in: smooth0
-  node_out: buffer1
-  slot_in: data
-  slot_out: out
-- node_in: joinstring0
-  node_out: constantstring1
-  slot_in: string1
-  slot_out: out
-- node_in: tableselectstring0
-  node_out: coord2loc0
-  slot_in: input_table
-  slot_out: coord_info
-- node_in: walker0
-  node_out: coord2loc0
-  slot_in: water
-  slot_out: water_situation
-- node_in: oscout0
-  node_out: extendedtable1
-  slot_in: data
-  slot_out: table
-- node_in: textgeneration0
-  node_out: joinstring0
-  slot_in: prompt
-  slot_out: output
-- node_in: buffer0
-  node_out: lslclient0
-  slot_in: val
-  slot_out: out
-- node_in: walker0
-  node_out: math0
-  slot_in: velocity
-  slot_out: out
-- node_in: math0
-  node_out: powerbandeeg0
-  slot_in: data
-  slot_out: theta
-- node_in: powerbandeeg0
-  node_out: psd0
-  slot_in: data
-  slot_out: psd
-- node_in: select0
-  node_out: select1
-  slot_in: data
-  slot_out: out
-- node_in: psd0
-  node_out: select2
-  slot_in: data
-  slot_out: out
-- node_in: select4
-  node_out: select2
-  slot_in: data
-  slot_out: out
-- node_in: lempelziv0
-  node_out: select2
-  slot_in: data
-  slot_out: out
-- node_in: walker0
-  node_out: select3
-  slot_in: angle
-  slot_out: out
-- node_in: select3
-  node_out: smooth0
-  slot_in: data
-  slot_out: out
-- node_in: joinstring0
-  node_out: tableselectstring0
-  slot_in: string2
-  slot_out: output_string
-- node_in: extendedtable1
-  node_out: textgeneration0
-  slot_in: string_input1
-  slot_out: generated_text
-- node_in: coord2loc0
-  node_out: walker0
-  slot_in: latitude
-  slot_out: latitude
-- node_in: meteomedia0
-  node_out: walker0
-  slot_in: latitude
-  slot_out: latitude
-- node_in: coord2loc0
-  node_out: walker0
-  slot_in: longitude
-  slot_out: longitude
-- node_in: meteomedia0
-  node_out: walker0
-  slot_in: longitude
-  slot_out: longitude
-- node_in: buffer1
-  node_out: compass1
-  slot_in: val
-  slot_out: angles
-- node_in: compass1
-  node_out: select0
-  slot_in: pole1
-  slot_out: out
-- node_in: buffer2
-  node_out: lempelziv0
-  slot_in: val
-  slot_out: lzc
-- node_in: compass1
-  node_out: buffer2
-  slot_in: pole2
-  slot_out: out
 nodes:
   buffer0:
     _type: Buffer
     category: signal
-    gui_kwargs:
-      pos:
-      - 1741
-      - -297
-      viewers:
-        out:
-          collapsed: false
-          height: 100
-          log_scale_x: false
-          log_scale_y: false
-          viewer_idx: 0
-          width: 175
     params:
       buffer:
+        size: 320.0
         axis: -1
+        unit: samples
         reset: false
-        size: 320
       common:
         autotrigger: false
         max_frequency: 30.0
+        frequency_mode: updates-per-second
+    gui_kwargs:
+      pos:
+      - 512
+      - -402
+      viewers:
+        out:
+          viewer_idx: 0
+          width: 175
+          height: 100
+          collapsed: false
+          log_scale_x: false
+          log_scale_y: false
   buffer1:
     _type: Buffer
     category: signal
-    gui_kwargs:
-      pos:
-      - 2460
-      - 33
-      viewers:
-        out:
-          collapsed: false
-          height: 100
-          log_scale_x: false
-          log_scale_y: false
-          viewer_idx: 0
-          width: 175
     params:
       buffer:
+        size: 120.0
         axis: -1
+        unit: samples
         reset: false
-        size: 120
       common:
         autotrigger: false
         max_frequency: 30.0
-  buffer2:
-    _type: Buffer
-    category: signal
+        frequency_mode: updates-per-second
     gui_kwargs:
       pos:
-      - 1971
-      - 189
+      - 2040
+      - -47
       viewers:
         out:
-          collapsed: false
-          height: 100
-          log_scale_x: false
-          log_scale_y: false
           viewer_idx: 0
           width: 175
-    params:
-      buffer:
-        axis: -1
-        reset: false
-        size: 2
-      common:
-        autotrigger: false
-        max_frequency: 30.0
+          height: 100
+          collapsed: false
+          log_scale_x: false
+          log_scale_y: false
   compass1:
     _type: Compass
     category: analysis
-    gui_kwargs:
-      pos:
-      - 2234
-      - 21
-      viewers:
-        angles:
-          collapsed: false
-          height: 100
-          log_scale_x: false
-          log_scale_y: false
-          viewer_idx: 0
-          width: 175
     params:
       common:
         autotrigger: false
         max_frequency: 30.0
+        frequency_mode: updates-per-second
+    gui_kwargs:
+      pos:
+      - 1830
+      - -50
+      viewers:
+        angles:
+          viewer_idx: 0
+          width: 175
+          height: 100
+          collapsed: false
+          log_scale_x: false
+          log_scale_y: false
   constantstring1:
     _type: ConstantString
     category: inputs
+    params:
+      constant:
+        value: convert this address in english and output ONLY a prompt for a diffusion
+          model that will generate a landscape of this place. Use latin character
+      common:
+        autotrigger: true
+        max_frequency: 0.1
+        frequency_mode: updates-per-second
     gui_kwargs:
       pos:
-      - 3832
-      - -425
+      - 3408
+      - -469
       viewers:
         out:
-          collapsed: false
-          height: 100
-          log_scale_x: false
-          log_scale_y: false
           viewer_idx: 0
           width: 175
-    params:
-      common:
-        autotrigger: false
-        max_frequency: 30.0
-      constant:
-        value: convert this address in english and output a prompt for a diffusion
-          model that will generate a landscape of this place. Use latin character
+          height: 100
+          collapsed: false
+          log_scale_x: false
+          log_scale_y: false
   coord2loc0:
     _type: Coord2loc
     category: analysis
-    gui_kwargs:
-      pos:
-      - 3520
-      - -418
-      viewers:
-        coord_info:
-          collapsed: false
-          height: 150
-          log_scale_x: false
-          log_scale_y: false
-          viewer_idx: 0
-          width: 225
-        water_situation:
-          collapsed: false
-          height: 100
-          log_scale_x: false
-          log_scale_y: false
-          viewer_idx: 0
-          width: 175
     params:
       common:
         autotrigger: false
         max_frequency: 30.0
+        frequency_mode: updates-per-second
+    gui_kwargs:
+      pos:
+      - 3108
+      - -372
+      viewers:
+        coord_info:
+          viewer_idx: 0
+          width: 225
+          height: 150
+          collapsed: false
+          log_scale_x: false
+          log_scale_y: false
+        water_situation:
+          viewer_idx: 0
+          width: 175
+          height: 100
+          collapsed: false
+          log_scale_x: false
+          log_scale_y: false
   eegrecording0:
     _type: EEGRecording
     category: inputs
-    gui_kwargs:
-      pos:
-      - 1510
-      - -272
-      viewers: {}
     params:
-      common:
-        autotrigger: false
-        max_frequency: 30.0
       recording:
+        use_example_data: true
         file_path: ''
         file_sfreq: 256.0
         source_name: goofi
         stream_name: recording
-        use_example_data: true
-  extendedtable1:
-    _type: ExtendedTable
-    category: inputs
-    gui_kwargs:
-      pos:
-      - 4406
-      - -1
-      viewers:
-        table:
-          collapsed: false
-          height: 100
-          log_scale_x: false
-          log_scale_y: false
-          viewer_idx: 0
-          width: 175
-    params:
+        loop: true
+        reset: false
       common:
         autotrigger: false
         max_frequency: 30.0
+        frequency_mode: updates-per-second
+    gui_kwargs:
+      pos:
+      - 293
+      - -462
+      viewers: {}
+  extendedtable1:
+    _type: ExtendedTable
+    category: inputs
+    params:
       table:
         param1: ''
-        param10: value10
         param2: value2
         param3: value3
         param4: value4
@@ -296,25 +154,27 @@ nodes:
         param7: value7
         param8: value8
         param9: value9
-  joinstring0:
-    _type: JoinString
-    category: misc
-    gui_kwargs:
-      pos:
-      - 4076
-      - -375
-      viewers:
-        output:
-          collapsed: false
-          height: 100
-          log_scale_x: false
-          log_scale_y: false
-          viewer_idx: 0
-          width: 175
-    params:
+        param10: value10
       common:
         autotrigger: false
         max_frequency: 30.0
+        frequency_mode: updates-per-second
+    gui_kwargs:
+      pos:
+      - 4115
+      - -403
+      viewers:
+        table:
+          viewer_idx: 0
+          width: 175
+          height: 100
+          collapsed: false
+          log_scale_x: false
+          log_scale_y: false
+  joinstring0:
+    _type: JoinString
+    category: misc
+    params:
       join:
         separator: ', '
         string1: true
@@ -322,437 +182,599 @@ nodes:
         string3: true
         string4: true
         string5: true
+      common:
+        autotrigger: false
+        max_frequency: 30.0
+        frequency_mode: updates-per-second
+    gui_kwargs:
+      pos:
+      - 3642
+      - -412
+      viewers:
+        output:
+          viewer_idx: 0
+          width: 175
+          height: 100
+          collapsed: false
+          log_scale_x: false
+          log_scale_y: false
   lempelziv0:
     _type: LempelZiv
     category: analysis
-    gui_kwargs:
-      pos:
-      - 1723
-      - 168
-      viewers:
-        lzc:
-          collapsed: false
-          height: 100
-          log_scale_x: false
-          log_scale_y: false
-          viewer_idx: 0
-          width: 175
     params:
+      lempel_ziv:
+        binarization: mean
+        axis: -1
       common:
         autotrigger: false
         max_frequency: 30.0
-      lempel_ziv:
-        axis: -1
-        binarization: mean
+        frequency_mode: updates-per-second
+    gui_kwargs:
+      pos:
+      - 938
+      - -22
+      viewers:
+        lzc:
+          viewer_idx: 0
+          width: 175
+          height: 100
+          collapsed: false
+          log_scale_x: false
+          log_scale_y: false
   lslclient0:
     _type: LSLClient
     category: inputs
-    gui_kwargs:
-      pos:
-      - 1516
-      - -214
-      viewers:
-        out:
-          collapsed: false
-          height: 100
-          log_scale_x: false
-          log_scale_y: false
-          viewer_idx: 0
-          width: 175
     params:
+      lsl_stream:
+        source_name: goofi
+        stream_name: ''
+        refresh: false
       common:
         autotrigger: true
         max_frequency: 30.0
-      lsl_stream:
-        refresh: false
-        source_name: goofi
-        stream_name: ''
+        frequency_mode: updates-per-second
+    gui_kwargs:
+      pos:
+      - 299
+      - -404
+      viewers:
+        out:
+          viewer_idx: 0
+          width: 175
+          height: 100
+          collapsed: false
+          log_scale_x: false
+          log_scale_y: false
   math0:
     _type: Math
     category: array
-    gui_kwargs:
-      pos:
-      - 2950
-      - -276
-      viewers:
-        out:
-          collapsed: false
-          height: 100
-          log_scale_x: false
-          log_scale_y: false
-          viewer_idx: 0
-          width: 175
     params:
-      common:
-        autotrigger: false
-        max_frequency: 30.0
-      map:
-        input_max: 1.0
-        input_min: 0.0
-        output_max: 1.0
-        output_min: 0.0
       math:
+        pre_add: 0.0
         multiply: 0.2
         post_add: 0.0
-        pre_add: 0.0
         round: -1
         sqrt: false
         squared: false
-  meteomedia0:
-    _type: MeteoMedia
-    category: inputs
+      map:
+        input_min: 0.0
+        input_max: 1.0
+        output_min: 0.0
+        output_max: 1.0
+      common:
+        autotrigger: false
+        max_frequency: 30.0
+        frequency_mode: updates-per-second
     gui_kwargs:
       pos:
-      - 3546
-      - 45
+      - 1593
+      - -430
       viewers:
-        weather_data_table:
-          collapsed: false
-          height: 100
-          log_scale_x: false
-          log_scale_y: false
+        out:
           viewer_idx: 0
           width: 175
-    params:
-      TomorrowAPI:
-        key: YOUR_API_KEY
-      common:
-        autotrigger: true
-        max_frequency: 0.1
+          height: 100
+          collapsed: false
+          log_scale_x: false
+          log_scale_y: false
   oscout0:
     _type: OSCOut
     category: outputs
-    gui_kwargs:
-      pos:
-      - 4640
-      - 44
-      viewers: {}
     params:
+      osc:
+        address: localhost
+        port: 8000
+        prefix: /goofi
+        bundle: false
+        broadcast: false
+        require_change: false
       common:
         autotrigger: false
         max_frequency: 30.0
-      osc:
-        address: localhost
-        broadcast: false
-        bundle: false
-        port: 8000
-        prefix: /goofi
+        frequency_mode: updates-per-second
+    gui_kwargs:
+      pos:
+      - 4327
+      - -179
+      viewers: {}
   powerbandeeg0:
     _type: PowerBandEEG
     category: analysis
-    gui_kwargs:
-      pos:
-      - 2423
-      - -279
-      viewers:
-        alpha:
-          collapsed: false
-          height: 100
-          log_scale_x: false
-          log_scale_y: false
-          viewer_idx: 0
-          width: 175
-        delta:
-          collapsed: false
-          height: 100
-          log_scale_x: false
-          log_scale_y: false
-          viewer_idx: 0
-          width: 175
-        gamma:
-          collapsed: false
-          height: 100
-          log_scale_x: false
-          log_scale_y: false
-          viewer_idx: 0
-          width: 175
-        highbeta:
-          collapsed: false
-          height: 100
-          log_scale_x: false
-          log_scale_y: false
-          viewer_idx: 0
-          width: 175
-        lowbeta:
-          collapsed: false
-          height: 100
-          log_scale_x: false
-          log_scale_y: false
-          viewer_idx: 0
-          width: 175
-        theta:
-          collapsed: false
-          height: 100
-          log_scale_x: false
-          log_scale_y: false
-          viewer_idx: 0
-          width: 175
     params:
+      powerband:
+        power_type: absolute
       common:
         autotrigger: false
         max_frequency: 30.0
-      powerband:
-        power_type: absolute
+        frequency_mode: updates-per-second
+    gui_kwargs:
+      pos:
+      - 1136
+      - -209
+      viewers:
+        delta:
+          viewer_idx: 0
+          width: 175
+          height: 100
+          collapsed: false
+          log_scale_x: false
+          log_scale_y: false
+        theta:
+          viewer_idx: 0
+          width: 175
+          height: 100
+          collapsed: false
+          log_scale_x: false
+          log_scale_y: false
+        alpha:
+          viewer_idx: 0
+          width: 175
+          height: 100
+          collapsed: false
+          log_scale_x: false
+          log_scale_y: false
+        lowbeta:
+          viewer_idx: 0
+          width: 175
+          height: 100
+          collapsed: false
+          log_scale_x: false
+          log_scale_y: false
+        highbeta:
+          viewer_idx: 0
+          width: 175
+          height: 100
+          collapsed: false
+          log_scale_x: false
+          log_scale_y: false
+        gamma:
+          viewer_idx: 0
+          width: 175
+          height: 100
+          collapsed: false
+          log_scale_x: false
+          log_scale_y: false
   psd0:
     _type: PSD
     category: signal
-    gui_kwargs:
-      pos:
-      - 2197
-      - -284
-      viewers:
-        psd:
-          collapsed: false
-          height: 100
-          log_scale_x: false
-          log_scale_y: false
-          viewer_idx: 0
-          width: 175
     params:
+      psd:
+        method: welch
+        f_min: 1.0
+        f_max: 60.0
+        axis: -1
+      welch:
+        nperseg: -1
+        noverlap: -1
       common:
         autotrigger: false
         max_frequency: 30.0
-      psd:
-        f_max: 60.0
-        f_min: 1.0
-        method: welch
-        noverlap: 0
-        precision: 0.1
-        smooth_welch: 1
+        frequency_mode: updates-per-second
+    gui_kwargs:
+      pos:
+      - 934
+      - -211
+      viewers:
+        psd:
+          viewer_idx: 0
+          width: 175
+          height: 100
+          collapsed: false
+          log_scale_x: false
+          log_scale_y: false
   select0:
     _type: Select
     category: array
-    gui_kwargs:
-      pos:
-      - 2145
-      - -563
-      viewers:
-        out:
-          collapsed: false
-          height: 100
-          log_scale_x: false
-          log_scale_y: false
-          viewer_idx: 0
-          width: 175
     params:
+      select:
+        axis: 0
+        include: 1, 50
+        exclude: ''
+        expand_asterisk: false
       common:
         autotrigger: false
         max_frequency: 30.0
-      select:
-        axis: 0
-        exclude: ''
-        include: 1, 50
+        frequency_mode: updates-per-second
+    gui_kwargs:
+      pos:
+      - 932
+      - -396
+      viewers:
+        out:
+          viewer_idx: 0
+          width: 175
+          height: 100
+          collapsed: false
+          log_scale_x: false
+          log_scale_y: false
   select1:
     _type: Select
     category: array
-    gui_kwargs:
-      pos:
-      - 1952
-      - -291
-      viewers:
-        out:
-          collapsed: false
-          height: 100
-          log_scale_x: false
-          log_scale_y: false
-          viewer_idx: 0
-          width: 175
     params:
+      select:
+        axis: 0
+        include: P1
+        exclude: ''
+        expand_asterisk: false
       common:
         autotrigger: false
         max_frequency: 30.0
-      select:
-        axis: 0
-        exclude: ''
-        include: P1
+        frequency_mode: updates-per-second
+    gui_kwargs:
+      pos:
+      - 723
+      - -396
+      viewers:
+        out:
+          viewer_idx: 0
+          width: 175
+          height: 100
+          collapsed: false
+          log_scale_x: false
+          log_scale_y: false
   select2:
     _type: Select
     category: array
-    gui_kwargs:
-      pos:
-      - 1951
-      - -94
-      viewers:
-        out:
-          collapsed: false
-          height: 100
-          log_scale_x: false
-          log_scale_y: false
-          viewer_idx: 0
-          width: 175
     params:
+      select:
+        axis: 0
+        include: O1
+        exclude: ''
+        expand_asterisk: false
       common:
         autotrigger: false
         max_frequency: 30.0
-      select:
-        axis: 0
-        exclude: ''
-        include: O1
+        frequency_mode: updates-per-second
+    gui_kwargs:
+      pos:
+      - 722
+      - -199
+      viewers:
+        out:
+          viewer_idx: 0
+          width: 175
+          height: 100
+          collapsed: false
+          log_scale_x: false
+          log_scale_y: false
   select3:
     _type: Select
     category: array
-    gui_kwargs:
-      pos:
-      - 2920
-      - 183
-      viewers:
-        out:
-          collapsed: false
-          height: 100
-          log_scale_x: false
-          log_scale_y: false
-          viewer_idx: 0
-          width: 175
     params:
-      common:
-        autotrigger: false
-        max_frequency: 30.0
       select:
         axis: 0
-        exclude: ''
         include: '-1'
-  select4:
-    _type: Select
-    category: array
-    gui_kwargs:
-      pos:
-      - 2456
-      - -550
-      viewers:
-        out:
-          collapsed: false
-          height: 100
-          log_scale_x: false
-          log_scale_y: false
-          viewer_idx: 0
-          width: 175
-    params:
+        exclude: ''
+        expand_asterisk: false
       common:
         autotrigger: false
         max_frequency: 30.0
-      select:
-        axis: 0
-        exclude: ''
-        include: 1, 50
+        frequency_mode: updates-per-second
+    gui_kwargs:
+      pos:
+      - 2464
+      - -40
+      viewers:
+        out:
+          viewer_idx: 0
+          width: 175
+          height: 100
+          collapsed: false
+          log_scale_x: false
+          log_scale_y: false
   smooth0:
     _type: Smooth
     category: signal
+    params:
+      smooth:
+        sigma: 4.146999835968018
+        axis: -1
+      common:
+        autotrigger: false
+        max_frequency: 30.0
+        frequency_mode: updates-per-second
     gui_kwargs:
       pos:
-      - 2685
-      - 138
+      - 2247
+      - -45
       viewers:
         out:
-          collapsed: false
-          height: 100
-          log_scale_x: false
-          log_scale_y: false
           viewer_idx: 0
           width: 175
-    params:
-      common:
-        autotrigger: false
-        max_frequency: 30.0
-      smooth:
-        axis: -1
-        sigma: 4.146999835968018
-  table0:
-    _type: Table
-    category: inputs
-    gui_kwargs:
-      pos:
-      - 2952
-      - -40
-      viewers:
-        table:
-          collapsed: false
           height: 100
+          collapsed: false
           log_scale_x: false
           log_scale_y: false
-          viewer_idx: 0
-          width: 175
-    params:
-      common:
-        autotrigger: false
-        max_frequency: 30.0
-      table:
-        new_entry_key: key
   tableselectstring0:
     _type: TableSelectString
     category: misc
-    gui_kwargs:
-      pos:
-      - 3834
-      - -229
-      viewers:
-        output_string:
-          collapsed: false
-          height: 100
-          log_scale_x: false
-          log_scale_y: false
-          viewer_idx: 0
-          width: 175
     params:
+      selection:
+        key: full_address
       common:
         autotrigger: false
         max_frequency: 30.0
-      selection:
-        key: full_address
+        frequency_mode: updates-per-second
+    gui_kwargs:
+      pos:
+      - 3409
+      - -282
+      viewers:
+        output_string:
+          viewer_idx: 0
+          width: 175
+          height: 100
+          collapsed: false
+          log_scale_x: false
+          log_scale_y: false
   textgeneration0:
     _type: TextGeneration
     category: inputs
-    gui_kwargs:
-      pos:
-      - 4333
-      - -348
-      viewers:
-        generated_text:
-          collapsed: false
-          height: 100
-          log_scale_x: false
-          log_scale_y: false
-          viewer_idx: 0
-          width: 175
     params:
+      text_generation:
+        api_key: openai.key
+        model: gpt-4o-mini
+        system_prompt: ''
+        temperature: 1.0
+        max_tokens: 128
+        max_conversation_length: 0
+        save_conversation: ''
       common:
         autotrigger: true
         max_frequency: 0.2
-      text_generation:
-        api_key: openai.key
-        keep_conversation: false
-        max_tokens: 128
-        model: gpt-4o-mini
-        save_conversation: ''
-        system_prompt: ''
-        temperature: 1.0
+        frequency_mode: updates-per-second
+    gui_kwargs:
+      pos:
+      - 3857
+      - -406
+      viewers:
+        generated_text:
+          viewer_idx: 0
+          width: 225
+          height: 150
+          collapsed: false
+          log_scale_x: false
+          log_scale_y: false
   walker0:
     _type: Walker
     category: analysis
-    gui_kwargs:
-      pos:
-      - 3241
-      - -261
-      viewers:
-        latitude:
-          collapsed: false
-          height: 100
-          log_scale_x: false
-          log_scale_y: false
-          viewer_idx: 0
-          width: 175
-        longitude:
-          collapsed: false
-          height: 100
-          log_scale_x: false
-          log_scale_y: false
-          viewer_idx: 0
-          width: 175
     params:
-      common:
-        autotrigger: false
-        max_frequency: 30.0
       initial_coordinates:
         latitude: 0.0
         longitude: 0.0
         reset: true
         water_speed_factor: 4.922999858856201
+      common:
+        autotrigger: false
+        max_frequency: 30.0
+        frequency_mode: updates-per-second
+    gui_kwargs:
+      pos:
+      - 2770
+      - -216
+      viewers:
+        latitude:
+          viewer_idx: 0
+          width: 175
+          height: 100
+          collapsed: false
+          log_scale_x: false
+          log_scale_y: false
+        longitude:
+          viewer_idx: 0
+          width: 175
+          height: 100
+          collapsed: false
+          log_scale_x: false
+          log_scale_y: false
+  constantarray0:
+    _type: ConstantArray
+    category: inputs
+    params:
+      constant:
+        value: 0.0
+        shape: '2'
+        graph: none
+      common:
+        autotrigger: true
+        max_frequency: 30.0
+        frequency_mode: updates-per-second
+    gui_kwargs:
+      pos:
+      - 1594
+      - -232
+      viewers:
+        out:
+          viewer_idx: 0
+          width: 175
+          height: 100
+          collapsed: false
+          log_scale_x: false
+          log_scale_y: false
+  join0:
+    _type: Join
+    category: array
+    params:
+      join:
+        method: concatenate
+        axis: 0
+      common:
+        autotrigger: false
+        max_frequency: 30.0
+        frequency_mode: updates-per-second
+    gui_kwargs:
+      pos:
+      - 1389
+      - -51
+      viewers:
+        out:
+          viewer_idx: 0
+          width: 175
+          height: 100
+          collapsed: false
+          log_scale_x: false
+          log_scale_y: false
+  normalization0:
+    _type: Normalization
+    category: signal
+    params:
+      normalization:
+        method: z-score
+        buffer_size: 1024
+        reset: false
+        axis: -1
+      quantile:
+        n_quantiles: 1000
+        output_distribution: uniform
+      robust:
+        quantile_min: 25
+        quantile_max: 75
+        unit_variance: false
+      minmax:
+        feature_min: 0.0
+        feature_max: 1.0
+      common:
+        autotrigger: false
+        max_frequency: 30.0
+        frequency_mode: updates-per-second
+    gui_kwargs:
+      pos:
+      - 1598
+      - -49
+      viewers:
+        normalized:
+          viewer_idx: 0
+          width: 175
+          height: 100
+          collapsed: false
+          log_scale_x: false
+          log_scale_y: false
+links:
+- node_out: buffer0
+  node_in: select1
+  slot_out: out
+  slot_in: data
+- node_out: buffer0
+  node_in: select2
+  slot_out: out
+  slot_in: data
+- node_out: buffer1
+  node_in: smooth0
+  slot_out: out
+  slot_in: data
+- node_out: compass1
+  node_in: buffer1
+  slot_out: angles
+  slot_in: val
+- node_out: constantstring1
+  node_in: joinstring0
+  slot_out: out
+  slot_in: string1
+- node_out: coord2loc0
+  node_in: tableselectstring0
+  slot_out: coord_info
+  slot_in: input_table
+- node_out: coord2loc0
+  node_in: walker0
+  slot_out: water_situation
+  slot_in: water
+- node_out: extendedtable1
+  node_in: oscout0
+  slot_out: table
+  slot_in: data
+- node_out: joinstring0
+  node_in: textgeneration0
+  slot_out: output
+  slot_in: prompt
+- node_out: lempelziv0
+  node_in: join0
+  slot_out: lzc
+  slot_in: a
+- node_out: lslclient0
+  node_in: buffer0
+  slot_out: out
+  slot_in: val
+- node_out: math0
+  node_in: walker0
+  slot_out: out
+  slot_in: velocity
+- node_out: powerbandeeg0
+  node_in: math0
+  slot_out: theta
+  slot_in: data
+- node_out: powerbandeeg0
+  node_in: join0
+  slot_out: alpha
+  slot_in: b
+- node_out: psd0
+  node_in: powerbandeeg0
+  slot_out: psd
+  slot_in: data
+- node_out: select1
+  node_in: select0
+  slot_out: out
+  slot_in: data
+- node_out: select2
+  node_in: psd0
+  slot_out: out
+  slot_in: data
+- node_out: select2
+  node_in: lempelziv0
+  slot_out: out
+  slot_in: data
+- node_out: select3
+  node_in: walker0
+  slot_out: out
+  slot_in: angle
+- node_out: smooth0
+  node_in: select3
+  slot_out: out
+  slot_in: data
+- node_out: tableselectstring0
+  node_in: joinstring0
+  slot_out: output_string
+  slot_in: string2
+- node_out: textgeneration0
+  node_in: extendedtable1
+  slot_out: generated_text
+  slot_in: string_input1
+- node_out: walker0
+  node_in: coord2loc0
+  slot_out: latitude
+  slot_in: latitude
+- node_out: walker0
+  node_in: coord2loc0
+  slot_out: longitude
+  slot_in: longitude
+- node_out: constantarray0
+  node_in: compass1
+  slot_out: out
+  slot_in: pole1
+- node_out: join0
+  node_in: normalization0
+  slot_out: out
+  slot_in: data
+- node_out: normalization0
+  node_in: compass1
+  slot_out: normalized
+  slot_in: pole2

@@ -1,12 +1,12 @@
 nodes:
-  buffer1:
+  buffer0:
     _type: Buffer
     category: signal
     params:
       buffer:
-        size: 1000.0
-        axis: 1
-        unit: samples
+        size: 5.0
+        axis: -1
+        unit: seconds
         reset: false
       common:
         autotrigger: false
@@ -14,8 +14,8 @@ nodes:
         frequency_mode: updates-per-second
     gui_kwargs:
       pos:
-      - 1163
-      - 361
+      - 218
+      - 373
       viewers:
         out:
           viewer_idx: 0
@@ -42,40 +42,9 @@ nodes:
         frequency_mode: updates-per-second
     gui_kwargs:
       pos:
-      - 246
-      - 173
+      - 18
+      - 325
       viewers: {}
-  extendedtable0:
-    _type: ExtendedTable
-    category: inputs
-    params:
-      table:
-        param1: delta
-        param2: theta
-        param3: alpha
-        param4: lowbeta
-        param5: highbeta
-        param6: value6
-        param7: value7
-        param8: value8
-        param9: value9
-        param10: value10
-      common:
-        autotrigger: false
-        max_frequency: 30.0
-        frequency_mode: updates-per-second
-    gui_kwargs:
-      pos:
-      - 1377
-      - 178
-      viewers:
-        table:
-          viewer_idx: 0
-          width: 175
-          height: 100
-          collapsed: false
-          log_scale_x: false
-          log_scale_y: false
   lslclient0:
     _type: LSLClient
     category: inputs
@@ -90,8 +59,8 @@ nodes:
         frequency_mode: updates-per-second
     gui_kwargs:
       pos:
-      - 362
-      - 172
+      - 15
+      - 375
       viewers:
         out:
           viewer_idx: 0
@@ -100,26 +69,41 @@ nodes:
           collapsed: false
           log_scale_x: false
           log_scale_y: false
-  oscout0:
-    _type: OSCOut
-    category: outputs
+  normalization1:
+    _type: Normalization
+    category: signal
     params:
-      osc:
-        address: localhost
-        port: 8000
-        prefix: /goofi
-        bundle: false
-        broadcast: false
-        require_change: false
+      normalization:
+        method: minmax
+        buffer_size: 5000
+        reset: false
+        axis: -1
+      quantile:
+        n_quantiles: 1000
+        output_distribution: uniform
+      robust:
+        quantile_min: 25
+        quantile_max: 75
+        unit_variance: false
+      minmax:
+        feature_min: 0.0
+        feature_max: 1.0
       common:
         autotrigger: false
         max_frequency: 30.0
         frequency_mode: updates-per-second
     gui_kwargs:
       pos:
-      - 1580
-      - 420
-      viewers: {}
+      - 1146
+      - 377
+      viewers:
+        normalized:
+          viewer_idx: 3
+          width: 475
+          height: 400
+          collapsed: false
+          log_scale_x: false
+          log_scale_y: false
   powerbandeeg0:
     _type: PowerBandEEG
     category: analysis
@@ -132,8 +116,8 @@ nodes:
         frequency_mode: updates-per-second
     gui_kwargs:
       pos:
-      - 1159
-      - 177
+      - 933
+      - 375
       viewers:
         delta:
           viewer_idx: 0
@@ -153,7 +137,7 @@ nodes:
           viewer_idx: 0
           width: 175
           height: 100
-          collapsed: true
+          collapsed: false
           log_scale_x: false
           log_scale_y: false
         lowbeta:
@@ -183,8 +167,8 @@ nodes:
     params:
       psd:
         method: welch
-        f_min: 1.0
-        f_max: 20.0
+        f_min: 2.0
+        f_max: 60.0
         axis: -1
       welch:
         nperseg: -1
@@ -195,108 +179,30 @@ nodes:
         frequency_mode: updates-per-second
     gui_kwargs:
       pos:
-      - 761
-      - 173
+      - 419
+      - 373
       viewers:
         psd:
           viewer_idx: 0
-          width: 175
-          height: 100
+          width: 465
+          height: 390
           collapsed: false
-          log_scale_x: false
-          log_scale_y: false
-  select0:
-    _type: Select
-    category: array
-    params:
-      select:
-        axis: 0
-        include: Cz, Pz
-        exclude: ''
-        expand_asterisk: false
-      common:
-        autotrigger: false
-        max_frequency: 30.0
-        frequency_mode: updates-per-second
-    gui_kwargs:
-      pos:
-      - 961
-      - 176
-      viewers:
-        out:
-          viewer_idx: 0
-          width: 175
-          height: 100
-          collapsed: false
-          log_scale_x: false
-          log_scale_y: false
-  buffer0:
-    _type: Buffer
-    category: signal
-    params:
-      buffer:
-        size: 5.0
-        axis: -1
-        unit: seconds
-        reset: false
-      common:
-        autotrigger: false
-        max_frequency: 30.0
-        frequency_mode: updates-per-second
-    gui_kwargs:
-      pos:
-      - 562
-      - 175
-      viewers:
-        out:
-          viewer_idx: 0
-          width: 175
-          height: 100
-          collapsed: false
-          log_scale_x: false
-          log_scale_y: false
+          log_scale_x: true
+          log_scale_y: true
 links:
-- node_out: extendedtable0
-  node_in: oscout0
-  slot_out: table
+- node_out: buffer0
+  node_in: psd0
+  slot_out: out
   slot_in: data
 - node_out: lslclient0
   node_in: buffer0
   slot_out: out
   slot_in: val
 - node_out: powerbandeeg0
-  node_in: extendedtable0
-  slot_out: delta
-  slot_in: array_input1
-- node_out: powerbandeeg0
-  node_in: extendedtable0
-  slot_out: theta
-  slot_in: array_input2
-- node_out: powerbandeeg0
-  node_in: buffer1
+  node_in: normalization1
   slot_out: alpha
-  slot_in: val
-- node_out: powerbandeeg0
-  node_in: extendedtable0
-  slot_out: alpha
-  slot_in: array_input3
-- node_out: powerbandeeg0
-  node_in: extendedtable0
-  slot_out: lowbeta
-  slot_in: array_input4
-- node_out: powerbandeeg0
-  node_in: extendedtable0
-  slot_out: highbeta
-  slot_in: array_input5
+  slot_in: data
 - node_out: psd0
-  node_in: select0
-  slot_out: psd
-  slot_in: data
-- node_out: select0
   node_in: powerbandeeg0
-  slot_out: out
-  slot_in: data
-- node_out: buffer0
-  node_in: psd0
-  slot_out: out
+  slot_out: psd
   slot_in: data

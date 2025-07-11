@@ -39,8 +39,8 @@ nodes:
         frequency_mode: updates-per-second
     gui_kwargs:
       pos:
-      - 743
-      - 27
+      - 761
+      - 29
       viewers:
         out:
           viewer_idx: 0
@@ -54,10 +54,10 @@ nodes:
     category: analysis
     params:
       classification:
-        n_states: 3
-        current_state: 1
+        n_states: 2
+        current_state: 2
         add_to_training: false
-        train: true
+        train: false
         classifier_choice: SVM
         clear_training: false
         load_data: false
@@ -100,29 +100,6 @@ nodes:
           collapsed: false
           log_scale_x: false
           log_scale_y: false
-  reduce0:
-    _type: Reduce
-    category: array
-    params:
-      reduce:
-        method: mean
-        axis: 0
-      common:
-        autotrigger: false
-        max_frequency: 30.0
-        frequency_mode: updates-per-second
-    gui_kwargs:
-      pos:
-      - 541
-      - 32
-      viewers:
-        out:
-          viewer_idx: 0
-          width: 175
-          height: 100
-          collapsed: false
-          log_scale_x: false
-          log_scale_y: false
   smooth0:
     _type: Smooth
     category: signal
@@ -136,37 +113,13 @@ nodes:
         frequency_mode: updates-per-second
     gui_kwargs:
       pos:
-      - 745
-      - 219
+      - 559
+      - 226
       viewers:
         out:
           viewer_idx: 0
-          width: 175
-          height: 100
-          collapsed: false
-          log_scale_x: false
-          log_scale_y: false
-  audiostream0:
-    _type: AudioStream
-    category: inputs
-    params:
-      audio:
-        sampling_rate: '44100'
-        device: Microsoft Sound Mapper - Input
-        convert_to_mono: true
-      common:
-        autotrigger: true
-        max_frequency: 30.0
-        frequency_mode: updates-per-second
-    gui_kwargs:
-      pos:
-      - -271
-      - 23
-      viewers:
-        out:
-          viewer_idx: 0
-          width: 175
-          height: 100
+          width: 375
+          height: 300
           collapsed: false
           log_scale_x: false
           log_scale_y: false
@@ -198,6 +151,55 @@ nodes:
           collapsed: false
           log_scale_x: true
           log_scale_y: true
+  audiostream0:
+    _type: AudioStream
+    category: inputs
+    params:
+      audio:
+        sampling_rate: '44100'
+        device: Microsoft Sound Mapper - Input
+        convert_to_mono: true
+      common:
+        autotrigger: true
+        max_frequency: 30.0
+        frequency_mode: updates-per-second
+    gui_kwargs:
+      pos:
+      - -271
+      - 24
+      viewers:
+        out:
+          viewer_idx: 0
+          width: 175
+          height: 100
+          collapsed: false
+          log_scale_x: false
+          log_scale_y: false
+  select0:
+    _type: Select
+    category: array
+    params:
+      select:
+        axis: 0
+        include: '0'
+        exclude: ''
+        expand_asterisk: false
+      common:
+        autotrigger: false
+        max_frequency: 30.0
+        frequency_mode: updates-per-second
+    gui_kwargs:
+      pos:
+      - 549
+      - 29
+      viewers:
+        out:
+          viewer_idx: 0
+          width: 175
+          height: 100
+          collapsed: false
+          log_scale_x: false
+          log_scale_y: false
 links:
 - node_out: buffer0
   node_in: psd0
@@ -208,18 +210,18 @@ links:
   slot_out: out
   slot_in: data
 - node_out: classifier0
-  node_in: reduce0
+  node_in: select0
   slot_out: probs
-  slot_in: array
-- node_out: reduce0
-  node_in: buffer1
-  slot_out: out
-  slot_in: val
-- node_out: audiostream0
-  node_in: buffer0
-  slot_out: out
-  slot_in: val
+  slot_in: data
 - node_out: psd0
   node_in: classifier0
   slot_out: psd
   slot_in: data
+- node_out: audiostream0
+  node_in: buffer0
+  slot_out: out
+  slot_in: val
+- node_out: select0
+  node_in: buffer1
+  slot_out: out
+  slot_in: val

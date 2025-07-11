@@ -1,350 +1,367 @@
-links:
-- node_in: normalization0
-  node_out: biotuner0
-  slot_in: data
-  slot_out: harmsim
-- node_in: extendedtable0
-  node_out: biotuner0
-  slot_in: array_input2
-  slot_out: peaks
-- node_in: extendedtable0
-  node_out: biotuner0
-  slot_in: array_input3
-  slot_out: amps
-- node_in: biotuner0
-  node_out: buffer0
-  slot_in: data
-  slot_out: out
-- node_in: smooth0
-  node_out: buffer1
-  slot_in: data
-  slot_out: out
-- node_in: oscout0
-  node_out: extendedtable0
-  slot_in: data
-  slot_out: table
-- node_in: select0
-  node_out: lslclient0
-  slot_in: data
-  slot_out: out
-- node_in: extendedtable0
-  node_out: normalization0
-  slot_in: array_input1
-  slot_out: normalized
-- node_in: buffer1
-  node_out: normalization0
-  slot_in: val
-  slot_out: normalized
-- node_in: buffer0
-  node_out: select0
-  slot_in: val
-  slot_out: out
 nodes:
   biotuner0:
     _type: Biotuner
     category: analysis
+    params:
+      biotuner:
+        n_peaks: 5
+        f_min: 2.0
+        f_max: 45.0
+        precision: 0.5
+        peaks_function: fixed
+        n_harm_subharm: 3
+        n_harm_extended: 3
+        delta_lim: 250
+      common:
+        autotrigger: false
+        max_frequency: 10.0
+        frequency_mode: updates-per-second
     gui_kwargs:
       pos:
       - 622
       - 198
       viewers:
-        amps:
-          collapsed: true
-          height: 100
-          log_scale_x: false
-          log_scale_y: false
-          viewer_idx: 0
-          width: 175
-        cons:
-          collapsed: true
-          height: 100
-          log_scale_x: false
-          log_scale_y: false
-          viewer_idx: 0
-          width: 175
-        extended_amps:
-          collapsed: true
-          height: 100
-          log_scale_x: false
-          log_scale_y: false
-          viewer_idx: 0
-          width: 175
-        extended_peaks:
-          collapsed: true
-          height: 100
-          log_scale_x: false
-          log_scale_y: false
-          viewer_idx: 0
-          width: 175
-        harm_tuning:
-          collapsed: true
-          height: 100
-          log_scale_x: false
-          log_scale_y: false
-          viewer_idx: 0
-          width: 175
         harmsim:
-          collapsed: true
-          height: 100
-          log_scale_x: false
-          log_scale_y: false
           viewer_idx: 0
           width: 175
-        peaks:
-          collapsed: true
           height: 100
+          collapsed: true
           log_scale_x: false
           log_scale_y: false
-          viewer_idx: 0
-          width: 175
-        peaks_ratios_tuning:
-          collapsed: true
-          height: 100
-          log_scale_x: false
-          log_scale_y: false
-          viewer_idx: 0
-          width: 175
-        subharm_tension:
-          collapsed: true
-          height: 100
-          log_scale_x: false
-          log_scale_y: false
-          viewer_idx: 0
-          width: 175
         tenney:
-          collapsed: true
-          height: 100
-          log_scale_x: false
-          log_scale_y: false
           viewer_idx: 0
           width: 175
-    params:
-      biotuner:
-        delta_lim: 250
-        f_max: 30.0
-        f_min: 2.0
-        n_harm_extended: 3
-        n_harm_subharm: 3
-        n_peaks: 5
-        peaks_function: EMD
-        precision: 0.1
-      common:
-        autotrigger: false
-        max_frequency: 10.0
+          height: 100
+          collapsed: true
+          log_scale_x: false
+          log_scale_y: false
+        subharm_tension:
+          viewer_idx: 0
+          width: 175
+          height: 100
+          collapsed: true
+          log_scale_x: false
+          log_scale_y: false
+        cons:
+          viewer_idx: 0
+          width: 175
+          height: 100
+          collapsed: true
+          log_scale_x: false
+          log_scale_y: false
+        peaks_ratios_tuning:
+          viewer_idx: 0
+          width: 175
+          height: 100
+          collapsed: true
+          log_scale_x: false
+          log_scale_y: false
+        harm_tuning:
+          viewer_idx: 0
+          width: 175
+          height: 100
+          collapsed: false
+          log_scale_x: false
+          log_scale_y: false
+        peaks:
+          viewer_idx: 0
+          width: 175
+          height: 100
+          collapsed: true
+          log_scale_x: false
+          log_scale_y: false
+        amps:
+          viewer_idx: 0
+          width: 175
+          height: 100
+          collapsed: true
+          log_scale_x: false
+          log_scale_y: false
+        extended_peaks:
+          viewer_idx: 0
+          width: 175
+          height: 100
+          collapsed: true
+          log_scale_x: false
+          log_scale_y: false
+        extended_amps:
+          viewer_idx: 0
+          width: 175
+          height: 100
+          collapsed: true
+          log_scale_x: false
+          log_scale_y: false
   buffer0:
     _type: Buffer
     category: signal
+    params:
+      buffer:
+        size: 6.0
+        axis: -1
+        unit: seconds
+        reset: false
+      common:
+        autotrigger: false
+        max_frequency: 30.0
+        frequency_mode: updates-per-second
     gui_kwargs:
       pos:
       - 419
       - 198
       viewers:
         out:
-          collapsed: false
-          height: 100
-          log_scale_x: false
-          log_scale_y: false
           viewer_idx: 0
           width: 175
-    params:
-      buffer:
-        axis: -1
-        reset: false
-        size: 6.0
-        unit: seconds
-      common:
-        autotrigger: false
-        max_frequency: 30.0
+          height: 100
+          collapsed: false
+          log_scale_x: false
+          log_scale_y: false
   buffer1:
     _type: Buffer
     category: signal
+    params:
+      buffer:
+        size: 100.0
+        axis: -1
+        unit: samples
+        reset: false
+      common:
+        autotrigger: false
+        max_frequency: 30.0
+        frequency_mode: updates-per-second
     gui_kwargs:
       pos:
       - 1066
       - 79
       viewers:
         out:
-          collapsed: false
-          height: 100
-          log_scale_x: false
-          log_scale_y: false
           viewer_idx: 0
           width: 175
-    params:
-      buffer:
-        axis: -1
-        reset: false
-        size: 100.0
-        unit: samples
-      common:
-        autotrigger: false
-        max_frequency: 30.0
+          height: 100
+          collapsed: false
+          log_scale_x: false
+          log_scale_y: false
   eegrecording0:
     _type: EEGRecording
     category: inputs
+    params:
+      recording:
+        use_example_data: true
+        file_path: ''
+        file_sfreq: 256.0
+        source_name: goofi
+        stream_name: goofi-stream
+        loop: true
+        reset: false
+      common:
+        autotrigger: false
+        max_frequency: 30.0
+        frequency_mode: updates-per-second
     gui_kwargs:
       pos:
       - 15
       - 142
       viewers: {}
-    params:
-      common:
-        autotrigger: false
-        max_frequency: 30.0
-      recording:
-        file_path: ''
-        file_sfreq: 256.0
-        source_name: goofi
-        stream_name: goofi-stream
-        use_example_data: true
   extendedtable0:
     _type: ExtendedTable
     category: inputs
-    gui_kwargs:
-      pos:
-      - 1068
-      - 292
-      viewers:
-        table:
-          collapsed: false
-          height: 100
-          log_scale_x: false
-          log_scale_y: false
-          viewer_idx: 0
-          width: 175
     params:
-      common:
-        autotrigger: false
-        max_frequency: 30.0
       table:
         param1: harmsim
-        param10: value10
         param2: peaks
         param3: amps
-        param4: value5
+        param4: tuning
         param5: value6
         param6: value6
         param7: value7
         param8: value8
         param9: value9
+        param10: value10
+      common:
+        autotrigger: false
+        max_frequency: 30.0
+        frequency_mode: updates-per-second
+    gui_kwargs:
+      pos:
+      - 1060
+      - 286
+      viewers:
+        table:
+          viewer_idx: 0
+          width: 175
+          height: 100
+          collapsed: false
+          log_scale_x: false
+          log_scale_y: false
   lslclient0:
     _type: LSLClient
     category: inputs
+    params:
+      lsl_stream:
+        source_name: goofi
+        stream_name: ''
+        refresh: false
+      common:
+        autotrigger: true
+        max_frequency: 30.0
+        frequency_mode: updates-per-second
     gui_kwargs:
       pos:
       - 15
       - 196
       viewers:
         out:
-          collapsed: false
-          height: 100
-          log_scale_x: false
-          log_scale_y: false
           viewer_idx: 0
           width: 175
-    params:
-      common:
-        autotrigger: true
-        max_frequency: 30.0
-      lsl_stream:
-        refresh: false
-        source_name: goofi
-        stream_name: ''
+          height: 100
+          collapsed: false
+          log_scale_x: false
+          log_scale_y: false
   normalization0:
     _type: Normalization
     category: signal
+    params:
+      normalization:
+        method: z-score
+        buffer_size: 1024
+        reset: false
+        axis: -1
+      quantile:
+        n_quantiles: 1000
+        output_distribution: uniform
+      robust:
+        quantile_min: 25
+        quantile_max: 75
+        unit_variance: false
+      minmax:
+        feature_min: 0.0
+        feature_max: 1.0
+      common:
+        autotrigger: false
+        max_frequency: 30.0
+        frequency_mode: updates-per-second
     gui_kwargs:
       pos:
       - 842
       - 132
       viewers:
         normalized:
-          collapsed: false
-          height: 100
-          log_scale_x: false
-          log_scale_y: false
           viewer_idx: 0
           width: 175
-    params:
-      common:
-        autotrigger: false
-        max_frequency: 30.0
-      minmax:
-        feature_max: 1.0
-        feature_min: 0.0
-      normalization:
-        axis: -1
-        buffer_size: 1024
-        method: z-score
-        reset: false
-      quantile:
-        n_quantiles: 1000
-        output_distribution: uniform
-      robust:
-        quantile_max: 75
-        quantile_min: 25
-        unit_variance: false
+          height: 100
+          collapsed: false
+          log_scale_x: false
+          log_scale_y: false
   oscout0:
     _type: OSCOut
     category: outputs
-    gui_kwargs:
-      pos:
-      - 1286
-      - 555
-      viewers: {}
     params:
+      osc:
+        address: localhost
+        port: 5070
+        prefix: /goofi
+        bundle: false
+        broadcast: false
+        require_change: false
       common:
         autotrigger: false
         max_frequency: 10.0
-      osc:
-        address: localhost
-        broadcast: false
-        bundle: false
-        port: 5070
-        prefix: /goofi
+        frequency_mode: updates-per-second
+    gui_kwargs:
+      pos:
+      - 1444
+      - 581
+      viewers: {}
   select0:
     _type: Select
     category: array
+    params:
+      select:
+        axis: 0
+        include: Cz
+        exclude: ''
+        expand_asterisk: false
+      common:
+        autotrigger: false
+        max_frequency: 30.0
+        frequency_mode: updates-per-second
     gui_kwargs:
       pos:
       - 219
       - 198
       viewers:
         out:
-          collapsed: false
-          height: 100
-          log_scale_x: false
-          log_scale_y: false
           viewer_idx: 0
           width: 175
-    params:
-      common:
-        autotrigger: false
-        max_frequency: 30.0
-      select:
-        axis: 0
-        exclude: ''
-        expand_asterisk: false
-        include: Cz
+          height: 100
+          collapsed: false
+          log_scale_x: false
+          log_scale_y: false
   smooth0:
     _type: Smooth
     category: signal
+    params:
+      smooth:
+        sigma: 2.0
+        axis: -1
+      common:
+        autotrigger: false
+        max_frequency: 30.0
+        frequency_mode: updates-per-second
     gui_kwargs:
       pos:
       - 1271
       - 77
       viewers:
         out:
+          viewer_idx: 0
+          width: 245
+          height: 170
           collapsed: false
-          height: 340
           log_scale_x: false
           log_scale_y: false
-          viewer_idx: 0
-          width: 415
-    params:
-      common:
-        autotrigger: false
-        max_frequency: 30.0
-      smooth:
-        axis: -1
-        sigma: 2.0
+links:
+- node_out: biotuner0
+  node_in: normalization0
+  slot_out: harmsim
+  slot_in: data
+- node_out: biotuner0
+  node_in: extendedtable0
+  slot_out: peaks_ratios_tuning
+  slot_in: array_input4
+- node_out: biotuner0
+  node_in: extendedtable0
+  slot_out: peaks
+  slot_in: array_input2
+- node_out: biotuner0
+  node_in: extendedtable0
+  slot_out: amps
+  slot_in: array_input3
+- node_out: buffer0
+  node_in: biotuner0
+  slot_out: out
+  slot_in: data
+- node_out: buffer1
+  node_in: smooth0
+  slot_out: out
+  slot_in: data
+- node_out: extendedtable0
+  node_in: oscout0
+  slot_out: table
+  slot_in: data
+- node_out: lslclient0
+  node_in: select0
+  slot_out: out
+  slot_in: data
+- node_out: normalization0
+  node_in: extendedtable0
+  slot_out: normalized
+  slot_in: array_input1
+- node_out: normalization0
+  node_in: buffer1
+  slot_out: normalized
+  slot_in: val
+- node_out: select0
+  node_in: buffer0
+  slot_out: out
+  slot_in: val
