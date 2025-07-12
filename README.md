@@ -16,7 +16,7 @@
 <h3 align="center"><a href="https://notebooklm.google.com/notebook/b28ee248-db68-4b41-b914-1fc8312f86a8/audio?pli=1">AI Podcast about goofi-pipe</a> | <a href="https://deepwiki.com/dav0dea/goofi-pipe">AI-generated Documentation</a></h3>
 
 # Installation
-If you only want to run goofi-pipe and not edit any of the code, make sure you activated the desired Python environment with Python>=3.9 and run the following commands in your terminal:
+If you only want to run goofi-pipe and not edit any of the code, make sure you activated the desired Python environment with Python >=3.9 and <3.13 and run the following commands in your terminal:
 ```bash
 pip install goofi # install goofi-pipe
 goofi-pipe # start the application
