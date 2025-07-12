@@ -17,11 +17,14 @@ class PSD(Node):
         return {
             "psd": {
                 "method": StringParam("welch", options=["fft", "welch"]),
-                "f_min": FloatParam(512, 0.0, 9999.0),
-                "f_max": FloatParam(400, 1.0, 10000.0),
+                "f_min": FloatParam(1, 0.0, 9999.0),
+                "f_max": FloatParam(40, 1.0, 10000.0),
                 "axis": -1,
             },
-            "welch": {"nperseg": IntParam(-1, 1, 1000), "noverlap": IntParam(-1, 0, 1000)},
+            "welch": {
+                "nperseg": IntParam(-1, 1, 1000),
+                "noverlap": IntParam(-1, 0, 1000),
+            },
         }
 
     def setup(self):
