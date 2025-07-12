@@ -26,5 +26,5 @@ keywords = ["signal-processing", "neurofeedback", "biofeedback", "real-time", "E
 license = {file = "LICENSE"}
 name = "goofi"
 readme = {file = "README.md", content-type = "text/markdown"}
-requires-python = ">=3.9"
-version = "2.1.34"
+requires-python = ">=3.9,<3.13"
+version = "2.1.35"

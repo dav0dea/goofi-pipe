@@ -32,7 +32,7 @@ If you want to use PyTorch-based nodes and require a specific version of CUDA, r
 > ```
 
 ## Development
-Follow these steps if you want to adapt the code of existing nodes, or create custom new nodes. In your terminal, make sure you activated the desired Python environment with Python>=3.9, and that you are in the directory where you want to install goofi-pipe. Then, run the following commands:
+Follow these steps if you want to adapt the code of existing nodes, or create custom new nodes. In your terminal, make sure you activated the desired Python environment with Python >=3.9 and <3.13, and that you are in the directory where you want to install goofi-pipe. Then, run the following commands:
 ```bash
 git clone git@github.com:dav0dea/goofi-pipe.git # download the repository
 cd goofi-pipe # navigate into the repository
