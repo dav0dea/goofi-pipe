@@ -98,7 +98,7 @@ class PhiID(Node):
         if matrix.meta and "channels" in matrix.meta and "dim0" in matrix.meta["channels"]:
             channel_labels = matrix.meta["channels"]["dim0"]
         else:
-            channel_labels = [f"ch{i}" for i in range(n_channels - 1)]
+            channel_labels = [f"ch{i}" for i in range(n_channels)]
 
         if self.params.PhiID.mode.value == "pairwise":
             # Prepare output array: one row per channel, one col per atom
@@ -175,16 +175,15 @@ class PhiID(Node):
             PhiID_vals = PhiID_vals[:, mask]
             inf_dyn_vals = inf_dyn_vals[:, mask]
             IIT_vals = IIT_vals[:, mask]
-            # channel_labels = [channel_labels[i] for i in range(n_channels) if i != tgt_index]
+            channel_labels = [channel_labels[i] for i in range(n_channels) if i != tgt_index]
 
         out_phiid = matrix.meta.copy()
-        del out_phiid["channels"]  
-        # out_phiid["channels"] = {"dim0": atom_names, "dim1": channel_labels}
+        out_phiid["channels"] = {"dim0": atom_names, "dim1": channel_labels}
+
         out_inf_dyn = matrix.meta.copy()
-        #del out_inf_dyn["channels"]
         out_inf_dyn["channels"] = {"dim0": list(information_dynamics_metrics.keys()), "dim1": channel_labels}
+
         out_iit = matrix.meta.copy()
-        #del out_iit["channels"]
         out_iit["channels"] = {"dim0": list(IIT_metrics.keys()), "dim1": channel_labels}
 
         return {"PhiID": (PhiID_vals, out_phiid), "inf_dyn": (inf_dyn_vals, out_inf_dyn), "IIT": (IIT_vals, out_iit)}
