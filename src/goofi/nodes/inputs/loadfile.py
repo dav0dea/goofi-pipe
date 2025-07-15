@@ -154,3 +154,7 @@ class LoadFile(Node):
             self.data_output = (data, meta if self.params.embedding_csv.name_column.value else {})
             self.string_output = None
             return
+
+    def file_filename_changed(self, filename):
+        self.setup()
+        
