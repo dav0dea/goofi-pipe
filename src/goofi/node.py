@@ -113,7 +113,11 @@ class Node(ABC):
 
         if environment != NodeEnv.STANDALONE:
             # initialize data processing thread
-            self.processing_thread = Thread(target=self._processing_loop, daemon=True)
+            self.processing_thread = Thread(
+                target=self._processing_loop,
+                name=f"{self.__class__.__name__}-proc_loop",
+                daemon=True,
+            )
             self.processing_thread.start()
 
         if environment == NodeEnv.MULTIPROCESSING:
@@ -122,7 +126,11 @@ class Node(ABC):
             self._messaging_loop()
         elif environment == NodeEnv.LOCAL:
             # we are in the main process, create a new thread to not block it
-            self.messaging_thread = Thread(target=self._messaging_loop, daemon=True)
+            self.messaging_thread = Thread(
+                target=self._messaging_loop,
+                name=f"{self.__class__.__name__}-msg_loop",
+                daemon=True,
+            )
             self.messaging_thread.start()
         elif environment == NodeEnv.STANDALONE:
             # the node does not have a messaging, or processing loop when running in standalone mode
@@ -201,7 +209,7 @@ class Node(ABC):
             self.connection.try_send(Message(MessageType.PROCESSING_ERROR, {"error": error}))
             raise RuntimeError(error)
 
-        Thread(target=self._setup, daemon=True).start()
+        Thread(target=self._setup, name=f"{self.__class__.__name__}-setup", daemon=True).start()
 
         # run the messaging loop
         while self.alive:
@@ -221,7 +229,9 @@ class Node(ABC):
             # potentially restart the processing thread
             # TODO: this might be starting too many threads and not cleaning up properly
             if not self.processing_thread.is_alive():
-                self.processing_thread = Thread(target=self._processing_loop, daemon=True)
+                self.processing_thread = Thread(
+                    target=self._processing_loop, name=f"{self.__class__.__name__}-proc_loop", daemon=True
+                )
                 self.processing_thread.start()
 
             if not isinstance(msg, Message):
@@ -456,7 +466,7 @@ class Node(ABC):
                         self.pending_connections[conn._id] = []
 
                     # send the message (in a separate thread because connections may time out and block)
-                    t = Thread(target=conn.send, args=(msg,), daemon=True)
+                    t = Thread(target=conn.send, name=f"{self.__class__.__name__}-send-{conn._id}", args=(msg,), daemon=True)
                     t.start()
                     self.pending_connections[conn._id].append((t, time.time()))
 
@@ -520,7 +530,12 @@ class Node(ABC):
                 conn1, conn2 = Connection.create()
 
                 # instantiate the node in a separate process
-                proc = Process(target=cls, args=(conn2, in_slots, out_slots, params, NodeEnv.MULTIPROCESSING), daemon=True)
+                proc = Process(
+                    target=cls,
+                    name=cls.__name__,
+                    args=(conn2, in_slots, out_slots, params, NodeEnv.MULTIPROCESSING),
+                    daemon=True,
+                )
                 proc.start()
                 break
             except Exception as e:
