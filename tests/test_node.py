@@ -282,7 +282,7 @@ def test_serialize():
 
     # serialize the node
     ref.connection.send(Message(MessageType.SERIALIZE_REQUEST, {}))
-    time.sleep(0.05)
+    time.sleep(0.1)
 
     # "ground truth" serialized node
     node_type = "FullDummyNode"
