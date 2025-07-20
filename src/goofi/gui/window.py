@@ -1025,7 +1025,9 @@ class Window:
                         dpg.mvNodeCol_TitleBarHovered, scale(NODE_CAT_COLORS[i], darkness + 0.1), category=dpg.mvThemeCat_Nodes
                     )
                     dpg.add_theme_color(
-                        dpg.mvNodeCol_TitleBarSelected, scale(NODE_CAT_COLORS[i], darkness + 0.2), category=dpg.mvThemeCat_Nodes
+                        dpg.mvNodeCol_TitleBarSelected,
+                        scale(NODE_CAT_COLORS[i], darkness + 0.2),
+                        category=dpg.mvThemeCat_Nodes,
                     )
 
             self.node_themes[cat] = theme
@@ -1046,7 +1048,9 @@ class Window:
                         dpg.mvNodeCol_TitleBarHovered, scale(NODE_CAT_COLORS[i], darkness + 0.1), category=dpg.mvThemeCat_Nodes
                     )
                     dpg.add_theme_color(
-                        dpg.mvNodeCol_TitleBarSelected, scale(NODE_CAT_COLORS[i], darkness + 0.2), category=dpg.mvThemeCat_Nodes
+                        dpg.mvNodeCol_TitleBarSelected,
+                        scale(NODE_CAT_COLORS[i], darkness + 0.2),
+                        category=dpg.mvThemeCat_Nodes,
                     )
             self.node_error_themes[cat] = theme
 
