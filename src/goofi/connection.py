@@ -262,9 +262,9 @@ class ZeroMQConnection(Connection, ABC):
 
     def close(self) -> None:
         self.alive = False
-        if self.push_thread.is_alive():
+        if hasattr(self, "push_thread") and self.push_thread.is_alive():
             self.push_thread.join()
-        if self.pull_thread.is_alive():
+        if hasattr(self, "pull_thread") and self.pull_thread.is_alive():
             self.pull_thread.join()
 
     def __reduce__(self):
