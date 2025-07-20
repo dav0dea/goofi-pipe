@@ -144,6 +144,7 @@ class MultiprocessingConnection(Connection):
     def __init__(self, conn: _ConnectionBase) -> None:
         super().__init__()
         self.conn = conn
+        self._send_lock = threading.Lock()
 
     @staticmethod
     def _create() -> Tuple[Connection, Connection]:
@@ -152,7 +153,8 @@ class MultiprocessingConnection(Connection):
 
     def send(self, obj: object) -> None:
         try:
-            self.conn.send(obj)
+            with self._send_lock:
+                self.conn.send(obj)
         except (OSError, BrokenPipeError):
             raise ConnectionError("Connection closed")
 
@@ -174,6 +176,18 @@ class MultiprocessingConnection(Connection):
             self.conn._handle = None
         except Exception:
             pass
+
+    def __getstate__(self):
+        state = self.__dict__.copy()
+        # Remove unpicklable lock object from state
+        if "_send_lock" in state:
+            del state["_send_lock"]
+        return state
+
+    def __setstate__(self, state):
+        self.__dict__.update(state)
+        # Recreate the lock upon unpickling
+        self._send_lock = threading.Lock()
 
 
 class ZeroMQConnection(Connection, ABC):
