@@ -169,7 +169,6 @@ class MultiprocessingConnection(Connection):
             pass
 
     def __del__(self) -> None:
-        """Destructor to close the connection and free any resources associated with it."""
         try:
             self.close()
             self.conn._handle = None
@@ -277,13 +276,11 @@ class ZeroMQConnection(Connection, ABC):
         self._id = state["_id"]
 
     def __del__(self) -> None:
-        """Destructor to close the connection and free any resources associated with it."""
         self.close()
 
     @staticmethod
     @abstractmethod
     def protocol() -> str:
-        """Return the protocol used by the connection"""
         pass
 
     @staticmethod
