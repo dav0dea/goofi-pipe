@@ -154,18 +154,26 @@ class Filter(Node):
             elif filter_type == "notch":
                 filter_state = self.filter_state_notch
 
-            if data.ndim == 1:
-                zi = self.signal.lfilter_zi(b, a)
-                if filter_state is None or filter_state.shape != zi.shape:
-                    filter_state = zi * data[0]
-                filtered_data, new_state = self.signal.lfilter(b, a, data, zi=filter_state)
-            elif data.ndim == 2:
-                num_channels = data.shape[0]
-                zi = self.signal.lfilter_zi(b, a).reshape(-1, 1)
-                if filter_state is None or filter_state.shape[1] != num_channels:
-                    filter_state = np.tile(zi, (1, num_channels)) * data[:, 0]
-                filtered_data, new_state = self.signal.lfilter(b, a, data.T, axis=0, zi=filter_state)
-                filtered_data = filtered_data.T
+            try:
+                if data.ndim == 1:
+                    zi = self.signal.lfilter_zi(b, a)
+                    if filter_state is None or filter_state.shape != zi.shape:
+                        filter_state = zi * data[0]
+                    filtered_data, new_state = self.signal.lfilter(b, a, data, zi=filter_state)
+                elif data.ndim == 2:
+                    num_channels = data.shape[0]
+                    zi = self.signal.lfilter_zi(b, a).reshape(-1, 1)
+                    if filter_state is None or filter_state.shape[1] != num_channels:
+                        filter_state = np.tile(zi, (1, num_channels)) * data[:, 0]
+                    filtered_data, new_state = self.signal.lfilter(b, a, data.T, axis=0, zi=filter_state)
+                    filtered_data = filtered_data.T
+            except:
+                raise
+            finally:
+                if filter_type == "bandpass":
+                    self.filter_state_bp = None
+                elif filter_type == "notch":
+                    self.filter_state_notch = None
 
             # Update the appropriate filter state
             if filter_type == "bandpass":
