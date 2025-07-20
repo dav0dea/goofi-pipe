@@ -400,6 +400,7 @@ Nodes that perform analysis on the data.
     - z_theta_alpha: ARRAY
     - z_lempel_ziv: ARRAY
     - baseline_stats: TABLE
+    - hypnodensities: ARRAY
   </details>
 
 <details><summary>&emsp;EEGEmbedding</summary>
@@ -556,14 +557,6 @@ Nodes that perform analysis on the data.
     - input_data: ARRAY
   - **Outputs:**
     - data: ARRAY
-  </details>
-
-<details><summary>&emsp;ReveEEG</summary>
-
-  - **Inputs:**
-    - eeg: ARRAY
-  - **Outputs:**
-    - embedding: ARRAY
   </details>
 
 <details><summary>&emsp;SpectroMorphology</summary>
@@ -1253,6 +1246,14 @@ Nodes implementing signal processing operations.
     - signal: ARRAY
   - **Outputs:**
     - cycle: ARRAY
+  </details>
+
+<details><summary>&emsp;Delay</summary>
+
+  - **Inputs:**
+    - data: ARRAY
+  - **Outputs:**
+    - output: ARRAY
   </details>
 
 <details><summary>&emsp;EEGHeadsetDetection</summary>
