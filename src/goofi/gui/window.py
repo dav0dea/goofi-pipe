@@ -230,6 +230,10 @@ def param_updated(a, value, user_data):
                 # the input widget might have been deleted, ignore this error
                 pass
 
+    if value == node.params[group][name].value:
+        # value did not change, ignore this update
+        return
+
     # send the updated parameter to the node
     node.update_param(group, name, value)
     # mark manager state as dirty
