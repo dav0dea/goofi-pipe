@@ -226,8 +226,7 @@ class ZeroMQConnection(Connection, ABC):
                 obj = self.push_queue.get(block=False)
                 push_socket.send(pickle.dumps(obj))
             except queue.Empty:
-                pass
-            time.sleep(0.01)
+                time.sleep(0.01)
 
         if push_socket:
             push_socket.close()
@@ -245,8 +244,7 @@ class ZeroMQConnection(Connection, ABC):
                 obj = pickle.loads(pull_socket.recv(zmq.NOBLOCK))
                 self.pull_queue.put(obj)
             except zmq.Again:
-                pass
-            time.sleep(0.01)
+                time.sleep(0.01)
 
         if pull_socket:
             pull_socket.close()
