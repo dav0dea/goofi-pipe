@@ -1,9 +1,12 @@
 import colorsys
+
 import numpy as np
-from goofi.params import IntParam, StringParam
+import webcolors
+import webcolors._definitions
+
 from goofi.data import Data, DataType
 from goofi.node import Node
-import webcolors
+from goofi.params import IntParam, StringParam
 
 
 class TuningColors(Node):
@@ -115,9 +118,9 @@ def rgb2name(rgb):
     Returns:
         str: The name of the closest color in the dictionary
     """
-    colors = {k: webcolors.hex_to_rgb(k) for k in webcolors.constants.CSS3_HEX_TO_NAMES.keys()}
+    colors = {k: webcolors.hex_to_rgb(k) for k in webcolors._definitions._CSS3_HEX_TO_NAMES.keys()}
     closest_color = min(
         colors,
         key=lambda color: sum((a - b) ** 2 for a, b in zip(rgb, colors[color])),
     )
-    return webcolors.constants.CSS3_HEX_TO_NAMES[closest_color]
+    return webcolors._definitions._CSS3_HEX_TO_NAMES[closest_color]
