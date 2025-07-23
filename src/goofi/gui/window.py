@@ -99,10 +99,14 @@ class GUINode:
 
     def set_error(self, msg: str, win: "Window") -> None:
         """Set the error message."""
+        # TODO: revert back to the standard node categories (without _empty suffix) once https://github.com/hoffstadt/DearPyGui/issues/2444 is fixed
+        theme_name = self.node_ref.category
+        theme_name += "_empty" if len(self.input_slots) == 0 and len(self.output_slots) == 0 else ""
+
         if msg is None:
             # no error, reset theme
             try:
-                dpg.bind_item_theme(self.item, win.node_themes[self.node_ref.category])
+                dpg.bind_item_theme(self.item, win.node_themes[theme_name])
             except SystemError:
                 # the node might have been deleted, ignore this error
                 pass
@@ -115,7 +119,7 @@ class GUINode:
         self._error_msg = msg
 
         # we have an error, set theme
-        dpg.bind_item_theme(self.item, win.node_error_themes[self.node_ref.category])
+        dpg.bind_item_theme(self.item, win.node_error_themes[theme_name])
 
         # update the info window if it is open
         info_win = win.node_info_window
@@ -467,7 +471,10 @@ class Window:
         if offset is not None:
             pos = (pos[0] + offset[0], pos[1] + offset[1])
 
-        with dpg.node(parent=self.node_editor, label=node_name, pos=pos, user_data=node) as node_id:
+        # TODO: revert to using just the node_name in all cases once https://github.com/hoffstadt/DearPyGui/issues/2444 is fixed
+        node_display_name = " " + node_name + " " if len(node.input_slots) == 0 and len(node.output_slots) == 0 else node_name
+
+        with dpg.node(parent=self.node_editor, label=node_display_name, pos=pos, user_data=node) as node_id:
             ############### input slots ###############
             in_slots = {}
             for name, dtype in node.input_slots.items():
@@ -1016,21 +1023,29 @@ class Window:
         # set up node themes
         self.node_themes = {}
         for i, cat in enumerate(cats):
-            with dpg.theme() as theme:
-                with dpg.theme_component():
-                    dpg.add_theme_color(
-                        dpg.mvNodeCol_TitleBar, scale(NODE_CAT_COLORS[i], darkness), category=dpg.mvThemeCat_Nodes
-                    )
-                    dpg.add_theme_color(
-                        dpg.mvNodeCol_TitleBarHovered, scale(NODE_CAT_COLORS[i], darkness + 0.1), category=dpg.mvThemeCat_Nodes
-                    )
-                    dpg.add_theme_color(
-                        dpg.mvNodeCol_TitleBarSelected,
-                        scale(NODE_CAT_COLORS[i], darkness + 0.2),
-                        category=dpg.mvThemeCat_Nodes,
-                    )
+            for suffix in ["", "_empty"]:
+                with dpg.theme() as theme:
+                    with dpg.theme_component():
+                        if suffix == "_empty":
+                            # NOTE: setting horizontal padding to 0 prevents a bug in dearpygui>2 where empty nodes grow indefinitely
+                            # TODO: remove the extra case for empty nodes once the following issue is resolved: https://github.com/hoffstadt/DearPyGui/issues/2444
+                            dpg.add_theme_style(dpg.mvNodeStyleVar_NodePadding, 0, 7, category=dpg.mvThemeCat_Nodes)
 
-            self.node_themes[cat] = theme
+                        dpg.add_theme_color(
+                            dpg.mvNodeCol_TitleBar, scale(NODE_CAT_COLORS[i], darkness), category=dpg.mvThemeCat_Nodes
+                        )
+                        dpg.add_theme_color(
+                            dpg.mvNodeCol_TitleBarHovered,
+                            scale(NODE_CAT_COLORS[i], darkness + 0.1),
+                            category=dpg.mvThemeCat_Nodes,
+                        )
+                        dpg.add_theme_color(
+                            dpg.mvNodeCol_TitleBarSelected,
+                            scale(NODE_CAT_COLORS[i], darkness + 0.2),
+                            category=dpg.mvThemeCat_Nodes,
+                        )
+
+                self.node_themes[cat + suffix] = theme
 
         # set up node error themes
         self.node_error_themes = {}
