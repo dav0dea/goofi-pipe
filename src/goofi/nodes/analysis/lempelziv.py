@@ -42,8 +42,6 @@ class LempelZiv(Node):
 
         # compute Lempel-Ziv complexity
         lzc = np.apply_along_axis(self.compute_lzc, axis, binarized, normalize=True)
-        #                         ^^^^^^^^^^^^^^^^  ^^^^   ^^^^^^^^^  ^^^^^^^^^^^^^^
-        #                         fn to apply       axis   data       args to fn
 
         # return Lempel-Ziv complexity and incoming metadata
         return {"lzc": (lzc, data.meta)}
