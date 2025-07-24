@@ -13,7 +13,7 @@
   <a href="https://pypi.org/project/goofi/"><img alt="PyPI - Python Version" src="https://img.shields.io/pypi/pyversions/goofi"></a>
 </p>
 
-<h3 align="center"><a href="https://notebooklm.google.com/notebook/b28ee248-db68-4b41-b914-1fc8312f86a8/audio?pli=1">AI Podcast about goofi-pipe</a> | <a href="https://deepwiki.com/dav0dea/goofi-pipe">AI-generated Documentation</a></h3>
+<h3 align="center"><a href="https://notebooklm.google.com/notebook/9966e328-5ac5-48a6-989d-f46f14d81d30/audio">AI Podcast about goofi-pipe</a> | <a href="https://deepwiki.com/dav0dea/goofi-pipe">AI-generated Documentation</a></h3>
 
 # Installation
 If you only want to run goofi-pipe and not edit any of the code, make sure you activated the desired Python environment with Python >=3.9 and <3.13 and run the following commands in your terminal:
