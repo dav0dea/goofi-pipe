@@ -32,17 +32,16 @@ class OSCIn(Node):
         self.messages = {}
 
     def callback(self, address, *args):
-        if len(args) > 1:
-            raise ValueError(
-                "For now the OSCIn node only support a single argument per message. "
-                "Please open an issue if you need more (https://github.com/dav0dea/goofi-pipe/issues)."
-            )
-
-        val = args[0]
-        if isinstance(val, bytes):
-            val = Data(DataType.STRING, val.decode(), {})
+        if isinstance(args[0], bytes):
+            if len(args) > 1:
+                raise ValueError(
+                    "OSCIn currently doesn't support multiple string message per OSC address but "
+                    f"received {list(map(bytes.decode, args))}... If you think this is wrong, "
+                    "open an issue: https://github.com/dav0dea/goofi-pipe/issues"
+                )
+            val = Data(DataType.STRING, args[0].decode(), {})
         else:
-            val = Data(DataType.ARRAY, np.array([val]), {})
+            val = Data(DataType.ARRAY, np.array(args), {})
 
         self.messages[address.decode()] = val
 
