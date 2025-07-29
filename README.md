@@ -1384,6 +1384,8 @@ Nodes implementing signal processing operations.
 
   - **Inputs:**
     - data: ARRAY
+    - trigger_baseline: ARRAY
+    - n_seconds: ARRAY
   - **Outputs:**
     - normalized: ARRAY
   </details>
