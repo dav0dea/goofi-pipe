@@ -10,6 +10,7 @@ from mne import channels
 from scipy.interpolate import griddata
 
 from goofi.data import Data, DataType
+from goofi.gui.events import is_ctrl_down
 from goofi.message import Message, MessageType
 
 
@@ -56,7 +57,7 @@ class ViewerContainer:
             # window is not hovered
             return
 
-        if dpg.is_key_down(dpg.mvKey_Control):
+        if is_ctrl_down():
             # ctrl+click: switch to next viewer
             self.next_viewer()
 

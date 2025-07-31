@@ -6,6 +6,14 @@ import dearpygui.dearpygui as dpg
 from goofi.node_helpers import list_nodes
 
 
+def is_ctrl_down() -> bool:
+    return dpg.is_key_down(dpg.mvKey_LControl) or dpg.is_key_down(dpg.mvKey_RControl)
+
+
+def is_shift_down() -> bool:
+    return dpg.is_key_down(dpg.mvKey_LShift) or dpg.is_key_down(dpg.mvKey_RShift)
+
+
 def is_click_inside(item):
     """Check if the mouse click was inside the given item."""
     mouse_pos = dpg.get_mouse_pos(local=False)
@@ -137,7 +145,7 @@ def create_node(win):
             # the window is open and focused, switch to the next tab
             tab_bar = dpg.get_item_user_data(win.create_node_window)[0]
             # increment tab index
-            if dpg.is_key_down(dpg.mvKey_Shift):
+            if is_shift_down():
                 win.last_create_node_tab = (win.last_create_node_tab - 1) % len(categories)
             else:
                 win.last_create_node_tab = (win.last_create_node_tab + 1) % len(categories)
@@ -233,13 +241,13 @@ def escape(win):
 
 def save_manager(win):
     """Save the manager to a file. We go through the Window to potentially open a file selection dialog."""
-    if dpg.is_key_down(dpg.mvKey_Control):
+    if is_ctrl_down():
         win.save()
 
 
 def copy_selected_nodes(win, timeout: float = 0.1):
     """Copy the selected nodes to the clipboard."""
-    if not dpg.is_key_down(dpg.mvKey_Control):
+    if not is_ctrl_down():
         return
 
     # retrieve selected nodes and their positions
@@ -295,7 +303,7 @@ def copy_selected_nodes(win, timeout: float = 0.1):
 
 def paste_nodes(win):
     """Paste the nodes from the clipboard."""
-    if not dpg.is_key_down(dpg.mvKey_Control) or win.node_clipboard is None:
+    if not is_ctrl_down() or win.node_clipboard is None:
         return
 
     # add the nodes to the manager
