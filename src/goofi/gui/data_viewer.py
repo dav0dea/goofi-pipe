@@ -331,9 +331,7 @@ class ImageViewer(DataViewer):
 
         # initialize texture
         with dpg.texture_registry():
-            self.texture = dpg.add_dynamic_texture(
-                width=res[0], height=res[1], default_value=[0.0 for _ in range(res[0] * res[1] * 4)]
-            )
+            self.texture = dpg.add_dynamic_texture(width=res[0], height=res[1], default_value=[0.0 for _ in range(res[0] * res[1] * 4)])
         self.image = dpg.add_image(self.texture, parent=self.content_window)
         self.res = res
 

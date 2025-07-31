@@ -479,9 +479,7 @@ class Window:
             in_slots = {}
             for name, dtype in node.input_slots.items():
                 # create input slot
-                in_slots[name] = dpg.add_node_attribute(
-                    label=name, attribute_type=dpg.mvNode_Attr_Input, shape=DTYPE_SHAPE_MAP[dtype], user_data=dtype
-                )
+                in_slots[name] = dpg.add_node_attribute(label=name, attribute_type=dpg.mvNode_Attr_Input, shape=DTYPE_SHAPE_MAP[dtype], user_data=dtype)
                 # simply add a text label
                 dpg.add_text(name, parent=in_slots[name])
 
@@ -490,9 +488,7 @@ class Window:
             output_draw_handlers = {}
             for name, dtype in node.output_slots.items():
                 # create output slot
-                out_slots[name] = dpg.add_node_attribute(
-                    label=name, attribute_type=dpg.mvNode_Attr_Output, shape=DTYPE_SHAPE_MAP[dtype], user_data=dtype
-                )
+                out_slots[name] = dpg.add_node_attribute(label=name, attribute_type=dpg.mvNode_Attr_Output, shape=DTYPE_SHAPE_MAP[dtype], user_data=dtype)
 
                 # determine data viewer configuration
                 viewer_kwargs = viewers[name] if viewers is not None and name in viewers else {}
@@ -507,9 +503,7 @@ class Window:
             self.nodes[node_name] = GUINode(node_id, in_slots, out_slots, output_draw_handlers, node)
 
             # TODO: register PROCESSING_ERROR message handler and display error messages
-            node.set_message_handler(
-                MessageType.PROCESSING_ERROR, partial(self._processing_error_callback, node_name=node_name)
-            )
+            node.set_message_handler(MessageType.PROCESSING_ERROR, partial(self._processing_error_callback, node_name=node_name))
 
             # register data message handler to update the data viewers
             node.set_message_handler(MessageType.DATA, partial(handle_data, self, self.nodes[node_name]))
@@ -896,9 +890,7 @@ class Window:
                                 user_data=(self, node, slot, "y"),
                             )
                         dpg.add_separator()
-                        self.metadata_view[slot] = dpg.add_input_text(
-                            default_value="", multiline=True, readonly=True, width=-1, height=-1
-                        )
+                        self.metadata_view[slot] = dpg.add_input_text(default_value="", multiline=True, readonly=True, width=-1, height=-1)
 
         # show parameters window
         dpg.configure_item(self.side_panel_win, show=True)
@@ -1031,9 +1023,7 @@ class Window:
                             # TODO: remove the extra case for empty nodes once the following issue is resolved: https://github.com/hoffstadt/DearPyGui/issues/2444
                             dpg.add_theme_style(dpg.mvNodeStyleVar_NodePadding, 0, 7, category=dpg.mvThemeCat_Nodes)
 
-                        dpg.add_theme_color(
-                            dpg.mvNodeCol_TitleBar, scale(NODE_CAT_COLORS[i], darkness), category=dpg.mvThemeCat_Nodes
-                        )
+                        dpg.add_theme_color(dpg.mvNodeCol_TitleBar, scale(NODE_CAT_COLORS[i], darkness), category=dpg.mvThemeCat_Nodes)
                         dpg.add_theme_color(
                             dpg.mvNodeCol_TitleBarHovered,
                             scale(NODE_CAT_COLORS[i], darkness + 0.1),
@@ -1056,12 +1046,8 @@ class Window:
                     dpg.add_theme_color(dpg.mvNodeCol_NodeBackgroundHovered, [173, 20, 22], category=dpg.mvThemeCat_Nodes)
                     dpg.add_theme_color(dpg.mvNodeCol_NodeBackgroundSelected, [193, 20, 22], category=dpg.mvThemeCat_Nodes)
 
-                    dpg.add_theme_color(
-                        dpg.mvNodeCol_TitleBar, scale(NODE_CAT_COLORS[i], darkness), category=dpg.mvThemeCat_Nodes
-                    )
-                    dpg.add_theme_color(
-                        dpg.mvNodeCol_TitleBarHovered, scale(NODE_CAT_COLORS[i], darkness + 0.1), category=dpg.mvThemeCat_Nodes
-                    )
+                    dpg.add_theme_color(dpg.mvNodeCol_TitleBar, scale(NODE_CAT_COLORS[i], darkness), category=dpg.mvThemeCat_Nodes)
+                    dpg.add_theme_color(dpg.mvNodeCol_TitleBarHovered, scale(NODE_CAT_COLORS[i], darkness + 0.1), category=dpg.mvThemeCat_Nodes)
                     dpg.add_theme_color(
                         dpg.mvNodeCol_TitleBarSelected,
                         scale(NODE_CAT_COLORS[i], darkness + 0.2),
