@@ -363,53 +363,50 @@ def add_output_slot(parent: int, name: str, closed: bool = False, size: Tuple[in
         `items` : List[int]
             A list of four items: a bool indicating to close the header, the header, the window, and the content window.
         """
-        close, header, window, content = items
+        header, window, content = items
         header_height = dpg.get_item_state(header)["rect_size"][1]
+        viewer = dpg.get_item_user_data(content)[1]
+
+        collapse = not dpg.get_item_user_data(header)
+        viewer.collapsed = collapse
+        viewer.set_size(propagate=False)
+        dpg.set_item_user_data(header, collapse)
 
         if header_height == 0:
             # this happens when the header is off screen, set to default height
             header_height = 15
 
-        if close:
+        if collapse:
             # header was closed, shrink window to header size
             dpg.set_item_height(window, header_height)
         else:
             # header was opened, expand window to header size plus cotent size
-            content_height = dpg.get_item_state(content)["rect_size"][1]
-            if content_height == 0:
-                # this happens when the content window is off screen, set to default height
-                content_height = size[1]
+            if viewer is None:
+                content_height = dpg.get_item_state(content)["rect_size"][1]
+                if content_height == 0:
+                    # this happens when the content window is off screen, set to default height
+                    content_height = size[1]
+            else:
+                content_height = viewer.height
 
-            dpg.set_item_height(window, header_height + content_height + 4)  # magic + 4 to avoid scroll bar
-
-    # NOTE: The user_data lists are used to pass data to the callbacks. The first element is a bool, which
-    # is used to indicate whether the header was closed or opened. The remaining elements are the header,
-    # window, and content window items. Due to the way DearPyGui registers callbacks we can not use partials here.
-    user_data_open, user_data_close = [False], [True]
-    # register handlers
-    with dpg.item_handler_registry() as reg:
-        dpg.add_item_clicked_handler(callback=header_callback, user_data=user_data_close)
-        dpg.add_item_toggled_open_handler(callback=header_callback, user_data=user_data_open)
+            dpg.set_item_height(window, content_height + header_height + 4)  # magic + 4 to avoid scroll bar
 
     # NOTE: we initially set the height to 1 to avoid the node reaching out of the window, which would break the
     # initial header_callback call as the header and content sizes according to DearPyGui would be 0.
     # The child window is needed, because otherwise the header will expand to fill the entire node editor window.
     with dpg.child_window(width=size[0], height=1, parent=parent) as window:
         # add collapsable content area for the data viewer
-        header = dpg.add_collapsing_header(label=name, default_open=not closed, open_on_arrow=False, closable=False)
-        content = dpg.add_child_window(width=size[0], height=size[1], user_data=size, parent=header)
-        with dpg.tooltip(parent=content, show=True):
-            dpg.add_text("- ctrl + click\nswitch between data viewers\n- scroll\nzoom in/out")
+        header = dpg.add_collapsing_header(label=name, default_open=not closed, open_on_arrow=False, closable=False, user_data=closed)
+        content = dpg.add_child_window(width=size[0], height=size[1], user_data=(size, None), parent=header)
+        with dpg.tooltip(parent=content, show=True, delay=0.25, hide_on_activity=True):
+            dpg.add_text("Ctrl + Click: switch between data viewers", bullet=True)
+            dpg.add_text("Scroll: zoom in/out", bullet=True)
+            dpg.add_text("Shift + Scroll: zoom horizontally", bullet=True)
 
-    # store header, window and content window in user_data for the two callbacks
-    user_data_open.extend([header, window, content])
-    user_data_close.extend([header, window, content])
-    # bind the two callbacks to the header
+    # register click handlers
+    with dpg.item_handler_registry() as reg:
+        dpg.add_item_clicked_handler(callback=header_callback, user_data=(header, window, content))
     dpg.bind_item_handler_registry(header, reg)
-
-    # schedule the header callback to set up the window sizes
-    initial_args = user_data_close if closed else user_data_open
-    threading.Timer(0.1, header_callback, [None, None, initial_args]).start()
     return content
 
 
@@ -496,8 +493,10 @@ class Window:
 
                 # create content window for data viewer (initialize closed if more than two output slots)
                 content = add_output_slot(out_slots[name], name, closed=collapsed)
-                # create data viewer
-                output_draw_handlers[name] = ViewerContainer(dtype, content, **viewer_kwargs)
+
+                # create data viewer and store in content window's user data
+                output_draw_handlers[name] = ViewerContainer(dtype, content, collapsed, output_draw_handlers, **viewer_kwargs)
+                dpg.set_item_user_data(content, (dpg.get_item_user_data(content)[0], output_draw_handlers[name]))
 
             # add node to node list
             self.nodes[node_name] = GUINode(node_id, in_slots, out_slots, output_draw_handlers, node)
