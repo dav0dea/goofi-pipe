@@ -2,7 +2,7 @@ import numpy as np
 
 from goofi.data import Data, DataType
 from goofi.node import Node
-from goofi.params import FloatParam, IntParam
+from goofi.params import FloatParam, IntParam, StringParam
 
 
 class TimeDelayEmbedding(Node):
@@ -16,6 +16,11 @@ class TimeDelayEmbedding(Node):
         return {
             "embedding": {
                 "delay": IntParam(1, 1, 100),
+                "unit": StringParam(
+                    "samples",
+                    options=["samples", "seconds"],
+                    doc=("Unit of the buffer size. If 'seconds', the metadata must specify " "the sampling frequency via the 'sfreq' key."),
+                ),
                 "embedding_dimension": IntParam(2, 2, 100),
                 "moire_embedding": False,
                 "exponent": FloatParam(1.0, 0.0, 10.0, doc="Exponent for time delay embedding"),
@@ -26,13 +31,18 @@ class TimeDelayEmbedding(Node):
         if input_array is None or input_array.data is None:
             return None
 
-        delay = self.params["embedding"]["delay"].value
-        embedding_dimension = self.params["embedding"]["embedding_dimension"].value
-        moire_embedding = self.params["embedding"]["moire_embedding"].value
+        delay = self.params.embedding.delay.value
+        if self.params.embedding.unit.value == "seconds":
+            if "sfreq" not in input_array.meta:
+                raise ValueError("If unit is 'seconds', the metadata must contain 'sfreq'.")
+            delay = int(delay * input_array.meta["sfreq"])
+
+        embedding_dimension = self.params.embedding.embedding_dimension.value
+        moire_embedding = self.params.embedding.moire_embedding.value
 
         array = input_array.data
         arrays = [array]
-        exponent = self.params["embedding"]["exponent"].value
+        exponent = self.params.embedding.exponent.value
         max_shift = int((embedding_dimension - 1) ** exponent * delay)
 
         # Generating delayed versions
