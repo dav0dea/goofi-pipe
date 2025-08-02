@@ -21,7 +21,7 @@ class Monolith(Node):
         return {"data": DataType.ARRAY}
 
     def config_output_slots():
-        return {"features": DataType.ARRAY}
+        return {"features": DataType.ARRAY, "clean_data": DataType.ARRAY}
 
     def setup(self):
         pass
@@ -29,7 +29,7 @@ class Monolith(Node):
     def process(self, data: Data):
         assert "sfreq" in data.meta, "Data must have a 'sfreq' (sampling frequency) in its metadata."
         sfreq = data.meta["sfreq"]
-        data_arr = data.data
+        data_arr = data.data.astype(np.float32)
 
         ignore_names = set(map(str.strip, self.params.monolith.ignore_features.value.split(",")))
 
@@ -64,7 +64,7 @@ class Monolith(Node):
         meta = data.meta.copy()
         del meta["channels"]
 
-        return {"features": (features, meta)}
+        return {"features": (features, meta), "clean_data": (data_arr, data.meta)}
 
 
 def _bandpass_filter(x, sfreq, l_freq, h_freq, order=5):
