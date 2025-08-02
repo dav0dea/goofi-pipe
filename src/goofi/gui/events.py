@@ -7,11 +7,17 @@ from goofi.node_helpers import list_nodes
 
 
 def is_ctrl_down() -> bool:
-    return dpg.is_key_down(dpg.mvKey_LControl) or dpg.is_key_down(dpg.mvKey_RControl)
+    generic_ctrl = False
+    if hasattr(dpg, "mvKey_Control"):
+        generic_ctrl = dpg.is_key_down(dpg.mvKey_Control)
+    return dpg.is_key_down(dpg.mvKey_LControl) or dpg.is_key_down(dpg.mvKey_RControl) or generic_ctrl
 
 
 def is_shift_down() -> bool:
-    return dpg.is_key_down(dpg.mvKey_LShift) or dpg.is_key_down(dpg.mvKey_RShift)
+    generic_shift = False
+    if hasattr(dpg, "mvKey_Shift"):
+        generic_shift = dpg.mvKey_Shift
+    return dpg.is_key_down(dpg.mvKey_LShift) or dpg.is_key_down(dpg.mvKey_RShift) or generic_shift
 
 
 def is_click_inside(item):
@@ -163,9 +169,7 @@ def create_node(win):
         return
 
     # create a new window instance
-    win.create_node_window = dpg.add_window(
-        label="Create Node", pos=dpg.get_mouse_pos(local=False), no_collapse=True, autosize=True
-    )
+    win.create_node_window = dpg.add_window(label="Create Node", pos=dpg.get_mouse_pos(local=False), no_collapse=True, autosize=True)
 
     def search_callback(_, data):
         """Callback for when the search bar changes."""
