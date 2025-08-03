@@ -502,6 +502,7 @@ Nodes that perform analysis on the data.
     - data: ARRAY
   - **Outputs:**
     - features: ARRAY
+    - clean_data: ARRAY
   </details>
 
 <details><summary>&emsp;PCA</summary>
@@ -1059,6 +1060,30 @@ Miscellaneous nodes that do not fit into other categories.
     - rotated_vector: ARRAY
   </details>
 
+<details><summary>&emsp;NullArray</summary>
+
+  - **Inputs:**
+    - array_in: ARRAY
+  - **Outputs:**
+    - array_out: ARRAY
+  </details>
+
+<details><summary>&emsp;NullString</summary>
+
+  - **Inputs:**
+    - string_in: STRING
+  - **Outputs:**
+    - string_out: STRING
+  </details>
+
+<details><summary>&emsp;NullTable</summary>
+
+  - **Inputs:**
+    - table_in: TABLE
+  - **Outputs:**
+    - table_out: TABLE
+  </details>
+
 <details><summary>&emsp;RGBtoHSV</summary>
 
   - **Inputs:**
@@ -1316,6 +1341,14 @@ Nodes implementing signal processing operations.
     - inst_amplitude: ARRAY
     - inst_phase: ARRAY
     - inst_frequency: ARRAY
+  </details>
+
+<details><summary>&emsp;Histogram</summary>
+
+  - **Inputs:**
+    - data: ARRAY
+  - **Outputs:**
+    - histogram: ARRAY
   </details>
 
 <details><summary>&emsp;IFFT</summary>
