@@ -138,9 +138,6 @@ class LSLClient(Node):
             self.client = None
 
     def lsl_stream_refresh_changed(self, value: bool) -> None:
-        if self.lsl_discover_thread is not None:
-            return
-
         self.available_streams = self.pylsl.resolve_streams()
         stream_data = sorted([[info.source_id(), info.name(), info.hostname()] for info in self.available_streams], key=lambda x: x[0])
 
