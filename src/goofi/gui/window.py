@@ -867,6 +867,11 @@ class Window:
                             for name, param in node_ref.params[group].items():
                                 add_param(table, group, name, param, node_ref)
 
+                # add info tab
+                with dpg.tab(label="Info"):
+                    # TODO: replace magic padding number by retrieving parent width
+                    dpg.add_text(node_ref.__doc__, wrap=PARAM_WINDOW_WIDTH - 70)
+
         with dpg.child_window(autosize_y=True, parent=self.side_panel_win):
             # add title
             dpg.add_text("Outputs")

@@ -189,7 +189,9 @@ def create_node(win):
         # add a button for each node that matches the search query
         for node in list_nodes():
             if data.lower() in node.__name__.lower():
-                dpg.add_button(label=node.__name__, callback=select_node_callback, user_data=(win, node), parent=search_group)
+                btn = dpg.add_button(label=node.__name__, callback=select_node_callback, user_data=(win, node), parent=search_group)
+                with dpg.tooltip(btn):
+                    dpg.add_text(node.docstring().strip(), wrap=500)
 
         # show the search group
         dpg.configure_item(search_group, show=True)
@@ -205,7 +207,9 @@ def create_node(win):
             with dpg.tab(label=cat, tag=f"tab_{cat}"):
                 # create a button for each node in the category
                 for node in nodes:
-                    dpg.add_button(label=node.__name__, callback=select_node_callback, user_data=(win, node))
+                    btn = dpg.add_button(label=node.__name__, callback=select_node_callback, user_data=(win, node))
+                    with dpg.tooltip(btn):
+                        dpg.add_text(node.docstring().strip(), wrap=500)
 
     # create a vertical group for listing nodes during search
     search_group = dpg.add_group(horizontal=False, parent=win.create_node_window, show=False)

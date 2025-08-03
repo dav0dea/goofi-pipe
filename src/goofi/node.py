@@ -545,7 +545,7 @@ class Node(ABC):
                 time.sleep(0.1)
 
         # create the node reference
-        return NodeRef(
+        ref = NodeRef(
             conn1,
             {name: slot.dtype for name, slot in in_slots.items()},
             {name: slot.dtype for name, slot in out_slots.items()},
@@ -553,6 +553,8 @@ class Node(ABC):
             cls.category(),
             process=proc,
         )
+        ref.__doc__ = cls.docstring()
+        return ref
 
     @classmethod
     def create_local(cls, initial_params: Optional[Dict[str, Dict[str, Any]]] = None) -> Tuple[NodeRef, "Node"]:
@@ -588,16 +590,15 @@ class Node(ABC):
         # instantiate the node in the current process
         node = cls(conn2, in_slots, out_slots, params, NodeEnv.LOCAL)
         # create the node reference
-        return (
-            NodeRef(
-                conn1,
-                {name: slot.dtype for name, slot in in_slots.items()},
-                {name: slot.dtype for name, slot in out_slots.items()},
-                deepcopy(params),
-                cls.category(),
-            ),
-            node,
+        ref = NodeRef(
+            conn1,
+            {name: slot.dtype for name, slot in in_slots.items()},
+            {name: slot.dtype for name, slot in out_slots.items()},
+            deepcopy(params),
+            cls.category(),
         )
+        ref.__doc__ = cls.docstring()
+        return ref, node
 
     @classmethod
     def create_standalone(cls) -> "Node":
@@ -623,6 +624,20 @@ class Node(ABC):
             The category of the node.
         """
         return cls.__module__.split(".")[-2]
+
+    @classmethod
+    def docstring(cls) -> str:
+        """
+        Returns the cleaned docstring of the class (removes leading and trailing whitespace per line).
+
+        ### Returns
+        `str`
+            The cleaned docstring of the class, or an empty string if no docstring is present.
+        """
+
+        if hasattr(cls,"__doc__") and cls.__doc__:
+            return "\n".join([line.strip() for line in cls.__doc__.split("\n")])
+        return ""
 
     @property
     def assets_path(self) -> PosixPath:
