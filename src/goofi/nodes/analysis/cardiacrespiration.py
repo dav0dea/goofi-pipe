@@ -4,6 +4,16 @@ from goofi.params import StringParam
 
 
 class CardiacRespiration(Node):
+    """
+    This node extracts a respiration signal derived from cardiac activity in a 1D physiological waveform. It processes either ECG or (in the future) PPG signals and returns an estimated respiratory waveform (EDR) based on cardiac information.
+
+    Inputs:
+    - data: 1D array containing a physiological waveform (such as ECG), including associated metadata like sampling rate.
+
+    Outputs:
+    - cardiac: 1D array containing the cardiac-derived respiration (EDR) signal with original metadata.
+    """
+
     def config_input_slots():
         return {"data": DataType.ARRAY}
 

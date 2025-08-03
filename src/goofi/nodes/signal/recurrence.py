@@ -8,6 +8,19 @@ from goofi.params import BoolParam, FloatParam, IntParam
 
 
 class Recurrence(Node):
+    """
+    Computes the recurrence matrix and several recurrence quantification analysis (RQA) metrics for a given input array. The recurrence matrix represents recurrent states in the data based on pairwise distances, and the RQA metrics quantify aspects of the recurrence structure, including recurrence rate, determinism, and laminarity.
+
+    Inputs:
+    - input_array: N-dimensional array of data points to analyze for recurrence structures.
+
+    Outputs:
+    - recurrence_matrix: Matrix indicating where recurrences occur in the input data.
+    - RR: Array containing the calculated recurrence rate.
+    - DET: Array containing the calculated determinism.
+    - LAM: Array containing the calculated laminarity.
+    """
+
     def config_input_slots():
         return {"input_array": DataType.ARRAY}
 

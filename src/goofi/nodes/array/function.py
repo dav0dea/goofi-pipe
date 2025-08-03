@@ -6,6 +6,16 @@ from goofi.params import StringParam
 
 
 class Function(Node):
+    """
+    This node applies a specified element-wise mathematical function to the input array data, processing each element independently.
+
+    Inputs:
+    - array: The input array of data to be processed.
+
+    Outputs:
+    - out: The output array after applying the selected mathematical function to each element of the input array.
+    """
+
     def config_input_slots():
         return {"array": DataType.ARRAY}
 

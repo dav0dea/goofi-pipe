@@ -6,6 +6,17 @@ from goofi.params import BoolParam, FloatParam
 
 
 class LatentRotator(Node):
+    """
+    This node incrementally rotates a latent vector in its high-dimensional space based on an array of input angles. For each process step, a delta vector is calculated using the cosine of each angle and is added to the latent vector, enabling gradual, controlled movement within the latent space. The internal state accumulates these changes over time.
+
+    Inputs:
+    - latent_vector: The initial or current latent vector to be rotated, provided as a 1D array.
+    - angles: An array of angles (one per latent vector dimension) that determines the direction and magnitude of movement in the latent space.
+
+    Outputs:
+    - rotated_vector: The resulting latent vector after applying the incremental rotation and accumulation, as a 1D array.
+    """
+
     def config_input_slots():
         return {
             "latent_vector": DataType.ARRAY,

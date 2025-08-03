@@ -7,6 +7,16 @@ from goofi.params import FloatParam, StringParam
 
 # TODO: deal meta data output
 class PowerBand(Node):
+    """
+    This node calculates the total power within a specified frequency band from input data representing a power spectral density (PSD). It sums the power values within a chosen frequency range to output either the absolute or relative band power. The output preserves the input's metadata.
+
+    Inputs:
+    - data: An array containing PSD values with associated frequency information in the metadata.
+
+    Outputs:
+    - power: The computed band power as an array, along with the original metadata.
+    """
+
     def config_input_slots():
         return {"data": DataType.ARRAY}
 

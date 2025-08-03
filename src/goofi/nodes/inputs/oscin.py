@@ -7,6 +7,13 @@ from goofi.params import BoolParam, IntParam, StringParam
 
 
 class OSCIn(Node):
+    """
+    Receives incoming OSC (Open Sound Control) messages over the network and makes them available as output. Each OSC message received is stored and organized by its address. Messages containing string data are output as strings, while other types are represented as arrays. This node acts as a bridge between OSC sources (such as sensors, controllers, or other software) and Goofi-Pipe, enabling real-time signal and data integration.
+
+    Outputs:
+    - message: A table containing the latest received OSC messages, organized by address. Each entry holds the received data, which may be a string or an array, depending on the message content.
+    """
+
     def config_params():
         return {
             "osc": {

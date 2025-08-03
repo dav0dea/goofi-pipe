@@ -5,6 +5,25 @@ import re
 
 
 class FormatString(Node):
+    """
+    This node combines multiple input strings into a single output string, optionally using a formatting pattern. If no pattern is provided, all input strings are joined together with spaces. If a pattern is given, placeholders within the pattern are replaced with the corresponding input string values. Unnamed placeholders are filled with unused input strings in the order they appear.
+
+    Inputs:
+    - input_string_1: Input string to be included in the output.
+    - input_string_2: Input string to be included in the output.
+    - input_string_3: Input string to be included in the output.
+    - input_string_4: Input string to be included in the output.
+    - input_string_5: Input string to be included in the output.
+    - input_string_6: Input string to be included in the output.
+    - input_string_7: Input string to be included in the output.
+    - input_string_8: Input string to be included in the output.
+    - input_string_9: Input string to be included in the output.
+    - input_string_10: Input string to be included in the output.
+
+    Outputs:
+    - output_string: The resulting formatted string.
+    """
+
     def config_input_slots():
         slots = {}
         for i in range(1, 11):  # For 10 input strings

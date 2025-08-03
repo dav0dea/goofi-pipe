@@ -6,6 +6,16 @@ from goofi.params import FloatParam, IntParam, StringParam
 
 
 class TimeDelayEmbedding(Node):
+    """
+    This node performs time delay embedding on an input array. Time delay embedding reconstructs the state space of a signal by creating multiple delayed copies of the input and stacking them together, enabling the analysis of temporal structures and dynamics within the data.
+
+    Inputs:
+    - input_array: A one-dimensional array representing the input signal to be embedded.
+
+    Outputs:
+    - embedded_array: An array where each element contains values from the original signal at different delay steps, enabling state space reconstruction, along with updated metadata.
+    """
+
     def config_input_slots():
         return {"input_array": DataType.ARRAY}
 
@@ -19,7 +29,10 @@ class TimeDelayEmbedding(Node):
                 "unit": StringParam(
                     "samples",
                     options=["samples", "seconds"],
-                    doc=("Unit of the buffer size. If 'seconds', the metadata must specify " "the sampling frequency via the 'sfreq' key."),
+                    doc=(
+                        "Unit of the buffer size. If 'seconds', the metadata must specify "
+                        "the sampling frequency via the 'sfreq' key."
+                    ),
                 ),
                 "embedding_dimension": IntParam(2, 2, 100),
                 "moire_embedding": False,

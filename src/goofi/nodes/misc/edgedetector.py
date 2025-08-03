@@ -7,6 +7,16 @@ from goofi.params import FloatParam, StringParam
 
 
 class EdgeDetector(Node):
+    """
+    This node performs edge detection on input images using either the Canny or Sobel method. It receives an image array, converts it to grayscale if necessary, applies the selected edge detection algorithm, and outputs the resulting edge map as a normalized array.
+
+    Inputs:
+    - image: Input image array, which can be a grayscale or color image.
+
+    Outputs:
+    - edges: Array representing the detected edges, normalized to the range [0, 1].
+    """
+
     def config_input_slots():
         return {"image": DataType.ARRAY}  # Image as input
 

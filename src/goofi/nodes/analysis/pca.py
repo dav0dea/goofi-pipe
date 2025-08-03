@@ -6,6 +6,16 @@ from goofi.params import BoolParam, IntParam
 
 
 class PCA(Node):
+    """
+    This node performs Principal Component Analysis (PCA) on 2D array input data. It extracts a specified number of principal components, which are orthogonal vectors that capture the directions of maximum variance in the data. The node outputs these principal components as a matrix.
+
+    Inputs:
+    - data: 2D array to analyze, where each row is a sample and each column is a feature.
+
+    Outputs:
+    - principal_components: Array of the computed principal component vectors, along with associated metadata.
+    """
+
     def config_input_slots():
         return {"data": DataType.ARRAY}
 

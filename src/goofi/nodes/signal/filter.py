@@ -8,6 +8,16 @@ from goofi.params import BoolParam, FloatParam, IntParam, StringParam
 
 
 class Filter(Node):
+    """
+    This node applies digital signal filtering to incoming data arrays, allowing for the removal or attenuation of specific frequency components. The node supports real-time bandpass and notch filtering, with options for causal or zero-phase filters. It can also perform detrending and demeaning operations on the signal. Internally, it can buffer incoming data to enable more robust filtering.
+
+    Inputs:
+    - data: An array of numerical signal data to be filtered. The data should include associated metadata such as the sampling frequency ("sfreq").
+
+    Outputs:
+    - filtered_data: The filtered version of the input data array, returned with original metadata. This output contains the signal after the selected filtering and optional preprocessing steps have been applied.
+    """
+
     def config_input_slots():
         return {"data": DataType.ARRAY}
 

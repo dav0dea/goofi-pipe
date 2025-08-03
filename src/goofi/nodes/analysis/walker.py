@@ -6,6 +6,19 @@ from goofi.params import BoolParam, FloatParam
 
 
 class Walker(Node):
+    """
+    Simulates a step-by-step movement of a point (walker) on the Earth's surface based on a direction (angle), speed (velocity), and whether it is moving on water (water). The node calculates the new latitude and longitude from the previous position for each input, accounting for the Earth's curvature and constraints such as pole crossings and longitude normalization.
+
+    Inputs:
+    - angle: The direction(s) of movement in degrees, as an array.
+    - velocity: The distance(s) to move per step, as an array. Might be scaled up if moving through water.
+    - water: An array indicating if the movement is over water (1) or not (0), which affects the speed.
+
+    Outputs:
+    - latitude: The updated latitude(s) after applying movement and corrections for the globe's boundaries.
+    - longitude: The updated longitude(s) after applying movement and corrections for the globe's boundaries.
+    """
+
     def config_input_slots():
         return {"angle": DataType.ARRAY, "velocity": DataType.ARRAY, "water": DataType.ARRAY}
 
@@ -23,7 +36,10 @@ class Walker(Node):
         }
 
     def setup(self):
-        self.lat, self.lon = self.params["initial_coordinates"]["latitude"].value, self.params["initial_coordinates"]["longitude"].value
+        self.lat, self.lon = (
+            self.params["initial_coordinates"]["latitude"].value,
+            self.params["initial_coordinates"]["longitude"].value,
+        )
 
     def process(self, angle: Data, velocity: Data, water: Data):
         """
@@ -35,7 +51,10 @@ class Walker(Node):
             return None
 
         if self.params["initial_coordinates"]["reset"].value:
-            self.lat, self.lon = self.params["initial_coordinates"]["latitude"].value, self.params["initial_coordinates"]["longitude"].value
+            self.lat, self.lon = (
+                self.params["initial_coordinates"]["latitude"].value,
+                self.params["initial_coordinates"]["longitude"].value,
+            )
 
         if water is None:
             water_situation = 0

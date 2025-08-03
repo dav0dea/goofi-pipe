@@ -6,6 +6,16 @@ from goofi.params import BoolParam, FloatParam, IntParam, StringParam
 
 
 class Buffer(Node):
+    """
+    Buffers incoming array data along a specified axis, maintaining a rolling window of the most recent samples or seconds. The buffer is updated in real-time as new data arrives, concatenating incoming arrays and discarding the oldest to keep the buffer size constant. Channel metadata is propagated and updated accordingly. The node supports resetting to clear the buffer. The output is the current buffer contents with updated metadata.
+
+    Inputs:
+    - val: Array data to be buffered, with associated metadata.
+
+    Outputs:
+    - out: The current contents of the buffer as an array, along with updated metadata.
+    """
+
     def config_input_slots():
         return {"val": DataType.ARRAY}
 

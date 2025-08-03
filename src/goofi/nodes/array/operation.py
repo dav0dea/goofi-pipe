@@ -8,6 +8,17 @@ from goofi.params import StringParam
 
 
 class Operation(Node):
+    """
+    This node performs a specified element-wise or matrix operation on two input arrays. It supports common arithmetic operations such as addition, subtraction, multiplication, division, matrix multiplication, maximum, minimum, average, and cosine similarity. The operation is applied to the data from the two input arrays, and the output retains the metadata from the first input, adjusting dimensions and sampling frequency as needed.
+
+    Inputs:
+    - a: The first input array, with associated metadata including dimensions and channels.
+    - b: The second input array, with associated metadata.
+
+    Outputs:
+    - out: The result of applying the selected operation to the two input arrays, along with the merged and adjusted metadata.
+    """
+
     def config_input_slots():
         return {"a": DataType.ARRAY, "b": DataType.ARRAY}
 
@@ -16,7 +27,7 @@ class Operation(Node):
             "operation": {
                 "operation": StringParam(
                     "add",
-                    options=["add", "subtract", "multiply", "divide", "matmul", 'max', 'min', 'avg', "cosine_similarity"],
+                    options=["add", "subtract", "multiply", "divide", "matmul", "max", "min", "avg", "cosine_similarity"],
                     doc="Operation to perform on the input arrays",
                 )
             }

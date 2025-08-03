@@ -9,6 +9,16 @@ from goofi.params import StringParam
 
 
 class EEGEmbedding(Node):
+    """
+    The EEGEmbedding node extracts deep neural embeddings from multi-channel EEG data using a pre-trained EEG encoder model. It takes raw EEG signals, processes them through a neural network to generate feature embeddings that represent the temporal and spatial information in the brain activity. This is useful for downstream tasks such as brain decoding, classification, or similarity analysis.
+
+    Inputs:
+    - eeg: EEG array data with 128 channels, at least 440 samples, and a sampling frequency of 1000 Hz.
+
+    Outputs:
+    - embeddings: Neural feature embeddings extracted from the input EEG data as a NumPy array.
+    """
+
     def config_input_slots():
         return {"eeg": DataType.ARRAY}
 

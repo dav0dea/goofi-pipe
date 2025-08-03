@@ -6,6 +6,13 @@ from goofi.params import BoolParam, StringParam
 
 
 class RandomArray(Node):
+    """
+    This node generates a random array of specified dimensions using either a uniform or normal distribution. Optionally, if the array is square, it can normalize the largest eigenvalue to 1. The generated array can be reset or regenerated as needed.
+
+    Outputs:
+    - random_array: The generated random array based on the selected distribution and dimensions.
+    """
+
     def config_params():
         return {
             "random": {

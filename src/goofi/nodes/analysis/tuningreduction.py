@@ -5,6 +5,16 @@ from goofi.params import IntParam, StringParam
 
 
 class TuningReduction(Node):
+    """
+    This node reduces a given tuning array to a simplified musical mode using one of several harmonicity or consonance methods. It processes a 1D array of tuning values and outputs a reduced set of pitches according to the selected metric.
+
+    Inputs:
+    - tuning: 1D array of tuning values to be reduced.
+
+    Outputs:
+    - reduced: Reduced array of tuning values representing the extracted musical mode.
+    """
+
     def config_input_slots():
         return {"tuning": DataType.ARRAY}
 

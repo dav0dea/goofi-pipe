@@ -3,7 +3,18 @@ from goofi.data import DataType
 from goofi.node import Node
 from goofi.params import FloatParam
 
+
 class FrequencyShift(Node):
+    """
+    Shifts the frequency content of an input signal by a specified amount using the FFT frequency shifting method. The node takes a time-domain signal, converts it to the frequency domain, shifts the spectrum, and converts it back to the time domain.
+
+    Inputs:
+    - data: An array representing the input signal to shift. Must include metadata with the sampling frequency ("sfreq").
+
+    Outputs:
+    - out: The frequency-shifted signal as an array, with the original metadata preserved.
+    """
+
     @staticmethod
     def config_input_slots():
         return {"data": DataType.ARRAY}
@@ -16,9 +27,7 @@ class FrequencyShift(Node):
     def config_params():
         return {
             "shift": {
-                "frequency_shift": FloatParam(
-                    1.0, -1000.0, 1000.0, doc="Frequency shift in Hz"
-                ),
+                "frequency_shift": FloatParam(1.0, -1000.0, 1000.0, doc="Frequency shift in Hz"),
             }
         }
 

@@ -6,6 +6,16 @@ from goofi.params import FloatParam, StringParam
 
 
 class Binarize(Node):
+    """
+    This node transforms an input array into a binary array by applying a thresholding operation. For each value in the input, it assigns a 1 or 0 based on whether the value meets specified threshold criteria, effectively creating a binary representation of the original data.
+
+    Inputs:
+    - data: Array data to be binarized.
+
+    Outputs:
+    - bin_data: The binarized version of the input array, with each value set to either 1 or 0 based on the thresholding operation.
+    """
+
     def config_input_slots():
         return {"data": DataType.ARRAY}
 

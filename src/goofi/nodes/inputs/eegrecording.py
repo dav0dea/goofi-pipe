@@ -7,6 +7,13 @@ from goofi.params import BoolParam, FloatParam
 
 
 class EEGRecording(Node):
+    """
+    Streams EEG recordings as an LSL (Lab Streaming Layer) stream, either from an example dataset, a user-provided file, or a supported MNE-compatible format. This node manages reading, looping, and live replay of EEG data but does not process or modify incoming data.
+
+    Inputs:
+
+    Outputs:
+    """
 
     def config_params():
         return {

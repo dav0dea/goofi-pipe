@@ -6,6 +6,16 @@ from goofi.params import FloatParam
 
 
 class ColorEnhancer(Node):
+    """
+    Enhances a color or grayscale image by applying a combination of contrast, brightness, gamma correction, and optional color boosting. The node expects the input image data to be normalized to the [0, 1] range for correct operation.
+
+    Inputs:
+    - image: A NumPy array representing the input image, either grayscale or color (with 3 channels), with values normalized between 0 and 1.
+
+    Outputs:
+    - enhanced_image: The processed image array after enhancement, with the same shape as the input, and values clipped to the [0, 1] range.
+    """
+
     def config_input_slots():
         return {"image": DataType.ARRAY}
 

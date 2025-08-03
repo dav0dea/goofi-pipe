@@ -8,6 +8,16 @@ from goofi.params import FloatParam, IntParam
 
 
 class Bioelements(Node):
+    """
+    This node identifies chemical elements present in an input 1D frequency array by matching its spectral features against a database of known air element spectral lines. It extracts the most frequently matched elements and provides their names, spectral regions, and types as output.
+
+    Inputs:
+    - data: A 1D array representing signal frequencies to be analyzed for spectral characteristics.
+
+    Outputs:
+    - elements: A table containing the names of detected elements, their corresponding spectral regions, and their types, based on the matches found in the spectral database.
+    """
+
     def config_input_slots():
         return {"data": DataType.ARRAY}
 

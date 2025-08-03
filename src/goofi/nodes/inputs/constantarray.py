@@ -6,6 +6,13 @@ from goofi.params import FloatParam, StringParam
 
 
 class ConstantArray(Node):
+    """
+    This node generates an array output whose contents and structure depend on the selected mode. It can produce a constant-valued array of any specified shape, a ring graph adjacency matrix, or a random matrix. The node can be used to create standard data arrays or generate simple graph structures for further processing in the pipeline.
+
+    Outputs:
+    - out: An array (NumPy ndarray). The array can be a constant array of given shape filled with a specified value, a ring graph adjacency matrix, or a random matrix, depending on configuration. The output includes metadata with the sample frequency if available.
+    """
+
     def config_params():
         return {
             "constant": {

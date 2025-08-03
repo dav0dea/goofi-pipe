@@ -6,6 +6,17 @@ from goofi.params import FloatParam, IntParam, StringParam
 
 
 class TransitionalHarmony(Node):
+    """
+    This node computes a measure of transitional harmony between two segments of an input 1D array. The input data is split in half, and dominant frequency peaks are extracted from each half using a selected method. It then compares the frequency peaks between the two halves to analyze subharmonic relationships, providing an array representing harmonic tension over time as well as the harmonic pairs used in this analysis.
+
+    Inputs:
+    - data: 1D array containing the input signal to be analyzed.
+
+    Outputs:
+    - trans_harm: Array representing the transitional harmonic tension computed between peaks extracted from the two halves of the input.
+    - melody: Array of harmonic peak pairs that contribute to the transitional harmonic analysis.
+    """
+
     def config_input_slots():
         return {"data": DataType.ARRAY}
 

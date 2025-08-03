@@ -8,6 +8,16 @@ from goofi.params import BoolParam, FloatParam, StringParam
 
 
 class Threshold(Node):
+    """
+    Applies a thresholding operation to an input array. The node compares each value in the input array to a specified threshold using one of several modes (e.g., greater than, less than), and outputs an array where each element is set to a true or false value depending on the comparison result. The node supports features such as minimum delay between triggers, retrigger requirements, and outputting NaN after certain threshold crossings.
+
+    Inputs:
+    - data: The input array to be thresholded.
+
+    Outputs:
+    - thresholded: The thresholded array with elements set according to whether the input values passed the threshold condition.
+    """
+
     def config_input_slots():
         return {"data": DataType.ARRAY}
 

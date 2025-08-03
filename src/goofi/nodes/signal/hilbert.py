@@ -5,6 +5,18 @@ from goofi.node import Node
 
 
 class Hilbert(Node):
+    """
+    Computes the analytic signal of the input data using the Hilbert transform and extracts key instantaneous signal properties. Outputs the instantaneous amplitude, phase, and frequency of the input array, useful for advanced signal processing and time-frequency analysis.
+
+    Inputs:
+    - data: Input array representing one or more time-series signals.
+
+    Outputs:
+    - inst_amplitude: Instantaneous amplitude of the analytic signal for each input channel.
+    - inst_phase: Instantaneous phase of the analytic signal for each input channel.
+    - inst_frequency: Instantaneous frequency derived from unwrapped phase differences for each input channel.
+    """
+
     def config_input_slots():
         return {"data": DataType.ARRAY}
 

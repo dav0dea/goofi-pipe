@@ -6,6 +6,16 @@ from goofi.params import FloatParam, IntParam, BoolParam
 
 
 class Math(Node):
+    """
+    This node performs a series of mathematical operations and rescaling on array data. It processes incoming arrays by applying configurable arithmetic operations, rounding, and optional power functions, and then maps the result from a specified input range to an output range. This allows flexible numerical manipulation and transformation of real-time signals.
+
+    Inputs:
+    - data: An array containing the signal or values to be processed.
+
+    Outputs:
+    - out: The processed array after all mathematical operations and rescaling, along with its metadata.
+    """
+
     def config_input_slots():
         return {"data": DataType.ARRAY}
 

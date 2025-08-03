@@ -6,6 +6,16 @@ from goofi.params import FloatParam, IntParam
 
 
 class EEGHeadsetDetection(Node):
+    """
+    This node detects whether an EEG headset is worn or not by analyzing incoming EEG data. It monitors the average value of the EEG signal to determine the status and also handles situations where data is missing to decide if the headset is disconnected.
+
+    Inputs:
+    - eeg_data: The EEG signal data provided as an array.
+
+    Outputs:
+    - headset_status: An array indicating the detected status of the headset: 0 if disconnected, 1 if not worn, or 2 if worn.
+    """
+
     def config_params():
         return {
             "threshold": {

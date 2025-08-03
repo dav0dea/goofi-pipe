@@ -8,6 +8,16 @@ from goofi.params import IntParam
 
 
 class Resample(Node):
+    """
+    This node resamples an input signal array from its original sampling frequency to a new specified sampling frequency using polyphase filtering. It supports resampling along any axis of the input array. The node ensures any invalid numerical values (such as NaN or infinity) in the input are replaced with zeros before processing. The output array has its sample rate updated and, if applicable, the relevant channel metadata for the resampled axis is removed.
+
+    Inputs:
+    - data: Array data to be resampled, along with its associated metadata including sampling frequency and channel information.
+
+    Outputs:
+    - out: The resampled array with updated metadata reflecting the new sampling frequency and any changes to channel information.
+    """
+
     def config_input_slots():
         # Defining one input slot for one input signal
         return {"data": DataType.ARRAY}

@@ -5,6 +5,16 @@ from goofi.node import Node
 
 
 class Select(Node):
+    """
+    Selects a subset of channels or indices along a specified axis of the input array. This node can use channel names from metadata (if present) or fall back to selecting by numerical indices. The selection can be based on inclusion or exclusion lists, and supports both named and indexed axes. The result is a reduced array with only the selected entries, and the corresponding metadata is updated accordingly.
+
+    Inputs:
+    - data: An array containing the data to be subselected, with optional channel metadata in the form of named axes.
+
+    Outputs:
+    - out: The resulting array containing only the selected channels or indices, with the metadata updated to reflect the new selection.
+    """
+
     def config_input_slots():
         return {"data": DataType.ARRAY}
 

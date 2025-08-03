@@ -5,6 +5,21 @@ import numpy as np
 
 
 class PowerBandEEG(Node):
+    """
+    This node calculates the power in standard EEG frequency bands (delta, theta, alpha, low beta, high beta, and gamma) from an input power spectral density (PSD) array. It processes either 1D or 2D PSD data and outputs the total (or relative) power within each band as a new array. Each output also provides information about the frequency range used.
+
+    Inputs:
+    - data: Power spectral density (PSD) data as a 1D or 2D array, with corresponding frequency values provided in the metadata.
+
+    Outputs:
+    - delta: Power in the delta band (1–3 Hz), along with band metadata.
+    - theta: Power in the theta band (3–7 Hz), along with band metadata.
+    - alpha: Power in the alpha band (7–12 Hz), along with band metadata.
+    - lowbeta: Power in the low beta band (12–20 Hz), along with band metadata.
+    - highbeta: Power in the high beta band (20–30 Hz), along with band metadata.
+    - gamma: Power in the gamma band (30–50 Hz), along with band metadata.
+    """
+
     def config_input_slots():
         return {"data": DataType.ARRAY}
 

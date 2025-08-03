@@ -6,6 +6,18 @@ from goofi.params import BoolParam, FloatParam, IntParam, StringParam
 
 
 class DimensionalityReduction(Node):
+    """
+    Performs dimensionality reduction on array data using one of several algorithms (PCA, t-SNE, or UMAP), reducing high-dimensional input data to a lower-dimensional representation. This node can also optionally transform new incoming data samples into the previously computed low-dimensional space, when supported by the selected algorithm.
+
+    Inputs:
+    - data: The original array data to be reduced in dimensionality. Must be 2D.
+    - new_data: New array data samples to be projected into the computed lower-dimensional space using the fitted model.
+
+    Outputs:
+    - transformed: The array data transformed into the lower-dimensional space, along with updated metadata.
+    - new_components: The new data samples transformed into the same lower-dimensional space, with updated metadata. Only provided if new_data is given and supported by the selected method.
+    """
+
     def config_input_slots():
         return {"data": DataType.ARRAY, "new_data": DataType.ARRAY}
 

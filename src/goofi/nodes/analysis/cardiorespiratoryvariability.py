@@ -6,6 +6,25 @@ from goofi.params import StringParam
 
 
 class CardioRespiratoryVariability(Node):
+    """
+    This node computes a range of cardiorespiratory variability metrics from an input 1D signal, such as photoplethysmogram (PPG), electrocardiogram (ECG), or respiratory (RSP) data. It processes the signal to detect cycles (e.g., heartbeats or breaths), extracts rate information, and calculates time-domain and frequency-domain variability features relevant for heart rate variability (HRV) or respiratory rate variability (RRV) analysis.
+
+    Inputs:
+    - data: A 1D array containing the physiological signal to be analyzed (e.g., PPG, ECG, or RSP), along with associated sampling rate metadata.
+
+    Outputs:
+    - Mean: Mean interval between cycles (NN or BB intervals, depending on signal type).
+    - SDNN: Standard deviation of NN or BB intervals, a measure of overall variability.
+    - SDSD: Standard deviation of successive differences between intervals.
+    - RMSSD: Root mean square of successive differences between intervals.
+    - VLF: Power in the very low frequency band.
+    - LF: Power in the low frequency band.
+    - HF: Power in the high frequency band.
+    - LF/HF: Ratio of low frequency to high frequency power.
+    - Peaks: Indices where peaks (e.g., heartbeats or breaths) are detected within the input signal.
+    - Rate: Instantaneous rate (e.g., heart or respiratory rate) for each detected cycle.
+    """
+
     def config_input_slots():
         return {"data": DataType.ARRAY}
 
@@ -19,9 +38,9 @@ class CardioRespiratoryVariability(Node):
             "LF": DataType.ARRAY,
             "HF": DataType.ARRAY,
             "LF/HF": DataType.ARRAY,
-            #"LZC": DataType.ARRAY,
+            # "LZC": DataType.ARRAY,
             "Peaks": DataType.ARRAY,
-            "Rate": DataType.ARRAY
+            "Rate": DataType.ARRAY,
         }
 
     def config_params():
@@ -79,7 +98,7 @@ class CardioRespiratoryVariability(Node):
             "LF": (np.array(variability_df[f"{datatype}_LF"]), {}),
             "HF": (np.array(variability_df[f"{datatype}_HF"]), {}),
             "LF/HF": (np.array(variability_df[f"{datatype}_LFHF"]), {}),
-            #"LZC": (np.array(variability_df[f"{datatype}_LZC"]), {} if datatype == "HRV" else None),
+            # "LZC": (np.array(variability_df[f"{datatype}_LZC"]), {} if datatype == "HRV" else None),
             "Peaks": (np.array(peaks), {}),
-            "Rate": (np.array(rate), {}) 
+            "Rate": (np.array(rate), {}),
         }

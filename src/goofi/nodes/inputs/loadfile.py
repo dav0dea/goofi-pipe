@@ -8,6 +8,17 @@ from goofi.params import FloatParam, StringParam
 
 
 class LoadFile(Node):
+    """
+    This node loads data from a file and outputs the loaded data in array or string format, depending on the file type and content. It supports various file types such as spectrum data, time series, generic numpy arrays, embedding CSV files, and audio files. The node processes the input file according to the specified type and outputs the corresponding data structure with optional metadata.
+
+    Inputs:
+    - file: The filename (as a string) of the file to load.
+
+    Outputs:
+    - data_output: The primary data loaded from the file, such as an array with optional metadata depending on the file type.
+    - string_output: The string representation of the data if applicable (e.g., if data is non-numeric and cannot be converted to an array).
+    """
+
     def config_input_slots():
         return {"file": DataType.STRING}
 
@@ -157,4 +168,3 @@ class LoadFile(Node):
 
     def file_filename_changed(self, filename):
         self.setup()
-        

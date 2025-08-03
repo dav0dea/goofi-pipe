@@ -5,6 +5,19 @@ from goofi.params import FloatParam, StringParam, IntParam
 
 
 class Kuramoto(Node):
+    """
+    This node simulates the Kuramoto model of coupled phase oscillators, a mathematical model used to study synchronization phenomena. It integrates the phases of multiple oscillators over time, accounting for their natural frequencies and coupling, and outputs various aspects of the evolving system including the phase trajectories, the instantaneous coupling term, the global order parameter, and the corresponding oscillator waveforms.
+
+    Inputs:
+    - initial_phases: An array containing the initial phase values for each oscillator. If not provided, random initial phases are used.
+
+    Outputs:
+    - phases: The final phase values of each oscillator after simulation.
+    - coupling: The last computed coupling term for each oscillator.
+    - order_parameter: The global synchronization measure (order parameter) at the final timestep.
+    - waveforms: The time series waveforms for each oscillator based on their phase evolution.
+    """
+
     def config_input_slots():
         return {"initial_phases": DataType.ARRAY}
 
@@ -20,12 +33,8 @@ class Kuramoto(Node):
         return {
             "kuramoto": {
                 "coupling_strength": FloatParam(0.5, 0.0, 10.0),
-                "natural_frequencies": StringParam(
-                    "1, 1.5, 2", doc="Comma-separated list of natural frequencies"
-                ),
-                "timesteps": IntParam(
-                    1000, 0, 10000, doc="Number of timesteps to integrate"
-                ),
+                "natural_frequencies": StringParam("1, 1.5, 2", doc="Comma-separated list of natural frequencies"),
+                "timesteps": IntParam(1000, 0, 10000, doc="Number of timesteps to integrate"),
             }
         }
 

@@ -3,6 +3,26 @@ from goofi.node import Node
 
 
 class ExtendedTable(Node):
+    """
+    This node extends an input table by adding up to ten new entries, five from array inputs and five from string inputs. For each input, if a value is provided, it is added to the resulting table with a corresponding key. If no new entries are provided, the original base table is returned unchanged.
+
+    Inputs:
+    - base: The original table to extend.
+    - array_input1: First array to add to the table.
+    - array_input2: Second array to add to the table.
+    - array_input3: Third array to add to the table.
+    - array_input4: Fourth array to add to the table.
+    - array_input5: Fifth array to add to the table.
+    - string_input1: First string to add to the table.
+    - string_input2: Second string to add to the table.
+    - string_input3: Third string to add to the table.
+    - string_input4: Fourth string to add to the table.
+    - string_input5: Fifth string to add to the table.
+
+    Outputs:
+    - table: The extended table containing the original entries plus any new arrays and strings added.
+    """
+
     def config_input_slots():
         # Define 10 input slots, 5 are Arrays and 5 are Strings
         return {

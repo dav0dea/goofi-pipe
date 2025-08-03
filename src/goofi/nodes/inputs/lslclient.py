@@ -11,6 +11,17 @@ from goofi.params import BoolParam
 
 
 class LSLClient(Node):
+    """
+    This node connects to a Lab Streaming Layer (LSL) stream and receives real-time data from it. It discovers available LSL streams on the network, connects to the specified source and stream, reads chunks of incoming data, and outputs this data along with relevant metadata such as channel names and sampling frequency. The node is suitable for live signal acquisition from any source that publishes data via LSL.
+
+    Inputs:
+    - source_name: The LSL source ID to connect to.
+    - stream_name: The LSL stream name within the specified source.
+
+    Outputs:
+    - out: The acquired data as an array, along with metadata including sampling frequency and channel names.
+    """
+
     def config_params():
         return {
             "lsl_stream": {
@@ -117,7 +128,9 @@ class LSLClient(Node):
         if len(matches) != 1:
             if self.lsl_discover_thread is None:
                 # check if new streams arrived
-                self.lsl_discover_thread = Thread(target=self.lsl_stream_refresh_changed, args=(True,), daemon=True, name="lsl_discover_thread")
+                self.lsl_discover_thread = Thread(
+                    target=self.lsl_stream_refresh_changed, args=(True,), daemon=True, name="lsl_discover_thread"
+                )
                 self.lsl_discover_thread.start()
 
                 if len(matches) == 0:
@@ -139,7 +152,9 @@ class LSLClient(Node):
 
     def lsl_stream_refresh_changed(self, value: bool) -> None:
         self.available_streams = self.pylsl.resolve_streams()
-        stream_data = sorted([[info.source_id(), info.name(), info.hostname()] for info in self.available_streams], key=lambda x: x[0])
+        stream_data = sorted(
+            [[info.source_id(), info.name(), info.hostname()] for info in self.available_streams], key=lambda x: x[0]
+        )
 
         print("\nAvailable LSL streams:")
         print(tabulate(stream_data, headers=["Source ID", "Stream Name", "Host Name"], tablefmt="simple_outline"))

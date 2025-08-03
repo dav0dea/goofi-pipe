@@ -6,6 +6,16 @@ from goofi.params import BoolParam, FloatParam, IntParam, StringParam
 
 
 class Histogram(Node):
+    """
+    This node computes the histogram of an input array using either traditional binning or kernel density estimation (KDE). It receives an array of data, flattens it, computes a histogram or KDE within a specified data range, and outputs the resulting distribution along with metadata describing each bin.
+
+    Inputs:
+    - data: An array of numerical values to be analyzed.
+
+    Outputs:
+    - histogram: The computed histogram or KDE values, along with metadata including the bin lower edges as channel names.
+    """
+
     def config_input_slots():
         return {"data": DataType.ARRAY}
 

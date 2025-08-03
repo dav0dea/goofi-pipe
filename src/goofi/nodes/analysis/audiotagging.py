@@ -9,6 +9,18 @@ from goofi.params import BoolParam, FloatParam, IntParam
 
 
 class AudioTagging(Node):
+    """
+    AudioTagging node performs automatic audio tagging and embedding extraction from input audio data. It uses a pre-trained audio tagging model to identify the most likely audio classes present in the input, returning their probabilities and associated feature embeddings. The output tags are filtered by confidence and optionally by category.
+
+    Inputs:
+    - audioIn: 1D audio data array sampled at 32 kHz.
+
+    Outputs:
+    - tags: List of detected audio tag names as a newline-separated string.
+    - probabilities: Array of confidence values for each detected tag.
+    - embedding: Feature embedding array representing the input audio.
+    """
+
     def config_input_slots():
         return {"audioIn": DataType.ARRAY}
 
@@ -82,7 +94,7 @@ class AudioTagging(Node):
         indices = [i for i, x in enumerate(tags) if x in active_categories and probabilities[i] > threshold]
         formatted_tags = "\n".join(tags[i] for i in indices[: n_tags - 1])
         formatted_probs = np.array([probabilities[i] for i in indices[: n_tags - 1]])
-        
+
         return {
             "tags": (formatted_tags, audioIn.meta),
             "probabilities": (formatted_probs, audioIn.meta),

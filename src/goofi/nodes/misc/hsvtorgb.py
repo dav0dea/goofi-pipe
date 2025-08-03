@@ -5,6 +5,16 @@ import colorsys
 
 
 class HSVtoRGB(Node):
+    """
+    This node converts images from the HSV (Hue, Saturation, Value) color space to the RGB (Red, Green, Blue) color space. Each pixel in the input image is transformed so that its HSV values are mapped to the corresponding RGB values.
+
+    Inputs:
+    - hsv_image: A NumPy array representing an image in HSV color space, where the last dimension contains the H, S, and V channels.
+
+    Outputs:
+    - rgb_image: A NumPy array representing the input image converted to RGB color space, with the last dimension containing the R, G, and B channels.
+    """
+
     def config_input_slots():
         return {"hsv_image": DataType.ARRAY}
 

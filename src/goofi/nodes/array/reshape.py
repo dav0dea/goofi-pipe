@@ -4,6 +4,16 @@ from goofi.params import StringParam
 
 
 class Reshape(Node):
+    """
+    Reshapes an input array to a specified shape. The output array will have the new shape while preserving the original data. Metadata channels are removed in the output.
+
+    Inputs:
+    - array: The array to be reshaped.
+
+    Outputs:
+    - out: The reshaped array with updated metadata.
+    """
+
     def config_input_slots():
         return {"array": DataType.ARRAY}
 

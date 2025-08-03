@@ -3,6 +3,20 @@ from goofi.node import Node
 
 
 class JoinString(Node):
+    """
+    Joins up to five input strings into a single string, using a configurable separator. Only selected and non-empty inputs are included in the concatenation.
+
+    Inputs:
+    - string1: The first string to join.
+    - string2: The second string to join.
+    - string3: The third string to join.
+    - string4: The fourth string to join.
+    - string5: The fifth string to join.
+
+    Outputs:
+    - output: The concatenated string result.
+    """
+
     def config_input_slots():
         return {
             "string1": DataType.STRING,

@@ -11,6 +11,18 @@ from goofi.params import BoolParam, FloatParam, IntParam, StringParam
 
 
 class ImageGeneration(Node):
+    """
+    This node performs AI-based image generation by interfacing with either local Stable Diffusion (SD) or cloud-based DALL-E models. It supports both text-to-image (txt2img) and image-to-image (img2img) generation depending on model capabilities and user settings. The node can automatically manage image state for iterative workflows, and optionally saves generated images to disk.
+
+    Inputs:
+    - prompt: The main text prompt describing the desired content of the generated image.
+    - negative_prompt: An optional text prompt specifying aspects to avoid in the generated image.
+    - base_image: An optional input image used as a starting point or reference for image-to-image generation.
+
+    Outputs:
+    - img: The generated image as a NumPy array, along with associated prompt information.
+    """
+
     def config_params():
         return {
             "image_generation": {

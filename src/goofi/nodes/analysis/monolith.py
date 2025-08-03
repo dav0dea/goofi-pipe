@@ -8,6 +8,16 @@ from goofi.params import FloatParam, StringParam
 
 
 class Monolith(Node):
+    """
+    This node preprocesses incoming multichannel array data and extracts a broad set of signal features. It applies standard signal preprocessing (bandpass and notch filtering, DC offset removal, clipping, standardization), then computes a variety of channel-wise and non-channel-wise feature descriptors to summarize the data. The node outputs both the extracted features and the cleaned, preprocessed signal.
+
+    Inputs:
+    - data: Multichannel array data (e.g., time series data) with associated metadata.
+
+    Outputs:
+    - features: Extracted features summarizing the input signal, along with updated metadata.
+    - clean_data: The preprocessed (filtered, clipped, standardized) signal data, with unchanged metadata.
+    """
 
     def config_params():
         return {

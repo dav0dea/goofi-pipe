@@ -8,6 +8,17 @@ from goofi.params import BoolParam, StringParam
 
 
 class Embedding(Node):
+    """
+    This node generates embeddings for text and image data using a selectable machine learning model. It takes either text, array data (such as an image), or both, and outputs their respective embeddings as arrays. Different models are used depending on the selected embedding method, supporting both text embeddings (via models like CLIP, SBERT, FastText, Word2Vec) and image embeddings (via CLIP). The node processes the input, computes fixed-size vector representations (embeddings), and outputs them for downstream use.
+
+    Inputs:
+    - text: Input string to be converted into an embedding vector or set of vectors.
+    - data: Input array data, typically representing an image, to be converted into an embedding vector.
+
+    Outputs:
+    - text_embeddings: Array containing the embedding(s) generated from the input text.
+    - data_embeddings: Array containing the embedding generated from the input array data.
+    """
 
     def config_input_slots():
         return {"text": DataType.STRING, "data": DataType.ARRAY}

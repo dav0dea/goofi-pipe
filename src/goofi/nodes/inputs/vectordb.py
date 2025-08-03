@@ -10,6 +10,17 @@ from goofi.params import IntParam, StringParam
 
 
 class VectorDB(Node):
+    """
+    This node performs vector similarity search using a pre-built vector database. Given an input vector, it retrieves the top matching vectors from the database along with their associated labels and distances. This allows you to find which entries in the database are most similar to a given input embedding.
+
+    Inputs:
+    - input_vector: The vector to search for in the database. Should be a 1D array representing an embedding.
+
+    Outputs:
+    - top_labels: A table containing the top matching labels from the database along with their distances to the input vector.
+    - vectors: An array of the vectors corresponding to the top matches in the database.
+    """
+
     def config_input_slots():
         return {
             "input_vector": DataType.ARRAY,
@@ -63,7 +74,9 @@ class VectorDB(Node):
         # Ensure the input vector matches the index dimensionality
         index_dimensionality = self.index.ndim  # Assuming self.index has an 'ndim' attribute
         if input_vector_array.shape[0] != index_dimensionality:
-            raise ValueError(f"Input vector dimensions ({input_vector_array.shape[0]}) do not match index dimensions ({index_dimensionality}).")
+            raise ValueError(
+                f"Input vector dimensions ({input_vector_array.shape[0]}) do not match index dimensions ({index_dimensionality})."
+            )
 
         top_n = self.params.Control.top_n.value
 

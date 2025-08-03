@@ -5,6 +5,17 @@ from goofi.node import Node
 
 
 class Compass(Node):
+    """
+    Computes the angular differences between two points in N-dimensional space. The node receives two N-dimensional vectors and calculates the sequence of angles between corresponding vector elements, expressing the direction from the first input vector (pole1) to the second (pole2) projected onto each pair of adjacent dimensions. The angles are given in degrees and normalized to the range [0, 360).
+
+    Inputs:
+    - pole1: First N-dimensional array representing the initial point.
+    - pole2: Second N-dimensional array representing the target point.
+
+    Outputs:
+    - angles: Array of N-1 angles (in degrees) representing the orientation difference between pole1 and pole2 in each pair of adjacent dimensions.
+    """
+
     def config_input_slots():
         return {"pole1": DataType.ARRAY, "pole2": DataType.ARRAY}
 

@@ -8,6 +8,17 @@ from goofi.params import BoolParam, FloatParam, StringParam
 
 
 class ERP(Node):
+    """
+    This node computes the event-related potential (ERP) by averaging segments of input signals that are time-locked to external triggers. Each time a trigger is received, it collects a segment of the signal of fixed duration following that trigger and averages these segments in real time to update the ERP. The result is an averaged response to repeated events or stimuli, useful in signal processing applications such as EEG analysis.
+
+    Inputs:
+    - signal: Incoming array data representing the continuous time-series signal to be analyzed and averaged.
+    - trigger: Array indicating the presence of a trigger event, used to segment the signal for ERP extraction.
+
+    Outputs:
+    - erp: The current averaged event-related potential as an array, along with updated metadata.
+    """
+
     def config_input_slots():
         return {"signal": DataType.ARRAY, "trigger": DataType.ARRAY}
 

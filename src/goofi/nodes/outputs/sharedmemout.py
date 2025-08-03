@@ -7,6 +7,16 @@ from goofi.node import Node
 
 
 class SharedMemOut(Node):
+    """
+    This node writes array data to a shared memory segment to enable efficient inter-process communication with other processes that can access the same memory. When new array data is received, it is converted to 32-bit floating point format and copied into the shared memory, overwriting any previous contents. This allows other applications or processes to read the current array data in real-time.
+
+    Inputs:
+    - data: An array containing floating point values to be written to shared memory.
+
+    Outputs:
+    - None
+    """
+
     def config_params():
         return {"shared_memory": {"name": "goofi-pipe-memory"}}
 

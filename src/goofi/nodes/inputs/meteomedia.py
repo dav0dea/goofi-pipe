@@ -8,6 +8,18 @@ from goofi.params import FloatParam, StringParam
 
 
 class MeteoMedia(Node):
+    """
+    This node fetches current weather data for a given geographic location using the Tomorrow.io Realtime Weather API. It accepts either latitude and longitude coordinates or a location name as input, and outputs a table containing various weather parameters for the specified location.
+
+    Inputs:
+    - latitude: A single-value array representing the latitude coordinate of the location.
+    - longitude: A single-value array representing the longitude coordinate of the location.
+    - location_name: A string representing the human-readable name of the location (optional; used instead of coordinates if provided).
+
+    Outputs:
+    - weather_data_table: A table (dictionary of arrays) containing weather parameters such as temperature, humidity, wind speed, and other data returned by the API. If the API call fails, an "ERROR" field with the HTTP status code is provided.
+    """
+
     def config_input_slots():
         return {"latitude": DataType.ARRAY, "longitude": DataType.ARRAY, "location_name": DataType.STRING}
 

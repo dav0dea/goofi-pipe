@@ -10,6 +10,17 @@ from goofi.params import BoolParam, StringParam
 
 
 class EigenDecomposition(Node):
+    """
+    Performs eigen decomposition on a 2D matrix input. Optionally, the node can compute the (unnormalized or normalized) Laplacian of the matrix before decomposition. Different algorithms for eigenvalue and eigenvector computation are supported. The node returns both the eigenvalues and eigenvectors of the (transformed) matrix, with outputs ordered as specified and, if needed, with a consistent sign orientation.
+
+    Inputs:
+    - matrix: A 2D array representing the matrix to decompose.
+
+    Outputs:
+    - eigenvalues: Array containing the eigenvalues of the input (or Laplacian) matrix.
+    - eigenvectors: 2D array where each column is an eigenvector corresponding to an eigenvalue.
+    """
+
     def config_input_slots():
         return {"matrix": DataType.ARRAY}
 

@@ -9,6 +9,17 @@ from goofi.params import StringParam
 
 
 class FFT(Node):
+    """
+    This node computes the Fast Fourier Transform (FFT) of the input data, allowing analysis of frequency components in either time series or image data. For time series, it processes 1D or 2D arrays and outputs the magnitude and phase spectra for each frequency. For images, it processes grayscale or RGB images and outputs the magnitude and phase spectra over spatial frequencies.
+
+    Inputs:
+    - data: The input array to be transformed, either as a time series (1D or 2D array with sampling frequency in metadata) or as an image (2D grayscale or 3D RGB array).
+
+    Outputs:
+    - mag: The magnitude spectrum of the FFT of the input data.
+    - phase: The phase spectrum of the FFT of the input data.
+    """
+
     def config_input_slots():
         return {"data": DataType.ARRAY}
 

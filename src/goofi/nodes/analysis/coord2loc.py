@@ -4,14 +4,23 @@ import numpy as np
 
 
 class Coord2loc(Node):
+    """
+    This node converts geographic coordinates (latitude and longitude) into human-readable location information using reverse geocoding. It determines key location details such as city, state, country, road, and village, and provides both a structured location summary and an indication of whether the coordinates represent a valid land location or are in the ocean.
+
+    Inputs:
+    - latitude: The latitude coordinate to be reverse geocoded.
+    - longitude: The longitude coordinate to be reverse geocoded.
+
+    Outputs:
+    - coord_info: A table containing information about the location corresponding to the input coordinates, such as city, state, country, road, village, and the full address. If the coordinates are invalid or not associated with a land address, it returns a message indicating the location cannot be determined.
+    - water_situation: An array indicating whether the coordinates correspond to a recognized land location (0) or a water/non-land location (1).
+    """
+
     def config_input_slots():
         return {"latitude": DataType.ARRAY, "longitude": DataType.ARRAY}
 
     def config_output_slots():
-        return {
-            "coord_info": DataType.TABLE,
-            "water_situation": DataType.ARRAY
-        }
+        return {"coord_info": DataType.TABLE, "water_situation": DataType.ARRAY}
 
     def setup(self):
         from geopy.geocoders import Nominatim
@@ -81,4 +90,7 @@ class Coord2loc(Node):
 
             return {"coord_info": (location_info, {}), "water_situation": (np.array(0), {})}
         else:
-            return {"coord_info": ({"info": Data(DataType.STRING, "You're lost in the ocean", {})}, {}), "water_situation": (np.array(1), {})}
+            return {
+                "coord_info": ({"info": Data(DataType.STRING, "You're lost in the ocean", {})}, {}),
+                "water_situation": (np.array(1), {}),
+            }

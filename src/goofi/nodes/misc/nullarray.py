@@ -3,6 +3,16 @@ from goofi.node import Node
 
 
 class NullArray(Node):
+    """
+    This node passes the input array directly to the output without modification. It is useful for situations where an explicit bypass or null operation on array data is needed.
+
+    Inputs:
+    - array_in: The input array data to be passed through unchanged.
+
+    Outputs:
+    - array_out: The unmodified array data from the input.
+    """
+
     def config_input_slots():
         return {"array_in": DataType.ARRAY}
 

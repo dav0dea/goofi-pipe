@@ -6,6 +6,13 @@ from goofi.params import StringParam
 
 
 class AudioStream(Node):
+    """
+    This node captures live audio data from an input device (such as a microphone) and outputs the audio as a NumPy array. It supports real-time operation and can optionally convert multichannel audio to mono. The output includes audio data along with its sampling frequency.
+
+    Outputs:
+    - out: A NumPy array containing the recorded audio data (mono or multi-channel, depending on configuration) and a metadata dictionary containing the sampling frequency ('sfreq').
+    """
+
     def config_params():
         return {
             "audio": {

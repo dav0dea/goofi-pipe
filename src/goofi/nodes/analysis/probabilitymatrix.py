@@ -8,6 +8,15 @@ from goofi.params import BoolParam
 
 
 class ProbabilityMatrix(Node):
+    """
+    This node computes and updates a state transition probability matrix based on an incoming sequence of data values. Each data value is discretized (rounded to 2 decimal places), and the node tracks transitions between consecutive values, incrementally building a transition matrix representing the empirical probabilities of moving from one state to another within the observed sequence.
+
+    Inputs:
+    - input_data: Array of numerical data points, which are discretized and used to build the transition probability matrix by tracking transitions between consecutive values.
+
+    Outputs:
+    - data: The current transition probability matrix as a NumPy array, along with associated metadata such as sampling frequency.
+    """
 
     def config_input_slots():
         return {"input_data": DataType.ARRAY}

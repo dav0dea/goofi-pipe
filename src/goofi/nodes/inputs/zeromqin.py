@@ -6,6 +6,13 @@ from goofi.params import IntParam
 
 
 class ZeroMQIn(Node):
+    """
+    This node receives data from a ZeroMQ socket using the PAIR pattern and provides this data as output in real time. It connects to a specified address and port, then waits for incoming Python objects sent via ZeroMQ, which it passes on for processing by other nodes.
+
+    Outputs:
+    - data: The data object received from the ZeroMQ socket, provided as an array.
+    """
+
     def config_params():
         return {"zero_mq": {"address": "127.0.0.1", "port": IntParam(6543)}, "common": {"autotrigger": True}}
 

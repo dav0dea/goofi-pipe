@@ -6,6 +6,17 @@ from goofi.params import StringParam
 
 
 class Join(Node):
+    """
+    This node combines two array inputs into a single array output. It supports two methods of combining: joining the arrays along an existing axis or stacking them along a new dimension. The node manages the merging or updating of metadata from both inputs as needed.
+
+    Inputs:
+    - a: The first input array and its associated metadata.
+    - b: The second input array and its associated metadata.
+
+    Outputs:
+    - out: The combined array resulting from joining or stacking the two input arrays, along with updated metadata.
+    """
+
     def config_input_slots():
         return {"a": DataType.ARRAY, "b": DataType.ARRAY}
 

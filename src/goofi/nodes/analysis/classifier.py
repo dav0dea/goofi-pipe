@@ -8,6 +8,17 @@ from goofi.params import BoolParam, FloatParam, IntParam, StringParam
 
 
 class Classifier(Node):
+    """
+    This node performs supervised classification on streaming data using a selection of machine learning algorithms, such as Naive Bayes, SVM, Random Forest, Logistic Regression, or K-Nearest Neighbors. The node allows real-time training, prediction, saving/loading of the training set, and outputs both class probabilities and feature importances (when available) for the current input. It is used to infer and monitor discrete classes or states from continuous or multi-dimensional input data.
+
+    Inputs:
+    - data: Multidimensional numerical array to be classified, typically shaped as (n_features,) or (n_features, n_samples).
+
+    Outputs:
+    - probs: Class probabilities for the input data, along with metadata such as the chosen classifier and training set size per class.
+    - feature_importances: Numeric array of feature importances or weights for the classification model, when applicable. If not available for the chosen classifier, this output is None.
+    """
+
     def config_input_slots():
         return {"data": DataType.ARRAY}
 

@@ -4,6 +4,16 @@ from goofi.params import BoolParam, FloatParam, IntParam, StringParam
 
 
 class SpikingNetwork(Node):
+    """
+    This node simulates a spiking neural network (SNN) with user-configurable network topology and real-time updating of neuron dynamics. Each time it receives an input, it integrates the input into the potentials of the neural population, executes one simulation step, and outputs the updated neuron membrane potentials. The SNN simulates spiking activity, action potential propagation, synaptic transmission delays, and refractory dynamics in a spatially organized network.
+
+    Inputs:
+    - input: A one-dimensional array of values, representing external input currents or signals delivered to the neuron population.
+
+    Outputs:
+    - potentials: The current membrane potentials of all simulated neurons in a one-dimensional array, with associated sample frequency information.
+    """
+
     def config_params():
         return {
             "network": {

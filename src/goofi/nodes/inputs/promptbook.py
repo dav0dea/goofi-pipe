@@ -4,6 +4,16 @@ from goofi.params import StringParam
 
 
 class PromptBook(Node):
+    """
+    This node provides a standardized set of highly specialized prompts for creative text and text-to-image tasks. It allows you to select from a large collection of prompt templates designed for poetry, artistic or scientific descriptions, narratives, symbolism, horoscopes, and various text-to-image generation scenarios. The node outputs the selected prompt, optionally appending the input text to further specify or inform the prompt for downstream nodes or systems.
+
+    Inputs:
+    - input_prompt: Optional string to append to the selected prompt template, used to specialize or guide the generated output.
+
+    Outputs:
+    - out: The constructed prompt string based on the selected template and any provided input text.
+    """
+
     def config_input_slots():
         return {"input_prompt": DataType.STRING}
 
@@ -233,16 +243,16 @@ PROMPTS = {
     "the artstyle, inspired by the emotions and elements, and describe the lighting and perspective using cinematic terminology.  Ensure the entire image captures "
     "the symbolic essence of the provided words. Include relevant artists at the end of the prompt, whose work resonates with the symbolism of the guiding words. "
     "Keep the prompt VERY SHORT AND CONCISE, limited to a MAXIMUM OF 20 WORDS.",
-    'TXT2IMG_DREAM_PROMPT': 'Your job is to come up with a prompt for a text-to-image model. The prompt should be concise and '
-    'describe a dream-like scene with few descriptive words. Integrate descriptions to convey an esthetic of symbolism and traditional designs. Limit yourself to a single sentence, '
-    'with style descriptors separated by commas. Be purely descriptive, your response does not have to be a complete sentence. The description of the dream is: ',
-    'TXT2IMG_DREAM_PROMPT_UNUSUAL': 'Your job is to come up with a prompt for a text-to-image model. The prompt should describe a dream-like scene with an evocative'
-     ' and surreal atmosphere. Incorporate symbolism and traditional designs, but also experimental aesthetics, abstract compositions, and unconventional artistic movements. '
-     'Blend contrasting styles—classical, futuristic, abstract, and forgotten artistic forms—mixing them in surprising ways. Emphasize dream logic, such as fluid transformations, impossible perspectives, '
-     'and shifting realities. Use rich, unexpected descriptors that evoke surreal, visceral, or ethereal sensations. Explore obscure or experimental artistic styles such as generative noise, dreamcore, brutalism, and glitch aesthetics. ONLY ANSWER WITH THE PROMPT OF MAXIMUM 50 WORDS AND NOTHING ELSE. The description of the dream is:',
-     'TXT2IMG_DREAM_PROMPT_REALIST': 'Your job is to come up with a prompt for a text-to-image model. The prompt should describe a scene with an evocative'
-     ' and surreal atmosphere. Incorporate symbolism and traditional designs, but also experimental aesthetics, and unconventional artistic movements. '
-     'Blend contrasting styles—classical, futuristic, and forgotten artistic forms—mixing them in surprising ways. Emphasize impossible perspectives, '
-     'and shifting realities. Use rich, unexpected descriptors that evoke surreal, visceral, or ethereal sensations, while providing detailed and realistic elements with high levels of details.'
-     'Explore obscure or experimental artistic and diverse styles. ONLY ANSWER WITH THE PROMPT OF MAXIMUM 50 WORDS AND NOTHING ELSE. The description of the dream is:'
+    "TXT2IMG_DREAM_PROMPT": "Your job is to come up with a prompt for a text-to-image model. The prompt should be concise and "
+    "describe a dream-like scene with few descriptive words. Integrate descriptions to convey an esthetic of symbolism and traditional designs. Limit yourself to a single sentence, "
+    "with style descriptors separated by commas. Be purely descriptive, your response does not have to be a complete sentence. The description of the dream is: ",
+    "TXT2IMG_DREAM_PROMPT_UNUSUAL": "Your job is to come up with a prompt for a text-to-image model. The prompt should describe a dream-like scene with an evocative"
+    " and surreal atmosphere. Incorporate symbolism and traditional designs, but also experimental aesthetics, abstract compositions, and unconventional artistic movements. "
+    "Blend contrasting styles—classical, futuristic, abstract, and forgotten artistic forms—mixing them in surprising ways. Emphasize dream logic, such as fluid transformations, impossible perspectives, "
+    "and shifting realities. Use rich, unexpected descriptors that evoke surreal, visceral, or ethereal sensations. Explore obscure or experimental artistic styles such as generative noise, dreamcore, brutalism, and glitch aesthetics. ONLY ANSWER WITH THE PROMPT OF MAXIMUM 50 WORDS AND NOTHING ELSE. The description of the dream is:",
+    "TXT2IMG_DREAM_PROMPT_REALIST": "Your job is to come up with a prompt for a text-to-image model. The prompt should describe a scene with an evocative"
+    " and surreal atmosphere. Incorporate symbolism and traditional designs, but also experimental aesthetics, and unconventional artistic movements. "
+    "Blend contrasting styles—classical, futuristic, and forgotten artistic forms—mixing them in surprising ways. Emphasize impossible perspectives, "
+    "and shifting realities. Use rich, unexpected descriptors that evoke surreal, visceral, or ethereal sensations, while providing detailed and realistic elements with high levels of details."
+    "Explore obscure or experimental artistic and diverse styles. ONLY ANSWER WITH THE PROMPT OF MAXIMUM 50 WORDS AND NOTHING ELSE. The description of the dream is:",
 }

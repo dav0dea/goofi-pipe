@@ -9,6 +9,16 @@ from goofi.params import BoolParam, IntParam
 
 
 class OSCOut(Node):
+    """
+    This node sends incoming table data as OSC (Open Sound Control) messages to a specified network address and port. Input data is serialized to OSC message bundles or individual messages and transmitted, with options for broadcasting and message change detection.
+
+    Inputs:
+    - data: Table data to be transmitted as OSC messages.
+
+    Outputs:
+    - None.
+    """
+
     def config_input_slots():
         return {"data": DataType.TABLE}
 

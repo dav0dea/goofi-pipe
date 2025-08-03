@@ -9,6 +9,19 @@ import time
 
 
 class WriteCsv(Node):
+    """
+    This node writes incoming table data to a CSV file, supporting both generic tables and EEG-specific formats. The node can append new rows to an existing CSV, generate unique filenames based on the current time, and optionally include timestamps. Two writing modes are supported: a default mode for general tabular data and an EEG mode that handles multidimensional arrays and sampling frequency metadata. Data is automatically flattened and serialized as needed to preserve structure in the CSV output.
+
+    Inputs:
+    - table_input: Table data to be written into the CSV file. The table can contain nested tables, arrays, or strings.
+    - start: Array signal triggering the start of writing to the CSV file.
+    - stop: Array signal triggering the stop of writing to the CSV file.
+    - fname: String specifying the filename to use for the CSV output.
+
+    Outputs:
+    - None. This node writes data to disk but does not produce downstream data outputs.
+    """
+
     @staticmethod
     def config_input_slots():
         # This node will accept a table as its input.

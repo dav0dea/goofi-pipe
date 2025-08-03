@@ -6,6 +6,16 @@ from goofi.params import BoolParam, FloatParam, IntParam, StringParam
 
 
 class Normalization(Node):
+    """
+    This node performs normalization on array data using various normalization methods such as z-score, quantile, robust, or min-max scaling. It manages a buffer of incoming data along a specified axis to compute statistics and applies the selected normalization technique in real-time. The node is designed for use with multi-dimensional array data and is suitable for pre-processing input signals to have consistent statistical properties.
+
+    Inputs:
+    - data: Array input data to be normalized.
+
+    Outputs:
+    - normalized: The normalized array data, transformed according to the selected normalization method and matching the structure and size of the input.
+    """
+
     def config_input_slots():
         return {"data": DataType.ARRAY}
 

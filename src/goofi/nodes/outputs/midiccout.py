@@ -6,6 +6,20 @@ from goofi.params import IntParam, StringParam
 
 
 class MidiCCout(Node):
+    """
+    This node converts up to five arrays of input values into MIDI Control Change (CC) messages and sends them out to a selected MIDI output port. Each input array corresponds to a configurable MIDI CC number, allowing for real-time control of MIDI devices or software via multiple CC messages. The node provides status output indicating the success or any errors during message transmission.
+
+    Inputs:
+    - cc1: Array of values to send as MIDI CC messages using the first configured CC number.
+    - cc2: Array of values to send as MIDI CC messages using the second configured CC number.
+    - cc3: Array of values to send as MIDI CC messages using the third configured CC number.
+    - cc4: Array of values to send as MIDI CC messages using the fourth configured CC number.
+    - cc5: Array of values to send as MIDI CC messages using the fifth configured CC number.
+
+    Outputs:
+    - midi_status: Status message indicating whether the MIDI CC messages were sent successfully or if errors occurred.
+    """
+
     def config_input_slots():
         return {
             "cc1": DataType.ARRAY,

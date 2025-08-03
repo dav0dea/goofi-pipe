@@ -6,6 +6,16 @@ from goofi.node import Node
 
 
 class ZeroMQOut(Node):
+    """
+    This node sends array data to an external application or process over a network connection using the ZeroMQ library. It transmits data in real time via a TCP socket, allowing integration with remote systems or distributed processing setups.
+
+    Inputs:
+    - data: The array data to be transmitted, which is sent as a NumPy float32 array.
+
+    Outputs:
+    - None.
+    """
+
     def config_params():
         return {"zero_mq": {"address": "127.0.0.1", "port": 6543}}
 
