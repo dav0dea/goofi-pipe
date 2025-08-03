@@ -1,3 +1,4 @@
+import importlib.resources as pkg_resources
 import os
 import platform
 import pprint
@@ -9,6 +10,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import dearpygui.dearpygui as dpg
 
+from goofi import assets
 from goofi.data import DataType
 from goofi.gui import events
 from goofi.gui.data_viewer import ViewerContainer
@@ -1135,8 +1137,9 @@ class Window:
 
         # start DearPyGui
         dpg.create_viewport(title="goofi-pipe", width=width, height=height, disable_close=True)
-        dpg.set_viewport_large_icon("assets/goofi.ico")
-        dpg.set_viewport_small_icon("assets/goofi.ico")
+        assets_path = pkg_resources.files(assets)
+        dpg.set_viewport_large_icon(assets_path / "goofi.ico")
+        dpg.set_viewport_small_icon(assets_path / "goofi.ico")
         dpg.setup_dearpygui()
         dpg.show_viewport()
 
