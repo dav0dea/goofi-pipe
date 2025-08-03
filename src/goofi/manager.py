@@ -659,6 +659,13 @@ def main(duration: float = 0, args=None):
         update_docs()
         return
 
+    if args.gen_node_docs:
+        from goofi.doc_utils import gen_node_docs
+
+        # generate missing node docstrings
+        gen_node_docs()
+        return
+
     if args.example is not None:
         # look up example patches
         if not get_example_patch(args):

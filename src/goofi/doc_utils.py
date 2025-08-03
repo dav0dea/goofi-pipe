@@ -1,5 +1,9 @@
+import sys
 from os import path
 
+import libcst as cst
+from joblib import Parallel, delayed
+from litellm import completion
 from tqdm import tqdm
 
 from goofi.node_helpers import list_nodes
@@ -77,3 +81,94 @@ def update_docs():
     with open(readme_path, "w") as f:
         f.write(new_readme)
     print("done")
+
+
+class DocstringAdder(cst.CSTTransformer):
+    def __init__(self, target_class, docstring):
+        self.target_class = target_class
+        self.docstring = docstring
+
+    def leave_ClassDef(self, original_node, updated_node):
+        if original_node.name.value == self.target_class:
+            return updated_node.with_changes(
+                body=updated_node.body.with_changes(
+                    body=[cst.SimpleStatementLine([cst.Expr(cst.SimpleString(f'"""{self.docstring}"""'))])]
+                    + [
+                        s
+                        for s in updated_node.body.body
+                        if not (isinstance(s, cst.SimpleStatementLine) and isinstance(s.body[0], cst.Expr) and isinstance(s.body[0].value, cst.SimpleString))
+                    ]
+                )
+            )
+        return updated_node
+
+
+def add_docstring_to_class(filepath, classname, docstring):
+    with open(filepath, "r", encoding="utf-8") as f:
+        module = cst.parse_module(f.read())
+    mod_new = module.visit(DocstringAdder(classname, docstring))
+    with open(filepath, "w", encoding="utf-8") as f:
+        f.write(mod_new.code)
+
+
+DOC_PROMPT = """
+```
+{}
+```
+
+The above code is the definition and implementation of a node in goofi-pipe, a node-based visual coding software for real-time signal processing.
+Examine this code closely while paying special attention to the function of this node.
+Your task is to generate documentation for this node with a focus on what the node is doing.
+Only describe the general node's function and the input and output data.
+Do NOT include the parameters in the documentation unless required to explain the function, input or output. Parameter documentation exists separately.
+Write the documentation in plain text, not markdown. The documentation should be concise and accurate, do not make mistakes!
+Respond with ONLY the documentation and nothing else.
+Use the following structure:
+```
+<general description of the node>
+
+Inputs:
+- <in1_name>: <description>
+- ...
+
+Outputs:
+- <out1_name>: <description>
+- ...
+```
+
+Inputs are defined in `config_input_slots`, and outputs in `config_output_slots`. If a node doesn't have inputs or outputs it may not define these functions.
+In that case do not include "Inputs" or "Outputs" in the documentation respectively.
+"""
+
+
+def _gen_doc(node):
+    if node.__doc__:
+        return
+
+    clsname = node.__name__
+    clspath = sys.modules[node.__module__].__file__
+
+    with open(clspath, "r") as f:
+        file_txt = f.read()
+
+    # generate documentation for the current node
+    response = completion(model="openai/gpt-4.1", messages=[{"role": "user", "content": DOC_PROMPT.format(file_txt)}])
+    docstring = response.choices[0].message.content
+
+    # add leading and trailing new lines
+    docstring = f"\n{docstring.strip()}\n"
+
+    add_docstring_to_class(clspath, clsname, docstring)
+
+
+def gen_node_docs():
+    """
+    This function retrieves a list of node classes using `list_nodes`, then generates documentation for each node
+    in parallel and updates the docstring of the node.
+    """
+    nodes_cls = list_nodes(verbose=True)
+    Parallel(n_jobs=-1)(delayed(_gen_doc)(node) for node in tqdm(nodes_cls, desc="Generating documentation"))
+
+
+if __name__ == "__main__":
+    gen_node_docs()
