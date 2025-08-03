@@ -1,17 +1,15 @@
+import os
 import pickle
+
 import numpy as np
+from usearch.index import Index
+
 from goofi.data import Data, DataType
 from goofi.node import Node
 from goofi.params import IntParam, StringParam
-from usearch.index import Index
-import os
 
 
 class VectorDB(Node):
-    """
-    A Goofi node for searching the top N labels from a vector embedding database.
-    """
-
     def config_input_slots():
         return {
             "input_vector": DataType.ARRAY,
@@ -36,7 +34,7 @@ class VectorDB(Node):
         Load the database index and mapping during initialization.
         """
         database_path = self.params.Control.database_path.value
-        #database_path = os.path.join(self.assets_path, database_path)
+        # database_path = os.path.join(self.assets_path, database_path)
         try:
             with open(database_path, "rb") as f:
                 index_data, self.idx2word = pickle.load(f)
@@ -65,9 +63,7 @@ class VectorDB(Node):
         # Ensure the input vector matches the index dimensionality
         index_dimensionality = self.index.ndim  # Assuming self.index has an 'ndim' attribute
         if input_vector_array.shape[0] != index_dimensionality:
-            raise ValueError(
-                f"Input vector dimensions ({input_vector_array.shape[0]}) do not match index dimensions ({index_dimensionality})."
-            )
+            raise ValueError(f"Input vector dimensions ({input_vector_array.shape[0]}) do not match index dimensions ({index_dimensionality}).")
 
         top_n = self.params.Control.top_n.value
 

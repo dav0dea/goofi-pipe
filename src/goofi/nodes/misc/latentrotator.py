@@ -1,15 +1,11 @@
 import numpy as np
+
 from goofi.data import Data, DataType
 from goofi.node import Node
 from goofi.params import BoolParam, FloatParam
 
 
 class LatentRotator(Node):
-    """
-    A Goofi node for rotating a latent vector in an N-dimensional space based on input angles.
-    The rotation is applied using spherical coordinate transformations.
-    """
-
     def config_input_slots():
         return {
             "latent_vector": DataType.ARRAY,

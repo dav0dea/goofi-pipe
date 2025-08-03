@@ -1,14 +1,10 @@
 import numpy as np
+
 from goofi.data import Data, DataType
 from goofi.node import Node
 
 
 class Compass(Node):
-    """
-    A Goofi node that calculates angles from polar arrays in N-dimensional space.
-    Takes two inputs (pole1, pole2) and computes the angles corresponding to N-1 dimensions.
-    """
-
     def config_input_slots():
         return {"pole1": DataType.ARRAY, "pole2": DataType.ARRAY}
 
