@@ -537,7 +537,8 @@ class Window:
             self._select_node(None)
 
         # determine the node name
-        name = dpg.get_item_label(item)
+        # NOTE: the strip is required for now as nodes without in- and outputs have leading and trailing spaces (https://github.com/hoffstadt/DearPyGui/issues/2444)
+        name = dpg.get_item_label(item).strip()
 
         # remove links associated with node
         for link in list(self.links.keys()):
@@ -592,8 +593,9 @@ class Window:
         slot1 = dpg.get_item_label(items[0])
         slot2 = dpg.get_item_label(items[1])
         # get node names
-        node1 = dpg.get_item_label(dpg.get_item_parent(items[0]))
-        node2 = dpg.get_item_label(dpg.get_item_parent(items[1]))
+        # NOTE: the strip is required for now as nodes without in- and outputs have leading and trailing spaces (https://github.com/hoffstadt/DearPyGui/issues/2444)
+        node1 = dpg.get_item_label(dpg.get_item_parent(items[0])).strip()
+        node2 = dpg.get_item_label(dpg.get_item_parent(items[1])).strip()
 
         # make sure the data types match
         dtype1 = dpg.get_item_user_data(items[0])
@@ -646,8 +648,9 @@ class Window:
         # get slot names
         slot1, slot2 = dpg.get_item_label(conf["attr_1"]), dpg.get_item_label(conf["attr_2"])
         # get node names
-        node1 = dpg.get_item_label(dpg.get_item_parent(conf["attr_1"]))
-        node2 = dpg.get_item_label(dpg.get_item_parent(conf["attr_2"]))
+        # NOTE: the strip is required for now as nodes without in- and outputs have leading and trailing spaces (https://github.com/hoffstadt/DearPyGui/issues/2444)
+        node1 = dpg.get_item_label(dpg.get_item_parent(conf["attr_1"])).strip()
+        node2 = dpg.get_item_label(dpg.get_item_parent(conf["attr_2"])).strip()
 
         if notify_manager:
             # remove link from manager
@@ -839,7 +842,8 @@ class Window:
         # clear parameters window
         dpg.delete_item(self.side_panel_win, children_only=True)
 
-        if item is None or dpg.get_item_label(item) not in self.nodes:
+        # NOTE: the strip is required for now as nodes without in- and outputs have leading and trailing spaces (https://github.com/hoffstadt/DearPyGui/issues/2444)
+        if item is None or dpg.get_item_label(item).strip() not in self.nodes:
             self.selected_node = None
             # node deselected, hide parameters window and resize node editor
             dpg.configure_item(self.side_panel_win, show=False)
@@ -847,7 +851,8 @@ class Window:
             return
 
         # get node reference
-        node = self.nodes[dpg.get_item_label(item)]
+        # NOTE: the strip is required for now as nodes without in- and outputs have leading and trailing spaces (https://github.com/hoffstadt/DearPyGui/issues/2444)
+        node = self.nodes[dpg.get_item_label(item).strip()]
         node_ref = node.node_ref
 
         with dpg.child_window(height=dpg.get_viewport_height() / 2, parent=self.side_panel_win):
