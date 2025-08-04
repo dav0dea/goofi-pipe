@@ -1,8 +1,10 @@
-import numpy as np
 from copy import deepcopy
+
+import numpy as np
+
 from goofi.data import Data, DataType
 from goofi.node import Node
-from goofi.params import StringParam
+from goofi.params import BoolParam, StringParam
 
 
 class Join(Node):
@@ -27,7 +29,15 @@ class Join(Node):
         return {"join": {"method": StringParam("concatenate", options=["concatenate", "stack"]), "axis": 0}}
 
     def process(self, a: Data, b: Data):
-        if a is None or b is None:
+        if a is not None and b is None:
+            if self.params.join.method.value == "stack":
+                a.data = np.expand_dims(a.data, axis=self.params.join.axis.value)
+            return {"out": (a.data, a.meta)}
+        elif a is None and b is not None:
+            if self.params.join.method.value == "stack":
+                b.data = np.expand_dims(b.data, axis=self.params.join.axis.value)
+            return {"out": (b.data, b.meta)}
+        elif a is None and b is None:
             return None
 
         result_meta = deepcopy(a.meta)
@@ -41,7 +51,9 @@ class Join(Node):
             # stack a and b
             result = np.stack([a.data, b.data], axis=self.params.join.axis.value)
         else:
-            raise ValueError(f"Unknown join method {self.params.join.method.value}. Supported are 'concatenate' and 'stack'.")
+            raise ValueError(
+                f"Unknown join method {self.params.join.method.value}. Supported are 'concatenate' and 'stack'."
+            )
 
         # TODO: properly combine metadata from both inputs
         # TODO: update metadata information after stack
