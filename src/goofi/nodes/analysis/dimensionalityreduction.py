@@ -73,9 +73,13 @@ class DimensionalityReduction(Node):
                     raise ValueError("The t-SNE algorithm does not support transforming new data")
 
                 new_data_arr = new_data.data
+                added_dim = False
                 if new_data_arr.ndim == 1:
+                    added_dim = True
                     new_data_arr = new_data_arr.reshape(1, -1)
-                new_components = self.model.transform(new_data_arr).squeeze()
+                new_components = self.model.transform(new_data_arr)
+                if added_dim:
+                    new_components = new_components[0]
 
                 new_meta = new_data.meta
                 if "channels" in new_meta and "dim1" in new_meta["channels"]:
@@ -126,9 +130,13 @@ class DimensionalityReduction(Node):
 
             if new_data is not None:
                 new_data_arr = new_data.data
+                added_dim = False
                 if new_data_arr.ndim == 1:
+                    added_dim = True
                     new_data_arr = new_data_arr.reshape(1, -1)
-                new_components = self.model.transform(new_data_arr).squeeze()
+                new_components = self.model.transform(new_data_arr)
+                if added_dim:
+                    new_components = new_components[0]
 
                 new_meta = new_data.meta
                 if "channels" in new_meta and "dim1" in new_meta["channels"]:
