@@ -46,6 +46,7 @@ class LSLClient(Node):
 
         if hasattr(self, "client"):
             self.disconnect()
+
         self.client = None
         self.lsl_discover_thread = None
         self.ch_names = None
@@ -145,13 +146,16 @@ class LSLClient(Node):
             return False
 
         # connect to the stream
-        self.client = self.pylsl.StreamInlet(info=list(matches.values())[0], recover=False)
+        self.client = self.pylsl.StreamInlet(info=list(matches.values())[0], recover=True)
         return True
 
     def disconnect(self) -> None:
         """Disconnect from the LSL stream."""
         if self.client is not None:
-            self.client.close_stream()
+            try:
+                self.client.close_stream()
+            except:
+                pass
             self.client = None
 
     def lsl_stream_refresh_changed(self, value: bool) -> None:
@@ -168,9 +172,17 @@ class LSLClient(Node):
             self.lsl_discover_thread = None
 
     def lsl_stream_source_name_changed(self, value: str) -> None:
-        if self.client is not None and value != self.client.info().source_id():
+        try:
+            if self.client is not None and value != self.client.info().source_id():
+                self.setup()
+        except:
+            # stream might have been lost
             self.setup()
 
     def lsl_stream_stream_name_changed(self, value: str) -> None:
-        if self.client is not None and value != self.client.info().name():
+        try:
+            if self.client is not None and value != self.client.info().name():
+                self.setup()
+        except:
+            # stream might have been lost
             self.setup()
