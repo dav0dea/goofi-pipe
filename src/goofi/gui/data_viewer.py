@@ -363,7 +363,7 @@ class ImageViewer(DataViewer):
 
         # make sure we have 4 channels
         if array.shape[2] > 4:
-            raise NotImplementedError(f"Cannot handle array with {array.shape[2]} channels.")
+            raise UnsupportedViewerError(f"Cannot handle array with {array.shape[2]} channels.")
         elif array.shape[2] == 3:
             array = np.concatenate([array, np.ones((*array.shape[:2], 1))], axis=2)
         elif array.shape[2] == 2:
