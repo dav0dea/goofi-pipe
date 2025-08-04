@@ -60,11 +60,11 @@ class LSLClient(Node):
         """Fetch the next chunk of data from the client."""
         if source_name is not None:
             self.params.lsl_stream.source_name.value = source_name.data
-            self.lsl_stream_stream_name_changed(source_name.data)
+            self.lsl_stream_source_name_changed(source_name.data)
             self.input_slots["source_name"].clear()
         if stream_name is not None:
             self.params.lsl_stream.stream_name.value = stream_name.data
-            self.lsl_stream_source_name_changed(stream_name.data)
+            self.lsl_stream_stream_name_changed(stream_name.data)
             self.input_slots["stream_name"].clear()
 
         if self.client is None:
@@ -136,7 +136,11 @@ class LSLClient(Node):
                 if len(matches) == 0:
                     print(f'\nCould not find source "{source_name}" with stream "{stream_name}".')
                 else:
-                    ms = tabulate([list(m) for m in matches], headers=["Source ID", "Stream Name"], tablefmt="simple_outline")
+                    ms = tabulate(
+                        [list(m) for m in matches],
+                        headers=["Source ID", "Stream Name"],
+                        tablefmt="simple_outline",
+                    )
                     print(f'\nFound multiple streams matching source="{source_name}", name="{stream_name}":\n{ms}.')
             return False
 
@@ -164,7 +168,9 @@ class LSLClient(Node):
             self.lsl_discover_thread = None
 
     def lsl_stream_source_name_changed(self, value: str) -> None:
-        self.setup()
+        if self.client is not None and value != self.client.info().source_id():
+            self.setup()
 
     def lsl_stream_stream_name_changed(self, value: str) -> None:
-        self.setup()
+        if self.client is not None and value != self.client.info().name():
+            self.setup()
