@@ -34,7 +34,7 @@ class TableSelectArray(Node):
         selected_key = self.params["selection"]["key"].value
 
         if selected_key not in input_table.data:
-            raise KeyError(f"{selected_key} not found in the input table.")
+            return
 
         selected_value = input_table.data[selected_key]
 
