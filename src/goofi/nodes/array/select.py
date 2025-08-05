@@ -100,7 +100,7 @@ class Select(Node):
                 idxs = [i for i in range(len(chs)) if i in include and i not in exclude]
 
         if len(idxs) == 0:
-            raise ValueError("No channels matched the selection.")
+            return
 
         # select channels from data
         selected = np.take(data.data, idxs, axis=axis)
