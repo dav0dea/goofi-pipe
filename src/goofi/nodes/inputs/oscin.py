@@ -39,6 +39,7 @@ class OSCIn(Node):
         self.messages = {}
 
     def callback(self, address, *args):
+        args = ["None".encode() if a is None else a for a in args]
         if isinstance(args[0], bytes):
             if len(args) > 1:
                 raise ValueError(
