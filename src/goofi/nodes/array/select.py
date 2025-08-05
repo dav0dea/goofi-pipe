@@ -107,7 +107,9 @@ class Select(Node):
 
         # update channel names if present
         if f"dim{axis}" in data.meta["channels"]:
-            data.meta["channels"][f"dim{axis}"] = [ch for i, ch in enumerate(data.meta["channels"][f"dim{axis}"]) if i in idxs]
+            data.meta["channels"][f"dim{axis}"] = [
+                ch for i, ch in enumerate(data.meta["channels"][f"dim{axis}"]) if i in idxs
+            ]
 
         if len(idxs) == 1:
             # remove axis if only one channel is selected
