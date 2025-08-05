@@ -4,6 +4,16 @@ from goofi.params import IntParam
 
 
 class EMD(Node):
+    """
+    Applies Empirical Mode Decomposition (EMD) to a one-dimensional array input signal, extracting its intrinsic mode functions (IMFs). The node returns the resulting IMFs as a multi-channel array, with each channel corresponding to an individual IMF. IMF indices are added to the metadata for channel identification.
+
+    Inputs:
+    - data: A one-dimensional array representing the input signal to be decomposed.
+
+    Outputs:
+    - IMFs: An array containing the extracted intrinsic mode functions, with channel metadata indicating the IMF index.
+    """
+
     def config_input_slots():
         return {"data": DataType.ARRAY}
 

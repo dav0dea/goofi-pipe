@@ -3,6 +3,16 @@ from goofi.node import Node
 
 
 class TableNormalization(Node):
+    """
+    This node performs normalization on each column of a table independently. For each key (column) in the input table, it applies a normalization process and produces a table with normalized data columns. Each column is normalized using its own normalization state, ensuring independent treatment per column.
+
+    Inputs:
+    - table: A table containing multiple columns (keys), where each column will be normalized separately.
+
+    Outputs:
+    - normalized: A table with the same structure as the input, where each column has been normalized.
+    """
+
     def config_input_slots():
         return {"table": DataType.TABLE}
 

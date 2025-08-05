@@ -3,6 +3,17 @@ from goofi.node import Node
 
 
 class Table(Node):
+    """
+    Creates or updates a table by adding a new entry under a specified key. If no base table is provided, an empty table is used. If no new entry is given, the current table is returned unchanged.
+
+    Inputs:
+    - base: The existing table to which a new entry can be added.
+    - new_entry: The data (as an array) to insert into the table.
+
+    Outputs:
+    - table: The updated table after adding the new entry, or the original table if no new entry was given.
+    """
+
     def config_input_slots():
         return {"base": DataType.TABLE, "new_entry": DataType.ARRAY}
 

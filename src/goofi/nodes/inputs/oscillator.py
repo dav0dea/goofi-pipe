@@ -8,6 +8,16 @@ from goofi.params import FloatParam, StringParam
 
 
 class Oscillator(Node):
+    """
+    This node generates basic oscillator waveforms such as sine, square, sawtooth, and pulse at a specified frequency and sampling rate. It produces a continuous stream of samples corresponding to the selected waveform. The frequency of the oscillator can be controlled in real-time by providing an input array; otherwise, a set frequency parameter is used.
+
+    Inputs:
+    - frequency: Optional. An array containing the frequency (Hz) with which to generate samples. If not provided, a default frequency is used.
+
+    Outputs:
+    - out: An array of generated waveform samples, along with metadata that includes the sampling frequency.
+    """
+
     def config_params():
         return {
             "oscillator": {

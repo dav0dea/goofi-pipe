@@ -4,6 +4,16 @@ from goofi.params import BoolParam, StringParam
 
 
 class Audiocraft(Node):
+    """
+    This node generates audio waveforms from a given text prompt using pretrained generative models. It leverages AudioGen or MusicGen models to synthesize audio based on the input description.
+
+    Inputs:
+    - prompt: A string containing the textual description or prompt for the desired audio.
+
+    Outputs:
+    - wav: An array representing the generated waveform audio data for the provided prompt. The output also includes metadata for the audio's sampling rate.
+    """
+
     def config_params():
         return {
             "audiocraft": {

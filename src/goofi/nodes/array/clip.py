@@ -6,6 +6,16 @@ from goofi.params import FloatParam
 
 
 class Clip(Node):
+    """
+    Clips the values of an input array so that they stay within a specified minimum and maximum range. Any values below the minimum are set to the minimum, and any values above the maximum are set to the maximum.
+
+    Inputs:
+    - array: The input array containing numerical values to be clipped.
+
+    Outputs:
+    - out: The clipped array with all values constrained within the defined range.
+    """
+
     def config_input_slots():
         return {"array": DataType.ARRAY}
 

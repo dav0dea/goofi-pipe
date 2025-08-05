@@ -6,6 +6,17 @@ from goofi.params import FloatParam
 
 
 class Avalanches(Node):
+    """
+    This node detects neuronal avalanches in the input signal using the EdgeOfPy library. Avalanches are cascades of activity within the signal, and the node outputs the size and duration of each detected avalanche event.
+
+    Inputs:
+    - data: Input array of signals, where each row represents a separate channel and each column is a time point.
+
+    Outputs:
+    - size: Array containing the size (number of events) of each detected avalanche.
+    - duration: Array containing the duration (in seconds) of each detected avalanche.
+    """
+
     def config_input_slots():
         return {"data": DataType.ARRAY}
 

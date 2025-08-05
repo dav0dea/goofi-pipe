@@ -7,17 +7,31 @@ import serial.tools.list_ports
 
 from goofi.data import DataType
 from goofi.node import Node
-from goofi.params import IntParam,StringParam
+from goofi.params import IntParam, StringParam
 
 
 class SerialStream(Node):
-    ESC = b"\xDB"
-    END = b"\xC0"
-    ESC_END = b"\xDC"
-    ESC_ESC = b"\xDD"
+    """
+    This node streams data directly from a serial device, supporting both ECG and capacitive sensing protocols. It reads incoming data packets, decodes and resamples them in real time to provide a uniformly sampled output array suitable for further processing.
+
+    Outputs:
+    - out: A NumPy array containing the decoded and resampled data from the serial device. For ECG, this is a 1D array of signal samples. For capacitive protocol, this is a 2D array where each row corresponds to a channel. The output includes metadata specifying the sampling frequency.
+    """
+
+    ESC = b"\xdb"
+    END = b"\xc0"
+    ESC_END = b"\xdc"
+    ESC_ESC = b"\xdd"
 
     def config_params():
-        return {"serial": {"sfreq": IntParam(512, 128, 1000), "port": "","protocol":StringParam("ECG", options=["ECG","capacitive"])}, "common": {"autotrigger": True}}
+        return {
+            "serial": {
+                "sfreq": IntParam(512, 128, 1000),
+                "port": "",
+                "protocol": StringParam("ECG", options=["ECG", "capacitive"]),
+            },
+            "common": {"autotrigger": True},
+        }
 
     def config_output_slots():
         return {"out": DataType.ARRAY}
@@ -97,13 +111,13 @@ class SerialStream(Node):
             if len(data_buf) == 0:
                 # no data received
                 return None
-            
+
             if self.last_time is None:
                 # first time, just store the data
                 self.last_time = time_buf[-1]
                 self.last_sample = data_buf[-1]
                 return None
-            
+
             if len(data_buf) == 1:
                 data_buf = [self.last_sample] + data_buf
                 time_buf = [self.last_time] + time_buf
@@ -114,7 +128,7 @@ class SerialStream(Node):
 
             dt = 1 / self.params.serial.sfreq.value
             xs = np.arange(time_buf[0], time_buf[-1], dt)
-            
+
             data = np.zeros((len(xs), data_buf.shape[1]))
             for i in range(data_buf.shape[1]):
                 data[:, i] = np.interp(xs, time_buf, data_buf[:, i], left=self.last_sample[i])
@@ -124,7 +138,6 @@ class SerialStream(Node):
 
             meta = {"sfreq": self.params.serial.sfreq.value}
             return {"out": (data.T, meta)}
-
 
     def detect_serial_port(self, names=["Arduino", "Serial"]):
         # detect the serial port

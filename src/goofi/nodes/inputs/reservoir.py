@@ -6,6 +6,16 @@ from goofi.params import FloatParam, IntParam, StringParam
 
 
 class Reservoir(Node):
+    """
+    This node implements a recurrent neural reservoir module. It maintains an internal state vector that evolves over time according to a configurable nonlinear transformation and a connectivity (weight) matrix. At each step, the state is updated by multiplying it with the connectivity matrix, optionally adding a bias, and applying a nonlinear activation function. This dynamic transformation is typically useful for tasks involving temporal or sequential data processing.
+
+    Inputs:
+    - connectivity: An optional square connectivity matrix (as an array) matching the size of the reservoir. If provided, it determines how each node in the reservoir is connected to others.
+
+    Outputs:
+    - data: The current state vector of the reservoir, after updating and applying the activation function. The output includes the array and associated sample frequency information.
+    """
+
     def config_params():
         return {
             "reservoir": {

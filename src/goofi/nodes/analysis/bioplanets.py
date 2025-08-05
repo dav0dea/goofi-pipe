@@ -8,6 +8,17 @@ from goofi.params import FloatParam, IntParam
 
 
 class Bioplanets(Node):
+    """
+    This node analyzes an array of peak frequencies and identifies which of the main solar system planets (Venus, Earth, Mars, Jupiter, Saturn) have spectral lines near those peaks, based on a reference planetary spectrum dataset. For each planet, it outputs the list of matched wavelengths, and also provides a summary indicating which planets have the most matched peaks.
+
+    Inputs:
+    - peaks: A 1D array of detected frequency peaks to be analyzed.
+
+    Outputs:
+    - planets: A table containing, for each planet, the array of matched wavelengths corresponding to the input peaks.
+    - top_planets: A string listing the planets with the highest number of matched spectral peaks, ranked in order.
+    """
+
     def config_input_slots():
         return {"peaks": DataType.ARRAY}
 

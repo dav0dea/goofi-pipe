@@ -5,6 +5,16 @@ from goofi.params import FloatParam, IntParam
 
 
 class Smooth(Node):
+    """
+    Applies Gaussian smoothing to an input array along a specified axis, reducing noise or fluctuations and producing a smoothed version of the original data.
+
+    Inputs:
+    - data: Array data to be smoothed.
+
+    Outputs:
+    - out: Smoothed array data, with the same shape as the input.
+    """
+
     def config_input_slots():
         return {"data": DataType.ARRAY}
 

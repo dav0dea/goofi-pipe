@@ -6,6 +6,16 @@ from goofi.params import BoolParam, StringParam
 
 
 class StringToTable(Node):
+    """
+    Converts a text containing structured data (in JSON or YAML format) into a Goofi table. The node parses the input string, automatically handling nested objects and converting them into nested table structures. Strings become string fields, arrays become array fields, and objects become subtables.
+
+    Inputs:
+    - text: The input string containing data in a structured format (JSON or YAML).
+
+    Outputs:
+    - table: The resulting table parsed from the input text, with fields mapped to Goofi TABLE, STRING, or ARRAY types as appropriate.
+    """
+
     def config_input_slots():
         return {"text": DataType.STRING}
 

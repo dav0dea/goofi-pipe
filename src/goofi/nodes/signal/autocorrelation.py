@@ -6,6 +6,16 @@ from goofi.params import BoolParam, IntParam
 
 
 class Autocorrelation(Node):
+    """
+    Computes the autocorrelation of input array signals along a specified axis. The autocorrelation measures the similarity of a signal with delayed versions of itself, and can reveal repeating patterns or periodicity in data.
+
+    Inputs:
+    - signal: Input array (may be one-dimensional or multi-dimensional) to compute the autocorrelation from.
+
+    Outputs:
+    - autocorr: The resulting autocorrelation array, with the same or reduced dimensionality depending on processing.
+    """
+
     def config_input_slots():
         return {"signal": DataType.ARRAY}
 

@@ -6,6 +6,18 @@ from goofi.params import BoolParam, FloatParam, IntParam
 
 
 class Biorhythms(Node):
+    """
+    This node analyzes an input tuning array and generates rhythm patterns by deriving Euclidean-like, consonant rhythmic groupings from the harmonic relationships in the tuning. It outputs the number of pulses, the total number of steps, and the phase offsets for each rhythm calculated from the input tuning.
+
+    Inputs:
+    - tuning: A 1D array representing a set of frequency or pitch values to be used for harmonic analysis and rhythm derivation.
+
+    Outputs:
+    - pulses: An array indicating the number of pulses for each generated rhythm pattern.
+    - steps: An array indicating the number of steps for each generated rhythm pattern.
+    - offsets: An array indicating the phase offset for each generated rhythm pattern.
+    """
+
     def config_input_slots():
         return {"tuning": DataType.ARRAY}
 

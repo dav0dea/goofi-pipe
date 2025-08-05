@@ -4,6 +4,17 @@ from goofi.params import BoolParam, StringParam
 
 
 class ArrayAwait(Node):
+    """
+    Waits for an incoming trigger to pass through the most recent array data. The node outputs the array only when both new data is present and a trigger event occurs. If the trigger input is not received, the array data will not be forwarded to the output.
+
+    Inputs:
+    - data: Array to be held until a trigger is received.
+    - trigger: Array input used solely as a trigger event to release the latest data.
+
+    Outputs:
+    - out: The latest array data passed through when a trigger is received.
+    """
+
     def config_input_slots():
         return {"data": DataType.ARRAY, "trigger": DataType.ARRAY}
 

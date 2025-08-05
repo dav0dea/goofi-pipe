@@ -1,6 +1,6 @@
 import traceback
 from abc import ABC, abstractmethod
-from typing import Any, Optional
+from typing import Any, Dict, Optional
 
 import cv2
 import dearpygui.dearpygui as dpg
@@ -10,6 +10,7 @@ from mne import channels
 from scipy.interpolate import griddata
 
 from goofi.data import Data, DataType
+from goofi.gui.events import is_ctrl_down, is_shift_down
 from goofi.message import Message, MessageType
 
 
@@ -18,6 +19,8 @@ class ViewerContainer:
         self,
         dtype: DataType,
         content_window: int,
+        collapsed: bool,
+        sibling_containers: Dict[str, "ViewerContainer"],
         log_scale_x: bool = False,
         log_scale_y: bool = False,
         viewer_idx: int = 0,
@@ -26,9 +29,11 @@ class ViewerContainer:
     ) -> None:
         self.dtype = dtype
         self.content_window = content_window
+        self.sibling_containers = sibling_containers
 
         self.log_scale_x = log_scale_x
         self.log_scale_y = log_scale_y
+        self.collapsed = collapsed
 
         self.viewer_idx = viewer_idx
         self.viewer = DTYPE_VIEWER_MAP[self.dtype][self.viewer_idx](self.content_window, self)
@@ -38,7 +43,10 @@ class ViewerContainer:
         self.update_axis_scaling()
 
         # set viewer size if provided
-        self.set_size(width, height)
+        min_size = dpg.get_item_user_data(self.content_window)[0]
+        self.width = width or min_size[0]
+        self.height = height or min_size[1]
+        self.set_size()
 
         with dpg.handler_registry():
             dpg.add_mouse_click_handler(button=0, callback=self.clicked)
@@ -56,7 +64,7 @@ class ViewerContainer:
             # window is not hovered
             return
 
-        if dpg.is_key_down(dpg.mvKey_Control):
+        if is_ctrl_down():
             # ctrl+click: switch to next viewer
             self.next_viewer()
 
@@ -72,25 +80,34 @@ class ViewerContainer:
             # window is not hovered
             return
 
-        min_size = dpg.get_item_user_data(self.content_window)
-        width, height = dpg.get_item_width(self.content_window), dpg.get_item_height(self.content_window)
-
         # increase or decrease size of viewer
-        width = max(min_size[0], width + value * 10)
-        height = max(min_size[1], height + value * 10)
+        min_size = dpg.get_item_user_data(self.content_window)[0]
+        self.width = max(min_size[0], self.width + value * 10)
+        if not is_shift_down():
+            self.height = max(min_size[1], self.height + value * 10)
 
         # apply changes
-        self.set_size(width, height)
+        self.set_size()
 
-    def set_size(self, width: Optional[int] = None, height: Optional[int] = None) -> None:
+    def set_size(self, new_width: Optional[int] = None, new_height: Optional[int] = None, propagate: bool = True) -> None:
         """Set the size of the viewer."""
-        if width is None:
-            width = dpg.get_item_width(self.content_window)
-        if height is None:
-            height = dpg.get_item_height(self.content_window)
+        new_width = new_width or self.width
+        new_height = new_height or self.height
 
-        dpg.set_item_width(self.content_window, width)
-        dpg.set_item_height(self.content_window, height)
+        # adjust width to always span the available width based on siblings
+        if len(self.sibling_containers) > 1:
+            new_width = max(new_width, max([sib.width for sib in self.sibling_containers.values() if self != sib]))
+            if propagate:
+                for sib in self.sibling_containers.values():
+                    if self == sib:
+                        continue
+                    sib.set_size(new_width=new_width, propagate=False)
+
+        if self.collapsed:
+            new_height = 0
+
+        dpg.set_item_width(self.content_window, new_width)
+        dpg.set_item_height(self.content_window, new_height)
 
         header = dpg.get_item_parent(self.content_window)
         window = dpg.get_item_parent(header)
@@ -100,8 +117,8 @@ class ViewerContainer:
             # this happens when the header is off screen, set to default height
             header_height = 15
 
-        dpg.set_item_width(window, width)
-        dpg.set_item_height(window, height + header_height + 4)  # magic + 4 to avoid scroll bar
+        dpg.set_item_width(window, new_width)
+        dpg.set_item_height(window, new_height + header_height + 4)  # magic + 4 to avoid scroll bar
 
         self.viewer.set_size()
 
@@ -133,17 +150,11 @@ class ViewerContainer:
             dpg.configure_item(self.viewer.yax, log_scale=self.log_scale_y)
 
     def get_state(self) -> dict:
-        width = dpg.get_item_width(self.content_window)
-        height = dpg.get_item_height(self.content_window)
-
-        header = dpg.get_item_parent(self.content_window)
-        collapsed = dpg.get_item_state(header)["content_region_avail"][1] <= 0
-
         return {
             "viewer_idx": self.viewer_idx,
-            "width": width,
-            "height": height,
-            "collapsed": collapsed,
+            "width": self.width,
+            "height": self.height,
+            "collapsed": self.collapsed,
             "log_scale_x": self.log_scale_x,
             "log_scale_y": self.log_scale_y,
         }
@@ -187,7 +198,7 @@ class ArrayViewer(DataViewer):
         self.margin = 0.1
         self.shrinking = 0.01
 
-        size = dpg.get_item_user_data(content_window)
+        size = dpg.get_item_user_data(content_window)[0]
         if size is None:
             raise RuntimeError("Expected content window to have user data with size.")
 
@@ -330,9 +341,7 @@ class ImageViewer(DataViewer):
 
         # initialize texture
         with dpg.texture_registry():
-            self.texture = dpg.add_dynamic_texture(
-                width=res[0], height=res[1], default_value=[0.0 for _ in range(res[0] * res[1] * 4)]
-            )
+            self.texture = dpg.add_dynamic_texture(width=res[0], height=res[1], default_value=[0.0 for _ in range(res[0] * res[1] * 4)])
         self.image = dpg.add_image(self.texture, parent=self.content_window)
         self.res = res
 
@@ -354,7 +363,7 @@ class ImageViewer(DataViewer):
 
         # make sure we have 4 channels
         if array.shape[2] > 4:
-            raise NotImplementedError(f"Cannot handle array with {array.shape[2]} channels.")
+            raise UnsupportedViewerError(f"Cannot handle array with {array.shape[2]} channels.")
         elif array.shape[2] == 3:
             array = np.concatenate([array, np.ones((*array.shape[:2], 1))], axis=2)
         elif array.shape[2] == 2:

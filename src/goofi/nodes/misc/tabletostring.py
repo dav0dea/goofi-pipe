@@ -8,6 +8,16 @@ from goofi.params import BoolParam, StringParam
 
 
 class TableToString(Node):
+    """
+    Converts a table data structure into a text representation in either JSON or YAML format. The node serializes the input table and outputs it as a string, enabling easy inspection or further text-based processing.
+
+    Inputs:
+    - table: The input table to be converted to text.
+
+    Outputs:
+    - text: The string representation of the input table, serialized in the chosen format.
+    """
+
     def config_input_slots():
         return {"table": DataType.TABLE}
 

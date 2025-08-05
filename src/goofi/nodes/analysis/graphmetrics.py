@@ -5,6 +5,21 @@ from goofi.node import Node
 
 
 class GraphMetrics(Node):
+    """
+    This node computes several important graph-theoretical metrics from a given adjacency matrix representing an undirected graph. The node analyzes the connectivity and topological features of the input network, returning quantitative measures that describe properties such as node centrality, clustering, assortativity, and overall network structure.
+
+    Inputs:
+    - matrix: A 2D symmetric adjacency matrix representing an undirected graph.
+
+    Outputs:
+    - clustering_coefficient: The average clustering coefficient of the graph, indicating the tendency of nodes to form clusters.
+    - characteristic_path_length: The average shortest path length between all pairs of nodes in the graph.
+    - betweenness_centrality: The betweenness centrality for each node, measuring the extent to which a node lies on shortest paths between other nodes.
+    - degree_centrality: The degree centrality for each node, indicating how many connections each node has relative to the rest of the graph.
+    - assortativity: The degree assortativity coefficient, representing the similarity of connections in the graph with respect to node degree.
+    - transitivity: The transitivity (global clustering coefficient) of the graph, measuring the overall probability that the adjacent nodes of a node are connected.
+    """
+
     def config_input_slots():
         return {"matrix": DataType.ARRAY}
 

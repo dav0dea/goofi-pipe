@@ -4,6 +4,16 @@ from goofi.params import StringParam
 
 
 class TableSelectString(Node):
+    """
+    This node extracts a specific string value from an input table based on a selected key. If the value associated with the key is not already a string, it is converted to a string before output.
+
+    Inputs:
+    - input_table: A table containing key-value pairs where each value is a data object.
+
+    Outputs:
+    - output_string: The string value retrieved from the table using the selected key.
+    """
+
     def config_input_slots():
         return {"input_table": DataType.TABLE}
 
@@ -24,7 +34,7 @@ class TableSelectString(Node):
         selected_key = self.params["selection"]["key"].value
 
         if selected_key not in input_table.data:
-            raise KeyError(f"{selected_key} not found in the input table.")
+            return
 
         selected_value = input_table.data[selected_key]
         # print(selected_value)

@@ -24,6 +24,17 @@ IIT_metrics = {
 
 
 class PhiID(Node):
+    """
+    This node computes Partial Information Decomposition (PhiID) metrics between pairs of signals or between one signal and the others in a multichannel dataset. It uses the phyid package to estimate fine-grained informational components that describe unique, redundant, synergistic, and transfer relationships between signals over a specified time lag. The node outputs the full set of PhiID "atom" values, as well as summary metrics relevant to information dynamics and integrated information theory.
+
+    Inputs:
+    - matrix: A 2D array (channels x timepoints) representing multichannel time series data.
+
+    Outputs:
+    - PhiID: An array containing the values of all atomic PhiID terms for each channel pair or one-vs-others, with metadata specifying the channel axes.
+    - inf_dyn: An array of summary metrics relevant to information dynamics, for each channel pair or one-vs-others, with corresponding labels.
+    - IIT: An array of summary metrics corresponding to integrated information theory concepts, for each channel pair or one-vs-others, with appropriate metadata.
+    """
 
     def config_input_slots():
         return {"matrix": DataType.ARRAY}

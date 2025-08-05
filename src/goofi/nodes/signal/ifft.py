@@ -5,6 +5,17 @@ from goofi.node import Node
 
 
 class IFFT(Node):
+    """
+    This node performs an inverse Fast Fourier Transform (IFFT) to reconstruct a time-domain signal from its magnitude (spectrum) and phase data. It accepts separate arrays for the spectrum and phase, combines them into complex frequency-domain data, and then computes the time-domain signal using the inverse FFT. If the input arrays differ in length, the shorter array is zero-padded to match the longer one before processing.
+
+    Inputs:
+    - spectrum: Array containing the magnitude (spectrum) values of the frequency-domain signal.
+    - phase: Array containing the phase values corresponding to the frequency-domain signal.
+
+    Outputs:
+    - reconstructed: Array containing the reconstructed time-domain signal obtained from the IFFT, along with the metadata from the phase input.
+    """
+
     def config_input_slots():
         return {"spectrum": DataType.ARRAY, "phase": DataType.ARRAY}
 

@@ -4,6 +4,15 @@ from goofi.params import BoolParam, StringParam
 
 
 class TotoEmbedding(Node):
+    """
+    This node generates fixed-size embeddings from timeseries data using the Toto foundation model. It processes 1D (time) or 2D (channels × time) array inputs, passing them through the Toto model and outputting the resulting embeddings. The embeddings can be optionally averaged across channels or time segments, resulting in a condensed feature representation suitable for downstream machine learning or analysis tasks.
+
+    Inputs:
+    - timeseries: An array representing a single-channel timeseries (1D) or multi-channel timeseries (2D, channels × time).
+
+    Outputs:
+    - embedding: An array containing the Toto model embedding of the input timeseries, optionally averaged across channels and/or time.
+    """
 
     @staticmethod
     def config_input_slots():

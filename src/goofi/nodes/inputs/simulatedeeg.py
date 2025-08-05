@@ -6,6 +6,19 @@ from goofi.params import FloatParam, IntParam
 
 
 class SimulatedEEG(Node):
+    """
+    This node simulates multi-channel EEG signals in real time, generating synthetic data with controllable background spectral exponents, oscillatory peaks, variances, and peak amplitudes per channel. The generated signal is output in chunks, suitable for real-time or streaming processing.
+
+    Inputs:
+    - exponents: Array of spectral exponent values, one per channel, controlling the power-law background of each channel's signal.
+    - peaks: Array specifying oscillatory peak frequencies for each channel.
+    - variances: Array specifying the variance of the background component for each channel.
+    - peak_amplitudes: Array specifying the amplitude for each peak frequency in each channel.
+
+    Outputs:
+    - eeg_signal: Multichannel EEG signal data chunked over time, along with metadata specifying the sampling frequency.
+    """
+
     def config_input_slots():
         return {
             "exponents": DataType.ARRAY,

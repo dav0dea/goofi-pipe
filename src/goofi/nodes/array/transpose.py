@@ -3,6 +3,16 @@ from goofi.node import Node
 
 
 class Transpose(Node):
+    """
+    Transposes a 2D array input, swapping its rows and columns. If the input is a 1D array, it is first converted to a 2D column vector before transposing. The node also swaps the associated "dim0" and "dim1" channel metadata to reflect the transpose operation.
+
+    Inputs:
+    - array: An array input, expected to be 1D or 2D. If 1D, it is reshaped to 2D before transposing.
+
+    Outputs:
+    - out: The transposed array along with updated channel metadata reflecting the swapped dimensions.
+    """
+
     def config_input_slots():
         return {"array": DataType.ARRAY}
 

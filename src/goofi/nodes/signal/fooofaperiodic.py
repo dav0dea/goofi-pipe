@@ -6,6 +6,19 @@ from goofi.params import FloatParam, IntParam, StringParam
 
 
 class FOOOFaperiodic(Node):
+    """
+    This node extracts the aperiodic parameters and peak center frequencies from input power spectral density (PSD) data using the FOOOF algorithm. It fits FOOOF models to each spectrum, separates the aperiodic (background) component from periodic peaks, and outputs both the background parameters and the PSD with the peaks removed.
+
+    Inputs:
+    - psd_data: Input array containing one or more power spectra with associated frequency information.
+
+    Outputs:
+    - offset: The offset parameter of the aperiodic (background) component for each spectrum.
+    - exponent: The exponent parameter of the aperiodic (background) component for each spectrum.
+    - cf_peaks: The center frequencies of all detected peaks in each spectrum.
+    - cleaned_psd: The power spectrum with periodic peaks removed, containing the aperiodic component only.
+    """
+
     def config_input_slots():
         return {"psd_data": DataType.ARRAY}
 

@@ -6,6 +6,16 @@ from goofi.params import StringParam
 
 
 class Reduce(Node):
+    """
+    Reduces an input array along a specified axis using a selected reduction operation. The node supports various reduction methods such as mean, median, min, max, standard deviation, norm, and sum. After reduction, it also updates the metadata to reflect changes in dimensionality.
+
+    Inputs:
+    - array: Multidimensional array data to be reduced.
+
+    Outputs:
+    - out: The array after reduction and its updated metadata.
+    """
+
     def config_input_slots():
         return {"array": DataType.ARRAY}
 

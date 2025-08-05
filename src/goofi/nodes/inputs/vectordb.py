@@ -1,15 +1,24 @@
+import os
 import pickle
+
 import numpy as np
+from usearch.index import Index
+
 from goofi.data import Data, DataType
 from goofi.node import Node
 from goofi.params import IntParam, StringParam
-from usearch.index import Index
-import os
 
 
 class VectorDB(Node):
     """
-    A Goofi node for searching the top N labels from a vector embedding database.
+    This node performs vector similarity search using a pre-built vector database. Given an input vector, it retrieves the top matching vectors from the database along with their associated labels and distances. This allows you to find which entries in the database are most similar to a given input embedding.
+
+    Inputs:
+    - input_vector: The vector to search for in the database. Should be a 1D array representing an embedding.
+
+    Outputs:
+    - top_labels: A table containing the top matching labels from the database along with their distances to the input vector.
+    - vectors: An array of the vectors corresponding to the top matches in the database.
     """
 
     def config_input_slots():
@@ -36,7 +45,7 @@ class VectorDB(Node):
         Load the database index and mapping during initialization.
         """
         database_path = self.params.Control.database_path.value
-        #database_path = os.path.join(self.assets_path, database_path)
+        # database_path = os.path.join(self.assets_path, database_path)
         try:
             with open(database_path, "rb") as f:
                 index_data, self.idx2word = pickle.load(f)

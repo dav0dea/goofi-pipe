@@ -6,6 +6,18 @@ from goofi.params import FloatParam
 
 
 class ResampleJoint(Node):
+    """
+    This node jointly resamples two input arrays so that both are converted to the same new sampling frequency, computed as an interpolation between their original sampling rates. The original data arrays are resampled to this common frequency and outputted along with updated metadata.
+
+    Inputs:
+    - data1: First input array along with its associated metadata, including original sampling frequency ("sfreq").
+    - data2: Second input array along with its associated metadata, including original sampling frequency ("sfreq").
+
+    Outputs:
+    - out1: Resampled version of data1, matched to the new common sampling frequency with updated metadata.
+    - out2: Resampled version of data2, matched to the new common sampling frequency with updated metadata.
+    """
+
     def config_input_slots():
         # Defining two input slots for two input signals
         return {"data1": DataType.ARRAY, "data2": DataType.ARRAY}

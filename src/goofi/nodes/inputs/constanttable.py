@@ -6,6 +6,12 @@ from goofi.params import FloatParam, IntParam, StringParam
 
 
 class ConstantTable(Node):
+    """
+    This node generates a constant table containing up to five key-value pairs, where each key is a user-defined name and each value is either a string or a numerical array, as specified by the user. The node does not require any inputs and always outputs the configured table whenever its parameters are updated.
+
+    Outputs:
+    - table: A table (dictionary) where each key corresponds to a user-specified name and each value is either an array or a string, depending on the chosen data type for each entry.
+    """
 
     def config_output_slots():
         return {"table": DataType.TABLE}

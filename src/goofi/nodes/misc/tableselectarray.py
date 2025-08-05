@@ -4,6 +4,16 @@ from goofi.params import StringParam
 
 
 class TableSelectArray(Node):
+    """
+    Selects a specified array column from an input table and outputs it as a separate array, preserving the table's metadata.
+
+    Inputs:
+    - input_table: Table containing one or more columns with data keyed by string.
+
+    Outputs:
+    - output_array: Array extracted from the input table, corresponding to the selected column, with associated metadata.
+    """
+
     def config_input_slots():
         return {"input_table": DataType.TABLE}
 
@@ -24,7 +34,7 @@ class TableSelectArray(Node):
         selected_key = self.params["selection"]["key"].value
 
         if selected_key not in input_table.data:
-            raise KeyError(f"{selected_key} not found in the input table.")
+            return
 
         selected_value = input_table.data[selected_key]
 

@@ -6,6 +6,18 @@ from goofi.params import StringParam
 
 
 class TuningMatrix(Node):
+    """
+    This node computes a tuning matrix and related metrics from an input tuning array using a selectable metric function. It processes the tuning data to generate a matrix that characterizes relationships or similarities between tunings, as well as metrics measuring aspects of the tuning structure.
+
+    Inputs:
+    - tuning: An array containing tuning data to be analyzed.
+
+    Outputs:
+    - matrix: The computed tuning matrix, expressing inter-relations between elements in the input tuning array. Depending on configuration, this may be a normalized matrix or may be set to None for certain ratio types.
+    - metric_per_step: An array containing the metric score calculated for each step or pair in the tuning.
+    - metric: An array containing overall metric values summarizing properties of the tuning.
+    """
+
     def config_input_slots():
         return {
             "tuning": DataType.ARRAY,

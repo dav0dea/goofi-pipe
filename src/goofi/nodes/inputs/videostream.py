@@ -10,6 +10,13 @@ from goofi.params import BoolParam, IntParam, StringParam
 
 
 class VideoStream(Node):
+    """
+    This node captures video frames from either a connected camera device or the desktop screen. It outputs the captured frame as a normalized RGB array, with optional mirroring and cropping applied.
+
+    Outputs:
+    - frame: The captured image frame as a NumPy array of shape (height, width, 3) in RGB format, with pixel values in the range [0, 1].
+    """
+
     def config_params():
         return {
             "video_stream": {

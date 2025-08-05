@@ -6,6 +6,17 @@ from goofi.params import StringParam
 
 
 class AudioOut(Node):
+    """
+    This node plays incoming audio data to an audio output device in real-time. It receives audio arrays and routes the signal to the selected audio hardware, handling transitions between consecutive audio blocks for seamless playback. The node can also switch audio devices dynamically.
+
+    Inputs:
+    - data: Array of audio samples to play through the output device.
+    - device: Name of the audio output device to use.
+
+    Outputs:
+    - finished: Signals completion of playback for the current audio data block.
+    """
+
     def config_input_slots():
         return {"data": DataType.ARRAY, "device": DataType.STRING}
 

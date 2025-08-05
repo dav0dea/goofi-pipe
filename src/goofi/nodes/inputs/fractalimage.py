@@ -6,6 +6,16 @@ import time
 
 
 class FractalImage(Node):
+    """
+    Generates a 2D fractal noise image based on the Fractal Brownian Motion (fBm) algorithm using Perlin noise. The node procedurally creates fractal patterns which can vary in complexity and visual detail. This can be used for texture synthesis, background generation, or as input to other visual processing nodes.
+
+    Inputs:
+    - complexity: If provided, overrides the default noise persistence value to modulate the fractal detail. Expects a scalar or array controlling the fBm persistence.
+
+    Outputs:
+    - image: A 2D array representing the generated fractal noise image, with values normalized to the [0, 1] range.
+    """
+
     def config_input_slots():
         return {"complexity": DataType.ARRAY}  # No input data for this node
 

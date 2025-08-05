@@ -5,6 +5,16 @@ from goofi.node import Node
 
 
 class LSLOut(Node):
+    """
+    This node outputs incoming array data as a Lab Streaming Layer (LSL) stream, allowing real-time transmission of signals (such as EEG, sensor data, etc.) to other software or machines compatible with LSL. The node automatically creates and manages an LSL outlet, configuring its channels and parameters to match the input array.
+
+    Inputs:
+    - data: A 1D or 2D array of floating-point data to be sent over LSL. The array can represent multi-channel or single-channel time series data. The expected channel names and sample frequency may be specified in metadata.
+
+    Outputs:
+    - None. (This node transmits data to an external LSL stream and does not produce an output within the goofi-pipe node graph.)
+    """
+
     def config_input_slots():
         return {"data": DataType.ARRAY}
 

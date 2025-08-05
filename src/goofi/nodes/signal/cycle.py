@@ -8,6 +8,16 @@ from goofi.params import FloatParam
 
 
 class Cycle(Node):
+    """
+    This node computes the average cycle shape of an oscillatory signal. It buffers incoming array data and, once enough data is collected, segments it into cycles based on a specified frequency. The node then averages a specified number of these cycles to create a representative cycle waveform of the input signal. This can be used to analyze the typical shape of periodic signals.
+
+    Inputs:
+    - signal: Array data representing the signal to be processed. The input must have a sampling frequency specified in its metadata.
+
+    Outputs:
+    - cycle: Array data containing the averaged cycle waveform computed from the input signal. The output has the same dimensionality as the input.
+    """
+
     def config_input_slots():
         return {"signal": DataType.ARRAY}
 

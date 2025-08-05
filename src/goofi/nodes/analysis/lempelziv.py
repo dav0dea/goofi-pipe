@@ -6,6 +6,16 @@ from goofi.params import StringParam
 
 
 class LempelZiv(Node):
+    """
+    This node computes the Lempel-Ziv complexity (LZC) of input array data. The LZC is a measure of complexity in a binary sequence, often used in signal analysis to quantify regularity or randomness. The input array is binarized using either a mean or median threshold along a specified axis, and then the Lempel-Ziv complexity is computed for each segment. The output is an array of LZC values, retaining the input metadata.
+
+    Inputs:
+    - data: Input array data to be analyzed.
+
+    Outputs:
+    - lzc: Array containing the Lempel-Ziv complexity values calculated from the input data, with metadata attached.
+    """
+
     def config_input_slots():
         return {"data": DataType.ARRAY}
 

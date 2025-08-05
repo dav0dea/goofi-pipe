@@ -5,6 +5,18 @@ from goofi.node import Node
 
 
 class Correlation(Node):
+    """
+    Calculates the Pearson correlation coefficient and p-value between two input arrays. This node measures the linear correlation between the inputs and returns both the correlation values and their statistical significance.
+
+    Inputs:
+    - data1: First array of data to correlate.
+    - data2: Second array of data to correlate, broadcasted to the same shape as data1 if necessary.
+
+    Outputs:
+    - pearson: Array of Pearson correlation coefficients between data1 and data2.
+    - pval: Array of p-values indicating the statistical significance of the correlation.
+    """
+
     def config_input_slots():
         return {"data1": DataType.ARRAY, "data2": DataType.ARRAY}
 

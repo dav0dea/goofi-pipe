@@ -7,6 +7,13 @@ from goofi.params import BoolParam, IntParam, StringParam
 
 
 class OSCIn(Node):
+    """
+    Receives incoming OSC (Open Sound Control) messages over the network and makes them available as output. Each OSC message received is stored and organized by its address. Messages containing string data are output as strings, while other types are represented as arrays. This node acts as a bridge between OSC sources (such as sensors, controllers, or other software) and Goofi-Pipe, enabling real-time signal and data integration.
+
+    Outputs:
+    - message: A table containing the latest received OSC messages, organized by address. Each entry holds the received data, which may be a string or an array, depending on the message content.
+    """
+
     def config_params():
         return {
             "osc": {
@@ -32,17 +39,16 @@ class OSCIn(Node):
         self.messages = {}
 
     def callback(self, address, *args):
-        if len(args) > 1:
-            raise ValueError(
-                "For now the OSCIn node only support a single argument per message. "
-                "Please open an issue if you need more (https://github.com/dav0dea/goofi-pipe/issues)."
-            )
-
-        val = args[0]
-        if isinstance(val, bytes):
-            val = Data(DataType.STRING, val.decode(), {})
+        if isinstance(args[0], bytes):
+            if len(args) > 1:
+                raise ValueError(
+                    "OSCIn currently doesn't support multiple string message per OSC address but "
+                    f"received {list(map(bytes.decode, args))}... If you think this is wrong, "
+                    "open an issue: https://github.com/dav0dea/goofi-pipe/issues"
+                )
+            val = Data(DataType.STRING, args[0].decode(), {})
         else:
-            val = Data(DataType.ARRAY, np.array([val]), {})
+            val = Data(DataType.ARRAY, np.array(args), {})
 
         self.messages[address.decode()] = val
 

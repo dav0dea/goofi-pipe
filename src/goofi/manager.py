@@ -353,9 +353,7 @@ class Manager:
             Window().remove_node(name, **gui_kwargs)
 
     @mark_unsaved_changes
-    def add_link(
-        self, node_out: str, node_in: str, slot_out: str, slot_in: str, notify_gui: bool = True, **gui_kwargs
-    ) -> None:
+    def add_link(self, node_out: str, node_in: str, slot_out: str, slot_in: str, notify_gui: bool = True, **gui_kwargs) -> None:
         """
         Adds a link between two nodes.
 
@@ -385,9 +383,7 @@ class Manager:
             Window().add_link(node_out, node_in, slot_out, slot_in, **gui_kwargs)
 
     @mark_unsaved_changes
-    def remove_link(
-        self, node_out: str, node_in: str, slot_out: str, slot_in: str, notify_gui: bool = True, **gui_kwargs
-    ) -> None:
+    def remove_link(self, node_out: str, node_in: str, slot_out: str, slot_in: str, notify_gui: bool = True, **gui_kwargs) -> None:
         """
         Removes a link between two nodes.
 
@@ -552,9 +548,7 @@ class Manager:
         if len(serialized_nodes) != len(self.nodes):
             filepath = f"{filepath}.incomplete"
             # TODO: add proper logging
-            print(
-                f"WARNING: Mismatch between serialized nodes and actual nodes, saving may be incomplete. Saving to '{filepath}'."
-            )
+            print(f"WARNING: Mismatch between serialized nodes and actual nodes, saving may be incomplete. Saving to '{filepath}'.")
 
         # convert the manager instance into yaml format
         manager_yaml = yaml.dump({"nodes": serialized_nodes, "links": links}, sort_keys=False)
@@ -603,6 +597,35 @@ class Manager:
         return self._headless
 
 
+def get_example_patch(args) -> bool:
+    """
+    Handles the selection and retrieval of example files based on command-line arguments.
+    If no example is specified in `args.example`, lists all available example files in the "examples" directory and exits.
+    If an example is specified, ensures that no direct filepath is provided, sets `args.filepath` to the selected example file, and returns True.
+    Args:
+        args: An object with attributes `example` (str) and `filepath` (str or None).
+    Returns:
+        bool: True if an example file is selected and `args.filepath` is set; False if listing examples or if no examples are found.
+    """
+
+    if len(args.example) == 0:
+        # list example files and exit
+        example_dir = Path(__file__).parents[2] / "examples"
+        example_files = sorted(example_dir.glob("*.gfi"))
+        if not example_files:
+            print("No example files found.")
+            return False
+        print("Available example files:")
+        for example_arg in example_files:
+            print(f" - {example_arg.name}")
+        print("Use `--example <filename>` to run an example file.")
+        return False
+    else:
+        assert args.filepath is None, "Please specify either a direct filepath or an example, not both."
+        args.filepath = str(Path(__file__).parents[2] / "examples" / args.example)
+        return True
+
+
 def main(duration: float = 0, args=None):
     """
     This is the main entry point for goofi-pipe. It parses command line arguments, creates a manager
@@ -624,31 +647,29 @@ def main(duration: float = 0, args=None):
     parser.add_argument("--headless", action="store_true", help="run in headless mode")
     parser.add_argument("--no-multiprocessing", action="store_true", help="disable multiprocessing")
     parser.add_argument("--comm", choices=["auto"] + comm_choices, default="auto", help="node communication backend")
-    parser.add_argument("--build-docs", action="store_true", help="update the node list in the README")
+    parser.add_argument("--update-readme-docs", action="store_true", help="update the node list in the README")
+    parser.add_argument("--gen-node-docs", action="store_true", help="generate missing node docstrings using the openai API")
     parser.add_argument("--example", nargs="?", const="", help="run example files instead of starting the manager")
     args = parser.parse_args(args)
 
-    if args.build_docs:
-        # just update the docs and exit
-        docs()
+    if args.update_readme_docs:
+        from goofi.doc_utils import update_docs
+
+        # update the node list in the readme
+        update_docs()
+        return
+
+    if args.gen_node_docs:
+        from goofi.doc_utils import gen_node_docs
+
+        # generate missing node docstrings
+        gen_node_docs()
         return
 
     if args.example is not None:
-        if len(args.example) == 0:
-            # list example files and exit
-            example_dir = Path(__file__).parents[2] / "examples"
-            example_files = sorted(example_dir.glob("*.gfi"))
-            if not example_files:
-                print("No example files found.")
-                return
-            print("Available example files:")
-            for example in example_files:
-                print(f" - {example.name}")
-            print("Use `--example <filename>` to run an example file.")
+        # look up example patches
+        if not get_example_patch(args):
             return
-        else:
-            assert args.filepath is None, "Please specify either a direct filepath or an example, not both."
-            args.filepath = str(Path(__file__).parents[2] / "examples" / args.example)
 
     # create and run the manager (this blocks until the manager is terminated)
     Manager(
@@ -658,83 +679,6 @@ def main(duration: float = 0, args=None):
         duration=duration,
         communication_backend=args.comm,
     )
-
-
-def docs():
-    """
-    Updates the documentation by updating the list of nodes in the README.
-    """
-    from os import path
-
-    from tqdm import tqdm
-
-    CATEGORY_DESCRIPTIONs = {
-        "inputs": "Nodes that provide data to the pipeline.",
-        "outputs": "Nodes that send data to external systems.",
-        "analysis": "Nodes that perform analysis on the data.",
-        "array": "Nodes implementing array operations.",
-        "signal": "Nodes implementing signal processing operations.",
-        "misc": "Miscellaneous nodes that do not fit into other categories.",
-    }
-
-    nodes_cls = list_nodes(verbose=True)
-
-    nodes = dict()
-    for node in tqdm(nodes_cls, desc="Collecting node information"):
-        if node.category() not in nodes:
-            nodes[node.category()] = []
-
-        # collect the node information
-        nodes[node.category()].append(
-            {
-                "name": node.__name__,
-                "input_slots": node.config_input_slots(),
-                "output_slots": node.config_output_slots(),
-            }
-        )
-
-    # find the README file
-    print("Loading README file...", end="")
-    readme_path = path.join(path.dirname(__file__), "..", "..", "README.md")
-    readme_path = path.abspath(readme_path)
-    assert path.exists(readme_path), f"README file not found: {readme_path}"
-
-    # read the README file
-    with open(readme_path, "r") as f:
-        readme = f.read()
-    print("done")
-
-    # find the start and end of the node list
-    start_tag = "<!-- !!GOOFI_PIPE_NODE_LIST_START!! -->"
-    end_tag = "<!-- !!GOOFI_PIPE_NODE_LIST_END!! -->"
-    start = readme.find(start_tag)
-    end = readme.find(end_tag)
-
-    # generate the new node list
-    new_nodes = []
-    for category, nodes_list in tqdm(nodes.items(), desc="Generating new node list"):
-        new_nodes.append(f"## {category.capitalize()}\n")
-        new_nodes.append(f"{CATEGORY_DESCRIPTIONs[category]}\n")
-        new_nodes.append("<details><summary>View Nodes</summary>\n")
-        for node in nodes_list:
-            new_nodes.append(f"<details><summary>&emsp;{node['name']}</summary>\n")
-            new_nodes.append("  - **Inputs:**")
-            for slot, slot_type in node["input_slots"].items():
-                new_nodes.append(f"    - {slot}: {slot_type}")
-            new_nodes.append("  - **Outputs:**")
-            for slot, slot_type in node["output_slots"].items():
-                new_nodes.append(f"    - {slot}: {slot_type}")
-            new_nodes.append("  </details>\n")
-        new_nodes.append("</details>\n")
-
-    # insert the new node list into the README
-    print("Updating README file...", end="")
-    new_readme = readme[: start + len(start_tag)] + "\n" + "\n".join(new_nodes) + readme[end:]
-
-    # write the updated README
-    with open(readme_path, "w") as f:
-        f.write(new_readme)
-    print("done")
 
 
 if __name__ == "__main__":

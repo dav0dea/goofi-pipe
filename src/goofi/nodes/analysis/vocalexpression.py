@@ -9,10 +9,22 @@ from goofi.params import FloatParam, StringParam
 
 
 class VocalExpression(Node):
+    """
+    This node analyzes voice audio input to detect emotional expressions using the Hume AI API. It processes a 1D audio signal and returns the predominant vocal emotions and their associated confidence scores, based on prosody and burst vocal analytics.
+
+    Inputs:
+    - data: A 1D array containing the raw audio waveform data.
+
+    Outputs:
+    - prosody_label: The name of the strongest detected emotion from prosody-based analysis.
+    - burst_label: The name of the strongest detected emotion from burst-based analysis.
+    - prosody_score: The confidence score of the detected prosody emotion as a 1-element array.
+    - burst_score: The confidence score of the detected burst emotion as a 1-element array.
+    """
+
     def setup(self):
         self.load_api_key()
         self.AudioSegment, self.HumeStreamClient, self.BurstConfig, self.ProsodyConfig = import_audio_libs()
-
 
     @staticmethod
     def config_input_slots():
@@ -32,9 +44,10 @@ class VocalExpression(Node):
         return {
             "vocal_analysis": {
                 "api_key": StringParam("hume.key", doc="Hume API key"),
-                "emotion_threshold": FloatParam(0.0, 0.0, 1.0, doc="Threshold for filtering emotions")
+                "emotion_threshold": FloatParam(0.0, 0.0, 1.0, doc="Threshold for filtering emotions"),
             }
         }
+
     def load_api_key(self):
         self.api_key = self.params["vocal_analysis"]["api_key"].value
 
@@ -45,7 +58,7 @@ class VocalExpression(Node):
             self.api_key = environ.get("HUME_API_KEY", self.api_key)
         elif not self.api_key:
             raise ValueError("API key not found")
-            
+
     async def decode_emotion_prosody(self, encoded_audio_sample):
         client = self.HumeStreamClient(self.params["vocal_analysis"]["api_key"].value)
         burst_config = self.BurstConfig()

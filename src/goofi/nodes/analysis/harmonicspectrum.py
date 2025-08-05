@@ -8,6 +8,18 @@ from goofi.params import IntParam, StringParam
 
 
 class HarmonicSpectrum(Node):
+    """
+    This node computes a harmonic spectrum of an input power spectral density (PSD) array by analyzing the harmonic relationships between frequency components. It calculates harmonicity metrics that quantify how harmonically related different spectral components are, outputting both the complete harmonic spectrum as well as summary statistics indicating the maximum and average harmonicity across frequencies.
+
+    Inputs:
+    - psd: An array representing the power spectral density of the signal, with frequency information included in its metadata.
+
+    Outputs:
+    - harmonic_spectrum: An array representing the harmonicity value at each frequency bin, indicating the degree to which each frequency is harmonically related to the others in the spectrum.
+    - max_harmonicity: The maximum harmonicity value found across all frequency bins, summarizing the most harmonically related component in the spectrum.
+    - avg_harmonicity: The average harmonicity value across all frequency bins, summarizing the overall harmonicity of the spectrum.
+    """
+
     def config_input_slots():
         return {"psd": DataType.ARRAY}
 

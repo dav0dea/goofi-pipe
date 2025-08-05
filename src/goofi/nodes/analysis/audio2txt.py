@@ -6,6 +6,17 @@ from goofi.params import FloatParam, IntParam, StringParam
 
 
 class Audio2Txt(Node):
+    """
+    This node converts an audio signal into natural language text by using a large language model specialized for audio captioning or transcription. It can optionally take a prompt to guide the generation of the output text. The audio is processed and sent to the selected provider, which returns a generated text description or transcription of the audio content.
+
+    Inputs:
+    - prompt: Optional text prompt that can guide or condition the text generation.
+    - audio: Array containing the audio data to be transcribed or described.
+
+    Outputs:
+    - generated_text: The text generated from the input audio, which may be a transcription or caption depending on the model and prompt.
+    """
+
     @staticmethod
     def config_input_slots():
         return {

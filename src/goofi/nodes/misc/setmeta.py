@@ -3,6 +3,16 @@ from goofi.node import Node
 
 
 class SetMeta(Node):
+    """
+    This node sets a metadata key-value pair on an input array. The value is type-cast based on a specified type before assignment. The data remains unchanged.
+
+    Inputs:
+    - array: Input array data with accompanying metadata.
+
+    Outputs:
+    - out: The same array data with the updated metadata.
+    """
+
     def config_input_slots():
         return {"array": DataType.ARRAY}
 

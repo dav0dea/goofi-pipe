@@ -4,6 +4,16 @@ from goofi.params import IntParam, StringParam
 
 
 class SpectroMorphology(Node):
+    """
+    This node calculates spectromorphological features on a 1D audio signal. It analyzes the input time series and extracts a selected spectral feature over time, returning the feature values aligned with their corresponding timestamps.
+
+    Inputs:
+    - data: A 1D array containing the audio signal to be analyzed, along with metadata such as the sampling frequency.
+
+    Outputs:
+    - spectro: A tuple consisting of an array of computed spectromorphological feature values and the original metadata.
+    """
+
     def config_input_slots():
         return {"data": DataType.ARRAY}
 

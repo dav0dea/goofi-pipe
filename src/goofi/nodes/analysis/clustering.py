@@ -6,6 +6,17 @@ from goofi.params import FloatParam, IntParam, StringParam
 
 
 class Clustering(Node):
+    """
+    This node performs clustering on input data using either the KMeans or Agglomerative Clustering algorithms. It assigns each data point in the input matrix to a cluster, and for KMeans, also computes the centers of each cluster.
+
+    Inputs:
+    - matrix: An array-like structure containing the data to be clustered. Each row should represent a sample, and each column a feature.
+
+    Outputs:
+    - cluster_labels: An array with a cluster label for each input sample, indicating its assigned cluster.
+    - cluster_centers: An array of the centers of the clusters (only produced when using the KMeans algorithm).
+    """
+
     def config_input_slots():
         return {"matrix": DataType.ARRAY}
 

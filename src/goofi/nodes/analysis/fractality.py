@@ -6,6 +6,16 @@ from goofi.params import FloatParam, IntParam, StringParam
 
 
 class Fractality(Node):
+    """
+    This node computes the fractal dimension or fractal characteristics of input data using a variety of methods, including several signal-based estimators (such as Hurst and Higuchi) and a box counting method for 2D arrays. It is applicable to both time series and image data, depending on the selected method.
+
+    Inputs:
+    - data_input: An array representing either a time series (1D or 2D) or a 2D image (grayscale or RGB).
+
+    Outputs:
+    - fractal_dimension: The calculated fractal dimension or feature value based on the chosen method.
+    """
+
     def config_input_slots():
         return {"data_input": DataType.ARRAY}
 

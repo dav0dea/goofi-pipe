@@ -1,16 +1,16 @@
 import numpy as np
 
-from goofi.data import Data, DataType
+from goofi.data import DataType
 from goofi.node import Node
 from goofi.params import BoolParam, StringParam
 
 
 class RandomArray(Node):
     """
-    A Goofi node that generates a random matrix based on specified dimensions and distribution.
-    The dimensions are provided as a string of comma-separated integers.
-    The distribution can be specified as "uniform" or "normal".
-    An option is provided to set the largest eigenvalue of the matrix to 1.
+    This node generates a random array of specified dimensions using either a uniform or normal distribution. Optionally, if the array is square, it can normalize the largest eigenvalue to 1. The generated array can be reset or regenerated as needed.
+
+    Outputs:
+    - random_array: The generated random array based on the selected distribution and dimensions.
     """
 
     def config_params():

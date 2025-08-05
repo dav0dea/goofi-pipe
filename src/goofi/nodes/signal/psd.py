@@ -7,6 +7,16 @@ from goofi.params import FloatParam, IntParam, StringParam
 
 
 class PSD(Node):
+    """
+    This node computes the Power Spectral Density (PSD) of input array data using either the FFT or Welch method. It processes one- or two-dimensional input data and returns the PSD values along with frequency information, within a specified frequency range.
+
+    Inputs:
+    - data: An array (1D or 2D) containing the signal data to analyze, with associated metadata including sampling frequency.
+
+    Outputs:
+    - psd: An array representing the power spectral density of the input data, along with updated metadata including the selected frequency values.
+    """
+
     def config_input_slots():
         return {"data": DataType.ARRAY}
 

@@ -9,6 +9,18 @@ from goofi.params import FloatParam, StringParam
 
 
 class SpeechSynthesis(Node):
+    """
+    This node provides speech synthesis and transcription capabilities using OpenAI's API. It can convert input text into synthesized speech audio, or transcribe input speech audio into text.
+
+    Inputs:
+    - text: The text string to be converted into speech audio.
+    - voice: An array representing audio data to be transcribed into text.
+
+    Outputs:
+    - speech: An array containing the synthesized speech audio corresponding to the input text, or an empty array if text input is not provided.
+    - transcript: The transcribed text from the input voice array, or an empty string if voice input is not provided.
+    """
+
     def config_input_slots():
         return {"text": DataType.STRING, "voice": DataType.ARRAY}
 

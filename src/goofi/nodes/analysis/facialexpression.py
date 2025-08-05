@@ -9,6 +9,18 @@ from goofi.params import BoolParam, IntParam, StringParam
 
 
 class FacialExpression(Node):
+    """
+    This node analyzes an input image and detects human facial expressions and action units using the py-feat library. It identifies the probabilities for several emotions, extracts facial action units, and determines the main emotion detected in the face within the image.
+
+    Inputs:
+    - image: An image (numpy array) containing a face to be analyzed.
+
+    Outputs:
+    - emotion_probabilities: An array containing the detection probabilities for each emotion (anger, disgust, fear, happiness, sadness, surprise, neutral).
+    - action_units: An array representing the detected facial muscle action units (AUs) based on the given face.
+    - main_emotion: The label of the primary emotion detected in the face.
+    """
+
     def config_input_slots():
         return {"image": DataType.ARRAY}
 

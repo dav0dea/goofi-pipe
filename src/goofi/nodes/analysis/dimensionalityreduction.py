@@ -6,6 +6,18 @@ from goofi.params import BoolParam, FloatParam, IntParam, StringParam
 
 
 class DimensionalityReduction(Node):
+    """
+    Performs dimensionality reduction on array data using one of several algorithms (PCA, t-SNE, or UMAP), reducing high-dimensional input data to a lower-dimensional representation. This node can also optionally transform new incoming data samples into the previously computed low-dimensional space, when supported by the selected algorithm.
+
+    Inputs:
+    - data: The original array data to be reduced in dimensionality. Must be 2D.
+    - new_data: New array data samples to be projected into the computed lower-dimensional space using the fitted model.
+
+    Outputs:
+    - transformed: The array data transformed into the lower-dimensional space, along with updated metadata.
+    - new_components: The new data samples transformed into the same lower-dimensional space, with updated metadata. Only provided if new_data is given and supported by the selected method.
+    """
+
     def config_input_slots():
         return {"data": DataType.ARRAY, "new_data": DataType.ARRAY}
 
@@ -61,9 +73,13 @@ class DimensionalityReduction(Node):
                     raise ValueError("The t-SNE algorithm does not support transforming new data")
 
                 new_data_arr = new_data.data
+                added_dim = False
                 if new_data_arr.ndim == 1:
+                    added_dim = True
                     new_data_arr = new_data_arr.reshape(1, -1)
-                new_components = self.model.transform(new_data_arr).squeeze()
+                new_components = self.model.transform(new_data_arr)
+                if added_dim:
+                    new_components = new_components[0]
 
                 new_meta = new_data.meta
                 if "channels" in new_meta and "dim1" in new_meta["channels"]:
@@ -114,9 +130,13 @@ class DimensionalityReduction(Node):
 
             if new_data is not None:
                 new_data_arr = new_data.data
+                added_dim = False
                 if new_data_arr.ndim == 1:
+                    added_dim = True
                     new_data_arr = new_data_arr.reshape(1, -1)
-                new_components = self.model.transform(new_data_arr).squeeze()
+                new_components = self.model.transform(new_data_arr)
+                if added_dim:
+                    new_components = new_components[0]
 
                 new_meta = new_data.meta
                 if "channels" in new_meta and "dim1" in new_meta["channels"]:

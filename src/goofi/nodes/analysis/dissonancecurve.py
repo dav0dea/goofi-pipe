@@ -6,6 +6,19 @@ from goofi.params import FloatParam, IntParam
 
 
 class DissonanceCurve(Node):
+    """
+    This node calculates a dissonance curve for a set of spectral peaks and their amplitudes, providing a quantitative measure of sensory dissonance as a function of interval ratios. It is typically used to analyze the dissonance of complex tones and suggest tunings that minimize dissonance.
+
+    Inputs:
+    - peaks: An array of frequency peaks (typically from a spectrum).
+    - amps: An array of amplitudes corresponding to the frequency peaks.
+
+    Outputs:
+    - dissonance_curve: An array representing the computed dissonance curve over a range of interval ratios.
+    - tuning: An array of interval ratios (relative tunings) corresponding to the dissonance curve.
+    - avg_dissonance: An array containing the average dissonance value across tested intervals.
+    """
+
     def config_input_slots():
         return {
             "peaks": DataType.ARRAY,

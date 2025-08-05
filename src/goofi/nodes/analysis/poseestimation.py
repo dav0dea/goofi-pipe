@@ -7,6 +7,16 @@ from goofi.node import Node
 
 
 class PoseEstimation(Node):
+    """
+    Estimates the 3D positions of hand landmarks from an input image using a machine learning model. The node processes images to detect a single hand and outputs the detected hand pose as a set of 3D landmark coordinates along with related metadata.
+
+    Inputs:
+    - image: A 2D or 3D array representing the input image for hand pose estimation.
+
+    Outputs:
+    - pose: The detected 3D hand landmarks as an array transposed to (3, 21), with accompanying metadata including the hand handedness and landmark channel names.
+    """
+
     def config_input_slots():
         return {"image": DataType.ARRAY}
 

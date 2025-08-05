@@ -6,6 +6,16 @@ from goofi.params import BoolParam, IntParam, StringParam
 
 
 class BufferString(Node):
+    """
+    This node accumulates incoming string values into a rolling buffer and outputs the concatenated result. Each new string input is split according to a chosen separator, and the resulting pieces are appended to the buffer. If the buffer exceeds its maximum size, the oldest entries are removed to maintain the limit. The output is the joined contents of the current buffer as a single string.
+
+    Inputs:
+    - val: String data to be added to the buffer.
+
+    Outputs:
+    - out: The concatenated string of buffer contents after appending the latest input.
+    """
+
     def config_input_slots():
         return {"val": DataType.STRING}
 
@@ -17,7 +27,7 @@ class BufferString(Node):
             "buffer": {
                 "size": IntParam(10, 1, 5000),
                 "separator": StringParam(" ", options=["[space]", ",", "[paragraph]"]),
-                "reset": BoolParam(False, trigger=True)
+                "reset": BoolParam(False, trigger=True),
             }
         }
 

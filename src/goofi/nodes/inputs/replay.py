@@ -18,6 +18,13 @@ def convert_to_numpy(val):
 
 
 class Replay(Node):
+    """
+    This node replays data from a CSV file as a table, outputting one row at a time on each process step. It reads the specified CSV file, converts each row into a dictionary with appropriate data formats (including lists as NumPy arrays), and sequentially outputs the data row by row, looping back to the start after reaching the end of the file.
+
+    Outputs:
+    - table_output: A tuple containing a dictionary representation of the current CSV row and an empty dictionary. All columns in the CSV are included as fields in the output dictionary, with lists automatically converted to NumPy arrays where applicable.
+    """
+
     @staticmethod
     def config_output_slots():
         return {"table_output": DataType.TABLE}

@@ -14,6 +14,18 @@ def hz_to_midi(hz):
 
 
 class MidiOut(Node):
+    """
+    This node sends MIDI note messages to an external MIDI device or software instrument. It receives note numbers (or frequencies), velocities, and durations as input arrays, and sends the corresponding MIDI note on/off messages using the selected output port and channel. Notes can be played either simultaneously or sequentially. The status of the MIDI message transmission is output as a string.
+
+    Inputs:
+    - note: An array of MIDI note numbers to play, or frequencies if Hz input is enabled.
+    - velocity: An array of velocities for each note. If not provided, default velocity is used.
+    - duration: An array of durations in seconds for each note. If not provided, default duration is used.
+
+    Outputs:
+    - midi_status: A string indicating whether the MIDI notes were sent successfully, or if there was an error with the note or velocity range.
+    """
+
     def config_input_slots():
         return {"note": DataType.ARRAY, "velocity": DataType.ARRAY, "duration": DataType.ARRAY}
 

@@ -1,3 +1,4 @@
+import importlib.resources as pkg_resources
 import os
 import platform
 import pprint
@@ -9,6 +10,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import dearpygui.dearpygui as dpg
 
+from goofi import assets
 from goofi.data import DataType
 from goofi.gui import events
 from goofi.gui.data_viewer import ViewerContainer
@@ -363,53 +365,50 @@ def add_output_slot(parent: int, name: str, closed: bool = False, size: Tuple[in
         `items` : List[int]
             A list of four items: a bool indicating to close the header, the header, the window, and the content window.
         """
-        close, header, window, content = items
+        header, window, content = items
         header_height = dpg.get_item_state(header)["rect_size"][1]
+        viewer = dpg.get_item_user_data(content)[1]
+
+        collapse = not dpg.get_item_user_data(header)
+        viewer.collapsed = collapse
+        viewer.set_size(propagate=False)
+        dpg.set_item_user_data(header, collapse)
 
         if header_height == 0:
             # this happens when the header is off screen, set to default height
             header_height = 15
 
-        if close:
+        if collapse:
             # header was closed, shrink window to header size
             dpg.set_item_height(window, header_height)
         else:
             # header was opened, expand window to header size plus cotent size
-            content_height = dpg.get_item_state(content)["rect_size"][1]
-            if content_height == 0:
-                # this happens when the content window is off screen, set to default height
-                content_height = size[1]
+            if viewer is None:
+                content_height = dpg.get_item_state(content)["rect_size"][1]
+                if content_height == 0:
+                    # this happens when the content window is off screen, set to default height
+                    content_height = size[1]
+            else:
+                content_height = viewer.height
 
-            dpg.set_item_height(window, header_height + content_height + 4)  # magic + 4 to avoid scroll bar
-
-    # NOTE: The user_data lists are used to pass data to the callbacks. The first element is a bool, which
-    # is used to indicate whether the header was closed or opened. The remaining elements are the header,
-    # window, and content window items. Due to the way DearPyGui registers callbacks we can not use partials here.
-    user_data_open, user_data_close = [False], [True]
-    # register handlers
-    with dpg.item_handler_registry() as reg:
-        dpg.add_item_clicked_handler(callback=header_callback, user_data=user_data_close)
-        dpg.add_item_toggled_open_handler(callback=header_callback, user_data=user_data_open)
+            dpg.set_item_height(window, content_height + header_height + 4)  # magic + 4 to avoid scroll bar
 
     # NOTE: we initially set the height to 1 to avoid the node reaching out of the window, which would break the
     # initial header_callback call as the header and content sizes according to DearPyGui would be 0.
     # The child window is needed, because otherwise the header will expand to fill the entire node editor window.
     with dpg.child_window(width=size[0], height=1, parent=parent) as window:
         # add collapsable content area for the data viewer
-        header = dpg.add_collapsing_header(label=name, default_open=not closed, open_on_arrow=False, closable=False)
-        content = dpg.add_child_window(width=size[0], height=size[1], user_data=size, parent=header)
-        with dpg.tooltip(parent=content, show=True):
-            dpg.add_text("- ctrl + click\nswitch between data viewers\n- scroll\nzoom in/out")
+        header = dpg.add_collapsing_header(label=name, default_open=not closed, open_on_arrow=False, closable=False, user_data=closed)
+        content = dpg.add_child_window(width=size[0], height=size[1], user_data=(size, None), parent=header)
+        with dpg.tooltip(parent=content, show=True, delay=0.25, hide_on_activity=True):
+            dpg.add_text("Ctrl + Click: switch between data viewers", bullet=True)
+            dpg.add_text("Scroll: zoom in/out", bullet=True)
+            dpg.add_text("Shift + Scroll: zoom horizontally", bullet=True)
 
-    # store header, window and content window in user_data for the two callbacks
-    user_data_open.extend([header, window, content])
-    user_data_close.extend([header, window, content])
-    # bind the two callbacks to the header
+    # register click handlers
+    with dpg.item_handler_registry() as reg:
+        dpg.add_item_clicked_handler(callback=header_callback, user_data=(header, window, content))
     dpg.bind_item_handler_registry(header, reg)
-
-    # schedule the header callback to set up the window sizes
-    initial_args = user_data_close if closed else user_data_open
-    threading.Timer(0.1, header_callback, [None, None, initial_args]).start()
     return content
 
 
@@ -479,9 +478,7 @@ class Window:
             in_slots = {}
             for name, dtype in node.input_slots.items():
                 # create input slot
-                in_slots[name] = dpg.add_node_attribute(
-                    label=name, attribute_type=dpg.mvNode_Attr_Input, shape=DTYPE_SHAPE_MAP[dtype], user_data=dtype
-                )
+                in_slots[name] = dpg.add_node_attribute(label=name, attribute_type=dpg.mvNode_Attr_Input, shape=DTYPE_SHAPE_MAP[dtype], user_data=dtype)
                 # simply add a text label
                 dpg.add_text(name, parent=in_slots[name])
 
@@ -490,9 +487,7 @@ class Window:
             output_draw_handlers = {}
             for name, dtype in node.output_slots.items():
                 # create output slot
-                out_slots[name] = dpg.add_node_attribute(
-                    label=name, attribute_type=dpg.mvNode_Attr_Output, shape=DTYPE_SHAPE_MAP[dtype], user_data=dtype
-                )
+                out_slots[name] = dpg.add_node_attribute(label=name, attribute_type=dpg.mvNode_Attr_Output, shape=DTYPE_SHAPE_MAP[dtype], user_data=dtype)
 
                 # determine data viewer configuration
                 viewer_kwargs = viewers[name] if viewers is not None and name in viewers else {}
@@ -500,16 +495,16 @@ class Window:
 
                 # create content window for data viewer (initialize closed if more than two output slots)
                 content = add_output_slot(out_slots[name], name, closed=collapsed)
-                # create data viewer
-                output_draw_handlers[name] = ViewerContainer(dtype, content, **viewer_kwargs)
+
+                # create data viewer and store in content window's user data
+                output_draw_handlers[name] = ViewerContainer(dtype, content, collapsed, output_draw_handlers, **viewer_kwargs)
+                dpg.set_item_user_data(content, (dpg.get_item_user_data(content)[0], output_draw_handlers[name]))
 
             # add node to node list
             self.nodes[node_name] = GUINode(node_id, in_slots, out_slots, output_draw_handlers, node)
 
             # TODO: register PROCESSING_ERROR message handler and display error messages
-            node.set_message_handler(
-                MessageType.PROCESSING_ERROR, partial(self._processing_error_callback, node_name=node_name)
-            )
+            node.set_message_handler(MessageType.PROCESSING_ERROR, partial(self._processing_error_callback, node_name=node_name))
 
             # register data message handler to update the data viewers
             node.set_message_handler(MessageType.DATA, partial(handle_data, self, self.nodes[node_name]))
@@ -542,7 +537,8 @@ class Window:
             self._select_node(None)
 
         # determine the node name
-        name = dpg.get_item_label(item)
+        # NOTE: the strip is required for now as nodes without in- and outputs have leading and trailing spaces (https://github.com/hoffstadt/DearPyGui/issues/2444)
+        name = dpg.get_item_label(item).strip()
 
         # remove links associated with node
         for link in list(self.links.keys()):
@@ -597,8 +593,9 @@ class Window:
         slot1 = dpg.get_item_label(items[0])
         slot2 = dpg.get_item_label(items[1])
         # get node names
-        node1 = dpg.get_item_label(dpg.get_item_parent(items[0]))
-        node2 = dpg.get_item_label(dpg.get_item_parent(items[1]))
+        # NOTE: the strip is required for now as nodes without in- and outputs have leading and trailing spaces (https://github.com/hoffstadt/DearPyGui/issues/2444)
+        node1 = dpg.get_item_label(dpg.get_item_parent(items[0])).strip()
+        node2 = dpg.get_item_label(dpg.get_item_parent(items[1])).strip()
 
         # make sure the data types match
         dtype1 = dpg.get_item_user_data(items[0])
@@ -651,8 +648,9 @@ class Window:
         # get slot names
         slot1, slot2 = dpg.get_item_label(conf["attr_1"]), dpg.get_item_label(conf["attr_2"])
         # get node names
-        node1 = dpg.get_item_label(dpg.get_item_parent(conf["attr_1"]))
-        node2 = dpg.get_item_label(dpg.get_item_parent(conf["attr_2"]))
+        # NOTE: the strip is required for now as nodes without in- and outputs have leading and trailing spaces (https://github.com/hoffstadt/DearPyGui/issues/2444)
+        node1 = dpg.get_item_label(dpg.get_item_parent(conf["attr_1"])).strip()
+        node2 = dpg.get_item_label(dpg.get_item_parent(conf["attr_2"])).strip()
 
         if notify_manager:
             # remove link from manager
@@ -844,7 +842,8 @@ class Window:
         # clear parameters window
         dpg.delete_item(self.side_panel_win, children_only=True)
 
-        if item is None or dpg.get_item_label(item) not in self.nodes:
+        # NOTE: the strip is required for now as nodes without in- and outputs have leading and trailing spaces (https://github.com/hoffstadt/DearPyGui/issues/2444)
+        if item is None or dpg.get_item_label(item).strip() not in self.nodes:
             self.selected_node = None
             # node deselected, hide parameters window and resize node editor
             dpg.configure_item(self.side_panel_win, show=False)
@@ -852,7 +851,8 @@ class Window:
             return
 
         # get node reference
-        node = self.nodes[dpg.get_item_label(item)]
+        # NOTE: the strip is required for now as nodes without in- and outputs have leading and trailing spaces (https://github.com/hoffstadt/DearPyGui/issues/2444)
+        node = self.nodes[dpg.get_item_label(item).strip()]
         node_ref = node.node_ref
 
         with dpg.child_window(height=dpg.get_viewport_height() / 2, parent=self.side_panel_win):
@@ -871,6 +871,11 @@ class Window:
 
                             for name, param in node_ref.params[group].items():
                                 add_param(table, group, name, param, node_ref)
+
+                # add info tab
+                with dpg.tab(label="Info"):
+                    # TODO: replace magic padding number by retrieving parent width
+                    dpg.add_text(node_ref.__doc__, wrap=PARAM_WINDOW_WIDTH - 70)
 
         with dpg.child_window(autosize_y=True, parent=self.side_panel_win):
             # add title
@@ -896,9 +901,7 @@ class Window:
                                 user_data=(self, node, slot, "y"),
                             )
                         dpg.add_separator()
-                        self.metadata_view[slot] = dpg.add_input_text(
-                            default_value="", multiline=True, readonly=True, width=-1, height=-1
-                        )
+                        self.metadata_view[slot] = dpg.add_input_text(default_value="", multiline=True, readonly=True, width=-1, height=-1)
 
         # show parameters window
         dpg.configure_item(self.side_panel_win, show=True)
@@ -1031,9 +1034,7 @@ class Window:
                             # TODO: remove the extra case for empty nodes once the following issue is resolved: https://github.com/hoffstadt/DearPyGui/issues/2444
                             dpg.add_theme_style(dpg.mvNodeStyleVar_NodePadding, 0, 7, category=dpg.mvThemeCat_Nodes)
 
-                        dpg.add_theme_color(
-                            dpg.mvNodeCol_TitleBar, scale(NODE_CAT_COLORS[i], darkness), category=dpg.mvThemeCat_Nodes
-                        )
+                        dpg.add_theme_color(dpg.mvNodeCol_TitleBar, scale(NODE_CAT_COLORS[i], darkness), category=dpg.mvThemeCat_Nodes)
                         dpg.add_theme_color(
                             dpg.mvNodeCol_TitleBarHovered,
                             scale(NODE_CAT_COLORS[i], darkness + 0.1),
@@ -1056,12 +1057,8 @@ class Window:
                     dpg.add_theme_color(dpg.mvNodeCol_NodeBackgroundHovered, [173, 20, 22], category=dpg.mvThemeCat_Nodes)
                     dpg.add_theme_color(dpg.mvNodeCol_NodeBackgroundSelected, [193, 20, 22], category=dpg.mvThemeCat_Nodes)
 
-                    dpg.add_theme_color(
-                        dpg.mvNodeCol_TitleBar, scale(NODE_CAT_COLORS[i], darkness), category=dpg.mvThemeCat_Nodes
-                    )
-                    dpg.add_theme_color(
-                        dpg.mvNodeCol_TitleBarHovered, scale(NODE_CAT_COLORS[i], darkness + 0.1), category=dpg.mvThemeCat_Nodes
-                    )
+                    dpg.add_theme_color(dpg.mvNodeCol_TitleBar, scale(NODE_CAT_COLORS[i], darkness), category=dpg.mvThemeCat_Nodes)
+                    dpg.add_theme_color(dpg.mvNodeCol_TitleBarHovered, scale(NODE_CAT_COLORS[i], darkness + 0.1), category=dpg.mvThemeCat_Nodes)
                     dpg.add_theme_color(
                         dpg.mvNodeCol_TitleBarSelected,
                         scale(NODE_CAT_COLORS[i], darkness + 0.2),
@@ -1150,8 +1147,9 @@ class Window:
 
         # start DearPyGui
         dpg.create_viewport(title="goofi-pipe", width=width, height=height, disable_close=True)
-        dpg.set_viewport_large_icon("assets/goofi.ico")
-        dpg.set_viewport_small_icon("assets/goofi.ico")
+        assets_path = pkg_resources.files(assets)
+        dpg.set_viewport_large_icon(assets_path / "goofi.ico")
+        dpg.set_viewport_small_icon(assets_path / "goofi.ico")
         dpg.setup_dearpygui()
         dpg.show_viewport()
 

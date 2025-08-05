@@ -6,6 +6,25 @@ from goofi.params import FloatParam, IntParam, StringParam
 
 
 class Biotuner(Node):
+    """
+    This node extracts dominant frequency peaks from an incoming 1D signal and computes several music-theoretical and harmonic metrics from the spectral content using the Biotuner library. It provides both raw peak data and a variety of measures relating to harmonicity and consonance, potentially useful for music analysis, neurofeedback, or real-time audio investigations.
+
+    Inputs:
+    - data: A 1D array containing the signal from which spectral peaks and associated metrics will be derived.
+
+    Outputs:
+    - harmsim: Harmonic similarity metric for the extracted peaks.
+    - tenney: Tenney height metric, a consonance measure, for the peaks.
+    - subharm_tension: Subharmonic tension metric, indicating harmonic tension based on subharmonics.
+    - cons: General consonance value computed from the peaks.
+    - peaks_ratios_tuning: Ratios between the detected peaks, reflecting interval relationships for tuning.
+    - harm_tuning: Harmonic tuning information for the peaks.
+    - peaks: Array of main frequency peaks detected in the input signal.
+    - amps: Amplitudes corresponding to the detected main frequency peaks.
+    - extended_peaks: Additional peaks derived by harmonic extension methods.
+    - extended_amps: Amplitudes of the extended peaks.
+    """
+
     def config_input_slots():
         return {"data": DataType.ARRAY}
 

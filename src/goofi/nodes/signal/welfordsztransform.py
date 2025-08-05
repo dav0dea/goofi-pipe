@@ -6,6 +6,16 @@ from goofi.params import BoolParam
 
 
 class WelfordsZTransform(Node):
+    """
+    This node performs online z-score normalization of input array data using Welford's algorithm for numerically stable, running computation of mean and standard deviation. It updates normalization statistics incrementally as new values arrive, allowing for continual, real-time signal normalization without buffering the entire input stream. The node handles both 1D and 2D arrays, normalizing each individual signal channel independently. Initially, output values are set to zero until sufficient samples have been collected for reliable statistics. Strong outliers are clipped to within a configurable range.
+
+    Inputs:
+    - data: 1D or 2D array of numerical values to be normalized in real time.
+
+    Outputs:
+    - normalized: Array of the same shape as input, containing the online z-score normalized values.
+    """
+
     INIT_STEPS = 50
 
     def config_input_slots():

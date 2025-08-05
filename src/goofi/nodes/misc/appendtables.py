@@ -3,6 +3,17 @@ from goofi.node import Node
 
 
 class AppendTables(Node):
+    """
+    This node combines two tables by merging their data and metadata dictionaries into a single output table. If only one input table is provided, it passes that table to the output unchanged. If both inputs are absent, the output is None.
+
+    Inputs:
+    - table1: The first input table to be combined.
+    - table2: The second input table to be combined.
+
+    Outputs:
+    - output_table: The resulting table containing merged data and metadata from both input tables. If only one table is provided, it outputs that table as is.
+    """
+
     def config_input_slots():
         return {"table1": DataType.TABLE, "table2": DataType.TABLE}
 

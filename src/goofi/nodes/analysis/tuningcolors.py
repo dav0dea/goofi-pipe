@@ -10,6 +10,19 @@ from goofi.params import IntParam, StringParam
 
 
 class TuningColors(Node):
+    """
+    This node converts a musical scale represented as an array of frequency ratios into corresponding HSV color values, based on the frequency and averaged consonance of each step in the scale. The hue represents mapped frequency, saturation encodes consonance, and the value (brightness) is fixed. Additionally, the node provides readable color names or HEX codes for the first few colors calculated from the scale.
+
+    Inputs:
+    - data: 1D array representing a musical scale, where the first element is the fundamental frequency in Hz and the rest are frequency ratios.
+
+    Outputs:
+    - hue: Array of hue values (float), one for each note in the scale except the fundamental, representing converted pitch.
+    - saturation: Array of saturation values (float), encoding the consonance for each scale step.
+    - value: Array of value (brightness) values (float), set to a constant for each scale step.
+    - color_names: String containing the names or HEX codes of the first few color representations corresponding to the scale notes (excluding the fundamental).
+    """
+
     def config_input_slots():
         return {"data": DataType.ARRAY}
 

@@ -4,6 +4,23 @@ from goofi.params import StringParam
 
 
 class Switch(Node):
+    """
+    Selects and forwards one of several input arrays or strings to the output, based on the selector input and mode. The node routes either an array or a string input to the corresponding output.
+
+    Inputs:
+    - selector: Array input used to choose which input will be forwarded. The first element indicates selection (1, 2, or 3).
+    - array1: First array input.
+    - array2: Second array input.
+    - array3: Third array input.
+    - string1: First string input.
+    - string2: Second string input.
+    - string3: Third string input.
+
+    Outputs:
+    - array_out: Forwards the selected array input when the node is set to array mode. Only one array input is passed to the output depending on the selector value.
+    - string_out: Forwards the selected string input when the node is set to string mode. Only one string input is passed to the output depending on the selector value.
+    """
+
     def config_input_slots():
         return {
             "selector": DataType.ARRAY,  # Input 1: Selector array

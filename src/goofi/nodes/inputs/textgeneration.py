@@ -9,6 +9,16 @@ from goofi.params import FloatParam, IntParam, StringParam
 
 
 class TextGeneration(Node):
+    """
+    This node performs text generation using various large language models (LLMs) from different providers, including OpenAI GPT, Anthropic Claude, Google Gemini, Ollama, and optionally a local model endpoint. It sends an input prompt to the selected LLM and returns the generated text response. Conversation history and system prompts can be used depending on the model type, and generated conversations can be saved to a file if enabled.
+
+    Inputs:
+    - prompt: The input text prompt, typically a user message or instruction to be completed or responded to by the language model.
+
+    Outputs:
+    - generated_text: The generated response text produced by the selected language model, based on the input prompt and optional conversation history.
+    """
+
     @staticmethod
     def config_input_slots():
         return {"prompt": DataType.STRING}
@@ -216,9 +226,7 @@ class TextGeneration(Node):
             try:
                 import google.generativeai as genai
             except ImportError:
-                raise ImportError(
-                    "You need to install google-generativeai: pip install google-generativeai\nWith Python>=3.10"
-                )
+                raise ImportError("You need to install google-generativeai: pip install google-generativeai\nWith Python>=3.10")
             self.provider = genai
 
         elif model.startswith("ollama-"):

@@ -9,6 +9,22 @@ from goofi.params import BoolParam, FloatParam, IntParam, StringParam
 
 
 class DreamInceptor(Node):
+    """
+    This node monitors an incoming EEG signal and detects specific brain activity patterns suitable for targeted dream intervention (dream inception). Depending on configuration, it operates in two modes: (1) theta/alpha z-score detection, using baseline statistics to monitor significant changes in spectral ratios or signal complexity; or (2) hypnodensity-based detection, leveraging a deep learning model to compute state probabilities and entropy for distinguishing sleep stages. When detection criteria are met, the node outputs a trigger signal indicating the optimal moment for dream incubation, along with relevant feature data for tracking and analysis.
+
+    Inputs:
+    - data: One-dimensional EEG time series data used for ongoing analysis and detection.
+    - start: Optional control input to initiate the dream inception detection process.
+    - reset: Optional control input to abort and reset the detection process and baseline.
+
+    Outputs:
+    - trigger: Array output (single value) set to 1 when detection criteria are met (indicating to trigger dream incubation), or 0 when baseline collection is complete, otherwise None.
+    - z_theta_alpha: Array output with the current z-scored theta/alpha ratio for the EEG segment (only in theta_alpha mode).
+    - z_lempel_ziv: Array output with the current z-scored Lempel-Ziv complexity for the EEG segment (only in theta_alpha mode).
+    - baseline_stats: Table of mean or quantile baseline statistics for theta/alpha and Lempel-Ziv values (provided during and after baseline collection; only available in theta_alpha mode).
+    - hypnodensities: Array output with 6 values per window: 5-element hypnodensity state probabilities (from a neural network classifier) plus normalized entropy, updated each window (only in hypnodensity mode).
+    """
+
     def config_input_slots():
         return {"data": DataType.ARRAY, "start": DataType.ARRAY, "reset": DataType.ARRAY}
 
@@ -21,7 +37,6 @@ class DreamInceptor(Node):
             "hypnodensities": DataType.ARRAY,  # <-- New output: 6 floats per window
         }
 
-
     def config_params():
         return {
             "control": {
@@ -31,7 +46,7 @@ class DreamInceptor(Node):
                 "detection_method": StringParam(
                     "theta_alpha",
                     options=["theta_alpha", "hypnodensity"],
-                    doc="Select the detection method: theta/alpha z-score or hypnodensity entropy"
+                    doc="Select the detection method: theta/alpha z-score or hypnodensity entropy",
                 ),
             },
             "baseline": {
@@ -42,20 +57,17 @@ class DreamInceptor(Node):
                 "n_features": IntParam(100, 5, 500, doc="Number of feature values to accumulate"),
                 "lz_binarization": StringParam("mean", options=["mean", "median"], doc="LZ binarization method"),
             },
-            "feature_detection": {   # <-- Renamed from 'detection'
+            "feature_detection": {  # <-- Renamed from 'detection'
                 "threshold": FloatParam(2.0, 0.5, 5.0, doc="Theta/alpha z-score threshold"),
                 "n_windows": IntParam(20, 5, 100, doc="Number of successive windows required"),
             },
             "hypnodensity_detection": {  # <-- New panel for hypnodensity detection
-                "entropy_threshold": FloatParam(
-                    0.2, 0.01, 1.0, doc="Entropy threshold for hypnodensity-based detection (0–1)"
-                ),
+                "entropy_threshold": FloatParam(0.2, 0.01, 1.0, doc="Entropy threshold for hypnodensity-based detection (0–1)"),
                 "n_windows": IntParam(20, 5, 100, doc="Number of successive windows required for hypnodensity detection"),
-                'fmin': FloatParam(1.0, 0.1, 10.0, doc="Low frequency cutoff for bandpass filter"),
-                'fmax': FloatParam(30.0, 10.0, 50.0, doc="High frequency cutoff for bandpass filter"),
+                "fmin": FloatParam(1.0, 0.1, 10.0, doc="Low frequency cutoff for bandpass filter"),
+                "fmax": FloatParam(30.0, 10.0, 50.0, doc="High frequency cutoff for bandpass filter"),
             },
         }
-
 
     def setup(self):
         # Import required libraries
@@ -78,7 +90,6 @@ class DreamInceptor(Node):
 
         self.gssc_hidden = None
         self.hidden_iteration = 0
-
 
     def reset_state(self):
         """Reset all internal state variables"""
@@ -112,7 +123,13 @@ class DreamInceptor(Node):
         if self.params.control.reset.value:
             print("Resetting DreamInceptor state")
             self.reset_state()
-            return {"trigger": None, "z_theta_alpha": None, "z_lempel_ziv": None, "baseline_stats": None, "hypnodensities": None}
+            return {
+                "trigger": None,
+                "z_theta_alpha": None,
+                "z_lempel_ziv": None,
+                "baseline_stats": None,
+                "hypnodensities": None,
+            }
 
         if self.params.control.start.value and not self.is_running:
             self.is_running = True
@@ -122,14 +139,20 @@ class DreamInceptor(Node):
 
         if not self.is_running:
             print("DreamInceptor is not running. Waiting for start signal.")
-            return {"trigger": None, "z_theta_alpha": None, "z_lempel_ziv": None, "baseline_stats": None, "hypnodensities": None}
+            return {
+                "trigger": None,
+                "z_theta_alpha": None,
+                "z_lempel_ziv": None,
+                "baseline_stats": None,
+                "hypnodensities": None,
+            }
 
         eeg_signal = np.asarray(data.data)
         assert eeg_signal.ndim == 1, "Expected 1d time series"
 
         send_trigger = None
         detection_method = self.params.control.detection_method.value
-        if detection_method == 'theta_alpha':
+        if detection_method == "theta_alpha":
             # Phase 1: Baseline computation (first minute)
             if not self.baseline_computed:
                 elapsed_time = time.time() - self.time_origin
@@ -148,7 +171,7 @@ class DreamInceptor(Node):
                     # Compute baseline statistics
                     self._compute_baseline_stats()
                     self.baseline_computed = True
-                    send_trigger = np.array(0), data.meta # 0 means baseline finished
+                    send_trigger = np.array(0), data.meta  # 0 means baseline finished
 
             # Phase 2: Feature extraction and detection
             if self.baseline_computed and len(self.baseline_data) > 0:
@@ -171,7 +194,7 @@ class DreamInceptor(Node):
                 now = time.time()
                 if detected:
                     if (self.last_trigger_time is None) or ((now - self.last_trigger_time) >= wait_time):
-                        send_trigger = np.array(1), data.meta # 1 means incubation triggered
+                        send_trigger = np.array(1), data.meta  # 1 means incubation triggered
                         self.last_trigger_time = now  # reset cooldown
                     else:
                         send_trigger = None  # within cooldown window
@@ -190,14 +213,14 @@ class DreamInceptor(Node):
                     "baseline_stats": (baseline_stats_table, data.meta),
                     "hypnodensities": None,  # No hypnodensity output for theta/alpha method
                 }
-        elif detection_method == 'hypnodensity':
+        elif detection_method == "hypnodensity":
 
-            current_time = time.time()  
-            if not hasattr(self, 'last_hidden_reset'):  
-                self.last_hidden_reset = current_time  
-            
-            if current_time - self.last_hidden_reset > 10:  # Reset every 5 minutes  
-                self.gssc_hidden = None  
+            current_time = time.time()
+            if not hasattr(self, "last_hidden_reset"):
+                self.last_hidden_reset = current_time
+
+            if current_time - self.last_hidden_reset > 10:  # Reset every 5 minutes
+                self.gssc_hidden = None
                 self.last_hidden_reset = current_time
 
             fmin = self.params.hypnodensity_detection.fmin.value
@@ -214,11 +237,11 @@ class DreamInceptor(Node):
             #     global_mean=global_mean,
             #     global_std=global_std,
             # )
-            probs, entropy, self.gssc_hidden= compute_hypnodensity_entropy_single(
+            probs, entropy, self.gssc_hidden = compute_hypnodensity_entropy_single(
                 eeg_signal,
                 original_sampling_rate=data.meta.get("sfreq", 256) if hasattr(data, "meta") and data.meta else 256,
                 array_infer=self.array_infer,
-                hidden= None,
+                hidden=None,
                 l_freq=fmin,
                 h_freq=fmax,
             )
@@ -227,7 +250,6 @@ class DreamInceptor(Node):
             # if self.hidden_iteration == 900:
             #     self.gssc_hidden = hidden
             #     self.hidden_iteration = 0
-
 
             # print('HIDDEN SHAPE', self.gssc_hidden.shape)
             # Append to buffer for successive window logic
@@ -267,6 +289,7 @@ class DreamInceptor(Node):
                 "baseline_stats": None,
                 "hypnodensities": (hypnodensity_output, data.meta),
             }
+
     def _compute_baseline_stats(self):
         """Compute baseline statistics for z-score normalization"""
         baseline_array = np.array(self.baseline_data)
@@ -385,6 +408,7 @@ class DreamInceptor(Node):
         else:
             return 0
 
+
 def compute_hypnodensity_entropy_single(
     signal_1d,
     original_sampling_rate,
@@ -394,14 +418,14 @@ def compute_hypnodensity_entropy_single(
     l_freq=1,
     h_freq=30.0,
     segment_start=None,  # Start index in seconds (for multi-window, else None)
-    segment_length=30,   # Length of segment in seconds
+    segment_length=30,  # Length of segment in seconds
 ):
     """
     Processes the input EEG, returns:
       probabilities: ndarray of shape (5,)
       entropy: float (normalized)
       hidden: hidden state for model context (if needed)
-    
+
     - Normalization is done using global mean/std of filtered/resampled full signal.
     - segment_start: optional, if you want a moving window (in seconds).
     """
@@ -423,9 +447,9 @@ def compute_hypnodensity_entropy_single(
         resampled_signal = signal_1d
 
     # 3. Bandpass filter (full signal!)
-    info = mne.create_info(ch_names=['EEG'], sfreq=target_sampling_rate, ch_types=['eeg'])
+    info = mne.create_info(ch_names=["EEG"], sfreq=target_sampling_rate, ch_types=["eeg"])
     raw_mne = mne.io.RawArray(resampled_signal[np.newaxis, :], info, verbose=False)
-    raw_mne.filter(l_freq=l_freq, h_freq=h_freq, fir_design='firwin', verbose=False)
+    raw_mne.filter(l_freq=l_freq, h_freq=h_freq, fir_design="firwin", verbose=False)
     filtered_signal = raw_mne.get_data()[0] * 1e6  # µV
 
     filtered_signal = reject_outliers(filtered_signal, threshold=5.0)
@@ -444,7 +468,7 @@ def compute_hypnodensity_entropy_single(
         epoch_data = filtered_signal[-target_samples:]
         if len(epoch_data) < target_samples:
             # Pad if needed
-            epoch_data = np.pad(epoch_data, (target_samples - len(epoch_data), 0), mode='edge')
+            epoch_data = np.pad(epoch_data, (target_samples - len(epoch_data), 0), mode="edge")
     else:
         # Use a specific window (for offline/batch processing)
         start_idx = int(segment_start * target_sampling_rate)
@@ -452,7 +476,7 @@ def compute_hypnodensity_entropy_single(
         if end_idx > len(filtered_signal):
             epoch_data = filtered_signal[start_idx:]
             # Pad to reach target_samples
-            epoch_data = np.pad(epoch_data, (0, target_samples - len(epoch_data)), mode='edge')
+            epoch_data = np.pad(epoch_data, (0, target_samples - len(epoch_data)), mode="edge")
         else:
             epoch_data = filtered_signal[start_idx:end_idx]
 
@@ -474,71 +498,73 @@ def compute_hypnodensity_entropy_single(
 
     return probabilities, entropy_normalized, hidden
 
-# def compute_hypnodensity_entropy_single_with_context(  
-#     signal_1d,  
-#     original_sampling_rate,  
-#     array_infer,  
-#     hidden=None,  
-#     target_sampling_rate=85.33333,  
-#     l_freq=1,  # Changed to match GSSC training  
-#     h_freq=30.0  
-# ):  
-#     """  
-#     Takes a single segment, maintains hidden state for temporal context  
-#     Returns: probabilities, entropy, updated_hidden  
-#     """  
-#     import numpy as np  
-#     import torch  
-#     import torch.nn.functional as F  
-#     from scipy import signal as scipy_signal  
-#     import mne  
-#     from gssc.utils import epo_arr_zscore  
-  
-#     # Remove NaNs  
-#     signal_1d = np.asarray(signal_1d)  
-#     signal_1d = signal_1d[~np.isnan(signal_1d)]  
-  
-#     # For real-time processing, you might want to pad/truncate to expected length  
-#     target_samples = int(target_sampling_rate * 30)  # 30 seconds worth  
-      
-#     # Step 1: Resample to target sampling rate if needed  
-#     if original_sampling_rate != target_sampling_rate:  
-#         num_samples = int(len(signal_1d) * target_sampling_rate / original_sampling_rate)  
-#         resampled_data = scipy_signal.resample(signal_1d, num_samples)  
-#     else:  
-#         resampled_data = signal_1d  
-  
-#     # Ensure we have exactly the right number of samples  
-#     if len(resampled_data) > target_samples:  
-#         resampled_data = resampled_data[:target_samples]  
-#     elif len(resampled_data) < target_samples:  
-#         # Pad with zeros or repeat last value  
-#         pad_length = target_samples - len(resampled_data)  
-#         resampled_data = np.pad(resampled_data, (0, pad_length), mode='edge')  
-  
-#     # Step 2: Bandpass filter (0.3-30 Hz to match GSSC training)  
-#     info = mne.create_info(ch_names=['EEG'], sfreq=target_sampling_rate, ch_types=['eeg'])  
-#     raw_mne = mne.io.RawArray(resampled_data[np.newaxis, :], info)  
-#     raw_mne.filter(l_freq=l_freq, h_freq=h_freq, fir_design='firwin')  
-#     filtered_data = raw_mne.get_data()[0]  
-  
-#     # Step 3: Microvolts and z-score normalization  
-#     epoch_data = filtered_data * 1e6  # to microvolts  
-#     epoch_data_z = epo_arr_zscore(epoch_data[np.newaxis, np.newaxis, :])[0, 0]  
-  
-#     # Step 4: Inference with maintained hidden state  
-#     eeg_tensor = torch.tensor(epoch_data_z[np.newaxis, np.newaxis, :], dtype=torch.float32)  
-#     sigs = {"eeg": eeg_tensor}  
-      
-#     # Pass the hidden state to maintain temporal context  
-#     logits, nocontext_logits, updated_hidden = array_infer.infer(sigs, hidden=hidden)  
-#     probabilities = F.softmax(logits, dim=1)[0].detach().cpu().numpy()  
-  
-#     # Step 5: Entropy (normalized)  
-#     entropy = -np.sum(probabilities * np.log(probabilities + 1e-10))  
-#     entropy_normalized = entropy / np.log(5)  
-  
+
+# def compute_hypnodensity_entropy_single_with_context(
+#     signal_1d,
+#     original_sampling_rate,
+#     array_infer,
+#     hidden=None,
+#     target_sampling_rate=85.33333,
+#     l_freq=1,  # Changed to match GSSC training
+#     h_freq=30.0
+# ):
+#     """
+#     Takes a single segment, maintains hidden state for temporal context
+#     Returns: probabilities, entropy, updated_hidden
+#     """
+#     import numpy as np
+#     import torch
+#     import torch.nn.functional as F
+#     from scipy import signal as scipy_signal
+#     import mne
+#     from gssc.utils import epo_arr_zscore
+
+#     # Remove NaNs
+#     signal_1d = np.asarray(signal_1d)
+#     signal_1d = signal_1d[~np.isnan(signal_1d)]
+
+#     # For real-time processing, you might want to pad/truncate to expected length
+#     target_samples = int(target_sampling_rate * 30)  # 30 seconds worth
+
+#     # Step 1: Resample to target sampling rate if needed
+#     if original_sampling_rate != target_sampling_rate:
+#         num_samples = int(len(signal_1d) * target_sampling_rate / original_sampling_rate)
+#         resampled_data = scipy_signal.resample(signal_1d, num_samples)
+#     else:
+#         resampled_data = signal_1d
+
+#     # Ensure we have exactly the right number of samples
+#     if len(resampled_data) > target_samples:
+#         resampled_data = resampled_data[:target_samples]
+#     elif len(resampled_data) < target_samples:
+#         # Pad with zeros or repeat last value
+#         pad_length = target_samples - len(resampled_data)
+#         resampled_data = np.pad(resampled_data, (0, pad_length), mode='edge')
+
+#     # Step 2: Bandpass filter (0.3-30 Hz to match GSSC training)
+#     info = mne.create_info(ch_names=['EEG'], sfreq=target_sampling_rate, ch_types=['eeg'])
+#     raw_mne = mne.io.RawArray(resampled_data[np.newaxis, :], info)
+#     raw_mne.filter(l_freq=l_freq, h_freq=h_freq, fir_design='firwin')
+#     filtered_data = raw_mne.get_data()[0]
+
+#     # Step 3: Microvolts and z-score normalization
+#     epoch_data = filtered_data * 1e6  # to microvolts
+#     epoch_data_z = epo_arr_zscore(epoch_data[np.newaxis, np.newaxis, :])[0, 0]
+
+#     # Step 4: Inference with maintained hidden state
+#     eeg_tensor = torch.tensor(epoch_data_z[np.newaxis, np.newaxis, :], dtype=torch.float32)
+#     sigs = {"eeg": eeg_tensor}
+
+#     # Pass the hidden state to maintain temporal context
+#     logits, nocontext_logits, updated_hidden = array_infer.infer(sigs, hidden=hidden)
+#     probabilities = F.softmax(logits, dim=1)[0].detach().cpu().numpy()
+
+#     # Step 5: Entropy (normalized)
+#     entropy = -np.sum(probabilities * np.log(probabilities + 1e-10))
+#     entropy_normalized = entropy / np.log(5)
+
 #     return probabilities, entropy_normalized, updated_hidden
+
 
 def compute_hypnodensity_entropy_single_with_context_accum(
     signal_1d,
@@ -549,7 +575,7 @@ def compute_hypnodensity_entropy_single_with_context_accum(
     global_std=None,
     target_sampling_rate=85.33333,
     l_freq=2,
-    h_freq=30.0
+    h_freq=30.0,
 ):
     """
     Takes a single segment, uses accumulated normalization if provided.
@@ -579,12 +605,12 @@ def compute_hypnodensity_entropy_single_with_context_accum(
         resampled_data = resampled_data[:target_samples]
     elif len(resampled_data) < target_samples:
         pad_length = target_samples - len(resampled_data)
-        resampled_data = np.pad(resampled_data, (0, pad_length), mode='edge')
+        resampled_data = np.pad(resampled_data, (0, pad_length), mode="edge")
 
     # Step 2: Bandpass filter
-    info = mne.create_info(ch_names=['EEG'], sfreq=target_sampling_rate, ch_types=['eeg'])
+    info = mne.create_info(ch_names=["EEG"], sfreq=target_sampling_rate, ch_types=["eeg"])
     raw_mne = mne.io.RawArray(resampled_data[np.newaxis, :], info)
-    raw_mne.filter(l_freq=l_freq, h_freq=h_freq, fir_design='firwin')
+    raw_mne.filter(l_freq=l_freq, h_freq=h_freq, fir_design="firwin")
     filtered_data = raw_mne.get_data()[0]
 
     # Step 3: Microvolts conversion
@@ -608,6 +634,7 @@ def compute_hypnodensity_entropy_single_with_context_accum(
     entropy_normalized = entropy / np.log(5)
 
     return probabilities, entropy_normalized, updated_hidden
+
 
 def reject_outliers(signal, threshold=5.0):
     """Returns a signal where samples >threshold std from mean are replaced with NaN."""

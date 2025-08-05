@@ -6,6 +6,20 @@ import dearpygui.dearpygui as dpg
 from goofi.node_helpers import list_nodes
 
 
+def is_ctrl_down() -> bool:
+    generic_ctrl = False
+    if hasattr(dpg, "mvKey_Control"):
+        generic_ctrl = dpg.is_key_down(dpg.mvKey_Control)
+    return dpg.is_key_down(dpg.mvKey_LControl) or dpg.is_key_down(dpg.mvKey_RControl) or generic_ctrl
+
+
+def is_shift_down() -> bool:
+    generic_shift = False
+    if hasattr(dpg, "mvKey_Shift"):
+        generic_shift = dpg.mvKey_Shift
+    return dpg.is_key_down(dpg.mvKey_LShift) or dpg.is_key_down(dpg.mvKey_RShift) or generic_shift
+
+
 def is_click_inside(item):
     """Check if the mouse click was inside the given item."""
     mouse_pos = dpg.get_mouse_pos(local=False)
@@ -137,7 +151,7 @@ def create_node(win):
             # the window is open and focused, switch to the next tab
             tab_bar = dpg.get_item_user_data(win.create_node_window)[0]
             # increment tab index
-            if dpg.is_key_down(dpg.mvKey_Shift):
+            if is_shift_down():
                 win.last_create_node_tab = (win.last_create_node_tab - 1) % len(categories)
             else:
                 win.last_create_node_tab = (win.last_create_node_tab + 1) % len(categories)
@@ -155,9 +169,7 @@ def create_node(win):
         return
 
     # create a new window instance
-    win.create_node_window = dpg.add_window(
-        label="Create Node", pos=dpg.get_mouse_pos(local=False), no_collapse=True, autosize=True
-    )
+    win.create_node_window = dpg.add_window(label="Create Node", pos=dpg.get_mouse_pos(local=False), no_collapse=True, autosize=True)
 
     def search_callback(_, data):
         """Callback for when the search bar changes."""
@@ -177,7 +189,9 @@ def create_node(win):
         # add a button for each node that matches the search query
         for node in list_nodes():
             if data.lower() in node.__name__.lower():
-                dpg.add_button(label=node.__name__, callback=select_node_callback, user_data=(win, node), parent=search_group)
+                btn = dpg.add_button(label=node.__name__, callback=select_node_callback, user_data=(win, node), parent=search_group)
+                with dpg.tooltip(btn):
+                    dpg.add_text(node.docstring().strip(), wrap=500)
 
         # show the search group
         dpg.configure_item(search_group, show=True)
@@ -193,7 +207,9 @@ def create_node(win):
             with dpg.tab(label=cat, tag=f"tab_{cat}"):
                 # create a button for each node in the category
                 for node in nodes:
-                    dpg.add_button(label=node.__name__, callback=select_node_callback, user_data=(win, node))
+                    btn = dpg.add_button(label=node.__name__, callback=select_node_callback, user_data=(win, node))
+                    with dpg.tooltip(btn):
+                        dpg.add_text(node.docstring().strip(), wrap=500)
 
     # create a vertical group for listing nodes during search
     search_group = dpg.add_group(horizontal=False, parent=win.create_node_window, show=False)
@@ -233,13 +249,13 @@ def escape(win):
 
 def save_manager(win):
     """Save the manager to a file. We go through the Window to potentially open a file selection dialog."""
-    if dpg.is_key_down(dpg.mvKey_Control):
+    if is_ctrl_down():
         win.save()
 
 
 def copy_selected_nodes(win, timeout: float = 0.1):
     """Copy the selected nodes to the clipboard."""
-    if not dpg.is_key_down(dpg.mvKey_Control):
+    if not is_ctrl_down():
         return
 
     # retrieve selected nodes and their positions
@@ -295,7 +311,7 @@ def copy_selected_nodes(win, timeout: float = 0.1):
 
 def paste_nodes(win):
     """Paste the nodes from the clipboard."""
-    if not dpg.is_key_down(dpg.mvKey_Control) or win.node_clipboard is None:
+    if not is_ctrl_down() or win.node_clipboard is None:
         return
 
     # add the nodes to the manager

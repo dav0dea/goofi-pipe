@@ -6,6 +6,16 @@ from goofi.params import BoolParam, IntParam
 
 
 class VAMP(Node):
+    """
+    This node computes a variational approach for Markov processes (VAMP) dimensionality reduction on incoming 2D array data. It accumulates epochs of data, fits a VAMP model using a sliding time-lagged window, and projects input data onto learned VAMP components in real-time. The node is typically used to extract meaningful low-dimensional temporal features from multivariate time series.
+
+    Inputs:
+    - data: 2D array input data representing multichannel time series.
+
+    Outputs:
+    - comps: 2D array of VAMP components for the input data, with updated metadata.
+    """
+
     def config_input_slots():
         return {"data": DataType.ARRAY}
 

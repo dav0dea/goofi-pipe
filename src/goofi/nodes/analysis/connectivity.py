@@ -6,6 +6,16 @@ from goofi.params import BoolParam, FloatParam, IntParam, StringParam
 
 
 class Connectivity(Node):
+    """
+    This node computes connectivity matrices from multichannel 2D signals. It supports both classical and biotuner-based methods for estimating pairwise relationships between channels, such as coherence, wPLI, PLV, covariance, or various harmonic similarity measures. Optionally, the output matrix can be binarized based on a threshold.
+
+    Inputs:
+    - data: 2D array signal data, typically with shape (channels, samples), and accompanying metadata.
+
+    Outputs:
+    - matrix: 2D array representing the computed connectivity between channels, with original metadata attached.
+    """
+
     def config_input_slots():
         return {"data": DataType.ARRAY}
 
