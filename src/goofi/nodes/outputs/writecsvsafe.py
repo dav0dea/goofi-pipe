@@ -4,14 +4,12 @@ import queue
 import threading
 import time
 
-import numpy as np
-
 from goofi.data import Data, DataType
 from goofi.node import Node
 from goofi.params import BoolParam, FloatParam, StringParam
 
 
-class SafeSave(Node):
+class WriteCsvSafe(Node):
     def config_input_slots():
         return {"data": DataType.ARRAY, "start": DataType.ARRAY, "stop": DataType.ARRAY, "fname": DataType.STRING}
 
@@ -24,7 +22,7 @@ class SafeSave(Node):
                 "filename": StringParam("lsl_data.csv"),
                 "start": BoolParam(False, trigger=True),
                 "stop": BoolParam(False, trigger=True),
-                "duration": FloatParam(0.0, 0.0, 3600.0),
+                "duration": FloatParam(0.0, 0.0, 3600.0, doc="Maximum recording duration in seconds"),
             },
             "common": {
                 "autotrigger": True,
@@ -50,9 +48,11 @@ class SafeSave(Node):
         self.file_created = False
 
     def process(self, data: Data, start: Data, stop: Data, fname: Data):
-        # clear all input slots to avoid double-saving data (required for autotrigger=True)
-        for slot in self.input_slots.values():
-            slot.clear()
+        # NOTE: we need to clear input slots because this node has autotrigger=True and a high max_frequency,
+        # if we didn't clear the input slots we would likely repeat data packets in the output file
+        self.input_slots["data"].clear()
+        self.input_slots["start"].clear()
+        self.input_slots["stop"].clear()
 
         # Handle start/stop triggers
         if (start is not None and (start.data > 0).any()) or self.params.save.start.value:
@@ -73,8 +73,9 @@ class SafeSave(Node):
         # Simply append data to queue if recording
         if self.is_recording and data is not None:
             self.data_queue.put(data, block=False)
-            return {"status": (f"recording (queue: {queue_size})", {})}
 
+        if self.is_recording:
+            return {"status": (f"recording (queue: {queue_size})", {})}
         return {"status": (f"idle (queue: {queue_size})", {})}
 
     def _start_recording(self, fname: Data):
@@ -87,8 +88,8 @@ class SafeSave(Node):
         else:
             base_filename = self.params.save.filename.value
 
-        basename, ext = os.path.splitext(base_filename)
-        datetime_str = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        basename = os.path.splitext(base_filename)[0]
+        datetime_str = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
         self.current_filename = f"{basename}_{datetime_str}.csv"
 
         # Reset state
