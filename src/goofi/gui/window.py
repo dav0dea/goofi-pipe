@@ -213,6 +213,7 @@ def param_updated(a, value, user_data):
     a parameter is updated, and passed the update to the node.
     """
     group, name, node = user_data[:3]
+    is_trigger = isinstance(node.params[group][name], BoolParam) and node.params[group][name].trigger
 
     if len(user_data) == 4:
         # callback from a trigger button, value should be True
@@ -236,8 +237,8 @@ def param_updated(a, value, user_data):
                 # the input widget might have been deleted, ignore this error
                 pass
 
-    if value == node.params[group][name].value:
-        # value did not change, ignore this update
+    if value == node.params[group][name].value and not is_trigger:
+        # value did not change and param is not a trigger, ignore this update
         return
 
     # send the updated parameter to the node
