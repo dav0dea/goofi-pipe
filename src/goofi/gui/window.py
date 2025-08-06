@@ -398,7 +398,9 @@ def add_output_slot(parent: int, name: str, closed: bool = False, size: Tuple[in
     # The child window is needed, because otherwise the header will expand to fill the entire node editor window.
     with dpg.child_window(width=size[0], height=1, parent=parent) as window:
         # add collapsable content area for the data viewer
-        header = dpg.add_collapsing_header(label=name, default_open=not closed, open_on_arrow=False, closable=False, user_data=closed)
+        header = dpg.add_collapsing_header(
+            label=name, default_open=not closed, open_on_arrow=False, closable=False, user_data=closed
+        )
         content = dpg.add_child_window(width=size[0], height=size[1], user_data=(size, None), parent=header)
         with dpg.tooltip(parent=content, show=True, delay=0.25, hide_on_activity=True):
             dpg.add_text("Ctrl + Click: switch between data viewers", bullet=True)
@@ -471,14 +473,18 @@ class Window:
             pos = (pos[0] + offset[0], pos[1] + offset[1])
 
         # TODO: revert to using just the node_name in all cases once https://github.com/hoffstadt/DearPyGui/issues/2444 is fixed
-        node_display_name = " " + node_name + " " if len(node.input_slots) == 0 and len(node.output_slots) == 0 else node_name
+        node_display_name = (
+            " " + node_name + " " if len(node.input_slots) == 0 and len(node.output_slots) == 0 else node_name
+        )
 
         with dpg.node(parent=self.node_editor, label=node_display_name, pos=pos, user_data=node) as node_id:
             ############### input slots ###############
             in_slots = {}
             for name, dtype in node.input_slots.items():
                 # create input slot
-                in_slots[name] = dpg.add_node_attribute(label=name, attribute_type=dpg.mvNode_Attr_Input, shape=DTYPE_SHAPE_MAP[dtype], user_data=dtype)
+                in_slots[name] = dpg.add_node_attribute(
+                    label=name, attribute_type=dpg.mvNode_Attr_Input, shape=DTYPE_SHAPE_MAP[dtype], user_data=dtype
+                )
                 # simply add a text label
                 dpg.add_text(name, parent=in_slots[name])
 
@@ -487,7 +493,9 @@ class Window:
             output_draw_handlers = {}
             for name, dtype in node.output_slots.items():
                 # create output slot
-                out_slots[name] = dpg.add_node_attribute(label=name, attribute_type=dpg.mvNode_Attr_Output, shape=DTYPE_SHAPE_MAP[dtype], user_data=dtype)
+                out_slots[name] = dpg.add_node_attribute(
+                    label=name, attribute_type=dpg.mvNode_Attr_Output, shape=DTYPE_SHAPE_MAP[dtype], user_data=dtype
+                )
 
                 # determine data viewer configuration
                 viewer_kwargs = viewers[name] if viewers is not None and name in viewers else {}
@@ -497,14 +505,18 @@ class Window:
                 content = add_output_slot(out_slots[name], name, closed=collapsed)
 
                 # create data viewer and store in content window's user data
-                output_draw_handlers[name] = ViewerContainer(dtype, content, collapsed, output_draw_handlers, **viewer_kwargs)
+                output_draw_handlers[name] = ViewerContainer(
+                    dtype, content, collapsed, output_draw_handlers, **viewer_kwargs
+                )
                 dpg.set_item_user_data(content, (dpg.get_item_user_data(content)[0], output_draw_handlers[name]))
 
             # add node to node list
             self.nodes[node_name] = GUINode(node_id, in_slots, out_slots, output_draw_handlers, node)
 
             # TODO: register PROCESSING_ERROR message handler and display error messages
-            node.set_message_handler(MessageType.PROCESSING_ERROR, partial(self._processing_error_callback, node_name=node_name))
+            node.set_message_handler(
+                MessageType.PROCESSING_ERROR, partial(self._processing_error_callback, node_name=node_name)
+            )
 
             # register data message handler to update the data viewers
             node.set_message_handler(MessageType.DATA, partial(handle_data, self, self.nodes[node_name]))
@@ -901,7 +913,9 @@ class Window:
                                 user_data=(self, node, slot, "y"),
                             )
                         dpg.add_separator()
-                        self.metadata_view[slot] = dpg.add_input_text(default_value="", multiline=True, readonly=True, width=-1, height=-1)
+                        self.metadata_view[slot] = dpg.add_input_text(
+                            default_value="", multiline=True, readonly=True, width=-1, height=-1
+                        )
 
         # show parameters window
         dpg.configure_item(self.side_panel_win, show=True)
@@ -1034,7 +1048,9 @@ class Window:
                             # TODO: remove the extra case for empty nodes once the following issue is resolved: https://github.com/hoffstadt/DearPyGui/issues/2444
                             dpg.add_theme_style(dpg.mvNodeStyleVar_NodePadding, 0, 7, category=dpg.mvThemeCat_Nodes)
 
-                        dpg.add_theme_color(dpg.mvNodeCol_TitleBar, scale(NODE_CAT_COLORS[i], darkness), category=dpg.mvThemeCat_Nodes)
+                        dpg.add_theme_color(
+                            dpg.mvNodeCol_TitleBar, scale(NODE_CAT_COLORS[i], darkness), category=dpg.mvThemeCat_Nodes
+                        )
                         dpg.add_theme_color(
                             dpg.mvNodeCol_TitleBarHovered,
                             scale(NODE_CAT_COLORS[i], darkness + 0.1),
@@ -1054,11 +1070,21 @@ class Window:
             with dpg.theme() as theme:
                 with dpg.theme_component():
                     dpg.add_theme_color(dpg.mvNodeCol_NodeBackground, [153, 20, 22], category=dpg.mvThemeCat_Nodes)
-                    dpg.add_theme_color(dpg.mvNodeCol_NodeBackgroundHovered, [173, 20, 22], category=dpg.mvThemeCat_Nodes)
-                    dpg.add_theme_color(dpg.mvNodeCol_NodeBackgroundSelected, [193, 20, 22], category=dpg.mvThemeCat_Nodes)
+                    dpg.add_theme_color(
+                        dpg.mvNodeCol_NodeBackgroundHovered, [173, 20, 22], category=dpg.mvThemeCat_Nodes
+                    )
+                    dpg.add_theme_color(
+                        dpg.mvNodeCol_NodeBackgroundSelected, [193, 20, 22], category=dpg.mvThemeCat_Nodes
+                    )
 
-                    dpg.add_theme_color(dpg.mvNodeCol_TitleBar, scale(NODE_CAT_COLORS[i], darkness), category=dpg.mvThemeCat_Nodes)
-                    dpg.add_theme_color(dpg.mvNodeCol_TitleBarHovered, scale(NODE_CAT_COLORS[i], darkness + 0.1), category=dpg.mvThemeCat_Nodes)
+                    dpg.add_theme_color(
+                        dpg.mvNodeCol_TitleBar, scale(NODE_CAT_COLORS[i], darkness), category=dpg.mvThemeCat_Nodes
+                    )
+                    dpg.add_theme_color(
+                        dpg.mvNodeCol_TitleBarHovered,
+                        scale(NODE_CAT_COLORS[i], darkness + 0.1),
+                        category=dpg.mvThemeCat_Nodes,
+                    )
                     dpg.add_theme_color(
                         dpg.mvNodeCol_TitleBarSelected,
                         scale(NODE_CAT_COLORS[i], darkness + 0.2),
