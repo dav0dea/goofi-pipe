@@ -169,7 +169,9 @@ def create_node(win):
         return
 
     # create a new window instance
-    win.create_node_window = dpg.add_window(label="Create Node", pos=dpg.get_mouse_pos(local=False), no_collapse=True, autosize=True)
+    win.create_node_window = dpg.add_window(
+        label="Create Node", pos=dpg.get_mouse_pos(local=False), no_collapse=True, autosize=True
+    )
 
     def search_callback(_, data):
         """Callback for when the search bar changes."""
@@ -189,7 +191,9 @@ def create_node(win):
         # add a button for each node that matches the search query
         for node in list_nodes():
             if data.lower() in node.__name__.lower():
-                btn = dpg.add_button(label=node.__name__, callback=select_node_callback, user_data=(win, node), parent=search_group)
+                btn = dpg.add_button(
+                    label=node.__name__, callback=select_node_callback, user_data=(win, node), parent=search_group
+                )
                 with dpg.tooltip(btn):
                     dpg.add_text(node.docstring().strip(), wrap=500)
 
