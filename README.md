@@ -1062,12 +1062,12 @@ This node calculates the power in standard EEG frequency bands (delta, theta, al
 - data: Power spectral density (PSD) data as a 1D or 2D array, with corresponding frequency values provided in the metadata.
 
 ### Outputs
-- delta: Power in the delta band (1–3 Hz), along with band metadata.
-- theta: Power in the theta band (3–7 Hz), along with band metadata.
-- alpha: Power in the alpha band (7–12 Hz), along with band metadata.
-- lowbeta: Power in the low beta band (12–20 Hz), along with band metadata.
-- highbeta: Power in the high beta band (20–30 Hz), along with band metadata.
-- gamma: Power in the gamma band (30–50 Hz), along with band metadata.
+- delta: Power in the delta band (1â€“3 Hz), along with band metadata.
+- theta: Power in the theta band (3â€“7 Hz), along with band metadata.
+- alpha: Power in the alpha band (7â€“12 Hz), along with band metadata.
+- lowbeta: Power in the low beta band (12â€“20 Hz), along with band metadata.
+- highbeta: Power in the high beta band (20â€“30 Hz), along with band metadata.
+- gamma: Power in the gamma band (30â€“50 Hz), along with band metadata.
 
   </details>
 
@@ -1149,10 +1149,10 @@ Outputs:
   - embedding: ARRAY
 ```
 
-This node generates fixed-size embeddings from timeseries data using the Toto foundation model. It processes 1D (time) or 2D (channels × time) array inputs, passing them through the Toto model and outputting the resulting embeddings. The embeddings can be optionally averaged across channels or time segments, resulting in a condensed feature representation suitable for downstream machine learning or analysis tasks.
+This node generates fixed-size embeddings from timeseries data using the Toto foundation model. It processes 1D (time) or 2D (channels Ã— time) array inputs, passing them through the Toto model and outputting the resulting embeddings. The embeddings can be optionally averaged across channels or time segments, resulting in a condensed feature representation suitable for downstream machine learning or analysis tasks.
 
 ### Inputs
-- timeseries: An array representing a single-channel timeseries (1D) or multi-channel timeseries (2D, channels × time).
+- timeseries: An array representing a single-channel timeseries (1D) or multi-channel timeseries (2D, channels Ã— time).
 
 ### Outputs
 - embedding: An array containing the Toto model embedding of the input timeseries, optionally averaged across channels and/or time.

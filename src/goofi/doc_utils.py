@@ -83,7 +83,7 @@ def update_docs():
     new_readme = readme[: start + len(start_tag)] + "\n" + "\n".join(new_nodes) + readme[end:]
 
     # write the updated README
-    with open(readme_path, "w") as f:
+    with open(readme_path, "w", encoding="utf-8") as f:
         f.write(new_readme)
     print("done")
 
