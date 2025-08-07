@@ -23,7 +23,7 @@ class Monolith(Node):
         return {
             "monolith": {
                 "ignore_features": StringParam("pyspi,toto", doc="Comma-separated list of features to ignore"),
-                "clip_value": FloatParam(75, 1, 200, doc="Clip values to this range during preprocessing"),
+                "clip_value": FloatParam(100, 1, 200, doc="Clip values to this range during preprocessing"),
             }
         }
 
@@ -110,11 +110,11 @@ def _notch_filter(x, sfreq, freqs=[50, 60], Q=30):
 def preprocess(
     data: np.ndarray,
     sfreq: float,
-    clip_value: float = 75,
+    clip_value: float = 100,
     low_freq: float = 3,
-    high_freq: float = 30,
+    high_freq: float = 40,
     q: float = 30,
-    bandpass_order: int = 5,
+    bandpass_order: int = 10,
     crop_n_cycles: int = 2,
 ):
     # bandpass filter the data
@@ -126,7 +126,7 @@ def preprocess(
     # clip values
     data = np.clip(data, -clip_value, clip_value)
     # standardize
-    data = (data - np.mean(data)) / np.std(data)
+    data = (data - np.mean(data, axis=-1, keepdims=True)) / np.std(data, axis=-1, keepdims=True)
 
     crop_time = crop_n_cycles * (1 / low_freq)
     # convert to samples
