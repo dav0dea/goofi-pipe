@@ -34,6 +34,7 @@ def update_docs():
         nodes[node.category()].append(
             {
                 "name": node.__name__,
+                "doc": node.docstring(),
                 "input_slots": node.config_input_slots(),
                 "output_slots": node.config_output_slots(),
             }
@@ -64,12 +65,16 @@ def update_docs():
         new_nodes.append("<details><summary>View Nodes</summary>\n")
         for node in nodes_list:
             new_nodes.append(f"<details><summary>&emsp;{node['name']}</summary>\n")
-            new_nodes.append("  - **Inputs:**")
+            new_nodes.append("## " + node["name"])
+            new_nodes.append("```")
+            new_nodes.append("Inputs:")
             for slot, slot_type in node["input_slots"].items():
-                new_nodes.append(f"    - {slot}: {slot_type}")
-            new_nodes.append("  - **Outputs:**")
+                new_nodes.append(f"  - {slot}: {slot_type}")
+            new_nodes.append("\nOutputs:")
             for slot, slot_type in node["output_slots"].items():
-                new_nodes.append(f"    - {slot}: {slot_type}")
+                new_nodes.append(f"  - {slot}: {slot_type}")
+            new_nodes.append("```")
+            new_nodes.append(node["doc"].replace("Inputs:", "### Inputs").replace("Outputs:", "### Outputs"))
             new_nodes.append("  </details>\n")
         new_nodes.append("</details>\n")
 
@@ -96,7 +101,11 @@ class DocstringAdder(cst.CSTTransformer):
                     + [
                         s
                         for s in updated_node.body.body
-                        if not (isinstance(s, cst.SimpleStatementLine) and isinstance(s.body[0], cst.Expr) and isinstance(s.body[0].value, cst.SimpleString))
+                        if not (
+                            isinstance(s, cst.SimpleStatementLine)
+                            and isinstance(s.body[0], cst.Expr)
+                            and isinstance(s.body[0].value, cst.SimpleString)
+                        )
                     ]
                 )
             )
