@@ -43,13 +43,6 @@ def is_click_inside(item):
 
 
 def click_callback(_, btn, win):
-    """Update node selection after a click event."""
-    selected = dpg.get_selected_nodes(win.node_editor)
-    if len(selected) == 1:
-        win._select_node(selected[0])
-    else:
-        win._select_node(None)
-
     if win.create_node_window is not None and not is_click_inside(win.create_node_window):
         # the create node window is open but the click was outside of it, close it
         dpg.delete_item(win.create_node_window)

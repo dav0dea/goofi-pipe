@@ -190,7 +190,13 @@ def handle_data(win: "Window", gui_node: GUINode, node: NodeRef, message: Messag
     except Exception as e:
         print(f"Error in output draw handler for slot {message.content['slot_name']}: {e}")
 
-    if win.metadata_view is not None and win.selected_node == gui_node.item:
+    selected_nodes = dpg.get_selected_nodes(win.node_editor)
+    if (
+        win.metadata_view is not None
+        and len(selected_nodes) == 1
+        and selected_nodes[0] == gui_node.item
+        and message.content["slot_name"] in win.metadata_view
+    ):
         try:
             dpg.set_value(
                 win.metadata_view[message.content["slot_name"]],
@@ -212,8 +218,9 @@ def param_updated(a, value, user_data):
     A GUI callback function for updating a parameter value. This is called by DearPyGui when
     a parameter is updated, and passed the update to the node.
     """
-    group, name, node = user_data[:3]
-    is_trigger = isinstance(node.params[group][name], BoolParam) and node.params[group][name].trigger
+    group, name, nodes = user_data[:3]
+    # only inspect the param of the first node, as all nodes are guaranteed to have the same param here
+    is_trigger = isinstance(nodes[0].params[group][name], BoolParam) and nodes[0].params[group][name].trigger
 
     if len(user_data) == 4:
         # callback from a trigger button, value should be True
@@ -237,17 +244,22 @@ def param_updated(a, value, user_data):
                 # the input widget might have been deleted, ignore this error
                 pass
 
-    if value == node.params[group][name].value and not is_trigger:
-        # value did not change and param is not a trigger, ignore this update
-        return
+    made_changes = False
+    for node in nodes:
+        if value == node.params[group][name].value and not is_trigger:
+            # value did not change and param is not a trigger, ignore this update
+            continue
 
-    # send the updated parameter to the node
-    node.update_param(group, name, value)
-    # mark manager state as dirty
-    Window().manager.unsaved_changes = True
+        # send the updated parameter to the node
+        node.update_param(group, name, value)
+        made_changes = True
+
+    if made_changes:
+        # mark manager state as dirty
+        Window().manager.unsaved_changes = True
 
 
-def add_param(parent: int, group: str, name: str, param: Param, node: NodeRef) -> None:
+def add_param(parent: int, group: str, name: str, param: Param, nodes: List[NodeRef]) -> None:
     """
     Add a parameter to the GUI.
 
@@ -259,10 +271,12 @@ def add_param(parent: int, group: str, name: str, param: Param, node: NodeRef) -
     `name` : str
         The parameter name.
     `param` : Param
-        The parameter.
-    `node` : NodeRef
-        The node reference.
+        The parameter object.
+    `node` : List[NodeRef]
+        List of node references associated with this param.
     """
+    param_val = param._value
+
     with dpg.table_row(parent=parent):
         with dpg.table_cell():
             lbl = dpg.add_text(format_name(name))
@@ -273,9 +287,15 @@ def add_param(parent: int, group: str, name: str, param: Param, node: NodeRef) -
             if isinstance(param, BoolParam):
                 # parameter is a bool
                 if param.trigger:
-                    dpg.add_button(label=format_name(name), callback=param_updated, user_data=(group, name, node, True))
+                    dpg.add_button(
+                        label=format_name(name), callback=param_updated, user_data=(group, name, nodes, True)
+                    )
                 else:
-                    dpg.add_checkbox(default_value=param.value, callback=param_updated, user_data=(group, name, node))
+                    dpg.add_checkbox(
+                        default_value=False if param_val is None else param_val,
+                        callback=param_updated,
+                        user_data=(group, name, nodes),
+                    )
             elif isinstance(param, FloatParam):
                 with dpg.group(horizontal=True) as input_group:
                     # parameter is a float
@@ -283,16 +303,16 @@ def add_param(parent: int, group: str, name: str, param: Param, node: NodeRef) -
                         dpg.add_input_text(
                             width=50,
                             scientific=True,
-                            default_value=str(param.value),
+                            default_value="" if param_val is None else str(param_val),
                             callback=param_updated,
-                            user_data=(group, name, node, input_group, float),
+                            user_data=(group, name, nodes, input_group, float),
                         )
                     )
                     dpg.add_slider_float(
-                        default_value=param.value,
+                        default_value=param.vmin if param_val is None else param_val,
                         min_value=param.vmin,
                         max_value=param.vmax,
-                        user_data=(group, name, node, input_group, float),
+                        user_data=(group, name, nodes, input_group, float),
                         callback=param_updated,
                     )
             elif isinstance(param, IntParam):
@@ -301,17 +321,17 @@ def add_param(parent: int, group: str, name: str, param: Param, node: NodeRef) -
                     Window().param_input_fields.append(
                         dpg.add_input_text(
                             width=50,
-                            default_value=str(param.value),
+                            default_value="" if param_val is None else str(param_val),
                             callback=param_updated,
-                            user_data=(group, name, node, input_group, int),
+                            user_data=(group, name, nodes, input_group, int),
                         )
                     )
                     dpg.add_slider_int(
-                        default_value=param.value,
+                        default_value=param.vmin if param_val is None else param_val,
                         min_value=param.vmin,
                         max_value=param.vmax,
                         callback=param_updated,
-                        user_data=(group, name, node, input_group, int),
+                        user_data=(group, name, nodes, input_group, int),
                     )
             elif isinstance(param, StringParam):
                 # parameter is a string
@@ -319,18 +339,18 @@ def add_param(parent: int, group: str, name: str, param: Param, node: NodeRef) -
                     # `options` is not set, use an unconstrained text input
                     Window().param_input_fields.append(
                         dpg.add_input_text(
-                            default_value=param.value,
+                            default_value="" if param_val is None else param_val,
                             callback=param_updated,
-                            user_data=(group, name, node),
+                            user_data=(group, name, nodes),
                         )
                     )
                 else:
                     # `options` is set, use a dropdown menu
                     dpg.add_combo(
-                        default_value=param.value,
+                        default_value="" if param_val is None else param_val,
                         items=param.options,
                         callback=param_updated,
-                        user_data=(group, name, node),
+                        user_data=(group, name, nodes),
                     )
             else:
                 raise NotImplementedError(f"Parameter type {type(param)} not implemented.")
@@ -547,7 +567,7 @@ class Window:
         """
         if item in dpg.get_selected_nodes(self.node_editor):
             # deselect node if it is selected
-            self._select_node(None)
+            self._update_node_selection()
 
         # determine the node name
         # NOTE: the strip is required for now as nodes without in- and outputs have leading and trailing spaces (https://github.com/hoffstadt/DearPyGui/issues/2444)
@@ -836,7 +856,7 @@ class Window:
             "viewers": {slot: viewer.get_state() for slot, viewer in node.output_draw_handlers.items()},
         }
 
-    def _select_node(self, item: Optional[int]) -> None:
+    def _update_node_selection(self) -> None:
         """
         Register or unregister a node as selected. If a new node is selected, the parameters window is
         updated to show the parameters of that node.
@@ -845,19 +865,18 @@ class Window:
         `item` : Optional[int]
             The node item. If None, deselects the currently selected node.
         """
-        if self.selected_node == item:
-            # do nothing if the node is already selected
+        selection = dpg.get_selected_nodes(self.node_editor)
+        if sorted(selection) == sorted(self.selected_nodes):
             return
 
+        self.selected_nodes = selection
+
         # update window layout
-        self.selected_node = item
         self.resize_callback(None, [dpg.get_viewport_width(), dpg.get_viewport_height()])
         # clear parameters window
         dpg.delete_item(self.side_panel_win, children_only=True)
 
-        # NOTE: the strip is required for now as nodes without in- and outputs have leading and trailing spaces (https://github.com/hoffstadt/DearPyGui/issues/2444)
-        if item is None or dpg.get_item_label(item).strip() not in self.nodes:
-            self.selected_node = None
+        if len(self.selected_nodes) == 0:
             # node deselected, hide parameters window and resize node editor
             dpg.configure_item(self.side_panel_win, show=False)
             self.resize_callback(None, [dpg.get_viewport_width(), dpg.get_viewport_height()])
@@ -865,10 +884,11 @@ class Window:
 
         # get node reference
         # NOTE: the strip is required for now as nodes without in- and outputs have leading and trailing spaces (https://github.com/hoffstadt/DearPyGui/issues/2444)
-        node = self.nodes[dpg.get_item_label(item).strip()]
-        node_ref = node.node_ref
+        nodes = [self.nodes[dpg.get_item_label(i).strip()] for i in dpg.get_selected_nodes(self.node_editor)]
+        node_refs = [node.node_ref for node in nodes]
 
-        with dpg.child_window(height=dpg.get_viewport_height() / 2, parent=self.side_panel_win):
+        height = dpg.get_viewport_height() / 2 if len(node_refs) == 1 else -1
+        with dpg.child_window(height=height, parent=self.side_panel_win):
             # add title
             dpg.add_text("Parameters")
             dpg.add_separator()
@@ -876,47 +896,67 @@ class Window:
             # populate parameters window
             self.param_input_fields.clear()
             with dpg.tab_bar():
-                for group in node_ref.params:
+                # get intersection of param groups across nodes while maintaining order
+                groups = [list(nr.params.keys()) for nr in node_refs]
+                groups = [g for g in groups[0] if all(g in gs for gs in groups[1:])]
+
+                for group in groups:
                     with dpg.tab(label=format_name(group)) as tab:
                         with dpg.table(header_row=False, parent=tab, policy=dpg.mvTable_SizingStretchProp) as table:
                             dpg.add_table_column()
                             dpg.add_table_column()
 
-                            for name, param in node_ref.params[group].items():
-                                add_param(table, group, name, param, node_ref)
+                            # get intersection of param names across nodes while maintaining order
+                            names = [list(nr.params[group].keys()) for nr in node_refs]
+                            names = [n for n in names[0] if all(n in ns for ns in names[1:])]
 
-                # add info tab
-                with dpg.tab(label="Info"):
-                    # TODO: replace magic padding number by retrieving parent width
-                    dpg.add_text(node_ref.__doc__, wrap=PARAM_WINDOW_WIDTH - 70)
+                            for name in names:
+                                param = node_refs[0].params[group][name].copy()
 
-        with dpg.child_window(autosize_y=True, parent=self.side_panel_win):
-            # add title
-            dpg.add_text("Outputs")
-            dpg.add_separator()
+                                # set param value to None if nodes have different current values
+                                for nr in node_refs[1:]:
+                                    if nr.params[group][name]._value != param._value:
+                                        param._value = None
+                                        continue
 
-            # add one metadata view for each output slot
-            self.metadata_view = {}
-            with dpg.tab_bar():
-                for slot in node_ref.output_slots:
-                    with dpg.tab(label=slot) as tab:
-                        with dpg.group(horizontal=True):
-                            dpg.add_checkbox(
-                                label="log-scale x-axis",
-                                default_value=node.output_draw_handlers[slot].log_scale_x,
-                                callback=toggle_log_plot,
-                                user_data=(self, node, slot, "x"),
+                                add_param(table, group, name, param, node_refs)
+
+                if all(node_refs[0].node_class == nr.node_class for nr in node_refs[1:]):
+                    # add info tab
+                    with dpg.tab(label="Info"):
+                        # TODO: replace magic padding number by retrieving parent width
+                        dpg.add_text(node_refs[0].__doc__, wrap=PARAM_WINDOW_WIDTH - 70)
+
+        if len(node_refs) == 1:
+            node = nodes[0]
+            node_ref = node_refs[0]
+            with dpg.child_window(autosize_y=True, parent=self.side_panel_win):
+                # add title
+                dpg.add_text("Outputs")
+                dpg.add_separator()
+
+                # add one metadata view for each output slot
+                self.metadata_view = {}
+                with dpg.tab_bar():
+                    for slot in node_ref.output_slots:
+                        with dpg.tab(label=slot) as tab:
+                            with dpg.group(horizontal=True):
+                                dpg.add_checkbox(
+                                    label="log-scale x-axis",
+                                    default_value=node.output_draw_handlers[slot].log_scale_x,
+                                    callback=toggle_log_plot,
+                                    user_data=(self, node, slot, "x"),
+                                )
+                                dpg.add_checkbox(
+                                    label="log-scale y-axis",
+                                    default_value=node.output_draw_handlers[slot].log_scale_y,
+                                    callback=toggle_log_plot,
+                                    user_data=(self, node, slot, "y"),
+                                )
+                            dpg.add_separator()
+                            self.metadata_view[slot] = dpg.add_input_text(
+                                default_value="", multiline=True, readonly=True, width=-1, height=-1
                             )
-                            dpg.add_checkbox(
-                                label="log-scale y-axis",
-                                default_value=node.output_draw_handlers[slot].log_scale_y,
-                                callback=toggle_log_plot,
-                                user_data=(self, node, slot, "y"),
-                            )
-                        dpg.add_separator()
-                        self.metadata_view[slot] = dpg.add_input_text(
-                            default_value="", multiline=True, readonly=True, width=-1, height=-1
-                        )
 
         # show parameters window
         dpg.configure_item(self.side_panel_win, show=True)
@@ -949,7 +989,7 @@ class Window:
         else:
             dpg.configure_item(self.window, width=size[0], height=size[1])
 
-        if self.selected_node is None:
+        if len(dpg.get_selected_nodes(self.node_editor)) == 0:
             # no node selected, resize node editor to fill viewport
             dpg.configure_item(self.node_editor, width=0)
         else:
@@ -1101,7 +1141,7 @@ class Window:
         # initialize dicts to map names to dpg items
         self.nodes = {}
         self.links = {}
-        self.selected_node = None
+        self.selected_nodes = []
         self.create_node_window = None
         self.last_create_node_tab = 0
         self.file_selection_window = None
@@ -1160,6 +1200,7 @@ class Window:
         # register user interaction handlers
         with dpg.handler_registry():
             dpg.add_key_release_handler(callback=events.key_release_callback, user_data=self)
+            dpg.add_mouse_release_handler(callback=self._update_node_selection, user_data=self)
             dpg.add_mouse_click_handler(callback=events.click_callback, user_data=self)
             dpg.add_mouse_double_click_handler(callback=events.double_click_callback, user_data=self)
 

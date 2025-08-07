@@ -47,6 +47,12 @@ class Param(ABC):
     def value(self, value: Any):
         self._value = value
 
+    def copy(self):
+        """
+        Return a deep copy of the parameter object.
+        """
+        return deepcopy(self)
+
 
 @dataclass
 class BoolParam(Param):
@@ -328,6 +334,9 @@ class NodeParams:
                     serialized_params[name] = param
             serialized_data[group] = serialized_params
         return serialized_data
+
+    def keys(self):
+        return self._data.keys()
 
     def __getattr__(self, group: str):
         # don't allow access to the _data attribute
