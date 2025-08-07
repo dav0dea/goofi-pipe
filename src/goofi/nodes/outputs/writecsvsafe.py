@@ -4,6 +4,7 @@ import queue
 import threading
 import time
 import warnings
+from pathlib import Path
 
 import numpy as np
 
@@ -101,6 +102,7 @@ class WriteCsvSafe(Node):
         basename = os.path.splitext(base_filename)[0]
         datetime_str = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
         self.current_filename = f"{basename}_{datetime_str}.csv"
+        Path(self.current_filename).parent.mkdir(parents=True, exist_ok=True)
 
         # reset state
         self.is_recording = True
