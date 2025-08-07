@@ -4,7 +4,7 @@ import numpy as np
 
 from goofi.data import Data, DataType
 from goofi.node import Node
-from goofi.params import FloatParam, StringParam
+from goofi.params import FloatParam, StringParam, BoolParam
 
 
 class Monolith(Node):
@@ -23,7 +23,15 @@ class Monolith(Node):
         return {
             "monolith": {
                 "ignore_features": StringParam("pyspi,toto", doc="Comma-separated list of features to ignore"),
-                "clip_value": FloatParam(75, 1, 200, doc="Clip values to this range during preprocessing"),
+                "clip_value": FloatParam(75, 1, 200, doc="Clip values to this range during preprocessing")
+            },
+            'preprocessing': {
+                'notch50': BoolParam(True, doc="Apply 50Hz notch filter"),
+                'notch60': BoolParam(True, doc="Apply 60Hz notch filter"),
+                'q': FloatParam(30, 1, 100, doc="Quality factor for notch filters"),
+                'bandpass_l_freq': FloatParam(3, 0.1, 10, doc="Lower frequency for bandpass filter"),
+                'bandpass_h_freq': FloatParam(30, 10, 100, doc="Upper frequency for bandpass filter"),
+                'bandpass_order': FloatParam(5, 1, 10, doc="Order of the bandpass filter")
             }
         }
 
@@ -42,9 +50,21 @@ class Monolith(Node):
         data_arr = data.data.astype(np.float32)
 
         ignore_names = set(map(str.strip, self.params.monolith.ignore_features.value.split(",")))
-
+        
+        # get low and high frequency for bandpass filter
+        l_freq = self.params.preprocessing.bandpass_l_freq.value
+        h_freq = self.params.preprocessing.bandpass_h_freq.value
+        notch50 = self.params.preprocessing.notch50.value
+        notch60 = self.params.preprocessing.notch60.value
+        q = self.params.preprocessing.q.value
+        bandpass_order = self.params.preprocessing.bandpass_order.value
         # Preprocess the data
-        data_arr = preprocess(data_arr, sfreq, clip_value=self.params.monolith.clip_value.value)
+        data_arr = preprocess(data_arr, sfreq, clip_value=self.params.monolith.clip_value.value, 
+                              low_freq=l_freq, high_freq=h_freq,
+                              notch50=notch50, 
+                              notch60=notch60, 
+                              q=q,
+                              bandpass_order=bandpass_order)
 
         features = []
         # compute channel-wise features
@@ -96,7 +116,7 @@ def _notch_filter(x, sfreq, freqs=[50, 60], Q=30):
         n = 1
         while True:
             f = base_freq * n
-            if f >= nyq:
+            if f >= nyq/ 2:
                 break
             # iirnotch returns (b, a); convert to SOS
             b, a = iirnotch(f, Q, sfreq)
@@ -110,17 +130,30 @@ def _notch_filter(x, sfreq, freqs=[50, 60], Q=30):
     return sosfiltfilt(sos_all, x, axis=-1)
 
 
-def preprocess(data: np.ndarray, sfreq: float, clip_value: float = 75):
+def preprocess(data: np.ndarray, sfreq: float, clip_value: float = 75, low_freq: float = 3, high_freq: float = 30, notch50: bool = True, notch60: bool = True, q: float = 30, bandpass_order: int = 5):
     # bandpass filter the data
-    data = _bandpass_filter(data, sfreq, l_freq=3, h_freq=30)
+    data = _bandpass_filter(data, sfreq, l_freq=low_freq, h_freq=high_freq, order=bandpass_order)
     # apply notch filters at 50Hz and 60Hz
-    data = _notch_filter(data, sfreq, freqs=[50, 60])
+    if notch50:
+        data = _notch_filter(data, sfreq, freqs=[50], Q=q)
+    if notch60:
+        data = _notch_filter(data, sfreq, freqs=[60], Q=q)
     # remove DC offset
     data = data - np.mean(data, axis=-1, keepdims=True)
     # clip values
     data = np.clip(data, -clip_value, clip_value)
     # standardize
     data = (data - np.mean(data)) / np.std(data)
+    
+    n_cycles = 2  # Number of cycles to crop for safety
+    crop_time = n_cycles * (1 / low_freq)  # n_cycles = 1, 2, or more for safety
+    # Convert to samples
+    crop_samples = int(crop_time * sfreq)
+    # Crop the data to remove edge effects
+    if data.ndim == 1:
+        data = data[crop_samples:-crop_samples]
+    elif data.ndim == 2:
+        data = data[:, crop_samples:-crop_samples]
     return data
 
 
