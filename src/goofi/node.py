@@ -289,7 +289,9 @@ class Node(ABC):
             elif msg.type == MessageType.DATA:
                 # received data from another node
                 if msg.content["slot_name"] not in self.input_slots:
-                    raise ValueError(f"Received DATA message but input slot '{msg.content['slot_name']}' doesn't exist.")
+                    raise ValueError(
+                        f"Received DATA message but input slot '{msg.content['slot_name']}' doesn't exist."
+                    )
                 slot = self.input_slots[msg.content["slot_name"]]
                 slot.data = msg.content["data"]
                 if slot.trigger_process:
@@ -466,7 +468,9 @@ class Node(ABC):
                         self.pending_connections[conn._id] = []
 
                     # send the message (in a separate thread because connections may time out and block)
-                    t = Thread(target=conn.send, name=f"{self.__class__.__name__}-send-{conn._id}", args=(msg,), daemon=True)
+                    t = Thread(
+                        target=conn.send, name=f"{self.__class__.__name__}-send-{conn._id}", args=(msg,), daemon=True
+                    )
                     t.start()
                     self.pending_connections[conn._id].append((t, time.time()))
 
@@ -635,7 +639,7 @@ class Node(ABC):
             The cleaned docstring of the class, or an empty string if no docstring is present.
         """
 
-        if hasattr(cls,"__doc__") and cls.__doc__:
+        if hasattr(cls, "__doc__") and cls.__doc__:
             return "\n".join([line.strip() for line in cls.__doc__.split("\n")])
         return ""
 
