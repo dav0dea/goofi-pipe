@@ -6,7 +6,8 @@ import pkgutil
 import time
 import traceback
 from dataclasses import dataclass, field
-from multiprocessing import Process
+from multiprocessing import Pipe, Process
+from multiprocessing.connection import _ConnectionBase
 from threading import Thread
 from typing import Any, Callable, Dict, List, Optional, Tuple, Type
 
@@ -188,21 +189,25 @@ class NodeRef:
     input_slots: Dict[str, DataType]
     output_slots: Dict[str, DataType]
     params: NodeParams
-    category: str
+    node_class: Type
 
+    category: str = None
     process: Optional[Process] = None
     callbacks: Dict[MessageType, Callable] = field(default_factory=dict)
     serialization_pending: bool = False
     serialized_state: Optional[Dict[str, Any]] = None
     gui_kwargs: Dict[str, Any] = field(default_factory=dict)
+    create_initialized: bool = True
 
     def __post_init__(self):
         if self.connection is None:
             raise ValueError("Expected Connection, got None.")
 
-        self._alive = True
-        self._messaging_thread = Thread(target=self._messaging_loop, daemon=True)
-        self._messaging_thread.start()
+        self.__doc__ = self.node_class.docstring()
+        self.category = self.node_class.category()
+
+        if self.create_initialized:
+            self.initialize()
 
         # register the node reference as an output pipe for each output slot
         for name in self.output_slots.keys():
@@ -212,6 +217,11 @@ class NodeRef:
                     {"slot_name_out": name, "slot_name_in": name, "node_connection": None},
                 )
             )
+
+    def initialize(self):
+        self._alive = True
+        self._messaging_thread = Thread(target=self._messaging_loop, daemon=True)
+        self._messaging_thread.start()
 
         # request the initial serialized state
         self.serialize()
@@ -309,3 +319,37 @@ class NodeRef:
                 # store the serialized state
                 self.serialized_state = msg.content
                 self.serialization_pending = False
+
+
+class NodeProcess:
+    def __init__(self, name: str):
+        self.name = name
+        self.conn, recv = Pipe()
+        self.proc = Process(target=self.messaging_loop, name=name, args=(recv,), daemon=True)
+        self.proc.start()
+
+    def messaging_loop(self, conn: _ConnectionBase):
+        nodes = []
+        while True:
+            cls, conns, args = conn.recv()
+            ref, node = cls.create_local(initial_params=args, conns=conns, init_ref=False)
+            nodes.append(node)
+            conn.send(ref)
+
+
+class NodeProcessRegistry:
+    _instance = None
+    _processes: Dict[str, NodeProcess] = {}
+
+    def __new__(cls):
+        if cls._instance is None:
+            cls._instance = super(NodeProcessRegistry, cls).__new__(cls)
+        return cls._instance
+
+    def get(self, name: str) -> NodeProcess:
+        if name not in self._processes:
+            self._processes[name] = NodeProcess(name)
+        return self._processes.get(name)
+
+    def all(self) -> Dict[str, NodeProcess]:
+        return dict(self._processes)

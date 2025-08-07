@@ -14,7 +14,7 @@ from goofi import assets
 from goofi.connection import Connection
 from goofi.data import Data, DataType
 from goofi.message import Message, MessageType
-from goofi.node_helpers import InputSlot, NodeRef, OutputSlot
+from goofi.node_helpers import InputSlot, NodeProcessRegistry, NodeRef, OutputSlot
 from goofi.params import InvalidParamError, NodeParams
 
 
@@ -514,6 +514,17 @@ class Node(ABC):
         if cls.NO_MULTIPROCESSING:
             raise MultiprocessingForbiddenError("Multiprocessing is forbidden for this node.")
 
+        if initial_params is not None and "process_group" in initial_params["common"]:
+            pg_name = initial_params["common"]["process_group"]
+            if len(pg_name) > 0:
+                pg = NodeProcessRegistry().get(pg_name)
+                conn1, conn2 = Connection.create()
+                # spawn the node in the given process group
+                pg.conn.send((cls, (conn1, conn2), initial_params))
+                ref = pg.conn.recv()
+                ref.initialize()
+                return ref
+
         # generate arguments for the node
         in_slots, out_slots, params = cls._configure(cls)
         # integrate initial parameters if they are provided
@@ -554,14 +565,18 @@ class Node(ABC):
             {name: slot.dtype for name, slot in in_slots.items()},
             {name: slot.dtype for name, slot in out_slots.items()},
             params,
-            cls.category(),
+            cls,
             process=proc,
         )
-        ref.__doc__ = cls.docstring()
         return ref
 
     @classmethod
-    def create_local(cls, initial_params: Optional[Dict[str, Dict[str, Any]]] = None) -> Tuple[NodeRef, "Node"]:
+    def create_local(
+        cls,
+        initial_params: Optional[Dict[str, Dict[str, Any]]] = None,
+        conns: Optional[Tuple[Connection, Connection]] = None,
+        init_ref: bool = True,
+    ) -> Tuple[NodeRef, "Node"]:
         """
         Create a new node instance in the current process and return a reference to the node,
         as well as the node itself.
@@ -590,7 +605,7 @@ class Node(ABC):
                     "\n===================================================\n"
                 )
 
-        conn1, conn2 = Connection.create()
+        conn1, conn2 = Connection.create() if conns is None else conns
         # instantiate the node in the current process
         node = cls(conn2, in_slots, out_slots, params, NodeEnv.LOCAL)
         # create the node reference
@@ -599,9 +614,9 @@ class Node(ABC):
             {name: slot.dtype for name, slot in in_slots.items()},
             {name: slot.dtype for name, slot in out_slots.items()},
             deepcopy(params),
-            cls.category(),
+            cls,
+            create_initialized=init_ref,
         )
-        ref.__doc__ = cls.docstring()
         return ref, node
 
     @classmethod

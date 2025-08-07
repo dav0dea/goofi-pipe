@@ -153,6 +153,13 @@ DEFAULT_PARAMS = {
                 "If 'seconds-per-update', the node will run once every specified number of seconds."
             ),
         ),
+        "process_group": StringParam(
+            "",
+            doc=(
+                "If empty, spawn the node in its own process. If non-empty, register the node to the process with this name "
+                "(restart required to take effect)."
+            ),
+        ),
     },
 }
 
