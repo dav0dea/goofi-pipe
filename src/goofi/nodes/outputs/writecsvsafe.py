@@ -159,7 +159,7 @@ class WriteCsvSafe(Node):
         num_samples = 1 if data.ndim == 1 else data.shape[1]
 
         if self.columns is None:
-            self.columns = channel_names
+            self.columns = channel_names.copy()
             if annot is not None:
                 self.columns += list(annot.data.keys())
                 if len(self.columns) != len(set(self.columns)):
