@@ -353,7 +353,9 @@ class Manager:
             Window().remove_node(name, **gui_kwargs)
 
     @mark_unsaved_changes
-    def add_link(self, node_out: str, node_in: str, slot_out: str, slot_in: str, notify_gui: bool = True, **gui_kwargs) -> None:
+    def add_link(
+        self, node_out: str, node_in: str, slot_out: str, slot_in: str, notify_gui: bool = True, **gui_kwargs
+    ) -> None:
         """
         Adds a link between two nodes.
 
@@ -383,7 +385,9 @@ class Manager:
             Window().add_link(node_out, node_in, slot_out, slot_in, **gui_kwargs)
 
     @mark_unsaved_changes
-    def remove_link(self, node_out: str, node_in: str, slot_out: str, slot_in: str, notify_gui: bool = True, **gui_kwargs) -> None:
+    def remove_link(
+        self, node_out: str, node_in: str, slot_out: str, slot_in: str, notify_gui: bool = True, **gui_kwargs
+    ) -> None:
         """
         Removes a link between two nodes.
 
@@ -488,7 +492,9 @@ class Manager:
 
             if self.nodes[name].serialization_pending:
                 # TODO: add proper logging
-                print(f"WARNING: Node {name} timed out while waiting for serialization. Node state is possibly outdated.")
+                print(
+                    f"WARNING: Node {name} timed out while waiting for serialization. Node state is possibly outdated."
+                )
 
             # check if we got a response in time
             if self.nodes[name].serialized_state is None:
@@ -548,7 +554,9 @@ class Manager:
         if len(serialized_nodes) != len(self.nodes):
             filepath = f"{filepath}.incomplete"
             # TODO: add proper logging
-            print(f"WARNING: Mismatch between serialized nodes and actual nodes, saving may be incomplete. Saving to '{filepath}'.")
+            print(
+                f"WARNING: Mismatch between serialized nodes and actual nodes, saving may be incomplete. Saving to '{filepath}'."
+            )
 
         # convert the manager instance into yaml format
         manager_yaml = yaml.dump({"nodes": serialized_nodes, "links": links}, sort_keys=False)
@@ -648,7 +656,9 @@ def main(duration: float = 0, args=None):
     parser.add_argument("--no-multiprocessing", action="store_true", help="disable multiprocessing")
     parser.add_argument("--comm", choices=["auto"] + comm_choices, default="auto", help="node communication backend")
     parser.add_argument("--update-readme-docs", action="store_true", help="update the node list in the README")
-    parser.add_argument("--gen-node-docs", action="store_true", help="generate missing node docstrings using the openai API")
+    parser.add_argument(
+        "--gen-node-docs", action="store_true", help="generate missing node docstrings using the openai API"
+    )
     parser.add_argument("--example", nargs="?", const="", help="run example files instead of starting the manager")
     args = parser.parse_args(args)
 
