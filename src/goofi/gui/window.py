@@ -1230,10 +1230,10 @@ class Window:
 
         # TODO: add proper logging
         print("Shutting down graphical user interface.")
-
-        # terminate manager
         manager.terminate(notify_gui=False)
 
     def terminate(self):
         """Stop DearPyGui and close the window."""
+        # terminate manager
+        self.manager.terminate(notify_gui=False)
         dpg.stop_dearpygui()

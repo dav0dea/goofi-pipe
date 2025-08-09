@@ -14,7 +14,7 @@ from goofi.connection import Connection
 from goofi.gui.window import Window
 from goofi.message import Message, MessageType
 from goofi.node import MultiprocessingForbiddenError
-from goofi.node_helpers import NodeRef, list_nodes
+from goofi.node_helpers import NodeProcessRegistry, NodeRef, list_nodes
 
 
 def mark_unsaved_changes(func):
@@ -423,24 +423,25 @@ class Manager:
         `notify_gui` : bool
             Whether to notify the gui to terminate.
         """
+        print("Shutting down goofi-pipe manager.")
+        # terminate the manager
+        self._running = False
+
+        # terminate all nodes
+        NodeProcessRegistry().terminate()
+        for node in self.nodes:
+            self.nodes[node].terminate()
+
+        # close the communication backend
+        self._mp_manager.shutdown()
+
         if not self.headless and notify_gui:
             try:
                 # terminate the gui, which calls manager.terminate() with notify_gui=False once it is closed
                 Window().terminate()
                 return
             except Exception:
-                # TODO: add proper logging
                 print("Closing the GUI failed.")
-
-        # TODO: add proper logging
-        print("Shutting down goofi-pipe manager.")
-        # terminate the manager
-        self._running = False
-        for node in self.nodes:
-            self.nodes[node].terminate()
-
-        # close the communication backend
-        self._mp_manager.shutdown()
 
     def save(self, filepath: Optional[str] = None, overwrite: bool = False, timeout: float = 3.0) -> None:
         """

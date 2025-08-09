@@ -353,3 +353,7 @@ class NodeProcessRegistry:
 
     def all(self) -> Dict[str, NodeProcess]:
         return dict(self._processes)
+
+    def terminate(self):
+        for p in self._processes.values():
+            p.proc.kill()
