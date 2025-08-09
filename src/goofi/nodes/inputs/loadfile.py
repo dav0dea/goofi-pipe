@@ -2,9 +2,9 @@ from copy import deepcopy
 
 import numpy as np
 
-from goofi.data import DataType
+from goofi.data import Data, DataType
 from goofi.node import Node
-from goofi.params import FloatParam, StringParam
+from goofi.params import BoolParam, FloatParam, StringParam
 
 
 class LoadFile(Node):
@@ -20,7 +20,7 @@ class LoadFile(Node):
     """
 
     def config_input_slots():
-        return {"file": DataType.STRING}
+        return {"file": DataType.STRING, "reload": DataType.ARRAY}
 
     def config_output_slots():
         return {"data_output": DataType.ARRAY, "string_output": DataType.STRING}
@@ -35,6 +35,7 @@ class LoadFile(Node):
                     doc="Type of file to load",
                 ),
                 "select": StringParam("", doc="NumPy selection string"),
+                "reload": BoolParam(False, trigger=True, doc="Force reload the file"),
             },
             "spectrum": {"freq_multiplier": FloatParam(1.0, doc="Multiplier to adjust the frequency values")},
             "embedding_csv": {"header": 0, "name_column": False, "index_column": True},
@@ -52,7 +53,13 @@ class LoadFile(Node):
         self.string_output = None
         self.last_params = None
 
-    def process(self, file):
+    def process(self, file: Data, reload: Data):
+        if (reload is not None and np.any(reload.data > 0)) or self.params.file.reload.value:
+            self.input_slots["reload"].clear()
+            self.data_output = None
+            self.string_output = None
+            self.last_params = None
+
         if file is not None:
             self.params.file.filename.value = file.data
             self.file_filename_changed(file.data)
