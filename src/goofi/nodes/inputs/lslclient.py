@@ -74,13 +74,16 @@ class LSLClient(Node):
 
         try:
             # fetch data
-            samples, _ = self.client.pull_chunk()
+            samples, timestamps = self.client.pull_chunk()
         except Exception as e:
             print(f"Error fetching data from LSL stream: {e}")
             self.setup()
             return
 
         samples = np.array(samples).T
+
+        if timestamps is None or len(timestamps) != samples.shape[-1]:
+            timestamps = None
 
         if samples.size == 0:
             return
@@ -98,10 +101,9 @@ class LSLClient(Node):
             self.setup()
             return
 
-        meta = {
-            "sfreq": self.client.info().nominal_srate(),
-            "channels": {"dim0": self.ch_names},
-        }
+        meta = {"sfreq": self.client.info().nominal_srate(), "channels": {"dim0": self.ch_names}}
+        if timestamps is not None:
+            meta["channels"]["dim1"] = list(timestamps)
         return {"out": (samples, meta)}
 
     def connect(self) -> bool:
