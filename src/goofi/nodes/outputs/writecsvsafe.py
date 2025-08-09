@@ -130,20 +130,17 @@ class WriteCsvSafe(Node):
 
     def _write_worker(self):
         """Background thread that writes queued data to CSV file"""
-        try:
-            while not self.stop_event.is_set() or not self.data_queue.empty():
-                try:
-                    # retrieve data packet and write to csv
-                    data_item, annot = self.data_queue.get(timeout=0.5)
-                    self._write_to_csv(data_item, annot)
-                except queue.Empty:
-                    continue
-                except Exception as e:
-                    # log write errors but continue processing
-                    print(f"WriteCsvSafe write error: {e}")
-                    continue
-        except Exception as e:
-            print(f"WriteCsvSafe worker thread error: {e}")
+        while not self.stop_event.is_set() or not self.data_queue.empty():
+            try:
+                # retrieve data packet and write to csv
+                data_item, annot = self.data_queue.get(timeout=0.5)
+                self._write_to_csv(data_item, annot)
+            except queue.Empty:
+                continue
+            except Exception as e:
+                # log write errors but continue processing
+                print(f"WriteCsvSafe write error: {e}")
+                continue
 
     def _write_to_csv(self, data_item: Data, annot: Data):
         """Write single data item with annotations to CSV file"""
@@ -155,6 +152,13 @@ class WriteCsvSafe(Node):
             channel_names = meta["channels"]["dim0"]
         else:
             channel_names = [f"ch_{i}" for i in range(data.shape[0])]
+
+        if "channels" in meta and "dim1" in meta["channels"]:
+            timestamps = meta["channels"]["dim1"]
+        elif data.ndim == 1:
+            timestamps = [time.time()]
+        else:
+            timestamps = None
 
         num_samples = 1 if data.ndim == 1 else data.shape[1]
 
@@ -178,7 +182,7 @@ class WriteCsvSafe(Node):
                     df_data[col] = [data[data_idx]]
                 else:
                     df_data[col] = data[data_idx].tolist()
-            elif col in annot.data:
+            elif annot is not None and col in annot.data:
                 item = annot.data.pop(col).data
                 if isinstance(item, np.ndarray) and item.size == 1:
                     item = item.item()
@@ -187,14 +191,14 @@ class WriteCsvSafe(Node):
                 df_data[col] = [None] * num_samples
 
         # add extra annotations
-        extra_annots = {k: v.data for k, v in annot.data.items()}
+        extra_annots = {} if annot is None else {k: v.data for k, v in annot.data.items()}
         df_data["_extra_annot"] = [extra_annots] * num_samples
 
-        df = self.pd.DataFrame(df_data)
+        df = self.pd.DataFrame(df_data, index=timestamps)
 
         # Write to file (append mode, header only on first write)
         write_header = not self.file_created
-        df.to_csv(self.current_filename, mode="a", header=write_header, index=False)
+        df.to_csv(self.current_filename, mode="a", header=write_header, index=True)
         self.file_created = True
 
     def terminate(self):
