@@ -102,7 +102,6 @@ class WriteCsvSafe(Node):
         basename = os.path.splitext(base_filename)[0]
         datetime_str = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
         self.current_filename = f"{basename}_{datetime_str}.csv"
-        Path(self.current_filename).parent.mkdir(parents=True, exist_ok=True)
 
         # reset state
         self.is_recording = True
@@ -195,6 +194,9 @@ class WriteCsvSafe(Node):
         df_data["_extra_annot"] = [extra_annots] * num_samples
 
         df = self.pd.DataFrame(df_data, index=timestamps)
+
+        if not self.file_created:
+            Path(self.current_filename).parent.mkdir(parents=True, exist_ok=True)
 
         # Write to file (append mode, header only on first write)
         write_header = not self.file_created
