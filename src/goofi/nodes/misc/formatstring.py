@@ -1,7 +1,8 @@
-from goofi.data import DataType, Data
+import re
+
+from goofi.data import Data, DataType
 from goofi.node import Node
 from goofi.params import StringParam
-import re
 
 
 class FormatString(Node):
@@ -14,11 +15,6 @@ class FormatString(Node):
     - input_string_3: Input string to be included in the output.
     - input_string_4: Input string to be included in the output.
     - input_string_5: Input string to be included in the output.
-    - input_string_6: Input string to be included in the output.
-    - input_string_7: Input string to be included in the output.
-    - input_string_8: Input string to be included in the output.
-    - input_string_9: Input string to be included in the output.
-    - input_string_10: Input string to be included in the output.
 
     Outputs:
     - output_string: The resulting formatted string.
@@ -26,7 +22,7 @@ class FormatString(Node):
 
     def config_input_slots():
         slots = {}
-        for i in range(1, 11):  # For 10 input strings
+        for i in range(1, 6):  # For 5 input strings
             slots[f"input_string_{i}"] = DataType.STRING
         return slots
 
