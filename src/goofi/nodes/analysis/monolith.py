@@ -68,10 +68,14 @@ class Monolith(Node):
                 features.append([ft])
 
         features = np.concatenate(features, axis=-1)
-        meta = data.meta.copy()
-        del meta["channels"]
+        meta_ft = data.meta.copy()
+        del meta_ft["channels"]
 
-        return {"features": (features, meta), "clean_data": (data_arr, data.meta)}
+        meta_cln = data.meta.copy()
+        if "channels" in meta_cln and "dim1" in meta_cln["channels"]:
+            del meta_cln["channels"]["dim1"]
+
+        return {"features": (features, meta_ft), "clean_data": (data_arr, meta_cln)}
 
 
 def _bandpass_filter(x, sfreq, l_freq, h_freq, order=5):
