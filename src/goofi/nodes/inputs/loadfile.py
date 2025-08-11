@@ -1,4 +1,6 @@
 from copy import deepcopy
+from glob import glob
+from pathlib import Path
 
 import numpy as np
 
@@ -31,10 +33,13 @@ class LoadFile(Node):
                 "filename": StringParam("", doc="The name of the file to load with extension"),
                 "type": StringParam(
                     "spectrum",
-                    options=["spectrum", "time_series", "ndarray", "embedding_csv", "audio"],
+                    options=["spectrum", "time_series", "ndarray", "embedding_csv", "audio", "pickle"],
                     doc="Type of file to load",
                 ),
                 "select": StringParam("", doc="NumPy selection string"),
+                "glob_resolution": StringParam(
+                    "newest", options=["newest", "oldest", "alphabet_first", "alphabet_last"]
+                ),
                 "reload": BoolParam(False, trigger=True, doc="Force reload the file"),
             },
             "spectrum": {"freq_multiplier": FloatParam(1.0, doc="Multiplier to adjust the frequency values")},
@@ -84,6 +89,24 @@ class LoadFile(Node):
         file_type = self.params.file.type.value
         filename = self.params.file.filename.value
 
+        matches = glob(filename)
+        if len(matches) == 0:
+            raise FileNotFoundError(f"File does not exist or no matches found: {filename}")
+        elif len(matches) == 1:
+            filename = matches[0]
+        else:
+            glob_resolution = self.params.file.glob_resolution.value
+            if glob_resolution == "newest":
+                filename = max(matches, key=lambda f: Path(f).stat().st_mtime)
+            elif glob_resolution == "oldest":
+                filename = min(matches, key=lambda f: Path(f).stat().st_mtime)
+            elif glob_resolution == "alphabet_first":
+                filename = min(matches)
+            elif glob_resolution == "alphabet_last":
+                filename = max(matches)
+            else:
+                filename = matches[0]
+
         if file_type == "audio":
             try:
                 audio, sr = self.librosa.load(f"{filename}", sr=None)
@@ -103,9 +126,10 @@ class LoadFile(Node):
         elif extension == "txt":
             data = np.loadtxt(f"{filename}")
         elif extension == "csv":
+            header = self.params.embedding_csv.header.value
             df = self.pd.read_csv(
                 f"{filename}",
-                header=self.params.embedding_csv.header.value,
+                header=None if header < 0 else header,
                 index_col=0 if self.params.embedding_csv.index_column.value else None,
             )
             data = df.values
