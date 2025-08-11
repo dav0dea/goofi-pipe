@@ -1,17 +1,13 @@
+import time
+
 import numpy as np
 
-from goofi.data import DataType
+from goofi.data import Data, DataType
 from goofi.node import Node
 from goofi.params import FloatParam, StringParam
 
 
 class ConstantArray(Node):
-    """
-    This node generates an array output whose contents and structure depend on the selected mode. It can produce a constant-valued array of any specified shape, a ring graph adjacency matrix, or a random matrix. The node can be used to create standard data arrays or generate simple graph structures for further processing in the pipeline.
-
-    Outputs:
-    - out: An array (NumPy ndarray). The array can be a constant array of given shape filled with a specified value, a ring graph adjacency matrix, or a random matrix, depending on configuration. The output includes metadata with the sample frequency if available.
-    """
 
     def config_params():
         return {
@@ -19,30 +15,60 @@ class ConstantArray(Node):
                 "value": FloatParam(1.0, -10.0, 10.0),
                 "shape": "1",
                 "graph": StringParam("none", options=["none", "ring", "random"]),
+                "overwrite_timeout": FloatParam(
+                    5,
+                    0,
+                    30,
+                    doc="Duration within which the overwrite input data is used, revert to constant data after (0 never clears the overwrite).",
+                ),
             },
             "common": {"autotrigger": True},
         }
 
+    def config_input_slots():
+        return {"overwrite": DataType.ARRAY}
+
     def config_output_slots():
         return {"out": DataType.ARRAY}
 
-    def process(self):
+    def setup(self):
+        self.last_overwrite_time = None
+        self.last_overwrite_data = None
+
+    def process(self, overwrite: Data):
+        if overwrite is not None:
+            self.last_overwrite_data = overwrite
+            self.last_overwrite_time = time.time()
+            self.input_slots["overwrite"].clear()
+
+        if self.last_overwrite_data is not None:
+            timeout_val = self.params.constant.overwrite_timeout.value
+            if timeout_val > 0 and (time.time() - self.last_overwrite_time) > timeout_val:
+                self.last_overwrite_data = None
+                self.last_overwrite_time = None
+            else:
+                return {"out": (self.last_overwrite_data.data, self.last_overwrite_data.meta)}
+
         if self.params.constant.graph.value == "ring":
             matrix = ring_graph_adjacency_matrix(int(self.params.constant.shape.value))
             return {"out": (matrix, {"sfreq": self.params.common.max_frequency.value})}
-        elif self.params.constant.graph.value == "random":
+
+        if self.params.constant.graph.value == "random":
             return {
                 "out": (
                     np.random.rand(int(self.params.constant.shape.value), int(self.params.constant.shape.value)),
                     {"sfreq": self.params.common.max_frequency.value},
                 )
             }
-        else:
-            parts = [p for p in self.params.constant.shape.value.split(",") if len(p) > 0]
-            shape = list(map(int, parts))
-            return {
-                "out": (np.ones(shape) * self.params.constant.value.value, {"sfreq": self.params.common.max_frequency.value})
-            }
+
+        parts = [p for p in self.params.constant.shape.value.split(",") if len(p) > 0]
+        shape = list(map(int, parts))
+        return {
+            "out": (
+                np.ones(shape) * self.params.constant.value.value,
+                {"sfreq": self.params.common.max_frequency.value},
+            )
+        }
 
 
 def ring_graph_adjacency_matrix(n):
