@@ -51,8 +51,7 @@ class LSLClient(Node):
         self.lsl_discover_thread = None
         self.ch_names = None
 
-        if not hasattr(self, "available_streams"):
-            self.available_streams = None
+        self.available_streams = None
 
         # initialize list of streams
         self.connect()
@@ -139,13 +138,18 @@ class LSLClient(Node):
                 if len(matches) == 0:
                     print(f'\nCould not find source "{source_name}" with stream "{stream_name}".')
                 else:
-                    ms = tabulate(
-                        [list(m) for m in matches],
-                        headers=["Source ID", "Stream Name"],
-                        tablefmt="simple_outline",
-                    )
-                    print(f'\nFound multiple streams matching source="{source_name}", name="{stream_name}":\n{ms}.')
+                    # ms = tabulate(
+                    #     [list(m) for m in matches],
+                    #     headers=["Source ID", "Stream Name"],
+                    #     tablefmt="simple_outline",
+                    # )
+                    # print(f'\nFound multiple streams matching source="{source_name}", name="{stream_name}":\n{ms}.')
+                    print(f'\nFound multiple streams matching source="{source_name}", name="{stream_name}":\n{matches}.')
             return False
+            
+        # if len(matches) != 1:
+        #     print(f'\nFound multiple streams matching source="{source_name}", name="{stream_name}":\n{matches}.')
+        #     return False
 
         # connect to the stream
         self.client = self.pylsl.StreamInlet(info=list(matches.values())[0], recover=True)
@@ -166,8 +170,15 @@ class LSLClient(Node):
             [[info.source_id(), info.name(), info.hostname()] for info in self.available_streams], key=lambda x: x[0]
         )
 
+        # print("\nAvailable LSL streams:")
+        # print(tabulate(stream_data, headers=["Source ID", "Stream Name", "Host Name"], tablefmt="simple_outline"))
+        # print()
         print("\nAvailable LSL streams:")
-        print(tabulate(stream_data, headers=["Source ID", "Stream Name", "Host Name"], tablefmt="simple_outline"))
+        print(f"{'Source ID':<36} {'Stream Name':<25} {'Host Name':<20}")
+        print("-" * 85)
+
+        for source_id, stream_name, host_name in stream_data:
+            print(f"{source_id:<36} {stream_name:<25} {host_name:<20}")
         print()
 
         if current_thread().name == "lsl_discover_thread":
