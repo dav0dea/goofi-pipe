@@ -150,7 +150,7 @@ class OSCIn(Node):
             self.osc_address_changed(address.data)
         if port is not None:
             self.input_slots["port"].clear()
-            self.params.osc.port.value = port.data
+            self.params.osc.port.value = int(port.data)
             self.osc_port_changed(int(port.data))
 
         if not self.messages:
