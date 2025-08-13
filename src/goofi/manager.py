@@ -353,9 +353,7 @@ class Manager:
             Window().remove_node(name, **gui_kwargs)
 
     @mark_unsaved_changes
-    def add_link(
-        self, node_out: str, node_in: str, slot_out: str, slot_in: str, notify_gui: bool = True, **gui_kwargs
-    ) -> None:
+    def add_link(self, node_out: str, node_in: str, slot_out: str, slot_in: str, notify_gui: bool = True, **gui_kwargs) -> None:
         """
         Adds a link between two nodes.
 
@@ -493,9 +491,7 @@ class Manager:
 
             if self.nodes[name].serialization_pending:
                 # TODO: add proper logging
-                print(
-                    f"WARNING: Node {name} timed out while waiting for serialization. Node state is possibly outdated."
-                )
+                print(f"WARNING: Node {name} timed out while waiting for serialization. Node state is possibly outdated.")
 
             # check if we got a response in time
             if self.nodes[name].serialized_state is None:
@@ -635,14 +631,14 @@ def get_example_patch(args) -> bool:
         return True
 
 
-def main(duration: float = 0, args=None):
+def main(duration: Optional[float] = None, args=None):
     """
     This is the main entry point for goofi-pipe. It parses command line arguments, creates a manager
     instance and runs all nodes until the manager is terminated.
 
     ### Parameters
     `duration` : float
-        The duration to run the manager for. If `0`, runs indefinitely.
+        The duration to run the manager for. Runs indefinitely if None or `0`.
     `args` : list
         A list of arguments to pass to the manager. If `None`, uses `sys.argv[1:]`.
     """
@@ -656,10 +652,14 @@ def main(duration: float = 0, args=None):
     parser.add_argument("--headless", action="store_true", help="run in headless mode")
     parser.add_argument("--no-multiprocessing", action="store_true", help="disable multiprocessing")
     parser.add_argument("--comm", choices=["auto"] + comm_choices, default="auto", help="node communication backend")
-    parser.add_argument("--update-readme-docs", action="store_true", help="update the node list in the README")
     parser.add_argument(
-        "--gen-node-docs", action="store_true", help="generate missing node docstrings using the openai API"
+        "--duration",
+        default=0,
+        type=int,
+        help="Duration (in seconds) after which goofi-pipe automatically shuts down (0 to run indefinitely)",
     )
+    parser.add_argument("--update-readme-docs", action="store_true", help="update the node list in the README")
+    parser.add_argument("--gen-node-docs", action="store_true", help="generate missing node docstrings using the openai API")
     parser.add_argument("--example", nargs="?", const="", help="run example files instead of starting the manager")
     args = parser.parse_args(args)
 
@@ -681,6 +681,11 @@ def main(duration: float = 0, args=None):
         # look up example patches
         if not get_example_patch(args):
             return
+
+    if duration is not None and args.duration != 0:
+        raise ValueError("Manager duration should be given either as a parameter or as a command line argument, not both.")
+    elif duration is None:
+        duration = args.duration
 
     # create and run the manager (this blocks until the manager is terminated)
     Manager(
