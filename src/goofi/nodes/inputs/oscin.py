@@ -19,6 +19,13 @@ class OSCIn(Node):
             "osc": {
                 "address": StringParam("0.0.0.0"),
                 "port": IntParam(9000, 0, 65535),
+                "find_usable_port_tries": IntParam(
+                    0,
+                    0,
+                    100,
+                    doc="If larger than 0, increment the port by one iteratively until an unoccupied port is found, "
+                    "up to a maximum of this parameter's value.",
+                ),
                 "keep_messages": BoolParam(True, doc="Keep all received messages"),
                 "clear": BoolParam(trigger=True, doc="Clear all stored messages"),
             },
@@ -29,14 +36,27 @@ class OSCIn(Node):
         return {"message": DataType.TABLE}
 
     def setup(self):
-        self.server = OSCThreadServer(advanced_matching=True)
-        self.server.listen(address=self.params.osc.address.value, port=self.params.osc.port.value, default=True)
-
-        # bind to possible addresses of depth 10 (is there a better way to do this?)
-        for i in range(1, 11):
-            self.server.bind(b"/*" * i, self.callback, get_address=True)
-
         self.messages = {}
+
+        tries = 0
+        while tries <= self.params.osc.find_usable_port_tries.value:
+            try:
+                print(f"Trying to listen on port", self.params.osc.port.value + tries)
+                self.server = OSCThreadServer(advanced_matching=True)
+                self.server.listen(address=self.params.osc.address.value, port=self.params.osc.port.value + tries, default=True)
+
+                # bind to possible addresses of depth 10 (is there a better way to do this?)
+                for i in range(1, 11):
+                    self.server.bind(b"/*" * i, self.callback, get_address=True)
+            except OSError:
+                self.server.stop_all()
+                self.server.terminate_server()
+                self.server.join_server()
+
+                tries += 1
+
+                if tries == self.params.osc.find_usable_port_tries.value:
+                    raise
 
     def callback(self, address, *args):
         args = ["None".encode() if a is None else a for a in args]
