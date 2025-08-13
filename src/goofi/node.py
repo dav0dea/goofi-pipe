@@ -98,8 +98,9 @@ class Node(ABC):
         self._input_slots = input_slots
         self._output_slots = output_slots
         self._params = params
+        self._environment = environment
 
-        self._validate_attrs(environment)
+        self._validate_attrs()
 
         # NOTE: we avoid creating a threading.Event() in standalone mode to ensure nodes can be pickled
         if environment != NodeEnv.STANDALONE:
@@ -139,12 +140,12 @@ class Node(ABC):
             raise ValueError(f"Invalid environment: {environment}")
 
     @require_init
-    def _validate_attrs(self, environment: NodeEnv) -> None:
+    def _validate_attrs(self) -> None:
         """
         Check that all attributes are present and of the correct type.
         """
         # check connection type
-        if environment == NodeEnv.STANDALONE:
+        if self._environment == NodeEnv.STANDALONE:
             if self.connection is not None:
                 raise ValueError("Running in standalone mode, connection should be None.")
         else:
@@ -289,9 +290,7 @@ class Node(ABC):
             elif msg.type == MessageType.DATA:
                 # received data from another node
                 if msg.content["slot_name"] not in self.input_slots:
-                    raise ValueError(
-                        f"Received DATA message but input slot '{msg.content['slot_name']}' doesn't exist."
-                    )
+                    raise ValueError(f"Received DATA message but input slot '{msg.content['slot_name']}' doesn't exist.")
                 slot = self.input_slots[msg.content["slot_name"]]
                 slot.data = msg.content["data"]
                 if slot.trigger_process:
@@ -447,9 +446,7 @@ class Node(ABC):
                     if conn._id in self.pending_connections:
                         # filter out dead threads
                         self.pending_connections[conn._id] = [
-                            (thread, timestamp)
-                            for thread, timestamp in self.pending_connections[conn._id]
-                            if thread.is_alive()
+                            (thread, timestamp) for thread, timestamp in self.pending_connections[conn._id] if thread.is_alive()
                         ]
                         # check if the connection has timed out
                         timeout_occurred = False
@@ -468,9 +465,7 @@ class Node(ABC):
                         self.pending_connections[conn._id] = []
 
                     # send the message (in a separate thread because connections may time out and block)
-                    t = Thread(
-                        target=conn.send, name=f"{self.__class__.__name__}-send-{conn._id}", args=(msg,), daemon=True
-                    )
+                    t = Thread(target=conn.send, name=f"{self.__class__.__name__}-send-{conn._id}", args=(msg,), daemon=True)
                     t.start()
                     self.pending_connections[conn._id].append((t, time.time()))
 
@@ -496,6 +491,15 @@ class Node(ABC):
     def clear_error(self):
         """Clear the error message."""
         self.connection.try_send(Message(MessageType.PROCESSING_ERROR, {"error": None}))
+
+    @require_init
+    def request_shutdown(self):
+        """Send a shutdown request for the goofi-pipe process."""
+        if self._environment == NodeEnv.STANDALONE:
+            raise RuntimeError(
+                "Shutdown requested but the node is not running in standalone mode. A manager is required to perform the shutdown."
+            )
+        self.connection.try_send(Message(MessageType.SHUTDOWN, {}))
 
     @classmethod
     def create(cls, initial_params: Optional[Dict[str, Dict[str, Any]]] = None, retries: int = 3) -> NodeRef:

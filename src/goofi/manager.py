@@ -13,7 +13,7 @@ import yaml
 from goofi.connection import Connection
 from goofi.gui.window import Window
 from goofi.message import Message, MessageType
-from goofi.node import MultiprocessingForbiddenError
+from goofi.node import MultiprocessingForbiddenError, Node
 from goofi.node_helpers import NodeProcessRegistry, NodeRef, list_nodes
 
 
@@ -304,7 +304,7 @@ class Manager:
 
         # import the node
         mod = importlib.import_module(f"goofi.nodes.{category}.{node_type.lower()}")
-        node = getattr(mod, node_type)
+        node: Node = getattr(mod, node_type)
 
         # instantiate the node
         ref = None
@@ -318,6 +318,9 @@ class Manager:
         if ref is None:
             # spawn the node in the local process
             ref = node.create_local(initial_params=params)[0]
+
+        # set up the shutdown callback handler to terminate the manager
+        ref.set_message_handler(MessageType.SHUTDOWN, lambda *args: self.terminate())
 
         # add the node to the container
         if name is None:

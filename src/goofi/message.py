@@ -37,6 +37,7 @@ class MessageType(Enum):
         - `category` (str): The category of the node.
         - `out_conns` (Dict[str, List[Tuple[str, Connection]]]): A dictionary of named output slots containing connections.
         - `params` (Dict[str, Any]): The NodeParams object, represented as a dictionary.
+    - `SHUTDOWN`: Empty message to indicate that the goofi-pipe process should shut down.
     """
 
     ADD_OUTPUT_PIPE = 1
@@ -50,6 +51,7 @@ class MessageType(Enum):
     PARAMETER_UPDATE = 9
     SERIALIZE_REQUEST = 10
     SERIALIZE_RESPONSE = 11
+    SHUTDOWN = 12
 
 
 @dataclass
