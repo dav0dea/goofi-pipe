@@ -5,6 +5,7 @@ antropy
 biotuner
 pyserial
 oscpy
+python-osc
 sounddevice
 openai==1.3.6
 httpx==0.27.2 # currently required by openai
