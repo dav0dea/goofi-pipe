@@ -41,10 +41,8 @@ class StringToTable(Node):
 
         if self.params.string_to_table.format.value == "json":
             try:
-                import json
-
-                table = json.loads(text)
-            except json.JSONDecodeError as e:
+                table = extract_json(text)
+            except (json.JSONDecodeError, ValueError) as e:
                 raise ValueError(f"Error decoding JSON: {e}")
         elif self.params.string_to_table.format.value == "yaml":
             try:
@@ -54,7 +52,7 @@ class StringToTable(Node):
             except yaml.YAMLError as e:
                 raise ValueError(f"Error decoding YAML: {e}")
         else:
-            raise ValueError(f"Unsupported format: {self.params['string_to_table']['format'].value}")
+            raise ValueError(f"Unsupported format: {self.params.string_to_table.format.value}")
 
         # parse the table and return it
         return {"table": (parse_table(table, meta), meta)}
@@ -73,3 +71,32 @@ def parse_table(table, meta):
         table[key] = Data(DataType.ARRAY, np.array(value), meta)
 
     return table
+
+
+def extract_json(text):
+    """
+    Extract the first valid JSON object from the text, ignoring text before or after.
+    """
+    import json
+
+    # Find the start of the JSON object
+    start = text.find("{")
+    if start == -1:
+        raise ValueError("No JSON object found in text")
+
+    # Find the matching closing brace
+    brace_count = 0
+    end = start
+    for i in range(start, len(text)):
+        if text[i] == "{":
+            brace_count += 1
+        elif text[i] == "}":
+            brace_count -= 1
+            if brace_count == 0:
+                end = i + 1
+                break
+    else:
+        raise ValueError("Unmatched braces in JSON")
+
+    json_str = text[start:end]
+    return json.loads(json_str)
