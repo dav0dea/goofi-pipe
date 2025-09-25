@@ -31,6 +31,10 @@ class StringToTable(Node):
         }
 
     def process(self, text):
+        import json
+
+        import yaml
+
         if text.data is None:
             return None
 
