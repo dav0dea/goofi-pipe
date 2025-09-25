@@ -49,9 +49,19 @@ class LempelZiv(Node):
             binarized = data.data > np.mean(data.data, axis=axis, keepdims=True)  # mean split
         elif binarize_mode == "median":
             binarized = data.data > np.median(data.data, axis=axis, keepdims=True)  # median split
+        else:
+            raise ValueError(f"Unknown binarize mode: {binarize_mode}")
 
         # compute Lempel-Ziv complexity
         lzc = np.apply_along_axis(self.compute_lzc, axis, binarized, normalize=True)
+
+        axis = axis if axis >= 0 else axis + data.data.ndim
+        if "channels" in data.meta:
+            if f"dim{axis}" in data.meta["channels"]:
+                del data.meta["channels"][f"dim{axis}"]
+            for i in range(axis + 1, data.data.ndim):
+                if f"dim{i}" in data.meta["channels"]:
+                    data.meta["channels"][f"dim{i-1}"] = data.meta["channels"].pop(f"dim{i}")
 
         # return Lempel-Ziv complexity and incoming metadata
         return {"lzc": (lzc, data.meta)}
