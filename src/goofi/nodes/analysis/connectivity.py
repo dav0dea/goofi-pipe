@@ -29,7 +29,16 @@ class Connectivity(Node):
             "classical": {
                 "method": StringParam(
                     "wPLI",
-                    options=["coherence", "imag_coherence", "wPLI", "PLI", "PLV", "covariance", "pearson", "mutual_info"],
+                    options=[
+                        "coherence",
+                        "imag_coherence",
+                        "wPLI",
+                        "PLI",
+                        "PLV",
+                        "covariance",
+                        "pearson",
+                        "mutual_info",
+                    ],
                 ),
             },
             "biotuner": {
@@ -80,6 +89,10 @@ class Connectivity(Node):
         if binarize:
             matrix[matrix < threshold] = 0
             matrix[matrix >= threshold] = 1
+
+        meta = data.meta
+        if "dim1" in meta["channels"]:
+            del meta["channels"]["dim1"]
         return {"matrix": (matrix, data.meta)}
 
 
