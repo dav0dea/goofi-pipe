@@ -10,16 +10,6 @@ from goofi.params import BoolParam, FloatParam, StringParam
 
 
 class LoadFile(Node):
-    """
-    This node loads data from a file and outputs the loaded data in array or string format, depending on the file type and content. It supports various file types such as spectrum data, time series, generic numpy arrays, embedding CSV files, and audio files. The node processes the input file according to the specified type and outputs the corresponding data structure with optional metadata.
-
-    Inputs:
-    - file: The filename (as a string) of the file to load.
-
-    Outputs:
-    - data_output: The primary data loaded from the file, such as an array with optional metadata depending on the file type.
-    - string_output: The string representation of the data if applicable (e.g., if data is non-numeric and cannot be converted to an array).
-    """
 
     def config_input_slots():
         return {"file": DataType.STRING, "reload": DataType.ARRAY}
@@ -33,7 +23,7 @@ class LoadFile(Node):
                 "filename": StringParam("", doc="The name of the file to load with extension"),
                 "type": StringParam(
                     "spectrum",
-                    options=["spectrum", "time_series", "ndarray", "embedding_csv", "audio", "pickle"],
+                    options=["spectrum", "time_series", "ndarray", "embedding_csv", "audio", "pickle", "image"],
                     doc="Type of file to load",
                 ),
                 "select": StringParam("", doc="NumPy selection string"),
@@ -50,9 +40,11 @@ class LoadFile(Node):
     def setup(self):
         import librosa
         import pandas as pd
+        from PIL import Image
 
         self.pd = pd
         self.librosa = librosa
+        self.Image = Image
 
         self.data_output = None
         self.string_output = None
@@ -114,6 +106,21 @@ class LoadFile(Node):
                 self.string_output = None
             except Exception as e:
                 print(f"Error loading audio file: {e}")
+                self.data_output = None
+                self.string_output = None
+            return
+
+        elif file_type == "image":
+            try:
+                img = self.Image.open(filename)
+                img_array = np.array(img) / 255.0
+                self.data_output = (
+                    img_array.astype(np.float32),
+                    {"height": img.height, "width": img.width, "img_channels": len(img.getbands())},
+                )
+                self.string_output = None
+            except Exception as e:
+                print(f"Error loading image file: {e}")
                 self.data_output = None
                 self.string_output = None
             return
