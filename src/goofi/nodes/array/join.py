@@ -29,13 +29,15 @@ class Join(Node):
         return {"join": {"method": StringParam("concatenate", options=["concatenate", "stack"]), "axis": 0}}
 
     def process(self, a: Data, b: Data):
+        axis = self.params.join.axis.value
+
         if a is not None and b is None:
             if self.params.join.method.value == "stack":
-                a.data = np.expand_dims(a.data, axis=self.params.join.axis.value)
+                a.data = np.expand_dims(a.data, axis=axis)
             return {"out": (a.data, a.meta)}
         elif a is None and b is not None:
             if self.params.join.method.value == "stack":
-                b.data = np.expand_dims(b.data, axis=self.params.join.axis.value)
+                b.data = np.expand_dims(b.data, axis=axis)
             return {"out": (b.data, b.meta)}
         elif a is None and b is None:
             return None
@@ -43,13 +45,22 @@ class Join(Node):
         result_meta = deepcopy(a.meta)
         if self.params.join.method.value == "concatenate":
             # concatenate a and b
-            result = np.concatenate([a.data, b.data], axis=self.params.join.axis.value)
+            result = np.concatenate([a.data, b.data], axis=axis)
 
-            if "dim0" in a.meta["channels"] and "dim0" in b.meta["channels"]:
-                result_meta["channels"]["dim0"] = a.meta["channels"]["dim0"] + b.meta["channels"]["dim0"]
+            axis = axis if axis >= 0 else axis + a.data.ndim
+            if f"dim{axis}" in a.meta["channels"] and f"dim{axis}" in b.meta["channels"]:
+                result_meta["channels"][f"dim{axis}"] = (
+                    a.meta["channels"][f"dim{axis}"] + b.meta["channels"][f"dim{axis}"]
+                )
         elif self.params.join.method.value == "stack":
             # stack a and b
-            result = np.stack([a.data, b.data], axis=self.params.join.axis.value)
+            result = np.stack([a.data, b.data], axis=axis)
+
+            axis = axis if axis >= 0 else axis + a.data.ndim
+            for i in range(a.data.ndim, axis - 1, -1):
+                if f"dim{i}" in result_meta["channels"]:
+                    result_meta["channels"][f"dim{i+1}"] = result_meta["channels"].pop(f"dim{i}")
+
         else:
             raise ValueError(
                 f"Unknown join method {self.params.join.method.value}. Supported are 'concatenate' and 'stack'."
