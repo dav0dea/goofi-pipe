@@ -1,5 +1,6 @@
 import base64
 import io
+from os import environ
 
 import numpy as np
 from PIL import Image
@@ -34,7 +35,12 @@ class Img2Txt(Node):
             "img_to_text": {
                 "model": StringParam(
                     "gpt-4o-mini",
-                    options=["ollama:llama3.2-vision", "meta-llama/Llama-3.2-11B-Vision-Instruct", "gpt-4o-mini", "ollama"],
+                    options=[
+                        "ollama:llama3.2-vision",
+                        "meta-llama/Llama-3.2-11B-Vision-Instruct",
+                        "gpt-4o-mini",
+                        "ollama:gemma3:4b",
+                    ],
                     doc="Model ID or name for image captioning (Huggingface Llama, OpenAI, or Ollama)",
                 ),
                 "max_new_tokens": IntParam(30, 10, 1024, doc="Maximum number of tokens to generate"),
@@ -82,36 +88,36 @@ class Img2Txt(Node):
     def setup_openai_gpt(self):
         try:
             import openai
-
-            self.openai = openai
-            key = self.params["img_to_text"]["openai_key"].value
-            with open(key, "r") as f:
-                self.openai.api_key = f.read().strip()
         except ImportError:
             print("Error: 'openai' library not found. Please install it using 'pip install openai'.")
             raise
+
+        self.openai = openai
+        key_path = self.params["img_to_text"]["openai_key"].value
+
+        try:
+            with open(key_path, "r") as f:
+                self.openai.api_key = f.read().strip()
         except FileNotFoundError:
-            print(f"Error: OpenAI API key file not found at path: {key}")
-            raise
-        except Exception as e:
-            print(f"Error initializing OpenAI: {e}")
-            raise
+            print(f"Error: OpenAI API key file not found at path: {key_path}")
+            self.openai.api_key = environ.get("OPENAI_API_KEY", None)
+            if self.openai.api_key is None:
+                raise
 
     def setup_ollama(self):
         try:
             import ollama
 
             self.ollama = ollama
-        except ImportError:
-            print("Error: 'ollama' library not found. Please install it using 'pip install ollama'.")
-            raise
-        except ModuleNotFoundError:
+        except:
             print("Error: 'ollama' library not found. Please install it using 'pip install ollama'.")
             raise
 
     def encode_image(self, image_array):
         if image_array.dtype != "uint8":
-            image_array = (255 * (image_array - image_array.min()) / (image_array.max() - image_array.min())).astype("uint8")
+            image_array = (255 * (image_array - image_array.min()) / (image_array.max() - image_array.min())).astype(
+                "uint8"
+            )
         image = Image.fromarray(image_array)
         buffer = io.BytesIO()
         image.save(buffer, format="JPEG")
@@ -131,7 +137,9 @@ class Img2Txt(Node):
                 raise ValueError(f"Unexpected image array shape: {image_array.shape}")
 
         if image_array.ndim == 3:
-            if image_array.shape[2] == 3:  # RGB image
+            if image_array.shape[2] == 4:  # RGBA image
+                image_array = image_array[:, :, :3]
+            elif image_array.shape[2] == 3:  # RGB image
                 pass
             elif image_array.shape[2] == 1:  # Grayscale image
                 image_array = np.repeat(image_array, 3, axis=2)
@@ -234,4 +242,5 @@ class Img2Txt(Node):
     def img_to_text_model_changed(self, model_id):
         # reinitialize the model when the model_id changes
         if self.model_id != model_id:
+            self.setup()
             self.setup()
