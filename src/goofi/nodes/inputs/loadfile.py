@@ -49,6 +49,8 @@ class LoadFile(Node):
         self.data_output = None
         self.string_output = None
         self.last_params = None
+        self.last_mtime = None
+        self.resolved_filename = None
 
     def process(self, file: Data, reload: Data):
         if (reload is not None and np.any(reload.data > 0)) or self.params.file.reload.value:
@@ -56,11 +58,26 @@ class LoadFile(Node):
             self.data_output = None
             self.string_output = None
             self.last_params = None
+            self.last_mtime = None
+            self.resolved_filename = None
 
         if file is not None:
             self.params.file.filename.value = file.data
             self.file_filename_changed(file.data)
             self.input_slots["file"].clear()
+
+        # Check if file has been modified on disk
+        if self.last_mtime is not None and self.resolved_filename:
+            try:
+                current_mtime = Path(self.resolved_filename).stat().st_mtime
+                if current_mtime > self.last_mtime:
+                    self.data_output = None
+                    self.string_output = None
+                    self.last_params = None
+                    self.last_mtime = None
+                    self.resolved_filename = None
+            except (FileNotFoundError, OSError):
+                pass
 
         if self.last_params == self.params and not (self.data_output is None and self.string_output is None):
             # if the parameters are the same, return the previous output
@@ -70,12 +87,18 @@ class LoadFile(Node):
         self.last_params = deepcopy(self.params)
         self.load_file()
 
+        # Set last_mtime after successful load
+        if (self.data_output is not None or self.string_output is not None) and self.resolved_filename:
+            self.last_mtime = Path(self.resolved_filename).stat().st_mtime
+
         return {"data_output": self.data_output, "string_output": self.string_output}
 
     def load_file(self):
         if not self.params.file.filename.value:
             self.data_output = None
             self.string_output = None
+            self.last_mtime = None
+            self.resolved_filename = None
             return
 
         file_type = self.params.file.type.value
@@ -98,6 +121,8 @@ class LoadFile(Node):
                 filename = max(matches)
             else:
                 filename = matches[0]
+
+        self.resolved_filename = filename
 
         if file_type == "audio":
             try:
@@ -203,6 +228,8 @@ class LoadFile(Node):
             self.data_output = (data, meta if self.params.embedding_csv.name_column.value else {})
             self.string_output = None
             return
+
+        self.resolved_filename = filename  # Store the resolved filename
 
     def file_filename_changed(self, filename):
         self.setup()
