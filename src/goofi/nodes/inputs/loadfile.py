@@ -31,6 +31,7 @@ class LoadFile(Node):
                     "newest", options=["newest", "oldest", "alphabet_first", "alphabet_last"]
                 ),
                 "reload": BoolParam(False, trigger=True, doc="Force reload the file"),
+                "require_reload": BoolParam(False, doc="Only return the data if a file was newly loaded"),
             },
             "spectrum": {"freq_multiplier": FloatParam(1.0, doc="Multiplier to adjust the frequency values")},
             "embedding_csv": {"header": 0, "name_column": False, "index_column": True},
@@ -53,6 +54,8 @@ class LoadFile(Node):
         self.resolved_filename = None
 
     def process(self, file: Data, reload: Data):
+        self.just_loaded = False
+
         if (reload is not None and np.any(reload.data > 0)) or self.params.file.reload.value:
             self.input_slots["reload"].clear()
             self.data_output = None
@@ -80,18 +83,24 @@ class LoadFile(Node):
                 pass
 
         if self.last_params == self.params and not (self.data_output is None and self.string_output is None):
-            # if the parameters are the same, return the previous output
-            return {"data_output": self.data_output, "string_output": self.string_output}
+            if self.params.file.require_reload.value:
+                return {"data_output": None, "string_output": None}
+            else:
+                return {"data_output": self.data_output, "string_output": self.string_output}
 
         # if the parameters are different, load the file
         self.last_params = deepcopy(self.params)
         self.load_file()
+        self.just_loaded = True
 
         # Set last_mtime after successful load
         if (self.data_output is not None or self.string_output is not None) and self.resolved_filename:
             self.last_mtime = Path(self.resolved_filename).stat().st_mtime
 
-        return {"data_output": self.data_output, "string_output": self.string_output}
+        if self.params.file.require_reload.value and not self.just_loaded:
+            return {"data_output": None, "string_output": None}
+        else:
+            return {"data_output": self.data_output, "string_output": self.string_output}
 
     def load_file(self):
         if not self.params.file.filename.value:
@@ -152,7 +161,7 @@ class LoadFile(Node):
 
         extension = filename.split(".")[-1]
 
-        df = None
+        df, data = None, None
         if extension == "npy":
             data = np.load(f"{filename}", allow_pickle=True)
         elif extension == "txt":
