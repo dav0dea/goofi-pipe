@@ -19,6 +19,7 @@ class EEGRecording(Node):
         return {
             "recording": {
                 "use_example_data": True,
+                "example_data_subject": 1,
                 "file_path": "",
                 "file_sfreq": FloatParam(256, vmax=1000),
                 "source_name": "goofi",
@@ -66,7 +67,12 @@ class EEGRecording(Node):
                 raw = mne.io.read_raw(self.params.recording.file_path.value, preload=True)
         elif self.params.recording.use_example_data.value:
             raw = mne.concatenate_raws(
-                [mne.io.read_raw(p, preload=True, verbose=False) for p in eegbci.load_data(1, [1, 2], update_path=False)],
+                [
+                    mne.io.read_raw(p, preload=True, verbose=False)
+                    for p in eegbci.load_data(
+                        self.params.recording.example_data_subject.value, [1, 2], update_path=False
+                    )
+                ],
                 verbose=False,
             )
             eegbci.standardize(raw)
@@ -99,6 +105,10 @@ class EEGRecording(Node):
         raise NotImplementedError
 
     def recording_use_example_data_changed(self, _):
+        """Reinitialize the stream."""
+        self.setup()
+
+    def recording_example_data_subject_changed(self, _):
         """Reinitialize the stream."""
         self.setup()
 
