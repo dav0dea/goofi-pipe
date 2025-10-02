@@ -23,7 +23,7 @@ class Img2Txt(Node):
 
     @staticmethod
     def config_input_slots():
-        return {"image": DataType.ARRAY}
+        return {"prompt": DataType.STRING, "image": DataType.ARRAY}
 
     @staticmethod
     def config_output_slots():
@@ -123,9 +123,14 @@ class Img2Txt(Node):
         image.save(buffer, format="JPEG")
         return base64.b64encode(buffer.getvalue()).decode("utf-8")
 
-    def process(self, image: Data):
+    def process(self, prompt: Data, image: Data):
         if image.data is None:
             return None
+
+        if prompt is not None:
+            prompt = prompt.data
+        else:
+            prompt = self.params.img_to_text.prompt.value
 
         image_array = image.data
 
@@ -158,25 +163,20 @@ class Img2Txt(Node):
                 image_array = image_array.astype(np.uint8)
 
         if "/" in self.model_id.lower():
-            return self.process_huggingface_llama(image_array)
+            return self.process_huggingface_llama(prompt, image_array)
         elif "gpt" in self.model_id.lower():
-            return self.process_openai_gpt(image_array)
+            return self.process_openai_gpt(prompt, image_array)
         elif "ollama" in self.model_id.lower():
-            return self.process_ollama(image_array)
+            return self.process_ollama(prompt, image_array)
 
-    def process_huggingface_llama(self, image_array):
+    def process_huggingface_llama(self, prompt, image_array):
         if self.processor is None or self.model_instance is None:
             return {"generated_text": ("Error: Huggingface Llama model not initialized.", {})}
 
         # Process using Huggingface Llama
         base64_image = self.encode_image(image_array)
         messages = [
-            [
-                {
-                    "role": "user",
-                    "content": [{"type": "image"}, {"type": "text", "text": self.params.img_to_text.prompt.value}],
-                }
-            ],
+            [{"role": "user", "content": [{"type": "image"}, {"type": "text", "text": prompt}]}],
         ]
         text = self.processor.apply_chat_template(messages, add_generation_prompt=True)
 
@@ -194,7 +194,7 @@ class Img2Txt(Node):
         generated_text = self.processor.decode(output[0], skip_special_tokens=True)
         return {"generated_text": (generated_text, {})}
 
-    def process_openai_gpt(self, image_array):
+    def process_openai_gpt(self, prompt, image_array):
         # Process using OpenAI GPT
         base64_image = self.encode_image(image_array)
         headers = {"Content-Type": "application/json", "Authorization": f"Bearer {self.openai.api_key}"}
@@ -204,7 +204,7 @@ class Img2Txt(Node):
                 {
                     "role": "user",
                     "content": [
-                        {"type": "text", "text": self.params.img_to_text.prompt.value},
+                        {"type": "text", "text": prompt},
                         {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}},
                     ],
                 }
@@ -223,10 +223,10 @@ class Img2Txt(Node):
 
         return {"generated_text": (generated_text, {})}
 
-    def process_ollama(self, image_array):
+    def process_ollama(self, prompt, image_array):
         # Process using Ollama
         base64_image = self.encode_image(image_array)
-        messages = [{"role": "user", "content": self.params.img_to_text.prompt.value, "images": [base64_image]}]
+        messages = [{"role": "user", "content": prompt, "images": [base64_image]}]
         response = self.ollama.chat(
             model=self.model_id.replace("ollama:", ""),
             messages=messages,
@@ -243,4 +243,6 @@ class Img2Txt(Node):
         # reinitialize the model when the model_id changes
         if self.model_id != model_id:
             self.setup()
-            self.setup()
+
+    def img_to_text_prompt_changed(self, model_id):
+        self.input_slots["prompt"].clear()
