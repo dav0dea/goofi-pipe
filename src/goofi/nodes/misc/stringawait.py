@@ -24,7 +24,9 @@ class StringAwait(Node):
     def config_params():
         return {
             "string_await": {
-                "require_change": BoolParam(True, doc="Only output when the message changes, and we have an unconsumed trigger")
+                "require_change": BoolParam(
+                    True, doc="Only output when the message changes, and we have an unconsumed trigger"
+                )
             }
         }
 
