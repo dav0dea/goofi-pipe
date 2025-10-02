@@ -43,3 +43,4 @@ tabulate
 libcst
 litellm
 # py-feat # conflicts with other dependencies... required for the FacialExpression node
+pyperclip

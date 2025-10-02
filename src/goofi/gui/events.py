@@ -1,7 +1,9 @@
+import json
 import time
 from copy import deepcopy
 
 import dearpygui.dearpygui as dpg
+import pyperclip
 
 from goofi.node_helpers import list_nodes
 
@@ -278,13 +280,10 @@ def copy_selected_nodes(win, timeout: float = 0.1):
 
         # check if we got a response in time
         if node.serialization_pending:
-            # TODO: add proper logging
             print(f"WARNING: Node {name} timed out while waiting for serialization. Node state is possibly outdated.")
 
         if node.serialized_state is None:
-            # TODO: add proper logging
             print(f"ERROR: Node {name} does not have a serialized state. Copying is not possible.")
-            win.node_clipboard = None
             return
 
         # get links connected to input slots of the current node
@@ -303,26 +302,42 @@ def copy_selected_nodes(win, timeout: float = 0.1):
         serialized_nodes.append(ser)
 
     # store the serialized nodes in the clipboard
-    win.node_clipboard = serialized_nodes
+    pyperclip.copy(json.dumps(serialized_nodes))
 
 
 def paste_nodes(win):
     """Paste the nodes from the clipboard."""
-    if not is_ctrl_down() or win.node_clipboard is None:
+    try:
+        clip = json.loads(pyperclip.paste())
+    except json.JSONDecodeError:
+        print(f"Failed to decode the clipboard content into goofi-pipe nodes: {pyperclip.paste()}")
+        return
+
+    if not is_ctrl_down() or clip is None:
         return
 
     # add the nodes to the manager
     rename_nodes = {}
-    for node in win.node_clipboard:
-        new_name = win.manager.add_node(node["_type"], node["category"], params=node["params"], **node["gui_kwargs"])
-        rename_nodes[node["name"]] = new_name
+    for node in clip:
+        try:
+            new_name = win.manager.add_node(
+                node["_type"], node["category"], params=node["params"], **node["gui_kwargs"]
+            )
+            rename_nodes[node["name"]] = new_name
+        except KeyError:
+            print(f"Failed to parse node from clipboard: {node}")
+            continue
 
     # add links between the nodes
-    for node in win.node_clipboard:
-        for n1, n2, s1, s2 in node["input_links"]:
-            n1 = rename_nodes[n1] if n1 in rename_nodes else n1
-            n2 = rename_nodes[n2] if n2 in rename_nodes else n2
-            win.manager.add_link(n1, n2, s1, s2)
+    for node in clip:
+        try:
+            for n1, n2, s1, s2 in node["input_links"]:
+                n1 = rename_nodes[n1] if n1 in rename_nodes else n1
+                n2 = rename_nodes[n2] if n2 in rename_nodes else n2
+                win.manager.add_link(n1, n2, s1, s2)
+        except KeyError:
+            print(f"Failed to parse node link from clipboard: {node}")
+            continue
 
 
 # the key handler map maps key press events to functions that handle them

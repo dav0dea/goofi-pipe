@@ -1146,7 +1146,6 @@ class Window:
         self.last_create_node_tab = 0
         self.file_selection_window = None
         self.unsaved_changes_dialog_open = False
-        self.node_clipboard = None
         self.node_info_window = None
         self.metadata_view = None
         self.param_input_fields = []
