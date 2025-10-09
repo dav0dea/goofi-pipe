@@ -6,7 +6,7 @@ from copy import deepcopy
 from enum import Enum
 from multiprocessing import Process
 from os.path import dirname, join
-from pathlib import PosixPath
+from pathlib import Path
 from threading import Event, Thread
 from typing import Any, Callable, Dict, Optional, Tuple, Union
 
@@ -290,7 +290,9 @@ class Node(ABC):
             elif msg.type == MessageType.DATA:
                 # received data from another node
                 if msg.content["slot_name"] not in self.input_slots:
-                    raise ValueError(f"Received DATA message but input slot '{msg.content['slot_name']}' doesn't exist.")
+                    raise ValueError(
+                        f"Received DATA message but input slot '{msg.content['slot_name']}' doesn't exist."
+                    )
                 slot = self.input_slots[msg.content["slot_name"]]
                 slot.data = msg.content["data"]
                 if slot.trigger_process:
@@ -446,7 +448,9 @@ class Node(ABC):
                     if conn._id in self.pending_connections:
                         # filter out dead threads
                         self.pending_connections[conn._id] = [
-                            (thread, timestamp) for thread, timestamp in self.pending_connections[conn._id] if thread.is_alive()
+                            (thread, timestamp)
+                            for thread, timestamp in self.pending_connections[conn._id]
+                            if thread.is_alive()
                         ]
                         # check if the connection has timed out
                         timeout_occurred = False
@@ -465,11 +469,13 @@ class Node(ABC):
                         self.pending_connections[conn._id] = []
 
                     # send the message (in a separate thread because connections may time out and block)
-                    t = Thread(target=conn.send, name=f"{self.__class__.__name__}-send-{conn._id}", args=(msg,), daemon=True)
+                    t = Thread(
+                        target=conn.send, name=f"{self.__class__.__name__}-send-{conn._id}", args=(msg,), daemon=True
+                    )
                     t.start()
                     self.pending_connections[conn._id].append((t, time.time()))
 
-    @staticmethod
+    @classmethod
     def _configure(cls) -> Tuple[Dict[str, InputSlot], Dict[str, OutputSlot], NodeParams]:
         """Retrieves the node's configuration of input slots, output slots, and parameters."""
         in_slots = cls.config_input_slots()
@@ -530,7 +536,7 @@ class Node(ABC):
                 return ref
 
         # generate arguments for the node
-        in_slots, out_slots, params = cls._configure(cls)
+        in_slots, out_slots, params = cls._configure()
         # integrate initial parameters if they are provided
         if initial_params is not None:
             try:
@@ -595,7 +601,7 @@ class Node(ABC):
             A tuple containing the node reference and the node itself.
         """
         # generate arguments for the node
-        in_slots, out_slots, params = cls._configure(cls)
+        in_slots, out_slots, params = cls._configure()
 
         # integrate initial parameters if they are provided
         if initial_params is not None:
@@ -633,7 +639,7 @@ class Node(ABC):
             The node instance.
         """
         # generate arguments for the node
-        in_slots, out_slots, params = cls._configure(cls)
+        in_slots, out_slots, params = cls._configure()
         # instantiate the node in the current process
         return cls(None, in_slots, out_slots, params, NodeEnv.STANDALONE)
 
@@ -663,7 +669,7 @@ class Node(ABC):
         return ""
 
     @property
-    def assets_path(self) -> PosixPath:
+    def assets_path(self) -> Path:
         """
         Returns the absolute path to the assets folder of goofi-pipe.
 
@@ -671,7 +677,7 @@ class Node(ABC):
         `PosixPath`
             The path to the assets folder of the node.
         """
-        return pkg_resources.files(assets)
+        return Path(str(pkg_resources.files(assets)))
 
     @property
     def data_path(self) -> str:
