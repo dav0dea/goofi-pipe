@@ -508,7 +508,12 @@ class Node(ABC):
         self.connection.try_send(Message(MessageType.SHUTDOWN, {}))
 
     @classmethod
-    def create(cls, initial_params: Optional[Dict[str, Dict[str, Any]]] = None, retries: int = 3) -> NodeRef:
+    def create(
+        cls,
+        initial_params: Optional[Dict[str, Dict[str, Any]]] = None,
+        retries: int = 3,
+        send_output_to_ref: bool = True,
+    ) -> NodeRef:
         """
         Create a new node instance in a separate process and return a reference to the node.
 
@@ -516,6 +521,10 @@ class Node(ABC):
         `initial_params` : Optional[Dict[str, Dict[str, Any]]]
             A dictionary of parameter groups, where each group is a dictionary of parameter names and values.
             Defaults to None.
+        `retries` : int
+            The number of times to retry creating the node if it fails. Defaults to 3.
+        `send_output_to_ref` : bool
+            If True, connect the output slots of the node to the returned NodeRef. Defaults to True.
 
         ### Returns
         `NodeRef`
@@ -577,6 +586,7 @@ class Node(ABC):
             params,
             cls,
             process=proc,
+            receive_node_outputs=send_output_to_ref,
         )
         return ref
 
@@ -586,6 +596,7 @@ class Node(ABC):
         initial_params: Optional[Dict[str, Dict[str, Any]]] = None,
         conns: Optional[Tuple[Connection, Connection]] = None,
         init_ref: bool = True,
+        send_output_to_ref: bool = True,
     ) -> Tuple[NodeRef, "Node"]:
         """
         Create a new node instance in the current process and return a reference to the node,
@@ -595,6 +606,12 @@ class Node(ABC):
         `initial_params` : Optional[Dict[str, Dict[str, Any]]]
             A dictionary of parameter groups, where each group is a dictionary of parameter names and values.
             Defaults to None.
+        `conns` : Optional[Tuple[Connection, Connection]]
+            A tuple of two connections to use for the node. If None, a new connection pair will be created.
+        `init_ref` : bool
+            If True, call initialize() on the returned NodeRef. Defaults to True.
+        `send_output_to_ref` : bool
+            If True, connect the output slots of the node to the returned NodeRef. Defaults to True.
 
         ### Returns
         `Tuple[NodeRef, Node]`
@@ -626,6 +643,7 @@ class Node(ABC):
             deepcopy(params),
             cls,
             create_initialized=init_ref,
+            receive_node_outputs=send_output_to_ref,
         )
         return ref, node
 

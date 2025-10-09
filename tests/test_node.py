@@ -148,7 +148,9 @@ def test_full_node_input_slots():
         assert isinstance(
             n.input_slots[name], InputSlot
         ), f"Node input slot {name} should be an InputSlot, got {type(n.input_slots[name])}"
-        assert slot == n.input_slots[name].dtype, f"Mismatching slot types for {name}: {slot} != {n.input_slots[name].dtype}"
+        assert (
+            slot == n.input_slots[name].dtype
+        ), f"Mismatching slot types for {name}: {slot} != {n.input_slots[name].dtype}"
 
     ref.terminate()
 
@@ -162,7 +164,9 @@ def test_full_node_output_slots():
         assert isinstance(
             n.output_slots[name], OutputSlot
         ), f"Node output slot {name} should be an OutputSlot, got {type(n.output_slots[name])}"
-        assert slot == n.output_slots[name].dtype, f"Mismatching slot types for {name}: {slot} != {n.output_slots[name].dtype}"
+        assert (
+            slot == n.output_slots[name].dtype
+        ), f"Mismatching slot types for {name}: {slot} != {n.output_slots[name].dtype}"
 
     ref.terminate()
 
@@ -211,7 +215,9 @@ def test_pipes():
     assert (
         len(n1.output_slots["out"].connections) == 2
     ), f"Expected two output slot connections, got {len(n1.output_slots['out'].connections)}"
-    assert ("in", ref2.connection, False) in n1.output_slots["out"].connections, "Output slot connections are incorrect."
+    assert ("in", ref2.connection, False) in n1.output_slots[
+        "out"
+    ].connections, "Output slot connections are incorrect."
     assert len(results) > 0, "Processing callback should have been called once."
 
     # disconnect the nodes
@@ -228,6 +234,21 @@ def test_pipes():
 
     ref1.terminate()
     ref2.terminate()
+
+
+def test_ignore_output_in_ref():
+    cls = make_custom_node(output_slots={"out": DataType.ARRAY})
+    _, n1 = cls.create_local(send_output_to_ref=False)
+    _, n2 = cls.create_local(send_output_to_ref=True)
+
+    time.sleep(0.1)
+
+    assert (
+        len(n1.output_slots["out"].connections) == 0
+    ), f"Expected zero output slot connections, got {len(n1.output_slots['out'].connections)}"
+    assert (
+        len(n2.output_slots["out"].connections) == 1
+    ), f"Expected one output slot connection, got {len(n1.output_slots['out'].connections)}"
 
 
 @pytest.mark.parametrize("value", [10.0, 100.0])

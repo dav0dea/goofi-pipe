@@ -1,3 +1,4 @@
+import copy
 import pickle
 import platform
 import queue
@@ -28,9 +29,9 @@ class Connection(ABC):
         Connection._CONNECTION_IDS.append(self._id)
 
     @staticmethod
-    def get_backends() -> Dict[str, Type["Connection"]]:
+    def get_ipc_backends() -> Dict[str, Type["Connection"]]:
         """
-        List all available connection backends.
+        List all available inter-process communication backends.
         """
         return {
             "zmq-tcp": TCPZeroMQConnection,
@@ -61,18 +62,26 @@ class Connection(ABC):
 
         # set the backend if discovering connection IDs was successful (prevents overwriting the backend)
         assert (
-            backend in Connection.get_backends().keys()
-        ), f"Invalid backend: {backend}. Choose from {list(Connection.get_backends().keys())}"
+            backend in Connection.get_ipc_backends().keys()
+        ), f"Invalid backend: {backend}. Choose from {list(Connection.get_ipc_backends().keys())}"
         Connection._BACKEND = backend
 
     @staticmethod
-    def create() -> Tuple["Connection", "Connection"]:
+    def create(local: bool = False) -> Tuple["Connection", "Connection"]:
         """
         Create two instances of the connection class and return them as a tuple. Both instances should be
         connected to each other using the underlying connection mechanism of the deriving class.
+        Can return either a local inter-thread connection or an inter-process connection depending on the `local` parameter.
+
+        ### Parameters
+        `local` : bool
+            If True, create a local inter-thread connection instead of an inter-process connection.
         """
+        if local:
+            return ThreadConnection._create()
+
         assert Connection._BACKEND is not None, "No backend set. Call Connection.set_backend() first."
-        return Connection.get_backends()[Connection._BACKEND]._create()
+        return Connection.get_ipc_backends()[Connection._BACKEND]._create()
 
     @staticmethod
     @abstractmethod
@@ -326,3 +335,60 @@ class IPCZeroMQConnection(ZeroMQConnection):
     @staticmethod
     def protocol() -> str:
         return "ipc"
+
+
+class ThreadConnection(Connection):
+    def __init__(self, inbox: queue.Queue, outbox: queue.Queue):
+        super().__init__()
+        self._inbox = inbox
+        self._outbox = outbox
+        self._alive = True
+        self._send_lock = threading.Lock()
+
+    @staticmethod
+    def _create() -> Tuple[Connection, Connection]:
+        q1, q2 = queue.Queue(), queue.Queue()
+        return ThreadConnection(q1, q2), ThreadConnection(q2, q1)
+
+    def send(self, obj: object) -> None:
+        if not self._alive:
+            raise ConnectionError("Connection closed")
+        try:
+            with self._send_lock:
+                self._outbox.put(copy.deepcopy(obj))
+        except Exception:
+            raise ConnectionError("Send failed")
+
+    def recv(self) -> object:
+        if not self._alive:
+            raise ConnectionError("Connection closed")
+        try:
+            return self._inbox.get()
+        except Exception:
+            raise ConnectionError("Receive failed")
+
+    def close(self) -> None:
+        self._alive = False
+        while not self._inbox.empty():
+            try:
+                self._inbox.get_nowait()
+            except queue.Empty:
+                break
+        while not self._outbox.empty():
+            try:
+                self._outbox.get_nowait()
+            except queue.Empty:
+                break
+
+    def __del__(self) -> None:
+        self.close()
+
+    def __getstate__(self):
+        state = self.__dict__.copy()
+        if "_send_lock" in state:
+            del state["_send_lock"]
+        return state
+
+    def __setstate__(self, state):
+        self.__dict__.update(state)
+        self._send_lock = threading.Lock()

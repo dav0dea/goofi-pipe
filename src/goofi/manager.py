@@ -83,7 +83,7 @@ class NodeContainer:
         if name in self._nodes:
             self._nodes[name].terminate()
             del self._nodes[name]
-            return True
+            return
         raise KeyError(f"Node {name} not in container")
 
     def __getitem__(self, name: str) -> NodeRef:
@@ -156,6 +156,9 @@ class Manager:
         self._use_multiprocessing = use_multiprocessing
         self._running = True
         self.nodes = NodeContainer()
+
+        # propagate the headless argument to the node process registry
+        NodeProcessRegistry().headless = headless
 
         # store attributes related to loading and saving
         self._save_path = None
@@ -311,13 +314,13 @@ class Manager:
         if self._use_multiprocessing:
             # try to spawn the node in a separate process
             try:
-                ref = node.create(initial_params=params)
+                ref = node.create(initial_params=params, send_output_to_ref=not self.headless)
             except MultiprocessingForbiddenError:
                 # the node doesn't support multiprocessing, create it in the local process
                 pass
         if ref is None:
             # spawn the node in the local process
-            ref = node.create_local(initial_params=params)[0]
+            ref = node.create_local(initial_params=params, send_output_to_ref=not self.headless)[0]
 
         # set up the shutdown callback handler to terminate the manager
         ref.set_message_handler(MessageType.SHUTDOWN, lambda *args: self.terminate())
@@ -356,7 +359,9 @@ class Manager:
             Window().remove_node(name, **gui_kwargs)
 
     @mark_unsaved_changes
-    def add_link(self, node_out: str, node_in: str, slot_out: str, slot_in: str, notify_gui: bool = True, **gui_kwargs) -> None:
+    def add_link(
+        self, node_out: str, node_in: str, slot_out: str, slot_in: str, notify_gui: bool = True, **gui_kwargs
+    ) -> None:
         """
         Adds a link between two nodes.
 
@@ -374,6 +379,10 @@ class Manager:
         `gui_kwargs` : dict
             Additional keyword arguments to pass to the gui.
         """
+        # TODO: use a thread connection that avoids serialization in case the two nodes share a process
+        # if self.nodes[node_in].process == self.nodes[node_out].process:
+        #     use a thread connection
+
         # TODO: Prevent multiple links to the same input slot. The GUI already prevents this, but the manager should too.
         self.nodes[node_out].connection.send(
             Message(
@@ -494,7 +503,9 @@ class Manager:
 
             if self.nodes[name].serialization_pending:
                 # TODO: add proper logging
-                print(f"WARNING: Node {name} timed out while waiting for serialization. Node state is possibly outdated.")
+                print(
+                    f"WARNING: Node {name} timed out while waiting for serialization. Node state is possibly outdated."
+                )
 
             # check if we got a response in time
             if self.nodes[name].serialized_state is None:
@@ -647,22 +658,29 @@ def main(duration: Optional[float] = None, args=None):
     """
     import argparse
 
-    comm_choices = list(Connection.get_backends().keys())
+    comm_choices = list(Connection.get_ipc_backends().keys())
 
     # parse arguments
     parser = argparse.ArgumentParser(description="goofi-pipe")
     parser.add_argument("filepath", nargs="?", help="path to the file to load from")
     parser.add_argument("--headless", action="store_true", help="run in headless mode")
     parser.add_argument("--no-multiprocessing", action="store_true", help="disable multiprocessing")
-    parser.add_argument("--comm", choices=["auto"] + comm_choices, default="auto", help="node communication backend")
+    parser.add_argument(
+        "--ipc-backend",
+        choices=["auto"] + comm_choices,
+        default="auto",
+        help="node inter-process communication backend",
+    )
     parser.add_argument(
         "--duration",
         default=0,
-        type=int,
+        type=float,
         help="Duration (in seconds) after which goofi-pipe automatically shuts down (0 to run indefinitely)",
     )
     parser.add_argument("--update-readme-docs", action="store_true", help="update the node list in the README")
-    parser.add_argument("--gen-node-docs", action="store_true", help="generate missing node docstrings using the openai API")
+    parser.add_argument(
+        "--gen-node-docs", action="store_true", help="generate missing node docstrings using the openai API"
+    )
     parser.add_argument("--example", nargs="?", const="", help="run example files instead of starting the manager")
     args = parser.parse_args(args)
 
@@ -686,7 +704,9 @@ def main(duration: Optional[float] = None, args=None):
             return
 
     if duration is not None and args.duration != 0:
-        raise ValueError("Manager duration should be given either as a parameter or as a command line argument, not both.")
+        raise ValueError(
+            "Manager duration should be given either as a parameter or as a command line argument, not both."
+        )
     elif duration is None:
         duration = args.duration
 
@@ -696,7 +716,7 @@ def main(duration: Optional[float] = None, args=None):
         headless=args.headless,
         use_multiprocessing=not args.no_multiprocessing,
         duration=duration,
-        communication_backend=args.comm,
+        communication_backend=args.ipc_backend,
     )
 
 

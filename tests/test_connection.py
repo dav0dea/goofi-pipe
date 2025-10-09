@@ -8,7 +8,7 @@ from goofi.connection import Connection
 from goofi.message import Message, MessageType
 
 
-@pytest.mark.parametrize("backend", Connection.get_backends().keys())
+@pytest.mark.parametrize("backend", Connection.get_ipc_backends().keys())
 def test_abstract_create(backend):
     try:
         mp_manager = MPManager()
@@ -21,7 +21,7 @@ def test_abstract_create(backend):
         Connection._create()
 
 
-@pytest.mark.parametrize("backend", Connection.get_backends().keys())
+@pytest.mark.parametrize("backend", Connection.get_ipc_backends().keys())
 def test_create(backend):
     try:
         mp_manager = MPManager()
@@ -34,7 +34,7 @@ def test_create(backend):
     assert conn1 is not None and conn2 is not None, f"{backend.__name__}.create() returned None"
 
 
-@pytest.mark.parametrize("backend", Connection.get_backends().keys())
+@pytest.mark.parametrize("backend", Connection.get_ipc_backends().keys())
 def test_super_init(backend):
     try:
         mp_manager = MPManager()
@@ -49,7 +49,7 @@ def test_super_init(backend):
 
 
 @pytest.mark.parametrize("obj", [1, "test", None, [1, 2, 3], {"a": 1}, Message(MessageType.PING, {})])
-@pytest.mark.parametrize("backend", Connection.get_backends().keys())
+@pytest.mark.parametrize("backend", Connection.get_ipc_backends().keys())
 def test_send_recv(obj, backend):
     try:
         mp_manager = MPManager()
@@ -63,7 +63,7 @@ def test_send_recv(obj, backend):
     assert conn2.recv() == obj, "Connection.send() and Connection.recv() didn't work"
 
 
-@pytest.mark.parametrize("backend", Connection.get_backends().keys())
+@pytest.mark.parametrize("backend", Connection.get_ipc_backends().keys())
 def test_close(backend):
     try:
         mp_manager = MPManager()
@@ -92,7 +92,7 @@ def test_close(backend):
     conn2.close()
 
 
-@pytest.mark.parametrize("backend", Connection.get_backends().keys())
+@pytest.mark.parametrize("backend", Connection.get_ipc_backends().keys())
 def test_try_send(backend):
     try:
         mp_manager = MPManager()
@@ -110,7 +110,7 @@ def test_try_send(backend):
     conn2.close()
 
 
-@pytest.mark.parametrize("backend", Connection.get_backends().keys())
+@pytest.mark.parametrize("backend", Connection.get_ipc_backends().keys())
 def test_multiproc(backend):
     try:
         mp_manager = MPManager()

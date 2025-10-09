@@ -43,7 +43,7 @@ def test_main():
 
 
 @pytest.mark.skipif(platform.system() == "Windows", reason="Multiprocessing is very slow on Windows.")
-@pytest.mark.parametrize("comm_backend", Connection.get_backends().keys())
+@pytest.mark.parametrize("comm_backend", Connection.get_ipc_backends().keys())
 def test_simple(comm_backend):
     if comm_backend.startswith("zmq"):
         # TODO: make sure zmq backend works

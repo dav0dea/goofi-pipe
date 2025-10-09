@@ -179,6 +179,8 @@ class NodeRef:
         A dictionary of output slots and their data types.
     `params` : NodeParams
         The parameters of the node.
+    `node_class` : Type
+        The class of the node.
     `category` : str
         The category of the node.
     `process` : Optional[Process]
@@ -198,6 +200,7 @@ class NodeRef:
     serialized_state: Optional[Dict[str, Any]] = None
     gui_kwargs: Dict[str, Any] = field(default_factory=dict)
     create_initialized: bool = True
+    receive_node_outputs: bool = True
 
     def __post_init__(self):
         if self.connection is None:
@@ -209,14 +212,15 @@ class NodeRef:
         if self.create_initialized:
             self.initialize()
 
-        # register the node reference as an output pipe for each output slot
-        for name in self.output_slots.keys():
-            self.connection.send(
-                Message(
-                    MessageType.ADD_OUTPUT_PIPE,
-                    {"slot_name_out": name, "slot_name_in": name, "node_connection": None},
+        if self.receive_node_outputs:
+            # register the node reference as an output pipe for each output slot
+            for name in self.output_slots.keys():
+                self.connection.send(
+                    Message(
+                        MessageType.ADD_OUTPUT_PIPE,
+                        {"slot_name_out": name, "slot_name_in": name, "node_connection": None},
+                    )
                 )
-            )
 
     def initialize(self):
         self._alive = True
@@ -322,8 +326,21 @@ class NodeRef:
 
 
 class NodeProcess:
-    def __init__(self, name: str):
+    """
+    A NodeProcess manages a separate process that can host multiple nodes. Nodes can be spawned in the
+    process by sending the node class, its connections, and initial parameters through a pipe to the
+    process. The process will create the node and send back a NodeRef through the pipe.
+
+    ### Parameters
+    `name` : str
+        The name of the process.
+    `send_output_to_ref` : bool
+        If True, connect the output slots of the node to the returned NodeRef. Defaults to True.
+    """
+
+    def __init__(self, name: str, send_output_to_ref: bool = True):
         self.name = name
+        self.send_output_to_ref = send_output_to_ref
         self.conn, recv = Pipe()
         self.proc = Process(target=self.messaging_loop, name=name, args=(recv,), daemon=True)
         self.proc.start()
@@ -332,14 +349,29 @@ class NodeProcess:
         nodes = []
         while True:
             cls, conns, args = conn.recv()
-            ref, node = cls.create_local(initial_params=args, conns=conns, init_ref=False)
+            ref, node = cls.create_local(
+                initial_params=args,
+                conns=conns,
+                init_ref=False,
+                send_output_to_ref=self.send_output_to_ref,
+            )
             nodes.append(node)
             conn.send(ref)
 
 
 class NodeProcessRegistry:
+    """
+    A singleton registry for NodeProcess instances. This ensures that nodes with the same name are
+    spawned in the same process.
+
+    The `headless` attribute can be set to True to prevent nodes from sending their output
+    to their NodeRef instances, which reduces computational load.
+    """
+
     _instance = None
     _processes: Dict[str, NodeProcess] = {}
+
+    headless: bool = False
 
     def __new__(cls):
         if cls._instance is None:
@@ -348,8 +380,8 @@ class NodeProcessRegistry:
 
     def get(self, name: str) -> NodeProcess:
         if name not in self._processes:
-            self._processes[name] = NodeProcess(name)
-        return self._processes.get(name)
+            self._processes[name] = NodeProcess(name, send_output_to_ref=not self.headless)
+        return self._processes[name]
 
     def all(self) -> Dict[str, NodeProcess]:
         return dict(self._processes)
