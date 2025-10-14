@@ -101,8 +101,8 @@ class LSLClient(Node):
             return
 
         meta = {"sfreq": self.client.info().nominal_srate(), "channels": {"dim0": self.ch_names}}
-        if timestamps is not None:
-            meta["channels"]["dim1"] = list(timestamps)
+        # if timestamps is not None:
+        #     meta["channels"]["dim1"] = list(timestamps)
         return {"out": (samples, meta)}
 
     def connect(self) -> bool:
