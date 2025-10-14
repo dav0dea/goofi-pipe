@@ -5,18 +5,9 @@ from goofi.node import Node
 
 
 class LSLOut(Node):
-    """
-    This node outputs incoming array data as a Lab Streaming Layer (LSL) stream, allowing real-time transmission of signals (such as EEG, sensor data, etc.) to other software or machines compatible with LSL. The node automatically creates and manages an LSL outlet, configuring its channels and parameters to match the input array.
-
-    Inputs:
-    - data: A 1D or 2D array of floating-point data to be sent over LSL. The array can represent multi-channel or single-channel time series data. The expected channel names and sample frequency may be specified in metadata.
-
-    Outputs:
-    - None. (This node transmits data to an external LSL stream and does not produce an output within the goofi-pipe node graph.)
-    """
 
     def config_input_slots():
-        return {"data": DataType.ARRAY}
+        return {"data": DataType.ARRAY, "source_name": DataType.STRING, "stream_name": DataType.STRING}
 
     def config_params():
         return {
@@ -32,7 +23,16 @@ class LSLOut(Node):
         self.lsl = lsl
         self.outlet = None
 
-    def process(self, data: Data):
+    def process(self, data: Data, source_name: Data, stream_name: Data):
+        if source_name is not None:
+            self.params.lsl.source_name.value = source_name.data
+            self.lsl_source_name_changed(source_name.data)
+            self.input_slots["source_name"].clear()
+        if stream_name is not None:
+            self.params.lsl.stream_name.value = stream_name.data
+            self.lsl_stream_name_changed(stream_name.data)
+            self.input_slots["stream_name"].clear()
+
         if data is None or len(data.data) == 0:
             return
 
@@ -44,7 +44,7 @@ class LSLOut(Node):
                 self.params.lsl.stream_name.value,
                 "Data",
                 len(data.data),
-                data.meta["sfreq"] if "sfreq" in data.meta else self.lsl.IRREGULAR_RATE,
+                data.meta["sfreq"] if "sfreq" in data.meta and not np.isnan(data.meta["sfreq"]) else 0,
                 "float32",
                 self.params.lsl.source_name.value,
             )
@@ -64,6 +64,10 @@ class LSLOut(Node):
             self.outlet = None
             raise e
 
+    def lsl_source_name_changed(self, value: str):
+        if self.outlet is not None and self.outlet.get_sinfo().source_id != value:
+            self.outlet = None
+
     def lsl_stream_name_changed(self, value: str):
-        if self.outlet is not None:
+        if self.outlet is not None and self.outlet.get_sinfo().name != value:
             self.outlet = None
