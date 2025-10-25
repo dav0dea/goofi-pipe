@@ -26,11 +26,11 @@ class DimensionalityReduction(Node):
             "umap": {
                 "num_neighbors": IntParam(15, 2, 100, doc="Number of UMAP neighbors"),
                 "metric": StringParam("euclidean", options=UMAP_METRICS, doc="Distance metric for UMAP"),
-                "random_seed": IntParam(42, 0, 10000, doc="Random seed for UMAP"),
+                "random_seed": IntParam(1234, 0, 10000, doc="Random seed for UMAP"),
             },
             "tsne": {
                 "perplexity": FloatParam(30.0, 5.0, 50.0, doc="t-SNE perplexity"),
-                "random_seed": IntParam(42, 0, 10000, doc="Random seed for t-SNE"),
+                "random_seed": IntParam(1234, 0, 10000, doc="Random seed for t-SNE"),
             },
         }
 
