@@ -70,8 +70,12 @@ class Replay(Node):
         # Extract the current row as a dictionary
         row_data = self.df.iloc[self.current_index].to_dict()
 
-        # Convert each value to the appropriate Data format
-        table_output = {key: to_data(value) for key, value in row_data.items()}
+        # Convert each value, ensuring numeric types become np.number  
+        table_output = {}  
+        for key, value in row_data.items():  
+            if isinstance(value, (int, float)) and not isinstance(value, (np.number, np.ndarray)):  
+                value = np.float64(value)  # Convert Python numeric to NumPy  
+            table_output[key] = to_data(value)  
 
         # Increment index, loop back to the start when reaching the end
         self.current_index = (self.current_index + 1) % len(self.df)
