@@ -67,7 +67,6 @@ class Accelerometer(Node):
             
             # Extract sampling frequency from metadata  
             fs = x.meta.get("sfreq", 100.0)
-            print('fs':, fs, 'window_sec:', window_sec, 'hop_sec:', hop_sec)
             # Call your feature extraction function  
             features_df = accel_features_multi_axis(  
                 x_arr, y_arr, z_arr,   
