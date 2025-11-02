@@ -35,12 +35,16 @@ class Connectivity(Node):
                         "wPLI",
                         "PLI",
                         "PLV",
+                        "AEC",         # <-- NEW
+                        "AEC_orth",    # <-- NEW
                         "covariance",
                         "pearson",
                         "mutual_info",
+                        "dcor",        # <-- NEW
                     ],
                 ),
             },
+
             "biotuner": {
                 "method": StringParam(
                     "None", options=["None", "harmsim", "euler", "subharm_tension", "RRCi", "wPLI_crossfreq"]
@@ -132,66 +136,124 @@ def compute_conn_matrix_single(
 
 hilbert_fn, coherence_fn, pearsonr_fn, mutual_info_regression_fn = None, None, None, None
 
-
 def compute_classical_connectivity(data, method):
-    # import the connectivity function here to avoid loading it on startup
+    # lazy imports
     global hilbert_fn, coherence_fn, pearsonr_fn, mutual_info_regression_fn
     if hilbert_fn is None:
         from scipy.signal import coherence, hilbert
         from scipy.stats import pearsonr
         from sklearn.feature_selection import mutual_info_regression
-
         hilbert_fn = hilbert
         coherence_fn = coherence
         pearsonr_fn = pearsonr
         mutual_info_regression_fn = mutual_info_regression
 
+    # ---- NEW helpers ----
+    def _aec(x, y):
+        ex = np.abs(hilbert_fn(x))
+        ey = np.abs(hilbert_fn(y))
+        sx, sy = np.std(ex), np.std(ey)
+        if sx < 1e-9 or sy < 1e-9:
+            return np.nan
+        return float(np.corrcoef(ex, ey)[0, 1])
+
+    def _aec_orth(x, y):
+        # Orthogonalize y wrt x before envelope corr
+        zx = hilbert_fn(x)
+        zy = hilbert_fn(y)
+        y_orth = np.imag(zy * np.conj(zx) / (np.abs(zx) + 1e-12))
+        ex = np.abs(zx)
+        ey = np.abs(y_orth + 0j)
+        sx, sy = np.std(ex), np.std(ey)
+        if sx < 1e-9 or sy < 1e-9:
+            return np.nan
+        return float(np.corrcoef(ex, ey)[0, 1])
+
+    def _dcor(x, y):
+        # Distance correlation (zero iff independent)
+        x = x.reshape(-1, 1).astype(float)
+        y = y.reshape(-1, 1).astype(float)
+        n = len(x)
+        Dx = np.abs(x - x.T)
+        Dy = np.abs(y - y.T)
+        J = np.eye(n) - np.ones((n, n)) / n
+        Ax = J @ Dx @ J
+        Ay = J @ Dy @ J
+        dcov = np.sum(Ax * Ay) / (n * n)
+        dvarx = np.sum(Ax * Ax) / (n * n) + 1e-20
+        dvary = np.sum(Ay * Ay) / (n * n) + 1e-20
+        return float(dcov / np.sqrt(dvarx * dvary))
+
+    # ---- compute ----
     n_channels, n_samples = data.shape
-    matrix = np.zeros((n_channels, n_channels))
+    matrix = np.zeros((n_channels, n_channels), dtype=float)
 
     if method == "covariance":
-        matrix = np.cov(data)
-        return matrix
-    # TODO : optimize this shit
+        return np.cov(data)
+
     for i in range(n_channels):
-        for j in range(i, n_channels):  # Only compute upper diagonal
+        for j in range(i, n_channels):  # upper triangle
             if i == j:
-                matrix[i, j] = 1  # diagonal elements are 1, for coherence/PLV or 0 for others, adjust as needed
+                # set diag per-metric convention
+                if method in {"coherence", "imag_coherence", "wPLI", "PLI", "PLV", "AEC", "AEC_orth", "pearson"}:
+                    matrix[i, j] = 1.0
+                else:  # mutual_info, dcor (and others where "self" isn't informative)
+                    matrix[i, j] = 0.0
                 continue
 
+            xi = data[i, :]
+            yj = data[j, :]
+
             if method == "wPLI":
-                sig1 = hilbert_fn(data[i, :])
-                sig2 = hilbert_fn(data[j, :])
-                imag_csd = np.imag(np.exp(1j * (np.angle(sig1) - np.angle(sig2))))
-                matrix[i, j] = matrix[j, i] = np.abs(np.mean(imag_csd)) / np.mean(np.abs(imag_csd))
+                sig1 = hilbert_fn(xi)
+                sig2 = hilbert_fn(yj)
+                # standard wPLI from analytic cross-signal imaginary part
+                z = sig1 * np.conj(sig2)
+                Im = np.imag(z)
+                num = np.abs(np.sum(Im))
+                den = np.sum(np.abs(Im)) + 1e-12
+                matrix[i, j] = matrix[j, i] = float(num / den)
 
             elif method == "coherence":
-                f, Cxy = coherence_fn(data[i, :], data[j, :])
-                matrix[i, j] = matrix[j, i] = np.mean(Cxy)
+                f, Cxy = coherence_fn(xi, yj)
+                matrix[i, j] = matrix[j, i] = float(np.mean(Cxy)) if Cxy.size else np.nan
 
             elif method == "PLI":
-                sig1 = hilbert_fn(data[i, :])
-                sig2 = hilbert_fn(data[j, :])
-                matrix[i, j] = matrix[j, i] = np.mean(np.sign(np.angle(sig1) - np.angle(sig2)))
+                sig1 = hilbert_fn(xi)
+                sig2 = hilbert_fn(yj)
+                dphi = np.angle(sig1) - np.angle(sig2)
+                matrix[i, j] = matrix[j, i] = float(np.mean(np.sign(np.sin(dphi))))
 
             elif method == "imag_coherence":
-                sig1 = hilbert_fn(data[i, :])
-                sig2 = hilbert_fn(data[j, :])
-                matrix[i, j] = matrix[j, i] = np.mean(np.imag(np.conj(sig1) * sig2)) / (
-                    np.sqrt(np.mean(np.imag(sig1) ** 2)) * np.sqrt(np.mean(np.imag(sig2) ** 2))
-                )
+                sig1 = hilbert_fn(xi)
+                sig2 = hilbert_fn(yj)
+                num = np.imag(np.conj(sig1) * sig2)
+                den = np.sqrt(np.mean(np.imag(sig1) ** 2) * np.mean(np.imag(sig2) ** 2)) + 1e-12
+                matrix[i, j] = matrix[j, i] = float(np.mean(num) / den)
 
             elif method == "PLV":
-                sig1 = hilbert_fn(data[i, :])
-                sig2 = hilbert_fn(data[j, :])
-                matrix[i, j] = matrix[j, i] = np.abs(np.mean(np.exp(1j * (np.angle(sig1) - np.angle(sig2)))))
+                sig1 = hilbert_fn(xi)
+                sig2 = hilbert_fn(yj)
+                dphi = np.angle(sig1) - np.angle(sig2)
+                matrix[i, j] = matrix[j, i] = float(np.abs(np.mean(np.exp(1j * dphi))))
+
+            # ---- NEW: AEC & AEC_orth ----
+            elif method == "AEC":
+                matrix[i, j] = matrix[j, i] = _aec(xi, yj)
+
+            elif method == "AEC_orth":
+                matrix[i, j] = matrix[j, i] = _aec_orth(xi, yj)
 
             elif method == "pearson":
-                corr, _ = pearsonr_fn(data[i, :], data[j, :])
-                matrix[i, j] = matrix[j, i] = corr
+                corr, _ = pearsonr_fn(xi, yj)
+                matrix[i, j] = matrix[j, i] = float(corr)
 
             elif method == "mutual_info":
-                mutual_info = mutual_info_regression_fn(data[i, :].reshape(-1, 1), data[j, :])[0]
-                matrix[i, j] = matrix[j, i] = mutual_info
+                mi = mutual_info_regression_fn(xi.reshape(-1, 1), yj, discrete_features=False)[0]
+                matrix[i, j] = matrix[j, i] = float(mi)
+
+            # ---- NEW: distance correlation ----
+            elif method == "dcor":
+                matrix[i, j] = matrix[j, i] = _dcor(xi, yj)
 
     return matrix
