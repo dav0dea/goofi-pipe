@@ -191,9 +191,18 @@ class MultiprocessingConnection(Connection):
         # Remove unpicklable lock object from state
         if "_send_lock" in state:
             del state["_send_lock"]
+        # Store the backend for child process initialization
+        state["_backend"] = Connection._BACKEND
         return state
 
     def __setstate__(self, state):
+        # Initialize backend in child process if needed (for spawn method on macOS/Windows)
+        if Connection._CONNECTION_IDS is None:
+            Connection._CONNECTION_IDS = []
+            Connection._BACKEND = state.pop("_backend", "mp")
+        elif "_backend" in state:
+            state.pop("_backend")
+
         self.__dict__.update(state)
         # Recreate the lock upon unpickling
         self._send_lock = threading.Lock()
@@ -291,9 +300,13 @@ class ZeroMQConnection(Connection, ABC):
         return (self.__class__, (self.push_endpoint, None), self.__getstate__())
 
     def __getstate__(self):
-        return {"_id": self._id}
+        return {"_id": self._id, "_backend": Connection._BACKEND}
 
     def __setstate__(self, state):
+        # Initialize backend in child process if needed (for spawn method on macOS/Windows)
+        if Connection._CONNECTION_IDS is None:
+            Connection._CONNECTION_IDS = []
+            Connection._BACKEND = state.get("_backend", "zmq-tcp")
         self._id = state["_id"]
 
     def __del__(self) -> None:
@@ -387,8 +400,17 @@ class ThreadConnection(Connection):
         state = self.__dict__.copy()
         if "_send_lock" in state:
             del state["_send_lock"]
+        # Store the backend for child process initialization
+        state["_backend"] = Connection._BACKEND
         return state
 
     def __setstate__(self, state):
+        # Initialize backend in child process if needed (for spawn method on macOS/Windows)
+        if Connection._CONNECTION_IDS is None:
+            Connection._CONNECTION_IDS = []
+            Connection._BACKEND = state.pop("_backend", "zmq-tcp")
+        elif "_backend" in state:
+            state.pop("_backend")
+
         self.__dict__.update(state)
         self._send_lock = threading.Lock()
