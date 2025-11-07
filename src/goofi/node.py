@@ -22,6 +22,22 @@ class MultiprocessingForbiddenError(Exception):
     pass
 
 
+def _node_process_wrapper(node_class, backend, conn, in_slots, out_slots, params, env):
+    """
+    Wrapper function for spawning nodes in separate processes.
+    Initializes the connection backend in the child process (needed for spawn method on macOS).
+    """
+    # Set backend if not already set (spawn creates fresh process state)
+    if Connection._CONNECTION_IDS is None:
+        # In child processes, we just need a local list for tracking connection IDs
+        # No need to share across processes, so we use a regular list
+        Connection._CONNECTION_IDS = []
+        Connection._BACKEND = backend
+
+    # Instantiate the node
+    node_class(conn, in_slots, out_slots, params, env)
+
+
 def require_init(func: Callable) -> Callable:
     """
     Decorator that checks if `super().__init__()` has been called in the `__init__()` method of the class
@@ -563,11 +579,14 @@ class Node(ABC):
             try:
                 conn1, conn2 = Connection.create()
 
+                # Get the current backend to pass to child process
+                backend = Connection._BACKEND
+
                 # instantiate the node in a separate process
                 proc = Process(
-                    target=cls,
+                    target=_node_process_wrapper,
                     name=cls.__name__,
-                    args=(conn2, in_slots, out_slots, params, NodeEnv.MULTIPROCESSING),
+                    args=(cls, backend, conn2, in_slots, out_slots, params, NodeEnv.MULTIPROCESSING),
                     daemon=True,
                 )
                 proc.start()

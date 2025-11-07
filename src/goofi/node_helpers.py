@@ -342,10 +342,24 @@ class NodeProcess:
         self.name = name
         self.send_output_to_ref = send_output_to_ref
         self.conn, recv = Pipe()
-        self.proc = Process(target=self.messaging_loop, name=name, args=(recv,), daemon=True)
+        # Pass the backend and mp_manager info to the child process
+        from goofi.connection import Connection
+
+        backend = Connection._BACKEND
+        self.proc = Process(target=self.messaging_loop, name=name, args=(recv, backend), daemon=True)
         self.proc.start()
 
-    def messaging_loop(self, conn: _ConnectionBase):
+    def messaging_loop(self, conn: _ConnectionBase, backend: str):
+        # Initialize connection backend in the child process (needed for spawn method on macOS)
+        from goofi.connection import Connection
+
+        # Set backend if not already set (spawn creates fresh process state)
+        if Connection._CONNECTION_IDS is None:
+            # In child processes, we just need a local list for tracking connection IDs
+            # No need to share across processes, so we use a regular list
+            Connection._CONNECTION_IDS = []
+            Connection._BACKEND = backend
+
         nodes = []
         while True:
             cls, conns, args = conn.recv()
