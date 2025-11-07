@@ -27,4 +27,4 @@ license = {file = "LICENSE"}
 name = "goofi"
 readme = {file = "README.md", content-type = "text/markdown"}
 requires-python = ">=3.9,<3.13"
-version = "2.2.24"
+version = "2.2.25"
