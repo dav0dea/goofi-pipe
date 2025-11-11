@@ -18,7 +18,7 @@ mediapipe
 librosa==0.9.2
 panns_inference
 networkx
-deeptime
+# deeptime
 geopy
 edgeofpy
 powerlaw # dependency of edgeofpy (TODO: remove once edgeofpy is updated)
