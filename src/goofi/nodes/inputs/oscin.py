@@ -40,6 +40,7 @@ class OSCIn(Node):
         self._srv = None
         self._srv_thread: threading.Thread | None = None
         self._lock = threading.RLock()
+        self._backend_running = False
         self._start_backend()
 
     def teardown(self):
@@ -62,32 +63,59 @@ class OSCIn(Node):
                         self._start_oscpy(addr, port)
                     else:
                         self._start_pythonosc(addr, port)
-                    return
+                    self._backend_running = True
+                    print(f"OSC server started on {addr}:{port} using {backend}")
+                    return True
                 except OSError as e:
                     last_err = e
                     self._stop_backend(silent=True)
-                    time.sleep(0.02)  # help Windows release the port
+                    time.sleep(0.1)  # help Windows/Linux release the port
+
+            # Failed to start
+            self._backend_running = False
             if last_err:
-                raise last_err
+                print(f"Failed to start OSC server: {last_err}")
+            return False
 
     def _stop_backend(self, silent: bool = False):
         with self._lock:
+            if self._srv is None:
+                return
+
             try:
                 if isinstance(self._srv, OSCThreadServer):
-                    # CLI pattern shutdown: terminate then join
+                    # oscpy: stop all sockets first to prevent new receives
+                    try:
+                        self._srv.stop_all()
+                    except Exception:
+                        pass  # May fail if already stopped
+
+                    # Then terminate the server threads
                     self._srv.terminate_server()
-                    self._srv.join_server()
+
+                    # Wait for threads to finish with timeout
+                    try:
+                        self._srv.join_server(timeout=1.0)
+                    except TypeError:
+                        # Older versions may not support timeout
+                        self._srv.join_server()
+                    except Exception:
+                        pass  # Ignore errors during join
+
                 elif isinstance(self._srv, ThreadingOSCUDPServer):
                     if self._srv_thread and self._srv_thread.is_alive():
                         self._srv.shutdown()
                         self._srv.server_close()
                         self._srv_thread.join(timeout=2.0)
-            except Exception:
+            except Exception as e:
                 if not silent:
                     raise
             finally:
                 self._srv = None
                 self._srv_thread = None
+                self._backend_running = False
+                # Give the OS time to release the port
+                time.sleep(0.15)
 
     # ---------------- oscpy backend (CLI default_handler pattern) ---------------- #
 
@@ -171,6 +199,11 @@ class OSCIn(Node):
             self.input_slots["port"].clear()
             self.params.osc.port.value = int(port.data)
             self.osc_port_changed(int(port.data))
+
+        # Retry connection if backend isn't running
+        if not self._backend_running:
+            if not self._start_backend():
+                return None
 
         if not self.messages:
             return None
