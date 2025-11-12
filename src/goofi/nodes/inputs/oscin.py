@@ -1,7 +1,7 @@
 import threading
 import time
-import numpy as np
 
+import numpy as np
 from oscpy.server import OSCThreadServer
 from pythonosc.dispatcher import Dispatcher
 from pythonosc.osc_server import ThreadingOSCUDPServer
@@ -103,7 +103,7 @@ class OSCIn(Node):
 
     def _oscpy_default_handler(self, address: bytes, *values):
         # address is bytes; values may be bytes / numbers, etc.
-        addr_str = address.decode("utf-8", errors="ignore")
+        addr_str = address.decode("utf-8", errors="replace")
         self._handle_message(addr_str, *values)
 
     # ---------------- python-osc backend ---------------- #
@@ -125,21 +125,40 @@ class OSCIn(Node):
     # ---------------- shared handling ---------------- #
 
     def _handle_message(self, address: str, *args):
-        # Normalize None to b"None" for consistency
-        norm = [("None".encode() if a is None else a) for a in args]
+        # Normalize None and decode bytes to strings for consistency
+        norm = []
+        for a in args:
+            if a is None:
+                norm.append("None")
+            elif isinstance(a, bytes):
+                norm.append(a.decode("utf-8", errors="replace"))
+            else:
+                norm.append(a)
 
         # Single string payload → STRING
-        if norm and isinstance(norm[0], (bytes, str)):
+        if norm and isinstance(norm[0], str):
             if len(norm) > 1:
-                raise ValueError(
-                    "OSCIn does not support multiple string args per address; "
-                    f"received {[(x.decode() if isinstance(x, bytes) else x) for x in norm]}"
-                )
-            s = norm[0].decode() if isinstance(norm[0], bytes) else str(norm[0])
-            val = Data(DataType.STRING, s, {})
+                raise ValueError("OSCIn does not support multiple string args per address; " f"received {norm}")
+            val = Data(DataType.STRING, norm[0], {})
         else:
-            # Mixed/numeric payload → ARRAY (dtype=object keeps heterogenous types intact)
-            val = Data(DataType.ARRAY, np.array(norm, dtype=object), {})
+            # Numeric payload → ARRAY
+            # Convert to appropriate numeric dtype if possible
+            try:
+                arr = np.array(norm)
+                # If conversion resulted in object dtype but all elements are numeric-like,
+                # try to infer a better dtype
+                if arr.dtype == object:
+                    # Try to convert to float
+                    try:
+                        arr = np.array(norm, dtype=float)
+                    except (ValueError, TypeError):
+                        # Keep as object array if conversion fails
+                        pass
+            except Exception:
+                # Fallback to object array
+                arr = np.array(norm, dtype=object)
+
+            val = Data(DataType.ARRAY, arr, {})
 
         self.messages[address] = val
 
