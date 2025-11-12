@@ -99,6 +99,9 @@ class VAMP(Node):
         self.model = self.internal_model.fetch_model()
 
     def make_model(self):
-        from deeptime.decomposition import VAMP as VAMP_Model
+        try:
+            from deeptime.decomposition import VAMP as VAMP_Model
+        except ImportError:
+            raise ImportError("deeptime is required for VAMP node. Please install deeptime via pip or conda.")
 
         return VAMP_Model(lagtime=self.params.vamp.time_lag.value, dim=self.params.vamp.n_dims.value)
