@@ -1,5 +1,4 @@
 import copy
-import os
 import pickle
 import platform
 import queue
@@ -20,15 +19,8 @@ class Connection(ABC):
     _BACKEND = None
 
     def __init__(self) -> None:
-        # Initialize backend from environment variable if not already set (for spawned child processes)
         if Connection._CONNECTION_IDS is None:
-            backend = os.environ.get("GOOFI_CONNECTION_BACKEND")
-            if backend is not None:
-                # Child process: initialize with empty list (IDs will be managed per-process)
-                Connection._CONNECTION_IDS = []
-                Connection._BACKEND = backend
-            else:
-                raise RuntimeError("Connection._CONNECTION_IDS is None. Call Connection.set_backend() first.")
+            raise RuntimeError("Connection._CONNECTION_IDS is None. Call Connection.set_backend() first.")
 
         # register a unique id for the connection
         self._id = 0
@@ -73,9 +65,6 @@ class Connection(ABC):
             backend in Connection.get_ipc_backends().keys()
         ), f"Invalid backend: {backend}. Choose from {list(Connection.get_ipc_backends().keys())}"
         Connection._BACKEND = backend
-
-        # Set environment variable so child processes can initialize the backend
-        os.environ["GOOFI_CONNECTION_BACKEND"] = backend
 
     @staticmethod
     def create(local: bool = False) -> Tuple["Connection", "Connection"]:
@@ -209,10 +198,8 @@ class MultiprocessingConnection(Connection):
     def __setstate__(self, state):
         # Initialize backend in child process if needed (for spawn method on macOS/Windows)
         if Connection._CONNECTION_IDS is None:
-            # Try environment variable first, then fall back to pickled state
-            backend = os.environ.get("GOOFI_CONNECTION_BACKEND", state.get("_backend", "mp"))
             Connection._CONNECTION_IDS = []
-            Connection._BACKEND = backend
+            Connection._BACKEND = state.pop("_backend", "mp")
         elif "_backend" in state:
             state.pop("_backend")
 
@@ -318,10 +305,8 @@ class ZeroMQConnection(Connection, ABC):
     def __setstate__(self, state):
         # Initialize backend in child process if needed (for spawn method on macOS/Windows)
         if Connection._CONNECTION_IDS is None:
-            # Try environment variable first, then fall back to pickled state
-            backend = os.environ.get("GOOFI_CONNECTION_BACKEND", state.get("_backend", "zmq-tcp"))
             Connection._CONNECTION_IDS = []
-            Connection._BACKEND = backend
+            Connection._BACKEND = state.get("_backend", "zmq-tcp")
         self._id = state["_id"]
 
     def __del__(self) -> None:
@@ -422,10 +407,8 @@ class ThreadConnection(Connection):
     def __setstate__(self, state):
         # Initialize backend in child process if needed (for spawn method on macOS/Windows)
         if Connection._CONNECTION_IDS is None:
-            # Try environment variable first, then fall back to pickled state
-            backend = os.environ.get("GOOFI_CONNECTION_BACKEND", state.get("_backend", "zmq-tcp"))
             Connection._CONNECTION_IDS = []
-            Connection._BACKEND = backend
+            Connection._BACKEND = state.pop("_backend", "zmq-tcp")
         elif "_backend" in state:
             state.pop("_backend")
 
