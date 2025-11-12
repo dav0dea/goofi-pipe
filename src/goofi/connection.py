@@ -63,7 +63,7 @@ class Connection(ABC):
         Connection._CONNECTION_IDS = mp_manager.list()
 
         if backend == "auto":
-            if platform.system() == "Windows":
+            if platform.system() in ["Windows", "Darwin"]:
                 backend = "mp"
             else:
                 backend = "zmq-tcp"
