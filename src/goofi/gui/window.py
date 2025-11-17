@@ -1136,7 +1136,6 @@ class Window:
     def _initialize(self, manager, width=1280, height=720):
         """Initialize the window and launch the event loop (blocking)."""
         dpg.create_context()
-        dpg.set_global_font_scale(1.0)
         self.manager = manager
 
         # initialize dicts to map names to dpg items
