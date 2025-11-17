@@ -42,6 +42,9 @@ goofi-pipe # start the application to make sure the installation was successful
 
 # Basic Usage
 
+## Interface
+- You can use `Ctrl+Plus/Minus` to adjust the GUI size
+
 ## Accessing the Node Menu
 
 <p align="center">

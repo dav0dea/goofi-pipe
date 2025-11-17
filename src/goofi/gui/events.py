@@ -14,6 +14,12 @@ def is_ctrl_down() -> bool:
         generic_ctrl = dpg.is_key_down(dpg.mvKey_Control)
     return dpg.is_key_down(dpg.mvKey_LControl) or dpg.is_key_down(dpg.mvKey_RControl) or generic_ctrl
 
+def is_alt_down() -> bool:
+    generic_alt = False
+    if hasattr(dpg, "mvKey_Alt"):
+        generic_alt = dpg.is_key_down(dpg.mvKey_Alt)
+    return dpg.is_key_down(dpg.mvKey_LAlt) or dpg.is_key_down(dpg.mvKey_RAlt) or generic_alt
+
 
 def is_shift_down() -> bool:
     generic_shift = False
@@ -339,6 +345,16 @@ def paste_nodes(win):
             print(f"Failed to parse node link from clipboard: {node}")
             continue
 
+def increase_gui_scale(win):  
+    if is_ctrl_down():  
+        current_scale = dpg.get_global_font_scale()  
+        dpg.set_global_font_scale(current_scale + 0.1)  
+  
+def decrease_gui_scale(win):  
+    if is_ctrl_down():  
+        current_scale = dpg.get_global_font_scale()  
+        dpg.set_global_font_scale(max(0.5, current_scale - 0.1))
+
 
 # the key handler map maps key press events to functions that handle them
 KEY_HANDLER_MAP = {
@@ -350,4 +366,6 @@ KEY_HANDLER_MAP = {
     dpg.mvKey_C: copy_selected_nodes,
     dpg.mvKey_V: paste_nodes,
     dpg.mvKey_Return: create_selected_node,
+    602: increase_gui_scale,  # Plus key (same as =)  
+    598: decrease_gui_scale,
 }
