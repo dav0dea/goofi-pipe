@@ -42,6 +42,12 @@ goofi-pipe # start the application to make sure the installation was successful
 
 # Basic Usage
 
+## Interface
+- Middle mouse button + drag to pan the view
+- Ctrl + Left click on a node's data viewer to cycle viewer types (line plot, image, coordinates, topomap)
+- Scroll the mouse wheel on a node's data viewer to scale it up or down (+ Shift for horizontal scaling)
+- Ctrl+Plus/Minus to adjust the GUI's font size
+
 ## Accessing the Node Menu
 
 <p align="center">
