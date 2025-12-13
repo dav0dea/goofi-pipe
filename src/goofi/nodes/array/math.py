@@ -2,7 +2,7 @@ import numpy as np
 
 from goofi.data import Data, DataType
 from goofi.node import Node
-from goofi.params import FloatParam, IntParam, BoolParam
+from goofi.params import BoolParam, FloatParam, IntParam
 
 
 class Math(Node):
@@ -44,7 +44,7 @@ class Math(Node):
         if data is None or data.data is None:
             return None
 
-        signal = data.data
+        signal = data.data.copy()
 
         # apply math operations
         signal += self.params["math"]["pre_add"].value
