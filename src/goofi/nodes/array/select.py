@@ -2,11 +2,12 @@ import numpy as np
 
 from goofi.data import Data, DataType
 from goofi.node import Node
+from goofi.params import StringParam
 
 
 class Select(Node):
     """
-    Selects a subset of channels or indices along a specified axis of the input array. This node can use channel names from metadata (if present) or fall back to selecting by numerical indices. The selection can be based on inclusion or exclusion lists, and supports both named and indexed axes. The result is a reduced array with only the selected entries, and the corresponding metadata is updated accordingly.
+    Selects a subset of channels or indices along a specified axis of the input array. This node can use channel names from metadata or select by numerical indices based on the selection_mode parameter. The selection can be based on inclusion or exclusion lists, and supports both named and indexed axes. The result is a reduced array with only the selected entries, and the corresponding metadata is updated accordingly.
 
     Inputs:
     - data: An array containing the data to be subselected, with optional channel metadata in the form of named axes.
@@ -22,7 +23,15 @@ class Select(Node):
         return {"out": DataType.ARRAY}
 
     def config_params():
-        return {"select": {"axis": 0, "include": "", "exclude": "", "expand_asterisk": False}}
+        return {
+            "select": {
+                "axis": 0,
+                "selection_mode": StringParam("by_name", options=["by_name", "by_index"]),
+                "include": "",
+                "exclude": "",
+                "expand_asterisk": False,
+            }
+        }
 
     def setup(self):
         from mne import pick_channels
@@ -42,8 +51,12 @@ class Select(Node):
         exclude = self.params.select.exclude.value.split(",") or []
         exclude = [ch.strip() for ch in exclude if len(ch.strip()) > 0]
         expand_asterisk = self.params.select.expand_asterisk.value
+        selection_mode = self.params.select.selection_mode.value
 
-        if f"dim{axis}" in data.meta["channels"]:
+        # Determine whether to use name-based or index-based selection
+        use_names = selection_mode == "by_name" and f"dim{axis}" in data.meta["channels"]
+
+        if use_names:
             # use channel names from metadata
             chs = data.meta["channels"][f"dim{axis}"]
 
@@ -105,11 +118,9 @@ class Select(Node):
         # select channels from data
         selected = np.take(data.data, idxs, axis=axis)
 
-        # update channel names if present
+        # update channel names if present (regardless of selection mode)
         if f"dim{axis}" in data.meta["channels"]:
-            data.meta["channels"][f"dim{axis}"] = [
-                ch for i, ch in enumerate(data.meta["channels"][f"dim{axis}"]) if i in idxs
-            ]
+            data.meta["channels"][f"dim{axis}"] = [data.meta["channels"][f"dim{axis}"][int(i)] for i in idxs]
 
         if len(idxs) == 1:
             # remove axis if only one channel is selected
