@@ -66,6 +66,9 @@ class ReinforcementLearning(Node):
             "control": {
                 "reset_agent": BoolParam(False, trigger=True, doc="Reset the agent and training"),
                 "device": StringParam("auto", options=["auto", "cpu", "cuda"], doc="Device to run model on"),
+                "action_smoothing": FloatParam(
+                    0.0, 0.0, 0.99, doc="Action smoothing factor (0=no smoothing, higher=slower changes)"
+                ),
             },
         }
 
@@ -98,6 +101,7 @@ class ReinforcementLearning(Node):
         self.prev_log_prob = None
         self.prev_value = None
         self.timestep = 0
+        self.smoothed_action = None
 
         # Training statistics
         self.total_reward = 0
@@ -357,6 +361,13 @@ class ReinforcementLearning(Node):
 
         # Get action for current observation
         action, value, log_prob = self._get_action_and_value(obs_data)
+
+        # Apply action smoothing
+        smoothing = self.params.control.action_smoothing.value
+        if smoothing > 0 and self.smoothed_action is not None:
+            # Exponential moving average: smoothed = α * smoothed + (1-α) * new
+            action = smoothing * self.smoothed_action + (1 - smoothing) * action
+        self.smoothed_action = action
 
         # Store current state for next iteration
         self.prev_observation = obs_data
