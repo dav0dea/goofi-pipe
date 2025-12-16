@@ -167,10 +167,32 @@ class ReinforcementLearning(Node):
         value_layers.append(self.nn.Linear(prev_size, 1))
         self.value_net = self.nn.Sequential(*value_layers).to(self.device)
 
+        # Initialize weights with orthogonal initialization for better stability
+        def init_weights(m):
+            if isinstance(m, self.nn.Linear):
+                self.nn.init.orthogonal_(m.weight, gain=np.sqrt(2))
+                self.nn.init.constant_(m.bias, 0.0)
+
+        self.policy_net.apply(init_weights)
+        self.value_net.apply(init_weights)
+
+        # Smaller initialization for output layers
+        with self.torch.no_grad():
+            # Get last linear layer of policy net and use smaller init
+            for layer in reversed(list(self.policy_net.modules())):
+                if isinstance(layer, self.nn.Linear):
+                    self.nn.init.orthogonal_(layer.weight, gain=0.01)
+                    break
+            # Get last linear layer of value net and use smaller init
+            for layer in reversed(list(self.value_net.modules())):
+                if isinstance(layer, self.nn.Linear):
+                    self.nn.init.orthogonal_(layer.weight, gain=1.0)
+                    break
+
         # Optimizer
         lr = self.params.training.learning_rate.value
         params = list(self.policy_net.parameters()) + list(self.value_net.parameters()) + [self.log_std]
-        self.optimizer = self.torch.optim.Adam(params, lr=lr)
+        self.optimizer = self.torch.optim.Adam(params, lr=lr, eps=1e-5)  # Added eps for numerical stability
 
         print(f"Initialized PPO agent: obs_dim={obs_dim}, action_dim={action_dim}, hidden={hidden_layers}")
 
@@ -181,7 +203,12 @@ class ReinforcementLearning(Node):
         with self.torch.no_grad():
             # Get action mean from policy network
             action_mean = self.policy_net(obs_tensor)
-            action_std = self.torch.exp(self.log_std)
+            action_std = self.torch.exp(self.log_std.clamp(-20, 2))  # Clamp log_std for stability
+
+            # Check for NaN in action_mean and handle gracefully
+            if self.torch.isnan(action_mean).any():
+                print("Warning: NaN detected in action_mean, resetting to zeros")
+                action_mean = self.torch.zeros_like(action_mean)
 
             # Sample action from Gaussian distribution
             dist = self.torch.distributions.Normal(action_mean, action_std)
@@ -193,6 +220,14 @@ class ReinforcementLearning(Node):
 
             # Clip actions to [-1, 1]
             action = self.torch.tanh(action)
+
+            # Final NaN check on outputs
+            if self.torch.isnan(action).any():
+                action = self.torch.zeros_like(action)
+            if self.torch.isnan(value).any():
+                value = self.torch.zeros_like(value)
+            if self.torch.isnan(log_prob).any():
+                log_prob = self.torch.zeros_like(log_prob)
 
         return (
             action.cpu().numpy().flatten(),
@@ -234,15 +269,47 @@ class ReinforcementLearning(Node):
         values = np.array(self.buffer["values"])
         dones = np.array(self.buffer["dones"])
 
+        # Check for NaN in buffer data and skip update if found
+        if (
+            self.torch.isnan(obs).any()
+            or self.torch.isnan(actions).any()
+            or self.torch.isnan(old_log_probs).any()
+            or np.any(np.isnan(rewards))
+            or np.any(np.isnan(values))
+        ):
+            print("Warning: NaN detected in buffer, skipping policy update and clearing buffer")
+            self.buffer = {
+                "observations": [],
+                "actions": [],
+                "rewards": [],
+                "values": [],
+                "log_probs": [],
+                "dones": [],
+            }
+            return
+
         # Compute advantages
         advantages = self._compute_gae(rewards, values, dones)
         returns = advantages + values
 
+        # Check for NaN in computed values
+        if np.any(np.isnan(advantages)) or np.any(np.isnan(returns)):
+            print("Warning: NaN detected in advantages/returns, skipping policy update")
+            self.buffer = {
+                "observations": [],
+                "actions": [],
+                "rewards": [],
+                "values": [],
+                "log_probs": [],
+                "dones": [],
+            }
+            return
+
         advantages = self.torch.FloatTensor(advantages).to(self.device)
         returns = self.torch.FloatTensor(returns).to(self.device)
 
-        # Normalize advantages
-        advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+        # Normalize advantages (with larger epsilon for stability)
+        advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-5)
 
         # PPO update
         buffer_size = len(obs)
@@ -267,7 +334,13 @@ class ReinforcementLearning(Node):
 
                 # Get current policy outputs
                 action_mean = self.policy_net(batch_obs)
-                action_std = self.torch.exp(self.log_std)
+
+                # Check for NaN in action_mean during training
+                if self.torch.isnan(action_mean).any():
+                    print("Warning: NaN in action_mean during training, skipping batch")
+                    continue
+
+                action_std = self.torch.exp(self.log_std.clamp(-20, 2))  # Clamp log_std for stability
                 dist = self.torch.distributions.Normal(action_mean, action_std)
 
                 # Compute log probabilities of the taken actions
@@ -278,7 +351,7 @@ class ReinforcementLearning(Node):
                 values_pred = self.value_net(batch_obs).squeeze()
 
                 # PPO clipped loss
-                ratio = self.torch.exp(log_probs - batch_old_log_probs)
+                ratio = self.torch.exp((log_probs - batch_old_log_probs).clamp(-20, 20))  # Clamp for stability
                 clip_epsilon = self.params.training.clip_epsilon.value
 
                 surr1 = ratio * batch_advantages
@@ -292,6 +365,11 @@ class ReinforcementLearning(Node):
                 entropy_coef = self.params.training.entropy_coef.value
                 value_loss_coef = self.params.training.value_loss_coef.value
                 loss = policy_loss + value_loss_coef * value_loss - entropy_coef * entropy
+
+                # Skip update if loss is NaN
+                if self.torch.isnan(loss):
+                    print("Warning: NaN loss detected, skipping batch update")
+                    continue
 
                 # Optimize
                 self.optimizer.zero_grad()
@@ -326,6 +404,10 @@ class ReinforcementLearning(Node):
         # Get observation data
         obs_data = observations.data.flatten()
 
+        # Check for NaN/Inf in observations and replace with zeros
+        if np.any(np.isnan(obs_data)) or np.any(np.isinf(obs_data)):
+            obs_data = np.nan_to_num(obs_data, nan=0.0, posinf=1.0, neginf=-1.0)
+
         # Validate observation dimension
         expected_obs_dim = self.params.architecture.observation_dim.value
         if len(obs_data) != expected_obs_dim:
@@ -338,6 +420,11 @@ class ReinforcementLearning(Node):
         # Store previous transition in buffer (if we have previous data)
         if self.prev_observation is not None and reward is not None:
             reward_value = reward.data.flatten()[0] if reward.data.size > 0 else 0.0
+            # Sanitize reward value
+            if np.isnan(reward_value) or np.isinf(reward_value):
+                reward_value = 0.0
+            # Clip reward to prevent extreme values
+            reward_value = np.clip(reward_value, -10.0, 10.0)
 
             self.buffer["observations"].append(self.prev_observation)
             self.buffer["actions"].append(self.prev_action)
