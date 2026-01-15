@@ -475,6 +475,14 @@ class Node(ABC):
                     t.start()
                     self.pending_connections[conn._id].append((t, time.time()))
 
+    def __call__(self, *args: Any, **kwds: Any) -> Any:
+        if self._environment != NodeEnv.STANDALONE:
+            raise RuntimeError("Only nodes running in standalone mode can be called directly.")
+        if not self._node_ready:
+            self.setup()
+            self._node_ready = True
+        return self.process(*args, **kwds)
+
     @classmethod
     def _configure(cls) -> Tuple[Dict[str, InputSlot], Dict[str, OutputSlot], NodeParams]:
         """Retrieves the node's configuration of input slots, output slots, and parameters."""
