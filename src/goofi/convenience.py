@@ -1,9 +1,21 @@
+import inspect
 from typing import Callable, List, Optional, Tuple
 
 import mne
 import numpy as np
 from joblib import Parallel, delayed
 from tqdm.auto import trange
+
+
+def _filter_kwargs(func: Callable, kwargs: dict) -> dict:
+    """Filter kwargs to only include parameters accepted by func."""
+    sig = inspect.signature(func)
+    func_params = sig.parameters
+    has_var_keyword = any(p.kind == inspect.Parameter.VAR_KEYWORD for p in func_params.values())
+    if has_var_keyword:
+        return kwargs
+    else:
+        return {k: v for k, v in kwargs.items() if k in func_params}
 
 
 def sliding_window(
@@ -18,6 +30,7 @@ def sliding_window(
     channelwise: bool = False,
     n_jobs: int = -1,
     verbose: bool = True,
+    **kwargs,
 ) -> Tuple[np.ndarray, List]:
     """
     Apply a function to chunks of data in a sliding window manner. The provided function should follow the signature
@@ -37,6 +50,7 @@ def sliding_window(
         channelwise (bool): If True, apply the function to each channel separately.
         n_jobs (int): Number of parallel jobs to run. -1 means using all processors.
         verbose (bool): Whether to print progress messages.
+        **kwargs: Additional keyword arguments to pass to func (filtered based on func's signature).
     Returns:
         Tuple[np.ndarray, List]: Window onset times and results returned by the function.
     """
@@ -59,10 +73,13 @@ def sliding_window(
     # apply the function to chunks of data
     times = np.arange(0, len(data[0]) - window_size, step_size) / sfreq
 
+    # Filter kwargs based on func signature
+    filtered_kwargs = _filter_kwargs(func, kwargs)
+
     if channelwise:
         n_windows = (data.shape[1] - window_size) // step_size + 1
         results = Parallel(n_jobs=n_jobs)(
-            delayed(func)(data[ch, i : i + window_size], sfreq)
+            delayed(func)(data[ch, i : i + window_size], sfreq, **filtered_kwargs)
             for i in trange(0, data.shape[1] - window_size, step_size, disable=not verbose)
             for ch in range(data.shape[0])
         )
@@ -73,7 +90,7 @@ def sliding_window(
             results = list(np.array(results).reshape(n_windows, -1))
     else:
         results = Parallel(n_jobs=n_jobs)(
-            delayed(func)(data[:, i : i + window_size], sfreq)
+            delayed(func)(data[:, i : i + window_size], sfreq, **filtered_kwargs)
             for i in trange(0, data.shape[1] - window_size, step_size, disable=not verbose)
         )
 
@@ -97,6 +114,7 @@ def sliding_window_mne(
     channelwise: bool = False,
     n_jobs: int = -1,
     verbose: bool = True,
+    **kwargs,
 ) -> Tuple[np.ndarray, List]:
     """
     Apply a function to chunks of data in a sliding window manner. The provided function should follow the signature
@@ -116,6 +134,7 @@ def sliding_window_mne(
         channelwise (bool): If True, apply the function to each channel separately.
         n_jobs (int): Number of parallel jobs to run. -1 means using all processors.
         verbose (bool): Whether to print progress messages.
+        **kwargs: Additional keyword arguments to pass to func (filtered based on func's signature).
     Returns:
         Tuple[np.ndarray, List]: Window onset times and results returned by the function.
     """
@@ -141,6 +160,7 @@ def sliding_window_mne(
         channelwise=channelwise,
         n_jobs=n_jobs,
         verbose=verbose,
+        **kwargs,
     )
 
 
@@ -156,6 +176,7 @@ def batched_sliding_window(
     batch_size: int = 100,
     n_jobs: int = -1,
     verbose: bool = True,
+    **kwargs,
 ) -> Tuple[np.ndarray, List]:
     """
     Apply a function to chunks of data in a sliding window manner, processing the data in batches. The provided function
@@ -174,6 +195,7 @@ def batched_sliding_window(
         batch_size (int): Number of chunks to process in each batch.
         n_jobs (int): Number of parallel jobs to run. -1 means using all processors.
         verbose (bool): Whether to print progress messages.
+        **kwargs: Additional keyword arguments to pass to func (filtered based on func's signature).
     Returns:
         Tuple[np.ndarray, List]: Window onset times and results returned by the function.
     """
@@ -192,8 +214,12 @@ def batched_sliding_window(
     if len(windows) == 0:
         return np.array([]), []
     windows = np.stack(windows, axis=0)
+
+    # Filter kwargs based on func signature
+    filtered_kwargs = _filter_kwargs(func, kwargs)
+
     results = Parallel(n_jobs=n_jobs)(
-        delayed(func)(windows[i : i + batch_size], sfreq)
+        delayed(func)(windows[i : i + batch_size], sfreq, **filtered_kwargs)
         for i in trange(0, len(windows), batch_size, disable=not verbose)
     )
     # ensure all results still have the batch size and expand None results
@@ -229,6 +255,7 @@ def batched_sliding_window_mne(
     batch_size: int = 100,
     n_jobs: int = -1,
     verbose: bool = True,
+    **kwargs,
 ) -> Tuple[np.ndarray, List]:
     """
     Apply a function to chunks of data in a sliding window manner, processing the data in batches. The provided function
@@ -248,6 +275,7 @@ def batched_sliding_window_mne(
         batch_size (int): Number of chunks to process in each batch.
         n_jobs (int): Number of parallel jobs to run. -1 means using all processors.
         verbose (bool): Whether to print progress messages.
+        **kwargs: Additional keyword arguments to pass to func (filtered based on func's signature).
     Returns:
         Tuple[np.ndarray, List]: Window onset times and results returned by the function.
     """
@@ -273,4 +301,5 @@ def batched_sliding_window_mne(
         batch_size=batch_size,
         n_jobs=n_jobs,
         verbose=verbose,
+        **kwargs,
     )
