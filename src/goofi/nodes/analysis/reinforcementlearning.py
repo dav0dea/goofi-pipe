@@ -56,7 +56,12 @@ class ReinforcementLearning(Node):
                 "gae_lambda": FloatParam(0.95, 0.8, 0.99, doc="Lambda for Generalized Advantage Estimation"),
                 "clip_epsilon": FloatParam(0.2, 0.05, 0.5, doc="PPO clipping parameter"),
                 "value_loss_coef": FloatParam(0.5, 0.1, 1.0, doc="Coefficient for value loss"),
-                "entropy_coef": FloatParam(0.01, 0.0, 0.1, doc="Coefficient for entropy bonus"),
+                "entropy_coef": FloatParam(
+                    0.05, 0.0, 0.5, doc="Coefficient for entropy bonus (higher = more exploration)"
+                ),
+                "min_log_std": FloatParam(
+                    -1.0, -5.0, 0.0, doc="Minimum log std for action distribution (prevents variance collapse)"
+                ),
                 "max_grad_norm": FloatParam(0.5, 0.1, 10.0, doc="Maximum gradient norm for clipping"),
                 "buffer_size": IntParam(128, 16, 2048, doc="Number of timesteps before policy update"),
                 "epochs_per_update": IntParam(4, 1, 20, doc="Number of epochs to train on each buffer"),
@@ -69,6 +74,13 @@ class ReinforcementLearning(Node):
                 "action_smoothing": FloatParam(
                     0.0, 0.0, 0.99, doc="Action smoothing factor (0=no smoothing, higher=slower changes)"
                 ),
+                "variance_reward": FloatParam(
+                    0.0,
+                    0.0,
+                    1.0,
+                    doc="Reward bonus based on per-action variance over time (0=disabled, higher=stronger)",
+                ),
+                "variance_window": IntParam(2000, 8, 256, doc="Window size for computing action variance over time"),
             },
         }
 
@@ -106,6 +118,9 @@ class ReinforcementLearning(Node):
         # Training statistics
         self.total_reward = 0
         self.episode_rewards = []
+
+        # Action variance tracking for variance reward
+        self.action_history = []
 
     def _set_device(self):
         """Set the computation device."""
@@ -203,7 +218,8 @@ class ReinforcementLearning(Node):
         with self.torch.no_grad():
             # Get action mean from policy network
             action_mean = self.policy_net(obs_tensor)
-            action_std = self.torch.exp(self.log_std.clamp(-20, 2))  # Clamp log_std for stability
+            min_log_std = self.params.training.min_log_std.value
+            action_std = self.torch.exp(self.log_std.clamp(min_log_std, 2))  # Clamp log_std with configurable minimum
 
             # Check for NaN in action_mean and handle gracefully
             if self.torch.isnan(action_mean).any():
@@ -340,7 +356,10 @@ class ReinforcementLearning(Node):
                     print("Warning: NaN in action_mean during training, skipping batch")
                     continue
 
-                action_std = self.torch.exp(self.log_std.clamp(-20, 2))  # Clamp log_std for stability
+                min_log_std = self.params.training.min_log_std.value
+                action_std = self.torch.exp(
+                    self.log_std.clamp(min_log_std, 2)
+                )  # Clamp log_std with configurable minimum
                 dist = self.torch.distributions.Normal(action_mean, action_std)
 
                 # Compute log probabilities of the taken actions
@@ -425,6 +444,26 @@ class ReinforcementLearning(Node):
                 reward_value = 0.0
             # Clip reward to prevent extreme values
             reward_value = np.clip(reward_value, -10.0, 10.0)
+
+            # Compute variance reward bonus if enabled
+            variance_reward_coef = self.params.control.variance_reward.value
+            if variance_reward_coef > 0 and self.prev_action is not None:
+                # Track action history
+                self.action_history.append(self.prev_action.copy())
+                variance_window = self.params.control.variance_window.value
+                if len(self.action_history) > variance_window:
+                    self.action_history = self.action_history[-variance_window:]
+
+                # Compute per-action variance over the window
+                if len(self.action_history) >= 2:
+                    action_array = np.array(self.action_history)
+                    # Variance per action dimension, then mean across dimensions
+                    per_action_var = np.var(action_array, axis=0)
+                    mean_variance = np.mean(per_action_var)
+                    # Reward bonus: higher variance = higher bonus (scaled by coefficient)
+                    # Use sqrt to make the reward more linear with variance
+                    variance_bonus = variance_reward_coef * np.sqrt(mean_variance + 1e-6)
+                    reward_value += variance_bonus
 
             self.buffer["observations"].append(self.prev_observation)
             self.buffer["actions"].append(self.prev_action)
