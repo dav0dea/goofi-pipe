@@ -35,16 +35,15 @@ class Connectivity(Node):
                         "wPLI",
                         "PLI",
                         "PLV",
-                        "AEC",         # <-- NEW
-                        "AEC_orth",    # <-- NEW
+                        "AEC",  # <-- NEW
+                        "AEC_orth",  # <-- NEW
                         "covariance",
                         "pearson",
                         "mutual_info",
-                        "dcor",        # <-- NEW
+                        "dcor",  # <-- NEW
                     ],
                 ),
             },
-
             "biotuner": {
                 "method": StringParam(
                     "None", options=["None", "harmsim", "euler", "subharm_tension", "RRCi", "wPLI_crossfreq"]
@@ -95,9 +94,11 @@ class Connectivity(Node):
             matrix[matrix >= threshold] = 1
 
         meta = data.meta
-        if "dim1" in meta["channels"]:
+        if "dim0" in meta["channels"]:
+            meta["channels"]["dim1"] = meta["channels"]["dim0"]
+        elif "dim1" in meta["channels"]:
             del meta["channels"]["dim1"]
-        return {"matrix": (matrix, data.meta)}
+        return {"matrix": (matrix, meta)}
 
 
 connectivity_fn = None
@@ -136,6 +137,7 @@ def compute_conn_matrix_single(
 
 hilbert_fn, coherence_fn, pearsonr_fn, mutual_info_regression_fn = None, None, None, None
 
+
 def compute_classical_connectivity(data, method):
     # lazy imports
     global hilbert_fn, coherence_fn, pearsonr_fn, mutual_info_regression_fn
@@ -143,6 +145,7 @@ def compute_classical_connectivity(data, method):
         from scipy.signal import coherence, hilbert
         from scipy.stats import pearsonr
         from sklearn.feature_selection import mutual_info_regression
+
         hilbert_fn = hilbert
         coherence_fn = coherence
         pearsonr_fn = pearsonr
