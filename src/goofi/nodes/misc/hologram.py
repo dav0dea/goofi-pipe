@@ -1,7 +1,6 @@
 import re
 
 import numpy as np
-
 from goofi.data import Data, DataType
 from goofi.node import Node
 from goofi.params import BoolParam, FloatParam, StringParam
@@ -127,7 +126,7 @@ class Hologram(Node):
         pos = np.full((len(ch_names), 3), np.nan, dtype=np.float32)
         for i, ch_montage in enumerate(ch_names_montage):
             if ch_montage in pos_dict:
-                pos[i] = pos_dict[ch_montage]
+                pos[i] = pos_dict[ch_montage][[1, 0, 2]]
 
         # fill missing channels with mean position
         valid = np.isfinite(pos).all(axis=1)
