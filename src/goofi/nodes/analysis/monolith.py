@@ -174,11 +174,11 @@ def spectral(x, sfreq):
 
     f, Pxx = welch(x, sfreq)
     mean_frequency = np.sum(f * Pxx) / np.sum(Pxx)
-    delta = np.trapz(Pxx[(f >= 0) & (f <= 4)], f[(f >= 0) & (f <= 4)])
-    theta = np.trapz(Pxx[(f > 4) & (f <= 8)], f[(f > 4) & (f <= 8)])
-    alpha = np.trapz(Pxx[(f > 8) & (f <= 12)], f[(f > 8) & (f <= 12)])
-    beta = np.trapz(Pxx[(f > 12) & (f <= 30)], f[(f > 12) & (f <= 30)])
-    gamma = np.trapz(Pxx[(f > 30) & (f <= 45)], f[(f > 30) & (f <= 45)])
+    delta = np.trapezoid(Pxx[(f >= 0) & (f <= 4)], f[(f >= 0) & (f <= 4)])
+    theta = np.trapezoid(Pxx[(f > 4) & (f <= 8)], f[(f > 4) & (f <= 8)])
+    alpha = np.trapezoid(Pxx[(f > 8) & (f <= 12)], f[(f > 8) & (f <= 12)])
+    beta = np.trapezoid(Pxx[(f > 12) & (f <= 30)], f[(f > 12) & (f <= 30)])
+    gamma = np.trapezoid(Pxx[(f > 30) & (f <= 45)], f[(f > 30) & (f <= 45)])
 
     from fooof import FOOOF
 
