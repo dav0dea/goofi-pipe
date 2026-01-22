@@ -126,7 +126,7 @@ class Hologram(Node):
         pos = np.full((len(ch_names), 3), np.nan, dtype=np.float32)
         for i, ch_montage in enumerate(ch_names_montage):
             if ch_montage in pos_dict:
-                pos[i] = pos_dict[ch_montage][[2, 1, 0]]
+                pos[i] = pos_dict[ch_montage]
 
         # fill missing channels with mean position
         valid = np.isfinite(pos).all(axis=1)
