@@ -32,8 +32,18 @@ class PSD(Node):
                 "axis": -1,
             },
             "welch": {
-                "nperseg": IntParam(-1, 1, 1000),
-                "noverlap": IntParam(-1, 0, 1000),
+                "nperseg": FloatParam(0.5, 0.0, 10000.0, doc="Segment length. Unit determined by nperseg_unit."),
+                "nperseg_unit": StringParam(
+                    "fraction",
+                    options=["samples", "seconds", "fraction"],
+                    doc="Unit for nperseg: 'samples' (data points), 'seconds' (requires sfreq in metadata), or 'fraction' (fraction of signal length).",
+                ),
+                "noverlap": FloatParam(0.75, 0.0, 10000.0, doc="Overlap length. Unit determined by noverlap_unit."),
+                "noverlap_unit": StringParam(
+                    "fraction_nperseg",
+                    options=["samples", "seconds", "fraction", "fraction_nperseg"],
+                    doc="Unit for noverlap: 'samples' (data points), 'seconds' (requires sfreq in metadata), 'fraction' (fraction of signal length), or 'fraction_nperseg' (fraction of nperseg).",
+                ),
             },
         }
 
@@ -52,12 +62,47 @@ class PSD(Node):
         method = self.params.psd.method.value
         f_min = self.params.psd.f_min.value
         f_max = self.params.psd.f_max.value
-        axis = self.params.psd.axis.value if self.params.psd.axis.value >= 0 else data.data.ndim + self.params.psd.axis.value
-
-        nperseg = self.params.welch.nperseg.value if self.params.welch.nperseg.value > 0 else None
-        noverlap = self.params.welch.noverlap.value if self.params.welch.noverlap.value >= 0 else None
+        axis = (
+            self.params.psd.axis.value
+            if self.params.psd.axis.value >= 0
+            else data.data.ndim + self.params.psd.axis.value
+        )
 
         sfreq = data.meta["sfreq"]
+        signal_length = data.data.shape[axis]
+
+        # Calculate nperseg based on unit
+        nperseg_value = self.params.welch.nperseg.value
+        nperseg_unit = self.params.welch.nperseg_unit.value
+
+        if nperseg_unit == "samples":
+            nperseg = int(nperseg_value) if nperseg_value > 0 else None
+        elif nperseg_unit == "seconds":
+            nperseg = int(nperseg_value * sfreq) if nperseg_value > 0 else None
+        elif nperseg_unit == "fraction":
+            nperseg = int(nperseg_value * signal_length) if nperseg_value > 0 else None
+        else:
+            raise ValueError(f"Unknown nperseg_unit: {nperseg_unit}")
+
+        # Calculate noverlap based on unit
+        noverlap_value = self.params.welch.noverlap.value
+        noverlap_unit = self.params.welch.noverlap_unit.value
+
+        if noverlap_unit == "samples":
+            noverlap = int(noverlap_value) if noverlap_value >= 0 else None
+        elif noverlap_unit == "seconds":
+            noverlap = int(noverlap_value * sfreq) if noverlap_value >= 0 else None
+        elif noverlap_unit == "fraction":
+            # Fraction is of signal length
+            noverlap = int(noverlap_value * signal_length) if noverlap_value >= 0 else None
+        elif noverlap_unit == "fraction_nperseg":
+            # Fraction is of nperseg
+            if nperseg is not None:
+                noverlap = int(noverlap_value * nperseg) if noverlap_value >= 0 else None
+            else:
+                noverlap = None
+        else:
+            raise ValueError(f"Unknown noverlap_unit: {noverlap_unit}")
 
         if method == "fft":
             freq = fftfreq(data.data.shape[axis], 1 / sfreq)
