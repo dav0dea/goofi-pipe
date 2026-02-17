@@ -26,6 +26,9 @@ class DimensionalityReduction(Node):
             "umap": {
                 "num_neighbors": IntParam(15, 2, 100, doc="Number of UMAP neighbors"),
                 "metric": StringParam("euclidean", options=UMAP_METRICS, doc="Distance metric for UMAP"),
+                "min_dist": FloatParam(0.1, 0.0, 0.99, doc="Minimum distance between points in the embedding"),
+                "repulsion_strength": FloatParam(1.0, 0.1, 2.0, doc="Weighting applied to negative samples"),
+                "spread": FloatParam(1.0, 0.1, 3.0, doc="Effective scale of embedded points"),
                 "random_seed": IntParam(1234, 0, 10000, doc="Random seed for UMAP"),
             },
             "tsne": {
@@ -119,6 +122,9 @@ class DimensionalityReduction(Node):
                 n_components=n_components,
                 n_neighbors=self.params.umap.num_neighbors.value,
                 metric=self.params.umap.metric.value,
+                min_dist=self.params.umap.min_dist.value,
+                repulsion_strength=self.params.umap.repulsion_strength.value,
+                spread=self.params.umap.spread.value,
                 random_state=self.params.umap.random_seed.value,
             )
             self.components = self.model.fit_transform(data_array)
