@@ -12,7 +12,7 @@ from typing import Any, Callable, Dict, Optional, Tuple, Union
 
 from goofi import assets
 from goofi.connection import Connection
-from goofi.data import Data, DataType
+from goofi.data import Data, DataType, to_data
 from goofi.message import Message, MessageType
 from goofi.node_helpers import InputSlot, NodeProcessRegistry, NodeRef, OutputSlot
 from goofi.params import InvalidParamError, NodeParams
@@ -474,6 +474,26 @@ class Node(ABC):
                     )
                     t.start()
                     self.pending_connections[conn._id].append((t, time.time()))
+
+    def __call__(self, *args: Any, **kwargs: Any) -> Any:
+        if self._environment != NodeEnv.STANDALONE:
+            raise RuntimeError("Only nodes running in standalone mode can be called directly.")
+
+        if not self._node_ready:
+            # run setup if it hasn't been run yet
+            self.setup()
+            self._node_ready = True
+
+        # convert all inputs to Data instances
+        args = list(args)
+        for i in range(len(args)):
+            if not isinstance(args[i], Data):
+                args[i] = to_data(args[i])
+        for key, value in kwargs.items():
+            if not isinstance(value, Data):
+                kwargs[key] = to_data(value)
+
+        return self.process(*args, **kwargs)
 
     @classmethod
     def _configure(cls) -> Tuple[Dict[str, InputSlot], Dict[str, OutputSlot], NodeParams]:

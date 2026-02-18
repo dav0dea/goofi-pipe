@@ -340,6 +340,18 @@ def paste_nodes(win):
             continue
 
 
+def increase_gui_scale(_):
+    if is_ctrl_down():
+        current_scale = dpg.get_global_font_scale()
+        dpg.set_global_font_scale(current_scale + 0.1)
+
+
+def decrease_gui_scale(_):
+    if is_ctrl_down():
+        current_scale = dpg.get_global_font_scale()
+        dpg.set_global_font_scale(max(0.5, current_scale - 0.1))
+
+
 # the key handler map maps key press events to functions that handle them
 KEY_HANDLER_MAP = {
     dpg.mvKey_Delete: delete_selected_item,
@@ -350,4 +362,6 @@ KEY_HANDLER_MAP = {
     dpg.mvKey_C: copy_selected_nodes,
     dpg.mvKey_V: paste_nodes,
     dpg.mvKey_Return: create_selected_node,
+    605: increase_gui_scale,  # plus key (dpg.mvKey_Plus erroneously maps to 61)
+    dpg.mvKey_Minus: decrease_gui_scale,
 }

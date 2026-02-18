@@ -1,7 +1,7 @@
 import threading
 import time
-import numpy as np
 
+import numpy as np
 from oscpy.server import OSCThreadServer
 from pythonosc.dispatcher import Dispatcher
 from pythonosc.osc_server import ThreadingOSCUDPServer
@@ -40,6 +40,7 @@ class OSCIn(Node):
         self._srv = None
         self._srv_thread: threading.Thread | None = None
         self._lock = threading.RLock()
+        self._backend_running = False
         self._start_backend()
 
     def teardown(self):
@@ -62,32 +63,59 @@ class OSCIn(Node):
                         self._start_oscpy(addr, port)
                     else:
                         self._start_pythonosc(addr, port)
-                    return
+                    self._backend_running = True
+                    print(f"OSC server started on {addr}:{port} using {backend}")
+                    return True
                 except OSError as e:
                     last_err = e
                     self._stop_backend(silent=True)
-                    time.sleep(0.02)  # help Windows release the port
+                    time.sleep(0.1)  # help Windows/Linux release the port
+
+            # Failed to start
+            self._backend_running = False
             if last_err:
-                raise last_err
+                print(f"Failed to start OSC server: {last_err}")
+            return False
 
     def _stop_backend(self, silent: bool = False):
         with self._lock:
+            if self._srv is None:
+                return
+
             try:
                 if isinstance(self._srv, OSCThreadServer):
-                    # CLI pattern shutdown: terminate then join
+                    # oscpy: stop all sockets first to prevent new receives
+                    try:
+                        self._srv.stop_all()
+                    except Exception:
+                        pass  # May fail if already stopped
+
+                    # Then terminate the server threads
                     self._srv.terminate_server()
-                    self._srv.join_server()
+
+                    # Wait for threads to finish with timeout
+                    try:
+                        self._srv.join_server(timeout=1.0)
+                    except TypeError:
+                        # Older versions may not support timeout
+                        self._srv.join_server()
+                    except Exception:
+                        pass  # Ignore errors during join
+
                 elif isinstance(self._srv, ThreadingOSCUDPServer):
                     if self._srv_thread and self._srv_thread.is_alive():
                         self._srv.shutdown()
                         self._srv.server_close()
                         self._srv_thread.join(timeout=2.0)
-            except Exception:
+            except Exception as e:
                 if not silent:
                     raise
             finally:
                 self._srv = None
                 self._srv_thread = None
+                self._backend_running = False
+                # Give the OS time to release the port
+                time.sleep(0.15)
 
     # ---------------- oscpy backend (CLI default_handler pattern) ---------------- #
 
@@ -103,7 +131,7 @@ class OSCIn(Node):
 
     def _oscpy_default_handler(self, address: bytes, *values):
         # address is bytes; values may be bytes / numbers, etc.
-        addr_str = address.decode("utf-8", errors="ignore")
+        addr_str = address.decode("utf-8", errors="replace")
         self._handle_message(addr_str, *values)
 
     # ---------------- python-osc backend ---------------- #
@@ -125,21 +153,40 @@ class OSCIn(Node):
     # ---------------- shared handling ---------------- #
 
     def _handle_message(self, address: str, *args):
-        # Normalize None to b"None" for consistency
-        norm = [("None".encode() if a is None else a) for a in args]
+        # Normalize None and decode bytes to strings for consistency
+        norm = []
+        for a in args:
+            if a is None:
+                norm.append("None")
+            elif isinstance(a, bytes):
+                norm.append(a.decode("utf-8", errors="replace"))
+            else:
+                norm.append(a)
 
         # Single string payload → STRING
-        if norm and isinstance(norm[0], (bytes, str)):
+        if norm and isinstance(norm[0], str):
             if len(norm) > 1:
-                raise ValueError(
-                    "OSCIn does not support multiple string args per address; "
-                    f"received {[(x.decode() if isinstance(x, bytes) else x) for x in norm]}"
-                )
-            s = norm[0].decode() if isinstance(norm[0], bytes) else str(norm[0])
-            val = Data(DataType.STRING, s, {})
+                raise ValueError("OSCIn does not support multiple string args per address; " f"received {norm}")
+            val = Data(DataType.STRING, norm[0], {})
         else:
-            # Mixed/numeric payload → ARRAY (dtype=object keeps heterogenous types intact)
-            val = Data(DataType.ARRAY, np.array(norm, dtype=object), {})
+            # Numeric payload → ARRAY
+            # Convert to appropriate numeric dtype if possible
+            try:
+                arr = np.array(norm)
+                # If conversion resulted in object dtype but all elements are numeric-like,
+                # try to infer a better dtype
+                if arr.dtype == object:
+                    # Try to convert to float
+                    try:
+                        arr = np.array(norm, dtype=float)
+                    except (ValueError, TypeError):
+                        # Keep as object array if conversion fails
+                        pass
+            except Exception:
+                # Fallback to object array
+                arr = np.array(norm, dtype=object)
+
+            val = Data(DataType.ARRAY, arr, {})
 
         self.messages[address] = val
 
@@ -152,6 +199,11 @@ class OSCIn(Node):
             self.input_slots["port"].clear()
             self.params.osc.port.value = int(port.data)
             self.osc_port_changed(int(port.data))
+
+        # Retry connection if backend isn't running
+        if not self._backend_running:
+            if not self._start_backend():
+                return None
 
         if not self.messages:
             return None
