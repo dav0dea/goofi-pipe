@@ -37,6 +37,8 @@ class ViewerContainer:
 
         self.viewer_idx = viewer_idx
         self.viewer = DTYPE_VIEWER_MAP[self.dtype][self.viewer_idx](self.content_window, self)
+        self._high_dim_summary_text = None
+        self._showing_high_dim_summary = False
         self.viewer.set_size()
 
         # initialize axis scaling
@@ -120,7 +122,62 @@ class ViewerContainer:
         dpg.set_item_width(window, new_width)
         dpg.set_item_height(window, new_height + header_height + 4)  # magic + 4 to avoid scroll bar
 
+        if self._showing_high_dim_summary and self._high_dim_summary_text is not None:
+            dpg.configure_item(self._high_dim_summary_text, wrap=dpg.get_item_width(self.content_window))
+        else:
+            self.viewer.set_size()
+
+    def _show_high_dim_array_summary(self, data: Data) -> None:
+        """Display shape and basic stats instead of cycling through unsupported viewers."""
+        array = np.asarray(data.data)
+        summary = [
+            f"Array with ndim={array.ndim} is not rendered as plot/image.",
+            f"shape: {array.shape}",
+            f"dtype: {array.dtype}",
+            f"size: {array.size}",
+        ]
+
+        if np.issubdtype(array.dtype, np.number):
+            finite = array[np.isfinite(array)]
+            nan_count = int(np.isnan(array).sum()) if np.issubdtype(array.dtype, np.floating) else 0
+
+            if finite.size > 0:
+                summary.extend(
+                    [
+                        f"min: {float(np.min(finite)):.6g}",
+                        f"max: {float(np.max(finite)):.6g}",
+                        f"mean: {float(np.mean(finite)):.6g}",
+                        f"std: {float(np.std(finite)):.6g}",
+                    ]
+                )
+            else:
+                summary.append("stats: no finite values")
+
+            if nan_count > 0:
+                summary.append(f"nan_count: {nan_count}")
+
+        text = "\n".join(summary)
+
+        if not self._showing_high_dim_summary:
+            dpg.delete_item(self.content_window, children_only=True)
+            wrap_width = dpg.get_item_width(self.content_window) or 0
+            self._high_dim_summary_text = dpg.add_text("", parent=self.content_window, wrap=wrap_width)
+            self._showing_high_dim_summary = True
+
+        if self._high_dim_summary_text is not None:
+            dpg.set_value(self._high_dim_summary_text, text)
+
+    def _restore_viewer_after_summary(self) -> None:
+        """Restore the active viewer after high-dimensional summary fallback."""
+        if not self._showing_high_dim_summary:
+            return
+
+        dpg.delete_item(self.content_window, children_only=True)
+        self.viewer = DTYPE_VIEWER_MAP[self.dtype][self.viewer_idx](self.content_window, self)
         self.viewer.set_size()
+        self.update_axis_scaling()
+        self._high_dim_summary_text = None
+        self._showing_high_dim_summary = False
 
     def next_viewer(self) -> None:
         """Switch to the next viewer."""
@@ -164,6 +221,13 @@ class ViewerContainer:
             raise ValueError(f"Expected message type DATA, got {msg.type}.")
         if not msg.content["data"].dtype == self.dtype:
             raise ValueError(f"Expected data type {self.dtype}, got {msg.content['data'].dtype}.")
+
+        if self.dtype == DataType.ARRAY:
+            array = np.asarray(msg.content["data"].data)
+            if array.ndim > 2:
+                self._show_high_dim_array_summary(msg.content["data"])
+                return
+            self._restore_viewer_after_summary()
 
         try:
             # update the data viewer
