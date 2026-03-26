@@ -8,10 +8,10 @@ from goofi.params import FloatParam, IntParam, StringParam
 
 class PSD(Node):
     """
-    This node computes the Power Spectral Density (PSD) of input array data using either the FFT or Welch method. It processes one- or two-dimensional input data and returns the PSD values along with frequency information, within a specified frequency range.
+    This node computes the Power Spectral Density (PSD) of input array data using either the FFT or Welch method. It processes array data of any dimensionality and returns the PSD values along with frequency information, within a specified frequency range.
 
     Inputs:
-    - data: An array (1D or 2D) containing the signal data to analyze, with associated metadata including sampling frequency.
+    - data: An array containing the signal data to analyze, with associated metadata including sampling frequency.
 
     Outputs:
     - psd: An array representing the power spectral density of the input data, along with updated metadata including the selected frequency values.
@@ -55,9 +55,6 @@ class PSD(Node):
     def process(self, data: Data):
         if data is None or data.data is None:
             return None
-
-        if data.data.ndim not in [1, 2]:
-            raise ValueError("Data must be 1D or 2D")
 
         method = self.params.psd.method.value
         f_min = self.params.psd.f_min.value
@@ -109,6 +106,8 @@ class PSD(Node):
             psd = np.abs(fft(data.data, axis=axis))
         elif method == "welch":
             freq, psd = self.welch(data.data, fs=sfreq, nperseg=nperseg, noverlap=noverlap, axis=axis)
+        else:
+            raise ValueError(f"Unknown PSD method: {method}")
 
         # selecting the range of frequencies
         if f_min < 0:
