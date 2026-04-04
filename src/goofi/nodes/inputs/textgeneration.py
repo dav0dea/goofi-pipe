@@ -35,7 +35,7 @@ class TextGeneration(Node):
                 "model": StringParam("gpt-4o-mini", doc="Model ID for the text generation service"),
                 "system_prompt": StringParam("", doc="System prompt for text generation"),
                 "temperature": FloatParam(1.0, 0.0, 2.0, doc="Temperature for text generation"),
-                "max_tokens": IntParam(20, 5, 2048, doc="Maximum number of tokens to generate"),
+                "max_tokens": IntParam(-1, -1, 2048, doc="Maximum number of tokens to generate (-1 for model default)"),
                 "max_conversation_length": IntParam(
                     0, 0, 100, doc="Maximum length of conversation history (0 to disable, -1 for unlimited)"
                 ),
@@ -58,10 +58,13 @@ class TextGeneration(Node):
             "model": self.params.text_generation.model.value,
             "messages": messages,
             "temperature": self.params.text_generation.temperature.value,
-            "max_tokens": self.params.text_generation.max_tokens.value,
         }
 
-        if len(self.params.text_generation.system_prompt.value) > 0 and len(messages) < 2:
+        max_tokens = self.params.text_generation.max_tokens.value
+        if max_tokens > 0:
+            payload["max_tokens"] = max_tokens
+
+        if len(self.params.text_generation.system_prompt.value) > 0:
             payload["messages"] = [{"role": "system", "content": self.params.text_generation.system_prompt.value}] + messages
 
         response = self.client.chat.completions.create(**payload)
@@ -150,7 +153,7 @@ class TextGeneration(Node):
                 self.messages = self.messages[-max_conversation_length + 1 :]
             self.messages.append({"role": "user", "content": prompt.data})
 
-        if model.startswith("gpt-"):
+        if model.startswith("gpt-") or model.startswith("openai/"):
             generated_text = self.generate_openai_response(self.messages)
 
         elif model.startswith("claude-"):
@@ -168,6 +171,7 @@ class TextGeneration(Node):
 
         elif model.startswith("ollama-"):
             generated_text = self.generate_ollama_response(model, self.messages)
+
         else:
             raise ValueError(f"Unknown model: {model}")
 
@@ -187,7 +191,7 @@ class TextGeneration(Node):
         if path.exists(self.api_key):
             with open(self.api_key, "r") as f:
                 self.api_key = f.read().strip()
-        elif model.startswith("gpt-"):
+        elif model.startswith("gpt-") or model.startswith("openai/"):
             if len(environ.get("OPENAI_API_KEY", "")) > 0:
                 print("Using OPENAI_API_KEY from environment variables.")
             self.api_key = environ.get("OPENAI_API_KEY", self.api_key)
@@ -208,7 +212,7 @@ class TextGeneration(Node):
         self.provider = None
         self.client = None
 
-        if model.startswith("gpt-"):
+        if model.startswith("gpt-") or model.startswith("openai/"):
             try:
                 import openai
             except ImportError:
