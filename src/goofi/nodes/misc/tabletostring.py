@@ -4,7 +4,7 @@ import numpy as np
 
 from goofi.data import Data, DataType
 from goofi.node import Node
-from goofi.params import BoolParam, StringParam
+from goofi.params import BoolParam, IntParam, StringParam
 
 
 class TableToString(Node):
@@ -29,6 +29,7 @@ class TableToString(Node):
             "table_to_string": {
                 "format": StringParam("json", options=["json", "yaml"], doc="Output text format"),
                 "add_backslashes": BoolParam(True, doc="Add backslashes before quotes"),
+                "round_decimals": IntParam(-1, -1, 20, doc="Round floats to n decimals (-1 to disable)"),
             }
         }
 
@@ -38,6 +39,10 @@ class TableToString(Node):
 
         meta = table.meta
         table = table.data
+
+        decimals = self.params.table_to_string.round_decimals.value
+        if decimals >= 0:
+            table = round_table(table, decimals)
 
         if self.params.table_to_string.format.value == "json":
             try:
@@ -56,6 +61,28 @@ class TableToString(Node):
             text = text.replace('"', '\\"')
 
         return {"text": (text, meta)}
+
+
+def round_table(table, decimals):
+    """Recursively round float values in a table to the given number of decimals."""
+    result = {}
+    for key, value in table.items():
+        if isinstance(value, Data):
+            if value.dtype == DataType.TABLE:
+                result[key] = Data(DataType.TABLE, round_table(value.data, decimals), value.meta)
+            elif value.dtype == DataType.ARRAY:
+                result[key] = Data(DataType.ARRAY, np.round(value.data, decimals), value.meta)
+            else:
+                result[key] = value
+        elif isinstance(value, dict):
+            result[key] = round_table(value, decimals)
+        elif isinstance(value, np.ndarray):
+            result[key] = np.round(value, decimals)
+        elif isinstance(value, float):
+            result[key] = round(value, decimals)
+        else:
+            result[key] = value
+    return result
 
 
 def convert_data_to_serializable(data):
