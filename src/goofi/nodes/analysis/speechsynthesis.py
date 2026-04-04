@@ -66,7 +66,10 @@ class SpeechSynthesis(Node):
             # ensure transcript is a string
             transcript = self.transcribe_voice(voice.data) or ""
 
-        return {"speech": (speech, {}), "transcript": (transcript, {})}
+        return {
+            "speech": (speech, {}) if speech is not None else None,
+            "transcript": (transcript, {}) if transcript else None,
+        }
 
     def synthesize_speech_stream(self, text, speed):
         response = self.openai.audio.speech.create(
