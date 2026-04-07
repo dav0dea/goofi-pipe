@@ -1795,6 +1795,7 @@ This node loads data from a file and outputs the loaded data in array or string 
 Inputs:
   - source_name: STRING
   - stream_name: STRING
+  - source_type: STRING
 
 Outputs:
   - out: ARRAY
@@ -1805,6 +1806,7 @@ This node connects to a Lab Streaming Layer (LSL) stream and receives real-time 
 ### Inputs
 - source_name: The LSL source ID to connect to.
 - stream_name: The LSL stream name within the specified source.
+- source_type: The LSL stream type string as reported by the stream. Optional when empty. Use when several streams share the same source ID and stream name so the client resolves to a single stream.
 
 ### Outputs
 - out: The acquired data as an array, along with metadata including sampling frequency and channel names.
