@@ -914,6 +914,29 @@ This node takes an input image and generates a textual description or caption fo
 
   </details>
 
+<details><summary>&emsp;ImuFusion</summary>
+
+## ImuFusion
+```
+Inputs:
+  - acc: ARRAY
+  - gyro: ARRAY
+
+Outputs:
+  - out: ARRAY
+```
+
+This node fuses synchronized 3-axis accelerometer and gyroscope data into an orientation estimate using a complementary filter. The `ALPHA` parameter controls the gyro/accelerometer blend (higher values trust integrated gyroscope more for roll/pitch). It supports single samples `(3,)` or batched samples `(3, N)`, uses `sfreq` metadata when available (or `UPDATE_HZ` as fallback), and outputs either Euler angles in degrees (`roll, pitch, yaw`) or a quaternion (`x, y, z, w`).
+
+### Inputs
+- acc: Accelerometer array with shape `(3,)` or `(3, N)` where rows correspond to `X, Y, Z`.
+- gyro: Gyroscope array with the same shape and ordering as `acc` (values expected in degrees per second).
+
+### Outputs
+- out: Orientation as either Euler angles (`euler_deg`) or quaternion (`quaternion_xyzw`), with metadata updated to match output shape and channel labels.
+
+  </details>
+
 <details><summary>&emsp;LempelZiv</summary>
 
 ## LempelZiv
