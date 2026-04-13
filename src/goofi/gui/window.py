@@ -9,6 +9,7 @@ from functools import partial
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import dearpygui.dearpygui as dpg
+import pyperclip
 
 from goofi import assets
 from goofi.data import DataType
@@ -87,6 +88,16 @@ def update_minimap(func):
     return wrapper
 
 
+def copy_node_info_to_clipboard(sender, app_data, user_data):
+    win = user_data
+    wid = win.node_info_text_widget
+    if wid is not None and dpg.does_item_exist(wid):
+        try:
+            pyperclip.copy(str(dpg.get_value(wid) or ""))
+        except Exception:
+            pass
+
+
 @dataclass
 class GUINode:
     item: int
@@ -125,8 +136,12 @@ class GUINode:
 
         # update the info window if it is open
         info_win = win.node_info_window
-        if info_win is not None and dpg.get_item_user_data(info_win) == self.item:
-            dpg.set_value(dpg.get_item_children(info_win)[1][2], msg)
+        if (
+            info_win is not None
+            and dpg.get_item_user_data(info_win) == self.item
+            and win.node_info_text_widget is not None
+        ):
+            dpg.set_value(win.node_info_text_widget, msg)
 
     def display_info(self, win: "Window") -> None:
         """Display information about the node."""
@@ -134,6 +149,7 @@ class GUINode:
             # close the current info window
             dpg.delete_item(win.node_info_window)
             win.node_info_window = None
+            win.node_info_text_widget = None
 
         # create new info window
         size = (500, 300)
@@ -146,6 +162,13 @@ class GUINode:
                 dpg.add_theme_color(dpg.mvThemeCol_Text, [0, 0, 0, 255], category=dpg.mvThemeCat_Core)
                 dpg.add_theme_color(dpg.mvThemeCol_FrameBg, [0, 0, 0, 0], category=dpg.mvThemeCat_Core)
 
+        with dpg.theme() as copy_btn_theme:
+            with dpg.theme_component(dpg.mvButton):
+                dpg.add_theme_color(dpg.mvThemeCol_Button, [0, 0, 0, 0], category=dpg.mvThemeCat_Core)
+                dpg.add_theme_color(dpg.mvThemeCol_ButtonHovered, [0, 0, 0, 45], category=dpg.mvThemeCat_Core)
+                dpg.add_theme_color(dpg.mvThemeCol_ButtonActive, [0, 0, 0, 70], category=dpg.mvThemeCat_Core)
+                dpg.add_theme_style(dpg.mvStyleVar_FrameBorderSize, 0, category=dpg.mvThemeCat_Core)
+
         with dpg.window(
             width=size[0],
             height=size[1],
@@ -157,11 +180,22 @@ class GUINode:
             no_title_bar=True,
             user_data=self.item,
         ) as win.node_info_window:
-            dpg.add_text("Node Info")
+            with dpg.group(horizontal=True, width=-1):
+                dpg.add_text("Node Info")
+                dpg.add_spacer(width=-1)
+                copy_btn = dpg.add_button(
+                    label="Copy",
+                    width=72,
+                    callback=copy_node_info_to_clipboard,
+                    user_data=win,
+                )
+                dpg.bind_item_theme(copy_btn, copy_btn_theme)
             dpg.add_separator()
 
             txt = "All good!" if self._error_msg is None else self._error_msg
-            dpg.add_input_text(multiline=True, default_value=txt.strip(), readonly=True, width=-1, height=-1)
+            win.node_info_text_widget = dpg.add_input_text(
+                multiline=True, default_value=txt.strip(), readonly=True, width=-1, height=-1
+            )
 
             dpg.bind_item_theme(win.node_info_window, win_theme)
 
@@ -1147,6 +1181,7 @@ class Window:
         self.file_selection_window = None
         self.unsaved_changes_dialog_open = False
         self.node_info_window = None
+        self.node_info_text_widget = None
         self.metadata_view = None
         self.param_input_fields = []
 

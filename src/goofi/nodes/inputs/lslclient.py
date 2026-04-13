@@ -1,6 +1,7 @@
 import socket
+import time
 from threading import Thread, current_thread
-from typing import Any, Dict, Tuple
+from typing import Any, Dict, List, Tuple
 
 import numpy as np
 from tabulate import tabulate
@@ -8,6 +9,28 @@ from tabulate import tabulate
 from goofi.data import Data, DataType
 from goofi.node import Node
 from goofi.params import BoolParam
+
+# pylsl default wait is 1.0s; short waits can miss outlets that advertise slightly later.
+# Multiple passes merged by uid fixes Muse-style multi-stream devices (same source_id + name, different type).
+LSL_RESOLVE_ROUNDS = 2
+LSL_RESOLVE_WAIT_S = 2.0
+LSL_RESOLVE_PAUSE_S = 0.25
+
+
+def _stream_info_key(info) -> Tuple:
+    """Stable key for deduplicating pylsl.StreamInfo across resolve passes."""
+    u = info.uid()
+    if u:
+        return ("uid", u)
+    return (
+        "fallback",
+        info.source_id(),
+        info.name(),
+        info.type(),
+        info.hostname(),
+        info.channel_count(),
+        info.nominal_srate(),
+    )
 
 
 class LSLClient(Node):
@@ -17,6 +40,7 @@ class LSLClient(Node):
     Inputs:
     - source_name: The LSL source ID to connect to.
     - stream_name: The LSL stream name within the specified source.
+    - source_type: The LSL stream type string (StreamInfo.type(), e.g. EEG or GYRO). Optional when empty; set when multiple streams share the same source ID and stream name.
 
     Outputs:
     - out: The acquired data as an array, along with metadata including sampling frequency and channel names.
@@ -27,13 +51,18 @@ class LSLClient(Node):
             "lsl_stream": {
                 "source_name": "goofi",
                 "stream_name": "",
+                "source_type": "",
                 "refresh": BoolParam(False, trigger=True),
             },
             "common": {"autotrigger": True},
         }
 
     def config_input_slots():
-        return {"source_name": DataType.STRING, "stream_name": DataType.STRING}
+        return {
+            "source_name": DataType.STRING,
+            "stream_name": DataType.STRING,
+            "source_type": DataType.STRING,
+        }
 
     def config_output_slots():
         return {"out": DataType.ARRAY}
@@ -56,7 +85,9 @@ class LSLClient(Node):
         # initialize list of streams
         self.connect()
 
-    def process(self, source_name: Data, stream_name: Data) -> Dict[str, Tuple[np.ndarray, Dict[str, Any]]]:
+    def process(
+        self, source_name: Data, stream_name: Data, source_type: Data
+    ) -> Dict[str, Tuple[np.ndarray, Dict[str, Any]]]:
         """Fetch the next chunk of data from the client."""
         if source_name is not None:
             self.params.lsl_stream.source_name.value = source_name.data
@@ -66,6 +97,10 @@ class LSLClient(Node):
             self.params.lsl_stream.stream_name.value = stream_name.data
             self.lsl_stream_stream_name_changed(stream_name.data)
             self.input_slots["stream_name"].clear()
+        if source_type is not None:
+            self.params.lsl_stream.source_type.value = source_type.data
+            self.lsl_stream_source_type_changed(source_type.data)
+            self.input_slots["source_type"].clear()
 
         if self.client is None:
             if not self.connect():
@@ -115,17 +150,25 @@ class LSLClient(Node):
         # find the stream
         source_name = self.params.lsl_stream.source_name.value
         stream_name = self.params.lsl_stream.stream_name.value
+        source_type = self.params.lsl_stream.source_type.value
 
         matches = {}
         for info in self.available_streams:
             h, s, n = info.hostname(), info.source_id(), info.name()
-            if s == source_name and (len(stream_name) == 0 or n == stream_name):
-                if (s, n) in matches and h == socket.gethostname():
-                    # prefer local streams
-                    matches[(s, n)] = info
-                elif (s, n) not in matches:
-                    # otherwise, prefer the first match
-                    matches[(s, n)] = info
+            t = info.type()
+            if s != source_name:
+                continue
+            if len(stream_name) > 0 and n != stream_name:
+                continue
+            if len(source_type) > 0 and t != source_type:
+                continue
+            key = (s, n, t)
+            if key in matches and h == socket.gethostname():
+                # prefer local streams
+                matches[key] = info
+            elif key not in matches:
+                # otherwise, prefer the first match
+                matches[key] = info
 
         if len(matches) != 1:
             if self.lsl_discover_thread is None:
@@ -135,8 +178,9 @@ class LSLClient(Node):
                 )
                 self.lsl_discover_thread.start()
 
+                type_suffix = f', type "{source_type}"' if source_type else ""
                 if len(matches) == 0:
-                    print(f'\nCould not find source "{source_name}" with stream "{stream_name}".')
+                    print(f'\nCould not find source "{source_name}" with stream "{stream_name}"{type_suffix}.')
                 else:
                     # ms = tabulate(
                     #     [list(m) for m in matches],
@@ -144,7 +188,9 @@ class LSLClient(Node):
                     #     tablefmt="simple_outline",
                     # )
                     # print(f'\nFound multiple streams matching source="{source_name}", name="{stream_name}":\n{ms}.')
-                    print(f'\nFound multiple streams matching source="{source_name}", name="{stream_name}":\n{matches}.')
+                    print(
+                        f'\nFound multiple streams matching source="{source_name}", name="{stream_name}"{type_suffix}:\n{matches}.'
+                    )
             return False
             
         # if len(matches) != 1:
@@ -164,21 +210,32 @@ class LSLClient(Node):
                 pass
             self.client = None
 
+    def _resolve_stream_infos(self) -> List:
+        """Resolve LSL outlets; merge several passes so all streams are discovered (see pylsl.resolve_streams)."""
+        merged: Dict[Tuple, Any] = {}
+        for round_i in range(LSL_RESOLVE_ROUNDS):
+            for info in self.pylsl.resolve_streams(wait_time=LSL_RESOLVE_WAIT_S):
+                merged[_stream_info_key(info)] = info
+            if round_i + 1 < LSL_RESOLVE_ROUNDS:
+                time.sleep(LSL_RESOLVE_PAUSE_S)
+        return list(merged.values())
+
     def lsl_stream_refresh_changed(self, value: bool) -> None:
-        self.available_streams = self.pylsl.resolve_streams()
+        self.available_streams = self._resolve_stream_infos()
         stream_data = sorted(
-            [[info.source_id(), info.name(), info.hostname()] for info in self.available_streams], key=lambda x: x[0]
+            [[info.source_id(), info.name(), info.type(), info.hostname()] for info in self.available_streams],
+            key=lambda x: x[0],
         )
 
         # print("\nAvailable LSL streams:")
         # print(tabulate(stream_data, headers=["Source ID", "Stream Name", "Host Name"], tablefmt="simple_outline"))
         # print()
         print("\nAvailable LSL streams:")
-        print(f"{'Source ID':<36} {'Stream Name':<25} {'Host Name':<20}")
-        print("-" * 85)
+        print(f"{'Source ID':<36} {'Stream Name':<25} {'Type':<12} {'Host Name':<20}")
+        print("-" * 98)
 
-        for source_id, stream_name, host_name in stream_data:
-            print(f"{source_id:<36} {stream_name:<25} {host_name:<20}")
+        for source_id, stream_name, stream_type, host_name in stream_data:
+            print(f"{source_id:<36} {stream_name:<25} {stream_type:<12} {host_name:<20}")
         print()
 
         if current_thread().name == "lsl_discover_thread":
@@ -195,6 +252,14 @@ class LSLClient(Node):
     def lsl_stream_stream_name_changed(self, value: str) -> None:
         try:
             if self.client is not None and value != self.client.info().name():
+                self.setup()
+        except:
+            # stream might have been lost
+            self.setup()
+
+    def lsl_stream_source_type_changed(self, value: str) -> None:
+        try:
+            if self.client is not None and value != self.client.info().type():
                 self.setup()
         except:
             # stream might have been lost

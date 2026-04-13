@@ -53,6 +53,7 @@ def click_callback(_, btn, win):
         # the node info window is open but the click was outside of it, close it
         dpg.delete_item(win.node_info_window)
         win.node_info_window = None
+        win.node_info_text_widget = None
     # TODO: do the same thing for the file selection window, which has a broken get_item_pos
 
     if btn == 1:
@@ -244,6 +245,7 @@ def escape(win):
         # close the node info window
         dpg.delete_item(win.node_info_window)
         win.node_info_window = None
+        win.node_info_text_widget = None
 
 
 def save_manager(win):
