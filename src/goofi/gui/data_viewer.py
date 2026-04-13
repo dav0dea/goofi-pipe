@@ -300,6 +300,11 @@ class ArrayViewer(DataViewer):
         # convert data to numpy array and copy to C order (otherwise DPG will crash for some arrays)
         array = np.squeeze(data.data).copy(order="C")
 
+        if self.vmin is not None and self.vmax is not None:
+            # apply shrinking to vmin and vmax
+            self.vmin = self.vmin * (1 - self.shrinking) + self.vmax * self.shrinking
+            self.vmax = self.vmax * (1 - self.shrinking) + self.vmin * self.shrinking
+
         # update vmin and vmax
         if self.vmin is None or np.min(array) < self.vmin:
             self.vmin = np.nanmin(array)
