@@ -285,8 +285,6 @@ class ArrayViewer(DataViewer):
 
         # container for DPG line series
         self.line_series = []
-        self._last_1d_n: Optional[int] = None
-        self._last_2d_ch: Optional[int] = None
 
     def update(self, data: Data) -> None:
         """
@@ -301,30 +299,6 @@ class ArrayViewer(DataViewer):
         """
         # convert data to numpy array and copy to C order (otherwise DPG will crash for some arrays)
         array = np.squeeze(data.data).copy(order="C")
-
-        if array.size == 0:
-            return
-
-        # When the plotted vector shape changes (e.g. Euler (3,) vs quaternion (4,)), reset autoscale.
-        # Otherwise vmin/vmax only *expand* with new extrema; smaller-magnitude data stays as a hairline
-        # on the old axis range and looks "frozen".
-        if array.ndim == 1:
-            n = int(array.shape[0])
-            if self._last_1d_n is not None and n != self._last_1d_n:
-                self.vmin = None
-                self.vmax = None
-            self._last_1d_n = n
-        elif array.ndim == 2:
-            ch = int(array.shape[0])
-            if self._last_2d_ch is not None and ch != self._last_2d_ch:
-                self.vmin = None
-                self.vmax = None
-            self._last_2d_ch = ch
-
-        if self.vmin is not None and self.vmax is not None:
-            # apply shrinking to vmin and vmax
-            self.vmin = self.vmin * (1 - self.shrinking) + self.vmax * self.shrinking
-            self.vmax = self.vmax * (1 - self.shrinking) + self.vmin * self.shrinking
 
         # update vmin and vmax
         if self.vmin is None or np.min(array) < self.vmin:
