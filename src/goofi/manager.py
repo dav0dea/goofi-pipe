@@ -1,27 +1,45 @@
+"""Manager / orchestrator for goofi-pipe.
+
+After the iceoryx2 transport refactor, the manager:
+
+- assigns a process-wide iceoryx2 instance id and propagates it to spawned
+  nodes (so they all agree on service names);
+- spawns each node in its own OS process by default (one-node-per-group),
+  or hosts all nodes in the manager process when multiprocessing is
+  disabled (single group);
+- wires links by sending `REGISTER_SUBSCRIBER` on the producer's ctrl
+  channel and `SUBSCRIBE_INPUT` on the consumer's ctrl channel — no
+  Connection objects cross process boundaries any more;
+- reads each node's most recent serialized state directly from the
+  corresponding `NodeRef` (push-based, dirty/clean) when saving;
+- registers an `atexit` hook to drop iceoryx2 shared-memory entries
+  belonging to this instance id.
+"""
+from __future__ import annotations
+
+import atexit
+import glob
 import importlib
+import os
+import subprocess  # noqa: F401  (used by _cleanup_iceoryx2_shm)
 import time
+import uuid
 from copy import deepcopy
-from multiprocessing import Manager as MPManager
 from os import path
 from pathlib import Path
 from threading import Thread
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import yaml
 
-from goofi.connection import Connection
-from goofi.gui.window import Window
-from goofi.message import Message, MessageType
+from goofi.message import MessageType
 from goofi.node import MultiprocessingForbiddenError, Node
 from goofi.node_helpers import NodeProcessRegistry, NodeRef, list_nodes
+from goofi.transport import data_service_name, get_instance_id, set_instance_id
 
 
 def mark_unsaved_changes(func):
-    """
-    Decorator that marks the manager as having unsaved changes after the function is called.
-    """
-
     def wrapper(self, *args, **kwargs):
         res = func(self, *args, **kwargs)
         self.unsaved_changes = True
@@ -31,55 +49,30 @@ def mark_unsaved_changes(func):
 
 
 class NodeContainer:
-    """
-    The node container keeps track of all nodes in the manager. It provides methods to add and remove nodes,
-    and to access them by name.
-    """
+    """Bookkeeping dict of NodeRefs keyed by unique name."""
 
     def __init__(self) -> None:
         self._nodes: Dict[str, NodeRef] = {}
 
     def add_node(self, name: str, node: NodeRef, force_name: bool = False) -> str:
-        """
-        Adds a node to the container with a unique name.
-
-        ### Parameters
-        `name` : str
-            The name of the node.
-        `node` : NodeRef
-            The node to add.
-        `force_name`: bool
-            If True, raise an error if the name is already taken. Otherwise makes the name unique.
-        """
         if not isinstance(name, str):
             raise ValueError(f"Expected string, got {type(name)}.")
         if not isinstance(node, NodeRef):
             raise ValueError(f"Expected NodeRef, got {type(node)}.")
 
         if force_name:
-            # check if the name is already taken
             if name in self._nodes:
                 raise KeyError(f"Node {name} already in container.")
-            # register the node under the given name
             self._nodes[name] = node
             return name
 
-        # generate a unique name for the node
         idx = 0
         while f"{name}{idx}" in self._nodes:
             idx += 1
-        # register the node under the generated name
         self._nodes[f"{name}{idx}"] = node
         return f"{name}{idx}"
 
     def remove_node(self, name: str) -> None:
-        """
-        Terminates the node and removes it from the container.
-
-        ### Parameters
-        `name` : str
-            The name of the node.
-        """
         if name in self._nodes:
             self._nodes[name].terminate()
             del self._nodes[name]
@@ -100,23 +93,7 @@ class NodeContainer:
 
 
 class Manager:
-    """
-    The manager keeps track of all nodes, and provides methods to add and remove nodes, and links between them.
-    It also interfaces with the GUI to display the nodes and links, and to handle user interaction.
-
-    ### Parameters
-    `filepath` : Optional[str]
-        The path to the file to load from. If `None`, does not load a file.
-    `headless` : bool
-        Whether to run in headless mode. If `True`, the GUI will not be started.
-    `use_multiprocessing` : bool
-        Whether to use multiprocessing for nodes that support it. If `False`, all nodes will be created in the
-        same process as the manager.
-    `duration` : float
-        The duration to run the manager for. If `0`, runs indefinitely.
-    `communication_backend` : str
-        The communication backend to use for node communication. Default is "auto" (platform-dependent).
-    """
+    """Goofi-pipe orchestrator."""
 
     def __init__(
         self,
@@ -124,152 +101,91 @@ class Manager:
         headless: bool = True,
         use_multiprocessing: bool = True,
         duration: float = 0,
-        communication_backend: str = "auto",
     ) -> None:
-        # create a multiprocessing manager
-        self._mp_manager = MPManager()
+        # Single transport instance id per Manager. Embedded in every
+        # iceoryx2 service name; lets multiple goofi-pipe instances coexist
+        # on one host without /dev/shm collisions.
+        instance_id = f"{os.getpid()}-{uuid.uuid4().hex[:8]}"
+        set_instance_id(instance_id)
+        # Sweep any orphan iceoryx2 nodes from previously-crashed runs.
+        _cleanup_iceoryx2_shm(instance_id)
+        atexit.register(_cleanup_iceoryx2_shm, instance_id)
 
-        try:
-            # set up communication backend
-            Connection.set_backend(communication_backend, self._mp_manager)
-        except AssertionError:
-            print("Connection backend already set. Skipping.")
-
-        if communication_backend == "auto":
-            # make sure a backend was selected
-            assert Connection._BACKEND is not None
-        else:
-            # make sure the connection backend is set correctly
-            assert Connection._BACKEND == communication_backend
-
-        # TODO: add proper logging
         print("Starting goofi-pipe...")
-        # preload all nodes to avoid delays
         list_nodes(verbose=True)
 
-        # TODO: add proper logging
         mp_state = "enabled" if use_multiprocessing else "disabled"
-        print(f"Initializing goofi-pipe manager (multiprocessing {mp_state}).")
-        print(f"Using communication backend: {Connection._BACKEND}.")
+        print(f"Initializing goofi-pipe manager (multiprocessing {mp_state}). instance_id={instance_id}")
 
+        self._instance_id = instance_id
         self._headless = headless
         self._use_multiprocessing = use_multiprocessing
         self._running = True
         self.nodes = NodeContainer()
+        # node_name -> process_group id. When two nodes share a group, links
+        # between them use thread transport instead of iceoryx2.
+        self._node_groups: Dict[str, str] = {}
+        # explicit link table — manager-owned, replaces the per-node
+        # out_conns list from the old code.
+        self._links: List[Dict[str, str]] = []
 
-        # propagate the headless argument to the node process registry
         NodeProcessRegistry().headless = headless
 
-        # store attributes related to loading and saving
-        self._save_path = None
+        self._save_path: Optional[str] = None
         self._unsaved_changes = False
 
         if self.headless:
-            # there is no GUI, so we can run everything in the main thread
             self.post_init(filepath, duration)
         else:
-            # start the blocking non-daemon post-initialization thread to leave the main thread free for the GUI (limitation of MacOS)
-            Thread(target=self.post_init, args=(filepath, duration), daemon=False).start()
+            # Window() blocks main thread; everything else runs in a daemon.
+            from goofi.gui.window import Window
 
-            # initialize the GUI
-            # NOTE: this is a blocking call, so it must be the last thing we do
+            Thread(target=self.post_init, args=(filepath, duration), daemon=False).start()
             Window(self)
 
     def post_init(self, filepath: Optional[str] = None, duration: float = 0) -> None:
-        """
-        Wait until everything is initialized and run post-initialization tasks (e.g. loading a .gfi file) since the GUI
-        potentially blocks the main thread.
-
-        This function is called in a separate thread and will block until the manager is terminated. This is to avoid blocking
-        the main thread. We leave the main thread to the GUI, which is necessary on MacOS.
-
-        ### Parameters
-        `filepath` : Optional[str]
-            The path to the file to load from. If `None`, does not load a file.
-        `duration` : float
-            The duration to run the manager for. If `0`, runs indefinitely.
-        """
-        # wait for the GUI to initialize
         if not self.headless:
+            from goofi.gui.window import Window
+
             win = None
             while win is None:
-                # try to get the window instance from the main thread
                 try:
                     win = Window()
                 except RuntimeError:
-                    # the window is not initialized yet, wait a bit
                     time.sleep(0.01)
-
-            # make sure the GUI has finished initializing
             while not win._initialized:
                 time.sleep(0.01)
 
-        # load the manager state from a file
         if filepath is not None:
             self.load(filepath, load_on_init=True)
 
         if duration > 0:
-            # run for a fixed duration
             time.sleep(duration)
             self.terminate()
 
         try:
-            # run indefinitely
             while self.running:
                 time.sleep(1)
         except KeyboardInterrupt:
             self.terminate()
 
-    def load(self, filepath: str, load_on_init: bool = False) -> None:
-        """
-        Loads the state of the manager from a file.
+    # ------------------------------------------------------------------
+    # Node / link CRUD
+    # ------------------------------------------------------------------
 
-        ### Parameters
-        `filepath` : str
-            The path to the file to load from.
-        `load_on_init` : bool
-            Whether the file is being loaded during initialization of the manager.
-        """
-        if len(self.nodes) > 0:
-            # make sure the manager is empty
-            raise RuntimeError("This goofi-pipe already contains nodes.")
+    def _resolve_group(self, name: str, params: Optional[Dict[str, Dict[str, Any]]]) -> str:
+        """Determine the process group for a new node."""
+        if not self._use_multiprocessing:
+            return "default"
+        if params and "common" in params and isinstance(params["common"].get("process_group"), str):
+            grp = params["common"]["process_group"]
+            if grp:
+                return grp
+        # Default: one group per node = one process per node.
+        return name
 
-        if not path.exists(filepath):
-            if load_on_init:
-                # missing file during initialization, terminate the application
-                self.terminate()
-            raise FileNotFoundError(f"File '{filepath}' does not exist.")
-
-        # TODO: add proper logging
-        print(f"Loading manager state from '{filepath}'...")
-
-        # load the yaml file
-        with open(filepath, "r") as f:
-            manager_yaml = yaml.load(f, Loader=yaml.FullLoader)
-
-        # create all nodes
-        for name, node in manager_yaml["nodes"].items():
-            # In rare cases node positions can be corrupted, which shows up as a position of (min int32, min int32).
-            # This causes the dearpygui to segfault when trying to create a link to the node. Workaround this by
-            # resetting the position to (0, 0) if it is corrupted.
-            xpos, ypos = node["gui_kwargs"]["pos"]
-            if xpos == np.iinfo(np.int32).min or ypos == np.iinfo(np.int32).min:
-                print(f"WARNING: Node '{name}' has a corrupted position ({xpos}, {ypos}). Resetting to (0, 0).")
-                node["gui_kwargs"]["pos"] = (0, 0)
-
-            # add the node to the manager
-            self.add_node(node["_type"], node["category"], name=name, params=node["params"], **node["gui_kwargs"])
-
-        # add links
-        for link in manager_yaml["links"]:
-            self.add_link(link["node_out"], link["node_in"], link["slot_out"], link["slot_in"])
-
-        # store the save path
-        self.save_path = filepath
-        self.unsaved_changes = False
-
-        # TODO: add proper logging
-        print("Finished loading manager state.")
+    def _same_group(self, node_a: str, node_b: str) -> bool:
+        return self._node_groups.get(node_a) == self._node_groups.get(node_b)
 
     @mark_unsaved_changes
     def add_node(
@@ -281,307 +197,257 @@ class Manager:
         params: Optional[Dict[str, Dict[str, Any]]] = None,
         **gui_kwargs,
     ) -> str:
-        """
-        Adds a node to the container.
-
-        ### Parameters
-        `node_type` : str
-            The name of the node type (the node's class name).
-        `category` : str
-            The category of the node.
-        `notify_gui` : bool
-            Whether to notify the gui to add the node.
-        `name` : Optional[str]
-            Raises an error if the name is already taken. If `None`, a unique name is generated.
-        `params` : Optional[Dict[str, Dict[str, Any]]]
-            The parameters of the node. If `None`, the default parameters are used.
-        `gui_kwargs` : dict
-            Additional keyword arguments to pass to the gui.
-
-        ### Returns
-        `name` : str
-            The name of the node.
-        """
-        # TODO: add proper logging
         print(f"Adding node '{node_type}' from category '{category}'.")
 
-        # import the node
         mod = importlib.import_module(f"goofi.nodes.{category}.{node_type.lower()}")
-        node: Node = getattr(mod, node_type)
+        node_cls: Node = getattr(mod, node_type)
 
-        # instantiate the node
-        ref = None
+        # Determine the name *before* spawning so the spawned node uses it
+        # as its node_id (which feeds into every service name).
+        if name is None:
+            base = node_type.lower()
+            idx = 0
+            while f"{base}{idx}" in self.nodes:
+                idx += 1
+            assigned_name = f"{base}{idx}"
+        else:
+            assigned_name = name
+
+        group = self._resolve_group(assigned_name, params)
+
+        ref: Optional[NodeRef] = None
         if self._use_multiprocessing:
-            # try to spawn the node in a separate process
             try:
-                ref = node.create(initial_params=params, send_output_to_ref=not self.headless)
+                ref = node_cls.create(node_id=assigned_name, initial_params=params)
             except MultiprocessingForbiddenError:
-                # the node doesn't support multiprocessing, create it in the local process
-                pass
+                ref = None
         if ref is None:
-            # spawn the node in the local process
-            ref = node.create_local(initial_params=params, send_output_to_ref=not self.headless)[0]
+            ref, _ = node_cls.create_local(node_id=assigned_name, initial_params=params)
 
-        # set up the shutdown callback handler to terminate the manager
         ref.set_message_handler(MessageType.SHUTDOWN, lambda *args: self.terminate())
 
-        # add the node to the container
-        if name is None:
-            # default name is the node type
-            name = self.nodes.add_node(node_type.lower(), ref)
-        else:
-            # force the given name
-            name = self.nodes.add_node(name, ref, force_name=True)
+        registered = self.nodes.add_node(assigned_name, ref, force_name=True)
+        self._node_groups[registered] = group
 
-        # add the node to the gui
+        # Best-effort: block briefly for the initial STATE_UPDATE so the
+        # rest of the system (save / GUI) has node state to read.
+        ref.wait_for_state(timeout=2.0)
+
         if not self.headless and notify_gui:
-            Window().add_node(name, ref, **gui_kwargs)
-        return name
+            from goofi.gui.window import Window
+
+            Window().add_node(registered, ref, **gui_kwargs)
+        return registered
 
     @mark_unsaved_changes
     def remove_node(self, name: str, notify_gui: bool = True, **gui_kwargs) -> None:
-        """
-        Removes a node from the container.
-
-        ### Parameters
-        `name` : str
-            The name of the node.
-        `notify_gui` : bool
-            Whether to notify the gui to remove the node.
-        `gui_kwargs` : dict
-            Additional keyword arguments to pass to the gui.
-        """
-        # TODO: add proper logging
         print(f"Removing node '{name}'.")
+        # Drop any links touching this node.
+        for link in list(self._links):
+            if link["node_out"] == name or link["node_in"] == name:
+                self._teardown_link(link, notify_gui=False)
+                self._links.remove(link)
 
         self.nodes.remove_node(name)
+        self._node_groups.pop(name, None)
         if not self.headless and notify_gui:
+            from goofi.gui.window import Window
+
             Window().remove_node(name, **gui_kwargs)
 
     @mark_unsaved_changes
     def add_link(
-        self, node_out: str, node_in: str, slot_out: str, slot_in: str, notify_gui: bool = True, **gui_kwargs
+        self,
+        node_out: str,
+        node_in: str,
+        slot_out: str,
+        slot_in: str,
+        notify_gui: bool = True,
+        **gui_kwargs,
     ) -> None:
-        """
-        Adds a link between two nodes.
+        if node_out not in self.nodes:
+            raise KeyError(f"No such node: {node_out}")
+        if node_in not in self.nodes:
+            raise KeyError(f"No such node: {node_in}")
 
-        ### Parameters
-        `node_out` : str
-            The name of the output node.
-        `node_in` : str
-            The name of the input node.
-        `slot_out` : str
-            The output slot name of `node_out`.
-        `slot_in` : str
-            The input slot name of `node_in`.
-        `notify_gui` : bool
-            Whether to notify the gui to add the link.
-        `gui_kwargs` : dict
-            Additional keyword arguments to pass to the gui.
-        """
-        # TODO: use a thread connection that avoids serialization in case the two nodes share a process
-        # if self.nodes[node_in].process == self.nodes[node_out].process:
-        #     use a thread connection
+        # Idempotent: if the same link already exists, no-op.
+        for link in self._links:
+            if (
+                link["node_out"] == node_out
+                and link["node_in"] == node_in
+                and link["slot_out"] == slot_out
+                and link["slot_in"] == slot_in
+            ):
+                return
 
-        # TODO: Prevent multiple links to the same input slot. The GUI already prevents this, but the manager should too.
-        self.nodes[node_out].connection.send(
-            Message(
-                MessageType.ADD_OUTPUT_PIPE,
-                {"slot_name_out": slot_out, "slot_name_in": slot_in, "node_connection": self.nodes[node_in].connection},
-            )
+        src_ref = self.nodes[node_out]
+        dst_ref = self.nodes[node_in]
+        in_process = self._same_group(node_out, node_in)
+        service = data_service_name(node_out, slot_out)
+
+        # Order matters: register on the source first so it knows to
+        # publish, then subscribe on the destination.
+        src_ref.register_subscriber(slot_out)
+        dst_ref.subscribe_input(slot_in, service, in_process)
+
+        self._links.append(
+            {"node_out": node_out, "node_in": node_in, "slot_out": slot_out, "slot_in": slot_in}
         )
 
         if not self.headless and notify_gui:
+            from goofi.gui.window import Window
+
             Window().add_link(node_out, node_in, slot_out, slot_in, **gui_kwargs)
 
     @mark_unsaved_changes
     def remove_link(
-        self, node_out: str, node_in: str, slot_out: str, slot_in: str, notify_gui: bool = True, **gui_kwargs
+        self,
+        node_out: str,
+        node_in: str,
+        slot_out: str,
+        slot_in: str,
+        notify_gui: bool = True,
+        **gui_kwargs,
     ) -> None:
-        """
-        Removes a link between two nodes.
-
-        ### Parameters
-        `node_out` : str
-            The name of the output node.
-        `node_in` : str
-            The name of the input node.
-        `slot_out` : str
-            The output slot name of `node_out`.
-        `slot_in` : str
-            The input slot name of `node_in`.
-        `notify_gui` : bool
-            Whether to notify the gui to remove the link.
-        `gui_kwargs` : dict
-            Additional keyword arguments to pass to the gui.
-        """
-        self.nodes[node_out].connection.send(
-            Message(
-                MessageType.REMOVE_OUTPUT_PIPE,
-                {"slot_name_out": slot_out, "slot_name_in": slot_in, "node_connection": self.nodes[node_in].connection},
-            )
-        )
-
+        link = {"node_out": node_out, "node_in": node_in, "slot_out": slot_out, "slot_in": slot_in}
+        if link not in self._links:
+            return
+        self._teardown_link(link, notify_gui=False)
+        self._links.remove(link)
         if not self.headless and notify_gui:
+            from goofi.gui.window import Window
+
             Window().remove_link(node_out, node_in, slot_out, slot_in, **gui_kwargs)
 
-    def terminate(self, notify_gui: bool = True) -> None:
-        """
-        Terminates the manager and all nodes.
+    def _teardown_link(self, link: Dict[str, str], notify_gui: bool) -> None:
+        try:
+            self.nodes[link["node_out"]].unregister_subscriber(link["slot_out"])
+        except KeyError:
+            pass
+        try:
+            self.nodes[link["node_in"]].unsubscribe_input(link["slot_in"])
+        except KeyError:
+            pass
 
-        ### Parameters
-        `notify_gui` : bool
-            Whether to notify the gui to terminate.
-        """
-        print("Shutting down goofi-pipe manager.")
-        # terminate the manager
-        self._running = False
+    # ------------------------------------------------------------------
+    # Persistence
+    # ------------------------------------------------------------------
 
-        # terminate all nodes
-        NodeProcessRegistry().terminate()
-        for node in self.nodes:
-            self.nodes[node].terminate()
+    def load(self, filepath: str, load_on_init: bool = False) -> None:
+        if len(self.nodes) > 0:
+            raise RuntimeError("This goofi-pipe already contains nodes.")
+        if not path.exists(filepath):
+            if load_on_init:
+                self.terminate()
+            raise FileNotFoundError(f"File '{filepath}' does not exist.")
 
-        # close the communication backend
-        self._mp_manager.shutdown()
+        print(f"Loading manager state from '{filepath}'...")
 
-        if not self.headless and notify_gui:
-            try:
-                # terminate the gui, which calls manager.terminate() with notify_gui=False once it is closed
-                Window().terminate()
-                return
-            except Exception:
-                print("Closing the GUI failed.")
+        with open(filepath, "r") as f:
+            manager_yaml = yaml.load(f, Loader=yaml.FullLoader)
+
+        for name, node in manager_yaml["nodes"].items():
+            xpos, ypos = node["gui_kwargs"]["pos"]
+            if xpos == np.iinfo(np.int32).min or ypos == np.iinfo(np.int32).min:
+                print(f"WARNING: Node '{name}' has a corrupted position. Resetting to (0, 0).")
+                node["gui_kwargs"]["pos"] = (0, 0)
+
+            self.add_node(node["_type"], node["category"], name=name, params=node["params"], **node["gui_kwargs"])
+
+        for link in manager_yaml["links"]:
+            self.add_link(link["node_out"], link["node_in"], link["slot_out"], link["slot_in"])
+
+        self.save_path = filepath
+        self.unsaved_changes = False
+        print("Finished loading manager state.")
 
     def save(self, filepath: Optional[str] = None, overwrite: bool = False, timeout: float = 3.0) -> None:
-        """
-        Saves the state of the manager to a file.
+        """Persist the current graph to a `.gfi` YAML file.
 
-        ### Parameters
-        `filepath` : Optional[str]
-            The path to the file to save to. If `None`, a default filename is generated in the current directory.
-        `overwrite` : bool
-            Whether to overwrite an existing file.
-        `timeout` : float
-            The timeout in seconds for waiting for a response from each node.
+        Reads each node's pushed `serialized_state` directly — no
+        request/response round-trip. If a node hasn't pushed yet, waits
+        briefly with a small per-node timeout.
         """
-        # if no filepath was given, use a default filename in the current directory
         if not filepath and self._save_path:
             filepath = self._save_path
         elif not filepath:
             filepath = "."
 
-        # make sure we get a string
         if not isinstance(filepath, str):
             raise ValueError(f"Expected string, got {type(filepath)}.")
 
         if path.exists(filepath) and path.isdir(filepath):
-            # directory was given, create a default, non-conflicting filename
             idx = 0
             while path.exists(path.join(filepath, f"untitled{idx}.gfi")):
                 idx += 1
             filepath = path.join(filepath, f"untitled{idx}.gfi")
 
-        # add the file extension if it is missing
         if not filepath.endswith(".gfi"):
             filepath += ".gfi"
 
-        # check if the file already exists
         if path.exists(filepath) and not overwrite:
             raise FileExistsError(f"File {filepath} already exists.")
 
-        # TODO: add proper logging
         print("Saving manager state...")
 
-        # wait for all nodes to respond, if their serialization_pending flag is set
-        start = time.time()
-        serialized_nodes = {}
+        serialized_nodes: Dict[str, Any] = {}
         for name in self.nodes:
-            while self.nodes[name].serialization_pending and time.time() - start < timeout:
-                # wait for the node to respond or for the timeout to be reached
-                time.sleep(0.01)
-
-            if self.nodes[name].serialization_pending:
-                # TODO: add proper logging
-                print(
-                    f"WARNING: Node {name} timed out while waiting for serialization. Node state is possibly outdated."
+            ref = self.nodes[name]
+            ref.wait_for_state(timeout=timeout)
+            if ref.serialized_state is None:
+                raise RuntimeError(
+                    f"Node {name} does not have a serialized state. Recreate the node and try again."
                 )
-
-            # check if we got a response in time
-            if self.nodes[name].serialized_state is None:
-                raise RuntimeError(f"Node {name} does not have a serialized state. Recreate the node and try again.")
+            state = deepcopy(ref.serialized_state)
 
             if not self.headless:
-                # retrieve the GUI state
+                from goofi.gui.window import Window
+
                 gui_kwargs = Window().get_node_state(name)
                 if gui_kwargs is not None:
-                    self.nodes[name].gui_kwargs = gui_kwargs
-
-            # insert GUI state into the serialized node
-            state = deepcopy(self.nodes[name].serialized_state)
-            state["gui_kwargs"] = self.nodes[name].gui_kwargs
-
-            # store the serialized state
+                    ref.gui_kwargs = gui_kwargs
+            state["gui_kwargs"] = ref.gui_kwargs
+            # Drop output-subscriber bookkeeping — it's transient runtime
+            # state, not part of the persisted graph definition.
+            state.pop("output_subscribers", None)
             serialized_nodes[name] = state
 
-        # generate a list of links from the serialized nodes
-        links = []
-        for node_name_out, node in serialized_nodes.items():
-            # iterate over all output slots of the current node
-            for slot_name_out, conns in node["out_conns"].items():
-                # filter out self-connections
-                conns = [(s, c) for s, c, self_conn in conns if not self_conn]
-
-                # iterate over all connections of the current slot
-                for slot_name_in, conn in conns:
-                    # find the node that matches the output connection of the current slot
-                    for node_name_in in serialized_nodes.keys():
-                        # check if the connection matches the current node
-                        if conn == self.nodes[node_name_in].connection:
-                            # verify that the input slot exists
-                            if slot_name_in not in self.nodes[node_name_in].input_slots:
-                                continue
-                            # verify that the output slot exists
-                            if slot_name_out not in self.nodes[node_name_out].output_slots:
-                                continue
-
-                            # found the node, add the link
-                            links.append(
-                                {
-                                    "node_out": node_name_out,
-                                    "node_in": node_name_in,
-                                    "slot_out": slot_name_out,
-                                    "slot_in": slot_name_in,
-                                }
-                            )
-                            break
-                    # NOTE: it's okay if we didn't find the node, it could be some external connection (e.g. GUI)
-
-        # remove the output connections from the serialized_nodes dict so we can convert it to yaml
-        for node in serialized_nodes.values():
-            node.pop("out_conns")
-
-        # make sure the number of serialized nodes is correct
-        if len(serialized_nodes) != len(self.nodes):
-            filepath = f"{filepath}.incomplete"
-            # TODO: add proper logging
-            print(
-                f"WARNING: Mismatch between serialized nodes and actual nodes, saving may be incomplete. Saving to '{filepath}'."
-            )
-
-        # convert the manager instance into yaml format
+        links = list(self._links)
         manager_yaml = yaml.dump({"nodes": serialized_nodes, "links": links}, sort_keys=False)
 
-        # write the yaml to the file
         with open(filepath, "w") as f:
             f.write(manager_yaml)
 
-        # TODO: add proper logging
-        print(f"Successfuly saved manager state to '{filepath}'.")
-
-        # store the save path
+        print(f"Successfully saved manager state to '{filepath}'.")
         self.save_path = filepath
         self.unsaved_changes = False
+
+    # ------------------------------------------------------------------
+    # Lifecycle
+    # ------------------------------------------------------------------
+
+    def terminate(self, notify_gui: bool = True) -> None:
+        print("Shutting down goofi-pipe manager.")
+        self._running = False
+        NodeProcessRegistry().terminate()
+        for node in list(self.nodes):
+            try:
+                self.nodes[node].terminate()
+            except Exception:
+                pass
+
+        if not self.headless and notify_gui:
+            try:
+                from goofi.gui.window import Window
+
+                Window().terminate()
+                return
+            except Exception:
+                print("Closing the GUI failed.")
+
+    # ------------------------------------------------------------------
+    # Properties
+    # ------------------------------------------------------------------
 
     @property
     def save_path(self) -> Optional[str]:
@@ -590,9 +456,9 @@ class Manager:
     @save_path.setter
     def save_path(self, filepath: str) -> None:
         self._save_path = filepath
-
-        # update the window title
         if not self.headless:
+            from goofi.gui.window import Window
+
             Window().update_title()
 
     @property
@@ -602,9 +468,9 @@ class Manager:
     @unsaved_changes.setter
     def unsaved_changes(self, value: bool) -> None:
         self._unsaved_changes = value
-
-        # update the window title
         if not self.headless:
+            from goofi.gui.window import Window
+
             Window().update_title()
 
     @property
@@ -615,20 +481,88 @@ class Manager:
     def headless(self) -> bool:
         return self._headless
 
+    @property
+    def instance_id(self) -> str:
+        return self._instance_id
+
+    @property
+    def links(self) -> Tuple[Dict[str, str], ...]:
+        return tuple(dict(link) for link in self._links)
+
+
+# ---------------------------------------------------------------------------
+# /dev/shm cleanup
+# ---------------------------------------------------------------------------
+
+
+def _cleanup_iceoryx2_shm(instance_id: str) -> None:
+    """Best-effort sweep of `/dev/shm/iox2_*` orphans from dead instances.
+
+    iceoryx2 cleans up its own services on graceful Node drop. On crashes
+    or SIGKILL the entries linger. We try two cleanups, in order:
+
+    1. `Node.try_cleanup_dead_nodes` — clean reaper for nodes that
+       registered themselves and then died. Returns 0 if the registry was
+       lost (e.g., after manager hot-restart on the same /dev/shm).
+    2. Filesystem sweep — for every `/dev/shm/iox2_*` entry that doesn't
+       belong to a currently-running process, delete it. We identify
+       liveness by reading file mtime + PID-presence heuristics; this is a
+       best-effort fallback because iceoryx2's on-disk naming uses an
+       opaque hash rather than the owning PID.
+    """
+    try:
+        import iceoryx2 as iox2
+
+        iox2.Node.try_cleanup_dead_nodes(iox2.ServiceType.Ipc, iox2.config.global_config())
+    except Exception:
+        pass
+
+    # Filesystem-level sweep — delete `/dev/shm/iox2_*` entries older than
+    # 60s that no live goofi process is holding open. We use `lsof` if
+    # available; otherwise fall back to age-based deletion. Run only on
+    # startup (when nothing of ours is yet attached); the atexit path
+    # would race with our own still-attached endpoints.
+    if instance_id in _cleanup_iceoryx2_shm._swept:
+        return
+    _cleanup_iceoryx2_shm._swept.add(instance_id)
+
+    try:
+        import subprocess
+
+        entries = glob.glob("/dev/shm/iox2_*")
+        if not entries:
+            return
+        # Find which entries are currently held open by any process.
+        held: set[str] = set()
+        try:
+            out = subprocess.run(
+                ["lsof", "+D", "/dev/shm"], capture_output=True, text=True, timeout=2.0
+            )
+            for line in out.stdout.splitlines():
+                if "iox2_" in line:
+                    parts = line.split()
+                    held.add(parts[-1])
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            pass
+        for entry in entries:
+            if entry in held:
+                continue
+            try:
+                # Only sweep if older than 60 seconds — gives concurrent
+                # starts a chance to attach before we wipe them.
+                if time.time() - os.path.getmtime(entry) > 60:
+                    os.remove(entry)
+            except OSError:
+                pass
+    except Exception:
+        pass
+
+
+_cleanup_iceoryx2_shm._swept = set()
+
 
 def get_example_patch(args) -> bool:
-    """
-    Handles the selection and retrieval of example files based on command-line arguments.
-    If no example is specified in `args.example`, lists all available example files in the "examples" directory and exits.
-    If an example is specified, ensures that no direct filepath is provided, sets `args.filepath` to the selected example file, and returns True.
-    Args:
-        args: An object with attributes `example` (str) and `filepath` (str or None).
-    Returns:
-        bool: True if an example file is selected and `args.filepath` is set; False if listing examples or if no examples are found.
-    """
-
     if len(args.example) == 0:
-        # list example files and exit
         example_dir = Path(__file__).parents[2] / "examples"
         example_files = sorted(example_dir.glob("*.gfi"))
         if not example_files:
@@ -639,38 +573,18 @@ def get_example_patch(args) -> bool:
             print(f" - {example_arg.name}")
         print("Use `--example <filename>` to run an example file.")
         return False
-    else:
-        assert args.filepath is None, "Please specify either a direct filepath or an example, not both."
-        args.filepath = str(Path(__file__).parents[2] / "examples" / args.example)
-        return True
+    assert args.filepath is None, "Please specify either a direct filepath or an example, not both."
+    args.filepath = str(Path(__file__).parents[2] / "examples" / args.example)
+    return True
 
 
 def main(duration: Optional[float] = None, args=None):
-    """
-    This is the main entry point for goofi-pipe. It parses command line arguments, creates a manager
-    instance and runs all nodes until the manager is terminated.
-
-    ### Parameters
-    `duration` : float
-        The duration to run the manager for. Runs indefinitely if None or `0`.
-    `args` : list
-        A list of arguments to pass to the manager. If `None`, uses `sys.argv[1:]`.
-    """
     import argparse
 
-    comm_choices = list(Connection.get_ipc_backends().keys())
-
-    # parse arguments
     parser = argparse.ArgumentParser(description="goofi-pipe")
     parser.add_argument("filepath", nargs="?", help="path to the file to load from")
     parser.add_argument("--headless", action="store_true", help="run in headless mode")
     parser.add_argument("--no-multiprocessing", action="store_true", help="disable multiprocessing")
-    parser.add_argument(
-        "--ipc-backend",
-        choices=["auto"] + comm_choices,
-        default="auto",
-        help="node inter-process communication backend",
-    )
     parser.add_argument(
         "--duration",
         default=0,
@@ -687,19 +601,16 @@ def main(duration: Optional[float] = None, args=None):
     if args.update_readme_docs:
         from goofi.doc_utils import update_docs
 
-        # update the node list in the readme
         update_docs()
         return
 
     if args.gen_node_docs:
         from goofi.doc_utils import gen_node_docs
 
-        # generate missing node docstrings
         gen_node_docs()
         return
 
     if args.example is not None:
-        # look up example patches
         if not get_example_patch(args):
             return
 
@@ -710,13 +621,11 @@ def main(duration: Optional[float] = None, args=None):
     elif duration is None:
         duration = args.duration
 
-    # create and run the manager (this blocks until the manager is terminated)
     Manager(
         filepath=args.filepath,
         headless=args.headless,
         use_multiprocessing=not args.no_multiprocessing,
         duration=duration,
-        communication_backend=args.ipc_backend,
     )
 
 

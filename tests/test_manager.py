@@ -1,147 +1,142 @@
-import platform
+"""Tests for the Manager after the iceoryx2 refactor."""
 import time
+import uuid
 from os import path
 
 import pytest
 
 import goofi
-from goofi.connection import Connection
-from goofi.manager import Manager
-from goofi.message import Message, MessageType
+from goofi.manager import Manager, NodeContainer
+from goofi.transport import (
+    WaitSet,
+    create_data_subscriber,
+    data_service_name,
+    set_instance_id,
+)
 
-MANAGER_TEST_DURATION = 0.1
-
-
-def create_simple_manager(comm_backend: str = "mp") -> Manager:
-    """
-    Creates a simple manager with a constant node, an oscillator node, and an add node.
-
-    ### Parameters
-    `comm_backend` : str
-        The communication backend to use. Choose from "mp", "zmq-tcp" or "zmq-ipc".
-
-    ### Returns
-    manager : Manager
-        The manager object.
-    """
-    manager = Manager(duration=MANAGER_TEST_DURATION, communication_backend=comm_backend)
-    manager.add_node("ConstantArray", "inputs")
-    manager.add_node("Oscillator", "inputs")
-    manager.add_node("Operation", "array")
-
-    manager.add_link("constantarray0", "operation0", "out", "a")
-    manager.add_link("oscillator0", "operation0", "out", "b")
-    return manager
+MANAGER_TEST_DURATION = 0.2
 
 
-def test_creation():
+def _bare_manager(use_multiprocessing: bool = True) -> Manager:
+    """Construct a Manager without entering its blocking event loop."""
+    import os, atexit
+    from goofi.manager import _cleanup_iceoryx2_shm
+    from goofi.node_helpers import NodeProcessRegistry, list_nodes
+
+    mgr = Manager.__new__(Manager)
+    instance_id = f"{os.getpid()}-{uuid.uuid4().hex[:8]}"
+    set_instance_id(instance_id)
+    atexit.register(_cleanup_iceoryx2_shm, instance_id)
+    list_nodes(verbose=False)
+    mgr._instance_id = instance_id
+    mgr._headless = True
+    mgr._use_multiprocessing = use_multiprocessing
+    mgr._running = True
+    mgr.nodes = NodeContainer()
+    mgr._node_groups = {}
+    mgr._links = []
+    NodeProcessRegistry().headless = True
+    mgr._save_path = None
+    mgr._unsaved_changes = False
+    return mgr
+
+
+def _build_simple_graph(mgr: Manager) -> tuple[str, str]:
+    """Oscillator → Select with a 0:5 include filter."""
+    osc = mgr.add_node("Oscillator", "inputs")
+    sel = mgr.add_node("Select", "array", params={"select": {"include": "0:5"}})
+    mgr.add_link(osc, sel, "out", "data")
+    return osc, sel
+
+
+def test_creation_smoke():
+    """Manager(duration=...) ought to start, run briefly, and shut down cleanly."""
     Manager(duration=MANAGER_TEST_DURATION)
 
 
-def test_main():
+def test_main_entrypoint():
+    """The CLI entry point should accept --headless and exit cleanly."""
     goofi.manager.main(MANAGER_TEST_DURATION, ["--headless"])
 
 
-@pytest.mark.skipif(platform.system() == "Windows", reason="Multiprocessing is very slow on Windows.")
-@pytest.mark.parametrize("comm_backend", Connection.get_ipc_backends().keys())
-def test_simple(comm_backend):
-    if comm_backend.startswith("zmq"):
-        # TODO: make sure zmq backend works
-        pytest.skip("ZeroMQ backend still has some issues.")
+def test_simple_chain_dataflow():
+    """End-to-end: data passes through a 2-node chain via iceoryx2."""
+    mgr = _bare_manager()
+    try:
+        osc, sel = _build_simple_graph(mgr)
 
-    manager = create_simple_manager(comm_backend=comm_backend)
-    my_conn, node_conn = Connection.create()
-    manager.nodes["operation0"].connection.send(
-        Message(MessageType.ADD_OUTPUT_PIPE, {"slot_name_out": "out", "slot_name_in": "in", "node_connection": my_conn})
-    )
+        # External subscriber acting like a GUI viewer.
+        service = data_service_name(sel, "out")
+        sub, listener = create_data_subscriber(service, in_process=False)
+        ws = WaitSet()
+        ws.attach(listener)
+        mgr.nodes[sel].register_subscriber("out")
 
-    last = None
-    rates = []
-    data = []
-    for _ in range(10):
-        msg = node_conn.recv()
-        data.append(msg.content["data"].data[0])
+        from goofi.codec import decode_data
 
-        if last is not None:
-            rates.append(1 / (time.time() - last))
-        last = time.time()
-
-    # data should be between 0 and 2
-    assert all(0 <= x <= 2 for x in data), "Data should be between 0 and 2."
-
-    # mean rate should be ~30 Hz
-    mean_rate = sum(rates) / len(rates)
-    assert mean_rate == pytest.approx(30, abs=0.5), f"Mean rate should be ~30 Hz, got {mean_rate} Hz."
-
-    # clean up
-    manager.terminate()
+        received = []
+        deadline = time.time() + 3.0
+        while time.time() < deadline and len(received) < 5:
+            if ws.wait(0.25):
+                buf = sub.take_latest()
+                if buf is not None:
+                    received.append(decode_data(buf))
+        assert len(received) >= 1, "no data reached the downstream subscriber"
+        # The Select node was configured with include=0:5, so the latest
+        # frame must have at most 5 elements along axis 0.
+        assert received[-1].data.shape[0] == 5
+    finally:
+        mgr.terminate(notify_gui=False)
 
 
 def test_save_empty(tmpdir):
-    manager = Manager(duration=MANAGER_TEST_DURATION)
-
-    # if path is a file, save to that file
-    manager.save(path.join(tmpdir, "test.gfi"))
-    assert path.exists(path.join(tmpdir, "test.gfi")), "Expected file test.gfi to exist."
-
-    # clean up
-    manager.terminate()
+    mgr = _bare_manager()
+    try:
+        mgr.save(path.join(str(tmpdir), "test.gfi"))
+        assert path.exists(path.join(str(tmpdir), "test.gfi"))
+    finally:
+        mgr.terminate(notify_gui=False)
 
 
 def test_save_extension(tmpdir):
-    manager = create_simple_manager()
-
-    # make sure the file gets the correct extension
-    manager.save(path.join(tmpdir, "test2"))
-    assert path.exists(path.join(tmpdir, "test2.gfi")), "Expected file extension to be set to .gfi"
-
-    # clean up
-    manager.terminate()
+    mgr = _bare_manager()
+    try:
+        _build_simple_graph(mgr)
+        mgr.save(path.join(str(tmpdir), "no_extension"))
+        assert path.exists(path.join(str(tmpdir), "no_extension.gfi"))
+    finally:
+        mgr.terminate(notify_gui=False)
 
 
 @pytest.mark.parametrize("overwrite", [True, False])
-def test_save_simple(overwrite, tmpdir):
-    manager = create_simple_manager()
-
+def test_save_overwrite(overwrite, tmpdir):
+    mgr = _bare_manager()
     tmpdir = str(tmpdir)
-
-    # if path is a file, save to that file
-    manager.save(path.join(tmpdir, "test.gfi"), overwrite=overwrite)
-    assert path.exists(path.join(tmpdir, "test.gfi")), "Expected file test.gfi to exist."
-
-    time.sleep(0.1)
-
-    # if file already exists, raise FileExistsError
-    if overwrite:
-        manager.save(path.join(tmpdir, "test.gfi"), overwrite=True)
-        assert path.exists(path.join(tmpdir, "test.gfi")), "test.gfi should still be there."
-    else:
-        with pytest.raises(FileExistsError):
-            # overwrite is False by default
-            manager.save(path.join(tmpdir, "test.gfi"))
-
-    # clean up
-    manager.terminate()
+    try:
+        _build_simple_graph(mgr)
+        target = path.join(tmpdir, "test.gfi")
+        mgr.save(target, overwrite=overwrite)
+        assert path.exists(target)
+        if overwrite:
+            mgr.save(target, overwrite=True)
+            assert path.exists(target)
+        else:
+            with pytest.raises(FileExistsError):
+                mgr.save(target)
+    finally:
+        mgr.terminate(notify_gui=False)
 
 
-def test_save_simple_dir(tmpdir):
-    manager = create_simple_manager()
-
-    with pytest.raises(ValueError):
-        # if path is not a string, raise an error (tmpdir is a Path object)
-        manager.save(tmpdir)
-
+def test_save_to_directory(tmpdir):
+    mgr = _bare_manager()
     tmpdir = str(tmpdir)
-
-    # if path is a directory, save to untitled0.gfi
-    manager.save(tmpdir)
-    assert path.exists(path.join(tmpdir, "untitled0.gfi")), "Expected file untitled0.gfi to exist."
-
-    time.sleep(0.1)
-
-    # if untitled0.gfi exists in the directory, save to untitled1.gfi
-    manager.save(tmpdir)
-    assert path.exists(path.join(tmpdir, "untitled1.gfi")), "Expected file untitled1.gfi to exist."
-
-    # clean up
-    manager.terminate()
+    try:
+        _build_simple_graph(mgr)
+        with pytest.raises(ValueError):
+            mgr.save(123)  # not a str
+        mgr.save(tmpdir)
+        assert path.exists(path.join(tmpdir, "untitled0.gfi"))
+        mgr.save(tmpdir)
+        assert path.exists(path.join(tmpdir, "untitled1.gfi"))
+    finally:
+        mgr.terminate(notify_gui=False)

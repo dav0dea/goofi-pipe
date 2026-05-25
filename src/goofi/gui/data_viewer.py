@@ -217,14 +217,22 @@ class ViewerContainer:
         }
 
     def __call__(self, msg: Message) -> Any:
-        if not msg.type == MessageType.DATA:
-            raise ValueError(f"Expected message type DATA, got {msg.type}.")
+        # The data plane now rides on its own iceoryx2 channel; the GUI
+        # window.py constructs a tiny Message-shaped shim so existing
+        # viewers keep working unchanged. Only check the data dtype.
         if not msg.content["data"].dtype == self.dtype:
             raise ValueError(f"Expected data type {self.dtype}, got {msg.content['data'].dtype}.")
 
         if self.dtype == DataType.ARRAY:
-            array = np.asarray(msg.content["data"].data)
-            if array.ndim > 2:
+            # Squeeze singleton dims first so (1, H, W, 3) frames from
+            # video sources reduce to (H, W, 3) before we decide whether
+            # to render or summarize.
+            array = np.squeeze(np.asarray(msg.content["data"].data))
+            # 3D arrays may still be displayable as images (H, W, C) with
+            # C in {1, 2, 3, 4} — let the viewer chain try them. Only fall
+            # back to the text summary for truly high-dim arrays.
+            looks_like_image = array.ndim == 3 and array.shape[-1] in (1, 2, 3, 4)
+            if array.ndim > 3 or (array.ndim == 3 and not looks_like_image):
                 self._show_high_dim_array_summary(msg.content["data"])
                 return
             self._restore_viewer_after_summary()

@@ -2,114 +2,111 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Dict
 
-from goofi.connection import Connection
-from goofi.data import Data
-
 
 class MessageType(Enum):
     """
-    The type of a message. The message type determines the content of the message.
+    Message types carried on the control (manager → node) and status (node →
+    manager) iceoryx2 pub/sub channels. The data plane is handled by a
+    separate per-output-slot pub/sub channel — `DATA` is no longer a message
+    type.
 
-    - `ADD_OUTPUT_PIPE`: Sent by the manager to a node to add an output pipe to an output slot.
-        - `slot_name_out` (str): The name of the output slot.
-        - `slot_name_in` (str): The name of the input slot.
-        - `node_connection` (Connection): The connection object to the node. If None, connect to itself.
-    - `REMOVE_OUTPUT_PIPE`: Sent by the manager to a node to remove an output pipe from an output slot.
-        - `slot_name_out` (str): The name of the output slot.
-        - `slot_name_in` (str): The name of the input slot.
-        - `node_connection` (Connection): The connection object to the node.
-    - `DATA`: Sent by one node to another and contains data sent from an output slot to an input slot.
-        - `slot_name` (str): The name of the target input slot.
-        - `data` (Data): The data object. See the `Data` class for more information.
-    - `CLEAR_DATA`: Clear the data field on an input slot.
-    - `PING`: Empty probe to check if a process is alive.
-    - `PONG`: Response to a ping message.
-    - `TERMINATE`: Empty message to indicate that a node should terminate.
-    - `PROCESSING_ERROR`: Sent by a node to indicate that an error occurred during processing.
-        - `error` (str): The error message.
-    - `PARAMETER_UPDATE`: Sent by the manager to a node to update a parameter.
-        - `group` (str): The name of the parameter group.
-        - `param_name` (str): The name of the parameter.
-        - `param_value` (Any): The new parameter value.
-    - `SERIALIZE_REQUEST`: An empty message that requests a node to serialize its state and send it back.
-    - `SERIALIZE_RESPONSE`: The response to a serialize request message.
-        - `_type` (str): The type of the node.
-        - `category` (str): The category of the node.
-        - `out_conns` (Dict[str, List[Tuple[str, Connection]]]): A dictionary of named output slots containing connections.
-        - `params` (Dict[str, Any]): The NodeParams object, represented as a dictionary.
-    - `SHUTDOWN`: Empty message to indicate that the goofi-pipe process should shut down.
+    Control plane (manager → node):
+
+    - `SUBSCRIBE_INPUT`: instruct a node to start consuming from the named
+      data service into one of its input slots.
+        - `slot_name_in` (str): the input slot to bind.
+        - `service_name` (str): the iceoryx2 service to subscribe to.
+        - `in_process` (bool): true iff the upstream publisher lives in the
+          same process group; selects thread vs. iceoryx2 transport.
+    - `UNSUBSCRIBE_INPUT`: stop consuming on the named input slot.
+        - `slot_name_in` (str)
+    - `REGISTER_SUBSCRIBER`: increment subscriber count on a node's output
+      slot so the node knows a consumer exists and the slot is worth
+      publishing. Purely informational.
+        - `slot_name_out` (str)
+    - `UNREGISTER_SUBSCRIBER`: decrement subscriber count.
+        - `slot_name_out` (str)
+    - `PARAMETER_UPDATE`: update a parameter on the node.
+        - `group` (str): the parameter group.
+        - `param_name` (str): the parameter name.
+        - `param_value` (Any): the new value.
+    - `CLEAR_DATA`: clear the cached value on an input slot.
+        - `slot_name` (str)
+    - `TERMINATE`: empty; instructs the node to shut down.
+
+    Status plane (node → manager):
+
+    - `STATE_UPDATE`: pushed by the node whenever its serialized state
+      changes (dirty/clean tracking — replaces the old request/response
+      `SERIALIZE_REQUEST`/`SERIALIZE_RESPONSE` dance).
+        - `_type` (str): node class name.
+        - `category` (str): node category.
+        - `params` (dict): full param tree as a plain dict.
+        - `output_subscribers` (dict[str, int]): subscriber count per output
+          slot — manager uses this to verify wiring without round-tripping.
+    - `PROCESSING_ERROR`: most recent error from `process()` (or `None` to
+      clear a previously reported error).
+        - `error` (str | None)
+    - `SHUTDOWN`: node requests full goofi-pipe shutdown.
     """
 
-    ADD_OUTPUT_PIPE = 1
-    REMOVE_OUTPUT_PIPE = 2
-    DATA = 3
-    CLEAR_DATA = 4
-    PING = 5
-    PONG = 6
+    # control plane
+    SUBSCRIBE_INPUT = 1
+    UNSUBSCRIBE_INPUT = 2
+    REGISTER_SUBSCRIBER = 3
+    UNREGISTER_SUBSCRIBER = 4
+    PARAMETER_UPDATE = 5
+    CLEAR_DATA = 6
     TERMINATE = 7
-    PROCESSING_ERROR = 8
-    PARAMETER_UPDATE = 9
-    SERIALIZE_REQUEST = 10
-    SERIALIZE_RESPONSE = 11
-    SHUTDOWN = 12
+
+    # status plane
+    STATE_UPDATE = 8
+    PROCESSING_ERROR = 9
+    SHUTDOWN = 10
 
 
 @dataclass
 class Message:
     """
-    A message is used to send information between nodes. Each message has a type and some content. The
-    content field is a dict that contains the message content. The content field must contain the correct
-    fields for the message type.
-
-    ### Parameters
-    `type` : MessageType
-        The type of the message.
-    `content` : Dict[str, Any]
-        The content of the message with required fields for the message type.
+    A message carried on the control or status plane. The `content` dict
+    holds the per-type fields documented on `MessageType`.
     """
 
     type: MessageType
     content: Dict[str, Any]
 
-    def require_fields(self, **fields: Dict[str, Any]) -> None:
-        """
-        Check that the message content contains the required fields.
-
-        ### Parameters
-        `fields` : Dict[str, Any]
-            A dictionary of required fields and their types.
-        """
+    def require_fields(self, **fields: Any) -> None:
         for field, field_type in fields.items():
             if field not in self.content:
                 raise ValueError(f"Message content must contain field {field}.")
             if not isinstance(self.content[field], field_type):
                 raise ValueError(
-                    f"Message content field {field} must be of type {field_type} but got {type(self.content[field])}."
+                    f"Message content field {field} must be of type {field_type} "
+                    f"but got {type(self.content[field])}."
                 )
 
     def __post_init__(self):
-        """
-        Check that the message content is valid. The content field must be a dict, and it must contain the correct
-        fields for the message type.
-        """
-        # general checks
         if self.type is None:
             raise ValueError("Expected message type, got None.")
         if not isinstance(self.content, dict):
             raise ValueError(f"Expected dict, got {type(self.content)}.")
 
-        # check the content for the specific message type
-        if self.type == MessageType.ADD_OUTPUT_PIPE:
-            self.require_fields(slot_name_out=str, slot_name_in=str, node_connection=(Connection, type(None)))
-        elif self.type == MessageType.REMOVE_OUTPUT_PIPE:
-            self.require_fields(slot_name_out=str, slot_name_in=str, node_connection=Connection)
-        elif self.type == MessageType.DATA:
-            self.require_fields(slot_name=str, data=Data)
-        elif self.type == MessageType.CLEAR_DATA:
+        t = self.type
+        if t == MessageType.SUBSCRIBE_INPUT:
+            self.require_fields(slot_name_in=str, service_name=str, in_process=bool)
+        elif t == MessageType.UNSUBSCRIBE_INPUT:
+            self.require_fields(slot_name_in=str)
+        elif t == MessageType.REGISTER_SUBSCRIBER:
+            self.require_fields(slot_name_out=str)
+        elif t == MessageType.UNREGISTER_SUBSCRIBER:
+            self.require_fields(slot_name_out=str)
+        elif t == MessageType.PARAMETER_UPDATE:
+            self.require_fields(group=str, param_name=str)
+            if "param_value" not in self.content:
+                raise ValueError("PARAMETER_UPDATE content must contain field param_value.")
+        elif t == MessageType.CLEAR_DATA:
             self.require_fields(slot_name=str)
-        elif self.type == MessageType.PROCESSING_ERROR:
+        elif t == MessageType.STATE_UPDATE:
+            self.require_fields(_type=str, category=str, params=dict, output_subscribers=dict)
+        elif t == MessageType.PROCESSING_ERROR:
             self.require_fields(error=(str, type(None)))
-        elif self.type == MessageType.PARAMETER_UPDATE:
-            self.require_fields(group=str, param_name=str, param_value=object)
-        elif self.type == MessageType.SERIALIZE_RESPONSE:
-            self.require_fields(_type=str, category=str, out_conns=dict, params=dict)

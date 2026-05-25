@@ -299,8 +299,9 @@ def copy_selected_nodes(win, timeout: float = 0.1):
         ser["gui_kwargs"] = {"offset": [pos[0] - avg_pos[0], pos[1] - avg_pos[1]]}
         ser["name"] = name
         ser["input_links"] = input_links
-        # we don't need the output connections
-        del ser["out_conns"]
+        # `output_subscribers` is transient runtime state, not a copy/paste
+        # ingredient — drop it (along with any other future runtime fields).
+        ser.pop("output_subscribers", None)
         serialized_nodes.append(ser)
 
     # store the serialized nodes in the clipboard
@@ -312,7 +313,9 @@ def paste_nodes(win):
     try:
         clip = json.loads(pyperclip.paste())
     except json.JSONDecodeError:
-        print(f"Failed to decode the clipboard content into goofi-pipe nodes: {pyperclip.paste()}")
+        # Clipboard isn't a goofi-pipe node payload — could be anything
+        # (e.g. terminal text the user copied). Don't echo it.
+        print("Clipboard does not contain a valid goofi-pipe node payload.")
         return
 
     if not is_ctrl_down() or clip is None:

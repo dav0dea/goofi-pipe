@@ -2,7 +2,6 @@ import inspect
 from typing import Callable, Dict, List, Type
 
 from goofi import params
-from goofi.connection import Connection
 from goofi.data import DataType
 from goofi.node import Node
 from goofi.params import Param
@@ -10,7 +9,11 @@ from goofi.params import Param
 
 def list_param_types() -> List[Type[Param]]:
     """List all available parameter types."""
-    return [cls for _, cls in inspect.getmembers(params, inspect.isclass) if issubclass(cls, Param) and cls is not Param]
+    return [
+        cls
+        for _, cls in inspect.getmembers(params, inspect.isclass)
+        if issubclass(cls, Param) and cls is not Param
+    ]
 
 
 def list_data_types() -> List[DataType]:
@@ -48,28 +51,6 @@ class FullDummyNode(Node):
 
     def process(self, **kwargs):
         return None, {}
-
-
-class ProcessingErrorNode(Node):
-    """
-    A node that raises an exception in its process method.
-
-    ### Parameters
-    `connection` : Connection
-        The input connection to the node. This is used to receive messages from the manager, or other nodes.
-    `n_fails` : int
-        The number of times the node should fail before succeeding.
-    """
-
-    def __init__(self, connection: Connection, *args, n_fails: int = 1, **kwargs) -> None:
-        super().__init__(connection, *args, **kwargs)
-        self.n_fails = n_fails
-
-    def process(self):
-        if self.n_fails > 0:
-            self.n_fails -= 1
-            raise Exception("BrokenProcessingNode")
-        return {}
 
 
 def make_custom_node(

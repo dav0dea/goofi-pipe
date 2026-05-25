@@ -1,21 +1,56 @@
+"""Base `Node` class.
+
+Each node runs two background threads:
+
+- **messaging loop** drains the ctrl channel (manager → node) and applies
+  control messages: parameter updates, subscriber registration, input slot
+  wiring, terminate. It also pushes a `STATE_UPDATE` on the status channel
+  whenever the node has been marked dirty since the last push.
+- **processing loop** waits on a `WaitSet` over all input slot listeners,
+  drains each fired subscriber into the corresponding `slot.data` (latest
+  wins), calls `process()`, and publishes the result on each output slot's
+  publishers (skipping slots with no registered subscribers).
+
+iceoryx2 endpoints are constructed lazily by the node from canonical
+service names — `connection` objects are never sent across process
+boundaries.
+"""
+from __future__ import annotations
+
 import importlib.resources as pkg_resources
 import time
 import traceback
+import uuid
 from abc import ABC, abstractmethod
-from copy import deepcopy
 from enum import Enum
 from multiprocessing import Process
 from os.path import dirname, join
 from pathlib import Path
-from threading import Event, Thread
+from threading import Thread
 from typing import Any, Callable, Dict, Optional, Tuple, Union
 
 from goofi import assets
-from goofi.connection import Connection
+from goofi.codec import decode_data, decode_message, encode_data, encode_message
 from goofi.data import Data, DataType, to_data
 from goofi.message import Message, MessageType
 from goofi.node_helpers import InputSlot, NodeProcessRegistry, NodeRef, OutputSlot
 from goofi.params import InvalidParamError, NodeParams
+from goofi.transport import (
+    DEFAULT_MAX_PAYLOAD,
+    IpcPublisher,
+    IpcNotifier,
+    ThreadPublisher,
+    ThreadNotifier,
+    WaitSet,
+    create_ctrl_subscriber,
+    create_ctrl_publisher,  # used for status_pub
+    create_data_subscriber,
+    ctrl_service_name,
+    data_service_name,
+    event_service_name,
+    set_instance_id,
+    status_service_name,
+)
 
 
 class MultiprocessingForbiddenError(Exception):
@@ -23,22 +58,7 @@ class MultiprocessingForbiddenError(Exception):
 
 
 def require_init(func: Callable) -> Callable:
-    """
-    Decorator that checks if `super().__init__()` has been called in the `__init__()` method of the class
-    that the decorated method belongs to. This is used to make sure that the base class is initialized before
-    accessing any of its attributes.
-
-    ### Parameters
-    `func` : Callable
-        The method to decorate.
-
-    ### Returns
-    `Callable`
-        The decorated method.
-    """
-
     def wrapper(self, *args, **kwargs):
-        # check if the base class is initialized
         if not hasattr(self, "_alive"):
             raise RuntimeError("Make sure to call super().__init__() in your node's __init__ method.")
         return func(self, *args, **kwargs)
@@ -47,444 +67,436 @@ def require_init(func: Callable) -> Callable:
 
 
 class NodeEnv(Enum):
-    """
-    Enumeration of the possible node environments.
-    """
-
     MULTIPROCESSING = 1  # the node owns its own process
-    LOCAL = 2  # the node is running in the manager's process
+    LOCAL = 2  # the node is running in the manager's process or a shared group process
     STANDALONE = 3  # running in the main process, but without a manager
 
 
 class Node(ABC):
     """
-    The base class for all nodes. A node is a processing unit that can receive data from other nodes, process the
-    data, and send the processed data to other nodes. A node can have any number of input and output slots. Each
-    input slot can receive data from one output slot, and each output slot can send data to any number of input
-    slots.
+    Base class for all nodes.
 
-    ### Parameters
-    `connection` : Connection
-        The input connection to the node. This is used to receive messages from the manager, or other nodes.
-    `input_slots` : Dict[str, InputSlot]
-        A dict containing the input slots of the node. The keys are the names of the input slots, and the values
-        are the input slots themselves.
-    `output_slots` : Dict[str, OutputSlot]
-        A dict containing the output slots of the node. The keys are the names of the output slots, and the values
-        are the output slots themselves.
-    `params` : NodeParams
-        An instance of the NodeParams class containing the parameters of the node.
-    `environment` : NodeEnv
-        The environment in which the node is running.
+    Concrete subclasses implement `process(**inputs)`, optionally `setup()`,
+    `terminate()`, and `config_input_slots() / config_output_slots() /
+    config_params()`. The base class handles transport, threading, parameter
+    propagation, error reporting, and the dirty-flag state push.
     """
 
     NO_MULTIPROCESSING = False
-    MESSAGE_TIMEOUT = 500  # ms
+
+    # ------------------------------------------------------------------
+    # Construction
+    # ------------------------------------------------------------------
 
     def __init__(
         self,
-        connection: Optional[Connection],
+        node_id: Optional[str],
         input_slots: Dict[str, InputSlot],
         output_slots: Dict[str, OutputSlot],
         params: NodeParams,
         environment: NodeEnv,
+        *,
+        in_process_with_manager: bool = False,
     ) -> None:
-        # initialize the base class
+        # initialize the base class state
         self._alive = True
         self._node_ready = False
+        self._dirty = False
 
-        # store the arguments and validate them
-        self.connection = connection
+        self.node_id = node_id
         self._input_slots = input_slots
         self._output_slots = output_slots
         self._params = params
         self._environment = environment
+        self._in_process_with_manager = in_process_with_manager
 
         self._validate_attrs()
 
-        # NOTE: we avoid creating a threading.Event() in standalone mode to ensure nodes can be pickled
-        if environment != NodeEnv.STANDALONE:
-            # initialize node flags
-            self.process_flag = Event()
-            if self.params.common.autotrigger.value:
-                self.process_flag.set()
+        # WaitSet covering all currently-subscribed input listeners.
+        self._waitset: WaitSet = WaitSet()
 
-        # set up dict of possibly timed out output connections
-        self.pending_connections = {}
+        if environment == NodeEnv.STANDALONE:
+            # standalone mode skips all transport / threads — used for unit
+            # testing of `process()` in isolation.
+            return
 
-        if environment != NodeEnv.STANDALONE:
-            # initialize data processing thread
-            self.processing_thread = Thread(
-                target=self._processing_loop,
-                name=f"{self.__class__.__name__}-proc_loop",
-                daemon=True,
-            )
-            self.processing_thread.start()
+        # Bring up ctrl + status endpoints.
+        from goofi.transport import (
+            create_ctrl_subscriber as _ctrl_sub_fn,
+            create_ctrl_publisher as _ctrl_pub_fn,
+        )
+
+        self.ctrl_sub, self.ctrl_listener = _ctrl_sub_fn(
+            ctrl_service_name(node_id), in_process=in_process_with_manager
+        )
+        self.status_pub, self._status_notifier = _ctrl_pub_fn(
+            status_service_name(node_id), in_process=in_process_with_manager
+        )
+        self._waitset.attach(self.ctrl_listener)
+
+        # Drain any stale wake-up events from open_or_create (the manager's
+        # side may have already begun publishing if the service was opened
+        # before our subscriber was created).
+
+        # Start processing thread early so `setup()` can already trigger.
+        self.processing_thread = Thread(
+            target=self._processing_loop,
+            name=f"{self.__class__.__name__}-proc_loop",
+            daemon=True,
+        )
+        self.processing_thread.start()
 
         if environment == NodeEnv.MULTIPROCESSING:
-            # we are in a node-specific process, run the messaging loop in the current thread
-            # NOTE: if we don't block the current thread, the node's process will die
+            # block the process main thread in the messaging loop
             self._messaging_loop()
         elif environment == NodeEnv.LOCAL:
-            # we are in the main process, create a new thread to not block it
             self.messaging_thread = Thread(
                 target=self._messaging_loop,
                 name=f"{self.__class__.__name__}-msg_loop",
                 daemon=True,
             )
             self.messaging_thread.start()
-        elif environment == NodeEnv.STANDALONE:
-            # the node does not have a messaging, or processing loop when running in standalone mode
-            pass
         else:
             raise ValueError(f"Invalid environment: {environment}")
 
     @require_init
     def _validate_attrs(self) -> None:
-        """
-        Check that all attributes are present and of the correct type.
-        """
-        # check connection type
-        if self._environment == NodeEnv.STANDALONE:
-            if self.connection is not None:
-                raise ValueError("Running in standalone mode, connection should be None.")
-        else:
-            if not isinstance(self.connection, Connection):
-                raise TypeError(f"Expected Connection, got {type(self.connection)}")
-
-        # check input slots type
+        if self._environment != NodeEnv.STANDALONE:
+            if not isinstance(self.node_id, str) or not self.node_id:
+                raise ValueError("Expected non-empty node_id string.")
         for name, slot in self._input_slots.items():
-            if not isinstance(name, str) or len(name) == 0:
+            if not isinstance(name, str) or not name:
                 raise ValueError(f"Expected input slot name '{name}' to be a non-empty string.")
             if not isinstance(slot, InputSlot):
-                raise TypeError(f"Expected InputSlot for input slot '{name}', got {type(slot)}")
-
-        # check output slots type
+                raise TypeError(f"Expected InputSlot for '{name}', got {type(slot)}")
         for name, slot in self._output_slots.items():
-            if not isinstance(name, str) or len(name) == 0:
+            if not isinstance(name, str) or not name:
                 raise ValueError(f"Expected output slot name '{name}' to be a non-empty string.")
             if not isinstance(slot, OutputSlot):
-                raise TypeError(f"Expected OutputSlot for output slot '{name}', got {type(slot)}")
-
-        # check params type
+                raise TypeError(f"Expected OutputSlot for '{name}', got {type(slot)}")
         if not isinstance(self._params, NodeParams):
             raise TypeError(f"Expected NodeParams, got {type(self._params)}")
 
-    def _setup(self):
-        """This method calls the node's setup method and handles any exceptions that may occur."""
-        while not self._node_ready:
+    # ------------------------------------------------------------------
+    # Setup / lifecycle
+    # ------------------------------------------------------------------
+
+    def _setup(self) -> None:
+        while not self._node_ready and self._alive:
             try:
                 self.setup()
                 self._node_ready = True
-                # clear any errors that may have occurred during setup
-                self.connection.try_send(Message(MessageType.PROCESSING_ERROR, {"error": None}))
+                self._report_error(None)
+                self._mark_dirty()
             except Exception:
-                error_message = traceback.format_exc()
-                self.connection.try_send(Message(MessageType.PROCESSING_ERROR, {"error": error_message}))
+                self._report_error(traceback.format_exc())
                 time.sleep(0.1)
 
-    def _serialize(self):
-        """Serialize the node's type, output connections, and parameters, and send the serialized data to the manager."""
-        # serialize output connections and the node's parameters
-        out_conns = {name: slot.connections for name, slot in self.output_slots.items()}
-        params = self.params.serialize()
-        # return the serialized data
-        self.connection.try_send(
-            Message(
-                MessageType.SERIALIZE_RESPONSE,
-                {"_type": type(self).__name__, "category": self.category(), "out_conns": out_conns, "params": params},
+    def _report_error(self, error: Optional[str]) -> None:
+        if self._environment == NodeEnv.STANDALONE:
+            return
+        try:
+            self.status_pub.send(
+                encode_message(Message(MessageType.PROCESSING_ERROR, {"error": error}))
             )
-        )
+            self._status_notifier.notify()
+        except Exception:
+            pass
 
-    def _messaging_loop(self):
-        """
-        This method runs in a separate thread and handles incoming messages from the manager, or other nodes.
-        """
-        # run the node's setup method
+    def _mark_dirty(self) -> None:
+        self._dirty = True
+
+    def _push_state(self) -> None:
+        """Publish a STATE_UPDATE if we're dirty."""
+        if self._environment == NodeEnv.STANDALONE:
+            self._dirty = False
+            return
+        if not self._dirty:
+            return
+        state = {
+            "_type": type(self).__name__,
+            "category": self.category(),
+            "params": self.params.serialize(),
+            "output_subscribers": {n: s.subscriber_count for n, s in self.output_slots.items()},
+        }
+        try:
+            self.status_pub.send(encode_message(Message(MessageType.STATE_UPDATE, state)))
+            self._status_notifier.notify()
+            self._dirty = False
+        except Exception:
+            traceback.print_exc()
+
+    # ------------------------------------------------------------------
+    # Messaging loop (ctrl plane)
+    # ------------------------------------------------------------------
+
+    def _messaging_loop(self) -> None:
+        # The subclass must not override `_setup`.
         if self._setup.__self__.__class__._setup is not Node._setup:
-            # the node implements _setup, which is not allowed
             error = (
                 f"The {self.__class__.__name__} node implements the _setup() method, which is reserved for "
                 "internal use. Use setup() instead."
             )
-            self.connection.try_send(Message(MessageType.PROCESSING_ERROR, {"error": error}))
+            self._report_error(error)
             raise RuntimeError(error)
 
         Thread(target=self._setup, name=f"{self.__class__.__name__}-setup", daemon=True).start()
 
-        # run the messaging loop
+        ctrl_ws = WaitSet()
+        ctrl_ws.attach(self.ctrl_listener)
+
         while self.alive:
-            # receive the message
-            try:
-                msg = self.connection.recv()
-            except ConnectionError:
-                # the connection was closed, consider the node dead
-                self._alive = False
-                self.connection.close()
-                continue
-            except Exception:
-                error_message = traceback.format_exc()
-                self.connection.try_send(Message(MessageType.PROCESSING_ERROR, {"error": error_message}))
-                continue
-
-            # potentially restart the processing thread
-            # TODO: this might be starting too many threads and not cleaning up properly
-            if not self.processing_thread.is_alive():
-                self.processing_thread = Thread(
-                    target=self._processing_loop, name=f"{self.__class__.__name__}-proc_loop", daemon=True
-                )
-                self.processing_thread.start()
-
-            if not isinstance(msg, Message):
-                raise TypeError(f"Expected Message, got {type(msg)}")
-
-            if msg.type == MessageType.PING:
-                # respond to a ping message by sending a pong message
-                self.connection.try_send(Message(MessageType.PONG, {}))
-            elif msg.type == MessageType.TERMINATE:
-                # terminate the node
-                self._alive = False
-                # clear data in connected downstream nodes
-                for slot in self.output_slots.values():
-                    for slot_name, conn, _ in slot.connections:
-                        conn.try_send(Message(MessageType.CLEAR_DATA, {"slot_name": slot_name}))
-            elif msg.type == MessageType.ADD_OUTPUT_PIPE:
-                # add a connection to the output slot
-                slot = self.output_slots[msg.content["slot_name_out"]]
-                conn = msg.content["node_connection"]
-                self_conn = False
-
-                if conn is None:
-                    # if no connection is specified, connect to the node's own node reference
-                    conn = self.connection
-                    self_conn = True
-
-                slot.connections.append((msg.content["slot_name_in"], conn, self_conn))
-
-                if not self_conn:
-                    # notify the manager that the connection was added
-                    self._serialize()
-            elif msg.type == MessageType.REMOVE_OUTPUT_PIPE:
-                # clear the data in the input slot
-                msg.content["node_connection"].try_send(
-                    Message(MessageType.CLEAR_DATA, {"slot_name": msg.content["slot_name_in"]})
-                )
-                # remove the connection
-                slot = self.output_slots[msg.content["slot_name_out"]]
+            # Block on ctrl channel; short timeout so we re-check `alive`
+            # and can push dirty state changes promptly.
+            fired = ctrl_ws.wait(0.25)
+            # Drain any pending ctrl messages, regardless of whether a
+            # wake fired (other threads may have queued).
+            while True:
+                buf = self.ctrl_sub.take_next()
+                if buf is None:
+                    break
                 try:
-                    slot.connections.remove((msg.content["slot_name_in"], msg.content["node_connection"], False))
-                except ValueError:
-                    # connection doesn't exist
-                    self.connection.try_send(
-                        Message(
-                            MessageType.PROCESSING_ERROR,
-                            {
-                                "error": f"Request to remove non-existent connection from "
-                                f"{msg.content['slot_name_out']} to {msg.content['slot_name_in']}."
-                            },
-                        )
-                    )
+                    msg = decode_message(buf)
+                except Exception:
+                    self._report_error(traceback.format_exc())
+                    continue
+                try:
+                    self._handle_ctrl(msg)
+                except Exception:
+                    self._report_error(traceback.format_exc())
 
-                # notify the manager of the updated connections
-                self._serialize()
-            elif msg.type == MessageType.DATA:
-                # received data from another node
-                if msg.content["slot_name"] not in self.input_slots:
-                    raise ValueError(
-                        f"Received DATA message but input slot '{msg.content['slot_name']}' doesn't exist."
-                    )
-                slot = self.input_slots[msg.content["slot_name"]]
-                slot.data = msg.content["data"]
-                if slot.trigger_process:
-                    self.process_flag.set()
-            elif msg.type == MessageType.CLEAR_DATA:
-                # clear the data in the input slot (usually triggered by a REMOVE_OUTPUT_PIPE message)
-                slot = self.input_slots[msg.content["slot_name"]]
-                slot.clear()
-            elif msg.type == MessageType.PARAMETER_UPDATE:
-                # update a parameter
-                group = msg.content["group"]
-                param_name = msg.content["param_name"]
-                param_value = msg.content["param_value"]
-                if group not in self.params:
-                    raise ValueError(f"Parameter group '{group}' doesn't exist.")
-                if param_name not in self.params[group]:
-                    raise ValueError(f"Parameter '{param_name}' doesn't exist in group '{group}'.")
-                self.params[group][param_name].value = param_value
+            # Push any pending state changes.
+            self._push_state()
 
-                # notify the manager that the parameter was updated
-                self._serialize()
+            if not self.alive:
+                break
 
-                # call the callback if it exists
-                if hasattr(self, f"{group}_{param_name}_changed"):
-                    try:
-                        getattr(self, f"{group}_{param_name}_changed")(param_value)
-                    except Exception as e:
-                        # parameter callback raised an exception, send out an error message
-                        self.connection.try_send(
-                            Message(
-                                MessageType.PROCESSING_ERROR,
-                                {"error": f"Parameter callback for {group}.{param_name} failed: {e}"},
-                            )
-                        )
-
-            elif msg.type == MessageType.SERIALIZE_REQUEST:
-                self._serialize()
-            else:
-                # TODO: handle the incoming message
-                raise NotImplementedError(f"Message type {msg.type} not implemented.")
-
-        # run the node's terminate method
         try:
             self.terminate()
-        except Exception as e:
-            self.connection.try_send(Message(MessageType.PROCESSING_ERROR, {"error": str(e)}))
+        except Exception:
+            self._report_error(traceback.format_exc())
 
-        # close input connection
-        self.connection.close()
+    def _handle_ctrl(self, msg: Message) -> None:
+        t = msg.type
+        if t == MessageType.TERMINATE:
+            self._alive = False
+        elif t == MessageType.PARAMETER_UPDATE:
+            group = msg.content["group"]
+            name = msg.content["param_name"]
+            value = msg.content["param_value"]
+            if group not in self.params or name not in self.params[group]:
+                self._report_error(f"Unknown parameter {group}.{name}")
+                return
+            self.params[group][name].value = value
+            self._mark_dirty()
+            cb = getattr(self, f"{group}_{name}_changed", None)
+            if callable(cb):
+                try:
+                    cb(value)
+                except Exception:
+                    self._report_error(traceback.format_exc())
+        elif t == MessageType.REGISTER_SUBSCRIBER:
+            slot_name = msg.content["slot_name_out"]
+            slot = self.output_slots[slot_name]
+            slot.subscriber_count += 1
+            self._ensure_output_endpoints(slot_name, want_ipc=True)
+            self._mark_dirty()
+        elif t == MessageType.UNREGISTER_SUBSCRIBER:
+            slot_name = msg.content["slot_name_out"]
+            slot = self.output_slots[slot_name]
+            slot.subscriber_count = max(0, slot.subscriber_count - 1)
+            self._mark_dirty()
+        elif t == MessageType.SUBSCRIBE_INPUT:
+            self._subscribe_input(
+                slot_name_in=msg.content["slot_name_in"],
+                service_name=msg.content["service_name"],
+                in_process=msg.content["in_process"],
+            )
+            self._mark_dirty()
+        elif t == MessageType.UNSUBSCRIBE_INPUT:
+            self._unsubscribe_input(msg.content["slot_name_in"])
+            self._mark_dirty()
+        elif t == MessageType.CLEAR_DATA:
+            slot = self.input_slots.get(msg.content["slot_name"])
+            if slot is not None:
+                slot.clear()
+        else:
+            self._report_error(f"Unhandled control message type: {t}")
 
-    def _processing_loop(self):
+    # ------------------------------------------------------------------
+    # Input slot wiring (called from messaging loop)
+    # ------------------------------------------------------------------
+
+    def _subscribe_input(self, *, slot_name_in: str, service_name: str, in_process: bool) -> None:
+        slot = self.input_slots.get(slot_name_in)
+        if slot is None:
+            self._report_error(f"Unknown input slot: {slot_name_in}")
+            return
+        # Tear down any prior subscription on this slot.
+        self._unsubscribe_input(slot_name_in)
+
+        sub, listener = create_data_subscriber(service_name, in_process=in_process)
+        slot.subscriber = sub
+        slot.listener = listener
+        slot.service_name = service_name
+        slot.in_process = in_process
+        if slot.trigger_process:
+            self._waitset.attach(listener)
+
+    def _unsubscribe_input(self, slot_name_in: str) -> None:
+        slot = self.input_slots.get(slot_name_in)
+        if slot is None or slot.subscriber is None:
+            return
+        if slot.listener is not None and slot.trigger_process:
+            self._waitset.detach(slot.listener)
+        try:
+            slot.subscriber.close()
+        except Exception:
+            pass
+        slot.subscriber = None
+        slot.listener = None
+        slot.service_name = None
+        slot.in_process = False
+        slot.clear()
+
+    # ------------------------------------------------------------------
+    # Output endpoints (lazy)
+    # ------------------------------------------------------------------
+
+    def _ensure_output_endpoints(self, slot_name: str, *, want_ipc: bool = False, want_thread: bool = False) -> None:
+        """Idempotent — create the requested publisher flavours for a slot.
+
+        For now `REGISTER_SUBSCRIBER` always requests the ipc flavour; thread
+        publishers are created when a future SUBSCRIBE_THREAD-style hint is
+        added (or eagerly for groups). Cheap to create — iceoryx2 services
+        are reference-counted via `open_or_create`.
         """
-        This method runs in a separate thread and handles the processing of input data and sending of
-        output data to other nodes.
-        """
-        # wait until the node's setup is complete
-        while not self._node_ready:
-            time.sleep(0.1)
+        slot = self.output_slots[slot_name]
+        service = data_service_name(self.node_id, slot_name)
+        if want_ipc and not slot.has_ipc:
+            slot.publishers.append(IpcPublisher(service, latest_wins=True))
+            slot.notifiers.append(IpcNotifier(event_service_name(service)))
+            slot.has_ipc = True
+        if want_thread and not slot.has_thread:
+            slot.publishers.append(ThreadPublisher(service, latest_wins=True))
+            slot.notifiers.append(ThreadNotifier(event_service_name(service)))
+            slot.has_thread = True
 
-        last_update = 0
+    # ------------------------------------------------------------------
+    # Processing loop (data plane)
+    # ------------------------------------------------------------------
+
+    def _processing_loop(self) -> None:
+        while not self._node_ready and self.alive:
+            time.sleep(0.05)
+        if not self.alive:
+            return
+
+        last_update = 0.0
+        autotrigger_was_set = False
+
         while self.alive:
-            # wait for a trigger
-            self.process_flag.wait()
-            # clear the trigger if autotrigger is False
-            if not self.params.common.autotrigger.value:
-                self.process_flag.clear()
+            autotrigger = self.params.common.autotrigger.value
+            triggered = False
 
-            # limit the update rate
+            if autotrigger and self._has_no_triggering_inputs():
+                # Free-running mode: process every tick.
+                triggered = True
+                autotrigger_was_set = True
+            else:
+                fired = self._waitset.wait(0.1)
+                if not self.alive:
+                    break
+                # Drain every fired data listener into its slot.
+                drained_any = False
+                for listener in fired:
+                    # We don't know which listener is which — match by id.
+                    for slot in self.input_slots.values():
+                        if slot.listener is listener and slot.subscriber is not None:
+                            buf = slot.subscriber.take_latest()
+                            if buf is not None:
+                                try:
+                                    slot.data = decode_data(buf)
+                                    drained_any = True
+                                except Exception:
+                                    self._report_error(traceback.format_exc())
+                            break
+                if drained_any:
+                    triggered = True
+
+            if not triggered:
+                continue
+
+            # Rate limiting.
             if self.params.common.max_frequency.value > 0:
                 max_freq = self.params.common.max_frequency.value
                 if self.params.common.frequency_mode.value == "updates-per-second":
-                    # convert frequency to seconds per update
-                    max_freq = 1 / max_freq
+                    max_freq = 1.0 / max_freq
                 sleep_time = max_freq - (time.time() - last_update)
                 if sleep_time > 0:
                     time.sleep(sleep_time)
                 last_update = time.time()
 
-            # gather input data
             input_data = {name: slot.data for name, slot in self.input_slots.items()}
 
             try:
-                # process data
                 output_data = self.process(**input_data)
             except Exception:
-                error_message = traceback.format_exc()
-                self.connection.try_send(Message(MessageType.PROCESSING_ERROR, {"error": error_message}))
+                self._report_error(traceback.format_exc())
                 continue
 
             if not self.alive:
-                # the node was terminated during processing
                 break
-
-            # if process returns None, skip sending output data
             if output_data is None:
-                # TODO: make sure this is the correct behavior
+                continue
+            if not isinstance(output_data, dict):
+                self._report_error(
+                    f"process() must return a dict, got {type(output_data).__name__}."
+                )
                 continue
 
-            # check that the process method returned a dict
-            if not isinstance(output_data, dict):
-                raise TypeError(
-                    f"The process method should return a dictionary with one entry per output slot. "
-                    f"Got {type(output_data)}."
+            extra_fields = set(output_data.keys()) - set(self.output_slots.keys())
+            if extra_fields:
+                self._report_error(
+                    f"Extra output fields: {sorted(extra_fields)}. process() must only return declared slots."
                 )
 
-            # check that the output data contains the correct fields
-            if missing := set(self.output_slots.keys()) - set(output_data.keys()):
-                self.connection.try_send(
-                    Message(
-                        MessageType.PROCESSING_ERROR,
-                        {
-                            "error": f"Missing output fields: {missing}. "
-                            f"Make sure that the process method returns a dict with one entry per output slot."
-                        },
-                    )
-                )
-
-            # check that the output data doesn't contain extra fields
-            if extra_fields := list(set(output_data.keys()) - set(self.output_slots.keys())):
-                self.connection.try_send(
-                    Message(
-                        MessageType.PROCESSING_ERROR,
-                        {
-                            "error": f"Extra output fields: {extra_fields}. "
-                            f"The process method should only return those fields that were specified in the output slots."
-                        },
-                    )
-                )
-
-            # send output data
-            for name in self.output_slots.keys():
-                data = output_data[name]
-                if data is None:
-                    # skip sending None data
+            for slot_name, slot in self.output_slots.items():
+                if slot.subscriber_count == 0:
                     continue
-
+                value = output_data.get(slot_name)
+                if value is None:
+                    continue
                 try:
-                    data = Data(self.output_slots[name].dtype, data[0], data[1])
+                    data = Data(slot.dtype, value[0], value[1])
                 except Exception:
-                    error_message = traceback.format_exc()
-                    self.connection.try_send(Message(MessageType.PROCESSING_ERROR, {"error": error_message}))
+                    self._report_error(traceback.format_exc())
                     continue
-
-                # send the data to all connected nodes
-                for target_slot, conn, self_conn in self.output_slots[name].connections:
+                try:
+                    buf = encode_data(data)
+                except Exception:
+                    self._report_error(traceback.format_exc())
+                    continue
+                for pub, notif in zip(slot.publishers, slot.notifiers):
                     try:
-                        msg = Message(MessageType.DATA, {"data": data, "slot_name": target_slot})
+                        pub.send(buf)
+                        notif.notify()
                     except Exception:
-                        error_message = traceback.format_exc()
-                        self.connection.try_send(Message(MessageType.PROCESSING_ERROR, {"error": error_message}))
-                        continue
+                        self._report_error(traceback.format_exc())
 
-                    if conn._id in self.pending_connections:
-                        # filter out dead threads
-                        self.pending_connections[conn._id] = [
-                            (thread, timestamp)
-                            for thread, timestamp in self.pending_connections[conn._id]
-                            if thread.is_alive()
-                        ]
-                        # check if the connection has timed out
-                        timeout_occurred = False
-                        for _, creation in self.pending_connections[conn._id]:
-                            if time.time() - creation > self.MESSAGE_TIMEOUT / 1000:
-                                # the connection has timed out, remove it
-                                # TODO: figure out what's going on, if we remove a timed out connection the GUI will sometimes lose contact with the node
-                                # self.output_slots[name].connections.remove((target_slot, conn, self_conn))
-                                timeout_occurred = True
-                                continue
+    def _has_no_triggering_inputs(self) -> bool:
+        return not any(s.trigger_process and s.subscriber is not None for s in self.input_slots.values())
 
-                        if timeout_occurred:
-                            # skip sending the message if the connection has timed out
-                            continue
-                    else:
-                        self.pending_connections[conn._id] = []
-
-                    # send the message (in a separate thread because connections may time out and block)
-                    t = Thread(
-                        target=conn.send, name=f"{self.__class__.__name__}-send-{conn._id}", args=(msg,), daemon=True
-                    )
-                    t.start()
-                    self.pending_connections[conn._id].append((t, time.time()))
+    # ------------------------------------------------------------------
+    # Standalone direct call
+    # ------------------------------------------------------------------
 
     def __call__(self, *args: Any, **kwargs: Any) -> Any:
         if self._environment != NodeEnv.STANDALONE:
             raise RuntimeError("Only nodes running in standalone mode can be called directly.")
-
         if not self._node_ready:
-            # run setup if it hasn't been run yet
             self.setup()
             self._node_ready = True
-
-        # convert all inputs to Data instances
         args = list(args)
         for i in range(len(args)):
             if not isinstance(args[i], Data):
@@ -492,16 +504,17 @@ class Node(ABC):
         for key, value in kwargs.items():
             if not isinstance(value, Data):
                 kwargs[key] = to_data(value)
-
         return self.process(*args, **kwargs)
+
+    # ------------------------------------------------------------------
+    # Configuration
+    # ------------------------------------------------------------------
 
     @classmethod
     def _configure(cls) -> Tuple[Dict[str, InputSlot], Dict[str, OutputSlot], NodeParams]:
-        """Retrieves the node's configuration of input slots, output slots, and parameters."""
         in_slots = cls.config_input_slots()
         out_slots = cls.config_output_slots()
         params = cls.config_params()
-
         return (
             {name: slot if isinstance(slot, InputSlot) else InputSlot(slot) for name, slot in in_slots.items()},
             {name: slot if isinstance(slot, OutputSlot) else OutputSlot(slot) for name, slot in out_slots.items()},
@@ -509,64 +522,56 @@ class Node(ABC):
         )
 
     def common_autotrigger_changed(self, value):
-        """If the new value of the parameter common.autotrigger is True, trigger the processing loop."""
-        if value:
-            self.process_flag.set()
+        # No-op: autotrigger is consulted on each tick in the processing loop.
+        pass
 
     @require_init
-    def clear_error(self):
-        """Clear the error message."""
-        self.connection.try_send(Message(MessageType.PROCESSING_ERROR, {"error": None}))
+    def clear_error(self) -> None:
+        self._report_error(None)
 
     @require_init
-    def request_shutdown(self):
-        """Send a shutdown request for the goofi-pipe process."""
+    def request_shutdown(self) -> None:
         if self._environment == NodeEnv.STANDALONE:
             raise RuntimeError(
-                "Shutdown requested but the node is not running in standalone mode. A manager is required to perform the shutdown."
+                "Shutdown requested but the node is not running in standalone mode. "
+                "A manager is required to perform the shutdown."
             )
-        self.connection.try_send(Message(MessageType.SHUTDOWN, {}))
+        try:
+            self.status_pub.send(encode_message(Message(MessageType.SHUTDOWN, {})))
+            self._status_notifier.notify()
+        except Exception:
+            pass
+
+    # ------------------------------------------------------------------
+    # Factories
+    # ------------------------------------------------------------------
 
     @classmethod
     def create(
         cls,
+        node_id: Optional[str] = None,
         initial_params: Optional[Dict[str, Dict[str, Any]]] = None,
         retries: int = 3,
-        send_output_to_ref: bool = True,
     ) -> NodeRef:
-        """
-        Create a new node instance in a separate process and return a reference to the node.
-
-        ### Parameters
-        `initial_params` : Optional[Dict[str, Dict[str, Any]]]
-            A dictionary of parameter groups, where each group is a dictionary of parameter names and values.
-            Defaults to None.
-        `retries` : int
-            The number of times to retry creating the node if it fails. Defaults to 3.
-        `send_output_to_ref` : bool
-            If True, connect the output slots of the node to the returned NodeRef. Defaults to True.
-
-        ### Returns
-        `NodeRef`
-            A reference to the node.
-        """
+        """Spawn the node in its own process and return a `NodeRef`."""
         if cls.NO_MULTIPROCESSING:
             raise MultiprocessingForbiddenError("Multiprocessing is forbidden for this node.")
 
-        if initial_params is not None and "process_group" in initial_params["common"]:
-            pg_name = initial_params["common"]["process_group"]
-            if len(pg_name) > 0:
-                pg = NodeProcessRegistry().get(pg_name)
-                conn1, conn2 = Connection.create()
-                # spawn the node in the given process group
-                pg.conn.send((cls, (conn1, conn2), initial_params))
-                ref = pg.conn.recv()
-                ref.initialize()
-                return ref
+        if node_id is None:
+            node_id = f"{cls.__name__}-{uuid.uuid4().hex[:8]}"
 
-        # generate arguments for the node
+        # Group routing: if a process_group parameter is set, hand off to the
+        # registry to spawn inside that group's host process.
+        if initial_params is not None and "common" in initial_params and "process_group" in initial_params["common"]:
+            pg_name = initial_params["common"]["process_group"]
+            if isinstance(pg_name, str) and pg_name:
+                from goofi.transport import get_instance_id
+
+                pg = NodeProcessRegistry().get(pg_name, get_instance_id())
+                pg.spawn(cls, node_id, initial_params)
+                return cls._build_ref(node_id, initial_params, in_process=False, process=None)
+
         in_slots, out_slots, params = cls._configure()
-        # integrate initial parameters if they are provided
         if initial_params is not None:
             try:
                 params.update(initial_params)
@@ -578,16 +583,17 @@ class Node(ABC):
                     "\n===================================================\n"
                 )
 
+        from goofi.transport import get_instance_id
+
+        instance_id = get_instance_id()
+
         tries = 0
         while True:
             try:
-                conn1, conn2 = Connection.create()
-
-                # instantiate the node in a separate process
                 proc = Process(
-                    target=cls,
+                    target=_run_node_process,
                     name=cls.__name__,
-                    args=(conn2, in_slots, out_slots, params, NodeEnv.MULTIPROCESSING),
+                    args=(cls, node_id, in_slots, out_slots, params, instance_id),
                     daemon=True,
                 )
                 proc.start()
@@ -598,134 +604,90 @@ class Node(ABC):
                     raise e
                 time.sleep(0.1)
 
-        # create the node reference
-        ref = NodeRef(
-            conn1,
-            {name: slot.dtype for name, slot in in_slots.items()},
-            {name: slot.dtype for name, slot in out_slots.items()},
-            params,
-            cls,
-            process=proc,
-            receive_node_outputs=send_output_to_ref,
-        )
-        return ref
+        return cls._build_ref(node_id, params, in_process=False, process=proc)
 
     @classmethod
     def create_local(
         cls,
+        node_id: Optional[str] = None,
         initial_params: Optional[Dict[str, Dict[str, Any]]] = None,
-        conns: Optional[Tuple[Connection, Connection]] = None,
         init_ref: bool = True,
-        send_output_to_ref: bool = True,
     ) -> Tuple[NodeRef, "Node"]:
-        """
-        Create a new node instance in the current process and return a reference to the node,
-        as well as the node itself.
-
-        ### Parameters
-        `initial_params` : Optional[Dict[str, Dict[str, Any]]]
-            A dictionary of parameter groups, where each group is a dictionary of parameter names and values.
-            Defaults to None.
-        `conns` : Optional[Tuple[Connection, Connection]]
-            A tuple of two connections to use for the node. If None, a new connection pair will be created.
-        `init_ref` : bool
-            If True, call initialize() on the returned NodeRef. Defaults to True.
-        `send_output_to_ref` : bool
-            If True, connect the output slots of the node to the returned NodeRef. Defaults to True.
-
-        ### Returns
-        `Tuple[NodeRef, Node]`
-            A tuple containing the node reference and the node itself.
-        """
-        # generate arguments for the node
+        """Instantiate the node in the current process. Returns (ref, node)."""
+        if node_id is None:
+            node_id = f"{cls.__name__}-{uuid.uuid4().hex[:8]}"
         in_slots, out_slots, params = cls._configure()
-
-        # integrate initial parameters if they are provided
         if initial_params is not None:
             try:
                 params.update(initial_params)
             except InvalidParamError:
                 print(
                     "\n====================== ERROR ======================\n"
-                    f"Setting parameters failed for {cls.__name__}. This is likely due to updates"
-                    " in the node's code. Make sure to reconfigure the node."
+                    f"Setting parameters failed for {cls.__name__}."
                     "\n===================================================\n"
                 )
 
-        conn1, conn2 = Connection.create() if conns is None else conns
-        # instantiate the node in the current process
-        node = cls(conn2, in_slots, out_slots, params, NodeEnv.LOCAL)
-        # create the node reference
-        ref = NodeRef(
-            conn1,
-            {name: slot.dtype for name, slot in in_slots.items()},
-            {name: slot.dtype for name, slot in out_slots.items()},
-            deepcopy(params),
-            cls,
-            create_initialized=init_ref,
-            receive_node_outputs=send_output_to_ref,
-        )
+        ref = cls._build_ref(node_id, params, in_process=True, process=None, create_initialized=init_ref)
+        node = cls(node_id, in_slots, out_slots, params, NodeEnv.LOCAL, in_process_with_manager=True)
         return ref, node
 
     @classmethod
-    def create_standalone(cls) -> "Node":
-        """
-        Create a new node instance in the current process without a connection to the manager.
-
-        ### Returns
-        `Node`
-            The node instance.
-        """
-        # generate arguments for the node
+    def _spawn_local(cls, node_id: str, initial_params: Optional[Dict[str, Dict[str, Any]]]) -> "Node":
+        """Used by `NodeProcess` to create a node inside a shared group process."""
         in_slots, out_slots, params = cls._configure()
-        # instantiate the node in the current process
+        if initial_params is not None:
+            try:
+                params.update(initial_params)
+            except InvalidParamError:
+                pass
+        # In a group host process, the manager is in a *different* process,
+        # so ctrl/status still go over iceoryx2 — but data plane between
+        # group peers uses thread transport (decided at SUBSCRIBE_INPUT
+        # time by the manager).
+        return cls(node_id, in_slots, out_slots, params, NodeEnv.LOCAL, in_process_with_manager=False)
+
+    @classmethod
+    def _build_ref(
+        cls,
+        node_id: str,
+        params: NodeParams,
+        in_process: bool,
+        process: Optional[Process],
+        create_initialized: bool = True,
+    ) -> NodeRef:
+        in_slots, out_slots, _ = cls._configure()
+        return NodeRef(
+            node_id=node_id,
+            in_process=in_process,
+            input_slots={name: slot.dtype for name, slot in in_slots.items()},
+            output_slots={name: slot.dtype for name, slot in out_slots.items()},
+            params=params,
+            node_class=cls,
+            process=process,
+            create_initialized=create_initialized,
+        )
+
+    @classmethod
+    def create_standalone(cls) -> "Node":
+        in_slots, out_slots, params = cls._configure()
         return cls(None, in_slots, out_slots, params, NodeEnv.STANDALONE)
 
     @classmethod
     def category(cls) -> str:
-        """
-        Returns the category of the node, i.e. the name of the node's module.
-
-        ### Returns
-        `str`
-            The category of the node.
-        """
         return cls.__module__.split(".")[-2]
 
     @classmethod
     def docstring(cls) -> str:
-        """
-        Returns the cleaned docstring of the class (removes leading and trailing whitespace per line).
-
-        ### Returns
-        `str`
-            The cleaned docstring of the class, or an empty string if no docstring is present.
-        """
-
         if hasattr(cls, "__doc__") and cls.__doc__:
             return "\n".join([line.strip() for line in cls.__doc__.split("\n")])
         return ""
 
     @property
     def assets_path(self) -> Path:
-        """
-        Returns the absolute path to the assets folder of goofi-pipe.
-
-        ### Returns
-        `PosixPath`
-            The path to the assets folder of the node.
-        """
         return Path(str(pkg_resources.files(assets)))
 
     @property
     def data_path(self) -> str:
-        """
-        Returns the absolute path to the data folder of goofi-pipe.
-
-        ### Returns
-        `str`
-            The path to the data folder of the node.
-        """
         return join(dirname(dirname(dirname(__file__))), "data")
 
     @property
@@ -748,73 +710,47 @@ class Node(ABC):
     def output_slots(self) -> Dict[str, OutputSlot]:
         return self._output_slots
 
+    # ------------------------------------------------------------------
+    # Subclass override hooks
+    # ------------------------------------------------------------------
+
     @staticmethod
     def config_input_slots() -> Dict[str, Union[InputSlot, DataType]]:
-        """
-        This method is called when the node is instantiated. It should return a dict containing the input slots
-        of the node. The keys are the names of the input slots, and the values are either InputSlot instances or
-        DataType instances.
-
-        ### Returns
-        `Dict[str, Union[InputSlot, DataType]]`
-            A dict containing the input slots of the node.
-        """
         return {}
 
     @staticmethod
     def config_output_slots() -> Dict[str, Union[OutputSlot, DataType]]:
-        """
-        This method is called when the node is instantiated. It should return a dict containing the output slots
-        of the node. The keys are the names of the output slots, and the values are either OutputSlot instances or
-        DataType instances.
-
-        ### Returns
-        `Dict[str, Union[OutputSlot, DataType]]`
-            A dict containing the output slots of the node.
-        """
         return {}
 
     @staticmethod
     def config_params() -> Dict[str, Dict[str, Any]]:
-        """
-        This method is called when the node is instantiated. It should return a dict containing the parameters
-        of the node. The keys are the names of the parameter groups, and the values are dicts containing the
-        parameters of each group.
-
-        ### Returns
-        `Dict[str, Dict[str, Any]]`
-            A dict containing the parameters of the node. The values may be any type that is supported by the
-            `Param` class.
-        """
         return {}
 
     @require_init
     def setup(self) -> None:
-        """
-        This method is called after the node is instantiated. It can be used to set up the node.
-        """
         pass
 
     @abstractmethod
     def process(self, **kwargs) -> Dict[str, Tuple[Any, Dict[str, Any]]]:
-        """
-        This method is called when the node is triggered. It should process the input data and return a dict
-        containing the output data.
-
-        ### Parameters
-        `**kwargs` : Any
-            The input data.
-
-        ### Returns
-        `Dict[str, Tuple[Any, Dict[str, Any]]]`
-            A dict containing the output data. The keys are the names of the output slots, and the values are
-            tuples containing the data and metadata of the output data.
-        """
         pass
 
     def terminate(self) -> None:
-        """
-        This method is called when the node is terminated. It can be used to clean up any resources used by the
-        node.
-        """
         pass
+
+
+# ---------------------------------------------------------------------------
+# Process entrypoint for `Node.create()`
+# ---------------------------------------------------------------------------
+
+
+def _run_node_process(
+    cls,
+    node_id: str,
+    in_slots: Dict[str, InputSlot],
+    out_slots: Dict[str, OutputSlot],
+    params: NodeParams,
+    instance_id: str,
+) -> None:
+    """Child process main: set the instance id, instantiate the node."""
+    set_instance_id(instance_id)
+    cls(node_id, in_slots, out_slots, params, NodeEnv.MULTIPROCESSING, in_process_with_manager=False)

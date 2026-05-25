@@ -200,45 +200,52 @@ class GUINode:
             dpg.bind_item_theme(win.node_info_window, win_theme)
 
 
-def handle_data(win: "Window", gui_node: GUINode, node: NodeRef, message: Message):
-    """
-    Handle a data message from a node. This function is registered as a message handler for the
-    `MessageType.DATA` message type.
+def handle_data(win: "Window", gui_node: GUINode, node: NodeRef, slot_name: str, data) -> None:
+    """Drive the output draw handler for `slot_name` with the newly arrived data.
 
-    ### Parameters
-    `gui_node` : GUINode
-        The GUI node instance.
-    `node` : NodeRef
-        The node reference.
-    `message` : Message
-        The data message.
+    Wired via `NodeRef.set_data_handler` after the iceoryx2 refactor — there
+    is no longer a `DATA` message type; data flows on its own iceoryx2
+    publish/subscribe channel and is decoded in a per-NodeRef pump thread.
+
+    The body is wrapped in a single try/except: this runs in the data
+    pump thread on every incoming frame and any propagated dearpygui
+    exception would flood the console (item ids can go stale between
+    selection and write, viewer widgets can be torn down concurrently).
     """
     try:
-        gui_node.output_draw_handlers[message.content["slot_name"]](message)
-        gui_node.set_error(None, win)
-    except ValueError as e:
-        # TODO: add proper logging
-        print(f"Output draw handler for slot {message.content['slot_name']} failed: {e}")
-    except KeyError:
-        print(gui_node, message.content["slot_name"], gui_node.output_draw_handlers.keys())
-    except Exception as e:
-        print(f"Error in output draw handler for slot {message.content['slot_name']}: {e}")
+        shim = Message(
+            MessageType.STATE_UPDATE,
+            {"_type": "viewer", "category": "viewer", "params": {}, "output_subscribers": {}},
+        )
+        object.__setattr__(shim, "content", {"slot_name": slot_name, "data": data})
 
-    selected_nodes = dpg.get_selected_nodes(win.node_editor)
-    if (
-        win.metadata_view is not None
-        and len(selected_nodes) == 1
-        and selected_nodes[0] == gui_node.item
-        and message.content["slot_name"] in win.metadata_view
-    ):
         try:
-            dpg.set_value(
-                win.metadata_view[message.content["slot_name"]],
-                MetadataPrinter(compact=True, width=50).pformat(message.content["data"].meta),
-            )
-        except SystemError:
-            # param window was closed, ignore this error
-            pass
+            gui_node.output_draw_handlers[slot_name](shim)
+            gui_node.set_error(None, win)
+        except ValueError as e:
+            print(f"Output draw handler for slot {slot_name} failed: {e}")
+        except KeyError:
+            print(gui_node, slot_name, gui_node.output_draw_handlers.keys())
+        except Exception as e:
+            print(f"Error in output draw handler for slot {slot_name}: {e}")
+
+        selected_nodes = dpg.get_selected_nodes(win.node_editor)
+        if (
+            win.metadata_view is not None
+            and len(selected_nodes) == 1
+            and selected_nodes[0] == gui_node.item
+            and slot_name in win.metadata_view
+        ):
+            try:
+                dpg.set_value(
+                    win.metadata_view[slot_name],
+                    MetadataPrinter(compact=True, width=50).pformat(data.meta),
+                )
+            except Exception:
+                pass
+    except Exception:
+        # Catch-all so the pump thread never sees a propagated GUI error.
+        pass
 
 
 def toggle_log_plot(_1, _2, data):
@@ -573,8 +580,14 @@ class Window:
                 MessageType.PROCESSING_ERROR, partial(self._processing_error_callback, node_name=node_name)
             )
 
-            # register data message handler to update the data viewers
-            node.set_message_handler(MessageType.DATA, partial(handle_data, self, self.nodes[node_name]))
+            # Register a data handler per output slot — each spins up an
+            # iceoryx2 subscriber + listener + decode thread that calls
+            # `handle_data` whenever a fresh frame lands.
+            for slot_name in out_slots.keys():
+                node.set_data_handler(
+                    slot_name,
+                    partial(handle_data, self, self.nodes[node_name]),
+                )
 
     @running
     def remove_node(self, name: str) -> None:
