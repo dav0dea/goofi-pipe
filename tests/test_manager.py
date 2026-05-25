@@ -9,8 +9,8 @@ import goofi
 from goofi.manager import Manager, NodeContainer
 from goofi.transport import (
     WaitSet,
-    create_data_subscriber,
     data_service_name,
+    open_subscriber,
     set_instance_id,
 )
 
@@ -67,7 +67,7 @@ def test_simple_chain_dataflow():
 
         # External subscriber acting like a GUI viewer.
         service = data_service_name(sel, "out")
-        sub, listener = create_data_subscriber(service, in_process=False)
+        sub, listener = open_subscriber(service, in_process=False, latest_wins=True)
         ws = WaitSet()
         ws.attach(listener)
         mgr.nodes[sel].register_subscriber("out")

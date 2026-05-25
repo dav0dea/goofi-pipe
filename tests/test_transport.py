@@ -15,24 +15,19 @@ from goofi.codec import decode_data, decode_message, encode_data, encode_message
 from goofi.data import Data, DataType
 from goofi.message import Message, MessageType
 from goofi.transport import (
-    DEFAULT_MAX_PAYLOAD,
     IpcListener,
-    IpcNotifier,
-    IpcPublisher,
-    IpcSubscriber,
     ThreadListener,
     ThreadNotifier,
     ThreadPublisher,
     ThreadSubscriber,
     WaitSet,
-    create_ctrl_publisher,
-    create_ctrl_subscriber,
-    create_data_publisher,
-    create_data_subscriber,
     data_service_name,
-    event_service_name,
+    open_publisher,
+    open_subscriber,
     set_instance_id,
 )
+
+_EVT = ".evt"
 
 import numpy as np
 
@@ -100,8 +95,8 @@ def test_codec_message_roundtrip(msg):
 def test_ipc_pubsub_latest_wins():
     _fresh_iid()
     name = data_service_name("nodeA", "out")
-    pub, notif = create_data_publisher(name, in_process=False)
-    sub, listener = create_data_subscriber(name, in_process=False)
+    pub, notif = open_publisher(name, in_process=False, latest_wins=True)
+    sub, listener = open_subscriber(name, in_process=False, latest_wins=True)
     for i in range(10):
         pub.send(f"msg{i}".encode())
         notif.notify()
@@ -112,8 +107,8 @@ def test_ipc_pubsub_latest_wins():
 def test_ipc_atomic_instance_array():
     _fresh_iid()
     name = data_service_name("nodeAtomic", "out")
-    pub, _notif = create_data_publisher(name, in_process=False)
-    sub, _list = create_data_subscriber(name, in_process=False)
+    pub, _notif = open_publisher(name, in_process=False, latest_wins=True)
+    sub, _list = open_subscriber(name, in_process=False, latest_wins=True)
 
     arr = np.array([1, 2, 3, 4], dtype=np.int32)
     d = Data(DataType.ARRAY, arr, {})
@@ -130,8 +125,8 @@ def test_ipc_atomic_instance_array():
 def test_ipc_waitset_wake():
     _fresh_iid()
     name = data_service_name("nodeWS", "out")
-    pub, notif = create_data_publisher(name, in_process=False)
-    _sub, listener = create_data_subscriber(name, in_process=False)
+    pub, notif = open_publisher(name, in_process=False, latest_wins=True)
+    _sub, listener = open_subscriber(name, in_process=False, latest_wins=True)
     ws = WaitSet()
     ws.attach(listener)
 
@@ -150,7 +145,7 @@ def test_ipc_waitset_wake():
 
 def test_ipc_waitset_timeout():
     _fresh_iid()
-    _sub, listener = create_data_subscriber(data_service_name("idle", "out"), in_process=False)
+    _sub, listener = open_subscriber(data_service_name("idle", "out"), in_process=False, latest_wins=True)
     ws = WaitSet()
     ws.attach(listener)
     t0 = time.time()
@@ -163,8 +158,8 @@ def test_ipc_waitset_timeout():
 def test_ctrl_channel_order_under_burst():
     _fresh_iid()
     name = f"goofi-test-ctrl-{uuid.uuid4().hex[:8]}"
-    pub, notif = create_ctrl_publisher(name, in_process=False)
-    sub, listener = create_ctrl_subscriber(name, in_process=False)
+    pub, notif = open_publisher(name, in_process=False, latest_wins=False)
+    sub, listener = open_subscriber(name, in_process=False, latest_wins=False)
 
     # Burst N messages; expect them all in order.
     N = 20
@@ -208,8 +203,8 @@ def test_thread_atomic_instance_bytearray():
 
 def test_thread_listener_wake():
     name = f"goofi-test-thread-wake-{uuid.uuid4().hex[:8]}"
-    listener = ThreadListener(event_service_name(name))
-    notif = ThreadNotifier(event_service_name(name))
+    listener = ThreadListener((name + _EVT))
+    notif = ThreadNotifier((name + _EVT))
     ws = WaitSet()
     ws.attach(listener)
     # Drain any pre-existing state.
@@ -230,8 +225,8 @@ def test_thread_listener_wake():
 def test_thread_ctrl_order():
     """Reliable thread ctrl: messages arrive in order, no drops."""
     name = f"goofi-test-thread-ctrl-{uuid.uuid4().hex[:8]}"
-    pub, _ = create_ctrl_publisher(name, in_process=True)
-    sub, _ = create_ctrl_subscriber(name, in_process=True)
+    pub, _ = open_publisher(name, in_process=True, latest_wins=False)
+    sub, _ = open_subscriber(name, in_process=True, latest_wins=False)
     for i in range(8):
         pub.send(str(i).encode())
     received = []

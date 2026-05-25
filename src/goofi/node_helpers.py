@@ -22,7 +22,7 @@ import traceback
 from dataclasses import dataclass, field
 from multiprocessing import Pipe, Process
 from multiprocessing.connection import _ConnectionBase
-from threading import Thread
+from threading import Event, RLock, Thread
 from typing import Any, Callable, Dict, List, Optional, Type
 
 from goofi import nodes as goofi_nodes
@@ -35,11 +35,10 @@ from goofi.transport import (
     Publisher,
     Subscriber,
     WaitSet,
-    create_ctrl_publisher,
-    create_ctrl_subscriber,
-    create_data_subscriber,
     ctrl_service_name,
     data_service_name,
+    open_publisher,
+    open_subscriber,
     status_service_name,
 )
 
@@ -135,7 +134,11 @@ class InputSlot:
     trigger_process: bool = True
     data: Optional[Data] = None
 
-    # Runtime, set by Node — not picklable across process boundaries.
+    # Runtime endpoints — populated by the node when SUBSCRIBE_INPUT wires
+    # this slot, cleared on UNSUBSCRIBE_INPUT. They're always None at the
+    # time a slot is constructed (via `cls._configure()`) and at the time
+    # slots are pickled across process spawn, so no special pickle handling
+    # is needed.
     subscriber: Optional[Subscriber] = field(default=None, repr=False, compare=False)
     listener: Optional[Listener] = field(default=None, repr=False, compare=False)
     service_name: Optional[str] = field(default=None, repr=False, compare=False)
@@ -147,22 +150,6 @@ class InputSlot:
 
     def clear(self):
         self.data = None
-
-    def __getstate__(self):
-        """Drop runtime endpoints on pickle (used when spawning child process)."""
-        return {
-            "dtype": self.dtype,
-            "trigger_process": self.trigger_process,
-            "data": self.data,
-            "subscriber": None,
-            "listener": None,
-            "service_name": None,
-            "in_process": False,
-        }
-
-    def __setstate__(self, state):
-        for k, v in state.items():
-            setattr(self, k, v)
 
 
 @dataclass
@@ -183,31 +170,17 @@ class OutputSlot:
     dtype: DataType
     subscriber_count: int = 0
 
-    # Runtime, set by Node. `publishers` and `notifiers` are parallel lists.
+    # Runtime, set by Node — `publishers` and `notifiers` are parallel
+    # lists. Always empty at pickle time (slots are pickled via
+    # `cls._configure()` before any wiring), so no pickle hooks needed.
     publishers: List[Publisher] = field(default_factory=list, repr=False, compare=False)
     notifiers: List[object] = field(default_factory=list, repr=False, compare=False)
-    # Track which transports already have endpoints, so REGISTER_SUBSCRIBER
-    # is idempotent across subscriber counts.
     has_ipc: bool = field(default=False, repr=False, compare=False)
     has_thread: bool = field(default=False, repr=False, compare=False)
 
     def __post_init__(self):
         if isinstance(self.dtype, str):
             self.dtype = DataType[self.dtype]
-
-    def __getstate__(self):
-        return {
-            "dtype": self.dtype,
-            "subscriber_count": 0,
-            "publishers": [],
-            "notifiers": [],
-            "has_ipc": False,
-            "has_thread": False,
-        }
-
-    def __setstate__(self, state):
-        for k, v in state.items():
-            setattr(self, k, v)
 
 
 # ---------------------------------------------------------------------------
@@ -243,7 +216,6 @@ class NodeRef:
     category: str = None
     process: Optional[Process] = None
     callbacks: Dict[MessageType, Callable] = field(default_factory=dict)
-    serialization_pending: bool = False
     serialized_state: Optional[Dict[str, Any]] = None
     gui_kwargs: Dict[str, Any] = field(default_factory=dict)
     create_initialized: bool = True
@@ -262,18 +234,29 @@ class NodeRef:
         self.__doc__ = self.node_class.docstring()
         self.category = self.node_class.category()
 
-        # Bring up our half of the ctrl/status channels.
-        self.ctrl_pub, ctrl_notifier = create_ctrl_publisher(
-            ctrl_service_name(self.node_id), in_process=self.in_process
+        # Events / threads / handler bookkeeping. Init here (not as dataclass
+        # fields) so dataclass equality doesn't recurse into thread state.
+        self._first_state_event = Event()
+        self._data_handlers: Dict[str, tuple] = {}
+        self._data_handlers_lock = RLock()
+        self._data_waitset = WaitSet()
+        self._data_waitset_dirty = Event()
+        self._data_pump_thread: Optional[Thread] = None
+
+        self.ctrl_pub, self._ctrl_notifier = open_publisher(
+            ctrl_service_name(self.node_id), in_process=self.in_process, latest_wins=False
         )
-        # Hold a reference so the notifier isn't garbage-collected.
-        self._ctrl_notifier = ctrl_notifier
-        self.status_sub, self.status_listener = create_ctrl_subscriber(
-            status_service_name(self.node_id), in_process=self.in_process
+        self.status_sub, self.status_listener = open_subscriber(
+            status_service_name(self.node_id), in_process=self.in_process, latest_wins=False
         )
 
         if self.create_initialized:
             self.initialize()
+
+    @property
+    def serialization_pending(self) -> bool:
+        """True until the node has pushed its first STATE_UPDATE."""
+        return not self._first_state_event.is_set()
 
     def initialize(self) -> None:
         if self._alive:
@@ -281,7 +264,6 @@ class NodeRef:
         self._alive = True
         self._waitset = WaitSet()
         self._waitset.attach(self.status_listener)
-        self.serialization_pending = True  # cleared when first STATE_UPDATE arrives
         self._messaging_thread = Thread(
             target=self._messaging_loop,
             name=f"NodeRef-{self.node_id}-msg",
@@ -340,92 +322,101 @@ class NodeRef:
 
     def terminate(self) -> None:
         self._alive = False
+        # Wake the data-pump out of its idle wait so it can exit.
+        self._data_waitset_dirty.set()
         try:
             self._send(Message(MessageType.TERMINATE, {}))
         except Exception:
             pass
-        # Tear down our endpoints.
         if self.ctrl_pub:
             self.ctrl_pub.close()
         if self.status_sub:
             self.status_sub.close()
 
     def wait_for_state(self, timeout: float = 3.0) -> bool:
-        """Block until a STATE_UPDATE has been received at least once. Returns True if state arrived."""
-        deadline = time.time() + timeout
-        while self.serialization_pending and time.time() < deadline:
-            time.sleep(0.01)
-        return not self.serialization_pending
+        """Block until a STATE_UPDATE has been received at least once."""
+        return self._first_state_event.wait(timeout=timeout)
 
     def data_service_for(self, slot_name_out: str) -> str:
-        """Canonical iceoryx2 service name for one of the node's output slots."""
         return data_service_name(self.node_id, slot_name_out)
 
     def open_output_subscriber(self, slot_name_out: str) -> tuple[Subscriber, Listener]:
-        """Open a subscriber on one of the node's output slots (e.g. for a GUI viewer)."""
-        return create_data_subscriber(self.data_service_for(slot_name_out), in_process=self.in_process)
+        return open_subscriber(self.data_service_for(slot_name_out), in_process=self.in_process, latest_wins=True)
 
     def set_data_handler(self, slot_name_out: str, callback: Optional[Callable]) -> None:
-        """Register a callback invoked whenever fresh data lands on `slot_name_out`.
+        """Register / unregister a callback invoked on every fresh frame.
 
-        Spawns a tiny daemon thread per registered slot that owns the
-        subscriber + listener pair, decodes incoming frames, and calls
-        `callback(self, slot_name_out, data)` with the decoded `Data`. Pass
-        `callback=None` to unregister.
+        `callback(noderef, slot_name_out, data)` runs on the single per-ref
+        data-pump thread that fans out across all registered output slots.
+        Pass `callback=None` to unregister.
 
-        Behind the scenes this also sends a `REGISTER_SUBSCRIBER` to the
-        node so the producer publishes for the GUI viewer.
+        Side-effect: also sends `REGISTER_SUBSCRIBER` / `UNREGISTER_SUBSCRIBER`
+        so the producing node knows to start / stop publishing on the slot.
         """
-        if not hasattr(self, "_data_handlers"):
-            self._data_handlers: Dict[str, "Thread"] = {}
+        with self._data_handlers_lock:
+            prev = self._data_handlers.pop(slot_name_out, None)
+            if prev is not None:
+                self._data_waitset.detach(prev[1])
+                try:
+                    prev[0].close()
+                except Exception:
+                    pass
+                self.unregister_subscriber(slot_name_out)
 
-        # unregister any prior handler on this slot
-        prev = self._data_handlers.pop(slot_name_out, None)
-        if prev is not None:
-            prev_evt = getattr(prev, "_stop_evt", None)
-            if prev_evt is not None:
-                prev_evt.set()
+            if callback is None:
+                return
 
-        if callback is None:
-            self.unregister_subscriber(slot_name_out)
-            return
+            self.register_subscriber(slot_name_out)
+            sub, listener = self.open_output_subscriber(slot_name_out)
+            self._data_handlers[slot_name_out] = (sub, listener, callback)
+            self._data_waitset.attach(listener)
+            self._data_waitset_dirty.set()
 
-        self.register_subscriber(slot_name_out)
-        sub, listener = self.open_output_subscriber(slot_name_out)
+            if self._data_pump_thread is None or not self._data_pump_thread.is_alive():
+                self._data_pump_thread = Thread(
+                    target=self._data_pump,
+                    name=f"NodeRef-{self.node_id}-data-pump",
+                    daemon=True,
+                )
+                self._data_pump_thread.start()
+
+    def _data_pump(self) -> None:
+        """Single thread serving every registered data handler on this NodeRef."""
         from goofi.codec import decode_data
-        from threading import Event as _Event
-        stop_evt = _Event()
 
-        def pump():
-            ws = WaitSet()
-            ws.attach(listener)
-            while not stop_evt.is_set() and self._alive:
-                fired = ws.wait(0.25)
-                if not fired:
+        while self._alive:
+            # Snapshot the listener→slot map so the wait can run unlocked.
+            with self._data_handlers_lock:
+                handlers = dict(self._data_handlers)
+            if not handlers:
+                # No subscribers — sleep on the dirty flag until something
+                # registers (or terminate fires).
+                self._data_waitset_dirty.wait(timeout=0.5)
+                self._data_waitset_dirty.clear()
+                continue
+            listener_to_slot = {id(l): (n, s, cb) for n, (s, l, cb) in handlers.items()}
+            fired = self._data_waitset.wait(0.25)
+            for listener in fired:
+                entry = listener_to_slot.get(id(listener))
+                if entry is None:
                     continue
+                slot_name, sub, cb = entry
                 buf = sub.take_latest()
                 if buf is None:
                     continue
                 try:
                     data = decode_data(buf)
                 except Exception:
-                    traceback.print_exc()
+                    import sys
+
+                    print(f"decode failed for {self.node_id}.{slot_name}: {sys.exc_info()[1]}", file=sys.stderr)
                     continue
                 try:
-                    callback(self, slot_name_out, data)
+                    cb(self, slot_name, data)
                 except Exception:
-                    # Data callbacks are GUI code — failures here shouldn't
-                    # flood the console at the pump's frame rate. Print
-                    # once with a short summary; the user can re-run with
-                    # PYTHONFAULTHANDLER=1 for deeper diagnosis if needed.
                     import sys
-                    print(f"data handler for {self.node_id}.{slot_name_out} failed: {sys.exc_info()[1]}",
-                          file=sys.stderr)
 
-        t = Thread(target=pump, name=f"NodeRef-{self.node_id}-data-{slot_name_out}", daemon=True)
-        t._stop_evt = stop_evt
-        self._data_handlers[slot_name_out] = t
-        t.start()
+                    print(f"data handler for {self.node_id}.{slot_name} failed: {sys.exc_info()[1]}", file=sys.stderr)
 
     def _messaging_loop(self) -> None:
         """Drain the status channel and dispatch messages."""
@@ -455,7 +446,7 @@ class NodeRef:
 
                 if msg.type == MessageType.STATE_UPDATE:
                     self.serialized_state = msg.content
-                    self.serialization_pending = False
+                    self._first_state_event.set()
                     # Mirror reported params back into the local NodeParams
                     # so GUI reads stay coherent across reconnects.
                     try:
@@ -532,27 +523,31 @@ class NodeProcess:
         self.proc.kill()
 
 
-class NodeProcessRegistry:
-    """Singleton registry for `NodeProcess` instances, keyed by group name."""
+_process_groups: Dict[str, NodeProcess] = {}
 
-    _instance = None
-    _processes: Dict[str, NodeProcess] = {}
+
+class NodeProcessRegistry:
+    """Module-level registry of `NodeProcess` instances, keyed by group name.
+
+    Implemented as a thin facade over `_process_groups` (a module-level
+    dict) so the public API stays the same as the old singleton class —
+    callers do `NodeProcessRegistry().get(name, iid)`. The `headless`
+    attribute is a process-wide flag preserved for compatibility.
+    """
+
     headless: bool = False
 
-    def __new__(cls):
-        if cls._instance is None:
-            cls._instance = super().__new__(cls)
-        return cls._instance
-
     def get(self, name: str, instance_id: str) -> NodeProcess:
-        if name not in self._processes:
-            self._processes[name] = NodeProcess(name, instance_id)
-        return self._processes[name]
+        ng = _process_groups.get(name)
+        if ng is None:
+            ng = NodeProcess(name, instance_id)
+            _process_groups[name] = ng
+        return ng
 
     def all(self) -> Dict[str, NodeProcess]:
-        return dict(self._processes)
+        return dict(_process_groups)
 
-    def terminate(self):
-        for p in self._processes.values():
+    def terminate(self) -> None:
+        for p in _process_groups.values():
             p.kill()
-        self._processes.clear()
+        _process_groups.clear()

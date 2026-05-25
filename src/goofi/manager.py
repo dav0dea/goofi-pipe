@@ -18,10 +18,8 @@ After the iceoryx2 transport refactor, the manager:
 from __future__ import annotations
 
 import atexit
-import glob
 import importlib
 import os
-import subprocess  # noqa: F401  (used by _cleanup_iceoryx2_shm)
 import time
 import uuid
 from copy import deepcopy
@@ -187,6 +185,47 @@ class Manager:
     def _same_group(self, node_a: str, node_b: str) -> bool:
         return self._node_groups.get(node_a) == self._node_groups.get(node_b)
 
+    def _spawn_node(
+        self,
+        node_cls: type,
+        node_id: str,
+        params: Optional[Dict[str, Dict[str, Any]]],
+        group: str,
+    ) -> NodeRef:
+        """Pick a spawn strategy and return the resulting `NodeRef`.
+
+        Three paths:
+        - `--no-multiprocessing`: host the node in the manager's process
+          (thread-based ctrl/status, fastest startup).
+        - explicit `process_group` set: host the node inside a shared
+          subprocess managed by `NodeProcessRegistry` so peers in the same
+          group can communicate via thread transport.
+        - default: spawn the node in its own subprocess via `Node.create()`.
+
+        Multiprocessing-forbidden nodes always fall back to `create_local()`.
+        """
+        if not self._use_multiprocessing:
+            ref, _ = node_cls.create_local(node_id=node_id, initial_params=params)
+            return ref
+        if group != node_id:  # explicit group → registry host process
+            pg = NodeProcessRegistry().get(group, self._instance_id)
+            pg.spawn(node_cls, node_id, params)
+            # Build the manager-side ref. _build_ref configures params from
+            # cls._configure() and applies the dict overrides; the actual
+            # node lives in the group host process.
+            _, _, params_obj = node_cls._configure()
+            if params is not None:
+                try:
+                    params_obj.update(params)
+                except Exception:
+                    pass
+            return node_cls._build_ref(node_id, params_obj, in_process=False, process=None)
+        try:
+            return node_cls.create(node_id=node_id, initial_params=params)
+        except MultiprocessingForbiddenError:
+            ref, _ = node_cls.create_local(node_id=node_id, initial_params=params)
+            return ref
+
     @mark_unsaved_changes
     def add_node(
         self,
@@ -215,15 +254,7 @@ class Manager:
 
         group = self._resolve_group(assigned_name, params)
 
-        ref: Optional[NodeRef] = None
-        if self._use_multiprocessing:
-            try:
-                ref = node_cls.create(node_id=assigned_name, initial_params=params)
-            except MultiprocessingForbiddenError:
-                ref = None
-        if ref is None:
-            ref, _ = node_cls.create_local(node_id=assigned_name, initial_params=params)
-
+        ref = self._spawn_node(node_cls, assigned_name, params, group)
         ref.set_message_handler(MessageType.SHUTDOWN, lambda *args: self.terminate())
 
         registered = self.nodes.add_node(assigned_name, ref, force_name=True)
@@ -496,69 +527,22 @@ class Manager:
 
 
 def _cleanup_iceoryx2_shm(instance_id: str) -> None:
-    """Best-effort sweep of `/dev/shm/iox2_*` orphans from dead instances.
+    """Reap orphan iceoryx2 nodes via the native reaper.
 
     iceoryx2 cleans up its own services on graceful Node drop. On crashes
-    or SIGKILL the entries linger. We try two cleanups, in order:
-
-    1. `Node.try_cleanup_dead_nodes` — clean reaper for nodes that
-       registered themselves and then died. Returns 0 if the registry was
-       lost (e.g., after manager hot-restart on the same /dev/shm).
-    2. Filesystem sweep — for every `/dev/shm/iox2_*` entry that doesn't
-       belong to a currently-running process, delete it. We identify
-       liveness by reading file mtime + PID-presence heuristics; this is a
-       best-effort fallback because iceoryx2's on-disk naming uses an
-       opaque hash rather than the owning PID.
+    or SIGKILL the entries linger; `try_cleanup_dead_nodes` finds nodes
+    whose owning process is gone and releases their resources — a single
+    cross-platform call that works on Linux, macOS, and Windows. We call
+    it on Manager startup and again at process exit so successive sessions
+    don't accumulate shared-memory entries.
     """
     try:
         import iceoryx2 as iox2
 
         iox2.Node.try_cleanup_dead_nodes(iox2.ServiceType.Ipc, iox2.config.global_config())
     except Exception:
+        # Cleanup is best-effort; never let it fail the startup or exit path.
         pass
-
-    # Filesystem-level sweep — delete `/dev/shm/iox2_*` entries older than
-    # 60s that no live goofi process is holding open. We use `lsof` if
-    # available; otherwise fall back to age-based deletion. Run only on
-    # startup (when nothing of ours is yet attached); the atexit path
-    # would race with our own still-attached endpoints.
-    if instance_id in _cleanup_iceoryx2_shm._swept:
-        return
-    _cleanup_iceoryx2_shm._swept.add(instance_id)
-
-    try:
-        import subprocess
-
-        entries = glob.glob("/dev/shm/iox2_*")
-        if not entries:
-            return
-        # Find which entries are currently held open by any process.
-        held: set[str] = set()
-        try:
-            out = subprocess.run(
-                ["lsof", "+D", "/dev/shm"], capture_output=True, text=True, timeout=2.0
-            )
-            for line in out.stdout.splitlines():
-                if "iox2_" in line:
-                    parts = line.split()
-                    held.add(parts[-1])
-        except (FileNotFoundError, subprocess.TimeoutExpired):
-            pass
-        for entry in entries:
-            if entry in held:
-                continue
-            try:
-                # Only sweep if older than 60 seconds — gives concurrent
-                # starts a chance to attach before we wipe them.
-                if time.time() - os.path.getmtime(entry) > 60:
-                    os.remove(entry)
-            except OSError:
-                pass
-    except Exception:
-        pass
-
-
-_cleanup_iceoryx2_shm._swept = set()
 
 
 def get_example_patch(args) -> bool:

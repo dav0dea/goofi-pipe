@@ -26,28 +26,21 @@ from enum import Enum
 from multiprocessing import Process
 from os.path import dirname, join
 from pathlib import Path
-from threading import Thread
-from typing import Any, Callable, Dict, Optional, Tuple, Union
+from threading import Event, Thread
+from typing import Any, Dict, Optional, Tuple, Union
 
 from goofi import assets
 from goofi.codec import decode_data, decode_message, encode_data, encode_message
 from goofi.data import Data, DataType, to_data
 from goofi.message import Message, MessageType
-from goofi.node_helpers import InputSlot, NodeProcessRegistry, NodeRef, OutputSlot
+from goofi.node_helpers import InputSlot, NodeRef, OutputSlot
 from goofi.params import InvalidParamError, NodeParams
 from goofi.transport import (
-    DEFAULT_MAX_PAYLOAD,
-    IpcPublisher,
-    IpcNotifier,
-    ThreadPublisher,
-    ThreadNotifier,
     WaitSet,
-    create_ctrl_subscriber,
-    create_ctrl_publisher,  # used for status_pub
-    create_data_subscriber,
     ctrl_service_name,
     data_service_name,
-    event_service_name,
+    open_publisher,
+    open_subscriber,
     set_instance_id,
     status_service_name,
 )
@@ -55,15 +48,6 @@ from goofi.transport import (
 
 class MultiprocessingForbiddenError(Exception):
     pass
-
-
-def require_init(func: Callable) -> Callable:
-    def wrapper(self, *args, **kwargs):
-        if not hasattr(self, "_alive"):
-            raise RuntimeError("Make sure to call super().__init__() in your node's __init__ method.")
-        return func(self, *args, **kwargs)
-
-    return wrapper
 
 
 class NodeEnv(Enum):
@@ -98,9 +82,8 @@ class Node(ABC):
         *,
         in_process_with_manager: bool = False,
     ) -> None:
-        # initialize the base class state
         self._alive = True
-        self._node_ready = False
+        self._setup_done = Event()
         self._dirty = False
 
         self.node_id = node_id
@@ -111,34 +94,21 @@ class Node(ABC):
         self._in_process_with_manager = in_process_with_manager
 
         self._validate_attrs()
-
-        # WaitSet covering all currently-subscribed input listeners.
         self._waitset: WaitSet = WaitSet()
 
         if environment == NodeEnv.STANDALONE:
-            # standalone mode skips all transport / threads — used for unit
-            # testing of `process()` in isolation.
+            # No transport / no threads — used by offline analysis code that
+            # invokes `node(...)` directly via `__call__`.
             return
 
-        # Bring up ctrl + status endpoints.
-        from goofi.transport import (
-            create_ctrl_subscriber as _ctrl_sub_fn,
-            create_ctrl_publisher as _ctrl_pub_fn,
+        self.ctrl_sub, self.ctrl_listener = open_subscriber(
+            ctrl_service_name(node_id), in_process=in_process_with_manager, latest_wins=False
         )
-
-        self.ctrl_sub, self.ctrl_listener = _ctrl_sub_fn(
-            ctrl_service_name(node_id), in_process=in_process_with_manager
-        )
-        self.status_pub, self._status_notifier = _ctrl_pub_fn(
-            status_service_name(node_id), in_process=in_process_with_manager
+        self.status_pub, self._status_notifier = open_publisher(
+            status_service_name(node_id), in_process=in_process_with_manager, latest_wins=False
         )
         self._waitset.attach(self.ctrl_listener)
 
-        # Drain any stale wake-up events from open_or_create (the manager's
-        # side may have already begun publishing if the service was opened
-        # before our subscriber was created).
-
-        # Start processing thread early so `setup()` can already trigger.
         self.processing_thread = Thread(
             target=self._processing_loop,
             name=f"{self.__class__.__name__}-proc_loop",
@@ -147,7 +117,6 @@ class Node(ABC):
         self.processing_thread.start()
 
         if environment == NodeEnv.MULTIPROCESSING:
-            # block the process main thread in the messaging loop
             self._messaging_loop()
         elif environment == NodeEnv.LOCAL:
             self.messaging_thread = Thread(
@@ -159,7 +128,6 @@ class Node(ABC):
         else:
             raise ValueError(f"Invalid environment: {environment}")
 
-    @require_init
     def _validate_attrs(self) -> None:
         if self._environment != NodeEnv.STANDALONE:
             if not isinstance(self.node_id, str) or not self.node_id:
@@ -182,10 +150,10 @@ class Node(ABC):
     # ------------------------------------------------------------------
 
     def _setup(self) -> None:
-        while not self._node_ready and self._alive:
+        while not self._setup_done.is_set() and self._alive:
             try:
                 self.setup()
-                self._node_ready = True
+                self._setup_done.set()
                 self._report_error(None)
                 self._mark_dirty()
             except Exception:
@@ -335,7 +303,7 @@ class Node(ABC):
         # Tear down any prior subscription on this slot.
         self._unsubscribe_input(slot_name_in)
 
-        sub, listener = create_data_subscriber(service_name, in_process=in_process)
+        sub, listener = open_subscriber(service_name, in_process=in_process, latest_wins=True)
         slot.subscriber = sub
         slot.listener = listener
         slot.service_name = service_name
@@ -366,20 +334,22 @@ class Node(ABC):
     def _ensure_output_endpoints(self, slot_name: str, *, want_ipc: bool = False, want_thread: bool = False) -> None:
         """Idempotent — create the requested publisher flavours for a slot.
 
-        For now `REGISTER_SUBSCRIBER` always requests the ipc flavour; thread
-        publishers are created when a future SUBSCRIBE_THREAD-style hint is
-        added (or eagerly for groups). Cheap to create — iceoryx2 services
-        are reference-counted via `open_or_create`.
+        `REGISTER_SUBSCRIBER` always requests the ipc flavour; thread
+        publishers are added when a same-group consumer subscribes.
+        Endpoints are cheap (iceoryx2 services are ref-counted via
+        `open_or_create`).
         """
         slot = self.output_slots[slot_name]
         service = data_service_name(self.node_id, slot_name)
         if want_ipc and not slot.has_ipc:
-            slot.publishers.append(IpcPublisher(service, latest_wins=True))
-            slot.notifiers.append(IpcNotifier(event_service_name(service)))
+            pub, notif = open_publisher(service, in_process=False, latest_wins=True)
+            slot.publishers.append(pub)
+            slot.notifiers.append(notif)
             slot.has_ipc = True
         if want_thread and not slot.has_thread:
-            slot.publishers.append(ThreadPublisher(service, latest_wins=True))
-            slot.notifiers.append(ThreadNotifier(event_service_name(service)))
+            pub, notif = open_publisher(service, in_process=True, latest_wins=True)
+            slot.publishers.append(pub)
+            slot.notifiers.append(notif)
             slot.has_thread = True
 
     # ------------------------------------------------------------------
@@ -387,13 +357,14 @@ class Node(ABC):
     # ------------------------------------------------------------------
 
     def _processing_loop(self) -> None:
-        while not self._node_ready and self.alive:
-            time.sleep(0.05)
-        if not self.alive:
-            return
+        # Wait for setup() to finish before any processing tick. Polling the
+        # Event with a short timeout lets us bail out promptly if the node
+        # is terminated mid-setup.
+        while not self._setup_done.wait(timeout=0.25):
+            if not self.alive:
+                return
 
         last_update = 0.0
-        autotrigger_was_set = False
 
         while self.alive:
             autotrigger = self.params.common.autotrigger.value
@@ -402,7 +373,6 @@ class Node(ABC):
             if autotrigger and self._has_no_triggering_inputs():
                 # Free-running mode: process every tick.
                 triggered = True
-                autotrigger_was_set = True
             else:
                 fired = self._waitset.wait(0.1)
                 if not self.alive:
@@ -494,9 +464,9 @@ class Node(ABC):
     def __call__(self, *args: Any, **kwargs: Any) -> Any:
         if self._environment != NodeEnv.STANDALONE:
             raise RuntimeError("Only nodes running in standalone mode can be called directly.")
-        if not self._node_ready:
+        if not self._setup_done.is_set():
             self.setup()
-            self._node_ready = True
+            self._setup_done.set()
         args = list(args)
         for i in range(len(args)):
             if not isinstance(args[i], Data):
@@ -525,11 +495,9 @@ class Node(ABC):
         # No-op: autotrigger is consulted on each tick in the processing loop.
         pass
 
-    @require_init
     def clear_error(self) -> None:
         self._report_error(None)
 
-    @require_init
     def request_shutdown(self) -> None:
         if self._environment == NodeEnv.STANDALONE:
             raise RuntimeError(
@@ -553,23 +521,17 @@ class Node(ABC):
         initial_params: Optional[Dict[str, Dict[str, Any]]] = None,
         retries: int = 3,
     ) -> NodeRef:
-        """Spawn the node in its own process and return a `NodeRef`."""
+        """Spawn the node in its own process and return a `NodeRef`.
+
+        Group routing is the manager's responsibility, not this method's —
+        callers that want to host a node inside a shared group process use
+        `NodeProcessRegistry.spawn()` directly.
+        """
         if cls.NO_MULTIPROCESSING:
             raise MultiprocessingForbiddenError("Multiprocessing is forbidden for this node.")
 
         if node_id is None:
             node_id = f"{cls.__name__}-{uuid.uuid4().hex[:8]}"
-
-        # Group routing: if a process_group parameter is set, hand off to the
-        # registry to spawn inside that group's host process.
-        if initial_params is not None and "common" in initial_params and "process_group" in initial_params["common"]:
-            pg_name = initial_params["common"]["process_group"]
-            if isinstance(pg_name, str) and pg_name:
-                from goofi.transport import get_instance_id
-
-                pg = NodeProcessRegistry().get(pg_name, get_instance_id())
-                pg.spawn(cls, node_id, initial_params)
-                return cls._build_ref(node_id, initial_params, in_process=False, process=None)
 
         in_slots, out_slots, params = cls._configure()
         if initial_params is not None:
@@ -577,7 +539,7 @@ class Node(ABC):
                 params.update(initial_params)
             except InvalidParamError:
                 print(
-                    "\n====================== ERROR ======================\n"
+                    f"\n====================== ERROR ======================\n"
                     f"Setting parameters failed for {cls.__name__}. This is likely due to updates"
                     " in the node's code. Make sure to reconfigure the node."
                     "\n===================================================\n"
@@ -691,22 +653,18 @@ class Node(ABC):
         return join(dirname(dirname(dirname(__file__))), "data")
 
     @property
-    @require_init
     def alive(self) -> bool:
         return self._alive
 
     @property
-    @require_init
     def params(self) -> NodeParams:
         return self._params
 
     @property
-    @require_init
     def input_slots(self) -> Dict[str, InputSlot]:
         return self._input_slots
 
     @property
-    @require_init
     def output_slots(self) -> Dict[str, OutputSlot]:
         return self._output_slots
 
@@ -726,7 +684,6 @@ class Node(ABC):
     def config_params() -> Dict[str, Dict[str, Any]]:
         return {}
 
-    @require_init
     def setup(self) -> None:
         pass
 
