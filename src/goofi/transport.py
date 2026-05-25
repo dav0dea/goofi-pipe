@@ -381,7 +381,16 @@ class WaitSet:
         return []
 
     def _build_ipc_ws(self) -> None:
-        self._ipc_ws = iox2.WaitSetBuilder.new().create(iox2.ServiceType.Ipc)
+        # `SignalHandlingMode.Disabled` is critical: iceoryx2's default
+        # `HandleTerminationRequests` installs a C-level SIGINT handler that
+        # overrides Python's, so KeyboardInterrupt never propagates and the
+        # process becomes Ctrl+C-proof. Disabling here lets Python keep
+        # its signal handling and exit cleanly on Ctrl+C.
+        self._ipc_ws = (
+            iox2.WaitSetBuilder.new()
+            .signal_handling_mode(iox2.SignalHandlingMode.Disabled)
+            .create(iox2.ServiceType.Ipc)
+        )
         self._ipc_guards = {}
         for l in self._ipc_listeners:
             guard = self._ipc_ws.attach_notification(l._listener)
