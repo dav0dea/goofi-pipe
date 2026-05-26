@@ -1,24 +1,20 @@
 <script lang="ts">
-	import { Handle, Position, useNodes, type NodeProps } from '@xyflow/svelte';
+	import { Handle, Position, type NodeProps } from '@xyflow/svelte';
 	import { categoryColor, formatName } from './categoryColor';
-	import { graph } from '$lib/stores/graph.svelte';
 	import SlotViewer from '$lib/viewers/SlotViewer.svelte';
+	import { ui } from '$lib/stores/ui.svelte';
 	import type { NodeInstanceInfo } from '$lib/api/control';
 
 	let { data, selected }: NodeProps = $props();
 	const node = $derived(data.node as NodeInstanceInfo);
 	const inputs = $derived(Object.keys(node?.input_slots ?? {}));
 	const outputs = $derived(Object.keys(node?.output_slots ?? {}));
-	const expanded = $derived(Boolean(data.expanded));
+	const uiStore = ui();
+	const expanded = $derived(uiStore.isExpanded(node?.name ?? ''));
 
 	function toggleExpanded(e: MouseEvent) {
 		e.stopPropagation();
-		const nodes = useNodes();
-		nodes.update((arr) =>
-			arr.map((n) =>
-				n.id === node.name ? { ...n, data: { ...n.data, expanded: !expanded } } : n
-			)
-		);
+		uiStore.toggleExpanded(node.name);
 	}
 
 	const accent = $derived(categoryColor(node?.category));
@@ -32,7 +28,7 @@
 	style="--accent: {accent};"
 	title={node?.doc ?? ''}
 >
-	<div class="header" onclick={toggleExpanded} role="button" tabindex="0">
+	<div class="header">
 		<span class="dot" style="background: {accent};"></span>
 		<span class="title">{formatName(node?.type ?? node?.name)}</span>
 		<span class="name">{node?.name}</span>

@@ -345,7 +345,12 @@ class NodeRef:
         return data_service_name(self.node_id, slot_name_out)
 
     def open_output_subscriber(self, slot_name_out: str) -> tuple[Subscriber, Listener]:
-        return open_subscriber(self.data_service_for(slot_name_out), in_process=self.in_process, latest_wins=True)
+        # REGISTER_SUBSCRIBER always provisions the node's IPC publisher
+        # (`_ensure_output_endpoints(..., want_ipc=True)` in goofi.node), so
+        # we always subscribe via IPC — whether the node lives in this
+        # process or another. The thread transport is only used for explicit
+        # SUBSCRIBE_INPUT wiring between same-group peers.
+        return open_subscriber(self.data_service_for(slot_name_out), in_process=False, latest_wins=True)
 
     def set_data_handler(self, slot_name_out: str, callback: Optional[Callable]) -> None:
         """Register / unregister a callback invoked on every fresh frame.

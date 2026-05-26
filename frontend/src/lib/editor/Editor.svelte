@@ -30,18 +30,12 @@
 	let flowNodes = $state.raw<Node[]>([]);
 	let flowEdges = $state.raw<Edge[]>([]);
 
-	// expanded-state survives node-list re-syncs across snapshot updates.
-	let expandedSet = $state<Set<string>>(new Set());
-
 	$effect(() => {
 		const next: Node[] = g.nodes.map((n) => ({
 			id: n.name,
 			type: 'goofi',
 			position: { x: n.pos?.[0] ?? 0, y: n.pos?.[1] ?? 0 },
-			data: {
-				node: n,
-				expanded: expandedSet.has(n.name)
-			},
+			data: { node: n },
 			selected: selection.has(n.name)
 		}));
 		flowNodes = next;
@@ -96,13 +90,6 @@
 		} else {
 			selection = new Set([id]);
 		}
-	}
-
-	function toggleExpand(name: string): void {
-		const next = new Set(expandedSet);
-		if (next.has(name)) next.delete(name);
-		else next.add(name);
-		expandedSet = next;
 	}
 
 	const nodeTypes = { goofi: GoofiNode };
