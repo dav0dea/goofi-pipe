@@ -79,10 +79,15 @@ class Buffer(Node):
         # (re-)initialize buffer
         if self.buffer is None:
             self.buffer = np.array(val.data)
+            # Ensure the buffer has at least `axis+1` dimensions on first
+            # init so the subsequent truncation step doesn't trip when the
+            # user picks a buffer axis that exceeds the input's rank.
+            while self.buffer.ndim < (axis + 1):
+                self.buffer = np.expand_dims(self.buffer, axis=self.buffer.ndim)
             self.name_buffer = val.meta["channels"][f"dim{axis}"] if f"dim{axis}" in val.meta["channels"] else None
 
         # remove data that exceeds the maximum length
-        if self.buffer.shape[axis] > maxlen:
+        if axis < self.buffer.ndim and self.buffer.shape[axis] > maxlen:
             self.buffer = np.take(self.buffer, range(-maxlen, 0), axis=axis)
             if self.name_buffer is not None:
                 self.name_buffer = self.name_buffer[-maxlen:]

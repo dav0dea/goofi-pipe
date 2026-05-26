@@ -308,6 +308,12 @@ class ArrayViewer(DataViewer):
         # convert data to numpy array and copy to C order (otherwise DPG will crash for some arrays)
         array = np.squeeze(data.data).copy(order="C")
 
+        # Empty arrays appear when upstream nodes haven't accumulated
+        # samples yet (e.g. Oscillator early ticks). Skip rendering them;
+        # nanmin/nanmax raise on zero-size input.
+        if array.size == 0:
+            return
+
         if self.vmin is not None and self.vmax is not None:
             # apply shrinking to vmin and vmax
             self.vmin = self.vmin * (1 - self.shrinking) + self.vmax * self.shrinking
@@ -473,6 +479,12 @@ class TrajectoryViewer(ArrayViewer):
         """
         # convert data to numpy array and copy to C order (otherwise DPG will crash for some arrays)
         array = np.squeeze(data.data).copy(order="C")
+
+        # Empty arrays appear when upstream nodes haven't accumulated
+        # samples yet (e.g. Oscillator early ticks). Skip rendering them;
+        # nanmin/nanmax raise on zero-size input.
+        if array.size == 0:
+            return
 
         if self.vmin is not None and self.vmax is not None:
             # apply shrinking to vmin and vmax
