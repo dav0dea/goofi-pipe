@@ -11,6 +11,7 @@
 	} from '@xyflow/svelte';
 	import GoofiNode from './GoofiNode.svelte';
 	import AddNodeMenu from './AddNodeMenu.svelte';
+	import PlacementPreview from './PlacementPreview.svelte';
 	import ParamPanel from '$lib/params/ParamPanel.svelte';
 	import TopBar from './TopBar.svelte';
 	import ErrorPanel from './ErrorPanel.svelte';
@@ -19,15 +20,17 @@
 	import { ui, type SlotClickSeed } from '$lib/stores/ui.svelte';
 	import type { LinkInfo, NodeInstanceInfo, NodeTypeInfo } from '$lib/api/control';
 	import { onMount } from 'svelte';
+	import {
+		computeSnapDelta,
+		makeBounds,
+		DEFAULT_NODE_W,
+		DEFAULT_NODE_H,
+		type Bounds,
+		type Guide
+	} from './snap';
 
 	const g = graph();
 	const uiStore = ui();
-
-	// Snap tunables. Match goofi3's feel without porting its module.
-	const SNAP_THRESHOLD = 15; // engage snap when within this many flow-units
-	const SNAP_RANGE = 45; // start drawing guide hints from this far out
-	const DEFAULT_NODE_W = 240; // fallback when Svelte Flow hasn't measured a node yet
-	const DEFAULT_NODE_H = 120;
 
 	let menuOpen = $state(false);
 	let menuPos = $state<{ x: number; y: number }>({ x: 120, y: 120 });
@@ -54,10 +57,15 @@
 		menuOpen = true;
 	});
 
-	type Bounds = { left: number; right: number; top: number; bottom: number; cx: number; cy: number };
-	type Guide = { x?: number; y?: number; opacity: number };
-
 	let snapGuides = $state<Guide[]>([]);
+	// Active node-placement preview: when the user picks a type from the
+	// add-node menu, we don't insert immediately — we enter placement mode,
+	// follow the cursor with a ghost, and commit on click.
+	let pendingPlacement = $state<{
+		typeInfo: NodeTypeInfo;
+		seed: SlotClickSeed | null;
+		initialClient: { x: number; y: number };
+	} | null>(null);
 	// Per-drag bookkeeping: original positions of every dragged node when the
 	// drag started. We compute a fresh snap delta off these each frame so the
 	// guides stay coherent even as Svelte Flow moves the nodes 1:1 with the
@@ -147,30 +155,26 @@
 		const flowNode = flowNodes.find((n) => n.id === id);
 		const w = flowNode?.measured?.width ?? DEFAULT_NODE_W;
 		const h = flowNode?.measured?.height ?? DEFAULT_NODE_H;
-		return {
-			left: x,
-			right: x + w,
-			top: y,
-			bottom: y + h,
-			cx: x + w / 2,
-			cy: y + h / 2
-		};
+		return makeBounds(x, y, w, h);
 	}
 
-	/** Compute the snap delta + guide lines for the currently-dragging set.
-	 *
-	 * `current` carries the live mouse-tracked positions reported by Svelte
-	 * Flow; `start` carries the positions at drag-start. We snap the *current*
-	 * bounds toward any unselected node's edge, center, or gap.
-	 */
-	function computeSnapDelta(
+	/** Build a measurements map for PlacementPreview's snap targets. */
+	function buildMeasurements(): Map<string, { width: number; height: number }> {
+		const m = new Map<string, { width: number; height: number }>();
+		for (const n of flowNodes) {
+			if (n.measured?.width && n.measured?.height) {
+				m.set(n.id, { width: n.measured.width, height: n.measured.height });
+			}
+		}
+		return m;
+	}
+
+	/** Snap-delta wrapper that builds bounds for the dragged set and the rest
+	 * of the graph, then delegates to the shared snap util. */
+	function dragSnapDelta(
 		current: Map<string, { x: number; y: number }>,
 		altKey: boolean
 	): { dx: number; dy: number; guides: Guide[] } {
-		if (altKey || current.size === 0) return { dx: 0, dy: 0, guides: [] };
-
-		// Build bounds for the dragged set (using current positions) and
-		// the rest of the graph (using committed positions from the store).
 		const draggedBounds: Bounds[] = [];
 		for (const [id, pos] of current) draggedBounds.push(nodeBoundsFromFlow(id, pos.x, pos.y));
 		const targets: Bounds[] = [];
@@ -178,104 +182,7 @@
 			if (current.has(n.name)) continue;
 			targets.push(nodeBoundsFromFlow(n.name, n.pos[0], n.pos[1]));
 		}
-		if (targets.length === 0) return { dx: 0, dy: 0, guides: [] };
-
-		// Multi-pass: find the best snap delta, then collect guides for the
-		// post-snap configuration. Matches goofi3's `snapMultiDrag` shape.
-		const V_GAPS = [0, DEFAULT_NODE_H * 0.5];
-		const H_GAPS = [0, DEFAULT_NODE_W * 0.25];
-		let bestDistY = Infinity;
-		let bestDy = 0;
-		let bestDistX = Infinity;
-		let bestDx = 0;
-
-		for (const me of draggedBounds) {
-			for (const oe of targets) {
-				for (const gap of V_GAPS) {
-					const yPairs: [number, number][] = [
-						[me.top, oe.top],
-						[me.bottom, oe.bottom],
-						[me.top, oe.bottom + gap],
-						[me.bottom, oe.top - gap]
-					];
-					if (gap === 0) yPairs.push([me.cy, oe.cy]);
-					for (const [myE, otherE] of yPairs) {
-						const d = Math.abs(myE - otherE);
-						if (d < SNAP_THRESHOLD && d < bestDistY) {
-							bestDistY = d;
-							bestDy = otherE - myE;
-						}
-					}
-				}
-				for (const gap of H_GAPS) {
-					const xPairs: [number, number][] = [
-						[me.left, oe.left],
-						[me.right, oe.right],
-						[me.left, oe.right + gap],
-						[me.right, oe.left - gap]
-					];
-					if (gap === 0) xPairs.push([me.cx, oe.cx]);
-					for (const [myE, otherE] of xPairs) {
-						const d = Math.abs(myE - otherE);
-						if (d < SNAP_THRESHOLD && d < bestDistX) {
-							bestDistX = d;
-							bestDx = otherE - myE;
-						}
-					}
-				}
-			}
-		}
-
-		const dx = bestDistX < Infinity ? bestDx : 0;
-		const dy = bestDistY < Infinity ? bestDy : 0;
-
-		// Guides for visual feedback. Render any edge/center/gap pairing where
-		// the post-snap distance is < SNAP_RANGE; opacity fades with distance.
-		const guides: Guide[] = [];
-		for (const me of draggedBounds) {
-			const shifted: Bounds = {
-				left: me.left + dx,
-				right: me.right + dx,
-				top: me.top + dy,
-				bottom: me.bottom + dy,
-				cx: me.cx + dx,
-				cy: me.cy + dy
-			};
-			for (const oe of targets) {
-				for (const gap of V_GAPS) {
-					const yPairs: [number, number][] = [
-						[shifted.top, oe.top],
-						[shifted.bottom, oe.bottom],
-						[shifted.top, oe.bottom + gap],
-						[shifted.bottom, oe.top - gap]
-					];
-					if (gap === 0) yPairs.push([shifted.cy, oe.cy]);
-					for (const [myE, otherE] of yPairs) {
-						const d = Math.abs(myE - otherE);
-						if (d < SNAP_RANGE) {
-							guides.push({ y: otherE, opacity: d < 0.5 ? 1 : 1 - d / SNAP_RANGE });
-						}
-					}
-				}
-				for (const gap of H_GAPS) {
-					const xPairs: [number, number][] = [
-						[shifted.left, oe.left],
-						[shifted.right, oe.right],
-						[shifted.left, oe.right + gap],
-						[shifted.right, oe.left - gap]
-					];
-					if (gap === 0) xPairs.push([shifted.cx, oe.cx]);
-					for (const [myE, otherE] of xPairs) {
-						const d = Math.abs(myE - otherE);
-						if (d < SNAP_RANGE) {
-							guides.push({ x: otherE, opacity: d < 0.5 ? 1 : 1 - d / SNAP_RANGE });
-						}
-					}
-				}
-			}
-		}
-
-		return { dx, dy, guides };
+		return computeSnapDelta(draggedBounds, targets, altKey);
 	}
 
 	function onNodeDragStart(args: { nodes: Node[]; event: MouseEvent | TouchEvent }): void {
@@ -287,7 +194,7 @@
 		const current = new Map<string, { x: number; y: number }>();
 		for (const n of args.nodes) current.set(n.id, { x: n.position.x, y: n.position.y });
 		const alt = (args.event as MouseEvent).altKey === true;
-		const { dx, dy, guides } = computeSnapDelta(current, alt);
+		const { dx, dy, guides } = dragSnapDelta(current, alt);
 		snapGuides = guides;
 		// Visibly preview the snap: each dragged node gets the same delta as
 		// a CSS translate via the ui store. GoofiNode applies it on the
@@ -306,7 +213,7 @@
 		const current = new Map<string, { x: number; y: number }>();
 		for (const n of args.nodes) current.set(n.id, { x: n.position.x, y: n.position.y });
 		const alt = (args.event as MouseEvent).altKey === true;
-		const { dx, dy } = computeSnapDelta(current, alt);
+		const { dx, dy } = dragSnapDelta(current, alt);
 		for (const n of args.nodes) {
 			void g.setNodePos(n.id, [Math.round(n.position.x + dx), Math.round(n.position.y + dy)]);
 		}
@@ -580,13 +487,20 @@
 		}
 	}
 
-	/** Pick a flow-coordinate position for a freshly-added node. */
-	function pickInsertionPos(): [number, number] {
-		// Spread successive additions in a small grid so they don't pile up.
-		const n = g.nodes.length;
-		const col = n % 4;
-		const row = Math.floor(n / 4) % 6;
-		return [40 + col * 260, 40 + row * 220];
+	async function commitPlacement(pos: [number, number]): Promise<void> {
+		const placement = pendingPlacement;
+		if (!placement) return;
+		pendingPlacement = null;
+		try {
+			const newName = await g.addNode(
+				placement.typeInfo.type,
+				placement.typeInfo.category,
+				pos
+			);
+			if (placement.seed && newName) await autoLink(placement.seed, placement.typeInfo, newName);
+		} catch (e) {
+			console.warn('add_node failed', e);
+		}
 	}
 
 	let mouseX = 0;
@@ -668,6 +582,17 @@
 			>
 				<Controls />
 				<MiniMap pannable zoomable />
+				{#if pendingPlacement}
+					<PlacementPreview
+						typeInfo={pendingPlacement.typeInfo}
+						initialClient={pendingPlacement.initialClient}
+						measurements={buildMeasurements()}
+						onCommit={(pos) => void commitPlacement(pos)}
+						onCancel={() => {
+							pendingPlacement = null;
+						}}
+					/>
+				{/if}
 				{#if snapGuides.length > 0}
 					<ViewportPortal target="front">
 						<svg class="snap-guides" data-testid="snap-guides">
@@ -711,13 +636,15 @@
 				<div class="menu-anchor" style="left: {menuPos.x}px; top: {menuPos.y}px">
 					<AddNodeMenu
 						seed={menuSeed}
-						onPick={async (typeInfo) => {
+						onPick={(typeInfo) => {
 							const seed = menuSeed;
 							menuOpen = false;
 							menuSeed = null;
-							const pos = pickInsertionPos();
-							const newName = await g.addNode(typeInfo.type, typeInfo.category, pos);
-							if (seed && newName) await autoLink(seed, typeInfo, newName);
+							pendingPlacement = {
+								typeInfo,
+								seed,
+								initialClient: { x: mouseX, y: mouseY }
+							};
 						}}
 						onClose={() => {
 							menuOpen = false;

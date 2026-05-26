@@ -17,6 +17,20 @@ def _open_menu_and_pick(page: Page, type_name: str) -> None:
     page.wait_for_timeout(200)
     # Click the matching entry by visible text — more robust than Enter.
     page.locator(".item .t-name").filter(has_text=type_name).first.click()
+    # Picking now enters placement-preview mode; commit by clicking the canvas.
+    page.wait_for_selector('[data-testid="placement-ghost"]', timeout=1500)
+    pane = page.locator(".svelte-flow__pane").first
+    box = pane.bounding_box()
+    assert box
+    existing = page.locator(".svelte-flow__node").count()
+    target_x = box["x"] + 120 + (existing * 260) % max(int(box["width"]) - 240, 320)
+    target_y = box["y"] + box["height"] / 2
+    page.mouse.move(target_x, target_y)
+    page.wait_for_timeout(50)
+    # Alt bypasses snap-to-neighbours so successive placements don't pile up.
+    page.keyboard.down("Alt")
+    page.mouse.click(target_x, target_y)
+    page.keyboard.up("Alt")
     page.wait_for_selector(".svelte-flow__node", timeout=6000)
 
 
