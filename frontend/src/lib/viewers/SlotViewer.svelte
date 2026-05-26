@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { subscribeData } from '$lib/api/data';
 	import { isArrayFrame, isStringFrame, isTableFrame, type DataFrame } from '$lib/codec/decode';
+	import { Handle, Position } from '@xyflow/svelte';
 	import ArrayViewer from './ArrayViewer.svelte';
 	import ImageViewer from './ImageViewer.svelte';
 	import TrajectoryViewer from './TrajectoryViewer.svelte';
@@ -9,10 +10,22 @@
 	import TableViewer from './TableViewer.svelte';
 	import HighDimFallback from './HighDimFallback.svelte';
 	import { ui } from '$lib/stores/ui.svelte';
+	import { graph } from '$lib/stores/graph.svelte';
+	import { dtypeColor } from '$lib/editor/categoryColor';
 	import { onMount, untrack } from 'svelte';
 
 	type Props = { node: string; slot: string; dtype: string };
 	const { node, slot, dtype }: Props = $props();
+
+	const g = graph();
+
+	function onSlotClick(e: MouseEvent): void {
+		// Connected slots fall through so SvelteFlow's drag-start handler
+		// picks the gesture up; otherwise pop the seeded auto-link menu.
+		if (g.links.some((l) => l.node_out === node && l.slot_out === slot)) return;
+		e.stopPropagation();
+		ui().requestSlotClick({ node, slot, dtype, side: 'source', clientX: e.clientX, clientY: e.clientY });
+	}
 
 	const CYCLE_ARRAY = ['line', 'image', 'trajectory', 'topomap'] as const;
 	type ViewerKind = (typeof CYCLE_ARRAY)[number] | 'string' | 'table' | 'fallback';
@@ -96,16 +109,24 @@
 	class="slot-viewer"
 	class:active={visible}
 	class:collapsed={!expanded}
+	style="--dtype: {dtypeColor(dtype)};"
 	bind:this={container}
 	data-node={node}
 	data-slot={slot}
 >
 	<header>
-		<span class="slot-name">{slot}</span>
+		<span
+			class="slot-name"
+			onclick={onSlotClick}
+			role="button"
+			tabindex="0"
+			data-testid="slot-output"
+			title={dtype.toLowerCase()}
+		>
+			{slot}
+		</span>
 		{#if dtype === 'ARRAY'}
 			<button class="ghost cycle" onclick={cycle} title="cycle viewer">{kind}</button>
-		{:else}
-			<span class="kind">{dtype.toLowerCase()}</span>
 		{/if}
 		<button
 			class="ghost expand"
@@ -115,6 +136,7 @@
 		>
 			{expanded ? '▾' : '▸'}
 		</button>
+		<Handle id={slot} type="source" position={Position.Right} />
 	</header>
 
 	{#if expanded}
@@ -166,14 +188,35 @@
 		background: var(--bg-elev-2);
 		border-bottom: 1px solid var(--border);
 		font-size: 10px;
+		/* Positioning context for the source Handle so SvelteFlow's
+		   `top: 50%` anchors to this header row, not the whole node. */
+		position: relative;
 	}
 	.slot-name {
 		font-family: var(--font-mono);
-		color: var(--text-dim);
+		/* Slot label colour-codes the dtype: green=array, yellow=string,
+		   orange=table. Falls back to dim text for unknown types. */
+		color: var(--dtype, var(--text-dim));
+		cursor: pointer;
+		border-radius: 3px;
+		padding: 0 2px;
+		transition: background 80ms ease;
 	}
-	.kind {
-		font-family: var(--font-mono);
-		color: var(--text-faint);
+	.slot-name:hover {
+		background: color-mix(in srgb, var(--dtype, var(--accent)) 18%, transparent);
+	}
+	/* Inherit the dtype colour for the source handle just like the input
+	   handles do over in GoofiNode. */
+	header :global(.svelte-flow__handle) {
+		background: var(--dtype, var(--bg-elev-3));
+		border-color: var(--dtype, var(--border-strong));
+	}
+	/* Overhang half-outside the node so the pin sits on the outer border.
+	   The slot-viewer sits 6px inside the .viewers padding + 1px node
+	   border, so push the handle 7px out from the header's right edge —
+	   SF's translate(50%, -50%) adds the rest. */
+	header :global(.svelte-flow__handle-right) {
+		right: -7px;
 	}
 	.cycle {
 		padding: 0 6px;

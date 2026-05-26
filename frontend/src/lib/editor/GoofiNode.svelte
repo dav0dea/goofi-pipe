@@ -13,25 +13,12 @@
 	const uiStore = ui();
 	const g = graph();
 
-	function isConnected(slot: string, side: 'source' | 'target'): boolean {
-		for (const l of g.links) {
-			if (side === 'source' && l.node_out === node.name && l.slot_out === slot) return true;
-			if (side === 'target' && l.node_in === node.name && l.slot_in === slot) return true;
-		}
-		return false;
-	}
-
-	function onSlotClick(e: MouseEvent, slot: string, dtype: string, side: 'source' | 'target') {
-		if (isConnected(slot, side)) return; // let the click reach SvelteFlow
+	function onInputClick(e: MouseEvent, slot: string, dtype: string) {
+		// Connected slots fall through to SvelteFlow's drag-start. Output
+		// slots have their own click handler in SlotViewer.svelte.
+		if (g.links.some((l) => l.node_in === node.name && l.slot_in === slot)) return;
 		e.stopPropagation();
-		uiStore.requestSlotClick({
-			node: node.name,
-			slot,
-			dtype,
-			side,
-			clientX: e.clientX,
-			clientY: e.clientY
-		});
+		uiStore.requestSlotClick({ node: node.name, slot, dtype, side: 'target', clientX: e.clientX, clientY: e.clientY });
 	}
 
 	const accent = $derived(categoryColor(node?.category));
@@ -56,13 +43,13 @@
 		<span class="name" title={formatName(node?.type ?? node?.name)}>{node?.name}</span>
 	</div>
 
-	<div class="body">
-		<div class="ports inputs">
+	{#if inputs.length > 0}
+		<div class="body">
 			{#each inputs as slot (slot)}
 				<div
-					class="port-row clickable"
+					class="port-row"
 					style="--dtype: {dtypeColor(node.input_slots[slot])};"
-					onclick={(e) => onSlotClick(e, slot, node.input_slots[slot], 'target')}
+					onclick={(e) => onInputClick(e, slot, node.input_slots[slot])}
 					role="button"
 					tabindex="0"
 					data-testid="slot-input"
@@ -73,23 +60,7 @@
 				</div>
 			{/each}
 		</div>
-		<div class="ports outputs">
-			{#each outputs as slot (slot)}
-				<div
-					class="port-row out clickable"
-					style="--dtype: {dtypeColor(node.output_slots[slot])};"
-					onclick={(e) => onSlotClick(e, slot, node.output_slots[slot], 'source')}
-					role="button"
-					tabindex="0"
-					data-testid="slot-output"
-					title={node.output_slots[slot].toLowerCase()}
-				>
-					<span class="port-label">{slot}</span>
-					<Handle id={slot} type="source" position={Position.Right} />
-				</div>
-			{/each}
-		</div>
-	</div>
+	{/if}
 
 	{#if outputs.length > 0}
 		<div class="viewers">
@@ -181,66 +152,44 @@
 	}
 	.body {
 		padding: 6px 8px;
-		display: grid;
-		grid-template-columns: 1fr 1fr;
+		display: flex;
+		flex-direction: column;
+		align-items: flex-start;
 		gap: 4px;
 		font-size: 11px;
 	}
-	.ports {
-		display: flex;
-		flex-direction: column;
-		gap: 4px;
-		/* Inputs left-aligned, outputs right-aligned so the rows hug their
-		   own edge of the node rather than stretching halfway across. */
-		align-items: flex-start;
-	}
-	.ports.outputs {
-		align-items: flex-end;
-	}
 	.port-row {
+		/* `position: relative` + width-to-content puts the row's bounding
+		   box on the left edge of the body, so SF's
+		   `.svelte-flow__handle-left { top: 50% }` anchors per-row and the
+		   handle hit-area stays tight around the slot name. */
+		position: relative;
 		display: flex;
 		align-items: center;
 		gap: 4px;
 		min-height: 16px;
-		border-radius: 4px;
 		padding: 1px 4px;
-		/* Establish a positioning context so Svelte Flow's
-		   .svelte-flow__handle-{left,right} { top: 50% } anchors to THIS row,
-		   not to the whole node — otherwise every handle stacks at the node's
-		   vertical centre. */
-		position: relative;
-		/* The row only spans the text width — keeps the hover/click area
-		   tight around the slot name. */
 		width: max-content;
 		max-width: 100%;
-	}
-	.port-row.clickable {
+		border-radius: 4px;
 		cursor: pointer;
 		transition: background 80ms ease;
+		font-family: var(--font-mono);
+		color: var(--dtype, var(--text));
 	}
-	.port-row.clickable:hover {
+	.port-row:hover {
 		background: color-mix(in srgb, var(--dtype, var(--accent)) 15%, transparent);
 	}
-	.port-label {
-		/* Slot name carries the dtype colour now that the `array` / `string`
-		   / `table` text label is gone — keeps the row compact while still
-		   communicating dtype at a glance. */
-		color: var(--dtype, var(--text));
-		font-family: var(--font-mono);
-	}
-	:global(.svelte-flow__node) .port-row :global(.svelte-flow__handle) {
+	.port-row :global(.svelte-flow__handle) {
 		background: var(--dtype, var(--bg-elev-3));
 		border-color: var(--dtype, var(--border-strong));
 	}
-	/* Overhang the handle half-outside the node's body padding so the pin
-	   sits on the node's outer border, matching goofi3's slot look. The
-	   .body has 8px horizontal padding; SF's translate(±50%, -50%) already
-	   gives ~5px of overhang, so we nudge another 3px outward.            */
+	/* Overhang the pin past the node's body padding (8px) so it sits on
+	   the outer border. SF's translate(-50%, -50%) already gives ~5px of
+	   overhang; nudge another 3px outward. Output handles live in
+	   SlotViewer.svelte. */
 	.port-row :global(.svelte-flow__handle-left) {
 		left: -8px;
-	}
-	.port-row :global(.svelte-flow__handle-right) {
-		right: -8px;
 	}
 	.viewers {
 		border-top: 1px solid var(--border);
