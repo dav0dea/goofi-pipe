@@ -175,27 +175,12 @@ textarea:focus {
 .svelte-flow__handle {
 	background: var(--bg-elev-3);
 	border: 2px solid var(--border-strong);
-	width: 12px;
-	height: 12px;
-	transition:
-		background 80ms ease,
-		border-color 80ms ease,
-		transform 80ms ease;
+	width: 10px;
+	height: 10px;
 }
-/* Push handles a bit further out so they don't visually merge with the
-   node border, and so the entire circle is hit-testable. */
-.svelte-flow__handle.svelte-flow__handle-left {
-	left: -7px;
-}
-.svelte-flow__handle.svelte-flow__handle-right {
-	right: -7px;
-}
-.svelte-flow__handle:hover,
-.svelte-flow__handle.connecting,
-.svelte-flow__handle.valid {
+.svelte-flow__handle:hover {
 	background: var(--accent);
 	border-color: var(--accent);
-	transform: translateY(-50%) scale(1.15);
 }
 .svelte-flow__edge-path {
 	stroke: var(--border-strong);

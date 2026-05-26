@@ -5,6 +5,7 @@
 		Controls,
 		MiniMap,
 		SvelteFlowProvider,
+		ViewportPortal,
 		type Connection,
 		type Edge,
 		type Node
@@ -21,9 +22,25 @@
 
 	const g = graph();
 
+	// Snap tunables. Match goofi3's feel without porting its module.
+	const SNAP_THRESHOLD = 15; // engage snap when within this many flow-units
+	const SNAP_RANGE = 45; // start drawing guide hints from this far out
+	const DEFAULT_NODE_W = 240; // fallback when Svelte Flow hasn't measured a node yet
+	const DEFAULT_NODE_H = 120;
+
 	let menuOpen = $state(false);
 	let menuPos = $state<{ x: number; y: number }>({ x: 120, y: 120 });
 	let selection = $state<Set<string>>(new Set());
+
+	type Bounds = { left: number; right: number; top: number; bottom: number; cx: number; cy: number };
+	type Guide = { x?: number; y?: number; opacity: number };
+
+	let snapGuides = $state<Guide[]>([]);
+	// Per-drag bookkeeping: original positions of every dragged node when the
+	// drag started. We compute a fresh snap delta off these each frame so the
+	// guides stay coherent even as Svelte Flow moves the nodes 1:1 with the
+	// mouse.
+	let dragStartPositions: Map<string, { x: number; y: number }> = new Map();
 
 	// Lift backend nodes/links → Svelte Flow shapes. We rely on $derived
 	// to bridge state-store snapshots into SvelteFlow's input arrays.
@@ -67,10 +84,164 @@
 		});
 	}
 
-	function onNodeDragStop(args: { targetNode: Node | null; nodes: Node[]; event: MouseEvent | TouchEvent }): void {
-		for (const n of args.nodes) {
-			void g.setNodePos(n.id, [Math.round(n.position.x), Math.round(n.position.y)]);
+	function nodeBoundsFromFlow(id: string, x: number, y: number): Bounds {
+		const flowNode = flowNodes.find((n) => n.id === id);
+		const w = flowNode?.measured?.width ?? DEFAULT_NODE_W;
+		const h = flowNode?.measured?.height ?? DEFAULT_NODE_H;
+		return {
+			left: x,
+			right: x + w,
+			top: y,
+			bottom: y + h,
+			cx: x + w / 2,
+			cy: y + h / 2
+		};
+	}
+
+	/** Compute the snap delta + guide lines for the currently-dragging set.
+	 *
+	 * `current` carries the live mouse-tracked positions reported by Svelte
+	 * Flow; `start` carries the positions at drag-start. We snap the *current*
+	 * bounds toward any unselected node's edge, center, or gap.
+	 */
+	function computeSnapDelta(
+		current: Map<string, { x: number; y: number }>,
+		altKey: boolean
+	): { dx: number; dy: number; guides: Guide[] } {
+		if (altKey || current.size === 0) return { dx: 0, dy: 0, guides: [] };
+
+		// Build bounds for the dragged set (using current positions) and
+		// the rest of the graph (using committed positions from the store).
+		const draggedBounds: Bounds[] = [];
+		for (const [id, pos] of current) draggedBounds.push(nodeBoundsFromFlow(id, pos.x, pos.y));
+		const targets: Bounds[] = [];
+		for (const n of g.nodes) {
+			if (current.has(n.name)) continue;
+			targets.push(nodeBoundsFromFlow(n.name, n.pos[0], n.pos[1]));
 		}
+		if (targets.length === 0) return { dx: 0, dy: 0, guides: [] };
+
+		// Multi-pass: find the best snap delta, then collect guides for the
+		// post-snap configuration. Matches goofi3's `snapMultiDrag` shape.
+		const V_GAPS = [0, DEFAULT_NODE_H * 0.5];
+		const H_GAPS = [0, DEFAULT_NODE_W * 0.25];
+		let bestDistY = Infinity;
+		let bestDy = 0;
+		let bestDistX = Infinity;
+		let bestDx = 0;
+
+		for (const me of draggedBounds) {
+			for (const oe of targets) {
+				for (const gap of V_GAPS) {
+					const yPairs: [number, number][] = [
+						[me.top, oe.top],
+						[me.bottom, oe.bottom],
+						[me.top, oe.bottom + gap],
+						[me.bottom, oe.top - gap]
+					];
+					if (gap === 0) yPairs.push([me.cy, oe.cy]);
+					for (const [myE, otherE] of yPairs) {
+						const d = Math.abs(myE - otherE);
+						if (d < SNAP_THRESHOLD && d < bestDistY) {
+							bestDistY = d;
+							bestDy = otherE - myE;
+						}
+					}
+				}
+				for (const gap of H_GAPS) {
+					const xPairs: [number, number][] = [
+						[me.left, oe.left],
+						[me.right, oe.right],
+						[me.left, oe.right + gap],
+						[me.right, oe.left - gap]
+					];
+					if (gap === 0) xPairs.push([me.cx, oe.cx]);
+					for (const [myE, otherE] of xPairs) {
+						const d = Math.abs(myE - otherE);
+						if (d < SNAP_THRESHOLD && d < bestDistX) {
+							bestDistX = d;
+							bestDx = otherE - myE;
+						}
+					}
+				}
+			}
+		}
+
+		const dx = bestDistX < Infinity ? bestDx : 0;
+		const dy = bestDistY < Infinity ? bestDy : 0;
+
+		// Guides for visual feedback. Render any edge/center/gap pairing where
+		// the post-snap distance is < SNAP_RANGE; opacity fades with distance.
+		const guides: Guide[] = [];
+		for (const me of draggedBounds) {
+			const shifted: Bounds = {
+				left: me.left + dx,
+				right: me.right + dx,
+				top: me.top + dy,
+				bottom: me.bottom + dy,
+				cx: me.cx + dx,
+				cy: me.cy + dy
+			};
+			for (const oe of targets) {
+				for (const gap of V_GAPS) {
+					const yPairs: [number, number][] = [
+						[shifted.top, oe.top],
+						[shifted.bottom, oe.bottom],
+						[shifted.top, oe.bottom + gap],
+						[shifted.bottom, oe.top - gap]
+					];
+					if (gap === 0) yPairs.push([shifted.cy, oe.cy]);
+					for (const [myE, otherE] of yPairs) {
+						const d = Math.abs(myE - otherE);
+						if (d < SNAP_RANGE) {
+							guides.push({ y: otherE, opacity: d < 0.5 ? 1 : 1 - d / SNAP_RANGE });
+						}
+					}
+				}
+				for (const gap of H_GAPS) {
+					const xPairs: [number, number][] = [
+						[shifted.left, oe.left],
+						[shifted.right, oe.right],
+						[shifted.left, oe.right + gap],
+						[shifted.right, oe.left - gap]
+					];
+					if (gap === 0) xPairs.push([shifted.cx, oe.cx]);
+					for (const [myE, otherE] of xPairs) {
+						const d = Math.abs(myE - otherE);
+						if (d < SNAP_RANGE) {
+							guides.push({ x: otherE, opacity: d < 0.5 ? 1 : 1 - d / SNAP_RANGE });
+						}
+					}
+				}
+			}
+		}
+
+		return { dx, dy, guides };
+	}
+
+	function onNodeDragStart(args: { nodes: Node[]; event: MouseEvent | TouchEvent }): void {
+		dragStartPositions = new Map();
+		for (const n of args.nodes) dragStartPositions.set(n.id, { x: n.position.x, y: n.position.y });
+	}
+
+	function onNodeDrag(args: { nodes: Node[]; event: MouseEvent | TouchEvent }): void {
+		const current = new Map<string, { x: number; y: number }>();
+		for (const n of args.nodes) current.set(n.id, { x: n.position.x, y: n.position.y });
+		const alt = (args.event as MouseEvent).altKey === true;
+		const { guides } = computeSnapDelta(current, alt);
+		snapGuides = guides;
+	}
+
+	function onNodeDragStop(args: { targetNode: Node | null; nodes: Node[]; event: MouseEvent | TouchEvent }): void {
+		const current = new Map<string, { x: number; y: number }>();
+		for (const n of args.nodes) current.set(n.id, { x: n.position.x, y: n.position.y });
+		const alt = (args.event as MouseEvent).altKey === true;
+		const { dx, dy } = computeSnapDelta(current, alt);
+		for (const n of args.nodes) {
+			void g.setNodePos(n.id, [Math.round(n.position.x + dx), Math.round(n.position.y + dy)]);
+		}
+		snapGuides = [];
+		dragStartPositions = new Map();
 	}
 
 	function onPaneClick(args: { event: MouseEvent }): void {
@@ -337,6 +508,8 @@
 				bind:edges={flowEdges}
 				{nodeTypes}
 				onconnect={onConnect}
+				onnodedragstart={onNodeDragStart}
+				onnodedrag={onNodeDrag}
 				onnodedragstop={onNodeDragStop}
 				onpaneclick={onPaneClick}
 				onnodeclick={onNodeClick}
@@ -357,12 +530,40 @@
 				fitViewOptions={{ maxZoom: 1, padding: 0.18 }}
 				minZoom={0.05}
 				maxZoom={4}
-				snapGrid={[8, 8]}
-				defaultViewport={{ x: 0, y: 0, zoom: 0.85 }}
+				initialViewport={{ x: 0, y: 0, zoom: 0.85 }}
 			>
 				<Background gap={24} size={1} />
 				<Controls />
 				<MiniMap pannable zoomable />
+				{#if snapGuides.length > 0}
+					<ViewportPortal target="front">
+						<svg class="snap-guides" data-testid="snap-guides">
+							{#each snapGuides as g, i (i)}
+								{#if g.x !== undefined}
+									<line
+										x1={g.x}
+										x2={g.x}
+										y1={-5000}
+										y2={5000}
+										stroke="var(--accent)"
+										stroke-width="1"
+										stroke-opacity={g.opacity}
+									/>
+								{:else if g.y !== undefined}
+									<line
+										x1={-5000}
+										x2={5000}
+										y1={g.y}
+										y2={g.y}
+										stroke="var(--accent)"
+										stroke-width="1"
+										stroke-opacity={g.opacity}
+									/>
+								{/if}
+							{/each}
+						</svg>
+					</ViewportPortal>
+				{/if}
 			</SvelteFlow>
 
 			{#if menuOpen}
@@ -436,6 +637,18 @@
 		position: fixed;
 		z-index: 100;
 		width: 320px;
+	}
+	.snap-guides {
+		/* Lives inside SvelteFlow's viewport (via ViewportPortal), so SVG
+		   coords are flow-space. Render at (0,0) with overflow:visible so
+		   lines extending into negative space stay drawn. */
+		position: absolute;
+		left: 0;
+		top: 0;
+		width: 1px;
+		height: 1px;
+		overflow: visible;
+		pointer-events: none;
 	}
 </style>
 

@@ -78,10 +78,7 @@
 		border: 1px solid var(--border);
 		border-radius: var(--radius-md);
 		color: var(--text);
-		/* No overflow:hidden — handles sit half outside the node and would
-		   otherwise be clipped. Inner blocks below carry their own top/
-		   bottom rounded corners so the gradient + viewer panels respect
-		   the node outline. */
+		overflow: hidden;
 		box-shadow: var(--shadow-1);
 		transition:
 			border-color 80ms ease,
@@ -102,7 +99,6 @@
 		padding: 6px 10px;
 		background: linear-gradient(180deg, color-mix(in srgb, var(--accent) 18%, transparent), transparent);
 		border-bottom: 1px solid var(--border);
-		border-radius: var(--radius-md) var(--radius-md) 0 0;
 		cursor: pointer;
 		user-select: none;
 	}
@@ -135,12 +131,6 @@
 		grid-template-columns: 1fr 1fr;
 		gap: 4px;
 		font-size: 11px;
-		border-radius: 0 0 var(--radius-md) var(--radius-md);
-	}
-	/* When a viewer panel follows, drop the bottom rounding on .body so the
-	   .viewers section can own the bottom corners. */
-	.body:not(:last-child) {
-		border-radius: 0;
 	}
 	.ports {
 		display: flex;
@@ -151,24 +141,10 @@
 		display: flex;
 		align-items: center;
 		gap: 4px;
-		min-height: 18px;
-		position: relative; /* hosts the per-row handle */
+		min-height: 16px;
 	}
 	.port-row.out {
 		justify-content: flex-end;
-	}
-	/* By default Svelte Flow positions handles absolutely relative to the
-	   nearest positioned ancestor, which would be the node — that stacks
-	   all handles of the same side on top of each other. Make the row the
-	   positioning context so each handle sits at its own port's height. */
-	.port-row :global(.svelte-flow__handle) {
-		top: 50%;
-	}
-	.port-row :global(.svelte-flow__handle.svelte-flow__handle-left) {
-		left: -16px;
-	}
-	.port-row.out :global(.svelte-flow__handle.svelte-flow__handle-right) {
-		right: -16px;
 	}
 	.port-label {
 		color: var(--text);
@@ -181,7 +157,6 @@
 	}
 	.viewers {
 		border-top: 1px solid var(--border);
-		border-radius: 0 0 var(--radius-md) var(--radius-md);
 		display: flex;
 		flex-direction: column;
 		gap: 4px;
