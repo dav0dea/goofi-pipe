@@ -66,10 +66,10 @@
 					role="button"
 					tabindex="0"
 					data-testid="slot-input"
+					title={node.input_slots[slot].toLowerCase()}
 				>
 					<Handle id={slot} type="target" position={Position.Left} />
 					<span class="port-label">{slot}</span>
-					<span class="port-dtype">{node.input_slots[slot].toLowerCase()}</span>
 				</div>
 			{/each}
 		</div>
@@ -82,8 +82,8 @@
 					role="button"
 					tabindex="0"
 					data-testid="slot-output"
+					title={node.output_slots[slot].toLowerCase()}
 				>
-					<span class="port-dtype">{node.output_slots[slot].toLowerCase()}</span>
 					<span class="port-label">{slot}</span>
 					<Handle id={slot} type="source" position={Position.Right} />
 				</div>
@@ -215,14 +215,11 @@
 		background: color-mix(in srgb, var(--dtype, var(--accent)) 15%, transparent);
 	}
 	.port-label {
-		color: var(--text);
-	}
-	.port-dtype {
+		/* Slot name carries the dtype colour now that the `array` / `string`
+		   / `table` text label is gone — keeps the row compact while still
+		   communicating dtype at a glance. */
+		color: var(--dtype, var(--text));
 		font-family: var(--font-mono);
-		font-size: 9px;
-		color: var(--dtype, var(--text-faint));
-		text-transform: lowercase;
-		opacity: 0.9;
 	}
 	:global(.svelte-flow__node) .port-row :global(.svelte-flow__handle) {
 		background: var(--dtype, var(--bg-elev-3));
