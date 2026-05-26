@@ -38,86 +38,78 @@
 		return out;
 	}
 
-	/** Draw a handful of tick labels INSIDE the plot area.
-	 *
-	 * Default uPlot reserves a left + bottom gutter for axis labels. With many
-	 * small viewers per node, that gutter eats most of the canvas. We hide
-	 * the native axes (size=0, show=false) and use the `draw` hook to render
-	 * 3 X ticks along the bottom edge and 2 Y ticks (min/max) at the top-
-	 * and bottom-left, all overlaid on the plot itself.
-	 */
-	function drawInsideTicks(u: uPlot): void {
-		const ctx = u.ctx;
-		const x = u.scales.x;
-		const y = u.scales.y;
-		if (x?.min === undefined || x?.max === undefined) return;
-		if (y?.min === undefined || y?.max === undefined) return;
-
-		const plotL = u.bbox.left;
-		const plotT = u.bbox.top;
-		const plotW = u.bbox.width;
-		const plotH = u.bbox.height;
-
-		const dpr = window.devicePixelRatio || 1;
-		ctx.save();
-		ctx.font = `${10 * dpr}px "JetBrains Mono", ui-monospace, monospace`;
-		ctx.fillStyle = 'rgba(150, 158, 175, 0.7)';
-		ctx.textBaseline = 'bottom';
-
-		// X ticks: 3 evenly spaced labels (left / mid / right) along the
-		// bottom edge of the plot, anchored just inside the right edge so
-		// they don't overflow.
-		const xMin = x.min;
-		const xMax = x.max;
-		const xs = [xMin, (xMin + xMax) / 2, xMax];
-		const xAnchors: CanvasTextAlign[] = ['left', 'center', 'right'];
-		for (let i = 0; i < xs.length; i++) {
-			ctx.textAlign = xAnchors[i];
-			const label = fmt(xs[i]);
-			let px = plotL + ((xs[i] - xMin) / (xMax - xMin)) * plotW;
-			// Inset the edges by a couple of pixels so text doesn't clip.
-			if (i === 0) px += 3;
-			if (i === xs.length - 1) px -= 3;
-			ctx.fillText(label, px, plotT + plotH - 2);
-		}
-
-		// Y ticks: min/max in the top-left and bottom-left of the plot.
-		ctx.textAlign = 'left';
-		ctx.textBaseline = 'top';
-		ctx.fillText(fmt(y.max), plotL + 4, plotT + 2);
-		ctx.textBaseline = 'bottom';
-		ctx.fillText(fmt(y.min), plotL + 4, plotT + plotH - 12 * dpr);
-		ctx.restore();
+	function fmtTick(v: number): string {
+		if (!Number.isFinite(v)) return '';
+		const abs = Math.abs(v);
+		if (abs === 0) return '0';
+		if (abs >= 10000 || abs < 0.01) return v.toExponential(1);
+		if (abs >= 100) return v.toFixed(0);
+		if (abs >= 1) return v.toFixed(2);
+		return v.toFixed(3);
 	}
 
-	function fmt(v: number): string {
-		const av = Math.abs(v);
-		if (av === 0) return '0';
-		if (av >= 1000 || av < 0.01) return v.toExponential(1);
-		if (av >= 10) return v.toFixed(0);
-		return v.toPrecision(2);
+	/** uPlot draw hook: paint corner tick labels INSIDE the plot bbox so the
+	 * canvas can fill the entire viewer body without sacrificing axis info.
+	 * Anchors min/max for x and y at the canvas corners; tiny font, dim
+	 * colour — readable but unobtrusive. */
+	function drawCornerTicks(u: uPlot): void {
+		const ctx = u.ctx;
+		// uPlot doesn't pre-scale its ctx, so canvas coords are device pixels.
+		// Multiply font + padding by devicePixelRatio for crisp text.
+		const r = typeof window !== 'undefined' ? window.devicePixelRatio || 1 : 1;
+		const xMin = u.scales.x.min ?? 0;
+		const xMax = u.scales.x.max ?? 1;
+		const yMin = u.scales.y.min ?? 0;
+		const yMax = u.scales.y.max ?? 1;
+		const left = u.bbox.left;
+		const top = u.bbox.top;
+		const right = u.bbox.left + u.bbox.width;
+		const bottom = u.bbox.top + u.bbox.height;
+
+		ctx.save();
+		ctx.font = `${10 * r}px "JetBrains Mono", ui-monospace, monospace`;
+		ctx.fillStyle = 'rgba(208, 208, 208, 0.55)';
+		const pad = 4 * r;
+
+		// y-axis: max at top-left, min at bottom-left
+		ctx.textAlign = 'left';
+		ctx.textBaseline = 'top';
+		ctx.fillText(fmtTick(yMax), left + pad, top + pad);
+		ctx.textBaseline = 'bottom';
+		ctx.fillText(fmtTick(yMin), left + pad, bottom - pad);
+
+		// x-axis: min and max on the bottom, right-justified for max
+		ctx.textAlign = 'right';
+		ctx.textBaseline = 'bottom';
+		ctx.fillText(fmtTick(xMax), right - pad, bottom - pad);
+
+		ctx.restore();
 	}
 
 	function makePlot(width: number, height: number, nSeries: number): void {
 		plot?.destroy();
+		// `size: 0` reclaims the axis margin so the canvas plot area fills
+		// the viewer body. Grid stays via a thin transparent grid stroke.
+		// Tick text is painted inside the canvas via the `draw` hook.
+		const noMarginAxis: uPlot.Axis = {
+			show: true,
+			size: 0,
+			gap: 0,
+			stroke: 'transparent',
+			ticks: { show: false },
+			grid: { show: true, stroke: 'rgba(255,255,255,0.05)' },
+			values: () => []
+		};
 		const opts: uPlot.Options = {
 			width: Math.max(60, width),
 			height: Math.max(60, height),
 			padding: [2, 2, 2, 2],
 			series: buildSeries(nSeries),
-			// Axes hidden — labels are drawn inside the plot via the `draw`
-			// hook below. We still want gridlines, so keep `show: true` for
-			// the side rules but force size=0 so no gutter is reserved.
-			axes: [
-				{ show: false, size: 0 },
-				{ show: false, size: 0 }
-			],
+			axes: [noMarginAxis, noMarginAxis],
 			scales: { x: { time: false }, y: { auto: true } },
 			cursor: { show: false },
 			legend: { show: false },
-			hooks: {
-				draw: [(u) => drawInsideTicks(u)]
-			}
+			hooks: { draw: [drawCornerTicks] }
 		};
 		if (!container) return;
 		plot = new uPlot(opts, [[]], container);

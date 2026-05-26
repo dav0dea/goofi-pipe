@@ -37,66 +37,64 @@
 		return out;
 	}
 
-	function drawInsideTicks(u: uPlot): void {
-		const ctx = u.ctx;
-		const x = u.scales.x;
-		const y = u.scales.y;
-		if (x?.min === undefined || x?.max === undefined) return;
-		if (y?.min === undefined || y?.max === undefined) return;
-
-		const plotL = u.bbox.left;
-		const plotT = u.bbox.top;
-		const plotW = u.bbox.width;
-		const plotH = u.bbox.height;
-		const dpr = window.devicePixelRatio || 1;
-
-		ctx.save();
-		ctx.font = `${10 * dpr}px "JetBrains Mono", ui-monospace, monospace`;
-		ctx.fillStyle = 'rgba(150, 158, 175, 0.7)';
-		ctx.textBaseline = 'bottom';
-
-		const xs = [x.min, x.max];
-		const xAlign: CanvasTextAlign[] = ['left', 'right'];
-		for (let i = 0; i < xs.length; i++) {
-			ctx.textAlign = xAlign[i];
-			let px = plotL + ((xs[i] - x.min) / (x.max - x.min)) * plotW;
-			if (i === 0) px += 3;
-			if (i === xs.length - 1) px -= 3;
-			ctx.fillText(fmt(xs[i]), px, plotT + plotH - 2);
-		}
-		ctx.textAlign = 'left';
-		ctx.textBaseline = 'top';
-		ctx.fillText(fmt(y.max), plotL + 4, plotT + 2);
-		ctx.textBaseline = 'bottom';
-		ctx.fillText(fmt(y.min), plotL + 4, plotT + plotH - 12 * dpr);
-		ctx.restore();
+	function fmtTick(v: number): string {
+		if (!Number.isFinite(v)) return '';
+		const abs = Math.abs(v);
+		if (abs === 0) return '0';
+		if (abs >= 10000 || abs < 0.01) return v.toExponential(1);
+		if (abs >= 100) return v.toFixed(0);
+		if (abs >= 1) return v.toFixed(2);
+		return v.toFixed(3);
 	}
 
-	function fmt(v: number): string {
-		const av = Math.abs(v);
-		if (av === 0) return '0';
-		if (av >= 1000 || av < 0.01) return v.toExponential(1);
-		if (av >= 10) return v.toFixed(0);
-		return v.toPrecision(2);
+	function drawCornerTicks(u: uPlot): void {
+		const ctx = u.ctx;
+		const r = typeof window !== 'undefined' ? window.devicePixelRatio || 1 : 1;
+		const xMax = u.scales.x.max ?? 1;
+		const yMin = u.scales.y.min ?? 0;
+		const yMax = u.scales.y.max ?? 1;
+		const left = u.bbox.left;
+		const top = u.bbox.top;
+		const right = u.bbox.left + u.bbox.width;
+		const bottom = u.bbox.top + u.bbox.height;
+		ctx.save();
+		ctx.font = `${10 * r}px "JetBrains Mono", ui-monospace, monospace`;
+		ctx.fillStyle = 'rgba(208, 208, 208, 0.55)';
+		const pad = 4 * r;
+		ctx.textAlign = 'left';
+		ctx.textBaseline = 'top';
+		ctx.fillText(fmtTick(yMax), left + pad, top + pad);
+		ctx.textBaseline = 'bottom';
+		ctx.fillText(fmtTick(yMin), left + pad, bottom - pad);
+		ctx.textAlign = 'right';
+		ctx.textBaseline = 'bottom';
+		ctx.fillText(fmtTick(xMax), right - pad, bottom - pad);
+		ctx.restore();
 	}
 
 	function makePlot(width: number, height: number, nPairs: number): void {
 		plot?.destroy();
 		if (!container) return;
+		const noMarginAxis: uPlot.Axis = {
+			show: true,
+			size: 0,
+			gap: 0,
+			stroke: 'transparent',
+			ticks: { show: false },
+			grid: { show: true, stroke: 'rgba(255,255,255,0.05)' },
+			values: () => []
+		};
 		plot = new uPlot(
 			{
 				width: Math.max(60, width),
 				height: Math.max(60, height),
 				padding: [2, 2, 2, 2],
 				series: buildSeries(nPairs),
-				axes: [
-					{ show: false, size: 0 },
-					{ show: false, size: 0 }
-				],
+				axes: [noMarginAxis, noMarginAxis],
 				scales: { x: { time: false, auto: true }, y: { auto: true } },
 				cursor: { show: false },
 				legend: { show: false },
-				hooks: { draw: [(u) => drawInsideTicks(u)] }
+				hooks: { draw: [drawCornerTicks] }
 			},
 			[[]],
 			container

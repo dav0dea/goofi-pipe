@@ -96,6 +96,19 @@ class BridgeServer:
 
     async def _serve(self) -> None:
         app = web.Application(client_max_size=64 * 1024 * 1024)
+        # Disable HTTP caching for every response — the manager is a single-
+        # user local dev server, and serving stale JS/CSS during a `npm run
+        # build` cycle is far worse than the negligible cost of re-fetching.
+        @web.middleware
+        async def no_cache(request: web.Request, handler):
+            resp = await handler(request)
+            if isinstance(resp, web.StreamResponse):
+                resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+                resp.headers["Pragma"] = "no-cache"
+                resp.headers["Expires"] = "0"
+            return resp
+
+        app.middlewares.append(no_cache)
         app.add_routes(
             [
                 web.get("/control", self.control.handler),
