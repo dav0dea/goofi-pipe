@@ -37,6 +37,49 @@
 		return out;
 	}
 
+	function drawInsideTicks(u: uPlot): void {
+		const ctx = u.ctx;
+		const x = u.scales.x;
+		const y = u.scales.y;
+		if (x?.min === undefined || x?.max === undefined) return;
+		if (y?.min === undefined || y?.max === undefined) return;
+
+		const plotL = u.bbox.left;
+		const plotT = u.bbox.top;
+		const plotW = u.bbox.width;
+		const plotH = u.bbox.height;
+		const dpr = window.devicePixelRatio || 1;
+
+		ctx.save();
+		ctx.font = `${10 * dpr}px "JetBrains Mono", ui-monospace, monospace`;
+		ctx.fillStyle = 'rgba(150, 158, 175, 0.7)';
+		ctx.textBaseline = 'bottom';
+
+		const xs = [x.min, x.max];
+		const xAlign: CanvasTextAlign[] = ['left', 'right'];
+		for (let i = 0; i < xs.length; i++) {
+			ctx.textAlign = xAlign[i];
+			let px = plotL + ((xs[i] - x.min) / (x.max - x.min)) * plotW;
+			if (i === 0) px += 3;
+			if (i === xs.length - 1) px -= 3;
+			ctx.fillText(fmt(xs[i]), px, plotT + plotH - 2);
+		}
+		ctx.textAlign = 'left';
+		ctx.textBaseline = 'top';
+		ctx.fillText(fmt(y.max), plotL + 4, plotT + 2);
+		ctx.textBaseline = 'bottom';
+		ctx.fillText(fmt(y.min), plotL + 4, plotT + plotH - 12 * dpr);
+		ctx.restore();
+	}
+
+	function fmt(v: number): string {
+		const av = Math.abs(v);
+		if (av === 0) return '0';
+		if (av >= 1000 || av < 0.01) return v.toExponential(1);
+		if (av >= 10) return v.toFixed(0);
+		return v.toPrecision(2);
+	}
+
 	function makePlot(width: number, height: number, nPairs: number): void {
 		plot?.destroy();
 		if (!container) return;
@@ -44,14 +87,16 @@
 			{
 				width: Math.max(60, width),
 				height: Math.max(60, height),
+				padding: [2, 2, 2, 2],
 				series: buildSeries(nPairs),
 				axes: [
-					{ stroke: '#9aa3b3', grid: { stroke: 'rgba(255,255,255,0.05)' } },
-					{ stroke: '#9aa3b3', grid: { stroke: 'rgba(255,255,255,0.05)' } }
+					{ show: false, size: 0 },
+					{ show: false, size: 0 }
 				],
 				scales: { x: { time: false, auto: true }, y: { auto: true } },
 				cursor: { show: false },
-				legend: { show: false }
+				legend: { show: false },
+				hooks: { draw: [(u) => drawInsideTicks(u)] }
 			},
 			[[]],
 			container
