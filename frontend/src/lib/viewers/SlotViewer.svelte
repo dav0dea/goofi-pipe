@@ -43,8 +43,10 @@
 	const uiStore = ui();
 	const expanded = $derived(uiStore.isSlotExpanded(node, slot));
 
-	function toggleExpanded(e: MouseEvent): void {
-		e.stopPropagation();
+	function toggleExpanded(): void {
+		// Bound on the entire header — clicking anywhere except the cycle
+		// button or an unconnected slot name (both stopPropagation) toggles
+		// the viewer.
 		uiStore.toggleSlotExpanded(node, slot);
 	}
 
@@ -79,11 +81,12 @@
 		return () => unsub();
 	});
 
-	function cycle(): void {
+	function cycle(e: MouseEvent): void {
+		// Stop the click from bubbling to the header's collapse toggle.
+		e.stopPropagation();
 		if (dtype === 'STRING' || dtype === 'TABLE') return;
 		const cur = CYCLE_ARRAY.indexOf(kind as (typeof CYCLE_ARRAY)[number]);
-		const next = CYCLE_ARRAY[(cur + 1) % CYCLE_ARRAY.length];
-		kind = next;
+		kind = CYCLE_ARRAY[(cur + 1) % CYCLE_ARRAY.length];
 	}
 
 	// Detect "we can't draw this" → fall back to a numeric summary.
@@ -114,7 +117,10 @@
 	data-node={node}
 	data-slot={slot}
 >
-	<header>
+	<header onclick={toggleExpanded} role="button" tabindex="0" aria-expanded={expanded}>
+		{#if expanded && dtype === 'ARRAY'}
+			<button class="ghost cycle" onclick={cycle} title="cycle viewer">{kind}</button>
+		{/if}
 		<span
 			class="slot-name"
 			onclick={onSlotClick}
@@ -125,17 +131,6 @@
 		>
 			{slot}
 		</span>
-		{#if dtype === 'ARRAY'}
-			<button class="ghost cycle" onclick={cycle} title="cycle viewer">{kind}</button>
-		{/if}
-		<button
-			class="ghost expand"
-			onclick={toggleExpanded}
-			aria-label={expanded ? 'collapse viewer' : 'expand viewer'}
-			title={expanded ? 'collapse' : 'expand'}
-		>
-			{expanded ? '▾' : '▸'}
-		</button>
 		<Handle id={slot} type="source" position={Position.Right} />
 	</header>
 
@@ -181,17 +176,26 @@
 	header {
 		display: flex;
 		align-items: baseline;
-		justify-content: space-between;
 		gap: 6px;
 		padding: 2px 6px;
 		background: var(--bg-elev-2);
 		border-bottom: 1px solid var(--border);
 		font-size: 10px;
+		cursor: pointer;
+		user-select: none;
+		transition: background 80ms ease;
 		/* Positioning context for the source Handle so SvelteFlow's
 		   `top: 50%` anchors to this header row, not the whole node. */
 		position: relative;
 	}
+	header:hover {
+		background: var(--bg-elev-3);
+	}
 	.slot-name {
+		/* Hug the right edge of the header so the cycle button (when present)
+		   sits flush left and the slot label / handle line up with the node
+		   border. */
+		margin-left: auto;
 		font-family: var(--font-mono);
 		/* Slot label colour-codes the dtype: green=array, yellow=string,
 		   orange=table. Falls back to dim text for unknown types. */
@@ -222,30 +226,6 @@
 		font-family: var(--font-mono);
 		color: var(--text-dim);
 		font-size: 10px;
-		margin-left: auto;
-	}
-	.expand {
-		padding: 0;
-		width: 18px;
-		height: 18px;
-		display: flex;
-		align-items: center;
-		justify-content: center;
-		font-size: 13px;
-		line-height: 1;
-		padding-top: 1px;
-		color: var(--text-dim);
-		border-radius: 50%;
-		transition:
-			color 80ms ease,
-			box-shadow 120ms ease;
-	}
-	.expand:hover {
-		color: var(--accent);
-		background: transparent;
-		box-shadow:
-			0 0 0 1px color-mix(in srgb, var(--accent) 40%, transparent),
-			0 0 10px color-mix(in srgb, var(--accent) 50%, transparent);
 	}
 	.body {
 		flex-grow: 1;
