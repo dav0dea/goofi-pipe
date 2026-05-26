@@ -239,7 +239,7 @@ class Manager:
         print(f"Adding node '{node_type}' from category '{category}'.")
 
         mod = importlib.import_module(f"goofi.nodes.{category}.{node_type.lower()}")
-        node_cls: Node = getattr(mod, node_type)
+        node_cls: type = getattr(mod, node_type)
 
         # Determine the name *before* spawning so the spawned node uses it
         # as its node_id (which feeds into every service name).
@@ -310,6 +310,20 @@ class Manager:
                 and link["slot_in"] == slot_in
             ):
                 return
+
+        # Each input slot accepts exactly one wire. If `slot_in` on
+        # `node_in` is already occupied by a different source, tear down
+        # the old wire first — keeping the data plane consistent with the
+        # graph definition.
+        for existing in list(self._links):
+            if existing["node_in"] == node_in and existing["slot_in"] == slot_in:
+                self.remove_link(
+                    existing["node_out"],
+                    existing["node_in"],
+                    existing["slot_out"],
+                    existing["slot_in"],
+                    notify_gui=notify_gui,
+                )
 
         src_ref = self.nodes[node_out]
         dst_ref = self.nodes[node_in]
