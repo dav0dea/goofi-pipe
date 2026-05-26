@@ -30,6 +30,11 @@
 	--cat-signal: #7ab7ff;
 	--cat-viewer: #6e7686;
 
+	/* dtype palette — slot pins/labels colour-code at a glance. */
+	--dtype-array: #5dd09a;
+	--dtype-string: #f0c050;
+	--dtype-table: #e08060;
+
 	--shadow-1: 0 4px 18px rgba(0, 0, 0, 0.35);
 	--shadow-2: 0 12px 36px rgba(0, 0, 0, 0.45);
 

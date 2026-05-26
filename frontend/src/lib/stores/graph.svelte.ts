@@ -6,6 +6,7 @@
  * (driven by control events) so consumers never have to merge.
  */
 import { getControl, type ControlEvent, type GraphSnapshot, type LinkInfo, type NodeInstanceInfo, type NodeTypeInfo } from '$lib/api/control';
+import { ui } from './ui.svelte';
 
 class GraphStore {
 	nodes = $state<NodeInstanceInfo[]>([]);
@@ -48,6 +49,7 @@ class GraphStore {
 				this.links = this.links.filter(
 					(l) => l.node_in !== ev.payload.name && l.node_out !== ev.payload.name
 				);
+				ui().forget(ev.payload.name);
 				break;
 			case 'node_moved': {
 				const target = this.nodes.find((n) => n.name === ev.payload.name);

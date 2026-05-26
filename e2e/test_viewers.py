@@ -21,9 +21,10 @@ def _open_menu_and_pick(page: Page, type_name: str) -> None:
 
 
 def _expand_node_viewers(page: Page) -> None:
-    # Click the "▸" expand button on the goofi node header.
-    page.locator(".goofi-node .expand").first.click()
-    page.wait_for_timeout(200)
+    # Viewers are now visible by default (see ui.svelte.ts), so this helper
+    # is a no-op for fresh nodes. We keep it as a hook for explicit tests
+    # that toggle the collapse state.
+    page.wait_for_selector(".goofi-node .expand", timeout=2000)
 
 
 def _enable_autotrigger(page: Page) -> None:

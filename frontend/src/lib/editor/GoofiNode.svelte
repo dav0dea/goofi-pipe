@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { Handle, Position, type NodeProps } from '@xyflow/svelte';
-	import { categoryColor, formatName } from './categoryColor';
+	import { categoryColor, dtypeColor, formatName } from './categoryColor';
 	import SlotViewer from '$lib/viewers/SlotViewer.svelte';
 	import { ui } from '$lib/stores/ui.svelte';
 	import type { NodeInstanceInfo } from '$lib/api/control';
@@ -19,6 +19,7 @@
 
 	const accent = $derived(categoryColor(node?.category));
 	const hasError = $derived(Boolean(node?.error));
+	const healthColor = $derived(hasError ? 'var(--danger)' : 'var(--success)');
 </script>
 
 <div
@@ -31,6 +32,7 @@
 	<div class="header">
 		<span class="dot" style="background: {accent};"></span>
 		<span class="title">{formatName(node?.type ?? node?.name)}</span>
+		<span class="health" style="background: {healthColor};" title={node?.error ?? 'running'}></span>
 		<span class="name">{node?.name}</span>
 		<button class="ghost expand" onclick={toggleExpanded} aria-label="toggle viewers">
 			{expanded ? '▾' : '▸'}
@@ -40,17 +42,17 @@
 	<div class="body">
 		<div class="ports inputs">
 			{#each inputs as slot (slot)}
-				<div class="port-row">
+				<div class="port-row" style="--dtype: {dtypeColor(node.input_slots[slot])};">
 					<Handle id={slot} type="target" position={Position.Left} />
 					<span class="port-label">{slot}</span>
-					<span class="port-dtype">{node.input_slots[slot]}</span>
+					<span class="port-dtype">{node.input_slots[slot].toLowerCase()}</span>
 				</div>
 			{/each}
 		</div>
 		<div class="ports outputs">
 			{#each outputs as slot (slot)}
-				<div class="port-row out">
-					<span class="port-dtype">{node.output_slots[slot]}</span>
+				<div class="port-row out" style="--dtype: {dtypeColor(node.output_slots[slot])};">
+					<span class="port-dtype">{node.output_slots[slot].toLowerCase()}</span>
 					<span class="port-label">{slot}</span>
 					<Handle id={slot} type="source" position={Position.Right} />
 				</div>
@@ -64,10 +66,6 @@
 				<SlotViewer node={node.name} {slot} dtype={node.output_slots[slot]} />
 			{/each}
 		</div>
-	{/if}
-
-	{#if hasError}
-		<div class="error-banner" title={node.error ?? ''}>error</div>
 	{/if}
 </div>
 
@@ -107,6 +105,13 @@
 		height: 8px;
 		border-radius: 50%;
 		flex-shrink: 0;
+	}
+	.health {
+		width: 6px;
+		height: 6px;
+		border-radius: 50%;
+		flex-shrink: 0;
+		box-shadow: 0 0 4px currentColor;
 	}
 	.title {
 		font-weight: 600;
@@ -152,8 +157,13 @@
 	.port-dtype {
 		font-family: var(--font-mono);
 		font-size: 9px;
-		color: var(--text-faint);
+		color: var(--dtype, var(--text-faint));
 		text-transform: lowercase;
+		opacity: 0.9;
+	}
+	:global(.svelte-flow__node) .port-row :global(.svelte-flow__handle) {
+		background: var(--dtype, var(--bg-elev-3));
+		border-color: var(--dtype, var(--border-strong));
 	}
 	.viewers {
 		border-top: 1px solid var(--border);
@@ -162,18 +172,5 @@
 		gap: 4px;
 		padding: 6px;
 		background: var(--bg-elev-2);
-	}
-	.error-banner {
-		position: absolute;
-		top: -8px;
-		right: 8px;
-		background: var(--danger);
-		color: #1a0709;
-		font-size: 9px;
-		font-weight: 700;
-		padding: 1px 6px;
-		border-radius: 4px;
-		text-transform: uppercase;
-		pointer-events: auto;
 	}
 </style>
