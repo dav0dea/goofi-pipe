@@ -642,17 +642,27 @@
 			{/if}
 		</div>
 
-		<aside class="side-panel">
+		<aside class="side-panel" class:open={selectedNode !== null}>
 			<ParamPanel node={selectedNode} />
 			{#if selectedNode}
 				<MetadataPanel node={selectedNode} />
+				<ErrorPanel
+					mode="inline"
+					onFocus={(name) => {
+						selection = new Set([name]);
+					}}
+				/>
 			{/if}
-			<ErrorPanel
-				onFocus={(name) => {
-					selection = new Set([name]);
-				}}
-			/>
 		</aside>
+
+		<!-- Errors that exist even when nothing is selected get a floating
+		     chip in the canvas corner so they never disappear from view. -->
+		<ErrorPanel
+			mode="chip"
+			onFocus={(name) => {
+				selection = new Set([name]);
+			}}
+		/>
 	</div>
 </SvelteFlowProvider>
 
@@ -661,11 +671,10 @@
 		position: fixed;
 		inset: 0;
 		display: grid;
-		grid-template-columns: 1fr 360px;
 		grid-template-rows: 44px 1fr;
 		grid-template-areas:
-			'top top'
-			'canvas side';
+			'top'
+			'canvas';
 	}
 	:global(.editor-root > :first-child) {
 		grid-area: top;
@@ -677,13 +686,27 @@
 		min-height: 0;
 	}
 	.side-panel {
-		grid-area: side;
+		/* Floating overlay above the canvas — slides in only when a single
+		   node is selected. Canvas keeps full width underneath. */
+		position: absolute;
+		right: 0;
+		top: 0;
+		bottom: 0;
+		width: min(420px, 33vw);
+		background: color-mix(in srgb, var(--bg-elev-1) 96%, transparent);
+		backdrop-filter: blur(8px);
 		border-left: 1px solid var(--border);
-		background: var(--bg-elev-1);
 		overflow-y: auto;
 		display: flex;
 		flex-direction: column;
 		min-width: 0;
+		transform: translateX(100%);
+		transition: transform 180ms ease;
+		box-shadow: -8px 0 24px rgba(0, 0, 0, 0.35);
+		z-index: 50;
+	}
+	.side-panel.open {
+		transform: translateX(0);
 	}
 	.menu-overlay {
 		position: fixed;
