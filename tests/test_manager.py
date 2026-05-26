@@ -38,6 +38,7 @@ def _bare_manager(use_multiprocessing: bool = True) -> Manager:
     NodeProcessRegistry().headless = True
     mgr._save_path = None
     mgr._unsaved_changes = False
+    mgr._bridge = None
     return mgr
 
 
