@@ -173,6 +173,12 @@
 		font-weight: 600;
 		font-size: 12px;
 		color: var(--text);
+		/* Mono fonts ship a hefty ascender baseline that pushes the visual
+		   centre upward; normalise line-height to 1 and the flex centring
+		   on the header lands the text on the optical midline. */
+		line-height: 1;
+		display: flex;
+		align-items: center;
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;
@@ -181,9 +187,27 @@
 	}
 	.expand {
 		margin-left: auto;
-		padding: 0 4px;
-		min-width: 14px;
+		padding: 0;
+		width: 22px;
+		height: 22px;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		font-size: 16px;
+		line-height: 1;
 		color: var(--text-dim);
+		border-radius: 50%;
+		transition:
+			color 80ms ease,
+			background 80ms ease,
+			box-shadow 120ms ease;
+	}
+	.expand:hover {
+		color: var(--accent);
+		background: transparent;
+		box-shadow:
+			0 0 0 1px color-mix(in srgb, var(--accent) 40%, transparent),
+			0 0 12px color-mix(in srgb, var(--accent) 55%, transparent);
 	}
 	.body {
 		padding: 6px 8px;
