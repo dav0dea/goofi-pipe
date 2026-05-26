@@ -52,10 +52,38 @@ class UIStore {
 		this.expanded = { ...this.expanded, [k]: !this.isSlotExpanded(node, slot) };
 	}
 
+	setSlotExpanded(node: string, slot: string, expanded: boolean): void {
+		this.expanded = { ...this.expanded, [slotKey(node, slot)]: expanded };
+	}
+
 	isSlotExpanded(node: string, slot: string): boolean {
 		const k = slotKey(node, slot);
 		if (Object.prototype.hasOwnProperty.call(this.expanded, k)) return this.expanded[k];
 		return true; // default: visible
+	}
+
+	/** Seed expand state for a freshly-arrived node.
+	 *
+	 * - If the node carries an explicit `viewers` map (loaded from a saved
+	 *   patch), apply each slot's saved `collapsed` flag.
+	 * - Otherwise this is a fresh spawn: default to expanded, except when
+	 *   the node has 3+ outputs, in which case we start everything collapsed
+	 *   to avoid burying the canvas under tall viewers.
+	 */
+	seedNodeViewers(
+		node: string,
+		outputSlots: string[],
+		saved: Record<string, { collapsed?: boolean }> | undefined
+	): void {
+		const next = { ...this.expanded };
+		const hasSaved = saved && Object.keys(saved).length > 0;
+		const defaultCollapsed = !hasSaved && outputSlots.length >= 3;
+		for (const slot of outputSlots) {
+			const savedFor = saved?.[slot];
+			const collapsed = savedFor?.collapsed ?? defaultCollapsed;
+			next[slotKey(node, slot)] = !collapsed;
+		}
+		this.expanded = next;
 	}
 
 	/** Drop bookkeeping for every slot of a node that no longer exists. */

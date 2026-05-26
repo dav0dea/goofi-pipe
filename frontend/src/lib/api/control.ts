@@ -26,6 +26,9 @@ export interface NodeInstanceInfo {
 	output_slots: Record<string, string>;
 	params: Record<string, Record<string, ParamDescriptor>>;
 	pos: [number, number];
+	/** Per-output-slot view state restored from the .gfi patch — empty when
+	 * the node was just spawned, populated when a save was previously made. */
+	viewers: Record<string, { collapsed?: boolean }>;
 	error: string | null;
 }
 

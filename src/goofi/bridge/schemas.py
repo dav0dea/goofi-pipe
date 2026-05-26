@@ -73,6 +73,7 @@ def describe_node_class(cls: type) -> Dict[str, Any]:
 
 def describe_node_instance(name: str, ref: NodeRef) -> Dict[str, Any]:
     """Describe a *live* node (instance) on the current graph."""
+    gk = ref.gui_kwargs or {}
     return {
         "name": name,
         "type": ref.node_class.__name__,
@@ -81,7 +82,11 @@ def describe_node_instance(name: str, ref: NodeRef) -> Dict[str, Any]:
         "input_slots": {n: dt.name for n, dt in ref.input_slots.items()},
         "output_slots": {n: dt.name for n, dt in ref.output_slots.items()},
         "params": describe_params(ref.params),
-        "pos": list(ref.gui_kwargs.get("pos", (0, 0))),
+        "pos": list(gk.get("pos", (0, 0))),
+        # Per-output-slot view state persisted in the .gfi patch:
+        #   { "<slot>": {"collapsed": <bool>} }
+        # The frontend uses this to restore expand state on patch load.
+        "viewers": dict(gk.get("viewers") or {}),
         "error": ref.last_error,
     }
 

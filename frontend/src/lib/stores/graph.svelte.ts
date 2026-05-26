@@ -25,6 +25,12 @@ class GraphStore {
 	}
 
 	private _replaceSnapshot(snap: GraphSnapshot): void {
+		// Drop ui bookkeeping for any node that's about to disappear, then
+		// re-seed viewer-expand state for every node in the new snapshot.
+		for (const old of this.nodes) ui().forget(old.name);
+		for (const n of snap.nodes) {
+			ui().seedNodeViewers(n.name, Object.keys(n.output_slots), n.viewers);
+		}
 		this.nodes = snap.nodes;
 		this.links = snap.links;
 		this.savePath = snap.save_path;
@@ -42,6 +48,14 @@ class GraphStore {
 				this._replaceSnapshot(ev.payload);
 				break;
 			case 'node_added':
+				// Seed expand state for this node's output slots — from
+				// the saved patch (`viewers`) if present, otherwise from
+				// the default policy in ui.seedNodeViewers.
+				ui().seedNodeViewers(
+					ev.payload.name,
+					Object.keys(ev.payload.output_slots),
+					ev.payload.viewers
+				);
 				this.nodes = [...this.nodes.filter((n) => n.name !== ev.payload.name), ev.payload];
 				break;
 			case 'node_removed':
