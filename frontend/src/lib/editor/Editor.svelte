@@ -66,11 +66,6 @@
 		seed: SlotClickSeed | null;
 		initialClient: { x: number; y: number };
 	} | null>(null);
-	// Per-drag bookkeeping: original positions of every dragged node when the
-	// drag started. We compute a fresh snap delta off these each frame so the
-	// guides stay coherent even as Svelte Flow moves the nodes 1:1 with the
-	// mouse.
-	let dragStartPositions: Map<string, { x: number; y: number }> = new Map();
 
 	// Lift backend nodes/links → Svelte Flow shapes. We rely on $derived
 	// to bridge state-store snapshots into SvelteFlow's input arrays.
@@ -185,9 +180,9 @@
 		return computeSnapDelta(draggedBounds, targets, altKey);
 	}
 
-	function onNodeDragStart(args: { nodes: Node[]; event: MouseEvent | TouchEvent }): void {
-		dragStartPositions = new Map();
-		for (const n of args.nodes) dragStartPositions.set(n.id, { x: n.position.x, y: n.position.y });
+	function onNodeDragStart(_args: { nodes: Node[]; event: MouseEvent | TouchEvent }): void {
+		// No bookkeeping needed: snap is computed each frame off the live
+		// args.nodes positions reported by SvelteFlow.
 	}
 
 	function onNodeDrag(args: { nodes: Node[]; event: MouseEvent | TouchEvent }): void {
@@ -196,30 +191,37 @@
 		const alt = (args.event as MouseEvent).altKey === true;
 		const { dx, dy, guides } = dragSnapDelta(current, alt);
 		snapGuides = guides;
-		// Visibly preview the snap: each dragged node gets the same delta as
-		// a CSS translate via the ui store. GoofiNode applies it on the
-		// inner element so SvelteFlow's outer transform (which tracks the
-		// raw mouse position) stays intact.
-		if (dx === 0 && dy === 0) {
-			uiStore.dragSnap = {};
-		} else {
-			const next: Record<string, { dx: number; dy: number }> = {};
-			for (const n of args.nodes) next[n.id] = { dx, dy };
-			uiStore.dragSnap = next;
-		}
+		// Apply the snap by writing the snapped position back into flowNodes.
+		// SvelteFlow's drag is pointer-driven (it re-derives position from
+		// dragStart + pointerDelta each frame), so this doesn't fight the
+		// drag — every frame: SF writes raw, we overwrite to snapped, render
+		// is at snapped. Edges and handles read the same node.position, so
+		// they follow the snap without any separate transform overlay.
+		if (dx === 0 && dy === 0) return;
+		const dragged = new Set(args.nodes.map((n) => n.id));
+		flowNodes = flowNodes.map((n) => {
+			if (!dragged.has(n.id)) return n;
+			const c = current.get(n.id);
+			if (!c) return n;
+			return { ...n, position: { x: c.x + dx, y: c.y + dy } };
+		});
 	}
 
-	function onNodeDragStop(args: { targetNode: Node | null; nodes: Node[]; event: MouseEvent | TouchEvent }): void {
-		const current = new Map<string, { x: number; y: number }>();
-		for (const n of args.nodes) current.set(n.id, { x: n.position.x, y: n.position.y });
-		const alt = (args.event as MouseEvent).altKey === true;
-		const { dx, dy } = dragSnapDelta(current, alt);
+	function onNodeDragStop(args: {
+		targetNode: Node | null;
+		nodes: Node[];
+		event: MouseEvent | TouchEvent;
+	}): void {
+		// The last drag frame already snapped flowNodes — read the snapped
+		// position from there and commit it. If the user released mid-snap
+		// (alt held, or no nearby target), this falls through to the raw
+		// pointer position.
 		for (const n of args.nodes) {
-			void g.setNodePos(n.id, [Math.round(n.position.x + dx), Math.round(n.position.y + dy)]);
+			const fn = flowNodes.find((f) => f.id === n.id);
+			const pos = fn?.position ?? n.position;
+			void g.setNodePos(n.id, [Math.round(pos.x), Math.round(pos.y)]);
 		}
 		snapGuides = [];
-		dragStartPositions = new Map();
-		uiStore.dragSnap = {};
 	}
 
 	let lastPaneClickAt = 0;

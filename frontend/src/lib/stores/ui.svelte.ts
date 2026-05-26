@@ -31,12 +31,6 @@ class UIStore {
 	 * auto-link. Cleared by the consumer once handled. */
 	pendingSlotClick = $state<SlotClickSeed | null>(null);
 
-	/** Per-node CSS translation applied during a snapped drag. Editor writes
-	 * the snap delta here each `onnodedrag` tick; GoofiNode reads the value
-	 * and overlays a `transform: translate(...)` so the node visibly tracks
-	 * the snap guides instead of the raw mouse position. Cleared on dragstop. */
-	dragSnap = $state<Record<string, { dx: number; dy: number }>>({});
-
 	requestSlotClick(seed: SlotClickSeed): void {
 		this.pendingSlotClick = seed;
 	}
