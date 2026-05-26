@@ -289,6 +289,9 @@
 			void copySelection();
 		} else if (meta && e.key.toLowerCase() === 'v') {
 			void pasteClipboard();
+		} else if (meta && e.key.toLowerCase() === 'd') {
+			e.preventDefault();
+			void duplicateSelection();
 		} else if (e.key === 'Delete' || e.key === 'Backspace') {
 			if (selection.size === 0 && edgeSelection.size === 0) return;
 			e.preventDefault();
@@ -387,6 +390,56 @@
 		} catch (e) {
 			console.warn('clipboard write failed', e);
 		}
+	}
+
+	async function duplicateSelection(): Promise<void> {
+		// Like copy+paste but in-process: clone selected nodes (and their
+		// internal links) at a fixed flow-space offset so the duplicates land
+		// next to the originals instead of stacking on top of them.
+		const sel = g.nodes.filter((n) => selection.has(n.name));
+		if (sel.length === 0) return;
+		const OFFSET = 40;
+		const internalLinks = g.links.filter(
+			(l) => selection.has(l.node_in) && selection.has(l.node_out)
+		);
+		const rename: Record<string, string> = {};
+		const newSelection = new Set<string>();
+		for (const n of sel) {
+			try {
+				const newName = await g.addNode(n.type, n.category, [
+					n.pos[0] + OFFSET,
+					n.pos[1] + OFFSET
+				]);
+				rename[n.name] = newName;
+				newSelection.add(newName);
+				for (const [group, params] of Object.entries(n.params)) {
+					for (const [name, p] of Object.entries(params)) {
+						try {
+							await g.updateParam(newName, group, name, p.value);
+						} catch {
+							/* ignore */
+						}
+					}
+				}
+			} catch (e) {
+				console.warn('duplicate: add_node failed', e);
+			}
+		}
+		for (const l of internalLinks) {
+			try {
+				await g.addLink({
+					node_out: rename[l.node_out] ?? l.node_out,
+					node_in: rename[l.node_in] ?? l.node_in,
+					slot_out: l.slot_out,
+					slot_in: l.slot_in
+				});
+			} catch {
+				/* ignore */
+			}
+		}
+		// Move selection to the duplicates so the next drag/edit operates on
+		// them. Matches Figma / VSCode duplicate-then-keep-selected behavior.
+		if (newSelection.size > 0) selection = newSelection;
 	}
 
 	function serializableParams(n: NodeInstanceInfo): Record<string, Record<string, unknown>> {
@@ -516,12 +569,25 @@
 		document.querySelector<HTMLButtonElement>('.svelte-flow__controls-fitview')?.click();
 	}
 
+	function onBeforeUnload(e: BeforeUnloadEvent): void {
+		// Browser-native unsaved-changes guard. Only kicks in if the user has
+		// edits that haven't been written to the .gfi file (the backend's
+		// dirty flag — same one the title bar dot reflects).
+		if (!g.unsavedChanges) return;
+		e.preventDefault();
+		// Legacy Chrome requires .returnValue to be set; modern browsers
+		// ignore the string but require preventDefault. Set both to be safe.
+		e.returnValue = '';
+	}
+
 	onMount(() => {
 		window.addEventListener('keydown', onKeydown);
 		window.addEventListener('mousemove', trackMouse);
+		window.addEventListener('beforeunload', onBeforeUnload);
 		return () => {
 			window.removeEventListener('keydown', onKeydown);
 			window.removeEventListener('mousemove', trackMouse);
+			window.removeEventListener('beforeunload', onBeforeUnload);
 		};
 	});
 
