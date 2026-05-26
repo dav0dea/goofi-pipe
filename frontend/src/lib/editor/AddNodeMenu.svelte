@@ -1,14 +1,16 @@
 <script lang="ts">
 	import { graph } from '$lib/stores/graph.svelte';
-	import { categoryColor } from './categoryColor';
+	import { categoryColor, dtypeColor } from './categoryColor';
 	import type { NodeTypeInfo } from '$lib/api/control';
+	import type { SlotClickSeed } from '$lib/stores/ui.svelte';
 	import { onMount, tick } from 'svelte';
 
 	type Props = {
 		onPick: (type: NodeTypeInfo) => void;
 		onClose: () => void;
+		seed?: SlotClickSeed | null;
 	};
-	const { onPick, onClose }: Props = $props();
+	const { onPick, onClose, seed = null }: Props = $props();
 
 	const g = graph();
 	let query = $state('');
@@ -16,8 +18,16 @@
 	let inputEl = $state<HTMLInputElement | null>(null);
 	let highlighted = $state(0);
 
+	/** When seeded, narrow `nodeTypes` to those that expose at least one
+	 * opposite-side slot of matching dtype. */
+	function matchesSeed(t: NodeTypeInfo): boolean {
+		if (!seed) return true;
+		const candidates = seed.side === 'source' ? t.input_slots : t.output_slots;
+		return Object.values(candidates).includes(seed.dtype);
+	}
+
 	const filtered = $derived.by(() => {
-		const types = g.nodeTypes ?? [];
+		const types = (g.nodeTypes ?? []).filter(matchesSeed);
 		const q = query.trim().toLowerCase();
 		if (!q) return types;
 		return types.filter(
@@ -73,11 +83,23 @@
 </script>
 
 <div class="add-menu" role="dialog" aria-label="Add node">
+	{#if seed}
+		<div class="seed-chip" data-testid="add-menu-seed">
+			<span class="seed-arrow">{seed.side === 'source' ? '→' : '←'}</span>
+			<span class="seed-from">from</span>
+			<span class="seed-ref">{seed.node}.{seed.slot}</span>
+			<span class="seed-dtype" style="color: {dtypeColor(seed.dtype)};">
+				{seed.dtype.toLowerCase()}
+			</span>
+		</div>
+	{/if}
 	<input
 		bind:this={inputEl}
 		bind:value={query}
 		onkeydown={onKeydown}
-		placeholder="Type to search nodes…"
+		placeholder={seed
+			? `compatible with ${seed.dtype.toLowerCase()}…`
+			: 'Type to search nodes…'}
 		spellcheck="false"
 		autocomplete="off"
 		data-testid="add-menu-search"
@@ -206,5 +228,27 @@
 		text-align: center;
 		color: var(--text-faint);
 		padding: 16px;
+	}
+	.seed-chip {
+		display: flex;
+		align-items: center;
+		gap: 6px;
+		padding: 6px 12px;
+		background: color-mix(in srgb, var(--accent) 14%, transparent);
+		border-bottom: 1px solid var(--border);
+		font-size: 10px;
+		font-family: var(--font-mono);
+	}
+	.seed-arrow {
+		color: var(--accent);
+	}
+	.seed-from {
+		color: var(--text-faint);
+	}
+	.seed-ref {
+		color: var(--text);
+	}
+	.seed-dtype {
+		margin-left: auto;
 	}
 </style>

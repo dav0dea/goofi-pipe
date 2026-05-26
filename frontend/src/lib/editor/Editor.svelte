@@ -17,10 +17,12 @@
 	import ErrorPanel from './ErrorPanel.svelte';
 	import MetadataPanel from './MetadataPanel.svelte';
 	import { graph } from '$lib/stores/graph.svelte';
-	import type { LinkInfo, NodeInstanceInfo } from '$lib/api/control';
+	import { ui, type SlotClickSeed } from '$lib/stores/ui.svelte';
+	import type { LinkInfo, NodeInstanceInfo, NodeTypeInfo } from '$lib/api/control';
 	import { onMount } from 'svelte';
 
 	const g = graph();
+	const uiStore = ui();
 
 	// Snap tunables. Match goofi3's feel without porting its module.
 	const SNAP_THRESHOLD = 15; // engage snap when within this many flow-units
@@ -30,7 +32,25 @@
 
 	let menuOpen = $state(false);
 	let menuPos = $state<{ x: number; y: number }>({ x: 120, y: 120 });
+	let menuSeed = $state<SlotClickSeed | null>(null);
 	let selection = $state<Set<string>>(new Set());
+
+	// Watch ui.pendingSlotClick — when a node's port is clicked, open the
+	// menu near the port and seed it with the dtype filter + auto-link.
+	$effect(() => {
+		const seed = uiStore.pendingSlotClick;
+		if (!seed) return;
+		uiStore.consumeSlotClick();
+		menuSeed = seed;
+		// Position the menu to the right of the click for output ports, to
+		// the left for input ports. Clamp into viewport.
+		const offsetX = seed.side === 'source' ? 12 : -332;
+		menuPos = {
+			x: Math.max(8, Math.min(window.innerWidth - 332, seed.clientX + offsetX)),
+			y: Math.max(8, Math.min(window.innerHeight - 360, seed.clientY - 24))
+		};
+		menuOpen = true;
+	});
 
 	type Bounds = { left: number; right: number; top: number; bottom: number; cx: number; cy: number };
 	type Guide = { x?: number; y?: number; opacity: number };
@@ -448,6 +468,33 @@
 		menuOpen = true;
 	}
 
+	/** After auto-link insertion: connect the seed slot to the matching slot
+	 * on the newly-added node, if one exists. */
+	async function autoLink(
+		seed: SlotClickSeed,
+		picked: NodeTypeInfo,
+		newName: string
+	): Promise<void> {
+		// Choose the opposite-side slots of the new node and pick the first
+		// dtype match. If none, silently skip.
+		const candidates =
+			seed.side === 'source'
+				? Object.entries(picked.input_slots)
+				: Object.entries(picked.output_slots);
+		const match = candidates.find(([, dt]) => dt === seed.dtype);
+		if (!match) return;
+		const [matchedSlot] = match;
+		const link =
+			seed.side === 'source'
+				? { node_out: seed.node, slot_out: seed.slot, node_in: newName, slot_in: matchedSlot }
+				: { node_out: newName, slot_out: matchedSlot, node_in: seed.node, slot_in: seed.slot };
+		try {
+			await g.addLink(link);
+		} catch (e) {
+			console.warn('auto-link failed', e);
+		}
+	}
+
 	/** Pick a flow-coordinate position for a freshly-added node. */
 	function pickInsertionPos(): [number, number] {
 		// Spread successive additions in a small grid so they don't pile up.
@@ -569,17 +616,27 @@
 			{#if menuOpen}
 				<div
 					class="menu-overlay"
-					onclick={() => (menuOpen = false)}
+					onclick={() => {
+						menuOpen = false;
+						menuSeed = null;
+					}}
 					role="presentation"
 				></div>
 				<div class="menu-anchor" style="left: {menuPos.x}px; top: {menuPos.y}px">
 					<AddNodeMenu
+						seed={menuSeed}
 						onPick={async (typeInfo) => {
+							const seed = menuSeed;
 							menuOpen = false;
+							menuSeed = null;
 							const pos = pickInsertionPos();
-							await g.addNode(typeInfo.type, typeInfo.category, pos);
+							const newName = await g.addNode(typeInfo.type, typeInfo.category, pos);
+							if (seed && newName) await autoLink(seed, typeInfo, newName);
 						}}
-						onClose={() => (menuOpen = false)}
+						onClose={() => {
+							menuOpen = false;
+							menuSeed = null;
+						}}
 					/>
 				</div>
 			{/if}

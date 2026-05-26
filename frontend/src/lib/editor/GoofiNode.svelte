@@ -3,6 +3,7 @@
 	import { categoryColor, dtypeColor, formatName } from './categoryColor';
 	import SlotViewer from '$lib/viewers/SlotViewer.svelte';
 	import { ui } from '$lib/stores/ui.svelte';
+	import { graph } from '$lib/stores/graph.svelte';
 	import type { NodeInstanceInfo } from '$lib/api/control';
 
 	let { data, selected }: NodeProps = $props();
@@ -10,11 +11,33 @@
 	const inputs = $derived(Object.keys(node?.input_slots ?? {}));
 	const outputs = $derived(Object.keys(node?.output_slots ?? {}));
 	const uiStore = ui();
+	const g = graph();
 	const expanded = $derived(uiStore.isExpanded(node?.name ?? ''));
 
 	function toggleExpanded(e: MouseEvent) {
 		e.stopPropagation();
 		uiStore.toggleExpanded(node.name);
+	}
+
+	function isConnected(slot: string, side: 'source' | 'target'): boolean {
+		for (const l of g.links) {
+			if (side === 'source' && l.node_out === node.name && l.slot_out === slot) return true;
+			if (side === 'target' && l.node_in === node.name && l.slot_in === slot) return true;
+		}
+		return false;
+	}
+
+	function onSlotClick(e: MouseEvent, slot: string, dtype: string, side: 'source' | 'target') {
+		if (isConnected(slot, side)) return; // let the click reach SvelteFlow
+		e.stopPropagation();
+		uiStore.requestSlotClick({
+			node: node.name,
+			slot,
+			dtype,
+			side,
+			clientX: e.clientX,
+			clientY: e.clientY
+		});
 	}
 
 	const accent = $derived(categoryColor(node?.category));
@@ -42,7 +65,14 @@
 	<div class="body">
 		<div class="ports inputs">
 			{#each inputs as slot (slot)}
-				<div class="port-row" style="--dtype: {dtypeColor(node.input_slots[slot])};">
+				<div
+					class="port-row clickable"
+					style="--dtype: {dtypeColor(node.input_slots[slot])};"
+					onclick={(e) => onSlotClick(e, slot, node.input_slots[slot], 'target')}
+					role="button"
+					tabindex="0"
+					data-testid="slot-input"
+				>
 					<Handle id={slot} type="target" position={Position.Left} />
 					<span class="port-label">{slot}</span>
 					<span class="port-dtype">{node.input_slots[slot].toLowerCase()}</span>
@@ -51,7 +81,14 @@
 		</div>
 		<div class="ports outputs">
 			{#each outputs as slot (slot)}
-				<div class="port-row out" style="--dtype: {dtypeColor(node.output_slots[slot])};">
+				<div
+					class="port-row out clickable"
+					style="--dtype: {dtypeColor(node.output_slots[slot])};"
+					onclick={(e) => onSlotClick(e, slot, node.output_slots[slot], 'source')}
+					role="button"
+					tabindex="0"
+					data-testid="slot-output"
+				>
 					<span class="port-dtype">{node.output_slots[slot].toLowerCase()}</span>
 					<span class="port-label">{slot}</span>
 					<Handle id={slot} type="source" position={Position.Right} />
@@ -147,9 +184,18 @@
 		align-items: center;
 		gap: 4px;
 		min-height: 16px;
+		border-radius: 4px;
+		padding: 1px 2px;
 	}
 	.port-row.out {
 		justify-content: flex-end;
+	}
+	.port-row.clickable {
+		cursor: pointer;
+		transition: background 80ms ease;
+	}
+	.port-row.clickable:hover {
+		background: color-mix(in srgb, var(--dtype, var(--accent)) 15%, transparent);
 	}
 	.port-label {
 		color: var(--text);

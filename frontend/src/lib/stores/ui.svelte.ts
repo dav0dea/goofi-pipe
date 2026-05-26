@@ -2,6 +2,17 @@
  * Cross-component UI state — small enough to live alongside the graph
  * store but kept separate so re-renders are scoped.
  */
+export type SlotClickSeed = {
+	node: string;
+	slot: string;
+	dtype: string;
+	/** `'source'` when the user clicked an output port; `'target'` for inputs. */
+	side: 'source' | 'target';
+	/** Pointer position when the click happened — used to position the menu. */
+	clientX: number;
+	clientY: number;
+};
+
 class UIStore {
 	/** Which nodes have their viewer panel expanded.
 	 *
@@ -11,6 +22,21 @@ class UIStore {
 	 * visible by default", but the ▾/▸ toggle still lets the user hide them.
 	 */
 	expanded = $state<Record<string, boolean>>({});
+
+	/** Bubbled-up "user clicked an unconnected port" intent. Editor.svelte
+	 * watches this via $effect and pops the add-node menu pre-seeded for
+	 * auto-link. Cleared by the consumer once handled. */
+	pendingSlotClick = $state<SlotClickSeed | null>(null);
+
+	requestSlotClick(seed: SlotClickSeed): void {
+		this.pendingSlotClick = seed;
+	}
+
+	consumeSlotClick(): SlotClickSeed | null {
+		const seed = this.pendingSlotClick;
+		this.pendingSlotClick = null;
+		return seed;
+	}
 
 	toggleExpanded(name: string): void {
 		this.expanded = { ...this.expanded, [name]: !this.isExpanded(name) };
