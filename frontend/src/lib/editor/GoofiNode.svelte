@@ -186,6 +186,11 @@
 		min-height: 16px;
 		border-radius: 4px;
 		padding: 1px 2px;
+		/* Establish a positioning context so Svelte Flow's
+		   .svelte-flow__handle-{left,right} { top: 50% } anchors to THIS row,
+		   not to the whole node — otherwise every handle stacks at the node's
+		   vertical centre. */
+		position: relative;
 	}
 	.port-row.out {
 		justify-content: flex-end;
@@ -210,6 +215,16 @@
 	:global(.svelte-flow__node) .port-row :global(.svelte-flow__handle) {
 		background: var(--dtype, var(--bg-elev-3));
 		border-color: var(--dtype, var(--border-strong));
+	}
+	/* Overhang the handle half-outside the node's body padding so the pin
+	   sits on the node's outer border, matching goofi3's slot look. The
+	   .body has 8px horizontal padding; SF's translate(±50%, -50%) already
+	   gives ~5px of overhang, so we nudge another 3px outward.            */
+	.port-row :global(.svelte-flow__handle-left) {
+		left: -8px;
+	}
+	.port-row :global(.svelte-flow__handle-right) {
+		right: -8px;
 	}
 	.viewers {
 		border-top: 1px solid var(--border);
