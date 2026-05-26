@@ -190,6 +190,12 @@
 		display: flex;
 		flex-direction: column;
 		gap: 4px;
+		/* Inputs left-aligned, outputs right-aligned so the rows hug their
+		   own edge of the node rather than stretching halfway across. */
+		align-items: flex-start;
+	}
+	.ports.outputs {
+		align-items: flex-end;
 	}
 	.port-row {
 		display: flex;
@@ -197,15 +203,16 @@
 		gap: 4px;
 		min-height: 16px;
 		border-radius: 4px;
-		padding: 1px 2px;
+		padding: 1px 4px;
 		/* Establish a positioning context so Svelte Flow's
 		   .svelte-flow__handle-{left,right} { top: 50% } anchors to THIS row,
 		   not to the whole node — otherwise every handle stacks at the node's
 		   vertical centre. */
 		position: relative;
-	}
-	.port-row.out {
-		justify-content: flex-end;
+		/* The row only spans the text width — keeps the hover/click area
+		   tight around the slot name. */
+		width: max-content;
+		max-width: 100%;
 	}
 	.port-row.clickable {
 		cursor: pointer;
