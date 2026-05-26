@@ -1,7 +1,6 @@
 <script lang="ts">
 	import {
 		SvelteFlow,
-		Background,
 		Controls,
 		MiniMap,
 		SvelteFlowProvider,
@@ -288,8 +287,19 @@
 		const current = new Map<string, { x: number; y: number }>();
 		for (const n of args.nodes) current.set(n.id, { x: n.position.x, y: n.position.y });
 		const alt = (args.event as MouseEvent).altKey === true;
-		const { guides } = computeSnapDelta(current, alt);
+		const { dx, dy, guides } = computeSnapDelta(current, alt);
 		snapGuides = guides;
+		// Visibly preview the snap: each dragged node gets the same delta as
+		// a CSS translate via the ui store. GoofiNode applies it on the
+		// inner element so SvelteFlow's outer transform (which tracks the
+		// raw mouse position) stays intact.
+		if (dx === 0 && dy === 0) {
+			uiStore.dragSnap = {};
+		} else {
+			const next: Record<string, { dx: number; dy: number }> = {};
+			for (const n of args.nodes) next[n.id] = { dx, dy };
+			uiStore.dragSnap = next;
+		}
 	}
 
 	function onNodeDragStop(args: { targetNode: Node | null; nodes: Node[]; event: MouseEvent | TouchEvent }): void {
@@ -302,6 +312,7 @@
 		}
 		snapGuides = [];
 		dragStartPositions = new Map();
+		uiStore.dragSnap = {};
 	}
 
 	let lastPaneClickAt = 0;
@@ -654,7 +665,6 @@
 				maxZoom={4}
 				initialViewport={{ x: 0, y: 0, zoom: 0.85 }}
 			>
-				<Background gap={24} size={1} />
 				<Controls />
 				<MiniMap pannable zoomable />
 				{#if snapGuides.length > 0}

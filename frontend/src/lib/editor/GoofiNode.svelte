@@ -43,13 +43,18 @@
 	const accent = $derived(categoryColor(node?.category));
 	const hasError = $derived(Boolean(node?.error));
 	const healthColor = $derived(hasError ? 'var(--danger)' : 'var(--success)');
+	const snap = $derived(uiStore.dragSnap[node?.name ?? '']);
+	const snapStyle = $derived(
+		snap ? `--snap-dx: ${snap.dx}px; --snap-dy: ${snap.dy}px;` : ''
+	);
 </script>
 
 <div
 	class="goofi-node"
 	class:selected
 	class:has-error={hasError}
-	style="--accent: {accent};"
+	class:snapped={Boolean(snap)}
+	style="--accent: {accent}; {snapStyle}"
 	title={node?.doc ?? ''}
 >
 	<div class="header">
@@ -121,6 +126,20 @@
 			border-color 80ms ease,
 			box-shadow 80ms ease;
 		position: relative;
+		/* Live preview-snap offset applied during a snapped drag. Editor.svelte
+		   writes (--snap-dx, --snap-dy) onto the dragged nodes via the ui
+		   store; the transform sits on top of SvelteFlow's mouse-tracking
+		   transform on the outer .svelte-flow__node wrapper. */
+		transform: translate(var(--snap-dx, 0px), var(--snap-dy, 0px));
+	}
+	.goofi-node.snapped {
+		/* Briefly cushion the snap engagement with an easing window — uPlot
+		   refreshes still need to land within the next frame, so keep this
+		   short. */
+		transition:
+			border-color 80ms ease,
+			box-shadow 80ms ease,
+			transform 60ms ease-out;
 	}
 	.goofi-node.selected {
 		border-color: var(--accent);
