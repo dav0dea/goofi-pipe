@@ -288,27 +288,49 @@
 	}
 	/* Handle wrappers — absolutely positioned siblings of .node-clip so they
 	   can render half-outside the node and stay fully interactive. The
-	   wrapper is itself the positioned ancestor for the Handle, so the
-	   handle's default `top: 50%; left: 0; transform: translate(-50%, -50%)`
-	   resolves relative to a small box centered exactly on the slot row. */
+	   wrapper is the positioned ancestor for the Handle. We center it on
+	   the measured row Y via transform: translateY(-50%).
+
+	   The default Svelte Flow rules `.svelte-flow__handle-left/-right` carry
+	   `transform: translate(-50%, -50%)` and `top: 50%`. The Y component of
+	   that transform shifts the handle up by half its size on top of an
+	   already-centered position, which lands it half-a-handle ABOVE the
+	   row. We override to drop the Y translate while keeping the X one (so
+	   the handle still overhangs the edge horizontally), and pin `top: 50%`
+	   so the handle's TOP sits at wrapper-center then translateY(-50%)…
+	   wait — we just want centered. `top: 50%` + translateY(-50%) on the
+	   handle was the original buggy combo (the wrapper's own translateY
+	   double-applies); replace it with `top: 50%` and NO Y transform so the
+	   handle's TOP is at wrapper center, then we shift the WRAPPER's
+	   layout-top so wrapper-center lands exactly on row-center. */
 	.handle-wrap {
 		position: absolute;
-		width: 14px;
-		height: 14px;
+		width: 9px;
+		height: 9px;
 		transform: translateY(-50%);
 		z-index: 4;
 	}
 	.handle-wrap.left {
 		left: 0;
+		transform: translate(-50%, -50%);
 	}
 	.handle-wrap.right {
 		right: 0;
+		transform: translate(50%, -50%);
 	}
+	/* Override the default left/right handle rules so the handle sits at
+	   (0, 0) of its wrapper — the wrapper is already at the correct
+	   visual position. Without this, default `top: 50%` + transform
+	   translate Y shifts the handle off-row. */
 	:global(.svelte-flow__node) .handle-wrap :global(.svelte-flow__handle) {
 		background: var(--dtype, var(--bg-elev-3));
 		border-color: var(--dtype, var(--border-strong));
 		width: 9px;
 		height: 9px;
+		top: 0 !important;
+		left: 0 !important;
+		right: auto !important;
+		transform: none !important;
 	}
 	.viewers {
 		border-top: 1px solid var(--border);
