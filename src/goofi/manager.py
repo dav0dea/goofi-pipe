@@ -15,6 +15,7 @@ After the iceoryx2 transport refactor, the manager:
 - registers an `atexit` hook to drop iceoryx2 shared-memory entries
   belonging to this instance id.
 """
+
 from __future__ import annotations
 
 import atexit
@@ -25,8 +26,7 @@ import uuid
 from copy import deepcopy
 from os import path
 from pathlib import Path
-from threading import Thread
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING
 
 import numpy as np
 import yaml
@@ -36,7 +36,7 @@ from goofi.node import MultiprocessingForbiddenError, Node
 from goofi.node_helpers import NodeProcessRegistry, NodeRef, list_nodes
 from goofi.transport import data_service_name, get_instance_id, set_instance_id
 
-if False:  # typing only
+if TYPE_CHECKING:
     from goofi.bridge.server import BridgeServer
 
 
@@ -149,7 +149,7 @@ class Manager:
 
             self._bridge = start_bridge(self, host=bridge_host, port=bridge_port)
             if self._bridge.url:
-                print(f"\n  goofi-pipe is running. Open {self._bridge.url} in your browser.\n")
+                print(f"  goofi-pipe is running. Open {self._bridge.url} in your browser.\n")
 
         self.post_init(filepath, duration)
 
@@ -421,9 +421,7 @@ class Manager:
             ref = self.nodes[name]
             ref.wait_for_state(timeout=timeout)
             if ref.serialized_state is None:
-                raise RuntimeError(
-                    f"Node {name} does not have a serialized state. Recreate the node and try again."
-                )
+                raise RuntimeError(f"Node {name} does not have a serialized state. Recreate the node and try again.")
             state = deepcopy(ref.serialized_state)
             state["gui_kwargs"] = ref.gui_kwargs
             # Drop output-subscriber bookkeeping — it's transient runtime

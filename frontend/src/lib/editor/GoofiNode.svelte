@@ -53,10 +53,8 @@
 	title={node?.doc ?? ''}
 >
 	<div class="header">
-		<span class="dot" style="background: {accent};"></span>
-		<span class="title">{formatName(node?.type ?? node?.name)}</span>
 		<span class="health" style="background: {healthColor};" title={node?.error ?? 'running'}></span>
-		<span class="name">{node?.name}</span>
+		<span class="name" title={formatName(node?.type ?? node?.name)}>{node?.name}</span>
 		<button class="ghost expand" onclick={toggleExpanded} aria-label="toggle viewers">
 			{expanded ? '▾' : '▸'}
 		</button>
@@ -144,32 +142,26 @@
 		cursor: pointer;
 		user-select: none;
 	}
-	.dot {
+	.health {
 		width: 8px;
 		height: 8px;
 		border-radius: 50%;
 		flex-shrink: 0;
-	}
-	.health {
-		width: 6px;
-		height: 6px;
-		border-radius: 50%;
-		flex-shrink: 0;
-		box-shadow: 0 0 4px currentColor;
-	}
-	.title {
-		font-weight: 600;
-		font-size: 12px;
+		box-shadow: 0 0 5px currentColor;
 	}
 	.name {
-		color: var(--text-dim);
 		font-family: var(--font-mono);
-		font-size: 10px;
-		margin-left: auto;
-		opacity: 0.7;
+		font-weight: 600;
+		font-size: 12px;
+		color: var(--text);
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+		flex: 1 1 auto;
+		min-width: 0;
 	}
 	.expand {
-		margin-left: 4px;
+		margin-left: auto;
 		padding: 0 4px;
 		min-width: 14px;
 		color: var(--text-dim);
