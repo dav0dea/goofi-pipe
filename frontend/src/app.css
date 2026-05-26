@@ -1,0 +1,195 @@
+/* goofi-pipe — global styles. Single dark theme. */
+
+:root {
+	color-scheme: dark;
+
+	--bg: #0e1014;
+	--bg-elev-1: #15181f;
+	--bg-elev-2: #1c2029;
+	--bg-elev-3: #232834;
+	--surface-glass: rgba(28, 32, 41, 0.78);
+	--border: #2a3140;
+	--border-strong: #3a4252;
+	--text: #e8eaef;
+	--text-dim: #9aa3b3;
+	--text-faint: #6b7280;
+	--accent: #7ab7ff;
+	--accent-strong: #5da3ff;
+	--success: #5dd09a;
+	--warning: #ffb761;
+	--danger: #ff6b7a;
+
+	/* node category palette — chosen so categories are immediately
+	   distinguishable on a dark background; in dearpygui they were similar
+	   but with poor contrast against the canvas. */
+	--cat-analysis: #b58cff;
+	--cat-array: #5dd09a;
+	--cat-inputs: #ffb761;
+	--cat-misc: #c5c8d6;
+	--cat-outputs: #ff7aa2;
+	--cat-signal: #7ab7ff;
+	--cat-viewer: #6e7686;
+
+	--shadow-1: 0 4px 18px rgba(0, 0, 0, 0.35);
+	--shadow-2: 0 12px 36px rgba(0, 0, 0, 0.45);
+
+	--radius-sm: 6px;
+	--radius-md: 10px;
+	--radius-lg: 14px;
+
+	--font-sans:
+		'Inter',
+		ui-sans-serif,
+		system-ui,
+		-apple-system,
+		'Segoe UI',
+		Roboto,
+		sans-serif;
+	--font-mono:
+		'JetBrains Mono',
+		ui-monospace,
+		SFMono-Regular,
+		Menlo,
+		Consolas,
+		monospace;
+}
+
+* {
+	box-sizing: border-box;
+}
+
+html,
+body {
+	margin: 0;
+	padding: 0;
+	background: var(--bg);
+	color: var(--text);
+	font-family: var(--font-sans);
+	font-size: 13px;
+	line-height: 1.4;
+	overflow: hidden;
+	height: 100vh;
+	width: 100vw;
+	-webkit-font-smoothing: antialiased;
+	text-rendering: optimizeLegibility;
+}
+
+button {
+	font: inherit;
+	background: var(--bg-elev-2);
+	color: var(--text);
+	border: 1px solid var(--border);
+	border-radius: var(--radius-sm);
+	padding: 4px 10px;
+	cursor: pointer;
+	transition:
+		background 80ms ease,
+		border-color 80ms ease;
+}
+button:hover:not(:disabled) {
+	background: var(--bg-elev-3);
+	border-color: var(--border-strong);
+}
+button:disabled {
+	opacity: 0.5;
+	cursor: not-allowed;
+}
+button.primary {
+	background: var(--accent);
+	color: #0a0c10;
+	border-color: var(--accent);
+	font-weight: 600;
+}
+button.primary:hover:not(:disabled) {
+	background: var(--accent-strong);
+}
+button.ghost {
+	background: transparent;
+	border-color: transparent;
+}
+button.ghost:hover:not(:disabled) {
+	background: var(--bg-elev-2);
+}
+
+input,
+select,
+textarea {
+	font: inherit;
+	background: var(--bg-elev-1);
+	color: var(--text);
+	border: 1px solid var(--border);
+	border-radius: var(--radius-sm);
+	padding: 4px 8px;
+	outline: none;
+	transition: border-color 80ms ease;
+}
+input:focus,
+select:focus,
+textarea:focus {
+	border-color: var(--accent);
+}
+
+::-webkit-scrollbar {
+	width: 10px;
+	height: 10px;
+}
+::-webkit-scrollbar-track {
+	background: transparent;
+}
+::-webkit-scrollbar-thumb {
+	background: var(--bg-elev-3);
+	border-radius: 6px;
+}
+::-webkit-scrollbar-thumb:hover {
+	background: var(--border-strong);
+}
+
+/* Svelte Flow theming overrides */
+.svelte-flow {
+	background: var(--bg) !important;
+}
+.svelte-flow__background {
+	color: rgba(255, 255, 255, 0.04) !important;
+}
+.svelte-flow__minimap {
+	background: var(--bg-elev-1) !important;
+	border: 1px solid var(--border);
+	border-radius: var(--radius-sm);
+	overflow: hidden;
+}
+.svelte-flow__controls {
+	border-radius: var(--radius-sm);
+	overflow: hidden;
+	background: var(--bg-elev-1) !important;
+	border: 1px solid var(--border);
+	box-shadow: var(--shadow-1);
+}
+.svelte-flow__controls-button {
+	background: var(--bg-elev-1) !important;
+	color: var(--text) !important;
+	border-bottom: 1px solid var(--border) !important;
+}
+.svelte-flow__controls-button:hover {
+	background: var(--bg-elev-3) !important;
+}
+.svelte-flow__handle {
+	background: var(--bg-elev-3);
+	border: 2px solid var(--border-strong);
+	width: 10px;
+	height: 10px;
+}
+.svelte-flow__handle:hover {
+	background: var(--accent);
+	border-color: var(--accent);
+}
+.svelte-flow__edge-path {
+	stroke: var(--border-strong);
+	stroke-width: 1.6;
+}
+.svelte-flow__edge.selected .svelte-flow__edge-path {
+	stroke: var(--accent);
+	stroke-width: 2;
+}
+.svelte-flow__attribution {
+	display: none;
+}

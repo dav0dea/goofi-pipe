@@ -143,13 +143,12 @@ class ControlHub:
                 manager.add_node,
                 payload["type"],
                 payload["category"],
-                notify_gui=False,
                 name=payload.get("name"),
                 params=payload.get("params"),
                 pos=tuple(payload.get("pos") or (0, 0)),
             )
         if op == "remove_node":
-            await self._call_manager(manager.remove_node, payload["name"], notify_gui=False)
+            await self._call_manager(manager.remove_node, payload["name"])
             return {"ok": True}
         if op == "add_link":
             await self._call_manager(
@@ -158,7 +157,6 @@ class ControlHub:
                 payload["node_in"],
                 payload["slot_out"],
                 payload["slot_in"],
-                notify_gui=False,
             )
             return {"ok": True}
         if op == "remove_link":
@@ -168,7 +166,6 @@ class ControlHub:
                 payload["node_in"],
                 payload["slot_out"],
                 payload["slot_in"],
-                notify_gui=False,
             )
             return {"ok": True}
         if op == "update_param":
