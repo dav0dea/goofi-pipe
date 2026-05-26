@@ -57,7 +57,7 @@ def _resolve_static_root() -> Optional[Path]:
 class BridgeServer:
     """Daemon-thread aiohttp server orchestrating control + data hubs."""
 
-    def __init__(self, manager, host: str = "127.0.0.1", port: int = 8000) -> None:
+    def __init__(self, manager, host: str = "0.0.0.0", port: int = 8000) -> None:
         self.manager = manager
         self.host = host
         self.port = port
@@ -200,7 +200,7 @@ class BridgeServer:
         return web.json_response({"ok": True})
 
 
-def start_bridge(manager, host: str = "127.0.0.1", port: int = 8000) -> BridgeServer:
+def start_bridge(manager, host: str = "0.0.0.0", port: int = 8000) -> BridgeServer:
     """Spin up the bridge in a daemon thread and return the handle."""
     bridge = BridgeServer(manager, host=host, port=port)
     bridge.start()

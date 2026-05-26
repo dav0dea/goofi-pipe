@@ -102,7 +102,7 @@ class Manager:
         headless: bool = True,
         use_multiprocessing: bool = True,
         duration: float = 0,
-        bridge_host: str = "127.0.0.1",
+        bridge_host: str = "0.0.0.0",
         bridge_port: int = 8000,
     ) -> None:
         # Single transport instance id per Manager. Embedded in every
@@ -567,7 +567,12 @@ def main(duration: Optional[float] = None, args=None):
     parser.add_argument("--headless", action="store_true", help="run in headless mode (no browser bridge)")
     parser.add_argument("--no-multiprocessing", action="store_true", help="disable multiprocessing")
     parser.add_argument("--port", type=int, default=8000, help="port to serve the browser UI on (default 8000)")
-    parser.add_argument("--bind", type=str, default="127.0.0.1", help="host/interface to bind the bridge to")
+    parser.add_argument(
+        "--bind",
+        type=str,
+        default="0.0.0.0",
+        help="host/interface to bind the bridge to (default: 0.0.0.0 — reachable from any interface)",
+    )
     parser.add_argument(
         "--duration",
         default=0,
