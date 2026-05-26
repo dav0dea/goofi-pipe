@@ -11,26 +11,39 @@
 	let plot: uPlot | null = null;
 	let resizer: ResizeObserver | null = null;
 
+	// Per-axis log-scale toggles. Re-makes the plot when flipped so the
+	// scale `distr` switches between linear (1) and log10 (3).
+	let logX = $state(false);
+	let logY = $state(false);
+	let lastNSeries = 0;
+
+	// Cursor hover values, updated by the uPlot setCursor hook. Rendered
+	// as a top-right floating chip. `null` index = mouse not over plot.
+	let cursorIdx = $state<number | null>(null);
+	let cursorValues = $state<(number | null)[]>([]);
+	let cursorXValue = $state<number | null>(null);
+
 	function asArray(d: DataFrame['data']): ArrayData {
 		return d as ArrayData;
 	}
 
+	const PALETTE = [
+		'#7ab7ff',
+		'#b58cff',
+		'#5dd09a',
+		'#ffb761',
+		'#ff7aa2',
+		'#9aa3b3',
+		'#c5c8d6',
+		'#6e7686'
+	];
+
 	function buildSeries(nSeries: number): uPlot.Series[] {
-		const palette = [
-			'#7ab7ff',
-			'#b58cff',
-			'#5dd09a',
-			'#ffb761',
-			'#ff7aa2',
-			'#9aa3b3',
-			'#c5c8d6',
-			'#6e7686'
-		];
 		const out: uPlot.Series[] = [{ label: 'x' }];
 		for (let i = 0; i < nSeries; i++) {
 			out.push({
 				label: `c${i}`,
-				stroke: palette[i % palette.length],
+				stroke: PALETTE[i % PALETTE.length],
 				width: 1,
 				points: { show: false }
 			});
@@ -88,6 +101,7 @@
 
 	function makePlot(width: number, height: number, nSeries: number): void {
 		plot?.destroy();
+		lastNSeries = nSeries;
 		// `size: 0` reclaims the axis margin so the canvas plot area fills
 		// the viewer body. Grid stays via a thin transparent grid stroke.
 		// Tick text is painted inside the canvas via the `draw` hook.
@@ -100,16 +114,47 @@
 			grid: { show: true, stroke: 'rgba(255,255,255,0.05)' },
 			values: () => []
 		};
+		// uPlot.Scale.distr: 1 = linear, 3 = log10. Log scales reject
+		// non-positive values, so we silently clamp via the data path
+		// (filter happens in pushData when logY is on).
 		const opts: uPlot.Options = {
 			width: Math.max(60, width),
 			height: Math.max(60, height),
 			padding: [2, 2, 2, 2],
 			series: buildSeries(nSeries),
 			axes: [noMarginAxis, noMarginAxis],
-			scales: { x: { time: false }, y: { auto: true } },
-			cursor: { show: false },
+			scales: {
+				x: { time: false, distr: logX ? 3 : 1 },
+				y: { auto: true, distr: logY ? 3 : 1 }
+			},
+			cursor: {
+				show: true,
+				drag: { x: false, y: false, setScale: false },
+				points: { show: true, size: 5 }
+			},
 			legend: { show: false },
-			hooks: { draw: [drawCornerTicks] }
+			hooks: {
+				draw: [drawCornerTicks],
+				setCursor: [
+					(u) => {
+						const idx = u.cursor.idx ?? null;
+						if (idx == null) {
+							cursorIdx = null;
+							cursorXValue = null;
+							cursorValues = [];
+							return;
+						}
+						cursorIdx = idx;
+						cursorXValue = (u.data[0] as ArrayLike<number>)[idx] ?? null;
+						const vals: (number | null)[] = [];
+						for (let s = 1; s < u.data.length; s++) {
+							const arr = u.data[s] as ArrayLike<number> | null;
+							vals.push(arr ? arr[idx] ?? null : null);
+						}
+						cursorValues = vals;
+					}
+				]
+			}
 		};
 		if (!container) return;
 		plot = new uPlot(opts, [[]], container);
@@ -154,6 +199,17 @@
 		if (frame) pushData(asArray(frame.data));
 	});
 
+	$effect(() => {
+		// Rebuild whenever the log-scale flags flip. Reading both up front
+		// makes the dependency explicit; using a no-op reference of plot
+		// guards against running before mount.
+		void logX;
+		void logY;
+		if (!plot || !container) return;
+		makePlot(container.clientWidth || 200, container.clientHeight || 120, lastNSeries || 1);
+		if (frame) pushData(asArray(frame.data));
+	});
+
 	onMount(() => {
 		if (!container) return;
 		makePlot(container.clientWidth || 200, container.clientHeight || 120, 1);
@@ -171,7 +227,44 @@
 	});
 </script>
 
-<div class="container" bind:this={container}></div>
+<div class="container" bind:this={container}>
+	<div class="scale-toggles" role="group" aria-label="scale toggles">
+		<button
+			class="scale-btn"
+			class:on={logX}
+			onclick={(e) => {
+				e.stopPropagation();
+				logX = !logX;
+			}}
+			title="toggle log scale on x"
+			data-testid="log-x-toggle"
+		>
+			log x
+		</button>
+		<button
+			class="scale-btn"
+			class:on={logY}
+			onclick={(e) => {
+				e.stopPropagation();
+				logY = !logY;
+			}}
+			title="toggle log scale on y"
+			data-testid="log-y-toggle"
+		>
+			log y
+		</button>
+	</div>
+	{#if cursorIdx !== null && cursorValues.length > 0}
+		<div class="cursor-chip" data-testid="cursor-chip">
+			<span class="cursor-x">x={cursorXValue !== null ? fmtTick(cursorXValue) : '—'}</span>
+			{#each cursorValues as v, i (i)}
+				<span class="cursor-y" style="color: {PALETTE[i % PALETTE.length]};">
+					{v !== null ? fmtTick(v) : '—'}
+				</span>
+			{/each}
+		</div>
+	{/if}
+</div>
 
 <style>
 	.container {
@@ -179,8 +272,81 @@
 		height: 100%;
 		min-height: 100px;
 		min-width: 80px;
+		position: relative;
 	}
 	:global(.uplot, .uplot *, .uplot *::before, .uplot *::after) {
 		font-family: var(--font-mono);
+	}
+	.scale-toggles {
+		/* Sits in the top-right of the plot area; pointer-events on the
+		   buttons themselves so the rest of the canvas remains hoverable
+		   for the uPlot cursor. */
+		position: absolute;
+		top: 4px;
+		right: 4px;
+		display: flex;
+		gap: 3px;
+		z-index: 2;
+		pointer-events: none;
+	}
+	.scale-btn {
+		pointer-events: auto;
+		font-family: var(--font-mono);
+		font-size: 9px;
+		letter-spacing: 0.04em;
+		padding: 1px 5px;
+		border: 1px solid color-mix(in srgb, var(--text-faint) 30%, transparent);
+		background: color-mix(in srgb, var(--bg) 60%, transparent);
+		color: var(--text-faint);
+		border-radius: 3px;
+		cursor: pointer;
+		transition:
+			background 80ms ease,
+			color 80ms ease,
+			border-color 80ms ease;
+		opacity: 0;
+	}
+	.container:hover .scale-btn,
+	.scale-btn.on {
+		opacity: 1;
+	}
+	.scale-btn:hover {
+		color: var(--text);
+		border-color: var(--accent);
+	}
+	.scale-btn.on {
+		background: color-mix(in srgb, var(--accent) 25%, transparent);
+		color: var(--accent);
+		border-color: var(--accent);
+	}
+	.cursor-chip {
+		/* Bottom-center: corners are taken by the min/max corner ticks
+		   (`drawCornerTicks`) and the cursor-chip would otherwise overlap
+		   them on every hover. */
+		position: absolute;
+		bottom: 4px;
+		left: 50%;
+		transform: translateX(-50%);
+		display: flex;
+		gap: 6px;
+		font-family: var(--font-mono);
+		font-size: 9px;
+		padding: 2px 6px;
+		background: color-mix(in srgb, var(--bg) 78%, transparent);
+		border: 1px solid color-mix(in srgb, var(--text-faint) 30%, transparent);
+		border-radius: 3px;
+		color: var(--text-dim);
+		pointer-events: none;
+		max-width: calc(100% - 8px);
+		overflow: hidden;
+		white-space: nowrap;
+		text-overflow: ellipsis;
+		z-index: 2;
+	}
+	.cursor-x {
+		color: var(--text-faint);
+	}
+	.cursor-y {
+		font-variant-numeric: tabular-nums;
 	}
 </style>
