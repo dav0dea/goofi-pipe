@@ -195,16 +195,25 @@ class IpcSubscriber:
         return bytes((ctypes.c_uint8 * n).from_address(p.data_ptr))
 
     def take_latest(self) -> Optional[bytes]:
+        # Capture once: the data-pump can race with `close()` and clear
+        # `self._sub` between this and the `receive` call. Treat a closed
+        # subscriber as having no pending samples.
+        sub = self._sub
+        if sub is None:
+            return None
         latest = None
         while True:
-            s = self._sub.receive()
+            s = sub.receive()
             if s is None:
                 break
             latest = s
         return None if latest is None else self._bytes(latest)
 
     def take_next(self) -> Optional[bytes]:
-        s = self._sub.receive()
+        sub = self._sub
+        if sub is None:
+            return None
+        s = sub.receive()
         return None if s is None else self._bytes(s)
 
     def close(self) -> None:
