@@ -6,37 +6,7 @@ from pathlib import Path
 
 from playwright.sync_api import Page
 
-from .conftest import assert_no_console_errors
-
-
-def _open_menu_and_pick(page: Page, type_name: str) -> None:
-    """Open the add-node menu, pick a type, then commit placement by
-    clicking the canvas. Picking from the menu now enters a placement-
-    preview mode (ghost follows cursor) — the node isn't added until the
-    follow-up canvas click.
-
-    To prevent the snap-to-edge behavior from stacking successive nodes,
-    spread placements horizontally based on the current node count."""
-    page.click('[data-testid="topbar-add"]')
-    page.wait_for_selector('[data-testid="add-menu-search"]', timeout=2000)
-    page.fill('[data-testid="add-menu-search"]', type_name)
-    page.wait_for_timeout(200)
-    page.locator(".item .t-name").filter(has_text=type_name).first.click()
-    page.wait_for_selector('[data-testid="placement-ghost"]', timeout=1500)
-    pane = page.locator(".svelte-flow__pane").first
-    box = pane.bounding_box()
-    assert box
-    existing = page.locator(".svelte-flow__node").count()
-    # Hold Alt while clicking so we land at exactly the cursor, bypassing
-    # the snap-to-neighbours logic that would otherwise pile nodes up.
-    target_x = box["x"] + 120 + (existing * 260) % max(int(box["width"]) - 240, 320)
-    target_y = box["y"] + box["height"] / 2
-    page.mouse.move(target_x, target_y)
-    page.wait_for_timeout(50)
-    page.keyboard.down("Alt")
-    page.mouse.click(target_x, target_y)
-    page.keyboard.up("Alt")
-    page.wait_for_timeout(250)
+from .conftest import assert_no_console_errors, open_menu_and_pick as _open_menu_and_pick
 
 
 def test_empty_editor_renders(page: Page, shots: Path) -> None:

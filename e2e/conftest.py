@@ -109,6 +109,30 @@ def assert_no_console_errors(page: Page) -> None:
     assert not errors, f"unexpected console errors:\n" + "\n".join(errors)
 
 
+def open_menu_and_pick(page: Page, type_name: str) -> None:
+    """Open the add-node menu, pick `type_name`, and commit the placement-
+    preview by Alt-clicking the canvas. Alt bypasses snap-to-neighbours so
+    successive calls don't pile nodes on top of one another."""
+    page.click('[data-testid="topbar-add"]')
+    page.wait_for_selector('[data-testid="add-menu-search"]', timeout=2000)
+    page.fill('[data-testid="add-menu-search"]', type_name)
+    page.wait_for_timeout(200)
+    page.locator(".item .t-name").filter(has_text=type_name).first.click()
+    page.wait_for_selector('[data-testid="placement-ghost"]', timeout=1500)
+    pane = page.locator(".svelte-flow__pane").first
+    box = pane.bounding_box()
+    assert box
+    existing = page.locator(".svelte-flow__node").count()
+    target_x = box["x"] + 120 + (existing * 260) % max(int(box["width"]) - 240, 320)
+    target_y = box["y"] + box["height"] / 2
+    page.mouse.move(target_x, target_y)
+    page.wait_for_timeout(50)
+    page.keyboard.down("Alt")
+    page.mouse.click(target_x, target_y)
+    page.keyboard.up("Alt")
+    page.wait_for_selector(".svelte-flow__node", timeout=6000)
+
+
 @pytest.fixture
 def shots(tmp_path_factory) -> Path:
     out = REPO_ROOT / "e2e" / "screenshots"
