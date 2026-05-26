@@ -113,6 +113,50 @@ def _open_byte_service(name: str, *, latest_wins: bool):
 # ---------------------------------------------------------------------------
 
 
+class _IpcLoan:
+    """Writable, single-use loan of an iceoryx2 SHM slice.
+
+    The producer fills `.buffer` (a memoryview backed by shared memory),
+    then calls `.send()` to publish. Each call to `IpcPublisher.loan`
+    returns memory from iceoryx2's pool — subsequent loans yield a
+    different region, so previously-published samples remain valid for
+    consumers (no producer mutation can leak across publications).
+    """
+
+    __slots__ = ("_loan", "_size", "_buffer", "_sent")
+
+    def __init__(self, loan, size: int) -> None:
+        self._loan = loan
+        self._size = size
+        self._buffer: Optional[memoryview] = None
+        self._sent = False
+
+    @property
+    def buffer(self) -> memoryview:
+        if self._sent or self._loan is None:
+            raise RuntimeError("Loan already sent or released")
+        if self._buffer is None:
+            arr = (ctypes.c_uint8 * self._size).from_address(self._loan.payload_ptr)
+            # `.cast("B")` normalises the format to plain unsigned-byte so
+            # downstream `view[a:b] = src_bytes` slice assignments work
+            # (ctypes' memoryview format defaults to "<B", which Python's
+            # slice-assignment rejects with NotImplementedError).
+            self._buffer = memoryview(arr).cast("B")
+        return self._buffer
+
+    def send(self) -> None:
+        if self._sent:
+            raise RuntimeError("Loan already sent")
+        # Release the memoryview before iceoryx2 consumes the loan so the
+        # underlying ctypes buffer is no longer referenced from Python.
+        if self._buffer is not None:
+            self._buffer.release()
+            self._buffer = None
+        self._loan.assume_init().send()
+        self._loan = None
+        self._sent = True
+
+
 class IpcPublisher:
     def __init__(self, name: str, *, latest_wins: bool = True, max_payload: int = DEFAULT_MAX_PAYLOAD) -> None:
         self._name = name
@@ -124,7 +168,12 @@ class IpcPublisher:
             .create()
         )
 
+    def loan(self, size: int) -> _IpcLoan:
+        """Allocate `size` bytes of iceoryx2 shared memory for the next publish."""
+        return _IpcLoan(self._pub.loan_slice_uninit(size), size)
+
     def send(self, payload: bytes) -> None:
+        """Compatibility path: copy `payload` into a fresh loan and commit."""
         loan = self._pub.loan_slice_uninit(len(payload))
         ctypes.memmove(loan.payload_ptr, payload, len(payload))
         loan.assume_init().send()
@@ -263,9 +312,54 @@ def _thread_channel(name: str, *, latest_wins: bool) -> _ThreadChannel:
         return ch
 
 
+class _ThreadLoan:
+    """Writable, single-use loan for thread transport.
+
+    Wraps a fresh `bytearray` of the requested size. On `.send()`, the
+    bytearray is stored directly into the channel (zero extra copy);
+    the producer's reference is cleared so it cannot mutate the buffer
+    after publication. The consumer receives the bytearray as-is.
+    """
+
+    __slots__ = ("_channel", "_ba", "_buffer", "_sent")
+
+    def __init__(self, channel: "_ThreadChannel", size: int) -> None:
+        self._channel = channel
+        self._ba = bytearray(size)
+        self._buffer: Optional[memoryview] = None
+        self._sent = False
+
+    @property
+    def buffer(self) -> memoryview:
+        if self._sent or self._ba is None:
+            raise RuntimeError("Loan already sent or released")
+        if self._buffer is None:
+            self._buffer = memoryview(self._ba)
+        return self._buffer
+
+    def send(self) -> None:
+        if self._sent:
+            raise RuntimeError("Loan already sent")
+        if self._buffer is not None:
+            self._buffer.release()
+            self._buffer = None
+        ba, self._ba = self._ba, None
+        # `bytes(bytearray)` for the store ensures the consumer sees an
+        # immutable view that survives even hypothetical re-acquisition
+        # of the bytearray by the producer. The conversion is one memcpy
+        # but at this point the array is small (rare large payloads use
+        # the iceoryx2 path).
+        self._channel.store.put(bytes(ba))
+        self._channel.event.set()
+        self._sent = True
+
+
 class ThreadPublisher:
     def __init__(self, name: str, *, latest_wins: bool = True) -> None:
         self._ch = _thread_channel(name, latest_wins=latest_wins)
+
+    def loan(self, size: int) -> _ThreadLoan:
+        return _ThreadLoan(self._ch, size)
 
     def send(self, payload: bytes) -> None:
         # `bytes` are immutable — no shared-object risk with the consumer.

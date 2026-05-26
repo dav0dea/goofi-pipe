@@ -30,7 +30,7 @@ from threading import Event, Thread
 from typing import Any, Dict, Optional, Tuple, Union
 
 from goofi import assets
-from goofi.codec import decode_data, decode_message, encode_data, encode_message
+from goofi.codec import decode_data, decode_message, encode_data_into, encode_message, prepare_encode
 from goofi.data import Data, DataType, to_data
 from goofi.message import Message, MessageType
 from goofi.node_helpers import InputSlot, NodeRef, OutputSlot
@@ -107,7 +107,12 @@ class Node(ABC):
         self.status_pub, self._status_notifier = open_publisher(
             status_service_name(node_id), in_process=in_process_with_manager, latest_wins=False
         )
-        self._waitset.attach(self.ctrl_listener)
+        # NB: ctrl_listener is *not* attached to `self._waitset` — that
+        # WaitSet belongs to the processing loop and only watches input
+        # data slots. The messaging loop owns its own WaitSet locally;
+        # sharing a single listener between two WaitSets caused the
+        # listener's events to be drained by whichever WaitSet woke
+        # first, silently swallowing control messages on the other side.
 
         self.processing_thread = Thread(
             target=self._processing_loop,
@@ -232,6 +237,11 @@ class Node(ABC):
                     self._handle_ctrl(msg)
                 except Exception:
                     self._report_error(traceback.format_exc())
+
+            # If `_handle_ctrl` processed a TERMINATE message, bail out
+            # before pushing more state to keep shutdown latency low.
+            if not self.alive:
+                break
 
             # Push any pending state changes.
             self._push_state()
@@ -442,14 +452,22 @@ class Node(ABC):
                 except Exception:
                     self._report_error(traceback.format_exc())
                     continue
+                # Zero-copy publish: pack the meta dict once via
+                # `prepare_encode`, then for each publisher loan a slice
+                # sized to the exact encoded length and write the Data
+                # directly into the loan. The array body is copied once
+                # heap→SHM per publisher via numpy's buffer protocol;
+                # the meta is reused across all publishers.
                 try:
-                    buf = encode_data(data)
+                    size, meta_bytes = prepare_encode(data)
                 except Exception:
                     self._report_error(traceback.format_exc())
                     continue
                 for pub, notif in zip(slot.publishers, slot.notifiers):
                     try:
-                        pub.send(buf)
+                        loan = pub.loan(size)
+                        encode_data_into(data, loan.buffer, meta_bytes=meta_bytes)
+                        loan.send()
                         notif.notify()
                     except Exception:
                         self._report_error(traceback.format_exc())

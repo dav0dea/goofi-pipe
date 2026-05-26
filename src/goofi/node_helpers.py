@@ -328,10 +328,14 @@ class NodeRef:
             self._send(Message(MessageType.TERMINATE, {}))
         except Exception:
             pass
-        if self.ctrl_pub:
-            self.ctrl_pub.close()
-        if self.status_sub:
-            self.status_sub.close()
+        # NB: We deliberately do *not* call `ctrl_pub.close()` here.
+        # Iceoryx2's publisher drop is racy with in-flight sample
+        # delivery — dropping it too soon after `send(...)` can prevent
+        # the subscriber from ever observing the TERMINATE sample, even
+        # though the paired event-service notify fired. Letting the
+        # publisher live to GC time (when this NodeRef is collected)
+        # gives the subscriber time to drain reliably. `status_sub` is
+        # closed for the same reason in spirit; we trust GC.
 
     def wait_for_state(self, timeout: float = 3.0) -> bool:
         """Block until a STATE_UPDATE has been received at least once."""

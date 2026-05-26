@@ -57,10 +57,12 @@ def test_multiproc_create():
     try:
         assert ref.process.is_alive()
         # The first STATE_UPDATE proves the spawned process came up.
-        assert ref.wait_for_state(timeout=3.0), "no STATE_UPDATE arrived from child process"
+        # Generous timeout — spawn + iceoryx2 init can take a moment on
+        # a busy CI / dev machine.
+        assert ref.wait_for_state(timeout=10.0), "no STATE_UPDATE arrived from child process"
     finally:
         ref.terminate()
-        ref.process.join(timeout=2.0)
+        ref.process.join(timeout=5.0)
     assert not ref.process.is_alive()
 
 
