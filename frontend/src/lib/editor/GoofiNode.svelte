@@ -141,7 +141,10 @@
 	}
 	.header {
 		display: flex;
-		align-items: center;
+		/* baseline (not center) is what actually lands the mono glyphs
+		   visually centered with the round health dot — center on the line
+		   box leaves the ascender bias intact. */
+		align-items: baseline;
 		gap: 8px;
 		padding: 6px 10px;
 		background: linear-gradient(180deg, color-mix(in srgb, var(--accent) 18%, transparent), transparent);
@@ -164,13 +167,12 @@
 		font-weight: 600;
 		font-size: 12px;
 		color: var(--text);
-		/* Keep the font's natural line-height (don't force 1) so capital
-		   glyphs aren't clipped at the top, and add a single-pixel optical
-		   nudge: JetBrains Mono's geometric centre sits slightly above the
-		   x-height midline, so the text-box centre measured by flex lands
-		   the glyphs about 1px too high relative to the round health dot. */
-		line-height: 1.15;
-		padding-top: 1px;
+		/* `normal` line-height + parent's `align-items: baseline` puts the
+		   text baseline on the same line as the health dot. Trying to force
+		   line-height to 1 leaves the optical glyph centre above where the
+		   flex centring expects it; baseline alignment side-steps the
+		   problem entirely. */
+		line-height: normal;
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;

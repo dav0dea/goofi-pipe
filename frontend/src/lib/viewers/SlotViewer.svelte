@@ -159,8 +159,9 @@
 	}
 	header {
 		display: flex;
-		align-items: center;
+		align-items: baseline;
 		justify-content: space-between;
+		gap: 6px;
 		padding: 2px 6px;
 		background: var(--bg-elev-2);
 		border-bottom: 1px solid var(--border);
