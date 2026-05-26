@@ -5,6 +5,7 @@
 	import { ui } from '$lib/stores/ui.svelte';
 	import { graph } from '$lib/stores/graph.svelte';
 	import type { NodeInstanceInfo } from '$lib/api/control';
+	import { onMount, tick } from 'svelte';
 
 	let { data, selected }: NodeProps = $props();
 	const node = $derived(data.node as NodeInstanceInfo);
@@ -13,6 +14,54 @@
 	const uiStore = ui();
 	const g = graph();
 	const expanded = $derived(uiStore.isExpanded(node?.name ?? ''));
+
+	let nodeEl: HTMLDivElement | null = $state(null);
+	// Per-slot Y coordinates (centered on the corresponding label row) relative
+	// to the outer node element. Handles are rendered as absolutely-positioned
+	// children of the node and need exact Y per slot so they line up with the
+	// label and so the inside-clipping doesn't eat their hover/click area.
+	let inputYs = $state<number[]>([]);
+	let outputYs = $state<number[]>([]);
+
+	function measureRows(): void {
+		if (!nodeEl) return;
+		const nodeRect = nodeEl.getBoundingClientRect();
+		const inRows = nodeEl.querySelectorAll<HTMLElement>('.port-row.in');
+		const outRows = nodeEl.querySelectorAll<HTMLElement>('.port-row.out');
+		const nextIn: number[] = [];
+		const nextOut: number[] = [];
+		inRows.forEach((r) => {
+			const rect = r.getBoundingClientRect();
+			nextIn.push(rect.top + rect.height / 2 - nodeRect.top);
+		});
+		outRows.forEach((r) => {
+			const rect = r.getBoundingClientRect();
+			nextOut.push(rect.top + rect.height / 2 - nodeRect.top);
+		});
+		inputYs = nextIn;
+		outputYs = nextOut;
+	}
+
+	// Re-measure whenever the dependency surface that affects row positions
+	// changes — slot lists, the expanded flag, and (after mount) the node's
+	// actual rendered size via ResizeObserver.
+	$effect(() => {
+		// Subscribe to reactivity; the actual measurement happens after the
+		// DOM updates so we use tick() to defer.
+		void inputs.length;
+		void outputs.length;
+		void expanded;
+		void tick().then(measureRows);
+	});
+
+	onMount(() => {
+		measureRows();
+		if (!nodeEl) return;
+		const obs = new ResizeObserver(() => measureRows());
+		obs.observe(nodeEl);
+		nodeEl.querySelectorAll('.port-row').forEach((r) => obs.observe(r));
+		return () => obs.disconnect();
+	});
 
 	function toggleExpanded(e: MouseEvent) {
 		e.stopPropagation();
@@ -46,85 +95,115 @@
 </script>
 
 <div
+	bind:this={nodeEl}
 	class="goofi-node"
 	class:selected
 	class:has-error={hasError}
 	style="--accent: {accent};"
 	title={node?.doc ?? ''}
 >
-	<div class="header">
-		<span class="dot" style="background: {accent};"></span>
-		<span class="title">{formatName(node?.type ?? node?.name)}</span>
-		<span class="health" style="background: {healthColor};" title={node?.error ?? 'running'}></span>
-		<span class="name">{node?.name}</span>
-		<button class="ghost expand" onclick={toggleExpanded} aria-label="toggle viewers">
-			{expanded ? '▾' : '▸'}
-		</button>
+	<!-- Inner clip: everything that uses the rounded silhouette + the
+	     1px border lives here. The Handles are OUTSIDE this so they can
+	     overhang the node's edge without being clipped. -->
+	<div class="node-clip">
+		<div class="header">
+			<span class="dot" style="background: {accent};"></span>
+			<span class="title">{formatName(node?.type ?? node?.name)}</span>
+			<span class="health" style="background: {healthColor};" title={node?.error ?? 'running'}></span>
+			<span class="name">{node?.name}</span>
+			<button class="ghost expand" onclick={toggleExpanded} aria-label="toggle viewers">
+				{expanded ? '▾' : '▸'}
+			</button>
+		</div>
+
+		<div class="body">
+			<div class="ports inputs">
+				{#each inputs as slot (slot)}
+					<div
+						class="port-row in clickable"
+						style="--dtype: {dtypeColor(node.input_slots[slot])};"
+						onclick={(e) => onSlotClick(e, slot, node.input_slots[slot], 'target')}
+						role="button"
+						tabindex="0"
+						data-testid="slot-input"
+					>
+						<span class="port-label">{slot}</span>
+						<span class="port-dtype">{node.input_slots[slot].toLowerCase()}</span>
+					</div>
+				{/each}
+			</div>
+			<div class="ports outputs">
+				{#each outputs as slot (slot)}
+					<div
+						class="port-row out clickable"
+						style="--dtype: {dtypeColor(node.output_slots[slot])};"
+						onclick={(e) => onSlotClick(e, slot, node.output_slots[slot], 'source')}
+						role="button"
+						tabindex="0"
+						data-testid="slot-output"
+					>
+						<span class="port-dtype">{node.output_slots[slot].toLowerCase()}</span>
+						<span class="port-label">{slot}</span>
+					</div>
+				{/each}
+			</div>
+		</div>
+
+		{#if expanded}
+			<div class="viewers">
+				{#each outputs as slot (slot)}
+					<SlotViewer node={node.name} {slot} dtype={node.output_slots[slot]} />
+				{/each}
+			</div>
+		{/if}
 	</div>
 
-	<div class="body">
-		<div class="ports inputs">
-			{#each inputs as slot (slot)}
-				<div
-					class="port-row clickable"
-					style="--dtype: {dtypeColor(node.input_slots[slot])};"
-					onclick={(e) => onSlotClick(e, slot, node.input_slots[slot], 'target')}
-					role="button"
-					tabindex="0"
-					data-testid="slot-input"
-				>
-					<Handle id={slot} type="target" position={Position.Left} />
-					<span class="port-label">{slot}</span>
-					<span class="port-dtype">{node.input_slots[slot].toLowerCase()}</span>
-				</div>
-			{/each}
+	<!-- Handles: rendered as positioned siblings of .node-clip so they can
+	     overflow the node and stay clickable beyond its silhouette. Each
+	     handle's Y is set to the measured center of its label row. -->
+	{#each inputs as slot, i (slot)}
+		<div
+			class="handle-wrap left"
+			style="top: {inputYs[i] ?? 24}px; --dtype: {dtypeColor(node.input_slots[slot])};"
+		>
+			<Handle id={slot} type="target" position={Position.Left} />
 		</div>
-		<div class="ports outputs">
-			{#each outputs as slot (slot)}
-				<div
-					class="port-row out clickable"
-					style="--dtype: {dtypeColor(node.output_slots[slot])};"
-					onclick={(e) => onSlotClick(e, slot, node.output_slots[slot], 'source')}
-					role="button"
-					tabindex="0"
-					data-testid="slot-output"
-				>
-					<span class="port-dtype">{node.output_slots[slot].toLowerCase()}</span>
-					<span class="port-label">{slot}</span>
-					<Handle id={slot} type="source" position={Position.Right} />
-				</div>
-			{/each}
+	{/each}
+	{#each outputs as slot, i (slot)}
+		<div
+			class="handle-wrap right"
+			style="top: {outputYs[i] ?? 24}px; --dtype: {dtypeColor(node.output_slots[slot])};"
+		>
+			<Handle id={slot} type="source" position={Position.Right} />
 		</div>
-	</div>
-
-	{#if expanded}
-		<div class="viewers">
-			{#each outputs as slot (slot)}
-				<SlotViewer node={node.name} {slot} dtype={node.output_slots[slot]} />
-			{/each}
-		</div>
-	{/if}
+	{/each}
 </div>
 
 <style>
 	.goofi-node {
 		min-width: 200px;
+		color: var(--text);
+		/* overflow:visible so the handle wrappers can overhang the silhouette.
+		   The 1px border + rounded corners live on .node-clip below. */
+		overflow: visible;
+		box-shadow: var(--shadow-1);
+		transition: box-shadow 80ms ease;
+		position: relative;
+	}
+	.node-clip {
 		background: var(--bg-elev-1);
 		border: 1px solid var(--border);
 		border-radius: var(--radius-md);
-		color: var(--text);
 		overflow: hidden;
-		box-shadow: var(--shadow-1);
-		transition:
-			border-color 80ms ease,
-			box-shadow 80ms ease;
-		position: relative;
+		transition: border-color 80ms ease;
+	}
+	.goofi-node.selected .node-clip {
+		border-color: var(--accent);
 	}
 	.goofi-node.selected {
-		border-color: var(--accent);
 		box-shadow: var(--shadow-2);
 	}
-	.goofi-node.has-error {
+	.goofi-node.has-error .node-clip {
 		border-color: var(--danger);
 	}
 	.header {
@@ -183,9 +262,9 @@
 		display: flex;
 		align-items: center;
 		gap: 4px;
-		min-height: 16px;
+		min-height: 18px;
 		border-radius: 4px;
-		padding: 1px 2px;
+		padding: 2px 4px;
 	}
 	.port-row.out {
 		justify-content: flex-end;
@@ -207,9 +286,29 @@
 		text-transform: lowercase;
 		opacity: 0.9;
 	}
-	:global(.svelte-flow__node) .port-row :global(.svelte-flow__handle) {
+	/* Handle wrappers — absolutely positioned siblings of .node-clip so they
+	   can render half-outside the node and stay fully interactive. The
+	   wrapper is itself the positioned ancestor for the Handle, so the
+	   handle's default `top: 50%; left: 0; transform: translate(-50%, -50%)`
+	   resolves relative to a small box centered exactly on the slot row. */
+	.handle-wrap {
+		position: absolute;
+		width: 14px;
+		height: 14px;
+		transform: translateY(-50%);
+		z-index: 4;
+	}
+	.handle-wrap.left {
+		left: 0;
+	}
+	.handle-wrap.right {
+		right: 0;
+	}
+	:global(.svelte-flow__node) .handle-wrap :global(.svelte-flow__handle) {
 		background: var(--dtype, var(--bg-elev-3));
 		border-color: var(--dtype, var(--border-strong));
+		width: 9px;
+		height: 9px;
 	}
 	.viewers {
 		border-top: 1px solid var(--border);
