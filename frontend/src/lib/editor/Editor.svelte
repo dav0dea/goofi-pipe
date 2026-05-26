@@ -264,7 +264,30 @@
 		dragStartPositions = new Map();
 	}
 
+	let lastPaneClickAt = 0;
+	let lastPaneClickPos = { x: 0, y: 0 };
+	const DOUBLE_CLICK_MS = 350;
+
 	function onPaneClick(args: { event: MouseEvent }): void {
+		const now = performance.now();
+		const here = { x: args.event.clientX, y: args.event.clientY };
+		const dt = now - lastPaneClickAt;
+		const ddx = here.x - lastPaneClickPos.x;
+		const ddy = here.y - lastPaneClickPos.y;
+		const close = ddx * ddx + ddy * ddy < 30 * 30;
+		if (dt < DOUBLE_CLICK_MS && close) {
+			// Double-click on empty canvas → open add-node menu at the click.
+			menuPos = {
+				x: Math.max(8, Math.min(window.innerWidth - 332, here.x - 8)),
+				y: Math.max(8, Math.min(window.innerHeight - 360, here.y + 8))
+			};
+			menuSeed = null;
+			menuOpen = true;
+			lastPaneClickAt = 0;
+			return;
+		}
+		lastPaneClickAt = now;
+		lastPaneClickPos = here;
 		menuOpen = false;
 		if (args.event.shiftKey) return;
 		selection = new Set();
@@ -313,6 +336,14 @@
 			if (e.key === 'Tab') {
 				e.preventDefault();
 				openMenuAtCursor();
+			}
+		} else if (e.key === 'Escape') {
+			// Escape closes any open menu *and* clears selection.
+			if (menuOpen) {
+				menuOpen = false;
+				menuSeed = null;
+			} else if (selection.size > 0) {
+				selection = new Set();
 			}
 		} else if (e.key.toLowerCase() === 'f') {
 			document
