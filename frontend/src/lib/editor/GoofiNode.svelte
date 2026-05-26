@@ -12,12 +12,6 @@
 	const outputs = $derived(Object.keys(node?.output_slots ?? {}));
 	const uiStore = ui();
 	const g = graph();
-	const expanded = $derived(uiStore.isExpanded(node?.name ?? ''));
-
-	function toggleExpanded(e: MouseEvent) {
-		e.stopPropagation();
-		uiStore.toggleExpanded(node.name);
-	}
 
 	function isConnected(slot: string, side: 'source' | 'target'): boolean {
 		for (const l of g.links) {
@@ -60,9 +54,6 @@
 	<div class="header">
 		<span class="health" style="background: {healthColor};" title={node?.error ?? 'running'}></span>
 		<span class="name" title={formatName(node?.type ?? node?.name)}>{node?.name}</span>
-		<button class="ghost expand" onclick={toggleExpanded} aria-label="toggle viewers">
-			{expanded ? '▾' : '▸'}
-		</button>
 	</div>
 
 	<div class="body">
@@ -100,7 +91,7 @@
 		</div>
 	</div>
 
-	{#if expanded}
+	{#if outputs.length > 0}
 		<div class="viewers">
 			{#each outputs as slot (slot)}
 				<SlotViewer node={node.name} {slot} dtype={node.output_slots[slot]} />
@@ -185,33 +176,6 @@
 		white-space: nowrap;
 		flex: 1 1 auto;
 		min-width: 0;
-	}
-	.expand {
-		margin-left: auto;
-		padding: 0;
-		width: 22px;
-		height: 22px;
-		display: flex;
-		align-items: center;
-		justify-content: center;
-		font-size: 16px;
-		/* Same optical-centre nudge as .name — the ▾/▸ glyphs sit slightly
-		   above their line-box midline, especially on retina screens. */
-		line-height: 1;
-		padding-top: 2px;
-		color: var(--text-dim);
-		border-radius: 50%;
-		transition:
-			color 80ms ease,
-			background 80ms ease,
-			box-shadow 120ms ease;
-	}
-	.expand:hover {
-		color: var(--accent);
-		background: transparent;
-		box-shadow:
-			0 0 0 1px color-mix(in srgb, var(--accent) 40%, transparent),
-			0 0 12px color-mix(in srgb, var(--accent) 55%, transparent);
 	}
 	.body {
 		padding: 6px 8px;

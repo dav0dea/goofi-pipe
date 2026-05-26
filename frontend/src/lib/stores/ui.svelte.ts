@@ -13,13 +13,16 @@ export type SlotClickSeed = {
 	clientY: number;
 };
 
+/** Compose the storage key for a single slot's expand state. */
+export function slotKey(node: string, slot: string): string {
+	return `${node}|${slot}`;
+}
+
 class UIStore {
-	/** Which nodes have their viewer panel expanded.
-	 *
-	 * Default policy: a node is expanded unless the user has explicitly
-	 * collapsed it. We store the explicit user-set value here; `isExpanded`
-	 * falls back to `true` when no entry exists. Goofi3-style "viewers
-	 * visible by default", but the ▾/▸ toggle still lets the user hide them.
+	/** Per-slot expand state. Keys are `${node}|${slot}`; entries are the
+	 * explicit user-set values. Slots without an entry default to expanded
+	 * — viewers should be visible the moment a node arrives, and the user
+	 * can collapse individual slots independently.
 	 */
 	expanded = $state<Record<string, boolean>>({});
 
@@ -44,22 +47,29 @@ class UIStore {
 		return seed;
 	}
 
-	toggleExpanded(name: string): void {
-		this.expanded = { ...this.expanded, [name]: !this.isExpanded(name) };
+	toggleSlotExpanded(node: string, slot: string): void {
+		const k = slotKey(node, slot);
+		this.expanded = { ...this.expanded, [k]: !this.isSlotExpanded(node, slot) };
 	}
 
-	isExpanded(name: string): boolean {
-		if (Object.prototype.hasOwnProperty.call(this.expanded, name)) return this.expanded[name];
+	isSlotExpanded(node: string, slot: string): boolean {
+		const k = slotKey(node, slot);
+		if (Object.prototype.hasOwnProperty.call(this.expanded, k)) return this.expanded[k];
 		return true; // default: visible
 	}
 
-	/** Drop bookkeeping for nodes that no longer exist. */
+	/** Drop bookkeeping for every slot of a node that no longer exists. */
 	forget(name: string): void {
-		if (Object.prototype.hasOwnProperty.call(this.expanded, name)) {
-			const next = { ...this.expanded };
-			delete next[name];
-			this.expanded = next;
+		const prefix = `${name}|`;
+		let changed = false;
+		const next = { ...this.expanded };
+		for (const k of Object.keys(next)) {
+			if (k.startsWith(prefix)) {
+				delete next[k];
+				changed = true;
+			}
 		}
+		if (changed) this.expanded = next;
 	}
 }
 
