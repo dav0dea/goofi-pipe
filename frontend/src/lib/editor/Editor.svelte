@@ -569,6 +569,49 @@
 		document.querySelector<HTMLButtonElement>('.svelte-flow__controls-fitview')?.click();
 	}
 
+	// Side-panel width, persisted across reloads. Clamped to the
+	// MIN/MAX_PANEL_WIDTH band so a dragged-too-small panel can still be
+	// grabbed and a dragged-too-wide one can't take over the canvas.
+	const MIN_PANEL_WIDTH = 260;
+	const MAX_PANEL_WIDTH = 720;
+	const STORED_WIDTH = (() => {
+		try {
+			const raw = localStorage.getItem('goofi.panelWidth');
+			if (!raw) return 420;
+			const n = parseInt(raw, 10);
+			if (!Number.isFinite(n)) return 420;
+			return Math.max(MIN_PANEL_WIDTH, Math.min(MAX_PANEL_WIDTH, n));
+		} catch {
+			return 420;
+		}
+	})();
+	let panelWidth = $state(STORED_WIDTH);
+	let resizing = $state(false);
+
+	function startPanelResize(e: PointerEvent): void {
+		e.preventDefault();
+		const startX = e.clientX;
+		const startW = panelWidth;
+		resizing = true;
+		const onMove = (m: PointerEvent): void => {
+			// Dragging left → panel grows; rightward shrinks.
+			const next = startW - (m.clientX - startX);
+			panelWidth = Math.max(MIN_PANEL_WIDTH, Math.min(MAX_PANEL_WIDTH, next));
+		};
+		const onUp = (): void => {
+			resizing = false;
+			window.removeEventListener('pointermove', onMove);
+			window.removeEventListener('pointerup', onUp);
+			try {
+				localStorage.setItem('goofi.panelWidth', String(Math.round(panelWidth)));
+			} catch {
+				/* private mode; persistence is best-effort */
+			}
+		};
+		window.addEventListener('pointermove', onMove);
+		window.addEventListener('pointerup', onUp);
+	}
+
 	function onBeforeUnload(e: BeforeUnloadEvent): void {
 		// Browser-native unsaved-changes guard. Only kicks in if the user has
 		// edits that haven't been written to the .gfi file (the backend's
@@ -723,17 +766,32 @@
 			{/if}
 		</div>
 
-		<aside class="side-panel" class:open={selectedNode !== null}>
-			<ParamPanel node={selectedNode} />
-			{#if selectedNode}
-				<MetadataPanel node={selectedNode} />
-				<ErrorPanel
-					mode="inline"
-					onFocus={(name) => {
-						selection = new Set([name]);
-					}}
-				/>
-			{/if}
+		<aside
+			class="side-panel"
+			class:open={selectedNode !== null}
+			class:resizing
+			style="width: {panelWidth}px"
+		>
+			<div
+				class="resize-handle"
+				role="separator"
+				aria-orientation="vertical"
+				aria-label="Resize side panel"
+				onpointerdown={startPanelResize}
+				data-testid="panel-resize-handle"
+			></div>
+			<div class="panel-scroll">
+				<ParamPanel node={selectedNode} />
+				{#if selectedNode}
+					<MetadataPanel node={selectedNode} />
+					<ErrorPanel
+						mode="inline"
+						onFocus={(name) => {
+							selection = new Set([name]);
+						}}
+					/>
+				{/if}
+			</div>
 		</aside>
 
 		<!-- Errors that exist even when nothing is selected get a floating
@@ -768,16 +826,15 @@
 	}
 	.side-panel {
 		/* Floating overlay above the canvas — slides in only when a single
-		   node is selected. Canvas keeps full width underneath. */
+		   node is selected. Canvas keeps full width underneath. The width
+		   is user-adjustable via .resize-handle on the left edge. */
 		position: absolute;
 		right: 0;
 		top: 0;
 		bottom: 0;
-		width: min(420px, 33vw);
 		background: color-mix(in srgb, var(--bg-elev-1) 96%, transparent);
 		backdrop-filter: blur(8px);
 		border-left: 1px solid var(--border);
-		overflow-y: auto;
 		display: flex;
 		flex-direction: column;
 		min-width: 0;
@@ -788,6 +845,43 @@
 	}
 	.side-panel.open {
 		transform: translateX(0);
+	}
+	.side-panel.resizing {
+		/* Don't animate width while the user is actively dragging — the
+		   transition would lag behind the cursor by 180ms. */
+		transition: none;
+	}
+	.side-panel.resizing * {
+		user-select: none;
+	}
+	.panel-scroll {
+		flex: 1;
+		overflow-y: auto;
+		min-height: 0;
+	}
+	.resize-handle {
+		position: absolute;
+		left: -4px;
+		top: 0;
+		bottom: 0;
+		width: 8px;
+		cursor: col-resize;
+		z-index: 1;
+		touch-action: none;
+	}
+	.resize-handle::after {
+		content: '';
+		position: absolute;
+		left: 3px;
+		top: 0;
+		bottom: 0;
+		width: 2px;
+		background: transparent;
+		transition: background 100ms ease;
+	}
+	.resize-handle:hover::after,
+	.side-panel.resizing .resize-handle::after {
+		background: var(--accent);
 	}
 	.menu-overlay {
 		position: fixed;
