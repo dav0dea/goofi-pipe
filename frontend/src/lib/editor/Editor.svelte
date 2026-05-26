@@ -34,6 +34,9 @@
 	let menuPos = $state<{ x: number; y: number }>({ x: 120, y: 120 });
 	let menuSeed = $state<SlotClickSeed | null>(null);
 	let selection = $state<Set<string>>(new Set());
+	// Selected edges. Tracked separately from `selection` so node and edge
+	// selection don't clobber each other; Delete drains both sets.
+	let edgeSelection = $state<Set<string>>(new Set());
 
 	// Watch ui.pendingSlotClick — when a node's port is clicked, open the
 	// menu near the port and seed it with the dtype filter + auto-link.
@@ -79,14 +82,18 @@
 	});
 
 	$effect(() => {
-		const next: Edge[] = g.links.map((l) => ({
-			id: edgeId(l),
-			source: l.node_out,
-			sourceHandle: l.slot_out,
-			target: l.node_in,
-			targetHandle: l.slot_in,
-			animated: false
-		}));
+		const next: Edge[] = g.links.map((l) => {
+			const id = edgeId(l);
+			return {
+				id,
+				source: l.node_out,
+				sourceHandle: l.slot_out,
+				target: l.node_in,
+				targetHandle: l.slot_in,
+				selected: edgeSelection.has(id),
+				animated: false
+			};
+		});
 		flowEdges = next;
 	});
 
@@ -102,6 +109,39 @@
 			slot_out: c.sourceHandle,
 			slot_in: c.targetHandle
 		});
+	}
+
+	function onEdgeClick(args: { edge: Edge; event: MouseEvent }): void {
+		const id = args.edge.id;
+		const e = args.event;
+		if (e.shiftKey || e.ctrlKey || e.metaKey) {
+			const next = new Set(edgeSelection);
+			if (next.has(id)) next.delete(id);
+			else next.add(id);
+			edgeSelection = next;
+		} else {
+			edgeSelection = new Set([id]);
+			selection = new Set();
+		}
+	}
+
+	function findLinkById(id: string): LinkInfo | null {
+		for (const l of g.links) if (edgeId(l) === id) return l;
+		return null;
+	}
+
+	async function deleteEdgeSelection(): Promise<void> {
+		const ids = Array.from(edgeSelection);
+		for (const id of ids) {
+			const link = findLinkById(id);
+			if (!link) continue;
+			try {
+				await g.removeLink(link);
+			} catch (err) {
+				console.warn('remove edge failed', err);
+			}
+		}
+		edgeSelection = new Set();
 	}
 
 	function nodeBoundsFromFlow(id: string, x: number, y: number): Bounds {
@@ -291,6 +331,7 @@
 		menuOpen = false;
 		if (args.event.shiftKey) return;
 		selection = new Set();
+		edgeSelection = new Set();
 	}
 
 	function onNodeClick(args: { node: Node; event: MouseEvent | TouchEvent }): void {
@@ -329,9 +370,10 @@
 		} else if (meta && e.key.toLowerCase() === 'v') {
 			void pasteClipboard();
 		} else if (e.key === 'Delete' || e.key === 'Backspace') {
-			if (selection.size === 0) return;
+			if (selection.size === 0 && edgeSelection.size === 0) return;
 			e.preventDefault();
-			void deleteSelection();
+			if (selection.size > 0) void deleteSelection();
+			if (edgeSelection.size > 0) void deleteEdgeSelection();
 		} else if (e.key === 'Tab' || (e.key === ' ' && !menuOpen && e.shiftKey === false)) {
 			if (e.key === 'Tab') {
 				e.preventDefault();
@@ -342,8 +384,9 @@
 			if (menuOpen) {
 				menuOpen = false;
 				menuSeed = null;
-			} else if (selection.size > 0) {
+			} else if (selection.size > 0 || edgeSelection.size > 0) {
 				selection = new Set();
+				edgeSelection = new Set();
 			}
 		} else if (e.key.toLowerCase() === 'f') {
 			document
@@ -591,6 +634,7 @@
 				onnodedragstop={onNodeDragStop}
 				onpaneclick={onPaneClick}
 				onnodeclick={onNodeClick}
+				onedgeclick={onEdgeClick}
 				ondelete={async ({ nodes, edges }) => {
 					for (const n of nodes) await g.removeNode(n.id).catch(() => {});
 					for (const e of edges) {
