@@ -29,7 +29,7 @@ dependencies = [
   "msgpack>=1.0",
   "pyyaml",
   "pyzmq",
-  "dearpygui",
+  "aiohttp>=3.9",
   "mne-lsl",
   "antropy",
   "biotuner",

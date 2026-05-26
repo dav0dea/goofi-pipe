@@ -36,6 +36,9 @@ from goofi.node import MultiprocessingForbiddenError, Node
 from goofi.node_helpers import NodeProcessRegistry, NodeRef, list_nodes
 from goofi.transport import data_service_name, get_instance_id, set_instance_id
 
+if False:  # typing only
+    from goofi.bridge.server import BridgeServer
+
 
 def mark_unsaved_changes(func):
     def wrapper(self, *args, **kwargs):
@@ -99,6 +102,8 @@ class Manager:
         headless: bool = True,
         use_multiprocessing: bool = True,
         duration: float = 0,
+        bridge_host: str = "127.0.0.1",
+        bridge_port: int = 8000,
     ) -> None:
         # Single transport instance id per Manager. Embedded in every
         # iceoryx2 service name; lets multiple goofi-pipe instances coexist
@@ -132,28 +137,23 @@ class Manager:
         self._save_path: Optional[str] = None
         self._unsaved_changes = False
 
-        if self.headless:
-            self.post_init(filepath, duration)
-        else:
-            # Window() blocks main thread; everything else runs in a daemon.
-            from goofi.gui.window import Window
+        # Bridge (browser frontend). Started in non-headless mode; the
+        # process keeps running until terminate() — main thread serves
+        # KeyboardInterrupt either way.
+        self._bridge: Optional["BridgeServer"] = None
+        self._bridge_host = bridge_host
+        self._bridge_port = bridge_port
 
-            Thread(target=self.post_init, args=(filepath, duration), daemon=False).start()
-            Window(self)
+        if not self.headless:
+            from goofi.bridge.server import start_bridge
+
+            self._bridge = start_bridge(self, host=bridge_host, port=bridge_port)
+            if self._bridge.url:
+                print(f"\n  goofi-pipe is running. Open {self._bridge.url} in your browser.\n")
+
+        self.post_init(filepath, duration)
 
     def post_init(self, filepath: Optional[str] = None, duration: float = 0) -> None:
-        if not self.headless:
-            from goofi.gui.window import Window
-
-            win = None
-            while win is None:
-                try:
-                    win = Window()
-                except RuntimeError:
-                    time.sleep(0.01)
-            while not win._initialized:
-                time.sleep(0.01)
-
         if filepath is not None:
             self.load(filepath, load_on_init=True)
 
@@ -257,17 +257,19 @@ class Manager:
         ref = self._spawn_node(node_cls, assigned_name, params, group)
         ref.set_message_handler(MessageType.SHUTDOWN, lambda *args: self.terminate())
 
+        # Preserve gui_kwargs (notably 'pos') for the bridge / patch save.
+        if gui_kwargs:
+            ref.gui_kwargs = dict(gui_kwargs)
+
         registered = self.nodes.add_node(assigned_name, ref, force_name=True)
         self._node_groups[registered] = group
 
         # Best-effort: block briefly for the initial STATE_UPDATE so the
-        # rest of the system (save / GUI) has node state to read.
+        # rest of the system (save / bridge) has node state to read.
         ref.wait_for_state(timeout=2.0)
 
-        if not self.headless and notify_gui:
-            from goofi.gui.window import Window
-
-            Window().add_node(registered, ref, **gui_kwargs)
+        if self._bridge is not None and notify_gui:
+            self._bridge.control.on_node_added(registered)
         return registered
 
     @mark_unsaved_changes
@@ -281,10 +283,8 @@ class Manager:
 
         self.nodes.remove_node(name)
         self._node_groups.pop(name, None)
-        if not self.headless and notify_gui:
-            from goofi.gui.window import Window
-
-            Window().remove_node(name, **gui_kwargs)
+        if self._bridge is not None and notify_gui:
+            self._bridge.control.on_node_removed(name)
 
     @mark_unsaved_changes
     def add_link(
@@ -321,14 +321,11 @@ class Manager:
         src_ref.register_subscriber(slot_out)
         dst_ref.subscribe_input(slot_in, service, in_process)
 
-        self._links.append(
-            {"node_out": node_out, "node_in": node_in, "slot_out": slot_out, "slot_in": slot_in}
-        )
+        link = {"node_out": node_out, "node_in": node_in, "slot_out": slot_out, "slot_in": slot_in}
+        self._links.append(link)
 
-        if not self.headless and notify_gui:
-            from goofi.gui.window import Window
-
-            Window().add_link(node_out, node_in, slot_out, slot_in, **gui_kwargs)
+        if self._bridge is not None and notify_gui:
+            self._bridge.control.on_link_added(link)
 
     @mark_unsaved_changes
     def remove_link(
@@ -345,10 +342,8 @@ class Manager:
             return
         self._teardown_link(link, notify_gui=False)
         self._links.remove(link)
-        if not self.headless and notify_gui:
-            from goofi.gui.window import Window
-
-            Window().remove_link(node_out, node_in, slot_out, slot_in, **gui_kwargs)
+        if self._bridge is not None and notify_gui:
+            self._bridge.control.on_link_removed(link)
 
     def _teardown_link(self, link: Dict[str, str], notify_gui: bool) -> None:
         try:
@@ -430,13 +425,6 @@ class Manager:
                     f"Node {name} does not have a serialized state. Recreate the node and try again."
                 )
             state = deepcopy(ref.serialized_state)
-
-            if not self.headless:
-                from goofi.gui.window import Window
-
-                gui_kwargs = Window().get_node_state(name)
-                if gui_kwargs is not None:
-                    ref.gui_kwargs = gui_kwargs
             state["gui_kwargs"] = ref.gui_kwargs
             # Drop output-subscriber bookkeeping — it's transient runtime
             # state, not part of the persisted graph definition.
@@ -467,14 +455,11 @@ class Manager:
             except Exception:
                 pass
 
-        if not self.headless and notify_gui:
+        if self._bridge is not None:
             try:
-                from goofi.gui.window import Window
-
-                Window().terminate()
-                return
+                self._bridge.shutdown()
             except Exception:
-                print("Closing the GUI failed.")
+                pass
 
     # ------------------------------------------------------------------
     # Properties
@@ -487,10 +472,10 @@ class Manager:
     @save_path.setter
     def save_path(self, filepath: str) -> None:
         self._save_path = filepath
-        if not self.headless:
-            from goofi.gui.window import Window
-
-            Window().update_title()
+        if self._bridge is not None:
+            self._bridge.control.broadcast_threadsafe(
+                {"event": "save_path_changed", "payload": {"save_path": filepath}}
+            )
 
     @property
     def unsaved_changes(self) -> bool:
@@ -499,10 +484,10 @@ class Manager:
     @unsaved_changes.setter
     def unsaved_changes(self, value: bool) -> None:
         self._unsaved_changes = value
-        if not self.headless:
-            from goofi.gui.window import Window
-
-            Window().update_title()
+        if self._bridge is not None:
+            self._bridge.control.broadcast_threadsafe(
+                {"event": "unsaved_changes", "payload": {"unsaved_changes": value}}
+            )
 
     @property
     def running(self) -> bool:
@@ -567,8 +552,10 @@ def main(duration: Optional[float] = None, args=None):
 
     parser = argparse.ArgumentParser(description="goofi-pipe")
     parser.add_argument("filepath", nargs="?", help="path to the file to load from")
-    parser.add_argument("--headless", action="store_true", help="run in headless mode")
+    parser.add_argument("--headless", action="store_true", help="run in headless mode (no browser bridge)")
     parser.add_argument("--no-multiprocessing", action="store_true", help="disable multiprocessing")
+    parser.add_argument("--port", type=int, default=8000, help="port to serve the browser UI on (default 8000)")
+    parser.add_argument("--bind", type=str, default="127.0.0.1", help="host/interface to bind the bridge to")
     parser.add_argument(
         "--duration",
         default=0,
@@ -610,6 +597,8 @@ def main(duration: Optional[float] = None, args=None):
         headless=args.headless,
         use_multiprocessing=not args.no_multiprocessing,
         duration=duration,
+        bridge_host=args.bind,
+        bridge_port=args.port,
     )
 
 
