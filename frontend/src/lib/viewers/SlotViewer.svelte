@@ -172,7 +172,6 @@
 		display: flex;
 		flex-direction: column;
 		min-height: 80px;
-		overflow: hidden;
 	}
 	.slot-viewer.collapsed {
 		/* Just the header strip when collapsed — drop the floor on min-height

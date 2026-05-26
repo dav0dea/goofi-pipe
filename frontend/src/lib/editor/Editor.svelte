@@ -664,6 +664,7 @@
 				minZoom={0.05}
 				maxZoom={4}
 				initialViewport={{ x: 0, y: 0, zoom: 0.85 }}
+				zoomOnDoubleClick={false}
 			>
 				<Controls />
 				<MiniMap pannable zoomable />

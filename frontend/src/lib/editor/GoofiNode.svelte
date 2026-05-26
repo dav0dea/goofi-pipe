@@ -78,11 +78,6 @@
 		border: 1px solid var(--border);
 		border-radius: var(--radius-md);
 		color: var(--text);
-		/* Visible — otherwise the overhanging slot handles get clipped at
-		   the node's bounding box. Inner sections that rely on the rounded
-		   border-radius (header gradient, viewers panel background) carry
-		   their own matching corner radii below. */
-		overflow: visible;
 		box-shadow: var(--shadow-1);
 		transition:
 			border-color 80ms ease,
