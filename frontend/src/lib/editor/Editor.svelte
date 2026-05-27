@@ -212,14 +212,32 @@
 		nodes: Node[];
 		event: MouseEvent | TouchEvent;
 	}): void {
-		// The last drag frame already snapped flowNodes — read the snapped
-		// position from there and commit it. If the user released mid-snap
-		// (alt held, or no nearby target), this falls through to the raw
-		// pointer position.
+		// Re-snap at release. We can't trust the snap we wrote into
+		// flowNodes during the last onnodedrag frame: SvelteFlow's drag
+		// controller calls updateNodePositions(dragItems, false) on release
+		// with dragItems' RAW positions (set from pointer - dragStart.distance,
+		// pre-snap). That propagates through the bind:nodes setter and
+		// overwrites our snapped position back to raw before we get here —
+		// so reading flowNodes.position would commit the raw mouse position
+		// plus the offset between mouse and snap target.
+		const current = new Map<string, { x: number; y: number }>();
+		for (const n of args.nodes) current.set(n.id, { x: n.position.x, y: n.position.y });
+		const alt = (args.event as MouseEvent).altKey === true;
+		const { dx, dy } = dragSnapDelta(current, alt);
+		if (dx !== 0 || dy !== 0) {
+			// Persist the snapped position into flowNodes immediately so the
+			// node doesn't visibly flash back to raw between this commit and
+			// the backend's state_update echo a moment later.
+			const dragged = new Set(args.nodes.map((n) => n.id));
+			flowNodes = flowNodes.map((n) => {
+				if (!dragged.has(n.id)) return n;
+				const c = current.get(n.id);
+				if (!c) return n;
+				return { ...n, position: { x: c.x + dx, y: c.y + dy } };
+			});
+		}
 		for (const n of args.nodes) {
-			const fn = flowNodes.find((f) => f.id === n.id);
-			const pos = fn?.position ?? n.position;
-			void g.setNodePos(n.id, [Math.round(pos.x), Math.round(pos.y)]);
+			void g.setNodePos(n.id, [Math.round(n.position.x + dx), Math.round(n.position.y + dy)]);
 		}
 		snapGuides = [];
 	}
