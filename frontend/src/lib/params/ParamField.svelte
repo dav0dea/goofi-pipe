@@ -67,14 +67,16 @@
 				{step}
 				value={Number(local)}
 				onpointerdown={() => (editing = true)}
-				onpointerup={() => {
-					editing = false;
-					commit(Number(local));
-				}}
+				onpointerup={() => (editing = false)}
 				oninput={(e) => {
-					local = Number((e.currentTarget as HTMLInputElement).value);
+					// Stream the value live during drag so the running node
+					// reacts immediately instead of only on release. `editing`
+					// stays true between pointerdown/up so the backend's
+					// state_update echo of the value we just sent doesn't
+					// reset `local` mid-drag.
+					const v = Number((e.currentTarget as HTMLInputElement).value);
+					if (Number.isFinite(v)) commit(v);
 				}}
-				onchange={(e) => commit(Number((e.currentTarget as HTMLInputElement).value))}
 			/>
 			<input
 				class="num"
@@ -82,15 +84,18 @@
 				step={descriptor.type === 'int' ? 1 : 'any'}
 				value={Number(local)}
 				onfocus={() => (editing = true)}
-				onblur={() => {
-					editing = false;
-					commit(Number(local));
-				}}
+				onblur={() => (editing = false)}
 				onkeydown={(e) => {
 					if (e.key === 'Enter') (e.currentTarget as HTMLInputElement).blur();
 				}}
 				oninput={(e) => {
-					local = Number((e.currentTarget as HTMLInputElement).value);
+					// Skip intermediate non-numeric states like "" or "-" that
+					// happen while typing — Number() coerces those to 0 / NaN
+					// and would briefly stomp the running value.
+					const raw = (e.currentTarget as HTMLInputElement).value;
+					if (raw === '' || raw === '-' || raw === '.') return;
+					const v = Number(raw);
+					if (Number.isFinite(v)) commit(v);
 				}}
 			/>
 		{:else if descriptor.type === 'string'}
@@ -108,16 +113,11 @@
 					type="text"
 					value={String(local ?? '')}
 					onfocus={() => (editing = true)}
-					onblur={(e) => {
-						editing = false;
-						commit((e.currentTarget as HTMLInputElement).value);
-					}}
+					onblur={() => (editing = false)}
 					onkeydown={(e) => {
 						if (e.key === 'Enter') (e.currentTarget as HTMLInputElement).blur();
 					}}
-					oninput={(e) => {
-						local = (e.currentTarget as HTMLInputElement).value;
-					}}
+					oninput={(e) => commit((e.currentTarget as HTMLInputElement).value)}
 				/>
 			{/if}
 		{:else}
