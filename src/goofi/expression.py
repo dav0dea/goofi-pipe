@@ -21,7 +21,10 @@ keeps WaitSet ownership in one place.
 from __future__ import annotations
 
 import ast
+import datetime
 import math
+import random
+import time
 import traceback
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, Optional, Set, Tuple
@@ -169,6 +172,9 @@ class ExpressionEngine:
             "np": np,
             "numpy": np,
             "math": math,
+            "time": time,
+            "random": random,
+            "datetime": datetime,
             "slot": self._slot_accessor,
         }
 
