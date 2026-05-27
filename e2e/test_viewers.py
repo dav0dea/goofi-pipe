@@ -24,9 +24,10 @@ def _enable_autotrigger(page: Page) -> None:
     `common.autotrigger` is True. For viewer tests we need data flowing.
     """
     page.click(".svelte-flow__node")
-    page.wait_for_selector("details.group summary", timeout=2000)
-    common = page.locator("details.group summary").filter(has_text="common").first
-    common.click()
+    # Activate the 'common' tab in the param panel — the autotrigger
+    # bool lives there and is what gates emission for most nodes.
+    page.wait_for_selector('[data-testid="param-tabs"] .tab', timeout=2000)
+    page.locator('[data-testid="param-tabs"] .tab').filter(has_text="common").first.click()
     page.wait_for_timeout(120)
     # autotrigger is a non-trigger BoolParam → renders as a checkbox switch.
     page.locator(".switch input[type=checkbox]").first.check()

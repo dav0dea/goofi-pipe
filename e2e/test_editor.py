@@ -59,8 +59,8 @@ def test_param_panel_shows_when_selected(page: Page, shots: Path) -> None:
     page.wait_for_selector(".svelte-flow__node", timeout=4000)
     page.click(".svelte-flow__node")
     page.wait_for_timeout(150)
-    # The right-hand side panel should contain a "params" group at least.
-    page.wait_for_selector(".panel summary, details.group", timeout=2000)
+    # The right-hand side panel renders a tab strip with at least one group.
+    page.wait_for_selector('[data-testid="param-tabs"] .tab', timeout=2000)
     page.screenshot(path=str(shots / "04-param-panel.png"), full_page=True)
     assert_no_console_errors(page)
 

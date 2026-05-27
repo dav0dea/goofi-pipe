@@ -15,15 +15,38 @@
 		void g.updateParam(node.name, group, name, value);
 	}
 
-	// Sort groups: node-specific first (alphabetical), 'common' last.
-	const groupEntries = $derived.by(() => {
-		if (!node) return [] as [string, Record<string, ParamDescriptor>][];
-		const entries = Object.entries(node.params) as [string, Record<string, ParamDescriptor>][];
-		return entries.sort(([a], [b]) => {
+	// Sort groups: node-specific groups alphabetical, 'common' last.
+	const groupNames = $derived.by(() => {
+		if (!node) return [] as string[];
+		const names = Object.keys(node.params);
+		return names.sort((a, b) => {
 			if (a === 'common') return 1;
 			if (b === 'common') return -1;
 			return a.localeCompare(b);
 		});
+	});
+
+	let activeTab = $state<string | null>(null);
+	let docsOpen = $state(false);
+
+	// Keep the active tab in sync with the selected node: when the node
+	// changes, jump to its first non-common group (or whatever is left if
+	// the previously-active group no longer exists).
+	$effect(() => {
+		const valid = groupNames;
+		if (valid.length === 0) {
+			activeTab = null;
+			return;
+		}
+		if (!activeTab || !valid.includes(activeTab)) {
+			activeTab = valid[0];
+		}
+	});
+
+	const activeParams = $derived.by(() => {
+		if (!node || !activeTab) return [] as [string, ParamDescriptor][];
+		const group = node.params[activeTab] ?? {};
+		return Object.entries(group) as [string, ParamDescriptor][];
 	});
 </script>
 
@@ -34,46 +57,72 @@
 			<div class="empty-sub">Click a node to edit its parameters.</div>
 		</div>
 	{:else}
-		<header>
+		<header class:has-doc={Boolean(node.doc)} class:expanded={docsOpen}>
 			<span class="dot" style="background: {categoryColor(node.category)};"></span>
 			<div class="titles">
 				<div class="title">{formatName(node.type)}</div>
-				<div class="sub">{node.name} · {node.category}</div>
+				<div class="sub">{node.name}</div>
 			</div>
 			<span class="badge" class:badge-error={Boolean(node.error)} class:badge-ok={!node.error}>
 				{node.error ? 'error' : 'running'}
 			</span>
+			{#if node.doc}
+				<button
+					class="docs-toggle"
+					class:open={docsOpen}
+					onclick={() => (docsOpen = !docsOpen)}
+					title={docsOpen ? 'Hide docs' : 'Show docs'}
+					aria-label={docsOpen ? 'Hide docs' : 'Show docs'}
+					data-testid="docs-toggle"
+				>
+					▸
+				</button>
+			{/if}
 		</header>
+
+		{#if docsOpen && node.doc}
+			<p class="docstring" data-testid="docstring">{node.doc}</p>
+		{/if}
+
 		{#if node.error}
 			<pre class="err" data-testid="param-error">{node.error}</pre>
 		{/if}
-		{#if node.doc}
-			<p class="docstring">{node.doc}</p>
-		{/if}
 
-		{#each groupEntries as [groupName, group] (groupName)}
-			<details class="group" open={groupName !== 'common'}>
-				<summary>{groupName}</summary>
-				<div class="rows">
-					{#each Object.entries(group) as [paramName, descriptor] (paramName)}
-						<ParamField
-							{paramName}
-							descriptor={descriptor as ParamDescriptor}
-							onCommit={(v) => setValue(groupName, paramName, v)}
-						/>
-					{/each}
-				</div>
-			</details>
-		{/each}
+		<div class="tabs" role="tablist" data-testid="param-tabs">
+			{#each groupNames as groupName (groupName)}
+				<button
+					class="tab"
+					class:active={activeTab === groupName}
+					role="tab"
+					aria-selected={activeTab === groupName}
+					onclick={() => (activeTab = groupName)}
+				>
+					{groupName}
+				</button>
+			{/each}
+		</div>
+
+		<div class="rows" role="tabpanel" data-testid="param-rows">
+			{#if activeParams.length === 0}
+				<div class="empty-tab">No parameters in this group.</div>
+			{:else}
+				{#each activeParams as [paramName, descriptor] (paramName)}
+					<ParamField
+						{paramName}
+						{descriptor}
+						onCommit={(v) => setValue(activeTab ?? '', paramName, v)}
+					/>
+				{/each}
+			{/if}
+		</div>
 	{/if}
 </section>
 
 <style>
 	.panel {
-		padding: 12px 12px 12px;
+		padding: 0;
 		display: flex;
 		flex-direction: column;
-		gap: 8px;
 		min-width: 0;
 	}
 	.empty {
@@ -93,6 +142,9 @@
 		display: flex;
 		gap: 10px;
 		align-items: center;
+		padding: 10px 12px;
+		border-bottom: 1px solid var(--border);
+		background: var(--bg-elev-1);
 	}
 	.dot {
 		width: 10px;
@@ -138,60 +190,92 @@
 		background: color-mix(in srgb, var(--danger) 14%, transparent);
 		border: 1px solid color-mix(in srgb, var(--danger) 35%, transparent);
 	}
+	.docs-toggle {
+		font-family: var(--font-mono);
+		font-size: 12px;
+		color: var(--text-faint);
+		background: none;
+		border: none;
+		padding: 2px 4px;
+		cursor: pointer;
+		transition:
+			transform 100ms ease,
+			color 100ms ease;
+		flex-shrink: 0;
+	}
+	.docs-toggle:hover {
+		color: var(--text);
+	}
+	.docs-toggle.open {
+		transform: rotate(90deg);
+		color: var(--accent);
+	}
+	.docstring {
+		margin: 0;
+		font-size: 11px;
+		color: var(--text-dim);
+		background: var(--bg-elev-2);
+		padding: 8px 12px;
+		white-space: pre-wrap;
+		border-bottom: 1px solid var(--border);
+	}
 	.err {
 		margin: 0;
-		padding: 8px 10px;
+		padding: 8px 12px;
 		font-family: var(--font-mono);
 		font-size: 10px;
 		color: var(--danger);
 		background: color-mix(in srgb, var(--danger) 10%, transparent);
-		border: 1px solid color-mix(in srgb, var(--danger) 30%, transparent);
-		border-radius: var(--radius-sm);
+		border-bottom: 1px solid color-mix(in srgb, var(--danger) 30%, transparent);
 		white-space: pre-wrap;
 		word-break: break-word;
 		max-height: 140px;
 		overflow-y: auto;
 	}
-	.docstring {
-		font-size: 11px;
+	.tabs {
+		/* Tab strip — one tab per parameter group. Horizontally scrollable
+		 * when many groups exist; the active tab's underline tracks via
+		 * border-bottom on the button itself. */
+		display: flex;
+		gap: 0;
+		overflow-x: auto;
+		border-bottom: 1px solid var(--border);
+		scrollbar-width: thin;
+		background: var(--bg-elev-1);
+	}
+	.tab {
+		flex: 0 0 auto;
+		padding: 8px 14px;
+		background: none;
+		border: none;
+		border-bottom: 2px solid transparent;
 		color: var(--text-dim);
-		background: var(--bg-elev-2);
-		border-radius: var(--radius-sm);
-		padding: 6px 8px;
-		white-space: pre-wrap;
-		margin: 0;
-	}
-	details.group {
-		border: 1px solid var(--border);
-		border-radius: var(--radius-sm);
-		background: var(--bg-elev-2);
-	}
-	summary {
+		font-family: var(--font-mono);
+		font-size: 11px;
+		letter-spacing: 0.03em;
+		text-transform: lowercase;
 		cursor: pointer;
-		padding: 6px 10px;
-		font-weight: 600;
-		text-transform: capitalize;
-		font-size: 12px;
-		list-style: none;
-		user-select: none;
+		transition:
+			color 80ms ease,
+			border-color 80ms ease;
 	}
-	summary::-webkit-details-marker {
-		display: none;
+	.tab:hover {
+		color: var(--text);
 	}
-	summary::before {
-		content: '▸';
-		display: inline-block;
-		margin-right: 6px;
-		color: var(--text-faint);
-		transition: transform 80ms ease;
-	}
-	details[open] summary::before {
-		transform: rotate(90deg);
+	.tab.active {
+		color: var(--text);
+		border-bottom-color: var(--accent);
 	}
 	.rows {
 		display: flex;
 		flex-direction: column;
-		gap: 8px;
-		padding: 6px 10px 10px;
+		gap: 10px;
+		padding: 12px;
+	}
+	.empty-tab {
+		color: var(--text-faint);
+		font-size: 11px;
+		text-align: center;
+		padding: 20px 0;
 	}
 </style>
