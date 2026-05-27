@@ -184,62 +184,36 @@ def test_state_yaml_dumpable():
 
 
 def test_set_expression_round_trip():
-    """SET_EXPRESSION ctrl roundtrips: param's `expression` field and its
-    evaluated value land on the node and echo back via STATE_UPDATE."""
+    """SET_EXPRESSION ctrl roundtrips: param's `expression` field, its
+    evaluated value, and the two cadence flags all land on the node and
+    echo back via STATE_UPDATE."""
     _iid()
     ref, n = FullDummyNode.create_local()
     ref.wait_for_state(timeout=2.0)
-    # Bind a self-contained expression to a FloatParam.
-    ref.set_expression("test", "param_floatparam", "1.5 * 2")
+    # Bind a self-contained expression with both flags on.
+    ref.set_expression(
+        "test",
+        "param_floatparam",
+        "1.5 * 2",
+        triggers_process=True,
+        autoeval=True,
+    )
     for _ in range(80):
         if n.params.test.param_floatparam._value == 3.0:
             break
         time.sleep(0.02)
     assert n.params.test.param_floatparam._value == 3.0
     assert n.params.test.param_floatparam.expression == "1.5 * 2"
+    assert n.params.test.param_floatparam.expression_triggers_process is True
+    assert n.params.test.param_floatparam.expression_autoeval is True
 
-    # Clearing detaches the engine and the param keeps its last value
-    # (which it inherited from the eval) until a manual edit replaces it.
+    # Clear: engine torn down, flags reset, param keeps last value.
     ref.set_expression("test", "param_floatparam", None)
     for _ in range(80):
         if n.params.test.param_floatparam.expression is None:
             break
         time.sleep(0.02)
     assert n.params.test.param_floatparam.expression is None
-    ref.terminate()
-
-
-def test_param_update_triggers_process_when_toggle_on():
-    """`common.process_on_param_update`, when True, makes a manual param
-    edit wake `process()` even though no input slot fired."""
-    _iid()
-    calls = []
-
-    def cb():
-        calls.append(time.time())
-        return None, {}
-
-    cls = make_custom_node(process_callback=lambda **_: cb())
-    ref, n = cls.create_local()
-    ref.wait_for_state(timeout=2.0)
-    # Toggle off — a param edit alone shouldn't fire process().
-    n_calls_before = len(calls)
-    ref.update_param("common", "max_frequency", 5.0)
-    time.sleep(0.3)
-    assert len(calls) == n_calls_before, "process() must not fire when toggle off"
-
-    # Toggle on — same edit now wakes process().
-    ref.update_param("common", "process_on_param_update", True)
-    for _ in range(80):
-        if n.params.common.process_on_param_update.value:
-            break
-        time.sleep(0.02)
-    assert n.params.common.process_on_param_update.value is True
-    n_calls_before = len(calls)
-    ref.update_param("common", "max_frequency", 10.0)
-    for _ in range(80):
-        if len(calls) > n_calls_before:
-            break
-        time.sleep(0.02)
-    assert len(calls) > n_calls_before, "toggle on: param edit should wake process()"
+    assert n.params.test.param_floatparam.expression_triggers_process is False
+    assert n.params.test.param_floatparam.expression_autoeval is False
     ref.terminate()

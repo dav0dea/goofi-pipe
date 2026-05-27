@@ -2,11 +2,12 @@
 	import type { ParamDescriptor } from '$lib/api/types';
 	import ExpressionModal from './ExpressionModal.svelte';
 
+	type SetExprOpts = { triggers_process?: boolean; autoeval?: boolean };
 	type Props = {
 		paramName: string;
 		descriptor: ParamDescriptor;
 		onCommit: (value: unknown) => void;
-		onSetExpression: (expression: string | null) => void;
+		onSetExpression: (expression: string | null, opts?: SetExprOpts) => void;
 	};
 	const { paramName, descriptor, onCommit, onSetExpression }: Props = $props();
 
@@ -38,6 +39,13 @@
 		}
 	});
 
+	function currentFlags(): SetExprOpts {
+		return {
+			triggers_process: descriptor.expression_triggers_process,
+			autoeval: descriptor.expression_autoeval
+		};
+	}
+
 	function toggleFx(): void {
 		if (exprActive) {
 			// Turn off — reverts to manual widgets with whatever value
@@ -47,9 +55,23 @@
 			// Turn on — seed the source with the current value as a Python
 			// literal so the user starts from a working state.
 			const seed = literalFor(descriptor);
-			onSetExpression(seed);
+			onSetExpression(seed, { triggers_process: false, autoeval: false });
 			exprBuf = seed;
 		}
+	}
+
+	function toggleTriggersProcess(): void {
+		onSetExpression(descriptor.expression, {
+			triggers_process: !descriptor.expression_triggers_process,
+			autoeval: descriptor.expression_autoeval
+		});
+	}
+
+	function toggleAutoeval(): void {
+		onSetExpression(descriptor.expression, {
+			triggers_process: descriptor.expression_triggers_process,
+			autoeval: !descriptor.expression_autoeval
+		});
 	}
 
 	function literalFor(d: ParamDescriptor): string {
@@ -61,7 +83,7 @@
 	}
 
 	function commitExpr(): void {
-		onSetExpression(exprBuf);
+		onSetExpression(exprBuf, currentFlags());
 	}
 
 	function previewText(): string {
@@ -98,74 +120,12 @@
 		return v.toFixed(3);
 	}
 
-	// Drag-on-label scrub. Active on numeric params: pointerdown on the
-	// label captures the pointer and converts horizontal motion into value
-	// changes. Works for mouse, touchpad, and touch (single pointer events
-	// are unified by the browser). Shift = fine (0.1×), Alt = coarse (10×).
-	let scrub: { x: number; v: number; pointerId: number } | null = null;
-
-	function startScrub(e: PointerEvent): void {
-		if (!numeric || exprActive) return;
-		// Prevent text-selection on the label and any default touch panning.
-		e.preventDefault();
-		const target = e.currentTarget as HTMLElement;
-		try {
-			target.setPointerCapture(e.pointerId);
-		} catch {
-			// Older browsers / some touch devices may reject — drag still
-			// works via the window-level listeners below as a fallback.
-		}
-		editing = true;
-		scrub = { x: e.clientX, v: Number(local ?? 0), pointerId: e.pointerId };
-	}
-
-	function moveScrub(e: PointerEvent): void {
-		if (!scrub || !numeric) return;
-		const dx = e.clientX - scrub.x;
-		const span = Math.max(hi - lo, 1e-9);
-		let sens = numeric.type === 'int' ? 1 / 4 : span / 250;
-		if (e.shiftKey) sens *= 0.1;
-		if (e.altKey) sens *= 10;
-		let v = scrub.v + dx * sens;
-		if (numeric.type === 'int') v = Math.round(v);
-		if (Number.isFinite(v)) commit(v);
-	}
-
-	function endScrub(e: PointerEvent): void {
-		if (!scrub) return;
-		const target = e.currentTarget as HTMLElement;
-		try {
-			if (target.hasPointerCapture(scrub.pointerId)) {
-				target.releasePointerCapture(scrub.pointerId);
-			}
-		} catch {
-			/* ignore */
-		}
-		scrub = null;
-		editing = false;
-	}
 </script>
 
 <div class="field" title={descriptor.doc ?? ''}>
 	<div class="top-row">
+		<span class="label">{paramName}</span>
 		{#if numeric && !exprActive}
-			<!-- svelte-ignore a11y_no_static_element_interactions -->
-			<span
-				class="label scrubbable"
-				role="slider"
-				aria-valuemin={numeric.vmin}
-				aria-valuemax={numeric.vmax}
-				aria-valuenow={Number(local)}
-				aria-label={paramName}
-				tabindex="0"
-				onpointerdown={startScrub}
-				onpointermove={moveScrub}
-				onpointerup={endScrub}
-				onpointercancel={endScrub}
-				data-testid="param-label-scrub"
-			>
-				{paramName}
-			</span>
 			<input
 				class="num"
 				type="number"
@@ -183,8 +143,6 @@
 					if (Number.isFinite(v)) commit(v);
 				}}
 			/>
-		{:else}
-			<span class="label">{paramName}</span>
 		{/if}
 		<button
 			class="fx-btn"
@@ -237,6 +195,28 @@
 		<div class="expr-preview" title={String(descriptor.value)}>
 			<span class="prefix">=</span>
 			<span class="value">{previewText()}</span>
+		</div>
+		<div class="expr-flags">
+			<button
+				class="flag-btn"
+				class:on={descriptor.expression_autoeval}
+				onclick={toggleAutoeval}
+				aria-pressed={descriptor.expression_autoeval}
+				title="Re-evaluate this expression before every process() tick (use for expressions without slot refs, e.g. time.time())"
+				data-testid="param-expr-autoeval"
+			>
+				autoeval
+			</button>
+			<button
+				class="flag-btn"
+				class:on={descriptor.expression_triggers_process}
+				onclick={toggleTriggersProcess}
+				aria-pressed={descriptor.expression_triggers_process}
+				title="When this expression's value changes, wake the node's process()"
+				data-testid="param-expr-triggers-process"
+			>
+				trigger process
+			</button>
 		</div>
 	{:else if numeric}
 		<div class="slider-row">
@@ -311,7 +291,7 @@
 		onApply={(src) => {
 			exprBuf = src;
 			modalOpen = false;
-			onSetExpression(src);
+			onSetExpression(src, currentFlags());
 		}}
 		onCancel={() => {
 			modalOpen = false;
@@ -343,26 +323,6 @@
 		text-overflow: ellipsis;
 		white-space: nowrap;
 		letter-spacing: 0.02em;
-	}
-	.label.scrubbable {
-		/* ew-resize signals the drag affordance to mouse users; touch users
-		   discover it via the standard "drag the label name" gesture. */
-		cursor: ew-resize;
-		user-select: none;
-		touch-action: none;
-		padding: 4px 0;
-		margin: -4px 0;
-		border-bottom: 1px dashed transparent;
-		transition: border-color 100ms ease, color 100ms ease;
-	}
-	.label.scrubbable:hover {
-		color: var(--text);
-		border-bottom-color: color-mix(in srgb, var(--accent) 40%, transparent);
-	}
-	.label.scrubbable:focus {
-		outline: none;
-		color: var(--text);
-		border-bottom-color: var(--accent);
 	}
 	.fx-btn {
 		font-family: var(--font-mono);
@@ -459,6 +419,37 @@
 		white-space: nowrap;
 		min-width: 0;
 	}
+	.expr-flags {
+		display: flex;
+		gap: 4px;
+		flex-wrap: wrap;
+		padding: 0 2px;
+	}
+	.flag-btn {
+		font-family: var(--font-mono);
+		font-size: 9px;
+		letter-spacing: 0.04em;
+		padding: 3px 7px;
+		min-height: 22px;
+		border: 1px solid color-mix(in srgb, var(--text-faint) 30%, transparent);
+		background: transparent;
+		color: var(--text-faint);
+		border-radius: 999px;
+		cursor: pointer;
+		transition:
+			background 80ms ease,
+			color 80ms ease,
+			border-color 80ms ease;
+	}
+	.flag-btn:hover {
+		color: var(--text);
+		border-color: var(--accent);
+	}
+	.flag-btn.on {
+		background: color-mix(in srgb, var(--accent) 20%, transparent);
+		color: var(--accent);
+		border-color: var(--accent);
+	}
 	.bound {
 		color: var(--text-faint);
 		font-family: var(--font-mono);
@@ -481,38 +472,7 @@
 		background: transparent;
 		padding: 0;
 		border: none;
-		height: 22px;
 		touch-action: pan-y;
-	}
-	input[type='range']::-webkit-slider-thumb {
-		-webkit-appearance: none;
-		appearance: none;
-		width: 16px;
-		height: 16px;
-		border-radius: 50%;
-		background: var(--accent);
-		border: 2px solid var(--bg-elev-1);
-		box-shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
-		cursor: pointer;
-	}
-	input[type='range']::-moz-range-thumb {
-		width: 16px;
-		height: 16px;
-		border-radius: 50%;
-		background: var(--accent);
-		border: 2px solid var(--bg-elev-1);
-		box-shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
-		cursor: pointer;
-	}
-	input[type='range']::-webkit-slider-runnable-track {
-		height: 3px;
-		background: var(--border);
-		border-radius: 2px;
-	}
-	input[type='range']::-moz-range-track {
-		height: 3px;
-		background: var(--border);
-		border-radius: 2px;
 	}
 	.num {
 		width: 76px;

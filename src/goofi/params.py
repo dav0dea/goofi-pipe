@@ -115,11 +115,19 @@ def adjusted_init(original_init):
     def new_init(self, *args, **kwargs):
         self.doc = kwargs.pop("doc", None)
         self.save_param = kwargs.pop("save_param", True)
-        # `expression`, when set, makes the param's value derived from a
-        # Python snippet evaluated in the owning node's process. Stored on
-        # every Param via the same monkey-patch path as `doc` / `save_param`.
-        # The cached `_value` is the most recent eval result.
+        # Expression binding: when `expression` is set, the param's value
+        # is the most recent eval result. The two flag fields control
+        # cadence and are meaningful only when `expression` is non-None.
         self.expression = kwargs.pop("expression", None)
+        # When True, a re-eval that changes the param's value wakes the
+        # node's process(). When False, the new value just sits in state
+        # until the next regular process tick.
+        self.expression_triggers_process = kwargs.pop("expression_triggers_process", False)
+        # When True, the engine re-evaluates this expression before every
+        # process() call (regardless of slot ticks). Useful for expressions
+        # like `time.time()` that have no slot reference but should still
+        # refresh per tick.
+        self.expression_autoeval = kwargs.pop("expression_autoeval", False)
         original_init(self, *args, **kwargs)
 
     return new_init
@@ -136,6 +144,11 @@ def add_extra_attributes(cls):
     # expression attribute (str | None)
     setattr(cls, "expression", None)
     cls.__dataclass_fields__["expression"] = field(default=None)
+    # per-expression cadence flags
+    setattr(cls, "expression_triggers_process", False)
+    cls.__dataclass_fields__["expression_triggers_process"] = field(default=False)
+    setattr(cls, "expression_autoeval", False)
+    cls.__dataclass_fields__["expression_autoeval"] = field(default=False)
 
     # adjust the __init__ method
     cls.__init__ = adjusted_init(cls.__init__)
@@ -174,14 +187,6 @@ DEFAULT_PARAMS = {
                 "(restart required to take effect)."
             ),
         ),
-        "process_on_param_update": BoolParam(
-            False,
-            doc=(
-                "If set, the node will run its processing function whenever any of its parameters change "
-                "(including expression-driven re-evaluations). Defaults to off so existing patches keep the "
-                "input-only trigger semantics."
-            ),
-        ),
     },
 }
 
@@ -198,15 +203,21 @@ class InvalidParamError(Exception):
 
 
 def _split_saved(saved: Any) -> tuple:
-    """Pull a (value, expression) pair from a saved param entry.
+    """Pull (value, expression, triggers_process, autoeval) from a saved entry.
 
-    Accepts the new ``{value, expression}`` dict shape and falls back to
-    treating ``saved`` as a flat scalar otherwise. ``expression`` is
-    ``None`` for the flat case so legacy .gfi files keep their behavior.
+    Accepts the rich ``{value, expression, ...}`` dict shape and falls
+    back to treating ``saved`` as a flat scalar otherwise. The flag
+    fields default to False / None when absent so legacy .gfi files
+    keep their behavior.
     """
     if isinstance(saved, dict) and "value" in saved and "_value" not in saved:
-        return saved["value"], saved.get("expression")
-    return saved, None
+        return (
+            saved["value"],
+            saved.get("expression"),
+            bool(saved.get("expression_triggers_process", False)),
+            bool(saved.get("expression_autoeval", False)),
+        )
+    return saved, None, False, False
 
 
 class NodeParams:
@@ -235,10 +246,12 @@ class NodeParams:
                         # make sure we have a Param and not just a deserialized value
                         saved = data[group_name][param_name]
                         if not isinstance(saved, Param):
-                            value, expression = _split_saved(saved)
+                            value, expression, trig, auto = _split_saved(saved)
                             param._value = value
                             if expression is not None:
                                 param.expression = expression
+                                param.expression_triggers_process = trig
+                                param.expression_autoeval = auto
                             data[group_name][param_name] = param
                     else:
                         data[group_name][param_name] = param
@@ -250,14 +263,16 @@ class NodeParams:
             for param_name, param in params.items():
                 if not isinstance(param, Param):
                     if isinstance(param, dict):
-                        # `{value, expression}` is the new expression-aware shape;
-                        # `{_value, ...}` is the legacy goofi-patch reconstruction.
+                        # `{value, expression, ...}` is the expression-aware
+                        # shape; `{_value, ...}` is the legacy goofi-patch
+                        # reconstruction.
                         if "value" in param and "_value" not in param:
-                            value = param["value"]
-                            expression = param.get("expression")
+                            value, expression, trig, auto = _split_saved(param)
                             param_type = TYPE_PARAM_MAP[type(value)]
                             new_param = param_type(value)
                             new_param.expression = expression
+                            new_param.expression_triggers_process = trig
+                            new_param.expression_autoeval = auto
                             data[group][param_name] = new_param
                             continue
                         # reconstruct serialized param object (legacy)
@@ -335,13 +350,16 @@ class NodeParams:
 
                 if not isinstance(param, Param):
                     if isinstance(param, dict):
-                        # New {value, expression} shape — preserve all
+                        # New {value, expression, ...} shape — preserve all
                         # type-specific fields (vmin/vmax/options) on the
                         # existing Param by mutating in place.
                         if "value" in param and "_value" not in param:
                             existing = self._data[group][name]
-                            existing._value = param["value"]
-                            existing.expression = param.get("expression")
+                            value, expression, trig, auto = _split_saved(param)
+                            existing._value = value
+                            existing.expression = expression
+                            existing.expression_triggers_process = trig
+                            existing.expression_autoeval = auto
                             continue
                         # !!! LOADING PARAMS FROM DICT IS A LEGACY FEATURE TO LOAD OLD GOOFI PATCHES !!!
                         # reconstruct serialized param object
@@ -385,7 +403,16 @@ class NodeParams:
                         # Asymmetric on purpose: dict shape only when an
                         # expression is bound, flat value otherwise. Keeps
                         # legacy .gfi files byte-identical in git.
-                        serialized_params[name] = {"value": param._value, "expression": expr}
+                        serialized_params[name] = {
+                            "value": param._value,
+                            "expression": expr,
+                            "expression_triggers_process": bool(
+                                getattr(param, "expression_triggers_process", False)
+                            ),
+                            "expression_autoeval": bool(
+                                getattr(param, "expression_autoeval", False)
+                            ),
+                        }
                     else:
                         serialized_params[name] = param._value
             serialized_data[group] = serialized_params

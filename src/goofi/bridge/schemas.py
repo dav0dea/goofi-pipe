@@ -31,6 +31,10 @@ def describe_param(p: Param) -> Dict[str, Any]:
         "doc": p.doc,
         "save_param": p.save_param,
         "expression": getattr(p, "expression", None),
+        "expression_triggers_process": bool(
+            getattr(p, "expression_triggers_process", False)
+        ),
+        "expression_autoeval": bool(getattr(p, "expression_autoeval", False)),
     }
     if isinstance(p, FloatParam):
         out["type"] = "float"

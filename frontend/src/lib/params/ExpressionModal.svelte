@@ -12,6 +12,113 @@
 
 	let source = $state(initial);
 	let textarea: HTMLTextAreaElement | null = $state(null);
+	let modalEl: HTMLDivElement | null = $state(null);
+
+	// Modal geometry. Initial values are reset on mount once we can read
+	// the viewport size — we want centered + clamped, not the raw
+	// constants below.
+	let pos = $state({ x: 0, y: 0 });
+	let size = $state({ w: 640, h: 400 });
+	const MIN_W = 320;
+	const MIN_H = 220;
+	const MARGIN = 8;
+
+	let dragStart: { mx: number; my: number; px: number; py: number; pointerId: number } | null = null;
+	let resizeStart: { mx: number; my: number; w: number; h: number; pointerId: number } | null = null;
+
+	function clampPos(x: number, y: number, w: number, h: number) {
+		const vw = window.innerWidth;
+		const vh = window.innerHeight;
+		return {
+			x: Math.max(MARGIN, Math.min(vw - w - MARGIN, x)),
+			y: Math.max(MARGIN, Math.min(vh - h - MARGIN, y))
+		};
+	}
+
+	function clampSize(w: number, h: number) {
+		const vw = window.innerWidth;
+		const vh = window.innerHeight;
+		return {
+			w: Math.max(MIN_W, Math.min(vw - 2 * MARGIN, w)),
+			h: Math.max(MIN_H, Math.min(vh - 2 * MARGIN, h))
+		};
+	}
+
+	function startDrag(e: PointerEvent): void {
+		// Don't start a drag from the close button.
+		if ((e.target as HTMLElement).closest('button')) return;
+		e.preventDefault();
+		const target = e.currentTarget as HTMLElement;
+		try {
+			target.setPointerCapture(e.pointerId);
+		} catch {
+			/* some touch backends refuse capture; window listener still works */
+		}
+		dragStart = { mx: e.clientX, my: e.clientY, px: pos.x, py: pos.y, pointerId: e.pointerId };
+	}
+
+	function moveDrag(e: PointerEvent): void {
+		if (!dragStart) return;
+		const dx = e.clientX - dragStart.mx;
+		const dy = e.clientY - dragStart.my;
+		pos = clampPos(dragStart.px + dx, dragStart.py + dy, size.w, size.h);
+	}
+
+	function endDrag(e: PointerEvent): void {
+		if (!dragStart) return;
+		const target = e.currentTarget as HTMLElement;
+		try {
+			if (target.hasPointerCapture(dragStart.pointerId)) {
+				target.releasePointerCapture(dragStart.pointerId);
+			}
+		} catch {
+			/* ignore */
+		}
+		dragStart = null;
+	}
+
+	function startResize(e: PointerEvent): void {
+		e.preventDefault();
+		e.stopPropagation();
+		const target = e.currentTarget as HTMLElement;
+		try {
+			target.setPointerCapture(e.pointerId);
+		} catch {
+			/* ignore */
+		}
+		resizeStart = {
+			mx: e.clientX,
+			my: e.clientY,
+			w: size.w,
+			h: size.h,
+			pointerId: e.pointerId
+		};
+	}
+
+	function moveResize(e: PointerEvent): void {
+		if (!resizeStart) return;
+		const dx = e.clientX - resizeStart.mx;
+		const dy = e.clientY - resizeStart.my;
+		const next = clampSize(resizeStart.w + dx, resizeStart.h + dy);
+		// Don't allow resize to push the modal off-screen on the right /
+		// bottom: clamp width / height against current position too.
+		const maxW = Math.max(MIN_W, window.innerWidth - pos.x - MARGIN);
+		const maxH = Math.max(MIN_H, window.innerHeight - pos.y - MARGIN);
+		size = { w: Math.min(next.w, maxW), h: Math.min(next.h, maxH) };
+	}
+
+	function endResize(e: PointerEvent): void {
+		if (!resizeStart) return;
+		const target = e.currentTarget as HTMLElement;
+		try {
+			if (target.hasPointerCapture(resizeStart.pointerId)) {
+				target.releasePointerCapture(resizeStart.pointerId);
+			}
+		} catch {
+			/* ignore */
+		}
+		resizeStart = null;
+	}
 
 	function apply(): void {
 		onApply(source);
@@ -29,90 +136,152 @@
 		}
 	}
 
+	// Portal action: move the entire modal subtree to document.body so it
+	// escapes the side-panel's `transform`-induced stacking context (a
+	// position:fixed inside a transformed ancestor is positioned relative
+	// to that ancestor, not the viewport — that was the original bug
+	// where the modal hung off the right edge).
+	function portal(node: HTMLElement) {
+		const target = document.body;
+		target.appendChild(node);
+		return {
+			destroy() {
+				if (node.parentNode === target) target.removeChild(node);
+			}
+		};
+	}
+
+	function onWindowResize(): void {
+		// Re-clamp on viewport change so a previously valid layout doesn't
+		// end up off-screen after the user resizes their window.
+		const next = clampSize(size.w, size.h);
+		size = next;
+		pos = clampPos(pos.x, pos.y, next.w, next.h);
+	}
+
 	onMount(() => {
-		// Capture phase so Escape doesn't propagate to Editor's clear-selection
-		// handler and so Cmd+Enter doesn't fire a TopBar shortcut.
+		// Size first, position second — clamp size to viewport then center.
+		const s = clampSize(size.w, size.h);
+		size = s;
+		pos = {
+			x: Math.max(MARGIN, (window.innerWidth - s.w) / 2),
+			y: Math.max(MARGIN, (window.innerHeight - s.h) / 2)
+		};
 		window.addEventListener('keydown', onKeydown, true);
+		window.addEventListener('resize', onWindowResize);
 		textarea?.focus();
-		// Place caret at end so the user can keep typing where they left off.
 		const len = source.length;
 		textarea?.setSelectionRange(len, len);
-		return () => window.removeEventListener('keydown', onKeydown, true);
+		return () => {
+			window.removeEventListener('keydown', onKeydown, true);
+			window.removeEventListener('resize', onWindowResize);
+		};
 	});
 </script>
 
-<div
-	class="modal-overlay"
-	role="presentation"
-	onclick={onCancel}
-	data-testid="expression-modal"
-></div>
-<div class="modal" role="dialog" aria-label="Edit expression: {title}">
-	<header>
-		<div class="title">edit expression: <span class="param">{title}</span></div>
-		<button
-			class="close"
-			onclick={onCancel}
-			aria-label="Close"
-			data-testid="expression-modal-cancel"
+<div use:portal class="modal-root">
+	<div
+		class="modal-overlay"
+		role="presentation"
+		onclick={onCancel}
+		data-testid="expression-modal"
+	></div>
+	<div
+		bind:this={modalEl}
+		class="modal"
+		role="dialog"
+		aria-label="Edit expression: {title}"
+		style="left: {pos.x}px; top: {pos.y}px; width: {size.w}px; height: {size.h}px;"
+	>
+		<!-- svelte-ignore a11y_no_static_element_interactions -->
+		<header
+			class="drag-handle"
+			onpointerdown={startDrag}
+			onpointermove={moveDrag}
+			onpointerup={endDrag}
+			onpointercancel={endDrag}
 		>
-			✕
-		</button>
-	</header>
-	<textarea
-		bind:this={textarea}
-		bind:value={source}
-		spellcheck="false"
-		autocapitalize="off"
-		data-testid="expression-modal-textarea"
-	></textarea>
-	<footer>
-		<div class="preview">
-			<span class="hint">preview:</span>
-			<span class="value">{preview}</span>
-		</div>
-		<div class="actions">
-			<span class="kbd-hint">⌃⏎ apply · esc cancel</span>
-			<button class="btn ghost" onclick={onCancel} data-testid="expression-modal-cancel-btn">
-				cancel
+			<div class="title">edit expression: <span class="param">{title}</span></div>
+			<button
+				class="close"
+				onclick={onCancel}
+				aria-label="Close"
+				data-testid="expression-modal-cancel"
+			>
+				✕
 			</button>
-			<button class="btn primary" onclick={apply} data-testid="expression-modal-apply">
-				apply
-			</button>
-		</div>
-	</footer>
+		</header>
+		<textarea
+			bind:this={textarea}
+			bind:value={source}
+			spellcheck="false"
+			autocapitalize="off"
+			data-testid="expression-modal-textarea"
+		></textarea>
+		<footer>
+			<div class="preview">
+				<span class="hint">preview:</span>
+				<span class="value">{preview}</span>
+			</div>
+			<div class="actions">
+				<span class="kbd-hint">⌃⏎ apply · esc cancel</span>
+				<button class="btn ghost" onclick={onCancel} data-testid="expression-modal-cancel-btn">
+					cancel
+				</button>
+				<button class="btn primary" onclick={apply} data-testid="expression-modal-apply">
+					apply
+				</button>
+			</div>
+		</footer>
+		<!-- Resize handle: a small grip in the bottom-right corner. -->
+		<div
+			class="resize-grip"
+			role="presentation"
+			onpointerdown={startResize}
+			onpointermove={moveResize}
+			onpointerup={endResize}
+			onpointercancel={endResize}
+			data-testid="expression-modal-resize"
+		></div>
+	</div>
 </div>
 
 <style>
-	.modal-overlay {
+	.modal-root {
+		/* Portaled to body; lives outside the side-panel stacking context. */
 		position: fixed;
+		inset: 0;
+		z-index: 200;
+		pointer-events: none;
+	}
+	.modal-overlay {
+		position: absolute;
 		inset: 0;
 		background: color-mix(in srgb, var(--bg) 65%, transparent);
 		backdrop-filter: blur(2px);
-		z-index: 200;
+		pointer-events: auto;
 	}
 	.modal {
-		position: fixed;
-		left: 50%;
-		top: 50%;
-		transform: translate(-50%, -50%);
-		width: min(640px, 90vw);
-		max-width: 640px;
-		max-height: 80vh;
+		position: absolute;
 		display: flex;
 		flex-direction: column;
 		background: var(--bg-elev-1);
 		border: 1px solid var(--border);
 		border-radius: var(--radius-md);
 		box-shadow: 0 12px 48px rgba(0, 0, 0, 0.6);
-		z-index: 201;
+		pointer-events: auto;
+		overflow: hidden;
 	}
-	header {
+	.drag-handle {
 		display: flex;
 		align-items: center;
 		gap: 10px;
 		padding: 10px 14px;
 		border-bottom: 1px solid var(--border);
+		cursor: move;
+		user-select: none;
+		touch-action: none;
+		flex-shrink: 0;
 	}
 	.title {
 		flex: 1;
@@ -143,7 +312,7 @@
 	}
 	textarea {
 		flex: 1;
-		min-height: 200px;
+		min-height: 0;
 		resize: none;
 		padding: 14px;
 		font-family: var(--font-mono);
@@ -161,6 +330,7 @@
 		gap: 10px;
 		padding: 8px 14px;
 		border-top: 1px solid var(--border);
+		flex-shrink: 0;
 	}
 	.preview {
 		flex: 1;
@@ -224,5 +394,28 @@
 	}
 	.btn.primary:hover {
 		background: color-mix(in srgb, var(--accent) 80%, white);
+	}
+	.resize-grip {
+		position: absolute;
+		right: 0;
+		bottom: 0;
+		width: 14px;
+		height: 14px;
+		cursor: nwse-resize;
+		touch-action: none;
+		/* A subtle diagonal hash so the affordance is visible without
+		   shouting. Two stacked lines drawn via repeating-linear-gradient. */
+		background: repeating-linear-gradient(
+			135deg,
+			transparent 0,
+			transparent 3px,
+			var(--text-faint) 3px,
+			var(--text-faint) 4px
+		);
+		opacity: 0.5;
+		transition: opacity 100ms ease;
+	}
+	.resize-grip:hover {
+		opacity: 1;
 	}
 </style>

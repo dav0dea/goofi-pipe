@@ -228,7 +228,15 @@ class Node(ABC):
                 expr = getattr(param, "expression", None)
                 if expr:
                     try:
-                        self._set_expression(group, name, expr)
+                        self._set_expression(
+                            group,
+                            name,
+                            expr,
+                            triggers_process=bool(
+                                getattr(param, "expression_triggers_process", False)
+                            ),
+                            autoeval=bool(getattr(param, "expression_autoeval", False)),
+                        )
                     except Exception:
                         self._report_error(traceback.format_exc())
 
@@ -264,7 +272,14 @@ class Node(ABC):
     # Expression-bound params
     # ------------------------------------------------------------------
 
-    def _set_expression(self, group: str, name: str, expression: Optional[str]) -> None:
+    def _set_expression(
+        self,
+        group: str,
+        name: str,
+        expression: Optional[str],
+        triggers_process: bool = False,
+        autoeval: bool = False,
+    ) -> None:
         """Bind / unbind an expression on a param. Called from _handle_ctrl
         and (one-shot) when the node spins up with saved expressions."""
         if group not in self.params or name not in self.params[group]:
@@ -279,6 +294,8 @@ class Node(ABC):
             if engine is not None:
                 engine.close()
             param.expression = None
+            param.expression_triggers_process = False
+            param.expression_autoeval = False
             self._mark_dirty()
             return
 
@@ -297,6 +314,8 @@ class Node(ABC):
         else:
             self._report_error(None)
         param.expression = expression
+        param.expression_triggers_process = bool(triggers_process)
+        param.expression_autoeval = bool(autoeval)
         # Warm eval so the param has a value immediately. Subscriptions
         # for any referenced slots are opened during this first call.
         self._apply_expression(key, engine)
@@ -305,8 +324,9 @@ class Node(ABC):
     def _apply_expression(self, key: Tuple[str, str], engine: ExpressionEngine) -> None:
         """Run the engine once and push its result into the param.
 
-        Honors common.process_on_param_update for the re-trigger; the
-        param's value is always updated regardless of the toggle.
+        The new value is always written into the param. Whether that
+        change wakes process() is gated by the per-param
+        `expression_triggers_process` flag.
         """
         group, name = key
         result = engine.evaluate()
@@ -321,7 +341,7 @@ class Node(ABC):
         prev = param._value
         param._value = coerced
         self._mark_dirty()
-        if prev != coerced and self.params.common.process_on_param_update.value:
+        if prev != coerced and getattr(param, "expression_triggers_process", False):
             self._wake_processing()
 
     def _push_state(self) -> None:
@@ -418,11 +438,6 @@ class Node(ABC):
                     cb(value)
                 except Exception:
                     self._report_error(traceback.format_exc())
-            # Trigger a process() tick when the common toggle is on. The
-            # value has been applied; the next loop iteration will pick it
-            # up via the standard input_data snapshot.
-            if self.params.common.process_on_param_update.value:
-                self._wake_processing()
         elif t == MessageType.REGISTER_SUBSCRIBER:
             slot_name = msg.content["slot_name_out"]
             slot = self.output_slots[slot_name]
@@ -449,6 +464,8 @@ class Node(ABC):
                 group=msg.content["group"],
                 name=msg.content["param_name"],
                 expression=msg.content.get("expression"),
+                triggers_process=bool(msg.content.get("expression_triggers_process", False)),
+                autoeval=bool(msg.content.get("expression_autoeval", False)),
             )
         elif t == MessageType.CLEAR_DATA:
             slot = self.input_slots.get(msg.content["slot_name"])
@@ -593,6 +610,16 @@ class Node(ABC):
                 if sleep_time > 0:
                     time.sleep(sleep_time)
                 last_update = time.time()
+
+            # Per-param expression autoeval: re-evaluate engines whose
+            # param opted into "refresh before every process". This is what
+            # makes expressions without slot references (`time.time()`,
+            # `random.uniform(...)`) update per tick.
+            if self._expressions:
+                for key, engine in list(self._expressions.items()):
+                    param = self.params[key[0]][key[1]]
+                    if getattr(param, "expression_autoeval", False):
+                        self._apply_expression(key, engine)
 
             input_data = {name: slot.data for name, slot in self.input_slots.items()}
 

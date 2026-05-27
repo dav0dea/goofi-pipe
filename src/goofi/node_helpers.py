@@ -299,12 +299,20 @@ class NodeRef:
             )
         )
 
-    def set_expression(self, group: str, param_name: str, expression: Optional[str]) -> None:
+    def set_expression(
+        self,
+        group: str,
+        param_name: str,
+        expression: Optional[str],
+        triggers_process: bool = False,
+        autoeval: bool = False,
+    ) -> None:
         """Bind a Python expression to a parameter, or clear with ``None``.
 
-        Mirrors `update_param` shape; the node's expression engine handles
-        compilation, subscriptions to referenced output slots, and the
-        per-tick re-evaluation. State echoes back via STATE_UPDATE.
+        Mirrors `update_param` shape. ``triggers_process`` makes a re-eval
+        that changes the param's value wake `process()`; ``autoeval``
+        makes the engine refresh before every process tick (useful for
+        expressions with no slot reference).
         """
         if group not in self.params:
             raise ValueError(f"Parameter group '{group}' doesn't exist.")
@@ -312,11 +320,20 @@ class NodeRef:
             raise ValueError(f"Parameter '{param_name}' doesn't exist in group '{group}'.")
         # Reflect locally so the manager's snapshot matches what the node
         # will publish on its next state update.
-        self.params[group][param_name].expression = expression
+        p = self.params[group][param_name]
+        p.expression = expression
+        p.expression_triggers_process = bool(triggers_process)
+        p.expression_autoeval = bool(autoeval)
         self._send(
             Message(
                 MessageType.SET_EXPRESSION,
-                {"group": group, "param_name": param_name, "expression": expression},
+                {
+                    "group": group,
+                    "param_name": param_name,
+                    "expression": expression,
+                    "expression_triggers_process": bool(triggers_process),
+                    "expression_autoeval": bool(autoeval),
+                },
             )
         )
 

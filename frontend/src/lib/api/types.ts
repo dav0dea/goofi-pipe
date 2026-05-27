@@ -8,6 +8,13 @@ export interface BaseParam {
 	 * evaluated in the owning node's process. UI shows an `fx` mode in
 	 * place of the normal slider / number / text widget. */
 	expression: string | null;
+	/** Per-expression flag: when true, a re-eval that changes the param's
+	 * value wakes the node's `process()`. */
+	expression_triggers_process: boolean;
+	/** Per-expression flag: when true, the expression is re-evaluated
+	 * before every process() tick — useful for expressions with no slot
+	 * reference (e.g. `time.time()`). */
+	expression_autoeval: boolean;
 }
 
 export interface FloatParam extends BaseParam {

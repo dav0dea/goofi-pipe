@@ -15,9 +15,14 @@
 		void g.updateParam(node.name, group, name, value);
 	}
 
-	function setExpression(group: string, name: string, expression: string | null): void {
+	function setExpression(
+		group: string,
+		name: string,
+		expression: string | null,
+		opts: { triggers_process?: boolean; autoeval?: boolean } = {}
+	): void {
 		if (!node) return;
-		void g.setExpression(node.name, group, name, expression);
+		void g.setExpression(node.name, group, name, expression, opts);
 	}
 
 	// Sort groups: node-specific groups alphabetical, 'common' last.
@@ -116,7 +121,8 @@
 						{paramName}
 						{descriptor}
 						onCommit={(v) => setValue(activeTab ?? '', paramName, v)}
-						onSetExpression={(expr) => setExpression(activeTab ?? '', paramName, expr)}
+						onSetExpression={(expr, opts) =>
+							setExpression(activeTab ?? '', paramName, expr, opts)}
 					/>
 				{/each}
 			{/if}
