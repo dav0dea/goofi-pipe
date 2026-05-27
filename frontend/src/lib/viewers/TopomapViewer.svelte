@@ -1,6 +1,14 @@
 <script lang="ts">
 	import type { DataFrame, ArrayData } from '$lib/codec/decode';
 	import { EEG_LAYOUT } from './eegLayout';
+	import {
+		buildLayout,
+		buildPixelCache,
+		solveWeights,
+		evaluateField,
+		type TopoLayout,
+		type PixelCache
+	} from './topomapInterp';
 	import { onMount, onDestroy } from 'svelte';
 
 	type Props = { frame: DataFrame };
@@ -11,18 +19,93 @@
 	let imageData: ImageData | null = null;
 	let size = $state({ w: 200, h: 200 });
 
+	let layout: TopoLayout | null = null;
+	let pixelCache: PixelCache | null = null;
+	let field: Float32Array | null = null;
+
 	function asArray(d: DataFrame['data']): ArrayData {
 		return d as ArrayData;
 	}
 
-	function viridis(t: number): [number, number, number] {
-		t = Math.max(0, Math.min(1, t));
-		// Quintic approximation of the inferno-ish ramp — close enough for a
-		// small EEG topomap, and pure-JS so we don't bundle a colormap lib.
-		const r = Math.min(255, Math.max(0, Math.round(255 * Math.sqrt(t))));
-		const g = Math.min(255, Math.max(0, Math.round(255 * t * t)));
-		const b = Math.min(255, Math.max(0, Math.round(255 * Math.pow(t, 3) * 0.5)));
-		return [r, g, b];
+	// 17-point piecewise-linear approximation of matplotlib's `coolwarm` sampled
+	// at t = 0, 1/16, …, 1. Visually matches the real cmap; the 256-entry LUT
+	// below is built at module init from these control points.
+	const COOLWARM_STOPS: ReadonlyArray<readonly [number, number, number]> = [
+		[59, 76, 192],
+		[78, 104, 216],
+		[98, 130, 234],
+		[119, 154, 247],
+		[141, 176, 254],
+		[163, 194, 254],
+		[185, 208, 249],
+		[204, 217, 237],
+		[221, 220, 220],
+		[236, 211, 197],
+		[245, 196, 172],
+		[247, 176, 147],
+		[244, 152, 122],
+		[235, 125, 98],
+		[221, 95, 75],
+		[202, 59, 55],
+		[180, 4, 38]
+	];
+
+	const COOLWARM_LUT = (() => {
+		const lut = new Uint8Array(256 * 3);
+		const segments = COOLWARM_STOPS.length - 1;
+		for (let i = 0; i < 256; i++) {
+			const t = (i / 255) * segments;
+			const lo = Math.min(segments - 1, Math.floor(t));
+			const f = t - lo;
+			const a = COOLWARM_STOPS[lo];
+			const b = COOLWARM_STOPS[lo + 1];
+			lut[i * 3 + 0] = Math.round(a[0] + (b[0] - a[0]) * f);
+			lut[i * 3 + 1] = Math.round(a[1] + (b[1] - a[1]) * f);
+			lut[i * 3 + 2] = Math.round(a[2] + (b[2] - a[2]) * f);
+		}
+		return lut;
+	})();
+
+	function coolwarmIndex(v: number): number {
+		// Map v ∈ [-1, 1] (clamped) to LUT index 0..255.
+		const t = v <= -1 ? 0 : v >= 1 ? 1 : (v + 1) * 0.5;
+		return (t * 255) | 0;
+	}
+
+	function drawMessage(ctx: CanvasRenderingContext2D, w: number, h: number, msg: string): void {
+		ctx.fillStyle = '#1c2029';
+		ctx.fillRect(0, 0, w, h);
+		ctx.fillStyle = '#9aa3b3';
+		ctx.font = '11px var(--font-mono)';
+		ctx.textAlign = 'center';
+		ctx.fillText(msg, w / 2, h / 2);
+	}
+
+	function drawHeadDecor(
+		ctx: CanvasRenderingContext2D,
+		w: number,
+		h: number,
+		channels: Array<[number, number]>
+	): void {
+		const cx = w / 2;
+		const cy = h / 2;
+		const radius = Math.min(w, h) * 0.45;
+		ctx.strokeStyle = '#c5c8d6';
+		ctx.lineWidth = 1.5;
+		ctx.beginPath();
+		ctx.arc(cx, cy, radius, 0, Math.PI * 2);
+		ctx.stroke();
+		ctx.beginPath();
+		ctx.moveTo(cx - 8, cy - radius);
+		ctx.lineTo(cx, cy - radius - 10);
+		ctx.lineTo(cx + 8, cy - radius);
+		ctx.stroke();
+		ctx.fillStyle = '#0e1014';
+		for (const p of channels) {
+			ctx.beginPath();
+			ctx.arc(p[0] * w, p[1] * h, 2, 0, Math.PI * 2);
+			ctx.fill();
+		}
 	}
 
 	function paint(arr: ArrayData, channels: string[]): void {
@@ -31,93 +114,78 @@
 		if (!ctx) return;
 		const w = canvas.width;
 		const h = canvas.height;
-		if (!imageData || imageData.width !== w || imageData.height !== h) {
-			imageData = ctx.createImageData(w, h);
-		}
-		const known: { x: number; y: number; v: number }[] = [];
+
 		const vals = arr.values as ArrayLike<number>;
+		const knownIdx: number[] = [];
+		const knownPos: Array<[number, number]> = [];
 		for (let i = 0; i < channels.length; i++) {
 			const name = channels[i];
 			const pos = EEG_LAYOUT[name] ?? EEG_LAYOUT[name.toUpperCase()];
 			if (!pos) continue;
-			known.push({ x: pos[0], y: pos[1], v: Number(vals[i]) });
+			knownIdx.push(i);
+			knownPos.push(pos);
 		}
-		if (known.length === 0) {
-			ctx.fillStyle = '#1c2029';
-			ctx.fillRect(0, 0, w, h);
-			ctx.fillStyle = '#9aa3b3';
-			ctx.font = '11px var(--font-mono)';
-			ctx.textAlign = 'center';
-			ctx.fillText('no recognized channels', w / 2, h / 2);
+
+		if (knownPos.length === 0) {
+			drawMessage(ctx, w, h, 'no recognized channels');
 			return;
 		}
-		let mn = Infinity;
-		let mx = -Infinity;
-		for (const k of known) {
-			if (k.v < mn) mn = k.v;
-			if (k.v > mx) mx = k.v;
+		if (knownPos.length < 3) {
+			drawMessage(ctx, w, h, 'need ≥ 3 channels for topomap');
+			return;
 		}
-		const span = mx - mn || 1;
 
-		const data = imageData.data;
-		// IDW interpolation onto the canvas. Mask outside the head circle.
-		const cx = w / 2;
-		const cy = h / 2;
-		const radius = Math.min(w, h) * 0.45;
-		for (let y = 0; y < h; y++) {
-			for (let x = 0; x < w; x++) {
-				const off = (y * w + x) * 4;
-				const dx = x - cx;
-				const dy = y - cy;
-				if (Math.sqrt(dx * dx + dy * dy) > radius) {
-					data[off + 3] = 0;
-					continue;
-				}
-				const u = x / w;
-				const vy = y / h;
-				let weight = 0;
-				let acc = 0;
-				for (const k of known) {
-					const ddx = u - k.x;
-					const ddy = vy - k.y;
-					const dist2 = ddx * ddx + ddy * ddy;
-					if (dist2 < 1e-6) {
-						acc = k.v;
-						weight = 1;
-						break;
-					}
-					const wgt = 1 / dist2;
-					acc += wgt * k.v;
-					weight += wgt;
-				}
-				const v = (acc / weight - mn) / span;
-				const [r, g, b] = viridis(v);
-				data[off] = r;
-				data[off + 1] = g;
-				data[off + 2] = b;
-				data[off + 3] = 255;
+		const layoutKey = knownPos.map((p) => `${p[0]},${p[1]}`).join('|');
+		if (!layout || layout.layoutKey !== layoutKey) {
+			try {
+				layout = buildLayout(knownPos, layoutKey);
+			} catch {
+				layout = null;
 			}
+			pixelCache = null;
+			field = null;
+		}
+		if (!layout) {
+			drawMessage(ctx, w, h, 'topomap layout failed');
+			return;
+		}
+		if (
+			!pixelCache ||
+			pixelCache.width !== w ||
+			pixelCache.height !== h ||
+			pixelCache.layoutKey !== layoutKey
+		) {
+			pixelCache = buildPixelCache(layout, w, h);
+			field = new Float32Array(pixelCache.count);
+		}
+		if (!field) return;
+
+		const realVals = new Float64Array(knownIdx.length);
+		for (let i = 0; i < knownIdx.length; i++) {
+			realVals[i] = Number(vals[knownIdx[i]]);
+		}
+
+		const weights = solveWeights(layout, realVals);
+		evaluateField(layout, pixelCache, weights, field);
+
+		if (!imageData || imageData.width !== w || imageData.height !== h) {
+			imageData = ctx.createImageData(w, h);
+		}
+		const data = imageData.data;
+		data.fill(0);
+		const offsets = pixelCache.pixelByteOffsets;
+		const count = pixelCache.count;
+		const lut = COOLWARM_LUT;
+		for (let p = 0; p < count; p++) {
+			const off = offsets[p];
+			const idx = coolwarmIndex(field[p]) * 3;
+			data[off] = lut[idx];
+			data[off + 1] = lut[idx + 1];
+			data[off + 2] = lut[idx + 2];
+			data[off + 3] = 255;
 		}
 		ctx.putImageData(imageData, 0, 0);
-		// Head outline
-		ctx.strokeStyle = '#c5c8d6';
-		ctx.lineWidth = 1.5;
-		ctx.beginPath();
-		ctx.arc(cx, cy, radius, 0, Math.PI * 2);
-		ctx.stroke();
-		// Nose
-		ctx.beginPath();
-		ctx.moveTo(cx - 8, cy - radius);
-		ctx.lineTo(cx, cy - radius - 10);
-		ctx.lineTo(cx + 8, cy - radius);
-		ctx.stroke();
-		// Channel dots
-		ctx.fillStyle = '#0e1014';
-		for (const k of known) {
-			ctx.beginPath();
-			ctx.arc(k.x * w, k.y * h, 2, 0, Math.PI * 2);
-			ctx.fill();
-		}
+		drawHeadDecor(ctx, w, h, knownPos);
 	}
 
 	$effect(() => {
