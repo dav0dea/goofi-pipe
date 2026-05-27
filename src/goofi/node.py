@@ -232,6 +232,7 @@ class Node(ABC):
                             group,
                             name,
                             expr,
+                            enabled=bool(getattr(param, "expression_enabled", False)),
                             triggers_process=bool(
                                 getattr(param, "expression_triggers_process", False)
                             ),
@@ -277,48 +278,56 @@ class Node(ABC):
         group: str,
         name: str,
         expression: Optional[str],
+        enabled: bool = False,
         triggers_process: bool = False,
         autoeval: bool = False,
     ) -> None:
-        """Bind / unbind an expression on a param. Called from _handle_ctrl
-        and (one-shot) when the node spins up with saved expressions."""
+        """Bind / unbind an expression on a param.
+
+        ``expression`` is the source — kept on the Param even when
+        ``enabled`` is False so a user can toggle fx off and back on
+        without losing what they wrote. ``enabled`` gates whether the
+        ExpressionEngine is actually constructed and evaluating.
+        """
         if group not in self.params or name not in self.params[group]:
             self._report_error(f"Unknown parameter {group}.{name}")
             return
         param = self.params[group][name]
         key = (group, name)
 
-        if expression is None or expression.strip() == "":
-            # Tear down any existing engine and clear the param's expr.
-            engine = self._expressions.pop(key, None)
-            if engine is not None:
-                engine.close()
-            param.expression = None
-            param.expression_triggers_process = False
-            param.expression_autoeval = False
-            self._mark_dirty()
-            return
+        # Normalise: empty string source counts as "no source".
+        source = expression if (expression and expression.strip()) else None
+        # An engine can only run when there's a source AND the user has
+        # enabled it. Otherwise we tear it down but keep the source.
+        active = bool(enabled) and source is not None
 
-        engine = self._expressions.get(key)
-        if engine is None:
-            engine = ExpressionEngine(
-                location=f"{self.node_id}.{group}.{name}",
-                on_listener_added=self._waitset.attach,
-                on_listener_removed=self._waitset.detach,
-            )
-            self._expressions[key] = engine
-
-        engine.set_source(expression)
-        if engine.last_error:
-            self._report_error(engine.last_error)
-        else:
-            self._report_error(None)
-        param.expression = expression
+        param.expression = source
+        param.expression_enabled = active
         param.expression_triggers_process = bool(triggers_process)
         param.expression_autoeval = bool(autoeval)
-        # Warm eval so the param has a value immediately. Subscriptions
-        # for any referenced slots are opened during this first call.
-        self._apply_expression(key, engine)
+
+        engine = self._expressions.get(key)
+        if active:
+            if engine is None:
+                engine = ExpressionEngine(
+                    location=f"{self.node_id}.{group}.{name}",
+                    on_listener_added=self._waitset.attach,
+                    on_listener_removed=self._waitset.detach,
+                )
+                self._expressions[key] = engine
+            engine.set_source(source)
+            if engine.last_error:
+                self._report_error(engine.last_error)
+            else:
+                self._report_error(None)
+            # Warm eval so the param has a value immediately. Subscriptions
+            # for any referenced slots are opened during this first call.
+            self._apply_expression(key, engine)
+        else:
+            # Tear down any running engine; the source stays on the Param.
+            if engine is not None:
+                engine.close()
+                self._expressions.pop(key, None)
         self._mark_dirty()
 
     def _apply_expression(self, key: Tuple[str, str], engine: ExpressionEngine) -> None:
@@ -464,6 +473,7 @@ class Node(ABC):
                 group=msg.content["group"],
                 name=msg.content["param_name"],
                 expression=msg.content.get("expression"),
+                enabled=bool(msg.content.get("expression_enabled", False)),
                 triggers_process=bool(msg.content.get("expression_triggers_process", False)),
                 autoeval=bool(msg.content.get("expression_autoeval", False)),
             )

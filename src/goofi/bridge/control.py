@@ -184,6 +184,7 @@ class ControlHub:
                 payload["group"],
                 payload["name"],
                 payload.get("expression"),
+                bool(payload.get("expression_enabled", False)),
                 bool(payload.get("expression_triggers_process", False)),
                 bool(payload.get("expression_autoeval", False)),
             )

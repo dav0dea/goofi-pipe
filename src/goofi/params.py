@@ -115,10 +115,15 @@ def adjusted_init(original_init):
     def new_init(self, *args, **kwargs):
         self.doc = kwargs.pop("doc", None)
         self.save_param = kwargs.pop("save_param", True)
-        # Expression binding: when `expression` is set, the param's value
-        # is the most recent eval result. The two flag fields control
-        # cadence and are meaningful only when `expression` is non-None.
+        # Expression binding. `expression` holds the source code (None if
+        # no expression has been authored yet). `expression_enabled`
+        # gates whether the source is actually evaluated — toggling the
+        # fx button off in the UI sets this False without losing the
+        # source, so the user can flip back and forth between a static
+        # value and the previously-authored expression. The cadence
+        # flags below are part of the binding and survive the toggle.
         self.expression = kwargs.pop("expression", None)
+        self.expression_enabled = kwargs.pop("expression_enabled", False)
         # When True, a re-eval that changes the param's value wakes the
         # node's process(). When False, the new value just sits in state
         # until the next regular process tick.
@@ -141,9 +146,12 @@ def add_extra_attributes(cls):
     # save_param attribute
     setattr(cls, "save_param", True)
     cls.__dataclass_fields__["save_param"] = field(default=True)
-    # expression attribute (str | None)
+    # expression attribute (str | None) — the source code
     setattr(cls, "expression", None)
     cls.__dataclass_fields__["expression"] = field(default=None)
+    # whether the source is currently being evaluated
+    setattr(cls, "expression_enabled", False)
+    cls.__dataclass_fields__["expression_enabled"] = field(default=False)
     # per-expression cadence flags
     setattr(cls, "expression_triggers_process", False)
     cls.__dataclass_fields__["expression_triggers_process"] = field(default=False)
@@ -203,21 +211,25 @@ class InvalidParamError(Exception):
 
 
 def _split_saved(saved: Any) -> tuple:
-    """Pull (value, expression, triggers_process, autoeval) from a saved entry.
+    """Pull (value, expression, enabled, triggers_process, autoeval) from
+    a saved param entry.
 
     Accepts the rich ``{value, expression, ...}`` dict shape and falls
     back to treating ``saved`` as a flat scalar otherwise. The flag
     fields default to False / None when absent so legacy .gfi files
-    keep their behavior.
+    keep their behavior. ``enabled`` defaults to True when a saved
+    expression is present (older .gfi files predate the flag).
     """
     if isinstance(saved, dict) and "value" in saved and "_value" not in saved:
+        expr = saved.get("expression")
         return (
             saved["value"],
-            saved.get("expression"),
+            expr,
+            bool(saved.get("expression_enabled", expr is not None)),
             bool(saved.get("expression_triggers_process", False)),
             bool(saved.get("expression_autoeval", False)),
         )
-    return saved, None, False, False
+    return saved, None, False, False, False
 
 
 class NodeParams:
@@ -246,10 +258,11 @@ class NodeParams:
                         # make sure we have a Param and not just a deserialized value
                         saved = data[group_name][param_name]
                         if not isinstance(saved, Param):
-                            value, expression, trig, auto = _split_saved(saved)
+                            value, expression, enabled, trig, auto = _split_saved(saved)
                             param._value = value
                             if expression is not None:
                                 param.expression = expression
+                                param.expression_enabled = enabled
                                 param.expression_triggers_process = trig
                                 param.expression_autoeval = auto
                             data[group_name][param_name] = param
@@ -267,10 +280,11 @@ class NodeParams:
                         # shape; `{_value, ...}` is the legacy goofi-patch
                         # reconstruction.
                         if "value" in param and "_value" not in param:
-                            value, expression, trig, auto = _split_saved(param)
+                            value, expression, enabled, trig, auto = _split_saved(param)
                             param_type = TYPE_PARAM_MAP[type(value)]
                             new_param = param_type(value)
                             new_param.expression = expression
+                            new_param.expression_enabled = enabled
                             new_param.expression_triggers_process = trig
                             new_param.expression_autoeval = auto
                             data[group][param_name] = new_param
@@ -355,9 +369,10 @@ class NodeParams:
                         # existing Param by mutating in place.
                         if "value" in param and "_value" not in param:
                             existing = self._data[group][name]
-                            value, expression, trig, auto = _split_saved(param)
+                            value, expression, enabled, trig, auto = _split_saved(param)
                             existing._value = value
                             existing.expression = expression
+                            existing.expression_enabled = enabled
                             existing.expression_triggers_process = trig
                             existing.expression_autoeval = auto
                             continue
@@ -406,6 +421,9 @@ class NodeParams:
                         serialized_params[name] = {
                             "value": param._value,
                             "expression": expr,
+                            "expression_enabled": bool(
+                                getattr(param, "expression_enabled", False)
+                            ),
                             "expression_triggers_process": bool(
                                 getattr(param, "expression_triggers_process", False)
                             ),

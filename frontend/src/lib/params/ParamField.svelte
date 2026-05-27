@@ -2,7 +2,7 @@
 	import type { ParamDescriptor } from '$lib/api/types';
 	import ExpressionModal from './ExpressionModal.svelte';
 
-	type SetExprOpts = { triggers_process?: boolean; autoeval?: boolean };
+	type SetExprOpts = { enabled?: boolean; triggers_process?: boolean; autoeval?: boolean };
 	type Props = {
 		paramName: string;
 		descriptor: ParamDescriptor;
@@ -27,9 +27,9 @@
 	}
 
 	// --- expression mode ---
-	const exprActive = $derived(descriptor.expression !== null);
+	const exprActive = $derived(descriptor.expression_enabled);
 	// Buffer for the inline single-line editor. Kept in sync with the
-	// backend value via $effect unless the user is actively typing.
+	// backend source via $effect unless the user is actively typing.
 	let exprBuf = $state<string>('');
 	let exprEditing = $state(false);
 	let modalOpen = $state(false);
@@ -41,6 +41,7 @@
 
 	function currentFlags(): SetExprOpts {
 		return {
+			enabled: descriptor.expression_enabled,
 			triggers_process: descriptor.expression_triggers_process,
 			autoeval: descriptor.expression_autoeval
 		};
@@ -48,20 +49,29 @@
 
 	function toggleFx(): void {
 		if (exprActive) {
-			// Turn off — reverts to manual widgets with whatever value
-			// the expression last produced.
-			onSetExpression(null);
+			// Turn off — engine stops, source is stashed on the param so
+			// the user can flip back on without losing what they wrote.
+			onSetExpression(descriptor.expression, {
+				enabled: false,
+				triggers_process: descriptor.expression_triggers_process,
+				autoeval: descriptor.expression_autoeval
+			});
 		} else {
-			// Turn on — seed the source with the current value as a Python
-			// literal so the user starts from a working state.
-			const seed = literalFor(descriptor);
-			onSetExpression(seed, { triggers_process: false, autoeval: false });
+			// Turn on — use the stashed source if there is one, else seed
+			// from the current value as a Python literal.
+			const seed = descriptor.expression ?? literalFor(descriptor);
+			onSetExpression(seed, {
+				enabled: true,
+				triggers_process: descriptor.expression_triggers_process,
+				autoeval: descriptor.expression_autoeval
+			});
 			exprBuf = seed;
 		}
 	}
 
 	function toggleTriggersProcess(): void {
 		onSetExpression(descriptor.expression, {
+			enabled: descriptor.expression_enabled,
 			triggers_process: !descriptor.expression_triggers_process,
 			autoeval: descriptor.expression_autoeval
 		});
@@ -69,6 +79,7 @@
 
 	function toggleAutoeval(): void {
 		onSetExpression(descriptor.expression, {
+			enabled: descriptor.expression_enabled,
 			triggers_process: descriptor.expression_triggers_process,
 			autoeval: !descriptor.expression_autoeval
 		});
@@ -83,7 +94,10 @@
 	}
 
 	function commitExpr(): void {
-		onSetExpression(exprBuf, currentFlags());
+		// Committing the buffer enables the expression — editing implies
+		// "I want this to be active". If the user wants to disable, they
+		// hit the fx toggle.
+		onSetExpression(exprBuf, { ...currentFlags(), enabled: true });
 	}
 
 	function previewText(): string {
@@ -144,11 +158,33 @@
 				}}
 			/>
 		{/if}
+		{#if exprActive}
+			<button
+				class="flag-btn"
+				class:on={descriptor.expression_autoeval}
+				onclick={toggleAutoeval}
+				aria-pressed={descriptor.expression_autoeval}
+				title="Re-evaluate this expression before every process() tick (use for expressions without slot refs, e.g. time.time())"
+				data-testid="param-expr-autoeval"
+			>
+				auto
+			</button>
+			<button
+				class="flag-btn"
+				class:on={descriptor.expression_triggers_process}
+				onclick={toggleTriggersProcess}
+				aria-pressed={descriptor.expression_triggers_process}
+				title="When this expression's value changes, wake the node's process()"
+				data-testid="param-expr-triggers-process"
+			>
+				trig
+			</button>
+		{/if}
 		<button
 			class="fx-btn"
 			class:on={exprActive}
 			onclick={toggleFx}
-			title={exprActive ? 'Disable expression' : 'Bind to expression'}
+			title={exprActive ? 'Disable expression (keeps the source)' : 'Enable expression'}
 			aria-pressed={exprActive}
 			data-testid="param-fx-toggle"
 		>
@@ -166,7 +202,7 @@
 				autocorrect="off"
 				autocapitalize="off"
 				value={exprBuf}
-				placeholder="slot('node','out').data.mean()"
+				placeholder="nd('oscillator0').out.data.mean()"
 				onfocus={() => (exprEditing = true)}
 				onblur={() => {
 					exprEditing = false;
@@ -195,28 +231,6 @@
 		<div class="expr-preview" title={String(descriptor.value)}>
 			<span class="prefix">=</span>
 			<span class="value">{previewText()}</span>
-		</div>
-		<div class="expr-flags">
-			<button
-				class="flag-btn"
-				class:on={descriptor.expression_autoeval}
-				onclick={toggleAutoeval}
-				aria-pressed={descriptor.expression_autoeval}
-				title="Re-evaluate this expression before every process() tick (use for expressions without slot refs, e.g. time.time())"
-				data-testid="param-expr-autoeval"
-			>
-				autoeval
-			</button>
-			<button
-				class="flag-btn"
-				class:on={descriptor.expression_triggers_process}
-				onclick={toggleTriggersProcess}
-				aria-pressed={descriptor.expression_triggers_process}
-				title="When this expression's value changes, wake the node's process()"
-				data-testid="param-expr-triggers-process"
-			>
-				trigger process
-			</button>
 		</div>
 	{:else if numeric}
 		<div class="slider-row">
@@ -419,23 +433,18 @@
 		white-space: nowrap;
 		min-width: 0;
 	}
-	.expr-flags {
-		display: flex;
-		gap: 4px;
-		flex-wrap: wrap;
-		padding: 0 2px;
-	}
 	.flag-btn {
 		font-family: var(--font-mono);
 		font-size: 9px;
 		letter-spacing: 0.04em;
-		padding: 3px 7px;
+		padding: 2px 7px;
 		min-height: 22px;
 		border: 1px solid color-mix(in srgb, var(--text-faint) 30%, transparent);
 		background: transparent;
 		color: var(--text-faint);
 		border-radius: 999px;
 		cursor: pointer;
+		flex-shrink: 0;
 		transition:
 			background 80ms ease,
 			color 80ms ease,

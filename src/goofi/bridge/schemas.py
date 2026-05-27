@@ -31,6 +31,7 @@ def describe_param(p: Param) -> Dict[str, Any]:
         "doc": p.doc,
         "save_param": p.save_param,
         "expression": getattr(p, "expression", None),
+        "expression_enabled": bool(getattr(p, "expression_enabled", False)),
         "expression_triggers_process": bool(
             getattr(p, "expression_triggers_process", False)
         ),

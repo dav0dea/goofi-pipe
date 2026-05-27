@@ -184,17 +184,17 @@ def test_state_yaml_dumpable():
 
 
 def test_set_expression_round_trip():
-    """SET_EXPRESSION ctrl roundtrips: param's `expression` field, its
-    evaluated value, and the two cadence flags all land on the node and
-    echo back via STATE_UPDATE."""
+    """SET_EXPRESSION ctrl roundtrips: source + enabled + flags + value
+    all land on the node and echo back via STATE_UPDATE."""
     _iid()
     ref, n = FullDummyNode.create_local()
     ref.wait_for_state(timeout=2.0)
-    # Bind a self-contained expression with both flags on.
+    # Bind an enabled expression with both cadence flags on.
     ref.set_expression(
         "test",
         "param_floatparam",
         "1.5 * 2",
+        enabled=True,
         triggers_process=True,
         autoeval=True,
     )
@@ -204,16 +204,50 @@ def test_set_expression_round_trip():
         time.sleep(0.02)
     assert n.params.test.param_floatparam._value == 3.0
     assert n.params.test.param_floatparam.expression == "1.5 * 2"
+    assert n.params.test.param_floatparam.expression_enabled is True
     assert n.params.test.param_floatparam.expression_triggers_process is True
     assert n.params.test.param_floatparam.expression_autoeval is True
+    ref.terminate()
 
-    # Clear: engine torn down, flags reset, param keeps last value.
-    ref.set_expression("test", "param_floatparam", None)
+
+def test_expression_disable_preserves_source():
+    """Disabling an expression (enabled=False, same source) tears down
+    the engine but keeps the source on the Param so a later re-enable
+    restores it without losing what the user wrote."""
+    _iid()
+    ref, n = FullDummyNode.create_local()
+    ref.wait_for_state(timeout=2.0)
+    src = "42"
+    # Enable.
+    ref.set_expression("test", "param_floatparam", src, enabled=True)
+    for _ in range(80):
+        if n.params.test.param_floatparam.expression_enabled:
+            break
+        time.sleep(0.02)
+    assert n.params.test.param_floatparam.expression == src
+    assert n.params.test.param_floatparam.expression_enabled is True
+    # Disable but pass the same source: stash, no engine running.
+    ref.set_expression("test", "param_floatparam", src, enabled=False)
+    for _ in range(80):
+        if not n.params.test.param_floatparam.expression_enabled:
+            break
+        time.sleep(0.02)
+    assert n.params.test.param_floatparam.expression == src, (
+        "source must survive a disable so fx toggle is reversible"
+    )
+    assert n.params.test.param_floatparam.expression_enabled is False
+    # Re-enable with the stashed source.
+    ref.set_expression("test", "param_floatparam", src, enabled=True)
+    for _ in range(80):
+        if n.params.test.param_floatparam.expression_enabled:
+            break
+        time.sleep(0.02)
+    assert n.params.test.param_floatparam.expression_enabled is True
+    # Truly clear by sending None.
+    ref.set_expression("test", "param_floatparam", None, enabled=False)
     for _ in range(80):
         if n.params.test.param_floatparam.expression is None:
             break
         time.sleep(0.02)
     assert n.params.test.param_floatparam.expression is None
-    assert n.params.test.param_floatparam.expression_triggers_process is False
-    assert n.params.test.param_floatparam.expression_autoeval is False
     ref.terminate()

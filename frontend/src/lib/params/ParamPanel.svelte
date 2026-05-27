@@ -19,7 +19,7 @@
 		group: string,
 		name: string,
 		expression: string | null,
-		opts: { triggers_process?: boolean; autoeval?: boolean } = {}
+		opts: { enabled?: boolean; triggers_process?: boolean; autoeval?: boolean } = {}
 	): void {
 		if (!node) return;
 		void g.setExpression(node.name, group, name, expression, opts);

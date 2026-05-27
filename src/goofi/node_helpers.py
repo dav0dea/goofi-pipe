@@ -304,15 +304,18 @@ class NodeRef:
         group: str,
         param_name: str,
         expression: Optional[str],
+        enabled: bool = False,
         triggers_process: bool = False,
         autoeval: bool = False,
     ) -> None:
-        """Bind a Python expression to a parameter, or clear with ``None``.
+        """Bind a Python expression to a parameter (or stash one inactive).
 
-        Mirrors `update_param` shape. ``triggers_process`` makes a re-eval
-        that changes the param's value wake `process()`; ``autoeval``
-        makes the engine refresh before every process tick (useful for
-        expressions with no slot reference).
+        ``expression`` is the source — kept on the Param even when
+        ``enabled`` is False so the user can toggle the fx button off and
+        back on without losing what they wrote.
+        ``triggers_process`` makes a re-eval that changes the param's
+        value wake `process()`. ``autoeval`` makes the engine refresh
+        before every process tick.
         """
         if group not in self.params:
             raise ValueError(f"Parameter group '{group}' doesn't exist.")
@@ -321,7 +324,10 @@ class NodeRef:
         # Reflect locally so the manager's snapshot matches what the node
         # will publish on its next state update.
         p = self.params[group][param_name]
-        p.expression = expression
+        source = expression if (expression and expression.strip()) else None
+        active = bool(enabled) and source is not None
+        p.expression = source
+        p.expression_enabled = active
         p.expression_triggers_process = bool(triggers_process)
         p.expression_autoeval = bool(autoeval)
         self._send(
@@ -330,7 +336,8 @@ class NodeRef:
                 {
                     "group": group,
                     "param_name": param_name,
-                    "expression": expression,
+                    "expression": source,
+                    "expression_enabled": active,
                     "expression_triggers_process": bool(triggers_process),
                     "expression_autoeval": bool(autoeval),
                 },

@@ -82,41 +82,34 @@ def test_clear_source_tears_down() -> None:
     assert e._code is None  # noqa: SLF001 — direct check of cleared state
 
 
-def test_slot_accessor_returns_none_initially() -> None:
-    """`slot()` returns None on first call when no data has arrived yet.
-
-    The engine doesn't crash; the user code path that does
-    `slot(...).data` will raise, fall into the runtime-error path, and
-    last_value is preserved. This documents the behavior."""
+def test_nd_accessor_returns_none_initially() -> None:
+    """`nd('node').slot` returns None on first call when no data has
+    arrived yet. The engine doesn't crash; user code that dots through
+    a None will raise, fall into the runtime-error path, and last_value
+    is preserved."""
     e, added, _ = _make_engine()
     e.set_source("3.14")
     assert e.evaluate() == 3.14
-    # Now reference a slot — the service has no publisher in this test
-    # process, so `open_subscriber` returns a subscriber with no data.
-    e.set_source("d = slot('nonexistent_node', 'out')\n0 if d is None else d.data")
+    # Reference a slot — service has no publisher in this test process.
+    e.set_source("d = nd('nonexistent_node').out\n0 if d is None else d.data")
     v = e.evaluate()
-    # The slot returned None, expression evaluates to 0 (the `if` branch).
     assert v == 0
-    # A subscription was opened — listener added (best-effort; on systems
-    # without iceoryx2 init issues it'll be a real listener, otherwise the
-    # entry's listener may be None and add not called. Both are valid).
 
 
 def test_stale_refs_pruned_after_eval() -> None:
     """A reference dropped between evals is unsubscribed.
 
     We can't easily verify iceoryx2 close in this unit test, but we can
-    verify the internal subscribed dict shrinks and the removed callback
-    fires."""
+    verify the internal subscribed dict shrinks."""
     e, added, removed = _make_engine()
-    e.set_source("a = slot('node_a', 'out')\nb = slot('node_b', 'out')\n0")
+    e.set_source("a = nd('node_a').out\nb = nd('node_b').out\n0")
     e.evaluate()
     keys_before = set(e._subscribed.keys())  # noqa: SLF001
     assert ("node_a", "out") in keys_before
     assert ("node_b", "out") in keys_before
 
     # Drop node_b reference.
-    e.set_source("a = slot('node_a', 'out')\n0")
+    e.set_source("a = nd('node_a').out\n0")
     e.evaluate()
     keys_after = set(e._subscribed.keys())  # noqa: SLF001
     assert ("node_a", "out") in keys_after

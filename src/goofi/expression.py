@@ -1,16 +1,19 @@
 """Expression-bound parameters.
 
 A param can carry a Python snippet that references other nodes' output
-slots via a ``slot(node_id, slot_name)`` accessor; the snippet runs in
-the owning node's process and the value of the trailing expression
-(Jupyter-style) becomes the param's cached value.
+slots via the ``nd(node_id).<slot_name>`` accessor:
+
+    nd("oscillator0").out.data.mean()
+
+The snippet runs in the owning node's process and the value of the
+trailing expression (Jupyter-style) becomes the param's cached value.
 
 The engine maintains a persistent eval namespace (so ``import`` and
 helper ``def``s survive across evaluations) and a per-engine set of
-slot subscriptions opened lazily on first ``slot()`` call. After every
-successful eval, references not touched on that pass are unsubscribed
-so a branch-gated reference doesn't leak a subscription, and so editing
-the source to drop a reference is reflected in the wiring.
+slot subscriptions opened lazily on first attribute access. After
+every successful eval, references not touched on that pass are
+unsubscribed so a branch-gated reference doesn't leak a subscription
+and so editing the source to drop a reference is reflected in wiring.
 
 The engine never attaches its own listeners to a WaitSet — it pushes
 listener add/remove callbacks back to the owning node, which manages
@@ -24,6 +27,7 @@ import ast
 import datetime
 import math
 import random
+import re
 import time
 import traceback
 from dataclasses import dataclass
@@ -48,6 +52,30 @@ class _SubEntry:
     sub: Subscriber
     listener: Listener
     last: Any  # last decoded Data, or None until first arrival
+
+
+class _NodeProxy:
+    """Returned by ``nd(node_id)`` inside expression eval. Attribute
+    access maps each ``<slot_name>`` to the latest cached ``Data`` from
+    that slot — opens a subscriber lazily and records the reference on
+    the owning engine. Underscored attrs raise AttributeError so the
+    proxy stays inspectable in debuggers / reprs without accidentally
+    opening subscriptions to internal names.
+    """
+
+    __slots__ = ("_engine", "_node_id")
+
+    def __init__(self, engine: "ExpressionEngine", node_id: str) -> None:
+        object.__setattr__(self, "_engine", engine)
+        object.__setattr__(self, "_node_id", node_id)
+
+    def __getattr__(self, slot_name: str):
+        if slot_name.startswith("_"):
+            raise AttributeError(slot_name)
+        return self._engine._fetch_slot(self._node_id, slot_name)
+
+    def __repr__(self) -> str:
+        return f"nd({self._node_id!r})"
 
 
 class ExpressionEngine:
@@ -175,14 +203,19 @@ class ExpressionEngine:
             "time": time,
             "random": random,
             "datetime": datetime,
-            "slot": self._slot_accessor,
+            "re": re,
+            "nd": self._nd,
         }
 
-    def _slot_accessor(self, node_id: str, slot_name: str):
-        """The ``slot()`` function the user code calls.
+    def _nd(self, node_id: str) -> _NodeProxy:
+        """The ``nd()`` function the user code calls. Returns a proxy
+        whose attribute access maps to the cached ``Data`` of that slot.
+        """
+        return _NodeProxy(self, node_id)
 
-        Records the (node, slot) tuple as referenced this pass, opens a
-        new subscriber on first sight, drains any fresh frame into the
+    def _fetch_slot(self, node_id: str, slot_name: str):
+        """Records the (node, slot) tuple as referenced this pass, opens
+        a new subscriber on first sight, drains any fresh frame into the
         cache, and returns the latest decoded ``Data`` (or None until
         the first frame arrives).
         """

@@ -154,13 +154,14 @@ class GraphStore {
 		group: string,
 		name: string,
 		expression: string | null,
-		opts: { triggers_process?: boolean; autoeval?: boolean } = {}
+		opts: { enabled?: boolean; triggers_process?: boolean; autoeval?: boolean } = {}
 	): Promise<void> {
 		await getControl().call('set_expression', {
 			node,
 			group,
 			name,
 			expression,
+			expression_enabled: opts.enabled ?? false,
 			expression_triggers_process: opts.triggers_process ?? false,
 			expression_autoeval: opts.autoeval ?? false
 		});
