@@ -149,6 +149,15 @@ class GraphStore {
 		await getControl().call('update_param', { node, group, name, value });
 	}
 
+	async setExpression(
+		node: string,
+		group: string,
+		name: string,
+		expression: string | null
+	): Promise<void> {
+		await getControl().call('set_expression', { node, group, name, expression });
+	}
+
 	async setNodePos(name: string, pos: [number, number]): Promise<void> {
 		await getControl().call('set_node_pos', { name, pos });
 	}

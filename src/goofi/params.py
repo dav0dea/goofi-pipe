@@ -115,6 +115,11 @@ def adjusted_init(original_init):
     def new_init(self, *args, **kwargs):
         self.doc = kwargs.pop("doc", None)
         self.save_param = kwargs.pop("save_param", True)
+        # `expression`, when set, makes the param's value derived from a
+        # Python snippet evaluated in the owning node's process. Stored on
+        # every Param via the same monkey-patch path as `doc` / `save_param`.
+        # The cached `_value` is the most recent eval result.
+        self.expression = kwargs.pop("expression", None)
         original_init(self, *args, **kwargs)
 
     return new_init
@@ -128,6 +133,9 @@ def add_extra_attributes(cls):
     # save_param attribute
     setattr(cls, "save_param", True)
     cls.__dataclass_fields__["save_param"] = field(default=True)
+    # expression attribute (str | None)
+    setattr(cls, "expression", None)
+    cls.__dataclass_fields__["expression"] = field(default=None)
 
     # adjust the __init__ method
     cls.__init__ = adjusted_init(cls.__init__)
@@ -166,6 +174,14 @@ DEFAULT_PARAMS = {
                 "(restart required to take effect)."
             ),
         ),
+        "process_on_param_update": BoolParam(
+            False,
+            doc=(
+                "If set, the node will run its processing function whenever any of its parameters change "
+                "(including expression-driven re-evaluations). Defaults to off so existing patches keep the "
+                "input-only trigger semantics."
+            ),
+        ),
     },
 }
 
@@ -179,6 +195,18 @@ TYPE_PARAM_MAP = {
 
 class InvalidParamError(Exception):
     pass
+
+
+def _split_saved(saved: Any) -> tuple:
+    """Pull a (value, expression) pair from a saved param entry.
+
+    Accepts the new ``{value, expression}`` dict shape and falls back to
+    treating ``saved`` as a flat scalar otherwise. ``expression`` is
+    ``None`` for the flat case so legacy .gfi files keep their behavior.
+    """
+    if isinstance(saved, dict) and "value" in saved and "_value" not in saved:
+        return saved["value"], saved.get("expression")
+    return saved, None
 
 
 class NodeParams:
@@ -205,8 +233,12 @@ class NodeParams:
                 for param_name, param in group.items():
                     if param_name in data[group_name]:
                         # make sure we have a Param and not just a deserialized value
-                        if not isinstance(data[group_name][param_name], Param):
-                            param._value = data[group_name][param_name]
+                        saved = data[group_name][param_name]
+                        if not isinstance(saved, Param):
+                            value, expression = _split_saved(saved)
+                            param._value = value
+                            if expression is not None:
+                                param.expression = expression
                             data[group_name][param_name] = param
                     else:
                         data[group_name][param_name] = param
@@ -218,7 +250,17 @@ class NodeParams:
             for param_name, param in params.items():
                 if not isinstance(param, Param):
                     if isinstance(param, dict):
-                        # reconstruct serialized param object
+                        # `{value, expression}` is the new expression-aware shape;
+                        # `{_value, ...}` is the legacy goofi-patch reconstruction.
+                        if "value" in param and "_value" not in param:
+                            value = param["value"]
+                            expression = param.get("expression")
+                            param_type = TYPE_PARAM_MAP[type(value)]
+                            new_param = param_type(value)
+                            new_param.expression = expression
+                            data[group][param_name] = new_param
+                            continue
+                        # reconstruct serialized param object (legacy)
                         param_type = TYPE_PARAM_MAP[type(param["_value"])]
                         data[group][param_name] = param_type(**param)
                         continue
@@ -293,6 +335,14 @@ class NodeParams:
 
                 if not isinstance(param, Param):
                     if isinstance(param, dict):
+                        # New {value, expression} shape — preserve all
+                        # type-specific fields (vmin/vmax/options) on the
+                        # existing Param by mutating in place.
+                        if "value" in param and "_value" not in param:
+                            existing = self._data[group][name]
+                            existing._value = param["value"]
+                            existing.expression = param.get("expression")
+                            continue
                         # !!! LOADING PARAMS FROM DICT IS A LEGACY FEATURE TO LOAD OLD GOOFI PATCHES !!!
                         # reconstruct serialized param object
                         param_type = type(self._data[group][name])
@@ -330,8 +380,14 @@ class NodeParams:
             serialized_params = {}
             for name, param in params.items():
                 if param.save_param:
-                    param = param._value
-                    serialized_params[name] = param
+                    expr = getattr(param, "expression", None)
+                    if expr is not None:
+                        # Asymmetric on purpose: dict shape only when an
+                        # expression is bound, flat value otherwise. Keeps
+                        # legacy .gfi files byte-identical in git.
+                        serialized_params[name] = {"value": param._value, "expression": expr}
+                    else:
+                        serialized_params[name] = param._value
             serialized_data[group] = serialized_params
         return serialized_data
 

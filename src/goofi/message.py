@@ -30,6 +30,12 @@ class MessageType(Enum):
         - `group` (str): the parameter group.
         - `param_name` (str): the parameter name.
         - `param_value` (Any): the new value.
+    - `SET_EXPRESSION`: bind or unbind a Python expression on a parameter.
+      When set, the node spins up an `ExpressionEngine` that re-evaluates
+      whenever any referenced output slot emits new data. ``None`` clears.
+        - `group` (str): the parameter group.
+        - `param_name` (str): the parameter name.
+        - `expression` (str | None): the expression source, or None to clear.
     - `CLEAR_DATA`: clear the cached value on an input slot.
         - `slot_name` (str)
     - `TERMINATE`: empty; instructs the node to shut down.
@@ -58,6 +64,7 @@ class MessageType(Enum):
     PARAMETER_UPDATE = 5
     CLEAR_DATA = 6
     TERMINATE = 7
+    SET_EXPRESSION = 11
 
     # status plane
     STATE_UPDATE = 8
@@ -104,6 +111,13 @@ class Message:
             self.require_fields(group=str, param_name=str)
             if "param_value" not in self.content:
                 raise ValueError("PARAMETER_UPDATE content must contain field param_value.")
+        elif t == MessageType.SET_EXPRESSION:
+            self.require_fields(group=str, param_name=str)
+            # expression is allowed to be None (clears the binding)
+            if "expression" in self.content:
+                expr = self.content["expression"]
+                if expr is not None and not isinstance(expr, str):
+                    raise ValueError("SET_EXPRESSION 'expression' must be str or None.")
         elif t == MessageType.CLEAR_DATA:
             self.require_fields(slot_name=str)
         elif t == MessageType.STATE_UPDATE:

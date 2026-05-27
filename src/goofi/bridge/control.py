@@ -177,6 +177,15 @@ class ControlHub:
                 payload["value"],
             )
             return {"ok": True}
+        if op == "set_expression":
+            ref = manager.nodes[payload["node"]]
+            await self._call_manager(
+                ref.set_expression,
+                payload["group"],
+                payload["name"],
+                payload.get("expression"),
+            )
+            return {"ok": True}
         if op == "set_node_pos":
             name = payload["name"]
             pos = payload["pos"]

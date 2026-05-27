@@ -30,6 +30,7 @@ def describe_param(p: Param) -> Dict[str, Any]:
         "value": p._value,
         "doc": p.doc,
         "save_param": p.save_param,
+        "expression": getattr(p, "expression", None),
     }
     if isinstance(p, FloatParam):
         out["type"] = "float"

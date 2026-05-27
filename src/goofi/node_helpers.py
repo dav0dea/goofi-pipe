@@ -299,6 +299,27 @@ class NodeRef:
             )
         )
 
+    def set_expression(self, group: str, param_name: str, expression: Optional[str]) -> None:
+        """Bind a Python expression to a parameter, or clear with ``None``.
+
+        Mirrors `update_param` shape; the node's expression engine handles
+        compilation, subscriptions to referenced output slots, and the
+        per-tick re-evaluation. State echoes back via STATE_UPDATE.
+        """
+        if group not in self.params:
+            raise ValueError(f"Parameter group '{group}' doesn't exist.")
+        if param_name not in self.params[group]:
+            raise ValueError(f"Parameter '{param_name}' doesn't exist in group '{group}'.")
+        # Reflect locally so the manager's snapshot matches what the node
+        # will publish on its next state update.
+        self.params[group][param_name].expression = expression
+        self._send(
+            Message(
+                MessageType.SET_EXPRESSION,
+                {"group": group, "param_name": param_name, "expression": expression},
+            )
+        )
+
     def subscribe_input(self, slot_name_in: str, service_name: str, in_process: bool) -> None:
         self._send(
             Message(

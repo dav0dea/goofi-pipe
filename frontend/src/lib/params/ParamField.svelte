@@ -1,12 +1,14 @@
 <script lang="ts">
 	import type { ParamDescriptor } from '$lib/api/types';
+	import ExpressionModal from './ExpressionModal.svelte';
 
 	type Props = {
 		paramName: string;
 		descriptor: ParamDescriptor;
 		onCommit: (value: unknown) => void;
+		onSetExpression: (expression: string | null) => void;
 	};
-	const { paramName, descriptor, onCommit }: Props = $props();
+	const { paramName, descriptor, onCommit, onSetExpression }: Props = $props();
 
 	let local = $state<unknown>(descriptor.value);
 	// Suppress backend echoes while the user is actively editing — without
@@ -21,6 +23,56 @@
 	function commit(v: unknown): void {
 		local = v;
 		onCommit(v);
+	}
+
+	// --- expression mode ---
+	const exprActive = $derived(descriptor.expression !== null);
+	// Buffer for the inline single-line editor. Kept in sync with the
+	// backend value via $effect unless the user is actively typing.
+	let exprBuf = $state<string>('');
+	let exprEditing = $state(false);
+	let modalOpen = $state(false);
+	$effect(() => {
+		if (!exprEditing && !modalOpen) {
+			exprBuf = descriptor.expression ?? '';
+		}
+	});
+
+	function toggleFx(): void {
+		if (exprActive) {
+			// Turn off — reverts to manual widgets with whatever value
+			// the expression last produced.
+			onSetExpression(null);
+		} else {
+			// Turn on — seed the source with the current value as a Python
+			// literal so the user starts from a working state.
+			const seed = literalFor(descriptor);
+			onSetExpression(seed);
+			exprBuf = seed;
+		}
+	}
+
+	function literalFor(d: ParamDescriptor): string {
+		const v = d.value;
+		if (typeof v === 'number') return String(v);
+		if (typeof v === 'boolean') return v ? 'True' : 'False';
+		if (typeof v === 'string') return JSON.stringify(v);
+		return JSON.stringify(v);
+	}
+
+	function commitExpr(): void {
+		onSetExpression(exprBuf);
+	}
+
+	function previewText(): string {
+		const v = descriptor.value;
+		if (v === null || v === undefined) return '—';
+		if (typeof v === 'number') return Number.isFinite(v) ? String(v) : '—';
+		if (typeof v === 'boolean') return v ? 'true' : 'false';
+		if (typeof v === 'string') {
+			return v.length > 32 ? v.slice(0, 31) + '…' : v;
+		}
+		return String(v);
 	}
 
 	// Auto-extend slider bounds when the live value lies outside [vmin, vmax]
@@ -53,7 +105,7 @@
 	let scrub: { x: number; v: number; pointerId: number } | null = null;
 
 	function startScrub(e: PointerEvent): void {
-		if (!numeric) return;
+		if (!numeric || exprActive) return;
 		// Prevent text-selection on the label and any default touch panning.
 		e.preventDefault();
 		const target = e.currentTarget as HTMLElement;
@@ -70,10 +122,6 @@
 	function moveScrub(e: PointerEvent): void {
 		if (!scrub || !numeric) return;
 		const dx = e.clientX - scrub.x;
-		// Sensitivity: how much value per pixel. Bounded range → 1 sweep
-		// across ~250px covers the declared range; unbounded int → 1 unit
-		// per 4px. Both feel "tight enough to be useful, loose enough to
-		// hit any value with a long drag."
 		const span = Math.max(hi - lo, 1e-9);
 		let sens = numeric.type === 'int' ? 1 / 4 : span / 250;
 		if (e.shiftKey) sens *= 0.1;
@@ -100,7 +148,7 @@
 
 <div class="field" title={descriptor.doc ?? ''}>
 	<div class="top-row">
-		{#if numeric}
+		{#if numeric && !exprActive}
 			<!-- svelte-ignore a11y_no_static_element_interactions -->
 			<span
 				class="label scrubbable"
@@ -138,9 +186,59 @@
 		{:else}
 			<span class="label">{paramName}</span>
 		{/if}
+		<button
+			class="fx-btn"
+			class:on={exprActive}
+			onclick={toggleFx}
+			title={exprActive ? 'Disable expression' : 'Bind to expression'}
+			aria-pressed={exprActive}
+			data-testid="param-fx-toggle"
+		>
+			fx
+		</button>
 	</div>
 
-	{#if numeric}
+	{#if exprActive}
+		<div class="expr-row">
+			<input
+				class="expr-input"
+				type="text"
+				spellcheck="false"
+				autocomplete="off"
+				autocorrect="off"
+				autocapitalize="off"
+				value={exprBuf}
+				placeholder="slot('node','out').data.mean()"
+				onfocus={() => (exprEditing = true)}
+				onblur={() => {
+					exprEditing = false;
+					commitExpr();
+				}}
+				onkeydown={(e) => {
+					if (e.key === 'Enter') (e.currentTarget as HTMLInputElement).blur();
+					else if (e.key === 'Escape') {
+						exprBuf = descriptor.expression ?? '';
+						(e.currentTarget as HTMLInputElement).blur();
+					}
+				}}
+				oninput={(e) => (exprBuf = (e.currentTarget as HTMLInputElement).value)}
+				data-testid="param-expr-input"
+			/>
+			<button
+				class="expand-btn"
+				onclick={() => (modalOpen = true)}
+				title="Open in multi-line editor"
+				aria-label="Open expression editor"
+				data-testid="param-expr-expand"
+			>
+				⤢
+			</button>
+		</div>
+		<div class="expr-preview" title={String(descriptor.value)}>
+			<span class="prefix">=</span>
+			<span class="value">{previewText()}</span>
+		</div>
+	{:else if numeric}
 		<div class="slider-row">
 			<span class="bound" aria-hidden="true">{fmtBound(lo)}</span>
 			<input
@@ -205,6 +303,22 @@
 	{/if}
 </div>
 
+{#if modalOpen}
+	<ExpressionModal
+		title={paramName}
+		initial={exprBuf}
+		preview={previewText()}
+		onApply={(src) => {
+			exprBuf = src;
+			modalOpen = false;
+			onSetExpression(src);
+		}}
+		onCancel={() => {
+			modalOpen = false;
+		}}
+	/>
+{/if}
+
 <style>
 	.field {
 		display: flex;
@@ -238,8 +352,6 @@
 		touch-action: none;
 		padding: 4px 0;
 		margin: -4px 0;
-		/* Slight underline-on-hover hints at interactivity without yelling
-		   about it. */
 		border-bottom: 1px dashed transparent;
 		transition: border-color 100ms ease, color 100ms ease;
 	}
@@ -252,10 +364,99 @@
 		color: var(--text);
 		border-bottom-color: var(--accent);
 	}
+	.fx-btn {
+		font-family: var(--font-mono);
+		font-size: 10px;
+		font-style: italic;
+		letter-spacing: 0.04em;
+		min-width: 24px;
+		min-height: 22px;
+		padding: 2px 6px;
+		border: 1px solid color-mix(in srgb, var(--text-faint) 30%, transparent);
+		background: transparent;
+		color: var(--text-faint);
+		border-radius: 3px;
+		cursor: pointer;
+		transition:
+			background 80ms ease,
+			color 80ms ease,
+			border-color 80ms ease;
+		flex-shrink: 0;
+	}
+	.fx-btn:hover {
+		color: var(--text);
+		border-color: var(--accent);
+	}
+	.fx-btn.on {
+		background: color-mix(in srgb, var(--accent) 20%, transparent);
+		color: var(--accent);
+		border-color: var(--accent);
+		font-style: normal;
+	}
 	.slider-row {
 		display: flex;
 		align-items: center;
 		gap: 6px;
+		min-width: 0;
+	}
+	.expr-row {
+		display: flex;
+		align-items: stretch;
+		gap: 4px;
+		min-width: 0;
+	}
+	.expr-input {
+		flex: 1;
+		min-width: 0;
+		font-family: var(--font-mono);
+		font-size: 11px;
+		padding: 5px 8px;
+		background: color-mix(in srgb, var(--bg) 70%, transparent);
+		border: 1px solid color-mix(in srgb, var(--accent) 30%, var(--border));
+		border-radius: 3px;
+		color: var(--accent);
+	}
+	.expr-input:focus {
+		outline: none;
+		border-color: var(--accent);
+	}
+	.expand-btn {
+		min-width: 26px;
+		padding: 0 6px;
+		background: color-mix(in srgb, var(--bg-elev-3) 60%, transparent);
+		border: 1px solid var(--border);
+		color: var(--text-dim);
+		font-size: 12px;
+		line-height: 1;
+		border-radius: 3px;
+		cursor: pointer;
+		transition:
+			background 80ms ease,
+			color 80ms ease,
+			border-color 80ms ease;
+	}
+	.expand-btn:hover {
+		color: var(--text);
+		border-color: var(--accent);
+	}
+	.expr-preview {
+		display: flex;
+		gap: 6px;
+		align-items: baseline;
+		font-family: var(--font-mono);
+		font-size: 10px;
+		color: var(--text-faint);
+		padding: 0 2px;
+		overflow: hidden;
+	}
+	.expr-preview .prefix {
+		opacity: 0.6;
+	}
+	.expr-preview .value {
+		font-variant-numeric: tabular-nums;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
 		min-width: 0;
 	}
 	.bound {
@@ -281,11 +482,8 @@
 		padding: 0;
 		border: none;
 		height: 22px;
-		/* Touch: disable double-tap zoom while interacting with a slider. */
 		touch-action: pan-y;
 	}
-	/* Larger thumb for touch (and crisper on mouse). The native default is
-	   ~10-12px on most platforms — too small for a finger. */
 	input[type='range']::-webkit-slider-thumb {
 		-webkit-appearance: none;
 		appearance: none;
@@ -346,8 +544,6 @@
 		flex-shrink: 0;
 	}
 	.switch input {
-		/* Visual is .track; the input itself is invisible but expanded
-		   beyond the track on every side for a comfortable touch target. */
 		opacity: 0;
 		position: absolute;
 		inset: -6px;

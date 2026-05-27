@@ -32,6 +32,7 @@ from typing import Any, Dict, Optional, Tuple, Union
 from goofi import assets
 from goofi.codec import decode_data, decode_message, encode_data_into, encode_message, prepare_encode
 from goofi.data import Data, DataType, to_data
+from goofi.expression import ExpressionEngine
 from goofi.message import Message, MessageType
 from goofi.node_helpers import InputSlot, NodeRef, OutputSlot
 from goofi.params import InvalidParamError, NodeParams
@@ -41,6 +42,7 @@ from goofi.transport import (
     data_service_name,
     open_publisher,
     open_subscriber,
+    self_trigger_service_name,
     set_instance_id,
     status_service_name,
 )
@@ -48,6 +50,41 @@ from goofi.transport import (
 
 class MultiprocessingForbiddenError(Exception):
     pass
+
+
+def _coerce_to_param_type(param, value):
+    """Best-effort coercion of an expression result into a param's
+    declared type. Returns ``None`` to signal "skip this update" when
+    the value cannot be sensibly coerced — the caller should leave the
+    param at its previous value.
+    """
+    # numpy 0-d arrays / scalars carry an .item()
+    if hasattr(value, "item") and not isinstance(value, (str, bool, bytes)):
+        try:
+            value = value.item()
+        except Exception:
+            pass
+
+    expected_default = param.default()
+    expected_type = type(expected_default)
+
+    if isinstance(value, expected_type):
+        return value
+    if expected_type is float and isinstance(value, int) and not isinstance(value, bool):
+        return float(value)
+    if expected_type is int and isinstance(value, float):
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
+    if expected_type is bool:
+        return bool(value)
+    if expected_type is str:
+        try:
+            return str(value)
+        except Exception:
+            return None
+    return None
 
 
 class NodeEnv(Enum):
@@ -92,6 +129,10 @@ class Node(ABC):
         self._params = params
         self._environment = environment
         self._in_process_with_manager = in_process_with_manager
+        # Expression engines, keyed by (group, name). Populated lazily when
+        # a SET_EXPRESSION ctrl message arrives (or when a saved patch
+        # spawns the node with non-None expressions in its param dict).
+        self._expressions: Dict[Tuple[str, str], ExpressionEngine] = {}
 
         self._validate_attrs()
         self._waitset: WaitSet = WaitSet()
@@ -107,6 +148,17 @@ class Node(ABC):
         self.status_pub, self._status_notifier = open_publisher(
             status_service_name(node_id), in_process=in_process_with_manager, latest_wins=False
         )
+        # Self-trigger pair: in-process pub/sub the messaging thread (or
+        # an expression engine running in the processing thread) uses to
+        # wake the processing loop without going through input slots.
+        # Latest-wins so a burst of notifies coalesces into a single tick.
+        self._self_trigger_pub, self._self_trigger_notifier = open_publisher(
+            self_trigger_service_name(node_id), in_process=True, latest_wins=True
+        )
+        self._self_trigger_sub, self._self_trigger_listener = open_subscriber(
+            self_trigger_service_name(node_id), in_process=True, latest_wins=True
+        )
+        self._waitset.attach(self._self_trigger_listener)
         # NB: ctrl_listener is *not* attached to `self._waitset` — that
         # WaitSet belongs to the processing loop and only watches input
         # data slots. The messaging loop owns its own WaitSet locally;
@@ -158,12 +210,27 @@ class Node(ABC):
         while not self._setup_done.is_set() and self._alive:
             try:
                 self.setup()
+                self._instantiate_saved_expressions()
                 self._setup_done.set()
                 self._report_error(None)
                 self._mark_dirty()
             except Exception:
                 self._report_error(traceback.format_exc())
                 time.sleep(0.1)
+
+    def _instantiate_saved_expressions(self) -> None:
+        """Build engines for any param that arrived from a saved patch
+        with a non-None ``expression`` set on it."""
+        for group in self.params.keys():
+            group_data = self.params[group]
+            for name in group_data._fields:
+                param = group_data[name]
+                expr = getattr(param, "expression", None)
+                if expr:
+                    try:
+                        self._set_expression(group, name, expr)
+                    except Exception:
+                        self._report_error(traceback.format_exc())
 
     def _report_error(self, error: Optional[str]) -> None:
         if self._environment == NodeEnv.STANDALONE:
@@ -178,6 +245,84 @@ class Node(ABC):
 
     def _mark_dirty(self) -> None:
         self._dirty = True
+
+    def _wake_processing(self) -> None:
+        """Notify the processing loop's WaitSet from any thread.
+
+        Safe no-op when the node isn't fully wired (STANDALONE env or
+        between __init__ and the first transport setup completing).
+        """
+        notifier = getattr(self, "_self_trigger_notifier", None)
+        if notifier is None:
+            return
+        try:
+            notifier.notify()
+        except Exception:
+            pass
+
+    # ------------------------------------------------------------------
+    # Expression-bound params
+    # ------------------------------------------------------------------
+
+    def _set_expression(self, group: str, name: str, expression: Optional[str]) -> None:
+        """Bind / unbind an expression on a param. Called from _handle_ctrl
+        and (one-shot) when the node spins up with saved expressions."""
+        if group not in self.params or name not in self.params[group]:
+            self._report_error(f"Unknown parameter {group}.{name}")
+            return
+        param = self.params[group][name]
+        key = (group, name)
+
+        if expression is None or expression.strip() == "":
+            # Tear down any existing engine and clear the param's expr.
+            engine = self._expressions.pop(key, None)
+            if engine is not None:
+                engine.close()
+            param.expression = None
+            self._mark_dirty()
+            return
+
+        engine = self._expressions.get(key)
+        if engine is None:
+            engine = ExpressionEngine(
+                location=f"{self.node_id}.{group}.{name}",
+                on_listener_added=self._waitset.attach,
+                on_listener_removed=self._waitset.detach,
+            )
+            self._expressions[key] = engine
+
+        engine.set_source(expression)
+        if engine.last_error:
+            self._report_error(engine.last_error)
+        else:
+            self._report_error(None)
+        param.expression = expression
+        # Warm eval so the param has a value immediately. Subscriptions
+        # for any referenced slots are opened during this first call.
+        self._apply_expression(key, engine)
+        self._mark_dirty()
+
+    def _apply_expression(self, key: Tuple[str, str], engine: ExpressionEngine) -> None:
+        """Run the engine once and push its result into the param.
+
+        Honors common.process_on_param_update for the re-trigger; the
+        param's value is always updated regardless of the toggle.
+        """
+        group, name = key
+        result = engine.evaluate()
+        if engine.last_error:
+            self._report_error(engine.last_error)
+        if result is None:
+            return
+        param = self.params[group][name]
+        coerced = _coerce_to_param_type(param, result)
+        if coerced is None:
+            return
+        prev = param._value
+        param._value = coerced
+        self._mark_dirty()
+        if prev != coerced and self.params.common.process_on_param_update.value:
+            self._wake_processing()
 
     def _push_state(self) -> None:
         """Publish a STATE_UPDATE if we're dirty."""
@@ -273,6 +418,11 @@ class Node(ABC):
                     cb(value)
                 except Exception:
                     self._report_error(traceback.format_exc())
+            # Trigger a process() tick when the common toggle is on. The
+            # value has been applied; the next loop iteration will pick it
+            # up via the standard input_data snapshot.
+            if self.params.common.process_on_param_update.value:
+                self._wake_processing()
         elif t == MessageType.REGISTER_SUBSCRIBER:
             slot_name = msg.content["slot_name_out"]
             slot = self.output_slots[slot_name]
@@ -294,6 +444,12 @@ class Node(ABC):
         elif t == MessageType.UNSUBSCRIBE_INPUT:
             self._unsubscribe_input(msg.content["slot_name_in"])
             self._mark_dirty()
+        elif t == MessageType.SET_EXPRESSION:
+            self._set_expression(
+                group=msg.content["group"],
+                name=msg.content["param_name"],
+                expression=msg.content.get("expression"),
+            )
         elif t == MessageType.CLEAR_DATA:
             slot = self.input_slots.get(msg.content["slot_name"])
             if slot is not None:
@@ -387,10 +543,31 @@ class Node(ABC):
                 fired = self._waitset.wait(0.1)
                 if not self.alive:
                     break
-                # Drain every fired data listener into its slot.
+                # Drain every fired data listener into its slot. A fire on
+                # the self-trigger listener counts as a trigger but maps to
+                # no slot — it's just a wake signal. A fire on an
+                # expression-engine's subscriber listener runs that
+                # engine's evaluation; whether process() re-triggers from
+                # that depends on common.process_on_param_update.
                 drained_any = False
+                self_triggered = False
                 for listener in fired:
-                    # We don't know which listener is which — match by id.
+                    if listener is self._self_trigger_listener:
+                        try:
+                            self._self_trigger_sub.take_latest()
+                        except Exception:
+                            pass
+                        self_triggered = True
+                        continue
+                    matched_expression = False
+                    for key, engine in self._expressions.items():
+                        if engine.owns_listener(listener):
+                            self._apply_expression(key, engine)
+                            matched_expression = True
+                            break
+                    if matched_expression:
+                        continue
+                    # Fall back to: input slot listeners.
                     for slot in self.input_slots.values():
                         if slot.listener is listener and slot.subscriber is not None:
                             buf = slot.subscriber.take_latest()
@@ -401,7 +578,7 @@ class Node(ABC):
                                 except Exception:
                                     self._report_error(traceback.format_exc())
                             break
-                if drained_any:
+                if drained_any or self_triggered:
                     triggered = True
 
             if not triggered:

@@ -15,6 +15,11 @@
 		void g.updateParam(node.name, group, name, value);
 	}
 
+	function setExpression(group: string, name: string, expression: string | null): void {
+		if (!node) return;
+		void g.setExpression(node.name, group, name, expression);
+	}
+
 	// Sort groups: node-specific groups alphabetical, 'common' last.
 	const groupNames = $derived.by(() => {
 		if (!node) return [] as string[];
@@ -111,6 +116,7 @@
 						{paramName}
 						{descriptor}
 						onCommit={(v) => setValue(activeTab ?? '', paramName, v)}
+						onSetExpression={(expr) => setExpression(activeTab ?? '', paramName, expr)}
 					/>
 				{/each}
 			{/if}

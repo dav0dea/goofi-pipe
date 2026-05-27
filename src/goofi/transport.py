@@ -68,6 +68,12 @@ def status_service_name(node_name: str) -> str:
     return f"goofi.{get_instance_id()}.status.{node_name}"
 
 
+def self_trigger_service_name(node_name: str) -> str:
+    """Per-node in-process wake channel: any thread of the node can ping
+    its own processing loop by publishing on this service."""
+    return f"goofi.{get_instance_id()}.self.{node_name}"
+
+
 # ---------------------------------------------------------------------------
 # iceoryx2 node singleton (per OS process; rebuilt after fork)
 # ---------------------------------------------------------------------------

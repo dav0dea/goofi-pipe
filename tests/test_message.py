@@ -13,6 +13,9 @@ EXAMPLE_CONTENT = {
     MessageType.REGISTER_SUBSCRIBER: {"slot_name_out": "out"},
     MessageType.UNREGISTER_SUBSCRIBER: {"slot_name_out": "out"},
     MessageType.PARAMETER_UPDATE: {"group": "common", "param_name": "x", "param_value": "y"},
+    # expression field is optional (None == clear binding); the test
+    # below only verifies missing-required-field raises.
+    MessageType.SET_EXPRESSION: {"group": "common", "param_name": "x"},
     MessageType.CLEAR_DATA: {"slot_name": "in"},
     MessageType.TERMINATE: {},
     MessageType.STATE_UPDATE: {
