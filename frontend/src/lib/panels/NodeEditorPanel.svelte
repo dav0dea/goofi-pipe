@@ -36,7 +36,8 @@
 	import { ui, type SlotClickSeed } from '$lib/stores/ui.svelte';
 	import { selection } from '$lib/stores/selection.svelte';
 	import { workspace } from '$lib/workspace/workspace.svelte';
-	import type { PanelProps } from '$lib/workspace/registry';
+	import { getPanelType, type PanelProps } from '$lib/workspace/registry';
+	import { portal } from '$lib/workspace/portal';
 	import type { LinkInfo, NodeInstanceInfo, NodeTypeInfo } from '$lib/api/control';
 	import { registerEditor, unregisterEditor } from './editorCommands';
 	import InspectorOverlay from './InspectorOverlay.svelte';
@@ -192,19 +193,73 @@
 		return computeSnapDelta(draggedBounds, targets, altKey);
 	}
 
-	function onNodeDragStart(_args: { nodes: Node[]; event: MouseEvent | TouchEvent }): void {
-		// No bookkeeping needed: snap is computed each frame off the live
-		// args.nodes positions reported by SvelteFlow.
+	// Positions at drag start, so a node reverts (snaps back) when the drag
+	// turns into a panel-link rather than an in-editor reposition.
+	let dragOrigin = new Map<string, { x: number; y: number }>();
+	// Floating chip following the cursor while a drag is a reference (not a
+	// coordinate move). null = normal reposition drag.
+	let linkGhost = $state<{ x: number; y: number; name: string } | null>(null);
+
+	/** The leaf panel under a screen point (panels tile, so at most one). Found
+	 * geometrically off panel rects — NOT elementFromPoint, since the dragged
+	 * node sits under the cursor and would mask the panel beneath it. */
+	function panelUnder(x: number, y: number): { id: string; type: string } | null {
+		for (const el of document.querySelectorAll<HTMLElement>('[data-panel-id]')) {
+			const r = el.getBoundingClientRect();
+			if (x >= r.left && x < r.right && y >= r.top && y < r.bottom) {
+				return { id: el.dataset.panelId ?? '', type: el.dataset.panelType ?? '' };
+			}
+		}
+		return null;
+	}
+
+	/** A node-accepting panel under the cursor, other than this editor — i.e. a
+	 * valid drop target that turns the drag into a reference link. */
+	function linkTargetAt(event: MouseEvent | TouchEvent): { id: string; type: string } | null {
+		const m = event as MouseEvent;
+		if (typeof m.clientX !== 'number') return null;
+		const t = panelUnder(m.clientX, m.clientY);
+		return t && t.id !== panelId && getPanelType(t.type)?.acceptsNode === true ? t : null;
+	}
+
+	/** Put the dragged nodes back where the drag started (reference mode). */
+	function revertDragged(dragged: Set<string>): void {
+		flowNodes = flowNodes.map((n) => {
+			if (!dragged.has(n.id)) return n;
+			const o = dragOrigin.get(n.id);
+			return o ? { ...n, position: { x: o.x, y: o.y } } : n;
+		});
+	}
+
+	function onNodeDragStart(args: { nodes: Node[]; event: MouseEvent | TouchEvent }): void {
+		dragOrigin = new Map();
+		for (const n of args.nodes) dragOrigin.set(n.id, { x: n.position.x, y: n.position.y });
+		// Flag the drag so node-accepting panels show their drop outline.
+		uiStore.nodeDrag = args.nodes[0]?.id ?? null;
 	}
 
 	function onNodeDrag(args: { nodes: Node[]; event: MouseEvent | TouchEvent }): void {
+		const dragged = new Set(args.nodes.map((n) => n.id));
+		const target = linkTargetAt(args.event);
+		if (target) {
+			// Reference drag: snap the node back to its origin and let a ghost
+			// follow the cursor instead — it's a reference, not a coordinate move.
+			uiStore.nodeDragTarget = target.id;
+			const m = args.event as MouseEvent;
+			linkGhost = { x: m.clientX, y: m.clientY, name: args.nodes[0]?.id ?? '' };
+			snapGuides = [];
+			revertDragged(dragged);
+			return;
+		}
+		// Normal reposition drag with snapping.
+		uiStore.nodeDragTarget = null;
+		linkGhost = null;
 		const current = new Map<string, { x: number; y: number }>();
 		for (const n of args.nodes) current.set(n.id, { x: n.position.x, y: n.position.y });
 		const alt = (args.event as MouseEvent).altKey === true;
 		const { dx, dy, guides } = dragSnapDelta(current, alt);
 		snapGuides = guides;
 		if (dx === 0 && dy === 0) return;
-		const dragged = new Set(args.nodes.map((n) => n.id));
 		flowNodes = flowNodes.map((n) => {
 			if (!dragged.has(n.id)) return n;
 			const c = current.get(n.id);
@@ -218,22 +273,34 @@
 		nodes: Node[];
 		event: MouseEvent | TouchEvent;
 	}): void {
-		const current = new Map<string, { x: number; y: number }>();
-		for (const n of args.nodes) current.set(n.id, { x: n.position.x, y: n.position.y });
-		const alt = (args.event as MouseEvent).altKey === true;
-		const { dx, dy } = dragSnapDelta(current, alt);
-		if (dx !== 0 || dy !== 0) {
-			const dragged = new Set(args.nodes.map((n) => n.id));
-			flowNodes = flowNodes.map((n) => {
-				if (!dragged.has(n.id)) return n;
-				const c = current.get(n.id);
-				if (!c) return n;
-				return { ...n, position: { x: c.x + dx, y: c.y + dy } };
-			});
+		const dragged = new Set(args.nodes.map((n) => n.id));
+		const target = linkTargetAt(args.event);
+		if (target) {
+			// Dropped on a node-accepting panel → link the node there and leave
+			// it where it started (the reference, not the node, moved).
+			revertDragged(dragged);
+			const name = args.nodes[0]?.id;
+			if (name) ws.linkNodeToPanel(target.id, name);
+		} else {
+			const current = new Map<string, { x: number; y: number }>();
+			for (const n of args.nodes) current.set(n.id, { x: n.position.x, y: n.position.y });
+			const alt = (args.event as MouseEvent).altKey === true;
+			const { dx, dy } = dragSnapDelta(current, alt);
+			if (dx !== 0 || dy !== 0) {
+				flowNodes = flowNodes.map((n) => {
+					if (!dragged.has(n.id)) return n;
+					const c = current.get(n.id);
+					if (!c) return n;
+					return { ...n, position: { x: c.x + dx, y: c.y + dy } };
+				});
+			}
+			for (const n of args.nodes) {
+				void g.setNodePos(n.id, [Math.round(n.position.x + dx), Math.round(n.position.y + dy)]);
+			}
 		}
-		for (const n of args.nodes) {
-			void g.setNodePos(n.id, [Math.round(n.position.x + dx), Math.round(n.position.y + dy)]);
-		}
+		uiStore.nodeDrag = null;
+		uiStore.nodeDragTarget = null;
+		linkGhost = null;
 		snapGuides = [];
 	}
 
@@ -534,6 +601,12 @@
 			// when the user clicks blank space in the focused editor.
 			window.removeEventListener('keydown', onKeydown);
 			window.removeEventListener('mousemove', trackMouse);
+			// If a node drag was mid-flight when this editor unmounts, clear the
+			// shared drag flags so other panels don't keep showing drop outlines.
+			if (uiStore.nodeDrag !== null) {
+				uiStore.nodeDrag = null;
+				uiStore.nodeDragTarget = null;
+			}
 		};
 	});
 </script>
@@ -570,6 +643,7 @@
 			maxZoom={4}
 			initialViewport={{ x: 0, y: 0, zoom: 0.85 }}
 			zoomOnDoubleClick={false}
+			autoPanOnNodeDrag={false}
 		>
 			<Controls />
 			<MiniMap pannable zoomable />
@@ -650,6 +724,15 @@
 	</div>
 </SvelteFlowProvider>
 
+<!-- Reference chip that follows the cursor while a node is dragged onto a
+     node-accepting panel — the node itself stays put in the editor. Portaled
+     to <body> so it floats above every panel. -->
+{#if linkGhost}
+	<div class="link-ghost" use:portal style="left: {linkGhost.x}px; top: {linkGhost.y}px">
+		<span class="lg-icon">🔗</span>{linkGhost.name}
+	</div>
+{/if}
+
 <style>
 	.editor-panel {
 		position: relative;
@@ -667,6 +750,31 @@
 	.editor-panel :global(.svelte-flow__minimap) {
 		bottom: 20px;
 		right: 20px;
+	}
+	.link-ghost {
+		position: fixed;
+		/* Offset off the cursor so it reads as carried, not pinned. */
+		transform: translate(14px, 12px);
+		z-index: var(--z-tab-drag);
+		pointer-events: none;
+		display: flex;
+		align-items: center;
+		gap: 6px;
+		padding: 4px 9px;
+		max-width: 220px;
+		background: var(--bg-elev-2);
+		border: 1px solid var(--accent);
+		border-radius: var(--radius-sm);
+		box-shadow: var(--shadow-2);
+		font-family: var(--font-mono);
+		font-size: 0.78rem;
+		color: var(--text);
+		white-space: nowrap;
+		overflow: hidden;
+		text-overflow: ellipsis;
+	}
+	.lg-icon {
+		font-size: 0.8rem;
 	}
 	.menu-overlay {
 		position: fixed;

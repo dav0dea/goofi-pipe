@@ -26,19 +26,22 @@ export function registerAppPanels(): void {
 		id: 'parameters',
 		title: 'Parameters',
 		icon: '☰',
-		component: ParametersPanel
+		component: ParametersPanel,
+		acceptsNode: true
 	});
 	registerPanel({
 		id: 'viewer',
 		title: 'Viewer',
 		icon: '◫',
-		component: ViewerPanel
+		component: ViewerPanel,
+		acceptsNode: true
 	});
 	registerPanel({
 		id: 'metadata',
 		title: 'Metadata',
 		icon: 'ⓘ',
-		component: MetadataInspectorPanel
+		component: MetadataInspectorPanel,
+		acceptsNode: true
 	});
 	registerPanel({
 		id: 'errors',

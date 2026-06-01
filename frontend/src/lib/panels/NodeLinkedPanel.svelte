@@ -16,6 +16,7 @@
 	import type { Snippet } from 'svelte';
 
 	let {
+		panelId,
 		state: linkState,
 		setState,
 		label,
@@ -31,45 +32,22 @@
 			: null
 	);
 	const node = $derived(linkedName ? (g.nodes.find((n) => n.name === linkedName) ?? null) : null);
+	// A node is being dragged from an editor (the editor drives the link on
+	// release); `over` is true when it's currently over this panel.
 	const dragActive = $derived(uiStore.nodeDrag !== null);
-	let over = $state(false);
+	const over = $derived(uiStore.nodeDragTarget === panelId);
 
 	function base(): Record<string, unknown> {
 		return typeof linkState === 'object' && linkState !== null
 			? (linkState as Record<string, unknown>)
 			: {};
 	}
-	function onDragOver(e: DragEvent): void {
-		if (!dragActive) return;
-		e.preventDefault();
-		over = true;
-	}
-	function onDragLeave(e: DragEvent): void {
-		if (!(e.currentTarget as HTMLElement).contains(e.relatedTarget as Node)) over = false;
-	}
-	function onDrop(e: DragEvent): void {
-		over = false;
-		const name = uiStore.nodeDrag;
-		if (!name) return;
-		e.preventDefault();
-		e.stopPropagation();
-		setState({ ...base(), node: name });
-	}
 	function unlink(): void {
 		setState({ ...base(), node: null });
 	}
 </script>
 
-<div
-	class="linked"
-	class:dragging={dragActive}
-	class:over
-	ondragover={onDragOver}
-	ondragleave={onDragLeave}
-	ondrop={onDrop}
-	role="group"
-	data-testid="node-linked-panel"
->
+<div class="linked" class:dragging={dragActive} class:over role="group" data-testid="node-linked-panel">
 	{#if node}
 		<div class="linkbar">
 			<span class="dot" class:err={node.error}></span>

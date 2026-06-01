@@ -35,6 +35,9 @@ export interface PanelType {
 	/** When false, the panel renders its own header chrome instead of the
 	 * framework's. Defaults to true. */
 	chrome?: boolean;
+	/** True if a node dragged from an editor can be dropped onto this panel to
+	 * bind it (Parameters / Viewer / Metadata). */
+	acceptsNode?: boolean;
 }
 
 const registry = new Map<string, PanelType>();

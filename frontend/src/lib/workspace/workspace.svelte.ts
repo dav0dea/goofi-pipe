@@ -146,6 +146,17 @@ class WorkspaceStore {
 		if (this.activePanelId !== panelId) this.activePanelId = panelId;
 	}
 
+	/** Bind a node to a linkable panel (merges `node` into its state, keeping
+	 * any slot/kind). Called when a node is dragged onto the panel. */
+	linkNodeToPanel(panelId: string, nodeName: string): void {
+		this._updateActiveRoot((root) => {
+			const p = findPanel(root, panelId);
+			if (!p) return root;
+			const cur = typeof p.state === 'object' && p.state ? (p.state as Record<string, unknown>) : {};
+			return setPanelState(root, panelId, { ...cur, node: nodeName });
+		});
+	}
+
 	/** Unlink a deleted node from every panel bound to it (empties them). */
 	clearNodeRefs(nodeName: string): void {
 		let changed = false;

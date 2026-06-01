@@ -31,10 +31,15 @@ class UIStore {
 	 * auto-link. Cleared by the consumer once handled. */
 	pendingSlotClick = $state<SlotClickSeed | null>(null);
 
-	/** Name of the node currently being dragged out of an editor (by its grip)
-	 * to link into a Parameters / Viewer / Metadata panel. Null when no such
-	 * drag is in progress. */
+	/** Name of the node currently being dragged out of an editor to link into a
+	 * Parameters / Viewer / Metadata panel (set while a SvelteFlow node drag is
+	 * over — or heading toward — a linkable panel). Null otherwise. Drives the
+	 * "droppable" outline those panels show. */
 	nodeDrag = $state<string | null>(null);
+
+	/** Id of the linkable panel the dragged node is currently over, so that
+	 * panel can show the active drop highlight. Null when over none. */
+	nodeDragTarget = $state<string | null>(null);
 
 	requestSlotClick(seed: SlotClickSeed): void {
 		this.pendingSlotClick = seed;
