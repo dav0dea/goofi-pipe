@@ -522,7 +522,9 @@
 </script>
 
 <SvelteFlowProvider>
-	<div class="editor-panel" bind:this={rootEl}>
+	<!-- `canvas-wrap` is the marker PlacementPreview uses to tell a commit
+	     click (inside the canvas) from a cancel click (outside). -->
+	<div class="editor-panel canvas-wrap" bind:this={rootEl}>
 		<SvelteFlow
 			bind:nodes={flowNodes}
 			bind:edges={flowEdges}
