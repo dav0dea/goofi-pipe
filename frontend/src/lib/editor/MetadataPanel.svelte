@@ -4,29 +4,37 @@
 	import type { DataFrame } from '$lib/codec/decode';
 	import { onMount } from 'svelte';
 
-	type Props = { node: NodeInstanceInfo };
-	const { node }: Props = $props();
+	type Props = {
+		node: NodeInstanceInfo;
+		/** Show the "Inspector" header + slot dropdown. True in the editor's
+		 * slide-in inspector; false in the dedicated Metadata panel, which drives
+		 * the slot from its own header bar via `slot`. */
+		showHeader?: boolean;
+		/** Externally-controlled slot (used with `showHeader = false`). */
+		slot?: string | null;
+	};
+	const { node, showHeader = true, slot: slotProp = null }: Props = $props();
 
 	const slots = $derived(Object.keys(node.output_slots ?? {}));
-	let activeSlot = $state<string | null>(null);
+	let internalSlot = $state<string | null>(null);
 	let lastFrame = $state<DataFrame | null>(null);
 
+	// Own the slot only in header mode; otherwise the parent controls it.
 	$effect(() => {
+		if (!showHeader) return;
 		const fst = slots[0] ?? null;
-		if (activeSlot === null || !slots.includes(activeSlot)) activeSlot = fst;
+		if (internalSlot === null || !slots.includes(internalSlot)) internalSlot = fst;
 	});
 
-	let cleanup: (() => void) | null = null;
+	const activeSlot = $derived(showHeader ? internalSlot : slotProp);
+
 	$effect(() => {
-		cleanup?.();
-		cleanup = null;
 		lastFrame = null;
-		if (!activeSlot) return;
 		const slot = activeSlot;
+		if (!slot) return;
 		const unsub = subscribeData(node.name, slot, (f) => {
 			lastFrame = f;
 		});
-		cleanup = unsub;
 		return () => unsub();
 	});
 
@@ -41,17 +49,19 @@
 	}
 </script>
 
-<section class="panel">
-	<header>
-		<span>Inspector</span>
-		{#if slots.length > 0}
-			<select bind:value={activeSlot}>
-				{#each slots as s}
-					<option value={s}>{s}</option>
-				{/each}
-			</select>
-		{/if}
-	</header>
+<section class="panel" class:bare={!showHeader}>
+	{#if showHeader}
+		<header>
+			<span>Inspector</span>
+			{#if slots.length > 0}
+				<select bind:value={internalSlot}>
+					{#each slots as s}
+						<option value={s}>{s}</option>
+					{/each}
+				</select>
+			{/if}
+		</header>
+	{/if}
 
 	{#if lastFrame}
 		<div class="meta-line">dtype: <code>{lastFrame.dtype}</code></div>
@@ -76,6 +86,10 @@
 	.panel {
 		padding: 12px;
 		border-top: 1px solid var(--border);
+	}
+	/* Dedicated Metadata panel: no stacked-inspector divider or header. */
+	.panel.bare {
+		border-top: none;
 	}
 	header {
 		display: flex;

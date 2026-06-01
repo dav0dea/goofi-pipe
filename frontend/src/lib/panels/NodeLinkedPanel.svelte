@@ -20,8 +20,15 @@
 		state: linkState,
 		setState,
 		label,
-		content
-	}: PanelProps & { label: string; content: Snippet<[NodeInstanceInfo]> } = $props();
+		content,
+		controls
+	}: PanelProps & {
+		label: string;
+		content: Snippet<[NodeInstanceInfo]>;
+		/** Panel-specific controls rendered inline in the header bar next to the
+		 * node name (group tabs / slot picker / viewer selector). */
+		controls?: Snippet<[NodeInstanceInfo]>;
+	} = $props();
 
 	const g = graph();
 	const uiStore = ui();
@@ -52,6 +59,9 @@
 		<div class="linkbar">
 			<span class="dot" class:err={node.error}></span>
 			<span class="ln" title={node.type}>{node.name}</span>
+			{#if controls}
+				<div class="controls">{@render controls(node)}</div>
+			{/if}
 			<button class="unlink" title="Unlink node" aria-label="Unlink node" onclick={unlink}>✕</button>
 		</div>
 		<div class="body">
@@ -99,10 +109,23 @@
 	.ln {
 		font-family: var(--font-mono);
 		color: var(--text);
-		flex: 1;
+		flex: 0 1 auto;
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;
+	}
+	/* Host for the panel's own controls (group tabs / slot picker / viewer
+	   selector). Fills the slack between the node name and the unlink button and
+	   scrolls horizontally if its contents overflow. */
+	.controls {
+		flex: 1 1 auto;
+		min-width: 0;
+		display: flex;
+		align-items: center;
+		gap: 6px;
+		overflow-x: auto;
+		overflow-y: hidden;
+		scrollbar-width: thin;
 	}
 	.unlink {
 		width: 18px;

@@ -1,5 +1,20 @@
-<script lang="ts">
+<script module lang="ts">
 	import type { NodeInstanceInfo } from '$lib/api/control';
+
+	/** Parameter group names in display order: node-specific groups alphabetical,
+	 * 'common' last. Shared with the dedicated Parameters panel, which renders
+	 * the group tabs in its own header bar. */
+	export function paramGroupNames(node: NodeInstanceInfo | null): string[] {
+		if (!node) return [];
+		return Object.keys(node.params).sort((a, b) => {
+			if (a === 'common') return 1;
+			if (b === 'common') return -1;
+			return a.localeCompare(b);
+		});
+	}
+</script>
+
+<script lang="ts">
 	import type { ParamDescriptor } from '$lib/api/types';
 	import { graph } from '$lib/stores/graph.svelte';
 	import { categoryColor, formatName } from '$lib/editor/categoryColor';
@@ -12,8 +27,13 @@
 		 * dedicated Parameters panel, which already names the node in its linkbar
 		 * and wants the group tabs at the very top. */
 		showHeader?: boolean;
+		/** Hide the internal group-tab strip — the dedicated panel renders the
+		 * tabs in its header bar instead and drives the active group via `group`. */
+		hideTabs?: boolean;
+		/** Externally-controlled active group (used with `hideTabs`). */
+		group?: string | null;
 	};
-	const { node, showHeader = true }: Props = $props();
+	const { node, showHeader = true, hideTabs = false, group: groupProp = null }: Props = $props();
 
 	const g = graph();
 
@@ -32,33 +52,26 @@
 		void g.setExpression(node.name, group, name, expression, opts);
 	}
 
-	// Sort groups: node-specific groups alphabetical, 'common' last.
-	const groupNames = $derived.by(() => {
-		if (!node) return [] as string[];
-		const names = Object.keys(node.params);
-		return names.sort((a, b) => {
-			if (a === 'common') return 1;
-			if (b === 'common') return -1;
-			return a.localeCompare(b);
-		});
-	});
+	const groupNames = $derived(paramGroupNames(node));
 
-	let activeTab = $state<string | null>(null);
+	let internalTab = $state<string | null>(null);
 	let docsOpen = $state(false);
 
-	// Keep the active tab in sync with the selected node: when the node
-	// changes, jump to its first non-common group (or whatever is left if
-	// the previously-active group no longer exists).
+	// When this component owns the tabs (inspector), keep the active group valid
+	// as the node changes. When `hideTabs`, the parent controls it via `group`.
 	$effect(() => {
+		if (hideTabs) return;
 		const valid = groupNames;
 		if (valid.length === 0) {
-			activeTab = null;
+			internalTab = null;
 			return;
 		}
-		if (!activeTab || !valid.includes(activeTab)) {
-			activeTab = valid[0];
+		if (!internalTab || !valid.includes(internalTab)) {
+			internalTab = valid[0];
 		}
 	});
+
+	const activeTab = $derived(hideTabs ? groupProp : internalTab);
 
 	const activeParams = $derived.by(() => {
 		if (!node || !activeTab) return [] as [string, ParamDescriptor][];
@@ -107,19 +120,21 @@
 			<pre class="err" data-testid="param-error">{node.error}</pre>
 		{/if}
 
-		<div class="tabs" role="tablist" data-testid="param-tabs">
-			{#each groupNames as groupName (groupName)}
-				<button
-					class="tab"
-					class:active={activeTab === groupName}
-					role="tab"
-					aria-selected={activeTab === groupName}
-					onclick={() => (activeTab = groupName)}
-				>
-					{groupName}
-				</button>
-			{/each}
-		</div>
+		{#if !hideTabs}
+			<div class="tabs" role="tablist" data-testid="param-tabs">
+				{#each groupNames as groupName (groupName)}
+					<button
+						class="tab"
+						class:active={activeTab === groupName}
+						role="tab"
+						aria-selected={activeTab === groupName}
+						onclick={() => (internalTab = groupName)}
+					>
+						{groupName}
+					</button>
+				{/each}
+			</div>
+		{/if}
 
 		<div class="rows" role="tabpanel" data-testid="param-rows">
 			{#if activeParams.length === 0}
