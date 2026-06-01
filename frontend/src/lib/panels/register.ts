@@ -5,6 +5,10 @@
  */
 import { registerPanel } from '$lib/workspace/registry';
 import NodeEditorPanel from './NodeEditorPanel.svelte';
+import ParametersPanel from './ParametersPanel.svelte';
+import ViewerPanel from './ViewerPanel.svelte';
+import MetadataInspectorPanel from './MetadataInspectorPanel.svelte';
+import ErrorsPanel from './ErrorsPanel.svelte';
 
 let done = false;
 
@@ -17,5 +21,29 @@ export function registerAppPanels(): void {
 		title: 'Node Editor',
 		icon: '⛓',
 		component: NodeEditorPanel
+	});
+	registerPanel({
+		id: 'parameters',
+		title: 'Parameters',
+		icon: '☰',
+		component: ParametersPanel
+	});
+	registerPanel({
+		id: 'viewer',
+		title: 'Viewer',
+		icon: '◫',
+		component: ViewerPanel
+	});
+	registerPanel({
+		id: 'metadata',
+		title: 'Metadata',
+		icon: 'ⓘ',
+		component: MetadataInspectorPanel
+	});
+	registerPanel({
+		id: 'errors',
+		title: 'Errors',
+		icon: '⚠',
+		component: ErrorsPanel
 	});
 }
