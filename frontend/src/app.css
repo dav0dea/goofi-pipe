@@ -48,10 +48,13 @@
 
 	/* Z-index scale — single source of truth for stacking. Every overlay
 	   references one of these so layers never collide. Ascending:
-	   panels/chrome → side-panel → error chip → menus → add-node menu →
-	   split/join drag ghost → modals → tab drag. */
-	--z-chrome: 20; /* splitters, panel corner grips */
-	--z-side-panel: 50; /* auto selection inspector overlay */
+	   panel content → side-panel → layout chrome → error chip → menus →
+	   add-node menu → split/join drag ghost → modals → tab drag.
+	   Layout chrome (splitters + corner grips) sits ABOVE panel content so the
+	   split/join handles are always reachable, even under the slide-in
+	   inspector — the layout owns the panel, not its contents. */
+	--z-side-panel: 50; /* auto selection inspector overlay (panel content) */
+	--z-chrome: 55; /* splitters + panel corner grips (layout mechanics) */
 	--z-chip: 60; /* floating error chip */
 	--z-menu: 100; /* context menus, header dropdowns, examples popover */
 	--z-addmenu: 110; /* node-editor add-node menu + its capture overlay */

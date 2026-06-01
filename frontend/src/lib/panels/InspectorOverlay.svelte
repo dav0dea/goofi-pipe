@@ -106,6 +106,12 @@
 	.side-panel.open {
 		transform: translateX(0);
 	}
+	/* When closed the panel is parked off-screen; its resize handle would
+	   otherwise still poke back into view at the right edge and show a
+	   col-resize cursor. Disable all interaction until it's actually open. */
+	.side-panel:not(.open) {
+		pointer-events: none;
+	}
 	.side-panel.resizing {
 		transition: none;
 	}
