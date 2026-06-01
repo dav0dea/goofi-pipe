@@ -86,10 +86,27 @@
 	}
 
 	function onBeforeUnload(e: BeforeUnloadEvent): void {
+		// Flush a pending layout push so a quick reload keeps the arrangement.
+		if (pushTimer) {
+			clearTimeout(pushTimer);
+			pushTimer = null;
+			void g.setLayout(ws.serialize());
+		}
 		if (!g.unsavedChanges) return;
 		e.preventDefault();
 		e.returnValue = '';
 	}
+
+	// Push layout changes into the running patch (debounced — a resize drag or
+	// rapid splits collapse into one push). Only after the initial sync, so we
+	// don't echo before the patch's own layout has arrived.
+	let pushTimer: ReturnType<typeof setTimeout> | null = null;
+	$effect(() => {
+		void ws.state; // track: every layout mutation replaces this reference
+		if (!g.hadHello) return;
+		if (pushTimer) clearTimeout(pushTimer);
+		pushTimer = setTimeout(() => void g.setLayout(ws.serialize()), 400);
+	});
 
 	onMount(() => {
 		window.addEventListener('keydown', onKeydown);
@@ -97,6 +114,7 @@
 		return () => {
 			window.removeEventListener('keydown', onKeydown);
 			window.removeEventListener('beforeunload', onBeforeUnload);
+			if (pushTimer) clearTimeout(pushTimer);
 		};
 	});
 </script>

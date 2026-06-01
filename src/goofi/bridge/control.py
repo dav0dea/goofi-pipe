@@ -199,6 +199,12 @@ class ControlHub:
             manager.unsaved_changes = True
             await self.broadcast({"event": "node_moved", "payload": {"name": name, "pos": list(pos)}})
             return {"ok": True}
+        if op == "set_layout":
+            # The browser pushes its workspace layout into the running patch so
+            # it survives reloads and lands in the .gfi on save. Layout is soft
+            # UI state, so this deliberately does not mark the patch unsaved.
+            manager.layout = payload.get("layout")
+            return {"ok": True}
         if op == "save":
             path_arg = payload.get("path")
             overwrite = bool(payload.get("overwrite", False))

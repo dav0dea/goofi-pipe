@@ -30,25 +30,12 @@ import {
 } from './model';
 import { getPanelType } from './registry';
 
-const STORAGE_KEY = 'goofi.workspace';
-
 function isValidState(s: unknown): s is WorkspaceState {
 	if (typeof s !== 'object' || s === null) return false;
 	const obj = s as Record<string, unknown>;
 	if (!Array.isArray(obj.workspaces) || obj.workspaces.length === 0) return false;
 	if (typeof obj.activeWorkspaceId !== 'string') return false;
 	return obj.workspaces.some((w) => (w as Workspace).id === obj.activeWorkspaceId);
-}
-
-function readLocal(): WorkspaceState | null {
-	try {
-		const raw = localStorage.getItem(STORAGE_KEY);
-		if (!raw) return null;
-		const parsed: unknown = JSON.parse(raw);
-		return isValidState(parsed) ? parsed : null;
-	} catch {
-		return null;
-	}
 }
 
 class WorkspaceStore {
@@ -58,10 +45,10 @@ class WorkspaceStore {
 	/** When set, only this panel renders, filling the workspace. */
 	maximizedPanelId = $state<string | null>(null);
 
+	// The layout is *not* persisted to localStorage. It lives only in the
+	// running patch (pushed to the manager) and the .gfi on save; a fresh
+	// goofi-pipe with no patch therefore starts at the default layout.
 	constructor() {
-		const stored = readLocal();
-		if (stored) this.state = stored;
-		reseedIds(this.state);
 		this.activePanelId = firstPanelId(this.active.root);
 	}
 
@@ -72,19 +59,10 @@ class WorkspaceStore {
 		);
 	}
 
-	// --- persistence -------------------------------------------------------
-
-	private _commit(): void {
-		try {
-			localStorage.setItem(STORAGE_KEY, JSON.stringify(this.state));
-		} catch {
-			/* private mode / quota — best-effort, same as panelWidth */
-		}
-	}
-
-	/** Plain (de-proxied) snapshot for embedding in a saved `.gfi` patch.
-	 * `$state.snapshot` unwraps Svelte's reactive proxy — `structuredClone`
-	 * chokes on it, and the result must be a plain JSON object for the WS. */
+	/** Plain (de-proxied) snapshot for embedding in a saved `.gfi` patch and
+	 * for pushing into the running patch. `$state.snapshot` unwraps Svelte's
+	 * reactive proxy — `structuredClone` chokes on it, and the result must be a
+	 * plain JSON object for the WS. */
 	serialize(): WorkspaceState {
 		return $state.snapshot(this.state) as WorkspaceState;
 	}
@@ -96,7 +74,6 @@ class WorkspaceStore {
 		this.state = state;
 		this.maximizedPanelId = null;
 		this.activePanelId = firstPanelId(this.active.root);
-		this._commit();
 	}
 
 	private _setRoot(workspaceId: string, root: LayoutNode): void {
@@ -106,7 +83,6 @@ class WorkspaceStore {
 				w.id === workspaceId ? { ...w, root } : w
 			)
 		};
-		this._commit();
 	}
 
 	private _updateActiveRoot(fn: (root: LayoutNode) => LayoutNode | null): void {
@@ -177,9 +153,7 @@ class WorkspaceStore {
 			activeWorkspaceId: ws.id
 		};
 		this.maximizedPanelId = null;
-		this.activePanelId = firstPanelId(ws.root);
-		this._commit();
-	}
+		this.activePanelId = firstPanelId(ws.root);	}
 
 	selectTab(workspaceId: string): void {
 		if (this.state.activeWorkspaceId === workspaceId) return;
@@ -187,9 +161,7 @@ class WorkspaceStore {
 		if (!ws) return;
 		this.state = { ...this.state, activeWorkspaceId: workspaceId };
 		this.maximizedPanelId = null;
-		this.activePanelId = firstPanelId(ws.root);
-		this._commit();
-	}
+		this.activePanelId = firstPanelId(ws.root);	}
 
 	renameTab(workspaceId: string, name: string): void {
 		const trimmed = name.trim();
@@ -199,9 +171,7 @@ class WorkspaceStore {
 			workspaces: this.state.workspaces.map((w) =>
 				w.id === workspaceId ? { ...w, name: trimmed } : w
 			)
-		};
-		this._commit();
-	}
+		};	}
 
 	duplicateTab(workspaceId: string): void {
 		const src = this.state.workspaces.find((w) => w.id === workspaceId);
@@ -216,9 +186,7 @@ class WorkspaceStore {
 		workspaces.splice(idx + 1, 0, copy);
 		this.state = { workspaces, activeWorkspaceId: copy.id };
 		this.maximizedPanelId = null;
-		this.activePanelId = firstPanelId(copy.root);
-		this._commit();
-	}
+		this.activePanelId = firstPanelId(copy.root);	}
 
 	closeTab(workspaceId: string): void {
 		if (this.state.workspaces.length <= 1) return; // keep at least one tab
@@ -232,18 +200,14 @@ class WorkspaceStore {
 			this.maximizedPanelId = null;
 			this.activePanelId = firstPanelId(neighbor.root);
 		}
-		this.state = { workspaces, activeWorkspaceId };
-		this._commit();
-	}
+		this.state = { workspaces, activeWorkspaceId };	}
 
 	reorderTab(fromIndex: number, toIndex: number): void {
 		const ws = this.state.workspaces.slice();
 		if (fromIndex < 0 || fromIndex >= ws.length || toIndex < 0 || toIndex >= ws.length) return;
 		const [moved] = ws.splice(fromIndex, 1);
 		ws.splice(toIndex, 0, moved);
-		this.state = { ...this.state, workspaces: ws };
-		this._commit();
-	}
+		this.state = { ...this.state, workspaces: ws };	}
 }
 
 let _store: WorkspaceStore | null = null;

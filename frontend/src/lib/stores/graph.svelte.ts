@@ -180,6 +180,17 @@ class GraphStore {
 		await getControl().call('set_node_pos', { name, pos });
 	}
 
+	/** Push the current workspace layout into the running patch (manager memory)
+	 * so it survives reloads and lands in the .gfi on save. Fire-and-forget:
+	 * layout is soft UI state, so a dropped push is harmless. */
+	async setLayout(layout: unknown): Promise<void> {
+		try {
+			await getControl().call('set_layout', { layout });
+		} catch {
+			/* not connected / in flight — ignore */
+		}
+	}
+
 	async save(
 		path?: string,
 		overwrite = false,
