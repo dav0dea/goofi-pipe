@@ -21,6 +21,49 @@
 	const type = $derived(resolvePanelType(node.panelType));
 	const active = $derived(ws.activePanelId === node.id);
 
+	// --- tab drop zones (drag a workspace tab in to split) -----------------
+	type DropZone = 'left' | 'right' | 'top' | 'bottom';
+	let dropZone = $state<DropZone | null>(null);
+	// Active only while dragging a *different* tab than the one on screen.
+	const tabDragActive = $derived(
+		!!ws.draggingTabId && ws.draggingTabId !== ws.state.activeWorkspaceId
+	);
+	$effect(() => {
+		if (!tabDragActive) dropZone = null;
+	});
+
+	function onTabDragOver(e: DragEvent): void {
+		if (!tabDragActive) return;
+		e.preventDefault();
+		const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
+		const d = {
+			left: (e.clientX - r.left) / r.width,
+			right: (r.right - e.clientX) / r.width,
+			top: (e.clientY - r.top) / r.height,
+			bottom: (r.bottom - e.clientY) / r.height
+		};
+		let z: DropZone = 'left';
+		for (const k of ['right', 'top', 'bottom'] as DropZone[]) if (d[k] < d[z]) z = k;
+		dropZone = z;
+	}
+	function onTabDragLeave(e: DragEvent): void {
+		const rt = e.relatedTarget as Node | null;
+		if (!(e.currentTarget as HTMLElement).contains(rt)) dropZone = null;
+	}
+	function onTabDrop(e: DragEvent): void {
+		// Capture before clearing — `tabDragActive` derives from draggingTabId,
+		// so nulling it first would defeat the guard. dropTabIntoPanel itself
+		// rejects a self-drop (tab dropped onto its own layout).
+		const src = ws.draggingTabId;
+		const z = dropZone;
+		dropZone = null;
+		ws.draggingTabId = null;
+		if (!src || !z) return;
+		e.preventDefault();
+		const direction = z === 'left' || z === 'right' ? 'row' : 'column';
+		ws.dropTabIntoPanel(src, node.id, direction, z === 'left' || z === 'top');
+	}
+
 	const CORNERS = ['tl', 'tr', 'bl', 'br'] as const;
 	type Corner = (typeof CORNERS)[number];
 
@@ -112,6 +155,9 @@
 	class="panel"
 	class:active
 	onpointerdowncapture={() => ws.setActive(node.id)}
+	ondragover={onTabDragOver}
+	ondragleave={onTabDragLeave}
+	ondrop={onTabDrop}
 	data-panel-id={node.id}
 	data-panel-type={node.panelType}
 >
@@ -141,6 +187,10 @@
 				tabindex="-1"
 			></div>
 		{/each}
+
+		{#if tabDragActive && dropZone}
+			<div class="drop-zone {dropZone}" data-testid="tab-drop-zone"></div>
+		{/if}
 	</div>
 </section>
 
@@ -243,5 +293,38 @@
 	.drag-ghost.join {
 		background: color-mix(in srgb, var(--danger) 16%, transparent);
 		border: 1px solid var(--danger);
+	}
+	/* Live preview of where a dragged tab will land when dropped. */
+	.drop-zone {
+		position: absolute;
+		z-index: var(--z-drag-ghost);
+		pointer-events: none;
+		background: color-mix(in srgb, var(--accent) 20%, transparent);
+		border: 2px solid var(--accent);
+		border-radius: var(--radius-sm);
+	}
+	.drop-zone.left {
+		left: 0;
+		top: 0;
+		width: 50%;
+		height: 100%;
+	}
+	.drop-zone.right {
+		right: 0;
+		top: 0;
+		width: 50%;
+		height: 100%;
+	}
+	.drop-zone.top {
+		left: 0;
+		top: 0;
+		width: 100%;
+		height: 50%;
+	}
+	.drop-zone.bottom {
+		left: 0;
+		bottom: 0;
+		width: 100%;
+		height: 50%;
 	}
 </style>

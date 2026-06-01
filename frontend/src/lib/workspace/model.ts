@@ -185,14 +185,52 @@ export function resizeSplit(
 }
 
 /**
+ * Insert an arbitrary `node` (a panel or a whole subtree) adjacent to the
+ * target panel, splitting along `direction`.
+ *
+ * - If the target's parent split already runs along `direction`, the node is
+ *   inserted as an adjacent sibling and the target's size slice is halved.
+ * - Otherwise the target is wrapped in a fresh split with two equal children.
+ *
+ * `placeBefore` puts the inserted node before the target (left / top).
+ */
+export function insertNodeAtPanel(
+	root: LayoutNode,
+	targetPanelId: string,
+	direction: Direction,
+	placeBefore: boolean,
+	node: LayoutNode
+): LayoutNode {
+	const target = findPanel(root, targetPanelId);
+	if (!target) return root;
+	const parent = findParent(root, targetPanelId);
+
+	if (parent && parent.parent.direction === direction) {
+		return transform(root, parent.parent.id, (n) => {
+			if (n.kind !== 'split') return n;
+			const idx = n.children.findIndex((c) => c.id === targetPanelId);
+			if (idx < 0) return n;
+			const half = n.sizes[idx] / 2;
+			const children = n.children.slice();
+			const sizes = n.sizes.slice();
+			children.splice(placeBefore ? idx : idx + 1, 0, node);
+			sizes.splice(idx, 1, half, half);
+			return { ...n, children, sizes };
+		});
+	}
+
+	const wrap: SplitNode = {
+		kind: 'split',
+		id: uid('split'),
+		direction,
+		children: placeBefore ? [node, target] : [target, node],
+		sizes: [0.5, 0.5]
+	};
+	return transform(root, targetPanelId, () => wrap);
+}
+
+/**
  * Split `panelId` along `direction`, inserting a new panel of `newType`.
- *
- * - If the panel's parent split already runs along `direction`, the new panel
- *   is inserted as an adjacent sibling and the panel's size slice is halved.
- * - Otherwise the panel is wrapped in a fresh split of the requested
- *   direction with two equal children.
- *
- * `placeBefore` puts the new panel before the existing one (left / top).
  * Returns the new tree and the id of the created panel.
  */
 export function splitPanel(
@@ -202,35 +240,12 @@ export function splitPanel(
 	placeBefore: boolean,
 	newType: string
 ): { root: LayoutNode; newPanelId: string } {
-	const target = findPanel(root, panelId);
-	if (!target) return { root, newPanelId: '' };
-
+	if (!findPanel(root, panelId)) return { root, newPanelId: '' };
 	const newPanel = makePanel(newType);
-	const parent = findParent(root, panelId);
-
-	if (parent && parent.parent.direction === direction) {
-		const next = transform(root, parent.parent.id, (n) => {
-			if (n.kind !== 'split') return n;
-			const idx = n.children.findIndex((c) => c.id === panelId);
-			if (idx < 0) return n;
-			const half = n.sizes[idx] / 2;
-			const children = n.children.slice();
-			const sizes = n.sizes.slice();
-			children.splice(placeBefore ? idx : idx + 1, 0, newPanel);
-			sizes.splice(idx, 1, half, half);
-			return { ...n, children, sizes };
-		});
-		return { root: next, newPanelId: newPanel.id };
-	}
-
-	const wrap: SplitNode = {
-		kind: 'split',
-		id: uid('split'),
-		direction,
-		children: placeBefore ? [newPanel, target] : [target, newPanel],
-		sizes: [0.5, 0.5]
+	return {
+		root: insertNodeAtPanel(root, panelId, direction, placeBefore, newPanel),
+		newPanelId: newPanel.id
 	};
-	return { root: transform(root, panelId, () => wrap), newPanelId: newPanel.id };
 }
 
 function normalize(sizes: number[]): number[] {

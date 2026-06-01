@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
 	makePanel,
 	splitPanel,
+	insertNodeAtPanel,
 	closePanel,
 	resizeSplit,
 	setPanelType,
@@ -67,6 +68,36 @@ describe('splitPanel', () => {
 		const inner = outer.children[0] as SplitNode;
 		expect(inner.direction).toBe('column');
 		expect(inner.children).toHaveLength(2);
+	});
+});
+
+describe('insertNodeAtPanel (drag-tab-to-split)', () => {
+	it('inserts a whole subtree adjacent to the target, preserving its ids', () => {
+		const a = makePanel('a');
+		// A 2-panel column split, as if dragged in from another tab.
+		const subtree: SplitNode = {
+			kind: 'split',
+			id: 's-sub',
+			direction: 'column',
+			children: [makePanel('x'), makePanel('y')],
+			sizes: [0.5, 0.5]
+		};
+		const root = insertNodeAtPanel(a, a.id, 'row', false, subtree) as SplitNode;
+		expect(root.kind).toBe('split');
+		expect(root.direction).toBe('row');
+		expect(root.children).toHaveLength(2);
+		expect(root.children[0].id).toBe(a.id); // target stays first
+		expect(root.children[1].id).toBe('s-sub'); // dragged subtree second, ids intact
+		expect(countPanels(root)).toBe(3); // a + x + y
+	});
+
+	it('places the subtree before the target when placeBefore is set', () => {
+		const a = makePanel('a');
+		const subtree = makePanel('b');
+		const root = insertNodeAtPanel(a, a.id, 'column', true, subtree) as SplitNode;
+		expect(root.direction).toBe('column');
+		expect(root.children[0].id).toBe(subtree.id);
+		expect(root.children[1].id).toBe(a.id);
 	});
 });
 

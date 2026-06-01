@@ -528,7 +528,10 @@
 		window.addEventListener('mousemove', trackMouse);
 		return () => {
 			unregisterEditor(panelId);
-			sel.forgetPanel(panelId);
+			// NB: do NOT forget this panel's selection here — unmount also fires
+			// on a tab switch (the inactive tab's tree is torn down), and the
+			// selection must survive switching away and back. It only clears
+			// when the user clicks blank space in the focused editor.
 			window.removeEventListener('keydown', onKeydown);
 			window.removeEventListener('mousemove', trackMouse);
 		};

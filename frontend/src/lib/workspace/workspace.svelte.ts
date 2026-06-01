@@ -17,6 +17,7 @@ import {
 	DEFAULT_PANEL_TYPE,
 	findPanel,
 	firstPanelId,
+	insertNodeAtPanel,
 	makeWorkspace,
 	reseedIds,
 	resizeSplit,
@@ -44,6 +45,9 @@ class WorkspaceStore {
 	activePanelId = $state<string | null>(null);
 	/** When set, only this panel renders, filling the workspace. */
 	maximizedPanelId = $state<string | null>(null);
+	/** Workspace id of a tab currently being dragged — panels show drop zones
+	 * while this is set so the tab can be dropped in to split. */
+	draggingTabId = $state<string | null>(null);
 
 	// The layout is *not* persisted to localStorage. It lives only in the
 	// running patch (pushed to the manager) and the .gfi on save; a fresh
@@ -201,6 +205,31 @@ class WorkspaceStore {
 			this.activePanelId = firstPanelId(neighbor.root);
 		}
 		this.state = { workspaces, activeWorkspaceId };	}
+
+	/** Drop a tab onto a panel: merge that tab's whole layout into the active
+	 * tab by splitting `targetPanelId` along `direction`, then remove the
+	 * dragged tab. Node ids are preserved, so editor selections carry over. */
+	dropTabIntoPanel(
+		sourceWsId: string,
+		targetPanelId: string,
+		direction: Direction,
+		placeBefore: boolean
+	): void {
+		if (sourceWsId === this.state.activeWorkspaceId) return; // can't merge into itself
+		const source = this.state.workspaces.find((w) => w.id === sourceWsId);
+		const active = this.active;
+		if (!source) return;
+		const root = insertNodeAtPanel(active.root, targetPanelId, direction, placeBefore, source.root);
+		if (root === active.root) return;
+		this.state = {
+			workspaces: this.state.workspaces
+				.filter((w) => w.id !== sourceWsId)
+				.map((w) => (w.id === active.id ? { ...w, root } : w)),
+			activeWorkspaceId: active.id
+		};
+		this.maximizedPanelId = null;
+		this.activePanelId = firstPanelId(source.root);
+	}
 
 	reorderTab(fromIndex: number, toIndex: number): void {
 		const ws = this.state.workspaces.slice();
