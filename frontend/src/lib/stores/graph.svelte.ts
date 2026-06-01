@@ -7,6 +7,7 @@
  */
 import { getControl, type ControlEvent, type GraphSnapshot, type LinkInfo, type NodeInstanceInfo, type NodeTypeInfo } from '$lib/api/control';
 import { ui } from './ui.svelte';
+import { workspace } from '$lib/workspace/workspace.svelte';
 
 class GraphStore {
 	nodes = $state<NodeInstanceInfo[]>([]);
@@ -35,6 +36,9 @@ class GraphStore {
 		this.links = snap.links;
 		this.savePath = snap.save_path;
 		this.unsavedChanges = snap.unsaved_changes;
+		// A patch that carries a workspace layout drives the panel arrangement;
+		// otherwise keep whatever layout the browser already has.
+		if (snap.layout != null) workspace().hydrate(snap.layout);
 	}
 
 	private _handle(ev: ControlEvent): void {
@@ -110,6 +114,11 @@ class GraphStore {
 			case 'save_path_changed':
 				this.savePath = ev.payload.save_path;
 				break;
+			case 'layout':
+				// Layout restored from a patch loaded after this client connected
+				// (e.g. CLI startup load). Null → patch has no layout; keep ours.
+				if (ev.payload.layout != null) workspace().hydrate(ev.payload.layout);
+				break;
 			case 'manager_shutdown':
 				this.connected = false;
 				break;
@@ -171,8 +180,15 @@ class GraphStore {
 		await getControl().call('set_node_pos', { name, pos });
 	}
 
-	async save(path?: string, overwrite = false): Promise<{ path: string; yaml: string }> {
-		return getControl().call('save', { path, overwrite });
+	async save(
+		path?: string,
+		overwrite = false,
+		layout?: unknown
+	): Promise<{ path: string; yaml: string }> {
+		// `layout` is the frontend workspace arrangement; the backend writes it
+		// into the .gfi. Omitted (undefined) → not sent → backend keeps any
+		// existing layout.
+		return getControl().call('save', { path, overwrite, layout });
 	}
 
 	async loadText(content: string): Promise<void> {

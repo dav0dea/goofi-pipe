@@ -58,7 +58,7 @@
 
 	async function triggerSave(): Promise<void> {
 		try {
-			const { yaml, path } = await g.save(undefined, true);
+			const { yaml, path } = await g.save(undefined, true, ws.serialize());
 			const blob = new Blob([yaml], { type: 'application/x-yaml' });
 			const url = URL.createObjectURL(blob);
 			const a = document.createElement('a');

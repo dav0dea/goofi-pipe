@@ -82,9 +82,11 @@ class WorkspaceStore {
 		}
 	}
 
-	/** Snapshot for embedding in a saved `.gfi` patch. */
+	/** Plain (de-proxied) snapshot for embedding in a saved `.gfi` patch.
+	 * `$state.snapshot` unwraps Svelte's reactive proxy — `structuredClone`
+	 * chokes on it, and the result must be a plain JSON object for the WS. */
 	serialize(): WorkspaceState {
-		return structuredClone(this.state);
+		return $state.snapshot(this.state) as WorkspaceState;
 	}
 
 	/** Apply a layout restored from a `.gfi` patch (or any external source). */

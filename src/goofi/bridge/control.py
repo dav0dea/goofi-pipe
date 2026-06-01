@@ -202,6 +202,11 @@ class ControlHub:
         if op == "save":
             path_arg = payload.get("path")
             overwrite = bool(payload.get("overwrite", False))
+            # The browser ships its current workspace layout with the save so
+            # it round-trips into the .gfi. Only overwrite when present so a
+            # layout-less save can't wipe an existing one.
+            if "layout" in payload:
+                manager.layout = payload.get("layout")
             saved_path = await asyncio.get_running_loop().run_in_executor(
                 None, lambda: _save_and_return(manager, path_arg, overwrite)
             )
@@ -289,6 +294,7 @@ class ControlHub:
             "links": list(manager.links),
             "save_path": manager.save_path,
             "unsaved_changes": manager.unsaved_changes,
+            "layout": manager.layout,
         }
 
     async def _call_manager(self, fn, *args, **kwargs) -> Any:

@@ -44,6 +44,10 @@ export interface GraphSnapshot {
 	links: LinkInfo[];
 	save_path: string | null;
 	unsaved_changes: boolean;
+	/** Opaque frontend workspace-layout blob restored from the .gfi patch.
+	 * Null/absent when the patch carries no layout (older patch, or blank
+	 * start) — the frontend then keeps its localStorage / default layout. */
+	layout?: unknown;
 }
 
 export type ControlEvent =
@@ -65,6 +69,7 @@ export type ControlEvent =
 	| { event: 'unsaved_changes'; payload: { unsaved_changes: boolean } }
 	| { event: 'save_path_changed'; payload: { save_path: string | null } }
 	| { event: 'graph_replaced'; payload: GraphSnapshot }
+	| { event: 'layout'; payload: { layout: unknown } }
 	| { event: 'manager_shutdown'; payload: Record<string, never> };
 
 type EventHandler = (ev: ControlEvent) => void;

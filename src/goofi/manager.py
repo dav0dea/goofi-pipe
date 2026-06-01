@@ -136,6 +136,11 @@ class Manager:
 
         self._save_path: Optional[str] = None
         self._unsaved_changes = False
+        # Opaque frontend workspace-layout blob (panel/tab arrangement). The
+        # backend never interprets it — it round-trips through the .gfi file so
+        # a saved patch carries its UI layout. Set by the bridge on save, read
+        # back on load, and surfaced to the browser via the graph snapshot.
+        self._layout: Optional[Any] = None
 
         # Bridge (browser frontend). Started in non-headless mode; the
         # process keeps running until terminate() — main thread serves
@@ -397,6 +402,19 @@ class Manager:
         for link in manager_yaml["links"]:
             self.add_link(link["node_out"], link["node_in"], link["slot_out"], link["slot_in"])
 
+        # Restore the frontend layout if the patch carries one (optional key —
+        # older patches without it leave layout None, and the browser falls
+        # back to its localStorage / default layout). Broadcast it: the bridge
+        # is up before this initial load completes, so a client that connected
+        # during load got a layout-less `hello` and needs this to catch up
+        # (nodes already stream via node_added events; layout has no other
+        # delivery path). The frontend ignores a null payload.
+        self._layout = manager_yaml.get("layout")
+        if self._bridge is not None:
+            self._bridge.control.broadcast_threadsafe(
+                {"event": "layout", "payload": {"layout": self._layout}}
+            )
+
         self.save_path = filepath
         self.unsaved_changes = False
         print("Finished loading manager state.")
@@ -431,7 +449,10 @@ class Manager:
         print("Saving manager state...")
 
         serialized_nodes: Dict[str, Any] = {}
-        for name in self.nodes:
+        # Snapshot the names first: a patch may still be spawning nodes on
+        # another thread, and iterating the live container would raise
+        # "dictionary changed size during iteration" (matches terminate()).
+        for name in list(self.nodes):
             ref = self.nodes[name]
             ref.wait_for_state(timeout=timeout)
             if ref.serialized_state is None:
@@ -444,7 +465,10 @@ class Manager:
             serialized_nodes[name] = state
 
         links = list(self._links)
-        manager_yaml = yaml.dump({"nodes": serialized_nodes, "links": links}, sort_keys=False)
+        patch: Dict[str, Any] = {"nodes": serialized_nodes, "links": links}
+        if self.layout is not None:
+            patch["layout"] = self.layout
+        manager_yaml = yaml.dump(patch, sort_keys=False)
 
         with open(filepath, "w") as f:
             f.write(manager_yaml)
@@ -488,6 +512,16 @@ class Manager:
             self._bridge.control.broadcast_threadsafe(
                 {"event": "save_path_changed", "payload": {"save_path": filepath}}
             )
+
+    @property
+    def layout(self) -> Optional[Any]:
+        # getattr default keeps managers built via __new__ (test fixtures) safe
+        # even though they don't run __init__.
+        return getattr(self, "_layout", None)
+
+    @layout.setter
+    def layout(self, value: Optional[Any]) -> None:
+        self._layout = value
 
     @property
     def unsaved_changes(self) -> bool:
