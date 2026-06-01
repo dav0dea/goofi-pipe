@@ -6,13 +6,12 @@
 	import type { NodeInstanceInfo } from '$lib/api/control';
 	import NodeLinkedPanel from './NodeLinkedPanel.svelte';
 	import MetadataPanel from '$lib/editor/MetadataPanel.svelte';
+	import { asStateObject } from '$lib/workspace/panelState';
 
 	let props: PanelProps = $props();
 
 	function st(): Record<string, unknown> {
-		return typeof props.state === 'object' && props.state
-			? (props.state as Record<string, unknown>)
-			: {};
+		return asStateObject(props.state);
 	}
 	// Selected slot persists in the panel state alongside the linked node.
 	function curSlot(node: NodeInstanceInfo): string | null {

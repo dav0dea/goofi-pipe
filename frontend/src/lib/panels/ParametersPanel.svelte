@@ -7,13 +7,12 @@
 	import type { NodeInstanceInfo } from '$lib/api/control';
 	import NodeLinkedPanel from './NodeLinkedPanel.svelte';
 	import ParamPanel, { paramGroupNames } from '$lib/params/ParamPanel.svelte';
+	import { asStateObject } from '$lib/workspace/panelState';
 
 	let props: PanelProps = $props();
 
 	function st(): Record<string, unknown> {
-		return typeof props.state === 'object' && props.state
-			? (props.state as Record<string, unknown>)
-			: {};
+		return asStateObject(props.state);
 	}
 	// Active group persists in the panel state alongside the linked node; falls
 	// back to the first group when unset or stale for the current node.

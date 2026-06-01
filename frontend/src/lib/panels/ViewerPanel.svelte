@@ -8,24 +8,19 @@
 	import { dtypeColor } from '$lib/editor/categoryColor';
 	import NodeLinkedPanel from './NodeLinkedPanel.svelte';
 	import ViewerBody from './ViewerBody.svelte';
+	import { asStateObject } from '$lib/workspace/panelState';
+	import { defaultKind, cycleKind, type ViewerKind } from '$lib/viewers/kind';
 
-	type ViewerKind = 'line' | 'image' | 'trajectory' | 'topomap' | 'string' | 'table';
 	interface ViewerState {
 		node?: string | null;
 		slot?: string | null;
 		kind?: ViewerKind;
 	}
-	const CYCLE_ARRAY = ['line', 'image', 'trajectory', 'topomap'] as const;
 
 	let props: PanelProps = $props();
 
 	function st(): ViewerState {
-		return typeof props.state === 'object' && props.state ? (props.state as ViewerState) : {};
-	}
-	function defaultKind(dt: string | null): ViewerKind {
-		if (dt === 'STRING') return 'string';
-		if (dt === 'TABLE') return 'table';
-		return 'line';
+		return asStateObject(props.state) as ViewerState;
 	}
 	function curSlot(node: NodeInstanceInfo): string | null {
 		const cur = st();
@@ -40,8 +35,7 @@
 	}
 	function cycle(node: NodeInstanceInfo, slot: string | null, kind: ViewerKind): void {
 		if (!slot || node.output_slots[slot] !== 'ARRAY') return;
-		const i = CYCLE_ARRAY.indexOf(kind as (typeof CYCLE_ARRAY)[number]);
-		props.setState({ ...st(), kind: CYCLE_ARRAY[(i + 1) % CYCLE_ARRAY.length] });
+		props.setState({ ...st(), kind: cycleKind(kind) });
 	}
 </script>
 

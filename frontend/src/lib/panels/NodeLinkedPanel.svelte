@@ -13,6 +13,7 @@
 	import type { NodeInstanceInfo } from '$lib/api/control';
 	import { graph } from '$lib/stores/graph.svelte';
 	import { ui } from '$lib/stores/ui.svelte';
+	import { linkedNodeName, withLinkedNode } from '$lib/workspace/panelState';
 	import type { Snippet } from 'svelte';
 
 	let {
@@ -34,24 +35,15 @@
 	const g = graph();
 	const uiStore = ui();
 
-	const linkedName = $derived(
-		typeof linkState === 'object' && linkState !== null
-			? ((linkState as { node?: string | null }).node ?? null)
-			: null
-	);
-	const node = $derived(linkedName ? (g.nodes.find((n) => n.name === linkedName) ?? null) : null);
+	const linkedName = $derived(linkedNodeName(linkState));
+	const node = $derived(linkedName ? g.nodeByName(linkedName) : null);
 	// A node is being dragged from an editor (the editor drives the link on
 	// release); `over` is true when it's currently over this panel.
 	const dragActive = $derived(uiStore.nodeDrag !== null);
 	const over = $derived(uiStore.nodeDragTarget === panelId);
 
-	function base(): Record<string, unknown> {
-		return typeof linkState === 'object' && linkState !== null
-			? (linkState as Record<string, unknown>)
-			: {};
-	}
 	function unlink(): void {
-		setState({ ...base(), node: null });
+		setState(withLinkedNode(linkState, null));
 	}
 </script>
 
