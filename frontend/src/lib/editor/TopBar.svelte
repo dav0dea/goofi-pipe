@@ -6,9 +6,11 @@
 		onSave: () => void;
 		onLoad: () => void;
 		onFitView: () => void;
+		onToggleSidePanel: () => void;
+		sidePanelOn: boolean;
 	};
 
-	const { onAddNode, onSave, onLoad, onFitView }: Props = $props();
+	const { onAddNode, onSave, onLoad, onFitView, onToggleSidePanel, sidePanelOn }: Props = $props();
 
 	const g = graph();
 	let examplesOpen = $state(false);
@@ -56,6 +58,13 @@
 		<button class="ghost" data-testid="topbar-fit" onclick={onFitView}>Fit</button>
 		<button class="ghost" data-testid="topbar-save" onclick={onSave}>Save</button>
 		<button class="ghost" data-testid="topbar-load" onclick={onLoad}>Load…</button>
+		<button
+			class="ghost"
+			class:active={sidePanelOn}
+			data-testid="topbar-inspector"
+			title="Toggle the selection inspector overlay"
+			onclick={onToggleSidePanel}>Inspector</button
+		>
 		<div class="examples-host">
 			<button class="ghost" onclick={toggleExamples} data-testid="topbar-examples">
 				Examples ▾
@@ -125,6 +134,10 @@
 		display: flex;
 		align-items: center;
 		gap: 4px;
+	}
+	.actions button.active {
+		color: var(--accent);
+		background: color-mix(in srgb, var(--accent) 12%, transparent);
 	}
 	.examples-host {
 		position: relative;

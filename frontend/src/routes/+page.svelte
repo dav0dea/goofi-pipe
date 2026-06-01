@@ -1,9 +1,5 @@
 <script lang="ts">
-	import Editor from '$lib/editor/Editor.svelte';
+	import AppShell from '$lib/app/AppShell.svelte';
 </script>
 
-<svelte:head>
-	<title>goofi-pipe</title>
-</svelte:head>
-
-<Editor />
+<AppShell />
