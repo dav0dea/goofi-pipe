@@ -5,8 +5,15 @@
 	import { categoryColor, formatName } from '$lib/editor/categoryColor';
 	import ParamField from './ParamField.svelte';
 
-	type Props = { node: NodeInstanceInfo | null };
-	const { node }: Props = $props();
+	type Props = {
+		node: NodeInstanceInfo | null;
+		/** Show the node identity header (class + status light + name + docs
+		 * toggle). True in the editor's slide-in inspector; false in the
+		 * dedicated Parameters panel, which already names the node in its linkbar
+		 * and wants the group tabs at the very top. */
+		showHeader?: boolean;
+	};
+	const { node, showHeader = true }: Props = $props();
 
 	const g = graph();
 
@@ -67,31 +74,33 @@
 			<div class="empty-sub">Click a node to edit its parameters.</div>
 		</div>
 	{:else}
-		<header class:has-doc={Boolean(node.doc)} class:expanded={docsOpen}>
-			<span class="dot" style="background: {categoryColor(node.category)};"></span>
-			<div class="titles">
-				<div class="title">{formatName(node.type)}</div>
-				<div class="sub">{node.name}</div>
-			</div>
-			<span class="badge" class:badge-error={Boolean(node.error)} class:badge-ok={!node.error}>
-				{node.error ? 'error' : 'running'}
-			</span>
-			{#if node.doc}
-				<button
-					class="docs-toggle"
-					class:open={docsOpen}
-					onclick={() => (docsOpen = !docsOpen)}
-					title={docsOpen ? 'Hide docs' : 'Show docs'}
-					aria-label={docsOpen ? 'Hide docs' : 'Show docs'}
-					data-testid="docs-toggle"
-				>
-					▸
-				</button>
-			{/if}
-		</header>
+		{#if showHeader}
+			<header class:has-doc={Boolean(node.doc)} class:expanded={docsOpen}>
+				<span class="dot" style="background: {categoryColor(node.category)};"></span>
+				<div class="titles">
+					<div class="title">{formatName(node.type)}</div>
+					<div class="sub">{node.name}</div>
+				</div>
+				<span class="badge" class:badge-error={Boolean(node.error)} class:badge-ok={!node.error}>
+					{node.error ? 'error' : 'running'}
+				</span>
+				{#if node.doc}
+					<button
+						class="docs-toggle"
+						class:open={docsOpen}
+						onclick={() => (docsOpen = !docsOpen)}
+						title={docsOpen ? 'Hide docs' : 'Show docs'}
+						aria-label={docsOpen ? 'Hide docs' : 'Show docs'}
+						data-testid="docs-toggle"
+					>
+						▸
+					</button>
+				{/if}
+			</header>
 
-		{#if docsOpen && node.doc}
-			<p class="docstring" data-testid="docstring">{node.doc}</p>
+			{#if docsOpen && node.doc}
+				<p class="docstring" data-testid="docstring">{node.doc}</p>
+			{/if}
 		{/if}
 
 		{#if node.error}

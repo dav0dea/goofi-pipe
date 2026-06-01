@@ -18,6 +18,11 @@
 	let editValue = $state('');
 	let dropIndex = $state<number | null>(null);
 
+	// While a panel/tab is dragged over the bar, open a real placeholder slot at
+	// the drop index so it's clear where it'll land (and the ＋ shifts to make
+	// room) — rather than a thin insertion sliver.
+	const showPreview = $derived(!!ws.dragging && dropIndex !== null);
+
 	function startRename(id: string, name: string): void {
 		editing = id;
 		editValue = name;
@@ -75,10 +80,12 @@
 	tabindex="-1"
 >
 	{#each tabs as tab, i (tab.id)}
+		{#if showPreview && dropIndex === i}
+			<div class="tab-preview" aria-hidden="true"></div>
+		{/if}
 		<div
 			class="tab"
 			class:active={tab.id === activeId}
-			class:insert={dropIndex === i}
 			draggable={editing !== tab.id}
 			onclick={() => ws.selectTab(tab.id)}
 			ondblclick={() => startRename(tab.id, tab.name)}
@@ -123,30 +130,31 @@
 			{/if}
 		</div>
 	{/each}
-	<button
-		class="add"
-		class:insert={dropIndex === tabs.length}
-		onclick={() => ws.addTab()}
-		title="New tab"
-		aria-label="New tab">＋</button
-	>
+	{#if showPreview && dropIndex === tabs.length}
+		<div class="tab-preview" aria-hidden="true"></div>
+	{/if}
+	<button class="add" onclick={() => ws.addTab()} title="New tab" aria-label="New tab">＋</button>
 </div>
 
 <style>
 	.tabs {
+		/* Lives inside the TopBar's central slot: fills the slack, blends with
+		   the header (no own background / bottom border), matches its height. */
 		display: flex;
 		align-items: stretch;
 		gap: 2px;
-		height: var(--tabs-h, 30px);
-		flex: 0 0 auto;
-		padding: 0 6px;
-		background: var(--bg-elev-1);
-		border-bottom: 1px solid var(--border);
+		height: 100%;
+		flex: 1 1 auto;
+		min-width: 0;
+		padding: 0 4px;
+		background: transparent;
 		overflow-x: auto;
 		overflow-y: hidden;
+		scrollbar-width: thin;
 	}
 	.tabs.dragover {
-		background: color-mix(in srgb, var(--accent) 8%, var(--bg-elev-1));
+		background: color-mix(in srgb, var(--accent) 7%, transparent);
+		border-radius: var(--radius-sm);
 	}
 	.tab {
 		display: flex;
@@ -171,10 +179,16 @@
 		color: var(--text);
 		border-color: var(--border);
 	}
-	/* Insertion marker: an accent bar on the left edge of the drop slot. */
-	.tab.insert,
-	.add.insert {
-		box-shadow: inset 2px 0 0 0 var(--accent);
+	/* Drop placeholder: a tab-sized slot that opens up at the drop index so the
+	   landing spot is obvious and the ＋ shifts over to make room. */
+	.tab-preview {
+		flex: 0 0 auto;
+		align-self: center;
+		width: 96px;
+		height: calc(100% - 10px);
+		border-radius: var(--radius-sm);
+		border: 1px dashed var(--accent);
+		background: color-mix(in srgb, var(--accent) 14%, transparent);
 	}
 	.rename {
 		width: 9ch;

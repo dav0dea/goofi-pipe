@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { graph } from '$lib/stores/graph.svelte';
+	import type { Snippet } from 'svelte';
 
 	type Props = {
 		onAddNode: () => void;
@@ -8,9 +9,13 @@
 		onFitView: () => void;
 		onToggleSidePanel: () => void;
 		sidePanelOn: boolean;
+		/** Workspace tab strip, rendered in the header's central gap between the
+		 * filename and the action buttons. */
+		tabs?: Snippet;
 	};
 
-	const { onAddNode, onSave, onLoad, onFitView, onToggleSidePanel, sidePanelOn }: Props = $props();
+	const { onAddNode, onSave, onLoad, onFitView, onToggleSidePanel, sidePanelOn, tabs }: Props =
+		$props();
 
 	const g = graph();
 	let examplesOpen = $state(false);
@@ -53,6 +58,10 @@
 		{/if}
 	</div>
 
+	{#if tabs}
+		<div class="tabslot">{@render tabs()}</div>
+	{/if}
+
 	<div class="actions">
 		<button class="ghost" data-testid="topbar-add" onclick={onAddNode}>＋ Add node</button>
 		<button class="ghost" data-testid="topbar-fit" onclick={onFitView}>Fit</button>
@@ -87,7 +96,7 @@
 	.topbar {
 		display: flex;
 		align-items: center;
-		justify-content: space-between;
+		gap: 14px;
 		padding: 0 12px;
 		background: var(--bg-elev-1);
 		border-bottom: 1px solid var(--border);
@@ -99,6 +108,15 @@
 		display: flex;
 		align-items: center;
 		gap: 10px;
+		flex: 0 0 auto;
+	}
+	/* The tab strip fills the slack between the filename and the actions. */
+	.tabslot {
+		flex: 1 1 auto;
+		min-width: 0;
+		align-self: stretch;
+		display: flex;
+		align-items: stretch;
 	}
 	.logo {
 		font-size: 18px;
@@ -134,6 +152,7 @@
 		display: flex;
 		align-items: center;
 		gap: 4px;
+		flex: 0 0 auto;
 	}
 	.actions button.active {
 		color: var(--accent);

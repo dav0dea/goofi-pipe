@@ -132,8 +132,11 @@
 		onLoad={triggerLoad}
 		onToggleSidePanel={() => sel.toggleInspector()}
 		sidePanelOn={sel.inspectorEnabled}
-	/>
-	<WorkspaceTabs />
+	>
+		{#snippet tabs()}
+			<WorkspaceTabs />
+		{/snippet}
+	</TopBar>
 	<div class="main">
 		<WorkspaceView />
 		<ErrorPanel mode="chip" onFocus={focusError} />

@@ -10,7 +10,7 @@
 
 <NodeLinkedPanel {...props} label="parameters">
 	{#snippet content(node)}
-		<div class="scroll"><ParamPanel {node} /></div>
+		<div class="scroll"><ParamPanel {node} showHeader={false} /></div>
 	{/snippet}
 </NodeLinkedPanel>
 
