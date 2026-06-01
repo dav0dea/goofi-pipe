@@ -15,6 +15,7 @@ import {
 	cloneWithNewIds,
 	defaultWorkspaceState,
 	DEFAULT_PANEL_TYPE,
+	extractPanel,
 	findPanel,
 	firstPanelId,
 	insertNodeAtPanel,
@@ -31,6 +32,13 @@ import {
 } from './model';
 import { getPanelType } from './registry';
 
+/** A drag in progress. A panel and a tab are both just a `LayoutNode` being
+ * moved — the only difference is where it came from, which `_takeNode` knows
+ * how to detach. */
+export type DragRef =
+	| { kind: 'panel'; workspaceId: string; panelId: string }
+	| { kind: 'tab'; workspaceId: string };
+
 function isValidState(s: unknown): s is WorkspaceState {
 	if (typeof s !== 'object' || s === null) return false;
 	const obj = s as Record<string, unknown>;
@@ -45,9 +53,10 @@ class WorkspaceStore {
 	activePanelId = $state<string | null>(null);
 	/** When set, only this panel renders, filling the workspace. */
 	maximizedPanelId = $state<string | null>(null);
-	/** Workspace id of a tab currently being dragged — panels show drop zones
-	 * while this is set so the tab can be dropped in to split. */
-	draggingTabId = $state<string | null>(null);
+	/** The panel or tab currently being dragged. While set, panels show edge
+	 * drop zones and the tab bar accepts the drop, so the dragged node can be
+	 * repositioned in the layout or turned into a tab. */
+	dragging = $state<DragRef | null>(null);
 
 	// The layout is *not* persisted to localStorage. It lives only in the
 	// running patch (pushed to the manager) and the .gfi on save; a fresh
@@ -206,29 +215,85 @@ class WorkspaceStore {
 		}
 		this.state = { workspaces, activeWorkspaceId };	}
 
-	/** Drop a tab onto a panel: merge that tab's whole layout into the active
-	 * tab by splitting `targetPanelId` along `direction`, then remove the
-	 * dragged tab. Node ids are preserved, so editor selections carry over. */
-	dropTabIntoPanel(
-		sourceWsId: string,
-		targetPanelId: string,
-		direction: Direction,
-		placeBefore: boolean
-	): void {
-		if (sourceWsId === this.state.activeWorkspaceId) return; // can't merge into itself
-		const source = this.state.workspaces.find((w) => w.id === sourceWsId);
-		const active = this.active;
-		if (!source) return;
-		const root = insertNodeAtPanel(active.root, targetPanelId, direction, placeBefore, source.root);
-		if (root === active.root) return;
+	/**
+	 * Detach the dragged node (a panel or a whole tab) and return it plus the
+	 * state with the source removed. Shared by every drop target — this is what
+	 * makes a tab and a panel "the same thing": both yield a `LayoutNode` to
+	 * re-home, with ids preserved so editor selections carry over. Returns null
+	 * if the move would empty the last tab.
+	 */
+	private _takeNode(d: DragRef): { node: LayoutNode; state: WorkspaceState } | null {
+		if (d.kind === 'tab') {
+			const ws = this.state.workspaces.find((w) => w.id === d.workspaceId);
+			if (!ws || this.state.workspaces.length <= 1) return null;
+			const workspaces = this.state.workspaces.filter((w) => w.id !== d.workspaceId);
+			const activeWorkspaceId =
+				this.state.activeWorkspaceId === d.workspaceId
+					? workspaces[0].id
+					: this.state.activeWorkspaceId;
+			return { node: ws.root, state: { workspaces, activeWorkspaceId } };
+		}
+		const ws = this.state.workspaces.find((w) => w.id === d.workspaceId);
+		if (!ws) return null;
+		const { root, removed } = extractPanel(ws.root, d.panelId);
+		if (!removed) return null;
+		if (root === null) {
+			// the panel was the tab's only node → the tab goes with it
+			if (this.state.workspaces.length <= 1) return null;
+			const workspaces = this.state.workspaces.filter((w) => w.id !== d.workspaceId);
+			const activeWorkspaceId =
+				this.state.activeWorkspaceId === d.workspaceId
+					? workspaces[0].id
+					: this.state.activeWorkspaceId;
+			return { node: removed, state: { workspaces, activeWorkspaceId } };
+		}
+		const workspaces = this.state.workspaces.map((w) =>
+			w.id === d.workspaceId ? { ...w, root } : w
+		);
+		return { node: removed, state: { ...this.state, workspaces } };
+	}
+
+	/** Drop the dragged node (panel or tab) into the active layout by splitting
+	 * `targetPanelId` along `direction`. Repositions a panel or merges a tab. */
+	dropOnPanel(targetPanelId: string, direction: Direction, placeBefore: boolean): void {
+		const d = this.dragging;
+		this.dragging = null;
+		if (!d) return;
+		if (d.kind === 'panel' && d.panelId === targetPanelId) return; // onto itself
+		const taken = this._takeNode(d);
+		if (!taken) return;
+		const { node, state } = taken;
+		const active = state.workspaces.find((w) => w.id === state.activeWorkspaceId);
+		if (!active) return;
+		const root = insertNodeAtPanel(active.root, targetPanelId, direction, placeBefore, node);
+		if (root === active.root) return; // target not in the active tree (e.g. self-drop)
 		this.state = {
-			workspaces: this.state.workspaces
-				.filter((w) => w.id !== sourceWsId)
-				.map((w) => (w.id === active.id ? { ...w, root } : w)),
-			activeWorkspaceId: active.id
+			...state,
+			workspaces: state.workspaces.map((w) => (w.id === active.id ? { ...w, root } : w))
 		};
 		this.maximizedPanelId = null;
-		this.activePanelId = firstPanelId(source.root);
+		this.activePanelId = firstPanelId(node);
+	}
+
+	/** Drop the dragged panel onto the tab bar at `index` — it becomes a new
+	 * tab. (Tabs dropped on the bar reorder instead — see reorderTab.) */
+	dropPanelOnTabBar(index: number): void {
+		const d = this.dragging;
+		this.dragging = null;
+		if (!d || d.kind !== 'panel') return;
+		const taken = this._takeNode(d);
+		if (!taken) return;
+		const { node, state } = taken;
+		const tab: Workspace = {
+			id: makeWorkspace('').id,
+			name: this._uniqueName('Layout'),
+			root: node
+		};
+		const workspaces = state.workspaces.slice();
+		workspaces.splice(Math.max(0, Math.min(index, workspaces.length)), 0, tab);
+		this.state = { workspaces, activeWorkspaceId: tab.id };
+		this.maximizedPanelId = null;
+		this.activePanelId = firstPanelId(node);
 	}
 
 	reorderTab(fromIndex: number, toIndex: number): void {

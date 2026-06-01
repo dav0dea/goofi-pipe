@@ -1,8 +1,11 @@
 <!--
   Workspace tab strip. Click to switch, double-click to rename inline, a small
-  × to close, and `＋` to add a tab. Tabs are draggable: dropped on another tab
-  they reorder; dragged onto a panel's drop zone they split it (see Panel.svelte
-  / the workspace store's `draggingTabId`).
+  × to close, `＋` to add.
+
+  Tabs and panels share one drag system (workspace store `dragging`): a tab
+  dragged onto another tab reorders; a tab or panel dragged onto a panel splits
+  it; and a panel dragged onto this bar becomes a new tab. The bar shows an
+  insertion marker at the drop index while a drag is over it.
 -->
 <script lang="ts">
 	import { workspace } from './workspace.svelte';
@@ -13,7 +16,6 @@
 
 	let editing = $state<string | null>(null);
 	let editValue = $state('');
-	let dragIndex = $state<number | null>(null);
 	let dropIndex = $state<number | null>(null);
 
 	function startRename(id: string, name: string): void {
@@ -28,36 +30,62 @@
 		node.focus();
 		node.select();
 	}
+
+	function computeDropIndex(container: HTMLElement, clientX: number): number {
+		const els = Array.from(container.querySelectorAll('.tab')) as HTMLElement[];
+		for (let i = 0; i < els.length; i++) {
+			const r = els[i].getBoundingClientRect();
+			if (clientX < r.left + r.width / 2) return i;
+		}
+		return els.length;
+	}
+
+	function onBarDragOver(e: DragEvent): void {
+		if (!ws.dragging) return;
+		e.preventDefault();
+		dropIndex = computeDropIndex(e.currentTarget as HTMLElement, e.clientX);
+	}
+	function onBarDragLeave(e: DragEvent): void {
+		if (!(e.currentTarget as HTMLElement).contains(e.relatedTarget as Node)) dropIndex = null;
+	}
+	function onBarDrop(e: DragEvent): void {
+		const d = ws.dragging;
+		const idx = dropIndex ?? tabs.length;
+		dropIndex = null;
+		if (!d) return;
+		e.preventDefault();
+		if (d.kind === 'panel') {
+			ws.dropPanelOnTabBar(idx); // becomes a new tab (clears dragging itself)
+		} else {
+			const from = tabs.findIndex((t) => t.id === d.workspaceId);
+			if (from >= 0) ws.reorderTab(from, idx > from ? idx - 1 : idx);
+			ws.dragging = null;
+		}
+	}
 </script>
 
-<div class="tabs" data-testid="workspace-tabs">
+<div
+	class="tabs"
+	data-testid="workspace-tabs"
+	class:dragover={!!ws.dragging}
+	ondragover={onBarDragOver}
+	ondragleave={onBarDragLeave}
+	ondrop={onBarDrop}
+	role="tablist"
+	tabindex="-1"
+>
 	{#each tabs as tab, i (tab.id)}
 		<div
 			class="tab"
 			class:active={tab.id === activeId}
-			class:droptarget={dropIndex === i && dragIndex !== i}
+			class:insert={dropIndex === i}
 			draggable={editing !== tab.id}
 			onclick={() => ws.selectTab(tab.id)}
 			ondblclick={() => startRename(tab.id, tab.name)}
-			ondragstart={() => {
-				dragIndex = i;
-				ws.draggingTabId = tab.id;
-			}}
-			ondragover={(e) => {
-				e.preventDefault();
-				dropIndex = i;
-			}}
+			ondragstart={() => (ws.dragging = { kind: 'tab', workspaceId: tab.id })}
 			ondragend={() => {
-				dragIndex = null;
+				ws.dragging = null;
 				dropIndex = null;
-				ws.draggingTabId = null;
-			}}
-			ondrop={(e) => {
-				e.preventDefault();
-				if (dragIndex !== null && dragIndex !== i) ws.reorderTab(dragIndex, i);
-				dragIndex = null;
-				dropIndex = null;
-				ws.draggingTabId = null;
 			}}
 			onkeydown={(e) => {
 				if (e.key === 'Enter' || e.key === ' ') ws.selectTab(tab.id);
@@ -95,7 +123,13 @@
 			{/if}
 		</div>
 	{/each}
-	<button class="add" onclick={() => ws.addTab()} title="New tab" aria-label="New tab">＋</button>
+	<button
+		class="add"
+		class:insert={dropIndex === tabs.length}
+		onclick={() => ws.addTab()}
+		title="New tab"
+		aria-label="New tab">＋</button
+	>
 </div>
 
 <style>
@@ -110,6 +144,9 @@
 		border-bottom: 1px solid var(--border);
 		overflow-x: auto;
 		overflow-y: hidden;
+	}
+	.tabs.dragover {
+		background: color-mix(in srgb, var(--accent) 8%, var(--bg-elev-1));
 	}
 	.tab {
 		display: flex;
@@ -134,8 +171,10 @@
 		color: var(--text);
 		border-color: var(--border);
 	}
-	.tab.droptarget {
-		border-color: var(--accent);
+	/* Insertion marker: an accent bar on the left edge of the drop slot. */
+	.tab.insert,
+	.add.insert {
+		box-shadow: inset 2px 0 0 0 var(--accent);
 	}
 	.rename {
 		width: 9ch;

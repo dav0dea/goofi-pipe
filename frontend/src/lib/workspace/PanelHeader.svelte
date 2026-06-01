@@ -57,7 +57,17 @@
 
 <div
 	class="panel-header"
+	draggable="true"
 	oncontextmenu={onHeaderContext}
+	ondragstart={(e) => {
+		// Don't start a panel move when the drag begins on a control.
+		if ((e.target as HTMLElement).closest('button, select, input')) {
+			e.preventDefault();
+			return;
+		}
+		ws.dragging = { kind: 'panel', workspaceId: ws.state.activeWorkspaceId, panelId: node.id };
+	}}
+	ondragend={() => (ws.dragging = null)}
 	role="toolbar"
 	tabindex="-1"
 	aria-label="Panel header"
@@ -99,6 +109,10 @@
 		border-bottom: 1px solid var(--border);
 		gap: 2px;
 		user-select: none;
+		cursor: grab;
+	}
+	.panel-header:active {
+		cursor: grabbing;
 	}
 	.content-btn {
 		display: flex;

@@ -278,6 +278,24 @@ export function closePanel(root: LayoutNode, panelId: string): LayoutNode | null
 	return transform(root, split.id, () => replacement);
 }
 
+/**
+ * Remove `panelId` and return both the reduced tree and the removed panel, so
+ * the panel can be re-inserted elsewhere (drag-to-reposition). `root` is null
+ * when the panel was the entire tree.
+ */
+export function extractPanel(
+	root: LayoutNode,
+	panelId: string
+): { root: LayoutNode | null; removed: PanelNode | null } {
+	if (root.kind === 'panel') {
+		return root.id === panelId ? { root: null, removed: root } : { root, removed: null };
+	}
+	const removed = findPanel(root, panelId);
+	if (!removed) return { root, removed: null };
+	// root is a split with >= 2 panels, so closePanel won't refuse.
+	return { root: closePanel(root, panelId), removed };
+}
+
 // ---------------------------------------------------------------------------
 // Defaults & deep clone (for tab duplication and hydration safety)
 // ---------------------------------------------------------------------------

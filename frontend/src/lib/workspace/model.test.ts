@@ -3,6 +3,7 @@ import {
 	makePanel,
 	splitPanel,
 	insertNodeAtPanel,
+	extractPanel,
 	closePanel,
 	resizeSplit,
 	setPanelType,
@@ -98,6 +99,34 @@ describe('insertNodeAtPanel (drag-tab-to-split)', () => {
 		expect(root.direction).toBe('column');
 		expect(root.children[0].id).toBe(subtree.id);
 		expect(root.children[1].id).toBe(a.id);
+	});
+});
+
+describe('extractPanel (drag-to-reposition)', () => {
+	it('removes a panel and hands it back, collapsing the split', () => {
+		const a = makePanel('a');
+		const { root, newPanelId } = splitPanel(a, a.id, 'row', false, 'b');
+		const { root: reduced, removed } = extractPanel(root, newPanelId);
+		expect(removed?.id).toBe(newPanelId);
+		expect(reduced?.kind).toBe('panel'); // split collapsed to the surviving panel
+		expect(reduced?.id).toBe(a.id);
+	});
+
+	it('returns root=null when the panel is the whole tree', () => {
+		const a = makePanel('a');
+		const { root, removed } = extractPanel(a, a.id);
+		expect(root).toBeNull();
+		expect(removed?.id).toBe(a.id);
+	});
+
+	it('round-trips through insertNodeAtPanel (reposition preserves ids)', () => {
+		const a = makePanel('a');
+		const s = splitPanel(a, a.id, 'row', false, 'b'); // row [a, b]
+		const bId = (s.root as SplitNode).children[1].id;
+		const { root: reduced, removed } = extractPanel(s.root, a.id); // pull `a`
+		const moved = insertNodeAtPanel(reduced!, bId, 'column', false, removed!); // a below b
+		expect(countPanels(moved)).toBe(2);
+		expect((moved as SplitNode).direction).toBe('column');
 	});
 });
 

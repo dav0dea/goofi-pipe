@@ -21,19 +21,24 @@
 	const type = $derived(resolvePanelType(node.panelType));
 	const active = $derived(ws.activePanelId === node.id);
 
-	// --- tab drop zones (drag a workspace tab in to split) -----------------
+	// --- drop zones (drag a panel or tab in to split / reposition) ---------
 	type DropZone = 'left' | 'right' | 'top' | 'bottom';
 	let dropZone = $state<DropZone | null>(null);
-	// Active only while dragging a *different* tab than the one on screen.
-	const tabDragActive = $derived(
-		!!ws.draggingTabId && ws.draggingTabId !== ws.state.activeWorkspaceId
-	);
+	// Zones show while dragging any panel/tab, except onto the source panel
+	// itself or the active tab dragged onto its own panels (no-ops).
+	const dropActive = $derived.by(() => {
+		const d = ws.dragging;
+		if (!d) return false;
+		if (d.kind === 'tab' && d.workspaceId === ws.state.activeWorkspaceId) return false;
+		if (d.kind === 'panel' && d.panelId === node.id) return false;
+		return true;
+	});
 	$effect(() => {
-		if (!tabDragActive) dropZone = null;
+		if (!dropActive) dropZone = null;
 	});
 
-	function onTabDragOver(e: DragEvent): void {
-		if (!tabDragActive) return;
+	function onNodeDragOver(e: DragEvent): void {
+		if (!dropActive) return;
 		e.preventDefault();
 		const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
 		const d = {
@@ -46,22 +51,17 @@
 		for (const k of ['right', 'top', 'bottom'] as DropZone[]) if (d[k] < d[z]) z = k;
 		dropZone = z;
 	}
-	function onTabDragLeave(e: DragEvent): void {
+	function onNodeDragLeave(e: DragEvent): void {
 		const rt = e.relatedTarget as Node | null;
 		if (!(e.currentTarget as HTMLElement).contains(rt)) dropZone = null;
 	}
-	function onTabDrop(e: DragEvent): void {
-		// Capture before clearing — `tabDragActive` derives from draggingTabId,
-		// so nulling it first would defeat the guard. dropTabIntoPanel itself
-		// rejects a self-drop (tab dropped onto its own layout).
-		const src = ws.draggingTabId;
+	function onNodeDrop(e: DragEvent): void {
 		const z = dropZone;
 		dropZone = null;
-		ws.draggingTabId = null;
-		if (!src || !z) return;
+		if (!ws.dragging || !z) return;
 		e.preventDefault();
 		const direction = z === 'left' || z === 'right' ? 'row' : 'column';
-		ws.dropTabIntoPanel(src, node.id, direction, z === 'left' || z === 'top');
+		ws.dropOnPanel(node.id, direction, z === 'left' || z === 'top');
 	}
 
 	const CORNERS = ['tl', 'tr', 'bl', 'br'] as const;
@@ -151,13 +151,14 @@
 	}
 </script>
 
+<!-- svelte-ignore a11y_no_static_element_interactions -->
 <section
 	class="panel"
 	class:active
 	onpointerdowncapture={() => ws.setActive(node.id)}
-	ondragover={onTabDragOver}
-	ondragleave={onTabDragLeave}
-	ondrop={onTabDrop}
+	ondragover={onNodeDragOver}
+	ondragleave={onNodeDragLeave}
+	ondrop={onNodeDrop}
 	data-panel-id={node.id}
 	data-panel-type={node.panelType}
 >
@@ -188,7 +189,7 @@
 			></div>
 		{/each}
 
-		{#if tabDragActive && dropZone}
+		{#if dropActive && dropZone}
 			<div class="drop-zone {dropZone}" data-testid="tab-drop-zone"></div>
 		{/if}
 	</div>
