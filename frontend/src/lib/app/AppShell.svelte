@@ -19,11 +19,14 @@
 	import { workspace } from '$lib/workspace/workspace.svelte';
 	import { graph } from '$lib/stores/graph.svelte';
 	import { selection } from '$lib/stores/selection.svelte';
+	import { exposeAgentApi } from '$lib/agent';
 	import { onMount } from 'svelte';
 
 	// Populate the panel registry before any panel renders.
 	registerBuiltinPanels();
 	registerAppPanels();
+	// Publish window.goofi so the agent panel / Playwright can drive the app.
+	exposeAgentApi();
 
 	const g = graph();
 	const ws = workspace();
@@ -39,7 +42,7 @@
 
 	// Focus an errored node in the editor the user last touched.
 	function focusError(name: string): void {
-		if (sel.activeEditorId) sel.selectNodes(sel.activeEditorId, [name]);
+		editorFor(ws.activePanelId)?.focusNode(name);
 	}
 
 	async function triggerSave(): Promise<void> {
