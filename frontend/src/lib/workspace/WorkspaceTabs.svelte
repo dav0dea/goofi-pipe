@@ -141,7 +141,7 @@
 		/* Lives inside the TopBar's central slot: fills the slack, blends with
 		   the header (no own background / bottom border), matches its height. */
 		display: flex;
-		align-items: stretch;
+		align-items: center;
 		gap: 2px;
 		height: 100%;
 		flex: 1 1 auto;
@@ -159,12 +159,14 @@
 	.tab {
 		display: flex;
 		align-items: center;
-		gap: 6px;
-		padding: 0 6px 0 12px;
-		margin: 4px 0;
+		gap: 0;
+		/* Even padding on all sides; vertically centred in the header (no margin)
+		   so the pill sits neatly inside the bar rather than filling its height. */
+		padding: 5px 10px;
 		border-radius: var(--radius-sm);
 		color: var(--text-dim);
 		font-size: 0.82rem;
+		line-height: 1;
 		white-space: nowrap;
 		cursor: pointer;
 		user-select: none;
@@ -185,7 +187,7 @@
 		flex: 0 0 auto;
 		align-self: center;
 		width: 96px;
-		height: calc(100% - 10px);
+		height: 26px;
 		border-radius: var(--radius-sm);
 		border: 1px dashed var(--accent);
 		background: color-mix(in srgb, var(--accent) 14%, transparent);
@@ -199,8 +201,12 @@
 	.close {
 		display: grid;
 		place-items: center;
-		width: 16px;
+		/* Collapsed when hidden so an inactive tab stays evenly padded; expands
+		   (with its left gap) only on hover / when active. */
+		width: 0;
 		height: 16px;
+		margin-left: 0;
+		overflow: hidden;
 		padding: 0;
 		font-size: 0.7rem;
 		line-height: 1;
@@ -213,6 +219,8 @@
 	}
 	.tab:hover .close,
 	.tab.active .close {
+		width: 16px;
+		margin-left: 4px;
 		opacity: 1;
 	}
 	.close:hover {
