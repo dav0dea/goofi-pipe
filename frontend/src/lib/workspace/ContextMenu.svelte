@@ -110,7 +110,7 @@
 <style>
 	.context-menu {
 		position: fixed;
-		z-index: 100;
+		z-index: var(--z-menu);
 		min-width: 180px;
 		padding: 4px;
 		background: var(--bg-elev-2);

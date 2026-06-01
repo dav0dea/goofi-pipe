@@ -636,14 +636,24 @@
 		min-width: 0;
 		min-height: 0;
 	}
+	/* Nudge SvelteFlow's controls + minimap off the panel corners so the
+	   corner grips (drag-split / drag-join) stay reachable. */
+	.editor-panel :global(.svelte-flow__controls) {
+		bottom: 20px;
+		left: 20px;
+	}
+	.editor-panel :global(.svelte-flow__minimap) {
+		bottom: 20px;
+		right: 20px;
+	}
 	.menu-overlay {
 		position: fixed;
 		inset: 0;
-		z-index: 109;
+		z-index: calc(var(--z-addmenu) - 1);
 	}
 	.menu-anchor {
 		position: fixed;
-		z-index: 110;
+		z-index: var(--z-addmenu);
 		width: 320px;
 	}
 	.snap-guides {

@@ -59,7 +59,7 @@
 	.splitter {
 		flex: 0 0 var(--splitter-size, 6px);
 		position: relative;
-		z-index: 20;
+		z-index: var(--z-chrome);
 		touch-action: none;
 	}
 	.splitter.row {

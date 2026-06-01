@@ -15,6 +15,8 @@
 	let editing = $state<string | null>(null);
 	let editValue = $state('');
 	let menu = $state<{ x: number; y: number; items: MenuItem[] } | null>(null);
+	let dragIndex = $state<number | null>(null);
+	let dropIndex = $state<number | null>(null);
 
 	function startRename(id: string, name: string): void {
 		editing = id;
@@ -44,13 +46,30 @@
 </script>
 
 <div class="tabs" data-testid="workspace-tabs">
-	{#each tabs as tab (tab.id)}
+	{#each tabs as tab, i (tab.id)}
 		<div
 			class="tab"
 			class:active={tab.id === activeId}
+			class:droptarget={dropIndex === i && dragIndex !== i}
+			draggable={editing !== tab.id}
 			onclick={() => ws.selectTab(tab.id)}
 			ondblclick={() => startRename(tab.id, tab.name)}
 			oncontextmenu={(e) => onTabContext(e, tab.id, tab.name)}
+			ondragstart={() => (dragIndex = i)}
+			ondragover={(e) => {
+				e.preventDefault();
+				dropIndex = i;
+			}}
+			ondragend={() => {
+				dragIndex = null;
+				dropIndex = null;
+			}}
+			ondrop={(e) => {
+				e.preventDefault();
+				if (dragIndex !== null && dragIndex !== i) ws.reorderTab(dragIndex, i);
+				dragIndex = null;
+				dropIndex = null;
+			}}
 			onkeydown={(e) => {
 				if (e.key === 'Enter' || e.key === ' ') ws.selectTab(tab.id);
 			}}
@@ -117,6 +136,9 @@
 		background: var(--bg-elev-3);
 		color: var(--text);
 		border-color: var(--border);
+	}
+	.tab.droptarget {
+		border-color: var(--accent);
 	}
 	.rename {
 		width: 9ch;

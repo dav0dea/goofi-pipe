@@ -107,7 +107,7 @@
 		position: absolute;
 		left: 12px;
 		bottom: 12px;
-		z-index: 60;
+		z-index: var(--z-chip);
 		font-family: var(--font-mono);
 	}
 	.chip {

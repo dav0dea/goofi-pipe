@@ -156,7 +156,7 @@
 		display: flex;
 		flex-direction: column;
 		box-shadow: var(--shadow-2);
-		z-index: 200;
+		z-index: var(--z-menu);
 	}
 	.ex-item {
 		background: transparent;

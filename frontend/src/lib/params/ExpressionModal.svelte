@@ -251,7 +251,7 @@
 		/* Portaled to body; lives outside the side-panel stacking context. */
 		position: fixed;
 		inset: 0;
-		z-index: 200;
+		z-index: var(--z-modal);
 		pointer-events: none;
 	}
 	.modal-overlay {

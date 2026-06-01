@@ -46,6 +46,19 @@
 	--radius-md: 6px;
 	--radius-lg: 10px;
 
+	/* Z-index scale — single source of truth for stacking. Every overlay
+	   references one of these so layers never collide. Ascending:
+	   panels/chrome → side-panel → error chip → menus → add-node menu →
+	   split/join drag ghost → modals → tab drag. */
+	--z-chrome: 20; /* splitters, panel corner grips */
+	--z-side-panel: 50; /* auto selection inspector overlay */
+	--z-chip: 60; /* floating error chip */
+	--z-menu: 100; /* context menus, header dropdowns, examples popover */
+	--z-addmenu: 110; /* node-editor add-node menu + its capture overlay */
+	--z-drag-ghost: 150; /* live split/join preview while corner-dragging */
+	--z-modal: 200; /* expression editor + other modals */
+	--z-tab-drag: 250; /* a tab being dragged to reorder */
+
 	/* JetBrains Mono throughout — goofi3 aesthetic. Sans falls back to mono
 	   in case any component still references --font-sans explicitly. */
 	--font-sans:
