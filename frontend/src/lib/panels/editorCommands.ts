@@ -11,6 +11,8 @@ export interface EditorCommands {
 	openAddMenu: () => void;
 	/** Fit the graph into this editor's viewport. */
 	fitView: () => void;
+	/** Select/focus a node by name in this editor. */
+	focusNode: (name: string) => void;
 }
 
 const registry = new Map<string, EditorCommands>();

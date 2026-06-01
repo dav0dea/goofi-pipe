@@ -38,7 +38,8 @@
 	import { workspace } from '$lib/workspace/workspace.svelte';
 	import { getPanelType, type PanelProps } from '$lib/workspace/registry';
 	import { portal } from '$lib/workspace/portal';
-	import type { LinkInfo, NodeInstanceInfo, NodeTypeInfo } from '$lib/api/control';
+	import { linkKey, type LinkInfo, type NodeTypeInfo } from '$lib/api/control';
+	import { serializeClipboard, parseClipboard, clipToSpecs } from '$lib/editor/clipboard';
 	import { registerEditor, unregisterEditor } from './editorCommands';
 	import InspectorOverlay from './InspectorOverlay.svelte';
 	import { onMount } from 'svelte';
@@ -110,7 +111,7 @@
 
 	$effect(() => {
 		const next: Edge[] = g.links.map((l) => {
-			const id = edgeId(l);
+			const id = linkKey(l);
 			return {
 				id,
 				source: l.node_out,
@@ -124,9 +125,6 @@
 		flowEdges = next;
 	});
 
-	function edgeId(l: LinkInfo): string {
-		return `${l.node_out}.${l.slot_out}→${l.node_in}.${l.slot_in}`;
-	}
 
 	function onConnect(c: Connection): void {
 		if (!c.source || !c.target || !c.sourceHandle || !c.targetHandle) return;
@@ -144,21 +142,15 @@
 	}
 
 	function findLinkById(id: string): LinkInfo | null {
-		for (const l of g.links) if (edgeId(l) === id) return l;
+		for (const l of g.links) if (linkKey(l) === id) return l;
 		return null;
 	}
 
 	async function deleteEdgeSelection(): Promise<void> {
-		const ids = Array.from(sel.edges(panelId));
-		for (const id of ids) {
-			const link = findLinkById(id);
-			if (!link) continue;
-			try {
-				await g.removeLink(link);
-			} catch (err) {
-				console.warn('remove edge failed', err);
-			}
-		}
+		const links = Array.from(sel.edges(panelId), findLinkById).filter(
+			(l): l is LinkInfo => l !== null
+		);
+		await g.removeLinks(links);
 		sel.clearEdges(panelId);
 	}
 
@@ -376,96 +368,28 @@
 	}
 
 	async function deleteSelection(): Promise<void> {
-		const names = Array.from(sel.nodes(panelId));
-		for (const n of names) {
-			try {
-				await g.removeNode(n);
-			} catch (e) {
-				console.warn('remove failed', e);
-			}
-		}
+		await g.removeNodes(Array.from(sel.nodes(panelId)));
 		sel.clearNodes(panelId);
 	}
 
 	async function copySelection(): Promise<void> {
-		const selNodes = g.nodes.filter((n) => sel.nodes(panelId).has(n.name));
+		const names = sel.nodes(panelId);
+		const selNodes = g.nodes.filter((n) => names.has(n.name));
 		if (selNodes.length === 0) return;
-		const avg = selNodes.reduce((acc, n) => [acc[0] + n.pos[0], acc[1] + n.pos[1]], [0, 0]);
-		const avgX = avg[0] / selNodes.length;
-		const avgY = avg[1] / selNodes.length;
-		const links = g.links.filter(
-			(l) => sel.nodes(panelId).has(l.node_in) && sel.nodes(panelId).has(l.node_out)
-		);
-		const payload = {
-			__goofi_clip__: 1,
-			nodes: selNodes.map((n) => ({
-				name: n.name,
-				type: n.type,
-				category: n.category,
-				params: serializableParams(n),
-				offset: [n.pos[0] - avgX, n.pos[1] - avgY]
-			})),
-			links
-		};
+		const links = g.links.filter((l) => names.has(l.node_in) && names.has(l.node_out));
 		try {
-			await navigator.clipboard.writeText(JSON.stringify(payload));
+			await navigator.clipboard.writeText(JSON.stringify(serializeClipboard(selNodes, links)));
 		} catch (e) {
 			console.warn('clipboard write failed', e);
 		}
 	}
 
 	async function duplicateSelection(): Promise<void> {
-		const selNodes = g.nodes.filter((n) => sel.nodes(panelId).has(n.name));
-		if (selNodes.length === 0) return;
-		const OFFSET = 40;
-		const internalLinks = g.links.filter(
-			(l) => sel.nodes(panelId).has(l.node_in) && sel.nodes(panelId).has(l.node_out)
-		);
-		const rename: Record<string, string> = {};
-		const newSelection = new Set<string>();
-		for (const n of selNodes) {
-			try {
-				const newName = await g.addNode(n.type, n.category, [n.pos[0] + OFFSET, n.pos[1] + OFFSET]);
-				rename[n.name] = newName;
-				newSelection.add(newName);
-				for (const [group, params] of Object.entries(n.params)) {
-					for (const [name, p] of Object.entries(params)) {
-						try {
-							await g.updateParam(newName, group, name, p.value);
-						} catch {
-							/* ignore */
-						}
-					}
-				}
-			} catch (e) {
-				console.warn('duplicate: add_node failed', e);
-			}
-		}
-		for (const l of internalLinks) {
-			try {
-				await g.addLink({
-					node_out: rename[l.node_out] ?? l.node_out,
-					node_in: rename[l.node_in] ?? l.node_in,
-					slot_out: l.slot_out,
-					slot_in: l.slot_in
-				});
-			} catch {
-				/* ignore */
-			}
-		}
-		if (newSelection.size > 0) sel.selectNodes(panelId, newSelection);
+		const rename = await g.cloneNodes(sel.nodes(panelId), [40, 40]);
+		const created = Object.values(rename);
+		if (created.length > 0) sel.selectNodes(panelId, created);
 	}
 
-	function serializableParams(n: NodeInstanceInfo): Record<string, Record<string, unknown>> {
-		const out: Record<string, Record<string, unknown>> = {};
-		for (const [group, params] of Object.entries(n.params)) {
-			out[group] = {};
-			for (const [name, p] of Object.entries(params)) {
-				out[group][name] = p.value;
-			}
-		}
-		return out;
-	}
 
 	async function pasteClipboard(): Promise<void> {
 		let text = '';
@@ -474,58 +398,12 @@
 		} catch {
 			return;
 		}
-		let payload: {
-			__goofi_clip__?: number;
-			nodes: {
-				name: string;
-				type: string;
-				category: string;
-				params: Record<string, Record<string, unknown>>;
-				offset: [number, number];
-			}[];
-			links: LinkInfo[];
-		};
-		try {
-			payload = JSON.parse(text);
-		} catch {
-			return;
-		}
-		if (payload?.__goofi_clip__ !== 1) return;
-		const cx = window.innerWidth / 2;
-		const cy = window.innerHeight / 2;
-		const rename: Record<string, string> = {};
-		for (const n of payload.nodes) {
-			try {
-				const newName = await g.addNode(n.type, n.category, [
-					Math.round(cx / 2 + n.offset[0]),
-					Math.round(cy / 2 + n.offset[1])
-				]);
-				rename[n.name] = newName;
-				for (const [group, params] of Object.entries(n.params)) {
-					for (const [name, value] of Object.entries(params)) {
-						try {
-							await g.updateParam(newName, group, name, value);
-						} catch {
-							/* ignore */
-						}
-					}
-				}
-			} catch (e) {
-				console.warn('paste: add_node failed', e);
-			}
-		}
-		for (const l of payload.links) {
-			try {
-				await g.addLink({
-					node_out: rename[l.node_out] ?? l.node_out,
-					node_in: rename[l.node_in] ?? l.node_in,
-					slot_out: l.slot_out,
-					slot_in: l.slot_in
-				});
-			} catch {
-				/* ignore */
-			}
-		}
+		const clip = parseClipboard(text);
+		if (!clip) return;
+		// Anchor the paste near the viewport centre (preserves the prior
+		// placement math: a quarter of the window, plus each node's offset).
+		const at: [number, number] = [window.innerWidth / 4, window.innerHeight / 4];
+		await g.instantiateNodes(clipToSpecs(clip, at), clip.links);
 	}
 
 	function openMenuAtCursor(): void {
@@ -589,8 +467,15 @@
 		rootEl?.querySelector<HTMLButtonElement>('.svelte-flow__controls-fitview')?.click();
 	}
 
+	/** Select a node in this editor (and make it the active selection the
+	 * standalone panels follow). The shared handle the TopBar, the error panel,
+	 * and the agent surface use to focus a node. */
+	function focusNode(name: string): void {
+		sel.selectNodes(panelId, [name]);
+	}
+
 	onMount(() => {
-		registerEditor(panelId, { openAddMenu: openAddMenuCentered, fitView });
+		registerEditor(panelId, { openAddMenu: openAddMenuCentered, fitView, focusNode });
 		window.addEventListener('keydown', onKeydown);
 		window.addEventListener('mousemove', trackMouse);
 		return () => {
