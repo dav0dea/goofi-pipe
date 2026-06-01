@@ -1,21 +1,21 @@
-<!-- Parameters panel — the param editor for the currently selected node. Thin
-     adapter over the existing ParamPanel, fed from the shared selection store. -->
+<!-- Parameters panel — edits the parameters of the node dragged into it.
+     Linking + empty state are handled by NodeLinkedPanel. -->
 <script lang="ts">
 	import type { PanelProps } from '$lib/workspace/registry';
+	import NodeLinkedPanel from './NodeLinkedPanel.svelte';
 	import ParamPanel from '$lib/params/ParamPanel.svelte';
-	import { selection } from '$lib/stores/selection.svelte';
 
-	// eslint-disable-next-line @typescript-eslint/no-unused-vars
-	let {}: PanelProps = $props();
-	const sel = selection();
+	let props: PanelProps = $props();
 </script>
 
-<div class="wrap">
-	<ParamPanel node={sel.activeSelectedNode} />
-</div>
+<NodeLinkedPanel {...props} label="parameters">
+	{#snippet content(node)}
+		<div class="scroll"><ParamPanel {node} /></div>
+	{/snippet}
+</NodeLinkedPanel>
 
 <style>
-	.wrap {
+	.scroll {
 		height: 100%;
 		overflow-y: auto;
 		min-height: 0;

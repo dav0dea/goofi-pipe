@@ -248,6 +248,26 @@ export function splitPanel(
 	};
 }
 
+/** Clear any panel whose state links the named node (`state.node === name`),
+ * so deleting a node empties the Parameters / Viewer / Metadata panels bound to
+ * it. Returns the same tree if nothing referenced it. */
+export function clearNodeRef(root: LayoutNode, nodeName: string): LayoutNode {
+	const visit = (n: LayoutNode): LayoutNode => {
+		if (n.kind === 'panel') {
+			const s = n.state as { node?: string | null } | undefined;
+			return s && s.node === nodeName ? { ...n, state: { ...s, node: null } } : n;
+		}
+		let changed = false;
+		const children = n.children.map((c) => {
+			const nc = visit(c);
+			if (nc !== c) changed = true;
+			return nc;
+		});
+		return changed ? { ...n, children } : n;
+	};
+	return visit(root);
+}
+
 function normalize(sizes: number[]): number[] {
 	const total = sizes.reduce((a, b) => a + b, 0) || 1;
 	return sizes.map((s) => s / total);

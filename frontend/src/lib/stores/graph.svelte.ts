@@ -68,6 +68,8 @@ class GraphStore {
 					(l) => l.node_in !== ev.payload.name && l.node_out !== ev.payload.name
 				);
 				ui().forget(ev.payload.name);
+				// Empty any Parameters/Viewer/Metadata panel linked to this node.
+				workspace().clearNodeRefs(ev.payload.name);
 				break;
 			case 'node_moved': {
 				const target = this.nodes.find((n) => n.name === ev.payload.name);

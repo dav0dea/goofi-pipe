@@ -31,6 +31,11 @@ class UIStore {
 	 * auto-link. Cleared by the consumer once handled. */
 	pendingSlotClick = $state<SlotClickSeed | null>(null);
 
+	/** Name of the node currently being dragged out of an editor (by its grip)
+	 * to link into a Parameters / Viewer / Metadata panel. Null when no such
+	 * drag is in progress. */
+	nodeDrag = $state<string | null>(null);
+
 	requestSlotClick(seed: SlotClickSeed): void {
 		this.pendingSlotClick = seed;
 	}

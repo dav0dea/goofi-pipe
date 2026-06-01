@@ -36,6 +36,24 @@
 	<div class="header">
 		<span class="health" style="background: {healthColor};" title={node?.error ?? 'running'}></span>
 		<span class="name" title={formatName(node?.type ?? node?.name)}>{node?.name}</span>
+		<!-- Drag grip: pulls this node into a Parameters/Viewer/Metadata panel.
+		     `nodrag` keeps SvelteFlow from treating it as a reposition gesture;
+		     native DnD carries the node name. -->
+		<span
+			class="grip nodrag"
+			draggable="true"
+			role="button"
+			tabindex="-1"
+			aria-label="Drag node into a panel"
+			title="Drag into a Parameters, Viewer, or Metadata panel"
+			onpointerdown={(e) => e.stopPropagation()}
+			ondragstart={(e) => {
+				uiStore.nodeDrag = node.name;
+				e.dataTransfer?.setData('application/x-goofi-node', node.name);
+				if (e.dataTransfer) e.dataTransfer.effectAllowed = 'link';
+			}}
+			ondragend={() => (uiStore.nodeDrag = null)}
+		>⠿</span>
 	</div>
 
 	{#if inputs.length > 0}
@@ -108,6 +126,24 @@
 		border-radius: 50%;
 		flex-shrink: 0;
 		box-shadow: 0 0 5px currentColor;
+	}
+	.grip {
+		flex: 0 0 auto;
+		align-self: center;
+		padding: 0 2px;
+		color: var(--text-faint);
+		font-size: 12px;
+		line-height: 1;
+		cursor: grab;
+		opacity: 0.5;
+		transition: opacity 80ms ease;
+	}
+	.grip:hover {
+		opacity: 1;
+		color: var(--accent);
+	}
+	.grip:active {
+		cursor: grabbing;
 	}
 	.name {
 		font-family: var(--font-mono);

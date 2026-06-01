@@ -1,35 +1,23 @@
-<!-- Metadata panel — the incoming Data.meta inspector for the selected node.
-     Adapter over the existing editor/MetadataPanel, fed from selection. -->
+<!-- Metadata panel — shows the incoming Data.meta of the node dragged into it.
+     Linking + empty state are handled by NodeLinkedPanel. -->
 <script lang="ts">
 	import type { PanelProps } from '$lib/workspace/registry';
+	import NodeLinkedPanel from './NodeLinkedPanel.svelte';
 	import MetadataPanel from '$lib/editor/MetadataPanel.svelte';
-	import { selection } from '$lib/stores/selection.svelte';
 
-	// eslint-disable-next-line @typescript-eslint/no-unused-vars
-	let {}: PanelProps = $props();
-	const sel = selection();
+	let props: PanelProps = $props();
 </script>
 
-<div class="wrap">
-	{#if sel.activeSelectedNode}
-		<MetadataPanel node={sel.activeSelectedNode} />
-	{:else}
-		<div class="hint">Select a node to inspect its output metadata</div>
-	{/if}
-</div>
+<NodeLinkedPanel {...props} label="metadata">
+	{#snippet content(node)}
+		<div class="scroll"><MetadataPanel {node} /></div>
+	{/snippet}
+</NodeLinkedPanel>
 
 <style>
-	.wrap {
+	.scroll {
 		height: 100%;
 		overflow-y: auto;
 		min-height: 0;
-	}
-	.hint {
-		display: grid;
-		place-items: center;
-		height: 100%;
-		padding: 16px;
-		text-align: center;
-		color: var(--text-faint);
 	}
 </style>

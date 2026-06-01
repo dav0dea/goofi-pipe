@@ -11,6 +11,7 @@
  * created outside any component/effect context.
  */
 import {
+	clearNodeRef,
 	closePanel,
 	cloneWithNewIds,
 	defaultWorkspaceState,
@@ -143,6 +144,18 @@ class WorkspaceStore {
 
 	setActive(panelId: string): void {
 		if (this.activePanelId !== panelId) this.activePanelId = panelId;
+	}
+
+	/** Unlink a deleted node from every panel bound to it (empties them). */
+	clearNodeRefs(nodeName: string): void {
+		let changed = false;
+		const workspaces = this.state.workspaces.map((w) => {
+			const root = clearNodeRef(w.root, nodeName);
+			if (root === w.root) return w;
+			changed = true;
+			return { ...w, root };
+		});
+		if (changed) this.state = { ...this.state, workspaces };
 	}
 
 	toggleMaximize(panelId: string): void {
