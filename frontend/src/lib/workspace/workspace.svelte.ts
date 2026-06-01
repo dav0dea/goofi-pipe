@@ -109,12 +109,19 @@ class WorkspaceStore {
 	// --- layout mutations --------------------------------------------------
 
 	/** Split a panel. `newType` defaults to the source panel's own type, so a
-	 * split inherits content (Blender-style); the user then swaps if desired. */
-	split(panelId: string, direction: Direction, placeBefore = false, newType?: string): void {
+	 * split inherits content (Blender-style); the user then swaps if desired.
+	 * `fraction` is the new panel's share of the split (0.5 = even). */
+	split(
+		panelId: string,
+		direction: Direction,
+		placeBefore = false,
+		fraction = 0.5,
+		newType?: string
+	): void {
 		const ws = this.active;
 		const src = findPanel(ws.root, panelId);
 		const type = newType ?? src?.panelType ?? DEFAULT_PANEL_TYPE;
-		const { root, newPanelId } = splitPanel(ws.root, panelId, direction, placeBefore, type);
+		const { root, newPanelId } = splitPanel(ws.root, panelId, direction, placeBefore, type, fraction);
 		if (root === ws.root) return;
 		this._setRoot(ws.id, root);
 		if (newPanelId) this.activePanelId = newPanelId;

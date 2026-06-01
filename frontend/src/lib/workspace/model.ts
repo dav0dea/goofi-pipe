@@ -193,28 +193,35 @@ export function resizeSplit(
  * - Otherwise the target is wrapped in a fresh split with two equal children.
  *
  * `placeBefore` puts the inserted node before the target (left / top).
+ * `fraction` is the inserted node's share of the target's current slot
+ * (0.5 = even split); the target keeps the rest.
  */
 export function insertNodeAtPanel(
 	root: LayoutNode,
 	targetPanelId: string,
 	direction: Direction,
 	placeBefore: boolean,
-	node: LayoutNode
+	node: LayoutNode,
+	fraction = 0.5
 ): LayoutNode {
 	const target = findPanel(root, targetPanelId);
 	if (!target) return root;
 	const parent = findParent(root, targetPanelId);
+	const f = Math.max(0.05, Math.min(0.95, fraction));
 
 	if (parent && parent.parent.direction === direction) {
 		return transform(root, parent.parent.id, (n) => {
 			if (n.kind !== 'split') return n;
 			const idx = n.children.findIndex((c) => c.id === targetPanelId);
 			if (idx < 0) return n;
-			const half = n.sizes[idx] / 2;
+			const slot = n.sizes[idx];
+			const newSize = slot * f;
+			const keepSize = slot - newSize;
 			const children = n.children.slice();
 			const sizes = n.sizes.slice();
 			children.splice(placeBefore ? idx : idx + 1, 0, node);
-			sizes.splice(idx, 1, half, half);
+			// Sizes must line up with the new child order at this position.
+			sizes.splice(idx, 1, ...(placeBefore ? [newSize, keepSize] : [keepSize, newSize]));
 			return { ...n, children, sizes };
 		});
 	}
@@ -224,7 +231,7 @@ export function insertNodeAtPanel(
 		id: uid('split'),
 		direction,
 		children: placeBefore ? [node, target] : [target, node],
-		sizes: [0.5, 0.5]
+		sizes: placeBefore ? [f, 1 - f] : [1 - f, f]
 	};
 	return transform(root, targetPanelId, () => wrap);
 }
@@ -238,12 +245,13 @@ export function splitPanel(
 	panelId: string,
 	direction: Direction,
 	placeBefore: boolean,
-	newType: string
+	newType: string,
+	fraction = 0.5
 ): { root: LayoutNode; newPanelId: string } {
 	if (!findPanel(root, panelId)) return { root, newPanelId: '' };
 	const newPanel = makePanel(newType);
 	return {
-		root: insertNodeAtPanel(root, panelId, direction, placeBefore, newPanel),
+		root: insertNodeAtPanel(root, panelId, direction, placeBefore, newPanel, fraction),
 		newPanelId: newPanel.id
 	};
 }

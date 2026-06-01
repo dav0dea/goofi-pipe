@@ -75,7 +75,7 @@
 		h: number;
 	}
 	type Intent =
-		| { mode: 'split'; axis: Direction; placeBefore: boolean }
+		| { mode: 'split'; axis: Direction; placeBefore: boolean; fraction: number }
 		| { mode: 'join'; targetId: string }
 		| null;
 
@@ -90,21 +90,50 @@
 		return !!pa && !!pb && pa.parent.id === pb.parent.id;
 	}
 
-	function splitGhost(rect: DOMRect, axis: Direction, placeBefore: boolean, cx: number, cy: number): Ghost {
+	/**
+	 * Resolve a corner drag into a split: the new panel sits on the side of the
+	 * grabbed corner (right/left for a row split, bottom/top for a column), the
+	 * cursor is the split line, and the ghost previews the NEW panel's region so
+	 * its size matches what gets created. `fraction` is that region's share.
+	 */
+	function computeSplit(
+		rect: DOMRect,
+		axis: Direction,
+		corner: Corner,
+		cx: number,
+		cy: number
+	): { placeBefore: boolean; fraction: number; ghost: Ghost } {
 		if (axis === 'row') {
+			const onRight = corner === 'tr' || corner === 'br';
 			const b = Math.min(rect.right, Math.max(rect.left, cx));
-			return placeBefore
-				? { mode: 'split', x: rect.left, y: rect.top, w: b - rect.left, h: rect.height }
-				: { mode: 'split', x: b, y: rect.top, w: rect.right - b, h: rect.height };
+			return onRight
+				? {
+						placeBefore: false,
+						fraction: (rect.right - b) / rect.width,
+						ghost: { mode: 'split', x: b, y: rect.top, w: rect.right - b, h: rect.height }
+					}
+				: {
+						placeBefore: true,
+						fraction: (b - rect.left) / rect.width,
+						ghost: { mode: 'split', x: rect.left, y: rect.top, w: b - rect.left, h: rect.height }
+					};
 		}
+		const onBottom = corner === 'bl' || corner === 'br';
 		const b = Math.min(rect.bottom, Math.max(rect.top, cy));
-		return placeBefore
-			? { mode: 'split', x: rect.left, y: rect.top, w: rect.width, h: b - rect.top }
-			: { mode: 'split', x: rect.left, y: b, w: rect.width, h: rect.bottom - b };
+		return onBottom
+			? {
+					placeBefore: false,
+					fraction: (rect.bottom - b) / rect.height,
+					ghost: { mode: 'split', x: rect.left, y: b, w: rect.width, h: rect.bottom - b }
+				}
+			: {
+					placeBefore: true,
+					fraction: (b - rect.top) / rect.height,
+					ghost: { mode: 'split', x: rect.left, y: rect.top, w: rect.width, h: b - rect.top }
+				};
 	}
 
 	function startCornerDrag(e: PointerEvent, corner: Corner): void {
-		void corner;
 		e.preventDefault();
 		e.stopPropagation();
 		ws.setActive(node.id);
@@ -131,9 +160,15 @@
 				ghost = { mode: 'join', x: r.left, y: r.top, w: r.width, h: r.height };
 			} else {
 				const axis: Direction = Math.abs(dx) >= Math.abs(dy) ? 'row' : 'column';
-				const placeBefore = axis === 'row' ? dx < 0 : dy < 0;
-				intent = { mode: 'split', axis, placeBefore };
-				ghost = splitGhost(rect, axis, placeBefore, m.clientX, m.clientY);
+				const { placeBefore, fraction, ghost: gh } = computeSplit(
+					rect,
+					axis,
+					corner,
+					m.clientX,
+					m.clientY
+				);
+				intent = { mode: 'split', axis, placeBefore, fraction };
+				ghost = gh;
 			}
 		};
 		const onUp = (): void => {
@@ -143,7 +178,8 @@
 			intent = null;
 			ghost = null;
 			if (!committed) return;
-			if (committed.mode === 'split') ws.split(node.id, committed.axis, committed.placeBefore);
+			if (committed.mode === 'split')
+				ws.split(node.id, committed.axis, committed.placeBefore, committed.fraction);
 			else ws.close(committed.targetId);
 		};
 		window.addEventListener('pointermove', onMove);

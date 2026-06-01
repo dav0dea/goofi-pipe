@@ -59,6 +59,30 @@ describe('splitPanel', () => {
 		expect(split.sizes[2]).toBeCloseTo(0.25, 6);
 	});
 
+	it('respects an explicit fraction (new panel gets `fraction` of the split)', () => {
+		const root = makePanel('node-editor');
+		// new panel placed after → sizes [1-f, f]
+		const after = splitPanel(root, root.id, 'row', false, 'empty', 0.3).root as SplitNode;
+		expect(after.sizes[0]).toBeCloseTo(0.7, 6); // original keeps the rest
+		expect(after.sizes[1]).toBeCloseTo(0.3, 6); // new panel
+		// new panel placed before → sizes [f, 1-f]
+		const before = splitPanel(root, root.id, 'row', true, 'empty', 0.3).root as SplitNode;
+		expect(before.sizes[0]).toBeCloseTo(0.3, 6); // new panel first
+		expect(before.sizes[1]).toBeCloseTo(0.7, 6);
+	});
+
+	it('applies the fraction to the target slot when extending an existing split', () => {
+		const a = makePanel('a');
+		const step1 = splitPanel(a, a.id, 'row', false, 'b'); // row [a:0.5, b:0.5]
+		const b = (step1.root as SplitNode).children[1] as LayoutNode;
+		// split b again with the new panel taking 25% of b's 0.5 slot = 0.125
+		const step2 = splitPanel(step1.root, b.id, 'row', false, 'c', 0.25).root as SplitNode;
+		expect(sum(step2.sizes)).toBeCloseTo(1, 6);
+		expect(step2.sizes[0]).toBeCloseTo(0.5, 6); // a untouched
+		expect(step2.sizes[1]).toBeCloseTo(0.375, 6); // b keeps 0.75 * 0.5
+		expect(step2.sizes[2]).toBeCloseTo(0.125, 6); // c gets 0.25 * 0.5
+	});
+
 	it('nests a new split when splitting along the perpendicular direction', () => {
 		const a = makePanel('a');
 		const step1 = splitPanel(a, a.id, 'row', false, 'b'); // row [a, b]
