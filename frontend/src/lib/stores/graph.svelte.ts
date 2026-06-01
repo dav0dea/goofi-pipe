@@ -5,7 +5,16 @@
  * reading its `$state` fields directly. The store owns the only writes
  * (driven by control events) so consumers never have to merge.
  */
-import { getControl, type ControlEvent, type GraphSnapshot, type LinkInfo, type NodeInstanceInfo, type NodeTypeInfo } from '$lib/api/control';
+import {
+	getControl,
+	paramValues,
+	sameLink,
+	type ControlEvent,
+	type GraphSnapshot,
+	type LinkInfo,
+	type NodeInstanceInfo,
+	type NodeTypeInfo
+} from '$lib/api/control';
 import { ui } from './ui.svelte';
 import { workspace } from '$lib/workspace/workspace.svelte';
 
@@ -72,41 +81,25 @@ class GraphStore {
 				workspace().clearNodeRefs(ev.payload.name);
 				break;
 			case 'node_moved': {
-				const target = this.nodes.find((n) => n.name === ev.payload.name);
+				const target = this.nodeByName(ev.payload.name);
 				if (target) target.pos = ev.payload.pos;
 				break;
 			}
 			case 'link_added':
-				if (
-					!this.links.some(
-						(l) =>
-							l.node_out === ev.payload.node_out &&
-							l.node_in === ev.payload.node_in &&
-							l.slot_out === ev.payload.slot_out &&
-							l.slot_in === ev.payload.slot_in
-					)
-				) {
+				if (!this.links.some((l) => sameLink(l, ev.payload))) {
 					this.links = [...this.links, ev.payload];
 				}
 				break;
 			case 'link_removed':
-				this.links = this.links.filter(
-					(l) =>
-						!(
-							l.node_out === ev.payload.node_out &&
-							l.node_in === ev.payload.node_in &&
-							l.slot_out === ev.payload.slot_out &&
-							l.slot_in === ev.payload.slot_in
-						)
-				);
+				this.links = this.links.filter((l) => !sameLink(l, ev.payload));
 				break;
 			case 'state_update': {
-				const t = this.nodes.find((n) => n.name === ev.payload.node);
+				const t = this.nodeByName(ev.payload.node);
 				if (t) t.params = ev.payload.params;
 				break;
 			}
 			case 'error': {
-				const t = this.nodes.find((n) => n.name === ev.payload.node);
+				const t = this.nodeByName(ev.payload.node);
 				if (t) t.error = ev.payload.error;
 				break;
 			}
@@ -214,6 +207,121 @@ class GraphStore {
 
 	async loadExample(name: string): Promise<void> {
 		await getControl().call('load_example', { name });
+	}
+	// ------------------------------------------------------------------
+	// reads
+	// ------------------------------------------------------------------
+
+	/** Resolve a node instance by name (null if absent). The one accessor the
+	 * rest of the app — and the agent surface — use instead of scanning. */
+	nodeByName(name: string): NodeInstanceInfo | null {
+		return this.nodes.find((n) => n.name === name) ?? null;
+	}
+
+	/** Whether an output slot already feeds a link (drives the canvas "drag to
+	 * link vs pop add-menu" decision). */
+	isOutputConnected(node: string, slot: string): boolean {
+		return this.links.some((l) => l.node_out === node && l.slot_out === slot);
+	}
+
+	/** Whether an input slot is already fed by a link. */
+	isInputConnected(node: string, slot: string): boolean {
+		return this.links.some((l) => l.node_in === node && l.slot_in === slot);
+	}
+
+	// ------------------------------------------------------------------
+	// subgraph orchestration (clone / duplicate / paste / batch remove) —
+	// shared by the editor's keyboard handlers and the agent command surface
+	// ------------------------------------------------------------------
+
+	/** Create a batch of nodes, replay their param values, then wire the given
+	 * links with endpoints remapped to the new names. Returns the original→new
+	 * name map. Per-node/-param/-link failures are swallowed so one bad item
+	 * doesn't abort the batch. */
+	async instantiateNodes(
+		specs: {
+			key: string;
+			type: string;
+			category: string;
+			pos: [number, number];
+			params: Record<string, Record<string, unknown>>;
+		}[],
+		links: LinkInfo[] = []
+	): Promise<Record<string, string>> {
+		const rename: Record<string, string> = {};
+		for (const s of specs) {
+			try {
+				const newName = await this.addNode(s.type, s.category, s.pos);
+				rename[s.key] = newName;
+				for (const [group, params] of Object.entries(s.params)) {
+					for (const [name, value] of Object.entries(params)) {
+						try {
+							await this.updateParam(newName, group, name, value);
+						} catch {
+							/* ignore a single rejected param */
+						}
+					}
+				}
+			} catch (e) {
+				console.warn('instantiateNodes: add_node failed', e);
+			}
+		}
+		for (const l of links) {
+			try {
+				await this.addLink({
+					node_out: rename[l.node_out] ?? l.node_out,
+					node_in: rename[l.node_in] ?? l.node_in,
+					slot_out: l.slot_out,
+					slot_in: l.slot_in
+				});
+			} catch {
+				/* ignore a link that couldn't be remade */
+			}
+		}
+		return rename;
+	}
+
+	/** Duplicate the named nodes (offset from their originals), carrying their
+	 * current params and the links among them. Returns the original→new map so
+	 * the caller can select the clones. */
+	async cloneNodes(
+		names: Iterable<string>,
+		offset: [number, number] = [40, 40]
+	): Promise<Record<string, string>> {
+		const set = new Set(names);
+		const nodes = this.nodes.filter((n) => set.has(n.name));
+		if (nodes.length === 0) return {};
+		const links = this.links.filter((l) => set.has(l.node_in) && set.has(l.node_out));
+		const specs = nodes.map((n) => ({
+			key: n.name,
+			type: n.type,
+			category: n.category,
+			pos: [n.pos[0] + offset[0], n.pos[1] + offset[1]] as [number, number],
+			params: paramValues(n)
+		}));
+		return this.instantiateNodes(specs, links);
+	}
+
+	/** Remove a batch of nodes, swallowing per-node failures. */
+	async removeNodes(names: Iterable<string>): Promise<void> {
+		for (const name of names) {
+			try {
+				await this.removeNode(name);
+			} catch (e) {
+				console.warn('remove node failed', e);
+			}
+		}
+	}
+
+	/** Remove a batch of links, swallowing per-link failures. */
+	async removeLinks(links: Iterable<LinkInfo>): Promise<void> {
+		for (const l of links) {
+			try {
+				await this.removeLink(l);
+			} catch (e) {
+				console.warn('remove link failed', e);
+			}
+		}
 	}
 }
 
