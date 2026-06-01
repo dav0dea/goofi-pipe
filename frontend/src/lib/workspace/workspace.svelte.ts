@@ -32,6 +32,7 @@ import {
 	type WorkspaceState
 } from './model';
 import { getPanelType } from './registry';
+import { withLinkedNode } from './panelState';
 
 /** A drag in progress. A panel and a tab are both just a `LayoutNode` being
  * moved — the only difference is where it came from, which `_takeNode` knows
@@ -159,8 +160,7 @@ class WorkspaceStore {
 		this._updateActiveRoot((root) => {
 			const p = findPanel(root, panelId);
 			if (!p) return root;
-			const cur = typeof p.state === 'object' && p.state ? (p.state as Record<string, unknown>) : {};
-			return setPanelState(root, panelId, { ...cur, node: nodeName });
+			return setPanelState(root, panelId, withLinkedNode(p.state, nodeName));
 		});
 	}
 

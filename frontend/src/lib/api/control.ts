@@ -39,6 +39,33 @@ export interface LinkInfo {
 	slot_in: string;
 }
 
+/** Canonical string key for a link — its four slot endpoints. Stable and
+ * unique per link, usable as a map key or the SvelteFlow edge id. */
+export function linkKey(l: LinkInfo): string {
+	return `${l.node_out}.${l.slot_out}→${l.node_in}.${l.slot_in}`;
+}
+
+/** Structural equality of two links (all four endpoints match). */
+export function sameLink(a: LinkInfo, b: LinkInfo): boolean {
+	return (
+		a.node_out === b.node_out &&
+		a.node_in === b.node_in &&
+		a.slot_out === b.slot_out &&
+		a.slot_in === b.slot_in
+	);
+}
+
+/** Flatten a node's grouped param descriptors to a plain `{group: {name: value}}`
+ * bag — the shape clone/clipboard/replay all need. */
+export function paramValues(node: NodeInstanceInfo): Record<string, Record<string, unknown>> {
+	const out: Record<string, Record<string, unknown>> = {};
+	for (const [group, params] of Object.entries(node.params)) {
+		out[group] = {};
+		for (const [name, p] of Object.entries(params)) out[group][name] = p.value;
+	}
+	return out;
+}
+
 export interface GraphSnapshot {
 	nodes: NodeInstanceInfo[];
 	links: LinkInfo[];

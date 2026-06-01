@@ -12,6 +12,8 @@
  * (`workspace.svelte.ts`) is the only layer that holds state and reacts.
  */
 
+import { linkedNodeName, withLinkedNode } from './panelState';
+
 /** Smallest fraction a single child may shrink to, so a panel can always be
  * grabbed again after an aggressive resize. */
 export const MIN_FRACTION = 0.05;
@@ -262,8 +264,9 @@ export function splitPanel(
 export function clearNodeRef(root: LayoutNode, nodeName: string): LayoutNode {
 	const visit = (n: LayoutNode): LayoutNode => {
 		if (n.kind === 'panel') {
-			const s = n.state as { node?: string | null } | undefined;
-			return s && s.node === nodeName ? { ...n, state: { ...s, node: null } } : n;
+			return linkedNodeName(n.state) === nodeName
+				? { ...n, state: withLinkedNode(n.state, null) }
+				: n;
 		}
 		let changed = false;
 		const children = n.children.map((c) => {
