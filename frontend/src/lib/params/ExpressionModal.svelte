@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
+	import { portal } from '$lib/workspace/portal';
 
 	type Props = {
 		title: string;
@@ -134,21 +135,6 @@
 			e.stopPropagation();
 			apply();
 		}
-	}
-
-	// Portal action: move the entire modal subtree to document.body so it
-	// escapes the side-panel's `transform`-induced stacking context (a
-	// position:fixed inside a transformed ancestor is positioned relative
-	// to that ancestor, not the viewport — that was the original bug
-	// where the modal hung off the right edge).
-	function portal(node: HTMLElement) {
-		const target = document.body;
-		target.appendChild(node);
-		return {
-			destroy() {
-				if (node.parentNode === target) target.removeChild(node);
-			}
-		};
 	}
 
 	function onWindowResize(): void {
