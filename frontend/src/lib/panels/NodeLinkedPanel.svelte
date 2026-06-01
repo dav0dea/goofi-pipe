@@ -116,13 +116,15 @@
 	}
 	/* Host for the panel's own controls (group tabs / slot picker / viewer
 	   selector). Fills the slack between the node name and the unlink button and
-	   scrolls horizontally if its contents overflow. */
+	   scrolls horizontally if its contents overflow. The left margin keeps the
+	   controls visually separated from the node name. */
 	.controls {
 		flex: 1 1 auto;
 		min-width: 0;
 		display: flex;
 		align-items: center;
 		gap: 6px;
+		margin-left: 10px;
 		overflow-x: auto;
 		overflow-y: hidden;
 		scrollbar-width: thin;
