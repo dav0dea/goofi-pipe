@@ -1,47 +1,37 @@
 <script lang="ts">
-	import { subscribeData } from '$lib/api/data';
-	import { isArrayFrame, isStringFrame, isTableFrame, type DataFrame } from '$lib/codec/decode';
+	import { subscribeFrames } from '$lib/api/frames';
+	import type { DataFrame } from '$lib/codec/decode';
 	import { Handle, Position } from '@xyflow/svelte';
-	import ArrayViewer from './ArrayViewer.svelte';
-	import ImageViewer from './ImageViewer.svelte';
-	import TrajectoryViewer from './TrajectoryViewer.svelte';
-	import TopomapViewer from './TopomapViewer.svelte';
-	import StringViewer from './StringViewer.svelte';
-	import TableViewer from './TableViewer.svelte';
-	import HighDimFallback from './HighDimFallback.svelte';
+	import ViewerSurface from './ViewerSurface.svelte';
+	import { viewerKind, cycleViewerKind } from './viewerState.svelte';
 	import { ui } from '$lib/stores/ui.svelte';
 	import { graph } from '$lib/stores/graph.svelte';
 	import { dtypeColor } from '$lib/editor/categoryColor';
-	import { onMount, untrack } from 'svelte';
+	import { onMount } from 'svelte';
 
 	type Props = { node: string; slot: string; dtype: string };
 	const { node, slot, dtype }: Props = $props();
 
 	const g = graph();
+	const uiStore = ui();
 
 	function onSlotClick(e: MouseEvent): void {
 		// Connected slots fall through so SvelteFlow's drag-start handler
 		// picks the gesture up; otherwise pop the seeded auto-link menu.
-		if (g.links.some((l) => l.node_out === node && l.slot_out === slot)) return;
+		if (g.isOutputConnected(node, slot)) return;
 		e.stopPropagation();
 		ui().requestSlotClick({ node, slot, dtype, side: 'source', clientX: e.clientX, clientY: e.clientY });
 	}
 
-	const CYCLE_ARRAY = ['line', 'image', 'trajectory', 'topomap'] as const;
-	type ViewerKind = (typeof CYCLE_ARRAY)[number] | 'string' | 'table' | 'fallback';
+	// Chosen viewer type lives in a keyed store, so the cycle button, a restored
+	// patch, and the agent surface all drive the same place; frame→component
+	// dispatch is delegated to <ViewerSurface>.
+	const kind = $derived(viewerKind(node, slot, dtype));
+	const expanded = $derived(uiStore.isSlotExpanded(node, slot));
 
-	function initialKind(dt: string): ViewerKind {
-		if (dt === 'STRING') return 'string';
-		if (dt === 'TABLE') return 'table';
-		return 'line';
-	}
-
-	let kind = $state<ViewerKind>(initialKind(dtype));
 	let frame = $state<DataFrame | null>(null);
 	let visible = $state(false);
 	let container: HTMLDivElement | null = $state(null);
-	const uiStore = ui();
-	const expanded = $derived(uiStore.isSlotExpanded(node, slot));
 
 	function toggleExpanded(): void {
 		// Bound on the entire header — clicking anywhere except the cycle
@@ -50,13 +40,11 @@
 		uiStore.toggleSlotExpanded(node, slot);
 	}
 
-	$effect(() => {
-		// Reset frame when target node/slot changes (and kind back to default).
-		untrack(() => {
-			kind = initialKind(dtype);
-		});
-		frame = null;
-	});
+	function cycle(e: MouseEvent): void {
+		// Stop the click from bubbling to the header's collapse toggle.
+		e.stopPropagation();
+		cycleViewerKind(node, slot, dtype);
+	}
 
 	// IntersectionObserver: only subscribe while the viewer is in the
 	// viewport. This is crucial for performance with many simultaneous
@@ -74,37 +62,12 @@
 	});
 
 	$effect(() => {
-		// Don't burn a WS subscription on a collapsed viewer — and tear the
-		// existing one down when the user collapses it.
+		// Don't burn a WS subscription on a collapsed or off-screen viewer; the
+		// frame resets when the target slot changes so a stale view never shows.
+		frame = null;
 		if (!visible || !expanded) return;
-		const unsub = subscribeData(node, slot, (f) => (frame = f));
+		const unsub = subscribeFrames(node, slot, (f) => (frame = f));
 		return () => unsub();
-	});
-
-	function cycle(e: MouseEvent): void {
-		// Stop the click from bubbling to the header's collapse toggle.
-		e.stopPropagation();
-		if (dtype === 'STRING' || dtype === 'TABLE') return;
-		const cur = CYCLE_ARRAY.indexOf(kind as (typeof CYCLE_ARRAY)[number]);
-		kind = CYCLE_ARRAY[(cur + 1) % CYCLE_ARRAY.length];
-	}
-
-	// Detect "we can't draw this" → fall back to a numeric summary.
-	const arraySpec = $derived.by(() => {
-		if (frame && isArrayFrame(frame)) {
-			return frame.data;
-		}
-		return null;
-	});
-
-	const isRenderable = $derived.by(() => {
-		if (!arraySpec) return true;
-		const s = arraySpec.shape;
-		if (kind === 'line') return s.length === 0 || s.length === 1 || s.length === 2 || s.length === 3 ? true : false;
-		if (kind === 'image') return (s.length === 2) || (s.length === 3 && [1, 2, 3, 4].includes(s[2]));
-		if (kind === 'trajectory') return s.length === 2 && s[0] >= 2;
-		if (kind === 'topomap') return s.length === 1;
-		return true;
 	});
 </script>
 
@@ -136,25 +99,7 @@
 
 	{#if expanded}
 		<div class="body">
-			{#if !frame}
-				<div class="placeholder">no data yet</div>
-			{:else if !isRenderable && arraySpec}
-				<HighDimFallback {arraySpec} />
-			{:else if isArrayFrame(frame)}
-				{#if kind === 'line'}
-					<ArrayViewer {frame} />
-				{:else if kind === 'image'}
-					<ImageViewer {frame} />
-				{:else if kind === 'trajectory'}
-					<TrajectoryViewer {frame} />
-				{:else if kind === 'topomap'}
-					<TopomapViewer {frame} />
-				{/if}
-			{:else if isStringFrame(frame)}
-				<StringViewer {frame} />
-			{:else if isTableFrame(frame)}
-				<TableViewer {frame} />
-			{/if}
+			<ViewerSurface {frame} {kind} />
 		</div>
 	{/if}
 </div>
@@ -240,13 +185,5 @@
 		flex-grow: 1;
 		min-width: 0;
 		min-height: 0;
-	}
-	.placeholder {
-		flex-grow: 1;
-		display: flex;
-		align-items: center;
-		justify-content: center;
-		color: var(--text-faint);
-		font-size: 10px;
 	}
 </style>

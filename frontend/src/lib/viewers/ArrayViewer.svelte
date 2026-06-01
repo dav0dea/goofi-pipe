@@ -17,6 +17,21 @@
 	let logY = $state(false);
 	let lastNSeries = 0;
 
+	// Reused x-index array (0..m-1), rebuilt only when the sample count changes.
+	// uPlot keeps a reference to its data, so a stable index avoids allocating a
+	// fresh array every frame.
+	let xsCache: Float64Array | null = null;
+	let xsLen = -1;
+	function indexAxis(m: number): Float64Array {
+		if (xsLen !== m || !xsCache) {
+			const a = new Float64Array(m);
+			for (let i = 0; i < m; i++) a[i] = i;
+			xsCache = a;
+			xsLen = m;
+		}
+		return xsCache;
+	}
+
 	// Cursor hover values, updated by the uPlot setCursor hook. Rendered
 	// as a top-right floating chip. `null` index = mouse not over plot.
 	let cursorIdx = $state<number | null>(null);
@@ -164,21 +179,29 @@
 		if (!plot || !container) return;
 		const shape = arr.shape;
 		const flatLen = arr.values.length;
-		let xs: number[];
-		let ySeries: number[][];
+		// Hand typed arrays straight to uPlot — no per-frame number[] copy. BigInt
+		// dtypes (i8/u8) aren't numbers to uPlot, so only those fall back to a copy.
+		const v = arr.values as ArrayLike<number> & {
+			subarray?: (start: number, end: number) => ArrayLike<number>;
+		};
+		const isBig = flatLen > 0 && typeof v[0] === 'bigint';
+		let xs: ArrayLike<number>;
+		let ySeries: ArrayLike<number>[];
 		if (shape.length === 0 || shape.length === 1) {
-			xs = new Array(flatLen);
-			for (let i = 0; i < flatLen; i++) xs[i] = i;
-			ySeries = [Array.from(arr.values as ArrayLike<number>)];
+			xs = indexAxis(flatLen);
+			ySeries = [isBig ? Array.from(v, Number) : v];
 		} else if (shape.length === 2) {
 			const [n, m] = shape;
-			xs = new Array(m);
-			for (let i = 0; i < m; i++) xs[i] = i;
+			xs = indexAxis(m);
 			ySeries = [];
 			for (let c = 0; c < n; c++) {
-				const row: number[] = new Array(m);
-				for (let i = 0; i < m; i++) row[i] = Number((arr.values as ArrayLike<number>)[c * m + i]);
-				ySeries.push(row);
+				if (!isBig && v.subarray) {
+					ySeries.push(v.subarray(c * m, (c + 1) * m));
+				} else {
+					const row = new Array<number>(m);
+					for (let i = 0; i < m; i++) row[i] = Number(v[c * m + i]);
+					ySeries.push(row);
+				}
 			}
 		} else {
 			return; // higher-D handled by parent fallback

@@ -16,7 +16,7 @@
 	function onInputClick(e: MouseEvent, slot: string, dtype: string) {
 		// Connected slots fall through to SvelteFlow's drag-start. Output
 		// slots have their own click handler in SlotViewer.svelte.
-		if (g.links.some((l) => l.node_in === node.name && l.slot_in === slot)) return;
+		if (g.isInputConnected(node.name, slot)) return;
 		e.stopPropagation();
 		uiStore.requestSlotClick({ node: node.name, slot, dtype, side: 'target', clientX: e.clientX, clientY: e.clientY });
 	}

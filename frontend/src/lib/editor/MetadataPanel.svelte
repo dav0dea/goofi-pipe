@@ -1,6 +1,6 @@
 <script lang="ts">
 	import type { NodeInstanceInfo } from '$lib/api/control';
-	import { subscribeData } from '$lib/api/data';
+	import { subscribeFrames } from '$lib/api/frames';
 	import type { DataFrame } from '$lib/codec/decode';
 	import { onMount } from 'svelte';
 
@@ -32,7 +32,7 @@
 		lastFrame = null;
 		const slot = activeSlot;
 		if (!slot) return;
-		const unsub = subscribeData(node.name, slot, (f) => {
+		const unsub = subscribeFrames(node.name, slot, (f) => {
 			lastFrame = f;
 		});
 		return () => unsub();
