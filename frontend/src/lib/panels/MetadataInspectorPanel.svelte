@@ -11,8 +11,8 @@
 </script>
 
 <div class="wrap">
-	{#if sel.selectedNode}
-		<MetadataPanel node={sel.selectedNode} />
+	{#if sel.activeSelectedNode}
+		<MetadataPanel node={sel.activeSelectedNode} />
 	{:else}
 		<div class="hint">Select a node to inspect its output metadata</div>
 	{/if}

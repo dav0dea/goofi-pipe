@@ -39,6 +39,7 @@
 	import type { PanelProps } from '$lib/workspace/registry';
 	import type { LinkInfo, NodeInstanceInfo, NodeTypeInfo } from '$lib/api/control';
 	import { registerEditor, unregisterEditor } from './editorCommands';
+	import InspectorOverlay from './InspectorOverlay.svelte';
 	import { onMount } from 'svelte';
 
 	let { panelId }: PanelProps = $props();
@@ -51,6 +52,16 @@
 	/** Only the active panel reacts to editor keyboard shortcuts and pending
 	 * slot clicks, so multiple editor panels don't all fire at once. */
 	const isActive = (): boolean => ws.activePanelId === panelId;
+
+	// This editor's own selection (independent per panel). The inspector
+	// overlay reads it; standalone panels follow whichever editor is active.
+	const selectedNode = $derived(sel.selectedNode(panelId));
+
+	$effect(() => {
+		// When this editor becomes the active panel, mark it the active editor
+		// so the standalone Parameters/Metadata/Errors panels follow it.
+		if (ws.activePanelId === panelId) sel.setActiveEditor(panelId);
+	});
 
 	let rootEl = $state<HTMLDivElement | null>(null);
 
@@ -91,7 +102,7 @@
 			type: 'goofi',
 			position: { x: n.pos?.[0] ?? 0, y: n.pos?.[1] ?? 0 },
 			data: { node: n },
-			selected: sel.nodes.has(n.name)
+			selected: sel.nodes(panelId).has(n.name)
 		}));
 		flowNodes = next;
 	});
@@ -105,7 +116,7 @@
 				sourceHandle: l.slot_out,
 				target: l.node_in,
 				targetHandle: l.slot_in,
-				selected: sel.edges.has(id),
+				selected: sel.edges(panelId).has(id),
 				animated: false
 			};
 		});
@@ -128,7 +139,7 @@
 
 	function onEdgeClick(args: { edge: Edge; event: MouseEvent }): void {
 		const e = args.event;
-		sel.clickEdge(args.edge.id, e.shiftKey || e.ctrlKey || e.metaKey);
+		sel.clickEdge(panelId, args.edge.id, e.shiftKey || e.ctrlKey || e.metaKey);
 	}
 
 	function findLinkById(id: string): LinkInfo | null {
@@ -137,7 +148,7 @@
 	}
 
 	async function deleteEdgeSelection(): Promise<void> {
-		const ids = Array.from(sel.edges);
+		const ids = Array.from(sel.edges(panelId));
 		for (const id of ids) {
 			const link = findLinkById(id);
 			if (!link) continue;
@@ -147,7 +158,7 @@
 				console.warn('remove edge failed', err);
 			}
 		}
-		sel.clearEdges();
+		sel.clearEdges(panelId);
 	}
 
 	function nodeBoundsFromFlow(id: string, x: number, y: number): Bounds {
@@ -251,12 +262,12 @@
 		lastPaneClickAt = now;
 		lastPaneClickPos = here;
 		menuOpen = false;
-		sel.clickPane(args.event.shiftKey);
+		sel.clickPane(panelId, args.event.shiftKey);
 	}
 
 	function onNodeClick(args: { node: Node; event: MouseEvent | TouchEvent }): void {
 		const mouse = args.event as MouseEvent;
-		sel.clickNode(args.node.id, mouse.shiftKey || mouse.ctrlKey || mouse.metaKey);
+		sel.clickNode(panelId, args.node.id, mouse.shiftKey || mouse.ctrlKey || mouse.metaKey);
 	}
 
 	const nodeTypes = { goofi: GoofiNode };
@@ -269,7 +280,7 @@
 		const meta = e.ctrlKey || e.metaKey;
 		if (meta && e.key.toLowerCase() === 'a') {
 			e.preventDefault();
-			sel.selectNodes(g.nodes.map((n) => n.name));
+			sel.selectNodes(panelId, g.nodes.map((n) => n.name));
 		} else if (meta && e.key.toLowerCase() === 'c') {
 			void copySelection();
 		} else if (meta && e.key.toLowerCase() === 'v') {
@@ -278,10 +289,10 @@
 			e.preventDefault();
 			void duplicateSelection();
 		} else if (e.key === 'Delete' || e.key === 'Backspace') {
-			if (sel.nodes.size === 0 && sel.edges.size === 0) return;
+			if (sel.nodes(panelId).size === 0 && sel.edges(panelId).size === 0) return;
 			e.preventDefault();
-			if (sel.nodes.size > 0) void deleteSelection();
-			if (sel.edges.size > 0) void deleteEdgeSelection();
+			if (sel.nodes(panelId).size > 0) void deleteSelection();
+			if (sel.edges(panelId).size > 0) void deleteEdgeSelection();
 		} else if (e.key === 'Tab') {
 			e.preventDefault();
 			openMenuAtCursor();
@@ -290,7 +301,7 @@
 				menuOpen = false;
 				menuSeed = null;
 			} else {
-				sel.clear();
+				sel.clear(panelId);
 			}
 		} else if (e.key.toLowerCase() === 'f') {
 			fitView();
@@ -298,7 +309,7 @@
 	}
 
 	async function deleteSelection(): Promise<void> {
-		const names = Array.from(sel.nodes);
+		const names = Array.from(sel.nodes(panelId));
 		for (const n of names) {
 			try {
 				await g.removeNode(n);
@@ -306,16 +317,18 @@
 				console.warn('remove failed', e);
 			}
 		}
-		sel.clearNodes();
+		sel.clearNodes(panelId);
 	}
 
 	async function copySelection(): Promise<void> {
-		const selNodes = g.nodes.filter((n) => sel.nodes.has(n.name));
+		const selNodes = g.nodes.filter((n) => sel.nodes(panelId).has(n.name));
 		if (selNodes.length === 0) return;
 		const avg = selNodes.reduce((acc, n) => [acc[0] + n.pos[0], acc[1] + n.pos[1]], [0, 0]);
 		const avgX = avg[0] / selNodes.length;
 		const avgY = avg[1] / selNodes.length;
-		const links = g.links.filter((l) => sel.nodes.has(l.node_in) && sel.nodes.has(l.node_out));
+		const links = g.links.filter(
+			(l) => sel.nodes(panelId).has(l.node_in) && sel.nodes(panelId).has(l.node_out)
+		);
 		const payload = {
 			__goofi_clip__: 1,
 			nodes: selNodes.map((n) => ({
@@ -335,11 +348,11 @@
 	}
 
 	async function duplicateSelection(): Promise<void> {
-		const selNodes = g.nodes.filter((n) => sel.nodes.has(n.name));
+		const selNodes = g.nodes.filter((n) => sel.nodes(panelId).has(n.name));
 		if (selNodes.length === 0) return;
 		const OFFSET = 40;
 		const internalLinks = g.links.filter(
-			(l) => sel.nodes.has(l.node_in) && sel.nodes.has(l.node_out)
+			(l) => sel.nodes(panelId).has(l.node_in) && sel.nodes(panelId).has(l.node_out)
 		);
 		const rename: Record<string, string> = {};
 		const newSelection = new Set<string>();
@@ -373,7 +386,7 @@
 				/* ignore */
 			}
 		}
-		if (newSelection.size > 0) sel.selectNodes(newSelection);
+		if (newSelection.size > 0) sel.selectNodes(panelId, newSelection);
 	}
 
 	function serializableParams(n: NodeInstanceInfo): Record<string, Record<string, unknown>> {
@@ -515,6 +528,7 @@
 		window.addEventListener('mousemove', trackMouse);
 		return () => {
 			unregisterEditor(panelId);
+			sel.forgetPanel(panelId);
 			window.removeEventListener('keydown', onKeydown);
 			window.removeEventListener('mousemove', trackMouse);
 		};
@@ -627,6 +641,9 @@
 				/>
 			</div>
 		{/if}
+
+		<!-- Per-editor selection inspector — slides in within this panel. -->
+		<InspectorOverlay node={selectedNode} onFocus={(name) => sel.selectNodes(panelId, [name])} />
 	</div>
 </SvelteFlowProvider>
 

@@ -1,22 +1,24 @@
 <!--
-  Auto side-panel — the selection inspector overlay carried over from the old
-  Editor. Slides in from the right when exactly one node is selected and shows
-  its parameters, metadata, and errors. Width is drag-resizable and persisted.
+  Selection inspector for a single editor panel. Slides in from the right edge
+  of its host editor (not the whole window) when that editor has exactly one
+  node selected, showing its parameters, metadata, and errors. Width is
+  drag-resizable and persisted. Toggled globally via selection.inspectorEnabled
+  (the TopBar "Inspector" button).
 
-  This is additive to the placeable Parameters/Metadata/Errors panels: users
-  who place those can switch this overlay off via the TopBar "Inspector"
-  toggle (the `enabled` prop).
+  This is additive to the placeable Parameters/Metadata/Errors panels — those
+  follow the active editor's selection instead.
 -->
 <script lang="ts">
 	import ParamPanel from '$lib/params/ParamPanel.svelte';
 	import MetadataPanel from '$lib/editor/MetadataPanel.svelte';
 	import ErrorPanel from '$lib/editor/ErrorPanel.svelte';
 	import { selection } from '$lib/stores/selection.svelte';
+	import type { NodeInstanceInfo } from '$lib/api/control';
 
-	let { enabled }: { enabled: boolean } = $props();
+	let { node, onFocus }: { node: NodeInstanceInfo | null; onFocus: (name: string) => void } =
+		$props();
 
 	const sel = selection();
-	const selectedNode = $derived(sel.selectedNode);
 
 	const MIN_PANEL_WIDTH = 260;
 	const MAX_PANEL_WIDTH = 720;
@@ -58,10 +60,10 @@
 	}
 </script>
 
-{#if enabled}
+{#if sel.inspectorEnabled}
 	<aside
 		class="side-panel"
-		class:open={selectedNode !== null}
+		class:open={node !== null}
 		class:resizing
 		style="width: {panelWidth}px"
 		data-testid="auto-side-panel"
@@ -75,10 +77,10 @@
 			data-testid="panel-resize-handle"
 		></div>
 		<div class="panel-scroll">
-			<ParamPanel node={selectedNode} />
-			{#if selectedNode}
-				<MetadataPanel node={selectedNode} />
-				<ErrorPanel mode="inline" onFocus={(name) => sel.selectNodes([name])} />
+			<ParamPanel {node} />
+			{#if node}
+				<MetadataPanel {node} />
+				<ErrorPanel mode="inline" {onFocus} />
 			{/if}
 		</div>
 	</aside>

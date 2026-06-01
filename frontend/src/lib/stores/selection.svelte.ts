@@ -1,76 +1,140 @@
 /**
- * Graph selection — hoisted out of the (former) Editor monolith so it can be
- * shared across panels. The node editor writes it; the Parameters / Metadata
- * panels and the auto side-panel read `selectedNode` to follow the focus.
+ * Graph selection — keyed per editor panel.
  *
- * Sets are replaced (never mutated in place) so a plain assignment drives
- * reactivity, matching how the old Editor managed `selection`/`edgeSelection`.
- * The click semantics below are preserved verbatim from that code, including
- * the asymmetry that a plain node click leaves edge selection untouched while
- * a plain edge click clears node selection.
+ * Each node-editor panel has its own independent selection (selecting a node
+ * in one panel doesn't affect another). The per-editor inspector reads its own
+ * panel's selection; the standalone Parameters / Metadata / Errors panels
+ * follow `activeSelectedNode` — the selection of whichever editor was last
+ * focused.
+ *
+ * Selections are replaced (never mutated in place) so a plain assignment drives
+ * reactivity. The click semantics are preserved from the original Editor,
+ * including the asymmetry that a plain node click leaves edge selection intact
+ * while a plain edge click clears node selection.
  */
 import { graph } from './graph.svelte';
 import type { NodeInstanceInfo } from '$lib/api/control';
 
-class SelectionStore {
-	nodes = $state<Set<string>>(new Set());
-	edges = $state<Set<string>>(new Set());
+interface PanelSel {
+	nodes: Set<string>;
+	edges: Set<string>;
+}
+const EMPTY: PanelSel = { nodes: new Set(), edges: new Set() };
 
-	/** The single selected node, or null when zero / many are selected. */
-	get selectedNode(): NodeInstanceInfo | null {
-		if (this.nodes.size !== 1) return null;
-		const name = [...this.nodes][0];
+function readInspectorPref(): boolean {
+	try {
+		return localStorage.getItem('goofi.inspectorOn') !== '0';
+	} catch {
+		return true;
+	}
+}
+
+class SelectionStore {
+	/** Per-editor-panel selection, keyed by panel id. */
+	private map = $state<Record<string, PanelSel>>({});
+	/** Last-focused editor panel — the standalone panels follow this one. */
+	activeEditorId = $state<string | null>(null);
+	/** Whether each editor's inspector overlay is shown (global toggle). */
+	inspectorEnabled = $state(readInspectorPref());
+
+	private sel(panelId: string | null): PanelSel {
+		return (panelId && this.map[panelId]) || EMPTY;
+	}
+	private write(panelId: string, next: PanelSel): void {
+		this.map = { ...this.map, [panelId]: next };
+	}
+
+	nodes(panelId: string | null): Set<string> {
+		return this.sel(panelId).nodes;
+	}
+	edges(panelId: string | null): Set<string> {
+		return this.sel(panelId).edges;
+	}
+
+	/** The single selected node of `panelId`, or null for zero / many. */
+	selectedNode(panelId: string | null): NodeInstanceInfo | null {
+		const ns = this.sel(panelId).nodes;
+		if (ns.size !== 1) return null;
+		const name = [...ns][0];
 		return graph().nodes.find((n) => n.name === name) ?? null;
+	}
+
+	/** Selected node of the last-focused editor — for standalone panels. */
+	get activeSelectedNode(): NodeInstanceInfo | null {
+		return this.selectedNode(this.activeEditorId);
+	}
+
+	setActiveEditor(panelId: string): void {
+		if (this.activeEditorId !== panelId) this.activeEditorId = panelId;
+	}
+
+	toggleInspector(): void {
+		this.inspectorEnabled = !this.inspectorEnabled;
+		try {
+			localStorage.setItem('goofi.inspectorOn', this.inspectorEnabled ? '1' : '0');
+		} catch {
+			/* best-effort */
+		}
 	}
 
 	// --- node selection ----------------------------------------------------
 
-	clickNode(name: string, additive: boolean): void {
+	clickNode(panelId: string, name: string, additive: boolean): void {
+		const cur = this.sel(panelId);
 		if (additive) {
-			const next = new Set(this.nodes);
-			if (next.has(name)) next.delete(name);
-			else next.add(name);
-			this.nodes = next;
+			const nodes = new Set(cur.nodes);
+			if (nodes.has(name)) nodes.delete(name);
+			else nodes.add(name);
+			this.write(panelId, { nodes, edges: cur.edges });
 		} else {
-			this.nodes = new Set([name]);
+			this.write(panelId, { nodes: new Set([name]), edges: cur.edges });
 		}
 	}
 
-	selectNodes(names: Iterable<string>): void {
-		this.nodes = new Set(names);
+	selectNodes(panelId: string, names: Iterable<string>): void {
+		this.write(panelId, { nodes: new Set(names), edges: this.sel(panelId).edges });
 	}
 
 	// --- edge selection ----------------------------------------------------
 
-	clickEdge(id: string, additive: boolean): void {
+	clickEdge(panelId: string, id: string, additive: boolean): void {
+		const cur = this.sel(panelId);
 		if (additive) {
-			const next = new Set(this.edges);
-			if (next.has(id)) next.delete(id);
-			else next.add(id);
-			this.edges = next;
+			const edges = new Set(cur.edges);
+			if (edges.has(id)) edges.delete(id);
+			else edges.add(id);
+			this.write(panelId, { nodes: cur.nodes, edges });
 		} else {
-			this.edges = new Set([id]);
-			this.nodes = new Set();
+			this.write(panelId, { nodes: new Set(), edges: new Set([id]) });
 		}
 	}
 
 	// --- clearing ----------------------------------------------------------
 
-	/** Empty-canvas click: clear everything unless the user is shift-extending. */
-	clickPane(shift: boolean): void {
+	clickPane(panelId: string, shift: boolean): void {
 		if (shift) return;
-		this.clear();
+		this.clear(panelId);
 	}
 
-	clearNodes(): void {
-		if (this.nodes.size) this.nodes = new Set();
+	clearNodes(panelId: string): void {
+		const cur = this.sel(panelId);
+		if (cur.nodes.size) this.write(panelId, { nodes: new Set(), edges: cur.edges });
 	}
-	clearEdges(): void {
-		if (this.edges.size) this.edges = new Set();
+	clearEdges(panelId: string): void {
+		const cur = this.sel(panelId);
+		if (cur.edges.size) this.write(panelId, { nodes: cur.nodes, edges: new Set() });
 	}
-	clear(): void {
-		this.clearNodes();
-		this.clearEdges();
+	clear(panelId: string): void {
+		const cur = this.sel(panelId);
+		if (cur.nodes.size || cur.edges.size) this.write(panelId, { nodes: new Set(), edges: new Set() });
+	}
+
+	/** Drop a closed panel's selection so the map doesn't accumulate. */
+	forgetPanel(panelId: string): void {
+		if (!this.map[panelId]) return;
+		const { [panelId]: _drop, ...rest } = this.map;
+		this.map = rest;
+		if (this.activeEditorId === panelId) this.activeEditorId = null;
 	}
 }
 

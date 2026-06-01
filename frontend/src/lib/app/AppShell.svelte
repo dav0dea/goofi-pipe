@@ -13,7 +13,6 @@
 	import ErrorPanel from '$lib/editor/ErrorPanel.svelte';
 	import WorkspaceTabs from '$lib/workspace/WorkspaceTabs.svelte';
 	import WorkspaceView from '$lib/workspace/Workspace.svelte';
-	import AutoSidePanel from './AutoSidePanel.svelte';
 	import { registerBuiltinPanels } from '$lib/workspace/panels';
 	import { registerAppPanels } from '$lib/panels/register';
 	import { editorFor } from '$lib/panels/editorCommands';
@@ -30,30 +29,17 @@
 	const ws = workspace();
 	const sel = selection();
 
-	let sidePanelEnabled = $state(readInspectorPref());
-
-	function readInspectorPref(): boolean {
-		try {
-			return localStorage.getItem('goofi.inspectorOn') !== '0';
-		} catch {
-			return true;
-		}
-	}
-	function toggleSidePanel(): void {
-		sidePanelEnabled = !sidePanelEnabled;
-		try {
-			localStorage.setItem('goofi.inspectorOn', sidePanelEnabled ? '1' : '0');
-		} catch {
-			/* best-effort */
-		}
-	}
-
 	// TopBar "Add node" / "Fit" drive whichever editor panel is active.
 	function addNode(): void {
 		editorFor(ws.activePanelId)?.openAddMenu();
 	}
 	function fitView(): void {
 		editorFor(ws.activePanelId)?.fitView();
+	}
+
+	// Focus an errored node in the editor the user last touched.
+	function focusError(name: string): void {
+		if (sel.activeEditorId) sel.selectNodes(sel.activeEditorId, [name]);
 	}
 
 	async function triggerSave(): Promise<void> {
@@ -126,14 +112,13 @@
 		onFitView={fitView}
 		onSave={triggerSave}
 		onLoad={triggerLoad}
-		onToggleSidePanel={toggleSidePanel}
-		sidePanelOn={sidePanelEnabled}
+		onToggleSidePanel={() => sel.toggleInspector()}
+		sidePanelOn={sel.inspectorEnabled}
 	/>
 	<WorkspaceTabs />
 	<div class="main">
 		<WorkspaceView />
-		<AutoSidePanel enabled={sidePanelEnabled} />
-		<ErrorPanel mode="chip" onFocus={(name) => sel.selectNodes([name])} />
+		<ErrorPanel mode="chip" onFocus={focusError} />
 	</div>
 </div>
 

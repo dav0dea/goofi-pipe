@@ -11,7 +11,7 @@
 </script>
 
 <div class="wrap">
-	<ParamPanel node={sel.selectedNode} />
+	<ParamPanel node={sel.activeSelectedNode} />
 </div>
 
 <style>

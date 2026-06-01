@@ -12,7 +12,10 @@
 </script>
 
 <div class="wrap">
-	<ErrorPanel mode="inline" onFocus={(name) => sel.selectNodes([name])} />
+	<ErrorPanel
+		mode="inline"
+		onFocus={(name) => sel.activeEditorId && sel.selectNodes(sel.activeEditorId, [name])}
+	/>
 </div>
 
 <style>
