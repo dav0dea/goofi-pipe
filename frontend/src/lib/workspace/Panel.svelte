@@ -191,6 +191,7 @@
 <section
 	class="panel"
 	class:active
+	class:content-outline={type?.acceptsNode}
 	onpointerdowncapture={() => ws.setActive(node.id)}
 	ondragover={onNodeDragOver}
 	ondragleave={onNodeDragLeave}
@@ -254,7 +255,10 @@
 		box-shadow: inset 0 0 0 1px transparent;
 		transition: box-shadow 100ms ease;
 	}
-	.panel.active {
+	/* Active-panel accent. Node-linked panels (parameters / viewer / metadata)
+	   opt out here and draw their own outline around just the content below
+	   their inner header bar (see NodeLinkedPanel). */
+	.panel.active:not(.content-outline) {
 		box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 45%, transparent);
 	}
 	.panel-body {
