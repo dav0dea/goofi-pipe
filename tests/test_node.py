@@ -37,6 +37,38 @@ def test_create_local_basic():
     ref.terminate()
 
 
+def test_processing_error_clears_after_recovery():
+    """A transient process() failure must not stick. While process() keeps
+    raising, the node reports an error; once a later tick succeeds, the node
+    must report the error cleared (None) rather than leaving it latched."""
+    _iid()
+    state = {"fail": True}
+
+    def cb(**kwargs):
+        if state["fail"]:
+            raise ValueError("boom")
+        return {}
+
+    Custom = make_custom_node(process_callback=cb)
+    # autotrigger free-runs the processing loop so it ticks without inputs.
+    ref, n = Custom.create_local(initial_params={"common": {"autotrigger": True}})
+    try:
+        # While failing, the error is reported and stays observable.
+        deadline = time.time() + 2.0
+        while ref.last_error is None and time.time() < deadline:
+            time.sleep(0.01)
+        assert ref.last_error is not None and "boom" in ref.last_error
+
+        # Recover: subsequent successful ticks must clear the error.
+        state["fail"] = False
+        deadline = time.time() + 2.0
+        while ref.last_error is not None and time.time() < deadline:
+            time.sleep(0.01)
+        assert ref.last_error is None, f"error stuck after recovery: {ref.last_error!r}"
+    finally:
+        ref.terminate()
+
+
 def test_terminate_via_ref():
     _iid()
     ref, n = DummyNode.create_local()

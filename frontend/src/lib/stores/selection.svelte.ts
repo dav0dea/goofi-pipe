@@ -21,21 +21,14 @@ interface PanelSel {
 }
 const EMPTY: PanelSel = { nodes: new Set(), edges: new Set() };
 
-function readInspectorPref(): boolean {
-	try {
-		return localStorage.getItem('goofi.inspectorOn') !== '0';
-	} catch {
-		return true;
-	}
-}
-
 class SelectionStore {
 	/** Per-editor-panel selection, keyed by panel id. */
 	private map = $state<Record<string, PanelSel>>({});
 	/** Last-focused editor panel — the standalone panels follow this one. */
 	activeEditorId = $state<string | null>(null);
-	/** Whether each editor's inspector overlay is shown (global toggle). */
-	inspectorEnabled = $state(readInspectorPref());
+	/** Per-editor inspector visibility, keyed by panel id. Absent = enabled (the
+	 * default). Ephemeral — deliberately not persisted to any browser storage. */
+	private inspectorOn = $state<Record<string, boolean>>({});
 
 	private sel(panelId: string | null): PanelSel {
 		return (panelId && this.map[panelId]) || EMPTY;
@@ -68,13 +61,13 @@ class SelectionStore {
 		if (this.activeEditorId !== panelId) this.activeEditorId = panelId;
 	}
 
-	toggleInspector(): void {
-		this.inspectorEnabled = !this.inspectorEnabled;
-		try {
-			localStorage.setItem('goofi.inspectorOn', this.inspectorEnabled ? '1' : '0');
-		} catch {
-			/* best-effort */
-		}
+	/** Whether `panelId`'s inspector pane appears when it has a node selected.
+	 * Defaults to enabled; a null panel id (no active editor) reads as off. */
+	inspectorEnabledFor(panelId: string | null): boolean {
+		return panelId !== null ? (this.inspectorOn[panelId] ?? true) : false;
+	}
+	toggleInspectorFor(panelId: string): void {
+		this.inspectorOn = { ...this.inspectorOn, [panelId]: !this.inspectorEnabledFor(panelId) };
 	}
 
 	// --- node selection ----------------------------------------------------
@@ -130,10 +123,25 @@ class SelectionStore {
 	}
 
 	/** Drop a closed panel's selection so the map doesn't accumulate. */
+	/** Drop ALL per-panel state — selection and inspector visibility. Called when
+	 * the layout is wholesale-replaced (reset / hydrate): a loaded `.gfi` keeps
+	 * its saved panel ids, which can collide with ids used earlier this session,
+	 * so any leftover per-id state would silently apply to the new panels. */
+	forgetAll(): void {
+		this.map = {};
+		this.inspectorOn = {};
+		this.activeEditorId = null;
+	}
+
 	forgetPanel(panelId: string): void {
-		if (!this.map[panelId]) return;
-		const { [panelId]: _drop, ...rest } = this.map;
-		this.map = rest;
+		if (this.map[panelId]) {
+			const { [panelId]: _drop, ...rest } = this.map;
+			this.map = rest;
+		}
+		if (this.inspectorOn[panelId] !== undefined) {
+			const { [panelId]: _ins, ...rest } = this.inspectorOn;
+			this.inspectorOn = rest;
+		}
 		if (this.activeEditorId === panelId) this.activeEditorId = null;
 	}
 }

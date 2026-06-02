@@ -47,8 +47,6 @@ export const commands = {
 	save: (path?: string): Promise<{ path: string; yaml: string }> =>
 		graph().save(path, true, workspace().serialize()),
 	loadText: (content: string): Promise<void> => graph().loadText(content),
-	listExamples: (): Promise<{ examples: { name: string; size: number }[] }> => graph().listExamples(),
-	loadExample: (name: string): Promise<void> => graph().loadExample(name),
 
 	// --- selection / focus -------------------------------------------------
 	select: (names: string[], panelId: string | null = activeEditor()): void => {

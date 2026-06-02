@@ -18,7 +18,6 @@
 	import { editorFor } from '$lib/panels/editorCommands';
 	import { workspace } from '$lib/workspace/workspace.svelte';
 	import { graph } from '$lib/stores/graph.svelte';
-	import { selection } from '$lib/stores/selection.svelte';
 	import { exposeAgentApi } from '$lib/agent';
 	import { onMount } from 'svelte';
 
@@ -30,7 +29,6 @@
 
 	const g = graph();
 	const ws = workspace();
-	const sel = selection();
 
 	// TopBar "Add node" / "Fit" drive whichever editor panel is active.
 	function addNode(): void {
@@ -133,8 +131,6 @@
 		onFitView={fitView}
 		onSave={triggerSave}
 		onLoad={triggerLoad}
-		onToggleSidePanel={() => sel.toggleInspector()}
-		sidePanelOn={sel.inspectorEnabled}
 	>
 		{#snippet tabs()}
 			<WorkspaceTabs />
@@ -142,7 +138,7 @@
 	</TopBar>
 	<div class="main">
 		<WorkspaceView />
-		<ErrorPanel mode="chip" onFocus={focusError} />
+		<ErrorPanel onFocus={focusError} />
 	</div>
 </div>
 

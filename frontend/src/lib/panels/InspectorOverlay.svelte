@@ -1,9 +1,12 @@
 <!--
   Selection inspector for a single editor panel. Slides in from the right edge
   of its host editor (not the whole window) when that editor has exactly one
-  node selected, showing its parameters, metadata, and errors. Width is
-  drag-resizable and persisted. Toggled globally via selection.inspectorEnabled
-  (the TopBar "Inspector" button).
+  node selected, showing its parameters, errors, and metadata. Width is
+  drag-resizable.
+
+  Visibility is per-editor: `enabled` is owned by the host NodeEditorPanel
+  (turned on by the editor's own corner control, off by this pane's close
+  button) — there is no global header toggle.
 
   This is additive to the placeable Parameters/Metadata/Errors panels — those
   follow the active editor's selection instead.
@@ -11,14 +14,15 @@
 <script lang="ts">
 	import ParamPanel from '$lib/params/ParamPanel.svelte';
 	import MetadataPanel from '$lib/editor/MetadataPanel.svelte';
-	import ErrorPanel from '$lib/editor/ErrorPanel.svelte';
-	import { selection } from '$lib/stores/selection.svelte';
 	import type { NodeInstanceInfo } from '$lib/api/control';
 
-	let { node, onFocus }: { node: NodeInstanceInfo | null; onFocus: (name: string) => void } =
-		$props();
-
-	const sel = selection();
+	let {
+		node,
+		enabled
+	}: {
+		node: NodeInstanceInfo | null;
+		enabled: boolean;
+	} = $props();
 
 	const MIN_PANEL_WIDTH = 260;
 	const MAX_PANEL_WIDTH = 720;
@@ -60,7 +64,7 @@
 	}
 </script>
 
-{#if sel.inspectorEnabled}
+{#if enabled}
 	<aside
 		class="side-panel"
 		class:open={node !== null}
@@ -80,7 +84,12 @@
 			<ParamPanel {node} />
 			{#if node}
 				<MetadataPanel {node} />
-				<ErrorPanel mode="inline" {onFocus} />
+				{#if node.error}
+					<section class="node-error" data-testid="inspector-error">
+						<header>Error</header>
+						<pre>{node.error}</pre>
+					</section>
+				{/if}
 			{/if}
 		</div>
 	</aside>
@@ -122,6 +131,27 @@
 		flex: 1;
 		overflow-y: auto;
 		min-height: 0;
+	}
+	/* Current processing error for the selected node — a simple snapshot, shown
+	   only while the node is errored, after the metadata section. */
+	.node-error {
+		padding: 12px;
+		border-top: 1px solid var(--border);
+		background: var(--bg-elev-1);
+	}
+	.node-error header {
+		font-weight: 600;
+		font-size: 11px;
+		color: var(--danger);
+		margin-bottom: 6px;
+	}
+	.node-error pre {
+		font-family: var(--font-mono);
+		font-size: 10px;
+		color: var(--text-dim);
+		white-space: pre-wrap;
+		word-break: break-word;
+		margin: 0;
 	}
 	.resize-handle {
 		position: absolute;

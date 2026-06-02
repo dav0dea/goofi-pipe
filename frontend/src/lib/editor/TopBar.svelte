@@ -7,39 +7,14 @@
 		onSave: () => void;
 		onLoad: () => void;
 		onFitView: () => void;
-		onToggleSidePanel: () => void;
-		sidePanelOn: boolean;
 		/** Workspace tab strip, rendered in the header's central gap between the
 		 * filename and the action buttons. */
 		tabs?: Snippet;
 	};
 
-	const { onAddNode, onSave, onLoad, onFitView, onToggleSidePanel, sidePanelOn, tabs }: Props =
-		$props();
+	const { onAddNode, onSave, onLoad, onFitView, tabs }: Props = $props();
 
 	const g = graph();
-	let examplesOpen = $state(false);
-	let examples = $state<{ name: string; size: number }[]>([]);
-
-	async function toggleExamples(): Promise<void> {
-		examplesOpen = !examplesOpen;
-		if (examplesOpen && examples.length === 0) {
-			try {
-				examples = (await g.listExamples()).examples;
-			} catch (e) {
-				console.warn('list_examples failed', e);
-			}
-		}
-	}
-
-	async function loadExample(name: string): Promise<void> {
-		examplesOpen = false;
-		try {
-			await g.loadExample(name);
-		} catch (e) {
-			console.error('load_example failed', e);
-		}
-	}
 </script>
 
 <div class="topbar">
@@ -67,28 +42,6 @@
 		<button class="ghost" data-testid="topbar-fit" onclick={onFitView}>Fit</button>
 		<button class="ghost" data-testid="topbar-save" onclick={onSave}>Save</button>
 		<button class="ghost" data-testid="topbar-load" onclick={onLoad}>Load…</button>
-		<button
-			class="ghost"
-			class:active={sidePanelOn}
-			data-testid="topbar-inspector"
-			title="Toggle the selection inspector overlay"
-			onclick={onToggleSidePanel}>Inspector</button
-		>
-		<div class="examples-host">
-			<button class="ghost" onclick={toggleExamples} data-testid="topbar-examples">
-				Examples ▾
-			</button>
-			{#if examplesOpen}
-				<div class="examples-pop" role="menu">
-					{#each examples as ex}
-						<button class="ex-item" onclick={() => loadExample(ex.name)}>{ex.name}</button>
-					{/each}
-					{#if examples.length === 0}
-						<div class="ex-empty">no examples</div>
-					{/if}
-				</div>
-			{/if}
-		</div>
 	</div>
 </div>
 
@@ -153,47 +106,5 @@
 		align-items: center;
 		gap: 4px;
 		flex: 0 0 auto;
-	}
-	.actions button.active {
-		color: var(--accent);
-		background: color-mix(in srgb, var(--accent) 12%, transparent);
-	}
-	.examples-host {
-		position: relative;
-	}
-	.examples-pop {
-		position: absolute;
-		right: 0;
-		top: 100%;
-		margin-top: 4px;
-		background: var(--bg-elev-2);
-		border: 1px solid var(--border);
-		border-radius: var(--radius-sm);
-		min-width: 240px;
-		max-height: 320px;
-		overflow-y: auto;
-		display: flex;
-		flex-direction: column;
-		box-shadow: var(--shadow-2);
-		z-index: var(--z-menu);
-	}
-	.ex-item {
-		background: transparent;
-		border: none;
-		border-radius: 0;
-		text-align: left;
-		padding: 6px 10px;
-		font-family: var(--font-mono);
-		font-size: 11px;
-		color: var(--text);
-		cursor: pointer;
-	}
-	.ex-item:hover {
-		background: var(--bg-elev-3);
-	}
-	.ex-empty {
-		padding: 12px;
-		color: var(--text-faint);
-		text-align: center;
 	}
 </style>

@@ -3,12 +3,15 @@
  *
  * Holds the `WorkspaceState` (tabs + their layout trees) plus ephemeral UI
  * state (which panel is active, which is maximized). All structural changes go
- * through the pure ops in `model.ts`; this layer just owns the `$state`, picks
- * sensible follow-up selection, and persists to localStorage.
+ * through the pure ops in `model.ts`; this layer just owns the `$state` and
+ * picks sensible follow-up selection.
  *
- * Persistence is explicit (a `_commit()` call at the end of each mutation)
- * rather than `$effect`-driven, because the store is a module-level singleton
- * created outside any component/effect context.
+ * The layout is *not* persisted in the browser — no localStorage, no session
+ * storage. It lives only in memory here, is pushed to the manager as it
+ * changes (AppShell → `set_layout`), and is embedded in the `.gfi` on save. A
+ * fresh manager session therefore starts at the default layout; `GraphStore`
+ * detects a backend restart (via the snapshot `instance_id`) and calls
+ * `reset()` so a stale layout never lingers across a kill/restart.
  */
 import {
 	clearNodeRef,
@@ -16,6 +19,7 @@ import {
 	cloneWithNewIds,
 	defaultWorkspaceState,
 	DEFAULT_PANEL_TYPE,
+	EMPTY_PANEL_TYPE,
 	extractPanel,
 	findPanel,
 	firstPanelId,
@@ -60,10 +64,16 @@ class WorkspaceStore {
 	 * repositioned in the layout or turned into a tab. */
 	dragging = $state<DragRef | null>(null);
 
-	// The layout is *not* persisted to localStorage. It lives only in the
-	// running patch (pushed to the manager) and the .gfi on save; a fresh
-	// goofi-pipe with no patch therefore starts at the default layout.
 	constructor() {
+		this.activePanelId = firstPanelId(this.active.root);
+	}
+
+	/** Drop all layout state back to a single default panel. Called when a
+	 * fresh backend session connects without a layout of its own, so the panel
+	 * arrangement from the previous session doesn't linger in the open tab. */
+	reset(): void {
+		this.state = defaultWorkspaceState();
+		this.maximizedPanelId = null;
 		this.activePanelId = firstPanelId(this.active.root);
 	}
 
@@ -86,6 +96,12 @@ class WorkspaceStore {
 	hydrate(state: unknown): void {
 		if (!isValidState(state)) return;
 		reseedIds(state);
+		// Back-compat: the old "errors" panel is now the generalized "console".
+		const migrate = (node: LayoutNode): void => {
+			if (node.kind === 'split') node.children.forEach(migrate);
+			else if (node.panelType === 'errors') node.panelType = 'console';
+		};
+		for (const ws of state.workspaces) migrate(ws.root);
 		this.state = state;
 		this.maximizedPanelId = null;
 		this.activePanelId = firstPanelId(this.active.root);
@@ -109,9 +125,9 @@ class WorkspaceStore {
 
 	// --- layout mutations --------------------------------------------------
 
-	/** Split a panel. `newType` defaults to the source panel's own type, so a
-	 * split inherits content (Blender-style); the user then swaps if desired.
-	 * `fraction` is the new panel's share of the split (0.5 = even). */
+	/** Split a panel. The new panel is `empty` by default — the user picks its
+	 * content from the empty panel's buttons rather than inheriting the source's
+	 * type. `fraction` is the new panel's share of the split (0.5 = even). */
 	split(
 		panelId: string,
 		direction: Direction,
@@ -120,8 +136,7 @@ class WorkspaceStore {
 		newType?: string
 	): void {
 		const ws = this.active;
-		const src = findPanel(ws.root, panelId);
-		const type = newType ?? src?.panelType ?? DEFAULT_PANEL_TYPE;
+		const type = newType ?? EMPTY_PANEL_TYPE;
 		const { root, newPanelId } = splitPanel(ws.root, panelId, direction, placeBefore, type, fraction);
 		if (root === ws.root) return;
 		this._setRoot(ws.id, root);

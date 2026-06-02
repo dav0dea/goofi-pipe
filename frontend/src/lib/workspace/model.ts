@@ -334,6 +334,10 @@ export function extractPanel(
 /** The panel type a brand-new workspace / tab starts with. */
 export const DEFAULT_PANEL_TYPE = 'node-editor';
 
+/** The placeholder a split births: an empty panel whose in-panel buttons let
+ * the user choose its content, so a split never assumes a type. */
+export const EMPTY_PANEL_TYPE = 'empty';
+
 export function makeWorkspace(name: string, panelType: string = DEFAULT_PANEL_TYPE): Workspace {
 	return { id: uid('ws'), name, root: makePanel(panelType) };
 }

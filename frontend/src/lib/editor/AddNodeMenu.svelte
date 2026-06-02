@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { graph } from '$lib/stores/graph.svelte';
 	import { categoryColor, dtypeColor } from './categoryColor';
+	import { rankNodeTypes } from './nodeSearch';
 	import type { NodeTypeInfo } from '$lib/api/control';
 	import type { SlotClickSeed } from '$lib/stores/ui.svelte';
 	import { onMount, tick } from 'svelte';
@@ -28,14 +29,9 @@
 
 	const filtered = $derived.by(() => {
 		const types = (g.nodeTypes ?? []).filter(matchesSeed);
-		const q = query.trim().toLowerCase();
-		if (!q) return types;
-		return types.filter(
-			(t) =>
-				t.type.toLowerCase().includes(q) ||
-				t.category.toLowerCase().includes(q) ||
-				t.doc.toLowerCase().includes(q)
-		);
+		// Rank by match quality (name ≫ category ≫ doc) so the closest hit leads;
+		// an empty query is returned untouched and grouped by category below.
+		return rankNodeTypes(types, query);
 	});
 
 	// Group by category, but only when no query — when filtering, a flat

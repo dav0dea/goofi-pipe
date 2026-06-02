@@ -6,7 +6,7 @@
 
 	type Props = {
 		node: NodeInstanceInfo;
-		/** Show the "Inspector" header + slot dropdown. True in the editor's
+		/** Show the "Metadata" header + slot dropdown. True in the editor's
 		 * slide-in inspector; false in the dedicated Metadata panel, which drives
 		 * the slot from its own header bar via `slot`. */
 		showHeader?: boolean;
@@ -52,7 +52,7 @@
 <section class="panel" class:bare={!showHeader}>
 	{#if showHeader}
 		<header>
-			<span>Inspector</span>
+			<span>Metadata</span>
 			{#if slots.length > 0}
 				<select bind:value={internalSlot}>
 					{#each slots as s}

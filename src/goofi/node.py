@@ -26,13 +26,14 @@ from enum import Enum
 from multiprocessing import Process
 from os.path import dirname, join
 from pathlib import Path
-from threading import Event, Thread
+from threading import Event, Lock, Thread
 from typing import Any, Dict, Optional, Tuple, Union
 
 from goofi import assets
 from goofi.codec import decode_data, decode_message, encode_data_into, encode_message, prepare_encode
 from goofi.data import Data, DataType, to_data
 from goofi.expression import ExpressionEngine
+from goofi import node_log
 from goofi.message import Message, MessageType
 from goofi.node_helpers import InputSlot, NodeRef, OutputSlot
 from goofi.params import InvalidParamError, NodeParams
@@ -118,10 +119,23 @@ class Node(ABC):
         environment: NodeEnv,
         *,
         in_process_with_manager: bool = False,
+        capture_logs: bool = False,
     ) -> None:
         self._alive = True
         self._setup_done = Event()
         self._dirty = False
+        # Last error string broadcast via PROCESSING_ERROR (None = healthy).
+        # Errors are emitted on *every* occurrence so the frontend can count
+        # repeats (console-style); only the cleared (None) state is deduped, so a
+        # healthy node clearing every successful tick doesn't spam the channel.
+        # The very first report is always sent (even None), so the manager learns
+        # the node's initial health — `_error_announced` gates that.
+        self._last_reported_error: Optional[str] = None
+        self._error_announced = False
+        # `_report_error` is called from the setup, processing, and ctrl threads;
+        # this serializes the dedup-check + send + latch so the wire order can't
+        # diverge from `_last_reported_error` (which would strand a stuck error).
+        self._error_lock = Lock()
 
         self.node_id = node_id
         self._input_slots = input_slots
@@ -129,6 +143,11 @@ class Node(ABC):
         self._params = params
         self._environment = environment
         self._in_process_with_manager = in_process_with_manager
+        # stdout/stderr capture → per-node SSE log endpoint (non-headless only).
+        # `_log_endpoint` is advertised to the manager via STATE_UPDATE so the
+        # browser can subscribe peer-to-peer; None when capture is off.
+        self._capture_logs = capture_logs
+        self._log_endpoint: Optional[str] = None
         # Expression engines, keyed by (group, name). Populated lazily when
         # a SET_EXPRESSION ctrl message arrives (or when a saved patch
         # spawns the node with non-None expressions in its param dict).
@@ -148,6 +167,11 @@ class Node(ABC):
         self.status_pub, self._status_notifier = open_publisher(
             status_service_name(node_id), in_process=in_process_with_manager, latest_wins=False
         )
+        # Install stdout/stderr capture and start this process's SSE log server.
+        # Idempotent per process; `register_node` returns the URL the frontend
+        # connects to directly (the manager only relays the address).
+        if capture_logs:
+            self._log_endpoint = node_log.register_node(node_id)
         # Self-trigger pair: in-process pub/sub the messaging thread (or
         # an expression engine running in the processing thread) uses to
         # wake the processing loop without going through input slots.
@@ -207,6 +231,8 @@ class Node(ABC):
     # ------------------------------------------------------------------
 
     def _setup(self) -> None:
+        if self._capture_logs:
+            node_log.bind_thread_node(self.node_id)
         while not self._setup_done.is_set() and self._alive:
             try:
                 self.setup()
@@ -244,13 +270,41 @@ class Node(ABC):
     def _report_error(self, error: Optional[str]) -> None:
         if self._environment == NodeEnv.STANDALONE:
             return
-        try:
-            self.status_pub.send(
-                encode_message(Message(MessageType.PROCESSING_ERROR, {"error": error}))
-            )
-            self._status_notifier.notify()
-        except Exception:
-            pass
+        # Hold the lock across the dedup check, the send, and the latch so
+        # concurrent callers (setup / processing / ctrl threads) can't interleave
+        # such that the wire order diverges from `_last_reported_error` — which
+        # would suppress every later clear and strand a recovered node's error.
+        with self._error_lock:
+            # Dedupe only the cleared (None) state: a healthy node calls this every
+            # successful tick, and re-sending None would flood the channel. Real
+            # errors are always emitted so the frontend can count repeats. The
+            # first report always goes out, announcing the node's initial health.
+            if error is None and self._last_reported_error is None and self._error_announced:
+                return
+            try:
+                self.status_pub.send(
+                    encode_message(Message(MessageType.PROCESSING_ERROR, {"error": error}))
+                )
+                self._status_notifier.notify()
+                # Only latch once the change actually went out, so a failed send
+                # is retried on the next report.
+                self._last_reported_error = error
+                self._error_announced = True
+            except Exception:
+                pass
+
+    def _clear_error_if_healthy(self) -> None:
+        """Clear the reported error after a clean processing tick — UNLESS an
+        expression engine is still failing. An autoeval expression that errors
+        every tick (e.g. ``1/0``) would otherwise flicker error↔clear within a
+        single tick (the expression reports, then a successful ``process()``
+        clears), making the error effectively invisible in the inspector/chip.
+        While an expression is actively failing the node isn't healthy, so the
+        error stays reported."""
+        for engine in self._expressions.values():
+            if engine.last_error:
+                return
+        self._report_error(None)
 
     def _mark_dirty(self) -> None:
         self._dirty = True
@@ -365,6 +419,8 @@ class Node(ABC):
             "category": self.category(),
             "params": self.params.serialize(),
             "output_subscribers": {n: s.subscriber_count for n, s in self.output_slots.items()},
+            # Peer-to-peer SSE log endpoint for this node (None when capture off).
+            "log_endpoint": self._log_endpoint,
         }
         try:
             self.status_pub.send(encode_message(Message(MessageType.STATE_UPDATE, state)))
@@ -378,6 +434,8 @@ class Node(ABC):
     # ------------------------------------------------------------------
 
     def _messaging_loop(self) -> None:
+        if self._capture_logs:
+            node_log.bind_thread_node(self.node_id)
         # The subclass must not override `_setup`.
         if self._setup.__self__.__class__._setup is not Node._setup:
             error = (
@@ -427,6 +485,10 @@ class Node(ABC):
             self.terminate()
         except Exception:
             self._report_error(traceback.format_exc())
+
+        # Flush any pending (un-newlined) log line and drop this node's buffer.
+        if self._capture_logs:
+            node_log.unregister_node(self.node_id)
 
     def _handle_ctrl(self, msg: Message) -> None:
         t = msg.type
@@ -550,6 +612,8 @@ class Node(ABC):
     # ------------------------------------------------------------------
 
     def _processing_loop(self) -> None:
+        if self._capture_logs:
+            node_log.bind_thread_node(self.node_id)
         # Wait for setup() to finish before any processing tick. Polling the
         # Event with a short timeout lets us bail out promptly if the node
         # is terminated mid-setup.
@@ -642,6 +706,8 @@ class Node(ABC):
             if not self.alive:
                 break
             if output_data is None:
+                # A clean tick that produced nothing still clears a stale error.
+                self._clear_error_if_healthy()
                 continue
             if not isinstance(output_data, dict):
                 self._report_error(
@@ -649,11 +715,17 @@ class Node(ABC):
                 )
                 continue
 
+            # Track whether anything went wrong this tick. A fully clean tick
+            # clears a previously-reported error (the node has recovered);
+            # any failure below leaves the error reported as-is.
+            tick_error = False
+
             extra_fields = set(output_data.keys()) - set(self.output_slots.keys())
             if extra_fields:
                 self._report_error(
                     f"Extra output fields: {sorted(extra_fields)}. process() must only return declared slots."
                 )
+                tick_error = True
 
             for slot_name, slot in self.output_slots.items():
                 if slot.subscriber_count == 0:
@@ -665,6 +737,7 @@ class Node(ABC):
                     data = Data(slot.dtype, value[0], value[1])
                 except Exception:
                     self._report_error(traceback.format_exc())
+                    tick_error = True
                     continue
                 # Zero-copy publish: pack the meta dict once via
                 # `prepare_encode`, then for each publisher loan a slice
@@ -676,6 +749,7 @@ class Node(ABC):
                     size, meta_bytes = prepare_encode(data)
                 except Exception:
                     self._report_error(traceback.format_exc())
+                    tick_error = True
                     continue
                 for pub, notif in zip(slot.publishers, slot.notifiers):
                     try:
@@ -685,6 +759,12 @@ class Node(ABC):
                         notif.notify()
                     except Exception:
                         self._report_error(traceback.format_exc())
+                        tick_error = True
+
+            if not tick_error:
+                # Everything published cleanly — clear any prior error (unless an
+                # expression engine is still failing; see _clear_error_if_healthy).
+                self._clear_error_if_healthy()
 
     def _has_no_triggering_inputs(self) -> bool:
         return not any(s.trigger_process and s.subscriber is not None for s in self.input_slots.values())
@@ -752,6 +832,7 @@ class Node(ABC):
         node_id: Optional[str] = None,
         initial_params: Optional[Dict[str, Dict[str, Any]]] = None,
         retries: int = 3,
+        capture_logs: bool = False,
     ) -> NodeRef:
         """Spawn the node in its own process and return a `NodeRef`.
 
@@ -787,7 +868,7 @@ class Node(ABC):
                 proc = Process(
                     target=_run_node_process,
                     name=cls.__name__,
-                    args=(cls, node_id, in_slots, out_slots, params, instance_id),
+                    args=(cls, node_id, in_slots, out_slots, params, instance_id, capture_logs),
                     daemon=True,
                 )
                 proc.start()
@@ -806,6 +887,7 @@ class Node(ABC):
         node_id: Optional[str] = None,
         initial_params: Optional[Dict[str, Dict[str, Any]]] = None,
         init_ref: bool = True,
+        capture_logs: bool = False,
     ) -> Tuple[NodeRef, "Node"]:
         """Instantiate the node in the current process. Returns (ref, node)."""
         if node_id is None:
@@ -822,11 +904,24 @@ class Node(ABC):
                 )
 
         ref = cls._build_ref(node_id, params, in_process=True, process=None, create_initialized=init_ref)
-        node = cls(node_id, in_slots, out_slots, params, NodeEnv.LOCAL, in_process_with_manager=True)
+        node = cls(
+            node_id,
+            in_slots,
+            out_slots,
+            params,
+            NodeEnv.LOCAL,
+            in_process_with_manager=True,
+            capture_logs=capture_logs,
+        )
         return ref, node
 
     @classmethod
-    def _spawn_local(cls, node_id: str, initial_params: Optional[Dict[str, Dict[str, Any]]]) -> "Node":
+    def _spawn_local(
+        cls,
+        node_id: str,
+        initial_params: Optional[Dict[str, Dict[str, Any]]],
+        capture_logs: bool = False,
+    ) -> "Node":
         """Used by `NodeProcess` to create a node inside a shared group process."""
         in_slots, out_slots, params = cls._configure()
         if initial_params is not None:
@@ -838,7 +933,15 @@ class Node(ABC):
         # so ctrl/status still go over iceoryx2 — but data plane between
         # group peers uses thread transport (decided at SUBSCRIBE_INPUT
         # time by the manager).
-        return cls(node_id, in_slots, out_slots, params, NodeEnv.LOCAL, in_process_with_manager=False)
+        return cls(
+            node_id,
+            in_slots,
+            out_slots,
+            params,
+            NodeEnv.LOCAL,
+            in_process_with_manager=False,
+            capture_logs=capture_logs,
+        )
 
     @classmethod
     def _build_ref(
@@ -939,7 +1042,20 @@ def _run_node_process(
     out_slots: Dict[str, OutputSlot],
     params: NodeParams,
     instance_id: str,
+    capture_logs: bool = False,
 ) -> None:
     """Child process main: set the instance id, instantiate the node."""
     set_instance_id(instance_id)
-    cls(node_id, in_slots, out_slots, params, NodeEnv.MULTIPROCESSING, in_process_with_manager=False)
+    if capture_logs:
+        # This process hosts exactly one node — attribute every thread (incl.
+        # ones the node spawns itself) to it by default.
+        node_log.set_process_default_node(node_id)
+    cls(
+        node_id,
+        in_slots,
+        out_slots,
+        params,
+        NodeEnv.MULTIPROCESSING,
+        in_process_with_manager=False,
+        capture_logs=capture_logs,
+    )

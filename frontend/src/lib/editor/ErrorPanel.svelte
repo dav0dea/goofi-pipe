@@ -1,17 +1,17 @@
+<!-- Floating error chip — a small, always-visible badge of how many nodes are
+     *currently* errored (live snapshot from each node's `error` field, driven by
+     the control plane). Click to list them and focus one. Mounted once over the
+     editor (AppShell). The full, scrolling log of stdout/stderr + error
+     tracebacks lives in the Console panel; this is just the at-a-glance
+     indicator, independent of whether a Console is open. -->
 <script lang="ts">
 	import { graph } from '$lib/stores/graph.svelte';
 
-	type Props = {
-		onFocus: (name: string) => void;
-		/** `'inline'` renders the full list inside its parent (param panel).
-		 * `'chip'` shows a small floating badge anchored to the canvas corner
-		 * with a click-to-expand popover. */
-		mode?: 'inline' | 'chip';
-	};
-	const { onFocus, mode = 'inline' }: Props = $props();
+	type Props = { onFocus: (name: string) => void };
+	const { onFocus }: Props = $props();
 
 	const g = graph();
-	const errored = $derived(g.nodes.filter((n) => n.error));
+	const activeNodes = $derived(g.nodes.filter((n) => n.error));
 
 	let chipOpen = $state(false);
 	function focus(name: string): void {
@@ -20,32 +20,17 @@
 	}
 </script>
 
-{#if errored.length > 0 && mode === 'inline'}
-	<section class="panel">
-		<header>
-			<span class="badge">{errored.length}</span>
-			<span>Errors</span>
-		</header>
-		<ul>
-			{#each errored as n (n.name)}
-				<li>
-					<button class="link" onclick={() => focus(n.name)}>{n.name}</button>
-					<pre>{n.error}</pre>
-				</li>
-			{/each}
-		</ul>
-	</section>
-{:else if errored.length > 0 && mode === 'chip'}
+{#if activeNodes.length > 0}
 	<div class="chip-host" data-testid="error-chip">
 		<button class="chip" onclick={() => (chipOpen = !chipOpen)}>
 			<span class="dot"></span>
-			{errored.length}
-			{errored.length === 1 ? 'error' : 'errors'}
+			{activeNodes.length}
+			{activeNodes.length === 1 ? 'error' : 'errors'}
 		</button>
 		{#if chipOpen}
 			<div class="popover">
-				{#each errored as n (n.name)}
-					<button class="row" onclick={() => focus(n.name)}>
+				{#each activeNodes as n (n.name)}
+					<button class="prow" onclick={() => focus(n.name)}>
 						<span class="row-name">{n.name}</span>
 						<span class="row-error">{n.error}</span>
 					</button>
@@ -56,53 +41,6 @@
 {/if}
 
 <style>
-	.panel {
-		padding: 12px;
-		border-top: 1px solid var(--border);
-		background: var(--bg-elev-1);
-	}
-	header {
-		display: flex;
-		align-items: center;
-		gap: 8px;
-		font-weight: 600;
-		color: var(--danger);
-		margin-bottom: 8px;
-	}
-	.badge {
-		background: var(--danger);
-		color: #1a0709;
-		border-radius: 4px;
-		padding: 1px 6px;
-		font-size: 10px;
-	}
-	ul {
-		list-style: none;
-		padding: 0;
-		margin: 0;
-		display: flex;
-		flex-direction: column;
-		gap: 8px;
-	}
-	.link {
-		background: transparent;
-		border: none;
-		color: var(--accent);
-		padding: 0;
-		cursor: pointer;
-		font-family: var(--font-mono);
-		font-size: 11px;
-		text-align: left;
-	}
-	pre {
-		font-family: var(--font-mono);
-		font-size: 10px;
-		color: var(--text-dim);
-		white-space: pre-wrap;
-		margin: 4px 0 0;
-		max-height: 180px;
-		overflow: auto;
-	}
 	.chip-host {
 		position: absolute;
 		left: 12px;
@@ -146,7 +84,7 @@
 		flex-direction: column;
 		gap: 2px;
 	}
-	.row {
+	.prow {
 		display: flex;
 		flex-direction: column;
 		align-items: flex-start;
@@ -160,7 +98,7 @@
 		color: var(--text);
 		font-family: var(--font-mono);
 	}
-	.row:hover {
+	.prow:hover {
 		background: var(--bg-elev-3);
 	}
 	.row-name {
@@ -175,6 +113,7 @@
 		text-overflow: ellipsis;
 		display: -webkit-box;
 		-webkit-line-clamp: 3;
+		line-clamp: 3;
 		-webkit-box-orient: vertical;
 	}
 </style>

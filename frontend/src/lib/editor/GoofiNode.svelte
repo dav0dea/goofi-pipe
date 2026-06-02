@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { Handle, Position, type NodeProps } from '@xyflow/svelte';
-	import { categoryColor, dtypeColor, formatName } from './categoryColor';
+	import { categoryColor, dtypeColor } from './categoryColor';
 	import SlotViewer from '$lib/viewers/SlotViewer.svelte';
 	import { ui } from '$lib/stores/ui.svelte';
 	import { graph } from '$lib/stores/graph.svelte';
@@ -26,16 +26,10 @@
 	const healthColor = $derived(hasError ? 'var(--danger)' : 'var(--success)');
 </script>
 
-<div
-	class="goofi-node"
-	class:selected
-	class:has-error={hasError}
-	style="--accent: {accent};"
-	title={node?.doc ?? ''}
->
+<div class="goofi-node" class:selected class:has-error={hasError} style="--accent: {accent};">
 	<div class="header">
 		<span class="health" style="background: {healthColor};" title={node?.error ?? 'running'}></span>
-		<span class="name" title={formatName(node?.type ?? node?.name)}>{node?.name}</span>
+		<span class="name">{node?.name}</span>
 	</div>
 
 	{#if inputs.length > 0}

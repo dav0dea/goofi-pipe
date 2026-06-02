@@ -11,6 +11,9 @@ from __future__ import annotations
 
 import asyncio
 import importlib.resources as resources
+import os
+import shutil
+import subprocess
 import threading
 from pathlib import Path
 from typing import Optional
@@ -29,8 +32,6 @@ def _resolve_static_root() -> Optional[Path]:
     2. repo `frontend/build` (development checkout)
     3. installed package data `goofi/web` (wheel install)
     """
-    import os
-
     env = os.environ.get("GOOFI_FRONTEND_BUILD")
     if env:
         p = Path(env)
@@ -52,6 +53,99 @@ def _resolve_static_root() -> Optional[Path]:
     except (ModuleNotFoundError, FileNotFoundError):
         pass
     return None
+
+
+# Build inputs whose mtime gates staleness: dirs are walked recursively, files
+# stat'd directly. If any is newer than the emitted bundle, the SPA is rebuilt.
+_BUILD_INPUTS = (
+    "src",
+    "static",
+    "package.json",
+    "package-lock.json",
+    "svelte.config.js",
+    "tsconfig.json",
+    "vite.config.ts",
+)
+
+
+def _frontend_source_dir() -> Optional[Path]:
+    """The repo `frontend/` source tree — only present in a dev checkout.
+
+    Returns None for wheel installs (no source to build) and when
+    `$GOOFI_FRONTEND_BUILD` points the static root somewhere we don't own.
+    """
+    if os.environ.get("GOOFI_FRONTEND_BUILD"):
+        return None
+    frontend = Path(__file__).resolve().parents[3] / "frontend"
+    if (frontend / "package.json").is_file() and (frontend / "src").is_dir():
+        return frontend
+    return None
+
+
+def _newest_input_mtime(frontend: Path) -> float:
+    newest = 0.0
+    for name in _BUILD_INPUTS:
+        p = frontend / name
+        if not p.exists():
+            continue
+        # Stat the input itself *and*, for a dir, every descendant. Including the
+        # dir's own mtime catches a direct child being deleted/renamed — which
+        # rglob alone would miss, since the removed file no longer shows up but
+        # the parent dir's mtime bumps.
+        items = [p, *p.rglob("*")] if p.is_dir() else [p]
+        for item in items:
+            try:
+                newest = max(newest, item.stat().st_mtime)
+            except OSError:
+                pass
+    return newest
+
+
+def _frontend_is_stale(frontend: Path) -> bool:
+    index = frontend / "build" / "index.html"
+    if not index.is_file():
+        return True
+    try:
+        built = index.stat().st_mtime
+    except OSError:
+        return True
+    return _newest_input_mtime(frontend) > built
+
+
+def maybe_build_frontend() -> None:
+    """In a dev checkout, rebuild the SvelteKit SPA when its sources are newer
+    than the emitted bundle, so `goofi-pipe` always serves the current frontend.
+
+    No-op for wheel installs, when the bundle is already fresh, or when opted
+    out via `$GOOFI_NO_FRONTEND_BUILD`. Missing tooling (`npm`/`node_modules`)
+    or a failed build degrade to serving whatever bundle already exists.
+    """
+    if os.environ.get("GOOFI_NO_FRONTEND_BUILD"):
+        return
+    frontend = _frontend_source_dir()
+    if frontend is None or not _frontend_is_stale(frontend):
+        return
+
+    npm = shutil.which("npm")
+    if npm is None:
+        print(
+            "bridge: frontend bundle is stale but `npm` is not on PATH — serving the "
+            "existing build. Run `npm run build` in frontend/ to refresh."
+        )
+        return
+    if not (frontend / "node_modules").is_dir():
+        print(
+            "bridge: frontend bundle is stale but deps are missing — run `npm install` "
+            "in frontend/. Serving the existing build."
+        )
+        return
+
+    print("bridge: frontend sources changed — rebuilding (npm run build)…")
+    try:
+        subprocess.run([npm, "run", "build"], cwd=str(frontend), check=True)
+        print("bridge: frontend rebuilt.")
+    except subprocess.CalledProcessError as e:
+        print(f"bridge: frontend build failed (exit {e.returncode}) — serving the previous build.")
 
 
 class BridgeServer:
@@ -202,6 +296,9 @@ class BridgeServer:
 
 def start_bridge(manager, host: str = "0.0.0.0", port: int = 8000) -> BridgeServer:
     """Spin up the bridge in a daemon thread and return the handle."""
+    # Refresh the served bundle before binding so the printed URL lands on a
+    # current frontend (dev checkout only; no-op once the build is fresh).
+    maybe_build_frontend()
     bridge = BridgeServer(manager, host=host, port=port)
     bridge.start()
     return bridge

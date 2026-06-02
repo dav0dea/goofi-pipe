@@ -22,6 +22,6 @@ export function registerBuiltinPanels(): void {
 		component: EmptyPanel
 	});
 
-	// Application panels (node-editor, parameters, viewer, metadata, errors)
+	// Application panels (node-editor, parameters, viewer, metadata, console)
 	// are registered in lib/panels — see registerAppPanels().
 }

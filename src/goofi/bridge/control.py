@@ -243,17 +243,6 @@ class ControlHub:
                     pass
             await self.broadcast({"event": "graph_replaced", "payload": self._snapshot()})
             return {"ok": True}
-        if op == "list_examples":
-            return {"examples": _list_examples()}
-        if op == "load_example":
-            name = payload["name"]
-            example_dir = Path(__file__).resolve().parents[3] / "examples"
-            target = example_dir / name
-            if not target.is_file():
-                raise FileNotFoundError(f"example '{name}' not found")
-            await self._call_manager(_replace_graph, manager, str(target))
-            await self.broadcast({"event": "graph_replaced", "payload": self._snapshot()})
-            return {"ok": True}
         if op == "ping":
             return {"pong": True}
 
@@ -296,6 +285,11 @@ class ControlHub:
             except Exception:
                 traceback.print_exc()
         return {
+            # Identifies the manager *process*. The browser keeps its tab open
+            # across a backend restart and auto-reconnects; a changed id tells it
+            # this is a fresh session (→ reset layout) rather than a transient
+            # reconnect to the same one (→ keep the layout it already has).
+            "instance_id": manager.instance_id,
             "nodes": nodes,
             "links": list(manager.links),
             "save_path": manager.save_path,
@@ -335,6 +329,9 @@ class ControlHub:
                         "node": name,
                         "params": describe_params(noderef.params),
                         "output_subscribers": message.content.get("output_subscribers", {}),
+                        # Advertise the node's SSE log endpoint as soon as it's known
+                        # (first state push) so the frontend can subscribe peer-to-peer.
+                        "log_endpoint": message.content.get("log_endpoint"),
                     },
                 }
             )
@@ -371,13 +368,3 @@ def _replace_graph(manager, filepath: str) -> None:
         except Exception:
             traceback.print_exc()
     manager.load(filepath)
-
-
-def _list_examples() -> List[Dict[str, str]]:
-    example_dir = Path(__file__).resolve().parents[3] / "examples"
-    if not example_dir.exists():
-        return []
-    out: List[Dict[str, str]] = []
-    for p in sorted(example_dir.glob("*.gfi")):
-        out.append({"name": p.name, "size": p.stat().st_size})
-    return out

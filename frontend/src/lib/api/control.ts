@@ -30,6 +30,10 @@ export interface NodeInstanceInfo {
 	 * the node was just spawned, populated when a save was previously made. */
 	viewers: Record<string, { collapsed?: boolean }>;
 	error: string | null;
+	/** Peer-to-peer SSE log endpoint (`http://127.0.0.1:<port>/<node>`) the node
+	 * advertises via STATE_UPDATE. Null/absent until its first state push, or
+	 * when capture is off (headless). The Console subscribes to it directly. */
+	log_endpoint?: string | null;
 }
 
 export interface LinkInfo {
@@ -67,13 +71,17 @@ export function paramValues(node: NodeInstanceInfo): Record<string, Record<strin
 }
 
 export interface GraphSnapshot {
+	/** Identifies the manager *process*. Changes when the backend is restarted,
+	 * letting the graph store distinguish a fresh session (reset the layout)
+	 * from a transient reconnect to the same one (keep the current layout). */
+	instance_id: string;
 	nodes: NodeInstanceInfo[];
 	links: LinkInfo[];
 	save_path: string | null;
 	unsaved_changes: boolean;
 	/** Opaque frontend workspace-layout blob restored from the .gfi patch.
 	 * Null/absent when the patch carries no layout (older patch, or blank
-	 * start) — the frontend then keeps its localStorage / default layout. */
+	 * start) — a fresh session then falls back to the default layout. */
 	layout?: unknown;
 }
 
@@ -90,6 +98,7 @@ export type ControlEvent =
 				node: string;
 				params: Record<string, Record<string, ParamDescriptor>>;
 				output_subscribers: Record<string, number>;
+				log_endpoint?: string | null;
 			};
 	  }
 	| { event: 'error'; payload: { node: string; error: string | null } }

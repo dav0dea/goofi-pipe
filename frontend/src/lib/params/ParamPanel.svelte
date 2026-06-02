@@ -116,10 +116,6 @@
 			{/if}
 		{/if}
 
-		{#if node.error}
-			<pre class="err" data-testid="param-error">{node.error}</pre>
-		{/if}
-
 		{#if !hideTabs}
 			<div class="tabs" role="tablist" data-testid="param-tabs">
 				{#each groupNames as groupName (groupName)}
@@ -254,19 +250,6 @@
 		padding: 8px 12px;
 		white-space: pre-wrap;
 		border-bottom: 1px solid var(--border);
-	}
-	.err {
-		margin: 0;
-		padding: 8px 12px;
-		font-family: var(--font-mono);
-		font-size: 10px;
-		color: var(--danger);
-		background: color-mix(in srgb, var(--danger) 10%, transparent);
-		border-bottom: 1px solid color-mix(in srgb, var(--danger) 30%, transparent);
-		white-space: pre-wrap;
-		word-break: break-word;
-		max-height: 140px;
-		overflow-y: auto;
 	}
 	.tabs {
 		/* Tab strip — one tab per parameter group. Horizontally scrollable

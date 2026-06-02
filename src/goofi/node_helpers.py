@@ -529,20 +529,20 @@ class NodeProcess:
     bootstrapping new nodes into the group.
     """
 
-    def __init__(self, name: str, instance_id: str):
+    def __init__(self, name: str, instance_id: str, capture_logs: bool = False):
         self.name = name
         self.instance_id = instance_id
         self.conn, recv = Pipe()
         self.proc = Process(
             target=self._run,
             name=name,
-            args=(recv, instance_id),
+            args=(recv, instance_id, capture_logs),
             daemon=True,
         )
         self.proc.start()
 
     @staticmethod
-    def _run(conn: _ConnectionBase, instance_id: str):
+    def _run(conn: _ConnectionBase, instance_id: str, capture_logs: bool = False):
         # In the child, propagate the instance id so service names match.
         from goofi.transport import set_instance_id
 
@@ -557,7 +557,9 @@ class NodeProcess:
                 break
             cls, node_id, initial_params = payload
             try:
-                node = cls._spawn_local(node_id=node_id, initial_params=initial_params)
+                node = cls._spawn_local(
+                    node_id=node_id, initial_params=initial_params, capture_logs=capture_logs
+                )
                 nodes.append(node)
                 conn.send(("ok", node_id))
             except Exception:
@@ -594,7 +596,8 @@ class NodeProcessRegistry:
     def get(self, name: str, instance_id: str) -> NodeProcess:
         ng = _process_groups.get(name)
         if ng is None:
-            ng = NodeProcess(name, instance_id)
+            # The host process captures node stdout/stderr unless headless.
+            ng = NodeProcess(name, instance_id, capture_logs=not type(self).headless)
             _process_groups[name] = ng
         return ng
 

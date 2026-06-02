@@ -94,6 +94,9 @@ def describe_node_instance(name: str, ref: NodeRef) -> Dict[str, Any]:
         # The frontend uses this to restore expand state on patch load.
         "viewers": dict(gk.get("viewers") or {}),
         "error": ref.last_error,
+        # Peer-to-peer SSE log endpoint the node advertises via STATE_UPDATE.
+        # None until the node's first state push (or when capture is off).
+        "log_endpoint": (ref.serialized_state or {}).get("log_endpoint"),
     }
 
 

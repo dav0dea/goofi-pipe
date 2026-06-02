@@ -16,6 +16,8 @@ import {
 	type NodeTypeInfo
 } from '$lib/api/control';
 import { ui } from './ui.svelte';
+import { consoleStore } from './console.svelte';
+import { selection } from './selection.svelte';
 import { workspace } from '$lib/workspace/workspace.svelte';
 
 class GraphStore {
@@ -26,7 +28,19 @@ class GraphStore {
 	connected = $state(false);
 	hadHello = $state(false);
 
+	/** Bumps on every *wholesale* graph load (hello / graph_replaced), never on
+	 * incremental node add/remove. Editor panels watch it to fit the view to a
+	 * freshly-loaded patch — without auto-fitting when nodes are placed one by
+	 * one (which is what made the first interactively-placed node jump). */
+	loadEpoch = $state(0);
+
 	nodeTypes = $state<NodeTypeInfo[] | null>(null);
+
+	/** instance_id of the manager process we last hydrated from. A change means
+	 * the backend was restarted under our still-open tab — a fresh session,
+	 * not a transient reconnect — so a layout-less snapshot must reset the
+	 * layout instead of preserving the previous session's arrangement. */
+	private _lastInstanceId: string | null = null;
 
 	constructor() {
 		const ctl = getControl();
@@ -34,7 +48,10 @@ class GraphStore {
 		ctl.on((ev) => this._handle(ev));
 	}
 
-	private _replaceSnapshot(snap: GraphSnapshot): void {
+	/** Apply a wholesale snapshot. Returns whether it came from a *new* backend
+	 * session (changed `instance_id`) — the caller uses that to decide whether to
+	 * re-fit / clear history (a same-session reconnect must leave both alone). */
+	private _replaceSnapshot(snap: GraphSnapshot): boolean {
 		// Drop ui bookkeeping for any node that's about to disappear, then
 		// re-seed viewer-expand state for every node in the new snapshot.
 		for (const old of this.nodes) ui().forget(old.name);
@@ -45,20 +62,52 @@ class GraphStore {
 		this.links = snap.links;
 		this.savePath = snap.save_path;
 		this.unsavedChanges = snap.unsaved_changes;
-		// A patch that carries a workspace layout drives the panel arrangement;
-		// otherwise keep whatever layout the browser already has.
-		if (snap.layout != null) workspace().hydrate(snap.layout);
+
+		// Layout resolution. A snapshot carrying a layout always drives the panel
+		// arrangement (a patch loaded from disk, or the manager echoing what we
+		// pushed). A layout-less snapshot is ambiguous: from a *new* backend it
+		// means "blank session" (reset to default); from the *same* backend it's
+		// a transient reconnect whose layout already matches ours (keep it).
+		const freshSession = snap.instance_id !== this._lastInstanceId;
+		this._lastInstanceId = snap.instance_id;
+		if (snap.layout != null) {
+			workspace().hydrate(snap.layout);
+		} else if (freshSession) {
+			workspace().reset();
+		}
+		return freshSession;
+	}
+
+	/** React to a wholesale graph load (a new backend session, or a patch loaded
+	 * via the Load button). Fit the view (loadEpoch) and drop the error-console
+	 * history, which belongs to the graph that just went away — without this it
+	 * would show errors for nodes that no longer exist and could even merge a
+	 * reused node name's count across sessions. */
+	private _onWholesaleLoad(): void {
+		this.loadEpoch += 1;
+		consoleStore().clear();
+		// Drop stale per-panel selection/inspector state: a loaded layout keeps
+		// its saved panel ids, which can collide with ids used earlier this
+		// session and silently apply old state to the new panels. (A transient
+		// same-session reconnect doesn't come here, so its selection survives.)
+		selection().forgetAll();
 	}
 
 	private _handle(ev: ControlEvent): void {
 		switch (ev.event) {
-			case 'hello':
-				this._replaceSnapshot(ev.payload);
+			case 'hello': {
+				const fresh = this._replaceSnapshot(ev.payload);
 				this.hadHello = true;
+				// A reconnect to the *same* backend must not re-fit the view or wipe
+				// the error history; a new backend session (or first connect) should.
+				if (fresh) this._onWholesaleLoad();
 				void this._refreshNodeTypes();
 				break;
+			}
 			case 'graph_replaced':
+				// A patch was loaded/replaced wholesale — always re-fit + reset history.
 				this._replaceSnapshot(ev.payload);
+				this._onWholesaleLoad();
 				break;
 			case 'node_added':
 				// Seed expand state for this node's output slots — from
@@ -77,6 +126,7 @@ class GraphStore {
 					(l) => l.node_in !== ev.payload.name && l.node_out !== ev.payload.name
 				);
 				ui().forget(ev.payload.name);
+				consoleStore().forgetNodeDedup(ev.payload.name);
 				// Empty any Parameters/Viewer/Metadata panel linked to this node.
 				workspace().clearNodeRefs(ev.payload.name);
 				break;
@@ -95,12 +145,23 @@ class GraphStore {
 				break;
 			case 'state_update': {
 				const t = this.nodeByName(ev.payload.node);
-				if (t) t.params = ev.payload.params;
+				if (t) {
+					t.params = ev.payload.params;
+					// The node advertises its SSE log endpoint here; surfacing it lets
+					// the Console subscribe peer-to-peer (see $lib/stores/logStream).
+					if (ev.payload.log_endpoint !== undefined) t.log_endpoint = ev.payload.log_endpoint;
+				}
 				break;
 			}
 			case 'error': {
+				// Live snapshot — drives the node's red border, the floating error
+				// chip, and the inspector's current-error section. Always on, via the
+				// control plane, independent of whether a Console is open.
 				const t = this.nodeByName(ev.payload.node);
 				if (t) t.error = ev.payload.error;
+				// Mirror the active error into the Console as a stderr entry so the
+				// log view is the complete picture (repeats coalesce into one ×N).
+				if (ev.payload.error) consoleStore().ingestError(ev.payload.node, ev.payload.error, Date.now());
 				break;
 			}
 			case 'unsaved_changes':
@@ -110,9 +171,19 @@ class GraphStore {
 				this.savePath = ev.payload.save_path;
 				break;
 			case 'layout':
-				// Layout restored from a patch loaded after this client connected
-				// (e.g. CLI startup load). Null → patch has no layout; keep ours.
-				if (ev.payload.layout != null) workspace().hydrate(ev.payload.layout);
+				// A patch finished loading after we connected — e.g. CLI startup
+				// (`goofi-pipe x.gfi`), whose nodes arrive as node_added events with
+				// no graph_replaced snapshot. Hydrate its layout if any (null → keep
+				// ours), then fit the view to the freshly-loaded graph. No history
+				// reset here: it's the same session, and any load-time errors are
+				// the just-loaded patch's own.
+				if (ev.payload.layout != null) {
+					workspace().hydrate(ev.payload.layout);
+					// New layout's panel ids may collide with ones used earlier
+					// this session — drop stale per-panel state (see _onWholesaleLoad).
+					selection().forgetAll();
+				}
+				this.loadEpoch += 1;
 				break;
 			case 'manager_shutdown':
 				this.connected = false;
@@ -199,14 +270,6 @@ class GraphStore {
 
 	async loadText(content: string): Promise<void> {
 		await getControl().call('load_text', { content });
-	}
-
-	async listExamples(): Promise<{ examples: { name: string; size: number }[] }> {
-		return getControl().call('list_examples');
-	}
-
-	async loadExample(name: string): Promise<void> {
-		await getControl().call('load_example', { name });
 	}
 	// ------------------------------------------------------------------
 	// reads

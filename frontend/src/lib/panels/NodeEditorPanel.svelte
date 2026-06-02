@@ -19,11 +19,13 @@
 		ViewportPortal,
 		type Connection,
 		type Edge,
+		type FitViewOptions,
 		type Node
 	} from '@xyflow/svelte';
 	import GoofiNode from '$lib/editor/GoofiNode.svelte';
 	import AddNodeMenu from '$lib/editor/AddNodeMenu.svelte';
 	import PlacementPreview from '$lib/editor/PlacementPreview.svelte';
+	import FitToGraph from '$lib/editor/FitToGraph.svelte';
 	import {
 		computeSnapDelta,
 		makeBounds,
@@ -40,6 +42,7 @@
 	import { portal } from '$lib/workspace/portal';
 	import { linkKey, type LinkInfo, type NodeTypeInfo } from '$lib/api/control';
 	import { serializeClipboard, parseClipboard, clipToSpecs } from '$lib/editor/clipboard';
+	import { copyText } from '$lib/clipboard';
 	import { registerEditor, unregisterEditor } from './editorCommands';
 	import InspectorOverlay from './InspectorOverlay.svelte';
 	import { onMount } from 'svelte';
@@ -58,6 +61,9 @@
 	// This editor's own selection (independent per panel). The inspector
 	// overlay reads it; standalone panels follow whichever editor is active.
 	const selectedNode = $derived(sel.selectedNode(panelId));
+
+	// Whether this editor's inspector pane is enabled (per-panel; default on).
+	const inspectorOn = $derived(sel.inspectorEnabledFor(panelId));
 
 	$effect(() => {
 		// When this editor becomes the active panel, mark it the active editor
@@ -331,6 +337,10 @@
 
 	const nodeTypes = { goofi: GoofiNode };
 
+	/** Framing for every programmatic fit — the Controls/“F” button (via the
+	 * `fitViewOptions` prop) and the on-load fit in <FitToGraph>. */
+	const FIT_OPTIONS = { maxZoom: 1, padding: 0.18 } satisfies FitViewOptions;
+
 	function onKeydown(e: KeyboardEvent): void {
 		if (!isActive()) return;
 		const tag = (e.target as HTMLElement | null)?.tagName ?? '';
@@ -377,10 +387,8 @@
 		const selNodes = g.nodes.filter((n) => names.has(n.name));
 		if (selNodes.length === 0) return;
 		const links = g.links.filter((l) => names.has(l.node_in) && names.has(l.node_out));
-		try {
-			await navigator.clipboard.writeText(JSON.stringify(serializeClipboard(selNodes, links)));
-		} catch (e) {
-			console.warn('clipboard write failed', e);
+		if (!(await copyText(JSON.stringify(serializeClipboard(selNodes, links))))) {
+			console.warn('clipboard write failed');
 		}
 	}
 
@@ -522,8 +530,7 @@
 							.catch(() => {});
 				}
 			}}
-			fitView
-			fitViewOptions={{ maxZoom: 1, padding: 0.18 }}
+			fitViewOptions={FIT_OPTIONS}
 			minZoom={0.05}
 			maxZoom={4}
 			initialViewport={{ x: 0, y: 0, zoom: 0.85 }}
@@ -532,6 +539,7 @@
 		>
 			<Controls />
 			<MiniMap pannable zoomable />
+			<FitToGraph options={FIT_OPTIONS} />
 			{#if pendingPlacement}
 				<PlacementPreview
 					typeInfo={pendingPlacement.typeInfo}
@@ -604,8 +612,23 @@
 			</div>
 		{/if}
 
+		<!-- Always-visible affordance to toggle this editor's inspector. While the
+		     inspector is open (a node selected) the pane covers this icon — that's
+		     fine; deselecting brings it back into reach. -->
+		<button
+			class="inspector-toggle"
+			class:on={inspectorOn}
+			title={inspectorOn ? 'Hide the inspector' : 'Show the inspector when a node is selected'}
+			aria-label="Toggle inspector"
+			aria-pressed={inspectorOn}
+			data-testid="inspector-toggle"
+			onclick={() => sel.toggleInspectorFor(panelId)}
+		>
+			◧
+		</button>
+
 		<!-- Per-editor selection inspector — slides in within this panel. -->
-		<InspectorOverlay node={selectedNode} onFocus={(name) => sel.selectNodes(panelId, [name])} />
+		<InspectorOverlay node={selectedNode} enabled={inspectorOn} />
 	</div>
 </SvelteFlowProvider>
 
@@ -635,6 +658,42 @@
 	.editor-panel :global(.svelte-flow__minimap) {
 		bottom: 20px;
 		right: 20px;
+	}
+	/* Per-editor inspector affordance, parked top-right. Subtle until hovered so
+	   it doesn't compete with the canvas; only shown while the inspector is off. */
+	.inspector-toggle {
+		position: absolute;
+		top: 10px;
+		right: 10px;
+		z-index: 5;
+		width: 26px;
+		height: 26px;
+		display: grid;
+		place-items: center;
+		padding: 0;
+		font-size: 13px;
+		background: color-mix(in srgb, var(--bg-elev-1) 80%, transparent);
+		border: 1px solid var(--border);
+		border-radius: var(--radius-sm);
+		color: var(--text-faint);
+		opacity: 0.5;
+		cursor: pointer;
+		transition:
+			opacity 100ms ease,
+			color 100ms ease,
+			border-color 100ms ease;
+	}
+	.inspector-toggle:hover {
+		opacity: 1;
+		color: var(--text);
+		border-color: var(--accent);
+	}
+	/* Subtly indicate the inspector is enabled (it's just hidden because nothing
+	   is selected) vs. disabled. */
+	.inspector-toggle.on {
+		opacity: 0.9;
+		color: var(--text);
+		border-color: var(--accent);
 	}
 	.link-ghost {
 		position: fixed;

@@ -209,8 +209,11 @@ class Manager:
 
         Multiprocessing-forbidden nodes always fall back to `create_local()`.
         """
+        capture_logs = not self._headless
         if not self._use_multiprocessing:
-            ref, _ = node_cls.create_local(node_id=node_id, initial_params=params)
+            ref, _ = node_cls.create_local(
+                node_id=node_id, initial_params=params, capture_logs=capture_logs
+            )
             return ref
         if group != node_id:  # explicit group → registry host process
             pg = NodeProcessRegistry().get(group, self._instance_id)
@@ -226,9 +229,13 @@ class Manager:
                     pass
             return node_cls._build_ref(node_id, params_obj, in_process=False, process=None)
         try:
-            return node_cls.create(node_id=node_id, initial_params=params)
+            return node_cls.create(
+                node_id=node_id, initial_params=params, capture_logs=capture_logs
+            )
         except MultiprocessingForbiddenError:
-            ref, _ = node_cls.create_local(node_id=node_id, initial_params=params)
+            ref, _ = node_cls.create_local(
+                node_id=node_id, initial_params=params, capture_logs=capture_logs
+            )
             return ref
 
     @mark_unsaved_changes

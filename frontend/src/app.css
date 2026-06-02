@@ -56,7 +56,7 @@
 	--z-side-panel: 50; /* auto selection inspector overlay (panel content) */
 	--z-chrome: 55; /* splitters + panel corner grips (layout mechanics) */
 	--z-chip: 60; /* floating error chip */
-	--z-menu: 100; /* context menus, header dropdowns, examples popover */
+	--z-menu: 100; /* context menus */
 	--z-addmenu: 110; /* node-editor add-node menu + its capture overlay */
 	--z-drag-ghost: 150; /* live split/join preview while corner-dragging */
 	--z-modal: 200; /* expression editor + other modals */
