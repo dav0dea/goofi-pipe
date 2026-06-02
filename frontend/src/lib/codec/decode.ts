@@ -6,12 +6,12 @@
  *   offset  size  field
  *   ------  ----  ----------------------------------------------
  *   0       4     magic "GOOF"
- *   4       1     version (=1)
+ *   4       1     version (=2)
  *   5       1     dtype tag (0=ARRAY, 1=STRING, 2=TABLE)
- *   6       2     meta_len   (LE u16) — msgpack-encoded meta dict
- *   8       4     body_len   (LE u32)
- *   12      *     meta bytes
- *   12+ml   *     body
+ *   6       4     meta_len   (LE u32) — msgpack-encoded meta dict
+ *   10      4     body_len   (LE u32)
+ *   14      *     meta bytes
+ *   14+ml   *     body
  *
  * ARRAY body:
  *   u8 ndim, u8 dtype_str_len, dtype_str ascii, ndim × u32 shape, raw bytes
@@ -78,13 +78,13 @@ interface DecodeStep {
 function decodeInto(bytes: Uint8Array, view: DataView, off: number): DecodeStep {
 	checkMagic(view, off);
 	const version = view.getUint8(off + 4);
-	if (version !== 1) throw new Error(`Unsupported GOOF version ${version}`);
+	if (version !== 2) throw new Error(`Unsupported GOOF version ${version}`);
 	const dtypeTag = view.getUint8(off + 5);
 	const dtype = DTYPE_TAG[dtypeTag];
 	if (!dtype) throw new Error(`Unknown dtype tag ${dtypeTag}`);
-	const metaLen = view.getUint16(off + 6, true);
-	const bodyLen = view.getUint32(off + 8, true);
-	const headerEnd = off + 12;
+	const metaLen = view.getUint32(off + 6, true);
+	const bodyLen = view.getUint32(off + 10, true);
+	const headerEnd = off + 14;
 	const meta =
 		metaLen > 0
 			? ((): Record<string, unknown> => {

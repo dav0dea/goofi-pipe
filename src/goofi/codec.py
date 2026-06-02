@@ -8,12 +8,16 @@ Wire format
     offset  size  field
     ------  ----  ----------------------------------------------
     0       4     magic "GOOF"
-    4       1     version (=1)
+    4       1     version (=2)
     5       1     dtype tag (1=ARRAY, 2=STRING, 3=TABLE)
-    6       2     meta_len   (LE u16)  — msgpack-encoded meta dict
-    8       4     body_len   (LE u32)
-    12      *     meta bytes (msgpack)
-    12+meta *     body bytes (dtype-specific)
+    6       4     meta_len   (LE u32)  — msgpack-encoded meta dict
+    10      4     body_len   (LE u32)
+    14      *     meta bytes (msgpack)
+    14+meta *     body bytes (dtype-specific)
+
+    meta_len is u32 (not u16): nodes legitimately carry large coordinate
+    arrays in meta — e.g. PSD/FFT store the full frequency axis under
+    `channels["dim<axis>"]`, which exceeds 64 KB at fine resolution.
 
     ARRAY body:
         [u8 ndim][u8 dtype_str_len][dtype_str][ndim × LE u32 shape][raw ndarray bytes]
@@ -43,10 +47,10 @@ import numpy as np
 from goofi.data import Data, DataType
 
 _MAGIC = b"GOOF"
-_VERSION = 1
+_VERSION = 2
 # fixed header — see module docstring
-_HEADER = struct.Struct("<4sBBHI")  # magic, version, dtype, meta_len, body_len
-_HEADER_SIZE = _HEADER.size  # 12
+_HEADER = struct.Struct("<4sBBII")  # magic, version, dtype, meta_len (u32), body_len (u32)
+_HEADER_SIZE = _HEADER.size  # 14
 # ARRAY body sub-header — ndim + dtype_str_len, followed by dtype_str and shape u32s
 _ARRAY_SUBHEADER = struct.Struct("<BB")
 

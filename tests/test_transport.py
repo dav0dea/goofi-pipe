@@ -70,6 +70,18 @@ def test_codec_data_roundtrip(dtype):
         assert isinstance(d2.data["a"], Data)
 
 
+def test_codec_meta_exceeds_16bit():
+    """meta_len is a u32 field: a node can carry a large coordinate array in
+    meta. PSD/FFT store the full frequency axis under channels["dim<axis>"],
+    which exceeds 64 KB at fine resolution — this used to overflow the old u16
+    meta_len with `struct.error: 'H' format requires 0 <= number <= 65535`."""
+    freq = np.linspace(0.0, 22050.0, 55123)  # ~496 KB once msgpack-encoded
+    d = Data(DataType.ARRAY, np.random.rand(55123), {"channels": {"dim0": freq.tolist()}})
+    d2 = decode_data(encode_data(d))
+    assert np.array_equal(d.data, d2.data)
+    assert d2.meta["channels"]["dim0"] == pytest.approx(freq.tolist())
+
+
 @pytest.mark.parametrize(
     "msg",
     [
