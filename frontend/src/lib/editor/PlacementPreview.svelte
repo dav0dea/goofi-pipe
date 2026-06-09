@@ -109,33 +109,39 @@
 		class="ghost"
 		bind:offsetWidth={ghostW}
 		bind:offsetHeight={ghostH}
-		style="transform: translate({snappedX}px, {snappedY}px); --accent: {accent};"
+		style="transform: translate({snappedX}px, {snappedY}px); --accent: {accent}; min-height: calc(var(--node-header) + {Math.max(inputs.length, 1)} * var(--node-u));"
 		data-testid="placement-ghost"
 	>
-		<div class="header">
-			<span class="health"></span>
-			<span class="name">{typeInfo.type}</span>
+		<!-- Mirror of GoofiNode: a clipped surface plus an unclipped pin overlay. -->
+		<div class="surface">
+			<div class="header">
+				<span class="health"></span>
+				<span class="name">{typeInfo.type}</span>
+			</div>
+			{#if outputs.length > 0}
+				<div class="viewers">
+					{#each outputs as [slot, dtype] (slot)}
+						<div class="slot-row" style="--dtype: {dtypeColor(dtype)};">
+							<span class="slot-name">{slot}</span>
+						</div>
+					{/each}
+				</div>
+			{/if}
 		</div>
-		{#if inputs.length > 0}
-			<div class="body">
-				{#each inputs as [slot, dtype] (slot)}
-					<div class="port-row" style="--dtype: {dtypeColor(dtype)};">
-						<span class="pin in"></span>
-						<span class="port-label">{slot}</span>
-					</div>
-				{/each}
-			</div>
-		{/if}
-		{#if outputs.length > 0}
-			<div class="viewers">
-				{#each outputs as [slot, dtype] (slot)}
-					<div class="port-row out" style="--dtype: {dtypeColor(dtype)};">
-						<span class="port-label">{slot}</span>
-						<span class="pin out"></span>
-					</div>
-				{/each}
-			</div>
-		{/if}
+		<div class="ports">
+			{#each inputs as [slot, dtype], i (slot)}
+				<span
+					class="pin in"
+					style="top: calc(1px + var(--node-header) + var(--node-u) * {i + 0.5}); --dtype: {dtypeColor(dtype)};"
+				></span>
+			{/each}
+			{#each outputs as [slot, dtype], i (slot)}
+				<span
+					class="pin out"
+					style="top: calc(1px + var(--node-header) + var(--node-u) * {i + 0.5}); --dtype: {dtypeColor(dtype)};"
+				></span>
+			{/each}
+		</div>
 	</div>
 
 	{#if snap.guides.length > 0}
@@ -172,26 +178,37 @@
 		position: absolute;
 		left: 0;
 		top: 0;
-		min-width: 200px;
-		background: var(--bg-elev-1);
-		border: 1.5px dashed var(--accent);
-		border-radius: var(--radius-md);
+		display: flex;
+		flex-direction: column;
+		width: var(--node-w);
 		color: var(--text);
-		box-shadow: var(--shadow-1);
-		opacity: 0.85;
+		opacity: 0.9;
 		pointer-events: none;
+		font-family: var(--font-mono);
 		/* The ghost is purely visual — all input is handled by the window-level
 		 * listeners in PlacementPreview itself. */
 		user-select: none;
 	}
-	.header {
+	.surface {
+		flex: 1 1 auto;
+		overflow: hidden;
 		display: flex;
-		align-items: baseline;
+		flex-direction: column;
+		background: var(--bg-elev-1);
+		border: 1.5px dashed var(--accent);
+		border-radius: var(--radius-md);
+		box-shadow: var(--shadow-1);
+	}
+	.header {
+		flex: 0 0 auto;
+		height: var(--node-header);
+		box-sizing: border-box;
+		display: flex;
+		align-items: center;
 		gap: 8px;
-		padding: 6px 10px;
+		padding: 0 10px;
 		background: linear-gradient(180deg, color-mix(in srgb, var(--accent) 18%, transparent), transparent);
 		border-bottom: 1px solid var(--border);
-		border-radius: var(--radius-md) var(--radius-md) 0 0;
 	}
 	.health {
 		width: 8px;
@@ -202,7 +219,6 @@
 		box-shadow: 0 0 5px currentColor;
 	}
 	.name {
-		font-family: var(--font-mono);
 		font-weight: 600;
 		font-size: 12px;
 		line-height: normal;
@@ -210,49 +226,43 @@
 		text-overflow: ellipsis;
 		white-space: nowrap;
 	}
-	.body {
-		padding: 6px 8px;
+	.viewers {
 		display: flex;
 		flex-direction: column;
-		align-items: flex-start;
-		gap: 4px;
-		font-size: 11px;
 	}
-	.port-row {
-		position: relative;
-		display: flex;
-		align-items: center;
-		gap: 4px;
-		min-height: 16px;
-		padding: 1px 4px;
-		font-family: var(--font-mono);
-		color: var(--dtype, var(--text));
-	}
-	.port-row.out {
-		justify-content: flex-end;
-	}
-	.pin {
-		width: 8px;
-		height: 8px;
-		border-radius: 50%;
-		background: var(--dtype, var(--bg-elev-3));
-		border: 1px solid var(--dtype, var(--border-strong));
-		flex-shrink: 0;
-	}
-	.pin.in {
-		margin-left: -8px;
-	}
-	.pin.out {
-		margin-right: -8px;
-	}
-	.viewers {
+	.slot-row {
+		height: var(--node-u);
+		box-sizing: border-box;
 		border-top: 1px solid var(--border);
 		display: flex;
-		flex-direction: column;
-		gap: 4px;
-		padding: 6px;
-		background: var(--bg-elev-2);
-		border-radius: 0 0 var(--radius-md) var(--radius-md);
+		align-items: center;
+		justify-content: flex-end;
+		padding: 0 12px 0 8px;
+		font-size: 10px;
+		color: var(--dtype, var(--text-dim));
+	}
+	.viewers .slot-row:first-child {
+		border-top: none;
+	}
+	.ports {
+		position: absolute;
+		inset: 0;
+	}
+	.pin {
+		position: absolute;
+		width: 14px;
+		height: 9px;
+		border-radius: 999px;
+		background: var(--dtype, var(--border-strong));
+		box-shadow: 0 0 0 2px var(--bg-elev-1);
+	}
+	.pin.in {
+		left: 0;
+		transform: translate(-50%, -50%);
+	}
+	.pin.out {
+		right: 0;
+		transform: translate(50%, -50%);
 	}
 	.snap-guides {
 		position: absolute;

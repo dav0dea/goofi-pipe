@@ -19,8 +19,8 @@ export type Guide = { x?: number; y?: number; opacity: number };
 
 export const SNAP_THRESHOLD = 15; // engage snap within this many flow-units
 export const SNAP_RANGE = 45; // start fading in guide hints from this far out
-export const DEFAULT_NODE_W = 240; // fallback before a node has been measured
-export const DEFAULT_NODE_H = 120;
+export const DEFAULT_NODE_W = 233; // fallback before a node has been measured
+export const DEFAULT_NODE_H = 168; // a typical node: header + one open viewer (36 + 7u)
 
 export function makeBounds(x: number, y: number, w: number, h: number): Bounds {
 	return {

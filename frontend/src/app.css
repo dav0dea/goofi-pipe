@@ -39,6 +39,16 @@
 	--dtype-string: #f0c050;
 	--dtype-table: #e08060;
 
+	/* node geometry — one harmonic ladder (Fibonacci/φ). Node width is constant
+	   and every height is a multiple of the slot unit, so snap guides line up.
+	   A collapsed output slot and each input both occupy one --node-u; an open
+	   viewer plot is 233/φ ≈ 144 (a golden rectangle), making an open slot 7u —
+	   i.e. seven collapsed slots stack to one open viewer. */
+	--node-w: 233px; /* standard node width */
+	--node-header: 36px; /* title-bar height (1.5u) */
+	--node-u: 24px; /* slot unit: collapsed slot + input connector pitch */
+	--node-viewer: 144px; /* open viewer plot height */
+
 	--shadow-1: 0 4px 18px rgba(0, 0, 0, 0.45);
 	--shadow-2: 0 12px 36px rgba(0, 0, 0, 0.55);
 
@@ -200,15 +210,41 @@ textarea:focus {
 .svelte-flow__controls-button:hover {
 	background: var(--bg-elev-3) !important;
 }
+/* Connectors — "magnet" pills: a small dtype-coloured capsule sitting on the
+   node border, inside an oversized transparent hit-area so cables are easy to
+   grab. Colour comes from --dtype, set on the handle (or inherited) by the node
+   / slot; the visible pill is a ::before so there's no extra DOM per handle. */
 .svelte-flow__handle {
-	background: var(--bg-elev-3);
-	border: 2px solid var(--border-strong);
-	width: 9px;
-	height: 9px;
+	width: 22px;
+	height: 20px;
+	min-width: 0;
+	min-height: 0;
+	background: transparent;
+	border: 0;
+	border-radius: 0;
 }
-.svelte-flow__handle:hover {
-	background: var(--accent);
-	border-color: var(--accent);
+.svelte-flow__handle::before {
+	content: '';
+	position: absolute;
+	left: 50%;
+	top: 50%;
+	transform: translate(-50%, -50%);
+	width: 14px;
+	height: 9px;
+	border-radius: 999px;
+	background: var(--dtype, var(--border-strong));
+	box-shadow: 0 0 0 2px var(--bg-elev-1);
+	transition:
+		width 90ms ease,
+		height 90ms ease,
+		box-shadow 90ms ease;
+}
+.svelte-flow__handle:hover::before {
+	width: 16px;
+	height: 11px;
+	box-shadow:
+		0 0 0 2px var(--bg-elev-1),
+		0 0 8px var(--dtype, var(--accent));
 }
 .svelte-flow__edge-path {
 	stroke: var(--border-strong);

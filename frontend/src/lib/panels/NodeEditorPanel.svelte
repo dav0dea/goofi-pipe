@@ -441,6 +441,12 @@
 		const match = candidates.find(([, dt]) => dt === seed.dtype);
 		if (!match) return;
 		const [matchedSlot] = match;
+		// Inputs take a single source: replace whatever cable was already feeding
+		// this input. Outputs fan out, so the source side never disconnects.
+		if (seed.side === 'target') {
+			const existing = g.links.filter((l) => l.node_in === seed.node && l.slot_in === seed.slot);
+			for (const l of existing) await g.removeLink(l).catch(() => {});
+		}
 		const link =
 			seed.side === 'source'
 				? { node_out: seed.node, slot_out: seed.slot, node_in: newName, slot_in: matchedSlot }
