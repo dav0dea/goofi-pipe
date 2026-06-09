@@ -48,11 +48,7 @@ const SCHEMA: Record<ViewerKind, SettingGroup[]> = {
 				{ key: 'yMax', label: 'Max', type: 'number', default: 1, step: 0.1, showWhen: { key: 'yAuto', equals: false } }
 			]
 		},
-		{ title: 'Style', settings: [{ key: 'points', label: 'Show points', type: 'toggle', default: false }] },
-		// Single-sample streams (a scalar, or one value per channel) have nothing to
-		// draw as a line on their own, so the line viewer rolls them into a
-		// time-series — this is how many samples of that history it keeps.
-		{ title: 'Scalar stream', settings: [{ key: 'history', label: 'History', type: 'number', default: 256, min: 2, max: 8192, step: 1 }] }
+		{ title: 'Style', settings: [{ key: 'points', label: 'Show points', type: 'toggle', default: false }] }
 	],
 	image: [
 		{ title: 'Color', settings: [{ key: 'colormap', label: 'Colormap', type: 'select', default: 'gray', options: COLORMAPS }] },

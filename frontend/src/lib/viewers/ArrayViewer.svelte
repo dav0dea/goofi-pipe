@@ -17,35 +17,36 @@
 	const yMin = $derived(Number(settings.yMin ?? -1));
 	const yMax = $derived(Number(settings.yMax ?? 1));
 	const showPoints = $derived(Boolean(settings.points));
-	const histLen = $derived(Math.max(2, Math.floor(Number(settings.history ?? 256))));
 
 	// Plain mirrors of the plot-shaping settings (seeded with the schema defaults;
 	// the settings $effect refreshes them from the live values before any data is
 	// drawn). The data path (makePlot / indexAxis) reads ONLY these, never the
 	// reactive $derived above — so pushing a frame never makes the frame effect
-	// depend on a setting, which would re-ingest (double-count) a scalar frame on
-	// the next settings change.
+	// depend on a setting, which would force a redundant rebuild on every change.
 	let mLogX = false;
 	let mLogY = false;
 	let mYAuto = true;
 	let mYMin = -1;
 	let mYMax = 1;
 	let mPoints = false;
-	let mHist = 256;
 
 	let container: HTMLDivElement | null = $state(null);
 	let plot: uPlot | null = null;
 	let resizer: ResizeObserver | null = null;
 	let lastNSeries = 0;
 
-	// Single-sample streams (m === 1: a lone scalar, or N channels with one value
-	// each) have nothing to draw as a line on their own, so we roll each series'
-	// value into a rolling history and plot THAT as a time-series. `scalarMode`
-	// records whether the last frame was such a stream, so a settings rebuild
-	// re-renders the accumulated history instead of re-ingesting (which would
-	// double-count) the last frame.
+	// A size-one array (a single scalar) can't be drawn as a line. Rather than a
+	// misleading scrolling history (which reads as a 1-D array), we draw it as a
+	// vertical bar at x = value on a locked [0,1] y-axis — it slides left/right as
+	// the value changes, unmistakably distinct from an array's line plot. The
+	// value (x) axis uses the cog Y-range when set, else a self-calibrating span
+	// from the values seen so far. `plotIsScalar` tracks the plot's current build
+	// so we only rebuild when switching between the two modes.
 	let scalarMode = false;
-	let scalarHist: number[][] = [];
+	let plotIsScalar = false;
+	let lastScalar = 0;
+	let scalarMin = Infinity;
+	let scalarMax = -Infinity;
 
 	// Reused x-index array, rebuilt only when the sample count (or base) changes.
 	// uPlot keeps a reference to its data, so a stable index avoids allocating a
@@ -134,6 +135,18 @@
 		ctx.fillStyle = 'rgba(208, 208, 208, 0.55)';
 		const pad = 4 * r;
 
+		if (scalarMode) {
+			// Only the value (x) range is meaningful — y is the locked [0,1] bar
+			// height. Label the value span at the bottom corners.
+			ctx.textBaseline = 'bottom';
+			ctx.textAlign = 'left';
+			ctx.fillText(fmtTick(xMin), left + pad, bottom - pad);
+			ctx.textAlign = 'right';
+			ctx.fillText(fmtTick(xMax), right - pad, bottom - pad);
+			ctx.restore();
+			return;
+		}
+
 		// y-axis: max at top-left, min at bottom-left
 		ctx.textAlign = 'left';
 		ctx.textBaseline = 'top';
@@ -152,6 +165,7 @@
 	function makePlot(width: number, height: number, nSeries: number): void {
 		plot?.destroy();
 		lastNSeries = nSeries;
+		plotIsScalar = scalarMode;
 		// `size: 0` reclaims the axis margin so the canvas plot area fills
 		// the viewer body. Grid stays via a thin transparent grid stroke.
 		// Tick text is painted inside the canvas via the `draw` hook.
@@ -167,20 +181,31 @@
 		// uPlot.Scale.distr: 1 = linear, 3 = log10. The x index is 1-based under
 		// log-x (see indexAxis) so no x is <= 0; on log-y, uPlot simply skips any
 		// non-positive samples (gaps) rather than collapsing the scale.
+		// Scalar mode flips the axes' roles: the single value lives on x (so the
+		// bar slides), and y is locked to [0,1] just to draw a full-height bar.
+		const scales: uPlot.Options['scales'] = scalarMode
+			? {
+					x: { time: false, range: () => scalarXRange() },
+					y: { auto: false, range: [0, 1] }
+				}
+			: {
+					x: { time: false, distr: mLogX ? 3 : 1 },
+					// Manual Y range (from the cog menu) pins the scale; otherwise
+					// uPlot auto-fits to the data.
+					y: mYAuto
+						? { auto: true, distr: mLogY ? 3 : 1 }
+						: { auto: false, distr: mLogY ? 3 : 1, range: [mYMin, mYMax] }
+				};
+		const series: uPlot.Series[] = scalarMode
+			? [{ label: 'x' }, { label: 'v', stroke: PALETTE[0], width: 2, points: { show: false } }]
+			: buildSeries(nSeries);
 		const opts: uPlot.Options = {
 			width: Math.max(60, width),
 			height: Math.max(60, height),
 			padding: [2, 2, 2, 2],
-			series: buildSeries(nSeries),
+			series,
 			axes: [noMarginAxis, noMarginAxis],
-			scales: {
-				x: { time: false, distr: mLogX ? 3 : 1 },
-				// Manual Y range (from the cog menu) pins the scale; otherwise
-				// uPlot auto-fits to the data.
-				y: mYAuto
-					? { auto: true, distr: mLogY ? 3 : 1 }
-					: { auto: false, distr: mLogY ? 3 : 1, range: [mYMin, mYMax] }
-			},
+			scales,
 			cursor: {
 				show: true,
 				drag: { x: false, y: false, setScale: false },
@@ -224,23 +249,62 @@
 			}
 		};
 		if (!container) return;
-		plot = new uPlot(opts, [[]], container);
+		plot = new uPlot(opts, scalarMode ? [[], []] : [[]], container);
 	}
 
-	/** Push aligned data, rebuilding the plot if the series count changed. */
+	/** Push aligned data, rebuilding the plot if the mode or series count changed. */
 	function setSeries(xs: ArrayLike<number>, ySeries: ArrayLike<number>[]): void {
 		if (!plot || !container) return;
-		if (ySeries.length !== plot.series.length - 1) {
+		if (plotIsScalar !== scalarMode || ySeries.length !== plot.series.length - 1) {
 			makePlot(container.clientWidth || 200, container.clientHeight || 120, ySeries.length);
 		}
 		if (!plot) return;
 		plot.setData([xs, ...ySeries] as unknown as uPlot.AlignedData);
 	}
 
+	/** The value (x) axis span: the manual cog Y-range when set, else a
+	 * self-calibrating span from the values seen so far (so the bar visibly
+	 * slides). Degenerate spans get a unit of padding. */
+	function scalarXRange(): [number, number] {
+		if (!mYAuto && isFinite(mYMin) && isFinite(mYMax) && mYMin !== mYMax) {
+			return mYMin < mYMax ? [mYMin, mYMax] : [mYMax, mYMin];
+		}
+		const lo = scalarMin;
+		const hi = scalarMax;
+		if (!isFinite(lo) || !isFinite(hi)) return [lastScalar - 1, lastScalar + 1];
+		if (lo === hi) return [lo - 1, hi + 1];
+		const pad = (hi - lo) * 0.05;
+		return [lo - pad, hi + pad];
+	}
+
+	/** Draw a single scalar as a vertical bar at x = value (two points: y 0→1). */
+	function drawScalar(value: number): void {
+		scalarMode = true;
+		lastScalar = value;
+		if (isFinite(value)) {
+			if (value < scalarMin) scalarMin = value;
+			if (value > scalarMax) scalarMax = value;
+		}
+		if (!plot || !container) return;
+		if (!plotIsScalar) makePlot(container.clientWidth || 200, container.clientHeight || 120, 1);
+		if (!plot) return;
+		plot.setData([[value, value], [0, 1]] as unknown as uPlot.AlignedData);
+	}
+
 	function pushData(arr: ArrayData): void {
 		if (!plot || !container) return;
 		const shape = arr.shape;
 		const flatLen = arr.values.length;
+
+		// A single scalar → vertical bar at x = value (see drawScalar).
+		if (flatLen === 1) {
+			drawScalar(Number(arr.values[0]));
+			return;
+		}
+		scalarMode = false;
+		scalarMin = Infinity;
+		scalarMax = -Infinity;
+
 		// nSeries (channels) × m (samples per channel) from the shape.
 		let nSeries: number;
 		let m: number;
@@ -253,15 +317,6 @@
 		} else {
 			return; // higher-D handled by parent fallback
 		}
-
-		// One sample per series → roll it into a scrolling time-series instead of
-		// trying (and failing) to draw a one-point line.
-		if (m === 1) {
-			ingestScalarFrame(arr, nSeries);
-			return;
-		}
-		scalarMode = false;
-		scalarHist = [];
 
 		// Hand typed arrays straight to uPlot — no per-frame number[] copy. BigInt
 		// dtypes (i8/u8) aren't numbers to uPlot, so only those fall back to a copy.
@@ -287,45 +342,28 @@
 		setSeries(xs, ySeries);
 	}
 
-	/** Append this frame's per-series scalar(s) to the rolling history. */
-	function ingestScalarFrame(arr: ArrayData, nSeries: number): void {
-		scalarMode = true;
-		const v = arr.values as ArrayLike<number>;
-		const isBig = v.length > 0 && typeof v[0] === 'bigint';
-		if (scalarHist.length !== nSeries) scalarHist = Array.from({ length: nSeries }, () => []);
-		for (let s = 0; s < nSeries; s++) {
-			scalarHist[s].push(isBig ? Number(v[s]) : (v[s] as number));
-		}
-		renderScalar();
-	}
-
-	/** Draw the accumulated scalar history (also trims it to the current window). */
-	function renderScalar(): void {
-		if (!plot || scalarHist.length === 0) return;
-		for (const h of scalarHist) if (h.length > mHist) h.splice(0, h.length - mHist);
-		setSeries(indexAxis(scalarHist[0].length), scalarHist);
-	}
-
 	$effect(() => {
 		if (frame) pushData(asArray(frame.data));
 	});
 
 	$effect(() => {
 		// Refresh the plain mirrors from the reactive settings (this read is what
-		// makes the effect re-run on any change), then rebuild the plot.
+		// makes the effect re-run on any change), then re-render with them.
 		mLogX = logX;
 		mLogY = logY;
 		mYAuto = yAuto;
 		mYMin = yMin;
 		mYMax = yMax;
 		mPoints = showPoints;
-		mHist = histLen;
 		if (!plot || !container) return;
-		makePlot(container.clientWidth || 200, container.clientHeight || 120, lastNSeries || 1);
-		// In scalar mode re-render the accumulated history (re-ingesting the last
-		// frame would double-count it); otherwise re-push the current frame.
-		if (scalarMode) renderScalar();
-		else if (frame) pushData(asArray(frame.data));
+		if (scalarMode) {
+			// Y is locked and the value axis reads the live mirrors via the range
+			// function, so a redraw (not a rebuild) picks up the new settings.
+			drawScalar(lastScalar);
+		} else {
+			makePlot(container.clientWidth || 200, container.clientHeight || 120, lastNSeries || 1);
+			if (frame) pushData(asArray(frame.data));
+		}
 	});
 
 	// The live pointer event for the cursor.move hook — captured before uPlot's
