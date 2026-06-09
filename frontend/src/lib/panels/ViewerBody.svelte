@@ -10,6 +10,7 @@
 	import type { DataFrame } from '$lib/codec/decode';
 	import type { ViewerKind } from '$lib/viewers/kind';
 	import ViewerSurface from '$lib/viewers/ViewerSurface.svelte';
+	import { viewerSettings } from '$lib/viewers/viewerSettings.svelte';
 	import { onMount } from 'svelte';
 
 	let {
@@ -21,6 +22,10 @@
 		slotName: string | null;
 		kind: ViewerKind;
 	} = $props();
+
+	// Read the same per-slot settings the canvas viewer uses, so the panel
+	// reflects whatever was set in the slot's cog menu.
+	const settings = $derived(slotName ? viewerSettings(node.name, slotName, kind) : {});
 
 	let frame = $state<DataFrame | null>(null);
 	let visible = $state(false);
@@ -50,7 +55,7 @@
 	{#if !slotName}
 		<div class="placeholder">node has no output slots</div>
 	{:else}
-		<ViewerSurface {frame} {kind} />
+		<ViewerSurface {frame} {kind} {settings} />
 	{/if}
 </div>
 

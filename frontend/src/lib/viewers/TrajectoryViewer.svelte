@@ -1,15 +1,21 @@
 <script lang="ts">
 	import type { DataFrame, ArrayData } from '$lib/codec/decode';
+	import type { SettingsMap } from './viewerSettings.svelte';
 	import { onMount, onDestroy } from 'svelte';
 	import uPlot from 'uplot';
 	import 'uplot/dist/uPlot.min.css';
 
-	type Props = { frame: DataFrame };
-	const { frame }: Props = $props();
+	type Props = { frame: DataFrame; settings?: SettingsMap };
+	const { frame, settings = {} }: Props = $props();
+
+	const pointSize = $derived(Number(settings.pointSize ?? 2));
+	// Auto rescales the view to the data each frame; off freezes the range.
+	const autoRange = $derived(settings.auto !== false);
 
 	let container: HTMLDivElement | null = $state(null);
 	let plot: uPlot | null = null;
 	let resizer: ResizeObserver | null = null;
+	let lastNPairs = 1;
 
 	function asArray(d: DataFrame['data']): ArrayData {
 		return d as ArrayData;
@@ -31,7 +37,7 @@
 				label: `trace ${i}`,
 				stroke: palette[i % palette.length],
 				width: 1,
-				points: { show: true, size: 3, stroke: palette[i % palette.length] }
+				points: { show: pointSize > 0, size: pointSize, stroke: palette[i % palette.length] }
 			});
 		}
 		return out;
@@ -74,6 +80,7 @@
 
 	function makePlot(width: number, height: number, nPairs: number): void {
 		plot?.destroy();
+		lastNPairs = nPairs;
 		if (!container) return;
 		const noMarginAxis: uPlot.Axis = {
 			show: true,
@@ -91,7 +98,7 @@
 				padding: [2, 2, 2, 2],
 				series: buildSeries(nPairs),
 				axes: [noMarginAxis, noMarginAxis],
-				scales: { x: { time: false, auto: true }, y: { auto: true } },
+				scales: { x: { time: false, auto: autoRange }, y: { auto: autoRange } },
 				cursor: { show: false },
 				legend: { show: false },
 				hooks: { draw: [drawCornerTicks] }
@@ -130,6 +137,14 @@
 	}
 
 	$effect(() => {
+		if (frame) pushData(asArray(frame.data));
+	});
+
+	$effect(() => {
+		// Rebuild when point size or auto-range changes.
+		void [pointSize, autoRange];
+		if (!plot || !container) return;
+		makePlot(container.clientWidth || 200, container.clientHeight || 120, lastNPairs);
 		if (frame) pushData(asArray(frame.data));
 	});
 

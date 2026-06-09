@@ -1,20 +1,26 @@
 <script lang="ts">
 	import type { DataFrame, ArrayData } from '$lib/codec/decode';
+	import type { SettingsMap } from './viewerSettings.svelte';
 	import { onMount, onDestroy } from 'svelte';
 	import uPlot from 'uplot';
 	import 'uplot/dist/uPlot.min.css';
 
-	type Props = { frame: DataFrame };
-	const { frame }: Props = $props();
+	type Props = { frame: DataFrame; settings?: SettingsMap };
+	const { frame, settings = {} }: Props = $props();
+
+	// Settings come from the slot's cog menu (persisted per node+slot). Reading
+	// them as derived values means the rebuild effect re-makes the plot when any
+	// of them change.
+	const logX = $derived(Boolean(settings.logX));
+	const logY = $derived(Boolean(settings.logY));
+	const yAuto = $derived(settings.yAuto !== false);
+	const yMin = $derived(Number(settings.yMin ?? -1));
+	const yMax = $derived(Number(settings.yMax ?? 1));
+	const showPoints = $derived(Boolean(settings.points));
 
 	let container: HTMLDivElement | null = $state(null);
 	let plot: uPlot | null = null;
 	let resizer: ResizeObserver | null = null;
-
-	// Per-axis log-scale toggles. Re-makes the plot when flipped so the
-	// scale `distr` switches between linear (1) and log10 (3).
-	let logX = $state(false);
-	let logY = $state(false);
 	let lastNSeries = 0;
 
 	// Reused x-index array (0..m-1), rebuilt only when the sample count changes.
@@ -60,7 +66,7 @@
 				label: `c${i}`,
 				stroke: PALETTE[i % PALETTE.length],
 				width: 1,
-				points: { show: false }
+				points: { show: showPoints, size: 4 }
 			});
 		}
 		return out;
@@ -140,12 +146,29 @@
 			axes: [noMarginAxis, noMarginAxis],
 			scales: {
 				x: { time: false, distr: logX ? 3 : 1 },
-				y: { auto: true, distr: logY ? 3 : 1 }
+				// Manual Y range (from the cog menu) pins the scale; otherwise
+				// uPlot auto-fits to the data.
+				y: yAuto
+					? { auto: true, distr: logY ? 3 : 1 }
+					: { auto: false, distr: logY ? 3 : 1, range: [yMin, yMax] }
 			},
 			cursor: {
 				show: true,
 				drag: { x: false, y: false, setScale: false },
-				points: { show: true, size: 5 }
+				points: { show: true, size: 5 },
+				// The node is CSS-scaled (and re-positioned) by the SvelteFlow zoom,
+				// which uPlot's cached over-rect doesn't track — so the crosshair
+				// drifts. Recompute the position straight from the live pointer event
+				// and the current rect, dividing the scale back out, and ignore the
+				// value uPlot derived from its stale rect.
+				move: (u, left, top) => {
+					const e = lastMove;
+					if (!e) return [left, top];
+					const r = u.over.getBoundingClientRect();
+					const sx = u.over.offsetWidth ? r.width / u.over.offsetWidth : 1;
+					const sy = u.over.offsetHeight ? r.height / u.over.offsetHeight : 1;
+					return [(e.clientX - r.left) / sx, (e.clientY - r.top) / sy];
+				}
 			},
 			legend: { show: false },
 			hooks: {
@@ -223,19 +246,26 @@
 	});
 
 	$effect(() => {
-		// Rebuild whenever the log-scale flags flip. Reading both up front
-		// makes the dependency explicit; using a no-op reference of plot
-		// guards against running before mount.
-		void logX;
-		void logY;
+		// Rebuild whenever any plot-shaping setting changes. Reading them all up
+		// front makes the dependency set explicit.
+		void [logX, logY, yAuto, yMin, yMax, showPoints];
 		if (!plot || !container) return;
 		makePlot(container.clientWidth || 200, container.clientHeight || 120, lastNSeries || 1);
 		if (frame) pushData(asArray(frame.data));
 	});
 
+	// The live pointer event for the cursor.move hook — captured before uPlot's
+	// own (over-bound) handler runs, so move() can recompute the position from
+	// the current rect instead of uPlot's transform-stale one.
+	let lastMove: MouseEvent | null = null;
+	function captureMove(e: MouseEvent): void {
+		lastMove = e;
+	}
+
 	onMount(() => {
 		if (!container) return;
 		makePlot(container.clientWidth || 200, container.clientHeight || 120, 1);
+		container.addEventListener('mousemove', captureMove, true);
 		resizer = new ResizeObserver(() => {
 			if (!container || !plot) return;
 			plot.setSize({ width: container.clientWidth, height: container.clientHeight });
@@ -244,6 +274,7 @@
 	});
 
 	onDestroy(() => {
+		container?.removeEventListener('mousemove', captureMove, true);
 		resizer?.disconnect();
 		plot?.destroy();
 		plot = null;
@@ -251,32 +282,6 @@
 </script>
 
 <div class="container" bind:this={container}>
-	<div class="scale-toggles" role="group" aria-label="scale toggles">
-		<button
-			class="scale-btn"
-			class:on={logX}
-			onclick={(e) => {
-				e.stopPropagation();
-				logX = !logX;
-			}}
-			title="toggle log scale on x"
-			data-testid="log-x-toggle"
-		>
-			log x
-		</button>
-		<button
-			class="scale-btn"
-			class:on={logY}
-			onclick={(e) => {
-				e.stopPropagation();
-				logY = !logY;
-			}}
-			title="toggle log scale on y"
-			data-testid="log-y-toggle"
-		>
-			log y
-		</button>
-	</div>
 	{#if cursorIdx !== null && cursorValues.length > 0}
 		<div class="cursor-chip" data-testid="cursor-chip">
 			<span class="cursor-x">x={cursorXValue !== null ? fmtTick(cursorXValue) : '—'}</span>
@@ -299,48 +304,6 @@
 	}
 	:global(.uplot, .uplot *, .uplot *::before, .uplot *::after) {
 		font-family: var(--font-mono);
-	}
-	.scale-toggles {
-		/* Sits in the top-right of the plot area; pointer-events on the
-		   buttons themselves so the rest of the canvas remains hoverable
-		   for the uPlot cursor. */
-		position: absolute;
-		top: 4px;
-		right: 4px;
-		display: flex;
-		gap: 3px;
-		z-index: 2;
-		pointer-events: none;
-	}
-	.scale-btn {
-		pointer-events: auto;
-		font-family: var(--font-mono);
-		font-size: 9px;
-		letter-spacing: 0.04em;
-		padding: 1px 5px;
-		border: 1px solid color-mix(in srgb, var(--text-faint) 30%, transparent);
-		background: color-mix(in srgb, var(--bg) 60%, transparent);
-		color: var(--text-faint);
-		border-radius: 3px;
-		cursor: pointer;
-		transition:
-			background 80ms ease,
-			color 80ms ease,
-			border-color 80ms ease;
-		opacity: 0;
-	}
-	.container:hover .scale-btn,
-	.scale-btn.on {
-		opacity: 1;
-	}
-	.scale-btn:hover {
-		color: var(--text);
-		border-color: var(--accent);
-	}
-	.scale-btn.on {
-		background: color-mix(in srgb, var(--accent) 25%, transparent);
-		color: var(--accent);
-		border-color: var(--accent);
 	}
 	.cursor-chip {
 		/* Bottom-center: corners are taken by the min/max corner ticks

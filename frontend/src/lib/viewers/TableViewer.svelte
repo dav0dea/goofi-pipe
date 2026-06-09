@@ -1,17 +1,23 @@
 <script lang="ts">
 	import type { DataFrame } from '$lib/codec/decode';
+	import type { SettingsMap } from './viewerSettings.svelte';
 
-	type Props = { frame: DataFrame };
-	const { frame }: Props = $props();
+	type Props = { frame: DataFrame; settings?: SettingsMap };
+	const { frame, settings = {} }: Props = $props();
 
+	const decimals = $derived(Math.max(0, Math.min(10, Number(settings.decimals ?? 3))));
 	const table = $derived(frame.data as Record<string, DataFrame>);
+
+	function fmtNum(n: number): string {
+		return Number.isFinite(n) ? n.toFixed(decimals) : String(n);
+	}
 
 	function summarize(v: DataFrame): string {
 		if (v.dtype === 'STRING') return String(v.data).slice(0, 120);
 		if (v.dtype === 'TABLE') return `{${Object.keys(v.data as object).length} fields}`;
 		const arr = v.data as { shape: number[]; values: ArrayLike<number> };
 		if (arr.shape.length === 0 || (arr.shape.length === 1 && arr.shape[0] === 1)) {
-			return String(Number(arr.values[0]));
+			return fmtNum(Number(arr.values[0]));
 		}
 		return `array[${arr.shape.join('×')}]`;
 	}

@@ -25,6 +25,7 @@
   "dependencies": {
     "@msgpack/msgpack": "^3.0.0-beta3",
     "@xyflow/svelte": "^1.0.0",
+    "marked": "^18.0.5",
     "uplot": "^1.6.31"
   }
 }

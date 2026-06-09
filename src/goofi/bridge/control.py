@@ -199,6 +199,15 @@ class ControlHub:
             manager.unsaved_changes = True
             await self.broadcast({"event": "node_moved", "payload": {"name": name, "pos": list(pos)}})
             return {"ok": True}
+        if op == "set_node_viewers":
+            # Per-output-slot view state (collapsed / kind / settings) the browser
+            # keeps in sync so it round-trips into the .gfi on save. Soft UI state,
+            # like the workspace layout, so it deliberately does not mark unsaved.
+            ref = manager.nodes[payload["node"]]
+            kwargs = dict(ref.gui_kwargs or {})
+            kwargs["viewers"] = payload.get("viewers") or {}
+            ref.gui_kwargs = kwargs
+            return {"ok": True}
         if op == "set_layout":
             # The browser pushes its workspace layout into the running patch so
             # it survives reloads and lands in the .gfi on save. Layout is soft

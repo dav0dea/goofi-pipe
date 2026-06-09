@@ -19,6 +19,9 @@ import { ui } from './ui.svelte';
 import { consoleStore } from './console.svelte';
 import { selection } from './selection.svelte';
 import { workspace } from '$lib/workspace/workspace.svelte';
+import { seedViewerKind, forgetViewerKinds, viewerKind } from '$lib/viewers/viewerState.svelte';
+import { seedViewerSettings, forgetViewerSettings, rawViewerSettings, type SettingsMap } from '$lib/viewers/viewerSettings.svelte';
+import type { ViewerKind } from '$lib/viewers/kind';
 
 class GraphStore {
 	nodes = $state<NodeInstanceInfo[]>([]);
@@ -53,11 +56,13 @@ class GraphStore {
 	 * re-fit / clear history (a same-session reconnect must leave both alone). */
 	private _replaceSnapshot(snap: GraphSnapshot): boolean {
 		// Drop ui bookkeeping for any node that's about to disappear, then
-		// re-seed viewer-expand state for every node in the new snapshot.
-		for (const old of this.nodes) ui().forget(old.name);
-		for (const n of snap.nodes) {
-			ui().seedNodeViewers(n.name, Object.keys(n.output_slots), n.viewers);
+		// re-seed viewer state (collapse / kind / settings) for every node.
+		for (const old of this.nodes) {
+			ui().forget(old.name);
+			forgetViewerKinds(old.name);
+			forgetViewerSettings(old.name);
 		}
+		for (const n of snap.nodes) this._seedNodeViewerState(n);
 		this.nodes = snap.nodes;
 		this.links = snap.links;
 		this.savePath = snap.save_path;
@@ -93,6 +98,43 @@ class GraphStore {
 		selection().forgetAll();
 	}
 
+	/** Seed collapse + kind + settings for a node's slots from its (possibly
+	 * restored) `viewers` map. */
+	private _seedNodeViewerState(node: NodeInstanceInfo): void {
+		const slots = Object.keys(node.output_slots);
+		ui().seedNodeViewers(node.name, slots, node.viewers);
+		for (const slot of slots) {
+			const v = node.viewers?.[slot];
+			seedViewerKind(node.name, slot, v?.kind as ViewerKind | undefined);
+			seedViewerSettings(node.name, slot, v?.settings as SettingsMap | undefined);
+		}
+	}
+
+	private _viewerPushTimers = new Map<string, ReturnType<typeof setTimeout>>();
+	/** Debounced push of a node's full viewer state (collapse / kind / settings)
+	 * to the backend, so it round-trips into the .gfi on save. Soft UI state — the
+	 * bridge op deliberately doesn't mark the patch unsaved. */
+	pushNodeViewers(node: string): void {
+		clearTimeout(this._viewerPushTimers.get(node));
+		this._viewerPushTimers.set(
+			node,
+			setTimeout(() => {
+				this._viewerPushTimers.delete(node);
+				const n = this.nodeByName(node);
+				if (!n) return;
+				const viewers: Record<string, { collapsed: boolean; kind: string; settings: SettingsMap }> = {};
+				for (const slot of Object.keys(n.output_slots)) {
+					viewers[slot] = {
+						collapsed: !ui().isSlotExpanded(node, slot),
+						kind: viewerKind(node, slot, n.output_slots[slot]),
+						settings: rawViewerSettings(node, slot)
+					};
+				}
+				void getControl().call('set_node_viewers', { node, viewers }).catch(() => {});
+			}, 250)
+		);
+	}
+
 	private _handle(ev: ControlEvent): void {
 		switch (ev.event) {
 			case 'hello': {
@@ -110,14 +152,9 @@ class GraphStore {
 				this._onWholesaleLoad();
 				break;
 			case 'node_added':
-				// Seed expand state for this node's output slots — from
-				// the saved patch (`viewers`) if present, otherwise from
-				// the default policy in ui.seedNodeViewers.
-				ui().seedNodeViewers(
-					ev.payload.name,
-					Object.keys(ev.payload.output_slots),
-					ev.payload.viewers
-				);
+				// Seed view state for this node's output slots — from the saved
+				// patch (`viewers`) if present, else the defaults in the stores.
+				this._seedNodeViewerState(ev.payload);
 				this.nodes = [...this.nodes.filter((n) => n.name !== ev.payload.name), ev.payload];
 				break;
 			case 'node_removed':
@@ -126,6 +163,8 @@ class GraphStore {
 					(l) => l.node_in !== ev.payload.name && l.node_out !== ev.payload.name
 				);
 				ui().forget(ev.payload.name);
+				forgetViewerKinds(ev.payload.name);
+				forgetViewerSettings(ev.payload.name);
 				consoleStore().forgetNodeDedup(ev.payload.name);
 				// Empty any Parameters/Viewer/Metadata panel linked to this node.
 				workspace().clearNodeRefs(ev.payload.name);

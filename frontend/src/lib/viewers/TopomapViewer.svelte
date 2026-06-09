@@ -1,5 +1,7 @@
 <script lang="ts">
 	import type { DataFrame, ArrayData } from '$lib/codec/decode';
+	import type { SettingsMap } from './viewerSettings.svelte';
+	import { makeLUT } from './colormaps';
 	import { EEG_LAYOUT } from './eegLayout';
 	import {
 		buildLayout,
@@ -11,8 +13,14 @@
 	} from './topomapInterp';
 	import { onMount, onDestroy } from 'svelte';
 
-	type Props = { frame: DataFrame };
-	const { frame }: Props = $props();
+	type Props = { frame: DataFrame; settings?: SettingsMap };
+	const { frame, settings = {} }: Props = $props();
+
+	const colormap = $derived(String(settings.colormap ?? 'coolwarm'));
+	const autoRange = $derived(settings.auto !== false);
+	const vmin = $derived(Number(settings.vmin ?? -1));
+	const vmax = $derived(Number(settings.vmax ?? 1));
+	const contours = $derived(Boolean(settings.contours));
 
 	let canvas: HTMLCanvasElement | null = $state(null);
 	let resizer: ResizeObserver | null = null;
@@ -27,49 +35,15 @@
 		return d as ArrayData;
 	}
 
-	// 17-point piecewise-linear approximation of matplotlib's `coolwarm` sampled
-	// at t = 0, 1/16, …, 1. Visually matches the real cmap; the 256-entry LUT
-	// below is built at module init from these control points.
-	const COOLWARM_STOPS: ReadonlyArray<readonly [number, number, number]> = [
-		[59, 76, 192],
-		[78, 104, 216],
-		[98, 130, 234],
-		[119, 154, 247],
-		[141, 176, 254],
-		[163, 194, 254],
-		[185, 208, 249],
-		[204, 217, 237],
-		[221, 220, 220],
-		[236, 211, 197],
-		[245, 196, 172],
-		[247, 176, 147],
-		[244, 152, 122],
-		[235, 125, 98],
-		[221, 95, 75],
-		[202, 59, 55],
-		[180, 4, 38]
-	];
-
-	const COOLWARM_LUT = (() => {
-		const lut = new Uint8Array(256 * 3);
-		const segments = COOLWARM_STOPS.length - 1;
-		for (let i = 0; i < 256; i++) {
-			const t = (i / 255) * segments;
-			const lo = Math.min(segments - 1, Math.floor(t));
-			const f = t - lo;
-			const a = COOLWARM_STOPS[lo];
-			const b = COOLWARM_STOPS[lo + 1];
-			lut[i * 3 + 0] = Math.round(a[0] + (b[0] - a[0]) * f);
-			lut[i * 3 + 1] = Math.round(a[1] + (b[1] - a[1]) * f);
-			lut[i * 3 + 2] = Math.round(a[2] + (b[2] - a[2]) * f);
+	// The active colormap LUT, rebuilt only when the colormap setting changes.
+	let lut = makeLUT('coolwarm');
+	let lutName = 'coolwarm';
+	function lutFor(name: string): Uint8Array {
+		if (name !== lutName) {
+			lut = makeLUT(name);
+			lutName = name;
 		}
 		return lut;
-	})();
-
-	function coolwarmIndex(v: number): number {
-		// Map v ∈ [-1, 1] (clamped) to LUT index 0..255.
-		const t = v <= -1 ? 0 : v >= 1 ? 1 : (v + 1) * 0.5;
-		return (t * 255) | 0;
 	}
 
 	function drawMessage(ctx: CanvasRenderingContext2D, w: number, h: number, msg: string): void {
@@ -175,13 +149,36 @@
 		data.fill(0);
 		const offsets = pixelCache.pixelByteOffsets;
 		const count = pixelCache.count;
-		const lut = COOLWARM_LUT;
+		const L = lutFor(colormap);
+
+		// Value range: scanned from the field when auto, else the manual [vmin,
+		// vmax]. Contours posterize the normalized value into bands so their
+		// boundaries read as iso-lines.
+		let lo = vmin;
+		let hi = vmax;
+		if (autoRange) {
+			lo = Infinity;
+			hi = -Infinity;
+			for (let p = 0; p < count; p++) {
+				const v = field[p];
+				if (v < lo) lo = v;
+				if (v > hi) hi = v;
+			}
+			if (!(hi > lo)) {
+				lo = -1;
+				hi = 1;
+			}
+		}
+		const span = hi - lo || 1;
 		for (let p = 0; p < count; p++) {
 			const off = offsets[p];
-			const idx = coolwarmIndex(field[p]) * 3;
-			data[off] = lut[idx];
-			data[off + 1] = lut[idx + 1];
-			data[off + 2] = lut[idx + 2];
+			let t = (field[p] - lo) / span;
+			t = t < 0 ? 0 : t > 1 ? 1 : t;
+			if (contours) t = Math.round(t * 10) / 10;
+			const idx = ((t * 255) | 0) * 3;
+			data[off] = L[idx];
+			data[off + 1] = L[idx + 1];
+			data[off + 2] = L[idx + 2];
 			data[off + 3] = 255;
 		}
 		ctx.putImageData(imageData, 0, 0);
@@ -189,6 +186,8 @@
 	}
 
 	$effect(() => {
+		// Repaint on a new frame or any colormap / range / contour change.
+		void [colormap, autoRange, vmin, vmax, contours];
 		if (!frame || !canvas) return;
 		const arr = asArray(frame.data);
 		const channels = ((frame.meta?.channels as { dim0?: string[] }) ?? {}).dim0 ?? [];

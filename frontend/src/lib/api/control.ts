@@ -27,8 +27,10 @@ export interface NodeInstanceInfo {
 	params: Record<string, Record<string, ParamDescriptor>>;
 	pos: [number, number];
 	/** Per-output-slot view state restored from the .gfi patch — empty when
-	 * the node was just spawned, populated when a save was previously made. */
-	viewers: Record<string, { collapsed?: boolean }>;
+	 * the node was just spawned, populated when a save was previously made.
+	 * `kind` is the chosen viewer type; `settings` are that viewer's cog-menu
+	 * overrides. */
+	viewers: Record<string, { collapsed?: boolean; kind?: string; settings?: Record<string, unknown> }>;
 	error: string | null;
 	/** Peer-to-peer SSE log endpoint (`http://127.0.0.1:<port>/<node>`) the node
 	 * advertises via STATE_UPDATE. Null/absent until its first state push, or

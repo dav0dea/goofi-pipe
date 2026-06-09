@@ -35,3 +35,14 @@ export function setViewerKind(node: string, slot: string, kind: ViewerKind): voi
 export function cycleViewerKind(node: string, slot: string, dtype: string): void {
 	setViewerKind(node, slot, cycleKind(viewerKind(node, slot, dtype)));
 }
+
+/** Seed a slot's kind from a restored patch (no-op when absent). */
+export function seedViewerKind(node: string, slot: string, kind: ViewerKind | undefined): void {
+	if (kind) kinds[key(node, slot)] = kind;
+}
+
+/** Drop the stored kinds for a node that no longer exists. */
+export function forgetViewerKinds(node: string): void {
+	const prefix = `${node}|`;
+	for (const k of Object.keys(kinds)) if (k.startsWith(prefix)) delete kinds[k];
+}

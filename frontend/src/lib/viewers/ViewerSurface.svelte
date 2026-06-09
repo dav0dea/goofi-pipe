@@ -11,6 +11,7 @@
 <script lang="ts">
 	import { isArrayFrame, isStringFrame, isTableFrame, type DataFrame } from '$lib/codec/decode';
 	import { isRenderable, type ViewerKind } from './kind';
+	import type { SettingsMap } from './viewerSettings.svelte';
 	import ArrayViewer from './ArrayViewer.svelte';
 	import ImageViewer from './ImageViewer.svelte';
 	import TrajectoryViewer from './TrajectoryViewer.svelte';
@@ -19,7 +20,11 @@
 	import TableViewer from './TableViewer.svelte';
 	import HighDimFallback from './HighDimFallback.svelte';
 
-	let { frame, kind }: { frame: DataFrame | null; kind: ViewerKind } = $props();
+	let {
+		frame,
+		kind,
+		settings = {}
+	}: { frame: DataFrame | null; kind: ViewerKind; settings?: SettingsMap } = $props();
 
 	const arraySpec = $derived(frame && isArrayFrame(frame) ? frame.data : null);
 	const renderable = $derived(isRenderable(kind, arraySpec));
@@ -31,18 +36,18 @@
 	<HighDimFallback {arraySpec} />
 {:else if isArrayFrame(frame)}
 	{#if kind === 'line'}
-		<ArrayViewer {frame} />
+		<ArrayViewer {frame} {settings} />
 	{:else if kind === 'image'}
-		<ImageViewer {frame} />
+		<ImageViewer {frame} {settings} />
 	{:else if kind === 'trajectory'}
-		<TrajectoryViewer {frame} />
+		<TrajectoryViewer {frame} {settings} />
 	{:else if kind === 'topomap'}
-		<TopomapViewer {frame} />
+		<TopomapViewer {frame} {settings} />
 	{/if}
 {:else if isStringFrame(frame)}
-	<StringViewer {frame} />
+	<StringViewer {frame} {settings} />
 {:else if isTableFrame(frame)}
-	<TableViewer {frame} />
+	<TableViewer {frame} {settings} />
 {/if}
 
 <style>
