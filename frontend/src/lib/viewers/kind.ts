@@ -1,34 +1,19 @@
 /**
  * Viewer-kind vocabulary — the single source of truth for which viewer types
- * exist, what a slot defaults to, how the cycle button rotates, and whether a
- * given array shape can be drawn by a given viewer.
+ * exist, which ARRAY kinds the type dropdown offers, and whether a given array
+ * shape can be drawn by a given viewer.
  *
- * Previously this logic was re-implemented (and had drifted) across SlotViewer,
- * ViewerBody, and ViewerPanel; centralizing it also gives the agent surface one
- * place to answer "what can this slot be shown as".
+ * The dtype→default mapping lives in the `viewerKind` store (STRING/TABLE pin to
+ * their dedicated viewers, everything else starts on 'line'); this module just
+ * owns the vocabulary the SlotViewer and ViewerPanel share.
  */
 import type { ArrayData } from '$lib/codec/decode';
 
 /** The viewer types a slot can be rendered with. */
 export type ViewerKind = 'line' | 'image' | 'trajectory' | 'topomap' | 'string' | 'table';
 
-/** ARRAY viewer kinds the cycle button rotates through, in order. */
+/** ARRAY viewer kinds the viewer-type dropdown offers, in order. */
 export const ARRAY_KINDS = ['line', 'image', 'trajectory', 'topomap'] as const;
-
-/** The natural default viewer for a slot of the given dtype. */
-export function defaultKind(dtype: string | null): ViewerKind {
-	if (dtype === 'STRING') return 'string';
-	if (dtype === 'TABLE') return 'table';
-	return 'line';
-}
-
-/** Next ARRAY viewer kind after `kind` (wraps). Non-array kinds are returned
- * unchanged — only ARRAY slots cycle. */
-export function cycleKind(kind: ViewerKind): ViewerKind {
-	const i = ARRAY_KINDS.indexOf(kind as (typeof ARRAY_KINDS)[number]);
-	if (i < 0) return kind;
-	return ARRAY_KINDS[(i + 1) % ARRAY_KINDS.length];
-}
 
 /** Whether an array of the given shape can be drawn by `kind`. A non-array
  * frame (no spec) is always renderable by its own dedicated viewer. */

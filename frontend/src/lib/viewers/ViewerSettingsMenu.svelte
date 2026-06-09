@@ -8,6 +8,7 @@
 	import { viewerSettings, setViewerSetting } from './viewerSettings.svelte';
 	import type { ViewerKind } from './kind';
 	import { portal } from '$lib/workspace/portal';
+	import { graph } from '$lib/stores/graph.svelte';
 
 	let { node, slot, kind }: { node: string; slot: string; kind: ViewerKind } = $props();
 
@@ -39,6 +40,10 @@
 	}
 	function set(key: string, value: SettingValue): void {
 		setViewerSetting(node, slot, key, value);
+		// Persist from the mutation site so panel-driven changes round-trip even
+		// when no canvas SlotViewer is mounted for this slot (debounced; harmless
+		// alongside the SlotViewer effect when one is).
+		graph().pushNodeViewers(node);
 	}
 	function toggleGroup(title: string): void {
 		collapsed = { ...collapsed, [title]: !collapsed[title] };

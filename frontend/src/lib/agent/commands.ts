@@ -64,12 +64,21 @@ export const commands = {
 	fitView: (panelId: string | null = activeEditor()): void => editorFor(panelId)?.fitView(),
 
 	// --- viewers -----------------------------------------------------------
-	setSlotExpanded: (node: string, slot: string, expanded: boolean): void =>
-		ui().setSlotExpanded(node, slot, expanded),
-	setViewerKind: (node: string, slot: string, kind: ViewerKind): void =>
-		setViewerKind(node, slot, kind),
-	setViewerSetting: (node: string, slot: string, key: string, value: boolean | number | string): void =>
-		setViewerSetting(node, slot, key, value),
+	// Each mutator persists the slot's view state (debounced) so an agent-driven
+	// change round-trips into the .gfi the same way a click does, regardless of
+	// whether a canvas SlotViewer happens to be mounted for the slot.
+	setSlotExpanded: (node: string, slot: string, expanded: boolean): void => {
+		ui().setSlotExpanded(node, slot, expanded);
+		graph().pushNodeViewers(node);
+	},
+	setViewerKind: (node: string, slot: string, kind: ViewerKind): void => {
+		setViewerKind(node, slot, kind);
+		graph().pushNodeViewers(node);
+	},
+	setViewerSetting: (node: string, slot: string, key: string, value: boolean | number | string): void => {
+		setViewerSetting(node, slot, key, value);
+		graph().pushNodeViewers(node);
+	},
 
 	// --- panels / layout ---------------------------------------------------
 	bindNodeToPanel: (panelId: string, node: string): void => workspace().linkNodeToPanel(panelId, node),

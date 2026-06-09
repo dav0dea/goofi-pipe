@@ -1,15 +1,11 @@
 <script lang="ts">
-	import { subscribeFrames } from '$lib/api/frames';
-	import type { DataFrame } from '$lib/codec/decode';
-	import ViewerSurface from './ViewerSurface.svelte';
-	import ViewerSettingsMenu from './ViewerSettingsMenu.svelte';
-	import { viewerKind, setViewerKind } from './viewerState.svelte';
-	import { viewerSettings, rawViewerSettings } from './viewerSettings.svelte';
-	import { ARRAY_KINDS, type ViewerKind } from './kind';
+	import ViewerFeed from './ViewerFeed.svelte';
+	import ViewerControls from './ViewerControls.svelte';
+	import { viewerKind } from './viewerState.svelte';
+	import { rawViewerSettings } from './viewerSettings.svelte';
 	import { ui } from '$lib/stores/ui.svelte';
 	import { graph } from '$lib/stores/graph.svelte';
 	import { dtypeColor } from '$lib/editor/categoryColor';
-	import { onMount } from 'svelte';
 
 	type Props = { node: string; slot: string; dtype: string };
 	const { node, slot, dtype }: Props = $props();
@@ -28,11 +24,6 @@
 
 	const kind = $derived(viewerKind(node, slot, dtype));
 	const expanded = $derived(uiStore.isSlotExpanded(node, slot));
-	const settings = $derived(viewerSettings(node, slot, kind));
-
-	let frame = $state<DataFrame | null>(null);
-	let visible = $state(false);
-	let container: HTMLDivElement | null = $state(null);
 
 	function toggleExpanded(e?: Event): void {
 		// Stop the toggle from bubbling to SvelteFlow's node handlers, so
@@ -46,35 +37,11 @@
 		// their own clicks — stopPropagation doesn't preventDefault.
 		e.stopPropagation();
 	}
-	function onKindChange(e: Event): void {
-		e.stopPropagation();
-		setViewerKind(node, slot, (e.currentTarget as HTMLSelectElement).value as ViewerKind);
-	}
-
-	// IntersectionObserver: only subscribe while the viewer is in the
-	// viewport — the data WS opens lazily and tears down when scrolled away.
-	onMount(() => {
-		if (!container) return;
-		const obs = new IntersectionObserver(
-			(entries) => {
-				for (const e of entries) visible = e.isIntersecting;
-			},
-			{ rootMargin: '64px' }
-		);
-		obs.observe(container);
-		return () => obs.disconnect();
-	});
-
-	$effect(() => {
-		frame = null;
-		if (!visible || !expanded) return;
-		const unsub = subscribeFrames(node, slot, (f) => (frame = f));
-		return () => unsub();
-	});
 
 	// Persist view state (collapse / kind / settings) to the backend so it lands
 	// in the .gfi on save. Skips the first run so the seeded-from-patch state
-	// isn't echoed straight back; pushes (debounced) on every later change.
+	// isn't echoed straight back; pushes (debounced) on every later change —
+	// including changes made from the docked panel, which writes the same stores.
 	let settled = false;
 	$effect(() => {
 		const dep = [expanded, kind, JSON.stringify(rawViewerSettings(node, slot))];
@@ -89,10 +56,8 @@
 
 <div
 	class="slot-viewer"
-	class:active={visible}
 	class:collapsed={!expanded}
 	style="--dtype: {dtypeColor(dtype)};"
-	bind:this={container}
 	data-node={node}
 	data-slot={slot}
 >
@@ -106,14 +71,9 @@
 		<button class="tri" class:open={expanded} onclick={toggleExpanded} aria-label="toggle viewer">
 			<svg viewBox="0 0 12 12" aria-hidden="true"><path d="M4 2.5 L8.5 6 L4 9.5 Z" /></svg>
 		</button>
-		{#if expanded && dtype === 'ARRAY'}
-			<select class="kind" value={kind} onchange={onKindChange} onclick={(e) => e.stopPropagation()} title="viewer type">
-				{#each ARRAY_KINDS as k (k)}<option value={k}>{k}</option>{/each}
-			</select>
-		{/if}
 		<span class="hspace"></span>
 		{#if expanded}
-			<ViewerSettingsMenu {node} {slot} {kind} />
+			<ViewerControls {node} {slot} {dtype} />
 		{/if}
 		<span
 			class="slot-name"
@@ -128,9 +88,7 @@
 	</header>
 
 	{#if expanded}
-		<div class="body">
-			<ViewerSurface {frame} {kind} {settings} />
-		</div>
+		<div class="body"><ViewerFeed {node} {slot} {dtype} /></div>
 	{/if}
 </div>
 
@@ -194,28 +152,6 @@
 		fill: var(--text);
 	}
 
-	.kind {
-		appearance: none;
-		font-family: var(--font-mono);
-		font-size: 9px;
-		line-height: 1;
-		text-align: center;
-		text-align-last: center;
-		color: var(--text-dim);
-		background: color-mix(in srgb, var(--bg) 55%, transparent);
-		border: 1px solid var(--border);
-		border-radius: 3px;
-		padding: 2px 4px;
-		cursor: pointer;
-	}
-	.kind:hover {
-		color: var(--text);
-		border-color: var(--accent);
-	}
-	.kind:focus {
-		outline: none;
-		border-color: var(--accent);
-	}
 	.hspace {
 		flex: 1 1 auto;
 	}
