@@ -17,11 +17,21 @@
 	const yMin = $derived(Number(settings.yMin ?? -1));
 	const yMax = $derived(Number(settings.yMax ?? 1));
 	const showPoints = $derived(Boolean(settings.points));
+	const histLen = $derived(Math.max(2, Math.floor(Number(settings.history ?? 256))));
 
 	let container: HTMLDivElement | null = $state(null);
 	let plot: uPlot | null = null;
 	let resizer: ResizeObserver | null = null;
 	let lastNSeries = 0;
+
+	// Single-sample streams (m === 1: a lone scalar, or N channels with one value
+	// each) have nothing to draw as a line on their own, so we roll each series'
+	// value into a rolling history and plot THAT as a time-series. `scalarMode`
+	// records whether the last frame was such a stream, so a settings rebuild
+	// re-renders the accumulated history instead of re-ingesting (which would
+	// double-count) the last frame.
+	let scalarMode = false;
+	let scalarHist: number[][] = [];
 
 	// Reused x-index array (0..m-1), rebuilt only when the sample count changes.
 	// uPlot keeps a reference to its data, so a stable index avoids allocating a
@@ -198,26 +208,54 @@
 		plot = new uPlot(opts, [[]], container);
 	}
 
+	/** Push aligned data, rebuilding the plot if the series count changed. */
+	function setSeries(xs: ArrayLike<number>, ySeries: ArrayLike<number>[]): void {
+		if (!plot || !container) return;
+		if (ySeries.length !== plot.series.length - 1) {
+			makePlot(container.clientWidth || 200, container.clientHeight || 120, ySeries.length);
+		}
+		if (!plot) return;
+		plot.setData([xs, ...ySeries] as unknown as uPlot.AlignedData);
+	}
+
 	function pushData(arr: ArrayData): void {
 		if (!plot || !container) return;
 		const shape = arr.shape;
 		const flatLen = arr.values.length;
+		// nSeries (channels) × m (samples per channel) from the shape.
+		let nSeries: number;
+		let m: number;
+		if (shape.length <= 1) {
+			nSeries = 1;
+			m = flatLen;
+		} else if (shape.length === 2) {
+			nSeries = shape[0];
+			m = shape[1];
+		} else {
+			return; // higher-D handled by parent fallback
+		}
+
+		// One sample per series → roll it into a scrolling time-series instead of
+		// trying (and failing) to draw a one-point line.
+		if (m === 1) {
+			ingestScalarFrame(arr, nSeries);
+			return;
+		}
+		scalarMode = false;
+		scalarHist = [];
+
 		// Hand typed arrays straight to uPlot — no per-frame number[] copy. BigInt
 		// dtypes (i8/u8) aren't numbers to uPlot, so only those fall back to a copy.
 		const v = arr.values as ArrayLike<number> & {
 			subarray?: (start: number, end: number) => ArrayLike<number>;
 		};
 		const isBig = flatLen > 0 && typeof v[0] === 'bigint';
-		let xs: ArrayLike<number>;
-		let ySeries: ArrayLike<number>[];
-		if (shape.length === 0 || shape.length === 1) {
-			xs = indexAxis(flatLen);
-			ySeries = [isBig ? Array.from(v, Number) : v];
-		} else if (shape.length === 2) {
-			const [n, m] = shape;
-			xs = indexAxis(m);
-			ySeries = [];
-			for (let c = 0; c < n; c++) {
+		const xs = indexAxis(m);
+		const ySeries: ArrayLike<number>[] = [];
+		if (nSeries === 1) {
+			ySeries.push(isBig ? Array.from(v, Number) : v);
+		} else {
+			for (let c = 0; c < nSeries; c++) {
 				if (!isBig && v.subarray) {
 					ySeries.push(v.subarray(c * m, (c + 1) * m));
 				} else {
@@ -226,19 +264,27 @@
 					ySeries.push(row);
 				}
 			}
-		} else {
-			return; // higher-D handled by parent fallback
 		}
+		setSeries(xs, ySeries);
+	}
 
-		const expectedSeries = ySeries.length;
-		const currentSeries = plot.series.length - 1;
-		if (expectedSeries !== currentSeries) {
-			const w = container.clientWidth || 200;
-			const h = container.clientHeight || 120;
-			makePlot(w, h, expectedSeries);
+	/** Append this frame's per-series scalar(s) to the rolling history. */
+	function ingestScalarFrame(arr: ArrayData, nSeries: number): void {
+		scalarMode = true;
+		const v = arr.values as ArrayLike<number>;
+		const isBig = v.length > 0 && typeof v[0] === 'bigint';
+		if (scalarHist.length !== nSeries) scalarHist = Array.from({ length: nSeries }, () => []);
+		for (let s = 0; s < nSeries; s++) {
+			scalarHist[s].push(isBig ? Number(v[s]) : (v[s] as number));
 		}
-		if (!plot) return;
-		plot.setData([xs, ...ySeries] as unknown as uPlot.AlignedData);
+		renderScalar();
+	}
+
+	/** Draw the accumulated scalar history (also trims it to the current window). */
+	function renderScalar(): void {
+		if (!plot || scalarHist.length === 0) return;
+		for (const h of scalarHist) if (h.length > histLen) h.splice(0, h.length - histLen);
+		setSeries(indexAxis(scalarHist[0].length), scalarHist);
 	}
 
 	$effect(() => {
@@ -248,10 +294,13 @@
 	$effect(() => {
 		// Rebuild whenever any plot-shaping setting changes. Reading them all up
 		// front makes the dependency set explicit.
-		void [logX, logY, yAuto, yMin, yMax, showPoints];
+		void [logX, logY, yAuto, yMin, yMax, showPoints, histLen];
 		if (!plot || !container) return;
 		makePlot(container.clientWidth || 200, container.clientHeight || 120, lastNSeries || 1);
-		if (frame) pushData(asArray(frame.data));
+		// In scalar mode re-render the accumulated history (re-ingesting the last
+		// frame would double-count it); otherwise re-push the current frame.
+		if (scalarMode) renderScalar();
+		else if (frame) pushData(asArray(frame.data));
 	});
 
 	// The live pointer event for the cursor.move hook — captured before uPlot's
