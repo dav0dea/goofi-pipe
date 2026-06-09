@@ -163,12 +163,36 @@ class _IpcLoan:
         self._sent = True
 
 
+# A removed node only releases its iceoryx2 endpoints as it finishes shutting
+# down, but the manager reuses node names immediately — so a quick remove + re-add
+# of the same name races the new node's publisher/notifier against the old one's,
+# which still holds the single per-service producer slot (max_publishers=1). The
+# old node drops its slot the moment it exits; reclaim any already-dead node and
+# retry until then, bounded so a genuine slot exhaustion still surfaces promptly.
+_ENDPOINT_CREATE_TIMEOUT = 2.0  # seconds
+
+
+def _create_with_reuse_retry(make):
+    deadline = time.monotonic() + _ENDPOINT_CREATE_TIMEOUT
+    while True:
+        try:
+            return make()
+        except Exception as e:
+            if "ExceedsMaxSupported" not in str(e) or time.monotonic() >= deadline:
+                raise
+            try:
+                iox2.Node.try_cleanup_dead_nodes(iox2.ServiceType.Ipc, iox2.config.global_config())
+            except Exception:
+                pass  # best-effort reclaim; the alive old node still frees its slot on exit
+            time.sleep(0.05)
+
+
 class IpcPublisher:
     def __init__(self, name: str, *, latest_wins: bool = True, max_payload: int = DEFAULT_MAX_PAYLOAD) -> None:
         self._name = name
         svc = _open_byte_service(name, latest_wins=latest_wins)
-        self._pub = (
-            svc.publisher_builder()
+        self._pub = _create_with_reuse_retry(
+            lambda: svc.publisher_builder()
             .initial_max_slice_len(max_payload)
             .allocation_strategy(iox2.AllocationStrategy.PowerOfTwo)
             .create()
@@ -229,7 +253,7 @@ class IpcSubscriber:
 class IpcNotifier:
     def __init__(self, name: str) -> None:
         svc = _NodeSingleton.get().service_builder(iox2.ServiceName.new(name)).event().open_or_create()
-        self._notifier = svc.notifier_builder().create()
+        self._notifier = _create_with_reuse_retry(lambda: svc.notifier_builder().create())
 
     def notify(self) -> None:
         self._notifier.notify()
