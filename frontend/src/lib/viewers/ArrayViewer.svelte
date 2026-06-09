@@ -19,6 +19,20 @@
 	const showPoints = $derived(Boolean(settings.points));
 	const histLen = $derived(Math.max(2, Math.floor(Number(settings.history ?? 256))));
 
+	// Plain mirrors of the plot-shaping settings (seeded with the schema defaults;
+	// the settings $effect refreshes them from the live values before any data is
+	// drawn). The data path (makePlot / indexAxis) reads ONLY these, never the
+	// reactive $derived above — so pushing a frame never makes the frame effect
+	// depend on a setting, which would re-ingest (double-count) a scalar frame on
+	// the next settings change.
+	let mLogX = false;
+	let mLogY = false;
+	let mYAuto = true;
+	let mYMin = -1;
+	let mYMax = 1;
+	let mPoints = false;
+	let mHist = 256;
+
 	let container: HTMLDivElement | null = $state(null);
 	let plot: uPlot | null = null;
 	let resizer: ResizeObserver | null = null;
@@ -33,17 +47,22 @@
 	let scalarMode = false;
 	let scalarHist: number[][] = [];
 
-	// Reused x-index array (0..m-1), rebuilt only when the sample count changes.
+	// Reused x-index array, rebuilt only when the sample count (or base) changes.
 	// uPlot keeps a reference to its data, so a stable index avoids allocating a
-	// fresh array every frame.
+	// fresh array every frame. The base is 1 under a log-x scale: log10(0) is
+	// -Infinity, so a 0-based index collapses the whole x-scale and the plot
+	// vanishes — the bug this fixes. Linear x stays 0-based.
 	let xsCache: Float64Array | null = null;
 	let xsLen = -1;
+	let xsBase = -1;
 	function indexAxis(m: number): Float64Array {
-		if (xsLen !== m || !xsCache) {
+		const base = mLogX ? 1 : 0;
+		if (xsLen !== m || xsBase !== base || !xsCache) {
 			const a = new Float64Array(m);
-			for (let i = 0; i < m; i++) a[i] = i;
+			for (let i = 0; i < m; i++) a[i] = i + base;
 			xsCache = a;
 			xsLen = m;
+			xsBase = base;
 		}
 		return xsCache;
 	}
@@ -76,7 +95,7 @@
 				label: `c${i}`,
 				stroke: PALETTE[i % PALETTE.length],
 				width: 1,
-				points: { show: showPoints, size: 4 }
+				points: { show: mPoints, size: 4 }
 			});
 		}
 		return out;
@@ -145,9 +164,9 @@
 			grid: { show: true, stroke: 'rgba(255,255,255,0.05)' },
 			values: () => []
 		};
-		// uPlot.Scale.distr: 1 = linear, 3 = log10. Log scales reject
-		// non-positive values, so we silently clamp via the data path
-		// (filter happens in pushData when logY is on).
+		// uPlot.Scale.distr: 1 = linear, 3 = log10. The x index is 1-based under
+		// log-x (see indexAxis) so no x is <= 0; on log-y, uPlot simply skips any
+		// non-positive samples (gaps) rather than collapsing the scale.
 		const opts: uPlot.Options = {
 			width: Math.max(60, width),
 			height: Math.max(60, height),
@@ -155,12 +174,12 @@
 			series: buildSeries(nSeries),
 			axes: [noMarginAxis, noMarginAxis],
 			scales: {
-				x: { time: false, distr: logX ? 3 : 1 },
+				x: { time: false, distr: mLogX ? 3 : 1 },
 				// Manual Y range (from the cog menu) pins the scale; otherwise
 				// uPlot auto-fits to the data.
-				y: yAuto
-					? { auto: true, distr: logY ? 3 : 1 }
-					: { auto: false, distr: logY ? 3 : 1, range: [yMin, yMax] }
+				y: mYAuto
+					? { auto: true, distr: mLogY ? 3 : 1 }
+					: { auto: false, distr: mLogY ? 3 : 1, range: [mYMin, mYMax] }
 			},
 			cursor: {
 				show: true,
@@ -283,7 +302,7 @@
 	/** Draw the accumulated scalar history (also trims it to the current window). */
 	function renderScalar(): void {
 		if (!plot || scalarHist.length === 0) return;
-		for (const h of scalarHist) if (h.length > histLen) h.splice(0, h.length - histLen);
+		for (const h of scalarHist) if (h.length > mHist) h.splice(0, h.length - mHist);
 		setSeries(indexAxis(scalarHist[0].length), scalarHist);
 	}
 
@@ -292,9 +311,15 @@
 	});
 
 	$effect(() => {
-		// Rebuild whenever any plot-shaping setting changes. Reading them all up
-		// front makes the dependency set explicit.
-		void [logX, logY, yAuto, yMin, yMax, showPoints, histLen];
+		// Refresh the plain mirrors from the reactive settings (this read is what
+		// makes the effect re-run on any change), then rebuild the plot.
+		mLogX = logX;
+		mLogY = logY;
+		mYAuto = yAuto;
+		mYMin = yMin;
+		mYMax = yMax;
+		mPoints = showPoints;
+		mHist = histLen;
 		if (!plot || !container) return;
 		makePlot(container.clientWidth || 200, container.clientHeight || 120, lastNSeries || 1);
 		// In scalar mode re-render the accumulated history (re-ingesting the last
