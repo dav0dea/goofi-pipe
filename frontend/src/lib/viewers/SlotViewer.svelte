@@ -34,12 +34,17 @@
 	let visible = $state(false);
 	let container: HTMLDivElement | null = $state(null);
 
-	function toggleExpanded(): void {
+	function toggleExpanded(e?: Event): void {
+		// Stop the toggle from bubbling to SvelteFlow's node handlers, so
+		// collapsing or expanding a viewer never selects (or grabs) the node.
+		e?.stopPropagation();
 		uiStore.toggleSlotExpanded(node, slot);
 	}
-	function onTriangle(e: MouseEvent): void {
+	function stopSelect(e: Event): void {
+		// SvelteFlow begins node selection/drag on pointerdown; keep that off the
+		// slot header bar. Its children (kind dropdown, cog, slot name) still get
+		// their own clicks — stopPropagation doesn't preventDefault.
 		e.stopPropagation();
-		toggleExpanded();
 	}
 	function onKindChange(e: Event): void {
 		e.stopPropagation();
@@ -91,8 +96,14 @@
 	data-node={node}
 	data-slot={slot}
 >
-	<header onclick={toggleExpanded} role="button" tabindex="0" aria-expanded={expanded}>
-		<button class="tri" class:open={expanded} onclick={onTriangle} aria-label="toggle viewer">
+	<header
+		onclick={toggleExpanded}
+		onpointerdown={stopSelect}
+		role="button"
+		tabindex="0"
+		aria-expanded={expanded}
+	>
+		<button class="tri" class:open={expanded} onclick={toggleExpanded} aria-label="toggle viewer">
 			<svg viewBox="0 0 12 12" aria-hidden="true"><path d="M4 2.5 L8.5 6 L4 9.5 Z" /></svg>
 		</button>
 		{#if expanded && dtype === 'ARRAY'}
