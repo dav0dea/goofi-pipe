@@ -12,7 +12,7 @@
 	import TopBar from '$lib/editor/TopBar.svelte';
 	import ErrorPanel from '$lib/editor/ErrorPanel.svelte';
 	import WorkspaceTabs from '$lib/workspace/WorkspaceTabs.svelte';
-	import WorkspaceView from '$lib/workspace/Workspace.svelte';
+	import WorkspaceView from '$lib/workspace/WorkspaceView.svelte';
 	import { registerBuiltinPanels } from '$lib/workspace/panels';
 	import { registerAppPanels } from '$lib/panels/register';
 	import { editorFor } from '$lib/panels/editorCommands';
