@@ -34,7 +34,7 @@ import yaml
 from goofi.message import MessageType
 from goofi.node import MultiprocessingForbiddenError, Node
 from goofi.node_helpers import NodeProcessRegistry, NodeRef, list_nodes
-from goofi.transport import data_service_name, get_instance_id, set_instance_id
+from goofi.transport import data_service_name, ensure_iox2_runtime_dirs, get_instance_id, set_instance_id
 
 if TYPE_CHECKING:
     from goofi.bridge.server import BridgeServer
@@ -110,6 +110,9 @@ class Manager:
         # on one host without /dev/shm collisions.
         instance_id = f"{os.getpid()}-{uuid.uuid4().hex[:8]}"
         set_instance_id(instance_id)
+        # Create iceoryx2's runtime directory layout before any transport use.
+        # Must precede the cleanup sweep below, which scans those directories.
+        ensure_iox2_runtime_dirs()
         # Sweep any orphan iceoryx2 nodes from previously-crashed runs.
         _cleanup_iceoryx2_shm(instance_id)
         atexit.register(_cleanup_iceoryx2_shm, instance_id)

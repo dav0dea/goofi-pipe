@@ -79,6 +79,37 @@ def self_trigger_service_name(node_name: str) -> str:
 # ---------------------------------------------------------------------------
 
 
+def ensure_iox2_runtime_dirs() -> None:
+    """Ensure iceoryx2's configured runtime directory layout exists.
+
+    iceoryx2 keeps its node/service bookkeeping under ``<root>/nodes`` and
+    ``<root>/services`` (``<root>`` is ``/tmp/iceoryx2`` on POSIX,
+    ``C:\\Temp\\iceoryx2`` on Windows). Pre-creating them is an idempotent
+    initialisation step: where iceoryx2 creates them lazily this is a harmless
+    no-op; where it doesn't, it's required — so no platform branch is needed.
+
+    The latter is the case on Windows (iceoryx2 0.9.1): node creation scans
+    these directories through the POSIX ``opendir`` shim, whose
+    ``FindFirstFileA`` errors on a missing directory instead of treating it as
+    empty the way POSIX does — surfacing as ``NodeCreationFailure:
+    InternalError`` on the first node of a fresh session. Creating the (empty)
+    directories first lets the scan succeed; iceoryx2 still owns everything
+    inside them.
+
+    Paths come from iceoryx2's own config so they stay correct if the root is
+    reconfigured.
+    """
+    try:
+        g = iox2.config.global_config().global_cfg
+        for path in (g.node_dir.to_string(), g.service_dir.to_string()):
+            os.makedirs(path, exist_ok=True)
+    except Exception:
+        # Best-effort: a future iceoryx2 may reshape this config surface. Fall
+        # back to letting iceoryx2 create/fail on its own rather than masking an
+        # unrelated error here.
+        pass
+
+
 class _NodeSingleton:
     _node: ClassVar[object] = None
     _pid: ClassVar[int] = -1
