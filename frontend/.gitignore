@@ -2,6 +2,8 @@ node_modules
 build
 .svelte-kit
 .vite
+# No lockfile: this repo is a recipe, not a frozen build (see .npmrc).
+package-lock.json
 .env
 .env.*
 !.env.example
