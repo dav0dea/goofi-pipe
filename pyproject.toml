@@ -5,6 +5,12 @@ requires = ["setuptools"]
 [tool.black]
 line-length = 128
 
+[tool.uv]
+# Supply-chain cooldown: never resolve a package version published in the last
+# 7 days (rolling — recomputed on every resolve). Mirrors the frontend's npm
+# `min-release-age` policy. Requires uv >= 0.9.17 for the duration form.
+exclude-newer = "7 days"
+
 [project.scripts]
 goofi-pipe = "goofi.manager:main"
 
