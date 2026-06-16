@@ -215,9 +215,18 @@
 				// drifts. Recompute the position straight from the live pointer event
 				// and the current rect, dividing the scale back out, and ignore the
 				// value uPlot derived from its stale rect.
+				//
+				// Crucially this hook also decides when the crosshair HIDES. We can't
+				// lean on uPlot's own mouseleave here: it doesn't fire reliably for the
+				// CSS-scaled over element, and the live data stream re-commits the
+				// cursor on every frame (uPlot repaints it whenever `cursor.left >= 0`),
+				// which together strand a stale crosshair at the last position after the
+				// pointer leaves. So we gate on our own `pointerInside` tracking and
+				// return uPlot's hidden sentinel (negative coords) whenever the pointer
+				// isn't over the viewer — or when uPlot itself signals a hide.
 				move: (u, left, top) => {
 					const e = lastMove;
-					if (!e) return [left, top];
+					if (!pointerInside || left < 0 || top < 0 || !e) return [-10, -10];
 					const r = u.over.getBoundingClientRect();
 					const sx = u.over.offsetWidth ? r.width / u.over.offsetWidth : 1;
 					const sy = u.over.offsetHeight ? r.height / u.over.offsetHeight : 1;
@@ -368,16 +377,30 @@
 
 	// The live pointer event for the cursor.move hook — captured before uPlot's
 	// own (over-bound) handler runs, so move() can recompute the position from
-	// the current rect instead of uPlot's transform-stale one.
+	// the current rect instead of uPlot's transform-stale one. `pointerInside`
+	// tracks whether the pointer is currently over the viewer; the move hook
+	// reads it to decide whether to project the crosshair or hide it.
 	let lastMove: MouseEvent | null = null;
+	let pointerInside = false;
 	function captureMove(e: MouseEvent): void {
 		lastMove = e;
+		pointerInside = true;
+	}
+	// Pointer left the viewer: drop the cached event and retract the crosshair
+	// immediately (don't wait for the next data frame — the stream may be slow
+	// or paused). setCursor → move() returns the hidden sentinel, which nulls
+	// cursor.idx and clears the value chip via the setCursor hook.
+	function handleLeave(): void {
+		pointerInside = false;
+		lastMove = null;
+		plot?.setCursor({ left: -10, top: -10 });
 	}
 
 	onMount(() => {
 		if (!container) return;
 		makePlot(container.clientWidth || 200, container.clientHeight || 120, 1);
 		container.addEventListener('mousemove', captureMove, true);
+		container.addEventListener('mouseleave', handleLeave);
 		resizer = new ResizeObserver(() => {
 			if (!container || !plot) return;
 			plot.setSize({ width: container.clientWidth, height: container.clientHeight });
@@ -387,6 +410,7 @@
 
 	onDestroy(() => {
 		container?.removeEventListener('mousemove', captureMove, true);
+		container?.removeEventListener('mouseleave', handleLeave);
 		resizer?.disconnect();
 		plot?.destroy();
 		plot = null;
