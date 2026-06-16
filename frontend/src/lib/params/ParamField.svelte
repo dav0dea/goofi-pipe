@@ -317,8 +317,8 @@
 	.field {
 		display: flex;
 		flex-direction: column;
-		gap: 4px;
-		font-size: 11px;
+		gap: 6px;
+		font-size: 12px;
 	}
 	.top-row {
 		display: flex;
@@ -326,17 +326,21 @@
 		gap: 8px;
 		min-width: 0;
 	}
+	/* The param name is a primary scan target — keep it bright and a notch
+	   larger than the supporting chrome (bounds, fx, toggles), so the eye lands
+	   on "what" before "how much". */
 	.label {
-		color: var(--text-dim);
+		color: var(--text);
 		font-family: var(--font-mono);
-		font-size: 10px;
+		font-size: 13px;
+		font-weight: 600;
 		text-transform: lowercase;
 		flex: 1;
 		min-width: 0;
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;
-		letter-spacing: 0.02em;
+		letter-spacing: 0.01em;
 	}
 	.fx-btn {
 		font-family: var(--font-mono);
@@ -483,26 +487,41 @@
 		border: none;
 		touch-action: pan-y;
 	}
+	/* The edited value reads as prominently as the label: same brightness,
+	   slightly larger than chrome, tabular figures so digits don't jitter. */
 	.num {
-		width: 76px;
+		width: 84px;
 		text-align: right;
+		font-size: 13px;
+		color: var(--text);
 		font-variant-numeric: tabular-nums;
 	}
 	input[type='text'],
 	select {
 		flex-grow: 1;
 		min-width: 0;
+		font-size: 13px;
+		color: var(--text);
 	}
+	/* A trigger is an action, not a value — keep it quiet by default and let it
+	   warm to the accent only on hover/press, so it sits in the same visual
+	   register as the other controls instead of shouting over them. */
 	.trigger {
 		width: 100%;
-		padding: 8px 12px;
-		background: color-mix(in srgb, var(--accent) 22%, transparent);
-		border-color: var(--accent);
+		padding: 7px 12px;
+		background: var(--bg-elev-3);
+		border: 1px solid var(--border-strong);
+		color: var(--text);
 		text-transform: lowercase;
 		letter-spacing: 0.02em;
 	}
 	.trigger:hover:not(:disabled) {
+		background: color-mix(in srgb, var(--accent) 14%, var(--bg-elev-3));
+		border-color: color-mix(in srgb, var(--accent) 55%, var(--border-strong));
+	}
+	.trigger:active:not(:disabled) {
 		background: var(--accent);
+		border-color: var(--accent);
 		color: #0a0c10;
 	}
 	.switch {
