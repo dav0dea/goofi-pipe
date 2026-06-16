@@ -166,3 +166,5 @@ cython_debug/
 # OpenAI key
 openai.key
 
+.claude/
+/throwaway/
