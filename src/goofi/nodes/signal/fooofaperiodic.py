@@ -110,11 +110,12 @@ class FOOOFaperiodic(Node):
         cf_peaks = pad_to_max_len(cf_peaks)
         cleaned_psds = pad_to_max_len(cleaned_psds)
 
+        channels = {"dim0": ch_annot} if ch_annot is not None else {}
         return {
-            "offset": (offsets, {"channels": {"dim0": ch_annot}, "sfreq": psd_data.meta["sfreq"]}),
-            "exponent": (exponents, {"channels": {"dim0": ch_annot}, "sfreq": psd_data.meta["sfreq"]}),
-            "cf_peaks": (cf_peaks, {"channels": {"dim0": ch_annot}, "sfreq": psd_data.meta["sfreq"]}),
-            "cleaned_psd": (cleaned_psds, {"channels": {"dim0": ch_annot}, "sfreq": psd_data.meta["sfreq"]}),
+            "offset": (offsets, {"channels": channels, "sfreq": psd_data.meta["sfreq"]}),
+            "exponent": (exponents, {"channels": channels, "sfreq": psd_data.meta["sfreq"]}),
+            "cf_peaks": (cf_peaks, {"channels": channels, "sfreq": psd_data.meta["sfreq"]}),
+            "cleaned_psd": (cleaned_psds, {"channels": channels, "sfreq": psd_data.meta["sfreq"]}),
         }
 
 
