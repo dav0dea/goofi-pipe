@@ -576,3 +576,55 @@ You are done when **all** of the following hold:
 When you think you're done, screenshot the editor, the param panel,
 two viewer types side-by-side, and the add-node menu, and put them in a
 brief summary message for the user.
+
+---
+
+## 15. P2P viewer-data plane + node-side thalamus (DESIGN — not yet built)
+
+**Full spec:** [`docs/p2p-data-thalamus-spec.md`](docs/p2p-data-thalamus-spec.md) —
+authoritative, self-contained, implementable end-to-end. This section is the
+30-second summary; the spec is the source of truth.
+
+**Problem.** The `/data` plane ships the *full* `Data` every frame with zero
+reduction: `bridge/data.py:on_frame` re-encodes the whole decoded array. Measured:
+a 44.1 kHz / 60 s mono buffer is **~10.6 MB/frame** → **~318 MB/s** at 30 Hz into a
+~1000 px plot that needs ~2k points (a ~1300× oversend). Worse, the path is **not
+P2P**: `/data/<node>/<slot>` is served by the bridge *inside the manager process*
+(`server.py`: "Lives in the manager process"), whose `NodeRef._data_pump` opens its
+own iceoryx2 subscriber and **decodes every full frame in the manager** before
+re-encoding — three codec passes + a full SHM copy of unreduced data. This is a
+dearpygui-era hook the browser bridge inherited. node↔node data (iceoryx2) and
+logs (`node_log.py` SSE) are *already* P2P; only the viewer-data path routes
+through the manager.
+
+**Design.** Move the viewer-data path **peer-to-peer**, mirroring `node_log.py`:
+
+- Each **node-host process** hosts one tiny binary-WebSocket server
+  (`src/goofi/node_data.py`, NEW — stdlib hand-rolled RFC6455), advertises its base
+  URL as `data_endpoint` over `STATE_UPDATE` exactly like `log_endpoint`. The
+  browser discovers it from the control plane and connects **directly** to the node.
+- The node **reduces the live in-process `Data` *before* encode**
+  (`src/goofi/node_reduce.py`, NEW; `reduce_for_view` inline in `_processing_loop`
+  after `node.py:737`, gated on a new `OutputSlot.viewer_count`). This kills both
+  the WS oversend **and** the cross-process decode — the manager leaves the data
+  path entirely (`bridge/data.py` + `NodeRef.set_data_handler`/`_data_pump` deleted).
+- Reduction is dtype/viewer-aware: line → **min/max envelope** (never stride —
+  aliases audio transients); image → area downscale; trajectory → resample;
+  topomap/string/table/scalar → passthrough. Meta coord arrays co-reduce in lockstep
+  to satisfy `Data.__post_init__` (`data.py:104`). **Fail-open** (any error → input
+  unreduced).
+- The **frontend thalamus** (`thalamus.svelte.ts`, `dataStream.svelte.ts`) folds all
+  live viewer-consumers per `(node,slot)` into ONE `ViewSpec` (largest consumer
+  wins), sent **inband** on the per-node WS. One stream per slot; expand/collapse +
+  IntersectionObserver add/remove consumers.
+
+**Untouched (HARD):** node↔node iceoryx2 transport, `codec.py`, the zero-copy SHM
+publish path. The reduced browser frame is a *separate* encode of a *separate*
+reduced `Data`.
+
+**Accepted trade-offs (confirm before building):** (1) inline reduction can lower a
+node's *tick cadence* while a viewer is attached (the node↔node path is byte-for-byte
+unchanged, only its rate); (2) `viewer_count` does not cascade upstream, so viewing a
+purely input-triggered leaf whose upstream is idle shows nothing (sources free-run, so
+this matches `test.gfi`); (3) node servers bind `127.0.0.1`, so a remote browser over
+`--bind` LAN can't reach them (same limitation as logs today).
