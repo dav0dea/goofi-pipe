@@ -411,7 +411,9 @@
 		// Anchor the paste near the viewport centre (preserves the prior
 		// placement math: a quarter of the window, plus each node's offset).
 		const at: [number, number] = [window.innerWidth / 4, window.innerHeight / 4];
-		await g.instantiateNodes(clipToSpecs(clip, at), clip.links);
+		const rename = await g.instantiateNodes(clipToSpecs(clip, at), clip.links);
+		const created = Object.values(rename);
+		if (created.length > 0) sel.selectNodes(panelId, created);
 	}
 
 	function openMenuAtCursor(): void {
@@ -464,6 +466,11 @@
 		pendingPlacement = null;
 		try {
 			const newName = await g.addNode(placement.typeInfo.type, placement.typeInfo.category, pos);
+			// Auto-select the freshly-placed node so its parameters open in the
+			// inspector immediately — matching duplicate / paste / agent placement.
+			// Safe before node_added lands: flowNodes derives `selected` from this
+			// set, so the node renders selected the moment it appears.
+			if (newName) sel.selectNodes(panelId, [newName]);
 			if (placement.seed && newName) await autoLink(placement.seed, placement.typeInfo, newName);
 		} catch (e) {
 			console.warn('add_node failed', e);
