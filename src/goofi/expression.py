@@ -89,6 +89,11 @@ class ExpressionEngine:
     on_listener_added / on_listener_removed:
         Called when a new subscription opens or an existing one is
         pruned. The owning node uses these to keep its WaitSet in sync.
+    resolve_node_id:
+        Maps the user-facing display name passed to ``nd('name')`` onto the
+        producing node's stable transport id (the data services are keyed on
+        the id, not the reusable name). Defaults to identity for callers that
+        reference nodes by id directly (tests / standalone use).
     """
 
     def __init__(
@@ -96,10 +101,12 @@ class ExpressionEngine:
         location: str,
         on_listener_added: Callable[[Listener], None],
         on_listener_removed: Callable[[Listener], None],
+        resolve_node_id: Optional[Callable[[str], str]] = None,
     ) -> None:
         self.location = location
         self._on_listener_added = on_listener_added
         self._on_listener_removed = on_listener_removed
+        self._resolve_node_id = resolve_node_id or (lambda name: name)
         self._source: Optional[str] = None
         self._code = None
         self._namespace: Dict[str, Any] = self._make_namespace()
@@ -184,6 +191,12 @@ class ExpressionEngine:
     def owns_listener(self, listener: Listener) -> bool:
         return any(entry.listener is listener for entry in self._subscribed.values())
 
+    def references_other_nodes(self) -> bool:
+        """True if this engine holds any cross-node slot subscription — i.e.
+        its resolution depends on the name->id directory, so the owning node
+        should re-apply it when the directory changes."""
+        return bool(self._subscribed)
+
     def close(self) -> None:
         """Tear down every subscription. Safe to call repeatedly."""
         for entry in list(self._subscribed.values()):
@@ -213,12 +226,20 @@ class ExpressionEngine:
         """
         return _NodeProxy(self, node_id)
 
-    def _fetch_slot(self, node_id: str, slot_name: str):
+    def _fetch_slot(self, node_ref: str, slot_name: str):
         """Records the (node, slot) tuple as referenced this pass, opens
         a new subscriber on first sight, drains any fresh frame into the
         cache, and returns the latest decoded ``Data`` (or None until
         the first frame arrives).
+
+        ``node_ref`` is the display name from ``nd('name')``; it is resolved
+        to the producer's stable transport id so the subscription keys (and
+        the service we open) track the current owner of that name. Resolving
+        every eval makes the reference self-healing across a node
+        delete+recreate: a changed id yields a fresh key + subscription while
+        the stale one is pruned.
         """
+        node_id = self._resolve_node_id(node_ref)
         key: SlotKey = (node_id, slot_name)
         self._refs_this_eval.add(key)
 

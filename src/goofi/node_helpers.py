@@ -365,6 +365,12 @@ class NodeRef:
     def unregister_subscriber(self, slot_name_out: str) -> None:
         self._send(Message(MessageType.UNREGISTER_SUBSCRIBER, {"slot_name_out": slot_name_out}))
 
+    def send_directory(self, directory: Dict[str, str]) -> None:
+        """Push the manager's current display-name -> node_id map so this
+        node's expression engines can resolve `nd('name')` references to the
+        producing node's stable transport id."""
+        self._send(Message(MessageType.NODE_DIRECTORY, {"directory": dict(directory)}))
+
     def terminate(self) -> None:
         self._alive = False
         # Wake the data-pump out of its idle wait so it can exit.
@@ -556,6 +562,11 @@ class NodeProcess:
             if payload is None:
                 break
             cls, node_id, initial_params = payload
+            # Drop references to nodes that have terminated. Each node closes
+            # its own endpoints on shutdown (see Node._teardown_endpoints), so
+            # this only releases the inert Python object — but without it the
+            # host would pin every node it ever spawned for the group's life.
+            nodes = [n for n in nodes if n.alive]
             try:
                 node = cls._spawn_local(
                     node_id=node_id, initial_params=initial_params, capture_logs=capture_logs

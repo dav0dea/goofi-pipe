@@ -17,6 +17,7 @@ EXAMPLE_CONTENT = {
     # below only verifies missing-required-field raises.
     MessageType.SET_EXPRESSION: {"group": "common", "param_name": "x"},
     MessageType.CLEAR_DATA: {"slot_name": "in"},
+    MessageType.NODE_DIRECTORY: {"directory": {"oscillator0": "oscillator0-1a2b3c4d"}},
     MessageType.TERMINATE: {},
     MessageType.STATE_UPDATE: {
         "_type": "Foo",

@@ -26,7 +26,7 @@ from enum import Enum
 from multiprocessing import Process
 from os.path import dirname, join
 from pathlib import Path
-from threading import Event, Lock, Thread
+from threading import Event, Lock, Thread, current_thread
 from typing import Any, Dict, Optional, Tuple, Union
 
 from goofi import assets
@@ -86,6 +86,20 @@ def _coerce_to_param_type(param, value):
         except Exception:
             return None
     return None
+
+
+def _safe_close(endpoint) -> None:
+    """Close a transport endpoint, swallowing the None case and any error.
+
+    Used by node teardown, where best-effort release is the right policy: a
+    failed close must never stop the rest of the endpoints from being freed.
+    """
+    if endpoint is None:
+        return
+    try:
+        endpoint.close()
+    except Exception:
+        pass
 
 
 class NodeEnv(Enum):
@@ -152,6 +166,11 @@ class Node(ABC):
         # a SET_EXPRESSION ctrl message arrives (or when a saved patch
         # spawns the node with non-None expressions in its param dict).
         self._expressions: Dict[Tuple[str, str], ExpressionEngine] = {}
+        # display name -> node_id, pushed by the manager (NODE_DIRECTORY). Lets
+        # `nd('name')` expression references resolve to the producer's stable
+        # id. Empty until the first push; references resolve to the literal
+        # name meanwhile and self-heal once the directory arrives.
+        self._node_directory: Dict[str, str] = {}
 
         self._validate_attrs()
         self._waitset: WaitSet = WaitSet()
@@ -327,6 +346,14 @@ class Node(ABC):
     # Expression-bound params
     # ------------------------------------------------------------------
 
+    def _resolve_node_ref(self, name: str) -> str:
+        """Resolve a display name from `nd('name')` to the producing node's
+        stable transport id via the manager-pushed directory. Falls back to
+        the literal name when the directory hasn't arrived (or the referenced
+        node doesn't exist yet); the expression engine re-resolves each eval,
+        so it self-heals once the directory catches up."""
+        return self._node_directory.get(name, name)
+
     def _set_expression(
         self,
         group: str,
@@ -367,6 +394,7 @@ class Node(ABC):
                     location=f"{self.node_id}.{group}.{name}",
                     on_listener_added=self._waitset.attach,
                     on_listener_removed=self._waitset.detach,
+                    resolve_node_id=self._resolve_node_ref,
                 )
                 self._expressions[key] = engine
             engine.set_source(source)
@@ -445,7 +473,10 @@ class Node(ABC):
             self._report_error(error)
             raise RuntimeError(error)
 
-        Thread(target=self._setup, name=f"{self.__class__.__name__}-setup", daemon=True).start()
+        self._setup_thread = Thread(
+            target=self._setup, name=f"{self.__class__.__name__}-setup", daemon=True
+        )
+        self._setup_thread.start()
 
         ctrl_ws = WaitSet()
         ctrl_ws.attach(self.ctrl_listener)
@@ -489,6 +520,56 @@ class Node(ABC):
         # Flush any pending (un-newlined) log line and drop this node's buffer.
         if self._capture_logs:
             node_log.unregister_node(self.node_id)
+
+        # Release the node's transport endpoints. The process exits right after
+        # this in a one-node-per-process spawn, but in a shared group host it
+        # lives on — so an un-closed publisher would pin its per-service slot
+        # forever, permanently blocking that service name. This runs last, after
+        # the user terminate() hook and log flush, when nothing else publishes.
+        self._teardown_endpoints()
+
+    def _teardown_endpoints(self) -> None:
+        """Join the worker threads, then close every transport endpoint the
+        node owns so it leaves no iceoryx2 / thread resources behind."""
+        # Nudge the processing loop out of its wait and wait for both worker
+        # threads to stop touching the endpoints before we drop them.
+        self._wake_processing()
+        for th in (getattr(self, "processing_thread", None), getattr(self, "_setup_thread", None)):
+            if th is not None and th is not current_thread():
+                th.join(timeout=1.0)
+
+        for engine in list(self._expressions.values()):
+            try:
+                engine.close()
+            except Exception:
+                pass
+        self._expressions.clear()
+
+        for slot in self._input_slots.values():
+            _safe_close(slot.subscriber)
+            _safe_close(slot.listener)
+            slot.subscriber = None
+            slot.listener = None
+
+        for slot in self._output_slots.values():
+            for endpoint in (*slot.publishers, *slot.notifiers):
+                _safe_close(endpoint)
+            slot.publishers.clear()
+            slot.notifiers.clear()
+            slot.has_ipc = False
+            slot.has_thread = False
+
+        for attr in (
+            "_self_trigger_pub",
+            "_self_trigger_sub",
+            "_self_trigger_notifier",
+            "_self_trigger_listener",
+            "ctrl_sub",
+            "ctrl_listener",
+            "status_pub",
+            "_status_notifier",
+        ):
+            _safe_close(getattr(self, attr, None))
 
     def _handle_ctrl(self, msg: Message) -> None:
         t = msg.type
@@ -543,6 +624,18 @@ class Node(ABC):
             slot = self.input_slots.get(msg.content["slot_name"])
             if slot is not None:
                 slot.clear()
+        elif t == MessageType.NODE_DIRECTORY:
+            new_directory = dict(msg.content["directory"])
+            if new_directory != self._node_directory:
+                self._node_directory = new_directory
+                # Re-resolve cross-node references against the new directory.
+                # An expression warm-evaluated before a producer's id was known
+                # (e.g. during a patch load, where nodes resolve in setup order)
+                # would otherwise stay wired to a dangling service forever. Re-
+                # applying re-keys the subscription onto the producer's real id.
+                for expr_key, engine in list(self._expressions.items()):
+                    if engine.references_other_nodes():
+                        self._apply_expression(expr_key, engine)
         else:
             self._report_error(f"Unhandled control message type: {t}")
 

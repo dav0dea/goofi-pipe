@@ -9,7 +9,6 @@ import goofi
 from goofi.manager import Manager, NodeContainer
 from goofi.transport import (
     WaitSet,
-    data_service_name,
     open_subscriber,
     set_instance_id,
 )
@@ -66,8 +65,9 @@ def test_simple_chain_dataflow():
     try:
         osc, sel = _build_simple_graph(mgr)
 
-        # External subscriber acting like a GUI viewer.
-        service = data_service_name(sel, "out")
+        # External subscriber acting like a GUI viewer. The data service is
+        # keyed on the node's stable transport id, not its display name.
+        service = mgr.nodes[sel].data_service_for("out")
         sub, listener = open_subscriber(service, in_process=False, latest_wins=True)
         ws = WaitSet()
         ws.attach(listener)
@@ -139,5 +139,57 @@ def test_save_to_directory(tmpdir):
         assert path.exists(path.join(tmpdir, "untitled0.gfi"))
         mgr.save(tmpdir)
         assert path.exists(path.join(tmpdir, "untitled1.gfi"))
+    finally:
+        mgr.terminate(notify_gui=False)
+
+
+def test_reused_display_name_gets_unique_node_id():
+    """Deleting a node frees its display name for reuse, but the replacement
+    must get a fresh transport id so its iceoryx2 services never collide with
+    the still-shutting-down old node's (which would raise
+    ExceedsMaxSupportedPublishers)."""
+    mgr = _bare_manager()
+    try:
+        n1 = mgr.add_node("Oscillator", "inputs")
+        id1 = mgr.nodes[n1].node_id
+        mgr.remove_node(n1)
+        n2 = mgr.add_node("Oscillator", "inputs")
+        id2 = mgr.nodes[n2].node_id
+        # The display name is reused (nice UX); the transport id is not.
+        assert n1 == n2 == "oscillator0"
+        assert id1 != id2
+    finally:
+        mgr.terminate(notify_gui=False)
+
+
+def test_node_directory_maps_display_names_to_unique_ids():
+    """The manager's name->node_id directory (pushed to nodes so `nd('name')`
+    expressions resolve to the producer's stable id) maps each live display
+    name to its node's unique transport id."""
+    mgr = _bare_manager()
+    try:
+        a = mgr.add_node("Oscillator", "inputs")
+        b = mgr.add_node("Oscillator", "inputs")
+        directory = mgr._node_directory()
+        assert directory[a] == mgr.nodes[a].node_id
+        assert directory[b] == mgr.nodes[b].node_id
+        assert directory[a] != directory[b]
+    finally:
+        mgr.terminate(notify_gui=False)
+
+
+def test_group_mode_name_reuse_no_clash():
+    """Rapid remove + re-add of a node hosted in a shared process group must
+    not raise: the host process outlives the node, so the previous instance's
+    endpoints must be released AND the new instance must use a fresh transport
+    id. Before the unique-id fix this crashed on the second add with
+    ExceedsMaxSupportedPublishers (the host still held the status publisher
+    slot for the reused name)."""
+    mgr = _bare_manager()
+    try:
+        params = {"common": {"process_group": "reuse_grp"}}
+        for _ in range(5):
+            n = mgr.add_node("Oscillator", "inputs", params=params)
+            mgr.remove_node(n)
     finally:
         mgr.terminate(notify_gui=False)

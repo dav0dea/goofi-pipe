@@ -34,7 +34,7 @@ import yaml
 from goofi.message import MessageType
 from goofi.node import MultiprocessingForbiddenError, Node
 from goofi.node_helpers import NodeProcessRegistry, NodeRef, list_nodes
-from goofi.transport import data_service_name, ensure_iox2_runtime_dirs, get_instance_id, set_instance_id
+from goofi.transport import ensure_iox2_runtime_dirs, set_instance_id
 
 if TYPE_CHECKING:
     from goofi.bridge.server import BridgeServer
@@ -179,8 +179,13 @@ class Manager:
     # Node / link CRUD
     # ------------------------------------------------------------------
 
-    def _resolve_group(self, name: str, params: Optional[Dict[str, Dict[str, Any]]]) -> str:
-        """Determine the process group for a new node."""
+    def _resolve_group(self, node_id: str, params: Optional[Dict[str, Dict[str, Any]]]) -> str:
+        """Determine the process group for a new node.
+
+        The default group is the node's unique id, so each default node lands
+        in its own group (= its own process) and `_spawn_node`'s `group !=
+        node_id` test stays a reliable "explicit group?" check.
+        """
         if not self._use_multiprocessing:
             return "default"
         if params and "common" in params and isinstance(params["common"].get("process_group"), str):
@@ -188,7 +193,7 @@ class Manager:
             if grp:
                 return grp
         # Default: one group per node = one process per node.
-        return name
+        return node_id
 
     def _same_group(self, node_a: str, node_b: str) -> bool:
         return self._node_groups.get(node_a) == self._node_groups.get(node_b)
@@ -256,8 +261,13 @@ class Manager:
         mod = importlib.import_module(f"goofi.nodes.{category}.{node_type.lower()}")
         node_cls: type = getattr(mod, node_type)
 
-        # Determine the name *before* spawning so the spawned node uses it
-        # as its node_id (which feeds into every service name).
+        # The display name is the user-facing label and the container key. It
+        # is reused once freed: delete oscillator0 and the next Oscillator is
+        # oscillator0 again. The *transport* id must never be reused — a quick
+        # re-add would otherwise race the new node's iceoryx2 producers against
+        # the old, still-terminating node's for the single per-service slot. So
+        # we mint a unique node_id and feed *that* into every service name; the
+        # display name only keys the manager's bookkeeping.
         if name is None:
             base = node_type.lower()
             idx = 0
@@ -267,9 +277,10 @@ class Manager:
         else:
             assigned_name = name
 
-        group = self._resolve_group(assigned_name, params)
+        node_id = f"{assigned_name}-{uuid.uuid4().hex[:8]}"
+        group = self._resolve_group(node_id, params)
 
-        ref = self._spawn_node(node_cls, assigned_name, params, group)
+        ref = self._spawn_node(node_cls, node_id, params, group)
         ref.set_message_handler(MessageType.SHUTDOWN, lambda *args: self.terminate())
 
         # Preserve gui_kwargs (notably 'pos') for the bridge / patch save.
@@ -282,6 +293,10 @@ class Manager:
         # Best-effort: block briefly for the initial STATE_UPDATE so the
         # rest of the system (save / bridge) has node state to read.
         ref.wait_for_state(timeout=2.0)
+
+        # Refresh every node's name->id directory so `nd('name')` expression
+        # references (including the new node's own) resolve to current ids.
+        self._broadcast_node_directory()
 
         if self._bridge is not None and notify_gui:
             self._bridge.control.on_node_added(registered)
@@ -298,6 +313,9 @@ class Manager:
 
         self.nodes.remove_node(name)
         self._node_groups.pop(name, None)
+        # Refresh the directory so surviving nodes stop resolving `nd('name')`
+        # to the node that just left.
+        self._broadcast_node_directory()
         if self._bridge is not None and notify_gui:
             self._bridge.control.on_node_removed(name)
 
@@ -343,7 +361,9 @@ class Manager:
         src_ref = self.nodes[node_out]
         dst_ref = self.nodes[node_in]
         in_process = self._same_group(node_out, node_in)
-        service = data_service_name(node_out, slot_out)
+        # Derive the service from the source node's stable transport id (not
+        # its reusable display name) so the wire matches the producer.
+        service = src_ref.data_service_for(slot_out)
 
         # Order matters: register on the source first so it knows to
         # publish, then subscribe on the destination.
@@ -383,6 +403,20 @@ class Manager:
             self.nodes[link["node_in"]].unsubscribe_input(link["slot_in"])
         except KeyError:
             pass
+
+    def _node_directory(self) -> Dict[str, str]:
+        """Map each live display name to its node's stable transport id."""
+        return {name: self.nodes[name].node_id for name in self.nodes}
+
+    def _broadcast_node_directory(self) -> None:
+        """Push the current name->id directory to every live node so their
+        expression engines resolve `nd('name')` to the producing node's id."""
+        directory = self._node_directory()
+        for name in list(self.nodes):
+            try:
+                self.nodes[name].send_directory(directory)
+            except Exception:
+                pass
 
     # ------------------------------------------------------------------
     # Persistence

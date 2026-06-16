@@ -114,3 +114,47 @@ def test_stale_refs_pruned_after_eval() -> None:
     keys_after = set(e._subscribed.keys())  # noqa: SLF001
     assert ("node_a", "out") in keys_after
     assert ("node_b", "out") not in keys_after
+
+
+def test_nd_reference_resolves_display_name_to_node_id() -> None:
+    """`nd('name')` must resolve the user-facing display name to the
+    producer's stable transport id before opening a subscriber. The engine
+    keys its subscription on the *resolved* id, so the service name matches
+    the producer (whose iceoryx2 services use the unique id, not the name)."""
+    directory = {"osc": "osc-1a2b3c4d"}
+    e = ExpressionEngine(
+        "test",
+        lambda l: None,
+        lambda l: None,
+        resolve_node_id=lambda name: directory.get(name, name),
+    )
+    e.set_source("d = nd('osc').out\n0 if d is None else d.data")
+    e.evaluate()
+    keys = set(e._subscribed.keys())  # noqa: SLF001
+    assert ("osc-1a2b3c4d", "out") in keys
+    assert ("osc", "out") not in keys
+
+
+def test_nd_reference_default_resolver_is_identity() -> None:
+    """With no resolver supplied (the unit-test / standalone path), the
+    display name is used verbatim — preserving the engine's behaviour for
+    callers that don't wire a directory."""
+    e, _, _ = _make_engine()
+    e.set_source("d = nd('plain_name').out\n0")
+    e.evaluate()
+    assert ("plain_name", "out") in set(e._subscribed.keys())  # noqa: SLF001
+
+
+def test_engine_reports_whether_it_references_other_nodes() -> None:
+    """The owning node re-applies only the expressions that reference other
+    nodes when the name->id directory changes; a self-contained expression
+    (no nd()) reports no references so it is left untouched."""
+    e_plain, _, _ = _make_engine()
+    e_plain.set_source("time.time()")
+    e_plain.evaluate()
+    assert e_plain.references_other_nodes() is False
+
+    e_ref, _, _ = _make_engine()
+    e_ref.set_source("nd('producer').out\n0")
+    e_ref.evaluate()
+    assert e_ref.references_other_nodes() is True

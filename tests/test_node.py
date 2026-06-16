@@ -283,3 +283,70 @@ def test_expression_disable_preserves_source():
         time.sleep(0.02)
     assert n.params.test.param_floatparam.expression is None
     ref.terminate()
+
+
+def test_node_releases_ipc_endpoints_on_shutdown():
+    """A terminated node must close its iceoryx2 endpoints, not leak them.
+
+    This matters most for process-group hosting: the host process outlives
+    any single node, so a node that never releases its publisher slot would
+    block the name (and any reuse of it) from ever working again. We drive a
+    node with iceoryx2 ctrl/status endpoints (in_process_with_manager=False)
+    directly in this process and assert the publisher/subscriber handles are
+    dropped once the messaging loop exits."""
+    from goofi.node import NodeEnv
+
+    _iid()
+    in_slots, out_slots, params = DummyNode._configure()
+    node = DummyNode(
+        f"dummy-cleanup-{uuid.uuid4().hex[:8]}",
+        in_slots,
+        out_slots,
+        params,
+        NodeEnv.LOCAL,
+        in_process_with_manager=False,
+    )
+    # Let the messaging/processing threads and setup come up.
+    deadline = time.time() + 2.0
+    while not node._setup_done.is_set() and time.time() < deadline:
+        time.sleep(0.01)
+    status_pub = node.status_pub
+    ctrl_sub = node.ctrl_sub
+    assert status_pub._pub is not None
+    assert ctrl_sub._sub is not None
+
+    # Terminate: the messaging loop notices and runs the node's teardown.
+    node._alive = False
+    node.messaging_thread.join(timeout=3.0)
+    assert not node.messaging_thread.is_alive()
+    assert status_pub._pub is None, "status publisher not released on shutdown"
+    assert ctrl_sub._sub is None, "ctrl subscriber not released on shutdown"
+
+
+def test_node_reresolves_expression_when_directory_updates():
+    """A node must re-resolve cross-node expression references when the
+    name->id directory arrives. This is the patch-load ordering: a node
+    warm-evaluates `nd('producer')` during setup() before the producer's id
+    is known, wiring to a dangling service; the later NODE_DIRECTORY push must
+    re-key the subscription onto the producer's real transport id."""
+    _iid()
+    ref, n = FullDummyNode.create_local()
+    ref.wait_for_state(timeout=2.0)
+    ref.set_expression("test", "param_floatparam", "nd('producer').out\n0", enabled=True)
+    key = ("test", "param_floatparam")
+
+    def _wait(pred, timeout=2.0):
+        deadline = time.time() + timeout
+        while not pred() and time.time() < deadline:
+            time.sleep(0.02)
+
+    # Warm eval subscribes under the literal name (directory still empty).
+    _wait(lambda: key in n._expressions and ("producer", "out") in n._expressions[key]._subscribed)
+    assert ("producer", "out") in n._expressions[key]._subscribed
+
+    # The directory now carries the producer's real id; the node re-resolves.
+    ref.send_directory({"producer": "producer-deadbeef"})
+    _wait(lambda: ("producer-deadbeef", "out") in n._expressions[key]._subscribed)
+    assert ("producer-deadbeef", "out") in n._expressions[key]._subscribed
+    assert ("producer", "out") not in n._expressions[key]._subscribed
+    ref.terminate()

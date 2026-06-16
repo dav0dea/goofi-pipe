@@ -38,6 +38,12 @@ class MessageType(Enum):
         - `expression` (str | None): the expression source, or None to clear.
     - `CLEAR_DATA`: clear the cached value on an input slot.
         - `slot_name` (str)
+    - `NODE_DIRECTORY`: the manager's current map of display name -> stable
+      node_id. Pushed to every live node on each add/remove so a node's
+      expression engine can resolve `nd('name')` references to the producing
+      node's transport id (which the data services are keyed on, not the
+      reusable display name).
+        - `directory` (dict[str, str])
     - `TERMINATE`: empty; instructs the node to shut down.
 
     Status plane (node → manager):
@@ -65,6 +71,7 @@ class MessageType(Enum):
     CLEAR_DATA = 6
     TERMINATE = 7
     SET_EXPRESSION = 11
+    NODE_DIRECTORY = 12
 
     # status plane
     STATE_UPDATE = 8
@@ -120,6 +127,8 @@ class Message:
                     raise ValueError("SET_EXPRESSION 'expression' must be str or None.")
         elif t == MessageType.CLEAR_DATA:
             self.require_fields(slot_name=str)
+        elif t == MessageType.NODE_DIRECTORY:
+            self.require_fields(directory=dict)
         elif t == MessageType.STATE_UPDATE:
             self.require_fields(_type=str, category=str, params=dict, output_subscribers=dict)
         elif t == MessageType.PROCESSING_ERROR:
