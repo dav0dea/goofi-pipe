@@ -600,31 +600,43 @@ through the manager.
 **Design.** Move the viewer-data path **peer-to-peer**, mirroring `node_log.py`:
 
 - Each **node-host process** hosts one tiny binary-WebSocket server
-  (`src/goofi/node_data.py`, NEW — stdlib hand-rolled RFC6455), advertises its base
-  URL as `data_endpoint` over `STATE_UPDATE` exactly like `log_endpoint`. The
-  browser discovers it from the control plane and connects **directly** to the node.
-- The node **reduces the live in-process `Data` *before* encode**
-  (`src/goofi/node_reduce.py`, NEW; `reduce_for_view` inline in `_processing_loop`
-  after `node.py:737`, gated on a new `OutputSlot.viewer_count`). This kills both
-  the WS oversend **and** the cross-process decode — the manager leaves the data
-  path entirely (`bridge/data.py` + `NodeRef.set_data_handler`/`_data_pump` deleted).
-- Reduction is dtype/viewer-aware: line → **min/max envelope** (never stride —
-  aliases audio transients); image → area downscale; trajectory → resample;
-  topomap/string/table/scalar → passthrough. Meta coord arrays co-reduce in lockstep
-  to satisfy `Data.__post_init__` (`data.py:104`). **Fail-open** (any error → input
-  unreduced).
+  (`src/goofi/node_data.py`, NEW — stdlib hand-rolled RFC6455), advertises its
+  **port** as `data_port` over `STATE_UPDATE` exactly like the log endpoint. The
+  browser discovers it from the control plane, composes the URL from
+  `location.hostname`, and connects **directly** to the node.
+- A **dedicated per-process reducer thread** does the reduction off the processing
+  thread: `_processing_loop` only does an O(1) `node_data.offer(node, slot, data)` —
+  a **private snapshot** (array + meta copy on the node thread, so it's race-free vs.
+  in-place mutators like `LatentRotator`) into a latest-wins mailbox. The reducer
+  thread runs `reduce_for_view` (`src/goofi/node_reduce.py`, NEW) + `encode_data` and
+  fans the bytes to per-connection mailboxes. The node's tick — and its node↔node
+  output rate — is **not** slowed by reduce/encode. The manager leaves the data path
+  entirely (`bridge/data.py` + `NodeRef.set_data_handler`/`_data_pump` deleted).
+- Reduction is **per-axis and viewer-defined**: `ViewSpec = { axes: [{axis, max,
+  method}], version }`. Each viewer declares which axes to reduce, how far, and the
+  method — `envelope` (min/max per bin; waveforms, never stride), `area` (block-mean
+  downscale; images), `subsample` (linspace gather; channels, trajectory paths).
+  `reduce_for_view` composes the per-axis reductions; unlisted axes pass through.
+  **Fail-open** (any error → input unreduced).
+- **Meta inspector is unaffected by reduction.** One stream per slot, but the reduced
+  frame carries `meta['reduced'][axis] = {orig_len, method, orig_coord?}`; body
+  coord arrays co-reduce to satisfy `Data.__post_init__` (`data.py:104`), and
+  `MetadataPanel` is reduction-aware — it reconstructs and shows the **true original
+  meta**. Reduction is purely a viewer-rendering concern.
 - The **frontend thalamus** (`thalamus.svelte.ts`, `dataStream.svelte.ts`) folds all
-  live viewer-consumers per `(node,slot)` into ONE `ViewSpec` (largest consumer
-  wins), sent **inband** on the per-node WS. One stream per slot; expand/collapse +
-  IntersectionObserver add/remove consumers.
+  live viewer-consumers per `(node,slot)` into ONE `ViewSpec` (per-axis largest-max;
+  method: `envelope`>`area`>`subsample`), sent **inband** on the per-node WS. One
+  stream per slot; expand/collapse + IntersectionObserver add/remove consumers.
+- **Host scope = the frontend's.** `Manager.__init__` exports `GOOFI_BIND_HOST`
+  (default `0.0.0.0`), inherited by node processes; `node_log` + `node_data` bind it,
+  so logs and viewers share the manager's reachability (LAN-reachable when `--bind`
+  is). No auth, CORS `*` — single-user/trusted-LAN scope, same as the manager bridge.
 
 **Untouched (HARD):** node↔node iceoryx2 transport, `codec.py`, the zero-copy SHM
 publish path. The reduced browser frame is a *separate* encode of a *separate*
-reduced `Data`.
+reduced `Data` snapshot.
 
-**Accepted trade-offs (confirm before building):** (1) inline reduction can lower a
-node's *tick cadence* while a viewer is attached (the node↔node path is byte-for-byte
-unchanged, only its rate); (2) `viewer_count` does not cascade upstream, so viewing a
-purely input-triggered leaf whose upstream is idle shows nothing (sources free-run, so
-this matches `test.gfi`); (3) node servers bind `127.0.0.1`, so a remote browser over
-`--bind` LAN can't reach them (same limitation as logs today).
+**Remaining accepted limitation:** `viewer_count` does not cascade upstream, so
+viewing a purely input-triggered leaf whose upstream is idle shows nothing (sources
+free-run, so this matches `test.gfi`). (The earlier tick-cadence and 127.0.0.1
+trade-offs are now *resolved* by the reducer thread and the shared host scope.)
