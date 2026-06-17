@@ -1,227 +1,231 @@
-nodes:
-  buffer0:
-    _type: Buffer
-    category: signal
-    params:
-      buffer:
-        size: 44100.0
-        axis: -1
-        unit: samples
-        reset: false
-      common:
-        autotrigger: false
-        max_frequency: 44100.0
-        frequency_mode: updates-per-second
-    gui_kwargs:
-      pos:
-      - -66
-      - 25
-      viewers:
-        out:
-          viewer_idx: 0
-          width: 175
-          height: 100
-          collapsed: false
-          log_scale_x: false
-          log_scale_y: false
-  buffer1:
-    _type: Buffer
-    category: signal
-    params:
-      buffer:
-        size: 500.0
-        axis: 1
-        unit: samples
-        reset: false
-      common:
-        autotrigger: false
-        max_frequency: 30.0
-        frequency_mode: updates-per-second
-    gui_kwargs:
-      pos:
-      - 761
-      - 29
-      viewers:
-        out:
-          viewer_idx: 0
-          width: 175
-          height: 100
-          collapsed: false
-          log_scale_x: false
-          log_scale_y: false
-  classifier0:
-    _type: Classifier
-    category: analysis
-    params:
-      classification:
-        n_states: 2
-        current_state: 2
-        add_to_training: false
-        train: false
-        classifier_choice: SVM
-        clear_training: false
-        load_data: false
-        save_data: false
-        data_file: goofi_clf_data
-      NaiveBayes:
-        var_smoothing: 1.0e-09
-      SVM:
-        C: 1.0
-        kernel: rbf
-        gamma: scale
-      RandomForest:
-        n_estimators: 100
-        max_depth: 3
-        min_samples_split: 10
-      LogisticRegression:
-        C: 1.0
-      KNeighbors:
-        n_neighbors: 5
-      common:
-        autotrigger: false
-        max_frequency: 30.0
-        frequency_mode: updates-per-second
-    gui_kwargs:
-      pos:
-      - 341
-      - 28
-      viewers:
-        probs:
-          viewer_idx: 0
-          width: 175
-          height: 100
-          collapsed: false
-          log_scale_x: false
-          log_scale_y: false
-        feature_importances:
-          viewer_idx: 0
-          width: 175
-          height: 100
-          collapsed: false
-          log_scale_x: false
-          log_scale_y: false
-  smooth0:
-    _type: Smooth
-    category: signal
-    params:
-      smooth:
-        sigma: 5.0
-        axis: -1
-      common:
-        autotrigger: false
-        max_frequency: 30.0
-        frequency_mode: updates-per-second
-    gui_kwargs:
-      pos:
-      - 559
-      - 226
-      viewers:
-        out:
-          viewer_idx: 0
-          width: 375
-          height: 300
-          collapsed: false
-          log_scale_x: false
-          log_scale_y: false
-  psd0:
-    _type: PSD
-    category: signal
-    params:
-      psd:
-        method: welch
-        f_min: 20.0
-        f_max: 5000.0
-        axis: -1
-      welch:
-        nperseg: -1
-        noverlap: -1
-      common:
-        autotrigger: false
-        max_frequency: 30.0
-        frequency_mode: updates-per-second
-    gui_kwargs:
-      pos:
-      - 137
-      - 26
-      viewers:
+version: 2
+definitions: {}
+root:
+  nodes:
+    buffer0:
+      _type: Buffer
+      category: signal
+      params:
+        buffer:
+          size: 44100.0
+          axis: -1
+          unit: samples
+          reset: false
+        common:
+          autotrigger: false
+          max_frequency: 44100.0
+          frequency_mode: updates-per-second
+      gui_kwargs:
+        pos:
+        - -66
+        - 25
+        viewers:
+          out:
+            viewer_idx: 0
+            width: 175
+            height: 100
+            collapsed: false
+            log_scale_x: false
+            log_scale_y: false
+    buffer1:
+      _type: Buffer
+      category: signal
+      params:
+        buffer:
+          size: 500.0
+          axis: 1
+          unit: samples
+          reset: false
+        common:
+          autotrigger: false
+          max_frequency: 30.0
+          frequency_mode: updates-per-second
+      gui_kwargs:
+        pos:
+        - 761
+        - 29
+        viewers:
+          out:
+            viewer_idx: 0
+            width: 175
+            height: 100
+            collapsed: false
+            log_scale_x: false
+            log_scale_y: false
+    classifier0:
+      _type: Classifier
+      category: analysis
+      params:
+        classification:
+          n_states: 2
+          current_state: 2
+          add_to_training: false
+          train: false
+          classifier_choice: SVM
+          clear_training: false
+          load_data: false
+          save_data: false
+          data_file: goofi_clf_data
+        NaiveBayes:
+          var_smoothing: 1.0e-09
+        SVM:
+          C: 1.0
+          kernel: rbf
+          gamma: scale
+        RandomForest:
+          n_estimators: 100
+          max_depth: 3
+          min_samples_split: 10
+        LogisticRegression:
+          C: 1.0
+        KNeighbors:
+          n_neighbors: 5
+        common:
+          autotrigger: false
+          max_frequency: 30.0
+          frequency_mode: updates-per-second
+      gui_kwargs:
+        pos:
+        - 341
+        - 28
+        viewers:
+          probs:
+            viewer_idx: 0
+            width: 175
+            height: 100
+            collapsed: false
+            log_scale_x: false
+            log_scale_y: false
+          feature_importances:
+            viewer_idx: 0
+            width: 175
+            height: 100
+            collapsed: false
+            log_scale_x: false
+            log_scale_y: false
+    smooth0:
+      _type: Smooth
+      category: signal
+      params:
+        smooth:
+          sigma: 5.0
+          axis: -1
+        common:
+          autotrigger: false
+          max_frequency: 30.0
+          frequency_mode: updates-per-second
+      gui_kwargs:
+        pos:
+        - 559
+        - 226
+        viewers:
+          out:
+            viewer_idx: 0
+            width: 375
+            height: 300
+            collapsed: false
+            log_scale_x: false
+            log_scale_y: false
+    psd0:
+      _type: PSD
+      category: signal
+      params:
         psd:
-          viewer_idx: 0
-          width: 175
-          height: 100
-          collapsed: false
-          log_scale_x: true
-          log_scale_y: true
-  audiostream0:
-    _type: AudioStream
-    category: inputs
-    params:
-      audio:
-        sampling_rate: '44100'
-        device: Microsoft Sound Mapper - Input
-        convert_to_mono: true
-      common:
-        autotrigger: true
-        max_frequency: 30.0
-        frequency_mode: updates-per-second
-    gui_kwargs:
-      pos:
-      - -271
-      - 24
-      viewers:
-        out:
-          viewer_idx: 0
-          width: 175
-          height: 100
-          collapsed: false
-          log_scale_x: false
-          log_scale_y: false
-  select0:
-    _type: Select
-    category: array
-    params:
-      select:
-        axis: 0
-        include: '0'
-        exclude: ''
-        expand_asterisk: false
-      common:
-        autotrigger: false
-        max_frequency: 30.0
-        frequency_mode: updates-per-second
-    gui_kwargs:
-      pos:
-      - 549
-      - 29
-      viewers:
-        out:
-          viewer_idx: 0
-          width: 175
-          height: 100
-          collapsed: false
-          log_scale_x: false
-          log_scale_y: false
-links:
-- node_out: buffer0
-  node_in: psd0
-  slot_out: out
-  slot_in: data
-- node_out: buffer1
-  node_in: smooth0
-  slot_out: out
-  slot_in: data
-- node_out: classifier0
-  node_in: select0
-  slot_out: probs
-  slot_in: data
-- node_out: psd0
-  node_in: classifier0
-  slot_out: psd
-  slot_in: data
-- node_out: audiostream0
-  node_in: buffer0
-  slot_out: out
-  slot_in: val
-- node_out: select0
-  node_in: buffer1
-  slot_out: out
-  slot_in: val
+          method: welch
+          f_min: 20.0
+          f_max: 5000.0
+          axis: -1
+        welch:
+          nperseg: -1
+          noverlap: -1
+        common:
+          autotrigger: false
+          max_frequency: 30.0
+          frequency_mode: updates-per-second
+      gui_kwargs:
+        pos:
+        - 137
+        - 26
+        viewers:
+          psd:
+            viewer_idx: 0
+            width: 175
+            height: 100
+            collapsed: false
+            log_scale_x: true
+            log_scale_y: true
+    audiostream0:
+      _type: AudioStream
+      category: inputs
+      params:
+        audio:
+          sampling_rate: '44100'
+          device: Microsoft Sound Mapper - Input
+          convert_to_mono: true
+        common:
+          autotrigger: true
+          max_frequency: 30.0
+          frequency_mode: updates-per-second
+      gui_kwargs:
+        pos:
+        - -271
+        - 24
+        viewers:
+          out:
+            viewer_idx: 0
+            width: 175
+            height: 100
+            collapsed: false
+            log_scale_x: false
+            log_scale_y: false
+    select0:
+      _type: Select
+      category: array
+      params:
+        select:
+          axis: 0
+          include: '0'
+          exclude: ''
+          expand_asterisk: false
+        common:
+          autotrigger: false
+          max_frequency: 30.0
+          frequency_mode: updates-per-second
+      gui_kwargs:
+        pos:
+        - 549
+        - 29
+        viewers:
+          out:
+            viewer_idx: 0
+            width: 175
+            height: 100
+            collapsed: false
+            log_scale_x: false
+            log_scale_y: false
+  links:
+  - node_out: buffer0
+    node_in: psd0
+    slot_out: out
+    slot_in: data
+  - node_out: buffer1
+    node_in: smooth0
+    slot_out: out
+    slot_in: data
+  - node_out: classifier0
+    node_in: select0
+    slot_out: probs
+    slot_in: data
+  - node_out: psd0
+    node_in: classifier0
+    slot_out: psd
+    slot_in: data
+  - node_out: audiostream0
+    node_in: buffer0
+    slot_out: out
+    slot_in: val
+  - node_out: select0
+    node_in: buffer1
+    slot_out: out
+    slot_in: val
+  instances: {}

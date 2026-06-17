@@ -1,272 +1,276 @@
-nodes:
-  buffer0:
-    _type: Buffer
-    category: signal
-    params:
-      buffer:
-        size: 8.0
-        axis: -1
-        unit: seconds
-        reset: false
-      common:
-        autotrigger: false
-        max_frequency: 30.0
-        frequency_mode: updates-per-second
-    gui_kwargs:
-      pos:
-      - 122
-      - 179
-      viewers:
-        out:
-          viewer_idx: 0
-          width: 175
-          height: 100
-          collapsed: false
-          log_scale_x: false
-          log_scale_y: false
-  buffer1:
-    _type: Buffer
-    category: signal
-    params:
-      buffer:
-        size: 100.0
-        axis: 1
-        unit: samples
-        reset: false
-      common:
-        autotrigger: false
-        max_frequency: 30.0
-        frequency_mode: updates-per-second
-    gui_kwargs:
-      pos:
-      - 955
-      - 191
-      viewers:
-        out:
-          viewer_idx: 0
-          width: 175
-          height: 100
-          collapsed: false
-          log_scale_x: false
-          log_scale_y: false
-  classifier0:
-    _type: Classifier
-    category: analysis
-    params:
-      classification:
-        n_states: 2
-        current_state: 2
-        add_to_training: false
-        train: true
-        classifier_choice: RandomForest
-        clear_training: false
-        load_data: false
-        save_data: false
-        data_file: goofi_clf_data
-      NaiveBayes:
-        var_smoothing: 1.0e-09
-      SVM:
-        C: 1.0
-        kernel: rbf
-        gamma: scale
-      RandomForest:
-        n_estimators: 100
-        max_depth: 3
-        min_samples_split: 10
-      LogisticRegression:
-        C: 1.0
-      KNeighbors:
-        n_neighbors: 5
-      common:
-        autotrigger: false
-        max_frequency: 30.0
-        frequency_mode: updates-per-second
-    gui_kwargs:
-      pos:
-      - 536
-      - 185
-      viewers:
-        probs:
-          viewer_idx: 0
-          width: 175
-          height: 100
-          collapsed: false
-          log_scale_x: false
-          log_scale_y: false
-        feature_importances:
-          viewer_idx: 0
-          width: 175
-          height: 100
-          collapsed: false
-          log_scale_x: false
-          log_scale_y: false
-  eegrecording0:
-    _type: EEGRecording
-    category: inputs
-    params:
-      recording:
-        use_example_data: true
-        file_path: ''
-        file_sfreq: 256.0
-        source_name: goofi
-        stream_name: goofi-stream
-        loop: true
-        reset: false
-      common:
-        autotrigger: false
-        max_frequency: 30.0
-        frequency_mode: updates-per-second
-    gui_kwargs:
-      pos:
-      - -260
-      - 125
-      viewers: {}
-  lslclient0:
-    _type: LSLClient
-    category: inputs
-    params:
-      lsl_stream:
-        source_name: goofi
-        stream_name: ''
-        refresh: false
-      common:
-        autotrigger: true
-        max_frequency: 30.0
-        frequency_mode: updates-per-second
-    gui_kwargs:
-      pos:
-      - -292
-      - 177
-      viewers:
-        out:
-          viewer_idx: 0
-          width: 175
-          height: 100
-          collapsed: false
-          log_scale_x: false
-          log_scale_y: false
-  select0:
-    _type: Select
-    category: array
-    params:
-      select:
-        axis: 0
-        include: O1,O2
-        exclude: T9,T10,Iz
-        expand_asterisk: false
-      common:
-        autotrigger: false
-        max_frequency: 30.0
-        frequency_mode: updates-per-second
-    gui_kwargs:
-      pos:
-      - -84
-      - 179
-      viewers:
-        out:
-          viewer_idx: 0
-          width: 175
-          height: 100
-          collapsed: false
-          log_scale_x: false
-          log_scale_y: false
-  monolith0:
-    _type: Monolith
-    category: analysis
-    params:
-      monolith:
-        ignore_features: pyspi,toto
-        clip_value: 75.0
-      common:
-        autotrigger: false
-        max_frequency: 30.0
-        frequency_mode: updates-per-second
-    gui_kwargs:
-      pos:
-      - 328
-      - 181
-      viewers:
-        features:
-          viewer_idx: 0
-          width: 175
-          height: 100
-          collapsed: false
-          log_scale_x: false
-          log_scale_y: false
-  select1:
-    _type: Select
-    category: array
-    params:
-      select:
-        axis: 0
-        include: '0'
-        exclude: ''
-        expand_asterisk: false
-      common:
-        autotrigger: false
-        max_frequency: 30.0
-        frequency_mode: updates-per-second
-    gui_kwargs:
-      pos:
-      - 744
-      - 191
-      viewers:
-        out:
-          viewer_idx: 0
-          width: 175
-          height: 100
-          collapsed: false
-          log_scale_x: false
-          log_scale_y: false
-  smooth0:
-    _type: Smooth
-    category: signal
-    params:
-      smooth:
-        sigma: 2.0
-        axis: -1
-      common:
-        autotrigger: false
-        max_frequency: 30.0
-        frequency_mode: updates-per-second
-    gui_kwargs:
-      pos:
-      - 748
-      - 390
-      viewers:
-        out:
-          viewer_idx: 0
-          width: 375
-          height: 300
-          collapsed: false
-          log_scale_x: false
-          log_scale_y: false
-links:
-- node_out: buffer0
-  node_in: monolith0
-  slot_out: out
-  slot_in: data
-- node_out: buffer1
-  node_in: smooth0
-  slot_out: out
-  slot_in: data
-- node_out: classifier0
-  node_in: select1
-  slot_out: probs
-  slot_in: data
-- node_out: lslclient0
-  node_in: select0
-  slot_out: out
-  slot_in: data
-- node_out: select0
-  node_in: buffer0
-  slot_out: out
-  slot_in: val
-- node_out: monolith0
-  node_in: classifier0
-  slot_out: features
-  slot_in: data
-- node_out: select1
-  node_in: buffer1
-  slot_out: out
-  slot_in: val
+version: 2
+definitions: {}
+root:
+  nodes:
+    buffer0:
+      _type: Buffer
+      category: signal
+      params:
+        buffer:
+          size: 8.0
+          axis: -1
+          unit: seconds
+          reset: false
+        common:
+          autotrigger: false
+          max_frequency: 30.0
+          frequency_mode: updates-per-second
+      gui_kwargs:
+        pos:
+        - 122
+        - 179
+        viewers:
+          out:
+            viewer_idx: 0
+            width: 175
+            height: 100
+            collapsed: false
+            log_scale_x: false
+            log_scale_y: false
+    buffer1:
+      _type: Buffer
+      category: signal
+      params:
+        buffer:
+          size: 100.0
+          axis: 1
+          unit: samples
+          reset: false
+        common:
+          autotrigger: false
+          max_frequency: 30.0
+          frequency_mode: updates-per-second
+      gui_kwargs:
+        pos:
+        - 955
+        - 191
+        viewers:
+          out:
+            viewer_idx: 0
+            width: 175
+            height: 100
+            collapsed: false
+            log_scale_x: false
+            log_scale_y: false
+    classifier0:
+      _type: Classifier
+      category: analysis
+      params:
+        classification:
+          n_states: 2
+          current_state: 2
+          add_to_training: false
+          train: true
+          classifier_choice: RandomForest
+          clear_training: false
+          load_data: false
+          save_data: false
+          data_file: goofi_clf_data
+        NaiveBayes:
+          var_smoothing: 1.0e-09
+        SVM:
+          C: 1.0
+          kernel: rbf
+          gamma: scale
+        RandomForest:
+          n_estimators: 100
+          max_depth: 3
+          min_samples_split: 10
+        LogisticRegression:
+          C: 1.0
+        KNeighbors:
+          n_neighbors: 5
+        common:
+          autotrigger: false
+          max_frequency: 30.0
+          frequency_mode: updates-per-second
+      gui_kwargs:
+        pos:
+        - 536
+        - 185
+        viewers:
+          probs:
+            viewer_idx: 0
+            width: 175
+            height: 100
+            collapsed: false
+            log_scale_x: false
+            log_scale_y: false
+          feature_importances:
+            viewer_idx: 0
+            width: 175
+            height: 100
+            collapsed: false
+            log_scale_x: false
+            log_scale_y: false
+    eegrecording0:
+      _type: EEGRecording
+      category: inputs
+      params:
+        recording:
+          use_example_data: true
+          file_path: ''
+          file_sfreq: 256.0
+          source_name: goofi
+          stream_name: goofi-stream
+          loop: true
+          reset: false
+        common:
+          autotrigger: false
+          max_frequency: 30.0
+          frequency_mode: updates-per-second
+      gui_kwargs:
+        pos:
+        - -260
+        - 125
+        viewers: {}
+    lslclient0:
+      _type: LSLClient
+      category: inputs
+      params:
+        lsl_stream:
+          source_name: goofi
+          stream_name: ''
+          refresh: false
+        common:
+          autotrigger: true
+          max_frequency: 30.0
+          frequency_mode: updates-per-second
+      gui_kwargs:
+        pos:
+        - -292
+        - 177
+        viewers:
+          out:
+            viewer_idx: 0
+            width: 175
+            height: 100
+            collapsed: false
+            log_scale_x: false
+            log_scale_y: false
+    select0:
+      _type: Select
+      category: array
+      params:
+        select:
+          axis: 0
+          include: O1,O2
+          exclude: T9,T10,Iz
+          expand_asterisk: false
+        common:
+          autotrigger: false
+          max_frequency: 30.0
+          frequency_mode: updates-per-second
+      gui_kwargs:
+        pos:
+        - -84
+        - 179
+        viewers:
+          out:
+            viewer_idx: 0
+            width: 175
+            height: 100
+            collapsed: false
+            log_scale_x: false
+            log_scale_y: false
+    monolith0:
+      _type: Monolith
+      category: analysis
+      params:
+        monolith:
+          ignore_features: pyspi,toto
+          clip_value: 75.0
+        common:
+          autotrigger: false
+          max_frequency: 30.0
+          frequency_mode: updates-per-second
+      gui_kwargs:
+        pos:
+        - 328
+        - 181
+        viewers:
+          features:
+            viewer_idx: 0
+            width: 175
+            height: 100
+            collapsed: false
+            log_scale_x: false
+            log_scale_y: false
+    select1:
+      _type: Select
+      category: array
+      params:
+        select:
+          axis: 0
+          include: '0'
+          exclude: ''
+          expand_asterisk: false
+        common:
+          autotrigger: false
+          max_frequency: 30.0
+          frequency_mode: updates-per-second
+      gui_kwargs:
+        pos:
+        - 744
+        - 191
+        viewers:
+          out:
+            viewer_idx: 0
+            width: 175
+            height: 100
+            collapsed: false
+            log_scale_x: false
+            log_scale_y: false
+    smooth0:
+      _type: Smooth
+      category: signal
+      params:
+        smooth:
+          sigma: 2.0
+          axis: -1
+        common:
+          autotrigger: false
+          max_frequency: 30.0
+          frequency_mode: updates-per-second
+      gui_kwargs:
+        pos:
+        - 748
+        - 390
+        viewers:
+          out:
+            viewer_idx: 0
+            width: 375
+            height: 300
+            collapsed: false
+            log_scale_x: false
+            log_scale_y: false
+  links:
+  - node_out: buffer0
+    node_in: monolith0
+    slot_out: out
+    slot_in: data
+  - node_out: buffer1
+    node_in: smooth0
+    slot_out: out
+    slot_in: data
+  - node_out: classifier0
+    node_in: select1
+    slot_out: probs
+    slot_in: data
+  - node_out: lslclient0
+    node_in: select0
+    slot_out: out
+    slot_in: data
+  - node_out: select0
+    node_in: buffer0
+    slot_out: out
+    slot_in: val
+  - node_out: monolith0
+    node_in: classifier0
+    slot_out: features
+    slot_in: data
+  - node_out: select1
+    node_in: buffer1
+    slot_out: out
+    slot_in: val
+  instances: {}

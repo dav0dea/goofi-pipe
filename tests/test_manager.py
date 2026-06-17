@@ -34,6 +34,7 @@ def _bare_manager(use_multiprocessing: bool = True) -> Manager:
     mgr.nodes = NodeContainer()
     mgr._node_groups = {}
     mgr._links = []
+    mgr._refs_by_uid = {}
     NodeProcessRegistry().headless = True
     mgr._save_path = None
     mgr._unsaved_changes = False
@@ -56,12 +57,64 @@ def test_serialize_patch_returns_yaml_without_writing(tmp_path):
         _build_simple_graph(mgr)
         text = mgr.serialize_patch()
         doc = _yaml.load(text, Loader=_yaml.FullLoader)
-        assert set(doc.keys()) >= {"nodes", "links"}
-        assert len(doc["nodes"]) == 2
+        # v2 envelope: nodes/links live under root; version + (empty) sub-patch maps.
+        assert doc["version"] == 2
+        assert doc["definitions"] == {} and doc["root"]["instances"] == {}
+        assert len(doc["root"]["nodes"]) == 2
+        # every node carries a stable uid
+        assert all("uid" in n for n in doc["root"]["nodes"].values())
         # serialize must not have created a file or set save_path
         assert mgr.save_path is None
     finally:
         mgr.terminate()
+
+
+def test_save_load_roundtrip_preserves_uids(tmp_path):
+    mgr = _bare_manager(use_multiprocessing=False)
+    try:
+        osc, sel = _build_simple_graph(mgr)
+        uids_before = {name: mgr.nodes[name].member_uid for name in (osc, sel)}
+        assert all(uids_before.values())
+        fp = str(tmp_path / "p.gfi")
+        mgr.save(fp, overwrite=True)
+    finally:
+        mgr.terminate()
+
+    mgr2 = _bare_manager(use_multiprocessing=False)
+    try:
+        mgr2.load(fp)
+        uids_after = {name: mgr2.nodes[name].member_uid for name in (osc, sel)}
+        assert uids_after == uids_before  # uid is stable across save/load
+    finally:
+        mgr2.terminate()
+
+
+def test_load_v1_flat_patch_still_works(tmp_path):
+    # A legacy flat patch (no `version` key) must still load and get fresh uids.
+    import yaml as _yaml
+    mgr = _bare_manager(use_multiprocessing=False)
+    try:
+        _build_simple_graph(mgr)
+        v2_text = mgr.serialize_patch()
+        doc = _yaml.load(v2_text, Loader=_yaml.FullLoader)
+    finally:
+        mgr.terminate()
+    # Strip to the legacy flat shape (drop uids too).
+    flat = {"nodes": {}, "links": doc["root"]["links"]}
+    for name, n in doc["root"]["nodes"].items():
+        n.pop("uid", None)
+        flat["nodes"][name] = n
+    fp = tmp_path / "legacy.gfi"
+    fp.write_text(_yaml.dump(flat, sort_keys=False))
+
+    mgr2 = _bare_manager(use_multiprocessing=False)
+    try:
+        mgr2.load(str(fp))
+        assert len(mgr2.nodes) == 2
+        # fresh uids minted on load
+        assert all(mgr2.nodes[name].member_uid for name in mgr2.nodes)
+    finally:
+        mgr2.terminate()
 
 
 def test_creation_smoke():

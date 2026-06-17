@@ -1,268 +1,272 @@
-nodes:
-  buffer0:
-    _type: Buffer
-    category: signal
-    params:
-      buffer:
-        size: 500.0
-        axis: -1
-        unit: samples
-        reset: false
-      common:
-        autotrigger: false
-        max_frequency: 30.0
-        frequency_mode: updates-per-second
-    gui_kwargs:
-      pos:
-      - 561
-      - 174
-      viewers:
-        out:
-          viewer_idx: 0
-          width: 175
-          height: 100
-          collapsed: false
-          log_scale_x: false
-          log_scale_y: false
-  buffer1:
-    _type: Buffer
-    category: signal
-    params:
-      buffer:
-        size: 3.0
-        axis: 2
-        unit: samples
-        reset: false
-      common:
-        autotrigger: false
-        max_frequency: 30.0
-        frequency_mode: updates-per-second
-    gui_kwargs:
-      pos:
-      - 975
-      - 172
-      viewers:
-        out:
-          viewer_idx: 1
-          width: 175
-          height: 100
-          collapsed: false
-          log_scale_x: false
-          log_scale_y: false
-  buffer2:
-    _type: Buffer
-    category: signal
-    params:
-      buffer:
-        size: 300.0
-        axis: 1
-        unit: samples
-        reset: false
-      common:
-        autotrigger: false
-        max_frequency: 30.0
-        frequency_mode: updates-per-second
-    gui_kwargs:
-      pos:
-      - 964
-      - 369
-      viewers:
-        out:
-          viewer_idx: 0
-          width: 175
-          height: 100
-          collapsed: false
-          log_scale_x: false
-          log_scale_y: false
-  connectivity0:
-    _type: Connectivity
-    category: analysis
-    params:
-      classical:
-        method: wPLI
-      biotuner:
-        method: None
-        n_peaks: 5
-        f_min: 2.0
-        f_max: 30.0
-        precision: 0.1
-        peaks_function: EMD
-      Adjacency:
-        Binarize: false
-        threshold: 0.5
-      common:
-        autotrigger: false
-        max_frequency: 30.0
-        frequency_mode: updates-per-second
-    gui_kwargs:
-      pos:
-      - 772
-      - 173
-      viewers:
-        matrix:
-          viewer_idx: 1
-          width: 175
-          height: 100
-          collapsed: false
-          log_scale_x: false
-          log_scale_y: false
-  eegrecording0:
-    _type: EEGRecording
-    category: inputs
-    params:
-      recording:
-        use_example_data: true
-        file_path: ''
-        file_sfreq: 256.0
-        source_name: goofi
-        stream_name: goofi-stream
-        loop: true
-        reset: false
-      common:
-        autotrigger: false
-        max_frequency: 30.0
-        frequency_mode: updates-per-second
-    gui_kwargs:
-      pos:
-      - 246
-      - 173
-      viewers: {}
-  lslclient0:
-    _type: LSLClient
-    category: inputs
-    params:
-      lsl_stream:
-        source_name: goofi
-        stream_name: ''
-        refresh: false
-      common:
-        autotrigger: true
-        max_frequency: 30.0
-        frequency_mode: updates-per-second
-    gui_kwargs:
-      pos:
-      - 360
-      - 173
-      viewers:
-        out:
-          viewer_idx: 0
-          width: 175
-          height: 100
-          collapsed: false
-          log_scale_x: false
-          log_scale_y: false
-  psd0:
-    _type: PSD
-    category: signal
-    params:
-      psd:
-        method: welch
-        f_min: 1.0
-        f_max: 40.0
-        axis: -1
-      welch:
-        nperseg: -1
-        noverlap: -1
-      common:
-        autotrigger: false
-        max_frequency: 30.0
-        frequency_mode: updates-per-second
-    gui_kwargs:
-      pos:
-      - 765
-      - 367
-      viewers:
+version: 2
+definitions: {}
+root:
+  nodes:
+    buffer0:
+      _type: Buffer
+      category: signal
+      params:
+        buffer:
+          size: 500.0
+          axis: -1
+          unit: samples
+          reset: false
+        common:
+          autotrigger: false
+          max_frequency: 30.0
+          frequency_mode: updates-per-second
+      gui_kwargs:
+        pos:
+        - 561
+        - 174
+        viewers:
+          out:
+            viewer_idx: 0
+            width: 175
+            height: 100
+            collapsed: false
+            log_scale_x: false
+            log_scale_y: false
+    buffer1:
+      _type: Buffer
+      category: signal
+      params:
+        buffer:
+          size: 3.0
+          axis: 2
+          unit: samples
+          reset: false
+        common:
+          autotrigger: false
+          max_frequency: 30.0
+          frequency_mode: updates-per-second
+      gui_kwargs:
+        pos:
+        - 975
+        - 172
+        viewers:
+          out:
+            viewer_idx: 1
+            width: 175
+            height: 100
+            collapsed: false
+            log_scale_x: false
+            log_scale_y: false
+    buffer2:
+      _type: Buffer
+      category: signal
+      params:
+        buffer:
+          size: 300.0
+          axis: 1
+          unit: samples
+          reset: false
+        common:
+          autotrigger: false
+          max_frequency: 30.0
+          frequency_mode: updates-per-second
+      gui_kwargs:
+        pos:
+        - 964
+        - 369
+        viewers:
+          out:
+            viewer_idx: 0
+            width: 175
+            height: 100
+            collapsed: false
+            log_scale_x: false
+            log_scale_y: false
+    connectivity0:
+      _type: Connectivity
+      category: analysis
+      params:
+        classical:
+          method: wPLI
+        biotuner:
+          method: None
+          n_peaks: 5
+          f_min: 2.0
+          f_max: 30.0
+          precision: 0.1
+          peaks_function: EMD
+        Adjacency:
+          Binarize: false
+          threshold: 0.5
+        common:
+          autotrigger: false
+          max_frequency: 30.0
+          frequency_mode: updates-per-second
+      gui_kwargs:
+        pos:
+        - 772
+        - 173
+        viewers:
+          matrix:
+            viewer_idx: 1
+            width: 175
+            height: 100
+            collapsed: false
+            log_scale_x: false
+            log_scale_y: false
+    eegrecording0:
+      _type: EEGRecording
+      category: inputs
+      params:
+        recording:
+          use_example_data: true
+          file_path: ''
+          file_sfreq: 256.0
+          source_name: goofi
+          stream_name: goofi-stream
+          loop: true
+          reset: false
+        common:
+          autotrigger: false
+          max_frequency: 30.0
+          frequency_mode: updates-per-second
+      gui_kwargs:
+        pos:
+        - 246
+        - 173
+        viewers: {}
+    lslclient0:
+      _type: LSLClient
+      category: inputs
+      params:
+        lsl_stream:
+          source_name: goofi
+          stream_name: ''
+          refresh: false
+        common:
+          autotrigger: true
+          max_frequency: 30.0
+          frequency_mode: updates-per-second
+      gui_kwargs:
+        pos:
+        - 360
+        - 173
+        viewers:
+          out:
+            viewer_idx: 0
+            width: 175
+            height: 100
+            collapsed: false
+            log_scale_x: false
+            log_scale_y: false
+    psd0:
+      _type: PSD
+      category: signal
+      params:
         psd:
-          viewer_idx: 0
-          width: 175
-          height: 100
-          collapsed: false
-          log_scale_x: true
-          log_scale_y: true
-  reduce0:
-    _type: Reduce
-    category: array
-    params:
-      reduce:
-        method: mean
-        axis: 0
-      common:
-        autotrigger: false
-        max_frequency: 30.0
-        frequency_mode: updates-per-second
-    gui_kwargs:
-      pos:
-      - 562
-      - 366
-      viewers:
-        out:
-          viewer_idx: 0
-          width: 175
-          height: 100
-          collapsed: false
-          log_scale_x: false
-          log_scale_y: false
-  normalization0:
-    _type: Normalization
-    category: signal
-    params:
-      normalization:
-        method: minmax
-        buffer_size: 1024
-        reset: true
-        axis: 0
-      quantile:
-        n_quantiles: 1000
-        output_distribution: uniform
-      robust:
-        quantile_min: 25
-        quantile_max: 75
-        unit_variance: false
-      minmax:
-        feature_min: 0.0
-        feature_max: 1.0
-      common:
-        autotrigger: false
-        max_frequency: 30.0
-        frequency_mode: updates-per-second
-    gui_kwargs:
-      pos:
-      - 1164
-      - 374
-      viewers:
-        normalized:
-          viewer_idx: 1
-          width: 315
-          height: 240
-          collapsed: false
-          log_scale_x: false
-          log_scale_y: false
-links:
-- node_out: buffer0
-  node_in: reduce0
-  slot_out: out
-  slot_in: array
-- node_out: buffer0
-  node_in: connectivity0
-  slot_out: out
-  slot_in: data
-- node_out: buffer2
-  node_in: normalization0
-  slot_out: out
-  slot_in: data
-- node_out: connectivity0
-  node_in: buffer1
-  slot_out: matrix
-  slot_in: val
-- node_out: lslclient0
-  node_in: buffer0
-  slot_out: out
-  slot_in: val
-- node_out: psd0
-  node_in: buffer2
-  slot_out: psd
-  slot_in: val
-- node_out: reduce0
-  node_in: psd0
-  slot_out: out
-  slot_in: data
+          method: welch
+          f_min: 1.0
+          f_max: 40.0
+          axis: -1
+        welch:
+          nperseg: -1
+          noverlap: -1
+        common:
+          autotrigger: false
+          max_frequency: 30.0
+          frequency_mode: updates-per-second
+      gui_kwargs:
+        pos:
+        - 765
+        - 367
+        viewers:
+          psd:
+            viewer_idx: 0
+            width: 175
+            height: 100
+            collapsed: false
+            log_scale_x: true
+            log_scale_y: true
+    reduce0:
+      _type: Reduce
+      category: array
+      params:
+        reduce:
+          method: mean
+          axis: 0
+        common:
+          autotrigger: false
+          max_frequency: 30.0
+          frequency_mode: updates-per-second
+      gui_kwargs:
+        pos:
+        - 562
+        - 366
+        viewers:
+          out:
+            viewer_idx: 0
+            width: 175
+            height: 100
+            collapsed: false
+            log_scale_x: false
+            log_scale_y: false
+    normalization0:
+      _type: Normalization
+      category: signal
+      params:
+        normalization:
+          method: minmax
+          buffer_size: 1024
+          reset: true
+          axis: 0
+        quantile:
+          n_quantiles: 1000
+          output_distribution: uniform
+        robust:
+          quantile_min: 25
+          quantile_max: 75
+          unit_variance: false
+        minmax:
+          feature_min: 0.0
+          feature_max: 1.0
+        common:
+          autotrigger: false
+          max_frequency: 30.0
+          frequency_mode: updates-per-second
+      gui_kwargs:
+        pos:
+        - 1164
+        - 374
+        viewers:
+          normalized:
+            viewer_idx: 1
+            width: 315
+            height: 240
+            collapsed: false
+            log_scale_x: false
+            log_scale_y: false
+  links:
+  - node_out: buffer0
+    node_in: reduce0
+    slot_out: out
+    slot_in: array
+  - node_out: buffer0
+    node_in: connectivity0
+    slot_out: out
+    slot_in: data
+  - node_out: buffer2
+    node_in: normalization0
+    slot_out: out
+    slot_in: data
+  - node_out: connectivity0
+    node_in: buffer1
+    slot_out: matrix
+    slot_in: val
+  - node_out: lslclient0
+    node_in: buffer0
+    slot_out: out
+    slot_in: val
+  - node_out: psd0
+    node_in: buffer2
+    slot_out: psd
+    slot_in: val
+  - node_out: reduce0
+    node_in: psd0
+    slot_out: out
+    slot_in: data
+  instances: {}

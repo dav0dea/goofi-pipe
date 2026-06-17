@@ -40,6 +40,19 @@ if TYPE_CHECKING:
     from goofi.bridge.server import BridgeServer
 
 
+# Reserved separator for namespaced sub-patch member names (e.g. "sub0::osc0").
+# A user/file node name may never contain it, so the grouping runtime can mint
+# collision-free qualified names and round-trip them unambiguously.
+SUBPATCH_SEP = "::"
+
+
+def _reject_reserved_name(name: str) -> None:
+    if SUBPATCH_SEP in name:
+        raise ValueError(
+            f"node name {name!r} may not contain the reserved separator '{SUBPATCH_SEP}'"
+        )
+
+
 def mark_unsaved_changes(func):
     def wrapper(self, *args, **kwargs):
         res = func(self, *args, **kwargs)
@@ -134,6 +147,10 @@ class Manager:
         # explicit link table — manager-owned, replaces the per-node
         # out_conns list from the old code.
         self._links: List[Dict[str, str]] = []
+        # Stable-identity index: member_uid -> NodeRef. The uid is minted once
+        # per node, persisted in the .gfi, and survives respawn/reload — the
+        # spine the persistence + (future) data-by-uid layers key on.
+        self._refs_by_uid: Dict[str, NodeRef] = {}
 
         NodeProcessRegistry().headless = headless
 
@@ -246,6 +263,13 @@ class Manager:
             )
             return ref
 
+    def _mint_uid(self) -> str:
+        """A fresh member_uid not currently in use (48 bits + dedup pass)."""
+        while True:
+            uid = uuid.uuid4().hex[:12]
+            if uid not in self._refs_by_uid:
+                return uid
+
     @mark_unsaved_changes
     def add_node(
         self,
@@ -254,9 +278,13 @@ class Manager:
         notify_gui: bool = True,
         name: Optional[str] = None,
         params: Optional[Dict[str, Dict[str, Any]]] = None,
+        member_uid: Optional[str] = None,
+        membership: Optional[Dict[str, Any]] = None,
         **gui_kwargs,
     ) -> str:
         print(f"Adding node '{node_type}' from category '{category}'.")
+        if name is not None:
+            _reject_reserved_name(name)
 
         mod = importlib.import_module(f"goofi.nodes.{category}.{node_type.lower()}")
         node_cls: type = getattr(mod, node_type)
@@ -290,6 +318,13 @@ class Manager:
         registered = self.nodes.add_node(assigned_name, ref, force_name=True)
         self._node_groups[registered] = group
 
+        # Assign the stable identity (mint if absent or colliding) and index it.
+        if member_uid is None or member_uid in self._refs_by_uid:
+            member_uid = self._mint_uid()
+        ref.member_uid = member_uid
+        ref.membership = membership
+        self._refs_by_uid[member_uid] = ref
+
         # Best-effort: block briefly for the initial STATE_UPDATE so the
         # rest of the system (save / bridge) has node state to read.
         ref.wait_for_state(timeout=2.0)
@@ -310,6 +345,14 @@ class Manager:
             if link["node_out"] == name or link["node_in"] == name:
                 self._teardown_link(link, notify_gui=False)
                 self._links.remove(link)
+
+        # Drop the uid index entry for this node before it leaves the container.
+        try:
+            uid = self.nodes[name].member_uid
+            if uid is not None:
+                self._refs_by_uid.pop(uid, None)
+        except KeyError:
+            pass
 
         self.nodes.remove_node(name)
         self._node_groups.pop(name, None)
@@ -432,18 +475,35 @@ class Manager:
 
         print(f"Loading manager state from '{filepath}'...")
 
+        from goofi.patch_format import flat_view, normalize_loaded
+
         with open(filepath, "r") as f:
-            manager_yaml = yaml.load(f, Loader=yaml.FullLoader)
+            raw = yaml.load(f, Loader=yaml.FullLoader)
 
-        for name, node in manager_yaml["nodes"].items():
-            xpos, ypos = node["gui_kwargs"]["pos"]
-            if xpos == np.iinfo(np.int32).min or ypos == np.iinfo(np.int32).min:
-                print(f"WARNING: Node '{name}' has a corrupted position. Resetting to (0, 0).")
-                node["gui_kwargs"]["pos"] = (0, 0)
+        nodes_doc, links_doc, _instances, _defs, layout = flat_view(normalize_loaded(raw))
 
-            self.add_node(node["_type"], node["category"], name=name, params=node["params"], **node["gui_kwargs"])
+        for name, node in nodes_doc.items():
+            _reject_reserved_name(name)
+            gk = node.get("gui_kwargs") or {}
+            pos = gk.get("pos")
+            if pos is not None:
+                xpos, ypos = pos
+                if xpos == np.iinfo(np.int32).min or ypos == np.iinfo(np.int32).min:
+                    print(f"WARNING: Node '{name}' has a corrupted position. Resetting to (0, 0).")
+                    gk["pos"] = (0, 0)
+            node["gui_kwargs"] = gk
 
-        for link in manager_yaml["links"]:
+            self.add_node(
+                node["_type"],
+                node["category"],
+                name=name,
+                params=node["params"],
+                member_uid=node.get("uid"),
+                membership=node.get("membership"),
+                **node["gui_kwargs"],
+            )
+
+        for link in links_doc:
             self.add_link(link["node_out"], link["node_in"], link["slot_out"], link["slot_in"])
 
         # Restore the frontend layout if the patch carries one (optional key —
@@ -453,7 +513,7 @@ class Manager:
         # during load got a layout-less `hello` and needs this to catch up
         # (nodes already stream via node_added events; layout has no other
         # delivery path). The frontend ignores a null payload.
-        self._layout = manager_yaml.get("layout")
+        self._layout = layout
         if self._bridge is not None:
             self._bridge.control.broadcast_threadsafe(
                 {"event": "layout", "payload": {"layout": self._layout}}
@@ -485,12 +545,26 @@ class Manager:
             # Drop output-subscriber bookkeeping — it's transient runtime
             # state, not part of the persisted graph definition.
             state.pop("output_subscribers", None)
+            # Stable identity (and sub-patch membership, if any) — serialized_state
+            # carries neither; merge them from the NodeRef.
+            if ref.member_uid is not None:
+                state["uid"] = ref.member_uid
+            if ref.membership:
+                state["membership"] = ref.membership
             serialized_nodes[name] = state
 
-        patch: Dict[str, Any] = {"nodes": serialized_nodes, "links": list(self._links)}
-        if self.layout is not None:
-            patch["layout"] = self.layout
-        return yaml.dump(patch, sort_keys=False)
+        # Emit the recursive v2 envelope. Definitions/instances are empty until
+        # the grouping runtime populates them; flat patches are the degenerate case.
+        from goofi.patch_format import build_v2
+
+        doc = build_v2(
+            nodes=serialized_nodes,
+            links=list(self._links),
+            layout=self.layout,
+            definitions={},
+            instances={},
+        )
+        return yaml.dump(doc, sort_keys=False)
 
     def save(self, filepath: Optional[str] = None, overwrite: bool = False, timeout: float = 3.0) -> None:
         """Persist the current graph to a `.gfi` YAML file.

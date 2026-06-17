@@ -229,6 +229,13 @@ class NodeRef:
     _messaging_thread: Optional[Thread] = field(default=None, repr=False, compare=False)
     _waitset: Optional[WaitSet] = field(default=None, repr=False, compare=False)
     last_error: Optional[str] = field(default=None, repr=False, compare=False)
+    # Stable identity for the persistence layer: a uuid minted once by the
+    # manager (Manager.add_node), persisted in the .gfi, and carried across
+    # respawns/reloads. `membership` records sub-patch membership (set by the
+    # grouping runtime; None for a top-level leaf). Identity bookkeeping, so
+    # excluded from dataclass equality.
+    member_uid: Optional[str] = field(default=None, repr=False, compare=False)
+    membership: Optional[Dict[str, Any]] = field(default=None, repr=False, compare=False)
 
     def __post_init__(self):
         self.__doc__ = self.node_class.docstring()
