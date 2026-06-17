@@ -5,6 +5,8 @@
 	type Props = {
 		onAddNode: () => void;
 		onSave: () => void;
+		onSaveAs: () => void;
+		onSaveInBrowser: () => void;
 		onLoad: () => void;
 		onFitView: () => void;
 		/** Workspace tab strip, rendered in the header's central gap between the
@@ -12,9 +14,15 @@
 		tabs?: Snippet;
 	};
 
-	const { onAddNode, onSave, onLoad, onFitView, tabs }: Props = $props();
+	const { onAddNode, onSave, onSaveAs, onSaveInBrowser, onLoad, onFitView, tabs }: Props = $props();
 
 	const g = graph();
+	let saveMenuOpen = $state(false);
+
+	function pick(fn: () => void): void {
+		saveMenuOpen = false;
+		fn();
+	}
 </script>
 
 <div class="topbar">
@@ -40,7 +48,23 @@
 	<div class="actions">
 		<button class="ghost" data-testid="topbar-add" onclick={onAddNode}>＋ Add node</button>
 		<button class="ghost" data-testid="topbar-fit" onclick={onFitView}>Fit</button>
-		<button class="ghost" data-testid="topbar-save" onclick={onSave}>Save</button>
+		<div class="split">
+			<button class="ghost main" data-testid="topbar-save" onclick={onSave}>Save</button>
+			<button
+				class="ghost caret"
+				data-testid="topbar-save-caret"
+				aria-label="Save options"
+				onclick={() => (saveMenuOpen = !saveMenuOpen)}>▾</button
+			>
+			{#if saveMenuOpen}
+				<div class="menu" data-testid="topbar-save-menu">
+					<button onclick={() => pick(onSaveAs)} data-testid="topbar-save-as">Save As…</button>
+					<button onclick={() => pick(onSaveInBrowser)} data-testid="topbar-save-browser"
+						>Save in browser</button
+					>
+				</div>
+			{/if}
+		</div>
 		<button class="ghost" data-testid="topbar-load" onclick={onLoad}>Load…</button>
 	</div>
 </div>
@@ -106,5 +130,44 @@
 		align-items: center;
 		gap: 4px;
 		flex: 0 0 auto;
+	}
+	.split {
+		position: relative;
+		display: flex;
+		align-items: center;
+	}
+	.split .main {
+		border-top-right-radius: 0;
+		border-bottom-right-radius: 0;
+	}
+	.split .caret {
+		padding: 0 5px;
+		border-top-left-radius: 0;
+		border-bottom-left-radius: 0;
+	}
+	.split .menu {
+		position: absolute;
+		top: calc(100% + 4px);
+		right: 0;
+		background: var(--bg-elev-1);
+		border: 1px solid var(--border-strong);
+		border-radius: var(--radius-sm);
+		box-shadow: var(--shadow-2);
+		display: flex;
+		flex-direction: column;
+		min-width: 160px;
+		z-index: 50;
+	}
+	.split .menu button {
+		background: transparent;
+		border: none;
+		color: var(--text);
+		text-align: left;
+		padding: 8px 12px;
+		cursor: pointer;
+		font-size: 12px;
+	}
+	.split .menu button:hover {
+		background: color-mix(in srgb, var(--accent) 12%, transparent);
 	}
 </style>

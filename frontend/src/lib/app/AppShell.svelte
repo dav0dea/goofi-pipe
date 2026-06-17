@@ -10,6 +10,7 @@
 -->
 <script lang="ts">
 	import TopBar from '$lib/editor/TopBar.svelte';
+	import FsBrowser from '$lib/fs/FsBrowser.svelte';
 	import ErrorPanel from '$lib/editor/ErrorPanel.svelte';
 	import WorkspaceTabs from '$lib/workspace/WorkspaceTabs.svelte';
 	import WorkspaceView from '$lib/workspace/WorkspaceView.svelte';
@@ -43,36 +44,82 @@
 		editorFor(ws.activePanelId)?.focusNode(name);
 	}
 
-	async function triggerSave(): Promise<void> {
+	// Backend file browser state — null = closed.
+	let fsMode = $state<null | 'save' | 'load'>(null);
+
+	function dirOf(p: string | null): string | null {
+		if (!p) return null;
+		const i = p.lastIndexOf('/');
+		return i > 0 ? p.slice(0, i) : null;
+	}
+
+	async function saveBackend(path?: string): Promise<void> {
+		const { path: saved } = await g.save(path ?? g.savePath ?? undefined, true, ws.serialize());
+		g.savePath = saved; // backend also broadcasts save_path_changed; set now for immediacy
+	}
+
+	// Default Save: silent overwrite when the patch is named, else "Save As".
+	function triggerSave(): void {
+		if (g.savePath) {
+			void saveBackend().catch((e) => console.error('save failed', e));
+		} else {
+			fsMode = 'save';
+		}
+	}
+
+	function saveAs(): void {
+		fsMode = 'save';
+	}
+
+	// "Save in browser": download the patch YAML to the user's computer; no backend write.
+	async function saveInBrowser(): Promise<void> {
 		try {
-			const { yaml, path } = await g.save(undefined, true, ws.serialize());
+			const { yaml } = await g.serialize();
 			const blob = new Blob([yaml], { type: 'application/x-yaml' });
 			const url = URL.createObjectURL(blob);
 			const a = document.createElement('a');
+			const base = g.savePath ? (g.savePath.split('/').pop() ?? '') : '';
 			a.href = url;
-			a.download = path.split('/').pop() ?? 'patch.gfi';
+			a.download =
+				base || `${(window.prompt('Name this patch', 'patch') ?? 'patch').replace(/\.gfi$/, '')}.gfi`;
 			a.click();
 			setTimeout(() => URL.revokeObjectURL(url), 1000);
 		} catch (e) {
-			console.error('save failed', e);
+			console.error('browser save failed', e);
 		}
 	}
 
 	function triggerLoad(): void {
+		fsMode = 'load';
+	}
+
+	// Secondary load path: upload a .gfi from the frontend computer.
+	function uploadLoad(): void {
+		fsMode = null;
 		const input = document.createElement('input');
 		input.type = 'file';
 		input.accept = '.gfi,.yaml,.yml';
 		input.onchange = async () => {
 			const f = input.files?.[0];
 			if (!f) return;
-			const content = await f.text();
 			try {
-				await g.loadText(content);
+				await g.loadText(await f.text());
 			} catch (e) {
 				console.error('load failed', e);
 			}
 		};
 		input.click();
+	}
+
+	async function onFsPick(pickedPath: string): Promise<void> {
+		const mode = fsMode;
+		fsMode = null;
+		try {
+			if (mode === 'save') await saveBackend(pickedPath);
+			else if (mode === 'load') await g.load(pickedPath);
+		} catch (e) {
+			console.error(`${mode} failed`, e);
+		}
 	}
 
 	function onKeydown(e: KeyboardEvent): void {
@@ -130,6 +177,8 @@
 		onAddNode={addNode}
 		onFitView={fitView}
 		onSave={triggerSave}
+		onSaveAs={saveAs}
+		onSaveInBrowser={saveInBrowser}
 		onLoad={triggerLoad}
 	>
 		{#snippet tabs()}
@@ -140,6 +189,16 @@
 		<WorkspaceView />
 		<ErrorPanel onFocus={focusError} />
 	</div>
+	{#if fsMode}
+		<FsBrowser
+			mode={fsMode}
+			initialPath={dirOf(g.savePath)}
+			suggestedName={g.savePath ? (g.savePath.split('/').pop() ?? '').replace(/\.gfi$/, '') : ''}
+			onPick={onFsPick}
+			onClose={() => (fsMode = null)}
+			onUpload={uploadLoad}
+		/>
+	{/if}
 </div>
 
 <style>
