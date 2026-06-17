@@ -1,6 +1,8 @@
 <script lang="ts">
 	import { graph } from '$lib/stores/graph.svelte';
 	import type { Snippet } from 'svelte';
+	import type { MenuItem } from '$lib/workspace/menu';
+	import ContextMenu from '$lib/workspace/ContextMenu.svelte';
 
 	type Props = {
 		onAddNode: () => void;
@@ -17,11 +19,21 @@
 	const { onAddNode, onSave, onSaveAs, onSaveInBrowser, onLoad, onFitView, tabs }: Props = $props();
 
 	const g = graph();
-	let saveMenuOpen = $state(false);
 
-	function pick(fn: () => void): void {
-		saveMenuOpen = false;
-		fn();
+	// Save split-button dropdown — opened via the shared ContextMenu, which
+	// portals to <body> at --z-menu so it stacks above side panels.
+	let saveMenu = $state<{ x: number; y: number; items: MenuItem[] } | null>(null);
+
+	function openSaveMenu(e: MouseEvent): void {
+		const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
+		saveMenu = {
+			x: Math.max(6, r.right - 180),
+			y: r.bottom + 4,
+			items: [
+				{ label: 'Save As…', action: onSaveAs },
+				{ label: 'Save in browser', action: onSaveInBrowser }
+			]
+		};
 	}
 </script>
 
@@ -54,20 +66,21 @@
 				class="ghost caret"
 				data-testid="topbar-save-caret"
 				aria-label="Save options"
-				onclick={() => (saveMenuOpen = !saveMenuOpen)}>▾</button
+				onclick={openSaveMenu}>▾</button
 			>
-			{#if saveMenuOpen}
-				<div class="menu" data-testid="topbar-save-menu">
-					<button onclick={() => pick(onSaveAs)} data-testid="topbar-save-as">Save As…</button>
-					<button onclick={() => pick(onSaveInBrowser)} data-testid="topbar-save-browser"
-						>Save in browser</button
-					>
-				</div>
-			{/if}
 		</div>
 		<button class="ghost" data-testid="topbar-load" onclick={onLoad}>Load…</button>
 	</div>
 </div>
+
+{#if saveMenu}
+	<ContextMenu
+		x={saveMenu.x}
+		y={saveMenu.y}
+		items={saveMenu.items}
+		onClose={() => (saveMenu = null)}
+	/>
+{/if}
 
 <style>
 	.topbar {
@@ -144,30 +157,5 @@
 		padding: 0 5px;
 		border-top-left-radius: 0;
 		border-bottom-left-radius: 0;
-	}
-	.split .menu {
-		position: absolute;
-		top: calc(100% + 4px);
-		right: 0;
-		background: var(--bg-elev-1);
-		border: 1px solid var(--border-strong);
-		border-radius: var(--radius-sm);
-		box-shadow: var(--shadow-2);
-		display: flex;
-		flex-direction: column;
-		min-width: 160px;
-		z-index: 50;
-	}
-	.split .menu button {
-		background: transparent;
-		border: none;
-		color: var(--text);
-		text-align: left;
-		padding: 8px 12px;
-		cursor: pointer;
-		font-size: 12px;
-	}
-	.split .menu button:hover {
-		background: color-mix(in srgb, var(--accent) 12%, transparent);
 	}
 </style>

@@ -64,7 +64,10 @@
 	function confirmSave(): void {
 		const name = filename.trim();
 		if (!name) return;
-		const dir = cwd.replace(/\/+$/, '');
+		// The path bar is authoritative for the target directory — it holds the
+		// user's typed/navigated path even if a listDir() is still in flight, so
+		// a fast Save click can't fall back to a stale (or empty) cwd.
+		const dir = (pathDraft || cwd).replace(/\/+$/, '');
 		const full = `${dir}/${name.endsWith('.gfi') ? name : name + '.gfi'}`;
 		onPick(full);
 	}
