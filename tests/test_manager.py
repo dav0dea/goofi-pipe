@@ -49,6 +49,21 @@ def _build_simple_graph(mgr: Manager) -> tuple[str, str]:
     return osc, sel
 
 
+def test_serialize_patch_returns_yaml_without_writing(tmp_path):
+    import yaml as _yaml
+    mgr = _bare_manager(use_multiprocessing=False)
+    try:
+        _build_simple_graph(mgr)
+        text = mgr.serialize_patch()
+        doc = _yaml.load(text, Loader=_yaml.FullLoader)
+        assert set(doc.keys()) >= {"nodes", "links"}
+        assert len(doc["nodes"]) == 2
+        # serialize must not have created a file or set save_path
+        assert mgr.save_path is None
+    finally:
+        mgr.terminate()
+
+
 def test_creation_smoke():
     """Manager(duration=...) ought to start, run briefly, and shut down cleanly."""
     Manager(duration=MANAGER_TEST_DURATION)

@@ -463,6 +463,35 @@ class Manager:
         self.unsaved_changes = False
         print("Finished loading manager state.")
 
+    def serialize_patch(self, timeout: float = 3.0) -> str:
+        """Serialize the current graph to `.gfi` YAML text, without writing.
+
+        Reads each node's pushed `serialized_state` directly (waiting briefly
+        per node if it hasn't pushed yet) and merges its gui_kwargs. Shared by
+        `save()` (writes to disk) and the bridge `serialize` op ("Save in
+        browser" download).
+        """
+        serialized_nodes: Dict[str, Any] = {}
+        # Snapshot the names first: a patch may still be spawning nodes on
+        # another thread, and iterating the live container would raise
+        # "dictionary changed size during iteration" (matches terminate()).
+        for name in list(self.nodes):
+            ref = self.nodes[name]
+            ref.wait_for_state(timeout=timeout)
+            if ref.serialized_state is None:
+                raise RuntimeError(f"Node {name} does not have a serialized state. Recreate the node and try again.")
+            state = deepcopy(ref.serialized_state)
+            state["gui_kwargs"] = ref.gui_kwargs
+            # Drop output-subscriber bookkeeping — it's transient runtime
+            # state, not part of the persisted graph definition.
+            state.pop("output_subscribers", None)
+            serialized_nodes[name] = state
+
+        patch: Dict[str, Any] = {"nodes": serialized_nodes, "links": list(self._links)}
+        if self.layout is not None:
+            patch["layout"] = self.layout
+        return yaml.dump(patch, sort_keys=False)
+
     def save(self, filepath: Optional[str] = None, overwrite: bool = False, timeout: float = 3.0) -> None:
         """Persist the current graph to a `.gfi` YAML file.
 
@@ -491,28 +520,7 @@ class Manager:
             raise FileExistsError(f"File {filepath} already exists.")
 
         print("Saving manager state...")
-
-        serialized_nodes: Dict[str, Any] = {}
-        # Snapshot the names first: a patch may still be spawning nodes on
-        # another thread, and iterating the live container would raise
-        # "dictionary changed size during iteration" (matches terminate()).
-        for name in list(self.nodes):
-            ref = self.nodes[name]
-            ref.wait_for_state(timeout=timeout)
-            if ref.serialized_state is None:
-                raise RuntimeError(f"Node {name} does not have a serialized state. Recreate the node and try again.")
-            state = deepcopy(ref.serialized_state)
-            state["gui_kwargs"] = ref.gui_kwargs
-            # Drop output-subscriber bookkeeping — it's transient runtime
-            # state, not part of the persisted graph definition.
-            state.pop("output_subscribers", None)
-            serialized_nodes[name] = state
-
-        links = list(self._links)
-        patch: Dict[str, Any] = {"nodes": serialized_nodes, "links": links}
-        if self.layout is not None:
-            patch["layout"] = self.layout
-        manager_yaml = yaml.dump(patch, sort_keys=False)
+        manager_yaml = self.serialize_patch(timeout=timeout)
 
         with open(filepath, "w") as f:
             f.write(manager_yaml)
