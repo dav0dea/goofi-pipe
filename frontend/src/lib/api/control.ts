@@ -61,6 +61,28 @@ export function sameLink(a: LinkInfo, b: LinkInfo): boolean {
 	);
 }
 
+export interface FsEntry {
+	name: string;
+	path: string;
+	kind: 'dir' | 'file';
+	is_gfi: boolean;
+	hidden: boolean;
+	size: number;
+	mtime: number;
+}
+
+export interface FsRoot {
+	label: string;
+	path: string;
+}
+
+export interface DirListing {
+	path: string;
+	parent: string | null;
+	entries: FsEntry[];
+	roots: FsRoot[];
+}
+
 /** Flatten a node's grouped param descriptors to a plain `{group: {name: value}}`
  * bag — the shape clone/clipboard/replay all need. */
 export function paramValues(node: NodeInstanceInfo): Record<string, Record<string, unknown>> {

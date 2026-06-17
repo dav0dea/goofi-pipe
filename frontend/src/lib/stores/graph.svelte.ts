@@ -10,6 +10,8 @@ import {
 	paramValues,
 	sameLink,
 	type ControlEvent,
+	type DirListing,
+	type FsEntry,
 	type GraphSnapshot,
 	type LinkInfo,
 	type NodeInstanceInfo,
@@ -309,6 +311,26 @@ class GraphStore {
 
 	async loadText(content: string): Promise<void> {
 		await getControl().call('load_text', { content });
+	}
+
+	/** List one directory level on the BACKEND filesystem (full FS, no jail). */
+	async listDir(path?: string): Promise<DirListing> {
+		return getControl().call<DirListing>('list_dir', { path });
+	}
+
+	/** The bundled example patches (empty under a wheel without examples/). */
+	async listExamples(): Promise<{ entries: FsEntry[] }> {
+		return getControl().call<{ entries: FsEntry[] }>('list_examples');
+	}
+
+	/** Load a patch from a BACKEND filesystem path (destructive — replaces the graph). */
+	async load(path: string): Promise<void> {
+		await getControl().call('load', { path });
+	}
+
+	/** Current patch as `.gfi` YAML, without writing to disk (for browser download). */
+	async serialize(): Promise<{ yaml: string }> {
+		return getControl().call<{ yaml: string }>('serialize');
 	}
 	// ------------------------------------------------------------------
 	// reads
