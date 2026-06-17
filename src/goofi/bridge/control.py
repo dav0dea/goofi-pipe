@@ -25,6 +25,7 @@ from weakref import WeakSet
 
 from aiohttp import WSMsgType, web
 
+from goofi.bridge import fsbrowse
 from goofi.bridge.schemas import (
     describe_node_instance,
     describe_params,
@@ -252,6 +253,13 @@ class ControlHub:
                     pass
             await self.broadcast({"event": "graph_replaced", "payload": self._snapshot()})
             return {"ok": True}
+        if op == "list_dir":
+            return await self._call_manager(fsbrowse.list_dir, payload.get("path"))
+        if op == "list_examples":
+            return fsbrowse.list_examples()
+        if op == "serialize":
+            yaml_text = await self._call_manager(manager.serialize_patch)
+            return {"yaml": yaml_text}
         if op == "ping":
             return {"pong": True}
 
