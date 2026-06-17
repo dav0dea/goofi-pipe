@@ -15,7 +15,7 @@ producer or piles up memory.
 from __future__ import annotations
 
 import asyncio
-from typing import Optional, Set
+from typing import Optional
 
 from aiohttp import WSMsgType, web
 
@@ -80,10 +80,38 @@ class _SlotForwarder:
             pass
 
 
+class _SlotMux:
+    """Fan-out for one (node, slot): one NodeRef data-handler → N forwarders.
+
+    NodeRef.set_data_handler is single-callback-per-slot and evicting, so the
+    bridge multiplexes here: ONE handler per (node, slot), each frame encoded
+    once and dispatched to every connected forwarder. The handler is dropped
+    only when the last forwarder closes.
+    """
+
+    def __init__(self, ref, slot: str):
+        self.ref = ref
+        self.slot = slot
+        # Whole-tuple rebind on mutate → dispatch() (data-pump thread) always
+        # reads a consistent snapshot without locking.
+        self._forwarders: tuple = ()
+
+    def add(self, fwd) -> None:
+        self._forwarders = (*self._forwarders, fwd)
+
+    def remove(self, fwd) -> bool:
+        self._forwarders = tuple(f for f in self._forwarders if f is not fwd)
+        return not self._forwarders
+
+    def dispatch(self, frame: bytes) -> None:
+        for fwd in self._forwarders:
+            fwd.push_threadsafe(frame)
+
+
 class DataHub:
     def __init__(self, server) -> None:
         self.server = server
-        self._active: "Set[_SlotForwarder]" = set()
+        self._muxes: dict = {}  # (node, slot) -> _SlotMux
         self._lock = asyncio.Lock()
 
     async def handler(self, request: web.Request) -> web.WebSocketResponse:
@@ -107,20 +135,26 @@ class DataHub:
         fwd = _SlotForwarder(ws, loop)
         fwd.start()
 
-        def on_frame(_noderef, _slot_name, data):
-            try:
-                size, meta_bytes = prepare_encode(data)
-                buf = bytearray(size)
-                encode_data_into(data, memoryview(buf), meta_bytes=meta_bytes)
-                fwd.push_threadsafe(bytes(buf))
-            except Exception:
-                import traceback
-
-                traceback.print_exc()
-
-        ref.set_data_handler(slot, on_frame)
+        key = (node, slot)
         async with self._lock:
-            self._active.add(fwd)
+            mux = self._muxes.get(key)
+            if mux is None:
+                mux = _SlotMux(ref, slot)
+                self._muxes[key] = mux
+
+                def on_frame(_noderef, _slot_name, data, _mux=mux):
+                    try:
+                        size, meta_bytes = prepare_encode(data)
+                        buf = bytearray(size)
+                        encode_data_into(data, memoryview(buf), meta_bytes=meta_bytes)
+                        _mux.dispatch(bytes(buf))
+                    except Exception:
+                        import traceback
+
+                        traceback.print_exc()
+
+                ref.set_data_handler(slot, on_frame)
+            mux.add(fwd)
 
         try:
             async for msg in ws:
@@ -128,20 +162,24 @@ class DataHub:
                 if msg.type == WSMsgType.ERROR:
                     break
         finally:
-            try:
-                ref.set_data_handler(slot, None)
-            except Exception:
-                pass
-            await fwd.close()
             async with self._lock:
-                self._active.discard(fwd)
+                empty = mux.remove(fwd)
+                if empty:
+                    try:
+                        ref.set_data_handler(slot, None)
+                    except Exception:
+                        pass
+                    self._muxes.pop(key, None)
+            await fwd.close()
         return ws
 
     async def close_all(self) -> None:
-        for fwd in list(self._active):
-            try:
-                await fwd.close()
-                if not fwd.ws.closed:
-                    await fwd.ws.close()
-            except Exception:
-                pass
+        for mux in list(self._muxes.values()):
+            for fwd in mux._forwarders:
+                try:
+                    await fwd.close()
+                    if not fwd.ws.closed:
+                        await fwd.ws.close()
+                except Exception:
+                    pass
+        self._muxes.clear()
