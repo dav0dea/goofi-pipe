@@ -93,6 +93,9 @@ def describe_node_instance(name: str, ref: NodeRef) -> Dict[str, Any]:
         #   { "<slot>": {"collapsed": <bool>} }
         # The frontend uses this to restore expand state on patch load.
         "viewers": dict(gk.get("viewers") or {}),
+        # Sub-patch membership marker (None for a top-level node): the editor
+        # hides members of a collapsed instance and shows the group node instead.
+        "membership": ref.membership,
         "error": ref.last_error,
         # Peer-to-peer SSE log endpoint the node advertises via STATE_UPDATE.
         # None until the node's first state push (or when capture is off).

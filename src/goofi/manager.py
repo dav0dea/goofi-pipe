@@ -53,6 +53,10 @@ def _reject_reserved_name(name: str) -> None:
         )
 
 
+class SubPatchTooDeep(ValueError):
+    """A namespaced member name would overflow iceoryx2's 255-byte ServiceName."""
+
+
 def mark_unsaved_changes(func):
     def wrapper(self, *args, **kwargs):
         res = func(self, *args, **kwargs)
@@ -92,6 +96,17 @@ class NodeContainer:
             del self._nodes[name]
             return
         raise KeyError(f"Node {name} not in container")
+
+    def rename(self, old: str, new: str) -> None:
+        """Re-key a node, preserving insertion order. Caller owns all other
+        name-keyed state (links, groups, membership) — see Manager._rename."""
+        if old not in self._nodes:
+            raise KeyError(f"Node {old} not in container")
+        if new in self._nodes:
+            raise KeyError(f"Node {new} already in container")
+        # Rebuild to keep order stable (dicts preserve insertion order; a
+        # pop+set would move the entry to the end).
+        self._nodes = {new if k == old else k: v for k, v in self._nodes.items()}
 
     def __getitem__(self, name: str) -> NodeRef:
         return self._nodes[name]
@@ -149,8 +164,17 @@ class Manager:
         self._links: List[Dict[str, str]] = []
         # Stable-identity index: member_uid -> NodeRef. The uid is minted once
         # per node, persisted in the .gfi, and survives respawn/reload — the
-        # spine the persistence + (future) data-by-uid layers key on.
+        # spine the persistence + data-by-uid layers key on.
         self._refs_by_uid: Dict[str, NodeRef] = {}
+        # Sub-patch state (flatten-at-runtime). The live graph stays flat; these
+        # maps are the first-class record of grouping (NOT re-derived from name
+        # prefixes). `_membership` maps a member's display name -> instance id;
+        # `_instances` holds per-instance {kind, interface, pos, members} where
+        # members maps display name -> local name; `_definitions` holds shared
+        # sub-patch graphs (populated in the sharing phase).
+        self._membership: Dict[str, str] = {}
+        self._instances: Dict[str, Dict[str, Any]] = {}
+        self._definitions: Dict[str, Dict[str, Any]] = {}
 
         NodeProcessRegistry().headless = headless
 
@@ -270,6 +294,18 @@ class Manager:
             if uid not in self._refs_by_uid:
                 return uid
 
+    def _service_budget_ok(self, name: str) -> bool:
+        """Whether `name` fits iceoryx2's 255-byte ServiceName once embedded.
+
+        Service names are `goofi.{instance_id}.{kind}.{node_id}.{slot}` where
+        `node_id = f"{name}-{uuid8}"` (manager.py mints an 8-hex suffix). We
+        check a generous worst case (longest kind + a 48-char slot allowance)
+        so deep sub-patch nesting fails early with a clear error rather than a
+        late iceoryx2 crash mid-spawn.
+        """
+        worst = f"goofi.{self._instance_id}.status.{name}-deadbeef.{'s' * 48}"
+        return len(worst.encode()) <= 255
+
     @mark_unsaved_changes
     def add_node(
         self,
@@ -280,11 +316,19 @@ class Manager:
         params: Optional[Dict[str, Dict[str, Any]]] = None,
         member_uid: Optional[str] = None,
         membership: Optional[Dict[str, Any]] = None,
+        allow_reserved: bool = False,
         **gui_kwargs,
     ) -> str:
         print(f"Adding node '{node_type}' from category '{category}'.")
-        if name is not None:
+        # User/file top-level names may not contain the reserved separator. The
+        # sub-patch expander sets allow_reserved=True for namespaced member names.
+        if name is not None and not allow_reserved:
             _reject_reserved_name(name)
+        if name is not None and not self._service_budget_ok(name):
+            raise SubPatchTooDeep(
+                f"node name {name!r} is too long for an iceoryx2 service name "
+                "(deep sub-patch nesting). Flatten or shorten names."
+            )
 
         mod = importlib.import_module(f"goofi.nodes.{category}.{node_type.lower()}")
         node_cls: type = getattr(mod, node_type)
@@ -447,6 +491,256 @@ class Manager:
         except KeyError:
             pass
 
+    # ------------------------------------------------------------------
+    # Sub-patches (flatten-at-runtime)
+    # ------------------------------------------------------------------
+
+    def _rename(self, old: str, new: str) -> None:
+        """Atomically re-key a node across every name-keyed structure.
+
+        The container key alone is not enough: links, process-group map,
+        sub-patch membership, and instance member-maps are all keyed by display
+        name. The node's transport id (node_id) and member_uid are unchanged,
+        so open data subscriptions keep flowing across the rename.
+        """
+        if old == new:
+            return
+        self.nodes.rename(old, new)
+        if old in self._node_groups:
+            self._node_groups[new] = self._node_groups.pop(old)
+        for link in self._links:
+            if link["node_out"] == old:
+                link["node_out"] = new
+            if link["node_in"] == old:
+                link["node_in"] = new
+        if old in self._membership:
+            self._membership[new] = self._membership.pop(old)
+        for inst in self._instances.values():
+            if old in inst["members"]:
+                inst["members"][new] = inst["members"].pop(old)
+        self._broadcast_node_directory()
+        if self._bridge is not None:
+            self._bridge.control.on_node_renamed(old, new)
+
+    def _fresh_instance_id(self) -> str:
+        idx = 0
+        while True:
+            cand = f"subpatch{idx}"
+            if cand not in self._instances and cand not in self.nodes:
+                return cand
+            idx += 1
+
+    def _derive_interface(self, members: Dict[str, str]) -> Dict[str, Any]:
+        """Auto-derive the boundary interface from links crossing the member set.
+
+        A member input slot fed from outside is a boundary input; a member
+        output feeding outside is a boundary output. This is UI metadata (how
+        the collapsed sub-patch node presents its ports) — the live graph stays
+        flat, so it does not affect runtime or save/load round-tripping.
+        """
+        iface: Dict[str, Any] = {}
+        mset = set(members)
+        for link in self._links:
+            out_m = link["node_out"] in mset
+            in_m = link["node_in"] in mset
+            if in_m and not out_m:
+                local = members[link["node_in"]]
+                slot = link["slot_in"]
+                iface[f"{local}.{slot}"] = {"dir": "in", "inner_node": local, "inner_slot": slot}
+            elif out_m and not in_m:
+                local = members[link["node_out"]]
+                slot = link["slot_out"]
+                iface[f"{local}.{slot}"] = {"dir": "out", "inner_node": local, "inner_slot": slot}
+        return iface
+
+    @mark_unsaved_changes
+    def group_nodes(
+        self,
+        member_names,
+        interface: Optional[Dict[str, Any]] = None,
+        pos=(0, 0),
+        notify_gui: bool = True,
+    ) -> str:
+        """Group existing nodes into a unique (inline) sub-patch instance.
+
+        Members are renamed in place to `inst_id::local` (no respawn — node_id
+        and data subscriptions survive). Membership/interface are recorded as
+        first-class state. Returns the new instance id.
+        """
+        member_names = list(member_names)
+        if not member_names:
+            raise ValueError("no members to group")
+        for n in member_names:
+            if n not in self.nodes:
+                raise KeyError(f"No such node: {n}")
+            if n in self._membership:
+                raise ValueError(f"node {n} is already in a sub-patch")
+            _reject_reserved_name(n)
+
+        inst_id = self._fresh_instance_id()
+        members: Dict[str, str] = {}
+        renamed = []
+        try:
+            for n in member_names:
+                new_name = f"{inst_id}{SUBPATCH_SEP}{n}"
+                if not self._service_budget_ok(new_name):
+                    raise SubPatchTooDeep(f"grouping would overflow service-name budget for {new_name!r}")
+                self._rename(n, new_name)
+                renamed.append((n, new_name))
+                members[new_name] = n
+        except Exception:
+            # Roll back any renames already applied so a failure leaves the graph intact.
+            for old, new in reversed(renamed):
+                self._rename(new, old)
+            raise
+
+        if interface is None:
+            interface = self._derive_interface(members)
+        self._instances[inst_id] = {
+            "kind": "unique",
+            "interface": interface,
+            "pos": list(pos),
+            "members": members,
+        }
+        for nn, local in members.items():
+            self._membership[nn] = inst_id
+            self.nodes[nn].membership = {"instance": inst_id, "local_name": local}
+
+        if self._bridge is not None and notify_gui:
+            self._bridge.control.on_subpatch_changed()
+        return inst_id
+
+    @mark_unsaved_changes
+    def expand_instance(self, inst_id: str, notify_gui: bool = True) -> List[str]:
+        """Dissolve a sub-patch: rename members back to bare names, drop state."""
+        if inst_id not in self._instances:
+            raise KeyError(f"No such sub-patch: {inst_id}")
+        inst = self._instances[inst_id]
+        restored: List[str] = []
+        for new_name, local in list(inst["members"].items()):
+            target = local
+            if target in self.nodes and target != new_name:
+                base, idx = local, 0
+                while f"{base}{idx}" in self.nodes:
+                    idx += 1
+                target = f"{base}{idx}"
+            self._rename(new_name, target)
+            self._membership.pop(target, None)
+            self.nodes[target].membership = None
+            restored.append(target)
+        del self._instances[inst_id]
+        if self._bridge is not None and notify_gui:
+            self._bridge.control.on_subpatch_changed()
+        return restored
+
+    # `ungroup` reads better at call sites that just want the group dissolved.
+    ungroup = expand_instance
+
+    def _node_record(self, name: str) -> Dict[str, Any]:
+        ref = self.nodes[name]
+        if ref.serialized_state is None:
+            raise RuntimeError(f"Node {name} does not have a serialized state. Recreate the node and try again.")
+        state = deepcopy(ref.serialized_state)
+        state["gui_kwargs"] = ref.gui_kwargs
+        state.pop("output_subscribers", None)
+        if ref.member_uid is not None:
+            state["uid"] = ref.member_uid
+        return state
+
+    def _local_link(self, link: Dict[str, str], inst_id: str) -> Dict[str, str]:
+        m = self._instances[inst_id]["members"]
+        return {
+            "node_out": m[link["node_out"]],
+            "node_in": m[link["node_in"]],
+            "slot_out": link["slot_out"],
+            "slot_in": link["slot_in"],
+        }
+
+    def build_v2_tree(self):
+        """Collapse the live flat graph into (root_nodes, root_links, definitions,
+        instances) for the v2 envelope, reading first-class membership state."""
+        member_set = set(self._membership)
+        root_nodes = {name: self._node_record(name) for name in self.nodes if name not in member_set}
+
+        internal: Dict[str, list] = {iid: [] for iid in self._instances}
+        root_links: list = []
+        for link in self._links:
+            oi = self._membership.get(link["node_out"])
+            ii = self._membership.get(link["node_in"])
+            if oi is not None and oi == ii:
+                internal[oi].append(self._local_link(link, oi))
+            else:
+                root_links.append(dict(link))
+
+        instances: Dict[str, Any] = {}
+        for iid, inst in self._instances.items():
+            members = {inst["members"][nn]: self._node_record(nn) for nn in inst["members"]}
+            instances[iid] = {
+                "kind": inst["kind"],
+                "pos": inst["pos"],
+                "interface": inst["interface"],
+                "members": members,
+                "links": internal.get(iid, []),
+            }
+        return root_nodes, root_links, {}, instances
+
+    def _add_node_from_record(
+        self, name: str, node: Dict[str, Any], allow_reserved: bool = False, membership=None
+    ) -> str:
+        gk = node.get("gui_kwargs") or {}
+        pos = gk.get("pos")
+        if pos is not None:
+            xpos, ypos = pos
+            if xpos == np.iinfo(np.int32).min or ypos == np.iinfo(np.int32).min:
+                print(f"WARNING: Node '{name}' has a corrupted position. Resetting to (0, 0).")
+                gk["pos"] = (0, 0)
+        return self.add_node(
+            node["_type"],
+            node["category"],
+            name=name,
+            params=node["params"],
+            member_uid=node.get("uid"),
+            membership=membership if membership is not None else node.get("membership"),
+            allow_reserved=allow_reserved,
+            **gk,
+        )
+
+    def _expand_doc(self, root_nodes, root_links, instances) -> None:
+        """Splice a v2 document's root graph + sub-patch instances into the live
+        flat graph. Add all nodes first, then all links (so add_link never races
+        a not-yet-spawned endpoint)."""
+        for name, node in root_nodes.items():
+            self._add_node_from_record(name, node)
+
+        for inst_id, inst in instances.items():
+            members_map: Dict[str, str] = {}
+            for local, node in (inst.get("members") or {}).items():
+                new_name = f"{inst_id}{SUBPATCH_SEP}{local}"
+                self._add_node_from_record(
+                    new_name, node, allow_reserved=True,
+                    membership={"instance": inst_id, "local_name": local},
+                )
+                members_map[new_name] = local
+            self._instances[inst_id] = {
+                "kind": inst.get("kind", "unique"),
+                "interface": inst.get("interface", {}),
+                "pos": inst.get("pos", [0, 0]),
+                "members": members_map,
+            }
+            for nn in members_map:
+                self._membership[nn] = inst_id
+
+        for inst_id, inst in instances.items():
+            for link in inst.get("links", []):
+                self.add_link(
+                    f"{inst_id}{SUBPATCH_SEP}{link['node_out']}",
+                    f"{inst_id}{SUBPATCH_SEP}{link['node_in']}",
+                    link["slot_out"],
+                    link["slot_in"],
+                )
+        for link in root_links:
+            self.add_link(link["node_out"], link["node_in"], link["slot_out"], link["slot_in"])
+
     def _node_directory(self) -> Dict[str, str]:
         """Map each live display name to its node's stable transport id."""
         return {name: self.nodes[name].node_id for name in self.nodes}
@@ -475,36 +769,13 @@ class Manager:
 
         print(f"Loading manager state from '{filepath}'...")
 
-        from goofi.patch_format import flat_view, normalize_loaded
+        from goofi.patch_format import normalize_loaded, read_graph
 
         with open(filepath, "r") as f:
             raw = yaml.load(f, Loader=yaml.FullLoader)
 
-        nodes_doc, links_doc, _instances, _defs, layout = flat_view(normalize_loaded(raw))
-
-        for name, node in nodes_doc.items():
-            _reject_reserved_name(name)
-            gk = node.get("gui_kwargs") or {}
-            pos = gk.get("pos")
-            if pos is not None:
-                xpos, ypos = pos
-                if xpos == np.iinfo(np.int32).min or ypos == np.iinfo(np.int32).min:
-                    print(f"WARNING: Node '{name}' has a corrupted position. Resetting to (0, 0).")
-                    gk["pos"] = (0, 0)
-            node["gui_kwargs"] = gk
-
-            self.add_node(
-                node["_type"],
-                node["category"],
-                name=name,
-                params=node["params"],
-                member_uid=node.get("uid"),
-                membership=node.get("membership"),
-                **node["gui_kwargs"],
-            )
-
-        for link in links_doc:
-            self.add_link(link["node_out"], link["node_in"], link["slot_out"], link["slot_in"])
+        root_nodes, root_links, instances, _defs, layout = read_graph(normalize_loaded(raw))
+        self._expand_doc(root_nodes, root_links, instances)
 
         # Restore the frontend layout if the patch carries one (optional key —
         # older patches without it leave layout None, and the browser falls
@@ -531,7 +802,6 @@ class Manager:
         `save()` (writes to disk) and the bridge `serialize` op ("Save in
         browser" download).
         """
-        serialized_nodes: Dict[str, Any] = {}
         # Snapshot the names first: a patch may still be spawning nodes on
         # another thread, and iterating the live container would raise
         # "dictionary changed size during iteration" (matches terminate()).
@@ -540,29 +810,18 @@ class Manager:
             ref.wait_for_state(timeout=timeout)
             if ref.serialized_state is None:
                 raise RuntimeError(f"Node {name} does not have a serialized state. Recreate the node and try again.")
-            state = deepcopy(ref.serialized_state)
-            state["gui_kwargs"] = ref.gui_kwargs
-            # Drop output-subscriber bookkeeping — it's transient runtime
-            # state, not part of the persisted graph definition.
-            state.pop("output_subscribers", None)
-            # Stable identity (and sub-patch membership, if any) — serialized_state
-            # carries neither; merge them from the NodeRef.
-            if ref.member_uid is not None:
-                state["uid"] = ref.member_uid
-            if ref.membership:
-                state["membership"] = ref.membership
-            serialized_nodes[name] = state
 
-        # Emit the recursive v2 envelope. Definitions/instances are empty until
-        # the grouping runtime populates them; flat patches are the degenerate case.
+        # Collapse the flat live graph into the recursive v2 envelope, reading
+        # first-class sub-patch membership (not name prefixes).
         from goofi.patch_format import build_v2
 
+        root_nodes, root_links, definitions, instances = self.build_v2_tree()
         doc = build_v2(
-            nodes=serialized_nodes,
-            links=list(self._links),
+            nodes=root_nodes,
+            links=root_links,
             layout=self.layout,
-            definitions={},
-            instances={},
+            definitions=definitions,
+            instances=instances,
         )
         return yaml.dump(doc, sort_keys=False)
 

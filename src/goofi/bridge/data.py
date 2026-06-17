@@ -135,7 +135,11 @@ class DataHub:
         fwd = _SlotForwarder(ws, loop)
         fwd.start()
 
-        key = (node, slot)
+        # Key the mux by the node's STABLE member_uid, not its display name, so a
+        # rename (sub-patch group/expand renames in place) doesn't spawn a second
+        # mux that evicts the first's handler — viewers keep streaming across it.
+        uid = ref.member_uid or node
+        key = (uid, slot)
         async with self._lock:
             mux = self._muxes.get(key)
             if mux is None:

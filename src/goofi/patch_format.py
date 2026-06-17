@@ -82,6 +82,22 @@ def flat_view(doc: Dict[str, Any]) -> Tuple[Dict, List, Dict, Dict, Any]:
     return root.get("nodes", {}), root.get("links", []), instances, defs, doc.get("layout")
 
 
+def read_graph(doc: Dict[str, Any]) -> Tuple[Dict, List, Dict, Dict, Any]:
+    """Read a v2 document into (root_nodes, root_links, instances, definitions,
+    layout). Unlike `flat_view`, this does NOT reject sub-patch content — the
+    caller (Manager._expand_doc) knows how to splice instances into the flat
+    live graph.
+    """
+    root = doc.get("root") or {}
+    return (
+        root.get("nodes", {}),
+        root.get("links", []),
+        root.get("instances", {}),
+        doc.get("definitions") or {},
+        doc.get("layout"),
+    )
+
+
 # ---------------------------------------------------------------------------
 # One-shot v1 -> v2 converter (CLI)
 # ---------------------------------------------------------------------------

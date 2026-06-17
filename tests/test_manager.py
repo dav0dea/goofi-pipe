@@ -35,6 +35,9 @@ def _bare_manager(use_multiprocessing: bool = True) -> Manager:
     mgr._node_groups = {}
     mgr._links = []
     mgr._refs_by_uid = {}
+    mgr._membership = {}
+    mgr._instances = {}
+    mgr._definitions = {}
     NodeProcessRegistry().headless = True
     mgr._save_path = None
     mgr._unsaved_changes = False
@@ -113,6 +116,81 @@ def test_load_v1_flat_patch_still_works(tmp_path):
         assert len(mgr2.nodes) == 2
         # fresh uids minted on load
         assert all(mgr2.nodes[name].member_uid for name in mgr2.nodes)
+    finally:
+        mgr2.terminate()
+
+
+def _build_grouped_graph(mgr):
+    """osc → sel0 → sel1, with [sel0, sel1] grouped into one sub-patch.
+
+    Returns (osc_name, inst_id, members) where members maps display name -> local.
+    """
+    osc = mgr.add_node("Oscillator", "inputs")
+    sel0 = mgr.add_node("Select", "array", params={"select": {"include": "0:5"}})
+    sel1 = mgr.add_node("Select", "array", params={"select": {"include": "0:2"}})
+    out0 = list(mgr.nodes[sel0].output_slots)[0]
+    mgr.add_link(osc, sel0, "out", "data")
+    mgr.add_link(sel0, sel1, out0, "data")
+    inst_id = mgr.group_nodes([sel0, sel1])
+    return osc, inst_id
+
+
+def test_group_nodes_namespaces_members_and_records_state():
+    mgr = _bare_manager(use_multiprocessing=False)
+    try:
+        osc, inst = _build_grouped_graph(mgr)
+        assert inst == "subpatch0"
+        assert "subpatch0::select0" in mgr.nodes
+        assert "subpatch0::select1" in mgr.nodes
+        assert "select0" not in mgr.nodes  # renamed in place
+        assert mgr._membership["subpatch0::select0"] == "subpatch0"
+        # external link followed the rename
+        assert {"node_out": osc, "node_in": "subpatch0::select0", "slot_out": "out", "slot_in": "data"} in [
+            dict(link) for link in mgr.links
+        ]
+        # interface derived: select0.data is a boundary input (fed by osc)
+        assert "select0.data" in mgr._instances[inst]["interface"]
+    finally:
+        mgr.terminate()
+
+
+def test_subpatch_save_load_roundtrip_and_expand(tmp_path):
+    mgr = _bare_manager(use_multiprocessing=False)
+    try:
+        osc, inst = _build_grouped_graph(mgr)
+        fp = str(tmp_path / "grouped.gfi")
+        mgr.save(fp, overwrite=True)
+        # the v2 file carries the instance, not flat members
+        import yaml as _yaml
+        doc = _yaml.load(open(fp), Loader=_yaml.FullLoader)
+        assert "subpatch0" in doc["root"]["instances"]
+        assert set(doc["root"]["instances"]["subpatch0"]["members"]) == {"select0", "select1"}
+        assert len(doc["root"]["instances"]["subpatch0"]["links"]) == 1  # internal sel0->sel1
+    finally:
+        mgr.terminate()
+
+    mgr2 = _bare_manager(use_multiprocessing=False)
+    try:
+        mgr2.load(fp)
+        assert "subpatch0::select0" in mgr2.nodes and "subpatch0::select1" in mgr2.nodes
+        assert mgr2._membership["subpatch0::select1"] == "subpatch0"
+        assert set(mgr2._instances["subpatch0"]["members"]) == {
+            "subpatch0::select0",
+            "subpatch0::select1",
+        }
+        # both the external and internal links are restored
+        links = [dict(link) for link in mgr2.links]
+        assert {"node_out": osc, "node_in": "subpatch0::select0", "slot_out": "out", "slot_in": "data"} in links
+        assert any(l["node_out"] == "subpatch0::select0" and l["node_in"] == "subpatch0::select1" for l in links)
+
+        # expand dissolves the group back to bare names
+        restored = mgr2.expand_instance("subpatch0")
+        assert set(restored) == {"select0", "select1"}
+        assert "subpatch0::select0" not in mgr2.nodes
+        assert "select0" in mgr2.nodes
+        assert mgr2._instances == {} and mgr2._membership == {}
+        links2 = [dict(link) for link in mgr2.links]
+        assert {"node_out": osc, "node_in": "select0", "slot_out": "out", "slot_in": "data"} in links2
     finally:
         mgr2.terminate()
 

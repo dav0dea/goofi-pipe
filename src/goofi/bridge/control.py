@@ -253,6 +253,17 @@ class ControlHub:
                     pass
             await self.broadcast({"event": "graph_replaced", "payload": self._snapshot()})
             return {"ok": True}
+        if op == "group_nodes":
+            inst_id = await self._call_manager(
+                manager.group_nodes,
+                payload["members"],
+                payload.get("interface"),
+                tuple(payload.get("pos") or (0, 0)),
+            )
+            return {"inst_id": inst_id}
+        if op == "expand_instance":
+            restored = await self._call_manager(manager.expand_instance, payload["inst_id"])
+            return {"restored": restored}
         if op == "list_dir":
             return await self._call_manager(fsbrowse.list_dir, payload.get("path"))
         if op == "list_examples":
@@ -289,6 +300,18 @@ class ControlHub:
     def on_link_removed(self, link: Dict[str, str]) -> None:
         self.broadcast_threadsafe({"event": "link_removed", "payload": link})
 
+    def on_node_renamed(self, old: str, new: str) -> None:
+        # Re-wire the status fan-out: the STATE_UPDATE/PROCESSING_ERROR handlers
+        # captured the old name, so re-register them under the new one (same ref).
+        self._wired_nodes.discard(old)
+        self._wire_node_status(new)
+        self.broadcast_threadsafe({"event": "node_renamed", "payload": {"old": old, "new": new}})
+
+    def on_subpatch_changed(self) -> None:
+        # Group/expand renames members and rewrites membership/instances; push a
+        # fresh snapshot so clients re-sync without a wholesale re-fit.
+        self.broadcast_threadsafe({"event": "subpatch_changed", "payload": self._snapshot()})
+
     # ------------------------------------------------------------------
     # internals
     # ------------------------------------------------------------------
@@ -309,6 +332,17 @@ class ControlHub:
             "instance_id": manager.instance_id,
             "nodes": nodes,
             "links": list(manager.links),
+            # Sub-patch instances (flatten-at-runtime): the editor renders these
+            # as collapsible group nodes; members carry a `membership` marker.
+            "instances": {
+                iid: {
+                    "kind": inst["kind"],
+                    "interface": inst["interface"],
+                    "pos": list(inst["pos"]),
+                    "members": dict(inst["members"]),
+                }
+                for iid, inst in getattr(manager, "_instances", {}).items()
+            },
             "save_path": manager.save_path,
             "unsaved_changes": manager.unsaved_changes,
             "layout": manager.layout,
