@@ -25,8 +25,12 @@ function activeEditor(): string | null {
 
 export const commands = {
 	// --- graph mutations ---------------------------------------------------
-	addNode: (type: string, category: string, pos: [number, number] = [0, 0]): Promise<string> =>
-		graph().addNode(type, category, pos),
+	addNode: (
+		type: string,
+		category: string,
+		pos: [number, number] = [0, 0],
+		instId?: string
+	): Promise<string> => graph().addNode(type, category, pos, instId),
 	removeNode: (name: string): Promise<void> => graph().removeNode(name),
 	removeNodes: (names: string[]): Promise<void> => graph().removeNodes(names),
 	addLink: (link: LinkInfo): Promise<void> => graph().addLink(link),

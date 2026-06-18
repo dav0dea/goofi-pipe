@@ -149,6 +149,19 @@ class ControlHub:
         if op == "list_graph":
             return self._snapshot()
         if op == "add_node":
+            # Inside a sub-patch the new node must land as a member of that
+            # instance (and mirror to shared siblings), not in the root graph.
+            inst_id = payload.get("inst_id")
+            if inst_id:
+                return await self._call_manager(
+                    manager.add_member_node,
+                    inst_id,
+                    payload["type"],
+                    payload["category"],
+                    name=payload.get("name"),
+                    params=payload.get("params"),
+                    pos=tuple(payload.get("pos") or (0, 0)),
+                )
             return await self._call_manager(
                 manager.add_node,
                 payload["type"],

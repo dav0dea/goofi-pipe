@@ -655,6 +655,86 @@ class Manager:
             self._bridge.control.on_subpatch_changed()
         return inst_id
 
+    def _fresh_member_local(self, inst_id: str, node_type: str, requested: Optional[str]) -> str:
+        """Pick a local member name unique within the sub-patch. For a shared
+        instance the local namespace is the family's (def + every sibling carry
+        the same locals by strict mirror), so the instance's own members suffice
+        — but we also fold in the def's locals defensively."""
+        existing = set(self._instances[inst_id]["members"].values())
+        def_id = self._instances[inst_id].get("def_id")
+        if def_id and def_id in self._definitions:
+            existing |= set(self._definitions[def_id]["members"].keys())
+        if requested is not None:
+            _reject_reserved_name(requested)
+            if requested in existing:
+                raise ValueError(f"a member named {requested!r} already exists in {inst_id}")
+            return requested
+        base = node_type.lower()
+        idx = 0
+        while f"{base}{idx}" in existing:
+            idx += 1
+        return f"{base}{idx}"
+
+    @mark_unsaved_changes
+    def add_member_node(
+        self,
+        inst_id: str,
+        node_type: str,
+        category: str,
+        name: Optional[str] = None,
+        params: Optional[Dict[str, Dict[str, Any]]] = None,
+        pos=(0, 0),
+        notify_gui: bool = True,
+    ) -> str:
+        """Create a node directly inside an existing sub-patch instance.
+
+        The node is spawned with a namespaced display name (`inst_id::local`) and
+        recorded in the instance's membership/members maps. For a SHARED instance
+        the new member is mirrored into the definition and every sibling instance
+        (strict mirror), matching `update_param`/`set_node_pos`. Returns the new
+        member's display name.
+        """
+        if inst_id not in self._instances:
+            raise KeyError(f"No such sub-patch: {inst_id}")
+        inst = self._instances[inst_id]
+        local = self._fresh_member_local(inst_id, node_type, name)
+        disp = f"{inst_id}{SUBPATCH_SEP}{local}"
+        if not self._service_budget_ok(disp):
+            raise SubPatchTooDeep(f"adding {disp!r} would overflow the service-name budget")
+
+        # Spawn silently; the single on_subpatch_changed below re-syncs clients
+        # atomically (node + updated members map) without a top-level flash.
+        self.add_node(
+            node_type,
+            category,
+            notify_gui=False,
+            name=disp,
+            params=params,
+            pos=tuple(pos),
+            allow_reserved=True,
+            membership={"instance": inst_id, "local_name": local},
+        )
+        self._membership[disp] = inst_id
+        inst["members"][disp] = local
+
+        def_id = inst.get("def_id")
+        if def_id:
+            rec = self._node_record(disp)
+            rec.pop("uid", None)  # per-instance identity is never shared
+            self._definitions[def_id]["members"][local] = rec
+            for sib in self._shared_siblings(inst_id):
+                sib_disp = f"{sib}{SUBPATCH_SEP}{local}"
+                self._add_node_from_record(
+                    sib_disp, dict(rec), allow_reserved=True, notify_gui=False,
+                    membership={"instance": sib, "local_name": local},
+                )
+                self._membership[sib_disp] = sib
+                self._instances[sib]["members"][sib_disp] = local
+
+        if self._bridge is not None and notify_gui:
+            self._bridge.control.on_subpatch_changed()
+        return disp
+
     @mark_unsaved_changes
     def expand_instance(self, inst_id: str, notify_gui: bool = True) -> List[str]:
         """Dissolve a sub-patch: rename members back to bare names, drop state."""
@@ -1156,7 +1236,8 @@ class Manager:
         return root_nodes, root_links, definitions, instances
 
     def _add_node_from_record(
-        self, name: str, node: Dict[str, Any], allow_reserved: bool = False, membership=None
+        self, name: str, node: Dict[str, Any], allow_reserved: bool = False, membership=None,
+        notify_gui: bool = True,
     ) -> str:
         gk = node.get("gui_kwargs") or {}
         pos = gk.get("pos")
@@ -1168,6 +1249,7 @@ class Manager:
         return self.add_node(
             node["_type"],
             node["category"],
+            notify_gui=notify_gui,
             name=name,
             params=node["params"],
             member_uid=node.get("uid"),

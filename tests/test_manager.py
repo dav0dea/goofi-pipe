@@ -213,6 +213,45 @@ def test_shared_param_edit_mirrors_to_sibling():
         mgr.terminate()
 
 
+def test_add_member_node_lands_in_subpatch():
+    mgr = _bare_manager(use_multiprocessing=False)
+    try:
+        osc, inst = _build_grouped_graph(mgr)  # unique sub-patch select0, select1
+        disp = mgr.add_member_node(inst, "Buffer", "signal")
+        assert disp == f"{inst}::buffer0"
+        assert disp in mgr.nodes
+        assert mgr._membership[disp] == inst
+        assert mgr._instances[inst]["members"][disp] == "buffer0"
+        # the node carries the membership marker the bridge/save read
+        assert mgr.nodes[disp].membership == {"instance": inst, "local_name": "buffer0"}
+        # a fresh add picks the next free local
+        disp2 = mgr.add_member_node(inst, "Buffer", "signal")
+        assert disp2 == f"{inst}::buffer1"
+    finally:
+        mgr.terminate()
+
+
+def test_add_member_node_mirrors_to_shared_siblings():
+    mgr = _bare_manager(use_multiprocessing=False)
+    try:
+        osc, inst = _build_grouped_graph(mgr)
+        def_id = mgr.share_instance(inst)
+        inst2 = mgr.instantiate_definition(def_id)
+        # add a member to instance A → mirrors into the def and sibling B
+        disp = mgr.add_member_node(inst, "Buffer", "signal")
+        local = mgr._instances[inst]["members"][disp]
+        assert local in mgr._definitions[def_id]["members"]
+        sib_disp = f"{inst2}::{local}"
+        assert sib_disp in mgr.nodes
+        assert mgr._instances[inst2]["members"][sib_disp] == local
+        # both families stay strict mirrors: same member locals on each side
+        assert set(mgr._instances[inst]["members"].values()) == set(
+            mgr._instances[inst2]["members"].values()
+        )
+    finally:
+        mgr.terminate()
+
+
 def test_make_unique_detaches_and_gcs_definition():
     mgr = _bare_manager(use_multiprocessing=False)
     try:

@@ -791,7 +791,13 @@
 			return;
 		}
 		try {
-			const newName = await g.addNode(placement.typeInfo.type, placement.typeInfo.category, pos);
+			// Inside a sub-patch, the node becomes a member of the entered instance.
+			const newName = await g.addNode(
+				placement.typeInfo.type,
+				placement.typeInfo.category,
+				pos,
+				entered ?? undefined
+			);
 			// Auto-select the freshly-placed node so its parameters open in the
 			// inspector immediately — matching duplicate / paste / agent placement.
 			// Safe before node_added lands: flowNodes derives `selected` from this

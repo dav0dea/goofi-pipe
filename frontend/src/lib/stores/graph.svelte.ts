@@ -305,8 +305,17 @@ class GraphStore {
 	// mutations (sent via control RPC; UI updates apply on response)
 	// ------------------------------------------------------------------
 
-	async addNode(type: string, category: string, pos: [number, number]): Promise<string> {
-		return (await getControl().call<string>('add_node', { type, category, pos })) ?? '';
+	async addNode(
+		type: string,
+		category: string,
+		pos: [number, number],
+		instId?: string
+	): Promise<string> {
+		// `instId` lands the node inside that sub-patch (member of the instance);
+		// omitted, it goes in the root graph.
+		return (
+			(await getControl().call<string>('add_node', { type, category, pos, inst_id: instId })) ?? ''
+		);
 	}
 
 	async removeNode(name: string): Promise<void> {
