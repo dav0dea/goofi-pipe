@@ -28,6 +28,7 @@
 	import AddNodeMenu from '$lib/editor/AddNodeMenu.svelte';
 	import PlacementPreview from '$lib/editor/PlacementPreview.svelte';
 	import FitToGraph from '$lib/editor/FitToGraph.svelte';
+	import SubpatchZoomExit from '$lib/editor/SubpatchZoomExit.svelte';
 	import {
 		computeSnapDelta,
 		makeBounds,
@@ -900,6 +901,7 @@
 			<Controls />
 			<MiniMap pannable zoomable />
 			<FitToGraph options={FIT_OPTIONS} />
+			<SubpatchZoomExit {entered} onExit={() => exitToDepth(enteredPath.length - 1)} />
 			{#if pendingPlacement}
 				<PlacementPreview
 					typeInfo={pendingPlacement.typeInfo}
