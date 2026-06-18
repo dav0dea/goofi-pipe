@@ -31,6 +31,9 @@ export interface NodeInstanceInfo {
 	 * `kind` is the chosen viewer type; `settings` are that viewer's cog-menu
 	 * overrides. */
 	viewers: Record<string, { collapsed?: boolean; kind?: string; settings?: Record<string, unknown> }>;
+	/** Sub-patch membership marker; null for a top-level node. Members of a
+	 * collapsed instance are hidden from the canvas (the group node stands in). */
+	membership?: { instance: string; local_name: string } | null;
 	error: string | null;
 	/** Peer-to-peer SSE log endpoint (`http://127.0.0.1:<port>/<node>`) the node
 	 * advertises via STATE_UPDATE. Null/absent until its first state push, or
@@ -43,6 +46,23 @@ export interface LinkInfo {
 	node_in: string;
 	slot_out: string;
 	slot_in: string;
+}
+
+/** One exposed boundary port of a sub-patch (the collapsed group node's handle). */
+export interface SubPatchPort {
+	dir: 'in' | 'out';
+	inner_node: string; // member local name
+	inner_slot: string;
+}
+
+/** A flatten-at-runtime sub-patch instance the editor renders as a group node. */
+export interface InstanceInfo {
+	kind: string;
+	/** boundary handle name -> port */
+	interface: Record<string, SubPatchPort>;
+	pos: [number, number];
+	/** member display name -> local name */
+	members: Record<string, string>;
 }
 
 /** Canonical string key for a link — its four slot endpoints. Stable and
@@ -101,6 +121,8 @@ export interface GraphSnapshot {
 	instance_id: string;
 	nodes: NodeInstanceInfo[];
 	links: LinkInfo[];
+	/** Sub-patch instances keyed by instance id. */
+	instances?: Record<string, InstanceInfo>;
 	save_path: string | null;
 	unsaved_changes: boolean;
 	/** Opaque frontend workspace-layout blob restored from the .gfi patch.
@@ -129,6 +151,8 @@ export type ControlEvent =
 	| { event: 'unsaved_changes'; payload: { unsaved_changes: boolean } }
 	| { event: 'save_path_changed'; payload: { save_path: string | null } }
 	| { event: 'graph_replaced'; payload: GraphSnapshot }
+	| { event: 'subpatch_changed'; payload: GraphSnapshot }
+	| { event: 'node_renamed'; payload: { old: string; new: string } }
 	| { event: 'layout'; payload: { layout: unknown } }
 	| { event: 'manager_shutdown'; payload: Record<string, never> };
 

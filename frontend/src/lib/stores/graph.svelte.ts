@@ -13,6 +13,7 @@ import {
 	type DirListing,
 	type FsEntry,
 	type GraphSnapshot,
+	type InstanceInfo,
 	type LinkInfo,
 	type NodeInstanceInfo,
 	type NodeTypeInfo
@@ -28,6 +29,8 @@ import type { ViewerKind } from '$lib/viewers/kind';
 class GraphStore {
 	nodes = $state<NodeInstanceInfo[]>([]);
 	links = $state<LinkInfo[]>([]);
+	/** Sub-patch instances keyed by instance id (flatten-at-runtime group nodes). */
+	instances = $state<Record<string, InstanceInfo>>({});
 	savePath = $state<string | null>(null);
 	unsavedChanges = $state(false);
 	connected = $state(false);
@@ -67,6 +70,7 @@ class GraphStore {
 		for (const n of snap.nodes) this._seedNodeViewerState(n);
 		this.nodes = snap.nodes;
 		this.links = snap.links;
+		this.instances = snap.instances ?? {};
 		this.savePath = snap.save_path;
 		this.unsavedChanges = snap.unsaved_changes;
 
@@ -153,6 +157,33 @@ class GraphStore {
 				this._replaceSnapshot(ev.payload);
 				this._onWholesaleLoad();
 				break;
+			case 'subpatch_changed': {
+				// Group/expand renamed members + rewrote instances. Re-sync nodes,
+				// links, and instances from the fresh snapshot — but NOT layout or a
+				// re-fit (it's an in-place edit, not a wholesale load).
+				const snap = ev.payload;
+				for (const old of this.nodes) {
+					forgetViewerKinds(old.name);
+					forgetViewerSettings(old.name);
+				}
+				for (const n of snap.nodes) this._seedNodeViewerState(n);
+				this.nodes = snap.nodes;
+				this.links = snap.links;
+				this.instances = snap.instances ?? {};
+				break;
+			}
+			case 'node_renamed': {
+				// Light rename fix-up (subpatch_changed re-syncs authoritatively right
+				// after, but keep selection/refs coherent in the meantime).
+				const { old, new: nu } = ev.payload;
+				const t = this.nodeByName(old);
+				if (t) t.name = nu;
+				for (const l of this.links) {
+					if (l.node_out === old) l.node_out = nu;
+					if (l.node_in === old) l.node_in = nu;
+				}
+				break;
+			}
 			case 'node_added':
 				// Seed view state for this node's output slots — from the saved
 				// patch (`viewers`) if present, else the defaults in the stores.
@@ -174,6 +205,8 @@ class GraphStore {
 			case 'node_moved': {
 				const target = this.nodeByName(ev.payload.name);
 				if (target) target.pos = ev.payload.pos;
+				else if (this.instances[ev.payload.name])
+					this.instances[ev.payload.name].pos = ev.payload.pos;
 				break;
 			}
 			case 'link_added':
@@ -311,6 +344,17 @@ class GraphStore {
 
 	async loadText(content: string): Promise<void> {
 		await getControl().call('load_text', { content });
+	}
+
+	/** Group the named nodes into a unique (inline) sub-patch. Returns its instance id. */
+	async groupNodes(members: string[], pos?: [number, number]): Promise<string> {
+		const r = await getControl().call<{ inst_id: string }>('group_nodes', { members, pos });
+		return r.inst_id;
+	}
+
+	/** Dissolve a sub-patch instance back into its member nodes. */
+	async expandInstance(instId: string): Promise<void> {
+		await getControl().call('expand_instance', { inst_id: instId });
 	}
 
 	/** List one directory level on the BACKEND filesystem (full FS, no jail). */

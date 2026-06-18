@@ -23,6 +23,7 @@
 		type Node
 	} from '@xyflow/svelte';
 	import GoofiNode from '$lib/editor/GoofiNode.svelte';
+	import SubPatchNode from '$lib/editor/SubPatchNode.svelte';
 	import AddNodeMenu from '$lib/editor/AddNodeMenu.svelte';
 	import PlacementPreview from '$lib/editor/PlacementPreview.svelte';
 	import FitToGraph from '$lib/editor/FitToGraph.svelte';
@@ -104,32 +105,105 @@
 	let flowNodes = $state.raw<Node[]>([]);
 	let flowEdges = $state.raw<Edge[]>([]);
 
+	/** Display name -> the instance that hides it (collapsed sub-patch member). */
+	const memberInstance = $derived.by(() => {
+		const m = new Map<string, string>();
+		for (const [instId, inst] of Object.entries(g.instances)) {
+			for (const disp of Object.keys(inst.members)) m.set(disp, instId);
+		}
+		return m;
+	});
+
+	/** Resolve a link endpoint to what's actually drawn: a hidden member is
+	 * rerouted to its instance's boundary handle; a normal node is unchanged.
+	 * Returns null when the member slot isn't exposed (purely internal). */
+	function drawEndpoint(
+		node: string,
+		slot: string,
+		dir: 'in' | 'out'
+	): { node: string; handle: string } | null {
+		const instId = memberInstance.get(node);
+		if (instId === undefined) return { node, handle: slot };
+		const inst = g.instances[instId];
+		const local = inst.members[node];
+		for (const [bname, port] of Object.entries(inst.interface)) {
+			if (port.dir === dir && port.inner_node === local && port.inner_slot === slot) {
+				return { node: instId, handle: bname };
+			}
+		}
+		return null;
+	}
+
 	$effect(() => {
-		const next: Node[] = g.nodes.map((n) => ({
-			id: n.name,
-			type: 'goofi',
-			position: { x: n.pos?.[0] ?? 0, y: n.pos?.[1] ?? 0 },
-			data: { node: n },
-			selected: sel.nodes(panelId).has(n.name)
-		}));
+		const next: Node[] = [];
+		for (const n of g.nodes) {
+			if (memberInstance.has(n.name)) continue; // hidden member of a collapsed sub-patch
+			next.push({
+				id: n.name,
+				type: 'goofi',
+				position: { x: n.pos?.[0] ?? 0, y: n.pos?.[1] ?? 0 },
+				data: { node: n },
+				selected: sel.nodes(panelId).has(n.name)
+			});
+		}
+		for (const [instId, inst] of Object.entries(g.instances)) {
+			next.push({
+				id: instId,
+				type: 'subpatch',
+				position: { x: inst.pos?.[0] ?? 0, y: inst.pos?.[1] ?? 0 },
+				data: { instance: inst, instId, onExpand: expandInstance },
+				selected: sel.nodes(panelId).has(instId)
+			});
+		}
 		flowNodes = next;
 	});
 
 	$effect(() => {
-		const next: Edge[] = g.links.map((l) => {
+		const next: Edge[] = [];
+		for (const l of g.links) {
+			const oi = memberInstance.get(l.node_out);
+			const ii = memberInstance.get(l.node_in);
+			if (oi !== undefined && oi === ii) continue; // internal to one sub-patch — hidden
+			const src = drawEndpoint(l.node_out, l.slot_out, 'out');
+			const dst = drawEndpoint(l.node_in, l.slot_in, 'in');
+			if (!src || !dst) continue; // an endpoint isn't an exposed boundary
 			const id = linkKey(l);
-			return {
+			next.push({
 				id,
-				source: l.node_out,
-				sourceHandle: l.slot_out,
-				target: l.node_in,
-				targetHandle: l.slot_in,
+				source: src.node,
+				sourceHandle: src.handle,
+				target: dst.node,
+				targetHandle: dst.handle,
 				selected: sel.edges(panelId).has(id),
 				animated: false
-			};
-		});
+			});
+		}
 		flowEdges = next;
 	});
+
+	async function groupSelection(): Promise<void> {
+		// Only real nodes can be grouped (skip any selected instance group node).
+		const names = Array.from(sel.nodes(panelId)).filter((n) => !(n in g.instances));
+		if (names.length === 0) return;
+		// Place the collapsed group node at the centroid of its members.
+		const pts = names.map((n) => g.nodeByName(n)?.pos).filter((p): p is [number, number] => !!p);
+		const pos: [number, number] = pts.length
+			? [
+					Math.round(pts.reduce((a, p) => a + p[0], 0) / pts.length),
+					Math.round(pts.reduce((a, p) => a + p[1], 0) / pts.length)
+				]
+			: [0, 0];
+		try {
+			const instId = await g.groupNodes(names, pos);
+			sel.selectNodes(panelId, [instId]);
+		} catch (e) {
+			console.warn('group failed', e);
+		}
+	}
+
+	function expandInstance(instId: string): void {
+		void g.expandInstance(instId).catch((e) => console.warn('expand failed', e));
+	}
 
 
 	function onConnect(c: Connection): void {
@@ -335,7 +409,7 @@
 		sel.clickNode(panelId, args.node.id, mouse.shiftKey || mouse.ctrlKey || mouse.metaKey);
 	}
 
-	const nodeTypes = { goofi: GoofiNode };
+	const nodeTypes = { goofi: GoofiNode, subpatch: SubPatchNode };
 
 	/** Framing for every programmatic fit — the Controls/“F” button (via the
 	 * `fitViewOptions` prop) and the on-load fit in <FitToGraph>. */
@@ -357,6 +431,9 @@
 		} else if (meta && e.key.toLowerCase() === 'd') {
 			e.preventDefault();
 			void duplicateSelection();
+		} else if (meta && e.key.toLowerCase() === 'g') {
+			e.preventDefault();
+			void groupSelection();
 		} else if (e.key === 'Delete' || e.key === 'Backspace') {
 			if (sel.nodes(panelId).size === 0 && sel.edges(panelId).size === 0) return;
 			e.preventDefault();

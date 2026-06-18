@@ -193,6 +193,13 @@ class ControlHub:
         if op == "set_node_pos":
             name = payload["name"]
             pos = payload["pos"]
+            # A sub-patch group node isn't a real node — persist its pos on the
+            # instance record instead.
+            if name in getattr(manager, "_instances", {}):
+                manager._instances[name]["pos"] = list(pos)
+                manager.unsaved_changes = True
+                await self.broadcast({"event": "node_moved", "payload": {"name": name, "pos": list(pos)}})
+                return {"ok": True}
             ref = manager.nodes[name]
             kwargs = dict(ref.gui_kwargs or {})
             kwargs["pos"] = list(pos)
