@@ -11,6 +11,7 @@
 	let { data, selected }: NodeProps = $props();
 	const inst = $derived(data.instance as InstanceInfo);
 	const instId = $derived(data.instId as string);
+	const onEnter = data.onEnter as (id: string) => void;
 	const onExpand = data.onExpand as (id: string) => void;
 	const onDuplicateShared = data.onDuplicateShared as (id: string) => void;
 	const onMakeUnique = data.onMakeUnique as (id: string) => void;
@@ -32,10 +33,10 @@
 	class="subpatch-node"
 	class:selected
 	style="min-height: {HEADER + rows * ROW + 8}px;"
-	ondblclick={() => onExpand(instId)}
+	ondblclick={() => onEnter(instId)}
 	role="button"
 	tabindex="0"
-	title="Double-click to expand this sub-patch"
+	title="Double-click to enter (edit inside) this sub-patch"
 	data-testid="subpatch-node"
 >
 	<div class="header">
@@ -46,7 +47,19 @@
 		<span class="count" title="{memberCount} nodes">{memberCount}</span>
 		<button
 			class="expand"
-			title="Expand sub-patch"
+			title="Enter sub-patch (edit inside)"
+			aria-label="Enter sub-patch"
+			data-testid="subpatch-enter"
+			onclick={(e) => {
+				e.stopPropagation();
+				onEnter(instId);
+			}}
+		>
+			⮕
+		</button>
+		<button
+			class="expand"
+			title="Expand sub-patch (dissolve into its nodes)"
 			aria-label="Expand sub-patch"
 			data-testid="subpatch-expand"
 			onclick={(e) => {

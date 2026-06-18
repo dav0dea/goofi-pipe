@@ -44,6 +44,11 @@ export const commands = {
 	cloneNodes: (names: string[], offset: [number, number] = [40, 40]): Promise<Record<string, string>> =>
 		graph().cloneNodes(names, offset),
 
+	// --- sub-patches -------------------------------------------------------
+	groupNodes: (names: string[], pos: [number, number] = [0, 0]): Promise<string> =>
+		graph().groupNodes(names, pos),
+	expandInstance: (instId: string): Promise<void> => graph().expandInstance(instId),
+
 	// --- patch persistence -------------------------------------------------
 	save: (path?: string): Promise<{ path: string; yaml: string }> =>
 		graph().save(path, true, workspace().serialize()),

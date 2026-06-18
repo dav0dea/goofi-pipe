@@ -8,6 +8,9 @@
 
 	let { data, selected }: NodeProps = $props();
 	const node = $derived(data.node as NodeInstanceInfo);
+	// Inside a sub-patch the node shows its local (un-namespaced) name; elsewhere
+	// its full graph name. The id stays the full name — only the label differs.
+	const label = $derived((data.label as string | undefined) ?? node?.name);
 	const inputs = $derived(Object.keys(node?.input_slots ?? {}));
 	const outputs = $derived(Object.keys(node?.output_slots ?? {}));
 	const uiStore = ui();
@@ -65,7 +68,7 @@
 	<div class="surface">
 		<div class="header">
 			<span class="health" style="background: {healthColor};" title={node?.error ?? 'running'}></span>
-			<span class="name">{node?.name}</span>
+			<span class="name">{label}</span>
 		</div>
 
 		{#if outputs.length > 0}

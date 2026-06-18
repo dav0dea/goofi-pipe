@@ -24,6 +24,7 @@
 	} from '@xyflow/svelte';
 	import GoofiNode from '$lib/editor/GoofiNode.svelte';
 	import SubPatchNode from '$lib/editor/SubPatchNode.svelte';
+	import BoundaryNode from '$lib/editor/BoundaryNode.svelte';
 	import AddNodeMenu from '$lib/editor/AddNodeMenu.svelte';
 	import PlacementPreview from '$lib/editor/PlacementPreview.svelte';
 	import FitToGraph from '$lib/editor/FitToGraph.svelte';
@@ -41,7 +42,13 @@
 	import { workspace } from '$lib/workspace/workspace.svelte';
 	import { getPanelType, type PanelProps } from '$lib/workspace/registry';
 	import { portal } from '$lib/workspace/portal';
-	import { linkKey, type LinkInfo, type NodeTypeInfo } from '$lib/api/control';
+	import {
+		linkKey,
+		type InstanceInfo,
+		type LinkInfo,
+		type NodeTypeInfo,
+		type SubPatchPort
+	} from '$lib/api/control';
 	import { serializeClipboard, parseClipboard, clipToSpecs } from '$lib/editor/clipboard';
 	import { copyText } from '$lib/clipboard';
 	import { registerEditor, unregisterEditor } from './editorCommands';
@@ -105,6 +112,53 @@
 	let flowNodes = $state.raw<Node[]>([]);
 	let flowEdges = $state.raw<Edge[]>([]);
 
+	// --- sub-patch navigation (enter-to-edit) -------------------------------
+	// The stack of instance ids the editor has descended into; empty = top level.
+	// (A stack so nesting is a natural extension; today one level deep is reached.)
+	let enteredPath = $state<string[]>([]);
+	const entered = $derived(enteredPath.length ? enteredPath[enteredPath.length - 1] : null);
+
+	const BND_PREFIX = '__bnd__';
+	const boundaryId = (instId: string, name: string): string => `${BND_PREFIX}${instId}::${name}`;
+	const isBoundaryId = (id: string): boolean => id.startsWith(BND_PREFIX);
+
+	/** A boundary port's data type, read off the inner node's slot it maps to. */
+	function boundaryDtype(inst: InstanceInfo, port: SubPatchPort): string {
+		const disp = memberDisplay(inst, port.inner_node);
+		const n = disp ? g.nodeByName(disp) : null;
+		if (!n) return 'ARRAY';
+		const slots = port.dir === 'in' ? n.input_slots : n.output_slots;
+		return slots[port.inner_slot] ?? 'ARRAY';
+	}
+
+	/** The display (graph) name of a member given its local name within `inst`. */
+	function memberDisplay(inst: InstanceInfo, local: string): string | null {
+		for (const [disp, loc] of Object.entries(inst.members)) if (loc === local) return disp;
+		return null;
+	}
+
+	function enterInstance(instId: string): void {
+		if (!g.instances[instId]) return;
+		sel.clear(panelId);
+		enteredPath = [...enteredPath, instId];
+		setTimeout(fitView, 60); // frame the inside once it has rendered
+	}
+
+	/** Pop the breadcrumb back to `depth` levels (0 = top of the patch). */
+	function exitToDepth(depth: number): void {
+		sel.clear(panelId);
+		enteredPath = enteredPath.slice(0, depth);
+		setTimeout(fitView, 60);
+	}
+
+	// If an entered instance is dissolved/removed elsewhere, climb back out of it.
+	$effect(() => {
+		if (enteredPath.length === 0) return;
+		let depth = enteredPath.length;
+		while (depth > 0 && !g.instances[enteredPath[depth - 1]]) depth--;
+		if (depth !== enteredPath.length) enteredPath = enteredPath.slice(0, depth);
+	});
+
 	/** Display name -> the instance that hides it (collapsed sub-patch member). */
 	const memberInstance = $derived.by(() => {
 		const m = new Map<string, string>();
@@ -135,7 +189,58 @@
 	}
 
 	$effect(() => {
+		const inst = entered ? g.instances[entered] : null;
 		const next: Node[] = [];
+		if (inst && entered) {
+			// Inside a sub-patch: render its members (with local labels) plus the
+			// In/Out boundary nodes derived from its interface, laid out on either
+			// side of the members' bounding box.
+			const disps = Object.keys(inst.members);
+			const pts = disps
+				.map((d) => g.nodeByName(d)?.pos)
+				.filter((p): p is [number, number] => !!p);
+			const minX = pts.length ? Math.min(...pts.map((p) => p[0])) : 0;
+			const maxX = pts.length ? Math.max(...pts.map((p) => p[0])) : 0;
+			const minY = pts.length ? Math.min(...pts.map((p) => p[1])) : 0;
+			for (const disp of disps) {
+				const n = g.nodeByName(disp);
+				if (!n) continue;
+				next.push({
+					id: disp,
+					type: 'goofi',
+					position: { x: n.pos?.[0] ?? 0, y: n.pos?.[1] ?? 0 },
+					data: { node: n, label: inst.members[disp] },
+					selected: sel.nodes(panelId).has(disp)
+				});
+			}
+			const ports = Object.entries(inst.interface);
+			const ins = ports.filter(([, p]) => p.dir === 'in');
+			const outs = ports.filter(([, p]) => p.dir === 'out');
+			ins.forEach(([name, port], i) => {
+				next.push({
+					id: boundaryId(entered, name),
+					type: 'boundary',
+					position: { x: minX - 280, y: minY + i * 96 },
+					data: { name, dir: 'in', dtype: boundaryDtype(inst, port) },
+					selectable: false,
+					draggable: false,
+					deletable: false
+				});
+			});
+			outs.forEach(([name, port], i) => {
+				next.push({
+					id: boundaryId(entered, name),
+					type: 'boundary',
+					position: { x: maxX + 320, y: minY + i * 96 },
+					data: { name, dir: 'out', dtype: boundaryDtype(inst, port) },
+					selectable: false,
+					draggable: false,
+					deletable: false
+				});
+			});
+			flowNodes = next;
+			return;
+		}
 		for (const n of g.nodes) {
 			if (memberInstance.has(n.name)) continue; // hidden member of a collapsed sub-patch
 			next.push({
@@ -146,14 +251,15 @@
 				selected: sel.nodes(panelId).has(n.name)
 			});
 		}
-		for (const [instId, inst] of Object.entries(g.instances)) {
+		for (const [instId, inst2] of Object.entries(g.instances)) {
 			next.push({
 				id: instId,
 				type: 'subpatch',
-				position: { x: inst.pos?.[0] ?? 0, y: inst.pos?.[1] ?? 0 },
+				position: { x: inst2.pos?.[0] ?? 0, y: inst2.pos?.[1] ?? 0 },
 				data: {
-					instance: inst,
+					instance: inst2,
 					instId,
+					onEnter: enterInstance,
 					onExpand: expandInstance,
 					onDuplicateShared: duplicateShared,
 					onMakeUnique: makeUnique
@@ -165,7 +271,55 @@
 	});
 
 	$effect(() => {
+		const inst = entered ? g.instances[entered] : null;
 		const next: Edge[] = [];
+		if (inst && entered) {
+			// Internal member↔member links, drawn directly.
+			for (const l of g.links) {
+				if (!(l.node_out in inst.members) || !(l.node_in in inst.members)) continue;
+				const id = linkKey(l);
+				next.push({
+					id,
+					source: l.node_out,
+					sourceHandle: l.slot_out,
+					target: l.node_in,
+					targetHandle: l.slot_in,
+					selected: sel.edges(panelId).has(id),
+					animated: false
+				});
+			}
+			// Boundary edges: In node → member input, member output → Out node.
+			for (const [name, port] of Object.entries(inst.interface)) {
+				const disp = memberDisplay(inst, port.inner_node);
+				if (!disp) continue;
+				const bId = boundaryId(entered, name);
+				if (port.dir === 'in') {
+					next.push({
+						id: `${bId}→${disp}.${port.inner_slot}`,
+						source: bId,
+						sourceHandle: 'out',
+						target: disp,
+						targetHandle: port.inner_slot,
+						selectable: false,
+						deletable: false,
+						animated: false
+					});
+				} else {
+					next.push({
+						id: `${disp}.${port.inner_slot}→${bId}`,
+						source: disp,
+						sourceHandle: port.inner_slot,
+						target: bId,
+						targetHandle: 'in',
+						selectable: false,
+						deletable: false,
+						animated: false
+					});
+				}
+			}
+			flowEdges = next;
+			return;
+		}
 		for (const l of g.links) {
 			const oi = memberInstance.get(l.node_out);
 			const ii = memberInstance.get(l.node_in);
@@ -233,6 +387,9 @@
 
 	function onConnect(c: Connection): void {
 		if (!c.source || !c.target || !c.sourceHandle || !c.targetHandle) return;
+		// Boundary In/Out nodes are display-only in the enter-to-edit view; wiring
+		// them to define new sub-patch slots is a later (authoring) stage.
+		if (isBoundaryId(c.source) || isBoundaryId(c.target)) return;
 		void g.addLink({
 			node_out: c.source,
 			node_in: c.target,
@@ -430,11 +587,12 @@
 	}
 
 	function onNodeClick(args: { node: Node; event: MouseEvent | TouchEvent }): void {
+		if (isBoundaryId(args.node.id)) return; // boundary nodes aren't selectable
 		const mouse = args.event as MouseEvent;
 		sel.clickNode(panelId, args.node.id, mouse.shiftKey || mouse.ctrlKey || mouse.metaKey);
 	}
 
-	const nodeTypes = { goofi: GoofiNode, subpatch: SubPatchNode };
+	const nodeTypes = { goofi: GoofiNode, subpatch: SubPatchNode, boundary: BoundaryNode };
 
 	/** Framing for every programmatic fit — the Controls/“F” button (via the
 	 * `fitViewOptions` prop) and the on-load fit in <FitToGraph>. */
@@ -448,7 +606,12 @@
 		const meta = e.ctrlKey || e.metaKey;
 		if (meta && e.key.toLowerCase() === 'a') {
 			e.preventDefault();
-			sel.selectNodes(panelId, g.nodes.map((n) => n.name));
+			// Select what's actually on screen: the entered sub-patch's members, or
+			// every top-level node (collapsed members stay hidden, so excluded).
+			const names = entered
+				? Object.keys(g.instances[entered]?.members ?? {})
+				: g.nodes.filter((n) => !memberInstance.has(n.name)).map((n) => n.name);
+			sel.selectNodes(panelId, names);
 		} else if (meta && e.key.toLowerCase() === 'c') {
 			void copySelection();
 		} else if (meta && e.key.toLowerCase() === 'v') {
@@ -471,8 +634,10 @@
 			if (menuOpen) {
 				menuOpen = false;
 				menuSeed = null;
-			} else {
+			} else if (sel.nodes(panelId).size || sel.edges(panelId).size) {
 				sel.clear(panelId);
+			} else if (enteredPath.length) {
+				exitToDepth(enteredPath.length - 1); // step one level up
 			}
 		} else if (e.key.toLowerCase() === 'f') {
 			fitView();
@@ -623,6 +788,23 @@
 	<!-- `canvas-wrap` is the marker PlacementPreview uses to tell a commit
 	     click (inside the canvas) from a cancel click (outside). -->
 	<div class="editor-panel canvas-wrap" bind:this={rootEl}>
+		{#if enteredPath.length > 0}
+			<!-- Sub-patch breadcrumb: where in the patch hierarchy this editor is. -->
+			<nav class="breadcrumb" data-testid="subpatch-breadcrumb" aria-label="Sub-patch path">
+				<button class="crumb" onclick={() => exitToDepth(0)} title="Back to the top-level patch"
+					>Patch</button
+				>
+				{#each enteredPath as inst, i (inst)}
+					<span class="sep">›</span>
+					<button
+						class="crumb"
+						class:current={i === enteredPath.length - 1}
+						onclick={() => exitToDepth(i + 1)}
+						title="Go to {inst}">{inst}</button
+					>
+				{/each}
+			</nav>
+		{/if}
 		<SvelteFlow
 			bind:nodes={flowNodes}
 			bind:edges={flowEdges}
@@ -853,5 +1035,47 @@
 		height: 1px;
 		overflow: visible;
 		pointer-events: none;
+	}
+	.breadcrumb {
+		position: absolute;
+		top: 10px;
+		left: 10px;
+		z-index: 6;
+		display: flex;
+		align-items: center;
+		gap: 4px;
+		padding: 4px 8px;
+		max-width: calc(100% - 90px);
+		overflow: hidden;
+		background: color-mix(in srgb, var(--bg-elev-1) 88%, transparent);
+		border: 1px solid var(--border);
+		border-radius: var(--radius-sm);
+		box-shadow: var(--shadow-1);
+		font-family: var(--font-mono);
+		font-size: 11px;
+	}
+	.breadcrumb .crumb {
+		background: transparent;
+		border: none;
+		padding: 1px 4px;
+		border-radius: var(--radius-sm);
+		color: var(--text-dim);
+		cursor: pointer;
+		white-space: nowrap;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		max-width: 160px;
+	}
+	.breadcrumb .crumb:hover {
+		color: var(--text);
+		background: color-mix(in srgb, var(--accent) 16%, transparent);
+	}
+	.breadcrumb .crumb.current {
+		color: var(--text);
+		font-weight: 600;
+		cursor: default;
+	}
+	.breadcrumb .sep {
+		color: var(--text-faint);
 	}
 </style>
