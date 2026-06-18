@@ -1,44 +1,52 @@
 <!--
-  TouchDesigner-style "zoom out to leave a sub-patch". When the editor is inside a
-  sub-patch and the user zooms out far enough, it pops up one level. Must live
-  INSIDE <SvelteFlow> so useViewport()/useSvelteFlow() resolve from the provider
-  context (the parent panel's <script> can't see it — same reason FitToGraph is a
-  child). Renders nothing.
+  TouchDesigner-style "zoom out to leave a sub-patch". When inside a sub-patch and
+  the user zooms out far enough, it pops up one level. Must live INSIDE <SvelteFlow>
+  so the viewport/store hooks resolve from the provider context (the parent panel's
+  <script> can't see them — same reason FitToGraph is a child). Renders nothing.
 
-  Threshold is ADAPTIVE: it records the fit-zoom right after entering and pops when
-  the zoom drops below half of it — a fixed absolute zoom pops too eagerly on large
-  sub-patches and too late on tiny ones. Re-framing on exit (the parent panel's
-  exit re-fits) pushes zoom back above the threshold, and a one-shot guard prevents
-  an immediate second pop — so you cleanly surface one level at a time.
+  The threshold is computed LIVE from the actual content: exit when zoomed to half
+  the "all-node-fit" zoom (the zoom at which every currently-visible node just fits
+  the viewport, capped the same way the enter-fit is). That makes it size-aware —
+  a large sub-patch has a smaller fit zoom, so you must zoom out further before it
+  pops — and robust to panning/zooming after entry. A short arm delay + a one-shot
+  guard (the exit re-fit restores a higher zoom) prevent an immediate second pop.
 -->
 <script lang="ts">
-	import { useViewport } from '@xyflow/svelte';
+	import { useViewport, useSvelteFlow, useStore, getViewportForBounds } from '@xyflow/svelte';
 
 	let { entered, onExit }: { entered: string | null; onExit: () => void } = $props();
 
-	const EXIT_RATIO = 0.5; // pop when zoom falls below half the entry fit-zoom
+	const EXIT_RATIO = 0.5; // pop at half the all-node-fit zoom ("50% past fit")
+	const FIT_MAX_ZOOM = 1; // must match the editor's FIT_OPTIONS maxZoom
+	const FIT_PADDING = 0.18; // must match the editor's FIT_OPTIONS padding
+
 	const vp = useViewport();
-	let baseline = $state<number | null>(null);
+	const store = useStore();
+	const { getNodesBounds } = useSvelteFlow();
 	let armed = false; // plain (not a reactive dep) — only zoom changes drive the check
 
 	$effect(() => {
-		// Re-baseline whenever we descend into a (new) sub-patch. The enter-fit is
-		// scheduled by the panel (~60ms); record the settled zoom a bit after.
+		// Arm shortly after descending so the enter-fit settles first; disarm at top.
 		const cur = entered;
-		baseline = null;
 		armed = false;
 		if (!cur) return;
 		const t = setTimeout(() => {
-			baseline = vp.current.zoom;
 			armed = true;
-		}, 160);
+		}, 220);
 		return () => clearTimeout(t);
 	});
 
 	$effect(() => {
 		const z = vp.current.zoom; // reactive: fires continuously while zooming
-		if (!entered || !armed || baseline == null) return;
-		if (z < baseline * EXIT_RATIO) {
+		if (!entered || !armed) return;
+		const w = store.width;
+		const h = store.height;
+		const ids = store.nodes.map((n) => n.id);
+		if (!w || !h || ids.length === 0) return;
+		const bounds = getNodesBounds(ids);
+		if (!bounds.width || !bounds.height) return;
+		const fitZoom = getViewportForBounds(bounds, w, h, 0.05, FIT_MAX_ZOOM, FIT_PADDING).zoom;
+		if (z < fitZoom * EXIT_RATIO) {
 			armed = false; // one-shot; the exit re-fit restores a higher zoom
 			onExit();
 		}

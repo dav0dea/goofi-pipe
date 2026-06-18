@@ -144,6 +144,7 @@
 
 	function enterInstance(instId: string): void {
 		if (!g.instances[instId]) return;
+		if (enteredPath[enteredPath.length - 1] === instId) return; // already inside it
 		sel.clear(panelId);
 		enteredPath = [...enteredPath, instId];
 		setTimeout(fitView, 60); // frame the inside once it has rendered
@@ -447,10 +448,13 @@
 	): { dx: number; dy: number; guides: Guide[] } {
 		const draggedBounds: Bounds[] = [];
 		for (const [id, pos] of current) draggedBounds.push(nodeBoundsFromFlow(id, pos.x, pos.y));
+		// Snap only to what's actually on screen in THIS editor (flowNodes) — never
+		// to hidden members of a collapsed sub-patch or nodes outside the entered
+		// sub-patch (which g.nodes would include).
 		const targets: Bounds[] = [];
-		for (const n of g.nodes) {
-			if (current.has(n.name)) continue;
-			targets.push(nodeBoundsFromFlow(n.name, n.pos[0], n.pos[1]));
+		for (const n of flowNodes) {
+			if (current.has(n.id)) continue;
+			targets.push(nodeBoundsFromFlow(n.id, n.position.x, n.position.y));
 		}
 		return computeSnapDelta(draggedBounds, targets, altKey);
 	}
@@ -606,6 +610,39 @@
 	function onNodeClick(args: { node: Node; event: MouseEvent | TouchEvent }): void {
 		const mouse = args.event as MouseEvent;
 		sel.clickNode(panelId, args.node.id, mouse.shiftKey || mouse.ctrlKey || mouse.metaKey);
+	}
+
+	// Double-click a sub-patch group node → enter it. We can't use SvelteFlow's
+	// `onnodeclick` (it suppresses the 2nd click of a double-click), nor the native
+	// `dblclick` event (the 1st click selects the node, which rebuilds flowNodes and
+	// detaches the node element, so dblclick/elementFromPoint resolve to nothing on
+	// the 2nd click). So we detect it ourselves: record the group node hit by the
+	// 1st click, then a 2nd click at the same spot within the threshold enters it.
+	const DBL_PX = 6; // a real double-click barely moves the pointer
+	let lastClickInst = '';
+	let lastClickAt = 0;
+	let lastClickX = 0;
+	let lastClickY = 0;
+	function onCanvasClick(event: MouseEvent): void {
+		const now = performance.now();
+		if (
+			lastClickInst &&
+			now - lastClickAt < DOUBLE_CLICK_MS &&
+			Math.abs(event.clientX - lastClickX) < DBL_PX &&
+			Math.abs(event.clientY - lastClickY) < DBL_PX
+		) {
+			const inst = lastClickInst;
+			lastClickInst = '';
+			enterInstance(inst);
+			return;
+		}
+		const id =
+			(event.target as HTMLElement | null)?.closest('.svelte-flow__node')?.getAttribute('data-id') ??
+			'';
+		lastClickAt = now;
+		lastClickX = event.clientX;
+		lastClickY = event.clientY;
+		lastClickInst = id && id in g.instances ? id : '';
 	}
 
 	const nodeTypes = { goofi: GoofiNode, subpatch: SubPatchNode, boundary: BoundaryNode };
@@ -788,8 +825,10 @@
 		registerEditor(panelId, { openAddMenu: openAddMenuCentered, fitView, focusNode });
 		window.addEventListener('keydown', onKeydown);
 		window.addEventListener('mousemove', trackMouse);
+		rootEl?.addEventListener('click', onCanvasClick);
 		return () => {
 			unregisterEditor(panelId);
+			rootEl?.removeEventListener('click', onCanvasClick);
 			// NB: do NOT forget this panel's selection here — unmount also fires
 			// on a tab switch (the inactive tab's tree is torn down), and the
 			// selection must survive switching away and back. It only clears
