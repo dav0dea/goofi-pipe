@@ -162,6 +162,22 @@ class GraphStore {
 				// links, and instances from the fresh snapshot — but NOT layout or a
 				// re-fit (it's an in-place edit, not a wholesale load).
 				const snap = ev.payload;
+				// Names present before vs after — group/expand/remove_instance fire
+				// only this event (no per-node node_removed), so prune panel links to
+				// any node OR instance id that vanished. Critical: instance ids are
+				// reused (subpatch0 regenerates), so a stale link would silently
+				// re-bind a panel to an unrelated sub-patch.
+				const before = new Set<string>([
+					...this.nodes.map((n) => n.name),
+					...Object.keys(this.instances)
+				]);
+				const after = new Set<string>([
+					...snap.nodes.map((n) => n.name),
+					...Object.keys(snap.instances ?? {})
+				]);
+				for (const name of before) {
+					if (!after.has(name)) workspace().clearNodeRefs(name);
+				}
 				for (const old of this.nodes) {
 					forgetViewerKinds(old.name);
 					forgetViewerSettings(old.name);
@@ -421,36 +437,40 @@ class GraphStore {
 		);
 	}
 
-	/** Build the virtual NodeInstanceInfo that stands in for a sub-patch instance
-	 * wherever a node is looked up by name. Input/output slots mirror the
-	 * instance's boundary ports so any slot-driven node code stays consistent. */
-	private _synthSubpatchNode(instId: string, inst: InstanceInfo): NodeInstanceInfo {
-		const input_slots: Record<string, string> = {};
-		const output_slots: Record<string, string> = {};
-		for (const [pname, port] of Object.entries(inst.interface)) {
-			if (port.dir === 'in') input_slots[pname] = 'ARRAY';
-			else output_slots[pname] = 'ARRAY';
+	/** The first errored member of a sub-patch (its error string), or null. Lets
+	 * the collapsed group node and its inspector surface a member's error even
+	 * though the members themselves are hidden. */
+	instanceError(instId: string): string | null {
+		const inst = this.instances[instId];
+		if (!inst) return null;
+		for (const disp of Object.keys(inst.members)) {
+			const err = this._realNode(disp)?.error;
+			if (err) return err;
 		}
+		return null;
+	}
+
+	/** Build the virtual NodeInstanceInfo that stands in for a sub-patch instance
+	 * wherever a node is looked up by name (selection / inspector / drag). It
+	 * deliberately exposes NO input/output slots: a sub-patch is not a data
+	 * endpoint, so a viewer/metadata panel linked to it must not try to open a
+	 * (never-resolvable) data stream. Live sharing state is recomputed by the
+	 * inspector from `instances`, so only `instId` rides on the marker. */
+	private _synthSubpatchNode(instId: string, inst: InstanceInfo): NodeInstanceInfo {
 		const shared = Boolean(inst.def_id);
 		return {
 			name: instId,
 			type: shared ? 'Shared sub-patch' : 'Sub-patch',
 			category: 'subpatch',
 			doc: '',
-			input_slots,
-			output_slots,
+			input_slots: {},
+			output_slots: {},
 			params: {},
 			pos: inst.pos,
 			viewers: {},
 			membership: null,
-			error: null,
-			subpatch: {
-				instId,
-				kind: inst.kind,
-				def_id: inst.def_id ?? null,
-				siblings: this.subpatchSiblings(instId),
-				memberCount: Object.keys(inst.members).length
-			}
+			error: this.instanceError(instId),
+			subpatch: { instId }
 		};
 	}
 

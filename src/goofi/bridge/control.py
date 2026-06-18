@@ -149,7 +149,13 @@ class ControlHub:
                 pos=tuple(payload.get("pos") or (0, 0)),
             )
         if op == "remove_node":
-            await self._call_manager(manager.remove_node, payload["name"])
+            name = payload["name"]
+            # A sub-patch group node is virtual — deleting it removes the whole
+            # sub-patch (members + links), mirroring node-delete semantics.
+            if name in getattr(manager, "_instances", {}):
+                await self._call_manager(manager.remove_instance, name)
+            else:
+                await self._call_manager(manager.remove_node, name)
             return {"ok": True}
         if op == "add_link":
             await self._call_manager(

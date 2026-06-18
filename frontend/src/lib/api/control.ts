@@ -46,15 +46,11 @@ export interface NodeInstanceInfo {
 	subpatch?: SubpatchMeta | null;
 }
 
-/** Identity + sharing facts for a sub-patch instance, carried on the virtual
- * node the inspector renders. `siblings` are the OTHER instances mirroring the
- * same definition (strict mirror); empty for a unique sub-patch. */
+/** Marks a virtual node as standing in for a sub-patch instance. Only the id
+ * rides along — live sharing state (kind, def_id, siblings, member count) is
+ * recomputed from the `instances` map so it never goes stale. */
 export interface SubpatchMeta {
 	instId: string;
-	kind: string;
-	def_id: string | null;
-	siblings: string[];
-	memberCount: number;
 }
 
 export interface LinkInfo {

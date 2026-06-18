@@ -637,6 +637,24 @@ class Manager:
     # `ungroup` reads better at call sites that just want the group dissolved.
     ungroup = expand_instance
 
+    @mark_unsaved_changes
+    def remove_instance(self, inst_id: str, notify_gui: bool = True) -> None:
+        """Delete a whole sub-patch: its member nodes (and their links) and the
+        instance record. A virtual sub-patch node responds to Delete like any
+        node. GCs an orphaned shared definition, like `make_unique`."""
+        if inst_id not in self._instances:
+            raise KeyError(f"No such sub-patch: {inst_id}")
+        inst = self._instances[inst_id]
+        def_id = inst.get("def_id")
+        for member in list(inst["members"].keys()):
+            self.remove_node(member, notify_gui=False)
+            self._membership.pop(member, None)
+        del self._instances[inst_id]
+        if def_id and not any(i.get("def_id") == def_id for i in self._instances.values()):
+            self._definitions.pop(def_id, None)
+        if self._bridge is not None and notify_gui:
+            self._bridge.control.on_subpatch_changed()
+
     # ------------------------------------------------------------------
     # Shared sub-patches (strict mirror)
     # ------------------------------------------------------------------
@@ -798,16 +816,20 @@ class Manager:
         if not def_id:
             return changed
         local = inst["members"][name]
-        # Record on the definition (the save source of truth).
+        # Record on the definition (the save source of truth). Assign a fresh dict
+        # rather than mutating in place — `_node_record` can leave the def's member
+        # gui_kwargs aliased to a live node's dict, and we must not touch that.
         rec = self._definitions[def_id]["members"].get(local)
         if rec is not None:
-            rec.setdefault("gui_kwargs", {})["pos"] = pos
-        # Propagate to every sibling instance's corresponding member.
+            rec["gui_kwargs"] = {**(rec.get("gui_kwargs") or {}), "pos": pos}
+        # Propagate to every sibling instance's corresponding member. Tolerate a
+        # stale members entry whose node was already removed (remove_node leaves
+        # _membership/members untouched) — same defensive stance as update_param.
         for other_id, other in self._instances.items():
             if other_id == inst_id or other.get("def_id") != def_id:
                 continue
             for onode, olocal in other["members"].items():
-                if olocal == local:
+                if olocal == local and onode in self.nodes:
                     oref = self.nodes[onode]
                     oref.gui_kwargs = {**(oref.gui_kwargs or {}), "pos": pos}
                     changed.append(onode)

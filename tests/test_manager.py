@@ -254,6 +254,52 @@ def test_shared_member_pos_mirrors_to_sibling():
         mgr.terminate()
 
 
+def test_remove_instance_deletes_members_and_gcs_def():
+    mgr = _bare_manager(use_multiprocessing=False)
+    try:
+        osc, inst = _build_grouped_graph(mgr)
+        def_id = mgr.share_instance(inst)
+        inst2 = mgr.instantiate_definition(def_id)
+        # Delete one shared instance → its members + links gone; def survives (inst2 holds it).
+        mgr.remove_instance(inst)
+        assert inst not in mgr._instances
+        assert f"{inst}::select0" not in mgr.nodes
+        assert f"{inst}::select0" not in mgr._membership
+        assert all(link["node_in"] != f"{inst}::select0" for link in mgr.links)
+        assert def_id in mgr._definitions
+        # Delete the last instance → orphaned definition is GC'd.
+        mgr.remove_instance(inst2)
+        assert def_id not in mgr._definitions
+        assert mgr._instances == {}
+        assert all(not k.startswith(f"{inst2}::") for k in mgr._membership)
+    finally:
+        mgr.terminate()
+
+
+def test_shared_member_pos_survives_save_load(tmp_path):
+    mgr = _bare_manager(use_multiprocessing=False)
+    try:
+        osc, inst = _build_grouped_graph(mgr)
+        def_id = mgr.share_instance(inst)
+        inst2 = mgr.instantiate_definition(def_id)
+        mgr.set_node_pos(f"{inst}::select0", (321, 654))
+        fp = str(tmp_path / "shared_pos.gfi")
+        mgr.save(fp, overwrite=True)
+    finally:
+        mgr.terminate()
+
+    mgr2 = _bare_manager(use_multiprocessing=False)
+    try:
+        mgr2.load(fp)
+        # The mirrored layout round-trips: every shared sibling's member is at the moved pos.
+        shared_ids = [iid for iid, i in mgr2._instances.items() if i["def_id"] == def_id]
+        assert len(shared_ids) == 2
+        for iid in shared_ids:
+            assert list(mgr2.nodes[f"{iid}::select0"].gui_kwargs["pos"]) == [321, 654]
+    finally:
+        mgr2.terminate()
+
+
 def test_unique_member_pos_does_not_mirror():
     mgr = _bare_manager(use_multiprocessing=False)
     try:

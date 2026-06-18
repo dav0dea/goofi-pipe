@@ -259,6 +259,7 @@
 				data: {
 					instance: inst2,
 					instId,
+					hasError: Boolean(g.instanceError(instId)),
 					onEnter: enterInstance,
 					onExpand: expandInstance
 				},
@@ -339,10 +340,15 @@
 		flowEdges = next;
 	});
 
-	/** Node ids selected in THIS editor. Unions the app selection store (click /
-	 * shift-click / Ctrl+A) with Svelte Flow's live `selected` flags (marquee /
-	 * box select) — the store alone misses marquee selections. Excludes sub-patch
-	 * group nodes (not real nodes). */
+	/** Real-node ids selected in THIS editor — the operands for group / copy /
+	 * duplicate. Unions the app selection store (click / shift-click / Ctrl+A)
+	 * with Svelte Flow's live `selected` flags (marquee / box select) — the store
+	 * alone misses marquee selections. Sub-patch group nodes are excluded on
+	 * purpose: a sub-patch can't round-trip through the generic node clone/
+	 * clipboard path (it carries definition + membership state), so duplicating a
+	 * sub-patch goes through the inspector's explicit "Duplicate as shared".
+	 * (Delete is the exception — it reads the raw selection so it can remove a
+	 * sub-patch too, via remove_instance.) */
 	function selectedNodeNames(): string[] {
 		const ids = new Set<string>(sel.nodes(panelId));
 		for (const n of flowNodes) if (n.selected) ids.add(n.id);
@@ -594,10 +600,14 @@
 		if (meta && e.key.toLowerCase() === 'a') {
 			e.preventDefault();
 			// Select what's actually on screen: the entered sub-patch's members, or
-			// every top-level node (collapsed members stay hidden, so excluded).
+			// every top-level node PLUS the collapsed sub-patch group nodes (which
+			// are virtual nodes — they select like any node).
 			const names = entered
 				? Object.keys(g.instances[entered]?.members ?? {})
-				: g.nodes.filter((n) => !memberInstance.has(n.name)).map((n) => n.name);
+				: [
+						...g.nodes.filter((n) => !memberInstance.has(n.name)).map((n) => n.name),
+						...Object.keys(g.instances)
+					];
 			sel.selectNodes(panelId, names);
 		} else if (meta && e.key.toLowerCase() === 'c') {
 			void copySelection();

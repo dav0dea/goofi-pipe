@@ -52,6 +52,24 @@ authoring work. Driven by Phil's directive:
    carry identical pos, so the envelope round-trips the same layout. The group
    node's own pos stays per-instance (independent placements).
 
+## Done in the same pass
+- Delete-key on a sub-patch removes the whole sub-patch (`Manager.remove_instance`,
+  bridge `remove_node` routes instance ids to it, GCs an orphan def).
+
+## Hardening (from the adversarial review workflow, 7 confirmed defects fixed)
+- `set_node_pos` guards the sibling loop (`onode in self.nodes`) so a stale
+  members entry (after a member `remove_node`) can't `KeyError` the drag.
+- The synth sub-patch node exposes NO data slots, so a viewer/metadata panel
+  linked to a sub-patch can't open a never-resolvable `/data/<instId>` stream;
+  `data.ts` also stops reconnecting on terminal close codes (≥4000).
+- Member errors aggregate onto the collapsed group node (red border) + the synth
+  node's `error`, so a collapsed sub-patch isn't silently healthy.
+- Ctrl+A includes top-level sub-patch group nodes.
+- `subpatch_changed` clears panel links to instances/members that vanished
+  (prevents a stale link silently re-binding to a reused instance id).
+- `SubpatchMeta` trimmed to `{instId}`; sharing state is recomputed live.
+
 ## Out of scope (noted)
-- Delete-key on a sub-patch (still a swallowed no-op) — separate follow-up.
+- Ctrl+C/Ctrl+D don't round-trip a sub-patch (carries def+membership); the
+  inspector's explicit "Duplicate as shared" is the sub-patch duplicate path.
 - The In/Out authoring nodes — the next task, unblocked by this.

@@ -14,6 +14,9 @@
 	const onEnter = data.onEnter as (id: string) => void;
 	const onExpand = data.onExpand as (id: string) => void;
 	const shared = $derived(Boolean(inst?.def_id));
+	// True when any (hidden) member is currently erroring — surfaced as a red
+	// border so a collapsed sub-patch isn't silently healthy-looking.
+	const hasError = $derived(Boolean(data.hasError));
 
 	const ins = $derived(
 		Object.entries(inst?.interface ?? {}).filter(([, p]) => p.dir === 'in')
@@ -30,11 +33,12 @@
 <div
 	class="subpatch-node"
 	class:selected
+	class:has-error={hasError}
 	style="min-height: {HEADER + rows * ROW + 8}px;"
 	ondblclick={() => onEnter(instId)}
 	role="button"
 	tabindex="0"
-	title="Double-click to enter (edit inside) this sub-patch"
+	title={hasError ? 'A node inside this sub-patch has an error' : 'Double-click to enter (edit inside) this sub-patch'}
 	data-testid="subpatch-node"
 >
 	<div class="header">
@@ -101,6 +105,12 @@
 	.subpatch-node.selected {
 		border-color: var(--accent);
 		box-shadow: 0 0 0 1px var(--accent);
+	}
+	.subpatch-node.has-error {
+		border-color: var(--danger);
+	}
+	.subpatch-node.has-error.selected {
+		box-shadow: 0 0 0 1px var(--danger);
 	}
 	.header {
 		display: flex;
