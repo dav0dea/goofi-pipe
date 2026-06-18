@@ -384,6 +384,19 @@ class Manager:
     @mark_unsaved_changes
     def remove_node(self, name: str, notify_gui: bool = True, **gui_kwargs) -> None:
         print(f"Removing node '{name}'.")
+        # Defensive: if a member of a still-present UNIQUE sub-patch is deleted
+        # directly, unwire any boundary that points at it so no interface entry
+        # dangles at a gone member (its spliced external links drop below with the
+        # node's links). remove_instance pops membership first, so teardown skips
+        # this; shared single-member deletes are out of scope (would desync siblings).
+        _inst_id = self._membership.get(name)
+        if _inst_id is not None:
+            _inst = self._instances.get(_inst_id)
+            if _inst is not None and not _inst.get("def_id"):
+                _local = _inst["members"].get(name)
+                for _bid, _e in list(_inst["interface"].items()):
+                    if _e.get("inner_node") == _local:
+                        _inst["interface"][_bid] = {**_e, "inner_node": None, "inner_slot": None}
         # Drop any links touching this node.
         for link in list(self._links):
             if link["node_out"] == name or link["node_in"] == name:
@@ -530,13 +543,27 @@ class Manager:
                 return cand
             idx += 1
 
+    def _slot_dtype(self, display: str, slot: str, dir: str) -> str:
+        """Name of a node slot's DataType ('ARRAY'/'STRING'/'TABLE'), default ARRAY."""
+        ref = self.nodes[display]
+        slots = ref.input_slots if dir == "in" else ref.output_slots
+        dt = slots.get(slot)
+        return dt.name if dt is not None else "ARRAY"
+
+    def _beside_member_pos(self, display: str, dir: str) -> list:
+        """A default In/Out pill position beside its inner member (In left, Out right)."""
+        pos = (self.nodes[display].gui_kwargs or {}).get("pos") or [0, 0]
+        dx = -280 if dir == "in" else 320
+        return [int(pos[0]) + dx, int(pos[1])]
+
     def _derive_interface(self, members: Dict[str, str]) -> Dict[str, Any]:
         """Auto-derive the boundary interface from links crossing the member set.
 
-        A member input slot fed from outside is a boundary input; a member
-        output feeding outside is a boundary output. This is UI metadata (how
-        the collapsed sub-patch node presents its ports) — the live graph stays
-        flat, so it does not affect runtime or save/load round-tripping.
+        A member input slot fed from outside is a boundary input; a member output
+        feeding outside is a boundary output. Entries are first-class boundary
+        records (dir/dtype/inner_node/inner_slot/pos) identical in shape to
+        authored In/Out nodes — the live graph stays flat, so this does not affect
+        runtime or save/load round-tripping. One boundary per inner (node, slot).
         """
         iface: Dict[str, Any] = {}
         mset = set(members)
@@ -544,13 +571,21 @@ class Manager:
             out_m = link["node_out"] in mset
             in_m = link["node_in"] in mset
             if in_m and not out_m:
-                local = members[link["node_in"]]
-                slot = link["slot_in"]
-                iface[f"{local}.{slot}"] = {"dir": "in", "inner_node": local, "inner_slot": slot}
+                disp, local, slot, dir = link["node_in"], members[link["node_in"]], link["slot_in"], "in"
             elif out_m and not in_m:
-                local = members[link["node_out"]]
-                slot = link["slot_out"]
-                iface[f"{local}.{slot}"] = {"dir": "out", "inner_node": local, "inner_slot": slot}
+                disp, local, slot, dir = link["node_out"], members[link["node_out"]], link["slot_out"], "out"
+            else:
+                continue
+            key = f"{local}.{slot}"
+            if key in iface:
+                continue  # one boundary per inner slot (a 2nd external consumer fans out on the port)
+            iface[key] = {
+                "dir": dir,
+                "dtype": self._slot_dtype(disp, slot, dir),
+                "inner_node": local,
+                "inner_slot": slot,
+                "pos": self._beside_member_pos(disp, dir),
+            }
         return iface
 
     @mark_unsaved_changes
@@ -647,8 +682,10 @@ class Manager:
         inst = self._instances[inst_id]
         def_id = inst.get("def_id")
         for member in list(inst["members"].keys()):
-            self.remove_node(member, notify_gui=False)
+            # Pop membership BEFORE remove_node so its boundary defensive-unwire
+            # (which keys on membership) no-ops during this teardown.
             self._membership.pop(member, None)
+            self.remove_node(member, notify_gui=False)
         del self._instances[inst_id]
         if def_id and not any(i.get("def_id") == def_id for i in self._instances.values()):
             self._definitions.pop(def_id, None)
@@ -678,7 +715,9 @@ class Manager:
         for link in self._links:
             if self._membership.get(link["node_out"]) == inst_id and self._membership.get(link["node_in"]) == inst_id:
                 links.append(self._local_link(link, inst_id))
-        return {"members": members, "links": links, "interface": dict(inst["interface"])}
+        # Deep-copy the interface: entries are mutable port dicts that boundary
+        # edits rewrite, and the def must not alias the source instance's dicts.
+        return {"members": members, "links": links, "interface": deepcopy(inst["interface"])}
 
     @mark_unsaved_changes
     def share_instance(self, inst_id: str, notify_gui: bool = True) -> str:
@@ -737,7 +776,9 @@ class Manager:
         self._instances[inst_id] = {
             "kind": "shared",
             "def_id": def_id,
-            "interface": dict(d["interface"]),
+            # Deep-copy so this sibling's boundary edits never cross-mutate the def
+            # or other siblings (entries are mutable port dicts).
+            "interface": deepcopy(d["interface"]),
             "pos": list(pos),
             "members": members,
         }
@@ -756,10 +797,192 @@ class Manager:
         def_id = inst.get("def_id")
         inst["kind"] = "unique"
         inst["def_id"] = None
+        # Detach the interface from the def/siblings so later boundary edits on this
+        # now-unique instance can't cross-mutate the family it just left.
+        inst["interface"] = deepcopy(inst["interface"])
         if def_id and not any(i.get("def_id") == def_id for i in self._instances.values()):
             self._definitions.pop(def_id, None)
         if self._bridge is not None and notify_gui:
             self._bridge.control.on_subpatch_changed()
+
+    # ------------------------------------------------------------------
+    # In/Out boundary authoring (virtual nodes — interface entries only)
+    # ------------------------------------------------------------------
+
+    def _member_display(self, inst_id: str, local: str) -> str:
+        return f"{inst_id}{SUBPATCH_SEP}{local}"
+
+    def _fresh_boundary_id(self, inst_id: str, dir: str) -> str:
+        """Lowest unused `in0`/`out0`… among the instance's current interface keys."""
+        iface = self._instances[inst_id]["interface"]
+        idx = 0
+        while f"{dir}{idx}" in iface:
+            idx += 1
+        return f"{dir}{idx}"
+
+    def _boundary_external_links(self, inst_id: str, dir: str, local: str, slot: str) -> List[dict]:
+        """This instance's external flat links for the boundary mapping (local, slot):
+        the member-side endpoint matches and the other end is NOT a member of this
+        instance (so nested sibling-instance members count as external — correct)."""
+        disp = self._member_display(inst_id, local)
+        out: List[dict] = []
+        for link in self._links:
+            if dir == "in" and link["node_in"] == disp and link["slot_in"] == slot:
+                if self._membership.get(link["node_out"]) != inst_id:
+                    out.append(link)
+            elif dir == "out" and link["node_out"] == disp and link["slot_out"] == slot:
+                if self._membership.get(link["node_in"]) != inst_id:
+                    out.append(link)
+        return out
+
+    def _unsplice_instance(self, inst_id: str, dir: str, local: str, slot: str, notify_gui: bool) -> None:
+        for link in self._boundary_external_links(inst_id, dir, local, slot):
+            self.remove_link(
+                link["node_out"], link["node_in"], link["slot_out"], link["slot_in"], notify_gui=notify_gui
+            )
+
+    def _resplice_instance(self, inst_id, dir, old_local, old_slot, new_local, new_slot, notify_gui) -> None:
+        new_disp = self._member_display(inst_id, new_local)
+        for link in self._boundary_external_links(inst_id, dir, old_local, old_slot):
+            self.remove_link(
+                link["node_out"], link["node_in"], link["slot_out"], link["slot_in"], notify_gui=notify_gui
+            )
+            if dir == "in":
+                self.add_link(link["node_out"], new_disp, link["slot_out"], new_slot, notify_gui=notify_gui)
+            else:
+                self.add_link(new_disp, link["node_in"], new_slot, link["slot_in"], notify_gui=notify_gui)
+
+    def _shared_siblings(self, inst_id: str) -> List[str]:
+        def_id = self._instances[inst_id].get("def_id")
+        if not def_id:
+            return []
+        return [i for i, inst in self._instances.items() if i != inst_id and inst.get("def_id") == def_id]
+
+    def _mirror_boundary_entry(self, inst_id: str, bnd_id: str, entry: Optional[dict]) -> None:
+        """Mirror a boundary's TOPOLOGY (dir/dtype/inner/pos) to the definition and
+        every shared sibling (entry=None removes it). External wires stay per-instance."""
+        def_id = self._instances[inst_id].get("def_id")
+        if not def_id:
+            return
+        if entry is None:
+            self._definitions[def_id]["interface"].pop(bnd_id, None)
+        else:
+            self._definitions[def_id]["interface"][bnd_id] = deepcopy(entry)
+        for sib in self._shared_siblings(inst_id):
+            if entry is None:
+                self._instances[sib]["interface"].pop(bnd_id, None)
+            else:
+                self._instances[sib]["interface"][bnd_id] = deepcopy(entry)
+
+    @mark_unsaved_changes
+    def add_boundary(self, inst_id: str, dir: str, dtype: str, pos=(0, 0), notify_gui: bool = True) -> str:
+        """Add a virtual In/Out node to a sub-patch (unwired). Returns its boundary id."""
+        if inst_id not in self._instances:
+            raise KeyError(f"No such sub-patch: {inst_id}")
+        if dir not in ("in", "out"):
+            raise ValueError(f"dir must be in/out, got {dir!r}")
+        bnd_id = self._fresh_boundary_id(inst_id, dir)
+        entry = {"dir": dir, "dtype": dtype, "inner_node": None, "inner_slot": None, "pos": list(pos)}
+        self._instances[inst_id]["interface"][bnd_id] = entry
+        self._mirror_boundary_entry(inst_id, bnd_id, entry)
+        if self._bridge is not None and notify_gui:
+            self._bridge.control.on_subpatch_changed()
+        return bnd_id
+
+    @mark_unsaved_changes
+    def wire_boundary(self, inst_id, bnd_id, inner_node, inner_slot, notify_gui: bool = True) -> None:
+        """Set (or clear, with inner_node=None) a boundary's single inner target.
+
+        Wiring exposes the port on the collapsed node; unwiring tears down the
+        boundary's external wires. Enforces single-target, a dtype match, and one
+        boundary per inner slot. For shared instances the inner mapping mirrors to
+        every sibling, and each sibling re-splices its OWN external links.
+        """
+        inst = self._instances[inst_id]
+        iface = inst["interface"]
+        if bnd_id not in iface:
+            raise KeyError(f"No such boundary {bnd_id} on {inst_id}")
+        entry = iface[bnd_id]
+        dir = entry["dir"]
+        old_local, old_slot = entry["inner_node"], entry["inner_slot"]
+        siblings = self._shared_siblings(inst_id)
+
+        if inner_node is None:
+            if old_local is not None:
+                for iid in [inst_id, *siblings]:
+                    self._unsplice_instance(iid, dir, old_local, old_slot, notify_gui)
+            new_entry = {**entry, "inner_node": None, "inner_slot": None}
+        else:
+            disp = self._member_display(inst_id, inner_node)
+            if disp not in self.nodes or self._membership.get(disp) != inst_id:
+                raise ValueError(f"{inner_node} is not a member of {inst_id}")
+            slots = self.nodes[disp].input_slots if dir == "in" else self.nodes[disp].output_slots
+            dt = slots.get(inner_slot)
+            if dt is None:
+                raise ValueError(f"no {dir} slot {inner_slot!r} on {inner_node}")
+            if dt.name != entry["dtype"]:
+                raise ValueError(
+                    f"dtype mismatch: {inner_node}.{inner_slot} is {dt.name}, boundary is {entry['dtype']}"
+                )
+            for k, e in iface.items():
+                if k != bnd_id and e["dir"] == dir and e["inner_node"] == inner_node and e["inner_slot"] == inner_slot:
+                    raise ValueError(f"inner slot {inner_node}.{inner_slot} already exposed by {k}")
+            if old_local is not None and (old_local, old_slot) != (inner_node, inner_slot):
+                for iid in [inst_id, *siblings]:
+                    self._resplice_instance(iid, dir, old_local, old_slot, inner_node, inner_slot, notify_gui)
+            new_entry = {**entry, "inner_node": inner_node, "inner_slot": inner_slot}
+
+        iface[bnd_id] = new_entry
+        self._mirror_boundary_entry(inst_id, bnd_id, new_entry)
+        if self._bridge is not None and notify_gui:
+            self._bridge.control.on_subpatch_changed()
+
+    @mark_unsaved_changes
+    def remove_boundary(self, inst_id: str, bnd_id: str, notify_gui: bool = True) -> None:
+        """Delete an In/Out node, tearing down its external wires across siblings."""
+        inst = self._instances[inst_id]
+        iface = inst["interface"]
+        if bnd_id not in iface:
+            raise KeyError(f"No such boundary {bnd_id} on {inst_id}")
+        entry = iface[bnd_id]
+        if entry["inner_node"] is not None:
+            for iid in [inst_id, *self._shared_siblings(inst_id)]:
+                self._unsplice_instance(iid, entry["dir"], entry["inner_node"], entry["inner_slot"], notify_gui)
+        del iface[bnd_id]
+        self._mirror_boundary_entry(inst_id, bnd_id, None)
+        if self._bridge is not None and notify_gui:
+            self._bridge.control.on_subpatch_changed()
+
+    @mark_unsaved_changes
+    def set_boundary_pos(self, inst_id: str, bnd_id: str, pos) -> List[tuple]:
+        """Move an In/Out pill, mirroring the pos across shared siblings (like member
+        pos). Returns the (inst_id, bnd_id) pairs changed so the bridge can broadcast."""
+        pos = list(pos)
+        iface = self._instances[inst_id]["interface"]
+        if bnd_id not in iface:
+            raise KeyError(f"No such boundary {bnd_id} on {inst_id}")
+        changed = [(inst_id, bnd_id)]
+        iface[bnd_id] = {**iface[bnd_id], "pos": pos}
+        def_id = self._instances[inst_id].get("def_id")
+        if def_id:
+            if bnd_id in self._definitions[def_id]["interface"]:
+                self._definitions[def_id]["interface"][bnd_id]["pos"] = pos
+            for sib in self._shared_siblings(inst_id):
+                if bnd_id in self._instances[sib]["interface"]:
+                    self._instances[sib]["interface"][bnd_id] = {**self._instances[sib]["interface"][bnd_id], "pos": pos}
+                    changed.append((sib, bnd_id))
+        return changed
+
+    def resolve_boundary(self, inst_id: str, bnd_id: str) -> tuple:
+        """Translate a (sub-patch, boundary) port to the real inner (member display
+        name, slot) for the external-wire splice. Raises if unwired/unknown."""
+        inst = self._instances.get(inst_id)
+        if inst is None or bnd_id not in inst["interface"]:
+            raise KeyError(f"No such boundary {inst_id}:{bnd_id}")
+        entry = inst["interface"][bnd_id]
+        if entry["inner_node"] is None:
+            raise ValueError(f"boundary {inst_id}:{bnd_id} is not wired yet")
+        return self._member_display(inst_id, entry["inner_node"]), entry["inner_slot"]
 
     @mark_unsaved_changes
     def update_param(self, node: str, group: str, name: str, value: Any) -> None:
@@ -958,7 +1181,9 @@ class Manager:
                         membership={"instance": inst_id, "local_name": local},
                     )
                     members_map[new_name] = local
-                interface = d["interface"]
+                # Deep-copy: each loaded shared instance gets its own port dicts so
+                # later boundary edits don't alias the definition / siblings.
+                interface = deepcopy(d["interface"])
                 for link in d["links"]:
                     internal_links.append((inst_id, link))
             else:

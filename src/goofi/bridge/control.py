@@ -133,6 +133,15 @@ class ControlHub:
         if msg_id is not None:
             await ws.send_json({"id": msg_id, "result": result})
 
+    def _splice_endpoint(self, manager, node: str, slot: str, dir: str):
+        """Translate a sub-patch boundary endpoint (instance id + boundary id) to
+        the real inner (member display name, slot) so the flat link lands on the
+        member. A normal node endpoint passes through unchanged. Raises (→ error
+        reply) if the boundary is unwired — the inner target doesn't exist yet."""
+        if node in getattr(manager, "_instances", {}):
+            return manager.resolve_boundary(node, slot)
+        return node, slot
+
     async def _dispatch(self, op: str, payload: Dict[str, Any]) -> Any:
         manager = self.server.manager
         if op == "list_nodes":
@@ -158,22 +167,14 @@ class ControlHub:
                 await self._call_manager(manager.remove_node, name)
             return {"ok": True}
         if op == "add_link":
-            await self._call_manager(
-                manager.add_link,
-                payload["node_out"],
-                payload["node_in"],
-                payload["slot_out"],
-                payload["slot_in"],
-            )
+            no, so = self._splice_endpoint(manager, payload["node_out"], payload["slot_out"], "out")
+            ni, si = self._splice_endpoint(manager, payload["node_in"], payload["slot_in"], "in")
+            await self._call_manager(manager.add_link, no, ni, so, si)
             return {"ok": True}
         if op == "remove_link":
-            await self._call_manager(
-                manager.remove_link,
-                payload["node_out"],
-                payload["node_in"],
-                payload["slot_out"],
-                payload["slot_in"],
-            )
+            no, so = self._splice_endpoint(manager, payload["node_out"], payload["slot_out"], "out")
+            ni, si = self._splice_endpoint(manager, payload["node_in"], payload["slot_in"], "in")
+            await self._call_manager(manager.remove_link, no, ni, so, si)
             return {"ok": True}
         if op == "update_param":
             # Route through the manager so a shared sub-patch member mirrors the
@@ -288,6 +289,37 @@ class ControlHub:
             return {"def_id": def_id, "inst_id": new_inst}
         if op == "make_unique":
             await self._call_manager(manager.make_unique, payload["inst_id"])
+            return {"ok": True}
+        if op == "add_boundary":
+            bnd_id = await self._call_manager(
+                manager.add_boundary,
+                payload["inst_id"],
+                payload["dir"],
+                payload["dtype"],
+                tuple(payload.get("pos") or (0, 0)),
+            )
+            return {"bnd_id": bnd_id}
+        if op == "wire_boundary":
+            await self._call_manager(
+                manager.wire_boundary,
+                payload["inst_id"],
+                payload["bnd_id"],
+                payload.get("inner_node"),
+                payload.get("inner_slot"),
+            )
+            return {"ok": True}
+        if op == "remove_boundary":
+            await self._call_manager(manager.remove_boundary, payload["inst_id"], payload["bnd_id"])
+            return {"ok": True}
+        if op == "set_boundary_pos":
+            pos = list(payload["pos"])
+            changed = await self._call_manager(
+                manager.set_boundary_pos, payload["inst_id"], payload["bnd_id"], pos
+            )
+            for iid, bid in changed:
+                await self.broadcast(
+                    {"event": "boundary_moved", "payload": {"inst_id": iid, "bnd_id": bid, "pos": pos}}
+                )
             return {"ok": True}
         if op == "list_dir":
             return await self._call_manager(fsbrowse.list_dir, payload.get("path"))

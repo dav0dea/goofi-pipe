@@ -234,6 +234,129 @@ def test_make_unique_detaches_and_gcs_definition():
         mgr.terminate()
 
 
+def _build_single_member_subpatch(mgr):
+    """Group a lone Buffer into a sub-patch with an (initially) empty interface."""
+    buf = mgr.add_node("Buffer", "signal")
+    inst = mgr.group_nodes([buf])
+    return buf, inst
+
+
+def test_add_and_wire_boundary():
+    mgr = _bare_manager(use_multiprocessing=False)
+    try:
+        buf, inst = _build_single_member_subpatch(mgr)  # buffer0 -> inst::buffer0
+        assert mgr._instances[inst]["interface"] == {}
+        bid = mgr.add_boundary(inst, "in", "ARRAY", pos=(5, 6))
+        e = mgr._instances[inst]["interface"][bid]
+        assert e == {"dir": "in", "dtype": "ARRAY", "inner_node": None, "inner_slot": None, "pos": [5, 6]}
+        mgr.wire_boundary(inst, bid, "buffer0", "val")
+        e = mgr._instances[inst]["interface"][bid]
+        assert e["inner_node"] == "buffer0" and e["inner_slot"] == "val"
+        assert mgr.resolve_boundary(inst, bid) == (f"{inst}::buffer0", "val")
+    finally:
+        mgr.terminate()
+
+
+def test_wire_boundary_rejects_dtype_mismatch():
+    mgr = _bare_manager(use_multiprocessing=False)
+    try:
+        buf, inst = _build_single_member_subpatch(mgr)
+        bid = mgr.add_boundary(inst, "in", "STRING")
+        with pytest.raises(ValueError):
+            mgr.wire_boundary(inst, bid, "buffer0", "val")  # val is ARRAY
+    finally:
+        mgr.terminate()
+
+
+def test_wire_boundary_dedup_one_per_inner_slot():
+    mgr = _bare_manager(use_multiprocessing=False)
+    try:
+        buf, inst = _build_single_member_subpatch(mgr)
+        b0 = mgr.add_boundary(inst, "in", "ARRAY")
+        mgr.wire_boundary(inst, b0, "buffer0", "val")
+        b1 = mgr.add_boundary(inst, "in", "ARRAY")
+        with pytest.raises(ValueError):
+            mgr.wire_boundary(inst, b1, "buffer0", "val")  # already exposed by b0
+    finally:
+        mgr.terminate()
+
+
+def test_external_splice_and_unsplice():
+    mgr = _bare_manager(use_multiprocessing=False)
+    try:
+        osc = mgr.add_node("Oscillator", "inputs")
+        buf = mgr.add_node("Buffer", "signal")
+        inst = mgr.group_nodes([buf])
+        bid = mgr.add_boundary(inst, "in", "ARRAY")
+        mgr.wire_boundary(inst, bid, "buffer0", "val")
+        disp, slot = mgr.resolve_boundary(inst, bid)  # what the bridge resolves to
+        mgr.add_link(osc, disp, "out", slot)          # the spliced flat link
+        assert any(l["node_out"] == osc and l["node_in"] == disp and l["slot_in"] == slot for l in mgr.links)
+        # Deleting the boundary tears down its external wire.
+        mgr.remove_boundary(inst, bid)
+        assert bid not in mgr._instances[inst]["interface"]
+        assert not any(l["node_in"] == disp and l["slot_in"] == slot for l in mgr.links)
+    finally:
+        mgr.terminate()
+
+
+def test_rewire_boundary_resplices_external_link():
+    mgr = _bare_manager(use_multiprocessing=False)
+    try:
+        osc = mgr.add_node("Oscillator", "inputs")
+        b0 = mgr.add_node("Buffer", "signal")
+        b1 = mgr.add_node("Buffer", "signal")
+        inst = mgr.group_nodes([b0, b1])  # inst::buffer0, inst::buffer1
+        bid = mgr.add_boundary(inst, "in", "ARRAY")
+        mgr.wire_boundary(inst, bid, "buffer0", "val")
+        mgr.add_link(osc, f"{inst}::buffer0", "out", "val")  # external splice to buffer0
+        # Re-wire the In node to buffer1 → its external link follows.
+        mgr.wire_boundary(inst, bid, "buffer1", "val")
+        assert any(l["node_out"] == osc and l["node_in"] == f"{inst}::buffer1" and l["slot_in"] == "val" for l in mgr.links)
+        assert not any(l["node_in"] == f"{inst}::buffer0" and l["node_out"] == osc for l in mgr.links)
+    finally:
+        mgr.terminate()
+
+
+def test_shared_boundary_mirrors_and_make_unique_isolates():
+    mgr = _bare_manager(use_multiprocessing=False)
+    try:
+        buf, inst = _build_single_member_subpatch(mgr)
+        def_id = mgr.share_instance(inst)
+        inst2 = mgr.instantiate_definition(def_id)
+        bid = mgr.add_boundary(inst, "in", "ARRAY")  # mirrors to def + sibling
+        assert bid in mgr._instances[inst2]["interface"]
+        assert bid in mgr._definitions[def_id]["interface"]
+        mgr.wire_boundary(inst, bid, "buffer0", "val")  # inner mirrors to sibling's own member
+        assert mgr._instances[inst2]["interface"][bid]["inner_node"] == "buffer0"
+        # Detach inst2; editing it must not cross-mutate inst (deep-copied interface).
+        mgr.make_unique(inst2)
+        mgr.wire_boundary(inst2, bid, None, None)
+        assert mgr._instances[inst2]["interface"][bid]["inner_node"] is None
+        assert mgr._instances[inst]["interface"][bid]["inner_node"] == "buffer0"
+    finally:
+        mgr.terminate()
+
+
+def test_unwired_boundary_survives_save_load(tmp_path):
+    mgr = _bare_manager(use_multiprocessing=False)
+    try:
+        buf, inst = _build_single_member_subpatch(mgr)
+        bid = mgr.add_boundary(inst, "in", "ARRAY", pos=(7, 8))
+        fp = str(tmp_path / "unwired.gfi")
+        mgr.save(fp, overwrite=True)
+    finally:
+        mgr.terminate()
+
+    mgr2 = _bare_manager(use_multiprocessing=False)
+    try:
+        mgr2.load(fp)
+        e = mgr2._instances[inst]["interface"][bid]
+        assert e["inner_node"] is None and e["dtype"] == "ARRAY" and list(e["pos"]) == [7, 8]
+    finally:
+        mgr2.terminate()
+
+
 def test_shared_member_pos_mirrors_to_sibling():
     mgr = _bare_manager(use_multiprocessing=False)
     try:
