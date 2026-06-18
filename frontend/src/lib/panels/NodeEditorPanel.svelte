@@ -298,21 +298,25 @@
 				if (!disp) continue;
 				const bId = boundaryId(entered, name);
 				if (port.dir === 'in') {
+					const id = `${bId}→${disp}.${port.inner_slot}`;
 					next.push({
-						id: `${bId}→${disp}.${port.inner_slot}`,
+						id,
 						source: bId,
 						sourceHandle: 'out',
 						target: disp,
 						targetHandle: port.inner_slot,
+						selected: sel.edges(panelId).has(id),
 						animated: false
 					});
 				} else {
+					const id = `${disp}.${port.inner_slot}→${bId}`;
 					next.push({
-						id: `${disp}.${port.inner_slot}→${bId}`,
+						id,
 						source: disp,
 						sourceHandle: port.inner_slot,
 						target: bId,
 						targetHandle: 'in',
+						selected: sel.edges(panelId).has(id),
 						animated: false
 					});
 				}
@@ -418,19 +422,6 @@
 	function onEdgeClick(args: { edge: Edge; event: MouseEvent }): void {
 		const e = args.event;
 		sel.clickEdge(panelId, args.edge.id, e.shiftKey || e.ctrlKey || e.metaKey);
-	}
-
-	function findLinkById(id: string): LinkInfo | null {
-		for (const l of g.links) if (linkKey(l) === id) return l;
-		return null;
-	}
-
-	async function deleteEdgeSelection(): Promise<void> {
-		const links = Array.from(sel.edges(panelId), findLinkById).filter(
-			(l): l is LinkInfo => l !== null
-		);
-		await g.removeLinks(links);
-		sel.clearEdges(panelId);
 	}
 
 	function nodeBoundsFromFlow(id: string, x: number, y: number): Bounds {
@@ -651,11 +642,6 @@
 		} else if (meta && e.key.toLowerCase() === 'g') {
 			e.preventDefault();
 			void groupSelection();
-		} else if (e.key === 'Delete' || e.key === 'Backspace') {
-			if (sel.nodes(panelId).size === 0 && sel.edges(panelId).size === 0) return;
-			e.preventDefault();
-			if (sel.nodes(panelId).size > 0) void deleteSelection();
-			if (sel.edges(panelId).size > 0) void deleteEdgeSelection();
 		} else if (e.key === 'Tab') {
 			e.preventDefault();
 			openMenuAtCursor();
@@ -671,23 +657,6 @@
 		} else if (e.key.toLowerCase() === 'f') {
 			fitView();
 		}
-	}
-
-	async function deleteSelection(): Promise<void> {
-		// Boundary pills delete via removeBoundary; real nodes + sub-patch instances
-		// via removeNode (the bridge routes an instance id to remove_instance).
-		const ids = Array.from(sel.nodes(panelId));
-		const realIds: string[] = [];
-		for (const id of ids) {
-			const bnd = parseBoundary(id);
-			if (bnd && entered) {
-				await g.removeBoundary(entered, bnd).catch((e) => console.warn('remove boundary failed', e));
-			} else {
-				realIds.push(id);
-			}
-		}
-		if (realIds.length) await g.removeNodes(realIds);
-		sel.clearNodes(panelId);
 	}
 
 	async function copySelection(): Promise<void> {
@@ -862,6 +831,7 @@
 			bind:nodes={flowNodes}
 			bind:edges={flowEdges}
 			{nodeTypes}
+			deleteKey={['Delete', 'Backspace']}
 			onconnect={onConnect}
 			onnodedragstart={onNodeDragStart}
 			onnodedrag={onNodeDrag}
@@ -870,6 +840,9 @@
 			onnodeclick={onNodeClick}
 			onedgeclick={onEdgeClick}
 			ondelete={async ({ nodes, edges }) => {
+				// The single delete path (deleteKey wires Delete+Backspace here; the
+				// custom keydown handler no longer deletes). Covers app-store AND
+				// marquee selection — SvelteFlow filters by each element's `selected`.
 				for (const n of nodes) {
 					const bnd = parseBoundary(n.id);
 					if (bnd && entered) await g.removeBoundary(entered, bnd).catch(() => {});
@@ -890,6 +863,7 @@
 							.removeLink({ node_out: e.source, node_in: e.target, slot_out: so, slot_in: si })
 							.catch(() => {});
 				}
+				sel.clear(panelId);
 			}}
 			fitViewOptions={FIT_OPTIONS}
 			minZoom={0.05}

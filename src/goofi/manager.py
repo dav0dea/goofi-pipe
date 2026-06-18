@@ -384,19 +384,28 @@ class Manager:
     @mark_unsaved_changes
     def remove_node(self, name: str, notify_gui: bool = True, **gui_kwargs) -> None:
         print(f"Removing node '{name}'.")
-        # Defensive: if a member of a still-present UNIQUE sub-patch is deleted
-        # directly, unwire any boundary that points at it so no interface entry
-        # dangles at a gone member (its spliced external links drop below with the
-        # node's links). remove_instance pops membership first, so teardown skips
-        # this; shared single-member deletes are out of scope (would desync siblings).
+        # A node that's still a member of a sub-patch (remove_instance pops
+        # membership BEFORE calling this, so teardown skips the whole block):
         _inst_id = self._membership.get(name)
         if _inst_id is not None:
             _inst = self._instances.get(_inst_id)
-            if _inst is not None and not _inst.get("def_id"):
+            if _inst is not None:
+                # Deleting a single member of a SHARED sub-patch would desync it from
+                # its definition/siblings (topology isn't mirrored) and leave dangling
+                # ports — block it; the user must make the instance unique first.
+                if _inst.get("def_id"):
+                    raise ValueError(
+                        f"cannot delete member {name!r} of a shared sub-patch; make it unique first"
+                    )
+                # Unique: unwire any boundary pointing at this member (its spliced
+                # external links drop below with the node's links) and drop the member
+                # from the instance so save/iteration never references a gone node.
                 _local = _inst["members"].get(name)
                 for _bid, _e in list(_inst["interface"].items()):
                     if _e.get("inner_node") == _local:
                         _inst["interface"][_bid] = {**_e, "inner_node": None, "inner_slot": None}
+                _inst["members"].pop(name, None)
+                self._membership.pop(name, None)
         # Drop any links touching this node.
         for link in list(self._links):
             if link["node_out"] == name or link["node_in"] == name:
@@ -920,17 +929,34 @@ class Manager:
             dt = slots.get(inner_slot)
             if dt is None:
                 raise ValueError(f"no {dir} slot {inner_slot!r} on {inner_node}")
-            if dt.name != entry["dtype"]:
+            # `dtype` is absent on legacy (pre-dtype) entries — tolerate it and heal
+            # below by storing the real slot dtype.
+            expected = entry.get("dtype")
+            if expected is not None and dt.name != expected:
                 raise ValueError(
-                    f"dtype mismatch: {inner_node}.{inner_slot} is {dt.name}, boundary is {entry['dtype']}"
+                    f"dtype mismatch: {inner_node}.{inner_slot} is {dt.name}, boundary is {expected}"
                 )
             for k, e in iface.items():
                 if k != bnd_id and e["dir"] == dir and e["inner_node"] == inner_node and e["inner_slot"] == inner_slot:
                     raise ValueError(f"inner slot {inner_node}.{inner_slot} already exposed by {k}")
+            # An In port must own its inner input alone: refuse an inner input slot
+            # already fed by an INTERNAL member→member link, else the external splice
+            # would silently evict that internal wire (add_link is single-source).
+            if dir == "in":
+                for link in self._links:
+                    if (
+                        link["node_in"] == disp
+                        and link["slot_in"] == inner_slot
+                        and self._membership.get(link["node_out"]) == inst_id
+                    ):
+                        raise ValueError(
+                            f"{inner_node}.{inner_slot} is already fed inside the sub-patch; "
+                            f"an In node can't expose an already-connected input"
+                        )
             if old_local is not None and (old_local, old_slot) != (inner_node, inner_slot):
                 for iid in [inst_id, *siblings]:
                     self._resplice_instance(iid, dir, old_local, old_slot, inner_node, inner_slot, notify_gui)
-            new_entry = {**entry, "inner_node": inner_node, "inner_slot": inner_slot}
+            new_entry = {**entry, "dtype": dt.name, "inner_node": inner_node, "inner_slot": inner_slot}
 
         iface[bnd_id] = new_entry
         self._mirror_boundary_entry(inst_id, bnd_id, new_entry)

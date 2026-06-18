@@ -281,6 +281,68 @@ def test_wire_boundary_dedup_one_per_inner_slot():
         mgr.terminate()
 
 
+def test_wire_in_boundary_rejects_internally_fed_input():
+    mgr = _bare_manager(use_multiprocessing=False)
+    try:
+        b0 = mgr.add_node("Buffer", "signal")
+        b1 = mgr.add_node("Buffer", "signal")
+        mgr.add_link(b0, b1, "out", "val")  # internal feed buffer0.out -> buffer1.val
+        inst = mgr.group_nodes([b0, b1])
+        bid = mgr.add_boundary(inst, "in", "ARRAY")
+        with pytest.raises(ValueError):
+            mgr.wire_boundary(inst, bid, "buffer1", "val")  # already fed internally
+    finally:
+        mgr.terminate()
+
+
+def test_delete_unique_member_cleans_up_and_unwires():
+    mgr = _bare_manager(use_multiprocessing=False)
+    try:
+        b0 = mgr.add_node("Buffer", "signal")
+        b1 = mgr.add_node("Buffer", "signal")
+        inst = mgr.group_nodes([b0, b1])
+        bid = mgr.add_boundary(inst, "in", "ARRAY")
+        mgr.wire_boundary(inst, bid, "buffer1", "val")
+        mgr.remove_node(f"{inst}::buffer1")
+        # Member dropped from the instance + membership; boundary unwired (not dangling).
+        assert f"{inst}::buffer1" not in mgr._instances[inst]["members"]
+        assert f"{inst}::buffer1" not in mgr._membership
+        assert mgr._instances[inst]["interface"][bid]["inner_node"] is None
+        # Save no longer references the gone member.
+        mgr.serialize_patch()
+    finally:
+        mgr.terminate()
+
+
+def test_delete_shared_member_blocked():
+    mgr = _bare_manager(use_multiprocessing=False)
+    try:
+        buf, inst = _build_single_member_subpatch(mgr)
+        def_id = mgr.share_instance(inst)
+        mgr.instantiate_definition(def_id)
+        with pytest.raises(ValueError):
+            mgr.remove_node(f"{inst}::buffer0")  # shared member — must make unique first
+    finally:
+        mgr.terminate()
+
+
+def test_wire_legacy_entry_without_dtype_heals():
+    mgr = _bare_manager(use_multiprocessing=False)
+    try:
+        buf, inst = _build_single_member_subpatch(mgr)
+        # A legacy interface entry (pre-dtype shape) must not crash on wire.
+        mgr._instances[inst]["interface"]["legacy0"] = {
+            "dir": "in",
+            "inner_node": None,
+            "inner_slot": None,
+            "pos": [0, 0],
+        }
+        mgr.wire_boundary(inst, "legacy0", "buffer0", "val")
+        assert mgr._instances[inst]["interface"]["legacy0"]["dtype"] == "ARRAY"
+    finally:
+        mgr.terminate()
+
+
 def test_external_splice_and_unsplice():
     mgr = _bare_manager(use_multiprocessing=False)
     try:
