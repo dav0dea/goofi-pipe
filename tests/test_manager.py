@@ -234,6 +234,52 @@ def test_make_unique_detaches_and_gcs_definition():
         mgr.terminate()
 
 
+def test_shared_member_pos_mirrors_to_sibling():
+    mgr = _bare_manager(use_multiprocessing=False)
+    try:
+        osc, inst = _build_grouped_graph(mgr)
+        def_id = mgr.share_instance(inst)
+        inst2 = mgr.instantiate_definition(def_id)
+        # Move a member inside instance A → mirrors to B's corresponding member.
+        changed = mgr.set_node_pos(f"{inst}::select0", (123, 456))
+        assert list(mgr.nodes[f"{inst}::select0"].gui_kwargs["pos"]) == [123, 456]
+        assert list(mgr.nodes[f"{inst2}::select0"].gui_kwargs["pos"]) == [123, 456]
+        # Definition (save source of truth) records the pos too.
+        assert list(mgr._definitions[def_id]["members"]["select0"]["gui_kwargs"]["pos"]) == [123, 456]
+        # Both the moved node and its sibling are reported changed (for broadcasts).
+        assert set(changed) == {f"{inst}::select0", f"{inst2}::select0"}
+        # A non-mirrored member (select1) is untouched in the sibling.
+        assert mgr.nodes[f"{inst2}::select1"].gui_kwargs.get("pos") != [123, 456]
+    finally:
+        mgr.terminate()
+
+
+def test_unique_member_pos_does_not_mirror():
+    mgr = _bare_manager(use_multiprocessing=False)
+    try:
+        osc, inst = _build_grouped_graph(mgr)  # unique sub-patch
+        changed = mgr.set_node_pos(f"{inst}::select0", (10, 20))
+        assert list(mgr.nodes[f"{inst}::select0"].gui_kwargs["pos"]) == [10, 20]
+        assert changed == [f"{inst}::select0"]
+    finally:
+        mgr.terminate()
+
+
+def test_make_unique_stops_pos_mirror():
+    mgr = _bare_manager(use_multiprocessing=False)
+    try:
+        osc, inst = _build_grouped_graph(mgr)
+        def_id = mgr.share_instance(inst)
+        inst2 = mgr.instantiate_definition(def_id)
+        mgr.make_unique(inst2)
+        changed = mgr.set_node_pos(f"{inst}::select0", (7, 8))
+        # inst2 detached → its member must not move with inst's.
+        assert mgr.nodes[f"{inst2}::select0"].gui_kwargs.get("pos") != [7, 8]
+        assert changed == [f"{inst}::select0"]
+    finally:
+        mgr.terminate()
+
+
 def test_shared_subpatch_save_load_roundtrip(tmp_path):
     mgr = _bare_manager(use_multiprocessing=False)
     try:

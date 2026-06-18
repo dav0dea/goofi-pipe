@@ -19,6 +19,7 @@
 	import { graph } from '$lib/stores/graph.svelte';
 	import { categoryColor, formatName } from '$lib/editor/categoryColor';
 	import ParamField from './ParamField.svelte';
+	import SubPatchInspector from '$lib/editor/SubPatchInspector.svelte';
 
 	type Props = {
 		node: NodeInstanceInfo | null;
@@ -86,6 +87,9 @@
 			<div class="empty-title">No node selected</div>
 			<div class="empty-sub">Click a node to edit its parameters.</div>
 		</div>
+	{:else if node.subpatch}
+		<!-- A virtual sub-patch node: sharing controls + mirror list, not params. -->
+		<SubPatchInspector {node} />
 	{:else}
 		{#if showHeader}
 			<header class:has-doc={Boolean(node.doc)} class:expanded={docsOpen}>

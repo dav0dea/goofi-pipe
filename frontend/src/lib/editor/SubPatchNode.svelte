@@ -13,8 +13,6 @@
 	const instId = $derived(data.instId as string);
 	const onEnter = data.onEnter as (id: string) => void;
 	const onExpand = data.onExpand as (id: string) => void;
-	const onDuplicateShared = data.onDuplicateShared as (id: string) => void;
-	const onMakeUnique = data.onMakeUnique as (id: string) => void;
 	const shared = $derived(Boolean(inst?.def_id));
 
 	const ins = $derived(
@@ -72,27 +70,7 @@
 	</div>
 	<div class="body">
 		<span class="kind">{shared ? 'shared sub-patch' : 'sub-patch'}</span>
-		<div class="actions">
-			{#if shared}
-				<button
-					class="act"
-					data-testid="subpatch-make-unique"
-					onclick={(e) => {
-						e.stopPropagation();
-						onMakeUnique(instId);
-					}}>make unique</button
-				>
-			{:else}
-				<button
-					class="act"
-					data-testid="subpatch-share"
-					onclick={(e) => {
-						e.stopPropagation();
-						onDuplicateShared(instId);
-					}}>duplicate ⇄</button
-				>
-			{/if}
-		</div>
+		<span class="hint">select to edit</span>
 	</div>
 
 	{#each ins as [name], i (name)}
@@ -182,23 +160,10 @@
 		text-transform: uppercase;
 		color: var(--text-faint);
 	}
-	.actions {
-		display: flex;
-		gap: 4px;
-	}
-	.act {
-		background: transparent;
-		border: 1px solid var(--border);
-		border-radius: var(--radius-sm);
-		color: var(--text-dim);
-		cursor: pointer;
+	.hint {
 		font-size: 9px;
-		padding: 2px 6px;
-		white-space: nowrap;
-	}
-	.act:hover {
-		color: var(--text);
-		border-color: var(--accent);
+		color: var(--text-faint);
+		font-style: italic;
 	}
 	.conn {
 		position: absolute;

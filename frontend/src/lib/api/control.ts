@@ -39,6 +39,22 @@ export interface NodeInstanceInfo {
 	 * advertises via STATE_UPDATE. Null/absent until its first state push, or
 	 * when capture is off (headless). The Console subscribes to it directly. */
 	log_endpoint?: string | null;
+	/** Set only on a *virtual* node synthesized for a sub-patch instance (see
+	 * `graph.nodeByName`). Lets the node layers — selection, inspector, drag —
+	 * treat a sub-patch like a node while the inspector renders sharing controls
+	 * instead of param groups. Absent/null for real nodes. */
+	subpatch?: SubpatchMeta | null;
+}
+
+/** Identity + sharing facts for a sub-patch instance, carried on the virtual
+ * node the inspector renders. `siblings` are the OTHER instances mirroring the
+ * same definition (strict mirror); empty for a unique sub-patch. */
+export interface SubpatchMeta {
+	instId: string;
+	kind: string;
+	def_id: string | null;
+	siblings: string[];
+	memberCount: number;
 }
 
 export interface LinkInfo {

@@ -82,7 +82,7 @@
 		></div>
 		<div class="panel-scroll">
 			<ParamPanel {node} />
-			{#if node}
+			{#if node && !node.subpatch}
 				<MetadataPanel {node} />
 				{#if node.error}
 					<section class="node-error" data-testid="inspector-error">

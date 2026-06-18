@@ -775,6 +775,44 @@ class Manager:
                     except Exception:
                         pass
 
+    @mark_unsaved_changes
+    def set_node_pos(self, name: str, pos) -> List[str]:
+        """Set a node's editor position, mirroring across shared siblings.
+
+        Strict mirror of layout: moving a member of a *shared* sub-patch updates
+        the definition's stored member position and every sibling instance's
+        corresponding member in lockstep (same as `update_param` does for values).
+        Returns every node name whose position changed, so the bridge can emit a
+        `node_moved` for each.
+        """
+        pos = list(pos)
+        changed = [name]
+        ref = self.nodes[name]
+        ref.gui_kwargs = {**(ref.gui_kwargs or {}), "pos": pos}
+
+        inst_id = self._membership.get(name)
+        if not inst_id:
+            return changed
+        inst = self._instances.get(inst_id) or {}
+        def_id = inst.get("def_id")
+        if not def_id:
+            return changed
+        local = inst["members"][name]
+        # Record on the definition (the save source of truth).
+        rec = self._definitions[def_id]["members"].get(local)
+        if rec is not None:
+            rec.setdefault("gui_kwargs", {})["pos"] = pos
+        # Propagate to every sibling instance's corresponding member.
+        for other_id, other in self._instances.items():
+            if other_id == inst_id or other.get("def_id") != def_id:
+                continue
+            for onode, olocal in other["members"].items():
+                if olocal == local:
+                    oref = self.nodes[onode]
+                    oref.gui_kwargs = {**(oref.gui_kwargs or {}), "pos": pos}
+                    changed.append(onode)
+        return changed
+
     def _node_record(self, name: str) -> Dict[str, Any]:
         ref = self.nodes[name]
         if ref.serialized_state is None:

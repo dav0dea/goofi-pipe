@@ -202,12 +202,12 @@ class ControlHub:
                 manager.unsaved_changes = True
                 await self.broadcast({"event": "node_moved", "payload": {"name": name, "pos": list(pos)}})
                 return {"ok": True}
-            ref = manager.nodes[name]
-            kwargs = dict(ref.gui_kwargs or {})
-            kwargs["pos"] = list(pos)
-            ref.gui_kwargs = kwargs
-            manager.unsaved_changes = True
-            await self.broadcast({"event": "node_moved", "payload": {"name": name, "pos": list(pos)}})
+            # A real node — route through the manager so a shared sub-patch member
+            # mirrors its position across sibling instances (strict mirror). Emit
+            # a node_moved for every node the move touched (the node + siblings).
+            changed = await self._call_manager(manager.set_node_pos, name, pos)
+            for nm in changed:
+                await self.broadcast({"event": "node_moved", "payload": {"name": nm, "pos": list(pos)}})
             return {"ok": True}
         if op == "set_node_viewers":
             # Per-output-slot view state (collapsed / kind / settings) the browser

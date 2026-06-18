@@ -260,9 +260,7 @@
 					instance: inst2,
 					instId,
 					onEnter: enterInstance,
-					onExpand: expandInstance,
-					onDuplicateShared: duplicateShared,
-					onMakeUnique: makeUnique
+					onExpand: expandInstance
 				},
 				selected: sel.nodes(panelId).has(instId)
 			});
@@ -373,17 +371,6 @@
 	function expandInstance(instId: string): void {
 		void g.expandInstance(instId).catch((e) => console.warn('expand failed', e));
 	}
-
-	function duplicateShared(instId: string): void {
-		const p = g.instances[instId]?.pos;
-		const pos: [number, number] = p ? [p[0] + 60, p[1] + 60] : [0, 0];
-		void g.duplicateShared(instId, pos).catch((e) => console.warn('duplicate shared failed', e));
-	}
-
-	function makeUnique(instId: string): void {
-		void g.makeUnique(instId).catch((e) => console.warn('make unique failed', e));
-	}
-
 
 	function onConnect(c: Connection): void {
 		if (!c.source || !c.target || !c.sourceHandle || !c.targetHandle) return;

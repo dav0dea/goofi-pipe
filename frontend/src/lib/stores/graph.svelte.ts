@@ -203,10 +203,15 @@ class GraphStore {
 				workspace().clearNodeRefs(ev.payload.name);
 				break;
 			case 'node_moved': {
-				const target = this.nodeByName(ev.payload.name);
-				if (target) target.pos = ev.payload.pos;
-				else if (this.instances[ev.payload.name])
+				// Instances first: nodeByName now synthesizes a throwaway node for an
+				// instance id, so checking it first would write pos to a discarded
+				// object and the group node would snap back.
+				if (this.instances[ev.payload.name]) {
 					this.instances[ev.payload.name].pos = ev.payload.pos;
+				} else {
+					const target = this._realNode(ev.payload.name);
+					if (target) target.pos = ev.payload.pos;
+				}
 				break;
 			}
 			case 'link_added':
@@ -390,10 +395,63 @@ class GraphStore {
 	// reads
 	// ------------------------------------------------------------------
 
-	/** Resolve a node instance by name (null if absent). The one accessor the
-	 * rest of the app — and the agent surface — use instead of scanning. */
-	nodeByName(name: string): NodeInstanceInfo | null {
+	/** A real node by name (no sub-patch synthesis), or null. */
+	private _realNode(name: string): NodeInstanceInfo | null {
 		return this.nodes.find((n) => n.name === name) ?? null;
+	}
+
+	/** Resolve a node by name — the one accessor the rest of the app and the
+	 * agent surface use. A sub-patch instance id resolves to a *virtual* node
+	 * carrying a `subpatch` marker, so selection / inspector / drag treat a
+	 * sub-patch exactly like a node (no node class is instantiated). */
+	nodeByName(name: string): NodeInstanceInfo | null {
+		const real = this._realNode(name);
+		if (real) return real;
+		const inst = this.instances[name];
+		return inst ? this._synthSubpatchNode(name, inst) : null;
+	}
+
+	/** Other instance ids mirroring the same definition as `instId` (strict
+	 * mirror siblings); empty for a unique sub-patch. */
+	subpatchSiblings(instId: string): string[] {
+		const def = this.instances[instId]?.def_id;
+		if (!def) return [];
+		return Object.keys(this.instances).filter(
+			(id) => id !== instId && this.instances[id].def_id === def
+		);
+	}
+
+	/** Build the virtual NodeInstanceInfo that stands in for a sub-patch instance
+	 * wherever a node is looked up by name. Input/output slots mirror the
+	 * instance's boundary ports so any slot-driven node code stays consistent. */
+	private _synthSubpatchNode(instId: string, inst: InstanceInfo): NodeInstanceInfo {
+		const input_slots: Record<string, string> = {};
+		const output_slots: Record<string, string> = {};
+		for (const [pname, port] of Object.entries(inst.interface)) {
+			if (port.dir === 'in') input_slots[pname] = 'ARRAY';
+			else output_slots[pname] = 'ARRAY';
+		}
+		const shared = Boolean(inst.def_id);
+		return {
+			name: instId,
+			type: shared ? 'Shared sub-patch' : 'Sub-patch',
+			category: 'subpatch',
+			doc: '',
+			input_slots,
+			output_slots,
+			params: {},
+			pos: inst.pos,
+			viewers: {},
+			membership: null,
+			error: null,
+			subpatch: {
+				instId,
+				kind: inst.kind,
+				def_id: inst.def_id ?? null,
+				siblings: this.subpatchSiblings(instId),
+				memberCount: Object.keys(inst.members).length
+			}
+		};
 	}
 
 	/** Whether an output slot already feeds a link (drives the canvas "drag to

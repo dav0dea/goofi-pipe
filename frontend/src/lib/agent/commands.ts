@@ -48,6 +48,9 @@ export const commands = {
 	groupNodes: (names: string[], pos: [number, number] = [0, 0]): Promise<string> =>
 		graph().groupNodes(names, pos),
 	expandInstance: (instId: string): Promise<void> => graph().expandInstance(instId),
+	duplicateShared: (instId: string, pos: [number, number] = [60, 60]): Promise<void> =>
+		graph().duplicateShared(instId, pos),
+	makeUnique: (instId: string): Promise<void> => graph().makeUnique(instId),
 
 	// --- patch persistence -------------------------------------------------
 	save: (path?: string): Promise<{ path: string; yaml: string }> =>
