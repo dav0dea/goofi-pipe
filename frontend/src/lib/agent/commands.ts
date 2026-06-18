@@ -51,6 +51,20 @@ export const commands = {
 	duplicateShared: (instId: string, pos: [number, number] = [60, 60]): Promise<void> =>
 		graph().duplicateShared(instId, pos),
 	makeUnique: (instId: string): Promise<void> => graph().makeUnique(instId),
+	addBoundary: (
+		instId: string,
+		dir: 'in' | 'out',
+		dtype: string,
+		pos: [number, number] = [0, 0]
+	): Promise<string> => graph().addBoundary(instId, dir, dtype, pos),
+	wireBoundary: (
+		instId: string,
+		bndId: string,
+		innerNode: string | null,
+		innerSlot: string | null
+	): Promise<void> => graph().wireBoundary(instId, bndId, innerNode, innerSlot),
+	removeBoundary: (instId: string, bndId: string): Promise<void> =>
+		graph().removeBoundary(instId, bndId),
 
 	// --- patch persistence -------------------------------------------------
 	save: (path?: string): Promise<{ path: string; yaml: string }> =>

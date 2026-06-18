@@ -44,6 +44,8 @@
 	import { portal } from '$lib/workspace/portal';
 	import {
 		linkKey,
+		BOUNDARY_TYPES,
+		boundarySpec,
 		type InstanceInfo,
 		type LinkInfo,
 		type NodeTypeInfo,
@@ -122,11 +124,13 @@
 	const boundaryId = (instId: string, name: string): string => `${BND_PREFIX}${instId}::${name}`;
 	const isBoundaryId = (id: string): boolean => id.startsWith(BND_PREFIX);
 
-	/** A boundary port's data type, read off the inner node's slot it maps to. */
+	/** A boundary port's data type: the stored dtype (authoritative), falling back
+	 * to the inner node's slot dtype for legacy interface-only entries. */
 	function boundaryDtype(inst: InstanceInfo, port: SubPatchPort): string {
-		const disp = memberDisplay(inst, port.inner_node);
+		if (port.dtype) return port.dtype;
+		const disp = port.inner_node ? memberDisplay(inst, port.inner_node) : null;
 		const n = disp ? g.nodeByName(disp) : null;
-		if (!n) return 'ARRAY';
+		if (!n || !port.inner_slot) return 'ARRAY';
 		const slots = port.dir === 'in' ? n.input_slots : n.output_slots;
 		return slots[port.inner_slot] ?? 'ARRAY';
 	}
@@ -213,31 +217,28 @@
 					selected: sel.nodes(panelId).has(disp)
 				});
 			}
-			const ports = Object.entries(inst.interface);
-			const ins = ports.filter(([, p]) => p.dir === 'in');
-			const outs = ports.filter(([, p]) => p.dir === 'out');
-			ins.forEach(([name, port], i) => {
-				next.push({
-					id: boundaryId(entered, name),
-					type: 'boundary',
-					position: { x: minX - 280, y: minY + i * 96 },
-					data: { name, dir: 'in', dtype: boundaryDtype(inst, port) },
-					selectable: false,
-					draggable: false,
-					deletable: false
+			// In/Out boundary pills (incl. unwired). Use the stored pos; fall back to
+			// a beside-the-members layout for legacy entries with no pos.
+			const ins = Object.entries(inst.interface).filter(([, p]) => p.dir === 'in');
+			const outs = Object.entries(inst.interface).filter(([, p]) => p.dir === 'out');
+			const place = (
+				entries: [string, SubPatchPort][],
+				dir: 'in' | 'out',
+				fallbackX: number
+			) =>
+				entries.forEach(([name, port], i) => {
+					next.push({
+						id: boundaryId(entered, name),
+						type: 'boundary',
+						position: port.pos
+							? { x: port.pos[0], y: port.pos[1] }
+							: { x: fallbackX, y: minY + i * 96 },
+						data: { name, dir, dtype: boundaryDtype(inst, port), wired: port.inner_node !== null },
+						selected: sel.nodes(panelId).has(boundaryId(entered, name))
+					});
 				});
-			});
-			outs.forEach(([name, port], i) => {
-				next.push({
-					id: boundaryId(entered, name),
-					type: 'boundary',
-					position: { x: maxX + 320, y: minY + i * 96 },
-					data: { name, dir: 'out', dtype: boundaryDtype(inst, port) },
-					selectable: false,
-					draggable: false,
-					deletable: false
-				});
-			});
+			place(ins, 'in', minX - 280);
+			place(outs, 'out', maxX + 320);
 			flowNodes = next;
 			return;
 		}
@@ -288,7 +289,10 @@
 				});
 			}
 			// Boundary edges: In node → member input, member output → Out node.
+			// Only WIRED boundaries draw an edge; deletable so the user can unwire
+			// by deleting it (ondelete routes a boundary edge to wireBoundary(null)).
 			for (const [name, port] of Object.entries(inst.interface)) {
+				if (port.inner_node == null) continue;
 				const disp = memberDisplay(inst, port.inner_node);
 				if (!disp) continue;
 				const bId = boundaryId(entered, name);
@@ -299,8 +303,6 @@
 						sourceHandle: 'out',
 						target: disp,
 						targetHandle: port.inner_slot,
-						selectable: false,
-						deletable: false,
 						animated: false
 					});
 				} else {
@@ -310,8 +312,6 @@
 						sourceHandle: port.inner_slot,
 						target: bId,
 						targetHandle: 'in',
-						selectable: false,
-						deletable: false,
 						animated: false
 					});
 				}
@@ -352,7 +352,7 @@
 	function selectedNodeNames(): string[] {
 		const ids = new Set<string>(sel.nodes(panelId));
 		for (const n of flowNodes) if (n.selected) ids.add(n.id);
-		return [...ids].filter((id) => !(id in g.instances));
+		return [...ids].filter((id) => !(id in g.instances) && !isBoundaryId(id));
 	}
 
 	async function groupSelection(): Promise<void> {
@@ -378,11 +378,34 @@
 		void g.expandInstance(instId).catch((e) => console.warn('expand failed', e));
 	}
 
+	/** The boundary id (interface key) of a boundary flow-node id, or null. */
+	function parseBoundary(id: string): string | null {
+		if (!entered || !isBoundaryId(id)) return null;
+		return id.slice(`${BND_PREFIX}${entered}::`.length);
+	}
+
 	function onConnect(c: Connection): void {
 		if (!c.source || !c.target || !c.sourceHandle || !c.targetHandle) return;
-		// Boundary In/Out nodes are display-only in the enter-to-edit view; wiring
-		// them to define new sub-patch slots is a later (authoring) stage.
-		if (isBoundaryId(c.source) || isBoundaryId(c.target)) return;
+		// Inside the entered view, an edge touching an In/Out pill wires that
+		// boundary to the member slot on the other end (defines the sub-patch port).
+		const srcB = parseBoundary(c.source);
+		const dstB = parseBoundary(c.target);
+		if (srcB || dstB) {
+			if (!entered) return;
+			const inst = g.instances[entered];
+			const bnd = srcB ?? dstB!;
+			const memberId = srcB ? c.target : c.source;
+			const memberSlot = srcB ? c.targetHandle : c.sourceHandle;
+			const local = inst?.members[memberId];
+			if (!local) return; // the other end must be a member of this sub-patch
+			void g.wireBoundary(entered, bnd, local, memberSlot).catch((e) =>
+				console.warn('wire boundary failed', e)
+			);
+			return;
+		}
+		// Otherwise a normal link. A top-level wire to a collapsed sub-patch port
+		// (target/source is an instance id, handle is the boundary id) is sent
+		// as-is: the bridge splices it to the inner member's flat link.
 		void g.addLink({
 			node_out: c.source,
 			node_in: c.target,
@@ -521,7 +544,10 @@
 		event: MouseEvent | TouchEvent;
 	}): void {
 		const dragged = new Set(args.nodes.map((n) => n.id));
-		const target = linkTargetAt(args.event);
+		// A boundary pill isn't a real node — it can't be linked into a panel; it
+		// only repositions (mirrored across shared siblings via set_boundary_pos).
+		const draggingBoundary = args.nodes.some((n) => isBoundaryId(n.id));
+		const target = draggingBoundary ? null : linkTargetAt(args.event);
 		if (target) {
 			// Dropped on a node-accepting panel → link the node there and leave
 			// it where it started (the reference, not the node, moved).
@@ -542,7 +568,13 @@
 				});
 			}
 			for (const n of args.nodes) {
-				void g.setNodePos(n.id, [Math.round(n.position.x + dx), Math.round(n.position.y + dy)]);
+				const pos: [number, number] = [Math.round(n.position.x + dx), Math.round(n.position.y + dy)];
+				const bnd = parseBoundary(n.id);
+				if (bnd && entered) {
+					void g.setBoundaryPos(entered, bnd, pos).catch(() => {});
+				} else {
+					void g.setNodePos(n.id, pos);
+				}
 			}
 		}
 		uiStore.nodeDrag = null;
@@ -580,7 +612,6 @@
 	}
 
 	function onNodeClick(args: { node: Node; event: MouseEvent | TouchEvent }): void {
-		if (isBoundaryId(args.node.id)) return; // boundary nodes aren't selectable
 		const mouse = args.event as MouseEvent;
 		sel.clickNode(panelId, args.node.id, mouse.shiftKey || mouse.ctrlKey || mouse.metaKey);
 	}
@@ -642,7 +673,19 @@
 	}
 
 	async function deleteSelection(): Promise<void> {
-		await g.removeNodes(Array.from(sel.nodes(panelId)));
+		// Boundary pills delete via removeBoundary; real nodes + sub-patch instances
+		// via removeNode (the bridge routes an instance id to remove_instance).
+		const ids = Array.from(sel.nodes(panelId));
+		const realIds: string[] = [];
+		for (const id of ids) {
+			const bnd = parseBoundary(id);
+			if (bnd && entered) {
+				await g.removeBoundary(entered, bnd).catch((e) => console.warn('remove boundary failed', e));
+			} else {
+				realIds.push(id);
+			}
+		}
+		if (realIds.length) await g.removeNodes(realIds);
 		sel.clearNodes(panelId);
 	}
 
@@ -728,6 +771,18 @@
 		const placement = pendingPlacement;
 		if (!placement) return;
 		pendingPlacement = null;
+		// An In/Out boundary pseudo-type adds a virtual boundary to the entered
+		// sub-patch rather than spawning a real node.
+		const bspec = boundarySpec(placement.typeInfo.type);
+		if (bspec && placement.typeInfo.category === 'boundary') {
+			if (!entered) return;
+			try {
+				await g.addBoundary(entered, bspec.dir, bspec.dtype, pos);
+			} catch (e) {
+				console.warn('add boundary failed', e);
+			}
+			return;
+		}
 		try {
 			const newName = await g.addNode(placement.typeInfo.type, placement.typeInfo.category, pos);
 			// Auto-select the freshly-placed node so its parameters open in the
@@ -814,8 +869,19 @@
 			onnodeclick={onNodeClick}
 			onedgeclick={onEdgeClick}
 			ondelete={async ({ nodes, edges }) => {
-				for (const n of nodes) await g.removeNode(n.id).catch(() => {});
+				for (const n of nodes) {
+					const bnd = parseBoundary(n.id);
+					if (bnd && entered) await g.removeBoundary(entered, bnd).catch(() => {});
+					else await g.removeNode(n.id).catch(() => {});
+				}
 				for (const e of edges) {
+					// Deleting an In→member / member→Out edge unwires the boundary (the
+					// pill survives); a normal flat link is removed.
+					const bnd = parseBoundary(e.source) ?? parseBoundary(e.target);
+					if (bnd && entered) {
+						await g.wireBoundary(entered, bnd, null, null).catch(() => {});
+						continue;
+					}
 					const so = e.sourceHandle;
 					const si = e.targetHandle;
 					if (so && si)
@@ -888,6 +954,7 @@
 			<div class="menu-anchor" style="left: {menuPos.x}px; top: {menuPos.y}px">
 				<AddNodeMenu
 					seed={menuSeed}
+					extraTypes={entered ? BOUNDARY_TYPES : []}
 					onPick={(typeInfo) => {
 						const seed = menuSeed;
 						menuOpen = false;

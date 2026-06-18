@@ -18,11 +18,13 @@
 	// border so a collapsed sub-patch isn't silently healthy-looking.
 	const hasError = $derived(Boolean(data.hasError));
 
+	// Only WIRED boundaries become ports on the collapsed node — an unwired In/Out
+	// pill exposes nothing externally yet (it shows only inside the entered view).
 	const ins = $derived(
-		Object.entries(inst?.interface ?? {}).filter(([, p]) => p.dir === 'in')
+		Object.entries(inst?.interface ?? {}).filter(([, p]) => p.dir === 'in' && p.inner_node != null)
 	);
 	const outs = $derived(
-		Object.entries(inst?.interface ?? {}).filter(([, p]) => p.dir === 'out')
+		Object.entries(inst?.interface ?? {}).filter(([, p]) => p.dir === 'out' && p.inner_node != null)
 	);
 	const memberCount = $derived(Object.keys(inst?.members ?? {}).length);
 	const ROW = 24;

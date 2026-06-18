@@ -60,11 +60,42 @@ export interface LinkInfo {
 	slot_in: string;
 }
 
-/** One exposed boundary port of a sub-patch (the collapsed group node's handle). */
+/** One boundary (In/Out node) of a sub-patch. `inner_node`/`inner_slot` are null
+ * when the boundary is UNWIRED (added but not yet connected to a member); a wired
+ * boundary becomes a port on the collapsed group node. `pos` is the In/Out pill's
+ * position inside the entered view. */
 export interface SubPatchPort {
 	dir: 'in' | 'out';
-	inner_node: string; // member local name
-	inner_slot: string;
+	dtype?: string;
+	inner_node: string | null;
+	inner_slot: string | null;
+	pos?: [number, number];
+}
+
+/** The six virtual In/Out node types — one per data type per direction. They are
+ * placeable ONLY inside a sub-patch (the add-menu surfaces them when entered) and
+ * carry no params; the type name encodes the boundary's direction + data type. */
+export interface BoundarySpec {
+	dir: 'in' | 'out';
+	dtype: string;
+}
+const BOUNDARY_DTYPES = ['Array', 'String', 'Table'] as const;
+export const BOUNDARY_TYPES: NodeTypeInfo[] = (['In', 'Out'] as const).flatMap((side) =>
+	BOUNDARY_DTYPES.map((dt) => ({
+		type: `${side}${dt}`,
+		category: 'boundary',
+		doc: `Sub-patch ${side === 'In' ? 'input' : 'output'} (${dt.toLowerCase()})`,
+		input_slots: {},
+		output_slots: {},
+		params: {}
+	}))
+);
+
+/** Parse a boundary pseudo-type name (e.g. "InArray") to its dir + dtype, or null. */
+export function boundarySpec(type: string): BoundarySpec | null {
+	const m = /^(In|Out)(Array|String|Table)$/.exec(type);
+	if (!m) return null;
+	return { dir: m[1] === 'In' ? 'in' : 'out', dtype: m[2].toUpperCase() };
 }
 
 /** A flatten-at-runtime sub-patch instance the editor renders as a group node. */
@@ -166,6 +197,7 @@ export type ControlEvent =
 	| { event: 'save_path_changed'; payload: { save_path: string | null } }
 	| { event: 'graph_replaced'; payload: GraphSnapshot }
 	| { event: 'subpatch_changed'; payload: GraphSnapshot }
+	| { event: 'boundary_moved'; payload: { inst_id: string; bnd_id: string; pos: [number, number] } }
 	| { event: 'node_renamed'; payload: { old: string; new: string } }
 	| { event: 'layout'; payload: { layout: unknown } }
 	| { event: 'manager_shutdown'; payload: Record<string, never> };

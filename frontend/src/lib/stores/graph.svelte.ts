@@ -188,6 +188,12 @@ class GraphStore {
 				this.instances = snap.instances ?? {};
 				break;
 			}
+			case 'boundary_moved': {
+				const inst = this.instances[ev.payload.inst_id];
+				const port = inst?.interface?.[ev.payload.bnd_id];
+				if (port) port.pos = ev.payload.pos;
+				break;
+			}
 			case 'node_renamed': {
 				// Light rename fix-up (subpatch_changed re-syncs authoritatively right
 				// after, but keep selection/refs coherent in the meantime).
@@ -386,6 +392,47 @@ class GraphStore {
 	/** Detach a shared instance into its own private (unique) copy. */
 	async makeUnique(instId: string): Promise<void> {
 		await getControl().call('make_unique', { inst_id: instId });
+	}
+
+	/** Add a virtual In/Out boundary node to a sub-patch (unwired). Returns its id. */
+	async addBoundary(
+		instId: string,
+		dir: 'in' | 'out',
+		dtype: string,
+		pos: [number, number]
+	): Promise<string> {
+		const r = await getControl().call<{ bnd_id: string }>('add_boundary', {
+			inst_id: instId,
+			dir,
+			dtype,
+			pos
+		});
+		return r.bnd_id;
+	}
+
+	/** Set (inner_node/slot) or clear (nulls) a boundary's single inner target. */
+	async wireBoundary(
+		instId: string,
+		bndId: string,
+		innerNode: string | null,
+		innerSlot: string | null
+	): Promise<void> {
+		await getControl().call('wire_boundary', {
+			inst_id: instId,
+			bnd_id: bndId,
+			inner_node: innerNode,
+			inner_slot: innerSlot
+		});
+	}
+
+	/** Delete an In/Out boundary node (tears down its external wires). */
+	async removeBoundary(instId: string, bndId: string): Promise<void> {
+		await getControl().call('remove_boundary', { inst_id: instId, bnd_id: bndId });
+	}
+
+	/** Move an In/Out pill inside the entered view (mirrors across shared siblings). */
+	async setBoundaryPos(instId: string, bndId: string, pos: [number, number]): Promise<void> {
+		await getControl().call('set_boundary_pos', { inst_id: instId, bnd_id: bndId, pos });
 	}
 
 	/** List one directory level on the BACKEND filesystem (full FS, no jail). */

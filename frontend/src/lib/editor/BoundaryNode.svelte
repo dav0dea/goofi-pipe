@@ -12,13 +12,19 @@
 	const dir = $derived(data.dir as 'in' | 'out');
 	const name = $derived(data.name as string);
 	const dtype = $derived(data.dtype as string);
+	// Unwired = added but not yet connected to a member; shown dimmed/dashed and it
+	// exposes no port on the collapsed node until wired.
+	const wired = $derived(data.wired !== false);
 </script>
 
 <div
 	class="boundary {dir}"
 	class:selected
+	class:unwired={!wired}
 	style="--dtype: {dtypeColor(dtype)};"
-	title="{dir === 'in' ? 'Input' : 'Output'} · {dtype.toLowerCase()}"
+	title="{dir === 'in' ? 'Input' : 'Output'} · {dtype.toLowerCase()}{wired
+		? ''
+		: ' · unwired (connect to a node)'}"
 	data-testid="boundary-node"
 >
 	<span class="arrow">{dir === 'in' ? '▸' : '▸'}</span>
@@ -48,6 +54,10 @@
 	}
 	.boundary.selected {
 		box-shadow: 0 0 0 1px var(--dtype, var(--accent));
+	}
+	.boundary.unwired {
+		border-style: dashed;
+		opacity: 0.6;
 	}
 	.boundary.out {
 		flex-direction: row-reverse;

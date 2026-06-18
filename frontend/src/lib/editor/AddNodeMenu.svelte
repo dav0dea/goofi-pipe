@@ -10,8 +10,11 @@
 		onPick: (type: NodeTypeInfo) => void;
 		onClose: () => void;
 		seed?: SlotClickSeed | null;
+		/** Extra synthetic types prepended to the list (the In/Out boundary nodes,
+		 * passed only when the editor is inside a sub-patch). */
+		extraTypes?: NodeTypeInfo[];
 	};
-	const { onPick, onClose, seed = null }: Props = $props();
+	const { onPick, onClose, seed = null, extraTypes = [] }: Props = $props();
 
 	const g = graph();
 	let query = $state('');
@@ -28,7 +31,7 @@
 	}
 
 	const filtered = $derived.by(() => {
-		const types = (g.nodeTypes ?? []).filter(matchesSeed);
+		const types = [...extraTypes, ...(g.nodeTypes ?? [])].filter(matchesSeed);
 		// Rank by match quality (name ≫ category ≫ doc) so the closest hit leads;
 		// an empty query is returned untouched and grouped by category below.
 		return rankNodeTypes(types, query);
