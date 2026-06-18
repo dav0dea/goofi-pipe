@@ -598,6 +598,7 @@ class Manager:
             interface = self._derive_interface(members)
         self._instances[inst_id] = {
             "kind": "unique",
+            "def_id": None,
             "interface": interface,
             "pos": list(pos),
             "members": members,
@@ -636,6 +637,144 @@ class Manager:
     # `ungroup` reads better at call sites that just want the group dissolved.
     ungroup = expand_instance
 
+    # ------------------------------------------------------------------
+    # Shared sub-patches (strict mirror)
+    # ------------------------------------------------------------------
+
+    def _fresh_def_id(self) -> str:
+        idx = 0
+        while True:
+            cand = f"def{idx}"
+            if cand not in self._definitions:
+                return cand
+            idx += 1
+
+    def _definition_from_instance(self, inst_id: str) -> Dict[str, Any]:
+        """Snapshot a (unique) instance's topology+params as a reusable definition."""
+        inst = self._instances[inst_id]
+        members = {local: self._node_record(nn) for nn, local in inst["members"].items()}
+        # Strip per-instance identity from the shared definition records.
+        for rec in members.values():
+            rec.pop("uid", None)
+        links = []
+        for link in self._links:
+            if self._membership.get(link["node_out"]) == inst_id and self._membership.get(link["node_in"]) == inst_id:
+                links.append(self._local_link(link, inst_id))
+        return {"members": members, "links": links, "interface": dict(inst["interface"])}
+
+    @mark_unsaved_changes
+    def share_instance(self, inst_id: str, notify_gui: bool = True) -> str:
+        """Promote a unique instance to a shared one backed by a new definition.
+
+        Returns the definition id. Other instances can then be spawned from it
+        with `instantiate_definition`; param edits mirror across all of them.
+        """
+        if inst_id not in self._instances:
+            raise KeyError(f"No such sub-patch: {inst_id}")
+        inst = self._instances[inst_id]
+        if inst.get("def_id"):
+            return inst["def_id"]
+        def_id = self._fresh_def_id()
+        self._definitions[def_id] = self._definition_from_instance(inst_id)
+        inst["kind"] = "shared"
+        inst["def_id"] = def_id
+        if self._bridge is not None and notify_gui:
+            self._bridge.control.on_subpatch_changed()
+        return def_id
+
+    @mark_unsaved_changes
+    def instantiate_definition(self, def_id: str, pos=(0, 0), notify_gui: bool = True) -> str:
+        """Spawn a fresh shared instance of a definition (strict-mirror sibling)."""
+        if def_id not in self._definitions:
+            raise KeyError(f"No such definition: {def_id}")
+        d = self._definitions[def_id]
+        inst_id = self._fresh_instance_id()
+        members: Dict[str, str] = {}
+        spawned: List[str] = []
+        try:
+            for local, rec in d["members"].items():
+                new_name = f"{inst_id}{SUBPATCH_SEP}{local}"
+                if not self._service_budget_ok(new_name):
+                    raise SubPatchTooDeep(f"instance name {new_name!r} overflows the service-name budget")
+                self._add_node_from_record(
+                    new_name, dict(rec), allow_reserved=True,
+                    membership={"instance": inst_id, "local_name": local},
+                )
+                spawned.append(new_name)
+                members[new_name] = local
+            for link in d["links"]:
+                self.add_link(
+                    f"{inst_id}{SUBPATCH_SEP}{link['node_out']}",
+                    f"{inst_id}{SUBPATCH_SEP}{link['node_in']}",
+                    link["slot_out"], link["slot_in"], notify_gui=False,
+                )
+        except Exception:
+            # Roll back any members already spawned so a failure leaves the graph intact.
+            for n in reversed(spawned):
+                try:
+                    self.remove_node(n, notify_gui=False)
+                except Exception:
+                    pass
+            raise
+        self._instances[inst_id] = {
+            "kind": "shared",
+            "def_id": def_id,
+            "interface": dict(d["interface"]),
+            "pos": list(pos),
+            "members": members,
+        }
+        for nn in members:
+            self._membership[nn] = inst_id
+        if self._bridge is not None and notify_gui:
+            self._bridge.control.on_subpatch_changed()
+        return inst_id
+
+    @mark_unsaved_changes
+    def make_unique(self, inst_id: str, notify_gui: bool = True) -> None:
+        """Detach a shared instance into a private (unique) copy; GC an orphan def."""
+        if inst_id not in self._instances:
+            raise KeyError(f"No such sub-patch: {inst_id}")
+        inst = self._instances[inst_id]
+        def_id = inst.get("def_id")
+        inst["kind"] = "unique"
+        inst["def_id"] = None
+        if def_id and not any(i.get("def_id") == def_id for i in self._instances.values()):
+            self._definitions.pop(def_id, None)
+        if self._bridge is not None and notify_gui:
+            self._bridge.control.on_subpatch_changed()
+
+    @mark_unsaved_changes
+    def update_param(self, node: str, group: str, name: str, value: Any) -> None:
+        """Update a node param, mirroring across siblings if it's a shared member.
+
+        Strict mirror: editing a shared sub-patch member updates the definition
+        and every sibling instance's corresponding member in lockstep.
+        """
+        self.nodes[node].update_param(group, name, value)
+
+        inst_id = self._membership.get(node)
+        if not inst_id:
+            return
+        inst = self._instances.get(inst_id) or {}
+        def_id = inst.get("def_id")
+        if not def_id:
+            return
+        local = inst["members"][node]
+        # Update the definition's stored value (the save source of truth).
+        rec = self._definitions[def_id]["members"].get(local)
+        if rec is not None:
+            rec.setdefault("params", {}).setdefault(group, {})[name] = value
+        # Propagate to every sibling instance's corresponding member.
+        for other_id, other in self._instances.items():
+            if other_id == inst_id or other.get("def_id") != def_id:
+                continue
+            for onode, olocal in other["members"].items():
+                if olocal == local:
+                    try:
+                        self.nodes[onode].update_param(group, name, value)
+                    except Exception:
+                        pass
+
     def _node_record(self, name: str) -> Dict[str, Any]:
         ref = self.nodes[name]
         if ref.serialized_state is None:
@@ -658,7 +797,11 @@ class Manager:
 
     def build_v2_tree(self):
         """Collapse the live flat graph into (root_nodes, root_links, definitions,
-        instances) for the v2 envelope, reading first-class membership state."""
+        instances) for the v2 envelope, reading first-class membership state.
+
+        UNIQUE instances inline their members/links/interface. SHARED instances
+        reference a definition (emitted once) and carry only per-member uid+pos.
+        """
         member_set = set(self._membership)
         root_nodes = {name: self._node_record(name) for name in self.nodes if name not in member_set}
 
@@ -673,16 +816,35 @@ class Manager:
                 root_links.append(dict(link))
 
         instances: Dict[str, Any] = {}
+        definitions: Dict[str, Any] = {}
         for iid, inst in self._instances.items():
-            members = {inst["members"][nn]: self._node_record(nn) for nn in inst["members"]}
-            instances[iid] = {
-                "kind": inst["kind"],
-                "pos": inst["pos"],
-                "interface": inst["interface"],
-                "members": members,
-                "links": internal.get(iid, []),
-            }
-        return root_nodes, root_links, {}, instances
+            if inst.get("def_id"):
+                def_id = inst["def_id"]
+                if def_id not in definitions:
+                    definitions[def_id] = deepcopy(self._definitions[def_id])
+                instances[iid] = {
+                    "kind": "shared",
+                    "def": def_id,
+                    "pos": inst["pos"],
+                    # Only per-instance state — topology+params live in the definition.
+                    "members": {
+                        local: {
+                            "uid": self.nodes[nn].member_uid,
+                            "pos": (self.nodes[nn].gui_kwargs or {}).get("pos"),
+                        }
+                        for nn, local in inst["members"].items()
+                    },
+                }
+            else:
+                members = {inst["members"][nn]: self._node_record(nn) for nn in inst["members"]}
+                instances[iid] = {
+                    "kind": "unique",
+                    "pos": inst["pos"],
+                    "interface": inst["interface"],
+                    "members": members,
+                    "links": internal.get(iid, []),
+                }
+        return root_nodes, root_links, definitions, instances
 
     def _add_node_from_record(
         self, name: str, node: Dict[str, Any], allow_reserved: bool = False, membership=None
@@ -705,39 +867,68 @@ class Manager:
             **gk,
         )
 
-    def _expand_doc(self, root_nodes, root_links, instances) -> None:
+    def _expand_doc(self, root_nodes, root_links, instances, definitions=None) -> None:
         """Splice a v2 document's root graph + sub-patch instances into the live
         flat graph. Add all nodes first, then all links (so add_link never races
-        a not-yet-spawned endpoint)."""
+        a not-yet-spawned endpoint). Handles both unique (inline) and shared
+        (definition-backed) instances."""
+        self._definitions.update(definitions or {})
+
         for name, node in root_nodes.items():
             self._add_node_from_record(name, node)
 
+        internal_links: List[tuple] = []  # (inst_id, local_link)
         for inst_id, inst in instances.items():
+            kind = inst.get("kind", "unique")
             members_map: Dict[str, str] = {}
-            for local, node in (inst.get("members") or {}).items():
-                new_name = f"{inst_id}{SUBPATCH_SEP}{local}"
-                self._add_node_from_record(
-                    new_name, node, allow_reserved=True,
-                    membership={"instance": inst_id, "local_name": local},
-                )
-                members_map[new_name] = local
+            if kind == "shared":
+                def_id = inst["def"]
+                d = self._definitions[def_id]
+                per = inst.get("members") or {}
+                for local, rec in d["members"].items():
+                    new_name = f"{inst_id}{SUBPATCH_SEP}{local}"
+                    pm = per.get(local) or {}
+                    node_rec = dict(rec)
+                    if pm.get("uid"):
+                        node_rec["uid"] = pm["uid"]
+                    if pm.get("pos") is not None:
+                        node_rec["gui_kwargs"] = {**(rec.get("gui_kwargs") or {}), "pos": pm["pos"]}
+                    self._add_node_from_record(
+                        new_name, node_rec, allow_reserved=True,
+                        membership={"instance": inst_id, "local_name": local},
+                    )
+                    members_map[new_name] = local
+                interface = d["interface"]
+                for link in d["links"]:
+                    internal_links.append((inst_id, link))
+            else:
+                for local, rec in (inst.get("members") or {}).items():
+                    new_name = f"{inst_id}{SUBPATCH_SEP}{local}"
+                    self._add_node_from_record(
+                        new_name, rec, allow_reserved=True,
+                        membership={"instance": inst_id, "local_name": local},
+                    )
+                    members_map[new_name] = local
+                interface = inst.get("interface", {})
+                for link in inst.get("links", []):
+                    internal_links.append((inst_id, link))
+
             self._instances[inst_id] = {
-                "kind": inst.get("kind", "unique"),
-                "interface": inst.get("interface", {}),
+                "kind": kind,
+                "def_id": inst.get("def") if kind == "shared" else None,
+                "interface": interface,
                 "pos": inst.get("pos", [0, 0]),
                 "members": members_map,
             }
             for nn in members_map:
                 self._membership[nn] = inst_id
 
-        for inst_id, inst in instances.items():
-            for link in inst.get("links", []):
-                self.add_link(
-                    f"{inst_id}{SUBPATCH_SEP}{link['node_out']}",
-                    f"{inst_id}{SUBPATCH_SEP}{link['node_in']}",
-                    link["slot_out"],
-                    link["slot_in"],
-                )
+        for inst_id, link in internal_links:
+            self.add_link(
+                f"{inst_id}{SUBPATCH_SEP}{link['node_out']}",
+                f"{inst_id}{SUBPATCH_SEP}{link['node_in']}",
+                link["slot_out"], link["slot_in"],
+            )
         for link in root_links:
             self.add_link(link["node_out"], link["node_in"], link["slot_out"], link["slot_in"])
 
@@ -774,8 +965,8 @@ class Manager:
         with open(filepath, "r") as f:
             raw = yaml.load(f, Loader=yaml.FullLoader)
 
-        root_nodes, root_links, instances, _defs, layout = read_graph(normalize_loaded(raw))
-        self._expand_doc(root_nodes, root_links, instances)
+        root_nodes, root_links, instances, defs, layout = read_graph(normalize_loaded(raw))
+        self._expand_doc(root_nodes, root_links, instances, defs)
 
         # Restore the frontend layout if the patch carries one (optional key —
         # older patches without it leave layout None, and the browser falls

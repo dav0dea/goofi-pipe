@@ -195,6 +195,76 @@ def test_subpatch_save_load_roundtrip_and_expand(tmp_path):
         mgr2.terminate()
 
 
+def test_shared_param_edit_mirrors_to_sibling():
+    mgr = _bare_manager(use_multiprocessing=False)
+    try:
+        osc, inst = _build_grouped_graph(mgr)  # unique sub-patch with select0, select1
+        def_id = mgr.share_instance(inst)
+        inst2 = mgr.instantiate_definition(def_id)
+        # both instances reference the same definition
+        assert mgr._instances[inst]["def_id"] == def_id
+        assert mgr._instances[inst2]["def_id"] == def_id
+        # edit a param on instance A's select0 → mirrors to instance B's select0
+        mgr.update_param(f"{inst}::select0", "select", "include", "3:9")
+        assert mgr.nodes[f"{inst2}::select0"].params["select"]["include"].value == "3:9"
+        # the definition (save source of truth) also reflects the edit
+        assert mgr._definitions[def_id]["members"]["select0"]["params"]["select"]["include"] == "3:9"
+    finally:
+        mgr.terminate()
+
+
+def test_make_unique_detaches_and_gcs_definition():
+    mgr = _bare_manager(use_multiprocessing=False)
+    try:
+        osc, inst = _build_grouped_graph(mgr)
+        def_id = mgr.share_instance(inst)
+        inst2 = mgr.instantiate_definition(def_id)
+        mgr.make_unique(inst2)
+        assert mgr._instances[inst2]["def_id"] is None
+        assert mgr._instances[inst2]["kind"] == "unique"
+        # def still referenced by `inst`
+        assert def_id in mgr._definitions
+        # editing inst2 no longer affects inst
+        mgr.update_param(f"{inst2}::select0", "select", "include", "7:8")
+        assert mgr.nodes[f"{inst}::select0"].params["select"]["include"].value != "7:8"
+        # make the original unique too → definition is GC'd
+        mgr.make_unique(inst)
+        assert def_id not in mgr._definitions
+    finally:
+        mgr.terminate()
+
+
+def test_shared_subpatch_save_load_roundtrip(tmp_path):
+    mgr = _bare_manager(use_multiprocessing=False)
+    try:
+        osc, inst = _build_grouped_graph(mgr)
+        def_id = mgr.share_instance(inst)
+        inst2 = mgr.instantiate_definition(def_id)
+        fp = str(tmp_path / "shared.gfi")
+        mgr.save(fp, overwrite=True)
+        import yaml as _yaml
+        doc = _yaml.load(open(fp), Loader=_yaml.FullLoader)
+        # the definition is emitted once; both instances reference it as shared
+        assert def_id in doc["definitions"]
+        shared = [i for i in doc["root"]["instances"].values() if i["kind"] == "shared"]
+        assert len(shared) == 2
+        assert all(i["def"] == def_id for i in shared)
+    finally:
+        mgr.terminate()
+
+    mgr2 = _bare_manager(use_multiprocessing=False)
+    try:
+        mgr2.load(fp)
+        # both shared instances restored, members spawned, still mirror on edit
+        shared_ids = [iid for iid, i in mgr2._instances.items() if i["def_id"] == def_id]
+        assert len(shared_ids) == 2
+        a, b = shared_ids
+        mgr2.update_param(f"{a}::select0", "select", "include", "1:4")
+        assert mgr2.nodes[f"{b}::select0"].params["select"]["include"].value == "1:4"
+    finally:
+        mgr2.terminate()
+
+
 def test_creation_smoke():
     """Manager(duration=...) ought to start, run briefly, and shut down cleanly."""
     Manager(duration=MANAGER_TEST_DURATION)

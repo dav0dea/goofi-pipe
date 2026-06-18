@@ -357,6 +357,16 @@ class GraphStore {
 		await getControl().call('expand_instance', { inst_id: instId });
 	}
 
+	/** Promote an instance to shared and spawn a strict-mirror sibling copy. */
+	async duplicateShared(instId: string, pos?: [number, number]): Promise<void> {
+		await getControl().call('duplicate_shared', { inst_id: instId, pos });
+	}
+
+	/** Detach a shared instance into its own private (unique) copy. */
+	async makeUnique(instId: string): Promise<void> {
+		await getControl().call('make_unique', { inst_id: instId });
+	}
+
 	/** List one directory level on the BACKEND filesystem (full FS, no jail). */
 	async listDir(path?: string): Promise<DirListing> {
 		return getControl().call<DirListing>('list_dir', { path });

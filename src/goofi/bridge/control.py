@@ -170,9 +170,11 @@ class ControlHub:
             )
             return {"ok": True}
         if op == "update_param":
-            ref = manager.nodes[payload["node"]]
+            # Route through the manager so a shared sub-patch member mirrors the
+            # edit across its sibling instances (strict mirror).
             await self._call_manager(
-                ref.update_param,
+                manager.update_param,
+                payload["node"],
                 payload["group"],
                 payload["name"],
                 payload["value"],
@@ -271,6 +273,16 @@ class ControlHub:
         if op == "expand_instance":
             restored = await self._call_manager(manager.expand_instance, payload["inst_id"])
             return {"restored": restored}
+        if op == "duplicate_shared":
+            # Promote an instance to shared (if needed) and spawn a mirror sibling.
+            def_id = await self._call_manager(manager.share_instance, payload["inst_id"])
+            new_inst = await self._call_manager(
+                manager.instantiate_definition, def_id, tuple(payload.get("pos") or (0, 0))
+            )
+            return {"def_id": def_id, "inst_id": new_inst}
+        if op == "make_unique":
+            await self._call_manager(manager.make_unique, payload["inst_id"])
+            return {"ok": True}
         if op == "list_dir":
             return await self._call_manager(fsbrowse.list_dir, payload.get("path"))
         if op == "list_examples":
@@ -344,6 +356,7 @@ class ControlHub:
             "instances": {
                 iid: {
                     "kind": inst["kind"],
+                    "def_id": inst.get("def_id"),
                     "interface": inst["interface"],
                     "pos": list(inst["pos"]),
                     "members": dict(inst["members"]),

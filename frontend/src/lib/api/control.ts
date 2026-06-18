@@ -58,6 +58,8 @@ export interface SubPatchPort {
 /** A flatten-at-runtime sub-patch instance the editor renders as a group node. */
 export interface InstanceInfo {
 	kind: string;
+	/** Definition id when shared (strict-mirror sibling), null/absent when unique. */
+	def_id?: string | null;
 	/** boundary handle name -> port */
 	interface: Record<string, SubPatchPort>;
 	pos: [number, number];

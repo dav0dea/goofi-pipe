@@ -12,6 +12,9 @@
 	const inst = $derived(data.instance as InstanceInfo);
 	const instId = $derived(data.instId as string);
 	const onExpand = data.onExpand as (id: string) => void;
+	const onDuplicateShared = data.onDuplicateShared as (id: string) => void;
+	const onMakeUnique = data.onMakeUnique as (id: string) => void;
+	const shared = $derived(Boolean(inst?.def_id));
 
 	const ins = $derived(
 		Object.entries(inst?.interface ?? {}).filter(([, p]) => p.dir === 'in')
@@ -36,7 +39,9 @@
 	data-testid="subpatch-node"
 >
 	<div class="header">
-		<span class="glyph">▣</span>
+		<span class="glyph" class:shared title={shared ? 'shared (strict mirror)' : 'unique'}
+			>{shared ? '⇄' : '▣'}</span
+		>
 		<span class="name">{instId}</span>
 		<span class="count" title="{memberCount} nodes">{memberCount}</span>
 		<button
@@ -52,7 +57,30 @@
 			⤢
 		</button>
 	</div>
-	<div class="body">sub-patch</div>
+	<div class="body">
+		<span class="kind">{shared ? 'shared sub-patch' : 'sub-patch'}</span>
+		<div class="actions">
+			{#if shared}
+				<button
+					class="act"
+					data-testid="subpatch-make-unique"
+					onclick={(e) => {
+						e.stopPropagation();
+						onMakeUnique(instId);
+					}}>make unique</button
+				>
+			{:else}
+				<button
+					class="act"
+					data-testid="subpatch-share"
+					onclick={(e) => {
+						e.stopPropagation();
+						onDuplicateShared(instId);
+					}}>duplicate ⇄</button
+				>
+			{/if}
+		</div>
+	</div>
 
 	{#each ins as [name], i (name)}
 		<div class="conn in" style="top: {HEADER + i * ROW + ROW / 2}px;">
@@ -97,6 +125,9 @@
 	.glyph {
 		color: var(--accent);
 	}
+	.glyph.shared {
+		color: var(--cat-array, var(--accent));
+	}
 	.name {
 		flex: 1 1 auto;
 		font-weight: 600;
@@ -126,11 +157,35 @@
 		border-color: var(--accent);
 	}
 	.body {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 8px;
 		padding: 8px 10px;
+	}
+	.kind {
 		font-size: 10px;
 		letter-spacing: 0.08em;
 		text-transform: uppercase;
 		color: var(--text-faint);
+	}
+	.actions {
+		display: flex;
+		gap: 4px;
+	}
+	.act {
+		background: transparent;
+		border: 1px solid var(--border);
+		border-radius: var(--radius-sm);
+		color: var(--text-dim);
+		cursor: pointer;
+		font-size: 9px;
+		padding: 2px 6px;
+		white-space: nowrap;
+	}
+	.act:hover {
+		color: var(--text);
+		border-color: var(--accent);
 	}
 	.conn {
 		position: absolute;
