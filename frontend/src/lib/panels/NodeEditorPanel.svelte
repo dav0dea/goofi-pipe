@@ -187,9 +187,18 @@
 		flowEdges = next;
 	});
 
+	/** Node ids selected in THIS editor. Unions the app selection store (click /
+	 * shift-click / Ctrl+A) with Svelte Flow's live `selected` flags (marquee /
+	 * box select) — the store alone misses marquee selections. Excludes sub-patch
+	 * group nodes (not real nodes). */
+	function selectedNodeNames(): string[] {
+		const ids = new Set<string>(sel.nodes(panelId));
+		for (const n of flowNodes) if (n.selected) ids.add(n.id);
+		return [...ids].filter((id) => !(id in g.instances));
+	}
+
 	async function groupSelection(): Promise<void> {
-		// Only real nodes can be grouped (skip any selected instance group node).
-		const names = Array.from(sel.nodes(panelId)).filter((n) => !(n in g.instances));
+		const names = selectedNodeNames();
 		if (names.length === 0) return;
 		// Place the collapsed group node at the centroid of its members.
 		const pts = names.map((n) => g.nodeByName(n)?.pos).filter((p): p is [number, number] => !!p);
@@ -476,7 +485,7 @@
 	}
 
 	async function copySelection(): Promise<void> {
-		const names = sel.nodes(panelId);
+		const names = new Set(selectedNodeNames());
 		const selNodes = g.nodes.filter((n) => names.has(n.name));
 		if (selNodes.length === 0) return;
 		const links = g.links.filter((l) => names.has(l.node_in) && names.has(l.node_out));
@@ -486,7 +495,7 @@
 	}
 
 	async function duplicateSelection(): Promise<void> {
-		const rename = await g.cloneNodes(sel.nodes(panelId), [40, 40]);
+		const rename = await g.cloneNodes(selectedNodeNames(), [40, 40]);
 		const created = Object.values(rename);
 		if (created.length > 0) sel.selectNodes(panelId, created);
 	}
