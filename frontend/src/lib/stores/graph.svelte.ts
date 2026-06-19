@@ -481,21 +481,53 @@ export class GraphStore {
 	/** Group the named nodes into a unique (inline) sub-patch. Returns its instance id. */
 	async groupNodes(members: string[], pos?: [number, number]): Promise<string> {
 		const r = await this.ctl.call<{ inst_id: string }>('group_nodes', { members, pos });
+		if (r?.inst_id)
+			this._record({
+				kind: 'group_nodes',
+				label: 'Group nodes',
+				domain: 'graph',
+				context: captureNavContext(),
+				payload: { members: [...members], instId: r.inst_id, pos }
+			});
 		return r.inst_id;
 	}
 
 	/** Dissolve a sub-patch instance back into its member nodes. */
 	async expandInstance(instId: string): Promise<void> {
-		await this.ctl.call('expand_instance', { inst_id: instId });
+		const iface = structuredClone($state.snapshot(this.instances[instId]?.interface ?? {}));
+		const r = await this.ctl.call<{ restored: string[] }>('expand_instance', { inst_id: instId });
+		this._record({
+			kind: 'expand_instance',
+			label: 'Ungroup',
+			domain: 'graph',
+			context: captureNavContext(),
+			payload: { instId, restoredMembers: r?.restored ?? [], interface: iface }
+		});
 	}
 
 	/** Promote an instance to shared and spawn a strict-mirror sibling copy. */
 	async duplicateShared(instId: string, pos?: [number, number]): Promise<void> {
-		await this.ctl.call('duplicate_shared', { inst_id: instId, pos });
+		const wasUnique = !this.instances[instId]?.def_id;
+		const r = await this.ctl.call<{ inst_id: string }>('duplicate_shared', { inst_id: instId, pos });
+		this._record({
+			kind: 'duplicate_shared',
+			label: 'Duplicate shared',
+			domain: 'graph',
+			context: captureNavContext(),
+			payload: { instId, newInstId: r?.inst_id ?? '', wasUnique, pos }
+		});
 	}
 
 	/** Detach a shared instance into its own private (unique) copy. */
 	async makeUnique(instId: string): Promise<void> {
+		const defIdBefore = this.instances[instId]?.def_id ?? null;
+		this._record({
+			kind: 'make_unique',
+			label: 'Make unique',
+			domain: 'graph',
+			context: captureNavContext(),
+			payload: { instId, defIdBefore }
+		});
 		await this.ctl.call('make_unique', { inst_id: instId });
 	}
 
@@ -512,6 +544,14 @@ export class GraphStore {
 			dtype,
 			pos
 		});
+		if (r?.bnd_id)
+			this._record({
+				kind: 'add_boundary',
+				label: 'Add boundary',
+				domain: 'graph',
+				context: captureNavContext(),
+				payload: { instId, bndId: r.bnd_id, dir, dtype, pos }
+			});
 		return r.bnd_id;
 	}
 
@@ -522,6 +562,19 @@ export class GraphStore {
 		innerNode: string | null,
 		innerSlot: string | null
 	): Promise<void> {
+		const prev = this.instances[instId]?.interface?.[bndId];
+		this._record({
+			kind: 'wire_boundary',
+			label: 'Wire boundary',
+			domain: 'graph',
+			context: captureNavContext(),
+			payload: {
+				instId,
+				bndId,
+				oldInner: { node: prev?.inner_node ?? null, slot: prev?.inner_slot ?? null },
+				newInner: { node: innerNode, slot: innerSlot }
+			}
+		});
 		await this.ctl.call('wire_boundary', {
 			inst_id: instId,
 			bnd_id: bndId,
@@ -532,11 +585,28 @@ export class GraphStore {
 
 	/** Delete an In/Out boundary node (tears down its external wires). */
 	async removeBoundary(instId: string, bndId: string): Promise<void> {
+		const port = this.instances[instId]?.interface?.[bndId];
+		if (port)
+			this._record({
+				kind: 'remove_boundary',
+				label: 'Remove boundary',
+				domain: 'graph',
+				context: captureNavContext(),
+				payload: { instId, bndId, port: structuredClone($state.snapshot(port)) }
+			});
 		await this.ctl.call('remove_boundary', { inst_id: instId, bnd_id: bndId });
 	}
 
 	/** Move an In/Out pill inside the entered view (mirrors across shared siblings). */
 	async setBoundaryPos(instId: string, bndId: string, pos: [number, number]): Promise<void> {
+		const old = this.instances[instId]?.interface?.[bndId]?.pos ?? [0, 0];
+		this._record({
+			kind: 'set_boundary_pos',
+			label: 'Move boundary',
+			domain: 'graph',
+			context: captureNavContext(),
+			payload: { instId, bndId, oldPos: [old[0], old[1]], newPos: pos }
+		});
 		await this.ctl.call('set_boundary_pos', { inst_id: instId, bnd_id: bndId, pos });
 	}
 

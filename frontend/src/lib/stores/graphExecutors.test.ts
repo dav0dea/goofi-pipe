@@ -207,6 +207,175 @@ describe('graph executors — simple kinds', () => {
 	});
 });
 
+describe('graph executors — composite + sub-patch kinds', () => {
+	beforeEach(() => history().reset());
+
+	it('group_nodes: forward records the new instId, inverse expands it', async () => {
+		const fc = new FakeControl();
+		const g = new GraphStore(fc);
+		fc.setCallResult('group_nodes', { inst_id: 'subpatch1' });
+		const action: Action = {
+			kind: 'group_nodes',
+			label: 'Group',
+			domain: 'graph',
+			context: EMPTY_CTX,
+			payload: { members: ['a', 'b'], instId: 'subpatch0' }
+		};
+		await graphExecutors['group_nodes'].forward(action, deps(fc, g));
+		expect((action.payload as { instId: string }).instId).toBe('subpatch1'); // remapped
+		await graphExecutors['group_nodes'].inverse(action, deps(fc, g));
+		expect(
+			fc.recordedCalls().some((c) => c.op === 'expand_instance' && c.payload.inst_id === 'subpatch1')
+		).toBe(true);
+	});
+
+	it('expand_instance: inverse re-groups the restored members', async () => {
+		const fc = new FakeControl();
+		const g = new GraphStore(fc);
+		fc.setCallResult('group_nodes', { inst_id: 'subpatch9' });
+		const action: Action = {
+			kind: 'expand_instance',
+			label: 'Ungroup',
+			domain: 'graph',
+			context: EMPTY_CTX,
+			payload: { instId: 'subpatch0', restoredMembers: ['osc0', 'buffer0'], interface: {} }
+		};
+		await graphExecutors['expand_instance'].inverse(action, deps(fc, g));
+		const call = fc.recordedCalls().find((c) => c.op === 'group_nodes');
+		expect(call?.payload.members).toEqual(['osc0', 'buffer0']);
+		expect((action.payload as { instId: string }).instId).toBe('subpatch9'); // remapped for redo
+	});
+
+	it('add_boundary: forward records bnd_id, inverse removes it', async () => {
+		const fc = new FakeControl();
+		const g = new GraphStore(fc);
+		fc.setCallResult('add_boundary', { bnd_id: 'in0' });
+		const action: Action = {
+			kind: 'add_boundary',
+			label: 'Add input',
+			domain: 'graph',
+			context: EMPTY_CTX,
+			payload: { instId: 'subpatch0', bndId: '', dir: 'in', dtype: 'ARRAY', pos: [0, 0] }
+		};
+		await graphExecutors['add_boundary'].forward(action, deps(fc, g));
+		expect((action.payload as { bndId: string }).bndId).toBe('in0');
+		await graphExecutors['add_boundary'].inverse(action, deps(fc, g));
+		expect(
+			fc.recordedCalls().some((c) => c.op === 'remove_boundary' && c.payload.bnd_id === 'in0')
+		).toBe(true);
+	});
+
+	it('wire_boundary: inverse restores the prior inner target', async () => {
+		const fc = new FakeControl();
+		const g = new GraphStore(fc);
+		const action: Action = {
+			kind: 'wire_boundary',
+			label: 'Wire',
+			domain: 'graph',
+			context: EMPTY_CTX,
+			payload: {
+				instId: 'subpatch0',
+				bndId: 'in0',
+				oldInner: { node: null, slot: null },
+				newInner: { node: 'osc0', slot: 'out' }
+			}
+		};
+		await graphExecutors['wire_boundary'].inverse(action, deps(fc, g));
+		expect(fc.recordedCalls()).toEqual([
+			{ op: 'wire_boundary', payload: { inst_id: 'subpatch0', bnd_id: 'in0', inner_node: null, inner_slot: null } }
+		]);
+	});
+
+	it('set_boundary_pos: inverse restores the old position', async () => {
+		const fc = new FakeControl();
+		const g = new GraphStore(fc);
+		const action: Action = {
+			kind: 'set_boundary_pos',
+			label: 'Move pill',
+			domain: 'graph',
+			context: EMPTY_CTX,
+			payload: { instId: 'subpatch0', bndId: 'in0', oldPos: [1, 2], newPos: [9, 9] }
+		};
+		await graphExecutors['set_boundary_pos'].inverse(action, deps(fc, g));
+		expect(fc.recordedCalls()).toEqual([
+			{ op: 'set_boundary_pos', payload: { inst_id: 'subpatch0', bnd_id: 'in0', pos: [1, 2] } }
+		]);
+	});
+
+	it('remove_boundary: inverse re-adds the port and rewires it', async () => {
+		const fc = new FakeControl();
+		const g = new GraphStore(fc);
+		fc.setCallResult('add_boundary', { bnd_id: 'out1' });
+		const action: Action = {
+			kind: 'remove_boundary',
+			label: 'Remove boundary',
+			domain: 'graph',
+			context: EMPTY_CTX,
+			payload: {
+				instId: 'subpatch0',
+				bndId: 'out0',
+				port: { dir: 'out', dtype: 'ARRAY', inner_node: 'osc0', inner_slot: 'out', pos: [3, 4] }
+			}
+		};
+		await graphExecutors['remove_boundary'].inverse(action, deps(fc, g));
+		const ops = fc.recordedCalls();
+		expect(ops[0].op).toBe('add_boundary');
+		expect(ops[1]).toEqual({
+			op: 'wire_boundary',
+			payload: { inst_id: 'subpatch0', bnd_id: 'out1', inner_node: 'osc0', inner_slot: 'out' }
+		});
+	});
+
+	it('duplicate_shared: inverse removes the new sibling and re-uniques the source', async () => {
+		const fc = new FakeControl();
+		const g = new GraphStore(fc);
+		fc.setCallResult('duplicate_shared', { def_id: 'd', inst_id: 'subpatch2' });
+		const action: Action = {
+			kind: 'duplicate_shared',
+			label: 'Duplicate shared',
+			domain: 'graph',
+			context: EMPTY_CTX,
+			payload: { instId: 'subpatch0', newInstId: '', wasUnique: true }
+		};
+		await graphExecutors['duplicate_shared'].forward(action, deps(fc, g));
+		expect((action.payload as { newInstId: string }).newInstId).toBe('subpatch2');
+		await graphExecutors['duplicate_shared'].inverse(action, deps(fc, g));
+		const ops = fc.recordedCalls();
+		expect(ops.some((c) => c.op === 'remove_node' && c.payload.name === 'subpatch2')).toBe(true);
+		expect(ops.some((c) => c.op === 'make_unique' && c.payload.inst_id === 'subpatch0')).toBe(true);
+	});
+
+	it('make_unique: inverse re-shares when it was previously shared', async () => {
+		const fc = new FakeControl();
+		const g = new GraphStore(fc);
+		const action: Action = {
+			kind: 'make_unique',
+			label: 'Make unique',
+			domain: 'graph',
+			context: EMPTY_CTX,
+			payload: { instId: 'subpatch0', defIdBefore: 'd' }
+		};
+		await graphExecutors['make_unique'].inverse(action, deps(fc, g));
+		expect(fc.recordedCalls().some((c) => c.op === 'duplicate_shared' && c.payload.inst_id === 'subpatch0')).toBe(
+			true
+		);
+	});
+
+	it('make_unique: inverse is a no-op when it was already unique', async () => {
+		const fc = new FakeControl();
+		const g = new GraphStore(fc);
+		const action: Action = {
+			kind: 'make_unique',
+			label: 'Make unique',
+			domain: 'graph',
+			context: EMPTY_CTX,
+			payload: { instId: 'subpatch0', defIdBefore: null }
+		};
+		await graphExecutors['make_unique'].inverse(action, deps(fc, g));
+		expect(fc.recordedCalls()).toEqual([]);
+	});
+});
+
 describe('graph store — recording wrappers + undo replay', () => {
 	beforeEach(() => history().reset());
 
@@ -241,5 +410,28 @@ describe('graph store — recording wrappers + undo replay', () => {
 		expect(addCall.payload.name).toBe('osc0');
 		expect(history().canUndo).toBe(false);
 		expect(history().canRedo).toBe(true);
+	});
+
+	it('undo of removeNode restores panels that were bound to the node', async () => {
+		const fc = new FakeControl();
+		const g = new GraphStore(fc);
+		const ws = workspace();
+		ws.reset();
+		// bind the (only) default panel to osc0
+		const panelId = ws.activePanelId!;
+		ws.setType(panelId, 'parameters');
+		ws.linkNodeToPanel(panelId, 'osc0');
+		history().reset();
+		history().configureDeps(() => ({ control: fc, graph: g, workspace: ws }));
+
+		fc.emit({ event: 'node_added', payload: nodeInfo('osc0') });
+		await g.removeNode('osc0');
+		fc.emit({ event: 'node_removed', payload: { name: 'osc0' } });
+		// node_removed clears the binding
+		expect(ws.panelsBoundTo('osc0')).toHaveLength(0);
+
+		await history().undo();
+		fc.emit({ event: 'node_added', payload: nodeInfo('osc0') });
+		expect(ws.panelsBoundTo('osc0').map((p) => p.panelId)).toContain(panelId);
 	});
 });

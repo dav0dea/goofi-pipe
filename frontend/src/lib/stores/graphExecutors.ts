@@ -50,7 +50,8 @@ const removeNode: Executor = {
 			params: paramValues(n)
 		});
 		for (const link of a.payload.links) await deps.control.call('add_link', { ...link });
-		// Panel-binding restoration (boundPanels) is wired in Phase 3.
+		// Re-bind any panels that were emptied when the node was deleted.
+		for (const bp of a.payload.boundPanels) deps.workspace.setPanelState(bp.panelId, bp.state);
 	}
 };
 
@@ -126,6 +127,145 @@ const setNodePos: Executor = {
 	}
 };
 
+// --- composite / sub-patch -------------------------------------------------
+
+const groupNodes: Executor = {
+	async forward(action, deps) {
+		const a = as<'group_nodes'>(action);
+		const r = await deps.control.call<{ inst_id: string }>('group_nodes', {
+			members: a.payload.members,
+			pos: a.payload.pos
+		});
+		if (r?.inst_id) a.payload.instId = r.inst_id; // remap for the next inverse
+	},
+	async inverse(action, deps) {
+		const a = as<'group_nodes'>(action);
+		await deps.control.call('expand_instance', { inst_id: a.payload.instId });
+	}
+};
+
+const expandInstance: Executor = {
+	async forward(action, deps) {
+		const a = as<'expand_instance'>(action);
+		await deps.control.call('expand_instance', { inst_id: a.payload.instId });
+	},
+	async inverse(action, deps) {
+		const a = as<'expand_instance'>(action);
+		const r = await deps.control.call<{ inst_id: string }>('group_nodes', {
+			members: a.payload.restoredMembers
+		});
+		if (r?.inst_id) a.payload.instId = r.inst_id; // the re-grouped id (for redo)
+	}
+};
+
+const addBoundary: Executor = {
+	async forward(action, deps) {
+		const a = as<'add_boundary'>(action);
+		const r = await deps.control.call<{ bnd_id: string }>('add_boundary', {
+			inst_id: a.payload.instId,
+			dir: a.payload.dir,
+			dtype: a.payload.dtype,
+			pos: a.payload.pos
+		});
+		if (r?.bnd_id) a.payload.bndId = r.bnd_id;
+	},
+	async inverse(action, deps) {
+		const a = as<'add_boundary'>(action);
+		await deps.control.call('remove_boundary', { inst_id: a.payload.instId, bnd_id: a.payload.bndId });
+	}
+};
+
+const wireBoundary: Executor = {
+	async forward(action, deps) {
+		const a = as<'wire_boundary'>(action);
+		await deps.control.call('wire_boundary', {
+			inst_id: a.payload.instId,
+			bnd_id: a.payload.bndId,
+			inner_node: a.payload.newInner.node,
+			inner_slot: a.payload.newInner.slot
+		});
+	},
+	async inverse(action, deps) {
+		const a = as<'wire_boundary'>(action);
+		await deps.control.call('wire_boundary', {
+			inst_id: a.payload.instId,
+			bnd_id: a.payload.bndId,
+			inner_node: a.payload.oldInner.node,
+			inner_slot: a.payload.oldInner.slot
+		});
+	}
+};
+
+const removeBoundary: Executor = {
+	async forward(action, deps) {
+		const a = as<'remove_boundary'>(action);
+		await deps.control.call('remove_boundary', { inst_id: a.payload.instId, bnd_id: a.payload.bndId });
+	},
+	async inverse(action, deps) {
+		const a = as<'remove_boundary'>(action);
+		const p = a.payload.port;
+		const r = await deps.control.call<{ bnd_id: string }>('add_boundary', {
+			inst_id: a.payload.instId,
+			dir: p.dir,
+			dtype: p.dtype,
+			pos: p.pos
+		});
+		const bndId = r?.bnd_id ?? a.payload.bndId;
+		if (p.inner_node) {
+			await deps.control.call('wire_boundary', {
+				inst_id: a.payload.instId,
+				bnd_id: bndId,
+				inner_node: p.inner_node,
+				inner_slot: p.inner_slot
+			});
+		}
+	}
+};
+
+const setBoundaryPos: Executor = {
+	async forward(action, deps) {
+		const a = as<'set_boundary_pos'>(action);
+		await deps.control.call('set_boundary_pos', { inst_id: a.payload.instId, bnd_id: a.payload.bndId, pos: a.payload.newPos });
+	},
+	async inverse(action, deps) {
+		const a = as<'set_boundary_pos'>(action);
+		await deps.control.call('set_boundary_pos', { inst_id: a.payload.instId, bnd_id: a.payload.bndId, pos: a.payload.oldPos });
+	}
+};
+
+const duplicateShared: Executor = {
+	async forward(action, deps) {
+		const a = as<'duplicate_shared'>(action);
+		const r = await deps.control.call<{ inst_id: string }>('duplicate_shared', {
+			inst_id: a.payload.instId,
+			pos: a.payload.pos
+		});
+		if (r?.inst_id) a.payload.newInstId = r.inst_id;
+	},
+	async inverse(action, deps) {
+		const a = as<'duplicate_shared'>(action);
+		// remove_node routes to remove_instance for an instance id (bridge).
+		if (a.payload.newInstId) await deps.control.call('remove_node', { name: a.payload.newInstId });
+		// If the source was unique before, sharing it left a residual definition —
+		// detach it again so the graph matches the pre-duplicate state.
+		if (a.payload.wasUnique) await deps.control.call('make_unique', { inst_id: a.payload.instId });
+	}
+};
+
+const makeUnique: Executor = {
+	async forward(action, deps) {
+		const a = as<'make_unique'>(action);
+		await deps.control.call('make_unique', { inst_id: a.payload.instId });
+	},
+	async inverse(action, deps) {
+		const a = as<'make_unique'>(action);
+		// Best-effort: re-promote to shared when it had a definition before. (A
+		// perfect re-attach to the exact prior definition needs backend support —
+		// see spec §11 deferral.)
+		if (a.payload.defIdBefore) await deps.control.call('duplicate_shared', { inst_id: a.payload.instId });
+	}
+};
+
 export const graphExecutors: Record<string, Executor> = {
 	add_node: addNode,
 	remove_node: removeNode,
@@ -133,5 +273,13 @@ export const graphExecutors: Record<string, Executor> = {
 	remove_link: removeLink,
 	update_param: updateParam,
 	set_expression: setExpression,
-	set_node_pos: setNodePos
+	set_node_pos: setNodePos,
+	group_nodes: groupNodes,
+	expand_instance: expandInstance,
+	add_boundary: addBoundary,
+	wire_boundary: wireBoundary,
+	remove_boundary: removeBoundary,
+	set_boundary_pos: setBoundaryPos,
+	duplicate_shared: duplicateShared,
+	make_unique: makeUnique
 };
