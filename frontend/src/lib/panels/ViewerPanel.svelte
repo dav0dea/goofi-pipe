@@ -13,7 +13,10 @@
 	import ViewerFeed from '$lib/viewers/ViewerFeed.svelte';
 	import ViewerControls from '$lib/viewers/ViewerControls.svelte';
 	import { panelBinding, type ViewBinding } from '$lib/viewers/viewBinding';
+	import { recordViewChange } from '$lib/viewers/viewExecutors';
 	import { asStateObject } from '$lib/workspace/panelState';
+	import type { ViewerKind } from '$lib/viewers/kind';
+	import type { SettingsMap } from '$lib/viewers/settingsSchema';
 
 	interface ViewerState {
 		node?: string | null;
@@ -36,10 +39,36 @@
 
 	// Resolve the chosen slot, its dtype, and this panel's binding in one place so
 	// the controls and content snippets (separate scopes) don't each re-derive it.
+	// Raw (pre-resolution) snapshot of this panel's view state, for undo capture.
+	function snap(): { kind?: ViewerKind; settings: SettingsMap } {
+		const s = asStateObject(props.state);
+		return { kind: s.kind as ViewerKind | undefined, settings: (s.settings as SettingsMap) ?? {} };
+	}
 	function view(node: NodeInstanceInfo): { slot: string | null; dtype: string | null; binding: ViewBinding } {
 		const slot = curSlot(node);
 		const dtype = slot ? node.output_slots[slot] : null;
-		return { slot, dtype, binding: panelBinding(() => props.state, props.setState, dtype) };
+		const inner = panelBinding(() => props.state, props.setState, dtype);
+		// Wrap the setters so a viewer-type/settings change records an undo step
+		// (the inner binding stays pure + unit-testable in viewBinding.ts).
+		const binding: ViewBinding = {
+			get kind() {
+				return inner.kind;
+			},
+			get settings() {
+				return inner.settings;
+			},
+			setKind(k) {
+				const before = snap();
+				inner.setKind(k);
+				recordViewChange({ kind: 'panel', panelId: props.panelId }, before, snap(), `Viewer → ${k}`);
+			},
+			setSetting(key, value) {
+				const before = snap();
+				inner.setSetting(key, value);
+				recordViewChange({ kind: 'panel', panelId: props.panelId }, before, snap(), `Viewer ${key}`);
+			}
+		};
+		return { slot, dtype, binding };
 	}
 </script>
 

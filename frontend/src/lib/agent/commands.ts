@@ -14,9 +14,17 @@ import { ui } from '$lib/stores/ui.svelte';
 import { workspace } from '$lib/workspace/workspace.svelte';
 import { editorFor } from '$lib/panels/editorCommands';
 import { history } from '$lib/stores/history.svelte';
-import { setInlineKind, setInlineSetting } from '$lib/viewers/inlineView.svelte';
+import { setInlineKind, setInlineSetting, rawInlineView } from '$lib/viewers/inlineView.svelte';
+import { recordViewChange } from '$lib/viewers/viewExecutors';
+import type { SettingsMap } from '$lib/viewers/settingsSchema';
 import type { ViewerKind } from '$lib/viewers/kind';
 import type { LinkInfo } from '$lib/api/control';
+
+/** Raw (pre-resolution) inline view snapshot, for undo capture. */
+function inlineSnap(node: string, slot: string): { kind?: ViewerKind; settings: SettingsMap } {
+	const v = rawInlineView(node, slot);
+	return { kind: v.kind, settings: { ...v.settings } };
+}
 
 /** The editor panel that viewport/selection verbs default to. */
 function activeEditor(): string | null {
@@ -98,12 +106,16 @@ export const commands = {
 		graph().pushNodeViewers(node);
 	},
 	setViewerKind: (node: string, slot: string, kind: ViewerKind): void => {
+		const before = inlineSnap(node, slot);
 		setInlineKind(node, slot, kind);
 		graph().pushNodeViewers(node);
+		recordViewChange({ kind: 'inline', node, slot }, before, inlineSnap(node, slot), `Viewer → ${kind}`);
 	},
 	setViewerSetting: (node: string, slot: string, key: string, value: boolean | number | string): void => {
+		const before = inlineSnap(node, slot);
 		setInlineSetting(node, slot, key, value);
 		graph().pushNodeViewers(node);
+		recordViewChange({ kind: 'inline', node, slot }, before, inlineSnap(node, slot), `Viewer ${key}`);
 	},
 
 	// --- panels / layout ---------------------------------------------------

@@ -2,8 +2,9 @@
 	import ViewerFeed from './ViewerFeed.svelte';
 	import ViewerControls from './ViewerControls.svelte';
 	import { rawInlineView, setInlineKind, setInlineSetting } from './inlineView.svelte';
+	import { recordViewChange } from './viewExecutors';
 	import { resolveKind } from './kind';
-	import { resolveSettings } from './settingsSchema';
+	import { resolveSettings, type SettingsMap } from './settingsSchema';
 	import type { ViewBinding } from './viewBinding';
 	import { ui } from '$lib/stores/ui.svelte';
 	import { graph } from '$lib/stores/graph.svelte';
@@ -18,6 +19,11 @@
 	// The inline viewer's binding: backed by the node-scoped inline-view store,
 	// persisting into node.viewers via pushNodeViewers. Built here (its single use
 	// site) so viewBinding.ts stays rune-free and unit-testable.
+	// Raw (pre-resolution) snapshot of this slot's view state, for undo capture.
+	function snap(): { kind?: ReturnType<typeof resolveKind> | undefined; settings: SettingsMap } {
+		const v = rawInlineView(node, slot);
+		return { kind: v.kind, settings: { ...v.settings } };
+	}
 	const binding: ViewBinding = {
 		get kind() {
 			return resolveKind(dtype, rawInlineView(node, slot).kind);
@@ -26,12 +32,16 @@
 			return resolveSettings(this.kind, rawInlineView(node, slot).settings);
 		},
 		setKind(k) {
+			const before = snap();
 			setInlineKind(node, slot, k);
 			g.pushNodeViewers(node);
+			recordViewChange({ kind: 'inline', node, slot }, before, snap(), `Viewer → ${k}`);
 		},
 		setSetting(key, value) {
+			const before = snap();
 			setInlineSetting(node, slot, key, value);
 			g.pushNodeViewers(node);
+			recordViewChange({ kind: 'inline', node, slot }, before, snap(), `Viewer ${key}`);
 		}
 	};
 

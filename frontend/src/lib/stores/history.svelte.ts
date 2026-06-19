@@ -18,13 +18,16 @@ import type {
 } from '$lib/api/control';
 import { getControl } from '$lib/api/control';
 import type { WorkspaceState } from '$lib/workspace/model';
+import type { ViewerKind } from '$lib/viewers/kind';
+import type { SettingsMap } from '$lib/viewers/settingsSchema';
 import { graph } from './graph.svelte';
 import { workspace } from '$lib/workspace/workspace.svelte';
 import { graphExecutors } from './graphExecutors';
 import { layoutExecutors } from '$lib/workspace/layoutExecutors';
+import { viewExecutors } from '$lib/viewers/viewExecutors';
 import { restoreNavContext } from '$lib/workspace/navContext';
 
-export type ActionDomain = 'graph' | 'layout';
+export type ActionDomain = 'graph' | 'layout' | 'view';
 
 /** Where an action was performed — restored before its inverse/forward runs so
  * the undone/redone change is highlighted in the right tab/panel/sub-patch. */
@@ -177,7 +180,26 @@ export type CompoundAction = BaseAction & {
 	payload: { children: Action[] };
 };
 
-export type Action = GraphAction | LayoutAction | CompoundAction;
+// --- view domain: a data viewer's kind/settings (frontend-only state) --------
+/** A viewer's kind + cog-menu settings snapshot. */
+export interface ViewSnapshot {
+	kind?: ViewerKind;
+	settings: SettingsMap;
+}
+
+/** Where a viewer's view-state lives: on a node's inline body viewer, or in a
+ * docked Viewer panel's layout state. */
+export type ViewTarget =
+	| { kind: 'inline'; node: string; slot: string }
+	| { kind: 'panel'; panelId: string };
+
+export type ViewAction = BaseAction & {
+	domain: 'view';
+	kind: 'set_view';
+	payload: { target: ViewTarget; before: ViewSnapshot; after: ViewSnapshot };
+};
+
+export type Action = GraphAction | LayoutAction | CompoundAction | ViewAction;
 
 // --- executors ---------------------------------------------------------------
 export type GraphStoreT = ReturnType<typeof graph>;
@@ -220,6 +242,7 @@ const compoundExecutor: Executor = {
 export const executors: Record<string, Executor> = {
 	...graphExecutors,
 	...(layoutExecutors as Record<string, Executor>),
+	...viewExecutors,
 	compound: compoundExecutor
 };
 
