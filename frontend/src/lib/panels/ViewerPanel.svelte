@@ -1,15 +1,18 @@
 <!-- Viewer panel — visualizes an output slot of the node dragged into it. The
      slot picker plus the shared viewer-type dropdown + settings cog live in the
-     panel header (next to the node name); the body is the shared ViewerFeed. The
-     viewer type + settings come from the same per-(node, slot) stores the canvas
-     SlotViewer uses, so the two views stay in lock-step. Only the chosen slot is
-     panel-local state. Linking + empty state via NodeLinkedPanel. -->
+     panel header (next to the node name); the body is the shared ViewerFeed.
+     Each panel is an INDEPENDENT viewer instance: its viewer type + settings
+     live in this panel's own layout state (a panelBinding) and persist with the
+     panel, so it never tracks the node's inline viewer or another panel. The
+     data stream is still shared (one WS per node+slot). Linking + empty state
+     via NodeLinkedPanel. -->
 <script lang="ts">
 	import type { PanelProps } from '$lib/workspace/registry';
 	import type { NodeInstanceInfo } from '$lib/api/control';
 	import NodeLinkedPanel from './NodeLinkedPanel.svelte';
 	import ViewerFeed from '$lib/viewers/ViewerFeed.svelte';
 	import ViewerControls from '$lib/viewers/ViewerControls.svelte';
+	import { panelBinding } from '$lib/viewers/viewBinding';
 	import { asStateObject } from '$lib/workspace/panelState';
 
 	interface ViewerState {
@@ -36,6 +39,7 @@
 	{#snippet controls(node)}
 		{@const slot = curSlot(node)}
 		{@const dtype = slot ? node.output_slots[slot] : null}
+		{@const binding = panelBinding(() => props.state, props.setState, dtype)}
 		<select
 			class="slot-pick"
 			value={slot ?? ''}
@@ -47,14 +51,15 @@
 			{/each}
 		</select>
 		{#if slot && dtype}
-			<ViewerControls node={node.name} {slot} {dtype} />
+			<ViewerControls {dtype} {binding} />
 		{/if}
 	{/snippet}
 
 	{#snippet content(node)}
 		{@const slot = curSlot(node)}
 		{@const dtype = slot ? node.output_slots[slot] : null}
-		<div class="vp-body"><ViewerFeed node={node.name} {slot} {dtype} /></div>
+		{@const binding = panelBinding(() => props.state, props.setState, dtype)}
+		<div class="vp-body"><ViewerFeed node={node.name} {slot} {binding} /></div>
 	{/snippet}
 </NodeLinkedPanel>
 
