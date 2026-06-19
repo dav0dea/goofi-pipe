@@ -93,6 +93,11 @@ export class GraphStore {
 		} else if (freshSession) {
 			workspace().reset();
 		}
+		// A new backend session replaced the authoritative world out-of-band —
+		// replaying old RPCs is meaningless, so drop the history. The one
+		// exception to "never auto-clear" (an in-session load keeps its history
+		// as a `load_patch` checkpoint; same instance_id → not fresh).
+		if (freshSession) history().reset();
 		return freshSession;
 	}
 
@@ -475,7 +480,41 @@ export class GraphStore {
 	}
 
 	async loadText(content: string): Promise<void> {
+		const before = await this._loadCheckpointBefore();
 		await this.ctl.call('load_text', { content });
+		this._recordLoadPatch(before, content);
+	}
+
+	/** Raw patch swap used by the load_patch undo executor — bypasses recording. */
+	async applyLoadCheckpoint(yaml: string): Promise<void> {
+		await this.ctl.call('load_text', { content: yaml });
+	}
+
+	/** Snapshot the current patch + layout before a destructive load. */
+	private async _loadCheckpointBefore(): Promise<{ yaml: string; layout: unknown }> {
+		let yaml = '';
+		try {
+			yaml = (await this.serialize()).yaml;
+		} catch {
+			/* nothing loaded yet — empty before-state */
+		}
+		return { yaml, layout: workspace().serialize() };
+	}
+
+	private _recordLoadPatch(before: { yaml: string; layout: unknown }, afterYaml: string): void {
+		this._record({
+			kind: 'load_patch',
+			label: 'Load patch',
+			domain: 'graph',
+			context: captureNavContext(),
+			payload: {
+				beforeYaml: before.yaml,
+				afterYaml,
+				beforeLayout: before.layout as never,
+				afterLayout: null,
+				instanceId: this._lastInstanceId ?? ''
+			}
+		});
 	}
 
 	/** Group the named nodes into a unique (inline) sub-patch. Returns its instance id. */
@@ -622,7 +661,16 @@ export class GraphStore {
 
 	/** Load a patch from a BACKEND filesystem path (destructive — replaces the graph). */
 	async load(path: string): Promise<void> {
+		const before = await this._loadCheckpointBefore();
 		await this.ctl.call('load', { path });
+		// The loaded patch's YAML, for redo (re-applying the same load).
+		let afterYaml = '';
+		try {
+			afterYaml = (await this.serialize()).yaml;
+		} catch {
+			/* ignore */
+		}
+		this._recordLoadPatch(before, afterYaml);
 	}
 
 	/** Current patch as `.gfi` YAML, without writing to disk (for browser download). */

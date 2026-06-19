@@ -88,6 +88,16 @@ class SelectionStore {
 		this.write(panelId, { nodes: new Set(names), edges: this.sel(panelId).edges });
 	}
 
+	/** Replace the edge selection (used by undo's NavContext restore). */
+	selectEdges(panelId: string, ids: Iterable<string>): void {
+		this.write(panelId, { nodes: this.sel(panelId).nodes, edges: new Set(ids) });
+	}
+
+	/** Replace both node and edge selection at once (NavContext restore). */
+	setSelection(panelId: string, nodes: Iterable<string>, edges: Iterable<string>): void {
+		this.write(panelId, { nodes: new Set(nodes), edges: new Set(edges) });
+	}
+
 	// --- edge selection ----------------------------------------------------
 
 	clickEdge(panelId: string, id: string, additive: boolean): void {

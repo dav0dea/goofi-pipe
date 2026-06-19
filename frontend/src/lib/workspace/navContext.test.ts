@@ -1,0 +1,46 @@
+import { describe, it, expect, beforeEach } from 'vitest';
+import { workspace } from './workspace.svelte';
+import { selection } from '$lib/stores/selection.svelte';
+import { captureNavContext, restoreNavContext } from './navContext';
+
+describe('NavContext capture/restore', () => {
+	beforeEach(() => {
+		workspace().reset();
+		selection().forgetAll();
+	});
+
+	it('captures the active workspace, panel, and per-panel selection', () => {
+		const ws = workspace();
+		const panelId = ws.activePanelId!;
+		selection().selectNodes(panelId, ['osc0', 'buffer0']);
+		const ctx = captureNavContext();
+		expect(ctx.activeWorkspaceId).toBe(ws.state.activeWorkspaceId);
+		expect(ctx.activePanelId).toBe(panelId);
+		expect(ctx.selection[panelId].nodes.sort()).toEqual(['buffer0', 'osc0']);
+	});
+
+	it('restore re-applies the selection and active panel', async () => {
+		const ws = workspace();
+		const panelId = ws.activePanelId!;
+		selection().selectNodes(panelId, ['osc0']);
+		const ctx = captureNavContext();
+		selection().clear(panelId);
+		expect(selection().nodes(panelId).size).toBe(0);
+		await restoreNavContext(ctx);
+		expect([...selection().nodes(panelId)]).toEqual(['osc0']);
+		expect(ws.activePanelId).toBe(panelId);
+	});
+
+	it('captures and restores a panel sub-patch path (enteredPath)', async () => {
+		const ws = workspace();
+		const panelId = ws.activePanelId!;
+		ws.setPanelState(panelId, { subpatchPath: '/subpatch0' });
+		const ctx = captureNavContext();
+		expect(ctx.enteredPath[panelId]).toEqual(['subpatch0']);
+		ws.setPanelState(panelId, { subpatchPath: '/' }); // navigate out
+		await restoreNavContext(ctx);
+		const root = ws.active.root;
+		const state = root.kind === 'panel' ? (root.state as { subpatchPath?: string }) : {};
+		expect(state.subpatchPath).toBe('/subpatch0');
+	});
+});

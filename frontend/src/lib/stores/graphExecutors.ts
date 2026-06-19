@@ -266,8 +266,24 @@ const makeUnique: Executor = {
 	}
 };
 
+const loadPatch: Executor = {
+	async forward(action, deps) {
+		const a = as<'load_patch'>(action);
+		await deps.graph.applyLoadCheckpoint(a.payload.afterYaml);
+		if (a.payload.afterLayout) deps.workspace.restore(a.payload.afterLayout);
+	},
+	async inverse(action, deps) {
+		const a = as<'load_patch'>(action);
+		await deps.graph.applyLoadCheckpoint(a.payload.beforeYaml);
+		// Force the exact prior layout (the YAML reload re-hydrates a layout too,
+		// but the snapshot guarantees the precise prior arrangement + nav).
+		if (a.payload.beforeLayout) deps.workspace.restore(a.payload.beforeLayout);
+	}
+};
+
 export const graphExecutors: Record<string, Executor> = {
 	add_node: addNode,
+	load_patch: loadPatch,
 	remove_node: removeNode,
 	add_link: addLink,
 	remove_link: removeLink,

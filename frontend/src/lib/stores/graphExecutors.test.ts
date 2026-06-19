@@ -412,6 +412,49 @@ describe('graph store — recording wrappers + undo replay', () => {
 		expect(history().canRedo).toBe(true);
 	});
 
+	it('loadText records a load_patch entry; undo re-loads the prior YAML', async () => {
+		const fc = new FakeControl();
+		const g = new GraphStore(fc);
+		workspace().reset();
+		history().reset();
+		history().configureDeps(() => ({ control: fc, graph: g, workspace: workspace() }));
+		fc.setCallResult('serialize', { yaml: 'BEFORE_YAML' });
+
+		await g.loadText('AFTER_YAML');
+		expect(history().canUndo).toBe(true);
+		expect(history().undoLabel).toBe('Load patch');
+
+		fc.recordedCalls().length = 0; // clear to inspect the undo's calls
+		await history().undo();
+		const loadCall = fc.recordedCalls().find((c) => c.op === 'load_text');
+		expect(loadCall?.payload.content).toBe('BEFORE_YAML'); // restored prior patch
+	});
+
+	it('a fresh backend session (changed instance_id) hard-resets the history', () => {
+		const fc = new FakeControl();
+		const g = new GraphStore(fc);
+		// record something
+		fc.emit({ event: 'node_added', payload: nodeInfo('osc0') });
+		history().reset();
+		history().configureDeps(() => ({ control: fc, graph: g, workspace: workspace() }));
+		void g.removeNode('osc0');
+		expect(history().canUndo).toBe(true);
+		// a hello from a NEW backend instance
+		fc.emit({
+			event: 'hello',
+			payload: {
+				nodes: [],
+				links: [],
+				instances: {},
+				save_path: null,
+				unsaved_changes: false,
+				instance_id: 'a-brand-new-session',
+				layout: null
+			} as never
+		});
+		expect(history().canUndo).toBe(false); // history dropped
+	});
+
 	it('undo of removeNode restores panels that were bound to the node', async () => {
 		const fc = new FakeControl();
 		const g = new GraphStore(fc);
