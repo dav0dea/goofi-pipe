@@ -35,15 +35,19 @@ class VideoStream(Node):
         return {"frame": DataType.ARRAY}
 
     def setup(self):
-        try:
-            # close opencv video capture
-            self.cap.release()
-        except:
-            pass
+        # Release any open capture but do NOT open the camera here. Opening a
+        # device in setup() turns the webcam on the instant the node is
+        # instantiated — including in tests that merely create every node. The
+        # camera is opened lazily on the first process() tick instead, so the
+        # device is only touched once the node actually runs.
+        self._release_camera()
 
+    def _release_camera(self):
+        try:
+            self.cap.release()
+        except Exception:
+            pass
         self.cap = None
-        if self.params.video_stream.capture_mode.value == "camera":
-            self.cap = cv2.VideoCapture(self.params.video_stream.device_index.value)
 
     def process(self) -> Dict[str, Tuple[Any, Dict[str, Any]]]:
         frame = None
@@ -51,8 +55,10 @@ class VideoStream(Node):
         capture_mode = self.params.video_stream.capture_mode.value
         cropping_done = False
         if capture_mode == "camera":
+            # Lazy open: the first processing tick is the earliest point we
+            # genuinely need the camera (setup() deliberately leaves it closed).
             if self.cap is None:
-                return None
+                self.cap = cv2.VideoCapture(self.params.video_stream.device_index.value)
 
             ret, frame = self.cap.read()
             if ret:

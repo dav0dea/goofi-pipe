@@ -8,6 +8,13 @@ from goofi.node_helpers import list_nodes
 
 SKIP_NODES = ["AudioStream", "AudioOut", "MidiCCout", "MidiCout"]
 
+# The create/terminate smoke tests only check a node's lifecycle, not its
+# processing. Spawn them with autotrigger off so no node free-runs its
+# (side-effectful) process() during the test — e.g. VideoStream would otherwise
+# grab the webcam on the first tick. Combined with VideoStream opening the camera
+# lazily in process() (not setup()), this keeps the camera off during tests.
+IDLE_PARAMS = {"common": {"autotrigger": False}}
+
 
 @pytest.mark.parametrize("node", list_nodes())
 def test_implement_init(node: Type[Node]):
@@ -23,7 +30,7 @@ def test_create_local(node: Type[Node], timeout: float = 20.0):
         pytest.skip("Github Actions does not support audio devices.")
 
     # TODO: a 20 second timeout is too much, is there a way to kill nodes faster?
-    ref, n = node.create_local()
+    ref, n = node.create_local(initial_params=IDLE_PARAMS)
     ref.terminate()
 
     start = time.time()
@@ -37,7 +44,7 @@ def test_create(node: Type[Node]):
     if node.__name__ in SKIP_NODES:
         pytest.skip("Github Actions does not support audio devices.")
 
-    node.create().terminate()
+    node.create(initial_params=IDLE_PARAMS).terminate()
 
 
 @pytest.mark.parametrize("node", list_nodes())
