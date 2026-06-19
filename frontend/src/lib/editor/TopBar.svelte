@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { graph } from '$lib/stores/graph.svelte';
+	import { history } from '$lib/stores/history.svelte';
 	import type { Snippet } from 'svelte';
 	import type { MenuItem } from '$lib/workspace/menu';
 	import ContextMenu from '$lib/workspace/ContextMenu.svelte';
@@ -19,6 +20,7 @@
 	const { onAddNode, onSave, onSaveAs, onSaveInBrowser, onLoad, onFitView, tabs }: Props = $props();
 
 	const g = graph();
+	const h = history();
 
 	// Save split-button dropdown — opened via the shared ContextMenu, which
 	// portals to <body> at --z-menu so it stacks above side panels.
@@ -58,6 +60,22 @@
 	{/if}
 
 	<div class="actions">
+		<button
+			class="ghost icon"
+			data-testid="topbar-undo"
+			disabled={!h.canUndo}
+			title={h.undoLabel ? `Undo ${h.undoLabel}` : 'Nothing to undo'}
+			aria-label="Undo"
+			onclick={() => void h.undo()}>↶</button
+		>
+		<button
+			class="ghost icon"
+			data-testid="topbar-redo"
+			disabled={!h.canRedo}
+			title={h.redoLabel ? `Redo ${h.redoLabel}` : 'Nothing to redo'}
+			aria-label="Redo"
+			onclick={() => void h.redo()}>↷</button
+		>
 		<button class="ghost" data-testid="topbar-add" onclick={onAddNode}>＋ Add node</button>
 		<button class="ghost" data-testid="topbar-fit" onclick={onFitView}>Fit</button>
 		<div class="split">
@@ -143,6 +161,15 @@
 		align-items: center;
 		gap: 4px;
 		flex: 0 0 auto;
+	}
+	.icon {
+		font-size: 15px;
+		line-height: 1;
+		padding: 4px 7px;
+	}
+	.icon:disabled {
+		opacity: 0.35;
+		cursor: default;
 	}
 	.split {
 		position: relative;

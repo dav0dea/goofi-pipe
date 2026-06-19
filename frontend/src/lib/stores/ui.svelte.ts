@@ -26,6 +26,10 @@ class UIStore {
 	 */
 	expanded = $state<Record<string, boolean>>({});
 
+	/** True while a modal (e.g. the expression editor) owns the keyboard, so
+	 * global shortcuts — undo/redo in particular — stand down. */
+	modalOpen = $state(false);
+
 	/** Bubbled-up "user clicked an unconnected port" intent. Editor.svelte
 	 * watches this via $effect and pops the add-node menu pre-seeded for
 	 * auto-link. Cleared by the consumer once handled. */

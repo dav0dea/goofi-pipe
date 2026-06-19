@@ -19,6 +19,9 @@
 	import { editorFor } from '$lib/panels/editorCommands';
 	import { workspace } from '$lib/workspace/workspace.svelte';
 	import { graph } from '$lib/stores/graph.svelte';
+	import { ui } from '$lib/stores/ui.svelte';
+	import { history } from '$lib/stores/history.svelte';
+	import { undoKeyAction } from '$lib/app/undoKeys';
 	import { exposeAgentApi } from '$lib/agent';
 	import { onMount } from 'svelte';
 
@@ -127,9 +130,29 @@
 		if (meta && e.key.toLowerCase() === 's') {
 			e.preventDefault();
 			void triggerSave();
-		} else if (meta && e.key.toLowerCase() === 'o') {
+			return;
+		}
+		if (meta && e.key.toLowerCase() === 'o') {
 			e.preventDefault();
 			triggerLoad();
+			return;
+		}
+		const undoRedo = undoKeyAction(
+			{
+				key: e.key,
+				ctrlKey: e.ctrlKey,
+				metaKey: e.metaKey,
+				shiftKey: e.shiftKey,
+				targetTag: (e.target as HTMLElement | null)?.tagName ?? ''
+			},
+			ui().modalOpen
+		);
+		if (undoRedo === 'undo') {
+			e.preventDefault();
+			void history().undo();
+		} else if (undoRedo === 'redo') {
+			e.preventDefault();
+			void history().redo();
 		}
 	}
 

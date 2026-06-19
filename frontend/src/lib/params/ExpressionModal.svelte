@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { portal } from '$lib/workspace/portal';
+	import { ui } from '$lib/stores/ui.svelte';
 
 	type Props = {
 		title: string;
@@ -155,12 +156,14 @@
 		};
 		window.addEventListener('keydown', onKeydown, true);
 		window.addEventListener('resize', onWindowResize);
+		ui().modalOpen = true; // global undo/redo stands down while editing
 		textarea?.focus();
 		const len = source.length;
 		textarea?.setSelectionRange(len, len);
 		return () => {
 			window.removeEventListener('keydown', onKeydown, true);
 			window.removeEventListener('resize', onWindowResize);
+			ui().modalOpen = false;
 		};
 	});
 </script>
