@@ -14,7 +14,6 @@
 	import {
 		SvelteFlow,
 		Controls,
-		MiniMap,
 		SvelteFlowProvider,
 		ViewportPortal,
 		type Connection,
@@ -952,7 +951,6 @@
 			autoPanOnNodeDrag={false}
 		>
 			<Controls />
-			<MiniMap pannable zoomable />
 			<FitToGraph options={FIT_OPTIONS} />
 			<SubpatchZoomExit {entered} onExit={() => exitToDepth(enteredPath.length - 1)} />
 			{#if pendingPlacement}
@@ -1065,15 +1063,11 @@
 		min-width: 0;
 		min-height: 0;
 	}
-	/* Nudge SvelteFlow's controls + minimap off the panel corners so the
-	   corner grips (drag-split / drag-join) stay reachable. */
+	/* Nudge SvelteFlow's controls off the panel corner so the corner grips
+	   (drag-split / drag-join) stay reachable. */
 	.editor-panel :global(.svelte-flow__controls) {
 		bottom: 20px;
 		left: 20px;
-	}
-	.editor-panel :global(.svelte-flow__minimap) {
-		bottom: 20px;
-		right: 20px;
 	}
 	/* Per-editor inspector affordance, parked top-right. Subtle until hovered so
 	   it doesn't compete with the canvas; only shown while the inspector is off. */

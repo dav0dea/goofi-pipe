@@ -214,8 +214,8 @@
 		{/if}
 
 		<!-- Corner grips for drag-split / drag-join. Live on the body so they
-		     sit clear of the header buttons; the editor nudges its controls /
-		     minimap inward so the bottom grips stay reachable. -->
+		     sit clear of the header buttons; the editor nudges its controls
+		     inward so the bottom grips stay reachable. -->
 		{#each CORNERS as c (c)}
 			<div
 				class="corner {c}"

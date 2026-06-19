@@ -189,12 +189,6 @@ textarea:focus {
 .svelte-flow__background {
 	color: rgba(255, 255, 255, 0.035) !important;
 }
-.svelte-flow__minimap {
-	background: var(--bg-elev-1) !important;
-	border: 1px solid var(--border);
-	border-radius: var(--radius-sm);
-	overflow: hidden;
-}
 .svelte-flow__controls {
 	border-radius: var(--radius-sm);
 	overflow: hidden;
