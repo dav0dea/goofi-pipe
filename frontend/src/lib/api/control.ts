@@ -220,7 +220,17 @@ type Pending = {
 	reject: (e: Error) => void;
 };
 
-export class ControlClient {
+/** Minimal structural surface of the control client — the dependency-injection
+ * seam that executors and the history store depend on, so unit tests can
+ * substitute a fake (see `$lib/test/fakeControl`). `ControlClient` implements
+ * it; nothing else needs to. */
+export interface Control {
+	call<T = unknown>(op: string, payload?: Record<string, unknown>): Promise<T>;
+	on(fn: (ev: ControlEvent) => void): () => void;
+	onConnect(fn: (c: boolean) => void): () => void;
+}
+
+export class ControlClient implements Control {
 	private ws: WebSocket | null = null;
 	private url: string;
 	private nextId = 1;
