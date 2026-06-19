@@ -1,9 +1,9 @@
 <!--
   The viewer body: a lazily-subscribed Data frame fed into the shared
-  ViewerSurface. Owns the IntersectionObserver + data subscription and resolves
-  the slot's kind + settings from the shared stores, so neither the in-canvas
-  SlotViewer nor the docked ViewerPanel re-implements any of it. Padding is the
-  caller's concern (the node body and the panel body space it differently).
+  ViewerSurface. Owns the IntersectionObserver + data subscription and reads the
+  kind + settings from its ViewBinding, so neither the in-canvas SlotViewer nor
+  the docked ViewerPanel re-implements any of it. Padding is the caller's concern
+  (the node body and the panel body space it differently).
 -->
 <script lang="ts">
 	import { subscribeFrames } from '$lib/api/frames';
@@ -12,11 +12,8 @@
 	import type { ViewBinding } from './viewBinding';
 	import { onMount } from 'svelte';
 
-	let {
-		node,
-		slot,
-		binding
-	}: { node: string; slot: string | null; binding: ViewBinding } = $props();
+	let { node, slot, binding }: { node: string; slot: string | null; binding: ViewBinding } =
+		$props();
 
 	const kind = $derived(binding.kind);
 	const settings = $derived(binding.settings);

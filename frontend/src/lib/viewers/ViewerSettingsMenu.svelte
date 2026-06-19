@@ -37,8 +37,9 @@
 	function visible(s: SettingDescriptor): boolean {
 		return !s.showWhen || settings[s.showWhen.key] === s.showWhen.equals;
 	}
+	// Writes go straight to the binding, which owns persistence (inline →
+	// node.viewers; panel → layout).
 	function set(key: string, value: SettingValue): void {
-		// The binding owns persistence (inline → node.viewers; panel → layout).
 		binding.setSetting(key, value);
 	}
 	function toggleGroup(title: string): void {

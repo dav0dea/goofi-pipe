@@ -12,7 +12,7 @@
 	import NodeLinkedPanel from './NodeLinkedPanel.svelte';
 	import ViewerFeed from '$lib/viewers/ViewerFeed.svelte';
 	import ViewerControls from '$lib/viewers/ViewerControls.svelte';
-	import { panelBinding } from '$lib/viewers/viewBinding';
+	import { panelBinding, type ViewBinding } from '$lib/viewers/viewBinding';
 	import { asStateObject } from '$lib/workspace/panelState';
 
 	interface ViewerState {
@@ -33,13 +33,19 @@
 	function pick(slot: string): void {
 		props.setState({ ...st(), slot });
 	}
+
+	// Resolve the chosen slot, its dtype, and this panel's binding in one place so
+	// the controls and content snippets (separate scopes) don't each re-derive it.
+	function view(node: NodeInstanceInfo): { slot: string | null; dtype: string | null; binding: ViewBinding } {
+		const slot = curSlot(node);
+		const dtype = slot ? node.output_slots[slot] : null;
+		return { slot, dtype, binding: panelBinding(() => props.state, props.setState, dtype) };
+	}
 </script>
 
 <NodeLinkedPanel {...props} label="data">
 	{#snippet controls(node)}
-		{@const slot = curSlot(node)}
-		{@const dtype = slot ? node.output_slots[slot] : null}
-		{@const binding = panelBinding(() => props.state, props.setState, dtype)}
+		{@const { slot, dtype, binding } = view(node)}
 		<select
 			class="slot-pick"
 			value={slot ?? ''}
@@ -56,9 +62,7 @@
 	{/snippet}
 
 	{#snippet content(node)}
-		{@const slot = curSlot(node)}
-		{@const dtype = slot ? node.output_slots[slot] : null}
-		{@const binding = panelBinding(() => props.state, props.setState, dtype)}
+		{@const { slot, binding } = view(node)}
 		<div class="vp-body"><ViewerFeed node={node.name} {slot} {binding} /></div>
 	{/snippet}
 </NodeLinkedPanel>

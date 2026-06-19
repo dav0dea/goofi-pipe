@@ -32,21 +32,19 @@ export function panelBinding(
 	dtype: string | null
 ): ViewBinding {
 	const raw = () => asStateObject(getState());
+	const rawSettings = (): SettingsMap => (raw().settings as SettingsMap) ?? {};
 	return {
 		get kind() {
 			return resolveKind(dtype, raw().kind as ViewerKind | undefined);
 		},
 		get settings() {
-			return resolveSettings(this.kind, (raw().settings as SettingsMap) ?? {});
+			return resolveSettings(this.kind, rawSettings());
 		},
 		setKind(kind) {
 			setState({ ...raw(), kind });
 		},
 		setSetting(key, value) {
-			setState({
-				...raw(),
-				settings: { ...((raw().settings as SettingsMap) ?? {}), [key]: value }
-			});
+			setState({ ...raw(), settings: { ...rawSettings(), [key]: value } });
 		}
 	};
 }

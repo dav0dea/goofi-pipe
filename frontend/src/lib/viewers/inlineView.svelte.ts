@@ -18,21 +18,25 @@ function key(node: string, slot: string): string {
 	return `${node}|${slot}`;
 }
 
+function emptyView(): InlineView {
+	return { settings: {} };
+}
+
 const store = $state<Record<string, InlineView>>({});
 
 /** Raw stored inline view for a slot (no defaults applied). */
 export function rawInlineView(node: string, slot: string): InlineView {
-	return store[key(node, slot)] ?? { settings: {} };
+	return store[key(node, slot)] ?? emptyView();
 }
 
 export function setInlineKind(node: string, slot: string, kind: ViewerKind): void {
 	const id = key(node, slot);
-	store[id] = { ...(store[id] ?? { settings: {} }), kind };
+	store[id] = { ...(store[id] ?? emptyView()), kind };
 }
 
 export function setInlineSetting(node: string, slot: string, k: string, value: SettingValue): void {
 	const id = key(node, slot);
-	const cur = store[id] ?? { settings: {} };
+	const cur = store[id] ?? emptyView();
 	store[id] = { ...cur, settings: { ...cur.settings, [k]: value } };
 }
 
