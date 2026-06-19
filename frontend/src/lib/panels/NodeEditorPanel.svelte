@@ -55,9 +55,24 @@
 	import { copyText } from '$lib/clipboard';
 	import { registerEditor, unregisterEditor } from './editorCommands';
 	import InspectorOverlay from './InspectorOverlay.svelte';
-	import { onMount } from 'svelte';
+	import { asStateObject } from '$lib/workspace/panelState';
+	import { onMount, untrack } from 'svelte';
 
-	let { panelId }: PanelProps = $props();
+	let { panelId, state: panelState, setState }: PanelProps = $props();
+
+	// The sub-patch this editor is currently inside, as a path persisted in the
+	// panel's layout state so save/reload (and same-session reconnect) recover the
+	// exact view: '/' is the root patch, '/subpatch0' / '/subpatch0/subpatch1'
+	// descend into nested sub-patches.
+	function pathToArray(p: unknown): string[] {
+		return typeof p === 'string' ? p.split('/').filter(Boolean) : [];
+	}
+	function arrayToPath(a: string[]): string {
+		return '/' + a.join('/');
+	}
+	function samePath(a: string[], b: string[]): boolean {
+		return a.length === b.length && a.every((v, i) => v === b[i]);
+	}
 
 	const g = graph();
 	const uiStore = ui();
@@ -117,8 +132,30 @@
 	// --- sub-patch navigation (enter-to-edit) -------------------------------
 	// The stack of instance ids the editor has descended into; empty = top level.
 	// (A stack so nesting is a natural extension; today one level deep is reached.)
-	let enteredPath = $state<string[]>([]);
+	// Seeded from the persisted layout state so a saved/reloaded patch restores
+	// which sub-patch this editor was inside.
+	let enteredPath = $state<string[]>(pathToArray(asStateObject(panelState).subpatchPath));
 	const entered = $derived(enteredPath.length ? enteredPath[enteredPath.length - 1] : null);
+
+	/** Write the current path back into the panel's layout state (round-trips
+	 * through set_layout / the saved .gfi). Untracked so callers in effects don't
+	 * pick up `state` as a dependency. */
+	function persistEnteredPath(): void {
+		untrack(() => {
+			const path = arrayToPath(enteredPath);
+			if (asStateObject(panelState).subpatchPath === path) return;
+			setState({ ...asStateObject(panelState), subpatchPath: path });
+		});
+	}
+
+	// Follow an EXTERNAL path change (a patch load that reuses this panel id, so
+	// the component isn't remounted). Our own writes leave the two equal, so this
+	// is a no-op for them; an invalid restored id is trimmed by the climb-out
+	// effect below.
+	$effect(() => {
+		const persisted = pathToArray(asStateObject(panelState).subpatchPath);
+		if (!samePath(persisted, untrack(() => enteredPath))) enteredPath = persisted;
+	});
 
 	const BND_PREFIX = '__bnd__';
 	const boundaryId = (instId: string, name: string): string => `${BND_PREFIX}${instId}::${name}`;
@@ -135,6 +172,7 @@
 		if (enteredPath[enteredPath.length - 1] === instId) return; // already inside it
 		sel.clear(panelId);
 		enteredPath = [...enteredPath, instId];
+		persistEnteredPath();
 		setTimeout(fitView, 60); // frame the inside once it has rendered
 	}
 
@@ -142,6 +180,7 @@
 	function exitToDepth(depth: number): void {
 		sel.clear(panelId);
 		enteredPath = enteredPath.slice(0, depth);
+		persistEnteredPath();
 		setTimeout(fitView, 60);
 	}
 
@@ -150,7 +189,10 @@
 		if (enteredPath.length === 0) return;
 		let depth = enteredPath.length;
 		while (depth > 0 && !g.instances[enteredPath[depth - 1]]) depth--;
-		if (depth !== enteredPath.length) enteredPath = enteredPath.slice(0, depth);
+		if (depth !== enteredPath.length) {
+			enteredPath = enteredPath.slice(0, depth);
+			persistEnteredPath();
+		}
 	});
 
 	/** Display name -> the instance that hides it (collapsed sub-patch member). */
