@@ -1,29 +1,24 @@
 <!--
   Shared viewer header controls: the ARRAY viewer-type dropdown plus the settings
   cog. Used by both the in-canvas SlotViewer header and the docked ViewerPanel
-  header, so a slot's viewer type + settings are chosen the same way and stay in
-  lock-step (one keyed store behind both). Sizing is em-relative so it fits the
-  tiny node header and the larger panel bar alike.
+  header. Driven entirely by a ViewBinding (the per-instance view state), so each
+  viewer instance picks its own type/settings independently. Sizing is
+  em-relative so it fits the tiny node header and the larger panel bar alike.
 -->
 <script lang="ts">
 	import ViewerSettingsMenu from './ViewerSettingsMenu.svelte';
-	import { viewerKind, setViewerKind } from './viewerState.svelte';
 	import { ARRAY_KINDS, type ViewerKind } from './kind';
-	import { graph } from '$lib/stores/graph.svelte';
+	import type { ViewBinding } from './viewBinding';
 
-	let { node, slot, dtype }: { node: string; slot: string; dtype: string } = $props();
+	let { dtype, binding }: { dtype: string; binding: ViewBinding } = $props();
 
-	const kind = $derived(viewerKind(node, slot, dtype));
+	const kind = $derived(binding.kind);
 
 	function onKindChange(e: Event): void {
 		// stopPropagation so picking a kind on a node header doesn't also toggle the
 		// slot's collapse; harmless in the panel header.
 		e.stopPropagation();
-		setViewerKind(node, slot, (e.currentTarget as HTMLSelectElement).value as ViewerKind);
-		// Persist here, not from the SlotViewer effect — a slot's viewer can be
-		// driven from the docked panel when no canvas SlotViewer is mounted (lone
-		// viewer panel, or the node living on an inactive workspace tab).
-		graph().pushNodeViewers(node);
+		binding.setKind((e.currentTarget as HTMLSelectElement).value as ViewerKind);
 	}
 </script>
 
@@ -39,7 +34,7 @@
 			{#each ARRAY_KINDS as k (k)}<option value={k}>{k}</option>{/each}
 		</select>
 	{/if}
-	<ViewerSettingsMenu {node} {slot} {kind} />
+	<ViewerSettingsMenu {binding} />
 </div>
 
 <style>

@@ -5,15 +5,14 @@
 -->
 <script lang="ts">
 	import { settingsSchemaFor, type SettingDescriptor, type SettingValue } from './settingsSchema';
-	import { viewerSettings, setViewerSetting } from './viewerSettings.svelte';
-	import type { ViewerKind } from './kind';
+	import type { ViewBinding } from './viewBinding';
 	import { portal } from '$lib/workspace/portal';
-	import { graph } from '$lib/stores/graph.svelte';
 
-	let { node, slot, kind }: { node: string; slot: string; kind: ViewerKind } = $props();
+	let { binding }: { binding: ViewBinding } = $props();
 
+	const kind = $derived(binding.kind);
 	const groups = $derived(settingsSchemaFor(kind));
-	const settings = $derived(viewerSettings(node, slot, kind));
+	const settings = $derived(binding.settings);
 
 	let open = $state(false);
 	let anchor = $state<{ x: number; y: number }>({ x: 0, y: 0 });
@@ -39,11 +38,8 @@
 		return !s.showWhen || settings[s.showWhen.key] === s.showWhen.equals;
 	}
 	function set(key: string, value: SettingValue): void {
-		setViewerSetting(node, slot, key, value);
-		// Persist from the mutation site so panel-driven changes round-trip even
-		// when no canvas SlotViewer is mounted for this slot (debounced; harmless
-		// alongside the SlotViewer effect when one is).
-		graph().pushNodeViewers(node);
+		// The binding owns persistence (inline → node.viewers; panel → layout).
+		binding.setSetting(key, value);
 	}
 	function toggleGroup(title: string): void {
 		collapsed = { ...collapsed, [title]: !collapsed[title] };

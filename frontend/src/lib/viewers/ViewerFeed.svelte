@@ -9,14 +9,17 @@
 	import { subscribeFrames } from '$lib/api/frames';
 	import type { DataFrame } from '$lib/codec/decode';
 	import ViewerSurface from './ViewerSurface.svelte';
-	import { viewerKind } from './viewerState.svelte';
-	import { viewerSettings } from './viewerSettings.svelte';
+	import type { ViewBinding } from './viewBinding';
 	import { onMount } from 'svelte';
 
-	let { node, slot, dtype }: { node: string; slot: string | null; dtype: string | null } = $props();
+	let {
+		node,
+		slot,
+		binding
+	}: { node: string; slot: string | null; binding: ViewBinding } = $props();
 
-	const kind = $derived(slot && dtype ? viewerKind(node, slot, dtype) : 'line');
-	const settings = $derived(slot ? viewerSettings(node, slot, kind) : {});
+	const kind = $derived(binding.kind);
+	const settings = $derived(binding.settings);
 
 	let frame = $state<DataFrame | null>(null);
 	let visible = $state(false);
