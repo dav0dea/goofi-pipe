@@ -1,8 +1,10 @@
 <script lang="ts">
 	import ViewerFeed from './ViewerFeed.svelte';
 	import ViewerControls from './ViewerControls.svelte';
-	import { viewerKind } from './viewerState.svelte';
-	import { rawViewerSettings } from './viewerSettings.svelte';
+	import { rawInlineView, setInlineKind, setInlineSetting } from './inlineView.svelte';
+	import { resolveKind } from './kind';
+	import { resolveSettings } from './settingsSchema';
+	import type { ViewBinding } from './viewBinding';
 	import { ui } from '$lib/stores/ui.svelte';
 	import { graph } from '$lib/stores/graph.svelte';
 	import { dtypeColor } from '$lib/editor/categoryColor';
@@ -13,6 +15,26 @@
 	const g = graph();
 	const uiStore = ui();
 
+	// The inline viewer's binding: backed by the node-scoped inline-view store,
+	// persisting into node.viewers via pushNodeViewers. Built here (its single use
+	// site) so viewBinding.ts stays rune-free and unit-testable.
+	const binding: ViewBinding = {
+		get kind() {
+			return resolveKind(dtype, rawInlineView(node, slot).kind);
+		},
+		get settings() {
+			return resolveSettings(this.kind, rawInlineView(node, slot).settings);
+		},
+		setKind(k) {
+			setInlineKind(node, slot, k);
+			g.pushNodeViewers(node);
+		},
+		setSetting(key, value) {
+			setInlineSetting(node, slot, key, value);
+			g.pushNodeViewers(node);
+		}
+	};
+
 	function onSlotClick(e: MouseEvent): void {
 		// Clicking the slot name opens the add-node menu seeded to wire a new node
 		// onto this output — outputs fan out, so this never disconnects existing
@@ -22,7 +44,6 @@
 		ui().requestSlotClick({ node, slot, dtype, side: 'source', clientX: e.clientX, clientY: e.clientY });
 	}
 
-	const kind = $derived(viewerKind(node, slot, dtype));
 	const expanded = $derived(uiStore.isSlotExpanded(node, slot));
 
 	function toggleExpanded(e?: Event): void {
@@ -30,6 +51,9 @@
 		// collapsing or expanding a viewer never selects (or grabs) the node.
 		e?.stopPropagation();
 		uiStore.toggleSlotExpanded(node, slot);
+		// Collapse is the only inline view-state not owned by the binding; persist
+		// it here at its mutation site (kind/settings persist via the binding).
+		g.pushNodeViewers(node);
 	}
 	function stopSelect(e: Event): void {
 		// SvelteFlow begins node selection/drag on pointerdown; keep that off the
@@ -37,21 +61,6 @@
 		// their own clicks — stopPropagation doesn't preventDefault.
 		e.stopPropagation();
 	}
-
-	// Persist view state (collapse / kind / settings) to the backend so it lands
-	// in the .gfi on save. Skips the first run so the seeded-from-patch state
-	// isn't echoed straight back; pushes (debounced) on every later change —
-	// including changes made from the docked panel, which writes the same stores.
-	let settled = false;
-	$effect(() => {
-		const dep = [expanded, kind, JSON.stringify(rawViewerSettings(node, slot))];
-		void dep;
-		if (!settled) {
-			settled = true;
-			return;
-		}
-		g.pushNodeViewers(node);
-	});
 </script>
 
 <div
@@ -73,7 +82,7 @@
 		</button>
 		<span class="hspace"></span>
 		{#if expanded}
-			<ViewerControls {node} {slot} {dtype} />
+			<ViewerControls {dtype} {binding} />
 		{/if}
 		<span
 			class="slot-name"
@@ -88,7 +97,7 @@
 	</header>
 
 	{#if expanded}
-		<div class="body"><ViewerFeed {node} {slot} {dtype} /></div>
+		<div class="body"><ViewerFeed {node} {slot} {binding} /></div>
 	{/if}
 </div>
 
