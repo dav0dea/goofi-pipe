@@ -1,6 +1,6 @@
 <script lang="ts">
 	import type { DataFrame, ArrayData } from '$lib/codec/decode';
-	import type { SettingsMap } from './viewerSettings.svelte';
+	import type { SettingsMap } from './settingsSchema';
 	import { makeLUT } from './colormaps';
 	import { EEG_LAYOUT } from './eegLayout';
 	import {

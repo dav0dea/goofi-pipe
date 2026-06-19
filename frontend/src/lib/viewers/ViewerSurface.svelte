@@ -11,7 +11,7 @@
 <script lang="ts">
 	import { isArrayFrame, isStringFrame, isTableFrame, type DataFrame } from '$lib/codec/decode';
 	import { isRenderable, type ViewerKind } from './kind';
-	import type { SettingsMap } from './viewerSettings.svelte';
+	import type { SettingsMap } from './settingsSchema';
 	import ArrayViewer from './ArrayViewer.svelte';
 	import ImageViewer from './ImageViewer.svelte';
 	import TrajectoryViewer from './TrajectoryViewer.svelte';

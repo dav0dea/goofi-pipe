@@ -23,8 +23,9 @@ import { ui } from './ui.svelte';
 import { consoleStore } from './console.svelte';
 import { selection } from './selection.svelte';
 import { workspace } from '$lib/workspace/workspace.svelte';
-import { seedViewerKind, forgetViewerKinds, viewerKind } from '$lib/viewers/viewerState.svelte';
-import { seedViewerSettings, forgetViewerSettings, rawViewerSettings, type SettingsMap } from '$lib/viewers/viewerSettings.svelte';
+import { seedInlineView, forgetInlineView, rawInlineView } from '$lib/viewers/inlineView.svelte';
+import { resolveKind } from '$lib/viewers/kind';
+import type { SettingsMap } from '$lib/viewers/settingsSchema';
 import type { ViewerKind } from '$lib/viewers/kind';
 
 class GraphStore {
@@ -65,8 +66,7 @@ class GraphStore {
 		// re-seed viewer state (collapse / kind / settings) for every node.
 		for (const old of this.nodes) {
 			ui().forget(old.name);
-			forgetViewerKinds(old.name);
-			forgetViewerSettings(old.name);
+			forgetInlineView(old.name);
 		}
 		for (const n of snap.nodes) this._seedNodeViewerState(n);
 		this.nodes = snap.nodes;
@@ -112,8 +112,10 @@ class GraphStore {
 		ui().seedNodeViewers(node.name, slots, node.viewers);
 		for (const slot of slots) {
 			const v = node.viewers?.[slot];
-			seedViewerKind(node.name, slot, v?.kind as ViewerKind | undefined);
-			seedViewerSettings(node.name, slot, v?.settings as SettingsMap | undefined);
+			seedInlineView(node.name, slot, {
+				kind: v?.kind as ViewerKind | undefined,
+				settings: v?.settings as SettingsMap | undefined
+			});
 		}
 	}
 
@@ -131,10 +133,11 @@ class GraphStore {
 				if (!n) return;
 				const viewers: Record<string, { collapsed: boolean; kind: string; settings: SettingsMap }> = {};
 				for (const slot of Object.keys(n.output_slots)) {
+					const view = rawInlineView(node, slot);
 					viewers[slot] = {
 						collapsed: !ui().isSlotExpanded(node, slot),
-						kind: viewerKind(node, slot, n.output_slots[slot]),
-						settings: rawViewerSettings(node, slot)
+						kind: resolveKind(n.output_slots[slot], view.kind),
+						settings: view.settings
 					};
 				}
 				void getControl().call('set_node_viewers', { node, viewers }).catch(() => {});
@@ -180,8 +183,7 @@ class GraphStore {
 					if (!after.has(name)) workspace().clearNodeRefs(name);
 				}
 				for (const old of this.nodes) {
-					forgetViewerKinds(old.name);
-					forgetViewerSettings(old.name);
+					forgetInlineView(old.name);
 				}
 				for (const n of snap.nodes) this._seedNodeViewerState(n);
 				this.nodes = snap.nodes;
@@ -219,8 +221,7 @@ class GraphStore {
 					(l) => l.node_in !== ev.payload.name && l.node_out !== ev.payload.name
 				);
 				ui().forget(ev.payload.name);
-				forgetViewerKinds(ev.payload.name);
-				forgetViewerSettings(ev.payload.name);
+				forgetInlineView(ev.payload.name);
 				consoleStore().forgetNodeDedup(ev.payload.name);
 				// Empty any Parameters/Viewer/Metadata panel linked to this node.
 				workspace().clearNodeRefs(ev.payload.name);

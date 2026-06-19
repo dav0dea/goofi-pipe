@@ -1,6 +1,6 @@
 <script lang="ts">
 	import type { DataFrame, ArrayData } from '$lib/codec/decode';
-	import type { SettingsMap } from './viewerSettings.svelte';
+	import type { SettingsMap } from './settingsSchema';
 	import { onMount, onDestroy } from 'svelte';
 	import uPlot from 'uplot';
 	import 'uplot/dist/uPlot.min.css';

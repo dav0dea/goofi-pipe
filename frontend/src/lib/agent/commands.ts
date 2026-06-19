@@ -13,8 +13,7 @@ import { selection } from '$lib/stores/selection.svelte';
 import { ui } from '$lib/stores/ui.svelte';
 import { workspace } from '$lib/workspace/workspace.svelte';
 import { editorFor } from '$lib/panels/editorCommands';
-import { setViewerKind } from '$lib/viewers/viewerState.svelte';
-import { setViewerSetting } from '$lib/viewers/viewerSettings.svelte';
+import { setInlineKind, setInlineSetting } from '$lib/viewers/inlineView.svelte';
 import type { ViewerKind } from '$lib/viewers/kind';
 import type { LinkInfo } from '$lib/api/control';
 
@@ -98,11 +97,11 @@ export const commands = {
 		graph().pushNodeViewers(node);
 	},
 	setViewerKind: (node: string, slot: string, kind: ViewerKind): void => {
-		setViewerKind(node, slot, kind);
+		setInlineKind(node, slot, kind);
 		graph().pushNodeViewers(node);
 	},
 	setViewerSetting: (node: string, slot: string, key: string, value: boolean | number | string): void => {
-		setViewerSetting(node, slot, key, value);
+		setInlineSetting(node, slot, key, value);
 		graph().pushNodeViewers(node);
 	},
 

@@ -1,6 +1,6 @@
 <script lang="ts">
 	import type { DataFrame } from '$lib/codec/decode';
-	import type { SettingsMap } from './viewerSettings.svelte';
+	import type { SettingsMap } from './settingsSchema';
 	import { marked } from 'marked';
 
 	type Props = { frame: DataFrame; settings?: SettingsMap };
