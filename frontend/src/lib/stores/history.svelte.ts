@@ -315,11 +315,19 @@ export class HistoryStore {
 		return this.suspendDepth > 0;
 	}
 
-	/** Hard reset — only on a new backend session (see graph store). */
+	/** Number of undoable steps currently on the stack. */
+	get length(): number {
+		return this.undoStack.length;
+	}
+
+	/** Hard reset — only on a new backend session (see graph store). Drops the
+	 * stacks and any pending error; the deps provider is config, not state, so it
+	 * is left intact. */
 	reset(): void {
 		this.undoStack = [];
 		this.redoStack = [];
 		this.suspendDepth = 0;
+		this.lastError = null;
 		this._recompute();
 	}
 

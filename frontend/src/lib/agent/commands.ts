@@ -13,6 +13,7 @@ import { selection } from '$lib/stores/selection.svelte';
 import { ui } from '$lib/stores/ui.svelte';
 import { workspace } from '$lib/workspace/workspace.svelte';
 import { editorFor } from '$lib/panels/editorCommands';
+import { history } from '$lib/stores/history.svelte';
 import { setInlineKind, setInlineSetting } from '$lib/viewers/inlineView.svelte';
 import type { ViewerKind } from '$lib/viewers/kind';
 import type { LinkInfo } from '$lib/api/control';
@@ -108,7 +109,11 @@ export const commands = {
 	// --- panels / layout ---------------------------------------------------
 	bindNodeToPanel: (panelId: string, node: string): void => workspace().linkNodeToPanel(panelId, node),
 	setPanelType: (panelId: string, type: string): void => workspace().setType(panelId, type),
-	addTab: (panelType?: string): void => workspace().addTab(panelType)
+	addTab: (panelType?: string): void => workspace().addTab(panelType),
+
+	// --- history -----------------------------------------------------------
+	undo: (): Promise<void> => history().undo(),
+	redo: (): Promise<void> => history().redo()
 };
 
 export type Commands = typeof commands;

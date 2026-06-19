@@ -9,6 +9,7 @@
 import { graph } from '$lib/stores/graph.svelte';
 import { selection } from '$lib/stores/selection.svelte';
 import { workspace } from '$lib/workspace/workspace.svelte';
+import { history } from '$lib/stores/history.svelte';
 import { latestFrame } from '$lib/api/frames';
 import { collectPanels } from '$lib/workspace/model';
 import { asStateObject, linkedNodeName } from '$lib/workspace/panelState';
@@ -97,7 +98,14 @@ export const query = {
 				slot: typeof s.slot === 'string' ? s.slot : null,
 				kind: typeof s.kind === 'string' ? s.kind : null
 			};
-		})
+		}),
+
+	// --- history -----------------------------------------------------------
+	canUndo: (): boolean => history().canUndo,
+	canRedo: (): boolean => history().canRedo,
+	undoLabel: (): string | null => history().undoLabel,
+	redoLabel: (): string | null => history().redoLabel,
+	historyLength: (): number => history().length
 };
 
 export type Query = typeof query;
