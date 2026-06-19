@@ -38,6 +38,8 @@ import {
 } from './model';
 import { getPanelType } from './registry';
 import { linkedNodeName, withLinkedNode } from './panelState';
+import { history, type LayoutActionKind } from '$lib/stores/history.svelte';
+import { captureNavContext } from './navContext';
 
 /** A drag in progress. A panel and a tab are both just a `LayoutNode` being
  * moved — the only difference is where it came from, which `_takeNode` knows
@@ -93,6 +95,17 @@ class WorkspaceStore {
 		return $state.snapshot(this.state) as WorkspaceState;
 	}
 
+	/** Restore an exact `WorkspaceState` snapshot for undo/redo. Unlike
+	 * `hydrate`, this does NOT reseed ids or migrate — the snapshot is replayed
+	 * verbatim so panel/tab ids (and the selections keyed to them) are preserved.
+	 * Ephemeral view state (maximize) is dropped; focus is reset to a sensible
+	 * default and then overridden by the action's NavContext. */
+	restore(state: WorkspaceState): void {
+		this.state = state;
+		this.maximizedPanelId = null;
+		this.activePanelId = firstPanelId(this.active.root);
+	}
+
 	/** Apply a layout restored from a `.gfi` patch (or any external source). */
 	hydrate(state: unknown): void {
 		if (!isValidState(state)) return;
@@ -106,6 +119,25 @@ class WorkspaceStore {
 		this.state = state;
 		this.maximizedPanelId = null;
 		this.activePanelId = firstPanelId(this.active.root);
+	}
+
+	/** Run a tracked layout mutation `fn`, recording one history entry iff it
+	 * actually changed the state tree (a no-op split / blocked close records
+	 * nothing). `coalesceKey` merges a continuous gesture into one entry. */
+	private _tracked(kind: LayoutActionKind, label: string, fn: () => void, coalesceKey?: string): void {
+		const before = this.serialize();
+		const prev = this.state;
+		fn();
+		if (this.state !== prev && !history().isSuspended) {
+			history().record({
+				kind,
+				domain: 'layout',
+				label,
+				context: captureNavContext(),
+				coalesceKey,
+				payload: { before, after: this.serialize() }
+			});
+		}
 	}
 
 	private _setRoot(workspaceId: string, root: LayoutNode): void {
@@ -136,30 +168,43 @@ class WorkspaceStore {
 		fraction = 0.5,
 		newType?: string
 	): void {
-		const ws = this.active;
-		const type = newType ?? EMPTY_PANEL_TYPE;
-		const { root, newPanelId } = splitPanel(ws.root, panelId, direction, placeBefore, type, fraction);
-		if (root === ws.root) return;
-		this._setRoot(ws.id, root);
-		if (newPanelId) this.activePanelId = newPanelId;
+		this._tracked('split_panel', 'Split panel', () => {
+			const ws = this.active;
+			const type = newType ?? EMPTY_PANEL_TYPE;
+			const { root, newPanelId } = splitPanel(ws.root, panelId, direction, placeBefore, type, fraction);
+			if (root === ws.root) return;
+			this._setRoot(ws.id, root);
+			if (newPanelId) this.activePanelId = newPanelId;
+		});
 	}
 
 	close(panelId: string): void {
-		const ws = this.active;
-		const root = closePanel(ws.root, panelId);
-		if (!root) return;
-		this._setRoot(ws.id, root);
-		if (this.maximizedPanelId === panelId) this.maximizedPanelId = null;
-		if (this.activePanelId === panelId) this.activePanelId = firstPanelId(root);
+		this._tracked('close_panel', 'Close panel', () => {
+			const ws = this.active;
+			const root = closePanel(ws.root, panelId);
+			if (!root) return;
+			this._setRoot(ws.id, root);
+			if (this.maximizedPanelId === panelId) this.maximizedPanelId = null;
+			if (this.activePanelId === panelId) this.activePanelId = firstPanelId(root);
+		});
 	}
 
 	resize(splitId: string, dividerIndex: number, delta: number): void {
-		this._updateActiveRoot((root) => resizeSplit(root, splitId, dividerIndex, delta));
+		// A splitter drag fires this per mousemove — coalesce the whole drag into
+		// one undo step via a stable per-divider key.
+		this._tracked(
+			'resize_split',
+			'Resize',
+			() => this._updateActiveRoot((root) => resizeSplit(root, splitId, dividerIndex, delta)),
+			`resize:${splitId}:${dividerIndex}`
+		);
 	}
 
 	setType(panelId: string, panelType: string): void {
-		const ds = getPanelType(panelType)?.defaultState?.();
-		this._updateActiveRoot((root) => setPanelType(root, panelId, panelType, ds));
+		this._tracked('set_panel_type', 'Change panel', () => {
+			const ds = getPanelType(panelType)?.defaultState?.();
+			this._updateActiveRoot((root) => setPanelType(root, panelId, panelType, ds));
+		});
 	}
 
 	setPanelState(panelId: string, state: unknown): void {
@@ -173,10 +218,12 @@ class WorkspaceStore {
 	/** Bind a node to a linkable panel (merges `node` into its state, keeping
 	 * any slot/kind). Called when a node is dragged onto the panel. */
 	linkNodeToPanel(panelId: string, nodeName: string): void {
-		this._updateActiveRoot((root) => {
-			const p = findPanel(root, panelId);
-			if (!p) return root;
-			return setPanelState(root, panelId, withLinkedNode(p.state, nodeName));
+		this._tracked('link_node_to_panel', 'Bind node to panel', () => {
+			this._updateActiveRoot((root) => {
+				const p = findPanel(root, panelId);
+				if (!p) return root;
+				return setPanelState(root, panelId, withLinkedNode(p.state, nodeName));
+			});
 		});
 	}
 
@@ -222,13 +269,16 @@ class WorkspaceStore {
 	}
 
 	addTab(panelType: string = DEFAULT_PANEL_TYPE): void {
-		const ws = makeWorkspace(this._uniqueName('Layout'), panelType);
-		this.state = {
-			workspaces: [...this.state.workspaces, ws],
-			activeWorkspaceId: ws.id
-		};
-		this.maximizedPanelId = null;
-		this.activePanelId = firstPanelId(ws.root);	}
+		this._tracked('add_tab', 'Add tab', () => {
+			const ws = makeWorkspace(this._uniqueName('Layout'), panelType);
+			this.state = {
+				workspaces: [...this.state.workspaces, ws],
+				activeWorkspaceId: ws.id
+			};
+			this.maximizedPanelId = null;
+			this.activePanelId = firstPanelId(ws.root);
+		});
+	}
 
 	selectTab(workspaceId: string): void {
 		if (this.state.activeWorkspaceId === workspaceId) return;
@@ -239,43 +289,52 @@ class WorkspaceStore {
 		this.activePanelId = firstPanelId(ws.root);	}
 
 	renameTab(workspaceId: string, name: string): void {
-		const trimmed = name.trim();
-		if (!trimmed) return;
-		this.state = {
-			...this.state,
-			workspaces: this.state.workspaces.map((w) =>
-				w.id === workspaceId ? { ...w, name: trimmed } : w
-			)
-		};	}
+		this._tracked('rename_tab', 'Rename tab', () => {
+			const trimmed = name.trim();
+			if (!trimmed) return;
+			this.state = {
+				...this.state,
+				workspaces: this.state.workspaces.map((w) =>
+					w.id === workspaceId ? { ...w, name: trimmed } : w
+				)
+			};
+		});
+	}
 
 	duplicateTab(workspaceId: string): void {
-		const src = this.state.workspaces.find((w) => w.id === workspaceId);
-		if (!src) return;
-		const copy: Workspace = {
-			id: makeWorkspace('').id,
-			name: this._uniqueName(`${src.name} copy`),
-			root: cloneWithNewIds(src.root)
-		};
-		const idx = this.state.workspaces.findIndex((w) => w.id === workspaceId);
-		const workspaces = this.state.workspaces.slice();
-		workspaces.splice(idx + 1, 0, copy);
-		this.state = { workspaces, activeWorkspaceId: copy.id };
-		this.maximizedPanelId = null;
-		this.activePanelId = firstPanelId(copy.root);	}
+		this._tracked('duplicate_tab', 'Duplicate tab', () => {
+			const src = this.state.workspaces.find((w) => w.id === workspaceId);
+			if (!src) return;
+			const copy: Workspace = {
+				id: makeWorkspace('').id,
+				name: this._uniqueName(`${src.name} copy`),
+				root: cloneWithNewIds(src.root)
+			};
+			const idx = this.state.workspaces.findIndex((w) => w.id === workspaceId);
+			const workspaces = this.state.workspaces.slice();
+			workspaces.splice(idx + 1, 0, copy);
+			this.state = { workspaces, activeWorkspaceId: copy.id };
+			this.maximizedPanelId = null;
+			this.activePanelId = firstPanelId(copy.root);
+		});
+	}
 
 	closeTab(workspaceId: string): void {
-		if (this.state.workspaces.length <= 1) return; // keep at least one tab
-		const idx = this.state.workspaces.findIndex((w) => w.id === workspaceId);
-		if (idx < 0) return;
-		const workspaces = this.state.workspaces.filter((w) => w.id !== workspaceId);
-		let activeWorkspaceId = this.state.activeWorkspaceId;
-		if (activeWorkspaceId === workspaceId) {
-			const neighbor = workspaces[Math.min(idx, workspaces.length - 1)];
-			activeWorkspaceId = neighbor.id;
-			this.maximizedPanelId = null;
-			this.activePanelId = firstPanelId(neighbor.root);
-		}
-		this.state = { workspaces, activeWorkspaceId };	}
+		this._tracked('close_tab', 'Close tab', () => {
+			if (this.state.workspaces.length <= 1) return; // keep at least one tab
+			const idx = this.state.workspaces.findIndex((w) => w.id === workspaceId);
+			if (idx < 0) return;
+			const workspaces = this.state.workspaces.filter((w) => w.id !== workspaceId);
+			let activeWorkspaceId = this.state.activeWorkspaceId;
+			if (activeWorkspaceId === workspaceId) {
+				const neighbor = workspaces[Math.min(idx, workspaces.length - 1)];
+				activeWorkspaceId = neighbor.id;
+				this.maximizedPanelId = null;
+				this.activePanelId = firstPanelId(neighbor.root);
+			}
+			this.state = { workspaces, activeWorkspaceId };
+		});
+	}
 
 	/**
 	 * Detach the dragged node (a panel or a whole tab) and return it plus the
@@ -318,52 +377,59 @@ class WorkspaceStore {
 	/** Drop the dragged node (panel or tab) into the active layout by splitting
 	 * `targetPanelId` along `direction`. Repositions a panel or merges a tab. */
 	dropOnPanel(targetPanelId: string, direction: Direction, placeBefore: boolean): void {
-		const d = this.dragging;
-		this.dragging = null;
-		if (!d) return;
-		if (d.kind === 'panel' && d.panelId === targetPanelId) return; // onto itself
-		const taken = this._takeNode(d);
-		if (!taken) return;
-		const { node, state } = taken;
-		const active = state.workspaces.find((w) => w.id === state.activeWorkspaceId);
-		if (!active) return;
-		const root = insertNodeAtPanel(active.root, targetPanelId, direction, placeBefore, node);
-		if (root === active.root) return; // target not in the active tree (e.g. self-drop)
-		this.state = {
-			...state,
-			workspaces: state.workspaces.map((w) => (w.id === active.id ? { ...w, root } : w))
-		};
-		this.maximizedPanelId = null;
-		this.activePanelId = firstPanelId(node);
+		this._tracked('move_panel', 'Move panel', () => {
+			const d = this.dragging;
+			this.dragging = null;
+			if (!d) return;
+			if (d.kind === 'panel' && d.panelId === targetPanelId) return; // onto itself
+			const taken = this._takeNode(d);
+			if (!taken) return;
+			const { node, state } = taken;
+			const active = state.workspaces.find((w) => w.id === state.activeWorkspaceId);
+			if (!active) return;
+			const root = insertNodeAtPanel(active.root, targetPanelId, direction, placeBefore, node);
+			if (root === active.root) return; // target not in the active tree (e.g. self-drop)
+			this.state = {
+				...state,
+				workspaces: state.workspaces.map((w) => (w.id === active.id ? { ...w, root } : w))
+			};
+			this.maximizedPanelId = null;
+			this.activePanelId = firstPanelId(node);
+		});
 	}
 
 	/** Drop the dragged panel onto the tab bar at `index` — it becomes a new
 	 * tab. (Tabs dropped on the bar reorder instead — see reorderTab.) */
 	dropPanelOnTabBar(index: number): void {
-		const d = this.dragging;
-		this.dragging = null;
-		if (!d || d.kind !== 'panel') return;
-		const taken = this._takeNode(d);
-		if (!taken) return;
-		const { node, state } = taken;
-		const tab: Workspace = {
-			id: makeWorkspace('').id,
-			name: this._uniqueName('Layout'),
-			root: node
-		};
-		const workspaces = state.workspaces.slice();
-		workspaces.splice(Math.max(0, Math.min(index, workspaces.length)), 0, tab);
-		this.state = { workspaces, activeWorkspaceId: tab.id };
-		this.maximizedPanelId = null;
-		this.activePanelId = firstPanelId(node);
+		this._tracked('move_panel', 'Move panel to new tab', () => {
+			const d = this.dragging;
+			this.dragging = null;
+			if (!d || d.kind !== 'panel') return;
+			const taken = this._takeNode(d);
+			if (!taken) return;
+			const { node, state } = taken;
+			const tab: Workspace = {
+				id: makeWorkspace('').id,
+				name: this._uniqueName('Layout'),
+				root: node
+			};
+			const workspaces = state.workspaces.slice();
+			workspaces.splice(Math.max(0, Math.min(index, workspaces.length)), 0, tab);
+			this.state = { workspaces, activeWorkspaceId: tab.id };
+			this.maximizedPanelId = null;
+			this.activePanelId = firstPanelId(node);
+		});
 	}
 
 	reorderTab(fromIndex: number, toIndex: number): void {
-		const ws = this.state.workspaces.slice();
-		if (fromIndex < 0 || fromIndex >= ws.length || toIndex < 0 || toIndex >= ws.length) return;
-		const [moved] = ws.splice(fromIndex, 1);
-		ws.splice(toIndex, 0, moved);
-		this.state = { ...this.state, workspaces: ws };	}
+		this._tracked('reorder_tab', 'Reorder tabs', () => {
+			const ws = this.state.workspaces.slice();
+			if (fromIndex < 0 || fromIndex >= ws.length || toIndex < 0 || toIndex >= ws.length) return;
+			const [moved] = ws.splice(fromIndex, 1);
+			ws.splice(toIndex, 0, moved);
+			this.state = { ...this.state, workspaces: ws };
+		});
+	}
 }
 
 let _store: WorkspaceStore | null = null;

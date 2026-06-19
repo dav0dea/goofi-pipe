@@ -21,6 +21,7 @@ import type { WorkspaceState } from '$lib/workspace/model';
 import { graph } from './graph.svelte';
 import { workspace } from '$lib/workspace/workspace.svelte';
 import { graphExecutors } from './graphExecutors';
+import { layoutExecutors } from '$lib/workspace/layoutExecutors';
 import { restoreNavContext } from '$lib/workspace/navContext';
 
 export type ActionDomain = 'graph' | 'layout';
@@ -49,6 +50,12 @@ export interface BaseAction {
 	label: string;
 	domain: ActionDomain;
 	context: NavContext;
+	/** When set, a freshly-recorded action whose key matches the current top of
+	 * the undo stack MERGES into it instead of pushing a new entry — so a
+	 * continuous gesture (a splitter drag firing resize() per mousemove)
+	 * collapses to a single undo step. Distinct from time-window coalescing:
+	 * any intervening action with a different key breaks the run. */
+	coalesceKey?: string;
 }
 
 // --- graph domain: replayed as RPCs ------------------------------------------
@@ -187,7 +194,10 @@ export type { ControlEvent, InstanceInfo };
 
 /** The merged dispatch registry. Graph executors land here in Phase 2/3; layout
  * executors are spread in by Phase 4 (widening cast — each narrows internally). */
-export const executors: Record<string, Executor> = { ...graphExecutors };
+export const executors: Record<string, Executor> = {
+	...graphExecutors,
+	...(layoutExecutors as Record<string, Executor>)
+};
 
 /** Build the live dependency bundle for replaying actions. Lazy singletons, so
  * this is safe despite the history ↔ graph import cycle (never called at
@@ -223,6 +233,21 @@ export class HistoryStore {
 	 * (a new edit invalidates any redo future). */
 	record(action: Action): void {
 		if (this.suspendDepth > 0) return;
+		const top = this.undoStack[this.undoStack.length - 1];
+		// Gesture coalescing: merge into the matching top entry (keep its `before`,
+		// adopt the new `after`) rather than pushing a fresh step.
+		if (
+			action.coalesceKey &&
+			top &&
+			top.coalesceKey === action.coalesceKey &&
+			top.domain === 'layout' &&
+			action.domain === 'layout'
+		) {
+			top.payload.after = action.payload.after;
+			this.redoStack = [];
+			this._recompute();
+			return;
+		}
 		this.undoStack.push(action);
 		this.redoStack = [];
 		this._recompute();
