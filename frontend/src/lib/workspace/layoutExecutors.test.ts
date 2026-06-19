@@ -73,11 +73,13 @@ describe('workspace recording wrappers', () => {
 	beforeEach(() => {
 		workspace().reset();
 		history().reset();
+		// Layout undo only needs the workspace store; stub control/graph so the
+		// default liveDeps() (which builds a real ControlClient) isn't reached.
+		history().configureDeps(() => ({ control: {} as never, graph: {} as never, workspace: workspace() }));
 	});
 
 	it('split records a layout action and history.undo reverts it', async () => {
 		const ws = workspace();
-		history().configureDeps(() => ({ control: {} as never, graph: {} as never, workspace: ws }));
 		ws.split(ws.activePanelId!, 'row');
 		expect(history().canUndo).toBe(true);
 		expect(collectPanels(ws.active.root).length).toBe(2);
