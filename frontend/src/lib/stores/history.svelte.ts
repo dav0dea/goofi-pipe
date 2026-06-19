@@ -16,9 +16,12 @@ import type {
 	NodeInstanceInfo,
 	SubPatchPort
 } from '$lib/api/control';
+import { getControl } from '$lib/api/control';
 import type { WorkspaceState } from '$lib/workspace/model';
-import type { graph } from './graph.svelte';
-import type { workspace } from '$lib/workspace/workspace.svelte';
+import { graph } from './graph.svelte';
+import { workspace } from '$lib/workspace/workspace.svelte';
+import { graphExecutors } from './graphExecutors';
+import { restoreNavContext } from '$lib/workspace/navContext';
 
 export type ActionDomain = 'graph' | 'layout';
 
@@ -179,12 +182,19 @@ export interface Executor<A extends Action = Action> {
 	inverse(action: A, deps: ExecutorDeps): Promise<void>;
 }
 
-/** The merged dispatch registry. Filled by `graphExecutors` (Phase 2/3) and
- * `layoutExecutors` (Phase 4) — see the merge in those modules' wiring. */
-export const executors: Record<string, Executor> = {};
-
 // A `ControlEvent` re-export keeps test imports terse.
 export type { ControlEvent, InstanceInfo };
+
+/** The merged dispatch registry. Graph executors land here in Phase 2/3; layout
+ * executors are spread in by Phase 4 (widening cast — each narrows internally). */
+export const executors: Record<string, Executor> = { ...graphExecutors };
+
+/** Build the live dependency bundle for replaying actions. Lazy singletons, so
+ * this is safe despite the history ↔ graph import cycle (never called at
+ * module-eval time). */
+function liveDeps(): ExecutorDeps {
+	return { control: getControl(), graph: graph(), workspace: workspace() };
+}
 
 // --- the store ---------------------------------------------------------------
 export class HistoryStore {
@@ -192,10 +202,22 @@ export class HistoryStore {
 	canRedo = $state(false);
 	undoLabel = $state<string | null>(null);
 	redoLabel = $state<string | null>(null);
+	/** Set when an undo/redo replay rejects; surfaced as a toast (Phase 6). */
+	lastError = $state<string | null>(null);
 
 	private undoStack: Action[] = [];
 	private redoStack: Action[] = [];
 	private suspendDepth = 0;
+	/** How undo/redo resolve the stores+control to replay against. Defaults to
+	 * the live singletons; tests override it to inject a FakeControl-backed
+	 * store. */
+	private depsProvider: () => ExecutorDeps = liveDeps;
+
+	/** Test seam: replay against an injected store/control instead of the live
+	 * singletons. */
+	configureDeps(provider: () => ExecutorDeps): void {
+		this.depsProvider = provider;
+	}
 
 	/** Record a completed action. No-op while suspended. Clears the redo stack
 	 * (a new edit invalidates any redo future). */
@@ -206,31 +228,62 @@ export class HistoryStore {
 		this._recompute();
 	}
 
-	/** Phase 1: stack mechanics only. Phase 2 wires NavContext restore +
-	 * `executors[kind].inverse`. */
+	/** Replay the top action's inverse: restore its nav context, run the inverse
+	 * (recording suspended), then move it to the redo stack. Atomic — on RPC
+	 * failure the action stays on the undo stack and `lastError` is set. */
 	async undo(): Promise<void> {
 		if (!this.canUndo) return;
-		const action = this.undoStack.pop()!;
+		const action = this.undoStack[this.undoStack.length - 1];
+		const exec = executors[action.kind];
+		if (!exec) return;
+		try {
+			await restoreNavContext(action.context);
+			await this.suspend(() => exec.inverse(action, this.depsProvider()));
+		} catch (e) {
+			this.lastError = `Undo failed: ${(e as Error).message ?? e}`;
+			return; // leave the stacks untouched (atomic-or-nothing)
+		}
+		this.undoStack.pop();
 		this.redoStack.push(action);
 		this._recompute();
 	}
 
 	async redo(): Promise<void> {
 		if (!this.canRedo) return;
-		const action = this.redoStack.pop()!;
+		const action = this.redoStack[this.redoStack.length - 1];
+		const exec = executors[action.kind];
+		if (!exec) return;
+		try {
+			await restoreNavContext(action.context);
+			await this.suspend(() => exec.forward(action, this.depsProvider()));
+		} catch (e) {
+			this.lastError = `Redo failed: ${(e as Error).message ?? e}`;
+			return;
+		}
+		this.redoStack.pop();
 		this.undoStack.push(action);
 		this._recompute();
 	}
 
-	/** Run `fn` with recording disabled (executors replay through recording
-	 * store methods without pushing new actions). Reentrant. */
+	/** Run `fn` with recording disabled, then resume. Reentrant, and async-aware:
+	 * if `fn` returns a promise the guard stays up until it settles (so an
+	 * awaited replay or batch doesn't re-record mid-flight). */
 	suspend<T>(fn: () => T): T {
 		this.suspendDepth += 1;
+		let result: T;
 		try {
-			return fn();
-		} finally {
+			result = fn();
+		} catch (e) {
 			this.suspendDepth -= 1;
+			throw e;
 		}
+		if (result && typeof (result as { then?: unknown }).then === 'function') {
+			return (result as unknown as Promise<unknown>).finally(() => {
+				this.suspendDepth -= 1;
+			}) as unknown as T;
+		}
+		this.suspendDepth -= 1;
+		return result;
 	}
 
 	get isSuspended(): boolean {

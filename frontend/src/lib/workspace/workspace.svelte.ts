@@ -17,6 +17,7 @@ import {
 	clearNodeRef,
 	closePanel,
 	cloneWithNewIds,
+	collectPanels,
 	defaultWorkspaceState,
 	DEFAULT_PANEL_TYPE,
 	EMPTY_PANEL_TYPE,
@@ -36,7 +37,7 @@ import {
 	type WorkspaceState
 } from './model';
 import { getPanelType } from './registry';
-import { withLinkedNode } from './panelState';
+import { linkedNodeName, withLinkedNode } from './panelState';
 
 /** A drag in progress. A panel and a tab are both just a `LayoutNode` being
  * moved — the only difference is where it came from, which `_takeNode` knows
@@ -177,6 +178,21 @@ class WorkspaceStore {
 			if (!p) return root;
 			return setPanelState(root, panelId, withLinkedNode(p.state, nodeName));
 		});
+	}
+
+	/** Every panel currently bound to `nodeName`, with a snapshot of its state.
+	 * The undo system captures these before a node delete so undoing the delete
+	 * can re-bind the panels that `clearNodeRefs` emptied. */
+	panelsBoundTo(nodeName: string): Array<{ panelId: string; state: unknown }> {
+		const out: Array<{ panelId: string; state: unknown }> = [];
+		for (const w of this.state.workspaces) {
+			for (const p of collectPanels(w.root)) {
+				if (linkedNodeName(p.state) === nodeName) {
+					out.push({ panelId: p.id, state: $state.snapshot(p.state) });
+				}
+			}
+		}
+		return out;
 	}
 
 	/** Unlink a deleted node from every panel bound to it (empties them). */

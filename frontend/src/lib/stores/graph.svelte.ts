@@ -9,6 +9,7 @@ import {
 	getControl,
 	paramValues,
 	sameLink,
+	type Control,
 	type ControlEvent,
 	type DirListing,
 	type FsEntry,
@@ -27,8 +28,10 @@ import { seedInlineView, forgetInlineView, rawInlineView } from '$lib/viewers/in
 import { resolveKind } from '$lib/viewers/kind';
 import type { SettingsMap } from '$lib/viewers/settingsSchema';
 import type { ViewerKind } from '$lib/viewers/kind';
+import { history, type Action, type ExprState } from './history.svelte';
+import { captureNavContext } from '$lib/workspace/navContext';
 
-class GraphStore {
+export class GraphStore {
 	nodes = $state<NodeInstanceInfo[]>([]);
 	links = $state<LinkInfo[]>([]);
 	/** Sub-patch instances keyed by instance id (flatten-at-runtime group nodes). */
@@ -52,8 +55,11 @@ class GraphStore {
 	 * layout instead of preserving the previous session's arrangement. */
 	private _lastInstanceId: string | null = null;
 
-	constructor() {
-		const ctl = getControl();
+	/** The control client (injectable for tests; defaults to the live WS one). */
+	private ctl: Control;
+
+	constructor(ctl: Control = getControl()) {
+		this.ctl = ctl;
 		ctl.onConnect((c) => (this.connected = c));
 		ctl.on((ev) => this._handle(ev));
 	}
@@ -140,7 +146,7 @@ class GraphStore {
 						settings: view.settings
 					};
 				}
-				void getControl().call('set_node_viewers', { node, viewers }).catch(() => {});
+				void this.ctl.call('set_node_viewers', { node, viewers }).catch(() => {});
 			}, 250)
 		);
 	}
@@ -296,7 +302,7 @@ class GraphStore {
 
 	private async _refreshNodeTypes(): Promise<void> {
 		try {
-			const result = await getControl().call<{ types: NodeTypeInfo[] }>('list_nodes');
+			const result = await this.ctl.call<{ types: NodeTypeInfo[] }>('list_nodes');
 			this.nodeTypes = result.types;
 		} catch (e) {
 			console.warn('list_nodes failed', e);
@@ -307,6 +313,11 @@ class GraphStore {
 	// mutations (sent via control RPC; UI updates apply on response)
 	// ------------------------------------------------------------------
 
+	/** Push an action onto the history (unless a replay is in progress). */
+	private _record(action: Action): void {
+		if (!history().isSuspended) history().record(action);
+	}
+
 	async addNode(
 		type: string,
 		category: string,
@@ -315,25 +326,80 @@ class GraphStore {
 	): Promise<string> {
 		// `instId` lands the node inside that sub-patch (member of the instance);
 		// omitted, it goes in the root graph.
-		return (
-			(await getControl().call<string>('add_node', { type, category, pos, inst_id: instId })) ?? ''
-		);
+		const name =
+			(await this.ctl.call<string>('add_node', { type, category, pos, inst_id: instId })) ?? '';
+		// Record AFTER the call so we know the backend-assigned display name.
+		if (name)
+			this._record({
+				kind: 'add_node',
+				label: `Add ${type}`,
+				domain: 'graph',
+				context: captureNavContext(),
+				payload: { type, category, pos, instId, assignedName: name }
+			});
+		return name;
 	}
 
 	async removeNode(name: string): Promise<void> {
-		await getControl().call('remove_node', { name });
+		// Capture the full node + its links BEFORE the backend tears them down.
+		const node = this.nodeByName(name);
+		if (node && !history().isSuspended) {
+			const links = this.links
+				.filter((l) => l.node_in === name || l.node_out === name)
+				.map((l) => ({ ...l }));
+			this._record({
+				kind: 'remove_node',
+				label: `Delete ${name}`,
+				domain: 'graph',
+				context: captureNavContext(),
+				payload: {
+					name,
+					node: structuredClone($state.snapshot(node)),
+					links,
+					membership: node.membership ?? null,
+					boundPanels: workspace().panelsBoundTo(name)
+				}
+			});
+		}
+		await this.ctl.call('remove_node', { name });
 	}
 
 	async addLink(link: LinkInfo): Promise<void> {
-		await getControl().call('add_link', link as unknown as Record<string, unknown>);
+		// The single-source rule may displace an existing wire on the input —
+		// capture it before the add so undo can restore it.
+		const displaced =
+			this.links.find((l) => l.node_in === link.node_in && l.slot_in === link.slot_in) ?? null;
+		this._record({
+			kind: 'add_link',
+			label: 'Connect',
+			domain: 'graph',
+			context: captureNavContext(),
+			payload: { link: { ...link }, displaced: displaced ? { ...displaced } : null }
+		});
+		await this.ctl.call('add_link', link as unknown as Record<string, unknown>);
 	}
 
 	async removeLink(link: LinkInfo): Promise<void> {
-		await getControl().call('remove_link', link as unknown as Record<string, unknown>);
+		this._record({
+			kind: 'remove_link',
+			label: 'Disconnect',
+			domain: 'graph',
+			context: captureNavContext(),
+			payload: { link: { ...link } }
+		});
+		await this.ctl.call('remove_link', link as unknown as Record<string, unknown>);
 	}
 
 	async updateParam(node: string, group: string, name: string, value: unknown): Promise<void> {
-		await getControl().call('update_param', { node, group, name, value });
+		const oldValue = this.nodeByName(node)?.params?.[group]?.[name]?.value;
+		this._record({
+			kind: 'update_param',
+			label: `Set ${name}`,
+			domain: 'graph',
+			context: captureNavContext(),
+			payload: { node, group, name, oldValue, newValue: value }
+		});
+		await this.ctl.call('update_param', { node, group, name, value });
 	}
 
 	async setExpression(
@@ -343,19 +409,47 @@ class GraphStore {
 		expression: string | null,
 		opts: { enabled?: boolean; triggers_process?: boolean; autoeval?: boolean } = {}
 	): Promise<void> {
-		await getControl().call('set_expression', {
+		const d = this.nodeByName(node)?.params?.[group]?.[name];
+		const oldExpr: ExprState = {
+			expression: d?.expression ?? null,
+			enabled: d?.expression_enabled ?? false,
+			triggers_process: d?.expression_triggers_process ?? false,
+			autoeval: d?.expression_autoeval ?? false
+		};
+		const newExpr: ExprState = {
+			expression,
+			enabled: opts.enabled ?? false,
+			triggers_process: opts.triggers_process ?? false,
+			autoeval: opts.autoeval ?? false
+		};
+		this._record({
+			kind: 'set_expression',
+			label: `Set ${name} expression`,
+			domain: 'graph',
+			context: captureNavContext(),
+			payload: { node, group, name, oldExpr, newExpr }
+		});
+		await this.ctl.call('set_expression', {
 			node,
 			group,
 			name,
 			expression,
-			expression_enabled: opts.enabled ?? false,
-			expression_triggers_process: opts.triggers_process ?? false,
-			expression_autoeval: opts.autoeval ?? false
+			expression_enabled: newExpr.enabled,
+			expression_triggers_process: newExpr.triggers_process,
+			expression_autoeval: newExpr.autoeval
 		});
 	}
 
 	async setNodePos(name: string, pos: [number, number]): Promise<void> {
-		await getControl().call('set_node_pos', { name, pos });
+		const oldPos = this.nodeByName(name)?.pos ?? [0, 0];
+		this._record({
+			kind: 'set_node_pos',
+			label: `Move ${name}`,
+			domain: 'graph',
+			context: captureNavContext(),
+			payload: { name, oldPos: [oldPos[0], oldPos[1]], newPos: pos }
+		});
+		await this.ctl.call('set_node_pos', { name, pos });
 	}
 
 	/** Push the current workspace layout into the running patch (manager memory)
@@ -363,7 +457,7 @@ class GraphStore {
 	 * layout is soft UI state, so a dropped push is harmless. */
 	async setLayout(layout: unknown): Promise<void> {
 		try {
-			await getControl().call('set_layout', { layout });
+			await this.ctl.call('set_layout', { layout });
 		} catch {
 			/* not connected / in flight — ignore */
 		}
@@ -377,32 +471,32 @@ class GraphStore {
 		// `layout` is the frontend workspace arrangement; the backend writes it
 		// into the .gfi. Omitted (undefined) → not sent → backend keeps any
 		// existing layout.
-		return getControl().call('save', { path, overwrite, layout });
+		return this.ctl.call('save', { path, overwrite, layout });
 	}
 
 	async loadText(content: string): Promise<void> {
-		await getControl().call('load_text', { content });
+		await this.ctl.call('load_text', { content });
 	}
 
 	/** Group the named nodes into a unique (inline) sub-patch. Returns its instance id. */
 	async groupNodes(members: string[], pos?: [number, number]): Promise<string> {
-		const r = await getControl().call<{ inst_id: string }>('group_nodes', { members, pos });
+		const r = await this.ctl.call<{ inst_id: string }>('group_nodes', { members, pos });
 		return r.inst_id;
 	}
 
 	/** Dissolve a sub-patch instance back into its member nodes. */
 	async expandInstance(instId: string): Promise<void> {
-		await getControl().call('expand_instance', { inst_id: instId });
+		await this.ctl.call('expand_instance', { inst_id: instId });
 	}
 
 	/** Promote an instance to shared and spawn a strict-mirror sibling copy. */
 	async duplicateShared(instId: string, pos?: [number, number]): Promise<void> {
-		await getControl().call('duplicate_shared', { inst_id: instId, pos });
+		await this.ctl.call('duplicate_shared', { inst_id: instId, pos });
 	}
 
 	/** Detach a shared instance into its own private (unique) copy. */
 	async makeUnique(instId: string): Promise<void> {
-		await getControl().call('make_unique', { inst_id: instId });
+		await this.ctl.call('make_unique', { inst_id: instId });
 	}
 
 	/** Add a virtual In/Out boundary node to a sub-patch (unwired). Returns its id. */
@@ -412,7 +506,7 @@ class GraphStore {
 		dtype: string,
 		pos: [number, number]
 	): Promise<string> {
-		const r = await getControl().call<{ bnd_id: string }>('add_boundary', {
+		const r = await this.ctl.call<{ bnd_id: string }>('add_boundary', {
 			inst_id: instId,
 			dir,
 			dtype,
@@ -428,7 +522,7 @@ class GraphStore {
 		innerNode: string | null,
 		innerSlot: string | null
 	): Promise<void> {
-		await getControl().call('wire_boundary', {
+		await this.ctl.call('wire_boundary', {
 			inst_id: instId,
 			bnd_id: bndId,
 			inner_node: innerNode,
@@ -438,32 +532,32 @@ class GraphStore {
 
 	/** Delete an In/Out boundary node (tears down its external wires). */
 	async removeBoundary(instId: string, bndId: string): Promise<void> {
-		await getControl().call('remove_boundary', { inst_id: instId, bnd_id: bndId });
+		await this.ctl.call('remove_boundary', { inst_id: instId, bnd_id: bndId });
 	}
 
 	/** Move an In/Out pill inside the entered view (mirrors across shared siblings). */
 	async setBoundaryPos(instId: string, bndId: string, pos: [number, number]): Promise<void> {
-		await getControl().call('set_boundary_pos', { inst_id: instId, bnd_id: bndId, pos });
+		await this.ctl.call('set_boundary_pos', { inst_id: instId, bnd_id: bndId, pos });
 	}
 
 	/** List one directory level on the BACKEND filesystem (full FS, no jail). */
 	async listDir(path?: string): Promise<DirListing> {
-		return getControl().call<DirListing>('list_dir', { path });
+		return this.ctl.call<DirListing>('list_dir', { path });
 	}
 
 	/** The bundled example patches (empty under a wheel without examples/). */
 	async listExamples(): Promise<{ entries: FsEntry[] }> {
-		return getControl().call<{ entries: FsEntry[] }>('list_examples');
+		return this.ctl.call<{ entries: FsEntry[] }>('list_examples');
 	}
 
 	/** Load a patch from a BACKEND filesystem path (destructive — replaces the graph). */
 	async load(path: string): Promise<void> {
-		await getControl().call('load', { path });
+		await this.ctl.call('load', { path });
 	}
 
 	/** Current patch as `.gfi` YAML, without writing to disk (for browser download). */
 	async serialize(): Promise<{ yaml: string }> {
-		return getControl().call<{ yaml: string }>('serialize');
+		return this.ctl.call<{ yaml: string }>('serialize');
 	}
 	// ------------------------------------------------------------------
 	// reads
