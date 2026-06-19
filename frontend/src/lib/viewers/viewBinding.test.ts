@@ -1,0 +1,32 @@
+import { describe, it, expect } from 'vitest';
+import { panelBinding } from './viewBinding';
+
+describe('panelBinding', () => {
+	it('resolves kind/settings from panel state and writes back via setState', () => {
+		let state: Record<string, unknown> = { node: 'n', slot: 's' };
+		const b = panelBinding(
+			() => state,
+			(s) => {
+				state = s as Record<string, unknown>;
+			},
+			'ARRAY'
+		);
+		expect(b.kind).toBe('line'); // default
+		b.setKind('image');
+		expect(state.kind).toBe('image');
+		expect(b.kind).toBe('image'); // re-resolves from updated state
+		b.setSetting('colormap', 'viridis');
+		expect((state.settings as Record<string, unknown>).colormap).toBe('viridis');
+		expect(b.settings.colormap).toBe('viridis');
+	});
+
+	it('forces the string viewer for STRING dtype regardless of stored kind', () => {
+		const state = { kind: 'image' };
+		const b = panelBinding(
+			() => state,
+			() => {},
+			'STRING'
+		);
+		expect(b.kind).toBe('string');
+	});
+});
