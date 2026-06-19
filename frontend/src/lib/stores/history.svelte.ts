@@ -168,7 +168,16 @@ export type LayoutAction = BaseAction & {
 	payload: { before: WorkspaceState; after: WorkspaceState };
 };
 
-export type Action = GraphAction | LayoutAction;
+/** Several primitive actions grouped into one undo step (e.g. a slot-click that
+ * creates a node AND wires it). Children are replayed in order on redo and in
+ * reverse on undo, each through its own executor. */
+export type CompoundAction = BaseAction & {
+	domain: 'graph';
+	kind: 'compound';
+	payload: { children: Action[] };
+};
+
+export type Action = GraphAction | LayoutAction | CompoundAction;
 
 // --- executors ---------------------------------------------------------------
 export type GraphStoreT = ReturnType<typeof graph>;
@@ -192,11 +201,26 @@ export interface Executor<A extends Action = Action> {
 // A `ControlEvent` re-export keeps test imports terse.
 export type { ControlEvent, InstanceInfo };
 
+/** Replays a CompoundAction's children through their own executors — forward in
+ * order, inverse in reverse. */
+const compoundExecutor: Executor = {
+	async forward(action, deps) {
+		const a = action as CompoundAction;
+		for (const child of a.payload.children) await executors[child.kind]?.forward(child, deps);
+	},
+	async inverse(action, deps) {
+		const a = action as CompoundAction;
+		for (const child of [...a.payload.children].reverse()) await executors[child.kind]?.inverse(child, deps);
+	}
+};
+
 /** The merged dispatch registry. Graph executors land here in Phase 2/3; layout
- * executors are spread in by Phase 4 (widening cast — each narrows internally). */
+ * executors are spread in by Phase 4 (widening cast — each narrows internally);
+ * the compound executor groups several primitives into one step. */
 export const executors: Record<string, Executor> = {
 	...graphExecutors,
-	...(layoutExecutors as Record<string, Executor>)
+	...(layoutExecutors as Record<string, Executor>),
+	compound: compoundExecutor
 };
 
 /** Build the live dependency bundle for replaying actions. Lazy singletons, so
@@ -218,6 +242,10 @@ export class HistoryStore {
 	private undoStack: Action[] = [];
 	private redoStack: Action[] = [];
 	private suspendDepth = 0;
+	/** While a transaction is open, records collect here instead of pushing —
+	 * see `transaction`. Null when no transaction is active. */
+	private txBuffer: Action[] | null = null;
+	private txLabel = '';
 	/** How undo/redo resolve the stores+control to replay against. Defaults to
 	 * the live singletons; tests override it to inject a FakeControl-backed
 	 * store. */
@@ -233,6 +261,11 @@ export class HistoryStore {
 	 * (a new edit invalidates any redo future). */
 	record(action: Action): void {
 		if (this.suspendDepth > 0) return;
+		// Inside a transaction: collect rather than push — flushed as one entry.
+		if (this.txBuffer) {
+			this.txBuffer.push(action);
+			return;
+		}
 		const top = this.undoStack[this.undoStack.length - 1];
 		// Gesture coalescing: merge into the matching top entry (keep its `before`,
 		// adopt the new `after`) rather than pushing a fresh step.
@@ -308,6 +341,34 @@ export class HistoryStore {
 			}) as unknown as T;
 		}
 		this.suspendDepth -= 1;
+		return result;
+	}
+
+	/** Group every action recorded inside `fn` into ONE undo step. A single
+	 * recorded child is kept as-is (no wrapper); two or more become a `compound`.
+	 * Async-aware; nested transactions fold into the outer one. */
+	async transaction<T>(label: string, fn: () => Promise<T>): Promise<T> {
+		if (this.txBuffer || this.suspendDepth > 0) return fn(); // nested / suspended → passthrough
+		this.txBuffer = [];
+		this.txLabel = label;
+		let result: T;
+		try {
+			result = await fn();
+		} finally {
+			const children = this.txBuffer ?? [];
+			this.txBuffer = null;
+			if (children.length === 1) {
+				this.record(children[0]);
+			} else if (children.length > 1) {
+				this.record({
+					kind: 'compound',
+					domain: 'graph',
+					label,
+					context: children[0].context,
+					payload: { children }
+				});
+			}
+		}
 		return result;
 	}
 

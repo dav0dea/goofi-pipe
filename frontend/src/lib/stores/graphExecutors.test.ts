@@ -376,6 +376,66 @@ describe('graph executors — composite + sub-patch kinds', () => {
 	});
 });
 
+describe('history.transaction — compound actions', () => {
+	beforeEach(() => history().reset());
+
+	it('wraps addNode + addLink into ONE undo entry; undo reverses both', async () => {
+		const fc = new FakeControl();
+		const g = new GraphStore(fc);
+		history().configureDeps(() => ({ control: fc, graph: g, workspace: workspace() }));
+		fc.setCallResult('add_node', 'osc0');
+		fc.emit({ event: 'node_added', payload: nodeInfo('buffer0', 'Buffer') });
+
+		await history().transaction('Add + wire', async () => {
+			await g.addNode('Oscillator', 'inputs', [0, 0]);
+			await g.addLink({ node_out: 'osc0', slot_out: 'out', node_in: 'buffer0', slot_in: 'in' });
+		});
+		expect(history().length).toBe(1); // one compound, not two
+		expect(history().undoLabel).toBe('Add + wire');
+
+		await history().undo();
+		const ops = fc.recordedCalls().map((c) => c.op);
+		// children reverse-ordered: remove the link first, then the node
+		const iLink = ops.lastIndexOf('remove_link');
+		const iNode = ops.lastIndexOf('remove_node');
+		expect(iLink).toBeGreaterThanOrEqual(0);
+		expect(iNode).toBeGreaterThan(iLink);
+		expect(history().canUndo).toBe(false);
+		expect(history().canRedo).toBe(true);
+	});
+
+	it('a single-child transaction records the child directly (no compound wrapper)', async () => {
+		const fc = new FakeControl();
+		const g = new GraphStore(fc);
+		history().configureDeps(() => ({ control: fc, graph: g, workspace: workspace() }));
+		fc.setCallResult('add_node', 'osc0');
+		await history().transaction('Add node', async () => {
+			await g.addNode('Oscillator', 'inputs', [0, 0]);
+		});
+		expect(history().length).toBe(1);
+		// unwrapped → the label is the child's, not the transaction's
+		expect(history().undoLabel).toBe('Add Oscillator');
+	});
+
+	it('redo of a compound replays children in forward order', async () => {
+		const fc = new FakeControl();
+		const g = new GraphStore(fc);
+		history().configureDeps(() => ({ control: fc, graph: g, workspace: workspace() }));
+		fc.setCallResult('add_node', 'osc0');
+		fc.emit({ event: 'node_added', payload: nodeInfo('buffer0', 'Buffer') });
+		await history().transaction('Add + wire', async () => {
+			await g.addNode('Oscillator', 'inputs', [0, 0]);
+			await g.addLink({ node_out: 'osc0', slot_out: 'out', node_in: 'buffer0', slot_in: 'in' });
+		});
+		await history().undo();
+		fc.recordedCalls().length = 0;
+		await history().redo();
+		const ops = fc.recordedCalls().map((c) => c.op);
+		expect(ops.indexOf('add_node')).toBeGreaterThanOrEqual(0);
+		expect(ops.indexOf('add_link')).toBeGreaterThan(ops.indexOf('add_node'));
+	});
+});
+
 describe('graph store — recording wrappers + undo replay', () => {
 	beforeEach(() => history().reset());
 

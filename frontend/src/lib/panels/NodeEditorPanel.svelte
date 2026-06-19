@@ -36,6 +36,7 @@
 		type Guide
 	} from '$lib/editor/snap';
 	import { graph } from '$lib/stores/graph.svelte';
+	import { history } from '$lib/stores/history.svelte';
 	import { ui, type SlotClickSeed } from '$lib/stores/ui.svelte';
 	import { selection } from '$lib/stores/selection.svelte';
 	import { workspace } from '$lib/workspace/workspace.svelte';
@@ -809,37 +810,46 @@
 		const bspec = boundarySpec(placement.typeInfo.type);
 		if (bspec && placement.typeInfo.category === 'boundary') {
 			if (!entered) return;
-			try {
-				const bndId = await g.addBoundary(entered, bspec.dir, bspec.dtype, pos);
-				// Seeded from a member slot click → wire the new boundary straight to
-				// that slot, so In/Out behave like any other auto-connected node. The
-				// seed's node is the member display name; wire_boundary wants its local.
-				if (bndId && placement.seed) {
-					const local = g.instances[entered]?.members[placement.seed.node];
-					if (local) await g.wireBoundary(entered, bndId, local, placement.seed.slot);
+			// One undo step for "add boundary (+ wire it to the clicked slot)".
+			await history().transaction(`Add ${placement.typeInfo.type}`, async () => {
+				try {
+					const bndId = await g.addBoundary(entered, bspec.dir, bspec.dtype, pos);
+					// Seeded from a member slot click → wire the new boundary straight to
+					// that slot, so In/Out behave like any other auto-connected node. The
+					// seed's node is the member display name; wire_boundary wants its local.
+					if (bndId && placement.seed) {
+						const local = g.instances[entered]?.members[placement.seed.node];
+						if (local) await g.wireBoundary(entered, bndId, local, placement.seed.slot);
+					}
+				} catch (e) {
+					console.warn('add boundary failed', e);
 				}
-			} catch (e) {
-				console.warn('add boundary failed', e);
-			}
+			});
 			return;
 		}
-		try {
-			// Inside a sub-patch, the node becomes a member of the entered instance.
-			const newName = await g.addNode(
-				placement.typeInfo.type,
-				placement.typeInfo.category,
-				pos,
-				entered ?? undefined
-			);
-			// Auto-select the freshly-placed node so its parameters open in the
-			// inspector immediately — matching duplicate / paste / agent placement.
-			// Safe before node_added lands: flowNodes derives `selected` from this
-			// set, so the node renders selected the moment it appears.
-			if (newName) sel.selectNodes(panelId, [newName]);
-			if (placement.seed && newName) await autoLink(placement.seed, placement.typeInfo, newName);
-		} catch (e) {
-			console.warn('add_node failed', e);
-		}
+		// One undo step for "add node (+ auto-wire to the clicked slot)".
+		const label = placement.seed
+			? `Add ${placement.typeInfo.type} + connect`
+			: `Add ${placement.typeInfo.type}`;
+		await history().transaction(label, async () => {
+			try {
+				// Inside a sub-patch, the node becomes a member of the entered instance.
+				const newName = await g.addNode(
+					placement.typeInfo.type,
+					placement.typeInfo.category,
+					pos,
+					entered ?? undefined
+				);
+				// Auto-select the freshly-placed node so its parameters open in the
+				// inspector immediately — matching duplicate / paste / agent placement.
+				// Safe before node_added lands: flowNodes derives `selected` from this
+				// set, so the node renders selected the moment it appears.
+				if (newName) sel.selectNodes(panelId, [newName]);
+				if (placement.seed && newName) await autoLink(placement.seed, placement.typeInfo, newName);
+			} catch (e) {
+				console.warn('add_node failed', e);
+			}
+		});
 	}
 
 	let mouseX = 0;
