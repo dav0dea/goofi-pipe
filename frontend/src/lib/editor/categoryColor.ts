@@ -13,6 +13,8 @@ export function categoryColor(category: string | undefined | null): string {
 			return 'var(--cat-outputs)';
 		case 'signal':
 			return 'var(--cat-signal)';
+		case 'subpatch':
+			return 'var(--cat-misc)';
 		default:
 			return 'var(--cat-viewer)';
 	}

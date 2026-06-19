@@ -122,6 +122,17 @@ class DataHub:
         await ws.prepare(request)
 
         manager = self.server.manager
+        # A sub-patch output is viewed exactly like a node output: the client opens
+        # /data/<instId>/<boundary>. Splice that to the inner member's real (node,
+        # slot) so the same streaming path serves both. Unwired/unknown boundaries
+        # close terminally (the browser won't retry a 4000-range close).
+        if node in getattr(manager, "_instances", {}):
+            try:
+                node, slot = manager.resolve_boundary(node, slot)
+            except (KeyError, ValueError):
+                await ws.close(code=4004, message=b"unwired boundary")
+                return ws
+
         if node not in manager.nodes:
             await ws.close(code=4004, message=b"unknown node")
             return ws

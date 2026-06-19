@@ -23,7 +23,6 @@
 		type Node
 	} from '@xyflow/svelte';
 	import GoofiNode from '$lib/editor/GoofiNode.svelte';
-	import SubPatchNode from '$lib/editor/SubPatchNode.svelte';
 	import BoundaryNode from '$lib/editor/BoundaryNode.svelte';
 	import AddNodeMenu from '$lib/editor/AddNodeMenu.svelte';
 	import PlacementPreview from '$lib/editor/PlacementPreview.svelte';
@@ -125,17 +124,6 @@
 	const boundaryId = (instId: string, name: string): string => `${BND_PREFIX}${instId}::${name}`;
 	const isBoundaryId = (id: string): boolean => id.startsWith(BND_PREFIX);
 
-	/** A boundary port's data type: the stored dtype (authoritative), falling back
-	 * to the inner node's slot dtype for legacy interface-only entries. */
-	function boundaryDtype(inst: InstanceInfo, port: SubPatchPort): string {
-		if (port.dtype) return port.dtype;
-		const disp = port.inner_node ? memberDisplay(inst, port.inner_node) : null;
-		const n = disp ? g.nodeByName(disp) : null;
-		if (!n || !port.inner_slot) return 'ARRAY';
-		const slots = port.dir === 'in' ? n.input_slots : n.output_slots;
-		return slots[port.inner_slot] ?? 'ARRAY';
-	}
-
 	/** The display (graph) name of a member given its local name within `inst`. */
 	function memberDisplay(inst: InstanceInfo, local: string): string | null {
 		for (const [disp, loc] of Object.entries(inst.members)) if (loc === local) return disp;
@@ -235,7 +223,7 @@
 						position: port.pos
 							? { x: port.pos[0], y: port.pos[1] }
 							: { x: fallbackX, y: minY + i * 96 },
-						data: { name, dir, dtype: boundaryDtype(inst, port), wired: port.inner_node !== null },
+						data: { name, dir, dtype: g.boundaryDtype(inst, port), wired: port.inner_node !== null },
 						selected: sel.nodes(panelId).has(boundaryId(entered, name))
 					});
 				});
@@ -255,17 +243,14 @@
 			});
 		}
 		for (const [instId, inst2] of Object.entries(g.instances)) {
+			// A collapsed sub-patch is rendered by the SAME node component as a real
+			// node (its wired boundaries are slots, output slots show viewers); the
+			// onEnter/onExpand handlers drive the header's sub-patch controls.
 			next.push({
 				id: instId,
-				type: 'subpatch',
+				type: 'goofi',
 				position: { x: inst2.pos?.[0] ?? 0, y: inst2.pos?.[1] ?? 0 },
-				data: {
-					instance: inst2,
-					instId,
-					hasError: Boolean(g.instanceError(instId)),
-					onEnter: enterInstance,
-					onExpand: expandInstance
-				},
+				data: { node: g.nodeByName(instId), onEnter: enterInstance, onExpand: expandInstance },
 				selected: sel.nodes(panelId).has(instId)
 			});
 		}
@@ -645,7 +630,7 @@
 		lastClickInst = id && id in g.instances ? id : '';
 	}
 
-	const nodeTypes = { goofi: GoofiNode, subpatch: SubPatchNode, boundary: BoundaryNode };
+	const nodeTypes = { goofi: GoofiNode, boundary: BoundaryNode };
 
 	/** Framing for every programmatic fit — the Controls/“F” button (via the
 	 * `fitViewOptions` prop) and the on-load fit in <FitToGraph>. */
@@ -784,7 +769,14 @@
 		if (bspec && placement.typeInfo.category === 'boundary') {
 			if (!entered) return;
 			try {
-				await g.addBoundary(entered, bspec.dir, bspec.dtype, pos);
+				const bndId = await g.addBoundary(entered, bspec.dir, bspec.dtype, pos);
+				// Seeded from a member slot click → wire the new boundary straight to
+				// that slot, so In/Out behave like any other auto-connected node. The
+				// seed's node is the member display name; wire_boundary wants its local.
+				if (bndId && placement.seed) {
+					const local = g.instances[entered]?.members[placement.seed.node];
+					if (local) await g.wireBoundary(entered, bndId, local, placement.seed.slot);
+				}
 			} catch (e) {
 				console.warn('add boundary failed', e);
 			}

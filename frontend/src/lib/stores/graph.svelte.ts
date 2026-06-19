@@ -16,7 +16,8 @@ import {
 	type InstanceInfo,
 	type LinkInfo,
 	type NodeInstanceInfo,
-	type NodeTypeInfo
+	type NodeTypeInfo,
+	type SubPatchPort
 } from '$lib/api/control';
 import { ui } from './ui.svelte';
 import { consoleStore } from './console.svelte';
@@ -506,27 +507,53 @@ class GraphStore {
 		return null;
 	}
 
+	/** The display (graph) name of a member given its local name within `inst`. */
+	private _memberDisplay(inst: InstanceInfo, local: string): string | null {
+		for (const [disp, loc] of Object.entries(inst.members)) if (loc === local) return disp;
+		return null;
+	}
+
+	/** A boundary port's data type: the stored dtype (authoritative), falling back
+	 * to the wired inner node's slot dtype for legacy interface-only entries. */
+	boundaryDtype(inst: InstanceInfo, port: SubPatchPort): string {
+		if (port.dtype) return port.dtype;
+		const disp = port.inner_node ? this._memberDisplay(inst, port.inner_node) : null;
+		const n = disp ? this._realNode(disp) : null;
+		if (!n || !port.inner_slot) return 'ARRAY';
+		const slots = port.dir === 'in' ? n.input_slots : n.output_slots;
+		return slots[port.inner_slot] ?? 'ARRAY';
+	}
+
 	/** Build the virtual NodeInstanceInfo that stands in for a sub-patch instance
-	 * wherever a node is looked up by name (selection / inspector / drag). It
-	 * deliberately exposes NO input/output slots: a sub-patch is not a data
-	 * endpoint, so a viewer/metadata panel linked to it must not try to open a
-	 * (never-resolvable) data stream. Live sharing state is recomputed by the
-	 * inspector from `instances`, so only `instId` rides on the marker. */
+	 * wherever a node is looked up by name. A sub-patch behaves exactly like a
+	 * node: its WIRED boundaries become real input/output slots (so the canvas
+	 * renders connectors + output viewers and seeds add-node clicks the same way
+	 * as any node — the /data route splices an output boundary to its inner
+	 * member's stream). Live sharing state is recomputed by the inspector from
+	 * `instances`; the marker just rides the id + glyph/badge bits. */
 	private _synthSubpatchNode(instId: string, inst: InstanceInfo): NodeInstanceInfo {
 		const shared = Boolean(inst.def_id);
+		const input_slots: Record<string, string> = {};
+		const output_slots: Record<string, string> = {};
+		for (const [bnd, port] of Object.entries(inst.interface)) {
+			if (port.inner_node == null) continue; // unwired → not an external port yet
+			const dt = this.boundaryDtype(inst, port);
+			if (port.dir === 'in') input_slots[bnd] = dt;
+			else output_slots[bnd] = dt;
+		}
 		return {
 			name: instId,
 			type: shared ? 'Shared sub-patch' : 'Sub-patch',
 			category: 'subpatch',
 			doc: '',
-			input_slots: {},
-			output_slots: {},
+			input_slots,
+			output_slots,
 			params: {},
 			pos: inst.pos,
 			viewers: {},
 			membership: null,
 			error: this.instanceError(instId),
-			subpatch: { instId }
+			subpatch: { instId, shared, memberCount: Object.keys(inst.members).length }
 		};
 	}
 

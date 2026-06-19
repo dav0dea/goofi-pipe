@@ -252,6 +252,25 @@ def test_add_member_node_mirrors_to_shared_siblings():
         mgr.terminate()
 
 
+def test_output_boundary_resolves_for_data_route():
+    # The collapsed sub-patch's output viewer opens /data/<inst>/<boundary>; the
+    # data route splices that via resolve_boundary to the inner member's real
+    # (node, slot). Verify that mapping lands on a streaming node + output slot.
+    mgr = _bare_manager(use_multiprocessing=False)
+    try:
+        osc, inst = _build_grouped_graph(mgr)  # subpatch0 with select0, select1
+        out_slot = list(mgr.nodes[f"{inst}::select1"].output_slots)[0]
+        bnd = mgr.add_boundary(inst, "out", "ARRAY")
+        mgr.wire_boundary(inst, bnd, "select1", out_slot)
+        node, slot = mgr.resolve_boundary(inst, bnd)
+        assert node == f"{inst}::select1" and slot == out_slot
+        # data.py's preconditions: the resolved node is real and has that output.
+        assert node in mgr.nodes
+        assert slot in mgr.nodes[node].output_slots
+    finally:
+        mgr.terminate()
+
+
 def test_make_unique_detaches_and_gcs_definition():
     mgr = _bare_manager(use_multiprocessing=False)
     try:

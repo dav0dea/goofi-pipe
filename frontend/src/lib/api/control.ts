@@ -51,6 +51,10 @@ export interface NodeInstanceInfo {
  * recomputed from the `instances` map so it never goes stale. */
 export interface SubpatchMeta {
 	instId: string;
+	/** Strict-mirror shared instance (vs a unique/inline sub-patch). */
+	shared: boolean;
+	/** Number of member nodes (shown as a badge on the collapsed group node). */
+	memberCount: number;
 }
 
 export interface LinkInfo {
@@ -81,14 +85,21 @@ export interface BoundarySpec {
 }
 const BOUNDARY_DTYPES = ['Array', 'String', 'Table'] as const;
 export const BOUNDARY_TYPES: NodeTypeInfo[] = (['In', 'Out'] as const).flatMap((side) =>
-	BOUNDARY_DTYPES.map((dt) => ({
-		type: `${side}${dt}`,
-		category: 'boundary',
-		doc: `Sub-patch ${side === 'In' ? 'input' : 'output'} (${dt.toLowerCase()})`,
-		input_slots: {},
-		output_slots: {},
-		params: {}
-	}))
+	BOUNDARY_DTYPES.map((dt): NodeTypeInfo => {
+		const slot: Record<string, string> = { value: dt.toUpperCase() };
+		return {
+			type: `${side}${dt}`,
+			category: 'boundary',
+			doc: `Sub-patch ${side === 'In' ? 'input' : 'output'} (${dt.toLowerCase()})`,
+			// An In node feeds a member input (it has an OUTPUT of the dtype); an Out
+			// node drains a member output (it has an INPUT). Declaring these lets the
+			// seeded add-menu's dtype filter keep In/Out as valid auto-connect targets
+			// when you click a member slot inside a sub-patch.
+			input_slots: side === 'Out' ? slot : {},
+			output_slots: side === 'In' ? slot : {},
+			params: {}
+		};
+	})
 );
 
 /** Parse a boundary pseudo-type name (e.g. "InArray") to its dir + dtype, or null. */
