@@ -2,9 +2,10 @@
  * Per-viewer settings schema — the single source of truth for which settings a
  * viewer kind exposes in its cog menu, their types, defaults, and grouping.
  *
- * The cog dropdown renders these (Blender-style collapsible groups); each viewer
- * component reads the resolved values as props. Values live in the
- * `viewerSettings` store (per node+slot) and persist into the .gfi.
+ * The cog dropdown renders these (Blender-style collapsible groups); `resolveSettings`
+ * merges a viewer instance's overrides over these defaults. Each viewer instance
+ * owns its overrides via its ViewBinding (inline → node.viewers; panel → layout),
+ * persisted into the .gfi.
  */
 import type { ViewerKind } from './kind';
 import { COLORMAPS } from './colormaps';

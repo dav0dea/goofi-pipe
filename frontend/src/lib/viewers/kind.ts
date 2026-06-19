@@ -3,9 +3,9 @@
  * exist, which ARRAY kinds the type dropdown offers, and whether a given array
  * shape can be drawn by a given viewer.
  *
- * The dtype→default mapping lives in the `viewerKind` store (STRING/TABLE pin to
- * their dedicated viewers, everything else starts on 'line'); this module just
- * owns the vocabulary the SlotViewer and ViewerPanel share.
+ * The dtype→kind resolution lives in `resolveKind` here (STRING/TABLE pin to
+ * their dedicated viewers, everything else uses the stored kind, default 'line');
+ * every viewer instance resolves through it.
  */
 import type { ArrayData } from '$lib/codec/decode';
 
