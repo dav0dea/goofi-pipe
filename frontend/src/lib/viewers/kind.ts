@@ -15,6 +15,14 @@ export type ViewerKind = 'line' | 'image' | 'trajectory' | 'topomap' | 'string' 
 /** ARRAY viewer kinds the viewer-type dropdown offers, in order. */
 export const ARRAY_KINDS = ['line', 'image', 'trajectory', 'topomap'] as const;
 
+/** The viewer kind to actually use: STRING/TABLE slots force their dedicated
+ * viewer; ARRAY (and anything else) uses the stored kind, defaulting to line. */
+export function resolveKind(dtype: string | null, stored: ViewerKind | undefined): ViewerKind {
+	if (dtype === 'STRING') return 'string';
+	if (dtype === 'TABLE') return 'table';
+	return stored ?? 'line';
+}
+
 /** Whether an array of the given shape can be drawn by `kind`. A non-array
  * frame (no spec) is always renderable by its own dedicated viewer. */
 export function isRenderable(kind: ViewerKind, spec: ArrayData | null): boolean {

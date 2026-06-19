@@ -93,11 +93,20 @@ export function settingsSchemaFor(kind: ViewerKind): SettingGroup[] {
 	return SCHEMA[kind] ?? [];
 }
 
+/** A bag of explicitly-set setting overrides (or resolved values). */
+export type SettingsMap = Record<string, SettingValue>;
+
 /** The default value bag for a kind — every declared key, its default. */
-export function defaultSettings(kind: ViewerKind): Record<string, SettingValue> {
-	const out: Record<string, SettingValue> = {};
+export function defaultSettings(kind: ViewerKind): SettingsMap {
+	const out: SettingsMap = {};
 	for (const g of settingsSchemaFor(kind)) for (const s of g.settings) out[s.key] = s.default;
 	return out;
+}
+
+/** Resolved settings for a kind: its declared defaults with the explicit
+ * overrides applied on top. */
+export function resolveSettings(kind: ViewerKind, overrides: SettingsMap | undefined): SettingsMap {
+	return { ...defaultSettings(kind), ...(overrides ?? {}) };
 }
 
 export function hasSettings(kind: ViewerKind): boolean {
