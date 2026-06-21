@@ -262,7 +262,12 @@ class ControlHub:
             return {"path": saved_path, "yaml": Path(saved_path).read_text(encoding="utf-8")}
         if op == "load":
             path = payload["path"]
-            # Replace graph by clearing it first if needed.
+            # Replace graph by clearing it first if needed. The teardown removes
+            # old nodes with notify_gui=False (no on_node_removed), so reset the
+            # status-wiring bookkeeping here — otherwise reloaded nodes that reuse
+            # a display name are skipped by _wire_node_status and lose live
+            # state/error forwarding (report B1).
+            self._wired_nodes.clear()
             await self._call_manager(_replace_graph, manager, path)
             await self.broadcast({"event": "graph_replaced", "payload": self._snapshot()})
             return {"ok": True}
@@ -277,6 +282,9 @@ class ControlHub:
             ) as tf:
                 tf.write(content)
                 tmp_path = tf.name
+            # Reset status-wiring bookkeeping before the destructive reload so
+            # reloaded nodes reusing a display name get re-wired (report B1).
+            self._wired_nodes.clear()
             try:
                 await self._call_manager(_replace_graph, manager, tmp_path)
             finally:
