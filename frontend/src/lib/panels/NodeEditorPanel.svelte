@@ -26,6 +26,7 @@
 	import AddNodeMenu from '$lib/editor/AddNodeMenu.svelte';
 	import PlacementPreview from '$lib/editor/PlacementPreview.svelte';
 	import FitToGraph from '$lib/editor/FitToGraph.svelte';
+	import FlowApi from '$lib/editor/FlowApi.svelte';
 	import SubpatchZoomExit from '$lib/editor/SubpatchZoomExit.svelte';
 	import {
 		computeSnapDelta,
@@ -227,6 +228,19 @@
 	$effect(() => {
 		const inst = entered ? g.instances[entered] : null;
 		const next: Node[] = [];
+		// Svelte Flow sets `selected` directly on the node objects for a live
+		// marquee/box drag; that isn't mirrored into the selection store, so a
+		// rebuild from graph state (a node move, a state_update) would drop it.
+		// Snapshot the current live selection (untracked, so reading flowNodes
+		// here doesn't make this effect re-run on every marquee tick) and carry
+		// it onto the rebuilt nodes (report B8).
+		const liveSelected = untrack(
+			() => new Set(flowNodes.filter((fn) => fn.selected).map((fn) => fn.id))
+		);
+		const carry = (node: Node): Node => {
+			if (liveSelected.has(node.id)) node.selected = true;
+			return node;
+		};
 		if (inst && entered) {
 			// Inside a sub-patch: render its members (with local labels) plus the
 			// In/Out boundary nodes derived from its interface, laid out on either
@@ -271,7 +285,7 @@
 				});
 			place(ins, 'in', minX - 280);
 			place(outs, 'out', maxX + 320);
-			flowNodes = next;
+			flowNodes = next.map(carry);
 			return;
 		}
 		for (const n of g.nodes) {
@@ -296,7 +310,7 @@
 				selected: sel.nodes(panelId).has(instId)
 			});
 		}
-		flowNodes = next;
+		flowNodes = next.map(carry);
 	});
 
 	$effect(() => {
@@ -749,9 +763,16 @@
 		}
 		const clip = parseClipboard(text);
 		if (!clip) return;
-		// Anchor the paste near the viewport centre (preserves the prior
-		// placement math: a quarter of the window, plus each node's offset).
-		const at: [number, number] = [window.innerWidth / 4, window.innerHeight / 4];
+		// Anchor the paste at the visible viewport centre, in FLOW space — the
+		// old screen-space anchor (window/4) landed pasted nodes off-screen once
+		// the editor was panned or zoomed (report B9). clipToSpecs adds each
+		// node's relative offset on top of this anchor.
+		const rect = rootEl?.getBoundingClientRect();
+		let at: [number, number] = [window.innerWidth / 4, window.innerHeight / 4];
+		if (rect && screenToFlow) {
+			const c = screenToFlow({ x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 });
+			at = [c.x, c.y];
+		}
 		const rename = await g.instantiateNodes(clipToSpecs(clip, at), clip.links);
 		const created = Object.values(rename);
 		if (created.length > 0) sel.selectNodes(panelId, created);
@@ -859,6 +880,12 @@
 		mouseY = e.clientY;
 	}
 
+	// Bound from <FlowApi> inside <SvelteFlow>; converts a client point to flow
+	// space so paste anchors in the visible viewport (report B9).
+	let screenToFlow = $state<((p: { x: number; y: number }) => { x: number; y: number }) | undefined>(
+		undefined
+	);
+
 	function fitView(): void {
 		rootEl?.querySelector<HTMLButtonElement>('.svelte-flow__controls-fitview')?.click();
 	}
@@ -962,6 +989,7 @@
 		>
 			<Controls />
 			<FitToGraph options={FIT_OPTIONS} />
+			<FlowApi bind:screenToFlowPosition={screenToFlow} />
 			<SubpatchZoomExit {entered} onExit={() => exitToDepth(enteredPath.length - 1)} />
 			{#if pendingPlacement}
 				<PlacementPreview
