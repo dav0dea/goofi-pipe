@@ -6,7 +6,7 @@ import cv2
 import numpy as np
 
 from goofi.data import Data, DataType
-from goofi.image_utils import as_uint8
+from goofi.image_utils import as_float01, as_uint8
 from goofi.node import Node
 from goofi.params import BoolParam, FloatParam, IntParam, StringParam
 
@@ -219,8 +219,10 @@ class ImageGeneration(Node):
                 if self.params.img2img.enabled.value:
                     if base_image is None:
                         base_image = self.last_img
-                    else:
-                        base_image = base_image.data
+                    # base_image was already extracted + resized in the img2img
+                    # block above (re-reading `.data` here yielded a memoryview).
+                    # Producers now emit uint8, but the SD pipe wants float [0,1] (A0).
+                    base_image = as_float01(base_image)
 
                     # run the img2img stable diffusion pipeline
                     img, _ = self.sd_pipe(
