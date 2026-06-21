@@ -435,6 +435,20 @@ class Node(ABC):
         if prev != coerced and getattr(param, "expression_triggers_process", False):
             self._wake_processing()
 
+    def _match_fired_expression(self, listener) -> bool:
+        """Run the expression engine owning `listener`, if any. Returns True
+        when a matching engine was found and applied.
+
+        Snapshots `_expressions` because the messaging thread can SET/clear an
+        expression (mutating the dict) while this processing-thread loop walks
+        it — iterating the live dict would raise RuntimeError (report H4).
+        """
+        for key, engine in list(self._expressions.items()):
+            if engine.owns_listener(listener):
+                self._apply_expression(key, engine)
+                return True
+        return False
+
     def _push_state(self) -> None:
         """Publish a STATE_UPDATE if we're dirty."""
         if self._environment == NodeEnv.STANDALONE:
@@ -743,13 +757,7 @@ class Node(ABC):
                             pass
                         self_triggered = True
                         continue
-                    matched_expression = False
-                    for key, engine in self._expressions.items():
-                        if engine.owns_listener(listener):
-                            self._apply_expression(key, engine)
-                            matched_expression = True
-                            break
-                    if matched_expression:
+                    if self._match_fired_expression(listener):
                         continue
                     # Fall back to: input slot listeners.
                     for slot in self.input_slots.values():

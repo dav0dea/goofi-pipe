@@ -350,3 +350,41 @@ def test_node_reresolves_expression_when_directory_updates():
     assert ("producer-deadbeef", "out") in n._expressions[key]._subscribed
     assert ("producer", "out") not in n._expressions[key]._subscribed
     ref.terminate()
+
+
+def test_match_fired_expression_tolerates_concurrent_mutation():
+    """Report H4: the processing thread matches a fired listener against
+    `self._expressions` while the messaging thread can SET/clear an expression
+    (mutating the dict). Iterating a live dict would raise
+    `RuntimeError: dictionary changed size during iteration`; the match must
+    snapshot first."""
+
+    class _Stub:
+        pass
+
+    stub = _Stub()
+    applied: list = []
+    stub._apply_expression = lambda key, engine: applied.append(key)
+
+    class _BenignEngine:
+        def owns_listener(self, listener):
+            return False
+
+    class _MutatingEngine:
+        """Simulates a concurrent SET_EXPRESSION: pops a sibling key while the
+        processing thread is mid-iteration over `_expressions`."""
+
+        def owns_listener(self, listener):
+            stub._expressions.pop(("g", "c"), None)
+            return False
+
+    stub._expressions = {
+        ("g", "a"): _MutatingEngine(),
+        ("g", "b"): _BenignEngine(),
+        ("g", "c"): _BenignEngine(),
+    }
+
+    # Bind the real method to the stub; must not raise despite the mid-loop pop.
+    matched = Node._match_fired_expression(stub, object())
+    assert matched is False
+    assert applied == []
