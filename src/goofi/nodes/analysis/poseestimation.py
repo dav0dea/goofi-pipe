@@ -3,6 +3,7 @@ from os import path
 import numpy as np
 
 from goofi.data import Data, DataType
+from goofi.image_utils import as_uint8
 from goofi.node import Node
 
 
@@ -48,7 +49,7 @@ class PoseEstimation(Node):
         self.detector = vision.HandLandmarker.create_from_options(options)
 
     def process(self, image: Data):
-        mp_image = self.mp.Image(image_format=self.mp.ImageFormat.SRGB, data=(image.data * 255).astype(np.uint8))
+        mp_image = self.mp.Image(image_format=self.mp.ImageFormat.SRGB, data=as_uint8(image.data))
         detection_result = self.detector.detect(mp_image)
 
         if len(detection_result.hand_landmarks) == 0:

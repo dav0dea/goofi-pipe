@@ -5,6 +5,7 @@ from pathlib import Path
 import numpy as np
 
 from goofi.data import Data, DataType
+from goofi.image_utils import as_uint8
 from goofi.node import Node
 from goofi.params import BoolParam, FloatParam, StringParam
 
@@ -147,9 +148,9 @@ class LoadFile(Node):
         elif file_type == "image":
             try:
                 img = self.Image.open(filename)
-                img_array = np.array(img) / 255.0
+                # Emit uint8 [0,255] per the A0 convention (PIL already yields uint8).
                 self.data_output = (
-                    img_array.astype(np.float32),
+                    as_uint8(np.array(img)),
                     {"height": img.height, "width": img.width, "img_channels": len(img.getbands())},
                 )
                 self.string_output = None

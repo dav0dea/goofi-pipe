@@ -2,6 +2,7 @@ import cv2
 import numpy as np
 
 from goofi.data import Data, DataType
+from goofi.image_utils import as_uint8
 from goofi.node import Node
 from goofi.params import FloatParam, StringParam
 
@@ -47,8 +48,10 @@ class EdgeDetector(Node):
         else:
             gray_image = image.data
 
-        # Convert the image to 8-bit (values in [0, 255])
-        gray_image_8bit = (gray_image * 255).astype(np.uint8)
+        # Convert the image to 8-bit (values in [0, 255]). as_uint8 passes a
+        # uint8 input through and scales a float [0,1] input — so the node
+        # works whether the producer emits uint8 or float (A0).
+        gray_image_8bit = as_uint8(gray_image)
 
         # Apply the chosen edge detection method
         if method == "canny":
@@ -59,6 +62,8 @@ class EdgeDetector(Node):
             edges = cv2.magnitude(grad_x, grad_y)
             _, edges = cv2.threshold(edges, threshold1, 255, cv2.THRESH_BINARY)
 
-        edges = edges.astype(np.float32) / 255.0  # Convert to float and normalize to [0, 1]
+        # Emit the edge map as uint8 [0,255] (A0). Both Canny (uint8) and the
+        # thresholded Sobel magnitude (float {0,255}) are already in [0,255].
+        edges = np.clip(edges, 0, 255).astype(np.uint8)
 
         return {"edges": (edges, {**image.meta})}

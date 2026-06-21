@@ -1,6 +1,7 @@
 import numpy as np
 from goofi.node import Node
 from goofi.data import DataType, Data
+from goofi.image_utils import as_float01
 import colorsys
 
 
@@ -28,8 +29,11 @@ class RGBtoHSV(Node):
         if rgb_image is None or rgb_image.data is None:
             return None
 
+        # colorsys expects channels in [0,1]; coerce uint8 inputs (A0).
+        rgb = as_float01(rgb_image.data)
+
         # Extract RGB values
-        r, g, b = rgb_image.data[..., 0], rgb_image.data[..., 1], rgb_image.data[..., 2]
+        r, g, b = rgb[..., 0], rgb[..., 1], rgb[..., 2]
 
         # Convert RGB to HSV
         hsv = np.vectorize(colorsys.rgb_to_hsv)(r, g, b)

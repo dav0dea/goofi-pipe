@@ -1,6 +1,7 @@
 import numpy as np
 
 from goofi.data import Data, DataType
+from goofi.image_utils import as_float01
 from goofi.node import Node
 from goofi.params import FloatParam
 
@@ -42,11 +43,14 @@ class ColorEnhancer(Node):
         gamma = self.params["enhancement"]["gamma"].value
         color_boost = self.params["enhancement"]["color_boost"].value
 
+        # The math below assumes values in [0,1]; coerce uint8 inputs (A0).
+        img = as_float01(image.data)
+
         # Find the mean intensity
         midpoint = 0.5
 
         # Adjust contrast around the mean value
-        enhanced_image = (image.data - midpoint) * contrast + midpoint + brightness
+        enhanced_image = (img - midpoint) * contrast + midpoint + brightness
 
         # Adjust gamma
         enhanced_image = np.clip(np.power(enhanced_image, gamma), 0, 1)
