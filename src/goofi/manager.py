@@ -130,7 +130,7 @@ class Manager:
         headless: bool = True,
         use_multiprocessing: bool = True,
         duration: float = 0,
-        bridge_host: str = "0.0.0.0",
+        bridge_host: str = "127.0.0.1",
         bridge_port: int = 8000,
     ) -> None:
         # Single transport instance id per Manager. Embedded in every
@@ -1562,7 +1562,7 @@ def get_example_patch(args) -> bool:
     return True
 
 
-def main(duration: Optional[float] = None, args=None):
+def build_arg_parser():
     import argparse
 
     parser = argparse.ArgumentParser(description="goofi-pipe")
@@ -1573,8 +1573,12 @@ def main(duration: Optional[float] = None, args=None):
     parser.add_argument(
         "--bind",
         type=str,
-        default="0.0.0.0",
-        help="host/interface to bind the bridge to (default: 0.0.0.0 — reachable from any interface)",
+        default="127.0.0.1",
+        help=(
+            "host/interface to bind the bridge to (default: 127.0.0.1 — loopback only). "
+            "Pass 0.0.0.0 to expose on the network, but note the bridge has NO auth and "
+            "expression nodes execute arbitrary Python."
+        ),
     )
     parser.add_argument(
         "--duration",
@@ -1587,6 +1591,11 @@ def main(duration: Optional[float] = None, args=None):
         "--gen-node-docs", action="store_true", help="generate missing node docstrings using the openai API"
     )
     parser.add_argument("--example", nargs="?", const="", help="run example files instead of starting the manager")
+    return parser
+
+
+def main(duration: Optional[float] = None, args=None):
+    parser = build_arg_parser()
     args = parser.parse_args(args)
 
     if args.update_readme_docs:

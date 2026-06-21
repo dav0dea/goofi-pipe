@@ -151,7 +151,7 @@ def maybe_build_frontend() -> None:
 class BridgeServer:
     """Daemon-thread aiohttp server orchestrating control + data hubs."""
 
-    def __init__(self, manager, host: str = "0.0.0.0", port: int = 8000) -> None:
+    def __init__(self, manager, host: str = "127.0.0.1", port: int = 8000) -> None:
         self.manager = manager
         self.host = host
         self.port = port
@@ -294,11 +294,30 @@ class BridgeServer:
         return web.json_response({"ok": True})
 
 
-def start_bridge(manager, host: str = "0.0.0.0", port: int = 8000) -> BridgeServer:
+def bind_warning(host: str) -> Optional[str]:
+    """Return a security warning if `host` exposes the bridge beyond loopback.
+
+    The bridge has NO authentication and nodes execute arbitrary Python
+    (expression nodes), so a non-loopback bind is a remote-code-execution
+    risk. Returns None for loopback hosts.
+    """
+    if host in ("127.0.0.1", "localhost", "::1"):
+        return None
+    return (
+        f"WARNING: bridge bound to {host} — the UI is reachable from the network "
+        "with NO authentication, and nodes execute arbitrary Python (expression "
+        "nodes = remote code execution). Pass --bind 127.0.0.1 unless you intend this."
+    )
+
+
+def start_bridge(manager, host: str = "127.0.0.1", port: int = 8000) -> BridgeServer:
     """Spin up the bridge in a daemon thread and return the handle."""
     # Refresh the served bundle before binding so the printed URL lands on a
     # current frontend (dev checkout only; no-op once the build is fresh).
     maybe_build_frontend()
+    warning = bind_warning(host)
+    if warning:
+        print(warning)
     bridge = BridgeServer(manager, host=host, port=port)
     bridge.start()
     return bridge
