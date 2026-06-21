@@ -490,27 +490,36 @@ class WaitSet:
         self._thread_listeners: list[ThreadListener] = []
         self._ipc_ws = None  # built lazily, invalidated on attach/detach
         self._ipc_guards: dict[int, tuple[object, IpcListener]] = {}
+        # Guards all reads/writes of the listener lists + lazy ws/guards. The
+        # processing (or data-pump) thread waits while another thread wires
+        # links / (un)subscribes expression slots; without this, the waiter's
+        # snapshot races the mutation and can drop a wakeup (reports H1/B3).
+        # Released before every blocking wait so (un)subscribe never stalls.
+        self._lock = threading.Lock()
 
     def attach(self, listener: Listener) -> None:
-        if isinstance(listener, IpcListener):
-            self._ipc_listeners.append(listener)
-            self._ipc_ws = None
-        elif isinstance(listener, ThreadListener):
-            self._thread_listeners.append(listener)
-        else:
-            raise TypeError(f"WaitSet cannot attach {type(listener).__name__}")
+        with self._lock:
+            if isinstance(listener, IpcListener):
+                self._ipc_listeners.append(listener)
+                self._ipc_ws = None
+            elif isinstance(listener, ThreadListener):
+                self._thread_listeners.append(listener)
+            else:
+                raise TypeError(f"WaitSet cannot attach {type(listener).__name__}")
 
     def detach(self, listener: Listener) -> None:
-        if isinstance(listener, IpcListener) and listener in self._ipc_listeners:
-            self._ipc_listeners.remove(listener)
-            self._ipc_ws = None
-        elif isinstance(listener, ThreadListener) and listener in self._thread_listeners:
-            self._thread_listeners.remove(listener)
+        with self._lock:
+            if isinstance(listener, IpcListener) and listener in self._ipc_listeners:
+                self._ipc_listeners.remove(listener)
+                self._ipc_ws = None
+            elif isinstance(listener, ThreadListener) and listener in self._thread_listeners:
+                self._thread_listeners.remove(listener)
 
     def wait(self, timeout_s: float) -> list[Listener]:
         """Block until any attached listener fires; return the ones that did."""
-        has_ipc = bool(self._ipc_listeners)
-        has_thread = bool(self._thread_listeners)
+        with self._lock:
+            has_ipc = bool(self._ipc_listeners)
+            has_thread = bool(self._thread_listeners)
         if has_ipc and not has_thread:
             return list(self._drain_ipc(timeout_s))
         if has_thread and not has_ipc:
@@ -537,14 +546,19 @@ class WaitSet:
             self._ipc_guards[id(l)] = (guard, l)
 
     def _drain_ipc(self, timeout_s: float) -> list[IpcListener]:
-        if not self._ipc_listeners:
-            return []
-        if self._ipc_ws is None:
-            self._build_ipc_ws()
-        ids, _ = self._ipc_ws.wait_and_process_with_timeout(iox2.Duration.from_secs_f64(max(timeout_s, 0.0)))
+        # Snapshot the built ws + guards under the lock, then run the blocking
+        # iox2 wait unlocked so a concurrent attach/detach never stalls.
+        with self._lock:
+            if not self._ipc_listeners:
+                return []
+            if self._ipc_ws is None:
+                self._build_ipc_ws()
+            ws = self._ipc_ws
+            guards = list(self._ipc_guards.values())
+        ids, _ = ws.wait_and_process_with_timeout(iox2.Duration.from_secs_f64(max(timeout_s, 0.0)))
         fired: list[IpcListener] = []
         for aid in ids:
-            for guard, l in self._ipc_guards.values():
+            for guard, l in guards:
                 if aid.has_event_from(guard):
                     l._drain()
                     fired.append(l)
@@ -552,17 +566,19 @@ class WaitSet:
         return fired
 
     def _drain_thread(self) -> list[ThreadListener]:
-        return [l for l in self._thread_listeners if l._consume()]
+        with self._lock:
+            return [l for l in self._thread_listeners if l._consume()]
 
     def _wait_thread(self, timeout_s: float) -> list[ThreadListener]:
         fired = self._drain_thread()
         if fired:
             return fired
-        if len(self._thread_listeners) == 1:
-            l = self._thread_listeners[0]
-            if l._evt.wait(timeout_s):
-                l._consume()
-                return [l]
+        with self._lock:
+            single = self._thread_listeners[0] if len(self._thread_listeners) == 1 else None
+        if single is not None:
+            if single._evt.wait(timeout_s):
+                single._consume()
+                return [single]
             return []
         # >1 thread listeners: poll loop (rare; nodes typically have few inputs).
         deadline = time.monotonic() + timeout_s
