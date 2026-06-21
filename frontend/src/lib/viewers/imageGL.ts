@@ -53,8 +53,16 @@ export interface RenderOpts {
 	cssH: number;
 }
 
-/** Whether the GL path supports a given (channels, dtype). The rest fall to 2D. */
-export function glSupports(c: number, isFloat: boolean): boolean {
+/** Whether the GL path supports a given (channels, dtype). The rest fall to 2D.
+ *
+ * Only uint8 and float32/64 are handled: other integer dtypes (u2/i2/u4/i4)
+ * would need different texture types than the UNSIGNED_BYTE the renderer uploads
+ * (wrong normalization otherwise), and i8/u8 decode to BigInt arrays which
+ * texImage2D rejects outright. The 2D path coerces all of those via Number(). */
+export function glSupports(c: number, dtype: string): boolean {
+	const isFloat = dtype.startsWith('<f') || dtype.startsWith('|f') || dtype.startsWith('=f');
+	const isU8 = dtype === '<u1' || dtype === '|u1' || dtype === '=u1';
+	if (!isFloat && !isU8) return false;
 	if (c === 1) return true; // R8 / R32F
 	if (c === 3) return !isFloat; // RGB8 (RGB32F not core-guaranteed)
 	if (c === 4) return true; // RGBA8 / RGBA32F
@@ -118,7 +126,12 @@ export class GLImageRenderer {
 		gl.attachShader(prog, vs);
 		gl.attachShader(prog, fs);
 		gl.linkProgram(prog);
-		if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) return null;
+		if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) {
+			gl.deleteProgram(prog);
+			gl.deleteShader(vs);
+			gl.deleteShader(fs);
+			return null;
+		}
 		return new GLImageRenderer(gl, prog);
 	}
 

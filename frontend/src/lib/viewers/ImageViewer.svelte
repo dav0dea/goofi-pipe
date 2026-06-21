@@ -97,7 +97,7 @@
 		const [h, w, c] = dims;
 		const isFloat = isFloatDtype(arr.dtype);
 
-		if (renderer && glSupports(c, isFloat)) {
+		if (renderer && glSupports(c, arr.dtype)) {
 			useGl = true;
 			let lo = 0;
 			let hi = 1;
