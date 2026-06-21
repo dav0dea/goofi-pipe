@@ -1,7 +1,7 @@
 <script lang="ts">
 	import type { DataFrame } from '$lib/codec/decode';
 	import type { SettingsMap } from './settingsSchema';
-	import { marked } from 'marked';
+	import { renderMarkdown } from './renderMarkdown';
 
 	type Props = { frame: DataFrame; settings?: SettingsMap };
 	const { frame, settings = {} }: Props = $props();
@@ -9,9 +9,9 @@
 	const useMarkdown = $derived(Boolean(settings.markdown));
 	const wrap = $derived(settings.wrap !== false);
 	const text = $derived(typeof frame.data === 'string' ? frame.data : String(frame.data));
-	// Local single-user tool rendering a node's own string output — default
-	// marked (inline HTML allowed) is acceptable here.
-	const html = $derived(useMarkdown ? (marked.parse(text) as string) : '');
+	// Node-sourced strings are untrusted — renderMarkdown escapes raw HTML and
+	// blocks dangerous URL schemes before {@html} (report B14).
+	const html = $derived(useMarkdown ? renderMarkdown(text) : '');
 </script>
 
 {#if useMarkdown}
