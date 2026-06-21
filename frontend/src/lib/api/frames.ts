@@ -1,16 +1,18 @@
 /**
- * Display-rate frame delivery on top of the worker data plane.
+ * Display-rate frame delivery + a global paint scheduler (reports A16).
  *
- * The worker (`dataWorker.ts`) already does the WS receive, GOOF decode, and
- * latest-wins coalescing to ~display rate (reports A11/A13). This layer is a
- * thin main-thread router: it fans the worker's decoded frames out to the
- * viewer consumers and records the most recent frame per subscribed slot so the
- * agent / introspection surface can read "what is this viewer showing"
- * (`latestFrame`) without scraping the DOM. The cache holds a frame only while a
- * consumer is subscribed, so memory stays bounded to on-screen data.
+ * The worker (`dataWorker.ts`) does the WS receive, GOOF decode, and latest-wins
+ * coalescing. This main-thread layer adds ONE rAF-driven flush with a per-frame
+ * time budget: when the worker delivers a frame it's stashed as the slot's
+ * pending frame and a single rAF is requested; on that rAF we deliver pending
+ * frames to viewers, most-starved-slot first, and once the budget (~8 ms,
+ * leaving room for Svelte Flow + compositing) is spent we defer the rest to the
+ * next frame. Latest-wins makes deferral free — a deferred slot just shows its
+ * newest frame next tick — so no viewer is starved and no queue grows.
  *
- * `subscribeFrames` / `latestFrame` keep their exact signatures, so the viewer
- * layer and agent surface are unchanged by the move to a worker.
+ * It also records the latest frame per subscribed slot for the agent surface
+ * (`latestFrame`). `subscribeFrames` / `latestFrame` keep their exact
+ * signatures, so the viewer layer and agent surface are unchanged.
  */
 import { subscribeData } from './data';
 import type { DataFrame } from '$lib/codec/decode';
@@ -18,13 +20,63 @@ import type { DataFrame } from '$lib/codec/decode';
 type FrameCallback = (frame: DataFrame) => void;
 
 interface Slot {
-	/** Latest frame delivered to consumers — what `latestFrame` returns. */
+	/** Newest frame from the worker, not yet delivered to consumers. */
+	pending: DataFrame | null;
+	/** Latest frame delivered — what `latestFrame` returns. */
 	current: DataFrame | null;
 	cbs: Set<FrameCallback>;
 	unsub: () => void;
+	/** When this slot last delivered, for most-starved-first fairness. */
+	lastFlush: number;
 }
 
 const slots = new Map<string, Slot>();
+const dirty = new Set<Slot>();
+const FRAME_BUDGET_MS = 8;
+
+const nowMs =
+	typeof performance !== 'undefined' && typeof performance.now === 'function'
+		? (): number => performance.now()
+		: (): number => Date.now();
+
+const scheduleFlush =
+	typeof requestAnimationFrame === 'function'
+		? (fn: () => void): number => requestAnimationFrame(fn)
+		: (fn: () => void): number => setTimeout(fn, 16) as unknown as number;
+
+let rafId: number | null = null;
+function requestFlush(): void {
+	if (rafId !== null) return;
+	rafId = scheduleFlush(flush);
+}
+
+function flush(): void {
+	rafId = null;
+	const start = nowMs();
+	// Most-starved slot first (smallest lastFlush) so no slot is permanently
+	// deferred by the budget; new slots (lastFlush 0) lead.
+	const queue = [...dirty].sort((a, b) => a.lastFlush - b.lastFlush);
+	let painted = 0;
+	for (const s of queue) {
+		// Always deliver at least one slot; after that, stop once over budget.
+		if (painted > 0 && nowMs() - start > FRAME_BUDGET_MS) break;
+		const frame = s.pending;
+		dirty.delete(s);
+		if (!frame) continue;
+		s.pending = null;
+		s.current = frame;
+		s.lastFlush = start;
+		painted++;
+		for (const consumer of s.cbs) {
+			try {
+				consumer(frame);
+			} catch (err) {
+				console.error('frame consumer crashed', err);
+			}
+		}
+	}
+	if (dirty.size > 0) requestFlush(); // deferred slots → next frame
+}
 
 function key(node: string, slot: string): string {
 	return `${node} ${slot}`;
@@ -32,23 +84,18 @@ function key(node: string, slot: string): string {
 
 /**
  * Subscribe to a (node, slot) stream, receiving the latest decoded frame at
- * ~display rate. Returns an unsubscribe function. Multiple consumers of the same
- * slot share one worker subscription.
+ * ~display rate (subject to the global paint budget). Returns an unsubscribe
+ * function. Multiple consumers of the same slot share one worker subscription.
  */
 export function subscribeFrames(node: string, slot: string, cb: FrameCallback): () => void {
 	const k = key(node, slot);
 	let s = slots.get(k);
 	if (!s) {
-		const slot_: Slot = { current: null, cbs: new Set(), unsub: () => {} };
+		const slot_: Slot = { pending: null, current: null, cbs: new Set(), unsub: () => {}, lastFlush: 0 };
 		slot_.unsub = subscribeData(node, slot, (frame) => {
-			slot_.current = frame;
-			for (const consumer of slot_.cbs) {
-				try {
-					consumer(frame);
-				} catch (err) {
-					console.error('frame consumer crashed', err);
-				}
-			}
+			slot_.pending = frame; // overwrite — latest wins
+			dirty.add(slot_);
+			requestFlush();
 		});
 		s = slot_;
 		slots.set(k, s);
@@ -60,6 +107,7 @@ export function subscribeFrames(node: string, slot: string, cb: FrameCallback): 
 		cur.cbs.delete(cb);
 		if (cur.cbs.size > 0) return;
 		cur.unsub();
+		dirty.delete(cur);
 		slots.delete(k);
 	};
 }
