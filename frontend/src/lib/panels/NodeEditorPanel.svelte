@@ -228,19 +228,6 @@
 	$effect(() => {
 		const inst = entered ? g.instances[entered] : null;
 		const next: Node[] = [];
-		// Svelte Flow sets `selected` directly on the node objects for a live
-		// marquee/box drag; that isn't mirrored into the selection store, so a
-		// rebuild from graph state (a node move, a state_update) would drop it.
-		// Snapshot the current live selection (untracked, so reading flowNodes
-		// here doesn't make this effect re-run on every marquee tick) and carry
-		// it onto the rebuilt nodes (report B8).
-		const liveSelected = untrack(
-			() => new Set(flowNodes.filter((fn) => fn.selected).map((fn) => fn.id))
-		);
-		const carry = (node: Node): Node => {
-			if (liveSelected.has(node.id)) node.selected = true;
-			return node;
-		};
 		if (inst && entered) {
 			// Inside a sub-patch: render its members (with local labels) plus the
 			// In/Out boundary nodes derived from its interface, laid out on either
@@ -285,7 +272,7 @@
 				});
 			place(ins, 'in', minX - 280);
 			place(outs, 'out', maxX + 320);
-			flowNodes = next.map(carry);
+			flowNodes = next;
 			return;
 		}
 		for (const n of g.nodes) {
@@ -310,7 +297,7 @@
 				selected: sel.nodes(panelId).has(instId)
 			});
 		}
-		flowNodes = next.map(carry);
+		flowNodes = next;
 	});
 
 	$effect(() => {
@@ -653,6 +640,24 @@
 		sel.clickNode(panelId, args.node.id, mouse.shiftKey || mouse.ctrlKey || mouse.metaKey);
 	}
 
+	function sameMembers(set: Set<string>, ids: string[]): boolean {
+		if (set.size !== ids.length) return false;
+		for (const id of ids) if (!set.has(id)) return false;
+		return true;
+	}
+
+	/** Mirror Svelte Flow's live selection (clicks AND marquee/box drags) into the
+	 * selection store, which is then the single source of truth — so a flowNodes
+	 * rebuild reads `selected` straight from it and a marquee selection survives
+	 * (report B8), and a deselect can't leave a stale flag behind. Idempotent so
+	 * the rebuild re-applying `selected` can't loop back into a re-render. */
+	function onSelectionChange(args: { nodes: Node[]; edges: Edge[] }): void {
+		const nodeIds = args.nodes.map((n) => n.id);
+		const edgeIds = args.edges.map((e) => e.id);
+		if (sameMembers(sel.nodes(panelId), nodeIds) && sameMembers(sel.edges(panelId), edgeIds)) return;
+		sel.setSelection(panelId, nodeIds, edgeIds);
+	}
+
 	// Double-click a sub-patch group node → enter it. We can't use SvelteFlow's
 	// `onnodeclick` (it suppresses the 2nd click of a double-click), nor the native
 	// `dblclick` event (the 1st click selects the node, which rebuilds flowNodes and
@@ -953,6 +958,7 @@
 			onnodedragstop={onNodeDragStop}
 			onpaneclick={onPaneClick}
 			onnodeclick={onNodeClick}
+			onselectionchange={onSelectionChange}
 			onedgeclick={onEdgeClick}
 			ondelete={async ({ nodes, edges }) => {
 				// The single delete path (deleteKey wires Delete+Backspace here; the
