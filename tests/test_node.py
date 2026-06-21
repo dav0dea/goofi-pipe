@@ -359,10 +359,13 @@ def test_match_fired_expression_tolerates_concurrent_mutation():
     `RuntimeError: dictionary changed size during iteration`; the match must
     snapshot first."""
 
+    import threading
+
     class _Stub:
         pass
 
     stub = _Stub()
+    stub._expression_lock = threading.RLock()
     applied: list = []
     stub._apply_expression = lambda key, engine: applied.append(key)
 

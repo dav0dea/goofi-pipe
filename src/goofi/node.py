@@ -26,7 +26,7 @@ from enum import Enum
 from multiprocessing import Process
 from os.path import dirname, join
 from pathlib import Path
-from threading import Event, Lock, Thread, current_thread
+from threading import Event, Lock, RLock, Thread, current_thread
 from typing import Any, Dict, Optional, Tuple, Union
 
 from goofi import assets
@@ -150,6 +150,14 @@ class Node(ABC):
         # this serializes the dedup-check + send + latch so the wire order can't
         # diverge from `_last_reported_error` (which would strand a stuck error).
         self._error_lock = Lock()
+        # Serializes all ExpressionEngine create/eval/teardown so the same
+        # engine can't run concurrently from the messaging thread (SET_EXPRESSION,
+        # NODE_DIRECTORY) and the processing thread (autoeval, fired-listener
+        # match), which would corrupt its subscription bookkeeping (report H2).
+        # Reentrant: _set_expression calls _apply_expression under the same lock.
+        # Lock order is always expression_lock -> WaitSet lock (never reversed),
+        # so it can't deadlock with the data-plane wait.
+        self._expression_lock = RLock()
 
         self.node_id = node_id
         self._input_slots = input_slots
@@ -387,29 +395,30 @@ class Node(ABC):
         param.expression_triggers_process = bool(triggers_process)
         param.expression_autoeval = bool(autoeval)
 
-        engine = self._expressions.get(key)
-        if active:
-            if engine is None:
-                engine = ExpressionEngine(
-                    location=f"{self.node_id}.{group}.{name}",
-                    on_listener_added=self._waitset.attach,
-                    on_listener_removed=self._waitset.detach,
-                    resolve_node_id=self._resolve_node_ref,
-                )
-                self._expressions[key] = engine
-            engine.set_source(source)
-            if engine.last_error:
-                self._report_error(engine.last_error)
+        with self._expression_lock:
+            engine = self._expressions.get(key)
+            if active:
+                if engine is None:
+                    engine = ExpressionEngine(
+                        location=f"{self.node_id}.{group}.{name}",
+                        on_listener_added=self._waitset.attach,
+                        on_listener_removed=self._waitset.detach,
+                        resolve_node_id=self._resolve_node_ref,
+                    )
+                    self._expressions[key] = engine
+                engine.set_source(source)
+                if engine.last_error:
+                    self._report_error(engine.last_error)
+                else:
+                    self._report_error(None)
+                # Warm eval so the param has a value immediately. Subscriptions
+                # for any referenced slots are opened during this first call.
+                self._apply_expression(key, engine)
             else:
-                self._report_error(None)
-            # Warm eval so the param has a value immediately. Subscriptions
-            # for any referenced slots are opened during this first call.
-            self._apply_expression(key, engine)
-        else:
-            # Tear down any running engine; the source stays on the Param.
-            if engine is not None:
-                engine.close()
-                self._expressions.pop(key, None)
+                # Tear down any running engine; the source stays on the Param.
+                if engine is not None:
+                    engine.close()
+                    self._expressions.pop(key, None)
         self._mark_dirty()
 
     def _apply_expression(self, key: Tuple[str, str], engine: ExpressionEngine) -> None:
@@ -420,20 +429,21 @@ class Node(ABC):
         `expression_triggers_process` flag.
         """
         group, name = key
-        result = engine.evaluate()
-        if engine.last_error:
-            self._report_error(engine.last_error)
-        if result is None:
-            return
-        param = self.params[group][name]
-        coerced = _coerce_to_param_type(param, result)
-        if coerced is None:
-            return
-        prev = param._value
-        param._value = coerced
-        self._mark_dirty()
-        if prev != coerced and getattr(param, "expression_triggers_process", False):
-            self._wake_processing()
+        with self._expression_lock:
+            result = engine.evaluate()
+            if engine.last_error:
+                self._report_error(engine.last_error)
+            if result is None:
+                return
+            param = self.params[group][name]
+            coerced = _coerce_to_param_type(param, result)
+            if coerced is None:
+                return
+            prev = param._value
+            param._value = coerced
+            self._mark_dirty()
+            if prev != coerced and getattr(param, "expression_triggers_process", False):
+                self._wake_processing()
 
     def _match_fired_expression(self, listener) -> bool:
         """Run the expression engine owning `listener`, if any. Returns True
@@ -441,12 +451,15 @@ class Node(ABC):
 
         Snapshots `_expressions` because the messaging thread can SET/clear an
         expression (mutating the dict) while this processing-thread loop walks
-        it — iterating the live dict would raise RuntimeError (report H4).
+        it — iterating the live dict would raise RuntimeError (report H4). The
+        engine lock serializes the match+apply against a concurrent set/clear
+        (report H2).
         """
-        for key, engine in list(self._expressions.items()):
-            if engine.owns_listener(listener):
-                self._apply_expression(key, engine)
-                return True
+        with self._expression_lock:
+            for key, engine in list(self._expressions.items()):
+                if engine.owns_listener(listener):
+                    self._apply_expression(key, engine)
+                    return True
         return False
 
     def _push_state(self) -> None:
@@ -647,9 +660,10 @@ class Node(ABC):
                 # (e.g. during a patch load, where nodes resolve in setup order)
                 # would otherwise stay wired to a dangling service forever. Re-
                 # applying re-keys the subscription onto the producer's real id.
-                for expr_key, engine in list(self._expressions.items()):
-                    if engine.references_other_nodes():
-                        self._apply_expression(expr_key, engine)
+                with self._expression_lock:
+                    for expr_key, engine in list(self._expressions.items()):
+                        if engine.references_other_nodes():
+                            self._apply_expression(expr_key, engine)
         else:
             self._report_error(f"Unhandled control message type: {t}")
 
@@ -670,14 +684,16 @@ class Node(ABC):
         slot.listener = listener
         slot.service_name = service_name
         slot.in_process = in_process
-        if slot.trigger_process:
-            self._waitset.attach(listener)
+        # Attach EVERY input's listener so non-triggering slots are drained too;
+        # whether a fire actually triggers process() is gated separately on
+        # slot.trigger_process in the processing loop (report I2).
+        self._waitset.attach(listener)
 
     def _unsubscribe_input(self, slot_name_in: str) -> None:
         slot = self.input_slots.get(slot_name_in)
         if slot is None or slot.subscriber is None:
             return
-        if slot.listener is not None and slot.trigger_process:
+        if slot.listener is not None:
             self._waitset.detach(slot.listener)
         try:
             slot.subscriber.close()
@@ -718,6 +734,22 @@ class Node(ABC):
     # Processing loop (data plane)
     # ------------------------------------------------------------------
 
+    def _drain_pending_inputs(self) -> None:
+        """Non-blocking take of the latest frame on every subscribed input.
+
+        Used by free-running (autotrigger) nodes so their non-triggering inputs
+        still deliver current data to process() even without a wait()-driven
+        fire (report I2)."""
+        for slot in self.input_slots.values():
+            if slot.subscriber is None:
+                continue
+            buf = slot.subscriber.take_latest()
+            if buf is not None:
+                try:
+                    slot.data = decode_data(buf)
+                except Exception:
+                    self._report_error(traceback.format_exc())
+
     def _processing_loop(self) -> None:
         if self._capture_logs:
             node_log.bind_thread_node(self.node_id)
@@ -735,7 +767,9 @@ class Node(ABC):
             triggered = False
 
             if autotrigger and self._has_no_triggering_inputs():
-                # Free-running mode: process every tick.
+                # Free-running mode: process every tick. Pull any fresh input
+                # data first so non-triggering inputs reach process() (I2).
+                self._drain_pending_inputs()
                 triggered = True
             else:
                 fired = self._waitset.wait(0.1)
@@ -766,7 +800,11 @@ class Node(ABC):
                             if buf is not None:
                                 try:
                                     slot.data = decode_data(buf)
-                                    drained_any = True
+                                    # Only a triggering slot's fresh data wakes
+                                    # process(); non-triggering inputs are still
+                                    # drained above so their data is current (I2).
+                                    if slot.trigger_process:
+                                        drained_any = True
                                 except Exception:
                                     self._report_error(traceback.format_exc())
                             break
@@ -791,10 +829,11 @@ class Node(ABC):
             # makes expressions without slot references (`time.time()`,
             # `random.uniform(...)`) update per tick.
             if self._expressions:
-                for key, engine in list(self._expressions.items()):
-                    param = self.params[key[0]][key[1]]
-                    if getattr(param, "expression_autoeval", False):
-                        self._apply_expression(key, engine)
+                with self._expression_lock:
+                    for key, engine in list(self._expressions.items()):
+                        param = self.params[key[0]][key[1]]
+                        if getattr(param, "expression_autoeval", False):
+                            self._apply_expression(key, engine)
 
             input_data = {name: slot.data for name, slot in self.input_slots.items()}
 
