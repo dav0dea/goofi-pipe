@@ -4,6 +4,7 @@
 	import { onMount, onDestroy } from 'svelte';
 	import uPlot from 'uplot';
 	import 'uplot/dist/uPlot.min.css';
+	import { decimateMinMax } from './decimate';
 
 	type Props = { frame: DataFrame; settings?: SettingsMap };
 	const { frame, settings = {} }: Props = $props();
@@ -333,7 +334,6 @@
 			subarray?: (start: number, end: number) => ArrayLike<number>;
 		};
 		const isBig = flatLen > 0 && typeof v[0] === 'bigint';
-		const xs = indexAxis(m);
 		const ySeries: ArrayLike<number>[] = [];
 		if (nSeries === 1) {
 			ySeries.push(isBig ? Array.from(v, Number) : v);
@@ -348,7 +348,17 @@
 				}
 			}
 		}
-		setSeries(xs, ySeries);
+
+		// When there are far more samples than pixel columns, min/max-decimate to
+		// the display budget — preserves spikes, cuts uPlot's per-frame work from
+		// O(samples) to O(pixels) (report A15).
+		const cols = container.clientWidth || 800;
+		if (m > cols * 2) {
+			const dec = decimateMinMax(ySeries, m, cols);
+			setSeries(dec.xs, dec.ys);
+			return;
+		}
+		setSeries(indexAxis(m), ySeries);
 	}
 
 	$effect(() => {
