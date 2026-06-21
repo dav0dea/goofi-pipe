@@ -3,10 +3,10 @@
 A client wishing to view `node`'s `slot` output opens
     ws://.../data/<node>/<slot>
 
-The hub registers a data handler on the corresponding NodeRef
-(`NodeRef.set_data_handler`) and forwards every encoded `Data` frame
-verbatim — the browser holds the matching codec, so no transcoding
-happens server-side.
+The hub registers a `raw=True` data handler on the corresponding NodeRef
+(`NodeRef.set_data_handler`) and forwards the producer's GOOF wire bytes
+verbatim — the browser holds the matching codec, so no transcoding (decode
+or re-encode) happens server-side (A1).
 
 Backpressure: each WS has a single-slot mailbox. New frames overwrite
 older un-sent frames (latest-wins) so a slow client never stalls the
@@ -15,11 +15,10 @@ producer or piles up memory.
 from __future__ import annotations
 
 import asyncio
+import functools
 from typing import Optional
 
 from aiohttp import WSMsgType, web
-
-from goofi.codec import encode_data_into, prepare_encode
 
 
 class _SlotForwarder:
@@ -155,20 +154,22 @@ class DataHub:
             mux = self._muxes.get(key)
             if mux is None:
                 mux = _SlotMux(ref, slot)
+
+                def on_frame(_noderef, _slot_name, buf, _mux=mux):
+                    # Forward the producer's GOOF wire bytes verbatim — the
+                    # browser decodes with its own codec, so the manager does
+                    # no transcoding (A1). `buf` is a heap-copied bytes from the
+                    # subscriber, safe to fan out by reference.
+                    _mux.dispatch(buf)
+
+                # set_data_handler does blocking IPC (REGISTER_SUBSCRIBER +
+                # iceoryx2 setup); run it off the event loop so it can't stall
+                # other viewers' sends. Held under _lock so a concurrent
+                # connect/disconnect for the same slot can't interleave (B2).
+                await loop.run_in_executor(
+                    None, functools.partial(ref.set_data_handler, slot, on_frame, raw=True)
+                )
                 self._muxes[key] = mux
-
-                def on_frame(_noderef, _slot_name, data, _mux=mux):
-                    try:
-                        size, meta_bytes = prepare_encode(data)
-                        buf = bytearray(size)
-                        encode_data_into(data, memoryview(buf), meta_bytes=meta_bytes)
-                        _mux.dispatch(bytes(buf))
-                    except Exception:
-                        import traceback
-
-                        traceback.print_exc()
-
-                ref.set_data_handler(slot, on_frame)
             mux.add(fwd)
 
         try:
@@ -180,8 +181,11 @@ class DataHub:
             async with self._lock:
                 empty = mux.remove(fwd)
                 if empty:
+                    # Detach off the event loop too (blocking UNREGISTER_SUBSCRIBER
+                    # + iceoryx2 teardown) so a slow disconnect can't stall other
+                    # viewers; under _lock so a re-subscribe can't interleave (B2).
                     try:
-                        ref.set_data_handler(slot, None)
+                        await loop.run_in_executor(None, ref.set_data_handler, slot, None)
                     except Exception:
                         pass
                     self._muxes.pop(key, None)
