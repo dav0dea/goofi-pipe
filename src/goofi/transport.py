@@ -275,7 +275,13 @@ class IpcListener:
         self._listener = svc.listener_builder().create()
 
     def _drain(self) -> None:
-        for _ in self._listener.try_wait_all():
+        # Capture once: a WaitSet drain releases its lock before the blocking
+        # wait, so this listener can be detached + close()d (which nulls
+        # `_listener`) by another thread between the snapshot and here.
+        listener = self._listener
+        if listener is None:
+            return
+        for _ in listener.try_wait_all():
             pass
 
     def close(self) -> None:

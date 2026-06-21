@@ -741,9 +741,12 @@ class Node(ABC):
         still deliver current data to process() even without a wait()-driven
         fire (report I2)."""
         for slot in self.input_slots.values():
-            if slot.subscriber is None:
+            # Capture once — _unsubscribe_input (messaging thread) can null
+            # slot.subscriber between the check and the take.
+            sub = slot.subscriber
+            if sub is None:
                 continue
-            buf = slot.subscriber.take_latest()
+            buf = sub.take_latest()
             if buf is not None:
                 try:
                     slot.data = decode_data(buf)
@@ -795,8 +798,12 @@ class Node(ABC):
                         continue
                     # Fall back to: input slot listeners.
                     for slot in self.input_slots.values():
-                        if slot.listener is listener and slot.subscriber is not None:
-                            buf = slot.subscriber.take_latest()
+                        # Capture the subscriber once — the messaging thread can
+                        # null slot.subscriber via _unsubscribe_input between the
+                        # check and the take, which would AttributeError.
+                        sub = slot.subscriber
+                        if slot.listener is listener and sub is not None:
+                            buf = sub.take_latest()
                             if buf is not None:
                                 try:
                                     slot.data = decode_data(buf)
