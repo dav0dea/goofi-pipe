@@ -410,12 +410,18 @@ class NodeRef:
         # SUBSCRIBE_INPUT wiring between same-group peers.
         return open_subscriber(self.data_service_for(slot_name_out), in_process=False, latest_wins=True)
 
-    def set_data_handler(self, slot_name_out: str, callback: Optional[Callable]) -> None:
+    def set_data_handler(self, slot_name_out: str, callback: Optional[Callable], *, raw: bool = False) -> None:
         """Register / unregister a callback invoked on every fresh frame.
 
-        `callback(noderef, slot_name_out, data)` runs on the single per-ref
-        data-pump thread that fans out across all registered output slots.
-        Pass `callback=None` to unregister.
+        With `raw=False` (default) the callback is
+        `callback(noderef, slot_name_out, data)` with a decoded `Data`. With
+        `raw=True` it is `callback(noderef, slot_name_out, buf)` and receives
+        the producer's GOOF wire `bytes` straight from the subscriber — the
+        pump skips `decode_data`. The bridge uses `raw=True` so it can forward
+        frames to the browser verbatim, with no manager-side re-encode (A1).
+
+        The callback runs on the single per-ref data-pump thread that fans out
+        across all registered output slots. Pass `callback=None` to unregister.
 
         Side-effect: also sends `REGISTER_SUBSCRIBER` / `UNREGISTER_SUBSCRIBER`
         so the producing node knows to start / stop publishing on the slot.
@@ -424,10 +430,13 @@ class NodeRef:
             prev = self._data_handlers.pop(slot_name_out, None)
             if prev is not None:
                 self._data_waitset.detach(prev[1])
-                try:
-                    prev[0].close()
-                except Exception:
-                    pass
+                # Release BOTH endpoints — the subscriber and its listener.
+                # Closing only the subscriber leaks a listener per cycle (B4).
+                for endpoint in (prev[0], prev[1]):
+                    try:
+                        endpoint.close()
+                    except Exception:
+                        pass
                 self.unregister_subscriber(slot_name_out)
 
             if callback is None:
@@ -435,7 +444,7 @@ class NodeRef:
 
             self.register_subscriber(slot_name_out)
             sub, listener = self.open_output_subscriber(slot_name_out)
-            self._data_handlers[slot_name_out] = (sub, listener, callback)
+            self._data_handlers[slot_name_out] = (sub, listener, callback, raw)
             self._data_waitset.attach(listener)
             self._data_waitset_dirty.set()
 
@@ -461,25 +470,29 @@ class NodeRef:
                 self._data_waitset_dirty.wait(timeout=0.5)
                 self._data_waitset_dirty.clear()
                 continue
-            listener_to_slot = {id(l): (n, s, cb) for n, (s, l, cb) in handlers.items()}
+            listener_to_slot = {id(l): (n, s, cb, raw) for n, (s, l, cb, raw) in handlers.items()}
             fired = self._data_waitset.wait(0.25)
             for listener in fired:
                 entry = listener_to_slot.get(id(listener))
                 if entry is None:
                     continue
-                slot_name, sub, cb = entry
+                slot_name, sub, cb, raw = entry
                 buf = sub.take_latest()
                 if buf is None:
                     continue
-                try:
-                    data = decode_data(buf)
-                except Exception:
-                    import sys
+                if raw:
+                    # Forward the wire bytes verbatim — no decode (A1).
+                    payload = buf
+                else:
+                    try:
+                        payload = decode_data(buf)
+                    except Exception:
+                        import sys
 
-                    print(f"decode failed for {self.node_id}.{slot_name}: {sys.exc_info()[1]}", file=sys.stderr)
-                    continue
+                        print(f"decode failed for {self.node_id}.{slot_name}: {sys.exc_info()[1]}", file=sys.stderr)
+                        continue
                 try:
-                    cb(self, slot_name, data)
+                    cb(self, slot_name, payload)
                 except Exception:
                     import sys
 
