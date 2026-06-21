@@ -646,14 +646,29 @@
 		return true;
 	}
 
-	/** Mirror Svelte Flow's live selection (clicks AND marquee/box drags) into the
-	 * selection store, which is then the single source of truth — so a flowNodes
-	 * rebuild reads `selected` straight from it and a marquee selection survives
-	 * (report B8), and a deselect can't leave a stale flag behind. Idempotent so
-	 * the rebuild re-applying `selected` can't loop back into a re-render. */
-	function onSelectionChange(args: { nodes: Node[]; edges: Edge[] }): void {
-		const nodeIds = args.nodes.map((n) => n.id);
-		const edgeIds = args.edges.map((e) => e.id);
+	// True only between a box/marquee drag's start and end. Gates onSelectionEnd so
+	// it can't resurrect a just-cleared selection if Flow happens to fire its end
+	// event for a plain pane click (where `selected` flags may still be stale).
+	let boxSelecting = false;
+
+	/** Mirror a finished marquee/box-drag selection into the store, which is then
+	 * the single source of truth — so a flowNodes rebuild reads `selected` straight
+	 * from it and a marquee selection survives a graph change (report B8).
+	 *
+	 * Keyed on `onselectionstart`/`onselectionend` (a real box gesture), NOT
+	 * `onselectionchange`: a store-driven selection (Ctrl+A, click, paste) replaces
+	 * every flowNodes object, which makes Flow emit transient echo events — empty
+	 * AND partial — mid-rebuild. Honoring those shrank the store the rebuild had just
+	 * populated (the bug that left Ctrl+A→group absorbing only one member). Store-
+	 * driven changes never start a box gesture, so there are no echoes to filter;
+	 * deselection stays owned by onPaneClick → clickPane, Escape, and node-click. We
+	 * read the authoritative `selected` flags Flow set on the bound flowNodes/
+	 * flowEdges rather than a payload, since the gesture is now complete. */
+	function onSelectionEnd(): void {
+		if (!boxSelecting) return;
+		boxSelecting = false;
+		const nodeIds = flowNodes.filter((n) => n.selected).map((n) => n.id);
+		const edgeIds = flowEdges.filter((e) => e.selected).map((e) => e.id);
 		if (sameMembers(sel.nodes(panelId), nodeIds) && sameMembers(sel.edges(panelId), edgeIds)) return;
 		sel.setSelection(panelId, nodeIds, edgeIds);
 	}
@@ -958,7 +973,8 @@
 			onnodedragstop={onNodeDragStop}
 			onpaneclick={onPaneClick}
 			onnodeclick={onNodeClick}
-			onselectionchange={onSelectionChange}
+			onselectionstart={() => (boxSelecting = true)}
+			onselectionend={onSelectionEnd}
 			onedgeclick={onEdgeClick}
 			ondelete={async ({ nodes, edges }) => {
 				// The single delete path (deleteKey wires Delete+Backspace here; the
