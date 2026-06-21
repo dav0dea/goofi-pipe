@@ -265,6 +265,11 @@ export class HistoryStore {
 	private undoStack: Action[] = [];
 	private redoStack: Action[] = [];
 	private suspendDepth = 0;
+	/** Re-entrancy guard for undo()/redo(): two awaits sit between reading the
+	 * top action and pop(), so a held Ctrl+Z could double-replay and double-pop
+	 * the same action. While a replay is in flight, further undo/redo are
+	 * dropped (report B13). */
+	private replaying = false;
 	/** While a transaction is open, records collect here instead of pushing —
 	 * see `transaction`. Null when no transaction is active. */
 	private txBuffer: Action[] | null = null;
@@ -313,16 +318,19 @@ export class HistoryStore {
 	 * (recording suspended), then move it to the redo stack. Atomic — on RPC
 	 * failure the action stays on the undo stack and `lastError` is set. */
 	async undo(): Promise<void> {
-		if (!this.canUndo) return;
+		if (this.replaying || !this.canUndo) return;
 		const action = this.undoStack[this.undoStack.length - 1];
 		const exec = executors[action.kind];
 		if (!exec) return;
+		this.replaying = true;
 		try {
 			await restoreNavContext(action.context);
 			await this.suspend(() => exec.inverse(action, this.depsProvider()));
 		} catch (e) {
 			this.lastError = `Undo failed: ${(e as Error).message ?? e}`;
 			return; // leave the stacks untouched (atomic-or-nothing)
+		} finally {
+			this.replaying = false;
 		}
 		this.undoStack.pop();
 		this.redoStack.push(action);
@@ -330,16 +338,19 @@ export class HistoryStore {
 	}
 
 	async redo(): Promise<void> {
-		if (!this.canRedo) return;
+		if (this.replaying || !this.canRedo) return;
 		const action = this.redoStack[this.redoStack.length - 1];
 		const exec = executors[action.kind];
 		if (!exec) return;
+		this.replaying = true;
 		try {
 			await restoreNavContext(action.context);
 			await this.suspend(() => exec.forward(action, this.depsProvider()));
 		} catch (e) {
 			this.lastError = `Redo failed: ${(e as Error).message ?? e}`;
 			return;
+		} finally {
+			this.replaying = false;
 		}
 		this.redoStack.pop();
 		this.undoStack.push(action);
