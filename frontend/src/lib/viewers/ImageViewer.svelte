@@ -2,6 +2,8 @@
 	import type { DataFrame, ArrayData } from '$lib/codec/decode';
 	import type { SettingsMap } from './settingsSchema';
 	import { makeLUT } from './colormaps';
+	import { GLImageRenderer, glSupports } from './imageGL';
+	import { onMount, onDestroy } from 'svelte';
 
 	type Props = { frame: DataFrame; settings?: SettingsMap };
 	const { frame, settings = {} }: Props = $props();
@@ -13,9 +15,36 @@
 	const vmin = $derived(Number(settings.vmin ?? 0));
 	const vmax = $derived(Number(settings.vmax ?? 1));
 
-	let canvas: HTMLCanvasElement | null = $state(null);
-	// Reused across frames; reallocated only when the frame size changes, so a
-	// steady HD stream doesn't churn a fresh ~8MB ImageData every paint.
+	// Two canvases: a WebGL2 one (the fast path — HD video, float heatmaps) and a
+	// 2D one (fallback for the rare float-RGB / gray+alpha frames, or when WebGL2
+	// is unavailable). A canvas can hold only one context type, so we pick per
+	// frame and show the matching canvas.
+	let glCanvas: HTMLCanvasElement | null = $state(null);
+	let canvas2d: HTMLCanvasElement | null = $state(null);
+	let useGl = $state(false);
+	let renderer: GLImageRenderer | null = null;
+	let cssW = 300;
+	let cssH = 150;
+	let ro: ResizeObserver | null = null;
+
+	onMount(() => {
+		if (glCanvas) {
+			renderer = GLImageRenderer.tryCreate(glCanvas);
+			ro = new ResizeObserver((entries) => {
+				for (const e of entries) {
+					cssW = e.contentRect.width || cssW;
+					cssH = e.contentRect.height || cssH;
+				}
+			});
+			ro.observe(glCanvas);
+		}
+	});
+	onDestroy(() => {
+		ro?.disconnect();
+		renderer?.dispose();
+	});
+
+	// Reused 2D ImageData; reallocated only when the frame size changes.
 	let img: ImageData | null = null;
 
 	let lut = makeLUT('gray');
@@ -47,34 +76,59 @@
 		return [lo, hi];
 	}
 
-	function paint(arr: ArrayData): void {
-		if (!canvas) return;
+	function shapeOf(arr: ArrayData): [number, number, number] | null {
 		const shape = arr.shape;
-		if (shape.length < 2) return;
-		let h: number, w: number, c: number;
-		if (shape.length === 2) {
-			[h, w] = shape;
-			c = 1;
-		} else if (shape.length === 3) {
-			[h, w, c] = shape;
-			if (![1, 2, 3, 4].includes(c)) return;
-		} else {
+		if (shape.length === 2) return [shape[0], shape[1], 1];
+		if (shape.length === 3) {
+			const c = shape[2];
+			if (![1, 2, 3, 4].includes(c)) return null;
+			return [shape[0], shape[1], c];
+		}
+		return null;
+	}
+
+	function isFloatDtype(dtype: string): boolean {
+		return dtype.startsWith('<f') || dtype.startsWith('|f') || dtype.startsWith('=f');
+	}
+
+	function render(arr: ArrayData): void {
+		const dims = shapeOf(arr);
+		if (!dims) return;
+		const [h, w, c] = dims;
+		const isFloat = isFloatDtype(arr.dtype);
+
+		if (renderer && glSupports(c, isFloat)) {
+			useGl = true;
+			let lo = 0;
+			let hi = 1;
+			if (c === 1) [lo, hi] = grayRange(arr.values, w * h, 1);
+			renderer.render(arr.values, w, h, c, isFloat, {
+				colormap,
+				lut: lutFor(colormap),
+				lo,
+				hi,
+				cssW,
+				cssH
+			});
 			return;
 		}
+		useGl = false;
+		paint2d(arr, h, w, c, isFloat);
+	}
 
-		const ctx = canvas.getContext('2d');
+	function paint2d(arr: ArrayData, h: number, w: number, c: number, isFloat: boolean): void {
+		if (!canvas2d) return;
+		const ctx = canvas2d.getContext('2d');
 		if (!ctx) return;
-		if (canvas.width !== w || canvas.height !== h) {
-			canvas.width = w;
-			canvas.height = h;
+		if (canvas2d.width !== w || canvas2d.height !== h) {
+			canvas2d.width = w;
+			canvas2d.height = h;
 			img = null;
 		}
 		if (!img || img.width !== w || img.height !== h) img = ctx.createImageData(w, h);
 
 		const dst = img.data;
 		const src = arr.values;
-		const isFloat =
-			arr.dtype.startsWith('<f') || arr.dtype.startsWith('|f') || arr.dtype.startsWith('=f');
 		const isU8 = arr.dtype === '|u1' || arr.dtype === '<u1' || arr.dtype === '=u1';
 		const scale: (v: number) => number = isU8
 			? (v) => v
@@ -84,7 +138,6 @@
 		const n = w * h;
 
 		if (c === 1 || c === 2) {
-			// Grayscale → colormap, normalized to the chosen value range.
 			const stride = c;
 			const L = lutFor(colormap);
 			const [lo, hi] = grayRange(src, n, stride);
@@ -122,12 +175,13 @@
 
 	$effect(() => {
 		// Repaint on a new frame or any colormap / range change.
-		void [colormap, autoRange, vmin, vmax];
-		if (frame) paint(asArray(frame.data));
+		void [colormap, autoRange, vmin, vmax, cssW, cssH];
+		if (frame) render(asArray(frame.data));
 	});
 </script>
 
-<canvas bind:this={canvas}></canvas>
+<canvas bind:this={glCanvas} class:hidden={!useGl}></canvas>
+<canvas bind:this={canvas2d} class:hidden={useGl}></canvas>
 
 <style>
 	canvas {
@@ -136,5 +190,8 @@
 		image-rendering: pixelated;
 		background: #000;
 		object-fit: contain;
+	}
+	canvas.hidden {
+		display: none;
 	}
 </style>
