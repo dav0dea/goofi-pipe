@@ -26,6 +26,7 @@ import { graphExecutors } from './graphExecutors';
 import { layoutExecutors } from '$lib/workspace/layoutExecutors';
 import { viewExecutors } from '$lib/viewers/viewExecutors';
 import { restoreNavContext } from '$lib/workspace/navContext';
+import { pulseRestored } from './undoFlash';
 
 export type ActionDomain = 'graph' | 'layout' | 'view';
 
@@ -335,6 +336,7 @@ export class HistoryStore {
 		this.undoStack.pop();
 		this.redoStack.push(action);
 		this._recompute();
+		pulseRestored(action.context, this.depsProvider());
 	}
 
 	async redo(): Promise<void> {
@@ -355,6 +357,7 @@ export class HistoryStore {
 		this.redoStack.pop();
 		this.undoStack.push(action);
 		this._recompute();
+		pulseRestored(action.context, this.depsProvider());
 	}
 
 	/** Run `fn` with recording disabled, then resume. Reentrant, and async-aware:

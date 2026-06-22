@@ -3,6 +3,7 @@
 	import { categoryColor, dtypeColor } from './categoryColor';
 	import SlotViewer from '$lib/viewers/SlotViewer.svelte';
 	import { ui } from '$lib/stores/ui.svelte';
+	import { flash } from '$lib/stores/flash.svelte';
 	import { NODE } from './nodeMetrics';
 	import type { NodeInstanceInfo } from '$lib/api/control';
 
@@ -43,6 +44,8 @@
 
 	const accent = $derived(categoryColor(node?.category));
 	const hasError = $derived(Boolean(node?.error));
+	// Brief "this just changed" pulse after an undo/redo reorients here (#19).
+	const flashing = $derived(flash().active(node?.name));
 	const healthColor = $derived(hasError ? 'var(--danger)' : 'var(--success)');
 
 	// Inputs are bare connectors on the left edge, one per slot unit from the top
@@ -68,6 +71,7 @@
 	class="goofi-node"
 	class:selected
 	class:has-error={hasError}
+	class:undo-flash={flashing}
 	class:subpatch={Boolean(sub)}
 	style="--accent: {accent}; min-height: calc(var(--node-header) + {minBody} * var(--node-u));"
 	data-testid={sub ? 'subpatch-node' : undefined}
@@ -183,6 +187,25 @@
 	}
 	.goofi-node.has-error .surface {
 		border-color: var(--danger);
+	}
+	/* Undo/redo just reoriented here — a one-shot ring pulse to catch the eye
+	   (#19). The class is removed after the window, so the animation re-fires on
+	   the next undo/redo that lands on this node. */
+	.goofi-node.undo-flash .surface {
+		animation: undo-flash 0.7s ease-out;
+	}
+	@keyframes undo-flash {
+		0% {
+			box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 80%, transparent);
+		}
+		100% {
+			box-shadow: 0 0 0 10px color-mix(in srgb, var(--accent) 0%, transparent);
+		}
+	}
+	@media (prefers-reduced-motion: reduce) {
+		.goofi-node.undo-flash .surface {
+			animation: none;
+		}
 	}
 	.header {
 		flex: 0 0 auto;
