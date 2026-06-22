@@ -1,41 +1,26 @@
 <script lang="ts">
-	import type { ArrayData } from '$lib/codec/decode';
+	import type { ViewSummary } from './viewMeta';
 
-	type Props = { arraySpec: ArrayData };
-	const { arraySpec }: Props = $props();
+	type Props = { summary: ViewSummary };
+	const { summary }: Props = $props();
 
-	const stats = $derived.by(() => {
-		const v = arraySpec.values as ArrayLike<number>;
-		if (v.length === 0) return null;
-		let mn = Infinity;
-		let mx = -Infinity;
-		let sum = 0;
-		let n = 0;
-		for (let i = 0; i < v.length; i++) {
-			const x = Number(v[i]);
-			if (!Number.isFinite(x)) continue;
-			if (x < mn) mn = x;
-			if (x > mx) mx = x;
-			sum += x;
-			n++;
-		}
-		if (n === 0) return null;
-		return { min: mn, max: mx, mean: sum / n, n };
-	});
+	const hasStats = $derived(
+		summary.min !== null && summary.max !== null && summary.mean !== null
+	);
 </script>
 
 <div class="fallback" data-testid="highdim-fallback">
 	<div class="title">Cannot render this shape</div>
 	<div class="line">
-		shape: <code>[{arraySpec.shape.join(', ')}]</code>
+		shape: <code>[{summary.shape.join(', ')}]</code>
 	</div>
 	<div class="line">
-		dtype: <code>{arraySpec.dtype}</code>
+		dtype: <code>{summary.dtype}</code>
 	</div>
-	{#if stats}
-		<div class="line">min: <code>{stats.min.toPrecision(4)}</code></div>
-		<div class="line">max: <code>{stats.max.toPrecision(4)}</code></div>
-		<div class="line">mean: <code>{stats.mean.toPrecision(4)}</code></div>
+	{#if hasStats}
+		<div class="line">min: <code>{summary.min!.toPrecision(4)}</code></div>
+		<div class="line">max: <code>{summary.max!.toPrecision(4)}</code></div>
+		<div class="line">mean: <code>{summary.mean!.toPrecision(4)}</code></div>
 	{:else}
 		<div class="line">stats: no finite values</div>
 	{/if}
