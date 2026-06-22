@@ -1334,6 +1334,10 @@ class Manager:
                     "members": members,
                     "links": internal.get(iid, []),
                 }
+            # Per-instance viewer state (collapsed sub-patch slots) rides on the record
+            # so a reload keeps the kind/settings the user chose (backlog #17).
+            if inst.get("viewers"):
+                instances[iid]["viewers"] = deepcopy(inst["viewers"])
         return root_nodes, root_links, definitions, instances
 
     def _add_node_from_record(
@@ -1414,6 +1418,8 @@ class Manager:
                 "pos": inst.get("pos", [0, 0]),
                 "members": members_map,
             }
+            if inst.get("viewers"):
+                self._instances[inst_id]["viewers"] = inst["viewers"]
             for nn in members_map:
                 self._membership[nn] = inst_id
 

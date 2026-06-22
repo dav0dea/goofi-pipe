@@ -233,9 +233,13 @@ class ControlHub:
             # Per-output-slot view state (collapsed / kind / settings) the browser
             # keeps in sync so it round-trips into the .gfi on save. Soft UI state,
             # like the workspace layout, so it deliberately does not mark unsaved.
-            # A sub-patch instance id has no NodeRef of its own (its viewer state
-            # isn't persisted yet) — accept and ignore rather than erroring.
+            # A sub-patch instance id has no NodeRef of its own: persist its
+            # per-boundary-slot viewer state on the instance record so it round-trips
+            # into the .gfi (backlog #17).
             if payload["node"] not in manager.nodes:
+                inst = getattr(manager, "_instances", {}).get(payload["node"])
+                if inst is not None:
+                    inst["viewers"] = payload.get("viewers") or {}
                 return {"ok": True}
             ref = manager.nodes[payload["node"]]
             kwargs = dict(ref.gui_kwargs or {})
