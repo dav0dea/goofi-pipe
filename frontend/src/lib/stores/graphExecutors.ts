@@ -259,9 +259,14 @@ const makeUnique: Executor = {
 	},
 	async inverse(action, deps) {
 		const a = as<'make_unique'>(action);
-		// Best-effort: re-promote to shared when it had a definition before. (A
-		// perfect re-attach to the exact prior definition needs backend support —
-		// see spec §11 deferral.)
+		// KNOWN LIMITATION (backlog #21, spec §11 deferral): undoing make_unique
+		// re-promotes the instance to shared, but `duplicate_shared` mints a FRESH
+		// definition rather than re-attaching to the exact prior `defIdBefore` and
+		// its original siblings. So the instance is shared again (not left unique),
+		// but its shared-group identity differs from before the make_unique. An
+		// exact re-attach needs a backend "re-share to existing def_id" op, which is
+		// deliberately deferred — restoring a node to a specific prior definition
+		// identity is a larger sub-patch-runtime change than this frontend layer owns.
 		if (a.payload.defIdBefore) await deps.control.call('duplicate_shared', { inst_id: a.payload.instId });
 	}
 };
