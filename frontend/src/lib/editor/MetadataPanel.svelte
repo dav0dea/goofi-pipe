@@ -124,8 +124,8 @@
 		border-radius: 4px;
 		padding: 6px;
 		margin-top: 8px;
-		max-height: 200px;
-		overflow: auto;
+		/* No max-height: let the block grow to its content and use the panel's
+		   full height; the wrapping inspector panel (`.scroll`) handles overflow. */
 		white-space: pre-wrap;
 	}
 	.hint {

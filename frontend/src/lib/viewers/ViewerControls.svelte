@@ -48,7 +48,11 @@
 		appearance: none;
 		font-family: var(--font-mono);
 		font-size: 0.85em;
-		line-height: 1;
+		/* `line-height: 1` made the line box shorter than the monospace glyph box,
+		   so the <select>'s value text overflowed upward and clipped — it only
+		   *looked* top-offset. `normal` gives the line box enough height that the
+		   single value line centers within the symmetric padding box. */
+		line-height: normal;
 		text-align: center;
 		text-align-last: center;
 		color: var(--text-dim);
