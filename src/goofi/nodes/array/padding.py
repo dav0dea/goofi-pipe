@@ -1,3 +1,5 @@
+from copy import deepcopy
+
 import numpy as np
 
 from goofi.data import Data, DataType
@@ -74,8 +76,9 @@ class Padding(Node):
         else:
             result = np.pad(array.data, pad_width, mode=mode)
 
-        # Update metadata channels if they exist
-        meta = array.meta.copy()
+        # Update metadata channels if they exist (deep: we rewrite a nested channels
+        # list, so a shallow copy would alias and mutate the producer's meta).
+        meta = deepcopy(array.meta)
         if "channels" in meta and meta["channels"] is not None:
             channels = meta["channels"]
             if isinstance(channels, dict):

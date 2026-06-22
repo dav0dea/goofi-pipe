@@ -1,3 +1,5 @@
+from copy import deepcopy
+
 import numpy as np
 from numpy.fft import fft, fftfreq
 
@@ -116,7 +118,7 @@ class PSD(Node):
             f_max = freq.max()
         valid_indices = np.where((freq >= f_min) & (freq <= f_max))[0]
 
-        meta = data.meta.copy()
+        meta = deepcopy(data.meta)  # deep: we rewrite meta['channels'][dimN] (don't alias the producer)
         freq = freq[valid_indices]
         psd = np.take(psd, valid_indices, axis=axis)
         meta["channels"][f"dim{axis}"] = freq.tolist()
