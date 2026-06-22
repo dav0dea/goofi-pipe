@@ -640,3 +640,26 @@ reduced `Data` snapshot.
 viewing a purely input-triggered leaf whose upstream is idle shows nothing (sources
 free-run, so this matches `test.gfi`). (The earlier tick-cadence and 127.0.0.1
 trade-offs are now *resolved* by the reducer thread and the shared host scope.)
+
+**STATUS 2026-06-22 — relationship to the shipped viewer-adapters plane.** This
+spec was written (2026-06-16) *before* the viewer-adapters data plane that now
+ships on `frontend`. The two are **alternative** reductions of the same problem,
+not additive:
+
+- **Shipped today (viewer adapters):** the bridge decodes each slot once and
+  re-encodes per viewer *kind* with a **dtype** downcast at the boundary
+  (`bridge/adapters.py`: image→uint8, line/etc→float16) over
+  `/data/<node>/<slot>/<kind>`. The manager **stays** in the data path; reduction
+  is bit-depth only (~2–4×), full resolution still crosses the wire.
+- **This spec (P2P thalamus):** node-side per-axis reduction to the viewer's actual
+  *capacity* (~1300× for a kHz buffer; HD→viewer-pixels), **P2P**, manager removed
+  from the data path. It is strictly more powerful and directly removes the
+  measured perf ceiling (manager decode→re-encode + float32). §9.1 of the spec
+  **deletes `bridge/data.py`** — i.e. adopting the thalamus **supersedes** the
+  adapters plane (they cannot coexist).
+
+So the thalamus is the recommended **next major project** (a clean 10-step plan,
+§11), not a rebase of the current code. When undertaken, fold the per-kind adapter
+*intent* into the per-axis `ViewSpec` and delete `adapters.py` + the `/kind` route.
+Until then the adapters plane is the shipped reduction. The design branch this came
+from (`design/p2p-thalamus`) has been deleted now that the spec lives here.
