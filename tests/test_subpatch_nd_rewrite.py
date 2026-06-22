@@ -45,7 +45,7 @@ def test_none_expression_passthrough():
 # --- integration: group then expand round-trips the reference ---------------
 
 def test_group_and_expand_rewrite_nd_cross_refs():
-    mgr = _bare_manager()
+    mgr = _bare_manager(use_multiprocessing=False)
     try:
         a = mgr.add_node("Oscillator", "inputs")
         b = mgr.add_node("Oscillator", "inputs")

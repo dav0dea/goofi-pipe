@@ -11,13 +11,13 @@ from .test_manager import _bare_manager
 
 
 def test_transaction_rolls_back_nodes_and_maps_on_failure():
-    mgr = _bare_manager()
+    mgr = _bare_manager(use_multiprocessing=False)
     try:
         before_nodes = set(mgr.nodes)
         before_inst = dict(mgr._instances)
         with pytest.raises(RuntimeError):
             with mgr._transaction():
-                mgr.add_node("Oscillator", "inputs")  # spawns a real process
+                mgr.add_node("Oscillator", "inputs")  # spawns a node (thread-mode)
                 mgr._instances["ghost"] = {"kind": "unique", "members": {}}
                 raise RuntimeError("boom")
         assert set(mgr.nodes) == before_nodes, "spawned node not torn down on rollback"
@@ -27,7 +27,7 @@ def test_transaction_rolls_back_nodes_and_maps_on_failure():
 
 
 def test_transaction_commits_on_success():
-    mgr = _bare_manager()
+    mgr = _bare_manager(use_multiprocessing=False)
     try:
         before = set(mgr.nodes)
         with mgr._transaction():
@@ -40,10 +40,9 @@ def test_transaction_commits_on_success():
 def test_instantiate_definition_atomic_on_link_failure(monkeypatch):
     """A forced failure during the link phase tears down the just-spawned members
     and leaves no instance record behind (atomic via _transaction)."""
-    mgr = _bare_manager()
+    mgr = _bare_manager(use_multiprocessing=False)
     try:
         a = mgr.add_node("Oscillator", "inputs")
-        mgr.nodes[a].wait_for_state(timeout=3.0)  # serialized_state must exist before share
         inst = mgr.group_nodes([a])
         def_id = mgr.share_instance(inst)
         before_nodes = set(mgr.nodes)

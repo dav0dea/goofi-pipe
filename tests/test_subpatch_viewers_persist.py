@@ -8,10 +8,9 @@ from .test_manager import _bare_manager
 
 
 def test_instance_viewers_serialize_into_v2_tree():
-    mgr = _bare_manager()
+    mgr = _bare_manager(use_multiprocessing=False)
     try:
         a = mgr.add_node("Oscillator", "inputs")
-        mgr.nodes[a].wait_for_state(timeout=3.0)
         inst = mgr.group_nodes([a])
         mgr._instances[inst]["viewers"] = {"out0": {"kind": "image", "settings": {}}}
 
@@ -22,16 +21,15 @@ def test_instance_viewers_serialize_into_v2_tree():
 
 
 def test_instance_viewers_restore_on_expand_doc():
-    mgr = _bare_manager()
+    mgr = _bare_manager(use_multiprocessing=False)
     try:
         a = mgr.add_node("Oscillator", "inputs")
-        mgr.nodes[a].wait_for_state(timeout=3.0)
         inst = mgr.group_nodes([a])
         mgr._instances[inst]["viewers"] = {"out0": {"kind": "topomap"}}
         root_nodes, root_links, defs, instances = mgr.build_v2_tree()
 
         # Reload into a fresh manager via the same expand path the loader uses.
-        mgr2 = _bare_manager()
+        mgr2 = _bare_manager(use_multiprocessing=False)
         try:
             mgr2._expand_doc(root_nodes, root_links, instances, defs)
             assert mgr2._instances[inst].get("viewers") == {"out0": {"kind": "topomap"}}
