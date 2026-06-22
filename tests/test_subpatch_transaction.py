@@ -43,6 +43,7 @@ def test_instantiate_definition_atomic_on_link_failure(monkeypatch):
     mgr = _bare_manager()
     try:
         a = mgr.add_node("Oscillator", "inputs")
+        mgr.nodes[a].wait_for_state(timeout=3.0)  # serialized_state must exist before share
         inst = mgr.group_nodes([a])
         def_id = mgr.share_instance(inst)
         before_nodes = set(mgr.nodes)

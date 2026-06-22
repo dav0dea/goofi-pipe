@@ -11,6 +11,7 @@ def test_instance_viewers_serialize_into_v2_tree():
     mgr = _bare_manager()
     try:
         a = mgr.add_node("Oscillator", "inputs")
+        mgr.nodes[a].wait_for_state(timeout=3.0)
         inst = mgr.group_nodes([a])
         mgr._instances[inst]["viewers"] = {"out0": {"kind": "image", "settings": {}}}
 
@@ -24,6 +25,7 @@ def test_instance_viewers_restore_on_expand_doc():
     mgr = _bare_manager()
     try:
         a = mgr.add_node("Oscillator", "inputs")
+        mgr.nodes[a].wait_for_state(timeout=3.0)
         inst = mgr.group_nodes([a])
         mgr._instances[inst]["viewers"] = {"out0": {"kind": "topomap"}}
         root_nodes, root_links, defs, instances = mgr.build_v2_tree()

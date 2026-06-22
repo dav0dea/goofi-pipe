@@ -15,6 +15,7 @@ def test_shared_mirror_surfaces_sibling_failure(caplog):
     mgr = _bare_manager()
     try:
         a = mgr.add_node("Oscillator", "inputs")
+        mgr.nodes[a].wait_for_state(timeout=3.0)  # serialized_state must exist before grouping/sharing
         inst1 = mgr.group_nodes([a])
         def_id = mgr.share_instance(inst1)
         inst2 = mgr.instantiate_definition(def_id)
