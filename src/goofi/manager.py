@@ -19,6 +19,7 @@ After the iceoryx2 transport refactor, the manager:
 from __future__ import annotations
 
 import atexit
+import contextlib
 import importlib
 import os
 import re
@@ -621,6 +622,41 @@ class Manager:
             }
         return iface
 
+    @contextlib.contextmanager
+    def _transaction(self):
+        """Atomic rollback for multi-node sub-patch mutations (spec §2.10, backlog #2).
+
+        Snapshots the in-memory graph-state maps and the live node set on entry. On an
+        exception inside the block, tears down any nodes spawned during the block (so a
+        partial splice leaves no orphan process) and restores the maps in place — the
+        graph is byte-identical to before. On success the changes commit. (Live transport
+        re-wiring of an externally-displaced link is not replayed here; the restored
+        _links list re-wires on the next load.)"""
+        snap_links = deepcopy(self._links)
+        snap_groups = deepcopy(self._node_groups)
+        snap_membership = deepcopy(self._membership)
+        snap_instances = deepcopy(self._instances)
+        snap_definitions = deepcopy(self._definitions)
+        before_nodes = set(self.nodes)
+        try:
+            yield
+        except Exception:
+            for n in set(self.nodes) - before_nodes:
+                try:
+                    self.remove_node(n, notify_gui=False)
+                except Exception:
+                    pass
+            self._links[:] = snap_links
+            self._node_groups.clear()
+            self._node_groups.update(snap_groups)
+            self._membership.clear()
+            self._membership.update(snap_membership)
+            self._instances.clear()
+            self._instances.update(snap_instances)
+            self._definitions.clear()
+            self._definitions.update(snap_definitions)
+            raise
+
     def _rewrite_member_expressions(self, member_names, rename_map: Dict[str, str]) -> None:
         """Rewrite string-literal nd() refs in each member's param expressions to the
         renamed fellow members (group: bare->qualified; expand: qualified->bare),
@@ -891,8 +927,8 @@ class Manager:
         d = self._definitions[def_id]
         inst_id = self._fresh_instance_id()
         members: Dict[str, str] = {}
-        spawned: List[str] = []
-        try:
+        # Atomic: a failure mid-splice tears down spawned members + restores the maps.
+        with self._transaction():
             for local, rec in d["members"].items():
                 new_name = f"{inst_id}{SUBPATCH_SEP}{local}"
                 if not self._service_budget_ok(new_name):
@@ -901,7 +937,6 @@ class Manager:
                     new_name, dict(rec), allow_reserved=True,
                     membership={"instance": inst_id, "local_name": local},
                 )
-                spawned.append(new_name)
                 members[new_name] = local
             for link in d["links"]:
                 self.add_link(
@@ -909,25 +944,17 @@ class Manager:
                     f"{inst_id}{SUBPATCH_SEP}{link['node_in']}",
                     link["slot_out"], link["slot_in"], notify_gui=False,
                 )
-        except Exception:
-            # Roll back any members already spawned so a failure leaves the graph intact.
-            for n in reversed(spawned):
-                try:
-                    self.remove_node(n, notify_gui=False)
-                except Exception:
-                    pass
-            raise
-        self._instances[inst_id] = {
-            "kind": "shared",
-            "def_id": def_id,
-            # Deep-copy so this sibling's boundary edits never cross-mutate the def
-            # or other siblings (entries are mutable port dicts).
-            "interface": deepcopy(d["interface"]),
-            "pos": list(pos),
-            "members": members,
-        }
-        for nn in members:
-            self._membership[nn] = inst_id
+            self._instances[inst_id] = {
+                "kind": "shared",
+                "def_id": def_id,
+                # Deep-copy so this sibling's boundary edits never cross-mutate the def
+                # or other siblings (entries are mutable port dicts).
+                "interface": deepcopy(d["interface"]),
+                "pos": list(pos),
+                "members": members,
+            }
+            for nn in members:
+                self._membership[nn] = inst_id
         if self._bridge is not None and notify_gui:
             self._bridge.control.on_subpatch_changed()
         return inst_id
