@@ -21,6 +21,7 @@ from __future__ import annotations
 import atexit
 import importlib
 import os
+import re
 import time
 import uuid
 from copy import deepcopy
@@ -44,6 +45,29 @@ if TYPE_CHECKING:
 # A user/file node name may never contain it, so the grouping runtime can mint
 # collision-free qualified names and round-trip them unambiguously.
 SUBPATCH_SEP = "::"
+
+# Matches a string-literal `nd('name')` / `nd("name")` reference (up to the name's
+# closing quote), capturing the quote and the exact name. Whitespace after `nd(`
+# is tolerated and normalized away on rewrite; the closing paren is left untouched.
+_ND_REF = re.compile(r"nd\(\s*(?P<q>['\"])(?P<name>[^'\"]*)(?P=q)")
+
+
+def _rewrite_nd_literal(expr: Optional[str], rename_map: Dict[str, str]) -> Optional[str]:
+    """Best-effort rewrite of string-literal `nd('name')` references whose name is a
+    key of ``rename_map`` to the mapped name. References to names not in the map
+    (external producers) are left untouched. Non-string-literal / dynamic nd() args
+    are out of scope (they can't be statically rewritten)."""
+    if not expr or "nd(" not in expr:
+        return expr
+
+    def _repl(m: "re.Match[str]") -> str:
+        new = rename_map.get(m.group("name"))
+        if new is None:
+            return m.group(0)
+        q = m.group("q")
+        return f"nd({q}{new}{q}"
+
+    return _ND_REF.sub(_repl, expr)
 
 
 def _reject_reserved_name(name: str) -> None:
@@ -597,6 +621,29 @@ class Manager:
             }
         return iface
 
+    def _rewrite_member_expressions(self, member_names, rename_map: Dict[str, str]) -> None:
+        """Rewrite string-literal nd() refs in each member's param expressions to the
+        renamed fellow members (group: bare->qualified; expand: qualified->bare),
+        preserving the enable/trigger/autoeval flags. Best-effort: members without a
+        live ref/params are skipped."""
+        for name in member_names:
+            if name not in self.nodes:
+                continue
+            ref = self.nodes[name]
+            for grp in list(ref.params.keys()):
+                for pname, p in ref.params[grp].items():
+                    expr = getattr(p, "expression", None)
+                    new_expr = _rewrite_nd_literal(expr, rename_map)
+                    if new_expr != expr:
+                        ref.set_expression(
+                            grp,
+                            pname,
+                            new_expr,
+                            enabled=bool(getattr(p, "expression_enabled", False)),
+                            triggers_process=bool(getattr(p, "expression_triggers_process", False)),
+                            autoeval=bool(getattr(p, "expression_autoeval", False)),
+                        )
+
     @mark_unsaved_changes
     def group_nodes(
         self,
@@ -650,6 +697,10 @@ class Manager:
         for nn, local in members.items():
             self._membership[nn] = inst_id
             self.nodes[nn].membership = {"instance": inst_id, "local_name": local}
+
+        # Rewrite intra-group nd('name') references to the qualified member names so
+        # cross-references survive the rename (spec §2.6, backlog #1).
+        self._rewrite_member_expressions(members.keys(), {old: new for old, new in renamed})
 
         if self._bridge is not None and notify_gui:
             self._bridge.control.on_subpatch_changed()
@@ -742,6 +793,7 @@ class Manager:
             raise KeyError(f"No such sub-patch: {inst_id}")
         inst = self._instances[inst_id]
         restored: List[str] = []
+        rename_map: Dict[str, str] = {}
         for new_name, local in list(inst["members"].items()):
             target = local
             if target in self.nodes and target != new_name:
@@ -753,6 +805,9 @@ class Manager:
             self._membership.pop(target, None)
             self.nodes[target].membership = None
             restored.append(target)
+            rename_map[new_name] = target
+        # Reverse the grouping rewrite: qualified nd('inst::name') -> bare nd('name').
+        self._rewrite_member_expressions(restored, rename_map)
         del self._instances[inst_id]
         if self._bridge is not None and notify_gui:
             self._bridge.control.on_subpatch_changed()
