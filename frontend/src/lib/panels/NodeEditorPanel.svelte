@@ -289,13 +289,14 @@
 		}
 		for (const [instId, inst2] of Object.entries(g.instances)) {
 			// A collapsed sub-patch is rendered by the SAME node component as a real
-			// node (its wired boundaries are slots, output slots show viewers); the
-			// onEnter/onExpand handlers drive the header's sub-patch controls.
+			// node, with NO extra data — its wired boundaries are slots, its output
+			// slots show viewers. Enter it by double-click (onCanvasClick); its
+			// sharing/expand controls live in the inspector when it's selected.
 			next.push({
 				id: instId,
 				type: 'goofi',
 				position: { x: inst2.pos?.[0] ?? 0, y: inst2.pos?.[1] ?? 0 },
-				data: { node: g.nodeByName(instId), onEnter: enterInstance, onExpand: expandInstance },
+				data: { node: g.nodeByName(instId) },
 				selected: sel.nodes(panelId).has(instId)
 			});
 		}
@@ -408,10 +409,6 @@
 		} catch (e) {
 			console.warn('group failed', e);
 		}
-	}
-
-	function expandInstance(instId: string): void {
-		void g.expandInstance(instId).catch((e) => console.warn('expand failed', e));
 	}
 
 	/** The boundary id (interface key) of a boundary flow-node id, or null. */

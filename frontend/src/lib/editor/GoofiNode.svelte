@@ -1,5 +1,4 @@
 <script lang="ts">
-	import { untrack } from 'svelte';
 	import { Handle, Position, type NodeProps } from '@xyflow/svelte';
 	import { categoryColor, dtypeColor } from './categoryColor';
 	import SlotViewer from '$lib/viewers/SlotViewer.svelte';
@@ -17,13 +16,11 @@
 	const outputs = $derived(Object.keys(node?.output_slots ?? {}));
 	const uiStore = ui();
 
-	// A sub-patch instance is a node too: same surface, slots (its wired
-	// boundaries), and output viewers — plus a glyph, a member-count badge, and
-	// enter/expand controls in the header. Everything else is shared with a
-	// regular node, so the two never drift.
-	const sub = $derived(node?.subpatch ?? null);
-	const enterSub = untrack(() => data.onEnter as ((id: string) => void) | undefined);
-	const expandSub = untrack(() => data.onExpand as ((id: string) => void) | undefined);
+	// A sub-patch instance is rendered by THIS component with no special-casing: its
+	// wired boundaries are its slots, its output viewers stream its inner members.
+	// Enter it by double-click; its sharing/expand controls live in the inspector
+	// (SubPatchInspector) when selected — so the node body never diverges from a
+	// regular node's.
 
 	function onInputClick(e: MouseEvent, slot: string, dtype: string): void {
 		// Clicking an input opens the add-node menu seeded for this slot — whether
@@ -73,9 +70,8 @@
 	class:selected
 	class:has-error={hasError}
 	class:undo-flash={flashing}
-	class:subpatch={Boolean(sub)}
 	style="--accent: {accent}; min-height: calc(var(--node-header) + {minBody} * var(--node-u));"
-	data-testid={sub ? 'subpatch-node' : undefined}
+	data-testid={node?.subpatch ? 'subpatch-node' : undefined}
 >
 	<!-- Visual surface: clipped to the rounded node shape, so the header's top
 	     corners and the last slot's bottom corners are rounded once, here, no
@@ -83,33 +79,7 @@
 	<div class="surface">
 		<div class="header">
 			<span class="health" style="background: {healthColor};" title={node?.error ?? 'running'}></span>
-			{#if sub}
-				<span class="glyph" class:shared={sub.shared} title={sub.shared ? 'shared (strict mirror)' : 'unique sub-patch'}>{sub.shared ? '⇄' : '▣'}</span>
-			{/if}
 			<span class="name">{label}</span>
-			{#if sub}
-				<span class="count" title="{sub.memberCount} nodes">{sub.memberCount}</span>
-				<button
-					class="sp-btn"
-					title="Enter sub-patch (edit inside)"
-					aria-label="Enter sub-patch"
-					data-testid="subpatch-enter"
-					onclick={(e) => {
-						e.stopPropagation();
-						enterSub?.(sub.instId);
-					}}>⮕</button
-				>
-				<button
-					class="sp-btn"
-					title="Expand sub-patch (dissolve into its nodes)"
-					aria-label="Expand sub-patch"
-					data-testid="subpatch-expand"
-					onclick={(e) => {
-						e.stopPropagation();
-						expandSub?.(sub.instId);
-					}}>⤢</button
-				>
-			{/if}
 		</div>
 
 		{#if outputs.length > 0}
@@ -238,43 +208,6 @@
 		white-space: nowrap;
 		flex: 1 1 auto;
 		min-width: 0;
-	}
-	/* A collapsed sub-patch reads as a node with a slightly stronger border + a
-	   marker glyph, so it's recognizable without a separate component. */
-	.goofi-node.subpatch .surface {
-		background: var(--bg-elev-2);
-		border-color: var(--border-strong);
-	}
-	.glyph {
-		flex: 0 0 auto;
-		color: var(--accent);
-		font-size: 12px;
-	}
-	.glyph.shared {
-		color: var(--cat-array, var(--accent));
-	}
-	.count {
-		flex: 0 0 auto;
-		font-size: 10px;
-		color: var(--text-faint);
-		background: color-mix(in srgb, var(--accent) 16%, transparent);
-		border-radius: 8px;
-		padding: 1px 7px;
-	}
-	.sp-btn {
-		flex: 0 0 auto;
-		background: transparent;
-		border: 1px solid var(--border);
-		border-radius: var(--radius-sm);
-		color: var(--text-dim);
-		cursor: pointer;
-		font-size: 11px;
-		line-height: 1;
-		padding: 2px 5px;
-	}
-	.sp-btn:hover {
-		color: var(--text);
-		border-color: var(--accent);
 	}
 	.viewers {
 		display: flex;
