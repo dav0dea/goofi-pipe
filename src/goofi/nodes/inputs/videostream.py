@@ -5,7 +5,6 @@ import numpy as np
 from mss import mss
 
 from goofi.data import DataType
-from goofi.image_utils import as_uint8
 from goofi.node import Node
 from goofi.params import BoolParam, IntParam, StringParam
 
@@ -103,9 +102,9 @@ class VideoStream(Node):
             # flip the frame horizontally
             frame = cv2.flip(frame, 1)
 
-        # Emit uint8 [0,255] — 4x less wire data than float32/255, and the
-        # browser/viewer + downstream nodes accept uint8 directly (A0).
-        frame = as_uint8(frame)
+        # Nodes process pure float [0,1]; the wire-bandwidth win lives in the
+        # bridge viewer adapters, not here.
+        frame = frame.astype("float32") / 255.0
 
         return {"frame": (frame, {})}
 

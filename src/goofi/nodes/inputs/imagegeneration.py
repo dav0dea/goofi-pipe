@@ -6,7 +6,6 @@ import cv2
 import numpy as np
 
 from goofi.data import Data, DataType
-from goofi.image_utils import as_float01, as_uint8
 from goofi.node import Node
 from goofi.params import BoolParam, FloatParam, IntParam, StringParam
 
@@ -189,8 +188,8 @@ class ImageGeneration(Node):
                 else:
                     print(f"Failed to save image to {filename}_{n:02d}.png")
 
-            # Emit uint8 [0,255] per the A0 convention.
-            img_array = as_uint8(img_array)
+            # Emit float [0,1]; the bridge adapter handles wire representation.
+            img_array = img_array.astype(np.float32) / 255.0
             # Ensure correct shape
             if img_array.shape != (self.params.image_generation.width.value, self.params.image_generation.height.value, 3):
                 img_array = cv2.resize(
@@ -220,9 +219,8 @@ class ImageGeneration(Node):
                     if base_image is None:
                         base_image = self.last_img
                     # base_image was already extracted + resized in the img2img
-                    # block above (re-reading `.data` here yielded a memoryview).
-                    # Producers now emit uint8, but the SD pipe wants float [0,1] (A0).
-                    base_image = as_float01(base_image)
+                    # block above (re-reading `.data` here would yield a memoryview).
+                    # Producers emit float [0,1], which is what the SD pipe wants.
 
                     # run the img2img stable diffusion pipeline
                     img, _ = self.sd_pipe(
