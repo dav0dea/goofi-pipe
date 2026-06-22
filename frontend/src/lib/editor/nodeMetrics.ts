@@ -17,3 +17,33 @@ export const NODE = {
 	viewer: 144, // open viewer plot height
 	border: 1
 } as const;
+
+/** An In/Out boundary pill's footprint (mirrors BoundaryNode.svelte's min-width +
+ * padding/font). Pills are first-class draggables inside a sub-patch, so snapping
+ * needs their real size — a node-sized fallback would be wildly off. */
+export const BOUNDARY = {
+	width: 96,
+	height: 26
+} as const;
+
+/**
+ * The rendered size of a node's surface box, computed from its slot layout — the
+ * same rhythm GoofiNode draws with (header, then each output slot one unit tall
+ * collapsed / `unit + viewer` open, with a floor of one input-connector unit per
+ * input). This is the snap geometry's fallback when Svelte Flow hasn't measured a
+ * node yet, and the accurate size for short sub-patch group nodes — for which the
+ * old single fixed fallback was ~100px too tall, misaligning every snap.
+ *
+ * `outputExpanded[i]` is whether output slot i's inline viewer is open.
+ */
+export function nodeSurfaceSize(
+	inputCount: number,
+	outputExpanded: boolean[]
+): { width: number; height: number } {
+	const slotsStack = outputExpanded.reduce(
+		(h, open) => h + (open ? NODE.unit + NODE.viewer : NODE.unit),
+		0
+	);
+	const inputBody = Math.max(inputCount, 1) * NODE.unit;
+	return { width: NODE.width, height: NODE.header + Math.max(slotsStack, inputBody) };
+}

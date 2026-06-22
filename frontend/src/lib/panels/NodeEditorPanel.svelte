@@ -49,9 +49,11 @@
 		boundarySpec,
 		type InstanceInfo,
 		type LinkInfo,
+		type NodeInstanceInfo,
 		type NodeTypeInfo,
 		type SubPatchPort
 	} from '$lib/api/control';
+	import { nodeSurfaceSize, BOUNDARY } from '$lib/editor/nodeMetrics';
 	import { serializeClipboard, parseClipboard, clipToSpecs } from '$lib/editor/clipboard';
 	import { copyText } from '$lib/clipboard';
 	import { registerEditor, unregisterEditor } from './editorCommands';
@@ -479,21 +481,53 @@
 		sel.clickEdge(panelId, args.edge.id, e.shiftKey || e.ctrlKey || e.metaKey);
 	}
 
+	/** A node's snap footprint when Svelte Flow hasn't measured it yet. Computed
+	 * per node KIND so every first-class citizen snaps correctly: a sub-patch group
+	 * node from its wired-boundary slot layout (it's a `goofi` node like any other),
+	 * an In/Out boundary pill from the pill size, and a fresh real node from its
+	 * slots — instead of one fixed size that's right only for a typical mid node and
+	 * ~100px too tall for a short sub-patch. */
+	function nodeFallbackSize(flowNode: Node | undefined): { width: number; height: number } {
+		if (flowNode?.type === 'boundary') return { width: BOUNDARY.width, height: BOUNDARY.height };
+		const node = flowNode?.data?.node as NodeInstanceInfo | undefined;
+		if (node) {
+			const inputs = Object.keys(node.input_slots ?? {});
+			const outputs = Object.keys(node.output_slots ?? {});
+			return nodeSurfaceSize(
+				inputs.length,
+				outputs.map((s) => uiStore.isSlotExpanded(node.name, s))
+			);
+		}
+		return { width: DEFAULT_NODE_W, height: DEFAULT_NODE_H };
+	}
+
 	function nodeBoundsFromFlow(id: string, x: number, y: number): Bounds {
 		const flowNode = flowNodes.find((n) => n.id === id);
-		const w = flowNode?.measured?.width ?? DEFAULT_NODE_W;
-		const h = flowNode?.measured?.height ?? DEFAULT_NODE_H;
+		// Prefer the real DOM measurement; fall back to the kind-accurate size so a
+		// just-appeared (or transiently unmeasured) node still snaps to its true box.
+		let w = flowNode?.measured?.width;
+		let h = flowNode?.measured?.height;
+		if (w == null || h == null) {
+			const fb = nodeFallbackSize(flowNode);
+			w ??= fb.width;
+			h ??= fb.height;
+		}
 		return makeBounds(x, y, w, h);
 	}
 
-	function buildMeasurements(): Map<string, { width: number; height: number }> {
-		const m = new Map<string, { width: number; height: number }>();
+	/** Snap-target bounds (flow coords) for every node on screen in THIS editor,
+	 * excluding `exclude`. The single retrieval shared by the node drag AND the
+	 * placement preview, so sub-patch instances and boundary pills are first-class
+	 * snap targets in both paths and the two can't diverge. Only what's actually
+	 * rendered here (flowNodes) — never hidden members of a collapsed sub-patch, nor
+	 * nodes outside the entered sub-patch (which g.nodes would wrongly include). */
+	function snapTargetBounds(exclude: Set<string>): Bounds[] {
+		const targets: Bounds[] = [];
 		for (const n of flowNodes) {
-			if (n.measured?.width && n.measured?.height) {
-				m.set(n.id, { width: n.measured.width, height: n.measured.height });
-			}
+			if (exclude.has(n.id)) continue;
+			targets.push(nodeBoundsFromFlow(n.id, n.position.x, n.position.y));
 		}
-		return m;
+		return targets;
 	}
 
 	function dragSnapDelta(
@@ -502,15 +536,7 @@
 	): { dx: number; dy: number; guides: Guide[] } {
 		const draggedBounds: Bounds[] = [];
 		for (const [id, pos] of current) draggedBounds.push(nodeBoundsFromFlow(id, pos.x, pos.y));
-		// Snap only to what's actually on screen in THIS editor (flowNodes) — never
-		// to hidden members of a collapsed sub-patch or nodes outside the entered
-		// sub-patch (which g.nodes would include).
-		const targets: Bounds[] = [];
-		for (const n of flowNodes) {
-			if (current.has(n.id)) continue;
-			targets.push(nodeBoundsFromFlow(n.id, n.position.x, n.position.y));
-		}
-		return computeSnapDelta(draggedBounds, targets, altKey);
+		return computeSnapDelta(draggedBounds, snapTargetBounds(new Set(current.keys())), altKey);
 	}
 
 	// Positions at drag start, so a node reverts (snaps back) when the drag
@@ -1055,7 +1081,7 @@
 				<PlacementPreview
 					typeInfo={pendingPlacement.typeInfo}
 					initialClient={pendingPlacement.initialClient}
-					measurements={buildMeasurements()}
+					targets={snapTargetBounds(new Set())}
 					onCommit={(pos) => void commitPlacement(pos)}
 					onCancel={() => {
 						pendingPlacement = null;

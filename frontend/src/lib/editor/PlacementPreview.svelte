@@ -1,7 +1,6 @@
 <script lang="ts">
 	import { untrack } from 'svelte';
 	import { ViewportPortal, useSvelteFlow } from '@xyflow/svelte';
-	import { graph } from '$lib/stores/graph.svelte';
 	import { categoryColor, dtypeColor } from './categoryColor';
 	import {
 		computeSnapDelta,
@@ -17,16 +16,17 @@
 		/** Initial mouse position in client coords — used before the first
 		 * mousemove so the ghost spawns at the user's cursor rather than (0,0). */
 		initialClient: { x: number; y: number };
-		/** Measured widths/heights of currently-rendered nodes keyed by name. */
-		measurements: Map<string, { width: number; height: number }>;
+		/** Snap-target bounds (flow coords) of every node currently on screen — the
+		 * SAME set the drag snap uses, so a new node snaps to real nodes, sub-patch
+		 * instances, and boundary pills alike (not just the real nodes in g.nodes). */
+		targets: Bounds[];
 		onCommit: (pos: [number, number]) => void;
 		onCancel: () => void;
 	}
 
-	let { typeInfo, initialClient, measurements, onCommit, onCancel }: Props = $props();
+	let { typeInfo, initialClient, targets, onCommit, onCancel }: Props = $props();
 
 	const { screenToFlowPosition } = useSvelteFlow();
-	const g = graph();
 	const accent = $derived(categoryColor(typeInfo.category));
 
 	let mouseClient = $state<{ x: number; y: number }>(untrack(() => ({ x: initialClient.x, y: initialClient.y })));
@@ -38,13 +38,6 @@
 
 	const snap = $derived.by(() => {
 		const dragged = [makeBounds(flowPos.x, flowPos.y, ghostW, ghostH)];
-		const targets: Bounds[] = [];
-		for (const n of g.nodes) {
-			const m = measurements.get(n.name);
-			const w = m?.width ?? DEFAULT_NODE_W;
-			const h = m?.height ?? DEFAULT_NODE_H;
-			targets.push(makeBounds(n.pos[0], n.pos[1], w, h));
-		}
 		return computeSnapDelta(dragged, targets, altKey);
 	});
 
