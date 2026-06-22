@@ -17,14 +17,14 @@ export function registerAppPanels(): void {
 	if (done) return;
 	done = true;
 
-	// The trailing ︎ (text-presentation variation selector) forces the two
-	// emoji-default glyphs (⛓ U+26D3, ⚠ U+26A0) to render as monochrome text so
-	// they honor the inherited icon color — without it the browser draws them from
-	// the colour-emoji font, leaving these two coloured while the rest are grey.
+	// Panel icons are text-presentation glyphs (Geometric Shapes / Misc Technical),
+	// NOT emoji — so they all render monochrome and honor the inherited grey.
+	// Avoid emoji-default codepoints (⛓ U+26D3, ⚠ U+26A0) here: the browser draws
+	// those from the colour-emoji font regardless of CSS.
 	registerPanel({
 		id: 'node-editor',
 		title: 'Node Editor',
-		icon: '⛓︎',
+		icon: '◈',
 		component: NodeEditorPanel
 	});
 	registerPanel({
@@ -59,7 +59,7 @@ export function registerAppPanels(): void {
 	registerPanel({
 		id: 'errors',
 		title: 'Errors',
-		icon: '⚠︎',
+		icon: '◬',
 		component: ErrorsPanel
 	});
 }
