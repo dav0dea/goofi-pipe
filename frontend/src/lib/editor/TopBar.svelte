@@ -4,6 +4,7 @@
 	import type { Snippet } from 'svelte';
 	import type { MenuItem } from '$lib/workspace/menu';
 	import ContextMenu from '$lib/workspace/ContextMenu.svelte';
+	import { examplesToMenuItems } from './examplesMenu';
 
 	type Props = {
 		onAddNode: () => void;
@@ -36,6 +37,22 @@
 				{ label: 'Save in browser', action: onSaveInBrowser }
 			]
 		};
+	}
+
+	// Examples dropdown — lists examples/*.gfi from the backend and loads one on click,
+	// so users don't hand-navigate the filesystem to find them (backlog #11).
+	let examplesMenu = $state<{ x: number; y: number; items: MenuItem[] } | null>(null);
+
+	async function openExamplesMenu(e: MouseEvent): Promise<void> {
+		const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
+		let items: MenuItem[];
+		try {
+			const { entries } = await g.listExamples();
+			items = examplesToMenuItems(entries, (path) => void g.load(path));
+		} catch {
+			items = [{ label: '(failed to list examples)', disabled: true }];
+		}
+		examplesMenu = { x: Math.max(6, r.right - 200), y: r.bottom + 4, items };
 	}
 </script>
 
@@ -87,6 +104,7 @@
 				onclick={openSaveMenu}>▾</button
 			>
 		</div>
+		<button class="ghost" data-testid="topbar-examples" onclick={openExamplesMenu}>Examples ▾</button>
 		<button class="ghost" data-testid="topbar-load" onclick={onLoad}>Load…</button>
 	</div>
 </div>
@@ -97,6 +115,15 @@
 		y={saveMenu.y}
 		items={saveMenu.items}
 		onClose={() => (saveMenu = null)}
+	/>
+{/if}
+
+{#if examplesMenu}
+	<ContextMenu
+		x={examplesMenu.x}
+		y={examplesMenu.y}
+		items={examplesMenu.items}
+		onClose={() => (examplesMenu = null)}
 	/>
 {/if}
 
