@@ -9,6 +9,7 @@ import ParametersPanel from './ParametersPanel.svelte';
 import ViewerPanel from './ViewerPanel.svelte';
 import MetadataInspectorPanel from './MetadataInspectorPanel.svelte';
 import ConsolePanel from './ConsolePanel.svelte';
+import ErrorsPanel from './ErrorsPanel.svelte';
 
 let done = false;
 
@@ -50,5 +51,11 @@ export function registerAppPanels(): void {
 		component: ConsolePanel,
 		// Dropping a node filters the console to just that node's output.
 		acceptsNode: true
+	});
+	registerPanel({
+		id: 'errors',
+		title: 'Errors',
+		icon: '⚠',
+		component: ErrorsPanel
 	});
 }
