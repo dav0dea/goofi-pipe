@@ -48,18 +48,22 @@
 		appearance: none;
 		font-family: var(--font-mono);
 		font-size: 0.85em;
-		/* `line-height: 1` made the line box shorter than the monospace glyph box,
-		   so the <select>'s value text overflowed upward and clipped — it only
-		   *looked* top-offset. `normal` gives the line box enough height that the
-		   single value line centers within the symmetric padding box. */
-		line-height: normal;
+		/* The value text rode high at this smaller font-size because the browser
+		   floors a <select>'s height (UA min-height), leaving the short line box
+		   top-aligned in an over-tall control. Pin the content box to exactly the
+		   line height (content-box so they match precisely) and release the UA
+		   floor, so the single value line is vertically centered at any font-size. */
+		box-sizing: content-box;
+		height: 1.5em;
+		line-height: 1.5em;
+		min-height: 0;
 		text-align: center;
 		text-align-last: center;
 		color: var(--text-dim);
 		background: color-mix(in srgb, var(--bg) 55%, transparent);
 		border: 1px solid var(--border);
 		border-radius: 3px;
-		padding: 2px 4px;
+		padding: 0 4px;
 		cursor: pointer;
 	}
 	.kind:hover {
