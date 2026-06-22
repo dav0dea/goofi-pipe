@@ -31,7 +31,13 @@ class Delay(Node):
         # Get delay time from parameter
         delay_time = self.params.delay.time.value
 
-        # Apply delay
-        time.sleep(delay_time)
+        # Apply the delay in small chunks so terminate() (which clears self.alive) can
+        # interrupt a long delay instead of blocking the processing thread for the whole
+        # window — otherwise the node is unresponsive to shutdown for up to delay_time.
+        remaining = delay_time
+        while remaining > 0 and self.alive:
+            step = min(0.05, remaining)
+            time.sleep(step)
+            remaining -= step
 
         return {"output": (data.data, data.meta)}

@@ -49,3 +49,16 @@ class ZeroMQOut(Node):
     def zero_mq_port_changed(self, value):
         # TODO: make sure socket stuff only happens on the main thread
         self.setup()
+
+    def terminate(self):
+        # Close the socket + context so the bound port/fd isn't leaked across shutdown.
+        if getattr(self, "socket", None) is not None:
+            try:
+                self.socket.close(linger=0)
+            except Exception:
+                pass
+        if getattr(self, "context", None) is not None:
+            try:
+                self.context.term()
+            except Exception:
+                pass

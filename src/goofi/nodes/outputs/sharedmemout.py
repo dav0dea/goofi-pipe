@@ -67,3 +67,13 @@ class SharedMemOut(Node):
         if self.shm is not None:
             self.shm.close()
             self.shm.unlink()
+
+    def terminate(self):
+        # Release the shared-memory segment so it doesn't leak across shutdown/restart.
+        if getattr(self, "shm", None) is not None:
+            try:
+                self.shm.close()
+                self.shm.unlink()
+            except FileNotFoundError:
+                pass
+            self.shm = None
