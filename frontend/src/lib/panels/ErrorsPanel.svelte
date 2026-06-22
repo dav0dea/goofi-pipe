@@ -18,6 +18,10 @@
 	function focus(name: string): void {
 		editorFor(workspace().activePanelId)?.focusNode(name);
 	}
+
+	function restart(name: string): void {
+		void g.restartNode(name).catch((e) => console.warn('restart failed', e));
+	}
 </script>
 
 <div class="errors-panel" data-testid="errors-panel">
@@ -25,10 +29,18 @@
 		<div class="empty">No errors</div>
 	{:else}
 		{#each errored as n (n.name)}
-			<button class="err" onclick={() => focus(n.name)} title={`Focus ${n.name}`}>
-				<div class="ename">{n.name}</div>
+			<div class="err">
+				<div class="ehead">
+					<button class="ename" onclick={() => focus(n.name)} title={`Focus ${n.name}`}>{n.name}</button>
+					<button
+						class="restart"
+						onclick={() => restart(n.name)}
+						title="Restart this node (respawn with the same params + links)"
+						data-testid="errors-restart">↻ Restart</button
+					>
+				</div>
 				<pre class="etrace">{n.error}</pre>
-			</button>
+			</div>
 		{/each}
 	{/if}
 </div>
@@ -59,15 +71,39 @@
 		border: 1px solid color-mix(in srgb, var(--danger) 35%, transparent);
 		border-radius: var(--radius-sm);
 		padding: 6px 8px;
-		cursor: pointer;
 		color: var(--text);
 	}
-	.err:hover {
-		background: color-mix(in srgb, var(--danger) 14%, transparent);
+	.ehead {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 8px;
 	}
 	.ename {
 		color: var(--accent);
 		font-weight: 600;
+		background: none;
+		border: none;
+		padding: 0;
+		font: inherit;
+		cursor: pointer;
+		text-align: left;
+	}
+	.ename:hover {
+		text-decoration: underline;
+	}
+	.restart {
+		flex: 0 0 auto;
+		font-size: 10px;
+		padding: 2px 7px;
+		border-radius: var(--radius-sm);
+		border: 1px solid color-mix(in srgb, var(--danger) 45%, transparent);
+		background: color-mix(in srgb, var(--danger) 12%, transparent);
+		color: var(--text);
+		cursor: pointer;
+	}
+	.restart:hover {
+		background: color-mix(in srgb, var(--danger) 22%, transparent);
 	}
 	.etrace {
 		margin: 0;

@@ -385,6 +385,25 @@ export class GraphStore {
 		await this.ctl.call('remove_node', { name });
 	}
 
+	/** Respawn a (typically crashed) node: tear down its process and re-create it
+	 * with the SAME name, params, position, and links (backlog #25). It's a
+	 * recovery action, not a semantic edit — the node ends in the same logical
+	 * state — so it's run suspended and leaves the undo history untouched. */
+	async restartNode(name: string): Promise<void> {
+		const node = this.nodeByName(name);
+		if (!node) return;
+		const links = this.links
+			.filter((l) => l.node_in === name || l.node_out === name)
+			.map((l) => ({ ...l }));
+		const params = paramValues(node);
+		const { type, category, pos } = node;
+		await history().suspend(async () => {
+			await this.ctl.call('remove_node', { name });
+			await this.ctl.call('add_node', { type, category, name, pos, params });
+			for (const l of links) await this.ctl.call('add_link', { ...l });
+		});
+	}
+
 	async addLink(link: LinkInfo): Promise<void> {
 		// The single-source rule may displace an existing wire on the input —
 		// capture it before the add so undo can restore it.

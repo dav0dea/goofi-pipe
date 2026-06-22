@@ -560,6 +560,36 @@ describe('graph store — recording wrappers + undo replay', () => {
 		expect(history().canUndo).toBe(false); // history dropped
 	});
 
+	it('restartNode respawns the node with its params + links and records no history (#25)', async () => {
+		const fc = new FakeControl();
+		const g = new GraphStore(fc);
+		workspace().reset();
+		history().reset();
+		history().configureDeps(() => ({ control: fc, graph: g, workspace: workspace() }));
+
+		const vid = nodeInfo('vid0');
+		vid.input_slots = { in: 'ARRAY' };
+		vid.params = { common: { fps: { value: 30 } } } as never;
+		fc.emit({ event: 'node_added', payload: vid });
+		fc.emit({ event: 'node_added', payload: nodeInfo('buf0', 'Buffer') });
+		const lin: LinkInfo = { node_out: 'src0', slot_out: 'out', node_in: 'vid0', slot_in: 'in' };
+		const lout: LinkInfo = { node_out: 'vid0', slot_out: 'out', node_in: 'buf0', slot_in: 'in' };
+		fc.emit({ event: 'link_added', payload: lin });
+		fc.emit({ event: 'link_added', payload: lout });
+
+		fc.recordedCalls().length = 0;
+		await g.restartNode('vid0');
+
+		const ops = fc.recordedCalls();
+		const iRemove = ops.findIndex((c) => c.op === 'remove_node' && c.payload.name === 'vid0');
+		const iAdd = ops.findIndex((c) => c.op === 'add_node' && c.payload.name === 'vid0');
+		expect(iRemove).toBeGreaterThanOrEqual(0);
+		expect(iAdd).toBeGreaterThan(iRemove); // re-add AFTER remove, same name
+		expect(ops[iAdd].payload.params).toEqual({ common: { fps: 30 } }); // params preserved
+		expect(ops.filter((c) => c.op === 'add_link')).toHaveLength(2); // both links restored
+		expect(history().canUndo).toBe(false); // recovery op, not an edit
+	});
+
 	it('undo of removeNode restores panels that were bound to the node', async () => {
 		const fc = new FakeControl();
 		const g = new GraphStore(fc);

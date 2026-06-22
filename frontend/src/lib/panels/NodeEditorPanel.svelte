@@ -448,6 +448,32 @@
 		});
 	}
 
+	/** Drag an existing edge's endpoint to a new slot — re-target in place instead
+	 * of delete-then-redraw (backlog #25). Removing the old link + adding the new
+	 * one is wrapped in one history entry so a single undo reverts the move.
+	 * Boundary edges are left to the explicit wire/unwire flow. */
+	function onReconnect(oldEdge: Edge, c: Connection): void {
+		if (
+			parseBoundary(oldEdge.source) ||
+			parseBoundary(oldEdge.target) ||
+			parseBoundary(c.source ?? '') ||
+			parseBoundary(c.target ?? '')
+		)
+			return;
+		const oldSo = oldEdge.sourceHandle;
+		const oldSi = oldEdge.targetHandle;
+		if (!c.source || !c.target || !c.sourceHandle || !c.targetHandle || !oldSo || !oldSi) return;
+		void history().transaction('Reconnect link', async () => {
+			await g.removeLink({ node_out: oldEdge.source, node_in: oldEdge.target, slot_out: oldSo, slot_in: oldSi });
+			await g.addLink({
+				node_out: c.source as string,
+				node_in: c.target as string,
+				slot_out: c.sourceHandle as string,
+				slot_in: c.targetHandle as string
+			});
+		});
+	}
+
 	function onEdgeClick(args: { edge: Edge; event: MouseEvent }): void {
 		const e = args.event;
 		sel.clickEdge(panelId, args.edge.id, e.shiftKey || e.ctrlKey || e.metaKey);
@@ -979,6 +1005,7 @@
 			{nodeTypes}
 			deleteKey={['Delete', 'Backspace']}
 			onconnect={onConnect}
+			onreconnect={onReconnect}
 			onnodedragstart={onNodeDragStart}
 			onnodedrag={onNodeDrag}
 			onnodedragstop={onNodeDragStop}
@@ -1066,6 +1093,18 @@
 			{/if}
 		</SvelteFlow>
 
+		{#if flowNodes.length === 0 && !pendingPlacement && !menuOpen}
+			<!-- First-run / empty-canvas hint. pointer-events:none so double-click
+			     (open add-node menu) and panning still reach the canvas underneath. -->
+			<div class="empty-hint" data-testid="empty-hint">
+				<div class="eh-title">{entered ? 'This sub-patch is empty' : 'Empty patch'}</div>
+				<div class="eh-body">
+					Double-click the canvas or press <kbd>+</kbd> to add a node.
+					{#if !entered}<br />Load an example from the <strong>Examples ▾</strong> menu to get started.{/if}
+				</div>
+			</div>
+		{/if}
+
 		{#if menuOpen}
 			<div
 				class="menu-overlay"
@@ -1139,6 +1178,39 @@
 	.editor-panel :global(.svelte-flow__controls) {
 		bottom: 20px;
 		left: 20px;
+	}
+	/* First-run hint over an empty canvas. Non-interactive so it never eats the
+	   double-click that opens the add-node menu underneath it. */
+	.empty-hint {
+		position: absolute;
+		inset: 0;
+		display: flex;
+		flex-direction: column;
+		align-items: center;
+		justify-content: center;
+		gap: 8px;
+		text-align: center;
+		pointer-events: none;
+		color: var(--text-faint);
+		z-index: 1;
+	}
+	.eh-title {
+		font-size: 15px;
+		font-weight: 600;
+		color: var(--text-dim);
+	}
+	.eh-body {
+		font-size: 12px;
+		line-height: 1.6;
+		max-width: 320px;
+	}
+	.eh-body kbd {
+		font-family: var(--font-mono);
+		font-size: 11px;
+		padding: 1px 5px;
+		border: 1px solid var(--border);
+		border-radius: 4px;
+		background: var(--bg-elev-1);
 	}
 	/* Per-editor inspector affordance, parked top-right. Subtle until hovered so
 	   it doesn't compete with the canvas; only shown while the inspector is off. */
