@@ -14,16 +14,21 @@ type FrameCallback = (frame: DataFrame) => void;
 let worker: Worker | null = null;
 const consumers = new Map<string, Set<FrameCallback>>();
 
-function key(node: string, slot: string): string {
-	return `${node} ${slot}`;
+function key(node: string, slot: string, kind: string): string {
+	return `${node} ${slot} ${kind}`;
 }
 
 function ensureWorker(): Worker {
 	if (worker) return worker;
 	worker = new Worker(new URL('./dataWorker.ts', import.meta.url), { type: 'module' });
 	worker.addEventListener('message', (e: MessageEvent) => {
-		const { node, slot, frame } = e.data as { node: string; slot: string; frame: DataFrame };
-		const set = consumers.get(key(node, slot));
+		const { node, slot, kind, frame } = e.data as {
+			node: string;
+			slot: string;
+			kind: string;
+			frame: DataFrame;
+		};
+		const set = consumers.get(key(node, slot, kind));
 		if (!set) return;
 		for (const cb of set) {
 			try {
@@ -37,17 +42,18 @@ function ensureWorker(): Worker {
 }
 
 /**
- * Subscribe to a (node, slot) data stream. Returns an unsubscribe function.
- * Frames arrive already decoded and coalesced to ~display rate by the worker.
- * Multiple consumers of the same slot share one worker WS.
+ * Subscribe to a (node, slot) data stream rendered for viewer `kind`. Returns an
+ * unsubscribe function. Frames arrive already decoded (and adapted to `kind` on the
+ * bridge) and coalesced to ~display rate by the worker. Multiple consumers of the
+ * same (node, slot, kind) share one worker WS; different kinds get their own.
  */
-export function subscribeData(node: string, slot: string, cb: FrameCallback): () => void {
-	const k = key(node, slot);
+export function subscribeData(node: string, slot: string, kind: string, cb: FrameCallback): () => void {
+	const k = key(node, slot, kind);
 	let set = consumers.get(k);
 	if (!set) {
 		set = new Set();
 		consumers.set(k, set);
-		ensureWorker().postMessage({ op: 'sub', node, slot });
+		ensureWorker().postMessage({ op: 'sub', node, slot, kind });
 	}
 	set.add(cb);
 	return () => {
@@ -56,7 +62,7 @@ export function subscribeData(node: string, slot: string, cb: FrameCallback): ()
 		s.delete(cb);
 		if (s.size === 0) {
 			consumers.delete(k);
-			worker?.postMessage({ op: 'unsub', node, slot });
+			worker?.postMessage({ op: 'unsub', node, slot, kind });
 		}
 	};
 }

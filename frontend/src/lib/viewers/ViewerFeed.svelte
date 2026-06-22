@@ -39,7 +39,9 @@
 	$effect(() => {
 		frame = null;
 		if (!visible || !slot) return;
-		const unsub = subscribeFrames(node, slot, (f) => (frame = f));
+		// Subscribe with the resolved viewer kind so the bridge adapts the frame to
+		// this viewer's representation; a kind change re-runs this effect → re-subscribes.
+		const unsub = subscribeFrames(node, slot, kind, (f) => (frame = f));
 		return () => unsub();
 	});
 </script>

@@ -2,6 +2,7 @@
 	import type { NodeInstanceInfo } from '$lib/api/control';
 	import { subscribeFrames } from '$lib/api/frames';
 	import type { DataFrame } from '$lib/codec/decode';
+	import { resolveKind } from '$lib/viewers/kind';
 	import { onMount } from 'svelte';
 
 	type Props = {
@@ -32,7 +33,10 @@
 		lastFrame = null;
 		const slot = activeSlot;
 		if (!slot) return;
-		const unsub = subscribeFrames(node.name, slot, (f) => {
+		// The inspector only reads frame.meta, which is identical across viewer kinds;
+		// subscribe with the slot's dtype-default kind so the wire frame stays small.
+		const kind = resolveKind(node.output_slots?.[slot] ?? null, undefined);
+		const unsub = subscribeFrames(node.name, slot, kind, (f) => {
 			lastFrame = f;
 		});
 		return () => unsub();

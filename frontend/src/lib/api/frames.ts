@@ -78,21 +78,22 @@ function flush(): void {
 	if (dirty.size > 0) requestFlush(); // deferred slots → next frame
 }
 
-function key(node: string, slot: string): string {
-	return `${node} ${slot}`;
+function key(node: string, slot: string, kind: string): string {
+	return `${node} ${slot} ${kind}`;
 }
 
 /**
- * Subscribe to a (node, slot) stream, receiving the latest decoded frame at
- * ~display rate (subject to the global paint budget). Returns an unsubscribe
- * function. Multiple consumers of the same slot share one worker subscription.
+ * Subscribe to a (node, slot) stream rendered for viewer `kind`, receiving the
+ * latest decoded frame at ~display rate (subject to the global paint budget).
+ * Returns an unsubscribe function. Multiple consumers of the same (node, slot,
+ * kind) share one worker subscription; different kinds get their own.
  */
-export function subscribeFrames(node: string, slot: string, cb: FrameCallback): () => void {
-	const k = key(node, slot);
+export function subscribeFrames(node: string, slot: string, kind: string, cb: FrameCallback): () => void {
+	const k = key(node, slot, kind);
 	let s = slots.get(k);
 	if (!s) {
 		const slot_: Slot = { pending: null, current: null, cbs: new Set(), unsub: () => {}, lastFlush: 0 };
-		slot_.unsub = subscribeData(node, slot, (frame) => {
+		slot_.unsub = subscribeData(node, slot, kind, (frame) => {
 			slot_.pending = frame; // overwrite — latest wins
 			dirty.add(slot_);
 			requestFlush();
@@ -112,8 +113,14 @@ export function subscribeFrames(node: string, slot: string, cb: FrameCallback): 
 	};
 }
 
-/** The latest frame for a slot, while it has at least one live subscriber.
- * Null for an unsubscribed (off-screen) slot. */
+/** The latest frame for a (node, slot), whatever viewer kind is subscribed, while
+ * it has at least one live subscriber. Null for an unsubscribed (off-screen) slot.
+ * Kind-agnostic so the agent surface keeps its (node, slot) signature — the node
+ * meta it inspects is identical across kinds. */
 export function latestFrame(node: string, slot: string): DataFrame | null {
-	return slots.get(key(node, slot))?.current ?? null;
+	const prefix = `${node} ${slot} `;
+	for (const [k, s] of slots) {
+		if (k.startsWith(prefix)) return s.current;
+	}
+	return null;
 }
