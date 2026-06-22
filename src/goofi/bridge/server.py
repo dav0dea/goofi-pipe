@@ -206,7 +206,7 @@ class BridgeServer:
         app.add_routes(
             [
                 web.get("/control", self.control.handler),
-                web.get("/data/{node}/{slot}", self.data.handler),
+                web.get("/data/{node}/{slot}/{kind}", self.data.handler),
                 web.get("/api/healthz", self._healthz),
             ]
         )

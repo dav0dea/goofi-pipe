@@ -1,16 +1,21 @@
-"""Data plane: per-(node, slot) binary WebSocket.
+"""Data plane: per-(node, slot, kind) binary WebSocket.
 
-A client wishing to view `node`'s `slot` output opens
-    ws://.../data/<node>/<slot>
+A client wishing to view `node`'s `slot` output with viewer `kind` opens
+    ws://.../data/<node>/<slot>/<kind>
 
-The hub registers a `raw=True` data handler on the corresponding NodeRef
-(`NodeRef.set_data_handler`) and forwards the producer's GOOF wire bytes
-verbatim — the browser holds the matching codec, so no transcoding (decode
-or re-encode) happens server-side (A1).
+The hub registers ONE decoded (`raw=False`) data handler per (uid, slot) on the
+NodeRef and, for each distinct viewer kind among the connected forwarders, runs
+the per-kind adapter (`bridge.adapters.adapt`) on the decoded float `Data` and
+re-encodes it once — image→uint8, line/trajectory/topomap→float16, string/table
+passthrough. Decode happens once per slot; adapt+encode once per (slot, kind) per
+frame, regardless of how many viewers are attached. Float range/stats ride along
+in `meta["__view__"]` so the viewer's range and the metadata inspector stay
+float-accurate (viewer-adapters-design, backlog #3 — the deliberate reversal of
+A1's verbatim forward).
 
-Backpressure: each WS has a single-slot mailbox. New frames overwrite
-older un-sent frames (latest-wins) so a slow client never stalls the
-producer or piles up memory.
+Backpressure: each WS has a single-slot mailbox. New frames overwrite older
+un-sent frames (latest-wins) so a slow client never stalls the producer or piles
+up memory.
 """
 from __future__ import annotations
 
@@ -20,13 +25,17 @@ from typing import Optional
 
 from aiohttp import WSMsgType, web
 
+from goofi.bridge.adapters import adapt
+from goofi.codec import encode_data
+
 
 class _SlotForwarder:
     """One per active WS connection. Owns a `_pending` slot + sender task."""
 
-    def __init__(self, ws: web.WebSocketResponse, loop: asyncio.AbstractEventLoop):
+    def __init__(self, ws: web.WebSocketResponse, loop: asyncio.AbstractEventLoop, kind: str):
         self.ws = ws
         self.loop = loop
+        self.kind = kind  # the viewer kind this connection wants its frames adapted to
         self._pending: Optional[bytes] = None
         self._dirty = asyncio.Event()
         self._closed = False
@@ -102,9 +111,23 @@ class _SlotMux:
         self._forwarders = tuple(f for f in self._forwarders if f is not fwd)
         return not self._forwarders
 
-    def dispatch(self, frame: bytes) -> None:
-        for fwd in self._forwarders:
-            fwd.push_threadsafe(frame)
+    def dispatch(self, data) -> None:
+        """Adapt the decoded float `Data` once per distinct viewer kind, then fan
+        each representation out to that kind's forwarders. Runs on the NodeRef
+        data-pump thread; `_forwarders` is read as a consistent whole-tuple snapshot."""
+        forwarders = self._forwarders
+        if not forwarders:
+            return
+        by_kind: dict = {}
+        for fwd in forwarders:
+            by_kind.setdefault(fwd.kind, []).append(fwd)
+        for kind, fwds in by_kind.items():
+            try:
+                frame = encode_data(adapt(data, kind))
+            except Exception:
+                continue  # a bad frame for one kind must not stall the others
+            for fwd in fwds:
+                fwd.push_threadsafe(frame)
 
 
 class DataHub:
@@ -116,6 +139,7 @@ class DataHub:
     async def handler(self, request: web.Request) -> web.WebSocketResponse:
         node = request.match_info["node"]
         slot = request.match_info["slot"]
+        kind = request.match_info["kind"]
 
         ws = web.WebSocketResponse(max_msg_size=0, heartbeat=30.0)
         await ws.prepare(request)
@@ -142,7 +166,7 @@ class DataHub:
             return ws
 
         loop = asyncio.get_running_loop()
-        fwd = _SlotForwarder(ws, loop)
+        fwd = _SlotForwarder(ws, loop, kind)
         fwd.start()
 
         # Key the mux by the node's STABLE member_uid, not its display name, so a
@@ -155,19 +179,18 @@ class DataHub:
             if mux is None:
                 mux = _SlotMux(ref, slot)
 
-                def on_frame(_noderef, _slot_name, buf, _mux=mux):
-                    # Forward the producer's GOOF wire bytes verbatim — the
-                    # browser decodes with its own codec, so the manager does
-                    # no transcoding (A1). `buf` is a heap-copied bytes from the
-                    # subscriber, safe to fan out by reference.
-                    _mux.dispatch(buf)
+                def on_frame(_noderef, _slot_name, data, _mux=mux):
+                    # The pump decodes once per slot and hands us the float `Data`;
+                    # the mux adapts+encodes it per distinct viewer kind. One decode
+                    # per slot regardless of how many kinds/viewers are attached.
+                    _mux.dispatch(data)
 
                 # set_data_handler does blocking IPC (REGISTER_SUBSCRIBER +
                 # iceoryx2 setup); run it off the event loop so it can't stall
                 # other viewers' sends. Held under _lock so a concurrent
                 # connect/disconnect for the same slot can't interleave (B2).
                 await loop.run_in_executor(
-                    None, functools.partial(ref.set_data_handler, slot, on_frame, raw=True)
+                    None, functools.partial(ref.set_data_handler, slot, on_frame, raw=False)
                 )
                 self._muxes[key] = mux
             mux.add(fwd)
