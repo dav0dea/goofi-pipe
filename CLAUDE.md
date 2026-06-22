@@ -1,665 +1,241 @@
-# goofi-pipe — Frontend Rewrite
+# goofi-pipe
 
-You are starting fresh in `~/projects/goofi-next/goofi-pipe`. The backend
-of goofi-pipe was rewritten in the previous session (iceoryx2 transport,
-zero-copy publish path, ~25 commits on the `dev` branch). The backend is
-**done and not your concern** beyond reading its public surface. Your job
-is to **replace the entire dearpygui frontend with a browser-based UI**.
+A real-time, node-based data-processing platform for biosignals (EEG, ECG,
+audio, video). Users build **patches** in a browser node-graph: each node is a
+process that ingests, transforms, or emits `Data` objects; edges carry data
+between nodes' output and input slots. The platform targets live, high-rate
+streams (kHz EEG, HD video) with many simultaneous viewers.
 
-This brief is self-contained — read it end-to-end before touching code.
-
----
-
-## 1. What goofi-pipe is
-
-A real-time node-based data-processing platform aimed at biosignals
-(EEG, ECG, audio, video). Users build patches in a node-graph GUI:
-nodes are processes that ingest, transform, or emit `Data` objects;
-edges (links) carry data between nodes' output and input slots.
-
-Each node runs in its own OS process; the **manager** orchestrates them,
-maintains the graph, persists patches as `.gfi` YAML files, and bridges
-the in-flight data to whatever frontend is attached.
-
-The current frontend is a single-process dearpygui app embedded in the
-manager. **You are replacing it.**
+This file is the orientation for a Claude session working in this repo. Read it
+end-to-end before touching code, then read the specific subsystem you're
+changing. **The "How we work" section is not optional — it is how changes are
+expected to be made here.**
 
 ---
 
-## 2. Background: backend refactor (already shipped)
+## How we work (read first)
 
-Read `git log --oneline main..dev` for the full record. Highlights:
+These are hard expectations, in priority order. They override speed.
 
-- **`src/goofi/transport.py`** — unified `Publisher` / `Subscriber` /
-  `Listener` / `Notifier` / `WaitSet` API backed by iceoryx2 (cross-
-  process shared memory) and a thread variant (intra-process group).
-  Factory functions: `open_publisher(name, *, in_process, latest_wins)`
-  and `open_subscriber(...)`.
-- **`src/goofi/codec.py`** — binary `Data` codec with a fixed 12-byte
-  header, msgpack meta, and a dtype-specific body (raw numpy bytes for
-  ARRAY). Functions: `prepare_encode(d) -> (size, meta_bytes)`,
-  `encode_data_into(d, view, meta_bytes=...)`, `encode_data(d) -> bytes`,
-  `decode_data(buf) -> Data`. Read the docstring at the top — the wire
-  format is exact and you will need to mirror it in JavaScript.
-- **Zero-copy publish path**: producers write numpy arrays straight into
-  iceoryx2 SHM slices via `Publisher.loan(size)` → `_IpcLoan.buffer`
-  memoryview → `.send()`. One memcpy heap → SHM.
-- **`Manager` runs in its own process**; nodes spawn as their own
-  processes (or share a process group via the `common.process_group`
-  parameter). The manager owns `NodeContainer` (name → `NodeRef`) and
-  the `_links` list.
-- **`NodeRef`** is the manager-side proxy. It owns a ctrl pub/notifier
-  (to the node) and a status sub/listener (from the node). When the
-  node dirties its state, the node pushes a `STATE_UPDATE` and the
-  `NodeRef.serialized_state` field updates. `wait_for_state()` blocks
-  on a `threading.Event` until the first state arrives.
-- **`NodeRef.set_data_handler(slot, callback)`** registers a per-output-
-  slot data callback. A single pump thread per NodeRef drains a shared
-  `WaitSet` over all subscribed slot listeners and invokes the callback
-  with decoded `Data`. **This is the hook the new bridge uses to ship
-  data to the browser.**
-- Ctrl+C now works (iceoryx2 `SignalHandlingMode.Disabled`).
+1. **Test-driven development.** No production code without a failing test first.
+   Write the test, watch it fail for the right reason, write the minimal code to
+   pass, then refactor green. This is the Iron Law for new behavior, bug fixes,
+   and refactors alike. A bug fix starts with a test that reproduces the bug.
+   - Pure logic (codec, reducers, geometry, stores' core) is unit-tested directly.
+   - Svelte component/rune glue can't mount in vitest — verify it by typecheck +
+     an `e2e/` Playwright test, and keep the testable logic in a `.ts`/`.svelte.ts`
+     module that *is* unit-tested.
 
-**Do not** touch `transport.py`, `codec.py`, or the iceoryx2 setup unless
-absolutely necessary. Minor manager refactors are fine.
+2. **Root cause before fix.** Investigate until you understand *why* something
+   breaks — read the error, reproduce it, trace the data flow to its origin.
+   Fix the source, not the symptom. If three fixes fail, the architecture is
+   wrong; stop and reconsider it rather than piling on a fourth patch.
 
----
+3. **Structural edits over shallow hacks.** Prefer the change that makes the
+   codebase *correct by construction* over the one that silences the symptom.
+   When two code paths should agree, unify them at one source of truth instead of
+   duplicating a workaround in both. A larger, well-reasoned refactor is welcome
+   when it removes a class of bugs — the user does not gate refactor scope.
 
-## 3. What you are deleting
+4. **Deep code analysis.** Before changing a subsystem, hold enough of it in
+   context to reason about the change's blast radius. Trust documented internal
+   contracts; verify the ones you're about to depend on. Skim the relevant spec
+   in `docs/superpowers/specs/` — most subsystems have one.
 
-```
-src/goofi/gui/
-    window.py         (1273 LOC)  — dearpygui main window, node editor, dockspace
-    data_viewer.py    ( 670 LOC)  — viewer types: array, image, trajectory, topomap, string, table
-    events.py         ( 369 LOC)  — keyboard / paste handlers
-    __init__.py
-src/goofi/assets/     — dearpygui font / theme assets
-```
+5. **Minimum diff, maximum clarity.** Match the surrounding code's idiom, naming,
+   and comment density. Comments explain *why*, not *what*. Don't reformat code
+   you aren't changing. **Never run Prettier on this repo** — there is no config
+   and its defaults fight the codebase's tabs + single-quotes style; hand-match.
 
-All of these go. They are not features to migrate; they are an
-implementation to replace. Every feature they ship must be re-built in
-the new frontend (see §6 for the full feature inventory).
-
-Anything in `src/goofi/manager.py` that calls into `goofi.gui` will need
-to be re-pointed at the new bridge. Specifically:
-
-- `Manager.__init__` instantiates `Window(self)` in non-headless mode
-  (the dearpygui main loop blocks the main thread).
-- `Manager.add_node` / `remove_node` / `add_link` / `remove_link` /
-  `save` notify the GUI via `Window().add_node(...)` etc.
-
-Replace these calls with broadcasts to the new bridge (see §5).
+6. **Honest reporting.** If tests fail, say so with the output. If a step was
+   skipped, say that. State what is verified plainly; don't claim done what you
+   haven't run.
 
 ---
 
-## 4. The goal
+## Architecture
 
-> A **browser-based frontend** for goofi-pipe that:
->
-> 1. covers every feature of the current dearpygui frontend (see §6),
-> 2. supports **zoom and pan in the node editor** (this was missing /
->    broken in dearpygui — the headline UX win),
-> 3. renders **large data efficiently** in many simultaneous viewers
->    (HD video, kHz-rate EEG, etc.) without stuttering,
-> 4. is clean, modern, and not visually cluttered or overlapped, and
-> 5. is **the only frontend** — dearpygui is removed entirely.
+Three layers, connected by two transports.
 
-The user explicitly said: *"this is a greenfield redesign + reimplementation
-of the frontend into the current goofi-pipe framework. goofi3 was an overly
-ambitious prototype... in the current approach we are now only working on
-the frontend while keeping the backend intact."*
+```
+   ┌──────────────── browser ────────────────┐
+   │  SvelteKit SPA  (frontend/)              │
+   │   · Svelte Flow node editor (zoom/pan)   │
+   │   · viewers (uPlot / canvas / WebGL)     │
+   │   · dockable workspace panels            │
+   │   · undo/redo, params, sub-patches       │
+   └───────┬───────────────────────┬──────────┘
+           │ HTTP + /control WS     │ /data/<node>/<slot>/<kind> WS
+           │ (JSON RPC + events)    │ (binary GOOF frames)
+   ┌───────▼───────────────────────▼──────────┐
+   │  goofi.bridge  (src/goofi/bridge/)        │
+   │   aiohttp server in the manager process   │
+   │   serves the built SPA + the two planes   │
+   └───────┬───────────────────────────────────┘
+           │ Python calls
+   ┌───────▼───────────────┐   iceoryx2 (zero-copy SHM)
+   │  Manager + NodeRefs    │◄──────────────────────────┐
+   │  (graph, links, .gfi)  │   ctrl pub / status sub    │
+   └────────────────────────┘                            │
+   ┌─────────────────────────────────────────────────────▼─┐
+   │  Node processes (1 per node, or shared process group)  │
+   │   each runs its own tick loop; publishes Data to SHM    │
+   └────────────────────────────────────────────────────────┘
+```
 
-Treat goofi3's frontend (`~/projects/goofi-next/goofi3/frontend/`) as a
-**reference for principles and stack, not as code to copy**. Read it
-for ideas. Build your own.
+- **Backend is Python, process-per-node**, orchestrated by the **manager**, which
+  owns the graph and persists patches as `.gfi` YAML. Nodes talk to each other
+  over **iceoryx2** shared memory (zero-copy publish). The backend transport and
+  wire format are stable; treat them as fixed (see Hard constraints).
+- **The bridge** lives in the manager process and exposes the manager's API +
+  live data to the browser over HTTP/WebSocket. It serves the built SPA from
+  `frontend/build/`.
+- **The frontend** is the only UI (the old dearpygui GUI is gone). One manager ↔
+  one browser tab.
+
+### Control plane — `/control` WS
+JSON, bidirectional. Client sends RPCs (`add_node`, `add_link`, `update_param`,
+`group_nodes`, `save`, `load`, …); server broadcasts events (`hello`,
+`state_update`, `node_added`, `graph_replaced`, `error`, …). The browser is never
+authoritative — it issues RPCs and reconciles from the echoed events. Undo/redo
+replays inverse/forward RPCs; the backend never learns "undo" exists.
+
+### Data plane — `/data/<node>/<slot>/<kind>` WS
+One binary WS per (node, slot, viewer-kind) a client is viewing. The bridge
+decodes each slot **once**, runs the **viewer adapter** for each subscribed kind
+(image→uint8, line/trajectory/topomap→float16, string/table passthrough), and
+re-encodes once per kind — float range/stats ride in `meta["__view__"]` so
+viewers and the metadata inspector stay float-accurate. Latest-wins backpressure
+(drop oldest) mirrors iceoryx2. See `docs/superpowers/specs/2026-06-21-viewer-adapters-design.md`.
 
 ---
 
-## 5. Architecture: bridge + browser
-
-The backend stays Python and process-per-node. To talk to a browser
-you'll introduce a **bridge layer** inside the manager process that
-exposes the manager's API and live data via HTTP + WebSocket.
-
-```
-   ┌─────────────── browser ───────────────┐
-   │  SvelteKit SPA                        │
-   │  - node editor (Svelte Flow)          │
-   │  - parameter panels                   │
-   │  - data viewers (uPlot, canvas, ...)  │
-   │  - WebSocket clients                  │
-   └───────────────┬────────────────────────┘
-                   │ HTTP (static assets) + WS
-                   │
-   ┌───────────────▼────────────────────────┐
-   │  goofi.bridge  (new — Python)          │
-   │  - aiohttp / FastAPI server            │
-   │  - serves /static/* (built SPA)        │
-   │  - WS /control  (JSON RPC + events)    │
-   │  - WS /data/<node>/<slot>  (binary)    │
-   │  - subscribes to NodeRef state +       │
-   │    data handlers to fan out            │
-   └───────────────┬────────────────────────┘
-                   │ Python method calls
-                   ▼
-            Manager + NodeRefs (unchanged)
-                   │ iceoryx2 / thread transport
-                   ▼
-             Node processes (unchanged)
-```
-
-### Backend bridge (new code, `src/goofi/bridge/`)
-
-Suggested module shape:
-
-```
-src/goofi/bridge/
-    __init__.py
-    server.py        # HTTP + WS server (aiohttp recommended; pure-Python, async)
-    control.py       # /control endpoint — RPC dispatch + state broadcast
-    data.py          # /data endpoint — binary streaming per slot
-    schemas.py       # request/response shapes (pydantic or dataclasses)
-```
-
-- Lives in the manager process. The manager bootstraps it when
-  `--headless` is *off* (the previous dearpygui code path).
-- `--headless` keeps doing what it does now: run the manager without
-  any UI.
-- Add `--port N` (default 8000) and `--bind HOST` (default 127.0.0.1).
-  Print the URL on startup; tell the user "Open <url> in your browser".
-- The HTTP server runs in a daemon thread (`aiohttp.web.run_app` in an
-  asyncio loop on its own thread). The manager's main thread stays free
-  for `post_init`'s sleep loop and KeyboardInterrupt handling.
-
-#### Control plane — `WS /control`
-
-JSON messages. Bidirectional. **Client → server** commands:
-
-| op | payload | semantics |
-|---|---|---|
-| `list_nodes` | `{}` | reply with all node types/categories + their schema (input slots, output slots, params) |
-| `list_graph` | `{}` | reply with current nodes (name, type, category, position, params, error) + links |
-| `add_node` | `{type, category, name?, params?, pos?}` | calls `Manager.add_node(...)` |
-| `remove_node` | `{name}` | calls `Manager.remove_node(name)` |
-| `add_link` | `{node_out, node_in, slot_out, slot_in}` | calls `Manager.add_link(...)` |
-| `remove_link` | `{...}` | inverse |
-| `update_param` | `{node, group, name, value}` | calls `NodeRef.update_param(...)` |
-| `set_node_pos` | `{name, pos: [x,y]}` | updates `NodeRef.gui_kwargs["pos"]` |
-| `save` | `{path?, overwrite?}` | calls `Manager.save(...)` |
-| `load` | `{path}` | calls `Manager.load(...)` |
-| `subscribe_data` | `{node, slot}` | opens a `/data/<node>/<slot>` stream for this client |
-| `unsubscribe_data` | `{node, slot}` | closes it |
-
-**Server → client** events:
-
-| event | payload | when |
-|---|---|---|
-| `state_update` | `{node, state}` | on every `STATE_UPDATE` from the node |
-| `node_added` | `{name, type, category, params, pos}` | after `Manager.add_node` succeeds (any source — including programmatic, e.g. patch load) |
-| `node_removed` | `{name}` | after `remove_node` |
-| `link_added` | `{node_out, node_in, slot_out, slot_in}` | after `add_link` |
-| `link_removed` | `{...}` | inverse |
-| `error` | `{node, error}` | on `PROCESSING_ERROR` from a node |
-| `manager_shutdown` | `{}` | on terminate |
-
-Use `Manager.set_message_handler` plumbing for state + error; for the
-add/remove events, add a small notification hook in the Manager (just
-fire a callback the bridge registered).
-
-#### Data plane — `WS /data/<node>/<slot>`
-
-- One WS per (node, slot) pair the client is currently viewing.
-- Server pushes **binary frames** in the GOOF wire format defined by
-  `codec.py`. The browser decodes with a TypeScript port of the same
-  format (small — ~80 lines).
-- Backend implementation: `NodeRef.set_data_handler(slot, callback)`
-  where the callback forwards the encoded bytes to the WS. Throttle if
-  the WS send buffer backs up (drop oldest — match the iceoryx2
-  latest-wins semantics).
-- Frontend: subscribe only while a viewer is mounted and visible
-  (IntersectionObserver helps).
-
-### Frontend bundle (new code, `frontend/`)
-
-```
-frontend/
-    package.json            # SvelteKit project
-    svelte.config.js
-    vite.config.ts
-    src/
-        routes/
-            +layout.svelte
-            +page.svelte         # main editor view
-        lib/
-            api/                 # WS clients (control + data)
-            codec/               # GOOF decoder (TS port of codec.py)
-            editor/              # node graph (Svelte Flow integration)
-            viewers/             # ArrayViewer, ImageViewer, etc.
-            params/              # param widgets
-            stores/              # graph state, selection, etc.
-        app.html
-        app.css
-```
-
-- **Build target:** static SPA. `npm run build` produces `frontend/build/`
-  which the bridge serves. In dev, run `npm run dev` (Vite dev server)
-  and have it proxy `/control` and `/data` to the running bridge.
-- **TypeScript strict, no `any` in app code.** Codec layer can use
-  `unknown`-narrowing helpers.
-
----
-
-## 6. Feature inventory — what the new frontend must do
-
-Sourced from `src/goofi/gui/window.py`, `data_viewer.py`, `events.py`.
-The new frontend is feature-complete when each of these works:
-
-### 6.1 Node editor (the canvas)
-
-- [ ] Render every node in the graph, positioned by `gui_kwargs["pos"]`.
-- [ ] **Zoom (mouse wheel, pinch) — must work smoothly**. Pan (right-
-      click drag / space+drag). Reset view (keyboard shortcut).
-- [ ] Drag a node to reposition; new position broadcast as `set_node_pos`.
-- [ ] Select node(s): click, shift-click, marquee.
-- [ ] Multi-select drag.
-- [ ] Connect output slot → input slot by dragging from one pin to
-      another. Visual feedback while dragging. Prevent invalid links
-      (slot dtype must match the consumer side or be coercible — the
-      backend doesn't enforce, so add a soft client-side check).
-- [ ] Delete selected nodes / links via Delete key.
-- [ ] Per-node category color (currently a palette in
-      `window.py:NODE_CAT_COLORS` — pick a fresh palette but keep the
-      "one color per category" idea).
-- [ ] Error state visual: if `NodeRef.last_error` is set, the node
-      shows a red border / icon.
-- [ ] Minimap (optional but nice — `react-flow`/`svelte-flow` ships one).
-
-### 6.2 Add-node menu
-
-- [ ] Searchable (typeahead) list of all node types, grouped by
-      category (analysis, array, inputs, misc, outputs, signal).
-- [ ] Show docstrings on hover.
-- [ ] Insert at cursor position.
-- [ ] Backend source: `list_nodes` in `node_helpers.py` returns the
-      registered node classes. The bridge should serialize each as
-      `{type, category, doc, input_slots, output_slots, params}`.
-
-### 6.3 Parameter panel
-
-- [ ] When a node is selected, show its parameter groups in a side
-      panel.
-- [ ] Param types to render (see `src/goofi/params.py`):
-      - `FloatParam(value, min, max)` → number input + slider
-      - `IntParam(value, min, max)` → integer input + slider
-      - `BoolParam(value, trigger=False)` → toggle (trigger params are
-        click-once buttons)
-      - `StringParam(value, options=[...]?)` → text input OR dropdown
-        if `options` is set
-- [ ] Show docstring on hover.
-- [ ] Edits fire `update_param`.
-- [ ] State updates from the backend (`state_update` events) reflect
-      in the panel.
-
-### 6.4 Data viewers (per output slot)
-
-The dearpygui implementation has 6 viewer types cycled via Ctrl+click.
-The new frontend must cover:
-
-- [ ] **ArrayViewer** — line plot. 1D and 2D (channels × samples) arrays.
-      Log-scale toggle per axis. Auto-scaling with shrinking.
-      **Use uPlot or similar — must handle ~1 kHz × N channels smoothly.**
-- [ ] **ImageViewer** — RGB/RGBA images. HD frames (1920×1080×3).
-      Use a `<canvas>` with `putImageData` or WebGL for very large frames.
-- [ ] **TrajectoryViewer** — 2D paths (xy plots over time).
-- [ ] **TopomapViewer** — EEG topographic maps (channels arranged on a
-      head). The dearpygui version pulls electrode layouts; keep that
-      same data path, render via SVG or canvas.
-- [ ] **StringViewer** — for `Data` of dtype STRING. A scrolling text
-      area.
-- [ ] **TableViewer** — for `Data` of dtype TABLE (dict of nested Data).
-      A nested expandable tree.
-- [ ] Each viewer type is cyclable by clicking a "switch viewer" button
-      on the slot's viewer container.
-- [ ] **High-dim fallback**: if no viewer can render the array
-      (`ndim > 3` or weird shape), show a text summary (shape, dtype,
-      stats). The dearpygui version does this in `data_viewer.py:130`.
-- [ ] Viewers must **only consume data while visible**. Use
-      IntersectionObserver to subscribe / unsubscribe.
-
-### 6.5 Patch persistence
-
-- [ ] **Save** — file picker (browser File System Access API on
-      Chrome / `<a download>` fallback elsewhere) writing the .gfi
-      YAML produced by `Manager.save`. Backend already does this; the
-      frontend just triggers it and downloads the result.
-- [ ] **Load** — similarly. Triggers `Manager.load`.
-- [ ] **Unsaved-changes indicator** — title bar shows a dot when
-      `Manager.unsaved_changes` is True.
-- [ ] **Examples menu** — list of patches in `examples/` (the manager
-      already has `get_example_patch`); expose it via `list_examples`.
-
-### 6.6 Copy / paste
-
-- [ ] Ctrl+C: serialize selected nodes + their internal links to JSON
-      (the current `copy_nodes` in `events.py` produces a payload —
-      mirror that schema for compatibility, or design your own and
-      version it).
-- [ ] Ctrl+V: deserialize and create nodes at cursor.
-- [ ] Use the system clipboard (`navigator.clipboard`).
-
-### 6.7 Keyboard shortcuts
-
-Match the dearpygui set where reasonable:
-
-- `Ctrl+S` save · `Ctrl+O` load · `Ctrl+Z`/`Ctrl+Y` (out of scope —
-  no undo in the old GUI, don't add it here either)
-- `Delete` / `Backspace` remove selection
-- `Ctrl+C` / `Ctrl+V` copy/paste
-- `Ctrl+A` select all
-- `Ctrl++` / `Ctrl+-` zoom
-- `F` fit view to graph
-- `Space+drag` pan (or right-click-drag)
-
-### 6.8 Metadata inspector
-
-When a single node is selected and a viewer is active, show the
-incoming `Data.meta` dict as formatted text in a side panel.
-(`window.py:metadata_view` in the old code.)
-
-### 6.9 Error display
-
-A panel listing nodes with errors, with their stack traces.
-Click → focus that node in the canvas.
-
----
-
-## 7. Performance requirements
-
-This is the hardest non-feature requirement. The browser must stay
-responsive under realistic loads:
-
-- **Stress scenario**: a patch with 10+ viewers active simultaneously,
-  including:
-  - 1 HD video stream at 30 fps (~180 MB/s of raw frame data, ~10 MB/s
-    after browser-side downscale)
-  - 4 EEG buffers at 1 kHz × 32 channels (modest)
-  - 4 PSD viewers updating at 30 Hz
-- **Targets**:
-  - UI stays at 60 fps (no janky pans, no dropped frames during drag)
-  - Each viewer renders at its incoming data rate (or downsampled
-    intelligently if rate > 30 Hz)
-  - Memory does not grow unboundedly — bound per-viewer history,
-    release Data when out of scope
-  - WebSocket data backpressure: if the browser can't keep up, drop
-    older frames on the backend side (the iceoryx2 layer already does
-    this — surface that semantics to the WS layer)
-- **Techniques**:
-  - uPlot for line plots (fastest pure-JS time series)
-  - `<canvas>` with `requestAnimationFrame` for images; for HD video
-    consider `OffscreenCanvas` + worker
-  - Pause data delivery for viewers off-screen (IntersectionObserver)
-  - Bundle multiple slot updates into one WS message if rate is very
-    high (optional optimization)
-
----
-
-## 8. Tech stack — recommendations
-
-These match goofi3's choices and are well-suited:
-
-| layer | pick |
-|---|---|
-| frontend framework | **Svelte 5** + **SvelteKit** (static adapter) |
-| build | Vite |
-| typing | TypeScript strict |
-| node graph | **Svelte Flow** (`@xyflow/svelte`) — zoom, pan, edges, minimap built in |
-| time-series plot | **uPlot** |
-| general plotting | canvas + custom (avoid heavy chart libs for hot paths) |
-| WS / fetch | native |
-| msgpack (codec meta) | `@msgpack/msgpack` |
-| backend bridge | **aiohttp** (async, websockets built in; lower magic than FastAPI for this use) |
-
-Justify deviations in your commit messages if you pick differently.
-
----
-
-## 9. Validation
-
-You have screenshot / browser-automation tools available. Use them:
-
-- **Playwright** — install it, drive Chromium headless, take screenshots
-  of every screen and every state. Verify visually that nothing
-  overlaps, that the node editor zooms correctly, that the param panel
-  doesn't clip, etc.
-- For each viewer type, write a test that loads a known patch, waits
-  for data, takes a screenshot, and compares it to a baseline (image
-  diff with a tolerance — `pixelmatch` or similar).
-- For performance: open the stress patch, run for 30 seconds, dump
-  Chromium DevTools Performance trace, assert no frames > 50 ms.
-- The user said: *"Make sure to pay close attention to z layering."*
-  Test panel/menu/popover overlaps explicitly — screenshot with every
-  panel open, with the add-node menu over the canvas, with the param
-  panel over a viewer, etc.
-
-Set up an `e2e/` directory:
-
-```
-e2e/
-    playwright.config.ts
-    fixtures/         # known patches
-    tests/
-        editor.spec.ts
-        viewers.spec.ts
-        params.spec.ts
-        stress.spec.ts
-```
-
----
-
-## 10. Getting started
-
-Read these in order:
-
-1. **`src/goofi/manager.py`** — `Manager`, `NodeContainer`. Skim it.
-2. **`src/goofi/node_helpers.py`** — `NodeRef`, especially `_messaging_loop`
-   and `set_data_handler`. This is what the bridge hooks into.
-3. **`src/goofi/codec.py`** — wire format. Port the encoder/decoder
-   to TypeScript for the browser.
-4. **`src/goofi/params.py`** — param classes, including `serialize`.
-5. **`src/goofi/data.py`** — `Data` shape; meta conventions.
-6. **`src/goofi/gui/window.py`** — what to replace. Don't deep-dive; use
-   it as a feature reference (§6).
-7. **`~/projects/goofi-next/goofi3/frontend/`** — reference architecture.
-   Read `src/lib` and `src/routes`. **Don't copy code.**
-8. **`test.gfi`** in the repo root — the stress patch the user has been
-   testing with (Oscillator + PSD + 8 Buffers + VideoStream). Use it as
-   your reference workload.
-
-To run the existing backend:
+## Running, testing, building
 
 ```bash
-cd ~/projects/goofi-next/goofi-pipe
-uv run goofi-pipe --headless test.gfi           # no UI, runs the patch
+# Backend + bridge (serves the prebuilt SPA, prints the URL to open):
+uv run goofi-pipe                      # launches manager + bridge
+uv run goofi-pipe --headless test.gfi  # no UI; run a patch
 uv run goofi-pipe --headless --duration 5 test.gfi   # auto-stop
+#   flags: --port N (default 8000), --bind HOST (default 127.0.0.1)
+
+# Backend tests (must stay green; ~990 pass):
+.venv/bin/python -m pytest tests/
+
+# Frontend (run from frontend/):
+npm run dev      # Vite dev server; proxies /control + /data to the bridge
+npm run test     # vitest (unit)
+npm run check    # svelte-check + tsc strict — keep 0 errors
+npm run build    # static SPA → frontend/build/  (what the bridge serves)
+
+# e2e (frontend/../e2e/, GITIGNORED): Playwright + a real Manager, driven via
+# window.goofi. Boots the full stack; use plain grep (not git grep) to find refs.
 ```
 
-The venv is at `.venv/` already. `uv pip install -e ".[dev]"` if you
-need to refresh.
-
 If `/dev/shm/iox2_*` accumulates after a crash:
-
 ```bash
 .venv/bin/python -c "import iceoryx2 as i; i.Node.try_cleanup_dead_nodes(i.ServiceType.Ipc, i.config.global_config())"
 ```
 
----
-
-## 11. Repo layout (after your work)
-
-```
-goofi-pipe/
-    src/goofi/
-        bridge/                  ← NEW: HTTP + WS server module
-            __init__.py
-            server.py
-            control.py
-            data.py
-        manager.py               ← lightly tweaked to launch bridge
-        node.py                  ← unchanged
-        node_helpers.py          ← unchanged
-        transport.py             ← unchanged
-        codec.py                 ← unchanged
-        nodes/                   ← unchanged
-        gui/                     ← DELETED entirely
-        assets/                  ← DELETED (or moved if anything is reused)
-    frontend/                    ← NEW: SvelteKit SPA
-        package.json
-        src/
-            routes/
-            lib/
-        build/                   ← gitignored; served by bridge
-    e2e/                         ← NEW: Playwright tests
-    examples/                    ← unchanged (.gfi patch fixtures)
-    tests/                       ← unchanged (Python tests)
-    pyproject.toml               ← add aiohttp dependency
-```
+`test.gfi` (repo root) is the reference stress patch: Oscillator + PSD + 8
+Buffers + VideoStream.
 
 ---
 
-## 12. Workflow + git
+## Backend map (`src/goofi/`)
 
-- You are on branch **`dev`**, which already has the backend refactor
-  (commit `3acfe3c`).
-- Make a new branch `feat/frontend` off `dev` for your work.
-- Commit frequently, small focused commits. The previous session's
-  log style is the model.
-- Don't force-push without authorization.
-- When you have a working MVP (canvas + one viewer + load patch),
-  open a draft PR against `dev` so the user can preview.
+| file | owns |
+|---|---|
+| `transport.py` | iceoryx2 `Publisher`/`Subscriber`/`Listener`/`Notifier`/`WaitSet` + a thread variant. **Stable — do not touch.** |
+| `codec.py` | the binary `Data` wire format (12-byte header, msgpack meta, dtype body). **Stable.** Mirrored in `frontend/src/lib/codec/`. |
+| `data.py` | the `Data` object (dtype, value, meta) + meta conventions (`channels`, coords). |
+| `params.py` | `Float/Int/Bool/StringParam` descriptors + serialization. |
+| `node.py` | the node base: tick `_processing_loop`, slots, SHM publish, ctrl handling. |
+| `node_helpers.py` | `NodeRef` — the manager-side proxy: ctrl pub/notifier, status sub, the per-NodeRef data pump that decodes slot frames for the bridge. |
+| `manager.py` | `Manager` + `NodeContainer`: graph, `_links`, spawn/teardown, save/load, sub-patch runtime (group/expand/share, `_instances`/`_definitions`), bridge bootstrap. |
+| `node_log.py` | per-node SSE log server (peer-to-peer; the proven template for the future P2P data plane). |
+| `patch_format.py` | `.gfi` v2 (recursive, sub-patch-aware) build/expand. |
+| `bridge/server.py` | aiohttp HTTP + WS server; routes; static SPA serving. |
+| `bridge/control.py` | `/control` RPC dispatch + state/event broadcast. |
+| `bridge/data.py` | `/data` plane: `_SlotMux` decode-once + per-kind adapt/encode fan-out. |
+| `bridge/adapters.py` | the viewer adapters (float→uint8/float16, `__view__` stats). |
+| `bridge/fsbrowse.py` | filesystem browse RPC for save/load. |
+| `bridge/schemas.py` | request/response + snapshot shapes. |
+| `nodes/` | the node library (analysis, array, inputs, misc, outputs, signal). |
 
----
+## Frontend map (`frontend/src/lib/`)
 
-## 13. Out of scope
-
-- Reworking the Python tests
-- Touching `transport.py`, `codec.py`, the iceoryx2 setup
-- Reintroducing zmq, dearpygui, or any old IPC
-- Authentication on the WS endpoints (single-user local app for now)
-- Mobile / touch optimization (desktop browser only)
-- Theming / dark-mode toggle (pick one, do it well)
-- Multi-instance (one manager ↔ one browser tab is enough)
-
-If you discover you need to break something on this list, surface it to
-the user before doing it.
-
----
-
-## 14. Goal condition
-
-You are done when **all** of the following hold:
-
-1. `uv run goofi-pipe` (no flags) launches the manager, prints the URL,
-   and opening that URL in a browser shows the editor.
-2. Every feature in §6 works (verified by Playwright tests in `e2e/`).
-3. The stress patch (§7) runs for 60 s with 10+ visible viewers, the
-   browser stays at ≥ 55 fps median, no JS console errors, no Python
-   tracebacks.
-4. `git grep -i dearpygui src/goofi/` returns nothing. `src/goofi/gui/`
-   does not exist. `pyproject.toml` no longer lists dearpygui.
-5. Playwright screenshot tests pass for every viewer type, the
-   add-node menu, the param panel, save/load, and the multi-select
-   marquee. No visual regressions, no z-order glitches.
-6. The 128 existing Python tests (`pytest tests/`) still pass.
-7. The user can `git log` and see a clean, readable history of focused
-   commits — not one mega-commit.
-
-When you think you're done, screenshot the editor, the param panel,
-two viewer types side-by-side, and the add-node menu, and put them in a
-brief summary message for the user.
+| dir | owns |
+|---|---|
+| `api/` | transport clients: `control.ts` (RPC + events), `data.ts`/`dataWorker.ts` (binary stream, off-thread decode), `frames.ts` (rAF paint coalescer + per-slot latest frame), `perfStats`/`rateMeter` (fps HUD), `awaitEvent`. |
+| `codec/` | the TS port of `codec.py` (`decode.ts`, incl. float16). |
+| `stores/` | reactive state (Svelte 5 runes): `graph.svelte.ts` (server-authoritative graph mirror), `history.svelte.ts` + `graphExecutors.ts` (unified undo/redo), `selection`, `ui`, `console`, `flash`, `logStream`. |
+| `editor/` | the Svelte Flow canvas: `GoofiNode.svelte` (every node, incl. sub-patch instances — **one component, no per-kind branches**), `snap.ts` + `nodeMetrics.ts` (alignment snapping), placement, boundary nodes. |
+| `viewers/` | one component per viewer kind (`ArrayViewer`, `ImageViewer`, `TopomapViewer`, `TrajectoryViewer`, `StringViewer`, `TableViewer`) + `ViewerFeed` (subscribe lifecycle), `kind.ts`, `decimate.ts`, `imageGL.ts`. |
+| `params/` | parameter widgets + expression editor. |
+| `panels/` | dockable panel content (node-editor, parameters, viewer, metadata, console, errors) + the panel registry. |
+| `workspace/` | the panel layout engine: `model.ts` (pure tree algebra), `workspace.svelte.ts`, `navContext.ts` (undo focus restore). |
+| `fs/` | the filesystem browser for save/load. |
+| `agent/` | the automation façade (`window.goofi`: commands + query) — the seam e2e drives, and the basis for a planned in-app AI-agent panel. |
 
 ---
 
-## 15. P2P viewer-data plane + node-side thalamus (DESIGN — not yet built)
+## Key subsystems & their specs
 
-**Full spec:** [`docs/p2p-data-thalamus-spec.md`](docs/p2p-data-thalamus-spec.md) —
-authoritative, self-contained, implementable end-to-end. This section is the
-30-second summary; the spec is the source of truth.
+Most non-trivial subsystems have a design doc in `docs/superpowers/specs/`. Read
+the relevant one before changing the area.
 
-**Problem.** The `/data` plane ships the *full* `Data` every frame with zero
-reduction: `bridge/data.py:on_frame` re-encodes the whole decoded array. Measured:
-a 44.1 kHz / 60 s mono buffer is **~10.6 MB/frame** → **~318 MB/s** at 30 Hz into a
-~1000 px plot that needs ~2k points (a ~1300× oversend). Worse, the path is **not
-P2P**: `/data/<node>/<slot>` is served by the bridge *inside the manager process*
-(`server.py`: "Lives in the manager process"), whose `NodeRef._data_pump` opens its
-own iceoryx2 subscriber and **decodes every full frame in the manager** before
-re-encoding — three codec passes + a full SHM copy of unreduced data. This is a
-dearpygui-era hook the browser bridge inherited. node↔node data (iceoryx2) and
-logs (`node_log.py` SSE) are *already* P2P; only the viewer-data path routes
-through the manager.
+- **Undo/redo** (`2026-06-19-undo-redo-redesign-design.md`) — one history stack
+  spanning the graph domain (replayed as inverse/forward RPCs) and the layout
+  domain (restored as `WorkspaceState` snapshots). `history().transaction()` folds
+  N records into one entry. Each action carries a `NavContext` so undo reorients
+  to where the change happened.
+- **Sub-patches** (`2026-06-17-persistence-subpatch-design.md`,
+  `2026-06-18-virtual-subpatch-nodes.md`) — group/expand/share; a sub-patch
+  instance is a **virtual node** that renders through `GoofiNode` with no
+  special-casing (its wired boundaries are its slots; its sharing/expand controls
+  live in the inspector). Shared instances strict-mirror across siblings. v2
+  `.gfi` is recursive. Invariant: the synth node `nodeByName(instId)` returns a
+  **stable reference** when unchanged, like a real node.
+- **Viewer adapters** (`2026-06-21-viewer-adapters-design.md`) — the data-plane
+  reduction described above.
+- **Per-viewer view state** (`2026-06-18-per-viewer-instance-view-state-design.md`)
+  — each slot's chosen viewer kind + settings, persisted into the `.gfi`.
+- **In/Out authoring** (`2026-06-18-inout-authoring.md`) — sub-patch boundary
+  ports.
 
-**Design.** Move the viewer-data path **peer-to-peer**, mirroring `node_log.py`:
+Analysis reports live in `docs/analysis/`. The performance ceiling and a future,
+more aggressive data plane are tracked in **§ Future** below.
 
-- Each **node-host process** hosts one tiny binary-WebSocket server
-  (`src/goofi/node_data.py`, NEW — stdlib hand-rolled RFC6455), advertises its
-  **port** as `data_port` over `STATE_UPDATE` exactly like the log endpoint. The
-  browser discovers it from the control plane, composes the URL from
-  `location.hostname`, and connects **directly** to the node.
-- A **dedicated per-process reducer thread** does the reduction off the processing
-  thread: `_processing_loop` only does an O(1) `node_data.offer(node, slot, data)` —
-  a **private snapshot** (array + meta copy on the node thread, so it's race-free vs.
-  in-place mutators like `LatentRotator`) into a latest-wins mailbox. The reducer
-  thread runs `reduce_for_view` (`src/goofi/node_reduce.py`, NEW) + `encode_data` and
-  fans the bytes to per-connection mailboxes. The node's tick — and its node↔node
-  output rate — is **not** slowed by reduce/encode. The manager leaves the data path
-  entirely (`bridge/data.py` + `NodeRef.set_data_handler`/`_data_pump` deleted).
-- Reduction is **per-axis and viewer-defined**: `ViewSpec = { axes: [{axis, max,
-  method}], version }`. Each viewer declares which axes to reduce, how far, and the
-  method — `envelope` (min/max per bin; waveforms, never stride), `area` (block-mean
-  downscale; images), `subsample` (linspace gather; channels, trajectory paths).
-  `reduce_for_view` composes the per-axis reductions; unlisted axes pass through.
-  **Fail-open** (any error → input unreduced).
-- **Meta inspector is unaffected by reduction.** One stream per slot, but the reduced
-  frame carries `meta['reduced'][axis] = {orig_len, method, orig_coord?}`; body
-  coord arrays co-reduce to satisfy `Data.__post_init__` (`data.py:104`), and
-  `MetadataPanel` is reduction-aware — it reconstructs and shows the **true original
-  meta**. Reduction is purely a viewer-rendering concern.
-- The **frontend thalamus** (`thalamus.svelte.ts`, `dataStream.svelte.ts`) folds all
-  live viewer-consumers per `(node,slot)` into ONE `ViewSpec` (per-axis largest-max;
-  method: `envelope`>`area`>`subsample`), sent **inband** on the per-node WS. One
-  stream per slot; expand/collapse + IntersectionObserver add/remove consumers.
-- **Host scope = the frontend's.** `Manager.__init__` exports `GOOFI_BIND_HOST`
-  (default `0.0.0.0`), inherited by node processes; `node_log` + `node_data` bind it,
-  so logs and viewers share the manager's reachability (LAN-reachable when `--bind`
-  is). No auth, CORS `*` — single-user/trusted-LAN scope, same as the manager bridge.
+---
 
-**Untouched (HARD):** node↔node iceoryx2 transport, `codec.py`, the zero-copy SHM
-publish path. The reduced browser frame is a *separate* encode of a *separate*
-reduced `Data` snapshot.
+## Hard constraints
 
-**Remaining accepted limitation:** `viewer_count` does not cascade upstream, so
-viewing a purely input-triggered leaf whose upstream is idle shows nothing (sources
-free-run, so this matches `test.gfi`). (The earlier tick-cadence and 127.0.0.1
-trade-offs are now *resolved* by the reducer thread and the shared host scope.)
+- **Do not touch** `transport.py`, `codec.py`, or the iceoryx2 setup unless
+  truly unavoidable (and surface it first). The node↔node zero-copy publish path
+  is load-bearing.
+- **Leave `main` alone.** Work happens on the `frontend` branch. Don't push or
+  force-push without authorization; branch before committing on a default branch.
+- No auth on the WS endpoints — single-user, local/trusted-LAN app.
+- Desktop browser only (no mobile/touch). One theme, done well (no dark-mode toggle).
+- Don't reintroduce dearpygui or zmq.
+- Commit messages end with: `Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>`.
+- Commit in small, focused, readable steps — not one mega-commit.
 
-**STATUS 2026-06-22 — relationship to the shipped viewer-adapters plane.** This
-spec was written (2026-06-16) *before* the viewer-adapters data plane that now
-ships on `frontend`. The two are **alternative** reductions of the same problem,
-not additive:
+---
 
-- **Shipped today (viewer adapters):** the bridge decodes each slot once and
-  re-encodes per viewer *kind* with a **dtype** downcast at the boundary
-  (`bridge/adapters.py`: image→uint8, line/etc→float16) over
-  `/data/<node>/<slot>/<kind>`. The manager **stays** in the data path; reduction
-  is bit-depth only (~2–4×), full resolution still crosses the wire.
-- **This spec (P2P thalamus):** node-side per-axis reduction to the viewer's actual
-  *capacity* (~1300× for a kHz buffer; HD→viewer-pixels), **P2P**, manager removed
-  from the data path. It is strictly more powerful and directly removes the
-  measured perf ceiling (manager decode→re-encode + float32). §9.1 of the spec
-  **deletes `bridge/data.py`** — i.e. adopting the thalamus **supersedes** the
-  adapters plane (they cannot coexist).
+## Future: P2P data plane + node-side thalamus (designed, not built)
 
-So the thalamus is the recommended **next major project** (a clean 10-step plan,
-§11), not a rebase of the current code. When undertaken, fold the per-kind adapter
-*intent* into the per-axis `ViewSpec` and delete `adapters.py` + the `/kind` route.
-Until then the adapters plane is the shipped reduction. The design branch this came
-from (`design/p2p-thalamus`) has been deleted now that the spec lives here.
+`docs/p2p-data-thalamus-spec.md` is an implementation-ready, self-contained spec
+for the **next major architecture step**: move the
+viewer-data path **peer-to-peer** (browser connects directly to the node
+process), and reduce each stream **inside the node** to exactly what the viewer
+can display (per-axis: envelope for waveforms, area for images, subsample for
+channels) on a dedicated reducer thread — removing the manager from the data
+path entirely.
+
+It **supersedes** the shipped viewer-adapters plane (its §9.1 deletes
+`bridge/data.py`): the adapters do a bridge-side dtype downcast with the manager
+still transcoding; the thalamus does node-side capacity reduction P2P (~1300× for
+a kHz buffer) and directly removes the measured perf ceiling. It is a clean
+10-step plan, not a rebase — undertake it as its own project when prioritized.
