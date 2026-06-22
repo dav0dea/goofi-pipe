@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { untrack } from 'svelte';
 	import type { ParamDescriptor } from '$lib/api/types';
 	import ExpressionModal from './ExpressionModal.svelte';
 
@@ -11,7 +12,7 @@
 	};
 	const { paramName, descriptor, onCommit, onSetExpression }: Props = $props();
 
-	let local = $state<unknown>(descriptor.value);
+	let local = $state<unknown>(untrack(() => descriptor.value));
 	// Suppress backend echoes while the user is actively editing — without
 	// this, every committed slider/text edit would re-set `local` to the
 	// echoed value mid-typing.

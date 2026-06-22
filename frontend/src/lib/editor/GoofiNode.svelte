@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { untrack } from 'svelte';
 	import { Handle, Position, type NodeProps } from '@xyflow/svelte';
 	import { categoryColor, dtypeColor } from './categoryColor';
 	import SlotViewer from '$lib/viewers/SlotViewer.svelte';
@@ -21,8 +22,8 @@
 	// enter/expand controls in the header. Everything else is shared with a
 	// regular node, so the two never drift.
 	const sub = $derived(node?.subpatch ?? null);
-	const enterSub = data.onEnter as ((id: string) => void) | undefined;
-	const expandSub = data.onExpand as ((id: string) => void) | undefined;
+	const enterSub = untrack(() => data.onEnter as ((id: string) => void) | undefined);
+	const expandSub = untrack(() => data.onExpand as ((id: string) => void) | undefined);
 
 	function onInputClick(e: MouseEvent, slot: string, dtype: string): void {
 		// Clicking an input opens the add-node menu seeded for this slot — whether

@@ -6,6 +6,7 @@
   inside). Shared by panel headers, the content dropdown, and tab menus.
 -->
 <script lang="ts">
+	import { untrack } from 'svelte';
 	import type { MenuItem } from './menu';
 	import { portal } from './portal';
 	import Self from './ContextMenu.svelte';
@@ -25,7 +26,8 @@
 	} = $props();
 
 	let menuEl = $state<HTMLDivElement | null>(null);
-	let pos = $state({ x, y });
+	// Initial spawn point only; the $effect below re-clamps it to the viewport.
+	let pos = $state(untrack(() => ({ x, y })));
 	let openSub = $state<{ index: number; x: number; y: number } | null>(null);
 
 	$effect(() => {

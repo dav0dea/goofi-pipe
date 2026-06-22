@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { untrack } from 'svelte';
 	import { ViewportPortal, useSvelteFlow } from '@xyflow/svelte';
 	import { graph } from '$lib/stores/graph.svelte';
 	import { categoryColor, dtypeColor } from './categoryColor';
@@ -28,7 +29,7 @@
 	const g = graph();
 	const accent = $derived(categoryColor(typeInfo.category));
 
-	let mouseClient = $state<{ x: number; y: number }>({ x: initialClient.x, y: initialClient.y });
+	let mouseClient = $state<{ x: number; y: number }>(untrack(() => ({ x: initialClient.x, y: initialClient.y })));
 	let altKey = $state(false);
 	let ghostW = $state(DEFAULT_NODE_W);
 	let ghostH = $state(DEFAULT_NODE_H);

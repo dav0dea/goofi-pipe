@@ -6,7 +6,7 @@
 <script lang="ts">
 	import { graph } from '$lib/stores/graph.svelte';
 	import type { FsEntry, FsRoot } from '$lib/api/control';
-	import { onMount, tick } from 'svelte';
+	import { onMount, tick, untrack } from 'svelte';
 
 	type Props = {
 		mode: 'save' | 'load';
@@ -24,7 +24,7 @@
 	let entries = $state<FsEntry[]>([]);
 	let roots = $state<FsRoot[]>([]);
 	let pathDraft = $state('');
-	let filename = $state(suggestedName);
+	let filename = $state(untrack(() => suggestedName)); // initial draft; user edits own it
 	let selected = $state<string | null>(null);
 	let error = $state<string | null>(null);
 	let firstInput = $state<HTMLInputElement | null>(null);

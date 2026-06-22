@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { onMount } from 'svelte';
+	import { onMount, untrack } from 'svelte';
 	import { portal } from '$lib/workspace/portal';
 	import { ui } from '$lib/stores/ui.svelte';
 
@@ -12,7 +12,7 @@
 	};
 	const { title, initial, preview, onApply, onCancel }: Props = $props();
 
-	let source = $state(initial);
+	let source = $state(untrack(() => initial)); // seed once; user edits own it thereafter
 	let textarea: HTMLTextAreaElement | null = $state(null);
 	let modalEl: HTMLDivElement | null = $state(null);
 

@@ -135,7 +135,7 @@
 	// (A stack so nesting is a natural extension; today one level deep is reached.)
 	// Seeded from the persisted layout state so a saved/reloaded patch restores
 	// which sub-patch this editor was inside.
-	let enteredPath = $state<string[]>(pathToArray(asStateObject(panelState).subpatchPath));
+	let enteredPath = $state<string[]>(untrack(() => pathToArray(asStateObject(panelState).subpatchPath)));
 	const entered = $derived(enteredPath.length ? enteredPath[enteredPath.length - 1] : null);
 
 	/** Write the current path back into the panel's layout state (round-trips
