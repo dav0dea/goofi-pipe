@@ -24,6 +24,7 @@ import { ui } from './ui.svelte';
 import { consoleStore } from './console.svelte';
 import { selection } from './selection.svelte';
 import { workspace } from '$lib/workspace/workspace.svelte';
+import type { WorkspaceState } from '$lib/workspace/model';
 import { seedInlineView, forgetInlineView, rawInlineView } from '$lib/viewers/inlineView.svelte';
 import { resolveKind } from '$lib/viewers/kind';
 import type { SettingsMap } from '$lib/viewers/settingsSchema';
@@ -54,6 +55,13 @@ export class GraphStore {
 	 * not a transient reconnect — so a layout-less snapshot must reset the
 	 * layout instead of preserving the previous session's arrangement. */
 	private _lastInstanceId: string | null = null;
+
+	/** A just-recorded `load_patch` action awaiting its post-load layout. The
+	 * loaded patch's arrangement settles asynchronously — the `graph_replaced`
+	 * echo hydrates it AFTER we record the action — so we stash the payload here
+	 * and fill `afterLayout` once that echo lands, letting redo reproduce the
+	 * exact post-load layout instead of falling back to the YAML's default. */
+	private _pendingLoadAfter: { afterLayout: WorkspaceState | null } | null = null;
 
 	/** The control client (injectable for tests; defaults to the live WS one). */
 	private ctl: Control;
@@ -97,7 +105,11 @@ export class GraphStore {
 		// replaying old RPCs is meaningless, so drop the history. The one
 		// exception to "never auto-clear" (an in-session load keeps its history
 		// as a `load_patch` checkpoint; same instance_id → not fresh).
-		if (freshSession) history().reset();
+		if (freshSession) {
+			history().reset();
+			// History (and any load_patch action awaiting its after-layout) is gone.
+			this._pendingLoadAfter = null;
+		}
 		return freshSession;
 	}
 
@@ -171,6 +183,10 @@ export class GraphStore {
 				// A patch was loaded/replaced wholesale — always re-fit + reset history.
 				this._replaceSnapshot(ev.payload);
 				this._onWholesaleLoad();
+				// The loaded patch's layout has now settled — stamp it onto the
+				// load_patch action we recorded just before this echo, so redo restores
+				// the precise post-load arrangement (backlog #20).
+				this._captureLoadAfterLayout();
 				break;
 			case 'subpatch_changed': {
 				// Group/expand renamed members + rewrote instances. Re-sync nodes,
@@ -502,19 +518,25 @@ export class GraphStore {
 	}
 
 	private _recordLoadPatch(before: { yaml: string; layout: unknown }, afterYaml: string): void {
-		this._record({
-			kind: 'load_patch',
-			label: 'Load patch',
-			domain: 'graph',
-			context: captureNavContext(),
-			payload: {
-				beforeYaml: before.yaml,
-				afterYaml,
-				beforeLayout: before.layout as never,
-				afterLayout: null,
-				instanceId: this._lastInstanceId ?? ''
-			}
-		});
+		const payload = {
+			beforeYaml: before.yaml,
+			afterYaml,
+			beforeLayout: before.layout as WorkspaceState | null,
+			afterLayout: null as WorkspaceState | null,
+			instanceId: this._lastInstanceId ?? ''
+		};
+		this._record({ kind: 'load_patch', label: 'Load patch', domain: 'graph', context: captureNavContext(), payload });
+		// The post-load layout hasn't settled yet (the graph_replaced echo hydrates
+		// it next); capture it onto this payload when it lands so redo is exact.
+		this._pendingLoadAfter = payload;
+	}
+
+	/** Fill a pending load_patch's `afterLayout` with the now-settled arrangement.
+	 * Called once the wholesale-load echo has hydrated the loaded patch's layout. */
+	private _captureLoadAfterLayout(): void {
+		if (!this._pendingLoadAfter) return;
+		this._pendingLoadAfter.afterLayout = workspace().serialize();
+		this._pendingLoadAfter = null;
 	}
 
 	/** Group the named nodes into a unique (inline) sub-patch. Returns its instance id. */

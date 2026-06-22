@@ -4,6 +4,7 @@ import { GraphStore } from './graph.svelte';
 import { workspace } from '$lib/workspace/workspace.svelte';
 import { graphExecutors } from './graphExecutors';
 import { history, type Action, type ExecutorDeps, type NavContext } from './history.svelte';
+import { collectPanels } from '$lib/workspace/model';
 import type { NodeInstanceInfo, LinkInfo } from '$lib/api/control';
 
 const EMPTY_CTX: NavContext = { activeWorkspaceId: 'w', activePanelId: null, enteredPath: {}, selection: {} };
@@ -488,6 +489,50 @@ describe('graph store — recording wrappers + undo replay', () => {
 		await history().undo();
 		const loadCall = fc.recordedCalls().find((c) => c.op === 'load_text');
 		expect(loadCall?.payload.content).toBe('BEFORE_YAML'); // restored prior patch
+	});
+
+	it('redo of a load restores the layout captured after the load settled (#20)', async () => {
+		const fc = new FakeControl();
+		const g = new GraphStore(fc);
+		const ws = workspace();
+
+		// Build a recognisable 2-panel post-load layout, capture its shape, then
+		// reset — so the measured phase starts from a clean history.
+		ws.reset();
+		ws.split(ws.activePanelId!, 'row', false, 0.5, 'viewer');
+		const settledLayout = ws.serialize();
+		expect(collectPanels(settledLayout.workspaces[0].root)).toHaveLength(2);
+		ws.reset();
+		history().reset();
+		history().configureDeps(() => ({ control: fc, graph: g, workspace: ws }));
+
+		// Establish a backend session so the later graph_replaced echo (same id) is
+		// an in-session load, not a fresh session (which would reset history).
+		const hello = (instance_id: string, layout: unknown) =>
+			fc.emit({
+				event: 'hello',
+				payload: { nodes: [], links: [], instances: {}, save_path: null, unsaved_changes: false, instance_id, layout } as never
+			});
+		hello('sess1', null);
+		expect(collectPanels(ws.active.root)).toHaveLength(1); // pre-load baseline
+
+		fc.setCallResult('serialize', { yaml: 'BEFORE_YAML' });
+		await g.loadText('AFTER_YAML');
+
+		// The load settles: the loaded patch carried the 2-panel layout. The
+		// graph_replaced echo hydrates it; the store must capture it as afterLayout.
+		fc.emit({
+			event: 'graph_replaced',
+			payload: { nodes: [], links: [], instances: {}, save_path: null, unsaved_changes: false, instance_id: 'sess1', layout: settledLayout } as never
+		});
+		expect(collectPanels(ws.active.root)).toHaveLength(2);
+
+		// Undo → prior 1-panel layout; redo → must restore the captured 2-panel one
+		// (a no-op back when afterLayout was hardcoded null).
+		await history().undo();
+		expect(collectPanels(ws.active.root)).toHaveLength(1);
+		await history().redo();
+		expect(collectPanels(ws.active.root)).toHaveLength(2);
 	});
 
 	it('a fresh backend session (changed instance_id) hard-resets the history', () => {
