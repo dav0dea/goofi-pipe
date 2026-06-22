@@ -147,6 +147,16 @@ function decodeTable(
 	return out;
 }
 
+/** IEEE-754 binary16 → number. JS has no reliable Float16Array, so upcast by hand. */
+function halfToFloat(h: number): number {
+	const sign = h & 0x8000 ? -1 : 1;
+	const exp = (h & 0x7c00) >> 10;
+	const frac = h & 0x03ff;
+	if (exp === 0) return sign * Math.pow(2, -14) * (frac / 1024); // subnormal / zero
+	if (exp === 0x1f) return frac ? NaN : sign * Infinity;
+	return sign * Math.pow(2, exp - 15) * (1 + frac / 1024);
+}
+
 function readTypedArray(
 	dtypeStr: string,
 	buffer: ArrayBufferLike,
@@ -169,6 +179,14 @@ function readTypedArray(
 	// frame (which may be reused by the runtime).
 	const slice = buffer.slice(byteOffset, byteOffset + nBytes);
 	switch (kind + itemsize) {
+		case 'f2': {
+			// Half-float (line/trajectory/topomap viewer-adapter transport): read each
+			// LE u16 and upcast to a Float32Array so viewers consume float32 as before.
+			const u16 = new Uint16Array(slice, 0, count);
+			const out = new Float32Array(count);
+			for (let i = 0; i < count; i++) out[i] = halfToFloat(u16[i]);
+			return out;
+		}
 		case 'f4':
 			return new Float32Array(slice, 0, count);
 		case 'f8':
