@@ -735,8 +735,19 @@ export class GraphStore {
 		const real = this._realNode(name);
 		if (real) return real;
 		const inst = this.instances[name];
-		return inst ? this._synthSubpatchNode(name, inst) : null;
+		if (!inst) {
+			this._synthCache.delete(name);
+			return null;
+		}
+		return this._synthSubpatchNode(name, inst);
 	}
+
+	/** Memoized virtual nodes for sub-patch instances, keyed by instance id. A real
+	 * node is one stable `$state` object across `nodeByName` calls; without this the
+	 * synthesized stand-in was rebuilt every call, so a flowNodes rebuild (which
+	 * runs on any selection change) handed each sub-patch a fresh `data.node` and
+	 * its inline viewer re-subscribed/flickered. The cache restores that stability. */
+	private _synthCache = new Map<string, { sig: string; node: NodeInstanceInfo }>();
 
 	/** Other instance ids mirroring the same definition as `instId` (strict
 	 * mirror siblings); empty for a unique sub-patch. */
@@ -787,6 +798,24 @@ export class GraphStore {
 	 * `instances`; the marker just rides the id + glyph/badge bits. */
 	private _synthSubpatchNode(instId: string, inst: InstanceInfo): NodeInstanceInfo {
 		const shared = Boolean(inst.def_id);
+		const error = this.instanceError(instId);
+		const memberCount = Object.keys(inst.members).length;
+		// Signature of everything the synth node RENDERS except position — which is
+		// applied to the flow node separately and updated in place below, so a drag
+		// (a per-frame pos change) keeps the same identity and never churns the
+		// viewer. A selection change touches none of these, so the cache hits.
+		const ifaceSig = Object.entries(inst.interface)
+			.map(([bnd, p]) => `${bnd}:${p.dir}:${p.inner_node == null ? '' : this.boundaryDtype(inst, p)}`)
+			.sort()
+			.join('|');
+		const sig = `${shared}${error ?? ''}${memberCount}${ifaceSig}`;
+
+		const cached = this._synthCache.get(instId);
+		if (cached && cached.sig === sig) {
+			cached.node.pos = inst.pos; // keep position fresh without a new identity
+			return cached.node;
+		}
+
 		const input_slots: Record<string, string> = {};
 		const output_slots: Record<string, string> = {};
 		for (const [bnd, port] of Object.entries(inst.interface)) {
@@ -795,7 +824,7 @@ export class GraphStore {
 			if (port.dir === 'in') input_slots[bnd] = dt;
 			else output_slots[bnd] = dt;
 		}
-		return {
+		const node: NodeInstanceInfo = {
 			name: instId,
 			type: shared ? 'Shared sub-patch' : 'Sub-patch',
 			category: 'subpatch',
@@ -806,9 +835,11 @@ export class GraphStore {
 			pos: inst.pos,
 			viewers: {},
 			membership: null,
-			error: this.instanceError(instId),
-			subpatch: { instId, shared, memberCount: Object.keys(inst.members).length }
+			error,
+			subpatch: { instId, shared, memberCount }
 		};
+		this._synthCache.set(instId, { sig, node });
+		return node;
 	}
 
 	/** Whether an output slot already feeds a link (drives the canvas "drag to

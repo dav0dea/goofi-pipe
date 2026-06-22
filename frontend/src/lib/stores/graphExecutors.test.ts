@@ -613,3 +613,61 @@ describe('graph store — recording wrappers + undo replay', () => {
 		expect(ws.panelsBoundTo('osc0').map((p) => p.panelId)).toContain(panelId);
 	});
 });
+
+describe('sub-patch synth node identity (viewer re-instantiation bug)', () => {
+	function withInstance(g: GraphStore, fc: FakeControl, iface: Record<string, unknown>): void {
+		fc.emit({
+			event: 'hello',
+			payload: {
+				nodes: [],
+				links: [],
+				instances: {
+					subpatch0: { kind: 'subpatch', interface: iface, pos: [0, 0], members: { m0: 'oscillator0' } }
+				},
+				save_path: null,
+				unsaved_changes: false,
+				instance_id: 's',
+				layout: null
+			} as never
+		});
+	}
+
+	it('nodeByName returns a STABLE reference for an unchanged sub-patch instance', () => {
+		const fc = new FakeControl();
+		const g = new GraphStore(fc);
+		withInstance(g, fc, { out0: { dir: 'out', dtype: 'ARRAY', inner_node: 'm0', inner_slot: 'out' } });
+		const a = g.nodeByName('subpatch0');
+		const b = g.nodeByName('subpatch0');
+		expect(a).not.toBeNull();
+		// Same object across calls — like a real node — so a flowNodes rebuild on a
+		// mere selection change doesn't hand the viewer a fresh node and re-subscribe.
+		expect(a).toBe(b);
+	});
+
+	it('returns an UPDATED node when the instance interface changes (no stale memo)', () => {
+		const fc = new FakeControl();
+		const g = new GraphStore(fc);
+		withInstance(g, fc, { out0: { dir: 'out', dtype: 'ARRAY', inner_node: 'm0', inner_slot: 'out' } });
+		const before = g.nodeByName('subpatch0')!;
+		expect(Object.keys(before.output_slots)).toEqual(['out0']);
+		// Wire a second output boundary → the synth node must rebuild to expose it.
+		withInstance(g, fc, {
+			out0: { dir: 'out', dtype: 'ARRAY', inner_node: 'm0', inner_slot: 'out' },
+			out1: { dir: 'out', dtype: 'ARRAY', inner_node: 'm0', inner_slot: 'aux' }
+		});
+		const after = g.nodeByName('subpatch0')!;
+		expect(Object.keys(after.output_slots).sort()).toEqual(['out0', 'out1']);
+		expect(after).not.toBe(before); // content changed → fresh object
+	});
+
+	it('reflects a position move without changing identity (drag must not churn viewers)', () => {
+		const fc = new FakeControl();
+		const g = new GraphStore(fc);
+		withInstance(g, fc, { out0: { dir: 'out', dtype: 'ARRAY', inner_node: 'm0', inner_slot: 'out' } });
+		const a = g.nodeByName('subpatch0')!;
+		fc.emit({ event: 'node_moved', payload: { name: 'subpatch0', pos: [120, 80] } });
+		const b = g.nodeByName('subpatch0')!;
+		expect(b).toBe(a); // same identity across a move
+		expect(b.pos).toEqual([120, 80]); // but position is current
+	});
+});
