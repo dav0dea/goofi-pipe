@@ -5,6 +5,7 @@
 	import type { MenuItem } from '$lib/workspace/menu';
 	import ContextMenu from '$lib/workspace/ContextMenu.svelte';
 	import { examplesToMenuItems } from './examplesMenu';
+	import PerfHud from './PerfHud.svelte';
 
 	type Props = {
 		onAddNode: () => void;
@@ -63,6 +64,7 @@
 		<span class="status" class:online={g.connected} class:offline={!g.connected}>
 			{g.connected ? 'connected' : 'connecting…'}
 		</span>
+		<PerfHud />
 		{#if g.savePath}
 			<span class="path" title={g.savePath}
 				>{g.unsavedChanges ? '● ' : ''}{g.savePath.split('/').pop()}</span

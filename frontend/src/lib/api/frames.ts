@@ -15,6 +15,7 @@
  * signatures, so the viewer layer and agent surface are unchanged.
  */
 import { subscribeData } from './data';
+import { perfStats } from './perfStats.svelte';
 import type { DataFrame } from '$lib/codec/decode';
 
 type FrameCallback = (frame: DataFrame) => void;
@@ -67,6 +68,7 @@ function flush(): void {
 		s.current = frame;
 		s.lastFlush = start;
 		painted++;
+		perfStats().delivered();
 		for (const consumer of s.cbs) {
 			try {
 				consumer(frame);
@@ -94,6 +96,9 @@ export function subscribeFrames(node: string, slot: string, kind: string, cb: Fr
 	if (!s) {
 		const slot_: Slot = { pending: null, current: null, cbs: new Set(), unsub: () => {}, lastFlush: 0 };
 		slot_.unsub = subscribeData(node, slot, kind, (frame) => {
+			// A still-pending frame overwritten before it painted is a dropped frame
+			// (latest-wins) — surface that to the perf HUD.
+			if (slot_.pending !== null) perfStats().dropped();
 			slot_.pending = frame; // overwrite — latest wins
 			dirty.add(slot_);
 			requestFlush();
