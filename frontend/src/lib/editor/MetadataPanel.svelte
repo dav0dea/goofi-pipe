@@ -3,7 +3,7 @@
 	import { subscribeFrames } from '$lib/api/frames';
 	import type { DataFrame } from '$lib/codec/decode';
 	import { resolveKind } from '$lib/viewers/kind';
-	import { onMount } from 'svelte';
+	import { metaEntries, formatMetaValue, metaPreview, isLarge } from './metaFormat';
 
 	type Props = {
 		node: NodeInstanceInfo;
@@ -42,15 +42,17 @@
 		return () => unsub();
 	});
 
-	function fmtMeta(meta: Record<string, unknown>): string {
-		const safe = JSON.parse(
-			JSON.stringify(meta, (_k, v) => {
-				if (typeof v === 'bigint') return Number(v);
-				return v;
-			})
-		);
-		return JSON.stringify(safe, null, 2);
-	}
+	// Derive the rendered fields ONCE per frame (the panel re-renders at the data
+	// rate). Each field's body/preview/collapse state is precomputed so the
+	// template doesn't re-format — and the capped formatter bounds the cost.
+	const fields = $derived(
+		metaEntries(lastFrame?.meta).map(([key, value]) => ({
+			key,
+			body: formatMetaValue(value),
+			preview: metaPreview(value),
+			open: !isLarge(value)
+		}))
+	);
 </script>
 
 <section class="panel" class:bare={!showHeader}>
@@ -68,19 +70,21 @@
 	{/if}
 
 	{#if lastFrame}
-		<div class="meta-line">dtype: <code>{lastFrame.dtype}</code></div>
-		{#if lastFrame.dtype === 'ARRAY'}
-			<div class="meta-line">
-				shape:
-				<code
-					>[{(lastFrame.data as { shape: number[] }).shape.join(', ')}]</code
-				>
-			</div>
-			<div class="meta-line">
-				np dtype: <code>{(lastFrame.data as { dtype: string }).dtype}</code>
+		{#if fields.length === 0}
+			<div class="hint">No metadata</div>
+		{:else}
+			<div class="meta-tree">
+				{#each fields as f (f.key)}
+					<details class="meta-field" open={f.open}>
+						<summary>
+							<span class="mk">{f.key}</span>
+							<span class="mp">{f.preview}</span>
+						</summary>
+						<div class="mv">{f.body}</div>
+					</details>
+				{/each}
 			</div>
 		{/if}
-		<pre class="meta-block">{fmtMeta(lastFrame.meta)}</pre>
 	{:else}
 		<div class="hint">Waiting for data…</div>
 	{/if}
@@ -107,26 +111,46 @@
 		font-size: 10px;
 		padding: 2px 6px;
 	}
-	.meta-line {
+	.meta-tree {
+		display: flex;
+		flex-direction: column;
+		gap: 1px;
+	}
+	/* One collapsible section per top-level meta field. */
+	.meta-field > summary {
+		display: flex;
+		align-items: baseline;
+		gap: 8px;
+		cursor: pointer;
+		padding: 3px 2px;
 		font-family: var(--font-mono);
 		font-size: 11px;
-		color: var(--text-dim);
-		margin: 2px 0;
+		border-radius: 3px;
+		list-style-position: inside;
 	}
-	code {
+	.meta-field > summary:hover {
+		background: var(--bg-elev-2);
+	}
+	.mk {
 		color: var(--text);
+		font-weight: 600;
 	}
-	.meta-block {
+	.mp {
+		color: var(--text-faint);
+		font-size: 10px;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+	.mv {
 		font-family: var(--font-mono);
 		font-size: 10px;
 		color: var(--text-dim);
-		background: var(--bg-elev-2);
-		border-radius: 4px;
-		padding: 6px;
-		margin-top: 8px;
-		/* No max-height: let the block grow to its content and use the panel's
-		   full height; the wrapping inspector panel (`.scroll`) handles overflow. */
+		/* Preserve the dict indentation/newlines, but wrap long inline lists so
+		   they fill the panel width instead of one entry per line. */
 		white-space: pre-wrap;
+		overflow-wrap: anywhere;
+		padding: 2px 0 6px 16px;
 	}
 	.hint {
 		color: var(--text-faint);
