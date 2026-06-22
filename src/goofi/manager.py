@@ -21,6 +21,7 @@ from __future__ import annotations
 import atexit
 import contextlib
 import importlib
+import logging
 import os
 import re
 import time
@@ -46,6 +47,8 @@ if TYPE_CHECKING:
 # A user/file node name may never contain it, so the grouping runtime can mint
 # collision-free qualified names and round-trip them unambiguously.
 SUBPATCH_SEP = "::"
+
+logger = logging.getLogger(__name__)
 
 # Matches a string-literal `nd('name')` / `nd("name")` reference (up to the name's
 # closing quote), capturing the quote and the exact name. Whitespace after `nd(`
@@ -657,6 +660,19 @@ class Manager:
             self._definitions.update(snap_definitions)
             raise
 
+    def _surface_mirror_failure(self, node: str, what: str, exc: Exception) -> None:
+        """Report a strict-mirror propagation failure for a shared-sibling member —
+        logged, and pushed to the UI as an error event when a bridge is attached — so a
+        silently-diverging shared family is visible instead of swallowed (backlog #8)."""
+        logger.warning("strict-mirror: failed to propagate %s to sibling %s: %s", what, node, exc)
+        if self._bridge is not None:
+            try:
+                self._bridge.control.broadcast_threadsafe(
+                    {"event": "error", "payload": {"node": node, "error": f"shared-mirror failed ({what}): {exc}"}}
+                )
+            except Exception:
+                pass
+
     def _rewrite_member_expressions(self, member_names, rename_map: Dict[str, str]) -> None:
         """Rewrite string-literal nd() refs in each member's param expressions to the
         renamed fellow members (group: bare->qualified; expand: qualified->bare),
@@ -1201,8 +1217,11 @@ class Manager:
                 if olocal == local:
                     try:
                         self.nodes[onode].update_param(group, name, value)
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        # Surface, don't swallow: a sibling that fails to mirror would
+                        # silently drift from the family (and a later save would persist
+                        # whichever sibling is live). Report it so the divergence is visible.
+                        self._surface_mirror_failure(onode, f"{group}.{name}", exc)
 
     @mark_unsaved_changes
     def set_node_pos(self, name: str, pos) -> List[str]:
