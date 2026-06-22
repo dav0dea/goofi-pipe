@@ -1,9 +1,11 @@
-"""Raw-byte forwarding on the NodeRef data plane (report A1 + B4).
+"""Raw vs decoded data-handler contract on the NodeRef data plane (report B4).
 
-The bridge forwards the producer's GOOF wire bytes to the browser verbatim;
-the manager must NOT decode→re-encode every frame. `set_data_handler(raw=True)`
-hands the pump's wire bytes straight to the callback (no `decode_data`), while
-`raw=False` keeps the decoded-`Data` contract for any other consumer.
+`set_data_handler(raw=True)` hands the pump's GOOF wire bytes straight to the
+callback (no `decode_data`); `raw=False` decodes once and hands the callback a
+`Data`. Both are supported NodeRef capabilities. The bridge data plane uses
+`raw=False` — it decodes each slot once and the viewer adapters re-encode per
+kind (see test_dataplane_perf); the `raw=True` path remains for any consumer
+that wants the producer bytes untouched.
 """
 import time
 
