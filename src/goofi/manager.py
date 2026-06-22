@@ -322,16 +322,17 @@ class Manager:
             if uid not in self._refs_by_uid:
                 return uid
 
-    def _service_budget_ok(self, name: str) -> bool:
+    def _service_budget_ok(self, name: str, slots=None) -> bool:
         """Whether `name` fits iceoryx2's 255-byte ServiceName once embedded.
 
         Service names are `goofi.{instance_id}.{kind}.{node_id}.{slot}` where
-        `node_id = f"{name}-{uuid8}"` (manager.py mints an 8-hex suffix). We
-        check a generous worst case (longest kind + a 48-char slot allowance)
-        so deep sub-patch nesting fails early with a clear error rather than a
-        late iceoryx2 crash mid-spawn.
+        `node_id = f"{name}-{uuid8}"` (manager.py mints an 8-hex suffix). When the
+        node's real slot names are known, check the LONGEST one; otherwise fall back
+        to a generous 48-char slot allowance. Either way deep sub-patch nesting fails
+        early with a clear error rather than a late iceoryx2 crash mid-spawn.
         """
-        worst = f"goofi.{self._instance_id}.status.{name}-deadbeef.{'s' * 48}"
+        slot = max((s for s in (slots or ())), key=len, default="s" * 48)
+        worst = f"goofi.{self._instance_id}.status.{name}-deadbeef.{slot}"
         return len(worst.encode()) <= 255
 
     @mark_unsaved_changes
@@ -726,7 +727,9 @@ class Manager:
         try:
             for n in member_names:
                 new_name = f"{inst_id}{SUBPATCH_SEP}{n}"
-                if not self._service_budget_ok(new_name):
+                ref = self.nodes[n]
+                slots = list(ref.output_slots or ()) + list(ref.input_slots or ())
+                if not self._service_budget_ok(new_name, slots=slots):
                     raise SubPatchTooDeep(f"grouping would overflow service-name budget for {new_name!r}")
                 self._rename(n, new_name)
                 renamed.append((n, new_name))
