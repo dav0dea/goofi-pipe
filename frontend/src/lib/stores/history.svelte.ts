@@ -426,6 +426,11 @@ export class HistoryStore {
 		this._recompute();
 	}
 
+	/** Dismiss the last undo/redo error (e.g. after its toast is shown). */
+	clearError(): void {
+		this.lastError = null;
+	}
+
 	private _recompute(): void {
 		this.canUndo = this.undoStack.length > 0;
 		this.canRedo = this.redoStack.length > 0;

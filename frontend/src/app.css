@@ -71,6 +71,7 @@
 	--z-drag-ghost: 150; /* live split/join preview while corner-dragging */
 	--z-modal: 200; /* expression editor + other modals */
 	--z-tab-drag: 250; /* a tab being dragged to reorder */
+	--z-toast: 260; /* transient toast (undo/redo errors) — above everything */
 
 	/* JetBrains Mono throughout — goofi3 aesthetic. Sans falls back to mono
 	   in case any component still references --font-sans explicitly. */

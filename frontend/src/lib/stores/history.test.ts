@@ -115,3 +115,14 @@ describe('HistoryStore — re-entrancy (report B13: held Ctrl+Z)', () => {
 		expect(h.canUndo).toBe(true);
 	});
 });
+
+describe('HistoryStore — lastError surface (#9)', () => {
+	beforeEach(() => history().reset());
+
+	it('clearError() resets lastError so a dismissed toast stays dismissed', () => {
+		const h = history();
+		h.lastError = 'Undo failed: name taken';
+		h.clearError();
+		expect(h.lastError).toBe(null);
+	});
+});
