@@ -591,15 +591,20 @@
 					return { ...n, position: { x: c.x + dx, y: c.y + dy } };
 				});
 			}
-			for (const n of args.nodes) {
-				const pos: [number, number] = [Math.round(n.position.x + dx), Math.round(n.position.y + dy)];
-				const bnd = parseBoundary(n.id);
-				if (bnd && entered) {
-					void g.setBoundaryPos(entered, bnd, pos).catch(() => {});
-				} else {
-					void g.setNodePos(n.id, pos);
+			// One transaction so moving N selected nodes is a single Ctrl+Z (each
+			// set*Pos records synchronously, so they fold into one history entry).
+			const label = args.nodes.length > 1 ? `Move ${args.nodes.length} nodes` : 'Move node';
+			void history().transaction(label, async () => {
+				for (const n of args.nodes) {
+					const pos: [number, number] = [Math.round(n.position.x + dx), Math.round(n.position.y + dy)];
+					const bnd = parseBoundary(n.id);
+					if (bnd && entered) {
+						void g.setBoundaryPos(entered, bnd, pos).catch(() => {});
+					} else {
+						void g.setNodePos(n.id, pos);
+					}
 				}
-			}
+			});
 		}
 		uiStore.nodeDrag = null;
 		uiStore.nodeDragTarget = null;
@@ -768,7 +773,10 @@
 	}
 
 	async function duplicateSelection(): Promise<void> {
-		const rename = await g.cloneNodes(selectedNodeNames(), [40, 40]);
+		// One transaction so duplicating N nodes (+ their internal links) is a single Ctrl+Z.
+		const rename = await history().transaction('Duplicate nodes', () =>
+			g.cloneNodes(selectedNodeNames(), [40, 40])
+		);
 		const created = Object.values(rename);
 		if (created.length > 0) sel.selectNodes(panelId, created);
 	}
@@ -793,7 +801,10 @@
 			const c = screenToFlow({ x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 });
 			at = [c.x, c.y];
 		}
-		const rename = await g.instantiateNodes(clipToSpecs(clip, at), clip.links);
+		// One transaction so pasting N nodes (+ their internal links) is a single Ctrl+Z.
+		const rename = await history().transaction('Paste nodes', () =>
+			g.instantiateNodes(clipToSpecs(clip, at), clip.links)
+		);
 		const created = Object.values(rename);
 		if (created.length > 0) sel.selectNodes(panelId, created);
 	}
