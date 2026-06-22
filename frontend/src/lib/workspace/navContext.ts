@@ -44,22 +44,34 @@ export async function restoreNavContext(ctx: NavContext): Promise<void> {
 	if (ctx.activeWorkspaceId && ctx.activeWorkspaceId !== ws.state.activeWorkspaceId) {
 		ws.selectTab(ctx.activeWorkspaceId);
 	}
-	// Drive each editor's sub-patch depth back via its persisted path; the panel
-	// component reacts to subpatchPath and navigates there.
+	const root = ws.active.root;
+	// Drive each surviving editor's sub-patch depth back via its persisted path;
+	// the panel component reacts to subpatchPath and navigates there.
 	for (const [panelId, path] of Object.entries(ctx.enteredPath)) {
-		const p = findPanel(ws.active.root, panelId);
+		const p = findPanel(root, panelId);
 		if (!p) continue;
 		const want = arrayToPath(path);
 		if (asStateObject(p.state).subpatchPath !== want) {
 			ws.setPanelState(panelId, { ...asStateObject(p.state), subpatchPath: want });
 		}
 	}
-	// Restore the selection so the undone/redone change is highlighted.
+	// Restore the selection on every panel that still exists.
 	for (const [panelId, s] of Object.entries(ctx.selection)) {
-		selection().setSelection(panelId, s.nodes, s.edges);
+		if (findPanel(root, panelId)) selection().setSelection(panelId, s.nodes, s.edges);
 	}
-	if (ctx.activePanelId) {
-		ws.setActive(ctx.activePanelId);
-		selection().setActiveEditor(ctx.activePanelId);
+	// Reorient the active panel. If the recorded panel was closed by the very
+	// change we're undoing, fall back to a live node-editor panel so the restore
+	// lands somewhere visible instead of silently no-op'ing — and replay the
+	// recorded selection there so the change is still highlighted.
+	let target = ctx.activePanelId;
+	if (!target || !findPanel(root, target)) {
+		const fallback = collectPanels(root).find((p) => p.panelType === 'node-editor') ?? collectPanels(root)[0];
+		target = fallback?.id ?? null;
+		const primary = ctx.activePanelId ? ctx.selection[ctx.activePanelId] : undefined;
+		if (target && primary) selection().setSelection(target, primary.nodes, primary.edges);
+	}
+	if (target) {
+		ws.setActive(target);
+		selection().setActiveEditor(target);
 	}
 }

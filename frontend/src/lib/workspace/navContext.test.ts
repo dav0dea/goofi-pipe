@@ -31,6 +31,22 @@ describe('NavContext capture/restore', () => {
 		expect(ws.activePanelId).toBe(panelId);
 	});
 
+	it('falls back to a live editor panel when the recorded panel no longer exists', async () => {
+		const ws = workspace();
+		const oldPanel = ws.activePanelId!;
+		selection().selectNodes(oldPanel, ['osc0']);
+		const ctx = captureNavContext();
+		// The change being undone closed the recorded panel: a fresh workspace
+		// replaces it with a different panel id.
+		ws.reset();
+		const newPanel = ws.activePanelId!;
+		expect(newPanel).not.toBe(oldPanel);
+		await restoreNavContext(ctx);
+		// Not a no-op: a live editor is focused and the recorded selection lands there.
+		expect(ws.activePanelId).toBe(newPanel);
+		expect([...selection().nodes(newPanel)]).toEqual(['osc0']);
+	});
+
 	it('captures and restores a panel sub-patch path (enteredPath)', async () => {
 		const ws = workspace();
 		const panelId = ws.activePanelId!;
