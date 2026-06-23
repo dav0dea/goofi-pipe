@@ -43,16 +43,29 @@
 	});
 
 	// Derive the rendered fields ONCE per frame (the panel re-renders at the data
-	// rate). Each field's body/preview/collapse state is precomputed so the
-	// template doesn't re-format — and the capped formatter bounds the cost.
+	// rate). Each field's body/preview is precomputed so the template doesn't
+	// re-format — and the capped formatter bounds the cost. `defaultOpen` is only
+	// the INITIAL collapse state (large fields start collapsed).
 	const fields = $derived(
 		metaEntries(lastFrame?.meta).map(([key, value]) => ({
 			key,
 			body: formatMetaValue(value),
 			preview: metaPreview(value),
-			open: !isLarge(value)
+			defaultOpen: !isLarge(value)
 		}))
 	);
+
+	// The user's per-field collapse choice, keyed by field name, persisted for the
+	// life of this viewer. Without it, binding `open` to the per-frame-derived
+	// default would re-expand a manually-collapsed field on the next node tick.
+	let manualOpen = $state<Record<string, boolean>>({});
+
+	function isOpen(key: string, defaultOpen: boolean): boolean {
+		return manualOpen[key] ?? defaultOpen;
+	}
+	function onToggle(key: string, e: Event): void {
+		manualOpen[key] = (e.currentTarget as HTMLDetailsElement).open;
+	}
 </script>
 
 <section class="panel" class:bare={!showHeader}>
@@ -75,7 +88,11 @@
 		{:else}
 			<div class="meta-tree">
 				{#each fields as f (f.key)}
-					<details class="meta-field" open={f.open}>
+					<details
+						class="meta-field"
+						open={isOpen(f.key, f.defaultOpen)}
+						ontoggle={(e) => onToggle(f.key, e)}
+					>
 						<summary>
 							<span class="mk">{f.key}</span>
 							<span class="mp">{f.preview}</span>
