@@ -48,3 +48,22 @@ def test_meta_dtype_is_set_for_every_data_type():
 
     assert Data(DataType.STRING, "hello", {}).meta["dtype"] == "str"
     assert Data(DataType.TABLE, {}, {}).meta["dtype"] == "table"
+
+
+def test_array_never_carries_a_float_wider_than_float32():
+    # float64 (the numpy default for most ops) is downcast at the Data boundary —
+    # the single chokepoint — so nothing in the system ever carries float64.
+    d = Data(DataType.ARRAY, np.array([1.0, 2.0, 3.0], dtype=np.float64), {})
+    assert d.data.dtype == np.float32
+    assert d.meta["dtype"] == "float32"
+    # float128 (if the platform has it) is also narrowed to float32.
+    if hasattr(np, "float128"):
+        assert Data(DataType.ARRAY, np.zeros(2, dtype=np.float128), {}).data.dtype == np.float32
+
+
+def test_array_preserves_float32_float16_and_integer_dtypes():
+    # Only floats WIDER than 32-bit are touched — float32/float16/int stay as-is.
+    assert Data(DataType.ARRAY, np.zeros(2, dtype=np.float32), {}).data.dtype == np.float32
+    assert Data(DataType.ARRAY, np.zeros(2, dtype=np.float16), {}).data.dtype == np.float16
+    assert Data(DataType.ARRAY, np.zeros(2, dtype=np.int64), {}).data.dtype == np.int64
+    assert Data(DataType.ARRAY, np.zeros(2, dtype=np.uint8), {}).data.dtype == np.uint8

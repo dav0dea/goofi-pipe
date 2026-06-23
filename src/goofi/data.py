@@ -88,6 +88,14 @@ class Data:
         if self.data.ndim == 0:
             self.data = np.array([self.data])
 
+        # Never carry a float wider than 32-bit. Most numpy ops default to float64,
+        # which doubles memory + wire bandwidth for no benefit on biosignal data.
+        # This is the single chokepoint every array Data passes through, so float32
+        # is enforced everywhere by construction (float16 and integer dtypes are
+        # left untouched — only > 4-byte floats are narrowed).
+        if np.issubdtype(self.data.dtype, np.floating) and self.data.dtype.itemsize > 4:
+            self.data = self.data.astype(np.float32)
+
         # populate the metadata
         self.meta["shape"] = self.data.shape
         self.meta["dtype"] = str(self.data.dtype)
