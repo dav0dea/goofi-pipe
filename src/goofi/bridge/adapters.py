@@ -52,11 +52,23 @@ def is_renderable(kind: str, shape) -> bool:
     return True
 
 
+def _preserve_dtype(out: Data, src: Data) -> Data:
+    """Restore the source's true ``meta["dtype"]`` onto an adapted frame. Rebuilding
+    a ``Data`` with a downcast body re-derives ``dtype`` from the wire array (e.g.
+    float16/uint8); the inspector must still see the node's real dtype, so we copy
+    it back — the same float-accuracy contract as ``__view__``."""
+    if "dtype" in src.meta:
+        out.meta["dtype"] = src.meta["dtype"]
+    return out
+
+
 def _summary(data: Data) -> Data:
     """Non-renderable fallback: a bodyless frame carrying a float summary."""
     arr = np.asarray(data.data)
     summary = {"shape": list(arr.shape), "dtype": arr.dtype.str, **view_stats(arr)}
-    return Data(DataType.ARRAY, np.zeros(0, dtype=np.float32), {"__view__": {"summary": summary}})
+    return _preserve_dtype(
+        Data(DataType.ARRAY, np.zeros(0, dtype=np.float32), {"__view__": {"summary": summary}}), data
+    )
 
 
 def adapt_image(data: Data) -> Data:
@@ -77,7 +89,7 @@ def adapt_image(data: Data) -> Data:
         body = np.clip(np.round(norm * 255.0), 0, 255).astype(np.uint8)
     meta = copy.deepcopy(data.meta)
     meta["__view__"] = {"range": [fmin, fmax], "stats": stats}
-    return Data(DataType.ARRAY, body, meta)
+    return _preserve_dtype(Data(DataType.ARRAY, body, meta), data)
 
 
 def _make_float16_adapter(kind: str) -> Callable[[Data], Data]:
@@ -88,7 +100,7 @@ def _make_float16_adapter(kind: str) -> Callable[[Data], Data]:
         stats = view_stats(arr)  # on the float32 array, before the lossy downcast
         meta = copy.deepcopy(data.meta)
         meta["__view__"] = {"stats": stats}
-        return Data(DataType.ARRAY, arr.astype(np.float16), meta)
+        return _preserve_dtype(Data(DataType.ARRAY, arr.astype(np.float16), meta), data)
 
     return _adapt
 

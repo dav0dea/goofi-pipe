@@ -90,6 +90,7 @@ class Data:
 
         # populate the metadata
         self.meta["shape"] = self.data.shape
+        self.meta["dtype"] = str(self.data.dtype)
 
         # make sure that the metadata contains a channels dict
         if "channels" in self.meta:
@@ -113,12 +114,15 @@ class Data:
             assert dim < self.data.ndim, f"Expected channel key to be less than {self.data.ndim}, got {dim}."
 
     def _configure_string(self):
-        pass
+        # A content-type label, mirroring the array's element dtype, so every Data
+        # type carries `meta["dtype"]` for the inspector (not only ARRAY).
+        self.meta["dtype"] = "str"
 
     def _configure_table(self):
         """
         Configure the data object as a table and populate the metadata.
         """
+        self.meta["dtype"] = "table"
         for key, value in self.data.items():
             # make sure that table keys are strings
             if not isinstance(key, str):
