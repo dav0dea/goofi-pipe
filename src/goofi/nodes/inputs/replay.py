@@ -11,7 +11,10 @@ def convert_to_numpy(val):
     try:
         parsed_val = ast.literal_eval(val)  # Convert string to Python list/dict
         if isinstance(parsed_val, list):
-            return np.array(parsed_val, dtype=np.float32)  # Convert lists to NumPy arrays
+            # Infer the natural dtype: integer lists (sample indices, counters)
+            # stay integer; float lists are narrowed to float32 only at the Data
+            # boundary. Forcing float32 here corrupts large integers (> 2^24).
+            return np.array(parsed_val)
         return parsed_val  # Keep as is if it's not a list
     except (ValueError, SyntaxError):
         return val  # Return as is if it can't be parsed
@@ -67,15 +70,23 @@ class Replay(Node):
         if not self.params["Read"]["play"].value:
             return
 
-        # Extract the current row as a dictionary
-        row_data = self.df.iloc[self.current_index].to_dict()
+        # Extract the current row WITHOUT going through a row Series. A row Series
+        # must have a single dtype, so a row mixing an int64 column with a float64
+        # column upcasts the whole row to float64 — corrupting large integers
+        # (epoch-ms timestamps, counters) before they reach us. Pulling each column
+        # value individually preserves that column's native dtype.
+        idx = self.current_index
+        row_data = {col: self.df[col].iloc[idx] for col in self.df.columns}
 
-        # Convert each value, ensuring numeric types become np.number  
-        table_output = {}  
-        for key, value in row_data.items():  
-            if isinstance(value, (int, float)) and not isinstance(value, (np.number, np.ndarray)):  
-                value = np.float64(value)  # Convert Python numeric to NumPy  
-            table_output[key] = to_data(value)  
+        # Wrap plain Python scalars so to_data routes them to ARRAY, preserving
+        # the natural dtype: np.asarray keeps integers (epoch-ms timestamps,
+        # counters) exact; only genuine floats are narrowed to float32 at the
+        # Data boundary. np.float64 here would corrupt integers > 2^24.
+        table_output = {}
+        for key, value in row_data.items():
+            if isinstance(value, (int, float)) and not isinstance(value, (np.number, np.ndarray)):
+                value = np.asarray(value)
+            table_output[key] = to_data(value)
 
         # Increment index, loop back to the start when reaching the end
         self.current_index = (self.current_index + 1) % len(self.df)
