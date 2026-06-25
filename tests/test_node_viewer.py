@@ -6,8 +6,47 @@ import copy
 import pickle
 import threading
 
-from goofi.data import DataType
+import numpy as np
+import pytest
+
+from goofi.data import Data, DataType
 from goofi.node_helpers import OutputSlot
+from goofi.codec import decode_data
+from goofi.node_reduce import viewspec_from_dict
+
+
+@pytest.fixture(autouse=True)
+def _reset_node_viewer():
+    """Stop + clear the reducer subsystem after every test (no thread leak)."""
+    import goofi.node_viewer as nv
+
+    yield
+    nv._reset_for_tests()
+
+
+class _Sink:
+    """Collects delivered (encoded) frames and signals each arrival."""
+
+    def __init__(self):
+        self.frames = []
+        self.event = threading.Event()
+        self.gate = None  # optional threading.Event to block inside the sink
+
+    def __call__(self, buf: bytes):
+        if self.gate is not None:
+            self.gate.wait(timeout=5.0)
+        self.frames.append(buf)
+        self.event.set()
+
+    def wait(self, n=1, timeout=5.0):
+        # wait until at least n frames have arrived
+        import time
+
+        deadline = time.monotonic() + timeout
+        while len(self.frames) < n and time.monotonic() < deadline:
+            self.event.wait(timeout=0.05)
+            self.event.clear()
+        return len(self.frames)
 
 
 def test_output_slot_viewer_count_default_zero():
@@ -39,3 +78,125 @@ def test_output_slot_viewer_count_does_not_affect_equality():
     b = OutputSlot(DataType.ARRAY)
     b.viewer_count = 5
     assert a == b  # viewer_count is compare=False bookkeeping
+
+
+# ---- node_viewer reducer subsystem -------------------------------------------
+
+def _big_line(n=10000):
+    return Data(DataType.ARRAY, np.linspace(-1, 1, n).astype(np.float32),
+                {"channels": {"dim0": list(range(n))}})
+
+
+def test_snapshot_for_offer_does_not_alias_input():
+    import goofi.node_viewer as nv
+
+    arr = np.ones(8, dtype=np.float32)
+    data = Data(DataType.ARRAY, arr, {})
+    snap = nv._snapshot_for_offer(data)
+    arr[:] = 999.0  # mutate the node's array in place AFTER the snapshot
+    assert np.all(snap.data == 1.0)  # snapshot is an independent copy
+    assert snap.meta["channels"] is not data.meta["channels"]
+
+
+def test_offer_reduces_to_spec_and_delivers_encoded_frame():
+    import goofi.node_viewer as nv
+
+    sink = _Sink()
+    nv.register_viewer("n0", "out", sink)
+    nv.set_viewspec("n0", "out", viewspec_from_dict(
+        {"axes": [{"axis": -1, "max": 1000, "method": "envelope"}]}))
+    nv.offer("n0", "out", _big_line(10000))
+    assert sink.wait(1) == 1
+    red = decode_data(sink.frames[-1])
+    assert red.data.shape == (2000,)  # 2*W envelope, reduced inside the reducer thread
+
+
+def test_latest_wins_coalesces_while_reducer_busy():
+    import goofi.node_viewer as nv
+
+    sink = _Sink()
+    sink.gate = threading.Event()  # block the reducer inside the first sink call
+    nv.register_viewer("n1", "out", sink)
+    nv.set_viewspec("n1", "out", viewspec_from_dict(
+        {"axes": [{"axis": -1, "max": 1000, "method": "envelope"}]}))
+
+    # Constant-fill frames so the marker survives envelope (min==max==v).
+    def frame(v):
+        return Data(DataType.ARRAY, np.full(10000, v, dtype=np.float32), {})
+
+    # Frame 1: reducer picks it up and blocks in the sink.
+    nv.offer("n1", "out", frame(-1.0))
+    # Wait until the reducer is parked inside the sink (frame in flight).
+    import time
+    time.sleep(0.2)
+
+    # Frames 2..4 queue while the reducer is busy -> latest-wins coalesces them.
+    for v in (0.1, 0.2, 0.5):
+        nv.offer("n1", "out", frame(v))
+
+    sink.gate.set()  # release the reducer
+    assert sink.wait(2) == 2  # exactly two frames: the first + the coalesced latest
+    last = decode_data(sink.frames[-1])
+    assert abs(float(last.data[0]) - 0.5) < 1e-3  # latest (0.5) won, not 0.1/0.2
+
+
+def test_inplace_mutation_after_offer_cannot_affect_delivered_frame():
+    import goofi.node_viewer as nv
+
+    sink = _Sink()
+    nv.register_viewer("n2", "out", sink)
+    nv.set_viewspec("n2", "out", viewspec_from_dict(
+        {"axes": [{"axis": -1, "max": 100, "method": "envelope"}]}))
+    d = Data(DataType.ARRAY, np.zeros(1000, dtype=np.float32), {})
+    nv.offer("n2", "out", d)
+    d.data[:] = 999.0  # LatentRotator-shaped in-place mutation after return
+    assert sink.wait(1) == 1
+    red = decode_data(sink.frames[-1])
+    assert float(np.max(np.abs(red.data))) == 0.0  # delivered the snapshot (zeros)
+
+
+def test_reducer_survives_a_failing_sink():
+    import goofi.node_viewer as nv
+
+    calls = {"n": 0}
+
+    def flaky(buf):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("boom")  # first delivery explodes
+
+    nv.register_viewer("n3", "out", flaky)
+    nv.set_viewspec("n3", "out", viewspec_from_dict(
+        {"axes": [{"axis": -1, "max": 100, "method": "envelope"}]}))
+    nv.offer("n3", "out", _big_line(5000))
+    import time
+    time.sleep(0.3)
+    nv.offer("n3", "out", _big_line(5000))  # reducer must still be alive
+    deadline = time.monotonic() + 5.0
+    while calls["n"] < 2 and time.monotonic() < deadline:
+        time.sleep(0.02)
+    assert calls["n"] == 2
+
+
+def test_evict_clears_state_and_drops_pending():
+    import goofi.node_viewer as nv
+
+    sink = _Sink()
+    nv.register_viewer("n4", "out", sink)
+    nv.set_viewspec("n4", "out", viewspec_from_dict(
+        {"axes": [{"axis": -1, "max": 100, "method": "envelope"}]}))
+    nv.evict("n4", "out")
+    assert ("n4", "out") not in nv._sinks
+    assert ("n4", "out") not in nv._specs
+    nv.offer("n4", "out", _big_line(2000))  # no sink -> dropped, no crash
+    assert ("n4", "out") not in nv._pending
+
+
+def test_reset_for_tests_stops_reducer_thread():
+    import goofi.node_viewer as nv
+
+    nv.register_viewer("n5", "out", _Sink())
+    nv.offer("n5", "out", _big_line(2000))
+    nv._reset_for_tests()
+    assert not any(t.name == "goofi-data-reducer" and t.is_alive()
+                   for t in threading.enumerate())
