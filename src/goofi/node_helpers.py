@@ -22,7 +22,7 @@ import traceback
 from dataclasses import dataclass, field
 from multiprocessing import Pipe, Process
 from multiprocessing.connection import _ConnectionBase
-from threading import Event, RLock, Thread
+from threading import Event, Lock, RLock, Thread
 from typing import Any, Callable, Dict, List, Optional, Type
 
 from goofi import nodes as goofi_nodes
@@ -170,6 +170,14 @@ class OutputSlot:
     dtype: DataType
     subscriber_count: int = 0
 
+    # Browser-viewer count (Option C node-side reduction). Written ONLY by the
+    # messaging thread on REGISTER_VIEWER/UNREGISTER_VIEWER (under viewer_lock);
+    # read ONLY by the processing loop's gate. A plain int keeps OutputSlot
+    # picklable for MP spawn; it is 0 at pickle time because slots are pickled
+    # via `cls._configure()` before any viewer wiring, so the lazy viewer_lock
+    # (below) is likewise never present at pickle time.
+    viewer_count: int = field(default=0, repr=False, compare=False)
+
     # Runtime, set by Node — `publishers` and `notifiers` are parallel
     # lists. Always empty at pickle time (slots are pickled via
     # `cls._configure()` before any wiring), so no pickle hooks needed.
@@ -181,6 +189,17 @@ class OutputSlot:
     def __post_init__(self):
         if isinstance(self.dtype, str):
             self.dtype = DataType[self.dtype]
+
+    # Lazy lock — NOT a dataclass field, so it never participates in
+    # pickle/equality. Created on first use (always from the single messaging
+    # thread on the first REGISTER_VIEWER for this slot, before any concurrent
+    # writer can exist); later reads see the already-set `__dict__` entry.
+    @property
+    def viewer_lock(self) -> "Lock":
+        lk = self.__dict__.get("_viewer_lock")
+        if lk is None:
+            lk = self.__dict__["_viewer_lock"] = Lock()
+        return lk
 
 
 # ---------------------------------------------------------------------------
