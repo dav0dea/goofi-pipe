@@ -1,0 +1,188 @@
+"""Unit tests for the node-side thalamus reduction engine (src/goofi/node_reduce.py).
+
+Pure-numpy reduction: fold a Data to a per-axis ViewSpec. FAIL-OPEN, never mutate
+the input, fresh contiguous output arrays, coord co-reduction so the reduced Data
+satisfies Data.__post_init__'s per-axis coord-length assertion.
+"""
+import numpy as np
+
+from goofi.data import Data, DataType
+from goofi.node_reduce import (
+    AxisSpec,
+    ViewSpec,
+    viewspec_from_dict,
+    _subsample_idx,
+    _envelope,
+    _area_axis,
+    _apply_axis,
+    reduce_for_view,
+)
+
+
+# ---- Task 1: ViewSpec / parser -------------------------------------------------
+
+def test_viewspec_from_dict_parses_valid_axes():
+    spec = viewspec_from_dict(
+        {"axes": [{"axis": -1, "max": 1600, "method": "envelope"}], "version": 3}
+    )
+    assert spec.version == 3
+    assert spec.axes == (AxisSpec(axis=-1, max=1600, method="envelope"),)
+
+
+def test_viewspec_from_dict_is_tolerant():
+    spec = viewspec_from_dict(
+        {
+            "axes": [
+                {"axis": 0, "max": 0, "method": "subsample"},      # max clamped to >=1
+                {"axis": 1, "max": 10, "method": "bogus"},         # unknown method dropped
+                "not-a-dict",                                       # skipped
+                {"axis": 2, "max": 5, "method": "area"},
+            ],
+            "version": "nope",                                     # bad version -> 0
+        }
+    )
+    assert spec.version == 0
+    assert spec.axes == (
+        AxisSpec(axis=0, max=1, method="subsample"),
+        AxisSpec(axis=2, max=5, method="area"),
+    )
+
+
+def test_viewspec_empty_default():
+    assert viewspec_from_dict({}) == ViewSpec()
+
+
+# ---- Task 2: _subsample_idx ----------------------------------------------------
+
+def test_subsample_idx_picks_spread_indices():
+    idx = _subsample_idx(100, 5)
+    assert list(idx) == [0, 25, 50, 74, 99]
+
+
+def test_subsample_idx_caps_at_n_and_is_unique():
+    idx = _subsample_idx(3, 10)         # m > n -> at most n, no dups
+    assert list(idx) == [0, 1, 2]
+    assert len(set(idx)) == len(idx)
+    assert list(idx) == sorted(idx)
+
+
+# ---- Task 3: _envelope ---------------------------------------------------------
+
+def test_envelope_interleaves_min_max_per_bin():
+    x = np.array([0.0, 5.0, 1.0, 4.0, 2.0, 3.0], dtype=np.float32)  # n=6
+    env, centers = _envelope(x, axis=0, w=3)                        # 3 bins of 2
+    assert env.shape == (6,)                                        # 2*w
+    assert list(env) == [0.0, 5.0, 1.0, 4.0, 2.0, 3.0]             # (min,max) per pair
+    assert list(centers) == [0, 2, 4]
+
+
+def test_envelope_preserves_other_axes_2d():
+    x = np.arange(2 * 8, dtype=np.float32).reshape(2, 8)            # (C=2, N=8)
+    env, centers = _envelope(x, axis=1, w=4)
+    assert env.shape == (2, 8)                                      # rows kept, 2*4 on axis1
+    assert env.flags["C_CONTIGUOUS"]
+
+
+# ---- Task 4: _area_axis --------------------------------------------------------
+
+def test_area_axis_block_mean_divisor():
+    x = np.array([0.0, 2.0, 4.0, 6.0], dtype=np.float32)   # n=4 -> 2 bins
+    out, centers = _area_axis(x, axis=0, m=2)
+    assert list(out) == [1.0, 5.0]                          # mean(0,2), mean(4,6)
+    assert list(centers) == [0, 2]
+
+
+def test_area_axis_equals_true_2d_block_mean_nondivisor():
+    rng = np.random.default_rng(0)
+    img = rng.random((7, 5)).astype(np.float32)            # non-divisor ratios
+    a, _ = _area_axis(img, 0, 3)
+    a, _ = _area_axis(a, 1, 2)                              # separable compose
+    ei = np.linspace(0, 7, 4).astype(int)
+    ej = np.linspace(0, 5, 3).astype(int)
+    ref = np.empty((3, 2), dtype=np.float32)
+    for i in range(3):
+        for j in range(2):
+            ref[i, j] = img[ei[i]:max(ei[i] + 1, ei[i + 1]),
+                            ej[j]:max(ej[j] + 1, ej[j + 1])].mean()
+    assert np.max(np.abs(a - ref)) < 1e-6
+
+
+# ---- Task 5: _apply_axis -------------------------------------------------------
+
+def test_apply_axis_envelope_coreduces_coord_and_records_info():
+    arr = np.arange(8, dtype=np.float32)                 # n=8
+    meta = {"channels": {"dim0": list(range(8))}}
+    out, info = _apply_axis(arr, 0, AxisSpec(0, 2, "envelope"), meta)
+    assert out.shape == (4,)                             # 2*w
+    assert len(meta["channels"]["dim0"]) == 4            # co-reduced -> matches body
+    assert info == {"orig_len": 8, "method": "envelope"}
+
+
+def test_apply_axis_subsample_carries_small_orig_coord():
+    arr = np.arange(6, dtype=np.float32)
+    meta = {"channels": {"dim0": ["a", "b", "c", "d", "e", "f"]}}
+    out, info = _apply_axis(arr, 0, AxisSpec(0, 3, "subsample"), meta)
+    assert out.shape == (3,)
+    assert len(meta["channels"]["dim0"]) == 3
+    assert info["method"] == "subsample"
+    assert info["orig_coord"] == ["a", "b", "c", "d", "e", "f"]  # <= cap
+
+
+def test_apply_axis_envelope_skips_when_not_2x_smaller():
+    arr = np.arange(8, dtype=np.float32)
+    meta = {"channels": {"dim0": list(range(8))}}
+    out, info = _apply_axis(arr, 0, AxisSpec(0, 6, "envelope"), meta)  # 2*6=12 > 8
+    assert out is arr                                    # untouched
+    assert info is None
+    assert meta["channels"]["dim0"] == list(range(8))    # coord untouched
+
+
+# ---- Task 6: reduce_for_view ---------------------------------------------------
+
+def test_reduce_for_view_envelope_1d_full():
+    n = 10000
+    data = Data(DataType.ARRAY, np.linspace(-1, 1, n).astype(np.float32),
+                {"channels": {"dim0": list(range(n))}})
+    spec = viewspec_from_dict({"axes": [{"axis": -1, "max": 1000, "method": "envelope"}]})
+    red = reduce_for_view(data, spec)
+    assert red.data.shape == (2000,)                       # 2*W
+    assert red.meta["reduced"]["0"] == {"orig_len": n, "method": "envelope"}
+    assert len(red.meta["channels"]["dim0"]) == 2000        # constructor would assert otherwise
+
+
+def test_reduce_for_view_does_not_mutate_input():
+    n = 4096
+    arr = np.linspace(0, 1, n).astype(np.float32)
+    data = Data(DataType.ARRAY, arr, {"channels": {"dim0": list(range(n))}})
+    before = arr.copy()
+    reduce_for_view(data, viewspec_from_dict(
+        {"axes": [{"axis": 0, "max": 256, "method": "envelope"}]}))
+    assert np.array_equal(arr, before)                      # input array untouched
+    assert len(data.meta["channels"]["dim0"]) == n          # input meta untouched
+
+
+def test_reduce_for_view_2d_line_both_axes():
+    C, N = 64, 5000
+    data = Data(DataType.ARRAY, np.zeros((C, N), dtype=np.float32),
+                {"channels": {"dim0": [f"ch{i}" for i in range(C)], "dim1": list(range(N))}})
+    spec = viewspec_from_dict({"axes": [
+        {"axis": 0, "max": 8, "method": "subsample"},
+        {"axis": -1, "max": 800, "method": "envelope"},
+    ]})
+    red = reduce_for_view(data, spec)
+    assert red.data.shape == (8, 1600)                      # channel-cap + 2*W envelope
+    assert len(red.meta["channels"]["dim0"]) == 8
+    assert len(red.meta["channels"]["dim1"]) == 1600
+    assert set(red.meta["reduced"].keys()) == {"0", "1"}    # both axes recorded, canonical
+
+
+def test_reduce_for_view_fails_open_on_non_array():
+    s = Data(DataType.STRING, "hello", {})
+    spec = viewspec_from_dict({"axes": [{"axis": 0, "max": 2, "method": "area"}]})
+    assert reduce_for_view(s, spec) is s
+
+
+def test_reduce_for_view_none_or_empty_spec_passthrough():
+    data = Data(DataType.ARRAY, np.zeros((4,), dtype=np.float32), {})
+    assert reduce_for_view(data, None) is data
+    assert reduce_for_view(data, ViewSpec()) is data
