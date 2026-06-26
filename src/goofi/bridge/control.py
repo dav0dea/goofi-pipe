@@ -491,8 +491,14 @@ class ControlHub:
                 {"event": "error", "payload": {"node": name, "error": message.content.get("error")}}
             )
 
+        def on_stats(noderef, message: Message):
+            self.broadcast_threadsafe(
+                {"event": "node_stats", "payload": {"node": name, "stats": message.content.get("stats")}}
+            )
+
         ref.set_message_handler(MessageType.STATE_UPDATE, on_state)
         ref.set_message_handler(MessageType.PROCESSING_ERROR, on_error)
+        ref.set_message_handler(MessageType.NODE_STATS, on_stats)
         self._wired_nodes.add(name)
 
     def rewire_node_status(self, name: str) -> None:

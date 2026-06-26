@@ -248,6 +248,9 @@ class NodeRef:
     _messaging_thread: Optional[Thread] = field(default=None, repr=False, compare=False)
     _waitset: Optional[WaitSet] = field(default=None, repr=False, compare=False)
     last_error: Optional[str] = field(default=None, repr=False, compare=False)
+    # Latest execution telemetry the node pushed (NODE_STATS). Node-authoritative
+    # cache like serialized_state / last_error; surfaced to the browser.
+    node_stats: Optional[Dict[str, Any]] = field(default=None, repr=False, compare=False)
     # Stable identity for the persistence layer: a uuid minted once by the
     # manager (Manager.add_node), persisted in the .gfi, and carried across
     # respawns/reloads. `membership` records sub-patch membership (set by the
@@ -603,6 +606,8 @@ class NodeRef:
                 pass
         elif msg.type == MessageType.PROCESSING_ERROR:
             self.last_error = msg.content.get("error")
+        elif msg.type == MessageType.NODE_STATS:
+            self.node_stats = msg.content.get("stats")
 
         cb = self.callbacks.get(msg.type)
         if cb is not None:

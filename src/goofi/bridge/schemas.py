@@ -97,6 +97,12 @@ def describe_node_instance(name: str, ref: NodeRef) -> Dict[str, Any]:
         # hides members of a collapsed instance and shows the group node instead.
         "membership": ref.membership,
         "error": ref.last_error,
+        # Rolling execution telemetry the node pushes on the status plane
+        # (~1 Hz). None until the node's first NODE_STATS push.
+        "stats": ref.node_stats,
+        # How many times the supervisor has auto-restarted this node after a
+        # process crash; lets a freshly-connected client render the crash badge.
+        "restarts": ref.restart_count,
         # Peer-to-peer SSE log endpoint the node advertises via STATE_UPDATE.
         # None until the node's first state push (or when capture is off).
         "log_endpoint": (ref.serialized_state or {}).get("log_endpoint"),

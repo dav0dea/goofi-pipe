@@ -1,5 +1,9 @@
 """Rolling per-node execution statistics (src/goofi/node_stats.py)."""
+import time
+
 from goofi.node_stats import ExecStats
+
+from .test_manager import _bare_manager
 
 
 def test_empty_stats_are_zeroed():
@@ -44,3 +48,33 @@ def test_single_tick_has_no_rate_yet():
     assert snap["updates_per_second"] == 0.0  # need >=2 timestamps for a rate
     assert snap["mean_process_ms"] == 2.0
     assert snap["total_ticks"] == 1
+
+
+# ---- end-to-end: a real spawned node pushes NODE_STATS to its NodeRef --------
+
+def test_live_node_pushes_stats_to_noderef():
+    # The node computes stats on its own thread and emits NODE_STATS (~1 Hz) on
+    # the status plane; the NodeRef caches the latest snapshot. Drive a real
+    # process and wait for the first push to land.
+    mgr = _bare_manager(use_multiprocessing=True)
+    try:
+        a = mgr.add_node("Oscillator", "inputs")
+        ref = mgr.nodes[a]
+        assert ref.wait_for_state(timeout=2.0)
+
+        # The first push can fire at tick 1 (no rate yet); wait for a steady-state
+        # snapshot once enough ticks have accumulated for a rate (~1 push later).
+        deadline = time.perf_counter() + 5.0
+        while time.perf_counter() < deadline:
+            stats = ref.node_stats
+            if stats is not None and stats["updates_per_second"] > 0:
+                break
+            time.sleep(0.05)
+
+        stats = ref.node_stats
+        assert stats is not None, "node never pushed NODE_STATS"
+        assert set(stats) == {"updates_per_second", "mean_process_ms", "total_ticks"}
+        assert stats["total_ticks"] > 0
+        assert stats["updates_per_second"] > 0  # the Oscillator ticks continuously
+    finally:
+        mgr.terminate(notify_gui=False)

@@ -32,6 +32,9 @@ EXAMPLE_CONTENT = {
         "output_subscribers": {},
     },
     MessageType.PROCESSING_ERROR: {"error": "boom"},
+    MessageType.NODE_STATS: {
+        "stats": {"updates_per_second": 12.4, "mean_process_ms": 3.1, "total_ticks": 42},
+    },
     MessageType.SHUTDOWN: {},
 }
 

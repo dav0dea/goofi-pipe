@@ -18,6 +18,7 @@ def _fake_ref(callbacks=None, updates=None):
     return SimpleNamespace(
         serialized_state=None,
         last_error=None,
+        node_stats=None,
         _first_state_event=threading.Event(),
         params=SimpleNamespace(update=lambda d: (updates if updates is not None else []).append(d)),
         callbacks=callbacks or {},
@@ -58,6 +59,23 @@ def test_dispatch_status_applies_even_without_a_callback():
     NodeRef._dispatch_status(fake, Message(MessageType.STATE_UPDATE, content))
     assert fake.serialized_state == content
     assert updates == [{"g": {}}]
+
+
+def test_dispatch_status_node_stats_caches_then_fires():
+    # NODE_STATS is node-owned telemetry: it lands in the cache at the single
+    # apply site (so a synchronous reader / snapshot sees it) and then the bridge
+    # broadcast handler runs.
+    fired = []
+    fake = _fake_ref(callbacks={MessageType.NODE_STATS: lambda ref, m: fired.append(m)})
+    stats = {"updates_per_second": 12.4, "mean_process_ms": 3.1, "total_ticks": 42}
+
+    NodeRef._dispatch_status(fake, Message(MessageType.NODE_STATS, {"stats": stats}))
+
+    assert fake.node_stats == stats
+    assert len(fired) == 1
+    # stats are independent of state/error caches
+    assert fake.serialized_state is None
+    assert fake.last_error is None
 
 
 def test_dispatch_status_shutdown_only_dispatches_callback():

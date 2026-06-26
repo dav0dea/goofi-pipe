@@ -72,6 +72,9 @@ class MessageType(Enum):
     - `PROCESSING_ERROR`: most recent error from `process()` (or `None` to
       clear a previously reported error).
         - `error` (str | None)
+    - `NODE_STATS`: low-rate (~1 Hz) execution telemetry, decoupled from the
+      data rate and the dirty/clean state push.
+        - `stats` (dict): `{updates_per_second, mean_process_ms, total_ticks}`.
     - `SHUTDOWN`: node requests full goofi-pipe shutdown.
     """
 
@@ -93,6 +96,7 @@ class MessageType(Enum):
     STATE_UPDATE = 8
     PROCESSING_ERROR = 9
     SHUTDOWN = 10
+    NODE_STATS = 16
 
 
 @dataclass
@@ -155,3 +159,5 @@ class Message:
             self.require_fields(_type=str, category=str, params=dict, output_subscribers=dict)
         elif t == MessageType.PROCESSING_ERROR:
             self.require_fields(error=(str, type(None)))
+        elif t == MessageType.NODE_STATS:
+            self.require_fields(stats=dict)

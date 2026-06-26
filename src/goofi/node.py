@@ -55,6 +55,11 @@ class MultiprocessingForbiddenError(Exception):
     pass
 
 
+# Cadence for NODE_STATS pushes (seconds) — low + fixed, decoupled from the data
+# rate so a kHz node still reports telemetry only ~once per second.
+_STATS_PUSH_INTERVAL = 1.0
+
+
 def _coerce_to_param_type(param, value):
     """Best-effort coercion of an expression result into a param's
     declared type. Returns ``None`` to signal "skip this update" when
@@ -164,6 +169,7 @@ class Node(ABC):
         # Rolling execution telemetry (update rate, mean process() duration) over
         # the last N ticks. Written + read only on the processing thread, so no lock.
         self._exec_stats = ExecStats()
+        self._last_stats_push = 0.0
 
         self.node_id = node_id
         self._input_slots = input_slots
@@ -491,6 +497,23 @@ class Node(ABC):
             self.status_pub.send(encode_message(Message(MessageType.STATE_UPDATE, state)))
             self._status_notifier.notify()
             self._dirty = False
+        except Exception:
+            traceback.print_exc()
+
+    def _maybe_push_stats(self, now: float) -> None:
+        """Emit NODE_STATS at a low fixed cadence (decoupled from the data rate and
+        the dirty/clean STATE_UPDATE). Cheap: one ExecStats snapshot + ctrl publish.
+        `now` is a perf-counter reading (same clock as the throttle baseline)."""
+        if self._environment == NodeEnv.STANDALONE:
+            return
+        if now - self._last_stats_push < _STATS_PUSH_INTERVAL:
+            return
+        self._last_stats_push = now
+        try:
+            self.status_pub.send(
+                encode_message(Message(MessageType.NODE_STATS, {"stats": self._exec_stats.snapshot()}))
+            )
+            self._status_notifier.notify()
         except Exception:
             traceback.print_exc()
 
@@ -927,6 +950,7 @@ class Node(ABC):
                 continue
             _t1 = time.perf_counter()
             self._exec_stats.record(_t1 - _t0, _t1)
+            self._maybe_push_stats(_t1)
 
             if not self.alive:
                 break
