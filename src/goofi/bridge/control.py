@@ -34,6 +34,13 @@ from goofi.bridge.schemas import (
 )
 from goofi.message import Message, MessageType
 
+# Control-plane protocol version, stamped into the `hello` handshake. The browser
+# reconciles purely from echoed events, so a stale frontend/build/ against a newer
+# backend would diverge SILENTLY; the client asserts this against its own compiled
+# constant (frontend/src/lib/api/control.ts PROTOCOL_VERSION) and prompts a reload
+# on mismatch. Bump BOTH sides together when the wire shape / reconciliation changes.
+PROTOCOL_VERSION = 1
+
 
 class ControlHub:
     """One per BridgeServer. Holds connected clients + manager-side hooks."""
@@ -67,9 +74,13 @@ class ControlHub:
         for name in list(self.server.manager.nodes):
             self._wire_node_status(name)
 
-        # Snapshot — let the client render before any events trickle in.
+        # Snapshot — let the client render before any events trickle in. The
+        # handshake also carries the protocol version (only on `hello`, not the
+        # general snapshot) so the client can detect a stale-build skew.
         try:
-            await ws.send_json({"event": "hello", "payload": self._snapshot()})
+            await ws.send_json(
+                {"event": "hello", "payload": {**self._snapshot(), "protocol_version": PROTOCOL_VERSION}}
+            )
         except Exception:
             return ws
 

@@ -8,6 +8,21 @@
  */
 import type { ParamDescriptor } from '$lib/api/types';
 
+/** Control-plane protocol version. The browser reconciles purely from echoed
+ * events, so a stale `frontend/build/` against a newer backend would diverge
+ * SILENTLY rather than erroring. The backend stamps its version into `hello`
+ * (goofi/bridge/control.py PROTOCOL_VERSION) and the client asserts a match —
+ * turning silent skew into an explicit "reload required". Bump BOTH sides
+ * together whenever the wire shape or reconciliation rules change. */
+export const PROTOCOL_VERSION = 1;
+
+/** Whether a backend-reported protocol version is compatible with this build.
+ * Strict equality: an absent/non-numeric version means a backend older than this
+ * field, which is itself a skew worth flagging. */
+export function isProtocolCompatible(remote: unknown): boolean {
+	return remote === PROTOCOL_VERSION;
+}
+
 export interface NodeTypeInfo {
 	type: string;
 	category: string;
@@ -171,6 +186,10 @@ export function paramValues(node: NodeInstanceInfo): Record<string, Record<strin
 }
 
 export interface GraphSnapshot {
+	/** Control-plane protocol version, present on the `hello` handshake. The
+	 * client asserts it against {@link PROTOCOL_VERSION}; a mismatch surfaces a
+	 * "reload required" state instead of silently diverging. */
+	protocol_version?: number;
 	/** Identifies the manager *process*. Changes when the backend is restarted,
 	 * letting the graph store distinguish a fresh session (reset the layout)
 	 * from a transient reconnect to the same one (keep the current layout). */
@@ -237,7 +256,9 @@ export class ControlClient implements Control {
 	private pending = new Map<number, Pending>();
 	private handlers = new Set<EventHandler>();
 	private connectListeners = new Set<(connected: boolean) => void>();
+	private protocolListeners = new Set<(mismatch: boolean) => void>();
 	private _connected = false;
+	private _protocolMismatch = false;
 	private retryMs = 250;
 	private closedByUser = false;
 
@@ -292,6 +313,7 @@ export class ControlClient implements Control {
 			return;
 		}
 		if ('event' in obj && typeof obj.event === 'string') {
+			if (obj.event === 'hello') this._checkProtocol(obj.payload);
 			for (const h of this.handlers) {
 				try {
 					h(msg as ControlEvent);
@@ -300,6 +322,18 @@ export class ControlClient implements Control {
 				}
 			}
 		}
+	}
+
+	/** Latch a protocol mismatch from the `hello` handshake (one-way: a reload is
+	 * the only fix, so we never clear it). Notifies subscribers once. */
+	private _checkProtocol(payload: unknown): void {
+		const remote =
+			payload && typeof payload === 'object'
+				? (payload as { protocol_version?: unknown }).protocol_version
+				: undefined;
+		if (this._protocolMismatch || isProtocolCompatible(remote)) return;
+		this._protocolMismatch = true;
+		for (const h of this.protocolListeners) h(true);
 	}
 
 	private _onClose(): void {
@@ -337,8 +371,21 @@ export class ControlClient implements Control {
 		return () => this.connectListeners.delete(handler);
 	}
 
+	/** Subscribe to a protocol-version mismatch (fires once, immediately if already
+	 * mismatched). A mismatch means this build can't safely talk to the running
+	 * backend — the UI should prompt a reload. */
+	onProtocolMismatch(handler: (mismatch: boolean) => void): () => void {
+		this.protocolListeners.add(handler);
+		if (this._protocolMismatch) handler(true);
+		return () => this.protocolListeners.delete(handler);
+	}
+
 	get connected(): boolean {
 		return this._connected;
+	}
+
+	get protocolMismatch(): boolean {
+		return this._protocolMismatch;
 	}
 
 	/** Issue an RPC. Returns a promise resolving to the server's result. */

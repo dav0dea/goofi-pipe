@@ -24,7 +24,13 @@
 	import { history } from '$lib/stores/history.svelte';
 	import { undoKeyAction } from '$lib/app/undoKeys';
 	import { exposeAgentApi } from '$lib/agent';
+	import { getControl } from '$lib/api/control';
 	import { onMount } from 'svelte';
+
+	// A protocol-version mismatch means this built SPA can't safely talk to the
+	// running backend (a stale frontend/build/ against a newer manager). Prompt a
+	// hard reload rather than letting the event-reconciled UI diverge silently.
+	let protocolMismatch = $state(false);
 
 	// Populate the panel registry before any panel renders.
 	registerBuiltinPanels();
@@ -183,9 +189,11 @@
 	onMount(() => {
 		window.addEventListener('keydown', onKeydown);
 		window.addEventListener('beforeunload', onBeforeUnload);
+		const offProto = getControl().onProtocolMismatch(() => (protocolMismatch = true));
 		return () => {
 			window.removeEventListener('keydown', onKeydown);
 			window.removeEventListener('beforeunload', onBeforeUnload);
+			offProto();
 			if (pushTimer) clearTimeout(pushTimer);
 		};
 	});
@@ -197,6 +205,12 @@
 </svelte:head>
 
 <div class="app-root">
+	{#if protocolMismatch}
+		<div class="proto-banner" role="alert">
+			<span>This page is out of date with the backend. Reload to continue.</span>
+			<button type="button" onclick={() => location.reload()}>Reload</button>
+		</div>
+	{/if}
 	<TopBar
 		onAddNode={addNode}
 		onFitView={fitView}
@@ -241,5 +255,23 @@
 		min-width: 0;
 		min-height: 0;
 		display: flex;
+	}
+	.proto-banner {
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		gap: 0.75rem;
+		padding: 0.4rem 0.75rem;
+		background: var(--danger, #c0392b);
+		color: #fff;
+		font-size: 0.85rem;
+	}
+	.proto-banner button {
+		border: 1px solid #fff;
+		background: transparent;
+		color: #fff;
+		border-radius: 4px;
+		padding: 0.15rem 0.6rem;
+		cursor: pointer;
 	}
 </style>
