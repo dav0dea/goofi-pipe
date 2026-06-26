@@ -20,6 +20,13 @@ function fmtMs(ms: number): string {
 	return ms.toFixed(2);
 }
 
+/** Just the update rate (`12.4 upd/s`) for the compact, glanceable node-header
+ * readout. Null until the node's first NODE_STATS push. */
+export function formatUpdateRate(stats: NodeStats | null | undefined): string | null {
+	if (!stats) return null;
+	return `${fmtRate(stats.updates_per_second)} upd/s`;
+}
+
 /** Labelled rows for the metadata panel, or `[]` when no stats have arrived yet. */
 export function nodeStatsRows(stats: NodeStats | null | undefined): { label: string; value: string }[] {
 	if (!stats) return [];

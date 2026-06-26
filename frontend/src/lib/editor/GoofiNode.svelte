@@ -6,6 +6,7 @@
 	import { flash } from '$lib/stores/flash.svelte';
 	import { NODE } from './nodeMetrics';
 	import { nodeHealth } from './nodeHealth';
+	import { formatUpdateRate } from './nodeStats';
 	import type { NodeInstanceInfo } from '$lib/api/control';
 
 	let { data, selected }: NodeProps = $props();
@@ -53,6 +54,9 @@
 	const healthColor = $derived(
 		isCrashed ? 'var(--warning, #d8932b)' : isError ? 'var(--danger)' : 'var(--success)'
 	);
+	// Glanceable update rate at the right of the header — faint by default, brought
+	// forward on hover. Null until the node's first NODE_STATS push. Adds no height.
+	const rateLabel = $derived(formatUpdateRate(node?.stats));
 
 	// Inputs are bare connectors on the left edge, one per slot unit from the top
 	// (so their count never balloons the node). The node only needs to be tall
@@ -89,6 +93,9 @@
 		<div class="header">
 			<span class="health" class:pulse={isCrashed} style="background: {healthColor};" title={health.title}></span>
 			<span class="name">{label}</span>
+			{#if rateLabel}
+				<span class="rate" title="update rate">{rateLabel}</span>
+			{/if}
 		</div>
 
 		{#if outputs.length > 0}
@@ -237,6 +244,20 @@
 		white-space: nowrap;
 		flex: 1 1 auto;
 		min-width: 0;
+	}
+	/* Glanceable update rate, right-aligned. Faint at rest so it doesn't compete
+	   with the name; brought forward when the node is hovered. Tabular so the ~1 Hz
+	   number updates don't jitter the layout. */
+	.rate {
+		flex: 0 0 auto;
+		font-size: 9px;
+		color: var(--text-muted, #8a8f98);
+		font-variant-numeric: tabular-nums;
+		opacity: 0.3;
+		transition: opacity 120ms ease;
+	}
+	.goofi-node:hover .rate {
+		opacity: 0.85;
 	}
 	.viewers {
 		display: flex;
