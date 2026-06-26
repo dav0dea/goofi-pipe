@@ -37,7 +37,7 @@
 		// The inspector only reads frame.meta, which is identical across viewer kinds;
 		// subscribe with the slot's dtype-default kind so the wire frame stays small.
 		const kind = resolveKind(node.output_slots?.[slot] ?? null, undefined);
-		const unsub = subscribeFrames(node.name, slot, kind, (f) => {
+		const unsub = subscribeFrames(node.uid, slot, kind, (f) => {
 			lastFrame = f;
 		});
 		return () => unsub();

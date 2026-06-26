@@ -164,9 +164,10 @@
 	const boundaryId = (instId: string, name: string): string => `${BND_PREFIX}${instId}::${name}`;
 	const isBoundaryId = (id: string): boolean => id.startsWith(BND_PREFIX);
 
-	/** The display (graph) name of a member given its local name within `inst`. */
-	function memberDisplay(inst: InstanceInfo, local: string): string | null {
-		for (const [disp, loc] of Object.entries(inst.members)) if (loc === local) return disp;
+	/** The uid (flow-node id) of a member given its local name within `inst`
+	 * (members map is uid -> local). */
+	function memberUid(inst: InstanceInfo, local: string): string | null {
+		for (const [uid, loc] of Object.entries(inst.members)) if (loc === local) return uid;
 		return null;
 	}
 
@@ -198,11 +199,11 @@
 		}
 	});
 
-	/** Display name -> the instance that hides it (collapsed sub-patch member). */
+	/** member uid -> the instance that hides it (collapsed sub-patch member). */
 	const memberInstance = $derived.by(() => {
 		const m = new Map<string, string>();
 		for (const [instId, inst] of Object.entries(g.instances)) {
-			for (const disp of Object.keys(inst.members)) m.set(disp, instId);
+			for (const uid of Object.keys(inst.members)) m.set(uid, instId);
 		}
 		return m;
 	});
@@ -236,13 +237,13 @@
 			// side of the members' bounding box.
 			const disps = Object.keys(inst.members);
 			const pts = disps
-				.map((d) => g.nodeByName(d)?.pos)
+				.map((d) => g.nodeById(d)?.pos)
 				.filter((p): p is [number, number] => !!p);
 			const minX = pts.length ? Math.min(...pts.map((p) => p[0])) : 0;
 			const maxX = pts.length ? Math.max(...pts.map((p) => p[0])) : 0;
 			const minY = pts.length ? Math.min(...pts.map((p) => p[1])) : 0;
 			for (const disp of disps) {
-				const n = g.nodeByName(disp);
+				const n = g.nodeById(disp);
 				if (!n) continue;
 				next.push({
 					id: disp,
@@ -278,13 +279,13 @@
 			return;
 		}
 		for (const n of g.nodes) {
-			if (memberInstance.has(n.name)) continue; // hidden member of a collapsed sub-patch
+			if (memberInstance.has(n.uid)) continue; // hidden member of a collapsed sub-patch
 			next.push({
-				id: n.name,
+				id: n.uid,
 				type: 'goofi',
 				position: { x: n.pos?.[0] ?? 0, y: n.pos?.[1] ?? 0 },
 				data: { node: n },
-				selected: sel.nodes(panelId).has(n.name)
+				selected: sel.nodes(panelId).has(n.uid)
 			});
 		}
 		for (const [instId, inst2] of Object.entries(g.instances)) {
@@ -296,7 +297,7 @@
 				id: instId,
 				type: 'goofi',
 				position: { x: inst2.pos?.[0] ?? 0, y: inst2.pos?.[1] ?? 0 },
-				data: { node: g.nodeByName(instId) },
+				data: { node: g.nodeById(instId) },
 				selected: sel.nodes(panelId).has(instId)
 			});
 		}
@@ -326,7 +327,7 @@
 			// by deleting it (ondelete routes a boundary edge to wireBoundary(null)).
 			for (const [name, port] of Object.entries(inst.interface)) {
 				if (port.inner_node == null) continue;
-				const disp = memberDisplay(inst, port.inner_node);
+				const disp = memberUid(inst, port.inner_node);
 				if (!disp) continue;
 				const bId = boundaryId(entered, name);
 				if (port.dir === 'in') {
@@ -396,7 +397,7 @@
 		const names = selectedNodeNames();
 		if (names.length === 0) return;
 		// Place the collapsed group node at the centroid of its members.
-		const pts = names.map((n) => g.nodeByName(n)?.pos).filter((p): p is [number, number] => !!p);
+		const pts = names.map((n) => g.nodeById(n)?.pos).filter((p): p is [number, number] => !!p);
 		const pos: [number, number] = pts.length
 			? [
 					Math.round(pts.reduce((a, p) => a + p[0], 0) / pts.length),
@@ -492,7 +493,7 @@
 			const outputs = Object.keys(node.output_slots ?? {});
 			return nodeSurfaceSize(
 				inputs.length,
-				outputs.map((s) => uiStore.isSlotExpanded(node.name, s))
+				outputs.map((s) => uiStore.isSlotExpanded(node.uid, s))
 			);
 		}
 		return { width: DEFAULT_NODE_W, height: DEFAULT_NODE_H };
@@ -780,7 +781,7 @@
 			const names = entered
 				? Object.keys(g.instances[entered]?.members ?? {})
 				: [
-						...g.nodes.filter((n) => !memberInstance.has(n.name)).map((n) => n.name),
+						...g.nodes.filter((n) => !memberInstance.has(n.uid)).map((n) => n.uid),
 						...Object.keys(g.instances)
 					];
 			sel.selectNodes(panelId, names);
@@ -813,7 +814,7 @@
 
 	async function copySelection(): Promise<void> {
 		const names = new Set(selectedNodeNames());
-		const selNodes = g.nodes.filter((n) => names.has(n.name));
+		const selNodes = g.nodes.filter((n) => names.has(n.uid));
 		if (selNodes.length === 0) return;
 		const links = g.links.filter((l) => names.has(l.node_in) && names.has(l.node_out));
 		if (!(await copyText(JSON.stringify(serializeClipboard(selNodes, links))))) {

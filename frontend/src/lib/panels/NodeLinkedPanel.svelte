@@ -36,7 +36,7 @@
 	const uiStore = ui();
 
 	const linkedName = $derived(linkedNodeName(linkState));
-	const node = $derived(linkedName ? g.nodeByName(linkedName) : null);
+	const node = $derived(linkedName ? g.nodeById(linkedName) : null);
 	// A node is being dragged from an editor (the editor drives the link on
 	// release); `over` is true when it's currently over this panel.
 	const dragActive = $derived(uiStore.nodeDrag !== null);

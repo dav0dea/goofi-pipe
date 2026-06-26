@@ -31,7 +31,7 @@
 		// A drag from the handle is still a drag, not a click, so reconnect by
 		// dragging keeps working.
 		e.stopPropagation();
-		uiStore.requestSlotClick({ node: node.name, slot, dtype, side: 'target', clientX: e.clientX, clientY: e.clientY });
+		uiStore.requestSlotClick({ node: node.uid, slot, dtype, side: 'target', clientX: e.clientX, clientY: e.clientY });
 	}
 
 	function onOutputClick(e: MouseEvent, slot: string, dtype: string): void {
@@ -39,7 +39,7 @@
 		// seeds a new downstream node without disconnecting anything. Dragging the
 		// pill still starts a connection.
 		e.stopPropagation();
-		uiStore.requestSlotClick({ node: node.name, slot, dtype, side: 'source', clientX: e.clientX, clientY: e.clientY });
+		uiStore.requestSlotClick({ node: node.uid, slot, dtype, side: 'source', clientX: e.clientX, clientY: e.clientY });
 	}
 
 	const accent = $derived(categoryColor(node?.category));
@@ -50,7 +50,7 @@
 	const isError = $derived(health.kind === 'error');
 	const isCrashed = $derived(health.kind === 'crashed');
 	// Brief "this just changed" pulse after an undo/redo reorients here (#19).
-	const flashing = $derived(flash().active(node?.name));
+	const flashing = $derived(flash().active(node?.uid));
 	const healthColor = $derived(
 		isCrashed ? 'var(--warning, #d8932b)' : isError ? 'var(--danger)' : 'var(--success)'
 	);
@@ -71,7 +71,7 @@
 		let y = NODE.border + NODE.header;
 		return outputs.map((slot) => {
 			const top = y + NODE.unit / 2;
-			y += uiStore.isSlotExpanded(node.name, slot) ? NODE.unit + NODE.viewer : NODE.unit;
+			y += uiStore.isSlotExpanded(node.uid, slot) ? NODE.unit + NODE.viewer : NODE.unit;
 			return { slot, dtype: node.output_slots[slot], top };
 		});
 	});
@@ -101,7 +101,7 @@
 		{#if outputs.length > 0}
 			<div class="viewers">
 				{#each outputs as slot (slot)}
-					<SlotViewer node={node.name} {slot} dtype={node.output_slots[slot]} />
+					<SlotViewer node={node.uid} {slot} dtype={node.output_slots[slot]} />
 				{/each}
 			</div>
 		{/if}

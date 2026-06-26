@@ -49,7 +49,7 @@ class SelectionStore {
 		const ns = this.sel(panelId).nodes;
 		if (ns.size !== 1) return null;
 		const name = [...ns][0];
-		return graph().nodeByName(name);
+		return graph().nodeById(name);
 	}
 
 	/** Selected node of the last-focused editor — for standalone panels. */

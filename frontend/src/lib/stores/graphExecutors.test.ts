@@ -11,6 +11,7 @@ const EMPTY_CTX: NavContext = { activeWorkspaceId: 'w', activePanelId: null, ent
 
 function nodeInfo(name: string, type = 'Oscillator'): NodeInstanceInfo {
 	return {
+		uid: name,
 		name,
 		type,
 		category: 'inputs',
@@ -60,11 +61,11 @@ describe('graph executors — simple kinds', () => {
 			label: 'Add Oscillator',
 			domain: 'graph',
 			context: EMPTY_CTX,
-			payload: { type: 'Oscillator', category: 'inputs', pos: [0, 0], assignedName: 'osc0' }
+			payload: { type: 'Oscillator', category: 'inputs', pos: [0, 0], uid: 'osc0' }
 		};
 		await graphExecutors['add_node'].inverse(action, deps(fc, g));
-		expect(fc.recordedCalls().some((c) => c.op === 'remove_node' && c.payload.name === 'osc0')).toBe(true);
-		fc.emit({ event: 'node_removed', payload: { name: 'osc0' } });
+		expect(fc.recordedCalls().some((c) => c.op === 'remove_node' && c.payload.node === 'osc0')).toBe(true);
+		fc.emit({ event: 'node_removed', payload: { node: 'osc0' } });
 		expect(g.nodes.find((n) => n.name === 'osc0')).toBeUndefined();
 	});
 
@@ -85,7 +86,7 @@ describe('graph executors — simple kinds', () => {
 			domain: 'graph',
 			context: EMPTY_CTX,
 			payload: {
-				name: 'osc0',
+				uid: 'osc0',
 				node: structuredClone(node),
 				links: [link],
 				membership: null,
@@ -94,7 +95,7 @@ describe('graph executors — simple kinds', () => {
 		};
 
 		await graphExecutors['remove_node'].forward(action, deps(fc, g));
-		fc.emit({ event: 'node_removed', payload: { name: 'osc0' } });
+		fc.emit({ event: 'node_removed', payload: { node: 'osc0' } });
 		fc.emit({ event: 'link_removed', payload: link });
 		expect(g.nodes.find((n) => n.name === 'osc0')).toBeUndefined();
 		expect(g.links).toHaveLength(0);
@@ -201,10 +202,10 @@ describe('graph executors — simple kinds', () => {
 			label: 'Move osc0',
 			domain: 'graph',
 			context: EMPTY_CTX,
-			payload: { name: 'osc0', oldPos: [10, 20], newPos: [99, 99] }
+			payload: { uid: 'osc0', oldPos: [10, 20], newPos: [99, 99] }
 		};
 		await graphExecutors['set_node_pos'].inverse(action, deps(fc, g));
-		expect(fc.recordedCalls()).toEqual([{ op: 'set_node_pos', payload: { name: 'osc0', pos: [10, 20] } }]);
+		expect(fc.recordedCalls()).toEqual([{ op: 'set_node_pos', payload: { node: 'osc0', pos: [10, 20] } }]);
 	});
 });
 
@@ -342,7 +343,7 @@ describe('graph executors — composite + sub-patch kinds', () => {
 		expect((action.payload as { newInstId: string }).newInstId).toBe('subpatch2');
 		await graphExecutors['duplicate_shared'].inverse(action, deps(fc, g));
 		const ops = fc.recordedCalls();
-		expect(ops.some((c) => c.op === 'remove_node' && c.payload.name === 'subpatch2')).toBe(true);
+		expect(ops.some((c) => c.op === 'remove_node' && c.payload.node === 'subpatch2')).toBe(true);
 		expect(ops.some((c) => c.op === 'make_unique' && c.payload.inst_id === 'subpatch0')).toBe(true);
 	});
 
@@ -460,7 +461,7 @@ describe('graph store — recording wrappers + undo replay', () => {
 
 		await g.removeNode('osc0');
 		expect(history().canUndo).toBe(true);
-		fc.emit({ event: 'node_removed', payload: { name: 'osc0' } });
+		fc.emit({ event: 'node_removed', payload: { node: 'osc0' } });
 		expect(g.nodes.find((n) => n.name === 'osc0')).toBeUndefined();
 
 		await history().undo();
@@ -581,7 +582,7 @@ describe('graph store — recording wrappers + undo replay', () => {
 		await g.restartNode('vid0');
 
 		const ops = fc.recordedCalls();
-		const iRemove = ops.findIndex((c) => c.op === 'remove_node' && c.payload.name === 'vid0');
+		const iRemove = ops.findIndex((c) => c.op === 'remove_node' && c.payload.node === 'vid0');
 		const iAdd = ops.findIndex((c) => c.op === 'add_node' && c.payload.name === 'vid0');
 		expect(iRemove).toBeGreaterThanOrEqual(0);
 		expect(iAdd).toBeGreaterThan(iRemove); // re-add AFTER remove, same name
@@ -604,7 +605,7 @@ describe('graph store — recording wrappers + undo replay', () => {
 
 		fc.emit({ event: 'node_added', payload: nodeInfo('osc0') });
 		await g.removeNode('osc0');
-		fc.emit({ event: 'node_removed', payload: { name: 'osc0' } });
+		fc.emit({ event: 'node_removed', payload: { node: 'osc0' } });
 		// node_removed clears the binding
 		expect(ws.panelsBoundTo('osc0')).toHaveLength(0);
 
@@ -632,12 +633,12 @@ describe('sub-patch synth node identity (viewer re-instantiation bug)', () => {
 		});
 	}
 
-	it('nodeByName returns a STABLE reference for an unchanged sub-patch instance', () => {
+	it('nodeById returns a STABLE reference for an unchanged sub-patch instance', () => {
 		const fc = new FakeControl();
 		const g = new GraphStore(fc);
 		withInstance(g, fc, { out0: { dir: 'out', dtype: 'ARRAY', inner_node: 'm0', inner_slot: 'out' } });
-		const a = g.nodeByName('subpatch0');
-		const b = g.nodeByName('subpatch0');
+		const a = g.nodeById('subpatch0');
+		const b = g.nodeById('subpatch0');
 		expect(a).not.toBeNull();
 		// Same object across calls — like a real node — so a flowNodes rebuild on a
 		// mere selection change doesn't hand the viewer a fresh node and re-subscribe.
@@ -648,14 +649,14 @@ describe('sub-patch synth node identity (viewer re-instantiation bug)', () => {
 		const fc = new FakeControl();
 		const g = new GraphStore(fc);
 		withInstance(g, fc, { out0: { dir: 'out', dtype: 'ARRAY', inner_node: 'm0', inner_slot: 'out' } });
-		const before = g.nodeByName('subpatch0')!;
+		const before = g.nodeById('subpatch0')!;
 		expect(Object.keys(before.output_slots)).toEqual(['out0']);
 		// Wire a second output boundary → the synth node must rebuild to expose it.
 		withInstance(g, fc, {
 			out0: { dir: 'out', dtype: 'ARRAY', inner_node: 'm0', inner_slot: 'out' },
 			out1: { dir: 'out', dtype: 'ARRAY', inner_node: 'm0', inner_slot: 'aux' }
 		});
-		const after = g.nodeByName('subpatch0')!;
+		const after = g.nodeById('subpatch0')!;
 		expect(Object.keys(after.output_slots).sort()).toEqual(['out0', 'out1']);
 		expect(after).not.toBe(before); // content changed → fresh object
 	});
@@ -664,9 +665,9 @@ describe('sub-patch synth node identity (viewer re-instantiation bug)', () => {
 		const fc = new FakeControl();
 		const g = new GraphStore(fc);
 		withInstance(g, fc, { out0: { dir: 'out', dtype: 'ARRAY', inner_node: 'm0', inner_slot: 'out' } });
-		const a = g.nodeByName('subpatch0')!;
-		fc.emit({ event: 'node_moved', payload: { name: 'subpatch0', pos: [120, 80] } });
-		const b = g.nodeByName('subpatch0')!;
+		const a = g.nodeById('subpatch0')!;
+		fc.emit({ event: 'node_moved', payload: { node: 'subpatch0', pos: [120, 80] } });
+		const b = g.nodeById('subpatch0')!;
 		expect(b).toBe(a); // same identity across a move
 		expect(b.pos).toEqual([120, 80]); // but position is current
 	});

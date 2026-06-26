@@ -2,7 +2,7 @@ version: 2
 definitions: {}
 root:
   nodes:
-    buffer0:
+    28c3083b1bf1:
       _type: Buffer
       category: signal
       params:
@@ -27,7 +27,9 @@ root:
             collapsed: false
             log_scale_x: false
             log_scale_y: false
-    buffer1:
+      name: buffer0
+      uid: 28c3083b1bf1
+    7a956d3447a5:
       _type: Buffer
       category: signal
       params:
@@ -52,7 +54,9 @@ root:
             collapsed: false
             log_scale_x: false
             log_scale_y: false
-    compass1:
+      name: buffer1
+      uid: 7a956d3447a5
+    d2beb669d1c2:
       _type: Compass
       category: analysis
       params:
@@ -72,7 +76,9 @@ root:
             collapsed: false
             log_scale_x: false
             log_scale_y: false
-    constantstring1:
+      name: compass1
+      uid: d2beb669d1c2
+    8e4987ab485e:
       _type: ConstantString
       category: inputs
       params:
@@ -95,7 +101,9 @@ root:
             collapsed: false
             log_scale_x: false
             log_scale_y: false
-    coord2loc0:
+      name: constantstring1
+      uid: 8e4987ab485e
+    5a229db34475:
       _type: Coord2loc
       category: analysis
       params:
@@ -122,7 +130,9 @@ root:
             collapsed: false
             log_scale_x: false
             log_scale_y: false
-    eegrecording0:
+      name: coord2loc0
+      uid: 5a229db34475
+    779fcef2c832:
       _type: EEGRecording
       category: inputs
       params:
@@ -143,7 +153,9 @@ root:
         - 293
         - -462
         viewers: {}
-    extendedtable1:
+      name: eegrecording0
+      uid: 779fcef2c832
+    b71b1ef4280b:
       _type: ExtendedTable
       category: inputs
       params:
@@ -174,7 +186,9 @@ root:
             collapsed: false
             log_scale_x: false
             log_scale_y: false
-    joinstring0:
+      name: extendedtable1
+      uid: b71b1ef4280b
+    5d2418a3e5f7:
       _type: JoinString
       category: misc
       params:
@@ -201,7 +215,9 @@ root:
             collapsed: false
             log_scale_x: false
             log_scale_y: false
-    lempelziv0:
+      name: joinstring0
+      uid: 5d2418a3e5f7
+    9412d8a7c966:
       _type: LempelZiv
       category: analysis
       params:
@@ -224,7 +240,9 @@ root:
             collapsed: false
             log_scale_x: false
             log_scale_y: false
-    lslclient0:
+      name: lempelziv0
+      uid: 9412d8a7c966
+    34a89962d934:
       _type: LSLClient
       category: inputs
       params:
@@ -248,7 +266,9 @@ root:
             collapsed: false
             log_scale_x: false
             log_scale_y: false
-    math0:
+      name: lslclient0
+      uid: 34a89962d934
+    7850bfd32e53:
       _type: Math
       category: array
       params:
@@ -280,7 +300,9 @@ root:
             collapsed: false
             log_scale_x: false
             log_scale_y: false
-    oscout0:
+      name: math0
+      uid: 7850bfd32e53
+    a883483b6cdc:
       _type: OSCOut
       category: outputs
       params:
@@ -300,7 +322,9 @@ root:
         - 4327
         - -179
         viewers: {}
-    powerbandeeg0:
+      name: oscout0
+      uid: a883483b6cdc
+    68e3bf11f484:
       _type: PowerBandEEG
       category: analysis
       params:
@@ -357,7 +381,9 @@ root:
             collapsed: false
             log_scale_x: false
             log_scale_y: false
-    psd0:
+      name: powerbandeeg0
+      uid: 68e3bf11f484
+    557c7acf5bf5:
       _type: PSD
       category: signal
       params:
@@ -385,7 +411,9 @@ root:
             collapsed: false
             log_scale_x: false
             log_scale_y: false
-    select0:
+      name: psd0
+      uid: 557c7acf5bf5
+    b2e9cca9240a:
       _type: Select
       category: array
       params:
@@ -410,7 +438,9 @@ root:
             collapsed: false
             log_scale_x: false
             log_scale_y: false
-    select1:
+      name: select0
+      uid: b2e9cca9240a
+    b6d7ccf41d9f:
       _type: Select
       category: array
       params:
@@ -435,7 +465,9 @@ root:
             collapsed: false
             log_scale_x: false
             log_scale_y: false
-    select2:
+      name: select1
+      uid: b6d7ccf41d9f
+    24fba7d0721a:
       _type: Select
       category: array
       params:
@@ -460,7 +492,9 @@ root:
             collapsed: false
             log_scale_x: false
             log_scale_y: false
-    select3:
+      name: select2
+      uid: 24fba7d0721a
+    badc1c7596b9:
       _type: Select
       category: array
       params:
@@ -485,7 +519,9 @@ root:
             collapsed: false
             log_scale_x: false
             log_scale_y: false
-    smooth0:
+      name: select3
+      uid: badc1c7596b9
+    ab55a16a8d61:
       _type: Smooth
       category: signal
       params:
@@ -508,7 +544,9 @@ root:
             collapsed: false
             log_scale_x: false
             log_scale_y: false
-    tableselectstring0:
+      name: smooth0
+      uid: ab55a16a8d61
+    3910a10e7ba0:
       _type: TableSelectString
       category: misc
       params:
@@ -530,7 +568,9 @@ root:
             collapsed: false
             log_scale_x: false
             log_scale_y: false
-    textgeneration0:
+      name: tableselectstring0
+      uid: 3910a10e7ba0
+    9d6e3533644c:
       _type: TextGeneration
       category: inputs
       params:
@@ -558,7 +598,9 @@ root:
             collapsed: false
             log_scale_x: false
             log_scale_y: false
-    walker0:
+      name: textgeneration0
+      uid: 9d6e3533644c
+    067918515892:
       _type: Walker
       category: analysis
       params:
@@ -590,7 +632,9 @@ root:
             collapsed: false
             log_scale_x: false
             log_scale_y: false
-    constantarray0:
+      name: walker0
+      uid: 067918515892
+    2f90873b9098:
       _type: ConstantArray
       category: inputs
       params:
@@ -614,7 +658,9 @@ root:
             collapsed: false
             log_scale_x: false
             log_scale_y: false
-    join0:
+      name: constantarray0
+      uid: 2f90873b9098
+    9fb7da006693:
       _type: Join
       category: array
       params:
@@ -637,7 +683,9 @@ root:
             collapsed: false
             log_scale_x: false
             log_scale_y: false
-    normalization0:
+      name: join0
+      uid: 9fb7da006693
+    65a986405b1d:
       _type: Normalization
       category: signal
       params:
@@ -672,113 +720,115 @@ root:
             collapsed: false
             log_scale_x: false
             log_scale_y: false
+      name: normalization0
+      uid: 65a986405b1d
   links:
-  - node_out: buffer0
-    node_in: select1
+  - node_out: 28c3083b1bf1
+    node_in: b6d7ccf41d9f
     slot_out: out
     slot_in: data
-  - node_out: buffer0
-    node_in: select2
+  - node_out: 28c3083b1bf1
+    node_in: 24fba7d0721a
     slot_out: out
     slot_in: data
-  - node_out: buffer1
-    node_in: smooth0
+  - node_out: 7a956d3447a5
+    node_in: ab55a16a8d61
     slot_out: out
     slot_in: data
-  - node_out: compass1
-    node_in: buffer1
+  - node_out: d2beb669d1c2
+    node_in: 7a956d3447a5
     slot_out: angles
     slot_in: val
-  - node_out: constantstring1
-    node_in: joinstring0
+  - node_out: 8e4987ab485e
+    node_in: 5d2418a3e5f7
     slot_out: out
     slot_in: string1
-  - node_out: coord2loc0
-    node_in: tableselectstring0
+  - node_out: 5a229db34475
+    node_in: 3910a10e7ba0
     slot_out: coord_info
     slot_in: input_table
-  - node_out: coord2loc0
-    node_in: walker0
+  - node_out: 5a229db34475
+    node_in: 067918515892
     slot_out: water_situation
     slot_in: water
-  - node_out: extendedtable1
-    node_in: oscout0
+  - node_out: b71b1ef4280b
+    node_in: a883483b6cdc
     slot_out: table
     slot_in: data
-  - node_out: joinstring0
-    node_in: textgeneration0
+  - node_out: 5d2418a3e5f7
+    node_in: 9d6e3533644c
     slot_out: output
     slot_in: prompt
-  - node_out: lempelziv0
-    node_in: join0
+  - node_out: 9412d8a7c966
+    node_in: 9fb7da006693
     slot_out: lzc
     slot_in: a
-  - node_out: lslclient0
-    node_in: buffer0
+  - node_out: 34a89962d934
+    node_in: 28c3083b1bf1
     slot_out: out
     slot_in: val
-  - node_out: math0
-    node_in: walker0
+  - node_out: 7850bfd32e53
+    node_in: 067918515892
     slot_out: out
     slot_in: velocity
-  - node_out: powerbandeeg0
-    node_in: math0
+  - node_out: 68e3bf11f484
+    node_in: 7850bfd32e53
     slot_out: theta
     slot_in: data
-  - node_out: powerbandeeg0
-    node_in: join0
+  - node_out: 68e3bf11f484
+    node_in: 9fb7da006693
     slot_out: alpha
     slot_in: b
-  - node_out: psd0
-    node_in: powerbandeeg0
+  - node_out: 557c7acf5bf5
+    node_in: 68e3bf11f484
     slot_out: psd
     slot_in: data
-  - node_out: select1
-    node_in: select0
+  - node_out: b6d7ccf41d9f
+    node_in: b2e9cca9240a
     slot_out: out
     slot_in: data
-  - node_out: select2
-    node_in: psd0
+  - node_out: 24fba7d0721a
+    node_in: 557c7acf5bf5
     slot_out: out
     slot_in: data
-  - node_out: select2
-    node_in: lempelziv0
+  - node_out: 24fba7d0721a
+    node_in: 9412d8a7c966
     slot_out: out
     slot_in: data
-  - node_out: select3
-    node_in: walker0
+  - node_out: badc1c7596b9
+    node_in: 067918515892
     slot_out: out
     slot_in: angle
-  - node_out: smooth0
-    node_in: select3
+  - node_out: ab55a16a8d61
+    node_in: badc1c7596b9
     slot_out: out
     slot_in: data
-  - node_out: tableselectstring0
-    node_in: joinstring0
+  - node_out: 3910a10e7ba0
+    node_in: 5d2418a3e5f7
     slot_out: output_string
     slot_in: string2
-  - node_out: textgeneration0
-    node_in: extendedtable1
+  - node_out: 9d6e3533644c
+    node_in: b71b1ef4280b
     slot_out: generated_text
     slot_in: string_input1
-  - node_out: walker0
-    node_in: coord2loc0
+  - node_out: 067918515892
+    node_in: 5a229db34475
     slot_out: latitude
     slot_in: latitude
-  - node_out: walker0
-    node_in: coord2loc0
+  - node_out: 067918515892
+    node_in: 5a229db34475
     slot_out: longitude
     slot_in: longitude
-  - node_out: constantarray0
-    node_in: compass1
+  - node_out: 2f90873b9098
+    node_in: d2beb669d1c2
     slot_out: out
     slot_in: pole1
-  - node_out: join0
-    node_in: normalization0
+  - node_out: 9fb7da006693
+    node_in: 65a986405b1d
     slot_out: out
     slot_in: data
-  - node_out: normalization0
-    node_in: compass1
+  - node_out: 65a986405b1d
+    node_in: d2beb669d1c2
     slot_out: normalized
     slot_in: pole2
   instances: {}

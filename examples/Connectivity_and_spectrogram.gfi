@@ -2,7 +2,7 @@ version: 2
 definitions: {}
 root:
   nodes:
-    buffer0:
+    ac3ba8899115:
       _type: Buffer
       category: signal
       params:
@@ -27,7 +27,9 @@ root:
             collapsed: false
             log_scale_x: false
             log_scale_y: false
-    buffer1:
+      name: buffer0
+      uid: ac3ba8899115
+    fe7ce84e29b4:
       _type: Buffer
       category: signal
       params:
@@ -52,7 +54,9 @@ root:
             collapsed: false
             log_scale_x: false
             log_scale_y: false
-    buffer2:
+      name: buffer1
+      uid: fe7ce84e29b4
+    7c816bc71234:
       _type: Buffer
       category: signal
       params:
@@ -77,7 +81,9 @@ root:
             collapsed: false
             log_scale_x: false
             log_scale_y: false
-    connectivity0:
+      name: buffer2
+      uid: 7c816bc71234
+    a8c4d53a614a:
       _type: Connectivity
       category: analysis
       params:
@@ -109,7 +115,9 @@ root:
             collapsed: false
             log_scale_x: false
             log_scale_y: false
-    eegrecording0:
+      name: connectivity0
+      uid: a8c4d53a614a
+    8353a8e5729c:
       _type: EEGRecording
       category: inputs
       params:
@@ -130,7 +138,9 @@ root:
         - 246
         - 173
         viewers: {}
-    lslclient0:
+      name: eegrecording0
+      uid: 8353a8e5729c
+    b7113c2ce75a:
       _type: LSLClient
       category: inputs
       params:
@@ -154,7 +164,9 @@ root:
             collapsed: false
             log_scale_x: false
             log_scale_y: false
-    psd0:
+      name: lslclient0
+      uid: b7113c2ce75a
+    aa75618bad6b:
       _type: PSD
       category: signal
       params:
@@ -182,7 +194,9 @@ root:
             collapsed: false
             log_scale_x: true
             log_scale_y: true
-    reduce0:
+      name: psd0
+      uid: aa75618bad6b
+    2b0a418854ec:
       _type: Reduce
       category: array
       params:
@@ -205,7 +219,9 @@ root:
             collapsed: false
             log_scale_x: false
             log_scale_y: false
-    normalization0:
+      name: reduce0
+      uid: 2b0a418854ec
+    6873db157cba:
       _type: Normalization
       category: signal
       params:
@@ -240,33 +256,35 @@ root:
             collapsed: false
             log_scale_x: false
             log_scale_y: false
+      name: normalization0
+      uid: 6873db157cba
   links:
-  - node_out: buffer0
-    node_in: reduce0
+  - node_out: ac3ba8899115
+    node_in: 2b0a418854ec
     slot_out: out
     slot_in: array
-  - node_out: buffer0
-    node_in: connectivity0
+  - node_out: ac3ba8899115
+    node_in: a8c4d53a614a
     slot_out: out
     slot_in: data
-  - node_out: buffer2
-    node_in: normalization0
+  - node_out: 7c816bc71234
+    node_in: 6873db157cba
     slot_out: out
     slot_in: data
-  - node_out: connectivity0
-    node_in: buffer1
+  - node_out: a8c4d53a614a
+    node_in: fe7ce84e29b4
     slot_out: matrix
     slot_in: val
-  - node_out: lslclient0
-    node_in: buffer0
+  - node_out: b7113c2ce75a
+    node_in: ac3ba8899115
     slot_out: out
     slot_in: val
-  - node_out: psd0
-    node_in: buffer2
+  - node_out: aa75618bad6b
+    node_in: 7c816bc71234
     slot_out: psd
     slot_in: val
-  - node_out: reduce0
-    node_in: psd0
+  - node_out: 2b0a418854ec
+    node_in: aa75618bad6b
     slot_out: out
     slot_in: data
   instances: {}

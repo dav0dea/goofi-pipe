@@ -2,7 +2,7 @@ version: 2
 definitions: {}
 root:
   nodes:
-    buffer0:
+    ea97a22847f4:
       _type: Buffer
       category: signal
       params:
@@ -27,7 +27,9 @@ root:
             collapsed: false
             log_scale_x: false
             log_scale_y: false
-    buffer1:
+      name: buffer0
+      uid: ea97a22847f4
+    a16aef0ee6e1:
       _type: Buffer
       category: signal
       params:
@@ -52,7 +54,9 @@ root:
             collapsed: false
             log_scale_x: false
             log_scale_y: false
-    classifier0:
+      name: buffer1
+      uid: a16aef0ee6e1
+    f694d92c9bc3:
       _type: Classifier
       category: analysis
       params:
@@ -103,7 +107,9 @@ root:
             collapsed: false
             log_scale_x: false
             log_scale_y: false
-    smooth0:
+      name: classifier0
+      uid: f694d92c9bc3
+    d4af310fbdea:
       _type: Smooth
       category: signal
       params:
@@ -126,7 +132,9 @@ root:
             collapsed: false
             log_scale_x: false
             log_scale_y: false
-    psd0:
+      name: smooth0
+      uid: d4af310fbdea
+    b71e3ba18b9b:
       _type: PSD
       category: signal
       params:
@@ -154,7 +162,9 @@ root:
             collapsed: false
             log_scale_x: true
             log_scale_y: true
-    audiostream0:
+      name: psd0
+      uid: b71e3ba18b9b
+    fb36046cc6bd:
       _type: AudioStream
       category: inputs
       params:
@@ -178,7 +188,9 @@ root:
             collapsed: false
             log_scale_x: false
             log_scale_y: false
-    select0:
+      name: audiostream0
+      uid: fb36046cc6bd
+    adb7542aeaf5:
       _type: Select
       category: array
       params:
@@ -203,29 +215,31 @@ root:
             collapsed: false
             log_scale_x: false
             log_scale_y: false
+      name: select0
+      uid: adb7542aeaf5
   links:
-  - node_out: buffer0
-    node_in: psd0
+  - node_out: ea97a22847f4
+    node_in: b71e3ba18b9b
     slot_out: out
     slot_in: data
-  - node_out: buffer1
-    node_in: smooth0
+  - node_out: a16aef0ee6e1
+    node_in: d4af310fbdea
     slot_out: out
     slot_in: data
-  - node_out: classifier0
-    node_in: select0
+  - node_out: f694d92c9bc3
+    node_in: adb7542aeaf5
     slot_out: probs
     slot_in: data
-  - node_out: psd0
-    node_in: classifier0
+  - node_out: b71e3ba18b9b
+    node_in: f694d92c9bc3
     slot_out: psd
     slot_in: data
-  - node_out: audiostream0
-    node_in: buffer0
+  - node_out: fb36046cc6bd
+    node_in: ea97a22847f4
     slot_out: out
     slot_in: val
-  - node_out: select0
-    node_in: buffer1
+  - node_out: adb7542aeaf5
+    node_in: a16aef0ee6e1
     slot_out: out
     slot_in: val
   instances: {}

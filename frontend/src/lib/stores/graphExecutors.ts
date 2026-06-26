@@ -18,40 +18,56 @@ function as<K extends GraphAction['kind']>(a: unknown): Extract<GraphAction, { k
 const addNode: Executor = {
 	async forward(action, deps: ExecutorDeps) {
 		const a = as<'add_node'>(action);
-		const name = await deps.control.call<string>('add_node', {
+		// On redo, restore the SAME uid (member_uid) + display name so links/panels
+		// that reference this node reconnect to it.
+		const uid = await deps.control.call<string>('add_node', {
 			type: a.payload.type,
 			category: a.payload.category,
 			pos: a.payload.pos,
 			inst_id: a.payload.instId,
-			name: a.payload.assignedName
+			name: a.payload.name,
+			member_uid: a.payload.uid
 		});
-		a.payload.assignedName = name ?? a.payload.assignedName;
+		a.payload.uid = uid ?? a.payload.uid;
 	},
 	async inverse(action, deps) {
 		const a = as<'add_node'>(action);
-		if (a.payload.assignedName) await deps.control.call('remove_node', { name: a.payload.assignedName });
+		if (a.payload.uid) await deps.control.call('remove_node', { node: a.payload.uid });
 	}
 };
 
 const removeNode: Executor = {
 	async forward(action, deps) {
 		const a = as<'remove_node'>(action);
-		await deps.control.call('remove_node', { name: a.payload.name });
+		await deps.control.call('remove_node', { node: a.payload.uid });
 	},
 	async inverse(action, deps) {
 		const a = as<'remove_node'>(action);
 		const n = a.payload.node;
-		// Re-create with the SAME display name (reused once freed) + its params.
+		// Re-create with the SAME uid (so uid-keyed links/panels reconnect) + display
+		// name + params.
 		await deps.control.call('add_node', {
 			type: n.type,
 			category: n.category,
 			pos: n.pos,
-			name: a.payload.name,
+			name: n.name,
+			member_uid: a.payload.uid,
 			params: paramValues(n)
 		});
 		for (const link of a.payload.links) await deps.control.call('add_link', { ...link });
 		// Re-bind any panels that were emptied when the node was deleted.
 		for (const bp of a.payload.boundPanels) deps.workspace.setPanelState(bp.panelId, bp.state);
+	}
+};
+
+const renameNode: Executor = {
+	async forward(action, deps) {
+		const a = as<'rename_node'>(action);
+		await deps.control.call('rename_node', { node: a.payload.uid, name: a.payload.newName });
+	},
+	async inverse(action, deps) {
+		const a = as<'rename_node'>(action);
+		await deps.control.call('rename_node', { node: a.payload.uid, name: a.payload.oldName });
 	}
 };
 
@@ -119,11 +135,11 @@ const setExpression: Executor = {
 const setNodePos: Executor = {
 	async forward(action, deps) {
 		const a = as<'set_node_pos'>(action);
-		await deps.control.call('set_node_pos', { name: a.payload.name, pos: a.payload.newPos });
+		await deps.control.call('set_node_pos', { node: a.payload.uid, pos: a.payload.newPos });
 	},
 	async inverse(action, deps) {
 		const a = as<'set_node_pos'>(action);
-		await deps.control.call('set_node_pos', { name: a.payload.name, pos: a.payload.oldPos });
+		await deps.control.call('set_node_pos', { node: a.payload.uid, pos: a.payload.oldPos });
 	}
 };
 
@@ -245,7 +261,7 @@ const duplicateShared: Executor = {
 	async inverse(action, deps) {
 		const a = as<'duplicate_shared'>(action);
 		// remove_node routes to remove_instance for an instance id (bridge).
-		if (a.payload.newInstId) await deps.control.call('remove_node', { name: a.payload.newInstId });
+		if (a.payload.newInstId) await deps.control.call('remove_node', { node: a.payload.newInstId });
 		// If the source was unique before, sharing it left a residual definition —
 		// detach it again so the graph matches the pre-duplicate state.
 		if (a.payload.wasUnique) await deps.control.call('make_unique', { inst_id: a.payload.instId });
@@ -295,6 +311,7 @@ export const graphExecutors: Record<string, Executor> = {
 	update_param: updateParam,
 	set_expression: setExpression,
 	set_node_pos: setNodePos,
+	rename_node: renameNode,
 	group_nodes: groupNodes,
 	expand_instance: expandInstance,
 	add_boundary: addBoundary,

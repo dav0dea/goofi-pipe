@@ -79,8 +79,8 @@ export class GraphStore {
 		// Drop ui bookkeeping for any node that's about to disappear, then
 		// re-seed viewer state (collapse / kind / settings) for every node.
 		for (const old of this.nodes) {
-			ui().forget(old.name);
-			forgetInlineView(old.name);
+			ui().forget(old.uid);
+			forgetInlineView(old.uid);
 		}
 		for (const n of snap.nodes) this._seedNodeViewerState(n);
 		this.nodes = snap.nodes;
@@ -132,10 +132,10 @@ export class GraphStore {
 	 * restored) `viewers` map. */
 	private _seedNodeViewerState(node: NodeInstanceInfo): void {
 		const slots = Object.keys(node.output_slots);
-		ui().seedNodeViewers(node.name, slots, node.viewers);
+		ui().seedNodeViewers(node.uid, slots, node.viewers);
 		for (const slot of slots) {
 			const v = node.viewers?.[slot];
-			seedInlineView(node.name, slot, {
+			seedInlineView(node.uid, slot, {
 				kind: v?.kind as ViewerKind | undefined,
 				settings: v?.settings as SettingsMap | undefined
 			});
@@ -152,7 +152,7 @@ export class GraphStore {
 			node,
 			setTimeout(() => {
 				this._viewerPushTimers.delete(node);
-				const n = this.nodeByName(node);
+				const n = this.nodeById(node);
 				if (!n) return;
 				const viewers: Record<string, { collapsed: boolean; kind: string; settings: SettingsMap }> = {};
 				for (const slot of Object.keys(n.output_slots)) {
@@ -199,18 +199,18 @@ export class GraphStore {
 				// reused (subpatch0 regenerates), so a stale link would silently
 				// re-bind a panel to an unrelated sub-patch.
 				const before = new Set<string>([
-					...this.nodes.map((n) => n.name),
+					...this.nodes.map((n) => n.uid),
 					...Object.keys(this.instances)
 				]);
 				const after = new Set<string>([
-					...snap.nodes.map((n) => n.name),
+					...snap.nodes.map((n) => n.uid),
 					...Object.keys(snap.instances ?? {})
 				]);
-				for (const name of before) {
-					if (!after.has(name)) workspace().clearNodeRefs(name);
+				for (const id of before) {
+					if (!after.has(id)) workspace().clearNodeRefs(id);
 				}
 				for (const old of this.nodes) {
-					forgetInlineView(old.name);
+					forgetInlineView(old.uid);
 				}
 				for (const n of snap.nodes) this._seedNodeViewerState(n);
 				this.nodes = snap.nodes;
@@ -225,42 +225,37 @@ export class GraphStore {
 				break;
 			}
 			case 'node_renamed': {
-				// Light rename fix-up (subpatch_changed re-syncs authoritatively right
-				// after, but keep selection/refs coherent in the meantime).
-				const { old, new: nu } = ev.payload;
-				const t = this.nodeByName(old);
-				if (t) t.name = nu;
-				for (const l of this.links) {
-					if (l.node_out === old) l.node_out = nu;
-					if (l.node_in === old) l.node_in = nu;
-				}
+				// Only the display name changed — the uid (the key everything uses) is
+				// stable, so nothing else moves. Just update the label in place.
+				const t = this.nodeById(ev.payload.node);
+				if (t) t.name = ev.payload.name;
 				break;
 			}
 			case 'node_added':
 				// Seed view state for this node's output slots — from the saved
 				// patch (`viewers`) if present, else the defaults in the stores.
 				this._seedNodeViewerState(ev.payload);
-				this.nodes = [...this.nodes.filter((n) => n.name !== ev.payload.name), ev.payload];
+				this.nodes = [...this.nodes.filter((n) => n.uid !== ev.payload.uid), ev.payload];
 				break;
 			case 'node_removed':
-				this.nodes = this.nodes.filter((n) => n.name !== ev.payload.name);
+				this.nodes = this.nodes.filter((n) => n.uid !== ev.payload.node);
 				this.links = this.links.filter(
-					(l) => l.node_in !== ev.payload.name && l.node_out !== ev.payload.name
+					(l) => l.node_in !== ev.payload.node && l.node_out !== ev.payload.node
 				);
-				ui().forget(ev.payload.name);
-				forgetInlineView(ev.payload.name);
-				consoleStore().forgetNodeDedup(ev.payload.name);
+				ui().forget(ev.payload.node);
+				forgetInlineView(ev.payload.node);
+				consoleStore().forgetNodeDedup(ev.payload.node);
 				// Empty any Parameters/Viewer/Metadata panel linked to this node.
-				workspace().clearNodeRefs(ev.payload.name);
+				workspace().clearNodeRefs(ev.payload.node);
 				break;
 			case 'node_moved': {
-				// Instances first: nodeByName now synthesizes a throwaway node for an
-				// instance id, so checking it first would write pos to a discarded
-				// object and the group node would snap back.
-				if (this.instances[ev.payload.name]) {
-					this.instances[ev.payload.name].pos = ev.payload.pos;
+				// Instances first: nodeById synthesizes a throwaway node for an instance
+				// id, so checking it first would write pos to a discarded object and the
+				// group node would snap back.
+				if (this.instances[ev.payload.node]) {
+					this.instances[ev.payload.node].pos = ev.payload.pos;
 				} else {
-					const target = this._realNode(ev.payload.name);
+					const target = this._realNode(ev.payload.node);
 					if (target) target.pos = ev.payload.pos;
 				}
 				break;
@@ -274,7 +269,7 @@ export class GraphStore {
 				this.links = this.links.filter((l) => !sameLink(l, ev.payload));
 				break;
 			case 'state_update': {
-				const t = this.nodeByName(ev.payload.node);
+				const t = this.nodeById(ev.payload.node);
 				if (t) {
 					t.params = ev.payload.params;
 					// A healthy state push means the (possibly just-respawned) node is
@@ -290,7 +285,7 @@ export class GraphStore {
 				// The node's OS process died; the manager is auto-restarting it. Show
 				// a distinct, self-recovering crash state (cleared by the next healthy
 				// state_update above), not a code error.
-				const t = this.nodeByName(ev.payload.node);
+				const t = this.nodeById(ev.payload.node);
 				if (t) {
 					t.crashed = true;
 					t.restarts = ev.payload.restarts;
@@ -301,7 +296,7 @@ export class GraphStore {
 			case 'node_stats': {
 				// Low-rate (~1 Hz) self-reported execution telemetry; drives the node's
 				// stats overlay + the inspector's stats section. Latest-wins.
-				const t = this.nodeByName(ev.payload.node);
+				const t = this.nodeById(ev.payload.node);
 				if (t) t.stats = ev.payload.stats;
 				break;
 			}
@@ -309,7 +304,7 @@ export class GraphStore {
 				// Live snapshot — drives the node's red border, the floating error
 				// chip, and the inspector's current-error section. Always on, via the
 				// control plane, independent of whether a Console is open.
-				const t = this.nodeByName(ev.payload.node);
+				const t = this.nodeById(ev.payload.node);
 				if (t) t.error = ev.payload.error;
 				// Mirror the active error into the Console as a stderr entry so the
 				// log view is the complete picture (repeats coalesce into one ×N).
@@ -369,59 +364,61 @@ export class GraphStore {
 	): Promise<string> {
 		// `instId` lands the node inside that sub-patch (member of the instance);
 		// omitted, it goes in the root graph.
-		const name =
+		const uid =
 			(await this.ctl.call<string>('add_node', { type, category, pos, inst_id: instId })) ?? '';
-		// Record AFTER the call so we know the backend-assigned display name.
-		if (name)
+		// Record AFTER the call so we know the backend-assigned uid + display name —
+		// a redo restores both so links/panels reconnect to the same node.
+		if (uid)
 			this._record({
 				kind: 'add_node',
 				label: `Add ${type}`,
 				domain: 'graph',
 				context: captureNavContext(),
-				payload: { type, category, pos, instId, assignedName: name }
+				payload: { type, category, pos, instId, uid, name: this.nodeById(uid)?.name }
 			});
-		return name;
+		return uid;
 	}
 
-	async removeNode(name: string): Promise<void> {
+	async removeNode(uid: string): Promise<void> {
 		// Capture the full node + its links BEFORE the backend tears them down.
-		const node = this.nodeByName(name);
+		const node = this.nodeById(uid);
 		if (node && !history().isSuspended) {
 			const links = this.links
-				.filter((l) => l.node_in === name || l.node_out === name)
+				.filter((l) => l.node_in === uid || l.node_out === uid)
 				.map((l) => ({ ...l }));
 			this._record({
 				kind: 'remove_node',
-				label: `Delete ${name}`,
+				label: `Delete ${node.name}`,
 				domain: 'graph',
 				context: captureNavContext(),
 				payload: {
-					name,
+					uid,
 					node: structuredClone($state.snapshot(node)),
 					links,
 					membership: node.membership ?? null,
-					boundPanels: workspace().panelsBoundTo(name)
+					boundPanels: workspace().panelsBoundTo(uid)
 				}
 			});
 		}
-		await this.ctl.call('remove_node', { name });
+		await this.ctl.call('remove_node', { node: uid });
 	}
 
 	/** Respawn a (typically crashed) node: tear down its process and re-create it
-	 * with the SAME name, params, position, and links (backlog #25). It's a
-	 * recovery action, not a semantic edit — the node ends in the same logical
-	 * state — so it's run suspended and leaves the undo history untouched. */
-	async restartNode(name: string): Promise<void> {
-		const node = this.nodeByName(name);
+	 * with the SAME uid (so links/panels reconnect), name, params, position, and
+	 * links (backlog #25). It's a recovery action, not a semantic edit — the node
+	 * ends in the same logical state — so it's run suspended and leaves the undo
+	 * history untouched. */
+	async restartNode(uid: string): Promise<void> {
+		const node = this.nodeById(uid);
 		if (!node) return;
 		const links = this.links
-			.filter((l) => l.node_in === name || l.node_out === name)
+			.filter((l) => l.node_in === uid || l.node_out === uid)
 			.map((l) => ({ ...l }));
 		const params = paramValues(node);
-		const { type, category, pos } = node;
+		const { type, category, pos, name } = node;
 		await history().suspend(async () => {
-			await this.ctl.call('remove_node', { name });
-			await this.ctl.call('add_node', { type, category, name, pos, params });
+			await this.ctl.call('remove_node', { node: uid });
+			await this.ctl.call('add_node', { type, category, name, pos, params, member_uid: uid });
 			for (const l of links) await this.ctl.call('add_link', { ...l });
 		});
 	}
@@ -453,7 +450,7 @@ export class GraphStore {
 	}
 
 	async updateParam(node: string, group: string, name: string, value: unknown): Promise<void> {
-		const oldValue = this.nodeByName(node)?.params?.[group]?.[name]?.value;
+		const oldValue = this.nodeById(node)?.params?.[group]?.[name]?.value;
 		this._record({
 			kind: 'update_param',
 			label: `Set ${name}`,
@@ -471,7 +468,7 @@ export class GraphStore {
 		expression: string | null,
 		opts: { enabled?: boolean; triggers_process?: boolean; autoeval?: boolean } = {}
 	): Promise<void> {
-		const d = this.nodeByName(node)?.params?.[group]?.[name];
+		const d = this.nodeById(node)?.params?.[group]?.[name];
 		const oldExpr: ExprState = {
 			expression: d?.expression ?? null,
 			enabled: d?.expression_enabled ?? false,
@@ -502,16 +499,31 @@ export class GraphStore {
 		});
 	}
 
-	async setNodePos(name: string, pos: [number, number]): Promise<void> {
-		const oldPos = this.nodeByName(name)?.pos ?? [0, 0];
+	async setNodePos(uid: string, pos: [number, number]): Promise<void> {
+		const oldPos = this.nodeById(uid)?.pos ?? [0, 0];
 		this._record({
 			kind: 'set_node_pos',
-			label: `Move ${name}`,
+			label: `Move ${this.nodeById(uid)?.name ?? uid}`,
 			domain: 'graph',
 			context: captureNavContext(),
-			payload: { name, oldPos: [oldPos[0], oldPos[1]], newPos: pos }
+			payload: { uid, oldPos: [oldPos[0], oldPos[1]], newPos: pos }
 		});
-		await this.ctl.call('set_node_pos', { name, pos });
+		await this.ctl.call('set_node_pos', { node: uid, pos });
+	}
+
+	/** Set a node's mutable display name (uid identity is unchanged). */
+	async renameNode(uid: string, name: string): Promise<void> {
+		const node = this.nodeById(uid);
+		const oldName = node?.name ?? '';
+		if (oldName === name) return;
+		this._record({
+			kind: 'rename_node',
+			label: `Rename ${oldName} → ${name}`,
+			domain: 'graph',
+			context: captureNavContext(),
+			payload: { uid, oldName, newName: name }
+		});
+		await this.ctl.call('rename_node', { node: uid, name });
 	}
 
 	/** Push the current workspace layout into the running patch (manager memory)
@@ -744,28 +756,29 @@ export class GraphStore {
 	// reads
 	// ------------------------------------------------------------------
 
-	/** A real node by name (no sub-patch synthesis), or null. */
-	private _realNode(name: string): NodeInstanceInfo | null {
-		return this.nodes.find((n) => n.name === name) ?? null;
+	/** A real node by uid (no sub-patch synthesis), or null. */
+	private _realNode(uid: string): NodeInstanceInfo | null {
+		return this.nodes.find((n) => n.uid === uid) ?? null;
 	}
 
-	/** Resolve a node by name — the one accessor the rest of the app and the
+	/** Resolve a node by its UID — the one accessor the rest of the app and the
 	 * agent surface use. A sub-patch instance id resolves to a *virtual* node
 	 * carrying a `subpatch` marker, so selection / inspector / drag treat a
-	 * sub-patch exactly like a node (no node class is instantiated). */
-	nodeByName(name: string): NodeInstanceInfo | null {
-		const real = this._realNode(name);
+	 * sub-patch exactly like a node (no node class is instantiated). The synth
+	 * node's own `uid` is the instance id, so the identity stays uniform. */
+	nodeById(id: string): NodeInstanceInfo | null {
+		const real = this._realNode(id);
 		if (real) return real;
-		const inst = this.instances[name];
+		const inst = this.instances[id];
 		if (!inst) {
-			this._synthCache.delete(name);
+			this._synthCache.delete(id);
 			return null;
 		}
-		return this._synthSubpatchNode(name, inst);
+		return this._synthSubpatchNode(id, inst);
 	}
 
 	/** Memoized virtual nodes for sub-patch instances, keyed by instance id. A real
-	 * node is one stable `$state` object across `nodeByName` calls; without this the
+	 * node is one stable `$state` object across `nodeById` calls; without this the
 	 * synthesized stand-in was rebuilt every call, so a flowNodes rebuild (which
 	 * runs on any selection change) handed each sub-patch a fresh `data.node` and
 	 * its inline viewer re-subscribed/flickered. The cache restores that stability. */
@@ -787,16 +800,18 @@ export class GraphStore {
 	instanceError(instId: string): string | null {
 		const inst = this.instances[instId];
 		if (!inst) return null;
-		for (const disp of Object.keys(inst.members)) {
-			const err = this._realNode(disp)?.error;
+		// members maps member uid -> local name; look each member node up by uid.
+		for (const uid of Object.keys(inst.members)) {
+			const err = this._realNode(uid)?.error;
 			if (err) return err;
 		}
 		return null;
 	}
 
-	/** The display (graph) name of a member given its local name within `inst`. */
-	private _memberDisplay(inst: InstanceInfo, local: string): string | null {
-		for (const [disp, loc] of Object.entries(inst.members)) if (loc === local) return disp;
+	/** The uid of a member given its local name within `inst` (members map is
+	 * uid -> local), or null. */
+	private _memberUid(inst: InstanceInfo, local: string): string | null {
+		for (const [uid, loc] of Object.entries(inst.members)) if (loc === local) return uid;
 		return null;
 	}
 
@@ -804,8 +819,8 @@ export class GraphStore {
 	 * to the wired inner node's slot dtype for legacy interface-only entries. */
 	boundaryDtype(inst: InstanceInfo, port: SubPatchPort): string {
 		if (port.dtype) return port.dtype;
-		const disp = port.inner_node ? this._memberDisplay(inst, port.inner_node) : null;
-		const n = disp ? this._realNode(disp) : null;
+		const uid = port.inner_node ? this._memberUid(inst, port.inner_node) : null;
+		const n = uid ? this._realNode(uid) : null;
 		if (!n || !port.inner_slot) return 'ARRAY';
 		const slots = port.dir === 'in' ? n.input_slots : n.output_slots;
 		return slots[port.inner_slot] ?? 'ARRAY';
@@ -847,6 +862,9 @@ export class GraphStore {
 			else output_slots[bnd] = dt;
 		}
 		const node: NodeInstanceInfo = {
+			// The synth node's identity IS the instance id, so `node.uid` is the
+			// uniform flow/selection/data key for real and sub-patch nodes alike.
+			uid: instId,
 			name: instId,
 			type: shared ? 'Shared sub-patch' : 'Sub-patch',
 			category: 'subpatch',

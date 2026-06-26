@@ -9,6 +9,7 @@ import type { NodeInstanceInfo } from '$lib/api/control';
 
 function nodeInfo(name: string): NodeInstanceInfo {
 	return {
+		uid: name,
 		name,
 		type: 'Oscillator',
 		category: 'inputs',

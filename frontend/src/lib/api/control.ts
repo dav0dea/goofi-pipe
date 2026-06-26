@@ -42,6 +42,13 @@ export interface NodeStats {
 }
 
 export interface NodeInstanceInfo {
+	/** The UNIVERSAL node identity — the key everything references the node by
+	 * (flow id, selection, links, data subscriptions, panel bindings). Stable
+	 * across rename/restart/reload. For a sub-patch group node (a synthesized
+	 * virtual node) this is the instance id; for a real node it's the backend uid. */
+	uid: string;
+	/** Mutable DISPLAY name (e.g. "oscillator0", or "subpatch0::filter"). For the
+	 * label only — never an identity key, so it can be renamed freely. */
 	name: string;
 	type: string;
 	category: string;
@@ -77,7 +84,7 @@ export interface NodeInstanceInfo {
 	 * when capture is off (headless). The Console subscribes to it directly. */
 	log_endpoint?: string | null;
 	/** Set only on a *virtual* node synthesized for a sub-patch instance (see
-	 * `graph.nodeByName`). Lets the node layers — selection, inspector, drag —
+	 * `graph.nodeById`). Lets the node layers — selection, inspector, drag —
 	 * treat a sub-patch like a node while the inspector renders sharing controls
 	 * instead of param groups. Absent/null for real nodes. */
 	subpatch?: SubpatchMeta | null;
@@ -95,6 +102,7 @@ export interface SubpatchMeta {
 }
 
 export interface LinkInfo {
+	/** Source / target node UIDs (not display names). */
 	node_out: string;
 	node_in: string;
 	slot_out: string;
@@ -154,7 +162,7 @@ export interface InstanceInfo {
 	/** boundary handle name -> port */
 	interface: Record<string, SubPatchPort>;
 	pos: [number, number];
-	/** member display name -> local name */
+	/** member uid -> local name */
 	members: Record<string, string>;
 }
 
@@ -231,8 +239,8 @@ export interface GraphSnapshot {
 export type ControlEvent =
 	| { event: 'hello'; payload: GraphSnapshot }
 	| { event: 'node_added'; payload: NodeInstanceInfo }
-	| { event: 'node_removed'; payload: { name: string } }
-	| { event: 'node_moved'; payload: { name: string; pos: [number, number] } }
+	| { event: 'node_removed'; payload: { node: string } }
+	| { event: 'node_moved'; payload: { node: string; pos: [number, number] } }
 	| { event: 'link_added'; payload: LinkInfo }
 	| { event: 'link_removed'; payload: LinkInfo }
 	| {
@@ -252,7 +260,7 @@ export type ControlEvent =
 	| { event: 'graph_replaced'; payload: GraphSnapshot }
 	| { event: 'subpatch_changed'; payload: GraphSnapshot }
 	| { event: 'boundary_moved'; payload: { inst_id: string; bnd_id: string; pos: [number, number] } }
-	| { event: 'node_renamed'; payload: { old: string; new: string } }
+	| { event: 'node_renamed'; payload: { node: string; name: string } }
 	| { event: 'layout'; payload: { layout: unknown } }
 	| { event: 'manager_shutdown'; payload: Record<string, never> };
 

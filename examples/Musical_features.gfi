@@ -2,7 +2,7 @@ version: 2
 definitions: {}
 root:
   nodes:
-    biotuner0:
+    b8f0cbad39b1:
       _type: Biotuner
       category: analysis
       params:
@@ -94,7 +94,9 @@ root:
             collapsed: true
             log_scale_x: false
             log_scale_y: false
-    buffer0:
+      name: biotuner0
+      uid: b8f0cbad39b1
+    d762aaf10f17:
       _type: Buffer
       category: signal
       params:
@@ -119,7 +121,9 @@ root:
             collapsed: false
             log_scale_x: false
             log_scale_y: false
-    buffer1:
+      name: buffer0
+      uid: d762aaf10f17
+    411aa5acf22a:
       _type: Buffer
       category: signal
       params:
@@ -144,7 +148,9 @@ root:
             collapsed: false
             log_scale_x: false
             log_scale_y: false
-    eegrecording0:
+      name: buffer1
+      uid: 411aa5acf22a
+    4aca63f59715:
       _type: EEGRecording
       category: inputs
       params:
@@ -165,7 +171,9 @@ root:
         - 15
         - 142
         viewers: {}
-    extendedtable0:
+      name: eegrecording0
+      uid: 4aca63f59715
+    82e35ff68d86:
       _type: ExtendedTable
       category: inputs
       params:
@@ -196,7 +204,9 @@ root:
             collapsed: false
             log_scale_x: false
             log_scale_y: false
-    lslclient0:
+      name: extendedtable0
+      uid: 82e35ff68d86
+    035cb575c9ae:
       _type: LSLClient
       category: inputs
       params:
@@ -220,7 +230,9 @@ root:
             collapsed: false
             log_scale_x: false
             log_scale_y: false
-    normalization0:
+      name: lslclient0
+      uid: 035cb575c9ae
+    dc4e8c457ebe:
       _type: Normalization
       category: signal
       params:
@@ -255,7 +267,9 @@ root:
             collapsed: false
             log_scale_x: false
             log_scale_y: false
-    oscout0:
+      name: normalization0
+      uid: dc4e8c457ebe
+    f8325cbe0b60:
       _type: OSCOut
       category: outputs
       params:
@@ -275,7 +289,9 @@ root:
         - 1444
         - 581
         viewers: {}
-    select0:
+      name: oscout0
+      uid: f8325cbe0b60
+    9c96a27216f4:
       _type: Select
       category: array
       params:
@@ -300,7 +316,9 @@ root:
             collapsed: false
             log_scale_x: false
             log_scale_y: false
-    smooth0:
+      name: select0
+      uid: 9c96a27216f4
+    616d92457e0b:
       _type: Smooth
       category: signal
       params:
@@ -323,49 +341,51 @@ root:
             collapsed: false
             log_scale_x: false
             log_scale_y: false
+      name: smooth0
+      uid: 616d92457e0b
   links:
-  - node_out: biotuner0
-    node_in: normalization0
+  - node_out: b8f0cbad39b1
+    node_in: dc4e8c457ebe
     slot_out: harmsim
     slot_in: data
-  - node_out: biotuner0
-    node_in: extendedtable0
+  - node_out: b8f0cbad39b1
+    node_in: 82e35ff68d86
     slot_out: peaks_ratios_tuning
     slot_in: array_input4
-  - node_out: biotuner0
-    node_in: extendedtable0
+  - node_out: b8f0cbad39b1
+    node_in: 82e35ff68d86
     slot_out: peaks
     slot_in: array_input2
-  - node_out: biotuner0
-    node_in: extendedtable0
+  - node_out: b8f0cbad39b1
+    node_in: 82e35ff68d86
     slot_out: amps
     slot_in: array_input3
-  - node_out: buffer0
-    node_in: biotuner0
+  - node_out: d762aaf10f17
+    node_in: b8f0cbad39b1
     slot_out: out
     slot_in: data
-  - node_out: buffer1
-    node_in: smooth0
+  - node_out: 411aa5acf22a
+    node_in: 616d92457e0b
     slot_out: out
     slot_in: data
-  - node_out: extendedtable0
-    node_in: oscout0
+  - node_out: 82e35ff68d86
+    node_in: f8325cbe0b60
     slot_out: table
     slot_in: data
-  - node_out: lslclient0
-    node_in: select0
+  - node_out: 035cb575c9ae
+    node_in: 9c96a27216f4
     slot_out: out
     slot_in: data
-  - node_out: normalization0
-    node_in: extendedtable0
+  - node_out: dc4e8c457ebe
+    node_in: 82e35ff68d86
     slot_out: normalized
     slot_in: array_input1
-  - node_out: normalization0
-    node_in: buffer1
+  - node_out: dc4e8c457ebe
+    node_in: 411aa5acf22a
     slot_out: normalized
     slot_in: val
-  - node_out: select0
-    node_in: buffer0
+  - node_out: 9c96a27216f4
+    node_in: d762aaf10f17
     slot_out: out
     slot_in: val
   instances: {}

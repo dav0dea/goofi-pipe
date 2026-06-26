@@ -2,7 +2,7 @@ version: 2
 definitions: {}
 root:
   nodes:
-    classifier0:
+    2fefbb84e69e:
       _type: Classifier
       category: analysis
       gui_kwargs:
@@ -86,7 +86,9 @@ root:
             _value: 30.0
             vmax: 60.0
             vmin: 0.0
-    reduce0:
+      name: classifier0
+      uid: 2fefbb84e69e
+    21e04a0e0233:
       _type: Reduce
       category: array
       gui_kwargs:
@@ -115,7 +117,9 @@ root:
             - min
             - max
             - std
-    reduce1:
+      name: reduce0
+      uid: 21e04a0e0233
+    517c63e9b3cd:
       _type: Reduce
       category: array
       gui_kwargs:
@@ -144,7 +148,9 @@ root:
             - min
             - max
             - std
-    videostream0:
+      name: reduce1
+      uid: 517c63e9b3cd
+    7e4cc868c9f7:
       _type: VideoStream
       category: inputs
       gui_kwargs:
@@ -168,17 +174,19 @@ root:
           mirror:
             _value: true
             trigger: false
+      name: videostream0
+      uid: 7e4cc868c9f7
   links:
-  - node_in: reduce0
-    node_out: videostream0
-    slot_in: array
+  - node_out: 7e4cc868c9f7
+    node_in: 21e04a0e0233
     slot_out: frame
-  - node_in: classifier0
-    node_out: reduce0
-    slot_in: data
-    slot_out: out
-  - node_in: reduce1
-    node_out: classifier0
     slot_in: array
+  - node_out: 21e04a0e0233
+    node_in: 2fefbb84e69e
+    slot_out: out
+    slot_in: data
+  - node_out: 2fefbb84e69e
+    node_in: 517c63e9b3cd
     slot_out: probs
+    slot_in: array
   instances: {}

@@ -2,7 +2,7 @@ version: 2
 definitions: {}
 root:
   nodes:
-    buffer0:
+    3a935dc14268:
       _type: Buffer
       category: signal
       params:
@@ -27,7 +27,9 @@ root:
             collapsed: false
             log_scale_x: false
             log_scale_y: false
-    buffer1:
+      name: buffer0
+      uid: 3a935dc14268
+    55a237b1f6df:
       _type: Buffer
       category: signal
       params:
@@ -52,7 +54,9 @@ root:
             collapsed: false
             log_scale_x: false
             log_scale_y: false
-    classifier0:
+      name: buffer1
+      uid: 55a237b1f6df
+    f1323fc0112c:
       _type: Classifier
       category: analysis
       params:
@@ -103,7 +107,9 @@ root:
             collapsed: false
             log_scale_x: false
             log_scale_y: false
-    eegrecording0:
+      name: classifier0
+      uid: f1323fc0112c
+    587a149025c9:
       _type: EEGRecording
       category: inputs
       params:
@@ -124,7 +130,9 @@ root:
         - -260
         - 125
         viewers: {}
-    lslclient0:
+      name: eegrecording0
+      uid: 587a149025c9
+    39cdcbea7616:
       _type: LSLClient
       category: inputs
       params:
@@ -148,7 +156,9 @@ root:
             collapsed: false
             log_scale_x: false
             log_scale_y: false
-    select0:
+      name: lslclient0
+      uid: 39cdcbea7616
+    38b14bd4f8a6:
       _type: Select
       category: array
       params:
@@ -173,7 +183,9 @@ root:
             collapsed: false
             log_scale_x: false
             log_scale_y: false
-    monolith0:
+      name: select0
+      uid: 38b14bd4f8a6
+    be1a066e8363:
       _type: Monolith
       category: analysis
       params:
@@ -196,7 +208,9 @@ root:
             collapsed: false
             log_scale_x: false
             log_scale_y: false
-    select1:
+      name: monolith0
+      uid: be1a066e8363
+    9c833054ec77:
       _type: Select
       category: array
       params:
@@ -221,7 +235,9 @@ root:
             collapsed: false
             log_scale_x: false
             log_scale_y: false
-    smooth0:
+      name: select1
+      uid: 9c833054ec77
+    48e12e7fd3ff:
       _type: Smooth
       category: signal
       params:
@@ -244,33 +260,35 @@ root:
             collapsed: false
             log_scale_x: false
             log_scale_y: false
+      name: smooth0
+      uid: 48e12e7fd3ff
   links:
-  - node_out: buffer0
-    node_in: monolith0
+  - node_out: 3a935dc14268
+    node_in: be1a066e8363
     slot_out: out
     slot_in: data
-  - node_out: buffer1
-    node_in: smooth0
+  - node_out: 55a237b1f6df
+    node_in: 48e12e7fd3ff
     slot_out: out
     slot_in: data
-  - node_out: classifier0
-    node_in: select1
+  - node_out: f1323fc0112c
+    node_in: 9c833054ec77
     slot_out: probs
     slot_in: data
-  - node_out: lslclient0
-    node_in: select0
+  - node_out: 39cdcbea7616
+    node_in: 38b14bd4f8a6
     slot_out: out
     slot_in: data
-  - node_out: select0
-    node_in: buffer0
+  - node_out: 38b14bd4f8a6
+    node_in: 3a935dc14268
     slot_out: out
     slot_in: val
-  - node_out: monolith0
-    node_in: classifier0
+  - node_out: be1a066e8363
+    node_in: f1323fc0112c
     slot_out: features
     slot_in: data
-  - node_out: select1
-    node_in: buffer1
+  - node_out: 9c833054ec77
+    node_in: 55a237b1f6df
     slot_out: out
     slot_in: val
   instances: {}

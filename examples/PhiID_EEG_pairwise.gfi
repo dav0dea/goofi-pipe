@@ -2,7 +2,7 @@ version: 2
 definitions: {}
 root:
   nodes:
-    audiostream0:
+    7b5017745cfb:
       _type: AudioStream
       category: inputs
       params:
@@ -26,7 +26,9 @@ root:
             collapsed: false
             log_scale_x: false
             log_scale_y: false
-    buffer1:
+      name: audiostream0
+      uid: 7b5017745cfb
+    2bb75be3cb75:
       _type: Buffer
       category: signal
       params:
@@ -51,7 +53,9 @@ root:
             collapsed: false
             log_scale_x: false
             log_scale_y: false
-    buffer3:
+      name: buffer1
+      uid: 2bb75be3cb75
+    d5aff0a3da22:
       _type: Buffer
       category: signal
       params:
@@ -76,7 +80,9 @@ root:
             collapsed: false
             log_scale_x: false
             log_scale_y: false
-    correlation1:
+      name: buffer3
+      uid: d5aff0a3da22
+    960c54da8a05:
       _type: Correlation
       category: analysis
       params:
@@ -105,7 +111,9 @@ root:
             collapsed: false
             log_scale_x: false
             log_scale_y: false
-    eegrecording0:
+      name: correlation1
+      uid: 960c54da8a05
+    47cae0a3ca29:
       _type: EEGRecording
       category: inputs
       params:
@@ -126,7 +134,9 @@ root:
         - -514
         - -209
         viewers: {}
-    lslclient0:
+      name: eegrecording0
+      uid: 47cae0a3ca29
+    d9b3f092561a:
       _type: LSLClient
       category: inputs
       params:
@@ -150,7 +160,9 @@ root:
             collapsed: false
             log_scale_x: false
             log_scale_y: false
-    phiid0:
+      name: lslclient0
+      uid: d9b3f092561a
+    5e08f2ad241e:
       _type: PhiID
       category: analysis
       params:
@@ -190,7 +202,9 @@ root:
             collapsed: false
             log_scale_x: false
             log_scale_y: false
-    select1:
+      name: phiid0
+      uid: 5e08f2ad241e
+    fcbcf55c03a9:
       _type: Select
       category: array
       params:
@@ -215,7 +229,9 @@ root:
             collapsed: false
             log_scale_x: false
             log_scale_y: false
-    select2:
+      name: select1
+      uid: fcbcf55c03a9
+    bc902c75252c:
       _type: Select
       category: array
       params:
@@ -240,7 +256,9 @@ root:
             collapsed: false
             log_scale_x: false
             log_scale_y: false
-    select3:
+      name: select2
+      uid: bc902c75252c
+    27874048788f:
       _type: Select
       category: array
       params:
@@ -265,7 +283,9 @@ root:
             collapsed: false
             log_scale_x: false
             log_scale_y: false
-    smooth0:
+      name: select3
+      uid: 27874048788f
+    01ab56009419:
       _type: Smooth
       category: signal
       params:
@@ -288,7 +308,9 @@ root:
             collapsed: false
             log_scale_x: false
             log_scale_y: false
-    smooth1:
+      name: smooth0
+      uid: 01ab56009419
+    4f437d395a47:
       _type: Smooth
       category: signal
       params:
@@ -311,7 +333,9 @@ root:
             collapsed: false
             log_scale_x: false
             log_scale_y: false
-    timedelayembedding0:
+      name: smooth1
+      uid: 4f437d395a47
+    364eb0c93cba:
       _type: TimeDelayEmbedding
       category: signal
       params:
@@ -336,7 +360,9 @@ root:
             collapsed: false
             log_scale_x: false
             log_scale_y: false
-    buffer0:
+      name: timedelayembedding0
+      uid: 364eb0c93cba
+    bf469931f57a:
       _type: Buffer
       category: signal
       params:
@@ -361,7 +387,9 @@ root:
             collapsed: false
             log_scale_x: false
             log_scale_y: false
-    reduce0:
+      name: buffer0
+      uid: bf469931f57a
+    fe830f17d8ac:
       _type: Reduce
       category: array
       params:
@@ -384,7 +412,9 @@ root:
             collapsed: false
             log_scale_x: false
             log_scale_y: false
-    reduce1:
+      name: reduce0
+      uid: fe830f17d8ac
+    4365fdaaec4a:
       _type: Reduce
       category: array
       params:
@@ -407,7 +437,9 @@ root:
             collapsed: false
             log_scale_x: false
             log_scale_y: false
-    buffer2:
+      name: reduce1
+      uid: 4365fdaaec4a
+    08e245a39655:
       _type: Buffer
       category: signal
       params:
@@ -432,7 +464,9 @@ root:
             collapsed: false
             log_scale_x: false
             log_scale_y: false
-    smooth2:
+      name: buffer2
+      uid: 08e245a39655
+    2a11d0befd2d:
       _type: Smooth
       category: signal
       params:
@@ -455,69 +489,71 @@ root:
             collapsed: false
             log_scale_x: false
             log_scale_y: false
+      name: smooth2
+      uid: 2a11d0befd2d
   links:
-  - node_out: audiostream0
-    node_in: timedelayembedding0
+  - node_out: 7b5017745cfb
+    node_in: 364eb0c93cba
     slot_out: out
     slot_in: input_array
-  - node_out: buffer1
-    node_in: smooth0
+  - node_out: 2bb75be3cb75
+    node_in: 01ab56009419
     slot_out: out
     slot_in: data
-  - node_out: buffer1
-    node_in: correlation1
+  - node_out: 2bb75be3cb75
+    node_in: 960c54da8a05
     slot_out: out
     slot_in: data2
-  - node_out: buffer3
-    node_in: correlation1
+  - node_out: d5aff0a3da22
+    node_in: 960c54da8a05
     slot_out: out
     slot_in: data1
-  - node_out: buffer3
-    node_in: smooth1
+  - node_out: d5aff0a3da22
+    node_in: 4f437d395a47
     slot_out: out
     slot_in: data
-  - node_out: correlation1
-    node_in: buffer2
+  - node_out: 960c54da8a05
+    node_in: 08e245a39655
     slot_out: pearson
     slot_in: val
-  - node_out: lslclient0
-    node_in: buffer0
+  - node_out: d9b3f092561a
+    node_in: bf469931f57a
     slot_out: out
     slot_in: val
-  - node_out: phiid0
-    node_in: select3
+  - node_out: 5e08f2ad241e
+    node_in: 27874048788f
     slot_out: inf_dyn
     slot_in: data
-  - node_out: phiid0
-    node_in: select1
+  - node_out: 5e08f2ad241e
+    node_in: fcbcf55c03a9
     slot_out: IIT
     slot_in: data
-  - node_out: select1
-    node_in: reduce1
+  - node_out: fcbcf55c03a9
+    node_in: 4365fdaaec4a
     slot_out: out
     slot_in: array
-  - node_out: select2
-    node_in: phiid0
+  - node_out: bc902c75252c
+    node_in: 5e08f2ad241e
     slot_out: out
     slot_in: matrix
-  - node_out: select3
-    node_in: reduce0
+  - node_out: 27874048788f
+    node_in: fe830f17d8ac
     slot_out: out
     slot_in: array
-  - node_out: buffer0
-    node_in: select2
+  - node_out: bf469931f57a
+    node_in: bc902c75252c
     slot_out: out
     slot_in: data
-  - node_out: reduce0
-    node_in: buffer3
+  - node_out: fe830f17d8ac
+    node_in: d5aff0a3da22
     slot_out: out
     slot_in: val
-  - node_out: reduce1
-    node_in: buffer1
+  - node_out: 4365fdaaec4a
+    node_in: 2bb75be3cb75
     slot_out: out
     slot_in: val
-  - node_out: buffer2
-    node_in: smooth2
+  - node_out: 08e245a39655
+    node_in: 2a11d0befd2d
     slot_out: out
     slot_in: data
   instances: {}

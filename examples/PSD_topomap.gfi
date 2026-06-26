@@ -2,7 +2,7 @@ version: 2
 definitions: {}
 root:
   nodes:
-    buffer0:
+    a841ed80435f:
       _type: Buffer
       category: signal
       params:
@@ -27,7 +27,9 @@ root:
             collapsed: false
             log_scale_x: false
             log_scale_y: false
-    eegrecording0:
+      name: buffer0
+      uid: a841ed80435f
+    a8658f74aebc:
       _type: EEGRecording
       category: inputs
       params:
@@ -48,7 +50,9 @@ root:
         - 18
         - 325
         viewers: {}
-    lslclient0:
+      name: eegrecording0
+      uid: a8658f74aebc
+    b72268b1ebab:
       _type: LSLClient
       category: inputs
       params:
@@ -72,7 +76,9 @@ root:
             collapsed: false
             log_scale_x: false
             log_scale_y: false
-    normalization1:
+      name: lslclient0
+      uid: b72268b1ebab
+    df98ce559845:
       _type: Normalization
       category: signal
       params:
@@ -107,7 +113,9 @@ root:
             collapsed: false
             log_scale_x: false
             log_scale_y: false
-    powerbandeeg0:
+      name: normalization1
+      uid: df98ce559845
+    2363a54e7f24:
       _type: PowerBandEEG
       category: analysis
       params:
@@ -164,7 +172,9 @@ root:
             collapsed: true
             log_scale_x: false
             log_scale_y: false
-    psd0:
+      name: powerbandeeg0
+      uid: 2363a54e7f24
+    6dd8efffc0cf:
       _type: PSD
       category: signal
       params:
@@ -192,21 +202,23 @@ root:
             collapsed: false
             log_scale_x: true
             log_scale_y: true
+      name: psd0
+      uid: 6dd8efffc0cf
   links:
-  - node_out: buffer0
-    node_in: psd0
+  - node_out: a841ed80435f
+    node_in: 6dd8efffc0cf
     slot_out: out
     slot_in: data
-  - node_out: lslclient0
-    node_in: buffer0
+  - node_out: b72268b1ebab
+    node_in: a841ed80435f
     slot_out: out
     slot_in: val
-  - node_out: powerbandeeg0
-    node_in: normalization1
+  - node_out: 2363a54e7f24
+    node_in: df98ce559845
     slot_out: alpha
     slot_in: data
-  - node_out: psd0
-    node_in: powerbandeeg0
+  - node_out: 6dd8efffc0cf
+    node_in: 2363a54e7f24
     slot_out: psd
     slot_in: data
   instances: {}

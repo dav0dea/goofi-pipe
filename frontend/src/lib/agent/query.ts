@@ -94,9 +94,9 @@ export const query = {
 		};
 	},
 	nodeTypes: (): NodeTypeInfo[] | null => graph().nodeTypes,
-	node: (name: string): NodeInstanceInfo | null => graph().nodeByName(name),
+	node: (name: string): NodeInstanceInfo | null => graph().nodeById(name),
 	nodeParams: (name: string): NodeInstanceInfo['params'] | null =>
-		graph().nodeByName(name)?.params ?? null,
+		graph().nodeById(name)?.params ?? null,
 	selection: (
 		panelId: string | null = workspace().activePanelId
 	): { nodes: string[]; edges: string[] } => {

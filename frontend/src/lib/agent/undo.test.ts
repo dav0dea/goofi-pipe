@@ -12,7 +12,7 @@ const mk = (label: string): Action => ({
 	label,
 	domain: 'graph',
 	context: ctx,
-	payload: { type: 'X', category: 'c', pos: [0, 0], assignedName: 'x0' }
+	payload: { type: 'X', category: 'c', pos: [0, 0], uid: 'x0' }
 });
 
 describe('agent surface — undo/redo', () => {

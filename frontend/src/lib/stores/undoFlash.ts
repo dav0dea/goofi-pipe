@@ -19,7 +19,7 @@ export function pulseRestored(ctx: NavContext, deps: ExecutorDeps): void {
 	if (!names.size) return;
 
 	for (const name of names) {
-		if (deps.graph.nodeByName(name)) {
+		if (deps.graph.nodeById(name)) {
 			flash().pulse([name]);
 			continue;
 		}

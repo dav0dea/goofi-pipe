@@ -2,7 +2,7 @@ version: 2
 definitions: {}
 root:
   nodes:
-    audiostream0:
+    ae5f5ed99e11:
       _type: AudioStream
       category: inputs
       params:
@@ -26,7 +26,9 @@ root:
             collapsed: false
             log_scale_x: false
             log_scale_y: false
-    buffer1:
+      name: audiostream0
+      uid: ae5f5ed99e11
+    fdd765dbb4db:
       _type: Buffer
       category: signal
       params:
@@ -51,7 +53,9 @@ root:
             collapsed: false
             log_scale_x: false
             log_scale_y: false
-    buffer3:
+      name: buffer1
+      uid: fdd765dbb4db
+    6ec7a64eabd6:
       _type: Buffer
       category: signal
       params:
@@ -76,7 +80,9 @@ root:
             collapsed: false
             log_scale_x: false
             log_scale_y: false
-    correlation1:
+      name: buffer3
+      uid: 6ec7a64eabd6
+    5bbbb90f6bba:
       _type: Correlation
       category: analysis
       params:
@@ -105,7 +111,9 @@ root:
             collapsed: false
             log_scale_x: false
             log_scale_y: false
-    eegrecording0:
+      name: correlation1
+      uid: 5bbbb90f6bba
+    8fdfb9564a24:
       _type: EEGRecording
       category: inputs
       params:
@@ -126,7 +134,9 @@ root:
         - -713
         - -207
         viewers: {}
-    lslclient0:
+      name: eegrecording0
+      uid: 8fdfb9564a24
+    0020f5ec7843:
       _type: LSLClient
       category: inputs
       params:
@@ -150,7 +160,9 @@ root:
             collapsed: false
             log_scale_x: false
             log_scale_y: false
-    phiid0:
+      name: lslclient0
+      uid: 0020f5ec7843
+    1d2de67c5c98:
       _type: PhiID
       category: analysis
       params:
@@ -190,7 +202,9 @@ root:
             collapsed: false
             log_scale_x: false
             log_scale_y: false
-    reduce0:
+      name: phiid0
+      uid: 1d2de67c5c98
+    a92439e809c6:
       _type: Reduce
       category: array
       params:
@@ -213,7 +227,9 @@ root:
             collapsed: false
             log_scale_x: false
             log_scale_y: false
-    select1:
+      name: reduce0
+      uid: a92439e809c6
+    5c4db5079187:
       _type: Select
       category: array
       params:
@@ -238,7 +254,9 @@ root:
             collapsed: false
             log_scale_x: false
             log_scale_y: false
-    select2:
+      name: select1
+      uid: 5c4db5079187
+    534b38d0736f:
       _type: Select
       category: array
       params:
@@ -263,7 +281,9 @@ root:
             collapsed: false
             log_scale_x: false
             log_scale_y: false
-    select3:
+      name: select2
+      uid: 534b38d0736f
+    be21086a443b:
       _type: Select
       category: array
       params:
@@ -288,7 +308,9 @@ root:
             collapsed: false
             log_scale_x: false
             log_scale_y: false
-    smooth0:
+      name: select3
+      uid: be21086a443b
+    8c7a805a2687:
       _type: Smooth
       category: signal
       params:
@@ -311,7 +333,9 @@ root:
             collapsed: false
             log_scale_x: false
             log_scale_y: false
-    smooth1:
+      name: smooth0
+      uid: 8c7a805a2687
+    28ea9a4a1ae1:
       _type: Smooth
       category: signal
       params:
@@ -334,7 +358,9 @@ root:
             collapsed: false
             log_scale_x: false
             log_scale_y: false
-    timedelayembedding0:
+      name: smooth1
+      uid: 28ea9a4a1ae1
+    80a17fc253c4:
       _type: TimeDelayEmbedding
       category: signal
       params:
@@ -359,7 +385,9 @@ root:
             collapsed: false
             log_scale_x: false
             log_scale_y: false
-    buffer0:
+      name: timedelayembedding0
+      uid: 80a17fc253c4
+    614e21ca301f:
       _type: Buffer
       category: signal
       params:
@@ -384,7 +412,9 @@ root:
             collapsed: false
             log_scale_x: false
             log_scale_y: false
-    timedelayembedding1:
+      name: buffer0
+      uid: 614e21ca301f
+    e3d4eaaf0321:
       _type: TimeDelayEmbedding
       category: signal
       params:
@@ -409,61 +439,63 @@ root:
             collapsed: false
             log_scale_x: false
             log_scale_y: false
+      name: timedelayembedding1
+      uid: e3d4eaaf0321
   links:
-  - node_out: audiostream0
-    node_in: timedelayembedding0
+  - node_out: ae5f5ed99e11
+    node_in: 80a17fc253c4
     slot_out: out
     slot_in: input_array
-  - node_out: buffer1
-    node_in: smooth0
+  - node_out: fdd765dbb4db
+    node_in: 8c7a805a2687
     slot_out: out
     slot_in: data
-  - node_out: buffer1
-    node_in: correlation1
+  - node_out: fdd765dbb4db
+    node_in: 5bbbb90f6bba
     slot_out: out
     slot_in: data2
-  - node_out: buffer3
-    node_in: correlation1
+  - node_out: 6ec7a64eabd6
+    node_in: 5bbbb90f6bba
     slot_out: out
     slot_in: data1
-  - node_out: buffer3
-    node_in: smooth1
+  - node_out: 6ec7a64eabd6
+    node_in: 28ea9a4a1ae1
     slot_out: out
     slot_in: data
-  - node_out: lslclient0
-    node_in: buffer0
+  - node_out: 0020f5ec7843
+    node_in: 614e21ca301f
     slot_out: out
     slot_in: val
-  - node_out: phiid0
-    node_in: select3
+  - node_out: 1d2de67c5c98
+    node_in: be21086a443b
     slot_out: inf_dyn
     slot_in: data
-  - node_out: phiid0
-    node_in: select1
+  - node_out: 1d2de67c5c98
+    node_in: 5c4db5079187
     slot_out: IIT
     slot_in: data
-  - node_out: reduce0
-    node_in: timedelayembedding1
+  - node_out: a92439e809c6
+    node_in: e3d4eaaf0321
     slot_out: out
     slot_in: input_array
-  - node_out: select1
-    node_in: buffer1
+  - node_out: 5c4db5079187
+    node_in: fdd765dbb4db
     slot_out: out
     slot_in: val
-  - node_out: select2
-    node_in: reduce0
+  - node_out: 534b38d0736f
+    node_in: a92439e809c6
     slot_out: out
     slot_in: array
-  - node_out: select3
-    node_in: buffer3
+  - node_out: be21086a443b
+    node_in: 6ec7a64eabd6
     slot_out: out
     slot_in: val
-  - node_out: buffer0
-    node_in: select2
+  - node_out: 614e21ca301f
+    node_in: 534b38d0736f
     slot_out: out
     slot_in: data
-  - node_out: timedelayembedding1
-    node_in: phiid0
+  - node_out: e3d4eaaf0321
+    node_in: 1d2de67c5c98
     slot_out: embedded_array
     slot_in: matrix
   instances: {}

@@ -40,7 +40,7 @@
 
 	function setValue(group: string, name: string, value: unknown): void {
 		if (!node) return;
-		void g.updateParam(node.name, group, name, value);
+		void g.updateParam(node.uid, group, name, value);
 	}
 
 	function setExpression(
@@ -50,7 +50,7 @@
 		opts: { enabled?: boolean; triggers_process?: boolean; autoeval?: boolean } = {}
 	): void {
 		if (!node) return;
-		void g.setExpression(node.name, group, name, expression, opts);
+		void g.setExpression(node.uid, group, name, expression, opts);
 	}
 
 	const groupNames = $derived(paramGroupNames(node));

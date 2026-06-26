@@ -72,14 +72,17 @@ export type GraphAction =
 				category: string;
 				pos: [number, number];
 				instId?: string;
-				assignedName?: string;
+				// Filled after the first forward: the node's stable uid + display name,
+				// so a redo restores the SAME identity (links/panels reconnect).
+				uid?: string;
+				name?: string;
 			};
 	  })
 	| (BaseAction & {
 			kind: 'remove_node';
 			domain: 'graph';
 			payload: {
-				name: string;
+				uid: string;
 				node: NodeInstanceInfo;
 				links: LinkInfo[];
 				membership: { instance: string; local_name: string } | null;
@@ -101,7 +104,12 @@ export type GraphAction =
 	| (BaseAction & {
 			kind: 'set_node_pos';
 			domain: 'graph';
-			payload: { name: string; oldPos: [number, number]; newPos: [number, number] };
+			payload: { uid: string; oldPos: [number, number]; newPos: [number, number] };
+	  })
+	| (BaseAction & {
+			kind: 'rename_node';
+			domain: 'graph';
+			payload: { uid: string; oldName: string; newName: string };
 	  })
 	| (BaseAction & {
 			kind: 'group_nodes';

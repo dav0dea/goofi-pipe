@@ -2,7 +2,7 @@ version: 2
 definitions: {}
 root:
   nodes:
-    buffer1:
+    648313bdff77:
       _type: Buffer
       category: signal
       params:
@@ -27,7 +27,9 @@ root:
             collapsed: false
             log_scale_x: false
             log_scale_y: false
-    eegrecording0:
+      name: buffer1
+      uid: 648313bdff77
+    c0ae2b21d907:
       _type: EEGRecording
       category: inputs
       params:
@@ -48,7 +50,9 @@ root:
         - 246
         - 173
         viewers: {}
-    extendedtable0:
+      name: eegrecording0
+      uid: c0ae2b21d907
+    abd8e1ee3d2e:
       _type: ExtendedTable
       category: inputs
       params:
@@ -79,7 +83,9 @@ root:
             collapsed: false
             log_scale_x: false
             log_scale_y: false
-    lslclient0:
+      name: extendedtable0
+      uid: abd8e1ee3d2e
+    59cca4c23c80:
       _type: LSLClient
       category: inputs
       params:
@@ -103,7 +109,9 @@ root:
             collapsed: false
             log_scale_x: false
             log_scale_y: false
-    oscout0:
+      name: lslclient0
+      uid: 59cca4c23c80
+    b0811360b2f6:
       _type: OSCOut
       category: outputs
       params:
@@ -123,7 +131,9 @@ root:
         - 1580
         - 420
         viewers: {}
-    powerbandeeg0:
+      name: oscout0
+      uid: b0811360b2f6
+    3d7e8ce9649d:
       _type: PowerBandEEG
       category: analysis
       params:
@@ -180,7 +190,9 @@ root:
             collapsed: true
             log_scale_x: false
             log_scale_y: false
-    psd0:
+      name: powerbandeeg0
+      uid: 3d7e8ce9649d
+    0c671635b6e1:
       _type: PSD
       category: signal
       params:
@@ -208,7 +220,9 @@ root:
             collapsed: false
             log_scale_x: false
             log_scale_y: false
-    select0:
+      name: psd0
+      uid: 0c671635b6e1
+    fcf85202236f:
       _type: Select
       category: array
       params:
@@ -233,7 +247,9 @@ root:
             collapsed: false
             log_scale_x: false
             log_scale_y: false
-    buffer0:
+      name: select0
+      uid: fcf85202236f
+    28669395bf0c:
       _type: Buffer
       category: signal
       params:
@@ -258,49 +274,51 @@ root:
             collapsed: false
             log_scale_x: false
             log_scale_y: false
+      name: buffer0
+      uid: 28669395bf0c
   links:
-  - node_out: extendedtable0
-    node_in: oscout0
+  - node_out: abd8e1ee3d2e
+    node_in: b0811360b2f6
     slot_out: table
     slot_in: data
-  - node_out: lslclient0
-    node_in: buffer0
+  - node_out: 59cca4c23c80
+    node_in: 28669395bf0c
     slot_out: out
     slot_in: val
-  - node_out: powerbandeeg0
-    node_in: extendedtable0
+  - node_out: 3d7e8ce9649d
+    node_in: abd8e1ee3d2e
     slot_out: delta
     slot_in: array_input1
-  - node_out: powerbandeeg0
-    node_in: extendedtable0
+  - node_out: 3d7e8ce9649d
+    node_in: abd8e1ee3d2e
     slot_out: theta
     slot_in: array_input2
-  - node_out: powerbandeeg0
-    node_in: buffer1
+  - node_out: 3d7e8ce9649d
+    node_in: 648313bdff77
     slot_out: alpha
     slot_in: val
-  - node_out: powerbandeeg0
-    node_in: extendedtable0
+  - node_out: 3d7e8ce9649d
+    node_in: abd8e1ee3d2e
     slot_out: alpha
     slot_in: array_input3
-  - node_out: powerbandeeg0
-    node_in: extendedtable0
+  - node_out: 3d7e8ce9649d
+    node_in: abd8e1ee3d2e
     slot_out: lowbeta
     slot_in: array_input4
-  - node_out: powerbandeeg0
-    node_in: extendedtable0
+  - node_out: 3d7e8ce9649d
+    node_in: abd8e1ee3d2e
     slot_out: highbeta
     slot_in: array_input5
-  - node_out: psd0
-    node_in: select0
+  - node_out: 0c671635b6e1
+    node_in: fcf85202236f
     slot_out: psd
     slot_in: data
-  - node_out: select0
-    node_in: powerbandeeg0
+  - node_out: fcf85202236f
+    node_in: 3d7e8ce9649d
     slot_out: out
     slot_in: data
-  - node_out: buffer0
-    node_in: psd0
+  - node_out: 28669395bf0c
+    node_in: 0c671635b6e1
     slot_out: out
     slot_in: data
   instances: {}
