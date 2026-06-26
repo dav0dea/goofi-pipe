@@ -7,7 +7,7 @@
 -->
 <script lang="ts">
 	import { subscribeFrames } from '$lib/api/frames';
-	import { setViewSpec } from '$lib/api/data';
+	import { setViewSpec, clearViewSpec } from '$lib/api/data';
 	import { viewSpecForKind } from './capacity';
 	import type { DataFrame } from '$lib/codec/decode';
 	import ViewerSurface from './ViewerSurface.svelte';
@@ -28,6 +28,9 @@
 	let capW = $state(0);
 	let capH = $state(0);
 	let specVersion = 0;
+	// Stable per-instance token so multiple viewers of one slot fold (not evict).
+	const specToken =
+		typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `vf-${Math.random()}`;
 
 	function quantize(px: number): number {
 		const dpr = typeof window !== 'undefined' ? window.devicePixelRatio || 1 : 1;
@@ -73,8 +76,12 @@
 	// frame to this before sending (Option C); the worker re-sends on reconnect.
 	$effect(() => {
 		if (!visible || !slot || capW === 0 || capH === 0) return;
-		const spec = viewSpecForKind(kind, capW, capH, ++specVersion);
-		setViewSpec(node, slot, kind, spec);
+		const s = slot;
+		const k = kind;
+		setViewSpec(node, s, k, specToken, viewSpecForKind(k, capW, capH, ++specVersion));
+		// Drop this contribution when the deps change (kind/size/visibility) or on
+		// unmount, so a stale spec from this viewer can't linger in the fold.
+		return () => clearViewSpec(node, s, k, specToken);
 	});
 </script>
 

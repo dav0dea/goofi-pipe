@@ -69,3 +69,33 @@ export function viewSpecForKind(
 	}
 	return { axes, version };
 }
+
+/** Richer method wins when two viewers fold onto the same axis. Mirrors
+ * `node_reduce._RICHNESS` so the in-tab fold agrees with the node/bridge fold. */
+const RICHNESS: Record<ReduceMethod, number> = { envelope: 3, area: 2, subsample: 1 };
+
+/**
+ * Fold several viewers' ViewSpecs into one, richest-wins per axis (max of the
+ * per-axis `max`, richest method). Used to combine multiple viewers of the SAME
+ * (node, slot, kind) within one tab — they share a single WS, so the node must
+ * reduce to the union of what they can show (the bridge folds across tabs too).
+ */
+export function foldViewSpecs(specs: ViewSpec[]): ViewSpec {
+	const byAxis = new Map<number, AxisSpec>();
+	let version = 0;
+	for (const s of specs) {
+		if (!s) continue;
+		version = Math.max(version, s.version || 0);
+		for (const a of s.axes ?? []) {
+			const cur = byAxis.get(a.axis);
+			if (!cur) {
+				byAxis.set(a.axis, { axis: a.axis, max: a.max, method: a.method });
+			} else {
+				cur.max = Math.max(cur.max, a.max);
+				if ((RICHNESS[a.method] ?? 0) > (RICHNESS[cur.method] ?? 0)) cur.method = a.method;
+			}
+		}
+	}
+	const axes = [...byAxis.keys()].sort((x, y) => x - y).map((k) => byAxis.get(k) as AxisSpec);
+	return { axes, version };
+}

@@ -8,11 +8,16 @@
  * frame's array buffer is transferred from the worker (zero-copy).
  */
 import type { DataFrame } from '$lib/codec/decode';
+import { foldViewSpecs, type ViewSpec } from '$lib/viewers/capacity';
 
 type FrameCallback = (frame: DataFrame) => void;
 
 let worker: Worker | null = null;
 const consumers = new Map<string, Set<FrameCallback>>();
+// Per (node,slot,kind): each viewer's contributed ViewSpec, keyed by a stable
+// consumer token. Multiple viewers of one slot in a tab share ONE WS, so we fold
+// their specs here and send the union to the node (the bridge folds across tabs).
+const specs = new Map<string, Map<string, ViewSpec>>();
 
 function key(node: string, slot: string, kind: string): string {
 	return `${node} ${slot} ${kind}`;
@@ -67,12 +72,39 @@ export function subscribeData(node: string, slot: string, kind: string, cb: Fram
 	};
 }
 
+function pushFold(node: string, slot: string, kind: string, k: string): void {
+	const m = specs.get(k);
+	const folded = foldViewSpecs(m ? [...m.values()] : []);
+	ensureWorker().postMessage({ op: 'spec', node, slot, kind, spec: folded });
+}
+
 /**
- * Set (or update) the per-axis ViewSpec the node should reduce this (node, slot,
- * kind) stream to (Option C). Sent inband over the data WS; the node folds it with
- * any other browsers' specs and reduces each frame before sending. Safe to call
- * before/after `subscribeData`; the worker re-sends it on every (re)connect.
+ * Contribute (or update) this viewer's ViewSpec for a (node, slot, kind) stream
+ * (Option C). `token` identifies the viewer so several viewers of one slot fold
+ * correctly. The folded union is sent inband over the data WS; the node reduces
+ * each frame to it. Safe to call before/after `subscribeData`; the worker re-sends
+ * on every (re)connect.
  */
-export function setViewSpec(node: string, slot: string, kind: string, spec: unknown): void {
-	ensureWorker().postMessage({ op: 'spec', node, slot, kind, spec });
+export function setViewSpec(node: string, slot: string, kind: string, token: string, spec: ViewSpec): void {
+	const k = key(node, slot, kind);
+	let m = specs.get(k);
+	if (!m) {
+		m = new Map();
+		specs.set(k, m);
+	}
+	m.set(token, spec);
+	pushFold(node, slot, kind, k);
+}
+
+/** Drop this viewer's ViewSpec contribution (on unsubscribe / kind change). */
+export function clearViewSpec(node: string, slot: string, kind: string, token: string): void {
+	const k = key(node, slot, kind);
+	const m = specs.get(k);
+	if (!m) return;
+	m.delete(token);
+	if (m.size === 0) {
+		specs.delete(k);
+		return; // WS is closing anyway; nothing to renegotiate
+	}
+	pushFold(node, slot, kind, k);
 }

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { viewSpecForKind, CAP_FLOOR } from './capacity';
+import { viewSpecForKind, foldViewSpecs, CAP_FLOOR } from './capacity';
 
 describe('viewSpecForKind', () => {
 	it('line → channel subsample + sample envelope sized to width', () => {
@@ -34,5 +34,31 @@ describe('viewSpecForKind', () => {
 		const spec = viewSpecForKind('line', 0, 0);
 		expect(spec.axes[1].max).toBe(CAP_FLOOR);
 		expect(spec.axes[0].max).toBe(CAP_FLOOR);
+	});
+});
+
+describe('foldViewSpecs', () => {
+	it('richest-wins per axis: max() of max, richest method, max() of version', () => {
+		const folded = foldViewSpecs([
+			{ axes: [{ axis: -1, max: 800, method: 'subsample' }], version: 1 },
+			{ axes: [{ axis: -1, max: 2000, method: 'envelope' }], version: 5 }
+		]);
+		expect(folded.axes).toEqual([{ axis: -1, max: 2000, method: 'envelope' }]);
+		expect(folded.version).toBe(5);
+	});
+
+	it('keeps distinct axes independent and sorted', () => {
+		const folded = foldViewSpecs([
+			{ axes: [{ axis: 1, max: 500, method: 'envelope' }], version: 0 },
+			{ axes: [{ axis: 0, max: 8, method: 'subsample' }], version: 0 }
+		]);
+		expect(folded.axes).toEqual([
+			{ axis: 0, max: 8, method: 'subsample' },
+			{ axis: 1, max: 500, method: 'envelope' }
+		]);
+	});
+
+	it('empty input folds to no reduction', () => {
+		expect(foldViewSpecs([])).toEqual({ axes: [], version: 0 });
 	});
 });
