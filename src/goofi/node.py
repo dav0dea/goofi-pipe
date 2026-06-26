@@ -36,6 +36,7 @@ from goofi.expression import ExpressionEngine
 from goofi import node_log, node_viewer
 from goofi.message import Message, MessageType
 from goofi.node_reduce import viewspec_from_dict
+from goofi.node_stats import ExecStats
 from goofi.node_helpers import InputSlot, NodeRef, OutputSlot
 from goofi.params import InvalidParamError, NodeParams, normalize_expression_binding
 from goofi.transport import (
@@ -159,6 +160,10 @@ class Node(ABC):
         # Lock order is always expression_lock -> WaitSet lock (never reversed),
         # so it can't deadlock with the data-plane wait.
         self._expression_lock = RLock()
+
+        # Rolling execution telemetry (update rate, mean process() duration) over
+        # the last N ticks. Written + read only on the processing thread, so no lock.
+        self._exec_stats = ExecStats()
 
         self.node_id = node_id
         self._input_slots = input_slots
@@ -914,11 +919,14 @@ class Node(ABC):
 
             input_data = {name: slot.data for name, slot in self.input_slots.items()}
 
+            _t0 = time.perf_counter()
             try:
                 output_data = self.process(**input_data)
             except Exception:
                 self._report_error(traceback.format_exc())
                 continue
+            _t1 = time.perf_counter()
+            self._exec_stats.record(_t1 - _t0, _t1)
 
             if not self.alive:
                 break
