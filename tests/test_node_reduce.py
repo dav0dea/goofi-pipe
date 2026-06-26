@@ -262,6 +262,19 @@ def test_area_reduction_preserves_aspect_wide():
     assert red.data.shape == (720, 1280, 3)
 
 
+def test_area_passthrough_when_image_already_fits():
+    # An image smaller than the viewer box must pass through verbatim: no area
+    # downscale (the identity block-mean was a wasted full copy) and no 'reduced'
+    # marker, so reduce_for_view returns the original Data object untouched.
+    img = Data(DataType.ARRAY, np.arange(8 * 8, dtype=np.float32).reshape(8, 8), {})
+    spec = viewspec_from_dict({"axes": [
+        {"axis": 0, "max": 64, "method": "area"},
+        {"axis": 1, "max": 64, "method": "area"},
+    ]})
+    red = reduce_for_view(img, spec)
+    assert red is img  # fail-open passthrough — nothing actually reduced
+
+
 # ---- HIGH bug regression: 1-D line must envelope (peaks), not subsample --------
 
 def test_folded_line_spec_envelopes_1d_not_subsample():

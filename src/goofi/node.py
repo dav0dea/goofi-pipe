@@ -592,6 +592,16 @@ class Node(ABC):
             slot.has_ipc = False
             slot.has_thread = False
 
+        # Reduced-viewer ('.view') endpoints + reducer state (Option C). These live
+        # in self._view_pubs, separate from the node↔node output endpoints above, so
+        # the loops there miss them; closing here releases their SHM segments and
+        # unpins any Data the shared reducer still holds for this node's slots.
+        for slot_name, (pub, notif) in self._view_pubs.items():
+            _safe_close(pub)
+            _safe_close(notif)
+            node_viewer.evict(self.node_id, slot_name)
+        self._view_pubs.clear()
+
         for attr in (
             "_self_trigger_pub",
             "_self_trigger_sub",

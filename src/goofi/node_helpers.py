@@ -526,7 +526,7 @@ class NodeRef:
                 self._data_waitset_dirty.wait(timeout=0.5)
                 self._data_waitset_dirty.clear()
                 continue
-            listener_to_slot = {id(l): (n, s, cb, raw) for n, (s, l, cb, raw, view) in handlers.items()}
+            listener_to_slot = {id(l): (n, s, cb, raw) for n, (s, l, cb, raw, _view) in handlers.items()}
             fired = self._data_waitset.wait(0.25)
             for listener in fired:
                 entry = listener_to_slot.get(id(listener))

@@ -98,6 +98,19 @@ def test_snapshot_for_offer_does_not_alias_input():
     assert snap.meta["channels"] is not data.meta["channels"]
 
 
+def test_snapshot_for_offer_deep_copies_table_children():
+    """TABLE bodies are dict[str, Data] with no ndim; the snapshot must recurse so a
+    child array the node mutates after offer() can't change the delivered frame."""
+    import goofi.node_viewer as nv
+
+    child = np.ones(4, dtype=np.float32)
+    tbl = Data(DataType.TABLE, {"a": Data(DataType.ARRAY, child, {})}, {})
+    snap = nv._snapshot_for_offer(tbl)
+    child[:] = 999.0  # node mutates a child array in place after the snapshot
+    assert snap.data is not tbl.data                # not the same dict
+    assert np.all(snap.data["a"].data == 1.0)       # child is an independent copy
+
+
 def test_offer_reduces_to_spec_and_delivers_encoded_frame():
     import goofi.node_viewer as nv
 
@@ -248,6 +261,38 @@ def test_viewer_path_delivers_reduced_frames_end_to_end():
         _t.sleep(0.1)
     finally:
         mgr.terminate(notify_gui=False)
+
+
+def test_teardown_endpoints_closes_view_pubs_and_evicts():
+    """_teardown_endpoints must close the '.view' publishers/notifiers AND release the
+    node's reducer state — otherwise the iceoryx2 SHM segments + pinned Data leak."""
+    import types
+
+    import goofi.node_viewer as nv
+    from goofi.node import Node
+
+    class _Closeable:
+        def __init__(self):
+            self.closed = False
+
+        def close(self):
+            self.closed = True
+
+    pub, notif = _Closeable(), _Closeable()
+    nv.register_viewer("tn", "out", lambda buf: None)  # pretend a viewer is registered
+    assert ("tn", "out") in nv._sinks
+
+    fake = types.SimpleNamespace(
+        _wake_processing=lambda: None,
+        processing_thread=None, _setup_thread=None,
+        _expressions={}, _input_slots={}, _output_slots={},
+        _view_pubs={"out": (pub, notif)}, node_id="tn",
+    )
+    Node._teardown_endpoints(fake)
+
+    assert pub.closed and notif.closed             # SHM endpoints released
+    assert fake._view_pubs == {}                   # map cleared
+    assert ("tn", "out") not in nv._sinks          # reducer state evicted
 
 
 # ---- Phase 3a: NodeRef viewer API (manager-side) -----------------------------

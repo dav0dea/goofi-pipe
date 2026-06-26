@@ -25,7 +25,7 @@ from __future__ import annotations
 import threading
 import traceback
 from collections import deque
-from typing import Callable, Deque, Dict, Optional, Tuple
+from typing import Callable, Deque, Dict, Optional, Set, Tuple
 
 import numpy as np
 
@@ -42,7 +42,7 @@ Sink = Callable[[bytes], None]
 _cond = threading.Condition(threading.Lock())
 _pending: Dict[_SKey, Data] = {}      # latest offered snapshot per slot (latest-wins)
 _dirty: Deque[_SKey] = deque()        # slots needing reduction (round-robin fairness)
-_dirty_set: set = set()               # membership guard so a slot enqueues at most once
+_dirty_set: Set[_SKey] = set()        # membership guard so a slot enqueues at most once
 _specs: Dict[_SKey, ViewSpec] = {}    # folded ViewSpec per slot (last-received-wins)
 _sinks: Dict[_SKey, Sink] = {}        # encoded-frame sink per slot
 _thread: Optional[threading.Thread] = None
@@ -51,14 +51,22 @@ _running = False
 
 def _snapshot_for_offer(data: Data) -> Data:
     """Run on the NODE thread. Return a Data that aliases nothing the node retains:
-    a contiguous COPY of the array + a copied meta (shallow + channels sub-dict)."""
+    a contiguous COPY of the array + a copied meta (shallow + channels sub-dict).
+    A TABLE body is a ``dict[str, Data]`` (no ``ndim``), so recurse into it — else
+    the snapshot would share the node's live child arrays and tear under mutation."""
     arr = data.data
     meta = dict(data.meta)
     ch = meta.get("channels")
     if isinstance(ch, dict):
         meta["channels"] = {k: list(v) if isinstance(v, (list, tuple)) else v
                             for k, v in ch.items()}
-    body = np.ascontiguousarray(arr).copy() if hasattr(arr, "ndim") else arr
+    if hasattr(arr, "ndim"):           # ndarray -> contiguous private copy
+        body = np.ascontiguousarray(arr).copy()
+    elif isinstance(arr, dict):        # TABLE -> recurse so no child Data aliases live state
+        body = {k: _snapshot_for_offer(v) if isinstance(v, Data) else v
+                for k, v in arr.items()}
+    else:                              # STRING / scalar -> immutable, safe to share
+        body = arr
     return Data(data.dtype, body, meta)
 
 
@@ -108,12 +116,11 @@ def evict(node_id: str, slot_name: str) -> None:
         _sinks.pop(skey, None)
         _specs.pop(skey, None)
         _pending.pop(skey, None)
-        if skey in _dirty_set:
-            _dirty_set.discard(skey)
-            try:
-                _dirty.remove(skey)
-            except ValueError:
-                pass
+        _dirty_set.discard(skey)  # discard + remove are absence-safe; no need to pre-check
+        try:
+            _dirty.remove(skey)
+        except ValueError:
+            pass
 
 
 def _reducer_loop() -> None:

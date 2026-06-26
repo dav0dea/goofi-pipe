@@ -74,12 +74,12 @@ def viewspec_from_dict(d: dict) -> ViewSpec:
 
 
 def _subsample_idx(n: int, m: int) -> np.ndarray:
-    """Unique-preserving linspace indices; len = min(n, m)."""
+    """Linspace indices into [0, n); len <= min(n, m). The indices are already
+    ascending, so np.unique both de-dups (round() can collide for tiny n) and keeps
+    order in one pass — no separate sort needed."""
     m = min(max(1, m), n)
     idx = np.linspace(0, n - 1, m).round().astype(int)
-    # unique-preserving (linspace.round can collide for tiny n); keep order, drop dups
-    _, keep = np.unique(idx, return_index=True)
-    return idx[np.sort(keep)]
+    return np.unique(idx)
 
 
 def _envelope(x: np.ndarray, axis: int, w: int):
@@ -161,6 +161,8 @@ def _apply_axis(arr: np.ndarray, axis: int, a: AxisSpec, meta: dict):
         return out, info
 
     if a.method == "area":
+        if min(max(1, a.max), orig_len) >= orig_len:  # already fits -> skip the no-op copy
+            return arr, None
         out, centers = _area_axis(arr, axis, a.max)
         new_coord = ([coord[i] for i in centers]
                      if coord is not None and len(coord) == orig_len else None)
