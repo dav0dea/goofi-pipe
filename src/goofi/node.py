@@ -33,8 +33,9 @@ from goofi import assets
 from goofi.codec import decode_data, decode_message, encode_data_into, encode_message, prepare_encode
 from goofi.data import Data, DataType, to_data
 from goofi.expression import ExpressionEngine
-from goofi import node_log
+from goofi import node_log, node_viewer
 from goofi.message import Message, MessageType
+from goofi.node_reduce import viewspec_from_dict
 from goofi.node_helpers import InputSlot, NodeRef, OutputSlot
 from goofi.params import InvalidParamError, NodeParams
 from goofi.transport import (
@@ -179,6 +180,11 @@ class Node(ABC):
         # id. Empty until the first push; references resolve to the literal
         # name meanwhile and self-heal once the directory arrives.
         self._node_directory: Dict[str, str] = {}
+
+        # Per-slot iceoryx2 publisher for the reduced viewer stream (Option C).
+        # Created lazily on the first REGISTER_VIEWER; the reducer thread sends
+        # reduced frames on it (the manager relays them to browsers verbatim).
+        self._view_pubs: Dict[str, tuple] = {}
 
         self._validate_attrs()
         self._waitset: WaitSet = WaitSet()
@@ -628,6 +634,30 @@ class Node(ABC):
             slot = self.output_slots[slot_name]
             slot.subscriber_count = max(0, slot.subscriber_count - 1)
             self._mark_dirty()
+        elif t == MessageType.REGISTER_VIEWER:
+            slot_name = msg.content["slot_name_out"]
+            slot = self.output_slots[slot_name]
+            # Wire the reduced-stream publisher + reducer sink BEFORE bumping the
+            # count, so the first OR-gated offer() always has a sink to deliver to.
+            node_viewer.register_viewer(self.node_id, slot_name, self._view_sink(slot_name))
+            with slot.viewer_lock:
+                slot.viewer_count += 1
+            self._wake_processing()  # tick an idle free-running node so it produces
+            self._mark_dirty()
+        elif t == MessageType.UNREGISTER_VIEWER:
+            slot_name = msg.content["slot_name_out"]
+            slot = self.output_slots[slot_name]
+            with slot.viewer_lock:
+                slot.viewer_count = max(0, slot.viewer_count - 1)
+                gone = slot.viewer_count == 0
+            if gone:
+                node_viewer.evict(self.node_id, slot_name)  # release pinned Data
+            self._mark_dirty()
+        elif t == MessageType.SET_VIEWSPEC:
+            slot_name = msg.content["slot_name_out"]
+            node_viewer.set_viewspec(
+                self.node_id, slot_name, viewspec_from_dict(msg.content["spec"])
+            )
         elif t == MessageType.SUBSCRIBE_INPUT:
             self._subscribe_input(
                 slot_name_in=msg.content["slot_name_in"],
@@ -729,6 +759,34 @@ class Node(ABC):
             slot.publishers.append(pub)
             slot.notifiers.append(notif)
             slot.has_thread = True
+
+    def _ensure_view_endpoint(self, slot_name: str) -> tuple:
+        """Idempotent — create (once) the iceoryx2 publisher for a slot's reduced
+        viewer stream on the `<dataservice>.view` service. Separate from the
+        node↔node service so viewers receive reduced frames and node consumers the
+        full Data. Created on the messaging thread (REGISTER_VIEWER); the reducer
+        thread publishes on it."""
+        existing = self._view_pubs.get(slot_name)
+        if existing is not None:
+            return existing
+        service = data_service_name(self.node_id, slot_name) + ".view"
+        pub, notif = open_publisher(service, in_process=False, latest_wins=True)
+        self._view_pubs[slot_name] = (pub, notif)
+        return pub, notif
+
+    def _view_sink(self, slot_name: str):
+        """Return the reducer-thread sink that publishes one encoded reduced frame
+        on the slot's `.view` service. Closes over the publisher created here on the
+        messaging thread; the returned closure runs on the reducer thread."""
+        pub, notif = self._ensure_view_endpoint(slot_name)
+
+        def _sink(buf: bytes) -> None:
+            loan = pub.loan(len(buf))
+            loan.buffer[:] = buf
+            loan.send()
+            notif.notify()
+
+        return _sink
 
     # ------------------------------------------------------------------
     # Processing loop (data plane)
@@ -875,7 +933,8 @@ class Node(ABC):
                 tick_error = True
 
             for slot_name, slot in self.output_slots.items():
-                if slot.subscriber_count == 0:
+                # OR-gate: produce if a node consumer OR a browser viewer wants it.
+                if slot.subscriber_count == 0 and slot.viewer_count == 0:
                     continue
                 value = output_data.get(slot_name)
                 if value is None:
@@ -886,27 +945,34 @@ class Node(ABC):
                     self._report_error(traceback.format_exc())
                     tick_error = True
                     continue
-                # Zero-copy publish: pack the meta dict once via
-                # `prepare_encode`, then for each publisher loan a slice
-                # sized to the exact encoded length and write the Data
-                # directly into the loan. The array body is copied once
-                # heap→SHM per publisher via numpy's buffer protocol;
-                # the meta is reused across all publishers.
-                try:
-                    size, meta_bytes = prepare_encode(data)
-                except Exception:
-                    self._report_error(traceback.format_exc())
-                    tick_error = True
-                    continue
-                for pub, notif in zip(slot.publishers, slot.notifiers):
+                # Node↔node iceoryx2 fan-out — ONLY when real node consumers exist
+                # (Option C split-encode). The full Data is encoded SYNCHRONOUSLY on
+                # this thread; a reducer fault/latency can never affect these bytes.
+                # Zero-copy publish: pack the meta dict once via `prepare_encode`,
+                # then for each publisher loan a slice sized to the exact encoded
+                # length and write the Data directly into the loan.
+                if slot.subscriber_count > 0:
                     try:
-                        loan = pub.loan(size)
-                        encode_data_into(data, loan.buffer, meta_bytes=meta_bytes)
-                        loan.send()
-                        notif.notify()
+                        size, meta_bytes = prepare_encode(data)
                     except Exception:
                         self._report_error(traceback.format_exc())
                         tick_error = True
+                        size = None
+                    if size is not None:
+                        for pub, notif in zip(slot.publishers, slot.notifiers):
+                            try:
+                                loan = pub.loan(size)
+                                encode_data_into(data, loan.buffer, meta_bytes=meta_bytes)
+                                loan.send()
+                                notif.notify()
+                            except Exception:
+                                self._report_error(traceback.format_exc())
+                                tick_error = True
+                # Browser reduced fan-out — ONLY when a viewer is attached. O(1)
+                # offer to the reducer thread (Change A): no reduce/encode here, no
+                # tick_error coupling. Runs independently of the node↔node path.
+                if slot.viewer_count > 0:
+                    node_viewer.offer(self.node_id, slot_name, data)
 
             if not tick_error:
                 # Everything published cleanly — clear any prior error (unless an

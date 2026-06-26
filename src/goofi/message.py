@@ -44,6 +44,19 @@ class MessageType(Enum):
       node's transport id (which the data services are keyed on, not the
       reusable display name).
         - `directory` (dict[str, str])
+    - `REGISTER_VIEWER`: a browser viewer attached to a node's output slot
+      (Option C node-side reduction). Increments `viewer_count` so the node
+      produces + offers reduced frames on the slot's `.view` service even with
+      no node consumer. Manager-driven (one per (node, slot), folded across
+      browsers).
+        - `slot_name_out` (str)
+    - `UNREGISTER_VIEWER`: a browser viewer detached; decrements `viewer_count`
+      (evicts the reducer state on the 1->0 transition).
+        - `slot_name_out` (str)
+    - `SET_VIEWSPEC`: set the folded per-axis ViewSpec the node reduces a slot's
+      viewer frames to (last-received-wins).
+        - `slot_name_out` (str)
+        - `spec` (dict): `{axes:[{axis,max,method}], version}`.
     - `TERMINATE`: empty; instructs the node to shut down.
 
     Status plane (node → manager):
@@ -72,6 +85,9 @@ class MessageType(Enum):
     TERMINATE = 7
     SET_EXPRESSION = 11
     NODE_DIRECTORY = 12
+    REGISTER_VIEWER = 13
+    UNREGISTER_VIEWER = 14
+    SET_VIEWSPEC = 15
 
     # status plane
     STATE_UPDATE = 8
@@ -129,6 +145,12 @@ class Message:
             self.require_fields(slot_name=str)
         elif t == MessageType.NODE_DIRECTORY:
             self.require_fields(directory=dict)
+        elif t == MessageType.REGISTER_VIEWER:
+            self.require_fields(slot_name_out=str)
+        elif t == MessageType.UNREGISTER_VIEWER:
+            self.require_fields(slot_name_out=str)
+        elif t == MessageType.SET_VIEWSPEC:
+            self.require_fields(slot_name_out=str, spec=dict)
         elif t == MessageType.STATE_UPDATE:
             self.require_fields(_type=str, category=str, params=dict, output_subscribers=dict)
         elif t == MessageType.PROCESSING_ERROR:

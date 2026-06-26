@@ -18,6 +18,12 @@ EXAMPLE_CONTENT = {
     MessageType.SET_EXPRESSION: {"group": "common", "param_name": "x"},
     MessageType.CLEAR_DATA: {"slot_name": "in"},
     MessageType.NODE_DIRECTORY: {"directory": {"oscillator0": "oscillator0-1a2b3c4d"}},
+    MessageType.REGISTER_VIEWER: {"slot_name_out": "out"},
+    MessageType.UNREGISTER_VIEWER: {"slot_name_out": "out"},
+    MessageType.SET_VIEWSPEC: {
+        "slot_name_out": "out",
+        "spec": {"axes": [{"axis": -1, "max": 1600, "method": "envelope"}], "version": 0},
+    },
     MessageType.TERMINATE: {},
     MessageType.STATE_UPDATE: {
         "_type": "Foo",

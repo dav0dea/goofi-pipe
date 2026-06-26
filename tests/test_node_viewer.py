@@ -200,3 +200,51 @@ def test_reset_for_tests_stops_reducer_thread():
     nv._reset_for_tests()
     assert not any(t.name == "goofi-data-reducer" and t.is_alive()
                    for t in threading.enumerate())
+
+
+# ---- node.py integration: viewer-publish path (real spawned node) ------------
+
+def test_viewer_path_delivers_reduced_frames_end_to_end():
+    """A browser-only slot (subscriber_count==0) produces reduced frames on its
+    '.view' iceoryx2 service: validates the OR-gate, offer(), the reducer thread,
+    and the cross-thread+cross-process iceoryx2 publish in one shot."""
+    import time as _t
+
+    from goofi.codec import decode_data as _decode
+    from goofi.message import Message, MessageType
+    from goofi.transport import data_service_name, open_subscriber
+
+    from .test_manager import _bare_manager
+
+    mgr = _bare_manager()
+    try:
+        osc = mgr.add_node("Oscillator", "inputs")
+        ref = mgr.nodes[osc]
+        ref.wait_for_state(timeout=2.0)
+
+        # Manager-side subscriber on the node's reduced viewer service.
+        svc = data_service_name(ref.node_id, "out") + ".view"
+        sub, _listener = open_subscriber(svc, in_process=False, latest_wins=True)
+
+        # Drive the new ctrl messages directly (NodeRef wrappers land in Phase 3).
+        ref._send(Message(MessageType.SET_VIEWSPEC, {
+            "slot_name_out": "out",
+            "spec": {"axes": [{"axis": -1, "max": 200, "method": "envelope"}]},
+        }))
+        ref._send(Message(MessageType.REGISTER_VIEWER, {"slot_name_out": "out"}))
+
+        buf = None
+        deadline = _t.time() + 6.0
+        while buf is None and _t.time() < deadline:
+            buf = sub.take_latest()
+            if buf is None:
+                _t.sleep(0.02)
+        assert buf is not None, "no reduced frame arrived on the .view service"
+        red = _decode(buf)
+        assert red.dtype == DataType.ARRAY  # reduced GOOF frame decodes cleanly
+
+        # Tear the viewer down — must not raise.
+        ref._send(Message(MessageType.UNREGISTER_VIEWER, {"slot_name_out": "out"}))
+        _t.sleep(0.1)
+    finally:
+        mgr.terminate(notify_gui=False)
