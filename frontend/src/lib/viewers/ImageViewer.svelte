@@ -3,15 +3,10 @@
 	import type { SettingsMap } from './settingsSchema';
 	import { makeLUT } from './colormaps';
 	import { GLImageRenderer, glSupports } from './imageGL';
-	import { manualGrayDomain, viewInfo } from './viewMeta';
 	import { onMount, onDestroy } from 'svelte';
 
 	type Props = { frame: DataFrame; settings?: SettingsMap };
 	const { frame, settings = {} }: Props = $props();
-
-	// The bridge image adapter ships grayscale as uint8 normalized from the source
-	// float range, carried in meta.__view__.range — used to map a manual float window.
-	const view = $derived(viewInfo(frame.meta));
 
 	// Colormap + value range apply to single-channel (grayscale) frames; true RGB
 	// frames are drawn as-is.
@@ -67,16 +62,15 @@
 	}
 
 	/** Gray channel range — scanned from the data when auto, else the manual
-	 * [vmin, vmax]. */
+	 * [vmin, vmax]. The frame is float-accurate (Option C), so the manual window
+	 * is in the data's own units; no adapter-domain remap. */
 	function grayRange(
 		src: ArrayLike<number | bigint>,
 		n: number,
-		stride: number,
-		dtype: string
+		stride: number
 	): [number, number] {
 		if (!autoRange) {
-			const [lo, hi] = manualGrayDomain(view, vmin, vmax, dtype);
-			return [lo, hi > lo ? hi : lo + 1e-9];
+			return [vmin, vmax > vmin ? vmax : vmin + 1e-9];
 		}
 		let lo = Infinity;
 		let hi = -Infinity;
@@ -114,7 +108,7 @@
 			useGl = true;
 			let lo = 0;
 			let hi = 1;
-			if (c === 1) [lo, hi] = grayRange(arr.values, w * h, 1, arr.dtype);
+			if (c === 1) [lo, hi] = grayRange(arr.values, w * h, 1);
 			renderer.render(arr.values, w, h, c, isFloat, {
 				colormap,
 				lut: lutFor(colormap),
@@ -153,7 +147,7 @@
 		if (c === 1 || c === 2) {
 			const stride = c;
 			const L = lutFor(colormap);
-			const [lo, hi] = grayRange(src, n, stride, arr.dtype);
+			const [lo, hi] = grayRange(src, n, stride);
 			const span = hi - lo || 1;
 			for (let i = 0; i < n; i++) {
 				const t = (Number(src[i * stride]) - lo) / span;

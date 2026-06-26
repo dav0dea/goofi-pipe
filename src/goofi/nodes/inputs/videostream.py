@@ -103,7 +103,7 @@ class VideoStream(Node):
             frame = cv2.flip(frame, 1)
 
         # Nodes process pure float [0,1]; the wire-bandwidth win lives in the
-        # bridge viewer adapters, not here.
+        # node-side viewer reduction (node_reduce/node_viewer), not here.
         frame = frame.astype("float32") / 255.0
 
         return {"frame": (frame, {})}

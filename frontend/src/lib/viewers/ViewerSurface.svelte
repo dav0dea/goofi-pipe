@@ -11,7 +11,7 @@
 <script lang="ts">
 	import { isArrayFrame, isStringFrame, isTableFrame, type DataFrame } from '$lib/codec/decode';
 	import { isRenderable, type ViewerKind } from './kind';
-	import { summaryOf, viewInfo } from './viewMeta';
+	import { summaryOf } from './viewMeta';
 	import type { SettingsMap } from './settingsSchema';
 	import ArrayViewer from './ArrayViewer.svelte';
 	import ImageViewer from './ImageViewer.svelte';
@@ -29,13 +29,12 @@
 
 	const arraySpec = $derived(frame && isArrayFrame(frame) ? frame.data : null);
 	const renderable = $derived(isRenderable(kind, arraySpec));
-	// A bodyless backend summary frame (__view__.summary), or a locally-non-renderable
-	// array, both resolve to the text fallback — drawn from float stats when present.
+	// A locally-non-renderable array (a shape this kind can't draw) resolves to the
+	// text fallback — float stats computed from the received frame (Option C frames
+	// are float-accurate, so there's no separate backend summary anymore).
 	const summary = $derived.by(() => {
 		if (!frame || !arraySpec) return null;
-		const view = viewInfo(frame.meta);
-		if (view.summary) return view.summary;
-		if (!renderable) return summaryOf(arraySpec, view);
+		if (!renderable) return summaryOf(arraySpec);
 		return null;
 	});
 </script>
