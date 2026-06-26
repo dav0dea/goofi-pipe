@@ -22,7 +22,7 @@ jobs:
     - name: Install dependencies
       run: |
         pip install --upgrade pip setuptools wheel
-        pip install flake8 pytest pytest-forked pytest-xdist
+        pip install flake8 mypy pytest pytest-forked pytest-xdist
         pip install .
 
     - name: Lint with flake8
@@ -31,6 +31,15 @@ jobs:
         flake8 src/goofi/ --count --select=E9,F63,F7,F82 --show-source --statistics
         # exit-zero treats all errors as warnings. The GitHub editor is 127 chars wide
         flake8 src/goofi/ --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics
+
+    - name: Type-check boundary modules (advisory)
+      run: |
+        # Advisory like the flake8 pass above (--exit-zero never fails the build):
+        # surfaces type issues at the hand-mirrored contract boundary without
+        # blocking. Promote a module to a blocking gate once it is mypy-clean.
+        mypy --ignore-missing-imports --exit-zero \
+          src/goofi/codec.py src/goofi/data.py src/goofi/message.py \
+          src/goofi/node_reduce.py src/goofi/params.py src/goofi/bridge/
 
     - name: Running pytest
       run: |

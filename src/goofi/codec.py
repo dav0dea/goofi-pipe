@@ -39,7 +39,7 @@ small and benefit nothing from a custom format.
 from __future__ import annotations
 
 import struct
-from typing import Tuple, Union
+from typing import Optional, Tuple, Union
 
 import msgpack
 import numpy as np
@@ -113,7 +113,7 @@ def _body_size(d: Data) -> int:
 # ---------------------------------------------------------------------------
 
 
-def encode_data_into(d: Data, view: memoryview, meta_bytes: bytes = None) -> int:
+def encode_data_into(d: Data, view: memoryview, meta_bytes: Optional[bytes] = None) -> int:
     """Write the encoding of `d` into `view`. Returns bytes written.
 
     The caller must ensure `len(view) >= data_byte_size(d)`. `view` must
