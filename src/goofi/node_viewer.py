@@ -45,6 +45,7 @@ _dirty: Deque[_SKey] = deque()        # slots needing reduction (round-robin fai
 _dirty_set: Set[_SKey] = set()        # membership guard so a slot enqueues at most once
 _specs: Dict[_SKey, ViewSpec] = {}    # folded ViewSpec per slot (last-received-wins)
 _sinks: Dict[_SKey, Sink] = {}        # encoded-frame sink per slot
+_in_flight: Optional[_SKey] = None    # slot whose sink the reducer is executing right now
 _thread: Optional[threading.Thread] = None
 _running = False
 
@@ -109,11 +110,16 @@ def offer(node_id: str, slot_name: str, data: Data) -> None:
 
 
 def evict(node_id: str, slot_name: str) -> None:
-    """Drop all state for a slot. Called when the last browser leaves
-    (UNREGISTER_VIEWER 1->0) so no reduced Data stays pinned."""
+    """Drop all state for a slot and BLOCK until the reducer is no longer executing
+    its sink. Called when the last browser leaves (UNREGISTER_VIEWER 1->0) and at
+    node teardown right before the slot's '.view' publisher is closed — quiescing
+    here is what makes that close safe: removing the sink stops any NEW sink() call,
+    and the wait drains an in-flight one, so the reducer can never loan/send on a
+    publisher the caller is about to drop. The wait is bounded (the view sink is one
+    loan+send+notify); _cond.wait releases the lock so the reducer's finally can run."""
     skey = (node_id, slot_name)
     with _cond:
-        _sinks.pop(skey, None)
+        _sinks.pop(skey, None)  # no NEW sink() will start for this slot
         _specs.pop(skey, None)
         _pending.pop(skey, None)
         _dirty_set.discard(skey)  # discard + remove are absence-safe; no need to pre-check
@@ -121,9 +127,12 @@ def evict(node_id: str, slot_name: str) -> None:
             _dirty.remove(skey)
         except ValueError:
             pass
+        while _in_flight == skey:  # drain a sink() already in progress for this slot
+            _cond.wait()
 
 
 def _reducer_loop() -> None:
+    global _in_flight
     while True:
         with _cond:
             while _running and not _dirty:
@@ -135,6 +144,9 @@ def _reducer_loop() -> None:
             snap = _pending.pop(skey, None)
             spec = _specs.get(skey)
             sink = _sinks.get(skey)
+            # Publish the in-flight slot UNDER the lock so evict() can quiesce: it
+            # waits until we clear this before the caller closes the slot's pub.
+            _in_flight = skey if (snap is not None and sink is not None) else None
         if snap is None or sink is None:
             continue
         try:
@@ -145,13 +157,18 @@ def _reducer_loop() -> None:
             # Reduce/encode/sink errors are swallowed here so a bad frame for one
             # slot never kills the reducer or touches node state / node↔node.
             traceback.print_exc()
+        finally:
+            with _cond:
+                _in_flight = None
+                _cond.notify_all()  # wake any evict() quiescing on this slot
 
 
 def _reset_for_tests() -> None:
     """Stop + join the reducer thread and clear all state. Test-fixture hook."""
-    global _thread, _running
+    global _thread, _running, _in_flight
     with _cond:
         _running = False
+        _in_flight = None
         _pending.clear()
         _dirty.clear()
         _dirty_set.clear()

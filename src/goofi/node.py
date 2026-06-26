@@ -594,12 +594,15 @@ class Node(ABC):
 
         # Reduced-viewer ('.view') endpoints + reducer state (Option C). These live
         # in self._view_pubs, separate from the node↔node output endpoints above, so
-        # the loops there miss them; closing here releases their SHM segments and
-        # unpins any Data the shared reducer still holds for this node's slots.
+        # the loops there miss them. evict() FIRST — it removes the sink and blocks
+        # until the SHARED reducer thread is no longer mid-send on this slot — so the
+        # close below can't race the reducer loaning/sending on a dropped publisher;
+        # then close releases the SHM segments. (Order matters: close-then-evict
+        # would leave a use-after-close window.)
         for slot_name, (pub, notif) in self._view_pubs.items():
+            node_viewer.evict(self.node_id, slot_name)
             _safe_close(pub)
             _safe_close(notif)
-            node_viewer.evict(self.node_id, slot_name)
         self._view_pubs.clear()
 
         for attr in (

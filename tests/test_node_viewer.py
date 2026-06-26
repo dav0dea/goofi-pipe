@@ -205,6 +205,40 @@ def test_evict_clears_state_and_drops_pending():
     assert ("n4", "out") not in nv._pending
 
 
+def test_evict_quiesces_in_flight_sink_before_returning():
+    """evict must not return while the reducer is mid-sink for that slot. Node
+    teardown closes the slot's '.view' publisher right after evict; if evict raced
+    an in-flight sink, the reducer could loan/send on a closed publisher."""
+    import time
+
+    import goofi.node_viewer as nv
+
+    entered = threading.Event()
+    release = threading.Event()
+    done = []
+
+    def slow_sink(buf):
+        entered.set()
+        release.wait(2.0)  # park INSIDE the sink (mid loan/send window)
+        done.append(True)
+
+    nv.register_viewer("q0", "out", slow_sink)
+    nv.set_viewspec("q0", "out", viewspec_from_dict(
+        {"axes": [{"axis": -1, "max": 100, "method": "envelope"}]}))
+    nv.offer("q0", "out", _big_line(5000))
+    assert entered.wait(2.0)  # reducer is now parked inside the sink
+
+    evicted = threading.Event()
+    threading.Thread(target=lambda: (nv.evict("q0", "out"), evicted.set()), daemon=True).start()
+
+    # evict must BLOCK (quiesce) while the sink is still running.
+    assert not evicted.wait(0.3)
+    assert not done
+    release.set()  # let the in-flight sink finish
+    assert evicted.wait(2.0)  # only now may evict return
+    assert done == [True]
+
+
 def test_reset_for_tests_stops_reducer_thread():
     import goofi.node_viewer as nv
 
