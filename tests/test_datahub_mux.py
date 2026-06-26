@@ -71,3 +71,18 @@ def test_push_spec_if_changed_folds_richest_and_dedups():
     mux.push_spec_if_changed()
     assert len(ref.specs) == 2
     assert ref.specs[-1][1]["axes"][0]["max"] == 800
+
+
+def test_push_spec_dedups_on_axes_ignoring_version():
+    """The node ignores ViewSpec.version, so a version-only bump (identical axes)
+    must NOT trigger a redundant set_viewspec ctrl publish."""
+    ref = _FakeRef()
+    mux = _SlotMux(ref=ref, slot="out")
+    a = _FakeFwd({"axes": [{"axis": -1, "max": 800, "method": "envelope"}], "version": 1})
+    mux.add(a)
+    mux.push_spec_if_changed()
+    assert len(ref.specs) == 1
+
+    a.spec = {"axes": [{"axis": -1, "max": 800, "method": "envelope"}], "version": 7}
+    mux.push_spec_if_changed()  # only version changed → axes identical → no push
+    assert len(ref.specs) == 1

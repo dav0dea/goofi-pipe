@@ -109,7 +109,7 @@ class _SlotMux:
         # Whole-tuple rebind on mutate → dispatch() (data-pump thread) always
         # reads a consistent snapshot without locking.
         self._forwarders: tuple = ()
-        self._last_spec: Optional[dict] = None
+        self._last_axes: Optional[list] = None
 
     def add(self, fwd) -> None:
         self._forwarders = (*self._forwarders, fwd)
@@ -126,11 +126,18 @@ class _SlotMux:
             fwd.push_threadsafe(buf)
 
     def push_spec_if_changed(self) -> None:
-        """Re-fold the connected ViewSpecs and, if the fold changed, push it to the
-        node so it reduces to what the attached viewers actually need."""
+        """Re-fold the connected ViewSpecs and, if the reduction changed, push it to
+        the node so it reduces to what the attached viewers actually need. Dedup on
+        the `axes` only — the node ignores `version`, so a version-only bump (the
+        client's monotonic counter) must not trigger a redundant ctrl publish.
+
+        The push itself stays on the event loop: unlike the view-plane subscriber
+        setup (which builds iceoryx2 services and is offloaded in the handler), this
+        is one bounded, non-blocking latest-wins ctrl publish (loan + memcpy + notify)."""
         folded = fold_viewspecs([f.spec for f in self._forwarders])
-        if folded != self._last_spec:
-            self._last_spec = folded
+        axes = folded.get("axes")
+        if axes != self._last_axes:
+            self._last_axes = axes
             try:
                 self.ref.set_viewspec(self.slot, folded)
             except Exception:
@@ -237,7 +244,16 @@ class DataHub:
         return ws
 
     async def close_all(self) -> None:
+        loop = asyncio.get_running_loop()
         for mux in list(self._muxes.values()):
+            # Tell the node its viewers are gone (UNREGISTER_VIEWER) and tear down the
+            # .view subscriber — the per-connection finally does this, but a bulk
+            # shutdown bypasses it, leaving the node reducing+publishing into a dead
+            # subscriber. Off-loop, mirroring the handler's detach (blocking teardown).
+            try:
+                await loop.run_in_executor(None, mux.ref.set_data_handler, mux.slot, None)
+            except Exception:
+                pass
             for fwd in mux._forwarders:
                 try:
                     await fwd.close()
