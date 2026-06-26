@@ -31,6 +31,7 @@ from typing import Optional
 
 from aiohttp import WSMsgType, web
 
+from goofi.bridge.origin import origin_allowed
 from goofi.node_reduce import default_viewspec_for_kind, fold_viewspecs
 
 
@@ -150,7 +151,13 @@ class DataHub:
         self._muxes: dict = {}  # (uid, slot) -> _SlotMux
         self._lock = asyncio.Lock()
 
-    async def handler(self, request: web.Request) -> web.WebSocketResponse:
+    async def handler(self, request: web.Request) -> web.StreamResponse:
+        # Same cross-origin guard as the control plane: a foreign page must not be
+        # able to open viewer streams against the unauthenticated data plane.
+        if not origin_allowed(
+            request.headers.get("Origin"), request.headers.get("Host"), self.server.host
+        ):
+            return web.Response(status=403, text="cross-origin WebSocket rejected")
         node = request.match_info["node"]
         slot = request.match_info["slot"]
         kind = request.match_info["kind"]

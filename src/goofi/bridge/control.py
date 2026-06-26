@@ -26,6 +26,7 @@ from weakref import WeakSet
 from aiohttp import WSMsgType, web
 
 from goofi.bridge import fsbrowse
+from goofi.bridge.origin import origin_allowed
 from goofi.bridge.schemas import (
     describe_node_instance,
     describe_params,
@@ -49,7 +50,13 @@ class ControlHub:
     # connection lifecycle
     # ------------------------------------------------------------------
 
-    async def handler(self, request: web.Request) -> web.WebSocketResponse:
+    async def handler(self, request: web.Request) -> web.StreamResponse:
+        # Reject cross-origin upgrades before touching any state: the control plane
+        # is unauthenticated and can spawn arbitrary-Python nodes (drive-by RCE).
+        if not origin_allowed(
+            request.headers.get("Origin"), request.headers.get("Host"), self.server.host
+        ):
+            return web.Response(status=403, text="cross-origin WebSocket rejected")
         ws = web.WebSocketResponse(max_msg_size=16 * 1024 * 1024, heartbeat=30.0)
         await ws.prepare(request)
         async with self._lock:
