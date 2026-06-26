@@ -77,11 +77,15 @@ def describe_node_class(cls: type) -> Dict[str, Any]:
     }
 
 
-def describe_node_instance(name: str, ref: NodeRef) -> Dict[str, Any]:
-    """Describe a *live* node (instance) on the current graph."""
+def describe_node_instance(uid: str, ref: NodeRef) -> Dict[str, Any]:
+    """Describe a *live* node (instance) on the current graph.
+
+    `uid` is the universal identity (the key everything references); `name` is the
+    mutable display label."""
     gk = ref.gui_kwargs or {}
     return {
-        "name": name,
+        "uid": uid,
+        "name": ref.name,
         "type": ref.node_class.__name__,
         "category": ref.category,
         "doc": ref.node_class.docstring() or "",

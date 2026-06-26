@@ -189,13 +189,17 @@ class ControlHub:
                 pos=tuple(payload.get("pos") or (0, 0)),
             )
         if op == "remove_node":
-            name = payload["name"]
+            node = payload["node"]  # uid (real) or inst_id (sub-patch group node)
             # A sub-patch group node is virtual — deleting it removes the whole
             # sub-patch (members + links), mirroring node-delete semantics.
-            if name in getattr(manager, "_instances", {}):
-                await self._call_manager(manager.remove_instance, name)
+            if node in getattr(manager, "_instances", {}):
+                await self._call_manager(manager.remove_instance, node)
             else:
-                await self._call_manager(manager.remove_node, name)
+                await self._call_manager(manager.remove_node, node)
+            return {"ok": True}
+        if op == "rename_node":
+            # Set a node's mutable display name (safe — nothing keys on it).
+            await self._call_manager(manager.rename_node, payload["node"], payload["name"])
             return {"ok": True}
         if op == "add_link":
             no, so = self._splice_endpoint(manager, payload["node_out"], payload["slot_out"], "out")
@@ -231,21 +235,21 @@ class ControlHub:
             )
             return {"ok": True}
         if op == "set_node_pos":
-            name = payload["name"]
+            node = payload["node"]  # uid (real) or inst_id (sub-patch group node)
             pos = payload["pos"]
             # A sub-patch group node isn't a real node — persist its pos on the
             # instance record instead.
-            if name in getattr(manager, "_instances", {}):
-                manager._instances[name]["pos"] = list(pos)
+            if node in getattr(manager, "_instances", {}):
+                manager._instances[node]["pos"] = list(pos)
                 manager.unsaved_changes = True
-                await self.broadcast({"event": "node_moved", "payload": {"name": name, "pos": list(pos)}})
+                await self.broadcast({"event": "node_moved", "payload": {"node": node, "pos": list(pos)}})
                 return {"ok": True}
             # A real node — route through the manager so a shared sub-patch member
             # mirrors its position across sibling instances (strict mirror). Emit
             # a node_moved for every node the move touched (the node + siblings).
-            changed = await self._call_manager(manager.set_node_pos, name, pos)
-            for nm in changed:
-                await self.broadcast({"event": "node_moved", "payload": {"name": nm, "pos": list(pos)}})
+            changed = await self._call_manager(manager.set_node_pos, node, pos)
+            for uid in changed:
+                await self.broadcast({"event": "node_moved", "payload": {"node": uid, "pos": list(pos)}})
             return {"ok": True}
         if op == "set_node_viewers":
             # Per-output-slot view state (collapsed / kind / settings) the browser
@@ -384,19 +388,19 @@ class ControlHub:
     # manager hooks — called from any thread
     # ------------------------------------------------------------------
 
-    def on_node_added(self, name: str) -> None:
-        self._wire_node_status(name)
+    def on_node_added(self, uid: str) -> None:
+        self._wire_node_status(uid)
         manager = self.server.manager
         try:
-            ref = manager.nodes[name]
+            ref = manager.nodes[uid]
         except KeyError:
             return
-        payload = describe_node_instance(name, ref)
+        payload = describe_node_instance(uid, ref)
         self.broadcast_threadsafe({"event": "node_added", "payload": payload})
 
-    def on_node_removed(self, name: str) -> None:
-        self._wired_nodes.discard(name)
-        self.broadcast_threadsafe({"event": "node_removed", "payload": {"name": name}})
+    def on_node_removed(self, uid: str) -> None:
+        self._wired_nodes.discard(uid)
+        self.broadcast_threadsafe({"event": "node_removed", "payload": {"node": uid}})
 
     def on_link_added(self, link: Dict[str, str]) -> None:
         self.broadcast_threadsafe({"event": "link_added", "payload": link})
@@ -404,12 +408,10 @@ class ControlHub:
     def on_link_removed(self, link: Dict[str, str]) -> None:
         self.broadcast_threadsafe({"event": "link_removed", "payload": link})
 
-    def on_node_renamed(self, old: str, new: str) -> None:
-        # Re-wire the status fan-out: the STATE_UPDATE/PROCESSING_ERROR handlers
-        # captured the old name, so re-register them under the new one (same ref).
-        self._wired_nodes.discard(old)
-        self._wire_node_status(new)
-        self.broadcast_threadsafe({"event": "node_renamed", "payload": {"old": old, "new": new}})
+    def on_node_renamed(self, uid: str, name: str) -> None:
+        # Identity is the uid (unchanged); only the display name moved. The status
+        # fan-out is keyed by uid, so nothing to re-wire — just notify the browser.
+        self.broadcast_threadsafe({"event": "node_renamed", "payload": {"node": uid, "name": name}})
 
     def on_subpatch_changed(self) -> None:
         # Group/expand renames members and rewrites membership/instances; push a
@@ -423,9 +425,9 @@ class ControlHub:
     def _snapshot(self) -> Dict[str, Any]:
         manager = self.server.manager
         nodes = []
-        for name in list(manager.nodes):
+        for uid in list(manager.nodes):
             try:
-                nodes.append(describe_node_instance(name, manager.nodes[name]))
+                nodes.append(describe_node_instance(uid, manager.nodes[uid]))
             except Exception:
                 traceback.print_exc()
         return {
@@ -458,13 +460,14 @@ class ControlHub:
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(None, lambda: fn(*args, **kwargs))
 
-    def _wire_node_status(self, name: str) -> None:
-        """Forward STATE_UPDATE / PROCESSING_ERROR from the node to clients."""
-        if name in self._wired_nodes:
+    def _wire_node_status(self, uid: str) -> None:
+        """Forward STATE_UPDATE / PROCESSING_ERROR from the node to clients. Keyed
+        by the node's stable uid, so it survives a rename and re-points on restart."""
+        if uid in self._wired_nodes:
             return
         manager = self.server.manager
         try:
-            ref = manager.nodes[name]
+            ref = manager.nodes[uid]
         except KeyError:
             return
 
@@ -476,7 +479,7 @@ class ControlHub:
                 {
                     "event": "state_update",
                     "payload": {
-                        "node": name,
+                        "node": uid,
                         "params": describe_params(noderef.params),
                         "output_subscribers": message.content.get("output_subscribers", {}),
                         # Advertise the node's SSE log endpoint as soon as it's known
@@ -488,32 +491,32 @@ class ControlHub:
 
         def on_error(noderef, message: Message):
             self.broadcast_threadsafe(
-                {"event": "error", "payload": {"node": name, "error": message.content.get("error")}}
+                {"event": "error", "payload": {"node": uid, "error": message.content.get("error")}}
             )
 
         def on_stats(noderef, message: Message):
             self.broadcast_threadsafe(
-                {"event": "node_stats", "payload": {"node": name, "stats": message.content.get("stats")}}
+                {"event": "node_stats", "payload": {"node": uid, "stats": message.content.get("stats")}}
             )
 
         ref.set_message_handler(MessageType.STATE_UPDATE, on_state)
         ref.set_message_handler(MessageType.PROCESSING_ERROR, on_error)
         ref.set_message_handler(MessageType.NODE_STATS, on_stats)
-        self._wired_nodes.add(name)
+        self._wired_nodes.add(uid)
 
-    def rewire_node_status(self, name: str) -> None:
+    def rewire_node_status(self, uid: str) -> None:
         """Re-point the status handlers at a node's NEW NodeRef after a restart.
         The old handlers lived on the now-dead ref; drop the bookkeeping and wire
         the fresh one so its first healthy push (which clears the crash chip) flows."""
-        self._wired_nodes.discard(name)
-        self._wire_node_status(name)
+        self._wired_nodes.discard(uid)
+        self._wire_node_status(uid)
 
-    def on_node_crashed(self, name: str, exitcode, restart_count: int) -> None:
+    def on_node_crashed(self, uid: str, exitcode, restart_count: int) -> None:
         """Surface a crashed node process to the browser as a DISTINCT crash state
         (not a code error): a process crash is transient and auto-recovering. The
         frontend clears it on the respawned node's first healthy state push."""
         self.broadcast_threadsafe(
-            {"event": "node_crashed", "payload": {"node": name, "exitcode": exitcode, "restarts": restart_count}}
+            {"event": "node_crashed", "payload": {"node": uid, "exitcode": exitcode, "restarts": restart_count}}
         )
 
 

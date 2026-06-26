@@ -58,3 +58,22 @@ def test_default_names_stay_auto_numbered_per_type():
         assert a != b  # distinct uids
     finally:
         mgr.terminate(notify_gui=False)
+
+
+def test_bridge_snapshot_carries_uid_and_display_name():
+    # The wire contract (Phase 2): the node description sent to the browser keys on
+    # `uid` (identity) and carries the mutable `name` (display) separately.
+    from goofi.bridge.schemas import describe_node_instance
+
+    mgr = _bare_manager(use_multiprocessing=False)
+    try:
+        uid = mgr.add_node("Oscillator", "inputs")
+        desc = describe_node_instance(uid, mgr.nodes[uid])
+        assert desc["uid"] == uid
+        assert desc["name"] == "oscillator0"
+        # rename moves only the display field; the uid is stable
+        mgr.rename_node(uid, "my_osc")
+        desc2 = describe_node_instance(uid, mgr.nodes[uid])
+        assert desc2["uid"] == uid and desc2["name"] == "my_osc"
+    finally:
+        mgr.terminate(notify_gui=False)
