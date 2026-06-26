@@ -20,6 +20,10 @@ interface SlotState {
 	reconnectMs: number;
 	latestRaw: ArrayBuffer | null;
 	refs: number;
+	/** Latest per-axis ViewSpec the viewer wants this slot reduced to (Option C).
+	 * Sent inband on (re)connect and whenever it changes; null until the viewer
+	 * reports its capacity (the node uses its kind-default until then). */
+	spec: unknown | null;
 }
 
 const slots = new Map<string, SlotState>();
@@ -29,6 +33,15 @@ function key(node: string, slot: string, kind: string): string {
 	return `${node} ${slot} ${kind}`;
 }
 
+function sendSpec(st: SlotState): void {
+	if (st.spec == null || !st.ws || st.ws.readyState !== WebSocket.OPEN) return;
+	try {
+		st.ws.send(JSON.stringify({ op: 'view', spec: st.spec }));
+	} catch {
+		// Closed mid-send; the next (re)connect re-sends from st.spec.
+	}
+}
+
 function openWs(st: SlotState): void {
 	if (st.closed) return;
 	const ws = new WebSocket(st.url);
@@ -36,6 +49,7 @@ function openWs(st: SlotState): void {
 	st.ws = ws;
 	ws.addEventListener('open', () => {
 		st.reconnectMs = 250;
+		sendSpec(st); // re-send the ViewSpec on every (re)connect (no server resume)
 	});
 	ws.addEventListener('message', (e) => {
 		if (e.data instanceof ArrayBuffer) st.latestRaw = e.data; // overwrite — latest wins
@@ -65,18 +79,25 @@ function collectBuffers(frame: DataFrame, out: Set<ArrayBufferLike>): void {
 }
 
 self.addEventListener('message', (e: MessageEvent) => {
-	const m = e.data as { op: string; node: string; slot: string; kind: string };
+	const m = e.data as { op: string; node: string; slot: string; kind: string; spec?: unknown };
 	const k = key(m.node, m.slot, m.kind);
 	if (m.op === 'sub') {
 		let st = slots.get(k);
 		if (!st) {
 			const proto = self.location.protocol === 'https:' ? 'wss:' : 'ws:';
 			const url = dataUrl(proto, self.location.host, m.node, m.slot, m.kind);
-			st = { node: m.node, slot: m.slot, kind: m.kind, ws: null, url, closed: false, reconnectMs: 250, latestRaw: null, refs: 0 };
+			st = { node: m.node, slot: m.slot, kind: m.kind, ws: null, url, closed: false, reconnectMs: 250, latestRaw: null, refs: 0, spec: null };
 			slots.set(k, st);
 			openWs(st);
 		}
 		st.refs++;
+	} else if (m.op === 'spec') {
+		// Viewer reported (or updated) the capacity ViewSpec for this slot.
+		const st = slots.get(k);
+		if (st) {
+			st.spec = m.spec ?? null;
+			sendSpec(st);
+		}
 	} else if (m.op === 'unsub') {
 		const st = slots.get(k);
 		if (!st) return;

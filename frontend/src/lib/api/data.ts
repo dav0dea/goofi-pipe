@@ -66,3 +66,13 @@ export function subscribeData(node: string, slot: string, kind: string, cb: Fram
 		}
 	};
 }
+
+/**
+ * Set (or update) the per-axis ViewSpec the node should reduce this (node, slot,
+ * kind) stream to (Option C). Sent inband over the data WS; the node folds it with
+ * any other browsers' specs and reduces each frame before sending. Safe to call
+ * before/after `subscribeData`; the worker re-sends it on every (re)connect.
+ */
+export function setViewSpec(node: string, slot: string, kind: string, spec: unknown): void {
+	ensureWorker().postMessage({ op: 'spec', node, slot, kind, spec });
+}

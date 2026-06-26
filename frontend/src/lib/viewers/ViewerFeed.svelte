@@ -7,6 +7,8 @@
 -->
 <script lang="ts">
 	import { subscribeFrames } from '$lib/api/frames';
+	import { setViewSpec } from '$lib/api/data';
+	import { viewSpecForKind } from './capacity';
 	import type { DataFrame } from '$lib/codec/decode';
 	import ViewerSurface from './ViewerSurface.svelte';
 	import type { ViewBinding } from './viewBinding';
@@ -21,28 +23,58 @@
 	let frame = $state<DataFrame | null>(null);
 	let visible = $state(false);
 	let container: HTMLDivElement | null = $state(null);
+	// Device-pixel size of the viewer, quantized to 32-px steps so a 1-px resize
+	// doesn't renegotiate the reduction (hysteresis); drives the capacity ViewSpec.
+	let capW = $state(0);
+	let capH = $state(0);
+	let specVersion = 0;
+
+	function quantize(px: number): number {
+		const dpr = typeof window !== 'undefined' ? window.devicePixelRatio || 1 : 1;
+		return Math.max(32, Math.round((px * dpr) / 32) * 32);
+	}
 
 	// IntersectionObserver: only subscribe while the viewer is in the viewport —
-	// the data WS opens lazily and tears down when scrolled away.
+	// the data WS opens lazily and tears down when scrolled away. ResizeObserver
+	// tracks the viewer's pixel budget so the node reduces to what we can show.
 	onMount(() => {
 		if (!container) return;
-		const obs = new IntersectionObserver(
+		const io = new IntersectionObserver(
 			(entries) => {
 				for (const e of entries) visible = e.isIntersecting;
 			},
 			{ rootMargin: '64px' }
 		);
-		obs.observe(container);
-		return () => obs.disconnect();
+		io.observe(container);
+		const ro = new ResizeObserver((entries) => {
+			for (const e of entries) {
+				capW = quantize(e.contentRect.width);
+				capH = quantize(e.contentRect.height);
+			}
+		});
+		ro.observe(container);
+		return () => {
+			io.disconnect();
+			ro.disconnect();
+		};
 	});
 
 	$effect(() => {
 		frame = null;
 		if (!visible || !slot) return;
-		// Subscribe with the resolved viewer kind so the bridge adapts the frame to
-		// this viewer's representation; a kind change re-runs this effect → re-subscribes.
+		// Subscribe (latest decoded frame at display rate); a kind change re-runs
+		// this effect → re-subscribes.
 		const unsub = subscribeFrames(node, slot, kind, (f) => (frame = f));
 		return () => unsub();
+	});
+
+	// Push the capacity-derived ViewSpec to the node whenever the kind or the
+	// (quantized) pixel budget changes, while subscribed. The node reduces each
+	// frame to this before sending (Option C); the worker re-sends on reconnect.
+	$effect(() => {
+		if (!visible || !slot || capW === 0 || capH === 0) return;
+		const spec = viewSpecForKind(kind, capW, capH, ++specVersion);
+		setViewSpec(node, slot, kind, spec);
 	});
 </script>
 
