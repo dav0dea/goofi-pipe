@@ -102,9 +102,10 @@ export function clearViewSpec(node: string, slot: string, kind: string, token: s
 	const m = specs.get(k);
 	if (!m) return;
 	m.delete(token);
-	if (m.size === 0) {
-		specs.delete(k);
-		return; // WS is closing anyway; nothing to renegotiate
-	}
+	if (m.size === 0) specs.delete(k);
+	// Re-fold even when empty: the WS refcount (subscribeData) is decoupled from the
+	// spec refcount, so the slot may outlive this contribution. pushFold with no
+	// specs posts the empty fold, clearing the worker's stale spec instead of
+	// leaving it to reduce a later viewer's frames to this one's pixel budget.
 	pushFold(node, slot, kind, k);
 }

@@ -1,5 +1,5 @@
 /** Build the data-plane WebSocket URL for a (node, slot, kind) subscription.
- * Mirrors the bridge route `/data/<node>/<slot>/<kind>` (viewer adapters). */
+ * Mirrors the bridge route `/data/<node>/<slot>/<kind>` (Option C reduced relay). */
 export function dataUrl(
 	proto: string,
 	host: string,

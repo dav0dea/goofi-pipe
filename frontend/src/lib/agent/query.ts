@@ -14,6 +14,7 @@ import { latestFrame } from '$lib/api/frames';
 import { collectPanels } from '$lib/workspace/model';
 import { asStateObject, linkedNodeName } from '$lib/workspace/panelState';
 import { isArrayFrame, isStringFrame, type DataFrame } from '$lib/codec/decode';
+import { reconstructMeta } from '$lib/editor/metaFormat';
 import type { LinkInfo, NodeInstanceInfo, NodeTypeInfo } from '$lib/api/control';
 
 export interface FrameSummary {
@@ -42,7 +43,12 @@ function summarize(frame: DataFrame | null): FrameSummary | null {
 			sum += x;
 			n += 1;
 		}
-		return { dtype: a.dtype, shape: a.shape, numeric: n ? { min, max, mean: sum / n } : undefined };
+		// Report the node's TRUE shape, not the reduced wire shape (Option C): a
+		// node-reduced frame carries meta.reduced with each axis's orig_len. Mirror
+		// the inspector (reconstructMeta) so an agent reasons about real dimensions.
+		const recon = reconstructMeta(frame.meta);
+		const shape = Array.isArray(recon.shape) ? (recon.shape as number[]) : a.shape;
+		return { dtype: a.dtype, shape, numeric: n ? { min, max, mean: sum / n } : undefined };
 	}
 	if (isStringFrame(frame)) return { dtype: 'STRING', text: frame.data };
 	return { dtype: frame.dtype };

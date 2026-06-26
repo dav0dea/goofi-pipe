@@ -27,6 +27,10 @@ interface SlotState {
 }
 
 const slots = new Map<string, SlotState>();
+// A 'spec' can arrive before its slot's 'sub' (data.ts advertises setViewSpec as
+// safe to call before subscribeData). Stash it here so the slot adopts it on open
+// instead of silently dropping the first reduction.
+const pendingSpecs = new Map<string, unknown>();
 const TICK_MS = 16; // ~60 Hz; workers have no requestAnimationFrame
 
 function key(node: string, slot: string, kind: string): string {
@@ -86,7 +90,9 @@ self.addEventListener('message', (e: MessageEvent) => {
 		if (!st) {
 			const proto = self.location.protocol === 'https:' ? 'wss:' : 'ws:';
 			const url = dataUrl(proto, self.location.host, m.node, m.slot, m.kind);
-			st = { node: m.node, slot: m.slot, kind: m.kind, ws: null, url, closed: false, reconnectMs: 250, latestRaw: null, refs: 0, spec: null };
+			const spec = pendingSpecs.has(k) ? pendingSpecs.get(k) : null;
+			pendingSpecs.delete(k);
+			st = { node: m.node, slot: m.slot, kind: m.kind, ws: null, url, closed: false, reconnectMs: 250, latestRaw: null, refs: 0, spec };
 			slots.set(k, st);
 			openWs(st);
 		}
@@ -97,6 +103,8 @@ self.addEventListener('message', (e: MessageEvent) => {
 		if (st) {
 			st.spec = m.spec ?? null;
 			sendSpec(st);
+		} else {
+			pendingSpecs.set(k, m.spec ?? null); // arrived before 'sub' — adopt on open
 		}
 	} else if (m.op === 'unsub') {
 		const st = slots.get(k);
@@ -106,6 +114,7 @@ self.addEventListener('message', (e: MessageEvent) => {
 			st.closed = true;
 			st.ws?.close();
 			slots.delete(k);
+			pendingSpecs.delete(k);
 		}
 	}
 });
