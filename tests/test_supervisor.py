@@ -6,6 +6,7 @@ supervisor polls process liveness and respawns a dead node with a FRESH transpor
 id, re-applying its params and re-wiring its links (both directions, since the new
 id changes the node's service names).
 """
+import time
 from types import SimpleNamespace
 
 from goofi.manager import Manager
@@ -76,6 +77,35 @@ def test_supervisor_detects_killed_process_and_restarts():
         assert new is not old
         assert new.restart_count == 1
         assert new.wait_for_state(timeout=3.0)  # the replacement is live and pushing state
+    finally:
+        mgr.terminate(notify_gui=False)
+
+
+def test_supervisor_thread_auto_restarts_without_a_manual_sweep():
+    # The OTHER tests drive `_supervise_once()` by hand; this one exercises the
+    # running daemon thread itself (start + `_running` guard + 0.5s cadence) — the
+    # path the real Manager.__init__ wires up. `_bare_manager` skips it, so start
+    # it explicitly, then kill a node and let the loop recover it on its own.
+    mgr = _bare_manager(use_multiprocessing=True)
+    mgr._start_supervisor()
+    try:
+        a = mgr.add_node("Oscillator", "inputs")
+        old = mgr.nodes[a]
+        assert old.wait_for_state(timeout=2.0)
+
+        old.process.kill()
+        old.process.join(timeout=2.0)
+
+        deadline = time.perf_counter() + 5.0
+        while time.perf_counter() < deadline:
+            if mgr.nodes[a] is not old and mgr.nodes[a].restart_count >= 1:
+                break
+            time.sleep(0.05)
+
+        new = mgr.nodes[a]
+        assert new is not old, "supervisor thread never restarted the dead node"
+        assert new.restart_count == 1
+        assert new.wait_for_state(timeout=3.0)  # the replacement is live
     finally:
         mgr.terminate(notify_gui=False)
 
