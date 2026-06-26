@@ -14,14 +14,24 @@ meta['reduced'][str(axis)] so the metadata inspector can show the true original 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional, Tuple
+from typing import Dict, Optional, Tuple
 
 import numpy as np
 
 from goofi.data import Data, DataType
 
 _METHODS = ("envelope", "subsample", "area")
+_RICHNESS = {"envelope": 3, "area": 2, "subsample": 1}  # richest wins on fold conflict
 _ORIG_COORD_CAP = 4096  # carry orig_coord verbatim only for subsample axes <= this
+
+# Per-viewer-kind default axes (used by the manager relay to seed a ViewSpec from
+# the URL `kind` before the browser sends a capacity-derived one). Mirrors the
+# per-kind axis table in the spec (§6.3). Non-reducible kinds reduce nothing.
+_DEFAULT_VIEW_AXES = {
+    "line": [{"axis": -1, "max": 2000, "method": "envelope"}],
+    "image": [{"axis": 0, "max": 720, "method": "area"}, {"axis": 1, "max": 1280, "method": "area"}],
+    "trajectory": [{"axis": 0, "max": 5000, "method": "subsample"}],
+}
 
 
 @dataclass(frozen=True)
@@ -163,6 +173,47 @@ def _apply_axis(arr: np.ndarray, axis: int, a: AxisSpec, meta: dict):
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
+
+
+def default_viewspec_for_kind(kind: str) -> dict:
+    """Seed ViewSpec dict for a viewer `kind` (manager relay default). Unknown /
+    non-reducible kinds (string/table/topomap/...) reduce nothing."""
+    return {"axes": [dict(a) for a in _DEFAULT_VIEW_AXES.get(kind, [])], "version": 0}
+
+
+def fold_viewspecs(specs: list) -> dict:
+    """Fold N per-axis ViewSpec dicts into one (manager folds all browsers of a
+    slot). Richest-wins per axis: max() of the per-axis `max`, richest method
+    (envelope > area > subsample). Keyed by the raw `axis` value — clients of one
+    slot share an axis convention. `version` = max across inputs (client ordering)."""
+    by_axis: Dict[int, dict] = {}
+    ver = 0
+    for s in specs or []:
+        if not isinstance(s, dict):
+            continue
+        try:
+            ver = max(ver, int(s.get("version", 0) or 0))
+        except Exception:
+            pass
+        for a in (s.get("axes") or []):
+            if not isinstance(a, dict):
+                continue
+            try:
+                ax = int(a.get("axis"))
+                mx = max(1, int(a.get("max")))
+            except Exception:
+                continue
+            method = a.get("method")
+            if method not in _METHODS:
+                continue
+            cur = by_axis.get(ax)
+            if cur is None:
+                by_axis[ax] = {"axis": ax, "max": mx, "method": method}
+            else:
+                cur["max"] = max(cur["max"], mx)
+                if _RICHNESS.get(method, 0) > _RICHNESS.get(cur["method"], 0):
+                    cur["method"] = method
+    return {"axes": [by_axis[k] for k in sorted(by_axis.keys())], "version": ver}
 
 
 def reduce_for_view(data: Data, spec: Optional[ViewSpec]) -> Data:

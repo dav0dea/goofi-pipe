@@ -1,78 +1,63 @@
-"""Data-plane per-frame cost contract for the viewer-adapters path (backlog #18, #3).
+"""Data-plane per-frame cost contract for the Option C node-reduction relay.
 
-The bridge no longer forwards the producer's wire bytes verbatim (the A1 raw-
-forward unlock was deliberately reversed by the viewer-adapters rework). Instead
-the NodeRef pump decodes each slot's float ``Data`` ONCE, and ``_SlotMux.dispatch``
-adapts + re-encodes it ONCE per distinct viewer kind, sharing that encoded frame
-across every forwarder (viewer) of the same kind.
-
-Two always-on, deterministic assertions characterise that contract:
-
-1. ``dispatch`` adapts + encodes once per *distinct kind*, not once per forwarder —
-   so the manager-side per-frame cost scales with the number of kinds on a slot,
-   not the number of viewers attached.
-2. The adapted representation is smaller on the wire than the source float frame
-   (uint8 for images, float16 for line plots), and round-trips to that dtype.
+The node reduces + encodes the frame ONCE on its reducer thread; the manager
+subscribes once per (node, slot) and `_SlotMux.dispatch` fans the node-reduced
+bytes to every forwarder VERBATIM. So the manager-side per-frame cost is O(viewers)
+trivial pushes of the SAME bytes — no decode, no adapt, no re-encode — independent
+of the number of viewers AND their kinds. The reduction (the bandwidth win) lives
+in the node, before the cross-process copy.
 """
 import numpy as np
 
-from goofi.bridge import data as dataplane
-from goofi.bridge.adapters import adapt
 from goofi.bridge.data import _SlotMux
-from goofi.codec import decode_data, encode_data
+from goofi.codec import encode_data
 from goofi.data import Data, DataType
+from goofi.node_reduce import reduce_for_view, viewspec_from_dict
 
 
 class _FakeFwd:
     """Stand-in for a connected WS forwarder: records the frames pushed to it."""
 
-    def __init__(self, kind: str):
-        self.kind = kind
+    def __init__(self):
         self.frames: list[bytes] = []
 
-    def push_threadsafe(self, frame: bytes) -> None:
-        self.frames.append(frame)
+    def push_threadsafe(self, buf: bytes) -> None:
+        self.frames.append(buf)
 
 
-def _hd_image() -> Data:
-    # float RGB HD frame — the pure-float Data a producer emits, pre-adapter.
-    img = (np.arange(1080 * 1920 * 3, dtype=np.float32) % 256.0).reshape(1080, 1920, 3)
-    return Data(DataType.ARRAY, img, {})
-
-
-def test_dispatch_adapts_once_per_distinct_kind(monkeypatch):
+def test_dispatch_fans_one_buffer_to_all_forwarders():
     mux = _SlotMux(ref=None, slot="out")
-    # Three image viewers + two line viewers on the SAME slot.
-    fwds = [_FakeFwd("image"), _FakeFwd("image"), _FakeFwd("image"), _FakeFwd("line"), _FakeFwd("line")]
+    fwds = [_FakeFwd() for _ in range(5)]
     for f in fwds:
         mux.add(f)
 
-    counts = {"adapt": 0, "encode": 0}
-    real_adapt, real_encode = dataplane.adapt, dataplane.encode_data
-    monkeypatch.setattr(dataplane, "adapt", lambda d, k: counts.__setitem__("adapt", counts["adapt"] + 1) or real_adapt(d, k))
-    monkeypatch.setattr(dataplane, "encode_data", lambda d: counts.__setitem__("encode", counts["encode"] + 1) or real_encode(d))
+    mux.dispatch(b"NODE_REDUCED_FRAME")
 
-    mux.dispatch(_hd_image())
-
-    # Two distinct kinds → exactly two adapt + two encode, NOT one per forwarder (5).
-    assert counts == {"adapt": 2, "encode": 2}
-    # Every forwarder received exactly one frame.
+    # Every forwarder received exactly one frame — the identical bytes object,
+    # fanned out with no per-viewer / per-kind manager work.
     assert all(len(f.frames) == 1 for f in fwds)
-    # Same-kind forwarders share the identical encoded bytes (encoded once, fanned out).
-    assert fwds[0].frames[0] is fwds[1].frames[0] is fwds[2].frames[0]
-    assert fwds[3].frames[0] is fwds[4].frames[0]
-    # Different kinds get different representations.
-    assert fwds[0].frames[0] is not fwds[3].frames[0]
+    first = fwds[0].frames[0]
+    assert all(f.frames[0] is first for f in fwds)
 
 
-def test_adapted_frame_is_smaller_than_the_source_float_frame():
-    img = _hd_image()
-    raw = encode_data(img)  # what a verbatim forward (float32 HD frame) would have sent
-    adapted = encode_data(adapt(img, "image"))
-    assert len(adapted) < len(raw)  # uint8 body is ~4x smaller than float32
-    assert decode_data(adapted).data.dtype == np.uint8
+def test_node_reduced_frame_is_far_smaller_than_the_raw_float_frame():
+    # HD image: a full-frame verbatim forward would have sent float32 1080x1920x3.
+    img = Data(
+        DataType.ARRAY,
+        (np.arange(1080 * 1920 * 3, dtype=np.float32) % 256.0).reshape(1080, 1920, 3),
+        {},
+    )
+    raw = encode_data(img)
+    img_spec = viewspec_from_dict(
+        {"axes": [{"axis": 0, "max": 720, "method": "area"},
+                  {"axis": 1, "max": 1280, "method": "area"}]}
+    )
+    reduced = encode_data(reduce_for_view(img, img_spec))
+    assert len(reduced) < len(raw) / 2  # 1080x1920 -> 720x1280 area downscale
 
-    sig = Data(DataType.ARRAY, np.arange(32 * 1000, dtype=np.float32).reshape(32, 1000), {})
-    line = encode_data(adapt(sig, "line"))
-    assert len(line) < len(encode_data(sig))  # float16 is half of float32
-    assert decode_data(line).data.dtype == np.float16
+    # 1 s of 32-channel 44.1 kHz audio -> ~2*2000 envelope per channel.
+    sig = Data(DataType.ARRAY, np.arange(32 * 44100, dtype=np.float32).reshape(32, 44100), {})
+    full = encode_data(sig)
+    line_spec = viewspec_from_dict({"axes": [{"axis": -1, "max": 2000, "method": "envelope"}]})
+    line = encode_data(reduce_for_view(sig, line_spec))
+    assert len(line) < len(full) / 5

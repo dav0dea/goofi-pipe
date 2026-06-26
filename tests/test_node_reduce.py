@@ -186,3 +186,51 @@ def test_reduce_for_view_none_or_empty_spec_passthrough():
     data = Data(DataType.ARRAY, np.zeros((4,), dtype=np.float32), {})
     assert reduce_for_view(data, None) is data
     assert reduce_for_view(data, ViewSpec()) is data
+
+
+# ---- fold + per-kind default (manager relay folds browser specs) -------------
+
+def test_fold_viewspecs_richest_wins_per_axis():
+    from goofi.node_reduce import fold_viewspecs
+
+    folded = fold_viewspecs([
+        {"axes": [{"axis": -1, "max": 800, "method": "subsample"}], "version": 1},
+        {"axes": [{"axis": -1, "max": 2000, "method": "envelope"}], "version": 4},
+    ])
+    # max() of max, richest method (envelope>area>subsample), max() of version.
+    assert folded["axes"] == [{"axis": -1, "max": 2000, "method": "envelope"}]
+    assert folded["version"] == 4
+
+
+def test_fold_viewspecs_multiple_axes_independent():
+    from goofi.node_reduce import fold_viewspecs
+
+    folded = fold_viewspecs([
+        {"axes": [{"axis": 0, "max": 4, "method": "subsample"},
+                  {"axis": 1, "max": 500, "method": "envelope"}]},
+        {"axes": [{"axis": 0, "max": 8, "method": "subsample"},
+                  {"axis": 1, "max": 1200, "method": "envelope"}]},
+    ])
+    assert folded["axes"] == [
+        {"axis": 0, "max": 8, "method": "subsample"},
+        {"axis": 1, "max": 1200, "method": "envelope"},
+    ]
+
+
+def test_fold_viewspecs_empty_is_no_reduction():
+    from goofi.node_reduce import fold_viewspecs
+
+    assert fold_viewspecs([]) == {"axes": [], "version": 0}
+    assert fold_viewspecs([{"axes": []}, {"axes": []}]) == {"axes": [], "version": 0}
+
+
+def test_default_viewspec_for_kind():
+    from goofi.node_reduce import default_viewspec_for_kind, viewspec_from_dict
+
+    line = default_viewspec_for_kind("line")
+    assert line["axes"][0]["method"] == "envelope"
+    # round-trips through the parser the node uses
+    assert viewspec_from_dict(line).axes[0].method == "envelope"
+    # unknown / non-reducible kinds -> no reduction
+    assert default_viewspec_for_kind("string") == {"axes": [], "version": 0}
+    assert default_viewspec_for_kind("topomap") == {"axes": [], "version": 0}

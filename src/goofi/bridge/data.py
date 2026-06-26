@@ -1,41 +1,47 @@
-"""Data plane: per-(node, slot, kind) binary WebSocket.
+"""Data plane (Option C relay): per-(node, slot) reduced-frame relay.
 
-A client wishing to view `node`'s `slot` output with viewer `kind` opens
+A client viewing `node`'s `slot` opens
     ws://.../data/<node>/<slot>/<kind>
 
-The hub registers ONE decoded (`raw=False`) data handler per (uid, slot) on the
-NodeRef and, for each distinct viewer kind among the connected forwarders, runs
-the per-kind adapter (`bridge.adapters.adapt`) on the decoded float `Data` and
-re-encodes it once — image→uint8, line/trajectory/topomap→float16, string/table
-passthrough. Decode happens once per slot; adapt+encode once per (slot, kind) per
-frame, regardless of how many viewers are attached. Float range/stats ride along
-in `meta["__view__"]` so the viewer's range and the metadata inspector stay
-float-accurate (viewer-adapters-design, backlog #3 — the deliberate reversal of
-A1's verbatim forward).
+The producing **node** reduces the slot to its folded ViewSpec on a dedicated
+reducer thread and publishes small GOOF frames on its `<dataservice>.view`
+iceoryx2 service (see `goofi.node_viewer` / `goofi.node_reduce`). The manager
+subscribes ONCE per (node, slot) via the NodeRef *viewer plane*
+(`set_data_handler(..., view=True)`) and forwards those bytes to every connected
+browser **verbatim** — there is **no** manager-side decode or re-encode. The
+reduction (the ~1300× shrink) happens inside the node, before the cross-process
+copy; the manager is a thin switchboard.
+
+Each connection contributes a per-axis ViewSpec, seeded from its viewer `kind`
+and overridable inband via a TEXT `{"op":"view","spec":{axes,version}}` message.
+The hub folds the connected ViewSpecs richest-wins per (node, slot) and pushes the
+fold to the node (`set_viewspec`). On the first viewer of a slot the node is
+told to produce (REGISTER_VIEWER, via `set_data_handler(view=True)`); on the last
+it stops (UNREGISTER_VIEWER).
 
 Backpressure: each WS has a single-slot mailbox. New frames overwrite older
-un-sent frames (latest-wins) so a slow client never stalls the producer or piles
-up memory.
+un-sent frames (latest-wins) so a slow client never stalls the producer.
 """
 from __future__ import annotations
 
 import asyncio
 import functools
+import json
 from typing import Optional
 
 from aiohttp import WSMsgType, web
 
-from goofi.bridge.adapters import adapt
-from goofi.codec import encode_data
+from goofi.node_reduce import default_viewspec_for_kind, fold_viewspecs
 
 
 class _SlotForwarder:
-    """One per active WS connection. Owns a `_pending` slot + sender task."""
+    """One per active WS connection. Owns a `_pending` slot + sender task, plus the
+    per-axis ViewSpec this connection contributes to the slot's fold."""
 
-    def __init__(self, ws: web.WebSocketResponse, loop: asyncio.AbstractEventLoop, kind: str):
+    def __init__(self, ws: web.WebSocketResponse, loop: asyncio.AbstractEventLoop, spec: dict):
         self.ws = ws
         self.loop = loop
-        self.kind = kind  # the viewer kind this connection wants its frames adapted to
+        self.spec = spec  # this connection's ViewSpec dict (seed from kind; inband override)
         self._pending: Optional[bytes] = None
         self._dirty = asyncio.Event()
         self._closed = False
@@ -89,12 +95,12 @@ class _SlotForwarder:
 
 
 class _SlotMux:
-    """Fan-out for one (node, slot): one NodeRef data-handler → N forwarders.
+    """Fan-out for one (node, slot): one NodeRef view subscription → N forwarders.
 
-    NodeRef.set_data_handler is single-callback-per-slot and evicting, so the
-    bridge multiplexes here: ONE handler per (node, slot), each frame encoded
-    once and dispatched to every connected forwarder. The handler is dropped
-    only when the last forwarder closes.
+    `dispatch` forwards the node-reduced bytes to every connected forwarder
+    verbatim (no decode / no re-encode). The mux also folds the forwarders'
+    ViewSpecs and pushes the fold to the node, so the node reduces exactly once
+    to the richest representation any attached viewer needs.
     """
 
     def __init__(self, ref, slot: str):
@@ -103,6 +109,7 @@ class _SlotMux:
         # Whole-tuple rebind on mutate → dispatch() (data-pump thread) always
         # reads a consistent snapshot without locking.
         self._forwarders: tuple = ()
+        self._last_spec: Optional[dict] = None
 
     def add(self, fwd) -> None:
         self._forwarders = (*self._forwarders, fwd)
@@ -111,29 +118,29 @@ class _SlotMux:
         self._forwarders = tuple(f for f in self._forwarders if f is not fwd)
         return not self._forwarders
 
-    def dispatch(self, data) -> None:
-        """Adapt the decoded float `Data` once per distinct viewer kind, then fan
-        each representation out to that kind's forwarders. Runs on the NodeRef
-        data-pump thread; `_forwarders` is read as a consistent whole-tuple snapshot."""
-        forwarders = self._forwarders
-        if not forwarders:
-            return
-        by_kind: dict = {}
-        for fwd in forwarders:
-            by_kind.setdefault(fwd.kind, []).append(fwd)
-        for kind, fwds in by_kind.items():
+    def dispatch(self, buf: bytes) -> None:
+        """Forward a node-reduced GOOF frame to every connected forwarder verbatim.
+        Runs on the NodeRef data-pump thread; `_forwarders` is read as a consistent
+        whole-tuple snapshot."""
+        for fwd in self._forwarders:
+            fwd.push_threadsafe(buf)
+
+    def push_spec_if_changed(self) -> None:
+        """Re-fold the connected ViewSpecs and, if the fold changed, push it to the
+        node so it reduces to what the attached viewers actually need."""
+        folded = fold_viewspecs([f.spec for f in self._forwarders])
+        if folded != self._last_spec:
+            self._last_spec = folded
             try:
-                frame = encode_data(adapt(data, kind))
+                self.ref.set_viewspec(self.slot, folded)
             except Exception:
-                continue  # a bad frame for one kind must not stall the others
-            for fwd in fwds:
-                fwd.push_threadsafe(frame)
+                pass
 
 
 class DataHub:
     def __init__(self, server) -> None:
         self.server = server
-        self._muxes: dict = {}  # (node, slot) -> _SlotMux
+        self._muxes: dict = {}  # (uid, slot) -> _SlotMux
         self._lock = asyncio.Lock()
 
     async def handler(self, request: web.Request) -> web.WebSocketResponse:
@@ -166,7 +173,9 @@ class DataHub:
             return ws
 
         loop = asyncio.get_running_loop()
-        fwd = _SlotForwarder(ws, loop, kind)
+        # Seed this connection's ViewSpec from the viewer kind; the browser may
+        # override it inband with a capacity-derived spec ({"op":"view"}).
+        fwd = _SlotForwarder(ws, loop, default_viewspec_for_kind(kind))
         fwd.start()
 
         # Key the mux by the node's STABLE member_uid, not its display name, so a
@@ -179,39 +188,51 @@ class DataHub:
             if mux is None:
                 mux = _SlotMux(ref, slot)
 
-                def on_frame(_noderef, _slot_name, data, _mux=mux):
-                    # The pump decodes once per slot and hands us the float `Data`;
-                    # the mux adapts+encodes it per distinct viewer kind. One decode
-                    # per slot regardless of how many kinds/viewers are attached.
-                    _mux.dispatch(data)
+                def on_frame(_noderef, _slot_name, buf, _mux=mux):
+                    # The view-plane pump hands us the node-reduced GOOF bytes
+                    # verbatim (raw=True); fan them out unchanged.
+                    _mux.dispatch(buf)
 
-                # set_data_handler does blocking IPC (REGISTER_SUBSCRIBER +
-                # iceoryx2 setup); run it off the event loop so it can't stall
-                # other viewers' sends. Held under _lock so a concurrent
-                # connect/disconnect for the same slot can't interleave (B2).
+                # set_data_handler(view=True) does blocking IPC (REGISTER_VIEWER +
+                # iceoryx2 .view subscriber); run it off the event loop so it can't
+                # stall other viewers' sends. Held under _lock so a concurrent
+                # connect/disconnect for the same slot can't interleave.
                 await loop.run_in_executor(
-                    None, functools.partial(ref.set_data_handler, slot, on_frame, raw=False)
+                    None,
+                    functools.partial(ref.set_data_handler, slot, on_frame, raw=True, view=True),
                 )
                 self._muxes[key] = mux
             mux.add(fwd)
+            mux.push_spec_if_changed()  # fold now includes this viewer
 
         try:
             async for msg in ws:
-                # We don't expect inbound traffic; drain to detect close.
-                if msg.type == WSMsgType.ERROR:
+                if msg.type == WSMsgType.TEXT:
+                    # Inband renegotiation: {"op":"view","spec":{axes,version}}.
+                    try:
+                        payload = json.loads(msg.data)
+                    except Exception:
+                        continue
+                    if payload.get("op") == "view" and isinstance(payload.get("spec"), dict):
+                        fwd.spec = payload["spec"]
+                        async with self._lock:
+                            mux.push_spec_if_changed()
+                elif msg.type == WSMsgType.ERROR:
                     break
         finally:
             async with self._lock:
                 empty = mux.remove(fwd)
                 if empty:
-                    # Detach off the event loop too (blocking UNREGISTER_SUBSCRIBER
-                    # + iceoryx2 teardown) so a slow disconnect can't stall other
-                    # viewers; under _lock so a re-subscribe can't interleave (B2).
+                    # Detach off the event loop too (blocking UNREGISTER_VIEWER +
+                    # iceoryx2 teardown) so a slow disconnect can't stall other
+                    # viewers; under _lock so a re-subscribe can't interleave.
                     try:
                         await loop.run_in_executor(None, ref.set_data_handler, slot, None)
                     except Exception:
                         pass
                     self._muxes.pop(key, None)
+                else:
+                    mux.push_spec_if_changed()  # re-fold without this viewer
             await fwd.close()
         return ws
 
