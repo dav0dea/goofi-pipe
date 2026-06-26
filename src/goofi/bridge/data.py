@@ -245,6 +245,17 @@ class DataHub:
 
     async def close_all(self) -> None:
         loop = asyncio.get_running_loop()
+        # Hold _lock across the whole teardown: shutdown calls this while the server
+        # still accepts WS connections, and handler() inserts a fresh mux under _lock
+        # AFTER its awaits. Without the lock, a connect during one of our awaits would
+        # add a mux past our snapshot, and the final clear() would drop it WITHOUT
+        # UNREGISTER_VIEWER — re-leaking the very registration this method exists to
+        # release. The awaits below (run_in_executor / ws.close) never re-enter _lock,
+        # so there's no deadlock; a losing handler blocks until _muxes is cleared.
+        async with self._lock:
+            await self._close_all_locked(loop)
+
+    async def _close_all_locked(self, loop: asyncio.AbstractEventLoop) -> None:
         for mux in list(self._muxes.values()):
             # Tell the node its viewers are gone (UNREGISTER_VIEWER) and tear down the
             # .view subscriber — the per-connection finally does this, but a bulk
