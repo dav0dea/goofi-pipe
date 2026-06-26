@@ -9,7 +9,7 @@ Wire format
     ------  ----  ----------------------------------------------
     0       4     magic "GOOF"
     4       1     version (=2)
-    5       1     dtype tag (1=ARRAY, 2=STRING, 3=TABLE)
+    5       1     dtype tag = DataType.value (0=ARRAY, 1=STRING, 2=TABLE)
     6       4     meta_len   (LE u32)  — msgpack-encoded meta dict
     10      4     body_len   (LE u32)
     14      *     meta bytes (msgpack)
