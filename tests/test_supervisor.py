@@ -37,7 +37,8 @@ def test_restart_node_respawns_fresh_id_preserving_identity_and_links():
 
         old_ref = mgr.nodes[a]
         old_id = old_ref.node_id
-        old_uid = old_ref.member_uid
+        old_uid = old_ref.uid
+        assert old_uid == a                         # add_node returns the uid (the key)
         assert old_ref.process is not None  # one-node-per-process
 
         mgr.restart_node(a)
@@ -45,8 +46,8 @@ def test_restart_node_respawns_fresh_id_preserving_identity_and_links():
         new_ref = mgr.nodes[a]
         assert new_ref is not old_ref               # the ref object was replaced
         assert new_ref.node_id != old_id            # FRESH transport id (no service race)
-        assert new_ref.member_uid == old_uid        # stable identity preserved
-        assert mgr._refs_by_uid[old_uid] is new_ref  # uid index repointed
+        assert new_ref.uid == old_uid               # stable identity preserved
+        assert mgr.nodes[old_uid] is new_ref         # container (the uid index) repointed
         assert new_ref.restart_count == 1           # observability
         # the link survived and was re-wired (no exception re-issuing it)
         assert {"node_out": a, "node_in": b, "slot_out": "out", "slot_in": "val"} in mgr._links

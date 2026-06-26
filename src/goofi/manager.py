@@ -96,56 +96,41 @@ def mark_unsaved_changes(func):
 
 
 class NodeContainer:
-    """Bookkeeping dict of NodeRefs keyed by unique name."""
+    """Bookkeeping dict of NodeRefs keyed by stable `uid` (insertion-ordered).
+
+    The key is the node's universal identity, never its display name — so a node
+    can be renamed without re-keying anything here. Display-name generation and
+    uniqueness live in `Manager.add_node` (a display concern), not here."""
 
     def __init__(self) -> None:
-        self._nodes: Dict[str, NodeRef] = {}
+        self._nodes: Dict[str, NodeRef] = {}  # uid -> NodeRef
 
-    def add_node(self, name: str, node: NodeRef, force_name: bool = False) -> str:
-        if not isinstance(name, str):
-            raise ValueError(f"Expected string, got {type(name)}.")
+    def add_node(self, uid: str, node: NodeRef) -> str:
+        if not isinstance(uid, str):
+            raise ValueError(f"Expected string uid, got {type(uid)}.")
         if not isinstance(node, NodeRef):
             raise ValueError(f"Expected NodeRef, got {type(node)}.")
+        if uid in self._nodes:
+            raise KeyError(f"Node {uid} already in container.")
+        self._nodes[uid] = node
+        return uid
 
-        if force_name:
-            if name in self._nodes:
-                raise KeyError(f"Node {name} already in container.")
-            self._nodes[name] = node
-            return name
-
-        idx = 0
-        while f"{name}{idx}" in self._nodes:
-            idx += 1
-        self._nodes[f"{name}{idx}"] = node
-        return f"{name}{idx}"
-
-    def remove_node(self, name: str) -> None:
-        if name in self._nodes:
-            self._nodes[name].terminate()
-            del self._nodes[name]
+    def remove_node(self, uid: str) -> None:
+        if uid in self._nodes:
+            self._nodes[uid].terminate()
+            del self._nodes[uid]
             return
-        raise KeyError(f"Node {name} not in container")
+        raise KeyError(f"Node {uid} not in container")
 
-    def replace(self, name: str, node: NodeRef) -> None:
-        """Swap the NodeRef behind an existing display name in place (restart),
-        preserving insertion order so the editor's node ordering is stable."""
-        if name not in self._nodes:
-            raise KeyError(f"Node {name} not in container")
-        self._nodes[name] = node
+    def replace(self, uid: str, node: NodeRef) -> None:
+        """Swap the NodeRef behind a uid in place (restart), preserving insertion
+        order so the editor's node ordering is stable."""
+        if uid not in self._nodes:
+            raise KeyError(f"Node {uid} not in container")
+        self._nodes[uid] = node
 
-    def rename(self, old: str, new: str) -> None:
-        """Re-key a node, preserving insertion order. Caller owns all other
-        name-keyed state (links, groups, membership) — see Manager._rename."""
-        if old not in self._nodes:
-            raise KeyError(f"Node {old} not in container")
-        if new in self._nodes:
-            raise KeyError(f"Node {new} already in container")
-        # Rebuild to keep order stable (dicts preserve insertion order; a
-        # pop+set would move the entry to the end).
-        self._nodes = {new if k == old else k: v for k, v in self._nodes.items()}
-
-    def __getitem__(self, name: str) -> NodeRef:
-        return self._nodes[name]
+    def __getitem__(self, uid: str) -> NodeRef:
+        return self._nodes[uid]
 
     def __len__(self) -> int:
         return len(self._nodes)
@@ -153,8 +138,8 @@ class NodeContainer:
     def __iter__(self):
         return iter(self._nodes.keys())
 
-    def __contains__(self, name: str) -> bool:
-        return name in self._nodes
+    def __contains__(self, uid: str) -> bool:
+        return uid in self._nodes
 
 
 class Manager:
@@ -195,18 +180,16 @@ class Manager:
         # node_name -> process_group id. When two nodes share a group, links
         # between them use thread transport instead of iceoryx2.
         self._node_groups: Dict[str, str] = {}
-        # explicit link table — manager-owned, replaces the per-node
-        # out_conns list from the old code.
+        # explicit link table — manager-owned, replaces the per-node out_conns
+        # list from the old code. Endpoints are node UIDs (node_out/node_in).
         self._links: List[Dict[str, str]] = []
-        # Stable-identity index: member_uid -> NodeRef. The uid is minted once
-        # per node, persisted in the .gfi, and survives respawn/reload — the
-        # spine the persistence + data-by-uid layers key on.
-        self._refs_by_uid: Dict[str, NodeRef] = {}
+        # NB: there is no separate uid index — `self.nodes` (NodeContainer) IS
+        # keyed by uid, so it is the single uid->NodeRef map.
         # Sub-patch state (flatten-at-runtime). The live graph stays flat; these
         # maps are the first-class record of grouping (NOT re-derived from name
-        # prefixes). `_membership` maps a member's display name -> instance id;
+        # prefixes). `_membership` maps a member's uid -> instance id;
         # `_instances` holds per-instance {kind, interface, pos, members} where
-        # members maps display name -> local name; `_definitions` holds shared
+        # members maps member uid -> local name; `_definitions` holds shared
         # sub-patch graphs (populated in the sharing phase).
         self._membership: Dict[str, str] = {}
         self._instances: Dict[str, Dict[str, Any]] = {}
@@ -328,10 +311,10 @@ class Manager:
             return ref
 
     def _mint_uid(self) -> str:
-        """A fresh member_uid not currently in use (48 bits + dedup pass)."""
+        """A fresh node uid not currently in use (48 bits + dedup pass)."""
         while True:
             uid = uuid.uuid4().hex[:12]
-            if uid not in self._refs_by_uid:
+            if uid not in self.nodes:
                 return uid
 
     def _service_budget_ok(self, name: str, slots=None) -> bool:
@@ -374,41 +357,44 @@ class Manager:
         mod = importlib.import_module(f"goofi.nodes.{category}.{node_type.lower()}")
         node_cls: type = getattr(mod, node_type)
 
-        # The display name is the user-facing label and the container key. It
-        # is reused once freed: delete oscillator0 and the next Oscillator is
-        # oscillator0 again. The *transport* id must never be reused — a quick
-        # re-add would otherwise race the new node's iceoryx2 producers against
-        # the old, still-terminating node's for the single per-service slot. So
-        # we mint a unique node_id and feed *that* into every service name; the
-        # display name only keys the manager's bookkeeping.
+        # Two independent identities:
+        #  - `uid` (universal): the key everything references the node by; minted
+        #    once, never reused, stable across rename/restart/reload.
+        #  - display `name`: the user-facing label, auto-numbered per type and
+        #    reused once freed (delete oscillator0 -> the next Oscillator is
+        #    oscillator0 again). It keys NOTHING — purely display + `nd()`.
+        #  - `node_id` (transport): feeds every iceoryx2 service name; carries a
+        #    name prefix for debug + a fresh uuid suffix so a quick re-add can't
+        #    race the old, still-terminating node for a per-service slot.
         if name is None:
             base = node_type.lower()
+            existing = {self.nodes[u].name for u in self.nodes}
             idx = 0
-            while f"{base}{idx}" in self.nodes:
+            while f"{base}{idx}" in existing:
                 idx += 1
             assigned_name = f"{base}{idx}"
         else:
             assigned_name = name
 
+        # Mint (or restore, on load) the universal uid — the container key.
+        if member_uid is None or member_uid in self.nodes:
+            member_uid = self._mint_uid()
+
         node_id = f"{assigned_name}-{uuid.uuid4().hex[:8]}"
         group = self._resolve_group(node_id, params)
 
         ref = self._spawn_node(node_cls, node_id, params, group)
+        ref.uid = member_uid
+        ref.name = assigned_name
+        ref.membership = membership
         ref.set_message_handler(MessageType.SHUTDOWN, lambda *args: self.terminate())
 
         # Preserve gui_kwargs (notably 'pos') for the bridge / patch save.
         if gui_kwargs:
             ref.gui_kwargs = dict(gui_kwargs)
 
-        registered = self.nodes.add_node(assigned_name, ref, force_name=True)
-        self._node_groups[registered] = group
-
-        # Assign the stable identity (mint if absent or colliding) and index it.
-        if member_uid is None or member_uid in self._refs_by_uid:
-            member_uid = self._mint_uid()
-        ref.member_uid = member_uid
-        ref.membership = membership
-        self._refs_by_uid[member_uid] = ref
+        self.nodes.add_node(member_uid, ref)
+        self._node_groups[member_uid] = group
 
         # Best-effort: block briefly for the initial STATE_UPDATE so the
         # rest of the system (save / bridge) has node state to read.
@@ -419,15 +405,15 @@ class Manager:
         self._broadcast_node_directory()
 
         if self._bridge is not None and notify_gui:
-            self._bridge.control.on_node_added(registered)
-        return registered
+            self._bridge.control.on_node_added(member_uid)
+        return member_uid
 
     @mark_unsaved_changes
-    def remove_node(self, name: str, notify_gui: bool = True, **gui_kwargs) -> None:
-        print(f"Removing node '{name}'.")
+    def remove_node(self, uid: str, notify_gui: bool = True, **gui_kwargs) -> None:
+        print(f"Removing node '{uid}'.")
         # A node that's still a member of a sub-patch (remove_instance pops
         # membership BEFORE calling this, so teardown skips the whole block):
-        _inst_id = self._membership.get(name)
+        _inst_id = self._membership.get(uid)
         if _inst_id is not None:
             _inst = self._instances.get(_inst_id)
             if _inst is not None:
@@ -436,38 +422,31 @@ class Manager:
                 # ports — block it; the user must make the instance unique first.
                 if _inst.get("def_id"):
                     raise ValueError(
-                        f"cannot delete member {name!r} of a shared sub-patch; make it unique first"
+                        f"cannot delete member {uid!r} of a shared sub-patch; make it unique first"
                     )
                 # Unique: unwire any boundary pointing at this member (its spliced
                 # external links drop below with the node's links) and drop the member
                 # from the instance so save/iteration never references a gone node.
-                _local = _inst["members"].get(name)
+                _local = _inst["members"].get(uid)
                 for _bid, _e in list(_inst["interface"].items()):
                     if _e.get("inner_node") == _local:
                         _inst["interface"][_bid] = {**_e, "inner_node": None, "inner_slot": None}
-                _inst["members"].pop(name, None)
-                self._membership.pop(name, None)
+                _inst["members"].pop(uid, None)
+                self._membership.pop(uid, None)
         # Drop any links touching this node.
         for link in list(self._links):
-            if link["node_out"] == name or link["node_in"] == name:
+            if link["node_out"] == uid or link["node_in"] == uid:
                 self._teardown_link(link, notify_gui=False)
                 self._links.remove(link)
 
-        # Drop the uid index entry for this node before it leaves the container.
-        try:
-            uid = self.nodes[name].member_uid
-            if uid is not None:
-                self._refs_by_uid.pop(uid, None)
-        except KeyError:
-            pass
-
-        self.nodes.remove_node(name)
-        self._node_groups.pop(name, None)
+        # NodeContainer is the uid index — removing from it drops the node.
+        self.nodes.remove_node(uid)
+        self._node_groups.pop(uid, None)
         # Refresh the directory so surviving nodes stop resolving `nd('name')`
         # to the node that just left.
         self._broadcast_node_directory()
         if self._bridge is not None and notify_gui:
-            self._bridge.control.on_node_removed(name)
+            self._bridge.control.on_node_removed(uid)
 
     @mark_unsaved_changes
     def add_link(
@@ -568,7 +547,7 @@ class Manager:
         proc = ref.process
         return proc is not None and not proc.is_alive()
 
-    def restart_node(self, name: str) -> NodeRef:
+    def restart_node(self, uid: str) -> NodeRef:
         """Respawn a node whose process died, preserving identity + links.
 
         Mints a FRESH transport id (the old one must never be reused — see
@@ -579,13 +558,13 @@ class Manager:
         the link table is untouched. Restarts are unlimited; the count rides on the
         new ref for observability."""
         with (getattr(self, "_supervisor_lock", None) or contextlib.nullcontext()):
-            old = self.nodes[name]
+            old = self.nodes[uid]
             node_cls = old.node_class
             try:
                 params = old.params.serialize()
             except Exception:
                 params = None
-            uid, membership = old.member_uid, old.membership
+            display, membership = old.name, old.membership
             gui_kwargs = dict(old.gui_kwargs)
             count = old.restart_count + 1
 
@@ -595,7 +574,8 @@ class Manager:
             except Exception:
                 pass
 
-            new_id = f"{name}-{uuid.uuid4().hex[:8]}"
+            # Fresh transport id, keeping the display name as the debug prefix.
+            new_id = f"{display}-{uuid.uuid4().hex[:8]}"
             # Recompute the group from the NEW id: a default node's group IS its
             # node_id, so it must track the new id to stay "own process" (else
             # _spawn_node's `group != node_id` test would misroute it to the
@@ -605,28 +585,28 @@ class Manager:
             new_ref.set_message_handler(MessageType.SHUTDOWN, lambda *args: self.terminate())
             new_ref.gui_kwargs = gui_kwargs
             new_ref.membership = membership
-            new_ref.member_uid = uid
+            new_ref.uid = uid
+            new_ref.name = display
             new_ref.restart_count = count
 
-            self.nodes.replace(name, new_ref)
-            self._node_groups[name] = group
-            if uid is not None:
-                self._refs_by_uid[uid] = new_ref
+            # The container IS the uid index, so replace() repoints it in place.
+            self.nodes.replace(uid, new_ref)
+            self._node_groups[uid] = group
 
             # Re-wire the bridge status to the NEW ref BEFORE waiting for state, so
             # the respawned node's first push (and its healthy error-clear) reaches
             # the browser and lifts the crash chip.
             if self._bridge is not None:
                 try:
-                    self._bridge.control.rewire_node_status(name)
+                    self._bridge.control.rewire_node_status(uid)
                 except Exception:
-                    logger.exception("restart: bridge re-wire failed for %s", name)
+                    logger.exception("restart: bridge re-wire failed for %s", uid)
 
             new_ref.wait_for_state(timeout=2.0)
 
             # Re-establish every link touching this node from the current refs.
             for link in self._links:
-                if link["node_out"] == name or link["node_in"] == name:
+                if link["node_out"] == uid or link["node_in"] == uid:
                     try:
                         self._wire_link(link)
                     except Exception as exc:
@@ -638,25 +618,25 @@ class Manager:
     def _supervise_once(self) -> None:
         """One liveness sweep: respawn any node whose process has died, announcing
         the crash to the browser first so the node visibly flips to an error."""
-        for name in list(self.nodes):
+        for uid in list(self.nodes):
             try:
-                ref = self.nodes[name]
+                ref = self.nodes[uid]
             except KeyError:
                 continue
             if not self._node_is_dead(ref):
                 continue
             exitcode = ref.process.exitcode if ref.process is not None else None
             count = ref.restart_count + 1
-            print(f"supervisor: node '{name}' process died (exit {exitcode}) — restarting (#{count})")
+            print(f"supervisor: node '{ref.name}' process died (exit {exitcode}) — restarting (#{count})")
             if self._bridge is not None:
                 try:
-                    self._bridge.control.on_node_crashed(name, exitcode, count)
+                    self._bridge.control.on_node_crashed(uid, exitcode, count)
                 except Exception:
-                    logger.exception("supervisor: crash broadcast failed for %s", name)
+                    logger.exception("supervisor: crash broadcast failed for %s", uid)
             try:
-                self.restart_node(name)
+                self.restart_node(uid)
             except Exception:
-                logger.exception("supervisor: restart of %s failed", name)
+                logger.exception("supervisor: restart of %s failed", uid)
 
     def _supervisor_loop(self) -> None:
         while self._running and not self._supervisor_stop.is_set():
@@ -693,32 +673,18 @@ class Manager:
     # Sub-patches (flatten-at-runtime)
     # ------------------------------------------------------------------
 
-    def _rename(self, old: str, new: str) -> None:
-        """Atomically re-key a node across every name-keyed structure.
-
-        The container key alone is not enough: links, process-group map,
-        sub-patch membership, and instance member-maps are all keyed by display
-        name. The node's transport id (node_id) and member_uid are unchanged,
-        so open data subscriptions keep flowing across the rename.
-        """
-        if old == new:
-            return
-        self.nodes.rename(old, new)
-        if old in self._node_groups:
-            self._node_groups[new] = self._node_groups.pop(old)
-        for link in self._links:
-            if link["node_out"] == old:
-                link["node_out"] = new
-            if link["node_in"] == old:
-                link["node_in"] = new
-        if old in self._membership:
-            self._membership[new] = self._membership.pop(old)
-        for inst in self._instances.values():
-            if old in inst["members"]:
-                inst["members"][new] = inst["members"].pop(old)
+    @mark_unsaved_changes
+    def rename_node(self, uid: str, name: str) -> None:
+        """Set a node's mutable DISPLAY name. Safe BY CONSTRUCTION: nothing keys on
+        the name (the graph is uid-keyed), so no reference moves — we just write the
+        label, refresh the `nd()` directory, and notify the browser. The node's
+        transport id and uid are untouched, so data subscriptions keep flowing."""
+        if uid not in self.nodes:
+            raise KeyError(f"No such node: {uid}")
+        self.nodes[uid].name = name
         self._broadcast_node_directory()
         if self._bridge is not None:
-            self._bridge.control.on_node_renamed(old, new)
+            self._bridge.control.on_node_renamed(uid, name)
 
     def _fresh_instance_id(self) -> str:
         idx = 0
@@ -1422,8 +1388,8 @@ class Manager:
         state = deepcopy(ref.serialized_state)
         state["gui_kwargs"] = ref.gui_kwargs
         state.pop("output_subscribers", None)
-        if ref.member_uid is not None:
-            state["uid"] = ref.member_uid
+        if ref.uid is not None:
+            state["uid"] = ref.uid
         return state
 
     def _local_link(self, link: Dict[str, str], inst_id: str) -> Dict[str, str]:
@@ -1469,7 +1435,7 @@ class Manager:
                     # Only per-instance state — topology+params live in the definition.
                     "members": {
                         local: {
-                            "uid": self.nodes[nn].member_uid,
+                            "uid": self.nodes[nn].uid,
                             "pos": (self.nodes[nn].gui_kwargs or {}).get("pos"),
                         }
                         for nn, local in inst["members"].items()
@@ -1583,8 +1549,11 @@ class Manager:
             self.add_link(link["node_out"], link["node_in"], link["slot_out"], link["slot_in"])
 
     def _node_directory(self) -> Dict[str, str]:
-        """Map each live display name to its node's stable transport id."""
-        return {name: self.nodes[name].node_id for name in self.nodes}
+        """Map each live DISPLAY name to its node's stable transport id, for
+        `nd('name')` resolution. Names aren't guaranteed unique anymore (the graph
+        keys on uid); on a collision the last node wins — an acceptable edge case
+        for an expression-convenience lookup."""
+        return {self.nodes[uid].name: self.nodes[uid].node_id for uid in self.nodes}
 
     def _broadcast_node_directory(self) -> None:
         """Push the current name->id directory to every live node so their

@@ -252,12 +252,15 @@ class NodeRef:
     # Latest execution telemetry the node pushed (NODE_STATS). Node-authoritative
     # cache like serialized_state / last_error; surfaced to the browser.
     node_stats: Optional[Dict[str, Any]] = field(default=None, repr=False, compare=False)
-    # Stable identity for the persistence layer: a uuid minted once by the
-    # manager (Manager.add_node), persisted in the .gfi, and carried across
-    # respawns/reloads. `membership` records sub-patch membership (set by the
-    # grouping runtime; None for a top-level leaf). Identity bookkeeping, so
-    # excluded from dataclass equality.
-    member_uid: Optional[str] = field(default=None, repr=False, compare=False)
+    # The UNIVERSAL node identity: a uuid minted once by the manager
+    # (Manager.add_node), persisted in the .gfi, carried across respawns/reloads,
+    # and the key EVERYTHING references the node by (container, links, membership,
+    # data plane, frontend). Identity bookkeeping, so excluded from dataclass equality.
+    uid: Optional[str] = field(default=None, repr=False, compare=False)
+    # Mutable DISPLAY name (e.g. "oscillator0", or a qualified "subpatch0::filter").
+    # For display + `nd()` resolution ONLY — never a reference key, so it can be
+    # renamed freely without touching anything that points at the node.
+    name: Optional[str] = field(default=None, repr=False, compare=False)
     membership: Optional[Dict[str, Any]] = field(default=None, repr=False, compare=False)
     # How many times the manager's liveness supervisor has respawned this node
     # after its process crashed. Carried across respawns; surfaced to the UI so a
