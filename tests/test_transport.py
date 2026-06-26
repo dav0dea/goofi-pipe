@@ -25,6 +25,7 @@ from goofi.transport import (
     open_publisher,
     open_subscriber,
     set_instance_id,
+    view_service_name,
 )
 
 _EVT = ".evt"
@@ -34,6 +35,15 @@ import numpy as np
 
 def _fresh_iid():
     set_instance_id(f"t-{uuid.uuid4().hex[:8]}")
+
+
+def test_view_service_name_suffixes_the_data_service():
+    # The reduced viewer stream (Option C) lives on `<dataservice>.view`. The node
+    # publishes there and the manager subscribes — both must build the SAME name,
+    # so the suffix lives in one helper, not two raw `+ ".view"` concatenations.
+    _fresh_iid()
+    assert view_service_name("nodeA", "out") == data_service_name("nodeA", "out") + ".view"
+    assert view_service_name("nodeA", "out").endswith(".view")
 
 
 # ---------------------------------------------------------------------------

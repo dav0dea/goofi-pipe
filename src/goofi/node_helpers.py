@@ -40,6 +40,7 @@ from goofi.transport import (
     open_publisher,
     open_subscriber,
     status_service_name,
+    view_service_name,
 )
 
 
@@ -457,7 +458,7 @@ class NodeRef:
         """Subscribe to the node's REDUCED viewer stream (`<dataservice>.view`),
         provisioned by REGISTER_VIEWER. Carries small node-reduced GOOF frames the
         manager relays to browsers verbatim (Option C)."""
-        return open_subscriber(self.data_service_for(slot_name_out) + ".view", in_process=False, latest_wins=True)
+        return open_subscriber(view_service_name(self.node_id, slot_name_out), in_process=False, latest_wins=True)
 
     def set_data_handler(
         self, slot_name_out: str, callback: Optional[Callable], *, raw: bool = False, view: bool = False

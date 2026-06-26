@@ -60,6 +60,14 @@ def data_service_name(src_node: str, slot_name: str) -> str:
     return f"goofi.{get_instance_id()}.data.{src_node}.{slot_name}"
 
 
+def view_service_name(src_node: str, slot_name: str) -> str:
+    """Service name for a slot's REDUCED viewer stream (Option C): the node
+    publishes node-reduced frames here and the manager subscribes, separate from
+    the full node↔node `data_service_name`. The single source of the `.view`
+    suffix — node and manager must agree on it byte-for-byte."""
+    return data_service_name(src_node, slot_name) + ".view"
+
+
 def ctrl_service_name(node_name: str) -> str:
     return f"goofi.{get_instance_id()}.ctrl.{node_name}"
 

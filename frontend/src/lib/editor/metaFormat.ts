@@ -91,9 +91,9 @@ export function reconstructMeta(meta: Record<string, unknown>): Record<string, u
 }
 
 /** Top-level entries of a meta dict, in insertion order. Reduction artifacts are
- * reconstructed to the node's true meta (see {@link reconstructMeta}); bridge-
- * namespaced `__*__` keys (e.g. the adapter's `__view__` stats) are transport
- * plumbing, not node metadata, so they're hidden from the inspector. */
+ * reconstructed to the node's true meta (see {@link reconstructMeta}); any
+ * `__*__`-namespaced key (the codebase's idiom for internal, non-user markers) is
+ * plumbing, not node metadata, so it's hidden from the inspector. */
 export function metaEntries(meta: unknown): [string, unknown][] {
 	if (!isPlainObject(meta)) return [];
 	return Object.entries(reconstructMeta(meta)).filter(

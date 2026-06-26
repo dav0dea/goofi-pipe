@@ -12,8 +12,8 @@ describe('metaEntries', () => {
 		expect(metaEntries(null)).toEqual([]);
 		expect(metaEntries(undefined)).toEqual([]);
 	});
-	it('hides bridge-namespaced __*__ keys (e.g. the adapter __view__)', () => {
-		expect(metaEntries({ sfreq: 250, __view__: { stats: {} } })).toEqual([['sfreq', 250]]);
+	it('hides __*__-namespaced internal-marker keys', () => {
+		expect(metaEntries({ sfreq: 250, __internal__: { stats: {} } })).toEqual([['sfreq', 250]]);
 	});
 });
 

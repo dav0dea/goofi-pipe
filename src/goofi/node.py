@@ -48,6 +48,7 @@ from goofi.transport import (
     self_trigger_service_name,
     set_instance_id,
     status_service_name,
+    view_service_name,
 )
 
 
@@ -809,7 +810,7 @@ class Node(ABC):
         existing = self._view_pubs.get(slot_name)
         if existing is not None:
             return existing
-        service = data_service_name(self.node_id, slot_name) + ".view"
+        service = view_service_name(self.node_id, slot_name)
         pub, notif = open_publisher(service, in_process=False, latest_wins=True)
         self._view_pubs[slot_name] = (pub, notif)
         return pub, notif
