@@ -56,12 +56,49 @@ function formatInline(v: unknown): string {
 	return formatScalar(v);
 }
 
-/** Top-level entries of a meta dict, in insertion order. Bridge-namespaced
- * `__*__` keys (e.g. the adapter's `__view__` stats) are transport plumbing, not
- * node metadata, so they're hidden from the inspector. */
+/** Reconstruct the TRUE original meta from a node-reduced frame (Option C, Change
+ * C2). A reduced frame carries `meta.reduced = {axis: {orig_len, method, orig_coord?}}`
+ * plus a reduced `shape` + co-reduced `channels`; the inspector must show what the
+ * node actually produced, not the reduction artifacts. So we restore each reduced
+ * axis's original length into `shape`, restore its coord from `orig_coord` when
+ * carried (else drop the co-reduced coord — it's an artifact, not real metadata),
+ * and hide the `reduced` key itself. No `reduced` block → returns the meta as-is. */
+export function reconstructMeta(meta: Record<string, unknown>): Record<string, unknown> {
+	const reduced = meta['reduced'];
+	if (!isPlainObject(reduced)) return meta;
+	const out: Record<string, unknown> = { ...meta };
+	delete out['reduced'];
+	const shape = Array.isArray(meta['shape']) ? [...(meta['shape'] as number[])] : null;
+	const channels = isPlainObject(meta['channels'])
+		? { ...(meta['channels'] as Record<string, unknown>) }
+		: null;
+	for (const [axisStr, info] of Object.entries(reduced)) {
+		if (!isPlainObject(info)) continue;
+		const axis = Number(axisStr);
+		const origLen = typeof info['orig_len'] === 'number' ? (info['orig_len'] as number) : null;
+		if (shape && origLen !== null && Number.isInteger(axis) && axis >= 0 && axis < shape.length) {
+			shape[axis] = origLen;
+		}
+		if (channels) {
+			const key = 'dim' + axisStr;
+			if (Array.isArray(info['orig_coord'])) channels[key] = info['orig_coord'];
+			else delete channels[key];
+		}
+	}
+	if (shape) out['shape'] = shape;
+	if (channels) out['channels'] = channels;
+	return out;
+}
+
+/** Top-level entries of a meta dict, in insertion order. Reduction artifacts are
+ * reconstructed to the node's true meta (see {@link reconstructMeta}); bridge-
+ * namespaced `__*__` keys (e.g. the adapter's `__view__` stats) are transport
+ * plumbing, not node metadata, so they're hidden from the inspector. */
 export function metaEntries(meta: unknown): [string, unknown][] {
 	if (!isPlainObject(meta)) return [];
-	return Object.entries(meta).filter(([k]) => !(k.startsWith('__') && k.endsWith('__')));
+	return Object.entries(reconstructMeta(meta)).filter(
+		([k]) => !(k.startsWith('__') && k.endsWith('__'))
+	);
 }
 
 /** Readable text for one meta value: lists inline, dicts indented multi-line. */
