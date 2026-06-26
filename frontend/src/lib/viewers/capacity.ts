@@ -50,7 +50,8 @@ export function viewSpecForKind(
 	const h = px(height);
 	let axes: AxisSpec[];
 	if (kind === 'line') {
-		// 1-D data: axis 0 and -1 both canonicalize to axis 0, last-wins → envelope.
+		// 1-D data: axis 0 and -1 both canonicalize to axis 0; the node resolves the
+		// collision by richness (envelope > subsample), so the waveform keeps its peaks.
 		// 2-D (C,N): axis 0 caps channels (subsample), axis -1 envelopes the samples.
 		axes = [
 			{ axis: 0, max: Math.min(h, MAX_ROWS), method: 'subsample' },

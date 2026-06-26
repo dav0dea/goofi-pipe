@@ -229,10 +229,17 @@ def reduce_for_view(data: Data, spec: Optional[ViewSpec]) -> Data:
             return data
         ndim = arr.ndim
 
-        # Canonicalize axes to positive; de-dup (last spec for an axis wins).
+        # Canonicalize axes to positive and de-dup. Two raw axes can collapse onto
+        # one canonical axis (a 1-D line sends channel axis 0 AND sample axis -1,
+        # both -> 0); resolve by RICHNESS, not iteration order, so the waveform
+        # keeps its peak-preserving envelope instead of an aliased subsample.
+        # (Mirrors fold_viewspecs; positional last-wins silently dropped peaks.)
         by_axis = {}
         for a in spec.axes:
-            by_axis[a.axis % ndim] = a
+            c = a.axis % ndim
+            prev = by_axis.get(c)
+            if prev is None or _RICHNESS.get(a.method, 0) >= _RICHNESS.get(prev.method, 0):
+                by_axis[c] = a
         if not by_axis:
             return data
 

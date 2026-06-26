@@ -260,3 +260,25 @@ def test_area_reduction_preserves_aspect_wide():
     ]})
     red = reduce_for_view(img, spec)
     assert red.data.shape == (720, 1280, 3)
+
+
+# ---- HIGH bug regression: 1-D line must envelope (peaks), not subsample --------
+
+def test_folded_line_spec_envelopes_1d_not_subsample():
+    """The line viewer sends a channel-subsample (axis 0) AND a sample-envelope
+    (axis -1). After the manager fold sorts axes ascending, BOTH collapse onto
+    axis 0 for a 1-D buffer; the node must keep the RICHER (envelope) so a
+    single-channel waveform preserves its peaks instead of being aliased-subsampled."""
+    from goofi.node_reduce import fold_viewspecs
+
+    line = {"axes": [
+        {"axis": 0, "max": 300, "method": "subsample"},
+        {"axis": -1, "max": 1600, "method": "envelope"},
+    ], "version": 1}
+    folded = fold_viewspecs([line])               # exactly what the manager sends the node
+    spec = viewspec_from_dict(folded)
+    n = 10000
+    data = Data(DataType.ARRAY, np.linspace(-1, 1, n).astype(np.float32), {})
+    red = reduce_for_view(data, spec)
+    assert red.meta["reduced"]["0"]["method"] == "envelope"   # NOT 'subsample'
+    assert red.data.shape == (3200,)                          # 2*W envelope, not (300,) subsample
