@@ -391,6 +391,20 @@ class NodeRef:
     def unregister_subscriber(self, slot_name_out: str) -> None:
         self._send(Message(MessageType.UNREGISTER_SUBSCRIBER, {"slot_name_out": slot_name_out}))
 
+    def register_viewer(self, slot_name_out: str) -> None:
+        """Tell the node a browser viewer attached to this output slot (Option C):
+        the node starts producing + offering reduced frames on the slot's `.view`
+        service even with no node consumer."""
+        self._send(Message(MessageType.REGISTER_VIEWER, {"slot_name_out": slot_name_out}))
+
+    def unregister_viewer(self, slot_name_out: str) -> None:
+        self._send(Message(MessageType.UNREGISTER_VIEWER, {"slot_name_out": slot_name_out}))
+
+    def set_viewspec(self, slot_name_out: str, spec: Dict[str, Any]) -> None:
+        """Push the folded per-axis ViewSpec the node reduces this slot's viewer
+        frames to. `spec` = `{axes:[{axis,max,method}], version}` (a plain dict)."""
+        self._send(Message(MessageType.SET_VIEWSPEC, {"slot_name_out": slot_name_out, "spec": spec}))
+
     def send_directory(self, directory: Dict[str, str]) -> None:
         """Push the manager's current display-name -> node_id map so this
         node's expression engines can resolve `nd('name')` references to the
@@ -429,7 +443,15 @@ class NodeRef:
         # SUBSCRIBE_INPUT wiring between same-group peers.
         return open_subscriber(self.data_service_for(slot_name_out), in_process=False, latest_wins=True)
 
-    def set_data_handler(self, slot_name_out: str, callback: Optional[Callable], *, raw: bool = False) -> None:
+    def open_view_subscriber(self, slot_name_out: str) -> tuple[Subscriber, Listener]:
+        """Subscribe to the node's REDUCED viewer stream (`<dataservice>.view`),
+        provisioned by REGISTER_VIEWER. Carries small node-reduced GOOF frames the
+        manager relays to browsers verbatim (Option C)."""
+        return open_subscriber(self.data_service_for(slot_name_out) + ".view", in_process=False, latest_wins=True)
+
+    def set_data_handler(
+        self, slot_name_out: str, callback: Optional[Callable], *, raw: bool = False, view: bool = False
+    ) -> None:
         """Register / unregister a callback invoked on every fresh frame.
 
         With `raw=False` (default) the callback is
@@ -443,7 +465,13 @@ class NodeRef:
         across all registered output slots. Pass `callback=None` to unregister.
 
         Side-effect: also sends `REGISTER_SUBSCRIBER` / `UNREGISTER_SUBSCRIBER`
-        so the producing node knows to start / stop publishing on the slot.
+        (or `REGISTER_VIEWER` / `UNREGISTER_VIEWER` when `view=True`) so the
+        producing node knows to start / stop publishing on the slot.
+
+        With `view=True` (Option C) the handler subscribes to the node's REDUCED
+        `.view` stream instead of the full output, registers as a *viewer* (so the
+        node reduces per its folded ViewSpec — see `set_viewspec`), and forwards
+        the node-reduced bytes verbatim (`raw` is forced True).
         """
         with self._data_handlers_lock:
             prev = self._data_handlers.pop(slot_name_out, None)
@@ -456,14 +484,23 @@ class NodeRef:
                         endpoint.close()
                     except Exception:
                         pass
-                self.unregister_subscriber(slot_name_out)
+                # Unregister on the same plane we registered on (stored on prev).
+                if prev[4]:
+                    self.unregister_viewer(slot_name_out)
+                else:
+                    self.unregister_subscriber(slot_name_out)
 
             if callback is None:
                 return
 
-            self.register_subscriber(slot_name_out)
-            sub, listener = self.open_output_subscriber(slot_name_out)
-            self._data_handlers[slot_name_out] = (sub, listener, callback, raw)
+            if view:
+                raw = True  # reduced frames are pre-encoded; forward verbatim
+                self.register_viewer(slot_name_out)
+                sub, listener = self.open_view_subscriber(slot_name_out)
+            else:
+                self.register_subscriber(slot_name_out)
+                sub, listener = self.open_output_subscriber(slot_name_out)
+            self._data_handlers[slot_name_out] = (sub, listener, callback, raw, view)
             self._data_waitset.attach(listener)
             self._data_waitset_dirty.set()
 
@@ -489,7 +526,7 @@ class NodeRef:
                 self._data_waitset_dirty.wait(timeout=0.5)
                 self._data_waitset_dirty.clear()
                 continue
-            listener_to_slot = {id(l): (n, s, cb, raw) for n, (s, l, cb, raw) in handlers.items()}
+            listener_to_slot = {id(l): (n, s, cb, raw) for n, (s, l, cb, raw, view) in handlers.items()}
             fired = self._data_waitset.wait(0.25)
             for listener in fired:
                 entry = listener_to_slot.get(id(listener))

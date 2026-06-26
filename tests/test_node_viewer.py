@@ -248,3 +248,37 @@ def test_viewer_path_delivers_reduced_frames_end_to_end():
         _t.sleep(0.1)
     finally:
         mgr.terminate(notify_gui=False)
+
+
+# ---- Phase 3a: NodeRef viewer API (manager-side) -----------------------------
+
+def test_noderef_view_handler_delivers_reduced_frames():
+    """The NodeRef viewer API end-to-end: set_viewspec + a view-plane data handler
+    (REGISTER_VIEWER + subscribe to .view + raw pump) delivers reduced frames."""
+    import time as _t
+
+    from goofi.codec import decode_data as _decode
+    from .test_manager import _bare_manager
+
+    mgr = _bare_manager()
+    try:
+        osc = mgr.add_node("Oscillator", "inputs")
+        ref = mgr.nodes[osc]
+        ref.wait_for_state(timeout=2.0)
+
+        ref.set_viewspec("out", {
+            "axes": [{"axis": -1, "max": 200, "method": "envelope"}], "version": 1})
+        frames = []
+        ref.set_data_handler("out", lambda _nr, _s, buf: frames.append(buf),
+                             raw=True, view=True)
+
+        deadline = _t.time() + 6.0
+        while not frames and _t.time() < deadline:
+            _t.sleep(0.02)
+        ref.set_data_handler("out", None, view=True)
+
+        assert frames, "view handler received no reduced frames"
+        red = _decode(frames[-1])
+        assert red.dtype == DataType.ARRAY
+    finally:
+        mgr.terminate(notify_gui=False)
