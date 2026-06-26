@@ -49,17 +49,19 @@ def test_group_and_expand_rewrite_nd_cross_refs():
     try:
         a = mgr.add_node("Oscillator", "inputs")
         b = mgr.add_node("Oscillator", "inputs")
-        rb = mgr.nodes[b]
+        ra, rb = mgr.nodes[a], mgr.nodes[b]
         rb.wait_for_state(timeout=2.0)
         grp, pname = "oscillator", "frequency"
-        rb.set_expression(grp, pname, f"nd('{a}')", enabled=True)
+        # nd() resolves by DISPLAY name, so the expression references a's name.
+        a_name = ra.name
+        rb.set_expression(grp, pname, f"nd('{a_name}')", enabled=True)
 
-        inst = mgr.group_nodes([a, b])
-        new_b = f"{inst}{SUBPATCH_SEP}{b}"
-        qualified_a = f"{inst}{SUBPATCH_SEP}{a}"
-        assert mgr.nodes[new_b].params[grp][pname].expression == f"nd('{qualified_a}')"
+        inst = mgr.group_nodes([a, b])  # members referenced by uid
+        # display names become qualified; the nd literal follows
+        qualified_a = f"{inst}{SUBPATCH_SEP}{a_name}"
+        assert mgr.nodes[b].params[grp][pname].expression == f"nd('{qualified_a}')"
 
         mgr.expand_instance(inst)
-        assert mgr.nodes[b].params[grp][pname].expression == f"nd('{a}')"
+        assert mgr.nodes[b].params[grp][pname].expression == f"nd('{a_name}')"
     finally:
         mgr.terminate(notify_gui=False)

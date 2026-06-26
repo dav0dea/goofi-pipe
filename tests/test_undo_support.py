@@ -3,64 +3,60 @@
 The undo system lives entirely in the frontend (see
 ``docs/superpowers/specs/2026-06-19-undo-redo-redesign-design.md``). It needs
 NO new backend ops — undo-of-delete restores a node by re-adding it under its
-*reused display name*, and the bridge ``add_node`` op already accepts ``name``
-and ``params``. These tests pin the two backend behaviours that frontend
-contract depends on, so a future backend change can't silently break undo:
+*stable uid* (``member_uid`` passthrough), and the bridge ``add_node`` op already
+accepts ``name``, ``params`` and ``member_uid``. These tests pin the backend
+behaviours that contract depends on:
 
-  1. a freed display name is reused (so undo-of-delete restores identity); and
-  2. forcing an already-occupied name raises (so undo-of-delete fails loudly
-     rather than corrupting the graph — the frontend surfaces a toast).
-
-Gate decision (plan Phase 3.4): because both hold against the current backend,
-the optional bridge changes O1 (member_uid passthrough), O2 (displaced_link in
-the add_link response) and O3 (group_nodes rename metadata) are NOT needed for
-the core feature and are deferred (spec §7, §11).
+  1. the stable uid is preserved across a delete→re-add (so links, panel
+     bindings and selection — all keyed by uid — reconnect to the same node); and
+  2. the auto-numbered display name is reused after a delete (a UX nicety; the
+     name is display-only and no longer an identity).
 """
+from .test_manager import _bare_manager
 
-import pytest
 
-from goofi.manager import NodeContainer
-
-from .utils import DummyNode
+def test_uid_is_preserved_across_delete_and_readd():
+    """Undo-of-delete re-adds the node with its captured uid. Because everything
+    keys on the uid, the restored node IS the same node to links/selection."""
+    mgr = _bare_manager(use_multiprocessing=False)
+    try:
+        uid = mgr.add_node("Oscillator", "inputs")
+        name = mgr.nodes[uid].name
+        mgr.remove_node(uid)
+        # Undo passes the captured uid back through add_node (member_uid).
+        restored = mgr.add_node("Oscillator", "inputs", name=name, member_uid=uid)
+        assert restored == uid  # exact identity restored
+        assert mgr.nodes[uid].name == name
+    finally:
+        mgr.terminate(notify_gui=False)
 
 
 def test_auto_assigned_display_name_is_reused_after_remove():
-    """Delete ``dummy0`` and the next auto-named node takes ``dummy0`` again.
+    """Delete ``oscillator0`` and the next auto-named Oscillator takes the name
+    again — a display nicety, independent of the (always-fresh) uid."""
+    mgr = _bare_manager(use_multiprocessing=False)
+    try:
+        a = mgr.add_node("Oscillator", "inputs")
+        assert mgr.nodes[a].name == "oscillator0"
+        b = mgr.add_node("Oscillator", "inputs")
+        assert mgr.nodes[b].name == "oscillator1"
 
-    Undo-of-delete re-adds the node under the exact name it had; this reuse is
-    what lets links and panel bindings (keyed by display name) reconnect.
-    """
-    cont = NodeContainer()
-    n0 = cont.add_node("dummy", DummyNode.create_local()[0])
-    assert n0 == "dummy0"
-    n1 = cont.add_node("dummy", DummyNode.create_local()[0])
-    assert n1 == "dummy1"
-
-    cont.remove_node("dummy0")
-    # The freed slot is reused, not skipped to dummy2.
-    reused = cont.add_node("dummy", DummyNode.create_local()[0])
-    assert reused == "dummy0"
-    for name in ("dummy0", "dummy1"):
-        cont[name].terminate()
-
-
-def test_force_name_restores_exact_freed_name():
-    """``force_name=True`` (the path the bridge uses for an explicit ``name``)
-    stores the requested name verbatim when it is free — so undo can put the
-    node back as e.g. ``oscillator0``."""
-    cont = NodeContainer()
-    n0 = cont.add_node("dummy", DummyNode.create_local()[0])  # -> dummy0
-    cont.remove_node(n0)
-    restored = cont.add_node("dummy0", DummyNode.create_local()[0], force_name=True)
-    assert restored == "dummy0"
-    cont["dummy0"].terminate()
+        mgr.remove_node(a)
+        # The freed display name is reused, not skipped to oscillator2.
+        c = mgr.add_node("Oscillator", "inputs")
+        assert mgr.nodes[c].name == "oscillator0"
+        assert c != a  # ...but it is a brand-new node (fresh uid)
+    finally:
+        mgr.terminate(notify_gui=False)
 
 
-def test_force_name_collision_raises():
-    """Forcing a name that is already taken raises — the frontend relies on this
-    to fail an undo atomically (and toast) instead of clobbering a live node."""
-    cont = NodeContainer()
-    cont.add_node("dummy", DummyNode.create_local()[0])  # occupies dummy0
-    with pytest.raises(KeyError):
-        cont.add_node("dummy0", DummyNode.create_local()[0], force_name=True)
-    cont["dummy0"].terminate()
+def test_duplicate_member_uid_is_reminted():
+    """Passing a uid that's already live mints a fresh one instead of colliding —
+    the container's single uid index can never hold two nodes under one key."""
+    mgr = _bare_manager(use_multiprocessing=False)
+    try:
+        a = mgr.add_node("Oscillator", "inputs")
+        b = mgr.add_node("Oscillator", "inputs", member_uid=a)  # a is still live
+        assert b != a and b in mgr.nodes and a in mgr.nodes
+    finally:
+        mgr.terminate(notify_gui=False)

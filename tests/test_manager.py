@@ -46,11 +46,24 @@ def _bare_manager(use_multiprocessing: bool = True) -> Manager:
 
 
 def _build_simple_graph(mgr: Manager) -> tuple[str, str]:
-    """Oscillator → Select with a 0:5 include filter."""
+    """Oscillator → Select with a 0:5 include filter. Returns their UIDs."""
     osc = mgr.add_node("Oscillator", "inputs")
     sel = mgr.add_node("Select", "array", params={"select": {"include": "0:5"}})
     mgr.add_link(osc, sel, "out", "data")
     return osc, sel
+
+
+def _member(mgr: Manager, inst: str, local: str) -> str:
+    """The live UID of the member with local name `local` in instance `inst`."""
+    for uid, l in mgr._instances[inst]["members"].items():
+        if l == local:
+            return uid
+    raise KeyError(f"{inst}:{local}")
+
+
+def _disp(mgr: Manager, uid: str) -> str:
+    """The display name of a node by uid."""
+    return mgr.nodes[uid].name
 
 
 def test_serialize_patch_returns_yaml_without_writing(tmp_path):
@@ -76,8 +89,8 @@ def test_save_load_roundtrip_preserves_uids(tmp_path):
     mgr = _bare_manager(use_multiprocessing=False)
     try:
         osc, sel = _build_simple_graph(mgr)
-        uids_before = {name: mgr.nodes[name].member_uid for name in (osc, sel)}
-        assert all(uids_before.values())
+        uids_before = {osc, sel}  # add_node returns the uid (the container key)
+        assert all(mgr.nodes[u].uid == u for u in (osc, sel))
         fp = str(tmp_path / "p.gfi")
         mgr.save(fp, overwrite=True)
     finally:
@@ -86,36 +99,8 @@ def test_save_load_roundtrip_preserves_uids(tmp_path):
     mgr2 = _bare_manager(use_multiprocessing=False)
     try:
         mgr2.load(fp)
-        uids_after = {name: mgr2.nodes[name].member_uid for name in (osc, sel)}
-        assert uids_after == uids_before  # uid is stable across save/load
-    finally:
-        mgr2.terminate()
-
-
-def test_load_v1_flat_patch_still_works(tmp_path):
-    # A legacy flat patch (no `version` key) must still load and get fresh uids.
-    import yaml as _yaml
-    mgr = _bare_manager(use_multiprocessing=False)
-    try:
-        _build_simple_graph(mgr)
-        v2_text = mgr.serialize_patch()
-        doc = _yaml.load(v2_text, Loader=_yaml.FullLoader)
-    finally:
-        mgr.terminate()
-    # Strip to the legacy flat shape (drop uids too).
-    flat = {"nodes": {}, "links": doc["root"]["links"]}
-    for name, n in doc["root"]["nodes"].items():
-        n.pop("uid", None)
-        flat["nodes"][name] = n
-    fp = tmp_path / "legacy.gfi"
-    fp.write_text(_yaml.dump(flat, sort_keys=False))
-
-    mgr2 = _bare_manager(use_multiprocessing=False)
-    try:
-        mgr2.load(str(fp))
-        assert len(mgr2.nodes) == 2
-        # fresh uids minted on load
-        assert all(mgr2.nodes[name].member_uid for name in mgr2.nodes)
+        assert set(mgr2.nodes) == uids_before  # uid is stable across save/load
+        assert all(mgr2.nodes[u].uid == u for u in uids_before)
     finally:
         mgr2.terminate()
 
@@ -123,7 +108,7 @@ def test_load_v1_flat_patch_still_works(tmp_path):
 def _build_grouped_graph(mgr):
     """osc → sel0 → sel1, with [sel0, sel1] grouped into one sub-patch.
 
-    Returns (osc_name, inst_id, members) where members maps display name -> local.
+    Returns (osc_uid, inst_id). Member uids are reached via `_member(mgr, inst, local)`.
     """
     osc = mgr.add_node("Oscillator", "inputs")
     sel0 = mgr.add_node("Select", "array", params={"select": {"include": "0:5"}})
@@ -140,12 +125,13 @@ def test_group_nodes_namespaces_members_and_records_state():
     try:
         osc, inst = _build_grouped_graph(mgr)
         assert inst == "subpatch0"
-        assert "subpatch0::select0" in mgr.nodes
-        assert "subpatch0::select1" in mgr.nodes
-        assert "select0" not in mgr.nodes  # renamed in place
-        assert mgr._membership["subpatch0::select0"] == "subpatch0"
-        # external link followed the rename
-        assert {"node_out": osc, "node_in": "subpatch0::select0", "slot_out": "out", "slot_in": "data"} in [
+        s0, s1 = _member(mgr, inst, "select0"), _member(mgr, inst, "select1")
+        # members keep their uids; only the DISPLAY name is qualified
+        assert _disp(mgr, s0) == "subpatch0::select0"
+        assert _disp(mgr, s1) == "subpatch0::select1"
+        assert mgr._membership[s0] == "subpatch0"
+        # external link is unchanged (it references the member uid, not the name)
+        assert {"node_out": osc, "node_in": s0, "slot_out": "out", "slot_in": "data"} in [
             dict(link) for link in mgr.links
         ]
         # interface derived: select0.data is a boundary input (fed by osc)
@@ -164,6 +150,7 @@ def test_subpatch_save_load_roundtrip_and_expand(tmp_path):
         import yaml as _yaml
         doc = _yaml.load(open(fp), Loader=_yaml.FullLoader)
         assert "subpatch0" in doc["root"]["instances"]
+        # the saved instance is template-form: members keyed by LOCAL name
         assert set(doc["root"]["instances"]["subpatch0"]["members"]) == {"select0", "select1"}
         assert len(doc["root"]["instances"]["subpatch0"]["links"]) == 1  # internal sel0->sel1
     finally:
@@ -172,25 +159,22 @@ def test_subpatch_save_load_roundtrip_and_expand(tmp_path):
     mgr2 = _bare_manager(use_multiprocessing=False)
     try:
         mgr2.load(fp)
-        assert "subpatch0::select0" in mgr2.nodes and "subpatch0::select1" in mgr2.nodes
-        assert mgr2._membership["subpatch0::select1"] == "subpatch0"
-        assert set(mgr2._instances["subpatch0"]["members"]) == {
-            "subpatch0::select0",
-            "subpatch0::select1",
-        }
-        # both the external and internal links are restored
+        s0, s1 = _member(mgr2, "subpatch0", "select0"), _member(mgr2, "subpatch0", "select1")
+        assert s0 in mgr2.nodes and s1 in mgr2.nodes
+        assert mgr2._membership[s1] == "subpatch0"
+        assert _disp(mgr2, s0) == "subpatch0::select0"
+        # both the external and internal links are restored (by uid)
         links = [dict(link) for link in mgr2.links]
-        assert {"node_out": osc, "node_in": "subpatch0::select0", "slot_out": "out", "slot_in": "data"} in links
-        assert any(l["node_out"] == "subpatch0::select0" and l["node_in"] == "subpatch0::select1" for l in links)
+        assert {"node_out": osc, "node_in": s0, "slot_out": "out", "slot_in": "data"} in links
+        assert any(l["node_out"] == s0 and l["node_in"] == s1 for l in links)
 
-        # expand dissolves the group back to bare names
+        # expand dissolves the group back to bare display names (uids unchanged)
         restored = mgr2.expand_instance("subpatch0")
-        assert set(restored) == {"select0", "select1"}
-        assert "subpatch0::select0" not in mgr2.nodes
-        assert "select0" in mgr2.nodes
+        assert set(restored) == {s0, s1}  # returns member uids
+        assert {_disp(mgr2, u) for u in restored} == {"select0", "select1"}
         assert mgr2._instances == {} and mgr2._membership == {}
         links2 = [dict(link) for link in mgr2.links]
-        assert {"node_out": osc, "node_in": "select0", "slot_out": "out", "slot_in": "data"} in links2
+        assert {"node_out": osc, "node_in": s0, "slot_out": "out", "slot_in": "data"} in links2
     finally:
         mgr2.terminate()
 
@@ -205,8 +189,8 @@ def test_shared_param_edit_mirrors_to_sibling():
         assert mgr._instances[inst]["def_id"] == def_id
         assert mgr._instances[inst2]["def_id"] == def_id
         # edit a param on instance A's select0 → mirrors to instance B's select0
-        mgr.update_param(f"{inst}::select0", "select", "include", "3:9")
-        assert mgr.nodes[f"{inst2}::select0"].params["select"]["include"].value == "3:9"
+        mgr.update_param(_member(mgr, inst, "select0"), "select", "include", "3:9")
+        assert mgr.nodes[_member(mgr, inst2, "select0")].params["select"]["include"].value == "3:9"
         # the definition (save source of truth) also reflects the edit
         assert mgr._definitions[def_id]["members"]["select0"]["params"]["select"]["include"] == "3:9"
     finally:
@@ -217,16 +201,16 @@ def test_add_member_node_lands_in_subpatch():
     mgr = _bare_manager(use_multiprocessing=False)
     try:
         osc, inst = _build_grouped_graph(mgr)  # unique sub-patch select0, select1
-        disp = mgr.add_member_node(inst, "Buffer", "signal")
-        assert disp == f"{inst}::buffer0"
-        assert disp in mgr.nodes
-        assert mgr._membership[disp] == inst
-        assert mgr._instances[inst]["members"][disp] == "buffer0"
+        uid = mgr.add_member_node(inst, "Buffer", "signal")
+        assert _disp(mgr, uid) == f"{inst}::buffer0"
+        assert uid in mgr.nodes
+        assert mgr._membership[uid] == inst
+        assert mgr._instances[inst]["members"][uid] == "buffer0"
         # the node carries the membership marker the bridge/save read
-        assert mgr.nodes[disp].membership == {"instance": inst, "local_name": "buffer0"}
+        assert mgr.nodes[uid].membership == {"instance": inst, "local_name": "buffer0"}
         # a fresh add picks the next free local
-        disp2 = mgr.add_member_node(inst, "Buffer", "signal")
-        assert disp2 == f"{inst}::buffer1"
+        uid2 = mgr.add_member_node(inst, "Buffer", "signal")
+        assert _disp(mgr, uid2) == f"{inst}::buffer1"
     finally:
         mgr.terminate()
 
@@ -238,12 +222,12 @@ def test_add_member_node_mirrors_to_shared_siblings():
         def_id = mgr.share_instance(inst)
         inst2 = mgr.instantiate_definition(def_id)
         # add a member to instance A → mirrors into the def and sibling B
-        disp = mgr.add_member_node(inst, "Buffer", "signal")
-        local = mgr._instances[inst]["members"][disp]
+        uid = mgr.add_member_node(inst, "Buffer", "signal")
+        local = mgr._instances[inst]["members"][uid]
         assert local in mgr._definitions[def_id]["members"]
-        sib_disp = f"{inst2}::{local}"
-        assert sib_disp in mgr.nodes
-        assert mgr._instances[inst2]["members"][sib_disp] == local
+        sib_uid = _member(mgr, inst2, local)
+        assert sib_uid in mgr.nodes
+        assert mgr._instances[inst2]["members"][sib_uid] == local
         # both families stay strict mirrors: same member locals on each side
         assert set(mgr._instances[inst]["members"].values()) == set(
             mgr._instances[inst2]["members"].values()
@@ -255,15 +239,16 @@ def test_add_member_node_mirrors_to_shared_siblings():
 def test_output_boundary_resolves_for_data_route():
     # The collapsed sub-patch's output viewer opens /data/<inst>/<boundary>; the
     # data route splices that via resolve_boundary to the inner member's real
-    # (node, slot). Verify that mapping lands on a streaming node + output slot.
+    # (uid, slot). Verify that mapping lands on a streaming node + output slot.
     mgr = _bare_manager(use_multiprocessing=False)
     try:
         osc, inst = _build_grouped_graph(mgr)  # subpatch0 with select0, select1
-        out_slot = list(mgr.nodes[f"{inst}::select1"].output_slots)[0]
+        s1 = _member(mgr, inst, "select1")
+        out_slot = list(mgr.nodes[s1].output_slots)[0]
         bnd = mgr.add_boundary(inst, "out", "ARRAY")
         mgr.wire_boundary(inst, bnd, "select1", out_slot)
         node, slot = mgr.resolve_boundary(inst, bnd)
-        assert node == f"{inst}::select1" and slot == out_slot
+        assert node == s1 and slot == out_slot
         # data.py's preconditions: the resolved node is real and has that output.
         assert node in mgr.nodes
         assert slot in mgr.nodes[node].output_slots
@@ -283,8 +268,8 @@ def test_make_unique_detaches_and_gcs_definition():
         # def still referenced by `inst`
         assert def_id in mgr._definitions
         # editing inst2 no longer affects inst
-        mgr.update_param(f"{inst2}::select0", "select", "include", "7:8")
-        assert mgr.nodes[f"{inst}::select0"].params["select"]["include"].value != "7:8"
+        mgr.update_param(_member(mgr, inst2, "select0"), "select", "include", "7:8")
+        assert mgr.nodes[_member(mgr, inst, "select0")].params["select"]["include"].value != "7:8"
         # make the original unique too → definition is GC'd
         mgr.make_unique(inst)
         assert def_id not in mgr._definitions
@@ -310,7 +295,7 @@ def test_add_and_wire_boundary():
         mgr.wire_boundary(inst, bid, "buffer0", "val")
         e = mgr._instances[inst]["interface"][bid]
         assert e["inner_node"] == "buffer0" and e["inner_slot"] == "val"
-        assert mgr.resolve_boundary(inst, bid) == (f"{inst}::buffer0", "val")
+        assert mgr.resolve_boundary(inst, bid) == (_member(mgr, inst, "buffer0"), "val")
     finally:
         mgr.terminate()
 
@@ -361,10 +346,11 @@ def test_delete_unique_member_cleans_up_and_unwires():
         inst = mgr.group_nodes([b0, b1])
         bid = mgr.add_boundary(inst, "in", "ARRAY")
         mgr.wire_boundary(inst, bid, "buffer1", "val")
-        mgr.remove_node(f"{inst}::buffer1")
+        b1 = _member(mgr, inst, "buffer1")
+        mgr.remove_node(b1)
         # Member dropped from the instance + membership; boundary unwired (not dangling).
-        assert f"{inst}::buffer1" not in mgr._instances[inst]["members"]
-        assert f"{inst}::buffer1" not in mgr._membership
+        assert b1 not in mgr._instances[inst]["members"]
+        assert b1 not in mgr._membership
         assert mgr._instances[inst]["interface"][bid]["inner_node"] is None
         # Save no longer references the gone member.
         mgr.serialize_patch()
@@ -379,7 +365,7 @@ def test_delete_shared_member_blocked():
         def_id = mgr.share_instance(inst)
         mgr.instantiate_definition(def_id)
         with pytest.raises(ValueError):
-            mgr.remove_node(f"{inst}::buffer0")  # shared member — must make unique first
+            mgr.remove_node(_member(mgr, inst, "buffer0"))  # shared member — make unique first
     finally:
         mgr.terminate()
 
@@ -409,13 +395,13 @@ def test_external_splice_and_unsplice():
         inst = mgr.group_nodes([buf])
         bid = mgr.add_boundary(inst, "in", "ARRAY")
         mgr.wire_boundary(inst, bid, "buffer0", "val")
-        disp, slot = mgr.resolve_boundary(inst, bid)  # what the bridge resolves to
-        mgr.add_link(osc, disp, "out", slot)          # the spliced flat link
-        assert any(l["node_out"] == osc and l["node_in"] == disp and l["slot_in"] == slot for l in mgr.links)
+        uid, slot = mgr.resolve_boundary(inst, bid)  # what the bridge resolves to (uid)
+        mgr.add_link(osc, uid, "out", slot)          # the spliced flat link
+        assert any(l["node_out"] == osc and l["node_in"] == uid and l["slot_in"] == slot for l in mgr.links)
         # Deleting the boundary tears down its external wire.
         mgr.remove_boundary(inst, bid)
         assert bid not in mgr._instances[inst]["interface"]
-        assert not any(l["node_in"] == disp and l["slot_in"] == slot for l in mgr.links)
+        assert not any(l["node_in"] == uid and l["slot_in"] == slot for l in mgr.links)
     finally:
         mgr.terminate()
 
@@ -429,11 +415,12 @@ def test_rewire_boundary_resplices_external_link():
         inst = mgr.group_nodes([b0, b1])  # inst::buffer0, inst::buffer1
         bid = mgr.add_boundary(inst, "in", "ARRAY")
         mgr.wire_boundary(inst, bid, "buffer0", "val")
-        mgr.add_link(osc, f"{inst}::buffer0", "out", "val")  # external splice to buffer0
+        b0, b1 = _member(mgr, inst, "buffer0"), _member(mgr, inst, "buffer1")
+        mgr.add_link(osc, b0, "out", "val")  # external splice to buffer0
         # Re-wire the In node to buffer1 → its external link follows.
         mgr.wire_boundary(inst, bid, "buffer1", "val")
-        assert any(l["node_out"] == osc and l["node_in"] == f"{inst}::buffer1" and l["slot_in"] == "val" for l in mgr.links)
-        assert not any(l["node_in"] == f"{inst}::buffer0" and l["node_out"] == osc for l in mgr.links)
+        assert any(l["node_out"] == osc and l["node_in"] == b1 and l["slot_in"] == "val" for l in mgr.links)
+        assert not any(l["node_in"] == b0 and l["node_out"] == osc for l in mgr.links)
     finally:
         mgr.terminate()
 
@@ -483,16 +470,17 @@ def test_shared_member_pos_mirrors_to_sibling():
         osc, inst = _build_grouped_graph(mgr)
         def_id = mgr.share_instance(inst)
         inst2 = mgr.instantiate_definition(def_id)
+        a0, b0 = _member(mgr, inst, "select0"), _member(mgr, inst2, "select0")
         # Move a member inside instance A → mirrors to B's corresponding member.
-        changed = mgr.set_node_pos(f"{inst}::select0", (123, 456))
-        assert list(mgr.nodes[f"{inst}::select0"].gui_kwargs["pos"]) == [123, 456]
-        assert list(mgr.nodes[f"{inst2}::select0"].gui_kwargs["pos"]) == [123, 456]
+        changed = mgr.set_node_pos(a0, (123, 456))
+        assert list(mgr.nodes[a0].gui_kwargs["pos"]) == [123, 456]
+        assert list(mgr.nodes[b0].gui_kwargs["pos"]) == [123, 456]
         # Definition (save source of truth) records the pos too.
         assert list(mgr._definitions[def_id]["members"]["select0"]["gui_kwargs"]["pos"]) == [123, 456]
         # Both the moved node and its sibling are reported changed (for broadcasts).
-        assert set(changed) == {f"{inst}::select0", f"{inst2}::select0"}
+        assert set(changed) == {a0, b0}
         # A non-mirrored member (select1) is untouched in the sibling.
-        assert mgr.nodes[f"{inst2}::select1"].gui_kwargs.get("pos") != [123, 456]
+        assert mgr.nodes[_member(mgr, inst2, "select1")].gui_kwargs.get("pos") != [123, 456]
     finally:
         mgr.terminate()
 
@@ -503,18 +491,19 @@ def test_remove_instance_deletes_members_and_gcs_def():
         osc, inst = _build_grouped_graph(mgr)
         def_id = mgr.share_instance(inst)
         inst2 = mgr.instantiate_definition(def_id)
+        a0 = _member(mgr, inst, "select0")
         # Delete one shared instance → its members + links gone; def survives (inst2 holds it).
         mgr.remove_instance(inst)
         assert inst not in mgr._instances
-        assert f"{inst}::select0" not in mgr.nodes
-        assert f"{inst}::select0" not in mgr._membership
-        assert all(link["node_in"] != f"{inst}::select0" for link in mgr.links)
+        assert a0 not in mgr.nodes
+        assert a0 not in mgr._membership
+        assert all(link["node_in"] != a0 for link in mgr.links)
         assert def_id in mgr._definitions
         # Delete the last instance → orphaned definition is GC'd.
         mgr.remove_instance(inst2)
         assert def_id not in mgr._definitions
         assert mgr._instances == {}
-        assert all(not k.startswith(f"{inst2}::") for k in mgr._membership)
+        assert all(mgr._membership.get(u) != inst2 for u in mgr._membership)
     finally:
         mgr.terminate()
 
@@ -525,7 +514,7 @@ def test_shared_member_pos_survives_save_load(tmp_path):
         osc, inst = _build_grouped_graph(mgr)
         def_id = mgr.share_instance(inst)
         inst2 = mgr.instantiate_definition(def_id)
-        mgr.set_node_pos(f"{inst}::select0", (321, 654))
+        mgr.set_node_pos(_member(mgr, inst, "select0"), (321, 654))
         fp = str(tmp_path / "shared_pos.gfi")
         mgr.save(fp, overwrite=True)
     finally:
@@ -538,7 +527,7 @@ def test_shared_member_pos_survives_save_load(tmp_path):
         shared_ids = [iid for iid, i in mgr2._instances.items() if i["def_id"] == def_id]
         assert len(shared_ids) == 2
         for iid in shared_ids:
-            assert list(mgr2.nodes[f"{iid}::select0"].gui_kwargs["pos"]) == [321, 654]
+            assert list(mgr2.nodes[_member(mgr2, iid, "select0")].gui_kwargs["pos"]) == [321, 654]
     finally:
         mgr2.terminate()
 
@@ -547,9 +536,10 @@ def test_unique_member_pos_does_not_mirror():
     mgr = _bare_manager(use_multiprocessing=False)
     try:
         osc, inst = _build_grouped_graph(mgr)  # unique sub-patch
-        changed = mgr.set_node_pos(f"{inst}::select0", (10, 20))
-        assert list(mgr.nodes[f"{inst}::select0"].gui_kwargs["pos"]) == [10, 20]
-        assert changed == [f"{inst}::select0"]
+        s0 = _member(mgr, inst, "select0")
+        changed = mgr.set_node_pos(s0, (10, 20))
+        assert list(mgr.nodes[s0].gui_kwargs["pos"]) == [10, 20]
+        assert changed == [s0]
     finally:
         mgr.terminate()
 
@@ -561,10 +551,11 @@ def test_make_unique_stops_pos_mirror():
         def_id = mgr.share_instance(inst)
         inst2 = mgr.instantiate_definition(def_id)
         mgr.make_unique(inst2)
-        changed = mgr.set_node_pos(f"{inst}::select0", (7, 8))
+        s0 = _member(mgr, inst, "select0")
+        changed = mgr.set_node_pos(s0, (7, 8))
         # inst2 detached → its member must not move with inst's.
-        assert mgr.nodes[f"{inst2}::select0"].gui_kwargs.get("pos") != [7, 8]
-        assert changed == [f"{inst}::select0"]
+        assert mgr.nodes[_member(mgr, inst2, "select0")].gui_kwargs.get("pos") != [7, 8]
+        assert changed == [s0]
     finally:
         mgr.terminate()
 
@@ -594,8 +585,8 @@ def test_shared_subpatch_save_load_roundtrip(tmp_path):
         shared_ids = [iid for iid, i in mgr2._instances.items() if i["def_id"] == def_id]
         assert len(shared_ids) == 2
         a, b = shared_ids
-        mgr2.update_param(f"{a}::select0", "select", "include", "1:4")
-        assert mgr2.nodes[f"{b}::select0"].params["select"]["include"].value == "1:4"
+        mgr2.update_param(_member(mgr2, a, "select0"), "select", "include", "1:4")
+        assert mgr2.nodes[_member(mgr2, b, "select0")].params["select"]["include"].value == "1:4"
     finally:
         mgr2.terminate()
 
@@ -703,11 +694,13 @@ def test_reused_display_name_gets_unique_node_id():
     try:
         n1 = mgr.add_node("Oscillator", "inputs")
         id1 = mgr.nodes[n1].node_id
+        name1 = mgr.nodes[n1].name
         mgr.remove_node(n1)
         n2 = mgr.add_node("Oscillator", "inputs")
         id2 = mgr.nodes[n2].node_id
-        # The display name is reused (nice UX); the transport id is not.
-        assert n1 == n2 == "oscillator0"
+        # The display name is reused (nice UX); uid + transport id are not.
+        assert name1 == mgr.nodes[n2].name == "oscillator0"
+        assert n1 != n2  # fresh uid
         assert id1 != id2
     finally:
         mgr.terminate(notify_gui=False)
@@ -721,10 +714,10 @@ def test_node_directory_maps_display_names_to_unique_ids():
     try:
         a = mgr.add_node("Oscillator", "inputs")
         b = mgr.add_node("Oscillator", "inputs")
-        directory = mgr._node_directory()
-        assert directory[a] == mgr.nodes[a].node_id
-        assert directory[b] == mgr.nodes[b].node_id
-        assert directory[a] != directory[b]
+        directory = mgr._node_directory()  # keyed by DISPLAY name
+        assert directory[mgr.nodes[a].name] == mgr.nodes[a].node_id
+        assert directory[mgr.nodes[b].name] == mgr.nodes[b].node_id
+        assert mgr.nodes[a].node_id != mgr.nodes[b].node_id
     finally:
         mgr.terminate(notify_gui=False)
 
