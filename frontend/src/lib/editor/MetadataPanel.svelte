@@ -4,6 +4,7 @@
 	import type { DataFrame } from '$lib/codec/decode';
 	import { resolveKind } from '$lib/viewers/kind';
 	import { metaEntries, formatMetaValue, metaPreview, isLarge } from './metaFormat';
+	import { nodeStatsRows } from './nodeStats';
 
 	type Props = {
 		node: NodeInstanceInfo;
@@ -60,6 +61,11 @@
 	// default would re-expand a manually-collapsed field on the next node tick.
 	let manualOpen = $state<Record<string, boolean>>({});
 
+	// Node-level execution telemetry (update rate + mean process() time), pushed on
+	// the status plane independent of the data frame — so it shows even while we're
+	// still waiting for the first frame. Empty until the node's first NODE_STATS.
+	const statsRows = $derived(nodeStatsRows(node.stats));
+
 	function isOpen(key: string, defaultOpen: boolean): boolean {
 		return manualOpen[key] ?? defaultOpen;
 	}
@@ -80,6 +86,17 @@
 				</select>
 			{/if}
 		</header>
+	{/if}
+
+	{#if statsRows.length > 0}
+		<dl class="stats" data-testid="node-stats">
+			{#each statsRows as row (row.label)}
+				<div class="stat">
+					<dt>{row.label}</dt>
+					<dd>{row.value}</dd>
+				</div>
+			{/each}
+		</dl>
 	{/if}
 
 	{#if lastFrame}
@@ -127,6 +144,32 @@
 		font-family: var(--font-mono);
 		font-size: 10px;
 		padding: 2px 6px;
+	}
+	/* Node execution telemetry — a compact key/value strip directly under the
+	   "Metadata" heading, updated ~1 Hz from the node's NODE_STATS push. */
+	.stats {
+		margin: 0 0 8px;
+		padding: 0 0 8px;
+		display: flex;
+		flex-wrap: wrap;
+		gap: 2px 16px;
+		border-bottom: 1px solid var(--border);
+	}
+	.stats .stat {
+		display: flex;
+		gap: 6px;
+		align-items: baseline;
+		font-family: var(--font-mono);
+	}
+	.stats dt {
+		font-size: 10px;
+		color: var(--text-dim);
+	}
+	.stats dd {
+		margin: 0;
+		font-size: 11px;
+		color: var(--text);
+		font-variant-numeric: tabular-nums;
 	}
 	.meta-tree {
 		display: flex;

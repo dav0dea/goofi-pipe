@@ -18,7 +18,6 @@
 	import type { ParamDescriptor } from '$lib/api/types';
 	import { graph } from '$lib/stores/graph.svelte';
 	import { categoryColor, formatName } from '$lib/editor/categoryColor';
-	import { nodeStatsRows } from '$lib/editor/nodeStats';
 	import ParamField from './ParamField.svelte';
 	import SubPatchInspector from '$lib/editor/SubPatchInspector.svelte';
 
@@ -80,9 +79,6 @@
 		const group = node.params[activeTab] ?? {};
 		return Object.entries(group) as [string, ParamDescriptor][];
 	});
-
-	// Live execution telemetry rows (empty until the node's first NODE_STATS push).
-	const statsRows = $derived(nodeStatsRows(node?.stats));
 </script>
 
 <section class="panel">
@@ -121,17 +117,6 @@
 
 			{#if docsOpen && node.doc}
 				<p class="docstring" data-testid="docstring">{node.doc}</p>
-			{/if}
-
-			{#if statsRows.length > 0}
-				<dl class="stats" data-testid="node-stats">
-					{#each statsRows as row (row.label)}
-						<div class="stat">
-							<dt>{row.label}</dt>
-							<dd>{row.value}</dd>
-						</div>
-					{/each}
-				</dl>
 			{/if}
 		{/if}
 
@@ -269,33 +254,6 @@
 		padding: 8px 12px;
 		white-space: pre-wrap;
 		border-bottom: 1px solid var(--border);
-	}
-	/* Live execution telemetry — a compact key/value strip under the header,
-	   updated ~1 Hz from the node's NODE_STATS push. */
-	.stats {
-		margin: 0;
-		padding: 6px 12px;
-		display: flex;
-		flex-wrap: wrap;
-		gap: 4px 16px;
-		background: var(--bg-elev-2);
-		border-bottom: 1px solid var(--border);
-	}
-	.stats .stat {
-		display: flex;
-		gap: 6px;
-		align-items: baseline;
-	}
-	.stats dt {
-		font-size: 10px;
-		color: var(--text-dim);
-		letter-spacing: 0.02em;
-	}
-	.stats dd {
-		margin: 0;
-		font-size: 11px;
-		color: var(--text);
-		font-variant-numeric: tabular-nums;
 	}
 	.tabs {
 		/* Tab strip — one tab per parameter group. Horizontally scrollable

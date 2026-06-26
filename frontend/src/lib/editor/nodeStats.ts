@@ -2,8 +2,9 @@
  * Pure formatting of a node's execution telemetry (no DOM, unit-tested).
  *
  * The backend pushes `{updates_per_second, mean_process_ms, total_ticks}` on the
- * status plane (~1 Hz). This turns it into a compact canvas overlay and a labelled
- * row set for the inspector, with number widths chosen to stay readable on a node.
+ * status plane (~1 Hz). This turns the two displayed metrics — update rate and
+ * mean process() duration — into labelled rows for the metadata panel, with
+ * number widths chosen to stay readable.
  */
 import type { NodeStats } from '$lib/api/control';
 
@@ -19,19 +20,11 @@ function fmtMs(ms: number): string {
 	return ms.toFixed(2);
 }
 
-/** A compact one-line overlay (`12.4 upd/s · 3.12 ms`), or null when no stats
- * have arrived yet (the node hasn't pushed its first NODE_STATS). */
-export function formatNodeStats(stats: NodeStats | null | undefined): string | null {
-	if (!stats) return null;
-	return `${fmtRate(stats.updates_per_second)} upd/s · ${fmtMs(stats.mean_process_ms)} ms`;
-}
-
-/** Labelled rows for the inspector, or `[]` when no stats have arrived yet. */
+/** Labelled rows for the metadata panel, or `[]` when no stats have arrived yet. */
 export function nodeStatsRows(stats: NodeStats | null | undefined): { label: string; value: string }[] {
 	if (!stats) return [];
 	return [
 		{ label: 'Update rate', value: `${fmtRate(stats.updates_per_second)} upd/s` },
-		{ label: 'Process time', value: `${fmtMs(stats.mean_process_ms)} ms` },
-		{ label: 'Total ticks', value: stats.total_ticks.toString() }
+		{ label: 'Process time', value: `${fmtMs(stats.mean_process_ms)} ms` }
 	];
 }
