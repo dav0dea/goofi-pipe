@@ -2,7 +2,7 @@ from abc import ABC, abstractmethod
 from collections import namedtuple
 from copy import deepcopy
 from dataclasses import asdict, dataclass, field
-from typing import Any, Dict, List, Union
+from typing import Any, Dict, List, Optional, Union
 
 
 @dataclass
@@ -13,10 +13,18 @@ class Param(ABC):
 
     _value: Any = None
 
-    # NOTE: The `doc` and `save_param` attributes are added to the subclasses via monkey-patching.
-    # The kw_only=True argument is not supported in Python<3.10, so we have to use this hacky solution.
-    # doc: str = field(default=None, kw_only=True)
-    # save_param: bool = field(default=True, kw_only=True)
+    # Common attributes shared by every Param subclass. Declared KEYWORD-ONLY so a
+    # base-class field with a default doesn't shift each subclass's positional
+    # fields (value, vmin/vmax, options, trigger, ...). `expression` is the source
+    # (None if unauthored); `expression_enabled` gates evaluation — toggling the fx
+    # button off keeps the source so the user can flip back. The cadence flags ride
+    # along (see normalize_expression_binding).
+    doc: Optional[str] = field(default=None, kw_only=True)
+    save_param: bool = field(default=True, kw_only=True)
+    expression: Optional[str] = field(default=None, kw_only=True)
+    expression_enabled: bool = field(default=False, kw_only=True)
+    expression_triggers_process: bool = field(default=False, kw_only=True)
+    expression_autoeval: bool = field(default=False, kw_only=True)
 
     def __post_init__(self):
         if self._value is None:
@@ -103,69 +111,6 @@ class StringParam(Param):
     @staticmethod
     def default() -> str:
         return ""
-
-
-# NOTE: Monkey-patching the `doc` and `save_param` attribute into the Param subclasses is a hacky solution
-# to include keyword-only arguments in the __init__ method of the subclasses. Python>=3.10 can use the
-# kw_only=True argument in the field decorator.
-
-
-# decorator for adjusting the __init__ method of the Param subclasses
-def adjusted_init(original_init):
-    def new_init(self, *args, **kwargs):
-        self.doc = kwargs.pop("doc", None)
-        self.save_param = kwargs.pop("save_param", True)
-        # Expression binding. `expression` holds the source code (None if
-        # no expression has been authored yet). `expression_enabled`
-        # gates whether the source is actually evaluated — toggling the
-        # fx button off in the UI sets this False without losing the
-        # source, so the user can flip back and forth between a static
-        # value and the previously-authored expression. The cadence
-        # flags below are part of the binding and survive the toggle.
-        self.expression = kwargs.pop("expression", None)
-        self.expression_enabled = kwargs.pop("expression_enabled", False)
-        # When True, a re-eval that changes the param's value wakes the
-        # node's process(). When False, the new value just sits in state
-        # until the next regular process tick.
-        self.expression_triggers_process = kwargs.pop("expression_triggers_process", False)
-        # When True, the engine re-evaluates this expression before every
-        # process() call (regardless of slot ticks). Useful for expressions
-        # like `time.time()` that have no slot reference but should still
-        # refresh per tick.
-        self.expression_autoeval = kwargs.pop("expression_autoeval", False)
-        original_init(self, *args, **kwargs)
-
-    return new_init
-
-
-# monkey-patch the 'doc' attribute into the classes
-def add_extra_attributes(cls):
-    # doc attribute
-    setattr(cls, "doc", None)
-    cls.__dataclass_fields__["doc"] = field(default=None)
-    # save_param attribute
-    setattr(cls, "save_param", True)
-    cls.__dataclass_fields__["save_param"] = field(default=True)
-    # expression attribute (str | None) — the source code
-    setattr(cls, "expression", None)
-    cls.__dataclass_fields__["expression"] = field(default=None)
-    # whether the source is currently being evaluated
-    setattr(cls, "expression_enabled", False)
-    cls.__dataclass_fields__["expression_enabled"] = field(default=False)
-    # per-expression cadence flags
-    setattr(cls, "expression_triggers_process", False)
-    cls.__dataclass_fields__["expression_triggers_process"] = field(default=False)
-    setattr(cls, "expression_autoeval", False)
-    cls.__dataclass_fields__["expression_autoeval"] = field(default=False)
-
-    # adjust the __init__ method
-    cls.__init__ = adjusted_init(cls.__init__)
-
-
-# apply the monkey-patching
-add_extra_attributes(Param)
-for subclass in Param.__subclasses__():
-    add_extra_attributes(subclass)
 
 
 def normalize_expression_binding(expression, enabled, triggers_process, autoeval):

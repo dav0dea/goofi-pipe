@@ -235,3 +235,23 @@ def test_normalize_expression_binding_coerces_flag_types():
     src, active, trig, auto = normalize_expression_binding("a+b", 1, 1, 0)
     assert (src, active, trig, auto) == ("a+b", True, True, False)
     assert isinstance(active, bool) and isinstance(trig, bool) and isinstance(auto, bool)
+
+
+def test_common_and_expression_fields_are_keyword_only():
+    # The shared fields (doc/save_param/expression*) must be KEYWORD-ONLY so they
+    # never consume a subclass's positional slots (value, vmin, vmax, ...). This is
+    # the contract the kw_only fields preserve (previously via an __init__ monkey-patch).
+    from dataclasses import asdict
+
+    p = FloatParam(2.5, -1.0, 10.0, doc="d", expression="x*2", expression_enabled=True)
+    assert (p.value, p.vmin, p.vmax) == (2.5, -1.0, 10.0)  # positionals untouched
+    assert p.doc == "d" and p.expression == "x*2" and p.expression_enabled is True
+    assert p.save_param is True and p.expression_autoeval is False  # defaults
+
+    # asdict carries all fields and **dict reconstructs (the legacy .gfi load path)
+    p2 = FloatParam(**asdict(p))
+    assert p2 == p
+
+    # the extras are NOT positional: a 4th positional would be a TypeError
+    with pytest.raises(TypeError):
+        FloatParam(2.5, -1.0, 10.0, "doc-as-positional")
