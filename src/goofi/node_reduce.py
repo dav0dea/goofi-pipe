@@ -150,6 +150,8 @@ def _apply_axis(arr: np.ndarray, axis: int, a: AxisSpec, meta: dict):
         return out, {"orig_len": orig_len, "method": "envelope"}
 
     if a.method == "subsample":
+        if min(max(1, a.max), orig_len) >= orig_len:  # already fits -> skip (no-op take)
+            return arr, None
         idx = _subsample_idx(orig_len, a.max)
         out = np.ascontiguousarray(np.take(arr, idx, axis=axis))
         new_coord = ([coord[i] for i in idx]
@@ -233,15 +235,19 @@ def reduce_for_view(data: Data, spec: Optional[ViewSpec]) -> Data:
 
         # Canonicalize axes to positive and de-dup. Two raw axes can collapse onto
         # one canonical axis (a 1-D line sends channel axis 0 AND sample axis -1,
-        # both -> 0); resolve by RICHNESS, not iteration order, so the waveform
-        # keeps its peak-preserving envelope instead of an aliased subsample.
-        # (Mirrors fold_viewspecs; positional last-wins silently dropped peaks.)
+        # both -> 0). Fold collisions exactly like fold_viewspecs: richest method
+        # wins (so a waveform keeps its peak-preserving envelope over an aliased
+        # subsample) AND the larger cap wins (max-of-maxes). Positional last-wins
+        # used to drop peaks; richness-only used to drop the larger cap.
         by_axis = {}
         for a in spec.axes:
             c = a.axis % ndim
             prev = by_axis.get(c)
-            if prev is None or _RICHNESS.get(a.method, 0) >= _RICHNESS.get(prev.method, 0):
+            if prev is None:
                 by_axis[c] = a
+            else:
+                method = a.method if _RICHNESS.get(a.method, 0) >= _RICHNESS.get(prev.method, 0) else prev.method
+                by_axis[c] = AxisSpec(axis=prev.axis, max=max(prev.max, a.max), method=method)
         if not by_axis:
             return data
 
@@ -249,7 +255,9 @@ def reduce_for_view(data: Data, spec: Optional[ViewSpec]) -> Data:
         # H and W), capping each independently to the viewer's pixel box would
         # squash a non-square source into the box's aspect. Apply ONE uniform
         # downscale factor (min over the area axes, never upscale) so the reduced
-        # image keeps the source aspect ratio; the viewer letterboxes it.
+        # image keeps the source aspect ratio; the viewer letterboxes it. (Aspect
+        # is exact for axes large enough that round(orig*scale) actually shrinks;
+        # a degenerate ~2-3px axis can round back to orig and drift sub-pixel.)
         area_axes = [cax for cax, a in by_axis.items() if a.method == "area"]
         if len(area_axes) >= 2:
             scale = min(1.0, min(by_axis[cax].max / arr.shape[cax] for cax in area_axes))

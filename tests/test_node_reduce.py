@@ -275,6 +275,29 @@ def test_area_passthrough_when_image_already_fits():
     assert red is img  # fail-open passthrough — nothing actually reduced
 
 
+def test_subsample_passthrough_when_already_fits():
+    # A subsample axis whose cap >= length must passthrough (like envelope/area):
+    # no wasted np.take copy, no bogus 'reduced' marker. Hits the DEFAULT trajectory
+    # path (subsample axis0 max 5000) for any frame with fewer points.
+    arr = np.arange(500 * 2, dtype=np.float32).reshape(500, 2)
+    data = Data(DataType.ARRAY, arr, {})
+    spec = viewspec_from_dict({"axes": [{"axis": 0, "max": 5000, "method": "subsample"}]})
+    red = reduce_for_view(data, spec)
+    assert red is data  # nothing reduced -> original object untouched
+
+
+def test_collision_folds_max_on_equal_richness():
+    # Two same-richness axes that collide on one canonical axis (1-D) must keep the
+    # LARGER cap (mirrors fold_viewspecs' max-of-maxes), not whichever came last.
+    data = Data(DataType.ARRAY, np.zeros(1000, dtype=np.float32), {})
+    spec = viewspec_from_dict({"axes": [
+        {"axis": 0, "max": 500, "method": "area"},
+        {"axis": -1, "max": 100, "method": "area"},
+    ]})
+    red = reduce_for_view(data, spec)
+    assert red.data.shape == (500,)  # larger cap wins regardless of order
+
+
 # ---- HIGH bug regression: 1-D line must envelope (peaks), not subsample --------
 
 def test_folded_line_spec_envelopes_1d_not_subsample():
