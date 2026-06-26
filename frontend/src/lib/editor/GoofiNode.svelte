@@ -5,6 +5,7 @@
 	import { ui } from '$lib/stores/ui.svelte';
 	import { flash } from '$lib/stores/flash.svelte';
 	import { NODE } from './nodeMetrics';
+	import { nodeHealth } from './nodeHealth';
 	import type { NodeInstanceInfo } from '$lib/api/control';
 
 	let { data, selected }: NodeProps = $props();
@@ -41,10 +42,17 @@
 	}
 
 	const accent = $derived(categoryColor(node?.category));
-	const hasError = $derived(Boolean(node?.error));
+	// Health: ok / error (code) / crashed (process died, auto-restarting). The
+	// crash state is distinct so a transient, self-recovering crash (amber, pulsing)
+	// reads differently from a persistent code error (red border).
+	const health = $derived(nodeHealth(node));
+	const isError = $derived(health.kind === 'error');
+	const isCrashed = $derived(health.kind === 'crashed');
 	// Brief "this just changed" pulse after an undo/redo reorients here (#19).
 	const flashing = $derived(flash().active(node?.name));
-	const healthColor = $derived(hasError ? 'var(--danger)' : 'var(--success)');
+	const healthColor = $derived(
+		isCrashed ? 'var(--warning, #d8932b)' : isError ? 'var(--danger)' : 'var(--success)'
+	);
 
 	// Inputs are bare connectors on the left edge, one per slot unit from the top
 	// (so their count never balloons the node). The node only needs to be tall
@@ -68,7 +76,8 @@
 <div
 	class="goofi-node"
 	class:selected
-	class:has-error={hasError}
+	class:has-error={isError}
+	class:crashing={isCrashed}
 	class:undo-flash={flashing}
 	style="--accent: {accent}; min-height: calc(var(--node-header) + {minBody} * var(--node-u));"
 	data-testid={node?.subpatch ? 'subpatch-node' : undefined}
@@ -78,7 +87,7 @@
 	     matter how the slots stack. Nothing inside it needs to round itself. -->
 	<div class="surface">
 		<div class="header">
-			<span class="health" style="background: {healthColor};" title={node?.error ?? 'running'}></span>
+			<span class="health" class:pulse={isCrashed} style="background: {healthColor};" title={health.title}></span>
 			<span class="name">{label}</span>
 		</div>
 
@@ -159,6 +168,23 @@
 	.goofi-node.has-error .surface {
 		border-color: var(--danger);
 	}
+	/* A crashed (auto-restarting) node: amber surface + a pulsing status dot, so a
+	   transient process crash reads as "recovering", distinct from a red code error. */
+	.goofi-node.crashing .surface {
+		border-color: var(--warning, #d8932b);
+	}
+	.health.pulse {
+		animation: health-pulse 1s ease-in-out infinite;
+	}
+	@keyframes health-pulse {
+		0%,
+		100% {
+			opacity: 1;
+		}
+		50% {
+			opacity: 0.25;
+		}
+	}
 	/* Undo/redo just reoriented here — a one-shot ring pulse to catch the eye
 	   (#19). The class is removed after the window, so the animation re-fires on
 	   the next undo/redo that lands on this node. */
@@ -175,6 +201,9 @@
 	}
 	@media (prefers-reduced-motion: reduce) {
 		.goofi-node.undo-flash .surface {
+			animation: none;
+		}
+		.health.pulse {
 			animation: none;
 		}
 	}

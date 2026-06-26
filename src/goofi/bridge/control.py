@@ -503,12 +503,12 @@ class ControlHub:
         self._wire_node_status(name)
 
     def on_node_crashed(self, name: str, exitcode, restart_count: int) -> None:
-        """Surface a crashed node process to the browser as a node error (reusing
-        the existing error channel). Cleared automatically by the respawned node's
-        first healthy PROCESSING_ERROR(None)."""
-        detail = f" (exit {exitcode})" if exitcode is not None else ""
-        msg = f"process crashed{detail} — restarting (#{restart_count})"
-        self.broadcast_threadsafe({"event": "error", "payload": {"node": name, "error": msg}})
+        """Surface a crashed node process to the browser as a DISTINCT crash state
+        (not a code error): a process crash is transient and auto-recovering. The
+        frontend clears it on the respawned node's first healthy state push."""
+        self.broadcast_threadsafe(
+            {"event": "node_crashed", "payload": {"node": name, "exitcode": exitcode, "restarts": restart_count}}
+        )
 
 
 def _save_and_return(manager, path_arg, overwrite: bool) -> str:

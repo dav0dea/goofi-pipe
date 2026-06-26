@@ -50,6 +50,14 @@ export interface NodeInstanceInfo {
 	 * collapsed instance are hidden from the canvas (the group node stands in). */
 	membership?: { instance: string; local_name: string } | null;
 	error: string | null;
+	/** Distinct crash state (vs a code `error`): set when the node's OS process
+	 * died and the manager is auto-restarting it; cleared on the respawned node's
+	 * first healthy state push. `restarts` is the cumulative restart count. These
+	 * are transient runtime UI state, populated by the `node_crashed` event — not
+	 * part of the persisted snapshot. */
+	crashed?: boolean;
+	restarts?: number;
+	crashExit?: number | null;
 	/** Peer-to-peer SSE log endpoint (`http://127.0.0.1:<port>/<node>`) the node
 	 * advertises via STATE_UPDATE. Null/absent until its first state push, or
 	 * when capture is off (headless). The Console subscribes to it directly. */
@@ -223,6 +231,7 @@ export type ControlEvent =
 			};
 	  }
 	| { event: 'error'; payload: { node: string; error: string | null } }
+	| { event: 'node_crashed'; payload: { node: string; exitcode: number | null; restarts: number } }
 	| { event: 'unsaved_changes'; payload: { unsaved_changes: boolean } }
 	| { event: 'save_path_changed'; payload: { save_path: string | null } }
 	| { event: 'graph_replaced'; payload: GraphSnapshot }

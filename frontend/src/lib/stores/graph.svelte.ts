@@ -277,9 +277,24 @@ export class GraphStore {
 				const t = this.nodeByName(ev.payload.node);
 				if (t) {
 					t.params = ev.payload.params;
+					// A healthy state push means the (possibly just-respawned) node is
+					// running again — lift any crash indicator.
+					if (t.crashed) t.crashed = false;
 					// The node advertises its SSE log endpoint here; surfacing it lets
 					// the Console subscribe peer-to-peer (see $lib/stores/logStream).
 					if (ev.payload.log_endpoint !== undefined) t.log_endpoint = ev.payload.log_endpoint;
+				}
+				break;
+			}
+			case 'node_crashed': {
+				// The node's OS process died; the manager is auto-restarting it. Show
+				// a distinct, self-recovering crash state (cleared by the next healthy
+				// state_update above), not a code error.
+				const t = this.nodeByName(ev.payload.node);
+				if (t) {
+					t.crashed = true;
+					t.restarts = ev.payload.restarts;
+					t.crashExit = ev.payload.exitcode;
 				}
 				break;
 			}
