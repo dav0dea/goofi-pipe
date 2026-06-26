@@ -24,6 +24,18 @@ _METHODS = ("envelope", "subsample", "area")
 _RICHNESS = {"envelope": 3, "area": 2, "subsample": 1}  # richest wins on fold conflict
 _ORIG_COORD_CAP = 4096  # carry orig_coord verbatim only for subsample axes <= this
 
+
+def _fold_axis(cur_max: int, cur_method: str, new_max: int, new_method: str):
+    """Combine two reductions targeting the SAME axis into one: the larger cap and
+    the richest (most peak-preserving) method survive. This is the SINGLE rule the
+    manager-side spec fold (`fold_viewspecs`, keyed by raw axis) and the node-side
+    de-dup (inside `reduce_for_view`, keyed by canonical axis) share, so the two
+    can never drift. `cur` wins a richness tie — but since `_RICHNESS` values are
+    all distinct, a strictly-richer method always wins regardless of side, and the
+    TS `foldViewSpecs` mirror uses the same strict comparison."""
+    method = new_method if _RICHNESS.get(new_method, 0) > _RICHNESS.get(cur_method, 0) else cur_method
+    return max(cur_max, new_max), method
+
 # Per-viewer-kind default axes (used by the manager relay to seed a ViewSpec from
 # the URL `kind` before the browser sends a capacity-derived one). Mirrors the
 # per-kind axis table in the spec (§6.3). Non-reducible kinds reduce nothing.
@@ -214,9 +226,7 @@ def fold_viewspecs(specs: list) -> dict:
             if cur is None:
                 by_axis[ax] = {"axis": ax, "max": mx, "method": method}
             else:
-                cur["max"] = max(cur["max"], mx)
-                if _RICHNESS.get(method, 0) > _RICHNESS.get(cur["method"], 0):
-                    cur["method"] = method
+                cur["max"], cur["method"] = _fold_axis(cur["max"], cur["method"], mx, method)
     return {"axes": [by_axis[k] for k in sorted(by_axis.keys())], "version": ver}
 
 
@@ -246,8 +256,8 @@ def reduce_for_view(data: Data, spec: Optional[ViewSpec]) -> Data:
             if prev is None:
                 by_axis[c] = a
             else:
-                method = a.method if _RICHNESS.get(a.method, 0) >= _RICHNESS.get(prev.method, 0) else prev.method
-                by_axis[c] = AxisSpec(axis=prev.axis, max=max(prev.max, a.max), method=method)
+                mx, method = _fold_axis(prev.max, prev.method, a.max, a.method)
+                by_axis[c] = AxisSpec(axis=prev.axis, max=mx, method=method)
         if not by_axis:
             return data
 

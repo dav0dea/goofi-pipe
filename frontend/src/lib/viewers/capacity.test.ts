@@ -1,5 +1,14 @@
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { describe, it, expect } from 'vitest';
-import { viewSpecForKind, foldViewSpecs, CAP_FLOOR } from './capacity';
+import { viewSpecForKind, foldViewSpecs, CAP_FLOOR, type ViewSpec } from './capacity';
+
+/** The SAME fixture tests/test_viewspec_fold.py folds with the Python
+ * `fold_viewspecs`; folding it here pins the cross-language contract (the TS fold
+ * and the manager-side Python fold can't drift). */
+const VIEWSPEC_GOLDEN = JSON.parse(
+	readFileSync(fileURLToPath(new URL('../../../../tests/viewspec_golden.json', import.meta.url)), 'utf-8')
+) as { name: string; input: ViewSpec[]; output: ViewSpec }[];
 
 describe('viewSpecForKind', () => {
 	it('line → channel subsample + sample envelope sized to width', () => {
@@ -61,4 +70,12 @@ describe('foldViewSpecs', () => {
 	it('empty input folds to no reduction', () => {
 		expect(foldViewSpecs([])).toEqual({ axes: [], version: 0 });
 	});
+});
+
+describe('foldViewSpecs cross-language conformance (py fold_viewspecs)', () => {
+	for (const c of VIEWSPEC_GOLDEN) {
+		it(c.name, () => {
+			expect(foldViewSpecs(c.input)).toEqual(c.output);
+		});
+	}
 });

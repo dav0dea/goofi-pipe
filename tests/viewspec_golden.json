@@ -1,0 +1,58 @@
+[
+  {
+    "name": "empty -> empty",
+    "input": [],
+    "output": { "axes": [], "version": 0 }
+  },
+  {
+    "name": "single spec passes through",
+    "input": [{ "axes": [{ "axis": 0, "max": 64, "method": "subsample" }], "version": 1 }],
+    "output": { "axes": [{ "axis": 0, "max": 64, "method": "subsample" }], "version": 1 }
+  },
+  {
+    "name": "max-of-maxes on a shared axis",
+    "input": [
+      { "axes": [{ "axis": -1, "max": 100, "method": "subsample" }], "version": 0 },
+      { "axes": [{ "axis": -1, "max": 256, "method": "subsample" }], "version": 0 }
+    ],
+    "output": { "axes": [{ "axis": -1, "max": 256, "method": "subsample" }], "version": 0 }
+  },
+  {
+    "name": "richest method wins (envelope > subsample), version is the max",
+    "input": [
+      { "axes": [{ "axis": -1, "max": 128, "method": "subsample" }], "version": 2 },
+      { "axes": [{ "axis": -1, "max": 64, "method": "envelope" }], "version": 5 }
+    ],
+    "output": { "axes": [{ "axis": -1, "max": 128, "method": "envelope" }], "version": 5 }
+  },
+  {
+    "name": "area outranks subsample",
+    "input": [
+      { "axes": [{ "axis": 0, "max": 10, "method": "subsample" }] },
+      { "axes": [{ "axis": 0, "max": 20, "method": "area" }] }
+    ],
+    "output": { "axes": [{ "axis": 0, "max": 20, "method": "area" }], "version": 0 }
+  },
+  {
+    "name": "two distinct axes emitted sorted ascending",
+    "input": [{ "axes": [{ "axis": 1, "max": 50, "method": "area" }, { "axis": 0, "max": 40, "method": "area" }], "version": 0 }],
+    "output": {
+      "axes": [
+        { "axis": 0, "max": 40, "method": "area" },
+        { "axis": 1, "max": 50, "method": "area" }
+      ],
+      "version": 0
+    }
+  },
+  {
+    "name": "raw negative + positive axes kept separate and sorted",
+    "input": [{ "axes": [{ "axis": 0, "max": 8, "method": "subsample" }, { "axis": -1, "max": 16, "method": "envelope" }] }],
+    "output": {
+      "axes": [
+        { "axis": -1, "max": 16, "method": "envelope" },
+        { "axis": 0, "max": 8, "method": "subsample" }
+      ],
+      "version": 0
+    }
+  }
+]

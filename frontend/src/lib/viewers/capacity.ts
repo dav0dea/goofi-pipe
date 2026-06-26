@@ -80,6 +80,10 @@ const RICHNESS: Record<ReduceMethod, number> = { envelope: 3, area: 2, subsample
  * per-axis `max`, richest method). Used to combine multiple viewers of the SAME
  * (node, slot, kind) within one tab — they share a single WS, so the node must
  * reduce to the union of what they can show (the bridge folds across tabs too).
+ *
+ * Mirrors the manager-side Python `node_reduce.fold_viewspecs` (which routes the
+ * per-axis collision through `_fold_axis`). The shared rule is pinned by the
+ * cross-language golden in tests/viewspec_golden.json — see capacity.test.ts.
  */
 export function foldViewSpecs(specs: ViewSpec[]): ViewSpec {
 	const byAxis = new Map<number, AxisSpec>();
