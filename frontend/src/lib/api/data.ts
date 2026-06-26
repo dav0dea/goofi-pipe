@@ -72,10 +72,27 @@ export function subscribeData(node: string, slot: string, kind: string, cb: Fram
 	};
 }
 
+// Last folded axes posted per key, and keys with a flush already queued. Coalescing
+// the post to a microtask collapses the clear→re-add pair that a ViewerFeed resize
+// fires in one tick (cleanup runs clearViewSpec, body runs setViewSpec) into ONE
+// post of the final fold — no transient empty fold reaching the node (which would
+// ship one full-resolution frame), and no redundant re-post of an unchanged fold.
+const lastFold = new Map<string, string>();
+const flushQueued = new Set<string>();
+
 function pushFold(node: string, slot: string, kind: string, k: string): void {
-	const m = specs.get(k);
-	const folded = foldViewSpecs(m ? [...m.values()] : []);
-	ensureWorker().postMessage({ op: 'spec', node, slot, kind, spec: folded });
+	if (flushQueued.has(k)) return;
+	flushQueued.add(k);
+	queueMicrotask(() => {
+		flushQueued.delete(k);
+		const m = specs.get(k);
+		const folded = foldViewSpecs(m ? [...m.values()] : []);
+		const sig = JSON.stringify(folded.axes);
+		if (lastFold.get(k) === sig) return; // unchanged fold → nothing to renegotiate
+		if (folded.axes.length === 0) lastFold.delete(k); // slot drained — don't grow the map
+		else lastFold.set(k, sig);
+		ensureWorker().postMessage({ op: 'spec', node, slot, kind, spec: folded });
+	});
 }
 
 /**

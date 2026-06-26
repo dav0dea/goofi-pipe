@@ -20,6 +20,11 @@ import type { LinkInfo, NodeInstanceInfo, NodeTypeInfo } from '$lib/api/control'
 export interface FrameSummary {
 	dtype: string;
 	shape?: number[];
+	/** Present when the frame was node-reduced (Option C): the element count of the
+	 * reduced wire array that `numeric` was computed over. `shape` is the node's TRUE
+	 * original, so the two intentionally differ — and for an envelope reduction the
+	 * mean is over interleaved per-bin min/max, not the original signal. */
+	reducedLength?: number;
 	numeric?: { min: number; max: number; mean: number };
 	text?: string;
 }
@@ -46,9 +51,17 @@ function summarize(frame: DataFrame | null): FrameSummary | null {
 		// Report the node's TRUE shape, not the reduced wire shape (Option C): a
 		// node-reduced frame carries meta.reduced with each axis's orig_len. Mirror
 		// the inspector (reconstructMeta) so an agent reasons about real dimensions.
+		// `numeric` stays over the reduced wire array; surface its length (reducedLength)
+		// when reduced so the shape/stats gap is explicit, not silent.
 		const recon = reconstructMeta(frame.meta);
 		const shape = Array.isArray(recon.shape) ? (recon.shape as number[]) : a.shape;
-		return { dtype: a.dtype, shape, numeric: n ? { min, max, mean: sum / n } : undefined };
+		const reduced = !!frame.meta && typeof frame.meta === 'object' && 'reduced' in frame.meta;
+		return {
+			dtype: a.dtype,
+			shape,
+			numeric: n ? { min, max, mean: sum / n } : undefined,
+			...(reduced ? { reducedLength: a.values.length } : {})
+		};
 	}
 	if (isStringFrame(frame)) return { dtype: 'STRING', text: frame.data };
 	return { dtype: frame.dtype };

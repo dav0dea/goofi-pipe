@@ -37,6 +37,17 @@ function key(node: string, slot: string, kind: string): string {
 	return `${node} ${slot} ${kind}`;
 }
 
+/** A ViewSpec worth stashing before its slot exists — a fold with no axes is a
+ * "clear", not a reduction, so it must never be stored as a pending spec. */
+function specHasAxes(spec: unknown): boolean {
+	return (
+		!!spec &&
+		typeof spec === 'object' &&
+		Array.isArray((spec as { axes?: unknown }).axes) &&
+		(spec as { axes: unknown[] }).axes.length > 0
+	);
+}
+
 function sendSpec(st: SlotState): void {
 	if (st.spec == null || !st.ws || st.ws.readyState !== WebSocket.OPEN) return;
 	try {
@@ -103,8 +114,13 @@ self.addEventListener('message', (e: MessageEvent) => {
 		if (st) {
 			st.spec = m.spec ?? null;
 			sendSpec(st);
+		} else if (specHasAxes(m.spec)) {
+			pendingSpecs.set(k, m.spec); // real spec before 'sub' — adopt on open
 		} else {
-			pendingSpecs.set(k, m.spec ?? null); // arrived before 'sub' — adopt on open
+			// Empty/clearing fold for an absent slot: drop any stale stash instead of
+			// inserting one. Else clearViewSpec's always-push empty fold (landing after
+			// 'unsub' deleted the slot) would leak a permanent pendingSpecs entry.
+			pendingSpecs.delete(k);
 		}
 	} else if (m.op === 'unsub') {
 		const st = slots.get(k);
