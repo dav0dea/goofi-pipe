@@ -6,6 +6,7 @@
 	import { flash } from '$lib/stores/flash.svelte';
 	import { NODE } from './nodeMetrics';
 	import { nodeHealth } from './nodeHealth';
+	import { formatNodeStats } from './nodeStats';
 	import type { NodeInstanceInfo } from '$lib/api/control';
 
 	let { data, selected }: NodeProps = $props();
@@ -53,6 +54,9 @@
 	const healthColor = $derived(
 		isCrashed ? 'var(--warning, #d8932b)' : isError ? 'var(--danger)' : 'var(--success)'
 	);
+	// Subtle live execution telemetry (update rate + mean process() time), null
+	// until the node's first NODE_STATS push. Adds no height — sits in the header.
+	const statsLabel = $derived(formatNodeStats(node?.stats));
 
 	// Inputs are bare connectors on the left edge, one per slot unit from the top
 	// (so their count never balloons the node). The node only needs to be tall
@@ -89,6 +93,9 @@
 		<div class="header">
 			<span class="health" class:pulse={isCrashed} style="background: {healthColor};" title={health.title}></span>
 			<span class="name">{label}</span>
+			{#if statsLabel}
+				<span class="stats" title="execution stats (updates/s · mean process time)">{statsLabel}</span>
+			{/if}
 		</div>
 
 		{#if outputs.length > 0}
@@ -237,6 +244,19 @@
 		white-space: nowrap;
 		flex: 1 1 auto;
 		min-width: 0;
+	}
+	/* Live exec-stats readout, right-aligned in the header. Muted + tabular so the
+	   ~1 Hz number updates don't jitter the layout; yields width to the name. */
+	.stats {
+		flex: 0 1 auto;
+		min-width: 0;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+		font-size: 9px;
+		color: var(--text-muted, #8a8f98);
+		font-variant-numeric: tabular-nums;
+		opacity: 0.75;
 	}
 	.viewers {
 		display: flex;

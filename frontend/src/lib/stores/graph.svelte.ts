@@ -298,6 +298,13 @@ export class GraphStore {
 				}
 				break;
 			}
+			case 'node_stats': {
+				// Low-rate (~1 Hz) self-reported execution telemetry; drives the node's
+				// stats overlay + the inspector's stats section. Latest-wins.
+				const t = this.nodeByName(ev.payload.node);
+				if (t) t.stats = ev.payload.stats;
+				break;
+			}
 			case 'error': {
 				// Live snapshot — drives the node's red border, the floating error
 				// chip, and the inspector's current-error section. Always on, via the

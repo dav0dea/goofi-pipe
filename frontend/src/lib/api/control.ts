@@ -32,6 +32,15 @@ export interface NodeTypeInfo {
 	params: Record<string, Record<string, ParamDescriptor>>;
 }
 
+/** A node's self-reported execution telemetry (mirrors the backend NODE_STATS
+ * payload). `updates_per_second` is the tick cadence; `mean_process_ms` the mean
+ * `process()` wall-time over the window; `total_ticks` the lifetime count. */
+export interface NodeStats {
+	updates_per_second: number;
+	mean_process_ms: number;
+	total_ticks: number;
+}
+
 export interface NodeInstanceInfo {
 	name: string;
 	type: string;
@@ -58,6 +67,11 @@ export interface NodeInstanceInfo {
 	crashed?: boolean;
 	restarts?: number;
 	crashExit?: number | null;
+	/** Rolling execution telemetry the node pushes on the status plane (~1 Hz):
+	 * update rate + mean `process()` duration over the last ~10 ticks. Absent until
+	 * the node's first NODE_STATS push; populated by the `node_stats` event and
+	 * present in the snapshot for a freshly-connected client. Runtime UI state. */
+	stats?: NodeStats | null;
 	/** Peer-to-peer SSE log endpoint (`http://127.0.0.1:<port>/<node>`) the node
 	 * advertises via STATE_UPDATE. Null/absent until its first state push, or
 	 * when capture is off (headless). The Console subscribes to it directly. */
@@ -232,6 +246,7 @@ export type ControlEvent =
 	  }
 	| { event: 'error'; payload: { node: string; error: string | null } }
 	| { event: 'node_crashed'; payload: { node: string; exitcode: number | null; restarts: number } }
+	| { event: 'node_stats'; payload: { node: string; stats: NodeStats } }
 	| { event: 'unsaved_changes'; payload: { unsaved_changes: boolean } }
 	| { event: 'save_path_changed'; payload: { save_path: string | null } }
 	| { event: 'graph_replaced'; payload: GraphSnapshot }
