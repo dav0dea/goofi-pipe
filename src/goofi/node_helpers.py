@@ -576,27 +576,36 @@ class NodeRef:
                     traceback.print_exc()
                     continue
 
-                if msg.type in self.callbacks:
-                    try:
-                        self.callbacks[msg.type](self, msg)
-                    except Exception:
-                        traceback.print_exc()
-                    continue
+                self._dispatch_status(msg)
 
-                if msg.type == MessageType.STATE_UPDATE:
-                    self.serialized_state = msg.content
-                    self._first_state_event.set()
-                    # Mirror reported params back into the local NodeParams
-                    # so GUI reads stay coherent across reconnects.
-                    try:
-                        self.params.update(msg.content.get("params", {}))
-                    except Exception:
-                        pass
-                elif msg.type == MessageType.PROCESSING_ERROR:
-                    self.last_error = msg.content.get("error")
-                elif msg.type == MessageType.SHUTDOWN:
-                    # Forwarded to the manager via a registered callback.
-                    pass
+    def _dispatch_status(self, msg) -> None:
+        """The SINGLE apply site for node-pushed status. Update the NodeRef cache
+        from the node's authoritative push FIRST, then run any registered
+        side-effect handler (e.g. the bridge broadcast). Centralizing the apply
+        here means a handler and a synchronous reader always observe the same
+        node-pushed values — the bridge handler used to "re-do the work" because
+        the old structure skipped the default branch when a handler was set; that
+        second apply site is gone. (The manager may still optimistically pre-apply
+        a change it forwards via the shared normalize rule; the node echo handled
+        here is the ultimate authority and overwrites it.)"""
+        if msg.type == MessageType.STATE_UPDATE:
+            self.serialized_state = msg.content
+            self._first_state_event.set()
+            # Mirror reported params back into the local NodeParams so GUI reads
+            # stay coherent across reconnects.
+            try:
+                self.params.update(msg.content.get("params", {}))
+            except Exception:
+                pass
+        elif msg.type == MessageType.PROCESSING_ERROR:
+            self.last_error = msg.content.get("error")
+
+        cb = self.callbacks.get(msg.type)
+        if cb is not None:
+            try:
+                cb(self, msg)
+            except Exception:
+                traceback.print_exc()
 
 
 # ---------------------------------------------------------------------------

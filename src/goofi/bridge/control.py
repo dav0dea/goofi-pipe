@@ -468,16 +468,10 @@ class ControlHub:
         except KeyError:
             return
 
+        # These run AFTER the NodeRef messaging loop has already applied the push
+        # to its cache (the single apply site, NodeRef._dispatch_status), so they
+        # read fresh node-authoritative values and only fan them out to browsers.
         def on_state(noderef, message: Message):
-            # Mirror the legacy bookkeeping: store the latest state on the
-            # NodeRef (the messaging loop does this for the default path,
-            # but a custom handler replaces it — re-do the work here).
-            noderef.serialized_state = message.content
-            noderef._first_state_event.set()
-            try:
-                noderef.params.update(message.content.get("params", {}))
-            except Exception:
-                pass
             self.broadcast_threadsafe(
                 {
                     "event": "state_update",
@@ -493,10 +487,8 @@ class ControlHub:
             )
 
         def on_error(noderef, message: Message):
-            err = message.content.get("error")
-            noderef.last_error = err
             self.broadcast_threadsafe(
-                {"event": "error", "payload": {"node": name, "error": err}}
+                {"event": "error", "payload": {"node": name, "error": message.content.get("error")}}
             )
 
         ref.set_message_handler(MessageType.STATE_UPDATE, on_state)
