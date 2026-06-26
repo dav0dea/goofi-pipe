@@ -255,6 +255,10 @@ class NodeRef:
     # excluded from dataclass equality.
     member_uid: Optional[str] = field(default=None, repr=False, compare=False)
     membership: Optional[Dict[str, Any]] = field(default=None, repr=False, compare=False)
+    # How many times the manager's liveness supervisor has respawned this node
+    # after its process crashed. Carried across respawns; surfaced to the UI so a
+    # crash-loop is observable even though restarts are unlimited.
+    restart_count: int = field(default=0, repr=False, compare=False)
 
     def __post_init__(self):
         self.__doc__ = self.node_class.docstring()

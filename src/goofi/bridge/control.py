@@ -495,6 +495,21 @@ class ControlHub:
         ref.set_message_handler(MessageType.PROCESSING_ERROR, on_error)
         self._wired_nodes.add(name)
 
+    def rewire_node_status(self, name: str) -> None:
+        """Re-point the status handlers at a node's NEW NodeRef after a restart.
+        The old handlers lived on the now-dead ref; drop the bookkeeping and wire
+        the fresh one so its first healthy push (which clears the crash chip) flows."""
+        self._wired_nodes.discard(name)
+        self._wire_node_status(name)
+
+    def on_node_crashed(self, name: str, exitcode, restart_count: int) -> None:
+        """Surface a crashed node process to the browser as a node error (reusing
+        the existing error channel). Cleared automatically by the respawned node's
+        first healthy PROCESSING_ERROR(None)."""
+        detail = f" (exit {exitcode})" if exitcode is not None else ""
+        msg = f"process crashed{detail} — restarting (#{restart_count})"
+        self.broadcast_threadsafe({"event": "error", "payload": {"node": name, "error": msg}})
+
 
 def _save_and_return(manager, path_arg, overwrite: bool) -> str:
     """Helper for the bridge save op: invokes manager.save and returns the

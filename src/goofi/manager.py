@@ -24,6 +24,7 @@ import importlib
 import logging
 import os
 import re
+import threading
 import time
 import uuid
 from copy import deepcopy
@@ -124,6 +125,13 @@ class NodeContainer:
             del self._nodes[name]
             return
         raise KeyError(f"Node {name} not in container")
+
+    def replace(self, name: str, node: NodeRef) -> None:
+        """Swap the NodeRef behind an existing display name in place (restart),
+        preserving insertion order so the editor's node ordering is stable."""
+        if name not in self._nodes:
+            raise KeyError(f"Node {name} not in container")
+        self._nodes[name] = node
 
     def rename(self, old: str, new: str) -> None:
         """Re-key a node, preserving insertion order. Caller owns all other
@@ -227,6 +235,10 @@ class Manager:
             self._bridge = start_bridge(self, host=bridge_host, port=bridge_port)
             if self._bridge.url:
                 print(f"  goofi-pipe is running. Open {self._bridge.url} in your browser.\n")
+
+        # Watch node processes for crashes and auto-restart them (works headless;
+        # no-op when multiprocessing is disabled).
+        self._start_supervisor()
 
         self.post_init(filepath, duration)
 
@@ -496,23 +508,25 @@ class Manager:
                     notify_gui=notify_gui,
                 )
 
-        src_ref = self.nodes[node_out]
-        dst_ref = self.nodes[node_in]
-        in_process = self._same_group(node_out, node_in)
-        # Derive the service from the source node's stable transport id (not
-        # its reusable display name) so the wire matches the producer.
-        service = src_ref.data_service_for(slot_out)
-
-        # Order matters: register on the source first so it knows to
-        # publish, then subscribe on the destination.
-        src_ref.register_subscriber(slot_out)
-        dst_ref.subscribe_input(slot_in, service, in_process)
-
         link = {"node_out": node_out, "node_in": node_in, "slot_out": slot_out, "slot_in": slot_in}
+        self._wire_link(link)
         self._links.append(link)
 
         if self._bridge is not None and notify_gui:
             self._bridge.control.on_link_added(link)
+
+    def _wire_link(self, link: Dict[str, str]) -> None:
+        """Establish the data-plane wire for one link from the CURRENT refs.
+
+        Derives the service from the source node's stable transport id (not its
+        reusable display name), so it is also correct after a restart re-mints that
+        id. Order matters: register on the source first so it knows to publish,
+        then subscribe on the destination."""
+        src_ref = self.nodes[link["node_out"]]
+        dst_ref = self.nodes[link["node_in"]]
+        in_process = self._same_group(link["node_out"], link["node_in"])
+        src_ref.register_subscriber(link["slot_out"])
+        dst_ref.subscribe_input(link["slot_in"], src_ref.data_service_for(link["slot_out"]), in_process)
 
     @mark_unsaved_changes
     def remove_link(
@@ -541,6 +555,139 @@ class Manager:
             self.nodes[link["node_in"]].unsubscribe_input(link["slot_in"])
         except KeyError:
             pass
+
+    # ------------------------------------------------------------------
+    # Liveness supervision + auto-restart of crashed node processes
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _node_is_dead(ref: NodeRef) -> bool:
+        """True when a node's OWN OS process has exited. Only one-node-per-process
+        nodes carry a process; LOCAL (in-manager) and shared process-group members
+        have ``ref.process is None`` and are not supervised here."""
+        proc = ref.process
+        return proc is not None and not proc.is_alive()
+
+    def restart_node(self, name: str) -> NodeRef:
+        """Respawn a node whose process died, preserving identity + links.
+
+        Mints a FRESH transport id (the old one must never be reused — see
+        add_node), re-applies the last-known params, and re-wires every link
+        touching the node in BOTH directions (a new id changes the node's service
+        names, so a downstream consumer must re-subscribe to the new service).
+        Display name, member_uid, sub-patch membership and gui position are kept;
+        the link table is untouched. Restarts are unlimited; the count rides on the
+        new ref for observability."""
+        with (getattr(self, "_supervisor_lock", None) or contextlib.nullcontext()):
+            old = self.nodes[name]
+            node_cls = old.node_class
+            try:
+                params = old.params.serialize()
+            except Exception:
+                params = None
+            uid, membership = old.member_uid, old.membership
+            gui_kwargs = dict(old.gui_kwargs)
+            count = old.restart_count + 1
+
+            # Drop the dead manager-side ref (stops its messaging loop / endpoints).
+            try:
+                old.terminate()
+            except Exception:
+                pass
+
+            new_id = f"{name}-{uuid.uuid4().hex[:8]}"
+            # Recompute the group from the NEW id: a default node's group IS its
+            # node_id, so it must track the new id to stay "own process" (else
+            # _spawn_node's `group != node_id` test would misroute it to the
+            # shared-group registry). An explicit process_group is preserved.
+            group = self._resolve_group(new_id, params)
+            new_ref = self._spawn_node(node_cls, new_id, params, group)
+            new_ref.set_message_handler(MessageType.SHUTDOWN, lambda *args: self.terminate())
+            new_ref.gui_kwargs = gui_kwargs
+            new_ref.membership = membership
+            new_ref.member_uid = uid
+            new_ref.restart_count = count
+
+            self.nodes.replace(name, new_ref)
+            self._node_groups[name] = group
+            if uid is not None:
+                self._refs_by_uid[uid] = new_ref
+
+            # Re-wire the bridge status to the NEW ref BEFORE waiting for state, so
+            # the respawned node's first push (and its healthy error-clear) reaches
+            # the browser and lifts the crash chip.
+            if self._bridge is not None:
+                try:
+                    self._bridge.control.rewire_node_status(name)
+                except Exception:
+                    logger.exception("restart: bridge re-wire failed for %s", name)
+
+            new_ref.wait_for_state(timeout=2.0)
+
+            # Re-establish every link touching this node from the current refs.
+            for link in self._links:
+                if link["node_out"] == name or link["node_in"] == name:
+                    try:
+                        self._wire_link(link)
+                    except Exception as exc:
+                        logger.warning("restart: failed to rewire link %s: %s", link, exc)
+
+            self._broadcast_node_directory()
+            return new_ref
+
+    def _supervise_once(self) -> None:
+        """One liveness sweep: respawn any node whose process has died, announcing
+        the crash to the browser first so the node visibly flips to an error."""
+        for name in list(self.nodes):
+            try:
+                ref = self.nodes[name]
+            except KeyError:
+                continue
+            if not self._node_is_dead(ref):
+                continue
+            exitcode = ref.process.exitcode if ref.process is not None else None
+            count = ref.restart_count + 1
+            print(f"supervisor: node '{name}' process died (exit {exitcode}) — restarting (#{count})")
+            if self._bridge is not None:
+                try:
+                    self._bridge.control.on_node_crashed(name, exitcode, count)
+                except Exception:
+                    logger.exception("supervisor: crash broadcast failed for %s", name)
+            try:
+                self.restart_node(name)
+            except Exception:
+                logger.exception("supervisor: restart of %s failed", name)
+
+    def _supervisor_loop(self) -> None:
+        while self._running and not self._supervisor_stop.is_set():
+            self._supervisor_stop.wait(0.5)
+            if not self._running or self._supervisor_stop.is_set():
+                break
+            try:
+                with self._supervisor_lock:
+                    self._supervise_once()
+            except Exception:
+                logger.exception("supervisor sweep failed")
+
+    def _start_supervisor(self) -> None:
+        """Spin up the liveness supervisor daemon. No-op without multiprocessing —
+        LOCAL nodes share the manager process and can't crash independently."""
+        if not self._use_multiprocessing:
+            return
+        self._supervisor_lock = threading.RLock()
+        self._supervisor_stop = threading.Event()
+        self._supervisor_thread = threading.Thread(
+            target=self._supervisor_loop, name="goofi-supervisor", daemon=True
+        )
+        self._supervisor_thread.start()
+
+    def _stop_supervisor(self) -> None:
+        stop = getattr(self, "_supervisor_stop", None)
+        if stop is not None:
+            stop.set()
+        thread = getattr(self, "_supervisor_thread", None)
+        if thread is not None and thread is not threading.current_thread():
+            thread.join(timeout=1.0)
 
     # ------------------------------------------------------------------
     # Sub-patches (flatten-at-runtime)
@@ -1563,6 +1710,9 @@ class Manager:
     def terminate(self, notify_gui: bool = True) -> None:
         print("Shutting down goofi-pipe manager.")
         self._running = False
+        # Stop the liveness supervisor first so it can't race a teardown by
+        # "restarting" nodes we're about to terminate.
+        self._stop_supervisor()
         NodeProcessRegistry().terminate()
         for node in list(self.nodes):
             try:
