@@ -68,6 +68,16 @@ class Data:
         if self.meta is None or not isinstance(self.meta, dict):
             raise ValueError(f"Expected meta of type dict, got {type(self.meta)}.")
 
+        # Own an independent meta dict before stamping shape/dtype/channels into it.
+        # Nodes routinely pass their persistent `self.meta` as a slot's output meta;
+        # mutating the caller's dict here corrupted that shared state on every tick.
+        # A SHALLOW copy is the right scope: the constructor only ever writes top-level
+        # keys (+ the absent-channels default), never the channel coord lists — so the
+        # large per-dim coord arrays are NOT copied (the kHz/HD hot path stays cheap).
+        # Consumers that EDIT channels (node_reduce, node_viewer) still deep-copy that
+        # sub-dict themselves, since that aliasing is their concern, not the constructor's.
+        self.meta = dict(self.meta)
+
         # validate data type
         if isinstance(self.dtype, DataType) and self.dtype not in DTYPE_TO_TYPE:
             raise RuntimeError(

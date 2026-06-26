@@ -67,3 +67,39 @@ def test_array_preserves_float32_float16_and_integer_dtypes():
     assert Data(DataType.ARRAY, np.zeros(2, dtype=np.float16), {}).data.dtype == np.float16
     assert Data(DataType.ARRAY, np.zeros(2, dtype=np.int64), {}).data.dtype == np.int64
     assert Data(DataType.ARRAY, np.zeros(2, dtype=np.uint8), {}).data.dtype == np.uint8
+
+
+def test_construction_does_not_mutate_caller_meta():
+    # Data is a value object: constructing it must NOT stamp shape/dtype/channels
+    # into the caller's dict. Nodes routinely pass their own persistent `self.meta`
+    # as the output meta; the old in-place mutation corrupted that shared dict every
+    # tick (the systemic meta-mutation hazard). The Data owns an independent copy.
+    meta = {"sfreq": 256.0}
+    d = Data(DataType.ARRAY, np.ones(4, dtype=np.float32), meta)
+    assert meta == {"sfreq": 256.0}  # caller's dict untouched
+    assert d.meta is not meta
+    assert d.meta["shape"] == (4,)
+    assert d.meta["dtype"] == "float32"
+    assert d.meta["channels"] == {}
+    assert d.meta["sfreq"] == 256.0  # carried through
+
+
+def test_construction_does_not_add_channels_to_caller_meta():
+    # The absent-channels default ("channels": {}) must land on the Data's copy, not
+    # the caller's dict — and a caller-supplied channels dict rides through intact.
+    meta_no_chan = {"x": 1}
+    Data(DataType.ARRAY, np.ones(2, dtype=np.float32), meta_no_chan)
+    assert "channels" not in meta_no_chan and "shape" not in meta_no_chan
+
+    chans = {"dim0": ["a", "b", "c", "d"]}
+    d = Data(DataType.ARRAY, np.ones(4, dtype=np.float32), {"channels": chans})
+    assert d.meta["channels"]["dim0"] == ["a", "b", "c", "d"]
+
+
+def test_string_and_table_construction_do_not_mutate_caller_meta():
+    sm = {"k": "v"}
+    Data(DataType.STRING, "hi", sm)
+    assert sm == {"k": "v"}  # no "dtype" stamped onto caller
+    tm = {"k": "v"}
+    Data(DataType.TABLE, {}, tm)
+    assert tm == {"k": "v"}
