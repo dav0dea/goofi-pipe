@@ -207,3 +207,31 @@ def test_toggle_bool_param(trigger):
     p = BoolParam(True, trigger=trigger)
     assert p.value, "BoolParam should have the correct value."
     assert p.value == (not trigger), "Accessing BoolParam should set the value to False if trigger is True."
+
+
+# ---- expression-binding gating rule (single source of truth) -----------------
+
+def test_normalize_expression_binding_empty_source_is_inactive():
+    from goofi.params import normalize_expression_binding
+
+    # empty / whitespace-only source counts as "no source" -> inactive
+    assert normalize_expression_binding("", True, False, False) == (None, False, False, False)
+    assert normalize_expression_binding("   ", True, False, False) == (None, False, False, False)
+    assert normalize_expression_binding(None, True, False, False) == (None, False, False, False)
+
+
+def test_normalize_expression_binding_active_requires_source_and_enabled():
+    from goofi.params import normalize_expression_binding
+
+    # a real source + enabled -> active
+    assert normalize_expression_binding("x*2", True, False, False) == ("x*2", True, False, False)
+    # a real source but disabled -> source kept, inactive (toggle off without losing it)
+    assert normalize_expression_binding("x*2", False, False, False) == ("x*2", False, False, False)
+
+
+def test_normalize_expression_binding_coerces_flag_types():
+    from goofi.params import normalize_expression_binding
+
+    src, active, trig, auto = normalize_expression_binding("a+b", 1, 1, 0)
+    assert (src, active, trig, auto) == ("a+b", True, True, False)
+    assert isinstance(active, bool) and isinstance(trig, bool) and isinstance(auto, bool)

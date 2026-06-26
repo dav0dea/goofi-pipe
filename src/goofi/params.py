@@ -168,6 +168,22 @@ for subclass in Param.__subclasses__():
     add_extra_attributes(subclass)
 
 
+def normalize_expression_binding(expression, enabled, triggers_process, autoeval):
+    """Canonical expression-binding gating rule — the SINGLE source of truth.
+
+    An empty / whitespace-only source counts as "no source"; the engine is ACTIVE
+    only when there is a source AND the user enabled it (toggling off keeps the
+    source so it isn't lost). Returns the normalized
+    ``(source, active, triggers_process, autoeval)`` tuple. This is purposely PURE
+    (it writes nothing): the node applies it to its Param as the authority, while
+    the manager-side proxy uses it only to shape the outgoing RPC — so the rule
+    can never diverge between the two sides.
+    """
+    source = expression if (expression and expression.strip()) else None
+    active = bool(enabled) and source is not None
+    return source, active, bool(triggers_process), bool(autoeval)
+
+
 DEFAULT_PARAMS = {
     "common": {
         "autotrigger": BoolParam(

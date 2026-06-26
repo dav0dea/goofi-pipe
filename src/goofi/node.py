@@ -37,7 +37,7 @@ from goofi import node_log, node_viewer
 from goofi.message import Message, MessageType
 from goofi.node_reduce import viewspec_from_dict
 from goofi.node_helpers import InputSlot, NodeRef, OutputSlot
-from goofi.params import InvalidParamError, NodeParams
+from goofi.params import InvalidParamError, NodeParams, normalize_expression_binding
 from goofi.transport import (
     WaitSet,
     ctrl_service_name,
@@ -390,16 +390,15 @@ class Node(ABC):
         param = self.params[group][name]
         key = (group, name)
 
-        # Normalise: empty string source counts as "no source".
-        source = expression if (expression and expression.strip()) else None
-        # An engine can only run when there's a source AND the user has
-        # enabled it. Otherwise we tear it down but keep the source.
-        active = bool(enabled) and source is not None
-
+        # The node is the AUTHORITY for this binding: apply the canonical gating
+        # rule (shared with the manager-side proxy) and write it onto the Param.
+        source, active, triggers_process, autoeval = normalize_expression_binding(
+            expression, enabled, triggers_process, autoeval
+        )
         param.expression = source
         param.expression_enabled = active
-        param.expression_triggers_process = bool(triggers_process)
-        param.expression_autoeval = bool(autoeval)
+        param.expression_triggers_process = triggers_process
+        param.expression_autoeval = autoeval
 
         with self._expression_lock:
             engine = self._expressions.get(key)

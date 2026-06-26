@@ -29,7 +29,7 @@ from goofi import nodes as goofi_nodes
 from goofi.codec import decode_message, encode_message
 from goofi.data import Data, DataType
 from goofi.message import Message, MessageType
-from goofi.params import NodeParams
+from goofi.params import NodeParams, normalize_expression_binding
 from goofi.transport import (
     Listener,
     Publisher,
@@ -347,15 +347,18 @@ class NodeRef:
             raise ValueError(f"Parameter group '{group}' doesn't exist.")
         if param_name not in self.params[group]:
             raise ValueError(f"Parameter '{param_name}' doesn't exist in group '{group}'.")
+        # Apply the SAME canonical gating rule the node uses, so the forwarded RPC
+        # carries exactly the values the node will normalize to.
+        p = self.params[group][param_name]
+        source, active, triggers_process, autoeval = normalize_expression_binding(
+            expression, enabled, triggers_process, autoeval
+        )
         # Reflect locally so the manager's snapshot matches what the node
         # will publish on its next state update.
-        p = self.params[group][param_name]
-        source = expression if (expression and expression.strip()) else None
-        active = bool(enabled) and source is not None
         p.expression = source
         p.expression_enabled = active
-        p.expression_triggers_process = bool(triggers_process)
-        p.expression_autoeval = bool(autoeval)
+        p.expression_triggers_process = triggers_process
+        p.expression_autoeval = autoeval
         self._send(
             Message(
                 MessageType.SET_EXPRESSION,
@@ -364,8 +367,8 @@ class NodeRef:
                     "param_name": param_name,
                     "expression": source,
                     "expression_enabled": active,
-                    "expression_triggers_process": bool(triggers_process),
-                    "expression_autoeval": bool(autoeval),
+                    "expression_triggers_process": triggers_process,
+                    "expression_autoeval": autoeval,
                 },
             )
         )
