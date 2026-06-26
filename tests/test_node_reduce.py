@@ -234,3 +234,29 @@ def test_default_viewspec_for_kind():
     # unknown / non-reducible kinds -> no reduction
     assert default_viewspec_for_kind("string") == {"axes": [], "version": 0}
     assert default_viewspec_for_kind("topomap") == {"axes": [], "version": 0}
+
+
+# ---- image area reduction preserves aspect (no per-axis distortion) ----------
+
+def test_area_reduction_preserves_aspect_square():
+    # 512x512 square source, NON-square viewer box (128 tall, 256 wide) -> the
+    # reduced image must stay square (uniform downscale), not 128x256.
+    img = Data(DataType.ARRAY, np.zeros((512, 512, 3), dtype=np.float32), {})
+    spec = viewspec_from_dict({"axes": [
+        {"axis": 0, "max": 128, "method": "area"},
+        {"axis": 1, "max": 256, "method": "area"},
+    ]})
+    red = reduce_for_view(img, spec)
+    assert red.data.shape[0] == red.data.shape[1]  # aspect preserved (square stays square)
+    assert red.data.shape == (128, 128, 3)          # min scale = 128/512 applied to both
+
+
+def test_area_reduction_preserves_aspect_wide():
+    # 1080x1920 (16:9) -> 720x1280 box: equal scale on both -> exact 16:9 kept.
+    img = Data(DataType.ARRAY, np.zeros((1080, 1920, 3), dtype=np.float32), {})
+    spec = viewspec_from_dict({"axes": [
+        {"axis": 0, "max": 720, "method": "area"},
+        {"axis": 1, "max": 1280, "method": "area"},
+    ]})
+    red = reduce_for_view(img, spec)
+    assert red.data.shape == (720, 1280, 3)

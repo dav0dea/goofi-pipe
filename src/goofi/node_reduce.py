@@ -236,6 +236,18 @@ def reduce_for_view(data: Data, spec: Optional[ViewSpec]) -> Data:
         if not by_axis:
             return data
 
+        # Aspect-preserving image downscale: when 2+ axes use 'area' (an image's
+        # H and W), capping each independently to the viewer's pixel box would
+        # squash a non-square source into the box's aspect. Apply ONE uniform
+        # downscale factor (min over the area axes, never upscale) so the reduced
+        # image keeps the source aspect ratio; the viewer letterboxes it.
+        area_axes = [cax for cax, a in by_axis.items() if a.method == "area"]
+        if len(area_axes) >= 2:
+            scale = min(1.0, min(by_axis[cax].max / arr.shape[cax] for cax in area_axes))
+            for cax in area_axes:
+                target = max(1, round(arr.shape[cax] * scale))
+                by_axis[cax] = AxisSpec(axis=by_axis[cax].axis, max=target, method="area")
+
         # shallow-copy meta; deep-copy the channels sub-dict before edits (never mutate input)
         new_meta = dict(data.meta)
         ch_src = new_meta.get("channels") or {}
