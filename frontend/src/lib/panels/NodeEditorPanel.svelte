@@ -590,7 +590,8 @@
 			// follow the cursor instead — it's a reference, not a coordinate move.
 			uiStore.nodeDragTarget = target.id;
 			const m = args.event as MouseEvent;
-			linkGhost = { x: m.clientX, y: m.clientY, name: args.nodes[0]?.id ?? '' };
+			// `id` is the uid; the floating chip shows the display name.
+			linkGhost = { x: m.clientX, y: m.clientY, name: g.nodeById(args.nodes[0]?.id ?? '')?.name ?? '' };
 			snapGuides = [];
 			revertDragged(dragged);
 			return;

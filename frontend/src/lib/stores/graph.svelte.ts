@@ -899,9 +899,10 @@ export class GraphStore {
 	// ------------------------------------------------------------------
 
 	/** Create a batch of nodes, replay their param values, then wire the given
-	 * links with endpoints remapped to the new names. Returns the original→new
-	 * name map. Per-node/-param/-link failures are swallowed so one bad item
-	 * doesn't abort the batch. */
+	 * links with endpoints remapped to the new uids. Returns the original→new
+	 * uid map (spec `key` is the original uid, matching the uid link endpoints).
+	 * Per-node/-param/-link failures are swallowed so one bad item doesn't abort
+	 * the batch. */
 	async instantiateNodes(
 		specs: {
 			key: string;
@@ -915,12 +916,12 @@ export class GraphStore {
 		const rename: Record<string, string> = {};
 		for (const s of specs) {
 			try {
-				const newName = await this.addNode(s.type, s.category, s.pos);
-				rename[s.key] = newName;
+				const newUid = await this.addNode(s.type, s.category, s.pos);
+				rename[s.key] = newUid;
 				for (const [group, params] of Object.entries(s.params)) {
 					for (const [name, value] of Object.entries(params)) {
 						try {
-							await this.updateParam(newName, group, name, value);
+							await this.updateParam(newUid, group, name, value);
 						} catch {
 							/* ignore a single rejected param */
 						}
@@ -945,19 +946,22 @@ export class GraphStore {
 		return rename;
 	}
 
-	/** Duplicate the named nodes (offset from their originals), carrying their
-	 * current params and the links among them. Returns the original→new map so
-	 * the caller can select the clones. */
+	/** Duplicate the given nodes by uid (offset from their originals), carrying
+	 * their current params and the links among them. Returns the original→new uid
+	 * map so the caller can select the clones. */
 	async cloneNodes(
-		names: Iterable<string>,
+		uids: Iterable<string>,
 		offset: [number, number] = [40, 40]
 	): Promise<Record<string, string>> {
-		const set = new Set(names);
-		const nodes = this.nodes.filter((n) => set.has(n.name));
+		const set = new Set(uids);
+		// `uids` are node identities (selection sets + flow-node ids are uid-keyed), and link
+		// endpoints are uids — so the node filter and the spec key must be uids too,
+		// or the rename map in instantiateNodes won't line up with the link remap.
+		const nodes = this.nodes.filter((n) => set.has(n.uid));
 		if (nodes.length === 0) return {};
 		const links = this.links.filter((l) => set.has(l.node_in) && set.has(l.node_out));
 		const specs = nodes.map((n) => ({
-			key: n.name,
+			key: n.uid,
 			type: n.type,
 			category: n.category,
 			pos: [n.pos[0] + offset[0], n.pos[1] + offset[1]] as [number, number],

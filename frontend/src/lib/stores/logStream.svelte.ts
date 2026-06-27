@@ -73,26 +73,30 @@ class LogStream {
 
 	private reconcile(): void {
 		const nodes = graph().nodes;
+		// Key endpoints by the stable uid — the same identity the need set carries
+		// (a Console's bound node is its uid) and that the console store filters /
+		// error-correlates by. Keying by the mutable display name would make a
+		// node-filtered Console open no stream at all.
 		const endpoints = new Map<string, string>();
 		for (const node of nodes) {
-			if (node.log_endpoint) endpoints.set(node.name, node.log_endpoint);
+			if (node.log_endpoint) endpoints.set(node.uid, node.log_endpoint);
 		}
 		const need = this.neededNames(endpoints.keys());
 
 		// Close what's no longer needed or whose endpoint moved.
-		for (const [name, src] of [...this.sources]) {
-			if (!need.has(name) || endpoints.get(name) !== src.endpoint) {
-				this.closeOne(name);
+		for (const [uid, src] of [...this.sources]) {
+			if (!need.has(uid) || endpoints.get(uid) !== src.endpoint) {
+				this.closeOne(uid);
 			}
 		}
 		// Open what's needed and known but not yet connected.
-		for (const name of need) {
-			const ep = endpoints.get(name);
-			if (ep && !this.sources.has(name)) this.open(name, ep);
+		for (const uid of need) {
+			const ep = endpoints.get(uid);
+			if (ep && !this.sources.has(uid)) this.open(uid, ep);
 		}
 	}
 
-	private open(name: string, endpoint: string): void {
+	private open(uid: string, endpoint: string): void {
 		if (typeof EventSource === 'undefined') return;
 		let es: EventSource;
 		try {
@@ -103,24 +107,29 @@ class LogStream {
 		es.onmessage = (e: MessageEvent) => {
 			try {
 				const rec = JSON.parse(e.data) as LogRecord;
+				// SSE frames identify the source by the node-process `node_id` (a
+				// third identity the rest of the frontend never sees). Re-stamp with
+				// the owning uid so entries match the uid-keyed filters + mirrored
+				// errors in the console store.
+				rec.node = uid;
 				consoleStore().ingest(rec);
 			} catch {
 				/* ignore malformed frame */
 			}
 		};
 		// EventSource auto-reconnects on error; the backend resumes via Last-Event-ID.
-		this.sources.set(name, { es, endpoint });
+		this.sources.set(uid, { es, endpoint });
 	}
 
-	private closeOne(name: string): void {
-		const src = this.sources.get(name);
+	private closeOne(uid: string): void {
+		const src = this.sources.get(uid);
 		if (!src) return;
 		try {
 			src.es.close();
 		} catch {
 			/* noop */
 		}
-		this.sources.delete(name);
+		this.sources.delete(uid);
 	}
 }
 

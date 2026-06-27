@@ -23,10 +23,12 @@ export function pulseRestored(ctx: NavContext, deps: ExecutorDeps): void {
 			flash().pulse([name]);
 			continue;
 		}
-		// Re-created by the replay — flash when its node_added echo arrives.
+		// Re-created by the replay — flash when its node_added echo arrives. The
+		// selection set holds uids, so match the echo on its uid (identity), not
+		// its mutable display name.
 		void awaitEvent<ControlEvent>(
 			(cb) => deps.control.on(cb),
-			(ev) => ev.event === 'node_added' && (ev.payload as { name?: string }).name === name,
+			(ev) => ev.event === 'node_added' && (ev.payload as { uid?: string }).uid === name,
 			ECHO_TIMEOUT_MS
 		)
 			.then(() => flash().pulse([name]))

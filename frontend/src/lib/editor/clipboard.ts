@@ -4,14 +4,16 @@
  * Owns the on-the-wire clipboard schema (`__goofi_clip__`) so both the editor's
  * keyboard handlers and any programmatic driver serialize/parse it the same way.
  * Instantiation is done by `graph.instantiateNodes`, keyed on each node's
- * original name; this module only shapes the payload.
+ * original uid — the same identity the copied links' endpoints use, so paste can
+ * remap them onto the new nodes; this module only shapes the payload.
  */
 import { paramValues, type LinkInfo, type NodeInstanceInfo } from '$lib/api/control';
 
-const CLIP_VERSION = 1;
+const CLIP_VERSION = 2;
 
 export interface ClipNode {
-	name: string;
+	/** The source node's uid (its identity) — the spec key paste remaps links by. */
+	uid: string;
 	type: string;
 	category: string;
 	params: Record<string, Record<string, unknown>>;
@@ -33,7 +35,7 @@ export function serializeClipboard(nodes: NodeInstanceInfo[], links: LinkInfo[])
 	return {
 		__goofi_clip__: CLIP_VERSION,
 		nodes: nodes.map((n) => ({
-			name: n.name,
+			uid: n.uid,
 			type: n.type,
 			category: n.category,
 			params: paramValues(n),
@@ -76,7 +78,7 @@ export function clipToSpecs(
 	params: Record<string, Record<string, unknown>>;
 }[] {
 	return clip.nodes.map((n) => ({
-		key: n.name,
+		key: n.uid,
 		type: n.type,
 		category: n.category,
 		pos: [Math.round(at[0] + n.offset[0]), Math.round(at[1] + n.offset[1])],
