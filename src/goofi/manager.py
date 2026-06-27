@@ -909,6 +909,7 @@ class Manager:
         params: Optional[Dict[str, Dict[str, Any]]] = None,
         pos=(0, 0),
         notify_gui: bool = True,
+        member_uid: Optional[str] = None,
     ) -> str:
         """Create a node directly inside an existing sub-patch instance.
 
@@ -937,6 +938,8 @@ class Manager:
             pos=tuple(pos),
             allow_reserved=True,
             membership={"instance": inst_id, "local_name": local},
+            # Restore the original uid on redo-of-add (else captured links orphan).
+            member_uid=member_uid,
         )
         self._membership[uid] = inst_id
         inst["members"][uid] = local

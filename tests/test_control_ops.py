@@ -40,6 +40,25 @@ def test_serialize_op_calls_manager():
     assert res["yaml"].startswith("nodes:")
 
 
+def test_add_node_dispatch_forwards_member_uid():
+    """Redo-of-add and undo-of-delete re-create a node with its ORIGINAL uid
+    (sent as `member_uid`) so uid-keyed links and panel bindings reconnect. The
+    bridge must forward member_uid to the manager; dropping it mints a fresh uid
+    and orphans the captured links (KeyError on the replayed add_link)."""
+    manager = _bare_manager()
+    manager._layout = None
+    try:
+        hub = _hub(manager)
+        want = "deadbeef0001"
+        got = asyncio.run(
+            hub._dispatch("add_node", {"type": "Oscillator", "category": "inputs", "member_uid": want})
+        )
+        assert got == want, f"member_uid was not honored (bridge dropped it): {got!r}"
+        assert want in manager.nodes
+    finally:
+        manager.terminate(notify_gui=False)
+
+
 def test_load_rewires_state_forwarding_for_reused_names(tmp_path: Path):
     """Report B1: a destructive reload tears down old nodes with notify_gui=False
     (so _wired_nodes is never cleared), then re-adds nodes with the SAME display

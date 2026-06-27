@@ -170,6 +170,9 @@ class ControlHub:
             # Inside a sub-patch the new node must land as a member of that
             # instance (and mirror to shared siblings), not in the root graph.
             inst_id = payload.get("inst_id")
+            # `member_uid` carries a node's ORIGINAL uid on redo-of-add /
+            # undo-of-delete, so the re-created node keeps its identity and the
+            # captured uid-keyed links + panel bindings reconnect to it.
             if inst_id:
                 return await self._call_manager(
                     manager.add_member_node,
@@ -179,6 +182,7 @@ class ControlHub:
                     name=payload.get("name"),
                     params=payload.get("params"),
                     pos=tuple(payload.get("pos") or (0, 0)),
+                    member_uid=payload.get("member_uid"),
                 )
             return await self._call_manager(
                 manager.add_node,
@@ -187,6 +191,7 @@ class ControlHub:
                 name=payload.get("name"),
                 params=payload.get("params"),
                 pos=tuple(payload.get("pos") or (0, 0)),
+                member_uid=payload.get("member_uid"),
             )
         if op == "remove_node":
             node = payload["node"]  # uid (real) or inst_id (sub-patch group node)
