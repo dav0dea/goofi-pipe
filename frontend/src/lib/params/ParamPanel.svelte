@@ -18,6 +18,7 @@
 	import type { ParamDescriptor } from '$lib/api/types';
 	import { graph } from '$lib/stores/graph.svelte';
 	import { categoryColor, formatName } from '$lib/editor/categoryColor';
+	import { joinNodeName, splitNodeName } from '$lib/editor/nodeName';
 	import ParamField from './ParamField.svelte';
 	import SubPatchInspector from '$lib/editor/SubPatchInspector.svelte';
 
@@ -58,6 +59,40 @@
 	let internalTab = $state<string | null>(null);
 	let docsOpen = $state(false);
 
+	// --- inline name editing (slide-in inspector header) --------------------
+	// The display `name` is the only mutable, display-only attribute (identity is
+	// the uid). A sub-patch member's name is qualified `inst::local`; we keep the
+	// faint path fixed and let the user edit only the trailing base segment.
+	const nameParts = $derived(node ? splitNodeName(node.name) : { path: '', base: '' });
+	// Keyed by uid so switching nodes auto-closes the editor while live state
+	// updates (which re-create the node object) leave an open edit untouched.
+	let editingUid = $state<string | null>(null);
+	let nameDraft = $state('');
+	const editingName = $derived(node != null && editingUid === node.uid);
+
+	function startRename(): void {
+		if (!node) return;
+		nameDraft = splitNodeName(node.name).base;
+		editingUid = node.uid;
+	}
+	function commitRename(): void {
+		// Escape/cancel nulls editingUid first, so the blur it triggers as the input
+		// unmounts is a no-op here — only a live edit commits.
+		const uid = editingUid;
+		editingUid = null;
+		if (!uid || !node || node.uid !== uid) return;
+		const base = nameDraft.trim();
+		if (!base) return; // empty → keep the current name
+		void g.renameNode(uid, joinNodeName(splitNodeName(node.name).path, base));
+	}
+	function cancelRename(): void {
+		editingUid = null;
+	}
+	function focusInput(el: HTMLInputElement): void {
+		el.focus();
+		el.select();
+	}
+
 	// When this component owns the tabs (inspector), keep the active group valid
 	// as the node changes. When `hideTabs`, the parent controls it via `group`.
 	$effect(() => {
@@ -95,8 +130,31 @@
 			<header class:has-doc={Boolean(node.doc)} class:expanded={docsOpen}>
 				<span class="dot" style="background: {categoryColor(node.category)};"></span>
 				<div class="titles">
-					<div class="title">{formatName(node.type)}</div>
-					<div class="sub">{node.name}</div>
+					<div class="title">
+						{#if editingName}
+							<!-- svelte-ignore a11y_autofocus -->
+							<input
+								class="rename"
+								value={nameDraft}
+								oninput={(e) => (nameDraft = e.currentTarget.value)}
+								onblur={commitRename}
+								onkeydown={(e) => {
+									if (e.key === 'Enter') commitRename();
+									else if (e.key === 'Escape') cancelRename();
+								}}
+								data-testid="node-name-input"
+								use:focusInput
+							/>
+						{:else}
+							{#if nameParts.path}<span class="path">{nameParts.path}</span>{/if}<button
+								class="base"
+								title="Click to rename"
+								onclick={startRename}
+								data-testid="node-name">{nameParts.base}</button
+							>
+						{/if}
+					</div>
+					<div class="sub">{formatName(node.type)}</div>
 				</div>
 				<span class="badge" class:badge-error={Boolean(node.error)} class:badge-ok={!node.error}>
 					{node.error ? 'error' : 'running'}
@@ -198,6 +256,37 @@
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;
+	}
+	/* The sub-patch path is faint and fixed; only the bold base is the rename
+	   target. */
+	.path {
+		color: var(--text-faint);
+		font-weight: 400;
+	}
+	.base {
+		font: inherit;
+		color: var(--text);
+		background: none;
+		border: none;
+		padding: 0;
+		cursor: text;
+		border-radius: var(--radius-sm);
+	}
+	.base:hover {
+		text-decoration: underline;
+		text-decoration-style: dotted;
+		text-underline-offset: 2px;
+	}
+	.rename {
+		width: 100%;
+		font: inherit;
+		font-size: 14px;
+		font-weight: 600;
+		padding: 1px 4px;
+		color: var(--text);
+		background: var(--bg-elev-2);
+		border: 1px solid var(--accent);
+		border-radius: var(--radius-sm);
 	}
 	.sub {
 		color: var(--text-faint);
