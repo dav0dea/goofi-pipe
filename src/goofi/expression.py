@@ -47,6 +47,69 @@ from goofi.transport import (
 SlotKey = Tuple[str, str]
 
 
+# The single source of truth for the expression accessor token. Bound into the eval
+# namespace (`_make_namespace`) AND keyed on by `rewrite_nd_refs`, so renaming the
+# function is a one-line change here rather than a codebase-wide sweep.
+ND_FUNC_NAME = "nd"
+
+
+def _line_start_offsets(source: str) -> list[int]:
+    """Absolute string offset where each 1-based source line begins."""
+    offsets = [0]
+    for line in source.splitlines(keepends=True):
+        offsets.append(offsets[-1] + len(line))
+    return offsets
+
+
+def rewrite_nd_refs(source: Optional[str], name_map: Dict[str, str]) -> Optional[str]:
+    """Rewrite string-literal ``nd('name')`` references whose name is a key of
+    ``name_map`` to the mapped name — and ONLY those.
+
+    Parses ``source`` with ``ast`` and edits just the matched argument literal in
+    place, preserving every other byte of the source (whitespace, comments, the rest
+    of the expression). A look-alike call (``gnd``), a method call (``obj.nd(...)``),
+    a name that merely appears inside another string or a comment, and any non-literal
+    argument (``nd(x)``, ``nd('a' + 'b')``, ``nd(f'{x}')``) are all left untouched —
+    the AST is the filter, so there are no substring false positives. Un-parseable
+    source (a node mid-edit) is returned unchanged. The accessor token is
+    ``ND_FUNC_NAME``."""
+    if not source or not name_map or ND_FUNC_NAME not in source:
+        return source
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return source
+
+    line_starts = _line_start_offsets(source)
+    edits: list[tuple[int, int, str]] = []  # (start, end, replacement)
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        if not (isinstance(func, ast.Name) and func.id == ND_FUNC_NAME):
+            continue
+        if not node.args:
+            continue
+        arg = node.args[0]
+        if not (isinstance(arg, ast.Constant) and isinstance(arg.value, str)):
+            continue
+        new = name_map.get(arg.value)
+        if new is None:
+            continue
+        start = line_starts[arg.lineno - 1] + arg.col_offset
+        end = line_starts[arg.end_lineno - 1] + arg.end_col_offset
+        quote = source[end - 1]  # the literal's closing quote — preserve its style
+        edits.append((start, end, f"{quote}{new}{quote}"))
+
+    if not edits:
+        return source
+    # Apply right-to-left so earlier offsets stay valid as the string is spliced.
+    out = source
+    for start, end, repl in sorted(edits, key=lambda e: e[0], reverse=True):
+        out = out[:start] + repl + out[end:]
+    return out
+
+
 @dataclass
 class _SubEntry:
     sub: Subscriber
@@ -217,7 +280,7 @@ class ExpressionEngine:
             "random": random,
             "datetime": datetime,
             "re": re,
-            "nd": self._nd,
+            ND_FUNC_NAME: self._nd,
         }
 
     def _nd(self, node_id: str) -> _NodeProxy:
