@@ -28,6 +28,7 @@ import threading
 import time
 import uuid
 from copy import deepcopy
+from dataclasses import asdict, dataclass, field, replace
 from os import path
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING
@@ -109,6 +110,71 @@ def _reject_reserved_name(name: str) -> None:
 
 class SubPatchTooDeep(ValueError):
     """A namespaced member name would overflow iceoryx2's 255-byte ServiceName."""
+
+
+@dataclass
+class Boundary:
+    """One In/Out port on a sub-patch's interface. `inner_node` is the LOCAL name of
+    the member the port maps to (Phase 3: or a nested instance); `inner_slot` its
+    slot. Unwired ports carry inner_node=None. Identical in shape whether auto-derived
+    from a crossing link or authored as a virtual In/Out node."""
+
+    dir: str  # 'in' | 'out'
+    dtype: Optional[str]
+    inner_node: Optional[str]
+    inner_slot: Optional[str]
+    pos: List[float]
+
+
+@dataclass
+class SubPatchInstance:
+    """Runtime grouping record for one sub-patch instance. The live graph stays flat;
+    this is the first-class record of the grouping (never re-derived from name
+    prefixes). `members` maps member uid -> local name — the uid is the key that
+    links / membership / the data route use, the local name is the per-template
+    handle keyed into the definition."""
+
+    uid: str  # stable instance identity (also the _instances key)
+    name: str  # display label, e.g. "subpatch0"
+    kind: str  # 'unique' | 'shared'
+    def_id: Optional[str]  # set iff kind == 'shared'
+    members: Dict[str, str]  # member uid -> local name
+    interface: Dict[str, Boundary]  # boundary id -> port
+    pos: List[float]
+    viewers: Dict[str, Any] = field(default_factory=dict)
+    parent: Optional[str] = None  # parent instance uid (nesting); None at single level
+
+
+@dataclass
+class SubPatchDef:
+    """A reusable shared-sub-patch definition that every instance strict-mirrors:
+    template members (local name -> node record), internal links (local-name
+    endpoints), and the boundary interface."""
+
+    members: Dict[str, Dict[str, Any]]  # local name -> node record
+    links: List[Dict[str, str]]
+    interface: Dict[str, Boundary]
+
+
+def _iface_to_dict(interface: Dict[str, Boundary]) -> Dict[str, Dict[str, Any]]:
+    """Serialize an interface (boundary id -> Boundary) to plain dicts for the JSON
+    snapshot and the saved .gfi document."""
+    return {bid: asdict(b) for bid, b in interface.items()}
+
+
+def _iface_from_dict(raw: Dict[str, Dict[str, Any]]) -> Dict[str, Boundary]:
+    """Build runtime Boundary ports from plain dicts (.gfi load / wire payloads),
+    tolerating legacy pre-dtype entries (dtype defaults to None)."""
+    return {
+        bid: Boundary(
+            dir=e["dir"],
+            dtype=e.get("dtype"),
+            inner_node=e.get("inner_node"),
+            inner_slot=e.get("inner_slot"),
+            pos=list(e.get("pos") or [0, 0]),
+        )
+        for bid, e in raw.items()
+    }
 
 
 def mark_unsaved_changes(func):
@@ -211,14 +277,16 @@ class Manager:
         # NB: there is no separate uid index — `self.nodes` (NodeContainer) IS
         # keyed by uid, so it is the single uid->NodeRef map.
         # Sub-patch state (flatten-at-runtime). The live graph stays flat; these
-        # maps are the first-class record of grouping (NOT re-derived from name
-        # prefixes). `_membership` maps a member's uid -> instance id;
-        # `_instances` holds per-instance {kind, interface, pos, members} where
-        # members maps member uid -> local name; `_definitions` holds shared
-        # sub-patch graphs (populated in the sharing phase).
+        # maps are the first-class, typed record of grouping (NOT re-derived from
+        # name prefixes). `_membership` maps a member's uid -> instance id (the
+        # reverse index of every instance's `members`); `_instances` holds the
+        # SubPatchInstance records; `_definitions` holds the shared SubPatchDef
+        # templates (populated in the sharing phase). The three views (an
+        # instance's `members`, `_membership`, and each node's `.membership`
+        # marker) are kept in lockstep by `_attach_member` / `_detach_member`.
         self._membership: Dict[str, str] = {}
-        self._instances: Dict[str, Dict[str, Any]] = {}
-        self._definitions: Dict[str, Dict[str, Any]] = {}
+        self._instances: Dict[str, SubPatchInstance] = {}
+        self._definitions: Dict[str, SubPatchDef] = {}
 
         NodeProcessRegistry().headless = headless
 
@@ -445,19 +513,18 @@ class Manager:
                 # Deleting a single member of a SHARED sub-patch would desync it from
                 # its definition/siblings (topology isn't mirrored) and leave dangling
                 # ports — block it; the user must make the instance unique first.
-                if _inst.get("def_id"):
+                if _inst.def_id:
                     raise ValueError(
                         f"cannot delete member {uid!r} of a shared sub-patch; make it unique first"
                     )
                 # Unique: unwire any boundary pointing at this member (its spliced
                 # external links drop below with the node's links) and drop the member
                 # from the instance so save/iteration never references a gone node.
-                _local = _inst["members"].get(uid)
-                for _bid, _e in list(_inst["interface"].items()):
-                    if _e.get("inner_node") == _local:
-                        _inst["interface"][_bid] = {**_e, "inner_node": None, "inner_slot": None}
-                _inst["members"].pop(uid, None)
-                self._membership.pop(uid, None)
+                _local = _inst.members.get(uid)
+                for _bid, _e in list(_inst.interface.items()):
+                    if _e.inner_node == _local:
+                        _inst.interface[_bid] = replace(_e, inner_node=None, inner_slot=None)
+                self._detach_member(uid)
         # Drop any links touching this node.
         for link in list(self._links):
             if link["node_out"] == uid or link["node_in"] == uid:
@@ -569,16 +636,16 @@ class Manager:
         inst_id = self._membership.get(link["node_out"])
         if inst_id is None or inst_id != self._membership.get(link["node_in"]):
             return
-        inst = self._instances.get(inst_id) or {}
-        def_id = inst.get("def_id")
-        if not def_id:
+        inst = self._instances.get(inst_id)
+        if inst is None or not inst.def_id:
             return
-        members = inst["members"]
+        def_id = inst.def_id
+        members = inst.members
         lout, lin = members.get(link["node_out"]), members.get(link["node_in"])
         if lout is None or lin is None:
             return
         local_link = {"node_out": lout, "node_in": lin, "slot_out": link["slot_out"], "slot_in": link["slot_in"]}
-        deflinks = self._definitions[def_id]["links"]
+        deflinks = self._definitions[def_id].links
         if add and local_link not in deflinks:
             deflinks.append(local_link)
         elif not add and local_link in deflinks:
@@ -777,18 +844,18 @@ class Manager:
         of truth the members map, canvas label, and save/load all read). The sent
         `name` may be the qualified `inst::base` or a bare base; we take the base."""
         inst = self._instances[inst_id]
-        if inst.get("def_id"):
+        if inst.def_id:
             # A shared member's local is mirrored across the definition + every
             # sibling (strict mirror); renaming one would have to mirror to all.
             # Until that exists, reject rather than create inconsistent state.
             raise ValueError("Renaming a member of a shared sub-patch isn't supported yet.")
         new_local = name.split(SUBPATCH_SEP)[-1]
         _reject_reserved_name(new_local)
-        old_local = inst["members"][uid]
+        old_local = inst.members[uid]
         if new_local == old_local:
             return
         # Keep locals unique within the instance (the template/members key space).
-        others = {l for u, l in inst["members"].items() if u != uid}
+        others = {l for u, l in inst.members.items() if u != uid}
         base, idx = new_local, 1
         while new_local in others:
             new_local = f"{base}{idx}"
@@ -796,14 +863,12 @@ class Manager:
         new_disp = f"{inst_id}{SUBPATCH_SEP}{new_local}"
         if not self._service_budget_ok(new_disp):
             raise SubPatchTooDeep(f"renaming would overflow the service-name budget for {new_disp!r}")
-        inst["members"][uid] = new_local
         self.nodes[uid].name = new_disp
-        if self.nodes[uid].membership:
-            self.nodes[uid].membership["local_name"] = new_local
+        self._attach_member(inst_id, uid, new_local)  # re-keys local + marker in lockstep
         # A boundary may name this member as its inner endpoint (by local name).
-        for port in inst.get("interface", {}).values():
-            if port.get("inner_node") == old_local:
-                port["inner_node"] = new_local
+        for port in inst.interface.values():
+            if port.inner_node == old_local:
+                port.inner_node = new_local
         # Fellow members AND external referrers reference this one by its qualified
         # display name in nd() — rewrite across the whole graph (names are unique).
         old_disp = f"{inst_id}{SUBPATCH_SEP}{old_local}"
@@ -856,14 +921,35 @@ class Manager:
             key = f"{local}.{slot}"
             if key in iface:
                 continue  # one boundary per inner slot (a 2nd external consumer fans out on the port)
-            iface[key] = {
-                "dir": dir,
-                "dtype": self._slot_dtype(disp, slot, dir),
-                "inner_node": local,
-                "inner_slot": slot,
-                "pos": self._beside_member_pos(disp, dir),
-            }
+            iface[key] = Boundary(
+                dir=dir,
+                dtype=self._slot_dtype(disp, slot, dir),
+                inner_node=local,
+                inner_slot=slot,
+                pos=self._beside_member_pos(disp, dir),
+            )
         return iface
+
+    def _attach_member(self, inst_id: str, uid: str, local: str) -> None:
+        """Record `uid` as a member of `inst_id` under local name `local`, keeping the
+        three views in lockstep: the instance's `members` map, the uid->instance
+        reverse index, and the node's own `.membership` marker. The single funnel for
+        adding membership, so the invariant the structure depends on can't drift."""
+        self._instances[inst_id].members[uid] = local
+        self._membership[uid] = inst_id
+        if uid in self.nodes:
+            self.nodes[uid].membership = {"instance": inst_id, "local_name": local}
+
+    def _detach_member(self, uid: str) -> Optional[str]:
+        """Remove `uid` from whatever instance owns it, clearing all three views.
+        Returns the instance id it was detached from (or None if it had no parent).
+        Tolerates a node whose live ref is already gone (teardown order)."""
+        inst_id = self._membership.pop(uid, None)
+        if inst_id is not None and inst_id in self._instances:
+            self._instances[inst_id].members.pop(uid, None)
+        if uid in self.nodes:
+            self.nodes[uid].membership = None
+        return inst_id
 
     @contextlib.contextmanager
     def _transaction(self):
@@ -1018,16 +1104,19 @@ class Manager:
 
         if interface is None:
             interface = self._derive_interface(members)
-        self._instances[inst_id] = {
-            "kind": "unique",
-            "def_id": None,
-            "interface": interface,
-            "pos": list(pos),
-            "members": members,
-        }
+        else:
+            interface = _iface_from_dict(interface)
+        self._instances[inst_id] = SubPatchInstance(
+            uid=inst_id,
+            name=inst_id,
+            kind="unique",
+            def_id=None,
+            members={},
+            interface=interface,
+            pos=list(pos),
+        )
         for u, local in members.items():
-            self._membership[u] = inst_id
-            self.nodes[u].membership = {"instance": inst_id, "local_name": local}
+            self._attach_member(inst_id, u, local)
 
         # Rewrite nd('name') references to the qualified member names so
         # cross-references survive the rename — across the WHOLE graph, since an
@@ -1044,10 +1133,10 @@ class Manager:
         instance the local namespace is the family's (def + every sibling carry
         the same locals by strict mirror), so the instance's own members suffice
         — but we also fold in the def's locals defensively."""
-        existing = set(self._instances[inst_id]["members"].values())
-        def_id = self._instances[inst_id].get("def_id")
+        existing = set(self._instances[inst_id].members.values())
+        def_id = self._instances[inst_id].def_id
         if def_id and def_id in self._definitions:
-            existing |= set(self._definitions[def_id]["members"].keys())
+            existing |= set(self._definitions[def_id].members.keys())
         if requested is not None:
             _reject_reserved_name(requested)
             if requested in existing:
@@ -1103,23 +1192,21 @@ class Manager:
                 # Restore the original uid on redo-of-add (else captured links orphan).
                 member_uid=member_uid,
             )
-            self._membership[uid] = inst_id
-            inst["members"][uid] = local
+            self._attach_member(inst_id, uid, local)
 
-            def_id = inst.get("def_id")
+            def_id = inst.def_id
             if def_id:
                 rec = self._node_record(uid)
                 rec.pop("uid", None)  # per-instance identity is never shared
                 rec.pop("name", None)  # display name is per-instance, not part of the template
-                self._definitions[def_id]["members"][local] = rec
+                self._definitions[def_id].members[local] = rec
                 for sib in self._shared_siblings(inst_id):
                     sib_disp = f"{sib}{SUBPATCH_SEP}{local}"
                     sib_uid = self._add_node_from_record(
                         sib_disp, dict(rec), allow_reserved=True, notify_gui=False,
                         membership={"instance": sib, "local_name": local},
                     )
-                    self._membership[sib_uid] = sib
-                    self._instances[sib]["members"][sib_uid] = local
+                    self._attach_member(sib, sib_uid, local)
 
         if self._bridge is not None and notify_gui:
             self._bridge.control.on_subpatch_changed()
@@ -1132,10 +1219,10 @@ class Manager:
         if inst_id not in self._instances:
             raise KeyError(f"No such sub-patch: {inst_id}")
         inst = self._instances[inst_id]
-        def_id = inst.get("def_id")
+        def_id = inst.def_id
         restored: List[str] = []  # uids
         rename_map: Dict[str, str] = {}  # old display -> bare display (for nd())
-        for uid, local in list(inst["members"].items()):
+        for uid, local in list(inst.members.items()):
             ref = self.nodes[uid]
             old_disp = ref.name
             # Keep bare display names distinct for nd() readability (not required —
@@ -1148,8 +1235,7 @@ class Manager:
                     idx += 1
                 target = f"{base}{idx}"
             ref.name = target
-            self._membership.pop(uid, None)
-            ref.membership = None
+            self._detach_member(uid)
             restored.append(uid)
             rename_map[old_disp] = target
         # Reverse the grouping rewrite: qualified nd('inst::name') -> bare nd('name'),
@@ -1159,7 +1245,7 @@ class Manager:
         del self._instances[inst_id]
         # GC an orphaned shared definition (the expanded instance may have been its
         # last reference), like remove_instance / make_unique.
-        if def_id and not any(i.get("def_id") == def_id for i in self._instances.values()):
+        if def_id and not any(i.def_id == def_id for i in self._instances.values()):
             self._definitions.pop(def_id, None)
         if self._bridge is not None and notify_gui:
             self._bridge.control.on_subpatch_changed()
@@ -1176,14 +1262,14 @@ class Manager:
         if inst_id not in self._instances:
             raise KeyError(f"No such sub-patch: {inst_id}")
         inst = self._instances[inst_id]
-        def_id = inst.get("def_id")
-        for member in list(inst["members"].keys()):
+        def_id = inst.def_id
+        for member in list(inst.members.keys()):
             # Pop membership BEFORE remove_node so its boundary defensive-unwire
             # (which keys on membership) no-ops during this teardown.
             self._membership.pop(member, None)
             self.remove_node(member, notify_gui=False)
         del self._instances[inst_id]
-        if def_id and not any(i.get("def_id") == def_id for i in self._instances.values()):
+        if def_id and not any(i.def_id == def_id for i in self._instances.values()):
             self._definitions.pop(def_id, None)
         if self._bridge is not None and notify_gui:
             self._bridge.control.on_subpatch_changed()
@@ -1203,7 +1289,7 @@ class Manager:
     def _definition_from_instance(self, inst_id: str) -> Dict[str, Any]:
         """Snapshot a (unique) instance's topology+params as a reusable definition."""
         inst = self._instances[inst_id]
-        members = {local: self._node_record(uid) for uid, local in inst["members"].items()}
+        members = {local: self._node_record(uid) for uid, local in inst.members.items()}
         # Strip per-instance identity (uid + display name) from the shared definition
         # records — the template is keyed by local name.
         for rec in members.values():
@@ -1213,9 +1299,9 @@ class Manager:
         for link in self._links:
             if self._membership.get(link["node_out"]) == inst_id and self._membership.get(link["node_in"]) == inst_id:
                 links.append(self._local_link(link, inst_id))
-        # Deep-copy the interface: entries are mutable port dicts that boundary
-        # edits rewrite, and the def must not alias the source instance's dicts.
-        return {"members": members, "links": links, "interface": deepcopy(inst["interface"])}
+        # Deep-copy the interface: entries are mutable Boundary ports that boundary
+        # edits rewrite, and the def must not alias the source instance's ports.
+        return SubPatchDef(members=members, links=links, interface=deepcopy(inst.interface))
 
     @mark_unsaved_changes
     def share_instance(self, inst_id: str, notify_gui: bool = True) -> str:
@@ -1227,12 +1313,12 @@ class Manager:
         if inst_id not in self._instances:
             raise KeyError(f"No such sub-patch: {inst_id}")
         inst = self._instances[inst_id]
-        if inst.get("def_id"):
-            return inst["def_id"]
+        if inst.def_id:
+            return inst.def_id
         def_id = self._fresh_def_id()
         self._definitions[def_id] = self._definition_from_instance(inst_id)
-        inst["kind"] = "shared"
-        inst["def_id"] = def_id
+        inst.kind = "shared"
+        inst.def_id = def_id
         if self._bridge is not None and notify_gui:
             self._bridge.control.on_subpatch_changed()
         return def_id
@@ -1248,7 +1334,18 @@ class Manager:
         local_to_uid: Dict[str, str] = {}
         # Atomic: a failure mid-splice tears down spawned members + restores the maps.
         with self._transaction():
-            for local, rec in d["members"].items():
+            self._instances[inst_id] = SubPatchInstance(
+                uid=inst_id,
+                name=inst_id,
+                kind="shared",
+                def_id=def_id,
+                members={},
+                # Deep-copy so this sibling's boundary edits never cross-mutate the
+                # def or other siblings (Boundary ports are mutable).
+                interface=deepcopy(d.interface),
+                pos=list(pos),
+            )
+            for local, rec in d.members.items():
                 new_name = f"{inst_id}{SUBPATCH_SEP}{local}"
                 if not self._service_budget_ok(new_name):
                     raise SubPatchTooDeep(f"instance name {new_name!r} overflows the service-name budget")
@@ -1256,25 +1353,15 @@ class Manager:
                     new_name, dict(rec), allow_reserved=True,
                     membership={"instance": inst_id, "local_name": local},
                 )
+                self._attach_member(inst_id, uid, local)
                 members[uid] = local
                 local_to_uid[local] = uid
-            for link in d["links"]:
+            for link in d.links:
                 self.add_link(
                     local_to_uid[link["node_out"]],
                     local_to_uid[link["node_in"]],
                     link["slot_out"], link["slot_in"], notify_gui=False,
                 )
-            self._instances[inst_id] = {
-                "kind": "shared",
-                "def_id": def_id,
-                # Deep-copy so this sibling's boundary edits never cross-mutate the def
-                # or other siblings (entries are mutable port dicts).
-                "interface": deepcopy(d["interface"]),
-                "pos": list(pos),
-                "members": members,
-            }
-            for uid in members:
-                self._membership[uid] = inst_id
             # Re-point intra-sub-patch cross-refs at THIS instance's members.
             self._requalify_member_expressions(members.keys(), inst_id, set(members.values()))
         if self._bridge is not None and notify_gui:
@@ -1287,13 +1374,13 @@ class Manager:
         if inst_id not in self._instances:
             raise KeyError(f"No such sub-patch: {inst_id}")
         inst = self._instances[inst_id]
-        def_id = inst.get("def_id")
-        inst["kind"] = "unique"
-        inst["def_id"] = None
+        def_id = inst.def_id
+        inst.kind = "unique"
+        inst.def_id = None
         # Detach the interface from the def/siblings so later boundary edits on this
         # now-unique instance can't cross-mutate the family it just left.
-        inst["interface"] = deepcopy(inst["interface"])
-        if def_id and not any(i.get("def_id") == def_id for i in self._instances.values()):
+        inst.interface = deepcopy(inst.interface)
+        if def_id and not any(i.def_id == def_id for i in self._instances.values()):
             self._definitions.pop(def_id, None)
         if self._bridge is not None and notify_gui:
             self._bridge.control.on_subpatch_changed()
@@ -1311,7 +1398,7 @@ class Manager:
         _fresh_member_local, member-rename re-key). If that invariant is ever
         violated, fail loudly here rather than silently splicing onto whichever
         member iterates first."""
-        matches = [uid for uid, l in self._instances[inst_id]["members"].items() if l == local]
+        matches = [uid for uid, l in self._instances[inst_id].members.items() if l == local]
         if len(matches) > 1:
             raise RuntimeError(
                 f"sub-patch {inst_id!r} has duplicate local name {local!r} (members corrupt): {matches}"
@@ -1320,7 +1407,7 @@ class Manager:
 
     def _fresh_boundary_id(self, inst_id: str, dir: str) -> str:
         """Lowest unused `in0`/`out0`… among the instance's current interface keys."""
-        iface = self._instances[inst_id]["interface"]
+        iface = self._instances[inst_id].interface
         idx = 0
         while f"{dir}{idx}" in iface:
             idx += 1
@@ -1359,26 +1446,26 @@ class Manager:
                 self.add_link(new_uid, link["node_in"], new_slot, link["slot_in"], notify_gui=notify_gui)
 
     def _shared_siblings(self, inst_id: str) -> List[str]:
-        def_id = self._instances[inst_id].get("def_id")
+        def_id = self._instances[inst_id].def_id
         if not def_id:
             return []
-        return [i for i, inst in self._instances.items() if i != inst_id and inst.get("def_id") == def_id]
+        return [i for i, inst in self._instances.items() if i != inst_id and inst.def_id == def_id]
 
-    def _mirror_boundary_entry(self, inst_id: str, bnd_id: str, entry: Optional[dict]) -> None:
+    def _mirror_boundary_entry(self, inst_id: str, bnd_id: str, entry: Optional[Boundary]) -> None:
         """Mirror a boundary's TOPOLOGY (dir/dtype/inner/pos) to the definition and
         every shared sibling (entry=None removes it). External wires stay per-instance."""
-        def_id = self._instances[inst_id].get("def_id")
+        def_id = self._instances[inst_id].def_id
         if not def_id:
             return
         if entry is None:
-            self._definitions[def_id]["interface"].pop(bnd_id, None)
+            self._definitions[def_id].interface.pop(bnd_id, None)
         else:
-            self._definitions[def_id]["interface"][bnd_id] = deepcopy(entry)
+            self._definitions[def_id].interface[bnd_id] = deepcopy(entry)
         for sib in self._shared_siblings(inst_id):
             if entry is None:
-                self._instances[sib]["interface"].pop(bnd_id, None)
+                self._instances[sib].interface.pop(bnd_id, None)
             else:
-                self._instances[sib]["interface"][bnd_id] = deepcopy(entry)
+                self._instances[sib].interface[bnd_id] = deepcopy(entry)
 
     @mark_unsaved_changes
     def add_boundary(self, inst_id: str, dir: str, dtype: str, pos=(0, 0), notify_gui: bool = True) -> str:
@@ -1388,8 +1475,8 @@ class Manager:
         if dir not in ("in", "out"):
             raise ValueError(f"dir must be in/out, got {dir!r}")
         bnd_id = self._fresh_boundary_id(inst_id, dir)
-        entry = {"dir": dir, "dtype": dtype, "inner_node": None, "inner_slot": None, "pos": list(pos)}
-        self._instances[inst_id]["interface"][bnd_id] = entry
+        entry = Boundary(dir=dir, dtype=dtype, inner_node=None, inner_slot=None, pos=list(pos))
+        self._instances[inst_id].interface[bnd_id] = entry
         self._mirror_boundary_entry(inst_id, bnd_id, entry)
         if self._bridge is not None and notify_gui:
             self._bridge.control.on_subpatch_changed()
@@ -1405,19 +1492,19 @@ class Manager:
         every sibling, and each sibling re-splices its OWN external links.
         """
         inst = self._instances[inst_id]
-        iface = inst["interface"]
+        iface = inst.interface
         if bnd_id not in iface:
             raise KeyError(f"No such boundary {bnd_id} on {inst_id}")
         entry = iface[bnd_id]
-        dir = entry["dir"]
-        old_local, old_slot = entry["inner_node"], entry["inner_slot"]
+        dir = entry.dir
+        old_local, old_slot = entry.inner_node, entry.inner_slot
         siblings = self._shared_siblings(inst_id)
 
         if inner_node is None:
             if old_local is not None:
                 for iid in [inst_id, *siblings]:
                     self._unsplice_instance(iid, dir, old_local, old_slot, notify_gui)
-            new_entry = {**entry, "inner_node": None, "inner_slot": None}
+            new_entry = replace(entry, inner_node=None, inner_slot=None)
         else:
             uid = self._member_uid(inst_id, inner_node)
             if uid is None or uid not in self.nodes or self._membership.get(uid) != inst_id:
@@ -1428,13 +1515,13 @@ class Manager:
                 raise ValueError(f"no {dir} slot {inner_slot!r} on {inner_node}")
             # `dtype` is absent on legacy (pre-dtype) entries — tolerate it and heal
             # below by storing the real slot dtype.
-            expected = entry.get("dtype")
+            expected = entry.dtype
             if expected is not None and dt.name != expected:
                 raise ValueError(
                     f"dtype mismatch: {inner_node}.{inner_slot} is {dt.name}, boundary is {expected}"
                 )
             for k, e in iface.items():
-                if k != bnd_id and e["dir"] == dir and e["inner_node"] == inner_node and e["inner_slot"] == inner_slot:
+                if k != bnd_id and e.dir == dir and e.inner_node == inner_node and e.inner_slot == inner_slot:
                     raise ValueError(f"inner slot {inner_node}.{inner_slot} already exposed by {k}")
             # An In port must own its inner input alone: refuse an inner input slot
             # already fed by an INTERNAL member→member link, else the external splice
@@ -1453,7 +1540,7 @@ class Manager:
             if old_local is not None and (old_local, old_slot) != (inner_node, inner_slot):
                 for iid in [inst_id, *siblings]:
                     self._resplice_instance(iid, dir, old_local, old_slot, inner_node, inner_slot, notify_gui)
-            new_entry = {**entry, "dtype": dt.name, "inner_node": inner_node, "inner_slot": inner_slot}
+            new_entry = replace(entry, dtype=dt.name, inner_node=inner_node, inner_slot=inner_slot)
 
         iface[bnd_id] = new_entry
         self._mirror_boundary_entry(inst_id, bnd_id, new_entry)
@@ -1464,13 +1551,13 @@ class Manager:
     def remove_boundary(self, inst_id: str, bnd_id: str, notify_gui: bool = True) -> None:
         """Delete an In/Out node, tearing down its external wires across siblings."""
         inst = self._instances[inst_id]
-        iface = inst["interface"]
+        iface = inst.interface
         if bnd_id not in iface:
             raise KeyError(f"No such boundary {bnd_id} on {inst_id}")
         entry = iface[bnd_id]
-        if entry["inner_node"] is not None:
+        if entry.inner_node is not None:
             for iid in [inst_id, *self._shared_siblings(inst_id)]:
-                self._unsplice_instance(iid, entry["dir"], entry["inner_node"], entry["inner_slot"], notify_gui)
+                self._unsplice_instance(iid, entry.dir, entry.inner_node, entry.inner_slot, notify_gui)
         del iface[bnd_id]
         self._mirror_boundary_entry(inst_id, bnd_id, None)
         if self._bridge is not None and notify_gui:
@@ -1481,18 +1568,18 @@ class Manager:
         """Move an In/Out pill, mirroring the pos across shared siblings (like member
         pos). Returns the (inst_id, bnd_id) pairs changed so the bridge can broadcast."""
         pos = list(pos)
-        iface = self._instances[inst_id]["interface"]
+        iface = self._instances[inst_id].interface
         if bnd_id not in iface:
             raise KeyError(f"No such boundary {bnd_id} on {inst_id}")
         changed = [(inst_id, bnd_id)]
-        iface[bnd_id] = {**iface[bnd_id], "pos": pos}
-        def_id = self._instances[inst_id].get("def_id")
+        iface[bnd_id] = replace(iface[bnd_id], pos=pos)
+        def_id = self._instances[inst_id].def_id
         if def_id:
-            if bnd_id in self._definitions[def_id]["interface"]:
-                self._definitions[def_id]["interface"][bnd_id]["pos"] = pos
+            if bnd_id in self._definitions[def_id].interface:
+                self._definitions[def_id].interface[bnd_id].pos = pos
             for sib in self._shared_siblings(inst_id):
-                if bnd_id in self._instances[sib]["interface"]:
-                    self._instances[sib]["interface"][bnd_id] = {**self._instances[sib]["interface"][bnd_id], "pos": pos}
+                if bnd_id in self._instances[sib].interface:
+                    self._instances[sib].interface[bnd_id] = replace(self._instances[sib].interface[bnd_id], pos=pos)
                     changed.append((sib, bnd_id))
         return changed
 
@@ -1500,15 +1587,15 @@ class Manager:
         """Translate a (sub-patch, boundary) port to the real inner (member uid,
         slot) for the external-wire splice. Raises if unwired/unknown."""
         inst = self._instances.get(inst_id)
-        if inst is None or bnd_id not in inst["interface"]:
+        if inst is None or bnd_id not in inst.interface:
             raise KeyError(f"No such boundary {inst_id}:{bnd_id}")
-        entry = inst["interface"][bnd_id]
-        if entry["inner_node"] is None:
+        entry = inst.interface[bnd_id]
+        if entry.inner_node is None:
             raise ValueError(f"boundary {inst_id}:{bnd_id} is not wired yet")
-        uid = self._member_uid(inst_id, entry["inner_node"])
+        uid = self._member_uid(inst_id, entry.inner_node)
         if uid is None:
             raise ValueError(f"boundary {inst_id}:{bnd_id} inner member is gone")
-        return uid, entry["inner_slot"]
+        return uid, entry.inner_slot
 
     @mark_unsaved_changes
     def update_param(self, node: str, group: str, name: str, value: Any) -> None:
@@ -1522,16 +1609,16 @@ class Manager:
         inst_id = self._membership.get(node)
         if not inst_id:
             return
-        inst = self._instances.get(inst_id) or {}
-        def_id = inst.get("def_id")
-        if not def_id:
+        inst = self._instances.get(inst_id)
+        if inst is None or not inst.def_id:
             return
-        local = inst["members"][node]
+        def_id = inst.def_id
+        local = inst.members[node]
         # Update the definition's stored value (the save source of truth). If the
         # param carries a (possibly stashed) expression — stored as a {value,
         # expression, ...} dict — update only its value field so a value edit
         # doesn't wipe the binding.
-        rec = self._definitions[def_id]["members"].get(local)
+        rec = self._definitions[def_id].members.get(local)
         if rec is not None:
             grp = rec.setdefault("params", {}).setdefault(group, {})
             existing = grp.get(name)
@@ -1541,9 +1628,9 @@ class Manager:
                 grp[name] = value
         # Propagate to every sibling instance's corresponding member.
         for other_id, other in self._instances.items():
-            if other_id == inst_id or other.get("def_id") != def_id:
+            if other_id == inst_id or other.def_id != def_id:
                 continue
-            for onode, olocal in other["members"].items():
+            for onode, olocal in other.members.items():
                 if olocal == local:
                     try:
                         self.nodes[onode].update_param(group, name, value)
@@ -1576,16 +1663,16 @@ class Manager:
         inst_id = self._membership.get(uid)
         if not inst_id:
             return
-        inst = self._instances.get(inst_id) or {}
-        def_id = inst.get("def_id")
-        if not def_id:
+        inst = self._instances.get(inst_id)
+        if inst is None or not inst.def_id:
             return
-        local = inst["members"][uid]
+        def_id = inst.def_id
+        local = inst.members[uid]
         # Record on the definition. Read the normalized binding back off the primary
         # node's param (the NodeRef just applied the same canonical gating the node
         # will), and store it in the {value, expression, ...} shape Param.serialize
         # emits — or a flat value when the expression was cleared.
-        rec = self._definitions[def_id]["members"].get(local)
+        rec = self._definitions[def_id].members.get(local)
         if rec is not None:
             p = self.nodes[uid].params[group][name]
             params = rec.setdefault("params", {}).setdefault(group, {})
@@ -1602,10 +1689,10 @@ class Manager:
         # Propagate to every sibling instance's corresponding member, re-pointing any
         # intra-sub-patch cross-ref at the sibling's OWN members.
         for other_id, other in self._instances.items():
-            if other_id == inst_id or other.get("def_id") != def_id:
+            if other_id == inst_id or other.def_id != def_id:
                 continue
-            sib_expr = _requalify_nd_literal(expression, other_id, set(other["members"].values()))
-            for onode, olocal in other["members"].items():
+            sib_expr = _requalify_nd_literal(expression, other_id, set(other.members.values()))
+            for onode, olocal in other.members.items():
                 if olocal == local and onode in self.nodes:
                     try:
                         self.nodes[onode].set_expression(group, name, sib_expr, enabled, triggers_process, autoeval)
@@ -1630,24 +1717,24 @@ class Manager:
         inst_id = self._membership.get(name)
         if not inst_id:
             return changed
-        inst = self._instances.get(inst_id) or {}
-        def_id = inst.get("def_id")
-        if not def_id:
+        inst = self._instances.get(inst_id)
+        if inst is None or not inst.def_id:
             return changed
-        local = inst["members"][name]
+        def_id = inst.def_id
+        local = inst.members[name]
         # Record on the definition (the save source of truth). Assign a fresh dict
         # rather than mutating in place — `_node_record` can leave the def's member
         # gui_kwargs aliased to a live node's dict, and we must not touch that.
-        rec = self._definitions[def_id]["members"].get(local)
+        rec = self._definitions[def_id].members.get(local)
         if rec is not None:
             rec["gui_kwargs"] = {**(rec.get("gui_kwargs") or {}), "pos": pos}
         # Propagate to every sibling instance's corresponding member. Tolerate a
         # stale members entry whose node was already removed (remove_node leaves
         # _membership/members untouched) — same defensive stance as update_param.
         for other_id, other in self._instances.items():
-            if other_id == inst_id or other.get("def_id") != def_id:
+            if other_id == inst_id or other.def_id != def_id:
                 continue
-            for onode, olocal in other["members"].items():
+            for onode, olocal in other.members.items():
                 if olocal == local and onode in self.nodes:
                     oref = self.nodes[onode]
                     oref.gui_kwargs = {**(oref.gui_kwargs or {}), "pos": pos}
@@ -1668,7 +1755,7 @@ class Manager:
         return state
 
     def _local_link(self, link: Dict[str, str], inst_id: str) -> Dict[str, str]:
-        m = self._instances[inst_id]["members"]
+        m = self._instances[inst_id].members
         return {
             "node_out": m[link["node_out"]],
             "node_in": m[link["node_in"]],
@@ -1701,36 +1788,41 @@ class Manager:
         instances: Dict[str, Any] = {}
         definitions: Dict[str, Any] = {}
         for iid, inst in self._instances.items():
-            if inst.get("def_id"):
-                def_id = inst["def_id"]
+            if inst.def_id:
+                def_id = inst.def_id
                 if def_id not in definitions:
-                    definitions[def_id] = deepcopy(self._definitions[def_id])
+                    d = self._definitions[def_id]
+                    definitions[def_id] = {
+                        "members": deepcopy(d.members),
+                        "links": deepcopy(d.links),
+                        "interface": _iface_to_dict(d.interface),
+                    }
                 instances[iid] = {
                     "kind": "shared",
                     "def": def_id,
-                    "pos": inst["pos"],
+                    "pos": inst.pos,
                     # Only per-instance state — topology+params live in the definition.
                     "members": {
                         local: {
                             "uid": self.nodes[nn].uid,
                             "pos": (self.nodes[nn].gui_kwargs or {}).get("pos"),
                         }
-                        for nn, local in inst["members"].items()
+                        for nn, local in inst.members.items()
                     },
                 }
             else:
-                members = {inst["members"][nn]: self._node_record(nn) for nn in inst["members"]}
+                members = {inst.members[nn]: self._node_record(nn) for nn in inst.members}
                 instances[iid] = {
                     "kind": "unique",
-                    "pos": inst["pos"],
-                    "interface": inst["interface"],
+                    "pos": inst.pos,
+                    "interface": _iface_to_dict(inst.interface),
                     "members": members,
                     "links": internal.get(iid, []),
                 }
             # Per-instance viewer state (collapsed sub-patch slots) rides on the record
             # so a reload keeps the kind/settings the user chose (backlog #17).
-            if inst.get("viewers"):
-                instances[iid]["viewers"] = deepcopy(inst["viewers"])
+            if inst.viewers:
+                instances[iid]["viewers"] = deepcopy(inst.viewers)
         return root_nodes, root_links, definitions, instances
 
     def _add_node_from_record(
@@ -1776,7 +1868,13 @@ class Manager:
         flat graph. Add all nodes first, then all links (so add_link never races
         a not-yet-spawned endpoint). Handles both unique (inline) and shared
         (definition-backed) instances. Not atomic on its own — call via _expand_doc."""
-        self._definitions.update(definitions or {})
+        # Saved-doc definitions are plain dicts; rebuild the typed SubPatchDef records.
+        for def_id, draw in (definitions or {}).items():
+            self._definitions[def_id] = SubPatchDef(
+                members=draw.get("members", {}),
+                links=draw.get("links", []),
+                interface=_iface_from_dict(draw.get("interface", {})),
+            )
 
         for key, node in root_nodes.items():
             # v2 records carry their display name; v1 used the dict key as the name.
@@ -1793,7 +1891,7 @@ class Manager:
                 def_id = inst["def"]
                 d = self._definitions[def_id]
                 per = inst.get("members") or {}
-                for local, rec in d["members"].items():
+                for local, rec in d.members.items():
                     new_name = f"{inst_id}{SUBPATCH_SEP}{local}"
                     pm = per.get(local) or {}
                     node_rec = dict(rec)
@@ -1810,10 +1908,10 @@ class Manager:
                 # Re-point intra-sub-patch cross-refs at THIS instance (the def may
                 # carry them qualified to whichever instance it was snapshotted from).
                 self._requalify_member_expressions(members_map.keys(), inst_id, set(members_map.values()))
-                # Deep-copy: each loaded shared instance gets its own port dicts so
-                # later boundary edits don't alias the definition / siblings.
-                interface = deepcopy(d["interface"])
-                for link in d["links"]:
+                # Deep-copy: each loaded shared instance gets its own Boundary ports
+                # so later boundary edits don't alias the definition / siblings.
+                interface = deepcopy(d.interface)
+                for link in d.links:
                     internal_links.append((local_to_uid, link))
             else:
                 for local, rec in (inst.get("members") or {}).items():
@@ -1824,21 +1922,22 @@ class Manager:
                     )
                     members_map[uid] = local
                     local_to_uid[local] = uid
-                interface = inst.get("interface", {})
+                interface = _iface_from_dict(inst.get("interface", {}))
                 for link in inst.get("links", []):
                     internal_links.append((local_to_uid, link))
 
-            self._instances[inst_id] = {
-                "kind": kind,
-                "def_id": inst.get("def") if kind == "shared" else None,
-                "interface": interface,
-                "pos": inst.get("pos", [0, 0]),
-                "members": members_map,
-            }
-            if inst.get("viewers"):
-                self._instances[inst_id]["viewers"] = inst["viewers"]
-            for uid in members_map:
-                self._membership[uid] = inst_id
+            self._instances[inst_id] = SubPatchInstance(
+                uid=inst_id,
+                name=inst_id,
+                kind=kind,
+                def_id=inst.get("def") if kind == "shared" else None,
+                members={},
+                interface=interface,
+                pos=inst.get("pos", [0, 0]),
+                viewers=inst.get("viewers") or {},
+            )
+            for uid, local in members_map.items():
+                self._attach_member(inst_id, uid, local)
 
         for local_to_uid, link in internal_links:
             self.add_link(

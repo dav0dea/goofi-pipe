@@ -78,7 +78,7 @@ def test_external_nd_ref_follows_member_through_group_rename_expand():
         mgr.set_expression(ext, "oscillator", "frequency", "nd('oscillator0')", enabled=True)
 
         inst = mgr.group_nodes([a])
-        local = mgr._instances[inst]["members"][a]
+        local = mgr._instances[inst].members[a]
         f = mgr.nodes[ext].params["oscillator"]["frequency"]
         assert f.expression == f"nd('{inst}{SUBPATCH_SEP}{local}')"
 
@@ -102,8 +102,8 @@ def test_member_uid_raises_on_duplicate_local_rather_than_silent_misroute():
         a = mgr.add_node("Oscillator", "inputs")
         b = mgr.add_node("Buffer", "signal")
         inst = mgr.group_nodes([a, b])
-        for uid in list(mgr._instances[inst]["members"]):
-            mgr._instances[inst]["members"][uid] = "dup"  # force a collision
+        for uid in list(mgr._instances[inst].members):
+            mgr._instances[inst].members[uid] = "dup"  # force a collision
         with pytest.raises(RuntimeError):
             mgr._member_uid(inst, "dup")
     finally:

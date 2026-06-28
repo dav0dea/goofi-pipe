@@ -12,7 +12,7 @@ def test_instance_viewers_serialize_into_v2_tree():
     try:
         a = mgr.add_node("Oscillator", "inputs")
         inst = mgr.group_nodes([a])
-        mgr._instances[inst]["viewers"] = {"out0": {"kind": "image", "settings": {}}}
+        mgr._instances[inst].viewers = {"out0": {"kind": "image", "settings": {}}}
 
         _root_nodes, _root_links, _defs, instances = mgr.build_v2_tree()
         assert instances[inst].get("viewers") == {"out0": {"kind": "image", "settings": {}}}
@@ -25,14 +25,14 @@ def test_instance_viewers_restore_on_expand_doc():
     try:
         a = mgr.add_node("Oscillator", "inputs")
         inst = mgr.group_nodes([a])
-        mgr._instances[inst]["viewers"] = {"out0": {"kind": "topomap"}}
+        mgr._instances[inst].viewers = {"out0": {"kind": "topomap"}}
         root_nodes, root_links, defs, instances = mgr.build_v2_tree()
 
         # Reload into a fresh manager via the same expand path the loader uses.
         mgr2 = _bare_manager(use_multiprocessing=False)
         try:
             mgr2._expand_doc(root_nodes, root_links, instances, defs)
-            assert mgr2._instances[inst].get("viewers") == {"out0": {"kind": "topomap"}}
+            assert mgr2._instances[inst].viewers == {"out0": {"kind": "topomap"}}
         finally:
             mgr2.terminate(notify_gui=False)
     finally:

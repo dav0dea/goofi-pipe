@@ -32,8 +32,8 @@ def test_set_expression_mirrors_and_persists_across_shared_siblings():
         inst1 = mgr.group_nodes([a])
         def_id = mgr.share_instance(inst1)
         inst2 = mgr.instantiate_definition(def_id)
-        m1 = next(iter(mgr._instances[inst1]["members"]))
-        m2 = next(iter(mgr._instances[inst2]["members"]))
+        m1 = next(iter(mgr._instances[inst1].members))
+        m2 = next(iter(mgr._instances[inst2].members))
 
         mgr.set_expression(m1, "oscillator", "frequency", "5 + 5", enabled=True)
 
@@ -43,13 +43,13 @@ def test_set_expression_mirrors_and_persists_across_shared_siblings():
         assert p2.expression_enabled is True
 
         # ...the definition persists it...
-        local = mgr._instances[inst1]["members"][m1]
-        defrec = mgr._definitions[def_id]["members"][local]
+        local = mgr._instances[inst1].members[m1]
+        defrec = mgr._definitions[def_id].members[local]
         assert defrec["params"]["oscillator"]["frequency"]["expression"] == "5 + 5"
 
         # ...so a fresh sibling inherits it too.
         inst3 = mgr.instantiate_definition(def_id)
-        m3 = next(iter(mgr._instances[inst3]["members"]))
+        m3 = next(iter(mgr._instances[inst3].members))
         assert mgr.nodes[m3].params["oscillator"]["frequency"].expression == "5 + 5"
     finally:
         mgr.terminate(notify_gui=False)
@@ -64,13 +64,13 @@ def test_value_edit_preserves_a_shared_members_stashed_expression_in_the_def():
         a = mgr.add_node("Oscillator", "inputs")
         inst1 = mgr.group_nodes([a])
         def_id = mgr.share_instance(inst1)
-        m1 = next(iter(mgr._instances[inst1]["members"]))
-        local = mgr._instances[inst1]["members"][m1]
+        m1 = next(iter(mgr._instances[inst1].members))
+        local = mgr._instances[inst1].members[m1]
 
         mgr.set_expression(m1, "oscillator", "frequency", "3 + 4", enabled=False)
         mgr.update_param(m1, "oscillator", "frequency", 9.0)
 
-        defrec = mgr._definitions[def_id]["members"][local]["params"]["oscillator"]["frequency"]
+        defrec = mgr._definitions[def_id].members[local]["params"]["oscillator"]["frequency"]
         assert isinstance(defrec, dict), "value edit clobbered the stashed expression dict"
         assert defrec["expression"] == "3 + 4"
         assert defrec["value"] == 9.0
@@ -89,13 +89,13 @@ def test_internal_member_link_mirrors_to_siblings_and_definition():
         inst1 = mgr.group_nodes([a, b])
         def_id = mgr.share_instance(inst1)
         inst2 = mgr.instantiate_definition(def_id)
-        la = mgr._instances[inst1]["members"][a]
-        lb = mgr._instances[inst1]["members"][b]
+        la = mgr._instances[inst1].members[a]
+        lb = mgr._instances[inst1].members[b]
 
         mgr.add_link(a, b, "out", "val")
 
         # definition carries the local-form link
-        assert {"node_out": la, "node_in": lb, "slot_out": "out", "slot_in": "val"} in mgr._definitions[def_id]["links"]
+        assert {"node_out": la, "node_in": lb, "slot_out": "out", "slot_in": "val"} in mgr._definitions[def_id].links
         # the existing sibling got the corresponding live link
         sa, sb = mgr._member_uid(inst2, la), mgr._member_uid(inst2, lb)
         assert {"node_out": sa, "node_in": sb, "slot_out": "out", "slot_in": "val"} in mgr._links
@@ -106,7 +106,7 @@ def test_internal_member_link_mirrors_to_siblings_and_definition():
 
         # removing it mirrors too (def + siblings)
         mgr.remove_link(a, b, "out", "val")
-        assert {"node_out": la, "node_in": lb, "slot_out": "out", "slot_in": "val"} not in mgr._definitions[def_id]["links"]
+        assert {"node_out": la, "node_in": lb, "slot_out": "out", "slot_in": "val"} not in mgr._definitions[def_id].links
         assert {"node_out": sa, "node_in": sb, "slot_out": "out", "slot_in": "val"} not in mgr._links
     finally:
         mgr.terminate(notify_gui=False)
@@ -158,8 +158,8 @@ def test_shared_mirror_surfaces_sibling_failure():
         def_id = mgr.share_instance(inst1)
         inst2 = mgr.instantiate_definition(def_id)
 
-        member1 = next(iter(mgr._instances[inst1]["members"]))
-        member2 = next(iter(mgr._instances[inst2]["members"]))
+        member1 = next(iter(mgr._instances[inst1].members))
+        member2 = next(iter(mgr._instances[inst2].members))
 
         # make the sibling's mirror update raise
         def _boom(*_a, **_k):

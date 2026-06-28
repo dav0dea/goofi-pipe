@@ -34,7 +34,7 @@ def assert_subpatch_invariants(mgr) -> None:
     # --- membership -> instances is consistent, members are live, marker agrees
     for uid, inst_id in membership.items():
         assert inst_id in instances, f"membership[{uid}] points at missing instance {inst_id}"
-        members = instances[inst_id]["members"]
+        members = instances[inst_id].members
         assert uid in members, f"{uid} maps to {inst_id} in membership but is not one of its members"
         assert uid in nodes, f"member {uid} of {inst_id} is not a live node"
         local = members[uid]
@@ -45,7 +45,7 @@ def assert_subpatch_invariants(mgr) -> None:
 
     # --- instances -> membership reverse, local-name uniqueness, def + boundary
     for inst_id, inst in instances.items():
-        members = inst["members"]
+        members = inst.members
         for uid, local in members.items():
             assert uid in nodes, f"instance {inst_id} lists member {uid} that is not live"
             assert membership.get(uid) == inst_id, (
@@ -57,43 +57,43 @@ def assert_subpatch_invariants(mgr) -> None:
             f"duplicate local name within {inst_id}: {locals_}"
         )
 
-        def_id = inst.get("def_id")
+        def_id = inst.def_id
         if def_id is not None:
             assert def_id in definitions, f"instance {inst_id} references missing definition {def_id}"
-            assert set(members.values()) == set(definitions[def_id]["members"].keys()), (
+            assert set(members.values()) == set(definitions[def_id].members.keys()), (
                 f"shared instance {inst_id} member set diverges from its definition {def_id}"
             )
 
-        for bid, e in inst["interface"].items():
-            assert e["dir"] in ("in", "out"), f"boundary {inst_id}:{bid} has bad dir {e['dir']!r}"
-            inner = e.get("inner_node")
+        for bid, e in inst.interface.items():
+            assert e.dir in ("in", "out"), f"boundary {inst_id}:{bid} has bad dir {e.dir!r}"
+            inner = e.inner_node
             if inner is not None:
                 assert inner in members.values(), (
                     f"boundary {inst_id}:{bid} inner_node {inner!r} is not a member local"
                 )
                 muid = _member(mgr, inst_id, inner)
-                slots = mgr.nodes[muid].input_slots if e["dir"] == "in" else mgr.nodes[muid].output_slots
-                assert e["inner_slot"] in slots, (
-                    f"boundary {inst_id}:{bid} inner_slot {e['inner_slot']!r} missing on member {inner!r}"
+                slots = mgr.nodes[muid].input_slots if e.dir == "in" else mgr.nodes[muid].output_slots
+                assert e.inner_slot in slots, (
+                    f"boundary {inst_id}:{bid} inner_slot {e.inner_slot!r} missing on member {inner!r}"
                 )
 
     # --- definitions are GC'd: every def is referenced by >=1 instance --------
-    referenced = {inst.get("def_id") for inst in instances.values()} - {None}
+    referenced = {inst.def_id for inst in instances.values()} - {None}
     for def_id in definitions:
         assert def_id in referenced, f"orphan definition {def_id} was not garbage-collected"
 
     # --- shared siblings strict-mirror their member locals + boundary ids ------
     by_def: dict = {}
     for inst_id, inst in instances.items():
-        d = inst.get("def_id")
+        d = inst.def_id
         if d:
             by_def.setdefault(d, []).append(inst_id)
     for d, sibs in by_def.items():
-        local_sets = [set(instances[s]["members"].values()) for s in sibs]
+        local_sets = [set(instances[s].members.values()) for s in sibs]
         assert all(ls == local_sets[0] for ls in local_sets), (
             f"shared siblings of {d} diverge in member locals: {local_sets}"
         )
-        bnd_sets = [set(instances[s]["interface"].keys()) for s in sibs]
+        bnd_sets = [set(instances[s].interface.keys()) for s in sibs]
         assert all(bs == bnd_sets[0] for bs in bnd_sets), (
             f"shared siblings of {d} diverge in boundary ids: {bnd_sets}"
         )
@@ -131,7 +131,7 @@ def test_checker_catches_a_member_with_no_live_node():
     try:
         _osc, inst = _build_grouped_graph(mgr)
         # a member listed in the instance + membership but with no backing live node
-        mgr._instances[inst]["members"]["phantomuid"] = "phantom0"
+        mgr._instances[inst].members["phantomuid"] = "phantom0"
         mgr._membership["phantomuid"] = inst
         with pytest.raises(AssertionError):
             assert_subpatch_invariants(mgr)
@@ -143,7 +143,7 @@ def test_checker_catches_dangling_definition_reference():
     mgr = _bare_manager(use_multiprocessing=False)
     try:
         _osc, inst = _build_grouped_graph(mgr)
-        mgr._instances[inst]["def_id"] = "ghostdef"  # references a missing definition
+        mgr._instances[inst].def_id = "ghostdef"  # references a missing definition
         with pytest.raises(AssertionError):
             assert_subpatch_invariants(mgr)
     finally:
@@ -179,7 +179,7 @@ def test_invariants_hold_through_full_lifecycle():
         inst2 = mgr.instantiate_definition(def_id)
         assert_subpatch_invariants(mgr)
         # both instances are siblings of the same definition
-        assert mgr._instances[inst]["def_id"] == def_id == mgr._instances[inst2]["def_id"]
+        assert mgr._instances[inst].def_id == def_id == mgr._instances[inst2].def_id
 
         # a shared edit mirrors to the sibling (semantic, not representation)
         mgr.update_param(_member(mgr, inst, "select0"), "select", "include", "3:9")
@@ -228,7 +228,7 @@ def test_invariants_hold_through_make_unique_and_expand():
 
         # detach one sibling: def survives (still referenced by `inst`)
         mgr.make_unique(inst2)
-        assert mgr._instances[inst2]["def_id"] is None
+        assert mgr._instances[inst2].def_id is None
         assert def_id in mgr._definitions
         assert_subpatch_invariants(mgr)
 
@@ -238,7 +238,7 @@ def test_invariants_hold_through_make_unique_and_expand():
         assert_subpatch_invariants(mgr)
 
         # expand dissolves a group back to top-level nodes; external link preserved
-        members = set(mgr._instances[inst]["members"])
+        members = set(mgr._instances[inst].members)
         restored = set(mgr.expand_instance(inst))
         assert restored == members
         assert inst not in mgr._instances
@@ -267,7 +267,7 @@ def test_invariants_hold_across_save_load(tmp_path):
         mgr2.load(fp)
         assert_subpatch_invariants(mgr2)
         # the shared family round-tripped: two instances on one definition
-        defs = {i["def_id"] for i in mgr2._instances.values()}
+        defs = {i.def_id for i in mgr2._instances.values()}
         assert len(mgr2._instances) == 2 and defs and None not in defs
         # expanding every instance leaves a clean flat graph
         for iid in list(mgr2._instances):

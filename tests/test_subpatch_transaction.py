@@ -78,8 +78,8 @@ def test_add_member_node_atomic_on_sibling_spawn_failure(monkeypatch):
         mgr.instantiate_definition(def_id)  # sibling C
 
         before_nodes = set(mgr.nodes)
-        before_def = set(mgr._definitions[def_id]["members"])
-        before_members = {iid: dict(mgr._instances[iid]["members"]) for iid in mgr._instances}
+        before_def = set(mgr._definitions[def_id].members)
+        before_members = {iid: dict(mgr._instances[iid].members) for iid in mgr._instances}
 
         real = mgr._add_node_from_record
         calls = {"n": 0}
@@ -95,8 +95,8 @@ def test_add_member_node_atomic_on_sibling_spawn_failure(monkeypatch):
             mgr.add_member_node(inst, "Buffer", "signal")
 
         assert set(mgr.nodes) == before_nodes, "leaked member node after failed add_member"
-        assert set(mgr._definitions[def_id]["members"]) == before_def, "definition half-mirrored"
-        assert {iid: dict(mgr._instances[iid]["members"]) for iid in mgr._instances} == before_members, "instances half-mirrored"
+        assert set(mgr._definitions[def_id].members) == before_def, "definition half-mirrored"
+        assert {iid: dict(mgr._instances[iid].members) for iid in mgr._instances} == before_members, "instances half-mirrored"
     finally:
         mgr.terminate(notify_gui=False)
 

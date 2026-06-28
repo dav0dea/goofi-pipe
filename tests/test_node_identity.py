@@ -89,7 +89,7 @@ def test_group_dedupes_duplicate_member_local_names():
         b = mgr.add_node("Buffer", "signal")
         mgr.nodes[b].name = mgr.nodes[a].name  # force a duplicate display name
         inst = mgr.group_nodes([a, b])
-        locals_ = list(mgr._instances[inst]["members"].values())
+        locals_ = list(mgr._instances[inst].members.values())
         assert len(set(locals_)) == 2, f"member locals collided: {locals_}"
         # both members persist (the duplicate-local collapse would drop one) — the
         # v2 tree keys unique-instance members by local name.
@@ -108,9 +108,9 @@ def test_rename_subpatch_member_renames_its_local_and_survives_roundtrip(tmp_pat
         inst = mgr.group_nodes([u])
         from goofi.manager import SUBPATCH_SEP
 
-        old_local = mgr._instances[inst]["members"][u]
+        old_local = mgr._instances[inst].members[u]
         mgr.rename_node(u, f"{inst}{SUBPATCH_SEP}custom")
-        assert mgr._instances[inst]["members"][u] == "custom"
+        assert mgr._instances[inst].members[u] == "custom"
         assert mgr.nodes[u].membership["local_name"] == "custom"
         assert mgr.nodes[u].name == f"{inst}{SUBPATCH_SEP}custom"
         assert old_local != "custom"
@@ -123,7 +123,7 @@ def test_rename_subpatch_member_renames_its_local_and_survives_roundtrip(tmp_pat
     try:
         mgr2.load(fp)
         inst2 = next(iter(mgr2._instances))
-        assert "custom" in mgr2._instances[inst2]["members"].values()
+        assert "custom" in mgr2._instances[inst2].members.values()
     finally:
         mgr2.terminate(notify_gui=False)
 
@@ -137,7 +137,7 @@ def test_rename_shared_member_is_rejected():
         u = mgr.add_node("Oscillator", "inputs")
         inst = mgr.group_nodes([u])
         mgr.share_instance(inst)  # promotes inst to shared (sets def_id)
-        member = next(iter(mgr._instances[inst]["members"]))
+        member = next(iter(mgr._instances[inst].members))
         from goofi.manager import SUBPATCH_SEP
 
         import pytest

@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import os
 import traceback
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
 from weakref import WeakSet
@@ -248,7 +249,7 @@ class ControlHub:
             # A sub-patch group node isn't a real node — persist its pos on the
             # instance record instead.
             if node in getattr(manager, "_instances", {}):
-                manager._instances[node]["pos"] = list(pos)
+                manager._instances[node].pos = list(pos)
                 manager.unsaved_changes = True
                 await self.broadcast({"event": "node_moved", "payload": {"node": node, "pos": list(pos)}})
                 return {"ok": True}
@@ -269,7 +270,7 @@ class ControlHub:
             if payload["node"] not in manager.nodes:
                 inst = getattr(manager, "_instances", {}).get(payload["node"])
                 if inst is not None:
-                    inst["viewers"] = payload.get("viewers") or {}
+                    inst.viewers = payload.get("viewers") or {}
                 return {"ok": True}
             ref = manager.nodes[payload["node"]]
             kwargs = dict(ref.gui_kwargs or {})
@@ -450,11 +451,11 @@ class ControlHub:
             # as collapsible group nodes; members carry a `membership` marker.
             "instances": {
                 iid: {
-                    "kind": inst["kind"],
-                    "def_id": inst.get("def_id"),
-                    "interface": inst["interface"],
-                    "pos": list(inst["pos"]),
-                    "members": dict(inst["members"]),
+                    "kind": inst.kind,
+                    "def_id": inst.def_id,
+                    "interface": {bid: asdict(b) for bid, b in inst.interface.items()},
+                    "pos": list(inst.pos),
+                    "members": dict(inst.members),
                 }
                 for iid, inst in getattr(manager, "_instances", {}).items()
             },

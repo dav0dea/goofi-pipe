@@ -6,7 +6,9 @@ from os import path
 import pytest
 
 import goofi
-from goofi.manager import Manager, NodeContainer
+from dataclasses import asdict
+
+from goofi.manager import Boundary, Manager, NodeContainer
 from goofi.transport import (
     WaitSet,
     open_subscriber,
@@ -55,7 +57,7 @@ def _build_simple_graph(mgr: Manager) -> tuple[str, str]:
 
 def _member(mgr: Manager, inst: str, local: str) -> str:
     """The live UID of the member with local name `local` in instance `inst`."""
-    for uid, l in mgr._instances[inst]["members"].items():
+    for uid, l in mgr._instances[inst].members.items():
         if l == local:
             return uid
     raise KeyError(f"{inst}:{local}")
@@ -135,7 +137,7 @@ def test_group_nodes_namespaces_members_and_records_state():
             dict(link) for link in mgr.links
         ]
         # interface derived: select0.data is a boundary input (fed by osc)
-        assert "select0.data" in mgr._instances[inst]["interface"]
+        assert "select0.data" in mgr._instances[inst].interface
     finally:
         mgr.terminate()
 
@@ -186,13 +188,13 @@ def test_shared_param_edit_mirrors_to_sibling():
         def_id = mgr.share_instance(inst)
         inst2 = mgr.instantiate_definition(def_id)
         # both instances reference the same definition
-        assert mgr._instances[inst]["def_id"] == def_id
-        assert mgr._instances[inst2]["def_id"] == def_id
+        assert mgr._instances[inst].def_id == def_id
+        assert mgr._instances[inst2].def_id == def_id
         # edit a param on instance A's select0 → mirrors to instance B's select0
         mgr.update_param(_member(mgr, inst, "select0"), "select", "include", "3:9")
         assert mgr.nodes[_member(mgr, inst2, "select0")].params["select"]["include"].value == "3:9"
         # the definition (save source of truth) also reflects the edit
-        assert mgr._definitions[def_id]["members"]["select0"]["params"]["select"]["include"] == "3:9"
+        assert mgr._definitions[def_id].members["select0"]["params"]["select"]["include"] == "3:9"
     finally:
         mgr.terminate()
 
@@ -205,7 +207,7 @@ def test_add_member_node_lands_in_subpatch():
         assert _disp(mgr, uid) == f"{inst}::buffer0"
         assert uid in mgr.nodes
         assert mgr._membership[uid] == inst
-        assert mgr._instances[inst]["members"][uid] == "buffer0"
+        assert mgr._instances[inst].members[uid] == "buffer0"
         # the node carries the membership marker the bridge/save read
         assert mgr.nodes[uid].membership == {"instance": inst, "local_name": "buffer0"}
         # a fresh add picks the next free local
@@ -223,14 +225,14 @@ def test_add_member_node_mirrors_to_shared_siblings():
         inst2 = mgr.instantiate_definition(def_id)
         # add a member to instance A → mirrors into the def and sibling B
         uid = mgr.add_member_node(inst, "Buffer", "signal")
-        local = mgr._instances[inst]["members"][uid]
-        assert local in mgr._definitions[def_id]["members"]
+        local = mgr._instances[inst].members[uid]
+        assert local in mgr._definitions[def_id].members
         sib_uid = _member(mgr, inst2, local)
         assert sib_uid in mgr.nodes
-        assert mgr._instances[inst2]["members"][sib_uid] == local
+        assert mgr._instances[inst2].members[sib_uid] == local
         # both families stay strict mirrors: same member locals on each side
-        assert set(mgr._instances[inst]["members"].values()) == set(
-            mgr._instances[inst2]["members"].values()
+        assert set(mgr._instances[inst].members.values()) == set(
+            mgr._instances[inst2].members.values()
         )
     finally:
         mgr.terminate()
@@ -263,8 +265,8 @@ def test_make_unique_detaches_and_gcs_definition():
         def_id = mgr.share_instance(inst)
         inst2 = mgr.instantiate_definition(def_id)
         mgr.make_unique(inst2)
-        assert mgr._instances[inst2]["def_id"] is None
-        assert mgr._instances[inst2]["kind"] == "unique"
+        assert mgr._instances[inst2].def_id is None
+        assert mgr._instances[inst2].kind == "unique"
         # def still referenced by `inst`
         assert def_id in mgr._definitions
         # editing inst2 no longer affects inst
@@ -288,13 +290,13 @@ def test_add_and_wire_boundary():
     mgr = _bare_manager(use_multiprocessing=False)
     try:
         buf, inst = _build_single_member_subpatch(mgr)  # buffer0 -> inst::buffer0
-        assert mgr._instances[inst]["interface"] == {}
+        assert mgr._instances[inst].interface == {}
         bid = mgr.add_boundary(inst, "in", "ARRAY", pos=(5, 6))
-        e = mgr._instances[inst]["interface"][bid]
-        assert e == {"dir": "in", "dtype": "ARRAY", "inner_node": None, "inner_slot": None, "pos": [5, 6]}
+        e = mgr._instances[inst].interface[bid]
+        assert asdict(e) == {"dir": "in", "dtype": "ARRAY", "inner_node": None, "inner_slot": None, "pos": [5, 6]}
         mgr.wire_boundary(inst, bid, "buffer0", "val")
-        e = mgr._instances[inst]["interface"][bid]
-        assert e["inner_node"] == "buffer0" and e["inner_slot"] == "val"
+        e = mgr._instances[inst].interface[bid]
+        assert e.inner_node == "buffer0" and e.inner_slot == "val"
         assert mgr.resolve_boundary(inst, bid) == (_member(mgr, inst, "buffer0"), "val")
     finally:
         mgr.terminate()
@@ -349,9 +351,9 @@ def test_delete_unique_member_cleans_up_and_unwires():
         b1 = _member(mgr, inst, "buffer1")
         mgr.remove_node(b1)
         # Member dropped from the instance + membership; boundary unwired (not dangling).
-        assert b1 not in mgr._instances[inst]["members"]
+        assert b1 not in mgr._instances[inst].members
         assert b1 not in mgr._membership
-        assert mgr._instances[inst]["interface"][bid]["inner_node"] is None
+        assert mgr._instances[inst].interface[bid].inner_node is None
         # Save no longer references the gone member.
         mgr.serialize_patch()
     finally:
@@ -374,15 +376,12 @@ def test_wire_legacy_entry_without_dtype_heals():
     mgr = _bare_manager(use_multiprocessing=False)
     try:
         buf, inst = _build_single_member_subpatch(mgr)
-        # A legacy interface entry (pre-dtype shape) must not crash on wire.
-        mgr._instances[inst]["interface"]["legacy0"] = {
-            "dir": "in",
-            "inner_node": None,
-            "inner_slot": None,
-            "pos": [0, 0],
-        }
+        # A legacy interface entry (pre-dtype shape, dtype=None) must not crash on wire.
+        mgr._instances[inst].interface["legacy0"] = Boundary(
+            dir="in", dtype=None, inner_node=None, inner_slot=None, pos=[0, 0]
+        )
         mgr.wire_boundary(inst, "legacy0", "buffer0", "val")
-        assert mgr._instances[inst]["interface"]["legacy0"]["dtype"] == "ARRAY"
+        assert mgr._instances[inst].interface["legacy0"].dtype == "ARRAY"
     finally:
         mgr.terminate()
 
@@ -400,7 +399,7 @@ def test_external_splice_and_unsplice():
         assert any(l["node_out"] == osc and l["node_in"] == uid and l["slot_in"] == slot for l in mgr.links)
         # Deleting the boundary tears down its external wire.
         mgr.remove_boundary(inst, bid)
-        assert bid not in mgr._instances[inst]["interface"]
+        assert bid not in mgr._instances[inst].interface
         assert not any(l["node_in"] == uid and l["slot_in"] == slot for l in mgr.links)
     finally:
         mgr.terminate()
@@ -432,15 +431,15 @@ def test_shared_boundary_mirrors_and_make_unique_isolates():
         def_id = mgr.share_instance(inst)
         inst2 = mgr.instantiate_definition(def_id)
         bid = mgr.add_boundary(inst, "in", "ARRAY")  # mirrors to def + sibling
-        assert bid in mgr._instances[inst2]["interface"]
-        assert bid in mgr._definitions[def_id]["interface"]
+        assert bid in mgr._instances[inst2].interface
+        assert bid in mgr._definitions[def_id].interface
         mgr.wire_boundary(inst, bid, "buffer0", "val")  # inner mirrors to sibling's own member
-        assert mgr._instances[inst2]["interface"][bid]["inner_node"] == "buffer0"
+        assert mgr._instances[inst2].interface[bid].inner_node == "buffer0"
         # Detach inst2; editing it must not cross-mutate inst (deep-copied interface).
         mgr.make_unique(inst2)
         mgr.wire_boundary(inst2, bid, None, None)
-        assert mgr._instances[inst2]["interface"][bid]["inner_node"] is None
-        assert mgr._instances[inst]["interface"][bid]["inner_node"] == "buffer0"
+        assert mgr._instances[inst2].interface[bid].inner_node is None
+        assert mgr._instances[inst].interface[bid].inner_node == "buffer0"
     finally:
         mgr.terminate()
 
@@ -458,8 +457,8 @@ def test_unwired_boundary_survives_save_load(tmp_path):
     mgr2 = _bare_manager(use_multiprocessing=False)
     try:
         mgr2.load(fp)
-        e = mgr2._instances[inst]["interface"][bid]
-        assert e["inner_node"] is None and e["dtype"] == "ARRAY" and list(e["pos"]) == [7, 8]
+        e = mgr2._instances[inst].interface[bid]
+        assert e.inner_node is None and e.dtype == "ARRAY" and list(e.pos) == [7, 8]
     finally:
         mgr2.terminate()
 
@@ -476,7 +475,7 @@ def test_shared_member_pos_mirrors_to_sibling():
         assert list(mgr.nodes[a0].gui_kwargs["pos"]) == [123, 456]
         assert list(mgr.nodes[b0].gui_kwargs["pos"]) == [123, 456]
         # Definition (save source of truth) records the pos too.
-        assert list(mgr._definitions[def_id]["members"]["select0"]["gui_kwargs"]["pos"]) == [123, 456]
+        assert list(mgr._definitions[def_id].members["select0"]["gui_kwargs"]["pos"]) == [123, 456]
         # Both the moved node and its sibling are reported changed (for broadcasts).
         assert set(changed) == {a0, b0}
         # A non-mirrored member (select1) is untouched in the sibling.
@@ -524,7 +523,7 @@ def test_shared_member_pos_survives_save_load(tmp_path):
     try:
         mgr2.load(fp)
         # The mirrored layout round-trips: every shared sibling's member is at the moved pos.
-        shared_ids = [iid for iid, i in mgr2._instances.items() if i["def_id"] == def_id]
+        shared_ids = [iid for iid, i in mgr2._instances.items() if i.def_id == def_id]
         assert len(shared_ids) == 2
         for iid in shared_ids:
             assert list(mgr2.nodes[_member(mgr2, iid, "select0")].gui_kwargs["pos"]) == [321, 654]
@@ -582,7 +581,7 @@ def test_shared_subpatch_save_load_roundtrip(tmp_path):
     try:
         mgr2.load(fp)
         # both shared instances restored, members spawned, still mirror on edit
-        shared_ids = [iid for iid, i in mgr2._instances.items() if i["def_id"] == def_id]
+        shared_ids = [iid for iid, i in mgr2._instances.items() if i.def_id == def_id]
         assert len(shared_ids) == 2
         a, b = shared_ids
         mgr2.update_param(_member(mgr2, a, "select0"), "select", "include", "1:4")
