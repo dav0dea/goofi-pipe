@@ -1132,6 +1132,7 @@ class Manager:
         if inst_id not in self._instances:
             raise KeyError(f"No such sub-patch: {inst_id}")
         inst = self._instances[inst_id]
+        def_id = inst.get("def_id")
         restored: List[str] = []  # uids
         rename_map: Dict[str, str] = {}  # old display -> bare display (for nd())
         for uid, local in list(inst["members"].items()):
@@ -1156,6 +1157,10 @@ class Manager:
         self._rewrite_member_expressions(list(self.nodes), rename_map)
         self._broadcast_node_directory()
         del self._instances[inst_id]
+        # GC an orphaned shared definition (the expanded instance may have been its
+        # last reference), like remove_instance / make_unique.
+        if def_id and not any(i.get("def_id") == def_id for i in self._instances.values()):
+            self._definitions.pop(def_id, None)
         if self._bridge is not None and notify_gui:
             self._bridge.control.on_subpatch_changed()
         return restored
