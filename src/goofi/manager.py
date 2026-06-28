@@ -673,18 +673,76 @@ class Manager:
     # Sub-patches (flatten-at-runtime)
     # ------------------------------------------------------------------
 
+    def _unique_display_name(self, requested: str, exclude_uid: Optional[str] = None) -> str:
+        """Return `requested` if no OTHER live node holds it, else the smallest
+        integer-suffixed variant that's free. Display names must stay unique
+        because `nd('name')` resolves a cross-reference by display name — a
+        collision would make the lookup ambiguous (the directory is name->id)."""
+        taken = {self.nodes[u].name for u in self.nodes if u != exclude_uid}
+        if requested not in taken:
+            return requested
+        idx = 1
+        while f"{requested}{idx}" in taken:
+            idx += 1
+        return f"{requested}{idx}"
+
     @mark_unsaved_changes
     def rename_node(self, uid: str, name: str) -> None:
-        """Set a node's mutable DISPLAY name. Safe BY CONSTRUCTION: nothing keys on
-        the name (the graph is uid-keyed), so no reference moves — we just write the
-        label, refresh the `nd()` directory, and notify the browser. The node's
-        transport id and uid are untouched, so data subscriptions keep flowing."""
+        """Set a node's mutable DISPLAY name. For a TOP-LEVEL node the graph is
+        uid-keyed so no reference moves — we just write the label (disambiguated to
+        stay unique for `nd()`), refresh the directory, and notify the browser. A
+        SUB-PATCH MEMBER's display IS its local name (`inst::local`), which keys the
+        members map / template / canvas label / save — so a member rename re-keys
+        the local, not just the label (see `_rename_member`)."""
         if uid not in self.nodes:
             raise KeyError(f"No such node: {uid}")
+        inst_id = self._membership.get(uid)
+        if inst_id is not None:
+            return self._rename_member(uid, inst_id, name)
+        name = self._unique_display_name(name, exclude_uid=uid)
         self.nodes[uid].name = name
         self._broadcast_node_directory()
         if self._bridge is not None:
             self._bridge.control.on_node_renamed(uid, name)
+
+    def _rename_member(self, uid: str, inst_id: str, name: str) -> None:
+        """Rename a sub-patch member by re-keying its LOCAL name (the single source
+        of truth the members map, canvas label, and save/load all read). The sent
+        `name` may be the qualified `inst::base` or a bare base; we take the base."""
+        inst = self._instances[inst_id]
+        if inst.get("def_id"):
+            # A shared member's local is mirrored across the definition + every
+            # sibling (strict mirror); renaming one would have to mirror to all.
+            # Until that exists, reject rather than create inconsistent state.
+            raise ValueError("Renaming a member of a shared sub-patch isn't supported yet.")
+        new_local = name.split(SUBPATCH_SEP)[-1]
+        _reject_reserved_name(new_local)
+        old_local = inst["members"][uid]
+        if new_local == old_local:
+            return
+        # Keep locals unique within the instance (the template/members key space).
+        others = {l for u, l in inst["members"].items() if u != uid}
+        base, idx = new_local, 1
+        while new_local in others:
+            new_local = f"{base}{idx}"
+            idx += 1
+        new_disp = f"{inst_id}{SUBPATCH_SEP}{new_local}"
+        if not self._service_budget_ok(new_disp):
+            raise SubPatchTooDeep(f"renaming would overflow the service-name budget for {new_disp!r}")
+        inst["members"][uid] = new_local
+        self.nodes[uid].name = new_disp
+        if self.nodes[uid].membership:
+            self.nodes[uid].membership["local_name"] = new_local
+        # A boundary may name this member as its inner endpoint (by local name).
+        for port in inst.get("interface", {}).values():
+            if port.get("inner_node") == old_local:
+                port["inner_node"] = new_local
+        # Fellow members reference this one by its qualified display name in nd().
+        old_disp = f"{inst_id}{SUBPATCH_SEP}{old_local}"
+        self._rewrite_member_expressions(inst["members"].keys(), {old_disp: new_disp})
+        self._broadcast_node_directory()
+        if self._bridge is not None:
+            self._bridge.control.on_subpatch_changed()
 
     def _fresh_instance_id(self) -> str:
         idx = 0
@@ -838,23 +896,29 @@ class Manager:
         inst_id = self._fresh_instance_id()
         members: Dict[str, str] = {}  # uid -> local name
         rename_map: Dict[str, str] = {}  # old display -> qualified display (for nd())
-        done: list = []  # (uid, local) renamed so far, for rollback
+        done: list = []  # (uid, original_display) renamed so far, for rollback
+        used_locals: set = set()  # display names aren't unique anymore — dedupe locals
         try:
             for u in member_uids:
                 ref = self.nodes[u]
-                local = ref.name
+                base = ref.name
+                local, idx = base, 1
+                while local in used_locals:
+                    local = f"{base}{idx}"
+                    idx += 1
+                used_locals.add(local)
                 new_name = f"{inst_id}{SUBPATCH_SEP}{local}"
                 slots = list(ref.output_slots or ()) + list(ref.input_slots or ())
                 if not self._service_budget_ok(new_name, slots=slots):
                     raise SubPatchTooDeep(f"grouping would overflow service-name budget for {new_name!r}")
                 ref.name = new_name  # display only — uid (the key) is unchanged
-                done.append((u, local))
+                done.append((u, base))
                 members[u] = local
-                rename_map[local] = new_name
+                rename_map[base] = new_name
         except Exception:
             # Roll back any display renames so a failure leaves the graph intact.
-            for u, local in reversed(done):
-                self.nodes[u].name = local
+            for u, base in reversed(done):
+                self.nodes[u].name = base
             raise
 
         if interface is None:
@@ -1589,9 +1653,9 @@ class Manager:
 
     def _node_directory(self) -> Dict[str, str]:
         """Map each live DISPLAY name to its node's stable transport id, for
-        `nd('name')` resolution. Names aren't guaranteed unique anymore (the graph
-        keys on uid); on a collision the last node wins — an acceptable edge case
-        for an expression-convenience lookup."""
+        `nd('name')` resolution. Display names are kept unique (add auto-numbers,
+        rename disambiguates), so this lookup is unambiguous even though the graph
+        itself keys on uid."""
         return {self.nodes[uid].name: self.nodes[uid].node_id for uid in self.nodes}
 
     def _broadcast_node_directory(self) -> None:
