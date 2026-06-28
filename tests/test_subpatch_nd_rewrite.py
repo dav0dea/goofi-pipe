@@ -65,3 +65,27 @@ def test_group_and_expand_rewrite_nd_cross_refs():
         assert mgr.nodes[b].params[grp][pname].expression == f"nd('{a_name}')"
     finally:
         mgr.terminate(notify_gui=False)
+
+
+def test_external_nd_ref_follows_member_through_group_rename_expand():
+    """An EXTERNAL node that references a member by name must have its nd() literal
+    rewritten too (group: bare->qualified; rename: re-key; expand: ->bare), not just
+    fellow members — else the cross-reference silently dies."""
+    mgr = _bare_manager(use_multiprocessing=False)
+    try:
+        a = mgr.add_node("Oscillator", "inputs")  # oscillator0 (becomes a member)
+        ext = mgr.add_node("Oscillator", "inputs")  # oscillator1 (external referrer)
+        mgr.set_expression(ext, "oscillator", "frequency", "nd('oscillator0')", enabled=True)
+
+        inst = mgr.group_nodes([a])
+        local = mgr._instances[inst]["members"][a]
+        f = mgr.nodes[ext].params["oscillator"]["frequency"]
+        assert f.expression == f"nd('{inst}{SUBPATCH_SEP}{local}')"
+
+        mgr.rename_node(a, f"{inst}{SUBPATCH_SEP}renamed")
+        assert mgr.nodes[ext].params["oscillator"]["frequency"].expression == f"nd('{inst}{SUBPATCH_SEP}renamed')"
+
+        mgr.expand_instance(inst)
+        assert mgr.nodes[ext].params["oscillator"]["frequency"].expression == "nd('renamed')"
+    finally:
+        mgr.terminate(notify_gui=False)

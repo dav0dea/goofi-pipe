@@ -804,9 +804,10 @@ class Manager:
         for port in inst.get("interface", {}).values():
             if port.get("inner_node") == old_local:
                 port["inner_node"] = new_local
-        # Fellow members reference this one by its qualified display name in nd().
+        # Fellow members AND external referrers reference this one by its qualified
+        # display name in nd() — rewrite across the whole graph (names are unique).
         old_disp = f"{inst_id}{SUBPATCH_SEP}{old_local}"
-        self._rewrite_member_expressions(inst["members"].keys(), {old_disp: new_disp})
+        self._rewrite_member_expressions(list(self.nodes), {old_disp: new_disp})
         self._broadcast_node_directory()
         if self._bridge is not None:
             self._bridge.control.on_subpatch_changed()
@@ -916,12 +917,13 @@ class Manager:
             except Exception:
                 pass
 
-    def _rewrite_member_expressions(self, member_names, rename_map: Dict[str, str]) -> None:
-        """Rewrite string-literal nd() refs in each member's param expressions to the
-        renamed fellow members (group: bare->qualified; expand: qualified->bare),
-        preserving the enable/trigger/autoeval flags. Best-effort: members without a
-        live ref/params are skipped."""
-        for name in member_names:
+    def _rewrite_member_expressions(self, node_uids, rename_map: Dict[str, str]) -> None:
+        """Rewrite string-literal nd() refs in the given nodes' param expressions per
+        `rename_map` (group: bare->qualified; expand: qualified->bare), preserving the
+        enable/trigger/autoeval flags. Pass the whole node set so EXTERNAL referrers
+        are rewritten too, not just fellow members. Nodes without a live ref/params
+        are skipped."""
+        for name in node_uids:
             if name not in self.nodes:
                 continue
             ref = self.nodes[name]
@@ -1027,9 +1029,10 @@ class Manager:
             self._membership[u] = inst_id
             self.nodes[u].membership = {"instance": inst_id, "local_name": local}
 
-        # Rewrite intra-group nd('name') references to the qualified member names so
-        # cross-references survive the rename (spec §2.6, backlog #1).
-        self._rewrite_member_expressions(members.keys(), rename_map)
+        # Rewrite nd('name') references to the qualified member names so
+        # cross-references survive the rename — across the WHOLE graph, since an
+        # external node may reference a soon-to-be member (spec §2.6, backlog #1).
+        self._rewrite_member_expressions(list(self.nodes), rename_map)
         self._broadcast_node_directory()
 
         if self._bridge is not None and notify_gui:
@@ -1148,8 +1151,9 @@ class Manager:
             ref.membership = None
             restored.append(uid)
             rename_map[old_disp] = target
-        # Reverse the grouping rewrite: qualified nd('inst::name') -> bare nd('name').
-        self._rewrite_member_expressions(restored, rename_map)
+        # Reverse the grouping rewrite: qualified nd('inst::name') -> bare nd('name'),
+        # across the whole graph (external referrers too).
+        self._rewrite_member_expressions(list(self.nodes), rename_map)
         self._broadcast_node_directory()
         del self._instances[inst_id]
         if self._bridge is not None and notify_gui:
