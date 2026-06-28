@@ -1433,6 +1433,63 @@ class Manager:
                         self._surface_mirror_failure(onode, f"{group}.{name}", exc)
 
     @mark_unsaved_changes
+    def set_expression(
+        self,
+        uid: str,
+        group: str,
+        name: str,
+        expression: Optional[str],
+        enabled: bool = False,
+        triggers_process: bool = False,
+        autoeval: bool = False,
+    ) -> None:
+        """Bind/clear a param expression, mirroring across shared siblings.
+
+        Strict mirror, same as `update_param` but for the expression binding: an
+        edit on a shared member updates the definition (the save source of truth)
+        and every sibling instance's corresponding member in lockstep. Must route
+        through here, not straight to the NodeRef, or shared expressions silently
+        desync (and never persist into the definition)."""
+        self.nodes[uid].set_expression(group, name, expression, enabled, triggers_process, autoeval)
+
+        inst_id = self._membership.get(uid)
+        if not inst_id:
+            return
+        inst = self._instances.get(inst_id) or {}
+        def_id = inst.get("def_id")
+        if not def_id:
+            return
+        local = inst["members"][uid]
+        # Record on the definition. Read the normalized binding back off the primary
+        # node's param (the NodeRef just applied the same canonical gating the node
+        # will), and store it in the {value, expression, ...} shape Param.serialize
+        # emits — or a flat value when the expression was cleared.
+        rec = self._definitions[def_id]["members"].get(local)
+        if rec is not None:
+            p = self.nodes[uid].params[group][name]
+            params = rec.setdefault("params", {}).setdefault(group, {})
+            if getattr(p, "expression", None) is not None:
+                params[name] = {
+                    "value": p._value,
+                    "expression": p.expression,
+                    "expression_enabled": bool(getattr(p, "expression_enabled", False)),
+                    "expression_triggers_process": bool(getattr(p, "expression_triggers_process", False)),
+                    "expression_autoeval": bool(getattr(p, "expression_autoeval", False)),
+                }
+            else:
+                params[name] = p._value
+        # Propagate to every sibling instance's corresponding member.
+        for other_id, other in self._instances.items():
+            if other_id == inst_id or other.get("def_id") != def_id:
+                continue
+            for onode, olocal in other["members"].items():
+                if olocal == local and onode in self.nodes:
+                    try:
+                        self.nodes[onode].set_expression(group, name, expression, enabled, triggers_process, autoeval)
+                    except Exception as exc:
+                        self._surface_mirror_failure(onode, f"{group}.{name} (expression)", exc)
+
+    @mark_unsaved_changes
     def set_node_pos(self, name: str, pos) -> List[str]:
         """Set a node's editor position, mirroring across shared siblings.
 

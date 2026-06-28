@@ -228,9 +228,12 @@ class ControlHub:
             )
             return {"ok": True}
         if op == "set_expression":
-            ref = manager.nodes[payload["node"]]
+            # Route through the manager so a shared sub-patch member mirrors the
+            # binding across siblings + the definition (strict mirror), exactly like
+            # update_param — never straight to the NodeRef.
             await self._call_manager(
-                ref.set_expression,
+                manager.set_expression,
+                payload["node"],
                 payload["group"],
                 payload["name"],
                 payload.get("expression"),

@@ -22,6 +22,39 @@ class _FakeBridge:
         self.control = _Ctrl()
 
 
+def test_set_expression_mirrors_and_persists_across_shared_siblings():
+    # Strict mirror must cover EXPRESSION edits, not just value edits: binding an
+    # expression on one shared member must reach every sibling AND the definition
+    # (so a freshly-instantiated sibling inherits it).
+    mgr = _bare_manager(use_multiprocessing=False)
+    try:
+        a = mgr.add_node("Oscillator", "inputs")
+        inst1 = mgr.group_nodes([a])
+        def_id = mgr.share_instance(inst1)
+        inst2 = mgr.instantiate_definition(def_id)
+        m1 = next(iter(mgr._instances[inst1]["members"]))
+        m2 = next(iter(mgr._instances[inst2]["members"]))
+
+        mgr.set_expression(m1, "oscillator", "frequency", "5 + 5", enabled=True)
+
+        # the existing sibling mirrors the binding...
+        p2 = mgr.nodes[m2].params["oscillator"]["frequency"]
+        assert p2.expression == "5 + 5"
+        assert p2.expression_enabled is True
+
+        # ...the definition persists it...
+        local = mgr._instances[inst1]["members"][m1]
+        defrec = mgr._definitions[def_id]["members"][local]
+        assert defrec["params"]["oscillator"]["frequency"]["expression"] == "5 + 5"
+
+        # ...so a fresh sibling inherits it too.
+        inst3 = mgr.instantiate_definition(def_id)
+        m3 = next(iter(mgr._instances[inst3]["members"]))
+        assert mgr.nodes[m3].params["oscillator"]["frequency"].expression == "5 + 5"
+    finally:
+        mgr.terminate(notify_gui=False)
+
+
 def test_shared_mirror_surfaces_sibling_failure():
     mgr = _bare_manager(use_multiprocessing=False)
     try:
