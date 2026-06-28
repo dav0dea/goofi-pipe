@@ -99,21 +99,19 @@ def test_group_dedupes_duplicate_member_local_names():
         mgr.terminate(notify_gui=False)
 
 
-def test_rename_subpatch_member_renames_its_local_and_survives_roundtrip(tmp_path):
-    # Renaming a member via the qualified display name re-keys its LOCAL name (the
-    # one source of truth the canvas + save/load read), not just the label.
+def test_rename_subpatch_member_is_a_flat_rename_local_unchanged(tmp_path):
+    # Flat naming: renaming a member changes its globally-unique flat DISPLAY name;
+    # the `local` template key is decoupled (so boundaries that reference it survive)
+    # and is left unchanged. The display name round-trips through save/load.
     mgr = _bare_manager(use_multiprocessing=False)
     try:
         u = mgr.add_node("Oscillator", "inputs")
         inst = mgr.group_nodes([u])
-        from goofi.manager import SUBPATCH_SEP
-
         old_local = mgr._instances[inst].members[u]
-        mgr.rename_node(u, f"{inst}{SUBPATCH_SEP}custom")
-        assert mgr._instances[inst].members[u] == "custom"
-        assert mgr.nodes[u].membership["local_name"] == "custom"
-        assert mgr.nodes[u].name == f"{inst}{SUBPATCH_SEP}custom"
-        assert old_local != "custom"
+        mgr.rename_node(u, "custom")
+        assert mgr.nodes[u].name == "custom"  # flat display renamed
+        assert mgr._instances[inst].members[u] == old_local  # local template key unchanged
+        assert mgr.nodes[u].membership["local_name"] == old_local
         fp = str(tmp_path / "m.gfi")
         mgr.save(fp, overwrite=True)
     finally:
@@ -123,7 +121,8 @@ def test_rename_subpatch_member_renames_its_local_and_survives_roundtrip(tmp_pat
     try:
         mgr2.load(fp)
         inst2 = next(iter(mgr2._instances))
-        assert "custom" in mgr2._instances[inst2].members.values()
+        member = next(iter(mgr2._instances[inst2].members))
+        assert mgr2.nodes[member].name == "custom"  # flat display name round-trips
     finally:
         mgr2.terminate(notify_gui=False)
 
@@ -138,12 +137,11 @@ def test_rename_shared_member_is_rejected():
         inst = mgr.group_nodes([u])
         mgr.share_instance(inst)  # promotes inst to shared (sets def_id)
         member = next(iter(mgr._instances[inst].members))
-        from goofi.manager import SUBPATCH_SEP
 
         import pytest
 
         with pytest.raises(Exception):
-            mgr.rename_node(member, f"{inst}{SUBPATCH_SEP}renamed")
+            mgr.rename_node(member, "renamed")
     finally:
         mgr.terminate(notify_gui=False)
 

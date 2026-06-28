@@ -36,6 +36,7 @@ from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING
 import numpy as np
 import yaml
 
+from goofi.expression import rewrite_nd_refs
 from goofi.message import MessageType
 from goofi.node import MultiprocessingForbiddenError, Node
 from goofi.node_helpers import NodeProcessRegistry, NodeRef, list_nodes
@@ -45,67 +46,7 @@ if TYPE_CHECKING:
     from goofi.bridge.server import BridgeServer
 
 
-# Reserved separator for namespaced sub-patch member names (e.g. "sub0::osc0").
-# A user/file node name may never contain it, so the grouping runtime can mint
-# collision-free qualified names and round-trip them unambiguously.
-SUBPATCH_SEP = "::"
-
 logger = logging.getLogger(__name__)
-
-# Matches a string-literal `nd('name')` / `nd("name")` reference (up to the name's
-# closing quote), capturing the quote and the exact name. Whitespace after `nd(`
-# is tolerated and normalized away on rewrite; the closing paren is left untouched.
-_ND_REF = re.compile(r"nd\(\s*(?P<q>['\"])(?P<name>[^'\"]*)(?P=q)")
-
-
-def _rewrite_nd_literal(expr: Optional[str], rename_map: Dict[str, str]) -> Optional[str]:
-    """Best-effort rewrite of string-literal `nd('name')` references whose name is a
-    key of ``rename_map`` to the mapped name. References to names not in the map
-    (external producers) are left untouched. Non-string-literal / dynamic nd() args
-    are out of scope (they can't be statically rewritten)."""
-    if not expr or "nd(" not in expr:
-        return expr
-
-    def _repl(m: "re.Match[str]") -> str:
-        new = rename_map.get(m.group("name"))
-        if new is None:
-            return m.group(0)
-        q = m.group("q")
-        return f"nd({q}{new}{q}"
-
-    return _ND_REF.sub(_repl, expr)
-
-
-# Matches a qualified member ref nd('<inst>::<local>') — the local is captured so
-# a clone can re-point the qualifier prefix at the instance it landed in.
-_QUALIFIED_ND = re.compile(
-    r"nd\(\s*(?P<q>['\"])(?P<qual>[^'\"]+?)" + re.escape(SUBPATCH_SEP) + r"(?P<local>[^'\"]+)(?P=q)"
-)
-
-
-def _requalify_nd_literal(expr: Optional[str], target_inst: str, member_locals) -> Optional[str]:
-    """Rewrite ``nd('<anyinst>::<local>')`` to ``nd('<target_inst>::<local>')`` for
-    each ``<local>`` that names a member of the target instance, so an intra-sub-patch
-    cross-reference follows into the instance the member was cloned into. Refs to
-    non-members (externals) are left untouched."""
-    if not expr or "nd(" not in expr:
-        return expr
-
-    def _repl(m: "re.Match[str]") -> str:
-        local = m.group("local")
-        if local not in member_locals:
-            return m.group(0)
-        q = m.group("q")
-        return f"nd({q}{target_inst}{SUBPATCH_SEP}{local}{q}"
-
-    return _QUALIFIED_ND.sub(_repl, expr)
-
-
-def _reject_reserved_name(name: str) -> None:
-    if SUBPATCH_SEP in name:
-        raise ValueError(
-            f"node name {name!r} may not contain the reserved separator '{SUBPATCH_SEP}'"
-        )
 
 
 class SubPatchTooDeep(ValueError):
@@ -160,6 +101,18 @@ def _iface_to_dict(interface: Dict[str, Boundary]) -> Dict[str, Dict[str, Any]]:
     """Serialize an interface (boundary id -> Boundary) to plain dicts for the JSON
     snapshot and the saved .gfi document."""
     return {bid: asdict(b) for bid, b in interface.items()}
+
+
+def _rewrite_record_nd(rec: Dict[str, Any], name_map: Dict[str, str]) -> None:
+    """Rewrite nd() refs in a serialized node record's stashed param expressions
+    (the {value, expression, ...} form) per `name_map`, in place. Used to translate a
+    member record between live display names and a definition's template locals."""
+    for group in (rec.get("params") or {}).values():
+        if not isinstance(group, dict):
+            continue
+        for pval in group.values():
+            if isinstance(pval, dict) and pval.get("expression"):
+                pval["expression"] = rewrite_nd_refs(pval["expression"], name_map)
 
 
 def _iface_from_dict(raw: Dict[str, Dict[str, Any]]) -> Dict[str, Boundary]:
@@ -410,6 +363,22 @@ class Manager:
             if uid not in self.nodes:
                 return uid
 
+    def _fresh_display_name(self, base: str) -> str:
+        """Lowest free flat display name `base0`, `base1`, … (globally unique). Names
+        are flat at every nesting depth — no `inst::local` qualification — so nd()
+        resolves by the bare name and grouping never has to rename a member."""
+        existing = {self.nodes[u].name for u in self.nodes}
+        idx = 0
+        while f"{base}{idx}" in existing:
+            idx += 1
+        return f"{base}{idx}"
+
+    def _restore_member_name(self, saved_name: Optional[str], node_type: str) -> str:
+        """Flat display name for a member being loaded: the saved flat name
+        (disambiguated against the live graph, e.g. when splicing into a populated
+        graph), or a fresh type-based name when absent."""
+        return self._unique_display_name(saved_name) if saved_name else self._fresh_display_name(node_type.lower())
+
     def _service_budget_ok(self, name: str, slots=None) -> bool:
         """Whether `name` fits iceoryx2's 255-byte ServiceName once embedded.
 
@@ -433,14 +402,9 @@ class Manager:
         params: Optional[Dict[str, Dict[str, Any]]] = None,
         member_uid: Optional[str] = None,
         membership: Optional[Dict[str, Any]] = None,
-        allow_reserved: bool = False,
         **gui_kwargs,
     ) -> str:
         print(f"Adding node '{node_type}' from category '{category}'.")
-        # User/file top-level names may not contain the reserved separator. The
-        # sub-patch expander sets allow_reserved=True for namespaced member names.
-        if name is not None and not allow_reserved:
-            _reject_reserved_name(name)
         if name is not None and not self._service_budget_ok(name):
             raise SubPatchTooDeep(
                 f"node name {name!r} is too long for an iceoryx2 service name "
@@ -460,12 +424,7 @@ class Manager:
         #    name prefix for debug + a fresh uuid suffix so a quick re-add can't
         #    race the old, still-terminating node for a per-service slot.
         if name is None:
-            base = node_type.lower()
-            existing = {self.nodes[u].name for u in self.nodes}
-            idx = 0
-            while f"{base}{idx}" in existing:
-                idx += 1
-            assigned_name = f"{base}{idx}"
+            assigned_name = self._fresh_display_name(node_type.lower())
         else:
             assigned_name = name
 
@@ -822,60 +781,37 @@ class Manager:
 
     @mark_unsaved_changes
     def rename_node(self, uid: str, name: str) -> None:
-        """Set a node's mutable DISPLAY name. For a TOP-LEVEL node the graph is
-        uid-keyed so no reference moves — we just write the label (disambiguated to
-        stay unique for `nd()`), refresh the directory, and notify the browser. A
-        SUB-PATCH MEMBER's display IS its local name (`inst::local`), which keys the
-        members map / template / canvas label / save — so a member rename re-keys
-        the local, not just the label (see `_rename_member`)."""
+        """Set a node's mutable DISPLAY name — flat and globally unique at every
+        nesting depth (no `inst::local` qualification). The graph is uid-keyed so no
+        reference *key* moves, but nd() refs resolve by name, so the rename rewrites
+        every nd('old') -> nd('new') across the graph in the same call (the caller
+        records it as one undo entry). A member's `local` template key is decoupled
+        from its display, so renaming a member doesn't disturb its boundaries; a
+        shared member can't be renamed yet (its display is per-instance but lifting
+        the guard is a separate follow-up)."""
         if uid not in self.nodes:
             raise KeyError(f"No such node: {uid}")
         inst_id = self._membership.get(uid)
-        if inst_id is not None:
-            return self._rename_member(uid, inst_id, name)
-        name = self._unique_display_name(name, exclude_uid=uid)
-        self.nodes[uid].name = name
-        self._broadcast_node_directory()
-        if self._bridge is not None:
-            self._bridge.control.on_node_renamed(uid, name)
-
-    def _rename_member(self, uid: str, inst_id: str, name: str) -> None:
-        """Rename a sub-patch member by re-keying its LOCAL name (the single source
-        of truth the members map, canvas label, and save/load all read). The sent
-        `name` may be the qualified `inst::base` or a bare base; we take the base."""
-        inst = self._instances[inst_id]
-        if inst.def_id:
-            # A shared member's local is mirrored across the definition + every
-            # sibling (strict mirror); renaming one would have to mirror to all.
-            # Until that exists, reject rather than create inconsistent state.
+        is_member = inst_id is not None
+        if is_member and self._instances[inst_id].def_id:
             raise ValueError("Renaming a member of a shared sub-patch isn't supported yet.")
-        new_local = name.split(SUBPATCH_SEP)[-1]
-        _reject_reserved_name(new_local)
-        old_local = inst.members[uid]
-        if new_local == old_local:
+        old_name = self.nodes[uid].name
+        new_name = self._unique_display_name(name, exclude_uid=uid)
+        if new_name == old_name:
             return
-        # Keep locals unique within the instance (the template/members key space).
-        others = {l for u, l in inst.members.items() if u != uid}
-        base, idx = new_local, 1
-        while new_local in others:
-            new_local = f"{base}{idx}"
-            idx += 1
-        new_disp = f"{inst_id}{SUBPATCH_SEP}{new_local}"
-        if not self._service_budget_ok(new_disp):
-            raise SubPatchTooDeep(f"renaming would overflow the service-name budget for {new_disp!r}")
-        self.nodes[uid].name = new_disp
-        self._attach_member(inst_id, uid, new_local)  # re-keys local + marker in lockstep
-        # A boundary may name this member as its inner endpoint (by local name).
-        for port in inst.interface.values():
-            if port.inner_node == old_local:
-                port.inner_node = new_local
-        # Fellow members AND external referrers reference this one by its qualified
-        # display name in nd() — rewrite across the whole graph (names are unique).
-        old_disp = f"{inst_id}{SUBPATCH_SEP}{old_local}"
-        self._rewrite_member_expressions(list(self.nodes), {old_disp: new_disp})
+        if not self._service_budget_ok(new_name):
+            raise SubPatchTooDeep(f"renaming would overflow the service-name budget for {new_name!r}")
+        self.nodes[uid].name = new_name
+        # Fellow members AND external referrers point at this node by its display name
+        # in nd() — rewrite across the whole graph (names are globally unique, so the
+        # rewrite is unambiguous and reversed exactly by the inverse rename on undo).
+        self._rewrite_member_expressions(list(self.nodes), {old_name: new_name})
         self._broadcast_node_directory()
         if self._bridge is not None:
-            self._bridge.control.on_subpatch_changed()
+            if is_member:
+                self._bridge.control.on_subpatch_changed()
+            else:
+                self._bridge.control.on_node_renamed(uid, new_name)
 
     def _fresh_instance_id(self) -> str:
         idx = 0
@@ -1003,12 +939,13 @@ class Manager:
             except Exception:
                 pass
 
-    def _rewrite_member_expressions(self, node_uids, rename_map: Dict[str, str]) -> None:
-        """Rewrite string-literal nd() refs in the given nodes' param expressions per
-        `rename_map` (group: bare->qualified; expand: qualified->bare), preserving the
-        enable/trigger/autoeval flags. Pass the whole node set so EXTERNAL referrers
-        are rewritten too, not just fellow members. Nodes without a live ref/params
-        are skipped."""
+    def _rewrite_member_expressions(self, node_uids, name_map: Dict[str, str]) -> None:
+        """Rewrite string-literal nd() refs across the given live nodes' param
+        expressions per `name_map` (old display/local name -> new), preserving the
+        enable/trigger/autoeval flags. The single live-ref nd() rewriter — used by
+        rename (display->new display) and instantiate (template local->fresh display).
+        Pass the whole node set so EXTERNAL referrers are rewritten too. Nodes without
+        a live ref/params are skipped."""
         for name in node_uids:
             if name not in self.nodes:
                 continue
@@ -1016,29 +953,7 @@ class Manager:
             for grp in list(ref.params.keys()):
                 for pname, p in ref.params[grp].items():
                     expr = getattr(p, "expression", None)
-                    new_expr = _rewrite_nd_literal(expr, rename_map)
-                    if new_expr != expr:
-                        ref.set_expression(
-                            grp,
-                            pname,
-                            new_expr,
-                            enabled=bool(getattr(p, "expression_enabled", False)),
-                            triggers_process=bool(getattr(p, "expression_triggers_process", False)),
-                            autoeval=bool(getattr(p, "expression_autoeval", False)),
-                        )
-
-    def _requalify_member_expressions(self, member_uids, target_inst: str, member_locals) -> None:
-        """Re-point each member's intra-sub-patch nd('<inst>::<local>') refs at
-        `target_inst`, so a cloned member references its OWN sibling rather than the
-        instance it was copied from. Best-effort over live refs."""
-        for uid in member_uids:
-            if uid not in self.nodes:
-                continue
-            ref = self.nodes[uid]
-            for grp in list(ref.params.keys()):
-                for pname, p in ref.params[grp].items():
-                    expr = getattr(p, "expression", None)
-                    new_expr = _requalify_nd_literal(expr, target_inst, member_locals)
+                    new_expr = rewrite_nd_refs(expr, name_map)
                     if new_expr != expr:
                         ref.set_expression(
                             grp,
@@ -1059,8 +974,10 @@ class Manager:
     ) -> str:
         """Group existing nodes into a unique (inline) sub-patch instance.
 
-        Members keep their uids (no respawn — node_id and data subscriptions
-        survive); only their DISPLAY name is qualified to `inst_id::local`.
+        Flat naming: members keep their uids AND their (already globally-unique)
+        DISPLAY names — grouping is purely organizational, never a rename, so no
+        nd() cross-reference has to be rewritten. Each member's `local` is a
+        per-instance template key, seeded here from its display name.
         Membership/interface are recorded as first-class state, keyed by uid.
         Returns the new instance id. `member_names` is a list of member UIDs.
         """
@@ -1072,35 +989,18 @@ class Manager:
                 raise KeyError(f"No such node: {u}")
             if u in self._membership:
                 raise ValueError(f"node {u} is already in a sub-patch")
-            _reject_reserved_name(self.nodes[u].name)
 
         inst_id = self._fresh_instance_id()
-        members: Dict[str, str] = {}  # uid -> local name
-        rename_map: Dict[str, str] = {}  # old display -> qualified display (for nd())
-        done: list = []  # (uid, original_display) renamed so far, for rollback
-        used_locals: set = set()  # display names aren't unique anymore — dedupe locals
-        try:
-            for u in member_uids:
-                ref = self.nodes[u]
-                base = ref.name
-                local, idx = base, 1
-                while local in used_locals:
-                    local = f"{base}{idx}"
-                    idx += 1
-                used_locals.add(local)
-                new_name = f"{inst_id}{SUBPATCH_SEP}{local}"
-                slots = list(ref.output_slots or ()) + list(ref.input_slots or ())
-                if not self._service_budget_ok(new_name, slots=slots):
-                    raise SubPatchTooDeep(f"grouping would overflow service-name budget for {new_name!r}")
-                ref.name = new_name  # display only — uid (the key) is unchanged
-                done.append((u, base))
-                members[u] = local
-                rename_map[base] = new_name
-        except Exception:
-            # Roll back any display renames so a failure leaves the graph intact.
-            for u, base in reversed(done):
-                self.nodes[u].name = base
-            raise
+        members: Dict[str, str] = {}  # uid -> local name (template key)
+        used_locals: set = set()
+        for u in member_uids:
+            base = self.nodes[u].name
+            local, idx = base, 1
+            while local in used_locals:
+                local = f"{base}{idx}"
+                idx += 1
+            used_locals.add(local)
+            members[u] = local
 
         if interface is None:
             interface = self._derive_interface(members)
@@ -1117,11 +1017,6 @@ class Manager:
         )
         for u, local in members.items():
             self._attach_member(inst_id, u, local)
-
-        # Rewrite nd('name') references to the qualified member names so
-        # cross-references survive the rename — across the WHOLE graph, since an
-        # external node may reference a soon-to-be member (spec §2.6, backlog #1).
-        self._rewrite_member_expressions(list(self.nodes), rename_map)
         self._broadcast_node_directory()
 
         if self._bridge is not None and notify_gui:
@@ -1138,7 +1033,6 @@ class Manager:
         if def_id and def_id in self._definitions:
             existing |= set(self._definitions[def_id].members.keys())
         if requested is not None:
-            _reject_reserved_name(requested)
             if requested in existing:
                 raise ValueError(f"a member named {requested!r} already exists in {inst_id}")
             return requested
@@ -1162,19 +1056,16 @@ class Manager:
     ) -> str:
         """Create a node directly inside an existing sub-patch instance.
 
-        The node is spawned with a namespaced display name (`inst_id::local`) and
-        recorded in the instance's membership/members maps. For a SHARED instance
+        The node is spawned with a fresh flat (globally-unique) display name and
+        recorded under a per-instance `local` template key. For a SHARED instance
         the new member is mirrored into the definition and every sibling instance
         (strict mirror), matching `update_param`/`set_node_pos`. Returns the new
-        member's display name.
+        member's uid.
         """
         if inst_id not in self._instances:
             raise KeyError(f"No such sub-patch: {inst_id}")
         inst = self._instances[inst_id]
         local = self._fresh_member_local(inst_id, node_type, name)
-        disp = f"{inst_id}{SUBPATCH_SEP}{local}"
-        if not self._service_budget_ok(disp):
-            raise SubPatchTooDeep(f"adding {disp!r} would overflow the service-name budget")
 
         # Spawn silently; the single on_subpatch_changed below re-syncs clients
         # atomically (node + updated members map) without a top-level flash. Atomic:
@@ -1184,10 +1075,9 @@ class Manager:
                 node_type,
                 category,
                 notify_gui=False,
-                name=disp,
+                name=self._fresh_display_name(node_type.lower()),
                 params=params,
                 pos=tuple(pos),
-                allow_reserved=True,
                 membership={"instance": inst_id, "local_name": local},
                 # Restore the original uid on redo-of-add (else captured links orphan).
                 member_uid=member_uid,
@@ -1201,9 +1091,8 @@ class Manager:
                 rec.pop("name", None)  # display name is per-instance, not part of the template
                 self._definitions[def_id].members[local] = rec
                 for sib in self._shared_siblings(inst_id):
-                    sib_disp = f"{sib}{SUBPATCH_SEP}{local}"
                     sib_uid = self._add_node_from_record(
-                        sib_disp, dict(rec), allow_reserved=True, notify_gui=False,
+                        self._fresh_display_name(node_type.lower()), dict(rec), notify_gui=False,
                         membership={"instance": sib, "local_name": local},
                     )
                     self._attach_member(sib, sib_uid, local)
@@ -1220,28 +1109,11 @@ class Manager:
             raise KeyError(f"No such sub-patch: {inst_id}")
         inst = self._instances[inst_id]
         def_id = inst.def_id
-        restored: List[str] = []  # uids
-        rename_map: Dict[str, str] = {}  # old display -> bare display (for nd())
-        for uid, local in list(inst.members.items()):
-            ref = self.nodes[uid]
-            old_disp = ref.name
-            # Keep bare display names distinct for nd() readability (not required —
-            # uid is the key — but avoids surprising shadowing on expand).
-            existing = {self.nodes[u].name for u in self.nodes if u != uid}
-            target = local
-            if target in existing:
-                base, idx = local, 0
-                while f"{base}{idx}" in existing:
-                    idx += 1
-                target = f"{base}{idx}"
-            ref.name = target
+        # Flat naming: members already carry globally-unique display names, so expand
+        # is purely organizational — drop membership only. No rename, no nd() rewrite.
+        restored: List[str] = list(inst.members)
+        for uid in restored:
             self._detach_member(uid)
-            restored.append(uid)
-            rename_map[old_disp] = target
-        # Reverse the grouping rewrite: qualified nd('inst::name') -> bare nd('name'),
-        # across the whole graph (external referrers too).
-        self._rewrite_member_expressions(list(self.nodes), rename_map)
-        self._broadcast_node_directory()
         del self._instances[inst_id]
         # GC an orphaned shared definition (the expanded instance may have been its
         # last reference), like remove_instance / make_unique.
@@ -1289,12 +1161,19 @@ class Manager:
     def _definition_from_instance(self, inst_id: str) -> Dict[str, Any]:
         """Snapshot a (unique) instance's topology+params as a reusable definition."""
         inst = self._instances[inst_id]
-        members = {local: self._node_record(uid) for uid, local in inst.members.items()}
-        # Strip per-instance identity (uid + display name) from the shared definition
-        # records — the template is keyed by local name.
-        for rec in members.values():
+        # nd() cross-refs between members are stored in TEMPLATE form (against the
+        # local key), so each future instance can re-point them at its own fresh
+        # member names. Translate the live display names -> locals here.
+        display_to_local = {self.nodes[uid].name: local for uid, local in inst.members.items()}
+        members = {}
+        for uid, local in inst.members.items():
+            rec = self._node_record(uid)
+            # Strip per-instance identity (uid + display name); the template is keyed
+            # by local name and each instance mints its own.
             rec.pop("uid", None)
             rec.pop("name", None)
+            _rewrite_record_nd(rec, display_to_local)
+            members[local] = rec
         links = []
         for link in self._links:
             if self._membership.get(link["node_out"]) == inst_id and self._membership.get(link["node_in"]) == inst_id:
@@ -1345,25 +1224,26 @@ class Manager:
                 interface=deepcopy(d.interface),
                 pos=list(pos),
             )
+            name_map: Dict[str, str] = {}  # template local -> this instance's fresh flat name
             for local, rec in d.members.items():
-                new_name = f"{inst_id}{SUBPATCH_SEP}{local}"
-                if not self._service_budget_ok(new_name):
-                    raise SubPatchTooDeep(f"instance name {new_name!r} overflows the service-name budget")
+                disp = self._fresh_display_name(rec["_type"].lower())
                 uid = self._add_node_from_record(
-                    new_name, dict(rec), allow_reserved=True,
+                    disp, dict(rec),
                     membership={"instance": inst_id, "local_name": local},
                 )
                 self._attach_member(inst_id, uid, local)
                 members[uid] = local
                 local_to_uid[local] = uid
+                name_map[local] = disp
             for link in d.links:
                 self.add_link(
                     local_to_uid[link["node_out"]],
                     local_to_uid[link["node_in"]],
                     link["slot_out"], link["slot_in"], notify_gui=False,
                 )
-            # Re-point intra-sub-patch cross-refs at THIS instance's members.
-            self._requalify_member_expressions(members.keys(), inst_id, set(members.values()))
+            # Re-point intra-sub-patch nd() cross-refs from the def's template locals
+            # to THIS instance's fresh member display names.
+            self._rewrite_member_expressions(members.keys(), name_map)
         if self._bridge is not None and notify_gui:
             self._bridge.control.on_subpatch_changed()
         return inst_id
@@ -1668,6 +1548,11 @@ class Manager:
             return
         def_id = inst.def_id
         local = inst.members[uid]
+        # Intra-sub-patch nd() cross-refs are authored against THIS instance's live
+        # member display names; the definition stores them in TEMPLATE form (against
+        # the local key), and each sibling carries its OWN member display names.
+        me_by_local = {l: self.nodes[u].name for u, l in inst.members.items()}
+        display_to_local = {disp: l for l, disp in me_by_local.items()}
         # Record on the definition. Read the normalized binding back off the primary
         # node's param (the NodeRef just applied the same canonical gating the node
         # will), and store it in the {value, expression, ...} shape Param.serialize
@@ -1679,7 +1564,7 @@ class Manager:
             if getattr(p, "expression", None) is not None:
                 params[name] = {
                     "value": p._value,
-                    "expression": p.expression,
+                    "expression": rewrite_nd_refs(p.expression, display_to_local),
                     "expression_enabled": bool(getattr(p, "expression_enabled", False)),
                     "expression_triggers_process": bool(getattr(p, "expression_triggers_process", False)),
                     "expression_autoeval": bool(getattr(p, "expression_autoeval", False)),
@@ -1687,11 +1572,13 @@ class Manager:
             else:
                 params[name] = p._value
         # Propagate to every sibling instance's corresponding member, re-pointing any
-        # intra-sub-patch cross-ref at the sibling's OWN members.
+        # intra-sub-patch cross-ref at the sibling's OWN members (this display -> sib display).
         for other_id, other in self._instances.items():
             if other_id == inst_id or other.def_id != def_id:
                 continue
-            sib_expr = _requalify_nd_literal(expression, other_id, set(other.members.values()))
+            sib_by_local = {l: self.nodes[u].name for u, l in other.members.items()}
+            sib_map = {me_by_local[l]: sib_by_local[l] for l in me_by_local if l in sib_by_local}
+            sib_expr = rewrite_nd_refs(expression, sib_map)
             for onode, olocal in other.members.items():
                 if olocal == local and onode in self.nodes:
                     try:
@@ -1746,6 +1633,11 @@ class Manager:
         if ref.serialized_state is None:
             raise RuntimeError(f"Node {uid} does not have a serialized state. Recreate the node and try again.")
         state = deepcopy(ref.serialized_state)
+        # Overlay the AUTHORITATIVE live params: update_param/set_expression write
+        # ref.params synchronously, but serialized_state only refreshes on the node's
+        # next echo — so a save or share immediately after an edit would otherwise
+        # snapshot the stale value (and lose a just-bound expression).
+        state["params"] = ref.params.serialize()
         state["gui_kwargs"] = ref.gui_kwargs
         state.pop("output_subscribers", None)
         if ref.uid is not None:
@@ -1802,9 +1694,12 @@ class Manager:
                     "def": def_id,
                     "pos": inst.pos,
                     # Only per-instance state — topology+params live in the definition.
+                    # The flat display name is per-instance too (it round-trips so a
+                    # reload restores the same names the user saw).
                     "members": {
                         local: {
                             "uid": self.nodes[nn].uid,
+                            "name": self.nodes[nn].name,
                             "pos": (self.nodes[nn].gui_kwargs or {}).get("pos"),
                         }
                         for nn, local in inst.members.items()
@@ -1826,8 +1721,7 @@ class Manager:
         return root_nodes, root_links, definitions, instances
 
     def _add_node_from_record(
-        self, name: str, node: Dict[str, Any], allow_reserved: bool = False, membership=None,
-        notify_gui: bool = True,
+        self, name: str, node: Dict[str, Any], membership=None, notify_gui: bool = True,
     ) -> str:
         gk = node.get("gui_kwargs") or {}
         pos = gk.get("pos")
@@ -1844,7 +1738,6 @@ class Manager:
             params=node["params"],
             member_uid=node.get("uid"),
             membership=membership if membership is not None else node.get("membership"),
-            allow_reserved=allow_reserved,
             **gk,
         )
 
@@ -1891,23 +1784,25 @@ class Manager:
                 def_id = inst["def"]
                 d = self._definitions[def_id]
                 per = inst.get("members") or {}
+                name_map: Dict[str, str] = {}  # template local -> restored flat display
                 for local, rec in d.members.items():
-                    new_name = f"{inst_id}{SUBPATCH_SEP}{local}"
                     pm = per.get(local) or {}
+                    disp = self._restore_member_name(pm.get("name"), rec["_type"])
                     node_rec = dict(rec)
                     if pm.get("uid"):
                         node_rec["uid"] = pm["uid"]
                     if pm.get("pos") is not None:
                         node_rec["gui_kwargs"] = {**(rec.get("gui_kwargs") or {}), "pos": pm["pos"]}
                     uid = self._add_node_from_record(
-                        new_name, node_rec, allow_reserved=True,
+                        disp, node_rec,
                         membership={"instance": inst_id, "local_name": local},
                     )
                     members_map[uid] = local
                     local_to_uid[local] = uid
-                # Re-point intra-sub-patch cross-refs at THIS instance (the def may
-                # carry them qualified to whichever instance it was snapshotted from).
-                self._requalify_member_expressions(members_map.keys(), inst_id, set(members_map.values()))
+                    name_map[local] = disp
+                # The def stores nd() cross-refs in template-local form — re-point them
+                # at THIS instance's restored member display names.
+                self._rewrite_member_expressions(members_map.keys(), name_map)
                 # Deep-copy: each loaded shared instance gets its own Boundary ports
                 # so later boundary edits don't alias the definition / siblings.
                 interface = deepcopy(d.interface)
@@ -1915,9 +1810,8 @@ class Manager:
                     internal_links.append((local_to_uid, link))
             else:
                 for local, rec in (inst.get("members") or {}).items():
-                    new_name = f"{inst_id}{SUBPATCH_SEP}{local}"
                     uid = self._add_node_from_record(
-                        new_name, rec, allow_reserved=True,
+                        self._restore_member_name(rec.get("name"), rec["_type"]), rec,
                         membership={"instance": inst_id, "local_name": local},
                     )
                     members_map[uid] = local

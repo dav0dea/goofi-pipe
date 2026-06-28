@@ -107,6 +107,26 @@ def test_save_load_roundtrip_preserves_uids(tmp_path):
         mgr2.terminate()
 
 
+def test_node_record_reflects_live_params_despite_stale_serialized_state():
+    # update_param / set_expression write ref.params synchronously, but
+    # serialized_state only refreshes on the node's next echo. A save or a sub-patch
+    # share immediately after an edit must still capture the live binding — _node_record
+    # reads the authoritative live params, not the (possibly stale) snapshot.
+    mgr = _bare_manager(use_multiprocessing=False)
+    try:
+        a = mgr.add_node("Oscillator", "inputs")
+        b = mgr.add_node("Oscillator", "inputs")
+        mgr.set_expression(b, "oscillator", "frequency", f"nd('{mgr.nodes[a].name}')", enabled=True)
+        # serialized_state still holds the pre-edit value...
+        assert mgr.nodes[b].serialized_state["params"]["oscillator"]["frequency"] != \
+            mgr.nodes[b].params["oscillator"]["frequency"].expression
+        # ...but the record captures the live expression.
+        rec = mgr._node_record(b)
+        assert rec["params"]["oscillator"]["frequency"]["expression"] == f"nd('{mgr.nodes[a].name}')"
+    finally:
+        mgr.terminate(notify_gui=False)
+
+
 def _build_grouped_graph(mgr):
     """osc → sel0 → sel1, with [sel0, sel1] grouped into one sub-patch.
 
@@ -128,9 +148,9 @@ def test_group_nodes_namespaces_members_and_records_state():
         osc, inst = _build_grouped_graph(mgr)
         assert inst == "subpatch0"
         s0, s1 = _member(mgr, inst, "select0"), _member(mgr, inst, "select1")
-        # members keep their uids; only the DISPLAY name is qualified
-        assert _disp(mgr, s0) == "subpatch0::select0"
-        assert _disp(mgr, s1) == "subpatch0::select1"
+        # flat naming: members keep their (unchanged, globally-unique) display names
+        assert _disp(mgr, s0) == "select0"
+        assert _disp(mgr, s1) == "select1"
         assert mgr._membership[s0] == "subpatch0"
         # external link is unchanged (it references the member uid, not the name)
         assert {"node_out": osc, "node_in": s0, "slot_out": "out", "slot_in": "data"} in [
@@ -164,7 +184,7 @@ def test_subpatch_save_load_roundtrip_and_expand(tmp_path):
         s0, s1 = _member(mgr2, "subpatch0", "select0"), _member(mgr2, "subpatch0", "select1")
         assert s0 in mgr2.nodes and s1 in mgr2.nodes
         assert mgr2._membership[s1] == "subpatch0"
-        assert _disp(mgr2, s0) == "subpatch0::select0"
+        assert _disp(mgr2, s0) == "select0"  # flat name round-trips
         # both the external and internal links are restored (by uid)
         links = [dict(link) for link in mgr2.links]
         assert {"node_out": osc, "node_in": s0, "slot_out": "out", "slot_in": "data"} in links
@@ -204,15 +224,16 @@ def test_add_member_node_lands_in_subpatch():
     try:
         osc, inst = _build_grouped_graph(mgr)  # unique sub-patch select0, select1
         uid = mgr.add_member_node(inst, "Buffer", "signal")
-        assert _disp(mgr, uid) == f"{inst}::buffer0"
+        # flat naming: a fresh globally-unique display name, no inst:: qualification
+        assert _disp(mgr, uid) == "buffer0"
         assert uid in mgr.nodes
         assert mgr._membership[uid] == inst
-        assert mgr._instances[inst].members[uid] == "buffer0"
+        assert mgr._instances[inst].members[uid] == "buffer0"  # local template key
         # the node carries the membership marker the bridge/save read
         assert mgr.nodes[uid].membership == {"instance": inst, "local_name": "buffer0"}
-        # a fresh add picks the next free local
+        # a fresh add picks the next free flat name
         uid2 = mgr.add_member_node(inst, "Buffer", "signal")
-        assert _disp(mgr, uid2) == f"{inst}::buffer1"
+        assert _disp(mgr, uid2) == "buffer1"
     finally:
         mgr.terminate()
 
