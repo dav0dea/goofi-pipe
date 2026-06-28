@@ -129,3 +129,44 @@ def test_instantiate_definition_atomic_on_link_failure(monkeypatch):
         assert set(mgr._instances) == before_inst, "instance record left after failed instantiate"
     finally:
         mgr.terminate(notify_gui=False)
+
+
+def test_group_reparent_rolls_back_on_failure(monkeypatch):
+    """A reparenting group (Phase 3a) detaches members from one parent and re-homes
+    them under a new nested child — a multi-scope mutation. A failure partway must
+    restore _membership and _instances byte-clean, proving no parent-edge state
+    (the now-live SubPatchInstance.parent) escapes the existing _transaction snapshot."""
+    from copy import deepcopy
+
+    mgr = _bare_manager(use_multiprocessing=False)
+    try:
+        a = mgr.add_node("Buffer", "signal")
+        b = mgr.add_node("Buffer", "signal")
+        c = mgr.add_node("Buffer", "signal")
+        P = mgr.group_nodes([a, b, c])
+        before_membership = dict(mgr._membership)
+        before_instances = deepcopy(mgr._instances)
+
+        real_attach = mgr._attach_member
+        calls = {"n": 0}
+
+        def boom(inst_id, uid, local):
+            calls["n"] += 1
+            if calls["n"] == 1:  # fail on the first re-home, after members were detached
+                raise RuntimeError("forced reparent failure")
+            return real_attach(inst_id, uid, local)
+
+        monkeypatch.setattr(mgr, "_attach_member", boom)
+        with pytest.raises(RuntimeError):
+            mgr.group_nodes([a, b])
+
+        assert mgr._membership == before_membership, "_membership not restored on rollback"
+        assert set(mgr._instances) == set(before_instances), "stray instance left after rollback"
+        assert set(mgr._instances[P].members) == set(before_instances[P].members), (
+            "parent's members not restored (a/b not returned to P) on rollback"
+        )
+        assert all(mgr._instances[i].parent == before_instances[i].parent for i in before_instances), (
+            ".parent markers not restored on rollback"
+        )
+    finally:
+        mgr.terminate(notify_gui=False)

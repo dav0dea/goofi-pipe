@@ -907,18 +907,30 @@ class Manager:
             )
         return iface
 
+    def _entity_name(self, uid: str) -> str:
+        """Display name of any sub-patch entity — a real node OR a nested instance.
+        Both share one globally-unique flat namespace, so this is the single resolver
+        for seeding a member's local template key or reporting an entity by name."""
+        if uid in self.nodes:
+            return self.nodes[uid].name
+        return self._instances[uid].name
+
     def _attach_member(self, inst_id: str, uid: str, local: str) -> None:
         """Record `uid` as a member of `inst_id` under local name `local`, keeping the
-        three views in lockstep: the instance's `members` map, the uid->instance
-        reverse index, and the node's own `.membership` marker. The single funnel for
-        adding membership, so the invariant the structure depends on can't drift."""
+        views in lockstep: the instance's `members` map, the uid->instance reverse
+        index, and the member's own parent marker. A member is either a real NODE
+        (marker on `ref.membership`) or — once nested (Phase 3a) — another sub-patch
+        INSTANCE (marker on `SubPatchInstance.parent`); the same funnel maintains both,
+        so the parent edge can't drift from the index."""
         self._instances[inst_id].members[uid] = local
         self._membership[uid] = inst_id
         if uid in self.nodes:
             self.nodes[uid].membership = {"instance": inst_id, "local_name": local}
+        elif uid in self._instances:
+            self._instances[uid].parent = inst_id
 
     def _detach_member(self, uid: str) -> Optional[str]:
-        """Remove `uid` from whatever instance owns it, clearing all three views.
+        """Remove `uid` from whatever instance owns it, clearing all views.
         Returns the instance id it was detached from (or None if it had no parent).
         Tolerates a node whose live ref is already gone (teardown order)."""
         inst_id = self._membership.pop(uid, None)
@@ -926,6 +938,8 @@ class Manager:
             self._instances[inst_id].members.pop(uid, None)
         if uid in self.nodes:
             self.nodes[uid].membership = None
+        elif uid in self._instances:
+            self._instances[uid].parent = None
         return inst_id
 
     @contextlib.contextmanager
@@ -1026,16 +1040,28 @@ class Manager:
         if not member_uids:
             raise ValueError("no members to group")
         for u in member_uids:
-            if u not in self.nodes:
-                raise KeyError(f"No such node: {u}")
-            if u in self._membership:
-                raise ValueError(f"node {u} is already in a sub-patch")
+            if u not in self.nodes and u not in self._instances:
+                raise KeyError(f"No such entity: {u}")
+        # Every member must share ONE parent scope (same nesting level); the new
+        # instance is created at that level (None = top-level). A mixed-scope set is
+        # ambiguous — there is no single place to put the group.
+        parents = {self._membership.get(u) for u in member_uids}
+        if len(parents) != 1:
+            raise ValueError("group members must share one parent scope")
+        shared_parent = parents.pop()
+        # Nesting a child inside a SHARED parent would have to mirror the new structure
+        # into the definition and every sibling family — that recursion is Phase 3d.
+        if shared_parent is not None and self._instances[shared_parent].def_id:
+            raise ValueError("cannot group inside a shared sub-patch (deferred to 3d)")
 
         inst_id = self._fresh_instance_id()
         members: Dict[str, str] = {}  # uid -> local name (template key)
+        # A member's local seeds from its globally-unique display name (a node's name
+        # or an instance's label); since display names are unique across the unified
+        # node+instance namespace, locals can't collide and need no extra dedup.
         used_locals: set = set()
         for u in member_uids:
-            base = self.nodes[u].name
+            base = self._entity_name(u)
             local, idx = base, 1
             while local in used_locals:
                 local = f"{base}{idx}"
@@ -1047,17 +1073,30 @@ class Manager:
             interface = self._derive_interface(members)
         else:
             interface = _iface_from_dict(interface)
-        self._instances[inst_id] = SubPatchInstance(
-            uid=inst_id,
-            name=self._fresh_instance_name(),
-            kind="unique",
-            def_id=None,
-            members={},
-            interface=interface,
-            pos=list(pos),
-        )
-        for u, local in members.items():
-            self._attach_member(inst_id, u, local)
+        # Reparenting is a multi-scope mutation (detach members from their current
+        # parent, re-home them under the new instance, nest the new instance under the
+        # shared parent). Wrap it so a mid-way failure restores every index byte-clean.
+        with self._transaction():
+            # Lift the members out of their current parent (a no-op at top level) before
+            # re-homing them, so the old parent's `members` map no longer lists them.
+            for u in member_uids:
+                self._detach_member(u)
+            self._instances[inst_id] = SubPatchInstance(
+                uid=inst_id,
+                name=self._fresh_instance_name(),
+                kind="unique",
+                def_id=None,
+                members={},
+                interface=interface,
+                pos=list(pos),
+                parent=shared_parent,
+            )
+            for u, local in members.items():
+                self._attach_member(inst_id, u, local)
+            # Nest the new instance under the shared parent (its local is the instance's
+            # own globally-unique display label).
+            if shared_parent is not None:
+                self._attach_member(shared_parent, inst_id, self._instances[inst_id].name)
         self._broadcast_node_directory()
 
         if self._bridge is not None and notify_gui:
@@ -1144,17 +1183,24 @@ class Manager:
 
     @mark_unsaved_changes
     def expand_instance(self, inst_id: str, notify_gui: bool = True) -> List[str]:
-        """Dissolve a sub-patch: restore members' bare DISPLAY names, drop state.
-        Returns the member UIDs (now top-level)."""
+        """Dissolve a sub-patch, lifting its members ONE level up — into this instance's
+        parent, or to top-level when it is a root. A member that is itself a nested
+        instance has its whole subtree reparented (not flattened). Flat naming means
+        members already carry globally-unique display names, so this is purely
+        organizational: no rename, no nd() rewrite. Returns the member UIDs."""
         if inst_id not in self._instances:
             raise KeyError(f"No such sub-patch: {inst_id}")
         inst = self._instances[inst_id]
         def_id = inst.def_id
-        # Flat naming: members already carry globally-unique display names, so expand
-        # is purely organizational — drop membership only. No rename, no nd() rewrite.
+        parent = inst.parent
         restored: List[str] = list(inst.members)
         for uid in restored:
             self._detach_member(uid)
+            if parent is not None:
+                # Re-home one level up; the lifted member's local is its own
+                # globally-unique display name (so it can't collide in the parent).
+                self._attach_member(parent, uid, self._entity_name(uid))
+        self._detach_member(inst_id)  # remove the now-empty instance from its own parent
         del self._instances[inst_id]
         # GC an orphaned shared definition (the expanded instance may have been its
         # last reference), like remove_instance / make_unique.
@@ -1169,18 +1215,23 @@ class Manager:
 
     @mark_unsaved_changes
     def remove_instance(self, inst_id: str, notify_gui: bool = True) -> None:
-        """Delete a whole sub-patch: its member nodes (and their links) and the
-        instance record. A virtual sub-patch node responds to Delete like any
-        node. GCs an orphaned shared definition, like `make_unique`."""
+        """Delete a whole sub-patch and its entire subtree: member nodes (and their
+        links), and any nested instance members recursively. A virtual sub-patch node
+        responds to Delete like any node. GCs an orphaned shared definition, like
+        `make_unique`."""
         if inst_id not in self._instances:
             raise KeyError(f"No such sub-patch: {inst_id}")
         inst = self._instances[inst_id]
         def_id = inst.def_id
         for member in list(inst.members.keys()):
-            # Pop membership BEFORE remove_node so its boundary defensive-unwire
-            # (which keys on membership) no-ops during this teardown.
-            self._membership.pop(member, None)
-            self.remove_node(member, notify_gui=False)
+            if member in self._instances:
+                self.remove_instance(member, notify_gui=False)  # recurse into the nested subtree
+            else:
+                # Pop membership BEFORE remove_node so its boundary defensive-unwire
+                # (which keys on membership) no-ops during this teardown.
+                self._membership.pop(member, None)
+                self.remove_node(member, notify_gui=False)
+        self._detach_member(inst_id)  # drop self from its parent (if nested); no-op at top level
         del self._instances[inst_id]
         if def_id and not any(i.def_id == def_id for i in self._instances.values()):
             self._definitions.pop(def_id, None)

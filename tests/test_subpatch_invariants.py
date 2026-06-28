@@ -32,22 +32,30 @@ def assert_subpatch_invariants(mgr) -> None:
         assert link["node_in"] in nodes, f"link in endpoint {link['node_in']} is not a live node"
 
     # --- membership -> instances is consistent, members are live, marker agrees
+    # A member is either a live NODE or (Phase 3a nesting) another INSTANCE; a node
+    # carries its parentage on `ref.membership`, an instance on `.parent` (checked in
+    # the nesting block below). Anything that is neither is an orphan uid.
     for uid, inst_id in membership.items():
         assert inst_id in instances, f"membership[{uid}] points at missing instance {inst_id}"
         members = instances[inst_id].members
         assert uid in members, f"{uid} maps to {inst_id} in membership but is not one of its members"
-        assert uid in nodes, f"member {uid} of {inst_id} is not a live node"
-        local = members[uid]
-        assert mgr.nodes[uid].membership == {"instance": inst_id, "local_name": local}, (
-            f"ref.membership marker on {uid} out of sync: {mgr.nodes[uid].membership!r} "
-            f"!= {{'instance': {inst_id!r}, 'local_name': {local!r}}}"
+        assert uid in nodes or uid in instances, (
+            f"member {uid} of {inst_id} is neither a live node nor a sub-patch instance"
         )
+        local = members[uid]
+        if uid in nodes:
+            assert mgr.nodes[uid].membership == {"instance": inst_id, "local_name": local}, (
+                f"ref.membership marker on {uid} out of sync: {mgr.nodes[uid].membership!r} "
+                f"!= {{'instance': {inst_id!r}, 'local_name': {local!r}}}"
+            )
 
     # --- instances -> membership reverse, local-name uniqueness, def + boundary
     for inst_id, inst in instances.items():
         members = inst.members
         for uid, local in members.items():
-            assert uid in nodes, f"instance {inst_id} lists member {uid} that is not live"
+            assert uid in nodes or uid in instances, (
+                f"instance {inst_id} lists member {uid} that is neither a live node nor an instance"
+            )
             assert membership.get(uid) == inst_id, (
                 f"reverse membership mismatch: instance {inst_id} owns {uid} "
                 f"but membership says {membership.get(uid)!r}"
@@ -72,10 +80,36 @@ def assert_subpatch_invariants(mgr) -> None:
                     f"boundary {inst_id}:{bid} inner_node {inner!r} is not a member local"
                 )
                 muid = _member(mgr, inst_id, inner)
-                slots = mgr.nodes[muid].input_slots if e.dir == "in" else mgr.nodes[muid].output_slots
-                assert e.inner_slot in slots, (
-                    f"boundary {inst_id}:{bid} inner_slot {e.inner_slot!r} missing on member {inner!r}"
-                )
+                # A boundary whose inner target is a real NODE must name a real slot;
+                # a nested-instance inner target (3b auto-chain) resolves recursively
+                # through that instance's own interface, so skip the leaf-slot check.
+                if muid in nodes:
+                    slots = mgr.nodes[muid].input_slots if e.dir == "in" else mgr.nodes[muid].output_slots
+                    assert e.inner_slot in slots, (
+                        f"boundary {inst_id}:{bid} inner_slot {e.inner_slot!r} missing on member {inner!r}"
+                    )
+
+    # --- nesting tree: each instance's parent edge is consistent + acyclic ------
+    # An instance member carries its parentage on `.parent` (the instance-side analog
+    # of a node's `ref.membership` marker); it must agree with both the parent's
+    # `members` and the upward index, and the parent-chains must form a forest.
+    for inst_id, inst in instances.items():
+        parent = inst.parent
+        if parent is None:
+            continue
+        assert parent in instances, f"instance {inst_id}.parent {parent!r} is not an instance"
+        assert inst_id in instances[parent].members, (
+            f"instance {inst_id} has parent {parent} but is not one of its members"
+        )
+        assert membership.get(inst_id) == parent, (
+            f"instance {inst_id}.parent {parent!r} disagrees with membership {membership.get(inst_id)!r}"
+        )
+    for inst_id in instances:  # walking parents terminates at a root (no cycle)
+        seen, cur = set(), inst_id
+        while cur is not None:
+            assert cur not in seen, f"nesting cycle through instance {cur}"
+            seen.add(cur)
+            cur = instances[cur].parent if cur in instances else None
 
     # --- definitions are GC'd: every def is referenced by >=1 instance --------
     referenced = {inst.def_id for inst in instances.values()} - {None}
@@ -157,6 +191,57 @@ def test_checker_catches_duplicate_display_name():
         # collide two display names (nd() would misroute)
         sel0 = _member(mgr, inst, "select0")
         mgr.nodes[sel0].name = mgr.nodes[osc].name
+        with pytest.raises(AssertionError):
+            assert_subpatch_invariants(mgr)
+    finally:
+        mgr.terminate()
+
+
+# === the checker is tree-aware (Phase 3a nesting meta-tests) ==================
+
+def _two_instances(mgr):
+    """Two top-level instances: A = [select0, select1] (via _build_grouped_graph),
+    B = [buffer0, buffer1]. Returns (A, B)."""
+    _osc, a = _build_grouped_graph(mgr)
+    n0 = mgr.add_node("Buffer", "signal")
+    n1 = mgr.add_node("Buffer", "signal")
+    b = mgr.group_nodes([n0, n1])
+    return a, b
+
+
+def test_checker_accepts_an_instance_member():
+    """A correctly-nested instance-as-member passes the structural rail — the checker
+    no longer demands every member be a live node."""
+    mgr = _bare_manager(use_multiprocessing=False)
+    try:
+        a, b = _two_instances(mgr)
+        mgr._attach_member(a, b, mgr._instances[b].name)  # nest B under A
+        assert_subpatch_invariants(mgr)  # must not raise
+    finally:
+        mgr.terminate()
+
+
+def test_checker_catches_parent_child_mismatch():
+    """An instance whose `.parent` marker doesn't agree with its parent's `members`
+    (or with the upward index) is a desynced tree edge — must be caught."""
+    mgr = _bare_manager(use_multiprocessing=False)
+    try:
+        a, b = _two_instances(mgr)
+        mgr._instances[b].parent = a  # marker set, but B is NOT in A.members / membership
+        with pytest.raises(AssertionError):
+            assert_subpatch_invariants(mgr)
+    finally:
+        mgr.terminate()
+
+
+def test_checker_catches_nesting_cycle():
+    """A parent cycle (A nested in B, B nested in A) has no root and must be caught
+    rather than walked forever."""
+    mgr = _bare_manager(use_multiprocessing=False)
+    try:
+        a, b = _two_instances(mgr)
+        mgr._attach_member(a, b, mgr._instances[b].name)  # B in A
+        mgr._attach_member(b, a, mgr._instances[a].name)  # A in B -> cycle
         with pytest.raises(AssertionError):
             assert_subpatch_invariants(mgr)
     finally:
