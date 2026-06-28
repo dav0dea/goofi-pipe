@@ -69,6 +69,44 @@ describe('graph executors — simple kinds', () => {
 		expect(g.nodes.find((n) => n.name === 'osc0')).toBeUndefined();
 	});
 
+	it('add_node forward restores the original uid (member_uid) + name on redo', async () => {
+		const fc = new FakeControl();
+		const g = new GraphStore(fc);
+		fc.setCallResult('add_node', 'osc0');
+		const action: Action = {
+			kind: 'add_node',
+			label: 'Add Oscillator',
+			domain: 'graph',
+			context: EMPTY_CTX,
+			payload: { type: 'Oscillator', category: 'inputs', pos: [0, 0], uid: 'osc0', name: 'oscillator0' }
+		};
+		await graphExecutors['add_node'].forward(action, deps(fc, g));
+		const call = fc.recordedCalls().find((c) => c.op === 'add_node');
+		// redo must restore the SAME uid so captured links/panels reconnect
+		expect(call?.payload.member_uid).toBe('osc0');
+		expect(call?.payload.name).toBe('oscillator0');
+	});
+
+	it('rename_node forward/inverse send the uid as identity + the right name', async () => {
+		const fc = new FakeControl();
+		const g = new GraphStore(fc);
+		const action: Action = {
+			kind: 'rename_node',
+			label: 'Rename',
+			domain: 'graph',
+			context: EMPTY_CTX,
+			payload: { uid: 'osc0', oldName: 'oscillator0', newName: 'brain_wave' }
+		};
+		await graphExecutors['rename_node'].forward(action, deps(fc, g));
+		expect(
+			fc.recordedCalls().some((c) => c.op === 'rename_node' && c.payload.node === 'osc0' && c.payload.name === 'brain_wave')
+		).toBe(true);
+		await graphExecutors['rename_node'].inverse(action, deps(fc, g));
+		expect(
+			fc.recordedCalls().some((c) => c.op === 'rename_node' && c.payload.node === 'osc0' && c.payload.name === 'oscillator0')
+		).toBe(true);
+	});
+
 	it('undo of removeNode re-adds the node with the same name and restores its links', async () => {
 		const fc = new FakeControl();
 		const g = new GraphStore(fc);

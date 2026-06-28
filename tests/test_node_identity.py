@@ -148,6 +148,45 @@ def test_rename_shared_member_is_rejected():
         mgr.terminate(notify_gui=False)
 
 
+def test_rename_then_save_load_keeps_uid_and_new_display_name(tmp_path):
+    # The headline scenario: a renamed node round-trips with BOTH its stable uid
+    # and the new display name (the .gfi persists the name inside the uid record).
+    mgr = _bare_manager(use_multiprocessing=False)
+    try:
+        a = mgr.add_node("Oscillator", "inputs")
+        b = mgr.add_node("Buffer", "signal")
+        mgr.add_link(a, b, "out", "val")
+        mgr.rename_node(a, "brain_wave")
+        fp = str(tmp_path / "r.gfi")
+        mgr.save(fp, overwrite=True)
+    finally:
+        mgr.terminate(notify_gui=False)
+
+    mgr2 = _bare_manager(use_multiprocessing=False)
+    try:
+        mgr2.load(fp)
+        assert a in mgr2.nodes  # uid stable across save/load
+        assert mgr2.nodes[a].name == "brain_wave"  # renamed display survived
+        # the link still references the same uids
+        assert {"node_out": a, "node_in": b, "slot_out": "out", "slot_in": "val"} in mgr2._links
+    finally:
+        mgr2.terminate(notify_gui=False)
+
+
+def test_restart_preserves_uid_and_display_name():
+    mgr = _bare_manager(use_multiprocessing=False)
+    try:
+        a = mgr.add_node("Oscillator", "inputs")
+        mgr.rename_node(a, "keep_me")
+        old_node_id = mgr.nodes[a].node_id
+        mgr.restart_node(a)
+        assert a in mgr.nodes  # uid is stable across restart
+        assert mgr.nodes[a].name == "keep_me"  # display preserved
+        assert mgr.nodes[a].node_id != old_node_id  # transport id is fresh
+    finally:
+        mgr.terminate(notify_gui=False)
+
+
 def test_bridge_snapshot_carries_uid_and_display_name():
     # The wire contract (Phase 2): the node description sent to the browser keys on
     # `uid` (identity) and carries the mutable `name` (display) separately.
