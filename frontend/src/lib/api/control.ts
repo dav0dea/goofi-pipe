@@ -47,8 +47,9 @@ export interface NodeInstanceInfo {
 	 * across rename/restart/reload. For a sub-patch group node (a synthesized
 	 * virtual node) this is the instance id; for a real node it's the backend uid. */
 	uid: string;
-	/** Mutable DISPLAY name (e.g. "oscillator0", or "subpatch0::filter"). For the
-	 * label only — never an identity key, so it can be renamed freely. */
+	/** Mutable DISPLAY name (e.g. "oscillator0") — flat and globally unique at every
+	 * nesting depth (no `inst::local` qualification). For the label only — never an
+	 * identity key, so it can be renamed freely. */
 	name: string;
 	type: string;
 	category: string;

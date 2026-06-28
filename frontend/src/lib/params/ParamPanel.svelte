@@ -18,7 +18,6 @@
 	import type { ParamDescriptor } from '$lib/api/types';
 	import { graph } from '$lib/stores/graph.svelte';
 	import { categoryColor, formatName } from '$lib/editor/categoryColor';
-	import { joinNodeName, splitNodeName } from '$lib/editor/nodeName';
 	import ParamField from './ParamField.svelte';
 	import SubPatchInspector from '$lib/editor/SubPatchInspector.svelte';
 
@@ -61,9 +60,8 @@
 
 	// --- inline name editing (slide-in inspector header) --------------------
 	// The display `name` is the only mutable, display-only attribute (identity is
-	// the uid). A sub-patch member's name is qualified `inst::local`; we keep the
-	// faint path fixed and let the user edit only the trailing base segment.
-	const nameParts = $derived(node ? splitNodeName(node.name) : { path: '', base: '' });
+	// the uid). Names are flat and globally unique at every nesting depth — no
+	// `inst::local` qualification — so the whole name is editable directly.
 	// Keyed by uid so switching nodes auto-closes the editor while live state
 	// updates (which re-create the node object) leave an open edit untouched.
 	let editingUid = $state<string | null>(null);
@@ -72,7 +70,7 @@
 
 	function startRename(): void {
 		if (!node) return;
-		nameDraft = splitNodeName(node.name).base;
+		nameDraft = node.name;
 		editingUid = node.uid;
 	}
 	function commitRename(): void {
@@ -83,7 +81,7 @@
 		if (!uid || !node || node.uid !== uid) return;
 		const base = nameDraft.trim();
 		if (!base) return; // empty → keep the current name
-		void g.renameNode(uid, joinNodeName(splitNodeName(node.name).path, base));
+		void g.renameNode(uid, base);
 	}
 	function cancelRename(): void {
 		editingUid = null;
@@ -146,11 +144,11 @@
 								use:focusInput
 							/>
 						{:else}
-							{#if nameParts.path}<span class="path">{nameParts.path}</span>{/if}<button
+							<button
 								class="base"
 								title="Click to rename"
 								onclick={startRename}
-								data-testid="node-name">{nameParts.base}</button
+								data-testid="node-name">{node.name}</button
 							>
 						{/if}
 					</div>
@@ -256,12 +254,6 @@
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;
-	}
-	/* The sub-patch path is faint and fixed; only the bold base is the rename
-	   target. */
-	.path {
-		color: var(--text-faint);
-		font-weight: 400;
 	}
 	.base {
 		font: inherit;

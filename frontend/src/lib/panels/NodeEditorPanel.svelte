@@ -232,25 +232,25 @@
 		const inst = entered ? g.instances[entered] : null;
 		const next: Node[] = [];
 		if (inst && entered) {
-			// Inside a sub-patch: render its members (with local labels) plus the
-			// In/Out boundary nodes derived from its interface, laid out on either
-			// side of the members' bounding box.
-			const disps = Object.keys(inst.members);
-			const pts = disps
-				.map((d) => g.nodeById(d)?.pos)
+			// Inside a sub-patch: render its members (by their flat display names) plus
+			// the In/Out boundary nodes derived from its interface, laid out on either
+			// side of the members' bounding box. `inst.members` is keyed by member uid.
+			const memberUids = Object.keys(inst.members);
+			const pts = memberUids
+				.map((u) => g.nodeById(u)?.pos)
 				.filter((p): p is [number, number] => !!p);
 			const minX = pts.length ? Math.min(...pts.map((p) => p[0])) : 0;
 			const maxX = pts.length ? Math.max(...pts.map((p) => p[0])) : 0;
 			const minY = pts.length ? Math.min(...pts.map((p) => p[1])) : 0;
-			for (const disp of disps) {
-				const n = g.nodeById(disp);
+			for (const uid of memberUids) {
+				const n = g.nodeById(uid);
 				if (!n) continue;
 				next.push({
-					id: disp,
+					id: uid,
 					type: 'goofi',
 					position: { x: n.pos?.[0] ?? 0, y: n.pos?.[1] ?? 0 },
-					data: { node: n, label: inst.members[disp] },
-					selected: sel.nodes(panelId).has(disp)
+					data: { node: n, label: n.name },
+					selected: sel.nodes(panelId).has(uid)
 				});
 			}
 			// In/Out boundary pills (incl. unwired). Use the stored pos; fall back to
@@ -919,7 +919,8 @@
 					const bndId = await g.addBoundary(entered, bspec.dir, bspec.dtype, pos);
 					// Seeded from a member slot click → wire the new boundary straight to
 					// that slot, so In/Out behave like any other auto-connected node. The
-					// seed's node is the member display name; wire_boundary wants its local.
+					// seed's node is the member uid; wire_boundary wants its local template
+					// key (`inst.members` maps uid -> local).
 					if (bndId && placement.seed) {
 						const local = g.instances[entered]?.members[placement.seed.node];
 						if (local) await g.wireBoundary(entered, bndId, local, placement.seed.slot);

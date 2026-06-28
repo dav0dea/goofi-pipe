@@ -193,11 +193,11 @@ export class GraphStore {
 				// links, and instances from the fresh snapshot — but NOT layout or a
 				// re-fit (it's an in-place edit, not a wholesale load).
 				const snap = ev.payload;
-				// Names present before vs after — group/expand/remove_instance fire
+				// Entities present before vs after — group/expand/remove_instance fire
 				// only this event (no per-node node_removed), so prune panel links to
-				// any node OR instance id that vanished. Critical: instance ids are
-				// reused (subpatch0 regenerates), so a stale link would silently
-				// re-bind a panel to an unrelated sub-patch.
+				// any node OR instance uid that vanished. Instance uids are now stable
+				// minted ids (never reused), so a vanished uid means the entity is
+				// genuinely gone — clear any panel still bound to it.
 				const before = new Set<string>([
 					...this.nodes.map((n) => n.uid),
 					...Object.keys(this.instances)
