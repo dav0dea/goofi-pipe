@@ -112,6 +112,44 @@ def test_internal_member_link_mirrors_to_siblings_and_definition():
         mgr.terminate(notify_gui=False)
 
 
+def test_member_nd_cross_ref_requalifies_per_instance(tmp_path):
+    # An intra-sub-patch nd() cross-reference (one member references a fellow by its
+    # qualified name) must point at EACH instance's OWN member — on the existing
+    # sibling (mirror), a freshly instantiated sibling, and after save/load.
+    mgr = _bare_manager(use_multiprocessing=False)
+    try:
+        a = mgr.add_node("Oscillator", "inputs")  # local oscillator0
+        b = mgr.add_node("Oscillator", "inputs")  # local oscillator1
+        inst1 = mgr.group_nodes([a, b])
+        def_id = mgr.share_instance(inst1)
+        inst2 = mgr.instantiate_definition(def_id)  # existing sibling
+
+        # bind a cross-ref on inst1's member (routes through manager.set_expression)
+        mgr.set_expression(b, "oscillator", "frequency", f"nd('{inst1}::oscillator0')", enabled=True)
+
+        # the existing sibling's copy is re-pointed at ITS own member...
+        m2 = mgr._member_uid(inst2, "oscillator1")
+        assert mgr.nodes[m2].params["oscillator"]["frequency"].expression == f"nd('{inst2}::oscillator0')"
+        # ...and so is a freshly instantiated sibling.
+        inst3 = mgr.instantiate_definition(def_id)
+        m3 = mgr._member_uid(inst3, "oscillator1")
+        assert mgr.nodes[m3].params["oscillator"]["frequency"].expression == f"nd('{inst3}::oscillator0')"
+
+        fp = str(tmp_path / "req.gfi")
+        mgr.save(fp, overwrite=True)
+    finally:
+        mgr.terminate(notify_gui=False)
+
+    mgr2 = _bare_manager(use_multiprocessing=False)
+    try:
+        mgr2.load(fp)
+        for iid in mgr2._instances:
+            m = mgr2._member_uid(iid, "oscillator1")
+            assert mgr2.nodes[m].params["oscillator"]["frequency"].expression == f"nd('{iid}::oscillator0')"
+    finally:
+        mgr2.terminate(notify_gui=False)
+
+
 def test_shared_mirror_surfaces_sibling_failure():
     mgr = _bare_manager(use_multiprocessing=False)
     try:

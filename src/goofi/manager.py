@@ -75,6 +75,31 @@ def _rewrite_nd_literal(expr: Optional[str], rename_map: Dict[str, str]) -> Opti
     return _ND_REF.sub(_repl, expr)
 
 
+# Matches a qualified member ref nd('<inst>::<local>') — the local is captured so
+# a clone can re-point the qualifier prefix at the instance it landed in.
+_QUALIFIED_ND = re.compile(
+    r"nd\(\s*(?P<q>['\"])(?P<qual>[^'\"]+?)" + re.escape(SUBPATCH_SEP) + r"(?P<local>[^'\"]+)(?P=q)"
+)
+
+
+def _requalify_nd_literal(expr: Optional[str], target_inst: str, member_locals) -> Optional[str]:
+    """Rewrite ``nd('<anyinst>::<local>')`` to ``nd('<target_inst>::<local>')`` for
+    each ``<local>`` that names a member of the target instance, so an intra-sub-patch
+    cross-reference follows into the instance the member was cloned into. Refs to
+    non-members (externals) are left untouched."""
+    if not expr or "nd(" not in expr:
+        return expr
+
+    def _repl(m: "re.Match[str]") -> str:
+        local = m.group("local")
+        if local not in member_locals:
+            return m.group(0)
+        q = m.group("q")
+        return f"nd({q}{target_inst}{SUBPATCH_SEP}{local}{q}"
+
+    return _QUALIFIED_ND.sub(_repl, expr)
+
+
 def _reject_reserved_name(name: str) -> None:
     if SUBPATCH_SEP in name:
         raise ValueError(
@@ -910,6 +935,28 @@ class Manager:
                             autoeval=bool(getattr(p, "expression_autoeval", False)),
                         )
 
+    def _requalify_member_expressions(self, member_uids, target_inst: str, member_locals) -> None:
+        """Re-point each member's intra-sub-patch nd('<inst>::<local>') refs at
+        `target_inst`, so a cloned member references its OWN sibling rather than the
+        instance it was copied from. Best-effort over live refs."""
+        for uid in member_uids:
+            if uid not in self.nodes:
+                continue
+            ref = self.nodes[uid]
+            for grp in list(ref.params.keys()):
+                for pname, p in ref.params[grp].items():
+                    expr = getattr(p, "expression", None)
+                    new_expr = _requalify_nd_literal(expr, target_inst, member_locals)
+                    if new_expr != expr:
+                        ref.set_expression(
+                            grp,
+                            pname,
+                            new_expr,
+                            enabled=bool(getattr(p, "expression_enabled", False)),
+                            triggers_process=bool(getattr(p, "expression_triggers_process", False)),
+                            autoeval=bool(getattr(p, "expression_autoeval", False)),
+                        )
+
     @mark_unsaved_changes
     def group_nodes(
         self,
@@ -1213,6 +1260,8 @@ class Manager:
             }
             for uid in members:
                 self._membership[uid] = inst_id
+            # Re-point intra-sub-patch cross-refs at THIS instance's members.
+            self._requalify_member_expressions(members.keys(), inst_id, set(members.values()))
         if self._bridge is not None and notify_gui:
             self._bridge.control.on_subpatch_changed()
         return inst_id
@@ -1528,14 +1577,16 @@ class Manager:
                 }
             else:
                 params[name] = p._value
-        # Propagate to every sibling instance's corresponding member.
+        # Propagate to every sibling instance's corresponding member, re-pointing any
+        # intra-sub-patch cross-ref at the sibling's OWN members.
         for other_id, other in self._instances.items():
             if other_id == inst_id or other.get("def_id") != def_id:
                 continue
+            sib_expr = _requalify_nd_literal(expression, other_id, set(other["members"].values()))
             for onode, olocal in other["members"].items():
                 if olocal == local and onode in self.nodes:
                     try:
-                        self.nodes[onode].set_expression(group, name, expression, enabled, triggers_process, autoeval)
+                        self.nodes[onode].set_expression(group, name, sib_expr, enabled, triggers_process, autoeval)
                     except Exception as exc:
                         self._surface_mirror_failure(onode, f"{group}.{name} (expression)", exc)
 
@@ -1719,6 +1770,9 @@ class Manager:
                     )
                     members_map[uid] = local
                     local_to_uid[local] = uid
+                # Re-point intra-sub-patch cross-refs at THIS instance (the def may
+                # carry them qualified to whichever instance it was snapshotted from).
+                self._requalify_member_expressions(members_map.keys(), inst_id, set(members_map.values()))
                 # Deep-copy: each loaded shared instance gets its own port dicts so
                 # later boundary edits don't alias the definition / siblings.
                 interface = deepcopy(d["interface"])
