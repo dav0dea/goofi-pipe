@@ -1414,10 +1414,18 @@ class Manager:
         if not def_id:
             return
         local = inst["members"][node]
-        # Update the definition's stored value (the save source of truth).
+        # Update the definition's stored value (the save source of truth). If the
+        # param carries a (possibly stashed) expression — stored as a {value,
+        # expression, ...} dict — update only its value field so a value edit
+        # doesn't wipe the binding.
         rec = self._definitions[def_id]["members"].get(local)
         if rec is not None:
-            rec.setdefault("params", {}).setdefault(group, {})[name] = value
+            grp = rec.setdefault("params", {}).setdefault(group, {})
+            existing = grp.get(name)
+            if isinstance(existing, dict) and "expression" in existing:
+                existing["value"] = value
+            else:
+                grp[name] = value
         # Propagate to every sibling instance's corresponding member.
         for other_id, other in self._instances.items():
             if other_id == inst_id or other.get("def_id") != def_id:

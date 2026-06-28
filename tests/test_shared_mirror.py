@@ -55,6 +55,29 @@ def test_set_expression_mirrors_and_persists_across_shared_siblings():
         mgr.terminate(notify_gui=False)
 
 
+def test_value_edit_preserves_a_shared_members_stashed_expression_in_the_def():
+    # A param can carry a STASHED expression (fx toggled off) while its value
+    # widget stays editable. Dragging the value must not wipe the stashed
+    # expression from the definition (the save source of truth).
+    mgr = _bare_manager(use_multiprocessing=False)
+    try:
+        a = mgr.add_node("Oscillator", "inputs")
+        inst1 = mgr.group_nodes([a])
+        def_id = mgr.share_instance(inst1)
+        m1 = next(iter(mgr._instances[inst1]["members"]))
+        local = mgr._instances[inst1]["members"][m1]
+
+        mgr.set_expression(m1, "oscillator", "frequency", "3 + 4", enabled=False)
+        mgr.update_param(m1, "oscillator", "frequency", 9.0)
+
+        defrec = mgr._definitions[def_id]["members"][local]["params"]["oscillator"]["frequency"]
+        assert isinstance(defrec, dict), "value edit clobbered the stashed expression dict"
+        assert defrec["expression"] == "3 + 4"
+        assert defrec["value"] == 9.0
+    finally:
+        mgr.terminate(notify_gui=False)
+
+
 def test_shared_mirror_surfaces_sibling_failure():
     mgr = _bare_manager(use_multiprocessing=False)
     try:
