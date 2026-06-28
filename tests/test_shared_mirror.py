@@ -78,6 +78,40 @@ def test_value_edit_preserves_a_shared_members_stashed_expression_in_the_def():
         mgr.terminate(notify_gui=False)
 
 
+def test_internal_member_link_mirrors_to_siblings_and_definition():
+    # Wiring two members of a SHARED sub-patch is a topology edit that must mirror:
+    # into the definition (so it persists + new siblings inherit it) and into every
+    # existing sibling's corresponding members.
+    mgr = _bare_manager(use_multiprocessing=False)
+    try:
+        a = mgr.add_node("Oscillator", "inputs")
+        b = mgr.add_node("Buffer", "signal")
+        inst1 = mgr.group_nodes([a, b])
+        def_id = mgr.share_instance(inst1)
+        inst2 = mgr.instantiate_definition(def_id)
+        la = mgr._instances[inst1]["members"][a]
+        lb = mgr._instances[inst1]["members"][b]
+
+        mgr.add_link(a, b, "out", "val")
+
+        # definition carries the local-form link
+        assert {"node_out": la, "node_in": lb, "slot_out": "out", "slot_in": "val"} in mgr._definitions[def_id]["links"]
+        # the existing sibling got the corresponding live link
+        sa, sb = mgr._member_uid(inst2, la), mgr._member_uid(inst2, lb)
+        assert {"node_out": sa, "node_in": sb, "slot_out": "out", "slot_in": "val"} in mgr._links
+        # a fresh sibling inherits it
+        inst3 = mgr.instantiate_definition(def_id)
+        ta, tb = mgr._member_uid(inst3, la), mgr._member_uid(inst3, lb)
+        assert {"node_out": ta, "node_in": tb, "slot_out": "out", "slot_in": "val"} in mgr._links
+
+        # removing it mirrors too (def + siblings)
+        mgr.remove_link(a, b, "out", "val")
+        assert {"node_out": la, "node_in": lb, "slot_out": "out", "slot_in": "val"} not in mgr._definitions[def_id]["links"]
+        assert {"node_out": sa, "node_in": sb, "slot_out": "out", "slot_in": "val"} not in mgr._links
+    finally:
+        mgr.terminate(notify_gui=False)
+
+
 def test_shared_mirror_surfaces_sibling_failure():
     mgr = _bare_manager(use_multiprocessing=False)
     try:

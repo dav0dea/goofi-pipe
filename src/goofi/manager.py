@@ -456,6 +456,7 @@ class Manager:
         slot_out: str,
         slot_in: str,
         notify_gui: bool = True,
+        mirror: bool = True,
         **gui_kwargs,
     ) -> None:
         if node_out not in self.nodes:
@@ -476,7 +477,8 @@ class Manager:
         # Each input slot accepts exactly one wire. If `slot_in` on
         # `node_in` is already occupied by a different source, tear down
         # the old wire first — keeping the data plane consistent with the
-        # graph definition.
+        # graph definition. Carry `mirror` so a sibling-mirror call doesn't
+        # re-mirror its own eviction.
         for existing in list(self._links):
             if existing["node_in"] == node_in and existing["slot_in"] == slot_in:
                 self.remove_link(
@@ -485,11 +487,14 @@ class Manager:
                     existing["slot_out"],
                     existing["slot_in"],
                     notify_gui=notify_gui,
+                    mirror=mirror,
                 )
 
         link = {"node_out": node_out, "node_in": node_in, "slot_out": slot_out, "slot_in": slot_in}
         self._wire_link(link)
         self._links.append(link)
+        if mirror:
+            self._mirror_internal_link(link, add=True, notify_gui=notify_gui)
 
         if self._bridge is not None and notify_gui:
             self._bridge.control.on_link_added(link)
@@ -515,6 +520,7 @@ class Manager:
         slot_out: str,
         slot_in: str,
         notify_gui: bool = True,
+        mirror: bool = True,
         **gui_kwargs,
     ) -> None:
         link = {"node_out": node_out, "node_in": node_in, "slot_out": slot_out, "slot_in": slot_in}
@@ -522,8 +528,44 @@ class Manager:
             return
         self._teardown_link(link, notify_gui=False)
         self._links.remove(link)
+        if mirror:
+            self._mirror_internal_link(link, add=False, notify_gui=notify_gui)
         if self._bridge is not None and notify_gui:
             self._bridge.control.on_link_removed(link)
+
+    def _mirror_internal_link(self, link: Dict[str, str], add: bool, notify_gui: bool) -> None:
+        """Mirror an internal member->member link of a SHARED instance into the
+        definition (local-keyed) + every sibling's corresponding members. A no-op
+        for top-level links, external boundary wires (endpoints in different
+        instances), and unique instances (which inline their links on save).
+
+        Sibling calls pass mirror=False so they don't recurse; def-link writes are
+        idempotent so a restart/replay re-wiring an existing link is harmless."""
+        inst_id = self._membership.get(link["node_out"])
+        if inst_id is None or inst_id != self._membership.get(link["node_in"]):
+            return
+        inst = self._instances.get(inst_id) or {}
+        def_id = inst.get("def_id")
+        if not def_id:
+            return
+        members = inst["members"]
+        lout, lin = members.get(link["node_out"]), members.get(link["node_in"])
+        if lout is None or lin is None:
+            return
+        local_link = {"node_out": lout, "node_in": lin, "slot_out": link["slot_out"], "slot_in": link["slot_in"]}
+        deflinks = self._definitions[def_id]["links"]
+        if add and local_link not in deflinks:
+            deflinks.append(local_link)
+        elif not add and local_link in deflinks:
+            deflinks.remove(local_link)
+        for sib in self._shared_siblings(inst_id):
+            sout, sin = self._member_uid(sib, lout), self._member_uid(sib, lin)
+            if sout is None or sin is None:
+                continue
+            if add:
+                self.add_link(sout, sin, link["slot_out"], link["slot_in"], notify_gui=notify_gui, mirror=False)
+            else:
+                self.remove_link(sout, sin, link["slot_out"], link["slot_in"], notify_gui=notify_gui, mirror=False)
 
     def _teardown_link(self, link: Dict[str, str], notify_gui: bool) -> None:
         try:
