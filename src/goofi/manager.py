@@ -883,11 +883,10 @@ class Manager:
         try:
             yield
         except Exception:
-            for n in set(self.nodes) - before_nodes:
-                try:
-                    self.remove_node(n, notify_gui=False)
-                except Exception:
-                    pass
+            # Restore the state maps FIRST, then tear down the orphan nodes: with the
+            # maps back to their pre-block state a spawned member is no longer recorded
+            # as a shared-sub-patch member, so remove_node's shared-member-delete guard
+            # (and any other map-reading guard) won't trip and strand it.
             self._links[:] = snap_links
             self._node_groups.clear()
             self._node_groups.update(snap_groups)
@@ -897,6 +896,11 @@ class Manager:
             self._instances.update(snap_instances)
             self._definitions.clear()
             self._definitions.update(snap_definitions)
+            for n in set(self.nodes) - before_nodes:
+                try:
+                    self.remove_node(n, notify_gui=False)
+                except Exception:
+                    pass
             raise
 
     def _surface_mirror_failure(self, node: str, what: str, exc: Exception) -> None:
@@ -1081,36 +1085,38 @@ class Manager:
             raise SubPatchTooDeep(f"adding {disp!r} would overflow the service-name budget")
 
         # Spawn silently; the single on_subpatch_changed below re-syncs clients
-        # atomically (node + updated members map) without a top-level flash.
-        uid = self.add_node(
-            node_type,
-            category,
-            notify_gui=False,
-            name=disp,
-            params=params,
-            pos=tuple(pos),
-            allow_reserved=True,
-            membership={"instance": inst_id, "local_name": local},
-            # Restore the original uid on redo-of-add (else captured links orphan).
-            member_uid=member_uid,
-        )
-        self._membership[uid] = inst_id
-        inst["members"][uid] = local
+        # atomically (node + updated members map) without a top-level flash. Atomic:
+        # a sibling-mirror spawn failure must not leave the family half-mirrored.
+        with self._transaction():
+            uid = self.add_node(
+                node_type,
+                category,
+                notify_gui=False,
+                name=disp,
+                params=params,
+                pos=tuple(pos),
+                allow_reserved=True,
+                membership={"instance": inst_id, "local_name": local},
+                # Restore the original uid on redo-of-add (else captured links orphan).
+                member_uid=member_uid,
+            )
+            self._membership[uid] = inst_id
+            inst["members"][uid] = local
 
-        def_id = inst.get("def_id")
-        if def_id:
-            rec = self._node_record(uid)
-            rec.pop("uid", None)  # per-instance identity is never shared
-            rec.pop("name", None)  # display name is per-instance, not part of the template
-            self._definitions[def_id]["members"][local] = rec
-            for sib in self._shared_siblings(inst_id):
-                sib_disp = f"{sib}{SUBPATCH_SEP}{local}"
-                sib_uid = self._add_node_from_record(
-                    sib_disp, dict(rec), allow_reserved=True, notify_gui=False,
-                    membership={"instance": sib, "local_name": local},
-                )
-                self._membership[sib_uid] = sib
-                self._instances[sib]["members"][sib_uid] = local
+            def_id = inst.get("def_id")
+            if def_id:
+                rec = self._node_record(uid)
+                rec.pop("uid", None)  # per-instance identity is never shared
+                rec.pop("name", None)  # display name is per-instance, not part of the template
+                self._definitions[def_id]["members"][local] = rec
+                for sib in self._shared_siblings(inst_id):
+                    sib_disp = f"{sib}{SUBPATCH_SEP}{local}"
+                    sib_uid = self._add_node_from_record(
+                        sib_disp, dict(rec), allow_reserved=True, notify_gui=False,
+                        membership={"instance": sib, "local_name": local},
+                    )
+                    self._membership[sib_uid] = sib
+                    self._instances[sib]["members"][sib_uid] = local
 
         if self._bridge is not None and notify_gui:
             self._bridge.control.on_subpatch_changed()

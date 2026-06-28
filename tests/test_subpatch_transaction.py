@@ -65,6 +65,42 @@ def test_load_missing_definition_aborts_clean_without_leaking_nodes():
         mgr.terminate(notify_gui=False)
 
 
+def test_add_member_node_atomic_on_sibling_spawn_failure(monkeypatch):
+    """Adding a member to a SHARED family mirrors the spawn into the def + every
+    sibling. If a sibling spawn fails mid-loop, the whole add must roll back — not
+    leave the primary + def + some siblings carrying a member the rest lack."""
+    mgr = _bare_manager(use_multiprocessing=False)
+    try:
+        a = mgr.add_node("Oscillator", "inputs")
+        inst = mgr.group_nodes([a])
+        def_id = mgr.share_instance(inst)
+        mgr.instantiate_definition(def_id)  # sibling B
+        mgr.instantiate_definition(def_id)  # sibling C
+
+        before_nodes = set(mgr.nodes)
+        before_def = set(mgr._definitions[def_id]["members"])
+        before_members = {iid: dict(mgr._instances[iid]["members"]) for iid in mgr._instances}
+
+        real = mgr._add_node_from_record
+        calls = {"n": 0}
+
+        def boom(*args, **kwargs):
+            calls["n"] += 1
+            if calls["n"] >= 1:  # fail the FIRST sibling spawn
+                raise RuntimeError("sibling spawn failed")
+            return real(*args, **kwargs)
+
+        monkeypatch.setattr(mgr, "_add_node_from_record", boom)
+        with pytest.raises(RuntimeError):
+            mgr.add_member_node(inst, "Buffer", "signal")
+
+        assert set(mgr.nodes) == before_nodes, "leaked member node after failed add_member"
+        assert set(mgr._definitions[def_id]["members"]) == before_def, "definition half-mirrored"
+        assert {iid: dict(mgr._instances[iid]["members"]) for iid in mgr._instances} == before_members, "instances half-mirrored"
+    finally:
+        mgr.terminate(notify_gui=False)
+
+
 def test_instantiate_definition_atomic_on_link_failure(monkeypatch):
     """A forced failure during the link phase tears down the just-spawned members
     and leaves no instance record behind (atomic via _transaction)."""
