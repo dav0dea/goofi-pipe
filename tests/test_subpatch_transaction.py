@@ -37,6 +37,34 @@ def test_transaction_commits_on_success():
         mgr.terminate(notify_gui=False)
 
 
+def test_load_missing_definition_aborts_clean_without_leaking_nodes():
+    """A doc whose shared instance references an absent definition must fail fast,
+    before spawning anything — not spawn the root graph and then leak it when the
+    missing def aborts the splice mid-way."""
+    mgr = _bare_manager(use_multiprocessing=False)
+    try:
+        # a VALID root-node record (so its spawn succeeds — the leak we're guarding
+        # against is this node surviving when the later missing-def aborts the splice)
+        osc = mgr.add_node("Oscillator", "inputs")
+        rec = mgr._node_record(osc)
+        mgr.remove_node(osc)
+        assert len(mgr.nodes) == 0
+        root_nodes = {rec["uid"]: rec}
+        instances = {
+            "subpatch0": {
+                "kind": "shared",
+                "def": "missing",
+                "pos": [0, 0],
+                "members": {"x0": {"uid": "deaduid", "pos": [0, 0]}},
+            }
+        }
+        with pytest.raises(KeyError):
+            mgr._expand_doc(root_nodes, [], instances, definitions={})
+        assert len(mgr.nodes) == 0, "partial graph leaked after a missing-definition abort"
+    finally:
+        mgr.terminate(notify_gui=False)
+
+
 def test_instantiate_definition_atomic_on_link_failure(monkeypatch):
     """A forced failure during the link phase tears down the just-spawned members
     and leaves no instance record behind (atomic via _transaction)."""

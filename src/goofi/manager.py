@@ -1735,10 +1735,25 @@ class Manager:
         )
 
     def _expand_doc(self, root_nodes, root_links, instances, definitions=None) -> None:
+        """Atomically splice a v2 document into the live graph. Validates every
+        referenced definition up front and runs the splice in a transaction, so a
+        bad/partial doc fails fast and leaves no half-spliced graph or leaked node
+        processes behind."""
+        definitions = definitions or {}
+        known = set(self._definitions) | set(definitions)
+        for inst_id, inst in instances.items():
+            if inst.get("kind") == "shared" and inst.get("def") not in known:
+                raise KeyError(
+                    f"instance {inst_id!r} references missing definition {inst.get('def')!r}"
+                )
+        with self._transaction():
+            self._splice_doc(root_nodes, root_links, instances, definitions)
+
+    def _splice_doc(self, root_nodes, root_links, instances, definitions=None) -> None:
         """Splice a v2 document's root graph + sub-patch instances into the live
         flat graph. Add all nodes first, then all links (so add_link never races
         a not-yet-spawned endpoint). Handles both unique (inline) and shared
-        (definition-backed) instances."""
+        (definition-backed) instances. Not atomic on its own — call via _expand_doc."""
         self._definitions.update(definitions or {})
 
         for key, node in root_nodes.items():
