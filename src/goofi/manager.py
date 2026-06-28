@@ -1300,11 +1300,18 @@ class Manager:
     def _member_uid(self, inst_id: str, local: str) -> Optional[str]:
         """The live uid of the member with local name `local` in `inst_id`, or None.
         Members map uid -> local, so this is the reverse lookup. The uid is the key
-        links / membership / the data route use, never the qualified display name."""
-        for uid, l in self._instances[inst_id]["members"].items():
-            if l == local:
-                return uid
-        return None
+        links / membership / the data route use, never the qualified display name.
+
+        Local names are unique within an instance by construction (group dedup,
+        _fresh_member_local, member-rename re-key). If that invariant is ever
+        violated, fail loudly here rather than silently splicing onto whichever
+        member iterates first."""
+        matches = [uid for uid, l in self._instances[inst_id]["members"].items() if l == local]
+        if len(matches) > 1:
+            raise RuntimeError(
+                f"sub-patch {inst_id!r} has duplicate local name {local!r} (members corrupt): {matches}"
+            )
+        return matches[0] if matches else None
 
     def _fresh_boundary_id(self, inst_id: str, dir: str) -> str:
         """Lowest unused `in0`/`out0`… among the instance's current interface keys."""

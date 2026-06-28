@@ -89,3 +89,22 @@ def test_external_nd_ref_follows_member_through_group_rename_expand():
         assert mgr.nodes[ext].params["oscillator"]["frequency"].expression == "nd('renamed')"
     finally:
         mgr.terminate(notify_gui=False)
+
+
+def test_member_uid_raises_on_duplicate_local_rather_than_silent_misroute():
+    """A member's local name is a per-instance key; if two members ever share one
+    (corruption), _member_uid must fail loudly instead of returning whichever it
+    scans first and silently splicing boundaries/data onto the wrong member."""
+    import pytest
+
+    mgr = _bare_manager(use_multiprocessing=False)
+    try:
+        a = mgr.add_node("Oscillator", "inputs")
+        b = mgr.add_node("Buffer", "signal")
+        inst = mgr.group_nodes([a, b])
+        for uid in list(mgr._instances[inst]["members"]):
+            mgr._instances[inst]["members"][uid] = "dup"  # force a collision
+        with pytest.raises(RuntimeError):
+            mgr._member_uid(inst, "dup")
+    finally:
+        mgr.terminate(notify_gui=False)
