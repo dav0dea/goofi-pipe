@@ -48,6 +48,15 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# Marker prefixing a shared DEFINITION's INTERNAL (intra-sub-patch) nd() member refs,
+# so the instantiate-time local->display rewrite can never be hijacked by an EXTERNAL
+# ref whose name happens to equal a member's local template key. A definition stores
+# internal refs as `nd('\x1f<local>')` and external refs verbatim as `nd('<display>')`;
+# the two namespaces can't collide because the marker is a control char no display name
+# can contain (untypeable, never minted) yet is still valid in a Python expression
+# source (unlike NUL, which ast.parse rejects) and round-trips through .gfi YAML.
+_DEF_INTERNAL_REF = "\x1f"
+
 
 class SubPatchTooDeep(ValueError):
     """A namespaced member name would overflow iceoryx2's 255-byte ServiceName."""
@@ -365,11 +374,20 @@ class Manager:
             if uid not in self.nodes and uid not in self._instances:
                 return uid
 
+    def _display_names_in_use(self, exclude_uid: Optional[str] = None) -> set:
+        """Every display name currently taken — nodes AND sub-patch instances. Both are
+        first-class entities rendered in one flat canvas, and nd() resolves by the bare
+        name, so they share ONE global namespace. Any fresh/unique-name allocation must
+        consult both or a node could shadow an instance label (or vice versa)."""
+        return {self.nodes[u].name for u in self.nodes if u != exclude_uid} | {
+            i.name for i in self._instances.values() if i.uid != exclude_uid
+        }
+
     def _fresh_display_name(self, base: str) -> str:
         """Lowest free flat display name `base0`, `base1`, … (globally unique). Names
         are flat at every nesting depth — no `inst::local` qualification — so nd()
         resolves by the bare name and grouping never has to rename a member."""
-        existing = {self.nodes[u].name for u in self.nodes}
+        existing = self._display_names_in_use()
         idx = 0
         while f"{base}{idx}" in existing:
             idx += 1
@@ -773,7 +791,7 @@ class Manager:
         integer-suffixed variant that's free. Display names must stay unique
         because `nd('name')` resolves a cross-reference by display name — a
         collision would make the lookup ambiguous (the directory is name->id)."""
-        taken = {self.nodes[u].name for u in self.nodes if u != exclude_uid}
+        taken = self._display_names_in_use(exclude_uid)
         if requested not in taken:
             return requested
         idx = 1
@@ -808,6 +826,13 @@ class Manager:
         # in nd() — rewrite across the whole graph (names are globally unique, so the
         # rewrite is unambiguous and reversed exactly by the inverse rename on undo).
         self._rewrite_member_expressions(list(self.nodes), {old_name: new_name})
+        # Shared definitions store EXTERNAL refs verbatim (by display name); a rename of
+        # an external producer must follow into the def so freshly-instantiated siblings
+        # and the save/load round-trip stay current. Internal refs are stored
+        # `\x1f`-prefixed, so this plain {old: new} map can never touch them.
+        for d in self._definitions.values():
+            for rec in d.members.values():
+                _rewrite_record_nd(rec, {old_name: new_name})
         self._broadcast_node_directory()
         if self._bridge is not None:
             if is_member:
@@ -823,7 +848,7 @@ class Manager:
     def _fresh_instance_name(self) -> str:
         """Lowest free `subpatch0`, `subpatch1`, … display label, unique among nodes
         AND instances so a collapsed group node's label never shadows another."""
-        existing = {self.nodes[u].name for u in self.nodes} | {i.name for i in self._instances.values()}
+        existing = self._display_names_in_use()
         idx = 0
         while f"subpatch{idx}" in existing:
             idx += 1
@@ -834,7 +859,7 @@ class Manager:
         sub-patch into a graph that already has that label)."""
         if not saved_name:
             return self._fresh_instance_name()
-        existing = {self.nodes[u].name for u in self.nodes} | {i.name for i in self._instances.values()}
+        existing = self._display_names_in_use()
         return saved_name if saved_name not in existing else self._fresh_instance_name()
 
     def _slot_dtype(self, display: str, slot: str, dir: str) -> str:
@@ -1179,8 +1204,10 @@ class Manager:
         inst = self._instances[inst_id]
         # nd() cross-refs between members are stored in TEMPLATE form (against the
         # local key), so each future instance can re-point them at its own fresh
-        # member names. Translate the live display names -> locals here.
-        display_to_local = {self.nodes[uid].name: local for uid, local in inst.members.items()}
+        # member names. Translate the live display names -> `\x1f`-marked locals here;
+        # the marker keeps an INTERNAL ref distinct from an EXTERNAL ref to a non-member
+        # node that merely happens to share a member's local key (left verbatim).
+        display_to_local = {self.nodes[uid].name: _DEF_INTERNAL_REF + local for uid, local in inst.members.items()}
         members = {}
         for uid, local in inst.members.items():
             rec = self._node_record(uid)
@@ -1250,7 +1277,9 @@ class Manager:
                 self._attach_member(inst_id, uid, local)
                 members[uid] = local
                 local_to_uid[local] = uid
-                name_map[local] = disp
+                # Key by the `\x1f`-marked local so only INTERNAL refs are re-pointed;
+                # EXTERNAL refs (stored verbatim) never collide with a marked key.
+                name_map[_DEF_INTERNAL_REF + local] = disp
             for link in d.links:
                 self.add_link(
                     local_to_uid[link["node_out"]],
@@ -1568,7 +1597,9 @@ class Manager:
         # member display names; the definition stores them in TEMPLATE form (against
         # the local key), and each sibling carries its OWN member display names.
         me_by_local = {l: self.nodes[u].name for u, l in inst.members.items()}
-        display_to_local = {disp: l for l, disp in me_by_local.items()}
+        # Mark INTERNAL refs (`\x1f`-prefixed) so the def stores them distinct from an
+        # EXTERNAL ref that happens to match a member's local key (kept verbatim).
+        display_to_local = {disp: _DEF_INTERNAL_REF + l for l, disp in me_by_local.items()}
         # Record on the definition. Read the normalized binding back off the primary
         # node's param (the NodeRef just applied the same canonical gating the node
         # will), and store it in the {value, expression, ...} shape Param.serialize
@@ -1822,7 +1853,9 @@ class Manager:
                     )
                     members_map[uid] = local
                     local_to_uid[local] = uid
-                    name_map[local] = disp
+                    # `\x1f`-mark so only INTERNAL refs re-point; EXTERNAL refs in the
+                    # def (verbatim) survive the splice untouched.
+                    name_map[_DEF_INTERNAL_REF + local] = disp
                 # The def stores nd() cross-refs in template-local form — re-point them
                 # at THIS instance's restored member display names.
                 self._rewrite_member_expressions(members_map.keys(), name_map)

@@ -13,6 +13,28 @@ its display name, so:
 from .test_manager import _bare_manager, _disp, _member
 
 
+def test_rename_node_cannot_collide_with_an_instance_label():
+    """Nodes and sub-patch instances share ONE flat display namespace (both are
+    first-class, both render in the same canvas, nd() resolves by bare name). A node
+    rename must not be allowed to take a name already held by an instance, or nd()
+    resolution becomes ambiguous and the two entities shadow each other."""
+    mgr = _bare_manager(use_multiprocessing=False)
+    try:
+        a = mgr.add_node("Oscillator", "inputs")
+        inst = mgr.group_nodes([a])
+        inst_name = mgr._instances[inst].name  # 'subpatch0'
+        ext = mgr.add_node("Oscillator", "inputs")
+        mgr.rename_node(ext, inst_name)
+        # the rename was disambiguated away from the instance's label
+        assert mgr.nodes[ext].name != inst_name
+        names = [mgr.nodes[u].name for u in mgr.nodes] + [
+            i.name for i in mgr._instances.values()
+        ]
+        assert len(names) == len(set(names))  # globally unique across both namespaces
+    finally:
+        mgr.terminate(notify_gui=False)
+
+
 def test_group_keeps_flat_member_display_names():
     mgr = _bare_manager(use_multiprocessing=False)
     try:
