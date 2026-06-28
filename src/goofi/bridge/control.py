@@ -451,6 +451,8 @@ class ControlHub:
             # as collapsible group nodes; members carry a `membership` marker.
             "instances": {
                 iid: {
+                    "uid": inst.uid,
+                    "name": inst.name,
                     "kind": inst.kind,
                     "def_id": inst.def_id,
                     "interface": {bid: asdict(b) for bid, b in inst.interface.items()},

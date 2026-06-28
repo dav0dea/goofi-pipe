@@ -156,6 +156,10 @@ export function boundarySpec(type: string): BoundarySpec | null {
 
 /** A flatten-at-runtime sub-patch instance the editor renders as a group node. */
 export interface InstanceInfo {
+	/** The instance's stable uid (also its key in the instances map). */
+	uid: string;
+	/** Display label, e.g. "subpatch0" — separate from the uid key. */
+	name: string;
 	kind: string;
 	/** Definition id when shared (strict-mirror sibling), null/absent when unique. */
 	def_id?: string | null;

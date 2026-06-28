@@ -45,7 +45,7 @@
 		<span class="glyph" class:shared>{shared ? '⇄' : '▣'}</span>
 		<div class="titles">
 			<div class="title">{shared ? 'Shared sub-patch' : 'Sub-patch'}</div>
-			<div class="sub">{instId}</div>
+			<div class="sub">{inst?.name ?? instId}</div>
 		</div>
 		<span class="badge">{memberCount} node{memberCount === 1 ? '' : 's'}</span>
 	</header>
@@ -70,9 +70,10 @@
 				{:else}
 					<ul class="mirror-list" data-testid="subpatch-siblings">
 						{#each siblings as sib (sib)}
+							{@const sibName = g.instances[sib]?.name ?? sib}
 							<li>
-								<button class="sib" onclick={() => focusSibling(sib)} title="Select {sib}"
-									>⇄ {sib}</button
+								<button class="sib" onclick={() => focusSibling(sib)} title="Select {sibName}"
+									>⇄ {sibName}</button
 								>
 							</li>
 						{/each}

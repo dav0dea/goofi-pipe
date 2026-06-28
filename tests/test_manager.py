@@ -146,12 +146,12 @@ def test_group_nodes_namespaces_members_and_records_state():
     mgr = _bare_manager(use_multiprocessing=False)
     try:
         osc, inst = _build_grouped_graph(mgr)
-        assert inst == "subpatch0"
+        assert mgr._instances[inst].name == "subpatch0"  # display label (the key is a uid)
         s0, s1 = _member(mgr, inst, "select0"), _member(mgr, inst, "select1")
         # flat naming: members keep their (unchanged, globally-unique) display names
         assert _disp(mgr, s0) == "select0"
         assert _disp(mgr, s1) == "select1"
-        assert mgr._membership[s0] == "subpatch0"
+        assert mgr._membership[s0] == inst
         # external link is unchanged (it references the member uid, not the name)
         assert {"node_out": osc, "node_in": s0, "slot_out": "out", "slot_in": "data"} in [
             dict(link) for link in mgr.links
@@ -171,19 +171,20 @@ def test_subpatch_save_load_roundtrip_and_expand(tmp_path):
         # the v2 file carries the instance, not flat members
         import yaml as _yaml
         doc = _yaml.load(open(fp), Loader=_yaml.FullLoader)
-        assert "subpatch0" in doc["root"]["instances"]
+        assert inst in doc["root"]["instances"]  # keyed by the instance's stable uid
         # the saved instance is template-form: members keyed by LOCAL name
-        assert set(doc["root"]["instances"]["subpatch0"]["members"]) == {"select0", "select1"}
-        assert len(doc["root"]["instances"]["subpatch0"]["links"]) == 1  # internal sel0->sel1
+        assert set(doc["root"]["instances"][inst]["members"]) == {"select0", "select1"}
+        assert len(doc["root"]["instances"][inst]["links"]) == 1  # internal sel0->sel1
     finally:
         mgr.terminate()
 
     mgr2 = _bare_manager(use_multiprocessing=False)
     try:
         mgr2.load(fp)
-        s0, s1 = _member(mgr2, "subpatch0", "select0"), _member(mgr2, "subpatch0", "select1")
+        assert inst in mgr2._instances  # the instance uid persists across save/load
+        s0, s1 = _member(mgr2, inst, "select0"), _member(mgr2, inst, "select1")
         assert s0 in mgr2.nodes and s1 in mgr2.nodes
-        assert mgr2._membership[s1] == "subpatch0"
+        assert mgr2._membership[s1] == inst
         assert _disp(mgr2, s0) == "select0"  # flat name round-trips
         # both the external and internal links are restored (by uid)
         links = [dict(link) for link in mgr2.links]
@@ -191,7 +192,7 @@ def test_subpatch_save_load_roundtrip_and_expand(tmp_path):
         assert any(l["node_out"] == s0 and l["node_in"] == s1 for l in links)
 
         # expand dissolves the group back to bare display names (uids unchanged)
-        restored = mgr2.expand_instance("subpatch0")
+        restored = mgr2.expand_instance(inst)
         assert set(restored) == {s0, s1}  # returns member uids
         assert {_disp(mgr2, u) for u in restored} == {"select0", "select1"}
         assert mgr2._instances == {} and mgr2._membership == {}

@@ -357,10 +357,12 @@ class Manager:
             return ref
 
     def _mint_uid(self) -> str:
-        """A fresh node uid not currently in use (48 bits + dedup pass)."""
+        """A fresh entity uid not currently in use (48 bits + dedup pass). Spans BOTH
+        nodes and sub-patch instances — instances are first-class, uid-keyed entities,
+        so the two never collide."""
         while True:
             uid = uuid.uuid4().hex[:12]
-            if uid not in self.nodes:
+            if uid not in self.nodes and uid not in self._instances:
                 return uid
 
     def _fresh_display_name(self, base: str) -> str:
@@ -814,12 +816,26 @@ class Manager:
                 self._bridge.control.on_node_renamed(uid, new_name)
 
     def _fresh_instance_id(self) -> str:
+        """A fresh stable uid for an instance — its universal key, exactly like a
+        node's uid (never the reused display label)."""
+        return self._mint_uid()
+
+    def _fresh_instance_name(self) -> str:
+        """Lowest free `subpatch0`, `subpatch1`, … display label, unique among nodes
+        AND instances so a collapsed group node's label never shadows another."""
+        existing = {self.nodes[u].name for u in self.nodes} | {i.name for i in self._instances.values()}
         idx = 0
-        while True:
-            cand = f"subpatch{idx}"
-            if cand not in self._instances and cand not in self.nodes:
-                return cand
+        while f"subpatch{idx}" in existing:
             idx += 1
+        return f"subpatch{idx}"
+
+    def _restore_instance_name(self, saved_name: Optional[str]) -> str:
+        """The saved instance display name if free, else a fresh one (e.g. splicing a
+        sub-patch into a graph that already has that label)."""
+        if not saved_name:
+            return self._fresh_instance_name()
+        existing = {self.nodes[u].name for u in self.nodes} | {i.name for i in self._instances.values()}
+        return saved_name if saved_name not in existing else self._fresh_instance_name()
 
     def _slot_dtype(self, display: str, slot: str, dir: str) -> str:
         """Name of a node slot's DataType ('ARRAY'/'STRING'/'TABLE'), default ARRAY."""
@@ -1008,7 +1024,7 @@ class Manager:
             interface = _iface_from_dict(interface)
         self._instances[inst_id] = SubPatchInstance(
             uid=inst_id,
-            name=inst_id,
+            name=self._fresh_instance_name(),
             kind="unique",
             def_id=None,
             members={},
@@ -1215,7 +1231,7 @@ class Manager:
         with self._transaction():
             self._instances[inst_id] = SubPatchInstance(
                 uid=inst_id,
-                name=inst_id,
+                name=self._fresh_instance_name(),
                 kind="shared",
                 def_id=def_id,
                 members={},
@@ -1714,6 +1730,9 @@ class Manager:
                     "members": members,
                     "links": internal.get(iid, []),
                 }
+            # The instance is keyed by its stable uid; its display label rides on the
+            # record so a reload restores the same name (and uid).
+            instances[iid]["name"] = inst.name
             # Per-instance viewer state (collapsed sub-patch slots) rides on the record
             # so a reload keeps the kind/settings the user chose (backlog #17).
             if inst.viewers:
@@ -1776,7 +1795,11 @@ class Manager:
         # (inst_id, local_link, local_to_uid): resolve template-local link endpoints
         # to the freshly-minted member uids once all members of the instance exist.
         internal_links: List[tuple] = []
-        for inst_id, inst in instances.items():
+        for saved_id, inst in instances.items():
+            # Restore the saved instance uid if free (a fresh load); mint a fresh one
+            # when splicing into a graph that already holds it. The loop stores each
+            # instance before the next iterates, so a minted uid can't collide.
+            inst_id = saved_id if saved_id not in self._instances else self._mint_uid()
             kind = inst.get("kind", "unique")
             members_map: Dict[str, str] = {}  # uid -> local
             local_to_uid: Dict[str, str] = {}
@@ -1822,7 +1845,7 @@ class Manager:
 
             self._instances[inst_id] = SubPatchInstance(
                 uid=inst_id,
-                name=inst_id,
+                name=self._restore_instance_name(inst.get("name")),
                 kind=kind,
                 def_id=inst.get("def") if kind == "shared" else None,
                 members={},

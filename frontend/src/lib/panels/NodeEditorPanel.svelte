@@ -1014,12 +1014,13 @@
 					>Patch</button
 				>
 				{#each enteredPath as inst, i (inst)}
+					{@const label = g.instances[inst]?.name ?? inst}
 					<span class="sep">›</span>
 					<button
 						class="crumb"
 						class:current={i === enteredPath.length - 1}
 						onclick={() => exitToDepth(i + 1)}
-						title="Go to {inst}">{inst}</button
+						title="Go to {label}">{label}</button
 					>
 				{/each}
 			</nav>

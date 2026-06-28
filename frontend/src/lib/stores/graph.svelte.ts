@@ -845,7 +845,7 @@ export class GraphStore {
 			.map(([bnd, p]) => `${bnd}:${p.dir}:${p.inner_node == null ? '' : this.boundaryDtype(inst, p)}`)
 			.sort()
 			.join('|');
-		const sig = `${shared}${error ?? ''}${memberCount}${ifaceSig}`;
+		const sig = `${inst.name}${shared}${error ?? ''}${memberCount}${ifaceSig}`;
 
 		const cached = this._synthCache.get(instId);
 		if (cached && cached.sig === sig) {
@@ -862,10 +862,11 @@ export class GraphStore {
 			else output_slots[bnd] = dt;
 		}
 		const node: NodeInstanceInfo = {
-			// The synth node's identity IS the instance id, so `node.uid` is the
+			// The synth node's identity IS the instance uid, so `node.uid` is the
 			// uniform flow/selection/data key for real and sub-patch nodes alike.
 			uid: instId,
-			name: instId,
+			// Display label is the instance's separate name (the uid is opaque).
+			name: inst.name ?? instId,
 			type: shared ? 'Shared sub-patch' : 'Sub-patch',
 			category: 'subpatch',
 			doc: '',
