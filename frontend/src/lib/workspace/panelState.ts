@@ -7,7 +7,8 @@
  *
  *  - it coerces to a plain object (`asStateObject`)
  *  - node-linked panels (Parameters / Viewer / Metadata) store the bound node's
- *    name under `node` (`linkedNodeName` / `withLinkedNode`)
+ *    uid (its stable identity, not the display name) under `node`
+ *    (`linkedNodeName` / `withLinkedNode` — names kept for compatibility)
  *
  * Keeping the `node` key in one module means the model, the workspace store, and
  * every linkable panel agree on where the bound node lives.
@@ -18,7 +19,7 @@ export function asStateObject(state: unknown): Record<string, unknown> {
 	return typeof state === 'object' && state !== null ? (state as Record<string, unknown>) : {};
 }
 
-/** The node name a linkable panel is bound to, or null. */
+/** The node uid (stable identity) a linkable panel is bound to, or null. */
 export function linkedNodeName(state: unknown): string | null {
 	const v = asStateObject(state).node;
 	return typeof v === 'string' ? v : null;

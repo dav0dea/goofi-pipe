@@ -410,7 +410,7 @@ class Manager:
 
     @mark_unsaved_changes
     def remove_node(self, uid: str, notify_gui: bool = True, **gui_kwargs) -> None:
-        print(f"Removing node '{uid}'.")
+        print(f"Removing node '{self.nodes[uid].name if uid in self.nodes else '?'}' ({uid}).")
         # A node that's still a member of a sub-patch (remove_instance pops
         # membership BEFORE calling this, so teardown skips the whole block):
         _inst_id = self._membership.get(uid)
@@ -554,7 +554,7 @@ class Manager:
         add_node), re-applies the last-known params, and re-wires every link
         touching the node in BOTH directions (a new id changes the node's service
         names, so a downstream consumer must re-subscribe to the new service).
-        Display name, member_uid, sub-patch membership and gui position are kept;
+        Display name, uid, sub-patch membership and gui position are kept;
         the link table is untouched. Restarts are unlimited; the count rides on the
         new ref for observability."""
         with (getattr(self, "_supervisor_lock", None) or contextlib.nullcontext()):

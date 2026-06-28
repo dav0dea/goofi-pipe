@@ -71,8 +71,8 @@ class ControlHub:
 
         # Ensure every connected client gets node-status fan-out from any
         # nodes currently on the graph.
-        for name in list(self.server.manager.nodes):
-            self._wire_node_status(name)
+        for uid in list(self.server.manager.nodes):
+            self._wire_node_status(uid)
 
         # Snapshot — let the client render before any events trickle in. The
         # handshake also carries the protocol version (only on `hello`, not the
@@ -153,9 +153,9 @@ class ControlHub:
 
     def _splice_endpoint(self, manager, node: str, slot: str, dir: str):
         """Translate a sub-patch boundary endpoint (instance id + boundary id) to
-        the real inner (member display name, slot) so the flat link lands on the
-        member. A normal node endpoint passes through unchanged. Raises (→ error
-        reply) if the boundary is unwired — the inner target doesn't exist yet."""
+        the real inner (member uid, slot) so the flat link lands on the member. A
+        normal node endpoint passes through unchanged. Raises (→ error reply) if
+        the boundary is unwired — the inner target doesn't exist yet."""
         if node in getattr(manager, "_instances", {}):
             return manager.resolve_boundary(node, slot)
         return node, slot

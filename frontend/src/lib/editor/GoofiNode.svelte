@@ -12,7 +12,8 @@
 	let { data, selected }: NodeProps = $props();
 	const node = $derived(data.node as NodeInstanceInfo);
 	// Inside a sub-patch the node shows its local (un-namespaced) name; elsewhere
-	// its full graph name. The id stays the full name — only the label differs.
+	// its display name. The id stays the uid (the universal identity) — only the
+	// label differs.
 	const label = $derived((data.label as string | undefined) ?? node?.name);
 	const inputs = $derived(Object.keys(node?.input_slots ?? {}));
 	const outputs = $derived(Object.keys(node?.output_slots ?? {}));

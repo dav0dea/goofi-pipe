@@ -47,17 +47,17 @@ class LogStream {
 		});
 	}
 
-	private neededNames(names: Iterable<string>): Set<string> {
+	private neededUids(allUids: Iterable<string>): Set<string> {
 		const out = new Set<string>();
 		let all = false;
 		for (const n of Object.values(this.needs)) {
 			if (n === 'all') {
 				all = true;
 			} else {
-				for (const name of n) out.add(name);
+				for (const uid of n) out.add(uid);
 			}
 		}
-		if (all) for (const name of names) out.add(name);
+		if (all) for (const uid of allUids) out.add(uid);
 		return out;
 	}
 
@@ -81,7 +81,7 @@ class LogStream {
 		for (const node of nodes) {
 			if (node.log_endpoint) endpoints.set(node.uid, node.log_endpoint);
 		}
-		const need = this.neededNames(endpoints.keys());
+		const need = this.neededUids(endpoints.keys());
 
 		// Close what's no longer needed or whose endpoint moved.
 		for (const [uid, src] of [...this.sources]) {

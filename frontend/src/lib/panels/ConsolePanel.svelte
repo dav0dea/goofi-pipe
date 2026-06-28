@@ -16,6 +16,7 @@
 	import { logStream } from '$lib/stores/logStream.svelte';
 	import { selection } from '$lib/stores/selection.svelte';
 	import { ui } from '$lib/stores/ui.svelte';
+	import { graph } from '$lib/stores/graph.svelte';
 	import { linkedNodeName, withLinkedNode } from '$lib/workspace/panelState';
 	import { copyText } from '$lib/clipboard';
 	import { onDestroy, tick } from 'svelte';
@@ -25,7 +26,9 @@
 	const uiStore = ui();
 	const cs = consoleStore();
 
-	const filterName = $derived(linkedNodeName(linkState));
+	const filterName = $derived(linkedNodeName(linkState)); // the bound node's uid (identity)
+	// The chip shows the readable display name, not the raw uid.
+	const filterLabel = $derived(filterName ? (graph().nodeById(filterName)?.name ?? filterName) : null);
 	const dragActive = $derived(uiStore.nodeDrag !== null);
 	const over = $derived(uiStore.nodeDragTarget === panelId);
 
@@ -243,7 +246,7 @@
 		<span class="spacer"></span>
 		{#if filterName}
 			<span class="fl">filtering</span>
-			<span class="fn" title={filterName}>{filterName}</span>
+			<span class="fn" title={filterLabel}>{filterLabel}</span>
 			<button class="clearf" title="Show all nodes" aria-label="Clear filter" onclick={clearFilter}
 				>✕</button
 			>

@@ -1,8 +1,9 @@
 <!--
   Shared chrome for the node-linked panels (Parameters / Viewer / Metadata).
   A node is linked by dragging it (by its grip) from any editor into the panel;
-  the link (node name) is stored in the panel state, so it persists in the .gfi
-  and across selection changes — independent of which editor is focused.
+  the link (node uid — stable across rename + save/load) is stored in the panel
+  state, so it persists in the .gfi and across selection changes — independent of
+  which editor is focused.
 
   Empty until something is dropped; deleting the linked node empties it again
   (the store clears stale refs on node removal). The `content` snippet renders
