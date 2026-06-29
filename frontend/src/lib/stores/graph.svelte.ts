@@ -929,12 +929,15 @@ export class GraphStore {
 			pos: [number, number];
 			params: Record<string, Record<string, unknown>>;
 		}[],
-		links: LinkInfo[] = []
+		links: LinkInfo[] = [],
+		instId?: string
 	): Promise<Record<string, string>> {
 		const rename: Record<string, string> = {};
 		for (const s of specs) {
 			try {
-				const newUid = await this.addNode(s.type, s.category, s.pos);
+				// `instId` lands the clones inside the sub-patch being edited (members of
+				// the instance); omitted, they go in the root graph.
+				const newUid = await this.addNode(s.type, s.category, s.pos, instId);
 				rename[s.key] = newUid;
 				for (const [group, params] of Object.entries(s.params)) {
 					for (const [name, value] of Object.entries(params)) {
@@ -969,7 +972,8 @@ export class GraphStore {
 	 * map so the caller can select the clones. */
 	async cloneNodes(
 		uids: Iterable<string>,
-		offset: [number, number] = [40, 40]
+		offset: [number, number] = [40, 40],
+		instId?: string
 	): Promise<Record<string, string>> {
 		const set = new Set(uids);
 		// `uids` are node identities (selection sets + flow-node ids are uid-keyed), and link
@@ -985,7 +989,7 @@ export class GraphStore {
 			pos: [n.pos[0] + offset[0], n.pos[1] + offset[1]] as [number, number],
 			params: paramValues(n)
 		}));
-		return this.instantiateNodes(specs, links);
+		return this.instantiateNodes(specs, links, instId);
 	}
 
 	/** Remove a batch of nodes, swallowing per-node failures. */

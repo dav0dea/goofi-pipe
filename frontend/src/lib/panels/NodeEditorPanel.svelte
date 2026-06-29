@@ -771,7 +771,7 @@
 	async function duplicateSelection(): Promise<void> {
 		// One transaction so duplicating N nodes (+ their internal links) is a single Ctrl+Z.
 		const rename = await history().transaction('Duplicate nodes', () =>
-			g.cloneNodes(selectedNodeNames(), [40, 40])
+			g.cloneNodes(selectedNodeNames(), [40, 40], entered ?? undefined)
 		);
 		const created = Object.values(rename);
 		if (created.length > 0) sel.selectNodes(panelId, created);
@@ -799,7 +799,7 @@
 		}
 		// One transaction so pasting N nodes (+ their internal links) is a single Ctrl+Z.
 		const rename = await history().transaction('Paste nodes', () =>
-			g.instantiateNodes(clipToSpecs(clip, at), clip.links)
+			g.instantiateNodes(clipToSpecs(clip, at), clip.links, entered ?? undefined)
 		);
 		const created = Object.values(rename);
 		if (created.length > 0) sel.selectNodes(panelId, created);

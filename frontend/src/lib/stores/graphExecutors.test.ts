@@ -152,6 +152,29 @@ describe('graph executors — simple kinds', () => {
 		expect(g.links).toHaveLength(1);
 	});
 
+	it('instantiateNodes threads inst_id so paste lands inside the entered sub-patch', async () => {
+		const fc = new FakeControl();
+		const g = new GraphStore(fc);
+		fc.setCallResult('add_node', 'clone0');
+		await g.instantiateNodes(
+			[{ key: 'k0', type: 'Buffer', category: 'signal', pos: [0, 0], params: {} }],
+			[],
+			'subpatch0'
+		);
+		const addCall = fc.recordedCalls().find((c) => c.op === 'add_node');
+		expect(addCall).toBeDefined();
+		expect(addCall!.payload.inst_id).toBe('subpatch0'); // pasted node becomes a member
+	});
+
+	it('instantiateNodes with no inst_id pastes at root (undefined)', async () => {
+		const fc = new FakeControl();
+		const g = new GraphStore(fc);
+		fc.setCallResult('add_node', 'clone0');
+		await g.instantiateNodes([{ key: 'k0', type: 'Buffer', category: 'signal', pos: [0, 0], params: {} }]);
+		const addCall = fc.recordedCalls().find((c) => c.op === 'add_node');
+		expect(addCall!.payload.inst_id).toBeUndefined();
+	});
+
 	it('undo of deleting a sub-patch MEMBER restores it inside the sub-patch (not at root)', () => {
 		const fc = new FakeControl();
 		const g = new GraphStore(fc);
