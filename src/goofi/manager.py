@@ -699,10 +699,18 @@ class Manager:
             sout, sin = self._member_uid(sib, lout), self._member_uid(sib, lin)
             if sout is None or sin is None:
                 continue
-            if add:
-                self.add_link(sout, sin, link["slot_out"], link["slot_in"], notify_gui=notify_gui, mirror=False)
-            else:
-                self.remove_link(sout, sin, link["slot_out"], link["slot_in"], notify_gui=notify_gui, mirror=False)
+            # Surface a per-sibling failure instead of letting it propagate and abort the
+            # whole edit (or, worse, leave the family silently half-mirrored). Matches the
+            # param/expression mirror's 'surface, don't swallow' contract (backlog #8): the
+            # edited instance + def + reachable siblings still commit; the unreachable one
+            # is reported to logs + UI.
+            try:
+                if add:
+                    self.add_link(sout, sin, link["slot_out"], link["slot_in"], notify_gui=notify_gui, mirror=False)
+                else:
+                    self.remove_link(sout, sin, link["slot_out"], link["slot_in"], notify_gui=notify_gui, mirror=False)
+            except Exception as exc:
+                self._surface_mirror_failure(sib, f"link {lout}->{lin}", exc)
 
     def _teardown_link(self, link: Dict[str, str], notify_gui: bool) -> None:
         try:
@@ -1807,10 +1815,17 @@ class Manager:
         else:
             self._definitions[def_id].interface[bnd_id] = deepcopy(entry)
         for sib in self._shared_siblings(inst_id):
-            if entry is None:
-                self._instances[sib].interface.pop(bnd_id, None)
-            else:
-                self._instances[sib].interface[bnd_id] = deepcopy(entry)
+            # Surface a per-sibling failure rather than propagating it and aborting the
+            # boundary edit half-applied — same 'surface, don't swallow' contract as the
+            # link/param mirrors. Covers add_boundary, wire_boundary, and remove_boundary,
+            # which all fan out through here.
+            try:
+                if entry is None:
+                    self._instances[sib].interface.pop(bnd_id, None)
+                else:
+                    self._instances[sib].interface[bnd_id] = deepcopy(entry)
+            except Exception as exc:
+                self._surface_mirror_failure(sib, f"boundary {bnd_id}", exc)
 
     @mark_unsaved_changes
     def add_boundary(self, inst_id: str, dir: str, dtype: str, pos=(0, 0), notify_gui: bool = True) -> str:

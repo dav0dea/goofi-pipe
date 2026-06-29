@@ -18,6 +18,11 @@ class _Ctrl:
     def broadcast_threadsafe(self, payload):
         self.errors.append(payload)
 
+    def __getattr__(self, _name):
+        # Tolerate any other control callback (on_subpatch_changed, on_link_added, …)
+        # as a no-op so a fake bridge can be attached for just the surfacing assertion.
+        return lambda *a, **k: None
+
 
 class _FakeBridge:
     def __init__(self):
@@ -184,6 +189,77 @@ def test_shared_mirror_surfaces_sibling_failure():
             e.get("payload", {}).get("node") == member2 and "mirror" in e["payload"]["error"].lower()
             for e in fake.control.errors
         ), f"sibling mirror failure not surfaced to the UI; got: {fake.control.errors}"
+    finally:
+        mgr._bridge = None
+        mgr.terminate(notify_gui=False)
+
+
+def test_boundary_mirror_surfaces_sibling_failure_without_aborting():
+    """A boundary edit on a shared instance mirrors to every sibling. If one sibling's
+    interface can't be written (e.g. it was concurrently removed), the failure must be
+    SURFACED (logged + UI error) — not propagated to abort the whole op, nor silently
+    swallowed — so the edited instance + def + reachable siblings still update. Same
+    'surface, don't swallow' contract the param/expression mirror already honours."""
+    mgr = _bare_manager(use_multiprocessing=False)
+    try:
+        a = mgr.add_node("Oscillator", "inputs")
+        inst1 = mgr.group_nodes([a])
+        def_id = mgr.share_instance(inst1)
+        inst2 = mgr.instantiate_definition(def_id)
+
+        class _BoomDict(dict):
+            def __setitem__(self, k, v):
+                raise RuntimeError("sibling interface unreachable")
+
+        mgr._instances[inst2].interface = _BoomDict(mgr._instances[inst2].interface)
+        fake = _FakeBridge()
+        mgr._bridge = fake
+
+        bnd = mgr.add_boundary(inst1, "out", "array")  # must NOT raise
+
+        # edited instance + definition still got the boundary
+        assert bnd in mgr._instances[inst1].interface
+        assert bnd in mgr._definitions[def_id].interface
+        # the sibling failure was surfaced to the UI
+        assert any(
+            e.get("payload", {}).get("node") == inst2 and "mirror" in e["payload"]["error"].lower()
+            for e in fake.control.errors
+        ), f"boundary mirror failure not surfaced; got: {fake.control.errors}"
+    finally:
+        mgr._bridge = None
+        mgr.terminate(notify_gui=False)
+
+
+def test_internal_link_mirror_surfaces_sibling_failure_without_aborting():
+    """Wiring two members of a shared sub-patch mirrors the link to siblings. If a
+    sibling's wire fails, surface it (don't abort the edit nor swallow it): the edited
+    instance + def still carry the link, and the failure reaches the UI."""
+    mgr = _bare_manager(use_multiprocessing=False)
+    try:
+        a = mgr.add_node("Oscillator", "inputs")
+        b = mgr.add_node("Buffer", "signal")
+        inst1 = mgr.group_nodes([a, b])
+        def_id = mgr.share_instance(inst1)
+        inst2 = mgr.instantiate_definition(def_id)
+        la, lb = mgr._instances[inst1].members[a], mgr._instances[inst1].members[b]
+        sb = mgr._member_uid(inst2, lb)
+
+        def _boom(*_a, **_k):
+            raise RuntimeError("sibling wire unreachable")
+
+        mgr.nodes[sb].subscribe_input = _boom  # the sibling's wire fails mid-fan-out
+        fake = _FakeBridge()
+        mgr._bridge = fake
+
+        mgr.add_link(a, b, "out", "val")  # must NOT raise
+
+        # edited instance got the live link + the def carries the local-form link
+        assert {"node_out": a, "node_in": b, "slot_out": "out", "slot_in": "val"} in mgr._links
+        assert {"node_out": la, "node_in": lb, "slot_out": "out", "slot_in": "val"} in mgr._definitions[def_id].links
+        assert any(
+            e.get("payload", {}).get("node") == inst2 and "mirror" in e["payload"]["error"].lower()
+            for e in fake.control.errors
+        ), f"link mirror failure not surfaced; got: {fake.control.errors}"
     finally:
         mgr._bridge = None
         mgr.terminate(notify_gui=False)
