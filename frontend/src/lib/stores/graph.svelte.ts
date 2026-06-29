@@ -466,7 +466,13 @@ export class GraphStore {
 	}
 
 	async updateParam(node: string, group: string, name: string, value: unknown): Promise<void> {
-		const oldValue = this.nodeById(node)?.params?.[group]?.[name]?.value;
+		// Key on the param's EXISTENCE, not its value's truthiness — a real param may hold
+		// 0/false/''. A missing param (agent typo, or a call racing node hydration) would
+		// otherwise record oldValue=undefined, and the undo's update_param drops `value`
+		// from the JSON entirely → backend KeyError. Fail loudly instead of poisoning undo.
+		const param = this.nodeById(node)?.params?.[group]?.[name];
+		if (!param) throw new Error(`update_param: no param ${group}.${name} on node ${node}`);
+		const oldValue = param.value;
 		this._record({
 			kind: 'update_param',
 			label: `Set ${name}`,
