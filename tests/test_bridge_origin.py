@@ -64,3 +64,33 @@ def test_control_route_returns_403_for_foreign_origin():
             assert ok.status != 403  # guard passed; WS handshake fails for another reason
 
     asyncio.new_event_loop().run_until_complete(run())
+
+
+def test_hello_send_failure_still_discards_the_client():
+    """If the initial hello send fails (snapshot raises, or the client drops mid-handshake),
+    the early return must NOT skip the _clients cleanup — else the dead ws lingers in the
+    broadcast set. Uses a plain set (not the prod WeakSet) so GC can't mask the leak."""
+    import asyncio
+    from types import SimpleNamespace
+
+    from aiohttp import web
+    from aiohttp.test_utils import TestClient, TestServer
+
+    from goofi.bridge.control import ControlHub
+
+    def _boom():
+        raise RuntimeError("snapshot boom")
+
+    async def run():
+        hub = ControlHub(SimpleNamespace(host="127.0.0.1", manager=SimpleNamespace(nodes={})))
+        hub._clients = set()  # plain set: GC can't reclaim a leaked entry and hide the bug
+        hub._snapshot = _boom  # force the hello send to fail
+        app = web.Application()
+        app.add_routes([web.get("/control", hub.handler)])
+        async with TestClient(TestServer(app)) as client:
+            ws = await client.ws_connect("/control")
+            await ws.close()
+            await asyncio.sleep(0.05)  # let the server handler run its finally
+            assert hub._clients == set(), "hello-send failure leaked the client into _clients"
+
+    asyncio.new_event_loop().run_until_complete(run())

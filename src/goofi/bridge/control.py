@@ -76,17 +76,19 @@ class ControlHub:
         for uid in list(self.server.manager.nodes):
             self._wire_node_status(uid)
 
-        # Snapshot — let the client render before any events trickle in. The
-        # handshake also carries the protocol version (only on `hello`, not the
-        # general snapshot) so the client can detect a stale-build skew.
+        # One try/finally around BOTH the hello send and the message loop so the
+        # _clients cleanup always runs — a hello-send failure must not early-return
+        # past the discard and leak the ws into the broadcast set.
         try:
-            await ws.send_json(
-                {"event": "hello", "payload": {**self._snapshot(), "protocol_version": PROTOCOL_VERSION}}
-            )
-        except Exception:
-            return ws
-
-        try:
+            # Snapshot — let the client render before any events trickle in. The
+            # handshake also carries the protocol version (only on `hello`, not the
+            # general snapshot) so the client can detect a stale-build skew.
+            try:
+                await ws.send_json(
+                    {"event": "hello", "payload": {**self._snapshot(), "protocol_version": PROTOCOL_VERSION}}
+                )
+            except Exception:
+                return ws
             async for msg in ws:
                 if msg.type == WSMsgType.TEXT:
                     await self._handle_text(ws, msg.data)
