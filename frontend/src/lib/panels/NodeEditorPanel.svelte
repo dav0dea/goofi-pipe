@@ -56,7 +56,10 @@
 	import {
 		buildMemberIndex,
 		childrenOfScope,
-		drawEndpoint as sceneDrawEndpoint
+		drawEndpoint as sceneDrawEndpoint,
+		boundaryNodeId,
+		isBoundaryNodeId,
+		parseBoundaryNodeId
 	} from '$lib/editor/subpatchScene';
 	import { nodeSurfaceSize, BOUNDARY } from '$lib/editor/nodeMetrics';
 	import { serializeClipboard, parseClipboard, clipToSpecs } from '$lib/editor/clipboard';
@@ -165,9 +168,10 @@
 		if (!samePath(persisted, untrack(() => enteredPath))) enteredPath = persisted;
 	});
 
-	const BND_PREFIX = '__bnd__';
-	const boundaryId = (instId: string, name: string): string => `${BND_PREFIX}${instId}::${name}`;
-	const isBoundaryId = (id: string): boolean => id.startsWith(BND_PREFIX);
+	// Boundary-pill id format lives in the pure, tested scene module (single source of
+	// truth). `boundaryId`/`isBoundaryId` keep their short names at the call sites.
+	const boundaryId = boundaryNodeId;
+	const isBoundaryId = isBoundaryNodeId;
 
 	/** Index every entity (node OR nested instance) by uid -> {instId, local, ...}.
 	 * The single source for parent-scope + local lookups across the recursive tree. */
@@ -353,10 +357,10 @@
 		}
 	}
 
-	/** The boundary id (interface key) of a boundary flow-node id, or null. */
+	/** The boundary (interface) key of a pill id that belongs to the ENTERED scope, or
+	 * null. Scope-checked in the codec so a cross-instance id can't mis-slice. */
 	function parseBoundary(id: string): string | null {
-		if (!entered || !isBoundaryId(id)) return null;
-		return id.slice(`${BND_PREFIX}${entered}::`.length);
+		return parseBoundaryNodeId(id, entered);
 	}
 
 	function onConnect(c: Connection): void {

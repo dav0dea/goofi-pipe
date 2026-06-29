@@ -12,6 +12,38 @@
  * glue can't mount in vitest — keep the logic in a .ts module that is unit-tested).
  */
 
+/**
+ * Boundary-pill node id codec — the SINGLE source of truth for how a sub-patch's
+ * In/Out boundary is given a SvelteFlow node/handle id. A boundary isn't a real node,
+ * so it has no uid; inside an entered scope it's drawn as a pill whose id encodes the
+ * owning instance + the interface (boundary) key, so the panel can map a drag/connect/
+ * delete on that pill back to (instId, bnd). Kept here (pure, tested) rather than as
+ * magic strings in the component.
+ */
+const BND_PREFIX = '__bnd__';
+const BND_SEP = '::';
+
+/** The flow-node id for instance `instId`'s boundary `bnd`. */
+export function boundaryNodeId(instId: string, bnd: string): string {
+	return `${BND_PREFIX}${instId}${BND_SEP}${bnd}`;
+}
+
+/** Whether `id` is ANY boundary-pill id (scope-agnostic) — e.g. to exclude pills from
+ * a select-all of real members, or detect a boundary in a drag set. */
+export function isBoundaryNodeId(id: string): boolean {
+	return id.startsWith(BND_PREFIX);
+}
+
+/** The boundary (interface) key of a pill id that belongs to the ENTERED scope, or null
+ * — a non-boundary id, a pill from another instance, or no scope entered. Scope-checked
+ * (matches the full `__bnd__<entered>::` prefix) so a cross-instance id can never be
+ * mis-sliced into a garbage key. */
+export function parseBoundaryNodeId(id: string, entered: string | null): string | null {
+	if (!entered) return null;
+	const prefix = `${BND_PREFIX}${entered}${BND_SEP}`;
+	return id.startsWith(prefix) ? id.slice(prefix.length) : null;
+}
+
 export interface ScenePort {
 	dir: 'in' | 'out';
 	inner_node: string | null; // a member's template-local (node OR nested instance), or null when unwired
