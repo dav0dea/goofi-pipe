@@ -483,6 +483,13 @@ class Manager:
 
         self.nodes.add_node(member_uid, ref)
         self._node_groups[member_uid] = group
+        # A top-level node is a member of the ROOT scope (root = the scope with no
+        # parent), so membership has ONE funnel. A sub-patch member instead carries an
+        # explicit membership dict and is attached by its caller (add_member_node). The
+        # root local is the (deduped) display name — same convention as group/expand;
+        # it's never serialized (ROOT dissolves at save) and never seen by nd().
+        if membership is None:
+            self._attach_member(ROOT_ID, member_uid, self._unique_local_in(ROOT_ID, assigned_name))
 
         # Best-effort: block briefly for the initial STATE_UPDATE so the
         # rest of the system (save / bridge) has node state to read.
@@ -501,8 +508,12 @@ class Manager:
         print(f"Removing node '{self.nodes[uid].name if uid in self.nodes else '?'}' ({uid}).")
         # A node that's still a member of a sub-patch (remove_instance pops
         # membership BEFORE calling this, so teardown skips the whole block):
+        # Every node is a member of SOME scope (ROOT for a top-level node), so detach
+        # always runs through the one funnel; the event then diverges only on whether
+        # the scope was a real sub-patch vs ROOT (a top-level remove). (remove_instance
+        # pops membership BEFORE calling this, so its teardown skips the whole block.)
         _inst_id = self._membership.get(uid)
-        was_member = False
+        was_subpatch_member = False
         if _inst_id is not None:
             _inst = self._instances.get(_inst_id)
             if _inst is not None:
@@ -513,10 +524,10 @@ class Manager:
                     raise ValueError(
                         f"cannot delete member {uid!r} of a shared sub-patch; make it unique first"
                     )
-                # Unique: unwire any boundary pointing at this member (its spliced
-                # external links drop below with the node's links) and drop the member
-                # from the instance so save/iteration never references a gone node.
-                was_member = True
+                # A real sub-patch member drives an instance resync; a ROOT member is a
+                # plain top-level remove. Unwire any boundary pointing at this member
+                # (ROOT has none) and drop it from the scope so iteration never sees it.
+                was_subpatch_member = _inst_id != ROOT_ID
                 _local = _inst.members.get(uid)
                 for _bid, _e in list(_inst.interface.items()):
                     if _e.inner_node == _local:
@@ -535,7 +546,7 @@ class Manager:
         # to the node that just left.
         self._broadcast_node_directory()
         if self._bridge is not None and notify_gui:
-            if was_member:
+            if was_subpatch_member:
                 # A member left a still-existing sub-patch: resync the INSTANCE record
                 # (member_count, computed slots, interface) — the subpatch_changed
                 # snapshot's _reconcileNodes also does the per-node cleanup on_node_removed
@@ -839,7 +850,9 @@ class Manager:
         if uid not in self.nodes:
             raise KeyError(f"No such node: {uid}")
         inst_id = self._membership.get(uid)
-        is_member = inst_id is not None
+        # "Member" here means a real sub-patch member: a top-level (ROOT-scoped) node is
+        # renamed like any node (on_node_renamed), not as a structural sub-patch change.
+        is_member = inst_id is not None and inst_id != ROOT_ID
         if is_member and self._instances[inst_id].def_id:
             raise ValueError("Renaming a member of a shared sub-patch isn't supported yet.")
         old_name = self.nodes[uid].name
@@ -959,7 +972,14 @@ class Manager:
         index, and the member's own parent marker. A member is either a real NODE
         (marker on `ref.membership`) or — once nested (Phase 3a) — another sub-patch
         INSTANCE (marker on `SubPatchInstance.parent`); the same funnel maintains both,
-        so the parent edge can't drift from the index."""
+        so the parent edge can't drift from the index.
+
+        A MOVE, not just an add: any prior parent is dropped first, so an entity is never
+        listed under two scopes (idempotent; a no-op for a fresh entity). Now that every
+        entity has a parent — ROOT for a top-level one — callers that re-home an entity no
+        longer need an explicit detach-first to avoid a stale old-parent entry."""
+        if uid in self._membership:
+            self._detach_member(uid)
         self._instances[inst_id].members[uid] = local
         self._membership[uid] = inst_id
         if uid in self.nodes:
@@ -1333,7 +1353,7 @@ class Manager:
                 # (which keys on membership) no-ops during this teardown.
                 self._membership.pop(member, None)
                 self.remove_node(member, notify_gui=False)
-        self._detach_member(inst_id)  # drop self from its parent (if nested); no-op at top level
+        self._detach_member(inst_id)  # drop self from its parent (a nested instance, or ROOT)
         del self._instances[inst_id]
         if def_id and not any(i.def_id == def_id for i in self._instances.values()):
             self._definitions.pop(def_id, None)
@@ -1444,6 +1464,8 @@ class Manager:
         # none, so a mid-recursion failure unwinds the whole subtree byte-clean.
         with self._transaction():
             inst_id = self._instantiate_def_core(def_id, pos)
+            # A freshly instantiated sibling is a top-level instance — a member of ROOT.
+            self._attach_member(ROOT_ID, inst_id, self._unique_local_in(ROOT_ID, self._instances[inst_id].name))
         if self._bridge is not None and notify_gui:
             self._bridge.control.on_subpatch_changed()
         return inst_id
@@ -1579,11 +1601,13 @@ class Manager:
         return False
 
     def _ancestor_instances(self, uid: str) -> List[str]:
-        """The instance uids on `uid`'s parent chain, innermost-first (its immediate
-        owning instance, then that instance's parent, …). Empty for a top-level entity."""
+        """The real sub-patch instance uids on `uid`'s parent chain, innermost-first (its
+        immediate owning instance, then that instance's parent, …). Empty for a top-level
+        entity. ROOT is excluded — it is the canvas, not a collapsible sub-patch, so it
+        never surfaces an error/event of its own."""
         out: List[str] = []
         cur = self._membership.get(uid)
-        while cur is not None:
+        while cur is not None and cur != ROOT_ID:
             out.append(cur)
             cur = self._instances[cur].parent if cur in self._instances else None
         return out
@@ -2069,33 +2093,34 @@ class Manager:
         UNIQUE instances inline their members/links/interface. SHARED instances
         reference a definition (emitted once) and carry only per-member uid+pos.
         """
-        # root_nodes / links / instance members are all keyed by uid; the readable
-        # display name rides inside each node record (see _node_record).
-        member_set = set(self._membership)
-        root_nodes = {uid: self._node_record(uid) for uid in self.nodes if uid not in member_set}
+        # ROOT is DISSOLVED into the top-level `root_nodes` / `root_links` / `instances`,
+        # so the .gfi format is unchanged (ROOT is a runtime construct, never serialized
+        # as an instance). root_nodes/links/instance members are keyed by uid; the
+        # readable display name rides inside each node record (see _node_record).
+        root = self._instances[ROOT_ID]
+        root_nodes = {uid: self._node_record(uid) for uid in root.members if uid in self.nodes}
 
         internal: Dict[str, list] = {iid: [] for iid in self._instances}
         root_links: list = []
         for link in self._links:
             oi = self._membership.get(link["node_out"])
             ii = self._membership.get(link["node_in"])
-            if oi is not None and oi == ii:
+            # Internal to a real sub-patch only when both ends share ONE non-root scope;
+            # a link inside ROOT (both ends top-level) is a root_link, not "internal".
+            if oi is not None and oi == ii and oi != ROOT_ID:
                 internal[oi].append(self._local_link(link, oi))
             else:
                 root_links.append(dict(link))
 
-        # Emit only top-level sub-patch instances (parent is None, excluding ROOT
-        # itself); each recursively emits its child instances under its own `instances`
-        # sub-key, so the document mirrors the live `inst.parent` forest. A nested
-        # instance is emitted exactly once, under its parent — never a flat sibling.
-        # ROOT is DISSOLVED: its node members are the top-level `root_nodes` and its
-        # instance members are these top-level `instances`, so the .gfi format is
-        # unchanged (ROOT is a runtime construct, never serialized as an instance).
+        # The top-level sub-patches are ROOT's instance members; each recursively emits
+        # its child instances under its own `instances` sub-key, so the document mirrors
+        # the live `inst.parent` forest (a nested instance is emitted exactly once, under
+        # its parent — never a flat sibling).
         definitions: Dict[str, Any] = {}
         instances: Dict[str, Any] = {
             iid: self._emit_instance(iid, internal, definitions)
-            for iid, inst in self._instances.items()
-            if inst.parent is None and iid != ROOT_ID
+            for iid in root.members
+            if iid in self._instances
         }
         return root_nodes, root_links, definitions, instances
 
@@ -2322,9 +2347,10 @@ class Manager:
         # freshly-minted member uids once all members of the instance exist.
         internal_links: List[tuple] = []
         for saved_id, inst in instances.items():
-            # The doc's top-level `instances` are roots by construction; nested ones are
+            # The doc's top-level `instances` are ROOT's instance members; nested ones are
             # reached only through their parent's `instances` sub-key (recursion below).
-            self._restore_instance(saved_id, inst, internal_links)
+            iid = self._restore_instance(saved_id, inst, internal_links)
+            self._attach_member(ROOT_ID, iid, self._unique_local_in(ROOT_ID, self._instances[iid].name))
 
         for local_to_uid, link in internal_links:
             self.add_link(

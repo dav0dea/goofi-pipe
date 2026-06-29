@@ -8,6 +8,8 @@ node OR instance) and `SubPatchInstance.parent` (the instance-side marker) — k
 in sync by the one `_attach_member`/`_detach_member` funnel, exactly like a node's
 `_membership[uid]` + `ref.membership` marker.
 """
+from goofi.manager import ROOT_ID
+
 from .test_manager import _bare_manager, _build_grouped_graph, _member
 from .test_subpatch_invariants import assert_subpatch_invariants
 
@@ -27,15 +29,16 @@ def test_attach_detach_tracks_instance_parent():
     try:
         osc, A = _build_grouped_graph(mgr)  # instance A: [select0, select1]
         B = _second_instance(mgr)  # a second top-level instance
-        assert mgr._instances[B].parent is None
+        assert mgr._instances[B].parent == ROOT_ID  # top-level = a member of ROOT
 
-        mgr._attach_member(A, B, "subpatch1")  # nest B under A via the funnel
+        mgr._attach_member(A, B, "subpatch1")  # nest B under A via the funnel (a move)
         assert mgr._instances[B].parent == A  # instance-side marker
         assert mgr._membership[B] == A  # upward index keyed by the instance uid
         assert B in mgr._instances[A].members  # forward index
+        assert B not in mgr._instances[ROOT_ID].members  # moved cleanly out of ROOT
 
         mgr._detach_member(B)
-        assert mgr._instances[B].parent is None
+        assert mgr._instances[B].parent is None  # detach leaves it parentless
         assert B not in mgr._membership
     finally:
         mgr.terminate(notify_gui=False)
@@ -57,7 +60,7 @@ def test_group_node_and_instance_into_outer():
         assert mgr._membership[inner] == outer  # upward index keyed by instance uid
         assert mgr._membership[buf] == outer
         assert mgr._instances[inner].parent == outer  # instance-side marker, lockstep
-        assert mgr._instances[outer].parent is None  # outer is top-level
+        assert mgr._instances[outer].parent == ROOT_ID  # outer is top-level (a ROOT member)
 
         s0 = _member(mgr, inner, "select0")
         assert mgr._membership[s0] == inner  # inner's subtree still belongs to inner
@@ -107,7 +110,7 @@ def test_group_across_scopes_is_rejected():
         with pytest.raises(ValueError):
             mgr.group_nodes([a, x])  # a is inside P, x is top-level
         assert set(mgr._instances[P].members) == {a, b}  # unchanged
-        assert mgr._membership.get(x) is None
+        assert mgr._membership.get(x) == ROOT_ID  # x stays a top-level (ROOT) member
         assert_subpatch_invariants(mgr)
     finally:
         mgr.terminate(notify_gui=False)
@@ -443,7 +446,7 @@ def test_nested_unique_subpatch_save_load_roundtrip(tmp_path):
         mgr2.load(fp)
         assert outer in mgr2._instances and inner in mgr2._instances  # stable uids
         assert mgr2._instances[inner].parent == outer  # instance-side marker
-        assert mgr2._instances[outer].parent is None
+        assert mgr2._instances[outer].parent == ROOT_ID
         assert inner in mgr2._instances[outer].members  # forward index
         assert mgr2._membership[inner] == outer  # upward index keyed by instance uid
         assert mgr2._instances[outer].members[inner] == inner_local  # local preserved
@@ -530,7 +533,7 @@ def test_three_level_nesting_roundtrip_stable_uids(tmp_path):
             assert i in mgr2._instances  # instance uids stable
         assert mgr2._instances[G].parent == C
         assert mgr2._instances[C].parent == P
-        assert mgr2._instances[P].parent is None
+        assert mgr2._instances[P].parent == ROOT_ID
         assert mgr2._membership[g0] == G and mgr2._membership[extra] == C
         assert_subpatch_invariants(mgr2)
     finally:
@@ -616,7 +619,7 @@ def test_share_then_instantiate_replicates_nested_subtree_with_fresh_uids():
 
         sib = mgr.instantiate_definition(def_outer)
 
-        assert mgr._instances[sib].parent is None  # a root sibling
+        assert mgr._instances[sib].parent == ROOT_ID  # a root sibling (member of ROOT)
         assert mgr._instances[sib].def_id == def_outer
         # the sibling has exactly one nested-instance member, rebuilt fresh
         child_members = [u for u in mgr._instances[sib].members if u in mgr._instances]

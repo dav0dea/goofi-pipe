@@ -5,6 +5,8 @@ to before: no orphan spawned process, and the in-memory state maps (_links,
 _node_groups, _membership, _instances, _definitions) restored. This is the uniform
 rollback primitive the splice ops route through.
 """
+from copy import deepcopy
+
 import pytest
 
 from .test_manager import _bare_manager
@@ -14,7 +16,9 @@ def test_transaction_rolls_back_nodes_and_maps_on_failure():
     mgr = _bare_manager(use_multiprocessing=False)
     try:
         before_nodes = set(mgr.nodes)
-        before_inst = dict(mgr._instances)
+        # deepcopy: a top-level add now mutates ROOT.members in place, so a shallow copy
+        # would alias the live (mutated-then-rolled-back) ROOT record.
+        before_inst = deepcopy(mgr._instances)
         with pytest.raises(RuntimeError):
             with mgr._transaction():
                 mgr.add_node("Oscillator", "inputs")  # spawns a node (thread-mode)

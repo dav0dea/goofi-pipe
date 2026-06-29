@@ -10,6 +10,8 @@ its display name, so:
   - instantiate spawns members with fresh flat names and rewrites those refs to them;
   - a rename is a flat rename that follows nd() refs to the new name.
 """
+from goofi.manager import ROOT_ID
+
 from .test_manager import _bare_manager, _disp, _member
 
 
@@ -136,6 +138,8 @@ def test_member_nd_cross_ref_is_flat_per_instance_through_save_load(tmp_path):
         # in EVERY restored instance, the dependent member references its own sibling
         # by that sibling's flat name (no qualification, no cross-instance leakage)
         for iid, inst in mgr2._instances.items():
+            if iid == ROOT_ID:
+                continue  # ROOT's members are the top-level instances, not nodes
             local_to_uid = {l: u for u, l in inst.members.items()}
             # find the member whose freq is expression-bound
             for uid, local in inst.members.items():

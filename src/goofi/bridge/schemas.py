@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List
 
+from goofi.manager import ROOT_ID
 from goofi.node_helpers import NodeRef, list_nodes
 from goofi.params import (
     BoolParam,
@@ -115,12 +116,16 @@ def describe_instance(manager: Any, inst_id: str, inst: Any, error: Any = None) 
             "inner_slot": b.inner_slot,
             "pos": list(b.pos),
         }
+    # A top-level instance is internally parented to ROOT, but the wire still reports
+    # parent=None for it (the frontend's root scope is not yet ROOT-aware — that flips in
+    # step 3). A nested instance reports its real parent uid.
+    parent = None if inst.parent == ROOT_ID else inst.parent
     return {
         "uid": inst.uid,
         "name": inst.name,
         "kind": inst.kind,
         "def_id": inst.def_id,
-        "parent": inst.parent,
+        "parent": parent,
         "pos": list(inst.pos),
         "viewers": dict(inst.viewers or {}),
         "members": {
@@ -141,6 +146,12 @@ def describe_node_instance(uid: str, ref: NodeRef) -> Dict[str, Any]:
     `uid` is the universal identity (the key everything references); `name` is the
     mutable display label."""
     gk = ref.gui_kwargs or {}
+    # A top-level node is internally a member of the ROOT scope, but the wire still
+    # reports membership=None for it (the frontend's root scope is not yet ROOT-aware —
+    # that flips in step 3). A real sub-patch member reports its {instance, local_name}.
+    membership = ref.membership
+    if membership and membership.get("instance") == ROOT_ID:
+        membership = None
     return {
         "uid": uid,
         "name": ref.name,
@@ -157,7 +168,7 @@ def describe_node_instance(uid: str, ref: NodeRef) -> Dict[str, Any]:
         "viewers": dict(gk.get("viewers") or {}),
         # Sub-patch membership marker (None for a top-level node): the editor
         # hides members of a collapsed instance and shows the group node instead.
-        "membership": ref.membership,
+        "membership": membership,
         "error": ref.last_error,
         # Rolling execution telemetry the node pushes on the status plane
         # (~1 Hz). None until the node's first NODE_STATS push.
