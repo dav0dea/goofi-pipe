@@ -21,6 +21,12 @@ interface PanelSel {
 }
 const EMPTY: PanelSel = { nodes: new Set(), edges: new Set() };
 
+function setEq(a: Set<string>, b: Set<string>): boolean {
+	if (a.size !== b.size) return false;
+	for (const x of a) if (!b.has(x)) return false;
+	return true;
+}
+
 class SelectionStore {
 	/** Per-editor-panel selection, keyed by panel id. */
 	private map = $state<Record<string, PanelSel>>({});
@@ -34,6 +40,12 @@ class SelectionStore {
 		return (panelId && this.map[panelId]) || EMPTY;
 	}
 	private write(panelId: string, next: PanelSel): void {
+		// Skip a no-op write: re-selecting the already-selected node (e.g. a drag-start
+		// mousedown on a selected node) would otherwise allocate a fresh selection object,
+		// retriggering the editor's flowNodes effect mid-drag so Svelte Flow's
+		// onnodedragstart never fires and the node can't be dragged (e.g. into a panel).
+		const cur = this.map[panelId];
+		if (cur && setEq(cur.nodes, next.nodes) && setEq(cur.edges, next.edges)) return;
 		this.map = { ...this.map, [panelId]: next };
 	}
 
