@@ -1048,6 +1048,10 @@ class Manager:
         # on the live NodeRef (NOT inside the deepcopied _instances), so snapshot it too or
         # rollback leaves a surviving node's marker pointing at a rolled-back instance.
         snap_markers = {uid: deepcopy(self.nodes[uid].membership) for uid in self.nodes}
+        # An inner @mark_unsaved_changes call (e.g. wire_boundary) flips this flag before a
+        # later op in the block can fail; restore it on rollback so a byte-identical
+        # rollback doesn't leave the UI reporting false "unsaved changes".
+        snap_unsaved = self.unsaved_changes
         before_nodes = set(self.nodes)
         try:
             yield
@@ -1075,6 +1079,7 @@ class Manager:
                     self.remove_node(n, notify_gui=False)
                 except Exception:
                     pass
+            self.unsaved_changes = snap_unsaved
             raise
 
     def _surface_mirror_failure(self, node: str, what: str, exc: Exception) -> None:

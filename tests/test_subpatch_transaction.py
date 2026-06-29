@@ -174,3 +174,21 @@ def test_group_reparent_rolls_back_on_failure(monkeypatch):
         )
     finally:
         mgr.terminate(notify_gui=False)
+
+
+def test_transaction_rolls_back_unsaved_changes_flag_on_failure():
+    """A rolled-back transaction must leave the manager BYTE-IDENTICAL — including the
+    unsaved_changes flag. An inner @mark_unsaved_changes call (e.g. wire_boundary inside
+    the shared mirror-remove) sets the flag before a LATER op in the same transaction
+    fails; the rollback restores the state maps, so it must restore this flag too, or the
+    UI shows false 'unsaved changes' after an op that changed nothing."""
+    mgr = _bare_manager(use_multiprocessing=False)
+    try:
+        mgr.unsaved_changes = False
+        with pytest.raises(RuntimeError):
+            with mgr._transaction():
+                mgr.unsaved_changes = True  # an inner decorated call's side effect
+                raise RuntimeError("boom")
+        assert mgr.unsaved_changes is False  # restored to the pre-transaction value
+    finally:
+        mgr.terminate(notify_gui=False)
