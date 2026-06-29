@@ -337,6 +337,28 @@ describe('graph executors — composite + sub-patch kinds', () => {
 		expect((action.payload as { instId: string }).instId).toBe('subpatch9'); // remapped for redo
 	});
 
+	it('expand_instance: inverse restores the captured interface (unwired boundaries survive ungroup→undo)', async () => {
+		const fc = new FakeControl();
+		const g = new GraphStore(fc);
+		fc.setCallResult('group_nodes', { inst_id: 'subpatch9' });
+		// An UNWIRED In/Out port — it has no crossing link, so a derive-from-links re-group
+		// would drop it; the inverse must replay the captured interface verbatim.
+		const iface = { out0: { dir: 'out', dtype: 'ARRAY', inner_node: null, inner_slot: null, pos: [1, 2] } } as Record<
+			string,
+			import('$lib/api/control').SubPatchPort
+		>;
+		const action: Action = {
+			kind: 'expand_instance',
+			label: 'Ungroup',
+			domain: 'graph',
+			context: EMPTY_CTX,
+			payload: { instId: 'subpatch0', restoredMembers: ['osc0'], interface: iface }
+		};
+		await graphExecutors['expand_instance'].inverse(action, deps(fc, g));
+		const call = fc.recordedCalls().find((c) => c.op === 'group_nodes');
+		expect(call?.payload.interface).toEqual(iface);
+	});
+
 	it('add_boundary: forward records bnd_id, inverse removes it', async () => {
 		const fc = new FakeControl();
 		const g = new GraphStore(fc);

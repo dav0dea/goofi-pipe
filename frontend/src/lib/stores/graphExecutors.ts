@@ -169,8 +169,11 @@ const expandInstance: Executor = {
 	},
 	async inverse(action, deps) {
 		const a = as<'expand_instance'>(action);
+		// Replay the CAPTURED interface, not a derive-from-links re-group: an unwired
+		// In/Out boundary has no crossing link, so deriving would silently drop it.
 		const r = await deps.control.call<{ inst_id: string }>('group_nodes', {
-			members: a.payload.restoredMembers
+			members: a.payload.restoredMembers,
+			interface: a.payload.interface
 		});
 		if (r?.inst_id) a.payload.instId = r.inst_id; // the re-grouped id (for redo)
 	}
