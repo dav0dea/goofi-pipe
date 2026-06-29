@@ -348,6 +348,13 @@ class ControlHub:
         if op == "make_unique":
             await self._call_manager(manager.make_unique, payload["inst_id"])
             return {"ok": True}
+        if op == "re_share_instance":
+            # Undo of make_unique: re-attach a unique instance to its ORIGINAL definition
+            # (reuniting the strict-mirror family), instead of minting a fresh def + sibling.
+            def_id = await self._call_manager(
+                manager.re_share_instance, payload["inst_id"], payload["def_id"]
+            )
+            return {"def_id": def_id}
         if op == "add_boundary":
             bnd_id = await self._call_manager(
                 manager.add_boundary,

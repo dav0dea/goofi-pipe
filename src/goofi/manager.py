@@ -1492,6 +1492,35 @@ class Manager:
             self._bridge.control.on_subpatch_changed()
         return def_id
 
+    @mark_unsaved_changes
+    def re_share_instance(self, inst_id: str, def_id: str, notify_gui: bool = True) -> str:
+        """Re-attach a unique instance to an EXISTING shared definition — the exact inverse
+        of make_unique when siblings kept the def alive: it reunites the strict-mirror family
+        (same def_id) instead of minting a fresh def + spawning a sibling. Falls back to a
+        fresh def (share_instance) when the original was GC'd (make_unique on the last
+        instance) or when the instance has nested-instance members (whose recursive
+        re-attach is deferred — symmetric to make_unique's recursion). Returns the def id."""
+        self._reject_root(inst_id, "share")
+        if inst_id not in self._instances:
+            raise KeyError(f"No such sub-patch: {inst_id}")
+        inst = self._instances[inst_id]
+        if inst.def_id:
+            return inst.def_id
+        has_nested = any(uid in self._instances for uid in inst.members)
+        if def_id not in self._definitions or has_nested:
+            return self.share_instance(inst_id, notify_gui=notify_gui)
+        with self._transaction():
+            inst.kind = "shared"
+            inst.def_id = def_id
+            # Re-adopt the family's boundary topology, deep-copied so per-instance boundary
+            # edits can't alias the def/siblings (mirror of make_unique's detach).
+            inst.interface = {
+                bid: deepcopy(b) for bid, b in self._definitions[def_id].interface.items()
+            }
+        if self._bridge is not None and notify_gui:
+            self._bridge.control.on_subpatch_changed()
+        return def_id
+
     def _promote_to_def(self, inst_id: str) -> str:
         """Depth-first: promote every unique nested child to its own def, then snapshot
         this instance into a fresh def referencing those children. No transaction here —

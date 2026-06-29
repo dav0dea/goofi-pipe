@@ -436,7 +436,7 @@ describe('graph executors — composite + sub-patch kinds', () => {
 		expect(ops.some((c) => c.op === 'make_unique' && c.payload.inst_id === 'subpatch0')).toBe(true);
 	});
 
-	it('make_unique: inverse re-shares when it was previously shared', async () => {
+	it('make_unique: inverse re-attaches to the original def (re_share_instance), not duplicate_shared', async () => {
 		const fc = new FakeControl();
 		const g = new GraphStore(fc);
 		const action: Action = {
@@ -447,9 +447,11 @@ describe('graph executors — composite + sub-patch kinds', () => {
 			payload: { instId: 'subpatch0', defIdBefore: 'd' }
 		};
 		await graphExecutors['make_unique'].inverse(action, deps(fc, g));
-		expect(fc.recordedCalls().some((c) => c.op === 'duplicate_shared' && c.payload.inst_id === 'subpatch0')).toBe(
-			true
-		);
+		// re-attach to the SAME def (reunite the family), not duplicate_shared (which minted
+		// a fresh def + spawned an extra sibling).
+		expect(fc.recordedCalls()).toEqual([
+			{ op: 're_share_instance', payload: { inst_id: 'subpatch0', def_id: 'd' } }
+		]);
 	});
 
 	it('make_unique: inverse is a no-op when it was already unique', async () => {

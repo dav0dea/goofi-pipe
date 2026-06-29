@@ -276,3 +276,55 @@ def test_remove_node_rejects_a_nested_instance_member_of_a_shared_subpatch():
         assert inner in mgr._instances[outer].members
     finally:
         mgr.terminate(notify_gui=False)
+
+
+def test_re_share_reattaches_to_existing_def_reuniting_the_family():
+    """Undo of make_unique must re-attach the instance to its ORIGINAL definition (when
+    siblings kept it alive), reuniting the strict-mirror family — not mint a fresh def (which
+    splits the family) nor spawn an extra sibling (what the old duplicate_shared inverse did)."""
+    mgr = _bare_manager(use_multiprocessing=False)
+    try:
+        a = mgr.add_node("Oscillator", "inputs")
+        inst1 = mgr.group_nodes([a])
+        def_id = mgr.share_instance(inst1)
+        inst2 = mgr.instantiate_definition(def_id)  # sibling keeps def_id alive
+        mgr.make_unique(inst2)
+        assert mgr._instances[inst2].def_id is None
+        assert def_id in mgr._definitions
+
+        before = {i for i in mgr._instances}
+        result = mgr.re_share_instance(inst2, def_id)
+
+        assert result == def_id  # the SAME def, not a fresh one
+        assert mgr._instances[inst2].def_id == def_id
+        assert mgr._instances[inst2].kind == "shared"
+        assert {i for i in mgr._instances} == before  # no extra sibling spawned
+        # the family is reunited: editing inst1's member mirrors to inst2 again
+        m1 = next(iter(mgr._instances[inst1].members))
+        mgr.update_param(m1, "oscillator", "frequency", 7.0)
+        m2 = next(iter(mgr._instances[inst2].members))
+        assert mgr.nodes[m2].params["oscillator"]["frequency"].value == 7.0
+    finally:
+        mgr.terminate(notify_gui=False)
+
+
+def test_re_share_mints_a_fresh_def_when_the_original_was_gced():
+    """make_unique on the LAST instance GC's the definition; re-sharing to that now-gone def
+    falls back to minting a fresh one (the instance is alone, so identity doesn't matter)."""
+    mgr = _bare_manager(use_multiprocessing=False)
+    try:
+        a = mgr.add_node("Oscillator", "inputs")
+        inst = mgr.group_nodes([a])
+        def_id = mgr.share_instance(inst)
+        mgr.make_unique(inst)  # last instance -> def GC'd
+        assert def_id not in mgr._definitions
+
+        result = mgr.re_share_instance(inst, def_id)
+
+        # A fresh definition was minted (the gone one couldn't be re-attached to); the freed
+        # id may be reused, but the point is a real def now backs the re-shared instance.
+        assert result in mgr._definitions
+        assert mgr._instances[inst].def_id == result
+        assert mgr._instances[inst].kind == "shared"
+    finally:
+        mgr.terminate(notify_gui=False)
