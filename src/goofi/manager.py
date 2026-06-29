@@ -2131,7 +2131,10 @@ class Manager:
         # Intra-sub-patch nd() cross-refs are authored against THIS instance's live
         # member display names; the definition stores them in TEMPLATE form (against
         # the local key), and each sibling carries its OWN member display names.
-        me_by_local = {l: self.nodes[u].name for u, l in inst.members.items()}
+        # _entity_name resolves BOTH node members and nested-instance members (which live
+        # in _instances, not nodes) — self.nodes[u] would KeyError on a nested instance and
+        # desync the family mid-mirror. Same pattern as _definition_from_instance.
+        me_by_local = {l: self._entity_name(u) for u, l in inst.members.items()}
         # Mark INTERNAL refs (`\x1f`-prefixed) so the def stores them distinct from an
         # EXTERNAL ref that happens to match a member's local key (kept verbatim).
         display_to_local = {disp: _DEF_INTERNAL_REF + l for l, disp in me_by_local.items()}
@@ -2158,7 +2161,7 @@ class Manager:
         for other_id, other in self._instances.items():
             if other_id == inst_id or other.def_id != def_id:
                 continue
-            sib_by_local = {l: self.nodes[u].name for u, l in other.members.items()}
+            sib_by_local = {l: self._entity_name(u) for u, l in other.members.items()}
             sib_map = {me_by_local[l]: sib_by_local[l] for l in me_by_local if l in sib_by_local}
             sib_expr = rewrite_nd_refs(expression, sib_map)
             for onode, olocal in other.members.items():

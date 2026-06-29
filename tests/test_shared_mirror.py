@@ -265,6 +265,33 @@ def test_internal_link_mirror_surfaces_sibling_failure_without_aborting():
         mgr.terminate(notify_gui=False)
 
 
+def test_set_expression_on_a_node_member_of_a_shared_subpatch_with_a_nested_instance():
+    """set_expression builds a local->display name map over ALL members to rewrite nd()
+    refs. A shared sub-patch may hold a NESTED INSTANCE as a member (lives in _instances,
+    not nodes), so the map must resolve names via _entity_name — not self.nodes, which
+    KeyErrors on the instance uid and leaves the shared family desynced mid-mirror."""
+    mgr = _bare_manager(use_multiprocessing=False)
+    try:
+        osc = mgr.add_node("Oscillator", "inputs")
+        buf = mgr.add_node("Buffer", "signal")
+        inner = mgr.group_nodes([buf])  # a nested instance
+        outer = mgr.group_nodes([osc, inner])  # holds a node (osc) + a nested instance
+        def_id = mgr.share_instance(outer)
+        inst2 = mgr.instantiate_definition(def_id)  # a sibling to mirror into
+        local_osc = mgr._instances[outer].members[osc]
+
+        # Must NOT raise (used to KeyError on the nested-instance member uid).
+        mgr.set_expression(osc, "oscillator", "frequency", "5 + 5", enabled=True)
+
+        # primary applied + definition recorded + sibling mirrored (strict mirror intact)
+        assert mgr.nodes[osc].params["oscillator"]["frequency"].expression == "5 + 5"
+        assert mgr._definitions[def_id].members[local_osc]["params"]["oscillator"]["frequency"]["expression"] == "5 + 5"
+        sib_osc = mgr._member_uid(inst2, local_osc)
+        assert mgr.nodes[sib_osc].params["oscillator"]["frequency"].expression == "5 + 5"
+    finally:
+        mgr.terminate(notify_gui=False)
+
+
 def test_remove_shared_member_mirrors_across_siblings_and_def():
     """Bug C: deleting a member of a SHARED sub-patch is the symmetric inverse of the
     shared ADD — it mirror-removes the member from the definition AND every sibling
