@@ -2526,7 +2526,18 @@ class Manager:
         `nd('name')` resolution. Display names are kept unique (add auto-numbers,
         rename disambiguates), so this lookup is unambiguous even though the graph
         itself keys on uid."""
-        return {self.nodes[uid].name: self.nodes[uid].node_id for uid in self.nodes}
+        # Snapshot the uids first (list()) — like _broadcast_node_directory and
+        # serialize_patch — so a concurrent add/remove on a bridge executor thread can't
+        # raise "dictionary changed size during iteration"; guard each access in case a
+        # uid was removed between the snapshot and the read.
+        directory: Dict[str, str] = {}
+        for uid in list(self.nodes):
+            try:
+                ref = self.nodes[uid]
+            except KeyError:
+                continue
+            directory[ref.name] = ref.node_id
+        return directory
 
     def _broadcast_node_directory(self) -> None:
         """Push the current name->id directory to every live node so their
