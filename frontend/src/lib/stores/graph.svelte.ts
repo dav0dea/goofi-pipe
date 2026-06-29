@@ -429,24 +429,14 @@ export class GraphStore {
 		await this.ctl.call('remove_node', { node: uid });
 	}
 
-	/** Respawn a (typically crashed) node: tear down its process and re-create it
-	 * with the SAME uid (so links/panels reconnect), name, params, position, and
-	 * links (backlog #25). It's a recovery action, not a semantic edit — the node
-	 * ends in the same logical state — so it's run suspended and leaves the undo
-	 * history untouched. */
+	/** Respawn a (typically crashed) node: the backend restarts its process IN PLACE,
+	 * preserving the uid (so links/panels reconnect), display name, params, position,
+	 * sub-patch membership, and links — and re-wires status forwarding itself. A recovery
+	 * action, not a semantic edit, so it records no history. (A remove+add would land a
+	 * sub-patch member back at ROOT and, post Bug-C, mirror-remove a SHARED member across
+	 * its siblings — restart_node avoids both.) */
 	async restartNode(uid: string): Promise<void> {
-		const node = this.nodeById(uid);
-		if (!node) return;
-		const links = this.links
-			.filter((l) => l.node_in === uid || l.node_out === uid)
-			.map((l) => ({ ...l }));
-		const params = paramValues(node);
-		const { type, category, pos, name } = node;
-		await history().suspend(async () => {
-			await this.ctl.call('remove_node', { node: uid });
-			await this.ctl.call('add_node', { type, category, name, pos, params, member_uid: uid });
-			for (const l of links) await this.ctl.call('add_link', { ...l });
-		});
+		await this.ctl.call('restart_node', { node: uid });
 	}
 
 	async addLink(link: LinkInfo): Promise<void> {

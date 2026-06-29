@@ -227,3 +227,28 @@ def test_subpatch_changed_drops_wiring_for_vanished_member():
         assert a not in hub._wired_nodes and b not in hub._wired_nodes
     finally:
         manager.terminate(notify_gui=False)
+
+
+def test_restart_node_op_respawns_member_in_place_preserving_membership():
+    """The crash-recovery 'restart' must respawn a node IN PLACE (the manager's
+    restart_node keeps uid + display name + sub-patch membership + links), not remove+add
+    — which would land a sub-patch member back at ROOT and, for a SHARED member, cascade a
+    mirror-remove across siblings. The bridge exposes restart_node so the frontend uses it."""
+    manager = _bare_manager(use_multiprocessing=False)
+    manager._layout = None
+    try:
+        hub = _hub(manager)
+        manager._bridge = types.SimpleNamespace(control=hub)
+        a = manager.add_node("Oscillator", "inputs")
+        b = manager.add_node("Buffer", "signal")
+        inst = manager.group_nodes([a, b])
+        member = manager.add_member_node(inst, "Buffer", "signal")
+        old_membership = dict(manager.nodes[member].membership)
+
+        asyncio.run(hub._dispatch("restart_node", {"node": member}))
+
+        assert member in manager.nodes  # uid stable, respawned in place
+        assert manager.nodes[member].membership == old_membership  # stayed in its sub-patch
+        assert manager._membership[member] == inst
+    finally:
+        manager.terminate(notify_gui=False)

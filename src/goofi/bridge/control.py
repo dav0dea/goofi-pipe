@@ -193,6 +193,14 @@ class ControlHub:
             else:
                 await self._call_manager(manager.remove_node, node)
             return {"ok": True}
+        if op == "restart_node":
+            # Crash recovery: respawn the node's process IN PLACE. The manager's
+            # restart_node keeps the uid, display name, sub-patch membership, position and
+            # links, and re-wires bridge status forwarding itself — so a sub-patch member
+            # stays in its sub-patch (a remove+add would land it at ROOT and, for a SHARED
+            # member, mirror-remove it across siblings).
+            await self._call_manager(manager.restart_node, payload["node"])
+            return {"ok": True}
         if op == "rename_node":
             # Set a node's mutable display name (safe — nothing keys on it).
             await self._call_manager(manager.rename_node, payload["node"], payload["name"])

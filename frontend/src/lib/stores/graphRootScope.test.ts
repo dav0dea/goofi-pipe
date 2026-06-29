@@ -102,6 +102,25 @@ describe('root-as-scope: ROOT ships as an instance the editor renders from', () 
 		expect(g.instances['sub'].member_count).toBe(1);
 	});
 
+	it('restartNode respawns in place via the restart_node RPC (keeps scope, no cascade)', async () => {
+		const fc = new FakeControl();
+		const g = new GraphStore(fc);
+		// a crashed sub-patch member
+		fc.emit({
+			event: 'node_added',
+			payload: nodeInfo('m1', 'buffer0', { instance: 'sub', local_name: 'buffer0' })
+		});
+
+		await g.restartNode('m1');
+
+		const calls = fc.recordedCalls();
+		expect(calls.some((c) => c.op === 'restart_node' && c.payload.node === 'm1')).toBe(true);
+		// must NOT do the old remove+add dance — that lands a member back at ROOT and, for a
+		// SHARED member, mirror-removes it across siblings (post Bug-C).
+		expect(calls.some((c) => c.op === 'remove_node')).toBe(false);
+		expect(calls.some((c) => c.op === 'add_node')).toBe(false);
+	});
+
 	it('a member node_removed is dropped from the owning instance members map', () => {
 		const fc = new FakeControl();
 		const g = new GraphStore(fc);
