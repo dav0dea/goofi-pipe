@@ -229,6 +229,7 @@ const removeBoundary: Executor = {
 			pos: p.pos
 		});
 		const bndId = r?.bnd_id ?? a.payload.bndId;
+		a.payload.bndId = bndId; // remap (like addBoundary.forward) so a later redo removes the id that now exists
 		if (p.inner_node) {
 			await deps.control.call('wire_boundary', {
 				inst_id: a.payload.instId,

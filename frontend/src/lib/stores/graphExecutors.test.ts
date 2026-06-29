@@ -417,6 +417,34 @@ describe('graph executors — composite + sub-patch kinds', () => {
 		});
 	});
 
+	it('remove_boundary: inverse remaps bndId so a later redo removes the id that now exists', async () => {
+		const fc = new FakeControl();
+		const g = new GraphStore(fc);
+		// The re-added boundary gets a FRESH id (the backend reclaims the lowest-unused
+		// index, which differs from the original when a lower gap exists).
+		fc.setCallResult('add_boundary', { bnd_id: 'out1' });
+		const action: Action = {
+			kind: 'remove_boundary',
+			label: 'Remove boundary',
+			domain: 'graph',
+			context: EMPTY_CTX,
+			payload: {
+				instId: 'subpatch0',
+				bndId: 'out0',
+				port: { dir: 'out', dtype: 'ARRAY', inner_node: 'osc0', inner_slot: 'out', pos: [3, 4] }
+			}
+		};
+		await graphExecutors['remove_boundary'].inverse(action, deps(fc, g));
+		// The payload must track the re-added id, else redo removes a boundary that no
+		// longer exists (KeyError) and the redo aborts.
+		expect((action.payload as { bndId: string }).bndId).toBe('out1');
+
+		await graphExecutors['remove_boundary'].forward(action, deps(fc, g));
+		expect(
+			fc.recordedCalls().some((c) => c.op === 'remove_boundary' && c.payload.bnd_id === 'out1')
+		).toBe(true);
+	});
+
 	it('duplicate_shared: inverse removes the new sibling and re-uniques the source', async () => {
 		const fc = new FakeControl();
 		const g = new GraphStore(fc);
