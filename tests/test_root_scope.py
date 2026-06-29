@@ -26,6 +26,29 @@ def test_root_scope_is_materialized():
         mgr.terminate(notify_gui=False)
 
 
+def test_add_node_scope_is_the_one_entry_for_root_and_sub_patch():
+    """One add path: add_node(scope=…) adds to ANY scope. Omitted/ROOT → a top-level
+    node (member of ROOT); a sub-patch uid → a member of that instance, exactly like the
+    old add_member_node (same local-keyed, shared-mirroring orchestration)."""
+    mgr = _bare_manager(use_multiprocessing=False)
+    try:
+        a = mgr.add_node("Oscillator", "inputs")  # default scope = ROOT
+        assert mgr._membership[a] == ROOT_ID
+
+        b = mgr.add_node("Buffer", "signal")
+        inst = mgr.group_nodes([a, b])
+
+        # scope=inst lands the node inside the sub-patch (a member of the instance)
+        member = mgr.add_node("Buffer", "signal", scope=inst)
+        assert member in mgr._instances[inst].members
+        assert mgr._membership[member] == inst
+        # explicit ROOT scope == omitted scope
+        c = mgr.add_node("Buffer", "signal", scope=ROOT_ID)
+        assert mgr._membership[c] == ROOT_ID
+    finally:
+        mgr.terminate(notify_gui=False)
+
+
 def test_root_is_inert_on_the_wire():
     """Step 1 keeps the protocol identical: ROOT never appears as a sub-patch instance
     in the snapshot, and a flat graph still serializes with NO instances (ROOT is

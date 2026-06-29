@@ -169,27 +169,16 @@ class ControlHub:
         if op == "list_graph":
             return self._snapshot()
         if op == "add_node":
-            # Inside a sub-patch the new node must land as a member of that
-            # instance (and mirror to shared siblings), not in the root graph.
-            inst_id = payload.get("inst_id")
-            # `member_uid` carries a node's ORIGINAL uid on redo-of-add /
-            # undo-of-delete, so the re-created node keeps its identity and the
-            # captured uid-keyed links + panel bindings reconnect to it.
-            if inst_id:
-                return await self._call_manager(
-                    manager.add_member_node,
-                    inst_id,
-                    payload["type"],
-                    payload["category"],
-                    name=payload.get("name"),
-                    params=payload.get("params"),
-                    pos=tuple(payload.get("pos") or (0, 0)),
-                    member_uid=payload.get("member_uid"),
-                )
+            # ONE add path: scope selects where the node lands — a sub-patch instance
+            # (member, mirrored across shared siblings) or, omitted, the ROOT graph. A
+            # node is conceptually a member of some scope either way. `member_uid` carries
+            # a node's ORIGINAL uid on redo-of-add / undo-of-delete so the re-created node
+            # keeps its identity and the captured uid-keyed links + panels reconnect.
             return await self._call_manager(
                 manager.add_node,
                 payload["type"],
                 payload["category"],
+                scope=payload.get("inst_id") or ROOT_ID,
                 name=payload.get("name"),
                 params=payload.get("params"),
                 pos=tuple(payload.get("pos") or (0, 0)),

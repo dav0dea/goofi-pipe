@@ -438,8 +438,20 @@ class Manager:
         params: Optional[Dict[str, Dict[str, Any]]] = None,
         member_uid: Optional[str] = None,
         membership: Optional[Dict[str, Any]] = None,
+        scope: str = ROOT_ID,
         **gui_kwargs,
     ) -> str:
+        # ONE public add path, parameterized by scope (root = the scope with no parent).
+        # Adding into a real sub-patch needs scope-specific orchestration (a template
+        # local key + strict-mirror across shared siblings), so dispatch to that core;
+        # `membership` is the LOW-LEVEL form used internally (load / sibling-mirror) and
+        # bypasses the dispatch. A top-level (ROOT) add falls through to the spawn below.
+        if scope != ROOT_ID and membership is None:
+            return self.add_member_node(
+                scope, node_type, category, name=name, params=params,
+                pos=tuple(gui_kwargs.get("pos", (0, 0))), notify_gui=notify_gui,
+                member_uid=member_uid,
+            )
         print(f"Adding node '{node_type}' from category '{category}'.")
         if name is not None and not self._service_budget_ok(name):
             raise SubPatchTooDeep(
