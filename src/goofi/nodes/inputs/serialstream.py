@@ -10,6 +10,37 @@ from goofi.node import Node
 from goofi.params import IntParam, StringParam
 
 
+def _has_dropouts(time_buf, expected_dt, tol=2.0) -> bool:
+    """Return True if the per-packet timestamps must not be interpolated across.
+
+    The serial protocols use these arrival timestamps as the x-coordinates for
+    ``np.interp``. ``np.interp`` silently draws a straight line between adjacent
+    x-coordinates, so a dropped packet (a gap in the timestamps) would be bridged
+    by a flat ramp that has nothing to do with the real signal. We refuse to
+    resample a frame whose timestamps are either:
+      * non-monotonic -- time went backwards or repeated, which is invalid as
+        interp x-coordinates, or
+      * gapped -- some inter-packet interval exceeds ``tol * expected_dt``, the
+        signature of one or more dropped packets.
+    ``expected_dt`` is the nominal inter-packet interval (e.g. the median of the
+    observed deltas); ``tol`` is how many of those intervals a gap may span
+    before it counts as a dropout.
+    """
+    t = np.asarray(time_buf, dtype=float)
+    if t.size < 2:
+        # A single (or empty) timestamp spans no interval, so there is nothing
+        # for interp to bridge across -- treat it as continuous.
+        return False
+    diffs = np.diff(t)
+    if np.any(diffs <= 0):
+        # Strictly increasing timestamps are required; <= 0 means backwards/repeat.
+        return True
+    if expected_dt <= 0:
+        # No meaningful cadence to compare against; only the monotonic check applies.
+        return False
+    return bool(np.any(diffs > tol * expected_dt))
+
+
 class SerialStream(Node):
     """
     This node streams data directly from a serial device, supporting both ECG and capacitive sensing protocols. It reads incoming data packets, decodes and resamples them in real time to provide a uniformly sampled output array suitable for further processing.
@@ -88,10 +119,17 @@ class SerialStream(Node):
                 self.last_sample = data_buf[-1]
                 return None
 
+            # Drop a frame whose packet timestamps are gapped/non-monotonic rather
+            # than let np.interp bridge the dropout and emit a corrupted signal.
+            # The cadence is self-calibrated from the median observed interval.
+            time_arr = np.asarray(time_buf, dtype=float)
+            expected_dt = np.median(np.diff(time_arr))
+            if _has_dropouts(time_arr, expected_dt):
+                return None
+
             # resample the data
             dt = 1 / self.params.serial.sfreq.value
             xs = np.arange(time_buf[0], time_buf[-1], dt)
-            # TODO: make sure the time array is correct and we don't have discontinuities
             data = np.interp(xs, time_buf, data_buf, left=self.last_sample)
 
             self.last_time = time_buf[-1]
@@ -125,6 +163,13 @@ class SerialStream(Node):
             data_buf = np.array(data_buf)
             time_buf = np.array(time_buf)
             print(data_buf.shape, time_buf.shape)
+
+            # Same dropout guard as the ECG path: refuse to interpolate across a
+            # gap/non-monotonicity in the arrival timestamps, which would let
+            # np.interp splice a straight line over the missing samples.
+            expected_dt = np.median(np.diff(time_buf))
+            if _has_dropouts(time_buf, expected_dt):
+                return None
 
             dt = 1 / self.params.serial.sfreq.value
             xs = np.arange(time_buf[0], time_buf[-1], dt)

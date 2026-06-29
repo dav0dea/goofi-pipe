@@ -44,6 +44,19 @@ class Join(Node):
 
         result_meta = deepcopy(a.meta)
         if self.params.join.method.value == "concatenate":
+            # Guard shape compatibility up front so a mismatch reads as a clear error
+            # naming both shapes, instead of numpy's terser per-dimension message. The
+            # ndim check short-circuits the per-axis comparison, keeping b.data.shape[d]
+            # in range when the rank itself differs.
+            norm_axis = axis if axis >= 0 else axis + a.data.ndim
+            if a.data.ndim != b.data.ndim or any(
+                d != norm_axis and a.data.shape[d] != b.data.shape[d] for d in range(a.data.ndim)
+            ):
+                raise ValueError(
+                    f"Cannot concatenate arrays along axis {axis}: incompatible shapes "
+                    f"{a.data.shape} and {b.data.shape} (all non-join axes must match)."
+                )
+
             # concatenate a and b
             result = np.concatenate([a.data, b.data], axis=axis)
 
@@ -53,6 +66,14 @@ class Join(Node):
                     a.meta["channels"][f"dim{axis}"] + b.meta["channels"][f"dim{axis}"]
                 )
         elif self.params.join.method.value == "stack":
+            # Stack needs identical shapes; name both on mismatch rather than letting
+            # numpy raise its shape-less "all input arrays must have the same shape".
+            if a.data.shape != b.data.shape:
+                raise ValueError(
+                    f"Cannot stack arrays: shapes must be identical but got "
+                    f"{a.data.shape} and {b.data.shape}."
+                )
+
             # stack a and b
             result = np.stack([a.data, b.data], axis=axis)
 
@@ -66,7 +87,14 @@ class Join(Node):
                 f"Unknown join method {self.params.join.method.value}. Supported are 'concatenate' and 'stack'."
             )
 
-        # TODO: properly combine metadata from both inputs
-        # TODO: update metadata information after stack
-        # TODO: check if inputs are compatible
+        # Carry sfreq sensibly (mirrors Operation): when both sides have it they
+        # should match for a meaningful join, so a stays authoritative; otherwise
+        # carry whichever side provides it. result_meta already holds a's sfreq via
+        # the deepcopy, so only the b-only case needs an explicit assignment. Absent
+        # on both sides → leave sfreq unset rather than crash.
+        if "sfreq" in a.meta and "sfreq" in b.meta:
+            result_meta["sfreq"] = a.meta["sfreq"]
+        elif "sfreq" in b.meta:
+            result_meta["sfreq"] = b.meta["sfreq"]
+
         return {"out": (result, result_meta)}

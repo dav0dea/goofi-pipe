@@ -146,7 +146,20 @@ class PhiID(Node):
                             IIT_vals[k, i, j] -= float(np.mean(atoms_res["rtr"]))
 
         elif self.params.PhiID.mode.value == "one-vs-others":
-            # TODO: validate number of channels
+            # one-vs-others pits a single target channel against each of the others, so it
+            # is only meaningful with at least 2 channels (a lone channel has no "others").
+            if n_channels < 2:
+                raise ValueError(f"one-vs-others mode requires at least 2 channels, got {n_channels}.")
+
+            # tgt_index is an unconstrained param that can't know the real channel count, so
+            # guard it here: an out-of-range index would otherwise silently wrap around
+            # (numpy negative indexing) or raise a cryptic IndexError on `data[tgt_index]`.
+            tgt_index = self.params.PhiID.tgt_index.value
+            if not 0 <= tgt_index < n_channels:
+                raise ValueError(
+                    f"tgt_index {tgt_index} is out of bounds for {n_channels} channels "
+                    f"(valid range [0, {n_channels}))."
+                )
 
             # Prepare output array: one row per channel, one col per atom
             PhiID_vals = np.zeros((n_atoms, n_channels), dtype=np.float32)
@@ -154,7 +167,6 @@ class PhiID(Node):
             IIT_vals = np.zeros((len(IIT_metrics), n_channels), dtype=np.float32)
 
             # Compute PhiID for each channel vs. the mean of all other channels
-            tgt_index = self.params.PhiID.tgt_index.value
             tgt = data[tgt_index]
             for i in range(n_channels):
                 if i == tgt_index:
