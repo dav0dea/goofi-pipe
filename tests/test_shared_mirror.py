@@ -292,6 +292,40 @@ def test_set_expression_on_a_node_member_of_a_shared_subpatch_with_a_nested_inst
         mgr.terminate(notify_gui=False)
 
 
+def test_deleting_one_shared_instance_keeps_a_sibling_chained_boundary_intact():
+    """Deleting one instance of a shared family must leave its siblings + the definition
+    untouched. The recursive teardown defensively unwires parent boundaries that forward
+    into each removed member; for a SHARED parent (the instance being deleted) that unwire
+    must NOT mirror to surviving siblings — else deleting P1 silently unwires P2's chained
+    boundary (and drops its external links) and poisons the definition."""
+    mgr = _bare_manager(use_multiprocessing=False)
+    try:
+        leaf = mgr.add_node("Oscillator", "inputs")
+        inner = mgr.group_nodes([leaf])  # nested sub-patch C
+        outer = mgr.group_nodes([inner])  # P holds C as a nested-instance member
+        bP = mgr.add_boundary(outer, "out", "ARRAY")
+        mgr.wire_boundary_to_leaf(outer, bP, leaf, "out")  # chain P.bP -> C -> leaf.out
+        def_P = mgr.share_instance(outer)
+        sibling = mgr.instantiate_definition(def_P)  # P2, keeps def_P alive
+
+        # Precondition: the chained boundary is wired on the sibling AND in the definition.
+        assert mgr._instances[sibling].interface[bP].inner_node is not None
+        assert mgr._definitions[def_P].interface[bP].inner_node is not None
+
+        mgr.remove_instance(outer)  # delete the original P1
+
+        # The sibling survives untouched and the definition is not poisoned.
+        assert sibling in mgr._instances
+        assert mgr._instances[sibling].interface[bP].inner_node is not None, (
+            "deleting one shared instance unwired the sibling's chained boundary"
+        )
+        assert mgr._definitions[def_P].interface[bP].inner_node is not None, (
+            "deleting one shared instance poisoned the definition's interface"
+        )
+    finally:
+        mgr.terminate(notify_gui=False)
+
+
 def test_remove_shared_member_mirrors_across_siblings_and_def():
     """Bug C: deleting a member of a SHARED sub-patch is the symmetric inverse of the
     shared ADD — it mirror-removes the member from the definition AND every sibling

@@ -1412,6 +1412,11 @@ class Manager:
         if inst_id not in self._instances:
             raise KeyError(f"No such sub-patch: {inst_id}")
         self._reject_if_in_shared_parent(inst_id, "delete")
+        # Defensive parent-boundary unwire belongs HERE, at the top of the teardown, where
+        # the parent SURVIVES (and is non-shared, guaranteed by the check above) so the
+        # unwire is local. Doing it inside the recursion would route through the mirroring
+        # wire_boundary on a still-present shared parent and corrupt its surviving siblings.
+        self._unwire_parent_boundaries_to(inst_id, notify_gui=False)
         self._remove_instance_core(inst_id)
         if self._bridge is not None and notify_gui:
             self._bridge.control.on_subpatch_changed()
@@ -1421,8 +1426,10 @@ class Manager:
         then the whole subtree comes down regardless of its internal sharing)."""
         inst = self._instances[inst_id]
         def_id = inst.def_id
-        # Defensive: drop any parent boundary that forwarded into this instance.
-        self._unwire_parent_boundaries_to(inst_id, notify_gui=False)
+        # NB: the parent-boundary defensive unwire is done ONCE by the public remove_instance
+        # (where the parent survives and is non-shared). It must NOT run during this recursion:
+        # a recursed child's parent is itself in the teardown and may be a still-present SHARED
+        # instance, where the unwire would mirror to and corrupt surviving siblings.
         for member in list(inst.members.keys()):
             if member in self._instances:
                 self._remove_instance_core(member)  # recurse into the nested subtree
