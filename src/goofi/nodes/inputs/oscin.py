@@ -207,9 +207,15 @@ class OSCIn(Node):
 
         if not self.messages:
             return None
-        out = self.messages
-        if (not self.params.osc.keep_messages.value) or self.params.osc.clear.value:
-            self.messages = {}
+        # Hand downstream an independent snapshot: the OSC server runs on its own
+        # thread and inserts new keys via `_handle_message` -> self.messages[...].
+        # If we returned the live dict, encode iterating it (TABLE) on the
+        # processing thread would race that insert -> "dictionary changed size
+        # during iteration". Copying under the lock keeps the read+swap consistent.
+        with self._lock:
+            out = dict(self.messages)
+            if (not self.params.osc.keep_messages.value) or self.params.osc.clear.value:
+                self.messages = {}
         return {"message": (out, {})}
 
     # -------- live param changes (restart backend safely) -------- #
