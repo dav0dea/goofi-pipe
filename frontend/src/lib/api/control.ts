@@ -261,7 +261,12 @@ export interface GraphSnapshot {
 export type ControlEvent =
 	| { event: 'hello'; payload: GraphSnapshot }
 	| { event: 'node_added'; payload: NodeInstanceInfo }
-	| { event: 'node_removed'; payload: { node: string } }
+	| {
+			event: 'node_removed';
+			// `membership` is the scope the node was a member of ({instance, local_name} —
+			// ROOT for a top-level node), so the store drops it from that scope's members map.
+			payload: { node: string; membership: { instance: string; local_name: string } | null };
+	  }
 	| { event: 'node_moved'; payload: { node: string; pos: [number, number] } }
 	| { event: 'link_added'; payload: LinkInfo }
 	| { event: 'link_removed'; payload: LinkInfo }

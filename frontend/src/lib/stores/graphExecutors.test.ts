@@ -67,7 +67,7 @@ describe('graph executors — simple kinds', () => {
 		};
 		await graphExecutors['add_node'].inverse(action, deps(fc, g));
 		expect(fc.recordedCalls().some((c) => c.op === 'remove_node' && c.payload.node === 'osc0')).toBe(true);
-		fc.emit({ event: 'node_removed', payload: { node: 'osc0' } });
+		fc.emit({ event: 'node_removed', payload: { node: 'osc0', membership: null } });
 		expect(g.nodes.find((n) => n.name === 'osc0')).toBeUndefined();
 	});
 
@@ -135,7 +135,7 @@ describe('graph executors — simple kinds', () => {
 		};
 
 		await graphExecutors['remove_node'].forward(action, deps(fc, g));
-		fc.emit({ event: 'node_removed', payload: { node: 'osc0' } });
+		fc.emit({ event: 'node_removed', payload: { node: 'osc0', membership: null } });
 		fc.emit({ event: 'link_removed', payload: link });
 		expect(g.nodes.find((n) => n.name === 'osc0')).toBeUndefined();
 		expect(g.links).toHaveLength(0);
@@ -550,7 +550,7 @@ describe('graph store — recording wrappers + undo replay', () => {
 
 		await g.removeNode('osc0');
 		expect(history().canUndo).toBe(true);
-		fc.emit({ event: 'node_removed', payload: { node: 'osc0' } });
+		fc.emit({ event: 'node_removed', payload: { node: 'osc0', membership: null } });
 		expect(g.nodes.find((n) => n.name === 'osc0')).toBeUndefined();
 
 		await history().undo();
@@ -694,7 +694,7 @@ describe('graph store — recording wrappers + undo replay', () => {
 
 		fc.emit({ event: 'node_added', payload: nodeInfo('osc0') });
 		await g.removeNode('osc0');
-		fc.emit({ event: 'node_removed', payload: { node: 'osc0' } });
+		fc.emit({ event: 'node_removed', payload: { node: 'osc0', membership: null } });
 		// node_removed clears the binding
 		expect(ws.panelsBoundTo('osc0')).toHaveLength(0);
 

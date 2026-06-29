@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
+	ROOT_ID,
 	buildMemberIndex,
 	parentOf,
 	childrenOfScope,
@@ -10,12 +11,22 @@ import {
 	type SceneInstance
 } from './subpatchScene';
 
-// outer > [nodeA, inner]; inner > [leaf]. inner exposes leaf.out as boundary 'iout';
-// outer exposes inner.iout as boundary 'oout' (a 2-level chain).
+// Root ≡ a scope: ROOT is a first-class instance (parent=null, no boundaries) whose
+// members are every top-level entity. outer > [nodeA, inner]; inner > [leaf]. inner
+// exposes leaf.out as boundary 'iout'; outer exposes inner.iout as boundary 'oout' (a
+// 2-level chain). 'top' is a plain top-level node — a ROOT member, like outer.
 function fixture(): Record<string, SceneInstance> {
 	return {
-		outer: {
+		[ROOT_ID]: {
 			parent: null,
+			members: {
+				top: { uid: 'top', is_instance: false },
+				outer: { uid: 'outer', is_instance: true }
+			},
+			interface: {}
+		},
+		outer: {
+			parent: ROOT_ID,
 			members: {
 				nodeA: { uid: 'a', is_instance: false },
 				inner: { uid: 'inner', is_instance: true }
@@ -35,14 +46,15 @@ function fixture(): Record<string, SceneInstance> {
 }
 
 describe('parentOf', () => {
-	it('walks node -> instance -> instance -> null', () => {
+	it('walks node -> instance -> ROOT, with ROOT itself parent-less', () => {
 		const insts = fixture();
 		const idx = buildMemberIndex(insts);
 		expect(parentOf('a', idx)).toBe('outer'); // node directly in outer
 		expect(parentOf('leaf', idx)).toBe('inner'); // node in nested inner
 		expect(parentOf('inner', idx)).toBe('outer'); // nested instance's parent
-		expect(parentOf('outer', idx)).toBe(null); // root
-		expect(parentOf('top', idx)).toBe(null); // a top-level node (not a member)
+		expect(parentOf('outer', idx)).toBe(ROOT_ID); // a top-level instance is a ROOT member
+		expect(parentOf('top', idx)).toBe(ROOT_ID); // a top-level node is a ROOT member
+		expect(parentOf(ROOT_ID, idx)).toBe(null); // ROOT is the top of the tree
 	});
 });
 
@@ -52,9 +64,9 @@ describe('childrenOfScope', () => {
 		const idx = buildMemberIndex(insts);
 		const nodeUids = ['a', 'leaf', 'top'];
 
-		const root = childrenOfScope(null, insts, nodeUids, idx);
+		const root = childrenOfScope(ROOT_ID, insts, nodeUids, idx);
 		expect(root.nodeUids).toEqual(['top']); // 'a' is inside outer; 'leaf' inside inner
-		expect(root.instUids).toEqual(['outer']); // 'inner' is NOT a root child
+		expect(root.instUids).toEqual(['outer']); // 'inner' is NOT a root child; ROOT is not its own child
 
 		const inOuter = childrenOfScope('outer', insts, nodeUids, idx);
 		expect(inOuter.nodeUids).toEqual(['a']);
@@ -67,10 +79,10 @@ describe('childrenOfScope', () => {
 });
 
 describe('drawEndpoint', () => {
-	it('single-level: a top-level node at root is the identity', () => {
+	it('single-level: a top-level node at the ROOT scope is the identity', () => {
 		const insts = fixture();
 		const idx = buildMemberIndex(insts);
-		expect(drawEndpoint('top', 'out', 'out', null, insts, idx)).toEqual({ node: 'top', handle: 'out' });
+		expect(drawEndpoint('top', 'out', 'out', ROOT_ID, insts, idx)).toEqual({ node: 'top', handle: 'out' });
 	});
 
 	it('single-level: a member of a top-level instance climbs ONE hop to its boundary', () => {
@@ -86,7 +98,7 @@ describe('drawEndpoint', () => {
 		const insts = fixture();
 		const idx = buildMemberIndex(insts);
 		// leaf.out at the ROOT scope: leaf -> inner.iout -> outer.oout (the collapsed outer node's port)
-		expect(drawEndpoint('leaf', 'out', 'out', null, insts, idx)).toEqual({ node: 'outer', handle: 'oout' });
+		expect(drawEndpoint('leaf', 'out', 'out', ROOT_ID, insts, idx)).toEqual({ node: 'outer', handle: 'oout' });
 		// a direct child of outer at the outer scope draws as itself
 		expect(drawEndpoint('a', 'x', 'out', 'outer', insts, idx)).toEqual({ node: 'a', handle: 'x' });
 	});
@@ -95,7 +107,7 @@ describe('drawEndpoint', () => {
 		const insts = fixture();
 		const idx = buildMemberIndex(insts);
 		// leaf has no boundary for slot 'private' -> not exposed -> hidden at the root scope
-		expect(drawEndpoint('leaf', 'private', 'out', null, insts, idx)).toBe(null);
+		expect(drawEndpoint('leaf', 'private', 'out', ROOT_ID, insts, idx)).toBe(null);
 	});
 
 	it('returns null when the endpoint is outside the entered scope subtree', () => {

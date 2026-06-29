@@ -15,6 +15,7 @@ import { collectPanels } from '$lib/workspace/model';
 import { asStateObject, linkedNodeName } from '$lib/workspace/panelState';
 import { isArrayFrame, isStringFrame, type DataFrame } from '$lib/codec/decode';
 import { reconstructMeta } from '$lib/editor/metaFormat';
+import { ROOT_ID } from '$lib/editor/subpatchScene';
 import type { InstanceInfo, LinkInfo, NodeInstanceInfo, NodeTypeInfo } from '$lib/api/control';
 
 export interface FrameSummary {
@@ -96,10 +97,15 @@ export const query = {
 	nodeTypes: (): NodeTypeInfo[] | null => graph().nodeTypes,
 	/** Every sub-patch instance, keyed by uid (the universal node key). Each is the
 	 * server-computed record (parent, members{local:{uid,is_instance}}, slots, siblings,
-	 * error, …) the editor mirrors. */
-	instances: (): Record<string, InstanceInfo> => graph().instances,
-	/** One sub-patch instance by uid, or null. */
-	instance: (uid: string): InstanceInfo | null => graph().instances[uid] ?? null,
+	 * error, …) the editor mirrors. ROOT (the materialized root scope) is excluded — it's
+	 * the canvas, not a sub-patch the agent operates on. */
+	instances: (): Record<string, InstanceInfo> => {
+		const { [ROOT_ID]: _root, ...rest } = graph().instances;
+		return rest;
+	},
+	/** One sub-patch instance by uid, or null (ROOT is not a sub-patch). */
+	instance: (uid: string): InstanceInfo | null =>
+		uid === ROOT_ID ? null : graph().instances[uid] ?? null,
 	node: (uid: string): NodeInstanceInfo | null => graph().nodeById(uid),
 	nodeParams: (uid: string): NodeInstanceInfo['params'] | null =>
 		graph().nodeById(uid)?.params ?? null,

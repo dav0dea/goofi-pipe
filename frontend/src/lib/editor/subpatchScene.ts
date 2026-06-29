@@ -3,14 +3,25 @@
  *
  * The backend ships a recursive instance tree (each instance has a `parent` and
  * `members` keyed by template-local). The editor renders ONE scope at a time — the
- * direct children of the entered instance (null = the root patch) — drawing real nodes
- * and nested instances as peers, and rerouting any link that crosses a sub-patch
- * boundary to the nearest VISIBLE boundary port. This module is the testable core of
- * that mapping; `NodeEditorPanel.svelte` is a thin descriptor->SvelteFlow adapter over it.
+ * direct children of the entered instance — drawing real nodes and nested instances as
+ * peers, and rerouting any link that crosses a sub-patch boundary to the nearest VISIBLE
+ * boundary port. The root patch is just another scope: ROOT_ID names the first-class
+ * root instance (parent=null, no boundaries) whose members are every top-level entity, so
+ * there is no null special case — `scope` is always a real instance id. This module is the
+ * testable core of that mapping; `NodeEditorPanel.svelte` is a thin descriptor->SvelteFlow
+ * adapter over it.
  *
  * Kept free of Svelte/rune types so it unit-tests with plain objects (CLAUDE.md: rune
  * glue can't mount in vitest — keep the logic in a .ts module that is unit-tested).
  */
+
+/**
+ * The reserved id of the root scope. MUST match `goofi.manager.ROOT_ID` — the backend
+ * ships ROOT as an instance and reports every top-level entity's membership/parent against
+ * it, so the editor's root scope is literally this id (never `null`). Lives here, in the
+ * pure scope-algebra module, so it stays dependency-light and co-located with its tests.
+ */
+export const ROOT_ID = '__root__';
 
 /**
  * Boundary-pill node id codec — the SINGLE source of truth for how a sub-patch's
@@ -86,11 +97,12 @@ export function parentOf(uid: string, index: Map<string, MemberEntry>): string |
 	return index.get(uid)?.instId ?? null;
 }
 
-/** The direct children of a scope (null = root): real-node uids and nested-instance
- * uids whose parent === scope. This is what the canvas renders at the entered depth —
- * a nested instance shows up ONLY inside its parent, never leaked to the root. */
+/** The direct children of a scope: real-node uids and nested-instance uids whose
+ * parent === scope (`scope` is a real instance id — ROOT_ID for the root patch). This is
+ * what the canvas renders at the entered depth — a nested instance shows up ONLY inside
+ * its parent, never leaked to the root; ROOT (parent=null) is never its own child. */
 export function childrenOfScope(
-	scope: string | null,
+	scope: string,
 	instances: Record<string, SceneInstance>,
 	nodeUids: string[],
 	index: Map<string, MemberEntry>
@@ -107,13 +119,14 @@ export function childrenOfScope(
  *  - {node, handle} when the endpoint (or an ancestor of it) is a direct child of scope;
  *  - null when a level doesn't expose the slot up the chain (purely-internal link, hidden);
  *  - null when the endpoint lives OUTSIDE the entered scope's subtree.
- * At the root scope this reduces to the identity for a top-level node and to a one-hop
- * climb for a member of a top-level instance — bit-identical to the single-level case. */
+ * At the root scope (scope === ROOT_ID) this reduces to the identity for a top-level node
+ * and to a one-hop climb for a member of a top-level instance — bit-identical to the
+ * single-level case. */
 export function drawEndpoint(
 	uid: string,
 	slot: string,
 	dir: 'in' | 'out',
-	scope: string | null,
+	scope: string,
 	instances: Record<string, SceneInstance>,
 	index: Map<string, MemberEntry>
 ): { node: string; handle: string } | null {

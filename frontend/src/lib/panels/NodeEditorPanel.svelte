@@ -54,6 +54,7 @@
 		type SubPatchPort
 	} from '$lib/api/control';
 	import {
+		ROOT_ID,
 		buildMemberIndex,
 		childrenOfScope,
 		drawEndpoint as sceneDrawEndpoint,
@@ -213,14 +214,17 @@
 		slot: string,
 		dir: 'in' | 'out'
 	): { node: string; handle: string } | null {
-		return sceneDrawEndpoint(node, slot, dir, entered ?? null, g.instances, memberIndex);
+		// Root ≡ a scope: the scene algebra always takes a real scope id — ROOT_ID at the
+		// root patch (childrenOfScope(ROOT_ID) renders its members). `entered` stays null at
+		// root for the "are we inside a sub-patch?" decisions (boundary wiring, member adds).
+		return sceneDrawEndpoint(node, slot, dir, entered ?? ROOT_ID, g.instances, memberIndex);
 	}
 
-	// Render the DIRECT CHILDREN of the entered scope (null = root): real nodes AND
-	// nested instances (collapsed, double-click-enterable group nodes via the SAME
-	// GoofiNode component); plus, inside an entered instance, its In/Out boundary pills.
+	// Render the DIRECT CHILDREN of the entered scope (ROOT_ID = the root patch): real
+	// nodes AND nested instances (collapsed, double-click-enterable group nodes via the
+	// SAME GoofiNode component); plus, inside an entered instance, its In/Out boundary pills.
 	$effect(() => {
-		const scope = entered ?? null;
+		const scope = entered ?? ROOT_ID;
 		const next: Node[] = [];
 		const kids = childrenOfScope(scope, g.instances, g.nodes.map((n) => n.uid), memberIndex);
 		const childUids = [...kids.nodeUids, ...kids.instUids];
@@ -724,7 +728,7 @@
 			// every top-level node PLUS the collapsed sub-patch group nodes (which
 			// are virtual nodes — they select like any node).
 			const kids = childrenOfScope(
-				entered ?? null,
+				entered ?? ROOT_ID,
 				g.instances,
 				g.nodes.map((n) => n.uid),
 				memberIndex

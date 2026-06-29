@@ -30,6 +30,7 @@ import type { SettingsMap } from '$lib/viewers/settingsSchema';
 import type { ViewerKind } from '$lib/viewers/kind';
 import { history, type Action, type ExprState } from './history.svelte';
 import { captureNavContext } from '$lib/workspace/navContext';
+import { ROOT_ID } from '$lib/editor/subpatchScene';
 
 export class GraphStore {
 	nodes = $state<NodeInstanceInfo[]>([]);
@@ -243,12 +244,20 @@ export class GraphStore {
 				// patch (`viewers`) if present, else the defaults in the stores.
 				this._seedNodeViewerState(ev.payload);
 				this.nodes = [...this.nodes.filter((n) => n.uid !== ev.payload.uid), ev.payload];
+				// Every node is a member of SOME scope (ROOT for a top-level one). Fold it
+				// into the owning instance's members map — the index the canvas renders that
+				// scope's children from — so an incremental add keeps the scope in sync
+				// (member_count, child set) without a wholesale subpatch_changed snapshot.
+				this._addScopeMember(ev.payload.membership ?? null, ev.payload.uid);
 				break;
 			case 'node_removed':
 				this.nodes = this.nodes.filter((n) => n.uid !== ev.payload.node);
 				this.links = this.links.filter(
 					(l) => l.node_in !== ev.payload.node && l.node_out !== ev.payload.node
 				);
+				// Drop it from the owning scope's members map (mirror of node_added) so the
+				// scope stays in sync without a snapshot.
+				this._removeScopeMember(ev.payload.membership ?? null);
 				ui().forget(ev.payload.node);
 				forgetInlineView(ev.payload.node);
 				consoleStore().forgetNodeDedup(ev.payload.node);
@@ -786,6 +795,9 @@ export class GraphStore {
 	nodeById(id: string): NodeInstanceInfo | null {
 		const real = this._realNode(id);
 		if (real) return real;
+		// ROOT is a real scope in the mirror (the editor renders the root canvas from its
+		// members), but it is the canvas itself — never a selectable/synth group node.
+		if (id === ROOT_ID) return null;
 		const inst = this.instances[id];
 		if (!inst) {
 			this._synthCache.delete(id);
@@ -849,6 +861,32 @@ export class GraphStore {
 				this._synthCache.delete(uid); // cache lifetime tracks the instances map
 			}
 		}
+	}
+
+	/** Fold an entity into its owning scope's members map, keeping member_count in step.
+	 * Root ≡ a scope: a top-level node carries membership {instance: ROOT_ID, …}, a member
+	 * carries {instance: <sub-patch>, …}. The map (local -> {uid, is_instance}) is the index
+	 * the editor renders a scope's direct children from, so an incremental add/remove must
+	 * update it exactly as a subpatch_changed snapshot would. A node is never a nested
+	 * instance, so is_instance is always false here. */
+	private _addScopeMember(
+		membership: { instance: string; local_name: string } | null,
+		uid: string
+	): void {
+		if (!membership) return;
+		const inst = this.instances[membership.instance];
+		if (!inst) return;
+		inst.members[membership.local_name] = { uid, is_instance: false };
+		inst.member_count = Object.keys(inst.members).length;
+	}
+
+	/** Drop an entity from its owning scope's members map (mirror of _addScopeMember). */
+	private _removeScopeMember(membership: { instance: string; local_name: string } | null): void {
+		if (!membership) return;
+		const inst = this.instances[membership.instance];
+		if (!inst) return;
+		delete inst.members[membership.local_name];
+		inst.member_count = Object.keys(inst.members).length;
 	}
 
 	/** Build the virtual NodeInstanceInfo that stands in for a sub-patch instance
