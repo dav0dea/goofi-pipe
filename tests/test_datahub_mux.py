@@ -76,6 +76,29 @@ def test_rewire_node_repoints_mux_and_reregisters_handler_on_the_new_ref():
     assert fwd.frames == [b"FRESH"]
 
 
+def test_detach_unregisters_the_current_ref_not_a_stale_capture():
+    """When the last viewer of a slot disconnects, the unregister must target the CURRENT
+    ref (mux.ref) — which rewire_node may have re-pointed at the restarted node — not the
+    ref captured when the connection opened. Using the stale capture leaves the new ref's
+    view handler + reducer orphaned (the round-1 restart fix's regression)."""
+    old = _RecordingRef("n1")  # the ref captured at connect time (now dead after a restart)
+    new = _RecordingRef("n1")  # the live ref rewire_node re-pointed the mux at
+    hub = _hub_with_nodes({"n1": new})
+    mux = _SlotMux(ref=new, slot="out")
+    fwd = _FakeFwd()
+    mux.add(fwd)
+    hub._muxes[("n1", "out")] = mux
+
+    asyncio.run(hub._detach(("n1", "out"), mux, fwd))
+
+    # The last viewer left → unregister the handler on the CURRENT ref and drop the mux.
+    assert any(slot == "out" and fn is None for (slot, fn, _r, _v) in new.handlers), (
+        "did not unregister the current (mux.ref) handler"
+    )
+    assert old.handlers == [], "touched the stale captured ref instead of mux.ref"
+    assert ("n1", "out") not in hub._muxes
+
+
 def test_dispatch_fans_raw_bytes_verbatim():
     mux = _SlotMux(ref=_FakeRef(), slot="out")
     a, b = _FakeFwd(), _FakeFwd()

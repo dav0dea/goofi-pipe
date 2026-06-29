@@ -234,21 +234,30 @@ class DataHub:
                 elif msg.type == WSMsgType.ERROR:
                     break
         finally:
-            async with self._lock:
-                empty = mux.remove(fwd)
-                if empty:
-                    # Detach off the event loop too (blocking UNREGISTER_VIEWER +
-                    # iceoryx2 teardown) so a slow disconnect can't stall other
-                    # viewers; under _lock so a re-subscribe can't interleave.
-                    try:
-                        await loop.run_in_executor(None, ref.set_data_handler, slot, None)
-                    except Exception:
-                        pass
-                    self._muxes.pop(key, None)
-                else:
-                    mux.push_spec_if_changed()  # re-fold without this viewer
+            await self._detach(key, mux, fwd)
             await fwd.close()
         return ws
+
+    async def _detach(self, key, mux: "_SlotMux", fwd) -> None:
+        """Drop one forwarder from its mux; if it was the last, unregister the view
+        handler and forget the mux. Unregisters from mux.ref — the CURRENT ref, which
+        rewire_node may have re-pointed at a restarted node — not a ref captured when
+        the connection opened (that one is dead and unregistering it would orphan the
+        live ref's handler + reducer). Mirrors close_all, which also keys on mux.ref."""
+        loop = asyncio.get_running_loop()
+        async with self._lock:
+            empty = mux.remove(fwd)
+            if empty:
+                # Detach off the event loop too (blocking UNREGISTER_VIEWER +
+                # iceoryx2 teardown) so a slow disconnect can't stall other
+                # viewers; under _lock so a re-subscribe can't interleave.
+                try:
+                    await loop.run_in_executor(None, mux.ref.set_data_handler, mux.slot, None)
+                except Exception:
+                    pass
+                self._muxes.pop(key, None)
+            else:
+                mux.push_spec_if_changed()  # re-fold without this viewer
 
     async def rewire_node(self, uid: str) -> None:
         """Re-point this node's muxes at its NEW NodeRef after a restart and re-register
