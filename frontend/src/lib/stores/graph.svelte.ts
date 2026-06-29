@@ -207,12 +207,19 @@ export class GraphStore {
 				for (const iid of Object.keys(this.instances)) {
 					if (!afterInst.has(iid)) workspace().clearNodeRefs(iid);
 				}
+				// Instances present BEFORE this resync — seed viewer state only for the
+				// genuinely-new ones (mirror of _reconcileNodes' seed-only-new rule). Re-seeding
+				// a SURVIVING instance every subpatch_changed would overwrite its live, un-pushed
+				// collapse/kind (seedNodeViewers/seedInlineView clobber unconditionally), re-popping
+				// a collapsed viewer open → remounting its ViewerFeed → churning the data sub.
+				const knownInst = new Set(Object.keys(this.instances));
 				this._reconcileNodes(snap.nodes);
 				this.links = snap.links;
 				this._reconcileInstances(snap.instances ?? {});
-				// Seed collapse/kind/settings for each instance's output-boundary slots (its
-				// synth node carries inst.viewers) so a sub-patch viewer state round-trips.
+				// Seed collapse/kind/settings for a NEW instance's output-boundary slots (its synth
+				// node carries inst.viewers) so a freshly-created sub-patch's viewer state applies.
 				for (const iid of Object.keys(this.instances)) {
+					if (knownInst.has(iid)) continue;
 					const sn = this.nodeById(iid);
 					if (sn) this._seedNodeViewerState(sn);
 				}

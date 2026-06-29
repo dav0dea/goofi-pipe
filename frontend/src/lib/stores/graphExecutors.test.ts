@@ -6,6 +6,7 @@ import { graphExecutors } from './graphExecutors';
 import { history, type Action, type ExecutorDeps, type NavContext } from './history.svelte';
 import { collectPanels } from '$lib/workspace/model';
 import { setInlineKind, rawInlineView } from '$lib/viewers/inlineView.svelte';
+import { ui } from '$lib/stores/ui.svelte';
 import type { NodeInstanceInfo, LinkInfo } from '$lib/api/control';
 
 const EMPTY_CTX: NavContext = { activeWorkspaceId: 'w', activePanelId: null, enteredPath: {}, selection: {} };
@@ -816,5 +817,52 @@ describe('subpatch_changed reconciles real nodes in place (no viewer churn)', ()
 		fc.emit({ event: 'subpatch_changed', payload: subpatchSnapshot([nodeInfo('osc0')], {}) });
 		expect(g.nodeById('gone0')).toBeNull();
 		expect(rawInlineView('gone0', 'out').kind).toBeUndefined(); // its inline view is dropped
+	});
+
+	function instanceRecord(): Record<string, unknown> {
+		return {
+			uid: 'subpatch0',
+			name: 'subpatch0',
+			kind: 'subpatch',
+			def_id: null,
+			parent: null,
+			interface: { out0: { dir: 'out', dtype: 'ARRAY', inner_node: 'm0', inner_slot: 'out' } },
+			pos: [0, 0],
+			members: { oscillator0: { uid: 'm0', is_instance: false } },
+			slots: { input: {}, output: { out0: 'ARRAY' } },
+			siblings: [],
+			error: null,
+			viewers: {},
+			member_count: 1
+		};
+	}
+
+	it('does NOT reset a surviving instance viewer’s collapsed state on resync', () => {
+		const fc = new FakeControl();
+		const g = new GraphStore(fc);
+		// Seed the instance (a fresh-session hello seeds its viewers once).
+		fc.emit({
+			event: 'hello',
+			payload: {
+				nodes: [],
+				links: [],
+				instances: { subpatch0: instanceRecord() },
+				save_path: null,
+				unsaved_changes: false,
+				instance_id: 's',
+				layout: null
+			} as never
+		});
+		// User collapses the sub-patch's inline output viewer (live, un-pushed state).
+		ui().setSlotExpanded('subpatch0', 'out0', false);
+		expect(ui().isSlotExpanded('subpatch0', 'out0')).toBe(false);
+
+		// A later structural edit (e.g. add a member elsewhere) fires subpatch_changed
+		// with this instance SURVIVING and its viewers map still empty (push not landed).
+		fc.emit({ event: 'subpatch_changed', payload: subpatchSnapshot([], { subpatch0: instanceRecord() }) });
+
+		// Re-seeding a survivor would re-pop the viewer open → remount ViewerFeed →
+		// churn (close+reopen) its data subscription. It must stay collapsed.
+		expect(ui().isSlotExpanded('subpatch0', 'out0')).toBe(false);
 	});
 });
