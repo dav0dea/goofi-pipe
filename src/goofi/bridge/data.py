@@ -211,10 +211,26 @@ class DataHub:
                 # iceoryx2 .view subscriber); run it off the event loop so it can't
                 # stall other viewers' sends. Held under _lock so a concurrent
                 # connect/disconnect for the same slot can't interleave.
-                await loop.run_in_executor(
-                    None,
-                    functools.partial(ref.set_data_handler, slot, on_frame, raw=True, view=True),
-                )
+                try:
+                    await loop.run_in_executor(
+                        None,
+                        functools.partial(ref.set_data_handler, slot, on_frame, raw=True, view=True),
+                    )
+                except Exception:
+                    # A transport/iceoryx2 fault mid-registration is non-atomic: a
+                    # REGISTER_VIEWER may have landed before the subscriber build threw,
+                    # which would leave the node reducing into a dead subscriber. Undo it,
+                    # then tear down the already-started forwarder + ws here — the
+                    # try/finally that normally closes fwd opens BELOW this block, so an
+                    # escape would leak the parked sender task + a stranded viewer. Guard
+                    # parity with rewire_node / _detach / close_all.
+                    try:
+                        await loop.run_in_executor(None, ref.set_data_handler, slot, None)
+                    except Exception:
+                        pass
+                    await fwd.close()
+                    await ws.close(code=4011, message=b"view registration failed")
+                    return ws
                 self._muxes[key] = mux
             mux.add(fwd)
             mux.push_spec_if_changed()  # fold now includes this viewer

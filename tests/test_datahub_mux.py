@@ -147,6 +147,54 @@ def test_push_spec_if_changed_folds_richest_and_dedups():
     assert ref.specs[-1][1]["axes"][0]["max"] == 800
 
 
+def test_connect_path_registration_failure_cleans_up_without_leaking():
+    """The first-viewer registration (set_data_handler view=True) does blocking IPC that
+    can fault (iceoryx2 subscriber build, ctrl publish). If it raises, the handler must
+    undo any partial REGISTER_VIEWER (so the node doesn't reduce into a dead subscriber)
+    and tear down the started forwarder + ws — not let the exception escape past the
+    try/finally and leak the parked sender task + a stranded viewer registration."""
+    import asyncio
+    from types import SimpleNamespace
+
+    from aiohttp import web
+    from aiohttp.test_utils import TestClient, TestServer
+
+    from goofi.bridge.data import DataHub
+
+    class _FailingRef:
+        uid = "n1"
+        output_slots = {"out": "ARRAY"}
+
+        def __init__(self):
+            self.unregister_calls = []
+
+        def set_data_handler(self, slot, fn, raw=False, view=False):
+            if view and fn is not None:
+                raise RuntimeError("iceoryx2 .view subscriber build failed")
+            self.unregister_calls.append(slot)  # the cleanup unregister (fn=None)
+
+        def set_viewspec(self, slot, spec):
+            pass
+
+    async def run():
+        ref = _FailingRef()
+        manager = SimpleNamespace(nodes={"n1": ref}, _instances={})
+        server = SimpleNamespace(host="127.0.0.1", manager=manager)
+        hub = DataHub(server)
+        app = web.Application()
+        app.add_routes([web.get("/data/{node}/{slot}/{kind}", hub.handler)])
+        async with TestClient(TestServer(app)) as client:
+            ws = await client.ws_connect("/data/n1/out/line")
+            await ws.receive()  # server closes the ws after the failed registration
+            await ws.close()
+            await asyncio.sleep(0.05)
+            # No mux stored, and the partial registration was undone (orphan-viewer guard).
+            assert hub._muxes == {}, "a mux was stored despite a failed registration"
+            assert ref.unregister_calls == ["out"], "partial REGISTER_VIEWER not cleaned up"
+
+    asyncio.new_event_loop().run_until_complete(run())
+
+
 def test_push_spec_dedups_on_axes_ignoring_version():
     """The node ignores ViewSpec.version, so a version-only bump (identical axes)
     must NOT trigger a redundant set_viewspec ctrl publish."""
