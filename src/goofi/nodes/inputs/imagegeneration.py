@@ -59,17 +59,8 @@ class ImageGeneration(Node):
     def setup(self):
         if self.params.image_generation.model_id.value == "stabilityai/stable-diffusion-2-1":
             self.torch, self.diffusers = import_libs("stabilityai/stable-diffusion-2-1")
-            # load StableDiffusion model
-            if self.params.img2img.enabled.value:
-                # TODO: make sure this works without internet access
-                self.sd_pipe = self.diffusers.StableDiffusionImg2ImgPipeline.from_pretrained(
-                    self.params.image_generation.model_id.value, torch_dtype=self.torch.float16
-                )
-            else:
-                # TODO: make sure this works without internet access
-                self.sd_pipe = self.diffusers.StableDiffusionPipeline.from_pretrained(
-                    self.params.image_generation.model_id.value, torch_dtype=self.torch.float16
-                )
+            # load StableDiffusion model (offline-first; see _load_sd_pipe)
+            self.sd_pipe = self._load_sd_pipe()
             # set device
             self.sd_pipe.to(self.params.image_generation.device.value)
 
@@ -102,6 +93,27 @@ class ImageGeneration(Node):
                 self.reset_last_img()
         else:
             raise ValueError(f"Unknown model: {self.params.image_generation.model_id.value}")
+
+    def _load_sd_pipe(self):
+        """Load the Stable Diffusion pipeline, preferring the local cache.
+
+        `from_pretrained(..., local_files_only=True)` serves an already-cached
+        model with no network access and raises OSError on a cache miss; only
+        then do we fall back to the normal, downloading load. This lets setup
+        succeed offline when the model is cached, mirroring the embedding node.
+        """
+        # img2img and text2img use different pipeline classes; the offline
+        # fallback applies to whichever one this configuration needs.
+        pipe_cls = (
+            self.diffusers.StableDiffusionImg2ImgPipeline
+            if self.params.img2img.enabled.value
+            else self.diffusers.StableDiffusionPipeline
+        )
+        model_id = self.params.image_generation.model_id.value
+        try:
+            return pipe_cls.from_pretrained(model_id, torch_dtype=self.torch.float16, local_files_only=True)
+        except OSError:
+            return pipe_cls.from_pretrained(model_id, torch_dtype=self.torch.float16)
 
     def process(self, prompt: Data, negative_prompt: Data, base_image: Data) -> Dict[str, Tuple[np.ndarray, Dict[str, Any]]]:
         if prompt is None:

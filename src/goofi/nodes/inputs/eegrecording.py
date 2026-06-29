@@ -1,9 +1,12 @@
+import logging
 from typing import Any, Dict, Tuple
 
 import numpy as np
 
 from goofi.node import Node
 from goofi.params import BoolParam, FloatParam
+
+logger = logging.getLogger(__name__)
 
 
 class EEGRecording(Node):
@@ -44,9 +47,9 @@ class EEGRecording(Node):
         if self.params.recording.use_example_data.value:
             if self.params.recording.file_path.value != "":
                 # both use_example_data and file_path are set
-                # TODO: add proper logging
-                print(
-                    f"Both 'use_example_data' and 'file_path' are set. Prioritizing file: {self.params.recording.file_path.value}"
+                logger.warning(
+                    "Both 'use_example_data' and 'file_path' are set. Prioritizing file: %s",
+                    self.params.recording.file_path.value,
                 )
 
         assert self.params.recording.stream_name.value != "", "Stream name cannot be empty."
