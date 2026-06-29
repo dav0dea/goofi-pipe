@@ -871,7 +871,13 @@ export class GraphStore {
 	): void {
 		if (!membership) return;
 		const inst = this.instances[membership.instance];
-		if (!inst) return;
+		// An instance always exists before its members' events (it's created via
+		// group_nodes/subpatch_changed first), so a miss is a real backend↔store desync,
+		// not a normal case — surface it instead of silently orphaning the node.
+		if (!inst) {
+			console.warn(`_addScopeMember: unknown scope ${membership.instance} for ${uid}`);
+			return;
+		}
 		inst.members[membership.local_name] = { uid, is_instance: false };
 		inst.member_count = Object.keys(inst.members).length;
 	}
@@ -880,7 +886,10 @@ export class GraphStore {
 	private _removeScopeMember(membership: { instance: string; local_name: string } | null): void {
 		if (!membership) return;
 		const inst = this.instances[membership.instance];
-		if (!inst) return;
+		if (!inst) {
+			console.warn(`_removeScopeMember: unknown scope ${membership.instance}`);
+			return;
+		}
 		delete inst.members[membership.local_name];
 		inst.member_count = Object.keys(inst.members).length;
 	}
