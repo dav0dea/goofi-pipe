@@ -79,7 +79,7 @@ class Switch(Node):
                 return
             elif selector_value == 3:
                 if string3 is not None:
-                    return {"array_out": None, "string_out": (string3.data, string2.meta)}
+                    return {"array_out": None, "string_out": (string3.data, string3.meta)}
                 return
             else:
                 raise ValueError("Selector value must be 1 or 2")
