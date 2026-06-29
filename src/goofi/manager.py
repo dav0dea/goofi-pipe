@@ -530,13 +530,13 @@ class Manager:
         if _inst_id is not None:
             _inst = self._instances.get(_inst_id)
             if _inst is not None:
-                # Deleting a single member of a SHARED sub-patch would desync it from
-                # its definition/siblings (topology isn't mirrored) and leave dangling
-                # ports — block it; the user must make the instance unique first.
+                # Deleting a member of a SHARED sub-patch is the symmetric inverse of the
+                # shared add (add_member_node): mirror-remove it from the definition AND
+                # every sibling, keeping the strict mirror intact (what makes undo of
+                # add-into-a-shared sub-patch work). A structural fan-out, so this whole
+                # incremental path is bypassed for the mirror-remove's snapshot resync.
                 if _inst.def_id:
-                    raise ValueError(
-                        f"cannot delete member {uid!r} of a shared sub-patch; make it unique first"
-                    )
+                    return self._remove_shared_member(_inst_id, uid, notify_gui=notify_gui)
                 # Capture the scope membership for the incremental node_removed BEFORE
                 # detaching (so the frontend can drop the uid from the owning scope's
                 # members map). Then unwire any boundary pointing at this member (ROOT has
@@ -549,15 +549,9 @@ class Manager:
                         _inst.interface[_bid] = replace(_e, inner_node=None, inner_slot=None)
                         unwired_boundary = True
                 self._detach_member(uid)
-        # Drop any links touching this node.
-        for link in list(self._links):
-            if link["node_out"] == uid or link["node_in"] == uid:
-                self._teardown_link(link, notify_gui=False)
-                self._links.remove(link)
-
-        # NodeContainer is the uid index — removing from it drops the node.
-        self.nodes.remove_node(uid)
-        self._node_groups.pop(uid, None)
+        # Drop links + container entry + process-group bookkeeping (membership/boundaries
+        # were handled above; the shared mirror-remove returns earlier and runs its own).
+        self._teardown_node(uid)
         # Refresh the directory so surviving nodes stop resolving `nd('name')`
         # to the node that just left.
         self._broadcast_node_directory()
@@ -572,6 +566,17 @@ class Manager:
                 self._bridge.control.on_subpatch_changed()
             else:
                 self._bridge.control.on_node_removed(uid, membership=_membership_payload)
+
+    def _teardown_node(self, uid: str) -> None:
+        """Drop a node's links, container entry, and process-group bookkeeping — the
+        membership-agnostic teardown shared by remove_node and the shared mirror-remove.
+        Does NOT touch membership / boundaries / events; the caller owns those."""
+        for link in list(self._links):
+            if link["node_out"] == uid or link["node_in"] == uid:
+                self._teardown_link(link, notify_gui=False)
+                self._links.remove(link)
+        self.nodes.remove_node(uid)
+        self._node_groups.pop(uid, None)
 
     @mark_unsaved_changes
     def add_link(
@@ -1710,6 +1715,37 @@ class Manager:
         if not def_id:
             return []
         return [i for i, inst in self._instances.items() if i != inst_id and inst.def_id == def_id]
+
+    def _remove_shared_member(self, inst_id: str, uid: str, notify_gui: bool = True) -> None:
+        """Mirror-remove a member of a SHARED sub-patch — the symmetric inverse of the
+        shared add (add_member_node). Drop the member from the definition template AND from
+        every instance in the family (the edited one + its siblings), keyed by the member's
+        per-instance `local`, so the strict mirror stays intact. This is what lets undo of
+        add-into-a-shared sub-patch work (the add's exact inverse) and makes a direct
+        member-delete consistent across all instances rather than desyncing one."""
+        inst = self._instances[inst_id]
+        local = inst.members[uid]
+        def_id = inst.def_id
+        # Atomic: a partial fan-out must not leave the family half-mirrored.
+        with self._transaction():
+            # First unwire (across the family + def, tearing down any external flat links)
+            # every boundary that forwarded into this member, via the canonical unwire path
+            # — so deleting a wired member can't leave a dangling boundary. wire_boundary
+            # mirrors the unwire to the definition + siblings, so call it once per boundary.
+            for bid in [b for b, e in list(inst.interface.items()) if e.inner_node == local]:
+                self.wire_boundary(inst_id, bid, None, None, notify_gui=False)
+            # Then drop the member from the definition template + every instance in the
+            # family (keyed by the shared per-instance `local`).
+            self._definitions[def_id].members.pop(local, None)
+            for iid in [inst_id, *self._shared_siblings(inst_id)]:
+                m_uid = self._member_uid(iid, local)
+                if m_uid is None:
+                    continue
+                self._detach_member(m_uid)
+                self._teardown_node(m_uid)
+        self._broadcast_node_directory()
+        if self._bridge is not None and notify_gui:
+            self._bridge.control.on_subpatch_changed()
 
     def _mirror_boundary_entry(self, inst_id: str, bnd_id: str, entry: Optional[Boundary]) -> None:
         """Mirror a boundary's TOPOLOGY (dir/dtype/inner/pos) to the definition and

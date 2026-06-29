@@ -187,3 +187,65 @@ def test_shared_mirror_surfaces_sibling_failure():
     finally:
         mgr._bridge = None
         mgr.terminate(notify_gui=False)
+
+
+def test_remove_shared_member_mirrors_across_siblings_and_def():
+    """Bug C: deleting a member of a SHARED sub-patch is the symmetric inverse of the
+    shared ADD — it mirror-removes the member from the definition AND every sibling
+    instance (strict mirror), instead of the old 'make it unique first' block. This is
+    what makes undo of add-into-a-shared sub-patch work (the add's exact inverse)."""
+    mgr = _bare_manager(use_multiprocessing=False)
+    try:
+        a = mgr.add_node("Oscillator", "inputs")
+        inst1 = mgr.group_nodes([a])
+        def_id = mgr.share_instance(inst1)
+        inst2 = mgr.instantiate_definition(def_id)
+
+        # add a member to the shared family — mirrors into inst2 + the definition
+        member = mgr.add_member_node(inst1, "Buffer", "signal")
+        local = mgr._instances[inst1].members[member]
+        assert local in mgr._definitions[def_id].members
+        mirror = mgr._member_uid(inst2, local)
+        assert mirror is not None and mirror in mgr.nodes
+
+        # delete it — must NOT raise, and must mirror-remove across the whole family
+        mgr.remove_node(member)
+
+        assert member not in mgr.nodes  # the edited instance's copy is gone
+        assert mirror not in mgr.nodes  # the sibling's mirror is gone too
+        assert local not in mgr._definitions[def_id].members  # def template updated
+        assert local not in mgr._instances[inst1].members.values()
+        assert local not in mgr._instances[inst2].members.values()
+    finally:
+        mgr.terminate(notify_gui=False)
+
+
+def test_remove_wired_shared_member_unwires_boundary_across_family():
+    """A shared member wired to a boundary: deleting it must also unwire that boundary in
+    the definition AND every sibling — not leave the family's interface dangling at a
+    removed local. Mirror-remove is the inverse of the shared add + its boundary wiring."""
+    mgr = _bare_manager(use_multiprocessing=False)
+    try:
+        a = mgr.add_node("Oscillator", "inputs")
+        inst1 = mgr.group_nodes([a])
+        def_id = mgr.share_instance(inst1)
+        inst2 = mgr.instantiate_definition(def_id)
+
+        member = mgr.add_member_node(inst1, "Oscillator", "inputs")
+        local = mgr._instances[inst1].members[member]
+        out_slot = list(mgr.nodes[member].output_slots)[0]
+        dtype = mgr.nodes[member].output_slots[out_slot].name
+        bnd = mgr.add_boundary(inst1, "out", dtype)
+        mgr.wire_boundary(inst1, bnd, local, out_slot)
+        # sanity: the boundary mirrored to inst2 + the def, wired to the member's local
+        assert mgr._instances[inst1].interface[bnd].inner_node == local
+        assert mgr._instances[inst2].interface[bnd].inner_node == local
+        assert mgr._definitions[def_id].interface[bnd].inner_node == local
+
+        mgr.remove_node(member)  # delete the member → its boundary must unwire everywhere
+
+        assert mgr._instances[inst1].interface[bnd].inner_node is None
+        assert mgr._instances[inst2].interface[bnd].inner_node is None
+        assert mgr._definitions[def_id].interface[bnd].inner_node is None
+    finally:
+        mgr.terminate(notify_gui=False)
