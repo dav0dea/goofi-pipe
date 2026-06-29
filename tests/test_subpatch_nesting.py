@@ -391,3 +391,186 @@ def test_unwire_chained_boundary_tears_down_deep_external_link():
         assert_subpatch_invariants(mgr)
     finally:
         mgr.terminate(notify_gui=False)
+
+
+# === Phase 3c — recursive PERSISTENCE (nested save/load round-trip) ===========
+
+def test_build_v2_tree_emits_nested_instance_without_crash():
+    """Fast white-box: building the save doc for a 2-level nested unique sub-patch must
+    not crash, and must emit the inner instance UNDER the outer (not as a flat root)."""
+    mgr = _bare_manager(use_multiprocessing=False)
+    try:
+        osc, inner = _build_grouped_graph(mgr)  # inner > [select0, select1]
+        outer = mgr.group_nodes([inner])  # outer > inner
+        root_nodes, root_links, definitions, instances = mgr.build_v2_tree()
+        assert outer in instances  # outer is a root
+        assert inner not in instances  # inner is NOT a flat root
+        assert inner not in root_nodes  # nor a root node
+        outer_rec = instances[outer]
+        assert inner in outer_rec.get("instances", {})  # inner nested under outer
+        assert outer_rec["instances"][inner]["local"] == mgr._instances[outer].members[inner]
+    finally:
+        mgr.terminate(notify_gui=False)
+
+
+def test_nested_unique_subpatch_save_load_roundtrip(tmp_path):
+    """A 2-level nested unique sub-patch round-trips: stable uids, parent edges, nested
+    membership, leaf nodes, and the internal link all survive save/load."""
+    mgr = _bare_manager(use_multiprocessing=False)
+    try:
+        osc, inner = _build_grouped_graph(mgr)  # osc->sel0->sel1; inner > [select0, select1]
+        s0 = _member(mgr, inner, "select0")
+        s1 = _member(mgr, inner, "select1")
+        outer = mgr.group_nodes([inner])  # outer > inner > [s0, s1]
+        assert mgr._instances[inner].parent == outer
+        inner_local = mgr._instances[outer].members[inner]
+        fp = str(tmp_path / "nested.gfi")
+        mgr.save(fp, overwrite=True)
+    finally:
+        mgr.terminate(notify_gui=False)
+
+    mgr2 = _bare_manager(use_multiprocessing=False)
+    try:
+        mgr2.load(fp)
+        assert outer in mgr2._instances and inner in mgr2._instances  # stable uids
+        assert mgr2._instances[inner].parent == outer  # instance-side marker
+        assert mgr2._instances[outer].parent is None
+        assert inner in mgr2._instances[outer].members  # forward index
+        assert mgr2._membership[inner] == outer  # upward index keyed by instance uid
+        assert mgr2._instances[outer].members[inner] == inner_local  # local preserved
+        assert {s0, s1} <= set(mgr2.nodes)  # leaf nodes restored
+        assert mgr2._membership[s0] == inner and mgr2._membership[s1] == inner
+        assert any(l["node_out"] == s0 and l["node_in"] == s1 for l in mgr2.links)  # internal link
+        assert_subpatch_invariants(mgr2)
+    finally:
+        mgr2.terminate(notify_gui=False)
+
+
+def test_nested_chained_boundary_roundtrip(tmp_path):
+    """A chained boundary (outer port forwarding to a nested instance's boundary) must
+    survive save/load — resolve_boundary still reaches the deep leaf after reload."""
+    mgr = _bare_manager(use_multiprocessing=False)
+    try:
+        outer, outer_bnd, inner, inner_bnd, leaf, leaf_slot = _build_two_level_out_boundary(mgr)
+        leaf_name = mgr.nodes[leaf].name
+        fp = str(tmp_path / "chained.gfi")
+        mgr.save(fp, overwrite=True)
+    finally:
+        mgr.terminate(notify_gui=False)
+
+    mgr2 = _bare_manager(use_multiprocessing=False)
+    try:
+        mgr2.load(fp)
+        node, slot = mgr2.resolve_boundary(outer, outer_bnd)  # chain-to-leaf survives
+        assert node in mgr2.nodes and mgr2.nodes[node].name == leaf_name
+        assert slot == leaf_slot
+        # both interface levels restored with their forwarding intact
+        oe = mgr2._instances[outer].interface[outer_bnd]
+        assert oe.inner_node == mgr2._instances[outer].members[inner]  # forwards to inner
+        assert oe.inner_slot == inner_bnd
+        assert_subpatch_invariants(mgr2)
+    finally:
+        mgr2.terminate(notify_gui=False)
+
+
+def test_nested_roundtrip_preserves_parent_external_link(tmp_path):
+    """A flat link from an outside node to a deep leaf (a cross-level / boundary-spliced
+    link) survives save/load by uid (root_links re-resolve after the deep nodes exist)."""
+    mgr = _bare_manager(use_multiprocessing=False)
+    try:
+        outer, outer_bnd, inner, inner_bnd, leaf, leaf_slot = _build_two_level_out_boundary(mgr)
+        ext = mgr.add_node("Buffer", "signal")
+        node, slot = mgr.resolve_boundary(outer, outer_bnd)
+        mgr.add_link(node, ext, slot, "val")  # external consumer of the deep leaf
+        fp = str(tmp_path / "xlevel.gfi")
+        mgr.save(fp, overwrite=True)
+    finally:
+        mgr.terminate(notify_gui=False)
+
+    mgr2 = _bare_manager(use_multiprocessing=False)
+    try:
+        mgr2.load(fp)
+        assert any(l["node_out"] == leaf and l["node_in"] == ext for l in mgr2.links)
+        assert_subpatch_invariants(mgr2)
+    finally:
+        mgr2.terminate(notify_gui=False)
+
+
+def test_three_level_nesting_roundtrip_stable_uids(tmp_path):
+    """A 3-deep nesting (P > C > G) round-trips with every node + instance uid unchanged
+    and the full parent chain restored."""
+    mgr = _bare_manager(use_multiprocessing=False)
+    try:
+        g0 = mgr.add_node("Buffer", "signal")
+        g1 = mgr.add_node("Buffer", "signal")
+        G = mgr.group_nodes([g0, g1])
+        extra = mgr.add_node("Buffer", "signal")
+        C = mgr.group_nodes([G, extra])  # C > [G, extra]
+        P = mgr.group_nodes([C])  # P > C > G
+        fp = str(tmp_path / "deep.gfi")
+        mgr.save(fp, overwrite=True)
+    finally:
+        mgr.terminate(notify_gui=False)
+
+    mgr2 = _bare_manager(use_multiprocessing=False)
+    try:
+        mgr2.load(fp)
+        for u in (g0, g1, extra):
+            assert u in mgr2.nodes  # leaf uids stable
+        for i in (G, C, P):
+            assert i in mgr2._instances  # instance uids stable
+        assert mgr2._instances[G].parent == C
+        assert mgr2._instances[C].parent == P
+        assert mgr2._instances[P].parent is None
+        assert mgr2._membership[g0] == G and mgr2._membership[extra] == C
+        assert_subpatch_invariants(mgr2)
+    finally:
+        mgr2.terminate(notify_gui=False)
+
+
+def test_share_nesting_instance_is_rejected():
+    """Sharing a unique instance that CONTAINS a nested instance must fail loud (3c):
+    recursive definitions are 3d. The graph + definitions stay untouched."""
+    import pytest
+
+    mgr = _bare_manager(use_multiprocessing=False)
+    try:
+        osc, inner = _build_grouped_graph(mgr)
+        outer = mgr.group_nodes([inner])  # outer > inner (nesting)
+        before_defs = dict(mgr._definitions)
+        with pytest.raises(ValueError):
+            mgr.share_instance(outer)
+        assert mgr._definitions == before_defs  # no def written
+        assert mgr._instances[outer].def_id is None  # outer still unique
+        assert_subpatch_invariants(mgr)
+    finally:
+        mgr.terminate(notify_gui=False)
+
+
+def test_shared_child_under_unique_parent_roundtrip(tmp_path):
+    """A SHARED instance nested under a UNIQUE parent round-trips for free in 3c: its
+    flat node-only definition is emitted once at doc-top, its reference rides inside the
+    parent's `instances`. (Building this via group([shared]) — nesting a shared instance
+    under a fresh unique outer is allowed; only grouping INSIDE a shared parent is not.)"""
+    mgr = _bare_manager(use_multiprocessing=False)
+    try:
+        n0 = mgr.add_node("Buffer", "signal")
+        child = mgr.group_nodes([n0])
+        def_id = mgr.share_instance(child)  # child is now shared
+        outer = mgr.group_nodes([child])  # nest the shared child under a unique outer
+        assert mgr._instances[child].parent == outer
+        fp = str(tmp_path / "shared_child.gfi")
+        mgr.save(fp, overwrite=True)
+    finally:
+        mgr.terminate(notify_gui=False)
+
+    mgr2 = _bare_manager(use_multiprocessing=False)
+    try:
+        mgr2.load(fp)
+        assert mgr2._instances[child].parent == outer  # nested shared child restored
+        assert mgr2._instances[child].def_id == def_id  # still shared, same def
+        assert def_id in mgr2._definitions
+        assert child in mgr2._instances[outer].members
+        assert_subpatch_invariants(mgr2)
+    finally:
+        mgr2.terminate(notify_gui=False)

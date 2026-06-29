@@ -12,8 +12,15 @@ rides inside each node record, and link endpoints are uids):
     root:
       nodes:     {uid: {name, _type, category, params, gui_kwargs, ...}}
       links:     [{node_out: uid, node_in: uid, slot_out, slot_in}, ...]
-      instances: {inst_id: {kind, def|inline, gui_kwargs, members}}
+      instances: {inst_id: {kind, def|inline, gui_kwargs, members, instances}}
     layout: <opaque>   # optional
+
+`instances` is RECURSIVE: a unique instance carries its own `instances` sub-key
+holding nested child instances (each with an explicit `local`), mirroring the live
+parent forest. Nesting is encoded structurally (a child lives inside its parent's
+`instances`) — there is no `parent` field. This module is shape-agnostic about that
+nesting: it rides inside the opaque instance dict values; the Manager's
+build_v2_tree/_splice_doc own the recursion.
 """
 from __future__ import annotations
 

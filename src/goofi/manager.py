@@ -1253,6 +1253,15 @@ class Manager:
     def _definition_from_instance(self, inst_id: str) -> Dict[str, Any]:
         """Snapshot a (unique) instance's topology+params as a reusable definition."""
         inst = self._instances[inst_id]
+        # A definition is a flat node-only template in 3c; a member that is itself a
+        # nested instance would need a recursive definition (Phase 3d). Reject loudly
+        # rather than crash mid-snapshot in _node_record.
+        nested = [uid for uid in inst.members if uid in self._instances]
+        if nested:
+            raise ValueError(
+                f"cannot share sub-patch {inst_id}: it contains nested instance(s) {nested}; "
+                f"recursive definitions are not supported yet (Phase 3d)"
+            )
         # nd() cross-refs between members are stored in TEMPLATE form (against the
         # local key), so each future instance can re-point them at its own fresh
         # member names. Translate the live display names -> `\x1f`-marked locals here;
@@ -1868,51 +1877,84 @@ class Manager:
             else:
                 root_links.append(dict(link))
 
-        instances: Dict[str, Any] = {}
+        # Emit only ROOT instances at the top level (parent is None); each recursively
+        # emits its child instances under its own `instances` sub-key, so the document
+        # mirrors the live `inst.parent` forest. A nested instance is emitted exactly
+        # once, under its parent — never duplicated as a flat sibling.
         definitions: Dict[str, Any] = {}
-        for iid, inst in self._instances.items():
-            if inst.def_id:
-                def_id = inst.def_id
-                if def_id not in definitions:
-                    d = self._definitions[def_id]
-                    definitions[def_id] = {
-                        "members": deepcopy(d.members),
-                        "links": deepcopy(d.links),
-                        "interface": _iface_to_dict(d.interface),
-                    }
-                instances[iid] = {
-                    "kind": "shared",
-                    "def": def_id,
-                    "pos": inst.pos,
-                    # Only per-instance state — topology+params live in the definition.
-                    # The flat display name is per-instance too (it round-trips so a
-                    # reload restores the same names the user saw).
-                    "members": {
-                        local: {
-                            "uid": self.nodes[nn].uid,
-                            "name": self.nodes[nn].name,
-                            "pos": (self.nodes[nn].gui_kwargs or {}).get("pos"),
-                        }
-                        for nn, local in inst.members.items()
-                    },
-                }
-            else:
-                members = {inst.members[nn]: self._node_record(nn) for nn in inst.members}
-                instances[iid] = {
-                    "kind": "unique",
-                    "pos": inst.pos,
-                    "interface": _iface_to_dict(inst.interface),
-                    "members": members,
-                    "links": internal.get(iid, []),
-                }
-            # The instance is keyed by its stable uid; its display label rides on the
-            # record so a reload restores the same name (and uid).
-            instances[iid]["name"] = inst.name
-            # Per-instance viewer state (collapsed sub-patch slots) rides on the record
-            # so a reload keeps the kind/settings the user chose (backlog #17).
-            if inst.viewers:
-                instances[iid]["viewers"] = deepcopy(inst.viewers)
+        instances: Dict[str, Any] = {
+            iid: self._emit_instance(iid, internal, definitions)
+            for iid, inst in self._instances.items()
+            if inst.parent is None
+        }
         return root_nodes, root_links, definitions, instances
+
+    def _emit_instance(self, iid: str, internal: Dict[str, list], definitions: Dict[str, Any]) -> Dict[str, Any]:
+        """Serialize one instance for the save doc, recursing into nested-instance
+        members. Node members serialize under `members` (full node records); nested
+        instances serialize under `instances` (recursed, each carrying its parent-`local`
+        so a chained boundary's inner_node resolves on load). Shared instances stay
+        node-only (a definition containing nesting is rejected — that's 3d)."""
+        inst = self._instances[iid]
+        if inst.def_id:
+            def_id = inst.def_id
+            if def_id not in definitions:
+                d = self._definitions[def_id]
+                definitions[def_id] = {
+                    "members": deepcopy(d.members),
+                    "links": deepcopy(d.links),
+                    "interface": _iface_to_dict(d.interface),
+                }
+            # A shared definition is a flat node-only template in 3c; a shared instance
+            # can't (yet) hold a nested instance member.
+            for nn in inst.members:
+                if nn not in self.nodes:
+                    raise ValueError(
+                        f"shared sub-patch {iid} has a nested-instance member {nn}; "
+                        f"recursive definitions are not supported yet (Phase 3d)"
+                    )
+            entry: Dict[str, Any] = {
+                "kind": "shared",
+                "def": def_id,
+                "pos": inst.pos,
+                # Only per-instance state — topology+params live in the definition. The
+                # flat display name is per-instance too (round-trips so a reload restores
+                # the names the user saw).
+                "members": {
+                    local: {
+                        "uid": self.nodes[nn].uid,
+                        "name": self.nodes[nn].name,
+                        "pos": (self.nodes[nn].gui_kwargs or {}).get("pos"),
+                    }
+                    for nn, local in inst.members.items()
+                },
+            }
+        else:
+            members = {
+                local: self._node_record(uid)
+                for uid, local in inst.members.items()
+                if uid in self.nodes  # node members only — never serialize an instance here
+            }
+            children: Dict[str, Any] = {}
+            for child_uid, local in inst.members.items():
+                if child_uid in self._instances:
+                    child = self._emit_instance(child_uid, internal, definitions)
+                    child["local"] = local  # carry the parent-local explicitly
+                    children[child_uid] = child
+            entry = {
+                "kind": "unique",
+                "pos": inst.pos,
+                "interface": _iface_to_dict(inst.interface),
+                "members": members,
+                "links": internal.get(iid, []),
+                "instances": children,
+            }
+        entry["name"] = inst.name
+        # Per-instance viewer state (collapsed sub-patch slots) rides on the record so a
+        # reload keeps the kind/settings the user chose (backlog #17).
+        if inst.viewers:
+            entry["viewers"] = deepcopy(inst.viewers)
+        return entry
 
     def _add_node_from_record(
         self, name: str, node: Dict[str, Any], membership=None, notify_gui: bool = True,
@@ -1942,13 +1984,92 @@ class Manager:
         processes behind."""
         definitions = definitions or {}
         known = set(self._definitions) | set(definitions)
-        for inst_id, inst in instances.items():
-            if inst.get("kind") == "shared" and inst.get("def") not in known:
-                raise KeyError(
-                    f"instance {inst_id!r} references missing definition {inst.get('def')!r}"
-                )
+
+        def _check(insts):  # recurse nested `instances` so a bad def at any depth fails fast
+            for inst_id, inst in insts.items():
+                if inst.get("kind") == "shared" and inst.get("def") not in known:
+                    raise KeyError(
+                        f"instance {inst_id!r} references missing definition {inst.get('def')!r}"
+                    )
+                _check(inst.get("instances") or {})
+
+        _check(instances)
         with self._transaction():
             self._splice_doc(root_nodes, root_links, instances, definitions)
+
+    def _restore_instance(self, saved_id: str, inst: Dict[str, Any], internal_links: List[tuple]) -> str:
+        """Reconstruct one saved instance (post-order: spawn node members, recurse into
+        nested-instance members, create the SubPatchInstance, then attach all members
+        through the one `_attach_member` funnel). Returns the live (possibly re-minted)
+        uid. Nested children are created+registered before the parent attaches them, so
+        the funnel's `.parent` arm always sees the child already in `_instances`."""
+        # Restore the saved uid if free (fresh load); mint a fresh one when splicing into
+        # a graph that already holds it. The child is registered before its parent reads
+        # the returned uid, so a re-minted child can't dangle.
+        inst_id = saved_id if saved_id not in self._instances else self._mint_uid()
+        kind = inst.get("kind", "unique")
+        members_map: Dict[str, str] = {}  # uid -> local
+        local_to_uid: Dict[str, str] = {}
+        if kind == "shared":
+            def_id = inst["def"]
+            d = self._definitions[def_id]
+            per = inst.get("members") or {}
+            name_map: Dict[str, str] = {}  # template local -> restored flat display
+            for local, rec in d.members.items():
+                pm = per.get(local) or {}
+                disp = self._restore_member_name(pm.get("name"), rec["_type"])
+                node_rec = dict(rec)
+                if pm.get("uid"):
+                    node_rec["uid"] = pm["uid"]
+                if pm.get("pos") is not None:
+                    node_rec["gui_kwargs"] = {**(rec.get("gui_kwargs") or {}), "pos": pm["pos"]}
+                uid = self._add_node_from_record(
+                    disp, node_rec,
+                    membership={"instance": inst_id, "local_name": local},
+                )
+                members_map[uid] = local
+                local_to_uid[local] = uid
+                # `\x1f`-mark so only INTERNAL refs re-point; EXTERNAL refs in the
+                # def (verbatim) survive the splice untouched.
+                name_map[_DEF_INTERNAL_REF + local] = disp
+            # The def stores nd() cross-refs in template-local form — re-point them
+            # at THIS instance's restored member display names.
+            self._rewrite_member_expressions(members_map.keys(), name_map)
+            # Deep-copy: each loaded shared instance gets its own Boundary ports
+            # so later boundary edits don't alias the definition / siblings.
+            interface = deepcopy(d.interface)
+            for link in d.links:
+                internal_links.append((local_to_uid, link))
+        else:
+            for local, rec in (inst.get("members") or {}).items():
+                uid = self._add_node_from_record(
+                    self._restore_member_name(rec.get("name"), rec["_type"]), rec,
+                    membership={"instance": inst_id, "local_name": local},
+                )
+                members_map[uid] = local
+                local_to_uid[local] = uid
+            # Recurse into nested-instance members; each carries its parent-local. The
+            # child is fully restored (and registered in _instances) before we record it.
+            for child_saved_id, child_rec in (inst.get("instances") or {}).items():
+                child_uid = self._restore_instance(child_saved_id, child_rec, internal_links)
+                members_map[child_uid] = child_rec["local"]
+            interface = _iface_from_dict(inst.get("interface", {}))
+            for link in inst.get("links", []):
+                internal_links.append((local_to_uid, link))
+
+        self._instances[inst_id] = SubPatchInstance(
+            uid=inst_id,
+            name=self._restore_instance_name(inst.get("name")),
+            kind=kind,
+            def_id=inst.get("def") if kind == "shared" else None,
+            members={},
+            interface=interface,
+            pos=inst.get("pos", [0, 0]),
+            viewers=inst.get("viewers") or {},
+        )
+        for uid, local in members_map.items():
+            self._attach_member(inst_id, uid, local)
+        return inst_id
 
     def _splice_doc(self, root_nodes, root_links, instances, definitions=None) -> None:
         """Splice a v2 document's root graph + sub-patch instances into the live
@@ -1967,71 +2088,13 @@ class Manager:
             # v2 records carry their display name; v1 used the dict key as the name.
             self._add_node_from_record(node.get("name", key), node)
 
-        # (inst_id, local_link, local_to_uid): resolve template-local link endpoints
-        # to the freshly-minted member uids once all members of the instance exist.
+        # (local_to_uid, local_link): resolve template-local link endpoints to the
+        # freshly-minted member uids once all members of the instance exist.
         internal_links: List[tuple] = []
         for saved_id, inst in instances.items():
-            # Restore the saved instance uid if free (a fresh load); mint a fresh one
-            # when splicing into a graph that already holds it. The loop stores each
-            # instance before the next iterates, so a minted uid can't collide.
-            inst_id = saved_id if saved_id not in self._instances else self._mint_uid()
-            kind = inst.get("kind", "unique")
-            members_map: Dict[str, str] = {}  # uid -> local
-            local_to_uid: Dict[str, str] = {}
-            if kind == "shared":
-                def_id = inst["def"]
-                d = self._definitions[def_id]
-                per = inst.get("members") or {}
-                name_map: Dict[str, str] = {}  # template local -> restored flat display
-                for local, rec in d.members.items():
-                    pm = per.get(local) or {}
-                    disp = self._restore_member_name(pm.get("name"), rec["_type"])
-                    node_rec = dict(rec)
-                    if pm.get("uid"):
-                        node_rec["uid"] = pm["uid"]
-                    if pm.get("pos") is not None:
-                        node_rec["gui_kwargs"] = {**(rec.get("gui_kwargs") or {}), "pos": pm["pos"]}
-                    uid = self._add_node_from_record(
-                        disp, node_rec,
-                        membership={"instance": inst_id, "local_name": local},
-                    )
-                    members_map[uid] = local
-                    local_to_uid[local] = uid
-                    # `\x1f`-mark so only INTERNAL refs re-point; EXTERNAL refs in the
-                    # def (verbatim) survive the splice untouched.
-                    name_map[_DEF_INTERNAL_REF + local] = disp
-                # The def stores nd() cross-refs in template-local form — re-point them
-                # at THIS instance's restored member display names.
-                self._rewrite_member_expressions(members_map.keys(), name_map)
-                # Deep-copy: each loaded shared instance gets its own Boundary ports
-                # so later boundary edits don't alias the definition / siblings.
-                interface = deepcopy(d.interface)
-                for link in d.links:
-                    internal_links.append((local_to_uid, link))
-            else:
-                for local, rec in (inst.get("members") or {}).items():
-                    uid = self._add_node_from_record(
-                        self._restore_member_name(rec.get("name"), rec["_type"]), rec,
-                        membership={"instance": inst_id, "local_name": local},
-                    )
-                    members_map[uid] = local
-                    local_to_uid[local] = uid
-                interface = _iface_from_dict(inst.get("interface", {}))
-                for link in inst.get("links", []):
-                    internal_links.append((local_to_uid, link))
-
-            self._instances[inst_id] = SubPatchInstance(
-                uid=inst_id,
-                name=self._restore_instance_name(inst.get("name")),
-                kind=kind,
-                def_id=inst.get("def") if kind == "shared" else None,
-                members={},
-                interface=interface,
-                pos=inst.get("pos", [0, 0]),
-                viewers=inst.get("viewers") or {},
-            )
-            for uid, local in members_map.items():
-                self._attach_member(inst_id, uid, local)
+            # The doc's top-level `instances` are roots by construction; nested ones are
+            # reached only through their parent's `instances` sub-key (recursion below).
+            self._restore_instance(saved_id, inst, internal_links)
 
         for local_to_uid, link in internal_links:
             self.add_link(
