@@ -777,7 +777,17 @@ class Manager:
             new_ref.restart_count = count
 
             # The container IS the uid index, so replace() repoints it in place.
-            self.nodes.replace(uid, new_ref)
+            # If the node was deleted (remove_node on another thread takes no lock) during
+            # the spawn window, replace() raises KeyError — the new process has already
+            # started, so terminate it rather than orphaning a running daemon, then bail.
+            try:
+                self.nodes.replace(uid, new_ref)
+            except KeyError:
+                try:
+                    new_ref.terminate()
+                except Exception:
+                    pass
+                raise
             self._node_groups[uid] = group
 
             # Re-wire the bridge status to the NEW ref BEFORE waiting for state, so
