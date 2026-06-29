@@ -34,11 +34,13 @@ class Join(Node):
         if a is not None and b is None:
             if self.params.join.method.value == "stack":
                 a.data = np.expand_dims(a.data, axis=axis)
-            return {"out": (a.data, a.meta)}
+            # deepcopy like the main path: returning a.meta by reference lets a
+            # downstream channels-mutation corrupt the producer's meta (fan-out aliasing).
+            return {"out": (a.data, deepcopy(a.meta))}
         elif a is None and b is not None:
             if self.params.join.method.value == "stack":
                 b.data = np.expand_dims(b.data, axis=axis)
-            return {"out": (b.data, b.meta)}
+            return {"out": (b.data, deepcopy(b.meta))}
         elif a is None and b is None:
             return None
 

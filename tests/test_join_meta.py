@@ -99,6 +99,30 @@ def test_compatible_concatenate_and_stack_still_work():
     assert val2.shape == (2, 2, 3)
 
 
+def test_join_a_only_does_not_alias_producer_meta():
+    # One input unwired (b is None) takes the early-return path; the returned meta
+    # must still be a deepcopy, else a downstream channels-mutation corrupts the
+    # producer's meta and every other consumer.
+    node = _concat_node(axis=0)
+    a = Data(DataType.ARRAY, np.zeros((2, 3), np.float32), {"channels": {"dim0": ["a0", "a1"]}})
+    a_before = deepcopy(a.meta)
+    # process() directly: an unwired input reaches process as None (the harness's
+    # to_data() would reject an explicit None).
+    _, meta = node.process(a=a, b=None)["out"]
+    meta["channels"]["dim0"] = ["IMF0", "IMF1"]  # a downstream node mutating channels
+    assert a.meta == a_before, "Join a-only early return aliased producer a's meta"
+
+
+def test_join_b_only_does_not_alias_producer_meta():
+    # Symmetric: a is None, b carries the meta through the early return.
+    node = _concat_node(axis=0)
+    b = Data(DataType.ARRAY, np.zeros((2, 3), np.float32), {"channels": {"dim0": ["b0", "b1"]}})
+    b_before = deepcopy(b.meta)
+    _, meta = node.process(a=None, b=b)["out"]
+    meta["channels"]["dim0"] = ["IMF0", "IMF1"]
+    assert b.meta == b_before, "Join b-only early return aliased producer b's meta"
+
+
 def test_join_does_not_mutate_producer_meta():
     # The deepcopy(a.meta) guard must keep both producers' meta intact.
     node = _concat_node(axis=0)
