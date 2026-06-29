@@ -155,7 +155,9 @@ export function boundarySpec(type: string): BoundarySpec | null {
 	return { dir: m[1] === 'In' ? 'in' : 'out', dtype: m[2].toUpperCase() };
 }
 
-/** A flatten-at-runtime sub-patch instance the editor renders as a group node. */
+/** A flatten-at-runtime sub-patch instance the editor renders as a group node.
+ * This is a server-COMPUTED record (see bridge `describe_instance`) that the frontend
+ * MIRRORS — every field below is computed once on the backend, never re-derived here. */
 export interface InstanceInfo {
 	/** The instance's stable uid (also its key in the instances map). */
 	uid: string;
@@ -164,11 +166,25 @@ export interface InstanceInfo {
 	kind: string;
 	/** Definition id when shared (strict-mirror sibling), null/absent when unique. */
 	def_id?: string | null;
-	/** boundary handle name -> port */
+	/** Parent instance uid (the nesting tree edge); null at the top level. */
+	parent: string | null;
+	/** boundary handle name -> port (dtype RESOLVED chain-to-leaf server-side) */
 	interface: Record<string, SubPatchPort>;
 	pos: [number, number];
-	/** member uid -> local name */
-	members: Record<string, string>;
+	/** template-local name -> { member uid, whether the member is itself a nested
+	 * instance }. Inverted from the backend's uid->local so the editor can split
+	 * direct children into plain nodes vs nested collapsed instances. */
+	members: Record<string, { uid: string; is_instance: boolean }>;
+	/** External ports computed from WIRED boundaries: boundary id -> dtype. Mirror the
+	 * collapsed group node's input/output slots (a pure passthrough). */
+	slots: { input: Record<string, string>; output: Record<string, string> };
+	/** Other instance uids in this instance's strict-mirror family (shared def); []. */
+	siblings: string[];
+	/** First errored DESCENDANT across the whole subtree (recursion-correct), or null. */
+	error: string | null;
+	/** Per-output-slot view state persisted in the .gfi patch (round-trips). */
+	viewers: Record<string, unknown>;
+	member_count: number;
 }
 
 /** Canonical string key for a link — its four slot endpoints. Stable and

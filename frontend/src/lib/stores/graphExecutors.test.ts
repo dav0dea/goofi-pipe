@@ -655,13 +655,37 @@ describe('graph store — recording wrappers + undo replay', () => {
 
 describe('sub-patch synth node identity (viewer re-instantiation bug)', () => {
 	function withInstance(g: GraphStore, fc: FakeControl, iface: Record<string, unknown>): void {
+		// The bridge ships a server-COMPUTED instance record (describe_instance): slots are
+		// computed from wired boundaries, members are inverted to local -> {uid,is_instance}.
+		const slots: { input: Record<string, string>; output: Record<string, string> } = {
+			input: {},
+			output: {}
+		};
+		for (const [bid, p] of Object.entries(iface as Record<string, { dir: string; dtype?: string; inner_node: string | null }>)) {
+			if (p.inner_node == null) continue;
+			(p.dir === 'in' ? slots.input : slots.output)[bid] = p.dtype ?? 'ARRAY';
+		}
 		fc.emit({
 			event: 'hello',
 			payload: {
 				nodes: [],
 				links: [],
 				instances: {
-					subpatch0: { kind: 'subpatch', interface: iface, pos: [0, 0], members: { m0: 'oscillator0' } }
+					subpatch0: {
+						uid: 'subpatch0',
+						name: 'subpatch0',
+						kind: 'subpatch',
+						def_id: null,
+						parent: null,
+						interface: iface,
+						pos: [0, 0],
+						members: { oscillator0: { uid: 'm0', is_instance: false } },
+						slots,
+						siblings: [],
+						error: null,
+						viewers: {},
+						member_count: 1
+					}
 				},
 				save_path: null,
 				unsaved_changes: false,

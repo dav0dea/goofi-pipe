@@ -77,6 +77,68 @@ def describe_node_class(cls: type) -> Dict[str, Any]:
     }
 
 
+def describe_instance(manager: Any, inst_id: str, inst: Any) -> Dict[str, Any]:
+    """Describe a sub-patch INSTANCE as a computed, recursive record the frontend
+    mirrors (rather than re-deriving). The single server source of truth for every
+    per-instance field; each computed field replaces a frontend re-derivation:
+
+    - `parent`: the tree edge (None at root) -> frontend parentScope.
+    - `members`: inverted+enriched {local: {uid, is_instance}} (locals are unique within
+      an instance) -> lets the editor split direct children into nodes vs nested
+      collapsed instances, and kills the _memberUid reverse-scan.
+    - `interface[bid].dtype`: RESOLVED chain-to-leaf via resolve_boundary + _slot_dtype
+      (authoritative even for legacy/unwired-then-rewired entries); falls back to the
+      stored dtype when unwired/gone (guarded so one bad boundary can't drop the record).
+    - `slots`: {input,output} computed from WIRED boundaries -> the synth node's external
+      ports become a pure passthrough.
+    - `siblings`: _shared_siblings (def-scoped strict-mirror family); [] for unique.
+    - `error`: first errored DESCENDANT across the whole subtree (recursion-correct — a
+      deeply-nested member's error surfaces on the collapsed ancestor).
+    - `member_count`, `viewers`: direct reads (viewers round-trips the persisted state).
+    """
+    interface: Dict[str, Any] = {}
+    slots: Dict[str, Dict[str, str]] = {"input": {}, "output": {}}
+    for bid, b in inst.interface.items():
+        dtype = b.dtype
+        if b.inner_node is not None:
+            try:
+                leaf_uid, leaf_slot = manager.resolve_boundary(inst_id, bid)
+                dtype = manager._slot_dtype(leaf_uid, leaf_slot, b.dir)
+            except (KeyError, ValueError):
+                pass  # unwired/gone chain — keep the stored dtype, never throw
+            slots["input" if b.dir == "in" else "output"][bid] = dtype or "ARRAY"
+        interface[bid] = {
+            "dir": b.dir,
+            "dtype": dtype,
+            "inner_node": b.inner_node,
+            "inner_slot": b.inner_slot,
+            "pos": list(b.pos),
+        }
+    error = next(
+        (manager.nodes[u].last_error for u in manager.nodes
+         if manager.nodes[u].last_error and manager._within_subtree(u, inst_id)),
+        None,
+    )
+    return {
+        "uid": inst.uid,
+        "name": inst.name,
+        "kind": inst.kind,
+        "def_id": inst.def_id,
+        "parent": inst.parent,
+        "pos": list(inst.pos),
+        "viewers": dict(inst.viewers or {}),
+        "members": {
+            local: {"uid": uid, "is_instance": uid in manager._instances}
+            for uid, local in inst.members.items()
+        },
+        "interface": interface,
+        "slots": slots,
+        "siblings": manager._shared_siblings(inst_id),
+        "error": error,
+        "member_count": len(inst.members),
+    }
+
+
 def describe_node_instance(uid: str, ref: NodeRef) -> Dict[str, Any]:
     """Describe a *live* node (instance) on the current graph.
 

@@ -19,7 +19,6 @@ from __future__ import annotations
 import asyncio
 import os
 import traceback
-from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
 from weakref import WeakSet
@@ -29,6 +28,7 @@ from aiohttp import WSMsgType, web
 from goofi.bridge import fsbrowse
 from goofi.bridge.origin import origin_allowed
 from goofi.bridge.schemas import (
+    describe_instance,
     describe_node_instance,
     describe_params,
     list_node_types,
@@ -450,6 +450,12 @@ class ControlHub:
                 nodes.append(describe_node_instance(uid, manager.nodes[uid]))
             except Exception:
                 traceback.print_exc()
+        instances: Dict[str, Any] = {}
+        for iid, inst in getattr(manager, "_instances", {}).items():
+            try:
+                instances[iid] = describe_instance(manager, iid, inst)
+            except Exception:
+                traceback.print_exc()
         return {
             # Identifies the manager *process*. The browser keeps its tab open
             # across a backend restart and auto-reconnects; a changed id tells it
@@ -458,20 +464,11 @@ class ControlHub:
             "instance_id": manager.instance_id,
             "nodes": nodes,
             "links": list(manager.links),
-            # Sub-patch instances (flatten-at-runtime): the editor renders these
-            # as collapsible group nodes; members carry a `membership` marker.
-            "instances": {
-                iid: {
-                    "uid": inst.uid,
-                    "name": inst.name,
-                    "kind": inst.kind,
-                    "def_id": inst.def_id,
-                    "interface": {bid: asdict(b) for bid, b in inst.interface.items()},
-                    "pos": list(inst.pos),
-                    "members": dict(inst.members),
-                }
-                for iid, inst in getattr(manager, "_instances", {}).items()
-            },
+            # Sub-patch instances (flatten-at-runtime): the editor renders these as
+            # collapsible group nodes; each is a server-computed record the frontend
+            # mirrors (see describe_instance). Guarded per-instance, like the per-node
+            # loop above, so one broken instance can't drop the whole snapshot.
+            "instances": instances,
             "save_path": manager.save_path,
             "unsaved_changes": manager.unsaved_changes,
             "layout": manager.layout,

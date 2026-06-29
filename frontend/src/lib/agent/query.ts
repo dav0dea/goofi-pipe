@@ -15,7 +15,7 @@ import { collectPanels } from '$lib/workspace/model';
 import { asStateObject, linkedNodeName } from '$lib/workspace/panelState';
 import { isArrayFrame, isStringFrame, type DataFrame } from '$lib/codec/decode';
 import { reconstructMeta } from '$lib/editor/metaFormat';
-import type { LinkInfo, NodeInstanceInfo, NodeTypeInfo } from '$lib/api/control';
+import type { InstanceInfo, LinkInfo, NodeInstanceInfo, NodeTypeInfo } from '$lib/api/control';
 
 export interface FrameSummary {
 	dtype: string;
@@ -94,6 +94,12 @@ export const query = {
 		};
 	},
 	nodeTypes: (): NodeTypeInfo[] | null => graph().nodeTypes,
+	/** Every sub-patch instance, keyed by uid (the universal node key). Each is the
+	 * server-computed record (parent, members{local:{uid,is_instance}}, slots, siblings,
+	 * error, …) the editor mirrors. */
+	instances: (): Record<string, InstanceInfo> => graph().instances,
+	/** One sub-patch instance by uid, or null. */
+	instance: (uid: string): InstanceInfo | null => graph().instances[uid] ?? null,
 	node: (uid: string): NodeInstanceInfo | null => graph().nodeById(uid),
 	nodeParams: (uid: string): NodeInstanceInfo['params'] | null =>
 		graph().nodeById(uid)?.params ?? null,

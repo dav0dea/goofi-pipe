@@ -17,8 +17,7 @@ import {
 	type InstanceInfo,
 	type LinkInfo,
 	type NodeInstanceInfo,
-	type NodeTypeInfo,
-	type SubPatchPort
+	type NodeTypeInfo
 } from '$lib/api/control';
 import { ui } from './ui.svelte';
 import { consoleStore } from './console.svelte';
@@ -85,7 +84,7 @@ export class GraphStore {
 		for (const n of snap.nodes) this._seedNodeViewerState(n);
 		this.nodes = snap.nodes;
 		this.links = snap.links;
-		this.instances = snap.instances ?? {};
+		this._reconcileInstances(snap.instances ?? {});
 		this.savePath = snap.save_path;
 		this.unsavedChanges = snap.unsaved_changes;
 
@@ -215,7 +214,7 @@ export class GraphStore {
 				for (const n of snap.nodes) this._seedNodeViewerState(n);
 				this.nodes = snap.nodes;
 				this.links = snap.links;
-				this.instances = snap.instances ?? {};
+				this._reconcileInstances(snap.instances ?? {});
 				break;
 			}
 			case 'boundary_moved': {
@@ -784,46 +783,33 @@ export class GraphStore {
 	 * its inline viewer re-subscribed/flickered. The cache restores that stability. */
 	private _synthCache = new Map<string, { sig: string; node: NodeInstanceInfo }>();
 
-	/** Other instance ids mirroring the same definition as `instId` (strict
-	 * mirror siblings); empty for a unique sub-patch. */
-	subpatchSiblings(instId: string): string[] {
-		const def = this.instances[instId]?.def_id;
-		if (!def) return [];
-		return Object.keys(this.instances).filter(
-			(id) => id !== instId && this.instances[id].def_id === def
-		);
+	/** The parent-instance uid of any entity (the nesting tree edge), or null at the
+	 * top level. One accessor over both halves the backend ships: a node carries its
+	 * parent on `membership.instance`, an instance on `parent`. */
+	parentScope(uid: string): string | null {
+		const inst = this.instances[uid];
+		if (inst) return inst.parent;
+		return this._realNode(uid)?.membership?.instance ?? null;
 	}
 
-	/** The first errored member of a sub-patch (its error string), or null. Lets
-	 * the collapsed group node and its inspector surface a member's error even
-	 * though the members themselves are hidden. */
-	instanceError(instId: string): string | null {
-		const inst = this.instances[instId];
-		if (!inst) return null;
-		// members maps member uid -> local name; look each member node up by uid.
-		for (const uid of Object.keys(inst.members)) {
-			const err = this._realNode(uid)?.error;
-			if (err) return err;
+	/** The uid of a member given its template-local name within `instId` — a direct
+	 * read now that members is keyed local -> {uid, is_instance}. */
+	memberUid(instId: string, local: string): string | null {
+		return this.instances[instId]?.members[local]?.uid ?? null;
+	}
+
+	/** Reconcile the instances map IN PLACE by uid: mutate an existing record's fields
+	 * (preserving the object reference so the inspector's `$derived inst` and the
+	 * synth-node memo stay stable), insert new ones, drop vanished ones. */
+	private _reconcileInstances(next: Record<string, InstanceInfo>): void {
+		for (const [uid, rec] of Object.entries(next)) {
+			const cur = this.instances[uid];
+			if (cur) Object.assign(cur, rec);
+			else this.instances[uid] = rec;
 		}
-		return null;
-	}
-
-	/** The uid of a member given its local name within `inst` (members map is
-	 * uid -> local), or null. */
-	private _memberUid(inst: InstanceInfo, local: string): string | null {
-		for (const [uid, loc] of Object.entries(inst.members)) if (loc === local) return uid;
-		return null;
-	}
-
-	/** A boundary port's data type: the stored dtype (authoritative), falling back
-	 * to the wired inner node's slot dtype for legacy interface-only entries. */
-	boundaryDtype(inst: InstanceInfo, port: SubPatchPort): string {
-		if (port.dtype) return port.dtype;
-		const uid = port.inner_node ? this._memberUid(inst, port.inner_node) : null;
-		const n = uid ? this._realNode(uid) : null;
-		if (!n || !port.inner_slot) return 'ARRAY';
-		const slots = port.dir === 'in' ? n.input_slots : n.output_slots;
-		return slots[port.inner_slot] ?? 'ARRAY';
+		for (const uid of Object.keys(this.instances)) {
+			if (!(uid in next)) delete this.instances[uid];
+		}
 	}
 
 	/** Build the virtual NodeInstanceInfo that stands in for a sub-patch instance
@@ -835,17 +821,14 @@ export class GraphStore {
 	 * `instances`; the marker just rides the id + glyph/badge bits. */
 	private _synthSubpatchNode(instId: string, inst: InstanceInfo): NodeInstanceInfo {
 		const shared = Boolean(inst.def_id);
-		const error = this.instanceError(instId);
-		const memberCount = Object.keys(inst.members).length;
+		const error = inst.error ?? null;
+		const memberCount = inst.member_count;
 		// Signature of everything the synth node RENDERS except position — which is
 		// applied to the flow node separately and updated in place below, so a drag
 		// (a per-frame pos change) keeps the same identity and never churns the
 		// viewer. A selection change touches none of these, so the cache hits.
-		const ifaceSig = Object.entries(inst.interface)
-			.map(([bnd, p]) => `${bnd}:${p.dir}:${p.inner_node == null ? '' : this.boundaryDtype(inst, p)}`)
-			.sort()
-			.join('|');
-		const sig = `${inst.name}${shared}${error ?? ''}${memberCount}${ifaceSig}`;
+		// The slots are server-computed, so hashing them covers the wired-port set.
+		const sig = `${inst.name}|${inst.kind}|${error ?? ''}|${memberCount}|${JSON.stringify(inst.slots)}`;
 
 		const cached = this._synthCache.get(instId);
 		if (cached && cached.sig === sig) {
@@ -853,14 +836,9 @@ export class GraphStore {
 			return cached.node;
 		}
 
-		const input_slots: Record<string, string> = {};
-		const output_slots: Record<string, string> = {};
-		for (const [bnd, port] of Object.entries(inst.interface)) {
-			if (port.inner_node == null) continue; // unwired → not an external port yet
-			const dt = this.boundaryDtype(inst, port);
-			if (port.dir === 'in') input_slots[bnd] = dt;
-			else output_slots[bnd] = dt;
-		}
+		// External ports ARE the server-computed slots (a pure passthrough).
+		const input_slots: Record<string, string> = { ...inst.slots.input };
+		const output_slots: Record<string, string> = { ...inst.slots.output };
 		const node: NodeInstanceInfo = {
 			// The synth node's identity IS the instance uid, so `node.uid` is the
 			// uniform flow/selection/data key for real and sub-patch nodes alike.

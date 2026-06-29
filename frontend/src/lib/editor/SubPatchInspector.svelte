@@ -20,8 +20,8 @@
 	// immediately (the synth node is rebuilt on the next selection recompute).
 	const inst = $derived(g.instances[instId] ?? null);
 	const shared = $derived(Boolean(inst?.def_id));
-	const memberCount = $derived(inst ? Object.keys(inst.members).length : 0);
-	const siblings = $derived(g.subpatchSiblings(instId));
+	const memberCount = $derived(inst?.member_count ?? 0);
+	const siblings = $derived(inst?.siblings ?? []);
 
 	function duplicateShared(): void {
 		const p = inst?.pos;

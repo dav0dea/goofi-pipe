@@ -53,6 +53,11 @@
 		type NodeTypeInfo,
 		type SubPatchPort
 	} from '$lib/api/control';
+	import {
+		buildMemberIndex,
+		childrenOfScope,
+		drawEndpoint as sceneDrawEndpoint
+	} from '$lib/editor/subpatchScene';
 	import { nodeSurfaceSize, BOUNDARY } from '$lib/editor/nodeMetrics';
 	import { serializeClipboard, parseClipboard, clipToSpecs } from '$lib/editor/clipboard';
 	import { copyText } from '$lib/clipboard';
@@ -164,12 +169,9 @@
 	const boundaryId = (instId: string, name: string): string => `${BND_PREFIX}${instId}::${name}`;
 	const isBoundaryId = (id: string): boolean => id.startsWith(BND_PREFIX);
 
-	/** The uid (flow-node id) of a member given its local name within `inst`
-	 * (members map is uid -> local). */
-	function memberUid(inst: InstanceInfo, local: string): string | null {
-		for (const [uid, loc] of Object.entries(inst.members)) if (loc === local) return uid;
-		return null;
-	}
+	/** Index every entity (node OR nested instance) by uid -> {instId, local, ...}.
+	 * The single source for parent-scope + local lookups across the recursive tree. */
+	const memberIndex = $derived(buildMemberIndex(g.instances));
 
 	function enterInstance(instId: string): void {
 		if (!g.instances[instId]) return;
@@ -199,69 +201,49 @@
 		}
 	});
 
-	/** member uid -> the instance that hides it (collapsed sub-patch member). */
-	const memberInstance = $derived.by(() => {
-		const m = new Map<string, string>();
-		for (const [instId, inst] of Object.entries(g.instances)) {
-			for (const uid of Object.keys(inst.members)) m.set(uid, instId);
-		}
-		return m;
-	});
-
-	/** Resolve a link endpoint to what's actually drawn: a hidden member is
-	 * rerouted to its instance's boundary handle; a normal node is unchanged.
-	 * Returns null when the member slot isn't exposed (purely internal). */
+	/** Resolve a link endpoint to what's actually drawn in the entered scope: walk up
+	 * the nesting tree to the nearest visible boundary port (tree-aware). Null when the
+	 * slot is not exposed up the chain, or the endpoint is outside the entered subtree. */
 	function drawEndpoint(
 		node: string,
 		slot: string,
 		dir: 'in' | 'out'
 	): { node: string; handle: string } | null {
-		const instId = memberInstance.get(node);
-		if (instId === undefined) return { node, handle: slot };
-		const inst = g.instances[instId];
-		const local = inst.members[node];
-		for (const [bname, port] of Object.entries(inst.interface)) {
-			if (port.dir === dir && port.inner_node === local && port.inner_slot === slot) {
-				return { node: instId, handle: bname };
-			}
-		}
-		return null;
+		return sceneDrawEndpoint(node, slot, dir, entered ?? null, g.instances, memberIndex);
 	}
 
+	// Render the DIRECT CHILDREN of the entered scope (null = root): real nodes AND
+	// nested instances (collapsed, double-click-enterable group nodes via the SAME
+	// GoofiNode component); plus, inside an entered instance, its In/Out boundary pills.
 	$effect(() => {
-		const inst = entered ? g.instances[entered] : null;
+		const scope = entered ?? null;
 		const next: Node[] = [];
+		const kids = childrenOfScope(scope, g.instances, g.nodes.map((n) => n.uid), memberIndex);
+		const childUids = [...kids.nodeUids, ...kids.instUids];
+		const pts = childUids
+			.map((u) => g.nodeById(u)?.pos)
+			.filter((q): q is [number, number] => !!q);
+		const minX = pts.length ? Math.min(...pts.map((q) => q[0])) : 0;
+		const maxX = pts.length ? Math.max(...pts.map((q) => q[0])) : 0;
+		const minY = pts.length ? Math.min(...pts.map((q) => q[1])) : 0;
+		for (const uid of childUids) {
+			const n = g.nodeById(uid);
+			if (!n) continue;
+			next.push({
+				id: uid,
+				type: 'goofi',
+				position: { x: n.pos?.[0] ?? 0, y: n.pos?.[1] ?? 0 },
+				data: { node: n, label: n.name },
+				selected: sel.nodes(panelId).has(uid)
+			});
+		}
+		// Inside an entered instance, also render its In/Out boundary pills (incl.
+		// unwired). Stored pos, with a beside-the-children fallback for legacy entries.
+		const inst = entered ? g.instances[entered] : null;
 		if (inst && entered) {
-			// Inside a sub-patch: render its members (by their flat display names) plus
-			// the In/Out boundary nodes derived from its interface, laid out on either
-			// side of the members' bounding box. `inst.members` is keyed by member uid.
-			const memberUids = Object.keys(inst.members);
-			const pts = memberUids
-				.map((u) => g.nodeById(u)?.pos)
-				.filter((p): p is [number, number] => !!p);
-			const minX = pts.length ? Math.min(...pts.map((p) => p[0])) : 0;
-			const maxX = pts.length ? Math.max(...pts.map((p) => p[0])) : 0;
-			const minY = pts.length ? Math.min(...pts.map((p) => p[1])) : 0;
-			for (const uid of memberUids) {
-				const n = g.nodeById(uid);
-				if (!n) continue;
-				next.push({
-					id: uid,
-					type: 'goofi',
-					position: { x: n.pos?.[0] ?? 0, y: n.pos?.[1] ?? 0 },
-					data: { node: n, label: n.name },
-					selected: sel.nodes(panelId).has(uid)
-				});
-			}
-			// In/Out boundary pills (incl. unwired). Use the stored pos; fall back to
-			// a beside-the-members layout for legacy entries with no pos.
 			const ins = Object.entries(inst.interface).filter(([, p]) => p.dir === 'in');
 			const outs = Object.entries(inst.interface).filter(([, p]) => p.dir === 'out');
-			const place = (
-				entries: [string, SubPatchPort][],
-				dir: 'in' | 'out',
-				fallbackX: number
-			) =>
+			const place = (entries: [string, SubPatchPort][], dir: 'in' | 'out', fallbackX: number) =>
 				entries.forEach(([name, port], i) => {
 					next.push({
 						id: boundaryId(entered, name),
@@ -269,69 +251,48 @@
 						position: port.pos
 							? { x: port.pos[0], y: port.pos[1] }
 							: { x: fallbackX, y: minY + i * 96 },
-						data: { name, dir, dtype: g.boundaryDtype(inst, port), wired: port.inner_node !== null },
+						data: { name, dir, dtype: port.dtype ?? 'ARRAY', wired: port.inner_node !== null },
 						selected: sel.nodes(panelId).has(boundaryId(entered, name))
 					});
 				});
 			place(ins, 'in', minX - 280);
 			place(outs, 'out', maxX + 320);
-			flowNodes = next;
-			return;
-		}
-		for (const n of g.nodes) {
-			if (memberInstance.has(n.uid)) continue; // hidden member of a collapsed sub-patch
-			next.push({
-				id: n.uid,
-				type: 'goofi',
-				position: { x: n.pos?.[0] ?? 0, y: n.pos?.[1] ?? 0 },
-				data: { node: n },
-				selected: sel.nodes(panelId).has(n.uid)
-			});
-		}
-		for (const [instId, inst2] of Object.entries(g.instances)) {
-			// A collapsed sub-patch is rendered by the SAME node component as a real
-			// node, with NO extra data — its wired boundaries are slots, its output
-			// slots show viewers. Enter it by double-click (onCanvasClick); its
-			// sharing/expand controls live in the inspector when it's selected.
-			next.push({
-				id: instId,
-				type: 'goofi',
-				position: { x: inst2.pos?.[0] ?? 0, y: inst2.pos?.[1] ?? 0 },
-				data: { node: g.nodeById(instId) },
-				selected: sel.nodes(panelId).has(instId)
-			});
 		}
 		flowNodes = next;
 	});
 
+	// Every link, rerouted to the nearest VISIBLE boundary in the entered scope (null =
+	// root). Skip when an endpoint is not exposed up the chain, or both ends resolve to
+	// the same drawn node (internal to one collapsed sub-patch -> hidden). Inside an
+	// entered instance, also draw its boundary pill edges (In pill -> member input,
+	// member output -> Out pill); WIRED boundaries only, deletable to unwire.
 	$effect(() => {
-		const inst = entered ? g.instances[entered] : null;
 		const next: Edge[] = [];
+		for (const l of g.links) {
+			const src = drawEndpoint(l.node_out, l.slot_out, 'out');
+			const dst = drawEndpoint(l.node_in, l.slot_in, 'in');
+			if (!src || !dst) continue;
+			if (src.node === dst.node) continue;
+			const id = linkKey(l);
+			next.push({
+				id,
+				source: src.node,
+				sourceHandle: src.handle,
+				target: dst.node,
+				targetHandle: dst.handle,
+				selected: sel.edges(panelId).has(id),
+				animated: false
+			});
+		}
+		const inst = entered ? g.instances[entered] : null;
 		if (inst && entered) {
-			// Internal member↔member links, drawn directly.
-			for (const l of g.links) {
-				if (!(l.node_out in inst.members) || !(l.node_in in inst.members)) continue;
-				const id = linkKey(l);
-				next.push({
-					id,
-					source: l.node_out,
-					sourceHandle: l.slot_out,
-					target: l.node_in,
-					targetHandle: l.slot_in,
-					selected: sel.edges(panelId).has(id),
-					animated: false
-				});
-			}
-			// Boundary edges: In node → member input, member output → Out node.
-			// Only WIRED boundaries draw an edge; deletable so the user can unwire
-			// by deleting it (ondelete routes a boundary edge to wireBoundary(null)).
 			for (const [name, port] of Object.entries(inst.interface)) {
 				if (port.inner_node == null) continue;
-				const disp = memberUid(inst, port.inner_node);
+				const disp = g.memberUid(entered, port.inner_node);
 				if (!disp) continue;
 				const bId = boundaryId(entered, name);
 				if (port.dir === 'in') {
-					const id = `${bId}→${disp}.${port.inner_slot}`;
+					const id = `${bId}->${disp}.${port.inner_slot}`;
 					next.push({
 						id,
 						source: bId,
@@ -342,7 +303,7 @@
 						animated: false
 					});
 				} else {
-					const id = `${disp}.${port.inner_slot}→${bId}`;
+					const id = `${disp}.${port.inner_slot}->${bId}`;
 					next.push({
 						id,
 						source: disp,
@@ -354,26 +315,6 @@
 					});
 				}
 			}
-			flowEdges = next;
-			return;
-		}
-		for (const l of g.links) {
-			const oi = memberInstance.get(l.node_out);
-			const ii = memberInstance.get(l.node_in);
-			if (oi !== undefined && oi === ii) continue; // internal to one sub-patch — hidden
-			const src = drawEndpoint(l.node_out, l.slot_out, 'out');
-			const dst = drawEndpoint(l.node_in, l.slot_in, 'in');
-			if (!src || !dst) continue; // an endpoint isn't an exposed boundary
-			const id = linkKey(l);
-			next.push({
-				id,
-				source: src.node,
-				sourceHandle: src.handle,
-				target: dst.node,
-				targetHandle: dst.handle,
-				selected: sel.edges(panelId).has(id),
-				animated: false
-			});
 		}
 		flowEdges = next;
 	});
@@ -430,7 +371,7 @@
 			const bnd = srcB ?? dstB!;
 			const memberId = srcB ? c.target : c.source;
 			const memberSlot = srcB ? c.targetHandle : c.sourceHandle;
-			const local = inst?.members[memberId];
+			const local = memberIndex.get(memberId)?.local;
 			if (!local) return; // the other end must be a member of this sub-patch
 			void g.wireBoundary(entered, bnd, local, memberSlot).catch((e) =>
 				console.warn('wire boundary failed', e)
@@ -779,12 +720,13 @@
 			// Select what's actually on screen: the entered sub-patch's members, or
 			// every top-level node PLUS the collapsed sub-patch group nodes (which
 			// are virtual nodes — they select like any node).
-			const names = entered
-				? Object.keys(g.instances[entered]?.members ?? {})
-				: [
-						...g.nodes.filter((n) => !memberInstance.has(n.uid)).map((n) => n.uid),
-						...Object.keys(g.instances)
-					];
+			const kids = childrenOfScope(
+				entered ?? null,
+				g.instances,
+				g.nodes.map((n) => n.uid),
+				memberIndex
+			);
+			const names = [...kids.nodeUids, ...kids.instUids];
 			sel.selectNodes(panelId, names);
 		} else if (meta && e.key.toLowerCase() === 'c') {
 			void copySelection();
@@ -922,7 +864,7 @@
 					// seed's node is the member uid; wire_boundary wants its local template
 					// key (`inst.members` maps uid -> local).
 					if (bndId && placement.seed) {
-						const local = g.instances[entered]?.members[placement.seed.node];
+						const local = memberIndex.get(placement.seed.node)?.local;
 						if (local) await g.wireBoundary(entered, bndId, local, placement.seed.slot);
 					}
 				} catch (e) {
