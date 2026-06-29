@@ -194,31 +194,20 @@ export class GraphStore {
 				this._captureLoadAfterLayout();
 				break;
 			case 'subpatch_changed': {
-				// Group/expand renamed members + rewrote instances. Re-sync nodes,
-				// links, and instances from the fresh snapshot — but NOT layout or a
-				// re-fit (it's an in-place edit, not a wholesale load).
+				// Group/expand/share/make-unique rewrote the STRUCTURE, but the live node
+				// processes are unchanged — only membership/names/instances moved. Reconcile
+				// nodes, links and instances by STABLE uid IN PLACE (never a wholesale array
+				// swap) so a surviving node/instance keeps its object identity and its inline
+				// viewer never re-subscribes. NOT layout / re-fit — an in-place edit, not a load.
 				const snap = ev.payload;
-				// Entities present before vs after — group/expand/remove_instance fire
-				// only this event (no per-node node_removed), so prune panel links to
-				// any node OR instance uid that vanished. Instance uids are now stable
-				// minted ids (never reused), so a vanished uid means the entity is
-				// genuinely gone — clear any panel still bound to it.
-				const before = new Set<string>([
-					...this.nodes.map((n) => n.uid),
-					...Object.keys(this.instances)
-				]);
-				const after = new Set<string>([
-					...snap.nodes.map((n) => n.uid),
-					...Object.keys(snap.instances ?? {})
-				]);
-				for (const id of before) {
-					if (!after.has(id)) workspace().clearNodeRefs(id);
+				// Vanished instances fire only this event (no per-node node_removed): clear any
+				// panel still bound to one. Vanished member NODES are cleared inside
+				// _reconcileNodes; their stable minted uids are never reused, so gone means gone.
+				const afterInst = new Set(Object.keys(snap.instances ?? {}));
+				for (const iid of Object.keys(this.instances)) {
+					if (!afterInst.has(iid)) workspace().clearNodeRefs(iid);
 				}
-				for (const old of this.nodes) {
-					forgetInlineView(old.uid);
-				}
-				for (const n of snap.nodes) this._seedNodeViewerState(n);
-				this.nodes = snap.nodes;
+				this._reconcileNodes(snap.nodes);
 				this.links = snap.links;
 				this._reconcileInstances(snap.instances ?? {});
 				// Seed collapse/kind/settings for each instance's output-boundary slots (its
@@ -809,6 +798,33 @@ export class GraphStore {
 	 * read now that members is keyed local -> {uid, is_instance}. */
 	memberUid(instId: string, local: string): string | null {
 		return this.instances[instId]?.members[local]?.uid ?? null;
+	}
+
+	/** Reconcile the flat node list IN PLACE by uid (mirror of _reconcileInstances):
+	 * Object.assign a surviving node's fields so its object reference — and thus its
+	 * inline-viewer subscription — stays stable, insert + seed genuinely-new nodes, and
+	 * fully forget genuinely-vanished ones. The structural cure for the viewer flicker a
+	 * wholesale `this.nodes = snap.nodes` (plus a blanket forgetInlineView over every
+	 * node) caused on every group/expand/share/make-unique. */
+	private _reconcileNodes(next: NodeInstanceInfo[]): void {
+		const byUid = new Map(this.nodes.map((n) => [n.uid, n]));
+		const nextUids = new Set(next.map((n) => n.uid));
+		for (const old of this.nodes) {
+			if (nextUids.has(old.uid)) continue;
+			ui().forget(old.uid);
+			forgetInlineView(old.uid);
+			consoleStore().forgetNodeDedup(old.uid);
+			workspace().clearNodeRefs(old.uid);
+		}
+		this.nodes = next.map((n) => {
+			const cur = byUid.get(n.uid);
+			if (cur) {
+				Object.assign(cur, n); // survivor keeps its identity; fields refresh in place
+				return cur;
+			}
+			this._seedNodeViewerState(n); // genuinely new node — seed its inline view state
+			return n;
+		});
 	}
 
 	/** Reconcile the instances map IN PLACE by uid: mutate an existing record's fields

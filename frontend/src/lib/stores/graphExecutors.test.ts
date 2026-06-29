@@ -5,6 +5,7 @@ import { workspace } from '$lib/workspace/workspace.svelte';
 import { graphExecutors } from './graphExecutors';
 import { history, type Action, type ExecutorDeps, type NavContext } from './history.svelte';
 import { collectPanels } from '$lib/workspace/model';
+import { setInlineKind, rawInlineView } from '$lib/viewers/inlineView.svelte';
 import type { NodeInstanceInfo, LinkInfo } from '$lib/api/control';
 
 const EMPTY_CTX: NavContext = { activeWorkspaceId: 'w', activePanelId: null, enteredPath: {}, selection: {} };
@@ -747,5 +748,73 @@ describe('sub-patch synth node identity (viewer re-instantiation bug)', () => {
 		const b = g.nodeById('subpatch0')!;
 		expect(b).toBe(a); // same identity across a move
 		expect(b.pos).toEqual([120, 80]); // but position is current
+	});
+});
+
+describe('subpatch_changed reconciles real nodes in place (no viewer churn)', () => {
+	function subpatchSnapshot(
+		nodes: NodeInstanceInfo[],
+		instances: Record<string, unknown>
+	): never {
+		return {
+			nodes,
+			links: [],
+			instances,
+			save_path: null,
+			unsaved_changes: false,
+			instance_id: 's',
+			layout: null
+		} as never;
+	}
+
+	it('keeps a surviving node’s identity + live inline view across a group op', () => {
+		const fc = new FakeControl();
+		const g = new GraphStore(fc);
+		fc.emit({ event: 'node_added', payload: nodeInfo('osc0') });
+		fc.emit({ event: 'node_added', payload: nodeInfo('buffer0', 'Buffer') });
+		// User picks an inline viewer kind on osc0 — live state, not yet pushed/persisted.
+		setInlineKind('osc0', 'out', 'line');
+		const before = g.nodeById('osc0');
+		expect(before).not.toBeNull();
+
+		// A group op reparents buffer0 into a new instance; BOTH real nodes survive with
+		// their uids. Only this whole-snapshot event fires (no per-node add/remove).
+		fc.emit({
+			event: 'subpatch_changed',
+			payload: subpatchSnapshot([nodeInfo('osc0'), nodeInfo('buffer0', 'Buffer')], {
+				subpatch0: {
+					uid: 'subpatch0',
+					name: 'subpatch0',
+					kind: 'subpatch',
+					def_id: null,
+					parent: null,
+					interface: {},
+					pos: [0, 0],
+					members: { buffer0: { uid: 'buffer0', is_instance: false } },
+					slots: { input: {}, output: {} },
+					siblings: [],
+					error: null,
+					viewers: {},
+					member_count: 1
+				}
+			})
+		});
+
+		// A wholesale array swap would hand back a fresh object (re-subscribing the viewer);
+		// in-place reconcile keeps the same reference.
+		expect(g.nodeById('osc0')).toBe(before);
+		// And the blanket forgetInlineView would have wiped the live kind — it must survive.
+		expect(rawInlineView('osc0', 'out').kind).toBe('line');
+	});
+
+	it('forgets a node that genuinely vanished from the snapshot', () => {
+		const fc = new FakeControl();
+		const g = new GraphStore(fc);
+		fc.emit({ event: 'node_added', payload: nodeInfo('osc0') });
+		fc.emit({ event: 'node_added', payload: nodeInfo('gone0', 'Buffer') });
+		setInlineKind('gone0', 'out', 'line');
+		fc.emit({ event: 'subpatch_changed', payload: subpatchSnapshot([nodeInfo('osc0')], {}) });
+		expect(g.nodeById('gone0')).toBeNull();
+		expect(rawInlineView('gone0', 'out').kind).toBeUndefined(); // its inline view is dropped
 	});
 });
