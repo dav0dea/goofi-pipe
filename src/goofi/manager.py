@@ -517,6 +517,13 @@ class Manager:
 
     @mark_unsaved_changes
     def remove_node(self, uid: str, notify_gui: bool = True, **gui_kwargs) -> None:
+        # remove_node is for real NODES; a sub-patch INSTANCE comes down via remove_instance
+        # (recursive subtree teardown + the shared-parent policy). Reject an instance uid up
+        # front so the node-only teardown below can't KeyError or half-process it — a member
+        # that is a nested instance of a SHARED sub-patch would otherwise reach the
+        # mirror-remove and crash in _teardown_node / orphan the def's nested-instance ref.
+        if uid in self._instances:
+            raise ValueError(f"{uid!r} is a sub-patch instance; remove it with remove_instance")
         print(f"Removing node '{self.nodes[uid].name if uid in self.nodes else '?'}' ({uid}).")
         # A node that's still a member of a sub-patch (remove_instance pops
         # membership BEFORE calling this, so teardown skips the whole block):

@@ -249,3 +249,30 @@ def test_remove_wired_shared_member_unwires_boundary_across_family():
         assert mgr._definitions[def_id].interface[bnd].inner_node is None
     finally:
         mgr.terminate(notify_gui=False)
+
+
+def test_remove_node_rejects_a_nested_instance_member_of_a_shared_subpatch():
+    """Mirror-remove handles NODE members; a nested-instance member of a SHARED sub-patch
+    is different (recursive subtree teardown across the family + the def's `instances` map
+    is Phase 3d). remove_node must reject it with the SAME 'make the parent unique first'
+    policy as remove_instance/_reject_if_in_shared_parent — never crash in _teardown_node
+    (instance uids aren't in self.nodes) or silently orphan the definition's nested ref."""
+    import pytest
+
+    mgr = _bare_manager(use_multiprocessing=False)
+    try:
+        a = mgr.add_node("Oscillator", "inputs")
+        inner = mgr.group_nodes([a])  # a nested instance
+        outer = mgr.group_nodes([inner])  # outer holds the nested instance as a member
+        mgr.share_instance(outer)  # outer shared; inner is a nested-instance member
+        assert inner in mgr._instances[outer].members  # precondition
+
+        with pytest.raises(ValueError):
+            mgr.remove_node(inner)
+
+        # nothing corrupted: the nested instance + its node + the def survive intact
+        assert inner in mgr._instances
+        assert a in mgr.nodes
+        assert inner in mgr._instances[outer].members
+    finally:
+        mgr.terminate(notify_gui=False)
