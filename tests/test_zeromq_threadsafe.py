@@ -47,6 +47,11 @@ def test_zeromq_nodes_guard_the_socket_with_a_lock():
 
     for cls in (ZeroMQIn, ZeroMQOut):
         node = _standalone(cls)
+        if cls is ZeroMQOut:
+            # ZeroMQOut binds; use an ephemeral OS-assigned port so the test never collides
+            # with another test's (or a lingering process's) socket on the default 6543.
+            # (ZeroMQIn only connects, which never conflicts and rejects port 0.)
+            node.params.zero_mq.port.value = 0
         node.setup()  # STANDALONE skips auto-setup
         try:
             assert hasattr(node, "_lock"), f"{cls.__name__} has no socket lock"

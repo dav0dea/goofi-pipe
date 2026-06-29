@@ -383,14 +383,25 @@ def test_delete_unique_member_cleans_up_and_unwires():
         mgr.terminate()
 
 
-def test_delete_shared_member_blocked():
+def test_delete_shared_member_mirror_removes_across_the_family():
+    """Bug C: deleting a member of a SHARED sub-patch mirror-removes it from the definition
+    and every sibling (the symmetric inverse of the shared add), instead of the old
+    'make it unique first' block."""
     mgr = _bare_manager(use_multiprocessing=False)
     try:
         buf, inst = _build_single_member_subpatch(mgr)
         def_id = mgr.share_instance(inst)
-        mgr.instantiate_definition(def_id)
-        with pytest.raises(ValueError):
-            mgr.remove_node(_member(mgr, inst, "buffer0"))  # shared member — make unique first
+        sib = mgr.instantiate_definition(def_id)
+        member = _member(mgr, inst, "buffer0")
+        local = mgr._instances[inst].members[member]
+        sib_member = mgr._member_uid(sib, local)
+        assert sib_member in mgr.nodes
+
+        mgr.remove_node(member)  # no longer raises — mirror-removes across the family
+
+        assert member not in mgr.nodes
+        assert sib_member not in mgr.nodes  # the sibling's mirror is gone too
+        assert local not in mgr._definitions[def_id].members
     finally:
         mgr.terminate()
 
