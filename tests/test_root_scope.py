@@ -222,9 +222,14 @@ def test_structural_ops_reject_the_root_scope():
             mgr.make_unique(ROOT_ID)
         with pytest.raises(ValueError):
             mgr.add_boundary(ROOT_ID, "in", "ARRAY")
-        # ROOT survives every rejected op, still the parent-less root scope.
+        # Grouping ROOT would re-home it under the new instance (set ROOT.parent) — a
+        # corruption reachable via the bridge group_nodes RPC (ROOT is a real instance id).
+        with pytest.raises(ValueError):
+            mgr.group_nodes([ROOT_ID])
+        # ROOT survives every rejected op, still the parent-less root scope (uncorrupted).
         assert ROOT_ID in mgr._instances
         assert mgr._instances[ROOT_ID].parent is None
+        assert ROOT_ID not in mgr._membership  # never became a member of anything
     finally:
         mgr.terminate(notify_gui=False)
 

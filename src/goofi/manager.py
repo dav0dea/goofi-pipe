@@ -1124,6 +1124,10 @@ class Manager:
         if not member_uids:
             raise ValueError("no members to group")
         for u in member_uids:
+            # ROOT is a real instance id, so it would pass the existence check below and
+            # then get re-homed under the new group (ROOT.parent set) — corrupting the
+            # canvas. The root scope can never be a member of a sub-patch.
+            self._reject_root(u, "group")
             if u not in self.nodes and u not in self._instances:
                 raise KeyError(f"No such entity: {u}")
         # Every member must share ONE parent scope (same nesting level); the new
