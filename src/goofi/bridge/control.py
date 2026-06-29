@@ -368,6 +368,17 @@ class ControlHub:
                 payload.get("inner_slot"),
             )
             return {"ok": True}
+        if op == "wire_boundary_to_leaf":
+            created = await self._call_manager(
+                manager.wire_boundary_to_leaf,
+                payload["outer_inst"],
+                payload["bnd"],
+                payload["leaf_node"],
+                payload["leaf_slot"],
+            )
+            # The auto-created intermediate (inst_id, bnd_id) pairs, so the client can
+            # undo the whole chain (unwire the outer port + remove these) as one step.
+            return {"created": [list(p) for p in created]}
         if op == "remove_boundary":
             await self._call_manager(manager.remove_boundary, payload["inst_id"], payload["bnd_id"])
             return {"ok": True}

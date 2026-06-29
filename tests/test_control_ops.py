@@ -86,3 +86,29 @@ def test_load_rewires_state_forwarding_for_reused_names(tmp_path: Path):
         assert MessageType.PROCESSING_ERROR in manager.nodes[osc].callbacks
     finally:
         manager.terminate(notify_gui=False)
+
+
+def test_wire_boundary_to_leaf_dispatch_returns_created_chain():
+    """The bridge surfaces the auto-chain op and returns the auto-created intermediate
+    (inst_id, bnd_id) pairs so the frontend can undo the whole chain as one step."""
+    from .test_manager import _build_grouped_graph, _member
+
+    manager = _bare_manager(use_multiprocessing=False)
+    manager._layout = None
+    try:
+        hub = _hub(manager)
+        osc, inner = _build_grouped_graph(manager)
+        s1 = _member(manager, inner, "select1")
+        out_slot = list(manager.nodes[s1].output_slots)[0]
+        outer = manager.group_nodes([inner])
+        outer_bnd = manager.add_boundary(outer, "out", "ARRAY")
+        res = asyncio.run(
+            hub._dispatch(
+                "wire_boundary_to_leaf",
+                {"outer_inst": outer, "bnd": outer_bnd, "leaf_node": s1, "leaf_slot": out_slot},
+            )
+        )
+        assert len(res["created"]) == 1  # one auto-created intermediate boundary
+        assert manager.resolve_boundary(outer, outer_bnd) == (s1, out_slot)
+    finally:
+        manager.terminate(notify_gui=False)

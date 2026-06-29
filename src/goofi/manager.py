@@ -1394,6 +1394,14 @@ class Manager:
         the member-side endpoint matches and the other end is NOT a member of this
         instance (so nested sibling-instance members count as external — correct)."""
         uid = self._member_uid(inst_id, local)
+        # A CHAINED boundary forwards to a nested instance (slot = its boundary id); the
+        # real external flat link lives on the deep LEAF, so descend to it. An unwired
+        # nested chain has no leaf and thus no external link.
+        if uid in self._instances:
+            try:
+                uid, slot = self.resolve_boundary(uid, slot)
+            except (KeyError, ValueError):
+                return []
         out: List[dict] = []
         for link in self._links:
             if dir == "in" and link["node_in"] == uid and link["slot_in"] == slot:
@@ -1483,45 +1491,115 @@ class Manager:
             new_entry = replace(entry, inner_node=None, inner_slot=None)
         else:
             uid = self._member_uid(inst_id, inner_node)
-            if uid is None or uid not in self.nodes or self._membership.get(uid) != inst_id:
+            if uid is None or self._membership.get(uid) != inst_id or (
+                uid not in self.nodes and uid not in self._instances
+            ):
                 raise ValueError(f"{inner_node} is not a member of {inst_id}")
-            slots = self.nodes[uid].input_slots if dir == "in" else self.nodes[uid].output_slots
-            dt = slots.get(inner_slot)
-            if dt is None:
-                raise ValueError(f"no {dir} slot {inner_slot!r} on {inner_node}")
             # `dtype` is absent on legacy (pre-dtype) entries — tolerate it and heal
-            # below by storing the real slot dtype.
+            # below by storing the resolved dtype.
             expected = entry.dtype
-            if expected is not None and dt.name != expected:
-                raise ValueError(
-                    f"dtype mismatch: {inner_node}.{inner_slot} is {dt.name}, boundary is {expected}"
-                )
+            if uid in self._instances:
+                # The inner target is a NESTED INSTANCE: inner_slot names one of ITS
+                # boundaries; dtype/dir come from that child port (the data route
+                # descends through it recursively via resolve_boundary). No node-slot
+                # lookup and no internal-feed scan — a flat link never keys on an
+                # instance uid.
+                child = self._instances[uid].interface.get(inner_slot)
+                if child is None:
+                    raise ValueError(f"no {dir} boundary {inner_slot!r} on nested {inner_node}")
+                if child.dir != dir:
+                    raise ValueError(
+                        f"direction mismatch: nested {inner_node}.{inner_slot} is {child.dir}, port is {dir}"
+                    )
+                if expected is not None and child.dtype is not None and child.dtype != expected:
+                    raise ValueError(
+                        f"dtype mismatch: {inner_node}.{inner_slot} is {child.dtype}, boundary is {expected}"
+                    )
+                dt_name = child.dtype or expected
+            else:
+                slots = self.nodes[uid].input_slots if dir == "in" else self.nodes[uid].output_slots
+                dt = slots.get(inner_slot)
+                if dt is None:
+                    raise ValueError(f"no {dir} slot {inner_slot!r} on {inner_node}")
+                if expected is not None and dt.name != expected:
+                    raise ValueError(
+                        f"dtype mismatch: {inner_node}.{inner_slot} is {dt.name}, boundary is {expected}"
+                    )
+                dt_name = dt.name
+                # An In port must own its inner input alone: refuse an inner input slot
+                # already fed by an INTERNAL member→member link, else the external splice
+                # would silently evict that internal wire (add_link is single-source).
+                if dir == "in":
+                    for link in self._links:
+                        if (
+                            link["node_in"] == uid
+                            and link["slot_in"] == inner_slot
+                            and self._membership.get(link["node_out"]) == inst_id
+                        ):
+                            raise ValueError(
+                                f"{inner_node}.{inner_slot} is already fed inside the sub-patch; "
+                                f"an In node can't expose an already-connected input"
+                            )
             for k, e in iface.items():
                 if k != bnd_id and e.dir == dir and e.inner_node == inner_node and e.inner_slot == inner_slot:
                     raise ValueError(f"inner slot {inner_node}.{inner_slot} already exposed by {k}")
-            # An In port must own its inner input alone: refuse an inner input slot
-            # already fed by an INTERNAL member→member link, else the external splice
-            # would silently evict that internal wire (add_link is single-source).
-            if dir == "in":
-                for link in self._links:
-                    if (
-                        link["node_in"] == uid
-                        and link["slot_in"] == inner_slot
-                        and self._membership.get(link["node_out"]) == inst_id
-                    ):
-                        raise ValueError(
-                            f"{inner_node}.{inner_slot} is already fed inside the sub-patch; "
-                            f"an In node can't expose an already-connected input"
-                        )
             if old_local is not None and (old_local, old_slot) != (inner_node, inner_slot):
+                # Re-pointing a CHAINED (nested-instance) boundary would re-splice an
+                # external link onto an instance uid — unsupported in 3b. Unwire first.
+                if uid in self._instances or self._member_uid(inst_id, old_local) in self._instances:
+                    raise ValueError("re-pointing a chained boundary isn't supported yet; unwire it first")
                 for iid in [inst_id, *siblings]:
                     self._resplice_instance(iid, dir, old_local, old_slot, inner_node, inner_slot, notify_gui)
-            new_entry = replace(entry, dtype=dt.name, inner_node=inner_node, inner_slot=inner_slot)
+            new_entry = replace(entry, dtype=dt_name, inner_node=inner_node, inner_slot=inner_slot)
 
         iface[bnd_id] = new_entry
         self._mirror_boundary_entry(inst_id, bnd_id, new_entry)
         if self._bridge is not None and notify_gui:
             self._bridge.control.on_subpatch_changed()
+
+    @mark_unsaved_changes
+    def wire_boundary_to_leaf(self, outer_inst, bnd, leaf_node_uid, leaf_slot, notify_gui: bool = True):
+        """Auto-chain a pre-created OUTER boundary straight to a deeply-nested leaf node's
+        slot, building + chaining an In/Out boundary at every intermediate level. Returns
+        the auto-created (inst_id, bnd_id) pairs (innermost-first) so the caller can undo
+        the whole chain as one step. The outer boundary's dir is reused; the dtype is the
+        leaf slot's. The ancestor chain is walked via the 3a parent edges (no new index)."""
+        if outer_inst not in self._instances or bnd not in self._instances[outer_inst].interface:
+            raise KeyError(f"No such boundary {outer_inst}:{bnd}")
+        if leaf_node_uid not in self.nodes:
+            raise KeyError(f"No such node: {leaf_node_uid}")
+        dir = self._instances[outer_inst].interface[bnd].dir
+        dt = self._slot_dtype(leaf_node_uid, leaf_slot, dir)
+        # Walk leaf -> ... -> outer_inst (innermost-first) along the membership/parent
+        # chain; bail if outer_inst is not actually an ancestor of the leaf.
+        chain: List[tuple] = []  # (inst_id, member_uid)
+        member, inst = leaf_node_uid, self._membership.get(leaf_node_uid)
+        while inst is not None:
+            chain.append((inst, member))
+            if inst == outer_inst:
+                break
+            member, inst = inst, self._instances[inst].parent
+        else:
+            raise ValueError(f"{outer_inst} is not an ancestor of {leaf_node_uid}")
+
+        created: List[tuple] = []
+        inner_slot = leaf_slot
+        # Atomic: a mid-chain failure must leave no orphan intermediate boundary. Each
+        # wire here is FRESH (old inner is None), so no live transport re-splice runs
+        # inside the block — rollback is a pure map-restore.
+        with self._transaction():
+            for inst_id, member_uid in chain:  # innermost-first
+                local = self._instances[inst_id].members[member_uid]
+                if inst_id == outer_inst:
+                    bnd_id = bnd  # reuse the pre-created outer boundary
+                else:
+                    bnd_id = self.add_boundary(inst_id, dir, dt, notify_gui=False)
+                    created.append((inst_id, bnd_id))
+                self.wire_boundary(inst_id, bnd_id, local, inner_slot, notify_gui=False)
+                inner_slot = bnd_id  # the next (outer) level forwards to THIS boundary
+        if self._bridge is not None and notify_gui:
+            self._bridge.control.on_subpatch_changed()
+        return created
 
     @mark_unsaved_changes
     def remove_boundary(self, inst_id: str, bnd_id: str, notify_gui: bool = True) -> None:
@@ -1560,18 +1638,33 @@ class Manager:
         return changed
 
     def resolve_boundary(self, inst_id: str, bnd_id: str) -> tuple:
-        """Translate a (sub-patch, boundary) port to the real inner (member uid,
-        slot) for the external-wire splice. Raises if unwired/unknown."""
-        inst = self._instances.get(inst_id)
-        if inst is None or bnd_id not in inst.interface:
-            raise KeyError(f"No such boundary {inst_id}:{bnd_id}")
-        entry = inst.interface[bnd_id]
-        if entry.inner_node is None:
-            raise ValueError(f"boundary {inst_id}:{bnd_id} is not wired yet")
-        uid = self._member_uid(inst_id, entry.inner_node)
-        if uid is None:
-            raise ValueError(f"boundary {inst_id}:{bnd_id} inner member is gone")
-        return uid, entry.inner_slot
+        """Translate a (sub-patch, boundary) port to the real LEAF (node uid, slot) for
+        the external-wire splice / data route. Descends chain-to-leaf: when a boundary
+        forwards to a nested INSTANCE member, its `inner_slot` is that child's boundary
+        id, so we recurse into the child and repeat until a real node is reached. Raises
+        KeyError (unknown boundary) / ValueError (unwired or gone) anywhere in the chain
+        — the exact surface the data route catches to close cleanly."""
+        cur_inst, cur_bnd = inst_id, bnd_id
+        seen: set = set()
+        while True:
+            # Defensive: the nesting forest is acyclic (invariant), so this can't loop;
+            # the guard turns a hypothetical corruption into a loud error, not a hang.
+            if (cur_inst, cur_bnd) in seen:
+                raise ValueError(f"boundary chain cycles through {cur_inst}:{cur_bnd}")
+            seen.add((cur_inst, cur_bnd))
+            inst = self._instances.get(cur_inst)
+            if inst is None or cur_bnd not in inst.interface:
+                raise KeyError(f"No such boundary {cur_inst}:{cur_bnd}")
+            entry = inst.interface[cur_bnd]
+            if entry.inner_node is None:
+                raise ValueError(f"boundary {cur_inst}:{cur_bnd} is not wired yet")
+            uid = self._member_uid(cur_inst, entry.inner_node)
+            if uid is None:
+                raise ValueError(f"boundary {cur_inst}:{cur_bnd} inner member is gone")
+            if uid in self._instances:  # forward to the nested instance's own boundary
+                cur_inst, cur_bnd = uid, entry.inner_slot
+                continue
+            return uid, entry.inner_slot
 
     @mark_unsaved_changes
     def update_param(self, node: str, group: str, name: str, value: Any) -> None:

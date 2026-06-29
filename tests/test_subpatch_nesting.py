@@ -211,3 +211,183 @@ def test_remove_outer_deletes_nested_subtree():
         assert_subpatch_invariants(mgr)
     finally:
         mgr.terminate(notify_gui=False)
+
+
+# === Phase 3b — recursive BOUNDARIES (chain-to-leaf resolve + auto-chained wiring) ===
+
+def test_wire_boundary_accepts_nested_instance_target():
+    """3b producer: a boundary may forward to a NESTED INSTANCE's boundary, not only a
+    real node. wire_boundary must accept inner_node=<nested instance local> and
+    inner_slot=<that instance's boundary id>, healing dtype from the nested boundary."""
+    mgr = _bare_manager(use_multiprocessing=False)
+    try:
+        osc, inner = _build_grouped_graph(mgr)  # inner: [select0, select1]
+        s1 = _member(mgr, inner, "select1")
+        out_slot = list(mgr.nodes[s1].output_slots)[0]
+        inner_bnd = mgr.add_boundary(inner, "out", "ARRAY")
+        mgr.wire_boundary(inner, inner_bnd, "select1", out_slot)  # single-level, works today
+
+        outer = mgr.group_nodes([inner])  # nest inner under a new outer instance
+        inner_local = mgr._instances[outer].members[inner]  # inner's local in outer (its label)
+        outer_bnd = mgr.add_boundary(outer, "out", "ARRAY")
+
+        mgr.wire_boundary(outer, outer_bnd, inner_local, inner_bnd)  # forward outer -> inner's boundary
+
+        e = mgr._instances[outer].interface[outer_bnd]
+        assert e.inner_node == inner_local and e.inner_slot == inner_bnd
+        assert e.dtype == "ARRAY"  # healed from the nested boundary's dtype
+        assert_subpatch_invariants(mgr)
+    finally:
+        mgr.terminate(notify_gui=False)
+
+
+def _build_two_level_out_boundary(mgr):
+    """outer > inner > [select0, select1]; inner's OUT boundary wired to select1, and
+    outer's OUT boundary forwarded to inner's boundary. Returns
+    (outer, outer_bnd, inner, inner_bnd, leaf_uid, leaf_slot)."""
+    osc, inner = _build_grouped_graph(mgr)
+    s1 = _member(mgr, inner, "select1")
+    out_slot = list(mgr.nodes[s1].output_slots)[0]
+    inner_bnd = mgr.add_boundary(inner, "out", "ARRAY")
+    mgr.wire_boundary(inner, inner_bnd, "select1", out_slot)
+    outer = mgr.group_nodes([inner])
+    inner_local = mgr._instances[outer].members[inner]
+    outer_bnd = mgr.add_boundary(outer, "out", "ARRAY")
+    mgr.wire_boundary(outer, outer_bnd, inner_local, inner_bnd)
+    return outer, outer_bnd, inner, inner_bnd, s1, out_slot
+
+
+def test_resolve_two_level_boundary_reaches_leaf_node():
+    """3b consumer: resolving an OUTER boundary descends through the nested instance's
+    own boundary to the real leaf node+slot (the precondition every consumer relies on:
+    a real node in mgr.nodes with a real slot)."""
+    mgr = _bare_manager(use_multiprocessing=False)
+    try:
+        outer, outer_bnd, inner, inner_bnd, leaf, leaf_slot = _build_two_level_out_boundary(mgr)
+        node, slot = mgr.resolve_boundary(outer, outer_bnd)
+        assert node == leaf and slot == leaf_slot
+        assert node in mgr.nodes  # a real leaf, not the intermediate instance
+        assert slot in mgr.nodes[node].output_slots
+        assert_subpatch_invariants(mgr)
+    finally:
+        mgr.terminate(notify_gui=False)
+
+
+def test_resolve_raises_when_mid_chain_boundary_unwired():
+    """If an intermediate boundary in the chain is unwired, resolving the outer port
+    raises (so the data route closes cleanly) — never returns a bogus instance tuple."""
+    import pytest
+
+    mgr = _bare_manager(use_multiprocessing=False)
+    try:
+        osc, inner = _build_grouped_graph(mgr)
+        inner_bnd = mgr.add_boundary(inner, "out", "ARRAY")  # added but NOT wired
+        outer = mgr.group_nodes([inner])
+        inner_local = mgr._instances[outer].members[inner]
+        outer_bnd = mgr.add_boundary(outer, "out", "ARRAY")
+        mgr.wire_boundary(outer, outer_bnd, inner_local, inner_bnd)  # forwards to an unwired child
+        with pytest.raises(ValueError):
+            mgr.resolve_boundary(outer, outer_bnd)
+    finally:
+        mgr.terminate(notify_gui=False)
+
+
+def test_wire_boundary_to_leaf_auto_chains_intermediate_boundaries():
+    """Auto-chain: wiring a pre-created OUTER boundary straight to a deeply-nested leaf
+    builds + chains the intermediate boundary on each level, and the outer port then
+    resolves to the real leaf."""
+    mgr = _bare_manager(use_multiprocessing=False)
+    try:
+        osc, inner = _build_grouped_graph(mgr)  # inner > [select0, select1]; no boundaries
+        s1 = _member(mgr, inner, "select1")
+        out_slot = list(mgr.nodes[s1].output_slots)[0]
+        outer = mgr.group_nodes([inner])  # outer > inner
+        outer_bnd = mgr.add_boundary(outer, "out", "ARRAY")
+
+        created = mgr.wire_boundary_to_leaf(outer, outer_bnd, s1, out_slot)
+
+        assert len(created) == 1  # one intermediate boundary, on `inner`
+        ci, cb = created[0]
+        assert ci == inner and cb in mgr._instances[inner].interface
+        assert mgr.resolve_boundary(outer, outer_bnd) == (s1, out_slot)  # reaches the leaf
+        e = mgr._instances[outer].interface[outer_bnd]
+        assert e.inner_node == mgr._instances[outer].members[inner]  # forwards to inner
+        assert e.inner_slot == cb
+        assert_subpatch_invariants(mgr)
+    finally:
+        mgr.terminate(notify_gui=False)
+
+
+def test_wire_boundary_to_leaf_rejects_non_ancestor():
+    """Auto-chain refuses a target outer instance that is not an ancestor of the leaf."""
+    import pytest
+
+    mgr = _bare_manager(use_multiprocessing=False)
+    try:
+        osc, inner = _build_grouped_graph(mgr)
+        s1 = _member(mgr, inner, "select1")
+        out_slot = list(mgr.nodes[s1].output_slots)[0]
+        n0 = mgr.add_node("Buffer", "signal")
+        other = mgr.group_nodes([n0])  # a separate instance, NOT an ancestor of s1
+        other_bnd = mgr.add_boundary(other, "out", "ARRAY")
+        with pytest.raises(ValueError):
+            mgr.wire_boundary_to_leaf(other, other_bnd, s1, out_slot)
+    finally:
+        mgr.terminate(notify_gui=False)
+
+
+def test_wire_boundary_to_leaf_rolls_back_on_failure(monkeypatch):
+    """Auto-chain is atomic: a failure partway through the per-level wiring restores every
+    interface byte-clean — no orphan intermediate boundary survives."""
+    from copy import deepcopy
+    import pytest
+
+    mgr = _bare_manager(use_multiprocessing=False)
+    try:
+        osc, inner = _build_grouped_graph(mgr)  # inner > [select0, select1]
+        s1 = _member(mgr, inner, "select1")
+        out_slot = list(mgr.nodes[s1].output_slots)[0]
+        outer = mgr.group_nodes([inner])  # outer > inner
+        outer_bnd = mgr.add_boundary(outer, "out", "ARRAY")
+        before_instances = deepcopy(mgr._instances)
+        before_membership = dict(mgr._membership)
+
+        real_wire = mgr.wire_boundary
+        calls = {"n": 0}
+
+        def boom(*a, **k):
+            calls["n"] += 1
+            if calls["n"] == 2:  # fail on the outer wire, after the inner level is built
+                raise RuntimeError("forced mid-chain failure")
+            return real_wire(*a, **k)
+
+        monkeypatch.setattr(mgr, "wire_boundary", boom)
+        with pytest.raises(RuntimeError):
+            mgr.wire_boundary_to_leaf(outer, outer_bnd, s1, out_slot)
+
+        assert mgr._instances == before_instances, "interfaces not restored (orphan boundary)"
+        assert mgr._membership == before_membership
+        assert_subpatch_invariants(mgr)
+    finally:
+        mgr.terminate(notify_gui=False)
+
+
+def test_unwire_chained_boundary_tears_down_deep_external_link():
+    """Unwiring a CHAINED outer boundary tears down the external flat link that was
+    spliced onto the deep LEAF node — the resolve-to-leaf must also drive unsplice."""
+    mgr = _bare_manager(use_multiprocessing=False)
+    try:
+        outer, outer_bnd, inner, inner_bnd, leaf, leaf_slot = _build_two_level_out_boundary(mgr)
+        ext = mgr.add_node("Buffer", "signal")
+        node, slot = mgr.resolve_boundary(outer, outer_bnd)  # the deep leaf
+        assert (node, slot) == (leaf, leaf_slot)
+        mgr.add_link(node, ext, slot, "val")  # external consumer of the chained OUT port
+        assert any(l["node_out"] == leaf and l["node_in"] == ext for l in mgr.links)
+
+        mgr.wire_boundary(outer, outer_bnd, None, None)  # unwire the OUTER port
+        assert not any(l["node_out"] == leaf and l["node_in"] == ext for l in mgr.links), (
+            "deep external link of a chained boundary was not torn down"
+        )
+        assert_subpatch_invariants(mgr)
+    finally:
+        mgr.terminate(notify_gui=False)
