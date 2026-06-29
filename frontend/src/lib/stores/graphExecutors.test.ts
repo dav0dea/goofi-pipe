@@ -152,6 +152,32 @@ describe('graph executors — simple kinds', () => {
 		expect(g.links).toHaveLength(1);
 	});
 
+	it('undo of deleting a sub-patch MEMBER restores it inside the sub-patch (not at root)', () => {
+		const fc = new FakeControl();
+		const g = new GraphStore(fc);
+		const node = nodeInfo('buffer0', 'Buffer');
+		const action: Action = {
+			kind: 'remove_node',
+			label: 'Delete buffer0',
+			domain: 'graph',
+			context: EMPTY_CTX,
+			payload: {
+				uid: 'buffer0',
+				node: structuredClone(node),
+				links: [],
+				membership: { instance: 'subpatch0', local_name: 'buffer0' },
+				boundPanels: []
+			}
+		};
+		void graphExecutors['remove_node'].inverse(action, deps(fc, g));
+		const addCall = fc.recordedCalls().find((c) => c.op === 'add_node');
+		expect(addCall).toBeDefined();
+		// The member must be re-created back INSIDE its sub-patch (add_member_node path),
+		// not orphaned at top level — so inst_id rides the captured membership.
+		expect(addCall!.payload.inst_id).toBe('subpatch0');
+		expect(addCall!.payload.member_uid).toBe('buffer0'); // same identity
+	});
+
 	it('add_link inverse removes the link and re-adds a displaced one', async () => {
 		const fc = new FakeControl();
 		const g = new GraphStore(fc);

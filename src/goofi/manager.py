@@ -493,6 +493,7 @@ class Manager:
         # A node that's still a member of a sub-patch (remove_instance pops
         # membership BEFORE calling this, so teardown skips the whole block):
         _inst_id = self._membership.get(uid)
+        was_member = False
         if _inst_id is not None:
             _inst = self._instances.get(_inst_id)
             if _inst is not None:
@@ -506,6 +507,7 @@ class Manager:
                 # Unique: unwire any boundary pointing at this member (its spliced
                 # external links drop below with the node's links) and drop the member
                 # from the instance so save/iteration never references a gone node.
+                was_member = True
                 _local = _inst.members.get(uid)
                 for _bid, _e in list(_inst.interface.items()):
                     if _e.inner_node == _local:
@@ -524,7 +526,16 @@ class Manager:
         # to the node that just left.
         self._broadcast_node_directory()
         if self._bridge is not None and notify_gui:
-            self._bridge.control.on_node_removed(uid)
+            if was_member:
+                # A member left a still-existing sub-patch: resync the INSTANCE record
+                # (member_count, computed slots, interface) — the subpatch_changed
+                # snapshot's _reconcileNodes also does the per-node cleanup on_node_removed
+                # did (forget ui/inline-view/console/panel refs for the vanished uid) and
+                # the sweep drops its status wiring. Bare on_node_removed would leave the
+                # instance frozen (mirror of the add-member-not-wired bug).
+                self._bridge.control.on_subpatch_changed()
+            else:
+                self._bridge.control.on_node_removed(uid)
 
     @mark_unsaved_changes
     def add_link(
@@ -1440,9 +1451,14 @@ class Manager:
         name_map: Dict[str, str] = {}  # template local -> this instance's fresh flat name
         for local, rec in d.members.items():
             disp = self._fresh_display_name(rec["_type"].lower())
+            # Spawn silently like add_member_node's sibling mirror: the trailing
+            # on_subpatch_changed surfaces every member atomically (and its wiring sweep
+            # wires them). A per-member on_node_added would flash them at root and, if
+            # this transaction rolls back, leave a phantom node the browser never clears.
             uid = self._add_node_from_record(
                 disp, dict(rec),
                 membership={"instance": inst_id, "local_name": local},
+                notify_gui=False,
             )
             self._attach_member(inst_id, uid, local)
             members[uid] = local

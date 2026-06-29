@@ -45,14 +45,16 @@ const removeNode: Executor = {
 		const a = as<'remove_node'>(action);
 		const n = a.payload.node;
 		// Re-create with the SAME uid (so uid-keyed links/panels reconnect) + display
-		// name + params.
+		// name + params. A deleted sub-patch MEMBER is restored back INSIDE its instance
+		// (inst_id from the captured membership → add_member_node), never orphaned at root.
 		await deps.control.call('add_node', {
 			type: n.type,
 			category: n.category,
 			pos: n.pos,
 			name: n.name,
 			member_uid: a.payload.uid,
-			params: paramValues(n)
+			params: paramValues(n),
+			inst_id: a.payload.membership?.instance
 		});
 		for (const link of a.payload.links) await deps.control.call('add_link', { ...link });
 		// Re-bind any panels that were emptied when the node was deleted.

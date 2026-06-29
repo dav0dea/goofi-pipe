@@ -143,6 +143,67 @@ def test_member_node_added_inside_subpatch_gets_status_wired():
         manager.terminate(notify_gui=False)
 
 
+def test_member_removal_resyncs_instance_record():
+    """Removing a member of a sub-patch must resync the INSTANCE (member_count / computed
+    slots / interface) — fire on_subpatch_changed, not the bare on_node_removed which
+    leaves the frontend's instance record frozen (mirror of the add-member bug)."""
+    manager = _bare_manager(use_multiprocessing=False)
+    manager._layout = None
+    try:
+        hub = _hub(manager)
+        manager._bridge = types.SimpleNamespace(control=hub)
+        events: list = []
+        hub.broadcast_threadsafe = lambda msg: events.append(msg)
+
+        a = manager.add_node("Oscillator", "inputs")
+        b = manager.add_node("Buffer", "signal")
+        inst = manager.group_nodes([a, b])
+        member = manager.add_member_node(inst, "Buffer", "signal")
+        before = len(manager._instances[inst].members)
+
+        events.clear()
+        manager.remove_node(member)
+
+        assert member not in manager.nodes
+        assert len(manager._instances[inst].members) == before - 1
+        kinds = [e["event"] for e in events]
+        assert "subpatch_changed" in kinds, "member removal must resync the instance"
+        assert "node_removed" not in kinds, "bare node_removed leaves the instance stale"
+        snap = next(e["payload"] for e in events if e["event"] == "subpatch_changed")
+        assert snap["instances"][inst]["member_count"] == before - 1
+    finally:
+        manager.terminate(notify_gui=False)
+
+
+def test_instantiate_definition_spawns_members_silently():
+    """Members spawned by instantiate_definition (duplicate-as-shared) must surface ONLY
+    via the trailing on_subpatch_changed snapshot — not a per-member on_node_added, which
+    flashes them at root and leaves a phantom on the frontend if the wrapping transaction
+    rolls back. (The snapshot's wiring sweep wires them, so silent spawn is safe.)"""
+    manager = _bare_manager(use_multiprocessing=False)
+    manager._layout = None
+    try:
+        hub = _hub(manager)
+        manager._bridge = types.SimpleNamespace(control=hub)
+        a = manager.add_node("Oscillator", "inputs")
+        b = manager.add_node("Buffer", "signal")
+        inst = manager.group_nodes([a, b])
+        def_id = manager.share_instance(inst)
+
+        events: list = []
+        hub.broadcast_threadsafe = lambda msg: events.append(msg)
+        new_inst = manager.instantiate_definition(def_id, (10, 10))
+
+        kinds = [e["event"] for e in events]
+        assert "subpatch_changed" in kinds
+        assert "node_added" not in kinds, "members must spawn silently, surfaced by the snapshot"
+        snap = next(e["payload"] for e in events if e["event"] == "subpatch_changed")
+        assert new_inst in snap["instances"]
+        assert snap["instances"][new_inst]["member_count"] == 2
+    finally:
+        manager.terminate(notify_gui=False)
+
+
 def test_subpatch_changed_drops_wiring_for_vanished_member():
     """remove_instance tears members down with notify_gui=False (only on_subpatch_changed
     fires, no on_node_removed), so the wiring bookkeeping must be reconciled here too —
