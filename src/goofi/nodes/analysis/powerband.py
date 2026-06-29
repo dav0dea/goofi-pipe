@@ -1,3 +1,5 @@
+from copy import deepcopy
+
 import numpy as np
 
 from goofi.data import DataType
@@ -5,7 +7,6 @@ from goofi.node import Node
 from goofi.params import FloatParam, StringParam
 
 
-# TODO: deal meta data output
 class PowerBand(Node):
     """
     This node calculates the total power within a specified frequency band from input data representing a power spectral density (PSD). It sums the power values within a chosen frequency range to output either the absolute or relative band power. The output preserves the input's metadata.
@@ -57,4 +58,10 @@ class PowerBand(Node):
             total_power = np.sum(data.data, axis=-1)
             power = power / total_power
 
-        return {"power": (np.array(power), data.meta)}
+        # The frequency axis is summed out; drop its (now-stale) channel entry on a COPY —
+        # dim1 for a 2D PSD (channels x freqs), dim0 for a 1D PSD. The producer is untouched.
+        meta = deepcopy(data.meta)
+        ch = meta.get("channels")
+        if ch is not None:
+            ch.pop("dim1" if "dim1" in ch else "dim0", None)
+        return {"power": (np.array(power), meta)}

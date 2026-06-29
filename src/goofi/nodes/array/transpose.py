@@ -1,3 +1,5 @@
+from copy import deepcopy
+
 import numpy as np
 
 from goofi.data import Data, DataType
@@ -20,18 +22,21 @@ class Transpose(Node):
             return None
 
         if array.data.ndim == 1:
-            # If the input is a 1D array, add an extra dimension
+            # 1D -> add a leading axis: the single dim0 moves to dim1.
             result = array.data.reshape(1, -1)
+            axes = [1, 0]
         else:
-            axes = list(map(lambda a: int(a), self.params.transpose.axes.value.split(",")))
+            axes = list(map(int, self.params.transpose.axes.value.split(",")))
             result = np.transpose(array.data, axes=axes)
 
-        # transpose channel names
-        ch_names = {}
-        if "dim0" in array.meta["channels"]:
-            ch_names["dim1"] = array.meta["channels"]["dim0"]
-        if "dim1" in array.meta["channels"]:
-            ch_names["dim0"] = array.meta["channels"]["dim1"]
-        array.meta["channels"] = ch_names
-
-        return {"out": (result, {})}  # TODO: fix meta axes
+        # Permute the channel names to match (output dim i sources from input dim axes[i]),
+        # on a COPY — never mutate the producer's meta (fan-out aliasing, backlog #6).
+        meta = deepcopy(array.meta)
+        ch = meta.get("channels")
+        if ch is not None:
+            meta["channels"] = {
+                f"dim{new_dim}": ch[f"dim{old_dim}"]
+                for new_dim, old_dim in enumerate(axes)
+                if f"dim{old_dim}" in ch
+            }
+        return {"out": (result, meta)}

@@ -1,3 +1,5 @@
+from copy import deepcopy
+
 from goofi.data import Data, DataType
 from goofi.node import Node
 from goofi.params import StringParam
@@ -5,7 +7,9 @@ from goofi.params import StringParam
 
 class Reshape(Node):
     """
-    Reshapes an input array to a specified shape. The output array will have the new shape while preserving the original data. Metadata channels are removed in the output.
+    Reshapes an input array to a specified shape. The output array will have the new shape
+    while preserving the original data. Channel names can't survive an arbitrary reshape, so
+    they are dropped from the output (other metadata, e.g. sfreq, is preserved).
 
     Inputs:
     - array: The array to be reshaped.
@@ -30,6 +34,8 @@ class Reshape(Node):
         shape = list(map(int, self.params.reshape.shape.value.split(",")))
         result = array.data.reshape(shape)
 
-        # TODO: properly handle channel names
-        del array.meta["channels"]
-        return {"out": (result, array.meta)}
+        # Channel names don't survive an arbitrary reshape; drop them on a COPY so the
+        # producer's meta is never mutated (the old `del` aliased it across fan-out).
+        meta = deepcopy(array.meta)
+        meta.pop("channels", None)
+        return {"out": (result, meta)}
