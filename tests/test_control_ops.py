@@ -4,15 +4,17 @@ import types
 from pathlib import Path
 
 from goofi.bridge.control import ControlHub
+from goofi.bridge.data import DataHub
 from goofi.message import MessageType
 
 from .test_manager import _bare_manager
 
 
 def _hub(manager=None) -> ControlHub:
-    # ControlHub only needs `server.manager` for these ops; no real server.
-    # `schedule` swallows the broadcast coroutine (no loop in these tests).
+    # ControlHub needs `server.manager` for these ops + `server.data` (the load path
+    # tears down the data plane). No real socket; `schedule` swallows the coroutine.
     server = types.SimpleNamespace(manager=manager, schedule=lambda coro: coro.close())
+    server.data = DataHub(server)
     return ControlHub(server)
 
 
@@ -84,6 +86,33 @@ def test_load_rewires_state_forwarding_for_reused_names(tmp_path: Path):
         # The reloaded node's NEW NodeRef must have its forwarding handlers back.
         assert MessageType.STATE_UPDATE in manager.nodes[osc].callbacks, "state forwarding lost after reload (B1)"
         assert MessageType.PROCESSING_ERROR in manager.nodes[osc].callbacks
+    finally:
+        manager.terminate(notify_gui=False)
+
+
+def test_load_tears_down_the_data_plane(tmp_path: Path):
+    """A destructive reload replaces every node, so every data-plane mux is left caching
+    a dead NodeRef. The load op must tear the data plane down (close_all) so viewers
+    reconnect against the new graph instead of binding to a dead ref / reused-uid mux."""
+    manager = _bare_manager()
+    manager._layout = None
+    try:
+        hub = _hub(manager)
+        closed = []
+
+        class _SpyData:
+            async def close_all(self):
+                closed.append(True)
+
+        hub.server.data = _SpyData()
+        manager._bridge = types.SimpleNamespace(control=hub)
+        manager.add_node("Oscillator", "inputs")
+        gfi = tmp_path / "patch.gfi"
+        manager.save(str(gfi))
+
+        asyncio.run(hub._dispatch("load", {"path": str(gfi)}))
+
+        assert closed, "load did not tear down the data-plane muxes"
     finally:
         manager.terminate(notify_gui=False)
 

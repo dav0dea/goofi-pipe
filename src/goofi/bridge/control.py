@@ -302,6 +302,10 @@ class ControlHub:
             # state/error forwarding (report B1).
             self._wired_nodes.clear()
             await self._call_manager(_replace_graph, manager, path)
+            # The graph was wholly replaced: every data-plane mux now caches a dead
+            # NodeRef. Tear them down so viewers reconnect against the new graph
+            # (otherwise a mux keyed by a reused uid still points at the dead ref).
+            await self.server.data.close_all()
             await self.broadcast({"event": "graph_replaced", "payload": self._snapshot()})
             return {"ok": True}
         if op == "load_text":
@@ -325,6 +329,8 @@ class ControlHub:
                     os.unlink(tmp_path)
                 except OSError:
                     pass
+            # Same as `load`: drop the now-stale data-plane muxes before re-snapshotting.
+            await self.server.data.close_all()
             await self.broadcast({"event": "graph_replaced", "payload": self._snapshot()})
             return {"ok": True}
         if op == "group_nodes":
