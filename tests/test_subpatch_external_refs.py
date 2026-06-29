@@ -9,6 +9,8 @@ verbatim. Two hazards the flat-name + template-local design must defend against:
   #2 Renaming an external node must update the ref stored in the shared definition
      (the round-trip source of truth), not just the live members.
 """
+from goofi.manager import ROOT_ID
+
 from .test_manager import _bare_manager
 
 
@@ -65,7 +67,7 @@ def test_rename_external_node_updates_shared_definition_ref(tmp_path):
     mgr2 = _bare_manager(use_multiprocessing=False)
     try:
         mgr2.load(fp)
-        for iid in mgr2._instances:
+        for iid in [i for i in mgr2._instances if i != ROOT_ID]:
             bu = mgr2._member_uid(iid, lb)
             assert mgr2.nodes[bu].params["oscillator"]["frequency"].expression == "nd('extRenamed')"
     finally:

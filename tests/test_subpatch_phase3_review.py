@@ -10,6 +10,8 @@ are not supported — make the parent unique first (symmetric to group_nodes' ex
 """
 import pytest
 
+from goofi.manager import ROOT_ID
+
 from .test_manager import _bare_manager, _member
 from .test_subpatch_invariants import assert_subpatch_invariants
 
@@ -259,7 +261,7 @@ def test_expand_doc_precheck_catches_dangling_def_to_def_reference():
         }
         with pytest.raises(KeyError):
             mgr._expand_doc(root_nodes, root_links, instances, definitions)
-        # fail-fast: nothing spliced
-        assert mgr._instances == {}
+        # fail-fast: nothing spliced (only the ever-present ROOT scope remains)
+        assert set(mgr._instances) == {ROOT_ID}
     finally:
         mgr.terminate(notify_gui=False)

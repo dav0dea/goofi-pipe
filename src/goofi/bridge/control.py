@@ -33,6 +33,7 @@ from goofi.bridge.schemas import (
     describe_params,
     list_node_types,
 )
+from goofi.manager import ROOT_ID
 from goofi.message import Message, MessageType
 
 # Control-plane protocol version, stamped into the `hello` handshake. The browser
@@ -475,6 +476,8 @@ class ControlHub:
                 err_by_inst.setdefault(inst_id, err)
         instances: Dict[str, Any] = {}
         for iid, inst in getattr(manager, "_instances", {}).items():
+            if iid == ROOT_ID:
+                continue  # ROOT is the canvas itself, not a sub-patch instance on the wire
             try:
                 instances[iid] = describe_instance(manager, iid, inst, error=err_by_inst.get(iid))
             except Exception:

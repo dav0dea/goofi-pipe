@@ -8,7 +8,7 @@ import pytest
 import goofi
 from dataclasses import asdict
 
-from goofi.manager import Boundary, Manager, NodeContainer
+from goofi.manager import ROOT_ID, Boundary, Manager, NodeContainer
 from goofi.transport import (
     WaitSet,
     open_subscriber,
@@ -40,6 +40,7 @@ def _bare_manager(use_multiprocessing: bool = True) -> Manager:
     mgr._membership = {}
     mgr._instances = {}
     mgr._definitions = {}
+    mgr._install_root_scope()
     NodeProcessRegistry().headless = True
     mgr._save_path = None
     mgr._unsaved_changes = False
@@ -195,7 +196,7 @@ def test_subpatch_save_load_roundtrip_and_expand(tmp_path):
         restored = mgr2.expand_instance(inst)
         assert set(restored) == {s0, s1}  # returns member uids
         assert {_disp(mgr2, u) for u in restored} == {"select0", "select1"}
-        assert mgr2._instances == {} and mgr2._membership == {}
+        assert set(mgr2._instances) == {ROOT_ID} and all(v == ROOT_ID for v in mgr2._membership.values())
         links2 = [dict(link) for link in mgr2.links]
         assert {"node_out": osc, "node_in": s0, "slot_out": "out", "slot_in": "data"} in links2
     finally:
@@ -523,7 +524,7 @@ def test_remove_instance_deletes_members_and_gcs_def():
         # Delete the last instance → orphaned definition is GC'd.
         mgr.remove_instance(inst2)
         assert def_id not in mgr._definitions
-        assert mgr._instances == {}
+        assert set(mgr._instances) == {ROOT_ID}
         assert all(mgr._membership.get(u) != inst2 for u in mgr._membership)
     finally:
         mgr.terminate()

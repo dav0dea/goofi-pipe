@@ -6,6 +6,8 @@ a shared family drift apart unnoticed) — the failure is surfaced (logged + pus
 the UI as an error event). We assert the bridge error event, which is robust to global
 logging state (unlike caplog under the full suite).
 """
+from goofi.manager import ROOT_ID
+
 from .test_manager import _bare_manager
 
 
@@ -149,7 +151,7 @@ def test_member_nd_cross_ref_mirrors_flat_per_instance(tmp_path):
     mgr2 = _bare_manager(use_multiprocessing=False)
     try:
         mgr2.load(fp)
-        for iid in mgr2._instances:
+        for iid in [i for i in mgr2._instances if i != ROOT_ID]:
             b_u, a_u = mgr2._member_uid(iid, lb), mgr2._member_uid(iid, la)
             assert mgr2.nodes[b_u].params["oscillator"]["frequency"].expression == f"nd('{mgr2.nodes[a_u].name}')"
     finally:

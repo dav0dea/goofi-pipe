@@ -5,6 +5,8 @@ stable per-node `uid`. The display `name` lives ON the node and can be renamed
 freely without touching any reference — renaming is safe BY CONSTRUCTION because
 nothing keys on the name.
 """
+from goofi.manager import ROOT_ID
+
 from .test_manager import _bare_manager
 
 
@@ -120,7 +122,7 @@ def test_rename_subpatch_member_is_a_flat_rename_local_unchanged(tmp_path):
     mgr2 = _bare_manager(use_multiprocessing=False)
     try:
         mgr2.load(fp)
-        inst2 = next(iter(mgr2._instances))
+        inst2 = next(i for i in mgr2._instances if i != ROOT_ID)
         member = next(iter(mgr2._instances[inst2].members))
         assert mgr2.nodes[member].name == "custom"  # flat display name round-trips
     finally:

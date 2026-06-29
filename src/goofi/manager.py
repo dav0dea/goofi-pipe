@@ -57,6 +57,14 @@ logger = logging.getLogger(__name__)
 # source (unlike NUL, which ast.parse rejects) and round-trips through .gfi YAML.
 _DEF_INTERNAL_REF = "\x1f"
 
+# The reserved id of the ROOT scope — the top-level graph materialized as a first-class
+# SubPatchInstance(parent=None) so a top-level node is a member of ROOT exactly like a
+# sub-patch member (one add/remove/membership path; root = the scope with no parent).
+# Can never collide with a minted entity uid (always 12 hex chars) or a display name
+# (subpatchN / node-type names). Mirrored on the frontend (must match) — see
+# lib/editor/subpatchScene.ts.
+ROOT_ID = "__root__"
+
 
 class SubPatchTooDeep(ValueError):
     """A namespaced member name would overflow iceoryx2's 255-byte ServiceName."""
@@ -256,6 +264,7 @@ class Manager:
         self._membership: Dict[str, str] = {}
         self._instances: Dict[str, SubPatchInstance] = {}
         self._definitions: Dict[str, SubPatchDef] = {}
+        self._install_root_scope()
 
         NodeProcessRegistry().headless = headless
 
@@ -932,6 +941,17 @@ class Manager:
         if uid in self.nodes:
             return self.nodes[uid].name
         return self._instances[uid].name
+
+    def _install_root_scope(self) -> None:
+        """Materialize the root graph as a first-class scope: a unique, parent-less,
+        boundary-less instance under the reserved id. Every top-level node is its member,
+        so add/remove/membership have ONE code path (root = the scope with no parent). It
+        owns no process; `self.nodes` (real processes) is untouched. Idempotent."""
+        if ROOT_ID not in self._instances:
+            self._instances[ROOT_ID] = SubPatchInstance(
+                uid=ROOT_ID, name="root", kind="unique", def_id=None,
+                members={}, interface={}, pos=[0.0, 0.0],
+            )
 
     def _attach_member(self, inst_id: str, uid: str, local: str) -> None:
         """Record `uid` as a member of `inst_id` under local name `local`, keeping the
@@ -2064,15 +2084,18 @@ class Manager:
             else:
                 root_links.append(dict(link))
 
-        # Emit only ROOT instances at the top level (parent is None); each recursively
-        # emits its child instances under its own `instances` sub-key, so the document
-        # mirrors the live `inst.parent` forest. A nested instance is emitted exactly
-        # once, under its parent — never duplicated as a flat sibling.
+        # Emit only top-level sub-patch instances (parent is None, excluding ROOT
+        # itself); each recursively emits its child instances under its own `instances`
+        # sub-key, so the document mirrors the live `inst.parent` forest. A nested
+        # instance is emitted exactly once, under its parent — never a flat sibling.
+        # ROOT is DISSOLVED: its node members are the top-level `root_nodes` and its
+        # instance members are these top-level `instances`, so the .gfi format is
+        # unchanged (ROOT is a runtime construct, never serialized as an instance).
         definitions: Dict[str, Any] = {}
         instances: Dict[str, Any] = {
             iid: self._emit_instance(iid, internal, definitions)
             for iid, inst in self._instances.items()
-            if inst.parent is None
+            if inst.parent is None and iid != ROOT_ID
         }
         return root_nodes, root_links, definitions, instances
 

@@ -8,6 +8,8 @@ save/load, so the frontend can reconcile instances by a stable key (no more
 """
 import string
 
+from goofi.manager import ROOT_ID
+
 from .test_manager import _bare_manager
 
 
@@ -59,8 +61,8 @@ def test_instance_uid_persists_across_save_load(tmp_path):
     mgr2 = _bare_manager(use_multiprocessing=False)
     try:
         mgr2.load(fp)
-        # the same instance uids (and their names) come back
-        assert set(mgr2._instances) == set(before)
+        # the same instance uids (and their names) come back (ROOT aside)
+        assert set(mgr2._instances) - {ROOT_ID} == set(before)
         for iid, name in before.items():
             assert mgr2._instances[iid].uid == iid
             assert mgr2._instances[iid].name == name

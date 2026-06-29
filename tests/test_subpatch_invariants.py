@@ -15,6 +15,8 @@ changes (flat global names; stable minted instance uids).
 """
 import pytest
 
+from goofi.manager import ROOT_ID
+
 from .test_manager import _bare_manager, _build_grouped_graph, _member
 
 
@@ -25,6 +27,13 @@ def assert_subpatch_invariants(mgr) -> None:
     instances = mgr._instances
     definitions = mgr._definitions
     membership = mgr._membership
+
+    # --- ROOT scope is always present, parent-less, never itself a member -------
+    # The root graph is materialized as a first-class scope, so add/remove/membership
+    # have one code path (root = the scope with no parent).
+    assert ROOT_ID in instances, "root scope instance is missing"
+    assert instances[ROOT_ID].parent is None, "root scope must have no parent"
+    assert ROOT_ID not in membership, "root scope must not be a member of anything"
 
     # --- every link endpoint is a live node ---------------------------------
     for link in mgr._links:
@@ -359,13 +368,17 @@ def test_invariants_hold_across_save_load(tmp_path):
     try:
         mgr2.load(fp)
         assert_subpatch_invariants(mgr2)
-        # the shared family round-tripped: two instances on one definition
-        defs = {i.def_id for i in mgr2._instances.values()}
-        assert len(mgr2._instances) == 2 and defs and None not in defs
+        # the shared family round-tripped: two instances on one definition (ROOT aside)
+        subpatches = [i for iid, i in mgr2._instances.items() if iid != ROOT_ID]
+        defs = {i.def_id for i in subpatches}
+        assert len(subpatches) == 2 and defs and None not in defs
         # expanding every instance leaves a clean flat graph
-        for iid in list(mgr2._instances):
+        for iid in [i for i in mgr2._instances if i != ROOT_ID]:
             mgr2.expand_instance(iid)
-        assert mgr2._instances == {} and mgr2._membership == {}
+        # Only ROOT remains (it's the canvas); no sub-patch instances, no membership
+        # pointing anywhere but ROOT.
+        assert set(mgr2._instances) == {ROOT_ID}
+        assert all(v == ROOT_ID for v in mgr2._membership.values())
         assert_subpatch_invariants(mgr2)
     finally:
         mgr2.terminate()
