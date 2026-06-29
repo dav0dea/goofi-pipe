@@ -434,8 +434,21 @@ class ControlHub:
         self.broadcast_threadsafe({"event": "node_renamed", "payload": {"node": uid, "name": name}})
 
     def on_subpatch_changed(self) -> None:
-        # Group/expand renames members and rewrites membership/instances; push a
-        # fresh snapshot so clients re-sync without a wholesale re-fit.
+        # Group/expand/add-member/share rewrites the node SET structurally and is the
+        # ONLY event it fires — members spawn (add_member_node, shared-sibling mirror)
+        # and tear down (remove_instance) silently, with no on_node_added/on_node_removed.
+        # So reconcile status forwarding HERE: wire any new member's STATE_UPDATE / error
+        # / stats handlers, else a node created inside a sub-patch never echoes a param
+        # edit and its panel snaps back to the creation default; and drop bookkeeping for
+        # members that vanished, else a reused uid would early-return unwired. Idempotent
+        # + uid-keyed, so this is a cheap sweep over the current node set.
+        manager = self.server.manager
+        live = set(manager.nodes)
+        for uid in self._wired_nodes - live:
+            self._wired_nodes.discard(uid)
+        for uid in live:
+            self._wire_node_status(uid)
+        # Push a fresh snapshot so clients re-sync without a wholesale re-fit.
         self.broadcast_threadsafe({"event": "subpatch_changed", "payload": self._snapshot()})
 
     # ------------------------------------------------------------------
