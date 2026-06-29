@@ -1,3 +1,5 @@
+import threading
+
 import zmq
 
 from goofi.data import DataType
@@ -20,21 +22,37 @@ class ZeroMQIn(Node):
         return {"data": DataType.ARRAY}
 
     def setup(self):
-        if not hasattr(self, "context"):
-            self.context = zmq.Context()
+        # The address/port param callbacks call setup() on the messaging thread, closing +
+        # recreating the socket while process() may be using it on the processing thread.
+        # zmq sockets are NOT thread-safe, so guard every socket touch with one lock (created
+        # once, kept across setup() calls so both threads share the same lock).
+        if not hasattr(self, "_lock"):
+            self._lock = threading.RLock()
+        with self._lock:
+            if not hasattr(self, "context"):
+                self.context = zmq.Context()
 
-        if hasattr(self, "socket"):
-            try:
-                self.socket.close()
-            except Exception:
-                pass
+            if hasattr(self, "socket"):
+                try:
+                    self.socket.close(linger=0)
+                except Exception:
+                    pass
 
-        # bind a publisher socket
-        self.socket = self.context.socket(zmq.PAIR)
-        self.socket.connect(f"tcp://{self.params.zero_mq.address.value}:{self.params.zero_mq.port.value}")
+            self.socket = self.context.socket(zmq.PAIR)
+            self.socket.connect(f"tcp://{self.params.zero_mq.address.value}:{self.params.zero_mq.port.value}")
 
     def process(self):
-        data = self.socket.recv_pyobj()
+        # Poll briefly (non-blocking) under the lock instead of a blocking recv: holding the
+        # lock during a blocking recv_pyobj() would wedge the node when no peer is sending and
+        # deadlock every address/port change. Returns None when nothing is ready this tick
+        # (the node self-triggers via autotrigger, so it polls again immediately).
+        with self._lock:
+            if not self.socket.poll(timeout=100):
+                return None
+            try:
+                data = self.socket.recv_pyobj(flags=zmq.NOBLOCK)
+            except zmq.Again:
+                return None
         return {"data": (data, {})}
 
     def zero_mq_address_changed(self, value):
