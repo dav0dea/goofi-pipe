@@ -408,9 +408,16 @@ class ControlHub:
         payload = describe_node_instance(uid, ref)
         self.broadcast_threadsafe({"event": "node_added", "payload": payload})
 
-    def on_node_removed(self, uid: str) -> None:
+    def on_node_removed(self, uid: str, membership: Optional[Dict[str, Any]] = None) -> None:
+        # `membership` is the scope the node was a member of ({instance, local_name} —
+        # ROOT for a top-level node), captured by the manager BEFORE detach. The frontend
+        # drops the uid from that instance's members map (the index it renders the scope's
+        # children from), so an incremental remove keeps the owning scope in sync without a
+        # snapshot.
         self._wired_nodes.discard(uid)
-        self.broadcast_threadsafe({"event": "node_removed", "payload": {"node": uid}})
+        self.broadcast_threadsafe(
+            {"event": "node_removed", "payload": {"node": uid, "membership": membership}}
+        )
 
     def on_link_added(self, link: Dict[str, str]) -> None:
         self.broadcast_threadsafe({"event": "link_added", "payload": link})
@@ -465,8 +472,10 @@ class ControlHub:
                 err_by_inst.setdefault(inst_id, err)
         instances: Dict[str, Any] = {}
         for iid, inst in getattr(manager, "_instances", {}).items():
-            if iid == ROOT_ID:
-                continue  # ROOT is the canvas itself, not a sub-patch instance on the wire
+            # ROOT ships too: it's a real scope (parent=None, no boundaries) whose members
+            # are every top-level entity, so the editor renders the root canvas as
+            # childrenOfScope(ROOT_ID) with no null special case. It is never synthesized
+            # as a selectable group node (the frontend filters ROOT_ID out of nodeById).
             try:
                 instances[iid] = describe_instance(manager, iid, inst, error=err_by_inst.get(iid))
             except Exception:

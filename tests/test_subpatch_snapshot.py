@@ -9,6 +9,7 @@ subtree), `member_count`, and `viewers`.
 import types
 
 from goofi.bridge.control import ControlHub
+from goofi.manager import ROOT_ID
 
 from .test_manager import _bare_manager, _build_grouped_graph, _member
 
@@ -47,7 +48,7 @@ def test_snapshot_instance_record_is_computed_and_recursive():
         insts = snap["instances"]
 
         # --- parent (tree edge) ---
-        assert insts[outer]["parent"] is None
+        assert insts[outer]["parent"] == ROOT_ID  # a top-level instance is parented to ROOT
         assert insts[inner]["parent"] == outer
 
         # --- members inverted + enriched ---

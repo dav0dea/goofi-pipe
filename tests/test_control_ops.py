@@ -115,12 +115,12 @@ def test_wire_boundary_to_leaf_dispatch_returns_created_chain():
 
 
 def test_member_node_added_inside_subpatch_gets_status_wired():
-    """A node created INSIDE a sub-patch is spawned silently (notify_gui=False) and
-    only fires on_subpatch_changed — never on_node_added — so the bridge never wired
-    its STATE_UPDATE forwarding. Symptom: editing the member's param applies in the
-    backend (its viewer updates) but the echo never reaches the browser, so the param
-    panel snaps back to the creation default. on_subpatch_changed must wire forwarding
-    for any new member node."""
+    """A node created inside a UNIQUE sub-patch surfaces as an incremental on_node_added
+    (root ≡ unique sub-patch), which wires its STATE_UPDATE forwarding exactly like a
+    top-level add. Regression guard for the original bug: when this fired only
+    on_subpatch_changed and forwarding was never wired, editing the member's param applied
+    in the backend (its viewer updated) but the echo never reached the browser, so the
+    param panel snapped back to the creation default."""
     manager = _bare_manager(use_multiprocessing=False)
     manager._layout = None
     try:
@@ -143,10 +143,12 @@ def test_member_node_added_inside_subpatch_gets_status_wired():
         manager.terminate(notify_gui=False)
 
 
-def test_member_removal_resyncs_instance_record():
-    """Removing a member of a sub-patch must resync the INSTANCE (member_count / computed
-    slots / interface) — fire on_subpatch_changed, not the bare on_node_removed which
-    leaves the frontend's instance record frozen (mirror of the add-member bug)."""
+def test_member_removal_is_incremental_with_membership():
+    """Root ≡ unique sub-patch: removing a member NOT wired to any boundary is an
+    incremental node_removed carrying the member's membership — the frontend drops the uid
+    from the owning instance's members map (so member_count / slots stay correct) without a
+    wholesale subpatch_changed snapshot. (A removal that UNWIRES a boundary IS structural
+    and falls back to the snapshot — covered in test_root_scope.)"""
     manager = _bare_manager(use_multiprocessing=False)
     manager._layout = None
     try:
@@ -167,10 +169,11 @@ def test_member_removal_resyncs_instance_record():
         assert member not in manager.nodes
         assert len(manager._instances[inst].members) == before - 1
         kinds = [e["event"] for e in events]
-        assert "subpatch_changed" in kinds, "member removal must resync the instance"
-        assert "node_removed" not in kinds, "bare node_removed leaves the instance stale"
-        snap = next(e["payload"] for e in events if e["event"] == "subpatch_changed")
-        assert snap["instances"][inst]["member_count"] == before - 1
+        assert "node_removed" in kinds, "an unwired member removal is incremental"
+        assert "subpatch_changed" not in kinds, "no snapshot needed for an unwired removal"
+        payload = next(e["payload"] for e in events if e["event"] == "node_removed")
+        assert payload["node"] == member
+        assert payload["membership"]["instance"] == inst
     finally:
         manager.terminate(notify_gui=False)
 

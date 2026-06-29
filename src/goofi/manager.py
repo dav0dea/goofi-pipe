@@ -525,7 +525,8 @@ class Manager:
         # the scope was a real sub-patch vs ROOT (a top-level remove). (remove_instance
         # pops membership BEFORE calling this, so its teardown skips the whole block.)
         _inst_id = self._membership.get(uid)
-        was_subpatch_member = False
+        _membership_payload: Optional[Dict[str, Any]] = None
+        unwired_boundary = False
         if _inst_id is not None:
             _inst = self._instances.get(_inst_id)
             if _inst is not None:
@@ -536,14 +537,17 @@ class Manager:
                     raise ValueError(
                         f"cannot delete member {uid!r} of a shared sub-patch; make it unique first"
                     )
-                # A real sub-patch member drives an instance resync; a ROOT member is a
-                # plain top-level remove. Unwire any boundary pointing at this member
-                # (ROOT has none) and drop it from the scope so iteration never sees it.
-                was_subpatch_member = _inst_id != ROOT_ID
+                # Capture the scope membership for the incremental node_removed BEFORE
+                # detaching (so the frontend can drop the uid from the owning scope's
+                # members map). Then unwire any boundary pointing at this member (ROOT has
+                # none): if it fed ≥1 boundary the instance's computed slots/interface
+                # change — a structural edit that resyncs the whole record below.
                 _local = _inst.members.get(uid)
+                _membership_payload = {"instance": _inst_id, "local_name": _local}
                 for _bid, _e in list(_inst.interface.items()):
                     if _e.inner_node == _local:
                         _inst.interface[_bid] = replace(_e, inner_node=None, inner_slot=None)
+                        unwired_boundary = True
                 self._detach_member(uid)
         # Drop any links touching this node.
         for link in list(self._links):
@@ -558,16 +562,16 @@ class Manager:
         # to the node that just left.
         self._broadcast_node_directory()
         if self._bridge is not None and notify_gui:
-            if was_subpatch_member:
-                # A member left a still-existing sub-patch: resync the INSTANCE record
-                # (member_count, computed slots, interface) — the subpatch_changed
-                # snapshot's _reconcileNodes also does the per-node cleanup on_node_removed
-                # did (forget ui/inline-view/console/panel refs for the vanished uid) and
-                # the sweep drops its status wiring. Bare on_node_removed would leave the
-                # instance frozen (mirror of the add-member-not-wired bug).
+            # Root ≡ unique sub-patch: a member's removal is an incremental node_removed
+            # carrying its membership (so the frontend drops it from the owning scope's
+            # members map), EXACTLY like a top-level remove — UNLESS it unwired a boundary,
+            # which restructures the instance (computed slots/interface). That case resyncs
+            # the whole record via subpatch_changed (whose snapshot also does the per-node
+            # cleanup on_node_removed did and re-sweeps status wiring).
+            if unwired_boundary:
                 self._bridge.control.on_subpatch_changed()
             else:
-                self._bridge.control.on_node_removed(uid)
+                self._bridge.control.on_node_removed(uid, membership=_membership_payload)
 
     @mark_unsaved_changes
     def add_link(
@@ -1258,7 +1262,15 @@ class Manager:
                     self._attach_member(sib, sib_uid, local)
 
         if self._bridge is not None and notify_gui:
-            self._bridge.control.on_subpatch_changed()
+            # Root ≡ unique sub-patch: adding a member to a UNIQUE instance is an
+            # incremental node_added (its membership rides the payload, so the frontend
+            # adds it to the owning scope's members map) — exactly like a top-level add. A
+            # SHARED add fans out across the mirror siblings (structural), so resync the
+            # whole record via subpatch_changed.
+            if def_id:
+                self._bridge.control.on_subpatch_changed()
+            else:
+                self._bridge.control.on_node_added(uid)
         return uid
 
     def _parent_is_shared(self, inst_id: str) -> bool:
@@ -1275,6 +1287,15 @@ class Manager:
                 f"cannot {verb} a member of a shared sub-patch; make the parent unique first"
             )
 
+    def _reject_root(self, inst_id: str, verb: str) -> None:
+        """Guard the structural sub-patch mutators against the ROOT scope. ROOT is a real
+        scope (every node is its member) but NOT a sub-patch — it has no parent, no
+        boundaries, and is the canvas itself, so it cannot be dissolved/shared/expanded.
+        ROOT now ships on the wire, so the bridge's remove_node op could route ROOT_ID to
+        remove_instance; reject it here rather than corrupting the graph."""
+        if inst_id == ROOT_ID:
+            raise ValueError(f"cannot {verb} the root scope; it is the canvas, not a sub-patch")
+
     @mark_unsaved_changes
     def expand_instance(self, inst_id: str, notify_gui: bool = True) -> List[str]:
         """Dissolve a sub-patch, lifting its members ONE level up — into this instance's
@@ -1282,6 +1303,7 @@ class Manager:
         instance has its whole subtree reparented (not flattened). Flat naming means
         members already carry globally-unique display names, so this is purely
         organizational: no rename, no nd() rewrite. Returns the member UIDs."""
+        self._reject_root(inst_id, "expand")
         if inst_id not in self._instances:
             raise KeyError(f"No such sub-patch: {inst_id}")
         self._reject_if_in_shared_parent(inst_id, "expand")
@@ -1343,6 +1365,7 @@ class Manager:
         links), and any nested instance members recursively. A virtual sub-patch node
         responds to Delete like any node. GCs an orphaned shared definition, like
         `make_unique`."""
+        self._reject_root(inst_id, "delete")
         if inst_id not in self._instances:
             raise KeyError(f"No such sub-patch: {inst_id}")
         self._reject_if_in_shared_parent(inst_id, "delete")
@@ -1434,6 +1457,7 @@ class Manager:
         the parent def can reference it — once the parent is a multi-instance template a
         previously-"unique" child necessarily has one strict-mirrored copy per parent
         instance, which IS shared-by-a-def semantics."""
+        self._reject_root(inst_id, "share")
         if inst_id not in self._instances:
             raise KeyError(f"No such sub-patch: {inst_id}")
         if self._instances[inst_id].def_id:
@@ -1548,6 +1572,7 @@ class Manager:
         sibling parents) keeps that def alive. Privatizing a SINGLE nested child of a
         shared parent is rejected (it would orphan a def the parent def still
         references) — privatize from the top instead."""
+        self._reject_root(inst_id, "make unique")
         if inst_id not in self._instances:
             raise KeyError(f"No such sub-patch: {inst_id}")
         self._reject_if_in_shared_parent(inst_id, "make unique")
@@ -1701,6 +1726,7 @@ class Manager:
     @mark_unsaved_changes
     def add_boundary(self, inst_id: str, dir: str, dtype: str, pos=(0, 0), notify_gui: bool = True) -> str:
         """Add a virtual In/Out node to a sub-patch (unwired). Returns its boundary id."""
+        self._reject_root(inst_id, "add a boundary to")
         if inst_id not in self._instances:
             raise KeyError(f"No such sub-patch: {inst_id}")
         if dir not in ("in", "out"):
