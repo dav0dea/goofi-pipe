@@ -101,7 +101,12 @@ class MidiCCout(Node):
             if port_name != "goofi":
                 outport.close()  # Ensure that the MIDI port is closed when done
 
+        # cc1..cc5 are independent triggering inputs, so any subset may be wired.
+        # cc1 is not guaranteed to be present; pair the status with whichever cc
+        # input is actually present (else {}) so an unwired cc1 can't break it.
+        status_meta = next((d.meta for d in cc_data if d is not None), {})
+
         if alert_on:
-            return {"midi_status": (f"CC messages sent with errors\n{error_message}", cc1.meta)}
+            return {"midi_status": (f"CC messages sent with errors\n{error_message}", status_meta)}
         else:
-            return {"midi_status": ("CC messages sent successfully", cc1.meta)}
+            return {"midi_status": ("CC messages sent successfully", status_meta)}
