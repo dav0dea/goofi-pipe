@@ -964,6 +964,11 @@ class Manager:
         snap_membership = deepcopy(self._membership)
         snap_instances = deepcopy(self._instances)
         snap_definitions = deepcopy(self._definitions)
+        # The node-side membership MARKER (ref.membership) is a second view of an entity's
+        # parent, mutated by _attach_member/_detach_member alongside _membership. It lives
+        # on the live NodeRef (NOT inside the deepcopied _instances), so snapshot it too or
+        # rollback leaves a surviving node's marker pointing at a rolled-back instance.
+        snap_markers = {uid: deepcopy(self.nodes[uid].membership) for uid in self.nodes}
         before_nodes = set(self.nodes)
         try:
             yield
@@ -981,6 +986,11 @@ class Manager:
             self._instances.update(snap_instances)
             self._definitions.clear()
             self._definitions.update(snap_definitions)
+            # Restore the node-side markers for every surviving node (spawned nodes are
+            # torn down below, so only pre-block nodes need their marker put back).
+            for uid, marker in snap_markers.items():
+                if uid in self.nodes:
+                    self.nodes[uid].membership = marker
             for n in set(self.nodes) - before_nodes:
                 try:
                     self.remove_node(n, notify_gui=False)
@@ -1188,6 +1198,20 @@ class Manager:
             self._bridge.control.on_subpatch_changed()
         return uid
 
+    def _parent_is_shared(self, inst_id: str) -> bool:
+        """True if `inst_id`'s parent is a SHARED instance. Mutating the structure of a
+        member of a shared sub-patch (expand/remove/make_unique) would diverge that
+        instance from its definition + siblings, so it's rejected — make the parent
+        unique first (symmetric to group_nodes' 'cannot group inside a shared' guard)."""
+        parent = self._instances[inst_id].parent
+        return parent is not None and self._instances[parent].def_id is not None
+
+    def _reject_if_in_shared_parent(self, inst_id: str, verb: str) -> None:
+        if self._parent_is_shared(inst_id):
+            raise ValueError(
+                f"cannot {verb} a member of a shared sub-patch; make the parent unique first"
+            )
+
     @mark_unsaved_changes
     def expand_instance(self, inst_id: str, notify_gui: bool = True) -> List[str]:
         """Dissolve a sub-patch, lifting its members ONE level up — into this instance's
@@ -1197,16 +1221,21 @@ class Manager:
         organizational: no rename, no nd() rewrite. Returns the member UIDs."""
         if inst_id not in self._instances:
             raise KeyError(f"No such sub-patch: {inst_id}")
+        self._reject_if_in_shared_parent(inst_id, "expand")
         inst = self._instances[inst_id]
         def_id = inst.def_id
         parent = inst.parent
+        # Defensive: a parent boundary that forwards INTO this instance has its inner
+        # target dissolved — unwire it (and its external links), like remove_node does.
+        self._unwire_parent_boundaries_to(inst_id, notify_gui=False)
         restored: List[str] = list(inst.members)
         for uid in restored:
             self._detach_member(uid)
             if parent is not None:
-                # Re-home one level up; the lifted member's local is its own
-                # globally-unique display name (so it can't collide in the parent).
-                self._attach_member(parent, uid, self._entity_name(uid))
+                # Re-home one level up. A member's local is DECOUPLED from its (mutable,
+                # reusable) display name, so dedup against the receiving parent's existing
+                # locals to avoid a duplicate-local collision.
+                self._attach_member(parent, uid, self._unique_local_in(parent, self._entity_name(uid)))
         self._detach_member(inst_id)  # remove the now-empty instance from its own parent
         del self._instances[inst_id]
         # GC an orphaned shared definition (the expanded instance may have been its
@@ -1220,6 +1249,31 @@ class Manager:
     # `ungroup` reads better at call sites that just want the group dissolved.
     ungroup = expand_instance
 
+    def _unique_local_in(self, parent: str, base: str) -> str:
+        """Lowest free `base`, `base1`, `base2`, … local name within `parent`'s members."""
+        existing = set(self._instances[parent].members.values())
+        if base not in existing:
+            return base
+        idx = 1
+        while f"{base}{idx}" in existing:
+            idx += 1
+        return f"{base}{idx}"
+
+    def _unwire_parent_boundaries_to(self, inst_id: str, notify_gui: bool) -> None:
+        """Unwire any boundary on `inst_id`'s parent that forwards into `inst_id` (its
+        inner_node is this instance's local), tearing down the boundary's external links.
+        Called before an instance is dissolved/removed so the parent keeps no boundary
+        dangling at a gone member. The parent is unique here (shared parents are guarded)."""
+        parent = self._instances[inst_id].parent
+        if parent is None:
+            return
+        local = self._instances[parent].members.get(inst_id)
+        if local is None:
+            return
+        for bid, b in list(self._instances[parent].interface.items()):
+            if b.inner_node == local:
+                self.wire_boundary(parent, bid, None, None, notify_gui=notify_gui)
+
     @mark_unsaved_changes
     def remove_instance(self, inst_id: str, notify_gui: bool = True) -> None:
         """Delete a whole sub-patch and its entire subtree: member nodes (and their
@@ -1228,11 +1282,21 @@ class Manager:
         `make_unique`."""
         if inst_id not in self._instances:
             raise KeyError(f"No such sub-patch: {inst_id}")
+        self._reject_if_in_shared_parent(inst_id, "delete")
+        self._remove_instance_core(inst_id)
+        if self._bridge is not None and notify_gui:
+            self._bridge.control.on_subpatch_changed()
+
+    def _remove_instance_core(self, inst_id: str) -> None:
+        """Recursive teardown (no guard — the public entry checks it once at the root,
+        then the whole subtree comes down regardless of its internal sharing)."""
         inst = self._instances[inst_id]
         def_id = inst.def_id
+        # Defensive: drop any parent boundary that forwarded into this instance.
+        self._unwire_parent_boundaries_to(inst_id, notify_gui=False)
         for member in list(inst.members.keys()):
             if member in self._instances:
-                self.remove_instance(member, notify_gui=False)  # recurse into the nested subtree
+                self._remove_instance_core(member)  # recurse into the nested subtree
             else:
                 # Pop membership BEFORE remove_node so its boundary defensive-unwire
                 # (which keys on membership) no-ops during this teardown.
@@ -1242,8 +1306,6 @@ class Manager:
         del self._instances[inst_id]
         if def_id and not any(i.def_id == def_id for i in self._instances.values()):
             self._definitions.pop(def_id, None)
-        if self._bridge is not None and notify_gui:
-            self._bridge.control.on_subpatch_changed()
 
     # ------------------------------------------------------------------
     # Shared sub-patches (strict mirror)
@@ -1413,15 +1475,25 @@ class Manager:
         first), so "make this instance unique" really makes it private — editing a leaf
         anywhere under it no longer mirrors to a sibling subtree. Each level GC-checks
         its OWN def, so a nested child whose family still has other members (under
-        sibling parents) keeps that def alive."""
+        sibling parents) keeps that def alive. Privatizing a SINGLE nested child of a
+        shared parent is rejected (it would orphan a def the parent def still
+        references) — privatize from the top instead."""
         if inst_id not in self._instances:
             raise KeyError(f"No such sub-patch: {inst_id}")
+        self._reject_if_in_shared_parent(inst_id, "make unique")
+        self._make_unique_core(inst_id)
+        if self._bridge is not None and notify_gui:
+            self._bridge.control.on_subpatch_changed()
+
+    def _make_unique_core(self, inst_id: str) -> None:
+        """Recursive privatization (no guard — the public entry checks the root once,
+        then the whole subtree privatizes top-down)."""
         inst = self._instances[inst_id]
         # Privatize nested instance members first (depth-first), so the whole subtree
         # leaves its families before this level GC-checks.
         for uid in list(inst.members):
             if uid in self._instances:
-                self.make_unique(uid, notify_gui=False)
+                self._make_unique_core(uid)
         def_id = inst.def_id
         inst.kind = "unique"
         inst.def_id = None
@@ -1430,8 +1502,6 @@ class Manager:
         inst.interface = deepcopy(inst.interface)
         if def_id and not any(i.def_id == def_id for i in self._instances.values()):
             self._definitions.pop(def_id, None)
-        if self._bridge is not None and notify_gui:
-            self._bridge.control.on_subpatch_changed()
 
     # ------------------------------------------------------------------
     # In/Out boundary authoring (virtual nodes — interface entries only)
@@ -1461,10 +1531,23 @@ class Manager:
             idx += 1
         return f"{dir}{idx}"
 
+    def _within_subtree(self, uid: Optional[str], root: str) -> bool:
+        """True if entity `uid` is `root` or lives anywhere inside root's nesting subtree
+        (walk the membership/parent chain up to root)."""
+        cur, seen = uid, set()
+        while cur is not None and cur not in seen:
+            if cur == root:
+                return True
+            seen.add(cur)
+            cur = self._membership.get(cur)
+        return False
+
     def _boundary_external_links(self, inst_id: str, dir: str, local: str, slot: str) -> List[dict]:
         """This instance's external flat links for the boundary mapping (local, slot):
-        the member-side endpoint matches and the other end is NOT a member of this
-        instance (so nested sibling-instance members count as external — correct)."""
+        the member-side endpoint matches and the other end is OUTSIDE this instance's
+        SUBTREE. Subtree-aware (not single-level), so a link whose other end lives in
+        this instance's own nested child counts as INTERNAL and is left alone; a link to
+        a sibling-instance member (a different subtree) is external."""
         uid = self._member_uid(inst_id, local)
         # A CHAINED boundary forwards to a nested instance (slot = its boundary id); the
         # real external flat link lives on the deep LEAF, so descend to it. An unwired
@@ -1477,10 +1560,10 @@ class Manager:
         out: List[dict] = []
         for link in self._links:
             if dir == "in" and link["node_in"] == uid and link["slot_in"] == slot:
-                if self._membership.get(link["node_out"]) != inst_id:
+                if not self._within_subtree(link["node_out"], inst_id):
                     out.append(link)
             elif dir == "out" and link["node_out"] == uid and link["slot_out"] == slot:
-                if self._membership.get(link["node_in"]) != inst_id:
+                if not self._within_subtree(link["node_in"], inst_id):
                     out.append(link)
         return out
 
@@ -2063,6 +2146,14 @@ class Manager:
                 _check(inst.get("instances") or {})
 
         _check(instances)
+        # A definition can also reference a child definition by-reference (def.instances);
+        # validate those too so a corrupt doc fails fast at the precheck, not mid-splice.
+        for def_id, draw in definitions.items():
+            for local, ref in (draw.get("instances") or {}).items():
+                if ref.get("def") not in known:
+                    raise KeyError(
+                        f"definition {def_id!r} references missing child definition {ref.get('def')!r}"
+                    )
         with self._transaction():
             self._splice_doc(root_nodes, root_links, instances, definitions)
 
@@ -2178,6 +2269,12 @@ class Manager:
                 link["slot_out"], link["slot_in"],
             )
         for link in root_links:
+            # root_links carry verbatim saved node uids. On a fresh load (load() guards an
+            # empty graph) these match the just-restored nodes, so they resolve. NOTE
+            # (review #11, deferred): splicing into a POPULATED graph could collide a saved
+            # uid and re-mint it, leaving these by-uid root/cross-level links dangling — a
+            # paste/import feature would need a saved->live uid_map threaded through. No
+            # public path reaches that today; revisit when paste lands.
             self.add_link(link["node_out"], link["node_in"], link["slot_out"], link["slot_in"])
 
     def _node_directory(self) -> Dict[str, str]:
