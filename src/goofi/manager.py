@@ -99,11 +99,18 @@ class SubPatchInstance:
 class SubPatchDef:
     """A reusable shared-sub-patch definition that every instance strict-mirrors:
     template members (local name -> node record), internal links (local-name
-    endpoints), and the boundary interface."""
+    endpoints), the boundary interface, and nested-instance members by reference.
+
+    `instances` maps a nested-instance member's local -> {"def": child_def_id, "pos"}:
+    a definition is identity-free and shared by every instance, so it can only name a
+    nested sub-patch as a TEMPLATE (another def_id), never as an inline unique child —
+    this is the "independent nested defs" model (the nested sub-patch is its own
+    first-class definition; editing it propagates to every instance everywhere)."""
 
     members: Dict[str, Dict[str, Any]]  # local name -> node record
     links: List[Dict[str, str]]
     interface: Dict[str, Boundary]
+    instances: Dict[str, Dict[str, Any]] = field(default_factory=dict)  # local -> {def, pos}
 
 
 def _iface_to_dict(interface: Dict[str, Boundary]) -> Dict[str, Dict[str, Any]]:
@@ -1250,115 +1257,171 @@ class Manager:
                 return cand
             idx += 1
 
-    def _definition_from_instance(self, inst_id: str) -> Dict[str, Any]:
-        """Snapshot a (unique) instance's topology+params as a reusable definition."""
+    def _definition_from_instance(self, inst_id: str) -> SubPatchDef:
+        """Snapshot an instance's topology+params as a reusable definition.
+
+        Node members serialize as node records under `members`; a NESTED-INSTANCE
+        member serializes by reference under `instances` ({local -> {def, pos}}) — so
+        the child must already carry its own def_id (share_instance promotes it first).
+        The snapshot is read-only."""
         inst = self._instances[inst_id]
-        # A definition is a flat node-only template in 3c; a member that is itself a
-        # nested instance would need a recursive definition (Phase 3d). Reject loudly
-        # rather than crash mid-snapshot in _node_record.
-        nested = [uid for uid in inst.members if uid in self._instances]
-        if nested:
-            raise ValueError(
-                f"cannot share sub-patch {inst_id}: it contains nested instance(s) {nested}; "
-                f"recursive definitions are not supported yet (Phase 3d)"
-            )
-        # nd() cross-refs between members are stored in TEMPLATE form (against the
-        # local key), so each future instance can re-point them at its own fresh
-        # member names. Translate the live display names -> `\x1f`-marked locals here;
-        # the marker keeps an INTERNAL ref distinct from an EXTERNAL ref to a non-member
-        # node that merely happens to share a member's local key (left verbatim).
-        display_to_local = {self.nodes[uid].name: _DEF_INTERNAL_REF + local for uid, local in inst.members.items()}
-        members = {}
+        # nd() cross-refs between NODE members are stored in TEMPLATE form (against the
+        # local key) so each future instance re-points them at its own fresh member
+        # names. Translate live display names -> `\x1f`-marked locals; the marker keeps
+        # an INTERNAL ref distinct from a verbatim EXTERNAL ref that happens to share a
+        # member's local key. `_entity_name` resolves both nodes and nested instances.
+        display_to_local = {
+            self._entity_name(uid): _DEF_INTERNAL_REF + local for uid, local in inst.members.items()
+        }
+        members: Dict[str, Any] = {}
+        instances: Dict[str, Any] = {}
         for uid, local in inst.members.items():
-            rec = self._node_record(uid)
-            # Strip per-instance identity (uid + display name); the template is keyed
-            # by local name and each instance mints its own.
-            rec.pop("uid", None)
-            rec.pop("name", None)
-            _rewrite_record_nd(rec, display_to_local)
-            members[local] = rec
+            if uid in self.nodes:
+                rec = self._node_record(uid)
+                # Strip per-instance identity (uid + display name); the template is keyed
+                # by local name and each instance mints its own.
+                rec.pop("uid", None)
+                rec.pop("name", None)
+                _rewrite_record_nd(rec, display_to_local)
+                members[local] = rec
+            else:
+                # A nested-instance member: reference its independent def (promoted by
+                # share_instance before this snapshot runs).
+                child = self._instances[uid]
+                instances[local] = {"def": child.def_id, "pos": list(child.pos)}
         links = []
         for link in self._links:
             if self._membership.get(link["node_out"]) == inst_id and self._membership.get(link["node_in"]) == inst_id:
                 links.append(self._local_link(link, inst_id))
         # Deep-copy the interface: entries are mutable Boundary ports that boundary
         # edits rewrite, and the def must not alias the source instance's ports.
-        return SubPatchDef(members=members, links=links, interface=deepcopy(inst.interface))
+        return SubPatchDef(
+            members=members, links=links, interface=deepcopy(inst.interface), instances=instances
+        )
 
     @mark_unsaved_changes
     def share_instance(self, inst_id: str, notify_gui: bool = True) -> str:
         """Promote a unique instance to a shared one backed by a new definition.
 
         Returns the definition id. Other instances can then be spawned from it
-        with `instantiate_definition`; param edits mirror across all of them.
-        """
+        with `instantiate_definition`; param edits mirror across all of them. A nested
+        unique child is auto-promoted to its OWN independent def first (depth-first), so
+        the parent def can reference it — once the parent is a multi-instance template a
+        previously-"unique" child necessarily has one strict-mirrored copy per parent
+        instance, which IS shared-by-a-def semantics."""
         if inst_id not in self._instances:
             raise KeyError(f"No such sub-patch: {inst_id}")
-        inst = self._instances[inst_id]
-        if inst.def_id:
-            return inst.def_id
-        def_id = self._fresh_def_id()
-        self._definitions[def_id] = self._definition_from_instance(inst_id)
-        inst.kind = "shared"
-        inst.def_id = def_id
+        if self._instances[inst_id].def_id:
+            return self._instances[inst_id].def_id
+        # Atomic over the whole recursive promotion: a failure mid-snapshot rolls back
+        # every child def + kind/def_id flip. (A single non-reentrant core under one
+        # transaction, rather than nesting a _transaction per recursive call.)
+        with self._transaction():
+            def_id = self._promote_to_def(inst_id)
         if self._bridge is not None and notify_gui:
             self._bridge.control.on_subpatch_changed()
         return def_id
 
+    def _promote_to_def(self, inst_id: str) -> str:
+        """Depth-first: promote every unique nested child to its own def, then snapshot
+        this instance into a fresh def referencing those children. No transaction here —
+        the caller (share_instance) wraps the whole recursion in one."""
+        inst = self._instances[inst_id]
+        if inst.def_id:
+            return inst.def_id
+        for uid in list(inst.members):
+            if uid in self._instances and self._instances[uid].def_id is None:
+                self._promote_to_def(uid)
+        def_id = self._fresh_def_id()
+        self._definitions[def_id] = self._definition_from_instance(inst_id)
+        inst.kind = "shared"
+        inst.def_id = def_id
+        return def_id
+
     @mark_unsaved_changes
     def instantiate_definition(self, def_id: str, pos=(0, 0), notify_gui: bool = True) -> str:
-        """Spawn a fresh shared instance of a definition (strict-mirror sibling)."""
+        """Spawn a fresh shared instance of a definition (strict-mirror sibling). A
+        nesting-containing def recursively spawns each nested child as a fresh sibling
+        of the child's own def family, so the whole subtree is replicated with disjoint
+        uids."""
         if def_id not in self._definitions:
             raise KeyError(f"No such definition: {def_id}")
-        d = self._definitions[def_id]
-        inst_id = self._fresh_instance_id()
-        members: Dict[str, str] = {}  # uid -> local
-        local_to_uid: Dict[str, str] = {}
-        # Atomic: a failure mid-splice tears down spawned members + restores the maps.
+        # Atomic: a failure anywhere in the recursive spawn tears down every spawned
+        # member + restores the maps. ONE outer transaction — the recursive core opens
+        # none, so a mid-recursion failure unwinds the whole subtree byte-clean.
         with self._transaction():
-            self._instances[inst_id] = SubPatchInstance(
-                uid=inst_id,
-                name=self._fresh_instance_name(),
-                kind="shared",
-                def_id=def_id,
-                members={},
-                # Deep-copy so this sibling's boundary edits never cross-mutate the
-                # def or other siblings (Boundary ports are mutable).
-                interface=deepcopy(d.interface),
-                pos=list(pos),
-            )
-            name_map: Dict[str, str] = {}  # template local -> this instance's fresh flat name
-            for local, rec in d.members.items():
-                disp = self._fresh_display_name(rec["_type"].lower())
-                uid = self._add_node_from_record(
-                    disp, dict(rec),
-                    membership={"instance": inst_id, "local_name": local},
-                )
-                self._attach_member(inst_id, uid, local)
-                members[uid] = local
-                local_to_uid[local] = uid
-                # Key by the `\x1f`-marked local so only INTERNAL refs are re-pointed;
-                # EXTERNAL refs (stored verbatim) never collide with a marked key.
-                name_map[_DEF_INTERNAL_REF + local] = disp
-            for link in d.links:
-                self.add_link(
-                    local_to_uid[link["node_out"]],
-                    local_to_uid[link["node_in"]],
-                    link["slot_out"], link["slot_in"], notify_gui=False,
-                )
-            # Re-point intra-sub-patch nd() cross-refs from the def's template locals
-            # to THIS instance's fresh member display names.
-            self._rewrite_member_expressions(members.keys(), name_map)
+            inst_id = self._instantiate_def_core(def_id, pos)
         if self._bridge is not None and notify_gui:
             self._bridge.control.on_subpatch_changed()
         return inst_id
 
+    def _instantiate_def_core(self, def_id: str, pos) -> str:
+        """Spawn one instance of `def_id` (no transaction — the caller wraps the whole
+        recursion in one). Recurses into nested-instance def references, attaching each
+        fresh child under its template local. Mirrors `_restore_instance`'s tree shape,
+        differing only in identity (fresh-minted here vs restored on load)."""
+        d = self._definitions[def_id]
+        inst_id = self._fresh_instance_id()
+        self._instances[inst_id] = SubPatchInstance(
+            uid=inst_id,
+            name=self._fresh_instance_name(),
+            kind="shared",
+            def_id=def_id,
+            members={},
+            # Deep-copy so this sibling's boundary edits never cross-mutate the def or
+            # other siblings (Boundary ports are mutable).
+            interface=deepcopy(d.interface),
+            pos=list(pos),
+        )
+        members: Dict[str, str] = {}  # uid -> local (node members only, for nd() rewrite)
+        local_to_uid: Dict[str, str] = {}
+        name_map: Dict[str, str] = {}  # template local -> this instance's fresh flat name
+        for local, rec in d.members.items():
+            disp = self._fresh_display_name(rec["_type"].lower())
+            uid = self._add_node_from_record(
+                disp, dict(rec),
+                membership={"instance": inst_id, "local_name": local},
+            )
+            self._attach_member(inst_id, uid, local)
+            members[uid] = local
+            local_to_uid[local] = uid
+            # Key by the `\x1f`-marked local so only INTERNAL refs are re-pointed;
+            # EXTERNAL refs (stored verbatim) never collide with a marked key.
+            name_map[_DEF_INTERNAL_REF + local] = disp
+        # Recurse into nested-instance members: each spawns a fresh child of the child's
+        # OWN def (joining that family), attached under the template local so the
+        # deep-copied interface's chained boundaries (inner_node = child local) re-point.
+        for local, ref in d.instances.items():
+            child_uid = self._instantiate_def_core(ref["def"], ref.get("pos", (0, 0)))
+            self._attach_member(inst_id, child_uid, local)
+        for link in d.links:
+            self.add_link(
+                local_to_uid[link["node_out"]],
+                local_to_uid[link["node_in"]],
+                link["slot_out"], link["slot_in"], notify_gui=False,
+            )
+        # Re-point this level's intra-sub-patch nd() cross-refs from the def's template
+        # locals to THIS instance's fresh member display names (node members only).
+        self._rewrite_member_expressions(members.keys(), name_map)
+        return inst_id
+
     @mark_unsaved_changes
     def make_unique(self, inst_id: str, notify_gui: bool = True) -> None:
-        """Detach a shared instance into a private (unique) copy; GC an orphan def."""
+        """Detach a shared instance into a private (unique) copy; GC an orphan def.
+
+        Recurses: a nesting-containing instance privatizes its WHOLE subtree (depth
+        first), so "make this instance unique" really makes it private — editing a leaf
+        anywhere under it no longer mirrors to a sibling subtree. Each level GC-checks
+        its OWN def, so a nested child whose family still has other members (under
+        sibling parents) keeps that def alive."""
         if inst_id not in self._instances:
             raise KeyError(f"No such sub-patch: {inst_id}")
         inst = self._instances[inst_id]
+        # Privatize nested instance members first (depth-first), so the whole subtree
+        # leaves its families before this level GC-checks.
+        for uid in list(inst.members):
+            if uid in self._instances:
+                self.make_unique(uid, notify_gui=False)
         def_id = inst.def_id
         inst.kind = "unique"
         inst.def_id = None
@@ -1904,22 +1967,17 @@ class Manager:
                     "members": deepcopy(d.members),
                     "links": deepcopy(d.links),
                     "interface": _iface_to_dict(d.interface),
+                    # Nested-instance members of the definition, by reference (3d).
+                    "instances": deepcopy(d.instances),
                 }
-            # A shared definition is a flat node-only template in 3c; a shared instance
-            # can't (yet) hold a nested instance member.
-            for nn in inst.members:
-                if nn not in self.nodes:
-                    raise ValueError(
-                        f"shared sub-patch {iid} has a nested-instance member {nn}; "
-                        f"recursive definitions are not supported yet (Phase 3d)"
-                    )
             entry: Dict[str, Any] = {
                 "kind": "shared",
                 "def": def_id,
                 "pos": inst.pos,
                 # Only per-instance state — topology+params live in the definition. The
                 # flat display name is per-instance too (round-trips so a reload restores
-                # the names the user saw).
+                # the names the user saw). NODE members only here; nested-instance
+                # members carry their own per-instance state under `instances` below.
                 "members": {
                     local: {
                         "uid": self.nodes[nn].uid,
@@ -1927,8 +1985,19 @@ class Manager:
                         "pos": (self.nodes[nn].gui_kwargs or {}).get("pos"),
                     }
                     for nn, local in inst.members.items()
+                    if nn in self.nodes
                 },
             }
+            # A shared instance's nested-instance members are themselves instances with
+            # their own per-instance identity — recurse them like the unique branch.
+            children: Dict[str, Any] = {}
+            for child_uid, local in inst.members.items():
+                if child_uid in self._instances:
+                    child = self._emit_instance(child_uid, internal, definitions)
+                    child["local"] = local
+                    children[child_uid] = child
+            if children:
+                entry["instances"] = children
         else:
             members = {
                 local: self._node_record(uid)
@@ -2035,6 +2104,11 @@ class Manager:
             # The def stores nd() cross-refs in template-local form — re-point them
             # at THIS instance's restored member display names.
             self._rewrite_member_expressions(members_map.keys(), name_map)
+            # Recurse a shared instance's nested-instance members (its own per-instance
+            # subtrees), exactly like the unique branch — each carries its parent-local.
+            for child_saved_id, child_rec in (inst.get("instances") or {}).items():
+                child_uid = self._restore_instance(child_saved_id, child_rec, internal_links)
+                members_map[child_uid] = child_rec["local"]
             # Deep-copy: each loaded shared instance gets its own Boundary ports
             # so later boundary edits don't alias the definition / siblings.
             interface = deepcopy(d.interface)
@@ -2082,6 +2156,7 @@ class Manager:
                 members=draw.get("members", {}),
                 links=draw.get("links", []),
                 interface=_iface_from_dict(draw.get("interface", {})),
+                instances=draw.get("instances", {}),  # nested-instance refs (3d)
             )
 
         for key, node in root_nodes.items():

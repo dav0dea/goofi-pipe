@@ -528,25 +528,6 @@ def test_three_level_nesting_roundtrip_stable_uids(tmp_path):
         mgr2.terminate(notify_gui=False)
 
 
-def test_share_nesting_instance_is_rejected():
-    """Sharing a unique instance that CONTAINS a nested instance must fail loud (3c):
-    recursive definitions are 3d. The graph + definitions stay untouched."""
-    import pytest
-
-    mgr = _bare_manager(use_multiprocessing=False)
-    try:
-        osc, inner = _build_grouped_graph(mgr)
-        outer = mgr.group_nodes([inner])  # outer > inner (nesting)
-        before_defs = dict(mgr._definitions)
-        with pytest.raises(ValueError):
-            mgr.share_instance(outer)
-        assert mgr._definitions == before_defs  # no def written
-        assert mgr._instances[outer].def_id is None  # outer still unique
-        assert_subpatch_invariants(mgr)
-    finally:
-        mgr.terminate(notify_gui=False)
-
-
 def test_shared_child_under_unique_parent_roundtrip(tmp_path):
     """A SHARED instance nested under a UNIQUE parent round-trips for free in 3c: its
     flat node-only definition is emitted once at doc-top, its reference rides inside the
@@ -574,3 +555,221 @@ def test_shared_child_under_unique_parent_roundtrip(tmp_path):
         assert_subpatch_invariants(mgr2)
     finally:
         mgr2.terminate(notify_gui=False)
+
+
+# === Phase 3d — recursive SHARE / INSTANTIATE (independent nested defs) ========
+
+def test_share_captures_nested_child_as_independent_def():
+    """Sharing an instance that contains a nested child now SUCCEEDS (3d replaces the
+    3c guard): the nested child is auto-promoted to its OWN independent definition, and
+    the parent def references it BY def_id (not inline as flat node members)."""
+    mgr = _bare_manager(use_multiprocessing=False)
+    try:
+        a = mgr.add_node("Oscillator", "inputs")
+        b = mgr.add_node("Buffer", "signal")
+        mgr.add_link(a, b, "out", "val")  # internal link inside the child
+        child = mgr.group_nodes([a, b])  # unique nested child
+        outer = mgr.group_nodes([child])  # outer > child
+
+        def_outer = mgr.share_instance(outer)
+
+        assert mgr._instances[outer].def_id == def_outer
+        assert mgr._instances[outer].kind == "shared"
+        # nested child auto-promoted to its OWN independent def
+        child_def = mgr._instances[child].def_id
+        assert child_def is not None and child_def in mgr._definitions
+        # parent def references the child BY def_id, not as inline node members
+        d = mgr._definitions[def_outer]
+        child_local = mgr._instances[outer].members[child]
+        assert child_local in d.instances and d.instances[child_local]["def"] == child_def
+        assert child_local not in d.members
+        # the child def carries the child's two leaf node records
+        assert set(mgr._definitions[child_def].members) == {"oscillator0", "buffer0"}
+        assert_subpatch_invariants(mgr)
+    finally:
+        mgr.terminate(notify_gui=False)
+
+
+def test_share_then_instantiate_replicates_nested_subtree_with_fresh_uids():
+    """Instantiating a nesting-containing def spawns a fresh sibling whose nested child
+    is rebuilt with brand-new node + instance uids (disjoint from the source), correctly
+    parented, with the child's internal link reproduced."""
+    mgr = _bare_manager(use_multiprocessing=False)
+    try:
+        a = mgr.add_node("Oscillator", "inputs")
+        b = mgr.add_node("Buffer", "signal")
+        mgr.add_link(a, b, "out", "val")
+        child = mgr.group_nodes([a, b])
+        outer = mgr.group_nodes([child])
+        def_outer = mgr.share_instance(outer)
+        child_def = mgr._instances[child].def_id
+        src_uids = set(mgr.nodes) | set(mgr._instances)
+
+        sib = mgr.instantiate_definition(def_outer)
+
+        assert mgr._instances[sib].parent is None  # a root sibling
+        assert mgr._instances[sib].def_id == def_outer
+        # the sibling has exactly one nested-instance member, rebuilt fresh
+        child_members = [u for u in mgr._instances[sib].members if u in mgr._instances]
+        assert len(child_members) == 1
+        sib_child = child_members[0]
+        assert sib_child not in src_uids  # fresh instance uid
+        assert mgr._instances[sib_child].parent == sib  # parent edge via the funnel
+        assert mgr._instances[sib_child].def_id == child_def  # joins the child's family
+        # the sibling child's leaf nodes are fresh + its internal link reproduced
+        leafs = list(mgr._instances[sib_child].members)
+        assert all(u not in src_uids for u in leafs)
+        assert any(
+            l["node_out"] in leafs and l["node_in"] in leafs for l in mgr.links
+        )
+        assert_subpatch_invariants(mgr)
+    finally:
+        mgr.terminate(notify_gui=False)
+
+
+def test_nested_shared_child_mirrors_across_its_own_family_through_two_shared_parents():
+    """A nested shared child joins its def's family independently of its parent: editing
+    a member of the child under one parent mirrors to the corresponding member of the
+    child under a DIFFERENT parent (strict-mirror is def-scoped, depth-agnostic)."""
+    mgr = _bare_manager(use_multiprocessing=False)
+    try:
+        a = mgr.add_node("Oscillator", "inputs")
+        b = mgr.add_node("Buffer", "signal")
+        mgr.add_link(a, b, "out", "val")
+        child = mgr.group_nodes([a, b])
+        outer = mgr.group_nodes([child])
+        def_outer = mgr.share_instance(outer)
+        child_def = mgr._instances[child].def_id
+
+        outer2 = mgr.instantiate_definition(def_outer)  # a sibling parent
+        child2 = [u for u in mgr._instances[outer2].members if u in mgr._instances][0]
+        assert mgr._instances[child2].def_id == child_def  # same child family
+        assert set(mgr._shared_siblings(child)) == {child2}  # cross-parent family
+
+        # edit the oscillator inside child1 -> mirrors to child2's oscillator
+        osc1 = _member(mgr, child, "oscillator0")
+        mgr.update_param(osc1, "common", "autotrigger", True)
+        osc2 = _member(mgr, child2, "oscillator0")
+        assert mgr.nodes[osc2].params["common"]["autotrigger"].value is True
+        assert_subpatch_invariants(mgr)
+    finally:
+        mgr.terminate(notify_gui=False)
+
+
+def test_make_unique_on_nesting_containing_shared_parent_isolates_subtree():
+    """make_unique on a nesting-containing shared parent privatizes the WHOLE subtree
+    (depth-first): the nested child also detaches from its family, so editing a leaf
+    under the made-unique parent no longer mirrors to the sibling parent's subtree."""
+    mgr = _bare_manager(use_multiprocessing=False)
+    try:
+        a = mgr.add_node("Oscillator", "inputs")
+        b = mgr.add_node("Buffer", "signal")
+        mgr.add_link(a, b, "out", "val")
+        child = mgr.group_nodes([a, b])
+        outer = mgr.group_nodes([child])
+        def_outer = mgr.share_instance(outer)
+        child_def = mgr._instances[child].def_id
+        outer2 = mgr.instantiate_definition(def_outer)  # sibling parent
+        child2 = [u for u in mgr._instances[outer2].members if u in mgr._instances][0]
+
+        mgr.make_unique(outer)
+
+        assert mgr._instances[outer].def_id is None  # parent privatized
+        assert mgr._instances[outer].kind == "unique"
+        assert mgr._instances[child].def_id is None  # nested child privatized too
+        assert child not in mgr._shared_siblings(child2) if child in mgr._instances else True
+        assert mgr._instances[child].parent == outer  # still nested under outer
+        # the sibling subtree survives (def_outer + child_def still referenced by outer2)
+        assert def_outer in mgr._definitions and child_def in mgr._definitions
+        assert mgr._instances[outer2].def_id == def_outer
+        # editing a leaf under outer no longer mirrors to outer2's subtree
+        osc1 = _member(mgr, child, "oscillator0")
+        osc2 = _member(mgr, child2, "oscillator0")
+        before = mgr.nodes[osc2].params["oscillator"]["frequency"].value
+        mgr.update_param(osc1, "oscillator", "frequency", before + 13.0)
+        assert mgr.nodes[osc2].params["oscillator"]["frequency"].value == before  # unchanged
+        assert mgr.nodes[osc1].params["oscillator"]["frequency"].value == before + 13.0
+        assert_subpatch_invariants(mgr)
+    finally:
+        mgr.terminate(notify_gui=False)
+
+
+def test_shared_nesting_structure_save_load_roundtrip(tmp_path):
+    """A SHARED nesting structure (two parent siblings of one def, each with its own
+    nested shared child) round-trips: independent subtrees restored, and a shared edit
+    still mirrors across the family after reload."""
+    mgr = _bare_manager(use_multiprocessing=False)
+    try:
+        a = mgr.add_node("Oscillator", "inputs")
+        b = mgr.add_node("Buffer", "signal")
+        mgr.add_link(a, b, "out", "val")
+        child = mgr.group_nodes([a, b])
+        outer = mgr.group_nodes([child])
+        def_outer = mgr.share_instance(outer)
+        outer2 = mgr.instantiate_definition(def_outer)  # sibling parent
+        fp = str(tmp_path / "shared_nest.gfi")
+        mgr.save(fp, overwrite=True)
+    finally:
+        mgr.terminate(notify_gui=False)
+
+    mgr2 = _bare_manager(use_multiprocessing=False)
+    try:
+        mgr2.load(fp)
+        # both parent siblings restored, sharing def_outer
+        assert mgr2._instances[outer].def_id == def_outer
+        assert mgr2._instances[outer2].def_id == def_outer
+        # each has an independent nested child subtree (disjoint member uids)
+        c1 = [u for u in mgr2._instances[outer].members if u in mgr2._instances][0]
+        c2 = [u for u in mgr2._instances[outer2].members if u in mgr2._instances][0]
+        assert c1 != c2
+        assert mgr2._instances[c1].def_id == mgr2._instances[c2].def_id  # same child family
+        assert set(mgr2._instances[c1].members).isdisjoint(mgr2._instances[c2].members)
+        # a shared edit still mirrors across the parent family after reload
+        osc1 = _member(mgr2, c1, "oscillator0")
+        osc2 = _member(mgr2, c2, "oscillator0")
+        before = mgr2.nodes[osc2].params["oscillator"]["frequency"].value
+        mgr2.update_param(osc1, "oscillator", "frequency", before + 9.0)
+        assert mgr2.nodes[osc2].params["oscillator"]["frequency"].value == before + 9.0
+        assert_subpatch_invariants(mgr2)
+    finally:
+        mgr2.terminate(notify_gui=False)
+
+
+def test_instantiate_nesting_def_rolls_back_mid_recursion(monkeypatch):
+    """A failure partway through a recursive instantiate (e.g. spawning a nested child's
+    node) unwinds the whole subtree byte-clean — no orphan parent/child instance, no
+    leaked node — because the recursion runs inside the single outer transaction."""
+    from copy import deepcopy
+    import pytest
+
+    mgr = _bare_manager(use_multiprocessing=False)
+    try:
+        a = mgr.add_node("Oscillator", "inputs")
+        b = mgr.add_node("Buffer", "signal")
+        mgr.add_link(a, b, "out", "val")
+        child = mgr.group_nodes([a, b])
+        outer = mgr.group_nodes([child])
+        def_outer = mgr.share_instance(outer)
+        before_nodes = set(mgr.nodes)
+        before_instances = deepcopy(mgr._instances)
+        before_membership = dict(mgr._membership)
+
+        real_add = mgr._add_node_from_record
+        calls = {"n": 0}
+
+        def boom(*a_, **k):
+            calls["n"] += 1
+            if calls["n"] == 2:  # fail after the first node of the nested child spawned
+                raise RuntimeError("forced mid-recursion failure")
+            return real_add(*a_, **k)
+
+        monkeypatch.setattr(mgr, "_add_node_from_record", boom)
+        with pytest.raises(RuntimeError):
+            mgr.instantiate_definition(def_outer)
+
+        assert set(mgr.nodes) == before_nodes, "leaked node after rollback"
+        assert set(mgr._instances) == set(before_instances), "stray instance after rollback"
+        assert mgr._membership == before_membership, "_membership not restored"
+        assert_subpatch_invariants(mgr)
+    finally:
+        mgr.terminate(notify_gui=False)

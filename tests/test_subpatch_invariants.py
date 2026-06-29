@@ -68,8 +68,16 @@ def assert_subpatch_invariants(mgr) -> None:
         def_id = inst.def_id
         if def_id is not None:
             assert def_id in definitions, f"instance {inst_id} references missing definition {def_id}"
-            assert set(members.values()) == set(definitions[def_id].members.keys()), (
-                f"shared instance {inst_id} member set diverges from its definition {def_id}"
+            d = definitions[def_id]
+            # A shared instance mirrors its def: node members match def.members locals,
+            # nested-instance members match def.instances locals (the recursive split).
+            node_locals = {members[uid] for uid in members if uid in nodes}
+            inst_locals = {members[uid] for uid in members if uid in instances}
+            assert node_locals == set(d.members.keys()), (
+                f"shared instance {inst_id} node-member set diverges from definition {def_id}"
+            )
+            assert inst_locals == set(getattr(d, "instances", {}).keys()), (
+                f"shared instance {inst_id} nested-instance set diverges from definition {def_id}"
             )
 
         for bid, e in inst.interface.items():
