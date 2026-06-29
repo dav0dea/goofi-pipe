@@ -1997,7 +1997,12 @@ class Manager:
         def_id = self._instances[inst_id].def_id
         if def_id:
             if bnd_id in self._definitions[def_id].interface:
-                self._definitions[def_id].interface[bnd_id].pos = pos
+                # replace() like the instance/sibling updates below, not in-place mutation:
+                # keep Boundary updates uniformly immutable so no code path can alias a
+                # shared Boundary object and have an edit leak across the family.
+                self._definitions[def_id].interface[bnd_id] = replace(
+                    self._definitions[def_id].interface[bnd_id], pos=pos
+                )
             for sib in self._shared_siblings(inst_id):
                 if bnd_id in self._instances[sib].interface:
                     self._instances[sib].interface[bnd_id] = replace(self._instances[sib].interface[bnd_id], pos=pos)

@@ -330,6 +330,31 @@ def test_re_share_mints_a_fresh_def_when_the_original_was_gced():
         mgr.terminate(notify_gui=False)
 
 
+def test_set_boundary_pos_mirrors_to_def_siblings_and_future_instances():
+    """Moving an In/Out pill on one shared instance must mirror the pos to the definition,
+    every existing sibling, AND any future instance — the def and instances must stay in
+    lockstep. Pins the strict-mirror so the def-side immutability refactor can't regress it."""
+    mgr = _bare_manager(use_multiprocessing=False)
+    try:
+        a = mgr.add_node("Oscillator", "inputs")
+        inst1 = mgr.group_nodes([a])
+        def_id = mgr.share_instance(inst1)
+        inst2 = mgr.instantiate_definition(def_id)
+        bnd = mgr.add_boundary(inst1, "out", "array")  # mirrors to def + inst2
+
+        changed = mgr.set_boundary_pos(inst1, bnd, [42.0, 7.0])
+
+        assert (inst1, bnd) in changed and (inst2, bnd) in changed
+        assert mgr._instances[inst1].interface[bnd].pos == [42.0, 7.0]
+        assert mgr._instances[inst2].interface[bnd].pos == [42.0, 7.0]
+        assert mgr._definitions[def_id].interface[bnd].pos == [42.0, 7.0]
+        # A freshly-instantiated sibling inherits the moved pos from the def.
+        inst3 = mgr.instantiate_definition(def_id)
+        assert mgr._instances[inst3].interface[bnd].pos == [42.0, 7.0]
+    finally:
+        mgr.terminate(notify_gui=False)
+
+
 def test_re_share_mints_a_fresh_def_when_members_no_longer_match_the_def():
     """A unique instance whose members diverged from the def (a member added/removed while
     unique) must NOT silently re-attach to that def — reattaching would leave the extra
