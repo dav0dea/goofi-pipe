@@ -250,6 +250,44 @@ class DataHub:
             await fwd.close()
         return ws
 
+    async def rewire_node(self, uid: str) -> None:
+        """Re-point this node's muxes at its NEW NodeRef after a restart and re-register
+        the view-plane handler on it.
+
+        A _SlotMux is keyed by the stable uid and caches the NodeRef it was built with.
+        restart_node mints a fresh ref (new transport id) and terminates the old one, so
+        every live mux for this uid is left holding a dead ref: its handler died with the
+        old process and the new node publishes into nothing — connected viewers freeze.
+        Re-point each mux, re-register the handler on the new ref, and force a viewspec
+        re-push so the fresh node's reducer is told what the attached viewers need."""
+        loop = asyncio.get_running_loop()
+        manager = self.server.manager
+        async with self._lock:
+            if uid not in manager.nodes:
+                return
+            new_ref = manager.nodes[uid]
+            for (mux_uid, slot), mux in list(self._muxes.items()):
+                if mux_uid != uid:
+                    continue
+                mux.ref = new_ref
+
+                def on_frame(_noderef, _slot_name, buf, _mux=mux):
+                    _mux.dispatch(buf)
+
+                # Blocking IPC (REGISTER_VIEWER + .view subscriber) off the loop, like
+                # the connect path in handler().
+                try:
+                    await loop.run_in_executor(
+                        None,
+                        functools.partial(new_ref.set_data_handler, slot, on_frame, raw=True, view=True),
+                    )
+                except Exception:
+                    pass
+                # The fresh node's reducer starts at defaults; force a re-push of the
+                # folded ViewSpec (dedup state is keyed to the dead ref).
+                mux._last_axes = None
+                mux.push_spec_if_changed()
+
     async def close_all(self) -> None:
         loop = asyncio.get_running_loop()
         # Hold _lock across the whole teardown: shutdown calls this while the server

@@ -5,7 +5,10 @@ reduced + encoded the frame, so `dispatch` fans the node-reduced bytes to every
 connected forwarder VERBATIM — no manager-side decode/adapt/re-encode. The mux
 also folds the connected forwarders' ViewSpecs and pushes the fold to the node.
 """
-from goofi.bridge.data import _SlotMux
+import asyncio
+import types
+
+from goofi.bridge.data import DataHub, _SlotMux
 
 
 class _FakeFwd:
@@ -23,6 +26,54 @@ class _FakeRef:
 
     def set_viewspec(self, slot, spec):
         self.specs.append((slot, spec))
+
+
+class _RecordingRef:
+    """A NodeRef stand-in that records view-plane (re)registration + viewspec pushes."""
+
+    def __init__(self, uid):
+        self.uid = uid
+        self.handlers = []  # (slot, fn, raw, view)
+        self.specs = []
+
+    def set_data_handler(self, slot, fn, raw=False, view=False):
+        self.handlers.append((slot, fn, raw, view))
+
+    def set_viewspec(self, slot, spec):
+        self.specs.append((slot, spec))
+
+
+def _hub_with_nodes(nodes):
+    server = types.SimpleNamespace(manager=types.SimpleNamespace(nodes=nodes))
+    return DataHub(server)
+
+
+def test_rewire_node_repoints_mux_and_reregisters_handler_on_the_new_ref():
+    """After restart_node replaces a node's NodeRef, its mux still holds the OLD (dead)
+    ref and the view handler is bound to it — so the new node publishes into nothing and
+    viewers freeze. rewire_node must re-point the mux at the new ref, re-register the
+    view-plane handler on it, and re-push the folded viewspec so frames flow again."""
+    old = _RecordingRef("n1")
+    new = _RecordingRef("n1")  # same uid, fresh ref after restart
+    hub = _hub_with_nodes({"n1": new})
+
+    mux = _SlotMux(ref=old, slot="out")
+    fwd = _FakeFwd({"axes": [{"axis": -1, "max": 800, "method": "envelope"}], "version": 1})
+    mux.add(fwd)
+    hub._muxes[("n1", "out")] = mux
+
+    asyncio.run(hub.rewire_node("n1"))
+
+    assert mux.ref is new  # re-pointed at the live ref
+    assert any(slot == "out" and raw and view for (slot, _fn, raw, view) in new.handlers), (
+        "view-plane handler not re-registered on the new ref"
+    )
+    assert any(slot == "out" for (slot, _spec) in new.specs), "folded viewspec not re-pushed to the new node"
+
+    # Frames published by the restarted node now reach the still-connected viewer.
+    on_frame = next(fn for (slot, fn, _r, _v) in new.handlers if slot == "out")
+    on_frame(new, "out", b"FRESH")
+    assert fwd.frames == [b"FRESH"]
 
 
 def test_dispatch_fans_raw_bytes_verbatim():

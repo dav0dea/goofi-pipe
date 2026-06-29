@@ -238,7 +238,17 @@ def test_restart_node_op_respawns_member_in_place_preserving_membership():
     manager._layout = None
     try:
         hub = _hub(manager)
-        manager._bridge = types.SimpleNamespace(control=hub)
+
+        async def _noop_rewire(_uid):
+            return None
+
+        # restart_node also schedules a data-plane mux re-point on the bridge loop;
+        # give the fake bridge the same shape as the real server (control + data + schedule).
+        manager._bridge = types.SimpleNamespace(
+            control=hub,
+            data=types.SimpleNamespace(rewire_node=_noop_rewire),
+            schedule=lambda coro: coro.close(),
+        )
         a = manager.add_node("Oscillator", "inputs")
         b = manager.add_node("Buffer", "signal")
         inst = manager.group_nodes([a, b])

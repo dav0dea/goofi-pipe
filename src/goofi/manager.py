@@ -786,6 +786,10 @@ class Manager:
             if self._bridge is not None:
                 try:
                     self._bridge.control.rewire_node_status(uid)
+                    # Re-point the data-plane muxes at the new ref too (on the bridge
+                    # loop): the view handler died with the old ref, so without this any
+                    # connected viewer freezes after the restart.
+                    self._bridge.schedule(self._bridge.data.rewire_node(uid))
                 except Exception:
                     logger.exception("restart: bridge re-wire failed for %s", uid)
 
