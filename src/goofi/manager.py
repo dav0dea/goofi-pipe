@@ -1507,7 +1507,15 @@ class Manager:
         if inst.def_id:
             return inst.def_id
         has_nested = any(uid in self._instances for uid in inst.members)
-        if def_id not in self._definitions or has_nested:
+        # Only reunite with the original def when the instance's members still MATCH it. A
+        # member added/removed while unique means reattaching would silently diverge — the
+        # extra/missing member would never mirror to the def or siblings (set_expression et al.
+        # key on the def's members). Fall back to a fresh def then, as for a GC'd def or
+        # nested-instance members.
+        members_match = def_id in self._definitions and set(inst.members.values()) == set(
+            self._definitions[def_id].members.keys()
+        )
+        if has_nested or not members_match:
             return self.share_instance(inst_id, notify_gui=notify_gui)
         with self._transaction():
             inst.kind = "shared"

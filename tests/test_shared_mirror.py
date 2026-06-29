@@ -328,3 +328,34 @@ def test_re_share_mints_a_fresh_def_when_the_original_was_gced():
         assert mgr._instances[inst].kind == "shared"
     finally:
         mgr.terminate(notify_gui=False)
+
+
+def test_re_share_mints_a_fresh_def_when_members_no_longer_match_the_def():
+    """A unique instance whose members diverged from the def (a member added/removed while
+    unique) must NOT silently re-attach to that def — reattaching would leave the extra
+    member absent from the def, so strict-mirror edits to it would never reach the def or
+    siblings. re_share falls back to a fresh def capturing the instance's ACTUAL members."""
+    mgr = _bare_manager(use_multiprocessing=False)
+    try:
+        a = mgr.add_node("Oscillator", "inputs")
+        inst1 = mgr.group_nodes([a])
+        def_id = mgr.share_instance(inst1)
+        inst2 = mgr.instantiate_definition(def_id)  # sibling keeps def_id alive
+        mgr.make_unique(inst2)
+        # Edit inst2 while unique: add a member the def doesn't have.
+        mgr.add_member_node(inst2, "Buffer", "signal")
+        assert len(mgr._instances[inst2].members) == 2
+        assert len(mgr._definitions[def_id].members) == 1  # def still has just the oscillator
+
+        result = mgr.re_share_instance(inst2, def_id)
+
+        assert result != def_id, "re_share silently reattached to a member-mismatched def"
+        new_def = mgr._instances[inst2].def_id
+        assert new_def == result
+        # The fresh def captures inst2's actual members, so strict-mirror holds for them.
+        assert set(mgr._definitions[new_def].members.keys()) == set(mgr._instances[inst2].members.values())
+        assert mgr._instances[inst2].kind == "shared"
+        # inst1's original family is untouched.
+        assert len(mgr._definitions[def_id].members) == 1
+    finally:
+        mgr.terminate(notify_gui=False)
