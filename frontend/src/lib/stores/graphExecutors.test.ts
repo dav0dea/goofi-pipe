@@ -707,6 +707,21 @@ describe('sub-patch synth node identity (viewer re-instantiation bug)', () => {
 		expect(a).toBe(b);
 	});
 
+	it('a live error event for an instance uid lights up the collapsed group node', () => {
+		const fc = new FakeControl();
+		const g = new GraphStore(fc);
+		withInstance(g, fc, { out0: { dir: 'out', dtype: 'ARRAY', inner_node: 'm0', inner_slot: 'out' } });
+		expect(g.nodeById('subpatch0')!.error).toBeNull();
+		// The backend fires `error` per ancestor instance (keyed by the instance uid)
+		// when a deep member errors; the mirror updates inst.error -> the synth border.
+		fc.emit({ event: 'error', payload: { node: 'subpatch0', error: 'deep boom' } });
+		expect(g.instances['subpatch0'].error).toBe('deep boom');
+		expect(g.nodeById('subpatch0')!.error).toBe('deep boom');
+		// clearing propagates too
+		fc.emit({ event: 'error', payload: { node: 'subpatch0', error: null } });
+		expect(g.nodeById('subpatch0')!.error).toBeNull();
+	});
+
 	it('returns an UPDATED node when the instance interface changes (no stale memo)', () => {
 		const fc = new FakeControl();
 		const g = new GraphStore(fc);

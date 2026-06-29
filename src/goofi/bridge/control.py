@@ -450,10 +450,20 @@ class ControlHub:
                 nodes.append(describe_node_instance(uid, manager.nodes[uid]))
             except Exception:
                 traceback.print_exc()
+        # Attribute each errored node to its ancestor instances in ONE pass (the first
+        # errored descendant, in node order, wins), instead of re-scanning all nodes per
+        # instance inside describe_instance.
+        err_by_inst: Dict[str, Any] = {}
+        for u in manager.nodes:
+            err = manager.nodes[u].last_error
+            if not err:
+                continue
+            for inst_id in manager._ancestor_instances(u):
+                err_by_inst.setdefault(inst_id, err)
         instances: Dict[str, Any] = {}
         for iid, inst in getattr(manager, "_instances", {}).items():
             try:
-                instances[iid] = describe_instance(manager, iid, inst)
+                instances[iid] = describe_instance(manager, iid, inst, error=err_by_inst.get(iid))
             except Exception:
                 traceback.print_exc()
         return {
@@ -512,6 +522,16 @@ class ControlHub:
             self.broadcast_threadsafe(
                 {"event": "error", "payload": {"node": uid, "error": message.content.get("error")}}
             )
+            # A collapsed sub-patch mirrors its first-errored-descendant on the snapshot
+            # field `inst.error`, which only recomputes on a structural resync. So a live
+            # member error (or its clearing) must refresh each ancestor instance too —
+            # broadcast the recomputed error per ancestor, keyed by the instance uid (the
+            # frontend's `error` handler updates a node OR an instance in place).
+            manager = self.server.manager
+            for inst_id in manager._ancestor_instances(uid):
+                self.broadcast_threadsafe(
+                    {"event": "error", "payload": {"node": inst_id, "error": manager._instance_error(inst_id)}}
+                )
 
         def on_stats(noderef, message: Message):
             self.broadcast_threadsafe(

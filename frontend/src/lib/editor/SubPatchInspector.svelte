@@ -47,7 +47,7 @@
 			<div class="title">{shared ? 'Shared sub-patch' : 'Sub-patch'}</div>
 			<div class="sub">{inst?.name ?? instId}</div>
 		</div>
-		<span class="badge">{memberCount} node{memberCount === 1 ? '' : 's'}</span>
+		<span class="badge">{memberCount} member{memberCount === 1 ? '' : 's'}</span>
 	</header>
 
 	<div class="rows">

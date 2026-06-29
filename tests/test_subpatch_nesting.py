@@ -274,18 +274,27 @@ def test_resolve_two_level_boundary_reaches_leaf_node():
 
 
 def test_resolve_raises_when_mid_chain_boundary_unwired():
-    """If an intermediate boundary in the chain is unwired, resolving the outer port
-    raises (so the data route closes cleanly) — never returns a bogus instance tuple."""
+    """If an intermediate boundary in the chain becomes unwired AFTER the chain was
+    built, resolving the outer port raises (so the data route closes cleanly) — never
+    returns a bogus instance tuple. Chaining onto an *already*-unwired child is rejected
+    up front (see test_wire_boundary_rejects_chaining_onto_unwired_nested_boundary), so
+    the only way to reach an unwired mid-chain is to unwire a once-valid one."""
     import pytest
 
     mgr = _bare_manager(use_multiprocessing=False)
     try:
         osc, inner = _build_grouped_graph(mgr)
-        inner_bnd = mgr.add_boundary(inner, "out", "ARRAY")  # added but NOT wired
+        sel1 = _member(mgr, inner, "select1")
+        sel1_out = list(mgr.nodes[sel1].output_slots)[0]
+        inner_bnd = mgr.add_boundary(inner, "out", "ARRAY")
+        mgr.wire_boundary(inner, inner_bnd, "select1", sel1_out)  # inner -> real leaf
+
         outer = mgr.group_nodes([inner])
         inner_local = mgr._instances[outer].members[inner]
         outer_bnd = mgr.add_boundary(outer, "out", "ARRAY")
-        mgr.wire_boundary(outer, outer_bnd, inner_local, inner_bnd)  # forwards to an unwired child
+        mgr.wire_boundary(outer, outer_bnd, inner_local, inner_bnd)  # valid: chains onto a WIRED child
+
+        mgr.wire_boundary(inner, inner_bnd, None, None)  # now unwire the mid-chain boundary
         with pytest.raises(ValueError):
             mgr.resolve_boundary(outer, outer_bnd)
     finally:

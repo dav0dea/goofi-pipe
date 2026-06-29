@@ -272,7 +272,7 @@
 			const src = drawEndpoint(l.node_out, l.slot_out, 'out');
 			const dst = drawEndpoint(l.node_in, l.slot_in, 'in');
 			if (!src || !dst) continue;
-			if (src.node === dst.node) continue;
+			if (src.node === dst.node && l.node_out !== l.node_in) continue; // internal to one collapsed child -> hidden (but keep a real self-loop)
 			const id = linkKey(l);
 			next.push({
 				id,
@@ -367,7 +367,6 @@
 		const dstB = parseBoundary(c.target);
 		if (srcB || dstB) {
 			if (!entered) return;
-			const inst = g.instances[entered];
 			const bnd = srcB ?? dstB!;
 			const memberId = srcB ? c.target : c.source;
 			const memberSlot = srcB ? c.targetHandle : c.sourceHandle;

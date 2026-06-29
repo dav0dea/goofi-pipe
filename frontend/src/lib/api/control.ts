@@ -182,8 +182,9 @@ export interface InstanceInfo {
 	siblings: string[];
 	/** First errored DESCENDANT across the whole subtree (recursion-correct), or null. */
 	error: string | null;
-	/** Per-output-slot view state persisted in the .gfi patch (round-trips). */
-	viewers: Record<string, unknown>;
+	/** Per-output-boundary view state persisted in the .gfi patch (round-trips), keyed
+	 * by boundary id — same shape as a node's `viewers`. */
+	viewers: Record<string, { collapsed?: boolean; kind?: string; settings?: Record<string, unknown> }>;
 	member_count: number;
 }
 

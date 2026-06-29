@@ -77,7 +77,7 @@ def describe_node_class(cls: type) -> Dict[str, Any]:
     }
 
 
-def describe_instance(manager: Any, inst_id: str, inst: Any) -> Dict[str, Any]:
+def describe_instance(manager: Any, inst_id: str, inst: Any, error: Any = None) -> Dict[str, Any]:
     """Describe a sub-patch INSTANCE as a computed, recursive record the frontend
     mirrors (rather than re-deriving). The single server source of truth for every
     per-instance field; each computed field replaces a frontend re-derivation:
@@ -93,7 +93,8 @@ def describe_instance(manager: Any, inst_id: str, inst: Any) -> Dict[str, Any]:
       ports become a pure passthrough.
     - `siblings`: _shared_siblings (def-scoped strict-mirror family); [] for unique.
     - `error`: first errored DESCENDANT across the whole subtree (recursion-correct — a
-      deeply-nested member's error surfaces on the collapsed ancestor).
+      deeply-nested member's error surfaces on the collapsed ancestor). Precomputed once
+      per snapshot by the caller (one pass over nodes) and passed in.
     - `member_count`, `viewers`: direct reads (viewers round-trips the persisted state).
     """
     interface: Dict[str, Any] = {}
@@ -114,11 +115,6 @@ def describe_instance(manager: Any, inst_id: str, inst: Any) -> Dict[str, Any]:
             "inner_slot": b.inner_slot,
             "pos": list(b.pos),
         }
-    error = next(
-        (manager.nodes[u].last_error for u in manager.nodes
-         if manager.nodes[u].last_error and manager._within_subtree(u, inst_id)),
-        None,
-    )
     return {
         "uid": inst.uid,
         "name": inst.name,

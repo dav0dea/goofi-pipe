@@ -1542,6 +1542,26 @@ class Manager:
             cur = self._membership.get(cur)
         return False
 
+    def _ancestor_instances(self, uid: str) -> List[str]:
+        """The instance uids on `uid`'s parent chain, innermost-first (its immediate
+        owning instance, then that instance's parent, …). Empty for a top-level entity."""
+        out: List[str] = []
+        cur = self._membership.get(uid)
+        while cur is not None:
+            out.append(cur)
+            cur = self._instances[cur].parent if cur in self._instances else None
+        return out
+
+    def _instance_error(self, inst_id: str) -> Optional[str]:
+        """First errored descendant of `inst_id` across its whole subtree, or None — the
+        error a collapsed group node surfaces. Single source for describe_instance + the
+        live error-event propagation (no frontend re-derivation)."""
+        return next(
+            (self.nodes[u].last_error for u in self.nodes
+             if self.nodes[u].last_error and self._within_subtree(u, inst_id)),
+            None,
+        )
+
     def _boundary_external_links(self, inst_id: str, dir: str, local: str, slot: str) -> List[dict]:
         """This instance's external flat links for the boundary mapping (local, slot):
         the member-side endpoint matches and the other end is OUTSIDE this instance's
@@ -1662,6 +1682,11 @@ class Manager:
                 child = self._instances[uid].interface.get(inner_slot)
                 if child is None:
                     raise ValueError(f"no {dir} boundary {inner_slot!r} on nested {inner_node}")
+                if child.inner_node is None:
+                    # An unwired child boundary isn't an exposed port on the collapsed
+                    # node — chaining onto it would forward to nothing (and the editor
+                    # would draw a pill edge to a handle the synth node doesn't have).
+                    raise ValueError(f"nested boundary {inner_node}.{inner_slot} is not wired yet")
                 if child.dir != dir:
                     raise ValueError(
                         f"direction mismatch: nested {inner_node}.{inner_slot} is {child.dir}, port is {dir}"

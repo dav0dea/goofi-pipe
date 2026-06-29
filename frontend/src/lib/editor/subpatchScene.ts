@@ -29,6 +29,8 @@ export interface SceneInstance {
 export interface MemberEntry {
 	instId: string; // the instance that directly contains this entity
 	local: string; // its template-local within that instance
+	// Carried for parity with the snapshot's member shape; node-vs-instance classification
+	// for rendering is done by childrenOfScope (real nodes vs Object.keys(instances)).
 	is_instance: boolean;
 }
 

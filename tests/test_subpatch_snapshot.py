@@ -10,7 +10,7 @@ import types
 
 from goofi.bridge.control import ControlHub
 
-from .test_manager import _bare_manager, _member
+from .test_manager import _bare_manager, _build_grouped_graph, _member
 
 
 def _hub(manager):
@@ -90,5 +90,46 @@ def test_snapshot_ships_shared_siblings():
         uniq = mgr.group_nodes([mgr.add_node("Buffer", "signal")])
         insts = _hub(mgr)._snapshot()["instances"]
         assert insts[uniq]["siblings"] == []
+    finally:
+        mgr.terminate(notify_gui=False)
+
+
+def test_instance_error_and_ancestors_for_live_error_propagation():
+    """Phase 4 review #2: a member's live error must surface on its ancestor instances.
+    The manager exposes the building blocks: _instance_error (first errored descendant)
+    and _ancestor_instances (the chain a node-error event must refresh)."""
+    mgr = _bare_manager(use_multiprocessing=False)
+    try:
+        a = mgr.add_node("Oscillator", "inputs")
+        b = mgr.add_node("Buffer", "signal")
+        mgr.add_link(a, b, "out", "val")
+        inner = mgr.group_nodes([b])
+        outer = mgr.group_nodes([inner])  # outer > inner > [b]
+        assert mgr._instance_error(outer) is None
+        assert mgr._ancestor_instances(b) == [inner, outer]
+
+        mgr.nodes[b].last_error = "deep boom"
+        assert mgr._instance_error(inner) == "deep boom"
+        assert mgr._instance_error(outer) == "deep boom"  # surfaces up the whole chain
+        mgr.nodes[b].last_error = None
+        assert mgr._instance_error(outer) is None  # clears
+    finally:
+        mgr.terminate(notify_gui=False)
+
+
+def test_wire_boundary_rejects_chaining_onto_unwired_nested_boundary():
+    """Phase 4 review #8: chaining a boundary onto a nested instance's UNWIRED boundary
+    would expose a port the collapsed node doesn't actually have. Reject it."""
+    import pytest
+
+    mgr = _bare_manager(use_multiprocessing=False)
+    try:
+        osc, inner = _build_grouped_graph(mgr)
+        inner_bnd = mgr.add_boundary(inner, "out", "ARRAY")  # added but NOT wired
+        outer = mgr.group_nodes([inner])
+        inner_local = mgr._instances[outer].members[inner]
+        outer_bnd = mgr.add_boundary(outer, "out", "ARRAY")
+        with pytest.raises(ValueError):
+            mgr.wire_boundary(outer, outer_bnd, inner_local, inner_bnd)  # chain onto unwired child
     finally:
         mgr.terminate(notify_gui=False)

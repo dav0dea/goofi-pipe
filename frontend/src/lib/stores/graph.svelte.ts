@@ -85,6 +85,12 @@ export class GraphStore {
 		this.nodes = snap.nodes;
 		this.links = snap.links;
 		this._reconcileInstances(snap.instances ?? {});
+		// Seed collapse/kind/settings for each instance's output-boundary slots (its
+		// synth node carries inst.viewers) so a sub-patch viewer state round-trips.
+		for (const iid of Object.keys(this.instances)) {
+			const sn = this.nodeById(iid);
+			if (sn) this._seedNodeViewerState(sn);
+		}
 		this.savePath = snap.save_path;
 		this.unsavedChanges = snap.unsaved_changes;
 
@@ -215,6 +221,12 @@ export class GraphStore {
 				this.nodes = snap.nodes;
 				this.links = snap.links;
 				this._reconcileInstances(snap.instances ?? {});
+				// Seed collapse/kind/settings for each instance's output-boundary slots (its
+				// synth node carries inst.viewers) so a sub-patch viewer state round-trips.
+				for (const iid of Object.keys(this.instances)) {
+					const sn = this.nodeById(iid);
+					if (sn) this._seedNodeViewerState(sn);
+				}
 				break;
 			}
 			case 'boundary_moved': {
@@ -302,12 +314,22 @@ export class GraphStore {
 			case 'error': {
 				// Live snapshot — drives the node's red border, the floating error
 				// chip, and the inspector's current-error section. Always on, via the
-				// control plane, independent of whether a Console is open.
-				const t = this.nodeById(ev.payload.node);
-				if (t) t.error = ev.payload.error;
-				// Mirror the active error into the Console as a stderr entry so the
-				// log view is the complete picture (repeats coalesce into one ×N).
-				if (ev.payload.error) consoleStore().ingestError(ev.payload.node, ev.payload.error, Date.now());
+				// control plane, independent of whether a Console is open. The backend
+				// also fires this per ANCESTOR INSTANCE of an errored member (keyed by the
+				// instance uid) so a collapsed sub-patch reflects a deep member's error
+				// live — update the mirrored `inst.error` field (which feeds the synth
+				// node's border) rather than the throwaway synth node object.
+				const inst = this.instances[ev.payload.node];
+				if (inst) {
+					inst.error = ev.payload.error;
+				} else {
+					const t = this.nodeById(ev.payload.node);
+					if (t) t.error = ev.payload.error;
+					// Console ingest only for real nodes — an ancestor-instance event just
+					// mirrors a member error that already ingested under the member's uid.
+					if (ev.payload.error)
+						consoleStore().ingestError(ev.payload.node, ev.payload.error, Date.now());
+				}
 				break;
 			}
 			case 'unsaved_changes':
@@ -783,15 +805,6 @@ export class GraphStore {
 	 * its inline viewer re-subscribed/flickered. The cache restores that stability. */
 	private _synthCache = new Map<string, { sig: string; node: NodeInstanceInfo }>();
 
-	/** The parent-instance uid of any entity (the nesting tree edge), or null at the
-	 * top level. One accessor over both halves the backend ships: a node carries its
-	 * parent on `membership.instance`, an instance on `parent`. */
-	parentScope(uid: string): string | null {
-		const inst = this.instances[uid];
-		if (inst) return inst.parent;
-		return this._realNode(uid)?.membership?.instance ?? null;
-	}
-
 	/** The uid of a member given its template-local name within `instId` — a direct
 	 * read now that members is keyed local -> {uid, is_instance}. */
 	memberUid(instId: string, local: string): string | null {
@@ -808,7 +821,10 @@ export class GraphStore {
 			else this.instances[uid] = rec;
 		}
 		for (const uid of Object.keys(this.instances)) {
-			if (!(uid in next)) delete this.instances[uid];
+			if (!(uid in next)) {
+				delete this.instances[uid];
+				this._synthCache.delete(uid); // cache lifetime tracks the instances map
+			}
 		}
 	}
 
@@ -852,7 +868,7 @@ export class GraphStore {
 			output_slots,
 			params: {},
 			pos: inst.pos,
-			viewers: {},
+			viewers: inst.viewers ?? {},
 			membership: null,
 			error,
 			subpatch: { instId, shared, memberCount }
