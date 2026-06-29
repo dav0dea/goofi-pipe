@@ -126,3 +126,31 @@ describe('HistoryStore — lastError surface (#9)', () => {
 		expect(h.lastError).toBe(null);
 	});
 });
+
+describe('HistoryStore — transaction atomicity on throw', () => {
+	beforeEach(() => history().reset());
+
+	it('discards the buffered children when fn throws (no orphan undo step)', async () => {
+		const h = history();
+		await expect(
+			h.transaction('Add + boom', async () => {
+				h.record(mk('inner add')); // a child gets buffered…
+				throw new Error('boom'); // …then the transaction fails partway
+			})
+		).rejects.toThrow('boom');
+		// A failed transaction is not atomic, so it must leave NO undo step behind —
+		// a partial compound could inverse ops the backend never applied.
+		expect(h.canUndo).toBe(false);
+		expect(h.undoLabel).toBe(null);
+	});
+
+	it('still commits exactly one undo step when fn succeeds', async () => {
+		const h = history();
+		await h.transaction('Add', async () => {
+			h.record(mk('a'));
+			h.record(mk('b'));
+		});
+		expect(h.canUndo).toBe(true);
+		expect(h.undoLabel).toBe('Add'); // two children → one compound under the tx label
+	});
+});

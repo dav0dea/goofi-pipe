@@ -399,20 +399,26 @@ export class HistoryStore {
 		let result: T;
 		try {
 			result = await fn();
-		} finally {
-			const children = this.txBuffer ?? [];
+		} catch (e) {
+			// A thrown transaction did NOT complete atomically — discard its buffered
+			// children rather than committing a partial compound. Recording the partial
+			// set would push an undo step whose inverse replays ops the backend rejected
+			// (or only half of an intended atomic edit). The caller still sees the throw.
 			this.txBuffer = null;
-			if (children.length === 1) {
-				this.record(children[0]);
-			} else if (children.length > 1) {
-				this.record({
-					kind: 'compound',
-					domain: 'graph',
-					label,
-					context: children[0].context,
-					payload: { children }
-				});
-			}
+			throw e;
+		}
+		const children = this.txBuffer ?? [];
+		this.txBuffer = null;
+		if (children.length === 1) {
+			this.record(children[0]);
+		} else if (children.length > 1) {
+			this.record({
+				kind: 'compound',
+				domain: 'graph',
+				label,
+				context: children[0].context,
+				payload: { children }
+			});
 		}
 		return result;
 	}
