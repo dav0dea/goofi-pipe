@@ -326,6 +326,35 @@ def test_deleting_one_shared_instance_keeps_a_sibling_chained_boundary_intact():
         mgr.terminate(notify_gui=False)
 
 
+def test_removing_a_wired_shared_member_prunes_the_def_link():
+    """Deleting a WIRED member of a shared sub-patch must also prune the definition's
+    internal member->member link template. Otherwise def.links keeps a dangling local and
+    every consumer of def.links (instantiate, and load via _splice_doc) KeyErrors on the
+    gone member — so a saved .gfi becomes permanently unloadable (silent data loss)."""
+    mgr = _bare_manager(use_multiprocessing=False)
+    try:
+        x = mgr.add_node("Oscillator", "inputs")
+        y = mgr.add_node("Buffer", "signal")
+        inst1 = mgr.group_nodes([x, y])
+        def_id = mgr.share_instance(inst1)
+        mgr.instantiate_definition(def_id)  # a sibling, keeps the def alive
+        ly = mgr._instances[inst1].members[y]
+        mgr.add_link(x, y, "out", "val")  # mirrors {lx->ly} into def.links
+        assert any(link["node_in"] == ly for link in mgr._definitions[def_id].links)
+
+        mgr.remove_node(y)  # routes to _remove_shared_member
+
+        # The def link template no longer references the removed member's local...
+        assert not any(
+            link["node_out"] == ly or link["node_in"] == ly for link in mgr._definitions[def_id].links
+        ), "stale def.link references the deleted member"
+        # ...so instantiating the def no longer KeyErrors on the gone local.
+        new_inst = mgr.instantiate_definition(def_id)
+        assert new_inst in mgr._instances
+    finally:
+        mgr.terminate(notify_gui=False)
+
+
 def test_remove_shared_member_mirrors_across_siblings_and_def():
     """Bug C: deleting a member of a SHARED sub-patch is the symmetric inverse of the
     shared ADD — it mirror-removes the member from the definition AND every sibling

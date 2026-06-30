@@ -1815,6 +1815,12 @@ class Manager:
             # Then drop the member from the definition template + every instance in the
             # family (keyed by the shared per-instance `local`).
             self._definitions[def_id].members.pop(local, None)
+            # Prune the def's internal link template too: _teardown_node removes only the
+            # LIVE wires (self._links), never def.links (only _mirror_internal_link does,
+            # and it isn't on this path). A dangling local in def.links KeyErrors every
+            # consumer (instantiate, load) — leaving a saved patch unloadable.
+            deflinks = self._definitions[def_id].links
+            deflinks[:] = [l for l in deflinks if l["node_out"] != local and l["node_in"] != local]
             for iid in [inst_id, *self._shared_siblings(inst_id)]:
                 m_uid = self._member_uid(iid, local)
                 if m_uid is None:
