@@ -1440,6 +1440,22 @@ class Manager:
             idx += 1
         return f"{base}{idx}"
 
+    def _resolved_input_fed_within(self, uid: str, slot: str, scope: str) -> bool:
+        """True if the real leaf input that (uid, slot) resolves to is already fed by a link
+        INTERNAL to `scope`'s subtree. Resolves a CHAINED nested-instance target to its leaf
+        first, so a chained boundary is judged exactly like a direct one. The single source
+        for the 'an In port can't expose an already-connected input' rule — shared by
+        wire_boundary's guard and the group re-chain's graceful teardown, so the two paths
+        can never disagree about a chained boundary."""
+        try:
+            leaf_uid, leaf_slot = self.resolve_boundary(uid, slot) if uid in self._instances else (uid, slot)
+        except (KeyError, ValueError):
+            return False
+        return any(
+            l["node_in"] == leaf_uid and l["slot_in"] == leaf_slot and self._within_subtree(l["node_out"], scope)
+            for l in self._links
+        )
+
     def _unwire_parent_boundaries_to(self, inst_id: str, notify_gui: bool) -> None:
         """Unwire any boundary on `inst_id`'s parent that forwards into `inst_id` (its
         inner_node is this instance's local), tearing down the boundary's external links.
@@ -1479,11 +1495,11 @@ class Manager:
             # An IN boundary onto a member input that another grouped member now feeds
             # internally can't be chained (exposing it would evict that feed). Tear the
             # holder boundary down rather than abort the whole group — graceful degradation,
-            # since the input is no longer externally drivable.
-            if b.dir == "in" and any(
-                l["node_in"] == uid and l["slot_in"] == slot and self._within_subtree(l["node_out"], inst_id)
-                for l in self._links
-            ):
+            # since the input is no longer externally drivable. Uses the SAME resolved-leaf
+            # check as wire_boundary's guard, so a CHAINED holder boundary (uid = a nested
+            # instance, slot = its boundary id) degrades the same way a direct one does
+            # instead of falling through to the re-chain and tripping that guard.
+            if b.dir == "in" and self._resolved_input_fed_within(uid, slot, inst_id):
                 self.wire_boundary(holder, bid, None, None, notify_gui=False)
                 continue
             # Reuse an inner boundary `_derive_interface` already authored for this member
@@ -2055,27 +2071,13 @@ class Manager:
                 dt_name = dt.name
             # An In port must own its inner input alone: refuse exposing an input already fed
             # by a link INTERNAL to this sub-patch (the external splice is single-source and
-            # would silently evict it). Resolve a CHAINED target to its real leaf first and
-            # scope "internal" to this instance's whole subtree, so the guard covers a chained
-            # re-point onto a deeply-fed leaf, not just a direct member.
-            if dir == "in":
-                try:
-                    leaf_uid, leaf_slot = (
-                        self.resolve_boundary(uid, inner_slot) if uid in self._instances else (uid, inner_slot)
-                    )
-                except (KeyError, ValueError):
-                    leaf_uid = None
-                if leaf_uid is not None:
-                    for link in self._links:
-                        if (
-                            link["node_in"] == leaf_uid
-                            and link["slot_in"] == leaf_slot
-                            and self._within_subtree(link["node_out"], inst_id)
-                        ):
-                            raise ValueError(
-                                f"{inner_node}.{inner_slot} is already fed inside the sub-patch; "
-                                f"an In node can't expose an already-connected input"
-                            )
+            # would silently evict it). The shared resolved-leaf check handles a CHAINED
+            # target (resolve to leaf) and scopes "internal" to the whole subtree.
+            if dir == "in" and self._resolved_input_fed_within(uid, inner_slot, inst_id):
+                raise ValueError(
+                    f"{inner_node}.{inner_slot} is already fed inside the sub-patch; "
+                    f"an In node can't expose an already-connected input"
+                )
             for k, e in iface.items():
                 if k != bnd_id and e.dir == dir and e.inner_node == inner_node and e.inner_slot == inner_slot:
                     raise ValueError(f"inner slot {inner_node}.{inner_slot} already exposed by {k}")

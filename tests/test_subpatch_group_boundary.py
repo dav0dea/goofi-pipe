@@ -325,3 +325,30 @@ def test_chained_in_repoint_rejects_evicting_an_internal_feed():
         assert any(li["node_out"] == x and li["node_in"] == l for li in mgr.links)
     finally:
         mgr.terminate()
+
+
+def test_group_chained_holder_boundary_into_internally_fed_instance_degrades_gracefully():
+    """Round-2 audit: the graceful-teardown of an internally-fed IN holder boundary must
+    also apply when the holder boundary is CHAINED through a nested instance (not just a
+    direct-node target). Otherwise the re-chain trips the unified IN-feed guard and the
+    whole group aborts — a regression vs the direct-node case."""
+    mgr = _bare_manager(use_multiprocessing=False)
+    try:
+        a = mgr.add_node("Buffer", "signal")
+        b = mgr.add_node("Buffer", "signal")
+        N0 = mgr.group_nodes([a])  # N0 contains a (buffer0)
+        bN0 = mgr.add_boundary(N0, "in", "ARRAY")
+        mgr.wire_boundary(N0, bN0, "buffer0", "val")  # N0.in exposes a.val
+        S = mgr.group_nodes([N0, b])  # S contains instance N0 + node b
+        n0_local = mgr._instances[S].members[N0]
+        bS = mgr.add_boundary(S, "in", "ARRAY")
+        mgr.wire_boundary(S, bS, n0_local, bN0)  # chained S.in -> N0.bN0 -> a.val (a.val unfed)
+        mgr.add_link(b, a, _out_slot(mgr, b), "val")  # internal feed b -> a.val
+
+        G = mgr.group_nodes([N0, b])  # must NOT abort — bS can't chain, so tear it down
+
+        assert G in mgr._instances[S].members
+        assert mgr._instances[S].interface[bS].inner_node is None  # gracefully unwired
+        assert any(li["node_out"] == b and li["node_in"] == a for li in mgr.links)  # feed intact
+    finally:
+        mgr.terminate()
