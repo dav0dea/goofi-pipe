@@ -71,13 +71,19 @@ class WorkspaceStore {
 		this.activePanelId = firstPanelId(this.active.root);
 	}
 
+	/** After a structural layout change, drop the maximized view and focus the
+	 * first panel of `root` (firstPanelId returns '' when empty). */
+	private _focusFirst(root: LayoutNode): void {
+		this.maximizedPanelId = null;
+		this.activePanelId = firstPanelId(root);
+	}
+
 	/** Drop all layout state back to a single default panel. Called when a
 	 * fresh backend session connects without a layout of its own, so the panel
 	 * arrangement from the previous session doesn't linger in the open tab. */
 	reset(): void {
 		this.state = defaultWorkspaceState();
-		this.maximizedPanelId = null;
-		this.activePanelId = firstPanelId(this.active.root);
+		this._focusFirst(this.active.root);
 	}
 
 	get active(): Workspace {
@@ -102,8 +108,7 @@ class WorkspaceStore {
 	 * default and then overridden by the action's NavContext. */
 	restore(state: WorkspaceState): void {
 		this.state = state;
-		this.maximizedPanelId = null;
-		this.activePanelId = firstPanelId(this.active.root);
+		this._focusFirst(this.active.root);
 	}
 
 	/** Apply a layout restored from a `.gfi` patch (or any external source). */
@@ -117,8 +122,7 @@ class WorkspaceStore {
 		};
 		for (const ws of state.workspaces) migrate(ws.root);
 		this.state = state;
-		this.maximizedPanelId = null;
-		this.activePanelId = firstPanelId(this.active.root);
+		this._focusFirst(this.active.root);
 	}
 
 	/** Run a tracked layout mutation `fn`, recording one history entry iff it
@@ -275,8 +279,7 @@ class WorkspaceStore {
 				workspaces: [...this.state.workspaces, ws],
 				activeWorkspaceId: ws.id
 			};
-			this.maximizedPanelId = null;
-			this.activePanelId = firstPanelId(ws.root);
+			this._focusFirst(ws.root);
 		});
 	}
 
@@ -285,8 +288,8 @@ class WorkspaceStore {
 		const ws = this.state.workspaces.find((w) => w.id === workspaceId);
 		if (!ws) return;
 		this.state = { ...this.state, activeWorkspaceId: workspaceId };
-		this.maximizedPanelId = null;
-		this.activePanelId = firstPanelId(ws.root);	}
+		this._focusFirst(ws.root);
+	}
 
 	renameTab(workspaceId: string, name: string): void {
 		this._tracked('rename_tab', 'Rename tab', () => {
@@ -314,8 +317,7 @@ class WorkspaceStore {
 			const workspaces = this.state.workspaces.slice();
 			workspaces.splice(idx + 1, 0, copy);
 			this.state = { workspaces, activeWorkspaceId: copy.id };
-			this.maximizedPanelId = null;
-			this.activePanelId = firstPanelId(copy.root);
+			this._focusFirst(copy.root);
 		});
 	}
 
@@ -329,8 +331,7 @@ class WorkspaceStore {
 			if (activeWorkspaceId === workspaceId) {
 				const neighbor = workspaces[Math.min(idx, workspaces.length - 1)];
 				activeWorkspaceId = neighbor.id;
-				this.maximizedPanelId = null;
-				this.activePanelId = firstPanelId(neighbor.root);
+				this._focusFirst(neighbor.root);
 			}
 			this.state = { workspaces, activeWorkspaceId };
 		});
@@ -346,13 +347,10 @@ class WorkspaceStore {
 	private _takeNode(d: DragRef): { node: LayoutNode; state: WorkspaceState } | null {
 		if (d.kind === 'tab') {
 			const ws = this.state.workspaces.find((w) => w.id === d.workspaceId);
-			if (!ws || this.state.workspaces.length <= 1) return null;
-			const workspaces = this.state.workspaces.filter((w) => w.id !== d.workspaceId);
-			const activeWorkspaceId =
-				this.state.activeWorkspaceId === d.workspaceId
-					? workspaces[0].id
-					: this.state.activeWorkspaceId;
-			return { node: ws.root, state: { workspaces, activeWorkspaceId } };
+			if (!ws) return null;
+			const state = this._removeWorkspace(d.workspaceId);
+			if (!state) return null;
+			return { node: ws.root, state };
 		}
 		const ws = this.state.workspaces.find((w) => w.id === d.workspaceId);
 		if (!ws) return null;
@@ -360,18 +358,25 @@ class WorkspaceStore {
 		if (!removed) return null;
 		if (root === null) {
 			// the panel was the tab's only node → the tab goes with it
-			if (this.state.workspaces.length <= 1) return null;
-			const workspaces = this.state.workspaces.filter((w) => w.id !== d.workspaceId);
-			const activeWorkspaceId =
-				this.state.activeWorkspaceId === d.workspaceId
-					? workspaces[0].id
-					: this.state.activeWorkspaceId;
-			return { node: removed, state: { workspaces, activeWorkspaceId } };
+			const state = this._removeWorkspace(d.workspaceId);
+			if (!state) return null;
+			return { node: removed, state };
 		}
 		const workspaces = this.state.workspaces.map((w) =>
 			w.id === d.workspaceId ? { ...w, root } : w
 		);
 		return { node: removed, state: { ...this.state, workspaces } };
+	}
+
+	/** Remove an entire workspace tab, choosing a fallback active tab. Returns null
+	 * when it's the last tab (which must be kept). The shared body of `_takeNode`'s
+	 * tab-drag and last-panel-removal branches. */
+	private _removeWorkspace(id: string): WorkspaceState | null {
+		if (this.state.workspaces.length <= 1) return null;
+		const workspaces = this.state.workspaces.filter((w) => w.id !== id);
+		const activeWorkspaceId =
+			this.state.activeWorkspaceId === id ? workspaces[0].id : this.state.activeWorkspaceId;
+		return { workspaces, activeWorkspaceId };
 	}
 
 	/** Drop the dragged node (panel or tab) into the active layout by splitting
@@ -393,8 +398,7 @@ class WorkspaceStore {
 				...state,
 				workspaces: state.workspaces.map((w) => (w.id === active.id ? { ...w, root } : w))
 			};
-			this.maximizedPanelId = null;
-			this.activePanelId = firstPanelId(node);
+			this._focusFirst(node);
 		});
 	}
 
@@ -416,8 +420,7 @@ class WorkspaceStore {
 			const workspaces = state.workspaces.slice();
 			workspaces.splice(Math.max(0, Math.min(index, workspaces.length)), 0, tab);
 			this.state = { workspaces, activeWorkspaceId: tab.id };
-			this.maximizedPanelId = null;
-			this.activePanelId = firstPanelId(node);
+			this._focusFirst(node);
 		});
 	}
 
