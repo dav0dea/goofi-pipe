@@ -76,9 +76,6 @@
 	let cursorValues = $state<(number | null)[]>([]);
 	let cursorXValue = $state<number | null>(null);
 
-	function asArray(d: DataFrame['data']): ArrayData {
-		return d as ArrayData;
-	}
 
 	const PALETTE = [
 		'#7ab7ff',
@@ -353,7 +350,7 @@
 	}
 
 	$effect(() => {
-		if (frame) pushData(asArray(frame.data));
+		if (frame) pushData(frame.data as ArrayData);
 	});
 
 	$effect(() => {
@@ -372,7 +369,7 @@
 			drawScalar(lastScalar);
 		} else {
 			makePlot(container.clientWidth || 200, container.clientHeight || 120, lastNSeries || 1);
-			if (frame) pushData(asArray(frame.data));
+			if (frame) pushData(frame.data as ArrayData);
 		}
 	});
 

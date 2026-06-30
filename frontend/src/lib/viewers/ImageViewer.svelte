@@ -1,7 +1,7 @@
 <script lang="ts">
 	import type { DataFrame, ArrayData } from '$lib/codec/decode';
 	import type { SettingsMap } from './settingsSchema';
-	import { makeLUT } from './colormaps';
+	import { makeLUTCache } from './colormaps';
 	import { GLImageRenderer, glSupports } from './imageGL';
 	import { onMount, onDestroy } from 'svelte';
 
@@ -47,19 +47,8 @@
 	// Reused 2D ImageData; reallocated only when the frame size changes.
 	let img: ImageData | null = null;
 
-	let lut = makeLUT('gray');
-	let lutName = 'gray';
-	function lutFor(name: string): Uint8Array {
-		if (name !== lutName) {
-			lut = makeLUT(name);
-			lutName = name;
-		}
-		return lut;
-	}
+	const lutFor = makeLUTCache();
 
-	function asArray(d: DataFrame['data']): ArrayData {
-		return d as ArrayData;
-	}
 
 	/** Gray channel range — scanned from the data when auto, else the manual
 	 * [vmin, vmax]. The frame is float-accurate (Option C), so the manual window
@@ -183,7 +172,7 @@
 	$effect(() => {
 		// Repaint on a new frame or any colormap / range change.
 		void [colormap, autoRange, vmin, vmax, cssW, cssH];
-		if (frame) render(asArray(frame.data));
+		if (frame) render(frame.data as ArrayData);
 	});
 </script>
 

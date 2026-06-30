@@ -71,3 +71,18 @@ export function makeLUT(name: string, size = 256): Uint8Array {
 	}
 	return lut;
 }
+
+/** A single-slot LUT memo: returns a function that rebuilds the LUT only when the
+ * requested colormap name changes. Shared by the image + topomap viewers so the
+ * per-paint cache lives in one place. */
+export function makeLUTCache(): (name: string) => Uint8Array {
+	let lut: Uint8Array | null = null;
+	let name = '';
+	return (n) => {
+		if (n !== name) {
+			lut = makeLUT(n);
+			name = n;
+		}
+		return lut!;
+	};
+}

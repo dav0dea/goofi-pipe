@@ -40,9 +40,6 @@
 
 	const PALETTE = ['#7ab7ff', '#b58cff', '#5dd09a', '#ffb761', '#ff7aa2', '#9aa3b3', '#c5c8d6'];
 
-	function asArray(d: DataFrame['data']): ArrayData {
-		return d as ArrayData;
-	}
 
 
 	/** All i<j row pairs → one trajectory each, matching the old viewer's
@@ -271,7 +268,7 @@
 	}
 
 	$effect(() => {
-		if (frame) pushData(asArray(frame.data));
+		if (frame) pushData(frame.data as ArrayData);
 	});
 
 	$effect(() => {

@@ -1,7 +1,7 @@
 <script lang="ts">
 	import type { DataFrame, ArrayData } from '$lib/codec/decode';
 	import type { SettingsMap } from './settingsSchema';
-	import { makeLUT } from './colormaps';
+	import { makeLUTCache } from './colormaps';
 	import { EEG_LAYOUT } from './eegLayout';
 	import {
 		buildLayout,
@@ -31,20 +31,9 @@
 	let pixelCache: PixelCache | null = null;
 	let field: Float32Array | null = null;
 
-	function asArray(d: DataFrame['data']): ArrayData {
-		return d as ArrayData;
-	}
 
 	// The active colormap LUT, rebuilt only when the colormap setting changes.
-	let lut = makeLUT('coolwarm');
-	let lutName = 'coolwarm';
-	function lutFor(name: string): Uint8Array {
-		if (name !== lutName) {
-			lut = makeLUT(name);
-			lutName = name;
-		}
-		return lut;
-	}
+	const lutFor = makeLUTCache();
 
 	function drawMessage(ctx: CanvasRenderingContext2D, w: number, h: number, msg: string): void {
 		ctx.fillStyle = '#1c2029';
@@ -189,7 +178,7 @@
 		// Repaint on a new frame or any colormap / range / contour change.
 		void [colormap, autoRange, vmin, vmax, contours];
 		if (!frame || !canvas) return;
-		const arr = asArray(frame.data);
+		const arr = frame.data as ArrayData;
 		const channels = ((frame.meta?.channels as { dim0?: string[] }) ?? {}).dim0 ?? [];
 		if (canvas.width !== size.w) canvas.width = size.w;
 		if (canvas.height !== size.h) canvas.height = size.h;
