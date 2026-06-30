@@ -15,6 +15,8 @@ origin that served the app.
 from typing import Optional
 from urllib.parse import urlsplit
 
+from aiohttp import web
+
 _LOOPBACK = {"localhost", "127.0.0.1", "::1"}
 
 
@@ -51,3 +53,12 @@ def origin_allowed(origin: Optional[str], host_header: Optional[str], bind_host:
     if host_header and origin_host == _hostname(host_header):
         return True
     return False
+
+
+def reject_cross_origin(request: web.Request, bind_host: str) -> Optional[web.Response]:
+    """A 403 response for a foreign-Origin WS upgrade, or None to proceed — the single
+    guard the /control and /data handlers both apply at their door (each keeps its own
+    comment explaining that plane's specific threat)."""
+    if origin_allowed(request.headers.get("Origin"), request.headers.get("Host"), bind_host):
+        return None
+    return web.Response(status=403, text="cross-origin WebSocket rejected")

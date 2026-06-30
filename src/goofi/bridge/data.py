@@ -31,7 +31,7 @@ from typing import Optional
 
 from aiohttp import WSMsgType, web
 
-from goofi.bridge.origin import origin_allowed
+from goofi.bridge.origin import reject_cross_origin
 from goofi.node_reduce import default_viewspec_for_kind, fold_viewspecs
 
 
@@ -126,6 +126,12 @@ class _SlotMux:
         for fwd in self._forwarders:
             fwd.push_threadsafe(buf)
 
+    def on_frame(self, _noderef, _slot_name, buf) -> None:
+        """The view-plane data handler registered on the NodeRef — the data pump calls it
+        with (ref, slot, payload); we only need the bytes. A bound method (vs an inline
+        closure) binds the right mux naturally, so the connect + rewire paths share it."""
+        self.dispatch(buf)
+
     def push_spec_if_changed(self) -> None:
         """Re-fold the connected ViewSpecs and, if the reduction changed, push it to
         the node so it reduces to what the attached viewers actually need. Dedup on
@@ -154,10 +160,8 @@ class DataHub:
     async def handler(self, request: web.Request) -> web.StreamResponse:
         # Same cross-origin guard as the control plane: a foreign page must not be
         # able to open viewer streams against the unauthenticated data plane.
-        if not origin_allowed(
-            request.headers.get("Origin"), request.headers.get("Host"), self.server.host
-        ):
-            return web.Response(status=403, text="cross-origin WebSocket rejected")
+        if (deny := reject_cross_origin(request, self.server.host)) is not None:
+            return deny
         node = request.match_info["node"]
         slot = request.match_info["slot"]
         kind = request.match_info["kind"]
@@ -201,12 +205,6 @@ class DataHub:
             mux = self._muxes.get(key)
             if mux is None:
                 mux = _SlotMux(ref, slot)
-
-                def on_frame(_noderef, _slot_name, buf, _mux=mux):
-                    # The view-plane pump hands us the node-reduced GOOF bytes
-                    # verbatim (raw=True); fan them out unchanged.
-                    _mux.dispatch(buf)
-
                 # set_data_handler(view=True) does blocking IPC (REGISTER_VIEWER +
                 # iceoryx2 .view subscriber); run it off the event loop so it can't
                 # stall other viewers' sends. Held under _lock so a concurrent
@@ -214,7 +212,7 @@ class DataHub:
                 try:
                     await loop.run_in_executor(
                         None,
-                        functools.partial(ref.set_data_handler, slot, on_frame, raw=True, view=True),
+                        functools.partial(ref.set_data_handler, slot, mux.on_frame, raw=True, view=True),
                     )
                 except Exception:
                     # A transport/iceoryx2 fault mid-registration is non-atomic: a
@@ -224,10 +222,7 @@ class DataHub:
                     # try/finally that normally closes fwd opens BELOW this block, so an
                     # escape would leak the parked sender task + a stranded viewer. Guard
                     # parity with rewire_node / _detach / close_all.
-                    try:
-                        await loop.run_in_executor(None, ref.set_data_handler, slot, None)
-                    except Exception:
-                        pass
+                    await self._unregister(ref, slot)
                     await fwd.close()
                     await ws.close(code=4011, message=b"view registration failed")
                     return ws
@@ -260,20 +255,23 @@ class DataHub:
         rewire_node may have re-pointed at a restarted node — not a ref captured when
         the connection opened (that one is dead and unregistering it would orphan the
         live ref's handler + reducer). Mirrors close_all, which also keys on mux.ref."""
-        loop = asyncio.get_running_loop()
         async with self._lock:
             empty = mux.remove(fwd)
             if empty:
-                # Detach off the event loop too (blocking UNREGISTER_VIEWER +
-                # iceoryx2 teardown) so a slow disconnect can't stall other
-                # viewers; under _lock so a re-subscribe can't interleave.
-                try:
-                    await loop.run_in_executor(None, mux.ref.set_data_handler, mux.slot, None)
-                except Exception:
-                    pass
+                await self._unregister(mux.ref, mux.slot)
                 self._muxes.pop(key, None)
             else:
                 mux.push_spec_if_changed()  # re-fold without this viewer
+
+    async def _unregister(self, ref, slot) -> None:
+        """Tear down a node's view-plane handler (blocking UNREGISTER_VIEWER + iceoryx2
+        teardown) off the event loop, swallowing a fault on an already-dead ref. The single
+        unregister mechanism shared by the connect rollback, _detach, and close_all."""
+        loop = asyncio.get_running_loop()
+        try:
+            await loop.run_in_executor(None, ref.set_data_handler, slot, None)
+        except Exception:
+            pass
 
     async def rewire_node(self, uid: str) -> None:
         """Re-point this node's muxes at its NEW NodeRef after a restart and re-register
@@ -295,16 +293,12 @@ class DataHub:
                 if mux_uid != uid:
                     continue
                 mux.ref = new_ref
-
-                def on_frame(_noderef, _slot_name, buf, _mux=mux):
-                    _mux.dispatch(buf)
-
                 # Blocking IPC (REGISTER_VIEWER + .view subscriber) off the loop, like
                 # the connect path in handler().
                 try:
                     await loop.run_in_executor(
                         None,
-                        functools.partial(new_ref.set_data_handler, slot, on_frame, raw=True, view=True),
+                        functools.partial(new_ref.set_data_handler, slot, mux.on_frame, raw=True, view=True),
                     )
                 except Exception:
                     pass
@@ -314,7 +308,6 @@ class DataHub:
                 mux.push_spec_if_changed()
 
     async def close_all(self) -> None:
-        loop = asyncio.get_running_loop()
         # Hold _lock across the whole teardown: shutdown calls this while the server
         # still accepts WS connections, and handler() inserts a fresh mux under _lock
         # AFTER its awaits. Without the lock, a connect during one of our awaits would
@@ -323,18 +316,15 @@ class DataHub:
         # release. The awaits below (run_in_executor / ws.close) never re-enter _lock,
         # so there's no deadlock; a losing handler blocks until _muxes is cleared.
         async with self._lock:
-            await self._close_all_locked(loop)
+            await self._close_all_locked()
 
-    async def _close_all_locked(self, loop: asyncio.AbstractEventLoop) -> None:
+    async def _close_all_locked(self) -> None:
         for mux in list(self._muxes.values()):
             # Tell the node its viewers are gone (UNREGISTER_VIEWER) and tear down the
             # .view subscriber — the per-connection finally does this, but a bulk
             # shutdown bypasses it, leaving the node reducing+publishing into a dead
             # subscriber. Off-loop, mirroring the handler's detach (blocking teardown).
-            try:
-                await loop.run_in_executor(None, mux.ref.set_data_handler, mux.slot, None)
-            except Exception:
-                pass
+            await self._unregister(mux.ref, mux.slot)
             for fwd in mux._forwarders:
                 try:
                     await fwd.close()
