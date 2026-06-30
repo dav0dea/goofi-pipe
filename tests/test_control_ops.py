@@ -90,6 +90,39 @@ def test_load_rewires_state_forwarding_for_reused_names(tmp_path: Path):
         manager.terminate(notify_gui=False)
 
 
+def test_snapshot_error_pass_tolerates_concurrent_node_removal():
+    """_snapshot's error-attribution pass must iterate a SNAPSHOT of manager.nodes, not the
+    live dict: a structural RPC on another executor thread can remove a node mid-iteration,
+    and iterating the live dict would raise 'dictionary changed size during iteration',
+    aborting the whole snapshot (and suppressing graph_replaced on the load path)."""
+    mgr = _bare_manager(use_multiprocessing=False)
+    mgr._layout = None
+    try:
+        a = mgr.add_node("Oscillator", "inputs")
+        b = mgr.add_node("Buffer", "signal")
+        mgr.nodes[a].last_error = "boom-a"
+        mgr.nodes[b].last_error = "boom-b"
+        hub = _hub(mgr)
+
+        # Simulate a concurrent structural mutation: the first ancestor lookup in the error
+        # pass drops the OTHER node, so a live-dict iteration would blow up on the next step.
+        orig = mgr._ancestor_instances
+        state = {"evicted": False}
+
+        def _evict_then_delegate(uid):
+            if not state["evicted"]:
+                state["evicted"] = True
+                mgr.nodes._nodes.pop(b if uid == a else a, None)
+            return orig(uid)
+
+        mgr._ancestor_instances = _evict_then_delegate
+
+        snap = hub._snapshot()  # must NOT raise
+        assert "instances" in snap and "nodes" in snap
+    finally:
+        mgr.terminate(notify_gui=False)
+
+
 def test_load_tears_down_the_data_plane(tmp_path: Path):
     """A destructive reload replaces every node, so every data-plane mux is left caching
     a dead NodeRef. The load op must tear the data plane down (close_all) so viewers

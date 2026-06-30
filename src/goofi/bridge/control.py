@@ -487,8 +487,15 @@ class ControlHub:
         # errored descendant, in node order, wins), instead of re-scanning all nodes per
         # instance inside describe_instance.
         err_by_inst: Dict[str, Any] = {}
-        for u in manager.nodes:
-            err = manager.nodes[u].last_error
+        # Snapshot the keys (like the node loop above) — a structural RPC on an executor
+        # thread can mutate manager.nodes while this runs on the event loop; iterating the
+        # live dict would raise 'dictionary changed size during iteration' and abort the
+        # whole snapshot. Guard the per-node read too, in case the node is gone by now.
+        for u in list(manager.nodes):
+            try:
+                err = manager.nodes[u].last_error
+            except KeyError:
+                continue
             if not err:
                 continue
             for inst_id in manager._ancestor_instances(u):
