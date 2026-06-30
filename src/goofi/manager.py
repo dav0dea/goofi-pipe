@@ -1207,6 +1207,14 @@ class Manager:
         # parent, re-home them under the new instance, nest the new instance under the
         # shared parent). Wrap it so a mid-way failure restores every index byte-clean.
         with self._transaction():
+            # Capture each member's local in its CURRENT scope before detaching, so a
+            # holder boundary that forwarded into it (keyed by that local) can be
+            # re-chained through the new instance afterwards.
+            old_holder_locals = (
+                {u: self._instances[shared_parent].members.get(u) for u in member_uids}
+                if shared_parent is not None
+                else {}
+            )
             # Lift the members out of their current parent (a no-op at top level) before
             # re-homing them, so the old parent's `members` map no longer lists them.
             for u in member_uids:
@@ -1227,6 +1235,11 @@ class Manager:
             # own globally-unique display label).
             if shared_parent is not None:
                 self._attach_member(shared_parent, inst_id, self._instances[inst_id].name)
+                # A boundary on the holder that forwarded into a now-grouped member would
+                # be left dangling (its inner_node local moved into the new instance). The
+                # chaining inverse of expand/remove's defensive unwire: re-point it THROUGH
+                # the new instance so the port stays live (holder→inst→member).
+                self._repoint_holder_boundaries_into(shared_parent, inst_id, members, old_holder_locals)
         self._broadcast_node_directory()
 
         if self._bridge is not None and notify_gui:
@@ -1401,6 +1414,44 @@ class Manager:
         for bid, b in list(self._instances[parent].interface.items()):
             if b.inner_node == local:
                 self.wire_boundary(parent, bid, None, None, notify_gui=notify_gui)
+
+    def _repoint_holder_boundaries_into(self, holder: str, inst_id: str, members: Dict[str, str], old_holder_locals: Dict[str, Optional[str]]) -> None:
+        """After grouping members into the fresh nested instance `inst_id`, re-chain every
+        boundary on `holder` that forwarded into one of those members so it now forwards
+        THROUGH the new instance (holder→inst_id→member). The chaining inverse of
+        `_unwire_parent_boundaries_to`: a group preserves the member (one level deeper), so
+        the holder's port must be preserved by chaining, not torn down.
+
+        `old_holder_locals` maps each grouped uid to the local it had in `holder` before
+        being detached — the key a holder boundary referenced. `holder` is always unique
+        here (grouping inside a shared sub-patch is rejected), so no holder-side mirror is
+        needed; at ROOT (empty interface) this is a clean no-op."""
+        holder_inst = self._instances[holder]
+        inst = self._instances[inst_id]
+        inst_local = holder_inst.members[inst_id]  # the new instance's local in holder
+        by_old_local = {loc: u for u, loc in old_holder_locals.items() if loc is not None}
+        for bid, b in list(holder_inst.interface.items()):
+            uid = by_old_local.get(b.inner_node)
+            if uid is None:
+                continue  # this boundary forwarded into a member that stayed in holder
+            member_local = inst.members[uid]
+            slot = b.inner_slot
+            # Reuse an inner boundary `_derive_interface` already authored for this member
+            # slot (it does when an external flat link crossed the new member set), else
+            # author + wire a fresh one — so the member's slot is exposed exactly once.
+            nbid = next(
+                (k for k, e in inst.interface.items()
+                 if e.dir == b.dir and e.inner_node == member_local and e.inner_slot == slot),
+                None,
+            )
+            if nbid is None:
+                nbid = self.add_boundary(inst_id, b.dir, b.dtype, notify_gui=False)
+                self.wire_boundary(inst_id, nbid, member_local, slot, notify_gui=False)
+            # Re-point the holder boundary to chain through the instance. The runtime flat
+            # link to the real leaf is unchanged (data still flows leaf→consumer directly),
+            # so this is pure bookkeeping — no external-link resplice.
+            holder_inst.interface[bid] = replace(b, inner_node=inst_local, inner_slot=nbid)
+            self._mirror_boundary_entry(holder, bid, holder_inst.interface[bid])
 
     @mark_unsaved_changes
     def remove_instance(self, inst_id: str, notify_gui: bool = True) -> None:
