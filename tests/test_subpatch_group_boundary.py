@@ -8,6 +8,8 @@ the reported cluster: "boundary <inst>:<bnd> inner member is gone", "re-pointing
 chained boundary isn't supported", and "grouping in front of an Out node orphans it
 (no data out, can't reconnect)".
 """
+import pytest
+
 from goofi.bridge.schemas import describe_instance
 
 from .test_manager import _bare_manager, _build_grouped_graph, _member
@@ -239,5 +241,87 @@ def test_rename_boundary_mirrors_across_shared_siblings():
 
         assert mgr._instances[sib].interface[bid].name == "result"
         assert mgr._definitions[def_id].interface[bid].name == "result"
+    finally:
+        mgr.terminate()
+
+
+# --- Audit fixes: group<->expand symmetry, chained-IN guard, graceful re-chain ---------
+
+
+def test_group_then_expand_round_trips_holder_boundary():
+    """The inverse of the group re-chain (audit F4): expanding — or UNDOING — a group that
+    re-chained a wired holder boundary must re-point it back to the lifted member, not tear
+    it down. Otherwise undo of a group silently loses the boundary + its external link."""
+    mgr = _bare_manager(use_multiprocessing=False)
+    try:
+        b0 = mgr.add_node("Buffer", "signal")
+        b1 = mgr.add_node("Buffer", "signal")
+        S = mgr.group_nodes([b0, b1])
+        out_slot = _out_slot(mgr, b0)
+        bnd = mgr.add_boundary(S, "out", "ARRAY")
+        mgr.wire_boundary(S, bnd, "buffer0", out_slot)
+        ext = mgr.add_node("Buffer", "signal")
+        mgr.add_link(b0, ext, out_slot, "val")  # external consumer of the Out port
+
+        N = mgr.group_nodes([b0])  # re-chains S.bnd -> N -> b0
+        assert mgr._instances[S].interface[bnd].inner_node == mgr._instances[S].members[N]
+
+        mgr.expand_instance(N)  # the inverse: lift b0 back into S
+
+        # The boundary forwards DIRECTLY at b0 again (round-trip), external link intact.
+        assert mgr.resolve_boundary(S, bnd) == (b0, out_slot)
+        assert any(l["node_out"] == b0 and l["node_in"] == ext for l in mgr.links)
+    finally:
+        mgr.terminate()
+
+
+def test_group_internally_fed_input_unwires_boundary_instead_of_aborting():
+    """Audit F3: an IN holder boundary onto a member input that becomes internally fed by
+    another grouped member can't be chained — the group must still SUCCEED, tearing that
+    boundary down, not roll the whole group back (a previously-allowed group)."""
+    mgr = _bare_manager(use_multiprocessing=False)
+    try:
+        a = mgr.add_node("Buffer", "signal")
+        b = mgr.add_node("Buffer", "signal")
+        S = mgr.group_nodes([a, b])
+        bnd = mgr.add_boundary(S, "in", "ARRAY")
+        mgr.wire_boundary(S, bnd, "buffer0", "val")  # S.in -> a.val (unfed now)
+        a_uid = _member(mgr, S, "buffer0")
+        b_uid = _member(mgr, S, "buffer1")
+        mgr.add_link(b_uid, a_uid, _out_slot(mgr, b_uid), "val")  # b -> a.val internal feed
+
+        N = mgr.group_nodes([a_uid, b_uid])  # must NOT raise
+
+        assert N in mgr._instances[S].members
+        assert mgr._instances[S].interface[bnd].inner_node is None  # torn down gracefully
+    finally:
+        mgr.terminate()
+
+
+def test_chained_in_repoint_rejects_evicting_an_internal_feed():
+    """Audit F5: re-pointing an IN boundary onto a CHAINED target whose resolved leaf input
+    is already fed by a link internal to the sub-patch must be REJECTED, not silently evict
+    that internal feed via the single-source external splice."""
+    mgr = _bare_manager(use_multiprocessing=False)
+    try:
+        x = mgr.add_node("Buffer", "signal")
+        l = mgr.add_node("Buffer", "signal")
+        d = mgr.add_node("Buffer", "signal")
+        p = mgr.add_node("Buffer", "signal")  # external producer
+        mgr.add_link(x, l, _out_slot(mgr, x), "val")  # internal X -> L.val
+        S = mgr.group_nodes([x, l, d])  # buffer0=x, buffer1=l, buffer2=d
+        bnd = mgr.add_boundary(S, "in", "ARRAY")
+        mgr.wire_boundary(S, bnd, "buffer2", "val")  # S.in -> d.val
+        mgr.add_link(p, d, _out_slot(mgr, p), "val")  # external feed P -> d (the In port source)
+
+        M = mgr.group_nodes([l])  # X->L crosses -> M auto-exposes L.val as an In boundary
+        m_local = mgr._instances[S].members[M]
+        m_in = next(k for k, e in mgr._instances[M].interface.items() if e.dir == "in")
+
+        with pytest.raises(ValueError):
+            mgr.wire_boundary(S, bnd, m_local, m_in)  # would evict X -> L.val
+
+        # The internal feed survives (no silent eviction).
+        assert any(li["node_out"] == x and li["node_in"] == l for li in mgr.links)
     finally:
         mgr.terminate()

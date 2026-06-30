@@ -1382,19 +1382,46 @@ class Manager:
         inst = self._instances[inst_id]
         def_id = inst.def_id
         parent = inst.parent
-        # Defensive: a parent boundary that forwards INTO this instance has its inner
-        # target dissolved — unwire it (and its external links), like remove_node does.
-        self._unwire_parent_boundaries_to(inst_id, notify_gui=False)
+        # A parent boundary forwarding INTO this instance must FOLLOW its inner target up one
+        # level (the symmetric inverse of group's re-chain), not be torn down — else
+        # group↔expand wouldn't round-trip and undo of a group would silently lose the port.
+        # Capture each such boundary's chained inner target BEFORE the lift; a boundary whose
+        # chained child is unwired/gone has nothing to inherit, so it's unwired instead.
+        repoint: List[tuple] = []  # (parent_bid, inner_member_uid, inner_slot)
+        if parent is not None:
+            inst_local = self._instances[parent].members.get(inst_id)
+            for bid, b in list(self._instances[parent].interface.items()):
+                if b.inner_node != inst_local:
+                    continue
+                child = inst.interface.get(b.inner_slot)
+                cu = self._member_uid(inst_id, child.inner_node) if child and child.inner_node else None
+                if cu is not None:
+                    repoint.append((bid, cu, child.inner_slot))
+                else:
+                    self.wire_boundary(parent, bid, None, None, notify_gui=False)
         restored: List[str] = list(inst.members)
+        lifted_local: Dict[str, str] = {}  # uid -> its new local in parent
         for uid in restored:
             self._detach_member(uid)
             if parent is not None:
                 # Re-home one level up. A member's local is DECOUPLED from its (mutable,
                 # reusable) display name, so dedup against the receiving parent's existing
                 # locals to avoid a duplicate-local collision.
-                self._attach_member(parent, uid, self._unique_local_in(parent, self._entity_name(uid)))
+                nl = self._unique_local_in(parent, self._entity_name(uid))
+                self._attach_member(parent, uid, nl)
+                lifted_local[uid] = nl
         self._detach_member(inst_id)  # remove the now-empty instance from its own parent
         del self._instances[inst_id]
+        # Re-point the captured parent boundaries at the now-direct member (the chained child
+        # boundary died with inst_id). The runtime flat link to the real leaf is unchanged,
+        # so the external wire is preserved — no resplice.
+        for bid, cu, cslot in repoint:
+            nl = lifted_local.get(cu)
+            b = self._instances[parent].interface[bid]
+            self._instances[parent].interface[bid] = replace(
+                b, inner_node=nl, inner_slot=(cslot if nl is not None else None)
+            )
+            self._mirror_boundary_entry(parent, bid, self._instances[parent].interface[bid])
         # GC an orphaned shared definition (the expanded instance may have been its
         # last reference), like remove_instance / make_unique.
         if def_id and not any(i.def_id == def_id for i in self._instances.values()):
@@ -1449,6 +1476,16 @@ class Manager:
                 continue  # this boundary forwarded into a member that stayed in holder
             member_local = inst.members[uid]
             slot = b.inner_slot
+            # An IN boundary onto a member input that another grouped member now feeds
+            # internally can't be chained (exposing it would evict that feed). Tear the
+            # holder boundary down rather than abort the whole group — graceful degradation,
+            # since the input is no longer externally drivable.
+            if b.dir == "in" and any(
+                l["node_in"] == uid and l["slot_in"] == slot and self._within_subtree(l["node_out"], inst_id)
+                for l in self._links
+            ):
+                self.wire_boundary(holder, bid, None, None, notify_gui=False)
+                continue
             # Reuse an inner boundary `_derive_interface` already authored for this member
             # slot (it does when an external flat link crossed the new member set), else
             # author + wire a fresh one — so the member's slot is exposed exactly once.
@@ -1986,10 +2023,9 @@ class Manager:
             expected = entry.dtype
             if uid in self._instances:
                 # The inner target is a NESTED INSTANCE: inner_slot names one of ITS
-                # boundaries; dtype/dir come from that child port (the data route
-                # descends through it recursively via resolve_boundary). No node-slot
-                # lookup and no internal-feed scan — a flat link never keys on an
-                # instance uid.
+                # boundaries; dtype/dir come from that child port (the data route descends
+                # through it recursively via resolve_boundary). No node-slot lookup here; the
+                # unified In-feed guard below resolves the chain to its leaf before scanning.
                 child = self._instances[uid].interface.get(inner_slot)
                 if child is None:
                     raise ValueError(f"no {dir} boundary {inner_slot!r} on nested {inner_node}")
@@ -2017,15 +2053,24 @@ class Manager:
                         f"dtype mismatch: {inner_node}.{inner_slot} is {dt.name}, boundary is {expected}"
                     )
                 dt_name = dt.name
-                # An In port must own its inner input alone: refuse an inner input slot
-                # already fed by an INTERNAL member→member link, else the external splice
-                # would silently evict that internal wire (add_link is single-source).
-                if dir == "in":
+            # An In port must own its inner input alone: refuse exposing an input already fed
+            # by a link INTERNAL to this sub-patch (the external splice is single-source and
+            # would silently evict it). Resolve a CHAINED target to its real leaf first and
+            # scope "internal" to this instance's whole subtree, so the guard covers a chained
+            # re-point onto a deeply-fed leaf, not just a direct member.
+            if dir == "in":
+                try:
+                    leaf_uid, leaf_slot = (
+                        self.resolve_boundary(uid, inner_slot) if uid in self._instances else (uid, inner_slot)
+                    )
+                except (KeyError, ValueError):
+                    leaf_uid = None
+                if leaf_uid is not None:
                     for link in self._links:
                         if (
-                            link["node_in"] == uid
-                            and link["slot_in"] == inner_slot
-                            and self._membership.get(link["node_out"]) == inst_id
+                            link["node_in"] == leaf_uid
+                            and link["slot_in"] == leaf_slot
+                            and self._within_subtree(link["node_out"], inst_id)
                         ):
                             raise ValueError(
                                 f"{inner_node}.{inner_slot} is already fed inside the sub-patch; "
