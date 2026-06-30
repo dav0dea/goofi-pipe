@@ -352,3 +352,61 @@ def test_group_chained_holder_boundary_into_internally_fed_instance_degrades_gra
         assert any(li["node_out"] == b and li["node_in"] == a for li in mgr.links)  # feed intact
     finally:
         mgr.terminate()
+
+
+# --- Auto-derived boundaries must stack, not overlap, at group creation --------------
+
+
+def test_grouping_stacks_multiple_derived_in_boundaries_vertically():
+    """Several auto-derived IN boundaries must stack vertically instead of landing on the
+    same spot (the 'in/out nodes sit on top of each other' bug at sub-patch creation)."""
+    mgr = _bare_manager(use_multiprocessing=False)
+    try:
+        osc0 = mgr.add_node("Oscillator", "inputs")
+        osc1 = mgr.add_node("Oscillator", "inputs")
+        s0 = mgr.add_node("Select", "array")
+        s1 = mgr.add_node("Select", "array")
+        # Put both members at the SAME position — the old beside-member placement then
+        # collapsed both input pills onto one another.
+        mgr.set_node_pos(s0, (200, 100))
+        mgr.set_node_pos(s1, (200, 100))
+        mgr.add_link(osc0, s0, "out", "data")
+        mgr.add_link(osc1, s1, "out", "data")
+
+        inst = mgr.group_nodes([s0, s1])
+
+        ins = [b for b in mgr._instances[inst].interface.values() if b.dir == "in"]
+        assert len(ins) == 2
+        ys = sorted(b.pos[1] for b in ins)
+        assert ys[1] - ys[0] >= 30, f"stacked input pills overlap: {ys}"
+        assert ins[0].pos[0] == ins[1].pos[0], "same-direction pills share one column (x)"
+    finally:
+        mgr.terminate()
+
+
+def test_grouping_stacks_in_and_out_columns_independently():
+    """In pills stack in the left column, Out pills in the right column — the two columns
+    are independent (an In and an Out at the same index don't collide), and within a
+    column successive pills are separated."""
+    mgr = _bare_manager(use_multiprocessing=False)
+    try:
+        osc = mgr.add_node("Oscillator", "inputs")
+        s0 = mgr.add_node("Select", "array")
+        s1 = mgr.add_node("Select", "array")
+        sink0 = mgr.add_node("Buffer", "signal")
+        sink1 = mgr.add_node("Buffer", "signal")
+        mgr.add_link(osc, s0, "out", "data")  # external -> s0.data  (in0)
+        mgr.add_link(osc, s1, "out", "data")  # external -> s1.data  (in1)
+        mgr.add_link(s0, sink0, _out_slot(mgr, s0), "val")  # s0.out -> external (out0)
+        mgr.add_link(s1, sink1, _out_slot(mgr, s1), "val")  # s1.out -> external (out1)
+
+        inst = mgr.group_nodes([s0, s1])
+
+        iface = mgr._instances[inst].interface
+        ins = sorted((b.pos for b in iface.values() if b.dir == "in"), key=lambda p: p[1])
+        outs = sorted((b.pos for b in iface.values() if b.dir == "out"), key=lambda p: p[1])
+        assert len(ins) == 2 and len(outs) == 2
+        assert ins[1][1] - ins[0][1] >= 30 and outs[1][1] - outs[0][1] >= 30  # stacked
+        assert ins[0][0] < outs[0][0]  # in column is left of the out column
+    finally:
+        mgr.terminate()

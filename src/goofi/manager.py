@@ -964,11 +964,23 @@ class Manager:
         dt = slots.get(slot)
         return dt.name if dt is not None else "ARRAY"
 
-    def _beside_member_pos(self, display: str, dir: str) -> list:
-        """A default In/Out pill position beside its inner member (In left, Out right)."""
-        pos = (self.nodes[display].gui_kwargs or {}).get("pos") or [0, 0]
-        dx = -280 if dir == "in" else 320
-        return [int(pos[0]) + dx, int(pos[1])]
+    def _member_box(self, members) -> tuple:
+        """Bounding box (min_x, min_y, max_x) of a member set's positions — real nodes read
+        gui_kwargs['pos'], nested instances their own pos. Empty set -> the origin. Used to
+        anchor the auto-derived In/Out pill columns."""
+        xs, ys = [], []
+        for uid in members:
+            if uid in self.nodes:
+                p = (self.nodes[uid].gui_kwargs or {}).get("pos") or [0, 0]
+            elif uid in self._instances:
+                p = self._instances[uid].pos or [0, 0]
+            else:
+                p = [0, 0]
+            xs.append(int(p[0]))
+            ys.append(int(p[1]))
+        if not xs:
+            return 0, 0, 0
+        return min(xs), min(ys), max(xs)
 
     def _derive_interface(self, members: Dict[str, str]) -> Dict[str, Any]:
         """Auto-derive the boundary interface from links crossing the member set.
@@ -982,6 +994,12 @@ class Manager:
         iface: Dict[str, Any] = {}
         mset = set(members)
         counters = {"in": 0, "out": 0}  # next default-name index per direction
+        # Lay the auto-derived pills out as two tidy vertical columns — In on the left of
+        # the member box, Out on the right — each stacked top-down by a fixed gap, so
+        # several same-direction ports never land on top of one another (the per-direction
+        # `counters` index doubles as the stack row). Each is independently draggable after.
+        box_min_x, box_min_y, box_max_x = self._member_box(mset)
+        PILL_GAP = 96  # vertical spacing between stacked pills (matches the editor fallback)
         for link in self._links:
             out_m = link["node_out"] in mset
             in_m = link["node_in"] in mset
@@ -997,12 +1015,13 @@ class Manager:
             # The KEY stays member-derived (a stable internal routing id), but the user-facing
             # NAME is a clean in0/out0 default — a derived portal never shows the connected
             # node's name+slot.
+            x = box_min_x - 280 if dir == "in" else box_max_x + 320
             iface[key] = Boundary(
                 dir=dir,
                 dtype=self._slot_dtype(disp, slot, dir),
                 inner_node=local,
                 inner_slot=slot,
-                pos=self._beside_member_pos(disp, dir),
+                pos=[x, box_min_y + counters[dir] * PILL_GAP],
                 name=f"{dir}{counters[dir]}",
             )
             counters[dir] += 1
