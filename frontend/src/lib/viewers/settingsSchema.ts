@@ -109,7 +109,3 @@ export function defaultSettings(kind: ViewerKind): SettingsMap {
 export function resolveSettings(kind: ViewerKind, overrides: SettingsMap | undefined): SettingsMap {
 	return { ...defaultSettings(kind), ...(overrides ?? {}) };
 }
-
-export function hasSettings(kind: ViewerKind): boolean {
-	return settingsSchemaFor(kind).length > 0;
-}

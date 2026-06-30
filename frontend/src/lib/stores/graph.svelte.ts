@@ -1045,16 +1045,6 @@ export class GraphStore {
 		}
 	}
 
-	/** Remove a batch of links, swallowing per-link failures. */
-	async removeLinks(links: Iterable<LinkInfo>): Promise<void> {
-		for (const l of links) {
-			try {
-				await this.removeLink(l);
-			} catch (e) {
-				console.warn('remove link failed', e);
-			}
-		}
-	}
 }
 
 let _store: GraphStore | null = null;
