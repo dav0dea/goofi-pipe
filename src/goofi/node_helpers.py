@@ -238,7 +238,6 @@ class NodeRef:
     callbacks: Dict[MessageType, Callable] = field(default_factory=dict)
     serialized_state: Optional[Dict[str, Any]] = None
     gui_kwargs: Dict[str, Any] = field(default_factory=dict)
-    create_initialized: bool = True
 
     # Runtime fields populated in __post_init__ — not part of the dataclass
     # equality / repr surface.
@@ -287,13 +286,7 @@ class NodeRef:
             status_service_name(self.node_id), in_process=self.in_process, latest_wins=False
         )
 
-        if self.create_initialized:
-            self.initialize()
-
-    @property
-    def serialization_pending(self) -> bool:
-        """True until the node has pushed its first STATE_UPDATE."""
-        return not self._first_state_event.is_set()
+        self.initialize()
 
     def initialize(self) -> None:
         if self._alive:

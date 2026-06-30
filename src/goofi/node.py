@@ -24,7 +24,6 @@ import uuid
 from abc import ABC, abstractmethod
 from enum import Enum
 from multiprocessing import Process
-from os.path import dirname, join
 from pathlib import Path
 from threading import Event, Lock, RLock, Thread, current_thread
 from typing import Any, Dict, Optional, Tuple, Union
@@ -1144,7 +1143,6 @@ class Node(ABC):
         cls,
         node_id: Optional[str] = None,
         initial_params: Optional[Dict[str, Dict[str, Any]]] = None,
-        init_ref: bool = True,
         capture_logs: bool = False,
     ) -> Tuple[NodeRef, "Node"]:
         """Instantiate the node in the current process. Returns (ref, node)."""
@@ -1161,7 +1159,7 @@ class Node(ABC):
                     "\n===================================================\n"
                 )
 
-        ref = cls._build_ref(node_id, params, in_process=True, process=None, create_initialized=init_ref)
+        ref = cls._build_ref(node_id, params, in_process=True, process=None)
         node = cls(
             node_id,
             in_slots,
@@ -1208,7 +1206,6 @@ class Node(ABC):
         params: NodeParams,
         in_process: bool,
         process: Optional[Process],
-        create_initialized: bool = True,
     ) -> NodeRef:
         in_slots, out_slots, _ = cls._configure()
         return NodeRef(
@@ -1219,7 +1216,6 @@ class Node(ABC):
             params=params,
             node_class=cls,
             process=process,
-            create_initialized=create_initialized,
         )
 
     @classmethod
@@ -1240,10 +1236,6 @@ class Node(ABC):
     @property
     def assets_path(self) -> Path:
         return Path(str(pkg_resources.files(assets)))
-
-    @property
-    def data_path(self) -> str:
-        return join(dirname(dirname(dirname(__file__))), "data")
 
     @property
     def alive(self) -> bool:
