@@ -51,6 +51,42 @@ These are hard expectations, in priority order. They override speed.
    skipped, say that. State what is verified plainly; don't claim done what you
    haven't run.
 
+### Audit-driven hardening (multi-agent)
+
+The proven way to harden a subsystem — or the whole codebase — is a **broad,
+top-model audit run to convergence**, not a single read-through. Use the Workflow
+tool: fan *finders* across subsystem dimensions in parallel, then **adversarially
+verify every candidate** before believing it.
+
+- **Top model only.** Every finder *and* verifier runs on the most capable model
+  (Opus, or Fable when available) — never Haiku/Sonnet, even for cheap breadth; a
+  weaker finder under-finds. The `Explore` agent type pins Haiku in its frontmatter,
+  so pass `model: 'opus'` to override it (or drop `agentType`). Verify the run's
+  reported per-agent model is never haiku/sonnet.
+- **Verify is a gate, not a rubber stamp.** Each finding earns an explicit verdict:
+  - *correctness* → `real && reachable`. The hard lesson: a verifier readily confirms
+    "this path crashes" but misses "**is it reachable**" — so it must trace a real
+    caller (bridge RPC routing, the supervisor thread, frontend events, a normal node
+    tick) and **check the upstream guards**, not just the local function.
+  - *leanness* → `safe && !falsePositive && !servesArchitecture && !overAbstraction`.
+    Treat the system as an architecture with a purpose; cut **inflation** (dead code,
+    duplication, parallel paths) but **reject reshapes / speculative abstractions** —
+    over-abstraction is itself inflation. Before calling anything dead, clear this
+    codebase's *dynamic dispatch*: node auto-discovery (`pkgutil` over `goofi.nodes`,
+    underscore modules skipped), string-keyed RPC ops, the graph-executor + viewer-kind
+    registries, the `window.goofi`/`$lib/agent` façade + the **gitignored** `e2e/`
+    (plain `grep`, not `git grep`), Svelte-template usage, `Data`/codec meta string keys.
+- **Iterate to convergence, don't chase zero.** Re-run after each fix round.
+  Convergence shows as the confirmed count shrinking *and* shifting from structural to
+  trivial (e.g. 16→4, or 11→9→4→3). An adversarial finder always surfaces *something*
+  marginal — stop when only trivial/over-abstraction items remain; don't manufacture
+  churn. Re-auditing also catches regressions a fix itself introduced.
+- **Fix under the Iron Law.** Each confirmed finding is fixed TDD-first (or with a
+  characterization test where coverage was missing), behind green suites, committed in
+  small focused steps. Verifiers reliably *correct* finder over-reaches (a dropped
+  guard, a mischaracterized return, an order-changing hoist) — trust the corrected
+  proposal, not the finder's.
+
 ---
 
 ## Architecture
