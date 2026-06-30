@@ -148,6 +148,24 @@ def maybe_build_frontend() -> None:
         print(f"bridge: frontend build failed (exit {e.returncode}) — serving the previous build.")
 
 
+def is_benign_disconnect(exc: object) -> bool:
+    """True for a client that vanished mid-write (tab closed/reloaded). aiohttp's
+    ClientConnectionResetError subclasses the builtin ConnectionResetError, so one
+    isinstance check covers both — expected churn for a single-user local server,
+    not a fault."""
+    return isinstance(exc, ConnectionResetError)
+
+
+def quiet_disconnect_exception_handler(loop, context: dict) -> None:
+    """asyncio loop exception handler: demote a benign client disconnect to nothing.
+    aiohttp schedules the permessage-deflate frame flush as a fire-and-forget task, so a
+    client closing mid-broadcast otherwise surfaces as a noisy 'Task exception was never
+    retrieved'. Every real error still falls through to the default handler."""
+    if is_benign_disconnect(context.get("exception")):
+        return
+    loop.default_exception_handler(context)
+
+
 class BridgeServer:
     """Daemon-thread aiohttp server orchestrating control + data hubs."""
 
@@ -175,9 +193,15 @@ class BridgeServer:
         # final URL without racing the listener.
         self._started.wait(timeout=10.0)
 
+    def _install_exception_handler(self) -> None:
+        """Quiet the benign client-disconnect noise on this bridge loop (see
+        quiet_disconnect_exception_handler)."""
+        self._loop.set_exception_handler(quiet_disconnect_exception_handler)
+
     def _run(self) -> None:
         self._loop = asyncio.new_event_loop()
         asyncio.set_event_loop(self._loop)
+        self._install_exception_handler()
         try:
             self._loop.run_until_complete(self._serve())
         except Exception as e:
