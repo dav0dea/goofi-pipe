@@ -516,7 +516,7 @@ class Manager:
         return member_uid
 
     @mark_unsaved_changes
-    def remove_node(self, uid: str, notify_gui: bool = True, **gui_kwargs) -> None:
+    def remove_node(self, uid: str, notify_gui: bool = True) -> None:
         # remove_node is for real NODES; a sub-patch INSTANCE comes down via remove_instance
         # (recursive subtree teardown + the shared-parent policy). Reject an instance uid up
         # front so the node-only teardown below can't KeyError or half-process it — a member
@@ -594,7 +594,6 @@ class Manager:
         slot_in: str,
         notify_gui: bool = True,
         mirror: bool = True,
-        **gui_kwargs,
     ) -> None:
         if node_out not in self.nodes:
             raise KeyError(f"No such node: {node_out}")
@@ -658,7 +657,6 @@ class Manager:
         slot_in: str,
         notify_gui: bool = True,
         mirror: bool = True,
-        **gui_kwargs,
     ) -> None:
         link = {"node_out": node_out, "node_in": node_in, "slot_out": slot_out, "slot_in": slot_in}
         if link not in self._links:
@@ -2114,19 +2112,19 @@ class Manager:
                 existing["value"] = value
             else:
                 grp[name] = value
-        # Propagate to every sibling instance's corresponding member.
-        for other_id, other in self._instances.items():
-            if other_id == inst_id or other.def_id != def_id:
+        # Propagate to every sibling instance's corresponding member, via the same
+        # _shared_siblings/_member_uid idiom the link + boundary mirrors use.
+        for sib in self._shared_siblings(inst_id):
+            onode = self._member_uid(sib, local)
+            if onode is None:
                 continue
-            for onode, olocal in other.members.items():
-                if olocal == local:
-                    try:
-                        self.nodes[onode].update_param(group, name, value)
-                    except Exception as exc:
-                        # Surface, don't swallow: a sibling that fails to mirror would
-                        # silently drift from the family (and a later save would persist
-                        # whichever sibling is live). Report it so the divergence is visible.
-                        self._surface_mirror_failure(onode, f"{group}.{name}", exc)
+            try:
+                self.nodes[onode].update_param(group, name, value)
+            except Exception as exc:
+                # Surface, don't swallow: a sibling that fails to mirror would
+                # silently drift from the family (and a later save would persist
+                # whichever sibling is live). Report it so the divergence is visible.
+                self._surface_mirror_failure(onode, f"{group}.{name}", exc)
 
     @mark_unsaved_changes
     def set_expression(
@@ -2228,17 +2226,16 @@ class Manager:
         rec = self._definitions[def_id].members.get(local)
         if rec is not None:
             rec["gui_kwargs"] = {**(rec.get("gui_kwargs") or {}), "pos": pos}
-        # Propagate to every sibling instance's corresponding member. Tolerate a
-        # stale members entry whose node was already removed (remove_node leaves
-        # _membership/members untouched) — same defensive stance as update_param.
-        for other_id, other in self._instances.items():
-            if other_id == inst_id or other.def_id != def_id:
-                continue
-            for onode, olocal in other.members.items():
-                if olocal == local and onode in self.nodes:
-                    oref = self.nodes[onode]
-                    oref.gui_kwargs = {**(oref.gui_kwargs or {}), "pos": pos}
-                    changed.append(onode)
+        # Propagate to every sibling instance's corresponding member, via the same
+        # _shared_siblings/_member_uid idiom the value mirror uses. Tolerate a stale
+        # members entry whose node was already removed (remove_node leaves
+        # _membership/members untouched) — the `onode in self.nodes` skip.
+        for sib in self._shared_siblings(inst_id):
+            onode = self._member_uid(sib, local)
+            if onode is not None and onode in self.nodes:
+                oref = self.nodes[onode]
+                oref.gui_kwargs = {**(oref.gui_kwargs or {}), "pos": pos}
+                changed.append(onode)
         return changed
 
     def _node_record(self, uid: str) -> Dict[str, Any]:
@@ -2313,6 +2310,14 @@ class Manager:
         so a chained boundary's inner_node resolves on load). Shared instances stay
         node-only (a definition containing nesting is rejected — that's 3d)."""
         inst = self._instances[iid]
+        # Nested-instance members carry their own per-instance identity — recurse them
+        # (identical for shared and unique; only the attach differs per branch below).
+        children: Dict[str, Any] = {}
+        for child_uid, local in inst.members.items():
+            if child_uid in self._instances:
+                child = self._emit_instance(child_uid, internal, definitions)
+                child["local"] = local
+                children[child_uid] = child
         if inst.def_id:
             def_id = inst.def_id
             if def_id not in definitions:
@@ -2342,28 +2347,14 @@ class Manager:
                     if nn in self.nodes
                 },
             }
-            # A shared instance's nested-instance members are themselves instances with
-            # their own per-instance identity — recurse them like the unique branch.
-            children: Dict[str, Any] = {}
-            for child_uid, local in inst.members.items():
-                if child_uid in self._instances:
-                    child = self._emit_instance(child_uid, internal, definitions)
-                    child["local"] = local
-                    children[child_uid] = child
             if children:
-                entry["instances"] = children
+                entry["instances"] = children  # shared: omit when empty
         else:
             members = {
                 local: self._node_record(uid)
                 for uid, local in inst.members.items()
                 if uid in self.nodes  # node members only — never serialize an instance here
             }
-            children: Dict[str, Any] = {}
-            for child_uid, local in inst.members.items():
-                if child_uid in self._instances:
-                    child = self._emit_instance(child_uid, internal, definitions)
-                    child["local"] = local  # carry the parent-local explicitly
-                    children[child_uid] = child
             entry = {
                 "kind": "unique",
                 "pos": inst.pos,
@@ -2468,9 +2459,7 @@ class Manager:
             self._rewrite_member_expressions(members_map.keys(), name_map)
             # Recurse a shared instance's nested-instance members (its own per-instance
             # subtrees), exactly like the unique branch — each carries its parent-local.
-            for child_saved_id, child_rec in (inst.get("instances") or {}).items():
-                child_uid = self._restore_instance(child_saved_id, child_rec, internal_links)
-                members_map[child_uid] = child_rec["local"]
+            self._restore_nested(inst, members_map, internal_links)
             # Deep-copy: each loaded shared instance gets its own Boundary ports
             # so later boundary edits don't alias the definition / siblings.
             interface = deepcopy(d.interface)
@@ -2486,9 +2475,7 @@ class Manager:
                 local_to_uid[local] = uid
             # Recurse into nested-instance members; each carries its parent-local. The
             # child is fully restored (and registered in _instances) before we record it.
-            for child_saved_id, child_rec in (inst.get("instances") or {}).items():
-                child_uid = self._restore_instance(child_saved_id, child_rec, internal_links)
-                members_map[child_uid] = child_rec["local"]
+            self._restore_nested(inst, members_map, internal_links)
             interface = _iface_from_dict(inst.get("interface", {}))
             for link in inst.get("links", []):
                 internal_links.append((local_to_uid, link))
@@ -2506,6 +2493,15 @@ class Manager:
         for uid, local in members_map.items():
             self._attach_member(inst_id, uid, local)
         return inst_id
+
+    def _restore_nested(self, inst, members_map, internal_links) -> None:
+        """Restore a saved instance's nested-instance members (each its own subtree),
+        recording each child's parent-local. The recursion is identical for a shared and a
+        unique parent; only the call site — before each branch's own link append, preserving
+        internal_links order — differs."""
+        for child_saved_id, child_rec in (inst.get("instances") or {}).items():
+            child_uid = self._restore_instance(child_saved_id, child_rec, internal_links)
+            members_map[child_uid] = child_rec["local"]
 
     def _splice_doc(self, root_nodes, root_links, instances, definitions=None) -> None:
         """Splice a v2 document's root graph + sub-patch instances into the live
