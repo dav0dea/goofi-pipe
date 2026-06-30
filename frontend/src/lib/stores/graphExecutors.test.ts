@@ -320,6 +320,41 @@ describe('graph executors — composite + sub-patch kinds', () => {
 		).toBe(true);
 	});
 
+	it('group_nodes: forward passes the prior instId so a redo restores a stable id', async () => {
+		const fc = new FakeControl();
+		const g = new GraphStore(fc);
+		fc.setCallResult('group_nodes', { inst_id: 'subpatch0' });
+		const action: Action = {
+			kind: 'group_nodes',
+			label: 'Group',
+			domain: 'graph',
+			context: EMPTY_CTX,
+			payload: { members: ['a', 'b'], instId: 'subpatch0' } // already minted → this is a redo
+		};
+		await graphExecutors['group_nodes'].forward(action, deps(fc, g));
+		const call = fc.recordedCalls().find((c) => c.op === 'group_nodes');
+		// Redo must re-create the SAME instance id, else a stacked expand_instance(id) goes stale.
+		expect(call?.payload.inst_id).toBe('subpatch0');
+	});
+
+	it('expand_instance: inverse passes the captured instId so the re-group restores it', async () => {
+		const fc = new FakeControl();
+		const g = new GraphStore(fc);
+		fc.setCallResult('group_nodes', { inst_id: 'subpatch0' });
+		const action: Action = {
+			kind: 'expand_instance',
+			label: 'Ungroup',
+			domain: 'graph',
+			context: EMPTY_CTX,
+			payload: { instId: 'subpatch0', restoredMembers: ['osc0', 'buffer0'], interface: {} }
+		};
+		await graphExecutors['expand_instance'].inverse(action, deps(fc, g));
+		const call = fc.recordedCalls().find((c) => c.op === 'group_nodes');
+		// Undo-of-expand must re-create the instance under its ORIGINAL id so the outer
+		// group action's expand_instance(instId) still resolves on the next undo.
+		expect(call?.payload.inst_id).toBe('subpatch0');
+	});
+
 	it('expand_instance: inverse re-groups the restored members', async () => {
 		const fc = new FakeControl();
 		const g = new GraphStore(fc);

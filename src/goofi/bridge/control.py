@@ -341,6 +341,9 @@ class ControlHub:
                 payload["members"],
                 payload.get("interface"),
                 tuple(payload.get("pos") or (0, 0)),
+                # Restore the prior instance id on redo-of-group / undo-of-expand so the
+                # sub-patch keeps a stable identity across history (mirror of member_uid).
+                inst_id=payload.get("inst_id"),
             )
             return {"inst_id": inst_id}
         if op == "expand_instance":

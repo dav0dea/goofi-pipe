@@ -152,7 +152,10 @@ const groupNodes: Executor = {
 		const a = as<'group_nodes'>(action);
 		const r = await deps.control.call<{ inst_id: string }>('group_nodes', {
 			members: a.payload.members,
-			pos: a.payload.pos
+			pos: a.payload.pos,
+			// On REDO, restore the same instance id (undefined on the first group → backend
+			// mints one) so the sub-patch keeps a stable identity across history.
+			inst_id: a.payload.instId
 		});
 		if (r?.inst_id) a.payload.instId = r.inst_id; // remap for the next inverse
 	},
@@ -173,7 +176,10 @@ const expandInstance: Executor = {
 		// In/Out boundary has no crossing link, so deriving would silently drop it.
 		const r = await deps.control.call<{ inst_id: string }>('group_nodes', {
 			members: a.payload.restoredMembers,
-			interface: a.payload.interface
+			interface: a.payload.interface,
+			// Re-create the instance under its ORIGINAL id so the outer group action's
+			// expand_instance(instId) still resolves on the next undo (stable identity).
+			inst_id: a.payload.instId
 		});
 		if (r?.inst_id) a.payload.instId = r.inst_id; // the re-grouped id (for redo)
 	}

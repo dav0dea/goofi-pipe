@@ -1149,6 +1149,7 @@ class Manager:
         interface: Optional[Dict[str, Any]] = None,
         pos=(0, 0),
         notify_gui: bool = True,
+        inst_id: Optional[str] = None,
     ) -> str:
         """Group existing nodes into a unique (inline) sub-patch instance.
 
@@ -1181,7 +1182,11 @@ class Manager:
         if shared_parent is not None and self._instances[shared_parent].def_id:
             raise ValueError("cannot group inside a shared sub-patch (deferred to 3d)")
 
-        inst_id = self._fresh_instance_id()
+        # Reuse a caller-provided id when it's free (undo of an expand / redo of a group),
+        # so a sub-patch keeps a STABLE identity across history — like add_node restoring
+        # member_uid. Fall back to a fresh id when absent or already taken.
+        if not (inst_id and inst_id not in self._instances and inst_id not in self.nodes):
+            inst_id = self._fresh_instance_id()
         members: Dict[str, str] = {}  # uid -> local name (template key)
         # A member's local seeds from its globally-unique display name (a node's name
         # or an instance's label); since display names are unique across the unified

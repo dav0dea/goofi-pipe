@@ -163,6 +163,42 @@ def test_group_nodes_namespaces_members_and_records_state():
         mgr.terminate()
 
 
+def test_group_nodes_restores_a_provided_instance_id():
+    """Undo of an expand (and redo of a group) re-creates a sub-patch through group_nodes;
+    to keep its identity STABLE across history — so a stacked action's expand_instance(id)
+    still resolves — group_nodes must reuse a caller-provided inst_id when it's free, the
+    way add_node reuses member_uid. Otherwise the re-group mints a fresh uuid and the
+    earlier action's id goes stale (KeyError on the next undo)."""
+    mgr = _bare_manager(use_multiprocessing=False)
+    try:
+        a = mgr.add_node("Oscillator", "inputs")
+        b = mgr.add_node("Buffer", "signal")
+        inst = mgr.group_nodes([a, b])  # mints I1
+        mgr.expand_instance(inst)  # frees the id, like an ungroup
+        assert inst not in mgr._instances
+
+        regrouped = mgr.group_nodes([a, b], inst_id=inst)  # what undo-of-expand replays
+
+        assert regrouped == inst, "group_nodes did not restore the provided instance id"
+        assert inst in mgr._instances
+    finally:
+        mgr.terminate(notify_gui=False)
+
+
+def test_group_nodes_mints_fresh_when_the_provided_id_is_taken():
+    """Defensive: a provided id that already exists must not collide — fall back to fresh."""
+    mgr = _bare_manager(use_multiprocessing=False)
+    try:
+        a = mgr.add_node("Oscillator", "inputs")
+        b = mgr.add_node("Buffer", "signal")
+        taken = mgr.group_nodes([a])  # taken id
+        regrouped = mgr.group_nodes([b], inst_id=taken)
+        assert regrouped != taken
+        assert regrouped in mgr._instances and taken in mgr._instances
+    finally:
+        mgr.terminate(notify_gui=False)
+
+
 def test_subpatch_save_load_roundtrip_and_expand(tmp_path):
     mgr = _bare_manager(use_multiprocessing=False)
     try:
