@@ -2,6 +2,7 @@
 	import { untrack } from 'svelte';
 	import type { ParamDescriptor } from '$lib/api/types';
 	import ExpressionModal from './ExpressionModal.svelte';
+	import { formatTick } from '$lib/viewers/format';
 
 	type SetExprOpts = { enabled?: boolean; triggers_process?: boolean; autoeval?: boolean };
 	type Props = {
@@ -125,14 +126,10 @@
 	);
 
 	function fmtBound(v: number): string {
-		if (!Number.isFinite(v)) return '';
-		if (numeric?.type === 'int') return String(Math.round(v));
-		const abs = Math.abs(v);
-		if (abs === 0) return '0';
-		if (abs >= 10000 || abs < 0.01) return v.toExponential(1);
-		if (abs >= 100) return v.toFixed(0);
-		if (abs >= 1) return v.toFixed(2);
-		return v.toFixed(3);
+		// Keep the non-finite → '' guard on the int path (an int bound is rounded, not
+		// run through the shared float ladder).
+		if (numeric?.type === 'int') return Number.isFinite(v) ? String(Math.round(v)) : '';
+		return formatTick(v);
 	}
 
 </script>

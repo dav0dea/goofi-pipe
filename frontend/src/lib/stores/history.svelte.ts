@@ -156,7 +156,6 @@ export type GraphAction =
 				afterYaml: string;
 				beforeLayout: WorkspaceState | null;
 				afterLayout: WorkspaceState | null;
-				instanceId: string;
 			};
 	  });
 

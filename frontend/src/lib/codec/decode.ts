@@ -67,7 +67,7 @@ function checkMagic(view: DataView, off: number): void {
 export function decodeData(buf: ArrayBuffer | Uint8Array, offset = 0, length?: number): DataFrame {
 	const bytes = buf instanceof Uint8Array ? buf : new Uint8Array(buf);
 	const view = new DataView(bytes.buffer, bytes.byteOffset + offset, length ?? bytes.byteLength - offset);
-	return decodeInto(bytes, view, 0).frame;
+	return decodeInto(view, 0).frame;
 }
 
 interface DecodeStep {
@@ -75,7 +75,7 @@ interface DecodeStep {
 	consumed: number;
 }
 
-function decodeInto(bytes: Uint8Array, view: DataView, off: number): DecodeStep {
+function decodeInto(view: DataView, off: number): DecodeStep {
 	checkMagic(view, off);
 	const version = view.getUint8(off + 4);
 	if (version !== 2) throw new Error(`Unsupported GOOF version ${version}`);
@@ -97,16 +97,16 @@ function decodeInto(bytes: Uint8Array, view: DataView, off: number): DecodeStep 
 	const bodyEnd = bodyStart + bodyLen;
 	let data: ArrayData | string | Record<string, DataFrame>;
 	if (dtype === 'ARRAY') {
-		data = decodeArray(bytes, view, bodyStart, bodyEnd);
+		data = decodeArray(view, bodyStart, bodyEnd);
 	} else if (dtype === 'STRING') {
 		data = decoder.decode(new Uint8Array(view.buffer, view.byteOffset + bodyStart, bodyLen));
 	} else {
-		data = decodeTable(bytes, view, bodyStart);
+		data = decodeTable(view, bodyStart);
 	}
 	return { frame: { dtype, data, meta }, consumed: bodyEnd - off };
 }
 
-function decodeArray(bytes: Uint8Array, view: DataView, start: number, end: number): ArrayData {
+function decodeArray(view: DataView, start: number, end: number): ArrayData {
 	let off = start;
 	const ndim = view.getUint8(off);
 	off += 1;
@@ -124,11 +124,7 @@ function decodeArray(bytes: Uint8Array, view: DataView, start: number, end: numb
 	return { dtype: dtypeStr, shape, values };
 }
 
-function decodeTable(
-	bytes: Uint8Array,
-	view: DataView,
-	start: number
-): Record<string, DataFrame> {
+function decodeTable(view: DataView, start: number): Record<string, DataFrame> {
 	let off = start;
 	const n = view.getUint32(off, true);
 	off += 4;
@@ -140,7 +136,7 @@ function decodeTable(
 		off += keyLen;
 		const valueLen = view.getUint32(off, true);
 		off += 4;
-		const sub = decodeInto(bytes, view, off);
+		const sub = decodeInto(view, off);
 		out[key] = sub.frame;
 		off += valueLen;
 	}

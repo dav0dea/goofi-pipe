@@ -597,8 +597,7 @@ export class GraphStore {
 			beforeYaml: before.yaml,
 			afterYaml,
 			beforeLayout: before.layout as WorkspaceState | null,
-			afterLayout: null as WorkspaceState | null,
-			instanceId: this._lastInstanceId ?? ''
+			afterLayout: null as WorkspaceState | null
 		};
 		this._record({ kind: 'load_patch', label: 'Load patch', domain: 'graph', context: captureNavContext(), payload });
 		// The post-load layout hasn't settled yet (the graph_replaced echo hydrates

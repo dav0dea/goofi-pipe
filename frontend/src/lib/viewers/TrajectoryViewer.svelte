@@ -2,6 +2,7 @@
 	import type { DataFrame, ArrayData } from '$lib/codec/decode';
 	import type { SettingsMap } from './settingsSchema';
 	import { onMount, onDestroy } from 'svelte';
+	import { formatTick as fmtTick } from './format';
 
 	type Props = { frame: DataFrame; settings?: SettingsMap };
 	const { frame, settings = {} }: Props = $props();
@@ -43,15 +44,6 @@
 		return d as ArrayData;
 	}
 
-	function fmtTick(v: number): string {
-		if (!Number.isFinite(v)) return '';
-		const abs = Math.abs(v);
-		if (abs === 0) return '0';
-		if (abs >= 10000 || abs < 0.01) return v.toExponential(1);
-		if (abs >= 100) return v.toFixed(0);
-		if (abs >= 1) return v.toFixed(2);
-		return v.toFixed(3);
-	}
 
 	/** All i<j row pairs → one trajectory each, matching the old viewer's
 	 * n*(n-1)/2 behaviour (row i is x, row j is y). Capped for safety. */
