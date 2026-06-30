@@ -28,6 +28,7 @@
 	import FitToGraph from '$lib/editor/FitToGraph.svelte';
 	import FlowApi from '$lib/editor/FlowApi.svelte';
 	import SubpatchZoomExit from '$lib/editor/SubpatchZoomExit.svelte';
+	import SnapGuides from '$lib/editor/SnapGuides.svelte';
 	import {
 		computeSnapDelta,
 		makeBounds,
@@ -1040,31 +1041,7 @@
 			{/if}
 			{#if snapGuides.length > 0}
 				<ViewportPortal target="front">
-					<svg class="snap-guides" data-testid="snap-guides">
-						{#each snapGuides as guide, i (i)}
-							{#if guide.x !== undefined}
-								<line
-									x1={guide.x}
-									x2={guide.x}
-									y1={-5000}
-									y2={5000}
-									stroke="var(--accent)"
-									stroke-width="1"
-									stroke-opacity={guide.opacity}
-								/>
-							{:else if guide.y !== undefined}
-								<line
-									x1={-5000}
-									x2={5000}
-									y1={guide.y}
-									y2={guide.y}
-									stroke="var(--accent)"
-									stroke-width="1"
-									stroke-opacity={guide.opacity}
-								/>
-							{/if}
-						{/each}
-					</svg>
+					<SnapGuides guides={snapGuides} testid="snap-guides" />
 				</ViewportPortal>
 			{/if}
 		</SvelteFlow>
@@ -1258,15 +1235,6 @@
 		position: fixed;
 		z-index: var(--z-addmenu);
 		width: 320px;
-	}
-	.snap-guides {
-		position: absolute;
-		left: 0;
-		top: 0;
-		width: 1px;
-		height: 1px;
-		overflow: visible;
-		pointer-events: none;
 	}
 	.breadcrumb {
 		position: absolute;

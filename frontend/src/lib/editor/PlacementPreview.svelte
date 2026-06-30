@@ -2,6 +2,7 @@
 	import { untrack } from 'svelte';
 	import { ViewportPortal, useSvelteFlow } from '@xyflow/svelte';
 	import { categoryColor, dtypeColor } from './categoryColor';
+	import SnapGuides from './SnapGuides.svelte';
 	import {
 		computeSnapDelta,
 		makeBounds,
@@ -139,31 +140,7 @@
 	</div>
 
 	{#if snap.guides.length > 0}
-		<svg class="snap-guides" data-testid="placement-snap-guides">
-			{#each snap.guides as gd, i (i)}
-				{#if gd.x !== undefined}
-					<line
-						x1={gd.x}
-						x2={gd.x}
-						y1={-5000}
-						y2={5000}
-						stroke="var(--accent)"
-						stroke-width="1"
-						stroke-opacity={gd.opacity}
-					/>
-				{:else if gd.y !== undefined}
-					<line
-						x1={-5000}
-						x2={5000}
-						y1={gd.y}
-						y2={gd.y}
-						stroke="var(--accent)"
-						stroke-width="1"
-						stroke-opacity={gd.opacity}
-					/>
-				{/if}
-			{/each}
-		</svg>
+		<SnapGuides guides={snap.guides} testid="placement-snap-guides" />
 	{/if}
 </ViewportPortal>
 
@@ -257,14 +234,5 @@
 	.pin.out {
 		right: 0;
 		transform: translate(50%, -50%);
-	}
-	.snap-guides {
-		position: absolute;
-		left: 0;
-		top: 0;
-		width: 1px;
-		height: 1px;
-		overflow: visible;
-		pointer-events: none;
 	}
 </style>
