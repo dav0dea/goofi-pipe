@@ -396,6 +396,11 @@ class ControlHub:
         if op == "remove_boundary":
             await self._call_manager(manager.remove_boundary, payload["inst_id"], payload["bnd_id"])
             return {"ok": True}
+        if op == "rename_boundary":
+            await self._call_manager(
+                manager.rename_boundary, payload["inst_id"], payload["bnd_id"], payload["name"]
+            )
+            return {"ok": True}
         if op == "set_boundary_pos":
             pos = list(payload["pos"])
             changed = await self._call_manager(

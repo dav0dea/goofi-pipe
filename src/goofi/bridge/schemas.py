@@ -114,6 +114,9 @@ def describe_instance(manager: Any, inst_id: str, inst: Any, error: Any = None) 
             "inner_node": b.inner_node,
             "inner_slot": b.inner_slot,
             "pos": list(b.pos),
+            # The portal's renameable display/slot label; fall back to the routing id so a
+            # legacy/unnamed entry still renders something (never the connected node's name).
+            "name": b.name or bid,
         }
     return {
         "uid": inst.uid,

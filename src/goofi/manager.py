@@ -75,13 +75,19 @@ class Boundary:
     """One In/Out port on a sub-patch's interface. `inner_node` is the LOCAL name of
     the member the port maps to (Phase 3: or a nested instance); `inner_slot` its
     slot. Unwired ports carry inner_node=None. Identical in shape whether auto-derived
-    from a crossing link or authored as a virtual In/Out node."""
+    from a crossing link or authored as a virtual In/Out node.
+
+    `name` is the portal's renameable DISPLAY label and the sub-patch's exposed in/out
+    SLOT label — independent of whatever it connects to (defaults to in0/out0, node-style).
+    It is decoupled from the interface KEY (the stable routing id) exactly as a member's
+    display name is decoupled from its uid, so a rename never re-keys an external wire."""
 
     dir: str  # 'in' | 'out'
     dtype: Optional[str]
     inner_node: Optional[str]
     inner_slot: Optional[str]
     pos: List[float]
+    name: Optional[str] = None
 
 
 @dataclass
@@ -149,6 +155,7 @@ def _iface_from_dict(raw: Dict[str, Dict[str, Any]]) -> Dict[str, Boundary]:
             inner_node=e.get("inner_node"),
             inner_slot=e.get("inner_slot"),
             pos=list(e.get("pos") or [0, 0]),
+            name=e.get("name"),
         )
         for bid, e in raw.items()
     }
@@ -974,6 +981,7 @@ class Manager:
         """
         iface: Dict[str, Any] = {}
         mset = set(members)
+        counters = {"in": 0, "out": 0}  # next default-name index per direction
         for link in self._links:
             out_m = link["node_out"] in mset
             in_m = link["node_in"] in mset
@@ -986,13 +994,18 @@ class Manager:
             key = f"{local}.{slot}"
             if key in iface:
                 continue  # one boundary per inner slot (a 2nd external consumer fans out on the port)
+            # The KEY stays member-derived (a stable internal routing id), but the user-facing
+            # NAME is a clean in0/out0 default — a derived portal never shows the connected
+            # node's name+slot.
             iface[key] = Boundary(
                 dir=dir,
                 dtype=self._slot_dtype(disp, slot, dir),
                 inner_node=local,
                 inner_slot=slot,
                 pos=self._beside_member_pos(disp, dir),
+                name=f"{dir}{counters[dir]}",
             )
+            counters[dir] += 1
         return iface
 
     def _entity_name(self, uid: str) -> str:
@@ -1764,6 +1777,16 @@ class Manager:
             idx += 1
         return f"{dir}{idx}"
 
+    def _fresh_boundary_name(self, inst_id: str, dir: str) -> str:
+        """Lowest unused `in0`/`out0`… DISPLAY name among the instance's current boundary
+        names (a portal's renameable label, independent of its routing key). Names are
+        dir-prefixed, so scanning by direction can't collide across in/out."""
+        names = {b.name for b in self._instances[inst_id].interface.values() if b.name}
+        idx = 0
+        while f"{dir}{idx}" in names:
+            idx += 1
+        return f"{dir}{idx}"
+
     def _within_subtree(self, uid: Optional[str], root: str) -> bool:
         """True if entity `uid` is `root` or lives anywhere inside root's nesting subtree
         (walk the membership/parent chain up to root)."""
@@ -1829,7 +1852,12 @@ class Manager:
             )
 
     def _resplice_instance(self, inst_id, dir, old_local, old_slot, new_local, new_slot, notify_gui) -> None:
+        # The NEW target may itself be a nested instance (a chained boundary): resolve it
+        # to its real leaf so the external flat link lands on a node, never an instance uid.
+        # (_boundary_external_links already descends the OLD side to its leaf.)
         new_uid = self._member_uid(inst_id, new_local)
+        if new_uid in self._instances:
+            new_uid, new_slot = self.resolve_boundary(new_uid, new_slot)
         for link in self._boundary_external_links(inst_id, dir, old_local, old_slot):
             self.remove_link(
                 link["node_out"], link["node_in"], link["slot_out"], link["slot_in"], notify_gui=notify_gui
@@ -1914,7 +1942,10 @@ class Manager:
         if dir not in ("in", "out"):
             raise ValueError(f"dir must be in/out, got {dir!r}")
         bnd_id = self._fresh_boundary_id(inst_id, dir)
-        entry = Boundary(dir=dir, dtype=dtype, inner_node=None, inner_slot=None, pos=list(pos))
+        entry = Boundary(
+            dir=dir, dtype=dtype, inner_node=None, inner_slot=None, pos=list(pos),
+            name=self._fresh_boundary_name(inst_id, dir),
+        )
         self._instances[inst_id].interface[bnd_id] = entry
         self._mirror_boundary_entry(inst_id, bnd_id, entry)
         if self._bridge is not None and notify_gui:
@@ -2004,10 +2035,10 @@ class Manager:
                 if k != bnd_id and e.dir == dir and e.inner_node == inner_node and e.inner_slot == inner_slot:
                     raise ValueError(f"inner slot {inner_node}.{inner_slot} already exposed by {k}")
             if old_local is not None and (old_local, old_slot) != (inner_node, inner_slot):
-                # Re-pointing a CHAINED (nested-instance) boundary would re-splice an
-                # external link onto an instance uid — unsupported in 3b. Unwire first.
-                if uid in self._instances or self._member_uid(inst_id, old_local) in self._instances:
-                    raise ValueError("re-pointing a chained boundary isn't supported yet; unwire it first")
+                # Re-point: move the boundary's external links from the old inner target to
+                # the new one. Either endpoint may be CHAINED (a nested instance) —
+                # _resplice_instance resolves each to its real leaf — so a chained re-point
+                # needs no manual unwire-first.
                 for iid in [inst_id, *siblings]:
                     self._resplice_instance(iid, dir, old_local, old_slot, inner_node, inner_slot, notify_gui)
             new_entry = replace(entry, dtype=dt_name, inner_node=inner_node, inner_slot=inner_slot)
@@ -2074,6 +2105,30 @@ class Manager:
                 self._unsplice_instance(iid, entry.dir, entry.inner_node, entry.inner_slot, notify_gui)
         del iface[bnd_id]
         self._mirror_boundary_entry(inst_id, bnd_id, None)
+        if self._bridge is not None and notify_gui:
+            self._bridge.control.on_subpatch_changed()
+
+    @mark_unsaved_changes
+    def rename_boundary(self, inst_id: str, bnd_id: str, name: str, notify_gui: bool = True) -> None:
+        """Rename a portal — its display label AND the sub-patch's exposed in/out slot
+        label. The routing KEY (bnd_id) is unchanged, so external wires and the data route
+        (both keyed by bnd_id) survive a rename untouched. Mirrors across the shared family
+        like the rest of the boundary topology. Rejects a blank name or a same-direction
+        collision (two input ports can't share a label)."""
+        self._reject_root(inst_id, "rename a boundary on")
+        iface = self._instances[inst_id].interface
+        if bnd_id not in iface:
+            raise KeyError(f"No such boundary {bnd_id} on {inst_id}")
+        name = (name or "").strip()
+        if not name:
+            raise ValueError("boundary name must be non-empty")
+        entry = iface[bnd_id]
+        for k, e in iface.items():
+            if k != bnd_id and e.dir == entry.dir and e.name == name:
+                raise ValueError(f"a {entry.dir} boundary named {name!r} already exists on {inst_id}")
+        new_entry = replace(entry, name=name)
+        iface[bnd_id] = new_entry
+        self._mirror_boundary_entry(inst_id, bnd_id, new_entry)
         if self._bridge is not None and notify_gui:
             self._bridge.control.on_subpatch_changed()
 

@@ -8,7 +8,9 @@ the reported cluster: "boundary <inst>:<bnd> inner member is gone", "re-pointing
 chained boundary isn't supported", and "grouping in front of an Out node orphans it
 (no data out, can't reconnect)".
 """
-from .test_manager import _bare_manager, _member
+from goofi.bridge.schemas import describe_instance
+
+from .test_manager import _bare_manager, _build_grouped_graph, _member
 
 
 def _out_slot(mgr, uid):
@@ -85,5 +87,157 @@ def test_group_member_fed_by_in_boundary_rechains_through_new_instance():
         assert mgr.resolve_boundary(S, bnd) == (b0, "val")
         entry = mgr._instances[S].interface[bnd]
         assert mgr._member_uid(S, entry.inner_node) == N
+    finally:
+        mgr.terminate()
+
+
+def test_repoint_chained_out_boundary_to_direct_member_resplices_to_new_leaf():
+    """A boundary chained through a nested instance can be re-pointed to a different inner
+    target WITHOUT a manual unwire-first; the external link follows to the new leaf. This
+    removes the old "re-pointing a chained boundary isn't supported" wall (symptom 1)."""
+    mgr = _bare_manager(use_multiprocessing=False)
+    try:
+        b0 = mgr.add_node("Buffer", "signal")
+        b1 = mgr.add_node("Buffer", "signal")
+        S = mgr.group_nodes([b0, b1])
+        out_slot = _out_slot(mgr, b0)
+        bnd = mgr.add_boundary(S, "out", "ARRAY")
+        mgr.wire_boundary(S, bnd, "buffer0", out_slot)
+        ext = mgr.add_node("Buffer", "signal")
+        mgr.add_link(b0, ext, out_slot, "val")  # external consumer of the Out port
+
+        N = mgr.group_nodes([b0])  # S.bnd is now chained S→N→b0
+        assert mgr._instances[S].interface[bnd].inner_node == mgr._instances[S].members[N]
+
+        # Re-point the chained Out boundary to the still-direct member b1 — no unwire.
+        b1_out = _out_slot(mgr, b1)
+        mgr.wire_boundary(S, bnd, "buffer1", b1_out)
+
+        assert mgr.resolve_boundary(S, bnd) == (b1, b1_out)
+        # The external consumer follows to the new leaf: b1→ext now, b0→ext gone.
+        assert any(l["node_out"] == b1 and l["node_in"] == ext for l in mgr.links)
+        assert not any(l["node_out"] == b0 and l["node_in"] == ext for l in mgr.links)
+    finally:
+        mgr.terminate()
+
+
+# --- Stage 3: a portal has its own renameable name (default in0/out0), never the
+# connected node's name+slot (the "buffer0.out" complaint) ---------------------------
+
+
+def test_authored_boundary_gets_default_in_out_name():
+    """add_boundary names a fresh portal in0/out0/in1… — a default that follows node-style
+    naming and is independent of whatever it later connects to."""
+    mgr = _bare_manager(use_multiprocessing=False)
+    try:
+        buf = mgr.add_node("Buffer", "signal")
+        inst = mgr.group_nodes([buf])
+        b_in = mgr.add_boundary(inst, "in", "ARRAY")
+        b_out = mgr.add_boundary(inst, "out", "ARRAY")
+        b_in2 = mgr.add_boundary(inst, "in", "ARRAY")
+        ifc = mgr._instances[inst].interface
+        assert ifc[b_in].name == "in0"
+        assert ifc[b_out].name == "out0"
+        assert ifc[b_in2].name == "in1"
+    finally:
+        mgr.terminate()
+
+
+def test_derived_boundary_name_is_clean_default_not_member_slot():
+    """A boundary auto-derived by grouping must DISPLAY a clean in0/out0 name, not the
+    connected member's name+slot (e.g. 'select0.data'). The internal interface key may
+    stay member-derived, but the user-facing name never is."""
+    mgr = _bare_manager(use_multiprocessing=False)
+    try:
+        osc, inst = _build_grouped_graph(mgr)  # auto-derives one In boundary (osc→select0)
+        ifc = mgr._instances[inst].interface
+        assert ifc, "expected an auto-derived boundary"
+        b = next(iter(ifc.values()))
+        assert b.name == "in0"
+        # The snapshot the frontend renders carries the clean name on each interface entry.
+        desc = describe_instance(mgr, inst, mgr._instances[inst])
+        bid = next(iter(desc["interface"]))
+        assert desc["interface"][bid]["name"] == "in0"
+    finally:
+        mgr.terminate()
+
+
+def test_boundary_name_survives_save_load(tmp_path):
+    """The renameable name round-trips through the .gfi document."""
+    fp = str(tmp_path / "named.gfi")
+    mgr = _bare_manager(use_multiprocessing=False)
+    try:
+        buf = mgr.add_node("Buffer", "signal")
+        inst = mgr.group_nodes([buf])
+        bid = mgr.add_boundary(inst, "out", "ARRAY")
+        assert mgr._instances[inst].interface[bid].name == "out0"
+        mgr.save(fp, overwrite=True)
+    finally:
+        mgr.terminate()
+
+    mgr2 = _bare_manager(use_multiprocessing=False)
+    try:
+        mgr2.load(fp)
+        assert mgr2._instances[inst].interface[bid].name == "out0"
+    finally:
+        mgr2.terminate()
+
+
+# --- Stage 4: rename a portal (its display + exposed-slot label) ----------------------
+
+
+def test_rename_boundary_updates_name_keeps_routing_key():
+    """Renaming a portal changes only its label — the routing key (bnd_id) is unchanged,
+    so the data route / external wires keep resolving."""
+    mgr = _bare_manager(use_multiprocessing=False)
+    try:
+        buf = mgr.add_node("Buffer", "signal")
+        inst = mgr.group_nodes([buf])
+        out_slot = _out_slot(mgr, buf)
+        bid = mgr.add_boundary(inst, "out", "ARRAY")
+        mgr.wire_boundary(inst, bid, "buffer0", out_slot)
+
+        mgr.rename_boundary(inst, bid, "result")
+
+        assert mgr._instances[inst].interface[bid].name == "result"
+        assert mgr.resolve_boundary(inst, bid) == (buf, out_slot)  # key unchanged
+    finally:
+        mgr.terminate()
+
+
+def test_rename_boundary_rejects_duplicate_same_dir_and_blank():
+    mgr = _bare_manager(use_multiprocessing=False)
+    try:
+        buf = mgr.add_node("Buffer", "signal")
+        inst = mgr.group_nodes([buf])
+        b0 = mgr.add_boundary(inst, "out", "ARRAY")  # out0
+        b1 = mgr.add_boundary(inst, "out", "ARRAY")  # out1
+        import pytest
+
+        with pytest.raises(ValueError):
+            mgr.rename_boundary(inst, b1, "out0")  # collides with b0
+        with pytest.raises(ValueError):
+            mgr.rename_boundary(inst, b1, "   ")  # blank
+        # An in boundary may reuse an out name (separate slot namespaces).
+        b_in = mgr.add_boundary(inst, "in", "ARRAY")
+        mgr.rename_boundary(inst, b_in, "out0")
+        assert mgr._instances[inst].interface[b_in].name == "out0"
+    finally:
+        mgr.terminate()
+
+
+def test_rename_boundary_mirrors_across_shared_siblings():
+    mgr = _bare_manager(use_multiprocessing=False)
+    try:
+        buf = mgr.add_node("Buffer", "signal")
+        inst = mgr.group_nodes([buf])
+        bid = mgr.add_boundary(inst, "out", "ARRAY")
+        def_id = mgr.share_instance(inst)
+        sib = mgr.instantiate_definition(def_id)
+
+        mgr.rename_boundary(inst, bid, "result")
+
+        assert mgr._instances[sib].interface[bid].name == "result"
+        assert mgr._definitions[def_id].interface[bid].name == "result"
     finally:
         mgr.terminate()

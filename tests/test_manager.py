@@ -352,7 +352,11 @@ def test_add_and_wire_boundary():
         assert mgr._instances[inst].interface == {}
         bid = mgr.add_boundary(inst, "in", "ARRAY", pos=(5, 6))
         e = mgr._instances[inst].interface[bid]
-        assert asdict(e) == {"dir": "in", "dtype": "ARRAY", "inner_node": None, "inner_slot": None, "pos": [5, 6]}
+        # A fresh portal carries a clean default name (in0) — its renameable display/slot
+        # label, independent of whatever it later connects to.
+        assert asdict(e) == {
+            "dir": "in", "dtype": "ARRAY", "inner_node": None, "inner_slot": None, "pos": [5, 6], "name": "in0"
+        }
         mgr.wire_boundary(inst, bid, "buffer0", "val")
         e = mgr._instances[inst].interface[bid]
         assert e.inner_node == "buffer0" and e.inner_slot == "val"
