@@ -32,7 +32,7 @@
 				data-testid="metadata-slot"
 			>
 				{#each slots as s (s)}
-					<option value={s}>{s}</option>
+					<option value={s}>{node.slot_labels?.[s] ?? s}</option>
 				{/each}
 			</select>
 		{/if}

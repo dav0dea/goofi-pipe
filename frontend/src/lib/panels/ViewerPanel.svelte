@@ -82,7 +82,7 @@
 			data-testid="viewer-slot"
 		>
 			{#each Object.entries(node.output_slots) as [name, dt] (name)}
-				<option value={name}>{name} · {dt.toLowerCase()}</option>
+				<option value={name}>{node.slot_labels?.[name] ?? name} · {dt.toLowerCase()}</option>
 			{/each}
 		</select>
 		{#if slot && dtype}
