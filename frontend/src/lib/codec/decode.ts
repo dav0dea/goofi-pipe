@@ -223,10 +223,3 @@ export function isStringFrame(f: DataFrame): f is DataFrame & { data: string } {
 export function isTableFrame(f: DataFrame): f is DataFrame & { data: Record<string, DataFrame> } {
 	return f.dtype === 'TABLE';
 }
-
-/** Stride along the given dimension (row-major). */
-export function strideOf(shape: number[], dim: number): number {
-	let s = 1;
-	for (let i = dim + 1; i < shape.length; i++) s *= shape[i];
-	return s;
-}
