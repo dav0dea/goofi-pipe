@@ -56,6 +56,10 @@ export interface NodeInstanceInfo {
 	doc: string;
 	input_slots: Record<string, string>;
 	output_slots: Record<string, string>;
+	/** Optional per-slot DISPLAY label, keyed by slot id (the handle/routing key). When
+	 * absent for a slot, the slot id is shown. Used by a sub-patch synth node to show a
+	 * portal's renameable name while keeping the stable boundary id as the handle. */
+	slot_labels?: Record<string, string>;
 	params: Record<string, Record<string, ParamDescriptor>>;
 	pos: [number, number];
 	/** Per-output-slot view state restored from the .gfi patch — empty when
@@ -120,6 +124,10 @@ export interface SubPatchPort {
 	inner_node: string | null;
 	inner_slot: string | null;
 	pos?: [number, number];
+	/** The portal's renameable DISPLAY/slot label (defaults to in0/out0). Decoupled from
+	 * the interface KEY, which stays the stable routing id — so a rename never re-keys an
+	 * external wire. */
+	name?: string;
 }
 
 /** The six virtual In/Out node types — one per data type per direction. They are

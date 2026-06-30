@@ -261,6 +261,17 @@ const setBoundaryPos: Executor = {
 	}
 };
 
+const renameBoundary: Executor = {
+	async forward(action, deps) {
+		const a = as<'rename_boundary'>(action);
+		await deps.control.call('rename_boundary', { inst_id: a.payload.instId, bnd_id: a.payload.bndId, name: a.payload.newName });
+	},
+	async inverse(action, deps) {
+		const a = as<'rename_boundary'>(action);
+		await deps.control.call('rename_boundary', { inst_id: a.payload.instId, bnd_id: a.payload.bndId, name: a.payload.oldName });
+	}
+};
+
 const duplicateShared: Executor = {
 	async forward(action, deps) {
 		const a = as<'duplicate_shared'>(action);
@@ -328,6 +339,7 @@ export const graphExecutors: Record<string, Executor> = {
 	add_boundary: addBoundary,
 	wire_boundary: wireBoundary,
 	remove_boundary: removeBoundary,
+	rename_boundary: renameBoundary,
 	set_boundary_pos: setBoundaryPos,
 	duplicate_shared: duplicateShared,
 	make_unique: makeUnique

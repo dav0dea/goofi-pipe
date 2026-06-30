@@ -141,6 +141,12 @@
 
 	let flowNodes = $state.raw<Node[]>([]);
 	let flowEdges = $state.raw<Edge[]>([]);
+	// Bumped to force a flowEdges re-derive from authoritative state. SvelteFlow
+	// optimistically inserts a dropped connection into the bound edges BEFORE onConnect
+	// runs; a SUCCESSFUL wire's echo rebuilds the edges and discards it, but a REJECTED
+	// wire (dtype/duplicate) produces no echo — so we bump this in the failure path to
+	// strip the ghost edge instead of leaving a second cable hanging on the pill.
+	let reconcileTick = $state(0);
 
 	// --- sub-patch navigation (enter-to-edit) -------------------------------
 	// The stack of instance ids the editor has descended into; empty = top level.
@@ -253,15 +259,23 @@
 			const ins = Object.entries(inst.interface).filter(([, p]) => p.dir === 'in');
 			const outs = Object.entries(inst.interface).filter(([, p]) => p.dir === 'out');
 			const place = (entries: [string, SubPatchPort][], dir: 'in' | 'out', fallbackX: number) =>
-				entries.forEach(([name, port], i) => {
+				entries.forEach(([bid, port], i) => {
 					next.push({
-						id: boundaryId(entered, name),
+						// The flow id keys on the stable boundary id (routing); the pill shows
+						// the renameable NAME, and double-clicking it drives rename_boundary.
+						id: boundaryId(entered, bid),
 						type: 'boundary',
 						position: port.pos
 							? { x: port.pos[0], y: port.pos[1] }
 							: { x: fallbackX, y: minY + i * 96 },
-						data: { name, dir, dtype: port.dtype ?? 'ARRAY', wired: port.inner_node !== null },
-						selected: sel.nodes(panelId).has(boundaryId(entered, name))
+						data: {
+							name: port.name ?? bid,
+							dir,
+							dtype: port.dtype ?? 'ARRAY',
+							wired: port.inner_node !== null,
+							rename: (newName: string) => g.renameBoundary(entered!, bid, newName)
+						},
+						selected: sel.nodes(panelId).has(boundaryId(entered, bid))
 					});
 				});
 			place(ins, 'in', minX - 280);
@@ -276,6 +290,7 @@
 	// entered instance, also draw its boundary pill edges (In pill -> member input,
 	// member output -> Out pill); WIRED boundaries only, deletable to unwire.
 	$effect(() => {
+		reconcileTick; // re-derive on demand to drop an optimistic ghost edge after a rejected wire
 		const next: Edge[] = [];
 		for (const l of g.links) {
 			const src = drawEndpoint(l.node_out, l.slot_out, 'out');
@@ -381,9 +396,10 @@
 			const memberSlot = srcB ? c.targetHandle : c.sourceHandle;
 			const local = memberIndex.get(memberId)?.local;
 			if (!local) return; // the other end must be a member of this sub-patch
-			void g.wireBoundary(entered, bnd, local, memberSlot).catch((e) =>
-				console.warn('wire boundary failed', e)
-			);
+			void g.wireBoundary(entered, bnd, local, memberSlot).catch((e) => {
+				console.warn('wire boundary failed', e);
+				reconcileTick++; // drop the optimistic ghost edge SvelteFlow drew before this RPC
+			});
 			return;
 		}
 		// Otherwise a normal link. A top-level wire to a collapsed sub-patch port
@@ -641,6 +657,10 @@
 	}
 
 	function onNodeClick(args: { node: Node; event: MouseEvent | TouchEvent }): void {
+		// A click can land in the window between a graph mutation and the flowNodes rebuild,
+		// carrying an id that no longer exists (SvelteFlow then logs "Node … does not exist").
+		// Ignore a click whose node is no longer in the current scene.
+		if (!flowNodes.some((n) => n.id === args.node.id)) return;
 		const mouse = args.event as MouseEvent;
 		sel.clickNode(panelId, args.node.id, mouse.shiftKey || mouse.ctrlKey || mouse.metaKey);
 	}

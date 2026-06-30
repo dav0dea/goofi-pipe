@@ -732,6 +732,22 @@ export class GraphStore {
 		await this.ctl.call('remove_boundary', { inst_id: instId, bnd_id: bndId });
 	}
 
+	/** Rename an In/Out portal (its label + the sub-patch's exposed slot name). The
+	 * routing key (bndId) is unchanged, so external wires survive. Records undo only
+	 * AFTER the RPC lands, so a rejected rename (blank/duplicate) doesn't poison history. */
+	async renameBoundary(instId: string, bndId: string, name: string): Promise<void> {
+		const oldName = this.instances[instId]?.interface?.[bndId]?.name ?? bndId;
+		if (name === oldName) return;
+		await this.ctl.call('rename_boundary', { inst_id: instId, bnd_id: bndId, name });
+		this._record({
+			kind: 'rename_boundary',
+			label: 'Rename boundary',
+			domain: 'graph',
+			context: captureNavContext(),
+			payload: { instId, bndId, oldName, newName: name }
+		});
+	}
+
 	/** Move an In/Out pill inside the entered view (mirrors across shared siblings). */
 	async setBoundaryPos(instId: string, bndId: string, pos: [number, number]): Promise<void> {
 		const old = this.instances[instId]?.interface?.[bndId]?.pos ?? [0, 0];
@@ -909,7 +925,11 @@ export class GraphStore {
 		// (a per-frame pos change) keeps the same identity and never churns the
 		// viewer. A selection change touches none of these, so the cache hits.
 		// The slots are server-computed, so hashing them covers the wired-port set.
-		const sig = `${inst.name}|${inst.kind}|${error ?? ''}|${memberCount}|${JSON.stringify(inst.slots)}`;
+		// Hash the portal names too so a rename re-synthesizes the node's slot labels.
+		const labelSig = Object.entries(inst.interface)
+			.map(([bid, p]) => `${bid}=${p.name ?? ''}`)
+			.join(',');
+		const sig = `${inst.name}|${inst.kind}|${error ?? ''}|${memberCount}|${JSON.stringify(inst.slots)}|${labelSig}`;
 
 		const cached = this._synthCache.get(instId);
 		if (cached && cached.sig === sig) {
@@ -920,6 +940,13 @@ export class GraphStore {
 		// External ports ARE the server-computed slots (a pure passthrough).
 		const input_slots: Record<string, string> = { ...inst.slots.input };
 		const output_slots: Record<string, string> = { ...inst.slots.output };
+		// Exposed ports are keyed by the stable boundary id (the routing handle), but show
+		// the portal's renameable NAME — so a rename relabels the collapsed port without
+		// re-keying the wire.
+		const slot_labels: Record<string, string> = {};
+		for (const [bid, port] of Object.entries(inst.interface)) {
+			if (port.name) slot_labels[bid] = port.name;
+		}
 		const node: NodeInstanceInfo = {
 			// The synth node's identity IS the instance uid, so `node.uid` is the
 			// uniform flow/selection/data key for real and sub-patch nodes alike.
@@ -931,6 +958,7 @@ export class GraphStore {
 			doc: '',
 			input_slots,
 			output_slots,
+			slot_labels,
 			params: {},
 			pos: inst.pos,
 			viewers: inst.viewers ?? {},

@@ -124,7 +124,7 @@
 				title={node.input_slots[slot].toLowerCase()}
 			>
 				<Handle id={slot} type="target" position={Position.Left} />
-				<span class="conn-label">{slot}</span>
+				<span class="conn-label">{node.slot_labels?.[slot] ?? slot}</span>
 			</div>
 		{/each}
 

@@ -144,6 +144,11 @@ export type GraphAction =
 	  })
 	| (BaseAction & { kind: 'remove_boundary'; domain: 'graph'; payload: { instId: string; bndId: string; port: SubPatchPort } })
 	| (BaseAction & {
+			kind: 'rename_boundary';
+			domain: 'graph';
+			payload: { instId: string; bndId: string; oldName: string; newName: string };
+	  })
+	| (BaseAction & {
 			kind: 'set_boundary_pos';
 			domain: 'graph';
 			payload: { instId: string; bndId: string; oldPos: [number, number]; newPos: [number, number] };

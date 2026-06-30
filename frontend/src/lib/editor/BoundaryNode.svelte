@@ -15,6 +15,31 @@
 	// Unwired = added but not yet connected to a member; shown dimmed/dashed and it
 	// exposes no port on the collapsed node until wired.
 	const wired = $derived(data.wired !== false);
+	// Renaming the portal renames the sub-patch's exposed in/out SLOT (the routing key
+	// is unchanged, so wires survive). Double-click the label to edit.
+	const rename = $derived(data.rename as ((name: string) => void) | undefined);
+	let editing = $state(false);
+	let draft = $state('');
+	function startEdit() {
+		if (!rename) return;
+		draft = name;
+		editing = true;
+	}
+	function commit() {
+		if (!editing) return;
+		editing = false;
+		const next = draft.trim();
+		if (next && next !== name) rename?.(next);
+	}
+	function onKey(e: KeyboardEvent) {
+		if (e.key === 'Enter') {
+			e.preventDefault();
+			commit();
+		} else if (e.key === 'Escape') {
+			e.preventDefault();
+			editing = false;
+		}
+	}
 </script>
 
 <div
@@ -28,7 +53,21 @@
 	data-testid="boundary-node"
 >
 	<span class="arrow">{dir === 'in' ? '▸' : '▸'}</span>
-	<span class="lbl">{name}</span>
+	{#if editing}
+		<!-- svelte-ignore a11y_autofocus -->
+		<input
+			class="lbl-edit nodrag"
+			bind:value={draft}
+			onkeydown={onKey}
+			onblur={commit}
+			onpointerdown={(e) => e.stopPropagation()}
+			autofocus
+		/>
+	{:else}
+		<span class="lbl" ondblclick={startEdit} role="textbox" tabindex="-1" title="Double-click to rename"
+			>{name}</span
+		>
+	{/if}
 	<span class="dt">{dtype.toLowerCase()}</span>
 	{#if dir === 'in'}
 		<Handle id="out" type="source" position={Position.Right} />
@@ -70,6 +109,19 @@
 	}
 	.lbl {
 		font-weight: 600;
+		cursor: text;
+	}
+	.lbl-edit {
+		font-family: var(--font-mono);
+		font-size: 11px;
+		font-weight: 600;
+		color: var(--text);
+		background: var(--bg-elev-1);
+		border: 1px solid var(--dtype, var(--accent));
+		border-radius: 3px;
+		padding: 0 3px;
+		width: 7ch;
+		outline: none;
 	}
 	.dt {
 		color: var(--text-faint);
