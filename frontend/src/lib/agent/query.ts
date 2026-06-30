@@ -15,6 +15,7 @@ import { collectPanels } from '$lib/workspace/model';
 import { asStateObject, linkedNodeName } from '$lib/workspace/panelState';
 import { isArrayFrame, isStringFrame, type DataFrame } from '$lib/codec/decode';
 import { reconstructMeta } from '$lib/editor/metaFormat';
+import { summaryOf } from '$lib/viewers/viewMeta';
 import { ROOT_ID } from '$lib/editor/subpatchScene';
 import type { InstanceInfo, LinkInfo, NodeInstanceInfo, NodeTypeInfo } from '$lib/api/control';
 
@@ -36,19 +37,9 @@ function summarize(frame: DataFrame | null): FrameSummary | null {
 	if (!frame) return null;
 	if (isArrayFrame(frame)) {
 		const a = frame.data;
-		let min = Infinity;
-		let max = -Infinity;
-		let sum = 0;
-		let n = 0;
-		const v = a.values;
-		for (let i = 0; i < v.length; i++) {
-			const x = Number(v[i]);
-			if (!Number.isFinite(x)) continue;
-			if (x < min) min = x;
-			if (x > max) max = x;
-			sum += x;
-			n += 1;
-		}
+		// Reuse the viewers' pure min/max/mean reduction (same skip-non-finite algorithm)
+		// rather than re-implementing it here.
+		const s = summaryOf(a);
 		// Report the node's TRUE shape, not the reduced wire shape (Option C): a
 		// node-reduced frame carries meta.reduced with each axis's orig_len. Mirror
 		// the inspector (reconstructMeta) so an agent reasons about real dimensions.
@@ -60,7 +51,7 @@ function summarize(frame: DataFrame | null): FrameSummary | null {
 		return {
 			dtype: a.dtype,
 			shape,
-			numeric: n ? { min, max, mean: sum / n } : undefined,
+			numeric: s.min !== null ? { min: s.min, max: s.max as number, mean: s.mean as number } : undefined,
 			...(reduced ? { reducedLength: a.values.length } : {})
 		};
 	}
