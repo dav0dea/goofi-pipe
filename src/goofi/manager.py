@@ -1377,9 +1377,6 @@ class Manager:
             self._bridge.control.on_subpatch_changed()
         return restored
 
-    # `ungroup` reads better at call sites that just want the group dissolved.
-    ungroup = expand_instance
-
     def _unique_local_in(self, parent: str, base: str) -> str:
         """Lowest free `base`, `base1`, `base2`, … local name within `parent`'s members."""
         existing = set(self._instances[parent].members.values())

@@ -706,9 +706,6 @@ class NodeProcessRegistry:
             _process_groups[name] = ng
         return ng
 
-    def all(self) -> Dict[str, NodeProcess]:
-        return dict(_process_groups)
-
     def terminate(self) -> None:
         for p in _process_groups.values():
             p.kill()
