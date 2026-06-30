@@ -153,7 +153,7 @@ class ControlHub:
         if msg_id is not None:
             await ws.send_json({"id": msg_id, "result": result})
 
-    def _splice_endpoint(self, manager, node: str, slot: str, dir: str):
+    def _splice_endpoint(self, manager, node: str, slot: str):
         """Translate a sub-patch boundary endpoint (instance id + boundary id) to
         the real inner (member uid, slot) so the flat link lands on the member. A
         normal node endpoint passes through unchanged. Raises (→ error reply) if
@@ -206,13 +206,13 @@ class ControlHub:
             await self._call_manager(manager.rename_node, payload["node"], payload["name"])
             return {"ok": True}
         if op == "add_link":
-            no, so = self._splice_endpoint(manager, payload["node_out"], payload["slot_out"], "out")
-            ni, si = self._splice_endpoint(manager, payload["node_in"], payload["slot_in"], "in")
+            no, so = self._splice_endpoint(manager, payload["node_out"], payload["slot_out"])
+            ni, si = self._splice_endpoint(manager, payload["node_in"], payload["slot_in"])
             await self._call_manager(manager.add_link, no, ni, so, si)
             return {"ok": True}
         if op == "remove_link":
-            no, so = self._splice_endpoint(manager, payload["node_out"], payload["slot_out"], "out")
-            ni, si = self._splice_endpoint(manager, payload["node_in"], payload["slot_in"], "in")
+            no, so = self._splice_endpoint(manager, payload["node_out"], payload["slot_out"])
+            ni, si = self._splice_endpoint(manager, payload["node_in"], payload["slot_in"])
             await self._call_manager(manager.remove_link, no, ni, so, si)
             return {"ok": True}
         if op == "update_param":
