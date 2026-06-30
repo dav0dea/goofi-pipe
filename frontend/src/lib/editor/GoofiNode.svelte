@@ -102,7 +102,7 @@
 		{#if outputs.length > 0}
 			<div class="viewers">
 				{#each outputs as slot (slot)}
-					<SlotViewer node={node.uid} {slot} dtype={node.output_slots[slot]} />
+					<SlotViewer node={node.uid} {slot} dtype={node.output_slots[slot]} label={node.slot_labels?.[slot]} />
 				{/each}
 			</div>
 		{/if}

@@ -10,8 +10,11 @@
 	import { graph } from '$lib/stores/graph.svelte';
 	import { dtypeColor } from '$lib/editor/categoryColor';
 
-	type Props = { node: string; slot: string; dtype: string };
-	const { node, slot, dtype }: Props = $props();
+	// `label` overrides the displayed slot name (the handle id stays `slot`): a sub-patch
+	// synth node passes its renameable portal name so the collapsed output header matches
+	// the In/Out pill. Absent for a real node → the slot id is shown.
+	type Props = { node: string; slot: string; dtype: string; label?: string };
+	const { node, slot, dtype, label }: Props = $props();
 
 	const g = graph();
 	const uiStore = ui();
@@ -102,7 +105,7 @@
 			data-testid="slot-output"
 			title={dtype.toLowerCase()}
 		>
-			{slot}
+			{label ?? slot}
 		</span>
 	</header>
 
