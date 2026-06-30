@@ -1,11 +1,10 @@
-import time
-
 from goofi.data import Data, DataType
 from goofi.node import Node
+from goofi.nodes.inputs._overwrite import _OverwriteHold
 from goofi.params import FloatParam, StringParam
 
 
-class ConstantString(Node):
+class ConstantString(_OverwriteHold, Node):
 
     def config_params():
         return {
@@ -28,21 +27,10 @@ class ConstantString(Node):
         return {"out": DataType.STRING}
 
     def setup(self):
-        self.last_overwrite_time = None
-        self.last_overwrite_data = None
+        self.setup_overwrite()
 
     def process(self, overwrite: Data):
-        if overwrite is not None:
-            self.last_overwrite_data = overwrite
-            self.last_overwrite_time = time.time()
-            self.input_slots["overwrite"].clear()
-
-        if self.last_overwrite_data is not None:
-            timeout_val = self.params.constant.overwrite_timeout.value
-            if timeout_val > 0 and (time.time() - self.last_overwrite_time) > timeout_val:
-                self.last_overwrite_data = None
-                self.last_overwrite_time = None
-            else:
-                return {"out": (self.last_overwrite_data.data, {})}
-
+        held = self.held_override(overwrite)
+        if held is not None:
+            return {"out": (held.data, {})}
         return {"out": (self.params.constant.value.value, {})}
