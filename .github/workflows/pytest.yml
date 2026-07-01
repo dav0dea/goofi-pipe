@@ -34,12 +34,13 @@ jobs:
 
     - name: Type-check boundary modules (advisory)
       run: |
-        # Advisory like the flake8 pass above (--exit-zero never fails the build):
-        # surfaces type issues at the hand-mirrored contract boundary without
-        # blocking. Promote a module to a blocking gate once it is mypy-clean.
-        mypy --ignore-missing-imports --exit-zero \
+        # Advisory like the flake8 pass above: surfaces type issues at the
+        # hand-mirrored contract boundary without blocking. mypy has no
+        # flake8-style --exit-zero flag, so `|| true` swallows its exit code.
+        # Promote a module to a blocking gate once it is mypy-clean.
+        mypy --ignore-missing-imports \
           src/goofi/codec.py src/goofi/data.py src/goofi/message.py \
-          src/goofi/node_reduce.py src/goofi/params.py src/goofi/bridge/
+          src/goofi/node_reduce.py src/goofi/params.py src/goofi/bridge/ || true
 
     - name: Running pytest
       run: |
