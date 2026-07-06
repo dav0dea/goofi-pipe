@@ -60,7 +60,14 @@
 	});
 
 	function pick(t: NodeTypeInfo): void {
+		// Unavailable types (missing deps per the registry probe) render greyed
+		// and are not addable — adding one could only fail at spawn.
+		if (!t.available) return;
 		onPick(t);
+	}
+
+	function itemTitle(t: NodeTypeInfo): string {
+		return t.available ? t.doc : `missing dependency: ${t.missing_deps.join(', ')}`;
 	}
 
 	function onKeydown(e: KeyboardEvent): void {
@@ -115,7 +122,8 @@
 						type="button"
 						class="item"
 						class:hl={filtered[highlighted]?.type === t.type}
-						title={t.doc}
+						class:unavailable={!t.available}
+						title={itemTitle(t)}
 						onmouseenter={() => (highlighted = filtered.indexOf(t))}
 						onclick={() => pick(t)}
 					>
@@ -131,7 +139,8 @@
 					type="button"
 					class="item"
 					class:hl={idx === highlighted}
-					title={t.doc}
+					class:unavailable={!t.available}
+					title={itemTitle(t)}
 					onmouseenter={() => (highlighted = idx)}
 					onclick={() => pick(t)}
 				>
@@ -208,6 +217,12 @@
 	}
 	.item.hl {
 		background: color-mix(in srgb, var(--accent) 12%, transparent);
+	}
+	/* Missing dependency (registry availability probe): visible but not addable;
+	   the title names the missing package. */
+	.item.unavailable {
+		opacity: 0.35;
+		cursor: not-allowed;
 	}
 	.cat-dot {
 		width: 6px;

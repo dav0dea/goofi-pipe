@@ -50,6 +50,9 @@
 	const health = $derived(nodeHealth(node));
 	const isError = $derived(health.kind === 'error');
 	const isCrashed = $derived(health.kind === 'crashed');
+	// Still coming up (child importing its implementation / running setup()) —
+	// spinner + stage label instead of the status dot, body slightly dimmed.
+	const isBooting = $derived(health.kind === 'booting');
 	// Brief "this just changed" pulse after an undo/redo reorients here (#19).
 	const flashing = $derived(flash().active(node?.uid));
 	const healthColor = $derived(
@@ -83,6 +86,7 @@
 	class:selected
 	class:has-error={isError}
 	class:crashing={isCrashed}
+	class:booting={isBooting}
 	class:undo-flash={flashing}
 	style="--accent: {accent}; min-height: calc(var(--node-header) + {minBody} * var(--node-u));"
 	data-testid={node?.subpatch ? 'subpatch-node' : undefined}
@@ -92,9 +96,15 @@
 	     matter how the slots stack. Nothing inside it needs to round itself. -->
 	<div class="surface">
 		<div class="header">
-			<span class="health" class:pulse={isCrashed} style="background: {healthColor};" title={health.title}></span>
+			{#if isBooting}
+				<span class="boot-spinner" title={health.title} data-testid="boot-spinner"></span>
+			{:else}
+				<span class="health" class:pulse={isCrashed} style="background: {healthColor};" title={health.title}></span>
+			{/if}
 			<span class="name">{label}</span>
-			{#if rateLabel}
+			{#if isBooting}
+				<span class="boot-label" data-testid="boot-label">{health.label}</span>
+			{:else if rateLabel}
 				<span class="rate" title="update rate">{rateLabel}</span>
 			{/if}
 		</div>
@@ -181,6 +191,33 @@
 	.goofi-node.crashing .surface {
 		border-color: var(--warning, #d8932b);
 	}
+	/* A booting node (child importing / running setup): dimmed body + a small
+	   spinner and stage label in the header. Fully shaped from spec metadata —
+	   slots and params render normally — just not live yet. */
+	.goofi-node.booting .surface {
+		opacity: 0.75;
+	}
+	.boot-spinner {
+		width: 8px;
+		height: 8px;
+		border-radius: 50%;
+		flex-shrink: 0;
+		border: 1.5px solid color-mix(in srgb, var(--accent) 40%, transparent);
+		border-top-color: var(--accent);
+		animation: boot-spin 0.8s linear infinite;
+		box-sizing: border-box;
+	}
+	@keyframes boot-spin {
+		to {
+			transform: rotate(360deg);
+		}
+	}
+	.boot-label {
+		flex: 0 0 auto;
+		font-size: 9px;
+		color: var(--text-muted, #8a8f98);
+		font-style: italic;
+	}
 	.health.pulse {
 		animation: health-pulse 1s ease-in-out infinite;
 	}
@@ -212,6 +249,9 @@
 			animation: none;
 		}
 		.health.pulse {
+			animation: none;
+		}
+		.boot-spinner {
 			animation: none;
 		}
 	}

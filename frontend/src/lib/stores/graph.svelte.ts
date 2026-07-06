@@ -288,12 +288,25 @@ export class GraphStore {
 				const t = this.nodeById(ev.payload.node);
 				if (t) {
 					t.params = ev.payload.params;
+					// Lifecycle stage rides every state rebroadcast (authoritative:
+					// the manager-side ref derives it from the node's own pushes).
+					if (ev.payload.stage) t.stage = ev.payload.stage;
 					// A healthy state push means the (possibly just-respawned) node is
 					// running again — lift any crash indicator.
 					if (t.crashed) t.crashed = false;
 					// The node advertises its SSE log endpoint here; surfacing it lets
 					// the Console subscribe peer-to-peer (see $lib/stores/logStream).
 					if (ev.payload.log_endpoint !== undefined) t.log_endpoint = ev.payload.log_endpoint;
+				}
+				break;
+			}
+			case 'node_stage': {
+				// Discrete stage transitions the state plane can't carry — today only
+				// the terminal bootstrap 'error' (import failure; no auto-restart).
+				const t = this._realNode(ev.payload.node);
+				if (t) {
+					t.stage = ev.payload.stage;
+					if (ev.payload.error !== undefined) t.error = ev.payload.error;
 				}
 				break;
 			}

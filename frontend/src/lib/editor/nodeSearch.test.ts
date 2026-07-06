@@ -3,7 +3,17 @@ import { rankNodeTypes } from './nodeSearch';
 import type { NodeTypeInfo } from '$lib/api/control';
 
 function node(type: string, category: string, doc = ''): NodeTypeInfo {
-	return { type, category, doc, input_slots: {}, output_slots: {}, params: {} };
+	return {
+		type,
+		category,
+		doc,
+		input_slots: {},
+		output_slots: {},
+		params: {},
+		available: true,
+		dynamic: false,
+		missing_deps: []
+	};
 }
 
 const order = (types: NodeTypeInfo[], q: string): string[] =>

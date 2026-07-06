@@ -23,10 +23,23 @@ export function isProtocolCompatible(remote: unknown): boolean {
 	return remote === PROTOCOL_VERSION;
 }
 
+/** A node's lifecycle stage: 'creating' (process spawned; importing its
+ * implementation + opening endpoints) → 'setup' (first state arrived, setup()
+ * still running) → 'ready'. 'error' is terminal (bootstrap failure — the
+ * backend does not auto-restart it). */
+export type NodeStage = 'creating' | 'setup' | 'ready' | 'error';
+
 export interface NodeTypeInfo {
 	type: string;
 	category: string;
 	doc: string;
+	/** Unconditional top-level deps resolvable on this machine (registry probe).
+	 * Unavailable types render greyed/disabled in the add menu. */
+	available: boolean;
+	/** Config hooks reference runtime state (device lists) — the palette shows
+	 * the static declaration; options refresh from the live node. Informational. */
+	dynamic: boolean;
+	missing_deps: string[];
 	input_slots: Record<string, string>;
 	output_slots: Record<string, string>;
 	params: Record<string, Record<string, ParamDescriptor>>;
@@ -79,6 +92,11 @@ export interface NodeInstanceInfo {
 	crashed?: boolean;
 	restarts?: number;
 	crashExit?: number | null;
+	/** Lifecycle stage — seeded by node_added/snapshot, updated by state_update
+	 * and node_stage events. Drives the boot spinner ('creating'/'setup') and
+	 * the terminal boot-error badge. Backend always sends it for real nodes;
+	 * optional so synthesized virtual nodes (sub-patch instances) can omit it. */
+	stage?: NodeStage;
 	/** Rolling execution telemetry the node pushes on the status plane (~1 Hz):
 	 * update rate + mean `process()` duration over the last ~10 ticks. Absent until
 	 * the node's first NODE_STATS push; populated by the `node_stats` event and
@@ -151,7 +169,11 @@ export const BOUNDARY_TYPES: NodeTypeInfo[] = (['In', 'Out'] as const).flatMap((
 			// when you click a member slot inside a sub-patch.
 			input_slots: side === 'Out' ? slot : {},
 			output_slots: side === 'In' ? slot : {},
-			params: {}
+			params: {},
+			// Virtual types have no implementation module — always addable.
+			available: true,
+			dynamic: false,
+			missing_deps: []
 		};
 	})
 );
@@ -284,11 +306,13 @@ export type ControlEvent =
 				node: string;
 				params: Record<string, Record<string, ParamDescriptor>>;
 				output_subscribers: Record<string, number>;
+				stage?: NodeStage;
 				log_endpoint?: string | null;
 			};
 	  }
 	| { event: 'error'; payload: { node: string; error: string | null } }
 	| { event: 'node_crashed'; payload: { node: string; exitcode: number | null; restarts: number } }
+	| { event: 'node_stage'; payload: { node: string; stage: NodeStage; error?: string } }
 	| { event: 'node_stats'; payload: { node: string; stats: NodeStats } }
 	| { event: 'unsaved_changes'; payload: { unsaved_changes: boolean } }
 	| { event: 'save_path_changed'; payload: { save_path: string | null } }

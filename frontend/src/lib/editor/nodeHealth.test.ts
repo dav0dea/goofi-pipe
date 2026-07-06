@@ -28,4 +28,27 @@ describe('nodeHealth', () => {
 	it('handles a crash with no exit code', () => {
 		expect(nodeHealth({ crashed: true, restarts: 1 }).title).toBe('process crashed — restarting (×1)');
 	});
+
+	it('reports booting stages with a stage label', () => {
+		expect(nodeHealth({ stage: 'creating' })).toEqual({
+			kind: 'booting',
+			title: 'creating…',
+			label: 'creating…'
+		});
+		expect(nodeHealth({ stage: 'setup' })).toEqual({
+			kind: 'booting',
+			title: 'setting up…',
+			label: 'setting up…'
+		});
+		expect(nodeHealth({ stage: 'ready' }).kind).toBe('ok');
+	});
+
+	it('a real error outranks a stuck booting stage (failed setup keeps its stage)', () => {
+		expect(nodeHealth({ stage: 'setup', error: 'setup boom' }).kind).toBe('error');
+	});
+
+	it('a terminal boot error reads as an error', () => {
+		// The supervisor sets stage 'error' + error text for a bootstrap failure.
+		expect(nodeHealth({ stage: 'error', error: 'ModuleNotFoundError: torch' }).kind).toBe('error');
+	});
 });
