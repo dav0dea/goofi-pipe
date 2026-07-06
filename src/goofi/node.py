@@ -36,7 +36,7 @@ from goofi import node_log, node_viewer
 from goofi.message import Message, MessageType
 from goofi.node_reduce import viewspec_from_dict
 from goofi.node_stats import ExecStats
-from goofi.node_helpers import InputSlot, NodeRef, OutputSlot
+from goofi.node_helpers import InputSlot, NodeRef, OutputSlot, normalize_config
 from goofi.params import InvalidParamError, NodeParams, normalize_expression_binding
 from goofi.transport import (
     WaitSet,
@@ -1051,14 +1051,7 @@ class Node(ABC):
 
     @classmethod
     def _configure(cls) -> Tuple[Dict[str, InputSlot], Dict[str, OutputSlot], NodeParams]:
-        in_slots = cls.config_input_slots()
-        out_slots = cls.config_output_slots()
-        params = cls.config_params()
-        return (
-            {name: slot if isinstance(slot, InputSlot) else InputSlot(slot) for name, slot in in_slots.items()},
-            {name: slot if isinstance(slot, OutputSlot) else OutputSlot(slot) for name, slot in out_slots.items()},
-            NodeParams(params),
-        )
+        return normalize_config(cls.config_input_slots(), cls.config_output_slots(), cls.config_params())
 
     def common_autotrigger_changed(self, value):
         # No-op: autotrigger is consulted on each tick in the processing loop.

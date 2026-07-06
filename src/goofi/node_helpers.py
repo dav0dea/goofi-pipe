@@ -203,6 +203,20 @@ class OutputSlot:
         return lk
 
 
+def normalize_config(in_slots, out_slots, params):
+    """Normalize raw config-hook returns into (InputSlot map, OutputSlot map, NodeParams).
+
+    Shared by `Node._configure` (class-side) and `NodeSpec.configure` (registry-side)
+    so both derive identical metadata from the same hook output."""
+    from goofi.params import NodeParams
+
+    return (
+        {name: slot if isinstance(slot, InputSlot) else InputSlot(slot) for name, slot in in_slots.items()},
+        {name: slot if isinstance(slot, OutputSlot) else OutputSlot(slot) for name, slot in out_slots.items()},
+        NodeParams(params),
+    )
+
+
 # ---------------------------------------------------------------------------
 # NodeRef — the manager-side proxy for a node
 # ---------------------------------------------------------------------------
