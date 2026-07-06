@@ -255,3 +255,19 @@ def test_common_and_expression_fields_are_keyword_only():
     # the extras are NOT positional: a 4th positional would be a TypeError
     with pytest.raises(TypeError):
         FloatParam(2.5, -1.0, 10.0, "doc-as-positional")
+
+
+def test_update_options_refreshes_stringparam():
+    # The node process is the authority on runtime-enumerated options (device
+    # lists): update_options merges its report into the manager-side params.
+    from goofi.params import NodeParams, StringParam
+
+    p = NodeParams({"g": {"device": StringParam("default", options=["default"]), "free": StringParam("x")}})
+    p.update_options({"g": {"device": ["hw:0", "hw:1"]}})
+    assert p["g"]["device"].options == ["hw:0", "hw:1"]
+    # unknown groups/names and empty lists are ignored (schema drift must not crash)
+    p.update_options({"g": {"nonexistent": ["x"], "device": []}, "nope": {"a": ["b"]}})
+    assert p["g"]["device"].options == ["hw:0", "hw:1"]
+    # a free-form StringParam (options=None) stays free-form
+    p.update_options({"g": {"free": ["a"]}})
+    assert p["g"]["free"].options is None

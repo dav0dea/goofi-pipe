@@ -172,3 +172,19 @@ def test_terminate_while_creating_kills_the_process():
         assert time.time() - t0 < 2.0
     finally:
         ref.terminate()
+
+
+def test_child_reported_options_reach_the_ref():
+    """The node's state push carries its StringParam option lists; the ref merges
+    them so dynamic device lists refresh from the live process (and the bridge's
+    state_update rebroadcast carries them to dropdowns for free)."""
+    from .test_manager import _bare_manager
+
+    mgr = _bare_manager()
+    try:
+        uid = mgr.add_node("ConstantArray", "inputs", params={"common": {"autotrigger": False}})
+        ref = mgr.nodes[uid]
+        assert wait_until(lambda: ref.stage == "ready")
+        assert "param_options" in (ref.serialized_state or {})
+    finally:
+        mgr.terminate(notify_gui=False)

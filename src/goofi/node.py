@@ -37,7 +37,7 @@ from goofi.message import Message, MessageType
 from goofi.node_reduce import viewspec_from_dict
 from goofi.node_stats import ExecStats
 from goofi.node_helpers import InputSlot, NodeRef, OutputSlot, clean_docstring, normalize_config
-from goofi.params import InvalidParamError, NodeParams, normalize_expression_binding
+from goofi.params import InvalidParamError, NodeParams, StringParam, normalize_expression_binding
 from goofi.transport import (
     WaitSet,
     ctrl_service_name,
@@ -490,10 +490,24 @@ class Node(ABC):
             return
         if not self._dirty:
             return
+        # StringParam option lists, as THIS process sees them — the authority
+        # for runtime-enumerated options (device lists). The manager merges
+        # these into its ref (NodeParams.update_options).
+        param_options = {}
+        for group_name in self.params.keys():
+            group = self.params[group_name]
+            opts = {
+                name: group[name].options
+                for name in group._fields
+                if isinstance(group[name], StringParam) and group[name].options
+            }
+            if opts:
+                param_options[group_name] = opts
         state = {
             "_type": type(self).__name__,
             "category": self.category(),
             "params": self.params.serialize(),
+            "param_options": param_options,
             "output_subscribers": {n: s.subscriber_count for n, s in self.output_slots.items()},
             # Lifecycle: False while setup() is still running on its thread —
             # drives the manager-side 'setup' stage between the first state

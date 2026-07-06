@@ -300,6 +300,23 @@ class NodeParams:
             result[group] = NamedTupleClass(**params)
         return result
 
+    def update_options(self, options: Dict[str, Dict[str, list]]) -> None:
+        """Refresh StringParam option lists from a node's authoritative report
+        (runtime-enumerated device lists ride STATE_UPDATE as `param_options`).
+
+        Only params that DECLARED options are refreshed — a free-form
+        StringParam stays free-form. Unknown groups/names and empty lists are
+        ignored: schema drift must not crash the manager-side ref."""
+        for group, names in options.items():
+            if group not in self._data:
+                continue
+            for name, opts in names.items():
+                if name not in self._data[group]._fields:
+                    continue
+                param = self._data[group][name]
+                if isinstance(param, StringParam) and param.options is not None and opts:
+                    param.options = list(opts)
+
     def update(self, params: Dict[str, Dict[str, Any]]):
         """
         Update the parameters with new values.

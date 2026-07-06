@@ -677,6 +677,13 @@ class NodeRef:
                 self.params.update(msg.content.get("params", {}))
             except Exception:
                 pass
+            # Runtime-enumerated option lists (device pickers): the node
+            # process is the authority; refresh the manager-side descriptors
+            # so the bridge's state_update rebroadcast carries fresh options.
+            try:
+                self.params.update_options(msg.content.get("param_options", {}))
+            except Exception:
+                pass
         elif msg.type == MessageType.PROCESSING_ERROR:
             self.last_error = msg.content.get("error")
         elif msg.type == MessageType.NODE_STATS:
