@@ -22,3 +22,20 @@ def test_output_slot(dtype):
     assert slot.notifiers == []
     assert slot.has_ipc is False
     assert slot.has_thread is False
+
+
+def test_noderef_carries_spec_not_class():
+    """The manager-side proxy is spec-shaped: it must never hold the node CLASS
+    (holding the class means the manager imported the implementation)."""
+    from goofi.nodes.inputs.constantarray import ConstantArray
+
+    ref, node = ConstantArray.create_local(initial_params={"common": {"autotrigger": False}})
+    try:
+        assert not hasattr(ref, "node_class")
+        assert ref.spec.type == "ConstantArray"
+        assert ref.spec.cls_name == "ConstantArray"
+        assert ref.spec.module == "goofi.nodes.inputs.constantarray"
+        assert ref.category == ref.spec.category == "inputs"
+        assert ref.__doc__ == ref.spec.doc
+    finally:
+        ref.terminate()

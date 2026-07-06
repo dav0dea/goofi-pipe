@@ -23,7 +23,10 @@ from dataclasses import dataclass, field
 from multiprocessing import Pipe, Process
 from multiprocessing.connection import _ConnectionBase
 from threading import Event, Lock, RLock, Thread
-from typing import Any, Callable, Dict, List, Optional, Type
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Type
+
+if TYPE_CHECKING:
+    from goofi.registry import NodeSpec
 
 from goofi import nodes as goofi_nodes
 from goofi.codec import decode_message, encode_message
@@ -259,7 +262,9 @@ class NodeRef:
     input_slots: Dict[str, DataType]
     output_slots: Dict[str, DataType]
     params: NodeParams
-    node_class: Type
+    # The registry spec describing this node's type (metadata only — holding
+    # the CLASS here would mean the manager imported the implementation).
+    spec: "NodeSpec"
 
     category: str = None
     process: Optional[Process] = None
@@ -295,8 +300,8 @@ class NodeRef:
     restart_count: int = field(default=0, repr=False, compare=False)
 
     def __post_init__(self):
-        self.__doc__ = self.node_class.docstring()
-        self.category = self.node_class.category()
+        self.__doc__ = self.spec.doc
+        self.category = self.spec.category
 
         # Events / threads / handler bookkeeping. Init here (not as dataclass
         # fields) so dataclass equality doesn't recurse into thread state.

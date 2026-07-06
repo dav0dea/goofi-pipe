@@ -1200,6 +1200,8 @@ class Node(ABC):
         in_process: bool,
         process: Optional[Process],
     ) -> NodeRef:
+        from goofi.registry import NodeSpec
+
         in_slots, out_slots, _ = cls._configure()
         return NodeRef(
             node_id=node_id,
@@ -1207,7 +1209,7 @@ class Node(ABC):
             input_slots={name: slot.dtype for name, slot in in_slots.items()},
             output_slots={name: slot.dtype for name, slot in out_slots.items()},
             params=params,
-            node_class=cls,
+            spec=NodeSpec.from_class(cls),
             process=process,
         )
 

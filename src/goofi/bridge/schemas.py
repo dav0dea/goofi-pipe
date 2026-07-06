@@ -152,9 +152,9 @@ def describe_node_instance(uid: str, ref: NodeRef) -> Dict[str, Any]:
     return {
         "uid": uid,
         "name": ref.name,
-        "type": ref.node_class.__name__,
+        "type": ref.spec.type,
         "category": ref.category,
-        "doc": ref.node_class.docstring() or "",
+        "doc": ref.spec.doc,
         "input_slots": {n: dt.name for n, dt in ref.input_slots.items()},
         "output_slots": {n: dt.name for n, dt in ref.output_slots.items()},
         "params": describe_params(ref.params),

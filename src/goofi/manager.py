@@ -39,7 +39,7 @@ from goofi.expression import rewrite_nd_refs
 from goofi.message import MessageType
 from goofi.node import MultiprocessingForbiddenError, Node
 from goofi.node_helpers import NodeProcessRegistry, NodeRef
-from goofi.registry import build_catalog
+from goofi.registry import NodeSpec, build_catalog
 from goofi.transport import ensure_iox2_runtime_dirs, set_instance_id
 
 if TYPE_CHECKING:
@@ -349,7 +349,7 @@ class Manager:
 
     def _spawn_node(
         self,
-        node_cls: type,
+        spec: "NodeSpec",
         node_id: str,
         params: Optional[Dict[str, Dict[str, Any]]],
         group: str,
@@ -365,8 +365,11 @@ class Manager:
         - default: spawn the node in its own subprocess via `Node.create()`.
 
         Multiprocessing-forbidden nodes always fall back to `create_local()`.
+        The local and group paths run the node outside a dedicated child, so
+        they are the two documented exceptions that load the class here.
         """
         capture_logs = not self._headless
+        node_cls = spec.load_class()
         if not self._use_multiprocessing:
             ref, _ = node_cls.create_local(
                 node_id=node_id, initial_params=params, capture_logs=capture_logs
@@ -476,7 +479,6 @@ class Manager:
         spec = self.node_specs.get(node_type)
         if spec is None or spec.category != category:
             raise ValueError(f"Unknown node type '{category}/{node_type}'.")
-        node_cls: type = spec.load_class()
 
         # Two independent identities:
         #  - `uid` (universal): the key everything references the node by; minted
@@ -499,7 +501,7 @@ class Manager:
         node_id = f"{assigned_name}-{uuid.uuid4().hex[:8]}"
         group = self._resolve_group(node_id, params)
 
-        ref = self._spawn_node(node_cls, node_id, params, group)
+        ref = self._spawn_node(spec, node_id, params, group)
         ref.uid = member_uid
         ref.name = assigned_name
         ref.membership = membership
@@ -760,7 +762,7 @@ class Manager:
         new ref for observability."""
         with (getattr(self, "_supervisor_lock", None) or contextlib.nullcontext()):
             old = self.nodes[uid]
-            node_cls = old.node_class
+            spec = old.spec
             try:
                 params = old.params.serialize()
             except Exception:
@@ -782,7 +784,7 @@ class Manager:
             # _spawn_node's `group != node_id` test would misroute it to the
             # shared-group registry). An explicit process_group is preserved.
             group = self._resolve_group(new_id, params)
-            new_ref = self._spawn_node(node_cls, new_id, params, group)
+            new_ref = self._spawn_node(spec, new_id, params, group)
             new_ref.set_message_handler(MessageType.SHUTDOWN, lambda *args: self.terminate())
             new_ref.gui_kwargs = gui_kwargs
             new_ref.membership = membership
