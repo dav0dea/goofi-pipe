@@ -28,7 +28,7 @@ from typing import Callable, Dict, List, Optional, Tuple
 
 import goofi.params as _params_mod
 from goofi.data import DataType
-from goofi.node_helpers import InputSlot, OutputSlot, normalize_config
+from goofi.node_helpers import InputSlot, OutputSlot, clean_docstring, normalize_config
 
 HOOK_NAMES = ("config_input_slots", "config_output_slots", "config_params")
 
@@ -106,12 +106,16 @@ def _compile_function(fd: ast.FunctionDef, filename: str, ns: dict) -> Callable:
     return ns[fd.name]
 
 
-def _exec_static_constants(tree: ast.Module, filename: str, ns: dict) -> None:
-    """Execute top-level assignments that evaluate under the whitelist, in file
-    order. Assignments touching non-whitelisted names are skipped — a hook that
-    needs one will raise NameError, which is the contract signal."""
+def _exec_static_declarations(tree: ast.Module, filename: str, ns: dict) -> None:
+    """Execute top-level assignments AND function defs that evaluate under the
+    whitelist, in file order — the same-file static declarations hooks may use
+    (constants, shared param-builder helpers). Statements touching
+    non-whitelisted names are skipped — a hook that needs one will raise
+    NameError, which is the contract signal. Defining a helper function is
+    side-effect-free; if its BODY reaches outside the whitelist, calling it
+    from a hook fails validation with the same signal."""
     for stmt in tree.body:
-        if isinstance(stmt, (ast.Assign, ast.AnnAssign)):
+        if isinstance(stmt, (ast.Assign, ast.AnnAssign, ast.FunctionDef)):
             mod = ast.Module(body=[stmt], type_ignores=[])
             ast.fix_missing_locations(mod)
             try:
@@ -199,7 +203,7 @@ def build_catalog(
             if not any(isinstance(b, ast.Name) and b.id == "Node" for b in cls_node.bases):
                 continue
             ns = _whitelist_namespace()
-            _exec_static_constants(tree, str(path), ns)
+            _exec_static_declarations(tree, str(path), ns)
 
             hooks: Dict[str, Callable] = {}
             dynamic = False
@@ -232,7 +236,7 @@ def build_catalog(
                 category=category,
                 module=module,
                 cls_name=cls_node.name,
-                doc=ast.get_docstring(cls_node) or "",
+                doc=clean_docstring(ast.get_docstring(cls_node, clean=False)),
                 available=available,
                 dynamic=dynamic,
                 missing_deps=missing,

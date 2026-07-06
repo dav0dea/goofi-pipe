@@ -97,13 +97,19 @@ def list_nodes(verbose: bool = False) -> List[Type]:
                 continue
 
             members = inspect.getmembers(module, inspect.isclass)
-            new_nodes = [cls for _, cls in members if issubclass(cls, Node) and cls is not Node]
+            # Only classes DEFINED in this module (a multi-node file's classes are
+            # re-exported into sibling modules via imports; don't double-count).
+            new_nodes = [
+                cls
+                for _, cls in members
+                if issubclass(cls, Node) and cls is not Node and cls.__module__ == module.__name__
+            ]
 
-            if len(new_nodes) != 1:
-                raise ValueError(f"Expected exactly one node in module {module.__name__}, got {len(new_nodes)}")
+            if not new_nodes:
+                raise ValueError(f"Expected at least one node in module {module.__name__}, got 0")
 
             if verbose:
-                print(f"  {module_annot}{new_nodes[0].__name__}{module_annot}", end="")
+                print(f"  {module_annot}{', '.join(c.__name__ for c in new_nodes)}{module_annot}", end="")
 
             nodes.extend(new_nodes)
         return nodes
@@ -201,6 +207,14 @@ class OutputSlot:
         if lk is None:
             lk = self.__dict__["_viewer_lock"] = Lock()
         return lk
+
+
+def clean_docstring(raw: Optional[str]) -> str:
+    """The ONE docstring normalization — shared by `Node.docstring()` and the
+    registry's AST extraction so both derive the identical palette doc."""
+    if not raw:
+        return ""
+    return "\n".join(line.strip() for line in raw.split("\n"))
 
 
 def normalize_config(in_slots, out_slots, params):

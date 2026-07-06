@@ -124,6 +124,39 @@ def test_same_file_constants_resolve(tmp_path):
     assert catalog["Reducer"].dynamic is False
 
 
+HELPER_FN = '''
+from goofi.node import Node
+from goofi.params import IntParam
+
+def _shared_params():
+    return {"g": {"size": IntParam(8, 1, 64)}}
+
+class First(Node):
+    def config_params():
+        return _shared_params()
+    def process(self):
+        pass
+
+class Second(Node):
+    def config_params():
+        return _shared_params()
+    def process(self):
+        pass
+'''
+
+
+def test_same_file_helper_function_shared_by_hooks(tmp_path):
+    root = make_nodes_tree(tmp_path, {"signal/pair.py": HELPER_FN})
+    catalog, errors = build_catalog(root, package="fixture.nodes")
+    assert errors == []
+    _, _, p1 = catalog["First"].configure()
+    _, _, p2 = catalog["Second"].configure()
+    assert p1["g"]["size"].value == p2["g"]["size"].value == 8
+    # fresh Param objects per configure() — no shared mutable state
+    assert p1["g"]["size"] is not p2["g"]["size"]
+    assert catalog["First"].dynamic is False
+
+
 DYNAMIC = '''
 from goofi.node import Node
 from goofi.params import StringParam

@@ -36,7 +36,7 @@ from goofi import node_log, node_viewer
 from goofi.message import Message, MessageType
 from goofi.node_reduce import viewspec_from_dict
 from goofi.node_stats import ExecStats
-from goofi.node_helpers import InputSlot, NodeRef, OutputSlot, normalize_config
+from goofi.node_helpers import InputSlot, NodeRef, OutputSlot, clean_docstring, normalize_config
 from goofi.params import InvalidParamError, NodeParams, normalize_expression_binding
 from goofi.transport import (
     WaitSet,
@@ -1222,9 +1222,7 @@ class Node(ABC):
 
     @classmethod
     def docstring(cls) -> str:
-        if hasattr(cls, "__doc__") and cls.__doc__:
-            return "\n".join([line.strip() for line in cls.__doc__.split("\n")])
-        return ""
+        return clean_docstring(cls.__doc__)
 
     @property
     def assets_path(self) -> Path:

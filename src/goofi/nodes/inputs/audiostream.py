@@ -14,10 +14,17 @@ class AudioStream(Node):
     """
 
     def config_params():
+        # Device enumeration is runtime state: under the registry's static
+        # evaluation this falls to the fallback (the live node reports the
+        # real list via its state push).
+        try:
+            devices = AudioStream.list_audio_devices()
+        except Exception:
+            devices = ["default"]
         return {
             "audio": {
                 "sampling_rate": StringParam("44100", options=["44100", "48000"]),
-                "device": StringParam(AudioStream.list_audio_devices()[0], options=AudioStream.list_audio_devices()),
+                "device": StringParam(devices[0], options=devices),
                 "convert_to_mono": True,
             },
             "common": {"autotrigger": True},

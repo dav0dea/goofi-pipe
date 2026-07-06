@@ -59,12 +59,3 @@ def test_category(node: Type[Node]):
         f"Category of {node.__name__} should not be 'goofi'. The node should be placed in "
         f"'goofi/nodes/<category>/{node.__name__.lower()}.py'."
     )
-
-
-@pytest.mark.parametrize("node", list_nodes())
-def test_node_filename(node: Type[Node]):
-    fname = node.__module__.split(".")[-1]
-    # TODO: we might want to loosen this restriction in the future
-    assert (
-        fname == node.__name__.lower()
-    ), f"Filename of node '{node.__name__}' should be '{node.__name__.lower()}.py' (TODO: maybe loosen this restriction)."

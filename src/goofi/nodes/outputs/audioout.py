@@ -24,10 +24,17 @@ class AudioOut(Node):
         return {"finished": DataType.ARRAY}
 
     def config_params():
+        # Device enumeration is runtime state: under the registry's static
+        # evaluation this falls to the fallback (the live node reports the
+        # real list via its state push).
+        try:
+            devices = AudioOut.list_audio_devices()
+        except Exception:
+            devices = ["default"]
         return {
             "audio": {
                 "sampling_rate": StringParam("44100", options=["44100", "48000", "32000", "16000"]),
-                "device": StringParam(AudioOut.list_audio_devices()[0], options=AudioOut.list_audio_devices()),
+                "device": StringParam(devices[0], options=devices),
                 "transition_samples": 100,
             }
         }
