@@ -97,3 +97,78 @@ def test_crash_after_ready_still_restarts():
         assert new_ref.restart_count == 1
     finally:
         mgr.terminate(notify_gui=False)
+
+
+def test_add_node_returns_before_ready():
+    """add_node must not block on the child's first state push — the node is
+    tracked (and broadcast) from the moment of add."""
+    from .test_manager import _bare_manager
+
+    mgr = _bare_manager()
+    try:
+        uid = mgr.add_node("ConstantArray", "inputs", params={"common": {"autotrigger": False}})
+        ref = mgr.nodes[uid]
+        assert ref.stage == "creating"  # returned before the first STATE_UPDATE
+        assert wait_until(lambda: ref.stage == "ready")
+    finally:
+        mgr.terminate(notify_gui=False)
+
+
+def test_ctrl_messages_queue_until_ready():
+    """add + link + param issued before the child is up must all apply, in order."""
+    from .test_manager import _bare_manager
+
+    mgr = _bare_manager()
+    try:
+        a = mgr.add_node("ConstantArray", "inputs", params={"common": {"autotrigger": False}})
+        b = mgr.add_node("Math", "array")
+        mgr.add_link(a, b, "out", "data")
+        mgr.nodes[b].update_param("math", "multiply", 3.0)
+        assert wait_until(lambda: mgr.nodes[a].stage == "ready" and mgr.nodes[b].stage == "ready")
+        # the queued link materialized: the upstream slot gained a subscriber
+        assert wait_until(
+            lambda: (mgr.nodes[a].serialized_state or {})
+            .get("output_subscribers", {})
+            .get("out", 0)
+            >= 1
+        )
+        # the queued param update reached the node (echoed in its state push)
+        assert wait_until(
+            lambda: (mgr.nodes[b].serialized_state or {}).get("params", {}).get("math", {}).get("multiply")
+            == 3.0
+        )
+    finally:
+        mgr.terminate(notify_gui=False)
+
+
+def test_stage_passes_through_setup_to_ready():
+    from .test_manager import _bare_manager
+
+    mgr = _bare_manager()
+    try:
+        uid = mgr.add_node("ConstantArray", "inputs", params={"common": {"autotrigger": False}})
+        ref = mgr.nodes[uid]
+        seen = set()
+        assert wait_until(lambda: (seen.add(ref.stage), ref.stage == "ready")[1])
+        assert seen <= {"creating", "setup", "ready"} and "ready" in seen
+
+        from goofi.bridge.schemas import describe_node_instance
+
+        assert describe_node_instance(uid, ref)["stage"] == "ready"
+    finally:
+        mgr.terminate(notify_gui=False)
+
+
+def test_terminate_while_creating_kills_the_process():
+    """A TERMINATE publish can't reach a child that has no endpoints yet —
+    tearing down a never-ready node must kill the process directly."""
+    spec = dataclasses.replace(CATALOG["ConstantArray"], module="tests._slow_import", cls_name="SlowNode")
+    ref = spawn_node(spec)
+    try:
+        assert ref.stage == "creating"
+        t0 = time.time()
+        ref.terminate()
+        assert wait_until(lambda: not ref.process.is_alive(), timeout=2.0)
+        assert time.time() - t0 < 2.0
+    finally:
+        ref.terminate()

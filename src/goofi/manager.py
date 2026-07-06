@@ -511,9 +511,9 @@ class Manager:
         if membership is None:
             self._attach_member(ROOT_ID, member_uid, self._unique_local_in(ROOT_ID, assigned_name))
 
-        # Best-effort: block briefly for the initial STATE_UPDATE so the
-        # rest of the system (save / bridge) has node state to read.
-        ref.wait_for_state(timeout=2.0)
+        # No wait: the node is tracked (stage 'creating') from this moment; ctrl
+        # traffic issued before its first STATE_UPDATE rides the NodeRef's
+        # pending queue, and the browser follows the stage via events.
 
         # Refresh every node's name->id directory so `nd('name')` expression
         # references (including the new node's own) resolve to current ids.
@@ -816,7 +816,8 @@ class Manager:
                 except Exception:
                     logger.exception("restart: bridge re-wire failed for %s", uid)
 
-            new_ref.wait_for_state(timeout=2.0)
+            # No wait: the rewires below ride the new ref's pending-ctrl queue
+            # and flush in order on its first STATE_UPDATE.
 
             # Re-establish every link touching this node from the current refs.
             for link in self._links:
@@ -2435,22 +2436,25 @@ class Manager:
         return changed
 
     def _node_record(self, uid: str) -> Dict[str, Any]:
+        """A node's patch record, built purely from manager-side truth.
+
+        `ref.params` is AUTHORITATIVE (update_param/set_expression write it
+        synchronously; node echoes reconcile it), and type/category live on the
+        spec — so a record needs no node-pushed state. That keeps save/share
+        correct for a node that is still booting (async add) and keeps runtime
+        junk (log_endpoint, setup_complete) out of .gfi files."""
         ref = self.nodes[uid]
-        if ref.serialized_state is None:
-            raise RuntimeError(f"Node {uid} does not have a serialized state. Recreate the node and try again.")
-        state = deepcopy(ref.serialized_state)
-        # Overlay the AUTHORITATIVE live params: update_param/set_expression write
-        # ref.params synchronously, but serialized_state only refreshes on the node's
-        # next echo — so a save or share immediately after an edit would otherwise
-        # snapshot the stale value (and lose a just-bound expression).
-        state["params"] = ref.params.serialize()
-        state["gui_kwargs"] = ref.gui_kwargs
-        state.pop("output_subscribers", None)
+        rec: Dict[str, Any] = {
+            "_type": ref.spec.type,
+            "category": ref.spec.category,
+            "params": ref.params.serialize(),
+            "gui_kwargs": deepcopy(ref.gui_kwargs),
+        }
         if ref.uid is not None:
-            state["uid"] = ref.uid
+            rec["uid"] = ref.uid
         if ref.name is not None:
-            state["name"] = ref.name
-        return state
+            rec["name"] = ref.name
+        return rec
 
     def _local_link(self, link: Dict[str, str], inst_id: str) -> Dict[str, str]:
         m = self._instances[inst_id].members
@@ -2811,20 +2815,11 @@ class Manager:
     def serialize_patch(self, timeout: float = 3.0) -> str:
         """Serialize the current graph to `.gfi` YAML text, without writing.
 
-        Reads each node's pushed `serialized_state` directly (waiting briefly
-        per node if it hasn't pushed yet) and merges its gui_kwargs. Shared by
-        `save()` (writes to disk) and the bridge `serialize` op ("Save in
-        browser" download).
+        Built purely from manager-side truth (`_node_record`: spec + live
+        params + gui_kwargs), so it works even while nodes are still booting
+        (async add). Shared by `save()` (writes to disk) and the bridge
+        `serialize` op ("Save in browser" download).
         """
-        # Snapshot the names first: a patch may still be spawning nodes on
-        # another thread, and iterating the live container would raise
-        # "dictionary changed size during iteration" (matches terminate()).
-        for name in list(self.nodes):
-            ref = self.nodes[name]
-            ref.wait_for_state(timeout=timeout)
-            if ref.serialized_state is None:
-                raise RuntimeError(f"Node {name} does not have a serialized state. Recreate the node and try again.")
-
         # Collapse the flat live graph into the recursive v2 envelope, reading
         # first-class sub-patch membership (not name prefixes).
         from goofi.patch_format import build_v2
@@ -2842,9 +2837,8 @@ class Manager:
     def save(self, filepath: Optional[str] = None, overwrite: bool = False, timeout: float = 3.0) -> None:
         """Persist the current graph to a `.gfi` YAML file.
 
-        Reads each node's pushed `serialized_state` directly — no
-        request/response round-trip. If a node hasn't pushed yet, waits
-        briefly with a small per-node timeout.
+        Built from manager-side truth (see `serialize_patch`) — no node
+        round-trip, valid even while nodes are still booting.
         """
         if not filepath and self._save_path:
             filepath = self._save_path

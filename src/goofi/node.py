@@ -277,16 +277,21 @@ class Node(ABC):
     def _setup(self) -> None:
         if self._capture_logs:
             node_log.bind_thread_node(self.node_id)
-        while not self._setup_done.is_set() and self._alive:
-            try:
-                self.setup()
-                self._instantiate_saved_expressions()
-                self._setup_done.set()
-                self._report_error(None)
-                self._mark_dirty()
-            except Exception:
-                self._report_error(traceback.format_exc())
-                time.sleep(0.1)
+        try:
+            self.setup()
+            self._instantiate_saved_expressions()
+            self._setup_done.set()
+            self._report_error(None)
+        except Exception:
+            # No retry: with imports at module top, a setup failure is a real
+            # bug or missing resource, not a transient race. Surface it; the
+            # node idles (ctrl still works) and the manual restart affordance
+            # re-runs the full bootstrap.
+            self._report_error(traceback.format_exc())
+        finally:
+            # Announce setup_complete (or its absence) promptly via the state
+            # plane — this is what flips the UI's 'setting up…' spinner.
+            self._mark_dirty()
 
     def _instantiate_saved_expressions(self) -> None:
         """Build engines for any param that arrived from a saved patch
@@ -490,6 +495,10 @@ class Node(ABC):
             "category": self.category(),
             "params": self.params.serialize(),
             "output_subscribers": {n: s.subscriber_count for n, s in self.output_slots.items()},
+            # Lifecycle: False while setup() is still running on its thread —
+            # drives the manager-side 'setup' stage between the first state
+            # push and setup completion.
+            "setup_complete": self._setup_done.is_set(),
             # Peer-to-peer SSE log endpoint for this node (None when capture off).
             "log_endpoint": self._log_endpoint,
         }

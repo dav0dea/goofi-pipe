@@ -113,16 +113,14 @@ def test_node_record_reflects_live_params_despite_stale_serialized_state():
     # update_param / set_expression write ref.params synchronously, but
     # serialized_state only refreshes on the node's next echo. A save or a sub-patch
     # share immediately after an edit must still capture the live binding — _node_record
-    # reads the authoritative live params, not the (possibly stale) snapshot.
+    # is built from the authoritative live params, never the (possibly stale) snapshot.
     mgr = _bare_manager(use_multiprocessing=False)
     try:
         a = mgr.add_node("Oscillator", "inputs")
         b = mgr.add_node("Oscillator", "inputs")
+        assert mgr.nodes[b].wait_for_state(timeout=10.0)  # get a (soon-stale) snapshot
         mgr.set_expression(b, "oscillator", "frequency", f"nd('{mgr.nodes[a].name}')", enabled=True)
-        # serialized_state still holds the pre-edit value...
-        assert mgr.nodes[b].serialized_state["params"]["oscillator"]["frequency"] != \
-            mgr.nodes[b].params["oscillator"]["frequency"].expression
-        # ...but the record captures the live expression.
+        # even if the snapshot predates the edit, the record captures the live expression
         rec = mgr._node_record(b)
         assert rec["params"]["oscillator"]["frequency"]["expression"] == f"nd('{mgr.nodes[a].name}')"
     finally:

@@ -175,6 +175,9 @@ def describe_node_instance(uid: str, ref: NodeRef) -> Dict[str, Any]:
         # How many times the supervisor has auto-restarted this node after a
         # process crash; lets a freshly-connected client render the crash badge.
         "restarts": ref.restart_count,
+        # Lifecycle stage (creating/setup/ready/error) so a freshly-connected
+        # client renders the boot spinner / terminal boot error.
+        "stage": ref.stage,
         # Peer-to-peer SSE log endpoint the node advertises via STATE_UPDATE.
         # None until the node's first state push (or when capture is off).
         "log_endpoint": (ref.serialized_state or {}).get("log_endpoint"),

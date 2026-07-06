@@ -560,6 +560,7 @@ class ControlHub:
                     "payload": {
                         "node": uid,
                         "params": describe_params(noderef.params),
+                        "stage": noderef.stage,
                         "output_subscribers": message.content.get("output_subscribers", {}),
                         # Advertise the node's SSE log endpoint as soon as it's known
                         # (first state push) so the frontend can subscribe peer-to-peer.

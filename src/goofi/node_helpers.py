@@ -315,6 +315,12 @@ class NodeRef:
         # Events / threads / handler bookkeeping. Init here (not as dataclass
         # fields) so dataclass equality doesn't recurse into thread state.
         self._first_state_event = Event()
+        # Ctrl messages issued before the child's endpoints exist would be
+        # dropped by iceoryx2 (no subscriber history). Queue them and flush in
+        # order on the first STATE_UPDATE — this is what makes add-then-link
+        # safe without any blocking wait (patch load, undo replay, agents).
+        self._pending_ctrl: List[Message] = []
+        self._ctrl_queue_lock = RLock()
         self._data_handlers: Dict[str, tuple] = {}
         self._data_handlers_lock = RLock()
         self._data_waitset = WaitSet()
@@ -353,6 +359,13 @@ class NodeRef:
     def _send(self, msg: Message) -> None:
         if self.ctrl_pub is None:
             return
+        with self._ctrl_queue_lock:
+            if not self._first_state_event.is_set():
+                # TERMINATE is exempt: a never-ready node is killed directly
+                # in terminate(); queueing it would just pin the message.
+                if msg.type != MessageType.TERMINATE:
+                    self._pending_ctrl.append(msg)
+                    return
         self.ctrl_pub.send(encode_message(msg))
         self._ctrl_notifier.notify()
 
@@ -464,6 +477,15 @@ class NodeRef:
         self._alive = False
         # Wake the data-pump out of its idle wait so it can exit.
         self._data_waitset_dirty.set()
+        if not self._first_state_event.is_set() and self.process is not None:
+            # The child has no ctrl endpoints yet (still importing/constructing)
+            # — a TERMINATE publish would be lost. Kill the process directly.
+            try:
+                if self.process.is_alive():
+                    self.process.terminate()
+            except Exception:
+                pass
+            return
         try:
             self._send(Message(MessageType.TERMINATE, {}))
         except Exception:
@@ -636,8 +658,18 @@ class NodeRef:
         here is the ultimate authority and overwrites it.)"""
         if msg.type == MessageType.STATE_UPDATE:
             self.serialized_state = msg.content
-            self._first_state_event.set()
+            with self._ctrl_queue_lock:
+                self._first_state_event.set()
+                # Flush INSIDE the lock: a concurrent _send must not overtake
+                # messages that were queued before the node came up.
+                for queued in self._pending_ctrl:
+                    self.ctrl_pub.send(encode_message(queued))
+                if self._pending_ctrl:
+                    self._ctrl_notifier.notify()
+                self._pending_ctrl = []
             if self.stage == "creating":
+                self.stage = "ready" if msg.content.get("setup_complete", True) else "setup"
+            elif self.stage == "setup" and msg.content.get("setup_complete", False):
                 self.stage = "ready"
             # Mirror reported params back into the local NodeParams so GUI reads
             # stay coherent across reconnects.

@@ -21,6 +21,8 @@ def _fake_ref(callbacks=None, updates=None):
         node_stats=None,
         stage="creating",
         _first_state_event=threading.Event(),
+        _ctrl_queue_lock=threading.RLock(),
+        _pending_ctrl=[],
         params=SimpleNamespace(update=lambda d: (updates if updates is not None else []).append(d)),
         callbacks=callbacks or {},
     )
