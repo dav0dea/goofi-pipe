@@ -22,13 +22,14 @@ def _bare_manager(use_multiprocessing: bool = True) -> Manager:
     """Construct a Manager without entering its blocking event loop."""
     import os, atexit
     from goofi.manager import _cleanup_iceoryx2_shm
-    from goofi.node_helpers import NodeProcessRegistry, list_nodes
+    from goofi.node_helpers import NodeProcessRegistry
+    from goofi.registry import build_catalog
 
     mgr = Manager.__new__(Manager)
     instance_id = f"{os.getpid()}-{uuid.uuid4().hex[:8]}"
     set_instance_id(instance_id)
     atexit.register(_cleanup_iceoryx2_shm, instance_id)
-    list_nodes(verbose=False)
+    mgr.node_specs, _ = build_catalog()
     mgr._instance_id = instance_id
     mgr._headless = True
     mgr._use_multiprocessing = use_multiprocessing

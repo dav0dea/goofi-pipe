@@ -42,6 +42,24 @@ def test_serialize_op_calls_manager():
     assert res["yaml"].startswith("nodes:")
 
 
+def test_list_nodes_op_serves_the_catalog():
+    """The palette RPC serves registry specs — no node imports, and every entry
+    carries the availability/dynamic flags the add menu renders."""
+    manager = _bare_manager()
+    try:
+        hub = _hub(manager)
+        res = asyncio.run(hub._dispatch("list_nodes", {}))
+        types = res["types"]
+        assert len(types) >= 145
+        assert all({"type", "category", "doc", "available", "dynamic", "missing_deps"} <= set(t) for t in types)
+        assert types == sorted(types, key=lambda t: (t["category"], t["type"]))
+        by_type = {t["type"]: t for t in types}
+        assert by_type["AudioStream"]["dynamic"] is True
+        assert by_type["Oscillator"]["dynamic"] is False
+    finally:
+        manager.terminate(notify_gui=False)
+
+
 def test_add_node_dispatch_forwards_member_uid():
     """Redo-of-add and undo-of-delete re-create a node with its ORIGINAL uid
     (sent as `member_uid`) so uid-keyed links and panel bindings reconnect. The

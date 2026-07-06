@@ -165,7 +165,7 @@ class ControlHub:
     async def _dispatch(self, op: str, payload: Dict[str, Any]) -> Any:
         manager = self.server.manager
         if op == "list_nodes":
-            return {"types": list_node_types()}
+            return {"types": list_node_types(manager.node_specs)}
         if op == "list_graph":
             return self._snapshot()
         if op == "add_node":

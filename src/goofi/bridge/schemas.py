@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List
 
-from goofi.node_helpers import NodeRef, list_nodes
+from goofi.node_helpers import NodeRef
 from goofi.params import (
     BoolParam,
     FloatParam,
@@ -64,13 +64,16 @@ def describe_params(params: NodeParams) -> Dict[str, Dict[str, Any]]:
     return out
 
 
-def describe_node_class(cls: type) -> Dict[str, Any]:
-    """Describe a Node *class* for the add-node palette."""
-    input_slots, output_slots, default_params = cls._configure()
+def describe_node_spec(spec) -> Dict[str, Any]:
+    """One add-node-palette record, from the registry spec — no import."""
+    input_slots, output_slots, default_params = spec.configure()
     return {
-        "type": cls.__name__,
-        "category": cls.category(),
-        "doc": cls.docstring() or "",
+        "type": spec.type,
+        "category": spec.category,
+        "doc": spec.doc,
+        "available": spec.available,
+        "dynamic": spec.dynamic,
+        "missing_deps": list(spec.missing_deps),
         "input_slots": {name: slot.dtype.name for name, slot in input_slots.items()},
         "output_slots": {name: slot.dtype.name for name, slot in output_slots.items()},
         "params": describe_params(default_params),
@@ -178,13 +181,13 @@ def describe_node_instance(uid: str, ref: NodeRef) -> Dict[str, Any]:
     }
 
 
-def list_node_types() -> List[Dict[str, Any]]:
-    """Return all registered node classes as a JSON-safe list."""
+def list_node_types(catalog) -> List[Dict[str, Any]]:
+    """Return the registry catalog as a JSON-safe list for the add-node palette."""
     out: List[Dict[str, Any]] = []
-    for cls in list_nodes():
+    for spec in catalog.values():
         try:
-            out.append(describe_node_class(cls))
+            out.append(describe_node_spec(spec))
         except Exception as e:
-            print(f"bridge: failed to describe {cls.__name__}: {e}")
+            print(f"bridge: failed to describe {spec.type}: {e}")
     out.sort(key=lambda x: (x["category"], x["type"]))
     return out

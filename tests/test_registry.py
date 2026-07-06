@@ -249,3 +249,17 @@ def test_load_class_real_library():
     catalog, _ = build_catalog()
     cls = catalog["ConstantArray"].load_class()
     assert cls.__name__ == "ConstantArray"
+
+
+def test_describe_node_spec_payload():
+    from goofi.bridge.schemas import describe_node_spec
+
+    catalog, _ = build_catalog()
+    d = describe_node_spec(catalog["ConstantArray"])
+    assert d["type"] == "ConstantArray"
+    assert d["category"] == "inputs"
+    assert d["available"] is True
+    assert d["dynamic"] is False
+    assert d["missing_deps"] == []
+    assert len(d["output_slots"]) >= 1
+    assert isinstance(d["params"], dict)

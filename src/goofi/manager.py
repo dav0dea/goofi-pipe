@@ -20,7 +20,6 @@ from __future__ import annotations
 
 import atexit
 import contextlib
-import importlib
 import logging
 import os
 import re
@@ -39,7 +38,8 @@ import yaml
 from goofi.expression import rewrite_nd_refs
 from goofi.message import MessageType
 from goofi.node import MultiprocessingForbiddenError, Node
-from goofi.node_helpers import NodeProcessRegistry, NodeRef, list_nodes
+from goofi.node_helpers import NodeProcessRegistry, NodeRef
+from goofi.registry import build_catalog
 from goofi.transport import ensure_iox2_runtime_dirs, set_instance_id
 
 if TYPE_CHECKING:
@@ -242,7 +242,14 @@ class Manager:
         atexit.register(_cleanup_iceoryx2_shm, instance_id)
 
         print("Starting goofi-pipe...")
-        list_nodes(verbose=True)
+        # The node catalog is built from the AST — no node module is imported
+        # in this process, ever. Implementations import in their own child
+        # process at spawn time (see goofi/registry.py).
+        self.node_specs, spec_errors = build_catalog()
+        cats = sorted({s.category for s in self.node_specs.values()})
+        print(f"Discovered {len(self.node_specs)} node types across {len(cats)} categories ({', '.join(cats)}).")
+        for err in spec_errors:
+            print(f"  ! {err}")
 
         mp_state = "enabled" if use_multiprocessing else "disabled"
         print(f"Initializing goofi-pipe manager (multiprocessing {mp_state}). instance_id={instance_id}")
@@ -466,8 +473,10 @@ class Manager:
                 "(deep sub-patch nesting). Flatten or shorten names."
             )
 
-        mod = importlib.import_module(f"goofi.nodes.{category}.{node_type.lower()}")
-        node_cls: type = getattr(mod, node_type)
+        spec = self.node_specs.get(node_type)
+        if spec is None or spec.category != category:
+            raise ValueError(f"Unknown node type '{category}/{node_type}'.")
+        node_cls: type = spec.load_class()
 
         # Two independent identities:
         #  - `uid` (universal): the key everything references the node by; minted

@@ -106,45 +106,76 @@ def _compile_function(fd: ast.FunctionDef, filename: str, ns: dict) -> Callable:
     return ns[fd.name]
 
 
-def _exec_static_declarations(tree: ast.Module, filename: str, ns: dict) -> None:
-    """Execute top-level assignments AND function defs that evaluate under the
-    whitelist, in file order — the same-file static declarations hooks may use
-    (constants, shared param-builder helpers). Statements touching
-    non-whitelisted names are skipped — a hook that needs one will raise
-    NameError, which is the contract signal. Defining a helper function is
-    side-effect-free; if its BODY reaches outside the whitelist, calling it
-    from a hook fails validation with the same signal."""
+def _free_names(node: ast.AST) -> set:
+    """Names a statement loads but does not bind itself (approximate scope
+    analysis: a name stored anywhere inside counts as bound — good enough for
+    declaration code; hook validation catches anything this misses)."""
+    bound = set()
+    for n in ast.walk(node):
+        if isinstance(n, (ast.Import, ast.ImportFrom)):
+            for alias in n.names:
+                bound.add((alias.asname or alias.name).split(".")[0])
+        elif isinstance(n, ast.Name) and isinstance(n.ctx, ast.Store):
+            bound.add(n.id)
+        elif isinstance(n, ast.ExceptHandler) and n.name:
+            bound.add(n.name)
+        elif isinstance(n, (ast.FunctionDef, ast.Lambda)):
+            for a in getattr(n.args, "args", []):
+                bound.add(a.arg)
+    free = set()
+    for n in ast.walk(node):
+        if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load) and n.id not in bound:
+            free.add(n.id)
+    return free
+
+
+def _collect_declarations(tree: ast.Module) -> Dict[str, ast.stmt]:
+    """Map name -> top-level Assign/AnnAssign/FunctionDef that binds it."""
+    decls: Dict[str, ast.stmt] = {}
     for stmt in tree.body:
-        if isinstance(stmt, (ast.Assign, ast.AnnAssign, ast.FunctionDef)):
-            mod = ast.Module(body=[stmt], type_ignores=[])
-            ast.fix_missing_locations(mod)
-            try:
-                exec(compile(mod, filename, "exec"), ns)
-            except Exception:
-                continue
+        if isinstance(stmt, ast.FunctionDef):
+            decls[stmt.name] = stmt
+        elif isinstance(stmt, (ast.Assign, ast.AnnAssign)):
+            targets = stmt.targets if isinstance(stmt, ast.Assign) else [stmt.target]
+            for t in targets:
+                for n in ast.walk(t):
+                    if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Store):
+                        decls[n.id] = stmt
+    return decls
+
+
+def _resolve_declaration(name: str, decls: Dict[str, ast.stmt], filename: str, ns: dict, _stack=None) -> None:
+    """Execute the same-file top-level declaration binding `name` into `ns`,
+    resolving ITS free names first (recursively). Only what a hook actually
+    needs is ever compiled — declarations touching non-whitelisted names are
+    skipped, so the depending hook raises NameError: the contract signal."""
+    if name in ns or hasattr(builtins, name) or name not in decls:
+        return
+    stack = _stack if _stack is not None else set()
+    if name in stack:  # cycle — leave unresolved, validation reports it
+        return
+    stack.add(name)
+    stmt = decls[name]
+    for dep in _free_names(stmt):
+        _resolve_declaration(dep, decls, filename, ns, stack)
+    mod = ast.Module(body=[stmt], type_ignores=[])
+    ast.fix_missing_locations(mod)
+    try:
+        exec(compile(mod, filename, "exec"), ns)
+    except Exception:
+        pass
 
 
 def _hook_is_dynamic(fd: ast.FunctionDef, ns: dict) -> bool:
     """True when the hook reaches outside the whitelist: any import statement in
     its body, or a loaded name bound neither locally, in the namespace, nor in
     builtins. Such a hook must carry its own fallback path to stay evaluable."""
-    bound = set()
     for node in ast.walk(fd):
         if isinstance(node, (ast.Import, ast.ImportFrom)):
             return True
-        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store):
-            bound.add(node.id)
-        elif isinstance(node, ast.ExceptHandler) and node.name:
-            bound.add(node.name)
-        elif isinstance(node, (ast.FunctionDef, ast.Lambda)):
-            for a in getattr(node.args, "args", []):
-                bound.add(a.arg)
-    for node in ast.walk(fd):
-        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load):
-            if node.id in bound or node.id in ns or hasattr(builtins, node.id):
-                continue
-            return True
-    return False
+    return any(
+        name not in ns and not hasattr(builtins, name) for name in _free_names(fd)
+    )
 
 
 def _module_deps(tree: ast.Module) -> List[str]:
@@ -199,16 +230,21 @@ def build_catalog(
 
         available, missing = _probe_available(_module_deps(tree))
 
+        # One namespace + declaration map per FILE: hooks only trigger the
+        # compilation of same-file declarations they actually reference.
+        ns = _whitelist_namespace()
+        decls = _collect_declarations(tree)
+
         for cls_node in [n for n in tree.body if isinstance(n, ast.ClassDef)]:
             if not any(isinstance(b, ast.Name) and b.id == "Node" for b in cls_node.bases):
                 continue
-            ns = _whitelist_namespace()
-            _exec_static_declarations(tree, str(path), ns)
 
             hooks: Dict[str, Callable] = {}
             dynamic = False
             for item in cls_node.body:
                 if isinstance(item, ast.FunctionDef) and item.name in HOOK_NAMES:
+                    for dep in _free_names(item):
+                        _resolve_declaration(dep, decls, str(path), ns)
                     dynamic = dynamic or _hook_is_dynamic(item, ns)
                     hooks[item.name] = _compile_function(item, str(path), ns)
 
