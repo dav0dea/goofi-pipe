@@ -72,8 +72,9 @@ verify every candidate** before believing it.
     Treat the system as an architecture with a purpose; cut **inflation** (dead code,
     duplication, parallel paths) but **reject reshapes / speculative abstractions** —
     over-abstraction is itself inflation. Before calling anything dead, clear this
-    codebase's *dynamic dispatch*: node auto-discovery (`pkgutil` over `goofi.nodes`,
-    underscore modules skipped), string-keyed RPC ops, the graph-executor + viewer-kind
+    codebase's *dynamic dispatch*: node auto-discovery (the AST catalog in
+    `registry.py` — specs, not imports; multiple Node classes per file; underscore
+    modules skipped), string-keyed RPC ops, the graph-executor + viewer-kind
     registries, the `window.goofi`/`$lib/agent` façade + the **gitignored** `e2e/`
     (plain `grep`, not `git grep`), Svelte-template usage, `Data`/codec meta string keys.
 - **Iterate to convergence, don't chase zero.** Re-run after each fix round.
@@ -173,8 +174,18 @@ If `/dev/shm/iox2_*` accumulates after a crash:
 .venv/bin/python -c "import iceoryx2 as i; i.Node.try_cleanup_dead_nodes(i.ServiceType.Ipc, i.config.global_config())"
 ```
 
-`test.gfi` (repo root) is the reference stress patch: Oscillator + PSD + 8
-Buffers + VideoStream.
+The reference stress-patch shape is Oscillator + PSD + 8 Buffers (+
+VideoStream); build one via the UI or the agent façade and save it — patches
+are gitignored, so don't assume a `test.gfi` exists on disk.
+
+Node authoring: plain top-level imports for ALL deps (never defer into
+`setup()`; no import guards). Config hooks (`config_*`) may reference only
+builtins, `goofi.params`/`DataType`/slot types, and same-file static
+declarations — the AST registry execs them without importing the module
+(runtime state like device lists goes behind a try/except fallback there).
+Multiple `Node` classes per file are fine; type names are globally unique.
+A missing dep greys the palette entry; a broken one fails the node's
+bootstrap and surfaces on its error channel.
 
 ---
 
@@ -187,8 +198,9 @@ Buffers + VideoStream.
 | `data.py` | the `Data` object (dtype, value, meta) + meta conventions (`channels`, coords). |
 | `params.py` | `Float/Int/Bool/StringParam` descriptors + serialization. |
 | `node.py` | the node base: tick `_processing_loop`, slots, SHM publish, ctrl handling. |
-| `node_helpers.py` | `NodeRef` — the manager-side proxy: ctrl pub/notifier, status sub, the per-NodeRef data pump that decodes slot frames for the bridge. |
-| `manager.py` | `Manager` + `NodeContainer`: graph, `_links`, spawn/teardown, save/load, sub-patch runtime (group/expand/share, `_instances`/`_definitions`), bridge bootstrap. |
+| `node_helpers.py` | `NodeRef` — the manager-side proxy: ctrl pub/notifier (+ pre-ready ctrl queue), status sub, lifecycle `stage`, the per-NodeRef data pump that decodes slot frames for the bridge. |
+| `registry.py` | the AST node catalog: `NodeSpec` + `build_catalog`. **The manager never imports node modules** — config hooks are exec'd from the AST in a whitelisted namespace (`__import__` blocked); implementations import only in the node's child process. Purity contract enforced at build + by `tests/test_registry_parity.py`. |
+| `manager.py` | `Manager` + `NodeContainer`: graph, `_links`, async spawn/teardown (add returns immediately; stages creating→setup→ready/error), save/load, sub-patch runtime (group/expand/share, `_instances`/`_definitions`), bridge bootstrap. |
 | `node_log.py` | per-node SSE log server (peer-to-peer; the proven template for the future P2P data plane). |
 | `patch_format.py` | `.gfi` v2 (recursive, sub-patch-aware) build/expand. |
 | `bridge/server.py` | aiohttp HTTP + WS server; routes; static SPA serving. |
@@ -239,6 +251,12 @@ the relevant one before changing the area.
   — each slot's chosen viewer kind + settings, persisted into the `.gfi`.
 - **In/Out authoring** (`2026-06-18-inout-authoring.md`) — sub-patch boundary
   ports.
+- **Node discovery & instantiation**
+  (`2026-07-06-node-discovery-instantiation-design.md`) — the AST registry
+  (`registry.py`), child-side imports, async `add_node` with lifecycle stages
+  (creating→setup→ready/error), pre-ready ctrl queue, bootstrap-error pipe
+  (no restart loop), node-authoritative `param_options` reconciliation (the
+  seam the planned param-refresh feature reuses).
 
 Analysis reports live in `docs/analysis/`. The performance ceiling and a future,
 more aggressive data plane are tracked in **§ Future** below.
