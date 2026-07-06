@@ -6,7 +6,7 @@ from joblib import Parallel, delayed
 from litellm import completion
 from tqdm import tqdm
 
-from goofi.node_helpers import list_nodes
+from goofi.registry import build_catalog
 
 CATEGORY_DESCRIPTIONS = {
     "inputs": "Nodes that provide data to the pipeline.",
@@ -23,7 +23,7 @@ def update_docs():
     Updates the documentation by updating the list of nodes in the README.
     """
 
-    nodes_cls = list_nodes(verbose=True)
+    nodes_cls = [spec.load_class() for spec in build_catalog()[0].values()]
 
     nodes = dict()
     for node in tqdm(nodes_cls, desc="Collecting node information"):
@@ -172,10 +172,10 @@ def _gen_doc(node):
 
 def gen_node_docs():
     """
-    This function retrieves a list of node classes using `list_nodes`, then generates documentation for each node
+    This function retrieves the node classes via the registry catalog, then generates documentation for each node
     in parallel and updates the docstring of the node.
     """
-    nodes_cls = list_nodes(verbose=True)
+    nodes_cls = [spec.load_class() for spec in build_catalog()[0].values()]
     Parallel(n_jobs=-1)(delayed(_gen_doc)(node) for node in tqdm(nodes_cls, desc="Generating documentation"))
 
 

@@ -12,12 +12,7 @@ dirty cycle; the manager's `save()` reads it directly without round-trips.
 """
 from __future__ import annotations
 
-import functools
 import importlib
-import inspect
-import os
-import pkgutil
-import time
 import traceback
 from dataclasses import dataclass, field
 from multiprocessing import Pipe, Process
@@ -28,7 +23,6 @@ from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Type
 if TYPE_CHECKING:
     from goofi.registry import NodeSpec
 
-from goofi import nodes as goofi_nodes
 from goofi.codec import decode_message, encode_message
 from goofi.data import Data, DataType
 from goofi.message import Message, MessageType
@@ -45,84 +39,6 @@ from goofi.transport import (
     status_service_name,
     view_service_name,
 )
-
-
-class NodeLoadingError(Exception):
-    """Custom exception for node loading errors."""
-
-
-@functools.lru_cache(maxsize=1)
-def list_nodes(verbose: bool = False) -> List[Type]:
-    """
-    Gather a list of all available nodes in the goofi.nodes module.
-    """
-    first_module = True
-
-    def _list_nodes_recursive(nodes=None, parent_module=goofi_nodes):
-        from goofi.node import Node
-
-        nonlocal first_module
-
-        if nodes is None:
-            nodes = []
-
-        for info in pkgutil.walk_packages(parent_module.__path__):
-            if "goofi" + os.sep + "nodes" not in info.module_finder.path:
-                continue
-            if info.name.startswith("_"):
-                continue
-
-            start = time.time()
-            try:
-                module = importlib.import_module(f"{parent_module.__name__}.{info.name}")
-            except ModuleNotFoundError as e:
-                print()
-                raise NodeLoadingError(
-                    f"Missing dependency for node '{info.name}' -> {e}; make sure to install the required dependencies."
-                ) from e
-            except Exception as e:
-                print()
-                raise NodeLoadingError(f"Failed to load node '{info.name}' -> {e}") from e
-
-            module_annot = "" if time.time() - start < 0.2 else "!!!"
-
-            if verbose:
-                parts = module.__name__.split(".")
-                if len(parts) == 3:
-                    if first_module:
-                        first_module = False
-                    else:
-                        print()
-                    print(f"- {parts[2]}:", end="")
-
-            if info.ispkg:
-                _list_nodes_recursive(nodes, module)
-                continue
-
-            members = inspect.getmembers(module, inspect.isclass)
-            # Only classes DEFINED in this module (a multi-node file's classes are
-            # re-exported into sibling modules via imports; don't double-count).
-            new_nodes = [
-                cls
-                for _, cls in members
-                if issubclass(cls, Node) and cls is not Node and cls.__module__ == module.__name__
-            ]
-
-            if not new_nodes:
-                raise ValueError(f"Expected at least one node in module {module.__name__}, got 0")
-
-            if verbose:
-                print(f"  {module_annot}{', '.join(c.__name__ for c in new_nodes)}{module_annot}", end="")
-
-            nodes.extend(new_nodes)
-        return nodes
-
-    if verbose:
-        print("Discovering goofi-pipe nodes...")
-    res = _list_nodes_recursive()
-    if verbose:
-        print("\n")
-    return res
 
 
 # ---------------------------------------------------------------------------
