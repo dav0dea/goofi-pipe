@@ -376,16 +376,26 @@ class Manager:
             return ref
         if group != node_id:  # explicit group → registry host process
             pg = NodeProcessRegistry().get(group, self._instance_id)
-            pg.spawn(spec.module, spec.cls_name, node_id, params)
-            # Build the manager-side ref from the spec + dict overrides; the
-            # actual node lives in the group host process (which imports).
+            # Build the manager-side ref (status subscriber!) BEFORE the host
+            # constructs the node — its first STATE_UPDATE must not race the
+            # subscriber into the void (see spawn_node). The node itself lives
+            # in the group host process (which imports the implementation).
             _, _, params_obj = spec.configure()
             if params is not None:
                 try:
                     params_obj.update(params)
                 except Exception:
                     pass
-            return ref_from_spec(spec, node_id, params_obj, in_process=False, process=None)
+            ref = ref_from_spec(spec, node_id, params_obj, in_process=False, process=None)
+            try:
+                pg.spawn(spec.module, spec.cls_name, node_id, params)
+            except Exception:
+                try:
+                    ref.terminate()
+                except Exception:
+                    pass
+                raise
+            return ref
         return spawn_node(spec, node_id=node_id, initial_params=params, capture_logs=capture_logs)
 
     def _mint_uid(self) -> str:

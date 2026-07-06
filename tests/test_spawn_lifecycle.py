@@ -188,3 +188,25 @@ def test_child_reported_options_reach_the_ref():
         assert "param_options" in (ref.serialized_state or {})
     finally:
         mgr.terminate(notify_gui=False)
+
+
+def test_burst_add_all_reach_ready():
+    """Regression: spawn_node must open the manager-side ref (status
+    subscriber) BEFORE starting the child. iceoryx2 keeps no history, so a
+    subscriber opened after the child's first STATE_UPDATE loses it — and the
+    pre-ready ctrl queue then withholds every message, so the node (never
+    dirtied again) deadlocks in 'creating'. A 10-node burst reproduced this
+    reliably."""
+    from .test_manager import _bare_manager
+
+    mgr = _bare_manager()
+    try:
+        uids = [mgr.add_node("Oscillator", "inputs", params={"common": {"autotrigger": False}})]
+        uids.append(mgr.add_node("PSD", "signal"))
+        for _ in range(8):
+            uids.append(mgr.add_node("Buffer", "signal"))
+        assert wait_until(
+            lambda: all(mgr.nodes[u].stage == "ready" for u in uids), timeout=15.0
+        ), f"stuck stages: { {u: mgr.nodes[u].stage for u in uids if mgr.nodes[u].stage != 'ready'} }"
+    finally:
+        mgr.terminate(notify_gui=False)

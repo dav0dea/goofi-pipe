@@ -1317,6 +1317,14 @@ def spawn_node(
     instance_id = get_instance_id()
 
     recv_conn, send_conn = Pipe(duplex=False)
+    # Open the manager-side ref — and with it the STATUS SUBSCRIBER — BEFORE
+    # starting the child. iceoryx2 keeps no history: a subscriber opened after
+    # the child's first STATE_UPDATE loses it, and the pre-ready ctrl queue
+    # would then withhold every message, deadlocking the node in 'creating'
+    # (nothing ever dirties it into a re-push).
+    ref = ref_from_spec(spec, node_id, params, in_process=False, process=None)
+    ref.boot_conn = recv_conn
+
     tries = 0
     while True:
         try:
@@ -1331,13 +1339,16 @@ def spawn_node(
         except Exception as e:
             tries += 1
             if tries >= retries:
+                try:
+                    ref.terminate()
+                except Exception:
+                    pass
                 raise e
             time.sleep(0.1)
     # The child holds the write end; dropping ours makes its EOF observable.
     send_conn.close()
 
-    ref = ref_from_spec(spec, node_id, params, in_process=False, process=proc)
-    ref.boot_conn = recv_conn
+    ref.process = proc
     return ref
 
 
