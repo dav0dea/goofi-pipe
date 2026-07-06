@@ -37,7 +37,7 @@ import yaml
 
 from goofi.expression import rewrite_nd_refs
 from goofi.message import MessageType
-from goofi.node import MultiprocessingForbiddenError, Node
+from goofi.node import Node, ref_from_spec, spawn_node
 from goofi.node_helpers import NodeProcessRegistry, NodeRef
 from goofi.registry import NodeSpec, build_catalog
 from goofi.transport import ensure_iox2_runtime_dirs, set_instance_id
@@ -369,34 +369,24 @@ class Manager:
         they are the two documented exceptions that load the class here.
         """
         capture_logs = not self._headless
-        node_cls = spec.load_class()
-        if not self._use_multiprocessing:
-            ref, _ = node_cls.create_local(
+        if not self._use_multiprocessing or spec.no_multiprocessing:
+            ref, _ = spec.load_class().create_local(
                 node_id=node_id, initial_params=params, capture_logs=capture_logs
             )
             return ref
         if group != node_id:  # explicit group → registry host process
             pg = NodeProcessRegistry().get(group, self._instance_id)
-            pg.spawn(node_cls, node_id, params)
-            # Build the manager-side ref. _build_ref configures params from
-            # cls._configure() and applies the dict overrides; the actual
-            # node lives in the group host process.
-            _, _, params_obj = node_cls._configure()
+            pg.spawn(spec.module, spec.cls_name, node_id, params)
+            # Build the manager-side ref from the spec + dict overrides; the
+            # actual node lives in the group host process (which imports).
+            _, _, params_obj = spec.configure()
             if params is not None:
                 try:
                     params_obj.update(params)
                 except Exception:
                     pass
-            return node_cls._build_ref(node_id, params_obj, in_process=False, process=None)
-        try:
-            return node_cls.create(
-                node_id=node_id, initial_params=params, capture_logs=capture_logs
-            )
-        except MultiprocessingForbiddenError:
-            ref, _ = node_cls.create_local(
-                node_id=node_id, initial_params=params, capture_logs=capture_logs
-            )
-            return ref
+            return ref_from_spec(spec, node_id, params_obj, in_process=False, process=None)
+        return spawn_node(spec, node_id=node_id, initial_params=params, capture_logs=capture_logs)
 
     def _mint_uid(self) -> str:
         """A fresh entity uid not currently in use (48 bits + dedup pass). Spans BOTH
@@ -750,6 +740,13 @@ class Manager:
         proc = ref.process
         return proc is not None and not proc.is_alive()
 
+    @staticmethod
+    def _should_restart(ref: NodeRef) -> bool:
+        """Only restart nodes that were ever healthy. A process that died before
+        its first STATE_UPDATE failed bootstrap (import/construct) — restarting
+        would loop forever on the same traceback."""
+        return ref._first_state_event.is_set()
+
     def restart_node(self, uid: str) -> NodeRef:
         """Respawn a node whose process died, preserving identity + links.
 
@@ -843,6 +840,25 @@ class Manager:
             if not self._node_is_dead(ref):
                 continue
             exitcode = ref.process.exitcode if ref.process is not None else None
+            if not self._should_restart(ref):
+                if ref.stage == "error":
+                    continue  # already reported this boot failure
+                tb = None
+                conn = ref.boot_conn
+                try:
+                    if conn is not None and conn.poll(0):
+                        tb = conn.recv()
+                except (EOFError, OSError):
+                    pass
+                ref.stage = "error"
+                ref.last_error = tb or f"node process exited (code {exitcode}) before its first state push"
+                print(f"supervisor: node '{ref.name}' failed to boot — not restarting.\n{ref.last_error}")
+                if self._bridge is not None:
+                    try:
+                        self._bridge.control.on_node_stage(uid, "error", ref.last_error)
+                    except Exception:
+                        logger.exception("supervisor: boot-failure broadcast failed for %s", uid)
+                continue
             count = ref.restart_count + 1
             print(f"supervisor: node '{ref.name}' process died (exit {exitcode}) — restarting (#{count})")
             if self._bridge is not None:

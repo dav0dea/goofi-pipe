@@ -608,6 +608,14 @@ class ControlHub:
             {"event": "node_crashed", "payload": {"node": uid, "exitcode": exitcode, "restarts": restart_count}}
         )
 
+    def on_node_stage(self, uid: str, stage: str, error: Optional[str] = None) -> None:
+        """Broadcast a lifecycle-stage transition (creating/setup/ready/error).
+        `error` carries the bootstrap traceback for the terminal error stage."""
+        payload: Dict[str, Any] = {"node": uid, "stage": stage}
+        if error is not None:
+            payload["error"] = error
+        self.broadcast_threadsafe({"event": "node_stage", "payload": payload})
+
 
 def _save_and_return(manager, path_arg, overwrite: bool) -> str:
     """Helper for the bridge save op: invokes manager.save and returns the

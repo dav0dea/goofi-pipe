@@ -23,7 +23,7 @@ import traceback
 import uuid
 from abc import ABC, abstractmethod
 from enum import Enum
-from multiprocessing import Process
+from multiprocessing import Pipe, Process
 from pathlib import Path
 from threading import Event, Lock, RLock, Thread, current_thread
 from typing import Any, Dict, Optional, Tuple, Union
@@ -1086,50 +1086,23 @@ class Node(ABC):
     ) -> NodeRef:
         """Spawn the node in its own process and return a `NodeRef`.
 
-        Group routing is the manager's responsibility, not this method's —
-        callers that want to host a node inside a shared group process use
-        `NodeProcessRegistry.spawn()` directly.
+        Thin wrapper over `spawn_node` for callers that already hold the class
+        (tests, tooling). Group routing is the manager's responsibility, not
+        this method's — callers that want to host a node inside a shared group
+        process use `NodeProcessRegistry.spawn()` directly.
         """
         if cls.NO_MULTIPROCESSING:
             raise MultiprocessingForbiddenError("Multiprocessing is forbidden for this node.")
 
-        if node_id is None:
-            node_id = f"{cls.__name__}-{uuid.uuid4().hex[:8]}"
+        from goofi.registry import NodeSpec
 
-        in_slots, out_slots, params = cls._configure()
-        if initial_params is not None:
-            try:
-                params.update(initial_params)
-            except InvalidParamError:
-                print(
-                    f"\n====================== ERROR ======================\n"
-                    f"Setting parameters failed for {cls.__name__}. This is likely due to updates"
-                    " in the node's code. Make sure to reconfigure the node."
-                    "\n===================================================\n"
-                )
-
-        from goofi.transport import get_instance_id
-
-        instance_id = get_instance_id()
-
-        tries = 0
-        while True:
-            try:
-                proc = Process(
-                    target=_run_node_process,
-                    name=cls.__name__,
-                    args=(cls, node_id, in_slots, out_slots, params, instance_id, capture_logs),
-                    daemon=True,
-                )
-                proc.start()
-                break
-            except Exception as e:
-                tries += 1
-                if tries >= retries:
-                    raise e
-                time.sleep(0.1)
-
-        return cls._build_ref(node_id, params, in_process=False, process=proc)
+        return spawn_node(
+            NodeSpec.from_class(cls),
+            node_id=node_id,
+            initial_params=initial_params,
+            retries=retries,
+            capture_logs=capture_logs,
+        )
 
     @classmethod
     def create_local(
@@ -1202,16 +1175,7 @@ class Node(ABC):
     ) -> NodeRef:
         from goofi.registry import NodeSpec
 
-        in_slots, out_slots, _ = cls._configure()
-        return NodeRef(
-            node_id=node_id,
-            in_process=in_process,
-            input_slots={name: slot.dtype for name, slot in in_slots.items()},
-            output_slots={name: slot.dtype for name, slot in out_slots.items()},
-            params=params,
-            spec=NodeSpec.from_class(cls),
-            process=process,
-        )
+        return ref_from_spec(NodeSpec.from_class(cls), node_id, params, in_process, process)
 
     @classmethod
     def create_standalone(cls) -> "Node":
@@ -1274,31 +1238,130 @@ class Node(ABC):
 
 
 # ---------------------------------------------------------------------------
-# Process entrypoint for `Node.create()`
+# Spec-based spawning — the manager-side path (no class object, no import)
+# ---------------------------------------------------------------------------
+
+
+def ref_from_spec(
+    spec,
+    node_id: str,
+    params: NodeParams,
+    in_process: bool,
+    process: Optional[Process],
+) -> NodeRef:
+    """Build the manager-side proxy purely from registry metadata."""
+    in_slots, out_slots, _ = spec.configure()
+    return NodeRef(
+        node_id=node_id,
+        in_process=in_process,
+        input_slots={name: slot.dtype for name, slot in in_slots.items()},
+        output_slots={name: slot.dtype for name, slot in out_slots.items()},
+        params=params,
+        spec=spec,
+        process=process,
+    )
+
+
+def spawn_node(
+    spec,
+    node_id: Optional[str] = None,
+    initial_params: Optional[Dict[str, Dict[str, Any]]] = None,
+    retries: int = 3,
+    capture_logs: bool = False,
+) -> NodeRef:
+    """Spawn a node in its own process from a NodeSpec. The implementation
+    module is imported INSIDE the child — the calling process stays
+    import-free. A bootstrap failure (import/construct) is reported over the
+    ref's one-shot `boot_conn` pipe; the supervisor turns that into a
+    permanent error instead of a restart loop."""
+    if node_id is None:
+        node_id = f"{spec.type}-{uuid.uuid4().hex[:8]}"
+
+    in_slots, out_slots, params = spec.configure()
+    if initial_params is not None:
+        try:
+            params.update(initial_params)
+        except InvalidParamError:
+            print(
+                f"\n====================== ERROR ======================\n"
+                f"Setting parameters failed for {spec.type}. This is likely due to updates"
+                " in the node's code. Make sure to reconfigure the node."
+                "\n===================================================\n"
+            )
+
+    from goofi.transport import get_instance_id
+
+    instance_id = get_instance_id()
+
+    recv_conn, send_conn = Pipe(duplex=False)
+    tries = 0
+    while True:
+        try:
+            proc = Process(
+                target=_run_node_process,
+                name=spec.type,
+                args=(spec.module, spec.cls_name, node_id, params.serialize(), instance_id, capture_logs, send_conn),
+                daemon=True,
+            )
+            proc.start()
+            break
+        except Exception as e:
+            tries += 1
+            if tries >= retries:
+                raise e
+            time.sleep(0.1)
+    # The child holds the write end; dropping ours makes its EOF observable.
+    send_conn.close()
+
+    ref = ref_from_spec(spec, node_id, params, in_process=False, process=proc)
+    ref.boot_conn = recv_conn
+    return ref
+
+
+# ---------------------------------------------------------------------------
+# Process entrypoint for `spawn_node()` / `Node.create()`
 # ---------------------------------------------------------------------------
 
 
 def _run_node_process(
-    cls,
+    module: str,
+    cls_name: str,
     node_id: str,
-    in_slots: Dict[str, InputSlot],
-    out_slots: Dict[str, OutputSlot],
-    params: NodeParams,
+    initial_params: Optional[Dict[str, Dict[str, Any]]],
     instance_id: str,
-    capture_logs: bool = False,
+    capture_logs: bool,
+    err_conn,
 ) -> None:
-    """Child process main: set the instance id, instantiate the node."""
+    """Child main: import the implementation HERE, then construct the node.
+    A failure before the node's first state push is reported over `err_conn`
+    (the manager can't hear us on iceoryx2 yet — endpoints don't exist)."""
     set_instance_id(instance_id)
     if capture_logs:
         # This process hosts exactly one node — attribute every thread (incl.
         # ones the node spawns itself) to it by default.
         node_log.set_process_default_node(node_id)
-    cls(
-        node_id,
-        in_slots,
-        out_slots,
-        params,
-        NodeEnv.MULTIPROCESSING,
-        in_process_with_manager=False,
-        capture_logs=capture_logs,
-    )
+    try:
+        import importlib
+
+        cls = getattr(importlib.import_module(module), cls_name)
+        in_slots, out_slots, params = cls._configure()
+        if initial_params is not None:
+            try:
+                params.update(initial_params)
+            except InvalidParamError:
+                pass
+        cls(
+            node_id,
+            in_slots,
+            out_slots,
+            params,
+            NodeEnv.MULTIPROCESSING,
+            in_process_with_manager=False,
+            capture_logs=capture_logs,
+        )
+    except Exception:
+        try:
+            err_conn.send(traceback.format_exc())
+        finally:
+            err_conn.close()
+        raise SystemExit(1)

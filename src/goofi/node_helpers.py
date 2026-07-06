@@ -298,6 +298,15 @@ class NodeRef:
     # after its process crashed. Carried across respawns; surfaced to the UI so a
     # crash-loop is observable even though restarts are unlimited.
     restart_count: int = field(default=0, repr=False, compare=False)
+    # Lifecycle stage surfaced to the UI: "creating" (spawned; the child is
+    # importing its implementation + opening endpoints) → "setup" (first
+    # STATE_UPDATE arrived, setup() still running) → "ready". "error" is
+    # terminal (bootstrap/import failure — the supervisor sets it and does not
+    # restart, since a respawn would loop on the same traceback).
+    stage: str = field(default="creating", repr=False, compare=False)
+    # Read end of the one-shot bootstrap-error pipe (spawn_node). The child
+    # writes a traceback here iff it dies before its endpoints exist.
+    boot_conn: Optional[Any] = field(default=None, repr=False, compare=False)
 
     def __post_init__(self):
         self.__doc__ = self.spec.doc
@@ -628,6 +637,8 @@ class NodeRef:
         if msg.type == MessageType.STATE_UPDATE:
             self.serialized_state = msg.content
             self._first_state_event.set()
+            if self.stage == "creating":
+                self.stage = "ready"
             # Mirror reported params back into the local NodeParams so GUI reads
             # stay coherent across reconnects.
             try:
@@ -655,8 +666,9 @@ class NodeRef:
 class NodeProcess:
     """Hosts multiple LOCAL-mode nodes in one subprocess.
 
-    The host process runs a tiny dispatcher that receives (node_class,
-    node_id, params) tuples over a setup pipe and instantiates each node
+    The host process runs a tiny dispatcher that receives (module, cls_name,
+    node_id, params) tuples over a setup pipe, imports the implementation
+    (in the HOST — the manager stays import-free) and instantiates each node
     locally. After that, all data plane traffic uses iceoryx2 (cross-group)
     or thread transport (intra-group); the setup pipe is used only for
     bootstrapping new nodes into the group.
@@ -688,13 +700,14 @@ class NodeProcess:
                 break
             if payload is None:
                 break
-            cls, node_id, initial_params = payload
+            module, cls_name, node_id, initial_params = payload
             # Drop references to nodes that have terminated. Each node closes
             # its own endpoints on shutdown (see Node._teardown_endpoints), so
             # this only releases the inert Python object — but without it the
             # host would pin every node it ever spawned for the group's life.
             nodes = [n for n in nodes if n.alive]
             try:
+                cls = getattr(importlib.import_module(module), cls_name)
                 node = cls._spawn_local(
                     node_id=node_id, initial_params=initial_params, capture_logs=capture_logs
                 )
@@ -703,8 +716,8 @@ class NodeProcess:
             except Exception:
                 conn.send(("err", traceback.format_exc()))
 
-    def spawn(self, cls, node_id: str, initial_params: Optional[Dict[str, Dict[str, Any]]]):
-        self.conn.send((cls, node_id, initial_params))
+    def spawn(self, module: str, cls_name: str, node_id: str, initial_params: Optional[Dict[str, Dict[str, Any]]]):
+        self.conn.send((module, cls_name, node_id, initial_params))
         status, info = self.conn.recv()
         if status != "ok":
             raise RuntimeError(f"Failed to spawn {node_id} in process group {self.name}: {info}")

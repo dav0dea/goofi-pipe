@@ -231,6 +231,25 @@ def test_availability_probe(tmp_path):
     assert "also_not_installed_but_optional" not in spec.missing_deps
 
 
+NO_MP = '''
+from goofi.node import Node
+
+class Fussy(Node):
+    NO_MULTIPROCESSING = True
+    def config_params():
+        return {}
+    def process(self):
+        pass
+'''
+
+
+def test_no_multiprocessing_flag_extracted(tmp_path):
+    root = make_nodes_tree(tmp_path, {"misc/fussy.py": NO_MP, "misc/osc.py": BASIC})
+    catalog, _ = build_catalog(root, package="fixture.nodes")
+    assert catalog["Fussy"].no_multiprocessing is True
+    assert catalog["Osc"].no_multiprocessing is False
+
+
 def test_from_class_wraps_a_real_class():
     from goofi.nodes.inputs.constantarray import ConstantArray
 

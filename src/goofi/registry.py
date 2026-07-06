@@ -63,6 +63,7 @@ class NodeSpec:
     available: bool = True
     dynamic: bool = False
     missing_deps: Tuple[str, ...] = ()
+    no_multiprocessing: bool = False
     hooks: Tuple[Callable, Callable, Callable] = field(default=None, repr=False, compare=False)
 
     def configure(self):
@@ -85,6 +86,7 @@ class NodeSpec:
             module=node_cls.__module__,
             cls_name=node_cls.__name__,
             doc=node_cls.docstring(),
+            no_multiprocessing=bool(getattr(node_cls, "NO_MULTIPROCESSING", False)),
             hooks=(node_cls.config_input_slots, node_cls.config_output_slots, node_cls.config_params),
         )
 
@@ -241,7 +243,12 @@ def build_catalog(
 
             hooks: Dict[str, Callable] = {}
             dynamic = False
+            no_multiprocessing = False
             for item in cls_node.body:
+                if isinstance(item, ast.Assign) and any(
+                    isinstance(t, ast.Name) and t.id == "NO_MULTIPROCESSING" for t in item.targets
+                ):
+                    no_multiprocessing = bool(ast.literal_eval(item.value))
                 if isinstance(item, ast.FunctionDef) and item.name in HOOK_NAMES:
                     for dep in _free_names(item):
                         _resolve_declaration(dep, decls, str(path), ns)
@@ -276,6 +283,7 @@ def build_catalog(
                 available=available,
                 dynamic=dynamic,
                 missing_deps=missing,
+                no_multiprocessing=no_multiprocessing,
                 hooks=(
                     hooks.get("config_input_slots", dict),
                     hooks.get("config_output_slots", dict),

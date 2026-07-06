@@ -19,6 +19,7 @@ def _fake_ref(callbacks=None, updates=None):
         serialized_state=None,
         last_error=None,
         node_stats=None,
+        stage="creating",
         _first_state_event=threading.Event(),
         params=SimpleNamespace(update=lambda d: (updates if updates is not None else []).append(d)),
         callbacks=callbacks or {},
