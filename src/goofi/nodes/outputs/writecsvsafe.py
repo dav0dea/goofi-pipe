@@ -7,6 +7,7 @@ import warnings
 from pathlib import Path
 
 import numpy as np
+import pandas as pd
 
 from goofi.data import Data, DataType
 from goofi.node import Node
@@ -41,10 +42,6 @@ class WriteCsvSafe(Node):
         }
 
     def setup(self):
-        import pandas as pd
-
-        self.pd = pd
-
         # Simple unbounded queue
         self.data_queue = queue.Queue()
         self.write_thread = None
@@ -193,7 +190,7 @@ class WriteCsvSafe(Node):
         extra_annots = {} if annot is None else {k: v.data for k, v in annot.data.items()}
         df_data["_extra_annot"] = [extra_annots] * num_samples
 
-        df = self.pd.DataFrame(df_data, index=timestamps)
+        df = pd.DataFrame(df_data, index=timestamps)
 
         if not self.file_created:
             Path(self.current_filename).parent.mkdir(parents=True, exist_ok=True)

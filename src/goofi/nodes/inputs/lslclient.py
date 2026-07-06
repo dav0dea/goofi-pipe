@@ -4,6 +4,7 @@ from threading import Thread, current_thread
 from typing import Any, Dict, List, Tuple
 
 import numpy as np
+import pylsl
 from tabulate import tabulate
 
 from goofi.data import Data, DataType
@@ -69,10 +70,6 @@ class LSLClient(Node):
 
     def setup(self):
         """Initialize and start the LSL client."""
-        import pylsl
-
-        self.pylsl = pylsl
-
         if hasattr(self, "client"):
             self.disconnect()
 
@@ -198,7 +195,7 @@ class LSLClient(Node):
         #     return False
 
         # connect to the stream
-        self.client = self.pylsl.StreamInlet(info=list(matches.values())[0], recover=True)
+        self.client = pylsl.StreamInlet(info=list(matches.values())[0], recover=True)
         return True
 
     def disconnect(self) -> None:
@@ -214,7 +211,7 @@ class LSLClient(Node):
         """Resolve LSL outlets; merge several passes so all streams are discovered (see pylsl.resolve_streams)."""
         merged: Dict[Tuple, Any] = {}
         for round_i in range(LSL_RESOLVE_ROUNDS):
-            for info in self.pylsl.resolve_streams(wait_time=LSL_RESOLVE_WAIT_S):
+            for info in pylsl.resolve_streams(wait_time=LSL_RESOLVE_WAIT_S):
                 merged[_stream_info_key(info)] = info
             if round_i + 1 < LSL_RESOLVE_ROUNDS:
                 time.sleep(LSL_RESOLVE_PAUSE_S)

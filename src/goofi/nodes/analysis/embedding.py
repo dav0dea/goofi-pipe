@@ -1,10 +1,16 @@
 import cv2
 import numpy as np
+import torch
 from PIL import Image
+from transformers import CLIPModel, CLIPProcessor
 
 from goofi.data import Data, DataType
 from goofi.node import Node
 from goofi.params import BoolParam, StringParam
+
+from sentence_transformers import SentenceTransformer
+
+import gensim.downloader as gensim_downloader
 
 
 class Embedding(Node):
@@ -59,10 +65,6 @@ class Embedding(Node):
         self.device = None
 
         # Select device
-        import torch
-
-        self.torch = torch
-
         torch.set_grad_enabled(False)
 
         self.device = torch.device(self.params.embedding.device.value)
@@ -74,8 +76,6 @@ class Embedding(Node):
             self.model_type = "clip"
 
             print("Initializing CLIP model...")
-            from transformers import CLIPModel, CLIPProcessor
-
             try:
                 # try loading the local model (local_files_only=False interferes with goofi-pipe's multiprocessing environment)
                 # related issue: https://github.com/CompVis/stable-diffusion/issues/90#issuecomment-1228726914
@@ -89,23 +89,17 @@ class Embedding(Node):
             self.model_type = "sbert"
 
             print("Initializing SBERT model...")
-            from sentence_transformers import SentenceTransformer
-
             self.model = SentenceTransformer(self.model_id).to(self.device)
         elif "fasttext" in self.model_id.lower():
             self.model_type = "fasttext"
 
             print("Initializing FastText model...")
-            import gensim.downloader as api
-
-            self.model = api.load("fasttext-wiki-news-subwords-300")
+            self.model = gensim_downloader.load("fasttext-wiki-news-subwords-300")
         elif "word2vec" in self.model_id.lower():
             self.model_type = "word2vec"
 
             print("Initializing Word2Vec model...")
-            import gensim.downloader as api
-
-            self.model = api.load("word2vec-google-news-300")
+            self.model = gensim_downloader.load("word2vec-google-news-300")
         else:
             raise ValueError(f"Unsupported model type: {self.model_id}")
         print(f"Model {self.model_id} initialized successfully as {self.model_type} on {self.device}.")
@@ -126,7 +120,7 @@ class Embedding(Node):
             else:
                 input_texts = [input_text]
 
-            with self.torch.inference_mode():
+            with torch.inference_mode():
                 if self.model_type == "clip":  # Use CLIP for text
                     inputs_text = self.processor(text=input_texts, return_tensors="pt", padding=True).to(self.device)
                     outputs_text = self.model.get_text_features(**inputs_text)
@@ -166,7 +160,7 @@ class Embedding(Node):
             input_data = data.data
             metadata["data"] = data.meta  # Preserve metadata
 
-            with self.torch.inference_mode():
+            with torch.inference_mode():
                 # Preprocess and generate image embeddings using CLIP
                 if self.model_type == "clip":
                     # Check and preprocess numpy array

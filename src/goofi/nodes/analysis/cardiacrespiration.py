@@ -1,3 +1,5 @@
+import neurokit2 as nk
+
 from goofi.data import Data, DataType
 from goofi.node import Node
 from goofi.params import StringParam
@@ -27,11 +29,6 @@ class CardiacRespiration(Node):
             }
         }
 
-    def setup(self):
-        import neurokit2 as nk
-
-        self.neurokit = nk
-
     def process(self, data: Data):
         if data is None or data.data is None:
             return None
@@ -45,9 +42,9 @@ class CardiacRespiration(Node):
             # hrv_df = self.neurokit.hrv(info, sampling_rate=data.meta["sfreq"])
         elif self.params["cardiac"]["input_type"].value == "ecg":
             # extract peaks
-            rpeaks, info = self.neurokit.ecg_peaks(data.data, sampling_rate=data.meta["sfreq"])
+            rpeaks, info = nk.ecg_peaks(data.data, sampling_rate=data.meta["sfreq"])
             # compute rate
-            ecg_rate = self.neurokit.ecg_rate(rpeaks, sampling_rate=data.meta["sfreq"], desired_length=len(data.data))
-            edr = self.neurokit.ecg_rsp(ecg_rate, sampling_rate=data.meta["sfreq"])
+            ecg_rate = nk.ecg_rate(rpeaks, sampling_rate=data.meta["sfreq"], desired_length=len(data.data))
+            edr = nk.ecg_rsp(ecg_rate, sampling_rate=data.meta["sfreq"])
 
         return {"cardiac": (edr, data.meta)}

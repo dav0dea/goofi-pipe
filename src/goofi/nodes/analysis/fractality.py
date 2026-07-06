@@ -1,3 +1,4 @@
+import neurokit2 as nk
 import numpy as np
 
 from goofi.data import Data, DataType
@@ -52,11 +53,6 @@ class Fractality(Node):
             },
         }
 
-    def setup(self):
-        import neurokit2 as nk
-
-        self.nk = nk
-
     def process(self, data_input: Data):
         if data_input is None or data_input.data is None:
             return None
@@ -65,21 +61,21 @@ class Fractality(Node):
 
         # For methods in neurokit2
         if method == "fractal_katz":
-            result, _ = self.nk.fractal_katz(data_input.data)
+            result, _ = nk.fractal_katz(data_input.data)
         elif method == "fractal_petrosian":
-            result, _ = self.nk.fractal_petrosian(data_input.data)
+            result, _ = nk.fractal_petrosian(data_input.data)
         elif method == "fractal_linelength":
-            result, _ = self.nk.fractal_linelength(data_input.data)
+            result, _ = nk.fractal_linelength(data_input.data)
         elif method == "fractal_psdslope":
-            result, _ = self.nk.fractal_psdslope(data_input.data)
+            result, _ = nk.fractal_psdslope(data_input.data)
         elif method == "fractal_nld":
-            result, _ = self.nk.fractal_nld(data_input.data)
+            result, _ = nk.fractal_nld(data_input.data)
         elif method == "fractal_higuchi":
-            result, _ = self.nk.fractal_higuchi(data_input.data, k_max=self.params["fractal_higuchi"]["k_max"].value)
+            result, _ = nk.fractal_higuchi(data_input.data, k_max=self.params["fractal_higuchi"]["k_max"].value)
         elif method == "hurst":
-            result, _ = self.nk.fractal_hurst(data_input.data)
+            result, _ = nk.fractal_hurst(data_input.data)
         elif method == "fractal_correlation":
-            result, _ = self.nk.fractal_correlation(data_input.data)
+            result, _ = nk.fractal_correlation(data_input.data)
         elif method == "box_counting_2d":
             result = self.box_counting(data_input.data)
             print(result)

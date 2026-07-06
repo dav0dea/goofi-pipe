@@ -1,10 +1,19 @@
 import tempfile
 
+import neurokit2 as nk2
 import numpy as np
+from antropy import detrended_fluctuation, higuchi_fd, lziv_complexity, petrosian_fd
+from fooof import FOOOF
+from scipy.signal import butter, iirnotch, sosfiltfilt, tf2sos, welch
+from scipy.stats import kurtosis, skew
 
 from goofi.data import Data, DataType
 from goofi.node import Node
 from goofi.params import FloatParam, StringParam
+
+from pyspi.calculator import Calculator
+from phyid.calculate import calc_PhiID
+from toto.inference.embedding import embed as embed_toto
 
 
 class Monolith(Node):
@@ -79,8 +88,6 @@ class Monolith(Node):
 
 
 def _bandpass_filter(x, sfreq, l_freq, h_freq, order=5):
-    from scipy.signal import butter, sosfiltfilt
-
     nyq = 0.5 * sfreq
     low = l_freq / nyq
     high = h_freq / nyq
@@ -89,8 +96,6 @@ def _bandpass_filter(x, sfreq, l_freq, h_freq, order=5):
 
 
 def _notch_filter(x, sfreq, freqs=[50, 60], Q=30):
-    from scipy.signal import iirnotch, sosfiltfilt
-
     nyq = sfreq / 2
     sos_list = []
     for base_freq in freqs:
@@ -101,8 +106,6 @@ def _notch_filter(x, sfreq, freqs=[50, 60], Q=30):
                 break
             # iirnotch returns (b, a); convert to SOS
             b, a = iirnotch(f, Q, sfreq)
-            from scipy.signal import tf2sos
-
             sos = tf2sos(b, a)
             sos_list.append(sos)
             n += 1
@@ -144,14 +147,10 @@ def preprocess(
 
 
 def skewness(x, sfreq):
-    from scipy.stats import skew
-
     return skew(x)
 
 
 def kurt(x, sfreq):
-    from scipy.stats import kurtosis
-
     return kurtosis(x)
 
 
@@ -170,8 +169,6 @@ def hjorth_complexity(x, sfreq):
 
 
 def spectral(x, sfreq):
-    from scipy.signal import welch
-
     f, Pxx = welch(x, sfreq)
     mean_frequency = np.sum(f * Pxx) / np.sum(Pxx)
     delta = np.trapz(Pxx[(f >= 0) & (f <= 4)], f[(f >= 0) & (f <= 4)])
@@ -180,8 +177,6 @@ def spectral(x, sfreq):
     beta = np.trapz(Pxx[(f > 12) & (f <= 30)], f[(f > 12) & (f <= 30)])
     gamma = np.trapz(Pxx[(f > 30) & (f <= 45)], f[(f > 30) & (f <= 45)])
 
-    from fooof import FOOOF
-
     model = FOOOF(peak_width_limits=(2, 12))
     model.fit(f, Pxx, freq_range=(3, 30))
 
@@ -189,26 +184,18 @@ def spectral(x, sfreq):
 
 
 def compute_detrended_fluctuation(x, sfreq):
-    from antropy import detrended_fluctuation
-
     return detrended_fluctuation(x)
 
 
 def compute_higuchi_fd(x, sfreq):
-    from antropy import higuchi_fd
-
     return higuchi_fd(x)
 
 
 def compute_lziv_complexity(x, sfreq):
-    from antropy import lziv_complexity
-
     return lziv_complexity(x > x.mean(), normalize=True)
 
 
 def compute_petrosian_fd(x, sfreq):
-    from antropy import petrosian_fd
-
     return petrosian_fd(x)
 
 
@@ -217,94 +204,64 @@ def binarize_by_mean(x):
 
 
 def entropy_shannon(x, sfreq):
-    import neurokit2 as nk2
-
     bin_ts = binarize_by_mean(x)
     return nk2.entropy_shannon(bin_ts, base=2)[0]
 
 
 def entropy_renyi(x, sfreq):
-    import neurokit2 as nk2
-
     bin_ts = binarize_by_mean(x)
     return nk2.entropy_renyi(bin_ts, alpha=2)[0]
 
 
 def entropy_approximate(x, sfreq):
-    import neurokit2 as nk2
-
     return nk2.entropy_approximate(x, delay=1, dimension=2, tolerance="sd", Corrected=True)[0]
 
 
 def entropy_sample(x, sfreq):
-    import neurokit2 as nk2
-
     return nk2.entropy_sample(x, delay=1, dimension=2, tolerance="sd")[0]
 
 
 def entropy_rate(x, sfreq):
-    import neurokit2 as nk2
-
     return nk2.entropy_rate(x, kmax=10, symbolize="mean")[0]
 
 
 def entropy_permutation(x, sfreq):
-    import neurokit2 as nk2
-
     return nk2.entropy_permutation(x, delay=1, dimension=2, corrected=True, weighted=False, conditional=False)[0]
 
 
 def entropy_permutation_weighted(x, sfreq):
-    import neurokit2 as nk2
-
     return nk2.entropy_permutation(x, delay=1, dimension=2, corrected=True, weighted=True, conditional=False)[0]
 
 
 def entropy_permutation_conditional(x, sfreq):
-    import neurokit2 as nk2
-
     return nk2.entropy_permutation(x, delay=1, dimension=2, corrected=True, weighted=False, conditional=True)[0]
 
 
 def entropy_permutation_weighted_conditional(x, sfreq):
-    import neurokit2 as nk2
-
     return nk2.entropy_permutation(x, delay=1, dimension=2, corrected=True, weighted=True, conditional=True)[0]
 
 
 def entropy_multiscale(x, sfreq):
-    import neurokit2 as nk2
-
     return nk2.entropy_multiscale(x, dimension=2, tolerance="sd", method="MSPEn")[0]
 
 
 def entropy_bubble(x, sfreq):
-    import neurokit2 as nk2
-
     return nk2.entropy_bubble(x, delay=1, dimension=2, alpha=2, tolerance="sd")[0]
 
 
 def entropy_svd(x, sfreq):
-    import neurokit2 as nk2
-
     return nk2.entropy_svd(x, delay=1, dimension=2)[0]
 
 
 def entropy_attention(x, sfreq):
-    import neurokit2 as nk2
-
     return nk2.entropy_attention(x)[0]
 
 
 def entropy_dispersion(x, sfreq):
-    import neurokit2 as nk2
-
     return nk2.entropy_dispersion(x, delay=1, dimension=2, c=6, symbolize="NCDF")[0]
 
 
 def compute_spi_features(data, subset="fast"):
-    from pyspi.calculator import Calculator
-
     # Create a temporary file with the config
     with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
         f.write(PYSPI_FAST_CONFIG)
@@ -322,14 +279,6 @@ def phiid_pairwise_metrics(x, sfreq, tau=5, kind="gaussian", redundancy="MMI"):
     Compute all PhiID atom metrics for all pairs of channels (asymmetric, src->tgt and tgt->src).
     Returns a flattened array of all atom means for each channel pair and direction.
     """
-
-    try:
-        from phyid.calculate import calc_PhiID
-    except ImportError:
-        raise ImportError(
-            "The phyid package is not installed. Please install it with the following command:\n"
-            "pip install git+https://github.com/Imperial-MIND-lab/integrated-info-decomp.git"
-        )
 
     data = np.atleast_2d(x)
     n_channels, n_time = data.shape
@@ -367,8 +316,6 @@ def phiid_pairwise_metrics(x, sfreq, tau=5, kind="gaussian", redundancy="MMI"):
 
 
 def compute_toto_embedding(x, sfreq):
-    from toto.inference.embedding import embed as embed_toto
-
     return embed_toto(x, global_average=True)
 
 

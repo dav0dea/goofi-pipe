@@ -7,14 +7,20 @@ load: try `local_files_only=True` first (serves the local cache, raises OSError
 when the model isn't cached), then fall back to the normal, downloading load.
 
 Loading real Stable Diffusion is heavy and needs a GPU + a multi-GB download, so
-we never touch `diffusers` here. Instead we inject fake pipeline classes whose
-`from_pretrained` raises OSError for the offline attempt and returns a sentinel
-for the fallback, then drive the load helper directly and assert the order.
+we never LOAD via `diffusers` here (the module import needs it installed —
+importorskip). We inject fake pipeline classes whose `from_pretrained` raises
+OSError for the offline attempt and returns a sentinel for the fallback, then
+drive the load helper directly and assert the order.
 """
 import types
 
+import pytest
+
 from goofi.node import NodeEnv
-from goofi.nodes.inputs.imagegeneration import ImageGeneration
+
+pytest.importorskip("diffusers", reason="imagegeneration node needs diffusers to import")
+
+from goofi.nodes.inputs.imagegeneration import ImageGeneration  # noqa: E402
 
 SENTINEL = "loaded-pipe"
 

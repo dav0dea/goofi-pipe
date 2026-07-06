@@ -1,4 +1,5 @@
 import numpy as np
+from scipy.stats import gaussian_kde
 
 from goofi.data import Data, DataType
 from goofi.node import Node
@@ -75,8 +76,6 @@ class Histogram(Node):
         if method == "bins":
             hist, bin_edges = np.histogram(data_flat, bins=bin_count, range=(range_min, range_max))
         else:  # "kde"
-            from scipy.stats import gaussian_kde
-
             kde = gaussian_kde(data_flat)
             bin_edges = np.linspace(range_min, range_max, bin_count + 1)
             bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2

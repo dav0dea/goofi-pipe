@@ -3,6 +3,12 @@ import math
 import os
 from os.path import exists, join
 
+import gdown
+import torch
+from safetensors.torch import load_file
+from torch import nn
+from transformers import PretrainedConfig, PreTrainedModel
+
 from goofi.data import Data, DataType
 from goofi.node import Node
 from goofi.params import StringParam
@@ -33,15 +39,8 @@ class EEGEmbedding(Node):
         }
 
     def setup(self):
-        import torch
-        from safetensors.torch import load_file
-
-        self.torch = torch
-
         model_path = join(self.assets_path, "eeg_encoder_55-95_40_classes")
         if not exists(model_path):
-            import gdown
-
             model_url = "https://drive.google.com/drive/folders/1KAVbjwGdeA8RKTobMmzWNkHeKYklpCPF?usp=sharing"
             gdown.download_folder(model_url, output=model_path)
 
@@ -69,12 +68,12 @@ class EEGEmbedding(Node):
         # crop the EEG data to the last 440 samples
         eeg_data = eeg.data[:, -440:]
         # convert EEG data to PyTorch tensor and move to device
-        eeg_data = self.torch.tensor(eeg_data, dtype=self.torch.float32)[None, None].to(self.device)
+        eeg_data = torch.tensor(eeg_data, dtype=torch.float32)[None, None].to(self.device)
         # replace NaNs and Infs with zeros
-        eeg_data[~self.torch.isfinite(eeg_data)] = 0
+        eeg_data[~torch.isfinite(eeg_data)] = 0
 
         # Extract embeddings from the EEG encoder
-        with self.torch.inference_mode():
+        with torch.inference_mode():
             # assert False, str(eeg_tensor.shape)
             emb_out = self.model(eeg_data)[0].squeeze()
 
@@ -84,16 +83,12 @@ class EEGEmbedding(Node):
     def embedding_device_changed(self, value):
         self.device = self.params.embedding.device.value
         if self.device == "auto":
-            self.device = "cuda" if self.torch.cuda.is_available() else "cpu"
+            self.device = "cuda" if torch.cuda.is_available() else "cpu"
 
         self.model.to(self.device)
 
 
 def init_model_classes():
-    import torch
-    from torch import nn
-    from transformers import PretrainedConfig, PreTrainedModel
-
     # This is the model presented in the work: S. Palazzo, C. Spampinato, I. Kavasidis, D. Giordano, J. Schmidt, M. Shah, Decoding Brain Representations by
     # Multimodal Learning of Neural Activity and Visual Features,  IEEE TRANSACTIONS ON PATTERN ANALYSIS AND MACHINE INTELLIGENCE, 2020, doi: 10.1109/TPAMI.2020.2995909
     # code adapted from https://github.com/abhijitmishra/Thought2Text

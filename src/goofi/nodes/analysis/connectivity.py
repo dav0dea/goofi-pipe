@@ -1,4 +1,8 @@
 import numpy as np
+from biotuner.harmonic_connectivity import harmonic_connectivity
+from scipy.signal import coherence, hilbert
+from scipy.stats import pearsonr
+from sklearn.feature_selection import mutual_info_regression
 
 from goofi.data import Data, DataType
 from goofi.node import Node
@@ -101,9 +105,6 @@ class Connectivity(Node):
         return {"matrix": (matrix, meta)}
 
 
-connectivity_fn = None
-
-
 def compute_conn_matrix_single(
     data: np.ndarray,
     sfreq: float,
@@ -114,15 +115,8 @@ def compute_conn_matrix_single(
     n_peaks: int = 5,
     metric: str = "harmsim",
 ):
-    # import the connectivity function here to avoid loading it on startup
-    global connectivity_fn
-    if connectivity_fn is None:
-        from biotuner.harmonic_connectivity import harmonic_connectivity
-
-        connectivity_fn = harmonic_connectivity
-
     # compute connectivity matrix
-    bt_conn = connectivity_fn(
+    bt_conn = harmonic_connectivity(
         sf=sfreq,
         data=data,
         peaks_function=peaks_function,
@@ -135,26 +129,11 @@ def compute_conn_matrix_single(
     return bt_conn.conn_matrix
 
 
-hilbert_fn, coherence_fn, pearsonr_fn, mutual_info_regression_fn = None, None, None, None
-
-
 def compute_classical_connectivity(data, method):
-    # lazy imports
-    global hilbert_fn, coherence_fn, pearsonr_fn, mutual_info_regression_fn
-    if hilbert_fn is None:
-        from scipy.signal import coherence, hilbert
-        from scipy.stats import pearsonr
-        from sklearn.feature_selection import mutual_info_regression
-
-        hilbert_fn = hilbert
-        coherence_fn = coherence
-        pearsonr_fn = pearsonr
-        mutual_info_regression_fn = mutual_info_regression
-
     # ---- NEW helpers ----
     def _aec(x, y):
-        ex = np.abs(hilbert_fn(x))
-        ey = np.abs(hilbert_fn(y))
+        ex = np.abs(hilbert(x))
+        ey = np.abs(hilbert(y))
         sx, sy = np.std(ex), np.std(ey)
         if sx < 1e-9 or sy < 1e-9:
             return np.nan
@@ -162,8 +141,8 @@ def compute_classical_connectivity(data, method):
 
     def _aec_orth(x, y):
         # Orthogonalize y wrt x before envelope corr
-        zx = hilbert_fn(x)
-        zy = hilbert_fn(y)
+        zx = hilbert(x)
+        zy = hilbert(y)
         y_orth = np.imag(zy * np.conj(zx) / (np.abs(zx) + 1e-12))
         ex = np.abs(zx)
         ey = np.abs(y_orth + 0j)
@@ -208,8 +187,8 @@ def compute_classical_connectivity(data, method):
             yj = data[j, :]
 
             if method == "wPLI":
-                sig1 = hilbert_fn(xi)
-                sig2 = hilbert_fn(yj)
+                sig1 = hilbert(xi)
+                sig2 = hilbert(yj)
                 # standard wPLI from analytic cross-signal imaginary part
                 z = sig1 * np.conj(sig2)
                 Im = np.imag(z)
@@ -218,25 +197,25 @@ def compute_classical_connectivity(data, method):
                 matrix[i, j] = matrix[j, i] = float(num / den)
 
             elif method == "coherence":
-                f, Cxy = coherence_fn(xi, yj)
+                f, Cxy = coherence(xi, yj)
                 matrix[i, j] = matrix[j, i] = float(np.mean(Cxy)) if Cxy.size else np.nan
 
             elif method == "PLI":
-                sig1 = hilbert_fn(xi)
-                sig2 = hilbert_fn(yj)
+                sig1 = hilbert(xi)
+                sig2 = hilbert(yj)
                 dphi = np.angle(sig1) - np.angle(sig2)
                 matrix[i, j] = matrix[j, i] = float(np.mean(np.sign(np.sin(dphi))))
 
             elif method == "imag_coherence":
-                sig1 = hilbert_fn(xi)
-                sig2 = hilbert_fn(yj)
+                sig1 = hilbert(xi)
+                sig2 = hilbert(yj)
                 num = np.imag(np.conj(sig1) * sig2)
                 den = np.sqrt(np.mean(np.imag(sig1) ** 2) * np.mean(np.imag(sig2) ** 2)) + 1e-12
                 matrix[i, j] = matrix[j, i] = float(np.mean(num) / den)
 
             elif method == "PLV":
-                sig1 = hilbert_fn(xi)
-                sig2 = hilbert_fn(yj)
+                sig1 = hilbert(xi)
+                sig2 = hilbert(yj)
                 dphi = np.angle(sig1) - np.angle(sig2)
                 matrix[i, j] = matrix[j, i] = float(np.abs(np.mean(np.exp(1j * dphi))))
 
@@ -248,11 +227,11 @@ def compute_classical_connectivity(data, method):
                 matrix[i, j] = matrix[j, i] = _aec_orth(xi, yj)
 
             elif method == "pearson":
-                corr, _ = pearsonr_fn(xi, yj)
+                corr, _ = pearsonr(xi, yj)
                 matrix[i, j] = matrix[j, i] = float(corr)
 
             elif method == "mutual_info":
-                mi = mutual_info_regression_fn(xi.reshape(-1, 1), yj, discrete_features=False)[0]
+                mi = mutual_info_regression(xi.reshape(-1, 1), yj, discrete_features=False)[0]
                 matrix[i, j] = matrix[j, i] = float(mi)
 
             # ---- NEW: distance correlation ----

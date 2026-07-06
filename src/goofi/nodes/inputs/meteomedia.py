@@ -1,6 +1,7 @@
 from os.path import join
 
 import numpy as np
+import requests
 
 from goofi.data import Data, DataType
 from goofi.node import Node
@@ -37,11 +38,6 @@ class MeteoMedia(Node):
             },
         }
 
-    def setup(self):
-        import requests
-
-        self.requests = requests
-
     def process(self, latitude: Data, longitude: Data, location_name: Data):
         if latitude is None or longitude is None:
             return None
@@ -66,13 +62,13 @@ class MeteoMedia(Node):
                 f"https://api.tomorrow.io/v4/weather/realtime?location={float(lat_value)},{float(long_value)}&apikey={api_key}"
             )
             headers = {"accept": "application/json"}
-            response = self.requests.get(url, headers=headers)
+            response = requests.get(url, headers=headers)
             print(response.status_code)
 
         else:
             url = f"https://api.tomorrow.io/v4/weather/realtime?location={location_name}&apikey={api_key}"
             headers = {"accept": "application/json"}
-            response = self.requests.get(url, headers=headers)
+            response = requests.get(url, headers=headers)
             print(response.status_code)
         if response.status_code == 200:
             responses = response.json()

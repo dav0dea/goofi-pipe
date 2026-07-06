@@ -1,5 +1,6 @@
 import re
 
+import mne
 import numpy as np
 from goofi.data import Data, DataType
 from goofi.node import Node
@@ -93,9 +94,6 @@ class Hologram(Node):
 
     # ---------------- lifecycle ----------------
 
-    def setup(self):
-        import mne  # ensure available
-
     def process(self, psd: Data):
         if psd is None or psd.data is None:
             return None
@@ -117,8 +115,6 @@ class Hologram(Node):
             ch_names_montage = ch_names
 
         # ---- electrode positions via montage ----
-        import mne
-
         montage_name = self.params.hologram.montage.value
         montage = mne.channels.make_standard_montage(montage_name)
         pos_dict = montage.get_positions()["ch_pos"]

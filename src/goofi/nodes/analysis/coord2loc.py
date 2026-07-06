@@ -1,6 +1,8 @@
+import numpy as np
+from geopy.geocoders import Nominatim
+
 from goofi.data import Data, DataType
 from goofi.node import Node
-import numpy as np
 
 
 class Coord2loc(Node):
@@ -23,8 +25,6 @@ class Coord2loc(Node):
         return {"coord_info": DataType.TABLE, "water_situation": DataType.ARRAY}
 
     def setup(self):
-        from geopy.geocoders import Nominatim
-
         # list keys : ['ISO3166-2-lvl4', 'ISO3166-2-lvl6', 'ISO3166-2-lvl7', 'city',
         # 'city_district', 'country', 'country_code', 'county', 'district', 'hamlet', 'locality',
         # 'municipality', 'postcode', 'region', 'road', 'state', 'state_district', 'suburb', 'town', 'village']

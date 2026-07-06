@@ -2,6 +2,7 @@ import pickle
 from os.path import join
 
 import numpy as np
+from panns_inference import AudioTagging as PANNsAudioTagging, labels
 
 from goofi.data import Data, DataType
 from goofi.node import Node
@@ -44,10 +45,7 @@ class AudioTagging(Node):
         }
 
     def setup(self):
-        from panns_inference import AudioTagging, labels
-
-        self.at = AudioTagging(checkpoint_path=None, device="cpu")
-        self.labels = labels
+        self.at = PANNsAudioTagging(checkpoint_path=None, device="cpu")
         audio_tags_path = join(self.assets_path, "audio_tags_structure.pkl")
         with open(audio_tags_path, "rb") as f:
             self.audio_tags = pickle.load(f)
@@ -66,7 +64,7 @@ class AudioTagging(Node):
         (clipwise_output, embedding) = self.at.inference(audioIn.data)
 
         best_labels = np.argsort(clipwise_output[0])[::-1]
-        tags = np.array(self.labels)[best_labels]
+        tags = np.array(labels)[best_labels]
         probabilities = clipwise_output[0][best_labels]
         embedding = embedding.squeeze()
 

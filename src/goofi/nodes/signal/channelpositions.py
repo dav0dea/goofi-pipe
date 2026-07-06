@@ -1,3 +1,4 @@
+import mne
 import numpy as np
 
 from goofi.data import Data, DataType
@@ -71,9 +72,6 @@ class ChannelPositions(Node):
         }
 
     def setup(self):
-        import mne
-
-        self.mne = mne
         self._cache = {}
 
     def _get_positions(self, name, normalize):
@@ -81,7 +79,7 @@ class ChannelPositions(Node):
         if key in self._cache:
             return self._cache[key]
 
-        montage = self.mne.channels.make_standard_montage(name)
+        montage = mne.channels.make_standard_montage(name)
         pos_dict = {ch: np.asarray(p, dtype=np.float64) for ch, p in montage.get_positions()["ch_pos"].items()}
 
         if normalize and pos_dict:

@@ -1,4 +1,7 @@
+import json
+
 import numpy as np
+import yaml
 
 from goofi.data import Data, DataType
 from goofi.node import Node
@@ -31,10 +34,6 @@ class StringToTable(Node):
         }
 
     def process(self, text):
-        import json
-
-        import yaml
-
         if text.data is None:
             return None
 
@@ -50,8 +49,6 @@ class StringToTable(Node):
                 raise ValueError(f"Error decoding JSON: {e}")
         elif self.params.string_to_table.format.value == "yaml":
             try:
-                import yaml
-
                 table = yaml.safe_load(text)
             except yaml.YAMLError as e:
                 raise ValueError(f"Error decoding YAML: {e}")
@@ -81,8 +78,6 @@ def extract_json(text):
     """
     Extract the first valid JSON object from the text, ignoring text before or after.
     """
-    import json
-
     # Find the start of the JSON object
     start = text.find("{")
     if start == -1:

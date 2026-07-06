@@ -1,6 +1,7 @@
 from math import gcd
 
 import numpy as np
+from scipy.signal import resample_poly
 
 from goofi.data import Data, DataType
 from goofi.node import Node
@@ -34,11 +35,6 @@ class Resample(Node):
             }
         }
 
-    def setup(self):
-        from scipy.signal import resample_poly
-
-        self.resample_poly = resample_poly
-
     def process(self, data: Data):
         if data is None or data.data is None:
             print("Data is None")
@@ -62,7 +58,7 @@ class Resample(Node):
         signal = np.nan_to_num(signal, posinf=0, neginf=0)
 
         # Resample the signal based on the specified axis
-        resampled_signal = self.resample_poly(signal, up, down, axis=axis, padtype="line")
+        resampled_signal = resample_poly(signal, up, down, axis=axis, padtype="line")
 
         # Adjust axis for negative values
         if axis < 0:

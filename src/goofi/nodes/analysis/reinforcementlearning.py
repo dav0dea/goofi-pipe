@@ -1,4 +1,6 @@
 import numpy as np
+import torch
+import torch.nn as nn
 
 from goofi.data import Data, DataType
 from goofi.node import Node
@@ -85,12 +87,6 @@ class ReinforcementLearning(Node):
         }
 
     def setup(self):
-        import torch
-        import torch.nn as nn
-
-        self.torch = torch
-        self.nn = nn
-
         # Set device
         self._set_device()
 
@@ -126,7 +122,7 @@ class ReinforcementLearning(Node):
         """Set the computation device."""
         device_param = self.params.control.device.value
         if device_param == "auto":
-            self.device = "cuda" if self.torch.cuda.is_available() else "cpu"
+            self.device = "cuda" if torch.cuda.is_available() else "cpu"
         else:
             self.device = device_param
         print(f"ReinforcementLearning node using device: {self.device}")
@@ -155,18 +151,18 @@ class ReinforcementLearning(Node):
         for hidden_size in hidden_layers:
             policy_layers.extend(
                 [
-                    self.nn.Linear(prev_size, hidden_size),
-                    self.nn.Tanh(),
+                    nn.Linear(prev_size, hidden_size),
+                    nn.Tanh(),
                 ]
             )
             prev_size = hidden_size
 
         # Output layer for mean and log_std of action distribution
-        policy_layers.append(self.nn.Linear(prev_size, action_dim))
-        self.policy_net = self.nn.Sequential(*policy_layers).to(self.device)
+        policy_layers.append(nn.Linear(prev_size, action_dim))
+        self.policy_net = nn.Sequential(*policy_layers).to(self.device)
 
         # Learnable log standard deviation (state-independent)
-        self.log_std = self.nn.Parameter(self.torch.zeros(action_dim, device=self.device))
+        self.log_std = nn.Parameter(torch.zeros(action_dim, device=self.device))
 
         # Build value network (critic)
         value_layers = []
@@ -174,60 +170,60 @@ class ReinforcementLearning(Node):
         for hidden_size in hidden_layers:
             value_layers.extend(
                 [
-                    self.nn.Linear(prev_size, hidden_size),
-                    self.nn.Tanh(),
+                    nn.Linear(prev_size, hidden_size),
+                    nn.Tanh(),
                 ]
             )
             prev_size = hidden_size
-        value_layers.append(self.nn.Linear(prev_size, 1))
-        self.value_net = self.nn.Sequential(*value_layers).to(self.device)
+        value_layers.append(nn.Linear(prev_size, 1))
+        self.value_net = nn.Sequential(*value_layers).to(self.device)
 
         # Initialize weights with orthogonal initialization for better stability
         def init_weights(m):
-            if isinstance(m, self.nn.Linear):
-                self.nn.init.orthogonal_(m.weight, gain=np.sqrt(2))
-                self.nn.init.constant_(m.bias, 0.0)
+            if isinstance(m, nn.Linear):
+                nn.init.orthogonal_(m.weight, gain=np.sqrt(2))
+                nn.init.constant_(m.bias, 0.0)
 
         self.policy_net.apply(init_weights)
         self.value_net.apply(init_weights)
 
         # Smaller initialization for output layers
-        with self.torch.no_grad():
+        with torch.no_grad():
             # Get last linear layer of policy net and use smaller init
             for layer in reversed(list(self.policy_net.modules())):
-                if isinstance(layer, self.nn.Linear):
-                    self.nn.init.orthogonal_(layer.weight, gain=0.01)
+                if isinstance(layer, nn.Linear):
+                    nn.init.orthogonal_(layer.weight, gain=0.01)
                     break
             # Get last linear layer of value net and use smaller init
             for layer in reversed(list(self.value_net.modules())):
-                if isinstance(layer, self.nn.Linear):
-                    self.nn.init.orthogonal_(layer.weight, gain=1.0)
+                if isinstance(layer, nn.Linear):
+                    nn.init.orthogonal_(layer.weight, gain=1.0)
                     break
 
         # Optimizer
         lr = self.params.training.learning_rate.value
         params = list(self.policy_net.parameters()) + list(self.value_net.parameters()) + [self.log_std]
-        self.optimizer = self.torch.optim.Adam(params, lr=lr, eps=1e-5)  # Added eps for numerical stability
+        self.optimizer = torch.optim.Adam(params, lr=lr, eps=1e-5)  # Added eps for numerical stability
 
         print(f"Initialized PPO agent: obs_dim={obs_dim}, action_dim={action_dim}, hidden={hidden_layers}")
 
     def _get_action_and_value(self, observation):
         """Get action and value estimate for a given observation."""
-        obs_tensor = self.torch.FloatTensor(observation).unsqueeze(0).to(self.device)
+        obs_tensor = torch.FloatTensor(observation).unsqueeze(0).to(self.device)
 
-        with self.torch.no_grad():
+        with torch.no_grad():
             # Get action mean from policy network
             action_mean = self.policy_net(obs_tensor)
             min_log_std = self.params.training.min_log_std.value
-            action_std = self.torch.exp(self.log_std.clamp(min_log_std, 2))  # Clamp log_std with configurable minimum
+            action_std = torch.exp(self.log_std.clamp(min_log_std, 2))  # Clamp log_std with configurable minimum
 
             # Check for NaN in action_mean and handle gracefully
-            if self.torch.isnan(action_mean).any():
+            if torch.isnan(action_mean).any():
                 print("Warning: NaN detected in action_mean, resetting to zeros")
-                action_mean = self.torch.zeros_like(action_mean)
+                action_mean = torch.zeros_like(action_mean)
 
             # Sample action from Gaussian distribution
-            dist = self.torch.distributions.Normal(action_mean, action_std)
+            dist = torch.distributions.Normal(action_mean, action_std)
             action = dist.sample()
             log_prob = dist.log_prob(action).sum(dim=-1)
 
@@ -235,15 +231,15 @@ class ReinforcementLearning(Node):
             value = self.value_net(obs_tensor)
 
             # Clip actions to [-1, 1]
-            action = self.torch.tanh(action)
+            action = torch.tanh(action)
 
             # Final NaN check on outputs
-            if self.torch.isnan(action).any():
-                action = self.torch.zeros_like(action)
-            if self.torch.isnan(value).any():
-                value = self.torch.zeros_like(value)
-            if self.torch.isnan(log_prob).any():
-                log_prob = self.torch.zeros_like(log_prob)
+            if torch.isnan(action).any():
+                action = torch.zeros_like(action)
+            if torch.isnan(value).any():
+                value = torch.zeros_like(value)
+            if torch.isnan(log_prob).any():
+                log_prob = torch.zeros_like(log_prob)
 
         return (
             action.cpu().numpy().flatten(),
@@ -278,18 +274,18 @@ class ReinforcementLearning(Node):
             return
 
         # Convert buffer to tensors
-        obs = self.torch.FloatTensor(np.array(self.buffer["observations"])).to(self.device)
-        actions = self.torch.FloatTensor(np.array(self.buffer["actions"])).to(self.device)
-        old_log_probs = self.torch.FloatTensor(np.array(self.buffer["log_probs"])).to(self.device)
+        obs = torch.FloatTensor(np.array(self.buffer["observations"])).to(self.device)
+        actions = torch.FloatTensor(np.array(self.buffer["actions"])).to(self.device)
+        old_log_probs = torch.FloatTensor(np.array(self.buffer["log_probs"])).to(self.device)
         rewards = np.array(self.buffer["rewards"])
         values = np.array(self.buffer["values"])
         dones = np.array(self.buffer["dones"])
 
         # Check for NaN in buffer data and skip update if found
         if (
-            self.torch.isnan(obs).any()
-            or self.torch.isnan(actions).any()
-            or self.torch.isnan(old_log_probs).any()
+            torch.isnan(obs).any()
+            or torch.isnan(actions).any()
+            or torch.isnan(old_log_probs).any()
             or np.any(np.isnan(rewards))
             or np.any(np.isnan(values))
         ):
@@ -321,8 +317,8 @@ class ReinforcementLearning(Node):
             }
             return
 
-        advantages = self.torch.FloatTensor(advantages).to(self.device)
-        returns = self.torch.FloatTensor(returns).to(self.device)
+        advantages = torch.FloatTensor(advantages).to(self.device)
+        returns = torch.FloatTensor(returns).to(self.device)
 
         # Normalize advantages (with larger epsilon for stability)
         advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-5)
@@ -334,7 +330,7 @@ class ReinforcementLearning(Node):
 
         for epoch in range(epochs):
             # Shuffle indices
-            indices = self.torch.randperm(buffer_size)
+            indices = torch.randperm(buffer_size)
 
             for start in range(0, buffer_size, minibatch_size):
                 end = start + minibatch_size
@@ -352,15 +348,15 @@ class ReinforcementLearning(Node):
                 action_mean = self.policy_net(batch_obs)
 
                 # Check for NaN in action_mean during training
-                if self.torch.isnan(action_mean).any():
+                if torch.isnan(action_mean).any():
                     print("Warning: NaN in action_mean during training, skipping batch")
                     continue
 
                 min_log_std = self.params.training.min_log_std.value
-                action_std = self.torch.exp(
+                action_std = torch.exp(
                     self.log_std.clamp(min_log_std, 2)
                 )  # Clamp log_std with configurable minimum
-                dist = self.torch.distributions.Normal(action_mean, action_std)
+                dist = torch.distributions.Normal(action_mean, action_std)
 
                 # Compute log probabilities of the taken actions
                 log_probs = dist.log_prob(batch_actions).sum(dim=-1)
@@ -370,15 +366,15 @@ class ReinforcementLearning(Node):
                 values_pred = self.value_net(batch_obs).squeeze()
 
                 # PPO clipped loss
-                ratio = self.torch.exp((log_probs - batch_old_log_probs).clamp(-20, 20))  # Clamp for stability
+                ratio = torch.exp((log_probs - batch_old_log_probs).clamp(-20, 20))  # Clamp for stability
                 clip_epsilon = self.params.training.clip_epsilon.value
 
                 surr1 = ratio * batch_advantages
-                surr2 = self.torch.clamp(ratio, 1 - clip_epsilon, 1 + clip_epsilon) * batch_advantages
-                policy_loss = -self.torch.min(surr1, surr2).mean()
+                surr2 = torch.clamp(ratio, 1 - clip_epsilon, 1 + clip_epsilon) * batch_advantages
+                policy_loss = -torch.min(surr1, surr2).mean()
 
                 # Value loss
-                value_loss = self.nn.functional.mse_loss(values_pred, batch_returns)
+                value_loss = nn.functional.mse_loss(values_pred, batch_returns)
 
                 # Total loss
                 entropy_coef = self.params.training.entropy_coef.value
@@ -386,14 +382,14 @@ class ReinforcementLearning(Node):
                 loss = policy_loss + value_loss_coef * value_loss - entropy_coef * entropy
 
                 # Skip update if loss is NaN
-                if self.torch.isnan(loss):
+                if torch.isnan(loss):
                     print("Warning: NaN loss detected, skipping batch update")
                     continue
 
                 # Optimize
                 self.optimizer.zero_grad()
                 loss.backward()
-                self.torch.nn.utils.clip_grad_norm_(
+                torch.nn.utils.clip_grad_norm_(
                     list(self.policy_net.parameters()) + list(self.value_net.parameters()) + [self.log_std],
                     self.params.training.max_grad_norm.value,
                 )

@@ -2,6 +2,7 @@ from copy import deepcopy
 
 import numpy as np
 from numpy.fft import fft, fftfreq
+from scipy.signal import welch
 
 from goofi.data import Data, DataType
 from goofi.node import Node
@@ -48,11 +49,6 @@ class PSD(Node):
                 ),
             },
         }
-
-    def setup(self):
-        from scipy.signal import welch
-
-        self.welch = welch
 
     def process(self, data: Data):
         if data is None or data.data is None:
@@ -107,7 +103,7 @@ class PSD(Node):
             freq = fftfreq(data.data.shape[axis], 1 / sfreq)
             psd = np.abs(fft(data.data, axis=axis))
         elif method == "welch":
-            freq, psd = self.welch(data.data, fs=sfreq, nperseg=nperseg, noverlap=noverlap, axis=axis)
+            freq, psd = welch(data.data, fs=sfreq, nperseg=nperseg, noverlap=noverlap, axis=axis)
         else:
             raise ValueError(f"Unknown PSD method: {method}")
 

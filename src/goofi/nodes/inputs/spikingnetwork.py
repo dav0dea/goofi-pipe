@@ -1,3 +1,5 @@
+import torch
+
 from goofi.data import Data, DataType
 from goofi.node import Node
 from goofi.params import BoolParam, FloatParam, IntParam, StringParam
@@ -42,13 +44,9 @@ class SpikingNetwork(Node):
         return {"potentials": DataType.ARRAY}
 
     def setup(self):
-        import torch
-
-        self.torch = torch
-
         device = self.params.network.device.value
         if device == "auto":
-            device = "cuda" if self.torch.cuda.is_available() else "cpu"
+            device = "cuda" if torch.cuda.is_available() else "cpu"
 
         # create the SNN instance with parameters
         self.network = Network(
@@ -69,7 +67,7 @@ class SpikingNetwork(Node):
         if input is not None:
             assert input.data.ndim == 1, "Input must be one-dimensional."
             assert input.data.shape[0] < self.network.potential.shape[0], "Input size must match number of neurons."
-            self.network.potential[: input.data.shape[0]] += self.torch.from_numpy(input.data).to(self.network.potential.device)
+            self.network.potential[: input.data.shape[0]] += torch.from_numpy(input.data).to(self.network.potential.device)
 
         # simulate the SNN for one time step
         self.network.update(
@@ -104,24 +102,20 @@ class Network:
     NEUROTRANSMITTER_REPLENISHMENT_RATE = 0.1
 
     def __init__(self, n_neurons=5000, max_n_in=20, spatial_dims=2, device="cpu"):
-        import torch
+        self.positions = torch.rand(n_neurons, spatial_dims, device=device)
+        self.potential = torch.zeros(n_neurons, device=device)
+        self.ap_timers = torch.full((n_neurons, max_n_in), float("inf"), device=device)
 
-        self.torch = torch
+        self.dendrite_weights = torch.full((n_neurons, max_n_in), 0.0, device=device)
+        self.dendrite_indices = torch.full((n_neurons, max_n_in), -1, device=device, dtype=torch.long)
+        self.dendrite_activity = torch.ones(n_neurons, max_n_in, device=device)
 
-        self.positions = self.torch.rand(n_neurons, spatial_dims, device=device)
-        self.potential = self.torch.zeros(n_neurons, device=device)
-        self.ap_timers = self.torch.full((n_neurons, max_n_in), float("inf"), device=device)
-
-        self.dendrite_weights = self.torch.full((n_neurons, max_n_in), 0.0, device=device)
-        self.dendrite_indices = self.torch.full((n_neurons, max_n_in), -1, device=device, dtype=self.torch.long)
-        self.dendrite_activity = self.torch.ones(n_neurons, max_n_in, device=device)
-
-        self.distances = self.torch.cdist(self.positions, self.positions).fill_diagonal_(float("inf"))
+        self.distances = torch.cdist(self.positions, self.positions).fill_diagonal_(float("inf"))
 
         for i in range(n_neurons):
-            n = self.torch.randint(1, max_n_in, (1,)).item()
-            self.dendrite_indices[i, :n] = self.torch.multinomial((1 / (self.distances[i] + 1e-6)).softmax(dim=0), n)
-            self.dendrite_weights[i, :n] = self.torch.randn(n)
+            n = torch.randint(1, max_n_in, (1,)).item()
+            self.dendrite_indices[i, :n] = torch.multinomial((1 / (self.distances[i] + 1e-6)).softmax(dim=0), n)
+            self.dendrite_weights[i, :n] = torch.randn(n)
 
     def update(self, dt=0.1, shift=0, scale=1):
         self.ap_timers -= self.AP_SPEED * dt
@@ -133,7 +127,7 @@ class Network:
 
         mask = ~mask
         if mask.sum() > 0:
-            self.potential[mask] -= self.torch.sign(self.potential[mask]) * self.POTENTIAL_DECAY * dt
+            self.potential[mask] -= torch.sign(self.potential[mask]) * self.POTENTIAL_DECAY * dt
 
         self.potential += (arrived * (self.dendrite_weights * scale + shift) / self.dendrite_activity).sum(dim=-1)
 
@@ -145,7 +139,7 @@ class Network:
         self.potential[new_ap] = self.REFRACTION_POTENTIAL
 
         firing_neurons = new_ap.nonzero(as_tuple=True)[0]
-        mask = self.torch.isin(self.dendrite_indices, firing_neurons) & self.ap_timers.isinf()
+        mask = torch.isin(self.dendrite_indices, firing_neurons) & self.ap_timers.isinf()
         receiving_neurons, dendrite_indices = mask.nonzero(as_tuple=True)
         self.ap_timers[receiving_neurons, dendrite_indices] = self.distances[
             receiving_neurons,

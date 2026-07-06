@@ -1,6 +1,8 @@
 from os.path import join
 
 import numpy as np
+import pandas as pd
+from biotuner.bioelements import find_matching_spectral_lines, hertz_to_nm
 
 from goofi.data import Data, DataType
 from goofi.node import Node
@@ -34,9 +36,6 @@ class Bioplanets(Node):
         }
 
     def setup(self):
-        import pandas as pd
-
-        # load the dataframe here to avoid loading it on startup
         self.planets_data = pd.read_csv(join(self.assets_path, "planets_peaks_prominence02.csv"))
         self.desired_planets = ["venus", "earth", "mars", "jupiter", "saturn"]
 
@@ -63,23 +62,14 @@ class Bioplanets(Node):
         return {"planets": (planets, peaks.meta), "top_planets": (top_planets_str, peaks.meta)}
 
 
-hertz_to_nm_fn, find_matching_spectral_lines_fn = None, None
-
-
 def bioplanets_realtime(peaks, df, tolerance):
     desired_planets = ["venus", "earth", "mars", "jupiter", "saturn"]
-    global hertz_to_nm_fn, find_matching_spectral_lines_fn
-    if hertz_to_nm_fn is None or find_matching_spectral_lines_fn is None:
-        from biotuner.bioelements import find_matching_spectral_lines, hertz_to_nm
-
-        hertz_to_nm_fn = hertz_to_nm
-        find_matching_spectral_lines_fn = find_matching_spectral_lines
     # Define the list of planets you are interested in
 
-    peaks_ang = [hertz_to_nm_fn(x) * 10 for x in peaks]  # convert to Angstrom
+    peaks_ang = [hertz_to_nm(x) * 10 for x in peaks]  # convert to Angstrom
 
     # find_matching_spectral_lines is a function you must have defined elsewhere
-    res = find_matching_spectral_lines_fn(df, peaks_ang, tolerance=tolerance)
+    res = find_matching_spectral_lines(df, peaks_ang, tolerance=tolerance)
 
     # Filter the res DataFrame for the desired planets
     res_filtered = res[res["planet"].isin(desired_planets)]

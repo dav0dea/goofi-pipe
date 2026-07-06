@@ -1,4 +1,5 @@
 import numpy as np
+from scipy.signal import resample_poly
 
 from goofi.data import Data, DataType
 from goofi.node import Node
@@ -29,11 +30,6 @@ class ResampleJoint(Node):
     def config_params():
         return {"resample": {"scale": FloatParam(0.5, 0.0, 1.0)}}
 
-    def setup(self):
-        from scipy.signal import resample_poly
-
-        self.resample_poly = resample_poly
-
     def process(self, data1: Data, data2: Data):
         if data1 is None or data1.data is None or data2 is None or data2.data is None:
             return None
@@ -53,8 +49,8 @@ class ResampleJoint(Node):
         signal2 = np.array(data2.data)
 
         # Resample the signals
-        resampled_signal1 = self.resample_poly(signal1, up1, down1, padtype="line")
-        resampled_signal2 = self.resample_poly(signal2, up2, down2, padtype="line")
+        resampled_signal1 = resample_poly(signal1, up1, down1, padtype="line")
+        resampled_signal2 = resample_poly(signal2, up2, down2, padtype="line")
 
         # Update the 'sfreq' metadata
         data1.meta["sfreq"] = new_sfreq

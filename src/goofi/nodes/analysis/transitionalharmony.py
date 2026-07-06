@@ -1,4 +1,6 @@
 import numpy as np
+from biotuner.biotuner_object import compute_biotuner
+from biotuner.metrics import compute_subharmonics_2lists
 
 from goofi.data import Data, DataType
 from goofi.node import Node
@@ -36,13 +38,6 @@ class TransitionalHarmony(Node):
             }
         }
 
-    def setup(self):
-        from biotuner.biotuner_object import compute_biotuner
-        from biotuner.metrics import compute_subharmonics_2lists
-
-        self.compute_biotuner = compute_biotuner
-        self.compute_subharmonics_2lists = compute_subharmonics_2lists
-
     def process(self, data: Data):
         if data is None:
             return None
@@ -57,7 +52,7 @@ class TransitionalHarmony(Node):
         data2 = data.data[int(data_len / 2) :]
 
         # extract peaks from data1
-        bt1 = self.compute_biotuner(
+        bt1 = compute_biotuner(
             sf=data.meta["sfreq"],
             peaks_function=self.params.transitional_harmony.peaks_function.value,
         )
@@ -70,7 +65,7 @@ class TransitionalHarmony(Node):
         )
 
         # extract peaks from data2
-        bt2 = self.compute_biotuner(
+        bt2 = compute_biotuner(
             sf=data.meta["sfreq"],
             peaks_function=self.params.transitional_harmony.peaks_function.value,
         )
@@ -83,7 +78,7 @@ class TransitionalHarmony(Node):
         )
 
         # compute subharmonics between peaks
-        result = self.compute_subharmonics_2lists(
+        result = compute_subharmonics_2lists(
             bt1.peaks,
             bt2.peaks,
             self.params.transitional_harmony.subharmonics.value,

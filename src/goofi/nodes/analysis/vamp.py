@@ -4,6 +4,8 @@ from goofi.data import Data, DataType
 from goofi.node import Node
 from goofi.params import BoolParam, IntParam
 
+from deeptime.decomposition import VAMP as VAMP_Model
+
 
 class VAMP(Node):
     """
@@ -99,9 +101,4 @@ class VAMP(Node):
         self.model = self.internal_model.fetch_model()
 
     def make_model(self):
-        try:
-            from deeptime.decomposition import VAMP as VAMP_Model
-        except ImportError:
-            raise ImportError("deeptime is required for VAMP node. Please install deeptime via pip or conda.")
-
         return VAMP_Model(lagtime=self.params.vamp.time_lag.value, dim=self.params.vamp.n_dims.value)

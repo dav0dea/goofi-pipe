@@ -1,4 +1,5 @@
 import numpy as np
+from scipy.signal import hilbert
 
 from goofi.data import Data, DataType
 from goofi.node import Node
@@ -23,16 +24,11 @@ class Hilbert(Node):
     def config_output_slots():
         return {"inst_amplitude": DataType.ARRAY, "inst_phase": DataType.ARRAY, "inst_frequency": DataType.ARRAY}
 
-    def setup(self):
-        from scipy.signal import hilbert
-
-        self.hilbert = hilbert
-
     def process(self, data: Data):
         if data is None or data.data is None:
             return None
 
-        analytic_signal = self.hilbert(data.data)
+        analytic_signal = hilbert(data.data)
         inst_amplitude = np.abs(analytic_signal)
         inst_phase = np.angle(analytic_signal)
 

@@ -1,8 +1,22 @@
+import traceback
+
+import librosa
 import numpy as np
+import torch
 
 from goofi.data import Data, DataType
 from goofi.node import Node
 from goofi.params import FloatParam, StringParam
+
+try:
+    from transformers import Gemma3nForConditionalGeneration, Gemma3nProcessor
+except ImportError:
+    # Fallback to Auto classes if Gemma3n classes not available
+    from transformers import AutoModelForConditionalGeneration, AutoProcessor
+
+    print("Gemma3n classes not found, using Auto classes")
+    Gemma3nForConditionalGeneration = AutoModelForConditionalGeneration
+    Gemma3nProcessor = AutoProcessor
 
 
 class Gemma3nAudio(Node):
@@ -44,28 +58,6 @@ class Gemma3nAudio(Node):
         }
 
     def setup(self):
-        import torch
-
-        self.torch = torch
-
-        try:
-            from transformers import Gemma3nForConditionalGeneration, Gemma3nProcessor
-        except ImportError:
-            try:
-                from transformers import (
-                    AutoModelForConditionalGeneration,
-                    AutoProcessor,
-                )
-
-                # Fallback to Auto classes if Gemma3n classes not available
-                print("Gemma3n classes not found, using Auto classes")
-                Gemma3nForConditionalGeneration = AutoModelForConditionalGeneration
-                Gemma3nProcessor = AutoProcessor
-            except ImportError:
-                raise ImportError(
-                    "Please install transformers with Gemma3n support: " "pip install transformers>=4.50.0"
-                )
-
         # Get model configuration
         model_path = self.params.model.model_path.value
         device = self.params.model.device.value
@@ -131,13 +123,7 @@ class Gemma3nAudio(Node):
 
         # Resample if needed
         if input_sr != self.expected_sr:
-            try:
-                import librosa
-
-                audio_data = librosa.resample(audio_data, orig_sr=input_sr, target_sr=self.expected_sr)
-            except ImportError:
-                print("Warning: librosa not available for resampling. Using audio as-is.")
-                print(f"Expected {self.expected_sr} Hz but got {input_sr} Hz")
+            audio_data = librosa.resample(audio_data, orig_sr=input_sr, target_sr=self.expected_sr)
 
         # Ensure audio is 2D for the processor: (batch, samples) or (channels, samples)
         # The feature extractor expects shape (channels, samples) typically
@@ -152,14 +138,14 @@ class Gemma3nAudio(Node):
             features = {k: v.to(self.device) for k, v in features.items()}
 
             # Use the model's get_audio_features method to extract features
-            with self.torch.no_grad():
+            with torch.no_grad():
                 audio_features, audio_mask = self.model.model.get_audio_features(
                     features["input_features"], ~features["input_features_mask"]
                 )
 
             # Convert to numpy (bfloat16 not supported by numpy, so convert to float32 first)
-            if audio_features.dtype == self.torch.bfloat16:
-                feature_array = audio_features.cpu().to(self.torch.float32).numpy()
+            if audio_features.dtype == torch.bfloat16:
+                feature_array = audio_features.cpu().to(torch.float32).numpy()
             else:
                 feature_array = audio_features.cpu().numpy()
 
@@ -171,8 +157,6 @@ class Gemma3nAudio(Node):
 
         except Exception as e:
             print(f"Error extracting features: {e}")
-            import traceback
-
             traceback.print_exc()
             return None
 

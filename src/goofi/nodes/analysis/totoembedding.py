@@ -1,6 +1,10 @@
+import torch
+
 from goofi.data import Data, DataType
 from goofi.node import Node
 from goofi.params import BoolParam, StringParam
+
+from toto.model.toto import Toto
 
 
 class TotoEmbedding(Node):
@@ -33,16 +37,6 @@ class TotoEmbedding(Node):
         }
 
     def setup(self):
-        import torch
-
-        try:
-            from toto.model.toto import Toto
-        except:
-            raise ImportError(
-                "Toto package failed to import. Please install it via pip install git+https://github.com/dav0dea/toto.git"
-            )
-
-        self.torch = torch
         device = self.params.toto.device.value
 
         self.model: Toto = Toto.from_pretrained("Datadog/Toto-Open-Base-1.0").to(device).eval()
@@ -50,15 +44,15 @@ class TotoEmbedding(Node):
         self.model.compile()
 
     def _embed(self, series):
-        with self.torch.inference_mode():
+        with torch.inference_mode():
             series = series.unsqueeze(0)  # → (1, ch, t)
 
-            input_padding_mask = self.torch.full_like(series, True, dtype=self.torch.bool)
-            id_mask = self.torch.zeros_like(series)
+            input_padding_mask = torch.full_like(series, True, dtype=torch.bool)
+            id_mask = torch.zeros_like(series)
 
             scaled, *_ = self.model.model.scaler(
                 series,
-                weights=self.torch.ones_like(series, device=series.device),
+                weights=torch.ones_like(series, device=series.device),
                 padding_mask=input_padding_mask,
                 prefix_length=None,
             )
@@ -76,7 +70,7 @@ class TotoEmbedding(Node):
         device = self.params.toto.device.value
         assert device == "cuda", "For now, only CUDA is supported for Toto embedding."
 
-        tensor = self.torch.as_tensor(ts, dtype=self.torch.float32, device=device)
+        tensor = torch.as_tensor(ts, dtype=torch.float32, device=device)
 
         emb = self._embed(tensor).cpu().numpy()
 

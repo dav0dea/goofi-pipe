@@ -1,6 +1,8 @@
 from os.path import join
 
 import numpy as np
+import pandas as pd
+from biotuner.bioelements import find_matching_spectral_lines, hertz_to_nm
 
 from goofi.data import Data, DataType
 from goofi.node import Node
@@ -33,9 +35,6 @@ class Bioelements(Node):
         }
 
     def setup(self):
-        import pandas as pd
-
-        # load the dataframe here to avoid loading it on startup
         self.air_elements = pd.read_csv(join(self.assets_path, "air_elements_filtered.csv"))
 
     def process(self, data: Data):
@@ -72,19 +71,9 @@ class Bioelements(Node):
         return {"elements": (elements, data.meta)}
 
 
-hertz_to_nm_fn, find_matching_spectral_lines_fn = None, None
-
-
 def bioelements_realtime(data, df, tolerance):
-    global hertz_to_nm_fn, find_matching_spectral_lines_fn
-    if hertz_to_nm_fn is None or find_matching_spectral_lines_fn is None:
-        from biotuner.bioelements import find_matching_spectral_lines, hertz_to_nm
-
-        hertz_to_nm_fn = hertz_to_nm
-        find_matching_spectral_lines_fn = find_matching_spectral_lines
-
-    peaks_ang = [hertz_to_nm_fn(x) * 10 for x in data]
-    res = find_matching_spectral_lines_fn(df, peaks_ang, tolerance=tolerance)
+    peaks_ang = [hertz_to_nm(x) * 10 for x in data]
+    res = find_matching_spectral_lines(df, peaks_ang, tolerance=tolerance)
     elements_count = res["element"].value_counts()
     elements_final = elements_count.index.tolist()[:3]  # take the three most common elements
 

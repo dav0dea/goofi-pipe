@@ -1,5 +1,7 @@
 import threading
 
+import mido
+
 from goofi.data import Data, DataType
 from goofi.node import Node
 from goofi.params import IntParam, StringParam
@@ -58,12 +60,7 @@ class MidiCCout(Node):
         # convert cc_number to int
         cc_number = int(cc_number)
         value = int(value)
-        outport.send(self.mido.Message("control_change", control=cc_number, value=value, channel=channel))
-
-    def setup(self):
-        import mido
-
-        self.mido = mido
+        outport.send(mido.Message("control_change", control=cc_number, value=value, channel=channel))
 
     def process(self, cc1: Data, cc2: Data, cc3: Data, cc4: Data, cc5: Data):
         port_name = self.params.MIDI["port_name"].value
@@ -78,7 +75,7 @@ class MidiCCout(Node):
         ]
         cc_data = [cc1, cc2, cc3, cc4, cc5]
 
-        outport = self.mido.open_output(port_name) if port_name != "goofi" else self.goofi_port
+        outport = mido.open_output(port_name) if port_name != "goofi" else self.goofi_port
 
         alert_on = False
         try:

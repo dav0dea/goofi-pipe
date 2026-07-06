@@ -1,6 +1,7 @@
 import datetime
 import os
 import numpy as np
+import pandas as pd
 from goofi.data import Data, DataType
 from goofi.node import Node
 from goofi.params import StringParam, BoolParam, FloatParam
@@ -42,9 +43,6 @@ class WriteCsv(Node):
         }
 
     def setup(self):
-        import pandas as pd
-
-        self.pd = pd
         self.last_filename = None
         self.base_filename = None  # Track the base filename without timestamp
         self.written_files = set()  # Track files to ensure headers are written
@@ -123,7 +121,7 @@ class WriteCsv(Node):
             flattened_data["timestamp"] = timestamps
 
         # Convert to DataFrame
-        df = self.pd.DataFrame(flattened_data)
+        df = pd.DataFrame(flattened_data)
 
         # Check if filename has changed, then update with timestamp
         fn = self.last_filename
@@ -182,7 +180,7 @@ class WriteCsv(Node):
                 raise ValueError(f"Unsupported data type: {val.dtype}")
 
         # Convert to DataFrame
-        df = self.pd.DataFrame(column_data)
+        df = pd.DataFrame(column_data)
         # Check if filename has changed, then update with timestamp
         fn = self.last_filename
         # Determine if headers should be written

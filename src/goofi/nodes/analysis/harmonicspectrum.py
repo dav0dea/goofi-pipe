@@ -1,6 +1,8 @@
 from copy import deepcopy
 
 import numpy as np
+from biotuner.biotuner_utils import apply_power_law_remove
+from biotuner.metrics import compute_subharmonic_tension, dyad_similarity
 
 from goofi.data import Data, DataType
 from goofi.node import Node
@@ -39,13 +41,6 @@ class HarmonicSpectrum(Node):
         }
 
     def setup(self):
-        from biotuner.biotuner_utils import apply_power_law_remove
-        from biotuner.metrics import compute_subharmonic_tension, dyad_similarity
-
-        self.apply_power_law_remove = apply_power_law_remove
-        self.compute_subharmonic_tension = compute_subharmonic_tension
-        self.dyad_similarity = dyad_similarity
-
         self.cached_freqs = None
         self.cached_harmonicity_matrix = None
         self.cached_metric = None
@@ -95,7 +90,7 @@ class HarmonicSpectrum(Node):
     def _compute_for_single_psd(self, psd_values, freqs):
         power_law_remove = self.params["harmonic"]["power_law_remove"].value
         if power_law_remove:
-            psd_values = self.apply_power_law_remove(freqs, psd_values, power_law_remove)
+            psd_values = apply_power_law_remove(freqs, psd_values, power_law_remove)
             # clip the psd_values to avoid negative values by converting them to 0
             psd_values = np.clip(psd_values, 0, None)
 
@@ -134,9 +129,9 @@ class HarmonicSpectrum(Node):
             for j, f2 in enumerate(freqs):
                 if f1 != f2:  # avoiding division by zero and self-comparison
                     if metric == "harmsim":
-                        harmonicity[i, j] = self.dyad_similarity(f1 / f2)
+                        harmonicity[i, j] = dyad_similarity(f1 / f2)
                     elif metric == "subharm_tension":
-                        _, _, subharm, _ = self.compute_subharmonic_tension(
+                        _, _, subharm, _ = compute_subharmonic_tension(
                             [f1, f2], n_harmonics=n_harms, delta_lim=delta_lim, min_notes=min_notes
                         )
                         try:

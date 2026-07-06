@@ -8,8 +8,9 @@ least 2 channels (one target + at least one "other"). These tests pin down a cle
 early ValueError for both failure modes, and guard that a valid index still passes the
 bounds check.
 
-phyid is an optional dependency that is not installed here, so we mark setup as done and
-stub `calc_PhiID` — the validation we care about must fire *before* any calc_PhiID call.
+Node modules import their deps unconditionally at module top, so this test can
+only run where phyid is installed (importorskip below). We still stub
+`calc_PhiID` — the validation we care about must fire *before* any calc_PhiID call.
 """
 from collections import defaultdict
 
@@ -18,7 +19,10 @@ import pytest
 
 from goofi.data import Data, DataType
 from goofi.node import NodeEnv
-from goofi.nodes.analysis.phiid import PhiID
+
+pytest.importorskip("phyid", reason="phiid node needs the phyid package to import")
+
+from goofi.nodes.analysis.phiid import PhiID  # noqa: E402
 
 
 def _standalone(node_cls):

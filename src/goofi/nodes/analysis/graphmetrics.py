@@ -1,3 +1,4 @@
+import networkx as nx
 import numpy as np
 
 from goofi.data import Data, DataType
@@ -33,11 +34,6 @@ class GraphMetrics(Node):
             "transitivity": DataType.ARRAY,
         }
 
-    def setup(self):
-        import networkx as nx
-
-        self.nx = nx
-
     def process(self, matrix: Data):
         if matrix is None:
             return None
@@ -47,20 +43,20 @@ class GraphMetrics(Node):
             raise ValueError("Matrix must be 2D and symmetric.")
 
         # Create a graph from the matrix (assuming undirected graph)
-        G = self.nx.from_numpy_array(matrix.data)
+        G = nx.from_numpy_array(matrix.data)
 
         # Compute metrics
-        clustering_coefficients = self.nx.average_clustering(G)
+        clustering_coefficients = nx.average_clustering(G)
         try:
-            path_length = self.nx.average_shortest_path_length(G)
-        except self.nx.NetworkXError:  # Handles cases where the graph is not connected
+            path_length = nx.average_shortest_path_length(G)
+        except nx.NetworkXError:  # Handles cases where the graph is not connected
             path_length = None
-        betweenness = self.nx.betweenness_centrality(G)
+        betweenness = nx.betweenness_centrality(G)
         betweenness = np.array(list(betweenness.values()))
-        degree_centrality = self.nx.degree_centrality(G)
+        degree_centrality = nx.degree_centrality(G)
         degree_centrality = np.array(list(degree_centrality.values()))
-        assortativity = self.nx.degree_assortativity_coefficient(G)
-        transitivity = self.nx.transitivity(G)
+        assortativity = nx.degree_assortativity_coefficient(G)
+        transitivity = nx.transitivity(G)
 
         return {
             "clustering_coefficient": (np.array(clustering_coefficients), {}),

@@ -1,4 +1,10 @@
+import librosa
 import soundfile as sf
+import torch
+
+from transformers import AutoProcessor, Qwen2AudioForConditionalGeneration
+
+from nexa.gguf.nexa_inference_audio_lm import NexaAudioLMInference
 
 from goofi.data import Data, DataType
 from goofi.node import InputSlot, Node
@@ -43,10 +49,6 @@ class Audio2Txt(Node):
         }
 
     def setup(self):
-        import librosa
-
-        self.librosa = librosa
-
         provider = self.params.audio_to_text.provider.value
         if provider == "huggingface":
             self.setup_huggingface()
@@ -75,13 +77,6 @@ class Audio2Txt(Node):
         self.setup()
 
     def setup_huggingface(self):
-        import torch
-
-        try:
-            from transformers import AutoProcessor, Qwen2AudioForConditionalGeneration
-        except ModuleNotFoundError:
-            raise ModuleNotFoundError("Please install transformers to use Qwen2-Audio models via pip install transformers")
-
         try:
             self.processor = AutoProcessor.from_pretrained(
                 self.params["audio_to_text"]["model"].value, torch_dtype=torch.float16
@@ -98,7 +93,7 @@ class Audio2Txt(Node):
     def generate_huggingface(self, prompt, audio):
         # Ensure the audio is sampled at the model's expected rate
         sampling_rate = self.processor.feature_extractor.sampling_rate
-        audio_array = self.librosa.resample(audio.data, orig_sr=audio.meta["sfreq"], target_sr=sampling_rate)
+        audio_array = librosa.resample(audio.data, orig_sr=audio.meta["sfreq"], target_sr=sampling_rate)
 
         # Prepare the conversation input
         conversation = [
@@ -135,18 +130,12 @@ class Audio2Txt(Node):
         return generated_text
 
     def setup_nexa(self):
-        try:
-            from nexa.gguf.nexa_inference_audio_lm import NexaAudioLMInference
-        except Exception as e:
-            print(f"Error initializing Nexa model: {e}")
-            raise
-
         self.model = NexaAudioLMInference(self.params.audio_to_text.model.value)
 
     def generate_nexa(self, prompt, audio):
         # save audio to temp file (nexa expects 16kHz audio)
         audio_file = "./temp_audio.wav"
-        sf.write(audio_file, self.librosa.resample(audio.data, orig_sr=audio.meta["sfreq"], target_sr=16000), 16000)
+        sf.write(audio_file, librosa.resample(audio.data, orig_sr=audio.meta["sfreq"], target_sr=16000), 16000)
 
         # TODO: this doesn't work due to current limitiation in Nexa
         self.model.params["max_new_tokens"] = self.params.audio_to_text.max_new_tokens.value

@@ -3,11 +3,17 @@ import io
 from os import environ
 
 import numpy as np
+import openai
+import requests
+import torch
 from PIL import Image
+from transformers import AutoProcessor, MllamaForConditionalGeneration
 
 from goofi.data import Data, DataType
 from goofi.node import Node
 from goofi.params import FloatParam, IntParam, StringParam
+
+import ollama
 
 
 class Img2Txt(Node):
@@ -51,14 +57,8 @@ class Img2Txt(Node):
         }
 
     def setup(self):
-        import requests
-
-        self.requests = requests
-
         self.processor = None
         self.model_instance = None
-        self.openai = None
-        self.ollama = None
         self.model_id = self.params.img_to_text.model.value
 
         if "/" in self.model_id.lower():
@@ -72,9 +72,6 @@ class Img2Txt(Node):
 
     def setup_huggingface_llama(self):
         try:
-            import torch
-            from transformers import AutoProcessor, MllamaForConditionalGeneration
-
             self.model_instance = MllamaForConditionalGeneration.from_pretrained(
                 self.model_id,
                 torch_dtype=torch.bfloat16,
@@ -86,32 +83,20 @@ class Img2Txt(Node):
             raise
 
     def setup_openai_gpt(self):
-        try:
-            import openai
-        except ImportError:
-            print("Error: 'openai' library not found. Please install it using 'pip install openai'.")
-            raise
-
-        self.openai = openai
         key_path = self.params["img_to_text"]["openai_key"].value
 
         try:
             with open(key_path, "r") as f:
-                self.openai.api_key = f.read().strip()
+                openai.api_key = f.read().strip()
         except FileNotFoundError:
             print(f"Error: OpenAI API key file not found at path: {key_path}")
-            self.openai.api_key = environ.get("OPENAI_API_KEY", None)
-            if self.openai.api_key is None:
+            openai.api_key = environ.get("OPENAI_API_KEY", None)
+            if openai.api_key is None:
                 raise
 
     def setup_ollama(self):
-        try:
-            import ollama
-
-            self.ollama = ollama
-        except:
-            print("Error: 'ollama' library not found. Please install it using 'pip install ollama'.")
-            raise
+        # ollama is used via its module-level client at call time; nothing to initialize here
+        pass
 
     def encode_image(self, image_array):
         if image_array.dtype != "uint8":
@@ -197,7 +182,7 @@ class Img2Txt(Node):
     def process_openai_gpt(self, prompt, image_array):
         # Process using OpenAI GPT
         base64_image = self.encode_image(image_array)
-        headers = {"Content-Type": "application/json", "Authorization": f"Bearer {self.openai.api_key}"}
+        headers = {"Content-Type": "application/json", "Authorization": f"Bearer {openai.api_key}"}
         payload = {
             "model": self.model_id,
             "messages": [
@@ -214,10 +199,10 @@ class Img2Txt(Node):
         }
 
         try:
-            response = self.requests.post("https://api.openai.com/v1/chat/completions", headers=headers, json=payload)
+            response = requests.post("https://api.openai.com/v1/chat/completions", headers=headers, json=payload)
             response.raise_for_status()
             generated_text = response.json().get("choices", [{}])[0].get("message", {}).get("content", "")
-        except self.requests.exceptions.RequestException as e:
+        except requests.exceptions.RequestException as e:
             print(f"Error during OpenAI captioning request: {e}")
             return {"generated_text": ("Error generating caption.", {})}
 
@@ -227,7 +212,7 @@ class Img2Txt(Node):
         # Process using Ollama
         base64_image = self.encode_image(image_array)
         messages = [{"role": "user", "content": prompt, "images": [base64_image]}]
-        response = self.ollama.chat(
+        response = ollama.chat(
             model=self.model_id.replace("ollama:", ""),
             messages=messages,
             options={

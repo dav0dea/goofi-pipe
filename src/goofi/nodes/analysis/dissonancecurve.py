@@ -1,4 +1,5 @@
 import numpy as np
+from biotuner.scale_construction import diss_curve
 
 from goofi.data import Data, DataType
 from goofi.node import Node
@@ -38,11 +39,6 @@ class DissonanceCurve(Node):
             }
         }
 
-    def setup(self):
-        from biotuner.scale_construction import diss_curve
-
-        self.diss_curve = diss_curve
-
     def process(self, peaks: Data, amps: Data):
         if peaks is None or peaks.data is None or amps is None or amps.data is None:
             return None
@@ -56,7 +52,7 @@ class DissonanceCurve(Node):
             peaks = [p * 128 for p in peaks]  # scale the peaks up to accomodate beating frequency modelling.
             amps = np.interp(amps, (np.array(amps).min(), np.array(amps).max()), (0.2, 0.8))
 
-            diss, intervals, diss_scale, euler_diss, diss_mean, harm_sim_diss = self.diss_curve(
+            diss, intervals, diss_scale, euler_diss, diss_mean, harm_sim_diss = diss_curve(
                 peaks,
                 amps,
                 denom=denom,

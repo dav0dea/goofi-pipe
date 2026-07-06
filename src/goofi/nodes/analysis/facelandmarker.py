@@ -1,6 +1,10 @@
 from os import path
 
+import mediapipe as mp
 import numpy as np
+import requests
+from mediapipe.tasks import python
+from mediapipe.tasks.python import vision
 
 from goofi.data import Data, DataType
 from goofi.node import Node
@@ -42,15 +46,6 @@ class FaceLandmarker(Node):
         }
 
     def setup(self):
-        import mediapipe as mp
-        import requests
-        from mediapipe.tasks import python
-        from mediapipe.tasks.python import vision
-
-        self.mp = mp
-        self.python = python
-        self.vision = vision
-        self.requests = requests
         self.detector = None
         self._setup_detector()
 
@@ -61,13 +56,13 @@ class FaceLandmarker(Node):
 
         if not path.exists(model_path):
             url = f"https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/{model_filename}"
-            response = self.requests.get(url)
+            response = requests.get(url)
             response.raise_for_status()
             with open(model_path, "wb") as file:
                 file.write(response.content)
 
-        base_options = self.python.BaseOptions(model_asset_path=model_path)
-        options = self.vision.FaceLandmarkerOptions(
+        base_options = python.BaseOptions(model_asset_path=model_path)
+        options = vision.FaceLandmarkerOptions(
             base_options=base_options,
             num_faces=self.params["detection"]["num_faces"].value,
             min_face_detection_confidence=self.params["detection"]["min_detection_confidence"].value,
@@ -75,7 +70,7 @@ class FaceLandmarker(Node):
             min_tracking_confidence=self.params["detection"]["min_tracking_confidence"].value,
             output_face_blendshapes=self.params["detection"]["output_blendshapes"].value,
         )
-        self.detector = self.vision.FaceLandmarker.create_from_options(options)
+        self.detector = vision.FaceLandmarker.create_from_options(options)
 
     def process(self, image: Data):
         if image is None or image.data is None:
@@ -86,7 +81,7 @@ class FaceLandmarker(Node):
         if img_data.dtype != np.uint8:
             img_data = (img_data * 255).astype(np.uint8)
         
-        mp_image = self.mp.Image(image_format=self.mp.ImageFormat.SRGB, data=img_data)
+        mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=img_data)
         detection_result = self.detector.detect(mp_image)
 
         if len(detection_result.face_landmarks) == 0:

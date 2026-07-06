@@ -1,9 +1,14 @@
+import base64
 from os.path import join, exists
 from os import makedirs
 from typing import Any, Dict, Tuple
 
 import cv2
 import numpy as np
+import openai
+import torch
+
+import diffusers
 
 from goofi.data import Data, DataType
 from goofi.node import Node
@@ -58,7 +63,6 @@ class ImageGeneration(Node):
 
     def setup(self):
         if self.params.image_generation.model_id.value == "stabilityai/stable-diffusion-2-1":
-            self.torch, self.diffusers = import_libs("stabilityai/stable-diffusion-2-1")
             # load StableDiffusion model (offline-first; see _load_sd_pipe)
             self.sd_pipe = self._load_sd_pipe()
             # set device
@@ -77,16 +81,14 @@ class ImageGeneration(Node):
                 self.last_img = None
                 self.reset_last_img()
         elif self.params.image_generation.model_id.value in ["dall-e-2", "dall-e-3"]:
-            self.base64, self.openai = import_libs("dall-e")
-
             api_key = self.params.image_generation.openai_key.value
             with open(api_key, "r") as f:
                 api_key = f.read().strip()
             # load Dall-E model
             if self.params.img2img.enabled.value:
-                self.dalle_pipe = self.openai.OpenAI(api_key=api_key).images.edit
+                self.dalle_pipe = openai.OpenAI(api_key=api_key).images.edit
             else:
-                self.dalle_pipe = self.openai.OpenAI(api_key=api_key).images.generate
+                self.dalle_pipe = openai.OpenAI(api_key=api_key).images.generate
             # initialize last image
             if not hasattr(self, "last_img"):
                 self.last_img = None
@@ -105,15 +107,15 @@ class ImageGeneration(Node):
         # img2img and text2img use different pipeline classes; the offline
         # fallback applies to whichever one this configuration needs.
         pipe_cls = (
-            self.diffusers.StableDiffusionImg2ImgPipeline
+            diffusers.StableDiffusionImg2ImgPipeline
             if self.params.img2img.enabled.value
-            else self.diffusers.StableDiffusionPipeline
+            else diffusers.StableDiffusionPipeline
         )
         model_id = self.params.image_generation.model_id.value
         try:
-            return pipe_cls.from_pretrained(model_id, torch_dtype=self.torch.float16, local_files_only=True)
+            return pipe_cls.from_pretrained(model_id, torch_dtype=torch.float16, local_files_only=True)
         except OSError:
-            return pipe_cls.from_pretrained(model_id, torch_dtype=self.torch.float16)
+            return pipe_cls.from_pretrained(model_id, torch_dtype=torch.float16)
 
     def process(self, prompt: Data, negative_prompt: Data, base_image: Data) -> Dict[str, Tuple[np.ndarray, Dict[str, Any]]]:
         if prompt is None:
@@ -170,7 +172,7 @@ class ImageGeneration(Node):
                         quality="standard",
                         response_format="b64_json",
                     )
-                except self.openai.BadRequestError as e:
+                except openai.BadRequestError as e:
                     if e.response.status_code == 400:
                         raise RuntimeError(
                             f"Error code 400: the size of the image is not supported by the model."
@@ -181,7 +183,7 @@ class ImageGeneration(Node):
 
             img = response.data[0].b64_json
             # Decode base64 to bytes
-            decoded_bytes = self.base64.b64decode(img)
+            decoded_bytes = base64.b64decode(img)
             # Convert bytes to numpy array using OpenCV
             img_array = cv2.imdecode(np.frombuffer(decoded_bytes, np.uint8), cv2.IMREAD_COLOR)
 
@@ -219,14 +221,14 @@ class ImageGeneration(Node):
         elif self.params.image_generation.model_id.value == "stabilityai/stable-diffusion-2-1":
             # set seed
             if self.params.image_generation.seed.value != -1:
-                self.torch.manual_seed(self.params.image_generation.seed.value)
+                torch.manual_seed(self.params.image_generation.seed.value)
 
             # add textural inversions to the negative prompt
             negative_prompt = negative_prompt.data if negative_prompt is not None else ""
             if self.params.image_generation.use_fixers.value:
                 negative_prompt = " ".join([negative_prompt, "nfixer nrealfixer"])
 
-            with self.torch.inference_mode():
+            with torch.inference_mode():
                 if self.params.img2img.enabled.value:
                     if base_image is None:
                         base_image = self.last_img
@@ -301,7 +303,7 @@ class ImageGeneration(Node):
         """Change the scheduler of the Stable Diffusion pipeline."""
         scheduler_settings = dict(SCHEDULER_MAPPING[value])
         scheduler_type = scheduler_settings.pop("_sched")
-        self.sd_pipe.scheduler = getattr(self.diffusers, scheduler_type).from_config(
+        self.sd_pipe.scheduler = getattr(diffusers, scheduler_type).from_config(
             self.sd_pipe.scheduler.config, **scheduler_settings
         )
 
@@ -316,36 +318,6 @@ class ImageGeneration(Node):
     def img2img_enabled_changed(self, value):
         """Load the correct Stable Diffusion pipeline."""
         self.setup()
-
-
-def import_libs(checks):
-    if checks == "stabilityai/stable-diffusion-2-1":
-        try:
-            import torch
-        except ImportError:
-            raise ImportError(
-                "You need to install torch to use the ImageGeneration node with Stable Diffusion: "
-                "https://pytorch.org/get-started/locally/"
-            )
-        try:
-            import diffusers
-        except ImportError:
-            raise ImportError(
-                "You need to install diffusers to use the ImageGeneration node with Stable Diffusion: pip install diffusers"
-            )
-        return torch, diffusers
-    elif checks == "dall-e":
-        try:
-            import openai
-        except ImportError:
-            raise ImportError("You need to install openai to use the ImageGeneration node with Dall-E: pip install openai")
-        try:
-            import base64
-        except ImportError:
-            raise ImportError("You need to import base64 to use the ImageGeneration node with Dall-E")
-        return base64, openai
-    else:
-        raise ValueError(f"Unknown model: {checks}")
 
 
 SCHEDULER_MAPPING = {

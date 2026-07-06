@@ -1,4 +1,5 @@
 import numpy as np
+from sklearn import preprocessing
 
 from goofi.data import Data, DataType
 from goofi.node import Node
@@ -52,9 +53,6 @@ class Normalization(Node):
         return _normalization_params()
 
     def setup(self):
-        from sklearn import preprocessing
-
-        self.preprocessing = preprocessing
         self.buffer = None
 
     def process(self, data: Data):
@@ -92,21 +90,21 @@ class Normalization(Node):
             current_slice = np.nan_to_num(current_slice, posinf=0, neginf=0)
 
             if self.params.normalization.method.value == "z-score":
-                normalized[idxs] = self.preprocessing.scale(current_slice)
+                normalized[idxs] = preprocessing.scale(current_slice)
             elif self.params.normalization.method.value == "quantile":
-                normalized[idxs] = self.preprocessing.quantile_transform(
+                normalized[idxs] = preprocessing.quantile_transform(
                     current_slice.reshape(-1, 1),
                     n_quantiles=min(self.params.quantile.n_quantiles.value, current_slice.size),
                     output_distribution=self.params.quantile.output_distribution.value,
                 ).squeeze(1)
             elif self.params.normalization.method.value == "robust":
-                normalized[idxs] = self.preprocessing.robust_scale(
+                normalized[idxs] = preprocessing.robust_scale(
                     current_slice,
                     quantile_range=(self.params.robust.quantile_min.value, self.params.robust.quantile_max.value),
                     unit_variance=self.params.robust.unit_variance.value,
                 )
             elif self.params.normalization.method.value == "minmax":
-                normalized[idxs] = self.preprocessing.minmax_scale(
+                normalized[idxs] = preprocessing.minmax_scale(
                     current_slice,
                     feature_range=(self.params.minmax.feature_min.value, self.params.minmax.feature_max.value),
                 )

@@ -3,6 +3,9 @@ import colorsys
 import numpy as np
 import webcolors
 import webcolors._definitions
+from biotuner.biocolors import audible2visible, scale2freqs, wavelength_to_rgb
+from biotuner.biotuner_object import dyad_similarity
+from biotuner.metrics import tuning_cons_matrix
 
 from goofi.data import Data, DataType
 from goofi.node import Node
@@ -37,17 +40,6 @@ class TuningColors(Node):
             }
         }
 
-    def setup(self):
-        from biotuner.biocolors import audible2visible, scale2freqs, wavelength_to_rgb
-        from biotuner.biotuner_object import dyad_similarity
-        from biotuner.metrics import tuning_cons_matrix
-
-        self.audible2visible = audible2visible
-        self.scale2freqs = scale2freqs
-        self.wavelength_to_rgb = wavelength_to_rgb
-        self.dyad_similarity = dyad_similarity
-        self.tuning_cons_matrix = tuning_cons_matrix
-
     def process(self, data: Data):
         """
         Convert a musical scale into a list of HSV colors based on the scale's frequency values
@@ -65,9 +57,9 @@ class TuningColors(Node):
         min_ = 0
         max_ = 1
         # convert the scale to frequency values
-        scale_freqs = self.scale2freqs(scale, fund)
+        scale_freqs = scale2freqs(scale, fund)
         # compute the averaged consonance of each step
-        scale_cons, _, _ = self.tuning_cons_matrix(scale, self.dyad_similarity, ratio_type="all")
+        scale_cons, _, _ = tuning_cons_matrix(scale, dyad_similarity, ratio_type="all")
         # rescale to match RGB standards (0, 255)
         scale_cons = (np.array(scale_cons) - min_) * (1 / max_ - min_) * 255
         scale_cons = scale_cons.astype("uint8").astype(float) / 255
@@ -75,9 +67,9 @@ class TuningColors(Node):
         hsv_all = []
         for s, cons in zip(scale_freqs, scale_cons):
             # convert freq in nanometer values
-            _, _, nm, octave = self.audible2visible(s)
+            _, _, nm, octave = audible2visible(s)
             # convert to RGB values
-            rgb = self.wavelength_to_rgb(nm)
+            rgb = wavelength_to_rgb(nm)
             # convert to HSV values
             # TODO: colorsys might be slow
             hsv = colorsys.rgb_to_hsv(rgb[0] / float(255), rgb[1] / float(255), rgb[2] / float(255))

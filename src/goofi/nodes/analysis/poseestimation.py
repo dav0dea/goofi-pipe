@@ -1,6 +1,10 @@
 from os import path
 
+import mediapipe as mp
 import numpy as np
+import requests
+from mediapipe.tasks import python
+from mediapipe.tasks.python import vision
 
 from goofi.data import Data, DataType
 from goofi.node import Node
@@ -24,13 +28,6 @@ class PoseEstimation(Node):
         return {"pose": DataType.ARRAY}
 
     def setup(self):
-        import mediapipe as mp
-        import requests
-        from mediapipe.tasks import python
-        from mediapipe.tasks.python import vision
-
-        self.mp = mp
-
         model_path = path.join(self.assets_path, "hand_landmarker.task")
         if not path.exists(model_path):
             url = (
@@ -49,7 +46,7 @@ class PoseEstimation(Node):
 
     def process(self, image: Data):
         # mediapipe wants uint8; coerce the float [0,1] input internally.
-        mp_image = self.mp.Image(image_format=self.mp.ImageFormat.SRGB, data=(image.data * 255).astype(np.uint8))
+        mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=(image.data * 255).astype(np.uint8))
         detection_result = self.detector.detect(mp_image)
 
         if len(detection_result.hand_landmarks) == 0:

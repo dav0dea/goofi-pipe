@@ -6,6 +6,8 @@ from goofi.data import Data, DataType
 from goofi.node import Node
 from goofi.params import FloatParam, IntParam, StringParam
 
+from phyid.calculate import calc_PhiID
+
 information_dynamics_metrics = {
     "Storage": ["rtr", "xtx", "yty", "sts"],
     "Copy": ["xtx", "yty"],
@@ -57,21 +59,11 @@ class PhiID(Node):
             }
         }
 
-    def setup(self):
-        try:
-            from phyid.calculate import calc_PhiID
-        except ImportError:
-            raise ImportError(
-                "The phyid package is not installed. Please install it with the following command:\n"
-                "pip install git+https://github.com/Imperial-MIND-lab/integrated-info-decomp.git"
-            )
-
-        self.calc_PhiID = calc_PhiID
-
     def process(self, matrix: Data):
         # If no input, do nothing
         if matrix is None or matrix.data is None:
             return None
+
         # Ensure data is a 2D array: channels x timepoints
         data = np.asarray(matrix.data, dtype=float)
 
@@ -126,7 +118,7 @@ class PhiID(Node):
                     src = data[j]
                     tgt = data[i]
                     # Run the PhiID calculation
-                    atoms_res, _ = self.calc_PhiID(src, tgt, tau, kind=kind, redundancy=redundancy)
+                    atoms_res, _ = calc_PhiID(src, tgt, tau, kind=kind, redundancy=redundancy)
                     # Each atoms_res[name] is a vector length n_time - tau
                     # We average over time to get a single scalar per atom
                     for k, name in enumerate(atom_names):
@@ -174,7 +166,7 @@ class PhiID(Node):
 
                 # Run the PhiID calculation
                 src = data[i]
-                atoms_res, _ = self.calc_PhiID(src, tgt, tau, kind=kind, redundancy=redundancy)
+                atoms_res, _ = calc_PhiID(src, tgt, tau, kind=kind, redundancy=redundancy)
 
                 # Each atoms_res[name] is a vector length n_time - tau
                 # We average over time to get a single scalar per atom

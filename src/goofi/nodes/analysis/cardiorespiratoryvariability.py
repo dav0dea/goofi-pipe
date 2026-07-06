@@ -1,3 +1,4 @@
+import neurokit2 as nk
 import numpy as np
 
 from goofi.data import Data, DataType
@@ -50,11 +51,6 @@ class CardioRespiratoryVariability(Node):
             },
         }
 
-    def setup(self):
-        import neurokit2 as nk
-
-        self.neurokit = nk
-
     def process(self, data: Data):
         if data is None or data.data is None:
             return None
@@ -66,25 +62,25 @@ class CardioRespiratoryVariability(Node):
         rate = None
         if self.params["cardiorespiratory"]["input_type"].value == "ppg":
             datatype = "HRV"
-            ppg, info = self.neurokit.ppg_process(data.data, sampling_rate=data.meta["sfreq"])
+            ppg, info = nk.ppg_process(data.data, sampling_rate=data.meta["sfreq"])
             rate = ppg["PPG_Rate"]
-            variability_df = self.neurokit.hrv(info, sampling_rate=data.meta["sfreq"])
+            variability_df = nk.hrv(info, sampling_rate=data.meta["sfreq"])
             peaks = ppg["PPG_Peaks"]
 
         elif self.params["cardiorespiratory"]["input_type"].value == "ecg":
             datatype = "HRV"
             # extract peaks
-            ecg, info = self.neurokit.ecg_process(data.data, sampling_rate=data.meta["sfreq"])
+            ecg, info = nk.ecg_process(data.data, sampling_rate=data.meta["sfreq"])
             rate = ecg["ECG_Rate"]
             # compute hrv
-            variability_df = self.neurokit.hrv(info, sampling_rate=data.meta["sfreq"])
+            variability_df = nk.hrv(info, sampling_rate=data.meta["sfreq"])
             peaks = None
 
         elif self.params["cardiorespiratory"]["input_type"].value == "rsp":
             datatype = "RRV"
-            rsp, info = self.neurokit.rsp_process(data.data, sampling_rate=data.meta["sfreq"])
+            rsp, info = nk.rsp_process(data.data, sampling_rate=data.meta["sfreq"])
             rate = rsp["RSP_Rate"]
-            variability_df = self.neurokit.rsp_rrv(rsp, sampling_rate=data.meta["sfreq"])
+            variability_df = nk.rsp_rrv(rsp, sampling_rate=data.meta["sfreq"])
             peaks = None
 
         BBorNN = "BB" if datatype == "RRV" else "NN"

@@ -1,4 +1,5 @@
 import numpy as np
+from sklearn.decomposition import PCA as SklearnPCA
 
 from goofi.data import Data, DataType
 from goofi.node import Node
@@ -33,10 +34,6 @@ class PCA(Node):
         }
 
     def setup(self):
-        from sklearn.decomposition import PCA
-
-        self.pca = PCA
-
         self.components = None
         self.meta = None
 
@@ -62,7 +59,7 @@ class PCA(Node):
         if "channels" in self.meta and "dim0" in self.meta["channels"]:
             del self.meta["channels"]["dim0"]
 
-        pca = self.pca(n_components=n_components)
+        pca = SklearnPCA(n_components=n_components)
         pca.fit(data_array)
         self.components = pca.components_
 

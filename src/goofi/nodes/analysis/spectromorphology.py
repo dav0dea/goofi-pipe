@@ -1,3 +1,5 @@
+import pyACA
+
 from goofi.data import Data, DataType
 from goofi.node import Node
 from goofi.params import IntParam, StringParam
@@ -64,9 +66,6 @@ class SpectroMorphology(Node):
         return {"spectro": (v, data.meta)}
 
 
-pyACA_mod = None
-
-
 def computeFeatureCl_new(afAudioData, cFeatureName, f_s, window=4000, overlap=1):
     """Calculate spectromorphological metrics on time series.
 
@@ -95,11 +94,5 @@ def computeFeatureCl_new(afAudioData, cFeatureName, f_s, window=4000, overlap=1)
     t : array
         Timestamps.
     """
-    global pyACA_mod
-    if pyACA_mod is None:
-        import pyACA
-
-        pyACA_mod = pyACA
-
-    [v, t] = pyACA_mod.computeFeature(cFeatureName, afAudioData, f_s, None, window, overlap)
+    [v, t] = pyACA.computeFeature(cFeatureName, afAudioData, f_s, None, window, overlap)
     return (v, t)

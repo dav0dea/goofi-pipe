@@ -1,11 +1,18 @@
 import time
 from collections import deque
 
+import mne
 import numpy as np
+import torch
+import torch.nn.functional as F
+from antropy import lziv_complexity
+from scipy import signal
 
 from goofi.data import Data, DataType
 from goofi.node import Node
 from goofi.params import BoolParam, FloatParam, IntParam, StringParam
+
+from gssc.infer import ArrayInfer
 
 
 class DreamInceptor(Node):
@@ -70,13 +77,6 @@ class DreamInceptor(Node):
         }
 
     def setup(self):
-        # Import required libraries
-        from antropy import lziv_complexity
-        from scipy import signal
-        from gssc.infer import ArrayInfer  # <-- Add this import
-
-        self.compute_lzc = lziv_complexity
-        self.signal = signal
         self.last_trigger_time = None
 
         # Add GSSC ArrayInfer instance (set use_cuda=True if you want GPU)
@@ -335,7 +335,7 @@ class DreamInceptor(Node):
 
         # Compute LZ complexity
         try:
-            lzc = self.compute_lzc(binarized, normalize=True)
+            lzc = lziv_complexity(binarized, normalize=True)
             return float(lzc)
         except:
             return 0.0
@@ -350,7 +350,7 @@ class DreamInceptor(Node):
         # Get sampling frequency from metadata or use default
         fs = meta.get("sfreq", 256.0) if isinstance(meta, dict) else 256.0
         # Compute power spectral density
-        freqs, psd = self.signal.welch(
+        freqs, psd = signal.welch(
             signal_data, fs=fs, nperseg=min(512, len(signal_data) // 4), noverlap=min(400, len(signal_data) // 5)
         )
         # Define frequency bands
@@ -429,12 +429,6 @@ def compute_hypnodensity_entropy_single(
     - Normalization is done using global mean/std of filtered/resampled full signal.
     - segment_start: optional, if you want a moving window (in seconds).
     """
-    import numpy as np
-    import torch
-    import torch.nn.functional as F
-    from scipy import signal as scipy_signal
-    import mne
-
     # 1. Remove NaNs
     signal_1d = np.asarray(signal_1d)
     signal_1d = signal_1d[~np.isnan(signal_1d)]
@@ -442,7 +436,7 @@ def compute_hypnodensity_entropy_single(
     # 2. Resample
     if original_sampling_rate != target_sampling_rate:
         num_samples = int(len(signal_1d) * target_sampling_rate / original_sampling_rate)
-        resampled_signal = scipy_signal.resample(signal_1d, num_samples)
+        resampled_signal = signal.resample(signal_1d, num_samples)
     else:
         resampled_signal = signal_1d
 
@@ -581,12 +575,6 @@ def compute_hypnodensity_entropy_single_with_context_accum(
     Takes a single segment, uses accumulated normalization if provided.
     Returns: probabilities, entropy, updated_hidden
     """
-    import numpy as np
-    import torch
-    import torch.nn.functional as F
-    from scipy import signal as scipy_signal
-    import mne
-
     # Remove NaNs
     signal_1d = np.asarray(signal_1d)
     signal_1d = signal_1d[~np.isnan(signal_1d)]
@@ -596,7 +584,7 @@ def compute_hypnodensity_entropy_single_with_context_accum(
     # Step 1: Resample to target sampling rate if needed
     if original_sampling_rate != target_sampling_rate:
         num_samples = int(len(signal_1d) * target_sampling_rate / original_sampling_rate)
-        resampled_data = scipy_signal.resample(signal_1d, num_samples)
+        resampled_data = signal.resample(signal_1d, num_samples)
     else:
         resampled_data = signal_1d
 

@@ -1,6 +1,7 @@
 from itertools import groupby
 
 import numpy as np
+from sklearn.metrics import pairwise_distances
 
 from goofi.data import Data, DataType
 from goofi.node import Node
@@ -43,11 +44,6 @@ class Recurrence(Node):
             }
         }
 
-    def setup(self):
-        from sklearn.metrics import pairwise_distances
-
-        self.pairwise_distances = pairwise_distances
-
     def process(self, input_array: Data):
         if input_array is None:
             return None
@@ -66,7 +62,7 @@ class Recurrence(Node):
             raise ValueError("Not enough data points to compute recurrence matrix.")
 
         # Compute pairwise distance
-        distance_matrix = self.pairwise_distances(data)
+        distance_matrix = pairwise_distances(data)
 
         # Calculate the actual threshold
         threshold = relative_threshold * np.max(distance_matrix)

@@ -1,4 +1,5 @@
 import numpy as np
+from biotuner.rhythm_construction import consonant_euclid, find_optimal_offsets
 
 from goofi.data import Data, DataType
 from goofi.node import Node
@@ -39,12 +40,6 @@ class Biorhythms(Node):
             }
         }
 
-    def setup(self):
-        from biotuner.rhythm_construction import consonant_euclid, find_optimal_offsets
-
-        self.consonant_euclid = consonant_euclid
-        self.find_optimal_offsets = find_optimal_offsets
-
     def process(self, tuning: Data):
         if tuning is None:
             return None
@@ -59,7 +54,7 @@ class Biorhythms(Node):
         limit_denom_final = self.params["Euclidean"]["limit_denom_final"].value
         optimize_offset = self.params["Euclidean"]["optimize_offset"].value
         # Derive consonant euclidian rhythms from the harmonic tuning
-        euclid_final, cons = self.consonant_euclid(
+        euclid_final, cons = consonant_euclid(
             list(tuning.data),
             n_steps_down=n_steps_down,
             limit_denom=limit_denom,
@@ -75,7 +70,7 @@ class Biorhythms(Node):
 
         if optimize_offset:
             # find the optimal offsets
-            offsets = self.find_optimal_offsets(list(zip(pulses, steps)))
+            offsets = find_optimal_offsets(list(zip(pulses, steps)))
         else:
             offsets = [0] * len(pulses)
 

@@ -1,6 +1,8 @@
 import io
 
+import librosa
 import numpy as np
+import openai
 import soundfile as sf
 
 from goofi.data import Data, DataType
@@ -38,17 +40,11 @@ class SpeechSynthesis(Node):
         }
 
     def setup(self):
-        import librosa
-        import openai
-
-        self.librosa = librosa
-        self.openai = openai
-
         key = self.params["speech_generation"]["openai_key"].value
         with open(key, "r") as f:
             key = f.read().strip()
 
-        self.openai.api_key = key
+        openai.api_key = key
         self.client = openai.OpenAI(api_key=key)
 
     def process(self, text: Data, voice: Data):
@@ -72,7 +68,7 @@ class SpeechSynthesis(Node):
         }
 
     def synthesize_speech_stream(self, text, speed):
-        response = self.openai.audio.speech.create(
+        response = openai.audio.speech.create(
             model=self.params.speech_generation.model.value,
             voice=self.params.speech_generation.voice.value,
             input=text,
@@ -93,7 +89,7 @@ class SpeechSynthesis(Node):
 
     def resample_audio(self, audio, input_rate, output_rate):
         # resample audio from input_rate to output_rate
-        return self.librosa.resample(audio, orig_sr=input_rate, target_sr=output_rate)
+        return librosa.resample(audio, orig_sr=input_rate, target_sr=output_rate)
 
     def transcribe_voice(self, voice_buffer):
         # convert the numpy array buffer to a WAV file in memory

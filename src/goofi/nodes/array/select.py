@@ -1,4 +1,7 @@
+import re
+
 import numpy as np
+from mne import pick_channels
 
 from goofi.data import Data, DataType
 from goofi.node import Node
@@ -33,11 +36,6 @@ class Select(Node):
             }
         }
 
-    def setup(self):
-        from mne import pick_channels
-
-        self.pick_channels = pick_channels
-
     def process(self, data: Data):
         if data is None:
             return None
@@ -67,8 +65,6 @@ class Select(Node):
                 for pattern in include:
                     if "*" in pattern:
                         # Convert glob pattern to regex pattern
-                        import re
-
                         regex_pattern = "^" + pattern.replace("*", ".*") + "$"
                         expanded_include.extend([ch for ch in chs if re.match(regex_pattern, ch)])
                     else:
@@ -78,8 +74,6 @@ class Select(Node):
                 expanded_exclude = []
                 for pattern in exclude:
                     if "*" in pattern:
-                        import re
-
                         regex_pattern = "^" + pattern.replace("*", ".*") + "$"
                         expanded_exclude.extend([ch for ch in chs if re.match(regex_pattern, ch)])
                     else:
@@ -88,7 +82,7 @@ class Select(Node):
                 include = expanded_include
                 exclude = expanded_exclude
 
-            idxs = self.pick_channels(chs, include=include, exclude=exclude, ordered=False)
+            idxs = pick_channels(chs, include=include, exclude=exclude, ordered=False)
         else:
             # no channel names for this axis, use indices
             chs = [str(i) for i in range(data.data.shape[axis])]

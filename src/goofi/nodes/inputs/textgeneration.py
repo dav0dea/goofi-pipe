@@ -1,6 +1,10 @@
 import json
 from os import environ, path
 
+import anthropic
+import google.generativeai as genai
+import ollama
+import openai
 import requests
 
 from goofi.data import Data, DataType
@@ -213,31 +217,15 @@ class TextGeneration(Node):
         self.client = None
 
         if model.startswith("gpt-") or model.startswith("openai/"):
-            try:
-                import openai
-            except ImportError:
-                raise ImportError("You need to install openai: pip install openai")
             self.provider = openai
 
         elif model.startswith("claude-"):
-            try:
-                import anthropic
-            except ImportError:
-                raise ImportError("You need to install anthropic: pip install anthropic")
             self.provider = anthropic
 
         elif model.startswith("gemini-"):
-            try:
-                import google.generativeai as genai
-            except ImportError:
-                raise ImportError("You need to install google-generativeai: pip install google-generativeai\nWith Python>=3.10")
             self.provider = genai
 
         elif model.startswith("ollama-"):
-            try:
-                import ollama
-            except ImportError:
-                raise ImportError("You need to install ollama: pip install ollama")
             self.provider = ollama
 
         else:

@@ -1,4 +1,7 @@
 import numpy as np
+from sklearn.decomposition import PCA
+from sklearn.manifold import TSNE
+from umap import UMAP
 
 from goofi.data import Data, DataType
 from goofi.node import Node
@@ -38,14 +41,6 @@ class DimensionalityReduction(Node):
         }
 
     def setup(self):
-        from sklearn.decomposition import PCA
-        from sklearn.manifold import TSNE
-        from umap import UMAP
-
-        self.tsne_cls = TSNE
-        self.pca_cls = PCA
-        self.umap_cls = UMAP
-
         self.model = None
         self.components = None
         self.meta = None
@@ -99,7 +94,7 @@ class DimensionalityReduction(Node):
 
         new_components = None
         if method == "PCA":
-            self.model = self.pca_cls(n_components=n_components)
+            self.model = PCA(n_components=n_components)
             self.components = self.model.fit_transform(data_array)
 
             if new_data is not None:
@@ -109,7 +104,7 @@ class DimensionalityReduction(Node):
                     del new_meta["channels"]["dim1"]
 
         elif method == "t-SNE":
-            self.model = self.tsne_cls(
+            self.model = TSNE(
                 n_components=n_components,
                 perplexity=self.params.tsne.perplexity.value,
                 init="pca",
@@ -118,7 +113,7 @@ class DimensionalityReduction(Node):
             self.components = self.model.fit_transform(data_array)
 
         elif method == "UMAP":
-            self.model = self.umap_cls(
+            self.model = UMAP(
                 n_components=n_components,
                 n_neighbors=self.params.umap.num_neighbors.value,
                 metric=self.params.umap.metric.value,

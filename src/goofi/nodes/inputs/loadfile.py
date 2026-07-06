@@ -2,7 +2,10 @@ from copy import deepcopy
 from glob import glob
 from pathlib import Path
 
+import librosa
 import numpy as np
+import pandas as pd
+from PIL import Image
 
 from goofi.data import Data, DataType
 from goofi.node import Node
@@ -39,14 +42,6 @@ class LoadFile(Node):
         }
 
     def setup(self):
-        import librosa
-        import pandas as pd
-        from PIL import Image
-
-        self.pd = pd
-        self.librosa = librosa
-        self.Image = Image
-
         self.data_output = None
         self.string_output = None
         self.last_params = None
@@ -135,7 +130,7 @@ class LoadFile(Node):
 
         if file_type == "audio":
             try:
-                audio, sr = self.librosa.load(f"{filename}", sr=None)
+                audio, sr = librosa.load(f"{filename}", sr=None)
                 self.data_output = (audio.astype(np.float32), {"sfreq": sr})
                 self.string_output = None
             except Exception as e:
@@ -146,7 +141,7 @@ class LoadFile(Node):
 
         elif file_type == "image":
             try:
-                img = self.Image.open(filename)
+                img = Image.open(filename)
                 # Emit float [0,1]; the bridge adapter handles wire representation.
                 self.data_output = (
                     np.array(img).astype(np.float32) / 255.0,
@@ -168,7 +163,7 @@ class LoadFile(Node):
             data = np.loadtxt(f"{filename}")
         elif extension == "csv":
             header = self.params.embedding_csv.header.value
-            df = self.pd.read_csv(
+            df = pd.read_csv(
                 f"{filename}",
                 header=None if header < 0 else header,
                 index_col=0 if self.params.embedding_csv.index_column.value else None,

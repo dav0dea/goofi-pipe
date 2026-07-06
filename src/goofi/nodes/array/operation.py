@@ -1,6 +1,7 @@
 from copy import deepcopy
 
 import numpy as np
+from sklearn.metrics.pairwise import cosine_similarity
 
 from goofi.data import Data, DataType
 from goofi.node import Node
@@ -85,8 +86,6 @@ class Operation(Node):
         elif operation == "avg":
             result = (a.data + b.data) / 2
         elif operation == "cosine_similarity":
-            from sklearn.metrics.pairwise import cosine_similarity
-
             result = cosine_similarity(a.data, b.data)
         else:
             raise ValueError(f"Invalid operation: {operation}")

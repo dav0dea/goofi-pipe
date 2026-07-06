@@ -1,4 +1,5 @@
 import numpy as np
+from mne_lsl import lsl
 
 from goofi.data import Data, DataType
 from goofi.node import Node
@@ -18,9 +19,6 @@ class LSLOut(Node):
         }
 
     def setup(self):
-        from mne_lsl import lsl
-
-        self.lsl = lsl
         self.outlet = None
 
     def process(self, data: Data, source_name: Data, stream_name: Data):
@@ -40,7 +38,7 @@ class LSLOut(Node):
             self.outlet = None
 
         if self.outlet is None:
-            info = self.lsl.StreamInfo(
+            info = lsl.StreamInfo(
                 self.params.lsl.stream_name.value,
                 "Data",
                 len(data.data),
@@ -51,7 +49,7 @@ class LSLOut(Node):
             if "dim0" in data.meta["channels"]:
                 info.set_channel_names(data.meta["channels"]["dim0"])
 
-            self.outlet = self.lsl.StreamOutlet(info)
+            self.outlet = lsl.StreamOutlet(info)
 
         try:
             if data.data.ndim == 1:

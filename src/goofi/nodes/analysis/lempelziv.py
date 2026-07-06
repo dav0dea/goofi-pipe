@@ -1,4 +1,5 @@
 import numpy as np
+from antropy import lziv_complexity
 
 from goofi.data import Data, DataType
 from goofi.node import Node
@@ -30,11 +31,6 @@ class LempelZiv(Node):
             }
         }
 
-    def setup(self):
-        from antropy import lziv_complexity
-
-        self.compute_lzc = lziv_complexity
-
     def process(self, data: Data):
         if data is None:
             # no data, skip processing
@@ -53,7 +49,7 @@ class LempelZiv(Node):
             raise ValueError(f"Unknown binarize mode: {binarize_mode}")
 
         # compute Lempel-Ziv complexity
-        lzc = np.apply_along_axis(self.compute_lzc, axis, binarized, normalize=True)
+        lzc = np.apply_along_axis(lziv_complexity, axis, binarized, normalize=True)
 
         axis = axis if axis >= 0 else axis + data.data.ndim
         if "channels" in data.meta:

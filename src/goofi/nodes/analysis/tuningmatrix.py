@@ -1,4 +1,5 @@
 import numpy as np
+from biotuner.metrics import compute_consonance, dyad_similarity, metric_denom, tuning_cons_matrix
 
 from goofi.data import Data, DataType
 from goofi.node import Node
@@ -38,19 +39,6 @@ class TuningMatrix(Node):
             }
         }
 
-    def setup(self):
-        from biotuner.metrics import (
-            compute_consonance,
-            dyad_similarity,
-            metric_denom,
-            tuning_cons_matrix,
-        )
-
-        self.tuning_cons_matrix = tuning_cons_matrix
-        self.dyad_similarity = dyad_similarity
-        self.compute_consonance = compute_consonance
-        self.metric_denom = metric_denom
-
     def process(self, tuning: Data):
         if tuning is None or tuning.data is None:
             return None
@@ -58,12 +46,12 @@ class TuningMatrix(Node):
         function = self.params.Tuning_Matrix.function.value
         ratio_type = self.params.Tuning_Matrix.ratio_type.value
         if function == "dyad_similarity":
-            metric_per_step, metric, matrix = self.tuning_cons_matrix(tuning, self.dyad_similarity, ratio_type=ratio_type)
+            metric_per_step, metric, matrix = tuning_cons_matrix(tuning, dyad_similarity, ratio_type=ratio_type)
         if function == "consonance":
-            metric_per_step, metric, matrix = self.tuning_cons_matrix(tuning, self.compute_consonance, ratio_type=ratio_type)
+            metric_per_step, metric, matrix = tuning_cons_matrix(tuning, compute_consonance, ratio_type=ratio_type)
         if function == "metric_denom":
-            metric_per_step, metric, matrix = self.tuning_cons_matrix(
-                tuning, self.metric_denom, ratio_type=ratio_type, metric_denom=True
+            metric_per_step, metric, matrix = tuning_cons_matrix(
+                tuning, metric_denom, ratio_type=ratio_type, metric_denom=True
             )
         metric_per_step = np.array(metric_per_step)
         metric = np.array(metric)

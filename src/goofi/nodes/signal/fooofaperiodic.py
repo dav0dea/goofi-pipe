@@ -1,4 +1,5 @@
 import numpy as np
+from fooof import FOOOF
 
 from goofi.data import Data, DataType
 from goofi.node import Node
@@ -42,11 +43,6 @@ class FOOOFaperiodic(Node):
             }
         }
 
-    def setup(self):
-        from fooof import FOOOF
-
-        self.FOOOF = FOOOF
-
     def process(self, psd_data: Data):
         if psd_data is None or psd_data.data is None:
             return None
@@ -74,7 +70,7 @@ class FOOOFaperiodic(Node):
         for psd in psd_data.data:
             try:
                 # fit FOOOF model
-                fm = self.FOOOF(
+                fm = FOOOF(
                     peak_width_limits=(self.params.fooof.peak_width_min.value, self.params.fooof.peak_width_max.value),
                     max_n_peaks=max_n_peaks,
                     aperiodic_mode=self.params.fooof.mode.value,
