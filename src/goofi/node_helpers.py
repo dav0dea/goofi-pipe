@@ -280,10 +280,22 @@ class NodeRef:
                 # TERMINATE is exempt: a never-ready node is killed directly
                 # in terminate(); queueing it would just pin the message.
                 if msg.type != MessageType.TERMINATE:
-                    self._pending_ctrl.append(msg)
+                    self._enqueue_pending(msg)
                     return
         self.ctrl_pub.send(encode_message(msg))
         self._ctrl_notifier.notify()
+
+    def _enqueue_pending(self, msg: Message) -> None:
+        """Append to the pre-ready ctrl queue, coalescing the one message type
+        that a big patch load bursts: NODE_DIRECTORY. Each add re-broadcasts the
+        full directory to every node and the node replaces its directory
+        wholesale — so only the newest matters, and keeping just it stops the
+        queue from growing past the bounded (64) ctrl channel's capacity and
+        stalling the flush. Order-sensitive messages (link wiring, subscriber
+        registration, param edits) are never coalesced — they append in order."""
+        if msg.type == MessageType.NODE_DIRECTORY:
+            self._pending_ctrl = [m for m in self._pending_ctrl if m.type != MessageType.NODE_DIRECTORY]
+        self._pending_ctrl.append(msg)
 
     def update_param(self, group: str, param_name: str, param_value: Any) -> None:
         if group not in self.params:
@@ -643,6 +655,11 @@ class NodeProcess:
     def __init__(self, name: str, instance_id: str, capture_logs: bool = False):
         self.name = name
         self.instance_id = instance_id
+        # Serializes the send/recv pair in spawn() (and the kill sentinel): two
+        # concurrent spawns into one host share this pipe, and interleaved
+        # transactions would swap responses (a failed spawn recorded as a live
+        # node stuck in 'creating').
+        self._lock = Lock()
         self.conn, recv = Pipe()
         self.proc = Process(
             target=self._run,
@@ -683,20 +700,23 @@ class NodeProcess:
                 conn.send(("err", traceback.format_exc()))
 
     def spawn(self, module: str, cls_name: str, node_id: str, initial_params: Optional[Dict[str, Dict[str, Any]]]):
-        self.conn.send((module, cls_name, node_id, initial_params))
-        status, info = self.conn.recv()
+        with self._lock:
+            self.conn.send((module, cls_name, node_id, initial_params))
+            status, info = self.conn.recv()
         if status != "ok":
             raise RuntimeError(f"Failed to spawn {node_id} in process group {self.name}: {info}")
 
     def kill(self):
         try:
-            self.conn.send(None)
+            with self._lock:
+                self.conn.send(None)
         except Exception:
             pass
         self.proc.kill()
 
 
 _process_groups: Dict[str, NodeProcess] = {}
+_process_groups_lock = Lock()
 
 
 class NodeProcessRegistry:
@@ -711,12 +731,15 @@ class NodeProcessRegistry:
     headless: bool = False
 
     def get(self, name: str, instance_id: str) -> NodeProcess:
-        ng = _process_groups.get(name)
-        if ng is None:
-            # The host process captures node stdout/stderr unless headless.
-            ng = NodeProcess(name, instance_id, capture_logs=not type(self).headless)
-            _process_groups[name] = ng
-        return ng
+        # Lock the check-then-create: two concurrent adds into the same group
+        # (two /control clients) would otherwise each fork a duplicate host.
+        with _process_groups_lock:
+            ng = _process_groups.get(name)
+            if ng is None:
+                # The host process captures node stdout/stderr unless headless.
+                ng = NodeProcess(name, instance_id, capture_logs=not type(self).headless)
+                _process_groups[name] = ng
+            return ng
 
     def terminate(self) -> None:
         for p in _process_groups.values():

@@ -1378,8 +1378,16 @@ def _run_node_process(
             capture_logs=capture_logs,
         )
     except Exception:
+        # Truncate head+tail so an oversized traceback (an exception embedding a
+        # large payload) can't exceed the ~64 KiB pipe capacity and block the
+        # dying child forever in write() — which would wedge the node in
+        # 'creating' with no error surfaced. Keep both ends: the frame chain
+        # (head) and the raising frame + exception type/message (tail).
+        tb = traceback.format_exc()
+        if len(tb) > 16384:
+            tb = tb[:8192] + "\n... [traceback truncated] ...\n" + tb[-8192:]
         try:
-            err_conn.send(traceback.format_exc())
+            err_conn.send(tb)
         finally:
             err_conn.close()
         raise SystemExit(1)

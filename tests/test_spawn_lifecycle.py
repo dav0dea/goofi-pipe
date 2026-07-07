@@ -219,6 +219,178 @@ def test_spawn_feeds_child_raw_params_not_ast_fallback(tmp_path):
         ref.terminate()
 
 
+def test_boot_pipe_truncates_oversized_traceback():
+    """A bootstrap traceback larger than the pipe capacity must be truncated
+    before the one-shot send, so the dying child never blocks in write() (which
+    would wedge the node in 'creating' with no error ever surfaced)."""
+    spec = dataclasses.replace(CATALOG["ConstantArray"], module="tests._huge_error", cls_name="HugeError")
+    ref = spawn_node(spec)
+    try:
+        assert wait_until(lambda: ref.process is not None and not ref.process.is_alive(), timeout=5.0), (
+            "child blocked writing the oversized traceback"
+        )
+        assert ref.boot_conn is not None and ref.boot_conn.poll(1.0)
+        tb = ref.boot_conn.recv()
+        assert "truncated" in tb
+        assert "RuntimeError" in tb  # the exception type still survives the truncation
+        assert len(tb) < 40000
+    finally:
+        ref.terminate()
+
+
+def test_instance_error_tolerates_concurrent_container_mutation():
+    """_instance_error runs on a NodeRef messaging thread and races structural
+    RPCs mutating the container on executor threads; it must snapshot + guard,
+    not iterate the live dict (which raises 'changed size'/KeyError)."""
+    from types import SimpleNamespace
+
+    from goofi.manager import Manager
+
+    class _Nodes:
+        def __iter__(self):
+            return iter(["a", "b"])  # 'a' vanished between snapshot and lookup
+
+        def __getitem__(self, k):
+            if k == "a":
+                raise KeyError(k)
+            return SimpleNamespace(last_error="boom")
+
+    fake = SimpleNamespace(nodes=_Nodes(), _within_subtree=lambda u, i: True)
+    assert Manager._instance_error(fake, "inst") == "boom"
+
+
+def test_nodeprocess_registry_get_is_atomic_under_concurrency(monkeypatch):
+    """Concurrent get() for one group name must yield a single host — the
+    unlocked check-then-create would fork a duplicate host per racing caller."""
+    import threading
+    import time as _time
+
+    import goofi.node_helpers as nh
+
+    nh._process_groups.clear()
+    created = []
+
+    class _StubHost:
+        def __init__(self, name, iid, capture_logs=False):
+            _time.sleep(0.02)  # simulate the real fork window where the race lives
+            created.append(name)
+
+        def kill(self):
+            pass
+
+    monkeypatch.setattr(nh, "NodeProcess", _StubHost)
+    barrier = threading.Barrier(16)
+    hosts = []
+
+    def do():
+        barrier.wait()
+        hosts.append(nh.NodeProcessRegistry().get("grp", "iid"))
+
+    threads = [threading.Thread(target=do) for _ in range(16)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert len(created) == 1, f"get() created {len(created)} hosts under concurrency"
+    assert len({id(h) for h in hosts}) == 1
+
+
+def test_nodeprocess_spawn_serializes_concurrent_callers():
+    """Two callers spawning into one host must not interleave their send/recv on
+    the shared setup pipe (which would swap responses)."""
+    import threading
+    import time as _time
+
+    from goofi.node_helpers import NodeProcess
+
+    state = {"depth": 0, "violation": False}
+
+    class _Conn:
+        def send(self, payload):
+            state["depth"] += 1
+            if state["depth"] > 1:
+                state["violation"] = True
+            _time.sleep(0.01)
+
+        def recv(self):
+            _time.sleep(0.01)
+            state["depth"] -= 1
+            return ("ok", "id")
+
+    host = NodeProcess.__new__(NodeProcess)
+    host.name = "g"
+    host.conn = _Conn()
+    host._lock = threading.Lock()  # the fix initializes this in __init__
+
+    threads = [threading.Thread(target=lambda i=i: host.spawn("m", "c", f"n{i}", None)) for i in range(4)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert not state["violation"], "concurrent spawn transactions interleaved on the pipe"
+
+
+def test_restart_consumer_does_not_double_register_producer():
+    """Restarting a CONSUMER must not re-register the surviving producer's
+    subscriber (its registration from the original wiring is still valid) —
+    else the producer publishes forever for a subscriber count that never
+    unwinds."""
+    from .test_manager import _bare_manager
+
+    mgr = _bare_manager()
+    try:
+        prod = mgr.add_node("ConstantArray", "inputs", params={"common": {"autotrigger": True}})
+        cons = mgr.add_node("Buffer", "signal")
+        mgr.add_link(prod, cons, "out", "val")
+        assert wait_until(
+            lambda: (mgr.nodes[prod].serialized_state or {}).get("output_subscribers", {}).get("out", 0) == 1
+        )
+
+        mgr.nodes[cons].process.kill()
+        assert wait_until(lambda: not mgr.nodes[cons].process.is_alive())
+        mgr._supervise_once()
+        assert wait_until(lambda: mgr.nodes[cons].stage == "ready")
+
+        # After the rewire settles, the producer still has exactly ONE registered
+        # subscriber for the one link — not two.
+        time.sleep(0.6)
+        assert (mgr.nodes[prod].serialized_state or {}).get("output_subscribers", {}).get("out", 0) == 1
+    finally:
+        mgr.terminate(notify_gui=False)
+
+
+def test_pending_ctrl_coalesces_node_directory():
+    """The pre-ready ctrl queue must coalesce NODE_DIRECTORY pushes (the node
+    replaces its directory wholesale, so only the newest matters). A big patch
+    load broadcasts the directory once per add; without coalescing a slow-setup
+    node accumulates one per add and the flush hits the bounded (64) ctrl
+    channel's wall — a stall or, if the node then crashes, a permanent wedge."""
+    from goofi.message import Message, MessageType
+    from goofi.node import ref_from_spec
+    from goofi.transport import set_instance_id
+
+    set_instance_id(f"t-coalesce-{id(object())}")
+    spec = CATALOG["ConstantArray"]
+    _, _, params = spec.configure()
+    ref = ref_from_spec(spec, "coalesce-test", params, in_process=False, process=None)
+    try:
+        for i in range(100):  # 100 directory pushes while pre-ready
+            ref._send(Message(MessageType.NODE_DIRECTORY, {"directory": {"n": str(i)}}))
+        # an order-sensitive message must NOT be coalesced away
+        ref._send(
+            Message(
+                MessageType.SUBSCRIBE_INPUT,
+                {"slot_name_in": "val", "service_name": "svc", "in_process": False},
+            )
+        )
+        dirs = [m for m in ref._pending_ctrl if m.type == MessageType.NODE_DIRECTORY]
+        assert len(dirs) == 1, f"expected one coalesced directory, got {len(dirs)}"
+        assert dirs[0].content["directory"] == {"n": "99"}  # newest wins
+        assert len(ref._pending_ctrl) == 2  # 1 directory + the subscribe
+    finally:
+        ref.terminate()
+
+
 def test_burst_add_all_reach_ready():
     """Regression: spawn_node must open the manager-side ref (status
     subscriber) BEFORE starting the child. iceoryx2 keeps no history, so a

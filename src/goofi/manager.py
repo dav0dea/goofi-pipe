@@ -653,17 +653,24 @@ class Manager:
         if self._bridge is not None and notify_gui:
             self._bridge.control.on_link_added(link)
 
-    def _wire_link(self, link: Dict[str, str]) -> None:
+    def _wire_link(self, link: Dict[str, str], *, register_source: bool = True) -> None:
         """Establish the data-plane wire for one link from the CURRENT refs.
 
         Derives the service from the source node's stable transport id (not its
         reusable display name), so it is also correct after a restart re-mints that
         id. Order matters: register on the source first so it knows to publish,
-        then subscribe on the destination."""
+        then subscribe on the destination.
+
+        `register_source=False` skips the producer registration (but still
+        re-subscribes the destination): on a restart where only the CONSUMER was
+        respawned, the surviving producer's registration from the original wiring
+        is still valid — re-registering would double-count its subscribers and it
+        would publish forever for a count that never unwinds."""
         src_ref = self.nodes[link["node_out"]]
         dst_ref = self.nodes[link["node_in"]]
         in_process = self._same_group(link["node_out"], link["node_in"])
-        src_ref.register_subscriber(link["slot_out"])
+        if register_source:
+            src_ref.register_subscriber(link["slot_out"])
         dst_ref.subscribe_input(link["slot_in"], src_ref.data_service_for(link["slot_out"]), in_process)
 
     @mark_unsaved_changes
@@ -830,10 +837,13 @@ class Manager:
             # and flush in order on its first STATE_UPDATE.
 
             # Re-establish every link touching this node from the current refs.
+            # Only re-register the source when the RESTARTED node is the producer
+            # (its fresh process needs it); when it's only the consumer, the
+            # surviving producer's registration is intact and must not be doubled.
             for link in self._links:
                 if link["node_out"] == uid or link["node_in"] == uid:
                     try:
-                        self._wire_link(link)
+                        self._wire_link(link, register_source=(link["node_out"] == uid))
                     except Exception as exc:
                         logger.warning("restart: failed to rewire link %s: %s", link, exc)
 
@@ -1923,12 +1933,19 @@ class Manager:
     def _instance_error(self, inst_id: str) -> Optional[str]:
         """First errored descendant of `inst_id` across its whole subtree, or None — the
         error a collapsed group node surfaces. Single source for describe_instance + the
-        live error-event propagation (no frontend re-derivation)."""
-        return next(
-            (self.nodes[u].last_error for u in self.nodes
-             if self.nodes[u].last_error and self._within_subtree(u, inst_id)),
-            None,
-        )
+        live error-event propagation (no frontend re-derivation).
+
+        Snapshot the keys + guard the per-node read (like `_node_directory`): this
+        runs on a NodeRef messaging thread and races structural RPCs mutating
+        `self.nodes` on executor threads — iterating the live dict would raise."""
+        for u in list(self.nodes):
+            try:
+                err = self.nodes[u].last_error
+            except KeyError:
+                continue
+            if err and self._within_subtree(u, inst_id):
+                return err
+        return None
 
     def _boundary_external_links(self, inst_id: str, dir: str, local: str, slot: str) -> List[dict]:
         """This instance's external flat links for the boundary mapping (local, slot):
