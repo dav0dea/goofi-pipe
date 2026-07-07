@@ -301,12 +301,16 @@ class ControlHub:
             # a display name are skipped by _wire_node_status and lose live
             # state/error forwarding (report B1).
             self._wired_nodes.clear()
-            await self._call_manager(_replace_graph, manager, path)
-            # The graph was wholly replaced: every data-plane mux now caches a dead
-            # NodeRef. Tear them down so viewers reconnect against the new graph
-            # (otherwise a mux keyed by a reused uid still points at the dead ref).
-            await self.server.data.close_all()
-            await self.broadcast({"event": "graph_replaced", "payload": self._snapshot()})
+            try:
+                await self._call_manager(_replace_graph, manager, path)
+            finally:
+                # Resync every client to backend truth in ALL cases: a rejected
+                # load leaves the (intact) graph and re-broadcasting it is a no-op;
+                # a failure AFTER teardown must not leave a browser rendering the
+                # destroyed graph. The graph was wholly replaced, so every stale
+                # data-plane mux (dead NodeRef, reused uid) is dropped too.
+                await self.server.data.close_all()
+                await self.broadcast({"event": "graph_replaced", "payload": self._snapshot()})
             return {"ok": True}
         if op == "load_text":
             # Frontend uploaded YAML content directly — write to a temp file
@@ -329,9 +333,10 @@ class ControlHub:
                     os.unlink(tmp_path)
                 except OSError:
                     pass
-            # Same as `load`: drop the now-stale data-plane muxes before re-snapshotting.
-            await self.server.data.close_all()
-            await self.broadcast({"event": "graph_replaced", "payload": self._snapshot()})
+                # Resync in all cases (see `load`): a rejected upload leaves the
+                # graph intact; a post-teardown failure still reflects backend truth.
+                await self.server.data.close_all()
+                await self.broadcast({"event": "graph_replaced", "payload": self._snapshot()})
             return {"ok": True}
         if op == "group_nodes":
             inst_id = await self._call_manager(
@@ -631,15 +636,14 @@ def _save_and_return(manager, path_arg, overwrite: bool) -> str:
 
 
 def _replace_graph(manager, filepath: str) -> None:
-    """Clear the current graph (if any) and load `filepath`.
+    """Validate, then destructively replace the current graph with `filepath`.
 
-    `Manager.load` refuses to load on top of an existing graph; the
-    frontend's "Load" flow is destructive (replace) so we tear down
-    every node first.
+    Validation runs BEFORE any teardown, so a rejected load (unknown node type,
+    unsupported version, missing file) leaves the current graph fully intact.
+    `clear_graph` (not a per-node remove loop) also wipes sub-patch instances,
+    definitions, and membership — else the old graph's instances survive as
+    phantom empty group nodes.
     """
-    for n in list(manager.nodes):
-        try:
-            manager.remove_node(n, notify_gui=False)
-        except Exception:
-            traceback.print_exc()
+    manager.validate_loadable(filepath)  # raises here -> current graph untouched
+    manager.clear_graph()
     manager.load(filepath)

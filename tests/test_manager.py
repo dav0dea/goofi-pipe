@@ -557,6 +557,84 @@ def test_shared_member_pos_mirrors_to_sibling():
         mgr.terminate()
 
 
+def test_clear_graph_resets_to_bare_root():
+    """clear_graph must tear down real nodes AND sub-patch instances/defs/
+    membership, leaving only the bare ROOT scope — the per-node remove loop
+    the old replace path used never touched instance records."""
+    mgr = _bare_manager(use_multiprocessing=False)
+    try:
+        osc, inst = _build_grouped_graph(mgr)
+        mgr.share_instance(inst)  # create a definition too
+        assert inst in mgr._instances and mgr._definitions
+
+        mgr.clear_graph()
+
+        assert set(mgr._instances) == {ROOT_ID}
+        assert mgr._definitions == {}
+        assert mgr._membership == {}
+        assert len(mgr.nodes) == 0
+        assert list(mgr.links) == []
+    finally:
+        mgr.terminate()
+
+
+def test_replace_graph_leaves_no_phantom_instance(tmp_path):
+    """Loading a new patch over one that had a sub-patch must not leave the old
+    instance (and its def/membership) behind as a phantom empty group node."""
+    from goofi.bridge.control import _replace_graph
+
+    # Patch B: a single plain node, no sub-patches.
+    mgr_b = _bare_manager(use_multiprocessing=False)
+    mgr_b.add_node("Buffer", "signal")
+    b_yaml = mgr_b.serialize_patch()
+    mgr_b.terminate()
+    b_file = tmp_path / "b.gfi"
+    b_file.write_text(b_yaml)
+
+    # Graph A has a sub-patch; loading B over it must wipe A's instance.
+    mgr_a = _bare_manager(use_multiprocessing=False)
+    try:
+        _build_grouped_graph(mgr_a)
+        assert len([i for i in mgr_a._instances if i != ROOT_ID]) == 1
+        _replace_graph(mgr_a, str(b_file))
+        assert set(mgr_a._instances) == {ROOT_ID}, "phantom sub-patch instance survived the load"
+        assert mgr_a._definitions == {}
+    finally:
+        mgr_a.terminate()
+
+
+def test_failed_load_preserves_current_graph(tmp_path):
+    """A rejected load (unknown node type / unsupported version) must be caught
+    BEFORE the current graph is torn down — not leave the backend empty."""
+    from goofi.bridge.control import _replace_graph
+
+    mgr = _bare_manager(use_multiprocessing=False)
+    try:
+        keep = mgr.add_node("Buffer", "signal")
+
+        unknown = tmp_path / "unknown.gfi"
+        unknown.write_text(
+            "version: 2\n"
+            "definitions: {}\n"
+            "root:\n"
+            "  nodes:\n"
+            "    u1: {name: nosuch0, _type: NoSuchNode, category: signal, params: {}}\n"
+            "  links: []\n"
+            "  instances: {}\n"
+        )
+        with pytest.raises(ValueError):
+            _replace_graph(mgr, str(unknown))
+        assert keep in mgr.nodes and len(mgr.nodes) == 1, "current graph destroyed by a rejected load"
+
+        legacy = tmp_path / "v1.gfi"
+        legacy.write_text("version: 1\nnodes: {}\n")  # unsupported version
+        with pytest.raises(ValueError):
+            _replace_graph(mgr, str(legacy))
+        assert keep in mgr.nodes and len(mgr.nodes) == 1
+    finally:
+        mgr.terminate()
+
+
 def test_remove_instance_deletes_members_and_gcs_def():
     mgr = _bare_manager(use_multiprocessing=False)
     try:

@@ -2804,6 +2804,68 @@ class Manager:
     # Persistence
     # ------------------------------------------------------------------
 
+    def clear_graph(self) -> None:
+        """Tear down the ENTIRE graph — real nodes AND sub-patch instances,
+        definitions, and membership — resetting to a bare ROOT scope. Used
+        before a destructive load: a plain per-node remove loop skips instance
+        records entirely, leaving a phantom empty group node (and its def) that
+        the next save then writes into the .gfi."""
+        # Recursively remove ROOT's sub-patch instances (members + links + nested
+        # instances + orphaned shared defs) via the canonical teardown; loose
+        # top-level nodes are removed by the sweep below.
+        root = self._instances.get(ROOT_ID)
+        for iid in (list(root.members) if root else []):
+            if iid in self._instances:
+                try:
+                    self.remove_instance(iid, notify_gui=False)
+                except Exception:
+                    logger.exception("clear_graph: remove_instance %s failed", iid)
+        for uid in list(self.nodes):
+            try:
+                self.remove_node(uid, notify_gui=False)
+            except Exception:
+                logger.exception("clear_graph: remove_node %s failed", uid)
+        # Final invariant reset — a partially-inconsistent prior state can't leak past.
+        self._membership.clear()
+        self._instances.clear()
+        self._definitions.clear()
+        self._links.clear()
+        self._node_groups.clear()
+        self._install_root_scope()
+
+    def validate_loadable(self, filepath: str) -> None:
+        """Parse + validate a patch WITHOUT mutating the graph, so a destructive
+        load can be rejected before the current graph is torn down. Raises on a
+        missing file, an unsupported version, or an unknown node type (no spec,
+        or a category mismatch). An UNAVAILABLE type — installed but with a
+        missing dep — is allowed: it spawns and errors on its own channel, exactly
+        as the interactive add path does."""
+        if not path.exists(filepath):
+            raise FileNotFoundError(f"File '{filepath}' does not exist.")
+        from goofi.patch_format import normalize_loaded
+
+        with open(filepath, "r") as f:
+            raw = yaml.load(f, Loader=yaml.FullLoader)
+        doc = normalize_loaded(raw)  # raises ValueError on an unsupported version
+
+        def _records(obj):
+            # Every node record is a dict carrying '_type', anywhere in the tree
+            # (root nodes, definition members, nested instances). Param values
+            # never carry '_type', so this walk yields node records only.
+            if isinstance(obj, dict):
+                if "_type" in obj:
+                    yield obj.get("_type"), obj.get("category")
+                for v in obj.values():
+                    yield from _records(v)
+            elif isinstance(obj, list):
+                for v in obj:
+                    yield from _records(v)
+
+        for node_type, category in _records(doc):
+            spec = self.node_specs.get(node_type)
+            if spec is None or (category is not None and spec.category != category):
+                raise ValueError(f"Unknown node type '{category}/{node_type}' in patch.")
+
     def load(self, filepath: str, load_on_init: bool = False) -> None:
         if len(self.nodes) > 0:
             raise RuntimeError("This goofi-pipe already contains nodes.")
