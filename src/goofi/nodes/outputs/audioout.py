@@ -29,7 +29,7 @@ class AudioOut(Node):
         # evaluation this falls to the fallback (the live node reports the
         # real list via its state push).
         try:
-            devices = AudioOut.list_audio_devices()
+            devices = AudioOut.list_audio_devices() or ["default"]
         except Exception:
             devices = ["default"]
         return {

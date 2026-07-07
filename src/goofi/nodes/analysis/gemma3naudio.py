@@ -8,15 +8,7 @@ from goofi.data import Data, DataType
 from goofi.node import Node
 from goofi.params import FloatParam, StringParam
 
-try:
-    from transformers import Gemma3nForConditionalGeneration, Gemma3nProcessor
-except ImportError:
-    # Fallback to Auto classes if Gemma3n classes not available
-    from transformers import AutoModelForConditionalGeneration, AutoProcessor
-
-    print("Gemma3n classes not found, using Auto classes")
-    Gemma3nForConditionalGeneration = AutoModelForConditionalGeneration
-    Gemma3nProcessor = AutoProcessor
+from transformers import Gemma3nForConditionalGeneration, Gemma3nProcessor
 
 
 class Gemma3nAudio(Node):

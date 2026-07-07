@@ -78,3 +78,16 @@ def test_no_cc_inputs_present_falls_back_to_empty_meta(monkeypatch):
     value, meta = out["midi_status"]
     assert value == "CC messages sent successfully"
     assert meta == {}
+
+
+def test_port_name_goofi_opens_the_named_port(monkeypatch):
+    # There is no goofi virtual-port feature; port_name == "goofi" used to hit
+    # self.goofi_port (assigned nowhere) -> AttributeError on every tick. The
+    # literal "goofi" must open like any other port name.
+    node, fake = _midiccout(monkeypatch)
+    node.params.MIDI["port_name"].value = "goofi"
+    cc1 = Data(DataType.ARRAY, np.array([64.0]), {})
+    out = node.process(cc1=cc1, cc2=None, cc3=None, cc4=None, cc5=None)
+    value, _ = out["midi_status"]
+    assert value == "CC messages sent successfully"
+    assert len(fake.outport.sent) == 1

@@ -75,7 +75,7 @@ class MidiCCout(Node):
         ]
         cc_data = [cc1, cc2, cc3, cc4, cc5]
 
-        outport = mido.open_output(port_name) if port_name != "goofi" else self.goofi_port
+        outport = mido.open_output(port_name)
 
         alert_on = False
         try:
@@ -95,8 +95,7 @@ class MidiCCout(Node):
             for t in threads:
                 t.join()
         finally:
-            if port_name != "goofi":
-                outport.close()  # Ensure that the MIDI port is closed when done
+            outport.close()  # Ensure that the MIDI port is closed when done
 
         # cc1..cc5 are independent triggering inputs, so any subset may be wired.
         # cc1 is not guaranteed to be present; pair the status with whichever cc

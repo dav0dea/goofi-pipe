@@ -19,7 +19,7 @@ class AudioStream(Node):
         # evaluation this falls to the fallback (the live node reports the
         # real list via its state push).
         try:
-            devices = AudioStream.list_audio_devices()
+            devices = AudioStream.list_audio_devices() or ["default"]
         except Exception:
             devices = ["default"]
         return {
