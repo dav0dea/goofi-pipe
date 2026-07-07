@@ -174,3 +174,6 @@ openai.key
 .claude/
 /throwaway/
 /docs/
+
+# SvelteKit generated (root, when tooling runs from repo root)
+.svelte-kit/

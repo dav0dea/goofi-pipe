@@ -250,6 +250,113 @@ def test_no_multiprocessing_flag_extracted(tmp_path):
     assert catalog["Osc"].no_multiprocessing is False
 
 
+NON_LITERAL_NO_MP = '''
+from goofi.node import Node
+
+class BadFlag(Node):
+    NO_MULTIPROCESSING = bool(1)  # not a plain literal -> ast.literal_eval raises
+    def config_params():
+        return {}
+    def process(self):
+        pass
+'''
+
+
+def test_non_literal_no_multiprocessing_excluded_not_fatal(tmp_path):
+    # A node whose NO_MULTIPROCESSING is a non-literal expression must be
+    # EXCLUDED with a named error — never crash the whole catalog build (and
+    # with it manager startup). Sibling nodes still land.
+    root = make_nodes_tree(tmp_path, {"misc/badflag.py": NON_LITERAL_NO_MP, "misc/osc.py": BASIC})
+    catalog, errors = build_catalog(root, package="fixture.nodes")
+    assert "BadFlag" not in catalog
+    assert "Osc" in catalog
+    assert any("BadFlag" in e and "NO_MULTIPROCESSING" in e for e in errors)
+
+
+UTF8_DOC = '''
+from goofi.node import Node
+
+class Cafe(Node):
+    """Réduit le café — accented docstring with a typographic dash."""
+    def config_params():
+        return {}
+    def process(self):
+        pass
+'''
+
+
+def test_build_catalog_reads_utf8_regardless_of_locale(tmp_path, monkeypatch):
+    # Node sources are UTF-8 by the import system's contract (PEP 263). The
+    # catalog must decode them as UTF-8, not via the locale codec — else a
+    # legacy locale crashes startup on the first multibyte docstring. We prove
+    # the read never goes through the locale-dependent Path.read_text().
+    root = make_nodes_tree(tmp_path, {"misc/cafe.py": UTF8_DOC})
+
+    def boom(self, *a, **k):  # any non-UTF-8 locale would raise here
+        raise UnicodeDecodeError("ascii", b"", 0, 1, "locale codec cannot decode node source")
+
+    monkeypatch.setattr(Path, "read_text", boom)
+    catalog, errors = build_catalog(root, package="fixture.nodes")
+    assert errors == []
+    assert "Cafe" in catalog
+    assert "café" in catalog["Cafe"].doc
+
+
+def test_availability_probe_namespace_package_submodule(tmp_path, monkeypatch):
+    # A PEP 420 namespace package (a bare dir on sys.path, no __init__.py) makes
+    # find_spec(top-level) succeed even though the real dependency is a SUBMODULE
+    # that isn't installed — the google/google.generativeai shape. The probe must
+    # see through it and report the node unavailable, naming the dotted gap.
+    import importlib
+
+    site = tmp_path / "site"
+    (site / "acme_ns").mkdir(parents=True)  # namespace portion, no __init__.py
+    monkeypatch.syspath_prepend(str(site))
+    importlib.invalidate_caches()
+
+    src = '''
+import acme_ns.generativeai as gen
+from goofi.node import Node
+
+class NS(Node):
+    def config_params():
+        return {}
+    def process(self):
+        pass
+'''
+    root = make_nodes_tree(tmp_path, {"misc/ns.py": src})
+    catalog, _ = build_catalog(root, package="fixture.nodes")
+    spec = catalog["NS"]
+    assert spec.available is False
+    assert "acme_ns.generativeai" in spec.missing_deps
+
+
+SHADOW = '''
+from goofi.node import Node
+from goofi.params import StringParam
+
+# A module-level constant that shadows a registry-whitelist name. Under a real
+# import the file's binding wins; the AST catalog must agree, or it silently
+# feeds the palette the whitelist object instead of the node's own list.
+FloatParam = ["red", "green", "blue"]
+
+class Painter(Node):
+    def config_params():
+        return {"p": {"color": StringParam(FloatParam[0], options=FloatParam)}}
+    def process(self):
+        pass
+'''
+
+
+def test_same_file_declaration_shadows_whitelist(tmp_path):
+    root = make_nodes_tree(tmp_path, {"misc/painter.py": SHADOW})
+    catalog, errors = build_catalog(root, package="fixture.nodes")
+    assert errors == []
+    _, _, params = catalog["Painter"].configure()
+    assert params["p"]["color"].options == ["red", "green", "blue"]
+    assert params["p"]["color"].value == "red"
+
+
 def test_from_class_wraps_a_real_class():
     from goofi.nodes.inputs.constantarray import ConstantArray
 
