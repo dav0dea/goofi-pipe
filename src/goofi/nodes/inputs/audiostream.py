@@ -71,7 +71,7 @@ class AudioStream(Node):
 
         return {"out": (data, {"sfreq": float(self.params.audio.sampling_rate.value)})}
 
-    def audio_sampling_frequency_changed(self, value):
+    def audio_sampling_rate_changed(self, value):
         self.setup()
 
     def audio_device_changed(self, value):

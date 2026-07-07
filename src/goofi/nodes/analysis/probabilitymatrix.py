@@ -74,6 +74,3 @@ class ProbabilityMatrix(Node):
         if self.params.Probability.Reset.value:
             self.setup()
         return {"data": (self.transition_matrix, {"sfreq": self.params.common.autotrigger.value})}
-
-    def autotrigger_changed(self, value):
-        self.setup()

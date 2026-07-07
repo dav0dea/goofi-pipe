@@ -94,6 +94,6 @@ class ERP(Node):
         else:
             return None
 
-    def erp_duration_changed(self):
+    def erp_duration_changed(self, value):
         self.erp = None
         self.collecting = None

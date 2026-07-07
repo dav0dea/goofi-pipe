@@ -340,13 +340,35 @@ def build_catalog(
                 ),
             )
             try:
-                spec.configure()  # normalization must hold too (slot dtypes, params shape)
+                _, _, cfg_params = spec.configure()  # normalization must hold too (slot dtypes, params shape)
             except Exception as e:
                 errors.append(
                     f"{rel}: {cls_node.name} config does not normalize "
                     f"({type(e).__name__}: {e})"
                 )
                 continue
+
+            # Param-changed callback guard. `Node._handle_ctrl` dispatches a param
+            # edit to `self.{group}_{name}_changed(value)`; a method whose name maps
+            # to no real param is never called (getattr misses silently), and one
+            # that omits the value arg raises TypeError on every change. Surface both
+            # as errors — non-fatal (the node still configures), so it isn't excluded.
+            valid_changed = {
+                f"{g}_{n}_changed" for g in cfg_params.keys() for n in cfg_params[g]._fields
+            }
+            for item in cls_node.body:
+                if not (isinstance(item, ast.FunctionDef) and item.name.endswith("_changed")):
+                    continue
+                if item.name not in valid_changed:
+                    errors.append(
+                        f"{rel}: {cls_node.name}.{item.name} is a dead param callback "
+                        "(no matching '{group}_{name}' param) — see Node._handle_ctrl"
+                    )
+                elif len(item.args.args) != 2:
+                    errors.append(
+                        f"{rel}: {cls_node.name}.{item.name} must take (self, value); got "
+                        f"{len(item.args.args)} arg(s) — the dispatcher calls it with the new value"
+                    )
 
             if cls_node.name in catalog:
                 errors.append(

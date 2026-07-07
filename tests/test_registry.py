@@ -357,6 +357,40 @@ def test_same_file_declaration_shadows_whitelist(tmp_path):
     assert params["p"]["color"].value == "red"
 
 
+BAD_CALLBACKS = '''
+from goofi.node import Node
+from goofi.params import IntParam, StringParam
+
+class Cbs(Node):
+    def config_params():
+        return {"g": {"size": IntParam(4, 1, 8), "mode": StringParam("a", options=["a", "b"])}}
+    def process(self):
+        pass
+    def g_size_changed(self, value):        # OK: matches g.size, takes (self, value)
+        pass
+    def g_nonexistent_changed(self, value): # dead: no g.nonexistent param
+        pass
+    def g_mode_changed(self):               # wrong arity: matches g.mode but no value arg
+        pass
+    def common_autotrigger_changed(self, value):  # OK: the injected common param
+        pass
+'''
+
+
+def test_param_changed_callbacks_validated(tmp_path):
+    # A `{group}_{name}_changed` method that maps to no real param is silently
+    # never dispatched; one that omits the value arg TypeErrors on every change.
+    # Both are surfaced as (non-fatal) errors — the node still configures.
+    root = make_nodes_tree(tmp_path, {"misc/cbs.py": BAD_CALLBACKS})
+    catalog, errors = build_catalog(root, package="fixture.nodes")
+    assert "Cbs" in catalog  # a dead callback doesn't cripple the node
+    assert any("g_nonexistent_changed" in e for e in errors), "dead callback name must be reported"
+    assert any("g_mode_changed" in e for e in errors), "wrong-arity callback must be reported"
+    # the correct ones are never flagged
+    assert not any("g_size_changed" in e for e in errors)
+    assert not any("common_autotrigger_changed" in e for e in errors)
+
+
 def test_from_class_wraps_a_real_class():
     from goofi.nodes.inputs.constantarray import ConstantArray
 

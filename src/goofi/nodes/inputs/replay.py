@@ -92,8 +92,7 @@ class Replay(Node):
 
         return {"table_output": (table_output, {})}
 
-    def read_filename_changed(self):
-        self.load_csv()
-
-    def read_restart_changed(self):
-        self.current_index = 0  # Reset index when restart is triggered
+    def Read_restart_changed(self, value):
+        self.current_index = 0  # Reset index when the restart trigger fires
+        # (filename changes need no callback: process() reloads via load_csv()
+        # every tick, which is a no-op unless the filename actually changed.)
