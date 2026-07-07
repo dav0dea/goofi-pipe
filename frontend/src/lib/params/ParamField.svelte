@@ -2,6 +2,7 @@
 	import { untrack } from 'svelte';
 	import type { ParamDescriptor } from '$lib/api/types';
 	import ExpressionModal from './ExpressionModal.svelte';
+	import { selectOptions } from './selectOptions';
 	import { formatTick } from '$lib/viewers/format';
 
 	type SetExprOpts = { enabled?: boolean; triggers_process?: boolean; autoeval?: boolean };
@@ -274,7 +275,7 @@
 						value={String(local ?? '')}
 						onchange={(e) => commit((e.currentTarget as HTMLSelectElement).value)}
 					>
-						{#each descriptor.options as opt}
+						{#each selectOptions(descriptor.options, String(local ?? '')) as opt}
 							<option value={opt}>{opt}</option>
 						{/each}
 					</select>
