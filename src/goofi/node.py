@@ -37,7 +37,13 @@ from goofi.message import Message, MessageType
 from goofi.node_reduce import viewspec_from_dict
 from goofi.node_stats import ExecStats
 from goofi.node_helpers import InputSlot, NodeRef, OutputSlot, clean_docstring, normalize_config
-from goofi.params import InvalidParamError, NodeParams, StringParam, normalize_expression_binding
+from goofi.params import (
+    InvalidParamError,
+    NodeParams,
+    StringParam,
+    coerce_to_param_type,
+    normalize_expression_binding,
+)
 from goofi.transport import (
     WaitSet,
     ctrl_service_name,
@@ -58,41 +64,6 @@ class MultiprocessingForbiddenError(Exception):
 # Cadence for NODE_STATS pushes (seconds) — low + fixed, decoupled from the data
 # rate so a kHz node still reports telemetry only ~once per second.
 _STATS_PUSH_INTERVAL = 1.0
-
-
-def _coerce_to_param_type(param, value):
-    """Best-effort coercion of an expression result into a param's
-    declared type. Returns ``None`` to signal "skip this update" when
-    the value cannot be sensibly coerced — the caller should leave the
-    param at its previous value.
-    """
-    # numpy 0-d arrays / scalars carry an .item()
-    if hasattr(value, "item") and not isinstance(value, (str, bool, bytes)):
-        try:
-            value = value.item()
-        except Exception:
-            pass
-
-    expected_default = param.default()
-    expected_type = type(expected_default)
-
-    if isinstance(value, expected_type):
-        return value
-    if expected_type is float and isinstance(value, int) and not isinstance(value, bool):
-        return float(value)
-    if expected_type is int and isinstance(value, float):
-        try:
-            return int(value)
-        except (TypeError, ValueError):
-            return None
-    if expected_type is bool:
-        return bool(value)
-    if expected_type is str:
-        try:
-            return str(value)
-        except Exception:
-            return None
-    return None
 
 
 def _safe_close(endpoint) -> None:
@@ -457,7 +428,7 @@ class Node(ABC):
             if result is None:
                 return
             param = self.params[group][name]
-            coerced = _coerce_to_param_type(param, result)
+            coerced = coerce_to_param_type(param, result)
             if coerced is None:
                 return
             prev = param._value
@@ -678,6 +649,13 @@ class Node(ABC):
             if group not in self.params or name not in self.params[group]:
                 self._report_error(f"Unknown parameter {group}.{name}")
                 return
+            coerced = coerce_to_param_type(self.params[group][name], value)
+            if coerced is None:
+                self._report_error(
+                    f"Cannot coerce {value!r} to the type of {group}.{name}; ignoring update."
+                )
+                return
+            value = coerced
             self.params[group][name].value = value
             self._mark_dirty()
             cb = getattr(self, f"{group}_{name}_changed", None)

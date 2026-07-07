@@ -113,6 +113,43 @@ class StringParam(Param):
         return ""
 
 
+def coerce_to_param_type(param, value):
+    """Best-effort coercion of a value into a param's declared type. Returns
+    ``None`` to signal "cannot coerce" — the caller leaves the param unchanged
+    (or rejects the update). The ONE coercion rule, shared by every param write
+    seam (expression eval, NodeRef.update_param, Node ctrl handling, NodeParams
+    .update) so a fractional value can never poison an IntParam mirror and make
+    the saved patch unloadable.
+    """
+    # numpy 0-d arrays / scalars carry an .item()
+    if hasattr(value, "item") and not isinstance(value, (str, bool, bytes)):
+        try:
+            value = value.item()
+        except Exception:
+            pass
+
+    expected_default = param.default()
+    expected_type = type(expected_default)
+
+    if isinstance(value, expected_type):
+        return value
+    if expected_type is float and isinstance(value, int) and not isinstance(value, bool):
+        return float(value)
+    if expected_type is int and isinstance(value, float):
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
+    if expected_type is bool:
+        return bool(value)
+    if expected_type is str:
+        try:
+            return str(value)
+        except Exception:
+            return None
+    return None
+
+
 def normalize_expression_binding(expression, enabled, triggers_process, autoeval):
     """Canonical expression-binding gating rule — the SINGLE source of truth.
 
@@ -360,17 +397,24 @@ class NodeParams:
                         self._data[group] = self._data[group]._replace(**{name: param_type(**param)})
                         continue
 
-                    # update only the value of the parameter, leave the rest unchanged
-                    if not isinstance(self._data[group][name], TYPE_PARAM_MAP[type(param)]):
-                        # it's okay if we wanted a float but got int
-                        if isinstance(self._data[group][name], FloatParam) and isinstance(param, int):
-                            param = float(param)
-                        else:
-                            raise TypeError(
-                                f"Expected parameter type {TYPE_PARAM_MAP[type(param)].__name__} but got "
-                                f"{type(self._data[group][name]).__name__}."
-                            )
-                    self._data[group][name]._value = param
+                    # Update only the value, coercing to the param's type via the
+                    # shared rule (int->float widen, float->int truncate, ...).
+                    # Contain a per-param failure instead of raising mid-loop:
+                    # a single uncoercible value (a hand-edited .gfi, a schema
+                    # drift) must not abort the whole update — later params still
+                    # apply, and InvalidParamError is raised once at the end so a
+                    # poisoned patch degrades to the "reconfigure the node"
+                    # warning rather than an unloadable one.
+                    existing = self._data[group][name]
+                    coerced = coerce_to_param_type(existing, param)
+                    if coerced is None:
+                        encountered_invalid_params = True
+                        print(
+                            f"Invalid value {param!r} for '{name}' in group '{group}': "
+                            f"not coercible to {type(existing).__name__}."
+                        )
+                        continue
+                    existing._value = coerced
                 else:
                     # update the entire parameter object
                     self._data[group] = self._data[group]._replace(**{name: param})
@@ -391,13 +435,23 @@ class NodeParams:
             serialized_params = {}
             for name, param in params.items():
                 if param.save_param:
+                    # A trigger BoolParam's resting value is False; it is only
+                    # momentarily True between a click and the next process()
+                    # consumption. Persist False so a saved patch (and clones /
+                    # restarts, which go through this same serialize()) never
+                    # re-fires the trigger on load.
+                    saved_value = (
+                        False
+                        if (isinstance(param, BoolParam) and getattr(param, "trigger", False))
+                        else param._value
+                    )
                     expr = getattr(param, "expression", None)
                     if expr is not None:
                         # Asymmetric on purpose: dict shape only when an
                         # expression is bound, flat value otherwise. Keeps
                         # legacy .gfi files byte-identical in git.
                         serialized_params[name] = {
-                            "value": param._value,
+                            "value": saved_value,
                             "expression": expr,
                             "expression_enabled": bool(
                                 getattr(param, "expression_enabled", False)
@@ -410,7 +464,7 @@ class NodeParams:
                             ),
                         }
                     else:
-                        serialized_params[name] = param._value
+                        serialized_params[name] = saved_value
             serialized_data[group] = serialized_params
         return serialized_data
 

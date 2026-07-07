@@ -26,7 +26,7 @@ if TYPE_CHECKING:
 from goofi.codec import decode_message, encode_message
 from goofi.data import Data, DataType
 from goofi.message import Message, MessageType
-from goofi.params import NodeParams, normalize_expression_binding
+from goofi.params import NodeParams, coerce_to_param_type, normalize_expression_binding
 from goofi.transport import (
     Listener,
     Publisher,
@@ -290,6 +290,17 @@ class NodeRef:
             raise ValueError(f"Parameter group '{group}' doesn't exist.")
         if param_name not in self.params[group]:
             raise ValueError(f"Parameter '{param_name}' doesn't exist in group '{group}'.")
+        # Coerce to the param's declared type at the manager-side mirror so a
+        # fractional value typed into an int field never poisons this NodeParams
+        # (which save() reads as authoritative) nor rides an uncoerced value out
+        # to the node. An uncoercible value fails the RPC visibly.
+        coerced = coerce_to_param_type(self.params[group][param_name], param_value)
+        if coerced is None:
+            raise ValueError(
+                f"Value {param_value!r} is not valid for {group}.{param_name} "
+                f"({type(self.params[group][param_name]).__name__})."
+            )
+        param_value = coerced
         # Reflect locally so the manager has up-to-date params even before
         # the node pushes a STATE_UPDATE back.
         self.params[group][param_name].value = param_value

@@ -19,6 +19,48 @@ def _iid():
     set_instance_id(f"t-{uuid.uuid4().hex[:8]}")
 
 
+def test_handle_ctrl_coerces_fractional_int_param():
+    """The node-side param write must coerce to the param's type: a fractional
+    value pushed to an IntParam is truncated, never stored as a float (which
+    would later serialize into an unloadable patch)."""
+    from goofi.params import IntParam
+
+    node = make_custom_node(params={"g": {"n": IntParam(4, 0, 10)}}).create_standalone()
+    node._handle_ctrl(
+        Message(MessageType.PARAMETER_UPDATE, {"group": "g", "param_name": "n", "param_value": 2.5})
+    )
+    assert node.params["g"]["n"].value == 2
+
+
+def test_noderef_update_param_coerces_fractional_int():
+    """The manager-side mirror (NodeRef.update_param) must coerce too, so a
+    fractional value typed into an int field never poisons the saved patch."""
+    from goofi.params import IntParam
+
+    _iid()
+    cls = make_custom_node(params={"g": {"n": IntParam(4, 0, 10)}})
+    ref, _ = cls.create_local()
+    try:
+        ref.update_param("g", "n", 2.5)
+        assert ref.params["g"]["n"].value == 2
+    finally:
+        ref.terminate()
+
+
+def test_noderef_update_param_rejects_uncoercible_value():
+    from goofi.params import IntParam
+
+    _iid()
+    cls = make_custom_node(params={"g": {"n": IntParam(4, 0, 10)}})
+    ref, _ = cls.create_local()
+    try:
+        with pytest.raises(ValueError):
+            ref.update_param("g", "n", "not a number")
+        assert ref.params["g"]["n"].value == 4  # unchanged
+    finally:
+        ref.terminate()
+
+
 def test_abstract_node():
     """Instantiating an abstract Node subclass must raise TypeError."""
     with pytest.raises(TypeError):

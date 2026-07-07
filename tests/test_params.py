@@ -2,9 +2,64 @@ import pytest
 import yaml
 
 from goofi import params
-from goofi.params import DEFAULT_PARAMS, BoolParam, FloatParam, NodeParams
+from goofi.params import (
+    DEFAULT_PARAMS,
+    BoolParam,
+    FloatParam,
+    IntParam,
+    NodeParams,
+    StringParam,
+    coerce_to_param_type,
+)
 
 from .utils import list_param_types
+
+
+def test_coerce_to_param_type_truncates_and_rejects():
+    # int field gets a fractional value -> truncate; float gets an int -> widen;
+    # a non-numeric string into an int field is uncoercible -> None (skip).
+    assert coerce_to_param_type(IntParam(0), 2.5) == 2
+    assert coerce_to_param_type(FloatParam(0.0), 3) == 3.0
+    assert coerce_to_param_type(StringParam(""), 5) == "5"
+    assert coerce_to_param_type(IntParam(0), 4) == 4
+    assert coerce_to_param_type(IntParam(0), "abc") is None
+
+
+def test_nodeparams_update_truncates_float_into_int_param():
+    # A fractional value must NOT poison an IntParam and make the saved patch
+    # unloadable — it is truncated, and a serialize()->load round-trip is clean.
+    p = NodeParams({"g": {"n": IntParam(4, 0, 10)}})
+    p.update({"g": {"n": 2.5}})
+    assert p["g"]["n"].value == 2
+    assert p.serialize()["g"]["n"] == 2
+
+
+def test_nodeparams_update_contains_uncoercible_value():
+    # One bad param must not abort the whole update loop (the STATE_UPDATE mirror
+    # / .gfi load path): later params still apply, and the bad one is left as-is.
+    p = NodeParams({"g": {"n": IntParam(4, 0, 10), "m": IntParam(7, 0, 10)}})
+    with pytest.raises(params.InvalidParamError):
+        p.update({"g": {"n": "not a number", "m": 9}})
+    assert p["g"]["n"].value == 4
+    assert p["g"]["m"].value == 9
+
+
+def test_trigger_boolparam_serializes_false_even_when_currently_true():
+    # A used-but-not-yet-consumed trigger must persist as its resting False, so a
+    # saved patch does not silently re-fire the trigger on every load.
+    p = NodeParams({"g": {"fire": BoolParam(True, trigger=True), "flag": BoolParam(True)}})
+    ser = p.serialize()
+    assert ser["g"]["fire"] is False
+    assert ser["g"]["flag"] is True
+
+
+def test_trigger_boolparam_with_expression_serializes_value_false():
+    p = NodeParams({"g": {"fire": BoolParam(True, trigger=True)}})
+    fire = p["g"]["fire"]
+    fire.expression = "True"
+    fire.expression_enabled = True
+    ser = p.serialize()
+    assert ser["g"]["fire"]["value"] is False
 
 
 def full_node_params(n_groups: int = 2) -> NodeParams:
