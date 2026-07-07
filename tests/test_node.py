@@ -36,6 +36,33 @@ def test_handle_ctrl_refresh_param_recomputes_options():
     # the current value 'a' is not in the fresh list -> kept selectable at the front
     assert p.options == ["a", "x", "y"]
     assert node._dirty is True
+    # completion marker rides the next push so the UI clears the ⟳ spinner
+    assert node._refreshed_params == [["g", "pick"]]
+
+
+def test_handle_ctrl_refresh_param_always_signals_completion():
+    """The ⟳ spinner clears on the node's `refreshed_params` marker, so EVERY
+    REFRESH_PARAM must append the [group, name] marker — even the failure modes.
+    A refresh for a param the node doesn't expose (descriptor/node skew) or one whose
+    method raises must still signal done, else the frontend entry stays disabled until
+    the 15s safety timeout."""
+    from goofi.params import IntParam, StringParam
+
+    # 1. Unknown param -> the early-return path still signals completion.
+    node = make_custom_node(params={"g": {"n": IntParam(4, 0, 10)}}).create_standalone()
+    node._dirty = False
+    node._handle_ctrl(Message(MessageType.REFRESH_PARAM, {"group": "g", "param_name": "missing"}))
+    assert node._refreshed_params == [["g", "missing"]]
+    assert node._dirty is True
+
+    # 2. Refresh method raises -> still signals completion (spinner clears).
+    cls = make_custom_node(params={"g": {"pick": StringParam("a", options=["a"], refresh="_boom")}})
+    node2 = cls.create_standalone()
+    node2._boom = lambda: (_ for _ in ()).throw(RuntimeError("scan failed"))
+    node2._dirty = False
+    node2._handle_ctrl(Message(MessageType.REFRESH_PARAM, {"group": "g", "param_name": "pick"}))
+    assert node2._refreshed_params == [["g", "pick"]]
+    assert node2._dirty is True
 
 
 def test_handle_ctrl_refresh_param_current_value_in_list():

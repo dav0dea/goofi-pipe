@@ -590,6 +590,9 @@ class ControlHub:
                         # Advertise the node's SSE log endpoint as soon as it's known
                         # (first state push) so the frontend can subscribe peer-to-peer.
                         "log_endpoint": message.content.get("log_endpoint"),
+                        # Params whose ⟳ refresh completed on this push — the frontend
+                        # clears their spinner exactly when the fresh options arrive.
+                        "refreshed_params": message.content.get("refreshed_params", []),
                     },
                 }
             )

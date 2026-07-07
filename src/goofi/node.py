@@ -116,6 +116,11 @@ class Node(ABC):
         self._alive = True
         self._setup_done = Event()
         self._dirty = False
+        # `[group, name]` pairs whose ⟳ refresh completed since the last state push
+        # (consumed once by `_push_state`). Lets the UI clear its per-param spinner
+        # exactly when the fresh options land. Touched only on the messaging thread
+        # (REFRESH_PARAM handler appends; _push_state drains) — no lock needed.
+        self._refreshed_params: list[list[str]] = []
         # Last error string broadcast via PROCESSING_ERROR (None = healthy).
         # Errors are emitted on *every* occurrence so the frontend can count
         # repeats (console-style); only the cleared (None) state is deduped, so a
@@ -458,6 +463,7 @@ class Node(ABC):
         """Publish a STATE_UPDATE if we're dirty."""
         if self._environment == NodeEnv.STANDALONE:
             self._dirty = False
+            self._refreshed_params.clear()
             return
         if not self._dirty:
             return
@@ -479,6 +485,9 @@ class Node(ABC):
             "category": self.category(),
             "params": self.params.serialize(),
             "param_options": param_options,
+            # `[group, name]` pairs whose ⟳ refresh just completed — the UI clears the
+            # per-param spinner on these. Empty on ordinary pushes.
+            "refreshed_params": list(self._refreshed_params),
             "output_subscribers": {n: s.subscriber_count for n, s in self.output_slots.items()},
             # Lifecycle: False while setup() is still running on its thread —
             # drives the manager-side 'setup' stage between the first state
@@ -501,6 +510,9 @@ class Node(ABC):
                 self.status_pub.send(encode_message(Message(MessageType.STATE_UPDATE, state)))
                 self._status_notifier.notify()
             self._dirty = False
+            # Drain only after a successful send so a failed push re-reports the
+            # completion on the next attempt (else the spinner would hang).
+            self._refreshed_params.clear()
         except Exception:
             traceback.print_exc()
 
@@ -677,24 +689,31 @@ class Node(ABC):
         elif t == MessageType.REFRESH_PARAM:
             group = msg.content["group"]
             name = msg.content["param_name"]
-            if group not in self.params or name not in self.params[group]:
-                self._report_error(f"Unknown parameter {group}.{name}")
-                return
-            param = self.params[group][name]
-            fn_name = getattr(param, "refresh", None)
-            fn = getattr(self, fn_name, None) if fn_name else None
-            if callable(fn):
-                try:
-                    opts = list(fn())
-                    # Keep the current selection valid: if it fell out of the fresh
-                    # list, prepend it so the dropdown doesn't silently re-point.
-                    cur = param.value
-                    if cur and cur not in opts:
-                        opts = [cur, *opts]
-                    param.options = opts
-                    self._mark_dirty()  # next STATE_UPDATE carries param_options
-                except Exception:
-                    self._report_error(traceback.format_exc())
+            try:
+                if group not in self.params or name not in self.params[group]:
+                    self._report_error(f"Unknown parameter {group}.{name}")
+                else:
+                    param = self.params[group][name]
+                    fn_name = getattr(param, "refresh", None)
+                    fn = getattr(self, fn_name, None) if fn_name else None
+                    if callable(fn):
+                        try:
+                            opts = list(fn())
+                            # Keep the current selection valid: if it fell out of the
+                            # fresh list, prepend it so the dropdown doesn't re-point.
+                            cur = param.value
+                            if cur and cur not in opts:
+                                opts = [cur, *opts]
+                            param.options = opts
+                        except Exception:
+                            self._report_error(traceback.format_exc())
+            finally:
+                # Signal completion for ANY outcome (fresh options, refresh error, or an
+                # unknown param) so the UI clears its ⟳ spinner on the next push rather
+                # than stalling until the safety timeout. The refresh ran synchronously
+                # on this messaging thread, so that push also carries the fresh options.
+                self._refreshed_params.append([group, name])
+                self._mark_dirty()
         elif t == MessageType.REGISTER_SUBSCRIBER:
             slot_name = msg.content["slot_name_out"]
             slot = self.output_slots[slot_name]

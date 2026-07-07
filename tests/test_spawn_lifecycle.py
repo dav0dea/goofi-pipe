@@ -198,6 +198,12 @@ def test_refresh_param_reaches_a_live_node_and_pushes_options(tmp_path):
         assert wait_until(
             lambda: ref.params["g"]["pick"].options == ["seed", "live-a", "live-b"]
         ), f"options never refreshed: {ref.params['g']['pick'].options}"
+        # The post-refresh push names the completed param on `refreshed_params`
+        # (consumed once) — the seam the UI reads to clear its ⟳ spinner exactly
+        # when the fresh options land, rather than on the fire-and-forget RPC ack.
+        assert wait_until(
+            lambda: ["g", "pick"] in (ref.serialized_state or {}).get("refreshed_params", [])
+        ), f"refresh completion never signalled: {(ref.serialized_state or {}).get('refreshed_params')}"
     finally:
         ref.terminate()
 
