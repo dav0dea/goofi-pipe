@@ -190,6 +190,35 @@ def test_child_reported_options_reach_the_ref():
         mgr.terminate(notify_gui=False)
 
 
+def test_spawn_feeds_child_raw_params_not_ast_fallback(tmp_path):
+    """spawn_node must hand the child the caller's raw overrides, not the
+    manager-side AST-fallback params. A dynamic node's static catalog default is
+    a placeholder ("fallback"); force-feeding it into the child clobbers the
+    child's real _configure() default ("real-a") — the AudioStream device bug."""
+    import dataclasses
+    import pathlib
+
+    from .test_registry import make_nodes_tree
+
+    src = (pathlib.Path(__file__).parent / "_divergent_node.py").read_text()
+    ast_cat, errors = build_catalog(make_nodes_tree(tmp_path, {"misc/divergent.py": src}), package="fixture.nodes")
+    ast_spec = ast_cat["DivergentDefault"]
+    assert ast_spec.dynamic is True
+    _, _, ast_params = ast_spec.configure()
+    assert ast_params["g"]["choice"].value == "fallback"  # static catalog sees only the fallback
+
+    # Point the spec at the real, importable module (child runs the real
+    # _configure -> "real-a") while keeping the AST fallback hooks.
+    spec = dataclasses.replace(ast_spec, module="tests._divergent_node", cls_name="DivergentDefault")
+    ref = spawn_node(spec, initial_params=None)
+    try:
+        assert ref.wait_for_state(timeout=10.0)
+        got = (ref.serialized_state or {}).get("params", {}).get("g", {}).get("choice")
+        assert got == "real-a", f"child param clobbered by AST fallback: {got!r}"
+    finally:
+        ref.terminate()
+
+
 def test_burst_add_all_reach_ready():
     """Regression: spawn_node must open the manager-side ref (status
     subscriber) BEFORE starting the child. iceoryx2 keeps no history, so a

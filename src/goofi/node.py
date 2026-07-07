@@ -1308,8 +1308,14 @@ def spawn_node(
         try:
             proc = Process(
                 target=_run_node_process,
-                name=spec.type,
-                args=(spec.module, spec.cls_name, node_id, params.serialize(), instance_id, capture_logs, send_conn),
+                # Feed the child the caller's RAW overrides, not params.serialize():
+                # spec.configure() ran the AST hooks, whose dynamic fallback (device
+                # lists, self-class refs) is a placeholder that would clobber the
+                # child's real _configure() default. The child applies real config +
+                # these overrides; the manager-side ref then converges to the child's
+                # authoritative values via the STATE_UPDATE echo. Mirrors the group /
+                # local paths, which already pass initial_params through.
+                args=(spec.module, spec.cls_name, node_id, initial_params, instance_id, capture_logs, send_conn),
                 daemon=True,
             )
             proc.start()
