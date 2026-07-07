@@ -2331,12 +2331,20 @@ class Manager:
         # doesn't wipe the binding.
         rec = self._definitions[def_id].members.get(local)
         if rec is not None:
+            # Store the SETTLED value the mirror landed on, not the raw RPC value:
+            # serialize() applies the same coercion (_node_record's save semantics)
+            # AND resets a live trigger to False, so the shared definition — the
+            # save source of truth for shared instances — never persists a
+            # fractional int or a trigger that would re-fire on load. Mirrors the
+            # read-back set_expression already does.
+            settled = self.nodes[node].params.serialize()[group][name]
+            settled_value = settled["value"] if isinstance(settled, dict) else settled
             grp = rec.setdefault("params", {}).setdefault(group, {})
             existing = grp.get(name)
             if isinstance(existing, dict) and "expression" in existing:
-                existing["value"] = value
+                existing["value"] = settled_value
             else:
-                grp[name] = value
+                grp[name] = settled_value
         # Propagate to every sibling instance's corresponding member, via the same
         # _shared_siblings/_member_uid idiom the link + boundary mirrors use.
         for sib in self._shared_siblings(inst_id):

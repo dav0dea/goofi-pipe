@@ -300,15 +300,17 @@ class ControlHub:
             # status-wiring bookkeeping here — otherwise reloaded nodes that reuse
             # a display name are skipped by _wire_node_status and lose live
             # state/error forwarding (report B1).
+            # Validate BEFORE any teardown or client resync, so a rejected load
+            # (unknown type / bad version) is a true no-op — the graph AND the
+            # session's console/viewport/selection/viewers are left untouched.
+            await self._call_manager(manager.validate_loadable, path)
             self._wired_nodes.clear()
             try:
                 await self._call_manager(_replace_graph, manager, path)
             finally:
-                # Resync every client to backend truth in ALL cases: a rejected
-                # load leaves the (intact) graph and re-broadcasting it is a no-op;
-                # a failure AFTER teardown must not leave a browser rendering the
-                # destroyed graph. The graph was wholly replaced, so every stale
-                # data-plane mux (dead NodeRef, reused uid) is dropped too.
+                # Past validation, teardown has begun: resync every client to
+                # backend truth even if the splice failed, so no browser renders
+                # the destroyed graph. Stale data-plane muxes are dropped too.
                 await self.server.data.close_all()
                 await self.broadcast({"event": "graph_replaced", "payload": self._snapshot()})
             return {"ok": True}
@@ -323,20 +325,25 @@ class ControlHub:
             ) as tf:
                 tf.write(content)
                 tmp_path = tf.name
-            # Reset status-wiring bookkeeping before the destructive reload so
-            # reloaded nodes reusing a display name get re-wired (report B1).
-            self._wired_nodes.clear()
             try:
-                await self._call_manager(_replace_graph, manager, tmp_path)
+                # Validate the upload BEFORE any teardown/resync — a rejected
+                # upload is a true no-op (see `load`).
+                await self._call_manager(manager.validate_loadable, tmp_path)
+                # Reset status-wiring bookkeeping before the destructive reload so
+                # reloaded nodes reusing a display name get re-wired (report B1).
+                self._wired_nodes.clear()
+                try:
+                    await self._call_manager(_replace_graph, manager, tmp_path)
+                finally:
+                    # Past validation: resync clients to backend truth even if the
+                    # splice failed; drop stale data-plane muxes.
+                    await self.server.data.close_all()
+                    await self.broadcast({"event": "graph_replaced", "payload": self._snapshot()})
             finally:
                 try:
                     os.unlink(tmp_path)
                 except OSError:
                     pass
-                # Resync in all cases (see `load`): a rejected upload leaves the
-                # graph intact; a post-teardown failure still reflects backend truth.
-                await self.server.data.close_all()
-                await self.broadcast({"event": "graph_replaced", "payload": self._snapshot()})
             return {"ok": True}
         if op == "group_nodes":
             inst_id = await self._call_manager(
@@ -578,6 +585,15 @@ class ControlHub:
                     },
                 }
             )
+            # Refresh each ANCESTOR sub-patch instance's error on every push. The
+            # diff-gated _broadcast_error_fanout skips a fresh ref's None==None
+            # (a restarted member), so without this a collapsed group node keeps a
+            # stale error chip after the member recovers. Empty for top-level nodes.
+            manager = self.server.manager
+            for inst_id in manager._ancestor_instances(uid):
+                self.broadcast_threadsafe(
+                    {"event": "error", "payload": {"node": inst_id, "error": manager._instance_error(inst_id)}}
+                )
 
         def on_error(noderef, message: Message):
             self._broadcast_error_fanout(uid, message.content.get("error"))

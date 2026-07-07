@@ -724,11 +724,18 @@ class NodeProcess:
             raise RuntimeError(f"Failed to spawn {node_id} in process group {self.name}: {info}")
 
     def kill(self):
+        # Best-effort graceful sentinel — but NEVER block the force-kill on the
+        # lock: a slow/hung spawn() holds it for the whole host import, and
+        # shutdown must not stall on that. proc.kill() signals the OS process and
+        # touches no pipe, so it needs no serialization and always runs.
+        got = self._lock.acquire(timeout=0.5)
         try:
-            with self._lock:
-                self.conn.send(None)
+            self.conn.send(None)
         except Exception:
             pass
+        finally:
+            if got:
+                self._lock.release()
         self.proc.kill()
 
 
@@ -759,6 +766,11 @@ class NodeProcessRegistry:
             return ng
 
     def terminate(self) -> None:
-        for p in _process_groups.values():
+        # Snapshot + clear under the lock (like get()'s check-then-create), then
+        # kill outside it: a concurrent get() inserting a new host mid-shutdown
+        # would otherwise raise 'dict changed size during iteration'.
+        with _process_groups_lock:
+            procs = list(_process_groups.values())
+            _process_groups.clear()
+        for p in procs:
             p.kill()
-        _process_groups.clear()

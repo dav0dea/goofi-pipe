@@ -143,6 +143,10 @@ class TableNormalization(Node):
         self.normalizers = {}
 
     def process(self, table: Data):
+        # Consume the wrapper's momentary reset trigger ONCE here. serialize()
+        # now emits False for triggers (persistence fix), so it can no longer
+        # carry the reset across to the children — propagate it explicitly below.
+        reset = self.params.normalization.reset.value
         params = self.params.serialize()
 
         result = {}
@@ -154,13 +158,13 @@ class TableNormalization(Node):
 
             # update params of the normalizer
             self.normalizers[key].params.update(params)
+            # serialize() dropped the trigger to False; re-apply the consumed reset
+            # so each per-column normalizer clears its buffer on this tick.
+            self.normalizers[key].params.normalization.reset._value = reset
 
             # process the data
             normalized = self.normalizers[key].process(data)["normalized"]
             result[key] = Data(data.dtype, *normalized)
-
-        # make sure to "use" the reset trigger so it doesn't get stuck
-        self.params.normalization.reset.value
 
         # delete normalizers for keys that are not in the table anymore
         self.normalizers = {key: norm for key, norm in self.normalizers.items() if key in table.data}

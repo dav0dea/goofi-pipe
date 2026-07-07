@@ -3,6 +3,8 @@ import asyncio
 import types
 from pathlib import Path
 
+import pytest
+
 from goofi.bridge.control import ControlHub
 from goofi.bridge.data import DataHub
 from goofi.message import MessageType
@@ -16,6 +18,73 @@ def _hub(manager=None) -> ControlHub:
     server = types.SimpleNamespace(manager=manager, schedule=lambda coro: coro.close())
     server.data = DataHub(server)
     return ControlHub(server)
+
+
+def test_on_state_refreshes_ancestor_instance_error():
+    """Every state push from a sub-patch member must refresh its ancestor
+    instances' error chip — else a collapsed group node keeps a stale error after
+    a member restarts/recovers (the fresh ref's None==None diff skips the fan-out)."""
+    from goofi.message import Message, MessageType
+
+    manager = _bare_manager(use_multiprocessing=False)
+    try:
+        n0 = manager.add_node("Buffer", "signal")
+        n1 = manager.add_node("Buffer", "signal")
+        inst = manager.group_nodes([n0, n1])
+
+        hub = _hub(manager)
+        hub._wire_node_status(n0)
+        events = []
+        hub.broadcast_threadsafe = lambda ev: events.append(ev)
+
+        ref = manager.nodes[n0]
+        # A fake message avoids the STATE_UPDATE content-field validation; on_state
+        # only reads output_subscribers + log_endpoint off .content.
+        ref.callbacks[MessageType.STATE_UPDATE](
+            ref, types.SimpleNamespace(content={"output_subscribers": {}, "log_endpoint": None})
+        )
+
+        assert any(e["event"] == "error" and e["payload"]["node"] == inst for e in events), (
+            "on_state must refresh the ancestor instance's error on every push"
+        )
+    finally:
+        manager.terminate(notify_gui=False)
+
+
+def test_rejected_load_does_not_resync_or_destroy():
+    """A rejected load (unknown type) must be a true no-op: no graph_replaced
+    broadcast (which would wipe console/viewport/selection) and the graph intact."""
+    import asyncio
+    import tempfile
+
+    manager = _bare_manager(use_multiprocessing=False)
+    try:
+        keep = manager.add_node("Buffer", "signal")
+        with tempfile.NamedTemporaryFile("w", suffix=".gfi", delete=False) as tf:
+            tf.write(
+                "version: 2\ndefinitions: {}\nroot:\n"
+                "  nodes:\n    u1: {name: x0, _type: NoSuchNode, category: signal, params: {}}\n"
+                "  links: []\n  instances: {}\n"
+            )
+            bad = tf.name
+
+        hub = _hub(manager)
+        events = []
+
+        async def _fake_broadcast(ev):
+            events.append(ev)
+
+        hub.broadcast = _fake_broadcast
+
+        with pytest.raises(Exception):
+            asyncio.run(hub._dispatch("load", {"path": bad}))
+
+        assert not any(e.get("event") == "graph_replaced" for e in events), (
+            "a rejected load must not broadcast graph_replaced"
+        )
+        assert keep in manager.nodes and len(manager.nodes) == 1
+    finally:
+        manager.terminate(notify_gui=False)
 
 
 def test_on_node_stage_error_fans_out_to_error_channel():

@@ -253,6 +253,62 @@ def test_setup_error_fans_out_to_the_processing_error_callback():
         ref.terminate()
 
 
+def test_nodeprocess_kill_does_not_block_on_a_held_spawn_lock():
+    """kill() must always force-kill the OS process, even while a slow/hung
+    spawn() holds the lock — else a group host wedged mid-import stalls shutdown
+    forever (the lock only serializes pipe sends; proc.kill needs no lock)."""
+    import threading
+
+    from goofi.node_helpers import NodeProcess
+
+    host = NodeProcess.__new__(NodeProcess)
+    host._lock = threading.Lock()
+    killed = {"v": False}
+
+    class _Conn:
+        def send(self, x):
+            pass
+
+    class _Proc:
+        def kill(self):
+            killed["v"] = True
+
+    host.conn = _Conn()
+    host.proc = _Proc()
+
+    host._lock.acquire()  # simulate a spawn() blocked in recv() holding the lock
+    try:
+        done = threading.Event()
+        threading.Thread(target=lambda: (host.kill(), done.set())).start()
+        assert done.wait(2.0), "kill() blocked on the held spawn lock"
+        assert killed["v"], "proc.kill() was never reached"
+    finally:
+        host._lock.release()
+
+
+def test_nodeprocess_registry_terminate_tolerates_concurrent_insert():
+    """terminate() must snapshot the hosts (not iterate the live dict) so a
+    concurrent get() insert during shutdown can't raise 'dict changed size'."""
+    import goofi.node_helpers as nh
+
+    nh._process_groups.clear()
+    killed = []
+
+    class _Stub:
+        def __init__(self, name):
+            self.name = name
+
+        def kill(self):
+            killed.append(self.name)
+            if self.name == "a":
+                nh._process_groups["c"] = _Stub("c")  # concurrent get() during teardown
+
+    nh._process_groups["a"] = _Stub("a")
+    nh._process_groups["b"] = _Stub("b")
+    nh.NodeProcessRegistry().terminate()  # must not raise
+    assert set(killed) == {"a", "b"}
+
+
 def test_boot_pipe_truncates_oversized_traceback():
     """A bootstrap traceback larger than the pipe capacity must be truncated
     before the one-shot send, so the dying child never blocks in write() (which

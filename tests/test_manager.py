@@ -557,6 +557,29 @@ def test_shared_member_pos_mirrors_to_sibling():
         mgr.terminate()
 
 
+def test_shared_member_edit_settles_definition_record():
+    """A param edit on a shared sub-patch member must store the COERCED,
+    trigger-safe value in the definition record (the save source of truth for
+    shared instances), not the raw RPC value — else a clicked trigger persists
+    True (re-fires on load) and a fractional int lands in the .gfi."""
+    mgr = _bare_manager(use_multiprocessing=False)
+    try:
+        n0 = mgr.add_node("Buffer", "signal")
+        n1 = mgr.add_node("Buffer", "signal")
+        inst = mgr.group_nodes([n0, n1])
+        def_id = mgr.share_instance(inst)
+        local = mgr._instances[inst].members[n0]
+
+        mgr.update_param(n0, "buffer", "reset", True)  # click a trigger
+        rec = mgr._definitions[def_id].members[local]["params"]["buffer"]
+        assert rec["reset"] is False, "shared definition persisted a live trigger"
+
+        mgr.update_param(n0, "buffer", "axis", 2.5)  # fractional int
+        assert mgr._definitions[def_id].members[local]["params"]["buffer"]["axis"] == 2
+    finally:
+        mgr.terminate()
+
+
 def test_clear_graph_resets_to_bare_root():
     """clear_graph must tear down real nodes AND sub-patch instances/defs/
     membership, leaving only the bare ROOT scope — the per-node remove loop
