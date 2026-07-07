@@ -623,6 +623,23 @@ class NodeRef:
                 self.params.update_options(msg.content.get("param_options", {}))
             except Exception:
                 pass
+            # The node carries its current error on the state plane. When it
+            # DIFFERS from what we last saw, drive the SAME fan-out as a live
+            # PROCESSING_ERROR — this is the only channel for the node's first
+            # error (message #1 is lost) and for a healthy respawn's error-clear.
+            # A normal processing error already set last_error via its own
+            # PROCESSING_ERROR message, so `carried == self.last_error` and this
+            # is a no-op — no double broadcast.
+            if "last_error" in msg.content:
+                carried = msg.content.get("last_error")
+                if carried != self.last_error:
+                    self.last_error = carried
+                    err_cb = self.callbacks.get(MessageType.PROCESSING_ERROR)
+                    if err_cb is not None:
+                        try:
+                            err_cb(self, Message(MessageType.PROCESSING_ERROR, {"error": carried}))
+                        except Exception:
+                            traceback.print_exc()
         elif msg.type == MessageType.PROCESSING_ERROR:
             self.last_error = msg.content.get("error")
         elif msg.type == MessageType.NODE_STATS:

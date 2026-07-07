@@ -219,6 +219,40 @@ def test_spawn_feeds_child_raw_params_not_ast_fallback(tmp_path):
         ref.terminate()
 
 
+def test_setup_failure_surfaces_error_via_state_plane():
+    """A node whose setup() raises must surface the error, not hang on an eternal
+    'setting up…' spinner. Its first PROCESSING_ERROR is lost (iceoryx2 keeps no
+    history), so the error rides the idempotent STATE_UPDATE and reaches the ref."""
+    spec = dataclasses.replace(CATALOG["ConstantArray"], module="tests._setup_fail", cls_name="SetupFail")
+    ref = spawn_node(spec)
+    try:
+        assert ref.wait_for_state(timeout=10.0)  # the STATE_UPDATE (setup_complete=False) arrives
+        assert wait_until(lambda: ref.last_error is not None and "setup boom" in ref.last_error), (
+            "setup() error never surfaced on the ref"
+        )
+        assert ref.stage == "setup"  # setup failed, so it never reaches 'ready'
+    finally:
+        ref.terminate()
+
+
+def test_setup_error_fans_out_to_the_processing_error_callback():
+    """The carried state-plane error must drive the SAME fan-out as a live
+    PROCESSING_ERROR (so the bridge broadcasts it + ancestor instances update),
+    since the node's first PROCESSING_ERROR message was lost."""
+    from goofi.message import MessageType
+
+    seen = []
+    spec = dataclasses.replace(CATALOG["ConstantArray"], module="tests._setup_fail", cls_name="SetupFail")
+    ref = spawn_node(spec)
+    ref.set_message_handler(
+        MessageType.PROCESSING_ERROR, lambda nr, msg: seen.append(msg.content.get("error"))
+    )
+    try:
+        assert wait_until(lambda: any(e and "setup boom" in e for e in seen), timeout=10.0)
+    finally:
+        ref.terminate()
+
+
 def test_boot_pipe_truncates_oversized_traceback():
     """A bootstrap traceback larger than the pipe capacity must be truncated
     before the one-shot send, so the dying child never blocks in write() (which

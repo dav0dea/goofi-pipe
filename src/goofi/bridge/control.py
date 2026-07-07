@@ -561,6 +561,11 @@ class ControlHub:
                         "node": uid,
                         "params": describe_params(noderef.params),
                         "stage": noderef.stage,
+                        # The node's current error rides the state plane so a lost first
+                        # PROCESSING_ERROR still reaches the browser and a healthy
+                        # respawn's null lifts the stale chip (the manager-side diff is
+                        # silent on a fresh ref whose last_error is already None).
+                        "error": noderef.last_error,
                         "output_subscribers": message.content.get("output_subscribers", {}),
                         # Advertise the node's SSE log endpoint as soon as it's known
                         # (first state push) so the frontend can subscribe peer-to-peer.

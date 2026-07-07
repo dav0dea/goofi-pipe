@@ -307,6 +307,10 @@ export type ControlEvent =
 				params: Record<string, Record<string, ParamDescriptor>>;
 				output_subscribers: Record<string, number>;
 				stage?: NodeStage;
+				// The node's current error, carried on the (always-on, re-pushed) state
+				// plane so a lost first PROCESSING_ERROR still surfaces and a healthy
+				// respawn's clear (null) lifts a stale chip.
+				error?: string | null;
 				log_endpoint?: string | null;
 			};
 	  }

@@ -484,6 +484,13 @@ class Node(ABC):
             # drives the manager-side 'setup' stage between the first state
             # push and setup completion.
             "setup_complete": self._setup_done.is_set(),
+            # The node's current error, carried on the idempotent state plane so a
+            # lost PROCESSING_ERROR (the FIRST status message is dropped — iceoryx2
+            # keeps no history) still reaches the ref: a setup() failure otherwise
+            # hangs on an eternal 'setting up…' spinner, and a healthy respawn's
+            # error-clear never lifts a stale chip. Latched under _error_lock before
+            # _setup's finally _mark_dirty(), so this push carries the traceback.
+            "last_error": self._last_reported_error,
             # Peer-to-peer SSE log endpoint for this node (None when capture off).
             "log_endpoint": self._log_endpoint,
         }

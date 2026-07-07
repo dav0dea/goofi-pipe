@@ -294,6 +294,12 @@ export class GraphStore {
 					// A healthy state push means the (possibly just-respawned) node is
 					// running again — lift any crash indicator.
 					if (t.crashed) t.crashed = false;
+					// The node carries its current error on the state plane (always on,
+					// re-pushed): a lost first PROCESSING_ERROR still surfaces here, and a
+					// healthy respawn's null clears the stale chip. Applied unconditionally
+					// when present so backend truth wins even when no diff-driven `error`
+					// event fired.
+					if ('error' in ev.payload) t.error = ev.payload.error ?? null;
 					// The node advertises its SSE log endpoint here; surfacing it lets
 					// the Console subscribe peer-to-peer (see $lib/stores/logStream).
 					if (ev.payload.log_endpoint !== undefined) t.log_endpoint = ev.payload.log_endpoint;

@@ -41,6 +41,32 @@ describe('node lifecycle stage', () => {
 		expect(g.nodeById('n1')?.stage).toBe('ready');
 	});
 
+	it('state_update carries the error and applies it (a healthy respawn clears the stale chip)', () => {
+		const fc = new FakeControl();
+		const g = new GraphStore(fc);
+		fc.emit({ event: 'node_added', payload: bootingNode('n1') });
+
+		// a setup() failure rides the idempotent state plane
+		fc.emit({
+			event: 'state_update',
+			payload: {
+				node: 'n1',
+				params: {},
+				output_subscribers: {},
+				stage: 'setup',
+				error: 'RuntimeError: setup boom'
+			}
+		});
+		expect(g.nodeById('n1')?.error).toContain('setup boom');
+
+		// a healthy respawn's state push carries error=null -> the chip clears
+		fc.emit({
+			event: 'state_update',
+			payload: { node: 'n1', params: {}, output_subscribers: {}, stage: 'ready', error: null }
+		});
+		expect(g.nodeById('n1')?.error).toBe(null);
+	});
+
 	it('node_stage error is terminal and carries the traceback', () => {
 		const fc = new FakeControl();
 		const g = new GraphStore(fc);
