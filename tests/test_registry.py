@@ -377,6 +377,36 @@ class Cbs(Node):
 '''
 
 
+REFRESH_PARAM_NODES = '''
+from goofi.node import Node
+from goofi.params import StringParam
+
+class Good(Node):
+    def config_params():
+        return {"g": {"pick": StringParam("a", options=["a"], refresh="_reload")}}
+    def process(self):
+        pass
+    def _reload(self):
+        return ["a", "b"]
+
+class Bad(Node):
+    def config_params():
+        return {"g": {"pick": StringParam("a", options=["a"], refresh="_missing")}}
+    def process(self):
+        pass
+'''
+
+
+def test_refresh_method_name_validated(tmp_path):
+    # A param whose refresh= names no class method is a dead refresh button;
+    # surface it as a (non-fatal) catalog error, like the *_changed guard.
+    root = make_nodes_tree(tmp_path, {"misc/refresh.py": REFRESH_PARAM_NODES})
+    catalog, errors = build_catalog(root, package="fixture.nodes")
+    assert "Good" in catalog and "Bad" in catalog  # dead refresh doesn't cripple the node
+    assert any("Bad" in e and "_missing" in e for e in errors)
+    assert not any("Good" in e for e in errors)
+
+
 def test_param_changed_callbacks_validated(tmp_path):
     # A `{group}_{name}_changed` method that maps to no real param is silently
     # never dispatched; one that omits the value arg TypeErrors on every change.

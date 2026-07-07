@@ -91,6 +91,7 @@ class MessageType(Enum):
     REGISTER_VIEWER = 13
     UNREGISTER_VIEWER = 14
     SET_VIEWSPEC = 15
+    REFRESH_PARAM = 17
 
     # status plane
     STATE_UPDATE = 8
@@ -155,6 +156,8 @@ class Message:
             self.require_fields(slot_name_out=str)
         elif t == MessageType.SET_VIEWSPEC:
             self.require_fields(slot_name_out=str, spec=dict)
+        elif t == MessageType.REFRESH_PARAM:
+            self.require_fields(group=str, param_name=str)
         elif t == MessageType.STATE_UPDATE:
             self.require_fields(_type=str, category=str, params=dict, output_subscribers=dict)
         elif t == MessageType.PROCESSING_ERROR:

@@ -557,6 +557,29 @@ def test_shared_member_pos_mirrors_to_sibling():
         mgr.terminate()
 
 
+def test_refresh_param_mirrors_across_shared_siblings():
+    """A refresh on one shared sub-patch member reloads the corresponding member
+    in every sibling instance, so the whole family's dropdown refreshes together."""
+    mgr = _bare_manager(use_multiprocessing=False)
+    try:
+        n0 = mgr.add_node("Buffer", "signal")
+        n1 = mgr.add_node("Buffer", "signal")
+        inst = mgr.group_nodes([n0, n1])
+        mgr.share_instance(inst)
+        inst2 = mgr.instantiate_definition(mgr._instances[inst].def_id)
+        local = mgr._instances[inst].members[n0]
+        sib_member = mgr._member_uid(inst2, local)
+
+        seen = []
+        for uid in (n0, sib_member):
+            mgr.nodes[uid].refresh_param = lambda g, nm, _u=uid: seen.append(_u)
+
+        mgr.refresh_param(n0, "buffer", "reset")
+        assert set(seen) == {n0, sib_member}, "refresh did not mirror to the shared sibling"
+    finally:
+        mgr.terminate()
+
+
 def test_shared_member_edit_settles_definition_record():
     """A param edit on a shared sub-patch member must store the COERCED,
     trigger-safe value in the definition record (the save source of truth for

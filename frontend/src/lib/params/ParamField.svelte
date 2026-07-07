@@ -10,8 +10,10 @@
 		descriptor: ParamDescriptor;
 		onCommit: (value: unknown) => void;
 		onSetExpression: (expression: string | null, opts?: SetExprOpts) => void;
+		/** Re-evaluate a refreshable dropdown's options (device / stream pickers). */
+		onRefresh?: () => void;
 	};
-	const { paramName, descriptor, onCommit, onSetExpression }: Props = $props();
+	const { paramName, descriptor, onCommit, onSetExpression, onRefresh }: Props = $props();
 
 	let local = $state<unknown>(untrack(() => descriptor.value));
 	// Suppress backend echoes while the user is actively editing — without
@@ -267,14 +269,25 @@
 	{:else if descriptor.type === 'string'}
 		<div class="control">
 			{#if descriptor.options && descriptor.options.length > 0}
-				<select
-					value={String(local ?? '')}
-					onchange={(e) => commit((e.currentTarget as HTMLSelectElement).value)}
-				>
-					{#each descriptor.options as opt}
-						<option value={opt}>{opt}</option>
-					{/each}
-				</select>
+				<div class="select-row">
+					<select
+						value={String(local ?? '')}
+						onchange={(e) => commit((e.currentTarget as HTMLSelectElement).value)}
+					>
+						{#each descriptor.options as opt}
+							<option value={opt}>{opt}</option>
+						{/each}
+					</select>
+					{#if descriptor.refreshable && onRefresh}
+						<button
+							type="button"
+							class="refresh"
+							title="Re-scan for options"
+							data-testid="param-refresh"
+							onclick={() => onRefresh?.()}>⟳</button
+						>
+					{/if}
+				</div>
 			{:else}
 				<input
 					type="text"
@@ -500,6 +513,31 @@
 		min-width: 0;
 		font-size: 13px;
 		color: var(--text);
+	}
+	/* A refreshable dropdown pairs its <select> with a ⟳ button that asks the
+	   live node to re-scan its options (device / stream pickers). */
+	.select-row {
+		display: flex;
+		gap: 4px;
+		align-items: stretch;
+		flex-grow: 1;
+		min-width: 0;
+	}
+	.refresh {
+		flex: 0 0 auto;
+		padding: 0 8px;
+		font-size: 13px;
+		line-height: 1;
+		color: var(--text-dim);
+		background: var(--bg-elev-3);
+		border: 1px solid var(--border-strong);
+		border-radius: var(--radius-sm);
+		cursor: pointer;
+	}
+	.refresh:hover {
+		color: var(--text);
+		background: color-mix(in srgb, var(--accent) 14%, var(--bg-elev-3));
+		border-color: color-mix(in srgb, var(--accent) 55%, var(--border-strong));
 	}
 	/* A trigger is an action, not a value — keep it quiet by default and let it
 	   warm to the accent only on hover/press, so it sits in the same visual

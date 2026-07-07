@@ -25,11 +25,15 @@ class AudioStream(Node):
         return {
             "audio": {
                 "sampling_rate": StringParam("44100", options=["44100", "48000"]),
-                "device": StringParam(devices[0], options=devices),
+                "device": StringParam(devices[0], options=devices, refresh="_refresh_audio_devices"),
                 "convert_to_mono": True,
             },
             "common": {"autotrigger": True},
         }
+
+    def _refresh_audio_devices(self):
+        """Re-enumerate live input devices for the device dropdown's ⟳ button."""
+        return AudioStream.list_audio_devices() or ["default"]
 
     def config_output_slots():
         return {"out": DataType.ARRAY}

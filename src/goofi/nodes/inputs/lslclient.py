@@ -9,7 +9,7 @@ from tabulate import tabulate
 
 from goofi.data import Data, DataType
 from goofi.node import Node
-from goofi.params import BoolParam
+from goofi.params import StringParam
 
 # pylsl default wait is 1.0s; short waits can miss outlets that advertise slightly later.
 # Multiple passes merged by uid fixes Muse-style multi-stream devices (same source_id + name, different type).
@@ -50,10 +50,11 @@ class LSLClient(Node):
     def config_params():
         return {
             "lsl_stream": {
-                "source_name": "goofi",
+                # A refreshable dropdown of discovered source ids — the ⟳ button
+                # re-resolves the network (replacing the old print-and-copy trigger).
+                "source_name": StringParam("goofi", options=["goofi"], refresh="_refresh_lsl_sources"),
                 "stream_name": "",
                 "source_type": "",
-                "refresh": BoolParam(False, trigger=True),
             },
             "common": {"autotrigger": True},
         }
@@ -142,7 +143,7 @@ class LSLClient(Node):
         if self.client is not None:
             self.disconnect()
         if self.available_streams is None:
-            self.lsl_stream_refresh_changed(True)
+            self._discover_streams()
 
         # find the stream
         source_name = self.params.lsl_stream.source_name.value
@@ -171,7 +172,7 @@ class LSLClient(Node):
             if self.lsl_discover_thread is None:
                 # check if new streams arrived
                 self.lsl_discover_thread = Thread(
-                    target=self.lsl_stream_refresh_changed, args=(True,), daemon=True, name="lsl_discover_thread"
+                    target=self._discover_streams, daemon=True, name="lsl_discover_thread"
                 )
                 self.lsl_discover_thread.start()
 
@@ -217,26 +218,29 @@ class LSLClient(Node):
                 time.sleep(LSL_RESOLVE_PAUSE_S)
         return list(merged.values())
 
-    def lsl_stream_refresh_changed(self, value: bool) -> None:
+    def _discover_streams(self) -> None:
+        """Resolve the network and cache the discovered outlets in
+        `available_streams` (used by connect() and the source_name dropdown)."""
         self.available_streams = self._resolve_stream_infos()
         stream_data = sorted(
             [[info.source_id(), info.name(), info.type(), info.hostname()] for info in self.available_streams],
             key=lambda x: x[0],
         )
-
-        # print("\nAvailable LSL streams:")
-        # print(tabulate(stream_data, headers=["Source ID", "Stream Name", "Host Name"], tablefmt="simple_outline"))
-        # print()
         print("\nAvailable LSL streams:")
         print(f"{'Source ID':<36} {'Stream Name':<25} {'Type':<12} {'Host Name':<20}")
         print("-" * 98)
-
         for source_id, stream_name, stream_type, host_name in stream_data:
             print(f"{source_id:<36} {stream_name:<25} {stream_type:<12} {host_name:<20}")
         print()
 
         if current_thread().name == "lsl_discover_thread":
             self.lsl_discover_thread = None
+
+    def _refresh_lsl_sources(self):
+        """Re-resolve the network and return discovered source ids for the
+        source_name dropdown's ⟳ button (sorted + unique)."""
+        self._discover_streams()
+        return sorted({info.source_id() for info in self.available_streams})
 
     def lsl_stream_source_name_changed(self, value: str) -> None:
         try:

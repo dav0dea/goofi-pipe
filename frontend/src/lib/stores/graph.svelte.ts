@@ -509,6 +509,13 @@ export class GraphStore {
 		await this.ctl.call('update_param', { node, group, name, value });
 	}
 
+	/** Ask a live node to re-evaluate a param's options (device / stream pickers).
+	 * Recomputes options only, never the value — so it is NOT an undoable edit; the
+	 * fresh list arrives on the node's next state_update. */
+	async refreshParam(node: string, group: string, name: string): Promise<void> {
+		await this.ctl.call('refresh_param', { node, group, name });
+	}
+
 	async setExpression(
 		node: string,
 		group: string,

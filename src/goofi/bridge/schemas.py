@@ -30,6 +30,9 @@ def describe_param(p: Param) -> Dict[str, Any]:
         "value": p._value,
         "doc": p.doc,
         "save_param": p.save_param,
+        # True iff the node declared a refresh method for this param (device/
+        # stream pickers) — the frontend renders a ⟳ button beside the dropdown.
+        "refreshable": getattr(p, "refresh", None) is not None,
         "expression": getattr(p, "expression", None),
         "expression_enabled": bool(getattr(p, "expression_enabled", False)),
         "expression_triggers_process": bool(

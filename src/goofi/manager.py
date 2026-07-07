@@ -2359,6 +2359,29 @@ class Manager:
                 # whichever sibling is live). Report it so the divergence is visible.
                 self._surface_mirror_failure(onode, f"{group}.{name}", exc)
 
+    def refresh_param(self, node: str, group: str, name: str) -> None:
+        """Ask a node to re-evaluate a param's options (device / stream pickers).
+        Options are node-authoritative and NOT persisted, so — unlike update_param
+        — there is no definition-record write; but a shared member still refreshes
+        across its sibling instances so every dropdown in the family reloads."""
+        self.nodes[node].refresh_param(group, name)
+
+        inst_id = self._membership.get(node)
+        if not inst_id:
+            return
+        inst = self._instances.get(inst_id)
+        if inst is None or not inst.def_id:
+            return
+        local = inst.members[node]
+        for sib in self._shared_siblings(inst_id):
+            onode = self._member_uid(sib, local)
+            if onode is None:
+                continue
+            try:
+                self.nodes[onode].refresh_param(group, name)
+            except Exception as exc:
+                self._surface_mirror_failure(onode, f"refresh {group}.{name}", exc)
+
     @mark_unsaved_changes
     def set_expression(
         self,

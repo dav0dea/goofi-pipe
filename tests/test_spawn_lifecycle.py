@@ -174,6 +174,34 @@ def test_terminate_while_creating_kills_the_process():
         ref.terminate()
 
 
+def test_refresh_param_reaches_a_live_node_and_pushes_options(tmp_path):
+    """End-to-end: NodeRef.refresh_param -> ctrl REFRESH_PARAM -> the node's
+    refresh method runs and pushes fresh options, which the ref merges (the seam
+    the UI dropdown reads)."""
+    import pathlib
+
+    from .test_registry import make_nodes_tree
+
+    src = (pathlib.Path(__file__).parent / "_refreshable_node.py").read_text()
+    cat, errors = build_catalog(make_nodes_tree(tmp_path, {"misc/refreshable.py": src}), package="fixture.nodes")
+    assert errors == []
+    spec = dataclasses.replace(cat["Refreshable"], module="tests._refreshable_node", cls_name="Refreshable")
+
+    ref = spawn_node(spec, initial_params={"common": {"autotrigger": False}})
+    try:
+        assert ref.wait_for_state(timeout=10.0)
+        assert wait_until(lambda: ref.params["g"]["pick"].options == ["seed"])
+
+        ref.refresh_param("g", "pick")
+        # The current value "seed" is not in the fresh list, so the node keeps it
+        # selectable at the front — the merged options the ref/UI sees.
+        assert wait_until(
+            lambda: ref.params["g"]["pick"].options == ["seed", "live-a", "live-b"]
+        ), f"options never refreshed: {ref.params['g']['pick'].options}"
+    finally:
+        ref.terminate()
+
+
 def test_child_reported_options_reach_the_ref():
     """The node's state push carries its StringParam option lists; the ref merges
     them so dynamic device lists refresh from the live process (and the bridge's

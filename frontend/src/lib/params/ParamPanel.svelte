@@ -43,6 +43,11 @@
 		void g.updateParam(node.uid, group, name, value);
 	}
 
+	function refreshOptions(group: string, name: string): void {
+		if (!node) return;
+		void g.refreshParam(node.uid, group, name).catch((e) => console.warn('refresh failed', e));
+	}
+
 	function setExpression(
 		group: string,
 		name: string,
@@ -203,6 +208,7 @@
 						onCommit={(v) => setValue(activeTab ?? '', paramName, v)}
 						onSetExpression={(expr, opts) =>
 							setExpression(activeTab ?? '', paramName, expr, opts)}
+						onRefresh={() => refreshOptions(activeTab ?? '', paramName)}
 					/>
 				{/each}
 			{/if}

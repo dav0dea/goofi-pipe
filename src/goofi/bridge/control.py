@@ -226,6 +226,14 @@ class ControlHub:
                 payload["value"],
             )
             return {"ok": True}
+        if op == "refresh_param":
+            # Ask a live node to re-evaluate a param's options (device / stream
+            # pickers). Route through the manager so a shared sub-patch member
+            # refreshes across siblings, like update_param.
+            await self._call_manager(
+                manager.refresh_param, payload["node"], payload["group"], payload["name"]
+            )
+            return {"ok": True}
         if op == "set_expression":
             # Route through the manager so a shared sub-patch member mirrors the
             # binding across siblings + the definition (strict mirror), exactly like

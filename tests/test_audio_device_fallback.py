@@ -19,3 +19,18 @@ def test_empty_device_list_falls_back_to_default(cls, monkeypatch):
     device = params["audio"]["device"]
     assert device.value == "default"
     assert device.options == ["default"]
+
+
+@pytest.mark.parametrize("cls", [AudioStream, AudioOut])
+def test_device_param_is_refreshable(cls):
+    device = cls.config_params()["audio"]["device"]
+    assert device.refresh == "_refresh_audio_devices"
+
+
+@pytest.mark.parametrize("cls", [AudioStream, AudioOut])
+def test_refresh_audio_devices_returns_live_list(cls, monkeypatch):
+    monkeypatch.setattr(cls, "list_audio_devices", staticmethod(lambda: ["mic", "usb"]))
+    node = cls.create_standalone()
+    assert node._refresh_audio_devices() == ["mic", "usb"]
+    monkeypatch.setattr(cls, "list_audio_devices", staticmethod(lambda: []))
+    assert node._refresh_audio_devices() == ["default"]

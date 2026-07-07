@@ -35,10 +35,14 @@ class AudioOut(Node):
         return {
             "audio": {
                 "sampling_rate": StringParam("44100", options=["44100", "48000", "32000", "16000"]),
-                "device": StringParam(devices[0], options=devices),
+                "device": StringParam(devices[0], options=devices, refresh="_refresh_audio_devices"),
                 "transition_samples": 100,
             }
         }
+
+    def _refresh_audio_devices(self):
+        """Re-enumerate live output devices for the device dropdown's ⟳ button."""
+        return AudioOut.list_audio_devices() or ["default"]
 
     def setup(self):
         if hasattr(self, "stream") and self.stream:

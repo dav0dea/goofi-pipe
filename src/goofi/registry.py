@@ -370,6 +370,19 @@ def build_catalog(
                         f"{len(item.args.args)} arg(s) — the dispatcher calls it with the new value"
                     )
 
+            # Refresh-method guard. A param's `refresh="name"` names the node method
+            # REFRESH_PARAM dispatches to; a name matching no class-body method is a
+            # dead refresh button. Surface it (non-fatal), like the *_changed guard.
+            class_methods = {i.name for i in cls_node.body if isinstance(i, ast.FunctionDef)}
+            for g in cfg_params.keys():
+                for n in cfg_params[g]._fields:
+                    ref = getattr(cfg_params[g][n], "refresh", None)
+                    if ref is not None and ref not in class_methods:
+                        errors.append(
+                            f"{rel}: {cls_node.name}.{g}.{n} refresh='{ref}' names no method on "
+                            f"the class — the ⟳ refresh button would be dead (see REFRESH_PARAM)"
+                        )
+
             if cls_node.name in catalog:
                 errors.append(
                     f"duplicate node type '{cls_node.name}': {origin[cls_node.name]} and {rel} "

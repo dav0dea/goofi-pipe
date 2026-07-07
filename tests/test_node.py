@@ -19,6 +19,38 @@ def _iid():
     set_instance_id(f"t-{uuid.uuid4().hex[:8]}")
 
 
+def test_handle_ctrl_refresh_param_recomputes_options():
+    """REFRESH_PARAM calls the param's refresh method, sets the fresh options
+    (keeping the current value selectable), and marks dirty so the next
+    STATE_UPDATE carries the new option list."""
+    from goofi.params import StringParam
+
+    cls = make_custom_node(params={"g": {"pick": StringParam("a", options=["a"], refresh="_reload")}})
+    node = cls.create_standalone()
+    node._reload = lambda: ["x", "y"]  # bind a refresh method on the instance
+    node._dirty = False
+
+    node._handle_ctrl(Message(MessageType.REFRESH_PARAM, {"group": "g", "param_name": "pick"}))
+
+    p = node.params["g"]["pick"]
+    # the current value 'a' is not in the fresh list -> kept selectable at the front
+    assert p.options == ["a", "x", "y"]
+    assert node._dirty is True
+
+
+def test_handle_ctrl_refresh_param_current_value_in_list():
+    from goofi.params import StringParam
+
+    cls = make_custom_node(params={"g": {"pick": StringParam("x", options=["x"], refresh="_reload")}})
+    node = cls.create_standalone()
+    node._reload = lambda: ["x", "y"]
+
+    node._handle_ctrl(Message(MessageType.REFRESH_PARAM, {"group": "g", "param_name": "pick"}))
+
+    # current value already present -> no duplicate prepend
+    assert node.params["g"]["pick"].options == ["x", "y"]
+
+
 def test_handle_ctrl_coerces_fractional_int_param():
     """The node-side param write must coerce to the param's type: a fractional
     value pushed to an IntParam is truncated, never stored as a float (which

@@ -4,6 +4,9 @@ export interface BaseParam {
 	value: unknown;
 	doc: string | null;
 	save_param: boolean;
+	/** True when the node declared a refresh method for this param (device /
+	 * stream pickers) — the UI shows a ⟳ button that re-evaluates the options. */
+	refreshable: boolean;
 	/** The source code of a bound expression, or null if none has been
 	 * authored. Surviving a toggle-off of `expression_enabled` means a
 	 * user can flip fx mode back on without losing what they typed. */

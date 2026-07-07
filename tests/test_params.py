@@ -15,6 +15,21 @@ from goofi.params import (
 from .utils import list_param_types
 
 
+def test_param_carries_refresh_method_name():
+    # A param can name a node method that re-evaluates its options on demand.
+    p = StringParam("a", options=["a", "b"], refresh="_refresh_x")
+    assert p.refresh == "_refresh_x"
+    assert StringParam("a").refresh is None  # default: not refreshable
+
+
+def test_describe_param_exposes_refreshable():
+    from goofi.bridge.schemas import describe_param
+
+    assert describe_param(StringParam("a", options=["a"], refresh="_r"))["refreshable"] is True
+    assert describe_param(StringParam("a", options=["a"]))["refreshable"] is False
+    assert describe_param(FloatParam(0.0))["refreshable"] is False
+
+
 def test_coerce_to_param_type_truncates_and_rejects():
     # int field gets a fractional value -> truncate; float gets an int -> widen;
     # a non-numeric string into an int field is uncoercible -> None (skip).

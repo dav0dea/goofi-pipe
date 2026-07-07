@@ -323,6 +323,18 @@ class NodeRef:
             )
         )
 
+    def refresh_param(self, group: str, param_name: str) -> None:
+        """Ask the node to re-evaluate a param's options (device / stream pickers).
+        The node runs the param's refresh method and pushes fresh options over its
+        next STATE_UPDATE (param_options)."""
+        if group not in self.params:
+            raise ValueError(f"Parameter group '{group}' doesn't exist.")
+        if param_name not in self.params[group]:
+            raise ValueError(f"Parameter '{param_name}' doesn't exist in group '{group}'.")
+        self._send(
+            Message(MessageType.REFRESH_PARAM, {"group": group, "param_name": param_name})
+        )
+
     def set_expression(
         self,
         group: str,

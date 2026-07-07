@@ -674,6 +674,27 @@ class Node(ABC):
                     cb(value)
                 except Exception:
                     self._report_error(traceback.format_exc())
+        elif t == MessageType.REFRESH_PARAM:
+            group = msg.content["group"]
+            name = msg.content["param_name"]
+            if group not in self.params or name not in self.params[group]:
+                self._report_error(f"Unknown parameter {group}.{name}")
+                return
+            param = self.params[group][name]
+            fn_name = getattr(param, "refresh", None)
+            fn = getattr(self, fn_name, None) if fn_name else None
+            if callable(fn):
+                try:
+                    opts = list(fn())
+                    # Keep the current selection valid: if it fell out of the fresh
+                    # list, prepend it so the dropdown doesn't silently re-point.
+                    cur = param.value
+                    if cur and cur not in opts:
+                        opts = [cur, *opts]
+                    param.options = opts
+                    self._mark_dirty()  # next STATE_UPDATE carries param_options
+                except Exception:
+                    self._report_error(traceback.format_exc())
         elif t == MessageType.REGISTER_SUBSCRIBER:
             slot_name = msg.content["slot_name_out"]
             slot = self.output_slots[slot_name]

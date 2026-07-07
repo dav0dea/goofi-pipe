@@ -50,3 +50,17 @@ describe('GraphStore.updateParam — guards a non-existent param', () => {
 		expect(history().canUndo).toBe(true);
 	});
 });
+
+describe('GraphStore.refreshParam — asks the node to re-evaluate options', () => {
+	it('sends refresh_param with the uid/group/name and records no undo entry', async () => {
+		const fc = new FakeControl();
+		const g = new GraphStore(fc);
+		history().reset();
+
+		await g.refreshParam('uidA', 'audio', 'device');
+		const call = fc.recordedCalls().find((c) => c.op === 'refresh_param');
+		expect(call?.payload).toEqual({ node: 'uidA', group: 'audio', name: 'device' });
+		// A refresh recomputes options, not values — it is not an undoable graph edit.
+		expect(history().canUndo).toBe(false);
+	});
+});

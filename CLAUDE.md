@@ -185,7 +185,10 @@ declarations — the AST registry execs them without importing the module
 (runtime state like device lists goes behind a try/except fallback there).
 Multiple `Node` classes per file are fine; type names are globally unique.
 A missing dep greys the palette entry; a broken one fails the node's
-bootstrap and surfaces on its error channel.
+bootstrap and surfaces on its error channel. A param-change hook
+`{group}_{name}_changed(self, value)` runs on a param edit, and a
+`StringParam(refresh="_method")` wires a ⟳ button to a node method that
+re-evaluates its options — both method names are validated at catalog build.
 
 ---
 
@@ -255,8 +258,13 @@ the relevant one before changing the area.
   (`2026-07-06-node-discovery-instantiation-design.md`) — the AST registry
   (`registry.py`), child-side imports, async `add_node` with lifecycle stages
   (creating→setup→ready/error), pre-ready ctrl queue, bootstrap-error pipe
-  (no restart loop), node-authoritative `param_options` reconciliation (the
-  seam the planned param-refresh feature reuses).
+  (no restart loop), node-authoritative `param_options` reconciliation.
+- **Param refresh** (`2026-07-07-param-refresh-design.md`) — a `StringParam` can
+  declare `refresh="_method"` (a node method → `list[str]`); the UI's ⟳ button
+  sends `REFRESH_PARAM`, the node re-evaluates and pushes fresh options over the
+  existing `param_options` STATE_UPDATE seam. `build_catalog` validates the
+  method exists (like the `{group}_{name}_changed` guard). Used by
+  AudioStream/AudioOut (`device`) and LSLClient (`source_name`).
 
 Analysis reports live in `docs/analysis/`. The performance ceiling and a future,
 more aggressive data plane are tracked in **§ Future** below.
