@@ -13,8 +13,18 @@
 		onSetExpression: (expression: string | null, opts?: SetExprOpts) => void;
 		/** Re-evaluate a refreshable dropdown's options (device / stream pickers). */
 		onRefresh?: () => void;
+		/** A ⟳ refresh is in flight — disable the dropdown and spin the button until
+		 * the node pushes fresh options. */
+		refreshing?: boolean;
 	};
-	const { paramName, descriptor, onCommit, onSetExpression, onRefresh }: Props = $props();
+	const {
+		paramName,
+		descriptor,
+		onCommit,
+		onSetExpression,
+		onRefresh,
+		refreshing = false
+	}: Props = $props();
 
 	let local = $state<unknown>(untrack(() => descriptor.value));
 	// Suppress backend echoes while the user is actively editing — without
@@ -273,6 +283,7 @@
 				<div class="select-row">
 					<select
 						value={String(local ?? '')}
+						disabled={refreshing}
 						onchange={(e) => commit((e.currentTarget as HTMLSelectElement).value)}
 					>
 						{#each selectOptions(descriptor.options, String(local ?? '')) as opt}
@@ -283,10 +294,18 @@
 						<button
 							type="button"
 							class="refresh"
-							title="Re-scan for options"
+							disabled={refreshing}
+							title={refreshing ? 'Re-scanning…' : 'Re-scan for options'}
 							data-testid="param-refresh"
-							onclick={() => onRefresh?.()}>⟳</button
+							aria-busy={refreshing}
+							onclick={() => onRefresh?.()}
 						>
+							{#if refreshing}
+								<span class="spinner" aria-hidden="true"></span>
+							{:else}
+								⟳
+							{/if}
+						</button>
 					{/if}
 				</div>
 			{:else}
@@ -526,6 +545,10 @@
 	}
 	.refresh {
 		flex: 0 0 auto;
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		min-width: 28px;
 		padding: 0 8px;
 		font-size: 13px;
 		line-height: 1;
@@ -535,10 +558,36 @@
 		border-radius: var(--radius-sm);
 		cursor: pointer;
 	}
-	.refresh:hover {
+	.refresh:hover:not(:disabled) {
 		color: var(--text);
 		background: color-mix(in srgb, var(--accent) 14%, var(--bg-elev-3));
 		border-color: color-mix(in srgb, var(--accent) 55%, var(--border-strong));
+	}
+	/* While a refresh is in flight the entry is inert. Only the <select> dims (to
+	   read as "not ready yet"); the button keeps full opacity so the spinner stays
+	   legible. The ⟳ glyph is swapped for a CSS ring (same as the node boot-spinner)
+	   because a geometric circle rotates dead-centered — a text glyph pivots off its
+	   baseline. */
+	.select-row select:disabled {
+		opacity: 0.55;
+		cursor: default;
+	}
+	.refresh:disabled {
+		cursor: default;
+	}
+	.refresh .spinner {
+		width: 12px;
+		height: 12px;
+		border-radius: 50%;
+		box-sizing: border-box;
+		border: 1.5px solid color-mix(in srgb, var(--accent) 40%, transparent);
+		border-top-color: var(--accent);
+		animation: refresh-spin 0.8s linear infinite;
+	}
+	@keyframes refresh-spin {
+		to {
+			transform: rotate(360deg);
+		}
 	}
 	/* A trigger is an action, not a value — keep it quiet by default and let it
 	   warm to the accent only on hover/press, so it sits in the same visual

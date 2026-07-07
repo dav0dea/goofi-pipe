@@ -205,6 +205,7 @@
 					<ParamField
 						{paramName}
 						{descriptor}
+						refreshing={node != null && g.isRefreshing(node.uid, activeTab ?? '', paramName)}
 						onCommit={(v) => setValue(activeTab ?? '', paramName, v)}
 						onSetExpression={(expr, opts) =>
 							setExpression(activeTab ?? '', paramName, expr, opts)}
