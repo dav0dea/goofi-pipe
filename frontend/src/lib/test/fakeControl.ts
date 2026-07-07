@@ -12,14 +12,24 @@ export class FakeControl implements Control {
 	private listeners = new Set<(ev: ControlEvent) => void>();
 	private connectListeners = new Set<(c: boolean) => void>();
 	private results = new Map<string, unknown>();
+	private failing = new Set<string>();
 
 	/** Make `call(op, …)` resolve to `value` (e.g. `add_node` → a display name). */
 	setCallResult(op: string, value: unknown): void {
 		this.results.set(op, value);
 	}
 
+	/** Make the NEXT `call(op, …)` reject once — simulates a dispatch/transport error. */
+	failNext(op: string): void {
+		this.failing.add(op);
+	}
+
 	call<T = unknown>(op: string, payload: Record<string, unknown> = {}): Promise<T> {
 		this.calls.push({ op, payload });
+		if (this.failing.has(op)) {
+			this.failing.delete(op);
+			return Promise.reject(new Error(`fake control: ${op} failed`));
+		}
 		return Promise.resolve(this.results.get(op) as T);
 	}
 

@@ -64,3 +64,73 @@ describe('GraphStore.refreshParam — asks the node to re-evaluate options', () 
 		expect(history().canUndo).toBe(false);
 	});
 });
+
+describe('GraphStore refresh spinner — the entry stays disabled until fresh options land', () => {
+	it('marks the param refreshing on refreshParam, then clears it when the node reports done', async () => {
+		const fc = new FakeControl();
+		const g = new GraphStore(fc);
+		fc.emit({ event: 'node_added', payload: nodeWithParam('uidA', 0) });
+
+		expect(g.isRefreshing('uidA', 'audio', 'device')).toBe(false);
+
+		await g.refreshParam('uidA', 'audio', 'device');
+		// The RPC only *dispatches* the ctrl message; the node re-scans asynchronously
+		// (LSL resolve is ~4s), so the entry stays disabled after the RPC resolves.
+		expect(g.isRefreshing('uidA', 'audio', 'device')).toBe(true);
+
+		// The node's post-refresh state push names the completed param → spinner clears.
+		fc.emit({
+			event: 'state_update',
+			payload: {
+				node: 'uidA',
+				params: {},
+				output_subscribers: {},
+				refreshed_params: [['audio', 'device']]
+			}
+		});
+		expect(g.isRefreshing('uidA', 'audio', 'device')).toBe(false);
+	});
+
+	it('clears only the completed param, leaving other in-flight refreshes disabled', async () => {
+		const fc = new FakeControl();
+		const g = new GraphStore(fc);
+		fc.emit({ event: 'node_added', payload: nodeWithParam('uidA', 0) });
+
+		await g.refreshParam('uidA', 'audio', 'device');
+		await g.refreshParam('uidA', 'lsl', 'source_name');
+
+		// A state push completing an *unrelated* param must not lift this one's spinner.
+		fc.emit({
+			event: 'state_update',
+			payload: {
+				node: 'uidA',
+				params: {},
+				output_subscribers: {},
+				refreshed_params: [['lsl', 'source_name']]
+			}
+		});
+		expect(g.isRefreshing('uidA', 'lsl', 'source_name')).toBe(false);
+		expect(g.isRefreshing('uidA', 'audio', 'device')).toBe(true);
+
+		// Clean up the still-pending safety timeout so it can't outlive the test.
+		fc.emit({
+			event: 'state_update',
+			payload: {
+				node: 'uidA',
+				params: {},
+				output_subscribers: {},
+				refreshed_params: [['audio', 'device']]
+			}
+		});
+	});
+
+	it('drops the spinner if the RPC dispatch itself fails (the node will never push)', async () => {
+		const fc = new FakeControl();
+		fc.failNext('refresh_param');
+		const g = new GraphStore(fc);
+		fc.emit({ event: 'node_added', payload: nodeWithParam('uidA', 0) });
+
+		await expect(g.refreshParam('uidA', 'audio', 'device')).rejects.toThrow();
+		expect(g.isRefreshing('uidA', 'audio', 'device')).toBe(false);
+	});
+});

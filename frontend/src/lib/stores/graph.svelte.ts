@@ -32,6 +32,18 @@ import { history, type Action, type ExprState } from './history.svelte';
 import { captureNavContext } from '$lib/workspace/navContext';
 import { ROOT_ID } from '$lib/editor/subpatchScene';
 
+/** Safety net: if a node never reports a ⟳ refresh done (it crashed mid-scan, or
+ * the option list was so trivially unchanged the push was coalesced away), lift the
+ * spinner after this long so the entry can never stay disabled forever. Generous —
+ * an LSL resolve blocks the node's ctrl thread ~4s. */
+const REFRESH_SPINNER_TIMEOUT_MS = 15000;
+
+/** Stable key for an in-flight param refresh. U+001F (unit separator) can't occur
+ * in a uid/group/name, so it composes them unambiguously. */
+function refreshKey(node: string, group: string, name: string): string {
+	return `${node}\u001f${group}\u001f${name}`;
+}
+
 export class GraphStore {
 	nodes = $state<NodeInstanceInfo[]>([]);
 	links = $state<LinkInfo[]>([]);
@@ -49,6 +61,14 @@ export class GraphStore {
 	loadEpoch = $state(0);
 
 	nodeTypes = $state<NodeTypeInfo[] | null>(null);
+
+	/** Params with a ⟳ refresh in flight, keyed by `refreshKey` → its safety-timeout
+	 * handle. Reactive so a param widget disables its control + shows a spinner while
+	 * present. A refresh completes asynchronously (the node re-scans off its ctrl
+	 * thread and pushes fresh options on a later `state_update`), so this is set when
+	 * the RPC is dispatched and cleared when the node reports the param done
+	 * (`refreshed_params`) — not on the fire-and-forget RPC ack. */
+	private _refreshing = $state<Record<string, ReturnType<typeof setTimeout>>>({});
 
 	/** instance_id of the manager process we last hydrated from. A change means
 	 * the backend was restarted under our still-open tab — a fresh session,
@@ -304,6 +324,12 @@ export class GraphStore {
 					// the Console subscribe peer-to-peer (see $lib/stores/logStream).
 					if (ev.payload.log_endpoint !== undefined) t.log_endpoint = ev.payload.log_endpoint;
 				}
+				// A ⟳ refresh finished for these params on this very push (the node
+				// re-scanned and now carries fresh options) — lift each spinner exactly
+				// when the new options land. Keyed by node id, independent of `t`.
+				for (const [group, name] of ev.payload.refreshed_params ?? []) {
+					this._endRefresh(refreshKey(ev.payload.node, group, name));
+				}
 				break;
 			}
 			case 'node_stage': {
@@ -511,9 +537,40 @@ export class GraphStore {
 
 	/** Ask a live node to re-evaluate a param's options (device / stream pickers).
 	 * Recomputes options only, never the value — so it is NOT an undoable edit; the
-	 * fresh list arrives on the node's next state_update. */
+	 * fresh list arrives on the node's next state_update. The param is marked
+	 * refreshing (disabling its widget with a spinner) until the node reports it done. */
 	async refreshParam(node: string, group: string, name: string): Promise<void> {
-		await this.ctl.call('refresh_param', { node, group, name });
+		const key = refreshKey(node, group, name);
+		this._beginRefresh(key);
+		try {
+			await this.ctl.call('refresh_param', { node, group, name });
+		} catch (e) {
+			// The RPC only *dispatches* the ctrl message; if even that failed the node
+			// will never re-scan or push, so lift the spinner now rather than wait out
+			// the safety timeout.
+			this._endRefresh(key);
+			throw e;
+		}
+	}
+
+	/** Whether a ⟳ refresh is currently in flight for this param — the widget reads
+	 * this to disable its control and show a spinner. */
+	isRefreshing(node: string, group: string, name: string): boolean {
+		return refreshKey(node, group, name) in this._refreshing;
+	}
+
+	private _beginRefresh(key: string): void {
+		this._endRefresh(key); // coalesce a rapid re-click onto one in-flight refresh
+		const handle = setTimeout(() => this._endRefresh(key), REFRESH_SPINNER_TIMEOUT_MS);
+		this._refreshing = { ...this._refreshing, [key]: handle };
+	}
+
+	private _endRefresh(key: string): void {
+		const handle = this._refreshing[key];
+		if (handle === undefined) return;
+		clearTimeout(handle);
+		const { [key]: _drop, ...rest } = this._refreshing;
+		this._refreshing = rest;
 	}
 
 	async setExpression(

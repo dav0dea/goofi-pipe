@@ -312,6 +312,10 @@ export type ControlEvent =
 				// respawn's clear (null) lifts a stale chip.
 				error?: string | null;
 				log_endpoint?: string | null;
+				// Params (`[group, name]`) whose ⟳ refresh just completed on this push —
+				// the node re-scanned its options and reports done (success or failure),
+				// so the UI can clear the per-param spinner exactly when fresh options land.
+				refreshed_params?: [string, string][];
 			};
 	  }
 	| { event: 'error'; payload: { node: string; error: string | null } }
