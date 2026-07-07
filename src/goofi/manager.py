@@ -23,6 +23,7 @@ import contextlib
 import logging
 import os
 import re
+import sys
 import threading
 import time
 import uuid
@@ -3137,14 +3138,21 @@ def main(duration: Optional[float] = None, args=None):
     elif duration is None:
         duration = args.duration
 
-    Manager(
-        filepath=args.filepath,
-        headless=args.headless,
-        use_multiprocessing=not args.no_multiprocessing,
-        duration=duration,
-        bridge_host=args.bind,
-        bridge_port=args.port,
-    )
+    try:
+        Manager(
+            filepath=args.filepath,
+            headless=args.headless,
+            use_multiprocessing=not args.no_multiprocessing,
+            duration=duration,
+            bridge_host=args.bind,
+            bridge_port=args.port,
+        )
+    except RuntimeError as e:
+        # A bridge bind failure (port in use) surfaces here — print it and exit
+        # non-zero instead of dumping a traceback. The bridge starts before any
+        # node spawn or file load, so nothing is left half-initialized.
+        print(f"\nError: {e}", file=sys.stderr)
+        sys.exit(1)
 
 
 if __name__ == "__main__":

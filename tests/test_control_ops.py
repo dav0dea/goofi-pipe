@@ -18,6 +18,33 @@ def _hub(manager=None) -> ControlHub:
     return ControlHub(server)
 
 
+def test_on_node_stage_error_fans_out_to_error_channel():
+    """A terminal bootstrap 'error' must also drive the error channel (node uid +
+    every ancestor sub-patch instance), not just a node_stage event — else a
+    boot-failed member of a collapsed sub-patch renders healthy and never reaches
+    the console."""
+    manager = _bare_manager(use_multiprocessing=False)
+    try:
+        # group two nodes so the errored member has an ancestor instance
+        n0 = manager.add_node("Buffer", "signal")
+        n1 = manager.add_node("Buffer", "signal")
+        inst = manager.group_nodes([n0, n1])
+        manager.nodes[n0].last_error = "boom tb"  # supervisor sets this before on_node_stage
+
+        hub = _hub(manager)
+        events = []
+        hub.broadcast_threadsafe = lambda ev: events.append(ev)
+
+        hub.on_node_stage(n0, "error", "boom tb")
+
+        kinds = [(e["event"], e["payload"].get("node")) for e in events]
+        assert ("node_stage", n0) in kinds
+        assert ("error", n0) in kinds, "member uid must get an error event"
+        assert ("error", inst) in kinds, "ancestor instance must get an error event"
+    finally:
+        manager.terminate(notify_gui=False)
+
+
 def test_list_dir_op(tmp_path: Path):
     (tmp_path / "x.gfi").write_text("x")
     hub = _hub()

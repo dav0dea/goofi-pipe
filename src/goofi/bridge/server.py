@@ -10,6 +10,7 @@ handle. Call `.shutdown()` from the manager on terminate.
 from __future__ import annotations
 
 import asyncio
+import errno
 import importlib.resources as resources
 import os
 import shutil
@@ -176,7 +177,10 @@ class BridgeServer:
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._runner: Optional[web.AppRunner] = None
         self._thread: Optional[threading.Thread] = None
+        # `_started` means "startup resolved" — bound OR failed. `_startup_error`
+        # carries the bind failure so start() can raise instead of hanging.
         self._started = threading.Event()
+        self._startup_error: Optional[BaseException] = None
         self._url: Optional[str] = None
 
         self.control = ControlHub(self)
@@ -189,9 +193,20 @@ class BridgeServer:
     def start(self) -> None:
         self._thread = threading.Thread(target=self._run, name="goofi-bridge", daemon=True)
         self._thread.start()
-        # Wait for the server to actually bind so the caller can print the
-        # final URL without racing the listener.
+        # Wait for the server to actually bind (or fail) so the caller can print
+        # the final URL without racing the listener — and surface a bind failure
+        # instead of blocking the full timeout and then running forever with no UI.
         self._started.wait(timeout=10.0)
+        if self._startup_error is not None:
+            err = self._startup_error
+            if isinstance(err, OSError) and err.errno == errno.EADDRINUSE:
+                raise RuntimeError(
+                    f"port {self.port} is already in use — is another goofi-pipe running? "
+                    "Pass --port to pick another."
+                ) from err
+            raise RuntimeError(f"bridge failed to start: {err}") from err
+        if not self._started.is_set():
+            raise RuntimeError("bridge did not start within 10s")
 
     def _install_exception_handler(self) -> None:
         """Quiet the benign client-disconnect noise on this bridge loop (see
@@ -205,8 +220,15 @@ class BridgeServer:
         try:
             self._loop.run_until_complete(self._serve())
         except Exception as e:
+            # Capture a startup (bind) failure so start() can raise it; a
+            # post-bind crash lands here too but start() has already returned.
+            self._startup_error = e
             print(f"bridge: server crashed: {e}")
         finally:
+            # Unblock start()'s wait whether we bound, failed to bind, or exited —
+            # `_started` is "startup resolved", not "bound". On the success path
+            # _serve() already set it before entering its keep-alive loop.
+            self._started.set()
             try:
                 self._loop.close()
             except Exception:

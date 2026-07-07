@@ -15,12 +15,14 @@
 	const g = graph();
 	const errored = $derived(g.nodes.filter((n) => n.error));
 
-	function focus(name: string): void {
-		editorFor(workspace().activePanelId)?.focusNode(name);
+	// The node is keyed EVERYWHERE by its uid (container, links, restart RPC,
+	// selection); `name` is display-only. Pass the uid, render the name.
+	function focus(uid: string): void {
+		editorFor(workspace().activePanelId)?.focusNode(uid);
 	}
 
-	function restart(name: string): void {
-		void g.restartNode(name).catch((e) => console.warn('restart failed', e));
+	function restart(uid: string): void {
+		void g.restartNode(uid).catch((e) => console.warn('restart failed', e));
 	}
 </script>
 
@@ -28,13 +30,13 @@
 	{#if errored.length === 0}
 		<div class="empty">No errors</div>
 	{:else}
-		{#each errored as n (n.name)}
+		{#each errored as n (n.uid)}
 			<div class="err">
 				<div class="ehead">
-					<button class="ename" onclick={() => focus(n.name)} title={`Focus ${n.name}`}>{n.name}</button>
+					<button class="ename" onclick={() => focus(n.uid)} title={`Focus ${n.name}`}>{n.name}</button>
 					<button
 						class="restart"
-						onclick={() => restart(n.name)}
+						onclick={() => restart(n.uid)}
 						title="Restart this node (respawn with the same params + links)"
 						data-testid="errors-restart">↻ Restart</button
 					>

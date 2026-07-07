@@ -49,9 +49,9 @@
 		editorFor(ws.activePanelId)?.fitView();
 	}
 
-	// Focus an errored node in the editor the user last touched.
-	function focusError(name: string): void {
-		editorFor(ws.activePanelId)?.focusNode(name);
+	// Focus an errored node in the editor the user last touched (keyed by uid).
+	function focusError(uid: string): void {
+		editorFor(ws.activePanelId)?.focusNode(uid);
 	}
 
 	// Backend file browser state — null = closed.

@@ -7,15 +7,15 @@
 <script lang="ts">
 	import { graph } from '$lib/stores/graph.svelte';
 
-	type Props = { onFocus: (name: string) => void };
+	type Props = { onFocus: (uid: string) => void };
 	const { onFocus }: Props = $props();
 
 	const g = graph();
 	const activeNodes = $derived(g.nodes.filter((n) => n.error));
 
 	let chipOpen = $state(false);
-	function focus(name: string): void {
-		onFocus(name);
+	function focus(uid: string): void {
+		onFocus(uid);
 		chipOpen = false;
 	}
 </script>
@@ -29,8 +29,8 @@
 		</button>
 		{#if chipOpen}
 			<div class="popover">
-				{#each activeNodes as n (n.name)}
-					<button class="prow" onclick={() => focus(n.name)}>
+				{#each activeNodes as n (n.uid)}
+					<button class="prow" onclick={() => focus(n.uid)}>
 						<span class="row-name">{n.name}</span>
 						<span class="row-error">{n.error}</span>
 					</button>

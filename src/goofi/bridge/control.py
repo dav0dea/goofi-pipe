@@ -580,19 +580,7 @@ class ControlHub:
             )
 
         def on_error(noderef, message: Message):
-            self.broadcast_threadsafe(
-                {"event": "error", "payload": {"node": uid, "error": message.content.get("error")}}
-            )
-            # A collapsed sub-patch mirrors its first-errored-descendant on the snapshot
-            # field `inst.error`, which only recomputes on a structural resync. So a live
-            # member error (or its clearing) must refresh each ancestor instance too —
-            # broadcast the recomputed error per ancestor, keyed by the instance uid (the
-            # frontend's `error` handler updates a node OR an instance in place).
-            manager = self.server.manager
-            for inst_id in manager._ancestor_instances(uid):
-                self.broadcast_threadsafe(
-                    {"event": "error", "payload": {"node": inst_id, "error": manager._instance_error(inst_id)}}
-                )
+            self._broadcast_error_fanout(uid, message.content.get("error"))
 
         def on_stats(noderef, message: Message):
             self.broadcast_threadsafe(
@@ -619,6 +607,22 @@ class ControlHub:
             {"event": "node_crashed", "payload": {"node": uid, "exitcode": exitcode, "restarts": restart_count}}
         )
 
+    def _broadcast_error_fanout(self, uid: str, error: Optional[str]) -> None:
+        """Broadcast a node's error on the error channel, keyed by its uid AND by
+        each ANCESTOR sub-patch instance. A collapsed sub-patch mirrors its
+        first-errored-descendant on the snapshot field `inst.error`, which only
+        recomputes on a structural resync — so a live member error (or its
+        clearing) must refresh each ancestor. The frontend's `error` handler
+        updates a node OR an instance in place, and ingests member errors to the
+        console. Shared by the live PROCESSING_ERROR path and terminal bootstrap
+        errors (on_node_stage), which otherwise reach neither."""
+        self.broadcast_threadsafe({"event": "error", "payload": {"node": uid, "error": error}})
+        manager = self.server.manager
+        for inst_id in manager._ancestor_instances(uid):
+            self.broadcast_threadsafe(
+                {"event": "error", "payload": {"node": inst_id, "error": manager._instance_error(inst_id)}}
+            )
+
     def on_node_stage(self, uid: str, stage: str, error: Optional[str] = None) -> None:
         """Broadcast a lifecycle-stage transition (creating/setup/ready/error).
         `error` carries the bootstrap traceback for the terminal error stage."""
@@ -626,6 +630,11 @@ class ControlHub:
         if error is not None:
             payload["error"] = error
         self.broadcast_threadsafe({"event": "node_stage", "payload": payload})
+        # A terminal bootstrap error reaches the browser ONLY via node_stage; run
+        # the standard error fan-out too so the console + ancestor sub-patch
+        # instances see it (the child never got to send a PROCESSING_ERROR).
+        if error is not None:
+            self._broadcast_error_fanout(uid, error)
 
 
 def _save_and_return(manager, path_arg, overwrite: bool) -> str:

@@ -79,4 +79,43 @@ describe('node lifecycle stage', () => {
 		expect(g.nodeById('n1')?.stage).toBe('error');
 		expect(g.nodeById('n1')?.error).toContain('ModuleNotFoundError');
 	});
+
+	it('node_stage error clears a lingering crashed flag (boot failure after a crash)', () => {
+		const fc = new FakeControl();
+		const g = new GraphStore(fc);
+		fc.emit({ event: 'node_added', payload: bootingNode('n1') });
+		fc.emit({ event: 'node_crashed', payload: { node: 'n1', exitcode: -9, restarts: 1 } });
+		expect(g.nodeById('n1')?.crashed).toBe(true);
+
+		// the respawn dies during import before its first state push -> terminal error.
+		fc.emit({ event: 'node_stage', payload: { node: 'n1', stage: 'error', error: 'boot tb' } });
+		expect(g.nodeById('n1')?.crashed).toBe(false); // not stuck 'restarting' forever
+		expect(g.nodeById('n1')?.error).toContain('boot tb');
+	});
+
+	it('a stale subpatch_changed snapshot does not regress a ready node to booting', () => {
+		const fc = new FakeControl();
+		const g = new GraphStore(fc);
+		fc.emit({ event: 'node_added', payload: bootingNode('n1') });
+		fc.emit({
+			event: 'state_update',
+			payload: { node: 'n1', params: {}, output_subscribers: {}, stage: 'ready' }
+		});
+		expect(g.nodeById('n1')?.stage).toBe('ready');
+
+		// a snapshot built on a manager thread BEFORE the node reached ready arrives late.
+		fc.emit({
+			event: 'subpatch_changed',
+			payload: {
+				instance_id: 'x',
+				nodes: [{ ...bootingNode('n1'), stage: 'creating' }],
+				links: [],
+				instances: {},
+				save_path: null,
+				unsaved_changes: false,
+				layout: null
+			}
+		});
+		expect(g.nodeById('n1')?.stage).toBe('ready'); // stale pre-ready stage ignored
+	});
 });

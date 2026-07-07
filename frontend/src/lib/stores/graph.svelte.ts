@@ -313,6 +313,13 @@ export class GraphStore {
 				if (t) {
 					t.stage = ev.payload.stage;
 					if (ev.payload.error !== undefined) t.error = ev.payload.error;
+						// A terminal boot failure after a crash: lift the transient crash
+						// indicator (which outranks 'error' in nodeHealth) so the traceback
+						// shows instead of a 'restarting…' badge that never resolves.
+						if (ev.payload.stage === 'error' && t.crashed) {
+							t.crashed = false;
+							t.crashExit = null;
+						}
 				}
 				break;
 			}
@@ -868,7 +875,15 @@ export class GraphStore {
 		this.nodes = next.map((n) => {
 			const cur = byUid.get(n.uid);
 			if (cur) {
+				// Never regress a 'ready' node to a pre-ready stage from a snapshot
+				// built on a manager thread that a later state_update already
+				// overtook: stage only advances, so an incoming 'creating'/'setup'
+				// for a node we already saw ready is stale (a stuck boot spinner on
+				// a running node). 'error' (terminal) still wins.
+				const keepReady =
+					cur.stage === 'ready' && (n.stage === 'creating' || n.stage === 'setup');
 				Object.assign(cur, n); // survivor keeps its identity; fields refresh in place
+				if (keepReady) cur.stage = 'ready';
 				return cur;
 			}
 			this._seedNodeViewerState(n); // genuinely new node — seed its inline view state
