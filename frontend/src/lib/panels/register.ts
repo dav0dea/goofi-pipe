@@ -9,7 +9,6 @@ import ParametersPanel from './ParametersPanel.svelte';
 import ViewerPanel from './ViewerPanel.svelte';
 import MetadataInspectorPanel from './MetadataInspectorPanel.svelte';
 import ConsolePanel from './ConsolePanel.svelte';
-import ErrorsPanel from './ErrorsPanel.svelte';
 
 let done = false;
 
@@ -56,10 +55,8 @@ export function registerAppPanels(): void {
 		// Dropping a node filters the console to just that node's output.
 		acceptsNode: true
 	});
-	registerPanel({
-		id: 'errors',
-		title: 'Errors',
-		icon: '◬',
-		component: ErrorsPanel
-	});
+	// The old dockable "Errors" panel was removed — the Console (filterable,
+	// accumulating, stderr-aware) supersedes it, and a legacy `errors` panel type
+	// migrates to `console` on load (see workspace.svelte.ts). Per-node current
+	// errors still surface on the floating chip and the inspector's error section.
 }

@@ -14,6 +14,7 @@
 <script lang="ts">
 	import ParamPanel from '$lib/params/ParamPanel.svelte';
 	import MetadataPanel from '$lib/editor/MetadataPanel.svelte';
+	import { graph } from '$lib/stores/graph.svelte';
 	import type { NodeInstanceInfo } from '$lib/api/control';
 
 	let {
@@ -23,6 +24,16 @@
 		node: NodeInstanceInfo | null;
 		enabled: boolean;
 	} = $props();
+
+	// Respawn the selected node with the same params + links. The inspector's
+	// error section is the home for this since the dockable Errors panel (which
+	// used to carry it) was removed.
+	function restart(): void {
+		if (!node) return;
+		void graph()
+			.restartNode(node.uid)
+			.catch((e) => console.warn('restart failed', e));
+	}
 
 	const MIN_PANEL_WIDTH = 260;
 	const MAX_PANEL_WIDTH = 720;
@@ -86,7 +97,15 @@
 				<MetadataPanel {node} />
 				{#if node.error}
 					<section class="node-error" data-testid="inspector-error">
-						<header>Error</header>
+						<div class="err-head">
+							<header>Error</header>
+							<button
+								class="restart"
+								onclick={restart}
+								title="Restart this node (respawn with the same params + links)"
+								data-testid="inspector-restart">↻ Restart</button
+							>
+						</div>
 						<pre>{node.error}</pre>
 					</section>
 				{/if}
@@ -139,11 +158,30 @@
 		border-top: 1px solid var(--border);
 		background: var(--bg-elev-1);
 	}
+	.err-head {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 8px;
+		margin-bottom: 6px;
+	}
 	.node-error header {
 		font-weight: 600;
 		font-size: 11px;
 		color: var(--danger);
-		margin-bottom: 6px;
+	}
+	.restart {
+		flex: 0 0 auto;
+		font-size: 10px;
+		padding: 2px 8px;
+		border-radius: var(--radius-sm);
+		border: 1px solid color-mix(in srgb, var(--danger) 45%, transparent);
+		background: color-mix(in srgb, var(--danger) 12%, transparent);
+		color: var(--text);
+		cursor: pointer;
+	}
+	.restart:hover {
+		background: color-mix(in srgb, var(--danger) 22%, transparent);
 	}
 	.node-error pre {
 		font-family: var(--font-mono);
