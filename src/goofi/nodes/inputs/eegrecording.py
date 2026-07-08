@@ -1,12 +1,13 @@
 import logging
+import time
 from typing import Any, Dict, Tuple
 
 import mne
 import numpy as np
 import pandas as pd
 from mne.datasets import eegbci
-from mne_lsl.player import PlayerLSL
 
+from goofi.data import DataType
 from goofi.node import Node
 from goofi.params import BoolParam, FloatParam
 
@@ -15,11 +16,16 @@ logger = logging.getLogger(__name__)
 
 class EEGRecording(Node):
     """
-    Streams EEG recordings as an LSL (Lab Streaming Layer) stream, either from an example dataset, a user-provided file, or a supported MNE-compatible format. This node manages reading, looping, and live replay of EEG data but does not process or modify incoming data.
+    Replays an EEG recording (example dataset, a user-provided file, or any
+    MNE-compatible format) as a direct data stream. Each tick emits the next
+    slice of samples on the `out` slot, paced to the recording's sampling rate,
+    looping when enabled.
 
     Inputs:
 
     Outputs:
+    - out: The next chunk of recording samples (channels x samples), with
+      metadata carrying the sampling frequency and channel names.
     """
 
     def config_params():
@@ -29,29 +35,23 @@ class EEGRecording(Node):
                 "example_data_subject": 1,
                 "file_path": "",
                 "file_sfreq": FloatParam(256, vmax=1000),
-                "source_name": "goofi",
-                "stream_name": "recording",
                 "loop": BoolParam(True, doc="Whether to loop the recording"),
-                "reset": BoolParam(trigger=True, doc="Restart the recording stream"),
-            }
+                "reset": BoolParam(trigger=True, doc="Restart the recording from the beginning"),
+            },
+            "common": {"autotrigger": True},
         }
 
+    def config_output_slots():
+        return {"out": DataType.ARRAY}
+
     def setup(self):
-        """
-        Load the data and start the stream.
-        """
-        # stop previous stream if it exists
-        self.stop()
-
-        if self.params.recording.use_example_data.value:
-            if self.params.recording.file_path.value != "":
-                # both use_example_data and file_path are set
-                logger.warning(
-                    "Both 'use_example_data' and 'file_path' are set. Prioritizing file: %s",
-                    self.params.recording.file_path.value,
-                )
-
-        assert self.params.recording.stream_name.value != "", "Stream name cannot be empty."
+        """Load the recording into memory and reset the read cursor."""
+        if self.params.recording.use_example_data.value and self.params.recording.file_path.value != "":
+            # both use_example_data and file_path are set
+            logger.warning(
+                "Both 'use_example_data' and 'file_path' are set. Prioritizing file: %s",
+                self.params.recording.file_path.value,
+            )
 
         if self.params.recording.file_path.value != "":
             if self.params.recording.file_path.value.endswith(".csv"):
@@ -83,62 +83,63 @@ class EEGRecording(Node):
         else:
             raise RuntimeError("No data source specified. Set either 'use_example_data' or 'file_path'.")
 
-        # start the stream
-        self.stream = PlayerLSL(
-            raw,
-            name=self.params.recording.stream_name.value,
-            source_id=self.params.recording.source_name.value,
-            n_repeat=np.inf if self.params.recording.loop.value else 1,
-            annotations=False,
-        )
-        self.stream.start()
-
-        # NOTE: this is a special case since the node doesn't process data, so errors are never cleared
+        # cache the recording as a plain array + its metadata, and reset the cursor
+        self.data = raw.get_data()
+        self.sfreq = float(raw.info["sfreq"])
+        self.ch_names = list(raw.ch_names)
+        self.idx = 0
+        self.last_trigger = time.time()
         self.clear_error()
 
-    def stop(self):
-        """Stop the stream if it exists."""
-        if hasattr(self, "stream") and self.stream is not None:
-            self.stream.stop()
-            self.stream = None
+    @staticmethod
+    def _read_chunk(data, idx, n, loop):
+        """Read `n` samples starting at column `idx` from `data` (channels × total).
+
+        loop=True wraps around (valid for any n, even n > total); loop=False
+        clamps to the end and returns (None, total) once idx is at the end, so
+        the node idles until reset."""
+        total = data.shape[1]
+        if loop:
+            return data[:, np.arange(idx, idx + n) % total], (idx + n) % total
+        if idx >= total:
+            return None, total
+        end = min(idx + n, total)
+        return data[:, idx:end], end
 
     def process(self) -> Dict[str, Tuple[Any, Dict[str, Any]]]:
-        """Should never run, as the stream runs on its own."""
-        raise NotImplementedError
+        """Emit the samples that fall within the wall-clock time since the last
+        tick — round(dt * sfreq) of them — advancing the cursor (looping if
+        enabled). A late tick emits one larger (but bounded) chunk, never a
+        sustained burst."""
+        t = time.time()
+        n = int(np.round((t - self.last_trigger) * self.sfreq))
+        self.last_trigger = t
+        if n <= 0:
+            return None
+
+        chunk, self.idx = self._read_chunk(self.data, self.idx, n, self.params.recording.loop.value)
+        if chunk is None:
+            return None
+
+        return {"out": (chunk, {"sfreq": self.sfreq, "channels": {"dim0": self.ch_names}})}
 
     def recording_use_example_data_changed(self, _):
-        """Reinitialize the stream."""
+        """Reload the recording."""
         self.setup()
 
     def recording_example_data_subject_changed(self, _):
-        """Reinitialize the stream."""
+        """Reload the recording."""
         self.setup()
 
     def recording_file_path_changed(self, _):
-        """Reinitialize the stream."""
+        """Reload the recording."""
         self.setup()
 
     def recording_file_sfreq_changed(self, _):
-        """Reinitialize the stream."""
-        self.setup()
-
-    def recording_source_name_changed(self, _):
-        """Reinitialize the stream."""
-        self.setup()
-
-    def recording_stream_name_changed(self, _):
-        """Reinitialize the stream."""
-        self.setup()
-
-    def recording_loop_changed(self, value: bool):
-        """Set the loop parameter of the stream."""
-        # ideally we wouldn't reset the stream, not sure if there is a way to change the n_repeat parameter on the fly
+        """Reload the recording."""
         self.setup()
 
     def recording_reset_changed(self, value: bool):
-        """Reset the stream if the reset parameter is triggered."""
-        self.setup()
-
-    def terminate(self):
-        """Stop the stream and terminate the node."""
-        self.stop()
+        """Restart the recording from the beginning."""
+        self.idx = 0
+        self.last_trigger = time.time()
