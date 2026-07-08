@@ -298,7 +298,7 @@
 							title={refreshing ? 'Re-scanning…' : 'Re-scan for options'}
 							data-testid="param-refresh"
 							aria-busy={refreshing}
-							onclick={() => onRefresh?.()}
+							onclick={() => onRefresh()}
 						>
 							{#if refreshing}
 								<span class="spinner" aria-hidden="true"></span>

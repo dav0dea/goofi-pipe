@@ -20,6 +20,10 @@ def test_param_carries_refresh_method_name():
     p = StringParam("a", options=["a", "b"], refresh="_refresh_x")
     assert p.refresh == "_refresh_x"
     assert StringParam("a").refresh is None  # default: not refreshable
+    # `refresh` lives on StringParam, paired with `options`: only a dropdown has
+    # options to refresh, so a refresh method on a value-only param is nonsensical.
+    with pytest.raises(TypeError):
+        FloatParam(0.0, refresh="_refresh_x")
 
 
 def test_describe_param_exposes_refreshable():

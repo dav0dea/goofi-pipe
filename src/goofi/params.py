@@ -25,12 +25,6 @@ class Param(ABC):
     expression_enabled: bool = field(default=False, kw_only=True)
     expression_triggers_process: bool = field(default=False, kw_only=True)
     expression_autoeval: bool = field(default=False, kw_only=True)
-    # Name of a node instance-method `self.<refresh>() -> list[str]` that
-    # re-evaluates this param's options on demand (device lists, LSL streams).
-    # Structural config, like `options` — never persisted to `.gfi`. A REFRESH_PARAM
-    # ctrl message (the UI's ⟳ button) makes the node call it and push fresh options
-    # over the existing STATE_UPDATE param_options seam.
-    refresh: Optional[str] = field(default=None, kw_only=True)
 
     def __post_init__(self):
         if self._value is None:
@@ -113,6 +107,12 @@ class IntParam(Param):
 class StringParam(Param):
     # if options is None, the string is free-form, otherwise it is a dropdown
     options: List[str] = None
+    # Name of a node instance-method `self.<refresh>() -> list[str]` that re-evaluates
+    # this param's `options` on demand (device lists, LSL streams) — lives here, paired
+    # with `options`, since only a dropdown has options to refresh. Structural config,
+    # like `options`: never persisted to `.gfi`. The UI's ⟳ button sends a REFRESH_PARAM
+    # ctrl message; the node calls this and pushes fresh options over STATE_UPDATE.
+    refresh: Optional[str] = field(default=None, kw_only=True)
 
     @staticmethod
     def default() -> str:

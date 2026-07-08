@@ -5,7 +5,6 @@ from typing import Any, Dict, List, Tuple
 
 import numpy as np
 import pylsl
-from tabulate import tabulate
 
 from goofi.data import Data, DataType
 from goofi.node import Node
