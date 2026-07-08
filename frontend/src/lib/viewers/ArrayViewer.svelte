@@ -1,7 +1,7 @@
 <script lang="ts">
 	import type { DataFrame, ArrayData } from '$lib/codec/decode';
 	import type { SettingsMap } from './settingsSchema';
-	import { onMount, onDestroy } from 'svelte';
+	import { onMount, onDestroy, untrack } from 'svelte';
 	import uPlot from 'uplot';
 	import 'uplot/dist/uPlot.min.css';
 	import { decimateMinMax } from './decimate';
@@ -52,14 +52,12 @@
 
 	// Reused x-index array, rebuilt only when the sample count (or base) changes.
 	// uPlot keeps a reference to its data, so a stable index avoids allocating a
-	// fresh array every frame. The base is 1 under a log-x scale: log10(0) is
-	// -Infinity, so a 0-based index collapses the whole x-scale and the plot
-	// vanishes — the bug this fixes. Linear x stays 0-based.
+	// fresh array every frame. `base` is the sample-index origin chosen by the
+	// caller (see pushData).
 	let xsCache: Float64Array | null = null;
 	let xsLen = -1;
 	let xsBase = -1;
-	function indexAxis(m: number): Float64Array {
-		const base = mLogX ? 1 : 0;
+	function indexAxis(m: number, base: number): Float64Array {
 		if (xsLen !== m || xsBase !== base || !xsCache) {
 			const a = new Float64Array(m);
 			for (let i = 0; i < m; i++) a[i] = i + base;
@@ -337,16 +335,22 @@
 			}
 		}
 
+		// One x-index origin for BOTH the decimated and non-decimated paths: 1 under
+		// log-x so no x is <= 0 (uPlot's log10(0) = -Infinity collapses the x-scale
+		// and blanks the plot), else 0. Deciding it here keeps the two x-generators
+		// from drifting — the decimation path once bypassed this and silently
+		// reintroduced the log-x empty-plot bug.
+		const base = mLogX ? 1 : 0;
 		// When there are far more samples than pixel columns, min/max-decimate to
 		// the display budget — preserves spikes, cuts uPlot's per-frame work from
 		// O(samples) to O(pixels) (report A15).
 		const cols = container.clientWidth || 800;
 		if (m > cols * 2) {
-			const dec = decimateMinMax(ySeries, m, cols);
+			const dec = decimateMinMax(ySeries, m, cols, base);
 			setSeries(dec.xs, dec.ys);
 			return;
 		}
-		setSeries(indexAxis(m), ySeries);
+		setSeries(indexAxis(m, base), ySeries);
 	}
 
 	$effect(() => {
@@ -369,7 +373,14 @@
 			drawScalar(lastScalar);
 		} else {
 			makePlot(container.clientWidth || 200, container.clientHeight || 120, lastNSeries || 1);
-			if (frame) pushData(frame.data as ArrayData);
+			// Re-seed the rebuilt plot with the LATEST frame, but read it untracked:
+			// this effect must depend on the settings only, never on `frame`. Once a
+			// setting is toggled (plot now exists, so we reach this branch instead of
+			// early-returning at mount), a tracked `frame` read would make every data
+			// frame re-run this effect and rebuild the whole plot — thrashing uPlot
+			// (and, under a log scale, breaking the hover crosshair).
+			const f = untrack(() => frame);
+			if (f) pushData(f.data as ArrayData);
 		}
 	});
 

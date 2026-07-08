@@ -9,6 +9,11 @@
  *
  * All channels share one x grid (two x slots per bucket) so the result is valid
  * uPlot AlignedData. Pure and dependency-free, so it's unit-testable.
+ *
+ * `base` offsets every x (the sample-index origin), matching ArrayViewer's
+ * `indexAxis`: 0 for a linear x-axis, 1 under log-x so the first bucket's x is 1
+ * rather than 0 — log10(0) is -Infinity and would collapse uPlot's x-scale,
+ * blanking the whole plot.
  */
 export interface Decimated {
 	xs: number[];
@@ -18,7 +23,8 @@ export interface Decimated {
 export function decimateMinMax(
 	channels: ArrayLike<number>[],
 	m: number,
-	targetCols: number
+	targetCols: number,
+	base = 0
 ): Decimated {
 	const buckets = Math.max(1, Math.min(targetCols, m));
 	const bucketSize = m / buckets;
@@ -29,8 +35,8 @@ export function decimateMinMax(
 		const start = Math.floor(b * bucketSize);
 		const end = Math.min(m, Math.floor((b + 1) * bucketSize));
 		// Two distinct x slots per bucket so min and max are separate points.
-		xs[b * 2] = start;
-		xs[b * 2 + 1] = Math.max(start, end - 1);
+		xs[b * 2] = start + base;
+		xs[b * 2 + 1] = Math.max(start, end - 1) + base;
 		for (let c = 0; c < channels.length; c++) {
 			const ch = channels[c];
 			let mn = Infinity;
