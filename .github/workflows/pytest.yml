@@ -19,6 +19,13 @@ jobs:
         python-version: ${{ matrix.python-version }}
         cache: 'pip'
 
+    - name: Install system dependencies
+      run: |
+        # The Linux sounddevice wheel does not bundle PortAudio, so importing
+        # the audio nodes (audiostream/audioout) raises OSError without this.
+        sudo apt-get update
+        sudo apt-get install -y libportaudio2
+
     - name: Install dependencies
       run: |
         pip install --upgrade pip setuptools wheel
