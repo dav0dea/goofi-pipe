@@ -122,6 +122,9 @@
 	     left/right edges. Pointer-transparent except for each connector box. -->
 	<div class="ports">
 		{#each inputs as slot, i (slot)}
+			<!-- Pointer-only connector pill: opens the add-node menu at the cursor;
+			     keyboard users reach "add node" via the topbar + menu. -->
+			<!-- svelte-ignore a11y_click_events_have_key_events -->
 			<div
 				class="conn in"
 				style="top: calc({NODE.border}px + var(--node-header) + var(--node-u) * {i + 0.5}); --dtype: {dtypeColor(
@@ -139,6 +142,9 @@
 		{/each}
 
 		{#each outPorts as port (port.slot)}
+			<!-- Pointer-only connector pill: opens the add-node menu at the cursor;
+			     keyboard users reach "add node" via the topbar + menu. -->
+			<!-- svelte-ignore a11y_click_events_have_key_events -->
 			<div
 				class="conn out"
 				style="top: {port.top}px; --dtype: {dtypeColor(port.dtype)};"

@@ -83,6 +83,9 @@
 	data-node={node}
 	data-slot={slot}
 >
+	<!-- The whole header bar is a pointer click-target for collapse/expand;
+	     keyboard users toggle it via the ► button it contains. -->
+	<!-- svelte-ignore a11y_click_events_have_key_events -->
 	<header
 		onclick={toggleExpanded}
 		onpointerdown={stopSelect}
@@ -97,6 +100,9 @@
 		{#if expanded}
 			<ViewerControls {dtype} {binding} />
 		{/if}
+		<!-- Pointer convenience: opens the add-node menu at the cursor (like the
+		     connector pill). Keyboard "add node" is the topbar + menu. -->
+		<!-- svelte-ignore a11y_click_events_have_key_events -->
 		<span
 			class="slot-name"
 			onclick={onSlotClick}
