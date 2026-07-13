@@ -533,6 +533,18 @@ class Node(ABC):
         except Exception:
             traceback.print_exc()
 
+    def _stats_extra(self) -> dict:
+        """Node-specific telemetry merged into the NODE_STATS payload. The base
+        node has none; latency-sensitive sinks (AudioOut) override this to surface
+        e.g. output latency and jitter-ring under/overrun counters in the
+        inspector, without a bespoke status channel."""
+        return {}
+
+    def _build_stats_payload(self) -> dict:
+        """The NODE_STATS payload: rolling exec stats plus any node-specific
+        extras. Built + read on the processing thread, so no locking."""
+        return {**self._exec_stats.snapshot(), **self._stats_extra()}
+
     def _maybe_push_stats(self, now: float) -> None:
         """Emit NODE_STATS at a low fixed cadence (decoupled from the data rate and
         the dirty/clean STATE_UPDATE). Cheap: one ExecStats snapshot + ctrl publish.
@@ -544,7 +556,7 @@ class Node(ABC):
         self._last_stats_push = now
         try:
             self.status_pub.send(
-                encode_message(Message(MessageType.NODE_STATS, {"stats": self._exec_stats.snapshot()}))
+                encode_message(Message(MessageType.NODE_STATS, {"stats": self._build_stats_payload()}))
             )
             self._status_notifier.notify()
         except Exception:

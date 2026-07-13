@@ -78,6 +78,18 @@ class AudioOut(Node):
         """Re-enumerate live output devices for the device dropdown's ⟳ button."""
         return AudioOut.list_audio_devices() or ["default"]
 
+    def _stats_extra(self):
+        """Surface the sink's live output latency and jitter-ring under/overrun
+        counts on the NODE_STATS channel so they render in the inspector."""
+        ring = getattr(self, "ring", None)
+        stream = getattr(self, "stream", None)
+        latency = getattr(stream, "latency", 0.0) if stream is not None else 0.0
+        return {
+            "latency_ms": round(float(latency) * 1000.0, 2),
+            "underruns": ring.underruns if ring is not None else 0,
+            "overruns": ring.overruns if ring is not None else 0,
+        }
+
     def setup(self):
         if getattr(self, "stream", None) is not None:
             try:

@@ -78,3 +78,33 @@ def test_live_node_pushes_stats_to_noderef():
         assert stats["updates_per_second"] > 0  # the Oscillator ticks continuously
     finally:
         mgr.terminate(notify_gui=False)
+
+
+# ---- node-specific extras ride the NODE_STATS payload (Phase 6) --------------
+
+def test_stats_payload_merges_node_extras():
+	# A sink node surfaces its own counters (latency, ring under/overruns) on the
+	# same NODE_STATS payload that carries the rolling exec stats.
+	from .utils import DummyNode
+
+	class _Sink(DummyNode):
+		def _stats_extra(self):
+			return {"latency_ms": 27.5, "underruns": 3, "overruns": 0}
+
+	node = _Sink.create_standalone()
+	node._exec_stats.record(duration=0.002, now=5.0)
+	payload = node._build_stats_payload()
+	# rolling exec stats are still present …
+	assert payload["total_ticks"] == 1
+	assert payload["mean_process_ms"] == 2.0
+	# … alongside the node-specific counters
+	assert payload["latency_ms"] == 27.5
+	assert payload["underruns"] == 3
+	assert payload["overruns"] == 0
+
+
+def test_base_node_payload_is_just_exec_stats():
+	from .utils import DummyNode
+
+	node = DummyNode.create_standalone()
+	assert node._build_stats_payload() == node._exec_stats.snapshot()
