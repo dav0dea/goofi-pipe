@@ -57,6 +57,20 @@ def test_drift_not_applied_before_playback_starts():
     assert node.ring.fill == 64                      # exactly one block, no stuffed frame
 
 
+def test_empty_frame_while_started_does_not_crash():
+    # Generators emit empty frames by design when their SampleClock has no whole
+    # sample due; the queue/publish path forwards them one-per-frame. A started sink
+    # whose ring has drifted out of the deadband must tolerate an empty frame (drift
+    # correction is a no-op on it), not raise.
+    node = _make_node()
+    node.process(_audio(128, 0.25), None)
+    node.process(_audio(128, 0.25), None)                 # primed + started
+    node.stream.pump(128)                                  # drop fill below deadband
+    empty = Data(DataType.ARRAY, np.zeros(0, np.float32), {"sfreq": 48000})
+    assert node.process(empty, None) is not None           # accepted, no exception
+    assert node.ring.underruns >= 0                         # sink still consistent
+
+
 def test_drift_drops_a_frame_when_ring_is_overfull():
     node = _make_node()
     for _ in range(3):

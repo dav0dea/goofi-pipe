@@ -16,6 +16,8 @@ class DriftCorrector:
         self.deadband = int(deadband)
 
     def correct(self, block: np.ndarray, fill: int) -> np.ndarray:
+        if block.shape[0] == 0:
+            return block  # nothing to stuff/drop; _zero_crossing is undefined on empty
         if fill > self.target_fill + self.deadband:
             idx = self._zero_crossing(block)
             return np.delete(block, idx, axis=0)

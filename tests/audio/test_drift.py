@@ -17,6 +17,16 @@ def test_within_deadband_is_passthrough_identity():
     assert out2 is block
 
 
+def test_empty_block_is_passthrough_out_of_band():
+    # A zero-length block has nothing to stuff/drop and _zero_crossing (argmin over
+    # an empty array) is undefined. Generators emit empty frames by design when the
+    # SampleClock has no whole sample due, and they reach the sink out-of-band.
+    d = DriftCorrector(240, deadband=64)
+    empty = np.zeros((0, 2), dtype=np.float32)
+    assert d.correct(empty, fill=10).shape == (0, 2)     # underfull → would have stuffed
+    assert d.correct(empty, fill=400).shape == (0, 2)    # overfull → would have dropped
+
+
 def test_overfull_drops_one_frame_at_zero_crossing():
     d = DriftCorrector(1000, deadband=64)
     block = np.full((100, 1), 0.5, dtype=np.float32)

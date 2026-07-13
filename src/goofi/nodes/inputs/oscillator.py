@@ -53,8 +53,13 @@ class Oscillator(Node):
         # samples/sec while process() has already switched to the new one (a
         # detune/timebase mismatch otherwise). Re-anchor at `now` to avoid a
         # backlog jump; leave self.phase so the waveform stays phase-continuous.
-        self.clock = SampleClock(value)
-        self.clock.start(time.time())
+        # This hook runs on the ctrl thread while process() reads self.clock on
+        # the processing thread, so build+start into a local and swap in ONE
+        # atomic rebind — process() then only ever sees a fully-started clock (a
+        # stale-but-valid old one for at most one tick is benign).
+        clock = SampleClock(value)
+        clock.start(time.time())
+        self.clock = clock
 
     def process(self, frequency):
         freq = frequency.data.item() if frequency else self.params.oscillator.frequency.value
