@@ -59,6 +59,11 @@ class InputSlot:
 
     dtype: DataType
     trigger_process: bool = True
+    # Delivery mode for THIS consuming edge: False = latest-wins (keep newest,
+    # today's default); True = lossless queue drained frame-by-frame in the
+    # processing loop. A node declares its default; the GUI can override per-slot
+    # (gui_kwargs["inputs"]). See docs/superpowers/specs/2026-07-13-audio-...
+    queue: bool = False
     data: Optional[Data] = None
 
     # Runtime endpoints — populated by the node when SUBSCRIBE_INPUT wires

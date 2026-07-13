@@ -39,3 +39,13 @@ def test_noderef_carries_spec_not_class():
         assert ref.__doc__ == ref.spec.doc
     finally:
         ref.terminate()
+
+
+def test_input_slot_queue_defaults_false_and_is_settable():
+    from goofi.node_helpers import InputSlot
+    from goofi.data import DataType
+
+    assert InputSlot(DataType.ARRAY).queue is False
+    assert InputSlot(DataType.ARRAY, queue=True).queue is True
+    # A bare single-positional construction (dtype only) still works.
+    assert InputSlot(DataType.ARRAY, trigger_process=False, queue=True).trigger_process is False
