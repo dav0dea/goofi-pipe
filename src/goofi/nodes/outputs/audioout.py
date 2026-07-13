@@ -6,7 +6,7 @@ from goofi.audio.drift import DriftCorrector
 from goofi.audio.ring import AudioRing
 from goofi.data import Data, DataType
 from goofi.node import InputSlot, Node
-from goofi.params import FloatParam, IntParam, StringParam
+from goofi.params import IntParam, StringParam
 
 
 # Discontinuity seam crossfade length (samples): short + fixed, REPLACES the
@@ -70,8 +70,9 @@ class AudioOut(Node):
                 "buffer_ms": IntParam(30, 5, 200),
                 "blocksize": IntParam(256, 32, 2048),
             },
-            # Free-run the DAC: the callback stream, not the tick limiter, paces output.
-            "common": {"max_frequency": FloatParam(0.0, 0.0, 60.0)},
+            # No common override: the DAC callback stream, not the tick limiter,
+            # paces output. The sink inherits the unbounded default max_frequency
+            # and runs at its input's rate.
         }
 
     def _refresh_audio_devices(self):
