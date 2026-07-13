@@ -37,6 +37,7 @@ def _bare_manager(use_multiprocessing: bool = True) -> Manager:
     mgr.nodes = NodeContainer()
     mgr._node_groups = {}
     mgr._links = []
+    mgr._expr_demand = {}
     mgr._refs_by_uid = {}
     mgr._membership = {}
     mgr._instances = {}

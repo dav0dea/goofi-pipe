@@ -31,12 +31,12 @@ from copy import deepcopy
 from dataclasses import asdict, dataclass, field, replace
 from os import path
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING
+from typing import Any, Dict, List, Optional, Set, Tuple, TYPE_CHECKING
 
 import numpy as np
 import yaml
 
-from goofi.expression import rewrite_nd_refs
+from goofi.expression import extract_nd_refs, rewrite_nd_refs
 from goofi.message import MessageType
 from goofi.node import Node, ref_from_spec, spawn_node
 from goofi.node_helpers import NodeProcessRegistry, NodeRef
@@ -270,6 +270,11 @@ class Manager:
         # explicit link table — manager-owned, replaces the per-node out_conns
         # list from the old code. Endpoints are node UIDs (node_out/node_in).
         self._links: List[Dict[str, str]] = []
+        # Producer demand created by nd() expression references (consuming uid ->
+        # {(producer_uid, slot)}). An nd("X").slot ref is a first-class consumer,
+        # identical to a link: it registers a latest-wins subscriber on X so X
+        # publishes to its node↔node service. Reconciled on expression/graph change.
+        self._expr_demand: Dict[str, Set[Tuple[str, str]]] = {}
         # NB: there is no separate uid index — `self.nodes` (NodeContainer) IS
         # keyed by uid, so it is the single uid->NodeRef map.
         # Sub-patch state (flatten-at-runtime). The live graph stays flat; these
@@ -730,6 +735,62 @@ class Manager:
             self._teardown_link(link, notify_gui=False)
         for link in links:
             self._wire_link(link)
+
+    def _node_expr_refs(self, ref: NodeRef) -> Set[Tuple[str, str]]:
+        """All (display_name, slot) nd() references across a node's ENABLED param
+        expressions. A disabled binding never evaluates, so it creates no demand."""
+        refs: Set[Tuple[str, str]] = set()
+        params = ref.params
+        for group in params.keys():
+            grp = params[group]
+            for pname in grp._fields:
+                p = grp[pname]
+                if getattr(p, "expression_enabled", False):
+                    refs |= extract_nd_refs(getattr(p, "expression", None))
+        return refs
+
+    def _apply_expr_demand(self, uid: str, desired: Set[Tuple[str, str]]) -> None:
+        """Diff one consuming node's nd() demand and register/release the delta on
+        the producers (latest-wins, sized to the slot's current aggregate cap)."""
+        current = self._expr_demand.get(uid, set())
+        for producer, slot in desired - current:
+            try:
+                self.nodes[producer].register_subscriber(
+                    slot, buffer_cap=self._slot_service_cap(producer, slot)
+                )
+            except Exception:
+                pass
+        for producer, slot in current - desired:
+            try:
+                self.nodes[producer].unregister_subscriber(slot)
+            except Exception:
+                pass
+        if desired:
+            self._expr_demand[uid] = desired
+        else:
+            self._expr_demand.pop(uid, None)
+
+    def _reconcile_expr_demand(self) -> None:
+        """Register producer demand for every ENABLED nd() reference in the graph,
+        so a node referenced only via nd() still publishes to its node↔node service
+        — a first-class consumer, identical to a real link. Idempotent; call after
+        any expression or graph change. Resolving names every pass makes it
+        self-healing across renames / delete+recreate (a name that now maps to a
+        different uid re-registers there)."""
+        # nd() references the producer's DISPLAY NAME; register_subscriber needs its
+        # UID (the node_id in _node_directory is the transport id, a different key).
+        name_to_uid = {self.nodes[u].name: u for u in list(self.nodes)}
+        for uid in list(self.nodes):
+            desired: Set[Tuple[str, str]] = set()
+            if uid in self.nodes:
+                for name, slot in self._node_expr_refs(self.nodes[uid]):
+                    producer = name_to_uid.get(name)
+                    if producer is not None and producer in self.nodes:
+                        desired.add((producer, slot))
+            self._apply_expr_demand(uid, desired)
+        # A consuming node that vanished releases whatever demand it still held.
+        for gone in [u for u in self._expr_demand if u not in self.nodes]:
+            self._apply_expr_demand(gone, set())
 
     @mark_unsaved_changes
     def remove_link(
@@ -2466,6 +2527,9 @@ class Manager:
         through here, not straight to the NodeRef, or shared expressions silently
         desync (and never persist into the definition)."""
         self.nodes[uid].set_expression(group, name, expression, enabled, triggers_process, autoeval)
+        # The node's nd() references may have changed — (de)register producer demand
+        # so a newly-referenced node starts producing and a dropped one is released.
+        self._reconcile_expr_demand()
 
         inst_id = self._membership.get(uid)
         if not inst_id:
@@ -2517,6 +2581,8 @@ class Manager:
                         self.nodes[onode].set_expression(group, name, sib_expr, enabled, triggers_process, autoeval)
                     except Exception as exc:
                         self._surface_mirror_failure(onode, f"{group}.{name} (expression)", exc)
+        # Mirrored siblings' expressions changed too — reconcile their demand.
+        self._reconcile_expr_demand()
 
     @mark_unsaved_changes
     def set_node_inputs(self, uid: str, inputs: Dict[str, Any]) -> None:
@@ -2914,6 +2980,11 @@ class Manager:
                 self.nodes[name].send_directory(directory)
             except Exception:
                 pass
+        # The set of resolvable nd() producers just changed (add/remove/rename/
+        # restart/load all funnel through here), so re-register expression demand:
+        # a newly-appeared producer starts producing for an existing reference, and
+        # a departed one's demand is released.
+        self._reconcile_expr_demand()
 
     # ------------------------------------------------------------------
     # Persistence

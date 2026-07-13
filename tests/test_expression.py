@@ -158,3 +158,19 @@ def test_engine_reports_whether_it_references_other_nodes() -> None:
     e_ref.set_source("nd('producer').out\n0")
     e_ref.evaluate()
     assert e_ref.references_other_nodes() is True
+
+
+def test_extract_nd_refs_pulls_node_slot_pairs() -> None:
+    from goofi.expression import extract_nd_refs
+
+    # single ref with a slot
+    assert extract_nd_refs('nd("delta").normalized.data * 2') == {("delta", "normalized")}
+    # multiple refs, chained attrs, mixed with other calls
+    src = 'nd("a").out.mean() + nd("b").val.data - foo(nd("a").out)'
+    assert extract_nd_refs(src) == {("a", "out"), ("b", "val")}
+    # non-literal arg / look-alike / no-attr are ignored (no false positives)
+    assert extract_nd_refs("nd(x).out + gnd('y').z + nd('c')") == set()
+    # unparseable / empty
+    assert extract_nd_refs("nd('a').") == set()
+    assert extract_nd_refs("") == set()
+    assert extract_nd_refs(None) == set()

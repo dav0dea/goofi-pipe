@@ -110,6 +110,39 @@ def rewrite_nd_refs(source: Optional[str], name_map: Dict[str, str]) -> Optional
     return out
 
 
+def extract_nd_refs(source: Optional[str]) -> Set[Tuple[str, str]]:
+    """Return the ``(node_name, slot_name)`` pairs referenced as
+    ``nd("node_name").slot_name`` in ``source``.
+
+    AST-based (same filter as ``rewrite_nd_refs``), so there are no substring
+    false positives: a non-literal arg (``nd(x)``), a look-alike (``gnd(...)``),
+    or a bare ``nd('x')`` with no attribute access are all skipped, and
+    un-parseable source yields the empty set. The manager uses this to register
+    producer demand for expression references, making ``nd()`` a first-class
+    consumer (identical to a real link) rather than a passive reader that only
+    sees data when the producer already has some other consumer."""
+    refs: Set[Tuple[str, str]] = set()
+    if not source or ND_FUNC_NAME not in source:
+        return refs
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return refs
+    for node in ast.walk(tree):
+        # Match `nd("name").slot` — an Attribute whose value is the nd() call.
+        if not isinstance(node, ast.Attribute):
+            continue
+        call = node.value
+        if not (isinstance(call, ast.Call) and isinstance(call.func, ast.Name) and call.func.id == ND_FUNC_NAME):
+            continue
+        if not call.args:
+            continue
+        arg = call.args[0]
+        if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
+            refs.add((arg.value, node.attr))
+    return refs
+
+
 @dataclass
 class _SubEntry:
     sub: Subscriber
