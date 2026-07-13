@@ -1014,6 +1014,11 @@ class Node(ABC):
         self._exec_stats.record(_t1 - _t0, _t1)
         self._maybe_push_stats(_t1)
 
+        # One-time GC/scheduling policy, applied only after a real tick has
+        # succeeded (warm-up done) so it never delays ready/_setup_done.
+        if not self._gc_policy_applied:
+            self._apply_gc_policy()
+
         if not self.alive:
             return
         if output_data is None:

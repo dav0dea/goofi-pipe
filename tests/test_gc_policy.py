@@ -55,3 +55,31 @@ def test_apply_gc_policy_realtime_permission_denied_degrades(monkeypatch):
 	node._apply_gc_policy()  # must not raise
 
 	assert node._gc_policy_applied is True
+
+
+def test_gc_policy_applied_after_first_tick():
+	"""The loop must invoke `_apply_gc_policy` once a real tick succeeds — after
+	warm-up, never blocking setup. Driven with a live local node (autotrigger
+	free-runs the loop) so this exercises the actual wiring, not the method.
+
+	`create_local` runs the loop in THIS process, so the real policy fires here;
+	save/restore the process-global switch interval so it doesn't leak into the
+	rest of the suite (priority stays 'normal', so GC is never disabled)."""
+	import time
+	import uuid
+
+	from goofi.transport import set_instance_id
+
+	from .utils import DummyNode
+
+	set_instance_id(f"t-{uuid.uuid4().hex[:8]}")
+	prev_switch = sys.getswitchinterval()
+	ref, n = DummyNode.create_local(initial_params={"common": {"autotrigger": True}})
+	try:
+		deadline = time.time() + 3.0
+		while not n._gc_policy_applied and time.time() < deadline:
+			time.sleep(0.01)
+		assert n._gc_policy_applied, "GC policy was not applied after the first tick."
+	finally:
+		ref.terminate()
+		sys.setswitchinterval(prev_switch)
