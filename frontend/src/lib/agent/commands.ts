@@ -118,6 +118,17 @@ export const commands = {
 		recordViewChange({ kind: 'inline', node, slot }, before, inlineSnap(node, slot), `Viewer ${key}`);
 	},
 
+	// --- delivery mode -----------------------------------------------------
+	// Per-input-slot queue (lossless) vs latest-wins. Mutates the node's `inputs`
+	// override and debounce-pushes it; the backend reallocates the feeding channel
+	// and round-trips the override into the .gfi.
+	setInputMode: (node: string, slot: string, queue: boolean): void => {
+		const n = graph().nodeById(node);
+		if (!n) return;
+		n.inputs = { ...(n.inputs ?? {}), [slot]: { queue } };
+		graph().pushNodeInputs(node);
+	},
+
 	// --- panels / layout ---------------------------------------------------
 	bindNodeToPanel: (panelId: string, node: string): void => workspace().linkNodeToPanel(panelId, node),
 	setPanelType: (panelId: string, type: string): void => workspace().setType(panelId, type),

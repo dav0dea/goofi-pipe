@@ -35,6 +35,15 @@
 			.catch((e) => console.warn('restart failed', e));
 	}
 
+	// Per-input-slot delivery mode: queue = lossless FIFO (drained frame-by-frame),
+	// latest = keep-newest (the default). Mutating the node's `inputs` override and
+	// pushing it makes the backend reallocate the feeding channel + persist it.
+	function setQueue(slot: string, queue: boolean): void {
+		if (!node) return;
+		node.inputs = { ...(node.inputs ?? {}), [slot]: { queue } };
+		graph().pushNodeInputs(node.uid);
+	}
+
 	const MIN_PANEL_WIDTH = 260;
 	const MAX_PANEL_WIDTH = 720;
 	const STORED_WIDTH = (() => {
@@ -95,6 +104,23 @@
 			<ParamPanel {node} />
 			{#if node && !node.subpatch}
 				<MetadataPanel {node} />
+				{#if Object.keys(node.input_slots).length > 0}
+					<section class="delivery" data-testid="inspector-delivery">
+						<header>Input delivery</header>
+						{#each Object.keys(node.input_slots) as slot (slot)}
+							<label class="delivery-row">
+								<span class="slot-name" title={slot}>{slot}</span>
+								<input
+									type="checkbox"
+									checked={node.inputs?.[slot]?.queue ?? false}
+									onchange={(e) => setQueue(slot, e.currentTarget.checked)}
+									data-testid="delivery-toggle-{slot}"
+								/>
+								<span class="mode">{node.inputs?.[slot]?.queue ? 'queue' : 'latest'}</span>
+							</label>
+						{/each}
+					</section>
+				{/if}
 				{#if node.error}
 					<section class="node-error" data-testid="inspector-error">
 						<div class="err-head">
@@ -190,6 +216,36 @@
 		white-space: pre-wrap;
 		word-break: break-word;
 		margin: 0;
+	}
+	.delivery {
+		padding: 8px 10px;
+		border-top: 1px solid var(--border);
+	}
+	.delivery header {
+		font-weight: 600;
+		font-size: 11px;
+		color: var(--text-dim);
+		margin-bottom: 6px;
+	}
+	.delivery-row {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		font-size: 11px;
+		padding: 2px 0;
+	}
+	.delivery-row .slot-name {
+		flex: 1 1 auto;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+		font-family: var(--font-mono);
+	}
+	.delivery-row .mode {
+		flex: 0 0 auto;
+		color: var(--text-dim);
+		font-size: 10px;
+		width: 40px;
 	}
 	.resize-handle {
 		position: absolute;
