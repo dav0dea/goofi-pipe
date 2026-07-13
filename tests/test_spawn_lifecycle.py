@@ -469,6 +469,13 @@ def test_restart_consumer_does_not_double_register_producer():
         assert wait_until(
             lambda: (mgr.nodes[prod].serialized_state or {}).get("output_subscribers", {}).get("out", 0) == 1
         )
+        # The consumer must be fully READY (its first state event has landed) before
+        # we kill it — this is the scenario under test: restart of a HEALTHY consumer.
+        # Killing it mid-boot instead leaves _first_state_event unset, so
+        # _should_restart treats the death as a boot failure and the supervisor
+        # (correctly) won't respawn it. The producer's subscriber count reaching 1
+        # only proves the LINK wired, not that the consumer finished bootstrapping.
+        assert wait_until(lambda: mgr.nodes[cons].stage == "ready")
 
         mgr.nodes[cons].process.kill()
         assert wait_until(lambda: not mgr.nodes[cons].process.is_alive())
