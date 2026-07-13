@@ -1,3 +1,5 @@
+import threading
+
 import numpy as np
 
 from goofi.audio.ring import AudioRing
@@ -69,3 +71,51 @@ def test_multichannel_and_spsc_fill_math():
         total_r += r.read_into(out)
     assert r.fill == total_w - total_r
     assert 0 <= r.fill <= r.capacity
+
+
+def test_fill_is_derived_not_a_dual_writer_counter():
+    # The lock-free SPSC contract: occupancy is DERIVED from the two
+    # single-writer counters, never a third field both threads mutate. This
+    # guards against reintroducing a `_fill` read-modify-write race (a lost
+    # update that is masked by the GIL today but real under free-threading).
+    r = AudioRing(8, 1)
+    assert not hasattr(r, "_fill")
+    r.write(_ramp(0, 5))
+    r.read_into(np.zeros((2, 1), dtype=np.float32))
+    assert r.fill == r._w - r._r == 3
+
+
+def test_concurrent_producer_consumer_conserves_frames():
+    # A real producer thread + consumer thread hammering a small ring: every
+    # frame written must be read exactly once and the ring must end empty.
+    r = AudioRing(64, 1)
+    n_writes = 20000
+    blk = np.ones((4, 1), dtype=np.float32)
+    wrote = [0]
+    read = [0]
+    stop = threading.Event()
+
+    def producer():
+        for _ in range(n_writes):
+            wrote[0] += r.write(blk)
+
+    def consumer():
+        out = np.zeros((4, 1), dtype=np.float32)
+        while not stop.is_set():
+            read[0] += r.read_into(out)
+
+    prod = threading.Thread(target=producer)
+    cons = threading.Thread(target=consumer)
+    cons.start()
+    prod.start()
+    prod.join()
+    stop.set()
+    cons.join()
+    drain = np.zeros((r.capacity, 1), dtype=np.float32)
+    while True:
+        n = r.read_into(drain)
+        if n == 0:
+            break
+        read[0] += n
+    assert r.fill == 0
+    assert wrote[0] == read[0]
