@@ -392,23 +392,40 @@ class NodeRef:
             )
         )
 
-    def subscribe_input(self, slot_name_in: str, service_name: str, in_process: bool) -> None:
-        self._send(
-            Message(
-                MessageType.SUBSCRIBE_INPUT,
-                {
-                    "slot_name_in": slot_name_in,
-                    "service_name": service_name,
-                    "in_process": in_process,
-                },
-            )
-        )
+    def subscribe_input(
+        self, slot_name_in: str, service_name: str, in_process: bool, *, queue: bool = False, buffer_cap=None
+    ) -> None:
+        content = {"slot_name_in": slot_name_in, "service_name": service_name, "in_process": in_process}
+        if queue:
+            content["queue"] = True
+        if buffer_cap is not None:
+            content["buffer_cap"] = buffer_cap
+        self._send(Message(MessageType.SUBSCRIBE_INPUT, content))
 
     def unsubscribe_input(self, slot_name_in: str) -> None:
         self._send(Message(MessageType.UNSUBSCRIBE_INPUT, {"slot_name_in": slot_name_in}))
 
-    def register_subscriber(self, slot_name_out: str) -> None:
-        self._send(Message(MessageType.REGISTER_SUBSCRIBER, {"slot_name_out": slot_name_out}))
+    def register_subscriber(self, slot_name_out: str, *, buffer_cap=None, max_subscribers=None) -> None:
+        content = {"slot_name_out": slot_name_out}
+        if buffer_cap is not None:
+            content["buffer_cap"] = buffer_cap
+        if max_subscribers is not None:
+            content["max_subscribers"] = max_subscribers
+        self._send(Message(MessageType.REGISTER_SUBSCRIBER, content))
+
+    def input_queue_mode(self, slot_name_in: str) -> bool:
+        """Effective delivery mode for a destination input slot: the persisted
+        per-slot override in `gui_kwargs["inputs"]` if set, else the node type's
+        declared `InputSlot.queue` default (read once from the spec)."""
+        override = (self.gui_kwargs or {}).get("inputs", {}).get(slot_name_in, {})
+        if "queue" in override:
+            return bool(override["queue"])
+        defaults = self.__dict__.get("_input_queue_defaults")
+        if defaults is None:
+            in_slots, _, _ = self.spec.configure()
+            defaults = {n: bool(s.queue) for n, s in in_slots.items()}
+            self.__dict__["_input_queue_defaults"] = defaults
+        return defaults.get(slot_name_in, False)
 
     def unregister_subscriber(self, slot_name_out: str) -> None:
         self._send(Message(MessageType.UNREGISTER_SUBSCRIBER, {"slot_name_out": slot_name_out}))

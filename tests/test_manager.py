@@ -933,3 +933,54 @@ def test_group_mode_name_reuse_no_clash():
             mgr.remove_node(n)
     finally:
         mgr.terminate(notify_gui=False)
+
+
+def test_wire_link_provisions_buffer_cap_from_consumer_mode(monkeypatch):
+    from goofi.manager import QUEUE_DEPTH
+
+    mgr = _bare_manager(use_multiprocessing=False)
+    try:
+        osc = mgr.add_node("Oscillator", "inputs")
+        sel = mgr.add_node("Select", "array", params={"select": {"include": "0:5"}})
+        # As the GUI would: override Select's `data` input to queue mode.
+        mgr.nodes[sel].gui_kwargs = {"inputs": {"data": {"queue": True}}}
+
+        seen_sub, seen_reg = {}, {}
+        orig_sub = mgr.nodes[sel].subscribe_input
+        orig_reg = mgr.nodes[osc].register_subscriber
+
+        def spy_sub(slot_name_in, service_name, in_process, *, queue=False, buffer_cap=None):
+            seen_sub.update(queue=queue, buffer_cap=buffer_cap)
+            return orig_sub(slot_name_in, service_name, in_process, queue=queue, buffer_cap=buffer_cap)
+
+        def spy_reg(slot_name_out, *, buffer_cap=None, max_subscribers=None):
+            seen_reg.update(buffer_cap=buffer_cap)
+            return orig_reg(slot_name_out, buffer_cap=buffer_cap, max_subscribers=max_subscribers)
+
+        monkeypatch.setattr(mgr.nodes[sel], "subscribe_input", spy_sub)
+        monkeypatch.setattr(mgr.nodes[osc], "register_subscriber", spy_reg)
+
+        mgr.add_link(osc, sel, "out", "data")
+        assert seen_sub == {"queue": True, "buffer_cap": QUEUE_DEPTH}
+        assert seen_reg == {"buffer_cap": QUEUE_DEPTH}
+    finally:
+        mgr.terminate()
+
+
+def test_wire_link_default_latest_consumer_gets_no_buffer_cap(monkeypatch):
+    mgr = _bare_manager(use_multiprocessing=False)
+    try:
+        osc = mgr.add_node("Oscillator", "inputs")
+        sel = mgr.add_node("Select", "array", params={"select": {"include": "0:5"}})
+        seen = {}
+        orig = mgr.nodes[sel].subscribe_input
+
+        def spy(slot_name_in, service_name, in_process, *, queue=False, buffer_cap=None):
+            seen.update(queue=queue, buffer_cap=buffer_cap)
+            return orig(slot_name_in, service_name, in_process, queue=queue, buffer_cap=buffer_cap)
+
+        monkeypatch.setattr(mgr.nodes[sel], "subscribe_input", spy)
+        mgr.add_link(osc, sel, "out", "data")
+        assert seen == {"queue": False, "buffer_cap": None}
+    finally:
+        mgr.terminate()

@@ -66,6 +66,10 @@ _DEF_INTERNAL_REF = "\x1f"
 # lib/editor/subpatchScene.ts.
 ROOT_ID = "__root__"
 
+# Buffer depth for a queue-mode (lossless) input channel. Modest: a jitter
+# cushion, not an unbounded backlog.
+QUEUE_DEPTH = 8
+
 
 class SubPatchTooDeep(ValueError):
     """A namespaced member name would overflow iceoryx2's 255-byte ServiceName."""
@@ -670,9 +674,20 @@ class Manager:
         src_ref = self.nodes[link["node_out"]]
         dst_ref = self.nodes[link["node_in"]]
         in_process = self._same_group(link["node_out"], link["node_in"])
+        # The consumer's delivery mode (InputSlot.queue, possibly overridden in
+        # gui_kwargs) sizes the channel: a queue link gets a QUEUE_DEPTH buffer on
+        # both endpoints; a latest link stays at the default (latest-wins).
+        queue = dst_ref.input_queue_mode(link["slot_in"])
+        buffer_cap = QUEUE_DEPTH if queue else None
         if register_source:
-            src_ref.register_subscriber(link["slot_out"])
-        dst_ref.subscribe_input(link["slot_in"], src_ref.data_service_for(link["slot_out"]), in_process)
+            src_ref.register_subscriber(link["slot_out"], buffer_cap=buffer_cap)
+        dst_ref.subscribe_input(
+            link["slot_in"],
+            src_ref.data_service_for(link["slot_out"]),
+            in_process,
+            queue=queue,
+            buffer_cap=buffer_cap,
+        )
 
     @mark_unsaved_changes
     def remove_link(
