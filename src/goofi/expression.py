@@ -310,7 +310,7 @@ class ExpressionEngine:
             service = data_service_name(node_id, slot_name)
             try:
                 sub, listener = open_subscriber(
-                    service, in_process=False, latest_wins=True
+                    service, in_process=False
                 )
             except Exception:
                 # Service unavailable right now — record the ref so we

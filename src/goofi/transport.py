@@ -134,22 +134,34 @@ class _NodeSingleton:
         return cls._node
 
 
-def _open_byte_service(name: str, *, latest_wins: bool):
+def _open_byte_service(
+    name: str,
+    *,
+    safe_overflow: bool,
+    buffer_cap: Optional[int] = None,
+    max_subscribers: int = DEFAULT_MAX_SUBSCRIBERS,
+):
     """Open or create a `publish_subscribe` byte-slice service.
 
-    `latest_wins=True` configures overflow-safe (data plane); `False` gives
-    bounded, in-order delivery (ctrl / status plane).
+    `safe_overflow` is the overflow policy (True = producer never blocks, the
+    data plane; False = bounded reliable delivery for the ctrl/status plane).
+    `buffer_cap`, when given, sets the service's per-subscriber buffer ceiling
+    (`subscriber_max_buffer_size`) — decoupled from the overflow flag so a deep
+    queue channel and a shallow latest tap can share one safe-overflow service.
     """
     builder = (
         _NodeSingleton.get()
         .service_builder(iox2.ServiceName.new(name))
         .publish_subscribe(iox2.Slice[ctypes.c_uint8])
-        .enable_safe_overflow(latest_wins)
+        .enable_safe_overflow(safe_overflow)
         .max_publishers(1)
-        .max_subscribers(DEFAULT_MAX_SUBSCRIBERS)
+        .max_subscribers(max_subscribers)
     )
-    if not latest_wins:
-        builder = builder.history_size(CTRL_HISTORY_SIZE).subscriber_max_buffer_size(CTRL_HISTORY_SIZE)
+    if not safe_overflow:
+        # Reliable ctrl/status plane replays recent samples to a late subscriber.
+        builder = builder.history_size(CTRL_HISTORY_SIZE)
+    if buffer_cap is not None:
+        builder = builder.subscriber_max_buffer_size(buffer_cap)
     return builder.open_or_create()
 
 
@@ -203,9 +215,19 @@ class _IpcLoan:
 
 
 class IpcPublisher:
-    def __init__(self, name: str, *, latest_wins: bool = True, max_payload: int = DEFAULT_MAX_PAYLOAD) -> None:
+    def __init__(
+        self,
+        name: str,
+        *,
+        safe_overflow: bool = True,
+        buffer_cap: Optional[int] = None,
+        max_subscribers: int = DEFAULT_MAX_SUBSCRIBERS,
+        max_payload: int = DEFAULT_MAX_PAYLOAD,
+    ) -> None:
         self._name = name
-        svc = _open_byte_service(name, latest_wins=latest_wins)
+        svc = _open_byte_service(
+            name, safe_overflow=safe_overflow, buffer_cap=buffer_cap, max_subscribers=max_subscribers
+        )
         self._pub = (
             svc.publisher_builder()
             .initial_max_slice_len(max_payload)
@@ -228,10 +250,20 @@ class IpcPublisher:
 
 
 class IpcSubscriber:
-    def __init__(self, name: str, *, latest_wins: bool = True) -> None:
+    def __init__(
+        self,
+        name: str,
+        *,
+        safe_overflow: bool = True,
+        buffer_cap: Optional[int] = None,
+        buffer_size: Optional[int] = None,
+    ) -> None:
         self._name = name
-        svc = _open_byte_service(name, latest_wins=latest_wins)
-        self._sub = svc.subscriber_builder().create()
+        svc = _open_byte_service(name, safe_overflow=safe_overflow, buffer_cap=buffer_cap)
+        builder = svc.subscriber_builder()
+        if buffer_size is not None:
+            builder = builder.buffer_size(buffer_size)
+        self._sub = builder.create()
 
     @staticmethod
     def _bytes(sample) -> bytes:
@@ -304,35 +336,37 @@ class IpcListener:
 class _ThreadStore:
     """Lock-protected backing store for a `Thread*` endpoint pair.
 
-    Two modes: `latest_wins=True` keeps only the newest payload (data
-    plane); `latest_wins=False` keeps a bounded FIFO (ctrl/status plane).
+    Two modes: `safe_overflow=True` keeps only the newest payload (data
+    plane, e.g. self-trigger); `safe_overflow=False` keeps a bounded FIFO
+    (ctrl/status plane). A thread-transport *queue* data channel is deferred
+    with co-location (§12), so `safe_overflow=True` stays single-slot here.
     """
 
-    __slots__ = ("_lock", "_latest_wins", "_value", "_queue")
+    __slots__ = ("_lock", "_safe_overflow", "_value", "_queue")
 
-    def __init__(self, latest_wins: bool, maxlen: int = CTRL_HISTORY_SIZE) -> None:
+    def __init__(self, safe_overflow: bool, maxlen: int = CTRL_HISTORY_SIZE) -> None:
         self._lock = threading.Lock()
-        self._latest_wins = latest_wins
+        self._safe_overflow = safe_overflow
         self._value: Optional[bytes] = None
-        self._queue: Optional[Deque[bytes]] = None if latest_wins else deque(maxlen=maxlen)
+        self._queue: Optional[Deque[bytes]] = None if safe_overflow else deque(maxlen=maxlen)
 
     def put(self, value: bytes) -> None:
         with self._lock:
-            if self._latest_wins:
+            if self._safe_overflow:
                 self._value = value
             else:
                 self._queue.append(value)
 
     def take_one(self) -> Optional[bytes]:
         with self._lock:
-            if self._latest_wins:
+            if self._safe_overflow:
                 v, self._value = self._value, None
                 return v
             return self._queue.popleft() if self._queue else None
 
     def take_latest(self) -> Optional[bytes]:
         with self._lock:
-            if self._latest_wins:
+            if self._safe_overflow:
                 v, self._value = self._value, None
                 return v
             if not self._queue:
@@ -343,13 +377,18 @@ class _ThreadStore:
 
 
 class _ThreadChannel:
-    """Pairs a `_ThreadStore` with a `threading.Event` for wake-up."""
+    """Pairs a `_ThreadStore` with a `threading.Event` for wake-up.
 
-    __slots__ = ("store", "event", "latest_wins")
+    `safe_overflow` mirrors the ipc plane: True → single-slot keep-newest
+    (data-plane latest, e.g. self-trigger), False → bounded FIFO (ctrl/status).
+    A thread-transport *queue* data channel is deferred with co-location (§12).
+    """
 
-    def __init__(self, latest_wins: bool) -> None:
-        self.latest_wins = latest_wins
-        self.store = _ThreadStore(latest_wins)
+    __slots__ = ("store", "event", "safe_overflow")
+
+    def __init__(self, *, safe_overflow: bool, buffer_cap: Optional[int] = None) -> None:
+        self.safe_overflow = safe_overflow
+        self.store = _ThreadStore(safe_overflow, maxlen=buffer_cap or CTRL_HISTORY_SIZE)
         self.event = threading.Event()
 
 
@@ -357,17 +396,17 @@ _thread_registry: dict[str, _ThreadChannel] = {}
 _thread_registry_lock = threading.Lock()
 
 
-def _thread_channel(name: str, *, latest_wins: bool) -> _ThreadChannel:
+def _thread_channel(name: str, *, safe_overflow: bool, buffer_cap: Optional[int] = None) -> _ThreadChannel:
     """Look up or create the per-process registry entry for a channel."""
     with _thread_registry_lock:
         ch = _thread_registry.get(name)
         if ch is None:
-            ch = _ThreadChannel(latest_wins=latest_wins)
+            ch = _ThreadChannel(safe_overflow=safe_overflow, buffer_cap=buffer_cap)
             _thread_registry[name] = ch
-        elif ch.latest_wins != latest_wins:
+        elif ch.safe_overflow != safe_overflow:
             raise RuntimeError(
-                f"Thread channel {name} requested with latest_wins={latest_wins} "
-                f"but already exists with latest_wins={ch.latest_wins}"
+                f"Thread channel {name} requested with safe_overflow={safe_overflow} "
+                f"but already exists with safe_overflow={ch.safe_overflow}"
             )
         return ch
 
@@ -415,8 +454,8 @@ class _ThreadLoan:
 
 
 class ThreadPublisher:
-    def __init__(self, name: str, *, latest_wins: bool = True) -> None:
-        self._ch = _thread_channel(name, latest_wins=latest_wins)
+    def __init__(self, name: str, *, safe_overflow: bool = True, buffer_cap: Optional[int] = None) -> None:
+        self._ch = _thread_channel(name, safe_overflow=safe_overflow, buffer_cap=buffer_cap)
 
     def loan(self, size: int) -> _ThreadLoan:
         return _ThreadLoan(self._ch, size)
@@ -433,9 +472,9 @@ class ThreadPublisher:
 
 
 class ThreadSubscriber:
-    def __init__(self, name: str, *, latest_wins: bool = True) -> None:
+    def __init__(self, name: str, *, safe_overflow: bool = True, buffer_cap: Optional[int] = None) -> None:
         self._name = name
-        self._ch = _thread_channel(name, latest_wins=latest_wins)
+        self._ch = _thread_channel(name, safe_overflow=safe_overflow, buffer_cap=buffer_cap)
 
     def take_latest(self) -> Optional[bytes]:
         v = self._ch.store.take_latest()
@@ -453,7 +492,7 @@ class ThreadSubscriber:
 
 class ThreadNotifier:
     def __init__(self, name: str) -> None:
-        self._evt = _thread_channel(name, latest_wins=True).event
+        self._evt = _thread_channel(name, safe_overflow=True).event
 
     def notify(self) -> None:
         self._evt.set()
@@ -464,7 +503,7 @@ class ThreadNotifier:
 
 class ThreadListener:
     def __init__(self, name: str) -> None:
-        self._evt = _thread_channel(name, latest_wins=True).event
+        self._evt = _thread_channel(name, safe_overflow=True).event
 
     def _consume(self) -> bool:
         if self._evt.is_set():
@@ -628,15 +667,35 @@ class WaitSet:
 # ---------------------------------------------------------------------------
 
 
-def open_publisher(name: str, *, in_process: bool, latest_wins: bool = True) -> Tuple[Publisher, Notifier]:
+def open_publisher(
+    name: str,
+    *,
+    in_process: bool,
+    safe_overflow: bool = True,
+    buffer_cap: Optional[int] = None,
+    max_subscribers: int = DEFAULT_MAX_SUBSCRIBERS,
+) -> Tuple[Publisher, Notifier]:
     """Build the producer side of a channel — pub + paired notifier."""
     if in_process:
-        return ThreadPublisher(name, latest_wins=latest_wins), ThreadNotifier(name + _EVT)
-    return IpcPublisher(name, latest_wins=latest_wins), IpcNotifier(name + _EVT)
+        return ThreadPublisher(name, safe_overflow=safe_overflow, buffer_cap=buffer_cap), ThreadNotifier(name + _EVT)
+    return (
+        IpcPublisher(name, safe_overflow=safe_overflow, buffer_cap=buffer_cap, max_subscribers=max_subscribers),
+        IpcNotifier(name + _EVT),
+    )
 
 
-def open_subscriber(name: str, *, in_process: bool, latest_wins: bool = True) -> Tuple[Subscriber, Listener]:
+def open_subscriber(
+    name: str,
+    *,
+    in_process: bool,
+    safe_overflow: bool = True,
+    buffer_cap: Optional[int] = None,
+    buffer_size: Optional[int] = None,
+) -> Tuple[Subscriber, Listener]:
     """Build the consumer side of a channel — sub + paired listener."""
     if in_process:
-        return ThreadSubscriber(name, latest_wins=latest_wins), ThreadListener(name + _EVT)
-    return IpcSubscriber(name, latest_wins=latest_wins), IpcListener(name + _EVT)
+        return ThreadSubscriber(name, safe_overflow=safe_overflow, buffer_cap=buffer_cap), ThreadListener(name + _EVT)
+    return (
+        IpcSubscriber(name, safe_overflow=safe_overflow, buffer_cap=buffer_cap, buffer_size=buffer_size),
+        IpcListener(name + _EVT),
+    )

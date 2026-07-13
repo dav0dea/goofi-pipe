@@ -45,6 +45,8 @@ from goofi.params import (
     normalize_expression_binding,
 )
 from goofi.transport import (
+    CTRL_HISTORY_SIZE,
+    DEFAULT_MAX_SUBSCRIBERS,
     WaitSet,
     ctrl_service_name,
     data_service_name,
@@ -182,10 +184,10 @@ class Node(ABC):
             return
 
         self.ctrl_sub, self.ctrl_listener = open_subscriber(
-            ctrl_service_name(node_id), in_process=in_process_with_manager, latest_wins=False
+            ctrl_service_name(node_id), in_process=in_process_with_manager, safe_overflow=False, buffer_cap=CTRL_HISTORY_SIZE
         )
         self.status_pub, self._status_notifier = open_publisher(
-            status_service_name(node_id), in_process=in_process_with_manager, latest_wins=False
+            status_service_name(node_id), in_process=in_process_with_manager, safe_overflow=False, buffer_cap=CTRL_HISTORY_SIZE
         )
         # Install stdout/stderr capture and start this process's SSE log server.
         # Idempotent per process; `register_node` returns the URL the frontend
@@ -197,10 +199,10 @@ class Node(ABC):
         # wake the processing loop without going through input slots.
         # Latest-wins so a burst of notifies coalesces into a single tick.
         self._self_trigger_pub, self._self_trigger_notifier = open_publisher(
-            self_trigger_service_name(node_id), in_process=True, latest_wins=True
+            self_trigger_service_name(node_id), in_process=True
         )
         self._self_trigger_sub, self._self_trigger_listener = open_subscriber(
-            self_trigger_service_name(node_id), in_process=True, latest_wins=True
+            self_trigger_service_name(node_id), in_process=True
         )
         self._waitset.attach(self._self_trigger_listener)
         # NB: ctrl_listener is *not* attached to `self._waitset` — that
@@ -800,7 +802,7 @@ class Node(ABC):
         # Tear down any prior subscription on this slot.
         self._unsubscribe_input(slot_name_in)
 
-        sub, listener = open_subscriber(service_name, in_process=in_process, latest_wins=True)
+        sub, listener = open_subscriber(service_name, in_process=in_process)
         slot.subscriber = sub
         slot.listener = listener
         slot.service_name = service_name
@@ -841,12 +843,12 @@ class Node(ABC):
         slot = self.output_slots[slot_name]
         service = data_service_name(self.node_id, slot_name)
         if want_ipc and not slot.has_ipc:
-            pub, notif = open_publisher(service, in_process=False, latest_wins=True)
+            pub, notif = open_publisher(service, in_process=False)
             slot.publishers.append(pub)
             slot.notifiers.append(notif)
             slot.has_ipc = True
         if want_thread and not slot.has_thread:
-            pub, notif = open_publisher(service, in_process=True, latest_wins=True)
+            pub, notif = open_publisher(service, in_process=True)
             slot.publishers.append(pub)
             slot.notifiers.append(notif)
             slot.has_thread = True
@@ -861,7 +863,7 @@ class Node(ABC):
         if existing is not None:
             return existing
         service = view_service_name(self.node_id, slot_name)
-        pub, notif = open_publisher(service, in_process=False, latest_wins=True)
+        pub, notif = open_publisher(service, in_process=False)
         self._view_pubs[slot_name] = (pub, notif)
         return pub, notif
 

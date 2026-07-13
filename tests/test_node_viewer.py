@@ -271,7 +271,7 @@ def test_viewer_path_delivers_reduced_frames_end_to_end():
 
         # Manager-side subscriber on the node's reduced viewer service.
         svc = data_service_name(ref.node_id, "out") + ".view"
-        sub, _listener = open_subscriber(svc, in_process=False, latest_wins=True)
+        sub, _listener = open_subscriber(svc, in_process=False)
 
         # Drive the new ctrl messages directly (NodeRef wrappers land in Phase 3).
         ref._send(Message(MessageType.SET_VIEWSPEC, {

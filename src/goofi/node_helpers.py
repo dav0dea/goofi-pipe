@@ -28,6 +28,7 @@ from goofi.data import Data, DataType
 from goofi.message import Message, MessageType
 from goofi.params import NodeParams, coerce_to_param_type, normalize_expression_binding
 from goofi.transport import (
+    CTRL_HISTORY_SIZE,
     Listener,
     Publisher,
     Subscriber,
@@ -244,10 +245,10 @@ class NodeRef:
         self._data_pump_thread: Optional[Thread] = None
 
         self.ctrl_pub, self._ctrl_notifier = open_publisher(
-            ctrl_service_name(self.node_id), in_process=self.in_process, latest_wins=False
+            ctrl_service_name(self.node_id), in_process=self.in_process, safe_overflow=False, buffer_cap=CTRL_HISTORY_SIZE
         )
         self.status_sub, self.status_listener = open_subscriber(
-            status_service_name(self.node_id), in_process=self.in_process, latest_wins=False
+            status_service_name(self.node_id), in_process=self.in_process, safe_overflow=False, buffer_cap=CTRL_HISTORY_SIZE
         )
 
         self.initialize()
@@ -463,13 +464,13 @@ class NodeRef:
         # we always subscribe via IPC — whether the node lives in this
         # process or another. The thread transport is only used for explicit
         # SUBSCRIBE_INPUT wiring between same-group peers.
-        return open_subscriber(self.data_service_for(slot_name_out), in_process=False, latest_wins=True)
+        return open_subscriber(self.data_service_for(slot_name_out), in_process=False)
 
     def open_view_subscriber(self, slot_name_out: str) -> tuple[Subscriber, Listener]:
         """Subscribe to the node's REDUCED viewer stream (`<dataservice>.view`),
         provisioned by REGISTER_VIEWER. Carries small node-reduced GOOF frames the
         manager relays to browsers verbatim (Option C)."""
-        return open_subscriber(view_service_name(self.node_id, slot_name_out), in_process=False, latest_wins=True)
+        return open_subscriber(view_service_name(self.node_id, slot_name_out), in_process=False)
 
     def set_data_handler(
         self, slot_name_out: str, callback: Optional[Callable], *, raw: bool = False, view: bool = False

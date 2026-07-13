@@ -15,6 +15,7 @@ from goofi.codec import decode_data, decode_message, encode_data, encode_message
 from goofi.data import Data, DataType
 from goofi.message import Message, MessageType
 from goofi.transport import (
+    CTRL_HISTORY_SIZE,
     IpcListener,
     ThreadListener,
     ThreadNotifier,
@@ -117,8 +118,8 @@ def test_codec_message_roundtrip(msg):
 def test_ipc_pubsub_latest_wins():
     _fresh_iid()
     name = data_service_name("nodeA", "out")
-    pub, notif = open_publisher(name, in_process=False, latest_wins=True)
-    sub, listener = open_subscriber(name, in_process=False, latest_wins=True)
+    pub, notif = open_publisher(name, in_process=False)
+    sub, listener = open_subscriber(name, in_process=False)
     for i in range(10):
         pub.send(f"msg{i}".encode())
         notif.notify()
@@ -129,8 +130,8 @@ def test_ipc_pubsub_latest_wins():
 def test_ipc_atomic_instance_array():
     _fresh_iid()
     name = data_service_name("nodeAtomic", "out")
-    pub, _notif = open_publisher(name, in_process=False, latest_wins=True)
-    sub, _list = open_subscriber(name, in_process=False, latest_wins=True)
+    pub, _notif = open_publisher(name, in_process=False)
+    sub, _list = open_subscriber(name, in_process=False)
 
     arr = np.array([1, 2, 3, 4], dtype=np.int32)
     d = Data(DataType.ARRAY, arr, {})
@@ -147,8 +148,8 @@ def test_ipc_atomic_instance_array():
 def test_ipc_waitset_wake():
     _fresh_iid()
     name = data_service_name("nodeWS", "out")
-    pub, notif = open_publisher(name, in_process=False, latest_wins=True)
-    _sub, listener = open_subscriber(name, in_process=False, latest_wins=True)
+    pub, notif = open_publisher(name, in_process=False)
+    _sub, listener = open_subscriber(name, in_process=False)
     ws = WaitSet()
     ws.attach(listener)
 
@@ -167,7 +168,7 @@ def test_ipc_waitset_wake():
 
 def test_ipc_waitset_timeout():
     _fresh_iid()
-    _sub, listener = open_subscriber(data_service_name("idle", "out"), in_process=False, latest_wins=True)
+    _sub, listener = open_subscriber(data_service_name("idle", "out"), in_process=False)
     ws = WaitSet()
     ws.attach(listener)
     t0 = time.time()
@@ -180,8 +181,8 @@ def test_ipc_waitset_timeout():
 def test_ctrl_channel_order_under_burst():
     _fresh_iid()
     name = f"goofi-test-ctrl-{uuid.uuid4().hex[:8]}"
-    pub, notif = open_publisher(name, in_process=False, latest_wins=False)
-    sub, listener = open_subscriber(name, in_process=False, latest_wins=False)
+    pub, notif = open_publisher(name, in_process=False, safe_overflow=False, buffer_cap=CTRL_HISTORY_SIZE)
+    sub, listener = open_subscriber(name, in_process=False, safe_overflow=False, buffer_cap=CTRL_HISTORY_SIZE)
 
     # Burst N messages; expect them all in order.
     N = 20
@@ -206,8 +207,8 @@ def test_ctrl_channel_order_under_burst():
 
 def test_thread_pubsub_latest_wins():
     name = f"goofi-test-thread-{uuid.uuid4().hex[:8]}"
-    pub = ThreadPublisher(name, latest_wins=True)
-    sub = ThreadSubscriber(name, latest_wins=True)
+    pub = ThreadPublisher(name)
+    sub = ThreadSubscriber(name)
     for i in range(5):
         pub.send(f"t{i}".encode())
     assert sub.take_latest() == b"t4"
@@ -215,8 +216,8 @@ def test_thread_pubsub_latest_wins():
 
 def test_thread_atomic_instance_bytearray():
     name = f"goofi-test-thread-atom-{uuid.uuid4().hex[:8]}"
-    pub = ThreadPublisher(name, latest_wins=True)
-    sub = ThreadSubscriber(name, latest_wins=True)
+    pub = ThreadPublisher(name)
+    sub = ThreadSubscriber(name)
     buf = bytearray(b"abc")
     pub.send(buf)
     buf[0] = ord("Z")
@@ -247,8 +248,8 @@ def test_thread_listener_wake():
 def test_thread_ctrl_order():
     """Reliable thread ctrl: messages arrive in order, no drops."""
     name = f"goofi-test-thread-ctrl-{uuid.uuid4().hex[:8]}"
-    pub, _ = open_publisher(name, in_process=True, latest_wins=False)
-    sub, _ = open_subscriber(name, in_process=True, latest_wins=False)
+    pub, _ = open_publisher(name, in_process=True, safe_overflow=False, buffer_cap=CTRL_HISTORY_SIZE)
+    sub, _ = open_subscriber(name, in_process=True, safe_overflow=False, buffer_cap=CTRL_HISTORY_SIZE)
     for i in range(8):
         pub.send(str(i).encode())
     received = []
@@ -258,3 +259,44 @@ def test_thread_ctrl_order():
             break
         received.append(b.decode())
     assert received == [str(i) for i in range(8)]
+
+
+def test_ipc_queue_subscriber_lossless_with_latest_tap():
+    # One always-safe-overflow service serves a deep-buffer QUEUE consumer
+    # (drains every frame in order via take_next) and a shallow LATEST tap
+    # (take_latest -> newest only) simultaneously.
+    _fresh_iid()
+    name = data_service_name("nodeQ", "out")
+    pub, notif = open_publisher(name, in_process=False, safe_overflow=True, buffer_cap=8)
+    q_sub, _ = open_subscriber(name, in_process=False, safe_overflow=True, buffer_cap=8, buffer_size=8)
+    l_sub, _ = open_subscriber(name, in_process=False, safe_overflow=True, buffer_cap=8, buffer_size=2)
+    for i in range(5):
+        pub.send(f"f{i}".encode())
+        notif.notify()
+    time.sleep(0.05)
+    drained = []
+    while True:
+        b = q_sub.take_next()
+        if b is None:
+            break
+        drained.append(b.decode())
+    assert drained == [f"f{i}" for i in range(5)], f"queue consumer lost frames: {drained}"
+    assert l_sub.take_latest() == b"f4", "latest tap did not coalesce to newest"
+
+
+def test_thread_ctrl_respects_custom_buffer_cap():
+    # The thread ctrl/status plane (safe_overflow=False) keeps a bounded FIFO
+    # sized by buffer_cap.
+    _fresh_iid()
+    name = f"goofi-test-tcap-{uuid.uuid4().hex[:8]}"
+    pub, _ = open_publisher(name, in_process=True, safe_overflow=False, buffer_cap=3)
+    sub, _ = open_subscriber(name, in_process=True, safe_overflow=False, buffer_cap=3)
+    for i in range(5):
+        pub.send(str(i).encode())
+    got = []
+    while True:
+        b = sub.take_next()
+        if b is None:
+            break
+        got.append(b.decode())
+    assert got == ["2", "3", "4"], f"expected newest-3 FIFO, got {got}"

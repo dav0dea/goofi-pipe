@@ -22,12 +22,12 @@ def test_waitset_concurrent_churn_is_safe_and_stays_live():
     set_instance_id("waitset-race")
 
     # A real channel whose listener we keep attached the whole time.
-    pub, notifier = open_publisher("waitset-race-live", in_process=True, latest_wins=True)
-    live_sub, live_listener = open_subscriber("waitset-race-live", in_process=True, latest_wins=True)
+    pub, notifier = open_publisher("waitset-race-live", in_process=True)
+    live_sub, live_listener = open_subscriber("waitset-race-live", in_process=True)
 
     ws = WaitSet()
     ws.attach(live_listener)
-    churn_listeners = [open_subscriber(f"waitset-race-{i}", in_process=True, latest_wins=True)[1] for i in range(8)]
+    churn_listeners = [open_subscriber(f"waitset-race-{i}", in_process=True)[1] for i in range(8)]
 
     errors: list = []
     stop = threading.Event()

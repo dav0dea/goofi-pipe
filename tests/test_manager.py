@@ -806,7 +806,7 @@ def test_simple_chain_dataflow():
         # External subscriber acting like a GUI viewer. The data service is
         # keyed on the node's stable transport id, not its display name.
         service = mgr.nodes[sel].data_service_for("out")
-        sub, listener = open_subscriber(service, in_process=False, latest_wins=True)
+        sub, listener = open_subscriber(service, in_process=False)
         ws = WaitSet()
         ws.attach(listener)
         mgr.nodes[sel].register_subscriber("out")
