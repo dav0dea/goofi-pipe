@@ -4,7 +4,7 @@ import numpy as np
 
 from goofi.audio.clock import SampleClock
 from goofi.data import DataType
-from goofi.node import InputSlot, Node
+from goofi.node import Node
 from goofi.params import FloatParam, StringParam
 
 
@@ -35,10 +35,11 @@ class Oscillator(Node):
         }
 
     def config_input_slots():
-        # `frequency` is a control knob, not the audio timeline: mark it
-        # non-index-carrying so a stamped control source never fakes a
-        # discontinuity on the phase-continuous output (see _propagated_index).
-        return {"frequency": InputSlot(DataType.ARRAY, carries_index=False)}
+        # `frequency` is a scalar control knob, not the audio timeline. Its frame
+        # count never matches the generated block, so _propagated_index never
+        # propagates its index onto the phase-continuous output (the oscillator
+        # emits a fresh index) — no per-slot flag needed.
+        return {"frequency": DataType.ARRAY}
 
     def config_output_slots():
         return {"out": DataType.ARRAY}

@@ -7,20 +7,19 @@ from goofi.nodes.inputs.oscillator import Oscillator
 from .audio_utils import FixedClock
 
 
-def test_frequency_control_input_does_not_carry_index():
-    # The frequency input is a control signal, not the audio timeline. If it
-    # carried an index the generic propagate-or-fresh rule would copy the control
-    # source's index onto the phase-continuous audio output, and AudioOut would
-    # crossfade continuous audio on every control-index jump. It must be marked
-    # non-carrying so the oscillator falls through to a fresh per-output counter.
+def test_frequency_control_input_never_propagates_its_index():
+    # The frequency input is a scalar control signal, not the audio timeline. Its
+    # frame count (1) never matches a generated block, so the propagate-or-fresh
+    # rule never copies the control source's index onto the phase-continuous audio
+    # output — the oscillator emits a fresh per-output index (so AudioOut never
+    # crossfades continuous audio on a control-index jump). No per-slot flag needed.
     node = Oscillator.create_standalone()
-    assert node.input_slots["frequency"].carries_index is False
     node.input_slots["frequency"].data = Data(
         DataType.ARRAY, np.array([440.0], np.float32), {"index": 99}
     )
-    assert node._propagated_index() is None
-    assert node._next_index("out") == 0
-    assert node._next_index("out") == 1
+    assert node._propagated_index(240) is None      # 240-sample block vs scalar freq
+    assert node._next_index("out", 240) == 0
+    assert node._next_index("out", 240) == 1
 
 
 def _render(clock_sizes, freq=440.0, sfreq=48000.0):

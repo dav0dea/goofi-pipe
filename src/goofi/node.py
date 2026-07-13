@@ -1223,34 +1223,52 @@ class Node(ABC):
     def _has_no_triggering_inputs(self) -> bool:
         return not any(s.trigger_process and s.subscriber is not None for s in self.input_slots.values())
 
-    def _propagated_index(self) -> Optional[int]:
+    @staticmethod
+    def _frame_count(value) -> int:
+        """Number of frames a value spans, for index-timeline matching. Uses the
+        total element count (numpy `.size`), so a length-preserving transform's
+        output matches its input and a length-changing one (resampler, PSD, a
+        generator's scalar control input) does not — regardless of dimensionality."""
+        n = getattr(value, "size", None)  # numpy array
+        if n is not None:
+            return int(n)
+        try:
+            return len(value)
+        except TypeError:
+            return 1
+
+    def _propagated_index(self, output_frames: int) -> Optional[int]:
         """Source-origin index to propagate this tick, or None.
 
-        Propagate-or-fresh rule (v1): if EXACTLY ONE input slot currently
-        holds `Data` whose meta carries an `index`, that value is copied onto
-        every output (length-preserving propagation); otherwise each output
-        starts a fresh per-output counter. A single-input processor (Gain)
-        thus forwards its source's numbering unchanged, so an upstream drop
-        stays visible at the sink; a generator (no such input) starts fresh.
+        Propagate the index of the SINGLE input whose frame count equals this
+        output's — i.e. the input that is genuinely the same timeline (a length-
+        preserving pass-through like Gain forwards its source's numbering, so an
+        upstream drop stays visible at the sink). Any other case starts a fresh
+        per-output counter: a generator (no matching input), a control input of a
+        different length (an oscillator's scalar frequency), a length-changing
+        transform (resampler/PSD), or an ambiguous >1 matching inputs. Frame count,
+        not a per-slot flag, is the discriminator — index is always present on a
+        connected input, so presence alone never distinguishes timeline from control.
         """
         found: Optional[int] = None
         count = 0
         for slot in self.input_slots.values():
-            if not slot.carries_index:
-                continue  # control input — its source index is not our timeline
             data = slot.data
-            if data is not None and INDEX_META_KEY in data.meta:
-                count += 1
-                found = data.meta[INDEX_META_KEY]
+            if data is None or INDEX_META_KEY not in data.meta:
+                continue
+            if self._frame_count(data.data) != output_frames:
+                continue
+            count += 1
+            found = data.meta[INDEX_META_KEY]
         return found if count == 1 else None
 
-    def _next_index(self, slot_name: str) -> int:
+    def _next_index(self, slot_name: str, output_frames: int) -> int:
         """meta["index"] for one emit on `slot_name` (see `_propagated_index`).
 
         Advances the per-output counter only in the fresh case; propagation
-        just mirrors the input's value.
+        just mirrors the matching input's value.
         """
-        propagated = self._propagated_index()
+        propagated = self._propagated_index(output_frames)
         if propagated is not None:
             return propagated
         idx = self._index_counters.get(slot_name, 0)
@@ -1265,7 +1283,7 @@ class Node(ABC):
         (data.py:79) keep it un-aliased across fan-out.
         """
         data = Data(slot.dtype, value[0], value[1])
-        data.meta[INDEX_META_KEY] = self._next_index(slot_name)
+        data.meta[INDEX_META_KEY] = self._next_index(slot_name, self._frame_count(value[0]))
         return data
 
     # ------------------------------------------------------------------
