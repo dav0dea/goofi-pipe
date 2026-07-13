@@ -1,10 +1,18 @@
 import numpy as np
 import sounddevice as sd
 
+from goofi.audio.continuity import INDEX_META_KEY, crossfade, is_discontinuous
+from goofi.audio.drift import DriftCorrector
 from goofi.audio.ring import AudioRing
 from goofi.data import Data, DataType
 from goofi.node import InputSlot, Node
 from goofi.params import FloatParam, IntParam, StringParam
+
+
+# Discontinuity seam crossfade length (samples): short + fixed, REPLACES the
+# first frames of the post-jump block (never prepends), so it cannot inflate
+# the timebase the way the old per-block transition ramp did.
+CROSSFADE_SAMPLES = 64
 
 
 def _sounddevice_stream_factory(*, samplerate, channels, blocksize, device, callback):
@@ -82,6 +90,10 @@ class AudioOut(Node):
         self.target_fill = int(sr * self.params.audio.buffer_ms.value / 1000)
         self.ring = AudioRing(capacity_frames=max(self.target_fill * 4, 1), channels=2)
         self.started = False
+        self.drift = DriftCorrector(self.target_fill)
+        self._prev_index = None
+        self._prev_tail = None
+        self.discontinuities = 0
 
         self.stream = self.stream_factory(
             samplerate=sr,
@@ -115,7 +127,28 @@ class AudioOut(Node):
             return
 
         block = self._to_stereo(data.data)
+
+        # `index` is source-origin + propagated (base-stamped at node.py's publish
+        # path, Phase 3). A jump > 1 means an upstream drop/reset: crossfade the
+        # seam so the phase discontinuity is inaudible. Contiguous audio never
+        # crossfades.
+        index = data.meta.get(INDEX_META_KEY)
+        if is_discontinuous(self._prev_index, index):
+            if self._prev_tail is not None:
+                block = crossfade(self._prev_tail, block, CROSSFADE_SAMPLES)
+            self.discontinuities += 1
+        self._prev_index = index
+
+        # Threshold-triggered single-sample stuff/drop at a zero crossing to
+        # track DAC-vs-producer clock drift (inaudible, ~one edit / 0.3 s). Only
+        # in steady state: during priming the ring is deliberately below target,
+        # so correcting there would stuff a duplicate frame into every pre-
+        # playback write. The DAC isn't draining yet, so there is no drift to fix.
+        if self.started:
+            block = self.drift.correct(block, self.ring.fill)
         self.ring.write(block)
+        if block.shape[0] > 0:
+            self._prev_tail = block
 
         if not self.started and self.ring.fill >= self.target_fill:
             self.stream.start()
