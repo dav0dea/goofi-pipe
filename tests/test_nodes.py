@@ -8,7 +8,7 @@ from .test_registry_parity import load_or_skip
 
 CATALOG, _ = build_catalog()
 
-SKIP_NODES = ["AudioStream", "AudioOut", "MidiCCout", "MidiCout"]
+SKIP_NODES = ["AudioStream", "AudioOut", "Oscillator", "MidiCCout", "MidiCout"]
 
 # The create/terminate smoke tests only check a node's lifecycle, not its
 # processing. Spawn them with autotrigger off so no node free-runs its

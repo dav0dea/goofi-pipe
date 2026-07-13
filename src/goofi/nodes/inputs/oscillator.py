@@ -2,6 +2,7 @@ import time
 
 import numpy as np
 
+from goofi.audio.clock import SampleClock
 from goofi.data import DataType
 from goofi.node import Node
 from goofi.params import FloatParam, StringParam
@@ -22,11 +23,15 @@ class Oscillator(Node):
         return {
             "oscillator": {
                 "type": StringParam("sine", options=["sine", "square", "sawtooth", "pulse"]),
-                "frequency": FloatParam(1.0, 0.1, 30.0),
-                "sampling_frequency": FloatParam(1000.0, 1.0, 1000.0),
+                "frequency": FloatParam(440.0, 0.1, 20000.0),
+                "sampling_frequency": FloatParam(48000.0, 1.0, 192000.0),
             },
             "square": {"duty_cycle": FloatParam(0.5, 0.0, 1.0)},
-            "common": {"autotrigger": True},
+            # Free-run, paced by the tick rate limiter so the loop can't busy-spin.
+            # The SampleClock still owns the EXACT sample count per tick (no round(dt)
+            # quantization, no drift) — the limiter only sets how often we wake and
+            # thus the audio block granularity (200 Hz -> ~5 ms blocks at 48 kHz).
+            "common": {"autotrigger": True, "max_frequency": FloatParam(200.0, 0.0, 1000.0)},
         }
 
     def config_input_slots():
@@ -37,7 +42,8 @@ class Oscillator(Node):
 
     def setup(self):
         self.phase = 0.0
-        self.last_trigger = time.time()
+        self.clock = SampleClock(self.params.oscillator.sampling_frequency.value)
+        self.clock.start(time.time())
 
     def process(self, frequency):
         freq = frequency.data.item() if frequency else self.params.oscillator.frequency.value
@@ -46,34 +52,31 @@ class Oscillator(Node):
 
         meta = {"sfreq": sfreq}
 
-        t = time.time()
-        dt = t - self.last_trigger
-        n_samples = int(np.round(dt * sfreq))
-        self.last_trigger = t
-
-        if n_samples == 0:
+        # The SampleClock owns pacing: emit exactly the samples that have elapsed.
+        n = self.clock.advance(time.time())
+        if n == 0:
             return {"out": (np.array([]), meta)}
 
-        data = np.zeros(n_samples)
-        phase_increment = 2 * np.pi * freq / sfreq
+        inc = 2 * np.pi * freq / sfreq
+        i = np.arange(n)
+        raw = self.phase + inc * i          # unwrapped phase at each sample's start
+        osc_phase = raw % (2 * np.pi)        # == the per-sample old_phase of the old loop
 
-        for i in range(n_samples):
-            old_phase = self.phase
-            self.phase += phase_increment
-            if self.phase >= 2 * np.pi:
-                self.phase -= 2 * np.pi
+        if osc_type == "sine":
+            data = np.sin(osc_phase)
+        elif osc_type == "square":
+            duty_cycle = self.params.square.duty_cycle.value
+            data = np.where(osc_phase < 2 * np.pi * duty_cycle, 1.0, -1.0)
+        elif osc_type == "sawtooth":
+            data = osc_phase / np.pi - 1.0
+        elif osc_type == "pulse":
+            # Fire on the sample whose step crosses a 2*pi boundary (phase wrap).
+            next_raw = raw + inc
+            data = (np.floor(next_raw / (2 * np.pi)) > np.floor(raw / (2 * np.pi))).astype(float)
+        else:
+            data = np.zeros(n)
 
-            if osc_type == "sine":
-                data[i] = np.sin(old_phase)
-            elif osc_type == "square":
-                duty_cycle = self.params.square.duty_cycle.value
-                data[i] = 1.0 if old_phase < 2 * np.pi * duty_cycle else -1.0
-            elif osc_type == "sawtooth":
-                data[i] = old_phase / np.pi - 1.0
-            elif osc_type == "pulse":
-                if self.phase < old_phase:  # phase wrapped
-                    data[i] = 1.0
-                else:
-                    data[i] = 0.0
+        # Carry the phase forward (mod 2*pi) so the next block continues seamlessly.
+        self.phase = float((self.phase + inc * n) % (2 * np.pi))
 
         return {"out": (data, meta)}
