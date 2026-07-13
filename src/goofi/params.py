@@ -199,6 +199,16 @@ DEFAULT_PARAMS = {
                 "(restart required to take effect)."
             ),
         ),
+        "priority": StringParam(
+            "normal",
+            options=["normal", "realtime"],
+            doc=(
+                "Scheduling quality-of-service for the node's process. 'normal' keeps default "
+                "CPython GC (frozen after warm-up). 'realtime' disables GC and asks the kernel "
+                "for SCHED_FIFO on the processing thread (best-effort; silently degrades without "
+                "rtprio permission). Use for latency-sensitive nodes such as audio."
+            ),
+        ),
     },
 }
 

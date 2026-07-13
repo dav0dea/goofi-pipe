@@ -345,3 +345,20 @@ def test_update_options_refreshes_stringparam():
     # a free-form StringParam (options=None) stays free-form
     p.update_options({"g": {"free": ["a"]}})
     assert p["g"]["free"].options is None
+
+
+def test_common_priority_param_present():
+	"""`common.priority` is a general per-node scheduling-QoS knob (Phase 4).
+	It must ship as a normal/realtime dropdown and reach every node's default
+	params via the standard `common` merge."""
+	from .utils import DummyNode
+
+	assert "priority" in DEFAULT_PARAMS["common"], "Missing default param 'priority' in group 'common'."
+	p = DEFAULT_PARAMS["common"]["priority"]
+	assert isinstance(p, StringParam)
+	assert p.value == "normal"
+	assert p.options == ["normal", "realtime"]
+
+	# It must appear in a node's configured default params, not just the raw dict.
+	_, _, params = DummyNode._configure()
+	assert params.common.priority.value == "normal"
