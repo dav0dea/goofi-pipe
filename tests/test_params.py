@@ -115,6 +115,16 @@ def test_default_members():
     ), "Wrong type for default param 'max_frequency' in group 'common'."
 
 
+def test_default_max_frequency_is_unbounded():
+    # The base default is 0 == unbounded: an input-triggered consumer runs at its
+    # producer's rate (no throttle), while free-running producers opt into a finite
+    # cap themselves. A fresh node (no common override) inherits the 0.
+    from goofi.params import NodeParams
+
+    assert DEFAULT_PARAMS["common"]["max_frequency"].value == 0.0
+    assert NodeParams({}).common.max_frequency.value == 0.0
+
+
 @pytest.mark.parametrize("param_type", list_param_types())
 def test_param_types(param_type):
     p = param_type()

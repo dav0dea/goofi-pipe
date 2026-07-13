@@ -182,7 +182,14 @@ DEFAULT_PARAMS = {
             ),
         ),
         "max_frequency": FloatParam(
-            30.0, 0.0, 60.0, doc="The maximum frequency at which the node will run its processing function."
+            0.0,
+            0.0,
+            60.0,
+            doc=(
+                "The maximum frequency (updates/sec) at which the node runs its processing function. "
+                "0 means unbounded: an input-triggered node then runs at its input's rate, and a "
+                "free-running (autotrigger) node should set a finite cap so its loop can't busy-spin."
+            ),
         ),
         "frequency_mode": StringParam(
             "updates-per-second",
