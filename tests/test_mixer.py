@@ -18,10 +18,10 @@ def test_inputs_are_queue_slots():
 
 
 def test_mixer_is_input_triggered_not_free_running():
-    # Its queue inputs drive it: each delivered frame triggers process(), and the
-    # framework exempts queue-drained ticks from the max_frequency throttle, so it
-    # runs at the producers' rate without free-running. autotrigger would only
-    # busy-run the loop when NO input is connected (nothing to mix anyway).
+    # Its queue inputs drive it: each delivered frame triggers process(). With the
+    # unbounded default max_frequency (0) it runs at the producers' rate without
+    # free-running. autotrigger would only busy-run the loop when NO input is
+    # connected (nothing to mix anyway).
     node = Mixer.create_standalone()
     assert node.params.common.autotrigger.value is False
 

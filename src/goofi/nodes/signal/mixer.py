@@ -40,9 +40,9 @@ class Mixer(Node):
                 "buffer_ms": IntParam(50, 5, 500, doc="Per-input jitter-ring depth (ms at 48 kHz)."),
             },
             # No common override: the queue inputs drive the node (each delivered
-            # frame triggers process()), and the framework exempts queue-drained
-            # ticks from the max_frequency throttle — so it runs at the producers'
-            # rate. The rings, not the tick rate, set alignment.
+            # frame triggers process()), and with the unbounded default
+            # max_frequency it runs at the producers' rate. The rings, not the
+            # tick rate, set alignment.
         }
 
     def setup(self):
