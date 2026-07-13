@@ -1,43 +1,69 @@
 import numpy as np
 import sounddevice as sd
 
+from goofi.audio.ring import AudioRing
 from goofi.data import Data, DataType
-from goofi.node import Node
-from goofi.params import StringParam
+from goofi.node import InputSlot, Node
+from goofi.params import FloatParam, IntParam, StringParam
+
+
+def _sounddevice_stream_factory(*, samplerate, channels, blocksize, device, callback):
+    """Default stream factory: a real non-blocking sounddevice callback stream."""
+    return sd.OutputStream(
+        samplerate=samplerate,
+        channels=channels,
+        blocksize=blocksize,
+        device=device,
+        callback=callback,
+    )
 
 
 class AudioOut(Node):
     """
-    This node plays incoming audio data to an audio output device in real-time. It receives audio arrays and routes the signal to the selected audio hardware, handling transitions between consecutive audio blocks for seamless playback. The node can also switch audio devices dynamically.
+    This node plays incoming audio to an output device in real-time using a
+    non-blocking callback stream fed by a jitter-buffer ring. Audio blocks are
+    written into the ring on the tick thread; the device callback drains the ring
+    on its own clock. The stream is primed (not started until the ring reaches
+    its target fill) and outputs zeros on an empty ring, so playback never blocks
+    the graph and never blocks the producer.
 
     Inputs:
     - data: Array of audio samples to play through the output device.
     - device: Name of the audio output device to use.
 
     Outputs:
-    - finished: Signals completion of playback for the current audio data block.
+    - finished: Signals that a block was accepted into the playback ring.
     """
 
+    # Overridable in tests: a callable returning a stream object exposing
+    # start()/stop()/close() and driven by the injected callback. A staticmethod
+    # so `self.stream_factory(...)` never binds `self`; a test sets an instance
+    # attribute (a plain function, likewise unbound).
+    stream_factory = staticmethod(_sounddevice_stream_factory)
+
     def config_input_slots():
-        return {"data": DataType.ARRAY, "device": DataType.STRING}
+        return {"data": InputSlot(DataType.ARRAY, queue=True), "device": DataType.STRING}
 
     def config_output_slots():
         return {"finished": DataType.ARRAY}
 
     def config_params():
         # Device enumeration is runtime state: under the registry's static
-        # evaluation this falls to the fallback (the live node reports the
-        # real list via its state push).
+        # evaluation this falls to the fallback (the live node reports the real
+        # list via its state push).
         try:
             devices = AudioOut.list_audio_devices() or ["default"]
         except Exception:
             devices = ["default"]
         return {
             "audio": {
-                "sampling_rate": StringParam("44100", options=["44100", "48000", "32000", "16000"]),
+                "sampling_rate": StringParam("48000", options=["48000", "44100", "32000", "16000"]),
                 "device": StringParam(devices[0], options=devices, refresh="_refresh_audio_devices"),
-                "transition_samples": 100,
-            }
+                "buffer_ms": IntParam(30, 5, 200),
+                "blocksize": IntParam(256, 32, 2048),
+            },
+            # Free-run the DAC: the callback stream, not the tick limiter, paces output.
+            "common": {"max_frequency": FloatParam(0.0, 0.0, 60.0)},
         }
 
     def _refresh_audio_devices(self):
@@ -45,18 +71,39 @@ class AudioOut(Node):
         return AudioOut.list_audio_devices() or ["default"]
 
     def setup(self):
-        if hasattr(self, "stream") and self.stream:
-            self.stream.stop()
-            self.stream.close()
+        if getattr(self, "stream", None) is not None:
+            try:
+                self.stream.stop()
+                self.stream.close()
+            except Exception:
+                pass
 
-        self.stream = sd.OutputStream(
-            samplerate=int(self.params.audio.sampling_rate.value),
-            device=self.params.audio.device.value,
+        sr = int(self.params.audio.sampling_rate.value)
+        self.target_fill = int(sr * self.params.audio.buffer_ms.value / 1000)
+        self.ring = AudioRing(capacity_frames=max(self.target_fill * 4, 1), channels=2)
+        self.started = False
+
+        self.stream = self.stream_factory(
+            samplerate=sr,
             channels=2,
+            blocksize=self.params.audio.blocksize.value,
+            device=self.params.audio.device.value,
+            callback=self._callback,
         )
-        self.stream.start()
 
-        self.last_sample = None
+    def _callback(self, outdata, frames, time_info, status):
+        # Runs on the device thread: fill from the ring, zero any shortfall.
+        outdata[:] = 0.0
+        self.ring.read_into(outdata)
+
+    def _to_stereo(self, arr):
+        samples = np.asarray(arr, dtype=np.float32)
+        if samples.ndim > 1:
+            samples = samples.T.squeeze()
+        if samples.ndim == 1:
+            # Mono -> duplicate into stereo.
+            samples = np.stack((samples, samples), axis=-1)
+        return np.ascontiguousarray(samples, dtype=np.float32)
 
     def process(self, data: Data, device: Data):
         if device is not None:
@@ -67,46 +114,27 @@ class AudioOut(Node):
         if data is None:
             return
 
-        if self.stream is None:
-            raise RuntimeError("Audio output stream is not available.")
+        block = self._to_stereo(data.data)
+        self.ring.write(block)
 
-        # set data type to float32
-        samples = data.data.astype(np.float32).T.squeeze()
-        # Handle Mono to Stereo or Stereo to Mono Conversion
-        # Verify that the samples array has the correct number of dimensions
-        if samples.data.ndim == 1:
-            # Mono audio: duplicate the channel for stereo output
-            samples = np.stack((samples.data, samples.data), axis=-1)
-        else:
-            # For already stereo or multi-channel data, use as is
-            samples = samples.data
-
-        if self.last_sample is None:
-            self.last_sample = samples[-1]
-
-        transition = np.linspace(self.last_sample, samples[0], num=self.params.audio.transition_samples.value)
-        samples = np.concatenate((transition, samples), axis=0)
-
-        self.last_sample = samples[-1]
-
-        # Send the audio data to the output device after ensuring it's C-contiguous
-        self.stream.write(np.ascontiguousarray(samples))
+        if not self.started and self.ring.fill >= self.target_fill:
+            self.stream.start()
+            self.started = True
 
         return {"finished": (np.array([1]), {})}
 
     def audio_sampling_rate_changed(self, value):
         self.setup()
 
+    def audio_device_changed(self, value):
+        self.setup()
+
     @staticmethod
     def list_audio_devices():
-        """Returns a list of available audio devices."""
+        """Returns a list of available audio output devices."""
         devices = sd.query_devices()
         device_names = []
         for device in devices:
-            # check if the device is an output device
             if device["max_output_channels"] > 0:
                 device_names.append(device["name"])
         return device_names
-
-    def audio_device_changed(self, value):
-        self.setup()
