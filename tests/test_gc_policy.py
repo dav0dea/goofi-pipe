@@ -3,7 +3,19 @@ import gc
 import os
 import sys
 
+import pytest
+
+from goofi.node import NodeEnv
+
 from .utils import DummyNode
+
+
+def _mp_node():
+	"""A node that OWNS its process — the only environment where mutating
+	process-global GC/scheduling state is safe."""
+	node = DummyNode.create_standalone()
+	node._environment = NodeEnv.MULTIPROCESSING
+	return node
 
 
 def test_apply_gc_policy_normal_freezes_once(monkeypatch):
@@ -13,7 +25,7 @@ def test_apply_gc_policy_normal_freezes_once(monkeypatch):
 	monkeypatch.setattr(gc, "disable", lambda: calls.__setitem__("disable", calls["disable"] + 1))
 	monkeypatch.setattr(sys, "setswitchinterval", lambda v: switch.append(v))
 
-	node = DummyNode.create_standalone()
+	node = _mp_node()
 	assert node._gc_policy_applied is False
 	node._apply_gc_policy()
 	node._apply_gc_policy()  # idempotent: guard must swallow the second call
@@ -32,7 +44,7 @@ def test_apply_gc_policy_realtime_disables_and_sets_fifo(monkeypatch):
 	monkeypatch.setattr(sys, "setswitchinterval", lambda v: None)
 	monkeypatch.setattr(os, "sched_setscheduler", lambda pid, policy, param: sched.append((pid, policy)))
 
-	node = DummyNode.create_standalone()
+	node = _mp_node()
 	node.params.common.priority.value = "realtime"
 	node._apply_gc_policy()
 
@@ -50,11 +62,31 @@ def test_apply_gc_policy_realtime_permission_denied_degrades(monkeypatch):
 
 	monkeypatch.setattr(os, "sched_setscheduler", boom)
 
-	node = DummyNode.create_standalone()
+	node = _mp_node()
 	node.params.common.priority.value = "realtime"
 	node._apply_gc_policy()  # must not raise
 
 	assert node._gc_policy_applied is True
+
+
+@pytest.mark.parametrize("env", [NodeEnv.LOCAL, NodeEnv.STANDALONE])
+def test_gc_policy_skipped_for_colocated_nodes(monkeypatch, env):
+	# In LOCAL (--no-multiprocessing or a shared process_group) and STANDALONE the
+	# node does NOT own its process, so freezing/disabling GC or grabbing SCHED_FIFO
+	# would corrupt the manager/bridge or sibling nodes. The policy must no-op there
+	# — but still latch so the loop stops retrying it every tick.
+	touched = []
+	monkeypatch.setattr(gc, "freeze", lambda: touched.append("freeze"))
+	monkeypatch.setattr(gc, "disable", lambda: touched.append("disable"))
+	monkeypatch.setattr(sys, "setswitchinterval", lambda v: touched.append("switch"))
+
+	node = DummyNode.create_standalone()
+	node._environment = env
+	node.params.common.priority.value = "realtime"
+	node._apply_gc_policy()
+
+	assert touched == []  # no process-global mutation in a co-located process
+	assert node._gc_policy_applied is True  # latched: the loop won't retry
 
 
 def test_gc_policy_applied_after_first_tick():
@@ -62,9 +94,9 @@ def test_gc_policy_applied_after_first_tick():
 	warm-up, never blocking setup. Driven with a live local node (autotrigger
 	free-runs the loop) so this exercises the actual wiring, not the method.
 
-	`create_local` runs the loop in THIS process, so the real policy fires here;
-	save/restore the process-global switch interval so it doesn't leak into the
-	rest of the suite (priority stays 'normal', so GC is never disabled)."""
+	`create_local` runs the node in the LOCAL environment, so the policy latches
+	but its process-global mutations are gated off (this is the manager's process)
+	— nothing leaks into the rest of the suite."""
 	import time
 	import uuid
 
@@ -73,7 +105,6 @@ def test_gc_policy_applied_after_first_tick():
 	from .utils import DummyNode
 
 	set_instance_id(f"t-{uuid.uuid4().hex[:8]}")
-	prev_switch = sys.getswitchinterval()
 	ref, n = DummyNode.create_local(initial_params={"common": {"autotrigger": True}})
 	try:
 		deadline = time.time() + 3.0
@@ -82,4 +113,3 @@ def test_gc_policy_applied_after_first_tick():
 		assert n._gc_policy_applied, "GC policy was not applied after the first tick."
 	finally:
 		ref.terminate()
-		sys.setswitchinterval(prev_switch)

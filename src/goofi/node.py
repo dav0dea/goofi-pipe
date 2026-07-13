@@ -1288,6 +1288,13 @@ class Node(ABC):
         if self._gc_policy_applied:
             return
         self._gc_policy_applied = True
+        # Only safe when the node OWNS its process. In the co-located LOCAL
+        # environments — the whole graph inside the manager+bridge process under
+        # --no-multiprocessing, or a shared common.process_group host — freezing/
+        # disabling GC or grabbing SCHED_FIFO would corrupt the bridge and every
+        # sibling node. Latch first (so the loop stops retrying), then bail.
+        if self._environment != NodeEnv.MULTIPROCESSING:
+            return
         gc.freeze()
         sys.setswitchinterval(0.001)
         if self.params.common.priority.value == "realtime":
