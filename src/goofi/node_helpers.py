@@ -411,12 +411,10 @@ class NodeRef:
     def unsubscribe_input(self, slot_name_in: str) -> None:
         self._send(Message(MessageType.UNSUBSCRIBE_INPUT, {"slot_name_in": slot_name_in}))
 
-    def register_subscriber(self, slot_name_out: str, *, buffer_cap=None, max_subscribers=None) -> None:
+    def register_subscriber(self, slot_name_out: str, *, buffer_cap=None) -> None:
         content = {"slot_name_out": slot_name_out}
         if buffer_cap is not None:
             content["buffer_cap"] = buffer_cap
-        if max_subscribers is not None:
-            content["max_subscribers"] = max_subscribers
         self._send(Message(MessageType.REGISTER_SUBSCRIBER, content))
 
     def input_queue_mode(self, slot_name_in: str) -> bool:

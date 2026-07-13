@@ -93,5 +93,5 @@ def test_subscribe_input_rejects_non_int_buffer_cap():
 
 
 def test_register_subscriber_accepts_optional_caps():
-    m = Message(MessageType.REGISTER_SUBSCRIBER, {"slot_name_out": "out", "buffer_cap": 8, "max_subscribers": 4})
-    assert m.content["buffer_cap"] == 8 and m.content["max_subscribers"] == 4
+    m = Message(MessageType.REGISTER_SUBSCRIBER, {"slot_name_out": "out", "buffer_cap": 8})
+    assert m.content["buffer_cap"] == 8

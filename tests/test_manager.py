@@ -953,9 +953,9 @@ def test_wire_link_provisions_buffer_cap_from_consumer_mode(monkeypatch):
             seen_sub.update(queue=queue, buffer_cap=buffer_cap)
             return orig_sub(slot_name_in, service_name, in_process, queue=queue, buffer_cap=buffer_cap)
 
-        def spy_reg(slot_name_out, *, buffer_cap=None, max_subscribers=None):
+        def spy_reg(slot_name_out, *, buffer_cap=None):
             seen_reg.update(buffer_cap=buffer_cap)
-            return orig_reg(slot_name_out, buffer_cap=buffer_cap, max_subscribers=max_subscribers)
+            return orig_reg(slot_name_out, buffer_cap=buffer_cap)
 
         monkeypatch.setattr(mgr.nodes[sel], "subscribe_input", spy_sub)
         monkeypatch.setattr(mgr.nodes[osc], "register_subscriber", spy_reg)

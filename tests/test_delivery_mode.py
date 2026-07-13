@@ -55,8 +55,8 @@ def test_ensure_output_endpoints_threads_buffer_cap(monkeypatch):
         def close(self):
             pass
 
-    def fake_open_publisher(name, *, in_process, safe_overflow=True, buffer_cap=None, max_subscribers=16):
-        captured.update(name=name, buffer_cap=buffer_cap, max_subscribers=max_subscribers)
+    def fake_open_publisher(name, *, in_process, safe_overflow=True, buffer_cap=None):
+        captured.update(name=name, buffer_cap=buffer_cap)
         return _FakePub(), _FakeNotif()
 
     monkeypatch.setattr(node_mod, "open_publisher", fake_open_publisher)
@@ -64,8 +64,8 @@ def test_ensure_output_endpoints_threads_buffer_cap(monkeypatch):
     Cls = make_custom_node(input_slots={"data": DataType.ARRAY}, output_slots={"out": DataType.ARRAY})
     n = Cls.create_standalone()
 
-    n._ensure_output_endpoints("out", want_ipc=True, buffer_cap=8, max_subscribers=4)
-    assert captured["buffer_cap"] == 8 and captured["max_subscribers"] == 4
+    n._ensure_output_endpoints("out", want_ipc=True, buffer_cap=8)
+    assert captured["buffer_cap"] == 8
     assert n.output_slots["out"].ipc_buffer_cap == 8
 
 

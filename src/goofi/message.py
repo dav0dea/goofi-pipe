@@ -139,8 +139,6 @@ class Message:
             self.require_fields(slot_name_out=str)
             if "buffer_cap" in self.content and not isinstance(self.content["buffer_cap"], int):
                 raise ValueError("REGISTER_SUBSCRIBER 'buffer_cap' must be int.")
-            if "max_subscribers" in self.content and not isinstance(self.content["max_subscribers"], int):
-                raise ValueError("REGISTER_SUBSCRIBER 'max_subscribers' must be int.")
         elif t == MessageType.UNREGISTER_SUBSCRIBER:
             self.require_fields(slot_name_out=str)
         elif t == MessageType.PARAMETER_UPDATE:

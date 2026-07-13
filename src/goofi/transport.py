@@ -139,7 +139,6 @@ def _open_byte_service(
     *,
     safe_overflow: bool,
     buffer_cap: Optional[int] = None,
-    max_subscribers: int = DEFAULT_MAX_SUBSCRIBERS,
 ):
     """Open or create a `publish_subscribe` byte-slice service.
 
@@ -155,7 +154,7 @@ def _open_byte_service(
         .publish_subscribe(iox2.Slice[ctypes.c_uint8])
         .enable_safe_overflow(safe_overflow)
         .max_publishers(1)
-        .max_subscribers(max_subscribers)
+        .max_subscribers(DEFAULT_MAX_SUBSCRIBERS)
     )
     if not safe_overflow:
         # Reliable ctrl/status plane replays recent samples to a late subscriber.
@@ -221,13 +220,10 @@ class IpcPublisher:
         *,
         safe_overflow: bool = True,
         buffer_cap: Optional[int] = None,
-        max_subscribers: int = DEFAULT_MAX_SUBSCRIBERS,
         max_payload: int = DEFAULT_MAX_PAYLOAD,
     ) -> None:
         self._name = name
-        svc = _open_byte_service(
-            name, safe_overflow=safe_overflow, buffer_cap=buffer_cap, max_subscribers=max_subscribers
-        )
+        svc = _open_byte_service(name, safe_overflow=safe_overflow, buffer_cap=buffer_cap)
         self._pub = (
             svc.publisher_builder()
             .initial_max_slice_len(max_payload)
@@ -673,13 +669,12 @@ def open_publisher(
     in_process: bool,
     safe_overflow: bool = True,
     buffer_cap: Optional[int] = None,
-    max_subscribers: int = DEFAULT_MAX_SUBSCRIBERS,
 ) -> Tuple[Publisher, Notifier]:
     """Build the producer side of a channel — pub + paired notifier."""
     if in_process:
         return ThreadPublisher(name, safe_overflow=safe_overflow, buffer_cap=buffer_cap), ThreadNotifier(name + _EVT)
     return (
-        IpcPublisher(name, safe_overflow=safe_overflow, buffer_cap=buffer_cap, max_subscribers=max_subscribers),
+        IpcPublisher(name, safe_overflow=safe_overflow, buffer_cap=buffer_cap),
         IpcNotifier(name + _EVT),
     )
 

@@ -50,7 +50,6 @@ from goofi.params import (
 )
 from goofi.transport import (
     CTRL_HISTORY_SIZE,
-    DEFAULT_MAX_SUBSCRIBERS,
     WaitSet,
     ctrl_service_name,
     data_service_name,
@@ -751,7 +750,6 @@ class Node(ABC):
                 slot_name,
                 want_ipc=True,
                 buffer_cap=msg.content.get("buffer_cap"),
-                max_subscribers=msg.content.get("max_subscribers"),
             )
             self._mark_dirty()
         elif t == MessageType.UNREGISTER_SUBSCRIBER:
@@ -897,14 +895,13 @@ class Node(ABC):
         want_ipc: bool = False,
         want_thread: bool = False,
         buffer_cap=None,
-        max_subscribers=None,
     ) -> None:
         """Idempotent — create the requested publisher flavours for a slot.
 
         `REGISTER_SUBSCRIBER` always requests the ipc flavour; the manager sizes
-        `buffer_cap`/`max_subscribers` from the wired endpoints. Thread publishers
-        are added when a same-group consumer subscribes. Endpoints are cheap
-        (iceoryx2 services are ref-counted via `open_or_create`).
+        `buffer_cap` from the wired endpoints. Thread publishers are added when a
+        same-group consumer subscribes. Endpoints are cheap (iceoryx2 services are
+        ref-counted via `open_or_create`).
         """
         slot = self.output_slots[slot_name]
         service = data_service_name(self.node_id, slot_name)
@@ -920,7 +917,6 @@ class Node(ABC):
                     service,
                     in_process=False,
                     buffer_cap=buffer_cap,
-                    max_subscribers=max_subscribers or DEFAULT_MAX_SUBSCRIBERS,
                 )
                 slot.publishers.append(pub)
                 slot.notifiers.append(notif)
