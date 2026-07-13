@@ -1196,12 +1196,9 @@ class Node(ABC):
             if not triggered:
                 continue
 
-            # Rate limiting.
-            if self.params.common.max_frequency.value > 0:
-                max_freq = self.params.common.max_frequency.value
-                if self.params.common.frequency_mode.value == "updates-per-second":
-                    max_freq = 1.0 / max_freq
-                sleep_time = max_freq - (time.time() - last_update)
+            # Rate limiting (queue-drained ticks are exempt — see below).
+            sleep_time = self._rate_limit_sleep(queued_frames, last_update, time.time())
+            if sleep_time is not None:
                 if sleep_time > 0:
                     time.sleep(sleep_time)
                 last_update = time.time()
@@ -1222,6 +1219,26 @@ class Node(ABC):
 
     def _has_no_triggering_inputs(self) -> bool:
         return not any(s.trigger_process and s.subscriber is not None for s in self.input_slots.values())
+
+    def _rate_limit_sleep(self, queued_frames, last_update: float, now: float) -> Optional[float]:
+        """Seconds to sleep this tick to honor common.max_frequency, or None
+        when the tick must NOT be throttled.
+
+        Returns None in two cases: the cap is off (max_frequency <= 0), or the
+        tick drained a queue burst. A `queue` input is lossless-and-prompt by
+        contract — throttling it would re-introduce the burst gaps queue mode
+        exists to remove (an audio processor scaling a 48 kHz stream must run at
+        the producer's rate, not the 30 Hz default cap). Otherwise returns the
+        seconds left in the tick period; <= 0 means we're already behind and
+        won't sleep, but the caller still advances last_update.
+        """
+        if queued_frames:
+            return None
+        max_freq = self.params.common.max_frequency.value
+        if max_freq <= 0:
+            return None
+        period = 1.0 / max_freq if self.params.common.frequency_mode.value == "updates-per-second" else max_freq
+        return period - (now - last_update)
 
     @staticmethod
     def _frame_count(value) -> int:
