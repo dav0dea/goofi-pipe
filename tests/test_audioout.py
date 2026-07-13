@@ -25,6 +25,20 @@ def test_data_input_is_a_queue_slot():
     assert node.input_slots["data"].queue is True
 
 
+def test_ring_capacity_holds_at_least_one_callback_block():
+    # buffer_ms and blocksize are independent params. A low-latency / large-block
+    # combo (target_fill*4 < blocksize) would leave the ring unable to hold even
+    # one callback block -> read_into short-reads every callback (perpetual
+    # underrun, mostly-zero output). Capacity must floor at blocksize + jitter.
+    node = AudioOut.create_standalone()
+    node.stream_factory = fake_stream_factory
+    node.params.audio.sampling_rate.value = "16000"
+    node.params.audio.buffer_ms.value = 5       # target_fill = 80 -> *4 = 320
+    node.params.audio.blocksize.value = 2048     # >> 320
+    node.setup()
+    assert node.ring.capacity >= node.params.audio.blocksize.value
+
+
 def test_primes_before_starting_the_stream():
     node = _make_node()
     node.process(_audio(128, 0.1), None)        # fill 128 < target 240

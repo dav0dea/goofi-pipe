@@ -100,7 +100,15 @@ class AudioOut(Node):
 
         sr = int(self.params.audio.sampling_rate.value)
         self.target_fill = int(sr * self.params.audio.buffer_ms.value / 1000)
-        self.ring = AudioRing(capacity_frames=max(self.target_fill * 4, 1), channels=2)
+        # Floor the ring so it can always hold one callback block PLUS the jitter
+        # target, regardless of the (independent) buffer_ms/blocksize combo — else
+        # a low-latency/large-block choice (target_fill*4 < blocksize) underruns
+        # every callback and plays mostly zeros.
+        blocksize = self.params.audio.blocksize.value
+        self.ring = AudioRing(
+            capacity_frames=max(self.target_fill * 4, blocksize + self.target_fill, 1),
+            channels=2,
+        )
         self.started = False
         self.drift = DriftCorrector(self.target_fill)
         self._prev_index = None
