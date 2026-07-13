@@ -849,6 +849,20 @@ class Node(ABC):
     # Output endpoints (lazy)
     # ------------------------------------------------------------------
 
+    def _close_ipc_publisher(self, slot) -> None:
+        """Tear down a slot's ipc publisher/notifier so its service can be
+        recreated at a new buffer depth. v1 only: skipped by the caller if a
+        thread publisher coexists (co-located fan-out is deferred, §12)."""
+        for endpoint in (*slot.publishers, *slot.notifiers):
+            try:
+                endpoint.close()
+            except Exception:
+                pass
+        slot.publishers.clear()
+        slot.notifiers.clear()
+        slot.has_ipc = False
+        slot.ipc_buffer_cap = None
+
     def _ensure_output_endpoints(
         self,
         slot_name: str,
@@ -867,17 +881,24 @@ class Node(ABC):
         """
         slot = self.output_slots[slot_name]
         service = data_service_name(self.node_id, slot_name)
-        if want_ipc and not slot.has_ipc:
-            pub, notif = open_publisher(
-                service,
-                in_process=False,
-                buffer_cap=buffer_cap,
-                max_subscribers=max_subscribers or DEFAULT_MAX_SUBSCRIBERS,
-            )
-            slot.publishers.append(pub)
-            slot.notifiers.append(notif)
-            slot.has_ipc = True
-            slot.ipc_buffer_cap = buffer_cap
+        if want_ipc:
+            if slot.has_ipc and buffer_cap != slot.ipc_buffer_cap and not slot.has_thread:
+                # Live delivery-mode override changed the channel depth — drop the
+                # ipc publisher so open_or_create rebuilds the service at the new
+                # cap. Safe in v1: the consumer is unsubscribed before reallocation,
+                # so this process holds the only remaining service reference.
+                self._close_ipc_publisher(slot)
+            if not slot.has_ipc:
+                pub, notif = open_publisher(
+                    service,
+                    in_process=False,
+                    buffer_cap=buffer_cap,
+                    max_subscribers=max_subscribers or DEFAULT_MAX_SUBSCRIBERS,
+                )
+                slot.publishers.append(pub)
+                slot.notifiers.append(notif)
+                slot.has_ipc = True
+                slot.ipc_buffer_cap = buffer_cap
         if want_thread and not slot.has_thread:
             pub, notif = open_publisher(service, in_process=True)
             slot.publishers.append(pub)

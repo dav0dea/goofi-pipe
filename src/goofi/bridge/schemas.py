@@ -166,6 +166,9 @@ def describe_node_instance(uid: str, ref: NodeRef) -> Dict[str, Any]:
         #   { "<slot>": {"collapsed": <bool>} }
         # The frontend uses this to restore expand state on patch load.
         "viewers": dict(gk.get("viewers") or {}),
+        # Per-input-slot delivery-mode override persisted in the .gfi:
+        #   { "<slot>": {"queue": <bool>} }
+        "inputs": dict(gk.get("inputs") or {}),
         # Sub-patch membership marker. Every node is a member of SOME scope — a real
         # sub-patch ({instance, local_name}) or ROOT ({instance: ROOT_ID, ...}) for a
         # top-level node — so the editor indexes its parent scope uniformly. The editor

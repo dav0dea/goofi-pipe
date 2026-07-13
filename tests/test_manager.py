@@ -984,3 +984,37 @@ def test_wire_link_default_latest_consumer_gets_no_buffer_cap(monkeypatch):
         assert seen == {"queue": False, "buffer_cap": None}
     finally:
         mgr.terminate()
+
+
+def test_set_node_inputs_persists_and_reallocates(monkeypatch, tmp_path):
+    from goofi.manager import QUEUE_DEPTH
+
+    mgr = _bare_manager(use_multiprocessing=False)
+    try:
+        osc, sel = _build_simple_graph(mgr)  # osc.out -> sel.data (latest by default)
+
+        seen = {}
+        orig = mgr.nodes[sel].subscribe_input
+
+        def spy(slot_name_in, service_name, in_process, *, queue=False, buffer_cap=None):
+            seen.update(queue=queue, buffer_cap=buffer_cap)
+            return orig(slot_name_in, service_name, in_process, queue=queue, buffer_cap=buffer_cap)
+
+        monkeypatch.setattr(mgr.nodes[sel], "subscribe_input", spy)
+
+        mgr.set_node_inputs(sel, {"data": {"queue": True}})
+        # The override is persisted on gui_kwargs and the live link was reallocated.
+        assert mgr.nodes[sel].gui_kwargs["inputs"] == {"data": {"queue": True}}
+        assert seen == {"queue": True, "buffer_cap": QUEUE_DEPTH}
+
+        fp = str(tmp_path / "p.gfi")
+        mgr.save(fp, overwrite=True)
+    finally:
+        mgr.terminate()
+
+    mgr2 = _bare_manager(use_multiprocessing=False)
+    try:
+        mgr2.load(fp)
+        assert mgr2.nodes[sel].gui_kwargs.get("inputs") == {"data": {"queue": True}}
+    finally:
+        mgr2.terminate()

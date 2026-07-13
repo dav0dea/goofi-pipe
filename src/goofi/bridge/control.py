@@ -283,6 +283,16 @@ class ControlHub:
             kwargs["viewers"] = payload.get("viewers") or {}
             ref.gui_kwargs = kwargs
             return {"ok": True}
+        if op == "set_node_inputs":
+            # Per-input-slot delivery-mode override (queue vs latest), persisted on
+            # the node's gui_kwargs so it round-trips into the .gfi — mirrors
+            # set_node_viewers. Unlike viewers, flipping the mode reallocates the
+            # live channel, so it routes through the manager.
+            node = payload["node"]
+            if node not in manager.nodes:
+                return {"ok": True}
+            await self._call_manager(manager.set_node_inputs, node, payload.get("inputs") or {})
+            return {"ok": True}
         if op == "set_layout":
             # The browser pushes its workspace layout into the running patch so
             # it survives reloads and lands in the .gfi on save. Layout is soft

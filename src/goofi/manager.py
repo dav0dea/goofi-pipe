@@ -2469,6 +2469,19 @@ class Manager:
                         self._surface_mirror_failure(onode, f"{group}.{name} (expression)", exc)
 
     @mark_unsaved_changes
+    def set_node_inputs(self, uid: str, inputs: Dict[str, Any]) -> None:
+        """Persist a node's per-input-slot delivery-mode overrides on gui_kwargs
+        (round-trips into the .gfi, mirroring gui_kwargs["viewers"]) and reallocate
+        every live link feeding an overridden slot at the new buffer depth."""
+        ref = self.nodes[uid]
+        ref.gui_kwargs = {**(ref.gui_kwargs or {}), "inputs": inputs or {}}
+        # Drop the cached spec defaults so input_queue_mode re-reads the override.
+        ref.__dict__.pop("_input_queue_defaults", None)
+        for link in list(self._links):
+            if link["node_in"] == uid:
+                self._teardown_link(link, notify_gui=False)
+                self._wire_link(link)
+
     def set_node_pos(self, name: str, pos) -> List[str]:
         """Set a node's editor position, mirroring across shared siblings.
 
