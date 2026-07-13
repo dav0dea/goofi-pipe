@@ -720,7 +720,12 @@ class Node(ABC):
             slot_name = msg.content["slot_name_out"]
             slot = self.output_slots[slot_name]
             slot.subscriber_count += 1
-            self._ensure_output_endpoints(slot_name, want_ipc=True)
+            self._ensure_output_endpoints(
+                slot_name,
+                want_ipc=True,
+                buffer_cap=msg.content.get("buffer_cap"),
+                max_subscribers=msg.content.get("max_subscribers"),
+            )
             self._mark_dirty()
         elif t == MessageType.UNREGISTER_SUBSCRIBER:
             slot_name = msg.content["slot_name_out"]
@@ -756,6 +761,8 @@ class Node(ABC):
                 slot_name_in=msg.content["slot_name_in"],
                 service_name=msg.content["service_name"],
                 in_process=msg.content["in_process"],
+                queue=bool(msg.content.get("queue", False)),
+                buffer_cap=msg.content.get("buffer_cap"),
             )
             self._mark_dirty()
         elif t == MessageType.UNSUBSCRIBE_INPUT:
@@ -794,7 +801,9 @@ class Node(ABC):
     # Input slot wiring (called from messaging loop)
     # ------------------------------------------------------------------
 
-    def _subscribe_input(self, *, slot_name_in: str, service_name: str, in_process: bool) -> None:
+    def _subscribe_input(
+        self, *, slot_name_in: str, service_name: str, in_process: bool, queue: bool = False, buffer_cap=None
+    ) -> None:
         slot = self.input_slots.get(slot_name_in)
         if slot is None:
             self._report_error(f"Unknown input slot: {slot_name_in}")
@@ -802,11 +811,19 @@ class Node(ABC):
         # Tear down any prior subscription on this slot.
         self._unsubscribe_input(slot_name_in)
 
-        sub, listener = open_subscriber(service_name, in_process=in_process)
+        # queue → hold the full ordered burst (buffer_size == service cap);
+        # latest → keep only the newest (take_latest drains a 2-deep port).
+        sub, listener = open_subscriber(
+            service_name,
+            in_process=in_process,
+            buffer_cap=buffer_cap,
+            buffer_size=buffer_cap if queue else 2,
+        )
         slot.subscriber = sub
         slot.listener = listener
         slot.service_name = service_name
         slot.in_process = in_process
+        slot.queue = queue
         # Attach EVERY input's listener so non-triggering slots are drained too;
         # whether a fire actually triggers process() is gated separately on
         # slot.trigger_process in the processing loop (report I2).
@@ -832,21 +849,35 @@ class Node(ABC):
     # Output endpoints (lazy)
     # ------------------------------------------------------------------
 
-    def _ensure_output_endpoints(self, slot_name: str, *, want_ipc: bool = False, want_thread: bool = False) -> None:
+    def _ensure_output_endpoints(
+        self,
+        slot_name: str,
+        *,
+        want_ipc: bool = False,
+        want_thread: bool = False,
+        buffer_cap=None,
+        max_subscribers=None,
+    ) -> None:
         """Idempotent — create the requested publisher flavours for a slot.
 
-        `REGISTER_SUBSCRIBER` always requests the ipc flavour; thread
-        publishers are added when a same-group consumer subscribes.
-        Endpoints are cheap (iceoryx2 services are ref-counted via
-        `open_or_create`).
+        `REGISTER_SUBSCRIBER` always requests the ipc flavour; the manager sizes
+        `buffer_cap`/`max_subscribers` from the wired endpoints. Thread publishers
+        are added when a same-group consumer subscribes. Endpoints are cheap
+        (iceoryx2 services are ref-counted via `open_or_create`).
         """
         slot = self.output_slots[slot_name]
         service = data_service_name(self.node_id, slot_name)
         if want_ipc and not slot.has_ipc:
-            pub, notif = open_publisher(service, in_process=False)
+            pub, notif = open_publisher(
+                service,
+                in_process=False,
+                buffer_cap=buffer_cap,
+                max_subscribers=max_subscribers or DEFAULT_MAX_SUBSCRIBERS,
+            )
             slot.publishers.append(pub)
             slot.notifiers.append(notif)
             slot.has_ipc = True
+            slot.ipc_buffer_cap = buffer_cap
         if want_thread and not slot.has_thread:
             pub, notif = open_publisher(service, in_process=True)
             slot.publishers.append(pub)

@@ -117,6 +117,9 @@ class OutputSlot:
     notifiers: List[object] = field(default_factory=list, repr=False, compare=False)
     has_ipc: bool = field(default=False, repr=False, compare=False)
     has_thread: bool = field(default=False, repr=False, compare=False)
+    # Buffer depth the ipc publisher's service was created at (None = default).
+    # Tracked so a live delivery-mode override can reallocate the channel.
+    ipc_buffer_cap: Optional[int] = field(default=None, repr=False, compare=False)
 
     def __post_init__(self):
         if isinstance(self.dtype, str):
