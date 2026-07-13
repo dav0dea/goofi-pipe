@@ -64,6 +64,12 @@ class InputSlot:
     # processing loop. A node declares its default; the GUI can override per-slot
     # (gui_kwargs["inputs"]). See docs/superpowers/specs/2026-07-13-audio-...
     queue: bool = False
+    # Whether Data on this slot participates in meta["index"] continuity
+    # propagation (node.py `_propagated_index`). True for a signal input whose
+    # frame count maps to the output timeline; False for a CONTROL input (e.g. an
+    # oscillator's frequency knob) whose source index is unrelated to the audio
+    # the node emits — propagating it would fake downstream discontinuities.
+    carries_index: bool = True
     data: Optional[Data] = None
 
     # Runtime endpoints — populated by the node when SUBSCRIBE_INPUT wires

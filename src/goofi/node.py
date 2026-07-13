@@ -1213,6 +1213,8 @@ class Node(ABC):
         found: Optional[int] = None
         count = 0
         for slot in self.input_slots.values():
+            if not slot.carries_index:
+                continue  # control input — its source index is not our timeline
             data = slot.data
             if data is not None and INDEX_META_KEY in data.meta:
                 count += 1

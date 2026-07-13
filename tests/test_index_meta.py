@@ -2,7 +2,24 @@ import numpy as np
 
 from goofi.audio.continuity import INDEX_META_KEY, is_discontinuous
 from goofi.data import Data, DataType
+from goofi.node_helpers import InputSlot
 from tests.utils import make_custom_node
+
+
+def test_non_carrying_input_slot_is_skipped_for_index():
+	# A control-only input (carries_index=False, e.g. Oscillator.frequency) must
+	# not feed the propagate-or-fresh rule even when it holds index-bearing Data,
+	# so a generator driven by an index-stamped control source still emits a fresh
+	# monotonic index (no phantom downstream discontinuity).
+	cls = make_custom_node(
+		input_slots={"ctrl": InputSlot(DataType.ARRAY, carries_index=False)},
+		output_slots={"out": DataType.ARRAY},
+	)
+	node = cls.create_standalone()
+	node.input_slots["ctrl"].data = Data(DataType.ARRAY, np.zeros(2, np.float32), {INDEX_META_KEY: 77})
+	assert node._propagated_index() is None
+	assert node._next_index("out") == 0
+	assert node._next_index("out") == 1
 
 
 def test_generator_gets_fresh_monotonic_index():
