@@ -935,6 +935,111 @@ class Node(ABC):
                 except Exception:
                     self._report_error(traceback.format_exc())
 
+    def _drain_queue(self, sub) -> "list[Data]":
+        """Drain ALL pending frames on a queue-mode input (take_next until empty),
+        decoding each in arrival order."""
+        frames: "list[Data]" = []
+        while True:
+            buf = sub.take_next()
+            if buf is None:
+                break
+            try:
+                frames.append(decode_data(buf))
+            except Exception:
+                self._report_error(traceback.format_exc())
+        return frames
+
+    def _dispatch_burst(self, queued_frames: "dict[str, list[Data]]") -> None:
+        """Run the process/publish body once per frame of the deepest fired queue
+        (>=1). Between calls, each fired queue slot's data advances frame-by-frame
+        (clamped to its last frame if shorter); latest/non-fired inputs are held."""
+        burst = max((len(f) for f in queued_frames.values()), default=1)
+        for i in range(burst):
+            for slot_name, frames in queued_frames.items():
+                self.input_slots[slot_name].data = frames[i] if i < len(frames) else frames[-1]
+            self._dispatch_once()
+            if not self.alive:
+                break
+
+    def _dispatch_once(self) -> None:
+        """Snapshot inputs, run process(), and publish per output slot.
+
+        The single tick body, shared by the latest-wins path (called once per
+        wake) and the queue path (called once per drained frame)."""
+        input_data = {name: slot.data for name, slot in self.input_slots.items()}
+
+        _t0 = time.perf_counter()
+        try:
+            output_data = self.process(**input_data)
+        except Exception:
+            self._report_error(traceback.format_exc())
+            return
+        _t1 = time.perf_counter()
+        self._exec_stats.record(_t1 - _t0, _t1)
+        self._maybe_push_stats(_t1)
+
+        if not self.alive:
+            return
+        if output_data is None:
+            # A clean tick that produced nothing still clears a stale error.
+            self._clear_error_if_healthy()
+            return
+        if not isinstance(output_data, dict):
+            self._report_error(f"process() must return a dict, got {type(output_data).__name__}.")
+            return
+
+        # Track whether anything went wrong this tick. A fully clean tick clears
+        # a previously-reported error (the node has recovered).
+        tick_error = False
+        extra_fields = set(output_data.keys()) - set(self.output_slots.keys())
+        if extra_fields:
+            self._report_error(
+                f"Extra output fields: {sorted(extra_fields)}. process() must only return declared slots."
+            )
+            tick_error = True
+
+        for slot_name, slot in self.output_slots.items():
+            # OR-gate: produce if a node consumer OR a browser viewer wants it.
+            if slot.subscriber_count == 0 and slot.viewer_count == 0:
+                continue
+            value = output_data.get(slot_name)
+            if value is None:
+                continue
+            try:
+                data = Data(slot.dtype, value[0], value[1])
+            except Exception:
+                self._report_error(traceback.format_exc())
+                tick_error = True
+                continue
+            # Node↔node iceoryx2 fan-out — ONLY when real node consumers exist
+            # (Option C split-encode). Zero-copy publish: pack the meta once via
+            # `prepare_encode`, then loan a slice per publisher and write the Data
+            # directly into the loan.
+            if slot.subscriber_count > 0:
+                try:
+                    size, meta_bytes = prepare_encode(data)
+                except Exception:
+                    self._report_error(traceback.format_exc())
+                    tick_error = True
+                    size = None
+                if size is not None:
+                    for pub, notif in zip(slot.publishers, slot.notifiers):
+                        try:
+                            loan = pub.loan(size)
+                            encode_data_into(data, loan.buffer, meta_bytes=meta_bytes)
+                            loan.send()
+                            notif.notify()
+                        except Exception:
+                            self._report_error(traceback.format_exc())
+                            tick_error = True
+            # Browser reduced fan-out — ONLY when a viewer is attached. O(1) offer
+            # to the reducer thread (Change A), independent of the node↔node path.
+            if slot.viewer_count > 0:
+                node_viewer.offer(self.node_id, slot_name, data)
+
+        if not tick_error:
+            self._clear_error_if_healthy()
+
     def _processing_loop(self) -> None:
         if self._capture_logs:
             node_log.bind_thread_node(self.node_id)
@@ -950,6 +1055,8 @@ class Node(ABC):
         while self.alive:
             autotrigger = self.params.common.autotrigger.value
             triggered = False
+            # Ordered frames drained from fired QUEUE inputs this wake (name -> [Data]).
+            queued_frames: "dict[str, list[Data]]" = {}
 
             if autotrigger and self._has_no_triggering_inputs():
                 # Free-running mode: process every tick. Pull any fresh input
@@ -979,23 +1086,33 @@ class Node(ABC):
                     if self._match_fired_expression(listener):
                         continue
                     # Fall back to: input slot listeners.
-                    for slot in self.input_slots.values():
+                    for slot_name, slot in self.input_slots.items():
                         # Capture the subscriber once — the messaging thread can
                         # null slot.subscriber via _unsubscribe_input between the
                         # check and the take, which would AttributeError.
                         sub = slot.subscriber
                         if slot.listener is listener and sub is not None:
-                            buf = sub.take_latest()
-                            if buf is not None:
-                                try:
-                                    slot.data = decode_data(buf)
-                                    # Only a triggering slot's fresh data wakes
-                                    # process(); non-triggering inputs are still
-                                    # drained above so their data is current (I2).
+                            if slot.queue:
+                                # Lossless: drain every frame; dispatch runs
+                                # process() once per frame (holding other inputs).
+                                frames = self._drain_queue(sub)
+                                if frames:
+                                    queued_frames[slot_name] = frames
+                                    slot.data = frames[-1]
                                     if slot.trigger_process:
                                         drained_any = True
-                                except Exception:
-                                    self._report_error(traceback.format_exc())
+                            else:
+                                buf = sub.take_latest()
+                                if buf is not None:
+                                    try:
+                                        slot.data = decode_data(buf)
+                                        # Only a triggering slot's fresh data wakes
+                                        # process(); non-triggering inputs are still
+                                        # drained above so their data is current (I2).
+                                        if slot.trigger_process:
+                                            drained_any = True
+                                    except Exception:
+                                        self._report_error(traceback.format_exc())
                             break
                 if drained_any or self_triggered:
                     triggered = True
@@ -1024,88 +1141,8 @@ class Node(ABC):
                         if getattr(param, "expression_autoeval", False):
                             self._apply_expression(key, engine)
 
-            input_data = {name: slot.data for name, slot in self.input_slots.items()}
-
-            _t0 = time.perf_counter()
-            try:
-                output_data = self.process(**input_data)
-            except Exception:
-                self._report_error(traceback.format_exc())
-                continue
-            _t1 = time.perf_counter()
-            self._exec_stats.record(_t1 - _t0, _t1)
-            self._maybe_push_stats(_t1)
-
-            if not self.alive:
-                break
-            if output_data is None:
-                # A clean tick that produced nothing still clears a stale error.
-                self._clear_error_if_healthy()
-                continue
-            if not isinstance(output_data, dict):
-                self._report_error(
-                    f"process() must return a dict, got {type(output_data).__name__}."
-                )
-                continue
-
-            # Track whether anything went wrong this tick. A fully clean tick
-            # clears a previously-reported error (the node has recovered);
-            # any failure below leaves the error reported as-is.
-            tick_error = False
-
-            extra_fields = set(output_data.keys()) - set(self.output_slots.keys())
-            if extra_fields:
-                self._report_error(
-                    f"Extra output fields: {sorted(extra_fields)}. process() must only return declared slots."
-                )
-                tick_error = True
-
-            for slot_name, slot in self.output_slots.items():
-                # OR-gate: produce if a node consumer OR a browser viewer wants it.
-                if slot.subscriber_count == 0 and slot.viewer_count == 0:
-                    continue
-                value = output_data.get(slot_name)
-                if value is None:
-                    continue
-                try:
-                    data = Data(slot.dtype, value[0], value[1])
-                except Exception:
-                    self._report_error(traceback.format_exc())
-                    tick_error = True
-                    continue
-                # Node↔node iceoryx2 fan-out — ONLY when real node consumers exist
-                # (Option C split-encode). The full Data is encoded SYNCHRONOUSLY on
-                # this thread; a reducer fault/latency can never affect these bytes.
-                # Zero-copy publish: pack the meta dict once via `prepare_encode`,
-                # then for each publisher loan a slice sized to the exact encoded
-                # length and write the Data directly into the loan.
-                if slot.subscriber_count > 0:
-                    try:
-                        size, meta_bytes = prepare_encode(data)
-                    except Exception:
-                        self._report_error(traceback.format_exc())
-                        tick_error = True
-                        size = None
-                    if size is not None:
-                        for pub, notif in zip(slot.publishers, slot.notifiers):
-                            try:
-                                loan = pub.loan(size)
-                                encode_data_into(data, loan.buffer, meta_bytes=meta_bytes)
-                                loan.send()
-                                notif.notify()
-                            except Exception:
-                                self._report_error(traceback.format_exc())
-                                tick_error = True
-                # Browser reduced fan-out — ONLY when a viewer is attached. O(1)
-                # offer to the reducer thread (Change A): no reduce/encode here, no
-                # tick_error coupling. Runs independently of the node↔node path.
-                if slot.viewer_count > 0:
-                    node_viewer.offer(self.node_id, slot_name, data)
-
-            if not tick_error:
-                # Everything published cleanly — clear any prior error (unless an
-                # expression engine is still failing; see _clear_error_if_healthy).
-                self._clear_error_if_healthy()
+            # One dispatch per drained queue frame (latest-wins → burst of 1).
+            self._dispatch_burst(queued_frames)
 
     def _has_no_triggering_inputs(self) -> bool:
         return not any(s.trigger_process and s.subscriber is not None for s in self.input_slots.values())
