@@ -45,6 +45,14 @@ class Oscillator(Node):
         self.clock = SampleClock(self.params.oscillator.sampling_frequency.value)
         self.clock.start(time.time())
 
+    def oscillator_sampling_frequency_changed(self, value):
+        # Re-anchor the pacer to the live rate so it stops emitting the old
+        # samples/sec while process() has already switched to the new one (a
+        # detune/timebase mismatch otherwise). Re-anchor at `now` to avoid a
+        # backlog jump; leave self.phase so the waveform stays phase-continuous.
+        self.clock = SampleClock(value)
+        self.clock.start(time.time())
+
     def process(self, frequency):
         freq = frequency.data.item() if frequency else self.params.oscillator.frequency.value
         sfreq = self.params.oscillator.sampling_frequency.value

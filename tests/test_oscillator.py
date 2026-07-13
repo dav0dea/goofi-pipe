@@ -40,6 +40,22 @@ def test_setup_creates_a_started_sample_clock():
     assert node.clock.emitted >= 0
 
 
+def test_sampling_frequency_change_reanchors_the_clock():
+    # The SampleClock is built once in setup() from the setup-time sfreq, but
+    # process() reads the LIVE sfreq for the phase increment and meta. Without a
+    # change hook the clock paces off the stale rate -> the emitted sample rate
+    # diverges from the declared/played pitch. The hook must rebuild the clock at
+    # the new rate while leaving the waveform phase continuous.
+    node = Oscillator.create_standalone()
+    node.setup()
+    assert node.clock.sr == 48000.0
+    node.phase = 1.234
+    node.params.oscillator.sampling_frequency.value = 24000.0
+    node.oscillator_sampling_frequency_changed(24000.0)
+    assert node.clock.sr == 24000.0        # clock now paces at the live rate
+    assert node.phase == 1.234             # phase preserved -> waveform stays continuous
+
+
 def test_output_stamps_sfreq():
     node = Oscillator.create_standalone()
     node.setup()
