@@ -129,10 +129,18 @@ class Message:
         t = self.type
         if t == MessageType.SUBSCRIBE_INPUT:
             self.require_fields(slot_name_in=str, service_name=str, in_process=bool)
+            if "queue" in self.content and not isinstance(self.content["queue"], bool):
+                raise ValueError("SUBSCRIBE_INPUT 'queue' must be bool.")
+            if "buffer_cap" in self.content and not isinstance(self.content["buffer_cap"], int):
+                raise ValueError("SUBSCRIBE_INPUT 'buffer_cap' must be int.")
         elif t == MessageType.UNSUBSCRIBE_INPUT:
             self.require_fields(slot_name_in=str)
         elif t == MessageType.REGISTER_SUBSCRIBER:
             self.require_fields(slot_name_out=str)
+            if "buffer_cap" in self.content and not isinstance(self.content["buffer_cap"], int):
+                raise ValueError("REGISTER_SUBSCRIBER 'buffer_cap' must be int.")
+            if "max_subscribers" in self.content and not isinstance(self.content["max_subscribers"], int):
+                raise ValueError("REGISTER_SUBSCRIBER 'max_subscribers' must be int.")
         elif t == MessageType.UNREGISTER_SUBSCRIBER:
             self.require_fields(slot_name_out=str)
         elif t == MessageType.PARAMETER_UPDATE:

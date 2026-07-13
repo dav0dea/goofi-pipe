@@ -70,3 +70,28 @@ def test_message_errors(type):
         Message(None, EXAMPLE_CONTENT[type])
     with pytest.raises(ValueError):
         Message(type, None)
+
+
+def test_subscribe_input_accepts_optional_queue_and_buffer_cap():
+    m = Message(
+        MessageType.SUBSCRIBE_INPUT,
+        {"slot_name_in": "data", "service_name": "svc", "in_process": False, "queue": True, "buffer_cap": 8},
+    )
+    assert m.content["queue"] is True and m.content["buffer_cap"] == 8
+
+
+def test_subscribe_input_still_valid_without_optional_fields():
+    Message(MessageType.SUBSCRIBE_INPUT, {"slot_name_in": "data", "service_name": "svc", "in_process": False})
+
+
+def test_subscribe_input_rejects_non_int_buffer_cap():
+    with pytest.raises(ValueError):
+        Message(
+            MessageType.SUBSCRIBE_INPUT,
+            {"slot_name_in": "d", "service_name": "s", "in_process": False, "buffer_cap": "x"},
+        )
+
+
+def test_register_subscriber_accepts_optional_caps():
+    m = Message(MessageType.REGISTER_SUBSCRIBER, {"slot_name_out": "out", "buffer_cap": 8, "max_subscribers": 4})
+    assert m.content["buffer_cap"] == 8 and m.content["max_subscribers"] == 4
