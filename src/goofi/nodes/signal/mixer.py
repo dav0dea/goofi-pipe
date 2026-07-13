@@ -6,7 +6,7 @@ from goofi.audio.continuity import INDEX_META_KEY
 from goofi.audio.ring import AudioRing
 from goofi.data import DataType
 from goofi.node import InputSlot, Node
-from goofi.params import BoolParam, FloatParam, IntParam
+from goofi.params import BoolParam, IntParam
 
 _N_INPUTS = 8
 # Drop an input from the mix if it stops delivering for this long, so a single
@@ -39,9 +39,10 @@ class Mixer(Node):
                 "normalize": BoolParam(True, doc="Average the active inputs (True) or sum them (False)."),
                 "buffer_ms": IntParam(50, 5, 500, doc="Per-input jitter-ring depth (ms at 48 kHz)."),
             },
-            # Free-run fast enough to drain the queues promptly; the rings, not the
-            # tick rate, set alignment. (Paced so the loop can't busy-spin.)
-            "common": {"autotrigger": True, "max_frequency": FloatParam(500.0, 0.0, 1000.0)},
+            # No common override: the queue inputs drive the node (each delivered
+            # frame triggers process()), and the framework exempts queue-drained
+            # ticks from the max_frequency throttle — so it runs at the producers'
+            # rate. The rings, not the tick rate, set alignment.
         }
 
     def setup(self):
