@@ -1032,7 +1032,7 @@ class Node(ABC):
             if value is None:
                 continue
             try:
-                data = Data(slot.dtype, value[0], value[1])
+                data = self._build_output_data(slot_name, slot, value)
             except Exception:
                 self._report_error(traceback.format_exc())
                 tick_error = True
@@ -1204,6 +1204,17 @@ class Node(ABC):
         idx = self._index_counters.get(slot_name, 0)
         self._index_counters[slot_name] = idx + 1
         return idx
+
+    def _build_output_data(self, slot_name: str, slot: OutputSlot, value: Tuple) -> Data:
+        """Build one output slot's outgoing Data and stamp its continuity
+        index (propagate-or-fresh, §6) BEFORE the node fan-out encode and the
+        viewer offer, so every node consumer and the browser viewer see one
+        value. The scalar plus the constructor's shallow `dict(self.meta)` copy
+        (data.py:79) keep it un-aliased across fan-out.
+        """
+        data = Data(slot.dtype, value[0], value[1])
+        data.meta[INDEX_META_KEY] = self._next_index(slot_name)
+        return data
 
     # ------------------------------------------------------------------
     # Standalone direct call

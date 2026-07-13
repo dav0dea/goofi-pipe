@@ -62,3 +62,32 @@ def test_two_inputs_carrying_index_fall_back_to_fresh():
 	node.input_slots["b"].data = Data(DataType.ARRAY, np.zeros(2, np.float32), {INDEX_META_KEY: 200})
 	assert node._propagated_index() is None
 	assert node._next_index("out") == 0
+
+
+def test_build_output_stamps_fresh_index_for_generator():
+	cls = make_custom_node(output_slots={"out": DataType.ARRAY})
+	node = cls.create_standalone()
+	slot = node.output_slots["out"]
+	d0 = node._build_output_data("out", slot, (np.zeros(2, np.float32), {}))
+	d1 = node._build_output_data("out", slot, (np.zeros(2, np.float32), {}))
+	assert d0.meta[INDEX_META_KEY] == 0
+	assert d1.meta[INDEX_META_KEY] == 1
+	assert d0.meta is not d1.meta  # each output slot builds its own Data
+
+
+def test_build_output_fanout_shares_index_without_aliasing_input_meta():
+	# Two outputs propagate the same single-input index; the built metas are
+	# distinct dicts and the producer's input meta is left untouched.
+	cls = make_custom_node(
+		input_slots={"signal": DataType.ARRAY},
+		output_slots={"a": DataType.ARRAY, "b": DataType.ARRAY},
+	)
+	node = cls.create_standalone()
+	node.input_slots["signal"].data = Data(
+		DataType.ARRAY, np.zeros(2, np.float32), {INDEX_META_KEY: 9}
+	)
+	a = node._build_output_data("a", node.output_slots["a"], (np.zeros(2, np.float32), {}))
+	b = node._build_output_data("b", node.output_slots["b"], (np.zeros(2, np.float32), {}))
+	assert a.meta[INDEX_META_KEY] == b.meta[INDEX_META_KEY] == 9
+	assert a.meta is not b.meta
+	assert node.input_slots["signal"].data.meta[INDEX_META_KEY] == 9
