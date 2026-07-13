@@ -213,6 +213,7 @@ re-evaluates its options — both method names are validated at catalog build.
 | `bridge/fsbrowse.py` | filesystem browse RPC for save/load. |
 | `bridge/schemas.py` | request/response + snapshot shapes. |
 | `nodes/` | the node library (analysis, array, inputs, misc, outputs, signal). |
+| `audio/` | audio-synthesis pure cores: `clock.py` (`SampleClock` — exact, drift-free per-tick sample count), `ring.py` (`AudioRing` SPSC jitter buffer), `continuity.py` (`meta["index"]` + equal-power `crossfade`), `drift.py` (`DriftCorrector` stuff/drop). Consumed by the Oscillator generator + AudioOut sink. |
 
 ## Frontend map (`frontend/src/lib/`)
 
@@ -265,6 +266,20 @@ the relevant one before changing the area.
   existing `param_options` STATE_UPDATE seam. `build_catalog` validates the
   method exists (like the `{group}_{name}_changed` guard). Used by
   AudioStream/AudioOut (`device`) and LSLClient (`source_name`).
+- **Audio synthesis infrastructure**
+  (`2026-07-13-audio-synthesis-infrastructure-design.md`) — distributed,
+  pure-Python generative audio without an AUDIO dtype. Four axes: (1) **per-input-slot
+  delivery mode** — `InputSlot.queue` (lossless FIFO drained frame-by-frame) vs the
+  default latest-wins; the manager sizes the iceoryx2 channel from the *consumer's*
+  flag and reallocates on change (GUI/agent-overridable, persisted to `.gfi`).
+  (2) **SampleClock-paced generators** (`audio/clock.py`) — exact, drift-free per-tick
+  sample counts. (3) Cross-cutting **`meta["index"]`** — a source-origin emit counter,
+  base-stamped on every published frame and propagated unchanged through
+  length-preserving nodes, so an upstream drop stays visible at the sink. (4) **process
+  `common.priority`** — `gc.freeze()`+switchinterval after warm-up, GC-disable+SCHED_FIFO
+  on `realtime`. The one leaf is **AudioOut**: a non-blocking callback + `AudioRing`
+  jitter buffer, primed before start, index-driven crossfade on discontinuity, and
+  steady-state stuff/drop drift correction (`audio/{ring,continuity,drift}.py`).
 
 Analysis reports live in `docs/analysis/`. The performance ceiling and a future,
 more aggressive data plane are tracked in **§ Future** below.
