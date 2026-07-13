@@ -105,7 +105,9 @@ def test_gc_policy_applied_after_first_tick():
 	from .utils import DummyNode
 
 	set_instance_id(f"t-{uuid.uuid4().hex[:8]}")
-	ref, n = DummyNode.create_local(initial_params={"common": {"autotrigger": True}})
+	# Cap the free-run loop (the default max_frequency is now unbounded) so this
+	# autotrigger node ticks at 30 Hz instead of busy-spinning a core.
+	ref, n = DummyNode.create_local(initial_params={"common": {"autotrigger": True, "max_frequency": 30}})
 	try:
 		deadline = time.time() + 3.0
 		while not n._gc_policy_applied and time.time() < deadline:

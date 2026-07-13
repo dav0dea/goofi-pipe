@@ -151,8 +151,9 @@ def test_processing_error_clears_after_recovery():
         return {}
 
     Custom = make_custom_node(process_callback=cb)
-    # autotrigger free-runs the processing loop so it ticks without inputs.
-    ref, n = Custom.create_local(initial_params={"common": {"autotrigger": True}})
+    # autotrigger free-runs the processing loop so it ticks without inputs; cap it
+    # (the default is now unbounded) so the free-run loop doesn't busy-spin a core.
+    ref, n = Custom.create_local(initial_params={"common": {"autotrigger": True, "max_frequency": 30}})
     try:
         # While failing, the error is reported and stays observable.
         deadline = time.time() + 2.0
