@@ -1258,7 +1258,7 @@ class Node(ABC):
 
         Propagate the index of the SINGLE input whose frame count equals this
         output's — i.e. the input that is genuinely the same timeline (a length-
-        preserving pass-through like Gain forwards its source's numbering, so an
+        preserving pass-through like Math forwards its source's numbering, so an
         upstream drop stays visible at the sink). Any other case starts a fresh
         per-output counter: a generator (no matching input), a control input of a
         different length (an oscillator's scalar frequency), a length-changing

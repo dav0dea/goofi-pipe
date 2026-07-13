@@ -37,7 +37,7 @@ def test_two_outputs_have_independent_fresh_counters():
 
 def test_single_length_matching_input_propagates_its_index():
 	# Exactly one input whose frame count matches the output (a length-preserving
-	# processor like Gain) -> propagate its index, unchanged.
+	# processor like Math) -> propagate its index, unchanged.
 	cls = make_custom_node(
 		input_slots={"signal": DataType.ARRAY},
 		output_slots={"out": DataType.ARRAY},

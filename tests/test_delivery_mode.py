@@ -155,13 +155,13 @@ def test_mixed_mode_fanout_shares_one_service_cap():
     try:
         src = mgr.add_node("Oscillator", "inputs", params={"common": {"autotrigger": True}})
         latest = mgr.add_node("Buffer", "signal")   # `val` input: latest-wins (default)
-        queued = mgr.add_node("Gain", "signal")     # `signal` input: queue=True
+        queued = mgr.add_node("Mixer", "signal")    # `in0` input: queue=True
         assert _wait_until(lambda: all(mgr.nodes[u].stage == "ready" for u in (src, latest, queued)))
 
         # Wire the LATEST consumer FIRST (creates the service at the default cap),
         # then the QUEUE consumer (needs the deeper cap on that same service).
         mgr.add_link(src, latest, "out", "val")
-        mgr.add_link(src, queued, "out", "signal")
+        mgr.add_link(src, queued, "out", "in0")
 
         # The source must keep a live publisher for BOTH consumers...
         assert _wait_until(
