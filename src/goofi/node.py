@@ -17,7 +17,10 @@ boundaries.
 """
 from __future__ import annotations
 
+import gc
 import importlib.resources as pkg_resources
+import os
+import sys
 import time
 import traceback
 import uuid
@@ -68,6 +71,10 @@ class MultiprocessingForbiddenError(Exception):
 # rate so a kHz node still reports telemetry only ~once per second.
 _STATS_PUSH_INTERVAL = 1.0
 
+# Realtime processing-thread priority requested for `common.priority == "realtime"`
+# nodes. Best-effort: SCHED_FIFO needs rtprio permission, else it degrades silently.
+_SCHED_FIFO_PRIORITY = 10
+
 
 def _safe_close(endpoint) -> None:
     """Close a transport endpoint, swallowing the None case and any error.
@@ -117,6 +124,9 @@ class Node(ABC):
         capture_logs: bool = False,
     ) -> None:
         self._alive = True
+        # One-time process-global GC/scheduling policy latch (Phase 4). Flipped by
+        # `_apply_gc_policy`, invoked once from the processing loop after warm-up.
+        self._gc_policy_applied = False
         self._setup_done = Event()
         self._dirty = False
         # `[group, name]` pairs whose ⟳ refresh completed since the last state push
@@ -1246,6 +1256,31 @@ class Node(ABC):
     def common_autotrigger_changed(self, value):
         # No-op: autotrigger is consulted on each tick in the processing loop.
         pass
+
+    def _apply_gc_policy(self) -> None:
+        """One-time process-global GC/scheduling policy, applied after warm-up.
+
+        Freezing the import/setup heap out of every future gen2 scan removes the
+        ~60 ms collection tail (measured); the switch-interval bump cuts GIL
+        hand-off jitter. On a node the user marked `realtime`, GC is disabled
+        outright and the processing thread asks the kernel for SCHED_FIFO —
+        best-effort, silently degrading when the process lacks rtprio permission
+        (or on a platform without it). Guarded so it runs exactly once and never
+        blocks `ready`/`_setup_done`.
+        """
+        if self._gc_policy_applied:
+            return
+        self._gc_policy_applied = True
+        gc.freeze()
+        sys.setswitchinterval(0.001)
+        if self.params.common.priority.value == "realtime":
+            gc.disable()
+            try:
+                os.sched_setscheduler(0, os.SCHED_FIFO, os.sched_param(_SCHED_FIFO_PRIORITY))
+            except (OSError, AttributeError, ValueError):
+                # PermissionError (no rtprio) or unsupported platform: stay
+                # collected-but-frozen. Rare clicks under load are accepted.
+                pass
 
     def clear_error(self) -> None:
         self._report_error(None)
