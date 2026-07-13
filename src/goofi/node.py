@@ -89,6 +89,33 @@ def _safe_close(endpoint) -> None:
         pass
 
 
+# During a live delivery-mode reallocation the manager tears down and recreates a
+# source slot's shared iceoryx2 service at a new (deeper) buffer cap. The old
+# shallow service lingers until its LAST holder closes — including subscribers in
+# OTHER node processes — so open_or_create at the new cap transiently fails with
+# `DoesNotSupportRequestedMinBufferSize`. Retrying converges: whoever opens after
+# the old service is released recreates it at the new cap and the rest join.
+# Bounded (~0.5 s) so a genuine misconfiguration still surfaces as an error.
+_MIN_BUFFER_RETRY_ATTEMPTS = 50
+_MIN_BUFFER_RETRY_DELAY = 0.01
+
+
+def _open_data_endpoint(open_fn):
+    """Open an iceoryx2 data-plane endpoint, retrying ONLY the transient
+    min-buffer-size conflict that arises mid-reallocation (see above). Any other
+    error propagates immediately; the thread transport never hits this path."""
+    last = None
+    for _ in range(_MIN_BUFFER_RETRY_ATTEMPTS):
+        try:
+            return open_fn()
+        except Exception as exc:
+            if "MinBufferSize" not in str(exc):
+                raise
+            last = exc
+            time.sleep(_MIN_BUFFER_RETRY_DELAY)
+    raise last
+
+
 class NodeEnv(Enum):
     MULTIPROCESSING = 1  # the node owns its own process
     LOCAL = 2  # the node is running in the manager's process or a shared group process
@@ -838,11 +865,13 @@ class Node(ABC):
 
         # queue → hold the full ordered burst (buffer_size == service cap);
         # latest → keep only the newest (take_latest drains a 2-deep port).
-        sub, listener = open_subscriber(
-            service_name,
-            in_process=in_process,
-            buffer_cap=buffer_cap,
-            buffer_size=buffer_cap if queue else 2,
+        sub, listener = _open_data_endpoint(
+            lambda: open_subscriber(
+                service_name,
+                in_process=in_process,
+                buffer_cap=buffer_cap,
+                buffer_size=buffer_cap if queue else 2,
+            )
         )
         slot.subscriber = sub
         slot.listener = listener
@@ -913,10 +942,8 @@ class Node(ABC):
                 # so this process holds the only remaining service reference.
                 self._close_ipc_publisher(slot)
             if not slot.has_ipc:
-                pub, notif = open_publisher(
-                    service,
-                    in_process=False,
-                    buffer_cap=buffer_cap,
+                pub, notif = _open_data_endpoint(
+                    lambda: open_publisher(service, in_process=False, buffer_cap=buffer_cap)
                 )
                 slot.publishers.append(pub)
                 slot.notifiers.append(notif)

@@ -650,8 +650,20 @@ class Manager:
                 )
 
         link = {"node_out": node_out, "node_in": node_in, "slot_out": slot_out, "slot_in": slot_in}
-        self._wire_link(link)
+        # A new consumer can raise the source slot's aggregate service cap (the
+        # first queue consumer joining an existing latest slot). Since the shared
+        # service's cap is static, the already-wired siblings must be reallocated
+        # at the new cap too; otherwise wire only the new link onto the unchanged
+        # service.
+        cap_before = self._slot_service_cap(node_out, slot_out)
+        had_siblings = any(
+            l["node_out"] == node_out and l["slot_out"] == slot_out for l in self._links
+        )
         self._links.append(link)
+        if had_siblings and self._slot_service_cap(node_out, slot_out) != cap_before:
+            self._reallocate_output_slot(node_out, slot_out)
+        else:
+            self._wire_link(link)
         if mirror:
             self._mirror_internal_link(link, add=True, notify_gui=notify_gui)
 
@@ -674,11 +686,14 @@ class Manager:
         src_ref = self.nodes[link["node_out"]]
         dst_ref = self.nodes[link["node_in"]]
         in_process = self._same_group(link["node_out"], link["node_in"])
-        # The consumer's delivery mode (InputSlot.queue, possibly overridden in
-        # gui_kwargs) sizes the channel: a queue link gets a QUEUE_DEPTH buffer on
-        # both endpoints; a latest link stays at the default (latest-wins).
+        # This consumer's delivery mode drives its OWN buffer depth (queue → hold
+        # the ordered burst; latest → keep newest). But the iceoryx2 service cap is
+        # a static per-SERVICE minimum shared by every endpoint of the slot, so it
+        # must be the AGGREGATE over all consumers (deep iff any is queue) — a
+        # per-consumer cap makes a latest tap and a queue tap request incompatible
+        # caps on the one service and the deeper one fails (see `_slot_service_cap`).
         queue = dst_ref.input_queue_mode(link["slot_in"])
-        buffer_cap = QUEUE_DEPTH if queue else None
+        buffer_cap = self._slot_service_cap(link["node_out"], link["slot_out"])
         if register_source:
             src_ref.register_subscriber(link["slot_out"], buffer_cap=buffer_cap)
         dst_ref.subscribe_input(
@@ -688,6 +703,33 @@ class Manager:
             queue=queue,
             buffer_cap=buffer_cap,
         )
+
+    def _slot_service_cap(self, node_out: str, slot_out: str) -> Optional[int]:
+        """The shared iceoryx2 service buffer cap for one source slot, aggregated
+        over ALL its consumers: `QUEUE_DEPTH` if ANY consumer is queue-mode, else
+        `None` (the default cap). `subscriber_max_buffer_size` is a static per-
+        service minimum, so every endpoint of a slot must open at one cap; sizing
+        it to the deepest consumer lets a latest tap (buffer_size 2) and a queue
+        tap (buffer_size QUEUE_DEPTH) coexist on the same service, and keeps a
+        latest-only slot (e.g. a large video frame) at the cheap default."""
+        for link in self._links:
+            if link["node_out"] == node_out and link["slot_out"] == slot_out:
+                if self.nodes[link["node_in"]].input_queue_mode(link["slot_in"]):
+                    return QUEUE_DEPTH
+        return None
+
+    def _reallocate_output_slot(self, node_out: str, slot_out: str) -> None:
+        """Tear down and re-wire EVERY link of one source slot so all its endpoints
+        reopen at the slot's current aggregate cap. Needed when that cap changes (a
+        queue consumer joins/leaves the slot, or a consumer flips mode): the shared
+        service's cap is static, so an existing latest subscriber pins it at the old
+        cap and the publisher cannot simply reopen deeper — the whole slot must be
+        released and recreated. A no-op-safe brief data gap for a graph edit."""
+        links = [l for l in self._links if l["node_out"] == node_out and l["slot_out"] == slot_out]
+        for link in links:
+            self._teardown_link(link, notify_gui=False)
+        for link in links:
+            self._wire_link(link)
 
     @mark_unsaved_changes
     def remove_link(
@@ -702,8 +744,16 @@ class Manager:
         link = {"node_out": node_out, "node_in": node_in, "slot_out": slot_out, "slot_in": slot_in}
         if link not in self._links:
             return
+        cap_before = self._slot_service_cap(node_out, slot_out)
         self._teardown_link(link, notify_gui=False)
         self._links.remove(link)
+        # Removing the last queue consumer lowers the slot's aggregate cap; shrink
+        # the surviving endpoints back to the cheaper default (frees SHM). No-op
+        # when the cap is unchanged or the slot is now empty.
+        if self._slot_service_cap(node_out, slot_out) != cap_before and any(
+            l["node_out"] == node_out and l["slot_out"] == slot_out for l in self._links
+        ):
+            self._reallocate_output_slot(node_out, slot_out)
         if mirror:
             self._mirror_internal_link(link, add=False, notify_gui=notify_gui)
         if self._bridge is not None and notify_gui:
@@ -2477,10 +2527,15 @@ class Manager:
         ref.gui_kwargs = {**(ref.gui_kwargs or {}), "inputs": inputs or {}}
         # Drop the cached spec defaults so input_queue_mode re-reads the override.
         ref.__dict__.pop("_input_queue_defaults", None)
-        for link in list(self._links):
-            if link["node_in"] == uid:
-                self._teardown_link(link, notify_gui=False)
-                self._wire_link(link)
+        # A mode flip changes the aggregate cap of every SOURCE slot feeding this
+        # node, so reallocate each such slot WHOLE (all its endpoints), not just
+        # this node's link — a sibling latest consumer on the same source slot
+        # pins the shared service and would otherwise block the deeper reopen.
+        affected = {
+            (link["node_out"], link["slot_out"]) for link in self._links if link["node_in"] == uid
+        }
+        for node_out, slot_out in affected:
+            self._reallocate_output_slot(node_out, slot_out)
 
     def set_node_pos(self, name: str, pos) -> List[str]:
         """Set a node's editor position, mirroring across shared siblings.
