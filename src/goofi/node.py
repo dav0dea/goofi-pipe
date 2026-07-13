@@ -29,6 +29,7 @@ from threading import Event, Lock, RLock, Thread, current_thread
 from typing import Any, Dict, Optional, Tuple, Union
 
 from goofi import assets
+from goofi.audio.continuity import INDEX_META_KEY
 from goofi.codec import decode_data, decode_message, encode_data_into, encode_message, prepare_encode
 from goofi.data import Data, DataType, to_data
 from goofi.expression import ExpressionEngine
@@ -148,6 +149,10 @@ class Node(ABC):
         # the last N ticks. Written + read only on the processing thread, so no lock.
         self._exec_stats = ExecStats()
         self._last_stats_push = 0.0
+
+        # Per-output monotonic emit counter for meta["index"] (§6). Written +
+        # read only on the processing thread, so no lock (like _exec_stats).
+        self._index_counters: Dict[str, int] = {}
 
         self.node_id = node_id
         self._input_slots = input_slots
@@ -1167,6 +1172,38 @@ class Node(ABC):
 
     def _has_no_triggering_inputs(self) -> bool:
         return not any(s.trigger_process and s.subscriber is not None for s in self.input_slots.values())
+
+    def _propagated_index(self) -> Optional[int]:
+        """Source-origin index to propagate this tick, or None.
+
+        Propagate-or-fresh rule (v1): if EXACTLY ONE input slot currently
+        holds `Data` whose meta carries an `index`, that value is copied onto
+        every output (length-preserving propagation); otherwise each output
+        starts a fresh per-output counter. A single-input processor (Gain)
+        thus forwards its source's numbering unchanged, so an upstream drop
+        stays visible at the sink; a generator (no such input) starts fresh.
+        """
+        found: Optional[int] = None
+        count = 0
+        for slot in self.input_slots.values():
+            data = slot.data
+            if data is not None and INDEX_META_KEY in data.meta:
+                count += 1
+                found = data.meta[INDEX_META_KEY]
+        return found if count == 1 else None
+
+    def _next_index(self, slot_name: str) -> int:
+        """meta["index"] for one emit on `slot_name` (see `_propagated_index`).
+
+        Advances the per-output counter only in the fresh case; propagation
+        just mirrors the input's value.
+        """
+        propagated = self._propagated_index()
+        if propagated is not None:
+            return propagated
+        idx = self._index_counters.get(slot_name, 0)
+        self._index_counters[slot_name] = idx + 1
+        return idx
 
     # ------------------------------------------------------------------
     # Standalone direct call
