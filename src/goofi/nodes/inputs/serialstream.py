@@ -61,7 +61,7 @@ class SerialStream(Node):
                 "port": "",
                 "protocol": StringParam("ECG", options=["ECG", "capacitive"]),
             },
-            "common": {"autotrigger": True},
+            "common": {"autotrigger": True, "max_frequency": 30},
         }
 
     def config_output_slots():

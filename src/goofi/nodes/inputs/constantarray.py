@@ -21,7 +21,7 @@ class ConstantArray(_OverwriteHold, Node):
                     doc="Duration within which the overwrite input data is used, revert to constant data after (0 never clears the overwrite).",
                 ),
             },
-            "common": {"autotrigger": True},
+            "common": {"autotrigger": True, "max_frequency": 30},
         }
 
     def config_input_slots():

@@ -28,7 +28,7 @@ class AudioStream(Node):
                 "device": StringParam(devices[0], options=devices, refresh="_refresh_audio_devices"),
                 "convert_to_mono": True,
             },
-            "common": {"autotrigger": True},
+            "common": {"autotrigger": True, "max_frequency": 30},
         }
 
     def _refresh_audio_devices(self):

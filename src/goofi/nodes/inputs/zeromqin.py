@@ -16,7 +16,7 @@ class ZeroMQIn(Node):
     """
 
     def config_params():
-        return {"zero_mq": {"address": "127.0.0.1", "port": IntParam(6543)}, "common": {"autotrigger": True}}
+        return {"zero_mq": {"address": "127.0.0.1", "port": IntParam(6543)}, "common": {"autotrigger": True, "max_frequency": 30}}
 
     def config_output_slots():
         return {"data": DataType.ARRAY}

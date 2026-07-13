@@ -24,7 +24,7 @@ class OSCIn(Node):
                 "keep_messages": BoolParam(True, doc="Keep all received messages"),
                 "clear": BoolParam(trigger=True, doc="Clear all stored messages"),
             },
-            "common": {"autotrigger": True},
+            "common": {"autotrigger": True, "max_frequency": 30},
         }
 
     def config_input_slots():

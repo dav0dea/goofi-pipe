@@ -43,7 +43,7 @@ class ConstantTable(Node):
                 "value": StringParam("", doc="Value of the parameter"),
                 "data_type": StringParam("ARRAY", options=["ARRAY", "STRING"], doc="Data type of the parameter"),
             },
-            "common": {"autotrigger": True},
+            "common": {"autotrigger": True, "max_frequency": 30},
         }
 
     def process(self):

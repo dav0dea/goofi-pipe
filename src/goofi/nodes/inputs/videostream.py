@@ -28,7 +28,7 @@ class VideoStream(Node):
                 "crop_right": IntParam(0, 0, 2000, doc="Number of pixels to crop from the right"),
                 "crop_bottom": IntParam(0, 0, 2000, doc="Number of pixels to crop from the bottom"),
             },
-            "common": {"autotrigger": BoolParam(True)},
+            "common": {"autotrigger": BoolParam(True), "max_frequency": 30},
         }
 
     def config_output_slots():

@@ -38,7 +38,7 @@ class EEGRecording(Node):
                 "loop": BoolParam(True, doc="Whether to loop the recording"),
                 "reset": BoolParam(trigger=True, doc="Restart the recording from the beginning"),
             },
-            "common": {"autotrigger": True},
+            "common": {"autotrigger": True, "max_frequency": 30},
         }
 
     def config_output_slots():

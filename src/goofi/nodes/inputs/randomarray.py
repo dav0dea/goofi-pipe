@@ -23,6 +23,7 @@ class RandomArray(Node):
             },
             "common": {
                 "autotrigger": True,
+                "max_frequency": 30,
             },
         }
 

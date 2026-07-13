@@ -14,7 +14,7 @@ class ShutdownGoofi(Node):
                 "shutdown": BoolParam(trigger=True, doc="Shutdown this goofi-pipe instance after the specified delay"),
                 "cancel": BoolParam(trigger=True, doc="Cancel a scheduled shutdown"),
             },
-            "common": {"autotrigger": True},
+            "common": {"autotrigger": True, "max_frequency": 30},
         }
 
     def config_input_slots():

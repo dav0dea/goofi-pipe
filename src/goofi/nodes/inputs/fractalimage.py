@@ -32,7 +32,7 @@ class FractalImage(Node):
                 "octaves": IntParam(6, 1, 6),
                 "lacunarity": FloatParam(2.0, 1.0, 4.0),
             },
-            "common": {"autotrigger": True},
+            "common": {"autotrigger": True, "max_frequency": 30},
         }
 
     def process(self, complexity: Data):

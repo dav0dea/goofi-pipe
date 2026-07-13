@@ -25,7 +25,7 @@ class Reservoir(Node):
                 "mean": FloatParam(0.0, -0.2, 0.2),
                 "std": FloatParam(1.0, 0.7, 1.3),
             },
-            "common": {"autotrigger": True},
+            "common": {"autotrigger": True, "max_frequency": 30},
         }
 
     def config_input_slots():

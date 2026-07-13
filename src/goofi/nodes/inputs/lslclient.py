@@ -55,7 +55,7 @@ class LSLClient(Node):
                 "stream_name": "",
                 "source_type": "",
             },
-            "common": {"autotrigger": True},
+            "common": {"autotrigger": True, "max_frequency": 30},
         }
 
     def config_input_slots():
