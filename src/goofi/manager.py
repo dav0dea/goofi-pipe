@@ -514,7 +514,6 @@ class Manager:
         ref = self._spawn_node(spec, node_id, params, group)
         ref.uid = member_uid
         ref.name = assigned_name
-        ref.membership = membership
         ref.set_message_handler(MessageType.SHUTDOWN, lambda *args: self.terminate())
 
         # Preserve gui_kwargs (notably 'pos') for the bridge / patch save.
@@ -908,7 +907,7 @@ class Manager:
                 params = old.params.serialize()
             except Exception:
                 params = None
-            display, membership = old.name, old.membership
+            display = old.name
             gui_kwargs = dict(old.gui_kwargs)
             count = old.restart_count + 1
 
@@ -928,7 +927,6 @@ class Manager:
             new_ref = self._spawn_node(spec, new_id, params, group)
             new_ref.set_message_handler(MessageType.SHUTDOWN, lambda *args: self.terminate())
             new_ref.gui_kwargs = gui_kwargs
-            new_ref.membership = membership
             new_ref.uid = uid
             new_ref.name = display
             new_ref.restart_count = count
@@ -1215,10 +1213,9 @@ class Manager:
     def _attach_member(self, inst_id: str, uid: str, local: str) -> None:
         """Record `uid` as a member of `inst_id` under local name `local`, keeping the
         views in lockstep: the instance's `members` map, the uid->instance reverse
-        index, and the member's own parent marker. A member is either a real NODE
-        (marker on `ref.membership`) or — once nested (Phase 3a) — another sub-patch
-        INSTANCE (marker on `SubPatchInstance.parent`); the same funnel maintains both,
-        so the parent edge can't drift from the index.
+        index, and (for a nested sub-patch INSTANCE) its own `parent` marker. A real
+        node has no separate marker — its owning scope is read back off these two maps
+        by `_membership_marker`, so the parent edge can't drift from the index.
 
         A MOVE, not just an add: any prior parent is dropped first, so an entity is never
         listed under two scopes (idempotent; a no-op for a fresh entity). Now that every
@@ -1228,9 +1225,7 @@ class Manager:
             self._detach_member(uid)
         self._instances[inst_id].members[uid] = local
         self._membership[uid] = inst_id
-        if uid in self.nodes:
-            self.nodes[uid].membership = {"instance": inst_id, "local_name": local}
-        elif uid in self._instances:
+        if uid in self._instances:
             self._instances[uid].parent = inst_id
 
     def _detach_member(self, uid: str) -> Optional[str]:
@@ -1240,11 +1235,22 @@ class Manager:
         inst_id = self._membership.pop(uid, None)
         if inst_id is not None and inst_id in self._instances:
             self._instances[inst_id].members.pop(uid, None)
-        if uid in self.nodes:
-            self.nodes[uid].membership = None
-        elif uid in self._instances:
+        if uid in self._instances:
             self._instances[uid].parent = None
         return inst_id
+
+    def _membership_marker(self, uid: str) -> Optional[Dict[str, str]]:
+        """The wire marker for which scope owns `uid` — {instance, local_name} — or
+        None for an unparented entity. Derived from the authoritative _membership /
+        members maps (the single source of truth), so it can never drift from them."""
+        inst_id = self._membership.get(uid)
+        if inst_id is None:
+            return None
+        inst = self._instances.get(inst_id)
+        local = inst.members.get(uid) if inst is not None else None
+        if local is None:
+            return None
+        return {"instance": inst_id, "local_name": local}
 
     @contextlib.contextmanager
     def _transaction(self):
@@ -1261,11 +1267,6 @@ class Manager:
         snap_membership = deepcopy(self._membership)
         snap_instances = deepcopy(self._instances)
         snap_definitions = deepcopy(self._definitions)
-        # The node-side membership MARKER (ref.membership) is a second view of an entity's
-        # parent, mutated by _attach_member/_detach_member alongside _membership. It lives
-        # on the live NodeRef (NOT inside the deepcopied _instances), so snapshot it too or
-        # rollback leaves a surviving node's marker pointing at a rolled-back instance.
-        snap_markers = {uid: deepcopy(self.nodes[uid].membership) for uid in self.nodes}
         # An inner @mark_unsaved_changes call (e.g. wire_boundary) flips this flag before a
         # later op in the block can fail; restore it on rollback so a byte-identical
         # rollback doesn't leave the UI reporting false "unsaved changes".
@@ -1287,11 +1288,6 @@ class Manager:
             self._instances.update(snap_instances)
             self._definitions.clear()
             self._definitions.update(snap_definitions)
-            # Restore the node-side markers for every surviving node (spawned nodes are
-            # torn down below, so only pre-block nodes need their marker put back).
-            for uid, marker in snap_markers.items():
-                if uid in self.nodes:
-                    self.nodes[uid].membership = marker
             for n in set(self.nodes) - before_nodes:
                 try:
                     self.remove_node(n, notify_gui=False)

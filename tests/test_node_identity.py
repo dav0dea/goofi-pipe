@@ -113,7 +113,7 @@ def test_rename_subpatch_member_is_a_flat_rename_local_unchanged(tmp_path):
         mgr.rename_node(u, "custom")
         assert mgr.nodes[u].name == "custom"  # flat display renamed
         assert mgr._instances[inst].members[u] == old_local  # local template key unchanged
-        assert mgr.nodes[u].membership["local_name"] == old_local
+        assert mgr._membership_marker(u)["local_name"] == old_local
         fp = str(tmp_path / "m.gfi")
         mgr.save(fp, overwrite=True)
     finally:
@@ -195,12 +195,12 @@ def test_bridge_snapshot_carries_uid_and_display_name():
     mgr = _bare_manager(use_multiprocessing=False)
     try:
         uid = mgr.add_node("Oscillator", "inputs")
-        desc = describe_node_instance(uid, mgr.nodes[uid])
+        desc = describe_node_instance(mgr, uid, mgr.nodes[uid])
         assert desc["uid"] == uid
         assert desc["name"] == "oscillator0"
         # rename moves only the display field; the uid is stable
         mgr.rename_node(uid, "my_osc")
-        desc2 = describe_node_instance(uid, mgr.nodes[uid])
+        desc2 = describe_node_instance(mgr, uid, mgr.nodes[uid])
         assert desc2["uid"] == uid and desc2["name"] == "my_osc"
     finally:
         mgr.terminate(notify_gui=False)

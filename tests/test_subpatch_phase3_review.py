@@ -204,19 +204,20 @@ def test_unwire_chained_boundary_preserves_internal_link_in_nested_child():
         mgr.terminate(notify_gui=False)
 
 
-# === Cluster E: _transaction restores the node-side ref.membership marker ======
+# === Cluster E: _transaction rollback restores a node's owning scope =============
 
 def test_transaction_rollback_restores_node_membership_marker():
-    """Findings #9, #12: on rollback _transaction restored the _membership index but left
-    a surviving node's ref.membership marker pointing at the rolled-back instance — a
-    desync the invariant checker catches."""
+    """Findings #9, #12: a rolled-back transaction must leave a surviving node's owning
+    scope unchanged. The membership marker is derived from the _membership / members maps
+    (both snapshotted + restored by _transaction), so the derived marker must be back to
+    its pre-block value — a desync the invariant checker catches."""
     mgr = _bare_manager(use_multiprocessing=False)
     try:
         a = mgr.add_node("Buffer", "signal")
         b = mgr.add_node("Buffer", "signal")
         c = mgr.add_node("Buffer", "signal")
         P = mgr.group_nodes([a, b, c])
-        marker_a = dict(mgr.nodes[a].membership)  # {'instance': P, 'local_name': ...}
+        marker_a = dict(mgr._membership_marker(a))  # {'instance': P, 'local_name': ...}
 
         # group a subset into a new child, but force a failure mid-transaction
         real_attach = mgr._attach_member
@@ -235,7 +236,7 @@ def test_transaction_rollback_restores_node_membership_marker():
                 mgr.group_nodes([a, b])
 
         # a's marker must be restored to P (not left pointing at the rolled-back child)
-        assert mgr.nodes[a].membership == marker_a
+        assert mgr._membership_marker(a) == marker_a
         assert_subpatch_invariants(mgr)
     finally:
         mgr.terminate(notify_gui=False)

@@ -154,7 +154,7 @@ def test_stage_passes_through_setup_to_ready():
 
         from goofi.bridge.schemas import describe_node_instance
 
-        assert describe_node_instance(uid, ref)["stage"] == "ready"
+        assert describe_node_instance(mgr, uid, ref)["stage"] == "ready"
     finally:
         mgr.terminate(notify_gui=False)
 

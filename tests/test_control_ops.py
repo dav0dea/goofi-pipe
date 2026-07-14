@@ -429,12 +429,12 @@ def test_restart_node_op_respawns_member_in_place_preserving_membership():
         b = manager.add_node("Buffer", "signal")
         inst = manager.group_nodes([a, b])
         member = manager.add_member_node(inst, "Buffer", "signal")
-        old_membership = dict(manager.nodes[member].membership)
+        old_membership = dict(manager._membership_marker(member))
 
         asyncio.run(hub._dispatch("restart_node", {"node": member}))
 
         assert member in manager.nodes  # uid stable, respawned in place
-        assert manager.nodes[member].membership == old_membership  # stayed in its sub-patch
+        assert manager._membership_marker(member) == old_membership  # stayed in its sub-patch
         assert manager._membership[member] == inst
     finally:
         manager.terminate(notify_gui=False)

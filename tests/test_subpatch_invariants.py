@@ -41,9 +41,9 @@ def assert_subpatch_invariants(mgr) -> None:
         assert link["node_in"] in nodes, f"link in endpoint {link['node_in']} is not a live node"
 
     # --- membership -> instances is consistent, members are live, marker agrees
-    # A member is either a live NODE or (Phase 3a nesting) another INSTANCE; a node
-    # carries its parentage on `ref.membership`, an instance on `.parent` (checked in
-    # the nesting block below). Anything that is neither is an orphan uid.
+    # A member is either a live NODE or (Phase 3a nesting) another INSTANCE; a node's
+    # parentage is DERIVED (`_membership_marker`) from these maps, an instance carries
+    # `.parent` (checked in the nesting block below). Anything neither is an orphan uid.
     for uid, inst_id in membership.items():
         assert inst_id in instances, f"membership[{uid}] points at missing instance {inst_id}"
         members = instances[inst_id].members
@@ -53,8 +53,8 @@ def assert_subpatch_invariants(mgr) -> None:
         )
         local = members[uid]
         if uid in nodes:
-            assert mgr.nodes[uid].membership == {"instance": inst_id, "local_name": local}, (
-                f"ref.membership marker on {uid} out of sync: {mgr.nodes[uid].membership!r} "
+            assert mgr._membership_marker(uid) == {"instance": inst_id, "local_name": local}, (
+                f"derived membership marker on {uid} out of sync: {mgr._membership_marker(uid)!r} "
                 f"!= {{'instance': {inst_id!r}, 'local_name': {local!r}}}"
             )
 
@@ -108,7 +108,7 @@ def assert_subpatch_invariants(mgr) -> None:
 
     # --- nesting tree: each instance's parent edge is consistent + acyclic ------
     # An instance member carries its parentage on `.parent` (the instance-side analog
-    # of a node's `ref.membership` marker); it must agree with both the parent's
+    # of a node's derived membership marker); it must agree with both the parent's
     # `members` and the upward index, and the parent-chains must form a forest.
     for inst_id, inst in instances.items():
         parent = inst.parent

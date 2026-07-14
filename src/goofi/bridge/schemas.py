@@ -145,11 +145,12 @@ def describe_instance(manager: Any, inst_id: str, inst: Any, error: Any = None) 
     }
 
 
-def describe_node_instance(uid: str, ref: NodeRef) -> Dict[str, Any]:
+def describe_node_instance(manager, uid: str, ref: NodeRef) -> Dict[str, Any]:
     """Describe a *live* node (instance) on the current graph.
 
     `uid` is the universal identity (the key everything references); `name` is the
-    mutable display label."""
+    mutable display label. `manager` supplies the membership marker, derived from
+    the authoritative scope maps rather than a cached copy on the ref."""
     gk = ref.gui_kwargs or {}
     return {
         "uid": uid,
@@ -172,7 +173,7 @@ def describe_node_instance(uid: str, ref: NodeRef) -> Dict[str, Any]:
         # sub-patch ({instance, local_name}) or ROOT ({instance: ROOT_ID, ...}) for a
         # top-level node — so the editor indexes its parent scope uniformly. The editor
         # hides members of a collapsed instance and shows the group node instead.
-        "membership": ref.membership,
+        "membership": manager._membership_marker(uid),
         "error": ref.last_error,
         # Rolling execution telemetry the node pushes on the status plane
         # (~1 Hz). None until the node's first NODE_STATS push.

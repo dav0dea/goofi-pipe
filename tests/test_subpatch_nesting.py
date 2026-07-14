@@ -24,7 +24,7 @@ def _second_instance(mgr):
 def test_attach_detach_tracks_instance_parent():
     """The membership funnel keeps an instance member's `.parent` marker in lockstep
     with the `_membership` upward index — the instance-side analog of a node's
-    `ref.membership` marker."""
+    derived membership marker."""
     mgr = _bare_manager(use_multiprocessing=False)
     try:
         osc, A = _build_grouped_graph(mgr)  # instance A: [select0, select1]

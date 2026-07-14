@@ -267,8 +267,8 @@ def test_add_member_node_lands_in_subpatch():
         assert uid in mgr.nodes
         assert mgr._membership[uid] == inst
         assert mgr._instances[inst].members[uid] == "buffer0"  # local template key
-        # the node carries the membership marker the bridge/save read
-        assert mgr.nodes[uid].membership == {"instance": inst, "local_name": "buffer0"}
+        # the derived membership marker the bridge/save read
+        assert mgr._membership_marker(uid) == {"instance": inst, "local_name": "buffer0"}
         # a fresh add picks the next free flat name
         uid2 = mgr.add_member_node(inst, "Buffer", "signal")
         assert _disp(mgr, uid2) == "buffer1"

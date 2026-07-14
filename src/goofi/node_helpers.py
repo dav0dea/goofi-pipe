@@ -217,7 +217,6 @@ class NodeRef:
     # For display + `nd()` resolution ONLY — never a reference key, so it can be
     # renamed freely without touching anything that points at the node.
     name: Optional[str] = field(default=None, repr=False, compare=False)
-    membership: Optional[Dict[str, Any]] = field(default=None, repr=False, compare=False)
     # How many times the manager's liveness supervisor has respawned this node
     # after its process crashed. Carried across respawns; surfaced to the UI so a
     # crash-loop is observable even though restarts are unlimited.

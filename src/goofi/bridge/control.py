@@ -450,7 +450,7 @@ class ControlHub:
             ref = manager.nodes[uid]
         except KeyError:
             return
-        payload = describe_node_instance(uid, ref)
+        payload = describe_node_instance(manager, uid, ref)
         self.broadcast_threadsafe({"event": "node_added", "payload": payload})
 
     def on_node_removed(self, uid: str, membership: Optional[Dict[str, Any]] = None) -> None:
@@ -502,7 +502,7 @@ class ControlHub:
         nodes = []
         for uid in list(manager.nodes):
             try:
-                nodes.append(describe_node_instance(uid, manager.nodes[uid]))
+                nodes.append(describe_node_instance(manager, uid, manager.nodes[uid]))
             except Exception:
                 traceback.print_exc()
         # Attribute each errored node to its ancestor instances in ONE pass (the first
