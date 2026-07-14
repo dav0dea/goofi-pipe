@@ -14,6 +14,10 @@
 	const autoRange = $derived(settings.auto !== false);
 	const vmin = $derived(Number(settings.vmin ?? 0));
 	const vmax = $derived(Number(settings.vmax ?? 1));
+	// Keep the image's aspect ratio (letterbox) by default, or stretch it to fill
+	// the viewer. Both canvases hold the frame at its own aspect, so this is a pure
+	// object-fit switch: `contain` letterboxes, `fill` distorts to the box.
+	const objectFit = $derived(settings.stretch === true ? 'fill' : 'contain');
 
 	// Two canvases: a WebGL2 one (the fast path — HD video, float heatmaps) and a
 	// 2D one (fallback for the rare float-RGB / gray+alpha frames, or when WebGL2
@@ -176,8 +180,8 @@
 	});
 </script>
 
-<canvas bind:this={glCanvas} class:hidden={!useGl}></canvas>
-<canvas bind:this={canvas2d} class:hidden={useGl}></canvas>
+<canvas bind:this={glCanvas} class:hidden={!useGl} style:object-fit={objectFit}></canvas>
+<canvas bind:this={canvas2d} class:hidden={useGl} style:object-fit={objectFit}></canvas>
 
 <style>
 	canvas {

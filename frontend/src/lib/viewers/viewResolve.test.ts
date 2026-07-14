@@ -26,4 +26,8 @@ describe('resolveSettings', () => {
 	it('returns pure defaults when overrides are absent', () => {
 		expect(resolveSettings('image', undefined)).toEqual(resolveSettings('image', {}));
 	});
+	it('image defaults to keeping aspect ratio; stretch is an opt-in override', () => {
+		expect(resolveSettings('image', {}).stretch).toBe(false);
+		expect(resolveSettings('image', { stretch: true }).stretch).toBe(true);
+	});
 });

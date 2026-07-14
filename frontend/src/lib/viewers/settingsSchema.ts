@@ -60,7 +60,8 @@ const SCHEMA: Record<ViewerKind, SettingGroup[]> = {
 				{ key: 'vmin', label: 'Min', type: 'number', default: 0, step: 0.1, showWhen: { key: 'auto', equals: false } },
 				{ key: 'vmax', label: 'Max', type: 'number', default: 1, step: 0.1, showWhen: { key: 'auto', equals: false } }
 			]
-		}
+		},
+		{ title: 'Layout', settings: [{ key: 'stretch', label: 'Stretch to fill', type: 'toggle', default: false }] }
 	],
 	topomap: [
 		{ title: 'Color', settings: [{ key: 'colormap', label: 'Colormap', type: 'select', default: 'coolwarm', options: COLORMAPS }] },
