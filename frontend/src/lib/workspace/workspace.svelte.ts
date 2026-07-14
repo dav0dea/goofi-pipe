@@ -31,6 +31,7 @@ import {
 	setPanelState,
 	setPanelType,
 	splitPanel,
+	uid,
 	type Direction,
 	type LayoutNode,
 	type Workspace,
@@ -307,7 +308,7 @@ class WorkspaceStore {
 			const src = this.state.workspaces.find((w) => w.id === workspaceId);
 			if (!src) return;
 			const copy: Workspace = {
-				id: makeWorkspace('').id,
+				id: uid('ws'),
 				name: this._uniqueName(`${src.name} copy`),
 				root: cloneWithNewIds(src.root)
 			};
@@ -411,7 +412,7 @@ class WorkspaceStore {
 			if (!taken) return;
 			const { node, state } = taken;
 			const tab: Workspace = {
-				id: makeWorkspace('').id,
+				id: uid('ws'),
 				name: this._uniqueName('Layout'),
 				root: node
 			};
