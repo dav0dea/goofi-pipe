@@ -147,8 +147,10 @@ function transform(root: LayoutNode, nodeId: string, fn: (n: LayoutNode) => Layo
 	return changed ? { ...root, children } : root;
 }
 
-export function setPanelType(root: LayoutNode, panelId: string, panelType: string, state?: unknown): LayoutNode {
-	return transform(root, panelId, (n) => (n.kind === 'panel' ? { ...n, panelType, state } : n));
+export function setPanelType(root: LayoutNode, panelId: string, panelType: string): LayoutNode {
+	// Switching type discards the old type's per-panel state — a new type can't
+	// interpret it.
+	return transform(root, panelId, (n) => (n.kind === 'panel' ? { ...n, panelType, state: undefined } : n));
 }
 
 export function setPanelState(root: LayoutNode, panelId: string, state: unknown): LayoutNode {

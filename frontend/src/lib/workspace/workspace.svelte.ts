@@ -36,7 +36,6 @@ import {
 	type Workspace,
 	type WorkspaceState
 } from './model';
-import { getPanelType } from './registry';
 import { linkedNodeName, withLinkedNode } from './panelState';
 import { history, type LayoutActionKind } from '$lib/stores/history.svelte';
 import { captureNavContext } from './navContext';
@@ -206,8 +205,7 @@ class WorkspaceStore {
 
 	setType(panelId: string, panelType: string): void {
 		this._tracked('set_panel_type', 'Change panel', () => {
-			const ds = getPanelType(panelType)?.defaultState?.();
-			this._updateActiveRoot((root) => setPanelType(root, panelId, panelType, ds));
+			this._updateActiveRoot((root) => setPanelType(root, panelId, panelType));
 		});
 	}
 

@@ -30,11 +30,6 @@ export interface PanelType {
 	/** Optional glyph shown beside the title. */
 	icon?: string;
 	component: Component<PanelProps>;
-	/** Factory for the panel's initial state when first created / switched to. */
-	defaultState?: () => unknown;
-	/** When false, the panel renders its own header chrome instead of the
-	 * framework's. Defaults to true. */
-	chrome?: boolean;
 	/** True if a node dragged from an editor can be dropped onto this panel to
 	 * bind it (Parameters / Viewer / Metadata). */
 	acceptsNode?: boolean;
