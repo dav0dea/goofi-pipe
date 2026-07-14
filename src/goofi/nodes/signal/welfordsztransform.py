@@ -32,7 +32,7 @@ class WelfordsZTransform(Node):
         self.m2 = {}
 
     def process(self, data: Data):
-        if data is None or data.data is None:
+        if data is None:
             return None
 
         val = np.asarray(data.data)  # use asarray instead of squeeze to maintain dimensionality

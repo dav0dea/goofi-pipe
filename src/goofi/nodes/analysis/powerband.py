@@ -34,7 +34,7 @@ class PowerBand(Node):
         }
 
     def process(self, data):
-        if data is None or data.data is None:
+        if data is None:
             return None
 
         f_min = self.params["powerband"]["f_min"].value

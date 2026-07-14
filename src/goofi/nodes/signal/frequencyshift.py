@@ -33,7 +33,7 @@ class FrequencyShift(Node):
 
     def process(self, data):
         # early exit
-        if data is None or data.data is None:
+        if data is None:
             return None
 
         # flatten to 1D

@@ -61,7 +61,7 @@ class PhiID(Node):
 
     def process(self, matrix: Data):
         # If no input, do nothing
-        if matrix is None or matrix.data is None:
+        if matrix is None:
             return None
 
         # Ensure data is a 2D array: channels x timepoints

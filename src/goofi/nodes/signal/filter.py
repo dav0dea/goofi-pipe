@@ -79,7 +79,7 @@ class Filter(Node):
         self.internal_buffer = deque(maxlen=self.params["signal"]["buffer_size"].value)
 
     def process(self, data: Data):
-        if data is None or data.data is None:
+        if data is None:
             return None
 
         sfreq = data.meta["sfreq"]

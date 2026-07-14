@@ -33,7 +33,7 @@ class ColorEnhancer(Node):
         }
 
     def process(self, image: Data):
-        if image is None or image.data is None:
+        if image is None:
             return None
 
         # Extract parameters

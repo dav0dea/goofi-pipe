@@ -41,7 +41,7 @@ class StaticBaseline(Node):
         self.time_origin = None
 
     def process(self, data: Data, trigger_baseline: Data = None, n_seconds: Data = None):
-        if data is None or data.data is None:
+        if data is None:
             return None
 
         val = np.asarray(data.data)

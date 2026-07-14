@@ -57,7 +57,7 @@ class FacialExpression(Node):
         self.last_emotion = None
 
     def process(self, image: Data):
-        if image is None or image.data is None:
+        if image is None:
             logging.warning("No image data to process.")
             return {
                 "emotion_probabilities": None,

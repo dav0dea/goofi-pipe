@@ -38,7 +38,7 @@ class Coord2loc(Node):
         self.geolocator = Nominatim(user_agent="my_application")
 
     def process(self, latitude: Data, longitude: Data):
-        if latitude is None or latitude.data is None or longitude is None or longitude.data is None:
+        if latitude is None or longitude is None:
             return None
         # check if the input is within the range of the latitude and longitude
         if not (-90 <= latitude.data <= 90 and -180 <= longitude.data <= 180):

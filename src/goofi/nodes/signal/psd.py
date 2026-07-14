@@ -51,7 +51,7 @@ class PSD(Node):
         }
 
     def process(self, data: Data):
-        if data is None or data.data is None:
+        if data is None:
             return None
 
         method = self.params.psd.method.value

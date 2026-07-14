@@ -44,7 +44,7 @@ class FormatString(Node):
 
         # Convert Data objects to their string representations
         for key, value in input_strings.items():
-            if value is None or value.data is None:
+            if value is None:
                 input_strings[key] = Data(dtype=DataType.STRING, data="", meta={})
             else:
                 input_strings[key] = Data(dtype=DataType.STRING, data=value.data, meta=value.meta)

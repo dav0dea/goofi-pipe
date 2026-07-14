@@ -34,7 +34,7 @@ class FFT(Node):
         }
 
     def process(self, data: Data):
-        if data is None or data.data is None:
+        if data is None:
             return None
 
         input_type = self.params["fft"]["input_type"].value

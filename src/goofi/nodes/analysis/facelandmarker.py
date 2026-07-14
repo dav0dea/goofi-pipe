@@ -73,7 +73,7 @@ class FaceLandmarker(Node):
         self.detector = vision.FaceLandmarker.create_from_options(options)
 
     def process(self, image: Data):
-        if image is None or image.data is None:
+        if image is None:
             return None
 
         # Convert image to MediaPipe format

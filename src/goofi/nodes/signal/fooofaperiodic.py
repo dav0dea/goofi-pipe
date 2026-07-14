@@ -44,7 +44,7 @@ class FOOOFaperiodic(Node):
         }
 
     def process(self, psd_data: Data):
-        if psd_data is None or psd_data.data is None:
+        if psd_data is None:
             return None
 
         ch_annot = None

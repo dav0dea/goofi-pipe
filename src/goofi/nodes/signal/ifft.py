@@ -27,7 +27,7 @@ class IFFT(Node):
 
     def process(self, spectrum: Data, phase: Data):
         # Check if the input is provided
-        if spectrum is None or spectrum.data is None or phase is None or phase.data is None:
+        if spectrum is None or phase is None:
             return None
 
         # Check if the lengths of spectrum and phase are different

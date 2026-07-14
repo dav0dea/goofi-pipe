@@ -46,7 +46,7 @@ class Switch(Node):
         }
 
     def process(self, selector: Data, array1: Data, array2: Data, array3: Data, string1: Data, string2: Data, string3: Data):
-        if selector is None or selector.data is None:
+        if selector is None:
             return
 
         selector_value = int(selector.data[0])  # Assume selector is a single-element array

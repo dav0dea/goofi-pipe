@@ -83,7 +83,7 @@ class BodyPoseEstimation(Node):
         return self.detector
 
     def process(self, image: Data):
-        if image is None or image.data is None:
+        if image is None:
             return None
 
         detector = self._get_or_create_detector()

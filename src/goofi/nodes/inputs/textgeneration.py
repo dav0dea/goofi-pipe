@@ -143,7 +143,7 @@ class TextGeneration(Node):
         print(f"Conversation saved to {filename}")
 
     def process(self, prompt: Data):
-        if prompt is None or prompt.data is None:
+        if prompt is None:
             return None
 
         model = self.params.text_generation.model.value

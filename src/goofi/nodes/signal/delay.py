@@ -25,7 +25,7 @@ class Delay(Node):
         return {"delay": {"time": FloatParam(0.1, 0.0, 100.0)}}  # Delay time in seconds (default 0.1s, max 10s)
 
     def process(self, data: Data):
-        if data is None or data.data is None:
+        if data is None:
             return None
 
         # Get delay time from parameter

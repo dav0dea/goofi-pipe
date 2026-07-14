@@ -40,7 +40,7 @@ class TuningMatrix(Node):
         }
 
     def process(self, tuning: Data):
-        if tuning is None or tuning.data is None:
+        if tuning is None:
             return None
         tuning = tuning.data
         function = self.params.Tuning_Matrix.function.value

@@ -54,7 +54,7 @@ class Fractality(Node):
         }
 
     def process(self, data_input: Data):
-        if data_input is None or data_input.data is None:
+        if data_input is None:
             return None
 
         method = self.params["method"]["name"].value

@@ -48,7 +48,7 @@ class Threshold(Node):
             self.triggered_last_cycle = False
             return {"thresholded": (np.array([np.nan]), data.meta)}
 
-        if data is None or data.data is None:
+        if data is None:
             return None
 
         if self.params.threshold.mode.value == ">":

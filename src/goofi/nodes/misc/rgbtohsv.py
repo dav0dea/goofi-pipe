@@ -25,7 +25,7 @@ class RGBtoHSV(Node):
         return {}  # No parameters needed for this transformation
 
     def process(self, rgb_image: Data):
-        if rgb_image is None or rgb_image.data is None:
+        if rgb_image is None:
             return None
 
         # Extract RGB values (input is float [0,1], as colorsys expects)

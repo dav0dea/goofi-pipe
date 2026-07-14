@@ -46,7 +46,7 @@ class HarmonicSpectrum(Node):
         self.cached_metric = None
 
     def process(self, psd: Data):
-        if psd is None or psd.data is None:
+        if psd is None:
             return None
         psd.data = np.squeeze(psd.data)
         metadata = psd.meta

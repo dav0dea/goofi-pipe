@@ -40,7 +40,7 @@ class Histogram(Node):
         self.data_max = None
 
     def process(self, data: Data):
-        if data is None or data.data is None:
+        if data is None:
             return None
 
         # Handle reset trigger

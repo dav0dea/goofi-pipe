@@ -41,7 +41,7 @@ class TimeDelayEmbedding(Node):
         }
 
     def process(self, input_array: Data):
-        if input_array is None or input_array.data is None:
+        if input_array is None:
             return None
 
         delay = self.params.embedding.delay.value

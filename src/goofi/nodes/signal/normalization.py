@@ -56,7 +56,7 @@ class Normalization(Node):
         self.buffer = None
 
     def process(self, data: Data):
-        if data is None or data.data is None:
+        if data is None:
             return None
 
         array = data.data

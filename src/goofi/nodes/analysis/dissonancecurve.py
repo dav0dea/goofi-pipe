@@ -40,7 +40,7 @@ class DissonanceCurve(Node):
         }
 
     def process(self, peaks: Data, amps: Data):
-        if peaks is None or peaks.data is None or amps is None or amps.data is None:
+        if peaks is None or amps is None:
             return None
         peaks.data = np.squeeze(peaks.data)
         metadata = peaks.meta

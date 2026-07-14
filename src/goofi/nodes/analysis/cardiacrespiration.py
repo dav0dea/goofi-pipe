@@ -30,7 +30,7 @@ class CardiacRespiration(Node):
         }
 
     def process(self, data: Data):
-        if data is None or data.data is None:
+        if data is None:
             return None
 
         if data.data.ndim > 1:

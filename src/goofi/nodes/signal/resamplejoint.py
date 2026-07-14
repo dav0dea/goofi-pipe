@@ -31,7 +31,7 @@ class ResampleJoint(Node):
         return {"resample": {"scale": FloatParam(0.5, 0.0, 1.0)}}
 
     def process(self, data1: Data, data2: Data):
-        if data1 is None or data1.data is None or data2 is None or data2.data is None:
+        if data1 is None or data2 is None:
             return None
 
         sf1 = data1.meta["sfreq"]

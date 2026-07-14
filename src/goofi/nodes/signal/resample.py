@@ -36,7 +36,7 @@ class Resample(Node):
         }
 
     def process(self, data: Data):
-        if data is None or data.data is None:
+        if data is None:
             print("Data is None")
             return None
 

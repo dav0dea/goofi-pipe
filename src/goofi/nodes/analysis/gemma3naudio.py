@@ -95,7 +95,7 @@ class Gemma3nAudio(Node):
             raise
 
     def process(self, audio: Data):
-        if audio is None or audio.data is None:
+        if audio is None:
             return None
 
         audio_data = audio.data

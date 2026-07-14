@@ -95,7 +95,7 @@ class Hologram(Node):
     # ---------------- lifecycle ----------------
 
     def process(self, psd: Data):
-        if psd is None or psd.data is None:
+        if psd is None:
             return None
 
         amp = np.asarray(psd.data, dtype=np.float32)  # (N, F)

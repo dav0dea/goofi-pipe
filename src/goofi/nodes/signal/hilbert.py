@@ -25,7 +25,7 @@ class Hilbert(Node):
         return {"inst_amplitude": DataType.ARRAY, "inst_phase": DataType.ARRAY, "inst_frequency": DataType.ARRAY}
 
     def process(self, data: Data):
-        if data is None or data.data is None:
+        if data is None:
             return None
 
         analytic_signal = hilbert(data.data)

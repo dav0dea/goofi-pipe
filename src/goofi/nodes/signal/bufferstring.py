@@ -35,7 +35,7 @@ class BufferString(Node):
         self.buffer = []
 
     def process(self, val: Data):
-        if val is None or val.data is None:
+        if val is None:
             return None
 
         if self.params.buffer.reset.value:

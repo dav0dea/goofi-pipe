@@ -115,7 +115,7 @@ class DreamInceptor(Node):
             self.params.control.reset.value = True
             self.input_slots["reset"].clear()
 
-        if data is None or data.data is None:
+        if data is None:
             print("No data received")
             return None
 

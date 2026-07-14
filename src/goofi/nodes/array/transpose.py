@@ -18,7 +18,7 @@ class Transpose(Node):
         return {"transpose": {"axes": "1,0"}}
 
     def process(self, array: Data):
-        if array is None or array.data is None:
+        if array is None:
             return None
 
         if array.data.ndim == 1:
