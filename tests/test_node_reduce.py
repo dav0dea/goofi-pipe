@@ -23,9 +23,8 @@ from goofi.node_reduce import (
 
 def test_viewspec_from_dict_parses_valid_axes():
     spec = viewspec_from_dict(
-        {"axes": [{"axis": -1, "max": 1600, "method": "envelope"}], "version": 3}
+        {"axes": [{"axis": -1, "max": 1600, "method": "envelope"}]}
     )
-    assert spec.version == 3
     assert spec.axes == (AxisSpec(axis=-1, max=1600, method="envelope"),)
 
 
@@ -38,10 +37,8 @@ def test_viewspec_from_dict_is_tolerant():
                 "not-a-dict",                                       # skipped
                 {"axis": 2, "max": 5, "method": "area"},
             ],
-            "version": "nope",                                     # bad version -> 0
         }
     )
-    assert spec.version == 0
     assert spec.axes == (
         AxisSpec(axis=0, max=1, method="subsample"),
         AxisSpec(axis=2, max=5, method="area"),
@@ -194,12 +191,11 @@ def test_fold_viewspecs_richest_wins_per_axis():
     from goofi.node_reduce import fold_viewspecs
 
     folded = fold_viewspecs([
-        {"axes": [{"axis": -1, "max": 800, "method": "subsample"}], "version": 1},
-        {"axes": [{"axis": -1, "max": 2000, "method": "envelope"}], "version": 4},
+        {"axes": [{"axis": -1, "max": 800, "method": "subsample"}]},
+        {"axes": [{"axis": -1, "max": 2000, "method": "envelope"}]},
     ])
-    # max() of max, richest method (envelope>area>subsample), max() of version.
+    # max() of max, richest method (envelope>area>subsample).
     assert folded["axes"] == [{"axis": -1, "max": 2000, "method": "envelope"}]
-    assert folded["version"] == 4
 
 
 def test_fold_viewspecs_multiple_axes_independent():
@@ -220,8 +216,8 @@ def test_fold_viewspecs_multiple_axes_independent():
 def test_fold_viewspecs_empty_is_no_reduction():
     from goofi.node_reduce import fold_viewspecs
 
-    assert fold_viewspecs([]) == {"axes": [], "version": 0}
-    assert fold_viewspecs([{"axes": []}, {"axes": []}]) == {"axes": [], "version": 0}
+    assert fold_viewspecs([]) == {"axes": []}
+    assert fold_viewspecs([{"axes": []}, {"axes": []}]) == {"axes": []}
 
 
 def test_default_viewspec_for_kind():
@@ -232,8 +228,8 @@ def test_default_viewspec_for_kind():
     # round-trips through the parser the node uses
     assert viewspec_from_dict(line).axes[0].method == "envelope"
     # unknown / non-reducible kinds -> no reduction
-    assert default_viewspec_for_kind("string") == {"axes": [], "version": 0}
-    assert default_viewspec_for_kind("topomap") == {"axes": [], "version": 0}
+    assert default_viewspec_for_kind("string") == {"axes": []}
+    assert default_viewspec_for_kind("topomap") == {"axes": []}
 
 
 # ---- image area reduction preserves aspect (no per-axis distortion) ----------
@@ -310,7 +306,7 @@ def test_folded_line_spec_envelopes_1d_not_subsample():
     line = {"axes": [
         {"axis": 0, "max": 300, "method": "subsample"},
         {"axis": -1, "max": 1600, "method": "envelope"},
-    ], "version": 1}
+    ]}
     folded = fold_viewspecs([line])               # exactly what the manager sends the node
     spec = viewspec_from_dict(folded)
     n = 10000

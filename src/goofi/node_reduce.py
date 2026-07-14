@@ -56,7 +56,6 @@ class AxisSpec:
 @dataclass(frozen=True)
 class ViewSpec:
     axes: Tuple[AxisSpec, ...] = ()  # axes to reduce; unlisted axes untouched
-    version: int = 0  # client ordering only; node ignores
 
 
 def viewspec_from_dict(d: dict) -> ViewSpec:
@@ -73,11 +72,7 @@ def viewspec_from_dict(d: dict) -> ViewSpec:
         if method not in _METHODS:
             continue
         axes.append(AxisSpec(axis=ax, max=mx, method=method))
-    try:
-        ver = int(d.get("version", 0) or 0)
-    except Exception:
-        ver = 0
-    return ViewSpec(axes=tuple(axes), version=ver)
+    return ViewSpec(axes=tuple(axes))
 
 
 # ---------------------------------------------------------------------------
@@ -194,23 +189,18 @@ def _apply_axis(arr: np.ndarray, axis: int, a: AxisSpec, meta: dict):
 def default_viewspec_for_kind(kind: str) -> dict:
     """Seed ViewSpec dict for a viewer `kind` (manager relay default). Unknown /
     non-reducible kinds (string/table/topomap/...) reduce nothing."""
-    return {"axes": [dict(a) for a in _DEFAULT_VIEW_AXES.get(kind, [])], "version": 0}
+    return {"axes": [dict(a) for a in _DEFAULT_VIEW_AXES.get(kind, [])]}
 
 
 def fold_viewspecs(specs: list) -> dict:
     """Fold N per-axis ViewSpec dicts into one (manager folds all browsers of a
     slot). Richest-wins per axis: max() of the per-axis `max`, richest method
     (envelope > area > subsample). Keyed by the raw `axis` value — clients of one
-    slot share an axis convention. `version` = max across inputs (client ordering)."""
+    slot share an axis convention."""
     by_axis: Dict[int, dict] = {}
-    ver = 0
     for s in specs or []:
         if not isinstance(s, dict):
             continue
-        try:
-            ver = max(ver, int(s.get("version", 0) or 0))
-        except Exception:
-            pass
         for a in (s.get("axes") or []):
             if not isinstance(a, dict):
                 continue
@@ -227,7 +217,7 @@ def fold_viewspecs(specs: list) -> dict:
                 by_axis[ax] = {"axis": ax, "max": mx, "method": method}
             else:
                 cur["max"], cur["method"] = _fold_axis(cur["max"], cur["method"], mx, method)
-    return {"axes": [by_axis[k] for k in sorted(by_axis.keys())], "version": ver}
+    return {"axes": [by_axis[k] for k in sorted(by_axis.keys())]}
 
 
 def reduce_for_view(data: Data, spec: Optional[ViewSpec]) -> Data:

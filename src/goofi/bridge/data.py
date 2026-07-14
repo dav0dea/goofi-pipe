@@ -13,7 +13,7 @@ reduction (the ~1300× shrink) happens inside the node, before the cross-process
 copy; the manager is a thin switchboard.
 
 Each connection contributes a per-axis ViewSpec, seeded from its viewer `kind`
-and overridable inband via a TEXT `{"op":"view","spec":{axes,version}}` message.
+and overridable inband via a TEXT `{"op":"view","spec":{axes}}` message.
 The hub folds the connected ViewSpecs richest-wins per (node, slot) and pushes the
 fold to the node (`set_viewspec`). On the first viewer of a slot the node is
 told to produce (REGISTER_VIEWER, via `set_data_handler(view=True)`); on the last
@@ -135,8 +135,8 @@ class _SlotMux:
     def push_spec_if_changed(self) -> None:
         """Re-fold the connected ViewSpecs and, if the reduction changed, push it to
         the node so it reduces to what the attached viewers actually need. Dedup on
-        the `axes` only — the node ignores `version`, so a version-only bump (the
-        client's monotonic counter) must not trigger a redundant ctrl publish.
+        the folded `axes` so a re-fold that lands the same reduction doesn't trigger
+        a redundant ctrl publish.
 
         The push itself stays on the event loop: unlike the view-plane subscriber
         setup (which builds iceoryx2 services and is offloaded in the handler), this
@@ -233,7 +233,7 @@ class DataHub:
         try:
             async for msg in ws:
                 if msg.type == WSMsgType.TEXT:
-                    # Inband renegotiation: {"op":"view","spec":{axes,version}}.
+                    # Inband renegotiation: {"op":"view","spec":{axes}}.
                     try:
                         payload = json.loads(msg.data)
                     except Exception:

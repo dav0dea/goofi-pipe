@@ -38,17 +38,17 @@ def test_fold_axis_combines_cap_and_method_independently():
 # ---- fold_viewspecs (manager-side, raw-axis keyed) ---------------------------
 
 def test_fold_empty_is_empty():
-    assert fold_viewspecs([]) == {"axes": [], "version": 0}
+    assert fold_viewspecs([]) == {"axes": []}
 
 
 def test_fold_max_of_maxes_and_richest_on_shared_axis():
     out = fold_viewspecs(
         [
-            {"axes": [{"axis": -1, "max": 128, "method": "subsample"}], "version": 2},
-            {"axes": [{"axis": -1, "max": 64, "method": "envelope"}], "version": 5},
+            {"axes": [{"axis": -1, "max": 128, "method": "subsample"}]},
+            {"axes": [{"axis": -1, "max": 64, "method": "envelope"}]},
         ]
     )
-    assert out == {"axes": [{"axis": -1, "max": 128, "method": "envelope"}], "version": 5}
+    assert out == {"axes": [{"axis": -1, "max": 128, "method": "envelope"}]}
 
 
 def test_fold_keeps_raw_axes_separate_and_sorted():
@@ -60,7 +60,6 @@ def test_fold_keeps_raw_axes_separate_and_sorted():
             {"axis": -1, "max": 16, "method": "envelope"},
             {"axis": 0, "max": 8, "method": "subsample"},
         ],
-        "version": 0,
     }
 
 

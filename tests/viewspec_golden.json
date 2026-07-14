@@ -2,28 +2,28 @@
   {
     "name": "empty -> empty",
     "input": [],
-    "output": { "axes": [], "version": 0 }
+    "output": { "axes": [] }
   },
   {
     "name": "single spec passes through",
-    "input": [{ "axes": [{ "axis": 0, "max": 64, "method": "subsample" }], "version": 1 }],
-    "output": { "axes": [{ "axis": 0, "max": 64, "method": "subsample" }], "version": 1 }
+    "input": [{ "axes": [{ "axis": 0, "max": 64, "method": "subsample" }] }],
+    "output": { "axes": [{ "axis": 0, "max": 64, "method": "subsample" }] }
   },
   {
     "name": "max-of-maxes on a shared axis",
     "input": [
-      { "axes": [{ "axis": -1, "max": 100, "method": "subsample" }], "version": 0 },
-      { "axes": [{ "axis": -1, "max": 256, "method": "subsample" }], "version": 0 }
+      { "axes": [{ "axis": -1, "max": 100, "method": "subsample" }] },
+      { "axes": [{ "axis": -1, "max": 256, "method": "subsample" }] }
     ],
-    "output": { "axes": [{ "axis": -1, "max": 256, "method": "subsample" }], "version": 0 }
+    "output": { "axes": [{ "axis": -1, "max": 256, "method": "subsample" }] }
   },
   {
-    "name": "richest method wins (envelope > subsample), version is the max",
+    "name": "richest method wins (envelope > subsample)",
     "input": [
-      { "axes": [{ "axis": -1, "max": 128, "method": "subsample" }], "version": 2 },
-      { "axes": [{ "axis": -1, "max": 64, "method": "envelope" }], "version": 5 }
+      { "axes": [{ "axis": -1, "max": 128, "method": "subsample" }] },
+      { "axes": [{ "axis": -1, "max": 64, "method": "envelope" }] }
     ],
-    "output": { "axes": [{ "axis": -1, "max": 128, "method": "envelope" }], "version": 5 }
+    "output": { "axes": [{ "axis": -1, "max": 128, "method": "envelope" }] }
   },
   {
     "name": "area outranks subsample",
@@ -31,17 +31,16 @@
       { "axes": [{ "axis": 0, "max": 10, "method": "subsample" }] },
       { "axes": [{ "axis": 0, "max": 20, "method": "area" }] }
     ],
-    "output": { "axes": [{ "axis": 0, "max": 20, "method": "area" }], "version": 0 }
+    "output": { "axes": [{ "axis": 0, "max": 20, "method": "area" }] }
   },
   {
     "name": "two distinct axes emitted sorted ascending",
-    "input": [{ "axes": [{ "axis": 1, "max": 50, "method": "area" }, { "axis": 0, "max": 40, "method": "area" }], "version": 0 }],
+    "input": [{ "axes": [{ "axis": 1, "max": 50, "method": "area" }, { "axis": 0, "max": 40, "method": "area" }] }],
     "output": {
       "axes": [
         { "axis": 0, "max": 40, "method": "area" },
         { "axis": 1, "max": 50, "method": "area" }
-      ],
-      "version": 0
+      ]
     }
   },
   {
@@ -51,8 +50,7 @@
       "axes": [
         { "axis": -1, "max": 16, "method": "envelope" },
         { "axis": 0, "max": 8, "method": "subsample" }
-      ],
-      "version": 0
+      ]
     }
   }
 ]

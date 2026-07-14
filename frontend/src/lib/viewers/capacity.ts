@@ -22,7 +22,6 @@ export interface AxisSpec {
 
 export interface ViewSpec {
 	axes: AxisSpec[];
-	version: number;
 }
 
 /** Floor so a 0-px / collapsed layout never asks for a degenerate reduction. */
@@ -36,16 +35,8 @@ function px(v: number): number {
 	return Math.max(CAP_FLOOR, Math.round(v) || CAP_FLOOR);
 }
 
-/**
- * The ViewSpec for a viewer `kind` at `width`×`height` device pixels.
- * `version` is a client-side ordering counter (the node ignores it).
- */
-export function viewSpecForKind(
-	kind: ViewerKind,
-	width: number,
-	height: number,
-	version = 0
-): ViewSpec {
+/** The ViewSpec for a viewer `kind` at `width`×`height` device pixels. */
+export function viewSpecForKind(kind: ViewerKind, width: number, height: number): ViewSpec {
 	const w = px(width);
 	const h = px(height);
 	let axes: AxisSpec[];
@@ -68,7 +59,7 @@ export function viewSpecForKind(
 		// topomap / string / table → already tiny or non-array; no reduction.
 		axes = [];
 	}
-	return { axes, version };
+	return { axes };
 }
 
 /** Richer method wins when two viewers fold onto the same axis. Mirrors
@@ -87,10 +78,8 @@ const RICHNESS: Record<ReduceMethod, number> = { envelope: 3, area: 2, subsample
  */
 export function foldViewSpecs(specs: ViewSpec[]): ViewSpec {
 	const byAxis = new Map<number, AxisSpec>();
-	let version = 0;
 	for (const s of specs) {
 		if (!s) continue;
-		version = Math.max(version, s.version || 0);
 		for (const a of s.axes ?? []) {
 			const cur = byAxis.get(a.axis);
 			if (!cur) {
@@ -102,5 +91,5 @@ export function foldViewSpecs(specs: ViewSpec[]): ViewSpec {
 		}
 	}
 	const axes = [...byAxis.keys()].sort((x, y) => x - y).map((k) => byAxis.get(k) as AxisSpec);
-	return { axes, version };
+	return { axes };
 }

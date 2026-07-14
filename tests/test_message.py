@@ -22,7 +22,7 @@ EXAMPLE_CONTENT = {
     MessageType.UNREGISTER_VIEWER: {"slot_name_out": "out"},
     MessageType.SET_VIEWSPEC: {
         "slot_name_out": "out",
-        "spec": {"axes": [{"axis": -1, "max": 1600, "method": "envelope"}], "version": 0},
+        "spec": {"axes": [{"axis": -1, "max": 1600, "method": "envelope"}]},
     },
     MessageType.TERMINATE: {},
     MessageType.STATE_UPDATE: {

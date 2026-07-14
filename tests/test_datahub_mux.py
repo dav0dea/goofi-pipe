@@ -13,7 +13,7 @@ from goofi.bridge.data import DataHub, _SlotMux
 
 class _FakeFwd:
     def __init__(self, spec=None):
-        self.spec = spec or {"axes": [], "version": 0}
+        self.spec = spec or {"axes": []}
         self.frames = []
 
     def push_threadsafe(self, buf: bytes) -> None:
@@ -58,7 +58,7 @@ def test_rewire_node_repoints_mux_and_reregisters_handler_on_the_new_ref():
     hub = _hub_with_nodes({"n1": new})
 
     mux = _SlotMux(ref=old, slot="out")
-    fwd = _FakeFwd({"axes": [{"axis": -1, "max": 800, "method": "envelope"}], "version": 1})
+    fwd = _FakeFwd({"axes": [{"axis": -1, "max": 800, "method": "envelope"}]})
     mux.add(fwd)
     hub._muxes[("n1", "out")] = mux
 
@@ -127,8 +127,8 @@ def test_remove_keeps_others_and_reports_empty():
 def test_push_spec_if_changed_folds_richest_and_dedups():
     ref = _FakeRef()
     mux = _SlotMux(ref=ref, slot="out")
-    a = _FakeFwd({"axes": [{"axis": -1, "max": 800, "method": "envelope"}], "version": 1})
-    b = _FakeFwd({"axes": [{"axis": -1, "max": 2000, "method": "envelope"}], "version": 2})
+    a = _FakeFwd({"axes": [{"axis": -1, "max": 800, "method": "envelope"}]})
+    b = _FakeFwd({"axes": [{"axis": -1, "max": 2000, "method": "envelope"}]})
     mux.add(a)
     mux.add(b)
 
@@ -195,16 +195,15 @@ def test_connect_path_registration_failure_cleans_up_without_leaking():
     asyncio.new_event_loop().run_until_complete(run())
 
 
-def test_push_spec_dedups_on_axes_ignoring_version():
-    """The node ignores ViewSpec.version, so a version-only bump (identical axes)
-    must NOT trigger a redundant set_viewspec ctrl publish."""
+def test_push_spec_dedups_on_identical_axes():
+    """Re-folding to the SAME axes must NOT trigger a redundant set_viewspec ctrl
+    publish — only a real change in the folded reduction is pushed to the node."""
     ref = _FakeRef()
     mux = _SlotMux(ref=ref, slot="out")
-    a = _FakeFwd({"axes": [{"axis": -1, "max": 800, "method": "envelope"}], "version": 1})
+    a = _FakeFwd({"axes": [{"axis": -1, "max": 800, "method": "envelope"}]})
     mux.add(a)
     mux.push_spec_if_changed()
     assert len(ref.specs) == 1
 
-    a.spec = {"axes": [{"axis": -1, "max": 800, "method": "envelope"}], "version": 7}
-    mux.push_spec_if_changed()  # only version changed → axes identical → no push
+    mux.push_spec_if_changed()  # fold unchanged → no extra push
     assert len(ref.specs) == 1

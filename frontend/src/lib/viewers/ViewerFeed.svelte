@@ -27,7 +27,6 @@
 	// doesn't renegotiate the reduction (hysteresis); drives the capacity ViewSpec.
 	let capW = $state(0);
 	let capH = $state(0);
-	let specVersion = 0;
 	// Stable per-instance token so multiple viewers of one slot fold (not evict).
 	const specToken =
 		typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `vf-${Math.random()}`;
@@ -78,7 +77,7 @@
 		if (!visible || !slot || capW === 0 || capH === 0) return;
 		const s = slot;
 		const k = kind;
-		setViewSpec(node, s, k, specToken, viewSpecForKind(k, capW, capH, ++specVersion));
+		setViewSpec(node, s, k, specToken, viewSpecForKind(k, capW, capH));
 		// Drop this contribution when the deps change (kind/size/visibility) or on
 		// unmount, so a stale spec from this viewer can't linger in the fold.
 		return () => clearViewSpec(node, s, k, specToken);

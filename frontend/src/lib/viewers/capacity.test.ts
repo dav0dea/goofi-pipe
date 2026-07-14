@@ -12,8 +12,7 @@ const VIEWSPEC_GOLDEN = JSON.parse(
 
 describe('viewSpecForKind', () => {
 	it('line → channel subsample + sample envelope sized to width', () => {
-		const spec = viewSpecForKind('line', 1600, 300, 7);
-		expect(spec.version).toBe(7);
+		const spec = viewSpecForKind('line', 1600, 300);
 		expect(spec.axes).toEqual([
 			{ axis: 0, max: 300, method: 'subsample' },
 			{ axis: -1, max: 1600, method: 'envelope' }
@@ -47,19 +46,18 @@ describe('viewSpecForKind', () => {
 });
 
 describe('foldViewSpecs', () => {
-	it('richest-wins per axis: max() of max, richest method, max() of version', () => {
+	it('richest-wins per axis: max() of max, richest method', () => {
 		const folded = foldViewSpecs([
-			{ axes: [{ axis: -1, max: 800, method: 'subsample' }], version: 1 },
-			{ axes: [{ axis: -1, max: 2000, method: 'envelope' }], version: 5 }
+			{ axes: [{ axis: -1, max: 800, method: 'subsample' }] },
+			{ axes: [{ axis: -1, max: 2000, method: 'envelope' }] }
 		]);
 		expect(folded.axes).toEqual([{ axis: -1, max: 2000, method: 'envelope' }]);
-		expect(folded.version).toBe(5);
 	});
 
 	it('keeps distinct axes independent and sorted', () => {
 		const folded = foldViewSpecs([
-			{ axes: [{ axis: 1, max: 500, method: 'envelope' }], version: 0 },
-			{ axes: [{ axis: 0, max: 8, method: 'subsample' }], version: 0 }
+			{ axes: [{ axis: 1, max: 500, method: 'envelope' }] },
+			{ axes: [{ axis: 0, max: 8, method: 'subsample' }] }
 		]);
 		expect(folded.axes).toEqual([
 			{ axis: 0, max: 8, method: 'subsample' },
@@ -68,7 +66,7 @@ describe('foldViewSpecs', () => {
 	});
 
 	it('empty input folds to no reduction', () => {
-		expect(foldViewSpecs([])).toEqual({ axes: [], version: 0 });
+		expect(foldViewSpecs([])).toEqual({ axes: [] });
 	});
 });
 

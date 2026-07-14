@@ -346,7 +346,7 @@ def test_noderef_view_handler_delivers_reduced_frames():
         ref.wait_for_state(timeout=2.0)
 
         ref.set_viewspec("out", {
-            "axes": [{"axis": -1, "max": 200, "method": "envelope"}], "version": 1})
+            "axes": [{"axis": -1, "max": 200, "method": "envelope"}]})
         frames = []
         ref.set_data_handler("out", lambda _nr, _s, buf: frames.append(buf),
                              raw=True, view=True)
