@@ -956,15 +956,22 @@ export class GraphStore {
 		this.nodes = next.map((n) => {
 			const cur = byUid.get(n.uid);
 			if (cur) {
-				// Never regress a 'ready' node to a pre-ready stage from a snapshot
-				// built on a manager thread that a later state_update already
-				// overtook: stage only advances, so an incoming 'creating'/'setup'
-				// for a node we already saw ready is stale (a stuck boot spinner on
-				// a running node). 'error' (terminal) still wins.
-				const keepReady =
-					cur.stage === 'ready' && (n.stage === 'creating' || n.stage === 'setup');
-				Object.assign(cur, n); // survivor keeps its identity; fields refresh in place
-				if (keepReady) cur.stage = 'ready';
+				// subpatch_changed is a STRUCTURE event (group/expand/share/make-unique):
+				// membership/names/instances moved but the live node processes are
+				// unchanged. Their runtime lifecycle state (stage/error/stats/restarts/
+				// log_endpoint) is owned by the state_update / node_* stream, and this
+				// snapshot was built on a manager thread a later state_update may have
+				// overtaken — so copying its volatile fields would REGRESS them (a ready
+				// node flickering back to a boot spinner, a cleared error chip reappearing,
+				// live stats blanked). Refresh the structural fields in place; keep the
+				// survivor's runtime state, which its authoritative stream owns.
+				Object.assign(cur, n, {
+					stage: cur.stage,
+					error: cur.error,
+					stats: cur.stats,
+					restarts: cur.restarts,
+					log_endpoint: cur.log_endpoint
+				});
 				return cur;
 			}
 			this._seedNodeViewerState(n); // genuinely new node — seed its inline view state

@@ -118,4 +118,47 @@ describe('node lifecycle stage', () => {
 		});
 		expect(g.nodeById('n1')?.stage).toBe('ready'); // stale pre-ready stage ignored
 	});
+
+	it('a stale subpatch_changed snapshot does not regress a survivor runtime state (error/stats/restarts)', () => {
+		const fc = new FakeControl();
+		const g = new GraphStore(fc);
+		fc.emit({ event: 'node_added', payload: bootingNode('n1') });
+		// the node settles via the authoritative state stream: ready, error cleared, live stats.
+		fc.emit({
+			event: 'state_update',
+			payload: { node: 'n1', params: {}, output_subscribers: {}, stage: 'ready', error: null }
+		});
+		fc.emit({ event: 'node_stats', payload: { node: 'n1', stats: { updates_per_second: 30, mean_process_ms: 1, total_ticks: 100 } } });
+		fc.emit({ event: 'node_crashed', payload: { node: 'n1', exitcode: -9, restarts: 2 } });
+		expect(g.nodeById('n1')?.stats).toEqual({ updates_per_second: 30, mean_process_ms: 1, total_ticks: 100 });
+		expect(g.nodeById('n1')?.restarts).toBe(2);
+
+		// a structure snapshot built BEFORE the node settled carries stale runtime state.
+		fc.emit({
+			event: 'subpatch_changed',
+			payload: {
+				instance_id: 'x',
+				nodes: [
+					{
+						...bootingNode('n1'),
+						stage: 'creating',
+						error: 'stale setup boom',
+						stats: null,
+						restarts: 0,
+						log_endpoint: null
+					}
+				],
+				links: [],
+				instances: {},
+				save_path: null,
+				unsaved_changes: false,
+				layout: null
+			}
+		});
+		// runtime lifecycle is owned by the state stream, not the structure event.
+		expect(g.nodeById('n1')?.stage).toBe('ready');
+		expect(g.nodeById('n1')?.error).toBe(null); // stale error not resurrected
+		expect(g.nodeById('n1')?.stats).toEqual({ updates_per_second: 30, mean_process_ms: 1, total_ticks: 100 }); // live stats kept
+		expect(g.nodeById('n1')?.restarts).toBe(2); // live restart count kept
+	});
 });
