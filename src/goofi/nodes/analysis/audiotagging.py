@@ -51,7 +51,7 @@ class AudioTagging(Node):
             self.audio_tags = pickle.load(f)
 
     def process(self, audioIn: Data):
-        if audioIn.data is None:
+        if audioIn is None:
             return None
 
         if audioIn.meta["sfreq"] != 32000:

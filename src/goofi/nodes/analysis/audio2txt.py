@@ -56,10 +56,10 @@ class Audio2Txt(Node):
             self.setup_nexa()
 
     def process(self, prompt: Data, audio: Data):
-        if audio.data is None:
+        if audio is None:
             return None
 
-        prompt = prompt.data
+        prompt = prompt.data if prompt is not None else ""
 
         if self.params.audio_to_text.provider.value == "huggingface":
             generated_text = self.generate_huggingface(prompt, audio)

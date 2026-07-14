@@ -34,7 +34,7 @@ class StringToTable(Node):
         }
 
     def process(self, text):
-        if text.data is None:
+        if text is None:
             return None
 
         meta = text.meta

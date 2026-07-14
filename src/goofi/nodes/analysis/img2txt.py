@@ -109,7 +109,7 @@ class Img2Txt(Node):
         return base64.b64encode(buffer.getvalue()).decode("utf-8")
 
     def process(self, prompt: Data, image: Data):
-        if image.data is None:
+        if image is None:
             return None
 
         if prompt is not None:

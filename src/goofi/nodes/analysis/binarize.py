@@ -34,7 +34,7 @@ class Binarize(Node):
         }
 
     def process(self, data: Data):
-        if data.data is None:
+        if data is None:
             return None
 
         data.data = np.squeeze(data.data)
