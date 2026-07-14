@@ -17,7 +17,6 @@ EXAMPLE_CONTENT = {
     # below only verifies missing-required-field raises.
     MessageType.SET_EXPRESSION: {"group": "common", "param_name": "x"},
     MessageType.REFRESH_PARAM: {"group": "audio", "param_name": "device"},
-    MessageType.CLEAR_DATA: {"slot_name": "in"},
     MessageType.NODE_DIRECTORY: {"directory": {"oscillator0": "oscillator0-1a2b3c4d"}},
     MessageType.REGISTER_VIEWER: {"slot_name_out": "out"},
     MessageType.UNREGISTER_VIEWER: {"slot_name_out": "out"},

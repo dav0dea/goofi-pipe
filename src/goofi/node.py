@@ -829,10 +829,6 @@ class Node(ABC):
                 triggers_process=bool(msg.content.get("expression_triggers_process", False)),
                 autoeval=bool(msg.content.get("expression_autoeval", False)),
             )
-        elif t == MessageType.CLEAR_DATA:
-            slot = self.input_slots.get(msg.content["slot_name"])
-            if slot is not None:
-                slot.clear()
         elif t == MessageType.NODE_DIRECTORY:
             new_directory = dict(msg.content["directory"])
             if new_directory != self._node_directory:

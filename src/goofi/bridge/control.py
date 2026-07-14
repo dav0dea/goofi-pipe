@@ -166,8 +166,6 @@ class ControlHub:
         manager = self.server.manager
         if op == "list_nodes":
             return {"types": list_node_types(manager.node_specs)}
-        if op == "list_graph":
-            return self._snapshot()
         if op == "add_node":
             # ONE add path: scope selects where the node lands — a sub-patch instance
             # (member, mirrored across shared siblings) or, omitted, the ROOT graph. A
@@ -448,8 +446,6 @@ class ControlHub:
         if op == "serialize":
             yaml_text = await self._call_manager(manager.serialize_patch)
             return {"yaml": yaml_text}
-        if op == "ping":
-            return {"pong": True}
 
         raise ValueError(f"unknown op: {op}")
 

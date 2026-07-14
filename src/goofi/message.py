@@ -36,8 +36,6 @@ class MessageType(Enum):
         - `group` (str): the parameter group.
         - `param_name` (str): the parameter name.
         - `expression` (str | None): the expression source, or None to clear.
-    - `CLEAR_DATA`: clear the cached value on an input slot.
-        - `slot_name` (str)
     - `NODE_DIRECTORY`: the manager's current map of display name -> stable
       node_id. Pushed to every live node on each add/remove so a node's
       expression engine can resolve `nd('name')` references to the producing
@@ -84,7 +82,6 @@ class MessageType(Enum):
     REGISTER_SUBSCRIBER = 3
     UNREGISTER_SUBSCRIBER = 4
     PARAMETER_UPDATE = 5
-    CLEAR_DATA = 6
     TERMINATE = 7
     SET_EXPRESSION = 11
     NODE_DIRECTORY = 12
@@ -152,8 +149,6 @@ class Message:
                 expr = self.content["expression"]
                 if expr is not None and not isinstance(expr, str):
                     raise ValueError("SET_EXPRESSION 'expression' must be str or None.")
-        elif t == MessageType.CLEAR_DATA:
-            self.require_fields(slot_name=str)
         elif t == MessageType.NODE_DIRECTORY:
             self.require_fields(directory=dict)
         elif t == MessageType.REGISTER_VIEWER:
