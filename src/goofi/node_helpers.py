@@ -282,8 +282,6 @@ class NodeRef:
             self.callbacks[msg_type] = callback
 
     def _send(self, msg: Message) -> None:
-        if self.ctrl_pub is None:
-            return
         with self._ctrl_queue_lock:
             if not self._first_state_event.is_set():
                 # TERMINATE is exempt: a never-ready node is killed directly
@@ -607,8 +605,8 @@ class NodeRef:
             if not fired:
                 continue
             while True:
-                # Guard against a concurrent `terminate()` clearing endpoints.
-                if not self._alive or self.status_sub is None:
+                # Stop the status pump once terminate() has flipped _alive.
+                if not self._alive:
                     return
                 buf = self.status_sub.take_next()
                 if buf is None:
