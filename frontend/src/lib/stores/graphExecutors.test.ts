@@ -650,6 +650,31 @@ describe('graph store — recording wrappers + undo replay', () => {
 		expect(history().canRedo).toBe(true);
 	});
 
+	it('undo of a multi-node delete restores every node before any inter-node link', async () => {
+		const fc = new FakeControl();
+		const g = new GraphStore(fc);
+		history().configureDeps(() => deps(fc, g));
+		fc.emit({ event: 'node_added', payload: nodeInfo('osc0') });
+		fc.emit({ event: 'node_added', payload: nodeInfo('buffer0', 'Buffer') });
+		const link: LinkInfo = { node_out: 'osc0', slot_out: 'out', node_in: 'buffer0', slot_in: 'in' };
+		fc.emit({ event: 'link_added', payload: link });
+
+		// Delete BOTH linked nodes as one batch, then mirror the backend teardown.
+		await g.removeNodes(['osc0', 'buffer0']);
+		fc.emit({ event: 'link_removed', payload: link });
+		fc.emit({ event: 'node_removed', payload: { node: 'osc0', membership: null } });
+		fc.emit({ event: 'node_removed', payload: { node: 'buffer0', membership: null } });
+
+		fc.recordedCalls().length = 0; // inspect only the undo's RPCs
+		await history().undo(); // ONE step restores the whole batch
+
+		const ops = fc.recordedCalls().map((c) => c.op);
+		expect(ops.filter((o) => o === 'add_node').length).toBe(2); // both nodes back in one step
+		expect(ops).toContain('add_link'); // the inter-node link is restored
+		// the link is re-added only AFTER both endpoints exist again
+		expect(ops.indexOf('add_link')).toBeGreaterThan(ops.lastIndexOf('add_node'));
+	});
+
 	it('loadText records a load_patch entry; undo re-loads the prior YAML', async () => {
 		const fc = new FakeControl();
 		const g = new GraphStore(fc);

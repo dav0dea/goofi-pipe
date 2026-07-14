@@ -1016,11 +1016,16 @@
 				// The single delete path (deleteKey wires Delete+Backspace here; the
 				// custom keydown handler no longer deletes). Covers app-store AND
 				// marquee selection — SvelteFlow filters by each element's `selected`.
+				// Real nodes are deleted as ONE batch (removeNodes) so undo restores
+				// them all BEFORE their links; boundary pills are unwired individually.
+				const nodeIds: string[] = [];
 				for (const n of nodes) {
 					const bnd = parseBoundary(n.id);
 					if (bnd && entered) await g.removeBoundary(entered, bnd).catch(() => {});
-					else await g.removeNode(n.id).catch(() => {});
+					else nodeIds.push(n.id);
 				}
+				const deleted = new Set(nodeIds);
+				await g.removeNodes(nodeIds).catch(() => {});
 				for (const e of edges) {
 					// Deleting an In→member / member→Out edge unwires the boundary (the
 					// pill survives); a normal flat link is removed.
@@ -1029,6 +1034,9 @@
 						await g.wireBoundary(entered, bnd, null, null).catch(() => {});
 						continue;
 					}
+					// A normal link touching a batch-deleted node was already removed
+					// with it (removeNodes), so don't double-record its removal.
+					if (deleted.has(e.source) || deleted.has(e.target)) continue;
 					const so = e.sourceHandle;
 					const si = e.targetHandle;
 					if (so && si)

@@ -474,13 +474,17 @@ export class GraphStore {
 		return uid;
 	}
 
-	async removeNode(uid: string): Promise<void> {
+	async removeNode(uid: string, captureLinks = true): Promise<void> {
 		// Capture the full node + its links BEFORE the backend tears them down.
+		// A batch delete (removeNodes) passes captureLinks=false and records the links
+		// as separate remove_link actions ordered first, so undo restores every node
+		// before any link (a link to a co-deleted node can't be re-added until both
+		// endpoints are back).
 		const node = this.nodeById(uid);
 		if (node && !history().isSuspended) {
-			const links = this.links
-				.filter((l) => l.node_in === uid || l.node_out === uid)
-				.map((l) => ({ ...l }));
+			const links = captureLinks
+				? this.links.filter((l) => l.node_in === uid || l.node_out === uid).map((l) => ({ ...l }))
+				: [];
 			this._record({
 				kind: 'remove_node',
 				label: `Delete ${node.name}`,
@@ -1173,15 +1177,29 @@ export class GraphStore {
 		return this.instantiateNodes(specs, links, instId);
 	}
 
-	/** Remove a batch of nodes, swallowing per-node failures. */
-	async removeNodes(names: Iterable<string>): Promise<void> {
-		for (const name of names) {
-			try {
-				await this.removeNode(name);
-			} catch (e) {
-				console.warn('remove node failed', e);
-			}
-		}
+	/** Delete several nodes as ONE undoable step.
+	 *
+	 * Every link touching the batch is removed FIRST as a first-class remove_link
+	 * action, then the nodes (which no longer re-capture those links). Because the
+	 * transaction replays its children in reverse on undo, this restores every node
+	 * BEFORE any link — the only correct order, since a link between two co-deleted
+	 * nodes can't be re-added until both endpoints exist again. The old per-node
+	 * remove (each re-adding its own links) failed here: the first node's inverse
+	 * re-added a link to a sibling that hadn't been re-created yet. */
+	async removeNodes(uids: Iterable<string>): Promise<void> {
+		const uidList = [...uids];
+		if (uidList.length === 0) return;
+		const uidSet = new Set(uidList);
+		// Snapshot the affected links up front (one read — not re-derived between the
+		// awaits below, where the store may not have caught up to each removal yet).
+		const links = this.links
+			.filter((l) => uidSet.has(l.node_in) || uidSet.has(l.node_out))
+			.map((l) => ({ ...l }));
+		const label = `Delete ${uidList.length} node${uidList.length > 1 ? 's' : ''}`;
+		await history().transaction(label, async () => {
+			for (const link of links) await this.removeLink(link);
+			for (const uid of uidList) await this.removeNode(uid, false);
+		});
 	}
 
 }
