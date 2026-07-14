@@ -837,8 +837,7 @@ describe('sub-patch synth node identity (viewer re-instantiation bug)', () => {
 						slots,
 						siblings: [],
 						error: null,
-						viewers: {},
-						member_count: 1
+						viewers: {}
 					}
 				},
 				save_path: null,
@@ -947,8 +946,7 @@ describe('subpatch_changed reconciles real nodes in place (no viewer churn)', ()
 					slots: { input: {}, output: {} },
 					siblings: [],
 					error: null,
-					viewers: {},
-					member_count: 1
+					viewers: {}
 				}
 			})
 		});
@@ -984,8 +982,7 @@ describe('subpatch_changed reconciles real nodes in place (no viewer churn)', ()
 			slots: { input: {}, output: { out0: 'ARRAY' } },
 			siblings: [],
 			error: null,
-			viewers: {},
-			member_count: 1
+			viewers: {}
 		};
 	}
 

@@ -322,7 +322,7 @@ def test_member_node_added_inside_subpatch_gets_status_wired():
 def test_member_removal_is_incremental_with_membership():
     """Root ≡ unique sub-patch: removing a member NOT wired to any boundary is an
     incremental node_removed carrying the member's membership — the frontend drops the uid
-    from the owning instance's members map (so member_count / slots stay correct) without a
+    from the owning instance's members map (so the member set / slots stay correct) without a
     wholesale subpatch_changed snapshot. (A removal that UNWIRES a boundary IS structural
     and falls back to the snapshot — covered in test_root_scope.)"""
     manager = _bare_manager(use_multiprocessing=False)
@@ -378,7 +378,7 @@ def test_instantiate_definition_spawns_members_silently():
         assert "node_added" not in kinds, "members must spawn silently, surfaced by the snapshot"
         snap = next(e["payload"] for e in events if e["event"] == "subpatch_changed")
         assert new_inst in snap["instances"]
-        assert snap["instances"][new_inst]["member_count"] == 2
+        assert len(snap["instances"][new_inst]["members"]) == 2
     finally:
         manager.terminate(notify_gui=False)
 

@@ -283,8 +283,8 @@ export class GraphStore {
 				this.nodes = [...this.nodes.filter((n) => n.uid !== ev.payload.uid), ev.payload];
 				// Every node is a member of SOME scope (ROOT for a top-level one). Fold it
 				// into the owning instance's members map — the index the canvas renders that
-				// scope's children from — so an incremental add keeps the scope in sync
-				// (member_count, child set) without a wholesale subpatch_changed snapshot.
+				// scope's children from — so an incremental add keeps the scope's child set
+				// in sync without a wholesale subpatch_changed snapshot.
 				this._addScopeMember(ev.payload.membership ?? null, ev.payload.uid);
 				break;
 			case 'node_removed':
@@ -1000,7 +1000,7 @@ export class GraphStore {
 		}
 	}
 
-	/** Fold an entity into its owning scope's members map, keeping member_count in step.
+	/** Fold an entity into its owning scope's members map.
 	 * Root ≡ a scope: a top-level node carries membership {instance: ROOT_ID, …}, a member
 	 * carries {instance: <sub-patch>, …}. The map (local -> {uid, is_instance}) is the index
 	 * the editor renders a scope's direct children from, so an incremental add/remove must
@@ -1020,7 +1020,6 @@ export class GraphStore {
 			return;
 		}
 		inst.members[membership.local_name] = { uid, is_instance: false };
-		inst.member_count = Object.keys(inst.members).length;
 	}
 
 	/** Drop an entity from its owning scope's members map (mirror of _addScopeMember). */
@@ -1032,7 +1031,6 @@ export class GraphStore {
 			return;
 		}
 		delete inst.members[membership.local_name];
-		inst.member_count = Object.keys(inst.members).length;
 	}
 
 	/** Build the virtual NodeInstanceInfo that stands in for a sub-patch instance
@@ -1045,7 +1043,7 @@ export class GraphStore {
 	private _synthSubpatchNode(instId: string, inst: InstanceInfo): NodeInstanceInfo {
 		const shared = Boolean(inst.def_id);
 		const error = inst.error ?? null;
-		const memberCount = inst.member_count;
+		const memberCount = Object.keys(inst.members).length;
 		// Signature of everything the synth node RENDERS except position — which is
 		// applied to the flow node separately and updated in place below, so a drag
 		// (a per-frame pos change) keeps the same identity and never churns the

@@ -43,8 +43,7 @@ function instInfo(
 		slots: { input: {}, output: {} },
 		siblings: [],
 		error: null,
-		viewers: {},
-		member_count: Object.keys(members).length
+		viewers: {}
 	} as InstanceInfo;
 }
 
@@ -83,7 +82,7 @@ describe('root-as-scope: ROOT ships as an instance the editor renders from', () 
 		});
 
 		expect(g.instances[ROOT_ID].members['buffer0']).toEqual({ uid: 'n1', is_instance: false });
-		expect(g.instances[ROOT_ID].member_count).toBe(1);
+		expect(Object.keys(g.instances[ROOT_ID].members).length).toBe(1);
 	});
 
 	it('a member node_added is folded into the owning sub-patch instance', () => {
@@ -99,7 +98,7 @@ describe('root-as-scope: ROOT ships as an instance the editor renders from', () 
 		});
 
 		expect(g.instances['sub'].members['buffer0']).toEqual({ uid: 'm1', is_instance: false });
-		expect(g.instances['sub'].member_count).toBe(1);
+		expect(Object.keys(g.instances['sub'].members).length).toBe(1);
 	});
 
 	it('restartNode respawns in place via the restart_node RPC (keeps scope, no cascade)', async () => {
@@ -127,7 +126,7 @@ describe('root-as-scope: ROOT ships as an instance the editor renders from', () 
 		const root = instInfo(ROOT_ID, 'root', null, { subpatch0: { uid: 'sub', is_instance: true } });
 		const sub = instInfo('sub', 'subpatch0', ROOT_ID, { buffer0: { uid: 'm1', is_instance: false } });
 		fc.emit({ event: 'hello', payload: snapshot([nodeInfo('m1', 'buffer0', { instance: 'sub', local_name: 'buffer0' })], { [ROOT_ID]: root, sub }) });
-		expect(g.instances['sub'].member_count).toBe(1);
+		expect(Object.keys(g.instances['sub'].members).length).toBe(1);
 
 		fc.emit({
 			event: 'node_removed',
@@ -135,7 +134,7 @@ describe('root-as-scope: ROOT ships as an instance the editor renders from', () 
 		});
 
 		expect(g.instances['sub'].members['buffer0']).toBeUndefined();
-		expect(g.instances['sub'].member_count).toBe(0);
+		expect(Object.keys(g.instances['sub'].members).length).toBe(0);
 	});
 
 	it('a top-level node_removed is dropped from ROOT.members', () => {
@@ -150,6 +149,6 @@ describe('root-as-scope: ROOT ships as an instance the editor renders from', () 
 		});
 
 		expect(g.instances[ROOT_ID].members['buffer0']).toBeUndefined();
-		expect(g.instances[ROOT_ID].member_count).toBe(0);
+		expect(Object.keys(g.instances[ROOT_ID].members).length).toBe(0);
 	});
 });

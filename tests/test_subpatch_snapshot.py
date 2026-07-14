@@ -4,7 +4,7 @@ The frontend MIRRORS backend-computed state instead of re-deriving it. `describe
 is the single server source of truth: it ships `parent` (the tree edge), `members`
 inverted+enriched to {local: {uid, is_instance}}, server-resolved boundary dtypes (chain
 to leaf), computed `slots`, `siblings`, `error` (first errored DESCENDANT across the whole
-subtree), `member_count`, and `viewers`.
+subtree), and `viewers`.
 """
 import types
 
@@ -56,7 +56,7 @@ def test_snapshot_instance_record_is_computed_and_recursive():
         assert inner_local in m and m[inner_local]["uid"] == inner
         assert m[inner_local]["is_instance"] is True
         assert insts[inner]["members"][sel_local]["is_instance"] is False
-        assert insts[outer]["member_count"] == 1
+        assert len(insts[outer]["members"]) == 1
 
         # --- interface dtype resolved chain-to-leaf; unwired keeps stored, no throw ---
         assert insts[outer]["interface"][outer_bnd]["dtype"] == "ARRAY"

@@ -101,7 +101,7 @@ def describe_instance(manager: Any, inst_id: str, inst: Any, error: Any = None) 
     - `error`: first errored DESCENDANT across the whole subtree (recursion-correct — a
       deeply-nested member's error surfaces on the collapsed ancestor). Precomputed once
       per snapshot by the caller (one pass over nodes) and passed in.
-    - `member_count`, `viewers`: direct reads (viewers round-trips the persisted state).
+    - `viewers`: direct read (round-trips the persisted state).
     """
     interface: Dict[str, Any] = {}
     slots: Dict[str, Dict[str, str]] = {"input": {}, "output": {}}
@@ -142,7 +142,6 @@ def describe_instance(manager: Any, inst_id: str, inst: Any, error: Any = None) 
         "slots": slots,
         "siblings": manager._shared_siblings(inst_id),
         "error": error,
-        "member_count": len(inst.members),
     }
 
 
