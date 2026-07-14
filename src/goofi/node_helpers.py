@@ -73,8 +73,6 @@ class InputSlot:
     # is needed.
     subscriber: Optional[Subscriber] = field(default=None, repr=False, compare=False)
     listener: Optional[Listener] = field(default=None, repr=False, compare=False)
-    service_name: Optional[str] = field(default=None, repr=False, compare=False)
-    in_process: bool = field(default=False, repr=False, compare=False)
 
     def __post_init__(self):
         if isinstance(self.dtype, str):

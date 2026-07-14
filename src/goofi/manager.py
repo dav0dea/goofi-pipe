@@ -3087,7 +3087,7 @@ class Manager:
         self.unsaved_changes = False
         print("Finished loading manager state.")
 
-    def serialize_patch(self, timeout: float = 3.0) -> str:
+    def serialize_patch(self) -> str:
         """Serialize the current graph to `.gfi` YAML text, without writing.
 
         Built purely from manager-side truth (`_node_record`: spec + live
@@ -3109,7 +3109,7 @@ class Manager:
         )
         return yaml.dump(doc, sort_keys=False)
 
-    def save(self, filepath: Optional[str] = None, overwrite: bool = False, timeout: float = 3.0) -> None:
+    def save(self, filepath: Optional[str] = None, overwrite: bool = False) -> None:
         """Persist the current graph to a `.gfi` YAML file.
 
         Built from manager-side truth (see `serialize_patch`) — no node
@@ -3136,7 +3136,7 @@ class Manager:
             raise FileExistsError(f"File {filepath} already exists.")
 
         print("Saving manager state...")
-        manager_yaml = self.serialize_patch(timeout=timeout)
+        manager_yaml = self.serialize_patch()
 
         with open(filepath, "w") as f:
             f.write(manager_yaml)

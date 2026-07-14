@@ -871,8 +871,6 @@ class Node(ABC):
         )
         slot.subscriber = sub
         slot.listener = listener
-        slot.service_name = service_name
-        slot.in_process = in_process
         slot.queue = queue
         # Attach EVERY input's listener so non-triggering slots are drained too;
         # whether a fire actually triggers process() is gated separately on
@@ -891,8 +889,6 @@ class Node(ABC):
             pass
         slot.subscriber = None
         slot.listener = None
-        slot.service_name = None
-        slot.in_process = False
         slot.clear()
 
     # ------------------------------------------------------------------
