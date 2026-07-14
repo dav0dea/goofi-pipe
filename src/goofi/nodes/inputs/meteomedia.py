@@ -54,7 +54,6 @@ class MeteoMedia(Node):
         try:
             with open(api_key_path, "r") as f:
                 api_key = f.read()
-                print("API key found in file", api_key)
         except FileNotFoundError:
             pass
         if location_name is None:
@@ -63,22 +62,17 @@ class MeteoMedia(Node):
             )
             headers = {"accept": "application/json"}
             response = requests.get(url, headers=headers)
-            print(response.status_code)
 
         else:
             url = f"https://api.tomorrow.io/v4/weather/realtime?location={location_name}&apikey={api_key}"
             headers = {"accept": "application/json"}
             response = requests.get(url, headers=headers)
-            print(response.status_code)
         if response.status_code == 200:
             responses = response.json()
             output_table = responses["data"]["values"]
-            output_table
-            print("HELLO")
             # convert all elements of the dictionary to a Data object
             for key, value in output_table.items():
                 output_table[key] = Data(DataType.ARRAY, np.array(value), {})
-            print(output_table)
         else:
             # Handle error or empty response
             output_table = {"ERROR": Data(DataType.ARRAY, np.array(response.status_code), {})}
