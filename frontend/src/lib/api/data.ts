@@ -97,8 +97,8 @@ function pushFold(node: string, slot: string, kind: string, k: string): void {
  * Contribute (or update) this viewer's ViewSpec for a (node, slot, kind) stream
  * (Option C). `token` identifies the viewer so several viewers of one slot fold
  * correctly. The folded union is sent inband over the data WS; the node reduces
- * each frame to it. Safe to call before/after `subscribeData`; the worker re-sends
- * on every (re)connect.
+ * each frame to it. Call after `subscribeData` (ViewerFeed always subscribes in a
+ * source-earlier effect); the worker re-sends the spec on every (re)connect.
  */
 export function setViewSpec(node: string, slot: string, kind: string, token: string, spec: ViewSpec): void {
 	const k = streamKey(node, slot, kind);
