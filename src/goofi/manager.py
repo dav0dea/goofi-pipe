@@ -1115,22 +1115,13 @@ class Manager:
         node's uid (never the reused display label)."""
         return self._mint_uid()
 
-    def _fresh_instance_name(self) -> str:
-        """Lowest free `subpatch0`, `subpatch1`, … display label, unique among nodes
-        AND instances so a collapsed group node's label never shadows another."""
-        existing = self._display_names_in_use()
-        idx = 0
-        while f"subpatch{idx}" in existing:
-            idx += 1
-        return f"subpatch{idx}"
-
     def _restore_instance_name(self, saved_name: Optional[str]) -> str:
         """The saved instance display name if free, else a fresh one (e.g. splicing a
         sub-patch into a graph that already has that label)."""
         if not saved_name:
-            return self._fresh_instance_name()
+            return self._fresh_display_name("subpatch")
         existing = self._display_names_in_use()
-        return saved_name if saved_name not in existing else self._fresh_instance_name()
+        return saved_name if saved_name not in existing else self._fresh_display_name("subpatch")
 
     def _slot_dtype(self, display: str, slot: str, dir: str) -> str:
         """Name of a node slot's DataType ('ARRAY'/'STRING'/'TABLE'), default ARRAY."""
@@ -1428,7 +1419,7 @@ class Manager:
                 self._detach_member(u)
             self._instances[inst_id] = SubPatchInstance(
                 uid=inst_id,
-                name=self._fresh_instance_name(),
+                name=self._fresh_display_name("subpatch"),
                 kind="unique",
                 def_id=None,
                 members={},
@@ -1913,7 +1904,7 @@ class Manager:
         inst_id = self._fresh_instance_id()
         self._instances[inst_id] = SubPatchInstance(
             uid=inst_id,
-            name=self._fresh_instance_name(),
+            name=self._fresh_display_name("subpatch"),
             kind="shared",
             def_id=def_id,
             members={},
