@@ -162,6 +162,26 @@ class ControlHub:
             return manager.resolve_boundary(node, slot)
         return node, slot
 
+    async def _reload_from_path(self, manager, path) -> None:
+        """Validate then splice a `.gfi` at `path` into the live graph, resyncing
+        every client. Shared by the `load` and `load_text` ops.
+
+        Validate BEFORE any teardown so a rejected load (unknown type / bad
+        version) is a true no-op — the graph AND the session's
+        console/viewport/selection/viewers are left untouched. Reset the
+        status-wiring bookkeeping so reloaded nodes reusing a display name get
+        re-wired (report B1). Past validation, teardown has begun: resync every
+        client to backend truth even if the splice failed (so no browser renders
+        the destroyed graph) and drop stale data-plane muxes.
+        """
+        await self._call_manager(manager.validate_loadable, path)
+        self._wired_nodes.clear()
+        try:
+            await self._call_manager(_replace_graph, manager, path)
+        finally:
+            await self.server.data.close_all()
+            await self.broadcast({"event": "graph_replaced", "payload": self._snapshot()})
+
     async def _dispatch(self, op: str, payload: Dict[str, Any]) -> Any:
         manager = self.server.manager
         if op == "list_nodes":
@@ -310,25 +330,7 @@ class ControlHub:
             )
             return {"path": saved_path, "yaml": Path(saved_path).read_text(encoding="utf-8")}
         if op == "load":
-            path = payload["path"]
-            # Replace graph by clearing it first if needed. The teardown removes
-            # old nodes with notify_gui=False (no on_node_removed), so reset the
-            # status-wiring bookkeeping here — otherwise reloaded nodes that reuse
-            # a display name are skipped by _wire_node_status and lose live
-            # state/error forwarding (report B1).
-            # Validate BEFORE any teardown or client resync, so a rejected load
-            # (unknown type / bad version) is a true no-op — the graph AND the
-            # session's console/viewport/selection/viewers are left untouched.
-            await self._call_manager(manager.validate_loadable, path)
-            self._wired_nodes.clear()
-            try:
-                await self._call_manager(_replace_graph, manager, path)
-            finally:
-                # Past validation, teardown has begun: resync every client to
-                # backend truth even if the splice failed, so no browser renders
-                # the destroyed graph. Stale data-plane muxes are dropped too.
-                await self.server.data.close_all()
-                await self.broadcast({"event": "graph_replaced", "payload": self._snapshot()})
+            await self._reload_from_path(manager, payload["path"])
             return {"ok": True}
         if op == "load_text":
             # Frontend uploaded YAML content directly — write to a temp file
@@ -342,19 +344,7 @@ class ControlHub:
                 tf.write(content)
                 tmp_path = tf.name
             try:
-                # Validate the upload BEFORE any teardown/resync — a rejected
-                # upload is a true no-op (see `load`).
-                await self._call_manager(manager.validate_loadable, tmp_path)
-                # Reset status-wiring bookkeeping before the destructive reload so
-                # reloaded nodes reusing a display name get re-wired (report B1).
-                self._wired_nodes.clear()
-                try:
-                    await self._call_manager(_replace_graph, manager, tmp_path)
-                finally:
-                    # Past validation: resync clients to backend truth even if the
-                    # splice failed; drop stale data-plane muxes.
-                    await self.server.data.close_all()
-                    await self.broadcast({"event": "graph_replaced", "payload": self._snapshot()})
+                await self._reload_from_path(manager, tmp_path)
             finally:
                 try:
                     os.unlink(tmp_path)
