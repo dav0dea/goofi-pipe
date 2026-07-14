@@ -144,7 +144,7 @@ export interface SubPatchPort {
 	dtype?: string;
 	inner_node: string | null;
 	inner_slot: string | null;
-	pos?: [number, number];
+	pos: [number, number];
 	/** The portal's renameable DISPLAY/slot label (defaults to in0/out0). Decoupled from
 	 * the interface KEY, which stays the stable routing id — so a rename never re-keys an
 	 * external wire. */

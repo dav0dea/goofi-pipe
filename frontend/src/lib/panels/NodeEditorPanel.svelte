@@ -51,8 +51,7 @@
 		type InstanceInfo,
 		type LinkInfo,
 		type NodeInstanceInfo,
-		type NodeTypeInfo,
-		type SubPatchPort
+		type NodeTypeInfo
 	} from '$lib/api/control';
 	import {
 		ROOT_ID,
@@ -235,12 +234,6 @@
 		const next: Node[] = [];
 		const kids = childrenOfScope(scope, g.instances, g.nodes.map((n) => n.uid), memberIndex);
 		const childUids = [...kids.nodeUids, ...kids.instUids];
-		const pts = childUids
-			.map((u) => g.nodeById(u)?.pos)
-			.filter((q): q is [number, number] => !!q);
-		const minX = pts.length ? Math.min(...pts.map((q) => q[0])) : 0;
-		const maxX = pts.length ? Math.max(...pts.map((q) => q[0])) : 0;
-		const minY = pts.length ? Math.min(...pts.map((q) => q[1])) : 0;
 		for (const uid of childUids) {
 			const n = g.nodeById(uid);
 			if (!n) continue;
@@ -253,33 +246,26 @@
 			});
 		}
 		// Inside an entered instance, also render its In/Out boundary pills (incl.
-		// unwired). Stored pos, with a beside-the-children fallback for legacy entries.
+		// unwired), at their server-stored positions.
 		const inst = entered ? g.instances[entered] : null;
 		if (inst && entered) {
-			const ins = Object.entries(inst.interface).filter(([, p]) => p.dir === 'in');
-			const outs = Object.entries(inst.interface).filter(([, p]) => p.dir === 'out');
-			const place = (entries: [string, SubPatchPort][], dir: 'in' | 'out', fallbackX: number) =>
-				entries.forEach(([bid, port], i) => {
-					next.push({
-						// The flow id keys on the stable boundary id (routing); the pill shows
-						// the renameable NAME, and double-clicking it drives rename_boundary.
-						id: boundaryId(entered, bid),
-						type: 'boundary',
-						position: port.pos
-							? { x: port.pos[0], y: port.pos[1] }
-							: { x: fallbackX, y: minY + i * 96 },
-						data: {
-							name: port.name ?? bid,
-							dir,
-							dtype: port.dtype ?? 'ARRAY',
-							wired: port.inner_node !== null,
-							rename: (newName: string) => g.renameBoundary(entered!, bid, newName)
-						},
-						selected: sel.nodes(panelId).has(boundaryId(entered, bid))
-					});
+			for (const [bid, port] of Object.entries(inst.interface)) {
+				next.push({
+					// The flow id keys on the stable boundary id (routing); the pill shows
+					// the renameable NAME, and double-clicking it drives rename_boundary.
+					id: boundaryId(entered, bid),
+					type: 'boundary',
+					position: { x: port.pos[0], y: port.pos[1] },
+					data: {
+						name: port.name ?? bid,
+						dir: port.dir,
+						dtype: port.dtype ?? 'ARRAY',
+						wired: port.inner_node !== null,
+						rename: (newName: string) => g.renameBoundary(entered!, bid, newName)
+					},
+					selected: sel.nodes(panelId).has(boundaryId(entered, bid))
 				});
-			place(ins, 'in', minX - 280);
-			place(outs, 'out', maxX + 320);
+			}
 		}
 		flowNodes = next;
 	});
