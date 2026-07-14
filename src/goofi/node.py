@@ -1381,7 +1381,6 @@ class Node(ABC):
         cls,
         node_id: Optional[str] = None,
         initial_params: Optional[Dict[str, Dict[str, Any]]] = None,
-        retries: int = 3,
         capture_logs: bool = False,
     ) -> NodeRef:
         """Spawn the node in its own process and return a `NodeRef`.
@@ -1400,7 +1399,6 @@ class Node(ABC):
             NodeSpec.from_class(cls),
             node_id=node_id,
             initial_params=initial_params,
-            retries=retries,
             capture_logs=capture_logs,
         )
 
@@ -1566,7 +1564,6 @@ def spawn_node(
     spec,
     node_id: Optional[str] = None,
     initial_params: Optional[Dict[str, Dict[str, Any]]] = None,
-    retries: int = 3,
     capture_logs: bool = False,
 ) -> NodeRef:
     """Spawn a node in its own process from a NodeSpec. The implementation
@@ -1602,6 +1599,9 @@ def spawn_node(
     ref = ref_from_spec(spec, node_id, params, in_process=False, process=None)
     ref.boot_conn = recv_conn
 
+    # Retry the os.fork()/proc.start() a few times — a transient fork failure
+    # under load is worth another attempt before surfacing a bootstrap error.
+    MAX_FORK_RETRIES = 3
     tries = 0
     while True:
         try:
@@ -1621,7 +1621,7 @@ def spawn_node(
             break
         except Exception as e:
             tries += 1
-            if tries >= retries:
+            if tries >= MAX_FORK_RETRIES:
                 try:
                     ref.terminate()
                 except Exception:

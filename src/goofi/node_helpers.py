@@ -302,11 +302,14 @@ class NodeRef:
             self._pending_ctrl = [m for m in self._pending_ctrl if m.type != MessageType.NODE_DIRECTORY]
         self._pending_ctrl.append(msg)
 
-    def update_param(self, group: str, param_name: str, param_value: Any) -> None:
+    def _require_param(self, group: str, param_name: str) -> None:
         if group not in self.params:
             raise ValueError(f"Parameter group '{group}' doesn't exist.")
         if param_name not in self.params[group]:
             raise ValueError(f"Parameter '{param_name}' doesn't exist in group '{group}'.")
+
+    def update_param(self, group: str, param_name: str, param_value: Any) -> None:
+        self._require_param(group, param_name)
         # Coerce to the param's declared type at the manager-side mirror so a
         # fractional value typed into an int field never poisons this NodeParams
         # (which save() reads as authoritative) nor rides an uncoerced value out
@@ -332,10 +335,7 @@ class NodeRef:
         """Ask the node to re-evaluate a param's options (device / stream pickers).
         The node runs the param's refresh method and pushes fresh options over its
         next STATE_UPDATE (param_options)."""
-        if group not in self.params:
-            raise ValueError(f"Parameter group '{group}' doesn't exist.")
-        if param_name not in self.params[group]:
-            raise ValueError(f"Parameter '{param_name}' doesn't exist in group '{group}'.")
+        self._require_param(group, param_name)
         self._send(
             Message(MessageType.REFRESH_PARAM, {"group": group, "param_name": param_name})
         )
@@ -358,10 +358,7 @@ class NodeRef:
         value wake `process()`. ``autoeval`` makes the engine refresh
         before every process tick.
         """
-        if group not in self.params:
-            raise ValueError(f"Parameter group '{group}' doesn't exist.")
-        if param_name not in self.params[group]:
-            raise ValueError(f"Parameter '{param_name}' doesn't exist in group '{group}'.")
+        self._require_param(group, param_name)
         # Apply the SAME canonical gating rule the node uses, so the forwarded RPC
         # carries exactly the values the node will normalize to.
         p = self.params[group][param_name]
