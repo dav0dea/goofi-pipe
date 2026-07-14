@@ -9,6 +9,7 @@
  */
 import type { DataFrame } from '$lib/codec/decode';
 import { foldViewSpecs, type ViewSpec } from '$lib/viewers/capacity';
+import { streamKey } from './streamKey';
 
 type FrameCallback = (frame: DataFrame) => void;
 
@@ -19,9 +20,6 @@ const consumers = new Map<string, Set<FrameCallback>>();
 // their specs here and send the union to the node (the bridge folds across tabs).
 const specs = new Map<string, Map<string, ViewSpec>>();
 
-function key(node: string, slot: string, kind: string): string {
-	return `${node} ${slot} ${kind}`;
-}
 
 function ensureWorker(): Worker {
 	if (worker) return worker;
@@ -33,7 +31,7 @@ function ensureWorker(): Worker {
 			kind: string;
 			frame: DataFrame;
 		};
-		const set = consumers.get(key(node, slot, kind));
+		const set = consumers.get(streamKey(node, slot, kind));
 		if (!set) return;
 		for (const cb of set) {
 			try {
@@ -53,7 +51,7 @@ function ensureWorker(): Worker {
  * same (node, slot, kind) share one worker WS; different kinds get their own.
  */
 export function subscribeData(node: string, slot: string, kind: string, cb: FrameCallback): () => void {
-	const k = key(node, slot, kind);
+	const k = streamKey(node, slot, kind);
 	let set = consumers.get(k);
 	if (!set) {
 		set = new Set();
@@ -103,7 +101,7 @@ function pushFold(node: string, slot: string, kind: string, k: string): void {
  * on every (re)connect.
  */
 export function setViewSpec(node: string, slot: string, kind: string, token: string, spec: ViewSpec): void {
-	const k = key(node, slot, kind);
+	const k = streamKey(node, slot, kind);
 	let m = specs.get(k);
 	if (!m) {
 		m = new Map();
@@ -115,7 +113,7 @@ export function setViewSpec(node: string, slot: string, kind: string, token: str
 
 /** Drop this viewer's ViewSpec contribution (on unsubscribe / kind change). */
 export function clearViewSpec(node: string, slot: string, kind: string, token: string): void {
-	const k = key(node, slot, kind);
+	const k = streamKey(node, slot, kind);
 	const m = specs.get(k);
 	if (!m) return;
 	m.delete(token);

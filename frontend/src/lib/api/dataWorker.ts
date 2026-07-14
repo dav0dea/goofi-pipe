@@ -9,6 +9,7 @@
  */
 import { decodeData, type DataFrame } from '$lib/codec/decode';
 import { dataUrl } from './dataUrl';
+import { streamKey } from './streamKey';
 
 interface SlotState {
 	node: string;
@@ -33,9 +34,6 @@ const slots = new Map<string, SlotState>();
 const pendingSpecs = new Map<string, unknown>();
 const TICK_MS = 16; // ~60 Hz; workers have no requestAnimationFrame
 
-function key(node: string, slot: string, kind: string): string {
-	return `${node} ${slot} ${kind}`;
-}
 
 /** A ViewSpec worth stashing before its slot exists — a fold with no axes is a
  * "clear", not a reduction, so it must never be stored as a pending spec. */
@@ -95,7 +93,7 @@ function collectBuffers(frame: DataFrame, out: Set<ArrayBufferLike>): void {
 
 self.addEventListener('message', (e: MessageEvent) => {
 	const m = e.data as { op: string; node: string; slot: string; kind: string; spec?: unknown };
-	const k = key(m.node, m.slot, m.kind);
+	const k = streamKey(m.node, m.slot, m.kind);
 	if (m.op === 'sub') {
 		let st = slots.get(k);
 		if (!st) {

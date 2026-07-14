@@ -17,6 +17,7 @@
 import { subscribeData } from './data';
 import { perfStats } from './perfStats.svelte';
 import type { DataFrame } from '$lib/codec/decode';
+import { streamKey } from './streamKey';
 
 type FrameCallback = (frame: DataFrame) => void;
 
@@ -80,9 +81,6 @@ function flush(): void {
 	if (dirty.size > 0) requestFlush(); // deferred slots → next frame
 }
 
-function key(node: string, slot: string, kind: string): string {
-	return `${node} ${slot} ${kind}`;
-}
 
 /**
  * Subscribe to a (node, slot) stream rendered for viewer `kind`, receiving the
@@ -91,7 +89,7 @@ function key(node: string, slot: string, kind: string): string {
  * kind) share one worker subscription; different kinds get their own.
  */
 export function subscribeFrames(node: string, slot: string, kind: string, cb: FrameCallback): () => void {
-	const k = key(node, slot, kind);
+	const k = streamKey(node, slot, kind);
 	let s = slots.get(k);
 	if (!s) {
 		const slot_: Slot = { pending: null, current: null, cbs: new Set(), unsub: () => {}, lastFlush: 0 };
