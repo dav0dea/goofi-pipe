@@ -100,11 +100,6 @@ class SelectionStore {
 		this.write(panelId, { nodes: new Set(names), edges: this.sel(panelId).edges });
 	}
 
-	/** Replace the edge selection (used by undo's NavContext restore). */
-	selectEdges(panelId: string, ids: Iterable<string>): void {
-		this.write(panelId, { nodes: this.sel(panelId).nodes, edges: new Set(ids) });
-	}
-
 	/** Replace both node and edge selection at once (NavContext restore). */
 	setSelection(panelId: string, nodes: Iterable<string>, edges: Iterable<string>): void {
 		this.write(panelId, { nodes: new Set(nodes), edges: new Set(edges) });
@@ -131,20 +126,11 @@ class SelectionStore {
 		this.clear(panelId);
 	}
 
-	clearNodes(panelId: string): void {
-		const cur = this.sel(panelId);
-		if (cur.nodes.size) this.write(panelId, { nodes: new Set(), edges: cur.edges });
-	}
-	clearEdges(panelId: string): void {
-		const cur = this.sel(panelId);
-		if (cur.edges.size) this.write(panelId, { nodes: cur.nodes, edges: new Set() });
-	}
 	clear(panelId: string): void {
 		const cur = this.sel(panelId);
 		if (cur.nodes.size || cur.edges.size) this.write(panelId, { nodes: new Set(), edges: new Set() });
 	}
 
-	/** Drop a closed panel's selection so the map doesn't accumulate. */
 	/** Drop ALL per-panel state — selection and inspector visibility. Called when
 	 * the layout is wholesale-replaced (reset / hydrate): a loaded `.gfi` keeps
 	 * its saved panel ids, which can collide with ids used earlier this session,

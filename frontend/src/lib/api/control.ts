@@ -362,7 +362,6 @@ export class ControlClient implements Control {
 	private _connected = false;
 	private _protocolMismatch = false;
 	private retryMs = 250;
-	private closedByUser = false;
 
 	constructor(url?: string) {
 		const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -370,14 +369,12 @@ export class ControlClient implements Control {
 	}
 
 	connect(): void {
-		this.closedByUser = false;
 		this._open();
 	}
 
 	private _open(): void {
 		if (this.ws) return;
 		const ws = new WebSocket(this.url);
-		ws.binaryType = 'arraybuffer';
 		this.ws = ws;
 
 		ws.addEventListener('open', () => {
@@ -386,17 +383,9 @@ export class ControlClient implements Control {
 		});
 		ws.addEventListener('message', (e) => this._onMessage(e));
 		ws.addEventListener('close', () => this._onClose());
-		ws.addEventListener('error', () => {
-			try {
-				ws.close();
-			} catch {
-				/* noop */
-			}
-		});
 	}
 
 	private _onMessage(e: MessageEvent): void {
-		if (typeof e.data !== 'string') return;
 		let msg: unknown;
 		try {
 			msg = JSON.parse(e.data);
@@ -443,7 +432,6 @@ export class ControlClient implements Control {
 		this._setConnected(false);
 		for (const [, p] of this.pending) p.reject(new Error('control socket closed'));
 		this.pending.clear();
-		if (this.closedByUser) return;
 		const delay = this.retryMs;
 		this.retryMs = Math.min(this.retryMs * 2, 5000);
 		setTimeout(() => this._open(), delay);
@@ -453,12 +441,6 @@ export class ControlClient implements Control {
 		if (this._connected === v) return;
 		this._connected = v;
 		for (const h of this.connectListeners) h(v);
-	}
-
-	close(): void {
-		this.closedByUser = true;
-		this.ws?.close();
-		this.ws = null;
 	}
 
 	/** Subscribe to all incoming events. Returns an unsubscribe fn. */

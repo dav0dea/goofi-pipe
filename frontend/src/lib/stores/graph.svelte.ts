@@ -1085,17 +1085,6 @@ export class GraphStore {
 		return node;
 	}
 
-	/** Whether an output slot already feeds a link (drives the canvas "drag to
-	 * link vs pop add-menu" decision). */
-	isOutputConnected(node: string, slot: string): boolean {
-		return this.links.some((l) => l.node_out === node && l.slot_out === slot);
-	}
-
-	/** Whether an input slot is already fed by a link. */
-	isInputConnected(node: string, slot: string): boolean {
-		return this.links.some((l) => l.node_in === node && l.slot_in === slot);
-	}
-
 	// ------------------------------------------------------------------
 	// subgraph orchestration (clone / duplicate / paste / batch remove) —
 	// shared by the editor's keyboard handlers and the agent command surface
