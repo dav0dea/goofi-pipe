@@ -237,11 +237,10 @@ def _split_saved(saved: Any) -> tuple:
 
     Accepts the rich ``{value, expression, ...}`` dict shape and falls
     back to treating ``saved`` as a flat scalar otherwise. The flag
-    fields default to False / None when absent so legacy .gfi files
-    keep their behavior. ``enabled`` defaults to True when a saved
-    expression is present (older .gfi files predate the flag).
+    fields default to False / None when absent. ``enabled`` defaults to
+    True when a saved expression is present but the flag is absent.
     """
-    if isinstance(saved, dict) and "value" in saved and "_value" not in saved:
+    if isinstance(saved, dict) and "value" in saved:
         expr = saved.get("expression")
         return (
             saved["value"],
@@ -297,10 +296,9 @@ class NodeParams:
             for param_name, param in params.items():
                 if not isinstance(param, Param):
                     if isinstance(param, dict):
-                        # `{value, expression, ...}` is the expression-aware
-                        # shape; `{_value, ...}` is the legacy goofi-patch
-                        # reconstruction.
-                        if "value" in param and "_value" not in param:
+                        # The expression-aware `{value, expression, ...}` shape
+                        # (the only dict `serialize()` emits — flat scalar otherwise).
+                        if "value" in param:
                             value, expression, enabled, trig, auto = _split_saved(param)
                             param_type = TYPE_PARAM_MAP[type(value)]
                             new_param = param_type(value)
@@ -310,10 +308,7 @@ class NodeParams:
                             new_param.expression_autoeval = auto
                             data[group][param_name] = new_param
                             continue
-                        # reconstruct serialized param object (legacy)
-                        param_type = TYPE_PARAM_MAP[type(param["_value"])]
-                        data[group][param_name] = param_type(**param)
-                        continue
+                        raise TypeError(f"Unrecognized parameter dict for {param_name!r}: {param!r}")
 
                     # convert to Param object
                     if type(param) not in TYPE_PARAM_MAP:
@@ -401,23 +396,17 @@ class NodeParams:
                     continue
 
                 if not isinstance(param, Param):
-                    if isinstance(param, dict):
-                        # New {value, expression, ...} shape — preserve all
+                    if isinstance(param, dict) and "value" in param:
+                        # {value, expression, ...} shape — preserve all
                         # type-specific fields (vmin/vmax/options) on the
                         # existing Param by mutating in place.
-                        if "value" in param and "_value" not in param:
-                            existing = self._data[group][name]
-                            value, expression, enabled, trig, auto = _split_saved(param)
-                            existing._value = value
-                            existing.expression = expression
-                            existing.expression_enabled = enabled
-                            existing.expression_triggers_process = trig
-                            existing.expression_autoeval = auto
-                            continue
-                        # !!! LOADING PARAMS FROM DICT IS A LEGACY FEATURE TO LOAD OLD GOOFI PATCHES !!!
-                        # reconstruct serialized param object
-                        param_type = type(self._data[group][name])
-                        self._data[group] = self._data[group]._replace(**{name: param_type(**param)})
+                        existing = self._data[group][name]
+                        value, expression, enabled, trig, auto = _split_saved(param)
+                        existing._value = value
+                        existing.expression = expression
+                        existing.expression_enabled = enabled
+                        existing.expression_triggers_process = trig
+                        existing.expression_autoeval = auto
                         continue
 
                     # Update only the value, coercing to the param's type via the

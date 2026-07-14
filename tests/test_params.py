@@ -81,6 +81,37 @@ def test_trigger_boolparam_with_expression_serializes_value_false():
     assert ser["g"]["fire"]["value"] is False
 
 
+def test_expression_dict_round_trips_through_load():
+    """The serialize()->NodeParams->serialize() round-trip reconstructs an
+    expression-bound param from its `{value, expression, ...}` dict shape."""
+    src = NodeParams({"g": {"n": FloatParam(2.0, 0.0, 10.0)}})
+    n = src["g"]["n"]
+    n.expression = "1 + 1"
+    n.expression_enabled = True
+    n.expression_triggers_process = True
+    ser = src.serialize()
+    assert ser["g"]["n"] == {
+        "value": 2.0,
+        "expression": "1 + 1",
+        "expression_enabled": True,
+        "expression_triggers_process": True,
+        "expression_autoeval": False,
+    }
+    # Reloading the serialized dict rebuilds the same param (value + expr flags).
+    reloaded = NodeParams({"g": {"n": ser["g"]["n"]}})["g"]["n"]
+    assert reloaded.value == 2.0
+    assert reloaded.expression == "1 + 1"
+    assert reloaded.expression_enabled is True
+    assert reloaded.expression_triggers_process is True
+
+
+def test_unrecognized_param_dict_is_rejected():
+    """A dict that is neither a Param nor the `{value, ...}` shape is a type
+    error, not silently reconstructed."""
+    with pytest.raises((TypeError, KeyError)):
+        NodeParams({"g": {"n": {"nonsense": 1}}})
+
+
 def full_node_params(n_groups: int = 2) -> NodeParams:
     """
     Returns a NodeParams object with all parameter types.
