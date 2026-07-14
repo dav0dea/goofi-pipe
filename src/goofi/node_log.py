@@ -65,7 +65,6 @@ _orig_stderr = None
 _process_default: Optional[str] = None
 _buffers: Dict[str, "_NodeBuffer"] = {}
 _server: Optional["_LogServer"] = None
-_server_port: int = 0
 
 # Per-thread attribution + a re-entrancy guard so the emit path can't recurse
 # back into the redirector.
@@ -237,10 +236,9 @@ class _LogServer:
         self._httpd = ThreadingHTTPServer(("127.0.0.1", 0), _LogRequestHandler)
         self._httpd.daemon_threads = True
         self.port = self._httpd.server_address[1]
-        self._thread = threading.Thread(
+        threading.Thread(
             target=self._httpd.serve_forever, name="goofi-log-sse", daemon=True
-        )
-        self._thread.start()
+        ).start()
 
 
 # ---------------------------------------------------------------------------
@@ -285,7 +283,7 @@ def register_node(node_id: str) -> str:
         if node_id not in _buffers:
             _buffers[node_id] = _NodeBuffer(node_id)
         _ensure_server_locked()
-        port = _server_port
+        port = _server.port
     return f"http://127.0.0.1:{port}/{quote(node_id, safe='')}"
 
 
@@ -299,15 +297,14 @@ def unregister_node(node_id: str) -> None:
 
 def _ensure_server_locked() -> None:
     # Caller holds _lock.
-    global _server, _server_port
+    global _server
     if _server is None:
         _server = _LogServer()
-        _server_port = _server.port
 
 
 def _reset_for_tests() -> None:
     """Tear capture down — test-only, so a suite doesn't leak global state."""
-    global _enabled, _installed, _process_default, _server, _server_port
+    global _enabled, _installed, _process_default, _server
     with _lock:
         if _installed:
             if _orig_stdout is not None:
@@ -327,4 +324,3 @@ def _reset_for_tests() -> None:
             except Exception:
                 pass
         _server = None
-        _server_port = 0
