@@ -13,6 +13,7 @@ dirty cycle; the manager's `save()` reads it directly without round-trips.
 from __future__ import annotations
 
 import importlib
+import sys
 import traceback
 from dataclasses import dataclass, field
 from multiprocessing import Pipe, Process
@@ -23,7 +24,7 @@ from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Type
 if TYPE_CHECKING:
     from goofi.registry import NodeSpec
 
-from goofi.codec import decode_message, encode_message
+from goofi.codec import decode_data, decode_message, encode_message
 from goofi.data import Data, DataType
 from goofi.message import Message, MessageType
 from goofi.params import NodeParams, coerce_to_param_type, normalize_expression_binding
@@ -553,8 +554,6 @@ class NodeRef:
 
     def _data_pump(self) -> None:
         """Single thread serving every registered data handler on this NodeRef."""
-        from goofi.codec import decode_data
-
         while self._alive:
             # Snapshot the listener→slot map so the wait can run unlocked.
             with self._data_handlers_lock:
@@ -582,15 +581,11 @@ class NodeRef:
                     try:
                         payload = decode_data(buf)
                     except Exception:
-                        import sys
-
                         print(f"decode failed for {self.node_id}.{slot_name}: {sys.exc_info()[1]}", file=sys.stderr)
                         continue
                 try:
                     cb(self, slot_name, payload)
                 except Exception:
-                    import sys
-
                     print(f"data handler for {self.node_id}.{slot_name} failed: {sys.exc_info()[1]}", file=sys.stderr)
 
     def _messaging_loop(self) -> None:
