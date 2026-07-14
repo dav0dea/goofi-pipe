@@ -282,9 +282,10 @@ class Manager:
         # name prefixes). `_membership` maps a member's uid -> instance id (the
         # reverse index of every instance's `members`); `_instances` holds the
         # SubPatchInstance records; `_definitions` holds the shared SubPatchDef
-        # templates (populated in the sharing phase). The three views (an
-        # instance's `members`, `_membership`, and each node's `.membership`
-        # marker) are kept in lockstep by `_attach_member` / `_detach_member`.
+        # templates (populated in the sharing phase). The two views (an instance's
+        # `members` and the `_membership` reverse index) are kept in lockstep by
+        # `_attach_member` / `_detach_member`; a node's wire marker is derived from
+        # them on demand by `_membership_marker` (never stored).
         self._membership: Dict[str, str] = {}
         self._instances: Dict[str, SubPatchInstance] = {}
         self._definitions: Dict[str, SubPatchDef] = {}
