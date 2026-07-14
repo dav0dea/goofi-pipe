@@ -596,11 +596,7 @@ class ControlHub:
             # diff-gated _broadcast_error_fanout skips a fresh ref's None==None
             # (a restarted member), so without this a collapsed group node keeps a
             # stale error chip after the member recovers. Empty for top-level nodes.
-            manager = self.server.manager
-            for inst_id in manager._ancestor_instances(uid):
-                self.broadcast_threadsafe(
-                    {"event": "error", "payload": {"node": inst_id, "error": manager._instance_error(inst_id)}}
-                )
+            self._refresh_ancestor_errors(uid)
 
         def on_error(noderef, message: Message):
             self._broadcast_error_fanout(uid, message.content.get("error"))
@@ -640,6 +636,14 @@ class ControlHub:
         console. Shared by the live PROCESSING_ERROR path and terminal bootstrap
         errors (on_node_stage), which otherwise reach neither."""
         self.broadcast_threadsafe({"event": "error", "payload": {"node": uid, "error": error}})
+        self._refresh_ancestor_errors(uid)
+
+    def _refresh_ancestor_errors(self, uid: str) -> None:
+        """Re-broadcast each ANCESTOR sub-patch instance's recomputed error. A
+        collapsed group mirrors its first-errored-descendant on the snapshot field
+        `inst.error`, which only recomputes on a structural resync — so a live
+        member's error, or its clearing, must refresh each ancestor chip. No-op for
+        a top-level node (no ancestor instances)."""
         manager = self.server.manager
         for inst_id in manager._ancestor_instances(uid):
             self.broadcast_threadsafe(
