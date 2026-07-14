@@ -1,18 +1,14 @@
-"""Raw vs decoded data-handler contract on the NodeRef data plane (report B4).
+"""NodeRef view-plane data handler contract (Option C).
 
-`set_data_handler(raw=True)` hands the pump's GOOF wire bytes straight to the
-callback (no `decode_data`); `raw=False` decodes once and hands the callback a
-`Data`. Both are supported NodeRef capabilities. The bridge data plane uses
-`raw=False` — it decodes each slot once and the viewer adapters re-encode per
-kind (see test_dataplane_perf); the `raw=True` path remains for any consumer
-that wants the producer bytes untouched.
+`set_data_handler(slot, cb)` subscribes to the node's REDUCED `.view` stream,
+registers the manager as a *viewer* (REGISTER_VIEWER), and hands the pump's
+node-reduced GOOF wire bytes straight to `cb(noderef, slot, buf)` — forwarded to
+the browser verbatim, with no manager-side decode/re-encode (A1). `cb=None`
+unregisters (UNREGISTER_VIEWER + endpoint release).
 """
 import time
 
 import pytest
-
-from goofi.codec import decode_data
-from goofi.data import Data, DataType
 
 from .test_manager import _bare_manager
 
@@ -21,46 +17,6 @@ def _wait_until(pred, timeout: float) -> None:
     deadline = time.time() + timeout
     while not pred() and time.time() < deadline:
         time.sleep(0.02)
-
-
-def test_raw_handler_delivers_wire_bytes():
-    mgr = _bare_manager()
-    try:
-        osc = mgr.add_node("Oscillator", "inputs")
-        ref = mgr.nodes[osc]
-        ref.wait_for_state(timeout=2.0)
-
-        frames: list = []
-        ref.set_data_handler("out", lambda _nr, _slot, buf: frames.append(buf), raw=True)
-        _wait_until(lambda: len(frames) >= 2, 3.0)
-        ref.set_data_handler("out", None)
-
-        assert frames, "raw handler received no frames"
-        assert all(isinstance(f, (bytes, bytearray)) for f in frames)
-        # The raw bytes are a valid GOOF frame that decodes to the array output.
-        decoded = decode_data(frames[-1])
-        assert decoded.dtype == DataType.ARRAY
-    finally:
-        mgr.terminate(notify_gui=False)
-
-
-def test_decoded_handler_still_delivers_data():
-    mgr = _bare_manager()
-    try:
-        osc = mgr.add_node("Oscillator", "inputs")
-        ref = mgr.nodes[osc]
-        ref.wait_for_state(timeout=2.0)
-
-        frames: list = []
-        ref.set_data_handler("out", lambda _nr, _slot, data: frames.append(data))
-        _wait_until(lambda: len(frames) >= 2, 3.0)
-        ref.set_data_handler("out", None)
-
-        assert frames, "decoded handler received no frames"
-        assert all(isinstance(x, Data) for x in frames)
-        assert frames[-1].dtype == DataType.ARRAY
-    finally:
-        mgr.terminate(notify_gui=False)
 
 
 def test_unregister_closes_subscriber_and_listener():
@@ -73,7 +29,7 @@ def test_unregister_closes_subscriber_and_listener():
         ref = mgr.nodes[osc]
         ref.wait_for_state(timeout=2.0)
 
-        ref.set_data_handler("out", lambda *_a: None, raw=True)
+        ref.set_data_handler("out", lambda *_a: None)
         sub, listener = ref._data_handlers["out"][0], ref._data_handlers["out"][1]
         ref.set_data_handler("out", None)
 
@@ -106,7 +62,7 @@ def test_view_subscriber_fault_leaves_no_stranded_viewer_registration():
         ref.open_view_subscriber = _boom
 
         with pytest.raises(RuntimeError):
-            ref.set_data_handler("out", lambda *_a: None, view=True)
+            ref.set_data_handler("out", lambda *_a: None)
 
         regs = [e for e in events if e[0] == "reg"]
         unregs = [e for e in events if e[0] == "unreg"]

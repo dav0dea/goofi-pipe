@@ -24,7 +24,7 @@ from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Type
 if TYPE_CHECKING:
     from goofi.registry import NodeSpec
 
-from goofi.codec import decode_data, decode_message, encode_message
+from goofi.codec import decode_message, encode_message
 from goofi.data import Data, DataType
 from goofi.message import Message, MessageType
 from goofi.params import NodeParams, coerce_to_param_type, normalize_expression_binding
@@ -474,43 +474,23 @@ class NodeRef:
     def data_service_for(self, slot_name_out: str) -> str:
         return data_service_name(self.node_id, slot_name_out)
 
-    def open_output_subscriber(self, slot_name_out: str) -> tuple[Subscriber, Listener]:
-        # REGISTER_SUBSCRIBER always provisions the node's IPC publisher
-        # (`_ensure_output_endpoints(..., want_ipc=True)` in goofi.node), so
-        # we always subscribe via IPC — whether the node lives in this
-        # process or another. The thread transport is only used for explicit
-        # SUBSCRIBE_INPUT wiring between same-group peers.
-        return open_subscriber(self.data_service_for(slot_name_out), in_process=False)
-
     def open_view_subscriber(self, slot_name_out: str) -> tuple[Subscriber, Listener]:
         """Subscribe to the node's REDUCED viewer stream (`<dataservice>.view`),
         provisioned by REGISTER_VIEWER. Carries small node-reduced GOOF frames the
         manager relays to browsers verbatim (Option C)."""
         return open_subscriber(view_service_name(self.node_id, slot_name_out), in_process=False)
 
-    def set_data_handler(
-        self, slot_name_out: str, callback: Optional[Callable], *, raw: bool = False, view: bool = False
-    ) -> None:
-        """Register / unregister a callback invoked on every fresh frame.
+    def set_data_handler(self, slot_name_out: str, callback: Optional[Callable]) -> None:
+        """Register / unregister the browser-viewer callback for a slot's REDUCED
+        `.view` stream (Option C). The callback is `callback(noderef, slot_name_out,
+        buf)` — the node-reduced GOOF wire `bytes` straight from the subscriber,
+        forwarded to the browser verbatim (no manager-side decode/re-encode, A1). It
+        runs on the single per-ref data-pump thread that fans out across all slots.
+        Pass `callback=None` to unregister.
 
-        With `raw=False` (default) the callback is
-        `callback(noderef, slot_name_out, data)` with a decoded `Data`. With
-        `raw=True` it is `callback(noderef, slot_name_out, buf)` and receives
-        the producer's GOOF wire `bytes` straight from the subscriber — the
-        pump skips `decode_data`. The bridge uses `raw=True` so it can forward
-        frames to the browser verbatim, with no manager-side re-encode (A1).
-
-        The callback runs on the single per-ref data-pump thread that fans out
-        across all registered output slots. Pass `callback=None` to unregister.
-
-        Side-effect: also sends `REGISTER_SUBSCRIBER` / `UNREGISTER_SUBSCRIBER`
-        (or `REGISTER_VIEWER` / `UNREGISTER_VIEWER` when `view=True`) so the
-        producing node knows to start / stop publishing on the slot.
-
-        With `view=True` (Option C) the handler subscribes to the node's REDUCED
-        `.view` stream instead of the full output, registers as a *viewer* (so the
-        node reduces per its folded ViewSpec — see `set_viewspec`), and forwards
-        the node-reduced bytes verbatim (`raw` is forced True).
+        Side-effect: sends `REGISTER_VIEWER` / `UNREGISTER_VIEWER` so the node starts
+        / stops reducing + publishing on the slot's `.view` service per its folded
+        ViewSpec (see `set_viewspec`).
         """
         with self._data_handlers_lock:
             prev = self._data_handlers.pop(slot_name_out, None)
@@ -523,29 +503,20 @@ class NodeRef:
                         endpoint.close()
                     except Exception:
                         pass
-                # Unregister on the same plane we registered on (stored on prev).
-                if prev[4]:
-                    self.unregister_viewer(slot_name_out)
-                else:
-                    self.unregister_subscriber(slot_name_out)
+                self.unregister_viewer(slot_name_out)
 
             if callback is None:
                 return
 
-            # Subscribe BEFORE announcing the register: both endpoints open via
+            # Subscribe BEFORE announcing the viewer: open_view_subscriber uses
             # open_or_create at the default cap, so the manager's subscriber can
             # precede the node's publisher — and a subscriber-build fault then raises
-            # before any REGISTER_* is sent, leaving no node-side viewer_count/reducer
+            # before REGISTER_VIEWER is sent, leaving no node-side viewer_count/reducer
             # to strand (the bridge's connect-path rollback no-ops on the unstored
             # handler, so it can't undo a register it never observed).
-            if view:
-                raw = True  # reduced frames are pre-encoded; forward verbatim
-                sub, listener = self.open_view_subscriber(slot_name_out)
-                self.register_viewer(slot_name_out)
-            else:
-                sub, listener = self.open_output_subscriber(slot_name_out)
-                self.register_subscriber(slot_name_out)
-            self._data_handlers[slot_name_out] = (sub, listener, callback, raw, view)
+            sub, listener = self.open_view_subscriber(slot_name_out)
+            self.register_viewer(slot_name_out)
+            self._data_handlers[slot_name_out] = (sub, listener, callback)
             self._data_waitset.attach(listener)
             self._data_waitset_dirty.set()
 
@@ -558,38 +529,30 @@ class NodeRef:
                 self._data_pump_thread.start()
 
     def _data_pump(self) -> None:
-        """Single thread serving every registered data handler on this NodeRef."""
+        """Single thread serving every registered viewer handler on this NodeRef.
+        Frames are node-reduced + pre-encoded, so they're forwarded verbatim."""
         while self._alive:
             # Snapshot the listener→slot map so the wait can run unlocked.
             with self._data_handlers_lock:
                 handlers = dict(self._data_handlers)
             if not handlers:
-                # No subscribers — sleep on the dirty flag until something
-                # registers (or terminate fires).
+                # No viewers — sleep on the dirty flag until something registers
+                # (or terminate fires).
                 self._data_waitset_dirty.wait(timeout=0.5)
                 self._data_waitset_dirty.clear()
                 continue
-            listener_to_slot = {id(l): (n, s, cb, raw) for n, (s, l, cb, raw, _view) in handlers.items()}
+            listener_to_slot = {id(l): (n, s, cb) for n, (s, l, cb) in handlers.items()}
             fired = self._data_waitset.wait(0.25)
             for listener in fired:
                 entry = listener_to_slot.get(id(listener))
                 if entry is None:
                     continue
-                slot_name, sub, cb, raw = entry
+                slot_name, sub, cb = entry
                 buf = sub.take_latest()
                 if buf is None:
                     continue
-                if raw:
-                    # Forward the wire bytes verbatim — no decode (A1).
-                    payload = buf
-                else:
-                    try:
-                        payload = decode_data(buf)
-                    except Exception:
-                        print(f"decode failed for {self.node_id}.{slot_name}: {sys.exc_info()[1]}", file=sys.stderr)
-                        continue
                 try:
-                    cb(self, slot_name, payload)
+                    cb(self, slot_name, buf)
                 except Exception:
                     print(f"data handler for {self.node_id}.{slot_name} failed: {sys.exc_info()[1]}", file=sys.stderr)
 

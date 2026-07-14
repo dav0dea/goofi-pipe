@@ -348,13 +348,12 @@ def test_noderef_view_handler_delivers_reduced_frames():
         ref.set_viewspec("out", {
             "axes": [{"axis": -1, "max": 200, "method": "envelope"}]})
         frames = []
-        ref.set_data_handler("out", lambda _nr, _s, buf: frames.append(buf),
-                             raw=True, view=True)
+        ref.set_data_handler("out", lambda _nr, _s, buf: frames.append(buf))
 
         deadline = _t.time() + 6.0
         while not frames and _t.time() < deadline:
             _t.sleep(0.02)
-        ref.set_data_handler("out", None, view=True)
+        ref.set_data_handler("out", None)
 
         assert frames, "view handler received no reduced frames"
         red = _decode(frames[-1])

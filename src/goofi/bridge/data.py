@@ -7,7 +7,7 @@ The producing **node** reduces the slot to its folded ViewSpec on a dedicated
 reducer thread and publishes small GOOF frames on its `<dataservice>.view`
 iceoryx2 service (see `goofi.node_viewer` / `goofi.node_reduce`). The manager
 subscribes ONCE per (node, slot) via the NodeRef *viewer plane*
-(`set_data_handler(..., view=True)`) and forwards those bytes to every connected
+(`set_data_handler`) and forwards those bytes to every connected
 browser **verbatim** — there is **no** manager-side decode or re-encode. The
 reduction (the ~1300× shrink) happens inside the node, before the cross-process
 copy; the manager is a thin switchboard.
@@ -16,7 +16,7 @@ Each connection contributes a per-axis ViewSpec, seeded from its viewer `kind`
 and overridable inband via a TEXT `{"op":"view","spec":{axes}}` message.
 The hub folds the connected ViewSpecs richest-wins per (node, slot) and pushes the
 fold to the node (`set_viewspec`). On the first viewer of a slot the node is
-told to produce (REGISTER_VIEWER, via `set_data_handler(view=True)`); on the last
+told to produce (REGISTER_VIEWER, via `set_data_handler`); on the last
 it stops (UNREGISTER_VIEWER).
 
 Backpressure: each WS has a single-slot mailbox. New frames overwrite older
@@ -205,14 +205,14 @@ class DataHub:
             mux = self._muxes.get(key)
             if mux is None:
                 mux = _SlotMux(ref, slot)
-                # set_data_handler(view=True) does blocking IPC (REGISTER_VIEWER +
+                # set_data_handler does blocking IPC (REGISTER_VIEWER +
                 # iceoryx2 .view subscriber); run it off the event loop so it can't
                 # stall other viewers' sends. Held under _lock so a concurrent
                 # connect/disconnect for the same slot can't interleave.
                 try:
                     await loop.run_in_executor(
                         None,
-                        functools.partial(ref.set_data_handler, slot, mux.on_frame, raw=True, view=True),
+                        functools.partial(ref.set_data_handler, slot, mux.on_frame),
                     )
                 except Exception:
                     # A transport/iceoryx2 fault mid-registration is non-atomic: a
@@ -298,7 +298,7 @@ class DataHub:
                 try:
                     await loop.run_in_executor(
                         None,
-                        functools.partial(new_ref.set_data_handler, slot, mux.on_frame, raw=True, view=True),
+                        functools.partial(new_ref.set_data_handler, slot, mux.on_frame),
                     )
                 except Exception:
                     pass

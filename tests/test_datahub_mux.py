@@ -33,11 +33,11 @@ class _RecordingRef:
 
     def __init__(self, uid):
         self.uid = uid
-        self.handlers = []  # (slot, fn, raw, view)
+        self.handlers = []  # (slot, fn)
         self.specs = []
 
-    def set_data_handler(self, slot, fn, raw=False, view=False):
-        self.handlers.append((slot, fn, raw, view))
+    def set_data_handler(self, slot, fn):
+        self.handlers.append((slot, fn))
 
     def set_viewspec(self, slot, spec):
         self.specs.append((slot, spec))
@@ -65,13 +65,13 @@ def test_rewire_node_repoints_mux_and_reregisters_handler_on_the_new_ref():
     asyncio.run(hub.rewire_node("n1"))
 
     assert mux.ref is new  # re-pointed at the live ref
-    assert any(slot == "out" and raw and view for (slot, _fn, raw, view) in new.handlers), (
+    assert any(slot == "out" and fn is not None for (slot, fn) in new.handlers), (
         "view-plane handler not re-registered on the new ref"
     )
     assert any(slot == "out" for (slot, _spec) in new.specs), "folded viewspec not re-pushed to the new node"
 
     # Frames published by the restarted node now reach the still-connected viewer.
-    on_frame = next(fn for (slot, fn, _r, _v) in new.handlers if slot == "out")
+    on_frame = next(fn for (slot, fn) in new.handlers if slot == "out" and fn is not None)
     on_frame(new, "out", b"FRESH")
     assert fwd.frames == [b"FRESH"]
 
@@ -92,7 +92,7 @@ def test_detach_unregisters_the_current_ref_not_a_stale_capture():
     asyncio.run(hub._detach(("n1", "out"), mux, fwd))
 
     # The last viewer left → unregister the handler on the CURRENT ref and drop the mux.
-    assert any(slot == "out" and fn is None for (slot, fn, _r, _v) in new.handlers), (
+    assert any(slot == "out" and fn is None for (slot, fn) in new.handlers), (
         "did not unregister the current (mux.ref) handler"
     )
     assert old.handlers == [], "touched the stale captured ref instead of mux.ref"
@@ -148,11 +148,11 @@ def test_push_spec_if_changed_folds_richest_and_dedups():
 
 
 def test_connect_path_registration_failure_cleans_up_without_leaking():
-    """The first-viewer registration (set_data_handler view=True) does blocking IPC that
-    can fault (iceoryx2 subscriber build, ctrl publish). If it raises, the handler must
-    undo any partial REGISTER_VIEWER (so the node doesn't reduce into a dead subscriber)
-    and tear down the started forwarder + ws — not let the exception escape past the
-    try/finally and leak the parked sender task + a stranded viewer registration."""
+    """The first-viewer registration (set_data_handler) does blocking IPC that can fault
+    (iceoryx2 subscriber build, ctrl publish). If it raises, the handler must undo any
+    partial REGISTER_VIEWER (so the node doesn't reduce into a dead subscriber) and tear
+    down the started forwarder + ws — not let the exception escape past the try/finally
+    and leak the parked sender task + a stranded viewer registration."""
     import asyncio
     from types import SimpleNamespace
 
@@ -168,8 +168,8 @@ def test_connect_path_registration_failure_cleans_up_without_leaking():
         def __init__(self):
             self.unregister_calls = []
 
-        def set_data_handler(self, slot, fn, raw=False, view=False):
-            if view and fn is not None:
+        def set_data_handler(self, slot, fn):
+            if fn is not None:
                 raise RuntimeError("iceoryx2 .view subscriber build failed")
             self.unregister_calls.append(slot)  # the cleanup unregister (fn=None)
 
