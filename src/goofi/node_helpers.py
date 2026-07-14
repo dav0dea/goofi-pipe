@@ -532,13 +532,19 @@ class NodeRef:
             if callback is None:
                 return
 
+            # Subscribe BEFORE announcing the register: both endpoints open via
+            # open_or_create at the default cap, so the manager's subscriber can
+            # precede the node's publisher — and a subscriber-build fault then raises
+            # before any REGISTER_* is sent, leaving no node-side viewer_count/reducer
+            # to strand (the bridge's connect-path rollback no-ops on the unstored
+            # handler, so it can't undo a register it never observed).
             if view:
                 raw = True  # reduced frames are pre-encoded; forward verbatim
-                self.register_viewer(slot_name_out)
                 sub, listener = self.open_view_subscriber(slot_name_out)
+                self.register_viewer(slot_name_out)
             else:
-                self.register_subscriber(slot_name_out)
                 sub, listener = self.open_output_subscriber(slot_name_out)
+                self.register_subscriber(slot_name_out)
             self._data_handlers[slot_name_out] = (sub, listener, callback, raw, view)
             self._data_waitset.attach(listener)
             self._data_waitset_dirty.set()
