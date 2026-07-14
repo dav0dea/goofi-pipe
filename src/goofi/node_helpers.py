@@ -432,7 +432,7 @@ class NodeRef:
 
     def set_viewspec(self, slot_name_out: str, spec: Dict[str, Any]) -> None:
         """Push the folded per-axis ViewSpec the node reduces this slot's viewer
-        frames to. `spec` = `{axes:[{axis,max,method}], version}` (a plain dict)."""
+        frames to. `spec` = `{axes:[{axis,max,method}]}` (a plain dict)."""
         self._send(Message(MessageType.SET_VIEWSPEC, {"slot_name_out": slot_name_out, "spec": spec}))
 
     def send_directory(self, directory: Dict[str, str]) -> None:

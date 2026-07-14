@@ -54,7 +54,7 @@ class MessageType(Enum):
     - `SET_VIEWSPEC`: set the folded per-axis ViewSpec the node reduces a slot's
       viewer frames to (last-received-wins).
         - `slot_name_out` (str)
-        - `spec` (dict): `{axes:[{axis,max,method}], version}`.
+        - `spec` (dict): `{axes:[{axis,max,method}]}`.
     - `TERMINATE`: empty; instructs the node to shut down.
 
     Status plane (node → manager):
