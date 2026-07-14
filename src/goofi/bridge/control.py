@@ -158,7 +158,7 @@ class ControlHub:
         the real inner (member uid, slot) so the flat link lands on the member. A
         normal node endpoint passes through unchanged. Raises (→ error reply) if
         the boundary is unwired — the inner target doesn't exist yet."""
-        if node in getattr(manager, "_instances", {}):
+        if node in manager._instances:
             return manager.resolve_boundary(node, slot)
         return node, slot
 
@@ -188,7 +188,7 @@ class ControlHub:
             node = payload["node"]  # uid (real) or inst_id (sub-patch group node)
             # A sub-patch group node is virtual — deleting it removes the whole
             # sub-patch (members + links), mirroring node-delete semantics.
-            if node in getattr(manager, "_instances", {}):
+            if node in manager._instances:
                 await self._call_manager(manager.remove_instance, node)
             else:
                 await self._call_manager(manager.remove_node, node)
@@ -254,7 +254,7 @@ class ControlHub:
             pos = payload["pos"]
             # A sub-patch group node isn't a real node — persist its pos on the
             # instance record instead.
-            if node in getattr(manager, "_instances", {}):
+            if node in manager._instances:
                 manager._instances[node].pos = list(pos)
                 manager.unsaved_changes = True
                 await self.broadcast({"event": "node_moved", "payload": {"node": node, "pos": list(pos)}})
@@ -274,7 +274,7 @@ class ControlHub:
             # per-boundary-slot viewer state on the instance record so it round-trips
             # into the .gfi (backlog #17).
             if payload["node"] not in manager.nodes:
-                inst = getattr(manager, "_instances", {}).get(payload["node"])
+                inst = manager._instances.get(payload["node"])
                 if inst is not None:
                     inst.viewers = payload.get("viewers") or {}
                 return {"ok": True}
@@ -537,7 +537,7 @@ class ControlHub:
             for inst_id in manager._ancestor_instances(u):
                 err_by_inst.setdefault(inst_id, err)
         instances: Dict[str, Any] = {}
-        for iid, inst in getattr(manager, "_instances", {}).items():
+        for iid, inst in manager._instances.items():
             # ROOT ships too: it's a real scope (parent=None, no boundaries) whose members
             # are every top-level entity, so the editor renders the root canvas as
             # childrenOfScope(ROOT_ID) with no null special case. It is never synthesized

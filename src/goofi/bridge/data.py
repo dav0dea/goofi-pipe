@@ -174,7 +174,7 @@ class DataHub:
         # /data/<instId>/<boundary>. Splice that to the inner member's real (node,
         # slot) so the same streaming path serves both. Unwired/unknown boundaries
         # close terminally (the browser won't retry a 4000-range close).
-        if node in getattr(manager, "_instances", {}):
+        if node in manager._instances:
             try:
                 node, slot = manager.resolve_boundary(node, slot)
             except (KeyError, ValueError):
