@@ -883,10 +883,7 @@ class Node(ABC):
             return
         if slot.listener is not None:
             self._waitset.detach(slot.listener)
-        try:
-            slot.subscriber.close()
-        except Exception:
-            pass
+        _safe_close(slot.subscriber)
         slot.subscriber = None
         slot.listener = None
         slot.clear()
@@ -900,10 +897,7 @@ class Node(ABC):
         recreated at a new buffer depth. v1 only: skipped by the caller if a
         thread publisher coexists (co-located fan-out is deferred, §12)."""
         for endpoint in (*slot.publishers, *slot.notifiers):
-            try:
-                endpoint.close()
-            except Exception:
-                pass
+            _safe_close(endpoint)
         slot.publishers.clear()
         slot.notifiers.clear()
         slot.has_ipc = False
