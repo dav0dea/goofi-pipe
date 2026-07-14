@@ -140,18 +140,6 @@ class SelectionStore {
 		this.inspectorOn = {};
 		this.activeEditorId = null;
 	}
-
-	forgetPanel(panelId: string): void {
-		if (this.map[panelId]) {
-			const { [panelId]: _drop, ...rest } = this.map;
-			this.map = rest;
-		}
-		if (this.inspectorOn[panelId] !== undefined) {
-			const { [panelId]: _ins, ...rest } = this.inspectorOn;
-			this.inspectorOn = rest;
-		}
-		if (this.activeEditorId === panelId) this.activeEditorId = null;
-	}
 }
 
 let _sel: SelectionStore | null = null;

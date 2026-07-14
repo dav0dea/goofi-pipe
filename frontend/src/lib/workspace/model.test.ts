@@ -11,7 +11,6 @@ import {
 	findPanel,
 	countPanels,
 	collectPanels,
-	cloneWithNewIds,
 	MIN_FRACTION,
 	type LayoutNode,
 	type SplitNode
@@ -217,19 +216,6 @@ describe('panel content ops', () => {
 		const root = makePanel('viewer');
 		const next = setPanelState(root, root.id, { slot: 'out' });
 		expect(findPanel(next, root.id)!.state).toEqual({ slot: 'out' });
-	});
-});
-
-describe('cloneWithNewIds', () => {
-	it('produces a structurally identical tree with no shared ids', () => {
-		const a = makePanel('a');
-		const { root } = splitPanel(a, a.id, 'row', false, 'b');
-		const clone = cloneWithNewIds(root);
-		const origIds = new Set(collectPanels(root).map((p) => p.id));
-		const cloneIds = collectPanels(clone).map((p) => p.id);
-		expect(cloneIds).toHaveLength(2);
-		expect(cloneIds.every((id) => !origIds.has(id))).toBe(true);
-		expect((clone as SplitNode).direction).toBe((root as SplitNode).direction);
 	});
 });
 

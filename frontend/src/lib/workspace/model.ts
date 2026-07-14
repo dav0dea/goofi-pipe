@@ -348,18 +348,3 @@ export function defaultWorkspaceState(): WorkspaceState {
 	const ws = makeWorkspace('Layout');
 	return { workspaces: [ws], activeWorkspaceId: ws.id };
 }
-
-/** Deep clone a subtree with fresh ids — used when duplicating a tab so the
- * copy shares no node identities with the original. */
-export function cloneWithNewIds(node: LayoutNode): LayoutNode {
-	if (node.kind === 'panel') {
-		return { kind: 'panel', id: uid('panel'), panelType: node.panelType, state: node.state };
-	}
-	return {
-		kind: 'split',
-		id: uid('split'),
-		direction: node.direction,
-		children: node.children.map(cloneWithNewIds),
-		sizes: node.sizes.slice()
-	};
-}

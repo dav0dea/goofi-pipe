@@ -16,7 +16,6 @@
 import {
 	clearNodeRef,
 	closePanel,
-	cloneWithNewIds,
 	collectPanels,
 	defaultWorkspaceState,
 	DEFAULT_PANEL_TYPE,
@@ -300,23 +299,6 @@ class WorkspaceStore {
 					w.id === workspaceId ? { ...w, name: trimmed } : w
 				)
 			};
-		});
-	}
-
-	duplicateTab(workspaceId: string): void {
-		this._tracked('duplicate_tab', 'Duplicate tab', () => {
-			const src = this.state.workspaces.find((w) => w.id === workspaceId);
-			if (!src) return;
-			const copy: Workspace = {
-				id: uid('ws'),
-				name: this._uniqueName(`${src.name} copy`),
-				root: cloneWithNewIds(src.root)
-			};
-			const idx = this.state.workspaces.findIndex((w) => w.id === workspaceId);
-			const workspaces = this.state.workspaces.slice();
-			workspaces.splice(idx + 1, 0, copy);
-			this.state = { workspaces, activeWorkspaceId: copy.id };
-			this._focusFirst(copy.root);
 		});
 	}
 

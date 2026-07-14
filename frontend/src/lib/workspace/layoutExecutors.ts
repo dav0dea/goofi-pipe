@@ -24,7 +24,6 @@ const KINDS: LayoutActionKind[] = [
 	'link_node_to_panel',
 	'add_tab',
 	'close_tab',
-	'duplicate_tab',
 	'rename_tab',
 	'reorder_tab'
 ];
