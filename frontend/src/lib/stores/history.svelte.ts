@@ -327,49 +327,42 @@ export class HistoryStore {
 		this._recompute();
 	}
 
-	/** Replay the top action's inverse: restore its nav context, run the inverse
-	 * (recording suspended), then move it to the redo stack. Atomic — on RPC
-	 * failure the action stays on the undo stack and `lastError` is set. */
-	async undo(): Promise<void> {
-		if (this.replaying || !this.canUndo) return;
-		const action = this.undoStack[this.undoStack.length - 1];
+	/** Move the top action of `from` to `to`, replaying it through `direction`
+	 * (inverse for undo, forward for redo): restore its nav context, run it with
+	 * recording suspended, then relocate it. Atomic — on RPC failure the action
+	 * stays on `from` and `lastError` is set; the stacks are untouched. */
+	private async _replay(
+		from: Action[],
+		to: Action[],
+		direction: 'inverse' | 'forward',
+		verb: string
+	): Promise<void> {
+		if (this.replaying || from.length === 0) return;
+		const action = from[from.length - 1];
 		const exec = executors[action.kind];
 		if (!exec) return;
 		this.replaying = true;
 		try {
 			await restoreNavContext(action.context);
-			await this.suspend(() => exec.inverse(action, this.depsProvider()));
+			await this.suspend(() => exec[direction](action, this.depsProvider()));
 		} catch (e) {
-			this.lastError = `Undo failed: ${(e as Error).message ?? e}`;
+			this.lastError = `${verb} failed: ${(e as Error).message ?? e}`;
 			return; // leave the stacks untouched (atomic-or-nothing)
 		} finally {
 			this.replaying = false;
 		}
-		this.undoStack.pop();
-		this.redoStack.push(action);
+		from.pop();
+		to.push(action);
 		this._recompute();
 		pulseRestored(action.context, this.depsProvider());
 	}
 
+	async undo(): Promise<void> {
+		return this._replay(this.undoStack, this.redoStack, 'inverse', 'Undo');
+	}
+
 	async redo(): Promise<void> {
-		if (this.replaying || !this.canRedo) return;
-		const action = this.redoStack[this.redoStack.length - 1];
-		const exec = executors[action.kind];
-		if (!exec) return;
-		this.replaying = true;
-		try {
-			await restoreNavContext(action.context);
-			await this.suspend(() => exec.forward(action, this.depsProvider()));
-		} catch (e) {
-			this.lastError = `Redo failed: ${(e as Error).message ?? e}`;
-			return;
-		} finally {
-			this.replaying = false;
-		}
-		this.redoStack.pop();
-		this.undoStack.push(action);
-		this._recompute();
-		pulseRestored(action.context, this.depsProvider());
+		return this._replay(this.redoStack, this.undoStack, 'forward', 'Redo');
 	}
 
 	/** Run `fn` with recording disabled, then resume. Reentrant, and async-aware:
