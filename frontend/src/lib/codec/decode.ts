@@ -217,6 +217,14 @@ function readTypedArray(
 export function isArrayFrame(f: DataFrame): f is DataFrame & { data: ArrayData } {
 	return f.dtype === 'ARRAY';
 }
+/** True if a numpy dtype string names a (little-endian / byte-agnostic) float. */
+export function isFloatDtype(dtype: string): boolean {
+	return dtype.startsWith('<f') || dtype.startsWith('|f') || dtype.startsWith('=f');
+}
+/** True if a numpy dtype string names an 8-bit unsigned integer (a raw image byte). */
+export function isU8Dtype(dtype: string): boolean {
+	return dtype === '<u1' || dtype === '|u1' || dtype === '=u1';
+}
 export function isStringFrame(f: DataFrame): f is DataFrame & { data: string } {
 	return f.dtype === 'STRING';
 }

@@ -1,5 +1,5 @@
 <script lang="ts">
-	import type { DataFrame, ArrayData } from '$lib/codec/decode';
+	import { isFloatDtype, isU8Dtype, type DataFrame, type ArrayData } from '$lib/codec/decode';
 	import type { SettingsMap } from './settingsSchema';
 	import { makeLUTCache } from './colormaps';
 	import { GLImageRenderer, glSupports } from './imageGL';
@@ -87,10 +87,6 @@
 		return null;
 	}
 
-	function isFloatDtype(dtype: string): boolean {
-		return dtype.startsWith('<f') || dtype.startsWith('|f') || dtype.startsWith('=f');
-	}
-
 	function render(arr: ArrayData): void {
 		const dims = shapeOf(arr);
 		if (!dims) return;
@@ -129,7 +125,7 @@
 
 		const dst = img.data;
 		const src = arr.values;
-		const isU8 = arr.dtype === '|u1' || arr.dtype === '<u1' || arr.dtype === '=u1';
+		const isU8 = isU8Dtype(arr.dtype);
 		const scale: (v: number) => number = isU8
 			? (v) => v
 			: isFloat

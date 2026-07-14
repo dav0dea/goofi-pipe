@@ -12,6 +12,8 @@
  * ImageViewer (rare, and RGB32F textures aren't core-guaranteed). Returns null
  * from tryCreate() when WebGL2 is unavailable so the caller degrades to 2D.
  */
+import { isFloatDtype, isU8Dtype } from '$lib/codec/decode';
+
 const VERT = `#version 300 es
 const vec2 verts[3] = vec2[3](vec2(-1.0, -1.0), vec2(3.0, -1.0), vec2(-1.0, 3.0));
 out vec2 v_uv;
@@ -60,8 +62,8 @@ export interface RenderOpts {
  * (wrong normalization otherwise), and i8/u8 decode to BigInt arrays which
  * texImage2D rejects outright. The 2D path coerces all of those via Number(). */
 export function glSupports(c: number, dtype: string): boolean {
-	const isFloat = dtype.startsWith('<f') || dtype.startsWith('|f') || dtype.startsWith('=f');
-	const isU8 = dtype === '<u1' || dtype === '|u1' || dtype === '=u1';
+	const isFloat = isFloatDtype(dtype);
+	const isU8 = isU8Dtype(dtype);
 	if (!isFloat && !isU8) return false;
 	if (c === 1) return true; // R8 / R32F
 	if (c === 3) return !isFloat; // RGB8 (RGB32F not core-guaranteed)
