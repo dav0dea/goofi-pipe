@@ -206,7 +206,7 @@ pub fn snapshot(g: &Graph, instance_id: &str, with_protocol: bool) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use goofi_node::{Isolation, OutputDecl};
+    use goofi_node::{Isolation, OutputDecl, SlotDecl};
 
     fn stub_params() -> ParamGroups {
         ParamGroups::new()
@@ -223,6 +223,21 @@ mod tests {
         category: "python",
         doc: "runtime type",
         inputs: &[],
+        outputs: T_OUT,
+        default_params: stub_params,
+        isolation: Isolation::InProcess,
+        make: stub_make,
+    };
+
+    static MULTI_IN: &[SlotDecl] = &[
+        SlotDecl { name: "many", kind: goofi_core::SlotType::Table, trigger_process: true, multi: true },
+        SlotDecl { name: "one", kind: goofi_core::SlotType::Array, trigger_process: true, multi: false },
+    ];
+    static MULTI_MANIFEST: NodeManifest = NodeManifest {
+        type_name: "MultiThing",
+        category: "test",
+        doc: "has a multi input slot",
+        inputs: MULTI_IN,
         outputs: T_OUT,
         default_params: stub_params,
         isolation: Isolation::InProcess,
@@ -246,10 +261,9 @@ mod tests {
 
     #[test]
     fn input_multi_lists_the_variadic_input_slots() {
-        // AppendTables exposes one multi slot "tables"; the frontend reads this
-        // static shape to render it tall and accept many cables.
-        let m = goofi_node::find("AppendTables").expect("AppendTables in catalog");
-        assert_eq!(node_type_info(m)["input_multi"], json!(["tables"]));
+        // A node's multi slots appear in input_multi (static shape the frontend reads
+        // to render them tall); single slots do not.
+        assert_eq!(node_type_info(&MULTI_MANIFEST)["input_multi"], json!(["many"]));
         // A node with only single inputs reports an empty list.
         assert_eq!(node_type_info(&T_MANIFEST)["input_multi"], json!([]));
     }

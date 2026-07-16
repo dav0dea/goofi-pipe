@@ -127,7 +127,7 @@ async fn control_and_data_plane_end_to_end() {
     assert!(hello["payload"]["instances"]["__root__"].is_object());
     assert_eq!(hello["payload"]["nodes"].as_array().unwrap().len(), 0);
 
-    // 2. list_nodes returns the catalog incl. ConstantArray.
+    // 2. list_nodes returns the catalog incl. Oscillator.
     ws.send(Message::Text(
         json!({"id": 1, "op": "list_nodes", "payload": {}})
             .to_string(),
@@ -143,7 +143,7 @@ async fn control_and_data_plane_end_to_end() {
     let types = reply["result"]["types"].as_array().unwrap();
     // All native node types must survive linkage into a dependent binary (guards
     // against inventory registrations being dropped / stale-build confusion).
-    for expected in ["ConstantArray", "Oscillator", "Buffer", "Math"] {
+    for expected in ["Oscillator", "Buffer"] {
         assert!(
             types.iter().any(|t| t["type"] == expected),
             "catalog must contain {expected}; got {:?}",
@@ -155,7 +155,7 @@ async fn control_and_data_plane_end_to_end() {
 
     // 3. add_node -> uid result + node_added broadcast.
     ws.send(Message::Text(
-        json!({"id": 2, "op": "add_node", "payload": {"type": "ConstantArray", "category": "inputs", "pos": [10.0, 20.0]}})
+        json!({"id": 2, "op": "add_node", "payload": {"type": "Oscillator", "category": "inputs", "pos": [10.0, 20.0]}})
             .to_string(),
     ))
     .await
@@ -169,7 +169,7 @@ async fn control_and_data_plane_end_to_end() {
             uid = Some(m["result"].as_str().unwrap().to_string());
         } else if m["event"] == "node_added" {
             saw_added = true;
-            assert_eq!(m["payload"]["type"], "ConstantArray");
+            assert_eq!(m["payload"]["type"], "Oscillator");
             assert_eq!(m["payload"]["pos"][0], 10.0);
         }
         if uid.is_some() && saw_added {
@@ -212,7 +212,7 @@ async fn control_and_data_plane_end_to_end() {
 }
 
 #[tokio::test]
-async fn native_dsp_chain_streams_a_spectrum() {
+async fn native_chain_streams_frames_over_the_data_plane() {
     let base = start_server().await;
     let (mut ws, _) = connect_async(format!("{base}/control")).await.unwrap();
     let _hello = recv_text(&mut ws).await;
@@ -220,40 +220,32 @@ async fn native_dsp_chain_streams_a_spectrum() {
     let uid = |v: &Value| v["result"].as_str().unwrap().to_string();
     let osc = uid(&call(&mut ws, 1, "add_node", json!({ "type": "Oscillator" })).await);
     let buf = uid(&call(&mut ws, 2, "add_node", json!({ "type": "Buffer" })).await);
-    let psd = uid(&call(&mut ws, 3, "add_node", json!({ "type": "PSD" })).await);
 
-    // Bound the buffer so the spectrum length settles quickly.
+    // Bound the buffer so it fills quickly.
     call(
         &mut ws,
-        4,
+        3,
         "update_param",
         json!({ "node": buf, "group": "buffer", "name": "size", "value": 128 }),
     )
     .await;
-    // Oscillator -> Buffer -> PSD
+    // Oscillator -> Buffer
     call(
         &mut ws,
-        5,
+        4,
         "add_link",
         json!({ "node_out": osc, "slot_out": "out", "node_in": buf, "slot_in": "data" }),
     )
     .await;
-    call(
-        &mut ws,
-        6,
-        "add_link",
-        json!({ "node_out": buf, "slot_out": "out", "node_in": psd, "slot_in": "data" }),
-    )
-    .await;
 
-    // The PSD output streams a real one-sided spectrum through the data plane.
-    let (mut data, _) = connect_async(format!("{base}/data/{psd}/psd/line"))
+    // The buffered output streams real array frames through the data plane.
+    let (mut data, _) = connect_async(format!("{base}/data/{buf}/out/line"))
         .await
         .unwrap();
     let frame = loop {
         let msg = tokio::time::timeout(Duration::from_secs(5), data.next())
             .await
-            .expect("spectrum frame timed out")
+            .expect("data frame timed out")
             .expect("stream ended")
             .expect("ws error");
         if let Message::Binary(b) = msg {
@@ -262,9 +254,9 @@ async fn native_dsp_chain_streams_a_spectrum() {
     };
     assert_eq!(&frame[0..4], b"GOOF");
     assert_eq!(frame[4], 2, "version");
-    assert_eq!(frame[5], 0, "PSD emits an ARRAY");
+    assert_eq!(frame[5], 0, "Buffer emits an ARRAY");
     let body_len = u32::from_le_bytes(frame[10..14].try_into().unwrap());
-    assert!(body_len > 8, "non-trivial spectrum body ({body_len} bytes)");
+    assert!(body_len > 8, "non-trivial buffered body ({body_len} bytes)");
 }
 
 #[tokio::test]
