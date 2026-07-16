@@ -52,7 +52,7 @@
 		group: string,
 		name: string,
 		expression: string | null,
-		opts: { enabled?: boolean; triggers_process?: boolean; autoeval?: boolean } = {}
+		opts: { enabled?: boolean; triggers_process?: boolean } = {}
 	): void {
 		if (!node) return;
 		void g.setExpression(node.uid, group, name, expression, opts);

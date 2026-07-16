@@ -602,20 +602,18 @@ export class GraphStore {
 		group: string,
 		name: string,
 		expression: string | null,
-		opts: { enabled?: boolean; triggers_process?: boolean; autoeval?: boolean } = {}
+		opts: { enabled?: boolean; triggers_process?: boolean } = {}
 	): Promise<void> {
 		const d = this.nodeById(node)?.params?.[group]?.[name];
 		const oldExpr: ExprState = {
 			expression: d?.expression ?? null,
 			enabled: d?.expression_enabled ?? false,
-			triggers_process: d?.expression_triggers_process ?? false,
-			autoeval: d?.expression_autoeval ?? false
+			triggers_process: d?.expression_triggers_process ?? false
 		};
 		const newExpr: ExprState = {
 			expression,
 			enabled: opts.enabled ?? false,
-			triggers_process: opts.triggers_process ?? false,
-			autoeval: opts.autoeval ?? false
+			triggers_process: opts.triggers_process ?? false
 		};
 		this._record({
 			kind: 'set_expression',
@@ -630,8 +628,7 @@ export class GraphStore {
 			name,
 			expression,
 			expression_enabled: newExpr.enabled,
-			expression_triggers_process: newExpr.triggers_process,
-			expression_autoeval: newExpr.autoeval
+			expression_triggers_process: newExpr.triggers_process
 		});
 	}
 

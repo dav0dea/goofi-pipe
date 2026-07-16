@@ -118,8 +118,7 @@ function exprCall(node: string, group: string, name: string, e: ExprState): Reco
 		name,
 		expression: e.expression,
 		expression_enabled: e.enabled,
-		expression_triggers_process: e.triggers_process,
-		expression_autoeval: e.autoeval
+		expression_triggers_process: e.triggers_process
 	};
 }
 

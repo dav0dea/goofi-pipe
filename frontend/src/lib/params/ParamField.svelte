@@ -5,7 +5,7 @@
 	import { selectOptions } from './selectOptions';
 	import { formatTick } from '$lib/viewers/format';
 
-	type SetExprOpts = { enabled?: boolean; triggers_process?: boolean; autoeval?: boolean };
+	type SetExprOpts = { enabled?: boolean; triggers_process?: boolean };
 	type Props = {
 		paramName: string;
 		descriptor: ParamDescriptor;
@@ -57,8 +57,7 @@
 	function currentFlags(): SetExprOpts {
 		return {
 			enabled: descriptor.expression_enabled,
-			triggers_process: descriptor.expression_triggers_process,
-			autoeval: descriptor.expression_autoeval
+			triggers_process: descriptor.expression_triggers_process
 		};
 	}
 
@@ -68,8 +67,7 @@
 			// the user can flip back on without losing what they wrote.
 			onSetExpression(descriptor.expression, {
 				enabled: false,
-				triggers_process: descriptor.expression_triggers_process,
-				autoeval: descriptor.expression_autoeval
+				triggers_process: descriptor.expression_triggers_process
 			});
 		} else {
 			// Turn on — use the stashed source if there is one, else seed
@@ -77,8 +75,7 @@
 			const seed = descriptor.expression ?? literalFor(descriptor);
 			onSetExpression(seed, {
 				enabled: true,
-				triggers_process: descriptor.expression_triggers_process,
-				autoeval: descriptor.expression_autoeval
+				triggers_process: descriptor.expression_triggers_process
 			});
 			exprBuf = seed;
 		}
@@ -87,16 +84,7 @@
 	function toggleTriggersProcess(): void {
 		onSetExpression(descriptor.expression, {
 			enabled: descriptor.expression_enabled,
-			triggers_process: !descriptor.expression_triggers_process,
-			autoeval: descriptor.expression_autoeval
-		});
-	}
-
-	function toggleAutoeval(): void {
-		onSetExpression(descriptor.expression, {
-			enabled: descriptor.expression_enabled,
-			triggers_process: descriptor.expression_triggers_process,
-			autoeval: !descriptor.expression_autoeval
+			triggers_process: !descriptor.expression_triggers_process
 		});
 	}
 
@@ -172,16 +160,6 @@
 		{#if exprActive}
 			<button
 				class="flag-btn"
-				class:on={descriptor.expression_autoeval}
-				onclick={toggleAutoeval}
-				aria-pressed={descriptor.expression_autoeval}
-				title="Re-evaluate this expression before every process() tick (use for expressions without slot refs, e.g. time.time())"
-				data-testid="param-expr-autoeval"
-			>
-				auto
-			</button>
-			<button
-				class="flag-btn"
 				class:on={descriptor.expression_triggers_process}
 				onclick={toggleTriggersProcess}
 				aria-pressed={descriptor.expression_triggers_process}
@@ -207,6 +185,7 @@
 		<div class="expr-row">
 			<input
 				class="expr-input"
+				class:error={descriptor.expression_error}
 				type="text"
 				spellcheck="false"
 				autocomplete="off"
@@ -239,10 +218,17 @@
 				⤢
 			</button>
 		</div>
-		<div class="expr-preview" title={String(descriptor.value)}>
-			<span class="prefix">=</span>
-			<span class="value">{previewText()}</span>
-		</div>
+		{#if descriptor.expression_error}
+			<div class="expr-error" title={descriptor.expression_error} data-testid="param-expr-error">
+				<span class="prefix">⚠</span>
+				<span class="msg">{descriptor.expression_error}</span>
+			</div>
+		{:else}
+			<div class="expr-preview" title={String(descriptor.value)}>
+				<span class="prefix">=</span>
+				<span class="value">{previewText()}</span>
+			</div>
+		{/if}
 	{:else if numeric}
 		<div class="slider-row">
 			<span class="bound" aria-hidden="true">{fmtBound(lo)}</span>
@@ -428,6 +414,35 @@
 	.expr-input:focus {
 		outline: none;
 		border-color: var(--accent);
+	}
+	/* A failing expression (compile/eval error) turns the field red — the param-level
+	   pinpoint for the same error the node surfaces on its error channel. */
+	.expr-input.error {
+		border-color: var(--danger);
+		color: var(--danger);
+		background: color-mix(in srgb, var(--danger) 8%, transparent);
+	}
+	.expr-input.error:focus {
+		border-color: var(--danger);
+	}
+	.expr-error {
+		display: flex;
+		gap: 6px;
+		align-items: baseline;
+		font-family: var(--font-mono);
+		font-size: 10px;
+		color: var(--danger);
+		padding: 0 2px;
+		min-width: 0;
+	}
+	.expr-error .prefix {
+		flex-shrink: 0;
+	}
+	.expr-error .msg {
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+		min-width: 0;
 	}
 	.expand-btn {
 		min-width: 26px;

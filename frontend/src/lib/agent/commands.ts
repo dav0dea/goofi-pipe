@@ -50,7 +50,7 @@ export const commands = {
 		group: string,
 		name: string,
 		expression: string | null,
-		opts?: { enabled?: boolean; triggers_process?: boolean; autoeval?: boolean }
+		opts?: { enabled?: boolean; triggers_process?: boolean }
 	): Promise<void> => graph().setExpression(node, group, name, expression, opts),
 	setNodePos: (name: string, pos: [number, number]): Promise<void> => graph().setNodePos(name, pos),
 	cloneNodes: (names: string[], offset: [number, number] = [40, 40]): Promise<Record<string, string>> =>

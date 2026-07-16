@@ -17,10 +17,10 @@ export interface BaseParam {
 	/** Per-expression flag: when true, a re-eval that changes the param's
 	 * value wakes the node's `process()`. */
 	expression_triggers_process: boolean;
-	/** Per-expression flag: when true, the expression is re-evaluated
-	 * before every process() tick — useful for expressions with no slot
-	 * reference (e.g. `time.time()`). */
-	expression_autoeval: boolean;
+	/** The last evaluation/compile error for this expression, or null. A core
+	 * node error (surfaced on the node too); this field drives the per-param
+	 * red field indicator so the failing param is pinpointed. */
+	expression_error: string | null;
 }
 
 export interface FloatParam extends BaseParam {

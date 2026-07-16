@@ -246,8 +246,8 @@ describe('graph executors — simple kinds', () => {
 				node: 'osc0',
 				group: 'common',
 				name: 'frequency',
-				oldExpr: { expression: null, enabled: false, triggers_process: false, autoeval: false },
-				newExpr: { expression: 'nd("a")', enabled: true, triggers_process: false, autoeval: true }
+				oldExpr: { expression: null, enabled: false, triggers_process: false },
+				newExpr: { expression: 'nd("a")', enabled: true, triggers_process: false }
 			}
 		};
 		await graphExecutors['set_expression'].inverse(action, deps(fc, g));
@@ -260,8 +260,7 @@ describe('graph executors — simple kinds', () => {
 					name: 'frequency',
 					expression: null,
 					expression_enabled: false,
-					expression_triggers_process: false,
-					expression_autoeval: false
+					expression_triggers_process: false
 				}
 			}
 		]);

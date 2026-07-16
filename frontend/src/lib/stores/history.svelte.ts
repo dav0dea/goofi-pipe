@@ -45,7 +45,6 @@ export interface ExprState {
 	expression: string | null;
 	enabled: boolean;
 	triggers_process: boolean;
-	autoeval: boolean;
 }
 
 export interface BaseAction {
