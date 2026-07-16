@@ -1,0 +1,21 @@
+[package]
+name = "goofi-py"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# The pyo3 host is behind the `embed` feature so the default workspace build
+# stays python-free. Build/test the real thing with:
+#   PYO3_PYTHON=<python3.14t> PYTHONPATH=<ft site-packages> \
+#     cargo test -p goofi-py --features embed
+[features]
+default = []
+embed = ["dep:pyo3"]
+
+[dependencies]
+goofi-core = { path = "../goofi-core" }
+goofi-node = { path = "../goofi-node" }
+pyo3 = { version = "0.28", features = ["auto-initialize"], optional = true }
+
+[dev-dependencies]
+indexmap = "2"
