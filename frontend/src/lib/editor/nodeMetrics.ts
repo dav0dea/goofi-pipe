@@ -26,24 +26,52 @@ export const BOUNDARY = {
 	height: 26
 } as const;
 
+/** Total input-block height in units — a single slot is 1, a MULTI (list) slot 2,
+ * floored at 1 so a node with no inputs still has a body. The input-side height
+ * GoofiNode reserves and the snap-geometry fallback uses. */
+export function inputUnits(slots: string[], isMulti: (slot: string) => boolean): number {
+	return Math.max(
+		slots.reduce((n, s) => n + (isMulti(s) ? 2 : 1), 0),
+		1
+	);
+}
+
+/** Vertical placement of each input connector. Slots stack from below the header in
+ * declaration order; a MULTI (list) slot is 2 units tall, a single slot 1. `top` is
+ * the centre (px) of each slot's block — the rhythm GoofiNode's overlay draws with. */
+export function inputPorts(
+	slots: string[],
+	isMulti: (slot: string) => boolean
+): { slot: string; units: number; top: number }[] {
+	let y = NODE.border + NODE.header;
+	return slots.map((slot) => {
+		const units = isMulti(slot) ? 2 : 1;
+		const top = y + (units * NODE.unit) / 2; // centre of the slot's block
+		y += units * NODE.unit;
+		return { slot, units, top };
+	});
+}
+
 /**
  * The rendered size of a node's surface box, computed from its slot layout — the
  * same rhythm GoofiNode draws with (header, then each output slot one unit tall
- * collapsed / `unit + viewer` open, with a floor of one input-connector unit per
- * input). This is the snap geometry's fallback when Svelte Flow hasn't measured a
- * node yet, and the accurate size for short sub-patch group nodes — for which the
- * old single fixed fallback was ~100px too tall, misaligning every snap.
+ * collapsed / `unit + viewer` open, with a floor of one unit for the input body).
+ * This is the snap geometry's fallback when Svelte Flow hasn't measured a node yet,
+ * and the accurate size for short sub-patch group nodes — for which the old single
+ * fixed fallback was ~100px too tall, misaligning every snap.
  *
- * `outputExpanded[i]` is whether output slot i's inline viewer is open.
+ * `inputUnitsTotal` is the input body's height in units (a multi slot counts as 2 —
+ * see {@link inputUnits}); `outputExpanded[i]` is whether output slot i's inline
+ * viewer is open.
  */
 export function nodeSurfaceSize(
-	inputCount: number,
+	inputUnitsTotal: number,
 	outputExpanded: boolean[]
 ): { width: number; height: number } {
 	const slotsStack = outputExpanded.reduce(
 		(h, open) => h + (open ? NODE.unit + NODE.viewer : NODE.unit),
 		0
 	);
-	const inputBody = Math.max(inputCount, 1) * NODE.unit;
+	const inputBody = Math.max(inputUnitsTotal, 1) * NODE.unit;
 	return { width: NODE.width, height: NODE.header + Math.max(slotsStack, inputBody) };
 }

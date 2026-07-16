@@ -4,7 +4,7 @@
 	import SlotViewer from '$lib/viewers/SlotViewer.svelte';
 	import { ui } from '$lib/stores/ui.svelte';
 	import { flash } from '$lib/stores/flash.svelte';
-	import { NODE } from './nodeMetrics';
+	import { NODE, inputPorts, inputUnits } from './nodeMetrics';
 	import { nodeHealth } from './nodeHealth';
 	import { formatUpdateRate } from './nodeStats';
 	import type { NodeInstanceInfo } from '$lib/api/control';
@@ -62,10 +62,22 @@
 	// forward on hover. Null until the node's first NODE_STATS push. Adds no height.
 	const rateLabel = $derived(formatUpdateRate(node?.stats));
 
-	// Inputs are bare connectors on the left edge, one per slot unit from the top
-	// (so their count never balloons the node). The node only needs to be tall
-	// enough to host them — viewers grow it past that when there are more.
-	const minBody = $derived(Math.max(inputs.length, 1));
+	// Inputs are bare connectors on the left edge, stepping down from the top. A
+	// single slot is one unit tall; a MULTI (list) slot is 2× tall — the affordance
+	// that it accepts an arbitrary number of cables. `input_multi` is static type
+	// shape from the backend (which slots are multi), read-only here.
+	const multiInputs = $derived(new Set(node?.input_multi ?? []));
+	const isMulti = $derived((slot: string) => multiInputs.has(slot));
+	const inPorts = $derived(
+		inputPorts(inputs, isMulti).map((p) => ({
+			...p,
+			dtype: node.input_slots[p.slot],
+			multi: multiInputs.has(p.slot)
+		}))
+	);
+	// The node must be tall enough to host every input block (viewers grow it past
+	// that when there are more outputs).
+	const minBody = $derived(inputUnits(inputs, isMulti));
 
 	// Output ports live in the unclipped overlay, so we position them ourselves by
 	// walking the slot stack: header first, then each slot — one unit tall when
@@ -121,23 +133,26 @@
 	<!-- Connector overlay: sits outside the clip so the pills can overhang the
 	     left/right edges. Pointer-transparent except for each connector box. -->
 	<div class="ports">
-		{#each inputs as slot, i (slot)}
+		{#each inPorts as port (port.slot)}
 			<!-- Pointer-only connector pill: opens the add-node menu at the cursor;
-			     keyboard users reach "add node" via the topbar + menu. -->
+			     keyboard users reach "add node" via the topbar + menu. A multi (list)
+			     slot renders 2× tall with a bar-shaped handle. -->
 			<!-- svelte-ignore a11y_click_events_have_key_events -->
 			<div
 				class="conn in"
-				style="top: calc({NODE.border}px + var(--node-header) + var(--node-u) * {i + 0.5}); --dtype: {dtypeColor(
-					node.input_slots[slot]
+				class:multi={port.multi}
+				style="top: {port.top}px; height: calc(var(--node-u) * {port.units}); --dtype: {dtypeColor(
+					port.dtype
 				)};"
-				onclick={(e) => onInputClick(e, slot, node.input_slots[slot])}
+				onclick={(e) => onInputClick(e, port.slot, port.dtype)}
 				role="button"
 				tabindex="0"
 				data-testid="slot-input"
-				title={node.input_slots[slot].toLowerCase()}
+				data-multi={port.multi ? 'true' : undefined}
+				title={port.multi ? `${port.dtype.toLowerCase()} · list (multi-input)` : port.dtype.toLowerCase()}
 			>
-				<Handle id={slot} type="target" position={Position.Left} />
-				<span class="conn-label">{node.slot_labels?.[slot] ?? slot}</span>
+				<Handle id={port.slot} type="target" position={Position.Left} />
+				<span class="conn-label">{node.slot_labels?.[port.slot] ?? port.slot}</span>
 			</div>
 		{/each}
 
@@ -341,6 +356,12 @@
 	   pill — and the cable anchor SvelteFlow measures from it — lands on the edge. */
 	.conn.in :global(.svelte-flow__handle-left) {
 		left: 50%;
+	}
+	/* A multi (list) input: a taller, bar-shaped handle spanning the 2× box, so it
+	   reads as "accepts a stack of cables" rather than a single connector. */
+	.conn.in.multi :global(.svelte-flow__handle-left) {
+		height: calc(var(--node-u) * 1.15);
+		border-radius: 3px;
 	}
 	.conn.out :global(.svelte-flow__handle-right) {
 		right: 50%;

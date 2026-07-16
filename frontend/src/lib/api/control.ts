@@ -41,6 +41,9 @@ export interface NodeTypeInfo {
 	dynamic: boolean;
 	missing_deps: string[];
 	input_slots: Record<string, string>;
+	/** Names of the variadic (multi) input slots — static type shape the UI reads to
+	 * render those slots tall and accept many cables. Read-only; never toggled here. */
+	input_multi?: string[];
 	output_slots: Record<string, string>;
 	params: Record<string, Record<string, ParamDescriptor>>;
 }
@@ -68,6 +71,9 @@ export interface NodeInstanceInfo {
 	category: string;
 	doc: string;
 	input_slots: Record<string, string>;
+	/** Names of the variadic (multi) input slots — static type shape the UI reads to
+	 * render those slots tall and accept many cables. Read-only; never toggled here. */
+	input_multi?: string[];
 	output_slots: Record<string, string>;
 	/** Optional per-slot DISPLAY label, keyed by slot id (the handle/routing key). When
 	 * absent for a slot, the slot id is shown. Used by a sub-patch synth node to show a

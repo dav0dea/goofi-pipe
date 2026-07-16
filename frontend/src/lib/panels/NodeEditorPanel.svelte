@@ -62,7 +62,7 @@
 		isBoundaryNodeId,
 		parseBoundaryNodeId
 	} from '$lib/editor/subpatchScene';
-	import { nodeSurfaceSize, BOUNDARY } from '$lib/editor/nodeMetrics';
+	import { nodeSurfaceSize, inputUnits, BOUNDARY } from '$lib/editor/nodeMetrics';
 	import { serializeClipboard, parseClipboard, clipToSpecs } from '$lib/editor/clipboard';
 	import { copyText } from '$lib/clipboard';
 	import { registerEditor, unregisterEditor } from './editorCommands';
@@ -442,8 +442,9 @@
 		if (node) {
 			const inputs = Object.keys(node.input_slots ?? {});
 			const outputs = Object.keys(node.output_slots ?? {});
+			const multi = new Set(node.input_multi ?? []);
 			return nodeSurfaceSize(
-				inputs.length,
+				inputUnits(inputs, (s) => multi.has(s)),
 				outputs.map((s) => uiStore.isSlotExpanded(node.uid, s))
 			);
 		}

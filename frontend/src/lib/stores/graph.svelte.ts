@@ -513,10 +513,13 @@ export class GraphStore {
 	}
 
 	async addLink(link: LinkInfo): Promise<void> {
-		// The single-source rule may displace an existing wire on the input —
-		// capture it before the add so undo can restore it.
-		const displaced =
-			this.links.find((l) => l.node_in === link.node_in && l.slot_in === link.slot_in) ?? null;
+		// The single-source rule may displace an existing wire on the input — capture
+		// it before the add so undo can restore it. A MULTI input slot accepts many
+		// wires (the backend appends, never evicts), so nothing is displaced there.
+		const targetMulti = this._realNode(link.node_in)?.input_multi?.includes(link.slot_in) ?? false;
+		const displaced = targetMulti
+			? null
+			: (this.links.find((l) => l.node_in === link.node_in && l.slot_in === link.slot_in) ?? null);
 		this._record({
 			kind: 'add_link',
 			label: 'Connect',
