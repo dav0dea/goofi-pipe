@@ -782,7 +782,11 @@ impl Graph {
         let _ = self.update_param(uid, group, name, newp);
     }
 
-    /// Serialize the graph to a `.gfi` v3 document (YAML text).
+    /// Serialize the graph to a `.gfi` v4 document (YAML text). v4 is the recursive,
+    /// multi-pillar envelope: `version`/`pillar_default`/`definitions` at the top, with the
+    /// nodes/links nested under `root` (sub-patch `definitions`/`instances` are empty until
+    /// that subsystem lands). A signal-only patch is byte-equivalent to the old v3 flat form
+    /// modulo the version bump + `root` nesting.
     pub fn serialize(&self) -> String {
         use serde_json::{json, Map, Value};
         let mut nodes = Map::new();
@@ -822,21 +826,31 @@ impl Graph {
             .iter()
             .map(|l| json!([l.node_out.to_hex(), l.slot_out, l.node_in.to_hex(), l.slot_in]))
             .collect();
-        let doc = json!({ "version": 3, "nodes": Value::Object(nodes), "links": links });
+        let root = json!({ "nodes": Value::Object(nodes), "links": links, "instances": {} });
+        let doc = json!({
+            "version": 4,
+            "pillar_default": "signal",
+            "definitions": {},
+            "root": root,
+        });
         serde_yaml_ng::to_string(&doc).unwrap_or_default()
     }
 
-    /// Replace the graph from a `.gfi` v3 document. Node types are validated
-    /// before the current graph is torn down (a rejected load is a no-op).
+    /// Replace the graph from a `.gfi` document (v3 or v4). Node types are validated
+    /// before the current graph is torn down (a rejected load is a no-op). v3 keeps
+    /// `nodes`/`links` flat at the top level; v4 nests them under `root` (with
+    /// `definitions`/`instances` for sub-patches) — both up-convert to the same graph.
     pub fn load_doc(&mut self, text: &str) -> Result<(), String> {
         let doc: serde_json::Value = serde_yaml_ng::from_str(text).map_err(|e| e.to_string())?;
-        if doc.get("version").and_then(|v| v.as_i64()) != Some(3) {
-            return Err("unsupported .gfi version (expected 3)".into());
-        }
-        let nodes = doc
-            .get("nodes")
-            .and_then(|v| v.as_object())
-            .ok_or("missing `nodes`")?;
+        let (nodes_v, links_v) = match doc.get("version").and_then(|v| v.as_i64()) {
+            Some(3) => (doc.get("nodes"), doc.get("links")),
+            Some(4) => {
+                let root = doc.get("root");
+                (root.and_then(|r| r.get("nodes")), root.and_then(|r| r.get("links")))
+            }
+            _ => return Err("unsupported .gfi version (expected 3 or 4)".into()),
+        };
+        let nodes = nodes_v.and_then(|v| v.as_object()).ok_or("missing `nodes`")?;
         for rec in nodes.values() {
             let ty = rec.get("type").and_then(|v| v.as_str()).ok_or("node missing `type`")?;
             if !self.known_type(ty) {
@@ -883,7 +897,7 @@ impl Graph {
                 }
             }
         }
-        if let Some(links) = doc.get("links").and_then(|v| v.as_array()) {
+        if let Some(links) = links_v.and_then(|v| v.as_array()) {
             for l in links {
                 if let Some(a) = l.as_array() {
                     if a.len() == 4 {
@@ -2067,7 +2081,7 @@ mod tests {
     }
 
     #[test]
-    fn gfi_v3_serialize_load_roundtrip() {
+    fn gfi_serialize_load_roundtrip() {
         let mut g = Graph::new();
         let c = g.add_node("_TestConst", None).unwrap();
         g.update_param(c, "constant", "value", Param::float(7.5, -1e9, 1e9))
@@ -2078,7 +2092,7 @@ mod tests {
         g.add_link(c, "out", echo, "in").unwrap();
 
         let yaml = g.serialize();
-        assert!(yaml.contains("version: 3"));
+        assert!(yaml.contains("version: 4"));
 
         let mut g2 = Graph::new();
         g2.load_doc(&yaml).unwrap();
@@ -2531,6 +2545,39 @@ mod tests {
         assert_eq!(info.source, "5");
         assert!(info.enabled);
         assert!(info.triggers_process, "triggers_process round-trips");
+    }
+
+    #[test]
+    fn serialize_emits_v4_root_nested_and_roundtrips() {
+        // .gfi v4: version 4, a `pillar_default`, and nodes/links nested under `root`
+        // (the recursive multi-pillar envelope). A signal-only patch round-trips.
+        let mut g = Graph::new();
+        let n = g.add_node("_TestConst", None).unwrap();
+        g.update_param(n, "constant", "value", Param::float(7.0, -1.0e9, 1.0e9)).unwrap();
+        let yaml = g.serialize();
+        assert!(yaml.contains("version: 4"), "emits v4; got:\n{yaml}");
+        assert!(yaml.contains("pillar_default: signal"), "carries the default pillar");
+        assert!(yaml.contains("root:"), "nodes/links nested under root");
+        let mut g2 = Graph::new();
+        g2.load_doc(&yaml).unwrap();
+        assert_eq!(g2.node_uids().len(), 1, "node round-trips");
+        let uid2 = g2.node_uids()[0];
+        assert_eq!(
+            goofi_node::param(g2.params(uid2).unwrap(), "constant", "value").unwrap().as_f64(),
+            Some(7.0),
+            "param round-trips through v4",
+        );
+    }
+
+    #[test]
+    fn v3_document_upconverts_and_loads() {
+        // A legacy flat v3 document (nodes/links at the top level) still loads — the loader
+        // up-converts it (wraps under `root`) so old patches keep working.
+        let v3 = "version: 3\nnodes:\n  n0: { type: _TestConst, name: c0, pos: [1.0, 2.0], params: {} }\nlinks: []\n";
+        let mut g = Graph::new();
+        g.load_doc(v3).unwrap();
+        assert_eq!(g.node_uids().len(), 1, "v3 node loaded");
+        assert_eq!(g.name(g.node_uids()[0]), Some("c0"), "v3 name preserved");
     }
 
     #[test]
