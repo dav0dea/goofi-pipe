@@ -59,10 +59,15 @@ async fn control_and_data_plane_end_to_end() {
         }
     };
     let types = reply["result"]["types"].as_array().unwrap();
-    assert!(
-        types.iter().any(|t| t["type"] == "ConstantArray"),
-        "catalog must contain ConstantArray"
-    );
+    // All native node types must survive linkage into a dependent binary (guards
+    // against inventory registrations being dropped / stale-build confusion).
+    for expected in ["ConstantArray", "Oscillator", "Buffer", "Math"] {
+        assert!(
+            types.iter().any(|t| t["type"] == expected),
+            "catalog must contain {expected}; got {:?}",
+            types.iter().map(|t| &t["type"]).collect::<Vec<_>>()
+        );
+    }
     // Test-only nodes are hidden.
     assert!(!types.iter().any(|t| t["type"] == "_TestEcho"));
 

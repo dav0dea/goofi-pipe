@@ -91,15 +91,18 @@ pub fn app(state: AppState, static_dir: Option<PathBuf>) -> Router {
 }
 
 /// Resolve the built SPA directory: `$GOOFI_FRONTEND_BUILD` or `./frontend/build`.
+/// Returns a canonical absolute path so static + SPA-fallback serving is
+/// independent of the process working directory.
 pub fn resolve_frontend_dir() -> Option<PathBuf> {
-    if let Ok(d) = std::env::var("GOOFI_FRONTEND_BUILD") {
-        let p = PathBuf::from(d);
-        if p.is_dir() {
-            return Some(p);
-        }
+    let candidate = match std::env::var("GOOFI_FRONTEND_BUILD") {
+        Ok(d) => PathBuf::from(d),
+        Err(_) => PathBuf::from("frontend/build"),
+    };
+    if candidate.is_dir() {
+        Some(std::fs::canonicalize(&candidate).unwrap_or(candidate))
+    } else {
+        None
     }
-    let p = PathBuf::from("frontend/build");
-    p.is_dir().then_some(p)
 }
 
 /// Bind and serve (used by the CLI). Ticks at 60 Hz; serves the SPA if found.
@@ -128,6 +131,14 @@ pub async fn serve_app(
 
 async fn healthz() -> Json<Value> {
     Json(json!({ "ok": true }))
+}
+
+/// Native node type names visible in the catalog (diagnostic; ensures linkage).
+pub fn catalog_type_names() -> Vec<String> {
+    let _ = goofi_nodes::native_node_count();
+    goofi_node::catalog()
+        .map(|m| m.type_name.to_string())
+        .collect()
 }
 
 // ---------------------------------------------------------------------------

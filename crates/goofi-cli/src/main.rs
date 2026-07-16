@@ -25,6 +25,11 @@ async fn main() {
                 }
             }
             "--headless" => {}
+            "--list-nodes" => {
+                let names = goofi_bridge::catalog_type_names();
+                println!("{} native node types: {}", names.len(), names.join(", "));
+                return;
+            }
             "-h" | "--help" => {
                 println!("usage: goofi-pipe [--port N] [--bind HOST] [--headless]");
                 return;
