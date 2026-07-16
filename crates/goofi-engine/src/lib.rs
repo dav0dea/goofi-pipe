@@ -8,7 +8,7 @@
 //! data plane.
 
 use std::collections::HashMap;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use goofi_core::{Data, Param};
 use goofi_node::{Inputs, NodeCtx, NodeManifest, Outputs, ParamGroups, ParamKey, RunPolicy};
@@ -64,6 +64,12 @@ struct NodeEntry {
     /// the two maps partition the manifest's input slots (a slot is single XOR multi).
     multi_inputs: IndexMap<&'static str, Vec<WireCell>>,
     outputs: IndexMap<&'static str, Option<Data>>,
+    /// The last frame this node EMITTED on each slot, persisted across ticks where it
+    /// emitted nothing. `outputs` is reset to `None` every tick for emit detection +
+    /// propagation, so viewers (`latest_frame`) read this instead — a sparse /
+    /// wall-clock-paced producer (e.g. Oscillator ticked faster than its sample rate)
+    /// keeps showing its latest data rather than blinking to None on silent ticks.
+    last_outputs: IndexMap<&'static str, Data>,
     ctx: NodeCtx,
     last_error: Option<String>,
     /// Globally-unique display name (type-numbered), for the frontend/`.gfi`.
@@ -317,6 +323,7 @@ impl Graph {
                 inputs,
                 multi_inputs,
                 outputs,
+                last_outputs: IndexMap::new(),
                 ctx,
                 last_error,
                 name,
@@ -548,11 +555,12 @@ impl Graph {
 
     /// The latest output frame on `(uid, slot)`, if any (data plane read).
     pub fn latest_frame(&self, uid: Uid, slot: &str) -> Option<Data> {
+        // The last EMITTED frame (persisted across silent ticks), not the per-tick
+        // output that `run_node` resets to None — so a sparse producer still shows data.
         self.nodes
             .get(&uid)
-            .and_then(|e| e.outputs.get(slot))
+            .and_then(|e| e.last_outputs.get(slot))
             .cloned()
-            .flatten()
     }
 
     /// The node's current measured update frequency (Hz) — the same value stamped as
@@ -795,6 +803,42 @@ impl Graph {
         self.tick_at(Instant::now());
     }
 
+    /// The wall-clock delay until the next node is due to run, as of `now` — the pacing
+    /// signal for an adaptive tick loop that honors each node's `common.max_frequency`
+    /// with NO extra hardcoded ceiling. `Some(ZERO)`: a node wants to run right now (an
+    /// unbounded — `max_frequency <= 0` — or never-run/overdue producer) → tick again
+    /// immediately, i.e. as fast as possible. `Some(d)`: the soonest a rate-capped
+    /// producer's period elapses. `None`: nothing currently self-starts (the caller may
+    /// idle-poll for control-plane edits). Only self-starting producers constrain the
+    /// rate; a purely input-triggered node runs in the same tick as its producer.
+    pub fn next_run_delay(&self, now: Instant) -> Option<Duration> {
+        let wired = self.wired_trigger_nodes();
+        let mut soonest: Option<Duration> = None;
+        for (uid, e) in &self.nodes {
+            // Same "wants to run" predicate the tick uses (minus a consumed trigger).
+            let wants_run = e.trigger_pending
+                || !e.has_trigger_inputs
+                || (e.run_policy.autotrigger && !wired.contains(uid));
+            if !wants_run {
+                continue;
+            }
+            let remaining = match e.run_policy.period() {
+                None => Duration::ZERO, // unbounded → as fast as possible
+                Some(p) => match e.last_run {
+                    None => Duration::ZERO, // never ran → due now
+                    Some(t) => Duration::from_secs_f64((p - now.saturating_duration_since(t).as_secs_f64()).max(0.0)),
+                },
+            };
+            if soonest.is_none_or(|s| remaining < s) {
+                soonest = Some(remaining);
+            }
+            if remaining.is_zero() {
+                break; // can't beat "now"
+            }
+        }
+        soonest
+    }
+
     /// Run one tick as of instant `now` (injectable so rate gating is
     /// deterministically testable). Nodes are grouped into topological levels
     /// ([`Self::topo_levels`]); each level's mutually-independent nodes execute
@@ -931,6 +975,15 @@ fn run_node(entry: &mut NodeEntry) {
         Err(p) => Some(panic_message(p)),
     };
     stamp_meta(entry);
+    // Persist each freshly-emitted (stamped) frame so `latest_frame` keeps returning it
+    // on later ticks where this node emits nothing — viewers of a sparse producer never
+    // blink to None. Disjoint field borrows.
+    let (outputs, last) = (&entry.outputs, &mut entry.last_outputs);
+    for (slot, out) in outputs.iter() {
+        if let Some(d) = out {
+            last.insert(*slot, d.clone());
+        }
+    }
 }
 
 /// The number of frames a `Data` spans — its total element count (numpy `.size`
@@ -1907,6 +1960,44 @@ mod tests {
         }
         let f = g.latest_frame(src, "out").expect("frame");
         assert_eq!(f.meta().index, Some(2), "3 emits -> indices 0,1,2 (latest 2)");
+    }
+
+    #[test]
+    fn next_run_delay_zero_for_unbounded_producer() {
+        // A source with no rate cap (max_frequency <= 0) is always due — the adaptive
+        // tick loop must run it as fast as possible, not ceiling it at a fixed rate.
+        let mut g = Graph::new();
+        g.add_node("_TestConst", None).unwrap(); // no `common` group -> unbounded, no inputs
+        g.tick();
+        assert_eq!(
+            g.next_run_delay(Instant::now()),
+            Some(Duration::ZERO),
+            "unbounded producer -> zero delay (as fast as possible)"
+        );
+    }
+
+    #[test]
+    fn next_run_delay_respects_the_rate_cap() {
+        // A 10 Hz autotrigger source: after running, the next run is within its 0.1s
+        // period — the cap, not a hardcoded tick rate, sets the pace.
+        let mut g = Graph::new();
+        g.add_node("_TestCapped", None).unwrap();
+        g.tick();
+        let d = g.next_run_delay(Instant::now()).expect("a capped producer still wants to run");
+        assert!(d <= Duration::from_millis(100), "within the 10 Hz period, got {d:?}");
+    }
+
+    #[test]
+    fn latest_frame_persists_across_non_emitting_ticks() {
+        // A gated source emits every OTHER tick. latest_frame must keep returning the
+        // last emitted frame on the silent ticks — viewers of a sparse / fast-ticked
+        // producer see its latest data, not a None gap (the Oscillator-at-high-rate case).
+        let mut g = Graph::new();
+        let s = g.add_node("_TestGated", None).unwrap();
+        g.tick(); // n=0 -> emits
+        assert!(g.latest_frame(s, "out").is_some(), "first emit present");
+        g.tick(); // n=1 -> runs but emits nothing (output reset to None)
+        assert!(g.latest_frame(s, "out").is_some(), "persists last emit across a silent tick");
     }
 
     #[test]

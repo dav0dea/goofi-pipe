@@ -63,16 +63,31 @@ pub fn router(state: AppState) -> Router {
         .with_state(state)
 }
 
-/// Spawn the background tick loop at `hz` (grows into the real scheduler in M2).
-pub fn spawn_tick(graph: Arc<Mutex<Graph>>, hz: u64) {
+/// Spawn the background tick loop. It paces itself to the graph's fastest node via
+/// [`Graph::next_run_delay`] — a producer with `max_frequency <= 0` runs as fast as
+/// possible, a capped producer sleeps its remaining period, and an idle graph falls
+/// back to `IDLE_POLL` so control-plane edits are picked up promptly. There is NO fixed
+/// rate ceiling — `max_frequency` is the only cap (0 = unbounded).
+///
+/// `LOCK_CEDE` is a sub-millisecond floor applied only to the run-now (unbounded) case:
+/// the tick holds the single shared graph mutex, so a truly flat-out spin would starve
+/// the /control and /data planes (which lock the same mutex). It is a lock-fairness
+/// cede for today's single-mutex architecture (~10 kHz, 166× the old 60 Hz ceiling),
+/// NOT a rate policy; genuinely unbounded ticking wants the data plane decoupled from
+/// the graph lock (future work).
+pub fn spawn_tick(graph: Arc<Mutex<Graph>>) {
     std::thread::spawn(move || {
-        let period = Duration::from_secs_f64(1.0 / hz as f64);
+        const IDLE_POLL: Duration = Duration::from_millis(50);
+        const LOCK_CEDE: Duration = Duration::from_micros(100);
         loop {
-            {
+            let delay = {
                 let mut g = graph.lock().unwrap();
                 g.tick();
-            }
-            std::thread::sleep(period);
+                g.next_run_delay(std::time::Instant::now()).unwrap_or(IDLE_POLL)
+            };
+            // Clamp to [LOCK_CEDE, IDLE_POLL]: never spin the lock flat-out, never sleep
+            // so long that graph edits lag.
+            std::thread::sleep(delay.clamp(LOCK_CEDE, IDLE_POLL));
         }
     });
 }
@@ -136,9 +151,10 @@ pub fn resolve_frontend_dir() -> Option<PathBuf> {
     }
 }
 
-/// Bind and serve (used by the CLI). Ticks at 60 Hz; serves the SPA if found.
+/// Bind and serve (used by the CLI). Ticks adaptively (paced by node `max_frequency`,
+/// no fixed ceiling); serves the SPA if found.
 pub async fn serve(bind: &str, port: u16, state: AppState) -> std::io::Result<()> {
-    spawn_tick(state.graph.clone(), 60);
+    spawn_tick(state.graph.clone());
     spawn_stats(state.graph.clone(), state.events.clone(), 2); // node-header update rate
 
     let listener = tokio::net::TcpListener::bind((bind, port)).await?;
@@ -475,8 +491,8 @@ async fn handle_data(socket: WebSocket, state: AppState, node: String, slot: Str
             _ = ticker.tick() => {
                 // Hold the graph lock only for the cheap Arc clone; encode the
                 // (immutable) frame AFTER releasing it, so a viewer copying a large
-                // kHz/HD body never serializes against the 60 Hz scheduler tick or
-                // the other viewers.
+                // kHz/HD body never serializes against the scheduler tick or the
+                // other viewers.
                 let d = {
                     let g = state.graph.lock().unwrap();
                     g.latest_frame(uid, &slot)

@@ -17,7 +17,7 @@ type Ws = tokio_tungstenite::WebSocketStream<
 
 async fn start_server() -> String {
     let state = AppState::new();
-    spawn_tick(state.graph.clone(), 240);
+    spawn_tick(state.graph.clone());
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     tokio::spawn(async move {
@@ -54,7 +54,7 @@ async fn start_server_with_runtime_type() -> String {
         .lock()
         .unwrap()
         .register_dyn_type(&SERVE_MANIFEST, Box::new(|_| unreachable!()));
-    spawn_tick(state.graph.clone(), 240);
+    spawn_tick(state.graph.clone());
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     tokio::spawn(async move {

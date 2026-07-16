@@ -76,7 +76,7 @@ async fn main() {
     register_python(&state, python_nodes.as_deref());
     register_subproc(&state, subproc_nodes.as_deref(), &subproc_python);
     register_auto(&state, auto_nodes.as_deref(), &subproc_python);
-    spawn_tick(state.graph.clone(), 60);
+    spawn_tick(state.graph.clone());
 
     let listener = match tokio::net::TcpListener::bind((bind.as_str(), port)).await {
         Ok(l) => l,
