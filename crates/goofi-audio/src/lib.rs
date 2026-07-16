@@ -17,3 +17,6 @@ pub use ring::AudioRing;
 
 mod sink;
 pub use sink::{drain_into, AudioSink};
+
+mod wavegen;
+pub use wavegen::{WaveGen, Waveform};
