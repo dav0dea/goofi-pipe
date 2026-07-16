@@ -700,6 +700,25 @@ impl Graph {
         levels
     }
 
+    /// The set of nodes with at least one *wired* triggering input — a link feeds a
+    /// `trigger_process` input slot. Mirrors Python's `_has_no_triggering_inputs`
+    /// (negated): `autotrigger` free-runs a node only when this is empty for it, so
+    /// a connected consumer runs on its producer's rate rather than every tick.
+    fn wired_trigger_nodes(&self) -> std::collections::HashSet<Uid> {
+        self.links
+            .iter()
+            .filter(|l| {
+                self.nodes.get(&l.node_in).is_some_and(|e| {
+                    e.manifest
+                        .inputs
+                        .iter()
+                        .any(|i| i.name == l.slot_in && i.trigger_process)
+                })
+            })
+            .map(|l| l.node_in)
+            .collect()
+    }
+
     /// Run one tick of the whole graph against the wall clock. See [`Self::tick_at`].
     pub fn tick(&mut self) {
         self.tick_at(Instant::now());
@@ -710,13 +729,14 @@ impl Graph {
     /// ([`Self::topo_levels`]); each level's mutually-independent nodes execute
     /// concurrently on the rayon work-stealing pool, then their fresh outputs are
     /// propagated to the next level's inputs before it runs — so an acyclic graph
-    /// still propagates end-to-end within a single tick. A node runs iff its
-    /// [`RunPolicy`] admits it: it wants to run (it free-runs — no triggering
-    /// inputs — or a triggering input received a fresh frame, or it autotriggers)
-    /// AND its rate cap has elapsed since it last ran. A skipped node keeps its
-    /// outputs. With the default policy (`max_frequency == 0`) the rate cap is
-    /// unbounded, so this reduces to pure trigger arbitration.
+    /// still propagates end-to-end within a single tick. A node runs iff it *wants*
+    /// to run — it's a pure source (no triggering inputs), a triggering input
+    /// received a fresh frame, or it autotriggers *and has no wired trigger* — AND
+    /// its [`RunPolicy`] rate cap has elapsed since it last ran. A skipped node
+    /// keeps its outputs. With the default policy (`max_frequency == 0`) the rate
+    /// cap is unbounded, so this reduces to pure trigger arbitration.
     fn tick_at(&mut self, now: Instant) {
+        let wired = self.wired_trigger_nodes();
         let levels = self.topo_levels();
         for level in levels {
             let set: std::collections::HashSet<Uid> = level.iter().copied().collect();
@@ -732,9 +752,13 @@ impl Graph {
                         if !set.contains(uid) {
                             return false;
                         }
-                        let triggered = e.trigger_pending || !e.has_trigger_inputs;
+                        // A pure source free-runs; a fresh trigger fires; autotrigger
+                        // free-runs only a node with no *wired* trigger (Python parity).
+                        let wants_run = e.trigger_pending
+                            || !e.has_trigger_inputs
+                            || (e.run_policy.autotrigger && !wired.contains(uid));
                         let since_last = e.last_run.map(|t| now.saturating_duration_since(t).as_secs_f64());
-                        e.run_policy.should_run(since_last, triggered)
+                        e.run_policy.should_run(since_last, wants_run)
                     })
                     .map(|(uid, e)| {
                         e.last_run = Some(now);
@@ -1601,6 +1625,46 @@ mod tests {
         g2.tick_at(t0 + Duration::from_millis(50)); // skip -> gate active after load
         g2.tick_at(t0 + Duration::from_millis(100));
         assert_eq!(g2.latest_frame(c2, "out").unwrap().meta().index, Some(1), "gate active post-load");
+    }
+
+    #[test]
+    fn autotrigger_does_not_free_run_a_wired_trigger_node() {
+        // A wired triggered node with common.autotrigger=true must still run ONLY
+        // when a fresh frame arrives on its wired trigger — matching Python's
+        // `autotrigger AND _has_no_triggering_inputs()`. Gated source emits every
+        // other tick; over 6 ticks the counter must run exactly 3 times, not 6.
+        let mut g = Graph::new();
+        let src = g.add_node("_TestGated", None).unwrap();
+        let cnt = g.add_node("_TestCounter", None).unwrap();
+        g.add_link(src, "out", cnt, "in").unwrap();
+        g.update_param(cnt, "common", "autotrigger", Param::boolean(true)).unwrap();
+        for _ in 0..6 {
+            g.tick();
+        }
+        assert_eq!(
+            first_f32(&g.latest_frame(cnt, "out").expect("counter ran")),
+            3.0,
+            "autotrigger must not fire a wired-trigger node on its idle ticks"
+        );
+    }
+
+    #[test]
+    fn autotrigger_free_runs_an_unwired_trigger_node() {
+        // The faithful counterpart: a node that DECLARES a trigger input but has it
+        // UNWIRED, with autotrigger=true, free-runs every tick (Python:
+        // `_has_no_triggering_inputs()` is true when the slot has no source). This
+        // guards the fix from over-correcting the wired case into this one.
+        let mut g = Graph::new();
+        let cnt = g.add_node("_TestCounter", None).unwrap();
+        g.update_param(cnt, "common", "autotrigger", Param::boolean(true)).unwrap();
+        for _ in 0..3 {
+            g.tick();
+        }
+        assert_eq!(
+            first_f32(&g.latest_frame(cnt, "out").expect("free-ran")),
+            3.0,
+            "an unwired trigger node with autotrigger must free-run"
+        );
     }
 
     #[test]

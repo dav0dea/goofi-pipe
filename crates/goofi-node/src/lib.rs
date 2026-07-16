@@ -141,8 +141,9 @@ pub enum FrequencyMode {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct RunPolicy {
     /// Run every allowed tick even with no fresh input — a free-running producer.
-    /// (Only meaningful for a node with no triggering inputs; a triggered node
-    /// runs on its input's rate regardless.)
+    /// Only takes effect when the node has no *wired* triggering input; a node
+    /// whose trigger input is connected runs on that input's rate regardless (the
+    /// engine enforces this, since wiring isn't visible here). See [`Self::should_run`].
     pub autotrigger: bool,
     /// Max run rate. `<= 0` is unbounded: an input-triggered node then runs at its
     /// input's rate, a free-running one every tick (so it must set a finite cap to
@@ -174,14 +175,16 @@ impl RunPolicy {
         })
     }
 
-    /// Whether a node under this policy may run now. `triggered` is whether a fresh
-    /// triggering frame arrived this tick; `since_last` is seconds since the node
-    /// last ran (`None` = it has never run). A node with no fresh trigger runs only
-    /// if it free-runs (`autotrigger`); either way the rate cap gates it — unbounded
-    /// always passes, a never-run node runs immediately, otherwise the period must
-    /// have elapsed.
-    pub fn should_run(&self, since_last: Option<f64>, triggered: bool) -> bool {
-        if !triggered && !self.autotrigger {
+    /// Whether a node that already wants to run this tick is admitted by its rate
+    /// cap. `wants_run` folds the whole trigger/source/autotrigger decision — the
+    /// engine computes it from graph topology, because whether `autotrigger`
+    /// free-runs a node depends on whether its trigger input is *wired* (Python's
+    /// `autotrigger AND _has_no_triggering_inputs()`), which this type can't see.
+    /// This method only applies the frequency cap on top: unbounded always passes,
+    /// a never-run node (`since_last == None`) runs immediately, otherwise the
+    /// period must have elapsed.
+    pub fn should_run(&self, since_last: Option<f64>, wants_run: bool) -> bool {
+        if !wants_run {
             return false;
         }
         match self.period() {
@@ -369,27 +372,26 @@ mod tests {
     }
 
     #[test]
-    fn run_policy_gates_on_trigger_and_autotrigger() {
-        // Not triggered + not free-running -> never runs.
-        let triggered_only = RunPolicy::default();
-        assert!(!triggered_only.should_run(None, false));
-        assert!(triggered_only.should_run(None, true));
-        // Free-running runs without a trigger.
-        let free = RunPolicy { autotrigger: true, ..Default::default() };
-        assert!(free.should_run(None, false));
+    fn run_policy_gates_on_wants_run() {
+        // should_run is purely the rate gate over the engine's `wants_run`
+        // decision: no desire to run -> never runs; a desire + unbounded -> runs.
+        // (The autotrigger/trigger/source logic lives in the engine, not here.)
+        let p = RunPolicy::default();
+        assert!(!p.should_run(None, false), "doesn't want to run -> no");
+        assert!(p.should_run(None, true), "wants to run + unbounded -> yes");
     }
 
     #[test]
     fn run_policy_rate_caps_frequency() {
-        // Capped at 10 Hz (period 0.1s), free-running.
-        let p = RunPolicy { autotrigger: true, max_frequency: 10.0, ..Default::default() };
-        assert!(p.should_run(None, false), "never run yet -> runs immediately");
-        assert!(!p.should_run(Some(0.05), false), "0.05s < 0.1s period -> skip");
-        assert!(p.should_run(Some(0.10), false), "period elapsed -> run");
-        assert!(p.should_run(Some(0.30), false), "well past period -> run");
+        // Capped at 10 Hz (period 0.1s); `wants_run` is true throughout.
+        let p = RunPolicy { max_frequency: 10.0, ..Default::default() };
+        assert!(p.should_run(None, true), "never run yet -> runs immediately");
+        assert!(!p.should_run(Some(0.05), true), "0.05s < 0.1s period -> skip");
+        assert!(p.should_run(Some(0.10), true), "period elapsed -> run");
+        assert!(p.should_run(Some(0.30), true), "well past period -> run");
         // Unbounded ignores elapsed time entirely.
-        let unbounded = RunPolicy { autotrigger: true, ..Default::default() };
-        assert!(unbounded.should_run(Some(0.0), false));
+        let unbounded = RunPolicy::default();
+        assert!(unbounded.should_run(Some(0.0), true));
     }
 
     #[test]
