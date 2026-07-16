@@ -46,6 +46,10 @@ struct NodeEntry {
     name: String,
     /// Editor position `[x, y]`.
     pos: [f64; 2],
+    /// Whether this node has any triggering input (else it free-runs each tick).
+    has_trigger_inputs: bool,
+    /// Set when a triggering input received a fresh frame; cleared on process.
+    trigger_pending: bool,
 }
 
 /// A resolved link (uids + `&'static` slot names), for snapshot projection.
@@ -138,6 +142,7 @@ impl Graph {
         let outputs = manifest.output_buffer();
 
         let name = self.fresh_name(&manifest.type_name.to_lowercase());
+        let has_trigger_inputs = manifest.inputs.iter().any(|i| i.trigger_process);
         let uid = self.mint();
         self.nodes.insert(
             uid,
@@ -152,6 +157,8 @@ impl Graph {
                 last_error,
                 name,
                 pos: [0.0, 0.0],
+                has_trigger_inputs,
+                trigger_pending: false,
             },
         );
         Ok(uid)
@@ -378,10 +385,20 @@ impl Graph {
         order
     }
 
-    /// Run one tick of the whole graph.
+    /// Run one tick of the whole graph. A node runs iff it free-runs (no
+    /// triggering inputs) or a triggering input received a fresh frame this round
+    /// (trigger arbitration); a skipped node keeps its previous outputs.
     pub fn tick(&mut self) {
         let order = self.topo_order();
         for uid in order {
+            let should_run = {
+                let entry = self.nodes.get(&uid).expect("node in order exists");
+                !entry.has_trigger_inputs || entry.trigger_pending
+            };
+            if !should_run {
+                continue;
+            }
+
             let outgoing: Vec<(&'static str, Uid, &'static str)> = self
                 .links
                 .iter()
@@ -391,6 +408,7 @@ impl Graph {
 
             let produced: Vec<(&'static str, Data)> = {
                 let entry = self.nodes.get_mut(&uid).expect("node in order exists");
+                entry.trigger_pending = false;
                 entry.ctx.tick += 1;
                 for v in entry.outputs.values_mut() {
                     *v = None;
@@ -418,6 +436,15 @@ impl Graph {
                         if let Some(slot) = te.inputs.get_mut(slot_in) {
                             *slot = Some(d);
                         }
+                        // A fresh frame on a triggering input wakes the consumer.
+                        if te
+                            .manifest
+                            .inputs
+                            .iter()
+                            .any(|i| i.name == slot_in && i.trigger_process)
+                        {
+                            te.trigger_pending = true;
+                        }
                     }
                 }
             }
@@ -428,7 +455,7 @@ impl Graph {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use goofi_core::{SlotType, Value};
+    use goofi_core::{DType, Meta, SlotType, Value};
     use goofi_node::{
         Isolation, Node, NodeManifest, NodeResult, OutputDecl, SlotDecl,
     };
@@ -469,6 +496,82 @@ mod tests {
             default_params: echo_params,
             isolation: Isolation::InProcess,
             make: echo_make,
+        }
+    }
+
+    // A source that only emits on every other run (to exercise trigger arbitration).
+    struct GatedSource {
+        n: i64,
+    }
+    impl Node for GatedSource {
+        fn process(&mut self, _i: &Inputs<'_>, out: &mut Outputs<'_>, _c: &mut NodeCtx) -> NodeResult {
+            let emit = self.n % 2 == 0;
+            self.n += 1;
+            if emit {
+                let d = Data::from_array_bytes(DType::F32, vec![1], 1.0f32.to_le_bytes().to_vec(), Meta::empty())
+                    .map_err(|e| e.to_string())?;
+                out.set("out", d);
+            }
+            Ok(())
+        }
+    }
+    fn gated_make(_: &ParamGroups) -> Box<dyn Node> {
+        Box::new(GatedSource { n: 0 })
+    }
+    static G_OUT: &[OutputDecl] = &[OutputDecl {
+        name: "out",
+        kind: SlotType::Array,
+        length_preserving: false,
+    }];
+    inventory::submit! {
+        NodeManifest {
+            type_name: "_TestGated",
+            category: "test",
+            doc: "gated source",
+            inputs: &[],
+            outputs: G_OUT,
+            default_params: echo_params,
+            isolation: Isolation::InProcess,
+            make: gated_make,
+        }
+    }
+
+    // A triggered node that counts the number of times it actually ran.
+    struct Counter {
+        runs: i64,
+    }
+    impl Node for Counter {
+        fn process(&mut self, _i: &Inputs<'_>, out: &mut Outputs<'_>, _c: &mut NodeCtx) -> NodeResult {
+            self.runs += 1;
+            let d = Data::from_array_bytes(DType::F32, vec![1], (self.runs as f32).to_le_bytes().to_vec(), Meta::empty())
+                .map_err(|e| e.to_string())?;
+            out.set("out", d);
+            Ok(())
+        }
+    }
+    fn counter_make(_: &ParamGroups) -> Box<dyn Node> {
+        Box::new(Counter { runs: 0 })
+    }
+    static C_IN: &[SlotDecl] = &[SlotDecl {
+        name: "in",
+        kind: SlotType::Array,
+        trigger_process: true,
+    }];
+    static C_OUT: &[OutputDecl] = &[OutputDecl {
+        name: "out",
+        kind: SlotType::Array,
+        length_preserving: false,
+    }];
+    inventory::submit! {
+        NodeManifest {
+            type_name: "_TestCounter",
+            category: "test",
+            doc: "run counter",
+            inputs: C_IN,
+            outputs: C_OUT,
+            default_params: echo_params,
+            isolation: Isolation::InProcess,
+            make: counter_make,
         }
     }
 
@@ -539,5 +642,31 @@ mod tests {
         assert!(!g.contains(src));
         g.tick(); // must not panic; echo has no input now
         assert!(g.latest_frame(echo, "out").is_none());
+    }
+
+    #[test]
+    fn trigger_arbitration_gates_downstream() {
+        let mut g = Graph::new();
+        let src = g.add_node("_TestGated", None).unwrap(); // emits every other tick
+        let cnt = g.add_node("_TestCounter", None).unwrap(); // triggered
+        g.add_link(src, "out", cnt, "in").unwrap();
+        for _ in 0..6 {
+            g.tick();
+        }
+        // The gated source emits on 3 of 6 ticks, so the counter ran exactly 3 times.
+        assert_eq!(first_f32(&g.latest_frame(cnt, "out").expect("counter ran")), 3.0);
+    }
+
+    #[test]
+    fn unwired_triggered_node_never_runs() {
+        let mut g = Graph::new();
+        let cnt = g.add_node("_TestCounter", None).unwrap();
+        for _ in 0..5 {
+            g.tick();
+        }
+        assert!(
+            g.latest_frame(cnt, "out").is_none(),
+            "a triggered node with no wired input must never run"
+        );
     }
 }
