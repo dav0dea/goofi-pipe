@@ -20,6 +20,9 @@ def __goofi_wrap(process, raw, n):
 pub struct PyNode {
     process: Py<PyAny>,
     wrap: Py<PyAny>,
+    /// Whether the runtime GIL tripwire has run yet (it checks once, on the first
+    /// `process`, so the steady-state hot path pays nothing).
+    gil_checked: bool,
 }
 
 impl PyNode {
@@ -40,7 +43,11 @@ impl PyNode {
                 c"goofi_wrap",
             )?;
             let wrap = wrapmod.getattr("__goofi_wrap")?.unbind();
-            Ok(PyNode { process, wrap })
+            Ok(PyNode {
+                process,
+                wrap,
+                gil_checked: false,
+            })
         })
     }
 
@@ -94,15 +101,34 @@ impl Node for PyNode {
         let n = store.shape().iter().product::<usize>();
         let bytes = store.as_bytes().to_vec();
 
-        let out_bytes: Vec<u8> = Python::attach(|py| -> Result<Vec<u8>, String> {
-            let raw = PyBytes::new(py, &bytes);
-            let ret = self
-                .wrap
-                .call1(py, (&self.process, raw, n))
-                .map_err(|e| e.to_string())?;
-            let b = ret.bind(py).cast::<PyBytes>().map_err(|e| e.to_string())?;
-            Ok(b.as_bytes().to_vec())
-        })?;
+        // Check the GIL once (first tick): if running this node re-enabled it (an
+        // FT-unsafe import at call time), the shared interpreter is now serialized
+        // for ALL in-process nodes — a whole-host hazard the discovery probe can't
+        // see. Steady-state ticks skip the check, so the hot path pays nothing.
+        let check_gil = !self.gil_checked;
+        let (out_bytes, tripped): (Vec<u8>, bool) =
+            Python::attach(|py| -> Result<(Vec<u8>, bool), String> {
+                let raw = PyBytes::new(py, &bytes);
+                let ret = self
+                    .wrap
+                    .call1(py, (&self.process, raw, n))
+                    .map_err(|e| e.to_string())?;
+                let b = ret.bind(py).cast::<PyBytes>().map_err(|e| e.to_string())?;
+                let out = b.as_bytes().to_vec();
+                let tripped = check_gil
+                    && PyModule::import(py, "sys")
+                        .and_then(|m| m.getattr("_is_gil_enabled"))
+                        .and_then(|f| f.call0())
+                        .and_then(|v| v.extract::<bool>())
+                        .unwrap_or(false);
+                Ok((out, tripped))
+            })?;
+        self.gil_checked = true;
+        if tripped {
+            return Err(
+                "node re-enabled the GIL at runtime; quarantine it to the subprocess tier".into(),
+            );
+        }
 
         let len = out_bytes.len() / 4;
         let data = Data::from_array_bytes(DType::F32, vec![len], out_bytes, Meta::empty())
@@ -145,6 +171,18 @@ mod tests {
         }
     }
 
+    fn try_run(node: &mut PyNode, input: &[f32]) -> Result<(), String> {
+        let frame = Data::from_array_bytes(DType::F32, vec![input.len()], f32s(input), Meta::empty()).unwrap();
+        let mut inmap: IndexMap<&'static str, Option<Data>> = IndexMap::new();
+        inmap.insert("data", Some(frame));
+        let inp = Inputs::new(&inmap);
+        let mut outbuf: IndexMap<&'static str, Option<Data>> = IndexMap::new();
+        outbuf.insert("out", None);
+        let mut ctx = NodeCtx::new();
+        let mut out = Outputs::new(&mut outbuf);
+        node.process(&inp, &mut out, &mut ctx).map_err(|e| e.0)
+    }
+
     #[test]
     fn python_numpy_node_runs_in_process_gil_free() {
         assert!(!PyNode::gil_enabled().unwrap(), "interpreter must be free-threaded");
@@ -152,6 +190,23 @@ mod tests {
         let mut node = PyNode::from_source(src, "process").expect("compile python node");
         assert_eq!(run(&mut node, &[1.0, 2.0, 3.0]), vec![3.0, 5.0, 7.0]);
         assert!(!PyNode::gil_enabled().unwrap(), "GIL must stay disabled after running");
+    }
+
+    #[test]
+    fn gil_tripwire_fires_only_when_the_gil_is_enabled() {
+        // The runtime tripwire errors a node whose execution left the GIL enabled.
+        // We can't synthesize an FT-unsafe C-extension here, so drive both states
+        // via the interpreter's own GIL: normally disabled (clean run); with
+        // PYTHON_GIL=1 the interpreter starts GIL-on, which the tripwire must catch.
+        let src = "import numpy as np\ndef process(x):\n    return x\n";
+        let mut node = PyNode::from_source(src, "process").unwrap();
+        let r = try_run(&mut node, &[1.0, 2.0]);
+        if PyNode::gil_enabled().unwrap() {
+            let e = r.expect_err("tripwire must fire when the GIL is enabled");
+            assert!(e.contains("GIL"), "error should name the GIL: {e}");
+        } else {
+            assert!(r.is_ok(), "a clean node in free-threaded mode must not trip: {r:?}");
+        }
     }
 
     #[test]
