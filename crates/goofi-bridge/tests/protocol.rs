@@ -299,7 +299,7 @@ async fn data_plane_reduces_to_the_declared_viewspec() {
             "op": "view",
             "specs": [{
                 "dtype": "array",
-                "ndim": ["le", 2],
+                "ndim": [["le", 2]],
                 "reduce": [{ "dim": -1, "max": 32, "method": "envelope" }]
             }]
         })

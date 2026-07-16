@@ -655,15 +655,15 @@ mod tests {
         assert_eq!(goofi_view::Reducible::dtype_tag(&d), 0, "array tag");
         assert_eq!(goofi_view::Reducible::shape(&d), &[3, 1000]);
         // A line viewer (array, <=2d) admits it.
-        let line = ViewSpec { dtype: ViewDtype::Array, ndim: Some((DimCmp::Le, 2)), dims: vec![], reduce: vec![] };
+        let line = ViewSpec { dtype: ViewDtype::Array, ndim: vec![(DimCmp::Le, 2)], dims: vec![], reduce: vec![] };
         assert!(line.admits(&d));
         // A topomap viewer (array, ndim == 1) rejects a 2-D frame.
-        let topo = ViewSpec { dtype: ViewDtype::Array, ndim: Some((DimCmp::Eq, 1)), dims: vec![], reduce: vec![] };
+        let topo = ViewSpec { dtype: ViewDtype::Array, ndim: vec![(DimCmp::Eq, 1)], dims: vec![], reduce: vec![] };
         assert!(!topo.admits(&d));
         // An image viewer needing the last dim to be a channel count (<=4) rejects 1000.
         let image = ViewSpec {
             dtype: ViewDtype::Array,
-            ndim: None,
+            ndim: vec![],
             dims: vec![DimConstraint { dim: -1, cmp: DimCmp::Le, n: 4 }],
             reduce: vec![],
         };

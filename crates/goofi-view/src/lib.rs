@@ -105,9 +105,11 @@ pub struct ViewSpec {
     /// The Data kind this viewer draws. A frame of any other dtype ⇒ this spec does not
     /// admit it (contributes nothing to the merge).
     pub dtype: ViewDtype,
-    /// Dim-count comparison, or `None` ⇒ any ndim admitted.
+    /// Dim-count comparisons — ALL must hold to admit (empty ⇒ any ndim). A list, so a viewer
+    /// can bound a RANGE (an image is `[(Ge, 2), (Le, 3)]`: 2-D H×W or 3-D H×W×C), which a
+    /// single comparison can't state.
     #[serde(default)]
-    pub ndim: Option<(DimCmp, usize)>,
+    pub ndim: Vec<(DimCmp, usize)>,
     /// Per-dim length comparisons (ALL must hold to admit).
     #[serde(default)]
     pub dims: Vec<DimConstraint>,
@@ -148,8 +150,8 @@ impl ViewSpec {
             return true;
         }
         let ndim = frame.ndim();
-        // 3. dim-count comparison
-        if let Some((cmp, n)) = self.ndim {
+        // 3. dim-count comparisons (all must hold)
+        for &(cmp, n) in &self.ndim {
             if !cmp.holds(ndim, n) {
                 return false;
             }
@@ -282,7 +284,7 @@ mod tests {
     fn line_1d(w: usize) -> ViewSpec {
         ViewSpec {
             dtype: ViewDtype::Array,
-            ndim: Some((DimCmp::Le, 2)),
+            ndim: vec![(DimCmp::Le, 2)],
             dims: vec![],
             reduce: vec![AxisReduce { dim: -1, max: w, method: ReduceMethod::Envelope }],
         }
@@ -308,7 +310,7 @@ mod tests {
 
     #[test]
     fn admits_dtype_gate() {
-        let string_viewer = ViewSpec { dtype: ViewDtype::String, ndim: None, dims: vec![], reduce: vec![] };
+        let string_viewer = ViewSpec { dtype: ViewDtype::String, ndim: vec![], dims: vec![], reduce: vec![] };
         assert!(!string_viewer.admits(&Frame::array(&[10])), "string viewer rejects an array");
         assert!(string_viewer.admits(&Frame::string()), "string viewer admits a string on dtype alone");
         assert!(line_1d(150).admits(&Frame::array(&[1000])), "line admits a 1-D array");
@@ -319,16 +321,33 @@ mod tests {
         // An image viewer: any ndim, but the last dim must be a channel count 1..=4.
         let image = ViewSpec {
             dtype: ViewDtype::Array,
-            ndim: None,
+            ndim: vec![],
             dims: vec![DimConstraint { dim: -1, cmp: DimCmp::Le, n: 4 }],
             reduce: vec![],
         };
         assert!(image.admits(&Frame::array(&[200, 100, 3])), "HxWx3 admitted");
         assert!(!image.admits(&Frame::array(&[200, 100, 5])), "HxWx5 rejected (>4 channels)");
         // ndim gate: a trajectory viewer needs exactly 2 dims.
-        let traj = ViewSpec { dtype: ViewDtype::Array, ndim: Some((DimCmp::Eq, 2)), dims: vec![], reduce: vec![] };
+        let traj = ViewSpec { dtype: ViewDtype::Array, ndim: vec![(DimCmp::Eq, 2)], dims: vec![], reduce: vec![] };
         assert!(traj.admits(&Frame::array(&[500, 3])));
         assert!(!traj.admits(&Frame::array(&[500])), "1-D rejected by ndim Eq 2");
+    }
+
+    #[test]
+    fn admits_ndim_list_expresses_a_bounded_range() {
+        // The real image viewer's dim-count need is a RANGE — 2-D (H,W) or 3-D (H,W,C) —
+        // which a single ndim comparison can't state. A list of ndim constraints (ALL must
+        // hold) expresses `2 <= ndim <= 3`, dropping the viewer from a 1-D or 4-D merge.
+        let image = ViewSpec {
+            dtype: ViewDtype::Array,
+            ndim: vec![(DimCmp::Ge, 2), (DimCmp::Le, 3)],
+            dims: vec![],
+            reduce: vec![],
+        };
+        assert!(image.admits(&Frame::array(&[200, 100])), "2-D HxW admitted");
+        assert!(image.admits(&Frame::array(&[200, 100, 3])), "3-D HxWxC admitted");
+        assert!(!image.admits(&Frame::array(&[4000])), "1-D rejected (below the range)");
+        assert!(!image.admits(&Frame::array(&[2, 2, 2, 2])), "4-D rejected (above the range)");
     }
 
     #[test]
@@ -337,7 +356,7 @@ mod tests {
         // line's reduction survives into the plan.
         let image = ViewSpec {
             dtype: ViewDtype::Array,
-            ndim: Some((DimCmp::Eq, 2)),
+            ndim: vec![(DimCmp::Eq, 2)],
             dims: vec![],
             reduce: vec![AxisReduce { dim: 0, max: 100, method: ReduceMethod::Area }],
         };
@@ -350,7 +369,7 @@ mod tests {
         // Two viewers on the same axis: max(max)=300, richest method = envelope (> subsample).
         let a = ViewSpec {
             dtype: ViewDtype::Array,
-            ndim: None,
+            ndim: vec![],
             dims: vec![],
             reduce: vec![AxisReduce { dim: -1, max: 150, method: ReduceMethod::Subsample }],
         };
@@ -365,7 +384,7 @@ mod tests {
         // canonicalize to dim 0 → richest (envelope) wins, max = max(rows, W).
         let line_2d = ViewSpec {
             dtype: ViewDtype::Array,
-            ndim: Some((DimCmp::Le, 2)),
+            ndim: vec![(DimCmp::Le, 2)],
             dims: vec![],
             reduce: vec![
                 AxisReduce { dim: 0, max: 32, method: ReduceMethod::Subsample },
@@ -382,7 +401,7 @@ mod tests {
         // axis needs 200/400=0.5; W needs 100/100=1.0; min=0.5 applied to both → 200x50.
         let image = ViewSpec {
             dtype: ViewDtype::Array,
-            ndim: None,
+            ndim: vec![],
             dims: vec![],
             reduce: vec![
                 AxisReduce { dim: 0, max: 200, method: ReduceMethod::Area },
@@ -402,7 +421,7 @@ mod tests {
 
     #[test]
     fn passthrough_when_no_reductions_requested() {
-        let string_viewer = ViewSpec { dtype: ViewDtype::String, ndim: None, dims: vec![], reduce: vec![] };
+        let string_viewer = ViewSpec { dtype: ViewDtype::String, ndim: vec![], dims: vec![], reduce: vec![] };
         assert_eq!(plan(&[string_viewer], &Frame::string()), MergedViewSpec::default());
     }
 
