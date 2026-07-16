@@ -2,19 +2,20 @@
 //! emits the block of samples real time has advanced by (drift-free against
 //! `meta["sfreq"]`), carrying phase forward so blocks join click-free. A `frequency`
 //! slider (LFO range) and a `waveform` selector (sine/square/sawtooth/triangle) shape
-//! the signal; a wired `frequency` control input overrides the slider each tick.
-//! Self-contained (no audio-synth infrastructure) — one of the two seed nodes for the
-//! redesigned library.
+//! the signal. It is a pure producer with no input slots: drive `frequency` live by
+//! binding a param expression (e.g. `frequency = nd('lfo').out[0]`) rather than wiring
+//! a control cable. Self-contained (no audio-synth infrastructure) — one of the two
+//! seed nodes for the redesigned library.
 //!
 //! `frequency`, `amplitude`, and `waveform` are cold params (read live from `p` each
 //! tick). `sfreq` is the one stateful param: changing it must re-anchor the drift-free
 //! pacing, so it is mirrored to a field via `on_param_changed`.
 
 use goofi_core::SlotType;
-use goofi_core::{Data, DType, Meta, Value};
+use goofi_core::{Data, DType, Meta};
 use goofi_node::{
     default_factory, Inputs, Isolation, Node, NodeCtx, NodeManifest, NodeResult, OutputDecl,
-    Outputs, ParamDecl, ParamKey, ParamSpec, Params, SlotDecl,
+    Outputs, ParamDecl, ParamKey, ParamSpec, Params,
 };
 use std::f64::consts::{PI, TAU};
 
@@ -81,7 +82,7 @@ struct Oscillator {
 }
 
 impl Node for Oscillator {
-    fn process(&mut self, inp: &Inputs<'_>, out: &mut Outputs<'_>, c: &mut NodeCtx, p: &Params<'_>) -> NodeResult {
+    fn process(&mut self, _inp: &Inputs<'_>, out: &mut Outputs<'_>, c: &mut NodeCtx, p: &Params<'_>) -> NodeResult {
         // `sfreq` is seeded (>= 1) via on_param_changed; an unseeded node emits nothing.
         let sfreq = self.sfreq;
         // Drift-free sample count: how many samples real time has advanced by since the
@@ -94,12 +95,9 @@ impl Node for Oscillator {
         }
         self.emitted = total;
 
-        // A wired `frequency` control input drives frequency in real time (its first
-        // value); unwired, the `frequency` slider (a cold param) holds.
-        let freq = first_f32(inp.get("frequency"))
-            .map(|v| v as f64)
-            .or_else(|| p.f64("oscillator", "frequency"))
-            .unwrap_or(1.0);
+        // Frequency comes from the `frequency` param (a cold read). Drive it live by
+        // binding a param expression (e.g. frequency = nd('lfo').out[0]).
+        let freq = p.f64("oscillator", "frequency").unwrap_or(1.0);
         let amp = p.f64("oscillator", "amplitude").unwrap_or(1.0);
         let wave = Waveform::parse(p.str("oscillator", "waveform").unwrap_or("sine"));
         let step = TAU * freq / sfreq; // phase increment per sample
@@ -135,17 +133,6 @@ impl Node for Oscillator {
     }
 }
 
-/// First element of an f32 array `Data`, if the slot holds one (a scalar control).
-fn first_f32(d: Option<&Data>) -> Option<f32> {
-    match d?.value() {
-        Value::Array(s) if s.dtype() == DType::F32 => s
-            .as_bytes()
-            .get(0..4)
-            .map(|b| f32::from_le_bytes(b.try_into().unwrap())),
-        _ => None,
-    }
-}
-
 static PARAMS: &[ParamDecl] = &[
     // LFO / biosignal regime — a slow frequency slider, biosignal-typical sample rate.
     ParamDecl { group: "oscillator", name: "frequency", spec: ParamSpec::Float { default: 1.0, min: 0.0, max: 100.0 } },
@@ -161,21 +148,13 @@ static OUTPUTS: &[OutputDecl] = &[OutputDecl {
     name: "out",
     kind: SlotType::Array,
 }];
-// A single non-triggering control input: the oscillator free-runs (real-time paced)
-// and reads the latest `frequency` each tick rather than being woken by it.
-static INPUTS: &[SlotDecl] = &[SlotDecl {
-    name: "frequency",
-    kind: SlotType::Array,
-    trigger_process: false,
-    multi: false,
-}];
 
 inventory::submit! {
     NodeManifest {
         type_name: "Oscillator",
         category: "inputs",
         doc: "LFO/biosignal oscillator (sine/square/sawtooth/triangle), frequency slider, meta sfreq.",
-        inputs: INPUTS,
+        inputs: &[],
         outputs: OUTPUTS,
         params: PARAMS,
         isolation: Isolation::InProcess,
@@ -185,7 +164,7 @@ inventory::submit! {
 
 #[cfg(test)]
 mod tests {
-    use goofi_core::{DType, Param, Value};
+    use goofi_core::{Param, Value};
     use goofi_node::{Inputs, NodeCtx, Outputs, ParamGroups, ParamKey, Params};
     use indexmap::IndexMap;
 
@@ -323,26 +302,11 @@ mod tests {
     }
 
     #[test]
-    fn frequency_control_input_overrides_the_slider() {
-        use goofi_core::{Data, Meta};
-        // Slider frequency 10 Hz; a wired control input of 250 Hz (= sfreq/4) must win.
-        let (mut node, m, params) = build(10.0, 1000.0, 1.0, "sine");
-        let freq = Data::from_array_bytes(DType::F32, vec![1], 250.0f32.to_le_bytes().to_vec(), Meta::empty()).unwrap();
-        let mut inmap: IndexMap<&'static str, Option<Data>> = IndexMap::new();
-        inmap.insert("frequency", Some(freq));
-        let inp = Inputs::new(&inmap);
-
-        let mut o0 = m.output_buffer();
-        node.process(&inp, &mut Outputs::new(&mut o0), &mut NodeCtx { tick: 0, now: 0.0 }, &Params::new(&params)).unwrap();
-        let mut o1 = m.output_buffer();
-        node.process(&inp, &mut Outputs::new(&mut o1), &mut NodeCtx { tick: 1, now: 0.004 }, &Params::new(&params)).unwrap();
-        if let Value::Array(s) = o1.get("out").unwrap().as_ref().unwrap().value() {
-            assert_eq!(s.shape(), &[4]);
-            let v = |i: usize| f32::from_le_bytes(s.as_bytes()[i * 4..i * 4 + 4].try_into().unwrap());
-            assert!(v(0).abs() < 1e-5 && (v(1) - 1.0).abs() < 1e-5 && (v(3) + 1.0).abs() < 1e-5,
-                "control 250 Hz -> quarter-period [0,1,0,-1], got [{},{},{},{}]", v(0), v(1), v(2), v(3));
-        } else {
-            panic!("expected array");
-        }
+    fn has_no_control_input_slots() {
+        // The `frequency` control-input slot is gone — its role is now served by a param
+        // expression (frequency = nd('lfo')...), so the oscillator is a pure producer.
+        let m = goofi_node::find("Oscillator").expect("Oscillator registered");
+        assert!(m.inputs.is_empty(), "oscillator is a producer with no input slots; got {:?}",
+            m.inputs.iter().map(|s| s.name).collect::<Vec<_>>());
     }
 }
