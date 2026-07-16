@@ -48,6 +48,12 @@ impl WaveGen {
         self
     }
 
+    /// Switch waveform in place, keeping the accumulated phase — so changing shape
+    /// mid-stream doesn't reset the oscillator and click.
+    pub fn set_waveform(&mut self, waveform: Waveform) {
+        self.waveform = waveform;
+    }
+
     /// Generate `n` phase-continuous samples at `freq` Hz for sample rate `sfreq`,
     /// advancing the phase so the next call continues seamlessly.
     pub fn generate(&mut self, freq: f64, sfreq: f64, n: usize) -> Vec<f32> {
@@ -148,6 +154,19 @@ mod tests {
         let s = g.generate(6_000.0, 48_000.0, 16);
         let fired: f32 = s.iter().sum();
         assert_eq!(fired, 2.0, "one pulse per 2π wrap: {s:?}");
+    }
+
+    #[test]
+    fn set_waveform_keeps_phase() {
+        // Advance a sine some, switch to sawtooth: the sawtooth must continue from
+        // the accumulated phase (no reset to 0), so its first sample matches the
+        // sawtooth evaluated at that phase, not at 0 (which would be -1.0).
+        let (freq, sfreq) = (12_000.0, 48_000.0); // inc = π/2 per sample
+        let mut g = WaveGen::new(Waveform::Sine);
+        g.generate(freq, sfreq, 1); // phase now π/2
+        g.set_waveform(Waveform::Sawtooth);
+        let s = g.generate(freq, sfreq, 1); // sawtooth at π/2 -> (π/2)/π - 1 = -0.5
+        assert!((s[0] - (-0.5)).abs() < 1e-6, "kept phase: got {}", s[0]);
     }
 
     #[test]
