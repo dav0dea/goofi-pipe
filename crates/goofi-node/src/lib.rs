@@ -194,3 +194,80 @@ pub fn catalog() -> impl Iterator<Item = &'static NodeManifest> {
 pub fn find(type_name: &str) -> Option<&'static NodeManifest> {
     catalog().find(|m| m.type_name == type_name)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use goofi_core::{Data, DType, Meta, SlotType};
+
+    #[test]
+    fn inputs_and_outputs_tick_io() {
+        let mut inmap: IndexMap<&'static str, Option<Data>> = IndexMap::new();
+        inmap.insert("data", None);
+        let inp = Inputs::new(&inmap);
+        assert!(inp.get("data").is_none());
+        assert!(inp.get("missing").is_none());
+
+        let d = Data::from_array_bytes(DType::F32, vec![1], 1.0f32.to_le_bytes().to_vec(), Meta::empty())
+            .unwrap();
+        let mut outmap: IndexMap<&'static str, Option<Data>> = IndexMap::new();
+        outmap.insert("out", None);
+        {
+            let mut out = Outputs::new(&mut outmap);
+            out.set("out", d.clone());
+            out.set("nonexistent", d); // writing an unknown slot is a no-op
+        }
+        assert!(outmap.get("out").unwrap().is_some());
+    }
+
+    #[test]
+    fn param_lookup() {
+        let mut g = IndexMap::new();
+        g.insert("x".to_string(), Param::float(1.0, 0.0, 2.0));
+        let mut groups: ParamGroups = IndexMap::new();
+        groups.insert("grp".to_string(), g);
+        assert_eq!(param(&groups, "grp", "x").and_then(Param::as_f64), Some(1.0));
+        assert!(param(&groups, "grp", "missing").is_none());
+        assert!(param(&groups, "nogroup", "x").is_none());
+    }
+
+    struct Nop;
+    impl Node for Nop {
+        fn process(&mut self, _i: &Inputs<'_>, _o: &mut Outputs<'_>, _c: &mut NodeCtx) -> NodeResult {
+            Ok(())
+        }
+    }
+    fn nop_params() -> ParamGroups {
+        ParamGroups::new()
+    }
+    fn nop_make(_: &ParamGroups) -> Box<dyn Node> {
+        Box::new(Nop)
+    }
+    static NOP_OUT: &[OutputDecl] = &[OutputDecl {
+        name: "out",
+        kind: SlotType::Array,
+        length_preserving: false,
+    }];
+    inventory::submit! {
+        NodeManifest {
+            type_name: "_NodeTestNop",
+            category: "test",
+            doc: "",
+            inputs: &[],
+            outputs: NOP_OUT,
+            default_params: nop_params,
+            isolation: Isolation::InProcess,
+            make: nop_make,
+        }
+    }
+
+    #[test]
+    fn catalog_registration_and_output_buffer() {
+        let m = find("_NodeTestNop").expect("registered via inventory");
+        assert_eq!(m.outputs.len(), 1);
+        assert_eq!(m.isolation, Isolation::InProcess);
+        let buf = m.output_buffer();
+        assert!(buf.contains_key("out"));
+        assert!(catalog().any(|m| m.type_name == "_NodeTestNop"));
+    }
+}

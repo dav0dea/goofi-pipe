@@ -487,3 +487,87 @@ impl Param {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dtype_projections_and_parsing() {
+        assert_eq!(DType::F32.numpy_typestr(), "<f4");
+        assert_eq!(DType::U8.numpy_typestr(), "|u1");
+        assert_eq!(DType::Bool.numpy_typestr(), "|b1");
+        assert_eq!(DType::F16.numpy_typestr(), "<f2");
+        assert_eq!(DType::I64.numpy_name(), "int64");
+        assert_eq!(DType::F32.itemsize(), 4);
+        assert_eq!(DType::from_numpy_typestr("<f4"), Some(DType::F32));
+        assert_eq!(DType::from_numpy_typestr("|u1"), Some(DType::U8));
+        assert_eq!(DType::from_numpy_typestr(">f4"), None); // big-endian rejected
+        assert_eq!(DType::from_numpy_typestr("<x9"), None);
+    }
+
+    #[test]
+    fn f64_array_narrows_to_f32() {
+        let buf: Vec<u8> = [1.5f64, 2.5].iter().flat_map(|v| v.to_le_bytes()).collect();
+        let d = Data::from_array_bytes(DType::F64, vec![2], buf, Meta::empty()).unwrap();
+        let Value::Array(s) = d.value() else { panic!() };
+        assert_eq!(s.dtype(), DType::F32);
+        assert_eq!(s.as_bytes().len(), 8); // 2 x f32
+        assert_eq!(f32::from_le_bytes(s.as_bytes()[0..4].try_into().unwrap()), 1.5);
+    }
+
+    #[test]
+    fn zero_d_promotes_to_1d() {
+        let d = Data::from_array_bytes(DType::F32, vec![], 3.0f32.to_le_bytes().to_vec(), Meta::empty())
+            .unwrap();
+        let Value::Array(s) = d.value() else { panic!() };
+        assert_eq!(s.shape(), &[1]);
+    }
+
+    #[test]
+    fn wrong_buffer_length_errors() {
+        assert!(Data::from_array_bytes(DType::F32, vec![3], vec![0u8; 8], Meta::empty()).is_err());
+    }
+
+    #[test]
+    fn channel_length_must_match_shape() {
+        let mut ch = BTreeMap::new();
+        ch.insert(0usize, Arc::new(vec![Coord::Str("a".into())])); // len 1
+        let meta = Meta {
+            channels: Channels(ch),
+            ..Default::default()
+        };
+        let buf: Vec<u8> = [1.0f32, 2.0].iter().flat_map(|v| v.to_le_bytes()).collect(); // shape[0]=2
+        assert!(Data::from_array_bytes(DType::F32, vec![2], buf, meta).is_err());
+    }
+
+    #[test]
+    fn param_accessors_and_trigger_consume() {
+        assert_eq!(Param::float(2.5, 0.0, 10.0).as_f64(), Some(2.5));
+        assert_eq!(Param::int(4, 0, 10).as_i64(), Some(4));
+        assert_eq!(Param::boolean(true).as_bool(), Some(true));
+        assert_eq!(Param::str_free("hi").as_str(), Some("hi"));
+        let mut t = Param::Trigger { fired: true };
+        assert!(t.take_trigger());
+        assert!(!t.take_trigger()); // consumed on read
+    }
+
+    #[test]
+    fn slot_type_names_and_tags() {
+        assert_eq!(SlotType::Array.name(), "ARRAY");
+        assert_eq!(SlotType::String.name(), "STRING");
+        assert_eq!(SlotType::Table.tag(), 2);
+    }
+
+    #[test]
+    fn data_fan_out_is_arc_clone() {
+        let d = Data::from_array_bytes(DType::F32, vec![2], vec![0u8; 8], Meta::empty()).unwrap();
+        let d2 = d.clone();
+        // Both refer to the same underlying buffer (zero-copy fan-out).
+        if let (Value::Array(a), Value::Array(b)) = (d.value(), d2.value()) {
+            assert_eq!(a.as_bytes().as_ptr(), b.as_bytes().as_ptr());
+        } else {
+            panic!()
+        }
+    }
+}

@@ -69,6 +69,17 @@ struct Link {
     slot_in: &'static str,
 }
 
+/// Extract a readable message from a caught panic payload.
+fn panic_message(p: Box<dyn std::any::Any + Send>) -> String {
+    if let Some(s) = p.downcast_ref::<&str>() {
+        format!("panic: {s}")
+    } else if let Some(s) = p.downcast_ref::<String>() {
+        format!("panic: {s}")
+    } else {
+        "panic in node".to_string()
+    }
+}
+
 /// The persisted scalar value of a param (flat form; triggers persist `false`).
 fn param_value_json(p: &Param) -> serde_json::Value {
     use serde_json::json;
@@ -566,11 +577,19 @@ impl Graph {
                     *v = None;
                 }
                 let inp = Inputs::new(&entry.inputs);
+                let node = &mut entry.node;
+                let ctx = &mut entry.ctx;
                 let mut out = Outputs::new(&mut entry.outputs);
-                match entry.node.process(&inp, &mut out, &mut entry.ctx) {
-                    Ok(()) => entry.last_error = None,
-                    Err(e) => entry.last_error = Some(e.0),
-                }
+                // Catch a node panic so one faulty node can't unwind through the
+                // graph lock (poisoning the Mutex) and take down the whole engine.
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    node.process(&inp, &mut out, ctx)
+                }));
+                entry.last_error = match result {
+                    Ok(Ok(())) => None,
+                    Ok(Err(e)) => Some(e.0),
+                    Err(p) => Some(panic_message(p)),
+                };
                 entry
                     .outputs
                     .iter()
@@ -727,6 +746,34 @@ mod tests {
         }
     }
 
+    // A node that panics in process() — to verify the engine survives it.
+    struct Panicky;
+    impl Node for Panicky {
+        fn process(&mut self, _i: &Inputs<'_>, _o: &mut Outputs<'_>, _c: &mut NodeCtx) -> NodeResult {
+            panic!("boom");
+        }
+    }
+    fn panicky_make(_: &ParamGroups) -> Box<dyn Node> {
+        Box::new(Panicky)
+    }
+    static P_OUT: &[OutputDecl] = &[OutputDecl {
+        name: "out",
+        kind: SlotType::Array,
+        length_preserving: false,
+    }];
+    inventory::submit! {
+        NodeManifest {
+            type_name: "_TestPanic",
+            category: "test",
+            doc: "panics",
+            inputs: &[],
+            outputs: P_OUT,
+            default_params: echo_params,
+            isolation: Isolation::InProcess,
+            make: panicky_make,
+        }
+    }
+
     fn first_f32(d: &Data) -> f32 {
         if let Value::Array(s) = d.value() {
             f32::from_le_bytes(s.as_bytes()[0..4].try_into().unwrap())
@@ -874,5 +921,29 @@ mod tests {
         assert!(g.load_doc(bad).is_err());
         // validate-before-teardown: the existing graph is untouched on failure.
         assert_eq!(g.node_count(), before);
+    }
+
+    #[test]
+    fn panicking_node_does_not_crash_the_engine() {
+        // Silence the default panic backtrace during this test.
+        let prev = std::panic::take_hook();
+        std::panic::set_hook(Box::new(|_| {}));
+
+        let mut g = Graph::new();
+        let boom = g.add_node("_TestPanic", None).unwrap();
+        let ok = g.add_node("ConstantArray", None).unwrap();
+        g.update_param(ok, "constant", "value", Param::float(9.0, -1e9, 1e9))
+            .unwrap();
+
+        g.tick(); // must NOT unwind past here (would poison the graph lock)
+
+        std::panic::set_hook(prev);
+
+        // The panic is captured as the node's error; the healthy node still ran.
+        assert!(
+            g.last_error(boom).unwrap_or("").contains("panic"),
+            "panic must be captured as an error"
+        );
+        assert_eq!(first_f32(&g.latest_frame(ok, "out").unwrap()), 9.0);
     }
 }
