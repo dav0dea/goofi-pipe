@@ -7,6 +7,7 @@
 
 mod buffer;
 mod constant_array;
+mod fft;
 mod math;
 mod oscillator;
 mod psd;
