@@ -50,17 +50,26 @@ impl Node for FrequencyShift {
             return Ok(());
         }
 
-        let delta_bins = (self.freq_shift * n as f64 / sfreq).round() as i64;
+        // Round-HALF-TO-EVEN to match Python's built-in round() (banker's), so a
+        // shift landing exactly on a half-bin (e.g. 0.5 Hz over a 1 s window) picks
+        // the same bin as Python — `f64::round` rounds half AWAY from zero and would
+        // be off by one there.
+        let delta_bins = (self.freq_shift * n as f64 / sfreq).round_ties_even() as i64;
         let shifted = goofi_dsp::frequency_shift(&mut self.planner, &signal, delta_bins);
 
         let buf: Vec<u8> = shifted.iter().flat_map(|v| v.to_le_bytes()).collect();
-        // Preserve sfreq (same sample rate) and the continuity index (length-
-        // preserving). Per-axis channels are dropped — the flatten to 1-D
-        // invalidates any multi-dim coordinate labels.
-        let meta = Meta {
-            sfreq: Some(sfreq),
-            index: d.meta().index,
-            ..Default::default()
+        // A genuinely 1-D input is unchanged by the flatten, so its full meta (incl.
+        // dim0 channel labels, which stay length-n) carries through, matching the
+        // Python `return data.meta`. A multi-dim input's per-axis coords would no
+        // longer fit the 1-D output (Python's Data ctor raises there), so drop them.
+        let meta = if store.shape().len() == 1 {
+            d.meta().clone()
+        } else {
+            Meta {
+                sfreq: Some(sfreq),
+                index: d.meta().index,
+                ..Default::default()
+            }
         };
         let data = Data::from_array_bytes(DType::F32, vec![n], buf, meta).map_err(|e| e.to_string())?;
         out.set("out", data);
@@ -238,6 +247,40 @@ mod tests {
         let mut outbuf = m.output_buffer();
         node.process(&Inputs::new(&empty), &mut Outputs::new(&mut outbuf), &mut NodeCtx::new()).unwrap();
         assert!(outbuf.get("out").unwrap().is_none());
+    }
+
+    #[test]
+    fn half_bin_shift_rounds_ties_to_even_like_python() {
+        // freq_shift=0.5, n=128, sfreq=128 -> exactly 0.5 bins. Python round(0.5)=0
+        // (banker's), so delta_bins=0 and the output is the identity. f64::round would
+        // give 1 (a real 1-bin shift) — this locks in the banker's-rounding fix.
+        let sig = sine(16.0, 128.0, 128);
+        let (_shape, out, _m) = shift(0.5, Some(128.0), None, vec![128], &sig).unwrap();
+        for (o, s) in out.iter().zip(&sig) {
+            assert!((o - s).abs() < 1e-3, "0.5-bin shift must round to 0 (identity), got {o} vs {s}");
+        }
+    }
+
+    #[test]
+    fn one_d_input_keeps_its_channels() {
+        // A genuinely 1-D input is unchanged by the flatten, so its dim0 labels (still
+        // length n) carry through, matching Python's `return data.meta`.
+        use goofi_core::{Channels, Coord};
+        use std::collections::BTreeMap;
+        let m = goofi_node::find("FrequencyShift").unwrap();
+        let mut node = (m.make)(&(m.default_params)());
+        node.on_param_changed(&ParamKey::new("shift", "frequency_shift"), &goofi_core::Param::float(0.0, -1000.0, 1000.0)).unwrap();
+        let mut ch = BTreeMap::new();
+        ch.insert(0usize, std::sync::Arc::new((0..4).map(|i| Coord::Num(i as f64)).collect::<Vec<_>>()));
+        let meta = Meta { sfreq: Some(8.0), channels: Channels(ch), ..Default::default() };
+        let frame = Data::from_array_bytes(DType::F32, vec![4], [1.0f32, 2.0, 3.0, 4.0].iter().flat_map(|v| v.to_le_bytes()).collect(), meta).unwrap();
+        let mut inmap: IndexMap<&'static str, Option<Data>> = IndexMap::new();
+        inmap.insert("data", Some(frame));
+        let inp = Inputs::new(&inmap);
+        let mut outbuf = m.output_buffer();
+        node.process(&inp, &mut Outputs::new(&mut outbuf), &mut NodeCtx::new()).unwrap();
+        let d = outbuf.get("out").unwrap().as_ref().unwrap();
+        assert_eq!(d.meta().channels.0.get(&0).map(|c| c.len()), Some(4), "1-D input keeps dim0 labels");
     }
 
     #[test]
