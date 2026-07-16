@@ -257,6 +257,15 @@ fn parse_link(p: &Value) -> Result<(Uid, String, Uid, String), String> {
     Ok((node_out, slot_out, node_in, slot_in))
 }
 
+/// Coerce a JSON number to i64, ROUNDING a fractional value to nearest. serde's
+/// `as_i64()` returns `None` for a float like `5.5`, which the old `unwrap_or(0)`
+/// silently snapped to 0 — so editing an Int param to a fractional value reset it.
+fn json_to_i64(v: &Value) -> i64 {
+    v.as_i64()
+        .or_else(|| v.as_f64().map(|f| f.round() as i64))
+        .unwrap_or(0)
+}
+
 /// Build a `Param` from a JSON value, keeping the existing param's type + bounds.
 fn param_from_json(existing: &Param, v: &Value) -> Param {
     match existing {
@@ -266,7 +275,7 @@ fn param_from_json(existing: &Param, v: &Value) -> Param {
             vmax: *vmax,
         },
         Param::Int { vmin, vmax, .. } => Param::Int {
-            value: v.as_i64().unwrap_or(0),
+            value: json_to_i64(v),
             vmin: *vmin,
             vmax: *vmax,
         },
@@ -485,5 +494,20 @@ async fn handle_data(socket: WebSocket, state: AppState, node: String, slot: Str
                 _ => {}
             },
         }
+    }
+}
+
+#[cfg(test)]
+mod param_coerce_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn int_param_rounds_fractional_instead_of_zeroing() {
+        let p = Param::int(3, 0, 100);
+        // The bug: a fractional value snapped the Int param to 0. Now it rounds.
+        assert_eq!(param_from_json(&p, &json!(5.5)).as_i64(), Some(6));
+        assert_eq!(param_from_json(&p, &json!(5.4)).as_i64(), Some(5));
+        assert_eq!(param_from_json(&p, &json!(7)).as_i64(), Some(7), "plain int unaffected");
     }
 }

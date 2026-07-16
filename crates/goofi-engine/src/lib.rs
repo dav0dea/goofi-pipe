@@ -590,7 +590,12 @@ impl Graph {
                 vmax,
             },
             Param::Int { vmin, vmax, .. } => Param::Int {
-                value: val.as_i64().unwrap_or(0),
+                // Round a fractional value to nearest (as_i64 is None for e.g. 5.5,
+                // which the old unwrap_or(0) snapped to 0 on a hand-edited .gfi).
+                value: val
+                    .as_i64()
+                    .or_else(|| val.as_f64().map(|f| f.round() as i64))
+                    .unwrap_or(0),
                 vmin,
                 vmax,
             },
@@ -1013,15 +1018,16 @@ fn stamp_meta(entry: &mut NodeEntry) {
         // Exactly one index-bearing triggering input with a matching frame count → the
         // same timeline; zero or more than one → a fresh per-output counter.
         let mut matches = input_frames.iter().filter(|(_, f)| *f == of).map(|(i, _)| *i);
+        let counter = counters.entry(*slot).or_insert(0);
         let index = match (matches.next(), matches.next()) {
             (Some(i), None) => i,
-            _ => {
-                let c = counters.entry(*slot).or_insert(0);
-                let v = *c;
-                *c += 1;
-                v
-            }
+            _ => *counter,
         };
+        // Keep the fresh counter monotonically past whatever we emitted. Without this, a
+        // slot that MATCHES on one frame (an accumulator's first output length equals its
+        // input length) then goes fresh would restart the counter at 0 — duplicating or
+        // regressing the index at stream start (the Oscillator→Buffer reference patch).
+        *counter = index + 1;
         *d = d.with_stamps(index, node_ufreq);
     }
 }
@@ -1921,6 +1927,25 @@ mod tests {
         g.tick(); // src -> index 3; echo runs, matches len -> propagates 3
         let f = g.latest_frame(echo, "out").expect("echo ran");
         assert_eq!(f.meta().index, Some(3), "propagates the source's index, not fresh 0");
+    }
+
+    #[test]
+    fn accumulating_length_changing_node_keeps_index_monotonic() {
+        // Reference-patch shape: a source -> Buffer. Buffer's FIRST output frame (ring
+        // holds one input's worth) coincidentally equals the input length, then grows.
+        // The first frame must not propagate/duplicate the source index; the slot stays a
+        // monotonic fresh timeline (regression for the [0,0,1,2] stamp_meta bug).
+        let mut g = Graph::new();
+        let src = g.add_node("_TestConst", None).unwrap();
+        g.update_param(src, "constant", "length", Param::int(2, 1, 10)).unwrap();
+        let buf = g.add_node("Buffer", None).unwrap();
+        g.add_link(src, "out", buf, "data").unwrap();
+        let mut idx = Vec::new();
+        for _ in 0..4 {
+            g.tick();
+            idx.push(g.latest_frame(buf, "out").unwrap().meta().index.unwrap());
+        }
+        assert_eq!(idx, vec![0, 1, 2, 3], "buffer index must be a monotonic fresh timeline");
     }
 
     #[test]

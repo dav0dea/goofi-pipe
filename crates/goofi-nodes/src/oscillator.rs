@@ -121,9 +121,14 @@ impl Node for Oscillator {
         // effect from the next tick. frequency/amplitude/waveform are read live in process.
         if key.group == "oscillator" && key.name == "sfreq" {
             if let Some(x) = v.as_f64() {
-                self.sfreq = x.max(1.0);
-                self.start = None;
-                self.emitted = 0;
+                let new = x.max(1.0);
+                // Re-anchor ONLY on an actual change: a redundant same-value write must
+                // not reset pacing (which would drop the elapsed interval / stall a tick).
+                if new != self.sfreq {
+                    self.sfreq = new;
+                    self.start = None;
+                    self.emitted = 0;
+                }
             }
         }
         Ok(())
@@ -294,6 +299,27 @@ mod tests {
         } else {
             panic!("expected array");
         }
+    }
+
+    #[test]
+    fn same_value_sfreq_write_does_not_reanchor_pacing() {
+        let (mut node, m, params) = build(1.0, 1000.0, 1.0, "sine");
+        run_at(&mut node, m, &params, 0.0); // anchor at t=0
+        assert_eq!(run_at(&mut node, m, &params, 0.010).unwrap().len(), 10); // emitted = 10
+        // Redundant same-value sfreq write must NOT reset pacing.
+        node.on_param_changed(&ParamKey::new("oscillator", "sfreq"), &Param::float(1000.0, 1.0, 1e6)).unwrap();
+        // Drift-free pacing continues (10 more, not a re-anchor to zero elapsed).
+        assert_eq!(run_at(&mut node, m, &params, 0.020).unwrap().len(), 10);
+    }
+
+    #[test]
+    fn changed_sfreq_reanchors_pacing() {
+        let (mut node, m, params) = build(1.0, 1000.0, 1.0, "sine");
+        run_at(&mut node, m, &params, 0.0);
+        run_at(&mut node, m, &params, 0.010); // emitted = 10
+        // A real change re-anchors: the next tick anchors at its own `now` -> no frame yet.
+        node.on_param_changed(&ParamKey::new("oscillator", "sfreq"), &Param::float(500.0, 1.0, 1e6)).unwrap();
+        assert!(run_at(&mut node, m, &params, 0.020).is_none(), "changed sfreq re-anchors -> no frame this tick");
     }
 
     #[test]
