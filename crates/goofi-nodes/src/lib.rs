@@ -5,7 +5,9 @@
 //! Downstream binaries (engine/bridge) must reference this crate so the linker
 //! keeps the `inventory::submit!` registrations — call [`native_node_count`].
 
+mod buffer;
 mod constant_array;
+mod math;
 mod oscillator;
 
 /// Force-links this crate's node registrations and reports how many native node
