@@ -230,12 +230,20 @@ pub enum MetaValue {
 /// derived from the array store and projected into the wire meta at encode time.
 #[derive(Clone, Debug, Default)]
 pub struct Meta {
+    /// Intra-frame sample rate — samples *per second within one emitted frame*
+    /// (biosignals). Distinct from [`ufreq`](Self::ufreq), the frame-emit rate.
     pub sfreq: Option<f64>,
+    /// Measured update frequency: the producer slot's actual emit rate in Hz,
+    /// smoothed and stamped by the engine (like [`index`](Self::index) — the node
+    /// never sets it). `None` until the slot has emitted at least twice. The
+    /// default frequency-of-record for a slot; `sfreq` only overrides it for
+    /// signals carrying more samples per frame than the emit cadence.
+    pub ufreq: Option<f64>,
     pub index: Option<u64>,
     pub channels: Channels,
     pub reduced: Option<MetaValue>,
     /// Arbitrary keys, including the `/^__.*__$/` hidden-internal namespace.
-    /// Reserved keys (shape/dtype/channels/sfreq/index/reduced) never live here.
+    /// Reserved keys (shape/dtype/channels/sfreq/ufreq/index/reduced) never live here.
     pub extra: BTreeMap<String, MetaValue>,
 }
 
@@ -296,12 +304,15 @@ impl Data {
         }))
     }
 
-    /// A copy of this `Data` with `meta.index` set to `index`, sharing the value
-    /// buffer (an `Arc` bump — never a payload copy). Only the small `Meta` sidecar
-    /// is cloned. The engine stamps the continuity index this way after a node emits.
-    pub fn with_index(&self, index: u64) -> Data {
+    /// A copy of this `Data` with the engine-owned meta stamped on — the continuity
+    /// `index` and the measured update-rate `ufreq` — sharing the value buffer (an
+    /// `Arc` bump — never a payload copy). Only the small `Meta` sidecar is cloned.
+    /// The engine calls this once per emitted frame; both fields are authoritative
+    /// (overwritten, never inherited). `ufreq` is `None` before a rate is measured.
+    pub fn with_stamps(&self, index: u64, ufreq: Option<f64>) -> Data {
         let mut meta = self.0.meta.clone();
         meta.index = Some(index);
+        meta.ufreq = ufreq;
         Data(Arc::new(DataInner {
             value: self.0.value.clone(),
             meta,
@@ -580,18 +591,29 @@ mod tests {
     }
 
     #[test]
-    fn with_index_sets_meta_and_shares_buffer() {
+    fn with_stamps_sets_engine_meta_and_shares_buffer() {
         let d = Data::from_array_bytes(DType::F32, vec![2], vec![0u8; 8], Meta::empty()).unwrap();
         assert_eq!(d.meta().index, None);
-        let stamped = d.with_index(7);
+        assert_eq!(d.meta().ufreq, None);
+        let stamped = d.with_stamps(7, Some(50.0));
         assert_eq!(stamped.meta().index, Some(7));
+        assert_eq!(stamped.meta().ufreq, Some(50.0));
         assert_eq!(d.meta().index, None, "original is untouched (immutable)");
+        assert_eq!(d.meta().ufreq, None, "original is untouched (immutable)");
         // The value buffer is shared, not copied (Arc bump).
         if let (Value::Array(a), Value::Array(b)) = (d.value(), stamped.value()) {
             assert_eq!(a.as_bytes().as_ptr(), b.as_bytes().as_ptr());
         } else {
             panic!()
         }
+    }
+
+    #[test]
+    fn with_stamps_none_ufreq_leaves_field_none() {
+        let d = Data::from_array_bytes(DType::F32, vec![2], vec![0u8; 8], Meta::empty()).unwrap();
+        let stamped = d.with_stamps(3, None);
+        assert_eq!(stamped.meta().index, Some(3));
+        assert_eq!(stamped.meta().ufreq, None, "no measurement yet ⇒ no ufreq stamped");
     }
 
     #[test]

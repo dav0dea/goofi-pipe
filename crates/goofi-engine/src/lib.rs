@@ -877,7 +877,7 @@ fn stamp_indices(entry: &mut NodeEntry) {
             *c += 1;
             v
         };
-        *d = d.with_index(index);
+        *d = d.with_stamps(index, None);
     }
 }
 
