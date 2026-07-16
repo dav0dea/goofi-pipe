@@ -383,7 +383,35 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
                     "state_update",
                     json!({
                         "node": uid.to_hex(),
-                        "params": schemas::describe_params(g.params(uid).unwrap()),
+                        "params": schemas::describe_node_params(&g, uid),
+                        "output_subscribers": {},
+                        "stage": "ready",
+                        "error": g.last_error(uid),
+                        "log_endpoint": Value::Null,
+                        "refreshed_params": [],
+                    }),
+                ));
+                Ok(json!({ "ok": true }))
+            }
+            "set_expression" => {
+                let uid = parse_uid(&payload, "node")?;
+                let group = payload.get("group").and_then(|v| v.as_str()).ok_or("missing group")?;
+                let name = payload.get("name").and_then(|v| v.as_str()).ok_or("missing name")?;
+                let expression = payload.get("expression").and_then(|v| v.as_str()).unwrap_or("");
+                let enabled = payload
+                    .get("expression_enabled")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                let triggers = payload
+                    .get("expression_triggers_process")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                g.set_expression(uid, group, name, expression, enabled, triggers)?;
+                events.push(event(
+                    "state_update",
+                    json!({
+                        "node": uid.to_hex(),
+                        "params": schemas::describe_node_params(&g, uid),
                         "output_subscribers": {},
                         "stage": "ready",
                         "error": g.last_error(uid),

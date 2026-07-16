@@ -3,15 +3,16 @@
 //! and shapes aligned with the frontend or co-edit it.
 
 use goofi_core::Param;
-use goofi_engine::{Graph, LinkView, Uid};
+use goofi_engine::{ExprInfo, Graph, LinkView, Uid};
 use goofi_node::{NodeManifest, ParamGroups};
 use serde_json::{json, Map, Value};
 
 pub const ROOT_ID: &str = "__root__";
 pub const PROTOCOL_VERSION: i64 = 1;
 
-/// A single param descriptor (discriminated on `type`).
-pub fn describe_param(p: &Param) -> Value {
+/// A single param descriptor (discriminated on `type`). `expr` is the instance's
+/// expression binding (or `None` for a plain literal / a palette type-level param).
+pub fn describe_param(p: &Param, expr: Option<&ExprInfo>) -> Value {
     let mut m = Map::new();
     let value = match p {
         Param::Float { value, .. } => json!(value),
@@ -27,10 +28,17 @@ pub fn describe_param(p: &Param) -> Value {
         "refreshable".into(),
         json!(matches!(p, Param::Str { refresh: true, .. })),
     );
-    m.insert("expression".into(), Value::Null);
-    m.insert("expression_enabled".into(), json!(false));
-    m.insert("expression_triggers_process".into(), json!(false));
+    // Real expression state (or nulls/false for an unbound param). `expression_error`
+    // drives the per-param field indicator. `expression_autoeval` is vestigial (auto-eval
+    // is always on) — kept as `false` until the frontend "auto" button is removed.
+    m.insert("expression".into(), expr.map(|e| json!(e.source)).unwrap_or(Value::Null));
+    m.insert("expression_enabled".into(), json!(expr.is_some_and(|e| e.enabled)));
+    m.insert("expression_triggers_process".into(), json!(expr.is_some_and(|e| e.triggers_process)));
     m.insert("expression_autoeval".into(), json!(false));
+    m.insert(
+        "expression_error".into(),
+        expr.and_then(|e| e.error.as_ref()).map(|s| json!(s)).unwrap_or(Value::Null),
+    );
     match p {
         Param::Float { vmin, vmax, .. } => {
             m.insert("type".into(), json!("float"));
@@ -61,12 +69,31 @@ pub fn describe_param(p: &Param) -> Value {
     Value::Object(m)
 }
 
+/// Type-level / literal params (no expression bindings) — used for the palette.
 pub fn describe_params(p: &ParamGroups) -> Value {
     let mut groups = Map::new();
     for (gname, g) in p {
         let mut names = Map::new();
         for (n, param) in g {
-            names.insert(n.clone(), describe_param(param));
+            names.insert(n.clone(), describe_param(param, None));
+        }
+        groups.insert(gname.clone(), Value::Object(names));
+    }
+    Value::Object(groups)
+}
+
+/// A node instance's params, each carrying its real expression binding state (source /
+/// enabled / triggers / error) for the fx toggle + field error indicator.
+pub fn describe_node_params(g: &Graph, uid: Uid) -> Value {
+    let Some(params) = g.params(uid) else {
+        return Value::Object(Map::new());
+    };
+    let mut groups = Map::new();
+    for (gname, group) in params {
+        let mut names = Map::new();
+        for (n, param) in group {
+            let expr = g.param_expression(uid, gname, n);
+            names.insert(n.clone(), describe_param(param, expr.as_ref()));
         }
         groups.insert(gname.clone(), Value::Object(names));
     }
@@ -137,7 +164,7 @@ pub fn node_instance_info(g: &Graph, uid: Uid) -> Value {
         "input_slots": input_slots(m),
         "input_multi": input_multi(m),
         "output_slots": output_slots(m),
-        "params": describe_params(g.params(uid).expect("params")),
+        "params": describe_node_params(g, uid),
         "pos": g.pos(uid).unwrap_or([0.0, 0.0]),
         "viewers": {},
         "inputs": {},
