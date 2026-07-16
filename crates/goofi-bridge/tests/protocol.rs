@@ -11,7 +11,22 @@ use serde_json::{json, Value};
 use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::Message;
 
-async fn recv_text(ws: &mut (impl StreamExt<Item = tokio_tungstenite::tungstenite::Result<Message>> + Unpin)) -> Value {
+type Ws = tokio_tungstenite::WebSocketStream<
+    tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+>;
+
+async fn start_server() -> String {
+    let state = AppState::new();
+    spawn_tick(state.graph.clone(), 240);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        serve_listener(listener, state).await.unwrap();
+    });
+    format!("ws://{addr}")
+}
+
+async fn recv_text(ws: &mut Ws) -> Value {
     loop {
         let msg = tokio::time::timeout(Duration::from_secs(5), ws.next())
             .await
@@ -24,17 +39,24 @@ async fn recv_text(ws: &mut (impl StreamExt<Item = tokio_tungstenite::tungstenit
     }
 }
 
+/// Send an RPC and return the reply for its id (skipping interleaved events).
+async fn call(ws: &mut Ws, id: i64, op: &str, payload: Value) -> Value {
+    ws.send(Message::Text(
+        json!({ "id": id, "op": op, "payload": payload }).to_string(),
+    ))
+    .await
+    .unwrap();
+    loop {
+        let m = recv_text(ws).await;
+        if m.get("id").and_then(|v| v.as_i64()) == Some(id) {
+            return m;
+        }
+    }
+}
+
 #[tokio::test]
 async fn control_and_data_plane_end_to_end() {
-    let state = AppState::new();
-    spawn_tick(state.graph.clone(), 240);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    tokio::spawn(async move {
-        serve_listener(listener, state).await.unwrap();
-    });
-
-    let base = format!("ws://{addr}");
+    let base = start_server().await;
     let (mut ws, _) = connect_async(format!("{base}/control")).await.unwrap();
 
     // 1. hello: protocol_version + instance_id + ROOT instance.
@@ -127,4 +149,60 @@ async fn control_and_data_plane_end_to_end() {
         }
     };
     assert_eq!(closed, Some(4004), "unknown slot closes with 4004");
+}
+
+#[tokio::test]
+async fn native_dsp_chain_streams_a_spectrum() {
+    let base = start_server().await;
+    let (mut ws, _) = connect_async(format!("{base}/control")).await.unwrap();
+    let _hello = recv_text(&mut ws).await;
+
+    let uid = |v: &Value| v["result"].as_str().unwrap().to_string();
+    let osc = uid(&call(&mut ws, 1, "add_node", json!({ "type": "Oscillator" })).await);
+    let buf = uid(&call(&mut ws, 2, "add_node", json!({ "type": "Buffer" })).await);
+    let psd = uid(&call(&mut ws, 3, "add_node", json!({ "type": "PSD" })).await);
+
+    // Bound the buffer so the spectrum length settles quickly.
+    call(
+        &mut ws,
+        4,
+        "update_param",
+        json!({ "node": buf, "group": "buffer", "name": "size", "value": 128 }),
+    )
+    .await;
+    // Oscillator -> Buffer -> PSD
+    call(
+        &mut ws,
+        5,
+        "add_link",
+        json!({ "node_out": osc, "slot_out": "out", "node_in": buf, "slot_in": "data" }),
+    )
+    .await;
+    call(
+        &mut ws,
+        6,
+        "add_link",
+        json!({ "node_out": buf, "slot_out": "out", "node_in": psd, "slot_in": "data" }),
+    )
+    .await;
+
+    // The PSD output streams a real one-sided spectrum through the data plane.
+    let (mut data, _) = connect_async(format!("{base}/data/{psd}/psd/line"))
+        .await
+        .unwrap();
+    let frame = loop {
+        let msg = tokio::time::timeout(Duration::from_secs(5), data.next())
+            .await
+            .expect("spectrum frame timed out")
+            .expect("stream ended")
+            .expect("ws error");
+        if let Message::Binary(b) = msg {
+            break b;
+        }
+    };
+    assert_eq!(&frame[0..4], b"GOOF");
+    assert_eq!(frame[4], 2, "version");
+    assert_eq!(frame[5], 0, "PSD emits an ARRAY");
+    let body_len = u32::from_le_bytes(frame[10..14].try_into().unwrap());
+    assert!(body_len > 8, "non-trivial spectrum body ({body_len} bytes)");
 }
