@@ -5,6 +5,7 @@
 //! Downstream binaries (engine/bridge) must reference this crate so the linker
 //! keeps the `inventory::submit!` registrations — call [`native_node_count`].
 
+mod appendtables;
 mod autocorrelation;
 mod buffer;
 mod clip;
@@ -29,6 +30,8 @@ mod reduce;
 mod reshape;
 mod setmeta;
 mod smooth;
+mod tableselectarray;
+mod tableselectstring;
 mod threshold;
 mod timedelayembedding;
 mod transpose;
