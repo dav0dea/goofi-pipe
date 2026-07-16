@@ -89,6 +89,41 @@ fn real_python_node_runs_inside_the_engine_graph() {
 }
 
 #[test]
+fn discovers_and_hosts_python_nodes_from_a_directory() {
+    // A directory of node files, some valid, some not.
+    let dir = std::env::temp_dir().join(format!("goofi_pydisc_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("triple.py"),
+        "import numpy as np\ndef process(x):\n    return x * 3.0\n",
+    )
+    .unwrap();
+    std::fs::write(dir.join("_hidden.py"), "def process(x):\n    return x\n").unwrap();
+    std::fs::write(dir.join("broken.py"), "def not_process(x):\n    return x\n").unwrap();
+
+    let types = goofi_py::discover(&dir).unwrap();
+    // Only triple.py is a valid, non-hidden node defining `process`.
+    let names: Vec<&str> = types.iter().map(|t| t.manifest.type_name).collect();
+    assert_eq!(names, vec!["Triple"]);
+
+    // Register the discovered types into a graph and drive one end-to-end.
+    let mut g = Graph::new();
+    for t in types {
+        g.register_dyn_type(t.manifest, t.factory);
+    }
+    let src = g.add_node("ConstantArray", None).unwrap();
+    g.update_param(src, "constant", "value", Param::float(2.0, -1e9, 1e9)).unwrap();
+    g.update_param(src, "constant", "length", Param::int(3, 1, 1_000_000)).unwrap();
+    let py = g.add_node("Triple", None).unwrap();
+    g.add_link(src, "out", py, "data").unwrap();
+    g.tick();
+    assert_eq!(first_f32(&g.latest_frame(py, "out").unwrap()), 6.0);
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn python_nodes_run_concurrently_in_the_scheduler() {
     // One source fans out to N Python nodes, all at topological level 1, so the
     // scheduler runs them concurrently. Each sleeps 25ms inside Python: with the
