@@ -17,6 +17,7 @@ mod psd;
 mod reduce;
 mod smooth;
 mod threshold;
+mod transpose;
 
 /// Force-links this crate's node registrations and reports how many native node
 /// types are registered. Call once from a binary's startup so `inventory` keeps
