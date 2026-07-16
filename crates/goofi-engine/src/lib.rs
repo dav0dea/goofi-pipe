@@ -201,6 +201,17 @@ pub struct Graph {
     /// The injected param-expression evaluator (pyo3, from goofi-py). `None` → bindings
     /// are stored + round-trip but can't evaluate (graceful degrade to the literal).
     evaluator: Option<Arc<dyn goofi_node::ExprEvaluator>>,
+    /// ── Sub-patch forest (the authoritative composition model; the flat `nodes`/`links`
+    /// above is its projection). Empty ⇒ a plain flat graph, byte-for-byte today's behavior.
+    defs: IndexMap<subpatch::DefId, subpatch::SubPatchDef>,
+    /// Live instances (does NOT include the synthetic ROOT scope).
+    instances: IndexMap<Uid, subpatch::Instance>,
+    /// leaf/instance uid → its parent instance (`None` = ROOT scope). A uid absent from this
+    /// map is ROOT-scoped (so an ordinary flat graph needs no entries).
+    scope_of: HashMap<Uid, Option<Uid>>,
+    /// leaf/instance uid → its template-local name within its scope (absent ⇒ use the node name).
+    local_of: HashMap<Uid, subpatch::Local>,
+    next_def: u64,
 }
 
 impl Default for Graph {
@@ -220,6 +231,11 @@ impl Graph {
             dyn_types: HashMap::new(),
             start: None,
             evaluator: None,
+            defs: IndexMap::new(),
+            instances: IndexMap::new(),
+            scope_of: HashMap::new(),
+            local_of: HashMap::new(),
+            next_def: 1,
         }
     }
 
@@ -463,6 +479,231 @@ impl Graph {
     /// A node's viewer view-state blob (empty object if never set).
     pub fn viewers(&self, uid: Uid) -> Option<&serde_json::Value> {
         self.nodes.get(&uid).map(|e| &e.viewers)
+    }
+
+    // ── Sub-patch forest: accessors + group/expand (bookkeeping-only) ─────────────
+    // Grouping never touches the flat runtime — the members stay the exact live nodes they
+    // were; only their membership re-tags. So there is no respawn, no data gap, and undo is
+    // just the inverse tag flip. `reconcile` (Phase 5) is what SPAWNS subtrees.
+
+    /// The parent instance of a node/instance (`None` = ROOT scope). Absent ⇒ ROOT, so a
+    /// plain flat graph needs no entries.
+    pub fn scope_of(&self, uid: Uid) -> Option<Uid> {
+        self.scope_of.get(&uid).copied().flatten()
+    }
+
+    /// A node's template-local name within its scope (its display name by default).
+    pub fn local_of(&self, uid: Uid) -> Option<&str> {
+        self.local_of.get(&uid).map(|s| s.as_str())
+    }
+
+    /// Live instance uids (excludes the synthetic ROOT).
+    pub fn instance_uids(&self) -> Vec<Uid> {
+        self.instances.keys().copied().collect()
+    }
+
+    pub fn instance(&self, uid: Uid) -> Option<&subpatch::Instance> {
+        self.instances.get(&uid)
+    }
+
+    pub fn def(&self, def_id: subpatch::DefId) -> Option<&subpatch::SubPatchDef> {
+        self.defs.get(&def_id)
+    }
+
+    /// How many live instances reference a def: 1 ⇒ unique (serializes inline), ≥2 ⇒ shared.
+    pub fn def_refcount(&self, def_id: subpatch::DefId) -> usize {
+        self.instances.values().filter(|i| i.def_id == def_id).count()
+    }
+
+    fn mint_def(&mut self) -> subpatch::DefId {
+        let d = subpatch::DefId(self.next_def);
+        self.next_def += 1;
+        d
+    }
+
+    fn output_slot_type(&self, uid: Uid, slot: &str) -> Option<goofi_core::SlotType> {
+        let m = self.nodes.get(&uid)?.manifest;
+        m.outputs.iter().find(|o| o.name == slot).map(|o| o.kind)
+    }
+
+    fn input_slot_type(&self, uid: Uid, slot: &str) -> Option<goofi_core::SlotType> {
+        let m = self.nodes.get(&uid)?.manifest;
+        m.inputs.iter().find(|s| s.name == slot).map(|s| s.kind)
+    }
+
+    /// Capture a live leaf as a def `LeafDecl` (type/params/expressions/pos), for grouping.
+    fn capture_leaf_decl(&self, uid: Uid) -> Option<subpatch::LeafDecl> {
+        let e = self.nodes.get(&uid)?;
+        let mut expressions: Vec<subpatch::ExprDecl> = e
+            .bindings
+            .iter()
+            .map(|(k, b)| subpatch::ExprDecl {
+                group: k.group.clone(),
+                name: k.name.clone(),
+                source: b.source.clone(),
+                enabled: b.enabled,
+                triggers_process: b.triggers_process,
+            })
+            .collect();
+        expressions.sort_by(|a, b| (&a.group, &a.name).cmp(&(&b.group, &b.name)));
+        Some(subpatch::LeafDecl {
+            type_name: e.manifest.type_name.to_string(),
+            params: e.params.clone(),
+            expressions,
+            pos: e.pos,
+        })
+    }
+
+    /// Group `members` (leaf nodes and/or existing instances, all in ONE scope) into a new
+    /// sub-patch instance. Pure bookkeeping: captures a def from the live members, derives its
+    /// interface from the cut links, and re-tags membership. Returns the new instance uid.
+    /// The flat `nodes`/`links` and every member's uid are UNCHANGED.
+    pub fn group_nodes(&mut self, members: &[Uid], pos: [f64; 2]) -> Result<Uid, String> {
+        use subpatch::{Boundary, Dir, LocalLink, MemberDecl, NestedDecl, Pillar};
+        if members.is_empty() {
+            return Err("group_nodes: empty selection".into());
+        }
+        // 1. Validate BEFORE any mutation: each exists, and all share one scope.
+        let mut scope: Option<Option<Uid>> = None;
+        for &m in members {
+            if !self.nodes.contains_key(&m) && !self.instances.contains_key(&m) {
+                return Err(format!("group_nodes: no such node {m}"));
+            }
+            let s = self.scope_of(m);
+            match scope {
+                None => scope = Some(s),
+                Some(prev) if prev != s => {
+                    return Err("group_nodes: members span multiple scopes".into())
+                }
+                _ => {}
+            }
+        }
+        let parent = scope.unwrap();
+        let member_set: std::collections::HashSet<Uid> = members.iter().copied().collect();
+
+        // 2. Capture each member as a MemberDecl under its display-name local (globally unique,
+        //    hence unique within the def).
+        let mut def_members: IndexMap<subpatch::Local, MemberDecl> = IndexMap::new();
+        let mut inst_members: IndexMap<subpatch::Local, Uid> = IndexMap::new();
+        let mut local_by_uid: HashMap<Uid, subpatch::Local> = HashMap::new();
+        for &m in members {
+            let local = self.name(m).unwrap_or("").to_string();
+            let decl = if let Some(inst) = self.instances.get(&m) {
+                MemberDecl::Nested(NestedDecl { def_id: inst.def_id, pos: inst.pos })
+            } else {
+                MemberDecl::Leaf(self.capture_leaf_decl(m).ok_or("group_nodes: member vanished")?)
+            };
+            def_members.insert(local.clone(), decl);
+            inst_members.insert(local.clone(), m);
+            local_by_uid.insert(m, local);
+        }
+
+        // 3. Interface from cut links (exactly one endpoint inside), one boundary per inner
+        //    (node, slot); links wholly inside become the def's local links.
+        let mut interface: IndexMap<subpatch::BndId, Boundary> = IndexMap::new();
+        let mut internal: Vec<LocalLink> = Vec::new();
+        let mut seen: std::collections::HashSet<(Uid, &'static str, bool)> = std::collections::HashSet::new();
+        let (mut in_n, mut out_n) = (0usize, 0usize);
+        for l in &self.links {
+            let out_in = member_set.contains(&l.node_out);
+            let in_in = member_set.contains(&l.node_in);
+            if out_in && in_in {
+                internal.push(LocalLink {
+                    out: local_by_uid[&l.node_out].clone(),
+                    out_slot: l.slot_out.to_string(),
+                    in_: local_by_uid[&l.node_in].clone(),
+                    in_slot: l.slot_in.to_string(),
+                });
+                continue;
+            }
+            if out_in {
+                if !seen.insert((l.node_out, l.slot_out, true)) {
+                    continue;
+                }
+                let dtype = self.output_slot_type(l.node_out, l.slot_out).unwrap_or(goofi_core::SlotType::Array);
+                let name = format!("out{out_n}");
+                interface.insert(
+                    name.clone(),
+                    Boundary {
+                        dir: Dir::Out,
+                        pillar: Pillar::Signal,
+                        dtype,
+                        inner: Some((local_by_uid[&l.node_out].clone(), l.slot_out.to_string())),
+                        pos: [pos[0] + 220.0, pos[1] + 40.0 * out_n as f64],
+                        name,
+                    },
+                );
+                out_n += 1;
+            } else if in_in {
+                if !seen.insert((l.node_in, l.slot_in, false)) {
+                    continue;
+                }
+                let dtype = self.input_slot_type(l.node_in, l.slot_in).unwrap_or(goofi_core::SlotType::Array);
+                let name = format!("in{in_n}");
+                interface.insert(
+                    name.clone(),
+                    Boundary {
+                        dir: Dir::In,
+                        pillar: Pillar::Signal,
+                        dtype,
+                        inner: Some((local_by_uid[&l.node_in].clone(), l.slot_in.to_string())),
+                        pos: [pos[0] - 40.0, pos[1] + 40.0 * in_n as f64],
+                        name,
+                    },
+                );
+                in_n += 1;
+            }
+        }
+
+        // 4. Mint + register. Members stay live; only membership re-tags.
+        let def_id = self.mint_def();
+        let inst_uid = self.mint();
+        let disp = format!("subpatch{}", inst_uid.0);
+        self.defs.insert(
+            def_id,
+            subpatch::SubPatchDef { name: disp.clone(), members: def_members, links: internal, interface },
+        );
+        self.instances.insert(
+            inst_uid,
+            subpatch::Instance { uid: inst_uid, name: disp, def_id, parent, pos, members: inst_members },
+        );
+        for &m in members {
+            self.scope_of.insert(m, Some(inst_uid));
+            self.local_of.insert(m, local_by_uid[&m].clone());
+        }
+        self.scope_of.insert(inst_uid, parent);
+        Ok(inst_uid)
+    }
+
+    /// Inline an instance back into its parent scope: re-tag each member to the parent scope,
+    /// drop the instance, and GC its def if now unreferenced. External flat links already point
+    /// at the members, so they survive verbatim. Returns the restored member uids.
+    pub fn expand_instance(&mut self, inst: Uid) -> Result<Vec<Uid>, String> {
+        let instance = self
+            .instances
+            .get(&inst)
+            .ok_or_else(|| format!("expand_instance: no such instance {inst}"))?;
+        let parent = instance.parent;
+        let def_id = instance.def_id;
+        let restored: Vec<Uid> = instance.members.values().copied().collect();
+        for &m in &restored {
+            match parent {
+                Some(p) => {
+                    self.scope_of.insert(m, Some(p));
+                }
+                None => {
+                    self.scope_of.remove(&m);
+                }
+            }
+            self.local_of.remove(&m); // back to display-name addressing in the parent scope
+        }
+        self.instances.shift_remove(&inst);
+        self.scope_of.remove(&inst);
+        self.local_of.remove(&inst);
+        if self.def_refcount(def_id) == 0 {
+            self.defs.shift_remove(&def_id);
+        }
+        Ok(restored)
     }
 
     /// All links as resolved views (snapshot projection).
@@ -759,6 +1000,10 @@ impl Graph {
         }
         self.nodes.clear();
         self.links.clear();
+        self.defs.clear();
+        self.instances.clear();
+        self.scope_of.clear();
+        self.local_of.clear();
     }
 
     fn force_set_name(&mut self, uid: Uid, name: &str) {
@@ -2627,6 +2872,81 @@ mod tests {
         let mut g = Graph::new();
         g.add_node("_TestConst", None).unwrap();
         assert!(!g.serialize().contains("viewers"), "no empty viewers blob in the file");
+    }
+
+    #[test]
+    fn group_nodes_is_bookkeeping_only() {
+        // Group a 2-node chain: one instance appears with two members, the interface exposes
+        // the downstream output, and the FLAT graph is byte-identical — same node uids, same
+        // links, no respawn.
+        let mut g = Graph::new();
+        let a = g.add_node("_TestConst", None).unwrap();
+        let b = g.add_node("_TestEcho", None).unwrap();
+        let c = g.add_node("_TestEcho", None).unwrap();
+        g.add_link(a, "out", b, "in").unwrap(); // wholly inside once [a,b] group
+        g.add_link(b, "out", c, "in").unwrap(); // CUT: b inside, c outside → output boundary
+        let nodes_before = g.node_uids();
+        let links_before = g.links_view().len();
+
+        let inst = g.group_nodes(&[a, b], [100.0, 100.0]).unwrap();
+
+        // Flat runtime unchanged.
+        assert_eq!(g.node_uids(), nodes_before, "no node minted/removed; uids identical");
+        assert_eq!(g.links_view().len(), links_before, "both links untouched (boundary is a view)");
+        // Membership re-tagged.
+        assert_eq!(g.scope_of(a), Some(inst), "a is now a member of the instance");
+        assert_eq!(g.scope_of(b), Some(inst));
+        assert_eq!(g.scope_of(c), None, "c stays at ROOT (external)");
+        assert_eq!(g.scope_of(inst), None, "the instance sits at ROOT");
+        // Forest shape: one instance, one def refcount 1 (unique), two members.
+        let instance = g.instance(inst).unwrap();
+        assert_eq!(instance.members.len(), 2);
+        assert_eq!(g.def_refcount(instance.def_id), 1, "unique def");
+        let def = g.def(instance.def_id).unwrap();
+        // The a→b link is internal (a def local link); only the b→c cut mints a boundary.
+        assert_eq!(def.links.len(), 1, "a→b captured as an internal local link");
+        assert_eq!(def.interface.len(), 1, "one cut link → one boundary");
+        let (_bnd, boundary) = def.interface.iter().next().unwrap();
+        assert_eq!(boundary.dir, subpatch::Dir::Out, "downstream output boundary");
+        let (inner_local, inner_slot) = boundary.inner.as_ref().expect("wired boundary");
+        assert_eq!(inner_local, g.name(b).unwrap(), "inner is b (by its local name)");
+        assert_eq!(inner_slot, "out", "inner is b's out slot");
+    }
+
+    #[test]
+    fn group_nodes_rejects_mixed_scope_without_mutating() {
+        let mut g = Graph::new();
+        let a = g.add_node("_TestConst", None).unwrap();
+        let b = g.add_node("_TestConst", None).unwrap();
+        let inner = g.group_nodes(&[a], [0.0, 0.0]).unwrap(); // a is now scoped to `inner`
+        let defs_before = g.instance_uids().len();
+        // a (in `inner`) + b (ROOT) span two scopes → rejected, nothing changes.
+        let err = g.group_nodes(&[a, b], [0.0, 0.0]).unwrap_err();
+        assert!(err.contains("scope"), "mixed-scope error; got {err}");
+        assert_eq!(g.instance_uids().len(), defs_before, "no instance created on failure");
+        assert_eq!(g.scope_of(a), Some(inner), "a's membership untouched");
+        assert_eq!(g.scope_of(b), None, "b stays at ROOT");
+    }
+
+    #[test]
+    fn expand_instance_restores_membership_and_gcs_the_def() {
+        let mut g = Graph::new();
+        let a = g.add_node("_TestConst", None).unwrap();
+        let b = g.add_node("_TestEcho", None).unwrap();
+        g.add_link(a, "out", b, "in").unwrap();
+        let inst = g.group_nodes(&[a, b], [0.0, 0.0]).unwrap();
+        let def_id = g.instance(inst).unwrap().def_id;
+
+        let restored = g.expand_instance(inst).unwrap();
+        assert_eq!(restored.len(), 2, "both members restored");
+        assert!(restored.contains(&a) && restored.contains(&b), "same member uids");
+        assert_eq!(g.scope_of(a), None, "a back at ROOT");
+        assert_eq!(g.scope_of(b), None);
+        assert!(g.instance(inst).is_none(), "instance dropped");
+        assert_eq!(g.def_refcount(def_id), 0, "def unreferenced");
+        assert!(g.def(def_id).is_none(), "def GC'd");
+        // The flat a→b link survived the round-trip.
+        assert_eq!(g.links_view().len(), 1, "external/internal links intact");
     }
 
     #[test]
