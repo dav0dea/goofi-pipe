@@ -206,3 +206,34 @@ async fn native_dsp_chain_streams_a_spectrum() {
     let body_len = u32::from_le_bytes(frame[10..14].try_into().unwrap());
     assert!(body_len > 8, "non-trivial spectrum body ({body_len} bytes)");
 }
+
+#[tokio::test]
+async fn serialize_and_load_roundtrip() {
+    let base = start_server().await;
+    let (mut ws, _) = connect_async(format!("{base}/control")).await.unwrap();
+    let _hello = recv_text(&mut ws).await;
+
+    call(&mut ws, 1, "add_node", json!({ "type": "Oscillator" })).await;
+    let ser = call(&mut ws, 2, "serialize", json!({})).await;
+    let yaml = ser["result"]["yaml"].as_str().unwrap().to_string();
+    assert!(yaml.contains("version: 3"), "gfi v3 header");
+    assert!(yaml.contains("Oscillator"), "node persisted");
+
+    // load_text replaces the graph and broadcasts graph_replaced.
+    ws.send(Message::Text(
+        json!({ "id": 3, "op": "load_text", "payload": { "content": yaml } }).to_string(),
+    ))
+    .await
+    .unwrap();
+    let replaced = loop {
+        let m = recv_text(&mut ws).await;
+        if m.get("event").and_then(|v| v.as_str()) == Some("graph_replaced") {
+            break m;
+        }
+    };
+    let nodes = replaced["payload"]["nodes"].as_array().unwrap();
+    assert!(
+        nodes.iter().any(|n| n["type"] == "Oscillator"),
+        "graph_replaced snapshot contains the restored node"
+    );
+}

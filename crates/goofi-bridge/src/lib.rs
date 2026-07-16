@@ -349,6 +349,27 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
                 events.push(event("node_renamed", json!({ "node": uid.to_hex(), "name": name })));
                 Ok(json!({ "ok": true }))
             }
+            "serialize" => Ok(json!({ "yaml": g.serialize() })),
+            "save" => {
+                let yaml = g.serialize();
+                let path = payload.get("path").and_then(|v| v.as_str());
+                if let Some(p) = path {
+                    std::fs::write(p, &yaml).map_err(|e| format!("save failed: {e}"))?;
+                }
+                Ok(json!({ "path": path, "yaml": yaml }))
+            }
+            "load_text" => {
+                let content = payload
+                    .get("content")
+                    .and_then(|v| v.as_str())
+                    .ok_or("load_text: missing content")?;
+                g.load_doc(content)?;
+                events.push(event(
+                    "graph_replaced",
+                    schemas::snapshot(&g, &state.instance_id, false),
+                ));
+                Ok(json!({ "ok": true }))
+            }
             other => Err(format!("unknown op `{other}`")),
         }
     })();

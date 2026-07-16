@@ -69,6 +69,18 @@ struct Link {
     slot_in: &'static str,
 }
 
+/// The persisted scalar value of a param (flat form; triggers persist `false`).
+fn param_value_json(p: &Param) -> serde_json::Value {
+    use serde_json::json;
+    match p {
+        Param::Float { value, .. } => json!(value),
+        Param::Int { value, .. } => json!(value),
+        Param::Bool { value } => json!(value),
+        Param::Trigger { .. } => json!(false),
+        Param::Str { value, .. } => json!(value),
+    }
+}
+
 /// The authoritative graph + scheduler.
 pub struct Graph {
     nodes: IndexMap<Uid, NodeEntry>,
@@ -339,6 +351,146 @@ impl Graph {
             .and_then(|e| e.outputs.get(slot))
             .cloned()
             .flatten()
+    }
+
+    /// Remove all nodes and links.
+    pub fn clear(&mut self) {
+        self.nodes.clear();
+        self.links.clear();
+    }
+
+    fn force_set_name(&mut self, uid: Uid, name: &str) {
+        if let Some(e) = self.nodes.get_mut(&uid) {
+            e.name = name.to_string();
+        }
+    }
+
+    fn set_param_from_json(&mut self, uid: Uid, group: &str, name: &str, val: &serde_json::Value) {
+        let existing = self
+            .nodes
+            .get(&uid)
+            .and_then(|e| goofi_node::param(&e.params, group, name))
+            .cloned();
+        let Some(existing) = existing else {
+            return;
+        };
+        let newp = match existing {
+            Param::Float { vmin, vmax, .. } => Param::Float {
+                value: val.as_f64().unwrap_or(0.0),
+                vmin,
+                vmax,
+            },
+            Param::Int { vmin, vmax, .. } => Param::Int {
+                value: val.as_i64().unwrap_or(0),
+                vmin,
+                vmax,
+            },
+            Param::Bool { .. } => Param::Bool {
+                value: val.as_bool().unwrap_or(false),
+            },
+            Param::Trigger { .. } => Param::Trigger { fired: false },
+            Param::Str {
+                options, refresh, ..
+            } => Param::Str {
+                value: val.as_str().unwrap_or("").to_string(),
+                options,
+                refresh,
+            },
+        };
+        let _ = self.update_param(uid, group, name, newp);
+    }
+
+    /// Serialize the graph to a `.gfi` v3 document (YAML text).
+    pub fn serialize(&self) -> String {
+        use serde_json::{json, Map, Value};
+        let mut nodes = Map::new();
+        for uid in self.node_uids() {
+            let e = &self.nodes[&uid];
+            let mut params = Map::new();
+            for (group, names) in &e.params {
+                let mut gmap = Map::new();
+                for (name, p) in names {
+                    gmap.insert(name.clone(), param_value_json(p));
+                }
+                params.insert(group.clone(), Value::Object(gmap));
+            }
+            nodes.insert(
+                uid.to_hex(),
+                json!({ "type": e.type_name, "name": e.name, "pos": e.pos, "params": Value::Object(params) }),
+            );
+        }
+        let links: Vec<Value> = self
+            .links
+            .iter()
+            .map(|l| json!([l.node_out.to_hex(), l.slot_out, l.node_in.to_hex(), l.slot_in]))
+            .collect();
+        let doc = json!({ "version": 3, "nodes": Value::Object(nodes), "links": links });
+        serde_yaml_ng::to_string(&doc).unwrap_or_default()
+    }
+
+    /// Replace the graph from a `.gfi` v3 document. Node types are validated
+    /// before the current graph is torn down (a rejected load is a no-op).
+    pub fn load_doc(&mut self, text: &str) -> Result<(), String> {
+        let doc: serde_json::Value = serde_yaml_ng::from_str(text).map_err(|e| e.to_string())?;
+        if doc.get("version").and_then(|v| v.as_i64()) != Some(3) {
+            return Err("unsupported .gfi version (expected 3)".into());
+        }
+        let nodes = doc
+            .get("nodes")
+            .and_then(|v| v.as_object())
+            .ok_or("missing `nodes`")?;
+        for rec in nodes.values() {
+            let ty = rec.get("type").and_then(|v| v.as_str()).ok_or("node missing `type`")?;
+            if goofi_node::find(ty).is_none() {
+                return Err(format!("unknown node type `{ty}`"));
+            }
+        }
+
+        self.clear();
+        let mut idmap: HashMap<String, Uid> = HashMap::new();
+        for (old, rec) in nodes {
+            let ty = rec["type"].as_str().unwrap();
+            let uid = self.add_node(ty, None)?;
+            idmap.insert(old.clone(), uid);
+            if let Some(name) = rec.get("name").and_then(|v| v.as_str()) {
+                self.force_set_name(uid, name);
+            }
+            if let Some(p) = rec.get("pos").and_then(|v| v.as_array()) {
+                if p.len() == 2 {
+                    if let (Some(x), Some(y)) = (p[0].as_f64(), p[1].as_f64()) {
+                        let _ = self.set_node_pos(uid, [x, y]);
+                    }
+                }
+            }
+            if let Some(groups) = rec.get("params").and_then(|v| v.as_object()) {
+                for (group, names) in groups {
+                    if let Some(nm) = names.as_object() {
+                        for (name, val) in nm {
+                            self.set_param_from_json(uid, group, name, val);
+                        }
+                    }
+                }
+            }
+        }
+        if let Some(links) = doc.get("links").and_then(|v| v.as_array()) {
+            for l in links {
+                if let Some(a) = l.as_array() {
+                    if a.len() == 4 {
+                        let no = a[0].as_str().and_then(|s| idmap.get(s)).copied();
+                        let ni = a[2].as_str().and_then(|s| idmap.get(s)).copied();
+                        if let (Some(no), Some(ni)) = (no, ni) {
+                            let _ = self.add_link(
+                                no,
+                                a[1].as_str().unwrap_or(""),
+                                ni,
+                                a[3].as_str().unwrap_or(""),
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Kahn topological order (producers before consumers); a cycle's remaining
@@ -668,5 +820,59 @@ mod tests {
             g.latest_frame(cnt, "out").is_none(),
             "a triggered node with no wired input must never run"
         );
+    }
+
+    #[test]
+    fn gfi_v3_serialize_load_roundtrip() {
+        let mut g = Graph::new();
+        let c = g.add_node("ConstantArray", None).unwrap();
+        g.update_param(c, "constant", "value", Param::float(7.5, -1e9, 1e9))
+            .unwrap();
+        g.rename_node(c, "myconst").unwrap();
+        g.set_node_pos(c, [11.0, 22.0]).unwrap();
+        let echo = g.add_node("_TestEcho", None).unwrap();
+        g.add_link(c, "out", echo, "in").unwrap();
+
+        let yaml = g.serialize();
+        assert!(yaml.contains("version: 3"));
+
+        let mut g2 = Graph::new();
+        g2.load_doc(&yaml).unwrap();
+        assert_eq!(g2.node_count(), 2);
+
+        let restored = g2
+            .node_uids()
+            .into_iter()
+            .find(|u| g2.name(*u) == Some("myconst"))
+            .expect("named node restored");
+        assert_eq!(g2.type_name(restored), Some("ConstantArray"));
+        assert_eq!(g2.pos(restored), Some([11.0, 22.0]));
+        assert_eq!(
+            goofi_node::param(g2.params(restored).unwrap(), "constant", "value")
+                .unwrap()
+                .as_f64(),
+            Some(7.5)
+        );
+
+        // The link round-trips: ticking drives the echo from the restored source.
+        g2.tick();
+        let echo2 = g2
+            .node_uids()
+            .into_iter()
+            .find(|u| g2.type_name(*u) == Some("_TestEcho"))
+            .unwrap();
+        assert!(g2.latest_frame(echo2, "out").is_some(), "restored link must carry data");
+        assert_eq!(first_f32(&g2.latest_frame(echo2, "out").unwrap()), 7.5);
+    }
+
+    #[test]
+    fn load_doc_rejects_unknown_type_before_teardown() {
+        let mut g = Graph::new();
+        g.add_node("ConstantArray", None).unwrap();
+        let before = g.node_count();
+        let bad = "version: 3\nnodes:\n  \"00000000000a\":\n    type: NotAReal Node\n    pos: [0, 0]\nlinks: []\n";
+        assert!(g.load_doc(bad).is_err());
+        // validate-before-teardown: the existing graph is untouched on failure.
+        assert_eq!(g.node_count(), before);
     }
 }

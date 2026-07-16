@@ -9,6 +9,8 @@ goofi-core = { path = "../goofi-core" }
 goofi-node = { path = "../goofi-node" }
 goofi-nodes = { path = "../goofi-nodes" }
 indexmap = "2"
+serde_json = "1"
+serde_yaml_ng = "0.10"
 
 [dev-dependencies]
 inventory = "0.3"
