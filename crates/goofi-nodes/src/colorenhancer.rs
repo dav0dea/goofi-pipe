@@ -98,6 +98,7 @@ static INPUTS: &[SlotDecl] = &[SlotDecl {
     name: "image",
     kind: SlotType::Array,
     trigger_process: true,
+    multi: false,
 }];
 static OUTPUTS: &[OutputDecl] = &[OutputDecl {
     name: "enhanced_image",

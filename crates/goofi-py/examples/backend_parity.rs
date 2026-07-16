@@ -51,6 +51,7 @@ static IN: &[SlotDecl] = &[SlotDecl {
     name: "data",
     kind: goofi_core::SlotType::Array,
     trigger_process: true,
+    multi: false,
 }];
 static OUT: &[OutputDecl] = &[OutputDecl {
     name: "out",

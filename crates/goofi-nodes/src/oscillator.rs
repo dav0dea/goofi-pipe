@@ -159,6 +159,7 @@ static INPUTS: &[SlotDecl] = &[SlotDecl {
     name: "frequency",
     kind: SlotType::Array,
     trigger_process: false,
+    multi: false,
 }];
 
 inventory::submit! {

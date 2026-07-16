@@ -76,8 +76,8 @@ fn make(p: &ParamGroups) -> Box<dyn Node> {
 }
 
 static INPUTS: &[SlotDecl] = &[
-    SlotDecl { name: "input_table", kind: SlotType::Table, trigger_process: true },
-    SlotDecl { name: "key", kind: SlotType::String, trigger_process: true },
+    SlotDecl { name: "input_table", kind: SlotType::Table, trigger_process: true, multi: false },
+    SlotDecl { name: "key", kind: SlotType::String, trigger_process: true, multi: false },
 ];
 static OUTPUTS: &[OutputDecl] = &[OutputDecl {
     name: "output_array",

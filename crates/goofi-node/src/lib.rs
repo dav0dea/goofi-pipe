@@ -71,18 +71,50 @@ pub fn param<'a>(p: &'a ParamGroups, group: &str, name: &str) -> Option<&'a Para
 // Tick I/O
 // ---------------------------------------------------------------------------
 
-/// The latest `Data` on each subscribed input slot (`None` if unwired / no frame
-/// yet). Borrowed for the duration of a tick.
+/// The per-tick input view handed to a node. Single-source slots hold the latest
+/// `Data` (`None` if unwired / no frame yet); `multi` slots hold an ordered list of
+/// the latest frame from each connected wire (present-only, connection order —
+/// materialized by the engine). Borrowed for the duration of a tick. The two maps
+/// are keyed disjointly by slot name (a slot is single XOR multi).
 pub struct Inputs<'a> {
-    slots: &'a IndexMap<&'static str, Option<Data>>,
+    singles: &'a IndexMap<&'static str, Option<Data>>,
+    multis: Option<&'a IndexMap<&'static str, Vec<Data>>>,
 }
 
 impl<'a> Inputs<'a> {
-    pub fn new(slots: &'a IndexMap<&'static str, Option<Data>>) -> Inputs<'a> {
-        Inputs { slots }
+    /// A single-source-only input view (no `multi` slots).
+    pub fn new(singles: &'a IndexMap<&'static str, Option<Data>>) -> Inputs<'a> {
+        Inputs { singles, multis: None }
     }
+    /// An input view with `multi` slots (the engine's materialized per-wire lists).
+    pub fn with_multi(
+        singles: &'a IndexMap<&'static str, Option<Data>>,
+        multis: &'a IndexMap<&'static str, Vec<Data>>,
+    ) -> Inputs<'a> {
+        Inputs { singles, multis: Some(multis) }
+    }
+    /// The latest frame on a single slot. On a `multi` slot, the first present frame
+    /// (a convenience — `multi` nodes read [`get_multi`](Self::get_multi)).
     pub fn get(&self, name: &str) -> Option<&Data> {
-        self.slots.get(name).and_then(|o| o.as_ref())
+        if let Some(o) = self.singles.get(name) {
+            if let Some(d) = o.as_ref() {
+                return Some(d);
+            }
+        }
+        self.multis.and_then(|m| m.get(name)).and_then(|v| v.first())
+    }
+    /// The ordered list of present frames on a `multi` slot (connection order). On a
+    /// single slot, a total 0/1-element slice — so a node need not special-case arity.
+    pub fn get_multi(&self, name: &str) -> &[Data] {
+        if let Some(m) = self.multis {
+            if let Some(v) = m.get(name) {
+                return v.as_slice();
+            }
+        }
+        match self.singles.get(name) {
+            Some(Some(d)) => std::slice::from_ref(d),
+            _ => &[],
+        }
     }
 }
 
@@ -291,6 +323,11 @@ pub struct SlotDecl {
     pub kind: SlotType,
     /// Whether fresh data on this slot wakes `process()` (vs. a held reference input).
     pub trigger_process: bool,
+    /// A `multi` (variadic) input slot accepts an arbitrary number of wires and
+    /// delivers them to the node as an ordered `&[Data]` (via `inp.get_multi`),
+    /// latest-wins per wire, in connection order. Fixed by the node author here —
+    /// a slot is single or multi for the life of the node type, never toggled.
+    pub multi: bool,
 }
 
 pub struct OutputDecl {
@@ -352,6 +389,38 @@ mod tests {
             out.set("nonexistent", d); // writing an unknown slot is a no-op
         }
         assert!(outmap.get("out").unwrap().is_some());
+    }
+
+    #[test]
+    fn get_multi_returns_present_frames_in_connection_order() {
+        fn mk(v: f32) -> Data {
+            Data::from_array_bytes(DType::F32, vec![1], v.to_le_bytes().to_vec(), Meta::empty()).unwrap()
+        }
+        fn val(d: &Data) -> f32 {
+            match d.value() {
+                goofi_core::Value::Array(s) => f32::from_le_bytes(s.as_bytes()[0..4].try_into().unwrap()),
+                _ => panic!(),
+            }
+        }
+        let singles: IndexMap<&'static str, Option<Data>> = IndexMap::new();
+        let mut multis: IndexMap<&'static str, Vec<Data>> = IndexMap::new();
+        multis.insert("ins", vec![mk(1.0), mk(2.0), mk(3.0)]);
+        let inp = Inputs::with_multi(&singles, &multis);
+        let got = inp.get_multi("ins");
+        assert_eq!(got.len(), 3);
+        assert_eq!([val(&got[0]), val(&got[1]), val(&got[2])], [1.0, 2.0, 3.0], "order preserved");
+        assert_eq!(inp.get("ins").map(val), Some(1.0), "get() on a multi slot -> first present");
+        assert!(inp.get_multi("absent").is_empty());
+
+        // get_multi on a single slot is total: 0/1-element slice.
+        let mut singles2: IndexMap<&'static str, Option<Data>> = IndexMap::new();
+        singles2.insert("one", Some(mk(9.0)));
+        singles2.insert("empty", None);
+        let inp2 = Inputs::new(&singles2);
+        assert_eq!(inp2.get_multi("one").len(), 1);
+        assert_eq!(val(&inp2.get_multi("one")[0]), 9.0);
+        assert!(inp2.get_multi("empty").is_empty());
+        assert!(inp2.get_multi("missing").is_empty());
     }
 
     #[test]

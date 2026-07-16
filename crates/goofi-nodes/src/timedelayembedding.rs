@@ -215,6 +215,7 @@ static INPUTS: &[SlotDecl] = &[SlotDecl {
     name: "input_array",
     kind: SlotType::Array,
     trigger_process: true,
+    multi: false,
 }];
 static OUTPUTS: &[OutputDecl] = &[OutputDecl {
     name: "embedded_array",

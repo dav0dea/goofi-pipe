@@ -17,6 +17,7 @@ static PY_IN: &[SlotDecl] = &[SlotDecl {
     name: "data",
     kind: goofi_core::SlotType::Array,
     trigger_process: true,
+    multi: false,
 }];
 static PY_OUT: &[OutputDecl] = &[OutputDecl {
     name: "out",

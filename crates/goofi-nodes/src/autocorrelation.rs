@@ -202,6 +202,7 @@ static INPUTS: &[SlotDecl] = &[SlotDecl {
     name: "signal",
     kind: SlotType::Array,
     trigger_process: true,
+    multi: false,
 }];
 static OUTPUTS: &[OutputDecl] = &[OutputDecl {
     name: "autocorr",

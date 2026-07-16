@@ -234,11 +234,13 @@ static INPUTS: &[SlotDecl] = &[
         name: "a",
         kind: SlotType::Array,
         trigger_process: true,
+        multi: false,
     },
     SlotDecl {
         name: "b",
         kind: SlotType::Array,
         trigger_process: true,
+        multi: false,
     },
 ];
 static OUTPUTS: &[OutputDecl] = &[OutputDecl {

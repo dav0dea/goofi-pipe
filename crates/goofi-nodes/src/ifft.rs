@@ -79,11 +79,13 @@ static INPUTS: &[SlotDecl] = &[
         name: "spectrum",
         kind: SlotType::Array,
         trigger_process: true,
+        multi: false,
     },
     SlotDecl {
         name: "phase",
         kind: SlotType::Array,
         trigger_process: true,
+        multi: false,
     },
 ];
 static OUTPUTS: &[OutputDecl] = &[OutputDecl {

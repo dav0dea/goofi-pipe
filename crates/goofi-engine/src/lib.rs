@@ -956,6 +956,7 @@ mod tests {
         name: "in",
         kind: SlotType::Array,
         trigger_process: true,
+        multi: false,
     }];
     static E_OUT: &[OutputDecl] = &[OutputDecl {
         name: "out",
@@ -1030,6 +1031,7 @@ mod tests {
         name: "in",
         kind: SlotType::Array,
         trigger_process: true,
+        multi: false,
     }];
     static C_OUT: &[OutputDecl] = &[OutputDecl {
         name: "out",
@@ -1068,8 +1070,8 @@ mod tests {
         Box::new(Adder)
     }
     static ADD_IN: &[SlotDecl] = &[
-        SlotDecl { name: "a", kind: SlotType::Array, trigger_process: true },
-        SlotDecl { name: "b", kind: SlotType::Array, trigger_process: true },
+        SlotDecl { name: "a", kind: SlotType::Array, trigger_process: true, multi: false },
+        SlotDecl { name: "b", kind: SlotType::Array, trigger_process: true, multi: false },
     ];
     static ADD_OUT: &[OutputDecl] = &[OutputDecl {
         name: "out",
@@ -1204,8 +1206,8 @@ mod tests {
         Box::new(RefLenChange)
     }
     static REF_IN: &[SlotDecl] = &[
-        SlotDecl { name: "data", kind: SlotType::Array, trigger_process: true },
-        SlotDecl { name: "ref", kind: SlotType::Array, trigger_process: false },
+        SlotDecl { name: "data", kind: SlotType::Array, trigger_process: true, multi: false },
+        SlotDecl { name: "ref", kind: SlotType::Array, trigger_process: false, multi: false },
     ];
     inventory::submit! {
         NodeManifest {
