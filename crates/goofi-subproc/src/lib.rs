@@ -17,9 +17,18 @@
 //! through the ordinary `register_dyn_type` seam.
 
 use std::io::{Read, Write};
-use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
+use std::process::{Child, ChildStdin, Command, Stdio};
+use std::sync::mpsc::{Receiver, RecvTimeoutError};
+use std::thread::JoinHandle;
+use std::time::Duration;
 
 use goofi_node::{Inputs, Node, NodeCtx, NodeResult, Outputs};
+
+/// Default cap on how long a tick waits for a subprocess response before treating
+/// the child as hung. Generous enough to cover cold start (spawn + numpy import);
+/// a hung child is killed and surfaces as a node error rather than stranding the
+/// scheduler (and, in the bridge, the graph mutex) indefinitely.
+const DEFAULT_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// The Python worker: a self-contained GOOF-array codec (meta passed through
 /// opaquely — the Rust decoder re-derives shape/dtype from the body) that runs
@@ -76,18 +85,103 @@ while True:
     n = struct.unpack('<I', hdr)[0]
     frame = read_exact(inp, n)
     arr, meta = decode_array(frame)
-    res = np.ascontiguousarray(np.asarray(process(arr), dtype=arr.dtype)).ravel()
-    out = encode_array(res, meta)  # opaque meta reused; decoder re-derives shape/dtype
+    # Preserve the output shape (do NOT ravel — that would flatten [C,T] channel
+    # data to [C*T] and, with the carried channels meta, fail the decoder's
+    # channel-length check on every tick).
+    res = np.ascontiguousarray(np.asarray(process(arr), dtype=arr.dtype))
+    # The carried meta describes the INPUT (shape + channel coords). If the node
+    # changed the shape, that meta is stale (its channels would mismatch the new
+    # shape and the decoder would reject the frame), so drop it; when the shape is
+    # unchanged the meta (sfreq/index/channels) stays valid and rides through.
+    out_meta = meta if res.shape == arr.shape else b''
+    out = encode_array(res, out_meta)
     outp.write(struct.pack('<I', len(out)))
     outp.write(out)
     outp.flush()
 "#;
 
-/// The spawned child + its pipes.
+/// The spawned child + its stdin, plus a reader thread draining stdout into a
+/// channel. The reader lets `roundtrip` bound its wait with `recv_timeout` (a
+/// blocking `read_exact` on the pipe could otherwise hang forever).
 struct Running {
     child: Child,
     stdin: ChildStdin,
-    stdout: ChildStdout,
+    rx: Receiver<std::io::Result<Vec<u8>>>,
+    reader: Option<JoinHandle<()>>,
+}
+
+impl Running {
+    fn spawn(python: &str, source: &str) -> std::result::Result<Running, String> {
+        let mut child = Command::new(python)
+            .arg("-c")
+            .arg(WORKER_SRC)
+            .env("GOOFI_USER_SRC", source)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::inherit())
+            .spawn()
+            .map_err(|e| format!("spawn `{python}`: {e}"))?;
+        let stdin = child.stdin.take().expect("piped stdin");
+        let mut stdout = child.stdout.take().expect("piped stdout");
+        let (tx, rx) = std::sync::mpsc::channel();
+        // Reader thread: one length-prefixed frame per response. Exits (sending a
+        // final Err) when the child closes stdout / dies, so a killed child never
+        // strands this thread.
+        let reader = std::thread::spawn(move || loop {
+            let mut lenb = [0u8; 4];
+            if let Err(e) = stdout.read_exact(&mut lenb) {
+                let _ = tx.send(Err(e));
+                break;
+            }
+            let n = u32::from_le_bytes(lenb) as usize;
+            let mut buf = vec![0u8; n];
+            match stdout.read_exact(&mut buf) {
+                Ok(()) => {
+                    if tx.send(Ok(buf)).is_err() {
+                        break; // receiver gone
+                    }
+                }
+                Err(e) => {
+                    let _ = tx.send(Err(e));
+                    break;
+                }
+            }
+        });
+        Ok(Running {
+            child,
+            stdin,
+            rx,
+            reader: Some(reader),
+        })
+    }
+
+    /// Send one length-prefixed frame; wait up to `timeout` for the response.
+    /// A timeout kills the child (so the reader thread unwinds) and errors.
+    fn roundtrip(&mut self, frame: &[u8], timeout: Duration) -> std::result::Result<Vec<u8>, String> {
+        self.stdin
+            .write_all(&(frame.len() as u32).to_le_bytes())
+            .and_then(|_| self.stdin.write_all(frame))
+            .and_then(|_| self.stdin.flush())
+            .map_err(|e| format!("subprocess write: {e}"))?;
+        match self.rx.recv_timeout(timeout) {
+            Ok(Ok(buf)) => Ok(buf),
+            Ok(Err(e)) => Err(format!("subprocess read: {e}")),
+            Err(RecvTimeoutError::Timeout) => {
+                let _ = self.child.kill();
+                Err(format!("subprocess did not respond within {timeout:?}"))
+            }
+            Err(RecvTimeoutError::Disconnected) => Err("subprocess reader ended".into()),
+        }
+    }
+
+    /// Kill + reap the child and join the reader thread.
+    fn shutdown(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+        if let Some(h) = self.reader.take() {
+            let _ = h.join();
+        }
+    }
 }
 
 /// A Python node running in an isolated GIL subprocess. Construction is cheap and
@@ -97,6 +191,7 @@ struct Running {
 pub struct RemoteNode {
     python: String,
     source: String,
+    timeout: Duration,
     proc: Option<Running>,
 }
 
@@ -107,8 +202,15 @@ impl RemoteNode {
         RemoteNode {
             python: python.into(),
             source: source.into(),
+            timeout: DEFAULT_TIMEOUT,
             proc: None,
         }
+    }
+
+    /// Override the per-tick response timeout (builder; mainly for tests/config).
+    pub fn with_timeout(mut self, timeout: Duration) -> RemoteNode {
+        self.timeout = timeout;
+        self
     }
 
     /// Eagerly spawn (convenience for direct use / tests). Returns the spawn error.
@@ -120,35 +222,16 @@ impl RemoteNode {
 
     fn ensure(&mut self) -> std::result::Result<&mut Running, String> {
         if self.proc.is_none() {
-            let mut child = Command::new(&self.python)
-                .arg("-c")
-                .arg(WORKER_SRC)
-                .env("GOOFI_USER_SRC", &self.source)
-                .stdin(Stdio::piped())
-                .stdout(Stdio::piped())
-                .stderr(Stdio::inherit())
-                .spawn()
-                .map_err(|e| format!("spawn `{}`: {e}", self.python))?;
-            let stdin = child.stdin.take().expect("piped stdin");
-            let stdout = child.stdout.take().expect("piped stdout");
-            self.proc = Some(Running { child, stdin, stdout });
+            self.proc = Some(Running::spawn(&self.python, &self.source)?);
         }
         Ok(self.proc.as_mut().unwrap())
     }
-}
 
-impl Running {
-    /// Send one length-prefixed frame and read the length-prefixed response.
-    fn roundtrip(&mut self, frame: &[u8]) -> std::io::Result<Vec<u8>> {
-        self.stdin.write_all(&(frame.len() as u32).to_le_bytes())?;
-        self.stdin.write_all(frame)?;
-        self.stdin.flush()?;
-        let mut lenb = [0u8; 4];
-        self.stdout.read_exact(&mut lenb)?;
-        let n = u32::from_le_bytes(lenb) as usize;
-        let mut buf = vec![0u8; n];
-        self.stdout.read_exact(&mut buf)?;
-        Ok(buf)
+    /// Kill + reap the current child (if any) so the next tick respawns a fresh one.
+    fn reset(&mut self) {
+        if let Some(mut p) = self.proc.take() {
+            p.shutdown();
+        }
     }
 }
 
@@ -158,29 +241,29 @@ impl Node for RemoteNode {
             return Ok(());
         };
         let frame = goofi_codec::encode(d);
-        let running = self.ensure()?;
-        let resp = running
-            .roundtrip(&frame)
-            .map_err(|e| format!("subprocess io: {e}"))?;
+        let timeout = self.timeout;
+        // A dead/hung child (io error or timeout) is reaped so the NEXT tick spawns
+        // a fresh subprocess, instead of leaving a zombie and erroring forever.
+        let resp = match self.ensure().and_then(|r| r.roundtrip(&frame, timeout)) {
+            Ok(r) => r,
+            Err(e) => {
+                self.reset();
+                return Err(e.into());
+            }
+        };
         let data = goofi_codec::decode(&resp)?;
         out.set("out", data);
         Ok(())
     }
 
     fn terminate(&mut self) {
-        if let Some(mut p) = self.proc.take() {
-            let _ = p.child.kill();
-            let _ = p.child.wait();
-        }
+        self.reset();
     }
 }
 
 impl Drop for RemoteNode {
     fn drop(&mut self) {
-        if let Some(p) = self.proc.as_mut() {
-            let _ = p.child.kill();
-            let _ = p.child.wait();
-        }
+        self.reset();
     }
 }
 
@@ -319,6 +402,21 @@ mod tests {
         outmap.get("out").unwrap().clone().expect("output frame")
     }
 
+    fn try_run(node: &mut RemoteNode, d: Data) -> Result<Data, String> {
+        let mut inmap: IndexMap<&'static str, Option<Data>> = IndexMap::new();
+        inmap.insert("data", Some(d));
+        let inp = Inputs::new(&inmap);
+        let mut outmap: IndexMap<&'static str, Option<Data>> = IndexMap::new();
+        outmap.insert("out", None);
+        let mut ctx = NodeCtx::new();
+        let r = {
+            let mut out = Outputs::new(&mut outmap);
+            node.process(&inp, &mut out, &mut ctx)
+        };
+        r.map_err(|e| e.0)?;
+        Ok(outmap.get("out").unwrap().clone().expect("output frame"))
+    }
+
     fn floats(d: &Data) -> Vec<f32> {
         match d.value() {
             Value::Array(s) => s
@@ -328,6 +426,82 @@ mod tests {
                 .collect(),
             _ => panic!("not array"),
         }
+    }
+
+    #[test]
+    fn channels_preserved_on_2d_length_preserving_node() {
+        // Audit #1: the canonical EEG case. A [2,3] array with dim0 channel labels
+        // through a length-preserving node must come back [2,3] with channels
+        // intact — the old `.ravel()` flattened it to [6] and the decoder rejected
+        // the frame (channels len 2 != shape 6).
+        let Some(py) = usable_python() else {
+            eprintln!("SKIP: no python3 with numpy");
+            return;
+        };
+        let mut node = RemoteNode::spawn(&py, "def process(x):\n    return x * 2.0\n").unwrap();
+
+        let mut meta = Meta::empty();
+        meta.channels.0.insert(
+            0,
+            std::sync::Arc::new(vec![
+                goofi_core::Coord::Str("Fz".into()),
+                goofi_core::Coord::Str("Cz".into()),
+            ]),
+        );
+        let buf: Vec<u8> = (0..6).flat_map(|i| (i as f32).to_le_bytes()).collect();
+        let d = Data::from_array_bytes(DType::F32, vec![2, 3], buf, meta).unwrap();
+
+        let out = try_run(&mut node, d).expect("2-D channel frame must round-trip");
+        match out.value() {
+            Value::Array(s) => assert_eq!(s.shape(), &[2, 3], "shape must be preserved, not raveled"),
+            _ => panic!("expected array"),
+        }
+        assert_eq!(floats(&out), vec![0.0, 2.0, 4.0, 6.0, 8.0, 10.0]);
+        let ch = out.meta().channels.0.get(&0).expect("dim0 channels preserved");
+        assert_eq!(ch.len(), 2);
+    }
+
+    #[test]
+    fn crashed_child_is_reaped_and_respawns() {
+        // Audit #2: a tick whose worker raises must Err, then a later tick must
+        // succeed (a fresh subprocess is spawned) rather than being wedged forever.
+        let Some(py) = usable_python() else {
+            eprintln!("SKIP: no python3 with numpy");
+            return;
+        };
+        let mut node = RemoteNode::spawn(
+            &py,
+            "def process(x):\n    if x[0] < 0:\n        raise ValueError('boom')\n    return x * 2.0\n",
+        )
+        .unwrap();
+
+        let bad = Data::from_array_bytes(DType::F32, vec![1], (-1.0f32).to_le_bytes().to_vec(), Meta::empty()).unwrap();
+        assert!(try_run(&mut node, bad).is_err(), "worker raise must surface as an error");
+
+        let good = Data::from_array_bytes(DType::F32, vec![1], 3.0f32.to_le_bytes().to_vec(), Meta::empty()).unwrap();
+        let out = try_run(&mut node, good).expect("must respawn and succeed on the next tick");
+        assert_eq!(floats(&out), vec![6.0]);
+    }
+
+    #[test]
+    fn hung_subprocess_times_out_instead_of_hanging() {
+        // Audit #4: a worker that never responds must not block forever; with a
+        // short timeout the tick returns an error promptly.
+        let Some(py) = usable_python() else {
+            eprintln!("SKIP: no python3 with numpy");
+            return;
+        };
+        let mut node = RemoteNode::new(
+            &py,
+            "import time\ndef process(x):\n    while True:\n        time.sleep(1)\n",
+        )
+        .with_timeout(Duration::from_millis(600));
+
+        let d = Data::from_array_bytes(DType::F32, vec![1], 1.0f32.to_le_bytes().to_vec(), Meta::empty()).unwrap();
+        let t = std::time::Instant::now();
+        let r = try_run(&mut node, d);
+        assert!(r.is_err(), "a hung subprocess must error, not hang");
+        assert!(t.elapsed() < Duration::from_secs(5), "must return near the timeout, not block");
     }
 
     #[test]
