@@ -169,7 +169,7 @@ pub fn node_instance_info(g: &Graph, uid: Uid) -> Value {
         "output_slots": output_slots(m),
         "params": describe_node_params(g, uid),
         "pos": g.pos(uid).unwrap_or([0.0, 0.0]),
-        "viewers": {},
+        "viewers": g.viewers(uid).cloned().unwrap_or_else(|| json!({})),
         "inputs": {},
         "membership": { "instance": ROOT_ID, "local_name": name },
         "error": g.last_error(uid),

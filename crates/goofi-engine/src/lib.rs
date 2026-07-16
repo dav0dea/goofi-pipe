@@ -80,6 +80,10 @@ struct NodeEntry {
     name: String,
     /// Editor position `[x, y]`.
     pos: [f64; 2],
+    /// Per-slot viewer view-state (chosen kind + settings + collapsed), an OPAQUE JSON
+    /// blob the backend persists and round-trips but never interprets — view-state is
+    /// cross-cutting UI state, not pillar logic. Empty object until the editor sets it.
+    viewers: serde_json::Value,
     /// Whether this node has any triggering input (else it free-runs each tick).
     has_trigger_inputs: bool,
     /// Set when a triggering input received a fresh frame; cleared on process.
@@ -385,6 +389,7 @@ impl Graph {
                 last_error,
                 name,
                 pos: [0.0, 0.0],
+                viewers: serde_json::json!({}),
                 has_trigger_inputs,
                 trigger_pending: false,
                 index_counters: HashMap::new(),
@@ -438,6 +443,22 @@ impl Graph {
             .ok_or_else(|| format!("no such node {uid}"))?;
         e.pos = pos;
         Ok(())
+    }
+
+    /// Replace a node's opaque viewer view-state blob (persisted to `.gfi`, echoed in node
+    /// info). The backend never interprets it — it is the editor's per-slot kind/settings.
+    pub fn set_node_viewers(&mut self, uid: Uid, viewers: serde_json::Value) -> Result<(), String> {
+        let e = self
+            .nodes
+            .get_mut(&uid)
+            .ok_or_else(|| format!("no such node {uid}"))?;
+        e.viewers = viewers;
+        Ok(())
+    }
+
+    /// A node's viewer view-state blob (empty object if never set).
+    pub fn viewers(&self, uid: Uid) -> Option<&serde_json::Value> {
+        self.nodes.get(&uid).map(|e| &e.viewers)
     }
 
     /// All links as resolved views (snapshot projection).
@@ -819,6 +840,11 @@ impl Graph {
                     .collect();
                 node_obj.insert("expressions".into(), Value::Array(arr));
             }
+            // Persist viewer view-state (per-slot kind/settings) when the editor has set
+            // any — an empty blob stays out of the file so a fresh patch has no noise.
+            if e.viewers.as_object().is_some_and(|m| !m.is_empty()) {
+                node_obj.insert("viewers".into(), e.viewers.clone());
+            }
             nodes.insert(uid.to_hex(), Value::Object(node_obj));
         }
         let links: Vec<Value> = self
@@ -873,6 +899,9 @@ impl Graph {
                         let _ = self.set_node_pos(uid, [x, y]);
                     }
                 }
+            }
+            if let Some(v) = rec.get("viewers").filter(|v| v.is_object()) {
+                let _ = self.set_node_viewers(uid, v.clone());
             }
             if let Some(groups) = rec.get("params").and_then(|v| v.as_object()) {
                 for (group, names) in groups {
@@ -2567,6 +2596,33 @@ mod tests {
             Some(7.0),
             "param round-trips through v4",
         );
+    }
+
+    #[test]
+    fn viewer_view_state_round_trips_through_gfi() {
+        // The editor's per-slot viewer state is stored opaquely, echoed back, persisted to
+        // .gfi, and reconstructed — the backend never interprets the blob.
+        let mut g = Graph::new();
+        let n = g.add_node("_TestConst", None).unwrap();
+        assert_eq!(g.viewers(n), Some(&serde_json::json!({})), "empty until set");
+        let vs = serde_json::json!({ "out": { "collapsed": false, "kind": "line", "settings": { "yScale": 2 } } });
+        g.set_node_viewers(n, vs.clone()).unwrap();
+        assert_eq!(g.viewers(n), Some(&vs), "stored verbatim");
+
+        let yaml = g.serialize();
+        assert!(yaml.contains("viewers"), "view-state persisted; got:\n{yaml}");
+        let mut g2 = Graph::new();
+        g2.load_doc(&yaml).unwrap();
+        assert_eq!(g2.viewers(g2.node_uids()[0]), Some(&vs), "view-state reconstructed");
+    }
+
+    #[test]
+    fn empty_viewers_stay_out_of_the_gfi() {
+        // A node whose view-state was never set (or cleared to {}) writes no `viewers` key —
+        // a fresh patch carries no editor noise.
+        let mut g = Graph::new();
+        g.add_node("_TestConst", None).unwrap();
+        assert!(!g.serialize().contains("viewers"), "no empty viewers blob in the file");
     }
 
     #[test]

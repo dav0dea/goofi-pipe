@@ -474,6 +474,16 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
                 events.push(event("node_moved", json!({ "node": uid.to_hex(), "pos": pos })));
                 Ok(json!({ "ok": true }))
             }
+            "set_node_viewers" => {
+                // Opaque per-slot viewer view-state (kind/settings/collapsed). The backend is
+                // the persistence authority (it lands in `.gfi`); it stores + echoes the blob
+                // verbatim without interpreting it. Echo so any observer reconciles.
+                let uid = parse_uid(&payload, "node")?;
+                let viewers = payload.get("viewers").cloned().unwrap_or_else(|| json!({}));
+                g.set_node_viewers(uid, viewers.clone())?;
+                events.push(event("node_viewers", json!({ "node": uid.to_hex(), "viewers": viewers })));
+                Ok(json!({ "ok": true }))
+            }
             "rename_node" => {
                 let uid = parse_uid(&payload, "node")?;
                 let name = payload.get("name").and_then(|v| v.as_str()).ok_or("missing name")?;

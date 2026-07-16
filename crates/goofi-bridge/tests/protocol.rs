@@ -419,6 +419,53 @@ async fn set_expression_binds_and_reflects_over_the_wire() {
 }
 
 #[tokio::test]
+async fn set_node_viewers_persists_and_echoes_the_view_state() {
+    // The editor's per-slot viewer view-state (kind/settings) is server-authoritative:
+    // set_node_viewers stores it, echoes it back, and it survives a serialize round-trip.
+    let base = start_server().await;
+    let (mut ws, _) = connect_async(format!("{base}/control")).await.unwrap();
+    let _hello = recv_text(&mut ws).await;
+
+    let osc = call(&mut ws, 1, "add_node", json!({ "type": "Oscillator" })).await["result"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let viewers = json!({ "out": { "collapsed": false, "kind": "line", "settings": { "yScale": 2 } } });
+    ws.send(Message::Text(
+        json!({ "id": 2, "op": "set_node_viewers", "payload": { "node": osc, "viewers": viewers } })
+            .to_string(),
+    ))
+    .await
+    .unwrap();
+
+    // The reply dispatches (not 404) and the change is echoed as node_viewers.
+    let mut ok = false;
+    let mut echoed: Option<Value> = None;
+    for _ in 0..10 {
+        let m = recv_text(&mut ws).await;
+        if m.get("id").and_then(|v| v.as_i64()) == Some(2) {
+            assert_eq!(m["result"]["ok"], true, "set_node_viewers must dispatch");
+            ok = true;
+        } else if m["event"] == "node_viewers" && m["payload"]["node"] == json!(osc) {
+            echoed = Some(m["payload"]["viewers"].clone());
+        }
+        if ok && echoed.is_some() {
+            break;
+        }
+    }
+    assert!(ok, "reply must arrive");
+    assert_eq!(echoed.expect("node_viewers echo"), viewers, "view-state echoed verbatim");
+
+    // It persists into the serialized .gfi.
+    let yaml = call(&mut ws, 3, "serialize", json!({})).await["result"]["yaml"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert!(yaml.contains("yScale"), "view-state persisted to .gfi; got:\n{yaml}");
+}
+
+#[tokio::test]
 async fn serialize_and_load_roundtrip() {
     let base = start_server().await;
     let (mut ws, _) = connect_async(format!("{base}/control")).await.unwrap();
