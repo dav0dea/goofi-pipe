@@ -1308,6 +1308,36 @@ mod tests {
     }
 
     #[test]
+    fn sustained_load_reference_stress_shape_stays_stable() {
+        // The reference stress-patch shape: one Oscillator fanning out to a PSD and
+        // 8 Buffers — all at topo level 1, so they run concurrently on the pool each
+        // tick. Drive it hard and assert every consumer keeps producing with a clean
+        // error channel (sustained parallel stability, no drift into a faulted state).
+        let mut g = Graph::new();
+        let osc = g.add_node("Oscillator", None).unwrap();
+        let psd = g.add_node("PSD", None).unwrap();
+        g.add_link(osc, "out", psd, "data").unwrap();
+        let mut buffers = Vec::new();
+        for _ in 0..8 {
+            let b = g.add_node("Buffer", None).unwrap();
+            g.add_link(osc, "out", b, "data").unwrap();
+            buffers.push(b);
+        }
+
+        for _ in 0..5000 {
+            g.tick();
+        }
+
+        assert!(g.last_error(osc).is_none(), "oscillator faulted: {:?}", g.last_error(osc));
+        assert!(g.last_error(psd).is_none(), "psd faulted: {:?}", g.last_error(psd));
+        assert!(g.latest_frame(psd, "psd").is_some(), "psd must keep producing under load");
+        for b in &buffers {
+            assert!(g.last_error(*b).is_none(), "buffer faulted: {:?}", g.last_error(*b));
+            assert!(g.latest_frame(*b, "out").is_some(), "each buffer must keep producing");
+        }
+    }
+
+    #[test]
     fn panicking_node_does_not_crash_the_engine() {
         // Silence the default panic backtrace during this test.
         let prev = std::panic::take_hook();
