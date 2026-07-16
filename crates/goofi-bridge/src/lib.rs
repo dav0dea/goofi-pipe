@@ -588,16 +588,22 @@ async fn handle_data(socket: WebSocket, state: AppState, node: String, slot: Str
             return;
         }
     };
-    let valid = {
+    // Resolve the physical stream target. Either `(node, slot)` is a real output slot, or
+    // `node` is a sub-patch instance and `slot` is a wired OUTPUT boundary — chain-resolved to
+    // its single inner leaf `(uid, slot)`. Either way exactly one physical leaf slot is streamed,
+    // so a boundary viewer and an inner-scope viewer coalesce onto the same reducer (spec §5).
+    let target = {
         let g = state.graph.lock().unwrap();
-        g.manifest(uid)
-            .map(|m| m.outputs.iter().any(|o| o.name == slot))
-            .unwrap_or(false)
+        if g.manifest(uid).map(|m| m.outputs.iter().any(|o| o.name == slot)).unwrap_or(false) {
+            Some((uid, slot.clone()))
+        } else {
+            g.resolve_boundary(uid, &slot)
+        }
     };
-    if !valid {
+    let Some((stream_uid, stream_slot)) = target else {
         let _ = tx.send(close(4004, "unknown node/slot")).await;
         return;
-    }
+    };
 
     // This connection's viewers' ViewSpecs (merged at plan time). Empty until the first
     // inband `{op:"view"}` arrives — full-resolution passthrough until then.
@@ -611,7 +617,7 @@ async fn handle_data(socket: WebSocket, state: AppState, node: String, slot: Str
                 // kHz/HD frame never serializes against the scheduler tick or other viewers.
                 let d = {
                     let g = state.graph.lock().unwrap();
-                    g.latest_frame(uid, &slot)
+                    g.latest_frame(stream_uid, &stream_slot)
                 };
                 let Some(d) = d else { continue };
                 // Reduce to the merged need of this connection's viewers (one reduction per

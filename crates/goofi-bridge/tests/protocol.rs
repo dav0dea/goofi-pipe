@@ -477,6 +477,51 @@ async fn group_and_expand_project_the_instance_forest() {
 }
 
 #[tokio::test]
+async fn data_plane_streams_an_output_boundary_via_the_inner_leaf() {
+    // Group a Buffer whose output is wired downstream → the instance gains an output boundary.
+    // A viewer subscribing to /data/{inst}/{bnd} must receive the inner Buffer's frames (spec
+    // §5: a boundary resolves chain-to-leaf to exactly one physical stream).
+    let base = start_server().await;
+    let (mut ws, _) = connect_async(format!("{base}/control")).await.unwrap();
+    let _hello = recv_text(&mut ws).await;
+
+    let uid = |v: &Value| v["result"].as_str().unwrap().to_string();
+    let osc = uid(&call(&mut ws, 1, "add_node", json!({ "type": "Oscillator" })).await);
+    let buf = uid(&call(&mut ws, 2, "add_node", json!({ "type": "Buffer" })).await);
+    let sink = uid(&call(&mut ws, 3, "add_node", json!({ "type": "Buffer" })).await);
+    call(&mut ws, 4, "update_param", json!({ "node": buf, "group": "buffer", "name": "size", "value": 64 })).await;
+    call(&mut ws, 5, "add_link", json!({ "node_out": osc, "slot_out": "out", "node_in": buf, "slot_in": "data" })).await;
+    // buf.out → sink makes buf's output a CUT link when buf is grouped → an output boundary.
+    call(&mut ws, 6, "add_link", json!({ "node_out": buf, "slot_out": "out", "node_in": sink, "slot_in": "data" })).await;
+
+    let reply = call(&mut ws, 7, "group_nodes", json!({ "members": [buf], "pos": [0.0, 0.0] })).await;
+    let inst = reply["result"]["inst_id"].as_str().unwrap().to_string();
+    // drain the subpatch_changed event
+    loop {
+        let m = recv_text(&mut ws).await;
+        if m.get("event").and_then(|v| v.as_str()) == Some("subpatch_changed") {
+            // The interface must expose out0 (buf.out) as an output boundary.
+            let iface = &m["payload"]["instances"][&inst]["interface"];
+            assert!(iface.get("out0").is_some(), "output boundary out0 present; got {iface:?}");
+            break;
+        }
+    }
+
+    // Subscribe to the boundary port; frames come from the inner Buffer leaf.
+    let (mut data, _) = connect_async(format!("{base}/data/{inst}/out0")).await.unwrap();
+    let frame = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if let Message::Binary(b) = data.next().await.unwrap().unwrap() {
+                break b;
+            }
+        }
+    })
+    .await
+    .expect("a frame must arrive via the boundary");
+    assert_eq!(&frame[0..4], b"GOOF", "the inner leaf's frame streams through the boundary");
+}
+
+#[tokio::test]
 async fn set_node_viewers_persists_and_echoes_the_view_state() {
     // The editor's per-slot viewer view-state (kind/settings) is server-authoritative:
     // set_node_viewers stores it, echoes it back, and it survives a serialize round-trip.
