@@ -6,6 +6,7 @@
 //! keeps the `inventory::submit!` registrations — call [`native_node_count`].
 
 mod buffer;
+mod clip;
 mod constant_array;
 mod fft;
 mod math;
