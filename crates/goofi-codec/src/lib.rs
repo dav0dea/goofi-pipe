@@ -176,3 +176,249 @@ pub fn split_frame(frame: &[u8]) -> std::result::Result<(u8, &[u8], &[u8]), Stri
     }
     Ok((tag, &frame[HEADER_SIZE..meta_end], &frame[meta_end..body_end]))
 }
+
+// ---------------------------------------------------------------------------
+// Decode (inverse of `encode`) — used at the subprocess boundary to receive a
+// frame from a Python worker. Reconstructs `Data` (value + Meta), deriving
+// shape/dtype from the body (never from the redundant meta keys).
+// ---------------------------------------------------------------------------
+
+/// Decode a GOOF v2 frame into a `Data`. The inverse of [`encode`].
+pub fn decode(frame: &[u8]) -> std::result::Result<Data, String> {
+    let (tag, meta_bytes, body) = split_frame(frame)?;
+    let meta = parse_meta(meta_bytes)?;
+    match tag {
+        0 => decode_array(body, meta),
+        1 => {
+            let s = std::str::from_utf8(body).map_err(|e| e.to_string())?;
+            Ok(Data::string(s, meta))
+        }
+        2 => decode_table(body, meta),
+        other => Err(format!("unknown dtype tag {other}")),
+    }
+}
+
+fn decode_array(body: &[u8], meta: goofi_core::Meta) -> std::result::Result<Data, String> {
+    // [u8 ndim][u8 dtype_str_len][dtype_str][ndim × u32 shape][raw bytes]
+    if body.len() < 2 {
+        return Err("array body too small".into());
+    }
+    let ndim = body[0] as usize;
+    let dslen = body[1] as usize;
+    let mut off = 2;
+    if body.len() < off + dslen {
+        return Err("array dtype string truncated".into());
+    }
+    let dstr = std::str::from_utf8(&body[off..off + dslen]).map_err(|e| e.to_string())?;
+    let dtype = goofi_core::DType::from_numpy_typestr(dstr)
+        .ok_or_else(|| format!("unsupported dtype `{dstr}`"))?;
+    off += dslen;
+    let mut shape = Vec::with_capacity(ndim);
+    for _ in 0..ndim {
+        if body.len() < off + 4 {
+            return Err("array shape truncated".into());
+        }
+        shape.push(u32::from_le_bytes(body[off..off + 4].try_into().unwrap()) as usize);
+        off += 4;
+    }
+    let buf = body[off..].to_vec();
+    Data::from_array_bytes(dtype, shape, buf, meta).map_err(|e| e.to_string())
+}
+
+fn decode_table(body: &[u8], meta: goofi_core::Meta) -> std::result::Result<Data, String> {
+    if body.len() < 4 {
+        return Err("table body too small".into());
+    }
+    let n = u32::from_le_bytes(body[0..4].try_into().unwrap()) as usize;
+    let mut off = 4;
+    let mut map: indexmap::IndexMap<String, Data> = indexmap::IndexMap::new();
+    for _ in 0..n {
+        if body.len() < off + 2 {
+            return Err("table key length truncated".into());
+        }
+        let klen = u16::from_le_bytes(body[off..off + 2].try_into().unwrap()) as usize;
+        off += 2;
+        if body.len() < off + klen {
+            return Err("table key truncated".into());
+        }
+        let key = std::str::from_utf8(&body[off..off + klen])
+            .map_err(|e| e.to_string())?
+            .to_string();
+        off += klen;
+        if body.len() < off + 4 {
+            return Err("table value length truncated".into());
+        }
+        let vlen = u32::from_le_bytes(body[off..off + 4].try_into().unwrap()) as usize;
+        off += 4;
+        if body.len() < off + vlen {
+            return Err("table value frame truncated".into());
+        }
+        let child = decode(&body[off..off + vlen])?;
+        off += vlen;
+        map.insert(key, child);
+    }
+    Ok(Data::table(map, meta))
+}
+
+fn parse_meta(bytes: &[u8]) -> std::result::Result<goofi_core::Meta, String> {
+    let mut meta = goofi_core::Meta::empty();
+    if bytes.is_empty() {
+        return Ok(meta);
+    }
+    let mut cur = bytes;
+    let v = rmpv::decode::read_value(&mut cur).map_err(|e| e.to_string())?;
+    let Mp::Map(entries) = v else {
+        return Ok(meta);
+    };
+    for (k, val) in entries {
+        let Some(key) = k.as_str() else { continue };
+        match key {
+            // shape/dtype are derived from the body — ignore the redundant keys.
+            "shape" | "dtype" => {}
+            "channels" => meta.channels = parse_channels(&val),
+            "sfreq" => meta.sfreq = val.as_f64(),
+            "index" => meta.index = val.as_u64(),
+            "reduced" => meta.reduced = Some(mp_to_mv(&val)),
+            other => {
+                meta.extra.insert(other.to_string(), mp_to_mv(&val));
+            }
+        }
+    }
+    Ok(meta)
+}
+
+fn parse_channels(v: &Mp) -> goofi_core::Channels {
+    let mut ch = goofi_core::Channels::default();
+    if let Mp::Map(entries) = v {
+        for (k, list) in entries {
+            let Some(dim) = k
+                .as_str()
+                .and_then(|s| s.strip_prefix("dim"))
+                .and_then(|d| d.parse::<usize>().ok())
+            else {
+                continue;
+            };
+            if let Mp::Array(items) = list {
+                let coords: Vec<Coord> = items.iter().map(mp_to_coord).collect();
+                ch.0.insert(dim, std::sync::Arc::new(coords));
+            }
+        }
+    }
+    ch
+}
+
+fn mp_to_coord(v: &Mp) -> Coord {
+    match v {
+        Mp::String(s) => Coord::Str(s.as_str().unwrap_or("").into()),
+        other => Coord::Num(other.as_f64().unwrap_or(0.0)),
+    }
+}
+
+fn mp_to_mv(v: &Mp) -> MetaValue {
+    match v {
+        Mp::Nil => MetaValue::Null,
+        Mp::Boolean(b) => MetaValue::Bool(*b),
+        Mp::Integer(i) => {
+            if let Some(s) = i.as_i64() {
+                MetaValue::Int(s)
+            } else if let Some(u) = i.as_u64() {
+                MetaValue::Uint(u)
+            } else {
+                MetaValue::Null
+            }
+        }
+        Mp::F32(f) => MetaValue::Float(*f as f64),
+        Mp::F64(f) => MetaValue::Float(*f),
+        Mp::String(s) => MetaValue::Str(s.as_str().unwrap_or("").to_string()),
+        Mp::Binary(b) => MetaValue::Bytes(b.clone()),
+        Mp::Array(a) => MetaValue::List(a.iter().map(mp_to_mv).collect()),
+        Mp::Map(m) => MetaValue::Map(
+            m.iter()
+                .filter_map(|(k, v)| k.as_str().map(|ks| (ks.to_string(), mp_to_mv(v))))
+                .collect(),
+        ),
+        Mp::Ext(_, _) => MetaValue::Null,
+    }
+}
+
+#[cfg(test)]
+mod decode_tests {
+    use super::*;
+    use goofi_core::{Coord, DType, Data, Meta, MetaValue, Value};
+    use std::sync::Arc;
+
+    fn arr_bytes(d: &Data) -> (DType, Vec<usize>, Vec<u8>) {
+        match d.value() {
+            Value::Array(s) => (s.dtype(), s.shape().to_vec(), s.as_bytes().to_vec()),
+            _ => panic!("not array"),
+        }
+    }
+
+    #[test]
+    fn array_roundtrips_with_meta() {
+        let mut meta = Meta::empty();
+        meta.sfreq = Some(256.0);
+        meta.index = Some(42);
+        meta.extra.insert("label".into(), MetaValue::Str("eeg".into()));
+        meta.channels.0.insert(
+            0,
+            Arc::new(vec![Coord::Str("Fz".into()), Coord::Str("Cz".into())]),
+        );
+        let buf: Vec<u8> = [1.0f32, 2.0].iter().flat_map(|x| x.to_le_bytes()).collect();
+        let d = Data::from_array_bytes(DType::F32, vec![2], buf, meta).unwrap();
+
+        let back = decode(&encode(&d)).expect("decode");
+        let (dt, sh, by) = arr_bytes(&back);
+        assert_eq!(dt, DType::F32);
+        assert_eq!(sh, vec![2]);
+        assert_eq!(arr_bytes(&d).2, by);
+        assert_eq!(back.meta().sfreq, Some(256.0));
+        assert_eq!(back.meta().index, Some(42));
+        assert_eq!(back.meta().extra.get("label"), Some(&MetaValue::Str("eeg".into())));
+        let ch = back.meta().channels.0.get(&0).expect("dim0 channels");
+        assert_eq!(ch.as_slice(), &[Coord::Str("Fz".into()), Coord::Str("Cz".into())]);
+    }
+
+    #[test]
+    fn string_roundtrips() {
+        let d = Data::string("hello world", Meta::empty());
+        let back = decode(&encode(&d)).unwrap();
+        match back.value() {
+            Value::Str(s) => assert_eq!(&**s, "hello world"),
+            _ => panic!("expected string"),
+        }
+    }
+
+    #[test]
+    fn table_roundtrips_nested() {
+        let mut map = indexmap::IndexMap::new();
+        map.insert(
+            "a".to_string(),
+            Data::from_array_bytes(DType::F32, vec![1], 3.0f32.to_le_bytes().to_vec(), Meta::empty()).unwrap(),
+        );
+        map.insert("b".to_string(), Data::string("x", Meta::empty()));
+        let d = Data::table(map, Meta::empty());
+
+        let back = decode(&encode(&d)).unwrap();
+        match back.value() {
+            Value::Table(m) => {
+                assert_eq!(m.len(), 2);
+                assert!(matches!(m.get("a").unwrap().value(), Value::Array(_)));
+                match m.get("b").unwrap().value() {
+                    Value::Str(s) => assert_eq!(&**s, "x"),
+                    _ => panic!("nested string"),
+                }
+            }
+            _ => panic!("expected table"),
+        }
+    }
+
+    #[test]
+    fn rejects_bad_magic_and_truncation() {
+        assert!(decode(b"XXXX").is_err());
+        let d = Data::string("abc", Meta::empty());
+        let mut frame = encode(&d);
+        frame.truncate(frame.len() - 1); // drop a body byte
+        assert!(decode(&frame).is_err());
+    }
+}

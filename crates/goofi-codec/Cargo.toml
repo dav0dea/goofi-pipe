@@ -6,6 +6,7 @@ license.workspace = true
 
 [dependencies]
 goofi-core = { path = "../goofi-core" }
+indexmap = "2"
 rmpv = "1"
 
 [dev-dependencies]
