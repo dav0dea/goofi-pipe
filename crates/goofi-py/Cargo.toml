@@ -22,3 +22,9 @@ indexmap = "2"
 # For the engine-integration test (runs only under `--features embed`): proves a
 # real PyNode is hosted + ticked inside a live Graph, concurrently on the pool.
 goofi-engine = { path = "../goofi-engine" }
+
+# The latency/concurrency probe needs the embedded interpreter; skip it unless
+# `embed` is on (else the default workspace build would fail to compile it).
+[[example]]
+name = "py_latency"
+required-features = ["embed"]
