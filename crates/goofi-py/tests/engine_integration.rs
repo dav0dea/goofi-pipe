@@ -67,8 +67,8 @@ fn real_python_node_runs_inside_the_engine_graph() {
     let mut g = Graph::new();
     register_py(&mut g, "import numpy as np\ndef process(x):\n    return x * 2.0 + 1.0\n");
 
-    // Native ConstantArray -> Python node, wired and ticked by the engine.
-    let src = g.add_node("ConstantArray", None).unwrap();
+    // Native _TestConst -> Python node, wired and ticked by the engine.
+    let src = g.add_node("_TestConst", None).unwrap();
     g.update_param(src, "constant", "value", Param::float(3.0, -1e9, 1e9)).unwrap();
     g.update_param(src, "constant", "length", Param::int(4, 1, 1_000_000)).unwrap();
     let py = g.add_node("PyNode", None).unwrap();
@@ -112,7 +112,7 @@ fn discovers_and_hosts_python_nodes_from_a_directory() {
     for t in types {
         g.register_dyn_type(t.manifest, t.factory);
     }
-    let src = g.add_node("ConstantArray", None).unwrap();
+    let src = g.add_node("_TestConst", None).unwrap();
     g.update_param(src, "constant", "value", Param::float(2.0, -1e9, 1e9)).unwrap();
     g.update_param(src, "constant", "length", Param::int(3, 1, 1_000_000)).unwrap();
     let py = g.add_node("Triple", None).unwrap();
@@ -136,7 +136,7 @@ fn python_nodes_run_concurrently_in_the_scheduler() {
         "import time\nimport numpy as np\ndef process(x):\n    time.sleep(0.025)\n    return x\n",
     );
 
-    let src = g.add_node("ConstantArray", None).unwrap();
+    let src = g.add_node("_TestConst", None).unwrap();
     g.update_param(src, "constant", "value", Param::float(1.0, -1e9, 1e9)).unwrap();
     for _ in 0..N {
         let py = g.add_node("PyNode", None).unwrap();

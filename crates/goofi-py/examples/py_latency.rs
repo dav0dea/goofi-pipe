@@ -46,7 +46,7 @@ fn build(n: usize, src: &'static str, len: i64) -> Graph {
         &PY_MANIFEST,
         Box::new(move |_| Box::new(PyNode::from_source(src, "process").unwrap()) as Box<dyn Node>),
     );
-    let osc = g.add_node("ConstantArray", None).unwrap();
+    let osc = g.add_node("_TestConst", None).unwrap();
     g.update_param(osc, "constant", "value", Param::float(0.5, -1e9, 1e9)).unwrap();
     g.update_param(osc, "constant", "length", Param::int(len, 1, 10_000_000)).unwrap();
     for _ in 0..n {

@@ -1402,67 +1402,9 @@ mod tests {
         }
     }
 
-    // An in-crate constant-array source — value + length via the "constant" param
-    // group (mirroring the library's ConstantArray) — so the engine's own tests need
-    // no node from the library as a generic source. Emits an f32 array of `length`
-    // filled with `value`.
-    struct TestConst {
-        value: f32,
-        length: usize,
-    }
-    impl Node for TestConst {
-        fn process(&mut self, _i: &Inputs<'_>, out: &mut Outputs<'_>, _c: &mut NodeCtx) -> NodeResult {
-            let buf: Vec<u8> = (0..self.length).flat_map(|_| self.value.to_le_bytes()).collect();
-            let d = Data::from_array_bytes(DType::F32, vec![self.length], buf, Meta::empty())
-                .map_err(|e| e.to_string())?;
-            out.set("out", d);
-            Ok(())
-        }
-        fn on_param_changed(&mut self, key: &ParamKey, v: &Param) -> NodeResult {
-            match (key.group.as_str(), key.name.as_str()) {
-                ("constant", "value") => {
-                    if let Some(x) = v.as_f64() {
-                        self.value = x as f32;
-                    }
-                }
-                ("constant", "length") => {
-                    if let Some(x) = v.as_i64() {
-                        self.length = x.max(1) as usize;
-                    }
-                }
-                _ => {}
-            }
-            Ok(())
-        }
-    }
-    fn test_const_params() -> ParamGroups {
-        let mut group = IndexMap::new();
-        group.insert("value".to_string(), Param::float(0.0, -1.0e9, 1.0e9));
-        group.insert("length".to_string(), Param::int(1, 1, 1_000_000));
-        let mut groups = ParamGroups::new();
-        groups.insert("constant".to_string(), group);
-        groups
-    }
-    fn test_const_make(p: &ParamGroups) -> Box<dyn Node> {
-        let value = goofi_node::param(p, "constant", "value").and_then(Param::as_f64).unwrap_or(0.0) as f32;
-        let length = goofi_node::param(p, "constant", "length")
-            .and_then(Param::as_i64)
-            .unwrap_or(1)
-            .max(1) as usize;
-        Box::new(TestConst { value, length })
-    }
-    inventory::submit! {
-        NodeManifest {
-            type_name: "_TestConst",
-            category: "test",
-            doc: "constant f32 array source (value+length) — engine-internal test source",
-            inputs: &[],
-            outputs: G_OUT,
-            default_params: test_const_params,
-            isolation: Isolation::InProcess,
-            make: test_const_make,
-        }
-    }
+    // `_TestConst` (the constant-array source these tests use as a generic value
+    // source) is the hidden test node in goofi-nodes — one shared definition across
+    // the engine, bridge, and goofi-py suites.
 
     fn first_f32(d: &Data) -> f32 {
         if let Value::Array(s) = d.value() {
@@ -1746,7 +1688,7 @@ mod tests {
 
     #[test]
     fn independent_branches_both_produce_correctly() {
-        // Two disjoint ConstantArray -> Echo branches must both propagate in one
+        // Two disjoint _TestConst -> Echo branches must both propagate in one
         // tick regardless of the parallel scheduling of their level-0 sources.
         let mut g = Graph::new();
         let a = g.add_node("_TestConst", None).unwrap();
@@ -1957,7 +1899,7 @@ mod tests {
 
     #[test]
     fn length_preserving_node_propagates_source_index() {
-        // ConstantArray(len 2) -> Echo (echoes -> len 2). The echo's output frame
+        // _TestConst(len 2) -> Echo (echoes -> len 2). The echo's output frame
         // count matches its single index-bearing input, so it PROPAGATES the
         // source's origin index rather than starting a fresh counter — an upstream
         // drop stays visible at the sink. Pre-tick the source unwired so its index
@@ -1977,7 +1919,7 @@ mod tests {
 
     #[test]
     fn length_changing_node_uses_fresh_index() {
-        // ConstantArray(len 2) -> Counter (emits len 1). The output frame count (1)
+        // _TestConst(len 2) -> Counter (emits len 1). The output frame count (1)
         // never matches the input (2), so no input is the same timeline: the counter
         // starts its OWN fresh index at 0, independent of the source's index (3).
         let mut g = Graph::new();
@@ -2012,7 +1954,7 @@ mod tests {
     #[test]
     fn common_max_frequency_caps_a_production_node() {
         use std::time::Duration;
-        // Cap a real source (ConstantArray, a free-running generator) at 10 Hz via
+        // Cap a real source (_TestConst, a free-running generator) at 10 Hz via
         // its `common` group; its emit index advances only on admitted ticks.
         let mut g = Graph::new();
         let c = g.add_node("_TestConst", None).unwrap();

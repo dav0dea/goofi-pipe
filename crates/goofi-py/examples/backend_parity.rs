@@ -4,7 +4,7 @@
 //!   2. in-process FT Python  (pyo3, GIL off — `goofi_py::PyNode`)
 //!   3. subprocess Python     (a separate GIL interpreter — `goofi_subproc::RemoteNode`)
 //!
-//! Each backend is hosted identically (ConstantArray -> node), warmed up, then
+//! Each backend is hosted identically (_TestConst -> node), warmed up, then
 //! timed per-tick, followed by a sustained stability run (no faulted error
 //! channel). Not a test — run under the FT env (same vars as `py_latency`):
 //!   PYO3_PYTHON=<python3.14t> LD_LIBRARY_PATH=<base>/lib PYTHONPATH=<ft-sp> \
@@ -82,13 +82,13 @@ const fn manifest(type_name: &'static str) -> NodeManifest {
 
 type Factory = Box<dyn Fn(&ParamGroups) -> Box<dyn Node> + Send + Sync>;
 
-/// Build ConstantArray(len) -> `n` fanned `type_name` nodes (all at one topo level,
+/// Build _TestConst(len) -> `n` fanned `type_name` nodes (all at one topo level,
 /// so they run concurrently on the pool), warm up, gate correctness, time `iters`
 /// whole-graph ticks, then a stability pass. Returns per-tick microseconds.
 fn bench(manifest: &'static NodeManifest, factory: Factory, len: i64, n: usize, iters: u32) -> (f64, bool) {
     let mut g = Graph::new();
     g.register_dyn_type(manifest, factory);
-    let src = g.add_node("ConstantArray", None).unwrap();
+    let src = g.add_node("_TestConst", None).unwrap();
     g.update_param(src, "constant", "value", Param::float(0.5, -1e9, 1e9)).unwrap();
     g.update_param(src, "constant", "length", Param::int(len, 1, 10_000_000)).unwrap();
     let mut nodes = Vec::new();

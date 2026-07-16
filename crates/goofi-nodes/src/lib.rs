@@ -11,7 +11,7 @@ mod buffer;
 mod clip;
 mod colorenhancer;
 mod compass;
-mod constant_array;
+mod test_source;
 mod delay;
 mod fft;
 mod frequencyshift;

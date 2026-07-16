@@ -1,21 +1,19 @@
 //! Ad-hoc latency probe (not a test): rough per-tick cost of a small native
-//! DSP graph and GOOF encode throughput. Run: cargo run -p goofi-engine --example latency --release
+//! graph and GOOF encode throughput. Run: cargo run -p goofi-engine --example latency --release
 use std::time::Instant;
 use goofi_engine::Graph;
 use goofi_core::Param;
 
 fn main() {
-    // ConstantArray(256) -> Buffer(1024) -> PSD. A deterministic fixed-size block
-    // per tick (the Oscillator is now wall-clock-paced, so it emits nothing in a
-    // tight tick() loop — unsuitable for a per-tick cost probe).
+    // _TestConst(256) -> Buffer(1024). A deterministic fixed-size block per tick (the
+    // Oscillator is wall-clock-paced, so it emits nothing in a tight tick() loop —
+    // unsuitable for a per-tick cost probe).
     let mut g = Graph::new();
-    let src = g.add_node("ConstantArray", None).unwrap();
+    let src = g.add_node("_TestConst", None).unwrap();
     g.update_param(src, "constant", "length", Param::int(256, 1, 1_000_000)).unwrap();
     let buf = g.add_node("Buffer", None).unwrap();
     g.update_param(buf, "buffer", "size", Param::int(1024, 1, 10_000_000)).unwrap();
-    let psd = g.add_node("PSD", None).unwrap();
     g.add_link(src, "out", buf, "data").unwrap();
-    g.add_link(buf, "out", psd, "data").unwrap();
 
     // warm up
     for _ in 0..200 { g.tick(); }
@@ -24,16 +22,16 @@ fn main() {
     let t = Instant::now();
     for _ in 0..iters { g.tick(); }
     let per = t.elapsed().as_secs_f64() / iters as f64;
-    println!("ConstantArray(256)->Buffer(1024)->PSD full-graph tick: {:.2} us/tick ({:.0} ticks/s)",
+    println!("_TestConst(256)->Buffer(1024) full-graph tick: {:.2} us/tick ({:.0} ticks/s)",
         per * 1e6, 1.0 / per);
 
-    // encode throughput of the PSD frame
-    let frame = g.latest_frame(psd, "psd").expect("psd frame");
+    // encode throughput of the buffered frame
+    let frame = g.latest_frame(buf, "out").expect("buffer frame");
     let n = 100_000u32;
     let t = Instant::now();
     let mut total = 0usize;
     for _ in 0..n { total += goofi_codec::encode(&frame).len(); }
     let per = t.elapsed().as_secs_f64() / n as f64;
-    println!("GOOF encode of PSD frame ({} bytes): {:.3} us/encode ({:.1} M encodes/s)",
+    println!("GOOF encode of buffered frame ({} bytes): {:.3} us/encode ({:.1} M encodes/s)",
         total / n as usize, per * 1e6, 1e-6 / per);
 }
