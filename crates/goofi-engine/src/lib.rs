@@ -16,6 +16,10 @@ use goofi_node::{Inputs, NodeCtx, NodeManifest, Outputs, ParamGroups, ParamKey, 
 use indexmap::IndexMap;
 use rayon::prelude::*;
 
+/// Sub-patch forest model + pure projector (see `subpatch.rs`). Phase 1: types +
+/// `materialize`/`resolve_boundary`, not yet wired into the live graph.
+pub mod subpatch;
+
 /// A stable node identity. Encoded as a 12-hex string for the `.gfi` / frontend
 /// (the same key those use), a `u64` internally.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
