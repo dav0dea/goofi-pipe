@@ -83,30 +83,61 @@ while True:
     outp.flush()
 "#;
 
-/// A Python node running in an isolated GIL subprocess.
-pub struct RemoteNode {
+/// The spawned child + its pipes.
+struct Running {
     child: Child,
     stdin: ChildStdin,
     stdout: ChildStdout,
 }
 
+/// A Python node running in an isolated GIL subprocess. Construction is cheap and
+/// infallible ([`RemoteNode::new`]); the subprocess is spawned lazily on the first
+/// `process` (so a discovery factory never panics, and a spawn failure surfaces on
+/// the node's error channel instead of crashing the graph).
+pub struct RemoteNode {
+    python: String,
+    source: String,
+    proc: Option<Running>,
+}
+
 impl RemoteNode {
-    /// Spawn `python` running the worker for the user node `source` (defining
-    /// `process(x) -> array-like`). The interpreter is a normal GIL Python.
-    pub fn spawn(python: &str, source: &str) -> std::io::Result<RemoteNode> {
-        let mut child = Command::new(python)
-            .arg("-c")
-            .arg(WORKER_SRC)
-            .env("GOOFI_USER_SRC", source)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::inherit())
-            .spawn()?;
-        let stdin = child.stdin.take().expect("piped stdin");
-        let stdout = child.stdout.take().expect("piped stdout");
-        Ok(RemoteNode { child, stdin, stdout })
+    /// A remote node backed by `python` running `source` (defining
+    /// `process(x) -> array-like`). No process spawns until the first tick.
+    pub fn new(python: impl Into<String>, source: impl Into<String>) -> RemoteNode {
+        RemoteNode {
+            python: python.into(),
+            source: source.into(),
+            proc: None,
+        }
     }
 
+    /// Eagerly spawn (convenience for direct use / tests). Returns the spawn error.
+    pub fn spawn(python: &str, source: &str) -> std::io::Result<RemoteNode> {
+        let mut node = RemoteNode::new(python, source);
+        node.ensure().map_err(std::io::Error::other)?;
+        Ok(node)
+    }
+
+    fn ensure(&mut self) -> std::result::Result<&mut Running, String> {
+        if self.proc.is_none() {
+            let mut child = Command::new(&self.python)
+                .arg("-c")
+                .arg(WORKER_SRC)
+                .env("GOOFI_USER_SRC", &self.source)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::inherit())
+                .spawn()
+                .map_err(|e| format!("spawn `{}`: {e}", self.python))?;
+            let stdin = child.stdin.take().expect("piped stdin");
+            let stdout = child.stdout.take().expect("piped stdout");
+            self.proc = Some(Running { child, stdin, stdout });
+        }
+        Ok(self.proc.as_mut().unwrap())
+    }
+}
+
+impl Running {
     /// Send one length-prefixed frame and read the length-prefixed response.
     fn roundtrip(&mut self, frame: &[u8]) -> std::io::Result<Vec<u8>> {
         self.stdin.write_all(&(frame.len() as u32).to_le_bytes())?;
@@ -127,23 +158,127 @@ impl Node for RemoteNode {
             return Ok(());
         };
         let frame = goofi_codec::encode(d);
-        let resp = self.roundtrip(&frame).map_err(|e| format!("subprocess io: {e}"))?;
+        let running = self.ensure()?;
+        let resp = running
+            .roundtrip(&frame)
+            .map_err(|e| format!("subprocess io: {e}"))?;
         let data = goofi_codec::decode(&resp)?;
         out.set("out", data);
         Ok(())
     }
 
     fn terminate(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        if let Some(mut p) = self.proc.take() {
+            let _ = p.child.kill();
+            let _ = p.child.wait();
+        }
     }
 }
 
 impl Drop for RemoteNode {
     fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        if let Some(p) = self.proc.as_mut() {
+            let _ = p.child.kill();
+            let _ = p.child.wait();
+        }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Discovery — turn a directory of `process(x)` files into subprocess node types
+// the engine hosts via `register_dyn_type` (mirrors `goofi_py::discover`, but the
+// factory spawns a RemoteNode instead of an in-process PyNode).
+// ---------------------------------------------------------------------------
+
+use goofi_node::{Isolation, NodeManifest, OutputDecl, ParamGroups, SlotDecl};
+
+static PY_IN: &[SlotDecl] = &[SlotDecl {
+    name: "data",
+    kind: goofi_core::SlotType::Array,
+    trigger_process: true,
+}];
+static PY_OUT: &[OutputDecl] = &[OutputDecl {
+    name: "out",
+    kind: goofi_core::SlotType::Array,
+    length_preserving: true,
+}];
+fn sp_params() -> ParamGroups {
+    ParamGroups::new()
+}
+fn sp_stub_make(_: &ParamGroups) -> Box<dyn Node> {
+    unreachable!("a discovered subprocess node is built by its factory")
+}
+
+/// Builds a node instance (spawns lazily on first tick).
+pub type SubprocFactory = Box<dyn Fn(&ParamGroups) -> Box<dyn Node> + Send + Sync>;
+
+/// A discovered subprocess node type, ready to `register_dyn_type` into a Graph.
+pub struct SubprocNodeType {
+    pub manifest: &'static NodeManifest,
+    pub factory: SubprocFactory,
+}
+
+/// `snake_case` file stem -> `CamelCase` type name (matches `goofi_py::discover`
+/// so the same file yields the same type name whichever backend hosts it).
+fn camel(stem: &str) -> String {
+    stem.split('_')
+        .filter(|s| !s.is_empty())
+        .map(|w| {
+            let mut c = w.chars();
+            match c.next() {
+                Some(f) => f.to_uppercase().collect::<String>() + c.as_str(),
+                None => String::new(),
+            }
+        })
+        .collect()
+}
+
+/// Scan `dir` for `*.py` node files (skipping `_`-prefixed) that define
+/// `process`, returning subprocess-backed types that run on `python`.
+pub fn discover(dir: &std::path::Path, python: &str) -> std::io::Result<Vec<SubprocNodeType>> {
+    let mut entries: Vec<_> = std::fs::read_dir(dir)?.filter_map(|e| e.ok()).collect();
+    entries.sort_by_key(|e| e.file_name());
+
+    let mut out = Vec::new();
+    for entry in entries {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("py") {
+            continue;
+        }
+        let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
+            continue;
+        };
+        if stem.starts_with('_') {
+            continue;
+        }
+        let Ok(source) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        // Cheap guard: must plausibly define `process` (a missing one would only
+        // fail once the subprocess is spawned and asked to run).
+        if !source.contains("def process") {
+            continue;
+        }
+
+        let type_name: &'static str = Box::leak(camel(stem).into_boxed_str());
+        let doc: &'static str =
+            Box::leak(format!("Subprocess Python node from {}", path.display()).into_boxed_str());
+        let manifest: &'static NodeManifest = Box::leak(Box::new(NodeManifest {
+            type_name,
+            category: "subprocess",
+            doc,
+            inputs: PY_IN,
+            outputs: PY_OUT,
+            default_params: sp_params,
+            isolation: Isolation::Subprocess,
+            make: sp_stub_make,
+        }));
+        let python = python.to_string();
+        let factory: SubprocFactory =
+            Box::new(move |_p| Box::new(RemoteNode::new(&python, &source)) as Box<dyn Node>);
+        out.push(SubprocNodeType { manifest, factory });
+    }
+    Ok(out)
 }
 
 #[cfg(test)]
@@ -227,5 +362,51 @@ mod tests {
             }
             _ => panic!("expected array"),
         }
+    }
+
+    #[test]
+    fn camel_matches_the_inprocess_naming() {
+        assert_eq!(camel("triple"), "Triple");
+        assert_eq!(camel("my_band_filter"), "MyBandFilter");
+    }
+
+    #[test]
+    fn discover_yields_subprocess_types_that_run() {
+        let Some(py) = usable_python() else {
+            eprintln!("SKIP: no python3 with numpy available");
+            return;
+        };
+        let dir = std::env::temp_dir().join(format!("goofi_subdisc_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("negate.py"), "def process(x):\n    return -x\n").unwrap();
+        std::fs::write(dir.join("_hidden.py"), "def process(x):\n    return x\n").unwrap();
+        std::fs::write(dir.join("nope.py"), "x = 1\n").unwrap();
+
+        let types = discover(&dir, &py).unwrap();
+        let names: Vec<&str> = types.iter().map(|t| t.manifest.type_name).collect();
+        assert_eq!(names, vec!["Negate"]);
+        assert_eq!(types[0].manifest.category, "subprocess");
+        assert_eq!(types[0].manifest.isolation, Isolation::Subprocess);
+
+        // The factory builds a working node.
+        let mut node = (types[0].factory)(&ParamGroups::new());
+        let buf: Vec<u8> = [1.0f32, -2.0].iter().flat_map(|x| x.to_le_bytes()).collect();
+        let d = Data::from_array_bytes(DType::F32, vec![2], buf, Meta::empty()).unwrap();
+        let mut inmap: IndexMap<&'static str, Option<Data>> = IndexMap::new();
+        inmap.insert("data", Some(d));
+        let inp = Inputs::new(&inmap);
+        let mut outmap: IndexMap<&'static str, Option<Data>> = IndexMap::new();
+        outmap.insert("out", None);
+        let mut ctx = NodeCtx::new();
+        {
+            let mut out = Outputs::new(&mut outmap);
+            node.process(&inp, &mut out, &mut ctx).unwrap();
+        }
+        let got = floats(outmap.get("out").unwrap().as_ref().unwrap());
+        assert_eq!(got, vec![-1.0, 2.0]);
+        node.terminate();
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
