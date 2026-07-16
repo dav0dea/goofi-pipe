@@ -17,7 +17,7 @@
 //! through the ordinary `register_dyn_type` seam.
 
 use std::io::{Read, Write};
-use std::process::{Child, ChildStdin, Command, Stdio};
+use std::process::{Child, Command, Stdio};
 use std::sync::mpsc::{Receiver, RecvTimeoutError};
 use std::thread::JoinHandle;
 use std::time::Duration;
@@ -100,14 +100,17 @@ while True:
     outp.flush()
 "#;
 
-/// The spawned child + its stdin, plus a reader thread draining stdout into a
-/// channel. The reader lets `roundtrip` bound its wait with `recv_timeout` (a
-/// blocking `read_exact` on the pipe could otherwise hang forever).
+/// The spawned child plus a single **io thread** that owns both pipes and does
+/// the blocking write+read for each request. `roundtrip` hands it a frame over a
+/// channel and waits for the response with `recv_timeout`, so BOTH a stuck write
+/// (a large frame into a child that isn't draining stdin) and a stuck read are
+/// bounded — a timeout kills the child, which errors whichever syscall the io
+/// thread is blocked in, and it exits.
 struct Running {
     child: Child,
-    stdin: ChildStdin,
-    rx: Receiver<std::io::Result<Vec<u8>>>,
-    reader: Option<JoinHandle<()>>,
+    tx_req: Option<std::sync::mpsc::Sender<Vec<u8>>>,
+    rx_resp: Receiver<std::io::Result<Vec<u8>>>,
+    io_thread: Option<JoinHandle<()>>,
 }
 
 impl Running {
@@ -121,64 +124,76 @@ impl Running {
             .stderr(Stdio::inherit())
             .spawn()
             .map_err(|e| format!("spawn `{python}`: {e}"))?;
-        let stdin = child.stdin.take().expect("piped stdin");
+        let mut stdin = child.stdin.take().expect("piped stdin");
         let mut stdout = child.stdout.take().expect("piped stdout");
-        let (tx, rx) = std::sync::mpsc::channel();
-        // Reader thread: one length-prefixed frame per response. Exits (sending a
-        // final Err) when the child closes stdout / dies, so a killed child never
-        // strands this thread.
-        let reader = std::thread::spawn(move || loop {
-            let mut lenb = [0u8; 4];
-            if let Err(e) = stdout.read_exact(&mut lenb) {
-                let _ = tx.send(Err(e));
-                break;
-            }
-            let n = u32::from_le_bytes(lenb) as usize;
-            let mut buf = vec![0u8; n];
-            match stdout.read_exact(&mut buf) {
-                Ok(()) => {
-                    if tx.send(Ok(buf)).is_err() {
-                        break; // receiver gone
-                    }
-                }
-                Err(e) => {
-                    let _ = tx.send(Err(e));
+        let (tx_req, rx_req) = std::sync::mpsc::channel::<Vec<u8>>();
+        let (tx_resp, rx_resp) = std::sync::mpsc::channel::<std::io::Result<Vec<u8>>>();
+        // One request -> write it -> read one response, in lockstep. Exits when
+        // the request channel closes (shutdown drops tx_req) or a pipe syscall
+        // errors (the child died / was killed) — so it never strands.
+        let io_thread = std::thread::spawn(move || {
+            while let Ok(frame) = rx_req.recv() {
+                let w = stdin
+                    .write_all(&(frame.len() as u32).to_le_bytes())
+                    .and_then(|_| stdin.write_all(&frame))
+                    .and_then(|_| stdin.flush());
+                if let Err(e) = w {
+                    let _ = tx_resp.send(Err(e));
                     break;
+                }
+                let mut lenb = [0u8; 4];
+                if let Err(e) = stdout.read_exact(&mut lenb) {
+                    let _ = tx_resp.send(Err(e));
+                    break;
+                }
+                let n = u32::from_le_bytes(lenb) as usize;
+                let mut buf = vec![0u8; n];
+                match stdout.read_exact(&mut buf) {
+                    Ok(()) => {
+                        if tx_resp.send(Ok(buf)).is_err() {
+                            break; // receiver gone
+                        }
+                    }
+                    Err(e) => {
+                        let _ = tx_resp.send(Err(e));
+                        break;
+                    }
                 }
             }
         });
         Ok(Running {
             child,
-            stdin,
-            rx,
-            reader: Some(reader),
+            tx_req: Some(tx_req),
+            rx_resp,
+            io_thread: Some(io_thread),
         })
     }
 
-    /// Send one length-prefixed frame; wait up to `timeout` for the response.
-    /// A timeout kills the child (so the reader thread unwinds) and errors.
+    /// Hand one frame to the io thread; wait up to `timeout` for the response.
+    /// A timeout kills the child (unblocking a stuck write OR read) and errors.
     fn roundtrip(&mut self, frame: &[u8], timeout: Duration) -> std::result::Result<Vec<u8>, String> {
-        self.stdin
-            .write_all(&(frame.len() as u32).to_le_bytes())
-            .and_then(|_| self.stdin.write_all(frame))
-            .and_then(|_| self.stdin.flush())
-            .map_err(|e| format!("subprocess write: {e}"))?;
-        match self.rx.recv_timeout(timeout) {
+        match self.tx_req.as_ref() {
+            Some(tx) if tx.send(frame.to_vec()).is_ok() => {}
+            _ => return Err("subprocess io thread ended".into()),
+        }
+        match self.rx_resp.recv_timeout(timeout) {
             Ok(Ok(buf)) => Ok(buf),
-            Ok(Err(e)) => Err(format!("subprocess read: {e}")),
+            Ok(Err(e)) => Err(format!("subprocess io: {e}")),
             Err(RecvTimeoutError::Timeout) => {
                 let _ = self.child.kill();
                 Err(format!("subprocess did not respond within {timeout:?}"))
             }
-            Err(RecvTimeoutError::Disconnected) => Err("subprocess reader ended".into()),
+            Err(RecvTimeoutError::Disconnected) => Err("subprocess io thread ended".into()),
         }
     }
 
-    /// Kill + reap the child and join the reader thread.
+    /// Kill + reap the child, close the request channel (so an idle io thread
+    /// wakes), and join the io thread.
     fn shutdown(&mut self) {
         let _ = self.child.kill();
+        self.tx_req = None; // wakes an io thread blocked in rx_req.recv()
         let _ = self.child.wait();
-        if let Some(h) = self.reader.take() {
+        if let Some(h) = self.io_thread.take() {
             let _ = h.join();
         }
     }
@@ -502,6 +517,31 @@ mod tests {
         let r = try_run(&mut node, d);
         assert!(r.is_err(), "a hung subprocess must error, not hang");
         assert!(t.elapsed() < Duration::from_secs(5), "must return near the timeout, not block");
+    }
+
+    #[test]
+    fn large_frame_into_a_non_draining_child_times_out() {
+        // Audit R2-#1: the worker blocks at module import (never enters its read
+        // loop) AND the frame exceeds the OS pipe buffer (~64 KiB), so the WRITE
+        // would block forever without a write-side timeout. Must error, not hang.
+        let Some(py) = usable_python() else {
+            eprintln!("SKIP: no python3 with numpy");
+            return;
+        };
+        let mut node = RemoteNode::new(
+            &py,
+            "import time\ntime.sleep(30)\ndef process(x):\n    return x\n",
+        )
+        .with_timeout(Duration::from_millis(600));
+
+        let n = 40_000usize; // 160 KB >> 64 KiB pipe buffer
+        let buf: Vec<u8> = (0..n).flat_map(|i| (i as f32).to_le_bytes()).collect();
+        let d = Data::from_array_bytes(DType::F32, vec![n], buf, Meta::empty()).unwrap();
+
+        let t = std::time::Instant::now();
+        let r = try_run(&mut node, d);
+        assert!(r.is_err(), "a stuck write must error, not hang");
+        assert!(t.elapsed() < Duration::from_secs(5), "must return near the timeout");
     }
 
     #[test]

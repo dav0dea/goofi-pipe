@@ -99,10 +99,14 @@ fn register_python(state: &AppState, dir: Option<&str>) {
     let Some(dir) = dir else { return };
     match goofi_py::discover(std::path::Path::new(dir)) {
         Ok(types) => {
-            let n = types.len();
             let mut g = state.graph.lock().unwrap();
+            // Count only registrations that succeeded (a name colliding with a
+            // built-in or an earlier type is refused).
+            let mut n = 0;
             for t in types {
-                g.register_dyn_type(t.manifest, t.factory);
+                if g.register_dyn_type(t.manifest, t.factory) {
+                    n += 1;
+                }
             }
             println!("  registered {n} Python node type(s) from {dir}");
         }
@@ -144,10 +148,12 @@ fn register_subproc(state: &AppState, dir: Option<&str>, python: &str) {
     let Some(dir) = dir else { return };
     match goofi_subproc::discover(std::path::Path::new(dir), python) {
         Ok(types) => {
-            let n = types.len();
             let mut g = state.graph.lock().unwrap();
+            let mut n = 0;
             for t in types {
-                g.register_dyn_type(t.manifest, t.factory);
+                if g.register_dyn_type(t.manifest, t.factory) {
+                    n += 1;
+                }
             }
             println!("  registered {n} subprocess node type(s) from {dir} (python `{python}`)");
         }
