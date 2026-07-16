@@ -6,6 +6,7 @@
 //! keeps the `inventory::submit!` registrations — call [`native_node_count`].
 
 mod constant_array;
+mod oscillator;
 
 /// Force-links this crate's node registrations and reports how many native node
 /// types are registered. Call once from a binary's startup so `inventory` keeps
