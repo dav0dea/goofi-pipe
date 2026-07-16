@@ -26,12 +26,16 @@ export const BOUNDARY = {
 	height: 26
 } as const;
 
-/** Total input-block height in units — a single slot is 1, a MULTI (list) slot 2,
- * floored at 1 so a node with no inputs still has a body. The input-side height
- * GoofiNode reserves and the snap-geometry fallback uses. */
+/** A slot's height in units — the one place the "multi (list) slot is 2× tall,
+ * single is 1" rule lives. */
+const slotUnits = (multi: boolean): number => (multi ? 2 : 1);
+
+/** Total input-block height in units, floored at 1 so a node with no inputs still
+ * has a body. The input-side height GoofiNode reserves and the snap-geometry fallback
+ * uses. */
 export function inputUnits(slots: string[], isMulti: (slot: string) => boolean): number {
 	return Math.max(
-		slots.reduce((n, s) => n + (isMulti(s) ? 2 : 1), 0),
+		slots.reduce((n, s) => n + slotUnits(isMulti(s)), 0),
 		1
 	);
 }
@@ -45,7 +49,7 @@ export function inputPorts(
 ): { slot: string; units: number; top: number }[] {
 	let y = NODE.border + NODE.header;
 	return slots.map((slot) => {
-		const units = isMulti(slot) ? 2 : 1;
+		const units = slotUnits(isMulti(slot));
 		const top = y + (units * NODE.unit) / 2; // centre of the slot's block
 		y += units * NODE.unit;
 		return { slot, units, top };

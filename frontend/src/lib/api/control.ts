@@ -53,8 +53,9 @@ export interface NodeTypeInfo {
  * `process()` wall-time over the window; `total_ticks` the lifetime count. */
 export interface NodeStats {
 	updates_per_second: number;
-	mean_process_ms: number;
-	total_ticks: number;
+	/** Optional — not measured by the Rust engine yet, so omitted rather than faked. */
+	mean_process_ms?: number;
+	total_ticks?: number;
 }
 
 export interface NodeInstanceInfo {

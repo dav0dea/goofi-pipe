@@ -47,7 +47,18 @@ impl Waveform {
                 }
             }
             Waveform::Sawtooth => 2.0 * (phase.rem_euclid(TAU) / TAU) - 1.0,
-            Waveform::Triangle => (2.0 / PI) * phase.sin().asin(),
+            // Piecewise-linear (phase-aligned with sine: 0 at 0, +1 at π/2, -1 at 3π/2)
+            // — no per-sample transcendentals.
+            Waveform::Triangle => {
+                let t = phase.rem_euclid(TAU) / TAU;
+                if t < 0.25 {
+                    4.0 * t
+                } else if t < 0.75 {
+                    2.0 - 4.0 * t
+                } else {
+                    4.0 * t - 4.0
+                }
+            }
         }
     }
 }

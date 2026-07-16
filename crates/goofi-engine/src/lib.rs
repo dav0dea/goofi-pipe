@@ -940,6 +940,12 @@ fn frame_count(d: &Data) -> usize {
 /// describes how often the node updates, not a per-slot cadence. Authoritative —
 /// overwritten every emit, never inherited from upstream meta.
 fn stamp_meta(entry: &mut NodeEntry) {
+    // Nothing emitted this tick → no meta to stamp, and the ufreq meter only advances
+    // on a productive emit. Skip the whole index-timeline scan (the common case for a
+    // rate-gated or idle node that ran but produced nothing).
+    if entry.outputs.values().all(|o| o.is_none()) {
+        return;
+    }
     // Only triggering inputs carry the data timeline; control inputs are excluded.
     let triggering: std::collections::HashSet<&str> = entry
         .manifest
@@ -956,22 +962,17 @@ fn stamp_meta(entry: &mut NodeEntry) {
         .filter_map(|(_, o)| o.as_ref())
         .filter_map(|d| d.meta().index.map(|i| (i, frame_count(d))))
         .collect();
-    // This tick's wall clock — the timestamp source for the ufreq interval.
+    // Node-level ufreq: EMA of the inter-emit interval, inverted. `None` until the
+    // second emit; a non-advancing clock (`dt <= 0`) keeps the prior estimate.
     let now = entry.ctx.now;
-    // Node-level ufreq: advance the single meter once iff the node emitted anything
-    // this tick, then stamp the same value on every emitted slot. EMA of the inter-emit
-    // interval, inverted; `None` until the second emit; a non-advancing clock keeps the
-    // prior estimate (no divide-by-zero).
-    let emitted_any = entry.outputs.values().any(|o| o.is_some());
     let node_ufreq = {
         let m = &mut entry.ufreq_meter;
-        match (emitted_any, m.last_emit) {
-            (false, _) => m.ema.map(|e| 1.0 / e), // no productive emit — nothing to stamp
-            (true, None) => {
+        match m.last_emit {
+            None => {
                 m.last_emit = Some(now); // first emit: no interval yet
                 None
             }
-            (true, Some(prev)) => {
+            Some(prev) => {
                 let dt = now - prev;
                 m.last_emit = Some(now);
                 if dt > 0.0 {
@@ -990,21 +991,17 @@ fn stamp_meta(entry: &mut NodeEntry) {
     for (slot, slot_opt) in outputs.iter_mut() {
         let Some(d) = slot_opt else { continue };
         let of = frame_count(d);
-        let mut matched: Option<u64> = None;
-        let mut count = 0usize;
-        for (idx, f) in &input_frames {
-            if *f == of {
-                count += 1;
-                matched = Some(*idx);
+        // Exactly one index-bearing triggering input with a matching frame count → the
+        // same timeline; zero or more than one → a fresh per-output counter.
+        let mut matches = input_frames.iter().filter(|(_, f)| *f == of).map(|(i, _)| *i);
+        let index = match (matches.next(), matches.next()) {
+            (Some(i), None) => i,
+            _ => {
+                let c = counters.entry(*slot).or_insert(0);
+                let v = *c;
+                *c += 1;
+                v
             }
-        }
-        let index = if count == 1 {
-            matched.unwrap()
-        } else {
-            let c = counters.entry(*slot).or_insert(0);
-            let v = *c;
-            *c += 1;
-            v
         };
         *d = d.with_stamps(index, node_ufreq);
     }
@@ -1332,7 +1329,8 @@ mod tests {
     }
 
     // A pure source with two output slots at different cadences: "fast" emits every
-    // run, "slow" every other run — to prove ufreq is measured per output slot.
+    // run, "slow" every other run — to prove the node-level ufreq is stamped identically
+    // on every slot (not each slot's own cadence).
     struct TwoRate {
         n: i64,
     }

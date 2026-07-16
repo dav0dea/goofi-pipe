@@ -67,12 +67,13 @@
 	// that it accepts an arbitrary number of cables. `input_multi` is static type
 	// shape from the backend (which slots are multi), read-only here.
 	const multiInputs = $derived(new Set(node?.input_multi ?? []));
-	const isMulti = $derived((slot: string) => multiInputs.has(slot));
+	// Plain closure over the reactive set — read at call time, no $derived needed.
+	const isMulti = (slot: string) => multiInputs.has(slot);
 	const inPorts = $derived(
 		inputPorts(inputs, isMulti).map((p) => ({
 			...p,
 			dtype: node.input_slots[p.slot],
-			multi: multiInputs.has(p.slot)
+			multi: p.units === 2 // multi ⇔ 2 units (see inputPorts)
 		}))
 	);
 	// The node must be tall enough to host every input block (viewers grow it past

@@ -93,11 +93,13 @@ pub fn spawn_stats(graph: Arc<Mutex<Graph>>, events: broadcast::Sender<String>, 
                     .collect()
             };
             for (node, ufreq) in rates {
+                // Only send what we actually measure — no fabricated process-time /
+                // tick-count placeholders (the frontend treats those as optional).
                 let ev = serde_json::json!({
                     "event": "node_stats",
                     "payload": {
                         "node": node,
-                        "stats": { "updates_per_second": ufreq, "mean_process_ms": 0.0, "total_ticks": 0 }
+                        "stats": { "updates_per_second": ufreq }
                     }
                 });
                 let _ = events.send(ev.to_string());

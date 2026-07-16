@@ -27,11 +27,14 @@ export function formatUpdateRate(stats: NodeStats | null | undefined): string | 
 	return `${fmtRate(stats.updates_per_second)} upd/s`;
 }
 
-/** Labelled rows for the metadata panel, or `[]` when no stats have arrived yet. */
+/** Labelled rows for the metadata panel, or `[]` when no stats have arrived yet.
+ * Only rows for metrics the backend actually reports are shown (process time is
+ * optional — not measured yet). */
 export function nodeStatsRows(stats: NodeStats | null | undefined): { label: string; value: string }[] {
 	if (!stats) return [];
-	return [
-		{ label: 'Update rate', value: `${fmtRate(stats.updates_per_second)} upd/s` },
-		{ label: 'Process time', value: `${fmtMs(stats.mean_process_ms)} ms` }
-	];
+	const rows = [{ label: 'Update rate', value: `${fmtRate(stats.updates_per_second)} upd/s` }];
+	if (stats.mean_process_ms != null) {
+		rows.push({ label: 'Process time', value: `${fmtMs(stats.mean_process_ms)} ms` });
+	}
+	return rows;
 }
