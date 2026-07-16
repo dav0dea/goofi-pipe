@@ -35,6 +35,20 @@ impl std::fmt::Display for Uid {
     }
 }
 
+/// EMA weight for the measured update-frequency (`ufreq`). Smooths the inter-emit
+/// interval: time-constant ≈ `1/α` emits, so a steady slot reads exact from its 2nd
+/// emit and a jittery one settles within ~10–15. Tunable in this one place.
+const UFREQ_EMA_ALPHA: f64 = 0.2;
+
+/// Per-output-slot measured emit-rate state (see [`stamp_meta`]). Tracks the
+/// wall-clock (`ctx.now`) of the previous emit and the smoothed inter-emit
+/// interval; `ufreq = 1/ema`. `ema == None` until the second emit gives one
+/// interval to seed it.
+struct UfreqMeter {
+    last_emit: f64,
+    ema: Option<f64>,
+}
+
 struct NodeEntry {
     manifest: &'static NodeManifest,
     node: Box<dyn goofi_node::Node>,
@@ -56,6 +70,9 @@ struct NodeEntry {
     /// length-changing transform); a length-preserving emit mirrors its matching
     /// input's index instead. Engine-owned — the node never sees it.
     index_counters: HashMap<&'static str, u64>,
+    /// Per-output-slot measured update-rate state for `meta["ufreq"]`. Engine-owned;
+    /// advanced only when a slot actually emits, so it tracks that slot's true cadence.
+    ufreq_meters: HashMap<&'static str, UfreqMeter>,
     /// The node's run gate (from its `common` params), consulted each tick.
     run_policy: RunPolicy,
     /// Wall-clock instant the node last ran, for rate-cap gating (`None` = never).
@@ -277,6 +294,7 @@ impl Graph {
                 has_trigger_inputs,
                 trigger_pending: false,
                 index_counters: HashMap::new(),
+                ufreq_meters: HashMap::new(),
                 run_policy,
                 last_run: None,
             },
@@ -812,7 +830,7 @@ fn run_node(entry: &mut NodeEntry) {
         Ok(Err(e)) => Some(e.0),
         Err(p) => Some(panic_message(p)),
     };
-    stamp_indices(entry);
+    stamp_meta(entry);
 }
 
 /// The number of frames a `Data` spans — its total element count (numpy `.size`
@@ -827,18 +845,24 @@ fn frame_count(d: &Data) -> usize {
     }
 }
 
-/// Stamp `meta["index"]` on every frame this node just emitted (engine-owned; the
-/// node never touches it). For each output, propagate the index of the SINGLE
-/// index-bearing TRIGGERING input whose frame count equals the output's — that
-/// input is the same data timeline, so an upstream drop stays visible downstream.
-/// A non-triggering (control/reference) input — an oscillator's scalar frequency,
-/// say — is never a timeline candidate even if its length happens to match. With
-/// zero, or more than one, matching inputs (a generator, a length-changing
-/// transform, or an ambiguous fan-in) the slot starts a fresh per-output counter
-/// that advances one per emit. Ported from the Python node's
-/// `_next_index`/`_propagated_index` (which discriminates by frame count; here a
-/// control input is excluded up front, which is exact rather than length-lucky).
-fn stamp_indices(entry: &mut NodeEntry) {
+/// Stamp the engine-owned meta — `index` and `ufreq` — on every frame this node
+/// just emitted (the node never touches either).
+///
+/// **index**: for each output, propagate the index of the SINGLE index-bearing
+/// TRIGGERING input whose frame count equals the output's — that input is the same
+/// data timeline, so an upstream drop stays visible downstream. A non-triggering
+/// (control/reference) input — an oscillator's scalar frequency, say — is never a
+/// timeline candidate even if its length happens to match. With zero, or more than
+/// one, matching inputs (a generator, a length-changing transform, or an ambiguous
+/// fan-in) the slot starts a fresh per-output counter that advances one per emit.
+/// Ported from the Python node's `_next_index`/`_propagated_index`.
+///
+/// **ufreq**: the slot's measured emit rate (Hz) — an EMA of the inter-emit
+/// interval keyed on `ctx.now`, `None` until a second emit gives one interval.
+/// Advanced only when the slot actually emits, so it is that slot's true cadence
+/// (correctly lower than an input's for a rate-capped or dropping transform), and
+/// authoritative — overwritten every emit, never inherited from upstream meta.
+fn stamp_meta(entry: &mut NodeEntry) {
     // Only triggering inputs carry the data timeline; control inputs are excluded.
     let triggering: std::collections::HashSet<&str> = entry
         .manifest
@@ -855,9 +879,13 @@ fn stamp_indices(entry: &mut NodeEntry) {
         .filter_map(|(_, o)| o.as_ref())
         .filter_map(|d| d.meta().index.map(|i| (i, frame_count(d))))
         .collect();
-    // Disjoint field borrows: rewrite outputs while advancing the counters.
+    // This tick's wall clock — the timestamp source for the ufreq interval.
+    let now = entry.ctx.now;
+    // Disjoint field borrows: rewrite outputs while advancing the index counters and
+    // ufreq meters.
     let outputs = &mut entry.outputs;
     let counters = &mut entry.index_counters;
+    let meters = &mut entry.ufreq_meters;
     for (slot, slot_opt) in outputs.iter_mut() {
         let Some(d) = slot_opt else { continue };
         let of = frame_count(d);
@@ -877,7 +905,26 @@ fn stamp_indices(entry: &mut NodeEntry) {
             *c += 1;
             v
         };
-        *d = d.with_stamps(index, None);
+        // Measured update rate: EMA of the inter-emit interval, inverted. (Two-step
+        // contains/get — the `get_mut`/else get-or-insert form is NLL problem case #3.)
+        let ufreq = if meters.contains_key(*slot) {
+            let m = meters.get_mut(*slot).unwrap();
+            let dt = now - m.last_emit;
+            m.last_emit = now;
+            if dt > 0.0 {
+                let ema = m.ema.map_or(dt, |prev| UFREQ_EMA_ALPHA * dt + (1.0 - UFREQ_EMA_ALPHA) * prev);
+                m.ema = Some(ema);
+                Some(1.0 / ema)
+            } else {
+                // Non-advancing clock (same `now`): keep the prior estimate, no divide-by-zero.
+                m.ema.map(|e| 1.0 / e)
+            }
+        } else {
+            // First emit on this slot: record the timestamp, no interval to measure yet.
+            meters.insert(*slot, UfreqMeter { last_emit: now, ema: None });
+            None
+        };
+        *d = d.with_stamps(index, ufreq);
     }
 }
 
@@ -1197,6 +1244,45 @@ mod tests {
             default_params: echo_params,
             isolation: Isolation::InProcess,
             make: now_make,
+        }
+    }
+
+    // A pure source with two output slots at different cadences: "fast" emits every
+    // run, "slow" every other run — to prove ufreq is measured per output slot.
+    struct TwoRate {
+        n: i64,
+    }
+    impl Node for TwoRate {
+        fn process(&mut self, _i: &Inputs<'_>, out: &mut Outputs<'_>, _c: &mut NodeCtx) -> NodeResult {
+            self.n += 1;
+            let mk = || {
+                Data::from_array_bytes(DType::F32, vec![1], 1.0f32.to_le_bytes().to_vec(), Meta::empty())
+                    .map_err(|e| e.to_string())
+            };
+            out.set("fast", mk()?);
+            if self.n % 2 == 0 {
+                out.set("slow", mk()?);
+            }
+            Ok(())
+        }
+    }
+    fn two_rate_make(_: &ParamGroups) -> Box<dyn Node> {
+        Box::new(TwoRate { n: 0 })
+    }
+    static TWO_OUT: &[OutputDecl] = &[
+        OutputDecl { name: "fast", kind: SlotType::Array },
+        OutputDecl { name: "slow", kind: SlotType::Array },
+    ];
+    inventory::submit! {
+        NodeManifest {
+            type_name: "_TestTwoRate",
+            category: "test",
+            doc: "fast slot every run, slow slot every other run",
+            inputs: &[],
+            outputs: TWO_OUT,
+            default_params: echo_params,
+            isolation: Isolation::InProcess,
+            make: two_rate_make,
         }
     }
 
@@ -1748,6 +1834,80 @@ mod tests {
             3.0,
             "10 Hz cap admitted exactly 3 of 5 ticks"
         );
+    }
+
+    fn ufreq(g: &Graph, uid: Uid, slot: &str) -> Option<f64> {
+        g.latest_frame(uid, slot).unwrap().meta().ufreq
+    }
+
+    #[test]
+    fn ufreq_measures_steady_source_rate() {
+        use std::time::Duration;
+        // A pure source ticked every 10 ms emits at a steady 100 Hz. The first frame
+        // has no interval to measure; from the second on, a steady period reads exact.
+        let mut g = Graph::new();
+        let src = g.add_node("ConstantArray", None).unwrap();
+        let t0 = Instant::now();
+        g.tick_at(t0);
+        assert_eq!(ufreq(&g, src, "out"), None, "first emit: no interval yet");
+        g.tick_at(t0 + Duration::from_millis(10));
+        let uf = ufreq(&g, src, "out").expect("measured after 2nd emit");
+        assert!((uf - 100.0).abs() < 1e-6, "10 ms period -> 100 Hz, got {uf}");
+        g.tick_at(t0 + Duration::from_millis(20));
+        let uf3 = ufreq(&g, src, "out").expect("still measured");
+        assert!((uf3 - 100.0).abs() < 1e-6, "steady source stays exact, got {uf3}");
+    }
+
+    #[test]
+    fn ufreq_reflects_the_rate_cap_not_the_tick_rate() {
+        use std::time::Duration;
+        // A 10 Hz-capped source ticked at 100 Hz emits every ~0.1 s. Its ufreq must
+        // read the emit rate (~10 Hz), NOT the tick rate.
+        let mut g = Graph::new();
+        let src = g.add_node("_TestCapped", None).unwrap();
+        let t0 = Instant::now();
+        g.tick_at(t0); // run (emit 1) -> no interval yet
+        assert_eq!(ufreq(&g, src, "out"), None);
+        g.tick_at(t0 + Duration::from_millis(50)); // skipped by the cap
+        g.tick_at(t0 + Duration::from_millis(100)); // run (emit 2): dt = 0.1 s
+        let uf = ufreq(&g, src, "out").expect("measured after 2nd emit");
+        assert!((uf - 10.0).abs() < 1e-6, "capped emit rate -> 10 Hz, got {uf}");
+    }
+
+    #[test]
+    fn ufreq_is_measured_per_output_slot() {
+        use std::time::Duration;
+        // "fast" emits every 10 ms run (100 Hz); "slow" every other run (50 Hz).
+        // Each slot's meter advances only on its own emits, so the two disagree.
+        let mut g = Graph::new();
+        let src = g.add_node("_TestTwoRate", None).unwrap();
+        let t0 = Instant::now();
+        for i in 0..6 {
+            g.tick_at(t0 + Duration::from_millis(10 * i));
+        }
+        let fast = ufreq(&g, src, "fast").expect("fast measured");
+        let slow = ufreq(&g, src, "slow").expect("slow measured");
+        assert!((fast - 100.0).abs() < 1e-6, "fast slot -> 100 Hz, got {fast}");
+        assert!((slow - 50.0).abs() < 1e-6, "slow slot -> 50 Hz, got {slow}");
+    }
+
+    #[test]
+    fn ufreq_guards_nonadvancing_clock() {
+        use std::time::Duration;
+        // Two emits at the SAME instant (dt == 0) must never yield inf/NaN: before a
+        // measurement exists it stays None; afterwards it keeps the prior estimate.
+        let mut g = Graph::new();
+        let src = g.add_node("ConstantArray", None).unwrap();
+        let t0 = Instant::now();
+        g.tick_at(t0); // emit 1
+        g.tick_at(t0); // emit 2, dt == 0, no prior estimate
+        assert_eq!(ufreq(&g, src, "out"), None, "dt==0 with no estimate stays None");
+        g.tick_at(t0 + Duration::from_millis(10)); // emit 3: dt = 0.01 -> 100 Hz
+        assert!((ufreq(&g, src, "out").unwrap() - 100.0).abs() < 1e-6);
+        g.tick_at(t0 + Duration::from_millis(10)); // emit 4, dt == 0: keep prior estimate
+        let uf = ufreq(&g, src, "out").unwrap();
+        assert!(uf.is_finite(), "dt==0 must not produce inf/NaN, got {uf}");
+        assert!((uf - 100.0).abs() < 1e-6, "keeps the prior 100 Hz estimate, got {uf}");
     }
 
     #[test]
