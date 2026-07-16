@@ -42,6 +42,19 @@ struct NodeEntry {
     outputs: IndexMap<&'static str, Option<Data>>,
     ctx: NodeCtx,
     last_error: Option<String>,
+    /// Globally-unique display name (type-numbered), for the frontend/`.gfi`.
+    name: String,
+    /// Editor position `[x, y]`.
+    pos: [f64; 2],
+}
+
+/// A resolved link (uids + `&'static` slot names), for snapshot projection.
+#[derive(Clone, Copy, Debug)]
+pub struct LinkView {
+    pub node_out: Uid,
+    pub slot_out: &'static str,
+    pub node_in: Uid,
+    pub slot_in: &'static str,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -124,6 +137,7 @@ impl Graph {
             manifest.inputs.iter().map(|s| (s.name, None)).collect();
         let outputs = manifest.output_buffer();
 
+        let name = self.fresh_name(&manifest.type_name.to_lowercase());
         let uid = self.mint();
         self.nodes.insert(
             uid,
@@ -136,9 +150,68 @@ impl Graph {
                 outputs,
                 ctx,
                 last_error,
+                name,
+                pos: [0.0, 0.0],
             },
         );
         Ok(uid)
+    }
+
+    /// Lowest `{base}{N}` display name not already in use (globally unique).
+    fn fresh_name(&self, base: &str) -> String {
+        for n in 0.. {
+            let cand = format!("{base}{n}");
+            if !self.nodes.values().any(|e| e.name == cand) {
+                return cand;
+            }
+        }
+        unreachable!()
+    }
+
+    pub fn name(&self, uid: Uid) -> Option<&str> {
+        self.nodes.get(&uid).map(|e| e.name.as_str())
+    }
+
+    pub fn pos(&self, uid: Uid) -> Option<[f64; 2]> {
+        self.nodes.get(&uid).map(|e| e.pos)
+    }
+
+    pub fn params(&self, uid: Uid) -> Option<&ParamGroups> {
+        self.nodes.get(&uid).map(|e| &e.params)
+    }
+
+    pub fn rename_node(&mut self, uid: Uid, name: &str) -> Result<(), String> {
+        if self.nodes.values().any(|e| e.name == name) {
+            return Err(format!("display name `{name}` already in use"));
+        }
+        let e = self
+            .nodes
+            .get_mut(&uid)
+            .ok_or_else(|| format!("no such node {uid}"))?;
+        e.name = name.to_string();
+        Ok(())
+    }
+
+    pub fn set_node_pos(&mut self, uid: Uid, pos: [f64; 2]) -> Result<(), String> {
+        let e = self
+            .nodes
+            .get_mut(&uid)
+            .ok_or_else(|| format!("no such node {uid}"))?;
+        e.pos = pos;
+        Ok(())
+    }
+
+    /// All links as resolved views (snapshot projection).
+    pub fn links_view(&self) -> Vec<LinkView> {
+        self.links
+            .iter()
+            .map(|l| LinkView {
+                node_out: l.node_out,
+                slot_out: l.slot_out,
+                node_in: l.node_in,
+                slot_in: l.slot_in,
+            })
+            .collect()
     }
 
     pub fn remove_node(&mut self, uid: Uid) -> Result<(), String> {

@@ -1,0 +1,21 @@
+[package]
+name = "goofi-bridge"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+goofi-core = { path = "../goofi-core" }
+goofi-codec = { path = "../goofi-codec" }
+goofi-node = { path = "../goofi-node" }
+goofi-engine = { path = "../goofi-engine" }
+goofi-nodes = { path = "../goofi-nodes" }
+axum = { version = "0.8", features = ["ws"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "sync"] }
+futures-util = "0.3"
+serde_json = "1"
+
+[dev-dependencies]
+tokio-tungstenite = "0.24"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "sync"] }
+futures-util = "0.3"

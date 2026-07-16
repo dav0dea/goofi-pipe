@@ -6,6 +6,7 @@ members = [
     "crates/goofi-node",
     "crates/goofi-nodes",
     "crates/goofi-engine",
+    "crates/goofi-bridge",
 ]
 
 [workspace.package]
