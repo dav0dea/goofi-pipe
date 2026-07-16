@@ -7,6 +7,48 @@ use std::f32::consts::PI;
 use rustfft::num_complex::Complex;
 pub use rustfft::FftPlanner;
 
+/// Half-sample-symmetric ('reflect' / scipy default) index into a length-`n`
+/// signal, so an out-of-range index mirrors about the edge pixel (…c b a | a b c…).
+fn reflect(i: i64, n: i64) -> usize {
+    let p = 2 * n;
+    let mut i = ((i % p) + p) % p; // into [0, 2n)
+    if i >= n {
+        i = p - 1 - i;
+    }
+    i as usize
+}
+
+/// 1-D Gaussian smoothing (scipy `gaussian_filter1d`, `truncate=4.0`, `mode='reflect'`).
+/// Length-preserving; `sigma <= 0` (or a sub-1 radius) is the identity.
+pub fn gaussian_smooth1d(signal: &[f32], sigma: f32) -> Vec<f32> {
+    let n = signal.len();
+    if n == 0 {
+        return Vec::new();
+    }
+    let radius = (4.0 * sigma + 0.5) as i64; // scipy: int(truncate * sd + 0.5)
+    if sigma <= 0.0 || radius < 1 {
+        return signal.to_vec();
+    }
+    let mut kernel: Vec<f32> = (-radius..=radius)
+        .map(|i| (-0.5 * (i as f32 / sigma).powi(2)).exp())
+        .collect();
+    let sum: f32 = kernel.iter().sum();
+    for w in &mut kernel {
+        *w /= sum;
+    }
+    let (r, nn) = (radius, n as i64);
+    (0..n)
+        .map(|j| {
+            let j = j as i64;
+            kernel
+                .iter()
+                .enumerate()
+                .map(|(k, &w)| w * signal[reflect(j + k as i64 - r, nn)])
+                .sum()
+        })
+        .collect()
+}
+
 /// A Hann window of length `n` (n >= 1; n == 1 yields `[1.0]`).
 pub fn hann(n: usize) -> Vec<f32> {
     if n <= 1 {
@@ -109,6 +151,30 @@ mod tests {
         let mag = magnitude_spectrum(&mut FftPlanner::new(), &sig);
         assert_eq!(mag.len(), 8 / 2 + 1);
         assert_eq!(argmax(&mag), 0, "constant signal peaks at DC");
+    }
+
+    #[test]
+    fn gaussian_smooth_preserves_length_and_constants() {
+        // A constant signal is unchanged (kernel sums to 1); length preserved.
+        let c = vec![3.0f32; 16];
+        let out = gaussian_smooth1d(&c, 2.0);
+        assert_eq!(out.len(), 16);
+        for v in &out {
+            assert!((v - 3.0).abs() < 1e-4, "constant stays constant, got {v}");
+        }
+        // sigma <= 0 is the identity.
+        assert_eq!(gaussian_smooth1d(&[1.0, 5.0, 2.0], 0.0), vec![1.0, 5.0, 2.0]);
+    }
+
+    #[test]
+    fn gaussian_smooth_reduces_variance_and_conserves_sum() {
+        // A noisy alternating signal: smoothing shrinks its peak-to-peak, and the
+        // reflect boundary conserves the total sum (kernel is normalized).
+        let sig: Vec<f32> = (0..32).map(|i| if i % 2 == 0 { 1.0 } else { -1.0 }).collect();
+        let out = gaussian_smooth1d(&sig, 2.0);
+        let ptp = |v: &[f32]| v.iter().cloned().fold(f32::MIN, f32::max) - v.iter().cloned().fold(f32::MAX, f32::min);
+        assert!(ptp(&out) < ptp(&sig), "smoothing must reduce peak-to-peak");
+        assert!((out.iter().sum::<f32>() - sig.iter().sum::<f32>()).abs() < 1e-3, "reflect conserves the sum");
     }
 
     #[test]

@@ -15,6 +15,7 @@ mod normalization;
 mod oscillator;
 mod psd;
 mod reduce;
+mod smooth;
 mod threshold;
 
 /// Force-links this crate's node registrations and reports how many native node
