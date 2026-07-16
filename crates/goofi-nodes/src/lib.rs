@@ -4,37 +4,15 @@
 //!
 //! Downstream binaries (engine/bridge) must reference this crate so the linker
 //! keeps the `inventory::submit!` registrations — call [`native_node_count`].
+//!
+//! **Blank-slate reset:** the library is intentionally seeded with just two nodes,
+//! `Oscillator` and `Buffer`, to be co-designed into an orthogonal set from here.
+//! `test_source` is hidden test/bench scaffolding (`_TestConst`), not part of the
+//! user-facing library.
 
-mod appendtables;
-mod autocorrelation;
 mod buffer;
-mod clip;
-mod colorenhancer;
-mod compass;
-mod test_source;
-mod delay;
-mod fft;
-mod frequencyshift;
-mod function;
-mod ifft;
-mod join;
-mod joinstring;
-mod math;
-mod normalization;
 mod oscillator;
-mod padding;
-mod powerband;
-mod powerbandeeg;
-mod psd;
-mod reduce;
-mod reshape;
-mod setmeta;
-mod smooth;
-mod tableselectarray;
-mod tableselectstring;
-mod threshold;
-mod timedelayembedding;
-mod transpose;
+mod test_source;
 
 /// Force-links this crate's node registrations and reports how many native node
 /// types are registered. Call once from a binary's startup so `inventory` keeps

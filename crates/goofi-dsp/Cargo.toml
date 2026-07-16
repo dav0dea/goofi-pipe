@@ -1,8 +1,0 @@
-[package]
-name = "goofi-dsp"
-version.workspace = true
-edition.workspace = true
-license.workspace = true
-
-[dependencies]
-rustfft = "6"
