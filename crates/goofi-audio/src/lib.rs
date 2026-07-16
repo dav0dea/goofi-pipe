@@ -2,13 +2,15 @@
 //!
 //! Consumed by the (future) SampleClock-paced Oscillator generator and the
 //! AudioOut sink. Ported piece-by-piece from the Python `goofi/audio/` package.
-//! Still to come: the AudioRing SPSC jitter buffer (its lock-free split needs a
-//! careful atomics design) and the cpal/transport that composes these.
+//! Still to compose on top: the AudioOut non-blocking callback + the cpal
+//! transport that drives it.
 
 mod clock;
 mod continuity;
 mod drift;
+mod ring;
 
 pub use clock::SampleClock;
 pub use continuity::{crossfade, is_discontinuous, INDEX_META_KEY};
 pub use drift::DriftCorrector;
+pub use ring::AudioRing;
