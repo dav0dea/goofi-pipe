@@ -8,6 +8,7 @@
 //! data plane.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use goofi_core::{Data, Param};
@@ -70,6 +71,9 @@ struct NodeEntry {
     /// wall-clock-paced producer (e.g. Oscillator ticked faster than its sample rate)
     /// keeps showing its latest data rather than blinking to None on silent ticks.
     last_outputs: IndexMap<&'static str, Data>,
+    /// Param-expression bindings on this node, keyed by `(group, name)`. The engine
+    /// resolves them into `params` before the node runs; the node never sees them.
+    bindings: HashMap<ParamKey, ExprBinding>,
     ctx: NodeCtx,
     last_error: Option<String>,
     /// Globally-unique display name (type-numbered), for the frontend/`.gfi`.
@@ -147,6 +151,34 @@ struct DynType {
     factory: NodeFactory,
 }
 
+/// A param bound to an expression (engine-side record; the node stays oblivious — the
+/// engine writes the evaluated value into its params before it runs). See the
+/// param-expressions design.
+struct ExprBinding {
+    source: String,
+    enabled: bool,
+    triggers_process: bool,
+    /// Compiled handle owned by the evaluator (`None` if compile failed / no evaluator).
+    id: Option<goofi_node::BindingId>,
+    /// Statically-extracted `nd()` references (empty for a ref-less/time expression).
+    refs: Vec<goofi_node::ExprRef>,
+    /// The referenced producers' emit `index` seen at the last eval, for the dirty check.
+    last_seen: HashMap<(String, Option<String>), Option<u64>>,
+    /// Wall-clock of the last eval, for the per-node `max_frequency` eval gate.
+    last_eval: Option<Instant>,
+    /// The current expression error (field indicator), or `None` when healthy.
+    error: Option<String>,
+}
+
+/// A param's expression binding, projected for the bridge/`.gfi` (the internal
+/// [`ExprBinding`] is private). `error` drives the per-param field indicator.
+pub struct ExprInfo {
+    pub source: String,
+    pub enabled: bool,
+    pub triggers_process: bool,
+    pub error: Option<String>,
+}
+
 /// The authoritative graph + scheduler.
 pub struct Graph {
     nodes: IndexMap<Uid, NodeEntry>,
@@ -158,6 +190,9 @@ pub struct Graph {
     /// Wall-clock reference, anchored at the first tick, so `NodeCtx::now` is
     /// seconds-since-start (deterministic under an injected clock).
     start: Option<Instant>,
+    /// The injected param-expression evaluator (pyo3, from goofi-py). `None` → bindings
+    /// are stored + round-trip but can't evaluate (graceful degrade to the literal).
+    evaluator: Option<Arc<dyn goofi_node::ExprEvaluator>>,
 }
 
 impl Default for Graph {
@@ -176,7 +211,14 @@ impl Graph {
             next_uid: 1,
             dyn_types: HashMap::new(),
             start: None,
+            evaluator: None,
         }
+    }
+
+    /// Inject the param-expression evaluator (pyo3, from goofi-py). Wired by the CLI at
+    /// startup; without it, expression bindings are stored but not evaluated.
+    pub fn set_evaluator(&mut self, evaluator: Arc<dyn goofi_node::ExprEvaluator>) {
+        self.evaluator = Some(evaluator);
     }
 
     /// Register a node type discovered at runtime. `manifest` must be `'static`
@@ -324,6 +366,7 @@ impl Graph {
                 multi_inputs,
                 outputs,
                 last_outputs: IndexMap::new(),
+                bindings: HashMap::new(),
                 ctx,
                 last_error,
                 name,
@@ -448,6 +491,83 @@ impl Graph {
             .node
             .on_param_changed(&ParamKey::new(group, name), &value)
             .map_err(|e| e.0)
+    }
+
+    /// Bind (or unbind) a param to an expression. An empty `source` or `enabled == false`
+    /// removes the binding (the stored literal is used again). Otherwise the expression is
+    /// (re)compiled via the injected evaluator; a compile error is stored as the binding's
+    /// field error (and surfaced on the node) rather than rejecting the RPC — the frontend
+    /// keeps the source so the user can fix it. Returns Err only for an unknown node.
+    pub fn set_expression(
+        &mut self,
+        uid: Uid,
+        group: &str,
+        name: &str,
+        source: &str,
+        enabled: bool,
+        triggers_process: bool,
+    ) -> Result<(), String> {
+        if !self.nodes.contains_key(&uid) {
+            return Err(format!("no such node {uid}"));
+        }
+        let key = ParamKey::new(group, name);
+        // Release any prior compiled handle first.
+        if let Some(prev) = self.nodes.get(&uid).and_then(|e| e.bindings.get(&key)) {
+            if let (Some(ev), Some(id)) = (&self.evaluator, prev.id) {
+                ev.release(id);
+            }
+        }
+        if !enabled || source.trim().is_empty() {
+            if let Some(e) = self.nodes.get_mut(&uid) {
+                e.bindings.remove(&key);
+            }
+            return Ok(());
+        }
+        // Compile (reads the evaluator, not the graph). No evaluator → store the binding
+        // with an error so it round-trips and the UI shows the field indicator.
+        let (id, refs, error) = match &self.evaluator {
+            Some(ev) => match ev.compile(source) {
+                Ok(c) => (Some(c.id), c.refs, None),
+                Err(e) => (None, Vec::new(), Some(e.0)),
+            },
+            None => (None, Vec::new(), Some("no expression evaluator available".to_string())),
+        };
+        if let Some(err) = &error {
+            if let Some(e) = self.nodes.get_mut(&uid) {
+                e.last_error = Some(err.clone());
+            }
+        }
+        let binding = ExprBinding {
+            source: source.to_string(),
+            enabled: true,
+            triggers_process,
+            id,
+            refs,
+            last_seen: HashMap::new(),
+            last_eval: None,
+            error,
+        };
+        if let Some(e) = self.nodes.get_mut(&uid) {
+            e.bindings.insert(key, binding);
+        }
+        Ok(())
+    }
+
+    /// The expression binding on a param, for the bridge descriptor + `.gfi` (or `None`
+    /// if the param is a plain literal).
+    pub fn param_expression(&self, uid: Uid, group: &str, name: &str) -> Option<ExprInfo> {
+        let b = self.nodes.get(&uid)?.bindings.get(&ParamKey::new(group, name))?;
+        Some(ExprInfo {
+            source: b.source.clone(),
+            enabled: b.enabled,
+            triggers_process: b.triggers_process,
+            error: b.error.clone(),
+        })
+    }
+
+    /// Resolve a node display name to its uid (for `nd('name')` references).
+    fn uid_by_name(&self, name: &str) -> Option<Uid> {
+        self.nodes.iter().find(|(_, e)| e.name == name).map(|(u, _)| *u)
     }
 
     /// Resolve an output slot name to its `&'static` manifest name.
@@ -721,11 +841,41 @@ impl Graph {
     /// a cycle form a final level (latest-wins tolerates their back-edges). This
     /// is what lets a level's nodes run concurrently while the graph as a whole
     /// still propagates end-to-end in a single tick.
+    /// The scheduling dependency edges `(producer, consumer)`: wired links PLUS
+    /// param-expression `nd()` references (a host depends on each node it references, so
+    /// the referenced node runs first → the expression sees this-tick's value). A ref
+    /// cycle is handled like a link cycle (the remainder runs last, reading prev-tick
+    /// outputs — 1-tick feedback).
+    fn scheduling_edges(&self) -> Vec<(Uid, Uid)> {
+        let mut edges: Vec<(Uid, Uid)> = self
+            .links
+            .iter()
+            .filter(|l| self.nodes.contains_key(&l.node_out) && self.nodes.contains_key(&l.node_in))
+            .map(|l| (l.node_out, l.node_in))
+            .collect();
+        for (host, e) in &self.nodes {
+            for b in e.bindings.values() {
+                if !b.enabled {
+                    continue;
+                }
+                for r in &b.refs {
+                    if let Some(prod) = self.uid_by_name(&r.node) {
+                        if prod != *host {
+                            edges.push((prod, *host));
+                        }
+                    }
+                }
+            }
+        }
+        edges
+    }
+
     fn topo_levels(&self) -> Vec<Vec<Uid>> {
+        let edges = self.scheduling_edges();
         let mut indeg: HashMap<Uid, usize> = self.nodes.keys().map(|k| (*k, 0)).collect();
-        for l in &self.links {
-            if self.nodes.contains_key(&l.node_out) && indeg.contains_key(&l.node_in) {
-                *indeg.get_mut(&l.node_in).unwrap() += 1;
+        for (_from, to) in &edges {
+            if let Some(d) = indeg.get_mut(to) {
+                *d += 1;
             }
         }
         let mut levels: Vec<Vec<Uid>> = Vec::new();
@@ -745,13 +895,13 @@ impl Graph {
             // joins the next level. Reorder by insertion order for determinism.
             let mut freed: std::collections::HashSet<Uid> = std::collections::HashSet::new();
             for u in &current {
-                for l in &self.links {
-                    if l.node_out == *u {
-                        if let Some(d) = indeg.get_mut(&l.node_in) {
+                for (from, to) in &edges {
+                    if from == u {
+                        if let Some(d) = indeg.get_mut(to) {
                             if *d > 0 {
                                 *d -= 1;
                                 if *d == 0 {
-                                    freed.insert(l.node_in);
+                                    freed.insert(*to);
                                 }
                             }
                         }
@@ -796,6 +946,130 @@ impl Graph {
             })
             .map(|l| l.node_in)
             .collect()
+    }
+
+    /// Resolve the expression-bound params of this level's nodes into their concrete
+    /// `params`, BEFORE they run — so `process` reads a finished value with no eval in
+    /// its path. Called per level in topo order, so a referenced producer (an earlier
+    /// level via `scheduling_edges`) has already emitted this tick; a cycle back-edge
+    /// reads the producer's still-previous `last_outputs`. Two phases (read then apply)
+    /// so the immutable cross-node reads don't collide with the per-node param write.
+    fn resolve_level_bindings(&mut self, level: &[Uid], now: Instant, now_secs: f64) {
+        let Some(ev) = self.evaluator.clone() else { return };
+
+        enum Outcome {
+            Value(Param, HashMap<(String, Option<String>), Option<u64>>),
+            Error(String),
+        }
+        let mut results: Vec<(Uid, ParamKey, Outcome)> = Vec::new();
+
+        // READ phase — immutable; decide each due binding's outcome.
+        for &uid in level {
+            let Some(entry) = self.nodes.get(&uid) else { continue };
+            if entry.bindings.is_empty() {
+                continue;
+            }
+            let period = entry.run_policy.period();
+            for (key, b) in &entry.bindings {
+                if !b.enabled {
+                    continue;
+                }
+                let Some(id) = b.id else { continue }; // compile failed → keep its error
+                // Eval-rate gate: at most one eval per `max_frequency` period.
+                let gate_open = match (period, b.last_eval) {
+                    (None, _) | (Some(_), None) => true,
+                    (Some(p), Some(t)) => now.saturating_duration_since(t).as_secs_f64() >= p,
+                };
+                if !gate_open {
+                    continue;
+                }
+                // Resolve refs (fresh if the producer ran an earlier level this tick, else
+                // prev-tick = feedback); flag a bare nd() on a multi-output producer.
+                let mut refs_map: HashMap<(String, Option<String>), Option<Data>> = HashMap::new();
+                let mut seen: HashMap<(String, Option<String>), Option<u64>> = HashMap::new();
+                let mut ambiguity: Option<String> = None;
+                for r in &b.refs {
+                    let rk = (r.node.clone(), r.slot.clone());
+                    let data = match self.uid_by_name(&r.node) {
+                        None => None,
+                        Some(pu) => {
+                            let pe = &self.nodes[&pu];
+                            let slot: Option<&str> = match &r.slot {
+                                Some(s) => Some(s.as_str()),
+                                None if pe.manifest.outputs.len() == 1 => {
+                                    Some(pe.manifest.outputs[0].name)
+                                }
+                                None => {
+                                    ambiguity = Some(format!(
+                                        "nd('{n}') is ambiguous: '{n}' has {c} output slots — use nd('{n}').slot",
+                                        n = r.node,
+                                        c = pe.manifest.outputs.len()
+                                    ));
+                                    None
+                                }
+                            };
+                            slot.and_then(|s| pe.last_outputs.get(s).cloned())
+                        }
+                    };
+                    seen.insert(rk.clone(), data.as_ref().and_then(|d| d.meta().index));
+                    refs_map.insert(rk, data);
+                }
+                if let Some(msg) = ambiguity {
+                    results.push((uid, key.clone(), Outcome::Error(msg)));
+                    continue;
+                }
+                // Due: a ref-less (time) expr every gated tick; else a ref emitted a new
+                // frame, or a first eval, or an error to retry.
+                let due = b.refs.is_empty()
+                    || b.last_eval.is_none()
+                    || b.error.is_some()
+                    || seen.iter().any(|(k, idx)| b.last_seen.get(k) != Some(idx));
+                if !due {
+                    continue;
+                }
+                let Some(target) =
+                    entry.params.get(&key.group).and_then(|g| g.get(&key.name)).cloned()
+                else {
+                    continue;
+                };
+                let ctx = goofi_node::EvalCtx { refs: &refs_map, t: now_secs, target: &target };
+                match ev.eval(id, &ctx) {
+                    Ok(p) => results.push((uid, key.clone(), Outcome::Value(p, seen))),
+                    Err(e) => results.push((uid, key.clone(), Outcome::Error(e.0))),
+                }
+            }
+        }
+
+        // APPLY phase — mutable.
+        for (uid, key, outcome) in results {
+            let Some(entry) = self.nodes.get_mut(&uid) else { continue };
+            match outcome {
+                Outcome::Value(p, seen) => {
+                    if let Some(g) = entry.params.get_mut(&key.group) {
+                        g.insert(key.name.clone(), p);
+                    }
+                    let triggers = entry.bindings.get(&key).is_some_and(|b| b.triggers_process);
+                    if let Some(b) = entry.bindings.get_mut(&key) {
+                        b.last_seen = seen;
+                        b.last_eval = Some(now);
+                        b.error = None;
+                    }
+                    if key.group == "common" {
+                        entry.run_policy = RunPolicy::from_params(&entry.params);
+                    }
+                    if triggers {
+                        entry.trigger_pending = true;
+                    }
+                }
+                Outcome::Error(msg) => {
+                    if let Some(b) = entry.bindings.get_mut(&key) {
+                        b.last_eval = Some(now);
+                        b.error = Some(msg.clone());
+                    }
+                    entry.last_error = Some(msg);
+                }
+            }
+        }
     }
 
     /// Run one tick of the whole graph against the wall clock. See [`Self::tick_at`].
@@ -857,6 +1131,10 @@ impl Graph {
         let wired = self.wired_trigger_nodes();
         let levels = self.topo_levels();
         for level in levels {
+            // Resolve this level's expression-bound params BEFORE it runs, using the
+            // (already-run) earlier levels' fresh outputs. May set `trigger_pending` for
+            // a `triggers_process` binding, so it must precede Phase A's run decision.
+            self.resolve_level_bindings(&level, now, now_secs);
             let set: std::collections::HashSet<Uid> = level.iter().copied().collect();
 
             // Phase A — run every runnable node in this level in parallel. Each
@@ -974,6 +1252,12 @@ fn run_node(entry: &mut NodeEntry) {
         Ok(Err(e)) => Some(e.0),
         Err(p) => Some(panic_message(p)),
     };
+    // A process error wins; otherwise surface any active param-expression error, so a
+    // broken expression shows on the node's error channel even when process (running on
+    // the last good value) succeeded. Both are core node errors on the same channel.
+    if entry.last_error.is_none() {
+        entry.last_error = entry.bindings.values().find_map(|b| b.error.clone());
+    }
     stamp_meta(entry);
     // Persist each freshly-emitted (stamped) frame so `latest_frame` keeps returning it
     // on later ticks where this node emits nothing — viewers of a sparse producer never
@@ -1998,6 +2282,118 @@ mod tests {
         assert!(g.latest_frame(s, "out").is_some(), "first emit present");
         g.tick(); // n=1 -> runs but emits nothing (output reset to None)
         assert!(g.latest_frame(s, "out").is_some(), "persists last emit across a silent tick");
+    }
+
+    // A deterministic stand-in for the pyo3 evaluator, so the engine's binding lifecycle
+    // + scheduling + resolution are testable without a Python interpreter. It recognizes
+    // `nd('name')` (first f32 of that node's single output), a bare number (a constant),
+    // and `ERR` (a compile failure).
+    #[derive(Default)]
+    struct MockEval {
+        exprs: std::sync::Mutex<HashMap<u64, MockExpr>>,
+        next: std::sync::atomic::AtomicU64,
+    }
+    #[derive(Clone)]
+    enum MockExpr {
+        Ref(String),
+        Const(f64),
+    }
+    impl goofi_node::ExprEvaluator for MockEval {
+        fn compile(&self, source: &str) -> Result<goofi_node::Compiled, goofi_node::ExprError> {
+            if source == "ERR" {
+                return Err("mock compile error".into());
+            }
+            let (expr, refs) = if let Some(name) =
+                source.strip_prefix("nd('").and_then(|s| s.strip_suffix("')"))
+            {
+                (MockExpr::Ref(name.to_string()), vec![goofi_node::ExprRef { node: name.to_string(), slot: None }])
+            } else {
+                let v: f64 = source.parse().map_err(|_| goofi_node::ExprError("mock: not a number".into()))?;
+                (MockExpr::Const(v), vec![])
+            };
+            let id = self.next.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+            self.exprs.lock().unwrap().insert(id, expr);
+            Ok(goofi_node::Compiled { id, refs })
+        }
+        fn eval(&self, id: u64, ctx: &goofi_node::EvalCtx<'_>) -> Result<Param, goofi_node::ExprError> {
+            let expr = self.exprs.lock().unwrap().get(&id).cloned().ok_or_else(|| goofi_node::ExprError("mock: no such id".into()))?;
+            let v: f64 = match expr {
+                MockExpr::Const(c) => c,
+                MockExpr::Ref(node) => match ctx.refs.get(&(node.clone(), None)).and_then(|o| o.clone()) {
+                    Some(data) => first_f32(&data) as f64,
+                    None => return Err(goofi_node::ExprError(format!("mock: nd('{node}') missing"))),
+                },
+            };
+            Ok(match ctx.target {
+                Param::Int { vmin, vmax, .. } => Param::Int { value: v.round() as i64, vmin: *vmin, vmax: *vmax },
+                _ => Param::Float { value: v, vmin: 0.0, vmax: 0.0 },
+            })
+        }
+        fn release(&self, id: u64) {
+            self.exprs.lock().unwrap().remove(&id);
+        }
+    }
+
+    fn eval_graph() -> Graph {
+        let mut g = Graph::new();
+        g.set_evaluator(Arc::new(MockEval::default()));
+        g
+    }
+
+    #[test]
+    fn constant_expression_drives_a_param_before_process() {
+        // Bind _TestConst.value to the literal expression "5"; process must read 5.
+        let mut g = eval_graph();
+        let n = g.add_node("_TestConst", None).unwrap();
+        g.set_expression(n, "constant", "value", "5", true, false).unwrap();
+        g.tick();
+        assert_eq!(first_f32(&g.latest_frame(n, "out").unwrap()), 5.0);
+    }
+
+    #[test]
+    fn nd_reference_resolves_same_tick_via_dag_lifting() {
+        // src emits value 3; host.value = nd('src'). The ref edge schedules src before
+        // host, so host reads THIS tick's value — 3 in one tick, not next tick.
+        let mut g = eval_graph();
+        let src = g.add_node("_TestConst", None).unwrap();
+        g.rename_node(src, "src").unwrap();
+        g.update_param(src, "constant", "value", Param::float(3.0, -1e9, 1e9)).unwrap();
+        let host = g.add_node("_TestConst", None).unwrap();
+        g.set_expression(host, "constant", "value", "nd('src')", true, false).unwrap();
+        g.tick();
+        assert_eq!(first_f32(&g.latest_frame(host, "out").unwrap()), 3.0, "same-tick nd() resolution");
+    }
+
+    #[test]
+    fn missing_ref_errors_and_keeps_last_value() {
+        let mut g = eval_graph();
+        let host = g.add_node("_TestConst", None).unwrap();
+        g.set_expression(host, "constant", "value", "nd('ghost')", true, false).unwrap();
+        g.tick();
+        assert!(g.last_error(host).is_some(), "missing ref surfaces on the node error channel");
+        let info = g.param_expression(host, "constant", "value").expect("binding present");
+        assert!(info.error.is_some(), "field error indicator set");
+        // The literal value (default 0) is kept.
+        assert_eq!(first_f32(&g.latest_frame(host, "out").unwrap()), 0.0);
+    }
+
+    #[test]
+    fn compile_error_is_stored_not_rejected() {
+        let mut g = eval_graph();
+        let host = g.add_node("_TestConst", None).unwrap();
+        g.set_expression(host, "constant", "value", "ERR", true, false).unwrap(); // RPC ok
+        let info = g.param_expression(host, "constant", "value").expect("binding stored");
+        assert!(info.error.is_some(), "compile error stored as the field indicator");
+    }
+
+    #[test]
+    fn disabling_removes_the_binding() {
+        let mut g = eval_graph();
+        let host = g.add_node("_TestConst", None).unwrap();
+        g.set_expression(host, "constant", "value", "5", true, false).unwrap();
+        assert!(g.param_expression(host, "constant", "value").is_some());
+        g.set_expression(host, "constant", "value", "", false, false).unwrap();
+        assert!(g.param_expression(host, "constant", "value").is_none(), "unbound");
     }
 
     #[test]

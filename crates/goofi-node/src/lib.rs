@@ -47,7 +47,7 @@ pub type NodeResult = std::result::Result<(), NodeError>;
 pub type ParamGroups = IndexMap<String, IndexMap<String, Param>>;
 
 /// A `(group, name)` address into a node's params.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct ParamKey {
     pub group: String,
     pub name: String,
@@ -410,6 +410,79 @@ pub trait Node: Send {
 /// `on_param_changed`, so no per-node constructor boilerplate is written.
 pub fn default_factory<T: Node + Default + 'static>() -> Box<dyn Node> {
     Box::new(T::default())
+}
+
+// ---------------------------------------------------------------------------
+// Param expressions — the injected evaluator seam (impl lives in goofi-py, so the
+// engine core carries no pyo3 dependency). See the param-expressions design.
+// ---------------------------------------------------------------------------
+
+/// An opaque handle to a compiled expression, owned by the evaluator.
+pub type BindingId = u64;
+
+/// A param-expression failure: compile error, runtime exception, ambiguous bare
+/// `nd()`, missing ref with no fallback, or a type-incompatible result. Surfaced as a
+/// core node error (the same channel as a `process` error) plus a per-param indicator.
+#[derive(Debug, Clone)]
+pub struct ExprError(pub String);
+
+impl fmt::Display for ExprError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+impl std::error::Error for ExprError {}
+impl From<String> for ExprError {
+    fn from(s: String) -> Self {
+        ExprError(s)
+    }
+}
+impl From<&str> for ExprError {
+    fn from(s: &str) -> Self {
+        ExprError(s.to_string())
+    }
+}
+
+/// A reference an expression makes to another node's output: `nd('node').slot`, or a
+/// bare `nd('node')` (`slot` = `None` → the node's single output slot; a node with more
+/// than one output slot makes a bare `nd()` an error).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ExprRef {
+    pub node: String,
+    pub slot: Option<String>,
+}
+
+/// The result of compiling an expression: the evaluator's opaque handle plus the
+/// statically-extracted references, so the engine knows the dependency set (for
+/// scheduling + dirty-tracking) without executing the snippet.
+pub struct Compiled {
+    pub id: BindingId,
+    pub refs: Vec<ExprRef>,
+}
+
+/// Per-evaluation context handed to [`ExprEvaluator::eval`].
+pub struct EvalCtx<'a> {
+    /// Resolved referenced `Data` keyed by `(node name, slot|None)`. A `None` value
+    /// means the ref is missing / has not emitted (or is a feedback back-edge with no
+    /// prior frame) — the expression sees `nd(...)` as absent and may default it.
+    pub refs: &'a std::collections::HashMap<(String, Option<String>), Option<Data>>,
+    /// Engine wall-clock seconds (`NodeCtx::now`) — for time-based (ref-less) expressions.
+    pub t: f64,
+    /// The param being driven, a type template the evaluator coerces its result to.
+    pub target: &'a Param,
+}
+
+/// Evaluates param expressions. Implemented by `goofi-py` against the free-threaded
+/// interpreter and injected into the engine, so the engine core carries no pyo3
+/// dependency. The engine owns the binding lifecycle + scheduling and calls this only
+/// to compile / evaluate / release.
+pub trait ExprEvaluator: Send + Sync {
+    /// Compile a snippet once; returns the opaque handle + extracted `nd()` refs.
+    fn compile(&self, source: &str) -> Result<Compiled, ExprError>;
+    /// Evaluate a compiled expression to a concrete [`Param`] value.
+    fn eval(&self, id: BindingId, ctx: &EvalCtx<'_>) -> Result<Param, ExprError>;
+    /// Release a compiled expression (on unbind / node removal).
+    fn release(&self, id: BindingId);
 }
 
 // ---------------------------------------------------------------------------
