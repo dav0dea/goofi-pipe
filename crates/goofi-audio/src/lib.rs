@@ -14,3 +14,6 @@ pub use clock::SampleClock;
 pub use continuity::{crossfade, is_discontinuous, INDEX_META_KEY};
 pub use drift::DriftCorrector;
 pub use ring::AudioRing;
+
+mod sink;
+pub use sink::{drain_into, AudioSink};
