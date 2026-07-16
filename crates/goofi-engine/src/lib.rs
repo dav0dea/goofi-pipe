@@ -50,6 +50,11 @@ struct NodeEntry {
     has_trigger_inputs: bool,
     /// Set when a triggering input received a fresh frame; cleared on process.
     trigger_pending: bool,
+    /// Per-output-slot source-origin emit counter for `meta["index"]`. Advanced
+    /// only when a slot's frame starts a *fresh* timeline (a generator, or a
+    /// length-changing transform); a length-preserving emit mirrors its matching
+    /// input's index instead. Engine-owned — the node never sees it.
+    index_counters: HashMap<&'static str, u64>,
 }
 
 /// A resolved link (uids + `&'static` slot names), for snapshot projection.
@@ -261,6 +266,7 @@ impl Graph {
                 pos: [0.0, 0.0],
                 has_trigger_inputs,
                 trigger_pending: false,
+                index_counters: HashMap::new(),
             },
         );
         uid
@@ -721,9 +727,11 @@ impl Graph {
 }
 
 /// Run a single node's `process` in place: clear its outputs, tick its context,
-/// and capture any error or panic on its error channel. Panic isolation keeps one
-/// faulty node from unwinding through the scheduler (and, in the bridge, poisoning
-/// the graph mutex). Called from the parallel phase, so it touches only `entry`.
+/// stamp each emitted frame's continuity index, and capture any error or panic on
+/// its error channel. Panic isolation keeps one faulty node from unwinding through
+/// the scheduler (and, in the bridge, poisoning the graph mutex). Called from the
+/// parallel phase, so it touches only `entry` (index stamping included — the
+/// counter and both I/O buffers all live in `entry`, so it stays disjoint).
 fn run_node(entry: &mut NodeEntry) {
     entry.trigger_pending = false;
     entry.ctx.tick += 1;
@@ -741,6 +749,61 @@ fn run_node(entry: &mut NodeEntry) {
         Ok(Err(e)) => Some(e.0),
         Err(p) => Some(panic_message(p)),
     };
+    stamp_indices(entry);
+}
+
+/// The number of frames a `Data` spans — its total element count (numpy `.size`
+/// for an array, `len` for a string/table). This, not a static per-slot flag, is
+/// the timeline discriminator: a length-preserving transform's output matches its
+/// input's frame count; a generator or length-changing transform does not.
+fn frame_count(d: &Data) -> usize {
+    match d.value() {
+        goofi_core::Value::Array(s) => s.shape().iter().product(),
+        goofi_core::Value::Str(s) => s.chars().count(),
+        goofi_core::Value::Table(m) => m.len(),
+    }
+}
+
+/// Stamp `meta["index"]` on every frame this node just emitted (engine-owned; the
+/// node never touches it). For each output, propagate the index of the SINGLE
+/// index-bearing input whose frame count equals the output's — that input is the
+/// same timeline, so an upstream drop stays visible downstream. With zero, or more
+/// than one, matching inputs (a generator, a control input of a different length, a
+/// length-changing transform, or an ambiguous fan-in) the slot starts a fresh
+/// per-output counter that advances one per emit. Ported from the Python node's
+/// `_next_index`/`_propagated_index`.
+fn stamp_indices(entry: &mut NodeEntry) {
+    // Snapshot the index-bearing inputs (index, frame_count) — no borrow held.
+    let input_frames: Vec<(u64, usize)> = entry
+        .inputs
+        .values()
+        .filter_map(|o| o.as_ref())
+        .filter_map(|d| d.meta().index.map(|i| (i, frame_count(d))))
+        .collect();
+    // Disjoint field borrows: rewrite outputs while advancing the counters.
+    let outputs = &mut entry.outputs;
+    let counters = &mut entry.index_counters;
+    for (slot, slot_opt) in outputs.iter_mut() {
+        let Some(d) = slot_opt else { continue };
+        let of = frame_count(d);
+        let mut matched: Option<u64> = None;
+        let mut count = 0usize;
+        for (idx, f) in &input_frames {
+            if *f == of {
+                count += 1;
+                matched = Some(*idx);
+            }
+        }
+        let index = if count == 1 {
+            matched.unwrap()
+        } else {
+            let c = counters.entry(*slot).or_insert(0);
+            let v = *c;
+            *c += 1;
+            v
+        };
+        *d = d.with_index(index);
+    }
 }
 
 #[cfg(test)]
@@ -1335,6 +1398,57 @@ mod tests {
             assert!(g.last_error(*b).is_none(), "buffer faulted: {:?}", g.last_error(*b));
             assert!(g.latest_frame(*b, "out").is_some(), "each buffer must keep producing");
         }
+    }
+
+    #[test]
+    fn generator_stamps_fresh_incrementing_index() {
+        // A source (no index-bearing input) gets a fresh per-output counter that
+        // advances once per emit: after 3 ticks the latest frame carries index 2.
+        let mut g = Graph::new();
+        let src = g.add_node("ConstantArray", None).unwrap();
+        for _ in 0..3 {
+            g.tick();
+        }
+        let f = g.latest_frame(src, "out").expect("frame");
+        assert_eq!(f.meta().index, Some(2), "3 emits -> indices 0,1,2 (latest 2)");
+    }
+
+    #[test]
+    fn length_preserving_node_propagates_source_index() {
+        // ConstantArray(len 2) -> Echo (echoes -> len 2). The echo's output frame
+        // count matches its single index-bearing input, so it PROPAGATES the
+        // source's origin index rather than starting a fresh counter — an upstream
+        // drop stays visible at the sink. Pre-tick the source unwired so its index
+        // is a non-zero 3, distinguishable from a fresh-from-0 counter.
+        let mut g = Graph::new();
+        let src = g.add_node("ConstantArray", None).unwrap();
+        g.update_param(src, "constant", "length", Param::int(2, 1, 10)).unwrap();
+        let echo = g.add_node("_TestEcho", None).unwrap();
+        for _ in 0..3 {
+            g.tick(); // src advances to index 2; echo (unwired, triggered) never runs
+        }
+        g.add_link(src, "out", echo, "in").unwrap();
+        g.tick(); // src -> index 3; echo runs, matches len -> propagates 3
+        let f = g.latest_frame(echo, "out").expect("echo ran");
+        assert_eq!(f.meta().index, Some(3), "propagates the source's index, not fresh 0");
+    }
+
+    #[test]
+    fn length_changing_node_uses_fresh_index() {
+        // ConstantArray(len 2) -> Counter (emits len 1). The output frame count (1)
+        // never matches the input (2), so no input is the same timeline: the counter
+        // starts its OWN fresh index at 0, independent of the source's index (3).
+        let mut g = Graph::new();
+        let src = g.add_node("ConstantArray", None).unwrap();
+        g.update_param(src, "constant", "length", Param::int(2, 1, 10)).unwrap();
+        let cnt = g.add_node("_TestCounter", None).unwrap();
+        for _ in 0..3 {
+            g.tick(); // src advances to index 2; counter (unwired) never runs
+        }
+        g.add_link(src, "out", cnt, "in").unwrap();
+        g.tick(); // src -> index 3; counter runs, len mismatch -> fresh index 0
+        let f = g.latest_frame(cnt, "out").expect("counter ran");
+        assert_eq!(f.meta().index, Some(0), "fresh counter, not the source's 3");
     }
 
     #[test]

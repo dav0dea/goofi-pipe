@@ -296,6 +296,18 @@ impl Data {
         }))
     }
 
+    /// A copy of this `Data` with `meta.index` set to `index`, sharing the value
+    /// buffer (an `Arc` bump — never a payload copy). Only the small `Meta` sidecar
+    /// is cloned. The engine stamps the continuity index this way after a node emits.
+    pub fn with_index(&self, index: u64) -> Data {
+        let mut meta = self.0.meta.clone();
+        meta.index = Some(index);
+        Data(Arc::new(DataInner {
+            value: self.0.value.clone(),
+            meta,
+        }))
+    }
+
     pub fn string(s: impl Into<Arc<str>>, meta: Meta) -> Data {
         Data(Arc::new(DataInner {
             value: Value::Str(s.into()),
@@ -565,6 +577,21 @@ mod tests {
         assert_eq!(SlotType::Array.name(), "ARRAY");
         assert_eq!(SlotType::String.name(), "STRING");
         assert_eq!(SlotType::Table.tag(), 2);
+    }
+
+    #[test]
+    fn with_index_sets_meta_and_shares_buffer() {
+        let d = Data::from_array_bytes(DType::F32, vec![2], vec![0u8; 8], Meta::empty()).unwrap();
+        assert_eq!(d.meta().index, None);
+        let stamped = d.with_index(7);
+        assert_eq!(stamped.meta().index, Some(7));
+        assert_eq!(d.meta().index, None, "original is untouched (immutable)");
+        // The value buffer is shared, not copied (Arc bump).
+        if let (Value::Array(a), Value::Array(b)) = (d.value(), stamped.value()) {
+            assert_eq!(a.as_bytes().as_ptr(), b.as_bytes().as_ptr());
+        } else {
+            panic!()
+        }
     }
 
     #[test]
