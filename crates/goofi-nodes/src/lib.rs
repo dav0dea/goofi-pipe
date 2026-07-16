@@ -9,8 +9,10 @@ mod buffer;
 mod constant_array;
 mod fft;
 mod math;
+mod normalization;
 mod oscillator;
 mod psd;
+mod threshold;
 
 /// Force-links this crate's node registrations and reports how many native node
 /// types are registered. Call once from a binary's startup so `inventory` keeps
