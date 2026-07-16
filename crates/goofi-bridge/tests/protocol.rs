@@ -37,7 +37,6 @@ fn stub_make(_: &goofi_node::ParamGroups) -> Box<dyn goofi_node::Node> {
 static SERVE_OUT: &[goofi_node::OutputDecl] = &[goofi_node::OutputDecl {
     name: "out",
     kind: goofi_core::SlotType::Array,
-    length_preserving: false,
 }];
 static SERVE_MANIFEST: goofi_node::NodeManifest = goofi_node::NodeManifest {
     type_name: "DiscoveredPyNode",

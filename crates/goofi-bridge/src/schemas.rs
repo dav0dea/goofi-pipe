@@ -206,7 +206,6 @@ mod tests {
     static T_OUT: &[OutputDecl] = &[OutputDecl {
         name: "out",
         kind: goofi_core::SlotType::Array,
-        length_preserving: false,
     }];
     static T_MANIFEST: NodeManifest = NodeManifest {
         type_name: "MyPyThing",

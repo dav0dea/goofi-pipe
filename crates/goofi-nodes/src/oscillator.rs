@@ -95,7 +95,6 @@ fn make(p: &ParamGroups) -> Box<dyn Node> {
 static OUTPUTS: &[OutputDecl] = &[OutputDecl {
     name: "out",
     kind: SlotType::Array,
-    length_preserving: false,
 }];
 static INPUTS: &[SlotDecl] = &[];
 

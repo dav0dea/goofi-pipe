@@ -838,7 +838,6 @@ mod tests {
     static E_OUT: &[OutputDecl] = &[OutputDecl {
         name: "out",
         kind: SlotType::Array,
-        length_preserving: true,
     }];
     inventory::submit! {
         NodeManifest {
@@ -875,7 +874,6 @@ mod tests {
     static G_OUT: &[OutputDecl] = &[OutputDecl {
         name: "out",
         kind: SlotType::Array,
-        length_preserving: false,
     }];
     inventory::submit! {
         NodeManifest {
@@ -914,7 +912,6 @@ mod tests {
     static C_OUT: &[OutputDecl] = &[OutputDecl {
         name: "out",
         kind: SlotType::Array,
-        length_preserving: false,
     }];
     inventory::submit! {
         NodeManifest {
@@ -955,7 +952,6 @@ mod tests {
     static ADD_OUT: &[OutputDecl] = &[OutputDecl {
         name: "out",
         kind: SlotType::Array,
-        length_preserving: false,
     }];
     inventory::submit! {
         NodeManifest {
@@ -990,7 +986,6 @@ mod tests {
     static SLOW_OUT: &[OutputDecl] = &[OutputDecl {
         name: "out",
         kind: SlotType::Array,
-        length_preserving: false,
     }];
     inventory::submit! {
         NodeManifest {
@@ -1018,7 +1013,6 @@ mod tests {
     static P_OUT: &[OutputDecl] = &[OutputDecl {
         name: "out",
         kind: SlotType::Array,
-        length_preserving: false,
     }];
     inventory::submit! {
         NodeManifest {
@@ -1244,7 +1238,6 @@ mod tests {
     static RT_OUT: &[OutputDecl] = &[OutputDecl {
         name: "out",
         kind: SlotType::Array,
-        length_preserving: false,
     }];
     static RT_MANIFEST: NodeManifest = NodeManifest {
         type_name: "_RuntimeDyn",

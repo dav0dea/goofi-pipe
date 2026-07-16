@@ -72,7 +72,6 @@ static INPUTS: &[SlotDecl] = &[SlotDecl {
 static OUTPUTS: &[OutputDecl] = &[OutputDecl {
     name: "spectrum",
     kind: SlotType::Array,
-    length_preserving: false,
 }];
 
 inventory::submit! {

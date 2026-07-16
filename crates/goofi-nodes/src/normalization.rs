@@ -114,7 +114,6 @@ static INPUTS: &[SlotDecl] = &[SlotDecl {
 static OUTPUTS: &[OutputDecl] = &[OutputDecl {
     name: "normalized",
     kind: SlotType::Array,
-    length_preserving: true,
 }];
 
 inventory::submit! {

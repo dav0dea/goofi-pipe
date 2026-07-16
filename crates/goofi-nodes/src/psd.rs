@@ -70,7 +70,6 @@ static INPUTS: &[SlotDecl] = &[SlotDecl {
 static OUTPUTS: &[OutputDecl] = &[OutputDecl {
     name: "psd",
     kind: SlotType::Array,
-    length_preserving: false,
 }];
 
 inventory::submit! {

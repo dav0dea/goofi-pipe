@@ -26,7 +26,6 @@ static PY_IN: &[SlotDecl] = &[SlotDecl {
 static PY_OUT: &[OutputDecl] = &[OutputDecl {
     name: "out",
     kind: goofi_core::SlotType::Array,
-    length_preserving: true,
 }];
 fn py_params() -> ParamGroups {
     ParamGroups::new()

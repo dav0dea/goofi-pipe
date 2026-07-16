@@ -159,9 +159,6 @@ pub struct SlotDecl {
 pub struct OutputDecl {
     pub name: &'static str,
     pub kind: SlotType,
-    /// Whether this output preserves the input frame length (drives explicit
-    /// `meta["index"]` propagation).
-    pub length_preserving: bool,
 }
 
 /// Static, declarative node metadata, registered at compile time via `inventory`.
@@ -246,7 +243,6 @@ mod tests {
     static NOP_OUT: &[OutputDecl] = &[OutputDecl {
         name: "out",
         kind: SlotType::Array,
-        length_preserving: false,
     }];
     inventory::submit! {
         NodeManifest {

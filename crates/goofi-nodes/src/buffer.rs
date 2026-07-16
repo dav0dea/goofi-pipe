@@ -89,7 +89,6 @@ static INPUTS: &[SlotDecl] = &[SlotDecl {
 static OUTPUTS: &[OutputDecl] = &[OutputDecl {
     name: "out",
     kind: SlotType::Array,
-    length_preserving: false,
 }];
 
 inventory::submit! {
