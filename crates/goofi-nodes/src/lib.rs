@@ -5,17 +5,21 @@
 //! Downstream binaries (engine/bridge) must reference this crate so the linker
 //! keeps the `inventory::submit!` registrations — call [`native_node_count`].
 
+mod autocorrelation;
 mod buffer;
 mod clip;
 mod constant_array;
 mod delay;
 mod fft;
+mod frequencyshift;
 mod function;
+mod ifft;
 mod join;
 mod math;
 mod normalization;
 mod oscillator;
 mod padding;
+mod powerband;
 mod psd;
 mod reduce;
 mod reshape;

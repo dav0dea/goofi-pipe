@@ -112,6 +112,72 @@ pub fn psd_periodogram(planner: &mut FftPlanner<f32>, signal: &[f32], fs: f32) -
     (freqs, power)
 }
 
+/// Frequency-shift a real signal by translating its full (two-sided) FFT
+/// spectrum `delta_bins` bins and inverting. The vacated bins are **zero-filled,
+/// not wrapped** — this mirrors numpy's slice-assignment (`Y[d:] = X[:-d]`), so
+/// content shifted past an edge is dropped rather than rolled around. Because a
+/// one-sided shift breaks the spectrum's conjugate symmetry, the inverse is
+/// complex; we return its real part (length `n`). A positive `delta_bins` moves
+/// content toward higher bins. `delta_bins == 0` is the identity up to FFT
+/// round-trip error; `|delta_bins| >= n` zeros the whole spectrum (all-zero out).
+/// Takes a caller-owned [`FftPlanner`] (see [`magnitude_spectrum`]) so the
+/// forward+inverse plans are cached across ticks.
+pub fn frequency_shift(planner: &mut FftPlanner<f32>, signal: &[f32], delta_bins: i64) -> Vec<f32> {
+    let n = signal.len();
+    if n == 0 {
+        return Vec::new();
+    }
+    let mut buf: Vec<Complex<f32>> = signal.iter().map(|&x| Complex::new(x, 0.0)).collect();
+    planner.plan_fft_forward(n).process(&mut buf);
+
+    // Shift with zero-fill. `unsigned_abs` avoids the i64::MIN negation overflow;
+    // clamping to n makes an over-large shift a clean all-zero result (no panic).
+    let mag = delta_bins.unsigned_abs().min(n as u64) as usize;
+    let mut shifted = vec![Complex::new(0.0, 0.0); n];
+    if delta_bins > 0 {
+        shifted[mag..].copy_from_slice(&buf[..n - mag]);
+    } else if delta_bins < 0 {
+        shifted[..n - mag].copy_from_slice(&buf[mag..]);
+    } else {
+        shifted.copy_from_slice(&buf);
+    }
+
+    planner.plan_fft_inverse(n).process(&mut shifted);
+    // rustfft's inverse is unnormalized -> divide by n; keep only the real part.
+    let scale = 1.0 / n as f32;
+    shifted.iter().map(|c| c.re * scale).collect()
+}
+
+/// Reconstruct a real time-domain signal from a magnitude spectrum and its phase
+/// via the full inverse DFT — the kernel of goofi's Python IFFT node. Builds the
+/// complex spectrum `mag * exp(i*phase)`, runs an unnormalized inverse FFT, and
+/// returns its real part divided by `n` (matching numpy's normalized `ifft`).
+///
+/// `mag` and `phase` may differ in length; the shorter is treated as zero-padded
+/// to the longer (numpy `np.concatenate` with zeros in the node). Returns empty
+/// only when both inputs are empty. Takes a caller-owned [`FftPlanner`] (see
+/// [`magnitude_spectrum`]) so a node keeps the plan cached across ticks.
+pub fn inverse_fft_real(planner: &mut FftPlanner<f32>, mag: &[f32], phase: &[f32]) -> Vec<f32> {
+    let n = mag.len().max(phase.len());
+    if n == 0 {
+        return Vec::new();
+    }
+    let mut buf: Vec<Complex<f32>> = (0..n)
+        .map(|k| {
+            // Out-of-range on the shorter input reads as a zero pad.
+            let m = mag.get(k).copied().unwrap_or(0.0);
+            let p = phase.get(k).copied().unwrap_or(0.0);
+            // mag * exp(i*phase) = mag*(cos p + i sin p).
+            Complex::new(m * p.cos(), m * p.sin())
+        })
+        .collect();
+    let ifft = planner.plan_fft_inverse(n);
+    ifft.process(&mut buf);
+    // rustfft's inverse is unnormalized; numpy's ifft divides by n.
+    let inv_n = 1.0 / n as f32;
+    buf.iter().map(|c| c.re * inv_n).collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -154,6 +220,43 @@ mod tests {
     }
 
     #[test]
+    fn inverse_fft_real_round_trips_a_forward_fft() {
+        // Take the FULL forward FFT of a real signal to get (magnitude, phase),
+        // then reconstruct: ifft(mag * e^{i*phase}).re must recover the samples.
+        let n = 32usize;
+        let x: Vec<f32> = (0..n)
+            .map(|i| {
+                let t = i as f32 / n as f32;
+                (2.0 * PI * 3.0 * t).sin() + 0.5 * (2.0 * PI * 7.0 * t).cos()
+            })
+            .collect();
+        let mut planner = FftPlanner::new();
+        let mut spec: Vec<Complex<f32>> = x.iter().map(|&v| Complex::new(v, 0.0)).collect();
+        planner.plan_fft_forward(n).process(&mut spec);
+        let mag: Vec<f32> = spec.iter().map(|c| c.norm()).collect();
+        let phase: Vec<f32> = spec.iter().map(|c| c.arg()).collect();
+
+        let recon = inverse_fft_real(&mut planner, &mag, &phase);
+        assert_eq!(recon.len(), n);
+        for (a, b) in x.iter().zip(&recon) {
+            assert!((a - b).abs() < 1e-4, "reconstructed {b} != original {a}");
+        }
+    }
+
+    #[test]
+    fn inverse_fft_real_zero_pads_the_shorter_input() {
+        // Only a DC magnitude given; phase is longer, so mag is zero-padded to its
+        // length. A pure-DC spectrum reconstructs to a constant = dc / n.
+        let recon = inverse_fft_real(&mut FftPlanner::new(), &[4.0], &[0.0, 0.0, 0.0, 0.0]);
+        assert_eq!(recon.len(), 4, "output length follows the longer input");
+        for v in &recon {
+            assert!((v - 1.0).abs() < 1e-6, "DC-only spectrum -> constant, got {v}");
+        }
+        // Both empty -> empty (the node treats this as no-emit).
+        assert!(inverse_fft_real(&mut FftPlanner::new(), &[], &[]).is_empty());
+    }
+
+    #[test]
     fn gaussian_smooth_preserves_length_and_constants() {
         // A constant signal is unchanged (kernel sums to 1); length preserved.
         let c = vec![3.0f32; 16];
@@ -181,5 +284,41 @@ mod tests {
     fn hann_endpoints_are_zero() {
         let w = hann(16);
         assert!(w[0].abs() < 1e-6 && w[15].abs() < 1e-6);
+    }
+
+    #[test]
+    fn frequency_shift_zero_is_identity() {
+        // A zero-bin shift is just an FFT round-trip; the real part must recover
+        // the input (within f32 FFT round-trip error).
+        let sig: Vec<f32> = sine(16.0, 128.0, 128)
+            .iter()
+            .zip(sine(5.0, 128.0, 128))
+            .map(|(a, b)| a + 0.4 * b)
+            .collect();
+        let out = frequency_shift(&mut FftPlanner::new(), &sig, 0);
+        assert_eq!(out.len(), sig.len());
+        for (o, s) in out.iter().zip(&sig) {
+            assert!((o - s).abs() < 1e-3, "round-trip drifted: {o} vs {s}");
+        }
+    }
+
+    #[test]
+    fn frequency_shift_splits_sine_into_two_tones() {
+        // A zero-filled two-sided shift of a real sine at bin k by d bins moves the
+        // +freq image to k+d and the -freq image (at n-k) to n-(k-d); after taking
+        // the real part that folds back to bin |k-d|. So the output is the sum of
+        // two equal tones at bins {k+d, |k-d|} — the exact analytic signature of
+        // this shift method. Here k=16, d=8 -> peaks at bins 24 and 8, nothing else.
+        let (fs, n, k, d) = (128.0f32, 128usize, 16usize, 8i64);
+        let out = frequency_shift(&mut FftPlanner::new(), &sine(k as f32, fs, n), d);
+        let mag = magnitude_spectrum(&mut FftPlanner::new(), &out);
+        let (lo, hi) = (k - d as usize, k + d as usize); // 8 and 24
+        assert!(mag[lo] > 10.0 && mag[hi] > 10.0, "expected tones at {lo} and {hi}");
+        assert!((mag[lo] - mag[hi]).abs() < 1.0, "the two tones must be equal-amplitude");
+        for (b, &m) in mag.iter().enumerate() {
+            if b != lo && b != hi {
+                assert!(m < 1.0, "bin {b} should be silent, got {m}");
+            }
+        }
     }
 }
