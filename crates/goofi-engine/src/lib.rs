@@ -983,40 +983,35 @@ impl Graph {
                 if !gate_open {
                     continue;
                 }
-                // Resolve refs (fresh if the producer ran an earlier level this tick, else
-                // prev-tick = feedback); flag a bare nd() on a multi-output producer.
+                // Resolve refs: expose EVERY output slot of each referenced node keyed by
+                // (name, Some(slot)), plus (name, None) = the single output for a bare
+                // nd(). A multi-output node gets no (name, None) entry — a bare nd() on it
+                // is caught at runtime by the proxy. Fresh if the producer ran an earlier
+                // level this tick, else prev-tick (`last_outputs`) = 1-tick feedback.
                 let mut refs_map: HashMap<(String, Option<String>), Option<Data>> = HashMap::new();
                 let mut seen: HashMap<(String, Option<String>), Option<u64>> = HashMap::new();
-                let mut ambiguity: Option<String> = None;
-                for r in &b.refs {
-                    let rk = (r.node.clone(), r.slot.clone());
-                    let data = match self.uid_by_name(&r.node) {
-                        None => None,
+                let mut names: Vec<&str> = b.refs.iter().map(|r| r.node.as_str()).collect();
+                names.sort_unstable();
+                names.dedup();
+                for nm in names {
+                    let mut put = |k: (String, Option<String>), data: Option<Data>| {
+                        seen.insert(k.clone(), data.as_ref().and_then(|d| d.meta().index));
+                        refs_map.insert(k, data);
+                    };
+                    match self.uid_by_name(nm) {
+                        None => put((nm.to_string(), None), None), // missing → bare is None
                         Some(pu) => {
                             let pe = &self.nodes[&pu];
-                            let slot: Option<&str> = match &r.slot {
-                                Some(s) => Some(s.as_str()),
-                                None if pe.manifest.outputs.len() == 1 => {
-                                    Some(pe.manifest.outputs[0].name)
-                                }
-                                None => {
-                                    ambiguity = Some(format!(
-                                        "nd('{n}') is ambiguous: '{n}' has {c} output slots — use nd('{n}').slot",
-                                        n = r.node,
-                                        c = pe.manifest.outputs.len()
-                                    ));
-                                    None
-                                }
-                            };
-                            slot.and_then(|s| pe.last_outputs.get(s).cloned())
+                            for o in pe.manifest.outputs {
+                                let d = pe.last_outputs.get(o.name).cloned();
+                                put((nm.to_string(), Some(o.name.to_string())), d);
+                            }
+                            if pe.manifest.outputs.len() == 1 {
+                                let d = pe.last_outputs.get(pe.manifest.outputs[0].name).cloned();
+                                put((nm.to_string(), None), d);
+                            }
                         }
-                    };
-                    seen.insert(rk.clone(), data.as_ref().and_then(|d| d.meta().index));
-                    refs_map.insert(rk, data);
-                }
-                if let Some(msg) = ambiguity {
-                    results.push((uid, key.clone(), Outcome::Error(msg)));
-                    continue;
+                    }
                 }
                 // Due: a ref-less (time) expr every gated tick; else a ref emitted a new
                 // frame, or a first eval, or an error to retry.
