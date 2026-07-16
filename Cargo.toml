@@ -7,6 +7,7 @@ members = [
     "crates/goofi-dsp",
     "crates/goofi-py",
     "crates/goofi-nodes",
+    "crates/goofi-audio",
     "crates/goofi-subproc",
     "crates/goofi-engine",
     "crates/goofi-bridge",

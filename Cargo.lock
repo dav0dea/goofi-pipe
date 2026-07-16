@@ -275,6 +275,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "goofi-audio"
+version = "0.0.0"
+
+[[package]]
 name = "goofi-bridge"
 version = "0.0.0"
 dependencies = [
