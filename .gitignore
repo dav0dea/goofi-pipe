@@ -177,3 +177,6 @@ openai.key
 
 # SvelteKit generated (root, when tooling runs from repo root)
 .svelte-kit/
+
+# Rust build artifacts
+/target
