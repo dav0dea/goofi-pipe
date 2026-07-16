@@ -35,7 +35,6 @@ impl std::fmt::Display for Uid {
 }
 
 struct NodeEntry {
-    type_name: &'static str,
     manifest: &'static NodeManifest,
     node: Box<dyn goofi_node::Node>,
     params: ParamGroups,
@@ -136,9 +135,28 @@ impl Graph {
     /// Register a node type discovered at runtime. `manifest` must be `'static`
     /// (runtime types leak one manifest per type — bounded, catalog-lifetime); its
     /// `make` field is unused (instances come from `factory`).
-    pub fn register_dyn_type(&mut self, manifest: &'static NodeManifest, factory: NodeFactory) {
-        self.dyn_types
-            .insert(manifest.type_name, DynType { manifest, factory });
+    ///
+    /// A name that collides with a built-in catalog type or an already-registered
+    /// runtime type is refused (with a warning) rather than silently shadowed or
+    /// overwritten — a built-in always wins `add_node`/`load_doc` resolution, and a
+    /// blind overwrite would orphan the loser's leaked manifest and make its node
+    /// unreachable. Returns whether the type was registered.
+    pub fn register_dyn_type(
+        &mut self,
+        manifest: &'static NodeManifest,
+        factory: NodeFactory,
+    ) -> bool {
+        let name = manifest.type_name;
+        if goofi_node::find(name).is_some() {
+            eprintln!("warning: runtime node type `{name}` collides with a built-in; ignoring it");
+            return false;
+        }
+        if self.dyn_types.contains_key(name) {
+            eprintln!("warning: runtime node type `{name}` already registered; ignoring the duplicate");
+            return false;
+        }
+        self.dyn_types.insert(name, DynType { manifest, factory });
+        true
     }
 
     /// Whether a type name resolves to either the compile-time catalog or a
@@ -171,7 +189,7 @@ impl Graph {
     }
 
     pub fn type_name(&self, uid: Uid) -> Option<&'static str> {
-        self.nodes.get(&uid).map(|e| e.type_name)
+        self.nodes.get(&uid).map(|e| e.manifest.type_name)
     }
 
     pub fn manifest(&self, uid: Uid) -> Option<&'static NodeManifest> {
@@ -232,7 +250,6 @@ impl Graph {
         self.nodes.insert(
             uid,
             NodeEntry {
-                type_name: manifest.type_name,
                 manifest,
                 node,
                 params,
@@ -489,7 +506,7 @@ impl Graph {
             }
             nodes.insert(
                 uid.to_hex(),
-                json!({ "type": e.type_name, "name": e.name, "pos": e.pos, "params": Value::Object(params) }),
+                json!({ "type": e.manifest.type_name, "name": e.name, "pos": e.pos, "params": Value::Object(params) }),
             );
         }
         let links: Vec<Value> = self
@@ -1176,6 +1193,35 @@ mod tests {
         isolation: Isolation::InProcess,
         make: rt_stub_make,
     };
+
+    // A runtime manifest whose name collides with a built-in catalog type.
+    static COLLIDE_MANIFEST: NodeManifest = NodeManifest {
+        type_name: "Oscillator",
+        category: "runtime",
+        doc: "collides with the built-in Oscillator",
+        inputs: &[],
+        outputs: RT_OUT,
+        default_params: rt_params,
+        isolation: Isolation::InProcess,
+        make: rt_stub_make,
+    };
+
+    #[test]
+    fn register_dyn_type_refuses_collisions() {
+        let mut g = Graph::new();
+        // Collides with the built-in "Oscillator": refused, and add_node still
+        // resolves the native node (the dyn factory would panic via rt_stub_make).
+        assert!(!g.register_dyn_type(&COLLIDE_MANIFEST, Box::new(|_| unreachable!())));
+        assert!(g.dyn_type_manifests().is_empty());
+        let osc = g.add_node("Oscillator", None).unwrap();
+        assert_eq!(g.manifest(osc).unwrap().category, "inputs"); // the native one
+
+        // A fresh name registers once; a second registration of the same name is
+        // refused rather than overwriting (which would orphan the first's manifest).
+        assert!(g.register_dyn_type(&RT_MANIFEST, Box::new(|_| Box::new(RtSource { base: 1.0 }))));
+        assert!(!g.register_dyn_type(&RT_MANIFEST, Box::new(|_| Box::new(RtSource { base: 2.0 }))));
+        assert_eq!(g.dyn_type_manifests().len(), 1);
+    }
 
     #[test]
     fn hosts_a_runtime_registered_dyn_type() {
