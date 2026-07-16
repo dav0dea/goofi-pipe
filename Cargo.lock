@@ -371,6 +371,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "goofi-subproc"
+version = "0.0.0"
+dependencies = [
+ "goofi-codec",
+ "goofi-core",
+ "goofi-node",
+ "indexmap",
+]
+
+[[package]]
 name = "hashbrown"
 version = "0.17.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"

@@ -1,0 +1,22 @@
+[package]
+name = "goofi-subproc"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# The subprocess node tier: run a Python node in an isolated GIL interpreter
+# (for deps that aren't free-threading-safe, and — per the latency finding — for
+# parallel heavy-Python compute, since a separate interpreter has its own object
+# ownership and sidesteps free-threaded biased-refcount contention). No pyo3 here;
+# frames cross the boundary as length-prefixed GOOF (goofi-codec). Transport is
+# stdin/stdout pipes in this first cut; the intended production transport is
+# iceoryx2 shared memory, mirroring the node<->node plane (swappable — the codec
+# and worker protocol are transport-agnostic).
+
+[dependencies]
+goofi-core = { path = "../goofi-core" }
+goofi-node = { path = "../goofi-node" }
+goofi-codec = { path = "../goofi-codec" }
+
+[dev-dependencies]
+indexmap = "2"
