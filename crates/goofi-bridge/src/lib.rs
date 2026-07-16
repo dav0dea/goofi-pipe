@@ -77,6 +77,35 @@ pub fn spawn_tick(graph: Arc<Mutex<Graph>>, hz: u64) {
     });
 }
 
+/// Broadcast each node's measured update frequency to the control plane at `hz`, as
+/// `node_stats` events (forwarding `ufreq` as `updates_per_second` — the node-header
+/// update-rate readout). Skips nodes with no measurement yet.
+pub fn spawn_stats(graph: Arc<Mutex<Graph>>, events: broadcast::Sender<String>, hz: u64) {
+    std::thread::spawn(move || {
+        let period = Duration::from_secs_f64(1.0 / hz as f64);
+        loop {
+            std::thread::sleep(period);
+            let rates: Vec<(String, f64)> = {
+                let g = graph.lock().unwrap();
+                g.node_uids()
+                    .into_iter()
+                    .filter_map(|u| g.node_ufreq(u).map(|f| (u.to_hex(), f)))
+                    .collect()
+            };
+            for (node, ufreq) in rates {
+                let ev = serde_json::json!({
+                    "event": "node_stats",
+                    "payload": {
+                        "node": node,
+                        "stats": { "updates_per_second": ufreq, "mean_process_ms": 0.0, "total_ticks": 0 }
+                    }
+                });
+                let _ = events.send(ev.to_string());
+            }
+        }
+    });
+}
+
 /// The full router, optionally serving the built SPA (SPA-fallback to index.html)
 /// for any non-API path.
 pub fn app(state: AppState, static_dir: Option<PathBuf>) -> Router {
@@ -108,6 +137,8 @@ pub fn resolve_frontend_dir() -> Option<PathBuf> {
 /// Bind and serve (used by the CLI). Ticks at 60 Hz; serves the SPA if found.
 pub async fn serve(bind: &str, port: u16, state: AppState) -> std::io::Result<()> {
     spawn_tick(state.graph.clone(), 60);
+    spawn_stats(state.graph.clone(), state.events.clone(), 2); // node-header update rate
+
     let listener = tokio::net::TcpListener::bind((bind, port)).await?;
     serve_app(listener, state, resolve_frontend_dir()).await
 }

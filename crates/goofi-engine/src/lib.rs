@@ -538,6 +538,13 @@ impl Graph {
             .flatten()
     }
 
+    /// The node's current measured update frequency (Hz) — the same value stamped as
+    /// `meta["ufreq"]` on its output. `None` until it has been measured (≥2 emits).
+    /// The control plane forwards this to the node-header update-rate readout.
+    pub fn node_ufreq(&self, uid: Uid) -> Option<f64> {
+        self.nodes.get(&uid).and_then(|e| e.ufreq_meter.ema.map(|ema| 1.0 / ema))
+    }
+
     /// Remove all nodes and links.
     pub fn clear(&mut self) {
         self.nodes.clear();
@@ -2143,6 +2150,20 @@ mod tests {
         let uf = ufreq(&g, src, "out").unwrap();
         assert!(uf.is_finite(), "dt==0 must not produce inf/NaN, got {uf}");
         assert!((uf - 100.0).abs() < 1e-6, "keeps the prior 100 Hz estimate, got {uf}");
+    }
+
+    #[test]
+    fn node_ufreq_exposes_the_measured_rate() {
+        use std::time::Duration;
+        // The control-plane accessor the bridge forwards to the node header.
+        let mut g = Graph::new();
+        let src = g.add_node("_TestConst", None).unwrap();
+        let t0 = Instant::now();
+        g.tick_at(t0);
+        assert_eq!(g.node_ufreq(src), None, "no rate before the 2nd emit");
+        g.tick_at(t0 + Duration::from_millis(10));
+        let uf = g.node_ufreq(src).expect("measured");
+        assert!((uf - 100.0).abs() < 1e-6, "node_ufreq -> 100 Hz, got {uf}");
     }
 
     #[test]
