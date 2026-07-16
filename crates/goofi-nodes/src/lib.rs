@@ -8,6 +8,7 @@
 mod autocorrelation;
 mod buffer;
 mod clip;
+mod colorenhancer;
 mod compass;
 mod constant_array;
 mod delay;
@@ -16,6 +17,7 @@ mod frequencyshift;
 mod function;
 mod ifft;
 mod join;
+mod joinstring;
 mod math;
 mod normalization;
 mod oscillator;
@@ -28,6 +30,7 @@ mod reshape;
 mod setmeta;
 mod smooth;
 mod threshold;
+mod timedelayembedding;
 mod transpose;
 
 /// Force-links this crate's node registrations and reports how many native node
