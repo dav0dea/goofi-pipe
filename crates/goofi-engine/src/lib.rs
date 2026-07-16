@@ -8,9 +8,10 @@
 //! data plane.
 
 use std::collections::HashMap;
+use std::time::Instant;
 
 use goofi_core::{Data, Param};
-use goofi_node::{Inputs, NodeCtx, NodeManifest, Outputs, ParamGroups, ParamKey};
+use goofi_node::{Inputs, NodeCtx, NodeManifest, Outputs, ParamGroups, ParamKey, RunPolicy};
 use indexmap::IndexMap;
 use rayon::prelude::*;
 
@@ -55,6 +56,10 @@ struct NodeEntry {
     /// length-changing transform); a length-preserving emit mirrors its matching
     /// input's index instead. Engine-owned — the node never sees it.
     index_counters: HashMap<&'static str, u64>,
+    /// The node's run gate (from its `common` params), consulted each tick.
+    run_policy: RunPolicy,
+    /// Wall-clock instant the node last ran, for rate-cap gating (`None` = never).
+    last_run: Option<Instant>,
 }
 
 /// A resolved link (uids + `&'static` slot names), for snapshot projection.
@@ -251,6 +256,7 @@ impl Graph {
 
         let name = self.fresh_name(&manifest.type_name.to_lowercase());
         let has_trigger_inputs = manifest.inputs.iter().any(|i| i.trigger_process);
+        let run_policy = RunPolicy::from_params(&params);
         let uid = self.mint();
         self.nodes.insert(
             uid,
@@ -267,6 +273,8 @@ impl Graph {
                 has_trigger_inputs,
                 trigger_pending: false,
                 index_counters: HashMap::new(),
+                run_policy,
+                last_run: None,
             },
         );
         uid
@@ -363,6 +371,12 @@ impl Graph {
             g.insert(name.to_string(), value.clone());
         } else {
             return Err(format!("no such param group `{group}`"));
+        }
+        // The `common` group is scheduler metadata, not a node param — re-derive
+        // the cached run gate rather than dispatching it to the node.
+        if group == "common" {
+            entry.run_policy = RunPolicy::from_params(&entry.params);
+            return Ok(());
         }
         entry
             .node
@@ -653,14 +667,23 @@ impl Graph {
         levels
     }
 
-    /// Run one tick of the whole graph. Nodes are grouped into topological levels
+    /// Run one tick of the whole graph against the wall clock. See [`Self::tick_at`].
+    pub fn tick(&mut self) {
+        self.tick_at(Instant::now());
+    }
+
+    /// Run one tick as of instant `now` (injectable so rate gating is
+    /// deterministically testable). Nodes are grouped into topological levels
     /// ([`Self::topo_levels`]); each level's mutually-independent nodes execute
     /// concurrently on the rayon work-stealing pool, then their fresh outputs are
     /// propagated to the next level's inputs before it runs — so an acyclic graph
-    /// still propagates end-to-end within a single tick. A node runs iff it
-    /// free-runs (no triggering inputs) or a triggering input received a fresh
-    /// frame this round (trigger arbitration); a skipped node keeps its outputs.
-    pub fn tick(&mut self) {
+    /// still propagates end-to-end within a single tick. A node runs iff its
+    /// [`RunPolicy`] admits it: it wants to run (it free-runs — no triggering
+    /// inputs — or a triggering input received a fresh frame, or it autotriggers)
+    /// AND its rate cap has elapsed since it last ran. A skipped node keeps its
+    /// outputs. With the default policy (`max_frequency == 0`) the rate cap is
+    /// unbounded, so this reduces to pure trigger arbitration.
+    fn tick_at(&mut self, now: Instant) {
         let levels = self.topo_levels();
         for level in levels {
             let set: std::collections::HashSet<Uid> = level.iter().copied().collect();
@@ -673,9 +696,17 @@ impl Graph {
                     .nodes
                     .iter_mut()
                     .filter(|(uid, e)| {
-                        set.contains(uid) && (!e.has_trigger_inputs || e.trigger_pending)
+                        if !set.contains(uid) {
+                            return false;
+                        }
+                        let triggered = e.trigger_pending || !e.has_trigger_inputs;
+                        let since_last = e.last_run.map(|t| now.saturating_duration_since(t).as_secs_f64());
+                        e.run_policy.should_run(since_last, triggered)
                     })
-                    .map(|(uid, e)| (*uid, e))
+                    .map(|(uid, e)| {
+                        e.last_run = Some(now);
+                        (*uid, e)
+                    })
                     .collect();
                 let ran: Vec<Uid> = batch.iter().map(|(u, _)| *u).collect();
                 batch.into_par_iter().for_each(|(_, entry)| run_node(entry));
@@ -1024,6 +1055,45 @@ mod tests {
             default_params: echo_params,
             isolation: Isolation::InProcess,
             make: panicky_make,
+        }
+    }
+
+    // A free-running counter capped at 10 Hz via a `common` group — exercises the
+    // wall-clock rate gate. Emits its run count so a test can read how often it ran.
+    struct CappedSource {
+        runs: i64,
+    }
+    impl Node for CappedSource {
+        fn process(&mut self, _i: &Inputs<'_>, out: &mut Outputs<'_>, _c: &mut NodeCtx) -> NodeResult {
+            self.runs += 1;
+            let d = Data::from_array_bytes(DType::F32, vec![1], (self.runs as f32).to_le_bytes().to_vec(), Meta::empty())
+                .map_err(|e| e.to_string())?;
+            out.set("out", d);
+            Ok(())
+        }
+    }
+    fn capped_params() -> ParamGroups {
+        let mut common = IndexMap::new();
+        common.insert("autotrigger".to_string(), Param::boolean(true));
+        common.insert("max_frequency".to_string(), Param::float(10.0, 0.0, 60.0)); // 10 Hz -> 0.1s
+        common.insert("frequency_mode".to_string(), Param::str_free("updates-per-second"));
+        let mut g = ParamGroups::new();
+        g.insert("common".to_string(), common);
+        g
+    }
+    fn capped_make(_: &ParamGroups) -> Box<dyn Node> {
+        Box::new(CappedSource { runs: 0 })
+    }
+    inventory::submit! {
+        NodeManifest {
+            type_name: "_TestCapped",
+            category: "test",
+            doc: "10 Hz free-running counter",
+            inputs: &[],
+            outputs: G_OUT,
+            default_params: capped_params,
+            isolation: Isolation::InProcess,
+            make: capped_make,
         }
     }
 
@@ -1442,6 +1512,42 @@ mod tests {
         g.tick(); // src -> index 3; counter runs, len mismatch -> fresh index 0
         let f = g.latest_frame(cnt, "out").expect("counter ran");
         assert_eq!(f.meta().index, Some(0), "fresh counter, not the source's 3");
+    }
+
+    #[test]
+    fn rate_cap_gates_runs_by_wall_clock() {
+        use std::time::Duration;
+        // A 10 Hz (0.1s period) free-running source. Drive tick_at with a synthetic
+        // clock and assert it runs only once the period has elapsed since last run.
+        let mut g = Graph::new();
+        let src = g.add_node("_TestCapped", None).unwrap();
+        let t0 = Instant::now();
+        g.tick_at(t0); // never run -> runs (count 1)
+        g.tick_at(t0 + Duration::from_millis(50)); // 0.05 < 0.1 -> skip
+        g.tick_at(t0 + Duration::from_millis(100)); // 0.10 elapsed -> run (count 2)
+        g.tick_at(t0 + Duration::from_millis(120)); // 0.02 since last -> skip
+        g.tick_at(t0 + Duration::from_millis(210)); // 0.11 since last -> run (count 3)
+        assert_eq!(
+            first_f32(&g.latest_frame(src, "out").unwrap()),
+            3.0,
+            "10 Hz cap admitted exactly 3 of 5 ticks"
+        );
+    }
+
+    #[test]
+    fn default_policy_runs_every_tick_regardless_of_clock() {
+        use std::time::Duration;
+        // A default-policy source (unbounded) must run on every tick even when the
+        // clock barely advances — proving the rate gate is inert without a cap
+        // (backward compatibility with the pre-RunPolicy scheduler).
+        let mut g = Graph::new();
+        let src = g.add_node("ConstantArray", None).unwrap();
+        let t0 = Instant::now();
+        for i in 0..5 {
+            g.tick_at(t0 + Duration::from_nanos(i)); // clock essentially frozen
+        }
+        // 5 emits -> the generator's index advanced to 4 (ran every tick).
+        assert_eq!(g.latest_frame(src, "out").unwrap().meta().index, Some(4));
     }
 
     #[test]
