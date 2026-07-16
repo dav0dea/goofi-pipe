@@ -124,6 +124,9 @@ fn output_slots(m: &NodeManifest) -> Value {
 pub fn node_type_info(m: &NodeManifest) -> Value {
     json!({
         "type": m.type_name,
+        // A node's pillar (signal/audio/video) routes it to its editor panel. All current
+        // node types are signal; audio/video manifests will declare their own (layering §9).
+        "pillar": "signal",
         "category": m.category,
         "doc": m.doc,
         "available": true,
@@ -158,6 +161,7 @@ pub fn node_instance_info(g: &Graph, uid: Uid) -> Value {
         "uid": uid.to_hex(),
         "name": name,
         "type": g.type_name(uid).unwrap_or(""),
+        "pillar": "signal",
         "category": m.category,
         "doc": m.doc,
         "input_slots": input_slots(m),
@@ -216,6 +220,9 @@ pub fn snapshot(g: &Graph, instance_id: &str, with_protocol: bool) -> Value {
     instances.insert(ROOT_ID.to_string(), root_instance(g));
     let mut snap = json!({
         "instance_id": instance_id,
+        // The pillars this backend build actually hosts — the frontend shows only these
+        // editors. Signal-only for now; audio/video are added as their runtimes land.
+        "pillars": ["signal"],
         "nodes": nodes,
         "links": links,
         "instances": Value::Object(instances),
@@ -301,5 +308,12 @@ mod tests {
         assert_eq!(common["max_frequency"]["type"], json!("float"));
         assert_eq!(common["autotrigger"]["type"], json!("bool"));
         assert_eq!(common["frequency_mode"]["type"], json!("string"));
+    }
+
+    #[test]
+    fn node_type_info_carries_the_signal_pillar() {
+        // The pillar tag rides the control contract so the frontend can route a node to its
+        // editor panel; every current type is signal.
+        assert_eq!(node_type_info(&T_MANIFEST)["pillar"], json!("signal"));
     }
 }

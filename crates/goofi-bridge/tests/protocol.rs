@@ -124,6 +124,8 @@ async fn control_and_data_plane_end_to_end() {
     assert!(hello["payload"]["instance_id"].is_string());
     assert!(hello["payload"]["instances"]["__root__"].is_object());
     assert_eq!(hello["payload"]["nodes"].as_array().unwrap().len(), 0);
+    // The backend advertises the pillars it hosts (signal-only for now).
+    assert_eq!(hello["payload"]["pillars"], json!(["signal"]));
 
     // 2. list_nodes returns the catalog incl. Oscillator.
     ws.send(Message::Text(
