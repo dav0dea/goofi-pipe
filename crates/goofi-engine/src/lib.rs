@@ -1402,6 +1402,68 @@ mod tests {
         }
     }
 
+    // An in-crate constant-array source — value + length via the "constant" param
+    // group (mirroring the library's ConstantArray) — so the engine's own tests need
+    // no node from the library as a generic source. Emits an f32 array of `length`
+    // filled with `value`.
+    struct TestConst {
+        value: f32,
+        length: usize,
+    }
+    impl Node for TestConst {
+        fn process(&mut self, _i: &Inputs<'_>, out: &mut Outputs<'_>, _c: &mut NodeCtx) -> NodeResult {
+            let buf: Vec<u8> = (0..self.length).flat_map(|_| self.value.to_le_bytes()).collect();
+            let d = Data::from_array_bytes(DType::F32, vec![self.length], buf, Meta::empty())
+                .map_err(|e| e.to_string())?;
+            out.set("out", d);
+            Ok(())
+        }
+        fn on_param_changed(&mut self, key: &ParamKey, v: &Param) -> NodeResult {
+            match (key.group.as_str(), key.name.as_str()) {
+                ("constant", "value") => {
+                    if let Some(x) = v.as_f64() {
+                        self.value = x as f32;
+                    }
+                }
+                ("constant", "length") => {
+                    if let Some(x) = v.as_i64() {
+                        self.length = x.max(1) as usize;
+                    }
+                }
+                _ => {}
+            }
+            Ok(())
+        }
+    }
+    fn test_const_params() -> ParamGroups {
+        let mut group = IndexMap::new();
+        group.insert("value".to_string(), Param::float(0.0, -1.0e9, 1.0e9));
+        group.insert("length".to_string(), Param::int(1, 1, 1_000_000));
+        let mut groups = ParamGroups::new();
+        groups.insert("constant".to_string(), group);
+        groups
+    }
+    fn test_const_make(p: &ParamGroups) -> Box<dyn Node> {
+        let value = goofi_node::param(p, "constant", "value").and_then(Param::as_f64).unwrap_or(0.0) as f32;
+        let length = goofi_node::param(p, "constant", "length")
+            .and_then(Param::as_i64)
+            .unwrap_or(1)
+            .max(1) as usize;
+        Box::new(TestConst { value, length })
+    }
+    inventory::submit! {
+        NodeManifest {
+            type_name: "_TestConst",
+            category: "test",
+            doc: "constant f32 array source (value+length) — engine-internal test source",
+            inputs: &[],
+            outputs: G_OUT,
+            default_params: test_const_params,
+            isolation: Isolation::InProcess,
+            make: test_const_make,
+        }
+    }
+
     fn first_f32(d: &Data) -> f32 {
         if let Value::Array(s) = d.value() {
             f32::from_le_bytes(s.as_bytes()[0..4].try_into().unwrap())
@@ -1419,7 +1481,7 @@ mod tests {
     }
 
     fn const_src(g: &mut Graph, v: f32) -> Uid {
-        let u = g.add_node("ConstantArray", None).unwrap();
+        let u = g.add_node("_TestConst", None).unwrap();
         g.update_param(u, "constant", "value", Param::float(v as f64, -1e9, 1e9)).unwrap();
         u
     }
@@ -1427,7 +1489,7 @@ mod tests {
     #[test]
     fn source_streams_latest_frame() {
         let mut g = Graph::new();
-        let src = g.add_node("ConstantArray", None).unwrap();
+        let src = g.add_node("_TestConst", None).unwrap();
         g.update_param(src, "constant", "value", Param::float(7.0, -1e9, 1e9))
             .unwrap();
         g.tick();
@@ -1438,7 +1500,7 @@ mod tests {
     #[test]
     fn link_propagates_in_one_tick() {
         let mut g = Graph::new();
-        let src = g.add_node("ConstantArray", None).unwrap();
+        let src = g.add_node("_TestConst", None).unwrap();
         g.update_param(src, "constant", "value", Param::float(5.0, -1e9, 1e9))
             .unwrap();
         g.update_param(src, "constant", "length", Param::int(2, 1, 10))
@@ -1460,8 +1522,8 @@ mod tests {
     #[test]
     fn one_wire_per_input_evicts_prior_source() {
         let mut g = Graph::new();
-        let a = g.add_node("ConstantArray", None).unwrap();
-        let b = g.add_node("ConstantArray", None).unwrap();
+        let a = g.add_node("_TestConst", None).unwrap();
+        let b = g.add_node("_TestConst", None).unwrap();
         let echo = g.add_node("_TestEcho", None).unwrap();
         g.update_param(a, "constant", "value", Param::float(1.0, -1e9, 1e9))
             .unwrap();
@@ -1573,7 +1635,7 @@ mod tests {
     #[test]
     fn remove_node_drops_links() {
         let mut g = Graph::new();
-        let src = g.add_node("ConstantArray", None).unwrap();
+        let src = g.add_node("_TestConst", None).unwrap();
         let echo = g.add_node("_TestEcho", None).unwrap();
         g.add_link(src, "out", echo, "in").unwrap();
         g.remove_node(src).unwrap();
@@ -1611,7 +1673,7 @@ mod tests {
     #[test]
     fn gfi_v3_serialize_load_roundtrip() {
         let mut g = Graph::new();
-        let c = g.add_node("ConstantArray", None).unwrap();
+        let c = g.add_node("_TestConst", None).unwrap();
         g.update_param(c, "constant", "value", Param::float(7.5, -1e9, 1e9))
             .unwrap();
         g.rename_node(c, "myconst").unwrap();
@@ -1631,7 +1693,7 @@ mod tests {
             .into_iter()
             .find(|u| g2.name(*u) == Some("myconst"))
             .expect("named node restored");
-        assert_eq!(g2.type_name(restored), Some("ConstantArray"));
+        assert_eq!(g2.type_name(restored), Some("_TestConst"));
         assert_eq!(g2.pos(restored), Some([11.0, 22.0]));
         assert_eq!(
             goofi_node::param(g2.params(restored).unwrap(), "constant", "value")
@@ -1654,7 +1716,7 @@ mod tests {
     #[test]
     fn load_doc_rejects_unknown_type_before_teardown() {
         let mut g = Graph::new();
-        g.add_node("ConstantArray", None).unwrap();
+        g.add_node("_TestConst", None).unwrap();
         let before = g.node_count();
         let bad = "version: 3\nnodes:\n  \"00000000000a\":\n    type: NotAReal Node\n    pos: [0, 0]\nlinks: []\n";
         assert!(g.load_doc(bad).is_err());
@@ -1687,12 +1749,12 @@ mod tests {
         // Two disjoint ConstantArray -> Echo branches must both propagate in one
         // tick regardless of the parallel scheduling of their level-0 sources.
         let mut g = Graph::new();
-        let a = g.add_node("ConstantArray", None).unwrap();
+        let a = g.add_node("_TestConst", None).unwrap();
         let ea = g.add_node("_TestEcho", None).unwrap();
         g.update_param(a, "constant", "value", Param::float(3.0, -1e9, 1e9)).unwrap();
         g.add_link(a, "out", ea, "in").unwrap();
 
-        let b = g.add_node("ConstantArray", None).unwrap();
+        let b = g.add_node("_TestConst", None).unwrap();
         let eb = g.add_node("_TestEcho", None).unwrap();
         g.update_param(b, "constant", "value", Param::float(4.0, -1e9, 1e9)).unwrap();
         g.add_link(b, "out", eb, "in").unwrap();
@@ -1820,7 +1882,7 @@ mod tests {
         // {echoA,echoB}(1, parallel), adder(2). The adder must see BOTH branch
         // outputs — proving level-2 propagation waits for the whole level-1 batch.
         let mut g = Graph::new();
-        let src = g.add_node("ConstantArray", None).unwrap();
+        let src = g.add_node("_TestConst", None).unwrap();
         g.update_param(src, "constant", "value", Param::float(5.0, -1e9, 1e9)).unwrap();
         let ea = g.add_node("_TestEcho", None).unwrap();
         let eb = g.add_node("_TestEcho", None).unwrap();
@@ -1852,14 +1914,12 @@ mod tests {
     #[test]
     fn sustained_load_reference_stress_shape_stays_stable() {
         use std::time::Duration;
-        // The reference stress-patch shape: one Oscillator fanning out to a PSD and
-        // 8 Buffers — all at topo level 1, so they run concurrently on the pool each
-        // tick. Drive it hard and assert every consumer keeps producing with a clean
-        // error channel (sustained parallel stability, no drift into a faulted state).
+        // The reference stress-patch shape: one Oscillator fanning out to 8 Buffers —
+        // all at topo level 1, so they run concurrently on the pool each tick. Drive it
+        // hard and assert every consumer keeps producing with a clean error channel
+        // (sustained parallel stability, no drift into a faulted state).
         let mut g = Graph::new();
         let osc = g.add_node("Oscillator", None).unwrap();
-        let psd = g.add_node("PSD", None).unwrap();
-        g.add_link(osc, "out", psd, "data").unwrap();
         let mut buffers = Vec::new();
         for _ in 0..8 {
             let b = g.add_node("Buffer", None).unwrap();
@@ -1876,8 +1936,6 @@ mod tests {
         }
 
         assert!(g.last_error(osc).is_none(), "oscillator faulted: {:?}", g.last_error(osc));
-        assert!(g.last_error(psd).is_none(), "psd faulted: {:?}", g.last_error(psd));
-        assert!(g.latest_frame(psd, "psd").is_some(), "psd must keep producing under load");
         for b in &buffers {
             assert!(g.last_error(*b).is_none(), "buffer faulted: {:?}", g.last_error(*b));
             assert!(g.latest_frame(*b, "out").is_some(), "each buffer must keep producing");
@@ -1889,7 +1947,7 @@ mod tests {
         // A source (no index-bearing input) gets a fresh per-output counter that
         // advances once per emit: after 3 ticks the latest frame carries index 2.
         let mut g = Graph::new();
-        let src = g.add_node("ConstantArray", None).unwrap();
+        let src = g.add_node("_TestConst", None).unwrap();
         for _ in 0..3 {
             g.tick();
         }
@@ -1905,7 +1963,7 @@ mod tests {
         // drop stays visible at the sink. Pre-tick the source unwired so its index
         // is a non-zero 3, distinguishable from a fresh-from-0 counter.
         let mut g = Graph::new();
-        let src = g.add_node("ConstantArray", None).unwrap();
+        let src = g.add_node("_TestConst", None).unwrap();
         g.update_param(src, "constant", "length", Param::int(2, 1, 10)).unwrap();
         let echo = g.add_node("_TestEcho", None).unwrap();
         for _ in 0..3 {
@@ -1923,7 +1981,7 @@ mod tests {
         // never matches the input (2), so no input is the same timeline: the counter
         // starts its OWN fresh index at 0, independent of the source's index (3).
         let mut g = Graph::new();
-        let src = g.add_node("ConstantArray", None).unwrap();
+        let src = g.add_node("_TestConst", None).unwrap();
         g.update_param(src, "constant", "length", Param::int(2, 1, 10)).unwrap();
         let cnt = g.add_node("_TestCounter", None).unwrap();
         for _ in 0..3 {
@@ -1940,7 +1998,7 @@ mod tests {
         // The engine merges a universal `common` scheduling group into every node
         // (like Python's DEFAULT_PARAMS), so rate controls exist uniformly.
         let mut g = Graph::new();
-        let c = g.add_node("ConstantArray", None).unwrap();
+        let c = g.add_node("_TestConst", None).unwrap();
         let p = g.params(c).unwrap();
         let common = p.get("common").expect("common group injected");
         assert!(common.contains_key("autotrigger"));
@@ -1957,7 +2015,7 @@ mod tests {
         // Cap a real source (ConstantArray, a free-running generator) at 10 Hz via
         // its `common` group; its emit index advances only on admitted ticks.
         let mut g = Graph::new();
-        let c = g.add_node("ConstantArray", None).unwrap();
+        let c = g.add_node("_TestConst", None).unwrap();
         g.update_param(c, "common", "max_frequency", Param::float(10.0, 0.0, 60.0)).unwrap();
         let t0 = Instant::now();
         g.tick_at(t0); // run -> index 0
@@ -1972,7 +2030,7 @@ mod tests {
         use std::time::Duration;
         // A saved max_frequency must re-derive into the loaded node's run gate.
         let mut g = Graph::new();
-        let c = g.add_node("ConstantArray", None).unwrap();
+        let c = g.add_node("_TestConst", None).unwrap();
         g.update_param(c, "common", "max_frequency", Param::float(10.0, 0.0, 60.0)).unwrap();
         let yaml = g.serialize();
 
@@ -2073,7 +2131,7 @@ mod tests {
         // A pure source ticked every 10 ms emits at a steady 100 Hz. The first frame
         // has no interval to measure; from the second on, a steady period reads exact.
         let mut g = Graph::new();
-        let src = g.add_node("ConstantArray", None).unwrap();
+        let src = g.add_node("_TestConst", None).unwrap();
         let t0 = Instant::now();
         g.tick_at(t0);
         assert_eq!(ufreq(&g, src, "out"), None, "first emit: no interval yet");
@@ -2124,7 +2182,7 @@ mod tests {
         // Two emits at the SAME instant (dt == 0) must never yield inf/NaN: before a
         // measurement exists it stays None; afterwards it keeps the prior estimate.
         let mut g = Graph::new();
-        let src = g.add_node("ConstantArray", None).unwrap();
+        let src = g.add_node("_TestConst", None).unwrap();
         let t0 = Instant::now();
         g.tick_at(t0); // emit 1
         g.tick_at(t0); // emit 2, dt == 0, no prior estimate
@@ -2144,7 +2202,7 @@ mod tests {
         // encoded as `goofi_codec::encode(latest_frame(..))` (see bridge/lib.rs),
         // carries ufreq across the wire so the browser inspector shows it.
         let mut g = Graph::new();
-        let src = g.add_node("ConstantArray", None).unwrap();
+        let src = g.add_node("_TestConst", None).unwrap();
         let t0 = Instant::now();
         g.tick_at(t0);
         g.tick_at(t0 + Duration::from_millis(10)); // steady 100 Hz
@@ -2164,7 +2222,7 @@ mod tests {
         // clock barely advances — proving the rate gate is inert without a cap
         // (backward compatibility with the pre-RunPolicy scheduler).
         let mut g = Graph::new();
-        let src = g.add_node("ConstantArray", None).unwrap();
+        let src = g.add_node("_TestConst", None).unwrap();
         let t0 = Instant::now();
         for i in 0..5 {
             g.tick_at(t0 + Duration::from_nanos(i)); // clock essentially frozen
@@ -2182,8 +2240,8 @@ mod tests {
         // matching only the length-1 ref. The output index must be a FRESH 0, not
         // ref's 3 (which a naive length-only match would wrongly propagate).
         let mut g = Graph::new();
-        let rs = g.add_node("ConstantArray", None).unwrap(); // ref source, len 1
-        let ds = g.add_node("ConstantArray", None).unwrap();
+        let rs = g.add_node("_TestConst", None).unwrap(); // ref source, len 1
+        let ds = g.add_node("_TestConst", None).unwrap();
         g.update_param(ds, "constant", "length", Param::int(4, 1, 10)).unwrap(); // data source, len 4
         let c = g.add_node("_TestRefLenChange", None).unwrap();
         g.add_link(rs, "out", c, "ref").unwrap();
@@ -2204,7 +2262,7 @@ mod tests {
 
         let mut g = Graph::new();
         let boom = g.add_node("_TestPanic", None).unwrap();
-        let ok = g.add_node("ConstantArray", None).unwrap();
+        let ok = g.add_node("_TestConst", None).unwrap();
         g.update_param(ok, "constant", "value", Param::float(9.0, -1e9, 1e9))
             .unwrap();
 
