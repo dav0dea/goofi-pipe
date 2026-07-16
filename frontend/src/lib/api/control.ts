@@ -87,9 +87,6 @@ export interface NodeInstanceInfo {
 	 * `kind` is the chosen viewer type; `settings` are that viewer's cog-menu
 	 * overrides. */
 	viewers: Record<string, { collapsed?: boolean; kind?: string; settings?: Record<string, unknown> }>;
-	/** Per-input-slot delivery-mode override persisted in the .gfi patch, keyed by
-	 * slot id: `queue=true` = lossless FIFO, absent/false = latest-wins. */
-	inputs?: Record<string, { queue?: boolean }>;
 	/** Sub-patch membership marker; null for a top-level node. Members of a
 	 * collapsed instance are hidden from the canvas (the group node stands in). */
 	membership?: { instance: string; local_name: string } | null;

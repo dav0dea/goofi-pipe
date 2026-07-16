@@ -194,23 +194,6 @@ export class GraphStore {
 		);
 	}
 
-	private _inputPushTimers = new Map<string, ReturnType<typeof setTimeout>>();
-	/** Debounced push of a node's per-input-slot delivery-mode overrides to the
-	 * backend. Unlike viewers, the backend reallocates the live channel — but it
-	 * still round-trips into the .gfi via the node's gui_kwargs. */
-	pushNodeInputs(node: string): void {
-		clearTimeout(this._inputPushTimers.get(node));
-		this._inputPushTimers.set(
-			node,
-			setTimeout(() => {
-				this._inputPushTimers.delete(node);
-				const n = this.nodeById(node);
-				if (!n) return;
-				void this.ctl.call('set_node_inputs', { node, inputs: n.inputs ?? {} }).catch(() => {});
-			}, 250)
-		);
-	}
-
 	private _handle(ev: ControlEvent): void {
 		switch (ev.event) {
 			case 'hello': {
