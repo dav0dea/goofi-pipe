@@ -20,6 +20,37 @@ struct SetMeta {
     ty: String,
 }
 
+/// The numeric value of a cast `MetaValue`, for mapping onto a numeric typed field
+/// like `sfreq`. Only Int/Float are numeric; Bool/Str/… are not.
+fn mv_as_f64(mv: &MetaValue) -> Option<f64> {
+    match mv {
+        MetaValue::Int(n) => Some(*n as f64),
+        MetaValue::Float(f) => Some(*f),
+        _ => None,
+    }
+}
+
+/// Strip digit-group underscores the way CPython's `int()`/`float()` grammar
+/// accepts them: an underscore is allowed only BETWEEN two digits. Leading,
+/// trailing, or doubled underscores (which Python also rejects) are left in place
+/// so the subsequent `parse` still fails. Matches `int("1_000") == 1000`.
+fn strip_digit_underscores(s: &str) -> String {
+    let b = s.as_bytes();
+    let mut out = String::with_capacity(s.len());
+    for (i, &c) in b.iter().enumerate() {
+        if c == b'_'
+            && i > 0
+            && i + 1 < b.len()
+            && b[i - 1].is_ascii_digit()
+            && b[i + 1].is_ascii_digit()
+        {
+            continue; // drop a valid inter-digit separator
+        }
+        out.push(c as char);
+    }
+    out
+}
+
 impl Node for SetMeta {
     fn process(&mut self, inp: &Inputs<'_>, out: &mut Outputs<'_>, _c: &mut NodeCtx) -> NodeResult {
         let Some(d) = inp.get("array") else {
@@ -37,11 +68,11 @@ impl Node for SetMeta {
         // Python raises. Python `int`/`float` strip surrounding whitespace, so
         // trim to match; `bool`/`str` take the raw string (see below).
         let mv = match self.ty.as_str() {
-            "int" => match self.value.trim().parse::<i64>() {
+            "int" => match strip_digit_underscores(self.value.trim()).parse::<i64>() {
                 Ok(n) => MetaValue::Int(n),
                 Err(_) => return Ok(()),
             },
-            "float" => match self.value.trim().parse::<f64>() {
+            "float" => match strip_digit_underscores(self.value.trim()).parse::<f64>() {
                 Ok(f) => MetaValue::Float(f),
                 Err(_) => return Ok(()),
             },
@@ -53,22 +84,32 @@ impl Node for SetMeta {
             _ => return Ok(()),
         };
 
-        // The Rust `Meta` hoists the reserved keys out of the open map into
-        // derived/typed fields: shape+dtype are derived from the array store,
-        // and channels/sfreq/index/reduced are structured fields. None can be
-        // expressed as a free scalar in `extra` (channels least of all), so
-        // SetMeta only writes open-map keys and no-ops on a reserved name.
-        if matches!(
-            self.key.as_str(),
-            "shape" | "dtype" | "channels" | "sfreq" | "index" | "reduced"
-        ) {
-            return Ok(());
-        }
-
-        // Clone the input meta (never mutate the producer's immutable copy) and
-        // write the one key into the open map.
+        // Clone the input meta (never mutate the producer's immutable copy). Rust's
+        // `Meta` hoists the reserved keys into typed/derived fields, so a reserved
+        // name maps onto its field rather than the open `extra` map — but the frame
+        // still EMITS (Python always returns the passthrough array). Stamping
+        // `sfreq` is a primary use of this node, so it must not drop the frame.
         let mut meta = d.meta().clone();
-        meta.extra.insert(self.key.clone(), mv);
+        match self.key.as_str() {
+            // Python sets `meta["channels"] = scalar`, which its Data constructor
+            // rejects (channels must be a dict) -> raise. We no-op to match.
+            "channels" => return Ok(()),
+            // A sample rate is only meaningful as a number; set the typed field when
+            // the value is numeric, else pass the array through unchanged.
+            "sfreq" => {
+                if let Some(f) = mv_as_f64(&mv) {
+                    meta.sfreq = Some(f);
+                }
+            }
+            "reduced" => meta.reduced = Some(mv),
+            // shape/dtype are derived from the array and index is engine-restamped
+            // every tick, so writing them has no lasting effect in Python either —
+            // pass the array through unchanged (Python still emits it).
+            "shape" | "dtype" | "index" => {}
+            _ => {
+                meta.extra.insert(self.key.clone(), mv);
+            }
+        }
 
         // Pass the F32 payload through unchanged (same bytes, same shape); the
         // meta clone above carries the single new key.
@@ -265,12 +306,38 @@ mod tests {
     }
 
     #[test]
-    fn no_emit_on_reserved_key() {
-        // Reserved names live in typed/derived Meta fields, not the open map.
-        let f = f32_frame(vec![1], &[0.0], Meta::empty());
-        for reserved in ["sfreq", "index", "channels", "reduced", "shape", "dtype"] {
-            assert!(run(reserved, "1", "int", Some(f.clone())).is_none(), "{reserved} -> no-op");
+    fn reserved_keys_still_emit_and_map_to_typed_fields() {
+        // Python always emits the passthrough array; a reserved key maps onto its
+        // typed field rather than being dropped. Stamping sfreq is a primary use.
+        let f = f32_frame(vec![3], &[1.0, 2.0, 3.0], Meta::empty());
+        let d = run("sfreq", "256", "float", Some(f.clone())).expect("sfreq must emit, not drop the frame");
+        assert_eq!(d.meta().sfreq, Some(256.0), "sfreq mapped to the typed field");
+        assert_eq!(vals(&d), (vec![3], vec![1.0, 2.0, 3.0]), "payload unchanged");
+
+        // reduced maps to its typed field.
+        let d = run("reduced", "7", "int", Some(f.clone())).expect("emits");
+        assert_eq!(d.meta().reduced, Some(MetaValue::Int(7)));
+
+        // shape/dtype/index have no lasting effect (derived / engine-restamped) but
+        // the array must still pass through and emit.
+        for k in ["shape", "dtype", "index"] {
+            let d = run(k, "1", "int", Some(f.clone())).unwrap_or_else(|| panic!("{k} must still emit"));
+            assert_eq!(vals(&d), (vec![3], vec![1.0, 2.0, 3.0]));
         }
+
+        // Only channels no-emits (Python's Data ctor requires a dict there -> raise).
+        assert!(run("channels", "1", "int", Some(f)).is_none(), "channels -> no-op (Python raises)");
+    }
+
+    #[test]
+    fn numeric_parse_accepts_python_digit_underscores() {
+        // Python int("1_000") == 1000 and float("1_000.5") == 1000.5.
+        let f = f32_frame(vec![1], &[0.0], Meta::empty());
+        assert_eq!(run("n", "1_000", "int", Some(f.clone())).unwrap().meta().extra.get("n"), Some(&MetaValue::Int(1000)));
+        assert_eq!(run("x", "1_000.5", "float", Some(f.clone())).unwrap().meta().extra.get("x"), Some(&MetaValue::Float(1000.5)));
+        // Leading/trailing/doubled underscores are rejected, like Python.
+        assert!(run("n", "_1", "int", Some(f.clone())).is_none());
+        assert!(run("n", "1__0", "int", Some(f)).is_none());
     }
 
     #[test]
