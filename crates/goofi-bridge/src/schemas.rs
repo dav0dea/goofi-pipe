@@ -98,7 +98,9 @@ pub fn node_type_info(m: &NodeManifest) -> Value {
         "missing_deps": [],
         "input_slots": input_slots(m),
         "output_slots": output_slots(m),
-        "params": describe_params(&(m.default_params)()),
+        // Project the same universal `common` group instances carry, so the palette
+        // and an instantiated node agree on a type's params.
+        "params": describe_params(&goofi_node::with_common((m.default_params)())),
     })
 }
 
@@ -231,5 +233,16 @@ mod tests {
         );
         // Native catalog types remain present alongside the runtime ones.
         assert!(arr.iter().any(|v| ty(v).as_deref() == Some("Oscillator")));
+    }
+
+    #[test]
+    fn catalog_projects_the_common_scheduling_group() {
+        // The palette catalog must show the same universal `common` group every
+        // instantiated node carries, so type-level and instance-level params agree.
+        let info = node_type_info(&T_MANIFEST); // stub_params() -> empty groups
+        let common = &info["params"]["common"];
+        assert_eq!(common["max_frequency"]["type"], json!("float"));
+        assert_eq!(common["autotrigger"]["type"], json!("bool"));
+        assert_eq!(common["frequency_mode"]["type"], json!("string"));
     }
 }

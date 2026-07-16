@@ -215,6 +215,41 @@ impl RunPolicy {
     }
 }
 
+/// Guarantee a node's params carry the universal `common` scheduling group (the
+/// engine's equivalent of Python's `DEFAULT_PARAMS["common"]`), so rate controls
+/// exist on every node uniformly. Any keys a node already declared are kept;
+/// missing ones are filled with behavior-preserving defaults (unbounded, not
+/// autotriggering). `common` is placed first for a stable frontend ordering. Used
+/// both when instantiating a node (the engine) and when projecting a node type to
+/// the palette (the bridge), so type-level and instance-level params agree.
+pub fn with_common(params: ParamGroups) -> ParamGroups {
+    let mut common = params.get("common").cloned().unwrap_or_default();
+    common
+        .entry("autotrigger".to_string())
+        .or_insert_with(|| Param::boolean(false));
+    common
+        .entry("max_frequency".to_string())
+        .or_insert_with(|| Param::float(0.0, 0.0, 60.0));
+    common
+        .entry("frequency_mode".to_string())
+        .or_insert_with(|| Param::Str {
+            value: "updates-per-second".to_string(),
+            options: Some(vec![
+                "updates-per-second".to_string(),
+                "seconds-per-update".to_string(),
+            ]),
+            refresh: None,
+        });
+    let mut merged = ParamGroups::new();
+    merged.insert("common".to_string(), common);
+    for (k, v) in params {
+        if k != "common" {
+            merged.insert(k, v);
+        }
+    }
+    merged
+}
+
 // ---------------------------------------------------------------------------
 // The node trait
 // ---------------------------------------------------------------------------

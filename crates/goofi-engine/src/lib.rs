@@ -79,39 +79,6 @@ struct Link {
     slot_in: &'static str,
 }
 
-/// Guarantee a node's params carry the universal `common` scheduling group (the
-/// engine's equivalent of Python's `DEFAULT_PARAMS["common"]`), so rate controls
-/// exist on every node uniformly. Any keys a node already declared are kept;
-/// missing ones are filled with behavior-preserving defaults (unbounded, not
-/// autotriggering). `common` is placed first for a stable frontend ordering.
-fn with_common(params: ParamGroups) -> ParamGroups {
-    let mut common = params.get("common").cloned().unwrap_or_default();
-    common
-        .entry("autotrigger".to_string())
-        .or_insert_with(|| Param::boolean(false));
-    common
-        .entry("max_frequency".to_string())
-        .or_insert_with(|| Param::float(0.0, 0.0, 60.0));
-    common
-        .entry("frequency_mode".to_string())
-        .or_insert_with(|| Param::Str {
-            value: "updates-per-second".to_string(),
-            options: Some(vec![
-                "updates-per-second".to_string(),
-                "seconds-per-update".to_string(),
-            ]),
-            refresh: None,
-        });
-    let mut merged = ParamGroups::new();
-    merged.insert("common".to_string(), common);
-    for (k, v) in params {
-        if k != "common" {
-            merged.insert(k, v);
-        }
-    }
-    merged
-}
-
 /// Extract a readable message from a caught panic payload.
 fn panic_message(p: Box<dyn std::any::Any + Send>) -> String {
     if let Some(s) = p.downcast_ref::<&str>() {
@@ -258,11 +225,11 @@ impl Graph {
     ) -> Result<Uid, String> {
         let (manifest, params, node): (&'static NodeManifest, ParamGroups, Box<dyn goofi_node::Node>) =
             if let Some(m) = goofi_node::find(type_name) {
-                let p = with_common(params.unwrap_or_else(|| (m.default_params)()));
+                let p = goofi_node::with_common(params.unwrap_or_else(|| (m.default_params)()));
                 let n = (m.make)(&p);
                 (m, p, n)
             } else if let Some(dt) = self.dyn_types.get(type_name) {
-                let p = with_common(params.unwrap_or_else(|| (dt.manifest.default_params)()));
+                let p = goofi_node::with_common(params.unwrap_or_else(|| (dt.manifest.default_params)()));
                 let n = (dt.factory)(&p);
                 (dt.manifest, p, n)
             } else {
