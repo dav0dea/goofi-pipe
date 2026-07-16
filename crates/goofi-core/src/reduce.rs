@@ -13,8 +13,69 @@
 //! Each returns `None` when it would not actually reduce the axis, so the caller leaves that
 //! axis untouched.
 
-use crate::DType;
-use goofi_view::ReduceMethod;
+use crate::{Data, DType, Meta, MetaValue, Value};
+use goofi_view::{MergedViewSpec, ReduceMethod};
+use std::collections::BTreeMap;
+
+fn method_name(m: ReduceMethod) -> &'static str {
+    match m {
+        ReduceMethod::Envelope => "envelope",
+        ReduceMethod::Subsample => "subsample",
+        ReduceMethod::Area => "area",
+    }
+}
+
+/// Evaluate a merged view plan against a concrete frame: apply each planned axis reduction
+/// (descending dim order — every kernel preserves ndim, so indices stay valid), co-reduce
+/// the coordinate axes to match, record `meta.reduced["<dim>"] = {orig_len, method}`, and
+/// carry the SOURCE timeline meta (`index`/`ufreq`/`sfreq`) verbatim — spatial reduction
+/// doesn't change which emit this is or how fast the node emits. Non-array payloads and
+/// empty plans pass through untouched. **Fail-open**: if the reduced frame can't be
+/// reconstructed (a co-reduction invariant breach), the original frame is returned unreduced
+/// rather than a corrupt one.
+pub fn reduce_for_view(frame: &Data, plan: &MergedViewSpec) -> Data {
+    let Value::Array(store) = frame.value() else {
+        return frame.clone();
+    };
+    if plan.axes.is_empty() {
+        return frame.clone();
+    }
+    let dtype = store.dtype();
+    let mut bytes = store.as_bytes().to_vec();
+    let mut shape = store.shape().to_vec();
+    let mut axes = frame.meta().channels.clone();
+    let mut reduced: BTreeMap<String, MetaValue> = BTreeMap::new();
+
+    // Descending dim so a reduction never invalidates a not-yet-processed lower dim.
+    let mut planned = plan.axes.clone();
+    planned.sort_by(|a, b| b.dim.cmp(&a.dim));
+    for ax in &planned {
+        let Some(r) = reduce_axis(&bytes, &shape, dtype, ax.dim, ax.max, ax.method) else {
+            continue; // this axis did not shrink
+        };
+        let orig_len = shape[ax.dim];
+        bytes = r.bytes;
+        shape[ax.dim] = r.new_len;
+        axes = axes.sliced(ax.dim, &r.centers);
+        let mut entry = BTreeMap::new();
+        entry.insert("orig_len".to_string(), MetaValue::Uint(orig_len as u64));
+        entry.insert("method".to_string(), MetaValue::Str(method_name(ax.method).to_string()));
+        reduced.insert(ax.dim.to_string(), MetaValue::Map(entry));
+    }
+    if reduced.is_empty() {
+        return frame.clone(); // nothing actually reduced (all axes already small enough)
+    }
+    let src = frame.meta();
+    let meta = Meta {
+        sfreq: src.sfreq,
+        ufreq: src.ufreq,
+        index: src.index,
+        channels: axes,
+        reduced: Some(MetaValue::Map(reduced)),
+        extra: src.extra.clone(),
+    };
+    Data::from_array_bytes(dtype, shape, bytes, meta).unwrap_or_else(|_| frame.clone())
+}
 
 /// `m` evenly-spaced indices into `0..n` (inclusive endpoints, like `np.linspace(0,n-1,m)`).
 pub fn subsample_idx(n: usize, m: usize) -> Vec<usize> {
@@ -296,5 +357,66 @@ mod tests {
         let r = reduce_axis(&d, &[4], DType::F16, 0, 2, ReduceMethod::Envelope).unwrap();
         assert_eq!(r.new_len, 2, "degraded to a 2-element subsample");
         assert_eq!(r.bytes, vec![0, 0, 3, 0], "gathered elements 0 and 3");
+    }
+
+    // --- reduce_for_view (Data-level composition) ---
+    use crate::{Axes, Axis, Coord, Meta};
+    use goofi_view::{MergedViewSpec, PlannedAxis};
+
+    fn f32_frame(shape: Vec<usize>, vals: &[f32], meta: Meta) -> Data {
+        Data::from_array_bytes(DType::F32, shape, f32_bytes(vals), meta).unwrap()
+    }
+
+    #[test]
+    fn reduce_for_view_applies_plan_and_records_meta() {
+        // 8-sample waveform, envelope to W=2 → 4 body samples; meta.reduced["0"] recorded;
+        // source timeline (index/ufreq/sfreq) carried verbatim.
+        let meta = Meta { sfreq: Some(250.0), ufreq: Some(30.0), index: Some(7), ..Default::default() };
+        let f = f32_frame(vec![8], &[1.0, 4.0, 2.0, 3.0, 8.0, 5.0, 7.0, 6.0], meta);
+        let plan = MergedViewSpec { axes: vec![PlannedAxis { dim: 0, max: 2, method: ReduceMethod::Envelope }] };
+        let r = reduce_for_view(&f, &plan);
+        let Value::Array(s) = r.value() else { panic!() };
+        assert_eq!(s.shape(), &[4], "envelope 2W=4");
+        assert_eq!(as_f32(s.as_bytes()), vec![1.0, 4.0, 5.0, 8.0]);
+        // Source timeline verbatim.
+        assert_eq!(r.meta().sfreq, Some(250.0));
+        assert_eq!(r.meta().ufreq, Some(30.0));
+        assert_eq!(r.meta().index, Some(7), "index rides through untouched");
+        // reduced meta records the original length + method.
+        let Some(MetaValue::Map(m)) = &r.meta().reduced else { panic!("reduced meta set") };
+        let Some(MetaValue::Map(e)) = m.get("0") else { panic!("dim 0 recorded") };
+        assert_eq!(e.get("orig_len"), Some(&MetaValue::Uint(8)));
+        assert_eq!(e.get("method"), Some(&MetaValue::Str("envelope".into())));
+    }
+
+    #[test]
+    fn reduce_for_view_coreduces_channel_coords() {
+        // (3 channels, 2 samples), subsample the channel axis to 2 → coords ["a","c"].
+        let ch = Axes::new().with(
+            0,
+            Axis::coords(vec![Coord::Str("a".into()), Coord::Str("b".into()), Coord::Str("c".into())]),
+        );
+        let meta = Meta { channels: ch, ..Default::default() };
+        let f = f32_frame(vec![3, 2], &[10.0, 11.0, 20.0, 21.0, 30.0, 31.0], meta);
+        let plan = MergedViewSpec { axes: vec![PlannedAxis { dim: 0, max: 2, method: ReduceMethod::Subsample }] };
+        let r = reduce_for_view(&f, &plan);
+        let Value::Array(s) = r.value() else { panic!() };
+        assert_eq!(s.shape(), &[2, 2]);
+        assert_eq!(as_f32(s.as_bytes()), vec![10.0, 11.0, 30.0, 31.0], "kept channels 0 and 2");
+        let coords = r.meta().channels.get(0).and_then(|a| a.coords.clone()).expect("coords co-reduced");
+        assert_eq!(coords.as_ref(), &[Coord::Str("a".into()), Coord::Str("c".into())]);
+    }
+
+    #[test]
+    fn reduce_for_view_passthrough_string_and_empty_plan() {
+        let s = Data::string("hello", Meta::empty());
+        let plan = MergedViewSpec { axes: vec![PlannedAxis { dim: 0, max: 1, method: ReduceMethod::Subsample }] };
+        assert!(matches!(reduce_for_view(&s, &plan).value(), Value::Str(v) if v.as_ref() == "hello"));
+        // Empty plan → unchanged array.
+        let f = f32_frame(vec![4], &[1.0, 2.0, 3.0, 4.0], Meta::empty());
+        let r = reduce_for_view(&f, &MergedViewSpec::default());
+        let Value::Array(s2) = r.value() else { panic!() };
+        assert_eq!(s2.shape(), &[4]);
+        assert!(r.meta().reduced.is_none(), "no reduction, no reduced meta");
     }
 }
