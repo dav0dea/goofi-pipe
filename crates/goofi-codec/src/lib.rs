@@ -421,4 +421,95 @@ mod decode_tests {
         frame.truncate(frame.len() - 1); // drop a body byte
         assert!(decode(&frame).is_err());
     }
+
+    // -------------------------------------------------------------------------
+    // Adversarial input: a malformed/hostile frame must yield Err, never panic,
+    // wrap, or over-read. `decode` is public and (in future P2P) may see untrusted
+    // bytes, so it must be robust to garbage.
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn decode_never_panics_on_arbitrary_prefixes_of_a_valid_frame() {
+        // Every strict prefix of a real frame is incomplete and must Err —
+        // never panic or read out of bounds.
+        let mut meta = Meta::empty();
+        meta.sfreq = Some(64.0);
+        let buf: Vec<u8> = (0..8).flat_map(|i| (i as f32).to_le_bytes()).collect();
+        let d = Data::from_array_bytes(DType::F32, vec![2, 4], buf, meta).unwrap();
+        let frame = encode(&d);
+        for n in 0..frame.len() {
+            // Any strict prefix is incomplete → must Err, must not panic.
+            assert!(decode(&frame[..n]).is_err(), "prefix len {n} should be rejected");
+        }
+        assert!(decode(&frame).is_ok(), "the full frame still decodes");
+    }
+
+    #[test]
+    fn decode_rejects_overflowing_shape_without_wrapping() {
+        // Hand-craft an ARRAY frame whose header claims a 2-D shape of
+        // [2^32-1, 2^32-1] with an empty body. Without checked arithmetic the
+        // element-count product * itemsize would wrap and spuriously accept the
+        // 0-byte body; it must instead error cleanly.
+        let mut body = Vec::new();
+        body.push(2u8); // ndim
+        let dstr = b"<f4";
+        body.push(dstr.len() as u8);
+        body.extend_from_slice(dstr);
+        body.extend_from_slice(&u32::MAX.to_le_bytes());
+        body.extend_from_slice(&u32::MAX.to_le_bytes());
+        // no raw bytes (claims a gigantic array, sends nothing)
+
+        let meta = b""; // empty msgpack meta
+        let mut frame = Vec::new();
+        frame.extend_from_slice(MAGIC);
+        frame.push(VERSION);
+        frame.push(0); // ARRAY tag
+        frame.extend_from_slice(&(meta.len() as u32).to_le_bytes());
+        frame.extend_from_slice(&(body.len() as u32).to_le_bytes());
+        frame.extend_from_slice(meta);
+        frame.extend_from_slice(&body);
+
+        assert!(decode(&frame).is_err(), "an overflowing shape must be rejected, not wrapped");
+    }
+
+    #[test]
+    fn decode_rejects_declared_lengths_exceeding_the_frame() {
+        // meta_len / body_len larger than the actual bytes must be rejected by
+        // split_frame rather than slicing out of bounds.
+        let mut frame = Vec::new();
+        frame.extend_from_slice(MAGIC);
+        frame.push(VERSION);
+        frame.push(0);
+        frame.extend_from_slice(&1000u32.to_le_bytes()); // meta_len way past the end
+        frame.extend_from_slice(&1000u32.to_le_bytes());
+        frame.extend_from_slice(b"short");
+        assert!(decode(&frame).is_err());
+        assert!(split_frame(&frame).is_err());
+    }
+
+    #[test]
+    fn decode_rejects_bad_dtype_and_unknown_tag() {
+        // Unknown dtype string.
+        let mut body = vec![1u8, 3u8];
+        body.extend_from_slice(b"<z9"); // not a real dtype
+        body.extend_from_slice(&1u32.to_le_bytes());
+        body.extend_from_slice(&[0, 0, 0, 0]);
+        let mut frame = Vec::new();
+        frame.extend_from_slice(MAGIC);
+        frame.push(VERSION);
+        frame.push(0);
+        frame.extend_from_slice(&0u32.to_le_bytes());
+        frame.extend_from_slice(&(body.len() as u32).to_le_bytes());
+        frame.extend_from_slice(&body);
+        assert!(decode(&frame).is_err());
+
+        // Unknown dtype tag (3).
+        let mut f2 = Vec::new();
+        f2.extend_from_slice(MAGIC);
+        f2.push(VERSION);
+        f2.push(3); // invalid tag
+        f2.extend_from_slice(&0u32.to_le_bytes());
+        f2.extend_from_slice(&0u32.to_le_bytes());
+        assert!(decode(&f2).is_err());
+    }
 }

@@ -319,8 +319,16 @@ impl Data {
         buf: Vec<u8>,
         meta: Meta,
     ) -> Result<Data> {
-        let nelem: usize = shape.iter().product();
-        let expect = nelem * dtype.itemsize();
+        // Checked arithmetic: a hostile/garbled shape (e.g. from a decoded frame)
+        // could otherwise overflow `usize` and wrap `expect` to a small value that
+        // spuriously matches a short buffer. Overflow is a clean error, never a wrap.
+        let nelem: usize = shape
+            .iter()
+            .try_fold(1usize, |a, &d| a.checked_mul(d))
+            .ok_or_else(|| GoofiError::Invalid("array element count overflows usize".into()))?;
+        let expect = nelem
+            .checked_mul(dtype.itemsize())
+            .ok_or_else(|| GoofiError::Invalid("array byte length overflows usize".into()))?;
         if buf.len() != expect {
             return Err(GoofiError::Invalid(format!(
                 "buffer length {} != nelem {} * itemsize {} = {}",
