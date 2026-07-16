@@ -258,6 +258,74 @@ async fn native_chain_streams_frames_over_the_data_plane() {
 }
 
 #[tokio::test]
+async fn set_expression_binds_and_reflects_over_the_wire() {
+    // Regression guard for the "unknown op `set_expression`" bug: the op must dispatch
+    // (not 404), store the binding, and echo it back in the node's param descriptor —
+    // including `expression_error` (the field indicator) and with NO `expression_autoeval`
+    // key (auto-eval is always on, so there is no autoeval flag on the wire).
+    let base = start_server().await;
+    let (mut ws, _) = connect_async(format!("{base}/control")).await.unwrap();
+    let _hello = recv_text(&mut ws).await;
+
+    let osc = call(&mut ws, 1, "add_node", json!({ "type": "Oscillator" }))
+        .await["result"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // Bind an expression on the universal common.max_frequency param.
+    ws.send(Message::Text(
+        json!({
+            "id": 2,
+            "op": "set_expression",
+            "payload": {
+                "node": osc,
+                "group": "common",
+                "name": "max_frequency",
+                "expression": "1 + 2",
+                "expression_enabled": true,
+                "expression_triggers_process": false
+            }
+        })
+        .to_string(),
+    ))
+    .await
+    .unwrap();
+
+    // Collect both the id=2 reply and the state_update broadcast (either order).
+    let mut ok = false;
+    let mut descriptor: Option<Value> = None;
+    for _ in 0..10 {
+        let m = recv_text(&mut ws).await;
+        if m.get("id").and_then(|v| v.as_i64()) == Some(2) {
+            assert_eq!(m["result"]["ok"], true, "set_expression must dispatch, not 404 as unknown op");
+            ok = true;
+        } else if m["event"] == "state_update" && m["payload"]["node"] == json!(osc) {
+            descriptor = Some(m["payload"]["params"]["common"]["max_frequency"].clone());
+        }
+        if ok && descriptor.is_some() {
+            break;
+        }
+    }
+    assert!(ok, "set_expression reply must arrive");
+    let d = descriptor.expect("state_update carrying the param descriptor");
+    assert_eq!(d["expression"], "1 + 2", "source round-trips");
+    assert_eq!(d["expression_enabled"], true);
+    assert_eq!(d["expression_triggers_process"], false);
+    // This harness injects no evaluator, so the binding round-trips WITH an error — the
+    // point is the field exists as a string to drive the per-param red indicator.
+    assert!(
+        d["expression_error"].is_string(),
+        "expression_error must be present for the field indicator; got {:?}",
+        d["expression_error"]
+    );
+    assert!(
+        d.get("expression_autoeval").is_none(),
+        "no autoeval flag on the wire (auto-eval is always on)"
+    );
+}
+
+#[tokio::test]
 async fn serialize_and_load_roundtrip() {
     let base = start_server().await;
     let (mut ws, _) = connect_async(format!("{base}/control")).await.unwrap();

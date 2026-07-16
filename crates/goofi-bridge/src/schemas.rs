@@ -29,12 +29,11 @@ pub fn describe_param(p: &Param, expr: Option<&ExprInfo>) -> Value {
         json!(matches!(p, Param::Str { refresh: true, .. })),
     );
     // Real expression state (or nulls/false for an unbound param). `expression_error`
-    // drives the per-param field indicator. `expression_autoeval` is vestigial (auto-eval
-    // is always on) — kept as `false` until the frontend "auto" button is removed.
+    // drives the per-param field indicator. Auto-eval is always on, so there is no
+    // autoeval flag on the wire.
     m.insert("expression".into(), expr.map(|e| json!(e.source)).unwrap_or(Value::Null));
     m.insert("expression_enabled".into(), json!(expr.is_some_and(|e| e.enabled)));
     m.insert("expression_triggers_process".into(), json!(expr.is_some_and(|e| e.triggers_process)));
-    m.insert("expression_autoeval".into(), json!(false));
     m.insert(
         "expression_error".into(),
         expr.and_then(|e| e.error.as_ref()).map(|s| json!(s)).unwrap_or(Value::Null),
