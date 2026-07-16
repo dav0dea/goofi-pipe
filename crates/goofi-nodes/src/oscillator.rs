@@ -8,7 +8,7 @@
 
 use goofi_audio::{SampleClock, WaveGen, Waveform};
 use goofi_core::SlotType;
-use goofi_core::{Data, DType, Meta, Param};
+use goofi_core::{Data, DType, Meta, Param, Value};
 use goofi_node::{
     param, Inputs, Isolation, Node, NodeCtx, NodeManifest, NodeResult, OutputDecl, Outputs,
     ParamGroups, ParamKey, SlotDecl,
@@ -39,7 +39,7 @@ impl Oscillator {
 }
 
 impl Node for Oscillator {
-    fn process(&mut self, _inp: &Inputs<'_>, out: &mut Outputs<'_>, c: &mut NodeCtx) -> NodeResult {
+    fn process(&mut self, inp: &Inputs<'_>, out: &mut Outputs<'_>, c: &mut NodeCtx) -> NodeResult {
         if !self.started {
             self.clock.start(c.now);
             self.started = true;
@@ -49,10 +49,13 @@ impl Node for Oscillator {
         if n == 0 {
             return Ok(()); // nothing elapsed yet; emit no (empty) frame
         }
+        // A wired `frequency` control input drives the frequency in real time
+        // (its first value); unwired, the `frequency` param holds.
+        let freq = first_f32(inp.get("frequency")).map(|v| v as f64).unwrap_or(self.frequency);
         let amp = self.amplitude as f32;
         let buf: Vec<u8> = self
             .gen
-            .generate(self.frequency, self.sfreq, n)
+            .generate(freq, self.sfreq, n)
             .iter()
             .flat_map(|s| (s * amp).to_le_bytes())
             .collect();
@@ -98,6 +101,17 @@ impl Node for Oscillator {
     }
 }
 
+/// First element of an f32 array `Data`, if the slot holds one (a scalar control).
+fn first_f32(d: Option<&Data>) -> Option<f32> {
+    match d?.value() {
+        Value::Array(s) if s.dtype() == DType::F32 => s
+            .as_bytes()
+            .get(0..4)
+            .map(|b| f32::from_le_bytes(b.try_into().unwrap())),
+        _ => None,
+    }
+}
+
 fn default_params() -> ParamGroups {
     let mut g = IndexMap::new();
     g.insert("frequency".to_string(), Param::float(10.0, 0.0, 20_000.0));
@@ -139,7 +153,13 @@ static OUTPUTS: &[OutputDecl] = &[OutputDecl {
     name: "out",
     kind: SlotType::Array,
 }];
-static INPUTS: &[SlotDecl] = &[];
+// A single non-triggering control input: the oscillator free-runs (wall-clock
+// paced) and reads the latest `frequency` each tick rather than being woken by it.
+static INPUTS: &[SlotDecl] = &[SlotDecl {
+    name: "frequency",
+    kind: SlotType::Array,
+    trigger_process: false,
+}];
 
 inventory::submit! {
     NodeManifest {
@@ -196,6 +216,38 @@ mod tests {
         assert_eq!(s.len(), 10, "10 ms * 1 kHz = 10 samples");
         // Another 10 ms -> 10 more (drift-free, tracks wall clock).
         assert_eq!(run_at(&mut node, m, 0.020).unwrap().len(), 10);
+    }
+
+    #[test]
+    fn frequency_control_input_overrides_the_param() {
+        use goofi_core::{Data, Meta};
+        let m = goofi_node::find("Oscillator").unwrap();
+        let mut params = (m.default_params)();
+        // Param frequency is a slow 10 Hz; a wired control input of 250 Hz (= sfreq/4)
+        // must win, giving the clean quarter-period samples [0, 1, 0, -1].
+        params["oscillator"].insert("frequency".into(), goofi_core::Param::float(10.0, 0.0, 1e6));
+        params["oscillator"].insert("sfreq".into(), goofi_core::Param::float(1000.0, 1.0, 1e6));
+        let mut node = (m.make)(&params);
+
+        let freq = Data::from_array_bytes(DType::F32, vec![1], 250.0f32.to_le_bytes().to_vec(), Meta::empty()).unwrap();
+        let mut inmap: IndexMap<&'static str, Option<Data>> = IndexMap::new();
+        inmap.insert("frequency", Some(freq));
+        let inp = Inputs::new(&inmap);
+
+        // Anchor at now=0 (empty), then 4 ms -> 4 samples at the control frequency.
+        let mut ob0 = m.output_buffer();
+        node.process(&inp, &mut Outputs::new(&mut ob0), &mut NodeCtx { tick: 0, now: 0.0 }).unwrap();
+        let mut ob1 = m.output_buffer();
+        node.process(&inp, &mut Outputs::new(&mut ob1), &mut NodeCtx { tick: 1, now: 0.004 }).unwrap();
+        let d = ob1.get("out").unwrap().as_ref().unwrap();
+        if let Value::Array(s) = d.value() {
+            assert_eq!(s.shape(), &[4]);
+            let v = |i: usize| f32::from_le_bytes(s.as_bytes()[i * 4..i * 4 + 4].try_into().unwrap());
+            assert!(v(0).abs() < 1e-5 && (v(1) - 1.0).abs() < 1e-5 && (v(3) + 1.0).abs() < 1e-5,
+                "control freq 250 Hz -> quarter-period [0,1,0,-1], got [{},{},{},{}]", v(0), v(1), v(2), v(3));
+        } else {
+            panic!("expected array");
+        }
     }
 
     #[test]
