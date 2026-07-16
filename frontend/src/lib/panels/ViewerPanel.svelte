@@ -92,7 +92,7 @@
 
 	{#snippet content(node)}
 		{@const { slot, binding } = view(node)}
-		<div class="vp-body"><ViewerFeed node={node.name} {slot} {binding} /></div>
+		<div class="vp-body"><ViewerFeed node={node.uid} {slot} {binding} /></div>
 	{/snippet}
 </NodeLinkedPanel>
 
