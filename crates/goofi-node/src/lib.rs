@@ -118,6 +118,101 @@ impl NodeCtx {
 }
 
 // ---------------------------------------------------------------------------
+// RunPolicy — the scheduler's projection of the `common` param group
+// ---------------------------------------------------------------------------
+
+/// How `common.max_frequency` is interpreted.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum FrequencyMode {
+    /// `max_frequency` is a rate in Hz — the node runs at most that many times/sec.
+    #[default]
+    UpdatesPerSecond,
+    /// `max_frequency` is a period in seconds — the node runs once per that many sec.
+    SecondsPerUpdate,
+}
+
+/// When a node's `process` may run, lifted out of the params so the tick path
+/// never does a map lookup. This is the single-process engine's adaptation of the
+/// Python node loop's autotrigger gate + `_rate_limit_sleep`: because one shared
+/// loop drives every node, a node cannot *sleep* to pace itself (that would stall
+/// the others) — instead the scheduler *gates* each node's run on elapsed
+/// wall-clock, so a node capped at N Hz simply runs on the ticks where its period
+/// has elapsed and is skipped on the rest.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RunPolicy {
+    /// Run every allowed tick even with no fresh input — a free-running producer.
+    /// (Only meaningful for a node with no triggering inputs; a triggered node
+    /// runs on its input's rate regardless.)
+    pub autotrigger: bool,
+    /// Max run rate. `<= 0` is unbounded: an input-triggered node then runs at its
+    /// input's rate, a free-running one every tick (so it must set a finite cap to
+    /// not saturate the loop).
+    pub max_frequency: f64,
+    pub frequency_mode: FrequencyMode,
+}
+
+impl Default for RunPolicy {
+    fn default() -> RunPolicy {
+        RunPolicy {
+            autotrigger: false,
+            max_frequency: 0.0,
+            frequency_mode: FrequencyMode::UpdatesPerSecond,
+        }
+    }
+}
+
+impl RunPolicy {
+    /// The minimum seconds between runs, or `None` when unbounded (`max_frequency
+    /// <= 0`). Ported from the Python `_rate_limit_sleep` period computation.
+    pub fn period(&self) -> Option<f64> {
+        if self.max_frequency <= 0.0 {
+            return None;
+        }
+        Some(match self.frequency_mode {
+            FrequencyMode::UpdatesPerSecond => 1.0 / self.max_frequency,
+            FrequencyMode::SecondsPerUpdate => self.max_frequency,
+        })
+    }
+
+    /// Whether a node under this policy may run now. `triggered` is whether a fresh
+    /// triggering frame arrived this tick; `since_last` is seconds since the node
+    /// last ran (`None` = it has never run). A node with no fresh trigger runs only
+    /// if it free-runs (`autotrigger`); either way the rate cap gates it — unbounded
+    /// always passes, a never-run node runs immediately, otherwise the period must
+    /// have elapsed.
+    pub fn should_run(&self, since_last: Option<f64>, triggered: bool) -> bool {
+        if !triggered && !self.autotrigger {
+            return false;
+        }
+        match self.period() {
+            None => true,
+            Some(p) => since_last.is_none_or(|dt| dt >= p),
+        }
+    }
+
+    /// Read the policy from a node's `common` param group, defaulting each field
+    /// when the group or a key is absent (so a node without a `common` group is a
+    /// triggered, unbounded node — the safe default).
+    pub fn from_params(p: &ParamGroups) -> RunPolicy {
+        let autotrigger = param(p, "common", "autotrigger")
+            .and_then(Param::as_bool)
+            .unwrap_or(false);
+        let max_frequency = param(p, "common", "max_frequency")
+            .and_then(Param::as_f64)
+            .unwrap_or(0.0);
+        let frequency_mode = match param(p, "common", "frequency_mode").and_then(Param::as_str) {
+            Some("seconds-per-update") => FrequencyMode::SecondsPerUpdate,
+            _ => FrequencyMode::UpdatesPerSecond,
+        };
+        RunPolicy {
+            autotrigger,
+            max_frequency,
+            frequency_mode,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // The node trait
 // ---------------------------------------------------------------------------
 
@@ -255,6 +350,63 @@ mod tests {
             isolation: Isolation::InProcess,
             make: nop_make,
         }
+    }
+
+    #[test]
+    fn run_policy_period_by_mode() {
+        // Unbounded when max_frequency <= 0.
+        assert_eq!(RunPolicy::default().period(), None);
+        // updates-per-second: period = 1/f.
+        let ups = RunPolicy { max_frequency: 4.0, ..Default::default() };
+        assert_eq!(ups.period(), Some(0.25));
+        // seconds-per-update: period = f.
+        let spu = RunPolicy {
+            max_frequency: 2.0,
+            frequency_mode: FrequencyMode::SecondsPerUpdate,
+            ..Default::default()
+        };
+        assert_eq!(spu.period(), Some(2.0));
+    }
+
+    #[test]
+    fn run_policy_gates_on_trigger_and_autotrigger() {
+        // Not triggered + not free-running -> never runs.
+        let triggered_only = RunPolicy::default();
+        assert!(!triggered_only.should_run(None, false));
+        assert!(triggered_only.should_run(None, true));
+        // Free-running runs without a trigger.
+        let free = RunPolicy { autotrigger: true, ..Default::default() };
+        assert!(free.should_run(None, false));
+    }
+
+    #[test]
+    fn run_policy_rate_caps_frequency() {
+        // Capped at 10 Hz (period 0.1s), free-running.
+        let p = RunPolicy { autotrigger: true, max_frequency: 10.0, ..Default::default() };
+        assert!(p.should_run(None, false), "never run yet -> runs immediately");
+        assert!(!p.should_run(Some(0.05), false), "0.05s < 0.1s period -> skip");
+        assert!(p.should_run(Some(0.10), false), "period elapsed -> run");
+        assert!(p.should_run(Some(0.30), false), "well past period -> run");
+        // Unbounded ignores elapsed time entirely.
+        let unbounded = RunPolicy { autotrigger: true, ..Default::default() };
+        assert!(unbounded.should_run(Some(0.0), false));
+    }
+
+    #[test]
+    fn run_policy_from_params_reads_common_group() {
+        let mut common = IndexMap::new();
+        common.insert("autotrigger".to_string(), Param::boolean(true));
+        common.insert("max_frequency".to_string(), Param::float(30.0, 0.0, 60.0));
+        common.insert("frequency_mode".to_string(), Param::str_free("seconds-per-update"));
+        let mut groups: ParamGroups = IndexMap::new();
+        groups.insert("common".to_string(), common);
+        let p = RunPolicy::from_params(&groups);
+        assert_eq!(
+            p,
+            RunPolicy { autotrigger: true, max_frequency: 30.0, frequency_mode: FrequencyMode::SecondsPerUpdate }
+        );
+        // A node with no `common` group defaults to triggered + unbounded.
+        assert_eq!(RunPolicy::from_params(&ParamGroups::new()), RunPolicy::default());
     }
 
     #[test]
