@@ -64,23 +64,24 @@
 	$effect(() => {
 		frame = null;
 		if (!visible || !slot) return;
-		// Subscribe (latest decoded frame at display rate); a kind change re-runs
-		// this effect → re-subscribes.
-		const unsub = subscribeFrames(node, slot, kind, (f) => (frame = f));
+		// Subscribe to the slot's single reduced stream (latest decoded frame at
+		// display rate). Kind is NOT part of the stream identity, so a kind switch
+		// keeps this subscription and only re-negotiates the ViewSpec below.
+		const unsub = subscribeFrames(node, slot, (f) => (frame = f));
 		return () => unsub();
 	});
 
-	// Push the capacity-derived ViewSpec to the node whenever the kind or the
-	// (quantized) pixel budget changes, while subscribed. The node reduces each
-	// frame to this before sending (Option C); the worker re-sends on reconnect.
+	// Contribute the capacity-derived ViewSpec whenever the kind or the (quantized)
+	// pixel budget changes, while subscribed. The bridge merges every viewer's spec
+	// for this slot and reduces each frame to their union; the worker re-sends on
+	// reconnect.
 	$effect(() => {
 		if (!visible || !slot || capW === 0 || capH === 0) return;
 		const s = slot;
-		const k = kind;
-		setViewSpec(node, s, k, specToken, viewSpecForKind(k, capW, capH));
+		setViewSpec(node, s, specToken, viewSpecForKind(kind, capW, capH));
 		// Drop this contribution when the deps change (kind/size/visibility) or on
-		// unmount, so a stale spec from this viewer can't linger in the fold.
-		return () => clearViewSpec(node, s, k, specToken);
+		// unmount, so a stale spec from this viewer can't linger in the merge.
+		return () => clearViewSpec(node, s, specToken);
 	});
 </script>
 

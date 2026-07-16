@@ -1,27 +1,43 @@
 /**
- * Capacity → ViewSpec: derive the per-axis reduction a viewer can actually
- * display from its pixel size + kind (Option C node-side reduction). The browser
- * sends this spec to the node (via the /data WS side-channel); the node reduces
- * each frame to it before sending, so a 44.1 kHz buffer ships ~2·width points
- * instead of millions. Pure + unit-tested; the Svelte glue (ViewerFeed) measures
- * the element and calls this.
+ * Capacity → ViewSpec: the standardized per-viewer declaration the browser sends
+ * to the bridge on the /data socket — a *compatibility predicate* (what the viewer
+ * can draw) plus a *reduction request* (what it wants the drawable axes shrunk to).
  *
- * Mirrors the per-kind axis table in node_reduce.py (§6.3): line → envelope on
- * the sample axis (+ subsample the channel axis), image → area on both pixel
- * axes, trajectory → subsample the point axis, everything else → no reduction.
+ * Every viewer of a (node, slot) contributes ONE ViewSpec; the bridge merges them
+ * (`goofi_view::plan`) against the actual frame — incompatible viewers drop out,
+ * the rest fold to the largest need per axis — and reduces the slot ONCE
+ * (`reduce_for_view`), so a 44.1 kHz buffer ships ~2·width points instead of
+ * millions. The fold lives on the bridge now (it needs the real frame to filter
+ * compatibility), so this module only *produces* per-kind specs. Pure + unit-tested.
+ *
+ * Wire shape mirrors Rust `goofi_view::ViewSpec` exactly (snake_case enums):
+ *   { dtype, ndim: [[cmp, n], …], dims: [{dim, cmp, n}], reduce: [{dim, max, method}] }
+ * The `ndim` list is a conjunction (ALL must hold) so a viewer can bound a range —
+ * image is 2-D or 3-D → [['ge',2],['le',3]].
  */
 import type { ViewerKind } from './kind';
 
 export type ReduceMethod = 'envelope' | 'subsample' | 'area';
+export type DimCmp = 'lt' | 'le' | 'eq' | 'ge' | 'gt';
+export type ViewDtype = 'array' | 'string' | 'table';
 
-export interface AxisSpec {
-	axis: number;
+export interface AxisReduce {
+	dim: number;
 	max: number;
 	method: ReduceMethod;
 }
 
+export interface DimConstraint {
+	dim: number;
+	cmp: DimCmp;
+	n: number;
+}
+
 export interface ViewSpec {
-	axes: AxisSpec[];
+	dtype: ViewDtype;
+	ndim: [DimCmp, number][];
+	dims: DimConstraint[];
+	reduce: AxisReduce[];
 }
 
 /** Floor so a 0-px / collapsed layout never asks for a degenerate reduction. */
@@ -35,61 +51,55 @@ function px(v: number): number {
 	return Math.max(CAP_FLOOR, Math.round(v) || CAP_FLOOR);
 }
 
-/** The ViewSpec for a viewer `kind` at `width`×`height` device pixels. */
+/** The ViewSpec for a viewer `kind` at `width`×`height` device pixels. The `ndim`
+ * range mirrors `isRenderable` in kind.ts so "compatible for the merge" agrees with
+ * "the component will actually draw it". */
 export function viewSpecForKind(kind: ViewerKind, width: number, height: number): ViewSpec {
 	const w = px(width);
 	const h = px(height);
-	let axes: AxisSpec[];
 	if (kind === 'line') {
-		// 1-D data: axis 0 and -1 both canonicalize to axis 0; the node resolves the
-		// collision by richness (envelope > subsample), so the waveform keeps its peaks.
-		// 2-D (C,N): axis 0 caps channels (subsample), axis -1 envelopes the samples.
-		axes = [
-			{ axis: 0, max: Math.min(h, MAX_ROWS), method: 'subsample' },
-			{ axis: -1, max: w, method: 'envelope' }
-		];
-	} else if (kind === 'image') {
-		axes = [
-			{ axis: 0, max: h, method: 'area' },
-			{ axis: 1, max: w, method: 'area' }
-		];
-	} else if (kind === 'trajectory') {
-		axes = [{ axis: 0, max: Math.min(w, MAX_POINTS), method: 'subsample' }];
-	} else {
-		// topomap / string / table → already tiny or non-array; no reduction.
-		axes = [];
+		// 1-D data: dim 0 and -1 both canonicalize to dim 0 on the bridge; it resolves
+		// the collision by richness (envelope > subsample), so the waveform keeps its
+		// peaks. 2-D (C,N): dim 0 caps channels (subsample), dim -1 envelopes the samples.
+		return {
+			dtype: 'array',
+			ndim: [['le', 3]],
+			dims: [],
+			reduce: [
+				{ dim: 0, max: Math.min(h, MAX_ROWS), method: 'subsample' },
+				{ dim: -1, max: w, method: 'envelope' }
+			]
+		};
 	}
-	return { axes };
-}
-
-/** Richer method wins when two viewers fold onto the same axis. Mirrors
- * `node_reduce._RICHNESS` so the in-tab fold agrees with the node/bridge fold. */
-const RICHNESS: Record<ReduceMethod, number> = { envelope: 3, area: 2, subsample: 1 };
-
-/**
- * Fold several viewers' ViewSpecs into one, richest-wins per axis (max of the
- * per-axis `max`, richest method). Used to combine multiple viewers of the SAME
- * (node, slot, kind) within one tab — they share a single WS, so the node must
- * reduce to the union of what they can show (the bridge folds across tabs too).
- *
- * Mirrors the manager-side Python `node_reduce.fold_viewspecs` (which routes the
- * per-axis collision through `_fold_axis`). The shared rule is pinned by the
- * cross-language golden in tests/viewspec_golden.json — see capacity.test.ts.
- */
-export function foldViewSpecs(specs: ViewSpec[]): ViewSpec {
-	const byAxis = new Map<number, AxisSpec>();
-	for (const s of specs) {
-		if (!s) continue;
-		for (const a of s.axes ?? []) {
-			const cur = byAxis.get(a.axis);
-			if (!cur) {
-				byAxis.set(a.axis, { axis: a.axis, max: a.max, method: a.method });
-			} else {
-				cur.max = Math.max(cur.max, a.max);
-				if ((RICHNESS[a.method] ?? 0) > (RICHNESS[cur.method] ?? 0)) cur.method = a.method;
-			}
-		}
+	if (kind === 'image') {
+		return {
+			dtype: 'array',
+			ndim: [
+				['ge', 2],
+				['le', 3]
+			],
+			dims: [],
+			reduce: [
+				{ dim: 0, max: h, method: 'area' },
+				{ dim: 1, max: w, method: 'area' }
+			]
+		};
 	}
-	const axes = [...byAxis.keys()].sort((x, y) => x - y).map((k) => byAxis.get(k) as AxisSpec);
-	return { axes };
+	if (kind === 'trajectory') {
+		return {
+			dtype: 'array',
+			ndim: [['eq', 2]],
+			dims: [],
+			reduce: [{ dim: 0, max: Math.min(w, MAX_POINTS), method: 'subsample' }]
+		};
+	}
+	if (kind === 'topomap') {
+		// Per-channel scalars — already tiny; declare the shape, request no reduction.
+		return { dtype: 'array', ndim: [['eq', 1]], dims: [], reduce: [] };
+	}
+	if (kind === 'string') {
+		return { dtype: 'string', ndim: [], dims: [], reduce: [] };
+	}
+	// table
+	return { dtype: 'table', ndim: [], dims: [], reduce: [] };
 }

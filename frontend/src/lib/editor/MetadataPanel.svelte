@@ -2,7 +2,6 @@
 	import type { NodeInstanceInfo } from '$lib/api/control';
 	import { subscribeFrames } from '$lib/api/frames';
 	import type { DataFrame } from '$lib/codec/decode';
-	import { resolveKind } from '$lib/viewers/kind';
 	import { metaEntries, formatMetaValue, metaPreview, isLarge } from './metaFormat';
 	import { nodeStatsRows } from './nodeStats';
 
@@ -34,10 +33,11 @@
 		lastFrame = null;
 		const slot = activeSlot;
 		if (!slot) return;
-		// The inspector only reads frame.meta, which is identical across viewer kinds;
-		// subscribe with the slot's dtype-default kind so the wire frame stays small.
-		const kind = resolveKind(node.output_slots?.[slot] ?? null, undefined);
-		const unsub = subscribeFrames(node.uid, slot, kind, (f) => {
+		// The inspector only reads frame.meta. It shares the slot's single reduced
+		// stream — no viewer contributes a ViewSpec on its behalf, so if the inspector
+		// is the ONLY subscriber the frame arrives full-resolution; that's fine, the
+		// meta it reads is identical either way.
+		const unsub = subscribeFrames(node.uid, slot, (f) => {
 			lastFrame = f;
 		});
 		return () => unsub();

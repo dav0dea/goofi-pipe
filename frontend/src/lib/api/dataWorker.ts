@@ -14,29 +14,29 @@ import { streamKey } from './streamKey';
 interface SlotState {
 	node: string;
 	slot: string;
-	kind: string;
 	ws: WebSocket | null;
 	url: string;
 	closed: boolean;
 	reconnectMs: number;
 	latestRaw: ArrayBuffer | null;
 	refs: number;
-	/** Latest per-axis ViewSpec the viewer wants this slot reduced to (Option C).
-	 * Sent inband on (re)connect and whenever it changes; null until the viewer
-	 * reports its capacity (the node uses its kind-default until then). */
-	spec: unknown | null;
+	/** The ViewSpecs every viewer of this slot has contributed. Sent inband on
+	 * (re)connect and whenever they change; the bridge merges them against the real
+	 * frame and reduces the slot to their union. Empty until a viewer reports its
+	 * capacity (the bridge sends full-resolution frames until then). */
+	specs: unknown[];
 }
 
 const slots = new Map<string, SlotState>();
 const TICK_MS = 16; // ~60 Hz; workers have no requestAnimationFrame
 
 
-function sendSpec(st: SlotState): void {
-	if (st.spec == null || !st.ws || st.ws.readyState !== WebSocket.OPEN) return;
+function sendSpecs(st: SlotState): void {
+	if (!st.ws || st.ws.readyState !== WebSocket.OPEN) return;
 	try {
-		st.ws.send(JSON.stringify({ op: 'view', spec: st.spec }));
+		st.ws.send(JSON.stringify({ op: 'view', specs: st.specs }));
 	} catch {
-		// Closed mid-send; the next (re)connect re-sends from st.spec.
+		// Closed mid-send; the next (re)connect re-sends from st.specs.
 	}
 }
 
@@ -47,7 +47,7 @@ function openWs(st: SlotState): void {
 	st.ws = ws;
 	ws.addEventListener('open', () => {
 		st.reconnectMs = 250;
-		sendSpec(st); // re-send the ViewSpec on every (re)connect (no server resume)
+		sendSpecs(st); // re-send the ViewSpecs on every (re)connect (no server resume)
 	});
 	ws.addEventListener('message', (e) => {
 		if (e.data instanceof ArrayBuffer) st.latestRaw = e.data; // overwrite — latest wins
@@ -77,27 +77,27 @@ function collectBuffers(frame: DataFrame, out: Set<ArrayBufferLike>): void {
 }
 
 self.addEventListener('message', (e: MessageEvent) => {
-	const m = e.data as { op: string; node: string; slot: string; kind: string; spec?: unknown };
-	const k = streamKey(m.node, m.slot, m.kind);
+	const m = e.data as { op: string; node: string; slot: string; specs?: unknown[] };
+	const k = streamKey(m.node, m.slot);
 	if (m.op === 'sub') {
 		let st = slots.get(k);
 		if (!st) {
 			const proto = self.location.protocol === 'https:' ? 'wss:' : 'ws:';
-			const url = dataUrl(proto, self.location.host, m.node, m.slot, m.kind);
-			st = { node: m.node, slot: m.slot, kind: m.kind, ws: null, url, closed: false, reconnectMs: 250, latestRaw: null, refs: 0, spec: null };
+			const url = dataUrl(proto, self.location.host, m.node, m.slot);
+			st = { node: m.node, slot: m.slot, ws: null, url, closed: false, reconnectMs: 250, latestRaw: null, refs: 0, specs: [] };
 			slots.set(k, st);
 			openWs(st);
 		}
 		st.refs++;
 	} else if (m.op === 'spec') {
-		// Viewer reported (or updated) the capacity ViewSpec for this slot. The 'sub'
-		// for a slot is always posted before any 'spec' (ViewerFeed subscribes in a
+		// Viewers reported (or updated) the ViewSpecs for this slot. The 'sub' for a
+		// slot is always posted before any 'spec' (ViewerFeed subscribes in a
 		// source-earlier effect, and every spec post is microtask-deferred), so a spec
 		// for an absent slot is only a post-unsub straggler — drop it.
 		const st = slots.get(k);
 		if (st) {
-			st.spec = m.spec ?? null;
-			sendSpec(st);
+			st.specs = m.specs ?? [];
+			sendSpecs(st);
 		}
 	} else if (m.op === 'unsub') {
 		const st = slots.get(k);
@@ -125,7 +125,7 @@ setInterval(() => {
 		const transfer = new Set<ArrayBufferLike>();
 		collectBuffers(frame, transfer);
 		(self as unknown as Worker).postMessage(
-			{ node: st.node, slot: st.slot, kind: st.kind, frame },
+			{ node: st.node, slot: st.slot, frame },
 			Array.from(transfer) as Transferable[]
 		);
 	}
