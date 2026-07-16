@@ -72,12 +72,20 @@ def encode_array(arr, meta):
     hdr = MAGIC + bytes([VER, 0]) + struct.pack('<I', len(meta)) + struct.pack('<I', len(body))
     return hdr + meta + body
 
+# Reserve fd 1 exclusively for the length-prefixed protocol: dup it, then point
+# fd 1 (and Python-level stdout) at stderr, BEFORE importing the user module. Now
+# any node/C-extension write to stdout (a print, a flush, printf, os.write(1)) is
+# harmlessly routed to stderr instead of injecting bytes into the frame stream.
+_proto_fd = os.dup(1)
+os.dup2(2, 1)
+sys.stdout = sys.stderr
+
 ns = {}
 exec(os.environ['GOOFI_USER_SRC'], ns)
 process = ns['process']
 
 inp = sys.stdin.buffer
-outp = sys.stdout.buffer
+outp = os.fdopen(_proto_fd, 'wb')
 while True:
     hdr = read_exact(inp, 4)
     if hdr is None:
@@ -512,6 +520,28 @@ mod tests {
         assert_eq!(floats(&out), vec![0.0, 2.0, 4.0, 6.0, 8.0, 10.0]);
         let ch = out.meta().channels.0.get(&0).expect("dim0 channels preserved");
         assert_eq!(ch.len(), 2);
+    }
+
+    #[test]
+    fn node_stdout_does_not_corrupt_the_protocol_frame() {
+        // The protocol rides fd 1. A node that writes to stdout (here a flushed
+        // print, but equally a C-extension's printf — the very kind this tier
+        // hosts) must NOT inject bytes into the length-prefixed frame stream.
+        let Some(py) = usable_python() else {
+            eprintln!("SKIP: no python3 with numpy");
+            return;
+        };
+        let mut node = RemoteNode::spawn(
+            &py,
+            "def process(x):\n    import sys\n    print('debug from the node', flush=True)\n    sys.stdout.flush()\n    return x * 2.0\n",
+        )
+        .unwrap();
+        let d = Data::from_array_bytes(DType::F32, vec![3], (0..3).flat_map(|i| (i as f32).to_le_bytes()).collect(), Meta::empty()).unwrap();
+        let out = try_run(&mut node, d).expect("a node that prints must still round-trip");
+        assert_eq!(floats(&out), vec![0.0, 2.0, 4.0]);
+        // A second tick proves the stream stayed in sync (not just the first frame).
+        let d2 = Data::from_array_bytes(DType::F32, vec![2], [5.0f32, 6.0].iter().flat_map(|v| v.to_le_bytes()).collect(), Meta::empty()).unwrap();
+        assert_eq!(floats(&try_run(&mut node, d2).expect("second tick in sync")), vec![10.0, 12.0]);
     }
 
     #[test]
