@@ -22,9 +22,17 @@ indexmap = "2"
 # For the engine-integration test (runs only under `--features embed`): proves a
 # real PyNode is hosted + ticked inside a live Graph, concurrently on the pool.
 goofi-engine = { path = "../goofi-engine" }
+# The backend-parity benchmark hosts the subprocess tier alongside the in-process
+# tiers in one engine, for a directly comparable measurement.
+goofi-subproc = { path = "../goofi-subproc" }
 
 # The latency/concurrency probe needs the embedded interpreter; skip it unless
 # `embed` is on (else the default workspace build would fail to compile it).
 [[example]]
 name = "py_latency"
+required-features = ["embed"]
+
+# Unified native-vs-FT-Python-vs-subprocess parity benchmark (same env as above).
+[[example]]
+name = "backend_parity"
 required-features = ["embed"]

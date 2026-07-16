@@ -372,6 +372,7 @@ dependencies = [
  "goofi-core",
  "goofi-engine",
  "goofi-node",
+ "goofi-subproc",
  "indexmap",
  "pyo3",
 ]
