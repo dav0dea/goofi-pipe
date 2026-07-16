@@ -10,6 +10,7 @@
 
 mod schemas;
 
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -92,32 +93,86 @@ pub fn spawn_tick(graph: Arc<Mutex<Graph>>) {
     });
 }
 
-/// Broadcast each node's measured update frequency to the control plane at `hz`, as
-/// `node_stats` events (forwarding `ufreq` as `updates_per_second` — the node-header
-/// update-rate readout). Skips nodes with no measurement yet.
+/// Given each node's current error and the last-broadcast errors, return the uids whose
+/// error state changed (appeared, cleared, or message changed) and update `last`. A node
+/// first seen HEALTHY is not a change (so startup doesn't push a `state_update` for every
+/// node); removed nodes are forgotten so a re-created uid re-broadcasts fresh.
+fn error_transitions(
+    current: &[(String, Option<String>)],
+    last: &mut HashMap<String, Option<String>>,
+) -> Vec<String> {
+    let seen: HashSet<&String> = current.iter().map(|(u, _)| u).collect();
+    let mut changed = Vec::new();
+    for (uid, err) in current {
+        let is_changed = match last.get(uid) {
+            Some(prev) => prev != err,
+            None => err.is_some(),
+        };
+        if is_changed {
+            changed.push(uid.clone());
+        }
+        last.insert(uid.clone(), err.clone());
+    }
+    last.retain(|k, _| seen.contains(k));
+    changed
+}
+
+/// Broadcast each node's measured update frequency (`node_stats`) at `hz`, and push a
+/// `state_update` whenever a node's error state changes. The tick loop emits nothing, so
+/// without this a RUNTIME error that appears mid-run (an expression that compiles but
+/// fails on later data, a process error) would not turn the node border / per-param
+/// expression field red until an unrelated RPC or a reconnect. De-duped: one push per
+/// transition, not per tick.
 pub fn spawn_stats(graph: Arc<Mutex<Graph>>, events: broadcast::Sender<String>, hz: u64) {
     std::thread::spawn(move || {
         let period = Duration::from_secs_f64(1.0 / hz as f64);
+        let mut last_errors: HashMap<String, Option<String>> = HashMap::new();
         loop {
             std::thread::sleep(period);
-            let rates: Vec<(String, f64)> = {
+            let (rates, updates): (Vec<(String, f64)>, Vec<String>) = {
                 let g = graph.lock().unwrap();
-                g.node_uids()
-                    .into_iter()
-                    .filter_map(|u| g.node_ufreq(u).map(|f| (u.to_hex(), f)))
-                    .collect()
+                let mut rates = Vec::new();
+                let mut errs: Vec<(String, Option<String>)> = Vec::new();
+                for u in g.node_uids() {
+                    let hex = u.to_hex();
+                    if let Some(f) = g.node_ufreq(u) {
+                        rates.push((hex.clone(), f));
+                    }
+                    errs.push((hex, g.last_error(u).map(str::to_string)));
+                }
+                // Build the state_update payloads for changed nodes while the lock is held.
+                let changed = error_transitions(&errs, &mut last_errors);
+                let updates = changed
+                    .iter()
+                    .filter_map(|hex| Uid::from_hex(hex).map(|u| (hex.clone(), u)))
+                    .map(|(hex, u)| {
+                        event(
+                            "state_update",
+                            json!({
+                                "node": hex,
+                                "params": schemas::describe_node_params(&g, u),
+                                "output_subscribers": {},
+                                "stage": "ready",
+                                "error": g.last_error(u),
+                                "log_endpoint": Value::Null,
+                                "refreshed_params": [],
+                            }),
+                        )
+                    })
+                    .collect();
+                (rates, updates)
             };
             for (node, ufreq) in rates {
                 // Only send what we actually measure — no fabricated process-time /
                 // tick-count placeholders (the frontend treats those as optional).
-                let ev = serde_json::json!({
+                let ev = json!({
                     "event": "node_stats",
-                    "payload": {
-                        "node": node,
-                        "stats": { "updates_per_second": ufreq }
-                    }
+                    "payload": { "node": node, "stats": { "updates_per_second": ufreq } }
                 });
                 let _ = events.send(ev.to_string());
+            }
+            for ev in updates {
+                let _ = events.send(ev);
             }
         }
     });
@@ -553,5 +608,36 @@ mod param_coerce_tests {
         assert_eq!(param_from_json(&p, &json!(5.5)).as_i64(), Some(6));
         assert_eq!(param_from_json(&p, &json!(5.4)).as_i64(), Some(5));
         assert_eq!(param_from_json(&p, &json!(7)).as_i64(), Some(7), "plain int unaffected");
+    }
+
+    fn ev(uid: &str, err: Option<&str>) -> (String, Option<String>) {
+        (uid.to_string(), err.map(str::to_string))
+    }
+
+    #[test]
+    fn error_transitions_fires_only_on_change() {
+        let mut last = HashMap::new();
+        // First sight: a healthy node is NOT a transition; an errored one IS.
+        let t = error_transitions(&[ev("a", None), ev("b", Some("boom"))], &mut last);
+        assert_eq!(t, vec!["b".to_string()], "only the newly-errored node");
+        // Steady state: no repeat pushes.
+        assert!(error_transitions(&[ev("a", None), ev("b", Some("boom"))], &mut last).is_empty());
+        // Recovery of b + a newly errors -> both transition.
+        let mut t2 = error_transitions(&[ev("a", Some("x")), ev("b", None)], &mut last);
+        t2.sort();
+        assert_eq!(t2, vec!["a".to_string(), "b".to_string()]);
+        // A changed message is a transition.
+        assert_eq!(error_transitions(&[ev("a", Some("y")), ev("b", None)], &mut last), vec!["a".to_string()]);
+    }
+
+    #[test]
+    fn error_transitions_forgets_removed_nodes() {
+        let mut last = HashMap::new();
+        error_transitions(&[ev("a", Some("boom"))], &mut last);
+        assert!(last.contains_key("a"));
+        // 'a' gone next poll -> forgotten, so a re-created 'a' re-broadcasts fresh.
+        error_transitions(&[ev("b", None)], &mut last);
+        assert!(!last.contains_key("a"), "removed node forgotten");
+        assert_eq!(error_transitions(&[ev("a", Some("boom"))], &mut last), vec!["a".to_string()]);
     }
 }
