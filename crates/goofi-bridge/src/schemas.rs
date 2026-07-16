@@ -80,6 +80,13 @@ fn input_slots(m: &NodeManifest) -> Value {
     }
     Value::Object(o)
 }
+
+/// The names of the node type's `multi` (variadic) input slots — static shape the
+/// frontend reads to render those slots tall and accept many cables. Peer of the
+/// dtype in [`input_slots`]; not a mutable per-instance flag.
+fn input_multi(m: &NodeManifest) -> Value {
+    Value::Array(m.inputs.iter().filter(|s| s.multi).map(|s| json!(s.name)).collect())
+}
 fn output_slots(m: &NodeManifest) -> Value {
     let mut o = Map::new();
     for s in m.outputs {
@@ -97,6 +104,7 @@ pub fn node_type_info(m: &NodeManifest) -> Value {
         "dynamic": false,
         "missing_deps": [],
         "input_slots": input_slots(m),
+        "input_multi": input_multi(m),
         "output_slots": output_slots(m),
         // Project the same universal `common` group instances carry, so the palette
         // and an instantiated node agree on a type's params.
@@ -127,6 +135,7 @@ pub fn node_instance_info(g: &Graph, uid: Uid) -> Value {
         "category": m.category,
         "doc": m.doc,
         "input_slots": input_slots(m),
+        "input_multi": input_multi(m),
         "output_slots": output_slots(m),
         "params": describe_params(g.params(uid).expect("params")),
         "pos": g.pos(uid).unwrap_or([0.0, 0.0]),
@@ -233,6 +242,16 @@ mod tests {
         );
         // Native catalog types remain present alongside the runtime ones.
         assert!(arr.iter().any(|v| ty(v).as_deref() == Some("Oscillator")));
+    }
+
+    #[test]
+    fn input_multi_lists_the_variadic_input_slots() {
+        // AppendTables exposes one multi slot "tables"; the frontend reads this
+        // static shape to render it tall and accept many cables.
+        let m = goofi_node::find("AppendTables").expect("AppendTables in catalog");
+        assert_eq!(node_type_info(m)["input_multi"], json!(["tables"]));
+        // A node with only single inputs reports an empty list.
+        assert_eq!(node_type_info(&T_MANIFEST)["input_multi"], json!([]));
     }
 
     #[test]
