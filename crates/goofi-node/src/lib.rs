@@ -67,6 +67,88 @@ pub fn param<'a>(p: &'a ParamGroups, group: &str, name: &str) -> Option<&'a Para
     p.get(group)?.get(name)
 }
 
+/// A static, declarative parameter descriptor — the param analogue of [`SlotDecl`]/
+/// [`OutputDecl`], holding only `&'static str` + primitives so a node can declare its
+/// params as a `static PARAMS: &[ParamDecl]` (a literal `&[Param]` is impossible —
+/// `Param::Str` owns heap `String`/`Vec`). The runtime [`ParamGroups`] is built from
+/// these on demand by [`NodeManifest::default_params`].
+pub struct ParamDecl {
+    pub group: &'static str,
+    pub name: &'static str,
+    pub spec: ParamSpec,
+}
+
+/// The kind + defaults of a declared param.
+pub enum ParamSpec {
+    Float { default: f64, min: f64, max: f64 },
+    Int { default: i64, min: i64, max: i64 },
+    Bool { default: bool },
+    Str { default: &'static str, options: &'static [&'static str], refresh: bool },
+    Trigger,
+}
+
+impl ParamSpec {
+    /// Materialize the runtime [`Param`] this descriptor declares.
+    fn to_param(&self) -> Param {
+        match *self {
+            ParamSpec::Float { default, min, max } => Param::float(default, min, max),
+            ParamSpec::Int { default, min, max } => Param::int(default, min, max),
+            ParamSpec::Bool { default } => Param::boolean(default),
+            ParamSpec::Str { default, options, refresh } => Param::Str {
+                value: default.to_string(),
+                options: (!options.is_empty())
+                    .then(|| options.iter().map(|s| s.to_string()).collect()),
+                refresh,
+            },
+            ParamSpec::Trigger => Param::Trigger { fired: false },
+        }
+    }
+}
+
+/// Build a grouped [`ParamGroups`] from a flat, group-tagged declaration list —
+/// group order = first-seen, name order = declaration order (matching the old
+/// imperative `default_params()` builders).
+pub fn params_from_decls(decls: &[ParamDecl]) -> ParamGroups {
+    let mut groups = ParamGroups::new();
+    for d in decls {
+        groups
+            .entry(d.group.to_string())
+            .or_default()
+            .insert(d.name.to_string(), d.spec.to_param());
+    }
+    groups
+}
+
+/// A read-only, typed view of a node's current params, handed to `setup`/`process`
+/// so a *cold* param (read occasionally, mirrored to no field, with no side effect)
+/// can be read live — needing no field and no `on_param_changed` arm. The engine's
+/// `NodeEntry.params` is the source of truth, so a live edit is visible on the next
+/// tick. Read each param into a local once at the top of `process`; the per-*sample*
+/// hot loop then reads the local, never the map.
+pub struct Params<'a>(&'a ParamGroups);
+
+impl<'a> Params<'a> {
+    pub fn new(groups: &'a ParamGroups) -> Params<'a> {
+        Params(groups)
+    }
+    pub fn f64(&self, group: &str, name: &str) -> Option<f64> {
+        param(self.0, group, name).and_then(Param::as_f64)
+    }
+    pub fn i64(&self, group: &str, name: &str) -> Option<i64> {
+        param(self.0, group, name).and_then(Param::as_i64)
+    }
+    pub fn bool(&self, group: &str, name: &str) -> Option<bool> {
+        param(self.0, group, name).and_then(Param::as_bool)
+    }
+    pub fn str(&self, group: &str, name: &str) -> Option<&str> {
+        param(self.0, group, name).and_then(Param::as_str)
+    }
+    /// The underlying groups, for the rare node that needs to iterate.
+    pub fn groups(&self) -> &ParamGroups {
+        self.0
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Tick I/O
 // ---------------------------------------------------------------------------
@@ -274,7 +356,7 @@ pub fn with_common(params: ParamGroups) -> ParamGroups {
                 "updates-per-second".to_string(),
                 "seconds-per-update".to_string(),
             ]),
-            refresh: None,
+            refresh: false,
         });
     let mut merged = ParamGroups::new();
     merged.insert("common".to_string(), common);
@@ -291,21 +373,43 @@ pub fn with_common(params: ParamGroups) -> ParamGroups {
 // ---------------------------------------------------------------------------
 
 pub trait Node: Send {
-    /// One-time init; may fail terminally.
-    fn setup(&mut self, _ctx: &mut NodeCtx) -> NodeResult {
+    /// Derived one-time init, after the node's params have been seeded (via the
+    /// construction replay of `on_param_changed`). Reads live params from `p`; may
+    /// fail terminally (surfaced on the node's error channel via the bootstrap pipe).
+    fn setup(&mut self, _ctx: &mut NodeCtx, _p: &Params<'_>) -> NodeResult {
         Ok(())
     }
-    /// The tick body: read latest inputs, write outputs. Pure w.r.t. transport.
-    fn process(&mut self, inp: &Inputs<'_>, out: &mut Outputs<'_>, ctx: &mut NodeCtx) -> NodeResult;
-    /// Apply a param edit to the node's own state.
+    /// The tick body: read latest inputs + live params, write outputs. Pure w.r.t.
+    /// transport. Cold params are read from `p`; hot/stateful params are mirrored to
+    /// fields via `on_param_changed`.
+    fn process(
+        &mut self,
+        inp: &Inputs<'_>,
+        out: &mut Outputs<'_>,
+        ctx: &mut NodeCtx,
+        p: &Params<'_>,
+    ) -> NodeResult;
+    /// Optional: react to a param edit — mirror a hot field or run a side effect
+    /// (re-anchor pacing, reallocate a buffer). This same handler seeds mirrored
+    /// fields at construction (the engine replays it per declared param), so it is
+    /// the single source of truth for param→field. Cold params need no arm here.
     fn on_param_changed(&mut self, _key: &ParamKey, _v: &Param) -> NodeResult {
         Ok(())
     }
-    /// Re-enumerate a `StringParam`'s options (device pickers).
-    fn refresh_options(&mut self, _key: &ParamKey) -> Option<Vec<String>> {
+    /// Optional: re-enumerate a `Str` param's options for the UI's ⟳ button
+    /// (device/stream pickers). Paired with `on_param_changed` by name.
+    fn on_param_refreshed(&mut self, _key: &ParamKey) -> Option<Vec<String>> {
         None
     }
-    fn terminate(&mut self) {}
+    // Teardown is `impl Drop for TheNode`, not a trait method — it runs automatically
+    // when the engine drops the boxed node, and can't be forgotten.
+}
+
+/// The generic node factory the manifest stores — construct a default instance,
+/// type-erased. The engine seeds its params afterward by replaying
+/// `on_param_changed`, so no per-node constructor boilerplate is written.
+pub fn default_factory<T: Node + Default + 'static>() -> Box<dyn Node> {
+    Box::new(T::default())
 }
 
 // ---------------------------------------------------------------------------
@@ -342,15 +446,25 @@ pub struct NodeManifest {
     pub doc: &'static str,
     pub inputs: &'static [SlotDecl],
     pub outputs: &'static [OutputDecl],
-    pub default_params: fn() -> ParamGroups,
+    /// Declared params — the param analogue of `inputs`/`outputs`. The runtime
+    /// `ParamGroups` is built on demand by [`Self::default_params`].
+    pub params: &'static [ParamDecl],
     pub isolation: Isolation,
-    pub make: fn(&ParamGroups) -> Box<dyn Node>,
+    /// Build a default instance (type-erased). The engine seeds params afterward by
+    /// replaying `on_param_changed`; for native nodes this is `default_factory::<T>`.
+    pub factory: fn() -> Box<dyn Node>,
 }
 
 impl NodeManifest {
     /// A fresh output buffer seeded with this manifest's output slot names.
     pub fn output_buffer(&self) -> IndexMap<&'static str, Option<Data>> {
         self.outputs.iter().map(|o| (o.name, None)).collect()
+    }
+    /// The runtime default params, built from the static [`ParamDecl`] list. Callers
+    /// layer [`with_common`] on top (as before). Replaces the old
+    /// `default_params: fn() -> ParamGroups` field.
+    pub fn default_params(&self) -> ParamGroups {
+        params_from_decls(self.params)
     }
 }
 
@@ -423,6 +537,50 @@ mod tests {
         assert!(inp2.get_multi("missing").is_empty());
     }
 
+    static DECL_PARAMS: &[ParamDecl] = &[
+        ParamDecl { group: "g", name: "freq", spec: ParamSpec::Float { default: 1.0, min: 0.0, max: 10.0 } },
+        ParamDecl { group: "g", name: "n", spec: ParamSpec::Int { default: 4, min: 1, max: 9 } },
+        ParamDecl { group: "g", name: "wave", spec: ParamSpec::Str { default: "sine", options: &["sine", "saw"], refresh: false } },
+        ParamDecl { group: "z", name: "on", spec: ParamSpec::Bool { default: true } },
+    ];
+
+    #[test]
+    fn params_from_decls_preserves_group_and_name_order_and_values() {
+        let p = params_from_decls(DECL_PARAMS);
+        // Group order = first-seen ("g" before "z"); name order = declaration order.
+        assert_eq!(p.keys().collect::<Vec<_>>(), vec!["g", "z"]);
+        assert_eq!(p["g"].keys().collect::<Vec<_>>(), vec!["freq", "n", "wave"]);
+        assert_eq!(param(&p, "g", "freq").and_then(Param::as_f64), Some(1.0));
+        assert_eq!(param(&p, "g", "n").and_then(Param::as_i64), Some(4));
+        assert_eq!(param(&p, "z", "on").and_then(Param::as_bool), Some(true));
+        // A Str with options materializes them; refresh flag carried through.
+        match param(&p, "g", "wave").unwrap() {
+            Param::Str { value, options, refresh } => {
+                assert_eq!(value, "sine");
+                assert_eq!(options.as_deref(), Some(&["sine".to_string(), "saw".to_string()][..]));
+                assert!(!refresh);
+            }
+            _ => panic!("expected Str"),
+        }
+    }
+
+    #[test]
+    fn params_view_reads_typed_values() {
+        let p = params_from_decls(DECL_PARAMS);
+        let view = Params::new(&p);
+        assert_eq!(view.f64("g", "freq"), Some(1.0));
+        assert_eq!(view.i64("g", "n"), Some(4));
+        assert_eq!(view.str("g", "wave"), Some("sine"));
+        assert_eq!(view.bool("z", "on"), Some(true));
+        assert_eq!(view.f64("g", "missing"), None);
+    }
+
+    #[test]
+    fn manifest_default_params_builds_from_decls() {
+        let m = find("_NodeTestNop").unwrap();
+        assert!(m.default_params().is_empty(), "Nop declares no params");
+    }
+
     #[test]
     fn param_lookup() {
         let mut g = IndexMap::new();
@@ -434,22 +592,24 @@ mod tests {
         assert!(param(&groups, "nogroup", "x").is_none());
     }
 
+    #[derive(Default)]
     struct Nop;
     impl Node for Nop {
-        fn process(&mut self, _i: &Inputs<'_>, _o: &mut Outputs<'_>, _c: &mut NodeCtx) -> NodeResult {
+        fn process(
+            &mut self,
+            _i: &Inputs<'_>,
+            _o: &mut Outputs<'_>,
+            _c: &mut NodeCtx,
+            _p: &Params<'_>,
+        ) -> NodeResult {
             Ok(())
         }
-    }
-    fn nop_params() -> ParamGroups {
-        ParamGroups::new()
-    }
-    fn nop_make(_: &ParamGroups) -> Box<dyn Node> {
-        Box::new(Nop)
     }
     static NOP_OUT: &[OutputDecl] = &[OutputDecl {
         name: "out",
         kind: SlotType::Array,
     }];
+    static NOP_PARAMS: &[ParamDecl] = &[];
     inventory::submit! {
         NodeManifest {
             type_name: "_NodeTestNop",
@@ -457,9 +617,9 @@ mod tests {
             doc: "",
             inputs: &[],
             outputs: NOP_OUT,
-            default_params: nop_params,
+            params: NOP_PARAMS,
             isolation: Isolation::InProcess,
-            make: nop_make,
+            factory: default_factory::<Nop>,
         }
     }
 

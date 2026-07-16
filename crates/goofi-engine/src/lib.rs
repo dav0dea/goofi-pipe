@@ -135,7 +135,7 @@ fn param_value_json(p: &Param) -> serde_json::Value {
 pub type NodeFactory = Box<dyn Fn(&ParamGroups) -> Box<dyn goofi_node::Node> + Send + Sync>;
 
 /// A runtime-registered node type: its (leaked-`'static`) manifest plus the
-/// factory that builds instances of it. Its `manifest.make` is never called.
+/// factory that builds instances of it. Its `manifest.factory` is never called.
 struct DynType {
     manifest: &'static NodeManifest,
     factory: NodeFactory,
@@ -256,11 +256,11 @@ impl Graph {
     ) -> Result<Uid, String> {
         let (manifest, params, node): (&'static NodeManifest, ParamGroups, Box<dyn goofi_node::Node>) =
             if let Some(m) = goofi_node::find(type_name) {
-                let p = goofi_node::with_common(params.unwrap_or_else(|| (m.default_params)()));
-                let n = (m.make)(&p);
+                let p = goofi_node::with_common(params.unwrap_or_else(|| m.default_params()));
+                let n = (m.factory)();
                 (m, p, n)
             } else if let Some(dt) = self.dyn_types.get(type_name) {
-                let p = goofi_node::with_common(params.unwrap_or_else(|| (dt.manifest.default_params)()));
+                let p = goofi_node::with_common(params.unwrap_or_else(|| dt.manifest.default_params()));
                 let n = (dt.factory)(&p);
                 (dt.manifest, p, n)
             } else {
@@ -279,7 +279,24 @@ impl Graph {
         params: ParamGroups,
     ) -> Uid {
         let mut ctx = NodeCtx::new();
-        let last_error = node.setup(&mut ctx).err().map(|e| e.0);
+        // Seed the node by replaying `on_param_changed` for each declared param
+        // (not `common`, which is the scheduler's), then run derived one-time init.
+        // The FIRST error from replay-or-setup becomes the node's bootstrap error;
+        // the node is still inserted (no restart loop), matching the setup pipe.
+        let mut last_error = None;
+        for (group, entries) in &params {
+            if group == "common" {
+                continue;
+            }
+            for (name, value) in entries {
+                if let Err(e) = node.on_param_changed(&ParamKey::new(group.as_str(), name.as_str()), value) {
+                    last_error.get_or_insert(e.0);
+                }
+            }
+        }
+        if let Err(e) = node.setup(&mut ctx, &goofi_node::Params::new(&params)) {
+            last_error.get_or_insert(e.0);
+        }
 
         let inputs: IndexMap<&'static str, Option<Data>> =
             manifest.inputs.iter().filter(|s| !s.multi).map(|s| (s.name, None)).collect();
@@ -896,11 +913,13 @@ fn run_node(entry: &mut NodeEntry) {
         .map(|(k, cells)| (*k, cells.iter().filter_map(|(_, _, o)| o.clone()).collect()))
         .collect();
     let inp = Inputs::with_multi(&entry.inputs, &multis);
+    let params = goofi_node::Params::new(&entry.params);
     let node = &mut entry.node;
     let ctx = &mut entry.ctx;
     let mut out = Outputs::new(&mut entry.outputs);
-    let result =
-        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| node.process(&inp, &mut out, ctx)));
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        node.process(&inp, &mut out, ctx, &params)
+    }));
     entry.last_error = match result {
         Ok(Ok(())) => None,
         Ok(Err(e)) => Some(e.0),
@@ -1012,24 +1031,23 @@ mod tests {
     use super::*;
     use goofi_core::{DType, Meta, SlotType, Value};
     use goofi_node::{
-        Isolation, Node, NodeManifest, NodeResult, OutputDecl, SlotDecl,
+        default_factory, Isolation, Node, NodeManifest, NodeResult, OutputDecl, ParamDecl,
+        ParamSpec, Params, SlotDecl,
     };
 
+    /// Empty param declaration, shared by the many test nodes with no own params.
+    static NO_PARAMS: &[ParamDecl] = &[];
+
     // A test-only passthrough node (ARRAY "in" -> ARRAY "out") to exercise links.
+    #[derive(Default)]
     struct Echo;
     impl Node for Echo {
-        fn process(&mut self, inp: &Inputs<'_>, out: &mut Outputs<'_>, _c: &mut NodeCtx) -> NodeResult {
+        fn process(&mut self, inp: &Inputs<'_>, out: &mut Outputs<'_>, _c: &mut NodeCtx, _p: &Params<'_>) -> NodeResult {
             if let Some(d) = inp.get("in") {
                 out.set("out", d.clone());
             }
             Ok(())
         }
-    }
-    fn echo_params() -> ParamGroups {
-        ParamGroups::new()
-    }
-    fn echo_make(_: &ParamGroups) -> Box<dyn Node> {
-        Box::new(Echo)
     }
     static E_IN: &[SlotDecl] = &[SlotDecl {
         name: "in",
@@ -1048,18 +1066,19 @@ mod tests {
             doc: "test passthrough",
             inputs: E_IN,
             outputs: E_OUT,
-            default_params: echo_params,
+            params: NO_PARAMS,
             isolation: Isolation::InProcess,
-            make: echo_make,
+            factory: default_factory::<Echo>,
         }
     }
 
     // A source that only emits on every other run (to exercise trigger arbitration).
+    #[derive(Default)]
     struct GatedSource {
         n: i64,
     }
     impl Node for GatedSource {
-        fn process(&mut self, _i: &Inputs<'_>, out: &mut Outputs<'_>, _c: &mut NodeCtx) -> NodeResult {
+        fn process(&mut self, _i: &Inputs<'_>, out: &mut Outputs<'_>, _c: &mut NodeCtx, _p: &Params<'_>) -> NodeResult {
             let emit = self.n % 2 == 0;
             self.n += 1;
             if emit {
@@ -1069,9 +1088,6 @@ mod tests {
             }
             Ok(())
         }
-    }
-    fn gated_make(_: &ParamGroups) -> Box<dyn Node> {
-        Box::new(GatedSource { n: 0 })
     }
     static G_OUT: &[OutputDecl] = &[OutputDecl {
         name: "out",
@@ -1084,27 +1100,25 @@ mod tests {
             doc: "gated source",
             inputs: &[],
             outputs: G_OUT,
-            default_params: echo_params,
+            params: NO_PARAMS,
             isolation: Isolation::InProcess,
-            make: gated_make,
+            factory: default_factory::<GatedSource>,
         }
     }
 
     // A triggered node that counts the number of times it actually ran.
+    #[derive(Default)]
     struct Counter {
         runs: i64,
     }
     impl Node for Counter {
-        fn process(&mut self, _i: &Inputs<'_>, out: &mut Outputs<'_>, _c: &mut NodeCtx) -> NodeResult {
+        fn process(&mut self, _i: &Inputs<'_>, out: &mut Outputs<'_>, _c: &mut NodeCtx, _p: &Params<'_>) -> NodeResult {
             self.runs += 1;
             let d = Data::from_array_bytes(DType::F32, vec![1], (self.runs as f32).to_le_bytes().to_vec(), Meta::empty())
                 .map_err(|e| e.to_string())?;
             out.set("out", d);
             Ok(())
         }
-    }
-    fn counter_make(_: &ParamGroups) -> Box<dyn Node> {
-        Box::new(Counter { runs: 0 })
     }
     static C_IN: &[SlotDecl] = &[SlotDecl {
         name: "in",
@@ -1123,18 +1137,19 @@ mod tests {
             doc: "run counter",
             inputs: C_IN,
             outputs: C_OUT,
-            default_params: echo_params,
+            params: NO_PARAMS,
             isolation: Isolation::InProcess,
-            make: counter_make,
+            factory: default_factory::<Counter>,
         }
     }
 
     // A two-input node summing a[0]+b[0] — exercises fan-in convergence, where a
     // consumer at a later level must receive fresh frames from two producers that
     // ran (in parallel) at the same earlier level.
+    #[derive(Default)]
     struct Adder;
     impl Node for Adder {
-        fn process(&mut self, inp: &Inputs<'_>, out: &mut Outputs<'_>, _c: &mut NodeCtx) -> NodeResult {
+        fn process(&mut self, inp: &Inputs<'_>, out: &mut Outputs<'_>, _c: &mut NodeCtx, _p: &Params<'_>) -> NodeResult {
             let (Some(a), Some(b)) = (inp.get("a"), inp.get("b")) else {
                 return Ok(());
             };
@@ -1144,9 +1159,6 @@ mod tests {
             out.set("out", d);
             Ok(())
         }
-    }
-    fn adder_make(_: &ParamGroups) -> Box<dyn Node> {
-        Box::new(Adder)
     }
     static ADD_IN: &[SlotDecl] = &[
         SlotDecl { name: "a", kind: SlotType::Array, trigger_process: true, multi: false },
@@ -1163,9 +1175,9 @@ mod tests {
             doc: "a[0] + b[0]",
             inputs: ADD_IN,
             outputs: ADD_OUT,
-            default_params: echo_params,
+            params: NO_PARAMS,
             isolation: Isolation::InProcess,
-            make: adder_make,
+            factory: default_factory::<Adder>,
         }
     }
 
@@ -1174,17 +1186,19 @@ mod tests {
     struct Slow {
         ms: u64,
     }
+    impl Default for Slow {
+        fn default() -> Slow {
+            Slow { ms: 20 }
+        }
+    }
     impl Node for Slow {
-        fn process(&mut self, _i: &Inputs<'_>, out: &mut Outputs<'_>, _c: &mut NodeCtx) -> NodeResult {
+        fn process(&mut self, _i: &Inputs<'_>, out: &mut Outputs<'_>, _c: &mut NodeCtx, _p: &Params<'_>) -> NodeResult {
             std::thread::sleep(std::time::Duration::from_millis(self.ms));
             let d = Data::from_array_bytes(DType::F32, vec![1], 1.0f32.to_le_bytes().to_vec(), Meta::empty())
                 .map_err(|e| e.to_string())?;
             out.set("out", d);
             Ok(())
         }
-    }
-    fn slow_make(_: &ParamGroups) -> Box<dyn Node> {
-        Box::new(Slow { ms: 20 })
     }
     static SLOW_OUT: &[OutputDecl] = &[OutputDecl {
         name: "out",
@@ -1197,21 +1211,19 @@ mod tests {
             doc: "sleeps 20ms then emits",
             inputs: &[],
             outputs: SLOW_OUT,
-            default_params: echo_params,
+            params: NO_PARAMS,
             isolation: Isolation::InProcess,
-            make: slow_make,
+            factory: default_factory::<Slow>,
         }
     }
 
     // A node that panics in process() — to verify the engine survives it.
+    #[derive(Default)]
     struct Panicky;
     impl Node for Panicky {
-        fn process(&mut self, _i: &Inputs<'_>, _o: &mut Outputs<'_>, _c: &mut NodeCtx) -> NodeResult {
+        fn process(&mut self, _i: &Inputs<'_>, _o: &mut Outputs<'_>, _c: &mut NodeCtx, _p: &Params<'_>) -> NodeResult {
             panic!("boom");
         }
-    }
-    fn panicky_make(_: &ParamGroups) -> Box<dyn Node> {
-        Box::new(Panicky)
     }
     static P_OUT: &[OutputDecl] = &[OutputDecl {
         name: "out",
@@ -1224,19 +1236,20 @@ mod tests {
             doc: "panics",
             inputs: &[],
             outputs: P_OUT,
-            default_params: echo_params,
+            params: NO_PARAMS,
             isolation: Isolation::InProcess,
-            make: panicky_make,
+            factory: default_factory::<Panicky>,
         }
     }
 
     // A free-running counter capped at 10 Hz via a `common` group — exercises the
     // wall-clock rate gate. Emits its run count so a test can read how often it ran.
+    #[derive(Default)]
     struct CappedSource {
         runs: i64,
     }
     impl Node for CappedSource {
-        fn process(&mut self, _i: &Inputs<'_>, out: &mut Outputs<'_>, _c: &mut NodeCtx) -> NodeResult {
+        fn process(&mut self, _i: &Inputs<'_>, out: &mut Outputs<'_>, _c: &mut NodeCtx, _p: &Params<'_>) -> NodeResult {
             self.runs += 1;
             let d = Data::from_array_bytes(DType::F32, vec![1], (self.runs as f32).to_le_bytes().to_vec(), Meta::empty())
                 .map_err(|e| e.to_string())?;
@@ -1244,18 +1257,11 @@ mod tests {
             Ok(())
         }
     }
-    fn capped_params() -> ParamGroups {
-        let mut common = IndexMap::new();
-        common.insert("autotrigger".to_string(), Param::boolean(true));
-        common.insert("max_frequency".to_string(), Param::float(10.0, 0.0, 60.0)); // 10 Hz -> 0.1s
-        common.insert("frequency_mode".to_string(), Param::str_free("updates-per-second"));
-        let mut g = ParamGroups::new();
-        g.insert("common".to_string(), common);
-        g
-    }
-    fn capped_make(_: &ParamGroups) -> Box<dyn Node> {
-        Box::new(CappedSource { runs: 0 })
-    }
+    // 10 Hz (-> 0.1s), autotriggering. `frequency_mode` is filled by `with_common`.
+    static CAPPED_PARAMS: &[ParamDecl] = &[
+        ParamDecl { group: "common", name: "autotrigger", spec: ParamSpec::Bool { default: true } },
+        ParamDecl { group: "common", name: "max_frequency", spec: ParamSpec::Float { default: 10.0, min: 0.0, max: 60.0 } },
+    ];
     inventory::submit! {
         NodeManifest {
             type_name: "_TestCapped",
@@ -1263,26 +1269,24 @@ mod tests {
             doc: "10 Hz free-running counter",
             inputs: &[],
             outputs: G_OUT,
-            default_params: capped_params,
+            params: CAPPED_PARAMS,
             isolation: Isolation::InProcess,
-            make: capped_make,
+            factory: default_factory::<CappedSource>,
         }
     }
 
     // A node with a TRIGGERING "data" input and a NON-triggering "ref" (control)
     // input, emitting a length-1 frame. Used to prove index propagation ignores a
     // control input even when its length coincidentally matches the output's.
+    #[derive(Default)]
     struct RefLenChange;
     impl Node for RefLenChange {
-        fn process(&mut self, _i: &Inputs<'_>, out: &mut Outputs<'_>, _c: &mut NodeCtx) -> NodeResult {
+        fn process(&mut self, _i: &Inputs<'_>, out: &mut Outputs<'_>, _c: &mut NodeCtx, _p: &Params<'_>) -> NodeResult {
             let d = Data::from_array_bytes(DType::F32, vec![1], 1.0f32.to_le_bytes().to_vec(), Meta::empty())
                 .map_err(|e| e.to_string())?;
             out.set("out", d);
             Ok(())
         }
-    }
-    fn ref_make(_: &ParamGroups) -> Box<dyn Node> {
-        Box::new(RefLenChange)
     }
     static REF_IN: &[SlotDecl] = &[
         SlotDecl { name: "data", kind: SlotType::Array, trigger_process: true, multi: false },
@@ -1295,25 +1299,23 @@ mod tests {
             doc: "triggering data + non-triggering ref; emits len-1",
             inputs: REF_IN,
             outputs: C_OUT,
-            default_params: echo_params,
+            params: NO_PARAMS,
             isolation: Isolation::InProcess,
-            make: ref_make,
+            factory: default_factory::<RefLenChange>,
         }
     }
 
     // A source that emits the engine-supplied wall clock (ctx.now) as its value,
     // to prove NodeCtx::now advances deterministically under an injected clock.
+    #[derive(Default)]
     struct NowSource;
     impl Node for NowSource {
-        fn process(&mut self, _i: &Inputs<'_>, out: &mut Outputs<'_>, c: &mut NodeCtx) -> NodeResult {
+        fn process(&mut self, _i: &Inputs<'_>, out: &mut Outputs<'_>, c: &mut NodeCtx, _p: &Params<'_>) -> NodeResult {
             let d = Data::from_array_bytes(DType::F32, vec![1], (c.now as f32).to_le_bytes().to_vec(), Meta::empty())
                 .map_err(|e| e.to_string())?;
             out.set("out", d);
             Ok(())
         }
-    }
-    fn now_make(_: &ParamGroups) -> Box<dyn Node> {
-        Box::new(NowSource)
     }
     inventory::submit! {
         NodeManifest {
@@ -1322,20 +1324,21 @@ mod tests {
             doc: "emits ctx.now",
             inputs: &[],
             outputs: G_OUT,
-            default_params: echo_params,
+            params: NO_PARAMS,
             isolation: Isolation::InProcess,
-            make: now_make,
+            factory: default_factory::<NowSource>,
         }
     }
 
     // A pure source with two output slots at different cadences: "fast" emits every
     // run, "slow" every other run — to prove the node-level ufreq is stamped identically
     // on every slot (not each slot's own cadence).
+    #[derive(Default)]
     struct TwoRate {
         n: i64,
     }
     impl Node for TwoRate {
-        fn process(&mut self, _i: &Inputs<'_>, out: &mut Outputs<'_>, _c: &mut NodeCtx) -> NodeResult {
+        fn process(&mut self, _i: &Inputs<'_>, out: &mut Outputs<'_>, _c: &mut NodeCtx, _p: &Params<'_>) -> NodeResult {
             self.n += 1;
             let mk = || {
                 Data::from_array_bytes(DType::F32, vec![1], 1.0f32.to_le_bytes().to_vec(), Meta::empty())
@@ -1348,9 +1351,6 @@ mod tests {
             Ok(())
         }
     }
-    fn two_rate_make(_: &ParamGroups) -> Box<dyn Node> {
-        Box::new(TwoRate { n: 0 })
-    }
     static TWO_OUT: &[OutputDecl] = &[
         OutputDecl { name: "fast", kind: SlotType::Array },
         OutputDecl { name: "slow", kind: SlotType::Array },
@@ -1362,9 +1362,9 @@ mod tests {
             doc: "fast slot every run, slow slot every other run",
             inputs: &[],
             outputs: TWO_OUT,
-            default_params: echo_params,
+            params: NO_PARAMS,
             isolation: Isolation::InProcess,
-            make: two_rate_make,
+            factory: default_factory::<TwoRate>,
         }
     }
 
@@ -1372,9 +1372,10 @@ mod tests {
     // is the first element of each received frame in connection order — so a test can
     // read the fan-in count, order, and latest-wins. Autotriggers so the 0-wire
     // (empty-list) case still runs.
+    #[derive(Default)]
     struct Collect;
     impl Node for Collect {
-        fn process(&mut self, inp: &Inputs<'_>, out: &mut Outputs<'_>, _c: &mut NodeCtx) -> NodeResult {
+        fn process(&mut self, inp: &Inputs<'_>, out: &mut Outputs<'_>, _c: &mut NodeCtx, _p: &Params<'_>) -> NodeResult {
             let items = inp.get_multi("ins");
             let mut vals: Vec<f32> = vec![items.len() as f32];
             vals.extend(items.iter().map(first_f32));
@@ -1385,16 +1386,11 @@ mod tests {
             Ok(())
         }
     }
-    fn collect_params() -> ParamGroups {
-        let mut common = IndexMap::new();
-        common.insert("autotrigger".to_string(), Param::boolean(true));
-        let mut g = ParamGroups::new();
-        g.insert("common".to_string(), common);
-        g
-    }
-    fn collect_make(_: &ParamGroups) -> Box<dyn Node> {
-        Box::new(Collect)
-    }
+    static COLLECT_PARAMS: &[ParamDecl] = &[ParamDecl {
+        group: "common",
+        name: "autotrigger",
+        spec: ParamSpec::Bool { default: true },
+    }];
     static COLLECT_IN: &[SlotDecl] = &[SlotDecl {
         name: "ins",
         kind: SlotType::Array,
@@ -1408,9 +1404,9 @@ mod tests {
             doc: "multi-input: emits [count, v0, v1, …] of its wires in connection order",
             inputs: COLLECT_IN,
             outputs: G_OUT,
-            default_params: collect_params,
+            params: COLLECT_PARAMS,
             isolation: Isolation::InProcess,
-            make: collect_make,
+            factory: default_factory::<Collect>,
         }
     }
 
@@ -1724,18 +1720,16 @@ mod tests {
         base: f32,
     }
     impl Node for RtSource {
-        fn process(&mut self, _i: &Inputs<'_>, out: &mut Outputs<'_>, _c: &mut NodeCtx) -> NodeResult {
+        fn process(&mut self, _i: &Inputs<'_>, out: &mut Outputs<'_>, _c: &mut NodeCtx, _p: &Params<'_>) -> NodeResult {
             let d = Data::from_array_bytes(DType::F32, vec![1], self.base.to_le_bytes().to_vec(), Meta::empty())
                 .map_err(|e| e.to_string())?;
             out.set("out", d);
             Ok(())
         }
     }
-    fn rt_params() -> ParamGroups {
-        ParamGroups::new()
-    }
-    fn rt_stub_make(_: &ParamGroups) -> Box<dyn Node> {
-        unreachable!("a runtime dyn type is constructed by its registered factory, not manifest.make")
+    static RT_PARAMS: &[ParamDecl] = &[];
+    fn rt_stub_factory() -> Box<dyn Node> {
+        unreachable!("a runtime dyn type is constructed by its registered factory, not manifest.factory")
     }
     static RT_OUT: &[OutputDecl] = &[OutputDecl {
         name: "out",
@@ -1747,9 +1741,9 @@ mod tests {
         doc: "runtime-registered node type",
         inputs: &[],
         outputs: RT_OUT,
-        default_params: rt_params,
+        params: RT_PARAMS,
         isolation: Isolation::InProcess,
-        make: rt_stub_make,
+        factory: rt_stub_factory,
     };
 
     // A runtime manifest whose name collides with a built-in catalog type.
@@ -1759,9 +1753,9 @@ mod tests {
         doc: "collides with the built-in Oscillator",
         inputs: &[],
         outputs: RT_OUT,
-        default_params: rt_params,
+        params: RT_PARAMS,
         isolation: Isolation::InProcess,
-        make: rt_stub_make,
+        factory: rt_stub_factory,
     };
 
     #[test]

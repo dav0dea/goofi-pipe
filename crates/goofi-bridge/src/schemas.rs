@@ -25,7 +25,7 @@ pub fn describe_param(p: &Param) -> Value {
     m.insert("save_param".into(), json!(true));
     m.insert(
         "refreshable".into(),
-        json!(matches!(p, Param::Str { refresh: Some(_), .. })),
+        json!(matches!(p, Param::Str { refresh: true, .. })),
     );
     m.insert("expression".into(), Value::Null);
     m.insert("expression_enabled".into(), json!(false));
@@ -108,7 +108,7 @@ pub fn node_type_info(m: &NodeManifest) -> Value {
         "output_slots": output_slots(m),
         // Project the same universal `common` group instances carry, so the palette
         // and an instantiated node agree on a type's params.
-        "params": describe_params(&goofi_node::with_common((m.default_params)())),
+        "params": describe_params(&goofi_node::with_common(m.default_params())),
     })
 }
 
@@ -206,12 +206,10 @@ pub fn snapshot(g: &Graph, instance_id: &str, with_protocol: bool) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use goofi_node::{Isolation, OutputDecl, SlotDecl};
+    use goofi_node::{Isolation, OutputDecl, ParamDecl, SlotDecl};
 
-    fn stub_params() -> ParamGroups {
-        ParamGroups::new()
-    }
-    fn stub_make(_: &ParamGroups) -> Box<dyn goofi_node::Node> {
+    static STUB_PARAMS: &[ParamDecl] = &[];
+    fn stub_factory() -> Box<dyn goofi_node::Node> {
         unreachable!("catalog_types never instantiates")
     }
     static T_OUT: &[OutputDecl] = &[OutputDecl {
@@ -224,9 +222,9 @@ mod tests {
         doc: "runtime type",
         inputs: &[],
         outputs: T_OUT,
-        default_params: stub_params,
+        params: STUB_PARAMS,
         isolation: Isolation::InProcess,
-        make: stub_make,
+        factory: stub_factory,
     };
 
     static MULTI_IN: &[SlotDecl] = &[
@@ -239,9 +237,9 @@ mod tests {
         doc: "has a multi input slot",
         inputs: MULTI_IN,
         outputs: T_OUT,
-        default_params: stub_params,
+        params: STUB_PARAMS,
         isolation: Isolation::InProcess,
-        make: stub_make,
+        factory: stub_factory,
     };
 
     #[test]
@@ -272,7 +270,7 @@ mod tests {
     fn catalog_projects_the_common_scheduling_group() {
         // The palette catalog must show the same universal `common` group every
         // instantiated node carries, so type-level and instance-level params agree.
-        let info = node_type_info(&T_MANIFEST); // stub_params() -> empty groups
+        let info = node_type_info(&T_MANIFEST); // STUB_PARAMS -> empty groups
         let common = &info["params"]["common"];
         assert_eq!(common["max_frequency"]["type"], json!("float"));
         assert_eq!(common["autotrigger"]["type"], json!("bool"));

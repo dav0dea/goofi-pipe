@@ -451,8 +451,10 @@ pub enum Param {
     Str {
         value: String,
         options: Option<Vec<String>>,
-        /// Name of a node method that re-enumerates `options` (device pickers).
-        refresh: Option<&'static str>,
+        /// Whether this param is refreshable — the node re-enumerates its `options`
+        /// via `on_param_refreshed` when the UI's ⟳ button fires (device pickers).
+        /// Dispatch is by `ParamKey`, so a bool ("is refreshable") suffices.
+        refresh: bool,
     },
     /// Momentary trigger: `take_trigger` returns the state then resets to false.
     Trigger {
@@ -474,7 +476,7 @@ impl Param {
         Param::Str {
             value: value.into(),
             options: None,
-            refresh: None,
+            refresh: false,
         }
     }
 

@@ -16,8 +16,8 @@ use std::time::Instant;
 use goofi_core::{Data, DType, Param, Value};
 use goofi_engine::Graph;
 use goofi_node::{
-    Inputs, Isolation, Node, NodeCtx, NodeManifest, NodeResult, OutputDecl, Outputs, ParamGroups,
-    SlotDecl,
+    Inputs, Isolation, Node, NodeCtx, NodeManifest, NodeResult, OutputDecl, Outputs, ParamDecl,
+    ParamGroups, Params, SlotDecl,
 };
 use goofi_py::PyNode;
 use goofi_subproc::RemoteNode;
@@ -28,7 +28,7 @@ const PY_SRC: &str = "def process(x):\n    return x * 2 + 1\n";
 /// Native Rust equivalent of `x * 2 + 1`, element-wise over a float32 array.
 struct NativeMul;
 impl Node for NativeMul {
-    fn process(&mut self, inp: &Inputs<'_>, out: &mut Outputs<'_>, _c: &mut NodeCtx) -> NodeResult {
+    fn process(&mut self, inp: &Inputs<'_>, out: &mut Outputs<'_>, _c: &mut NodeCtx, _p: &Params<'_>) -> NodeResult {
         let Some(d) = inp.get("data") else {
             return Ok(());
         };
@@ -57,13 +57,11 @@ static OUT: &[OutputDecl] = &[OutputDecl {
     name: "out",
     kind: goofi_core::SlotType::Array,
 }];
-fn no_params() -> ParamGroups {
-    ParamGroups::new()
-}
-fn stub_make(_: &ParamGroups) -> Box<dyn Node> {
+static NO_PARAMS: &[ParamDecl] = &[];
+fn stub_factory() -> Box<dyn Node> {
     unreachable!("dyn types build via their registered factory")
 }
-// One leaked-'static manifest per backend type (their `make` is never called).
+// One leaked-'static manifest per backend type (their `factory` is never called).
 static NATIVE_M: NodeManifest = manifest("bench_native");
 static FTPY_M: NodeManifest = manifest("bench_ftpy");
 static SUBPY_M: NodeManifest = manifest("bench_subpy");
@@ -74,9 +72,9 @@ const fn manifest(type_name: &'static str) -> NodeManifest {
         doc: "",
         inputs: IN,
         outputs: OUT,
-        default_params: no_params,
+        params: NO_PARAMS,
         isolation: Isolation::InProcess,
-        make: stub_make,
+        factory: stub_factory,
     }
 }
 

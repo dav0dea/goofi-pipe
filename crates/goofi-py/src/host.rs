@@ -1,7 +1,7 @@
 use std::ffi::CString;
 
 use goofi_core::{Data, DType, Meta, Value};
-use goofi_node::{Inputs, Node, NodeCtx, NodeResult, Outputs};
+use goofi_node::{Inputs, Node, NodeCtx, NodeResult, Outputs, Params};
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyModule};
 
@@ -88,7 +88,7 @@ pub fn interpreter_path() -> Option<String> {
 }
 
 impl Node for PyNode {
-    fn process(&mut self, inp: &Inputs<'_>, out: &mut Outputs<'_>, _c: &mut NodeCtx) -> NodeResult {
+    fn process(&mut self, inp: &Inputs<'_>, out: &mut Outputs<'_>, _c: &mut NodeCtx, _p: &Params<'_>) -> NodeResult {
         let Some(d) = inp.get("data") else {
             return Ok(());
         };
@@ -157,9 +157,10 @@ mod tests {
         let mut outbuf: IndexMap<&'static str, Option<Data>> = IndexMap::new();
         outbuf.insert("out", None);
         let mut ctx = NodeCtx::new();
+        let params = goofi_node::ParamGroups::new();
         {
             let mut out = Outputs::new(&mut outbuf);
-            node.process(&inp, &mut out, &mut ctx).unwrap();
+            node.process(&inp, &mut out, &mut ctx, &Params::new(&params)).unwrap();
         }
         let d = outbuf.get("out").unwrap().as_ref().unwrap();
         if let Value::Array(s) = d.value() {
@@ -180,8 +181,9 @@ mod tests {
         let mut outbuf: IndexMap<&'static str, Option<Data>> = IndexMap::new();
         outbuf.insert("out", None);
         let mut ctx = NodeCtx::new();
+        let params = goofi_node::ParamGroups::new();
         let mut out = Outputs::new(&mut outbuf);
-        node.process(&inp, &mut out, &mut ctx).map_err(|e| e.0)
+        node.process(&inp, &mut out, &mut ctx, &Params::new(&params)).map_err(|e| e.0)
     }
 
     #[test]

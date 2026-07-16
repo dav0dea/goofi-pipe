@@ -10,7 +10,7 @@ use std::time::Instant;
 
 use goofi_core::Param;
 use goofi_engine::Graph;
-use goofi_node::{Isolation, Node, NodeManifest, OutputDecl, ParamGroups, SlotDecl};
+use goofi_node::{Isolation, Node, NodeManifest, OutputDecl, ParamDecl, ParamGroups, SlotDecl};
 use goofi_py::PyNode;
 
 static PY_IN: &[SlotDecl] = &[SlotDecl {
@@ -23,10 +23,8 @@ static PY_OUT: &[OutputDecl] = &[OutputDecl {
     name: "out",
     kind: goofi_core::SlotType::Array,
 }];
-fn py_params() -> ParamGroups {
-    ParamGroups::new()
-}
-fn py_stub_make(_: &ParamGroups) -> Box<dyn Node> {
+static PY_PARAMS: &[ParamDecl] = &[];
+fn py_stub_factory() -> Box<dyn Node> {
     unreachable!()
 }
 static PY_MANIFEST: NodeManifest = NodeManifest {
@@ -35,9 +33,9 @@ static PY_MANIFEST: NodeManifest = NodeManifest {
     doc: "",
     inputs: PY_IN,
     outputs: PY_OUT,
-    default_params: py_params,
+    params: PY_PARAMS,
     isolation: Isolation::InProcess,
-    make: py_stub_make,
+    factory: py_stub_factory,
 };
 
 fn build(n: usize, src: &'static str, len: i64) -> Graph {
@@ -153,7 +151,7 @@ fn main() {
 /// One process() call driving `bytes` through the node's `data` input.
 fn run_once(node: &mut PyNode, bytes: &[u8]) {
     use goofi_core::{Data, DType, Meta};
-    use goofi_node::{Inputs, NodeCtx, Outputs};
+    use goofi_node::{Inputs, NodeCtx, Outputs, Params};
     use indexmap::IndexMap;
     let frame =
         Data::from_array_bytes(DType::F32, vec![bytes.len() / 4], bytes.to_vec(), Meta::empty()).unwrap();
@@ -163,6 +161,7 @@ fn run_once(node: &mut PyNode, bytes: &[u8]) {
     let mut outbuf: IndexMap<&'static str, Option<Data>> = IndexMap::new();
     outbuf.insert("out", None);
     let mut ctx = NodeCtx::new();
+    let params = ParamGroups::new();
     let mut out = Outputs::new(&mut outbuf);
-    node.process(&inp, &mut out, &mut ctx).unwrap();
+    node.process(&inp, &mut out, &mut ctx, &Params::new(&params)).unwrap();
 }

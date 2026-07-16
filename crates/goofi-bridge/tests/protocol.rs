@@ -28,10 +28,8 @@ async fn start_server() -> String {
 
 // A runtime type registered before serving — stands in for a discovered Python
 // node (the CLI's `register_python` does exactly this against the live graph).
-fn params() -> goofi_node::ParamGroups {
-    goofi_node::ParamGroups::new()
-}
-fn stub_make(_: &goofi_node::ParamGroups) -> Box<dyn goofi_node::Node> {
+static SERVE_PARAMS: &[goofi_node::ParamDecl] = &[];
+fn stub_factory() -> Box<dyn goofi_node::Node> {
     unreachable!("list_nodes never instantiates")
 }
 static SERVE_OUT: &[goofi_node::OutputDecl] = &[goofi_node::OutputDecl {
@@ -44,9 +42,9 @@ static SERVE_MANIFEST: goofi_node::NodeManifest = goofi_node::NodeManifest {
     doc: "runtime type registered before serving",
     inputs: &[],
     outputs: SERVE_OUT,
-    default_params: params,
+    params: SERVE_PARAMS,
     isolation: goofi_node::Isolation::InProcess,
-    make: stub_make,
+    factory: stub_factory,
 };
 
 async fn start_server_with_runtime_type() -> String {

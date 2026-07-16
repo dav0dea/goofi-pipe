@@ -8,7 +8,7 @@
 use std::time::Instant;
 
 use goofi_core::{Data, DType, Meta};
-use goofi_node::{Inputs, Node, NodeCtx, Outputs};
+use goofi_node::{Inputs, Node, NodeCtx, Outputs, ParamGroups, Params};
 use goofi_subproc::RemoteNode;
 use indexmap::IndexMap;
 
@@ -19,8 +19,9 @@ fn one_tick(node: &mut RemoteNode, d: &Data) {
     let mut outmap: IndexMap<&'static str, Option<Data>> = IndexMap::new();
     outmap.insert("out", None);
     let mut ctx = NodeCtx::new();
+    let params = ParamGroups::new();
     let mut out = Outputs::new(&mut outmap);
-    node.process(&inp, &mut out, &mut ctx).expect("tick");
+    node.process(&inp, &mut out, &mut ctx, &Params::new(&params)).expect("tick");
 }
 
 fn main() {

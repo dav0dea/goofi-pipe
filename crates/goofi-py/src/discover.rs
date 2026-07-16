@@ -9,7 +9,7 @@
 
 use std::path::Path;
 
-use goofi_node::{Isolation, Node, NodeManifest, OutputDecl, ParamGroups, SlotDecl};
+use goofi_node::{Isolation, Node, NodeManifest, OutputDecl, ParamDecl, ParamGroups, SlotDecl};
 
 use crate::PyNode;
 
@@ -25,11 +25,9 @@ static PY_OUT: &[OutputDecl] = &[OutputDecl {
     kind: goofi_core::SlotType::Array,
 }];
 
-fn py_params() -> ParamGroups {
-    ParamGroups::new()
-}
-fn py_stub_make(_: &ParamGroups) -> Box<dyn Node> {
-    unreachable!("a discovered Python node is built by its factory, not manifest.make")
+static PY_PARAMS: &[ParamDecl] = &[];
+fn py_stub_factory() -> Box<dyn Node> {
+    unreachable!("a discovered Python node is built by its factory, not manifest.factory")
 }
 
 /// Builds a node instance from its params (mirrors the engine's `NodeFactory`;
@@ -85,9 +83,9 @@ pub fn discover_one(path: &Path) -> Option<PyNodeType> {
         doc,
         inputs: PY_IN,
         outputs: PY_OUT,
-        default_params: py_params,
+        params: PY_PARAMS,
         isolation: Isolation::InProcess,
-        make: py_stub_make,
+        factory: py_stub_factory,
     }));
     let factory: PyNodeFactory = Box::new(move |_p| {
         Box::new(PyNode::from_source(&source, "process").expect("validated at discovery"))

@@ -259,7 +259,7 @@ impl RemoteNode {
 }
 
 impl Node for RemoteNode {
-    fn process(&mut self, inp: &Inputs<'_>, out: &mut Outputs<'_>, _c: &mut NodeCtx) -> NodeResult {
+    fn process(&mut self, inp: &Inputs<'_>, out: &mut Outputs<'_>, _c: &mut NodeCtx, _p: &goofi_node::Params<'_>) -> NodeResult {
         let Some(d) = inp.get("data") else {
             return Ok(());
         };
@@ -277,10 +277,6 @@ impl Node for RemoteNode {
         let data = goofi_codec::decode(&resp)?;
         out.set("out", data);
         Ok(())
-    }
-
-    fn terminate(&mut self) {
-        self.reset();
     }
 }
 
@@ -349,10 +345,8 @@ static PY_OUT: &[OutputDecl] = &[OutputDecl {
     name: "out",
     kind: goofi_core::SlotType::Array,
 }];
-fn sp_params() -> ParamGroups {
-    ParamGroups::new()
-}
-fn sp_stub_make(_: &ParamGroups) -> Box<dyn Node> {
+static SP_PARAMS: &[goofi_node::ParamDecl] = &[];
+fn sp_stub_factory() -> Box<dyn Node> {
     unreachable!("a discovered subprocess node is built by its factory")
 }
 
@@ -408,9 +402,9 @@ pub fn discover_one(path: &std::path::Path, python: &str) -> Option<SubprocNodeT
         doc,
         inputs: PY_IN,
         outputs: PY_OUT,
-        default_params: sp_params,
+        params: SP_PARAMS,
         isolation: Isolation::Subprocess,
-        make: sp_stub_make,
+        factory: sp_stub_factory,
     }));
     let python = python.to_string();
     let factory: SubprocFactory =
@@ -457,9 +451,10 @@ mod tests {
         let mut outmap: IndexMap<&'static str, Option<Data>> = IndexMap::new();
         outmap.insert("out", None);
         let mut ctx = NodeCtx::new();
+        let params = ParamGroups::new();
         {
             let mut out = Outputs::new(&mut outmap);
-            node.process(&inp, &mut out, &mut ctx).expect("remote process");
+            node.process(&inp, &mut out, &mut ctx, &goofi_node::Params::new(&params)).expect("remote process");
         }
         outmap.get("out").unwrap().clone().expect("output frame")
     }
@@ -471,9 +466,10 @@ mod tests {
         let mut outmap: IndexMap<&'static str, Option<Data>> = IndexMap::new();
         outmap.insert("out", None);
         let mut ctx = NodeCtx::new();
+        let params = ParamGroups::new();
         let r = {
             let mut out = Outputs::new(&mut outmap);
-            node.process(&inp, &mut out, &mut ctx)
+            node.process(&inp, &mut out, &mut ctx, &goofi_node::Params::new(&params))
         };
         r.map_err(|e| e.0)?;
         Ok(outmap.get("out").unwrap().clone().expect("output frame"))
@@ -707,13 +703,14 @@ mod tests {
         let mut outmap: IndexMap<&'static str, Option<Data>> = IndexMap::new();
         outmap.insert("out", None);
         let mut ctx = NodeCtx::new();
+        let params = ParamGroups::new();
         {
             let mut out = Outputs::new(&mut outmap);
-            node.process(&inp, &mut out, &mut ctx).unwrap();
+            node.process(&inp, &mut out, &mut ctx, &goofi_node::Params::new(&params)).unwrap();
         }
         let got = floats(outmap.get("out").unwrap().as_ref().unwrap());
         assert_eq!(got, vec![-1.0, 2.0]);
-        node.terminate();
+        drop(node); // teardown now runs via Drop (was `terminate`)
 
         let _ = std::fs::remove_dir_all(&dir);
     }

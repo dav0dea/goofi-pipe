@@ -13,7 +13,7 @@
 use goofi_core::{DType, Param, Value};
 use goofi_engine::Graph;
 use goofi_node::{
-    Isolation, Node, NodeManifest, OutputDecl, ParamGroups, SlotDecl,
+    Isolation, Node, NodeManifest, OutputDecl, ParamDecl, SlotDecl,
 };
 use goofi_py::PyNode;
 
@@ -28,10 +28,8 @@ static PY_OUT: &[OutputDecl] = &[OutputDecl {
     name: "out",
     kind: goofi_core::SlotType::Array,
 }];
-fn py_params() -> ParamGroups {
-    ParamGroups::new()
-}
-fn py_stub_make(_: &ParamGroups) -> Box<dyn Node> {
+static PY_PARAMS: &[ParamDecl] = &[];
+fn py_stub_factory() -> Box<dyn Node> {
     unreachable!("PyNode instances come from the registered factory")
 }
 static PY_MANIFEST: NodeManifest = NodeManifest {
@@ -40,9 +38,9 @@ static PY_MANIFEST: NodeManifest = NodeManifest {
     doc: "in-process free-threaded Python node",
     inputs: PY_IN,
     outputs: PY_OUT,
-    default_params: py_params,
+    params: PY_PARAMS,
     isolation: Isolation::InProcess,
-    make: py_stub_make,
+    factory: py_stub_factory,
 };
 
 fn first_f32(d: &goofi_core::Data) -> f32 {
