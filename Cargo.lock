@@ -363,6 +363,7 @@ name = "goofi-py"
 version = "0.0.0"
 dependencies = [
  "goofi-core",
+ "goofi-engine",
  "goofi-node",
  "indexmap",
  "pyo3",

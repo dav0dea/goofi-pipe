@@ -19,3 +19,6 @@ pyo3 = { version = "0.28", features = ["auto-initialize"], optional = true }
 
 [dev-dependencies]
 indexmap = "2"
+# For the engine-integration test (runs only under `--features embed`): proves a
+# real PyNode is hosted + ticked inside a live Graph, concurrently on the pool.
+goofi-engine = { path = "../goofi-engine" }
