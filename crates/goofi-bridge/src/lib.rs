@@ -491,6 +491,26 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
                 events.push(event("node_renamed", json!({ "node": uid.to_hex(), "name": name })));
                 Ok(json!({ "ok": true }))
             }
+            "group_nodes" => {
+                let members = payload
+                    .get("members")
+                    .and_then(|v| v.as_array())
+                    .ok_or("group_nodes: missing members")?;
+                let uids: Vec<Uid> = members.iter().filter_map(|m| m.as_str().and_then(Uid::from_hex)).collect();
+                if uids.len() != members.len() {
+                    return Err("group_nodes: malformed member uid".into());
+                }
+                let pos = payload.get("pos").and_then(parse_pos).unwrap_or([0.0, 0.0]);
+                let inst = g.group_nodes(&uids, pos)?;
+                events.push(event("subpatch_changed", schemas::snapshot(&g, &state.instance_id, false)));
+                Ok(json!({ "inst_id": inst.to_hex() }))
+            }
+            "expand_instance" => {
+                let inst = parse_uid(&payload, "inst_id")?;
+                let restored = g.expand_instance(inst)?;
+                events.push(event("subpatch_changed", schemas::snapshot(&g, &state.instance_id, false)));
+                Ok(json!({ "restored": restored.iter().map(|u| u.to_hex()).collect::<Vec<_>>() }))
+            }
             "serialize" => Ok(json!({ "yaml": g.serialize() })),
             "save" => {
                 let yaml = g.serialize();

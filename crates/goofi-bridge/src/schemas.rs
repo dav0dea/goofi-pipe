@@ -171,7 +171,10 @@ pub fn node_instance_info(g: &Graph, uid: Uid) -> Value {
         "pos": g.pos(uid).unwrap_or([0.0, 0.0]),
         "viewers": g.viewers(uid).cloned().unwrap_or_else(|| json!({})),
         "inputs": {},
-        "membership": { "instance": ROOT_ID, "local_name": name },
+        "membership": {
+            "instance": g.scope_of(uid).map(|s| s.to_hex()).unwrap_or_else(|| ROOT_ID.to_string()),
+            "local_name": g.local_of(uid).unwrap_or(&name),
+        },
         "error": g.last_error(uid),
         "stage": "ready",
         "stats": Value::Null,
@@ -189,12 +192,23 @@ pub fn link_info(l: &LinkView) -> Value {
     })
 }
 
-/// The ROOT scope the editor renders its canvas from (no sub-patches yet).
+/// The ROOT scope the editor renders its canvas from: ROOT-scoped leaf nodes plus top-level
+/// sub-patch instances (`is_instance: true`). Nodes/instances inside a sub-patch are NOT
+/// members of ROOT — they belong to their instance's scope.
 fn root_instance(g: &Graph) -> Value {
     let mut members = Map::new();
     for uid in g.node_uids() {
-        let name = g.name(uid).unwrap_or("").to_string();
-        members.insert(name, json!({ "uid": uid.to_hex(), "is_instance": false }));
+        if g.scope_of(uid).is_none() {
+            let name = g.name(uid).unwrap_or("").to_string();
+            members.insert(name, json!({ "uid": uid.to_hex(), "is_instance": false }));
+        }
+    }
+    for inst in g.instance_uids() {
+        if g.scope_of(inst).is_none() {
+            if let Some(i) = g.instance(inst) {
+                members.insert(i.name.clone(), json!({ "uid": inst.to_hex(), "is_instance": true }));
+            }
+        }
     }
     json!({
         "uid": ROOT_ID,
@@ -212,12 +226,96 @@ fn root_instance(g: &Graph) -> Value {
     })
 }
 
+/// The first errored descendant of an instance (recursing into nested instances), for the
+/// collapsed sub-patch's error badge. `Null` if the whole subtree is healthy.
+fn instance_error(g: &Graph, uid: Uid) -> Value {
+    let Some(inst) = g.instance(uid) else { return Value::Null };
+    for muid in inst.members.values() {
+        if g.instance(*muid).is_some() {
+            let e = instance_error(g, *muid);
+            if !e.is_null() {
+                return e;
+            }
+        } else if let Some(err) = g.last_error(*muid) {
+            return json!(err);
+        }
+    }
+    Value::Null
+}
+
+/// The `InstanceInfo` the frontend types (`control.ts`): kind derived from the def refcount,
+/// interface ports chain-resolved to their inner leaf, wired boundaries projected as
+/// input/output slots, sibling instances of the same def, and the deep error.
+pub fn describe_instance(g: &Graph, uid: Uid) -> Value {
+    use goofi_engine::subpatch::Dir;
+    let Some(inst) = g.instance(uid) else { return Value::Null };
+    let refcount = g.def_refcount(inst.def_id);
+    let shared = refcount > 1;
+
+    let mut interface = Map::new();
+    let mut in_slots = Map::new();
+    let mut out_slots = Map::new();
+    if let Some(def) = g.def(inst.def_id) {
+        for (bnd, b) in def.interface.iter() {
+            let resolved = g.resolve_boundary(uid, bnd);
+            interface.insert(
+                bnd.clone(),
+                json!({
+                    "dir": match b.dir { Dir::In => "in", Dir::Out => "out" },
+                    "dtype": b.dtype.name(),
+                    "inner_node": resolved.as_ref().map(|(u, _)| u.to_hex()),
+                    "inner_slot": resolved.as_ref().map(|(_, s)| s.clone()),
+                    "pos": b.pos,
+                    "name": b.name,
+                }),
+            );
+            if resolved.is_some() {
+                match b.dir {
+                    Dir::In => in_slots.insert(bnd.clone(), json!(b.dtype.name())),
+                    Dir::Out => out_slots.insert(bnd.clone(), json!(b.dtype.name())),
+                };
+            }
+        }
+    }
+
+    let mut members = Map::new();
+    for (local, muid) in inst.members.iter() {
+        members.insert(local.clone(), json!({ "uid": muid.to_hex(), "is_instance": g.instance(*muid).is_some() }));
+    }
+
+    let def_id = inst.def_id;
+    let siblings: Vec<Value> = g
+        .instance_uids()
+        .into_iter()
+        .filter(|&o| o != uid && g.instance(o).map(|i| i.def_id) == Some(def_id))
+        .map(|o| json!(o.to_hex()))
+        .collect();
+
+    json!({
+        "uid": uid.to_hex(),
+        "name": inst.name,
+        "kind": if shared { "shared" } else { "unique" },
+        "def_id": if shared { json!(def_id.to_hex()) } else { Value::Null },
+        "parent": inst.parent.map(|p| json!(p.to_hex())).unwrap_or(Value::Null),
+        "pos": inst.pos,
+        "interface": Value::Object(interface),
+        "members": Value::Object(members),
+        "slots": { "input": Value::Object(in_slots), "output": Value::Object(out_slots) },
+        "siblings": siblings,
+        "error": instance_error(g, uid),
+        "viewers": {},
+    })
+}
+
 /// The full graph snapshot (`hello` / `graph_replaced` payload).
 pub fn snapshot(g: &Graph, instance_id: &str, with_protocol: bool) -> Value {
     let nodes: Vec<Value> = g.node_uids().iter().map(|u| node_instance_info(g, *u)).collect();
     let links: Vec<Value> = g.links_view().iter().map(link_info).collect();
     let mut instances = Map::new();
     instances.insert(ROOT_ID.to_string(), root_instance(g));
+    for inst in g.instance_uids() {
+        instances.insert(inst.to_hex(), describe_instance(g, inst));
+    }
     let mut snap = json!({
         "instance_id": instance_id,
         // The pillars this backend build actually hosts — the frontend shows only these

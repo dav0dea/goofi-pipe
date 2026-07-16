@@ -419,6 +419,64 @@ async fn set_expression_binds_and_reflects_over_the_wire() {
 }
 
 #[tokio::test]
+async fn group_and_expand_project_the_instance_forest() {
+    // Grouping two nodes surfaces one instance in the snapshot (ROOT membership re-tagged,
+    // the members moved into the instance's scope); expanding restores them to ROOT.
+    let base = start_server().await;
+    let (mut ws, _) = connect_async(format!("{base}/control")).await.unwrap();
+    let _hello = recv_text(&mut ws).await;
+
+    let uid = |v: &Value| v["result"].as_str().unwrap().to_string();
+    let osc = uid(&call(&mut ws, 1, "add_node", json!({ "type": "Oscillator" })).await);
+    let buf = uid(&call(&mut ws, 2, "add_node", json!({ "type": "Buffer" })).await);
+    call(
+        &mut ws,
+        3,
+        "add_link",
+        json!({ "node_out": osc, "slot_out": "out", "node_in": buf, "slot_in": "data" }),
+    )
+    .await;
+
+    // Group both into a sub-patch.
+    let reply = call(&mut ws, 4, "group_nodes", json!({ "members": [osc, buf], "pos": [50.0, 50.0] })).await;
+    let inst = reply["result"]["inst_id"].as_str().expect("inst_id returned").to_string();
+
+    // The subpatch_changed snapshot: ROOT holds the instance (not the members); the instance
+    // scope holds both members.
+    let snap = loop {
+        let m = recv_text(&mut ws).await;
+        if m.get("event").and_then(|v| v.as_str()) == Some("subpatch_changed") {
+            break m;
+        }
+    };
+    let root = &snap["payload"]["instances"]["__root__"];
+    assert!(root["members"].as_object().unwrap().values().any(|v| v["uid"] == json!(inst) && v["is_instance"] == true),
+        "ROOT lists the instance; got {:?}", root["members"]);
+    let inst_info = &snap["payload"]["instances"][&inst];
+    assert_eq!(inst_info["kind"], "unique", "one reference ⇒ unique");
+    assert_eq!(inst_info["members"].as_object().unwrap().len(), 2, "both members in the instance scope");
+    // The osc member's node info reports its new membership.
+    let nodes = snap["payload"]["nodes"].as_array().unwrap();
+    let osc_node = nodes.iter().find(|n| n["uid"] == json!(osc)).unwrap();
+    assert_eq!(osc_node["membership"]["instance"], json!(inst), "member membership re-tagged");
+
+    // Expand restores both members to ROOT.
+    let ex = call(&mut ws, 5, "expand_instance", json!({ "inst_id": inst })).await;
+    let restored = ex["result"]["restored"].as_array().unwrap();
+    assert_eq!(restored.len(), 2, "both members restored");
+    let snap2 = loop {
+        let m = recv_text(&mut ws).await;
+        if m.get("event").and_then(|v| v.as_str()) == Some("subpatch_changed") {
+            break m;
+        }
+    };
+    assert!(snap2["payload"]["instances"].get(&inst).is_none() || snap2["payload"]["instances"][&inst].is_null(),
+        "instance gone after expand");
+    let osc_after = snap2["payload"]["nodes"].as_array().unwrap().iter().find(|n| n["uid"] == json!(osc)).unwrap();
+    assert_eq!(osc_after["membership"]["instance"], "__root__", "member back at ROOT");
+}
+
+#[tokio::test]
 async fn set_node_viewers_persists_and_echoes_the_view_state() {
     // The editor's per-slot viewer view-state (kind/settings) is server-authoritative:
     // set_node_viewers stores it, echoes it back, and it survives a serialize round-trip.

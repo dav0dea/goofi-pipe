@@ -510,6 +510,13 @@ impl Graph {
         self.defs.get(&def_id)
     }
 
+    /// Chain-resolve an instance's boundary port to the single physical inner leaf `(uid, slot)`
+    /// it exposes (walking nested instances); `None` if unwired. Used by the snapshot projection
+    /// and the data plane (a viewer on `inst/bnd` subscribes to this leaf).
+    pub fn resolve_boundary(&self, inst: Uid, bnd: &str) -> Option<(Uid, String)> {
+        subpatch::resolve_boundary(&self.defs, &self.instances, inst, bnd)
+    }
+
     /// How many live instances reference a def: 1 ⇒ unique (serializes inline), ≥2 ⇒ shared.
     pub fn def_refcount(&self, def_id: subpatch::DefId) -> usize {
         self.instances.values().filter(|i| i.def_id == def_id).count()
