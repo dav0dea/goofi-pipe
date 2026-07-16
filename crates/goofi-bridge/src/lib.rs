@@ -10,8 +10,11 @@
 
 mod schemas;
 
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+
+use tower_http::services::{ServeDir, ServeFile};
 
 use axum::extract::ws::{CloseFrame, Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path, State};
@@ -74,19 +77,53 @@ pub fn spawn_tick(graph: Arc<Mutex<Graph>>, hz: u64) {
     });
 }
 
-/// Bind and serve (used by the CLI). Ticks at 60 Hz.
+/// The full router, optionally serving the built SPA (SPA-fallback to index.html)
+/// for any non-API path.
+pub fn app(state: AppState, static_dir: Option<PathBuf>) -> Router {
+    let base = router(state);
+    match static_dir {
+        Some(dir) => {
+            let index = dir.join("index.html");
+            base.fallback_service(ServeDir::new(&dir).not_found_service(ServeFile::new(index)))
+        }
+        None => base,
+    }
+}
+
+/// Resolve the built SPA directory: `$GOOFI_FRONTEND_BUILD` or `./frontend/build`.
+pub fn resolve_frontend_dir() -> Option<PathBuf> {
+    if let Ok(d) = std::env::var("GOOFI_FRONTEND_BUILD") {
+        let p = PathBuf::from(d);
+        if p.is_dir() {
+            return Some(p);
+        }
+    }
+    let p = PathBuf::from("frontend/build");
+    p.is_dir().then_some(p)
+}
+
+/// Bind and serve (used by the CLI). Ticks at 60 Hz; serves the SPA if found.
 pub async fn serve(bind: &str, port: u16, state: AppState) -> std::io::Result<()> {
     spawn_tick(state.graph.clone(), 60);
     let listener = tokio::net::TcpListener::bind((bind, port)).await?;
-    serve_listener(listener, state).await
+    serve_app(listener, state, resolve_frontend_dir()).await
 }
 
-/// Serve on an already-bound listener (used by tests to grab an ephemeral port).
+/// Serve on an already-bound listener, API only (used by tests for an ephemeral port).
 pub async fn serve_listener(
     listener: tokio::net::TcpListener,
     state: AppState,
 ) -> std::io::Result<()> {
     axum::serve(listener, router(state)).await
+}
+
+/// Serve on an already-bound listener with optional static SPA serving.
+pub async fn serve_app(
+    listener: tokio::net::TcpListener,
+    state: AppState,
+    static_dir: Option<PathBuf>,
+) -> std::io::Result<()> {
+    axum::serve(listener, app(state, static_dir)).await
 }
 
 async fn healthz() -> Json<Value> {
