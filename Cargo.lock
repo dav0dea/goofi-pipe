@@ -32,6 +32,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "goofi-engine"
+version = "0.0.0"
+dependencies = [
+ "goofi-core",
+ "goofi-node",
+ "goofi-nodes",
+ "indexmap",
+ "inventory",
+]
+
+[[package]]
 name = "goofi-node"
 version = "0.0.0"
 dependencies = [

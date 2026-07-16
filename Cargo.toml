@@ -5,6 +5,7 @@ members = [
     "crates/goofi-codec",
     "crates/goofi-node",
     "crates/goofi-nodes",
+    "crates/goofi-engine",
 ]
 
 [workspace.package]
