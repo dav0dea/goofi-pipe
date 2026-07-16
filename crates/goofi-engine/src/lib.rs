@@ -122,6 +122,9 @@ pub struct Graph {
     /// Node types registered at runtime (e.g. discovered Python nodes), keyed by
     /// type name. Survives `clear()`/`load_doc` — these are catalog, not content.
     dyn_types: HashMap<&'static str, DynType>,
+    /// Wall-clock reference, anchored at the first tick, so `NodeCtx::now` is
+    /// seconds-since-start (deterministic under an injected clock).
+    start: Option<Instant>,
 }
 
 impl Default for Graph {
@@ -139,6 +142,7 @@ impl Graph {
             links: Vec::new(),
             next_uid: 1,
             dyn_types: HashMap::new(),
+            start: None,
         }
     }
 
@@ -703,6 +707,9 @@ impl Graph {
     /// keeps its outputs. With the default policy (`max_frequency == 0`) the rate
     /// cap is unbounded, so this reduces to pure trigger arbitration.
     fn tick_at(&mut self, now: Instant) {
+        // Seconds since the first-ever tick — the monotonic wall clock nodes read.
+        let start = *self.start.get_or_insert(now);
+        let now_secs = now.duration_since(start).as_secs_f64();
         let wired = self.wired_trigger_nodes();
         let levels = self.topo_levels();
         for level in levels {
@@ -729,6 +736,7 @@ impl Graph {
                     })
                     .map(|(uid, e)| {
                         e.last_run = Some(now);
+                        e.ctx.now = now_secs;
                         (*uid, e)
                     })
                     .collect();
@@ -1121,6 +1129,33 @@ mod tests {
         }
     }
 
+    // A source that emits the engine-supplied wall clock (ctx.now) as its value,
+    // to prove NodeCtx::now advances deterministically under an injected clock.
+    struct NowSource;
+    impl Node for NowSource {
+        fn process(&mut self, _i: &Inputs<'_>, out: &mut Outputs<'_>, c: &mut NodeCtx) -> NodeResult {
+            let d = Data::from_array_bytes(DType::F32, vec![1], (c.now as f32).to_le_bytes().to_vec(), Meta::empty())
+                .map_err(|e| e.to_string())?;
+            out.set("out", d);
+            Ok(())
+        }
+    }
+    fn now_make(_: &ParamGroups) -> Box<dyn Node> {
+        Box::new(NowSource)
+    }
+    inventory::submit! {
+        NodeManifest {
+            type_name: "_TestNow",
+            category: "test",
+            doc: "emits ctx.now",
+            inputs: &[],
+            outputs: G_OUT,
+            default_params: echo_params,
+            isolation: Isolation::InProcess,
+            make: now_make,
+        }
+    }
+
     fn first_f32(d: &Data) -> f32 {
         if let Value::Array(s) = d.value() {
             f32::from_le_bytes(s.as_bytes()[0..4].try_into().unwrap())
@@ -1459,6 +1494,7 @@ mod tests {
 
     #[test]
     fn sustained_load_reference_stress_shape_stays_stable() {
+        use std::time::Duration;
         // The reference stress-patch shape: one Oscillator fanning out to a PSD and
         // 8 Buffers — all at topo level 1, so they run concurrently on the pool each
         // tick. Drive it hard and assert every consumer keeps producing with a clean
@@ -1474,8 +1510,12 @@ mod tests {
             buffers.push(b);
         }
 
-        for _ in 0..5000 {
-            g.tick();
+        // Advance a synthetic clock 10 ms/tick so the wall-clock-paced Oscillator
+        // emits a real block each tick (default 1 kHz -> ~10 samples) and keeps its
+        // consumers fed — a tight `tick()` loop would pass no time and starve them.
+        let t0 = Instant::now();
+        for i in 0..5000u64 {
+            g.tick_at(t0 + Duration::from_millis(10 * i));
         }
 
         assert!(g.last_error(osc).is_none(), "oscillator faulted: {:?}", g.last_error(osc));
@@ -1632,6 +1672,18 @@ mod tests {
             3.0,
             "an unwired trigger node with autotrigger must free-run"
         );
+    }
+
+    #[test]
+    fn ctx_now_is_seconds_since_first_tick() {
+        use std::time::Duration;
+        let mut g = Graph::new();
+        let n = g.add_node("_TestNow", None).unwrap();
+        let t0 = Instant::now();
+        g.tick_at(t0); // first tick anchors the reference -> now == 0
+        assert_eq!(first_f32(&g.latest_frame(n, "out").unwrap()), 0.0);
+        g.tick_at(t0 + Duration::from_millis(250)); // 0.25 s later
+        assert!((first_f32(&g.latest_frame(n, "out").unwrap()) - 0.25).abs() < 1e-4);
     }
 
     #[test]

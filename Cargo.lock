@@ -357,6 +357,7 @@ dependencies = [
 name = "goofi-nodes"
 version = "0.0.0"
 dependencies = [
+ "goofi-audio",
  "goofi-core",
  "goofi-dsp",
  "goofi-node",

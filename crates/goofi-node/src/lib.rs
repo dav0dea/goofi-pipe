@@ -109,6 +109,10 @@ impl<'a> Outputs<'a> {
 pub struct NodeCtx {
     /// Monotonic tick counter for this node.
     pub tick: u64,
+    /// Wall-clock seconds since the graph's first tick (monotonic, `0.0` on the
+    /// first tick). Wall-clock-paced generators (audio) read this to emit exactly
+    /// the samples that elapsed, drift-free; most nodes ignore it.
+    pub now: f64,
 }
 
 impl NodeCtx {

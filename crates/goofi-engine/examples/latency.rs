@@ -5,14 +5,16 @@ use goofi_engine::Graph;
 use goofi_core::Param;
 
 fn main() {
-    // Oscillator -> Buffer(1024) -> PSD
+    // ConstantArray(256) -> Buffer(1024) -> PSD. A deterministic fixed-size block
+    // per tick (the Oscillator is now wall-clock-paced, so it emits nothing in a
+    // tight tick() loop — unsuitable for a per-tick cost probe).
     let mut g = Graph::new();
-    let osc = g.add_node("Oscillator", None).unwrap();
-    g.update_param(osc, "oscillator", "n_samples", Param::int(256, 1, 1_000_000)).unwrap();
+    let src = g.add_node("ConstantArray", None).unwrap();
+    g.update_param(src, "constant", "length", Param::int(256, 1, 1_000_000)).unwrap();
     let buf = g.add_node("Buffer", None).unwrap();
     g.update_param(buf, "buffer", "size", Param::int(1024, 1, 10_000_000)).unwrap();
     let psd = g.add_node("PSD", None).unwrap();
-    g.add_link(osc, "out", buf, "data").unwrap();
+    g.add_link(src, "out", buf, "data").unwrap();
     g.add_link(buf, "out", psd, "data").unwrap();
 
     // warm up
@@ -22,7 +24,7 @@ fn main() {
     let t = Instant::now();
     for _ in 0..iters { g.tick(); }
     let per = t.elapsed().as_secs_f64() / iters as f64;
-    println!("Oscillator->Buffer(1024)->PSD full-graph tick: {:.2} us/tick ({:.0} ticks/s)",
+    println!("ConstantArray(256)->Buffer(1024)->PSD full-graph tick: {:.2} us/tick ({:.0} ticks/s)",
         per * 1e6, 1.0 / per);
 
     // encode throughput of the PSD frame
