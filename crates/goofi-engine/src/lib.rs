@@ -93,11 +93,26 @@ fn param_value_json(p: &Param) -> serde_json::Value {
     }
 }
 
+/// A node factory that can capture runtime state (a Python class handle, a device
+/// descriptor). Used for node types discovered at runtime rather than compiled
+/// into the `inventory` catalog — a bare `fn` pointer can't close over such state.
+pub type NodeFactory = Box<dyn Fn(&ParamGroups) -> Box<dyn goofi_node::Node> + Send + Sync>;
+
+/// A runtime-registered node type: its (leaked-`'static`) manifest plus the
+/// factory that builds instances of it. Its `manifest.make` is never called.
+struct DynType {
+    manifest: &'static NodeManifest,
+    factory: NodeFactory,
+}
+
 /// The authoritative graph + scheduler.
 pub struct Graph {
     nodes: IndexMap<Uid, NodeEntry>,
     links: Vec<Link>,
     next_uid: u64,
+    /// Node types registered at runtime (e.g. discovered Python nodes), keyed by
+    /// type name. Survives `clear()`/`load_doc` — these are catalog, not content.
+    dyn_types: HashMap<&'static str, DynType>,
 }
 
 impl Default for Graph {
@@ -114,7 +129,22 @@ impl Graph {
             nodes: IndexMap::new(),
             links: Vec::new(),
             next_uid: 1,
+            dyn_types: HashMap::new(),
         }
+    }
+
+    /// Register a node type discovered at runtime. `manifest` must be `'static`
+    /// (runtime types leak one manifest per type — bounded, catalog-lifetime); its
+    /// `make` field is unused (instances come from `factory`).
+    pub fn register_dyn_type(&mut self, manifest: &'static NodeManifest, factory: NodeFactory) {
+        self.dyn_types
+            .insert(manifest.type_name, DynType { manifest, factory });
+    }
+
+    /// Whether a type name resolves to either the compile-time catalog or a
+    /// runtime-registered type.
+    fn known_type(&self, type_name: &str) -> bool {
+        goofi_node::find(type_name).is_some() || self.dyn_types.contains_key(type_name)
     }
 
     pub fn node_count(&self) -> usize {
@@ -148,16 +178,37 @@ impl Graph {
         u
     }
 
-    /// Instantiate a catalog node. `params` defaults to the manifest defaults.
+    /// Instantiate a node by type name (compile-time catalog or a
+    /// runtime-registered type). `params` defaults to the type's defaults.
     pub fn add_node(
         &mut self,
         type_name: &str,
         params: Option<ParamGroups>,
     ) -> Result<Uid, String> {
-        let manifest = goofi_node::find(type_name)
-            .ok_or_else(|| format!("unknown node type `{type_name}`"))?;
-        let params = params.unwrap_or_else(|| (manifest.default_params)());
-        let mut node = (manifest.make)(&params);
+        let (manifest, params, node): (&'static NodeManifest, ParamGroups, Box<dyn goofi_node::Node>) =
+            if let Some(m) = goofi_node::find(type_name) {
+                let p = params.unwrap_or_else(|| (m.default_params)());
+                let n = (m.make)(&p);
+                (m, p, n)
+            } else if let Some(dt) = self.dyn_types.get(type_name) {
+                let p = params.unwrap_or_else(|| (dt.manifest.default_params)());
+                let n = (dt.factory)(&p);
+                (dt.manifest, p, n)
+            } else {
+                return Err(format!("unknown node type `{type_name}`"));
+            };
+        Ok(self.insert_node(manifest, node, params))
+    }
+
+    /// Build a `NodeEntry` from a manifest + a constructed node, run its `setup`,
+    /// seed its I/O buffers, assign a fresh name, and insert it. Shared by the
+    /// catalog and runtime instantiation paths.
+    fn insert_node(
+        &mut self,
+        manifest: &'static NodeManifest,
+        mut node: Box<dyn goofi_node::Node>,
+        params: ParamGroups,
+    ) -> Uid {
         let mut ctx = NodeCtx::new();
         let last_error = node.setup(&mut ctx).err().map(|e| e.0);
 
@@ -185,7 +236,7 @@ impl Graph {
                 trigger_pending: false,
             },
         );
-        Ok(uid)
+        uid
     }
 
     /// Lowest `{base}{N}` display name not already in use (globally unique).
@@ -453,7 +504,7 @@ impl Graph {
             .ok_or("missing `nodes`")?;
         for rec in nodes.values() {
             let ty = rec.get("type").and_then(|v| v.as_str()).ok_or("node missing `type`")?;
-            if goofi_node::find(ty).is_none() {
+            if !self.known_type(ty) {
                 return Err(format!("unknown node type `{ty}`"));
             }
         }
@@ -1079,6 +1130,79 @@ mod tests {
         g.tick();
         assert_eq!(first_f32(&g.latest_frame(ea, "out").unwrap()), 3.0);
         assert_eq!(first_f32(&g.latest_frame(eb, "out").unwrap()), 4.0);
+    }
+
+    // A runtime source built by a captured closure (not a bare fn pointer) —
+    // stands in for a pyo3 node whose factory captures a Python class handle.
+    struct RtSource {
+        base: f32,
+    }
+    impl Node for RtSource {
+        fn process(&mut self, _i: &Inputs<'_>, out: &mut Outputs<'_>, _c: &mut NodeCtx) -> NodeResult {
+            let d = Data::from_array_bytes(DType::F32, vec![1], self.base.to_le_bytes().to_vec(), Meta::empty())
+                .map_err(|e| e.to_string())?;
+            out.set("out", d);
+            Ok(())
+        }
+    }
+    fn rt_params() -> ParamGroups {
+        ParamGroups::new()
+    }
+    fn rt_stub_make(_: &ParamGroups) -> Box<dyn Node> {
+        unreachable!("a runtime dyn type is constructed by its registered factory, not manifest.make")
+    }
+    static RT_OUT: &[OutputDecl] = &[OutputDecl {
+        name: "out",
+        kind: SlotType::Array,
+        length_preserving: false,
+    }];
+    static RT_MANIFEST: NodeManifest = NodeManifest {
+        type_name: "_RuntimeDyn",
+        category: "runtime",
+        doc: "runtime-registered node type",
+        inputs: &[],
+        outputs: RT_OUT,
+        default_params: rt_params,
+        isolation: Isolation::InProcess,
+        make: rt_stub_make,
+    };
+
+    #[test]
+    fn hosts_a_runtime_registered_dyn_type() {
+        let mut g = Graph::new();
+        // Register a node TYPE that is not in the compile-time inventory. The
+        // factory captures state (base = 42.0), which a fn pointer could not.
+        let base = 42.0f32;
+        g.register_dyn_type(
+            &RT_MANIFEST,
+            Box::new(move |_params| Box::new(RtSource { base })),
+        );
+        // add_node resolves it transparently, like any catalog node.
+        let uid = g.add_node("_RuntimeDyn", None).unwrap();
+        assert_eq!(g.type_name(uid), Some("_RuntimeDyn"));
+        assert_eq!(g.manifest(uid).unwrap().category, "runtime");
+        g.tick();
+        assert_eq!(first_f32(&g.latest_frame(uid, "out").unwrap()), 42.0);
+    }
+
+    #[test]
+    fn dyn_type_survives_gfi_roundtrip() {
+        // A .gfi referencing a runtime type must load into a graph that has the
+        // type registered (validation consults both inventory and dyn types).
+        let mut g = Graph::new();
+        g.register_dyn_type(&RT_MANIFEST, Box::new(|_| Box::new(RtSource { base: 1.0 })));
+        g.add_node("_RuntimeDyn", None).unwrap();
+        let yaml = g.serialize();
+
+        let mut g2 = Graph::new();
+        g2.register_dyn_type(&RT_MANIFEST, Box::new(|_| Box::new(RtSource { base: 1.0 })));
+        g2.load_doc(&yaml).unwrap();
+        assert_eq!(g2.node_count(), 1);
+
+        // Loading a .gfi with an *unregistered* runtime type is rejected up front.
+        let mut g3 = Graph::new();
+        assert!(g3.load_doc(&yaml).is_err());
+        assert_eq!(g3.node_count(), 0);
     }
 
     #[test]
