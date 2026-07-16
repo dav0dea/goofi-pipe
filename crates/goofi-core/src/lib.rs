@@ -380,6 +380,26 @@ pub struct DataInner {
 #[derive(Clone, Debug)]
 pub struct Data(Arc<DataInner>);
 
+/// The data plane queries a `Data` frame's shape through this shared seam so the ViewSpec
+/// merge stays payload-free (goofi-view never sees `Data`). Non-array frames report 0 dims.
+impl goofi_view::Reducible for Data {
+    fn dtype_tag(&self) -> u8 {
+        self.0.value.dtype_tag()
+    }
+    fn ndim(&self) -> usize {
+        match &self.0.value {
+            Value::Array(s) => s.shape().len(),
+            _ => 0,
+        }
+    }
+    fn shape(&self) -> &[usize] {
+        match &self.0.value {
+            Value::Array(s) => s.shape(),
+            _ => &[],
+        }
+    }
+}
+
 impl Data {
     pub fn value(&self) -> &Value {
         &self.0.value
@@ -623,6 +643,29 @@ impl Param {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn viewspec_admits_a_real_data_frame() {
+        use goofi_view::{DimCmp, DimConstraint, ViewDtype, ViewSpec};
+        // A 2-D (3, 1000) f32 array frame.
+        let d = Data::from_array_bytes(DType::F32, vec![3, 1000], vec![0u8; 3 * 1000 * 4], Meta::empty()).unwrap();
+        assert_eq!(goofi_view::Reducible::dtype_tag(&d), 0, "array tag");
+        assert_eq!(goofi_view::Reducible::shape(&d), &[3, 1000]);
+        // A line viewer (array, <=2d) admits it.
+        let line = ViewSpec { dtype: ViewDtype::Array, ndim: Some((DimCmp::Le, 2)), dims: vec![], reduce: vec![] };
+        assert!(line.admits(&d));
+        // A topomap viewer (array, ndim == 1) rejects a 2-D frame.
+        let topo = ViewSpec { dtype: ViewDtype::Array, ndim: Some((DimCmp::Eq, 1)), dims: vec![], reduce: vec![] };
+        assert!(!topo.admits(&d));
+        // An image viewer needing the last dim to be a channel count (<=4) rejects 1000.
+        let image = ViewSpec {
+            dtype: ViewDtype::Array,
+            ndim: None,
+            dims: vec![DimConstraint { dim: -1, cmp: DimCmp::Le, n: 4 }],
+            reduce: vec![],
+        };
+        assert!(!image.admits(&d));
+    }
 
     #[test]
     fn dtype_projections_and_parsing() {

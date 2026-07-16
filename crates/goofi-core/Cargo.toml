@@ -6,3 +6,7 @@ license.workspace = true
 
 [dependencies]
 indexmap = "2"
+# The shared, payload-free ViewSpec algebra. goofi-core (signal payload) implements its
+# `Reducible` seam for `Data` — the allowed signal→shared dependency direction; goofi-view
+# never depends back on goofi-core.
+goofi-view = { path = "../goofi-view" }
