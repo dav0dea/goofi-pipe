@@ -367,3 +367,123 @@ impl Data {
         Ok(Data::array(ArrayStore::Rust(Arc::new(raw)), meta))
     }
 }
+
+// ---------------------------------------------------------------------------
+// SlotType — the Data kind a slot carries (frontend `input_slots` dtype name)
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
+pub enum SlotType {
+    Array,
+    String,
+    Table,
+}
+
+impl SlotType {
+    /// Frontend-facing name (`input_slots`/`output_slots` value).
+    pub fn name(self) -> &'static str {
+        match self {
+            SlotType::Array => "ARRAY",
+            SlotType::String => "STRING",
+            SlotType::Table => "TABLE",
+        }
+    }
+    pub fn tag(self) -> u8 {
+        match self {
+            SlotType::Array => 0,
+            SlotType::String => 1,
+            SlotType::Table => 2,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Param — the typed parameter descriptors (the `common` scheduling group is
+// lifted into RunPolicy elsewhere and is NOT a Param).
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum Param {
+    Float {
+        value: f64,
+        vmin: f64,
+        vmax: f64,
+    },
+    Int {
+        value: i64,
+        vmin: i64,
+        vmax: i64,
+    },
+    Bool {
+        value: bool,
+    },
+    Str {
+        value: String,
+        options: Option<Vec<String>>,
+        /// Name of a node method that re-enumerates `options` (device pickers).
+        refresh: Option<&'static str>,
+    },
+    /// Momentary trigger: `take_trigger` returns the state then resets to false.
+    Trigger {
+        fired: bool,
+    },
+}
+
+impl Param {
+    pub fn float(value: f64, vmin: f64, vmax: f64) -> Param {
+        Param::Float { value, vmin, vmax }
+    }
+    pub fn int(value: i64, vmin: i64, vmax: i64) -> Param {
+        Param::Int { value, vmin, vmax }
+    }
+    pub fn boolean(value: bool) -> Param {
+        Param::Bool { value }
+    }
+    pub fn str_free(value: impl Into<String>) -> Param {
+        Param::Str {
+            value: value.into(),
+            options: None,
+            refresh: None,
+        }
+    }
+
+    pub fn as_f64(&self) -> Option<f64> {
+        match self {
+            Param::Float { value, .. } => Some(*value),
+            Param::Int { value, .. } => Some(*value as f64),
+            Param::Bool { value } => Some(if *value { 1.0 } else { 0.0 }),
+            _ => None,
+        }
+    }
+    pub fn as_i64(&self) -> Option<i64> {
+        match self {
+            Param::Int { value, .. } => Some(*value),
+            Param::Float { value, .. } => Some(*value as i64),
+            Param::Bool { value } => Some(*value as i64),
+            _ => None,
+        }
+    }
+    pub fn as_bool(&self) -> Option<bool> {
+        match self {
+            Param::Bool { value } => Some(*value),
+            Param::Trigger { fired } => Some(*fired),
+            _ => None,
+        }
+    }
+    pub fn as_str(&self) -> Option<&str> {
+        match self {
+            Param::Str { value, .. } => Some(value),
+            _ => None,
+        }
+    }
+    /// Consume a momentary trigger: returns whether it fired, resetting to false.
+    pub fn take_trigger(&mut self) -> bool {
+        if let Param::Trigger { fired } = self {
+            let f = *fired;
+            *fired = false;
+            f
+        } else {
+            false
+        }
+    }
+}

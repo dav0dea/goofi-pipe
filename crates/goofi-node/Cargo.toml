@@ -1,0 +1,10 @@
+[package]
+name = "goofi-node"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+goofi-core = { path = "../goofi-core" }
+indexmap = "2"
+inventory = "0.3"

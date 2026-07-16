@@ -1,0 +1,196 @@
+//! goofi-node — the ONE node abstraction plus its runtime plumbing and the
+//! native compile-time catalog.
+//!
+//! Every node — native Rust, in-process pyo3 (free-threaded), or subprocess —
+//! implements [`Node`]. The scheduler never branches on backend. A node holds
+//! its own current param values as fields (seeded by `make`, updated via
+//! `on_param_changed`); `process` reads them directly, so the tick path never
+//! does a param-map lookup. The engine owns trigger arbitration, rate limiting,
+//! index stamping, and output gating *outside* the node.
+
+use std::fmt;
+
+use goofi_core::{Data, Param, SlotType};
+use indexmap::IndexMap;
+
+// ---------------------------------------------------------------------------
+// Errors
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone)]
+pub struct NodeError(pub String);
+
+impl fmt::Display for NodeError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+impl std::error::Error for NodeError {}
+impl From<String> for NodeError {
+    fn from(s: String) -> Self {
+        NodeError(s)
+    }
+}
+impl From<&str> for NodeError {
+    fn from(s: &str) -> Self {
+        NodeError(s.to_string())
+    }
+}
+
+pub type NodeResult = std::result::Result<(), NodeError>;
+
+// ---------------------------------------------------------------------------
+// Params
+// ---------------------------------------------------------------------------
+
+/// Grouped params: `group -> (name -> Param)`, insertion-ordered.
+pub type ParamGroups = IndexMap<String, IndexMap<String, Param>>;
+
+/// A `(group, name)` address into a node's params.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ParamKey {
+    pub group: String,
+    pub name: String,
+}
+
+impl ParamKey {
+    pub fn new(group: impl Into<String>, name: impl Into<String>) -> ParamKey {
+        ParamKey {
+            group: group.into(),
+            name: name.into(),
+        }
+    }
+}
+
+/// Look up a param by `(group, name)`.
+pub fn param<'a>(p: &'a ParamGroups, group: &str, name: &str) -> Option<&'a Param> {
+    p.get(group)?.get(name)
+}
+
+// ---------------------------------------------------------------------------
+// Tick I/O
+// ---------------------------------------------------------------------------
+
+/// The latest `Data` on each subscribed input slot (`None` if unwired / no frame
+/// yet). Borrowed for the duration of a tick.
+pub struct Inputs<'a> {
+    slots: &'a IndexMap<&'static str, Option<Data>>,
+}
+
+impl<'a> Inputs<'a> {
+    pub fn new(slots: &'a IndexMap<&'static str, Option<Data>>) -> Inputs<'a> {
+        Inputs { slots }
+    }
+    pub fn get(&self, name: &str) -> Option<&Data> {
+        self.slots.get(name).and_then(|o| o.as_ref())
+    }
+}
+
+/// A pre-sized output sink (seeded with the manifest's output slot names). A
+/// node writes with `out.set(slot, data)`; slots left unset emit nothing.
+pub struct Outputs<'a> {
+    slots: &'a mut IndexMap<&'static str, Option<Data>>,
+}
+
+impl<'a> Outputs<'a> {
+    pub fn new(slots: &'a mut IndexMap<&'static str, Option<Data>>) -> Outputs<'a> {
+        Outputs { slots }
+    }
+    /// Set an output slot. Writing an unknown slot name is a no-op.
+    pub fn set(&mut self, name: &str, data: Data) {
+        if let Some(s) = self.slots.get_mut(name) {
+            *s = Some(data);
+        }
+    }
+}
+
+/// Per-tick engine context handed to a node.
+#[derive(Debug, Default)]
+pub struct NodeCtx {
+    /// Monotonic tick counter for this node.
+    pub tick: u64,
+}
+
+impl NodeCtx {
+    pub fn new() -> NodeCtx {
+        NodeCtx::default()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The node trait
+// ---------------------------------------------------------------------------
+
+pub trait Node: Send {
+    /// One-time init; may fail terminally.
+    fn setup(&mut self, _ctx: &mut NodeCtx) -> NodeResult {
+        Ok(())
+    }
+    /// The tick body: read latest inputs, write outputs. Pure w.r.t. transport.
+    fn process(&mut self, inp: &Inputs<'_>, out: &mut Outputs<'_>, ctx: &mut NodeCtx) -> NodeResult;
+    /// Apply a param edit to the node's own state.
+    fn on_param_changed(&mut self, _key: &ParamKey, _v: &Param) -> NodeResult {
+        Ok(())
+    }
+    /// Re-enumerate a `StringParam`'s options (device pickers).
+    fn refresh_options(&mut self, _key: &ParamKey) -> Option<Vec<String>> {
+        None
+    }
+    fn terminate(&mut self) {}
+}
+
+// ---------------------------------------------------------------------------
+// Manifest + native catalog (inventory)
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Isolation {
+    InProcess,
+    Subprocess,
+}
+
+pub struct SlotDecl {
+    pub name: &'static str,
+    pub kind: SlotType,
+    /// Whether fresh data on this slot wakes `process()` (vs. a held reference input).
+    pub trigger_process: bool,
+}
+
+pub struct OutputDecl {
+    pub name: &'static str,
+    pub kind: SlotType,
+    /// Whether this output preserves the input frame length (drives explicit
+    /// `meta["index"]` propagation).
+    pub length_preserving: bool,
+}
+
+/// Static, declarative node metadata, registered at compile time via `inventory`.
+pub struct NodeManifest {
+    pub type_name: &'static str,
+    pub category: &'static str,
+    pub doc: &'static str,
+    pub inputs: &'static [SlotDecl],
+    pub outputs: &'static [OutputDecl],
+    pub default_params: fn() -> ParamGroups,
+    pub isolation: Isolation,
+    pub make: fn(&ParamGroups) -> Box<dyn Node>,
+}
+
+impl NodeManifest {
+    /// A fresh output buffer seeded with this manifest's output slot names.
+    pub fn output_buffer(&self) -> IndexMap<&'static str, Option<Data>> {
+        self.outputs.iter().map(|o| (o.name, None)).collect()
+    }
+}
+
+inventory::collect!(NodeManifest);
+
+/// Iterate the native node catalog.
+pub fn catalog() -> impl Iterator<Item = &'static NodeManifest> {
+    inventory::iter::<NodeManifest>()
+}
+
+/// Find a native node manifest by type name.
+pub fn find(type_name: &str) -> Option<&'static NodeManifest> {
+    catalog().find(|m| m.type_name == type_name)
+}

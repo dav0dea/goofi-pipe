@@ -3,6 +3,8 @@ resolver = "2"
 members = [
     "crates/goofi-core",
     "crates/goofi-codec",
+    "crates/goofi-node",
+    "crates/goofi-nodes",
 ]
 
 [workspace.package]

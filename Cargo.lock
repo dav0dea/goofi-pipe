@@ -32,6 +32,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "goofi-node"
+version = "0.0.0"
+dependencies = [
+ "goofi-core",
+ "indexmap",
+ "inventory",
+]
+
+[[package]]
+name = "goofi-nodes"
+version = "0.0.0"
+dependencies = [
+ "goofi-core",
+ "goofi-node",
+ "indexmap",
+ "inventory",
+]
+
+[[package]]
 name = "hashbrown"
 version = "0.17.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -45,6 +64,15 @@ checksum = "d466e9454f08e4a911e14806c24e16fba1b4c121d1ea474396f396069cf949d9"
 dependencies = [
  "equivalent",
  "hashbrown",
+]
+
+[[package]]
+name = "inventory"
+version = "0.3.24"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a4f0c30c76f2f4ccee3fe55a2435f691ca00c0e4bd87abe4f4a851b1d4dac39b"
+dependencies = [
+ "rustversion",
 ]
 
 [[package]]
@@ -103,6 +131,12 @@ checksum = "7a4e1d4b9b938a26d2996af33229f0ca0956c652c1375067f0b45291c1df8417"
 dependencies = [
  "rmp",
 ]
+
+[[package]]
+name = "rustversion"
+version = "1.0.23"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cf54715a573b99ac80df0bc206da022bcd442c974952c7b9720069370852e21f"
 
 [[package]]
 name = "serde"
