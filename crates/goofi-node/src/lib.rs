@@ -47,7 +47,7 @@ pub type NodeResult = std::result::Result<(), NodeError>;
 pub type ParamGroups = IndexMap<String, IndexMap<String, Param>>;
 
 /// A `(group, name)` address into a node's params.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct ParamKey {
     pub group: String,
     pub name: String,

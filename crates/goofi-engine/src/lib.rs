@@ -285,8 +285,22 @@ impl Graph {
         self.nodes.get(&uid).map(|e| e.manifest)
     }
 
+    /// The node's current error, derived fresh on read so recovery is always surfaced.
+    /// A process / bootstrap error (`last_error`) wins; otherwise the errored expression
+    /// binding with the smallest `ParamKey` — a deterministic pick, since `bindings` is a
+    /// `HashMap` whose iteration order is randomized. Deriving on read (rather than caching
+    /// into `last_error`) means a binding that recovers on a node that never runs again
+    /// still clears, and the two channels can't drift apart.
     pub fn last_error(&self, uid: Uid) -> Option<&str> {
-        self.nodes.get(&uid).and_then(|e| e.last_error.as_deref())
+        let e = self.nodes.get(&uid)?;
+        if let Some(err) = e.last_error.as_deref() {
+            return Some(err);
+        }
+        e.bindings
+            .iter()
+            .filter_map(|(k, b)| b.error.as_deref().map(|s| (k, s)))
+            .min_by(|a, b| a.0.cmp(b.0))
+            .map(|(_, s)| s)
     }
 
     fn mint(&mut self) -> Uid {
@@ -439,10 +453,23 @@ impl Graph {
             .collect()
     }
 
-    pub fn remove_node(&mut self, uid: Uid) -> Result<(), String> {
-        if self.nodes.shift_remove(&uid).is_none() {
-            return Err(format!("no such node {uid}"));
+    /// Release every compiled expression handle a node entry holds, so the evaluator's
+    /// registry doesn't leak across a node/graph teardown.
+    fn release_entry_bindings(&self, entry: &NodeEntry) {
+        if let Some(ev) = &self.evaluator {
+            for b in entry.bindings.values() {
+                if let Some(id) = b.id {
+                    ev.release(id);
+                }
+            }
         }
+    }
+
+    pub fn remove_node(&mut self, uid: Uid) -> Result<(), String> {
+        let Some(removed) = self.nodes.shift_remove(&uid) else {
+            return Err(format!("no such node {uid}"));
+        };
+        self.release_entry_bindings(&removed);
         // Drop links touching the node; clear any downstream input it fed.
         let dropped: Vec<Link> = self
             .links
@@ -493,11 +520,13 @@ impl Graph {
             .map_err(|e| e.0)
     }
 
-    /// Bind (or unbind) a param to an expression. An empty `source` or `enabled == false`
-    /// removes the binding (the stored literal is used again). Otherwise the expression is
-    /// (re)compiled via the injected evaluator; a compile error is stored as the binding's
-    /// field error (and surfaced on the node) rather than rejecting the RPC — the frontend
-    /// keeps the source so the user can fix it. Returns Err only for an unknown node.
+    /// Bind (or unbind) a param to an expression. An **empty** `source` unbinds (the stored
+    /// literal is used again). A non-empty source with `enabled == false` PRESERVES the
+    /// authored binding, disabled — so a UI fx toggle-off then -on keeps the user's code —
+    /// but is not compiled or evaluated. An enabled non-empty source is (re)compiled via the
+    /// injected evaluator; a compile error is stored as the binding's field error (surfaced
+    /// on the node) rather than rejecting the RPC — the frontend keeps the source so the
+    /// user can fix it. Returns Err for an unknown node or an unknown `(group, name)` param.
     pub fn set_expression(
         &mut self,
         uid: Uid,
@@ -517,29 +546,35 @@ impl Graph {
                 ev.release(id);
             }
         }
-        if !enabled || source.trim().is_empty() {
+        // Only an empty source is a true unbind.
+        if source.trim().is_empty() {
             if let Some(e) = self.nodes.get_mut(&uid) {
                 e.bindings.remove(&key);
             }
             return Ok(());
         }
-        // Compile (reads the evaluator, not the graph). No evaluator → store the binding
-        // with an error so it round-trips and the UI shows the field indicator.
-        let (id, refs, error) = match &self.evaluator {
-            Some(ev) => match ev.compile(source) {
-                Ok(c) => (Some(c.id), c.refs, None),
-                Err(e) => (None, Vec::new(), Some(e.0)),
-            },
-            None => (None, Vec::new(), Some("no expression evaluator available".to_string())),
-        };
-        if let Some(err) = &error {
-            if let Some(e) = self.nodes.get_mut(&uid) {
-                e.last_error = Some(err.clone());
-            }
+        // A non-empty source binds a real param — reject a dangling binding (invisible in
+        // the descriptor, unclearable from the UI, phantom scheduling edges), like
+        // update_param guards param existence.
+        if goofi_node::param(&self.nodes[&uid].params, group, name).is_none() {
+            return Err(format!("no such param `{group}/{name}`"));
         }
+        // Compile only when enabled; a disabled binding is preserved (source round-trips)
+        // but carries no handle/refs/error and is skipped by the scheduling + eval guards.
+        let (id, refs, error) = if enabled {
+            match &self.evaluator {
+                Some(ev) => match ev.compile(source) {
+                    Ok(c) => (Some(c.id), c.refs, None),
+                    Err(e) => (None, Vec::new(), Some(e.0)),
+                },
+                None => (None, Vec::new(), Some("no expression evaluator available".to_string())),
+            }
+        } else {
+            (None, Vec::new(), None)
+        };
         let binding = ExprBinding {
             source: source.to_string(),
-            enabled: true,
+            enabled,
             triggers_process,
             id,
             refs,
@@ -692,6 +727,11 @@ impl Graph {
 
     /// Remove all nodes and links.
     pub fn clear(&mut self) {
+        // Release each node's compiled expression handles before dropping them (load_doc
+        // goes through here, so a File→Open cycle can't leak the evaluator's registry).
+        for e in self.nodes.values() {
+            self.release_entry_bindings(e);
+        }
         self.nodes.clear();
         self.links.clear();
     }
@@ -756,10 +796,26 @@ impl Graph {
                 }
                 params.insert(group.clone(), Value::Object(gmap));
             }
-            nodes.insert(
-                uid.to_hex(),
-                json!({ "type": e.manifest.type_name, "name": e.name, "pos": e.pos, "params": Value::Object(params) }),
-            );
+            let mut node_obj = Map::new();
+            node_obj.insert("type".into(), json!(e.manifest.type_name));
+            node_obj.insert("name".into(), json!(e.name));
+            node_obj.insert("pos".into(), json!(e.pos));
+            node_obj.insert("params".into(), Value::Object(params));
+            // Persist expression bindings (sorted for a stable diff) — else a save/load
+            // silently freezes every live-driven param to its last evaluated literal.
+            if !e.bindings.is_empty() {
+                let mut binds: Vec<(&ParamKey, &ExprBinding)> = e.bindings.iter().collect();
+                binds.sort_by(|a, b| a.0.cmp(b.0));
+                let arr: Vec<Value> = binds
+                    .iter()
+                    .map(|(k, b)| {
+                        json!({ "group": k.group, "name": k.name, "source": b.source,
+                                "enabled": b.enabled, "triggers_process": b.triggers_process })
+                    })
+                    .collect();
+                node_obj.insert("expressions".into(), Value::Array(arr));
+            }
+            nodes.insert(uid.to_hex(), Value::Object(node_obj));
         }
         let links: Vec<Value> = self
             .links
@@ -810,6 +866,19 @@ impl Graph {
                         for (name, val) in nm {
                             self.set_param_from_json(uid, group, name, val);
                         }
+                    }
+                }
+            }
+            // Reconstruct expression bindings (after literal params are applied).
+            if let Some(exprs) = rec.get("expressions").and_then(|v| v.as_array()) {
+                for ex in exprs {
+                    let g = ex.get("group").and_then(|v| v.as_str());
+                    let n = ex.get("name").and_then(|v| v.as_str());
+                    let src = ex.get("source").and_then(|v| v.as_str()).unwrap_or("");
+                    let en = ex.get("enabled").and_then(|v| v.as_bool()).unwrap_or(false);
+                    let tp = ex.get("triggers_process").and_then(|v| v.as_bool()).unwrap_or(false);
+                    if let (Some(g), Some(n)) = (g, n) {
+                        let _ = self.set_expression(uid, g, n, src, en, tp);
                     }
                 }
             }
@@ -1059,9 +1128,11 @@ impl Graph {
                 Outcome::Error(msg) => {
                     if let Some(b) = entry.bindings.get_mut(&key) {
                         b.last_eval = Some(now);
-                        b.error = Some(msg.clone());
+                        b.error = Some(msg);
                     }
-                    entry.last_error = Some(msg);
+                    // The node-level error is derived from `b.error` on read (see
+                    // `last_error()`), so recovery/selection stays consistent — nothing to
+                    // cache here.
                 }
             }
         }
@@ -1095,7 +1166,14 @@ impl Graph {
                 None => Duration::ZERO, // unbounded → as fast as possible
                 Some(p) => match e.last_run {
                     None => Duration::ZERO, // never ran → due now
-                    Some(t) => Duration::from_secs_f64((p - now.saturating_duration_since(t).as_secs_f64()).max(0.0)),
+                    // `try_from_secs_f64` (not `from_secs_f64`, which PANICS on overflow —
+                // poisoning the graph mutex and killing the server) — an out-of-range period
+                // (a huge max_frequency from a .gfi / agent / expression) saturates to MAX,
+                // which the caller then clamps to IDLE_POLL anyway.
+                Some(t) => Duration::try_from_secs_f64(
+                    (p - now.saturating_duration_since(t).as_secs_f64()).max(0.0),
+                )
+                .unwrap_or(Duration::MAX),
                 },
             };
             if soonest.is_none_or(|s| remaining < s) {
@@ -1242,17 +1320,14 @@ fn run_node(entry: &mut NodeEntry) {
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         node.process(&inp, &mut out, ctx, &params)
     }));
+    // The process/bootstrap error channel. A binding error is NOT folded in here — it is
+    // derived on read by `last_error()`, so a binding that recovers surfaces even on a node
+    // that never runs process again (an idle node's run_node is not called).
     entry.last_error = match result {
         Ok(Ok(())) => None,
         Ok(Err(e)) => Some(e.0),
         Err(p) => Some(panic_message(p)),
     };
-    // A process error wins; otherwise surface any active param-expression error, so a
-    // broken expression shows on the node's error channel even when process (running on
-    // the last good value) succeeded. Both are core node errors on the same channel.
-    if entry.last_error.is_none() {
-        entry.last_error = entry.bindings.values().find_map(|b| b.error.clone());
-    }
     stamp_meta(entry);
     // Persist each freshly-emitted (stamped) frame so `latest_frame` keeps returning it
     // on later ticks where this node emits nothing — viewers of a sparse producer never
@@ -1407,6 +1482,39 @@ mod tests {
             params: NO_PARAMS,
             isolation: Isolation::InProcess,
             factory: default_factory::<Echo>,
+        }
+    }
+
+    // A trigger-gated sink WITH a bindable param — used to exercise the "never runs while
+    // unwired" path (its expression can error/recover on a node whose process never runs).
+    #[derive(Default)]
+    struct Sink;
+    impl Node for Sink {
+        fn process(&mut self, _i: &Inputs<'_>, _o: &mut Outputs<'_>, _c: &mut NodeCtx, _p: &Params<'_>) -> NodeResult {
+            Ok(())
+        }
+    }
+    static SINK_IN: &[SlotDecl] = &[SlotDecl {
+        name: "in",
+        kind: SlotType::Array,
+        trigger_process: true,
+        multi: false,
+    }];
+    static SINK_PARAMS: &[ParamDecl] = &[ParamDecl {
+        group: "control",
+        name: "value",
+        spec: ParamSpec::Float { default: 0.0, min: -1.0e9, max: 1.0e9 },
+    }];
+    inventory::submit! {
+        NodeManifest {
+            type_name: "_TestSink",
+            category: "test",
+            doc: "trigger-gated param sink",
+            inputs: SINK_IN,
+            outputs: &[],
+            params: SINK_PARAMS,
+            isolation: Isolation::InProcess,
+            factory: default_factory::<Sink>,
         }
     }
 
@@ -2382,13 +2490,94 @@ mod tests {
     }
 
     #[test]
-    fn disabling_removes_the_binding() {
+    fn disabling_preserves_the_source_and_only_empty_unbinds() {
+        // fx toggle-off (non-empty source, enabled=false) must PRESERVE the authored
+        // source, disabled — not destroy it. Only an EMPTY source truly unbinds.
         let mut g = eval_graph();
         let host = g.add_node("_TestConst", None).unwrap();
         g.set_expression(host, "constant", "value", "5", true, false).unwrap();
-        assert!(g.param_expression(host, "constant", "value").is_some());
+        g.set_expression(host, "constant", "value", "5", false, false).unwrap();
+        let info = g.param_expression(host, "constant", "value").expect("binding preserved when disabled");
+        assert!(!info.enabled, "disabled");
+        assert_eq!(info.source, "5", "authored source survives the toggle-off");
+        // A disabled binding is not evaluated (the param keeps its literal default 0).
+        g.tick();
+        assert_eq!(first_f32(&g.latest_frame(host, "out").unwrap()), 0.0, "disabled binding is inert");
+        // Empty source is the true unbind.
         g.set_expression(host, "constant", "value", "", false, false).unwrap();
-        assert!(g.param_expression(host, "constant", "value").is_none(), "unbound");
+        assert!(g.param_expression(host, "constant", "value").is_none(), "empty source unbinds");
+    }
+
+    #[test]
+    fn set_expression_rejects_an_unknown_param() {
+        // A non-empty source on a bogus (group, name) must be refused — no dangling,
+        // unclearable, phantom-edge-injecting binding.
+        let mut g = eval_graph();
+        let n = g.add_node("_TestConst", None).unwrap();
+        assert!(g.set_expression(n, "constant", "nope", "5", true, false).is_err());
+        assert!(g.param_expression(n, "constant", "nope").is_none(), "no dangling binding stored");
+    }
+
+    #[test]
+    fn expression_survives_a_gfi_roundtrip() {
+        let mut g = eval_graph();
+        let n = g.add_node("_TestConst", None).unwrap();
+        g.set_expression(n, "constant", "value", "5", true, true).unwrap();
+        let yaml = g.serialize();
+        let mut g2 = eval_graph();
+        g2.load_doc(&yaml).unwrap();
+        let uid2 = g2.node_uids()[0];
+        let info = g2.param_expression(uid2, "constant", "value").expect("binding restored from .gfi");
+        assert_eq!(info.source, "5");
+        assert!(info.enabled);
+        assert!(info.triggers_process, "triggers_process round-trips");
+    }
+
+    #[test]
+    fn teardown_releases_compiled_handles() {
+        // remove_node and clear (hence load_doc) must release the evaluator's handles.
+        let mock = Arc::new(MockEval::default());
+        let mut g = Graph::new();
+        g.set_evaluator(mock.clone());
+        let n = g.add_node("_TestConst", None).unwrap();
+        g.set_expression(n, "constant", "value", "5", true, false).unwrap();
+        assert_eq!(mock.exprs.lock().unwrap().len(), 1, "compiled once");
+        g.remove_node(n).unwrap();
+        assert_eq!(mock.exprs.lock().unwrap().len(), 0, "released on remove_node");
+        let n2 = g.add_node("_TestConst", None).unwrap();
+        g.set_expression(n2, "constant", "value", "7", true, false).unwrap();
+        assert_eq!(mock.exprs.lock().unwrap().len(), 1);
+        g.clear();
+        assert_eq!(mock.exprs.lock().unwrap().len(), 0, "released on clear");
+    }
+
+    #[test]
+    fn binding_error_clears_on_recovery_even_for_a_never_running_node() {
+        // _TestSink has a trigger input, autotrigger off, and (unwired) never runs — so
+        // run_node never fires for it. The node-level error must still clear when its
+        // expression recovers, because last_error() derives the binding error on read.
+        let mut g = eval_graph();
+        let sink = g.add_node("_TestSink", None).unwrap();
+        g.set_expression(sink, "control", "value", "nd('src')", true, false).unwrap();
+        g.tick();
+        assert!(g.last_error(sink).is_some(), "missing ref errors while idle");
+        let src = g.add_node("_TestConst", None).unwrap();
+        g.rename_node(src, "src").unwrap();
+        g.tick();
+        assert!(g.last_error(sink).is_none(), "recovery clears the node error on a never-running node");
+    }
+
+    #[test]
+    fn multiple_binding_errors_surface_deterministically() {
+        // Two errored bindings on one node -> the smaller ParamKey (constant/length <
+        // constant/value) wins, deterministically (not HashMap order).
+        let mut g = eval_graph();
+        let n = g.add_node("_TestConst", None).unwrap();
+        g.set_expression(n, "constant", "value", "nd('gv')", true, false).unwrap();
+        g.set_expression(n, "constant", "length", "nd('gl')", true, false).unwrap();
+        g.tick();
+        let err = g.last_error(n).expect("a binding error surfaces");
+        assert!(err.contains("gl"), "deterministic min-ParamKey selection, got: {err}");
     }
 
     #[test]
