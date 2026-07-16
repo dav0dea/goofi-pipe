@@ -829,18 +829,30 @@ fn frame_count(d: &Data) -> usize {
 
 /// Stamp `meta["index"]` on every frame this node just emitted (engine-owned; the
 /// node never touches it). For each output, propagate the index of the SINGLE
-/// index-bearing input whose frame count equals the output's — that input is the
-/// same timeline, so an upstream drop stays visible downstream. With zero, or more
-/// than one, matching inputs (a generator, a control input of a different length, a
-/// length-changing transform, or an ambiguous fan-in) the slot starts a fresh
-/// per-output counter that advances one per emit. Ported from the Python node's
-/// `_next_index`/`_propagated_index`.
+/// index-bearing TRIGGERING input whose frame count equals the output's — that
+/// input is the same data timeline, so an upstream drop stays visible downstream.
+/// A non-triggering (control/reference) input — an oscillator's scalar frequency,
+/// say — is never a timeline candidate even if its length happens to match. With
+/// zero, or more than one, matching inputs (a generator, a length-changing
+/// transform, or an ambiguous fan-in) the slot starts a fresh per-output counter
+/// that advances one per emit. Ported from the Python node's
+/// `_next_index`/`_propagated_index` (which discriminates by frame count; here a
+/// control input is excluded up front, which is exact rather than length-lucky).
 fn stamp_indices(entry: &mut NodeEntry) {
-    // Snapshot the index-bearing inputs (index, frame_count) — no borrow held.
+    // Only triggering inputs carry the data timeline; control inputs are excluded.
+    let triggering: std::collections::HashSet<&str> = entry
+        .manifest
+        .inputs
+        .iter()
+        .filter(|s| s.trigger_process)
+        .map(|s| s.name)
+        .collect();
+    // Snapshot the index-bearing triggering inputs (index, frame_count) — no borrow held.
     let input_frames: Vec<(u64, usize)> = entry
         .inputs
-        .values()
-        .filter_map(|o| o.as_ref())
+        .iter()
+        .filter(|(name, _)| triggering.contains(*name))
+        .filter_map(|(_, o)| o.as_ref())
         .filter_map(|d| d.meta().index.map(|i| (i, frame_count(d))))
         .collect();
     // Disjoint field borrows: rewrite outputs while advancing the counters.
@@ -1126,6 +1138,38 @@ mod tests {
             default_params: capped_params,
             isolation: Isolation::InProcess,
             make: capped_make,
+        }
+    }
+
+    // A node with a TRIGGERING "data" input and a NON-triggering "ref" (control)
+    // input, emitting a length-1 frame. Used to prove index propagation ignores a
+    // control input even when its length coincidentally matches the output's.
+    struct RefLenChange;
+    impl Node for RefLenChange {
+        fn process(&mut self, _i: &Inputs<'_>, out: &mut Outputs<'_>, _c: &mut NodeCtx) -> NodeResult {
+            let d = Data::from_array_bytes(DType::F32, vec![1], 1.0f32.to_le_bytes().to_vec(), Meta::empty())
+                .map_err(|e| e.to_string())?;
+            out.set("out", d);
+            Ok(())
+        }
+    }
+    fn ref_make(_: &ParamGroups) -> Box<dyn Node> {
+        Box::new(RefLenChange)
+    }
+    static REF_IN: &[SlotDecl] = &[
+        SlotDecl { name: "data", kind: SlotType::Array, trigger_process: true },
+        SlotDecl { name: "ref", kind: SlotType::Array, trigger_process: false },
+    ];
+    inventory::submit! {
+        NodeManifest {
+            type_name: "_TestRefLenChange",
+            category: "test",
+            doc: "triggering data + non-triggering ref; emits len-1",
+            inputs: REF_IN,
+            outputs: C_OUT,
+            default_params: echo_params,
+            isolation: Isolation::InProcess,
+            make: ref_make,
         }
     }
 
@@ -1720,6 +1764,29 @@ mod tests {
         }
         // 5 emits -> the generator's index advanced to 4 (ran every tick).
         assert_eq!(g.latest_frame(src, "out").unwrap().meta().index, Some(4));
+    }
+
+    #[test]
+    fn control_input_is_not_an_index_timeline() {
+        // A non-triggering "ref" (control) input must NOT drive meta["index"], even
+        // when its length coincidentally equals the output's. `ref`'s index is
+        // advanced to 3 while the consumer is dormant (its "data" trigger unwired),
+        // then a length-4 data frame triggers the consumer, which emits length 1 —
+        // matching only the length-1 ref. The output index must be a FRESH 0, not
+        // ref's 3 (which a naive length-only match would wrongly propagate).
+        let mut g = Graph::new();
+        let rs = g.add_node("ConstantArray", None).unwrap(); // ref source, len 1
+        let ds = g.add_node("ConstantArray", None).unwrap();
+        g.update_param(ds, "constant", "length", Param::int(4, 1, 10)).unwrap(); // data source, len 4
+        let c = g.add_node("_TestRefLenChange", None).unwrap();
+        g.add_link(rs, "out", c, "ref").unwrap();
+        for _ in 0..3 {
+            g.tick(); // rs -> index 2; c dormant (data unwired, triggered node)
+        }
+        g.add_link(ds, "out", c, "data").unwrap();
+        g.tick(); // rs -> index 3 (len 1); ds -> index 0 (len 4); c emits len 1
+        let f = g.latest_frame(c, "out").expect("consumer ran");
+        assert_eq!(f.meta().index, Some(0), "control input must not be the timeline");
     }
 
     #[test]
