@@ -431,11 +431,15 @@ async fn handle_data(socket: WebSocket, state: AppState, node: String, slot: Str
     loop {
         tokio::select! {
             _ = ticker.tick() => {
-                let frame = {
+                // Hold the graph lock only for the cheap Arc clone; encode the
+                // (immutable) frame AFTER releasing it, so a viewer copying a large
+                // kHz/HD body never serializes against the 60 Hz scheduler tick or
+                // the other viewers.
+                let d = {
                     let g = state.graph.lock().unwrap();
-                    g.latest_frame(uid, &slot).map(|d| goofi_codec::encode(&d))
+                    g.latest_frame(uid, &slot)
                 };
-                if let Some(bytes) = frame {
+                if let Some(bytes) = d.map(|d| goofi_codec::encode(&d)) {
                     if tx.send(Message::Binary(bytes.into())).await.is_err() {
                         break;
                     }
