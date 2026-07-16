@@ -9,6 +9,7 @@ mod buffer;
 mod clip;
 mod constant_array;
 mod fft;
+mod function;
 mod math;
 mod normalization;
 mod oscillator;
