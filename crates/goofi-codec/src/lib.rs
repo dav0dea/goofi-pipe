@@ -107,6 +107,9 @@ fn pack_meta(d: &Data) -> Vec<u8> {
     if let Some(sf) = meta.sfreq {
         entries.push((Mp::from("sfreq"), Mp::from(sf)));
     }
+    if let Some(uf) = meta.ufreq {
+        entries.push((Mp::from("ufreq"), Mp::from(uf)));
+    }
     if let Some(ix) = meta.index {
         entries.push((Mp::from("index"), Mp::from(ix)));
     }
@@ -277,6 +280,7 @@ fn parse_meta(bytes: &[u8]) -> std::result::Result<goofi_core::Meta, String> {
             "shape" | "dtype" => {}
             "channels" => meta.channels = parse_channels(&val),
             "sfreq" => meta.sfreq = val.as_f64(),
+            "ufreq" => meta.ufreq = val.as_f64(),
             "index" => meta.index = val.as_u64(),
             "reduced" => meta.reduced = Some(mp_to_mv(&val)),
             other => {
@@ -358,6 +362,7 @@ mod decode_tests {
     fn array_roundtrips_with_meta() {
         let mut meta = Meta::empty();
         meta.sfreq = Some(256.0);
+        meta.ufreq = Some(128.0);
         meta.index = Some(42);
         meta.extra.insert("label".into(), MetaValue::Str("eeg".into()));
         meta.channels.0.insert(
@@ -373,10 +378,32 @@ mod decode_tests {
         assert_eq!(sh, vec![2]);
         assert_eq!(arr_bytes(&d).2, by);
         assert_eq!(back.meta().sfreq, Some(256.0));
+        assert_eq!(back.meta().ufreq, Some(128.0));
         assert_eq!(back.meta().index, Some(42));
         assert_eq!(back.meta().extra.get("label"), Some(&MetaValue::Str("eeg".into())));
+        assert!(!back.meta().extra.contains_key("ufreq"), "ufreq is a typed field, never extra");
         let ch = back.meta().channels.0.get(&0).expect("dim0 channels");
         assert_eq!(ch.as_slice(), &[Coord::Str("Fz".into()), Coord::Str("Cz".into())]);
+    }
+
+    #[test]
+    fn ufreq_none_is_absent_from_the_wire() {
+        // An unmeasured slot (ufreq == None) must not emit the key, so frames that
+        // predate ufreq (and the Python-golden fixtures) stay byte-identical.
+        let d = Data::from_array_bytes(DType::F32, vec![1], 1.0f32.to_le_bytes().to_vec(), Meta::empty()).unwrap();
+        assert_eq!(d.meta().ufreq, None);
+        let bytes = encode(&d);
+        assert!(
+            !bytes.windows(5).any(|w| w == b"ufreq"),
+            "None ufreq must not appear in the encoded meta"
+        );
+        assert_eq!(decode(&bytes).unwrap().meta().ufreq, None);
+
+        // A measured slot emits the key.
+        let mut meta = Meta::empty();
+        meta.ufreq = Some(60.0);
+        let d2 = Data::from_array_bytes(DType::F32, vec![1], 1.0f32.to_le_bytes().to_vec(), meta).unwrap();
+        assert!(encode(&d2).windows(5).any(|w| w == b"ufreq"), "measured ufreq must appear");
     }
 
     #[test]
