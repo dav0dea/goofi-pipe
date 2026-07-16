@@ -79,6 +79,39 @@ struct Link {
     slot_in: &'static str,
 }
 
+/// Guarantee a node's params carry the universal `common` scheduling group (the
+/// engine's equivalent of Python's `DEFAULT_PARAMS["common"]`), so rate controls
+/// exist on every node uniformly. Any keys a node already declared are kept;
+/// missing ones are filled with behavior-preserving defaults (unbounded, not
+/// autotriggering). `common` is placed first for a stable frontend ordering.
+fn with_common(params: ParamGroups) -> ParamGroups {
+    let mut common = params.get("common").cloned().unwrap_or_default();
+    common
+        .entry("autotrigger".to_string())
+        .or_insert_with(|| Param::boolean(false));
+    common
+        .entry("max_frequency".to_string())
+        .or_insert_with(|| Param::float(0.0, 0.0, 60.0));
+    common
+        .entry("frequency_mode".to_string())
+        .or_insert_with(|| Param::Str {
+            value: "updates-per-second".to_string(),
+            options: Some(vec![
+                "updates-per-second".to_string(),
+                "seconds-per-update".to_string(),
+            ]),
+            refresh: None,
+        });
+    let mut merged = ParamGroups::new();
+    merged.insert("common".to_string(), common);
+    for (k, v) in params {
+        if k != "common" {
+            merged.insert(k, v);
+        }
+    }
+    merged
+}
+
 /// Extract a readable message from a caught panic payload.
 fn panic_message(p: Box<dyn std::any::Any + Send>) -> String {
     if let Some(s) = p.downcast_ref::<&str>() {
@@ -225,11 +258,11 @@ impl Graph {
     ) -> Result<Uid, String> {
         let (manifest, params, node): (&'static NodeManifest, ParamGroups, Box<dyn goofi_node::Node>) =
             if let Some(m) = goofi_node::find(type_name) {
-                let p = params.unwrap_or_else(|| (m.default_params)());
+                let p = with_common(params.unwrap_or_else(|| (m.default_params)()));
                 let n = (m.make)(&p);
                 (m, p, n)
             } else if let Some(dt) = self.dyn_types.get(type_name) {
-                let p = params.unwrap_or_else(|| (dt.manifest.default_params)());
+                let p = with_common(params.unwrap_or_else(|| (dt.manifest.default_params)()));
                 let n = (dt.factory)(&p);
                 (dt.manifest, p, n)
             } else {
@@ -1512,6 +1545,62 @@ mod tests {
         g.tick(); // src -> index 3; counter runs, len mismatch -> fresh index 0
         let f = g.latest_frame(cnt, "out").expect("counter ran");
         assert_eq!(f.meta().index, Some(0), "fresh counter, not the source's 3");
+    }
+
+    #[test]
+    fn every_node_gets_a_common_group() {
+        // The engine merges a universal `common` scheduling group into every node
+        // (like Python's DEFAULT_PARAMS), so rate controls exist uniformly.
+        let mut g = Graph::new();
+        let c = g.add_node("ConstantArray", None).unwrap();
+        let p = g.params(c).unwrap();
+        let common = p.get("common").expect("common group injected");
+        assert!(common.contains_key("autotrigger"));
+        assert!(common.contains_key("max_frequency"));
+        assert!(common.contains_key("frequency_mode"));
+        // Default is unbounded + not autotriggering (behavior-preserving).
+        assert_eq!(common["max_frequency"].as_f64(), Some(0.0));
+        assert_eq!(common["autotrigger"].as_bool(), Some(false));
+    }
+
+    #[test]
+    fn common_max_frequency_caps_a_production_node() {
+        use std::time::Duration;
+        // Cap a real source (ConstantArray, a free-running generator) at 10 Hz via
+        // its `common` group; its emit index advances only on admitted ticks.
+        let mut g = Graph::new();
+        let c = g.add_node("ConstantArray", None).unwrap();
+        g.update_param(c, "common", "max_frequency", Param::float(10.0, 0.0, 60.0)).unwrap();
+        let t0 = Instant::now();
+        g.tick_at(t0); // run -> index 0
+        g.tick_at(t0 + Duration::from_millis(50)); // skip
+        g.tick_at(t0 + Duration::from_millis(100)); // run -> index 1
+        g.tick_at(t0 + Duration::from_millis(210)); // run -> index 2
+        assert_eq!(g.latest_frame(c, "out").unwrap().meta().index, Some(2), "capped to 3 emits");
+    }
+
+    #[test]
+    fn run_policy_survives_gfi_roundtrip() {
+        use std::time::Duration;
+        // A saved max_frequency must re-derive into the loaded node's run gate.
+        let mut g = Graph::new();
+        let c = g.add_node("ConstantArray", None).unwrap();
+        g.update_param(c, "common", "max_frequency", Param::float(10.0, 0.0, 60.0)).unwrap();
+        let yaml = g.serialize();
+
+        let mut g2 = Graph::new();
+        g2.load_doc(&yaml).unwrap();
+        let c2 = g2.node_uids()[0];
+        assert_eq!(
+            goofi_node::param(g2.params(c2).unwrap(), "common", "max_frequency").unwrap().as_f64(),
+            Some(10.0),
+            "max_frequency round-trips"
+        );
+        let t0 = Instant::now();
+        g2.tick_at(t0);
+        g2.tick_at(t0 + Duration::from_millis(50)); // skip -> gate active after load
+        g2.tick_at(t0 + Duration::from_millis(100));
+        assert_eq!(g2.latest_frame(c2, "out").unwrap().meta().index, Some(1), "gate active post-load");
     }
 
     #[test]
