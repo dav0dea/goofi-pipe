@@ -4,6 +4,7 @@ members = [
     "crates/goofi-core",
     "crates/goofi-codec",
     "crates/goofi-node",
+    "crates/goofi-dsp",
     "crates/goofi-nodes",
     "crates/goofi-engine",
     "crates/goofi-bridge",

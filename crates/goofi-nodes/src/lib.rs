@@ -9,6 +9,7 @@ mod buffer;
 mod constant_array;
 mod math;
 mod oscillator;
+mod psd;
 
 /// Force-links this crate's node registrations and reports how many native node
 /// types are registered. Call once from a binary's startup so `inventory` keeps
