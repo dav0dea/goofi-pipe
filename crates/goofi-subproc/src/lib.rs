@@ -372,52 +372,50 @@ fn camel(stem: &str) -> String {
         .collect()
 }
 
+/// Build a subprocess-backed node type from a single file (running on `python`),
+/// or `None` if it is not a node file: non-`.py`, `_`-prefixed, unreadable, or it
+/// lacks `process`. Used per-file by [`discover`] and by the CLI's GIL-gate
+/// auto-router (which routes a node here when [`gil_safe`] judged it unsafe).
+pub fn discover_one(path: &std::path::Path, python: &str) -> Option<SubprocNodeType> {
+    if path.extension().and_then(|e| e.to_str()) != Some("py") {
+        return None;
+    }
+    let stem = path.file_stem().and_then(|s| s.to_str())?;
+    if stem.starts_with('_') {
+        return None;
+    }
+    let source = std::fs::read_to_string(path).ok()?;
+    // Cheap guard: must plausibly define `process` (a missing one would only fail
+    // once the subprocess is spawned and asked to run).
+    if !source.contains("def process") {
+        return None;
+    }
+
+    let type_name: &'static str = Box::leak(camel(stem).into_boxed_str());
+    let doc: &'static str =
+        Box::leak(format!("Subprocess Python node from {}", path.display()).into_boxed_str());
+    let manifest: &'static NodeManifest = Box::leak(Box::new(NodeManifest {
+        type_name,
+        category: "subprocess",
+        doc,
+        inputs: PY_IN,
+        outputs: PY_OUT,
+        default_params: sp_params,
+        isolation: Isolation::Subprocess,
+        make: sp_stub_make,
+    }));
+    let python = python.to_string();
+    let factory: SubprocFactory =
+        Box::new(move |_p| Box::new(RemoteNode::new(&python, &source)) as Box<dyn Node>);
+    Some(SubprocNodeType { manifest, factory })
+}
+
 /// Scan `dir` for `*.py` node files (skipping `_`-prefixed) that define
 /// `process`, returning subprocess-backed types that run on `python`.
 pub fn discover(dir: &std::path::Path, python: &str) -> std::io::Result<Vec<SubprocNodeType>> {
     let mut entries: Vec<_> = std::fs::read_dir(dir)?.filter_map(|e| e.ok()).collect();
     entries.sort_by_key(|e| e.file_name());
-
-    let mut out = Vec::new();
-    for entry in entries {
-        let path = entry.path();
-        if path.extension().and_then(|e| e.to_str()) != Some("py") {
-            continue;
-        }
-        let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
-            continue;
-        };
-        if stem.starts_with('_') {
-            continue;
-        }
-        let Ok(source) = std::fs::read_to_string(&path) else {
-            continue;
-        };
-        // Cheap guard: must plausibly define `process` (a missing one would only
-        // fail once the subprocess is spawned and asked to run).
-        if !source.contains("def process") {
-            continue;
-        }
-
-        let type_name: &'static str = Box::leak(camel(stem).into_boxed_str());
-        let doc: &'static str =
-            Box::leak(format!("Subprocess Python node from {}", path.display()).into_boxed_str());
-        let manifest: &'static NodeManifest = Box::leak(Box::new(NodeManifest {
-            type_name,
-            category: "subprocess",
-            doc,
-            inputs: PY_IN,
-            outputs: PY_OUT,
-            default_params: sp_params,
-            isolation: Isolation::Subprocess,
-            make: sp_stub_make,
-        }));
-        let python = python.to_string();
-        let factory: SubprocFactory =
-            Box::new(move |_p| Box::new(RemoteNode::new(&python, &source)) as Box<dyn Node>);
-        out.push(SubprocNodeType { manifest, factory });
-    }
-    Ok(out)
+    Ok(entries.iter().filter_map(|e| discover_one(&e.path(), python)).collect())
 }
 
 #[cfg(test)]

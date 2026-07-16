@@ -56,6 +56,30 @@ impl PyNode {
     }
 }
 
+/// Path to the free-threaded interpreter the in-process host runs on — the binary
+/// the GIL-gate spawns to probe a node's free-threading safety without touching
+/// the shared host interpreter.
+///
+/// For an EMBEDDED interpreter `sys.executable` is the host program (`goofi-pipe`),
+/// not a python binary, so it's unusable for spawning. Prefer the build-time
+/// `PYO3_PYTHON` (the exact interpreter pyo3 linked against); fall back to
+/// `sys.executable` only if it wasn't set.
+pub fn interpreter_path() -> Option<String> {
+    if let Some(p) = option_env!("PYO3_PYTHON") {
+        if !p.is_empty() {
+            return Some(p.to_string());
+        }
+    }
+    Python::attach(|py| {
+        PyModule::import(py, "sys")
+            .ok()?
+            .getattr("executable")
+            .ok()?
+            .extract::<String>()
+            .ok()
+    })
+}
+
 impl Node for PyNode {
     fn process(&mut self, inp: &Inputs<'_>, out: &mut Outputs<'_>, _c: &mut NodeCtx) -> NodeResult {
         let Some(d) = inp.get("data") else {

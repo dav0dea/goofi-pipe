@@ -59,54 +59,50 @@ fn camel(stem: &str) -> String {
         .collect()
 }
 
+/// Build an in-process Python node type from a single file, or `None` if it is
+/// not a node file: non-`.py`, `_`-prefixed (hidden), unreadable, or it doesn't
+/// compile / lacks `process`. Used per-file by [`discover`] and by the CLI's
+/// GIL-gate auto-router (which probes each file before choosing this backend).
+pub fn discover_one(path: &Path) -> Option<PyNodeType> {
+    if path.extension().and_then(|e| e.to_str()) != Some("py") {
+        return None;
+    }
+    let stem = path.file_stem().and_then(|s| s.to_str())?;
+    if stem.starts_with('_') {
+        return None;
+    }
+    let source = std::fs::read_to_string(path).ok()?;
+    // Validate: must compile and define `process` (fail-fast at discovery).
+    if PyNode::from_source(&source, "process").is_err() {
+        return None;
+    }
+
+    let type_name: &'static str = Box::leak(camel(stem).into_boxed_str());
+    let doc: &'static str = Box::leak(format!("Python node from {}", path.display()).into_boxed_str());
+    let manifest: &'static NodeManifest = Box::leak(Box::new(NodeManifest {
+        type_name,
+        category: "python",
+        doc,
+        inputs: PY_IN,
+        outputs: PY_OUT,
+        default_params: py_params,
+        isolation: Isolation::InProcess,
+        make: py_stub_make,
+    }));
+    let factory: PyNodeFactory = Box::new(move |_p| {
+        Box::new(PyNode::from_source(&source, "process").expect("validated at discovery"))
+            as Box<dyn Node>
+    });
+    Some(PyNodeType { manifest, factory })
+}
+
 /// Scan `dir` for `*.py` node files (skipping `_`-prefixed) and return the ones
 /// that compile and define `process`. Type names are the `CamelCase` file stem.
 pub fn discover(dir: &Path) -> std::io::Result<Vec<PyNodeType>> {
-    let mut out = Vec::new();
     let mut entries: Vec<_> = std::fs::read_dir(dir)?.filter_map(|e| e.ok()).collect();
     // Deterministic order (readdir is unordered) so type names are stable.
     entries.sort_by_key(|e| e.file_name());
-
-    for entry in entries {
-        let path = entry.path();
-        if path.extension().and_then(|e| e.to_str()) != Some("py") {
-            continue;
-        }
-        let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
-            continue;
-        };
-        if stem.starts_with('_') {
-            continue;
-        }
-        let Ok(source) = std::fs::read_to_string(&path) else {
-            continue;
-        };
-        // Validate: must compile and define `process`. Skip if not (fail-fast at
-        // discovery instead of a panic when the node is first instantiated).
-        if PyNode::from_source(&source, "process").is_err() {
-            continue;
-        }
-
-        let type_name: &'static str = Box::leak(camel(stem).into_boxed_str());
-        let doc: &'static str =
-            Box::leak(format!("Python node from {}", path.display()).into_boxed_str());
-        let manifest: &'static NodeManifest = Box::leak(Box::new(NodeManifest {
-            type_name,
-            category: "python",
-            doc,
-            inputs: PY_IN,
-            outputs: PY_OUT,
-            default_params: py_params,
-            isolation: Isolation::InProcess,
-            make: py_stub_make,
-        }));
-        let factory: PyNodeFactory = Box::new(move |_p| {
-            Box::new(PyNode::from_source(&source, "process").expect("validated at discovery"))
-                as Box<dyn Node>
-        });
-        out.push(PyNodeType { manifest, factory });
-    }
-    Ok(out)
+    Ok(entries.iter().filter_map(|e| discover_one(&e.path())).collect())
 }
 
 #[cfg(test)]

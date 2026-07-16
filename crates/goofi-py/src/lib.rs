@@ -13,10 +13,10 @@
 mod host;
 
 #[cfg(feature = "embed")]
-pub use host::PyNode;
+pub use host::{interpreter_path, PyNode};
 
 #[cfg(feature = "embed")]
 mod discover;
 
 #[cfg(feature = "embed")]
-pub use discover::{discover, PyNodeType};
+pub use discover::{discover, discover_one, PyNodeType};

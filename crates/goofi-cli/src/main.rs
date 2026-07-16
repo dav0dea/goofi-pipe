@@ -13,6 +13,7 @@ async fn main() {
     let mut bind = String::from("127.0.0.1");
     let mut python_nodes: Option<String> = None;
     let mut subproc_nodes: Option<String> = None;
+    let mut auto_nodes: Option<String> = None;
     let mut subproc_python = String::from("python3");
     let mut list_nodes = false;
     let mut args = std::env::args().skip(1);
@@ -37,6 +38,9 @@ async fn main() {
             "--subproc-nodes" => {
                 subproc_nodes = args.next();
             }
+            "--auto-nodes" => {
+                auto_nodes = args.next();
+            }
             "--subproc-python" => {
                 if let Some(v) = args.next() {
                     subproc_python = v;
@@ -47,7 +51,8 @@ async fn main() {
             "-h" | "--help" => {
                 println!(
                     "usage: goofi-pipe [--port N] [--bind HOST] [--headless] \
-                     [--python-nodes DIR] [--subproc-nodes DIR] [--subproc-python BIN]"
+                     [--python-nodes DIR] [--subproc-nodes DIR] [--auto-nodes DIR] \
+                     [--subproc-python BIN]"
                 );
                 return;
             }
@@ -62,6 +67,7 @@ async fn main() {
         let mut names = goofi_bridge::catalog_type_names();
         names.extend(python_type_names(python_nodes.as_deref()));
         names.extend(subproc_type_names(subproc_nodes.as_deref(), &subproc_python));
+        names.extend(auto_type_names(auto_nodes.as_deref(), &subproc_python));
         println!("{} node types: {}", names.len(), names.join(", "));
         return;
     }
@@ -69,6 +75,7 @@ async fn main() {
     let state = AppState::new();
     register_python(&state, python_nodes.as_deref());
     register_subproc(&state, subproc_nodes.as_deref(), &subproc_python);
+    register_auto(&state, auto_nodes.as_deref(), &subproc_python);
     spawn_tick(state.graph.clone(), 60);
 
     let listener = match tokio::net::TcpListener::bind((bind.as_str(), port)).await {
@@ -170,4 +177,87 @@ fn subproc_type_names(dir: Option<&str>, python: &str) -> Vec<String> {
             Vec::new()
         }
     }
+}
+
+/// Node files from `dir` that appear in a directory, newest-first, deterministic.
+#[cfg(feature = "python")]
+fn sorted_dir(dir: &str) -> Vec<std::path::PathBuf> {
+    match std::fs::read_dir(dir) {
+        Ok(rd) => {
+            let mut v: Vec<_> = rd.filter_map(|e| e.ok().map(|e| e.path())).collect();
+            v.sort();
+            v
+        }
+        Err(e) => {
+            eprintln!("failed to read {dir}: {e}");
+            Vec::new()
+        }
+    }
+}
+
+/// GIL-gate auto-router: probe each node file and register it in-process when its
+/// imports keep the free-threaded GIL disabled, else quarantine it to a subprocess.
+#[cfg(feature = "python")]
+fn register_auto(state: &AppState, dir: Option<&str>, subproc_python: &str) {
+    let Some(dir) = dir else { return };
+    let ft = goofi_py::interpreter_path(); // the embedded FT interpreter, for probing
+    let mut g = state.graph.lock().unwrap();
+    let (mut n_in, mut n_sub) = (0u32, 0u32);
+    for path in sorted_dir(dir) {
+        let Ok(source) = std::fs::read_to_string(&path) else { continue };
+        let safe = ft
+            .as_deref()
+            .map(|ft| goofi_subproc::gil_safe(ft, &source).unwrap_or(false))
+            .unwrap_or(false);
+        if safe {
+            if let Some(t) = goofi_py::discover_one(&path) {
+                if g.register_dyn_type(t.manifest, t.factory) {
+                    n_in += 1;
+                }
+            }
+        } else if let Some(t) = goofi_subproc::discover_one(&path, subproc_python) {
+            if g.register_dyn_type(t.manifest, t.factory) {
+                n_sub += 1;
+            }
+        }
+    }
+    println!("  auto-routed {n_in} in-process + {n_sub} subprocess node type(s) from {dir}");
+}
+
+#[cfg(not(feature = "python"))]
+fn register_auto(_state: &AppState, dir: Option<&str>, _subproc_python: &str) {
+    if dir.is_some() {
+        eprintln!("--auto-nodes ignored: this binary was built without the `python` feature");
+    }
+}
+
+#[cfg(feature = "python")]
+fn auto_type_names(dir: Option<&str>, subproc_python: &str) -> Vec<String> {
+    let Some(dir) = dir else { return Vec::new() };
+    let ft = goofi_py::interpreter_path();
+    let mut names = Vec::new();
+    for path in sorted_dir(dir) {
+        let Ok(source) = std::fs::read_to_string(&path) else { continue };
+        let safe = ft
+            .as_deref()
+            .map(|ft| goofi_subproc::gil_safe(ft, &source).unwrap_or(false))
+            .unwrap_or(false);
+        let named = if safe {
+            goofi_py::discover_one(&path).map(|t| (t.manifest.type_name, "in-proc"))
+        } else {
+            goofi_subproc::discover_one(&path, subproc_python).map(|t| (t.manifest.type_name, "subproc"))
+        };
+        if let Some((n, where_)) = named {
+            names.push(format!("{n} ({where_})"));
+        }
+    }
+    names
+}
+
+#[cfg(not(feature = "python"))]
+fn auto_type_names(dir: Option<&str>, _subproc_python: &str) -> Vec<String> {
+    if dir.is_some() {
+        eprintln!("--auto-nodes ignored: this binary was built without the `python` feature");
+    }
+    Vec::new()
 }
