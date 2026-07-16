@@ -139,49 +139,6 @@ pub fn node_instance_info(g: &Graph, uid: Uid) -> Value {
     })
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use goofi_node::{Isolation, OutputDecl};
-
-    fn stub_params() -> ParamGroups {
-        ParamGroups::new()
-    }
-    fn stub_make(_: &ParamGroups) -> Box<dyn goofi_node::Node> {
-        unreachable!("catalog_types never instantiates")
-    }
-    static T_OUT: &[OutputDecl] = &[OutputDecl {
-        name: "out",
-        kind: goofi_core::SlotType::Array,
-        length_preserving: false,
-    }];
-    static T_MANIFEST: NodeManifest = NodeManifest {
-        type_name: "MyPyThing",
-        category: "python",
-        doc: "runtime type",
-        inputs: &[],
-        outputs: T_OUT,
-        default_params: stub_params,
-        isolation: Isolation::InProcess,
-        make: stub_make,
-    };
-
-    #[test]
-    fn catalog_includes_runtime_registered_types() {
-        let mut g = Graph::new();
-        g.register_dyn_type(&T_MANIFEST, Box::new(|_| unreachable!()));
-        let cat = catalog_types(&g);
-        let arr = cat.as_array().unwrap();
-        let ty = |v: &Value| v.get("type").and_then(|t| t.as_str()).map(str::to_string);
-        assert!(
-            arr.iter().any(|v| ty(v).as_deref() == Some("MyPyThing")),
-            "runtime-registered type must appear in the palette"
-        );
-        // Native catalog types remain present alongside the runtime ones.
-        assert!(arr.iter().any(|v| ty(v).as_deref() == Some("Oscillator")));
-    }
-}
-
 pub fn link_info(l: &LinkView) -> Value {
     json!({
         "node_out": l.node_out.to_hex(),
@@ -233,4 +190,47 @@ pub fn snapshot(g: &Graph, instance_id: &str, with_protocol: bool) -> Value {
         snap["protocol_version"] = json!(PROTOCOL_VERSION);
     }
     snap
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use goofi_node::{Isolation, OutputDecl};
+
+    fn stub_params() -> ParamGroups {
+        ParamGroups::new()
+    }
+    fn stub_make(_: &ParamGroups) -> Box<dyn goofi_node::Node> {
+        unreachable!("catalog_types never instantiates")
+    }
+    static T_OUT: &[OutputDecl] = &[OutputDecl {
+        name: "out",
+        kind: goofi_core::SlotType::Array,
+        length_preserving: false,
+    }];
+    static T_MANIFEST: NodeManifest = NodeManifest {
+        type_name: "MyPyThing",
+        category: "python",
+        doc: "runtime type",
+        inputs: &[],
+        outputs: T_OUT,
+        default_params: stub_params,
+        isolation: Isolation::InProcess,
+        make: stub_make,
+    };
+
+    #[test]
+    fn catalog_includes_runtime_registered_types() {
+        let mut g = Graph::new();
+        g.register_dyn_type(&T_MANIFEST, Box::new(|_| unreachable!()));
+        let cat = catalog_types(&g);
+        let arr = cat.as_array().unwrap();
+        let ty = |v: &Value| v.get("type").and_then(|t| t.as_str()).map(str::to_string);
+        assert!(
+            arr.iter().any(|v| ty(v).as_deref() == Some("MyPyThing")),
+            "runtime-registered type must appear in the palette"
+        );
+        // Native catalog types remain present alongside the runtime ones.
+        assert!(arr.iter().any(|v| ty(v).as_deref() == Some("Oscillator")));
+    }
 }

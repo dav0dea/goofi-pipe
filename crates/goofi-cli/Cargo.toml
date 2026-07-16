@@ -11,3 +11,11 @@ path = "src/main.rs"
 [dependencies]
 goofi-bridge = { path = "../goofi-bridge" }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net"] }
+# Optional in-process Python nodes. Enable with `--features python` and a
+# free-threaded interpreter at build (PYO3_PYTHON=<python3.14t>). Off by default
+# so the shipped binary needs no Python.
+goofi-py = { path = "../goofi-py", optional = true }
+
+[features]
+default = []
+python = ["dep:goofi-py", "goofi-py/embed"]

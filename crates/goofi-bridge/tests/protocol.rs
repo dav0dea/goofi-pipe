@@ -26,6 +26,46 @@ async fn start_server() -> String {
     format!("ws://{addr}")
 }
 
+// A runtime type registered before serving — stands in for a discovered Python
+// node (the CLI's `register_python` does exactly this against the live graph).
+fn params() -> goofi_node::ParamGroups {
+    goofi_node::ParamGroups::new()
+}
+fn stub_make(_: &goofi_node::ParamGroups) -> Box<dyn goofi_node::Node> {
+    unreachable!("list_nodes never instantiates")
+}
+static SERVE_OUT: &[goofi_node::OutputDecl] = &[goofi_node::OutputDecl {
+    name: "out",
+    kind: goofi_core::SlotType::Array,
+    length_preserving: false,
+}];
+static SERVE_MANIFEST: goofi_node::NodeManifest = goofi_node::NodeManifest {
+    type_name: "DiscoveredPyNode",
+    category: "python",
+    doc: "runtime type registered before serving",
+    inputs: &[],
+    outputs: SERVE_OUT,
+    default_params: params,
+    isolation: goofi_node::Isolation::InProcess,
+    make: stub_make,
+};
+
+async fn start_server_with_runtime_type() -> String {
+    let state = AppState::new();
+    state
+        .graph
+        .lock()
+        .unwrap()
+        .register_dyn_type(&SERVE_MANIFEST, Box::new(|_| unreachable!()));
+    spawn_tick(state.graph.clone(), 240);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        serve_listener(listener, state).await.unwrap();
+    });
+    format!("ws://{addr}")
+}
+
 async fn recv_text(ws: &mut Ws) -> Value {
     loop {
         let msg = tokio::time::timeout(Duration::from_secs(5), ws.next())
@@ -52,6 +92,27 @@ async fn call(ws: &mut Ws, id: i64, op: &str, payload: Value) -> Value {
             return m;
         }
     }
+}
+
+#[tokio::test]
+async fn runtime_registered_type_reaches_the_palette_over_the_wire() {
+    // The full serving path a browser sees: a runtime type registered into the
+    // live graph (as the CLI's --python-nodes does) surfaces via list_nodes.
+    let base = start_server_with_runtime_type().await;
+    let (mut ws, _) = connect_async(format!("{base}/control")).await.unwrap();
+    let hello = recv_text(&mut ws).await;
+    assert_eq!(hello["event"], "hello");
+
+    let reply = call(&mut ws, 1, "list_nodes", json!({})).await;
+    let types = reply["result"]["types"].as_array().expect("types array");
+    assert!(
+        types.iter().any(|t| t["type"] == "DiscoveredPyNode"),
+        "runtime-registered type must appear in the palette; got {:?}",
+        types.iter().map(|t| &t["type"]).collect::<Vec<_>>()
+    );
+    // Its category rides along so the palette can group it.
+    let entry = types.iter().find(|t| t["type"] == "DiscoveredPyNode").unwrap();
+    assert_eq!(entry["category"], "python");
 }
 
 #[tokio::test]

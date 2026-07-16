@@ -296,6 +296,7 @@ name = "goofi-cli"
 version = "0.0.0"
 dependencies = [
  "goofi-bridge",
+ "goofi-py",
  "tokio",
 ]
 
