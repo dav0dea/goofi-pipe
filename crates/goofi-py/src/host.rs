@@ -99,7 +99,6 @@ impl Node for PyNode {
             return Ok(());
         }
         let n = store.shape().iter().product::<usize>();
-        let bytes = store.as_bytes().to_vec();
 
         // Check the GIL once (first tick): if running this node re-enabled it (an
         // FT-unsafe import at call time), the shared interpreter is now serialized
@@ -108,7 +107,9 @@ impl Node for PyNode {
         let check_gil = !self.gil_checked;
         let (out_bytes, tripped): (Vec<u8>, bool) =
             Python::attach(|py| -> Result<(Vec<u8>, bool), String> {
-                let raw = PyBytes::new(py, &bytes);
+                // Copy the Rust buffer straight into Python bytes (no intermediate
+                // Vec) — `store` is borrowed from the live input for this call.
+                let raw = PyBytes::new(py, store.as_bytes());
                 let ret = self
                     .wrap
                     .call1(py, (&self.process, raw, n))
