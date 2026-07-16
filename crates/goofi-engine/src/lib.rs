@@ -147,6 +147,16 @@ impl Graph {
         goofi_node::find(type_name).is_some() || self.dyn_types.contains_key(type_name)
     }
 
+    /// The manifests of all runtime-registered node types, sorted by type name
+    /// (the compile-time catalog is enumerated separately via `goofi_node::catalog`).
+    /// Used by the bridge to include runtime types in the editor palette.
+    pub fn dyn_type_manifests(&self) -> Vec<&'static NodeManifest> {
+        let mut ms: Vec<&'static NodeManifest> =
+            self.dyn_types.values().map(|dt| dt.manifest).collect();
+        ms.sort_by_key(|m| m.type_name);
+        ms
+    }
+
     pub fn node_count(&self) -> usize {
         self.nodes.len()
     }
@@ -1183,6 +1193,17 @@ mod tests {
         assert_eq!(g.manifest(uid).unwrap().category, "runtime");
         g.tick();
         assert_eq!(first_f32(&g.latest_frame(uid, "out").unwrap()), 42.0);
+    }
+
+    #[test]
+    fn dyn_type_manifests_enumerates_registered_runtime_types() {
+        let mut g = Graph::new();
+        assert!(g.dyn_type_manifests().is_empty());
+        g.register_dyn_type(&RT_MANIFEST, Box::new(|_| Box::new(RtSource { base: 1.0 })));
+        let ms = g.dyn_type_manifests();
+        assert_eq!(ms.len(), 1);
+        assert_eq!(ms[0].type_name, "_RuntimeDyn");
+        assert_eq!(ms[0].category, "runtime");
     }
 
     #[test]

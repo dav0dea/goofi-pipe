@@ -265,7 +265,7 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
     let result: Result<Value, String> = (|| {
         let mut g = state.graph.lock().unwrap();
         match op.as_str() {
-            "list_nodes" => Ok(json!({ "types": schemas::catalog_types() })),
+            "list_nodes" => Ok(json!({ "types": schemas::catalog_types(&g) })),
             "add_node" => {
                 let ty = payload
                     .get("type")
