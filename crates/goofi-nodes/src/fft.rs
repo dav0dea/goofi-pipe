@@ -11,7 +11,10 @@ use goofi_node::{
     SlotDecl,
 };
 
-struct Fft;
+struct Fft {
+    // Kept across ticks so a repeated signal length never re-plans the FFT.
+    planner: goofi_dsp::FftPlanner<f32>,
+}
 
 impl Node for Fft {
     fn process(&mut self, inp: &Inputs<'_>, out: &mut Outputs<'_>, _c: &mut NodeCtx) -> NodeResult {
@@ -34,7 +37,7 @@ impl Node for Fft {
         }
         let n = signal.len();
         let fs = d.meta().sfreq.unwrap_or(1000.0) as f32;
-        let mag = goofi_dsp::magnitude_spectrum(&signal);
+        let mag = goofi_dsp::magnitude_spectrum(&mut self.planner, &signal);
 
         let buf: Vec<u8> = mag.iter().flat_map(|v| v.to_le_bytes()).collect();
         let mut ch = BTreeMap::new();
@@ -61,7 +64,9 @@ fn default_params() -> ParamGroups {
     ParamGroups::new()
 }
 fn make(_: &ParamGroups) -> Box<dyn Node> {
-    Box::new(Fft)
+    Box::new(Fft {
+        planner: goofi_dsp::FftPlanner::new(),
+    })
 }
 
 static INPUTS: &[SlotDecl] = &[SlotDecl {

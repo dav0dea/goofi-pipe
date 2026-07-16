@@ -12,7 +12,10 @@ use goofi_node::{
     SlotDecl,
 };
 
-struct Psd;
+struct Psd {
+    // Kept across ticks so a repeated window length never re-plans the FFT.
+    planner: goofi_dsp::FftPlanner<f32>,
+}
 
 impl Node for Psd {
     fn process(&mut self, inp: &Inputs<'_>, out: &mut Outputs<'_>, _c: &mut NodeCtx) -> NodeResult {
@@ -35,7 +38,7 @@ impl Node for Psd {
         }
         let fs = d.meta().sfreq.unwrap_or(1000.0) as f32;
 
-        let (freqs, power) = goofi_dsp::psd_periodogram(&signal, fs);
+        let (freqs, power) = goofi_dsp::psd_periodogram(&mut self.planner, &signal, fs);
 
         let buf: Vec<u8> = power.iter().flat_map(|v| v.to_le_bytes()).collect();
         let mut ch = BTreeMap::new();
@@ -59,7 +62,9 @@ fn default_params() -> ParamGroups {
 }
 
 fn make(_: &ParamGroups) -> Box<dyn Node> {
-    Box::new(Psd)
+    Box::new(Psd {
+        planner: goofi_dsp::FftPlanner::new(),
+    })
 }
 
 static INPUTS: &[SlotDecl] = &[SlotDecl {

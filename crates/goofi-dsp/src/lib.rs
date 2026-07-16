@@ -4,7 +4,8 @@
 
 use std::f32::consts::PI;
 
-use rustfft::{num_complex::Complex, FftPlanner};
+use rustfft::num_complex::Complex;
+pub use rustfft::FftPlanner;
 
 /// A Hann window of length `n` (n >= 1; n == 1 yields `[1.0]`).
 pub fn hann(n: usize) -> Vec<f32> {
@@ -17,13 +18,15 @@ pub fn hann(n: usize) -> Vec<f32> {
 }
 
 /// Magnitude spectrum (|FFT|) of a real signal, one-sided (length `n/2 + 1`).
-pub fn magnitude_spectrum(signal: &[f32]) -> Vec<f32> {
+/// Takes a caller-owned [`FftPlanner`] so a node can keep it alive across ticks —
+/// rustfft caches the plan per length, so a repeated `n` never re-plans.
+pub fn magnitude_spectrum(planner: &mut FftPlanner<f32>, signal: &[f32]) -> Vec<f32> {
     let n = signal.len();
     if n == 0 {
         return Vec::new();
     }
     let mut buf: Vec<Complex<f32>> = signal.iter().map(|&x| Complex::new(x, 0.0)).collect();
-    let fft = FftPlanner::new().plan_fft_forward(n);
+    let fft = planner.plan_fft_forward(n);
     fft.process(&mut buf);
     buf.iter().take(n / 2 + 1).map(|c| c.norm()).collect()
 }
@@ -31,7 +34,8 @@ pub fn magnitude_spectrum(signal: &[f32]) -> Vec<f32> {
 /// One-sided power spectral density via a Hann-windowed periodogram.
 /// Returns `(freqs_hz, power)`, each of length `n/2 + 1`. Interior bins are
 /// doubled (one-sided), DC and Nyquist are not. Scaled by `1/(fs * sum(w^2))`.
-pub fn psd_periodogram(signal: &[f32], fs: f32) -> (Vec<f32>, Vec<f32>) {
+/// Takes a caller-owned [`FftPlanner`] (see [`magnitude_spectrum`]) to cache the plan.
+pub fn psd_periodogram(planner: &mut FftPlanner<f32>, signal: &[f32], fs: f32) -> (Vec<f32>, Vec<f32>) {
     let n = signal.len();
     if n == 0 || fs <= 0.0 {
         return (Vec::new(), Vec::new());
@@ -42,7 +46,7 @@ pub fn psd_periodogram(signal: &[f32], fs: f32) -> (Vec<f32>, Vec<f32>) {
         .zip(&w)
         .map(|(&x, &wi)| Complex::new(x * wi, 0.0))
         .collect();
-    let fft = FftPlanner::new().plan_fft_forward(n);
+    let fft = planner.plan_fft_forward(n);
     fft.process(&mut buf);
 
     let winpow: f32 = w.iter().map(|wi| wi * wi).sum();
@@ -89,7 +93,7 @@ mod tests {
         let fs = 256.0;
         let n = 256; // 1 Hz bin resolution
         let f0 = 20.0;
-        let (freqs, power) = psd_periodogram(&sine(f0, fs, n), fs);
+        let (freqs, power) = psd_periodogram(&mut FftPlanner::new(), &sine(f0, fs, n), fs);
         assert_eq!(freqs.len(), n / 2 + 1);
         let peak = argmax(&power);
         assert!(
@@ -102,7 +106,7 @@ mod tests {
     #[test]
     fn magnitude_spectrum_length_and_dc() {
         let sig = vec![1.0f32; 8]; // constant -> all energy at DC
-        let mag = magnitude_spectrum(&sig);
+        let mag = magnitude_spectrum(&mut FftPlanner::new(), &sig);
         assert_eq!(mag.len(), 8 / 2 + 1);
         assert_eq!(argmax(&mag), 0, "constant signal peaks at DC");
     }

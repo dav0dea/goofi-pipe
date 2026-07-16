@@ -44,6 +44,14 @@ impl Method {
             return 0.0;
         }
         let n = v.len() as f32;
+        // np.min/np.max/np.median propagate NaN (a single NaN makes the result NaN),
+        // unlike Rust's f32::min/max which drop it — guard those three to stay
+        // faithful. sum/mean/std/norm already propagate NaN via float arithmetic.
+        let has_nan = matches!(self, Method::Min | Method::Max | Method::Median)
+            && v.iter().any(|x| x.is_nan());
+        if has_nan {
+            return f32::NAN;
+        }
         match self {
             Method::Sum => v.iter().sum(),
             Method::Mean => v.iter().sum::<f32>() / n,
@@ -259,6 +267,18 @@ mod tests {
         // norm (L2): sqrt(1+4+9+16) = sqrt(30).
         let (_, nrm) = reduce("norm", 0, vec![4], &v);
         assert!((nrm[0] - 30.0f32.sqrt()).abs() < 1e-4);
+    }
+
+    #[test]
+    fn min_max_median_propagate_nan_like_numpy() {
+        // np.min/np.max/np.median PROPAGATE NaN (they don't skip it); the port must
+        // match, not silently return a finite extreme.
+        let v = [1.0f32, f32::NAN, 3.0];
+        assert!(reduce("min", 0, vec![3], &v).1[0].is_nan(), "min must propagate NaN");
+        assert!(reduce("max", 0, vec![3], &v).1[0].is_nan(), "max must propagate NaN");
+        assert!(reduce("median", 0, vec![3], &v).1[0].is_nan(), "median must propagate NaN");
+        // No NaN -> unaffected.
+        assert_eq!(reduce("min", 0, vec![3], &[2.0, 1.0, 3.0]).1, vec![1.0]);
     }
 
     #[test]
