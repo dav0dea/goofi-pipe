@@ -10,10 +10,13 @@ use pyo3::types::{PyBytes, PyModule};
 /// way (the zero-copy rust-numpy path replaces this later).
 const WRAP_SRC: &str = r#"
 import numpy as np
-def __goofi_wrap(process, raw, n):
-    x = np.frombuffer(raw, dtype=np.float32, count=n).copy()
-    y = np.ascontiguousarray(np.asarray(process(x), dtype=np.float32)).ravel()
-    return y.tobytes()
+def __goofi_wrap(process, raw, shape):
+    # Feed the node its input at its REAL shape (not flattened) and preserve the
+    # output shape (no ravel) — mirroring the subprocess worker so both backends
+    # produce identical output for the same node source. Returns (bytes, shape).
+    x = np.frombuffer(raw, dtype=np.float32).reshape(shape).copy()
+    y = np.ascontiguousarray(np.asarray(process(x), dtype=np.float32))
+    return (y.tobytes(), list(y.shape))
 "#;
 
 /// A Python node running in-process on the free-threaded interpreter.
@@ -98,31 +101,34 @@ impl Node for PyNode {
         if store.dtype() != DType::F32 {
             return Ok(());
         }
-        let n = store.shape().iter().product::<usize>();
+        let in_shape: Vec<usize> = store.shape().to_vec();
 
         // Check the GIL once (first tick): if running this node re-enabled it (an
         // FT-unsafe import at call time), the shared interpreter is now serialized
         // for ALL in-process nodes — a whole-host hazard the discovery probe can't
         // see. Steady-state ticks skip the check, so the hot path pays nothing.
         let check_gil = !self.gil_checked;
-        let (out_bytes, tripped): (Vec<u8>, bool) =
-            Python::attach(|py| -> Result<(Vec<u8>, bool), String> {
+        let (out_bytes, out_shape, tripped): (Vec<u8>, Vec<usize>, bool) =
+            Python::attach(|py| -> Result<(Vec<u8>, Vec<usize>, bool), String> {
                 // Copy the Rust buffer straight into Python bytes (no intermediate
                 // Vec) — `store` is borrowed from the live input for this call.
                 let raw = PyBytes::new(py, store.as_bytes());
                 let ret = self
                     .wrap
-                    .call1(py, (&self.process, raw, n))
+                    .call1(py, (&self.process, raw, in_shape.clone()))
                     .map_err(|e| e.to_string())?;
-                let b = ret.bind(py).cast::<PyBytes>().map_err(|e| e.to_string())?;
-                let out = b.as_bytes().to_vec();
+                // WRAP returns (bytes, shape) so the node's output shape is preserved.
+                let (bytes, shape) = ret
+                    .bind(py)
+                    .extract::<(Vec<u8>, Vec<usize>)>()
+                    .map_err(|e| e.to_string())?;
                 let tripped = check_gil
                     && PyModule::import(py, "sys")
                         .and_then(|m| m.getattr("_is_gil_enabled"))
                         .and_then(|f| f.call0())
                         .and_then(|v| v.extract::<bool>())
                         .unwrap_or(false);
-                Ok((out, tripped))
+                Ok((bytes, shape, tripped))
             })?;
         self.gil_checked = true;
         if tripped {
@@ -131,8 +137,12 @@ impl Node for PyNode {
             );
         }
 
-        let len = out_bytes.len() / 4;
-        let data = Data::from_array_bytes(DType::F32, vec![len], out_bytes, Meta::empty())
+        // Mirror the subprocess backend: carry the input meta through a
+        // length-preserving node (same shape → sfreq/channels/index stay valid), and
+        // drop it when the node changed the shape (stale channel coords would fail
+        // Data validation). In-process we clone the meta directly — no re-serialization.
+        let out_meta = if out_shape == in_shape { d.meta().clone() } else { Meta::empty() };
+        let data = Data::from_array_bytes(DType::F32, out_shape, out_bytes, out_meta)
             .map_err(|e| e.to_string())?;
         out.set("out", data);
         Ok(())
@@ -184,6 +194,38 @@ mod tests {
         let params = goofi_node::ParamGroups::new();
         let mut out = Outputs::new(&mut outbuf);
         node.process(&inp, &mut out, &mut ctx, &Params::new(&params)).map_err(|e| e.0)
+    }
+
+    #[test]
+    fn preserves_output_shape_and_length_preserving_meta() {
+        // A length-preserving node (x*2) on a [2,3] input must return [2,3] — NOT
+        // ravel to [6] — and carry the input meta (sfreq) through, matching the
+        // subprocess backend. Regression for the in-process meta/shape-drop divergence.
+        let src = "def process(x):\n    return x * 2.0\n";
+        let mut node = PyNode::from_source(src, "process").expect("compile python node");
+        let mut meta = Meta::empty();
+        meta.sfreq = Some(250.0);
+        let d = Data::from_array_bytes(DType::F32, vec![2, 3], f32s(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]), meta).unwrap();
+        let mut inmap: IndexMap<&'static str, Option<Data>> = IndexMap::new();
+        inmap.insert("data", Some(d));
+        let inp = Inputs::new(&inmap);
+        let mut outmap: IndexMap<&'static str, Option<Data>> = IndexMap::new();
+        outmap.insert("out", None);
+        let params = goofi_node::ParamGroups::new();
+        {
+            let mut o = Outputs::new(&mut outmap);
+            node.process(&inp, &mut o, &mut NodeCtx::new(), &Params::new(&params)).unwrap();
+        }
+        let outd = outmap.get("out").unwrap().as_ref().unwrap();
+        match outd.value() {
+            Value::Array(s) => {
+                assert_eq!(s.shape(), &[2, 3], "shape preserved, not raveled to [6]");
+                let v: Vec<f32> = s.as_bytes().chunks_exact(4).map(|c| f32::from_le_bytes(c.try_into().unwrap())).collect();
+                assert_eq!(v, vec![2.0, 4.0, 6.0, 8.0, 10.0, 12.0]);
+            }
+            _ => panic!("expected array"),
+        }
+        assert_eq!(outd.meta().sfreq, Some(250.0), "length-preserving node carries input meta");
     }
 
     #[test]
