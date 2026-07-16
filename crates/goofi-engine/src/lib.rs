@@ -1545,6 +1545,32 @@ mod tests {
     }
 
     #[test]
+    fn multi_input_wires_round_trip_in_connection_order() {
+        let mut g = Graph::new();
+        let a = const_src(&mut g, 1.0);
+        let b = const_src(&mut g, 2.0);
+        let c = const_src(&mut g, 3.0);
+        let col = g.add_node("_TestCollect", None).unwrap();
+        g.add_link(a, "out", col, "ins").unwrap();
+        g.add_link(b, "out", col, "ins").unwrap();
+        g.add_link(c, "out", col, "ins").unwrap();
+
+        let yaml = g.serialize();
+        let mut g2 = Graph::new();
+        g2.load_doc(&yaml).unwrap();
+        assert_eq!(g2.node_count(), 4);
+
+        let col2 = g2
+            .node_uids()
+            .into_iter()
+            .find(|u| g2.type_name(*u) == Some("_TestCollect"))
+            .expect("collect restored");
+        g2.tick();
+        // All 3 wires restored, in connection order (a=1, b=2, c=3).
+        assert_eq!(as_f32_vec(&g2.latest_frame(col2, "out").unwrap()), vec![3.0, 1.0, 2.0, 3.0]);
+    }
+
+    #[test]
     fn remove_node_drops_links() {
         let mut g = Graph::new();
         let src = g.add_node("ConstantArray", None).unwrap();
