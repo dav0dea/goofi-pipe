@@ -54,7 +54,24 @@ class _NdProxy:
     def __rmul__(self, o): return o * self._bare()
     def __truediv__(self, o): return self._bare() / o
     def __rtruediv__(self, o): return o / self._bare()
+    def __floordiv__(self, o): return self._bare() // o
+    def __rfloordiv__(self, o): return o // self._bare()
+    def __mod__(self, o): return self._bare() % o
+    def __rmod__(self, o): return o % self._bare()
+    def __pow__(self, o): return self._bare() ** o
+    def __rpow__(self, o): return o ** self._bare()
     def __neg__(self): return -self._bare()
+    def __abs__(self): return abs(self._bare())
+    # Rich comparisons — Python resolves operator dunders on the TYPE, bypassing
+    # __getattr__, so these must be defined explicitly or `nd('x') == v` compares by
+    # object identity (silently always False) and `nd('x') > v` raises.
+    def __lt__(self, o): return self._bare() < o
+    def __le__(self, o): return self._bare() <= o
+    def __gt__(self, o): return self._bare() > o
+    def __ge__(self, o): return self._bare() >= o
+    def __eq__(self, o): return self._bare() == o
+    def __ne__(self, o): return self._bare() != o
+    __hash__ = None  # defining __eq__ makes it unhashable; proxies are never dict keys
 
 def __goofi_compile(source):
     return compile(source, "<goofi-expr>", "eval")
@@ -96,30 +113,48 @@ impl PyExprEvaluator {
 /// Extract the distinct node names referenced by `nd('name')` / `nd("name")`. A plain
 /// scan (not a full parse): the engine resolves ALL of each referenced node's output
 /// slots, so only the node NAME matters here — `.slot` vs `.method` is resolved at eval.
+///
+/// `nd` must be a standalone token (a word boundary before it — so `round('x')`,
+/// `s.find('y')`, `grand('z')` do NOT match and inject phantom refs), and whitespace
+/// between `nd` and `(` is tolerated (`nd ('sig')` is a valid Python call).
 fn extract_refs(source: &str) -> Vec<ExprRef> {
     let b = source.as_bytes();
     let mut names: Vec<String> = Vec::new();
     let mut i = 0;
-    while let Some(p) = source[i..].find("nd(") {
-        let mut j = i + p + 3;
+    while i + 2 <= b.len() {
+        if &b[i..i + 2] != b"nd" {
+            i += 1;
+            continue;
+        }
+        // Word boundary before `nd` — reject `grand(`, `round(`, `.rfind(`, etc.
+        let boundary = i == 0 || !(b[i - 1].is_ascii_alphanumeric() || b[i - 1] == b'_');
+        let mut j = i + 2;
         while j < b.len() && (b[j] as char).is_whitespace() {
             j += 1;
         }
-        if j < b.len() && (b[j] == b'\'' || b[j] == b'"') {
-            let q = b[j];
+        if boundary && j < b.len() && b[j] == b'(' {
             j += 1;
-            let start = j;
-            while j < b.len() && b[j] != q {
+            while j < b.len() && (b[j] as char).is_whitespace() {
                 j += 1;
             }
-            if j < b.len() {
-                let name = &source[start..j];
-                if !name.is_empty() && !names.iter().any(|n| n == name) {
-                    names.push(name.to_string());
+            if j < b.len() && (b[j] == b'\'' || b[j] == b'"') {
+                let q = b[j];
+                j += 1;
+                let start = j;
+                while j < b.len() && b[j] != q {
+                    j += 1;
+                }
+                if j < b.len() {
+                    let name = &source[start..j];
+                    if !name.is_empty() && !names.iter().any(|n| n == name) {
+                        names.push(name.to_string());
+                    }
+                    i = j + 1;
+                    continue;
                 }
             }
         }
-        i += p + 3;
+        i += 2;
     }
     names.into_iter().map(|node| ExprRef { node, slot: None }).collect()
 }
@@ -140,22 +175,70 @@ fn data_to_py(py: Python<'_>, d: &Data) -> PyResult<Py<PyAny>> {
     }
 }
 
+/// Extract a scalar `f64` from an expression result. goofi Data force-promotes every
+/// scalar to a shape-[1] array, and numpy 2.x rejects `float(np.array([x]))` (only 0-d
+/// arrays convert), so the direct extract fails for the most natural expressions (bare
+/// `nd('x')`, `nd('a')*nd('b')`). Fall back to `np.asarray(x).item()` for any size-1
+/// array; a genuinely multi-element result is a real error.
+fn to_scalar_f64(result: &Bound<'_, PyAny>) -> Result<f64, String> {
+    if let Ok(v) = result.extract::<f64>() {
+        return Ok(v);
+    }
+    let np = PyModule::import(result.py(), "numpy").map_err(|e| e.to_string())?;
+    let a = np
+        .getattr("asarray")
+        .and_then(|f| f.call1((result,)))
+        .map_err(|_| "expression result is not a number".to_string())?;
+    let size: usize =
+        a.getattr("size").and_then(|s| s.extract()).map_err(|_| "expression result is not a number".to_string())?;
+    if size != 1 {
+        return Err(format!("expression result is not a scalar (size {size})"));
+    }
+    a.call_method0("item")
+        .and_then(|it| it.extract::<f64>())
+        .map_err(|_| "expression result is not a number".to_string())
+}
+
+/// Extract a scalar `bool` from a result, squeezing a size-1 array (comparisons over a
+/// bare `nd()` yield a shape-[1] bool array) — mirrors [`to_scalar_f64`].
+fn to_scalar_bool(result: &Bound<'_, PyAny>) -> Result<bool, String> {
+    if let Ok(v) = result.extract::<bool>() {
+        return Ok(v);
+    }
+    let np = PyModule::import(result.py(), "numpy").map_err(|e| e.to_string())?;
+    let a = np
+        .getattr("asarray")
+        .and_then(|f| f.call1((result,)))
+        .map_err(|_| "expression result is not a bool".to_string())?;
+    let size: usize =
+        a.getattr("size").and_then(|s| s.extract()).map_err(|_| "expression result is not a bool".to_string())?;
+    if size != 1 {
+        return Err(format!("expression result is not a scalar bool (size {size})"));
+    }
+    a.call_method0("item")
+        .and_then(|it| it.extract::<bool>())
+        .map_err(|_| "expression result is not a bool".to_string())
+}
+
 /// Coerce the Python result to the target param's type.
 fn coerce(result: &Bound<'_, PyAny>, target: &Param) -> Result<Param, String> {
     match target {
         Param::Float { vmin, vmax, .. } => {
-            let v: f64 = result.extract().map_err(|_| "expression result is not a number".to_string())?;
-            Ok(Param::Float { value: v, vmin: *vmin, vmax: *vmax })
+            Ok(Param::Float { value: to_scalar_f64(result)?, vmin: *vmin, vmax: *vmax })
         }
         Param::Int { vmin, vmax, .. } => {
-            let v: f64 = result.extract().map_err(|_| "expression result is not a number".to_string())?;
+            let v = to_scalar_f64(result)?;
+            // `as i64` saturates NaN→0 and ±inf→±i64::MAX/MIN silently; error instead,
+            // consistent with the other type-mismatch arms.
+            if !v.is_finite() {
+                return Err("expression result is not a finite number".to_string());
+            }
             Ok(Param::Int { value: v.round() as i64, vmin: *vmin, vmax: *vmax })
         }
-        Param::Bool { .. } => {
-            let v: bool = result.extract().map_err(|_| "expression result is not a bool".to_string())?;
-            Ok(Param::Bool { value: v })
-        }
-        Param::Trigger { .. } => Ok(Param::Trigger { fired: result.extract().unwrap_or(false) }),
+        Param::Bool { .. } => Ok(Param::Bool { value: to_scalar_bool(result)? }),
+        // A Trigger errors on a non-bool result (like the other arms) rather than
+        // silently swallowing it into `fired: false`.
+        Param::Trigger { .. } => Ok(Param::Trigger { fired: to_scalar_bool(result)? }),
         Param::Str { options, refresh, .. } => {
             let v: String = result.extract().map_err(|_| "expression result is not a string".to_string())?;
             Ok(Param::Str { value: v, options: options.clone(), refresh: *refresh })
@@ -225,6 +308,25 @@ mod tests {
     #[test]
     fn extract_refs_empty_for_refless() {
         assert!(extract_refs("t * 2").is_empty());
+    }
+
+    #[test]
+    fn extract_refs_requires_a_word_boundary() {
+        // A standalone `nd(...)` is a ref; an identifier merely ending in "nd" is not.
+        assert_eq!(names(&extract_refs("nd('s').find('sub')")), vec!["s"]);
+        assert!(extract_refs("round('x')").is_empty(), "round( is not nd(");
+        assert!(extract_refs("s.rfind('y')").is_empty(), "rfind( is not nd(");
+        assert!(extract_refs("grand('z')").is_empty(), "grand( is not nd(");
+    }
+
+    #[test]
+    fn extract_refs_tolerates_whitespace_before_paren() {
+        // `nd ('sig')` is a valid Python call.
+        assert_eq!(names(&extract_refs("nd ('sig') * 2")), vec!["sig"]);
+    }
+
+    fn names(refs: &[ExprRef]) -> Vec<&str> {
+        refs.iter().map(|r| r.node.as_str()).collect()
     }
 
     // The tests below drive the real embedded interpreter (numpy required), matching
@@ -307,5 +409,58 @@ mod tests {
     fn compile_error_surfaces() {
         let ev = PyExprEvaluator::new().expect("interpreter");
         assert!(ev.compile("1 +").is_err(), "a syntax error must fail compile");
+    }
+
+    #[test]
+    fn bare_nd_size1_array_coerces_to_scalar_float() {
+        // The canonical case: a producer emits shape [1]; bare nd('x') drives a Float.
+        let mut refs = Refs::new();
+        refs.insert(("x".into(), None), Some(f32_1d(&[3.5])));
+        let r = eval_once("nd('x')", 0.0, refs, &fparam()).unwrap();
+        assert!(matches!(r, Param::Float { value, .. } if (value - 3.5).abs() < 1e-6));
+    }
+
+    #[test]
+    fn arithmetic_over_size1_refs_coerces_to_float() {
+        let mut refs = Refs::new();
+        refs.insert(("a".into(), None), Some(f32_1d(&[2.0])));
+        refs.insert(("b".into(), None), Some(f32_1d(&[3.0])));
+        let r = eval_once("nd('a') * nd('b')", 0.0, refs, &fparam()).unwrap();
+        assert!(matches!(r, Param::Float { value, .. } if (value - 6.0).abs() < 1e-6));
+    }
+
+    #[test]
+    fn comparison_operators_on_bare_nd_drive_a_bool() {
+        let bp = Param::Bool { value: false };
+        let refs = || {
+            let mut r = Refs::new();
+            r.insert(("a".into(), None), Some(f32_1d(&[2.0])));
+            r
+        };
+        // `>` used to raise; `==` used to be silently identity-False. Both must be correct.
+        assert!(matches!(eval_once("nd('a') > 1", 0.0, refs(), &bp).unwrap(), Param::Bool { value: true }));
+        assert!(matches!(eval_once("nd('a') == 2", 0.0, refs(), &bp).unwrap(), Param::Bool { value: true }));
+        assert!(matches!(eval_once("nd('a') < 1", 0.0, refs(), &bp).unwrap(), Param::Bool { value: false }));
+    }
+
+    #[test]
+    fn pow_mod_floordiv_abs_delegate() {
+        let mut refs = Refs::new();
+        refs.insert(("a".into(), None), Some(f32_1d(&[-3.0])));
+        let f = |src: &str, r: Refs| match eval_once(src, 0.0, r, &fparam()).unwrap() {
+            Param::Float { value, .. } => value,
+            _ => f64::NAN,
+        };
+        assert!((f("abs(nd('a'))", refs.clone()) - 3.0).abs() < 1e-6);
+        assert!((f("nd('a') ** 2", refs.clone()) - 9.0).abs() < 1e-6);
+        assert!((f("nd('a') % 2", refs) - 1.0).abs() < 1e-6, "-3 % 2 == 1 (python)");
+    }
+
+    #[test]
+    fn nonfinite_int_and_nonbool_trigger_error() {
+        let ip = Param::Int { value: 0, vmin: -100, vmax: 100 };
+        assert!(eval_once("float('inf')", 0.0, Refs::new(), &ip).is_err(), "inf into Int errors, not i64::MAX");
+        let tp = Param::Trigger { fired: false };
+        assert!(eval_once("1.5", 0.0, Refs::new(), &tp).is_err(), "non-bool into Trigger errors, not silent false");
     }
 }
