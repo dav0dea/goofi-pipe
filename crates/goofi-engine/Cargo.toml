@@ -9,8 +9,10 @@ goofi-core = { path = "../goofi-core" }
 goofi-node = { path = "../goofi-node" }
 goofi-nodes = { path = "../goofi-nodes" }
 indexmap = "2"
+rayon = "1"
 serde_json = "1"
 serde_yaml_ng = "0.10"
 
 [dev-dependencies]
+goofi-codec = { path = "../goofi-codec" }
 inventory = "0.3"

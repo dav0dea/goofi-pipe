@@ -12,6 +12,7 @@ use std::collections::HashMap;
 use goofi_core::{Data, Param};
 use goofi_node::{Inputs, NodeCtx, NodeManifest, Outputs, ParamGroups, ParamKey};
 use indexmap::IndexMap;
+use rayon::prelude::*;
 
 /// A stable node identity. Encoded as a 12-hex string for the `.gfi` / frontend
 /// (the same key those use), a `u64` internally.
@@ -504,123 +505,164 @@ impl Graph {
         Ok(())
     }
 
-    /// Kahn topological order (producers before consumers); a cycle's remaining
-    /// nodes are appended in insertion order (latest-wins tolerates the back-edge).
-    fn topo_order(&self) -> Vec<Uid> {
+    /// BFS topological layering (producers before consumers). Each returned level
+    /// is a set of mutually-independent nodes — no edges run between them — and
+    /// every node's predecessors lie in strictly earlier levels. Nodes trapped in
+    /// a cycle form a final level (latest-wins tolerates their back-edges). This
+    /// is what lets a level's nodes run concurrently while the graph as a whole
+    /// still propagates end-to-end in a single tick.
+    fn topo_levels(&self) -> Vec<Vec<Uid>> {
         let mut indeg: HashMap<Uid, usize> = self.nodes.keys().map(|k| (*k, 0)).collect();
         for l in &self.links {
             if self.nodes.contains_key(&l.node_out) && indeg.contains_key(&l.node_in) {
                 *indeg.get_mut(&l.node_in).unwrap() += 1;
             }
         }
-        let mut order = Vec::with_capacity(self.nodes.len());
-        let mut ready: Vec<Uid> = self
+        let mut levels: Vec<Vec<Uid>> = Vec::new();
+        let mut placed: std::collections::HashSet<Uid> = std::collections::HashSet::new();
+        // Level 0: insertion-order nodes with no incoming edges.
+        let mut current: Vec<Uid> = self
             .nodes
             .keys()
             .copied()
             .filter(|u| indeg[u] == 0)
             .collect();
-        let mut visited: HashMap<Uid, bool> = HashMap::new();
-        while let Some(u) = ready.pop() {
-            if visited.insert(u, true).is_some() {
-                continue;
+        while !current.is_empty() {
+            for u in &current {
+                placed.insert(*u);
             }
-            order.push(u);
-            for l in &self.links {
-                if l.node_out == u {
-                    if let Some(d) = indeg.get_mut(&l.node_in) {
-                        if *d > 0 {
-                            *d -= 1;
-                            if *d == 0 {
-                                ready.push(l.node_in);
+            // Relax edges out of this level; a successor whose indegree hits zero
+            // joins the next level. Reorder by insertion order for determinism.
+            let mut freed: std::collections::HashSet<Uid> = std::collections::HashSet::new();
+            for u in &current {
+                for l in &self.links {
+                    if l.node_out == *u {
+                        if let Some(d) = indeg.get_mut(&l.node_in) {
+                            if *d > 0 {
+                                *d -= 1;
+                                if *d == 0 {
+                                    freed.insert(l.node_in);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            levels.push(current);
+            current = self
+                .nodes
+                .keys()
+                .copied()
+                .filter(|u| freed.contains(u))
+                .collect();
+        }
+        // Any node never freed sits in a cycle; run them together, last.
+        let remainder: Vec<Uid> = self
+            .nodes
+            .keys()
+            .copied()
+            .filter(|u| !placed.contains(u))
+            .collect();
+        if !remainder.is_empty() {
+            levels.push(remainder);
+        }
+        levels
+    }
+
+    /// Run one tick of the whole graph. Nodes are grouped into topological levels
+    /// ([`Self::topo_levels`]); each level's mutually-independent nodes execute
+    /// concurrently on the rayon work-stealing pool, then their fresh outputs are
+    /// propagated to the next level's inputs before it runs — so an acyclic graph
+    /// still propagates end-to-end within a single tick. A node runs iff it
+    /// free-runs (no triggering inputs) or a triggering input received a fresh
+    /// frame this round (trigger arbitration); a skipped node keeps its outputs.
+    pub fn tick(&mut self) {
+        let levels = self.topo_levels();
+        for level in levels {
+            let set: std::collections::HashSet<Uid> = level.iter().copied().collect();
+
+            // Phase A — run every runnable node in this level in parallel. Each
+            // closure touches only its own entry (disjoint `&mut`), so there is no
+            // shared state and the result is independent of thread scheduling.
+            let ran: Vec<Uid> = {
+                let batch: Vec<(Uid, &mut NodeEntry)> = self
+                    .nodes
+                    .iter_mut()
+                    .filter(|(uid, e)| {
+                        set.contains(uid) && (!e.has_trigger_inputs || e.trigger_pending)
+                    })
+                    .map(|(uid, e)| (*uid, e))
+                    .collect();
+                let ran: Vec<Uid> = batch.iter().map(|(u, _)| *u).collect();
+                batch.into_par_iter().for_each(|(_, entry)| run_node(entry));
+                ran
+            };
+
+            // Phase B — propagate this level's fresh frames to their consumers
+            // (serial; one-wire-per-input means each input has a single writer).
+            for uid in ran {
+                let produced: Vec<(&'static str, Data)> = self.nodes[&uid]
+                    .outputs
+                    .iter()
+                    .filter_map(|(k, v)| v.as_ref().map(|d| (*k, d.clone())))
+                    .collect();
+                if produced.is_empty() {
+                    continue;
+                }
+                let outgoing: Vec<(&'static str, Uid, &'static str)> = self
+                    .links
+                    .iter()
+                    .filter(|l| l.node_out == uid)
+                    .map(|l| (l.slot_out, l.node_in, l.slot_in))
+                    .collect();
+                for (slot_out, tgt, slot_in) in outgoing {
+                    if let Some(d) = produced
+                        .iter()
+                        .find(|(s, _)| *s == slot_out)
+                        .map(|(_, d)| d.clone())
+                    {
+                        if let Some(te) = self.nodes.get_mut(&tgt) {
+                            if let Some(slot) = te.inputs.get_mut(slot_in) {
+                                *slot = Some(d);
+                            }
+                            // A fresh frame on a triggering input wakes the consumer.
+                            if te
+                                .manifest
+                                .inputs
+                                .iter()
+                                .any(|i| i.name == slot_in && i.trigger_process)
+                            {
+                                te.trigger_pending = true;
                             }
                         }
                     }
                 }
             }
         }
-        // Append any cycle remainder in insertion order.
-        for u in self.nodes.keys() {
-            if !visited.contains_key(u) {
-                order.push(*u);
-            }
-        }
-        order
     }
+}
 
-    /// Run one tick of the whole graph. A node runs iff it free-runs (no
-    /// triggering inputs) or a triggering input received a fresh frame this round
-    /// (trigger arbitration); a skipped node keeps its previous outputs.
-    pub fn tick(&mut self) {
-        let order = self.topo_order();
-        for uid in order {
-            let should_run = {
-                let entry = self.nodes.get(&uid).expect("node in order exists");
-                !entry.has_trigger_inputs || entry.trigger_pending
-            };
-            if !should_run {
-                continue;
-            }
-
-            let outgoing: Vec<(&'static str, Uid, &'static str)> = self
-                .links
-                .iter()
-                .filter(|l| l.node_out == uid)
-                .map(|l| (l.slot_out, l.node_in, l.slot_in))
-                .collect();
-
-            let produced: Vec<(&'static str, Data)> = {
-                let entry = self.nodes.get_mut(&uid).expect("node in order exists");
-                entry.trigger_pending = false;
-                entry.ctx.tick += 1;
-                for v in entry.outputs.values_mut() {
-                    *v = None;
-                }
-                let inp = Inputs::new(&entry.inputs);
-                let node = &mut entry.node;
-                let ctx = &mut entry.ctx;
-                let mut out = Outputs::new(&mut entry.outputs);
-                // Catch a node panic so one faulty node can't unwind through the
-                // graph lock (poisoning the Mutex) and take down the whole engine.
-                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    node.process(&inp, &mut out, ctx)
-                }));
-                entry.last_error = match result {
-                    Ok(Ok(())) => None,
-                    Ok(Err(e)) => Some(e.0),
-                    Err(p) => Some(panic_message(p)),
-                };
-                entry
-                    .outputs
-                    .iter()
-                    .filter_map(|(k, v)| v.as_ref().map(|d| (*k, d.clone())))
-                    .collect()
-            };
-
-            for (slot_out, tgt, slot_in) in outgoing {
-                if let Some(d) = produced
-                    .iter()
-                    .find(|(s, _)| *s == slot_out)
-                    .map(|(_, d)| d.clone())
-                {
-                    if let Some(te) = self.nodes.get_mut(&tgt) {
-                        if let Some(slot) = te.inputs.get_mut(slot_in) {
-                            *slot = Some(d);
-                        }
-                        // A fresh frame on a triggering input wakes the consumer.
-                        if te
-                            .manifest
-                            .inputs
-                            .iter()
-                            .any(|i| i.name == slot_in && i.trigger_process)
-                        {
-                            te.trigger_pending = true;
-                        }
-                    }
-                }
-            }
-        }
+/// Run a single node's `process` in place: clear its outputs, tick its context,
+/// and capture any error or panic on its error channel. Panic isolation keeps one
+/// faulty node from unwinding through the scheduler (and, in the bridge, poisoning
+/// the graph mutex). Called from the parallel phase, so it touches only `entry`.
+fn run_node(entry: &mut NodeEntry) {
+    entry.trigger_pending = false;
+    entry.ctx.tick += 1;
+    for v in entry.outputs.values_mut() {
+        *v = None;
     }
+    let inp = Inputs::new(&entry.inputs);
+    let node = &mut entry.node;
+    let ctx = &mut entry.ctx;
+    let mut out = Outputs::new(&mut entry.outputs);
+    let result =
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| node.process(&inp, &mut out, ctx)));
+    entry.last_error = match result {
+        Ok(Ok(())) => None,
+        Ok(Err(e)) => Some(e.0),
+        Err(p) => Some(panic_message(p)),
+    };
 }
 
 #[cfg(test)]
@@ -743,6 +785,41 @@ mod tests {
             default_params: echo_params,
             isolation: Isolation::InProcess,
             make: counter_make,
+        }
+    }
+
+    // A source that sleeps in process() — used to prove independent nodes at the
+    // same topological level actually run concurrently (wall-clock < sum).
+    struct Slow {
+        ms: u64,
+    }
+    impl Node for Slow {
+        fn process(&mut self, _i: &Inputs<'_>, out: &mut Outputs<'_>, _c: &mut NodeCtx) -> NodeResult {
+            std::thread::sleep(std::time::Duration::from_millis(self.ms));
+            let d = Data::from_array_bytes(DType::F32, vec![1], 1.0f32.to_le_bytes().to_vec(), Meta::empty())
+                .map_err(|e| e.to_string())?;
+            out.set("out", d);
+            Ok(())
+        }
+    }
+    fn slow_make(_: &ParamGroups) -> Box<dyn Node> {
+        Box::new(Slow { ms: 20 })
+    }
+    static SLOW_OUT: &[OutputDecl] = &[OutputDecl {
+        name: "out",
+        kind: SlotType::Array,
+        length_preserving: false,
+    }];
+    inventory::submit! {
+        NodeManifest {
+            type_name: "_TestSlow",
+            category: "test",
+            doc: "sleeps 20ms then emits",
+            inputs: &[],
+            outputs: SLOW_OUT,
+            default_params: echo_params,
+            isolation: Isolation::InProcess,
+            make: slow_make,
         }
     }
 
@@ -921,6 +998,46 @@ mod tests {
         assert!(g.load_doc(bad).is_err());
         // validate-before-teardown: the existing graph is untouched on failure.
         assert_eq!(g.node_count(), before);
+    }
+
+    #[test]
+    fn independent_nodes_run_in_parallel() {
+        // Eight sources with no edges between them all sit in topo level 0, so a
+        // parallel scheduler runs them concurrently. Each sleeps 20ms: a
+        // sequential tick would take >= 160ms; a parallel one must finish well
+        // under that. Generous bound to stay robust on a loaded machine.
+        let mut g = Graph::new();
+        for _ in 0..8 {
+            g.add_node("_TestSlow", None).unwrap();
+        }
+        g.tick(); // warm the rayon pool (first use pays thread-spawn cost)
+        let t = std::time::Instant::now();
+        g.tick();
+        let elapsed = t.elapsed();
+        assert!(
+            elapsed < std::time::Duration::from_millis(100),
+            "8 independent 20ms nodes took {elapsed:?}; expected concurrent execution (< 100ms)"
+        );
+    }
+
+    #[test]
+    fn independent_branches_both_produce_correctly() {
+        // Two disjoint ConstantArray -> Echo branches must both propagate in one
+        // tick regardless of the parallel scheduling of their level-0 sources.
+        let mut g = Graph::new();
+        let a = g.add_node("ConstantArray", None).unwrap();
+        let ea = g.add_node("_TestEcho", None).unwrap();
+        g.update_param(a, "constant", "value", Param::float(3.0, -1e9, 1e9)).unwrap();
+        g.add_link(a, "out", ea, "in").unwrap();
+
+        let b = g.add_node("ConstantArray", None).unwrap();
+        let eb = g.add_node("_TestEcho", None).unwrap();
+        g.update_param(b, "constant", "value", Param::float(4.0, -1e9, 1e9)).unwrap();
+        g.add_link(b, "out", eb, "in").unwrap();
+
+        g.tick();
+        assert_eq!(first_f32(&g.latest_frame(ea, "out").unwrap()), 3.0);
+        assert_eq!(first_f32(&g.latest_frame(eb, "out").unwrap()), 4.0);
     }
 
     #[test]
