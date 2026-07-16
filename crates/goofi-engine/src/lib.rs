@@ -49,11 +49,20 @@ struct UfreqMeter {
     ema: Option<f64>,
 }
 
+/// One wire feeding a `multi` input slot: its source `(uid, out-slot)` identity and
+/// that wire's latest-wins frame (`None` until it first emits).
+type WireCell = (Uid, &'static str, Option<Data>);
+
 struct NodeEntry {
     manifest: &'static NodeManifest,
     node: Box<dyn goofi_node::Node>,
     params: ParamGroups,
     inputs: IndexMap<&'static str, Option<Data>>,
+    /// Per-wire latest-wins cells for each `multi` input slot, in connection order:
+    /// `(src_uid, src_slot) -> latest frame`. Engine-owned; materialized to an ordered
+    /// present-only `&[Data]` for the node at run time. Single slots live in `inputs`;
+    /// the two maps partition the manifest's input slots (a slot is single XOR multi).
+    multi_inputs: IndexMap<&'static str, Vec<WireCell>>,
     outputs: IndexMap<&'static str, Option<Data>>,
     ctx: NodeCtx,
     last_error: Option<String>,
@@ -272,7 +281,9 @@ impl Graph {
         let last_error = node.setup(&mut ctx).err().map(|e| e.0);
 
         let inputs: IndexMap<&'static str, Option<Data>> =
-            manifest.inputs.iter().map(|s| (s.name, None)).collect();
+            manifest.inputs.iter().filter(|s| !s.multi).map(|s| (s.name, None)).collect();
+        let multi_inputs: IndexMap<&'static str, Vec<WireCell>> =
+            manifest.inputs.iter().filter(|s| s.multi).map(|s| (s.name, Vec::new())).collect();
         let outputs = manifest.output_buffer();
 
         let name = self.fresh_name(&manifest.type_name.to_lowercase());
@@ -286,6 +297,7 @@ impl Graph {
                 node,
                 params,
                 inputs,
+                multi_inputs,
                 outputs,
                 ctx,
                 last_error,
@@ -373,7 +385,14 @@ impl Graph {
         self.links
             .retain(|l| l.node_out != uid && l.node_in != uid);
         for l in dropped {
-            self.clear_input(l.node_in, l.slot_in);
+            // Purge the removed node's wire from a downstream multi slot; else clear
+            // the single input it fed. (Links into the removed node itself no-op —
+            // its entry is already gone.)
+            if self.is_multi_input(l.node_in, l.slot_in) {
+                self.drop_multi_wire(l.node_in, l.slot_in, l.node_out, l.slot_out);
+            } else {
+                self.clear_input(l.node_in, l.slot_in);
+            }
         }
         Ok(())
     }
@@ -416,6 +435,15 @@ impl Graph {
         e.manifest.inputs.iter().find(|i| i.name == slot).map(|i| i.name)
     }
 
+    /// Whether input `slot` on node `uid` is a `multi` (variadic) slot — i.e. it
+    /// accepts many wires and lives in `multi_inputs` rather than `inputs`.
+    fn is_multi_input(&self, uid: Uid, slot: &str) -> bool {
+        self.nodes
+            .get(&uid)
+            .and_then(|e| e.manifest.inputs.iter().find(|i| i.name == slot))
+            .is_some_and(|i| i.multi)
+    }
+
     pub fn add_link(
         &mut self,
         node_out: Uid,
@@ -439,10 +467,20 @@ impl Graph {
         if self.links.contains(&new) {
             return Ok(()); // idempotent
         }
-        // One wire per input: evict any prior source of this (node_in, slot_in).
-        self.links
-            .retain(|l| !(l.node_in == node_in && l.slot_in == slot_in));
-        self.clear_input(node_in, slot_in);
+        if self.is_multi_input(node_in, slot_in) {
+            // A multi slot accepts many wires: append this wire's latest-wins cell in
+            // connection order (no eviction).
+            if let Some(e) = self.nodes.get_mut(&node_in) {
+                if let Some(cells) = e.multi_inputs.get_mut(slot_in) {
+                    cells.push((node_out, slot_out, None));
+                }
+            }
+        } else {
+            // One wire per single input: evict any prior source of this (node_in, slot_in).
+            self.links
+                .retain(|l| !(l.node_in == node_in && l.slot_in == slot_in));
+            self.clear_input(node_in, slot_in);
+        }
         self.links.push(new);
         Ok(())
     }
@@ -464,8 +502,22 @@ impl Graph {
         if self.links.len() == before {
             return Err("no such link".into());
         }
-        self.clear_input(node_in, slot_in);
+        if self.is_multi_input(node_in, slot_in) {
+            self.drop_multi_wire(node_in, slot_in, node_out, slot_out);
+        } else {
+            self.clear_input(node_in, slot_in);
+        }
         Ok(())
+    }
+
+    /// Remove one wire `(src_uid, src_slot)` from a multi input slot, preserving the
+    /// connection order of the survivors.
+    fn drop_multi_wire(&mut self, node_in: Uid, slot_in: &str, src: Uid, src_slot: &str) {
+        if let Some(e) = self.nodes.get_mut(&node_in) {
+            if let Some(cells) = e.multi_inputs.get_mut(slot_in) {
+                cells.retain(|(u, s, _)| !(*u == src && *s == src_slot));
+            }
+        }
     }
 
     fn clear_input(&mut self, uid: Uid, slot: &str) {
@@ -788,7 +840,15 @@ impl Graph {
                     {
                         if let Some(te) = self.nodes.get_mut(&tgt) {
                             if let Some(slot) = te.inputs.get_mut(slot_in) {
-                                *slot = Some(d);
+                                *slot = Some(d); // single slot: latest-wins
+                            } else if let Some(cells) = te.multi_inputs.get_mut(slot_in) {
+                                // multi slot: update THIS wire's latest-wins cell,
+                                // keyed by its source (uid, slot_out) — position kept.
+                                if let Some(cell) =
+                                    cells.iter_mut().find(|(u, s, _)| *u == uid && *s == slot_out)
+                                {
+                                    cell.2 = Some(d);
+                                }
                             }
                             // A fresh frame on a triggering input wakes the consumer.
                             if te
@@ -819,7 +879,15 @@ fn run_node(entry: &mut NodeEntry) {
     for v in entry.outputs.values_mut() {
         *v = None;
     }
-    let inp = Inputs::new(&entry.inputs);
+    // Materialize each multi slot's present frames in connection order for the node
+    // (Arc-bump clones). Empty for nodes with no multi slots — the common case pays
+    // nothing beyond an empty map.
+    let multis: IndexMap<&'static str, Vec<Data>> = entry
+        .multi_inputs
+        .iter()
+        .map(|(k, cells)| (*k, cells.iter().filter_map(|(_, _, o)| o.clone()).collect()))
+        .collect();
+    let inp = Inputs::with_multi(&entry.inputs, &multis);
     let node = &mut entry.node;
     let ctx = &mut entry.ctx;
     let mut out = Outputs::new(&mut entry.outputs);
@@ -1288,12 +1356,72 @@ mod tests {
         }
     }
 
+    // A node with a MULTI triggering input "ins". Emits [count, v0, v1, …] where vi
+    // is the first element of each received frame in connection order — so a test can
+    // read the fan-in count, order, and latest-wins. Autotriggers so the 0-wire
+    // (empty-list) case still runs.
+    struct Collect;
+    impl Node for Collect {
+        fn process(&mut self, inp: &Inputs<'_>, out: &mut Outputs<'_>, _c: &mut NodeCtx) -> NodeResult {
+            let items = inp.get_multi("ins");
+            let mut vals: Vec<f32> = vec![items.len() as f32];
+            vals.extend(items.iter().map(first_f32));
+            let bytes: Vec<u8> = vals.iter().flat_map(|v| v.to_le_bytes()).collect();
+            let d = Data::from_array_bytes(DType::F32, vec![vals.len()], bytes, Meta::empty())
+                .map_err(|e| e.to_string())?;
+            out.set("out", d);
+            Ok(())
+        }
+    }
+    fn collect_params() -> ParamGroups {
+        let mut common = IndexMap::new();
+        common.insert("autotrigger".to_string(), Param::boolean(true));
+        let mut g = ParamGroups::new();
+        g.insert("common".to_string(), common);
+        g
+    }
+    fn collect_make(_: &ParamGroups) -> Box<dyn Node> {
+        Box::new(Collect)
+    }
+    static COLLECT_IN: &[SlotDecl] = &[SlotDecl {
+        name: "ins",
+        kind: SlotType::Array,
+        trigger_process: true,
+        multi: true,
+    }];
+    inventory::submit! {
+        NodeManifest {
+            type_name: "_TestCollect",
+            category: "test",
+            doc: "multi-input: emits [count, v0, v1, …] of its wires in connection order",
+            inputs: COLLECT_IN,
+            outputs: G_OUT,
+            default_params: collect_params,
+            isolation: Isolation::InProcess,
+            make: collect_make,
+        }
+    }
+
     fn first_f32(d: &Data) -> f32 {
         if let Value::Array(s) = d.value() {
             f32::from_le_bytes(s.as_bytes()[0..4].try_into().unwrap())
         } else {
             panic!("not an array")
         }
+    }
+
+    fn as_f32_vec(d: &Data) -> Vec<f32> {
+        if let Value::Array(s) = d.value() {
+            s.as_bytes().chunks_exact(4).map(|c| f32::from_le_bytes(c.try_into().unwrap())).collect()
+        } else {
+            panic!("not an array")
+        }
+    }
+
+    fn const_src(g: &mut Graph, v: f32) -> Uid {
+        let u = g.add_node("ConstantArray", None).unwrap();
+        g.update_param(u, "constant", "value", Param::float(v as f64, -1e9, 1e9)).unwrap();
+        u
     }
 
     #[test]
@@ -1343,6 +1471,77 @@ mod tests {
         g.add_link(b, "out", echo, "in").unwrap(); // evicts a
         g.tick();
         assert_eq!(first_f32(&g.latest_frame(echo, "out").unwrap()), 2.0);
+    }
+
+    // ---- multi-input slots -------------------------------------------------
+
+    #[test]
+    fn multi_input_collects_wires_in_connection_order() {
+        let mut g = Graph::new();
+        let a = const_src(&mut g, 1.0);
+        let b = const_src(&mut g, 2.0);
+        let c = const_src(&mut g, 3.0);
+        let col = g.add_node("_TestCollect", None).unwrap();
+        g.add_link(a, "out", col, "ins").unwrap();
+        g.add_link(b, "out", col, "ins").unwrap();
+        g.add_link(c, "out", col, "ins").unwrap();
+        g.tick();
+        // [count=3, then each wire's value in connection order].
+        assert_eq!(as_f32_vec(&g.latest_frame(col, "out").unwrap()), vec![3.0, 1.0, 2.0, 3.0]);
+    }
+
+    #[test]
+    fn multi_input_remove_link_drops_one_wire_keeping_order() {
+        let mut g = Graph::new();
+        let a = const_src(&mut g, 1.0);
+        let b = const_src(&mut g, 2.0);
+        let c = const_src(&mut g, 3.0);
+        let col = g.add_node("_TestCollect", None).unwrap();
+        g.add_link(a, "out", col, "ins").unwrap();
+        g.add_link(b, "out", col, "ins").unwrap();
+        g.add_link(c, "out", col, "ins").unwrap();
+        g.remove_link(b, "out", col, "ins").unwrap();
+        g.tick();
+        assert_eq!(as_f32_vec(&g.latest_frame(col, "out").unwrap()), vec![2.0, 1.0, 3.0]);
+    }
+
+    #[test]
+    fn multi_input_remove_node_drops_its_wires() {
+        let mut g = Graph::new();
+        let a = const_src(&mut g, 1.0);
+        let b = const_src(&mut g, 2.0);
+        let c = const_src(&mut g, 3.0);
+        let col = g.add_node("_TestCollect", None).unwrap();
+        g.add_link(a, "out", col, "ins").unwrap();
+        g.add_link(b, "out", col, "ins").unwrap();
+        g.add_link(c, "out", col, "ins").unwrap();
+        g.remove_node(b).unwrap();
+        g.tick();
+        assert_eq!(as_f32_vec(&g.latest_frame(col, "out").unwrap()), vec![2.0, 1.0, 3.0]);
+    }
+
+    #[test]
+    fn multi_input_latest_wins_per_wire() {
+        let mut g = Graph::new();
+        let a = const_src(&mut g, 1.0);
+        let b = const_src(&mut g, 2.0);
+        let col = g.add_node("_TestCollect", None).unwrap();
+        g.add_link(a, "out", col, "ins").unwrap();
+        g.add_link(b, "out", col, "ins").unwrap();
+        g.tick();
+        assert_eq!(as_f32_vec(&g.latest_frame(col, "out").unwrap()), vec![2.0, 1.0, 2.0]);
+        // a's next frame overwrites its cell (latest-wins); b is retained; order stable.
+        g.update_param(a, "constant", "value", Param::float(9.0, -1e9, 1e9)).unwrap();
+        g.tick();
+        assert_eq!(as_f32_vec(&g.latest_frame(col, "out").unwrap()), vec![2.0, 9.0, 2.0]);
+    }
+
+    #[test]
+    fn multi_input_empty_slot_is_empty_list() {
+        let mut g = Graph::new();
+        let col = g.add_node("_TestCollect", None).unwrap(); // autotriggers with 0 wires
+        g.tick();
+        assert_eq!(as_f32_vec(&g.latest_frame(col, "out").unwrap()), vec![0.0]);
     }
 
     #[test]
