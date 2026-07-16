@@ -788,6 +788,47 @@ mod tests {
         }
     }
 
+    // A two-input node summing a[0]+b[0] — exercises fan-in convergence, where a
+    // consumer at a later level must receive fresh frames from two producers that
+    // ran (in parallel) at the same earlier level.
+    struct Adder;
+    impl Node for Adder {
+        fn process(&mut self, inp: &Inputs<'_>, out: &mut Outputs<'_>, _c: &mut NodeCtx) -> NodeResult {
+            let (Some(a), Some(b)) = (inp.get("a"), inp.get("b")) else {
+                return Ok(());
+            };
+            let sum = first_f32(a) + first_f32(b);
+            let d = Data::from_array_bytes(DType::F32, vec![1], sum.to_le_bytes().to_vec(), Meta::empty())
+                .map_err(|e| e.to_string())?;
+            out.set("out", d);
+            Ok(())
+        }
+    }
+    fn adder_make(_: &ParamGroups) -> Box<dyn Node> {
+        Box::new(Adder)
+    }
+    static ADD_IN: &[SlotDecl] = &[
+        SlotDecl { name: "a", kind: SlotType::Array, trigger_process: true },
+        SlotDecl { name: "b", kind: SlotType::Array, trigger_process: true },
+    ];
+    static ADD_OUT: &[OutputDecl] = &[OutputDecl {
+        name: "out",
+        kind: SlotType::Array,
+        length_preserving: false,
+    }];
+    inventory::submit! {
+        NodeManifest {
+            type_name: "_TestAdder",
+            category: "test",
+            doc: "a[0] + b[0]",
+            inputs: ADD_IN,
+            outputs: ADD_OUT,
+            default_params: echo_params,
+            isolation: Isolation::InProcess,
+            make: adder_make,
+        }
+    }
+
     // A source that sleeps in process() — used to prove independent nodes at the
     // same topological level actually run concurrently (wall-clock < sum).
     struct Slow {
@@ -1038,6 +1079,41 @@ mod tests {
         g.tick();
         assert_eq!(first_f32(&g.latest_frame(ea, "out").unwrap()), 3.0);
         assert_eq!(first_f32(&g.latest_frame(eb, "out").unwrap()), 4.0);
+    }
+
+    #[test]
+    fn diamond_converges_through_levels_in_one_tick() {
+        // src -> echoA, src -> echoB, {echoA,echoB} -> adder. Levels: src(0),
+        // {echoA,echoB}(1, parallel), adder(2). The adder must see BOTH branch
+        // outputs — proving level-2 propagation waits for the whole level-1 batch.
+        let mut g = Graph::new();
+        let src = g.add_node("ConstantArray", None).unwrap();
+        g.update_param(src, "constant", "value", Param::float(5.0, -1e9, 1e9)).unwrap();
+        let ea = g.add_node("_TestEcho", None).unwrap();
+        let eb = g.add_node("_TestEcho", None).unwrap();
+        let add = g.add_node("_TestAdder", None).unwrap();
+        g.add_link(src, "out", ea, "in").unwrap();
+        g.add_link(src, "out", eb, "in").unwrap();
+        g.add_link(ea, "out", add, "a").unwrap();
+        g.add_link(eb, "out", add, "b").unwrap();
+
+        g.tick();
+        assert_eq!(first_f32(&g.latest_frame(add, "out").expect("adder produced")), 10.0);
+    }
+
+    #[test]
+    fn cycle_is_tolerated_without_hanging() {
+        // A pure 2-cycle of triggered nodes (echoA -> echoB -> echoA) has no
+        // level-0 seed: both land in the cycle-remainder final level. tick() must
+        // terminate (not spin) and, unseeded, produce nothing.
+        let mut g = Graph::new();
+        let a = g.add_node("_TestEcho", None).unwrap();
+        let b = g.add_node("_TestEcho", None).unwrap();
+        g.add_link(a, "out", b, "in").unwrap();
+        g.add_link(b, "out", a, "in").unwrap();
+        g.tick(); // must return
+        assert!(g.latest_frame(a, "out").is_none());
+        assert!(g.latest_frame(b, "out").is_none());
     }
 
     #[test]
