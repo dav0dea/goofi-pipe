@@ -7,6 +7,7 @@ use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
 use goofi_bridge::{serve_listener, spawn_tick, AppState};
+use goofi_view::Reducible; // shape()/ndim() accessors on a decoded frame
 use serde_json::{json, Value};
 use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::Message;
@@ -180,7 +181,7 @@ async fn control_and_data_plane_end_to_end() {
     assert!(saw_added, "node_added must be broadcast");
 
     // 4. data plane: subscribe and receive a decodable GOOF frame.
-    let (mut data, _) = connect_async(format!("{base}/data/{uid}/out/line"))
+    let (mut data, _) = connect_async(format!("{base}/data/{uid}/out"))
         .await
         .unwrap();
     let frame = loop {
@@ -198,7 +199,7 @@ async fn control_and_data_plane_end_to_end() {
     assert_eq!(frame[5], 0, "dtype tag ARRAY");
 
     // 5. unknown node/slot -> terminal close 4004.
-    let (mut bad, _) = connect_async(format!("{base}/data/{uid}/nope/line"))
+    let (mut bad, _) = connect_async(format!("{base}/data/{uid}/nope"))
         .await
         .unwrap();
     let closed = loop {
@@ -239,7 +240,7 @@ async fn native_chain_streams_frames_over_the_data_plane() {
     .await;
 
     // The buffered output streams real array frames through the data plane.
-    let (mut data, _) = connect_async(format!("{base}/data/{buf}/out/line"))
+    let (mut data, _) = connect_async(format!("{base}/data/{buf}/out"))
         .await
         .unwrap();
     let frame = loop {
@@ -257,6 +258,96 @@ async fn native_chain_streams_frames_over_the_data_plane() {
     assert_eq!(frame[5], 0, "Buffer emits an ARRAY");
     let body_len = u32::from_le_bytes(frame[10..14].try_into().unwrap());
     assert!(body_len > 8, "non-trivial buffered body ({body_len} bytes)");
+}
+
+#[tokio::test]
+async fn data_plane_reduces_to_the_declared_viewspec() {
+    // A viewer declares its need inband on the /data socket (line: array, ≤2-D, envelope
+    // dim -1 → 32). The bridge reduces the buffered frame ONCE for this connection and
+    // stamps `meta.reduced` — proving reduction runs on the data plane, off the node tick,
+    // never in the node process.
+    let base = start_server().await;
+    let (mut ws, _) = connect_async(format!("{base}/control")).await.unwrap();
+    let _hello = recv_text(&mut ws).await;
+
+    let uid = |v: &Value| v["result"].as_str().unwrap().to_string();
+    let osc = uid(&call(&mut ws, 1, "add_node", json!({ "type": "Oscillator" })).await);
+    let buf = uid(&call(&mut ws, 2, "add_node", json!({ "type": "Buffer" })).await);
+    // A 128-sample buffer is well over the 2·32 envelope floor, so once it fills the
+    // last axis actually shrinks.
+    call(
+        &mut ws,
+        3,
+        "update_param",
+        json!({ "node": buf, "group": "buffer", "name": "size", "value": 128 }),
+    )
+    .await;
+    call(
+        &mut ws,
+        4,
+        "add_link",
+        json!({ "node_out": osc, "slot_out": "out", "node_in": buf, "slot_in": "data" }),
+    )
+    .await;
+
+    let (mut data, _) = connect_async(format!("{base}/data/{buf}/out"))
+        .await
+        .unwrap();
+    // Inband ViewSpec: one line viewer wanting the last axis enveloped to 32.
+    data.send(Message::Text(
+        json!({
+            "op": "view",
+            "specs": [{
+                "dtype": "array",
+                "ndim": ["le", 2],
+                "reduce": [{ "dim": -1, "max": 32, "method": "envelope" }]
+            }]
+        })
+        .to_string(),
+    ))
+    .await
+    .unwrap();
+
+    // Wait for a frame that carries reduced meta — the definitive proof the plan was
+    // applied (passthrough never stamps it). Bounded so a stuck plane fails loudly.
+    let reduced = tokio::time::timeout(Duration::from_secs(8), async {
+        loop {
+            let msg = data.next().await.expect("stream ended").expect("ws error");
+            if let Message::Binary(b) = msg {
+                let d = goofi_codec::decode(&b).expect("decodable GOOF frame");
+                if d.meta().reduced.is_some() {
+                    break d;
+                }
+            }
+        }
+    })
+    .await
+    .expect("a reduced frame must arrive");
+
+    let goofi_core::MetaValue::Map(dims) = reduced.meta().reduced.as_ref().unwrap() else {
+        panic!("reduced meta is a per-dim map");
+    };
+    let last = reduced.ndim() - 1;
+    let goofi_core::MetaValue::Map(entry) = dims.get(&last.to_string()).expect("last dim reduced")
+    else {
+        panic!("dim entry is a map");
+    };
+    assert_eq!(entry.get("method"), Some(&goofi_core::MetaValue::Str("envelope".into())));
+    // The pre-reduction axis is recorded. msgpack round-trips a small +int as Int, so read
+    // the value not the discriminant. Envelope only fires past its 2·32 floor, so the buffer
+    // had grown to ≥ 64 by the frame we caught.
+    let orig_len = match entry.get("orig_len") {
+        Some(goofi_core::MetaValue::Uint(n)) => *n as i64,
+        Some(goofi_core::MetaValue::Int(n)) => *n,
+        other => panic!("orig_len is an integer; got {other:?}"),
+    };
+    assert!(orig_len >= 64, "envelope fires only on a large axis; orig_len {orig_len}");
+    // Envelope emits (min,max) per bin → ≤ 2·32 samples, and strictly fewer than the source.
+    assert!(
+        reduced.shape()[last] <= 64 && (reduced.shape()[last] as i64) < orig_len,
+        "axis shrank to envelope width; got {} from {orig_len}",
+        reduced.shape()[last]
+    );
 }
 
 #[tokio::test]

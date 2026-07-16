@@ -59,7 +59,9 @@ impl AppState {
 pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/control", any(control_ws))
-        .route("/data/{node}/{slot}/{kind}", any(data_ws))
+        // One stream per (node, slot) — the kind segment is gone; a single reduced stream
+        // serves every viewer kind. Each connection sends its viewers' ViewSpecs inband.
+        .route("/data/{node}/{slot}", any(data_ws))
         .route("/api/healthz", get(healthz))
         .with_state(state)
 }
@@ -522,11 +524,21 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
 // ---------------------------------------------------------------------------
 
 async fn data_ws(
-    Path((node, slot, kind)): Path<(String, String, String)>,
+    Path((node, slot)): Path<(String, String)>,
     ws: WebSocketUpgrade,
     State(state): State<AppState>,
 ) -> Response {
-    ws.on_upgrade(move |socket| handle_data(socket, state, node, slot, kind))
+    ws.on_upgrade(move |socket| handle_data(socket, state, node, slot))
+}
+
+/// The inband `{op:"view", specs:[…]}` message a viewer sends on the `/data` socket to
+/// declare (or update) what it can draw + wants reduced. Latest-wins: the newest list
+/// replaces the connection's prior specs.
+#[derive(serde::Deserialize)]
+struct ViewMsg {
+    op: String,
+    #[serde(default)]
+    specs: Vec<goofi_view::ViewSpec>,
 }
 
 fn close(code: u16, reason: &str) -> Message {
@@ -536,7 +548,7 @@ fn close(code: u16, reason: &str) -> Message {
     }))
 }
 
-async fn handle_data(socket: WebSocket, state: AppState, node: String, slot: String, _kind: String) {
+async fn handle_data(socket: WebSocket, state: AppState, node: String, slot: String) {
     let (mut tx, mut rx) = socket.split();
 
     let uid = match Uid::from_hex(&node) {
@@ -557,28 +569,44 @@ async fn handle_data(socket: WebSocket, state: AppState, node: String, slot: Str
         return;
     }
 
+    // This connection's viewers' ViewSpecs (merged at plan time). Empty until the first
+    // inband `{op:"view"}` arrives — full-resolution passthrough until then.
+    let mut specs: Vec<goofi_view::ViewSpec> = Vec::new();
     let mut ticker = tokio::time::interval(Duration::from_millis(16));
     loop {
         tokio::select! {
             _ = ticker.tick() => {
-                // Hold the graph lock only for the cheap Arc clone; encode the
-                // (immutable) frame AFTER releasing it, so a viewer copying a large
-                // kHz/HD body never serializes against the scheduler tick or the
-                // other viewers.
+                // Hold the graph lock only for the cheap `latest_frame` Arc clone; PLAN,
+                // REDUCE, and ENCODE run AFTER the guard drops, so a viewer reducing a large
+                // kHz/HD frame never serializes against the scheduler tick or other viewers.
                 let d = {
                     let g = state.graph.lock().unwrap();
                     g.latest_frame(uid, &slot)
                 };
-                if let Some(bytes) = d.map(|d| goofi_codec::encode(&d)) {
-                    if tx.send(Message::Binary(bytes.into())).await.is_err() {
-                        break;
-                    }
+                let Some(d) = d else { continue };
+                // Reduce to the merged need of this connection's viewers (one reduction per
+                // slot); passthrough while no specs have been declared.
+                let out = if specs.is_empty() {
+                    d
+                } else {
+                    let plan = goofi_view::plan(&specs, &d);
+                    goofi_core::reduce::reduce_for_view(&d, &plan)
+                };
+                if tx.send(Message::Binary(goofi_codec::encode(&out).into())).await.is_err() {
+                    break;
                 }
             }
             incoming = rx.next() => match incoming {
                 Some(Ok(Message::Close(_))) | None => break,
                 Some(Err(_)) => break,
-                // Inbound ViewSpec `{op:"view"}` is ignored in M1 (full-resolution frames).
+                // Inband ViewSpec negotiation: latest-wins replace this connection's specs.
+                Some(Ok(Message::Text(t))) => {
+                    if let Ok(m) = serde_json::from_str::<ViewMsg>(t.as_str()) {
+                        if m.op == "view" {
+                            specs = m.specs;
+                        }
+                    }
+                }
                 _ => {}
             },
         }

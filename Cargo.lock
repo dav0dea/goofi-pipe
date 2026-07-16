@@ -285,6 +285,8 @@ dependencies = [
  "goofi-engine",
  "goofi-node",
  "goofi-nodes",
+ "goofi-view",
+ "serde",
  "serde_json",
  "tokio",
  "tokio-tungstenite 0.24.0",
@@ -315,6 +317,7 @@ dependencies = [
 name = "goofi-core"
 version = "0.0.0"
 dependencies = [
+ "goofi-view",
  "indexmap",
 ]
 
@@ -372,6 +375,14 @@ dependencies = [
  "goofi-core",
  "goofi-node",
  "indexmap",
+]
+
+[[package]]
+name = "goofi-view"
+version = "0.0.0"
+dependencies = [
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -788,6 +799,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9a8e94ea7f378bd32cbbd37198a4a91436180c5bb472411e48b5ec2e2124ae9e"
 dependencies = [
  "serde_core",
+ "serde_derive",
 ]
 
 [[package]]
