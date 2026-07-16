@@ -206,10 +206,105 @@ pub enum Coord {
     Str(Arc<str>),
 }
 
-/// `channels[dim] -> coord list`, coords `Arc`-shared so large (kHz/HD) axes
+/// Labels for one array dimension. Both fields optional: an unlabeled dimension is
+/// `Axis::default()` (the "null entry"). `name` is the growth hook toward named-dim
+/// ops (transpose/insert-robust addressing); `coords`, when present, has one entry
+/// per index along the dimension. Coords are `Arc`-shared so large (kHz/HD) axes
 /// don't copy on fan-out.
-#[derive(Clone, Debug, Default)]
-pub struct Channels(pub BTreeMap<usize, Arc<Vec<Coord>>>);
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Axis {
+    pub name: Option<Arc<str>>,
+    pub coords: Option<Arc<[Coord]>>,
+}
+
+impl Axis {
+    /// An axis with coords but no name.
+    pub fn coords(c: impl Into<Arc<[Coord]>>) -> Axis {
+        Axis { name: None, coords: Some(c.into()) }
+    }
+    /// A named axis with coords.
+    pub fn named(name: impl Into<Arc<str>>, c: impl Into<Arc<[Coord]>>) -> Axis {
+        Axis { name: Some(name.into()), coords: Some(c.into()) }
+    }
+    /// Whether this axis carries neither a name nor coords (the "null entry").
+    pub fn is_empty(&self) -> bool {
+        self.name.is_none() && self.coords.is_none()
+    }
+}
+
+/// Positional per-dimension labels: `axes[d]` describes dimension `d`; an empty
+/// leading/middle dimension is `Axis::default()`; trailing unlabeled dimensions may
+/// be omitted (`len <= ndim`). Replaces the old dim-keyed map — the field and wire
+/// key stay `channels`.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Axes(pub Vec<Axis>);
+
+impl Axes {
+    pub fn new() -> Axes {
+        Axes(Vec::new())
+    }
+    /// Whether no dimension carries labels.
+    pub fn is_empty(&self) -> bool {
+        self.0.iter().all(Axis::is_empty)
+    }
+    pub fn get(&self, dim: usize) -> Option<&Axis> {
+        self.0.get(dim)
+    }
+    /// Set dimension `dim` to `axis`, padding intermediate dimensions with empty axes.
+    pub fn with(mut self, dim: usize, axis: Axis) -> Axes {
+        if self.0.len() <= dim {
+            self.0.resize(dim + 1, Axis::default());
+        }
+        self.0[dim] = axis;
+        self
+    }
+
+    // --- axis-aware transform helpers: propagate labels through a shape change so a
+    // transform node need not hand-rewrite the map. Built out as nodes need them. ---
+
+    /// Drop dimension `dim` (a reduction that collapses it).
+    pub fn reduced(&self, dim: usize) -> Axes {
+        let mut v = self.0.clone();
+        if dim < v.len() {
+            v.remove(dim);
+        }
+        Axes(v)
+    }
+    /// Permute dimensions (transpose); `perm[new_dim] = old_dim`.
+    pub fn transposed(&self, perm: &[usize]) -> Axes {
+        Axes(perm.iter().map(|&d| self.0.get(d).cloned().unwrap_or_default()).collect())
+    }
+    /// Concatenate `self` with `others` along `dim`: coords join when every side
+    /// labels `dim`, else the result dimension is unlabeled. Other dims keep `self`'s.
+    pub fn concat(&self, others: &[&Axes], dim: usize) -> Axes {
+        let mut v = self.0.clone();
+        if v.len() <= dim {
+            v.resize(dim + 1, Axis::default());
+        }
+        let mut joined: Vec<Coord> = Vec::new();
+        let mut complete = true;
+        for side in std::iter::once(self).chain(others.iter().copied()) {
+            match side.get(dim).and_then(|a| a.coords.as_ref()) {
+                Some(c) => joined.extend(c.iter().cloned()),
+                None => complete = false,
+            }
+        }
+        v[dim].coords = complete.then(|| joined.into());
+        Axes(v)
+    }
+    /// Subset dimension `dim`'s coords to `indices` (slice/select). A missing index
+    /// is skipped; an unlabeled dim is unchanged.
+    pub fn sliced(&self, dim: usize, indices: &[usize]) -> Axes {
+        let mut v = self.0.clone();
+        if let Some(a) = v.get_mut(dim) {
+            if let Some(c) = &a.coords {
+                let picked: Vec<Coord> = indices.iter().filter_map(|&i| c.get(i).cloned()).collect();
+                a.coords = Some(picked.into());
+            }
+        }
+        Axes(v)
+    }
+}
 
 /// An arbitrary meta value (the open map the inspector renders).
 #[derive(Clone, Debug, PartialEq)]
@@ -240,7 +335,7 @@ pub struct Meta {
     /// signals carrying more samples per frame than the emit cadence.
     pub ufreq: Option<f64>,
     pub index: Option<u64>,
-    pub channels: Channels,
+    pub channels: Axes,
     pub reduced: Option<MetaValue>,
     /// Arbitrary keys, including the `/^__.*__$/` hidden-internal namespace.
     /// Reserved keys (shape/dtype/channels/sfreq/ufreq/index/reduced) never live here.
@@ -377,20 +472,24 @@ impl Data {
         // 0-d -> 1-d promotion (a scalar becomes a length-1 vector).
         let shape = if shape.is_empty() { vec![1] } else { shape };
 
-        // Validate channel coordinate lengths against the array shape.
-        for (&dim, coords) in meta.channels.0.iter() {
-            if dim >= shape.len() {
-                return Err(GoofiError::Invalid(format!(
-                    "channels dim{dim} exceeds ndim {}",
-                    shape.len()
-                )));
-            }
-            if coords.len() != shape[dim] {
-                return Err(GoofiError::Invalid(format!(
-                    "channels dim{dim} has {} coords, expected {}",
-                    coords.len(),
-                    shape[dim]
-                )));
+        // Validate positional axis coords against the array shape: no more axes than
+        // dimensions, and each labeled dim's coord count matches its extent.
+        if meta.channels.0.len() > shape.len() {
+            return Err(GoofiError::Invalid(format!(
+                "channels has {} axes, exceeds ndim {}",
+                meta.channels.0.len(),
+                shape.len()
+            )));
+        }
+        for (dim, axis) in meta.channels.0.iter().enumerate() {
+            if let Some(coords) = &axis.coords {
+                if coords.len() != shape[dim] {
+                    return Err(GoofiError::Invalid(format!(
+                        "channels dim{dim} has {} coords, expected {}",
+                        coords.len(),
+                        shape[dim]
+                    )));
+                }
             }
         }
 
@@ -564,14 +663,74 @@ mod tests {
 
     #[test]
     fn channel_length_must_match_shape() {
-        let mut ch = BTreeMap::new();
-        ch.insert(0usize, Arc::new(vec![Coord::Str("a".into())])); // len 1
+        // dim0 labeled with 1 coord but shape[0] == 2 -> reject.
         let meta = Meta {
-            channels: Channels(ch),
+            channels: Axes::new().with(0, Axis::coords(vec![Coord::Str("a".into())])),
             ..Default::default()
         };
         let buf: Vec<u8> = [1.0f32, 2.0].iter().flat_map(|v| v.to_le_bytes()).collect(); // shape[0]=2
         assert!(Data::from_array_bytes(DType::F32, vec![2], buf, meta).is_err());
+    }
+
+    #[test]
+    fn too_many_axes_for_ndim_is_rejected() {
+        // Two labeled axes on a 1-D array -> reject (axes.len() > ndim).
+        let meta = Meta {
+            channels: Axes(vec![Axis::default(), Axis::coords(vec![Coord::Num(1.0)])]),
+            ..Default::default()
+        };
+        let buf: Vec<u8> = 1.0f32.to_le_bytes().to_vec();
+        assert!(Data::from_array_bytes(DType::F32, vec![1], buf, meta).is_err());
+    }
+
+    #[test]
+    fn axes_with_pads_empty_leading_dims() {
+        // Labeling only dim1 yields [empty, {coords}] — the "null entry" for dim0.
+        let axes = Axes::new().with(1, Axis::coords(vec![Coord::Num(10.0), Coord::Num(20.0)]));
+        assert_eq!(axes.0.len(), 2);
+        assert!(axes.get(0).unwrap().is_empty());
+        assert!(axes.get(1).unwrap().coords.is_some());
+    }
+
+    #[test]
+    fn axes_reduced_drops_the_axis() {
+        let axes = Axes(vec![
+            Axis::named("chan", vec![Coord::Str("Fz".into())]),
+            Axis::named("freq", vec![Coord::Num(10.0)]),
+        ]);
+        let r = axes.reduced(0);
+        assert_eq!(r.0.len(), 1);
+        assert_eq!(r.get(0).unwrap().name.as_deref(), Some("freq"));
+    }
+
+    #[test]
+    fn axes_transposed_permutes() {
+        let axes = Axes(vec![
+            Axis::named("a", vec![Coord::Num(1.0)]),
+            Axis::named("b", vec![Coord::Num(2.0)]),
+        ]);
+        let t = axes.transposed(&[1, 0]);
+        assert_eq!(t.get(0).unwrap().name.as_deref(), Some("b"));
+        assert_eq!(t.get(1).unwrap().name.as_deref(), Some("a"));
+    }
+
+    #[test]
+    fn axes_concat_joins_when_all_sides_labeled_else_none() {
+        let a = Axes(vec![Axis::coords(vec![Coord::Str("Fz".into())])]);
+        let b = Axes(vec![Axis::coords(vec![Coord::Str("Cz".into())])]);
+        let joined = a.concat(&[&b], 0);
+        assert_eq!(joined.get(0).unwrap().coords.as_ref().unwrap().len(), 2);
+        // A side missing coords -> unlabeled result dim.
+        let unlabeled = Axes(vec![Axis::default()]);
+        assert!(a.concat(&[&unlabeled], 0).get(0).unwrap().coords.is_none());
+    }
+
+    #[test]
+    fn axes_sliced_subsets_coords() {
+        let axes = Axes(vec![Axis::coords(vec![Coord::Num(0.0), Coord::Num(1.0), Coord::Num(2.0)])]);
+        let s = axes.sliced(0, &[2, 0]);
+        let c = s.get(0).unwrap().coords.as_ref().unwrap();
+        assert_eq!(c.as_ref(), &[Coord::Num(2.0), Coord::Num(0.0)]);
     }
 
     #[test]

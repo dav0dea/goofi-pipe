@@ -7,10 +7,9 @@
 //! construction; that agreement is the contract this test enforces.
 
 use std::collections::BTreeMap;
-use std::sync::Arc;
 
 use goofi_codec::{encode, split_frame};
-use goofi_core::{Channels, Coord, Data, DType, Meta};
+use goofi_core::{Axes, Axis, Coord, Data, DType, Meta};
 use indexmap::IndexMap;
 
 // ------- typed array builders -------
@@ -24,14 +23,9 @@ fn f32s(vals: &[f32]) -> Vec<u8> {
 }
 
 fn build_cases() -> Vec<(&'static str, Data)> {
-    let mut ch = BTreeMap::new();
-    ch.insert(
-        0usize,
-        Arc::new(vec![Coord::Str("Fz".into()), Coord::Str("Cz".into())]),
-    );
     let meta_sfreq_ch = Meta {
         sfreq: Some(250.0),
-        channels: Channels(ch),
+        channels: Axes::new().with(0, Axis::coords(vec![Coord::Str("Fz".into()), Coord::Str("Cz".into())])),
         ..Default::default()
     };
     let meta_index = Meta {

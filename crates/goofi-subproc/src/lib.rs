@@ -499,9 +499,9 @@ mod tests {
         let mut node = RemoteNode::spawn(&py, "def process(x):\n    return x * 2.0\n").unwrap();
 
         let mut meta = Meta::empty();
-        meta.channels.0.insert(
+        meta.channels = goofi_core::Axes::new().with(
             0,
-            std::sync::Arc::new(vec![
+            goofi_core::Axis::coords(vec![
                 goofi_core::Coord::Str("Fz".into()),
                 goofi_core::Coord::Str("Cz".into()),
             ]),
@@ -515,7 +515,7 @@ mod tests {
             _ => panic!("expected array"),
         }
         assert_eq!(floats(&out), vec![0.0, 2.0, 4.0, 6.0, 8.0, 10.0]);
-        let ch = out.meta().channels.0.get(&0).expect("dim0 channels preserved");
+        let ch = out.meta().channels.get(0).and_then(|a| a.coords.clone()).expect("dim0 channels preserved");
         assert_eq!(ch.len(), 2);
     }
 

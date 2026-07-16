@@ -122,11 +122,16 @@ fn pack_meta(d: &Data) -> Vec<u8> {
     buf
 }
 
-fn channels_to_mp(ch: &goofi_core::Channels) -> Mp {
+fn channels_to_mp(ch: &goofi_core::Axes) -> Mp {
+    // Positional axes -> the dim-keyed wire dict (Python-compat). A dimension without
+    // coords emits nothing (byte-identical to the old map for coord-only frames).
+    // Axis names have no wire slot yet — they are internal-first.
     let mut entries: Vec<(Mp, Mp)> = Vec::new();
-    for (&dim, coords) in ch.0.iter() {
-        let list: Vec<Mp> = coords.iter().map(coord_to_mp).collect();
-        entries.push((Mp::from(format!("dim{dim}")), Mp::Array(list)));
+    for (dim, axis) in ch.0.iter().enumerate() {
+        if let Some(coords) = &axis.coords {
+            let list: Vec<Mp> = coords.iter().map(coord_to_mp).collect();
+            entries.push((Mp::from(format!("dim{dim}")), Mp::Array(list)));
+        }
     }
     Mp::Map(entries)
 }
@@ -291,8 +296,10 @@ fn parse_meta(bytes: &[u8]) -> std::result::Result<goofi_core::Meta, String> {
     Ok(meta)
 }
 
-fn parse_channels(v: &Mp) -> goofi_core::Channels {
-    let mut ch = goofi_core::Channels::default();
+fn parse_channels(v: &Mp) -> goofi_core::Axes {
+    // The dim-keyed wire dict -> positional axes, padding empty entries up to the max
+    // labeled dim (entries may arrive out of order).
+    let mut axes = goofi_core::Axes::new();
     if let Mp::Map(entries) = v {
         for (k, list) in entries {
             let Some(dim) = k
@@ -304,11 +311,11 @@ fn parse_channels(v: &Mp) -> goofi_core::Channels {
             };
             if let Mp::Array(items) = list {
                 let coords: Vec<Coord> = items.iter().map(mp_to_coord).collect();
-                ch.0.insert(dim, std::sync::Arc::new(coords));
+                axes = axes.with(dim, goofi_core::Axis::coords(coords));
             }
         }
     }
-    ch
+    axes
 }
 
 fn mp_to_coord(v: &Mp) -> Coord {
@@ -348,8 +355,7 @@ fn mp_to_mv(v: &Mp) -> MetaValue {
 #[cfg(test)]
 mod decode_tests {
     use super::*;
-    use goofi_core::{Coord, DType, Data, Meta, MetaValue, Value};
-    use std::sync::Arc;
+    use goofi_core::{Axes, Axis, Coord, DType, Data, Meta, MetaValue, Value};
 
     fn arr_bytes(d: &Data) -> (DType, Vec<usize>, Vec<u8>) {
         match d.value() {
@@ -365,10 +371,7 @@ mod decode_tests {
         meta.ufreq = Some(128.0);
         meta.index = Some(42);
         meta.extra.insert("label".into(), MetaValue::Str("eeg".into()));
-        meta.channels.0.insert(
-            0,
-            Arc::new(vec![Coord::Str("Fz".into()), Coord::Str("Cz".into())]),
-        );
+        meta.channels = Axes::new().with(0, Axis::coords(vec![Coord::Str("Fz".into()), Coord::Str("Cz".into())]));
         let buf: Vec<u8> = [1.0f32, 2.0].iter().flat_map(|x| x.to_le_bytes()).collect();
         let d = Data::from_array_bytes(DType::F32, vec![2], buf, meta).unwrap();
 
@@ -382,8 +385,8 @@ mod decode_tests {
         assert_eq!(back.meta().index, Some(42));
         assert_eq!(back.meta().extra.get("label"), Some(&MetaValue::Str("eeg".into())));
         assert!(!back.meta().extra.contains_key("ufreq"), "ufreq is a typed field, never extra");
-        let ch = back.meta().channels.0.get(&0).expect("dim0 channels");
-        assert_eq!(ch.as_slice(), &[Coord::Str("Fz".into()), Coord::Str("Cz".into())]);
+        let ch = back.meta().channels.get(0).and_then(|a| a.coords.clone()).expect("dim0 channels");
+        assert_eq!(ch.as_ref(), &[Coord::Str("Fz".into()), Coord::Str("Cz".into())]);
     }
 
     #[test]
