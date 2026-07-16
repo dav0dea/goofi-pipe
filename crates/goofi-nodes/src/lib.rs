@@ -8,6 +8,7 @@
 mod buffer;
 mod clip;
 mod constant_array;
+mod delay;
 mod fft;
 mod function;
 mod math;
