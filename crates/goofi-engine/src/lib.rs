@@ -1911,6 +1911,26 @@ mod tests {
     }
 
     #[test]
+    fn ufreq_survives_the_data_plane_wire() {
+        use std::time::Duration;
+        // End-to-end through the bridge's exact seam: an engine-stamped frame,
+        // encoded as `goofi_codec::encode(latest_frame(..))` (see bridge/lib.rs),
+        // carries ufreq across the wire so the browser inspector shows it.
+        let mut g = Graph::new();
+        let src = g.add_node("ConstantArray", None).unwrap();
+        let t0 = Instant::now();
+        g.tick_at(t0);
+        g.tick_at(t0 + Duration::from_millis(10)); // steady 100 Hz
+        let frame = g.latest_frame(src, "out").unwrap();
+        assert!((frame.meta().ufreq.unwrap() - 100.0).abs() < 1e-6);
+
+        let wire = goofi_codec::encode(&frame);
+        let back = goofi_codec::decode(&wire).expect("data-plane frame decodes");
+        assert_eq!(back.meta().ufreq, frame.meta().ufreq, "ufreq round-trips the data plane");
+        assert!((back.meta().ufreq.unwrap() - 100.0).abs() < 1e-6);
+    }
+
+    #[test]
     fn default_policy_runs_every_tick_regardless_of_clock() {
         use std::time::Duration;
         // A default-policy source (unbounded) must run on every tick even when the
