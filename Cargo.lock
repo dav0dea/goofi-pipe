@@ -297,6 +297,7 @@ version = "0.0.0"
 dependencies = [
  "goofi-bridge",
  "goofi-py",
+ "goofi-subproc",
  "tokio",
 ]
 

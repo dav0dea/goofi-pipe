@@ -1,7 +1,9 @@
 //! `goofi-pipe` — launches the Rust engine + bridge, serving the SPA and the two
 //! WebSocket planes. Flags: `--port N` (default 8000), `--bind HOST` (default
 //! 127.0.0.1), `--headless` (accepted; no UI difference yet), `--python-nodes DIR`
-//! (discover in-process Python nodes from DIR; requires the `python` feature).
+//! (discover in-process Python nodes; requires the `python` feature),
+//! `--subproc-nodes DIR` (discover isolated-GIL subprocess Python nodes, runs on
+//! `--subproc-python` (default `python3`)).
 
 use goofi_bridge::{resolve_frontend_dir, serve_app, spawn_tick, AppState};
 
@@ -10,6 +12,8 @@ async fn main() {
     let mut port: u16 = 8000;
     let mut bind = String::from("127.0.0.1");
     let mut python_nodes: Option<String> = None;
+    let mut subproc_nodes: Option<String> = None;
+    let mut subproc_python = String::from("python3");
     let mut list_nodes = false;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -30,11 +34,20 @@ async fn main() {
             "--python-nodes" => {
                 python_nodes = args.next();
             }
+            "--subproc-nodes" => {
+                subproc_nodes = args.next();
+            }
+            "--subproc-python" => {
+                if let Some(v) = args.next() {
+                    subproc_python = v;
+                }
+            }
             "--headless" => {}
             "--list-nodes" => list_nodes = true,
             "-h" | "--help" => {
                 println!(
-                    "usage: goofi-pipe [--port N] [--bind HOST] [--headless] [--python-nodes DIR]"
+                    "usage: goofi-pipe [--port N] [--bind HOST] [--headless] \
+                     [--python-nodes DIR] [--subproc-nodes DIR] [--subproc-python BIN]"
                 );
                 return;
             }
@@ -48,12 +61,14 @@ async fn main() {
     if list_nodes {
         let mut names = goofi_bridge::catalog_type_names();
         names.extend(python_type_names(python_nodes.as_deref()));
+        names.extend(subproc_type_names(subproc_nodes.as_deref(), &subproc_python));
         println!("{} node types: {}", names.len(), names.join(", "));
         return;
     }
 
     let state = AppState::new();
     register_python(&state, python_nodes.as_deref());
+    register_subproc(&state, subproc_nodes.as_deref(), &subproc_python);
     spawn_tick(state.graph.clone(), 60);
 
     let listener = match tokio::net::TcpListener::bind((bind.as_str(), port)).await {
@@ -121,4 +136,32 @@ fn python_type_names(dir: Option<&str>) -> Vec<String> {
         eprintln!("--python-nodes ignored: this binary was built without the `python` feature");
     }
     Vec::new()
+}
+
+/// Discover and register isolated-GIL subprocess Python node types (no build-time
+/// Python needed — only a `python` interpreter at run time). Always available.
+fn register_subproc(state: &AppState, dir: Option<&str>, python: &str) {
+    let Some(dir) = dir else { return };
+    match goofi_subproc::discover(std::path::Path::new(dir), python) {
+        Ok(types) => {
+            let n = types.len();
+            let mut g = state.graph.lock().unwrap();
+            for t in types {
+                g.register_dyn_type(t.manifest, t.factory);
+            }
+            println!("  registered {n} subprocess node type(s) from {dir} (python `{python}`)");
+        }
+        Err(e) => eprintln!("failed to discover subprocess nodes in {dir}: {e}"),
+    }
+}
+
+fn subproc_type_names(dir: Option<&str>, python: &str) -> Vec<String> {
+    let Some(dir) = dir else { return Vec::new() };
+    match goofi_subproc::discover(std::path::Path::new(dir), python) {
+        Ok(types) => types.iter().map(|t| t.manifest.type_name.to_string()).collect(),
+        Err(e) => {
+            eprintln!("failed to discover subprocess nodes in {dir}: {e}");
+            Vec::new()
+        }
+    }
 }
