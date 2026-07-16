@@ -20,3 +20,9 @@ mod discover;
 
 #[cfg(feature = "embed")]
 pub use discover::{discover, discover_one, PyNodeType};
+
+#[cfg(feature = "embed")]
+mod expr;
+
+#[cfg(feature = "embed")]
+pub use expr::PyExprEvaluator;
