@@ -1,0 +1,13 @@
+[package]
+name = "goofi-view"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# Shared, payload-free: the ViewSpec algebra is generic over the `Reducible` seam, so this
+# crate depends on NO pillar payload (no goofi-core/Data). serde for the /data inband JSON.
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+
+[dev-dependencies]
+serde_json = "1"
