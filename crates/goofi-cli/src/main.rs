@@ -73,6 +73,7 @@ async fn main() {
     }
 
     let state = AppState::new();
+    register_evaluator(&state);
     register_python(&state, python_nodes.as_deref());
     register_subproc(&state, subproc_nodes.as_deref(), &subproc_python);
     register_auto(&state, auto_nodes.as_deref(), &subproc_python);
@@ -98,6 +99,26 @@ async fn main() {
         eprintln!("server error: {e}");
         std::process::exit(1);
     }
+}
+
+/// Install the pyo3 param-expression evaluator into the graph. Independent of
+/// `--python-nodes`: expressions are a core feature, needing only the embedded
+/// free-threaded interpreter the `python` feature links.
+#[cfg(feature = "python")]
+fn register_evaluator(state: &AppState) {
+    match goofi_py::PyExprEvaluator::new() {
+        Ok(ev) => {
+            state.graph.lock().unwrap().set_evaluator(std::sync::Arc::new(ev));
+            println!("  param-expression evaluator ready (free-threaded Python)");
+        }
+        Err(e) => eprintln!("param-expression evaluator unavailable: {e}"),
+    }
+}
+
+#[cfg(not(feature = "python"))]
+fn register_evaluator(_state: &AppState) {
+    // Without the `python` feature there is no embedded interpreter; expression
+    // bindings are stored but not evaluated (the graph reports the missing evaluator).
 }
 
 /// Discover and register in-process Python node types into the live graph.
