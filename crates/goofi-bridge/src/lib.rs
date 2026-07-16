@@ -117,21 +117,27 @@ fn error_transitions(
     changed
 }
 
-/// Broadcast each node's measured update frequency (`node_stats`) at `hz`, and push a
-/// `state_update` whenever a node's error state changes. The tick loop emits nothing, so
+/// Broadcast each node's measured update frequency (`node_stats`) at `hz`, and push an
+/// `error` event whenever a node's error state changes. The tick loop emits nothing, so
 /// without this a RUNTIME error that appears mid-run (an expression that compiles but
-/// fails on later data, a process error) would not turn the node border / per-param
-/// expression field red until an unrelated RPC or a reconnect. De-duped: one push per
-/// transition, not per tick.
+/// fails on later data, a process error) would not turn the node border red until an
+/// unrelated RPC or a reconnect. De-duped: one push per transition, not per tick.
+///
+/// The transition push is the identity-only `error` event (node + error), NOT a
+/// full-params `state_update`: this async 2 Hz snapshot must never carry params, or a
+/// stale snapshot could arrive after — and clobber — a concurrent `update_param` edit on
+/// the same node (both ride the one broadcast channel, and the frontend replaces params
+/// wholesale). The per-param expression-error field refreshes on the next RPC; the node
+/// border + console update live here.
 pub fn spawn_stats(graph: Arc<Mutex<Graph>>, events: broadcast::Sender<String>, hz: u64) {
     std::thread::spawn(move || {
         let period = Duration::from_secs_f64(1.0 / hz as f64);
         let mut last_errors: HashMap<String, Option<String>> = HashMap::new();
         loop {
             std::thread::sleep(period);
-            let (rates, updates): (Vec<(String, f64)>, Vec<String>) = {
+            let (rates, errs) = {
                 let g = graph.lock().unwrap();
-                let mut rates = Vec::new();
+                let mut rates: Vec<(String, f64)> = Vec::new();
                 let mut errs: Vec<(String, Option<String>)> = Vec::new();
                 for u in g.node_uids() {
                     let hex = u.to_hex();
@@ -140,28 +146,10 @@ pub fn spawn_stats(graph: Arc<Mutex<Graph>>, events: broadcast::Sender<String>, 
                     }
                     errs.push((hex, g.last_error(u).map(str::to_string)));
                 }
-                // Build the state_update payloads for changed nodes while the lock is held.
-                let changed = error_transitions(&errs, &mut last_errors);
-                let updates = changed
-                    .iter()
-                    .filter_map(|hex| Uid::from_hex(hex).map(|u| (hex.clone(), u)))
-                    .map(|(hex, u)| {
-                        event(
-                            "state_update",
-                            json!({
-                                "node": hex,
-                                "params": schemas::describe_node_params(&g, u),
-                                "output_subscribers": {},
-                                "stage": "ready",
-                                "error": g.last_error(u),
-                                "log_endpoint": Value::Null,
-                                "refreshed_params": [],
-                            }),
-                        )
-                    })
-                    .collect();
-                (rates, updates)
+                (rates, errs)
             };
+            // Diff + build payloads after releasing the lock (both inputs are owned).
+            let changed = error_transitions(&errs, &mut last_errors);
             for (node, ufreq) in rates {
                 // Only send what we actually measure — no fabricated process-time /
                 // tick-count placeholders (the frontend treats those as optional).
@@ -171,8 +159,9 @@ pub fn spawn_stats(graph: Arc<Mutex<Graph>>, events: broadcast::Sender<String>, 
                 });
                 let _ = events.send(ev.to_string());
             }
-            for ev in updates {
-                let _ = events.send(ev);
+            for hex in changed {
+                let err = errs.iter().find(|(h, _)| *h == hex).and_then(|(_, e)| e.clone());
+                let _ = events.send(event("error", json!({ "node": hex, "error": err })));
             }
         }
     });
