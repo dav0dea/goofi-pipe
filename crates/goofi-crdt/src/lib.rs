@@ -705,7 +705,15 @@ mod tests {
         let rec = sample_instance();
         doc.upsert_instance("00000000000000f0", &rec);
         assert_eq!(doc.instance_ids(), vec!["00000000000000f0"]);
-        assert_eq!(doc.instance_record("00000000000000f0"), Some(rec));
+        // members/interface are read back from Y.Maps (key order not guaranteed), so normalize by
+        // sorting before comparing — consumers key them by name/bnd_id, not position.
+        let mut got = doc.instance_record("00000000000000f0").expect("mirrored");
+        got.members.sort();
+        got.interface.sort_by(|a, b| a.bnd_id.cmp(&b.bnd_id));
+        let mut want = rec;
+        want.members.sort();
+        want.interface.sort_by(|a, b| a.bnd_id.cmp(&b.bnd_id));
+        assert_eq!(got, want);
         assert_eq!(doc.instance_record("nope"), None);
     }
 
