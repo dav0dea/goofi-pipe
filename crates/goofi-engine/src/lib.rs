@@ -1049,6 +1049,18 @@ impl Graph {
         Ok(peers)
     }
 
+    /// Move a member, re-projecting to every shared sibling (§4.5 — a shared sub-patch's internal
+    /// layout is shared) and syncing the def's stored pos. A ROOT node or the instance box itself
+    /// (not a shared member) moves only itself — identical to `set_node_pos`.
+    pub fn set_member_pos(&mut self, uid: Uid, pos: [f64; 2]) -> Result<Vec<Uid>, String> {
+        let peers = self.shared_member_peers(uid);
+        for &peer in &peers {
+            self.set_node_pos(peer, pos)?;
+        }
+        self.sync_def_member(uid);
+        Ok(peers)
+    }
+
     /// Fork a shared instance's def to a fresh private copy (refcount 1) and repoint the
     /// instance. Pure bookkeeping — the live leaves already match the fork, so nothing respawns.
     pub fn make_unique(&mut self, inst: Uid) -> Result<subpatch::DefId, String> {

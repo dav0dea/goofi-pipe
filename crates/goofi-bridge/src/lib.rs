@@ -509,8 +509,12 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
             "set_node_pos" => {
                 let uid = parse_uid(&payload, "node")?;
                 let pos = payload.get("pos").and_then(parse_pos).ok_or("missing pos")?;
-                g.set_node_pos(uid, pos)?;
-                events.push(event("node_moved", json!({ "node": uid.to_hex(), "pos": pos })));
+                // A shared member's move mirrors to every sibling (§4.5); a ROOT node or the
+                // instance box moves only itself.
+                let moved = g.set_member_pos(uid, pos)?;
+                for peer in moved {
+                    events.push(event("node_moved", json!({ "node": peer.to_hex(), "pos": pos })));
+                }
                 Ok(json!({ "ok": true }))
             }
             "set_node_viewers" => {
