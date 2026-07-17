@@ -264,15 +264,8 @@ pub fn spawn_workers(state: &AppState) {
     spawn_stats(state.graph.clone(), state.events.clone(), 2);
 }
 
-/// Serve on an already-bound listener, API only (used by tests for an ephemeral port).
-pub async fn serve_listener(
-    listener: tokio::net::TcpListener,
-    state: AppState,
-) -> std::io::Result<()> {
-    axum::serve(listener, router(state)).await
-}
-
-/// Serve on an already-bound listener with optional static SPA serving.
+/// Serve on an already-bound listener with optional static SPA serving. Passing `None` serves the
+/// API only (`app(state, None)` is exactly `router(state)`) — what tests use for an ephemeral port.
 pub async fn serve_app(
     listener: tokio::net::TcpListener,
     state: AppState,

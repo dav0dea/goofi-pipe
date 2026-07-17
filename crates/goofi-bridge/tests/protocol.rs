@@ -6,7 +6,7 @@
 use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
-use goofi_bridge::{serve_listener, spawn_tick, spawn_workers, AppState};
+use goofi_bridge::{serve_app, spawn_tick, spawn_workers, AppState};
 use goofi_view::Reducible; // shape()/ndim() accessors on a decoded frame
 use serde_json::{json, Value};
 use tokio_tungstenite::connect_async;
@@ -33,7 +33,7 @@ async fn start_server() -> String {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     tokio::spawn(async move {
-        serve_listener(listener, state).await.unwrap();
+        serve_app(listener, state, None).await.unwrap();
     });
     format!("ws://{addr}")
 }
@@ -70,7 +70,7 @@ async fn start_server_with_runtime_type() -> String {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     tokio::spawn(async move {
-        serve_listener(listener, state).await.unwrap();
+        serve_app(listener, state, None).await.unwrap();
     });
     format!("ws://{addr}")
 }
@@ -933,7 +933,7 @@ async fn node_stats_broadcasts_the_measured_ufreq() {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     tokio::spawn(async move {
-        serve_listener(listener, state).await.unwrap();
+        serve_app(listener, state, None).await.unwrap();
     });
     let base = format!("ws://{addr}");
 
@@ -975,7 +975,7 @@ async fn param_values_broadcasts_live_expression_values() {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     tokio::spawn(async move {
-        serve_listener(listener, state).await.unwrap();
+        serve_app(listener, state, None).await.unwrap();
     });
     let base = format!("ws://{addr}");
     let (mut ws, _) = connect_async(format!("{base}/control")).await.unwrap();
