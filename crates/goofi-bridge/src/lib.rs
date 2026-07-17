@@ -1,12 +1,10 @@
 //! goofi-bridge — the axum HTTP/WebSocket server that exposes the engine to the
 //! browser: the `/control` JSON RPC + broadcast-event plane and the
-//! `/data/<node>/<slot>/<kind>` binary GOOF plane. Event-sourced: RPCs return
-//! thin acks; real state changes arrive as broadcast events the client applies.
-//!
-//! M1 scope: hello/snapshot, list_nodes, add_node/remove_node/add_link/
-//! remove_link/update_param/set_node_pos/rename_node, and full-resolution GOOF
-//! frame streaming. Inbound ViewSpec negotiation, log SSE, sub-patches, and
-//! static SPA serving arrive in later milestones.
+//! `/data/<node>/<slot>` binary GOOF plane — ONE reduced stream per (node, slot);
+//! the viewer kind is NOT in the path (viewers send their ViewSpec inband via
+//! `{op:"view"}`). Event-sourced: RPCs return thin acks; real state changes arrive
+//! as broadcast events the client applies. The built SPA is served from disk
+//! (`frontend/build`, or `GOOFI_FRONTEND_BUILD`) via `ServeDir`.
 
 mod schemas;
 
