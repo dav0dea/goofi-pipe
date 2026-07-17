@@ -79,14 +79,28 @@ pub enum ReduceMethod {
 }
 
 impl ReduceMethod {
-    /// Richest-wins ordering on a merge conflict: envelope > area > subsample. A richer
-    /// method is a superset a poorer viewer can still render (envelope keeps a waveform's
-    /// peaks; a subsample viewer can still draw the envelope's points).
-    pub fn richness(self) -> u8 {
-        match self {
-            ReduceMethod::Envelope => 3,
-            ReduceMethod::Area => 2,
-            ReduceMethod::Subsample => 1,
+    /// Merge two reduction methods requested on the SAME axis by different viewers (the "reduce once,
+    /// fan out to all" invariant means one method must serve every subscriber). Within the LINE
+    /// family (subsample<->envelope) the richer wins — envelope is a superset a subsample viewer can
+    /// still draw. ACROSS families "richest" is meaningless: envelope doubles an axis into
+    /// interleaved [min,max] (uninterpretable as an image), and area is a block-MEAN (destroys the
+    /// exact samples a line/trajectory viewer needs). The only value- and position-preserving
+    /// reduction BOTH an image and a line/trajectory viewer can render is exact subsampling, so a
+    /// cross-family conflict degrades to Subsample — the safe common denominator.
+    fn merge(self, other: ReduceMethod) -> ReduceMethod {
+        use ReduceMethod::*;
+        match (self, other) {
+            (Area, Area) => Area,
+            // Line family only (neither is Area): richest wins.
+            (a, b) if a != Area && b != Area => {
+                if a == Envelope || b == Envelope {
+                    Envelope
+                } else {
+                    Subsample
+                }
+            }
+            // Cross-family (area vs a line-family method).
+            _ => Subsample,
         }
     }
 }
@@ -208,9 +222,7 @@ pub fn plan<R: Reducible + ?Sized>(specs: &[ViewSpec], frame: &R) -> MergedViewS
             match folded.get_mut(&d) {
                 Some((mx, m)) => {
                     *mx = (*mx).max(r.max);
-                    if r.method.richness() > m.richness() {
-                        *m = r.method;
-                    }
+                    *m = m.merge(r.method);
                 }
                 None => {
                     order.push(d);
@@ -404,6 +416,35 @@ mod tests {
         let b = line_1d(300); // envelope, max 300
         let plan = plan(&[a, b], &Frame::array(&[10_000]));
         assert_eq!(plan.axes, vec![PlannedAxis { dim: 0, max: 300, method: ReduceMethod::Envelope }]);
+    }
+
+    #[test]
+    fn cross_family_axis_conflict_degrades_to_subsample() {
+        // A line viewer (envelope) and an image viewer (area/block-mean) co-view the SAME 2-D slot;
+        // both admit a 2-D array, so their specs merge per-axis. envelope and area are DIFFERENT
+        // families — envelope doubles an axis into interleaved [min,max] (uninterpretable as an
+        // image), area block-means (destroys the exact samples a line viewer needs). "Richest wins"
+        // is only valid WITHIN the line family (subsample<->envelope); across families the only
+        // value/position-preserving reduction both can render is exact subsampling. So the conflict
+        // must degrade to Subsample, not envelope. Otherwise the image viewer draws corrupt pixels.
+        let line = ViewSpec {
+            dtype: ViewDtype::Array,
+            ndim: vec![(DimCmp::Le, 3)],
+            dims: vec![],
+            reduce: vec![AxisReduce { dim: 1, max: 500, method: ReduceMethod::Envelope }],
+        };
+        let image = ViewSpec {
+            dtype: ViewDtype::Array,
+            ndim: vec![(DimCmp::Ge, 2), (DimCmp::Le, 3)],
+            dims: vec![],
+            reduce: vec![AxisReduce { dim: 1, max: 300, method: ReduceMethod::Area }],
+        };
+        let plan = plan(&[line, image], &Frame::array(&[8, 4000]));
+        assert_eq!(
+            plan.axes,
+            vec![PlannedAxis { dim: 1, max: 500, method: ReduceMethod::Subsample }],
+            "cross-family (envelope vs area) must degrade to the common denominator: subsample"
+        );
     }
 
     #[test]
