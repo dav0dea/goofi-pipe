@@ -23,6 +23,29 @@ export interface LinkView {
 	slot_in: string;
 }
 
+export interface BoundaryView {
+	bnd_id: string;
+	dir: string; // 'in' | 'out'
+	dtype: string;
+	name: string;
+	pos: [number, number];
+	inner_node?: string;
+	inner_slot?: string;
+}
+
+export interface InstanceView {
+	uid: string;
+	name: string;
+	/** Shared def id, or `undefined` when the instance is unique. */
+	def_id?: string;
+	/** Parent scope uid, or `'__root__'` for a top-level instance. */
+	parent: string;
+	pos: [number, number];
+	/** local name → live member uid. */
+	members: Record<string, string>;
+	interface: BoundaryView[];
+}
+
 /** The `nodes` root map. */
 export function nodesMap(doc: Y.Doc): Y.Map<Y.Map<unknown>> {
 	return doc.getMap('nodes') as Y.Map<Y.Map<unknown>>;
@@ -93,6 +116,66 @@ function paramEntry(
 	const params = nodesMap(doc).get(uid)?.get('params') as Y.Map<Y.Map<unknown>> | undefined;
 	const g = params?.get(group) as Y.Map<Y.Map<unknown>> | undefined;
 	return g?.get(name) as Y.Map<unknown> | undefined;
+}
+
+/** The `instances` root map (the sub-patch forest). */
+export function instancesMap(doc: Y.Doc): Y.Map<Y.Map<unknown>> {
+	return doc.getMap('instances') as Y.Map<Y.Map<unknown>>;
+}
+
+function pos2(m: Y.Map<unknown> | undefined): [number, number] {
+	const p = m?.get('pos') as Y.Map<unknown> | undefined;
+	const n = (k: string) => {
+		const v = p?.get(k);
+		return typeof v === 'number' ? v : 0;
+	};
+	return [n('x'), n('y')];
+}
+
+/** A sub-patch instance's forest view, or `null` if the uid is absent. */
+export function instanceView(doc: Y.Doc, uid: string): InstanceView | null {
+	const inst = instancesMap(doc).get(uid);
+	if (!inst) return null;
+	const members: Record<string, string> = {};
+	const mm = inst.get('members') as Y.Map<unknown> | undefined;
+	if (mm) for (const [local, u] of mm.entries()) if (typeof u === 'string') members[local] = u;
+	const iface: BoundaryView[] = [];
+	const im = inst.get('interface') as Y.Map<Y.Map<unknown>> | undefined;
+	if (im) {
+		for (const [bnd, b] of im.entries()) {
+			const inner_node = b.get('inner_node');
+			const inner_slot = b.get('inner_slot');
+			iface.push({
+				bnd_id: bnd,
+				dir: str(b, 'dir'),
+				dtype: str(b, 'dtype'),
+				name: str(b, 'name'),
+				pos: pos2(b),
+				inner_node: typeof inner_node === 'string' ? inner_node : undefined,
+				inner_slot: typeof inner_slot === 'string' ? inner_slot : undefined
+			});
+		}
+	}
+	const def = inst.get('def_id');
+	return {
+		uid,
+		name: str(inst, 'name'),
+		def_id: typeof def === 'string' ? def : undefined,
+		parent: str(inst, 'parent'),
+		pos: pos2(inst),
+		members,
+		interface: iface
+	};
+}
+
+/** All sub-patch instance views, in the doc's key order. */
+export function instanceViews(doc: Y.Doc): InstanceView[] {
+	const out: InstanceView[] = [];
+	for (const uid of instancesMap(doc).keys()) {
+		const v = instanceView(doc, uid);
+		if (v) out.push(v);
+	}
+	return out;
 }
 
 /** All links, in array order. */

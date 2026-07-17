@@ -7,7 +7,10 @@ import {
 	nodeViews,
 	paramValue,
 	paramExprSource,
-	linkViews
+	linkViews,
+	instancesMap,
+	instanceView,
+	instanceViews
 } from './graphDoc';
 
 /** Build a doc in the exact shape the Rust `GraphDoc` mirror writes. */
@@ -80,6 +83,57 @@ describe('graphDoc readers', () => {
 		expect(linkViews(doc)).toEqual([
 			{ node_out: 'a', slot_out: 'out', node_in: 'b', slot_in: 'data' }
 		]);
+	});
+
+	it('reads the sub-patch forest (instances, members, interface)', () => {
+		// Build an instance in the exact shape the Rust mirror writes.
+		const doc = new Y.Doc();
+		const inst = new Y.Map<unknown>();
+		inst.set('name', 'subpatch0');
+		inst.set('parent', '__root__');
+		const ipos = new Y.Map<unknown>();
+		ipos.set('x', 5);
+		ipos.set('y', 6);
+		inst.set('pos', ipos);
+		const members = new Y.Map<unknown>();
+		members.set('buffer0', 'm1');
+		inst.set('members', members);
+		const iface = new Y.Map<unknown>();
+		const out0 = new Y.Map<unknown>();
+		out0.set('dir', 'out');
+		out0.set('dtype', 'ARRAY');
+		out0.set('name', 'wave');
+		const bpos = new Y.Map<unknown>();
+		bpos.set('x', 1);
+		bpos.set('y', 2);
+		out0.set('pos', bpos);
+		out0.set('inner_node', 'm1');
+		out0.set('inner_slot', 'out');
+		iface.set('out0', out0);
+		inst.set('interface', iface);
+		instancesMap(doc).set('i1', inst);
+
+		expect(instanceViews(doc).map((i) => i.uid)).toEqual(['i1']);
+		expect(instanceView(doc, 'i1')).toEqual({
+			uid: 'i1',
+			name: 'subpatch0',
+			def_id: undefined,
+			parent: '__root__',
+			pos: [5, 6],
+			members: { buffer0: 'm1' },
+			interface: [
+				{
+					bnd_id: 'out0',
+					dir: 'out',
+					dtype: 'ARRAY',
+					name: 'wave',
+					pos: [1, 2],
+					inner_node: 'm1',
+					inner_slot: 'out'
+				}
+			]
+		});
+		expect(instanceView(doc, 'missing')).toBeNull();
 	});
 
 	it('reflects live edits (the reactive-read contract)', () => {

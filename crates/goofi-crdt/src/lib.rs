@@ -73,6 +73,35 @@ pub struct LinkRecord {
     pub slot_in: String,
 }
 
+/// One exposed sub-patch boundary port, as mirrored into the doc.
+#[derive(Clone, Debug, PartialEq)]
+pub struct BoundaryRecord {
+    pub bnd_id: String,
+    pub dir: String,   // "in" | "out"
+    pub dtype: String, // "ARRAY" | "STRING" | "TABLE"
+    pub name: String,
+    pub pos: [f64; 2],
+    /// The wired inner leaf (hex uid + slot), or `None` when the boundary is unwired.
+    pub inner_node: Option<String>,
+    pub inner_slot: Option<String>,
+}
+
+/// A sub-patch instance as mirrored into the doc — the manager-written forest (§4.2). Identity +
+/// parentage + placement + the local→uid member map + the exposed interface. Runtime-derived
+/// fields (error, siblings, resolved slot types) stay on the event/runtime plane.
+#[derive(Clone, Debug, PartialEq)]
+pub struct InstanceRecord {
+    pub name: String,
+    /// The shared def id (hex) when the instance is shared; `None` when unique.
+    pub def_id: Option<String>,
+    /// Parent scope (hex uid, or "__root__" for a top-level instance).
+    pub parent: String,
+    pub pos: [f64; 2],
+    /// local name → live member uid (hex). The SSOT for member identity.
+    pub members: Vec<(String, String)>,
+    pub interface: Vec<BoundaryRecord>,
+}
+
 /// Insert a scalar json value (number/bool/string; anything else → Null) into a yrs map.
 fn insert_scalar(map: &MapRef, txn: &mut yrs::TransactionMut, key: &str, v: &serde_json::Value) {
     match v {
@@ -121,12 +150,37 @@ fn get_or_insert_map(parent: &MapRef, txn: &mut yrs::TransactionMut, key: &str) 
     }
 }
 
+/// Idempotent scalar write: only touch `key` when its stored value actually differs. Every
+/// re-mirror (which re-asserts the whole graph after each op) then produces zero ops for an
+/// unchanged field — no churn and, load-bearing, no concurrent competing write that could race a
+/// client's edit (the same discipline as the in-place [`GraphDoc::set_param`]).
+fn set_scalar_if_changed(map: &MapRef, txn: &mut yrs::TransactionMut, key: &str, v: &serde_json::Value) {
+    if !scalar_unchanged(map, txn, key, v) {
+        insert_scalar(map, txn, key, v);
+    }
+}
+
+/// Idempotent `[x, y]` write onto a nested `pos` map.
+fn set_pos_if_changed(parent: &MapRef, txn: &mut yrs::TransactionMut, pos: [f64; 2]) {
+    let m = get_or_insert_map(parent, txn, "pos");
+    set_scalar_if_changed(&m, txn, "x", &serde_json::json!(pos[0]));
+    set_scalar_if_changed(&m, txn, "y", &serde_json::json!(pos[1]));
+}
+
+/// Remove every key of `map` not present in `keep` (used to prune stale members/boundaries when
+/// a re-mirror shrinks a collection).
+fn retain_keys<T: ReadTxn>(map: &MapRef, txn_keys: &T, keep: &std::collections::HashSet<String>) -> Vec<String> {
+    map.keys(txn_keys).map(|k| k.to_string()).filter(|k| !keep.contains(k)).collect()
+}
+
 /// The control-plane document. `nodes` is a Map<uid, {type, name, pos, params, viewers}>,
-/// `links` an Array of {node_out, slot_out, node_in, slot_in} (added in a later task).
+/// `links` an Array of {node_out, slot_out, node_in, slot_in}, and `instances` the sub-patch
+/// forest — a Map<uid, {name, def_id?, parent, pos, members:Map<local,uid>, interface:Map<bnd,…>}>.
 pub struct GraphDoc {
     doc: Doc,
     nodes: MapRef,
     links: ArrayRef,
+    instances: MapRef,
 }
 
 impl GraphDoc {
@@ -134,7 +188,8 @@ impl GraphDoc {
         let doc = Doc::new();
         let nodes = doc.get_or_insert_map("nodes");
         let links = doc.get_or_insert_array("links");
-        GraphDoc { doc, nodes, links }
+        let instances = doc.get_or_insert_map("instances");
+        GraphDoc { doc, nodes, links, instances }
     }
 
     /// The uids of all nodes currently in the doc.
@@ -329,6 +384,128 @@ impl GraphDoc {
         self.nodes.remove(&mut txn, uid);
     }
 
+    /// The uids of all sub-patch instances currently in the doc.
+    pub fn instance_ids(&self) -> Vec<String> {
+        let txn = self.doc.transact();
+        self.instances.keys(&txn).map(|k| k.to_string()).collect()
+    }
+
+    /// Insert or update a sub-patch instance's mirror record, IN PLACE (stable maps, per-field
+    /// skip-if-unchanged), so a re-mirror of an unchanged instance produces zero ops — same
+    /// idempotency discipline as [`Self::set_param`], and required for the same reason (the
+    /// mirror re-asserts the whole forest after every op).
+    pub fn upsert_instance(&mut self, uid: &str, rec: &InstanceRecord) {
+        use std::collections::HashSet;
+        let mut txn = self.doc.transact_mut();
+        let inst = match self.instances.get(&txn, uid).and_then(|v| v.cast::<MapRef>().ok()) {
+            Some(m) => m,
+            None => self.instances.insert(&mut txn, uid, MapPrelim::default()),
+        };
+        set_scalar_if_changed(&inst, &mut txn, "name", &serde_json::json!(rec.name));
+        set_scalar_if_changed(&inst, &mut txn, "parent", &serde_json::json!(rec.parent));
+        match &rec.def_id {
+            Some(d) => set_scalar_if_changed(&inst, &mut txn, "def_id", &serde_json::json!(d)),
+            None if inst.get(&txn, "def_id").is_some() => {
+                inst.remove(&mut txn, "def_id");
+            }
+            None => {}
+        }
+        set_pos_if_changed(&inst, &mut txn, rec.pos);
+
+        // members: Map<local, uid> — set-if-changed, prune stale locals.
+        let members = get_or_insert_map(&inst, &mut txn, "members");
+        let keep: HashSet<String> = rec.members.iter().map(|(l, _)| l.clone()).collect();
+        for k in retain_keys(&members, &txn, &keep) {
+            members.remove(&mut txn, &k);
+        }
+        for (local, muid) in &rec.members {
+            set_scalar_if_changed(&members, &mut txn, local, &serde_json::json!(muid));
+        }
+
+        // interface: Map<bnd_id, {dir, dtype, name, pos, inner_node?, inner_slot?}>.
+        let iface = get_or_insert_map(&inst, &mut txn, "interface");
+        let keep_b: HashSet<String> = rec.interface.iter().map(|b| b.bnd_id.clone()).collect();
+        for k in retain_keys(&iface, &txn, &keep_b) {
+            iface.remove(&mut txn, &k);
+        }
+        for b in &rec.interface {
+            let bm = get_or_insert_map(&iface, &mut txn, &b.bnd_id);
+            set_scalar_if_changed(&bm, &mut txn, "dir", &serde_json::json!(b.dir));
+            set_scalar_if_changed(&bm, &mut txn, "dtype", &serde_json::json!(b.dtype));
+            set_scalar_if_changed(&bm, &mut txn, "name", &serde_json::json!(b.name));
+            set_pos_if_changed(&bm, &mut txn, b.pos);
+            match &b.inner_node {
+                Some(n) => set_scalar_if_changed(&bm, &mut txn, "inner_node", &serde_json::json!(n)),
+                None if bm.get(&txn, "inner_node").is_some() => {
+                    bm.remove(&mut txn, "inner_node");
+                }
+                None => {}
+            }
+            match &b.inner_slot {
+                Some(s) => set_scalar_if_changed(&bm, &mut txn, "inner_slot", &serde_json::json!(s)),
+                None if bm.get(&txn, "inner_slot").is_some() => {
+                    bm.remove(&mut txn, "inner_slot");
+                }
+                None => {}
+            }
+        }
+    }
+
+    pub fn remove_instance(&mut self, uid: &str) {
+        let mut txn = self.doc.transact_mut();
+        self.instances.remove(&mut txn, uid);
+    }
+
+    /// Read back a mirrored instance record (for tests / a manager-side reader).
+    pub fn instance_record(&self, uid: &str) -> Option<InstanceRecord> {
+        let txn = self.doc.transact();
+        let inst = self.instances.get(&txn, uid).and_then(|v| v.cast::<MapRef>().ok())?;
+        let s = |m: &MapRef, k: &str| match m.get(&txn, k) {
+            Some(Out::Any(Any::String(v))) => Some(v.to_string()),
+            _ => None,
+        };
+        let pos_of = |m: &MapRef| -> [f64; 2] {
+            let p = m.get(&txn, "pos").and_then(|v| v.cast::<MapRef>().ok());
+            let f = |k: &str| match p.as_ref().and_then(|pm| pm.get(&txn, k)) {
+                Some(Out::Any(Any::Number(n))) => n,
+                _ => 0.0,
+            };
+            [f("x"), f("y")]
+        };
+        let mut members = Vec::new();
+        if let Some(mm) = inst.get(&txn, "members").and_then(|v| v.cast::<MapRef>().ok()) {
+            for local in mm.keys(&txn) {
+                if let Some(uid) = s(&mm, local) {
+                    members.push((local.to_string(), uid));
+                }
+            }
+        }
+        let mut interface = Vec::new();
+        if let Some(im) = inst.get(&txn, "interface").and_then(|v| v.cast::<MapRef>().ok()) {
+            for bnd in im.keys(&txn) {
+                if let Some(bm) = im.get(&txn, bnd).and_then(|v| v.cast::<MapRef>().ok()) {
+                    interface.push(BoundaryRecord {
+                        bnd_id: bnd.to_string(),
+                        dir: s(&bm, "dir").unwrap_or_default(),
+                        dtype: s(&bm, "dtype").unwrap_or_default(),
+                        name: s(&bm, "name").unwrap_or_default(),
+                        pos: pos_of(&bm),
+                        inner_node: s(&bm, "inner_node"),
+                        inner_slot: s(&bm, "inner_slot"),
+                    });
+                }
+            }
+        }
+        Some(InstanceRecord {
+            name: s(&inst, "name").unwrap_or_default(),
+            def_id: s(&inst, "def_id"),
+            parent: s(&inst, "parent").unwrap_or_default(),
+            pos: pos_of(&inst),
+            members,
+            interface,
+        })
+    }
+
     /// The full document state as a v1 update (what a joining client would receive).
     pub fn encode_state(&self) -> Vec<u8> {
         let txn = self.doc.transact();
@@ -501,6 +678,60 @@ mod tests {
             doc.param_value("000000000001", "common", "max_frequency"),
             Some(json!(42.0))
         );
+    }
+
+    fn sample_instance() -> InstanceRecord {
+        InstanceRecord {
+            name: "subpatch0".into(),
+            def_id: Some("00000000000000aa".into()),
+            parent: "__root__".into(),
+            pos: [10.0, 20.0],
+            members: vec![("buffer0".into(), "000000000001".into()), ("osc0".into(), "000000000002".into())],
+            interface: vec![BoundaryRecord {
+                bnd_id: "out0".into(),
+                dir: "out".into(),
+                dtype: "ARRAY".into(),
+                name: "wave".into(),
+                pos: [1.0, 2.0],
+                inner_node: Some("000000000001".into()),
+                inner_slot: Some("out".into()),
+            }],
+        }
+    }
+
+    #[test]
+    fn upsert_instance_round_trips_the_forest_record() {
+        let mut doc = GraphDoc::new();
+        let rec = sample_instance();
+        doc.upsert_instance("00000000000000f0", &rec);
+        assert_eq!(doc.instance_ids(), vec!["00000000000000f0"]);
+        assert_eq!(doc.instance_record("00000000000000f0"), Some(rec));
+        assert_eq!(doc.instance_record("nope"), None);
+    }
+
+    #[test]
+    fn upsert_instance_is_idempotent_and_prunes_removed_members() {
+        // The forest mirror re-asserts every instance after every op, so re-upserting an
+        // unchanged record must produce NO doc ops (empty diff) — same discipline as set_param.
+        let mut doc = GraphDoc::new();
+        doc.upsert_instance("00000000000000f0", &sample_instance());
+        let sv = doc.state_vector();
+        doc.upsert_instance("00000000000000f0", &sample_instance());
+        assert!(doc.is_empty_diff(&doc.diff(&sv)), "re-upserting an unchanged instance is a no-op");
+
+        // Dropping a member + unwiring the boundary prunes stale keys and updates in place.
+        let mut shrunk = sample_instance();
+        shrunk.members.pop(); // remove osc0
+        shrunk.interface[0].inner_node = None;
+        shrunk.interface[0].inner_slot = None;
+        doc.upsert_instance("00000000000000f0", &shrunk);
+        let got = doc.instance_record("00000000000000f0").unwrap();
+        assert_eq!(got.members.len(), 1, "stale member pruned");
+        assert_eq!(got.members[0].0, "buffer0");
+        assert_eq!(got.interface[0].inner_node, None, "boundary unwired in place");
+
+        doc.remove_instance("00000000000000f0");
+        assert!(doc.instance_ids().is_empty());
     }
 
     #[test]
