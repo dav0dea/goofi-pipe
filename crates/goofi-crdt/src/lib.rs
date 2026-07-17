@@ -65,15 +65,6 @@ impl SyncMsg {
     }
 }
 
-/// A link as mirrored into the doc (hex uids + slot names).
-#[derive(Clone, Debug, PartialEq)]
-pub struct LinkRecord {
-    pub node_out: String,
-    pub slot_out: String,
-    pub node_in: String,
-    pub slot_in: String,
-}
-
 /// The merge-safe leaves a client's incremental update changed — what the manager pushes into the
 /// engine `Graph` after applying a client doc write. Params carry `(uid, group, name, value)`;
 /// positions carry `(uid, [x, y])` for each node or instance box that moved; viewers carry
@@ -186,15 +177,15 @@ fn any_to_json(a: Any) -> serde_json::Value {
     serde_json::from_str(&s).unwrap_or(serde_json::Value::Null)
 }
 
-/// Parse a `{node_out, slot_out, node_in, slot_in}` projection entry into a [`LinkRecord`].
-fn link_record_from_json(v: &serde_json::Value) -> Option<LinkRecord> {
-    let s = |k: &str| -> Option<String> { v.get(k)?.as_str().map(str::to_string) };
-    Some(LinkRecord {
-        node_out: s("node_out")?,
-        slot_out: s("slot_out")?,
-        node_in: s("node_in")?,
-        slot_in: s("slot_in")?,
-    })
+/// The four string leaves a stored link has, in canonical form — dropping any projection entry
+/// missing one. This canonical object is BOTH the equality key (vs `links.to_json`) and the source
+/// for the yrs rebuild, so links never round-trip through a typed struct.
+fn canonical_link(v: &serde_json::Value) -> Option<serde_json::Value> {
+    let s = |k: &str| -> Option<&str> { v.get(k)?.as_str() };
+    Some(serde_json::json!({
+        "node_out": s("node_out")?, "slot_out": s("slot_out")?,
+        "node_in": s("node_in")?, "slot_in": s("slot_in")?,
+    }))
 }
 
 /// The control-plane document. `nodes` is a Map<uid, {type, name, pos, params, viewers}>,
@@ -238,13 +229,8 @@ impl GraphDoc {
             reconcile_map(&mut txn, &self.instances, instances);
         }
         // Links are an ordered, manager-authoritative array (no client leaf-merge) → the idempotent
-        // skip-if-equal wholesale replace, reused verbatim.
-        let links = target
-            .get("links")
-            .and_then(|v| v.as_array())
-            .map(|arr| arr.iter().filter_map(link_record_from_json).collect())
-            .unwrap_or_default();
-        self.replace_links(links);
+        // skip-if-equal wholesale replace, reused verbatim, straight from the projection's JSON array.
+        self.replace_links(target.get("links").and_then(|v| v.as_array()).map(|a| a.as_slice()).unwrap_or(&[]));
     }
 
     /// The entire control-plane doc as plain JSON (`{nodes, links, instances}`) — the generic
@@ -317,35 +303,25 @@ impl GraphDoc {
     /// common case — links change far less often than params/positions) it must produce no doc ops.
     /// An unguarded remove-all+re-push would churn the link array (new items + tombstones) on every
     /// unrelated edit, defeating the empty-diff broadcast-skip for any patch that has links.
-    pub fn replace_links(&mut self, links: Vec<LinkRecord>) {
-        // Compare against the current link array read through the generic `ToJson` bridge (not a
-        // typed getter): order-sensitive array equality, string leaves, no numeric normalization.
-        let target = serde_json::Value::Array(
-            links
-                .iter()
-                .map(|l| {
-                    serde_json::json!({
-                        "node_out": l.node_out, "slot_out": l.slot_out,
-                        "node_in": l.node_in, "slot_in": l.slot_in,
-                    })
-                })
-                .collect(),
-        );
+    pub fn replace_links(&mut self, links: &[serde_json::Value]) {
+        // Canonicalize the projection to exactly the four string leaves we store, in order, then
+        // compare against the current array read through the generic `ToJson` bridge: order-sensitive
+        // array equality, string leaves, no numeric normalization.
+        let target: Vec<serde_json::Value> = links.iter().filter_map(canonical_link).collect();
         {
             let txn = self.doc.transact();
-            if any_to_json(self.links.to_json(&txn)) == target {
+            if any_to_json(self.links.to_json(&txn)) == serde_json::Value::Array(target.clone()) {
                 return; // unchanged — no wholesale rewrite (order-sensitive equality)
             }
         }
         let mut txn = self.doc.transact_mut();
         let len = self.links.len(&txn);
         self.links.remove_range(&mut txn, 0, len);
-        for l in links {
+        for l in &target {
             let m: MapRef = self.links.push_back(&mut txn, MapPrelim::default());
-            m.insert(&mut txn, "node_out", l.node_out.as_str());
-            m.insert(&mut txn, "slot_out", l.slot_out.as_str());
-            m.insert(&mut txn, "node_in", l.node_in.as_str());
-            m.insert(&mut txn, "slot_in", l.slot_in.as_str());
+            for k in ["node_out", "slot_out", "node_in", "slot_in"] {
+                m.insert(&mut txn, k, l[k].as_str().unwrap_or_default());
+            }
         }
     }
 
@@ -359,17 +335,6 @@ impl GraphDoc {
     pub fn encode_state(&self) -> Vec<u8> {
         let txn = self.doc.transact();
         txn.encode_state_as_update_v1(&yrs::StateVector::default())
-    }
-
-    /// Build a fresh doc and apply a v1 update (state) to it.
-    pub fn from_update(update: &[u8]) -> GraphDoc {
-        let this = GraphDoc::new();
-        {
-            let mut txn = this.doc.transact_mut();
-            let u = yrs::Update::decode_v1(update).expect("valid v1 update");
-            txn.apply_update(u).expect("apply update");
-        }
-        this
     }
 
     /// This replica's state vector (v1), which a peer advertises so the other side can
@@ -609,15 +574,12 @@ mod tests {
         }));
         assert_eq!(viewers(&doc, "1"), Some(json!({"out": {"kind": "line"}})));
 
-        doc.replace_links(vec![LinkRecord {
-            node_out: "1".into(),
-            slot_out: "out".into(),
-            node_in: "2".into(),
-            slot_in: "data".into(),
-        }]);
+        doc.replace_links(&[json!({
+            "node_out": "1", "slot_out": "out", "node_in": "2", "slot_in": "data",
+        })]);
         assert_eq!(links(&doc).len(), 1);
         assert_eq!(links(&doc)[0]["slot_in"], json!("data"));
-        doc.replace_links(vec![]);
+        doc.replace_links(&[]);
         assert!(links(&doc).is_empty());
     }
 
@@ -627,27 +589,24 @@ mod tests {
         // must produce NO doc ops — else the link array churns (new items + tombstones) on every
         // unrelated edit, defeating the empty-diff broadcast-skip for any patch that has links.
         let mut doc = GraphDoc::new();
-        let l = |a: &str, b: &str| LinkRecord {
-            node_out: a.into(),
-            slot_out: "out".into(),
-            node_in: b.into(),
-            slot_in: "in".into(),
+        let l = |a: &str, b: &str| {
+            serde_json::json!({ "node_out": a, "slot_out": "out", "node_in": b, "slot_in": "in" })
         };
-        doc.replace_links(vec![l("1", "2"), l("2", "3")]);
+        doc.replace_links(&[l("1", "2"), l("2", "3")]);
 
         let sv = doc.state_vector();
-        doc.replace_links(vec![l("1", "2"), l("2", "3")]);
+        doc.replace_links(&[l("1", "2"), l("2", "3")]);
         assert!(
             doc.is_empty_diff(&doc.diff(&sv)),
             "re-asserting the same link set must be a no-op"
         );
         // A real change (an added link) still applies.
-        doc.replace_links(vec![l("1", "2"), l("2", "3"), l("3", "4")]);
+        doc.replace_links(&[l("1", "2"), l("2", "3"), l("3", "4")]);
         assert!(!doc.is_empty_diff(&doc.diff(&sv)), "a real link change produces a delta");
         assert_eq!(links(&doc).len(), 3);
         // Order matters — a reordering is a real change.
         let sv2 = doc.state_vector();
-        doc.replace_links(vec![l("3", "4"), l("1", "2"), l("2", "3")]);
+        doc.replace_links(&[l("3", "4"), l("1", "2"), l("2", "3")]);
         assert!(!doc.is_empty_diff(&doc.diff(&sv2)), "a reordering is a change");
     }
 
@@ -665,7 +624,8 @@ mod tests {
         assert_eq!(doc.node_ids(), vec!["2"]);
 
         let bytes = doc.encode_state();
-        let copy = GraphDoc::from_update(&bytes);
+        let mut copy = GraphDoc::new();
+        copy.apply_update(&bytes).unwrap();
         assert_eq!(copy.node_ids(), vec!["2"]);
         assert_eq!(nstr(&copy, "2", "name").as_deref(), Some("buf"));
     }
