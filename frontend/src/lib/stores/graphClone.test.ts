@@ -1,9 +1,9 @@
 import { describe, it, expect } from 'vitest';
 import { FakeControl } from '$lib/test/fakeControl';
 import { GraphStore } from './graph.svelte';
-import type { NodeInstanceInfo, LinkInfo } from '$lib/api/control';
+import type { LinkInfo, NodeTypeInfo } from '$lib/api/control';
 import * as Y from 'yjs';
-import { linksArray } from '$lib/crdt/graphDoc';
+import { linksArray, nodesMap, setParamValue } from '$lib/crdt/graphDoc';
 
 /** Links are read from the CRDT doc (Phase 2); seed one by writing the doc. */
 function docAddLink(g: GraphStore, link: LinkInfo): void {
@@ -15,30 +15,72 @@ function docAddLink(g: GraphStore, link: LinkInfo): void {
 	linksArray(g.doc).push([m]);
 }
 
-function nodeInfo(uid: string, name: string, type = 'Oscillator'): NodeInstanceInfo {
-	return {
-		uid,
-		name,
-		type,
-		category: 'inputs',
-		doc: '',
-		input_slots: { in: 'ARRAY' },
-		output_slots: { out: 'ARRAY' },
-		params: {},
-		pos: [0, 0],
-		viewers: {},
-		membership: null,
-		error: null
-	};
+/** The catalog (list_nodes) the manager provides — `g.nodeTypes = catalog()` flips the store
+ * doc-authoritative for node identity, so nodes are built from the doc + these descriptors. */
+function catalog(): NodeTypeInfo[] {
+	const floatParam = (value: number) => ({
+		type: 'float' as const,
+		value,
+		vmin: 0,
+		vmax: 1000,
+		doc: null,
+		save_param: true,
+		refreshable: false,
+		expression: null,
+		expression_enabled: false,
+		expression_triggers_process: false,
+		expression_error: null
+	});
+	return [
+		{
+			type: 'Oscillator',
+			category: 'inputs',
+			doc: '',
+			available: true,
+			dynamic: false,
+			missing_deps: [],
+			input_slots: { in: 'ARRAY' },
+			output_slots: { out: 'ARRAY' },
+			// Default 30 — so a seeded 42 is a genuine non-default the clone must carry inline.
+			params: { common: { max_frequency: floatParam(30) } }
+		},
+		{
+			type: 'Buffer',
+			category: 'inputs',
+			doc: '',
+			available: true,
+			dynamic: false,
+			missing_deps: [],
+			input_slots: { in: 'ARRAY' },
+			output_slots: { out: 'ARRAY' },
+			params: {}
+		}
+	];
+}
+
+/** Seed a node into the store's doc exactly as the manager's mirror (`sync_graph_to_doc`) writes it,
+ * in ONE Yjs transaction so the store's afterTransaction → _syncFromDoc → reconcile fires once. */
+function docSeedNode(g: GraphStore, uid: string, type: string, name: string, pos: [number, number]): void {
+	Y.transact(g.doc, () => {
+		const n = new Y.Map<unknown>();
+		n.set('type', type);
+		n.set('name', name);
+		const p = new Y.Map<unknown>();
+		p.set('x', pos[0]);
+		p.set('y', pos[1]);
+		n.set('pos', p);
+		nodesMap(g.doc).set(uid, n);
+	});
 }
 
 describe('cloneNodes — identity is the uid, not the display name', () => {
 	it('finds the selected nodes by uid and re-wires their internal links to the clones', async () => {
 		const fc = new FakeControl();
 		const g = new GraphStore(fc);
+		g.nodeTypes = catalog(); // catalog present → the doc is authoritative for node identity
 		// Display names are NOT the uids (the post-rekey reality).
-		fc.emit({ event: 'node_added', payload: nodeInfo('uidA', 'oscillator0') });
-		fc.emit({ event: 'node_added', payload: nodeInfo('uidB', 'buffer0', 'Buffer') });
+		docSeedNode(g, 'uidA', 'Oscillator', 'oscillator0', [0, 0]);
+		docSeedNode(g, 'uidB', 'Buffer', 'buffer0', [0, 0]);
 		const link: LinkInfo = { node_out: 'uidA', slot_out: 'out', node_in: 'uidB', slot_in: 'in' };
 		docAddLink(g, link);
 
@@ -60,12 +102,10 @@ describe('cloneNodes — identity is the uid, not the display name', () => {
 	it('carries cloned param values INLINE on add_node — no racy post-add leaf-write', async () => {
 		const fc = new FakeControl();
 		const g = new GraphStore(fc);
-		const node = nodeInfo('uidA', 'osc0');
-		// A non-default param value the clone must carry.
-		node.params = {
-			common: { max_frequency: { value: 42 } }
-		} as unknown as NodeInstanceInfo['params'];
-		fc.emit({ event: 'node_added', payload: node });
+		g.nodeTypes = catalog();
+		docSeedNode(g, 'uidA', 'Oscillator', 'osc0', [0, 0]);
+		// A non-default param value the clone must carry (default is 30).
+		setParamValue(g.doc, 'uidA', 'common', 'max_frequency', 42);
 		fc.setCallResult('add_node', 'NEW');
 
 		await g.cloneNodes(['uidA']);

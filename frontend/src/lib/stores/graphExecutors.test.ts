@@ -7,18 +7,94 @@ import { history, type Action, type ExecutorDeps, type NavContext } from './hist
 import { collectPanels } from '$lib/workspace/model';
 import { setInlineKind, rawInlineView } from '$lib/viewers/inlineView.svelte';
 import { ui } from '$lib/stores/ui.svelte';
-import type { NodeInstanceInfo, LinkInfo } from '$lib/api/control';
+import type { NodeInstanceInfo, LinkInfo, NodeTypeInfo } from '$lib/api/control';
 import * as Y from 'yjs';
-import { linksArray, paramValue, nodeView, docParams, setParamExpr } from '$lib/crdt/graphDoc';
+import { linksArray, paramValue, nodeView, docParams, setParamExpr, nodesMap, instancesMap } from '$lib/crdt/graphDoc';
+import { ROOT_ID } from '$lib/editor/subpatchScene';
 
-/** Seed a node into the store's CRDT doc so a param leaf-write targeting it lands. */
-function docAddNode(g: GraphStore, uid: string): void {
+/** Minimal catalog — its presence flips the store to doc-authoritative node/instance identity. */
+function catalog(): NodeTypeInfo[] {
+	const mk = (type: string): NodeTypeInfo => ({
+		type,
+		category: 'inputs',
+		doc: '',
+		available: true,
+		dynamic: false,
+		missing_deps: [],
+		input_slots: { in: 'ARRAY' },
+		output_slots: { out: 'ARRAY' },
+		params: {}
+	});
+	return [mk('Oscillator'), mk('Buffer')];
+}
+
+/** Seed a node into the store's CRDT doc so a param leaf-write (or a doc-authoritative
+ * node read) targeting it lands. Defaults preserve the type='Oscillator', name=uid shape. */
+function docAddNode(g: GraphStore, uid: string, type = 'Oscillator', name = uid): void {
 	const nodes = g.doc.getMap('nodes') as Y.Map<Y.Map<unknown>>;
 	if (nodes.get(uid)) return;
 	const n = new Y.Map<unknown>();
-	n.set('type', 'Oscillator');
-	n.set('name', uid);
+	n.set('type', type);
+	n.set('name', name);
 	nodes.set(uid, n);
+}
+
+/** Remove a node from the store's CRDT doc (mirror of the manager dropping it on delete). */
+function docRemoveNode(g: GraphStore, uid: string): void {
+	(g.doc.getMap('nodes') as Y.Map<Y.Map<unknown>>).delete(uid);
+}
+
+/** Seed a node into an arbitrary `nodes` map (doc-authoritative instance seeding). */
+function seedNode(nodes: Y.Map<Y.Map<unknown>>, uid: string, type: string, name: string): void {
+	const n = new Y.Map<unknown>();
+	n.set('type', type);
+	n.set('name', name);
+	nodes.set(uid, n);
+}
+
+interface Bnd {
+	bnd_id: string;
+	dir: 'in' | 'out';
+	dtype: string;
+	name: string;
+	pos?: [number, number];
+	inner_node?: string;
+	inner_slot?: string;
+}
+
+/** Seed an instance into the doc in the exact shape the Rust mirror (`upsert_instance`) writes it. */
+function seedInstance(
+	insts: Y.Map<Y.Map<unknown>>,
+	uid: string,
+	o: { name: string; parent?: string; def_id?: string; pos?: [number, number]; members?: Record<string, string>; interface?: Bnd[] }
+): void {
+	const m = new Y.Map<unknown>();
+	m.set('name', o.name);
+	m.set('parent', o.parent ?? ROOT_ID);
+	if (o.def_id !== undefined) m.set('def_id', o.def_id);
+	const p = new Y.Map<unknown>();
+	p.set('x', (o.pos ?? [0, 0])[0]);
+	p.set('y', (o.pos ?? [0, 0])[1]);
+	m.set('pos', p);
+	const mem = new Y.Map<unknown>();
+	for (const [local, muid] of Object.entries(o.members ?? {})) mem.set(local, muid);
+	m.set('members', mem);
+	const iface = new Y.Map<Y.Map<unknown>>();
+	for (const b of o.interface ?? []) {
+		const bm = new Y.Map<unknown>();
+		bm.set('dir', b.dir);
+		bm.set('dtype', b.dtype);
+		bm.set('name', b.name);
+		const bp = new Y.Map<unknown>();
+		bp.set('x', (b.pos ?? [0, 0])[0]);
+		bp.set('y', (b.pos ?? [0, 0])[1]);
+		bm.set('pos', bp);
+		if (b.inner_node !== undefined) bm.set('inner_node', b.inner_node);
+		if (b.inner_slot !== undefined) bm.set('inner_slot', b.inner_slot);
+		iface.set(b.bnd_id, bm);
+	}
+	m.set('interface', iface);
+	insts.set(uid, m);
 }
 
 const EMPTY_CTX: NavContext = { activeWorkspaceId: 'w', activePanelId: null, enteredPath: {}, selection: {} };
@@ -156,8 +232,9 @@ describe('graph executors — simple kinds', () => {
 	it('undo of removeNode re-adds the node with the same name and restores its links', async () => {
 		const fc = new FakeControl();
 		const g = new GraphStore(fc);
-		fc.emit({ event: 'node_added', payload: nodeInfo('osc0') });
-		fc.emit({ event: 'node_added', payload: nodeInfo('buffer0', 'Buffer') });
+		g.nodeTypes = catalog();
+		docAddNode(g, 'osc0');
+		docAddNode(g, 'buffer0', 'Buffer');
 		const link: LinkInfo = { node_out: 'osc0', slot_out: 'out', node_in: 'buffer0', slot_in: 'in' };
 		docAddLink(g, link);
 
@@ -179,7 +256,7 @@ describe('graph executors — simple kinds', () => {
 		};
 
 		await graphExecutors['remove_node'].forward(action, deps(fc, g));
-		fc.emit({ event: 'node_removed', payload: { node: 'osc0', membership: null } });
+		docRemoveNode(g, 'osc0');
 		docClearLinks(g);
 		expect(g.nodes.find((n) => n.name === 'osc0')).toBeUndefined();
 		expect(g.links).toHaveLength(0);
@@ -190,7 +267,7 @@ describe('graph executors — simple kinds', () => {
 		expect(addCall!.payload.name).toBe('osc0'); // SAME display name
 		expect(fc.recordedCalls().some((c) => c.op === 'add_link')).toBe(true);
 		// simulate the backend echo
-		fc.emit({ event: 'node_added', payload: nodeInfo('osc0') });
+		docAddNode(g, 'osc0');
 		docAddLink(g, link);
 		expect(g.nodes.find((n) => n.name === 'osc0')).toBeDefined();
 		expect(g.links).toHaveLength(1);
@@ -669,15 +746,16 @@ describe('graph store — recording wrappers + undo replay', () => {
 	it('removeNode records an action; history.undo() replays add_node + add_link', async () => {
 		const fc = new FakeControl();
 		const g = new GraphStore(fc);
+		g.nodeTypes = catalog();
 		history().configureDeps(() => ({ control: fc, graph: g, workspace: workspace() }));
-		fc.emit({ event: 'node_added', payload: nodeInfo('osc0') });
-		fc.emit({ event: 'node_added', payload: nodeInfo('buffer0', 'Buffer') });
+		docAddNode(g, 'osc0');
+		docAddNode(g, 'buffer0', 'Buffer');
 		const link: LinkInfo = { node_out: 'osc0', slot_out: 'out', node_in: 'buffer0', slot_in: 'in' };
 		docAddLink(g, link);
 
 		await g.removeNode('osc0');
 		expect(history().canUndo).toBe(true);
-		fc.emit({ event: 'node_removed', payload: { node: 'osc0', membership: null } });
+		docRemoveNode(g, 'osc0');
 		expect(g.nodes.find((n) => n.name === 'osc0')).toBeUndefined();
 
 		await history().undo();
@@ -693,17 +771,18 @@ describe('graph store — recording wrappers + undo replay', () => {
 	it('undo of a multi-node delete restores every node before any inter-node link', async () => {
 		const fc = new FakeControl();
 		const g = new GraphStore(fc);
+		g.nodeTypes = catalog();
 		history().configureDeps(() => deps(fc, g));
-		fc.emit({ event: 'node_added', payload: nodeInfo('osc0') });
-		fc.emit({ event: 'node_added', payload: nodeInfo('buffer0', 'Buffer') });
+		docAddNode(g, 'osc0');
+		docAddNode(g, 'buffer0', 'Buffer');
 		const link: LinkInfo = { node_out: 'osc0', slot_out: 'out', node_in: 'buffer0', slot_in: 'in' };
 		docAddLink(g, link);
 
 		// Delete BOTH linked nodes as one batch, then mirror the backend teardown.
 		await g.removeNodes(['osc0', 'buffer0']);
 		docClearLinks(g);
-		fc.emit({ event: 'node_removed', payload: { node: 'osc0', membership: null } });
-		fc.emit({ event: 'node_removed', payload: { node: 'buffer0', membership: null } });
+		docRemoveNode(g, 'osc0');
+		docRemoveNode(g, 'buffer0');
 
 		fc.recordedCalls().length = 0; // inspect only the undo's RPCs
 		await history().undo(); // ONE step restores the whole batch
@@ -780,8 +859,9 @@ describe('graph store — recording wrappers + undo replay', () => {
 	it('a fresh backend session (changed instance_id) hard-resets the history', () => {
 		const fc = new FakeControl();
 		const g = new GraphStore(fc);
+		g.nodeTypes = catalog();
 		// record something
-		fc.emit({ event: 'node_added', payload: nodeInfo('osc0') });
+		docAddNode(g, 'osc0');
 		history().reset();
 		history().configureDeps(() => ({ control: fc, graph: g, workspace: workspace() }));
 		void g.removeNode('osc0');
@@ -826,6 +906,7 @@ describe('graph store — recording wrappers + undo replay', () => {
 	it('undo of removeNode restores panels that were bound to the node', async () => {
 		const fc = new FakeControl();
 		const g = new GraphStore(fc);
+		g.nodeTypes = catalog();
 		const ws = workspace();
 		ws.reset();
 		// bind the (only) default panel to osc0
@@ -835,14 +916,14 @@ describe('graph store — recording wrappers + undo replay', () => {
 		history().reset();
 		history().configureDeps(() => ({ control: fc, graph: g, workspace: ws }));
 
-		fc.emit({ event: 'node_added', payload: nodeInfo('osc0') });
+		docAddNode(g, 'osc0');
 		await g.removeNode('osc0');
-		fc.emit({ event: 'node_removed', payload: { node: 'osc0', membership: null } });
-		// node_removed clears the binding
+		docRemoveNode(g, 'osc0');
+		// the doc-removal reconcile (clearNodeRefs) clears the binding
 		expect(ws.panelsBoundTo('osc0')).toHaveLength(0);
 
 		await history().undo();
-		fc.emit({ event: 'node_added', payload: nodeInfo('osc0') });
+		docAddNode(g, 'osc0');
 		expect(ws.panelsBoundTo('osc0').map((p) => p.panelId)).toContain(panelId);
 	});
 });
@@ -900,46 +981,6 @@ describe('sub-patch synth node identity (viewer re-instantiation bug)', () => {
 		expect(a).toBe(b);
 	});
 
-	it('a deep error in the instance snapshot lights up the collapsed group node', () => {
-		const fc = new FakeControl();
-		const g = new GraphStore(fc);
-		withInstance(g, fc, { out0: { dir: 'out', dtype: 'ARRAY', inner_node: 'm0', inner_slot: 'out' } });
-		expect(g.nodeById('subpatch0')!.error).toBeNull();
-		// The bridge only keys `error` events by real node uids; a collapsed sub-patch's deep error
-		// rides its snapshot record (describe_instance.error = first errored descendant). The
-		// event-sourced reconcile applies it to inst.error, which the synth node's border reflects.
-		const snapWithError = (error: string | null) => ({
-			nodes: [],
-			links: [],
-			instances: {
-				subpatch0: {
-					uid: 'subpatch0',
-					name: 'subpatch0',
-					kind: 'subpatch',
-					def_id: null,
-					parent: null,
-					interface: { out0: { dir: 'out', dtype: 'ARRAY', inner_node: 'm0', inner_slot: 'out' } },
-					pos: [0, 0],
-					members: { oscillator0: { uid: 'm0', is_instance: false } },
-					slots: { input: {}, output: { out0: 'ARRAY' } },
-					siblings: [],
-					error,
-					viewers: {}
-				}
-			},
-			save_path: null,
-			unsaved_changes: false,
-			instance_id: 's',
-			layout: null
-		});
-		fc.emit({ event: 'subpatch_changed', payload: snapWithError('deep boom') as never });
-		expect(g.instances['subpatch0'].error).toBe('deep boom');
-		expect(g.nodeById('subpatch0')!.error).toBe('deep boom');
-		// clearing propagates too
-		fc.emit({ event: 'subpatch_changed', payload: snapWithError(null) as never });
-		expect(g.nodeById('subpatch0')!.error).toBeNull();
-	});
-
 	it('returns an UPDATED node when the instance interface changes (no stale memo)', () => {
 		const fc = new FakeControl();
 		const g = new GraphStore(fc);
@@ -959,7 +1000,15 @@ describe('sub-patch synth node identity (viewer re-instantiation bug)', () => {
 	it('reflects a position move without changing identity (drag must not churn viewers)', () => {
 		const fc = new FakeControl();
 		const g = new GraphStore(fc);
-		withInstance(g, fc, { out0: { dir: 'out', dtype: 'ARRAY', inner_node: 'm0', inner_slot: 'out' } });
+		g.nodeTypes = catalog();
+		Y.transact(g.doc, () => {
+			seedNode(nodesMap(g.doc), 'm0', 'Buffer', 'osc0m');
+			seedInstance(instancesMap(g.doc), 'subpatch0', {
+				name: 'subpatch0',
+				members: { oscillator0: 'm0' },
+				interface: [{ bnd_id: 'out0', dir: 'out', dtype: 'ARRAY', name: 'out0', inner_node: 'm0', inner_slot: 'out' }]
+			});
+		});
 		const a = g.nodeById('subpatch0')!;
 		docSetInstancePos(g, 'subpatch0', [120, 80]); // position is doc-owned now
 		const b = g.nodeById('subpatch0')!;
@@ -984,37 +1033,20 @@ describe('subpatch_changed reconciles real nodes in place (no viewer churn)', ()
 		} as never;
 	}
 
-	it('keeps a surviving node’s identity + live inline view across a group op', () => {
+	it('keeps a surviving node’s identity + live inline view across an unrelated doc change', () => {
 		const fc = new FakeControl();
 		const g = new GraphStore(fc);
-		fc.emit({ event: 'node_added', payload: nodeInfo('osc0') });
-		fc.emit({ event: 'node_added', payload: nodeInfo('buffer0', 'Buffer') });
+		g.nodeTypes = catalog();
+		docAddNode(g, 'osc0');
+		docAddNode(g, 'buffer0', 'Buffer');
 		// User picks an inline viewer kind on osc0 — live state, not yet pushed/persisted.
 		setInlineKind('osc0', 'out', 'line');
 		const before = g.nodeById('osc0');
 		expect(before).not.toBeNull();
 
-		// A group op reparents buffer0 into a new instance; BOTH real nodes survive with
-		// their uids. Only this whole-snapshot event fires (no per-node add/remove).
-		fc.emit({
-			event: 'subpatch_changed',
-			payload: subpatchSnapshot([nodeInfo('osc0'), nodeInfo('buffer0', 'Buffer')], {
-				subpatch0: {
-					uid: 'subpatch0',
-					name: 'subpatch0',
-					kind: 'subpatch',
-					def_id: null,
-					parent: null,
-					interface: {},
-					pos: [0, 0],
-					members: { buffer0: { uid: 'buffer0', is_instance: false } },
-					slots: { input: {}, output: {} },
-					siblings: [],
-					error: null,
-					viewers: {}
-				}
-			})
-		});
+		// An UNRELATED doc change (a third node lands) triggers a full doc reconcile; osc0
+		// survives untouched, so its object identity and live inline view must be preserved.
+		docAddNode(g, 'buffer0b', 'Buffer');
 
 		// A wholesale array swap would hand back a fresh object (re-subscribing the viewer);
 		// in-place reconcile keeps the same reference.
@@ -1023,13 +1055,14 @@ describe('subpatch_changed reconciles real nodes in place (no viewer churn)', ()
 		expect(rawInlineView('osc0', 'out').kind).toBe('line');
 	});
 
-	it('forgets a node that genuinely vanished from the snapshot', () => {
+	it('forgets a node that genuinely vanished from the doc', () => {
 		const fc = new FakeControl();
 		const g = new GraphStore(fc);
-		fc.emit({ event: 'node_added', payload: nodeInfo('osc0') });
-		fc.emit({ event: 'node_added', payload: nodeInfo('gone0', 'Buffer') });
+		g.nodeTypes = catalog();
+		docAddNode(g, 'osc0');
+		docAddNode(g, 'gone0', 'Buffer');
 		setInlineKind('gone0', 'out', 'line');
-		fc.emit({ event: 'subpatch_changed', payload: subpatchSnapshot([nodeInfo('osc0')], {}) });
+		docRemoveNode(g, 'gone0');
 		expect(g.nodeById('gone0')).toBeNull();
 		expect(rawInlineView('gone0', 'out').kind).toBeUndefined(); // its inline view is dropped
 	});

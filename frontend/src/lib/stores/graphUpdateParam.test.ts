@@ -2,8 +2,8 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { FakeControl } from '$lib/test/fakeControl';
 import { GraphStore } from './graph.svelte';
 import { history } from './history.svelte';
-import { docParams } from '$lib/crdt/graphDoc';
-import type { NodeInstanceInfo } from '$lib/api/control';
+import { docParams, nodesMap, setParamValue } from '$lib/crdt/graphDoc';
+import type { NodeInstanceInfo, NodeTypeInfo } from '$lib/api/control';
 import * as Y from 'yjs';
 
 /** Seed a node into the store's CRDT doc — a param leaf-write targets the doc's node (which the
@@ -15,6 +15,55 @@ function docAddNode(g: GraphStore, uid: string): void {
 	n.set('type', 'Oscillator');
 	n.set('name', uid);
 	nodes.set(uid, n);
+}
+
+/** The catalog (list_nodes) the manager provides — `g.nodeTypes = catalog()` flips the store
+ * doc-authoritative, so node identity + params come from the doc + these descriptors. */
+function catalog(): NodeTypeInfo[] {
+	return [
+		{
+			type: 'Oscillator',
+			category: 'inputs',
+			doc: '',
+			available: true,
+			dynamic: false,
+			missing_deps: [],
+			input_slots: { in: 'ARRAY' },
+			output_slots: { out: 'ARRAY' },
+			params: {
+				common: {
+					frequency: {
+						type: 'float',
+						value: 1,
+						vmin: 0,
+						vmax: 1000,
+						doc: null,
+						save_param: true,
+						refreshable: false,
+						expression: null,
+						expression_enabled: false,
+						expression_triggers_process: false,
+						expression_error: null
+					}
+				}
+			}
+		}
+	];
+}
+
+/** Seed a node into the store's doc exactly as the manager's mirror (`sync_graph_to_doc`) writes it,
+ * in ONE Yjs transaction so the store's afterTransaction → _syncFromDoc → reconcile fires once. */
+function docSeedNode(g: GraphStore, uid: string, type: string, name: string, pos: [number, number]): void {
+	Y.transact(g.doc, () => {
+		const n = new Y.Map<unknown>();
+		n.set('type', type);
+		n.set('name', name);
+		const p = new Y.Map<unknown>();
+		p.set('x', pos[0]);
+		p.set('y', pos[1]);
+		n.set('pos', p);
+		nodesMap(g.doc).set(uid, n);
+	});
 }
 
 function nodeWithParam(uid: string, value: unknown): NodeInstanceInfo {
@@ -53,8 +102,9 @@ describe('GraphStore.updateParam — guards a non-existent param', () => {
 	it('treats a falsy current value (0) as present, not missing', async () => {
 		const fc = new FakeControl();
 		const g = new GraphStore(fc);
-		fc.emit({ event: 'node_added', payload: nodeWithParam('uidA', 0) });
-		docAddNode(g, 'uidA'); // the doc node the leaf-write targets
+		g.nodeTypes = catalog(); // catalog present → node identity + params come from the doc
+		docSeedNode(g, 'uidA', 'Oscillator', 'osc0', [0, 0]);
+		setParamValue(g.doc, 'uidA', 'common', 'frequency', 0); // the current value the guard must treat as present
 
 		// The guard keys on the param's existence, not the truthiness of its value, so
 		// editing a param whose current value is 0/false/'' still works. The leaf-write lands

@@ -71,36 +71,6 @@ describe('root-as-scope: ROOT ships as an instance the editor renders from', () 
 		expect(g.nodeById(ROOT_ID)).toBe(null); // …but never synthesized as a node
 	});
 
-	it('a top-level node_added is folded into ROOT.members (so it renders as a root child)', () => {
-		const fc = new FakeControl();
-		const g = new GraphStore(fc);
-		fc.emit({ event: 'hello', payload: snapshot([], { [ROOT_ID]: instInfo(ROOT_ID, 'root', null) }) });
-
-		fc.emit({
-			event: 'node_added',
-			payload: nodeInfo('n1', 'buffer0', { instance: ROOT_ID, local_name: 'buffer0' })
-		});
-
-		expect(g.instances[ROOT_ID].members['buffer0']).toEqual({ uid: 'n1', is_instance: false });
-		expect(Object.keys(g.instances[ROOT_ID].members).length).toBe(1);
-	});
-
-	it('a member node_added is folded into the owning sub-patch instance', () => {
-		const fc = new FakeControl();
-		const g = new GraphStore(fc);
-		const root = instInfo(ROOT_ID, 'root', null, { subpatch0: { uid: 'sub', is_instance: true } });
-		const sub = instInfo('sub', 'subpatch0', ROOT_ID, {});
-		fc.emit({ event: 'hello', payload: snapshot([], { [ROOT_ID]: root, sub }) });
-
-		fc.emit({
-			event: 'node_added',
-			payload: nodeInfo('m1', 'buffer0', { instance: 'sub', local_name: 'buffer0' })
-		});
-
-		expect(g.instances['sub'].members['buffer0']).toEqual({ uid: 'm1', is_instance: false });
-		expect(Object.keys(g.instances['sub'].members).length).toBe(1);
-	});
-
 	it('restartNode respawns in place via the restart_node RPC (keeps scope, no cascade)', async () => {
 		const fc = new FakeControl();
 		const g = new GraphStore(fc);
@@ -118,37 +88,5 @@ describe('root-as-scope: ROOT ships as an instance the editor renders from', () 
 		// SHARED member, mirror-removes it across siblings (post Bug-C).
 		expect(calls.some((c) => c.op === 'remove_node')).toBe(false);
 		expect(calls.some((c) => c.op === 'add_node')).toBe(false);
-	});
-
-	it('a member node_removed is dropped from the owning instance members map', () => {
-		const fc = new FakeControl();
-		const g = new GraphStore(fc);
-		const root = instInfo(ROOT_ID, 'root', null, { subpatch0: { uid: 'sub', is_instance: true } });
-		const sub = instInfo('sub', 'subpatch0', ROOT_ID, { buffer0: { uid: 'm1', is_instance: false } });
-		fc.emit({ event: 'hello', payload: snapshot([nodeInfo('m1', 'buffer0', { instance: 'sub', local_name: 'buffer0' })], { [ROOT_ID]: root, sub }) });
-		expect(Object.keys(g.instances['sub'].members).length).toBe(1);
-
-		fc.emit({
-			event: 'node_removed',
-			payload: { node: 'm1', membership: { instance: 'sub', local_name: 'buffer0' } }
-		});
-
-		expect(g.instances['sub'].members['buffer0']).toBeUndefined();
-		expect(Object.keys(g.instances['sub'].members).length).toBe(0);
-	});
-
-	it('a top-level node_removed is dropped from ROOT.members', () => {
-		const fc = new FakeControl();
-		const g = new GraphStore(fc);
-		const root = instInfo(ROOT_ID, 'root', null, { buffer0: { uid: 'n1', is_instance: false } });
-		fc.emit({ event: 'hello', payload: snapshot([nodeInfo('n1', 'buffer0', { instance: ROOT_ID, local_name: 'buffer0' })], { [ROOT_ID]: root }) });
-
-		fc.emit({
-			event: 'node_removed',
-			payload: { node: 'n1', membership: { instance: ROOT_ID, local_name: 'buffer0' } }
-		});
-
-		expect(g.instances[ROOT_ID].members['buffer0']).toBeUndefined();
-		expect(Object.keys(g.instances[ROOT_ID].members).length).toBe(0);
 	});
 });
