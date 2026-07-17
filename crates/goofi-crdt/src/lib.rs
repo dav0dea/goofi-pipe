@@ -91,6 +91,28 @@ fn insert_scalar(map: &MapRef, txn: &mut yrs::TransactionMut, key: &str, v: &ser
     }
 }
 
+/// Read a scalar map key as JSON, for change detection. Numbers are always stored as f64 (see
+/// [`insert_scalar`]), so a caller comparing against an `i64`-typed value must compare by
+/// `as_f64` — [`scalar_unchanged`] does.
+fn read_scalar<T: ReadTxn>(map: &MapRef, txn: &T, key: &str) -> Option<serde_json::Value> {
+    match map.get(txn, key) {
+        Some(Out::Any(Any::Number(n))) => Some(serde_json::json!(n)),
+        Some(Out::Any(Any::Bool(b))) => Some(serde_json::json!(b)),
+        Some(Out::Any(Any::String(s))) => Some(serde_json::json!(s.to_string())),
+        _ => None,
+    }
+}
+
+/// True when the map's current scalar at `key` already equals `v` — comparing numbers by f64
+/// (the doc stores every number as f64) so an incoming `i64` matches its stored `f64` form.
+fn scalar_unchanged<T: ReadTxn>(map: &MapRef, txn: &T, key: &str, v: &serde_json::Value) -> bool {
+    match (read_scalar(map, txn, key), v) {
+        (Some(serde_json::Value::Number(a)), serde_json::Value::Number(b)) => a.as_f64() == b.as_f64(),
+        (Some(a), b) => &a == b,
+        (None, _) => false,
+    }
+}
+
 /// Get an existing nested map by key, or insert a fresh one.
 fn get_or_insert_map(parent: &MapRef, txn: &mut yrs::TransactionMut, key: &str) -> MapRef {
     match parent.get(txn, key).and_then(|v| v.cast::<MapRef>().ok()) {
@@ -181,13 +203,38 @@ impl GraphDoc {
         };
         let params = get_or_insert_map(&node, &mut txn, "params");
         let g = get_or_insert_map(&params, &mut txn, group);
-        let entry: MapRef = g.insert(&mut txn, name, MapPrelim::default()); // replace whole entry
-        insert_scalar(&entry, &mut txn, "value", value);
-        if let Some(e) = expr {
-            let ex: MapRef = entry.insert(&mut txn, "expr", MapPrelim::default());
-            ex.insert(&mut txn, "source", e.source.as_str());
-            ex.insert(&mut txn, "enabled", e.enabled);
-            ex.insert(&mut txn, "triggers", e.triggers);
+        // Get-or-insert a STABLE entry map — never replace it. Replacing minted a fresh nested
+        // map on every write, so the manager's blanket re-mirror and a client's direct leaf write
+        // became competing same-key insertions in the CRDT; the winner was decided by map/client
+        // identity, not recency, and could silently drop a concurrent client update. Writing the
+        // scalar fields in place instead keeps one entry per param, and each writer's edits form a
+        // single causal chain that converges.
+        let entry = get_or_insert_map(&g, &mut txn, name);
+        // Idempotent: only touch a field when it actually changed. A re-mirror of an unchanged
+        // param then produces ZERO ops — so it never manufactures a concurrent write that could
+        // race (and lose to) a client's in-flight edit, and the doc does not churn/grow per tick.
+        if !scalar_unchanged(&entry, &txn, "value", value) {
+            insert_scalar(&entry, &mut txn, "value", value);
+        }
+        match expr {
+            Some(e) => {
+                let ex = get_or_insert_map(&entry, &mut txn, "expr");
+                if !scalar_unchanged(&ex, &txn, "source", &serde_json::json!(e.source)) {
+                    ex.insert(&mut txn, "source", e.source.as_str());
+                }
+                if !scalar_unchanged(&ex, &txn, "enabled", &serde_json::json!(e.enabled)) {
+                    ex.insert(&mut txn, "enabled", e.enabled);
+                }
+                if !scalar_unchanged(&ex, &txn, "triggers", &serde_json::json!(e.triggers)) {
+                    ex.insert(&mut txn, "triggers", e.triggers);
+                }
+            }
+            // Clearing an expression drops the whole sub-map (only when one is present).
+            None => {
+                if entry.get(&txn, "expr").is_some() {
+                    entry.remove(&mut txn, "expr");
+                }
+            }
         }
     }
 
@@ -420,6 +467,40 @@ mod tests {
     fn a_fresh_doc_has_no_nodes() {
         let doc = GraphDoc::new();
         assert!(doc.node_ids().is_empty());
+    }
+
+    #[test]
+    fn set_param_is_idempotent_and_writes_in_place() {
+        // The re-mirror re-asserts every param after every op. Re-setting a param to its CURRENT
+        // value must produce NO doc ops (an empty diff) — otherwise the manager's blanket
+        // re-mirror manufactures a concurrent write on the value key that can race, and lose to,
+        // a client's in-flight edit (the concurrent-leaf-write lost-update bug). It must also not
+        // grow the doc unboundedly per tick.
+        use serde_json::json;
+        let mut doc = GraphDoc::new();
+        doc.upsert_node("000000000001", "Oscillator", "osc", [0.0, 0.0]);
+        doc.set_param("000000000001", "common", "max_frequency", &json!(30.0), None);
+
+        let sv = doc.state_vector();
+        // Re-assert the SAME value (what a re-mirror does): no change ⇒ empty diff.
+        doc.set_param("000000000001", "common", "max_frequency", &json!(30.0), None);
+        assert!(
+            doc.is_empty_diff(&doc.diff(&sv)),
+            "re-setting a param to its current value must be a no-op"
+        );
+        // An i64 that equals the stored f64 must also be treated as unchanged.
+        doc.set_param("000000000001", "common", "max_frequency", &json!(30), None);
+        assert!(
+            doc.is_empty_diff(&doc.diff(&sv)),
+            "an int equal to the stored float is unchanged"
+        );
+        // A genuine change is still applied.
+        doc.set_param("000000000001", "common", "max_frequency", &json!(42.0), None);
+        assert!(!doc.is_empty_diff(&doc.diff(&sv)), "a real change produces a delta");
+        assert_eq!(
+            doc.param_value("000000000001", "common", "max_frequency"),
+            Some(json!(42.0))
+        );
     }
 
     #[test]
