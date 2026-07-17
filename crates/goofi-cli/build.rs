@@ -50,11 +50,15 @@ fn sync_frontend() {
     // Watch every source path + track the newest source mtime in one walk.
     let mut newest_src: Option<SystemTime> = None;
     for input in INPUTS {
-        watch_and_max(&frontend.join(input), &mut newest_src);
+        if let Some(t) = newest_mtime(&frontend.join(input), true) {
+            if newest_src.is_none_or(|n| t > n) {
+                newest_src = Some(t);
+            }
+        }
     }
 
     // `build/` is the output — walk it for its newest mtime but do NOT watch it (avoid self-retrigger).
-    let built = newest_mtime(&frontend.join("build"));
+    let built = newest_mtime(&frontend.join("build"), false);
 
     let stale = match (newest_src, built) {
         (_, None) => true,                 // no build yet
@@ -169,39 +173,25 @@ fn query(py: &Path, code: &str) -> Option<String> {
     (!s.is_empty()).then_some(s)
 }
 
-/// Emit `cargo:rerun-if-changed` for `path` and everything beneath it, folding the max mtime seen
-/// into `newest`. A per-path emit (not a bare directory) is robust across cargo versions, which
-/// differ in whether a watched directory is scanned recursively.
-fn watch_and_max(path: &Path, newest: &mut Option<SystemTime>) {
-    let Ok(meta) = std::fs::symlink_metadata(path) else {
-        return;
-    };
-    println!("cargo:rerun-if-changed={}", path.display());
-    if let Ok(t) = meta.modified() {
-        if newest.is_none_or(|n| t > n) {
-            *newest = Some(t);
-        }
+/// Newest modification time of `path` (a file) or anything under it (a dir), or `None` if absent.
+/// When `watch`, also emits `cargo:rerun-if-changed` for every path visited — a per-path emit (not a
+/// bare directory) is robust across cargo versions, which differ on whether a watched directory is
+/// scanned recursively. Sources pass `watch = true`; the `build/` output passes `false` (watching it
+/// would self-retrigger).
+fn newest_mtime(path: &Path, watch: bool) -> Option<SystemTime> {
+    let meta = std::fs::symlink_metadata(path).ok()?;
+    if watch {
+        println!("cargo:rerun-if-changed={}", path.display());
     }
+    let mut newest = meta.modified().ok();
     if meta.is_dir() {
         if let Ok(entries) = std::fs::read_dir(path) {
             for entry in entries.flatten() {
-                watch_and_max(&entry.path(), newest);
-            }
-        }
-    }
-}
-
-/// Newest modification time of `path` (a file) or anything under it (a dir), or `None` if absent.
-fn newest_mtime(path: &Path) -> Option<SystemTime> {
-    let meta = std::fs::symlink_metadata(path).ok()?;
-    if !meta.is_dir() {
-        return meta.modified().ok();
-    }
-    let mut newest = meta.modified().ok();
-    for entry in std::fs::read_dir(path).ok()?.flatten() {
-        if let Some(t) = newest_mtime(&entry.path()) {
-            if newest.is_none_or(|n| t > n) {
-                newest = Some(t);
+                if let Some(t) = newest_mtime(&entry.path(), watch) {
+                    if newest.is_none_or(|n| t > n) {
+                        newest = Some(t);
+                    }
+                }
             }
         }
     }
