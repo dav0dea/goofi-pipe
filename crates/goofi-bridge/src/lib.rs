@@ -556,6 +556,25 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
                     .and_then(|v| v.as_str())
                     .ok_or("add_node: missing type")?;
                 let uid = g.add_node(ty, None)?;
+                // Optional inline params (paste/duplicate replay + undo-of-delete): apply at creation
+                // UNDER THE GRAPH LOCK so the node is born configured. A post-add update_param would
+                // now be a doc leaf-write that no-ops until the node has synced into the client's
+                // replica — silently dropping the replayed values (same coercion as the update_param
+                // arm). node_added is emitted after, so it carries the configured values, and the
+                // resync mirrors them into the doc.
+                if let Some(groups) = payload.get("params").and_then(|v| v.as_object()) {
+                    for (group, names) in groups {
+                        let Some(names) = names.as_object() else { continue };
+                        for (name, vjson) in names {
+                            if let Some(existing) =
+                                g.params(uid).and_then(|p| goofi_node::param(p, group, name)).cloned()
+                            {
+                                let newp = param_from_json(&existing, vjson);
+                                let _ = g.update_member_param(uid, group, name, newp);
+                            }
+                        }
+                    }
+                }
                 if let Some(pos) = payload.get("pos").and_then(parse_pos) {
                     let _ = g.set_node_pos(uid, pos);
                 }

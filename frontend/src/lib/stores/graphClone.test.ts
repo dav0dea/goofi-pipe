@@ -56,4 +56,24 @@ describe('cloneNodes — identity is the uid, not the display name', () => {
 		expect(addLink, 'cloneNodes must re-create the internal link').toBeDefined();
 		expect(addLink!.payload).toMatchObject({ node_out: 'NEW', node_in: 'NEW' });
 	});
+
+	it('carries cloned param values INLINE on add_node — no racy post-add leaf-write', async () => {
+		const fc = new FakeControl();
+		const g = new GraphStore(fc);
+		const node = nodeInfo('uidA', 'osc0');
+		// A non-default param value the clone must carry.
+		node.params = {
+			common: { max_frequency: { value: 42 } }
+		} as unknown as NodeInstanceInfo['params'];
+		fc.emit({ event: 'node_added', payload: node });
+		fc.setCallResult('add_node', 'NEW');
+
+		await g.cloneNodes(['uidA']);
+
+		// The value rides inline on add_node (applied under the graph lock, node born configured) —
+		// NOT written via a post-add leaf-write that would no-op until the new node syncs into the
+		// replica (which it never does in this test, so a missed inline would drop the value).
+		const addCall = fc.recordedCalls().find((c) => c.op === 'add_node');
+		expect(addCall?.payload).toMatchObject({ type: 'Oscillator', params: { common: { max_frequency: 42 } } });
+	});
 });

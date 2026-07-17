@@ -509,12 +509,16 @@ export class GraphStore {
 		type: string,
 		category: string,
 		pos: [number, number],
-		instId?: string
+		instId?: string,
+		params?: Record<string, Record<string, unknown>>
 	): Promise<string> {
 		// `instId` lands the node inside that sub-patch (member of the instance);
-		// omitted, it goes in the root graph.
+		// omitted, it goes in the root graph. `params` (paste/duplicate replay) are applied at
+		// creation UNDER THE GRAPH LOCK — a post-add leaf-write would no-op until the new node syncs
+		// into the replica, silently dropping the values.
 		const uid =
-			(await this.ctl.call<string>('add_node', { type, category, pos, inst_id: instId })) ?? '';
+			(await this.ctl.call<string>('add_node', { type, category, pos, inst_id: instId, params })) ??
+			'';
 		// Record AFTER the call so we know the backend-assigned uid + display name —
 		// a redo restores both so links/panels reconnect to the same node.
 		if (uid)
@@ -1242,18 +1246,11 @@ export class GraphStore {
 		for (const s of specs) {
 			try {
 				// `instId` lands the clones inside the sub-patch being edited (members of
-				// the instance); omitted, they go in the root graph.
-				const newUid = await this.addNode(s.type, s.category, s.pos, instId);
+				// the instance); omitted, they go in the root graph. Params ride INLINE on add_node
+				// (applied under the graph lock) — a post-add updateParam is now a doc leaf-write that
+				// no-ops until the new node has synced into the replica, so it would drop the values.
+				const newUid = await this.addNode(s.type, s.category, s.pos, instId, s.params);
 				rename[s.key] = newUid;
-				for (const [group, params] of Object.entries(s.params)) {
-					for (const [name, value] of Object.entries(params)) {
-						try {
-							await this.updateParam(newUid, group, name, value);
-						} catch {
-							/* ignore a single rejected param */
-						}
-					}
-				}
 			} catch (e) {
 				console.warn('instantiateNodes: add_node failed', e);
 			}

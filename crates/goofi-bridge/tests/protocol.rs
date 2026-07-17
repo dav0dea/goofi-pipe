@@ -1537,6 +1537,47 @@ async fn many_clients_concurrently_drag_and_all_converge() {
 }
 
 #[tokio::test]
+async fn add_node_applies_inline_params_at_creation() {
+    // Paste/duplicate and undo-of-delete replay a node's params by passing an inline `params` map to
+    // add_node; the node must be born CONFIGURED (params applied under the graph lock, before
+    // node_added). Before this, callers did a post-add update_param — but that became a doc
+    // leaf-write which no-ops until the just-added node has synced into the client's replica, so the
+    // replayed values were silently dropped.
+    let base = start_server().await;
+    let (mut ws, _) = connect_async(format!("{base}/control")).await.unwrap();
+    let _hello = recv_text(&mut ws).await;
+
+    ws.send(Message::Text(
+        json!({ "id": 1, "op": "add_node", "payload": {
+            "type": "Oscillator",
+            "params": { "common": { "max_frequency": 42.0 } }
+        }})
+        .to_string(),
+    ))
+    .await
+    .unwrap();
+
+    // Capture BOTH the reply (uid) and the node_added broadcast (either order) — node_added must
+    // already carry the applied value.
+    let mut uid: Option<String> = None;
+    let mut val: Option<Value> = None;
+    for _ in 0..20 {
+        let m = recv_text(&mut ws).await;
+        if m.get("id").and_then(|v| v.as_i64()) == Some(1) {
+            uid = m["result"].as_str().map(str::to_string);
+        }
+        if m["event"] == "node_added" {
+            val = Some(m["payload"]["params"]["common"]["max_frequency"]["value"].clone());
+        }
+        if uid.is_some() && val.is_some() {
+            break;
+        }
+    }
+    assert!(uid.is_some(), "add_node reply must arrive");
+    assert_eq!(val, Some(json!(42.0)), "add_node applied the inline param at creation");
+}
+
+#[tokio::test]
 async fn node_removed_reports_the_members_real_scope() {
     // Removing a node that lives inside a sub-patch must broadcast node_removed with that
     // member's REAL scope, so the frontend drops it from the right members index. The handler
