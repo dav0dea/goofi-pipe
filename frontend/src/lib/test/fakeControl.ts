@@ -11,8 +11,11 @@ export class FakeControl implements Control {
 	private calls: Array<{ op: string; payload: Record<string, unknown> }> = [];
 	private listeners = new Set<(ev: ControlEvent) => void>();
 	private connectListeners = new Set<(c: boolean) => void>();
+	private syncListeners = new Set<(bytes: Uint8Array) => void>();
 	private results = new Map<string, unknown>();
 	private failing = new Set<string>();
+	/** Binary sync frames the code under test sent via `sendSync` (for assertions). */
+	sentSyncFrames: Uint8Array[] = [];
 
 	/** Make `call(op, …)` resolve to `value` (e.g. `add_node` → a display name). */
 	setCallResult(op: string, value: unknown): void {
@@ -41,6 +44,20 @@ export class FakeControl implements Control {
 	onConnect(fn: (c: boolean) => void): () => void {
 		this.connectListeners.add(fn);
 		return () => this.connectListeners.delete(fn);
+	}
+
+	onSyncFrame(fn: (bytes: Uint8Array) => void): () => void {
+		this.syncListeners.add(fn);
+		return () => this.syncListeners.delete(fn);
+	}
+
+	sendSync(bytes: Uint8Array): void {
+		this.sentSyncFrames.push(bytes);
+	}
+
+	/** Drive an inbound binary sync frame to every `onSyncFrame` listener. */
+	emitSync(bytes: Uint8Array): void {
+		for (const fn of this.syncListeners) fn(bytes);
 	}
 
 	/** Synchronously fan an event out to every `on` listener — simulates the
