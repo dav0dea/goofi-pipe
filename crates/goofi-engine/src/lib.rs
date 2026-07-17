@@ -916,14 +916,17 @@ impl Graph {
             self.remove_node(u)?;
         }
 
-        // 2. Insert planned members not yet live; (re)tag membership/local/pos for all.
+        // 2. Insert planned members not yet live; (re)tag membership/local for all. Pos is
+        //    applied ONLY to freshly-inserted members — a surviving member keeps its live pos
+        //    (so an unrelated duplicate/re-project never snaps a user-moved member back to the
+        //    def's group-time pos; shared pos-mirroring is the §4.5 edit path, not reconcile's).
         for pn in &plan.nodes {
             if !self.nodes.contains_key(&pn.uid) {
                 self.insert_planned_leaf(pn)?;
+                let _ = self.set_node_pos(pn.uid, pn.pos);
             }
             self.scope_of.insert(pn.uid, Some(pn.scope));
             self.local_of.insert(pn.uid, pn.local.clone());
-            let _ = self.set_node_pos(pn.uid, pn.pos);
         }
 
         // 3. Managed links → exactly the plan's links.
@@ -3496,6 +3499,17 @@ mod tests {
         g.remove_instance(inst).unwrap();
         assert_eq!(g.node_uids().len(), 0, "all leaves torn down");
         assert!(g.def(def_id).is_none(), "def GC'd once unreferenced");
+    }
+
+    #[test]
+    fn duplicate_shared_preserves_a_moved_original_members_pos() {
+        // reconcile must not snap a surviving member back to the def's group-time pos.
+        let mut g = Graph::new();
+        let a = g.add_node("_TestConst", None).unwrap();
+        let inst = g.group_nodes(&[a], [0.0, 0.0]).unwrap();
+        g.set_node_pos(a, [123.0, 456.0]).unwrap(); // user moves the member after grouping
+        g.duplicate_shared(inst, [10.0, 10.0]).unwrap();
+        assert_eq!(g.pos(a), Some([123.0, 456.0]), "the original member keeps its moved position");
     }
 
     #[test]
