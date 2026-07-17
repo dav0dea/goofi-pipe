@@ -1245,15 +1245,16 @@ export class GraphStore {
 
 	/** Build `this.instances` (the whole sub-patch forest, INCLUDING the synthetic ROOT scope) from
 	 * the CRDT doc (Phase-2 instances read cutover). Every structural field is reconstructed from the
-	 * doc to match the backend's `describe_instance`/`root_instance`; `error` is a runtime overlay
-	 * preserved from the current record (kept fresh by the `error` event, never in the doc). Wraps
+	 * doc to match the backend's `describe_instance`/`root_instance`; `error` is DERIVED from the
+	 * members' runtime node errors (the bridge only emits `error` keyed by a real node uid, never an
+	 * instance uid — so an instance's deep error must be recomputed, not overlaid). Wraps
 	 * `_reconcileInstances` with the same vanished-teardown + seed-only-new lifecycle the
 	 * `subpatch_changed` handler applied, so a collapsed sub-patch's live viewer state survives. */
 	private _reconcileInstancesFromDoc(): void {
 		if (!this.nodeTypes?.length) return; // no catalog yet → keep event-sourced instances
 		const doc = this._sync.doc;
 		const nodes = nodeViews(doc).map((n) => ({ uid: n.uid, name: n.name }));
-		const next = assembleInstances(instanceViews(doc), nodes, (uid) => this.instances[uid]?.error ?? null);
+		const next = assembleInstances(instanceViews(doc), nodes, (uid) => this._realNode(uid)?.error ?? null);
 		// Vanished instances fire no per-node event — clear any panel still bound to one (mirror of the
 		// retired `subpatch_changed` wrap; `_reconcileInstances` itself drops the map entry + synth cache).
 		const before = new Set(Object.keys(this.instances));

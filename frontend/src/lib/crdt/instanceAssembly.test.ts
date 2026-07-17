@@ -153,18 +153,31 @@ describe('instanceAssembly — synthetic ROOT', () => {
 });
 
 describe('instanceAssembly — assembleInstances (full map incl. ROOT)', () => {
-	it('returns ROOT + every real instance, wiring the runtime-error lookup', () => {
+	it('returns ROOT + every real instance, deriving each instance error from its member nodes', () => {
 		const i1 = inst({ uid: 'i1', name: 'sp0', members: { buffer0: 'm1' } });
 		const nodes = [
 			{ uid: 'n0', name: 'osc0' },
 			{ uid: 'm1', name: 'buffer0' }
 		];
-		const map = assembleInstances([i1], nodes, (uid) => (uid === 'i1' ? 'deep error' : null));
+		// The lookup answers per NODE uid; the instance's deep error is derived from its member m1.
+		const map = assembleInstances([i1], nodes, (uid) => (uid === 'm1' ? 'member boom' : null));
 
 		expect(Object.keys(map).sort()).toEqual([ROOT_ID, 'i1'].sort());
 		expect(map[ROOT_ID].members.osc0).toEqual({ uid: 'n0', is_instance: false });
 		expect(map[ROOT_ID].members.sp0).toEqual({ uid: 'i1', is_instance: true });
-		expect(map.i1.error).toBe('deep error');
+		expect(map.i1.error).toBe('member boom');
 		expect(map.i1.members.buffer0).toEqual({ uid: 'm1', is_instance: false });
+	});
+
+	it('derives a nested instance error up through the parent (recursion-correct)', () => {
+		// i1 contains nested instance i2; i2 contains member node m2 which is in error. i1's deep
+		// error must surface m2's error through the two levels.
+		const i2 = inst({ uid: 'i2', name: 'inner', parent: 'i1', members: { buf: 'm2' } });
+		const i1 = inst({ uid: 'i1', name: 'outer', members: { inner0: 'i2' } });
+		const map = assembleInstances([i1, i2], [{ uid: 'm2', name: 'buf' }], (uid) =>
+			uid === 'm2' ? 'deep boom' : null
+		);
+		expect(map.i2.error).toBe('deep boom');
+		expect(map.i1.error, 'error propagates up through the nested instance').toBe('deep boom');
 	});
 });

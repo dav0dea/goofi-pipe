@@ -108,17 +108,36 @@ export function assembleRoot(
 	};
 }
 
+/** An instance's deep error = the first errored descendant across its subtree (recursion-correct,
+ * mirroring the backend `instance_error`): a plain member's runtime NODE error, or a nested
+ * instance's own derived error. `null` when the whole subtree is healthy. Derived — NOT event-
+ * overlaid: the bridge only ever emits `error` keyed by a real node uid, never an instance uid. */
+function instanceError(
+	view: InstanceView,
+	byUid: Map<string, InstanceView>,
+	nodeError: (uid: string) => string | null
+): string | null {
+	for (const memberUid of Object.values(view.members)) {
+		const nested = byUid.get(memberUid);
+		const e = nested ? instanceError(nested, byUid, nodeError) : nodeError(memberUid);
+		if (e) return e;
+	}
+	return null;
+}
+
 /** Build the full render instances map (INCLUDING synthetic ROOT) from the doc's instance forest +
- * node identities + a runtime-error lookup. Pure — the store gathers the inputs and calls this. */
+ * node identities + a NODE-error lookup (each instance's deep error is derived from its members).
+ * Pure — the store gathers the inputs and calls this. */
 export function assembleInstances(
 	instances: InstanceView[],
 	nodes: { uid: string; name: string }[],
-	errorFor: (uid: string) => string | null
+	nodeError: (uid: string) => string | null
 ): Record<string, InstanceInfo> {
 	const instanceUids = new Set(instances.map((i) => i.uid));
+	const byUid = new Map(instances.map((i) => [i.uid, i]));
 	const out: Record<string, InstanceInfo> = { [ROOT_ID]: assembleRoot(nodes, instances) };
 	for (const view of instances) {
-		out[view.uid] = assembleInstance(view, instanceUids, instances, errorFor(view.uid));
+		out[view.uid] = assembleInstance(view, instanceUids, instances, instanceError(view, byUid, nodeError));
 	}
 	return out;
 }

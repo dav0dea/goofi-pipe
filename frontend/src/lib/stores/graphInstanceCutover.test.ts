@@ -163,22 +163,26 @@ describe('instance-forest read cutover — instances built from the doc when the
 		expect(g.instances.ghost).toBeUndefined();
 	});
 
-	it('an error event sets inst.error and it survives a later doc rebuild', () => {
+	it('derives a collapsed instance deep-error from a member NODE error (recursion-correct)', () => {
 		const fc = new FakeControl();
 		const g = new GraphStore(fc);
 		g.nodeTypes = catalog();
-		Y.transact(g.doc, () => {
-			seedNode(nodesMap(g.doc), 'm1', 'Buffer', 'buffer0');
-			seedInstance(instancesMap(g.doc), 'i1', { name: 'sp0', members: { buffer0: 'm1' } });
-		});
-		// The backend fires `error` keyed by the ancestor instance uid for a deep member error.
-		fc.emit({ event: 'error', payload: { node: 'i1', error: 'deep boom' } });
-		expect(g.instances.i1.error).toBe('deep boom');
+		// m1 exists at top level and goes into error. The bridge only ever emits `error` keyed by a
+		// real NODE uid (never an instance uid) — so the instance error must be DERIVED from members,
+		// not overlaid from a (never-sent) instance-keyed event.
+		Y.transact(g.doc, () => seedNode(nodesMap(g.doc), 'm1', 'Buffer', 'buffer0'));
+		fc.emit({ event: 'error', payload: { node: 'm1', error: 'member boom' } });
+		expect(g.nodeById('m1')!.error).toBe('member boom');
 
-		// An unrelated doc change triggers a full instance rebuild — the runtime error must persist.
-		Y.transact(g.doc, () => instancesMap(g.doc).get('i1')!.set('name', 'sp0_renamed'));
-		expect(g.instances.i1.name).toBe('sp0_renamed');
-		expect(g.instances.i1.error, 'runtime error preserved across a doc-driven rebuild').toBe('deep boom');
+		// Grouping m1 into i1 (mirror writes the instance → doc reconcile) must redden the collapsed
+		// sub-patch with its member's deep error, as describe_instance.error did pre-cutover.
+		Y.transact(g.doc, () => seedInstance(instancesMap(g.doc), 'i1', { name: 'sp0', members: { buffer0: 'm1' } }));
+		expect(g.instances.i1.error, 'collapsed instance reflects its member deep error').toBe('member boom');
+
+		// Clearing the member error and re-reconciling clears the instance error (no stale chip).
+		fc.emit({ event: 'error', payload: { node: 'm1', error: null } });
+		Y.transact(g.doc, () => instancesMap(g.doc).get('i1')!.set('name', 'sp0b'));
+		expect(g.instances.i1.error, 'cleared member error clears the derived instance error').toBeNull();
 	});
 
 	it('the synth node keeps a stable reference across an unrelated doc change', () => {
