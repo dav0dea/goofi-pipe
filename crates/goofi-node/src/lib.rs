@@ -471,6 +471,95 @@ pub trait ExprEvaluator: Send + Sync {
 }
 
 // ---------------------------------------------------------------------------
+// `nd()` reference scanning — the one source of truth for finding `nd('name')`
+// references in an expression source. Both extraction (which producers an
+// expression depends on) and rewriting (renaming a referenced node) run off this
+// scan, so they can never disagree on what counts as a reference.
+// ---------------------------------------------------------------------------
+
+/// Scan `source` for `nd('name')` / `nd("name")` calls, yielding the byte span of each
+/// name *literal's content* (between the quotes) and the name, in source order.
+///
+/// A plain lexical scan, not a full parse: `nd` must be a standalone token (word
+/// boundary before it, so `round('x')`, `s.rfind('y')`, `grand('z')` do NOT match),
+/// whitespace between `nd` and `(` is tolerated (`nd ('sig')` is a valid call), and the
+/// first argument must be a single string literal (a non-literal `nd(x)` is skipped).
+/// This mirrors what the evaluator resolves — only the node NAME matters; `.slot`
+/// vs `.method` is decided at eval.
+fn scan_nd_calls(source: &str) -> Vec<(usize, usize, &str)> {
+    let b = source.as_bytes();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i + 2 <= b.len() {
+        if &b[i..i + 2] != b"nd" {
+            i += 1;
+            continue;
+        }
+        // Word boundary before `nd` — reject `grand(`, `round(`, `.rfind(`, etc.
+        let boundary = i == 0 || !(b[i - 1].is_ascii_alphanumeric() || b[i - 1] == b'_');
+        let mut j = i + 2;
+        while j < b.len() && (b[j] as char).is_whitespace() {
+            j += 1;
+        }
+        if boundary && j < b.len() && b[j] == b'(' {
+            j += 1;
+            while j < b.len() && (b[j] as char).is_whitespace() {
+                j += 1;
+            }
+            if j < b.len() && (b[j] == b'\'' || b[j] == b'"') {
+                let q = b[j];
+                j += 1;
+                let start = j;
+                while j < b.len() && b[j] != q {
+                    j += 1;
+                }
+                if j < b.len() {
+                    out.push((start, j, &source[start..j]));
+                    i = j + 1;
+                    continue;
+                }
+            }
+        }
+        i += 2;
+    }
+    out
+}
+
+/// The distinct node names referenced as `nd('name')` in `source`, in first-seen order.
+pub fn nd_ref_names(source: &str) -> Vec<String> {
+    let mut names: Vec<String> = Vec::new();
+    for (_, _, name) in scan_nd_calls(source) {
+        if !name.is_empty() && !names.iter().any(|n| n == name) {
+            names.push(name.to_string());
+        }
+    }
+    names
+}
+
+/// Rewrite every `nd('name')` literal for which `rename(name)` returns `Some(new)`,
+/// preserving the literal's quote style and every other byte of the source. Returns
+/// `Some(new_source)` if any literal changed, else `None` (nothing to do). Used when a
+/// referenced node is renamed: `nd('old')` follows to `nd('new')` across the graph.
+pub fn rewrite_nd_refs(source: &str, rename: impl Fn(&str) -> Option<String>) -> Option<String> {
+    // Collect (start, end, replacement) then splice right-to-left so earlier byte offsets
+    // stay valid as the string is edited.
+    let mut edits: Vec<(usize, usize, String)> = Vec::new();
+    for (start, end, name) in scan_nd_calls(source) {
+        if let Some(new) = rename(name) {
+            edits.push((start, end, new));
+        }
+    }
+    if edits.is_empty() {
+        return None;
+    }
+    let mut out = source.to_string();
+    for (start, end, repl) in edits.into_iter().rev() {
+        out.replace_range(start..end, &repl);
+    }
+    Some(out)
+}
+
+// ---------------------------------------------------------------------------
 // Manifest + native catalog (inventory)
 // ---------------------------------------------------------------------------
 
@@ -637,6 +726,36 @@ mod tests {
     fn manifest_default_params_builds_from_decls() {
         let m = find("_NodeTestNop").unwrap();
         assert!(m.default_params().is_empty(), "Nop declares no params");
+    }
+
+    #[test]
+    fn nd_ref_names_are_distinct_and_ordered() {
+        let names = nd_ref_names("nd('lfo') * 2 + nd(\"psd\").out.mean() + nd('lfo')[0]");
+        assert_eq!(names, vec!["lfo", "psd"], "distinct names in first-seen order");
+        assert!(nd_ref_names("t * 2").is_empty(), "no refs for a time expression");
+    }
+
+    #[test]
+    fn nd_ref_names_requires_a_word_boundary() {
+        assert_eq!(nd_ref_names("nd('s').find('sub')"), vec!["s"], "only nd(), not .find()");
+        assert!(nd_ref_names("round('x')").is_empty(), "round( is not nd(");
+        assert!(nd_ref_names("grand('z')").is_empty(), "grand( is not nd(");
+        assert_eq!(nd_ref_names("nd ('sig') * 2"), vec!["sig"], "whitespace before ( tolerated");
+    }
+
+    #[test]
+    fn rewrite_nd_refs_renames_only_matching_literals() {
+        // Both single- and double-quoted refs to `lfo` follow; the quote style is kept;
+        // a non-matching name and a look-alike token are left untouched.
+        let src = "nd('lfo') + nd(\"lfo\").out - nd('psd') + grand('lfo')";
+        let out = rewrite_nd_refs(src, |n| (n == "lfo").then(|| "osc".to_string())).unwrap();
+        assert_eq!(out, "nd('osc') + nd(\"osc\").out - nd('psd') + grand('lfo')");
+    }
+
+    #[test]
+    fn rewrite_nd_refs_returns_none_when_nothing_changes() {
+        assert!(rewrite_nd_refs("nd('psd') + t", |n| (n == "lfo").then(|| "osc".into())).is_none());
+        assert!(rewrite_nd_refs("t * 2", |_| Some("x".to_string())).is_none(), "no nd() at all");
     }
 
     #[test]

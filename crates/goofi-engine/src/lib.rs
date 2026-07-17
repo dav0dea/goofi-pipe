@@ -465,16 +465,51 @@ impl Graph {
         self.nodes.get(&uid).map(|e| &e.params)
     }
 
-    pub fn rename_node(&mut self, uid: Uid, name: &str) -> Result<(), String> {
+    /// Rename a node's display name (globally unique). On a successful rename, every
+    /// `nd('old')` reference in the graph's param expressions follows to `nd('new')` —
+    /// they resolve producers by name — re-binding each rewritten expression. Returns the
+    /// referrer uids whose source changed, so the bridge can rebroadcast them. Mirrors
+    /// Python's `manager.rename_node`; the rewrite happens ONLY when the rename succeeds.
+    pub fn rename_node(&mut self, uid: Uid, name: &str) -> Result<Vec<Uid>, String> {
         if self.name_in_use(name) {
             return Err(format!("display name `{name}` already in use"));
         }
-        let e = self
+        let old_name = self
             .nodes
-            .get_mut(&uid)
-            .ok_or_else(|| format!("no such node {uid}"))?;
-        e.name = name.to_string();
-        Ok(())
+            .get(&uid)
+            .ok_or_else(|| format!("no such node {uid}"))?
+            .name
+            .clone();
+        self.nodes.get_mut(&uid).unwrap().name = name.to_string();
+        // `name_in_use` guarantees `name != old_name`, so the rename genuinely moved the
+        // display name — propagate it into every expression that referenced it.
+        Ok(self.rewrite_nd_refs_for_rename(&old_name, name))
+    }
+
+    /// Rewrite `nd('old')` -> `nd('new')` across all nodes' param expressions, re-binding
+    /// each changed source (recompiling so its extracted refs track the new name). Returns
+    /// the distinct referrer uids whose source changed.
+    fn rewrite_nd_refs_for_rename(&mut self, old: &str, new: &str) -> Vec<Uid> {
+        let mut edits: Vec<(Uid, ParamKey, String, bool, bool)> = Vec::new();
+        for (&ruid, entry) in &self.nodes {
+            for (key, b) in &entry.bindings {
+                let rewritten = goofi_node::rewrite_nd_refs(&b.source, |n| {
+                    (n == old).then(|| new.to_string())
+                });
+                if let Some(src) = rewritten {
+                    edits.push((ruid, key.clone(), src, b.enabled, b.triggers_process));
+                }
+            }
+        }
+        let mut touched: Vec<Uid> = Vec::new();
+        for (ruid, key, src, enabled, triggers) in edits {
+            if self.set_expression(ruid, &key.group, &key.name, &src, enabled, triggers).is_ok()
+                && !touched.contains(&ruid)
+            {
+                touched.push(ruid);
+            }
+        }
+        touched
     }
 
     pub fn set_node_pos(&mut self, uid: Uid, pos: [f64; 2]) -> Result<(), String> {
@@ -3477,6 +3512,48 @@ mod tests {
         g.set_expression(host, "constant", "value", "nd('src')", true, false).unwrap();
         g.tick();
         assert_eq!(first_f32(&g.latest_frame(host, "out").unwrap()), 3.0, "same-tick nd() resolution");
+    }
+
+    #[test]
+    fn renaming_a_referenced_node_rewrites_nd_expressions() {
+        // host.value = nd('src'); renaming `src` -> `signal` must follow the reference so
+        // the expression still resolves (Python: manager.rename_node rewrites nd('old')).
+        let mut g = eval_graph();
+        let src = g.add_node("_TestConst", None).unwrap();
+        g.rename_node(src, "src").unwrap();
+        g.update_param(src, "constant", "value", Param::float(3.0, -1e9, 1e9)).unwrap();
+        let host = g.add_node("_TestConst", None).unwrap();
+        g.set_expression(host, "constant", "value", "nd('src')", true, false).unwrap();
+
+        let touched = g.rename_node(src, "signal").unwrap();
+        assert_eq!(touched, vec![host], "the referrer is reported for rebroadcast");
+        assert_eq!(
+            g.param_expression(host, "constant", "value").unwrap().source,
+            "nd('signal')",
+            "the reference followed the rename"
+        );
+        // And it still resolves end-to-end through the new name.
+        g.tick();
+        assert_eq!(first_f32(&g.latest_frame(host, "out").unwrap()), 3.0, "resolves via nd('signal')");
+    }
+
+    #[test]
+    fn a_failed_rename_leaves_nd_expressions_untouched() {
+        // The rewrite is gated on a SUCCESSFUL rename: renaming onto a taken name must
+        // fail and touch no expression.
+        let mut g = eval_graph();
+        let a = g.add_node("_TestConst", None).unwrap();
+        g.rename_node(a, "a").unwrap();
+        let b = g.add_node("_TestConst", None).unwrap();
+        g.rename_node(b, "b").unwrap();
+        let host = g.add_node("_TestConst", None).unwrap();
+        g.set_expression(host, "constant", "value", "nd('a')", true, false).unwrap();
+        assert!(g.rename_node(a, "b").is_err(), "rename onto a taken name fails");
+        assert_eq!(
+            g.param_expression(host, "constant", "value").unwrap().source,
+            "nd('a')",
+            "a failed rename rewrites nothing"
+        );
     }
 
     #[test]

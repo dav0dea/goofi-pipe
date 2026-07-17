@@ -458,6 +458,50 @@ async fn set_expression_binds_and_reflects_over_the_wire() {
 }
 
 #[tokio::test]
+async fn renaming_a_node_rewrites_referrers_nd_expressions_over_the_wire() {
+    // A node referenced by `nd('old')` in another node's expression: renaming it must
+    // rewrite the reference to `nd('new')` AND rebroadcast the referrer's params so its
+    // inspector reflects the rewrite (Python: manager.rename_node).
+    let base = start_server().await;
+    let (mut ws, _) = connect_async(format!("{base}/control")).await.unwrap();
+    let _hello = recv_text(&mut ws).await;
+
+    let uid = |v: &Value| v["result"].as_str().unwrap().to_string();
+    let producer = uid(&call(&mut ws, 1, "add_node", json!({ "type": "Oscillator" })).await);
+    let consumer = uid(&call(&mut ws, 2, "add_node", json!({ "type": "Oscillator" })).await);
+    call(&mut ws, 3, "rename_node", json!({ "node": producer, "name": "src" })).await;
+
+    // consumer.common.max_frequency = nd('src')
+    call(
+        &mut ws,
+        4,
+        "set_expression",
+        json!({
+            "node": consumer, "group": "common", "name": "max_frequency",
+            "expression": "nd('src')", "expression_enabled": true, "expression_triggers_process": false
+        }),
+    )
+    .await;
+
+    // Rename the producer; the reply is fire-and-forget, the rewrite rides a state_update.
+    call(&mut ws, 5, "rename_node", json!({ "node": producer, "name": "signal" })).await;
+
+    let mut rewritten: Option<Value> = None;
+    for _ in 0..20 {
+        let m = recv_text(&mut ws).await;
+        if m["event"] == "state_update" && m["payload"]["node"] == json!(consumer) {
+            rewritten = Some(m["payload"]["params"]["common"]["max_frequency"]["expression"].clone());
+            break;
+        }
+    }
+    assert_eq!(
+        rewritten.expect("a state_update for the referrer must be broadcast"),
+        json!("nd('signal')"),
+        "the referrer's nd() reference followed the rename"
+    );
+}
+
+#[tokio::test]
 async fn group_and_expand_project_the_instance_forest() {
     // Grouping two nodes surfaces one instance in the snapshot (ROOT membership re-tagged,
     // the members moved into the instance's scope); expanding restores them to ROOT.

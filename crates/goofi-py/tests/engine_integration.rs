@@ -123,6 +123,39 @@ fn real_evaluator_resolves_a_param_expression_end_to_end() {
 }
 
 #[test]
+fn renaming_a_producer_keeps_the_real_evaluator_expression_resolving() {
+    // Renaming a node referenced by `nd('src')` must rewrite the source AND have the real
+    // pyo3 evaluator recompile it, so the expression still resolves through the new name
+    // (not just a string rewrite that leaves the compiled refs pointing at the old name).
+    assert!(!PyNode::gil_enabled().unwrap(), "interpreter must be free-threaded");
+    let mut g = Graph::new();
+    g.set_evaluator(std::sync::Arc::new(goofi_py::PyExprEvaluator::new().unwrap()));
+
+    let src = g.add_node("_TestConst", None).unwrap();
+    g.rename_node(src, "src").unwrap();
+    g.update_param(src, "constant", "value", Param::float(5.0, -1e9, 1e9)).unwrap();
+    g.update_param(src, "constant", "length", Param::int(1, 1, 1_000_000)).unwrap();
+
+    let host = g.add_node("_TestConst", None).unwrap();
+    g.set_expression(host, "constant", "value", "nd('src')", true, false).unwrap();
+    g.tick();
+    assert_eq!(first_f32(&g.latest_frame(host, "out").unwrap()), 5.0, "resolves before rename");
+
+    let touched = g.rename_node(src, "signal").unwrap();
+    assert_eq!(touched, vec![host], "the referrer is reported for rebroadcast");
+    let info = g.param_expression(host, "constant", "value").unwrap();
+    assert_eq!(info.source, "nd('signal')", "source rewritten");
+    assert!(info.error.is_none(), "the real evaluator recompiled the rewritten source cleanly");
+    g.tick();
+    assert_eq!(
+        first_f32(&g.latest_frame(host, "out").unwrap()),
+        5.0,
+        "still resolves end-to-end via nd('signal')"
+    );
+    assert!(!PyNode::gil_enabled().unwrap(), "GIL stays disabled");
+}
+
+#[test]
 fn discovers_and_hosts_python_nodes_from_a_directory() {
     // A directory of node files, some valid, some not.
     let dir = std::env::temp_dir().join(format!("goofi_pydisc_{}", std::process::id()));

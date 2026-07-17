@@ -110,53 +110,16 @@ impl PyExprEvaluator {
     }
 }
 
-/// Extract the distinct node names referenced by `nd('name')` / `nd("name")`. A plain
-/// scan (not a full parse): the engine resolves ALL of each referenced node's output
-/// slots, so only the node NAME matters here — `.slot` vs `.method` is resolved at eval.
-///
-/// `nd` must be a standalone token (a word boundary before it — so `round('x')`,
-/// `s.find('y')`, `grand('z')` do NOT match and inject phantom refs), and whitespace
-/// between `nd` and `(` is tolerated (`nd ('sig')` is a valid Python call).
+/// Extract the distinct node names referenced by `nd('name')` / `nd("name")`, as
+/// `ExprRef`s with an unresolved `slot` (the engine resolves ALL of each referenced
+/// node's output slots — only the node NAME matters here; `.slot` vs `.method` is
+/// resolved at eval). Scanning lives in [`goofi_node::nd_ref_names`], the one source of
+/// truth shared with the rename rewriter, so extraction and rewriting can't disagree.
 fn extract_refs(source: &str) -> Vec<ExprRef> {
-    let b = source.as_bytes();
-    let mut names: Vec<String> = Vec::new();
-    let mut i = 0;
-    while i + 2 <= b.len() {
-        if &b[i..i + 2] != b"nd" {
-            i += 1;
-            continue;
-        }
-        // Word boundary before `nd` — reject `grand(`, `round(`, `.rfind(`, etc.
-        let boundary = i == 0 || !(b[i - 1].is_ascii_alphanumeric() || b[i - 1] == b'_');
-        let mut j = i + 2;
-        while j < b.len() && (b[j] as char).is_whitespace() {
-            j += 1;
-        }
-        if boundary && j < b.len() && b[j] == b'(' {
-            j += 1;
-            while j < b.len() && (b[j] as char).is_whitespace() {
-                j += 1;
-            }
-            if j < b.len() && (b[j] == b'\'' || b[j] == b'"') {
-                let q = b[j];
-                j += 1;
-                let start = j;
-                while j < b.len() && b[j] != q {
-                    j += 1;
-                }
-                if j < b.len() {
-                    let name = &source[start..j];
-                    if !name.is_empty() && !names.iter().any(|n| n == name) {
-                        names.push(name.to_string());
-                    }
-                    i = j + 1;
-                    continue;
-                }
-            }
-        }
-        i += 2;
-    }
-    names.into_iter().map(|node| ExprRef { node, slot: None }).collect()
+    goofi_node::nd_ref_names(source)
+        .into_iter()
+        .map(|node| ExprRef { node, slot: None })
+        .collect()
 }
 
 /// Convert a resolved `Data` to a Python object for the eval namespace (array → numpy,

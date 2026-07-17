@@ -531,8 +531,13 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
             "rename_node" => {
                 let uid = parse_uid(&payload, "node")?;
                 let name = payload.get("name").and_then(|v| v.as_str()).ok_or("missing name")?;
-                g.rename_node(uid, name)?;
+                let referrers = g.rename_node(uid, name)?;
                 events.push(event("node_renamed", json!({ "node": uid.to_hex(), "name": name })));
+                // Any expression that referenced the old name was rewritten to nd('new'):
+                // push each referrer's fresh params so its inspector reflects the rewrite.
+                for r in referrers {
+                    events.push(param_state_update(&g, r));
+                }
                 Ok(json!({ "ok": true }))
             }
             "group_nodes" => {
