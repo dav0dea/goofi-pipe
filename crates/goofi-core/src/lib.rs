@@ -262,39 +262,6 @@ impl Axes {
         self
     }
 
-    // --- axis-aware transform helpers: propagate labels through a shape change so a
-    // transform node need not hand-rewrite the map. Built out as nodes need them. ---
-
-    /// Drop dimension `dim` (a reduction that collapses it).
-    pub fn reduced(&self, dim: usize) -> Axes {
-        let mut v = self.0.clone();
-        if dim < v.len() {
-            v.remove(dim);
-        }
-        Axes(v)
-    }
-    /// Permute dimensions (transpose); `perm[new_dim] = old_dim`.
-    pub fn transposed(&self, perm: &[usize]) -> Axes {
-        Axes(perm.iter().map(|&d| self.0.get(d).cloned().unwrap_or_default()).collect())
-    }
-    /// Concatenate `self` with `others` along `dim`: coords join when every side
-    /// labels `dim`, else the result dimension is unlabeled. Other dims keep `self`'s.
-    pub fn concat(&self, others: &[&Axes], dim: usize) -> Axes {
-        let mut v = self.0.clone();
-        if v.len() <= dim {
-            v.resize(dim + 1, Axis::default());
-        }
-        let mut joined: Vec<Coord> = Vec::new();
-        let mut complete = true;
-        for side in std::iter::once(self).chain(others.iter().copied()) {
-            match side.get(dim).and_then(|a| a.coords.as_ref()) {
-                Some(c) => joined.extend(c.iter().cloned()),
-                None => complete = false,
-            }
-        }
-        v[dim].coords = complete.then(|| joined.into());
-        Axes(v)
-    }
     /// Subset dimension `dim`'s coords to `indices` (slice/select). A missing index
     /// is skipped; an unlabeled dim is unchanged.
     pub fn sliced(&self, dim: usize, indices: &[usize]) -> Axes {
@@ -736,39 +703,6 @@ mod tests {
         assert_eq!(axes.0.len(), 2);
         assert!(axes.get(0).unwrap().is_empty());
         assert!(axes.get(1).unwrap().coords.is_some());
-    }
-
-    #[test]
-    fn axes_reduced_drops_the_axis() {
-        let axes = Axes(vec![
-            Axis::named("chan", vec![Coord::Str("Fz".into())]),
-            Axis::named("freq", vec![Coord::Num(10.0)]),
-        ]);
-        let r = axes.reduced(0);
-        assert_eq!(r.0.len(), 1);
-        assert_eq!(r.get(0).unwrap().name.as_deref(), Some("freq"));
-    }
-
-    #[test]
-    fn axes_transposed_permutes() {
-        let axes = Axes(vec![
-            Axis::named("a", vec![Coord::Num(1.0)]),
-            Axis::named("b", vec![Coord::Num(2.0)]),
-        ]);
-        let t = axes.transposed(&[1, 0]);
-        assert_eq!(t.get(0).unwrap().name.as_deref(), Some("b"));
-        assert_eq!(t.get(1).unwrap().name.as_deref(), Some("a"));
-    }
-
-    #[test]
-    fn axes_concat_joins_when_all_sides_labeled_else_none() {
-        let a = Axes(vec![Axis::coords(vec![Coord::Str("Fz".into())])]);
-        let b = Axes(vec![Axis::coords(vec![Coord::Str("Cz".into())])]);
-        let joined = a.concat(&[&b], 0);
-        assert_eq!(joined.get(0).unwrap().coords.as_ref().unwrap().len(), 2);
-        // A side missing coords -> unlabeled result dim.
-        let unlabeled = Axes(vec![Axis::default()]);
-        assert!(a.concat(&[&unlabeled], 0).get(0).unwrap().coords.is_none());
     }
 
     #[test]
