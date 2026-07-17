@@ -296,7 +296,7 @@ pub fn describe_instance(g: &Graph, uid: Uid) -> Value {
         "name": inst.name,
         "kind": if shared { "shared" } else { "unique" },
         "def_id": if shared { json!(def_id.to_hex()) } else { Value::Null },
-        "parent": inst.parent.map(|p| json!(p.to_hex())).unwrap_or(Value::Null),
+        "parent": g.scope_of(uid).map(|p| json!(p.to_hex())).unwrap_or(Value::Null),
         "pos": inst.pos,
         "interface": Value::Object(interface),
         "members": Value::Object(members),

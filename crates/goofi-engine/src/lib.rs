@@ -574,9 +574,8 @@ impl Graph {
         })
     }
 
-    /// Re-tag a member's scope, keeping the two representations in sync: the `scope_of` map AND,
-    /// when the member is a nested instance, its `parent` field. They must never diverge — a
-    /// nested instance whose `parent` still points at a removed scope reloads as a phantom root.
+    /// Re-tag a member's scope. `scope_of` is the single source of truth for parentage (an
+    /// instance's parent is just `scope_of[inst]`), so this is the one place membership changes.
     /// `None` = ROOT scope.
     fn set_member_scope(&mut self, member: Uid, scope: Option<Uid>) {
         match scope {
@@ -586,9 +585,6 @@ impl Graph {
             None => {
                 self.scope_of.remove(&member);
             }
-        }
-        if let Some(inst) = self.instances.get_mut(&member) {
-            inst.parent = scope;
         }
     }
 
@@ -770,7 +766,7 @@ impl Graph {
         );
         self.instances.insert(
             inst_uid,
-            subpatch::Instance { uid: inst_uid, name: disp, def_id, parent, pos, members: inst_members },
+            subpatch::Instance { uid: inst_uid, name: disp, def_id, pos, members: inst_members },
         );
         for &m in members {
             self.set_member_scope(m, Some(inst_uid));
@@ -788,11 +784,11 @@ impl Graph {
             .instances
             .get(&inst)
             .ok_or_else(|| format!("expand_instance: no such instance {inst}"))?;
-        let parent = instance.parent;
         let def_id = instance.def_id;
         let restored: Vec<Uid> = instance.members.values().copied().collect();
+        let parent = self.scope_of(inst); // the grandparent scope members fall back to
         for &m in &restored {
-            self.set_member_scope(m, parent); // grandparent scope; keeps nested `parent` in sync
+            self.set_member_scope(m, parent);
             self.local_of.remove(&m); // back to display-name addressing in the parent scope
         }
         self.instances.shift_remove(&inst);
@@ -1077,7 +1073,7 @@ impl Graph {
         let disp = format!("subpatch{}", inst_uid.0);
         self.instances.insert(
             inst_uid,
-            subpatch::Instance { uid: inst_uid, name: disp, def_id, parent, pos, members },
+            subpatch::Instance { uid: inst_uid, name: disp, def_id, pos, members },
         );
         self.scope_of.insert(inst_uid, parent);
         for (nuid, ndef, npos) in nested {
@@ -1091,7 +1087,7 @@ impl Graph {
     pub fn duplicate_shared(&mut self, inst: Uid, pos: [f64; 2]) -> Result<Uid, String> {
         let (def_id, parent) = {
             let i = self.instances.get(&inst).ok_or_else(|| format!("duplicate_shared: no such instance {inst}"))?;
-            (i.def_id, i.parent)
+            (i.def_id, self.scope_of(inst))
         };
         let new_inst = self.mint();
         self.spawn_instance_tree(new_inst, def_id, parent, pos);
@@ -1658,7 +1654,7 @@ impl Graph {
                 json!({
                     "name": inst.name,
                     "def": inst.def_id.to_hex(),
-                    "parent": inst.parent.map(|p| p.to_hex()),
+                    "parent": self.scope_of(*uid).map(|p| p.to_hex()),
                     "pos": inst.pos,
                     "members": Value::Object(members),
                 }),
@@ -1817,7 +1813,7 @@ impl Graph {
                 self.local_of.insert(muid, local.clone());
             }
             self.scope_of.insert(uid, parent);
-            self.instances.insert(uid, subpatch::Instance { uid, name, def_id, parent, pos, members });
+            self.instances.insert(uid, subpatch::Instance { uid, name, def_id, pos, members });
         }
 
         // 2a. Deserialize every def's NAME + INTERFACE first (empty body) so that when 2b maps a
@@ -3943,7 +3939,7 @@ mod tests {
         let root_inst = g2
             .instance_uids()
             .into_iter()
-            .find(|&u| g2.instance(u).unwrap().parent.is_none())
+            .find(|&u| g2.scope_of(u).is_none())
             .expect("a root sub-patch instance survived load");
         g2.duplicate_shared(root_inst, [300.0, 0.0]).unwrap();
         assert_eq!(g2.node_uids().len(), 6, "third sibling's a''/b'' spawned from the reloaded def");
@@ -3953,7 +3949,7 @@ mod tests {
     #[test]
     fn expanding_an_outer_sub_patch_re_parents_its_nested_instance_to_the_grandparent() {
         // Un-grouping an outer that contains a nested sub-patch must reset the nested instance's
-        // scope AND its `parent` field to the grandparent (here ROOT) — the two must not diverge.
+        // scope to the grandparent (here ROOT).
         let mut g = Graph::new();
         let a = g.add_node("_TestConst", None).unwrap();
         let b = g.add_node("_TestEcho", None).unwrap();
@@ -3961,13 +3957,11 @@ mod tests {
         let inner = g.group_nodes(&[a], [0.0, 0.0]).unwrap();
         let outer = g.group_nodes(&[inner, b], [100.0, 0.0]).unwrap();
         assert_eq!(g.scope_of(inner), Some(outer), "inner nested under outer");
-        assert_eq!(g.instance(inner).unwrap().parent, Some(outer), "parent field agrees");
 
         g.expand_instance(outer).unwrap();
         assert!(g.instance(outer).is_none(), "outer dissolved");
         assert!(g.instance(inner).is_some(), "inner survives as a now-root instance");
         assert_eq!(g.scope_of(inner), None, "inner re-tagged to ROOT scope");
-        assert_eq!(g.instance(inner).unwrap().parent, None, "parent field re-tagged in lockstep");
     }
 
     #[test]

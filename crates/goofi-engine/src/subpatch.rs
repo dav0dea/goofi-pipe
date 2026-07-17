@@ -131,14 +131,14 @@ pub struct SubPatchDef {
     pub interface: IndexMap<BndId, Boundary>,
 }
 
-/// A live placement of a def into a scope.
+/// A live placement of a def into a scope. Its parent scope is NOT stored here — the engine's
+/// `scope_of` map is the single source of truth (an instance is a member of some scope exactly
+/// as a leaf is), so `Graph::scope_of(uid)` gives the parent. The pure projector never needs it.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Instance {
     pub uid: Uid,
     pub name: String,
     pub def_id: DefId,
-    /// `None` ⇒ direct child of ROOT.
-    pub parent: Option<Uid>,
     pub pos: [f64; 2],
     /// local -> live leaf/instance uid (the SSOT for uids; stable across re-projection).
     pub members: IndexMap<Local, Uid>,
@@ -326,7 +326,7 @@ mod tests {
         let mut members = IndexMap::new();
         members.insert("osc".to_string(), Uid(fold_u64(uid.0, "osc")));
         members.insert("psd".to_string(), Uid(fold_u64(uid.0, "psd")));
-        Instance { uid, name: "subpatch0".to_string(), def_id, parent: None, pos: [0.0, 0.0], members }
+        Instance { uid, name: "subpatch0".to_string(), def_id, pos: [0.0, 0.0], members }
     }
 
     #[test]
@@ -415,7 +415,6 @@ mod tests {
             uid: Uid(1),
             name: "outer0".to_string(),
             def_id: outer_def,
-            parent: None,
             pos: [0.0, 0.0],
             members: outer_members_map,
         };
