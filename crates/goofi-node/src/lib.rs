@@ -17,25 +17,33 @@ use indexmap::IndexMap;
 // Errors
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone)]
-pub struct NodeError(pub String);
+/// Defines a `pub struct $name(pub String)` error newtype with the byte-identical
+/// Display / Error / `From<String>` / `From<&str>` impls every node-error string type wants.
+macro_rules! string_error {
+    ($(#[$m:meta])* $name:ident) => {
+        $(#[$m])*
+        #[derive(Debug, Clone)]
+        pub struct $name(pub String);
+        impl fmt::Display for $name {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str(&self.0)
+            }
+        }
+        impl std::error::Error for $name {}
+        impl From<String> for $name {
+            fn from(s: String) -> Self {
+                $name(s)
+            }
+        }
+        impl From<&str> for $name {
+            fn from(s: &str) -> Self {
+                $name(s.to_string())
+            }
+        }
+    };
+}
 
-impl fmt::Display for NodeError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.0)
-    }
-}
-impl std::error::Error for NodeError {}
-impl From<String> for NodeError {
-    fn from(s: String) -> Self {
-        NodeError(s)
-    }
-}
-impl From<&str> for NodeError {
-    fn from(s: &str) -> Self {
-        NodeError(s.to_string())
-    }
-}
+string_error!(NodeError);
 
 pub type NodeResult = std::result::Result<(), NodeError>;
 
@@ -400,28 +408,12 @@ pub fn default_factory<T: Node + Default + 'static>() -> Box<dyn Node> {
 /// An opaque handle to a compiled expression, owned by the evaluator.
 pub type BindingId = u64;
 
-/// A param-expression failure: compile error, runtime exception, ambiguous bare
-/// `nd()`, missing ref with no fallback, or a type-incompatible result. Surfaced as a
-/// core node error (the same channel as a `process` error) plus a per-param indicator.
-#[derive(Debug, Clone)]
-pub struct ExprError(pub String);
-
-impl fmt::Display for ExprError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.0)
-    }
-}
-impl std::error::Error for ExprError {}
-impl From<String> for ExprError {
-    fn from(s: String) -> Self {
-        ExprError(s)
-    }
-}
-impl From<&str> for ExprError {
-    fn from(s: &str) -> Self {
-        ExprError(s.to_string())
-    }
-}
+string_error!(
+    /// A param-expression failure: compile error, runtime exception, ambiguous bare
+    /// `nd()`, missing ref with no fallback, or a type-incompatible result. Surfaced as a
+    /// core node error (the same channel as a `process` error) plus a per-param indicator.
+    ExprError
+);
 
 /// A reference an expression makes to another node's output: `nd('node').slot`, or a
 /// bare `nd('node')` (`slot` = `None` → the node's single output slot; a node with more
