@@ -6,23 +6,38 @@
 //! finding, a *separate interpreter* has its own object ownership, so parallel
 //! heavy-Python compute avoids free-threaded CPython's biased-refcount penalty.
 //!
-//! Each tick is one request/response: the input `Data` is GOOF-encoded
-//! ([`goofi_codec::encode`]), length-prefixed, and written to the child's stdin;
-//! the child runs the user `process(x)` and writes back a GOOF frame we decode
-//! ([`goofi_codec::decode`]). Transport is pipes in this first cut; iceoryx2 SHM
-//! is the intended production transport (the protocol is transport-agnostic).
+//! Each tick is one request/response over **iceoryx2 shared memory** (the spec's
+//! subprocess-boundary transport — the same zero-copy plane the Python backend uses).
+//! The input `Data` is GOOF-encoded ([`goofi_codec::encode`]), prefixed with a 4-byte
+//! request sequence, and published to the child's per-node `<id>_req` byte-slice service;
+//! the child runs `process(x)` and publishes `[seq][GOOF]` back on `<id>_resp`, which we
+//! decode ([`goofi_codec::decode`]). The sequence disambiguates responses so a re-publish
+//! (needed while the child's subscriber is still connecting) never returns a stale frame.
+//!
+//! Rust parent uses the iceoryx2 **Rust crate**; the Python child uses the iceoryx2 Python
+//! binding directly (same 0.9.3 ABI — `[u8]` ⇄ `Slice[c_uint8]`, validated by a cross-language
+//! round-trip). The child interpreter must therefore have `iceoryx2` + `numpy`.
 //!
 //! The node implements the same [`Node`] trait as native and in-process Python
 //! nodes, so the scheduler never branches on backend and the engine hosts it
 //! through the ordinary `register_dyn_type` seam.
 
-use std::io::{Read, Write};
 use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError};
 use std::thread::JoinHandle;
-use std::time::Duration;
+use std::time::{Duration, Instant};
+
+use iceoryx2::prelude::*;
 
 use goofi_node::{Inputs, Node, NodeCtx, NodeResult, Outputs};
+
+/// Per-process counter giving each spawned subprocess a unique iceoryx2 service-name base
+/// (`goofi_sub_<pid>_<n>`), so concurrent nodes — and a respawn after a reset — never collide.
+static SUBPROC_SEQ: AtomicU64 = AtomicU64::new(0);
+
+/// iceoryx2 byte-slice pool ceiling per publisher (matches the Python transport's default).
+const MAX_PAYLOAD: usize = 64 * 1024;
 
 /// Default cap on how long a tick waits for a subprocess response before treating
 /// the child as hung. Generous enough to cover cold start (spawn + numpy import);
@@ -32,22 +47,17 @@ const DEFAULT_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// The Python worker: a self-contained GOOF-array codec (meta passed through
 /// opaquely — the Rust decoder re-derives shape/dtype from the body) that runs
-/// the user's `process(x)` supplied via the `GOOFI_USER_SRC` env var. Needs only
-/// numpy (no msgpack — meta bytes are never parsed here).
+/// the user's `process(x)` over **iceoryx2 shared memory**. Needs `iceoryx2` +
+/// `numpy` (no msgpack — meta bytes are never parsed here). Service names arrive
+/// via `GOOFI_IOX_REQ`/`GOOFI_IOX_RESP`; the 4-byte request sequence is echoed so
+/// the parent can dedup re-publishes.
 const WORKER_SRC: &str = r#"
-import sys, os, struct
+import sys, os, struct, ctypes, time
 import numpy as np
+import iceoryx2 as iox2
 
 MAGIC = b'GOOF'; VER = 2
-
-def read_exact(f, n):
-    b = b''
-    while len(b) < n:
-        c = f.read(n - len(b))
-        if not c:
-            return None
-        b += c
-    return b
+MAX_PAYLOAD = 64 * 1024
 
 def decode_array(frame):
     assert frame[:4] == MAGIC and frame[4] == VER and frame[5] == 0, "not a GOOF array frame"
@@ -72,11 +82,45 @@ def encode_array(arr, meta):
     hdr = MAGIC + bytes([VER, 0]) + struct.pack('<I', len(meta)) + struct.pack('<I', len(body))
     return hdr + meta + body
 
-# Reserve fd 1 exclusively for the length-prefixed protocol: dup it, then point
-# fd 1 (and Python-level stdout) at stderr, BEFORE importing the user module. Now
-# any node/C-extension write to stdout (a print, a flush, printf, os.write(1)) is
-# harmlessly routed to stderr instead of injecting bytes into the frame stream.
-_proto_fd = os.dup(1)
+# iceoryx2 byte-slice service open (mirrors the Python backend's transport.py config so the
+# Rust `[u8]` publisher/subscriber on the same service are ABI-compatible).
+_node = iox2.NodeBuilder.new().create(iox2.ServiceType.Ipc)
+
+def _byte_service(name):
+    return (_node.service_builder(iox2.ServiceName.new(name))
+            .publish_subscribe(iox2.Slice[ctypes.c_uint8])
+            .enable_safe_overflow(True)
+            .max_publishers(1)
+            .max_subscribers(16)
+            .open_or_create())
+
+_req_sub = _byte_service(os.environ['GOOFI_IOX_REQ']).subscriber_builder().create()
+_resp_pub = (_byte_service(os.environ['GOOFI_IOX_RESP']).publisher_builder()
+             .initial_max_slice_len(MAX_PAYLOAD)
+             .allocation_strategy(iox2.AllocationStrategy.PowerOfTwo)
+             .create())
+
+def _sample_bytes(s):
+    p = s.payload()
+    n = p.number_of_elements
+    return bytes((ctypes.c_uint8 * n).from_address(p.data_ptr))
+
+def _take_latest():
+    latest = None
+    while True:
+        s = _req_sub.receive()
+        if s is None:
+            break
+        latest = s
+    return None if latest is None else _sample_bytes(latest)
+
+def _send(payload):
+    loan = _resp_pub.loan_slice_uninit(len(payload))
+    ctypes.memmove(loan.payload_ptr, bytes(payload), len(payload))
+    loan.assume_init().send()
+
+# Point fd 1 (and Python-level stdout) at stderr BEFORE importing the user module, so any
+# node/C-extension write to stdout is harmless (there is no stdout protocol anymore).
 os.dup2(2, 1)
 sys.stdout = sys.stderr
 
@@ -84,91 +128,60 @@ ns = {}
 exec(os.environ['GOOFI_USER_SRC'], ns)
 process = ns['process']
 
-inp = sys.stdin.buffer
-outp = os.fdopen(_proto_fd, 'wb')
+last_seq = None
 while True:
-    hdr = read_exact(inp, 4)
-    if hdr is None:
-        break
-    n = struct.unpack('<I', hdr)[0]
-    frame = read_exact(inp, n)
+    m = _take_latest()
+    if m is None:
+        time.sleep(0.0005)  # idle poll; a request wakes it within ~0.5 ms
+        continue
+    seq = struct.unpack('<I', m[:4])[0]
+    if seq == last_seq:
+        continue  # a re-publish of an already-answered request — its response is in the buffer
+    frame = m[4:]
     arr, meta = decode_array(frame)
-    # Preserve the output shape (do NOT ravel — that would flatten [C,T] channel
-    # data to [C*T] and, with the carried channels meta, fail the decoder's
-    # channel-length check on every tick).
+    # Preserve the output shape (do NOT ravel — that would flatten [C,T] channel data and
+    # fail the decoder's channel-length check with the carried channels meta).
     res = np.ascontiguousarray(np.asarray(process(arr), dtype=arr.dtype))
-    # The carried meta describes the INPUT (shape + channel coords). If the node
-    # changed the shape, that meta is stale (its channels would mismatch the new
-    # shape and the decoder would reject the frame), so drop it; when the shape is
-    # unchanged the meta (sfreq/index/channels) stays valid and rides through.
+    # The carried meta describes the INPUT; if the node changed the shape it is stale (its
+    # channels would mismatch), so drop it — else sfreq/index/channels ride through.
     out_meta = meta if res.shape == arr.shape else b''
-    out = encode_array(res, out_meta)
-    outp.write(struct.pack('<I', len(out)))
-    outp.write(out)
-    outp.flush()
+    _send(struct.pack('<I', seq) + encode_array(res, out_meta))
+    last_seq = seq
 "#;
 
-/// The spawned child plus a single **io thread** that owns both pipes and does
-/// the blocking write+read for each request. `roundtrip` hands it a frame over a
-/// channel and waits for the response with `recv_timeout`, so BOTH a stuck write
-/// (a large frame into a child that isn't draining stdin) and a stuck read are
-/// bounded — a timeout kills the child, which errors whichever syscall the io
-/// thread is blocked in, and it exits.
+/// The spawned child plus a single **io thread** that owns the iceoryx2 ports (they are
+/// single-threaded, so they live on one thread and never cross it). `roundtrip` hands it a
+/// `(frame, timeout)` over a channel and waits for the response; the io thread bounds itself to
+/// `timeout` (publish → poll for the matching-sequence response), so a dead/hung child never
+/// strands the caller.
 struct Running {
     child: Child,
-    tx_req: Option<std::sync::mpsc::Sender<Vec<u8>>>,
+    tx_req: Option<std::sync::mpsc::Sender<(Vec<u8>, Duration)>>,
     rx_resp: Receiver<std::io::Result<Vec<u8>>>,
     io_thread: Option<JoinHandle<()>>,
 }
 
 impl Running {
     fn spawn(python: &str, source: &str) -> std::result::Result<Running, String> {
-        let mut child = Command::new(python)
+        let id = format!("goofi_sub_{}_{}", std::process::id(), SUBPROC_SEQ.fetch_add(1, Ordering::Relaxed));
+        let req_name = format!("{id}_req");
+        let resp_name = format!("{id}_resp");
+        // No stdin/stdout protocol anymore — the child talks over iceoryx2. stdout/stderr are
+        // inherited so node prints/tracebacks surface (the worker routes fd 1 to stderr).
+        let child = Command::new(python)
             .arg("-c")
             .arg(WORKER_SRC)
             .env("GOOFI_USER_SRC", source)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
+            .env("GOOFI_IOX_REQ", &req_name)
+            .env("GOOFI_IOX_RESP", &resp_name)
+            .stdin(Stdio::null())
+            .stdout(Stdio::inherit())
             .stderr(Stdio::inherit())
             .spawn()
             .map_err(|e| format!("spawn `{python}`: {e}"))?;
-        let mut stdin = child.stdin.take().expect("piped stdin");
-        let mut stdout = child.stdout.take().expect("piped stdout");
-        let (tx_req, rx_req) = std::sync::mpsc::channel::<Vec<u8>>();
+        let (tx_req, rx_req) = std::sync::mpsc::channel::<(Vec<u8>, Duration)>();
         let (tx_resp, rx_resp) = std::sync::mpsc::channel::<std::io::Result<Vec<u8>>>();
-        // One request -> write it -> read one response, in lockstep. Exits when
-        // the request channel closes (shutdown drops tx_req) or a pipe syscall
-        // errors (the child died / was killed) — so it never strands.
-        let io_thread = std::thread::spawn(move || {
-            while let Ok(frame) = rx_req.recv() {
-                let w = stdin
-                    .write_all(&(frame.len() as u32).to_le_bytes())
-                    .and_then(|_| stdin.write_all(&frame))
-                    .and_then(|_| stdin.flush());
-                if let Err(e) = w {
-                    let _ = tx_resp.send(Err(e));
-                    break;
-                }
-                let mut lenb = [0u8; 4];
-                if let Err(e) = stdout.read_exact(&mut lenb) {
-                    let _ = tx_resp.send(Err(e));
-                    break;
-                }
-                let n = u32::from_le_bytes(lenb) as usize;
-                let mut buf = vec![0u8; n];
-                match stdout.read_exact(&mut buf) {
-                    Ok(()) => {
-                        if tx_resp.send(Ok(buf)).is_err() {
-                            break; // receiver gone
-                        }
-                    }
-                    Err(e) => {
-                        let _ = tx_resp.send(Err(e));
-                        break;
-                    }
-                }
-            }
-        });
+        let io_thread = std::thread::spawn(move || io_loop(req_name, resp_name, rx_req, tx_resp));
         Ok(Running {
             child,
             tx_req: Some(tx_req),
@@ -177,14 +190,15 @@ impl Running {
         })
     }
 
-    /// Hand one frame to the io thread; wait up to `timeout` for the response.
-    /// A timeout kills the child (unblocking a stuck write OR read) and errors.
+    /// Hand one frame to the io thread; wait for the response. The io thread bounds itself to
+    /// `timeout`, so the caller waits a hair longer as a backstop; on timeout the child is killed
+    /// (the next tick respawns a fresh one).
     fn roundtrip(&mut self, frame: &[u8], timeout: Duration) -> std::result::Result<Vec<u8>, String> {
         match self.tx_req.as_ref() {
-            Some(tx) if tx.send(frame.to_vec()).is_ok() => {}
+            Some(tx) if tx.send((frame.to_vec(), timeout)).is_ok() => {}
             _ => return Err("subprocess io thread ended".into()),
         }
-        match self.rx_resp.recv_timeout(timeout) {
+        match self.rx_resp.recv_timeout(timeout + Duration::from_secs(1)) {
             Ok(Ok(buf)) => Ok(buf),
             Ok(Err(e)) => Err(format!("subprocess io: {e}")),
             Err(RecvTimeoutError::Timeout) => {
@@ -204,6 +218,116 @@ impl Running {
         if let Some(h) = self.io_thread.take() {
             let _ = h.join();
         }
+    }
+}
+
+/// The io thread: build the iceoryx2 node + `<id>_req` publisher + `<id>_resp` subscriber on
+/// this thread, then serve one request at a time. A setup failure fails every request with the
+/// error (so it surfaces on the node's error channel rather than panicking the thread).
+fn io_loop(
+    req_name: String,
+    resp_name: String,
+    rx_req: Receiver<(Vec<u8>, Duration)>,
+    tx_resp: std::sync::mpsc::Sender<std::io::Result<Vec<u8>>>,
+) {
+    let ports = (|| -> Result<_, String> {
+        let node = NodeBuilder::new()
+            .create::<ipc::Service>()
+            .map_err(|e| format!("iox node: {e}"))?;
+        let mk_pubsub = |name: &str| {
+            node.service_builder(
+                &name.try_into().map_err(|e| format!("bad service name `{name}`: {e:?}"))?,
+            )
+            .publish_subscribe::<[u8]>()
+            .enable_safe_overflow(true)
+            .max_publishers(1)
+            .max_subscribers(16)
+            .open_or_create()
+            .map_err(|e| format!("service `{name}`: {e}"))
+        };
+        let req_pub = mk_pubsub(&req_name)?
+            .publisher_builder()
+            .initial_max_slice_len(MAX_PAYLOAD)
+            .allocation_strategy(AllocationStrategy::PowerOfTwo)
+            .create()
+            .map_err(|e| format!("req publisher: {e}"))?;
+        let resp_sub = mk_pubsub(&resp_name)?
+            .subscriber_builder()
+            .create()
+            .map_err(|e| format!("resp subscriber: {e}"))?;
+        Ok((node, req_pub, resp_sub))
+    })();
+
+    let (_node, req_pub, resp_sub) = match ports {
+        Ok(x) => x,
+        Err(e) => {
+            while rx_req.recv().is_ok() {
+                if tx_resp.send(Err(std::io::Error::other(e.clone()))).is_err() {
+                    break;
+                }
+            }
+            return;
+        }
+    };
+
+    let mut seq: u32 = 0;
+    while let Ok((frame, timeout)) = rx_req.recv() {
+        seq = seq.wrapping_add(1);
+        let result = one_roundtrip(&req_pub, &resp_sub, seq, &frame, timeout);
+        if tx_resp.send(result).is_err() {
+            break; // caller gone
+        }
+    }
+}
+
+type BytePublisher = iceoryx2::port::publisher::Publisher<ipc::Service, [u8], ()>;
+type ByteSubscriber = iceoryx2::port::subscriber::Subscriber<ipc::Service, [u8], ()>;
+
+/// One request/response: publish `[seq][frame]` and poll `<resp>` for the sample whose leading
+/// sequence matches. Re-publishes each idle millisecond (so the child gets it even if its
+/// subscriber was still connecting when we first published) and drops any stale/mismatched
+/// sample. Bounded by `timeout`.
+fn one_roundtrip(
+    req_pub: &BytePublisher,
+    resp_sub: &ByteSubscriber,
+    seq: u32,
+    frame: &[u8],
+    timeout: Duration,
+) -> std::io::Result<Vec<u8>> {
+    // Discard any stale response left from a prior tick before we start.
+    while matches!(resp_sub.receive(), Ok(Some(_))) {}
+
+    let mut msg = Vec::with_capacity(4 + frame.len());
+    msg.extend_from_slice(&seq.to_le_bytes());
+    msg.extend_from_slice(frame);
+
+    let deadline = Instant::now() + timeout;
+    loop {
+        match req_pub.loan_slice_uninit(msg.len()) {
+            Ok(sample) => {
+                let _ = sample.write_from_slice(msg.as_slice()).send();
+            }
+            Err(e) => return Err(std::io::Error::other(format!("iox publish: {e}"))),
+        }
+        loop {
+            match resp_sub.receive() {
+                Ok(Some(sample)) => {
+                    let payload = sample.payload();
+                    if payload.len() >= 4
+                        && u32::from_le_bytes(payload[0..4].try_into().unwrap()) == seq
+                    {
+                        return Ok(payload[4..].to_vec());
+                    }
+                    // A mismatched (stale) sample — keep draining this batch.
+                }
+                Ok(None) => break, // drained; re-publish + wait
+                Err(e) => return Err(std::io::Error::other(format!("iox receive: {e}"))),
+            }
+        }
+        if Instant::now() >= deadline {
+            return Err(std::io::Error::other("subprocess did not respond in time"));
+        }
+        std::thread::sleep(Duration::from_millis(1));
     }
 }
 
@@ -426,18 +550,27 @@ mod tests {
     use goofi_core::{DType, Data, Meta, Value};
     use indexmap::IndexMap;
 
-    /// A python3 with numpy, or None (the subprocess tier test is skipped then).
+    /// A python with BOTH numpy and iceoryx2 (the subprocess transport), or None (the tier
+    /// test is skipped then). Prefers `$GOOFI_SUBPROC_TEST_PYTHON`, then the repo's iceoryx2
+    /// venv, then a PATH python that happens to have iceoryx2.
     fn usable_python() -> Option<String> {
-        for cand in ["python3", "python"] {
-            if let Ok(out) = Command::new(cand)
+        let mut cands: Vec<String> = Vec::new();
+        if let Ok(p) = std::env::var("GOOFI_SUBPROC_TEST_PYTHON") {
+            cands.push(p);
+        }
+        cands.push(format!("{}/../../.venv/bin/python", env!("CARGO_MANIFEST_DIR")));
+        cands.push("python3".to_string());
+        cands.push("python".to_string());
+        for cand in cands {
+            if let Ok(out) = Command::new(&cand)
                 .arg("-c")
-                .arg("import numpy")
+                .arg("import numpy, iceoryx2")
                 .stdout(Stdio::null())
                 .stderr(Stdio::null())
                 .status()
             {
                 if out.success() {
-                    return Some(cand.to_string());
+                    return Some(cand);
                 }
             }
         }
@@ -599,14 +732,34 @@ mod tests {
         )
         .with_timeout(Duration::from_millis(600));
 
-        let n = 40_000usize; // 160 KB >> 64 KiB pipe buffer
+        let n = 40_000usize; // 160 KB >> the 64 KiB initial slice — a big frame to a stuck child
         let buf: Vec<u8> = (0..n).flat_map(|i| (i as f32).to_le_bytes()).collect();
         let d = Data::from_array_bytes(DType::F32, vec![n], buf, Meta::empty()).unwrap();
 
         let t = std::time::Instant::now();
         let r = try_run(&mut node, d);
-        assert!(r.is_err(), "a stuck write must error, not hang");
+        assert!(r.is_err(), "a child stuck before the loop must error, not hang");
         assert!(t.elapsed() < Duration::from_secs(5), "must return near the timeout");
+    }
+
+    #[test]
+    fn large_frame_round_trips_over_shared_memory() {
+        // A frame far larger than the 64 KiB initial slice must round-trip — iceoryx2 grows the
+        // publisher's segment (PowerOfTwo), and the 4-byte sequence framing survives a big body.
+        let Some(py) = usable_python() else {
+            eprintln!("SKIP: no python with numpy + iceoryx2");
+            return;
+        };
+        let mut node = RemoteNode::spawn(&py, "def process(x):\n    return x * 2.0\n").unwrap();
+        let n = 100_000usize; // 400 KB body
+        let buf: Vec<u8> = (0..n).flat_map(|i| (i as f32).to_le_bytes()).collect();
+        let d = Data::from_array_bytes(DType::F32, vec![n], buf, Meta::empty()).unwrap();
+        let out = run(&mut node, d);
+        let vals = floats(&out);
+        assert_eq!(vals.len(), n, "shape preserved across the SHM round-trip");
+        assert_eq!(vals[1], 2.0, "1 * 2");
+        assert_eq!(vals[10], 20.0, "10 * 2");
+        assert_eq!(vals[n - 1], (n - 1) as f32 * 2.0, "last element doubled");
     }
 
     #[test]

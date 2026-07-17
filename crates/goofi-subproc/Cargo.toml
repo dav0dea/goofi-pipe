@@ -8,15 +8,15 @@ license.workspace = true
 # (for deps that aren't free-threading-safe, and — per the latency finding — for
 # parallel heavy-Python compute, since a separate interpreter has its own object
 # ownership and sidesteps free-threaded biased-refcount contention). No pyo3 here;
-# frames cross the boundary as length-prefixed GOOF (goofi-codec). Transport is
-# stdin/stdout pipes in this first cut; the intended production transport is
-# iceoryx2 shared memory, mirroring the node<->node plane (swappable — the codec
-# and worker protocol are transport-agnostic).
+# frames cross the boundary as GOOF (goofi-codec) over iceoryx2 shared memory — the
+# spec's subprocess-boundary transport (Rust crate ⇄ the Python iceoryx2 binding,
+# same 0.9.3 ABI). The child interpreter needs `iceoryx2` + `numpy`.
 
 [dependencies]
 goofi-core = { path = "../goofi-core" }
 goofi-node = { path = "../goofi-node" }
 goofi-codec = { path = "../goofi-codec" }
+iceoryx2 = "0.9.3"
 
 [dev-dependencies]
 indexmap = "2"
