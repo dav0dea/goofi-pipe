@@ -44,7 +44,7 @@ import {
 	setViewers as docSetViewers
 } from '$lib/crdt/graphDoc';
 import { assembleNode, type RuntimeOverlay } from '$lib/crdt/nodeAssembly';
-import { assembleInstances } from '$lib/crdt/instanceAssembly';
+import { assembleInstances, instanceError } from '$lib/crdt/instanceAssembly';
 import type { StringParam } from '$lib/api/types';
 import type * as Y from 'yjs';
 
@@ -486,24 +486,18 @@ export class GraphStore {
 				break;
 			}
 			case 'error': {
-				// Live snapshot — drives the node's red border, the floating error
-				// chip, and the inspector's current-error section. Always on, via the
-				// control plane, independent of whether a Console is open. The backend
-				// also fires this per ANCESTOR INSTANCE of an errored member (keyed by the
-				// instance uid) so a collapsed sub-patch reflects a deep member's error
-				// live — update the mirrored `inst.error` field (which feeds the synth
-				// node's border) rather than the throwaway synth node object.
-				const inst = this.instances[ev.payload.node];
-				if (inst) {
-					inst.error = ev.payload.error;
-				} else {
-					const t = this.nodeById(ev.payload.node);
-					if (t) t.error = ev.payload.error;
-					// Console ingest only for real nodes — an ancestor-instance event just
-					// mirrors a member error that already ingested under the member's uid.
-					if (ev.payload.error)
-						consoleStore().ingestError(ev.payload.node, ev.payload.error, Date.now());
-				}
+				// Live snapshot — drives the node's red border, the floating error chip, and the
+				// inspector's current-error section. Always on, via the control plane, independent of
+				// whether a Console is open. The bridge only ever keys this by a REAL node uid (its
+				// error-transition loop iterates node_uids); a collapsed sub-patch's deep error is
+				// DERIVED from its members, so after updating the member node we recompute the
+				// enclosing instances (this event fires no doc transaction, so the doc-reconcile that
+				// normally derives instance error does not run).
+				const t = this.nodeById(ev.payload.node);
+				if (t) t.error = ev.payload.error;
+				if (ev.payload.error)
+					consoleStore().ingestError(ev.payload.node, ev.payload.error, Date.now());
+				this._recomputeInstanceErrors();
 				break;
 			}
 			case 'unsaved_changes':
@@ -1267,6 +1261,23 @@ export class GraphStore {
 			if (before.has(iid)) continue;
 			const sn = this.nodeById(iid);
 			if (sn) this._seedNodeViewerState(sn);
+		}
+	}
+
+	/** Re-derive every instance's deep error from its members' current runtime node errors and apply
+	 * it in place. Instance error is DERIVED (never in the doc), and a runtime member `error` event
+	 * fires no doc transaction — so the doc-reconcile that normally derives it doesn't run. Called
+	 * from the `error` handler so a collapsed sub-patch's badge tracks a member error/recovery live. */
+	private _recomputeInstanceErrors(): void {
+		if (!this.nodeTypes?.length) return; // instances are event-sourced until the catalog lands
+		const views = instanceViews(this._sync.doc);
+		const byUid = new Map(views.map((v) => [v.uid, v]));
+		const nodeError = (uid: string) => this._realNode(uid)?.error ?? null;
+		for (const view of views) {
+			const rec = this.instances[view.uid];
+			if (!rec) continue;
+			const err = instanceError(view, byUid, nodeError);
+			if (rec.error !== err) rec.error = err;
 		}
 	}
 

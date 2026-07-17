@@ -112,7 +112,7 @@ export function assembleRoot(
  * mirroring the backend `instance_error`): a plain member's runtime NODE error, or a nested
  * instance's own derived error. `null` when the whole subtree is healthy. Derived — NOT event-
  * overlaid: the bridge only ever emits `error` keyed by a real node uid, never an instance uid. */
-function instanceError(
+export function instanceError(
 	view: InstanceView,
 	byUid: Map<string, InstanceView>,
 	nodeError: (uid: string) => string | null

@@ -185,6 +185,30 @@ describe('instance-forest read cutover — instances built from the doc when the
 		expect(g.instances.i1.error, 'cleared member error clears the derived instance error').toBeNull();
 	});
 
+	it('a member runtime error live-updates the collapsed instance badge (no doc transaction)', () => {
+		const fc = new FakeControl();
+		const g = new GraphStore(fc);
+		g.nodeTypes = catalog();
+		Y.transact(g.doc, () => {
+			seedNode(nodesMap(g.doc), 'm1', 'Buffer', 'buffer0');
+			seedInstance(instancesMap(g.doc), 'i1', { name: 'sp0', members: { buffer0: 'm1' } });
+		});
+		expect(g.instances.i1.error).toBeNull();
+
+		// A member's runtime error arrives via the `error` event (keyed by the member NODE uid — the
+		// only error events the bridge sends). It fires NO doc transaction, so the collapsed instance
+		// badge must be recomputed from members right here, not only on the next structural edit.
+		fc.emit({ event: 'error', payload: { node: 'm1', error: 'runtime boom' } });
+		expect(g.nodeById('m1')!.error).toBe('runtime boom');
+		expect(g.instances.i1.error, 'collapsed instance reflects the member runtime error live').toBe('runtime boom');
+		// …and the collapsed synth node's border reflects it (its sig includes error).
+		expect(g.nodeById('i1')!.error).toBe('runtime boom');
+
+		// Recovery clears it live too.
+		fc.emit({ event: 'error', payload: { node: 'm1', error: null } });
+		expect(g.instances.i1.error, 'collapsed instance clears when the member recovers').toBeNull();
+	});
+
 	it('the synth node keeps a stable reference across an unrelated doc change', () => {
 		const fc = new FakeControl();
 		const g = new GraphStore(fc);

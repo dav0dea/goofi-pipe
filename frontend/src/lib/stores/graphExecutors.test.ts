@@ -900,18 +900,43 @@ describe('sub-patch synth node identity (viewer re-instantiation bug)', () => {
 		expect(a).toBe(b);
 	});
 
-	it('a live error event for an instance uid lights up the collapsed group node', () => {
+	it('a deep error in the instance snapshot lights up the collapsed group node', () => {
 		const fc = new FakeControl();
 		const g = new GraphStore(fc);
 		withInstance(g, fc, { out0: { dir: 'out', dtype: 'ARRAY', inner_node: 'm0', inner_slot: 'out' } });
 		expect(g.nodeById('subpatch0')!.error).toBeNull();
-		// The backend fires `error` per ancestor instance (keyed by the instance uid)
-		// when a deep member errors; the mirror updates inst.error -> the synth border.
-		fc.emit({ event: 'error', payload: { node: 'subpatch0', error: 'deep boom' } });
+		// The bridge only keys `error` events by real node uids; a collapsed sub-patch's deep error
+		// rides its snapshot record (describe_instance.error = first errored descendant). The
+		// event-sourced reconcile applies it to inst.error, which the synth node's border reflects.
+		const snapWithError = (error: string | null) => ({
+			nodes: [],
+			links: [],
+			instances: {
+				subpatch0: {
+					uid: 'subpatch0',
+					name: 'subpatch0',
+					kind: 'subpatch',
+					def_id: null,
+					parent: null,
+					interface: { out0: { dir: 'out', dtype: 'ARRAY', inner_node: 'm0', inner_slot: 'out' } },
+					pos: [0, 0],
+					members: { oscillator0: { uid: 'm0', is_instance: false } },
+					slots: { input: {}, output: { out0: 'ARRAY' } },
+					siblings: [],
+					error,
+					viewers: {}
+				}
+			},
+			save_path: null,
+			unsaved_changes: false,
+			instance_id: 's',
+			layout: null
+		});
+		fc.emit({ event: 'subpatch_changed', payload: snapWithError('deep boom') as never });
 		expect(g.instances['subpatch0'].error).toBe('deep boom');
 		expect(g.nodeById('subpatch0')!.error).toBe('deep boom');
 		// clearing propagates too
-		fc.emit({ event: 'error', payload: { node: 'subpatch0', error: null } });
+		fc.emit({ event: 'subpatch_changed', payload: snapWithError(null) as never });
 		expect(g.nodeById('subpatch0')!.error).toBeNull();
 	});
 
