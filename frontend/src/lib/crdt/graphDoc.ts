@@ -95,18 +95,6 @@ export function paramValue(
 	return typeof v === 'number' || typeof v === 'string' || typeof v === 'boolean' ? v : undefined;
 }
 
-/** A param's expression source (`nd('…')`), or `undefined` if it has no binding. */
-export function paramExprSource(
-	doc: Y.Doc,
-	uid: string,
-	group: string,
-	name: string
-): string | undefined {
-	const expr = paramEntry(doc, uid, group, name)?.get('expr') as Y.Map<unknown> | undefined;
-	const s = expr?.get('source');
-	return typeof s === 'string' ? s : undefined;
-}
-
 export interface ParamExpr {
 	source: string;
 	enabled: boolean;
@@ -143,19 +131,6 @@ export function docParams(doc: Y.Doc, uid: string): DocParamLeaves {
 		}
 	}
 	return out;
-}
-
-/** A param's full expression binding `{source, enabled, triggers}`, or `undefined` if unbound. */
-export function paramExpr(doc: Y.Doc, uid: string, group: string, name: string): ParamExpr | undefined {
-	const expr = paramEntry(doc, uid, group, name)?.get('expr') as Y.Map<unknown> | undefined;
-	if (!expr) return undefined;
-	const s = expr.get('source');
-	if (typeof s !== 'string') return undefined;
-	return {
-		source: s,
-		enabled: expr.get('enabled') === true,
-		triggers: expr.get('triggers') === true
-	};
 }
 
 function paramEntry(

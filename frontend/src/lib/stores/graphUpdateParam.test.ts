@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { FakeControl } from '$lib/test/fakeControl';
 import { GraphStore } from './graph.svelte';
 import { history } from './history.svelte';
-import { paramExpr } from '$lib/crdt/graphDoc';
+import { docParams } from '$lib/crdt/graphDoc';
 import type { NodeInstanceInfo } from '$lib/api/control';
 import * as Y from 'yjs';
 
@@ -78,7 +78,7 @@ describe('GraphStore.setExpression — guards a non-existent param', () => {
 		// `expr` onto a phantom param entry — the graph rejects it and the re-mirror never prunes it.
 		await expect(g.setExpression('uidA', 'nope', 'missing', "nd('x')")).rejects.toThrow();
 		expect(history().canUndo).toBe(false);
-		expect(paramExpr(g.doc, 'uidA', 'nope', 'missing')).toBeUndefined();
+		expect(docParams(g.doc, 'uidA').nope?.missing?.expr).toBeUndefined();
 	});
 });
 

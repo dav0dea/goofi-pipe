@@ -9,7 +9,7 @@ import { setInlineKind, rawInlineView } from '$lib/viewers/inlineView.svelte';
 import { ui } from '$lib/stores/ui.svelte';
 import type { NodeInstanceInfo, LinkInfo } from '$lib/api/control';
 import * as Y from 'yjs';
-import { linksArray, paramValue, nodeView, paramExpr, setParamExpr } from '$lib/crdt/graphDoc';
+import { linksArray, paramValue, nodeView, docParams, setParamExpr } from '$lib/crdt/graphDoc';
 
 /** Seed a node into the store's CRDT doc so a param leaf-write targeting it lands. */
 function docAddNode(g: GraphStore, uid: string): void {
@@ -300,7 +300,7 @@ describe('graph executors — simple kinds', () => {
 		await graphExecutors['set_expression'].inverse(action, deps(fc, g));
 		// The retired set_expression RPC is gone; the old (cleared) binding lands in the CRDT doc.
 		expect(fc.recordedCalls().some((c) => c.op === 'set_expression')).toBe(false);
-		expect(paramExpr(g.doc, 'osc0', 'common', 'frequency')).toBeUndefined();
+		expect(docParams(g.doc, 'osc0').common?.frequency?.expr).toBeUndefined();
 	});
 
 	it('update_param inverse writes the old value to the doc (leaf-write)', async () => {

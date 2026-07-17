@@ -6,8 +6,6 @@ import {
 	nodeView,
 	nodeViews,
 	paramValue,
-	paramExpr,
-	paramExprSource,
 	setParamExpr,
 	linkViews,
 	instancesMap,
@@ -80,8 +78,8 @@ describe('graphDoc readers', () => {
 		expect(paramValue(doc, 'a', 'common', 'max_frequency')).toBe(30);
 		expect(paramValue(doc, 'a', 'oscillator', 'waveform')).toBe('sine');
 		expect(paramValue(doc, 'a', 'common', 'nope')).toBeUndefined();
-		expect(paramExprSource(doc, 'a', 'oscillator', 'waveform')).toBe("nd('lfo')");
-		expect(paramExprSource(doc, 'a', 'common', 'max_frequency')).toBeUndefined();
+		expect(docParams(doc, 'a').oscillator?.waveform?.expr?.source).toBe("nd('lfo')");
+		expect(docParams(doc, 'a').common?.max_frequency?.expr?.source).toBeUndefined();
 	});
 
 	it('reads links', () => {
@@ -210,7 +208,7 @@ describe('graphDoc.setParamExpr — expression-binding leaf write', () => {
 		expect(setParamExpr(doc, 'a', 'common', 'max_frequency', { source: "nd('f')", enabled: true, triggers: false })).toBe(
 			true
 		);
-		expect(paramExpr(doc, 'a', 'common', 'max_frequency')).toEqual({
+		expect(docParams(doc, 'a').common?.max_frequency?.expr).toEqual({
 			source: "nd('f')",
 			enabled: true,
 			triggers: false
@@ -222,9 +220,9 @@ describe('graphDoc.setParamExpr — expression-binding leaf write', () => {
 	it('clears a binding when passed null', () => {
 		const doc = seedDoc();
 		// `waveform` is seeded WITH an expr in seedDoc.
-		expect(paramExpr(doc, 'a', 'oscillator', 'waveform')).toBeDefined();
+		expect(docParams(doc, 'a').oscillator?.waveform?.expr).toBeDefined();
 		expect(setParamExpr(doc, 'a', 'oscillator', 'waveform', null)).toBe(true);
-		expect(paramExpr(doc, 'a', 'oscillator', 'waveform')).toBeUndefined();
+		expect(docParams(doc, 'a').oscillator?.waveform?.expr).toBeUndefined();
 	});
 
 	it('no-ops (returns false) when the node is absent — never mint a phantom', () => {
