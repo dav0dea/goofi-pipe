@@ -137,6 +137,35 @@ function paramEntry(
 	return g?.get(name) as Y.Map<unknown> | undefined;
 }
 
+/** Write a committed param value into the doc IN PLACE, matching the Rust `GraphDoc::set_param`
+ * structure (`nodes[uid].params[group][name].value`) so the manager's `apply_client_update`
+ * detects and applies it. A client leaf-write (§4.1). No-op if the node is not in this replica
+ * yet (never mint a phantom node — the diff would create a conflicting node on the manager).
+ * Returns whether the write landed. */
+export function setParamValue(
+	doc: Y.Doc,
+	uid: string,
+	group: string,
+	name: string,
+	value: number | string | boolean
+): boolean {
+	const node = nodesMap(doc).get(uid);
+	if (!node) return false;
+	const getMap = (parent: Y.Map<unknown>, key: string): Y.Map<unknown> => {
+		let m = parent.get(key) as Y.Map<unknown> | undefined;
+		if (!m) {
+			m = new Y.Map<unknown>();
+			parent.set(key, m);
+		}
+		return m;
+	};
+	const params = getMap(node, 'params');
+	const g = getMap(params, group);
+	const entry = getMap(g, name);
+	if (entry.get('value') !== value) entry.set('value', value);
+	return true;
+}
+
 /** The `instances` root map (the sub-patch forest). */
 export function instancesMap(doc: Y.Doc): Y.Map<Y.Map<unknown>> {
 	return doc.getMap('instances') as Y.Map<Y.Map<unknown>>;

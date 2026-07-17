@@ -9,7 +9,17 @@ import { setInlineKind, rawInlineView } from '$lib/viewers/inlineView.svelte';
 import { ui } from '$lib/stores/ui.svelte';
 import type { NodeInstanceInfo, LinkInfo } from '$lib/api/control';
 import * as Y from 'yjs';
-import { linksArray } from '$lib/crdt/graphDoc';
+import { linksArray, paramValue } from '$lib/crdt/graphDoc';
+
+/** Seed a node into the store's CRDT doc so a param leaf-write targeting it lands. */
+function docAddNode(g: GraphStore, uid: string): void {
+	const nodes = g.doc.getMap('nodes') as Y.Map<Y.Map<unknown>>;
+	if (nodes.get(uid)) return;
+	const n = new Y.Map<unknown>();
+	n.set('type', 'Oscillator');
+	n.set('name', uid);
+	nodes.set(uid, n);
+}
 
 const EMPTY_CTX: NavContext = { activeWorkspaceId: 'w', activePanelId: null, enteredPath: {}, selection: {} };
 
@@ -300,9 +310,10 @@ describe('graph executors — simple kinds', () => {
 		]);
 	});
 
-	it('update_param inverse restores the old value', async () => {
+	it('update_param inverse writes the old value to the doc (leaf-write)', async () => {
 		const fc = new FakeControl();
 		const g = new GraphStore(fc);
+		docAddNode(g, 'osc0'); // the doc node the leaf-write targets
 		const action: Action = {
 			kind: 'update_param',
 			label: 'Set freq',
@@ -311,9 +322,9 @@ describe('graph executors — simple kinds', () => {
 			payload: { node: 'osc0', group: 'common', name: 'frequency', oldValue: 1, newValue: 5 }
 		};
 		await graphExecutors['update_param'].inverse(action, deps(fc, g));
-		expect(fc.recordedCalls()).toEqual([
-			{ op: 'update_param', payload: { node: 'osc0', group: 'common', name: 'frequency', value: 1 } }
-		]);
+		// The retired update_param RPC is gone; the old value lands in the CRDT doc instead.
+		expect(fc.recordedCalls().some((c) => c.op === 'update_param')).toBe(false);
+		expect(paramValue(g.doc, 'osc0', 'common', 'frequency')).toBe(1);
 	});
 
 	it('set_node_pos inverse restores the old position', async () => {

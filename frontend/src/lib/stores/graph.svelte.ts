@@ -31,7 +31,7 @@ import { history, type Action, type ExprState } from './history.svelte';
 import { captureNavContext } from '$lib/workspace/navContext';
 import { ROOT_ID } from '$lib/editor/subpatchScene';
 import { SyncClient } from '$lib/crdt/syncClient';
-import { linkViews, nodeViews, instanceViews, paramValue } from '$lib/crdt/graphDoc';
+import { linkViews, nodeViews, instanceViews, paramValue, setParamValue } from '$lib/crdt/graphDoc';
 import type * as Y from 'yjs';
 
 /** Safety net: if a node never reports a ⟳ refresh done (it crashed mid-scan, or
@@ -634,7 +634,17 @@ export class GraphStore {
 			context: captureNavContext(),
 			payload: { node, group, name, oldValue, newValue: value }
 		});
-		await this.ctl.call('update_param', { node, group, name, value });
+		this.writeParamValue(node, group, name, value);
+	}
+
+	/** Client leaf-write of a committed param value into the CRDT doc (Phase 3 — replaces the
+	 * `update_param` RPC). The manager applies it to the graph via `apply_client_write` (re-
+	 * projecting to shared siblings) and mirrors it back; the reader overlay reflects it locally
+	 * and on the mirror-back. Records no history — callers (updateParam, the executor) own that. */
+	writeParamValue(node: string, group: string, name: string, value: unknown): void {
+		this._sync.commit((doc) => {
+			setParamValue(doc, node, group, name, value as number | string | boolean);
+		});
 	}
 
 	/** Ask a live node to re-evaluate a param's options (device / stream pickers).

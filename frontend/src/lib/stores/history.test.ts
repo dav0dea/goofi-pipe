@@ -3,6 +3,17 @@ import { history, type Action } from './history.svelte';
 import { FakeControl } from '$lib/test/fakeControl';
 import { GraphStore } from './graph.svelte';
 import { workspace } from '$lib/workspace/workspace.svelte';
+import * as Y from 'yjs';
+
+/** Seed a node into the store's CRDT doc so a param leaf-write targeting it lands + sends a frame. */
+function docAddNode(g: GraphStore, uid: string): void {
+	const nodes = g.doc.getMap('nodes') as Y.Map<Y.Map<unknown>>;
+	if (nodes.get(uid)) return;
+	const n = new Y.Map<unknown>();
+	n.set('type', 'Oscillator');
+	n.set('name', uid);
+	nodes.set(uid, n);
+}
 
 const ctx = { activeWorkspaceId: 'w', activePanelId: null, enteredPath: {}, selection: {} };
 const mk = (label: string): Action => ({
@@ -76,8 +87,10 @@ describe('HistoryStore — re-entrancy (report B13: held Ctrl+Z)', () => {
 		const g = new GraphStore(fc);
 		const h = history();
 		h.configureDeps(() => ({ control: fc, graph: g, workspace: workspace() }));
+		docAddNode(g, 'osc0'); // the doc node the inverse leaf-write targets
 		h.record(paramAction());
 		expect(h.canUndo).toBe(true);
+		fc.sentSyncFrames.length = 0; // exclude the connect-time syncHello
 
 		// Two awaits sit between reading the top action and pop(); a held key
 		// fires undo() again before the first pops. The guard must drop it.
@@ -85,8 +98,9 @@ describe('HistoryStore — re-entrancy (report B13: held Ctrl+Z)', () => {
 		const p2 = h.undo();
 		await Promise.all([p1, p2]);
 
-		const inverseCalls = fc.recordedCalls().filter((c) => c.op === 'update_param');
-		expect(inverseCalls).toHaveLength(1); // inverse ran once, not twice
+		// The inverse leaf-write (a doc update frame) went out exactly once — the guard dropped
+		// the second undo() before it re-ran the executor.
+		expect(fc.sentSyncFrames).toHaveLength(1);
 		expect(h.canUndo).toBe(false);
 		expect(h.canRedo).toBe(true);
 
@@ -101,16 +115,17 @@ describe('HistoryStore — re-entrancy (report B13: held Ctrl+Z)', () => {
 		const g = new GraphStore(fc);
 		const h = history();
 		h.configureDeps(() => ({ control: fc, graph: g, workspace: workspace() }));
+		docAddNode(g, 'osc0'); // the doc node the forward leaf-write targets
 		h.record(paramAction());
 		await h.undo(); // move the action onto the redo stack
-		fc.recordedCalls().length = 0;
+		fc.sentSyncFrames.length = 0;
 
 		const p1 = h.redo();
 		const p2 = h.redo();
 		await Promise.all([p1, p2]);
 
-		const forwardCalls = fc.recordedCalls().filter((c) => c.op === 'update_param');
-		expect(forwardCalls).toHaveLength(1);
+		// The forward leaf-write went out exactly once — the guard dropped the second redo().
+		expect(fc.sentSyncFrames).toHaveLength(1);
 		expect(h.canRedo).toBe(false);
 		expect(h.canUndo).toBe(true);
 	});

@@ -96,18 +96,16 @@ const removeLink: Executor = {
 	}
 };
 
-function paramCall(node: string, group: string, name: string, value: unknown): Record<string, unknown> {
-	return { node, group, name, value };
-}
-
 const updateParam: Executor = {
 	async forward(action, deps) {
 		const a = as<'update_param'>(action);
-		await deps.control.call('update_param', paramCall(a.payload.node, a.payload.group, a.payload.name, a.payload.newValue));
+		// Client leaf-write to the CRDT doc (Phase 3) — the manager applies it via
+		// apply_client_write instead of the retired update_param RPC.
+		deps.graph.writeParamValue(a.payload.node, a.payload.group, a.payload.name, a.payload.newValue);
 	},
 	async inverse(action, deps) {
 		const a = as<'update_param'>(action);
-		await deps.control.call('update_param', paramCall(a.payload.node, a.payload.group, a.payload.name, a.payload.oldValue));
+		deps.graph.writeParamValue(a.payload.node, a.payload.group, a.payload.name, a.payload.oldValue);
 	}
 };
 

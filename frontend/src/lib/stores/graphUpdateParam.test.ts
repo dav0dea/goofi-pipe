@@ -3,6 +3,18 @@ import { FakeControl } from '$lib/test/fakeControl';
 import { GraphStore } from './graph.svelte';
 import { history } from './history.svelte';
 import type { NodeInstanceInfo } from '$lib/api/control';
+import * as Y from 'yjs';
+
+/** Seed a node into the store's CRDT doc — a param leaf-write targets the doc's node (which the
+ * manager mirrors), so it no-ops unless the node is present in the replica. */
+function docAddNode(g: GraphStore, uid: string): void {
+	const nodes = g.doc.getMap('nodes') as Y.Map<Y.Map<unknown>>;
+	if (nodes.get(uid)) return;
+	const n = new Y.Map<unknown>();
+	n.set('type', 'Oscillator');
+	n.set('name', uid);
+	nodes.set(uid, n);
+}
 
 function nodeWithParam(uid: string, value: unknown): NodeInstanceInfo {
 	return {
@@ -41,12 +53,13 @@ describe('GraphStore.updateParam — guards a non-existent param', () => {
 		const fc = new FakeControl();
 		const g = new GraphStore(fc);
 		fc.emit({ event: 'node_added', payload: nodeWithParam('uidA', 0) });
+		docAddNode(g, 'uidA'); // the doc node the leaf-write targets
 
 		// The guard keys on the param's existence, not the truthiness of its value, so
-		// editing a param whose current value is 0/false/'' still works.
+		// editing a param whose current value is 0/false/'' still works. The leaf-write lands
+		// in the doc and the reader overlay reflects it in the store.
 		await g.updateParam('uidA', 'common', 'frequency', 5);
-		const call = fc.recordedCalls().find((c) => c.op === 'update_param');
-		expect(call?.payload).toMatchObject({ node: 'uidA', group: 'common', name: 'frequency', value: 5 });
+		expect(g.nodeById('uidA')!.params.common.frequency.value).toBe(5);
 		expect(history().canUndo).toBe(true);
 	});
 });

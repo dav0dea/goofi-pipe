@@ -69,6 +69,20 @@ export class SyncClient {
 		this.unsub = null;
 	}
 
+	/** Apply a LOCAL doc mutation and broadcast the resulting delta to the manager as a client
+	 * leaf-write (§4.1). The manager applies it to the graph via `apply_client_write` and mirrors
+	 * it back (idempotent). Local doc observers fire synchronously, so a reader overlay reflects
+	 * the change optimistically before the round-trip. Returns whether a non-empty delta was sent. */
+	commit(mutate: (doc: Y.Doc) => void): boolean {
+		const before = Y.encodeStateVector(this.doc);
+		mutate(this.doc);
+		const update = Y.encodeStateAsUpdate(this.doc, before);
+		// An empty v1 update is 2 bytes ([0,0]) — skip a no-op mutation.
+		if (update.length <= 2) return false;
+		this.control.sendSync(encodeSyncMsg({ kind: 'update', payload: update }));
+		return true;
+	}
+
 	/** Drive one inbound frame through the handshake, sending back any replies. Exposed for
 	 * tests; normally called from the `onSyncFrame` subscription. */
 	onFrame(bytes: Uint8Array): void {
