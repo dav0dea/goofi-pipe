@@ -9,6 +9,7 @@ members = [
     "crates/goofi-subproc",
     "crates/goofi-engine",
     "crates/goofi-view",
+    "crates/goofi-crdt",
     "crates/goofi-bridge",
     "crates/goofi-cli",
 ]
