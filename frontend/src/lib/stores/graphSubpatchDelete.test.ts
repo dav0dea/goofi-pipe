@@ -120,4 +120,54 @@ describe('deleting a collapsed sub-patch instance is undoable (no data loss)', (
 		).toBe(false);
 		expect(history().canRedo).toBe(true);
 	});
+
+	it('a MIXED batch (instance + node) records ONE checkpoint, not a compound that aborts on undo', async () => {
+		// Regression guard: deleting an instance is undone by a full reload, which re-mints every
+		// uid. If that checkpoint were a compound child alongside incremental link/node inverses,
+		// undo would replay an add_link against a re-minted survivor's dead uid and abort mid-way,
+		// dropping the link and half-reverting. The whole batch must be ONE checkpoint instead.
+		const fc = new FakeControl();
+		const g = new GraphStore(fc);
+		const root = instInfo(ROOT_ID, 'root', null, {
+			subpatch0: { uid: 'sub', is_instance: true },
+			buffer1: { uid: 'n1', is_instance: false }
+		});
+		const sub = instInfo('sub', 'subpatch0', ROOT_ID, { buffer0: { uid: 'm1', is_instance: false } });
+		fc.emit({
+			event: 'hello',
+			payload: snapshot(
+				[
+					nodeInfo('n1', 'buffer1', { instance: ROOT_ID, local_name: 'buffer1' }),
+					nodeInfo('m1', 'buffer0', { instance: 'sub', local_name: 'buffer0' })
+				],
+				{ [ROOT_ID]: root, sub }
+			)
+		});
+		history().configureDeps(() => ({ control: fc, graph: g, workspace: workspace() }));
+		fc.setCallResult('serialize', { yaml: 'PATCH_MIXED' });
+
+		await g.removeNodes(['n1', 'sub']);
+
+		// Forward deletes both.
+		const removed = fc
+			.recordedCalls()
+			.filter((c) => c.op === 'remove_node')
+			.map((c) => c.payload.node);
+		expect(removed).toContain('n1');
+		expect(removed).toContain('sub');
+		// ONE undoable checkpoint entry — never a compound.
+		expect(history().length).toBe(1);
+		expect(history().undoLabel).toBe('Delete 2 nodes');
+
+		// Undo is a single checkpoint reload — no incremental add_link/add_node inverses to abort.
+		const before = fc.recordedCalls().length;
+		await history().undo();
+		const undoCalls = fc.recordedCalls().slice(before);
+		expect(undoCalls.some((c) => c.op === 'load_text' && c.payload.content === 'PATCH_MIXED')).toBe(
+			true
+		);
+		expect(undoCalls.some((c) => c.op === 'add_link')).toBe(false);
+		expect(undoCalls.some((c) => c.op === 'add_node')).toBe(false);
+		expect(history().canRedo).toBe(true);
+	});
 });

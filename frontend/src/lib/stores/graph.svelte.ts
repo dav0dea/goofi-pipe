@@ -1225,12 +1225,47 @@ export class GraphStore {
 		const uidList = [...uids];
 		if (uidList.length === 0) return;
 		const uidSet = new Set(uidList);
+		const label = `Delete ${uidList.length} node${uidList.length > 1 ? 's' : ''}`;
+
+		// A collapsed sub-patch instance in the batch forces the WHOLE batch to be ONE full-graph
+		// checkpoint. Deleting an instance is undone by reloading the patch, and load_doc re-mints
+		// every uid on reload — which cannot compose with the incremental, uid-referencing
+		// link/node inverses of a compound transaction: a trailing add_link inverse would target a
+		// re-minted survivor's now-dead uid, abort the replay mid-way, and half-revert the graph.
+		// Capture one before/after checkpoint and suspend the per-child records; the backend
+		// cascades link cleanup on node/instance removal, so no explicit remove_link is needed
+		// (undo restores every link from the checkpoint YAML).
+		if (uidList.some((u) => this.instances[u] && u !== ROOT_ID) && !history().isSuspended) {
+			const before = await this._loadCheckpointBefore();
+			await history().suspend(async () => {
+				for (const uid of uidList) await this.removeNode(uid, false);
+			});
+			let afterYaml = '';
+			try {
+				afterYaml = (await this.serialize()).yaml;
+			} catch {
+				/* whole graph gone — empty after-state */
+			}
+			this._record({
+				kind: 'load_patch',
+				label,
+				domain: 'graph',
+				context: captureNavContext(),
+				payload: {
+					beforeYaml: before.yaml,
+					afterYaml,
+					beforeLayout: before.layout as WorkspaceState | null,
+					afterLayout: workspace().serialize() as WorkspaceState | null
+				}
+			});
+			return;
+		}
+
 		// Snapshot the affected links up front (one read — not re-derived between the
 		// awaits below, where the store may not have caught up to each removal yet).
 		const links = this.links
 			.filter((l) => uidSet.has(l.node_in) || uidSet.has(l.node_out))
 			.map((l) => ({ ...l }));
-		const label = `Delete ${uidList.length} node${uidList.length > 1 ? 's' : ''}`;
 		await history().transaction(label, async () => {
 			for (const link of links) await this.removeLink(link);
 			for (const uid of uidList) await this.removeNode(uid, false);
