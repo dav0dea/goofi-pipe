@@ -652,14 +652,24 @@ impl Graph {
         d
     }
 
+    /// The output slot decl named `slot` on node `uid`, if any — the shared lookup behind
+    /// `output_slot_type` / `resolve_output`.
+    fn find_output(&self, uid: Uid, slot: &str) -> Option<&'static goofi_node::OutputDecl> {
+        self.nodes.get(&uid)?.manifest.outputs.iter().find(|o| o.name == slot)
+    }
+
+    /// The input slot decl named `slot` on node `uid`, if any — the shared lookup behind
+    /// `input_slot_type` / `resolve_input` / `is_multi_input`.
+    fn find_input(&self, uid: Uid, slot: &str) -> Option<&'static goofi_node::SlotDecl> {
+        self.nodes.get(&uid)?.manifest.inputs.iter().find(|s| s.name == slot)
+    }
+
     fn output_slot_type(&self, uid: Uid, slot: &str) -> Option<goofi_core::SlotType> {
-        let m = self.nodes.get(&uid)?.manifest;
-        m.outputs.iter().find(|o| o.name == slot).map(|o| o.kind)
+        self.find_output(uid, slot).map(|o| o.kind)
     }
 
     fn input_slot_type(&self, uid: Uid, slot: &str) -> Option<goofi_core::SlotType> {
-        let m = self.nodes.get(&uid)?.manifest;
-        m.inputs.iter().find(|s| s.name == slot).map(|s| s.kind)
+        self.find_input(uid, slot).map(|s| s.kind)
     }
 
     /// Capture a live leaf as a def `LeafDecl` (type/params/expressions/pos), for grouping.
@@ -1521,21 +1531,16 @@ impl Graph {
 
     /// Resolve an output slot name to its `&'static` manifest name.
     fn resolve_output(&self, uid: Uid, slot: &str) -> Option<&'static str> {
-        let e = self.nodes.get(&uid)?;
-        e.manifest.outputs.iter().find(|o| o.name == slot).map(|o| o.name)
+        self.find_output(uid, slot).map(|o| o.name)
     }
     fn resolve_input(&self, uid: Uid, slot: &str) -> Option<&'static str> {
-        let e = self.nodes.get(&uid)?;
-        e.manifest.inputs.iter().find(|i| i.name == slot).map(|i| i.name)
+        self.find_input(uid, slot).map(|i| i.name)
     }
 
     /// Whether input `slot` on node `uid` is a `multi` (variadic) slot — i.e. it
     /// accepts many wires and lives in `multi_inputs` rather than `inputs`.
     fn is_multi_input(&self, uid: Uid, slot: &str) -> bool {
-        self.nodes
-            .get(&uid)
-            .and_then(|e| e.manifest.inputs.iter().find(|i| i.name == slot))
-            .is_some_and(|i| i.multi)
+        self.find_input(uid, slot).is_some_and(|i| i.multi)
     }
 
     pub fn add_link(
