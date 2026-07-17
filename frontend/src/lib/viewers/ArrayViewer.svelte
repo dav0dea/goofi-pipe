@@ -5,6 +5,7 @@
 	import uPlot from 'uplot';
 	import 'uplot/dist/uPlot.min.css';
 	import { decimateMinMax } from './decimate';
+	import { readEnvelope, envelopeBand } from './envelope';
 	import { formatTick as fmtTick } from './format';
 
 	type Props = { frame: DataFrame; settings?: SettingsMap };
@@ -287,7 +288,7 @@
 		plot.setData([[value, value], [0, 1]] as unknown as uPlot.AlignedData);
 	}
 
-	function pushData(arr: ArrayData): void {
+	function pushData(arr: ArrayData, envelope: { origLen: number } | null = null): void {
 		if (!plot || !container) return;
 		const shape = arr.shape;
 		const flatLen = arr.values.length;
@@ -341,6 +342,14 @@
 		// from drifting — the decimation path once bypassed this and silently
 		// reintroduced the log-x empty-plot bug.
 		const base = mLogX ? 1 : 0;
+		// The server already envelope-reduced the last axis (thalamus): the m samples ARE the
+		// [min,max] band pairs. Draw them directly over the reconstructed original x-span —
+		// re-decimating already-reduced data would blur the peaks the envelope preserved.
+		if (envelope) {
+			const band = envelopeBand(ySeries, envelope.origLen, base);
+			setSeries(band.xs, band.ys);
+			return;
+		}
 		// When there are far more samples than pixel columns, min/max-decimate to
 		// the display budget — preserves spikes, cuts uPlot's per-frame work from
 		// O(samples) to O(pixels) (report A15).
@@ -354,7 +363,11 @@
 	}
 
 	$effect(() => {
-		if (frame) pushData(frame.data as ArrayData);
+		if (!frame) return;
+		const arr = frame.data as ArrayData;
+		// If the data plane envelope-reduced the last axis, draw the received min/max band
+		// directly rather than re-decimating (thalamus G3). Non-enveloped frames → null.
+		pushData(arr, readEnvelope(frame.meta, arr.shape.length));
 	});
 
 	$effect(() => {
