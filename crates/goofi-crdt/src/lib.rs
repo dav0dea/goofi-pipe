@@ -409,8 +409,15 @@ impl GraphDoc {
         }
     }
 
-    /// Replace the whole link set (Phase 1 mirror is wholesale; incremental comes later).
+    /// Replace the whole link set (wholesale; a fine-grained incremental diff comes later). Guarded
+    /// idempotent: the re-mirror re-asserts this after every op, so when the set is UNCHANGED (the
+    /// common case — links change far less often than params/positions) it must produce no doc ops.
+    /// An unguarded remove-all+re-push would churn the link array (new items + tombstones) on every
+    /// unrelated edit, defeating the empty-diff broadcast-skip for any patch that has links.
     pub fn replace_links(&mut self, links: Vec<LinkRecord>) {
+        if self.links() == links {
+            return; // unchanged — no wholesale rewrite (order-sensitive equality)
+        }
         let mut txn = self.doc.transact_mut();
         let len = self.links.len(&txn);
         self.links.remove_range(&mut txn, 0, len);
@@ -1010,6 +1017,36 @@ mod tests {
         assert_eq!(doc.links()[0].slot_in, "data");
         doc.replace_links(vec![]);
         assert!(doc.links().is_empty());
+    }
+
+    #[test]
+    fn replace_links_is_idempotent() {
+        // The re-mirror re-asserts the whole link set after every op. Re-asserting the SAME links
+        // must produce NO doc ops — else the link array churns (new items + tombstones) on every
+        // unrelated edit, defeating the empty-diff broadcast-skip for any patch that has links.
+        let mut doc = GraphDoc::new();
+        let l = |a: &str, b: &str| LinkRecord {
+            node_out: a.into(),
+            slot_out: "out".into(),
+            node_in: b.into(),
+            slot_in: "in".into(),
+        };
+        doc.replace_links(vec![l("1", "2"), l("2", "3")]);
+
+        let sv = doc.state_vector();
+        doc.replace_links(vec![l("1", "2"), l("2", "3")]);
+        assert!(
+            doc.is_empty_diff(&doc.diff(&sv)),
+            "re-asserting the same link set must be a no-op"
+        );
+        // A real change (an added link) still applies.
+        doc.replace_links(vec![l("1", "2"), l("2", "3"), l("3", "4")]);
+        assert!(!doc.is_empty_diff(&doc.diff(&sv)), "a real link change produces a delta");
+        assert_eq!(doc.links().len(), 3);
+        // Order matters — a reordering is a real change.
+        let sv2 = doc.state_vector();
+        doc.replace_links(vec![l("3", "4"), l("1", "2"), l("2", "3")]);
+        assert!(!doc.is_empty_diff(&doc.diff(&sv2)), "a reordering is a change");
     }
 
     #[test]
