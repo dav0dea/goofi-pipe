@@ -573,16 +573,14 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
                     Ok(json!({ "ok": true }))
                 }
             }
+            // Links are read from the CRDT doc (Phase 2) — the resolved flat link rides the re-mirror
+            // after dispatch. The old `link_added`/`link_removed` events had no client consumer.
             "add_link" => {
                 let (a, so, b, si) = parse_link(&payload)?;
                 // Resolve either endpoint through a sub-patch boundary → flat leaf→leaf.
                 let (a, so) = resolve_link_endpoint(&g, a, &so);
                 let (b, si) = resolve_link_endpoint(&g, b, &si);
                 g.add_link(a, &so, b, &si)?;
-                events.push(event(
-                    "link_added",
-                    json!({ "node_out": a.to_hex(), "slot_out": so, "node_in": b.to_hex(), "slot_in": si }),
-                ));
                 Ok(json!({ "ok": true }))
             }
             "remove_link" => {
@@ -590,10 +588,6 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
                 let (a, so) = resolve_link_endpoint(&g, a, &so);
                 let (b, si) = resolve_link_endpoint(&g, b, &si);
                 g.remove_link(a, &so, b, &si)?;
-                events.push(event(
-                    "link_removed",
-                    json!({ "node_out": a.to_hex(), "slot_out": so, "node_in": b.to_hex(), "slot_in": si }),
-                ));
                 Ok(json!({ "ok": true }))
             }
             // Retained deliberately, unlike its 3 leaf-write siblings (set_node_pos/viewers/
@@ -704,7 +698,7 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
                 let bnd = parse_str(&payload, "bnd_id")?;
                 let pos = payload.get("pos").and_then(parse_pos).ok_or("set_boundary_pos: missing pos")?;
                 g.set_boundary_pos(inst, bnd, pos)?;
-                events.push(event("boundary_moved", json!({ "inst_id": inst.to_hex(), "bnd_id": bnd, "pos": pos })));
+                // Boundary positions are read from the CRDT doc forest (retired `boundary_moved`).
                 Ok(json!({ "ok": true }))
             }
             "duplicate_shared" => {
@@ -757,11 +751,14 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
     })();
 
     // Keep the server-side CRDT doc in agreement with the graph after any successful MUTATING
-    // control op, then broadcast the resulting delta so every connected client's replica
-    // converges. A non-empty `events` is exactly the "this op changed the graph" signal — every
-    // mutating arm pushes at least one event, while read-only ops (list_nodes, serialize, save)
-    // push none, so this skips a full-graph re-mirror walk on every read.
-    if result.is_ok() && !events.is_empty() {
+    // control op, then broadcast the resulting delta so every connected client's replica converges.
+    // The re-mirror is gated on whether the op *could* have mutated the graph — NOT on `events`,
+    // because link/boundary writes mutate the doc-read graph while emitting no client event (their
+    // `link_added`/`boundary_moved` events are retired). Read-only ops touch nothing and skip the
+    // expensive full-graph walk; any other op re-mirrors (an unchanged re-mirror is a no-op empty
+    // diff that broadcasts nothing, so defaulting a new op to re-mirror is safe).
+    let read_only = matches!(op.as_str(), "list_nodes" | "serialize" | "save");
+    if result.is_ok() && !read_only {
         resync_and_broadcast(state);
     }
 

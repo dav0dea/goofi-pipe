@@ -1073,15 +1073,28 @@ async fn connecting_to_a_boundary_creates_a_flat_leaf_link() {
 
     // Connect osc.out → inst::in0. The bridge translates it to osc.out → buf.data.
     call(&mut ws, 6, "add_link", json!({ "node_out": osc, "slot_out": "out", "node_in": inst, "slot_in": bnd })).await;
-    let added = loop {
-        let m = recv_text(&mut ws).await;
-        if m.get("event").and_then(|v| v.as_str()) == Some("link_added") {
-            break m;
+
+    // Links live in the CRDT doc now (the `link_added` event is retired). Sync a fresh replica and
+    // read the flat link back: the boundary endpoint must have resolved to the inner buffer leaf.
+    use goofi_crdt::{GraphDoc, SyncMsg};
+    let mut doc = GraphDoc::new();
+    ws.send(Message::Binary(doc.sync_hello().into())).await.unwrap();
+    let mut links = Vec::new();
+    for _ in 0..40 {
+        if let Some(m) = SyncMsg::decode(&recv_binary(&mut ws).await) {
+            doc.on_sync(m);
         }
-    };
-    assert_eq!(added["payload"]["node_in"], json!(buf), "resolved to the inner buffer leaf, not the instance");
-    assert_eq!(added["payload"]["slot_in"], "data", "resolved to the inner slot");
-    assert_eq!(added["payload"]["node_out"], json!(osc), "the plain endpoint passes through");
+        if let Some(Value::Array(a)) = doc.read_at(&["links"]) {
+            if !a.is_empty() {
+                links = a;
+                break;
+            }
+        }
+    }
+    assert_eq!(links.len(), 1, "one flat leaf→leaf link");
+    assert_eq!(links[0]["node_in"], json!(buf), "resolved to the inner buffer leaf, not the instance");
+    assert_eq!(links[0]["slot_in"], "data", "resolved to the inner slot");
+    assert_eq!(links[0]["node_out"], json!(osc), "the plain endpoint passes through");
 }
 
 #[tokio::test]
