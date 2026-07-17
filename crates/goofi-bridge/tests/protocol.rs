@@ -1137,3 +1137,120 @@ async fn serialize_and_load_roundtrip() {
         "graph_replaced snapshot contains the restored node"
     );
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn many_clients_concurrently_leaf_write_and_all_converge() {
+    // Stress + multi-user correctness for the CRDT write path. N clients each OWN one node and
+    // hammer `ROUNDS` leaf writes into their own replica concurrently, all racing through the
+    // manager's `apply_client_write → graph → resync_and_broadcast` path (the shared
+    // graph→crdt→last_sync_sv mutex chain). Two properties are proven at once:
+    //   * liveness — the contended mutex chain never deadlocks (the whole test completes);
+    //   * no-loss   — a fresh reader converges on ALL N distinct final values, so not one of
+    //                 the N·ROUNDS concurrent writes was dropped or clobbered by the re-mirror.
+    //
+    // Determinism hinges on a happens-before barrier: `handle_control` reads one incoming
+    // message per socket at a time, so a text RPC reply on a socket proves every prior binary
+    // leaf-write on that SAME socket was already applied. Each writer ends with a `serialize`
+    // RPC round-trip; once all writers return, every write is guaranteed live server-side, so
+    // the reader's first full-state sync already carries them (the timeout loop is just slack).
+    use goofi_crdt::{GraphDoc, SyncMsg};
+
+    const N: usize = 8;
+    const ROUNDS: usize = 5;
+
+    let base = start_server().await;
+
+    // Setup: add N Oscillators over one control client; collect their uids (all exist before
+    // any writer connects, so every writer's initial sync learns every node).
+    let (mut setup, _) = connect_async(format!("{base}/control")).await.unwrap();
+    let _ = recv_text(&mut setup).await; // hello
+    let _ = recv_binary(&mut setup).await; // server sync_hello (state vector)
+    let mut uids = Vec::new();
+    for i in 0..N {
+        let u = call(&mut setup, i as i64 + 1, "add_node", json!({ "type": "Oscillator" })).await
+            ["result"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        uids.push(u);
+    }
+
+    // Concurrent writers: each ramps its OWN node's max_frequency 1.0 → ROUNDS over the binary
+    // sync channel, then barriers on a serialize RPC before disconnecting.
+    let mut handles = Vec::new();
+    for i in 0..N {
+        let base = base.clone();
+        let uids = uids.clone();
+        handles.push(tokio::spawn(async move {
+            let (mut w, _) = connect_async(format!("{base}/control")).await.unwrap();
+            let _ = recv_text(&mut w).await; // hello
+            let _ = recv_binary(&mut w).await; // server sync_hello
+            let mut doc = GraphDoc::new();
+            w.send(Message::Binary(doc.sync_hello().into())).await.unwrap();
+            // Absorb sync frames until this writer's replica has learned its own node.
+            tokio::time::timeout(Duration::from_secs(10), async {
+                loop {
+                    let b = recv_binary(&mut w).await;
+                    if let Some(m) = SyncMsg::decode(&b) {
+                        doc.on_sync(m);
+                    }
+                    if doc.node_ids().contains(&uids[i]) {
+                        return;
+                    }
+                }
+            })
+            .await
+            .expect("writer replica learns its node");
+
+            for r in 1..=ROUNDS {
+                let before = doc.state_vector();
+                doc.set_param(&uids[i], "common", "max_frequency", &json!(r as f64), None);
+                let upd = doc.diff(&before);
+                w.send(Message::Binary(SyncMsg::Update(upd).encode().into()))
+                    .await
+                    .unwrap();
+            }
+            // Barrier: the reply proves all prior binary writes on this socket were applied.
+            call(&mut w, 1000 + i as i64, "serialize", json!({})).await;
+        }));
+    }
+    for h in handles {
+        h.await.unwrap();
+    }
+
+    // A fresh reader must converge on ALL N nodes at the final ramped value — proof that every
+    // concurrent write survived the contended re-mirror (no lost update, no deadlock stall).
+    let (mut r, _) = connect_async(format!("{base}/control")).await.unwrap();
+    let _ = recv_text(&mut r).await;
+    let _ = recv_binary(&mut r).await;
+    let mut rdoc = GraphDoc::new();
+    r.send(Message::Binary(rdoc.sync_hello().into())).await.unwrap();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
+    let mut converged = false;
+    while tokio::time::Instant::now() < deadline {
+        match tokio::time::timeout(Duration::from_millis(500), r.next()).await {
+            Ok(Some(Ok(Message::Binary(b)))) => {
+                if let Some(m) = SyncMsg::decode(&b) {
+                    rdoc.on_sync(m);
+                }
+            }
+            Ok(Some(Ok(_))) => continue,
+            Ok(_) => break,
+            Err(_) => {} // no frame this window — re-check convergence, keep waiting
+        }
+        if uids
+            .iter()
+            .all(|u| rdoc.param_value(u, "common", "max_frequency") == Some(json!(ROUNDS as f64)))
+        {
+            converged = true;
+            break;
+        }
+    }
+    if !converged {
+        let got: Vec<_> = uids
+            .iter()
+            .map(|u| rdoc.param_value(u, "common", "max_frequency"))
+            .collect();
+        panic!("not converged; final max_frequency per node = {got:?}");
+    }
+}

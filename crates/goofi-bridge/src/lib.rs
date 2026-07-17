@@ -792,15 +792,13 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
     }
 }
 
-/// Re-sync the CRDT doc from the (authoritative) graph and broadcast the resulting delta to
-/// every connected client, advancing the shared broadcast baseline. Called after any graph
-/// mutation — an RPC dispatch or an applied client doc-write. The re-mirror also RECONCILES
-/// the doc back to the graph's authoritative structure, so a client's out-of-band structural
-/// write (a bogus node/link) is reverted here rather than diverging the graph.
-fn resync_and_broadcast(state: &AppState) {
-    let g = state.graph.lock().unwrap();
-    let mut doc = state.crdt.lock().unwrap();
-    crdt_mirror::sync_graph_to_doc(&g, &mut doc);
+/// Re-mirror the (already-locked) graph into the (already-locked) doc and broadcast the
+/// resulting delta to every connected client, advancing the shared broadcast baseline. The
+/// caller must hold `graph` then `crdt` (the canonical order); passing the guards in keeps the
+/// whole apply→re-mirror critical section atomic so no concurrent writer can observe a doc
+/// leaf the graph has not yet caught up to.
+fn remirror_and_broadcast_locked(state: &AppState, g: &Graph, doc: &mut goofi_crdt::GraphDoc) {
+    crdt_mirror::sync_graph_to_doc(g, doc);
     let mut last_sv = state.last_sync_sv.lock().unwrap();
     let delta = doc.diff(&last_sv);
     // A no-op mutation yields a trivial empty-diff; only broadcast a real change.
@@ -810,34 +808,47 @@ fn resync_and_broadcast(state: &AppState) {
     }
 }
 
+/// Re-sync the CRDT doc from the (authoritative) graph and broadcast the resulting delta to
+/// every connected client, advancing the shared broadcast baseline. Called after any graph
+/// mutation — an RPC dispatch or an applied client doc-write. The re-mirror also RECONCILES
+/// the doc back to the graph's authoritative structure, so a client's out-of-band structural
+/// write (a bogus node/link) is reverted here rather than diverging the graph.
+fn resync_and_broadcast(state: &AppState) {
+    let g = state.graph.lock().unwrap();
+    let mut doc = state.crdt.lock().unwrap();
+    remirror_and_broadcast_locked(state, &g, &mut doc);
+}
+
 /// Apply a client's CRDT leaf write (a binary `SyncMsg::Update`) to the graph: apply it to
 /// the server replica, learn exactly which param values changed, push each into the engine
 /// `Graph` (coerced to the param's type, re-projected to shared siblings), then re-mirror +
 /// broadcast so every client — including the writer — converges on the authoritative result.
 /// Only param VALUES are honored from clients here; structural writes are reverted by the
 /// re-mirror (see [`resync_and_broadcast`]). Expression edits still flow via the RPC path.
+///
+/// The ENTIRE apply→graph-push→re-mirror→broadcast runs under a single `graph`+`crdt` critical
+/// section. This is load-bearing under concurrent writers: if the `crdt` lock were released
+/// after `apply_client_update` (so another writer could apply its leaf to the doc) before this
+/// writer's graph push landed, the subsequent blanket re-mirror would read a graph still behind
+/// that other leaf and clobber it back to the stale value — a lost update. Holding both locks
+/// throughout keeps graph and doc consistent at every release point.
 fn apply_client_write(state: &AppState, update: &[u8]) {
-    let changed = {
-        let mut doc = state.crdt.lock().unwrap();
-        doc.apply_client_update(update).unwrap_or_default()
-    };
+    let mut g = state.graph.lock().unwrap();
+    let mut doc = state.crdt.lock().unwrap();
+    let changed = doc.apply_client_update(update).unwrap_or_default();
     if changed.is_empty() {
         return;
     }
-    {
-        let mut g = state.graph.lock().unwrap();
-        for (uid_hex, group, name, value) in &changed {
-            let Some(uid) = Uid::from_hex(uid_hex) else { continue };
-            let Some(existing) =
-                g.params(uid).and_then(|p| goofi_node::param(p, group, name)).cloned()
-            else {
-                continue; // unknown param (e.g. a stale/bogus client write) — ignore
-            };
-            let newp = param_from_json(&existing, value);
-            let _ = g.update_member_param(uid, group, name, newp);
-        }
+    for (uid_hex, group, name, value) in &changed {
+        let Some(uid) = Uid::from_hex(uid_hex) else { continue };
+        let Some(existing) = g.params(uid).and_then(|p| goofi_node::param(p, group, name)).cloned()
+        else {
+            continue; // unknown param (e.g. a stale/bogus client write) — ignore
+        };
+        let newp = param_from_json(&existing, value);
+        let _ = g.update_member_param(uid, group, name, newp);
     }
-    resync_and_broadcast(state);
+    remirror_and_broadcast_locked(state, &g, &mut doc);
 }
 
 // ---------------------------------------------------------------------------
