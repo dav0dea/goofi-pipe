@@ -477,6 +477,48 @@ async fn group_and_expand_project_the_instance_forest() {
 }
 
 #[tokio::test]
+async fn boundary_authoring_over_the_wire() {
+    // add_boundary → wire_boundary → rename_boundary, reflected in the snapshot interface.
+    let base = start_server().await;
+    let (mut ws, _) = connect_async(format!("{base}/control")).await.unwrap();
+    let _hello = recv_text(&mut ws).await;
+
+    let uid = |v: &Value| v["result"].as_str().unwrap().to_string();
+    let osc = uid(&call(&mut ws, 1, "add_node", json!({ "type": "Oscillator" })).await);
+    let buf = uid(&call(&mut ws, 2, "add_node", json!({ "type": "Buffer" })).await);
+    call(&mut ws, 3, "add_link", json!({ "node_out": osc, "slot_out": "out", "node_in": buf, "slot_in": "data" })).await;
+    // Group only the Buffer: osc→buf.data is a cut → auto input boundary; buf.out is UNexposed
+    // (no downstream), so we can author a fresh output boundary onto it.
+    let inst = call(&mut ws, 4, "group_nodes", json!({ "members": [buf], "pos": [0.0, 0.0] })).await["result"]["inst_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // Add an unwired OUTPUT boundary, then wire it to the buffer's out.
+    let add = call(&mut ws, 5, "add_boundary", json!({ "inst_id": inst, "dir": "out", "dtype": "ARRAY", "pos": [0.0, 0.0] })).await;
+    let bnd = add["result"]["bnd_id"].as_str().expect("bnd_id").to_string();
+    call(&mut ws, 6, "wire_boundary", json!({ "inst_id": inst, "bnd_id": bnd, "inner_node": buf, "inner_slot": "out" })).await;
+    let rn = call(&mut ws, 7, "rename_boundary", json!({ "inst_id": inst, "bnd_id": bnd, "name": "wave" })).await;
+    assert_eq!(rn["result"]["ok"], true);
+
+    // The latest snapshot's interface carries the wired, renamed boundary (bnd_id unchanged).
+    let snap = loop {
+        let m = recv_text(&mut ws).await;
+        if m.get("event").and_then(|v| v.as_str()) == Some("subpatch_changed") {
+            let iface = &m["payload"]["instances"][&inst]["interface"];
+            if iface.get(&bnd).and_then(|b| b.get("name")) == Some(&json!("wave")) {
+                break m;
+            }
+        }
+    };
+    let port = &snap["payload"]["instances"][&inst]["interface"][&bnd];
+    assert_eq!(port["dir"], "out");
+    assert_eq!(port["inner_node"], json!(buf), "wired to the buffer leaf");
+    assert_eq!(port["inner_slot"], "out");
+    assert_eq!(port["name"], "wave", "renamed; bnd_id preserved");
+}
+
+#[tokio::test]
 async fn data_plane_streams_an_output_boundary_via_the_inner_leaf() {
     // Group a Buffer whose output is wired downstream → the instance gains an output boundary.
     // A viewer subscribing to /data/{inst}/{bnd} must receive the inner Buffer's frames (spec

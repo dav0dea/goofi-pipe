@@ -295,6 +295,15 @@ fn parse_uid(payload: &Value, key: &str) -> Result<Uid, String> {
         .ok_or_else(|| format!("missing/invalid uid `{key}`"))
 }
 
+fn parse_slot_type(s: &str) -> Option<goofi_core::SlotType> {
+    match s {
+        "ARRAY" => Some(goofi_core::SlotType::Array),
+        "STRING" => Some(goofi_core::SlotType::String),
+        "TABLE" => Some(goofi_core::SlotType::Table),
+        _ => None,
+    }
+}
+
 fn parse_pos(v: &Value) -> Option<[f64; 2]> {
     let a = v.as_array()?;
     if a.len() != 2 {
@@ -510,6 +519,52 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
                 let restored = g.expand_instance(inst)?;
                 events.push(event("subpatch_changed", schemas::snapshot(&g, &state.instance_id, false)));
                 Ok(json!({ "restored": restored.iter().map(|u| u.to_hex()).collect::<Vec<_>>() }))
+            }
+            "add_boundary" => {
+                let inst = parse_uid(&payload, "inst_id")?;
+                let dir = match payload.get("dir").and_then(|v| v.as_str()) {
+                    Some("in") => goofi_engine::subpatch::Dir::In,
+                    Some("out") => goofi_engine::subpatch::Dir::Out,
+                    _ => return Err("add_boundary: dir must be \"in\" or \"out\"".into()),
+                };
+                let dtype = parse_slot_type(payload.get("dtype").and_then(|v| v.as_str()).unwrap_or("ARRAY"))
+                    .ok_or("add_boundary: bad dtype")?;
+                let pos = payload.get("pos").and_then(parse_pos).unwrap_or([0.0, 0.0]);
+                let bnd = g.add_boundary(inst, dir, dtype, pos)?;
+                events.push(event("subpatch_changed", schemas::snapshot(&g, &state.instance_id, false)));
+                Ok(json!({ "bnd_id": bnd }))
+            }
+            "wire_boundary" => {
+                let inst = parse_uid(&payload, "inst_id")?;
+                let bnd = payload.get("bnd_id").and_then(|v| v.as_str()).ok_or("wire_boundary: missing bnd_id")?;
+                let inner = parse_uid(&payload, "inner_node")?;
+                let slot = payload.get("inner_slot").and_then(|v| v.as_str()).ok_or("wire_boundary: missing inner_slot")?;
+                g.wire_boundary(inst, bnd, inner, slot)?;
+                events.push(event("subpatch_changed", schemas::snapshot(&g, &state.instance_id, false)));
+                Ok(json!({ "ok": true }))
+            }
+            "remove_boundary" => {
+                let inst = parse_uid(&payload, "inst_id")?;
+                let bnd = payload.get("bnd_id").and_then(|v| v.as_str()).ok_or("remove_boundary: missing bnd_id")?;
+                g.remove_boundary(inst, bnd)?;
+                events.push(event("subpatch_changed", schemas::snapshot(&g, &state.instance_id, false)));
+                Ok(json!({ "ok": true }))
+            }
+            "rename_boundary" => {
+                let inst = parse_uid(&payload, "inst_id")?;
+                let bnd = payload.get("bnd_id").and_then(|v| v.as_str()).ok_or("rename_boundary: missing bnd_id")?;
+                let name = payload.get("name").and_then(|v| v.as_str()).ok_or("rename_boundary: missing name")?;
+                g.rename_boundary(inst, bnd, name)?;
+                events.push(event("subpatch_changed", schemas::snapshot(&g, &state.instance_id, false)));
+                Ok(json!({ "ok": true }))
+            }
+            "set_boundary_pos" => {
+                let inst = parse_uid(&payload, "inst_id")?;
+                let bnd = payload.get("bnd_id").and_then(|v| v.as_str()).ok_or("set_boundary_pos: missing bnd_id")?;
+                let pos = payload.get("pos").and_then(parse_pos).ok_or("set_boundary_pos: missing pos")?;
+                g.set_boundary_pos(inst, bnd, pos)?;
+                events.push(event("boundary_moved", json!({ "inst_id": inst.to_hex(), "bnd_id": bnd, "pos": pos })));
+                Ok(json!({ "ok": true }))
             }
             "serialize" => Ok(json!({ "yaml": g.serialize() })),
             "save" => {

@@ -713,6 +713,115 @@ impl Graph {
         Ok(restored)
     }
 
+    // ── Boundary authoring (interface entries on a def; never live nodes) ─────────
+    // A boundary is a naming indirection over an inner leaf slot. All edits mutate the
+    // instance's DEF, so on a shared def they mirror to every sibling for free (the def is
+    // the SSOT — resolve/describe read from it). External wires stay flat leaf→leaf links.
+
+    /// The template-local of `member` within `inst` (its key in the instance's members map).
+    fn member_local(&self, inst: Uid, member: Uid) -> Option<subpatch::Local> {
+        self.instances
+            .get(&inst)?
+            .members
+            .iter()
+            .find(|(_, &u)| u == member)
+            .map(|(l, _)| l.clone())
+    }
+
+    fn def_id_of(&self, inst: Uid) -> Result<subpatch::DefId, String> {
+        self.instances
+            .get(&inst)
+            .map(|i| i.def_id)
+            .ok_or_else(|| format!("no such instance {inst}"))
+    }
+
+    /// Add an UNWIRED boundary to an instance's def; returns its stable `BndId` (`in{n}`/
+    /// `out{n}`). `dtype` is the caller's provisional type until the port is wired.
+    pub fn add_boundary(
+        &mut self,
+        inst: Uid,
+        dir: subpatch::Dir,
+        dtype: goofi_core::SlotType,
+        pos: [f64; 2],
+    ) -> Result<subpatch::BndId, String> {
+        let def_id = self.def_id_of(inst)?;
+        let def = self.defs.get_mut(&def_id).ok_or("add_boundary: missing def")?;
+        let prefix = match dir {
+            subpatch::Dir::In => "in",
+            subpatch::Dir::Out => "out",
+        };
+        let mut n = 0;
+        while def.interface.contains_key(&format!("{prefix}{n}")) {
+            n += 1;
+        }
+        let bnd = format!("{prefix}{n}");
+        def.interface.insert(
+            bnd.clone(),
+            subpatch::Boundary { dir, pillar: subpatch::Pillar::Signal, dtype, inner: None, pos, name: bnd.clone() },
+        );
+        Ok(bnd)
+    }
+
+    /// Point a boundary at an inner member slot (one boundary per inner slot). `inner_node`
+    /// must be a member of `inst`; the boundary's dtype is resolved from that slot.
+    pub fn wire_boundary(&mut self, inst: Uid, bnd: &str, inner_node: Uid, inner_slot: &str) -> Result<(), String> {
+        let local = self.member_local(inst, inner_node).ok_or("wire_boundary: inner is not a member of this instance")?;
+        let def_id = self.def_id_of(inst)?;
+        let dir = self
+            .defs
+            .get(&def_id)
+            .and_then(|d| d.interface.get(bnd))
+            .map(|b| b.dir)
+            .ok_or("wire_boundary: no such boundary")?;
+        let dtype = match dir {
+            subpatch::Dir::In => self.input_slot_type(inner_node, inner_slot),
+            subpatch::Dir::Out => self.output_slot_type(inner_node, inner_slot),
+        }
+        .ok_or("wire_boundary: no such inner slot")?;
+        let target = (local, inner_slot.to_string());
+        let def = self.defs.get_mut(&def_id).ok_or("wire_boundary: missing def")?;
+        if def.interface.iter().any(|(id, b)| id != bnd && b.inner.as_ref() == Some(&target)) {
+            return Err("wire_boundary: that inner slot is already exposed by another boundary".into());
+        }
+        let b = def.interface.get_mut(bnd).ok_or("wire_boundary: no such boundary")?;
+        b.inner = Some(target);
+        b.dtype = dtype;
+        Ok(())
+    }
+
+    /// Drop a boundary. External flat links stay valid leaf→leaf links (they never referenced
+    /// the boundary at runtime), so they are left in place.
+    pub fn remove_boundary(&mut self, inst: Uid, bnd: &str) -> Result<(), String> {
+        let def_id = self.def_id_of(inst)?;
+        let def = self.defs.get_mut(&def_id).ok_or("remove_boundary: missing def")?;
+        def.interface.shift_remove(bnd).ok_or("remove_boundary: no such boundary")?;
+        Ok(())
+    }
+
+    /// Relabel a boundary's display name. The `bnd_id` is unchanged, so external wires survive.
+    pub fn rename_boundary(&mut self, inst: Uid, bnd: &str, name: &str) -> Result<(), String> {
+        let def_id = self.def_id_of(inst)?;
+        let b = self
+            .defs
+            .get_mut(&def_id)
+            .and_then(|d| d.interface.get_mut(bnd))
+            .ok_or("rename_boundary: no such boundary")?;
+        b.name = name.to_string();
+        Ok(())
+    }
+
+    /// Move a boundary pill inside the entered view.
+    pub fn set_boundary_pos(&mut self, inst: Uid, bnd: &str, pos: [f64; 2]) -> Result<(), String> {
+        let def_id = self.def_id_of(inst)?;
+        let b = self
+            .defs
+            .get_mut(&def_id)
+            .and_then(|d| d.interface.get_mut(bnd))
+            .ok_or("set_boundary_pos: no such boundary")?;
+        b.pos = pos;
+        Ok(())
+    }
+
     /// All links as resolved views (snapshot projection).
     pub fn links_view(&self) -> Vec<LinkView> {
         self.links
@@ -2933,6 +3042,46 @@ mod tests {
         assert_eq!(g.instance_uids().len(), defs_before, "no instance created on failure");
         assert_eq!(g.scope_of(a), Some(inner), "a's membership untouched");
         assert_eq!(g.scope_of(b), None, "b stays at ROOT");
+    }
+
+    #[test]
+    fn boundary_authoring_add_wire_rename_and_one_per_inner() {
+        use subpatch::Dir;
+        let mut g = Graph::new();
+        let a = g.add_node("_TestEcho", None).unwrap();
+        let b = g.add_node("_TestEcho", None).unwrap();
+        g.add_link(a, "out", b, "in").unwrap();
+        // Group just `a`: a→b is a cut, so a.out is auto-exposed as out0. a.in is UNexposed
+        // (no external link into it), so we author an input boundary onto it.
+        let inst = g.group_nodes(&[a], [0.0, 0.0]).unwrap();
+        let def_id = g.instance(inst).unwrap().def_id;
+        let before = g.def(def_id).unwrap().interface.len();
+
+        let bnd = g.add_boundary(inst, Dir::In, goofi_core::SlotType::Array, [10.0, 10.0]).unwrap();
+        assert_eq!(g.def(def_id).unwrap().interface.len(), before + 1, "boundary added");
+        assert!(g.def(def_id).unwrap().interface[&bnd].inner.is_none(), "born unwired");
+
+        g.wire_boundary(inst, &bnd, a, "in").unwrap();
+        assert_eq!(
+            g.resolve_boundary(inst, &bnd),
+            Some((a, "in".to_string())),
+            "wired boundary resolves to a.in",
+        );
+
+        // One boundary per inner slot: a.in is now exposed by `bnd`, so a second boundary
+        // wiring to the same slot is rejected.
+        let extra = g.add_boundary(inst, Dir::In, goofi_core::SlotType::Array, [0.0, 0.0]).unwrap();
+        let err = g.wire_boundary(inst, &extra, a, "in").unwrap_err();
+        assert!(err.contains("already exposed"), "one-boundary-per-inner enforced; got {err}");
+
+        // rename keeps the bnd_id (external wires survive), only the label changes.
+        g.rename_boundary(inst, &bnd, "signal").unwrap();
+        assert_eq!(g.def(def_id).unwrap().interface[&bnd].name, "signal");
+        assert!(g.def(def_id).unwrap().interface.contains_key(&bnd), "bnd_id unchanged after rename");
+
+        // wiring a non-member is rejected.
+        let outsider = g.add_node("_TestConst", None).unwrap();
+        assert!(g.wire_boundary(inst, &bnd, outsider, "in").is_err(), "non-member rejected");
     }
 
     #[test]
