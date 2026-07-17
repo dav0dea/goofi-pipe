@@ -12,11 +12,12 @@ path = "src/main.rs"
 goofi-bridge = { path = "../goofi-bridge" }
 goofi-subproc = { path = "../goofi-subproc" }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net"] }
-# Optional in-process Python nodes. Enable with `--features python` and a
-# free-threaded interpreter at build (PYO3_PYTHON=<python3.14t>). Off by default
-# so the shipped binary needs no Python.
+# In-process Python nodes + the param-expression evaluator (pyo3, free-threaded 3.14t).
+# ON by default: the build script provisions a repo-local `.ftvenv` and a `.cargo/config.toml`
+# that point pyo3 at it, so `cargo run` needs no env vars. Build a pure-native binary (no Python,
+# no interpreter needed) with `--no-default-features`.
 goofi-py = { path = "../goofi-py", optional = true }
 
 [features]
-default = []
+default = ["python"]
 python = ["dep:goofi-py", "goofi-py/embed"]
