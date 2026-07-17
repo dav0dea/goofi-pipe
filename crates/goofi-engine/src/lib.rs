@@ -3422,6 +3422,52 @@ mod tests {
     }
 
     #[test]
+    fn native_tick_latency_and_stability() {
+        // Concrete latency/stability read for the NATIVE (in-process Rust) node path — the
+        // counterpart to the subprocess-tier benchmark. Drive the reference fan-out shape
+        // (Oscillator → 8 Buffers) unbounded (max_frequency 0 → every tick computes) and report
+        // the full-graph per-tick latency distribution. Native nodes share the process (no IPC),
+        // so this is the pure compute+propagate path.
+        let mut g = Graph::new();
+        let unbounded = |g: &mut Graph, uid| {
+            g.update_param(uid, "common", "max_frequency", Param::float(0.0, 0.0, 1e9)).unwrap();
+        };
+        let osc = g.add_node("Oscillator", None).unwrap();
+        unbounded(&mut g, osc);
+        for _ in 0..8 {
+            let b = g.add_node("Buffer", None).unwrap();
+            g.update_param(b, "buffer", "size", Param::int(256, 1, 1_000_000)).unwrap();
+            unbounded(&mut g, b);
+            g.add_link(osc, "out", b, "data").unwrap();
+        }
+
+        for _ in 0..100 {
+            g.tick(); // warm up (buffers fill, buffers/paths hot)
+        }
+        let iters = 3000usize;
+        let mut lat: Vec<f64> = Vec::with_capacity(iters);
+        for _ in 0..iters {
+            let t0 = Instant::now();
+            g.tick();
+            lat.push(t0.elapsed().as_secs_f64() * 1e6); // microseconds
+        }
+        // Every buffer produced a frame (stability — the graph propagated end-to-end each tick).
+        assert!(g.node_uids().iter().all(|&u| g.latest_frame(u, "out").is_some()), "all nodes emit");
+
+        lat.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        let mean = lat.iter().sum::<f64>() / iters as f64;
+        let p = |q: f64| lat[((iters as f64 * q) as usize).min(iters - 1)];
+        eprintln!(
+            "native graph tick latency (Oscillator→8 Buffers, {iters} ticks): \
+             min={:.1}us  p50={:.1}us  p99={:.1}us  max={:.1}us  mean={mean:.1}us",
+            lat[0], p(0.50), p(0.99), lat[iters - 1]
+        );
+        // A full 9-node graph tick must stay a tiny fraction of a 60 Hz budget (16.6 ms) — a
+        // generous ceiling that still catches a regression to millisecond-scale per-tick cost.
+        assert!(p(0.99) < 2000.0, "p99 tick {:.1}us exceeds the budget", p(0.99));
+    }
+
+    #[test]
     fn group_nodes_is_bookkeeping_only() {
         // Group a 2-node chain: one instance appears with two members, the interface exposes
         // the downstream output, and the FLAT graph is byte-identical — same node uids, same
