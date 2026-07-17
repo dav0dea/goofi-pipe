@@ -31,7 +31,7 @@ import { history, type Action, type ExprState } from './history.svelte';
 import { captureNavContext } from '$lib/workspace/navContext';
 import { ROOT_ID } from '$lib/editor/subpatchScene';
 import { SyncClient } from '$lib/crdt/syncClient';
-import { linkViews, nodeViews, instanceViews } from '$lib/crdt/graphDoc';
+import { linkViews, nodeViews, instanceViews, paramValue } from '$lib/crdt/graphDoc';
 import type * as Y from 'yjs';
 
 /** Safety net: if a node never reports a ⟳ refresh done (it crashed mid-scan, or
@@ -123,7 +123,21 @@ export class GraphStore {
 		// the existing objects so a move re-renders without a wholesale node/instance rebuild.
 		for (const nv of nodeViews(doc)) {
 			const n = this._realNode(nv.uid);
-			if (n && (n.pos[0] !== nv.pos[0] || n.pos[1] !== nv.pos[1])) n.pos = nv.pos;
+			if (!n) continue;
+			if (n.pos[0] !== nv.pos[0] || n.pos[1] !== nv.pos[1]) n.pos = nv.pos;
+			// Committed param values are doc-owned leaves (§4.1). Overlay them so a client's
+			// DIRECT leaf-write (apply_client_write) is reflected — the manager does NOT emit a
+			// state_update for a doc-write, so this is the only read path for it. Skip
+			// expression-enabled params: their displayed value is the LIVE evaluated value
+			// (param_values), not the committed literal, so overlaying would flicker it.
+			for (const group of Object.keys(n.params)) {
+				for (const name of Object.keys(n.params[group])) {
+					const p = n.params[group][name];
+					if (p.expression_enabled) continue;
+					const v = paramValue(doc, nv.uid, group, name);
+					if (v !== undefined && p.value !== v) (p as { value: unknown }).value = v;
+				}
+			}
 		}
 		for (const iv of instanceViews(doc)) {
 			const inst = this.instances[iv.uid];
