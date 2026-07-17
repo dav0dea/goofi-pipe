@@ -574,6 +574,72 @@ impl Graph {
         })
     }
 
+    /// Re-tag a member's scope, keeping the two representations in sync: the `scope_of` map AND,
+    /// when the member is a nested instance, its `parent` field. They must never diverge — a
+    /// nested instance whose `parent` still points at a removed scope reloads as a phantom root.
+    /// `None` = ROOT scope.
+    fn set_member_scope(&mut self, member: Uid, scope: Option<Uid>) {
+        match scope {
+            Some(p) => {
+                self.scope_of.insert(member, Some(p));
+            }
+            None => {
+                self.scope_of.remove(&member);
+            }
+        }
+        if let Some(inst) = self.instances.get_mut(&member) {
+            inst.parent = scope;
+        }
+    }
+
+    /// Display name of a leaf node OR an instance (its `name` field) — the local key a member
+    /// takes when captured into a def. `self.name` alone returns `None` for an instance.
+    fn display_name(&self, uid: Uid) -> String {
+        self.name(uid)
+            .map(str::to_string)
+            .or_else(|| self.instances.get(&uid).map(|i| i.name.clone()))
+            .unwrap_or_default()
+    }
+
+    /// The member of `member_set` that transitively contains `uid` — `uid` itself if it is a
+    /// direct member, else the ancestor instance (walking up scopes) that is a member. `None`
+    /// if `uid` lies outside every member. Lets link-capture treat a leaf buried in a nested
+    /// member instance as "inside the group".
+    fn containing_member(&self, uid: Uid, member_set: &std::collections::HashSet<Uid>) -> Option<Uid> {
+        let mut cur = uid;
+        loop {
+            if member_set.contains(&cur) {
+                return Some(cur);
+            }
+            cur = self.scope_of(cur)?;
+        }
+    }
+
+    /// The boundary id on `inst`'s def (a member instance) whose chain-to-leaf resolution is
+    /// exactly `(leaf, slot)` in direction `dir`. Used to name the interior endpoint of a link
+    /// that crosses into a nested member: the link references the member's BOUNDARY, not the
+    /// buried leaf. Handles arbitrary nesting depth (resolve_boundary recurses down).
+    fn boundary_exposing(&self, inst: Uid, leaf: Uid, slot: &str, dir: subpatch::Dir) -> Option<subpatch::BndId> {
+        let def = self.defs.get(&self.instances.get(&inst)?.def_id)?;
+        def.interface
+            .iter()
+            .filter(|(_, b)| b.dir == dir)
+            .find(|(bnd, _)| self.resolve_boundary(inst, bnd).is_some_and(|(u, s)| u == leaf && s == slot))
+            .map(|(bnd, _)| bnd.clone())
+    }
+
+    /// The slot name for interior endpoint `(endpoint, slot)` as seen from a group whose direct
+    /// member is `member`: the real slot when `member` IS the endpoint (a leaf), else the nested
+    /// member's boundary id exposing it (falling back to the real slot for a corrupt graph with
+    /// no such boundary). The `local` half is always `member`'s local — the caller supplies it.
+    fn endpoint_slot(&self, member: Uid, endpoint: Uid, slot: &str, dir: subpatch::Dir) -> String {
+        if member == endpoint {
+            slot.to_string()
+        } else {
+            self.boundary_exposing(member, endpoint, slot, dir).unwrap_or_else(|| slot.to_string())
+        }
+    }
+
     /// Group `members` (leaf nodes and/or existing instances, all in ONE scope) into a new
     /// sub-patch instance. Pure bookkeeping: captures a def from the live members, derives its
     /// interface from the cut links, and re-tags membership. Returns the new instance uid.
@@ -607,7 +673,7 @@ impl Graph {
         let mut inst_members: IndexMap<subpatch::Local, Uid> = IndexMap::new();
         let mut local_by_uid: HashMap<Uid, subpatch::Local> = HashMap::new();
         for &m in members {
-            let local = self.name(m).unwrap_or("").to_string();
+            let local = self.display_name(m);
             let decl = if let Some(inst) = self.instances.get(&m) {
                 MemberDecl::Nested(NestedDecl { def_id: inst.def_id, pos: inst.pos })
             } else {
@@ -618,60 +684,65 @@ impl Graph {
             local_by_uid.insert(m, local);
         }
 
-        // 3. Interface from cut links (exactly one endpoint inside), one boundary per inner
-        //    (node, slot); links wholly inside become the def's local links.
+        // 3. Classify each link by TRANSITIVE containment — an endpoint buried inside a nested
+        //    member counts as inside the group. Both inside → an internal link; exactly one inside
+        //    → a boundary (one per inner (node, slot)). An interior endpoint that sits inside a
+        //    nested member is named by that member's BOUNDARY id (not the buried leaf), so the
+        //    runtime resolves it chain-to-leaf. `containing_member` returns the DIRECT member the
+        //    endpoint belongs to; `endpoint_slot` maps the slot to a boundary id when nested.
         let mut interface: IndexMap<subpatch::BndId, Boundary> = IndexMap::new();
         let mut internal: Vec<LocalLink> = Vec::new();
         let mut seen: std::collections::HashSet<(Uid, &'static str, bool)> = std::collections::HashSet::new();
         let (mut in_n, mut out_n) = (0usize, 0usize);
         for l in &self.links {
-            let out_in = member_set.contains(&l.node_out);
-            let in_in = member_set.contains(&l.node_in);
-            if out_in && in_in {
-                internal.push(LocalLink {
-                    out: local_by_uid[&l.node_out].clone(),
-                    out_slot: l.slot_out.to_string(),
-                    in_: local_by_uid[&l.node_in].clone(),
-                    in_slot: l.slot_in.to_string(),
-                });
-                continue;
-            }
-            if out_in {
-                if !seen.insert((l.node_out, l.slot_out, true)) {
-                    continue;
+            let out_m = self.containing_member(l.node_out, &member_set);
+            let in_m = self.containing_member(l.node_in, &member_set);
+            match (out_m, in_m) {
+                (Some(om), Some(im)) => internal.push(LocalLink {
+                    out: local_by_uid[&om].clone(),
+                    out_slot: self.endpoint_slot(om, l.node_out, l.slot_out, Dir::Out),
+                    in_: local_by_uid[&im].clone(),
+                    in_slot: self.endpoint_slot(im, l.node_in, l.slot_in, Dir::In),
+                }),
+                (Some(om), None) => {
+                    if !seen.insert((l.node_out, l.slot_out, true)) {
+                        continue;
+                    }
+                    let dtype = self.output_slot_type(l.node_out, l.slot_out).unwrap_or(goofi_core::SlotType::Array);
+                    let name = format!("out{out_n}");
+                    interface.insert(
+                        name.clone(),
+                        Boundary {
+                            dir: Dir::Out,
+                            pillar: Pillar::Signal,
+                            dtype,
+                            inner: Some((local_by_uid[&om].clone(), self.endpoint_slot(om, l.node_out, l.slot_out, Dir::Out))),
+                            pos: [pos[0] + 220.0, pos[1] + 40.0 * out_n as f64],
+                            name,
+                        },
+                    );
+                    out_n += 1;
                 }
-                let dtype = self.output_slot_type(l.node_out, l.slot_out).unwrap_or(goofi_core::SlotType::Array);
-                let name = format!("out{out_n}");
-                interface.insert(
-                    name.clone(),
-                    Boundary {
-                        dir: Dir::Out,
-                        pillar: Pillar::Signal,
-                        dtype,
-                        inner: Some((local_by_uid[&l.node_out].clone(), l.slot_out.to_string())),
-                        pos: [pos[0] + 220.0, pos[1] + 40.0 * out_n as f64],
-                        name,
-                    },
-                );
-                out_n += 1;
-            } else if in_in {
-                if !seen.insert((l.node_in, l.slot_in, false)) {
-                    continue;
+                (None, Some(im)) => {
+                    if !seen.insert((l.node_in, l.slot_in, false)) {
+                        continue;
+                    }
+                    let dtype = self.input_slot_type(l.node_in, l.slot_in).unwrap_or(goofi_core::SlotType::Array);
+                    let name = format!("in{in_n}");
+                    interface.insert(
+                        name.clone(),
+                        Boundary {
+                            dir: Dir::In,
+                            pillar: Pillar::Signal,
+                            dtype,
+                            inner: Some((local_by_uid[&im].clone(), self.endpoint_slot(im, l.node_in, l.slot_in, Dir::In))),
+                            pos: [pos[0] - 40.0, pos[1] + 40.0 * in_n as f64],
+                            name,
+                        },
+                    );
+                    in_n += 1;
                 }
-                let dtype = self.input_slot_type(l.node_in, l.slot_in).unwrap_or(goofi_core::SlotType::Array);
-                let name = format!("in{in_n}");
-                interface.insert(
-                    name.clone(),
-                    Boundary {
-                        dir: Dir::In,
-                        pillar: Pillar::Signal,
-                        dtype,
-                        inner: Some((local_by_uid[&l.node_in].clone(), l.slot_in.to_string())),
-                        pos: [pos[0] - 40.0, pos[1] + 40.0 * in_n as f64],
-                        name,
-                    },
-                );
-                in_n += 1;
+                (None, None) => {}
             }
         }
 
@@ -688,7 +759,7 @@ impl Graph {
             subpatch::Instance { uid: inst_uid, name: disp, def_id, parent, pos, members: inst_members },
         );
         for &m in members {
-            self.scope_of.insert(m, Some(inst_uid));
+            self.set_member_scope(m, Some(inst_uid));
             self.local_of.insert(m, local_by_uid[&m].clone());
         }
         self.scope_of.insert(inst_uid, parent);
@@ -707,14 +778,7 @@ impl Graph {
         let def_id = instance.def_id;
         let restored: Vec<Uid> = instance.members.values().copied().collect();
         for &m in &restored {
-            match parent {
-                Some(p) => {
-                    self.scope_of.insert(m, Some(p));
-                }
-                None => {
-                    self.scope_of.remove(&m);
-                }
-            }
+            self.set_member_scope(m, parent); // grandparent scope; keeps nested `parent` in sync
             self.local_of.remove(&m); // back to display-name addressing in the parent scope
         }
         self.instances.shift_remove(&inst);
@@ -976,21 +1040,47 @@ impl Graph {
         members
     }
 
+    /// Recursively register a fresh instance subtree for `def_id` at `inst_uid` under `parent`:
+    /// allocate its member uids, register the Instance, then recurse into every NESTED member
+    /// (its allocated uid becomes the nested instance's uid). Registers instances only — the leaf
+    /// members are spawned + wired by the caller's `materialize` + `reconcile`. Needed so a shared
+    /// def CONTAINING a sub-patch projects the sibling's whole subtree, not just its top leaves.
+    fn spawn_instance_tree(&mut self, inst_uid: Uid, def_id: subpatch::DefId, parent: Option<Uid>, pos: [f64; 2]) {
+        let members = self.alloc_member_uids(inst_uid, def_id);
+        let nested: Vec<(Uid, subpatch::DefId, [f64; 2])> = self
+            .defs
+            .get(&def_id)
+            .map(|def| {
+                members
+                    .iter()
+                    .filter_map(|(local, &uid)| match def.members.get(local) {
+                        Some(subpatch::MemberDecl::Nested(nd)) => Some((uid, nd.def_id, nd.pos)),
+                        _ => None,
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        let disp = format!("subpatch{}", inst_uid.0);
+        self.instances.insert(
+            inst_uid,
+            subpatch::Instance { uid: inst_uid, name: disp, def_id, parent, pos, members },
+        );
+        self.scope_of.insert(inst_uid, parent);
+        for (nuid, ndef, npos) in nested {
+            self.spawn_instance_tree(nuid, ndef, Some(inst_uid), npos);
+        }
+    }
+
     /// Promote an instance's def to shared and spawn a strict-mirror sibling (deterministic
-    /// member uids, `reconcile`d live + wired). The original's leaves are untouched.
+    /// member uids, `reconcile`d live + wired). The original's leaves are untouched. A nested
+    /// sub-patch member spawns its own sibling subtree (`spawn_instance_tree`).
     pub fn duplicate_shared(&mut self, inst: Uid, pos: [f64; 2]) -> Result<Uid, String> {
         let (def_id, parent) = {
             let i = self.instances.get(&inst).ok_or_else(|| format!("duplicate_shared: no such instance {inst}"))?;
             (i.def_id, i.parent)
         };
         let new_inst = self.mint();
-        let members = self.alloc_member_uids(new_inst, def_id);
-        let disp = format!("subpatch{}", new_inst.0);
-        self.instances.insert(
-            new_inst,
-            subpatch::Instance { uid: new_inst, name: disp, def_id, parent, pos, members },
-        );
-        self.scope_of.insert(new_inst, parent);
+        self.spawn_instance_tree(new_inst, def_id, parent, pos);
         let plan = subpatch::materialize(&self.defs, &self.instances);
         self.reconcile(plan)?;
         Ok(new_inst)
@@ -1704,8 +1794,9 @@ impl Graph {
             self.instances.insert(uid, subpatch::Instance { uid, name, def_id, parent, pos, members });
         }
 
-        // 2. Def bodies: interface deserialized; members + local links re-captured from the live
-        //    flat nodes/links of one instance that references the def (siblings are identical).
+        // 2a. Deserialize every def's NAME + INTERFACE first (empty body) so that when 2b maps a
+        //     nested-boundary link, every instance's def interface is already present for
+        //     `boundary_exposing` regardless of def iteration order.
         for (old, rec) in defs {
             let def_id = defmap[old];
             let def_name = rec.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
@@ -1734,35 +1825,48 @@ impl Graph {
                     interface.insert(bnd.clone(), Boundary { dir, pillar: Pillar::Signal, dtype, inner, pos, name });
                 }
             }
-            // Re-capture members + internal links from a referencing instance's live nodes.
+            self.defs.insert(def_id, subpatch::SubPatchDef { name: def_name, members: IndexMap::new(), links: vec![], interface });
+        }
+
+        // 2b. Re-capture each def's member bodies + internal links from a referencing instance's
+        //     live nodes/links (siblings are identical). A link endpoint buried in a NESTED member
+        //     is named by that member's boundary id (`endpoint_slot`), so nested internal links
+        //     survive the round-trip — the load-side analogue of the group_nodes capture.
+        for old in defs.keys() {
+            let def_id = defmap[old];
+            let Some(inst) = self.instances.values().find(|i| i.def_id == def_id).cloned() else { continue };
             let mut members: IndexMap<subpatch::Local, MemberDecl> = IndexMap::new();
+            for (local, &muid) in &inst.members {
+                let decl = if let Some(nested) = self.instances.get(&muid) {
+                    MemberDecl::Nested(NestedDecl { def_id: nested.def_id, pos: nested.pos })
+                } else if let Some(leaf) = self.capture_leaf_decl(muid) {
+                    MemberDecl::Leaf(leaf)
+                } else {
+                    continue;
+                };
+                members.insert(local.clone(), decl);
+            }
+            let member_set: std::collections::HashSet<Uid> = inst.members.values().copied().collect();
             let mut links: Vec<LocalLink> = Vec::new();
-            if let Some(inst) = self.instances.values().find(|i| i.def_id == def_id).cloned() {
-                for (local, &muid) in &inst.members {
-                    let decl = if let Some(nested) = self.instances.get(&muid) {
-                        MemberDecl::Nested(NestedDecl { def_id: nested.def_id, pos: nested.pos })
-                    } else if let Some(leaf) = self.capture_leaf_decl(muid) {
-                        MemberDecl::Leaf(leaf)
-                    } else {
-                        continue;
-                    };
-                    members.insert(local.clone(), decl);
-                }
-                let member_uids: std::collections::HashSet<Uid> = inst.members.values().copied().collect();
-                for l in &self.links {
-                    if member_uids.contains(&l.node_out) && member_uids.contains(&l.node_in) {
-                        if let (Some(ol), Some(il)) = (self.local_of.get(&l.node_out), self.local_of.get(&l.node_in)) {
-                            links.push(LocalLink {
-                                out: ol.clone(),
-                                out_slot: l.slot_out.to_string(),
-                                in_: il.clone(),
-                                in_slot: l.slot_in.to_string(),
-                            });
-                        }
-                    }
+            for l in &self.links {
+                let (Some(om), Some(im)) =
+                    (self.containing_member(l.node_out, &member_set), self.containing_member(l.node_in, &member_set))
+                else {
+                    continue;
+                };
+                if let (Some(ol), Some(il)) = (self.local_of.get(&om).cloned(), self.local_of.get(&im).cloned()) {
+                    links.push(LocalLink {
+                        out: ol,
+                        out_slot: self.endpoint_slot(om, l.node_out, l.slot_out, Dir::Out),
+                        in_: il,
+                        in_slot: self.endpoint_slot(im, l.node_in, l.slot_in, Dir::In),
+                    });
                 }
             }
-            self.defs.insert(def_id, subpatch::SubPatchDef { name: def_name, members, links, interface });
+            if let Some(def) = self.defs.get_mut(&def_id) {
+                def.members = members;
+                def.links = links;
+            }
         }
     }
 
@@ -3716,6 +3820,112 @@ mod tests {
         g.set_node_pos(a, [123.0, 456.0]).unwrap(); // user moves the member after grouping
         g.duplicate_shared(inst, [10.0, 10.0]).unwrap();
         assert_eq!(g.pos(a), Some([123.0, 456.0]), "the original member keeps its moved position");
+    }
+
+    #[test]
+    fn grouping_a_selection_containing_a_nested_instance_maps_interior_links_to_its_boundary() {
+        // a → b, then group [a] so the a→b link is exposed as inner's out-boundary. Grouping
+        // [inner, b] must recognize that a (inside the nested `inner`) is transitively within the
+        // outer group: a→b is INTERNAL to outer, captured as a link from inner's boundary to b —
+        // NOT mis-derived as an outer input boundary. The runtime model already supports a local
+        // link whose endpoint slot is a nested instance's BndId (see subpatch::LocalLink); this is
+        // the capture side catching up.
+        let mut g = Graph::new();
+        let a = g.add_node("_TestConst", None).unwrap();
+        let b = g.add_node("_TestEcho", None).unwrap();
+        g.add_link(a, "out", b, "in").unwrap();
+        let inner = g.group_nodes(&[a], [0.0, 0.0]).unwrap();
+        // inner exposes exactly one OUT boundary for a.out.
+        let inner_def = g.instance(inner).unwrap().def_id;
+        let bnd = g.def(inner_def).unwrap().interface.keys().next().unwrap().clone();
+
+        let outer = g.group_nodes(&[inner, b], [100.0, 0.0]).unwrap();
+        let def = g.def(g.instance(outer).unwrap().def_id).unwrap();
+
+        assert!(def.interface.is_empty(), "nothing crosses outer's edge — a→b is fully internal");
+        assert_eq!(def.links.len(), 1, "the inner→b connection is captured as one internal link");
+        let link = &def.links[0];
+        assert_eq!(link.out_slot, bnd, "the interior endpoint references inner's boundary as its slot");
+        assert_eq!(link.in_slot, "in", "the leaf endpoint keeps its real slot");
+        // The out local names the nested instance; the in local names the leaf b.
+        let inner_local = g.local_of(inner).map(|s| s.to_string()).or_else(|| g.name(inner).map(str::to_string)).unwrap();
+        let b_local = g.local_of(b).map(|s| s.to_string()).or_else(|| g.name(b).map(str::to_string)).unwrap();
+        assert_eq!(link.out, inner_local, "internal link's producer is the nested instance");
+        assert_eq!(link.in_, b_local, "internal link's consumer is the leaf");
+    }
+
+    #[test]
+    fn duplicate_shared_projects_a_nested_sub_patchs_internal_link() {
+        // Sharing an outer sub-patch that CONTAINS a nested sub-patch must spawn the sibling's own
+        // nested instance AND wire its interior link (a→b, crossing the inner boundary) live —
+        // proving materialize/reconcile resolve a local link whose slot is a nested BndId.
+        let mut g = Graph::new();
+        let a = g.add_node("_TestConst", None).unwrap();
+        let b = g.add_node("_TestEcho", None).unwrap();
+        g.add_link(a, "out", b, "in").unwrap();
+        let inner = g.group_nodes(&[a], [0.0, 0.0]).unwrap();
+        let outer = g.group_nodes(&[inner, b], [100.0, 0.0]).unwrap();
+        assert_eq!(g.node_uids().len(), 2, "grouping is bookkeeping-only");
+        assert_eq!(g.links_view().len(), 1, "one live internal link a→b");
+
+        let sib = g.duplicate_shared(outer, [200.0, 0.0]).unwrap();
+        assert_eq!(g.node_uids().len(), 4, "the sibling's own a'/b' leaves were spawned");
+        let sib_members: Vec<Uid> = g.instance(sib).unwrap().members.values().copied().collect();
+        assert!(sib_members.iter().any(|m| g.instance(*m).is_some()), "sibling has its own nested instance");
+        assert_eq!(g.links_view().len(), 2, "the sibling's interior a'→b' link is live");
+    }
+
+    #[test]
+    fn nested_shared_sub_patch_survives_a_gfi_round_trip() {
+        // Save/load a SHARED sub-patch that contains a nested sub-patch, then duplicate again on
+        // the reloaded graph. The post-load duplicate only wires correctly if reload_forest
+        // re-captured the outer def body with the nested-boundary internal link (not a spurious
+        // input boundary) — the load-side analogue of the group_nodes capture fix.
+        let mut g = Graph::new();
+        let a = g.add_node("_TestConst", None).unwrap();
+        let b = g.add_node("_TestEcho", None).unwrap();
+        g.add_link(a, "out", b, "in").unwrap();
+        let inner = g.group_nodes(&[a], [0.0, 0.0]).unwrap();
+        let outer = g.group_nodes(&[inner, b], [100.0, 0.0]).unwrap();
+        g.duplicate_shared(outer, [200.0, 0.0]).unwrap();
+        assert_eq!(g.node_uids().len(), 4);
+        assert_eq!(g.links_view().len(), 2);
+        let doc = g.serialize();
+
+        let mut g2 = Graph::new();
+        g2.load_doc(&doc).unwrap();
+        assert_eq!(g2.node_uids().len(), 4, "all four leaves reloaded");
+        assert_eq!(g2.links_view().len(), 2, "both interior links reloaded");
+
+        // Duplicate a reloaded root instance — the third sibling's whole subtree must spawn+wire.
+        let root_inst = g2
+            .instance_uids()
+            .into_iter()
+            .find(|&u| g2.instance(u).unwrap().parent.is_none())
+            .expect("a root sub-patch instance survived load");
+        g2.duplicate_shared(root_inst, [300.0, 0.0]).unwrap();
+        assert_eq!(g2.node_uids().len(), 6, "third sibling's a''/b'' spawned from the reloaded def");
+        assert_eq!(g2.links_view().len(), 3, "third sibling's interior link wired from the reloaded def");
+    }
+
+    #[test]
+    fn expanding_an_outer_sub_patch_re_parents_its_nested_instance_to_the_grandparent() {
+        // Un-grouping an outer that contains a nested sub-patch must reset the nested instance's
+        // scope AND its `parent` field to the grandparent (here ROOT) — the two must not diverge.
+        let mut g = Graph::new();
+        let a = g.add_node("_TestConst", None).unwrap();
+        let b = g.add_node("_TestEcho", None).unwrap();
+        g.add_link(a, "out", b, "in").unwrap();
+        let inner = g.group_nodes(&[a], [0.0, 0.0]).unwrap();
+        let outer = g.group_nodes(&[inner, b], [100.0, 0.0]).unwrap();
+        assert_eq!(g.scope_of(inner), Some(outer), "inner nested under outer");
+        assert_eq!(g.instance(inner).unwrap().parent, Some(outer), "parent field agrees");
+
+        g.expand_instance(outer).unwrap();
+        assert!(g.instance(outer).is_none(), "outer dissolved");
+        assert!(g.instance(inner).is_some(), "inner survives as a now-root instance");
+        assert_eq!(g.scope_of(inner), None, "inner re-tagged to ROOT scope");
+        assert_eq!(g.instance(inner).unwrap().parent, None, "parent field re-tagged in lockstep");
     }
 
     #[test]
