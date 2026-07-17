@@ -9,7 +9,8 @@
 //! channel). Not a test — run under the FT env (same vars as `py_latency`):
 //!   PYO3_PYTHON=<python3.14t> LD_LIBRARY_PATH=<base>/lib PYTHONPATH=<ft-sp> \
 //!     cargo run -p goofi-py --features embed --example backend_parity --release
-//! The subprocess tier reuses PYO3_PYTHON (it inherits PYTHONPATH so numpy loads).
+//! The subprocess tier talks iceoryx2, so point GOOFI_SUBPROC_PYTHON at an
+//! iceoryx2-capable interpreter (e.g. the repo .venv); it falls back to PYO3_PYTHON.
 
 use std::time::Instant;
 
@@ -124,7 +125,12 @@ fn bench(manifest: &'static NodeManifest, factory: Factory, len: i64, n: usize, 
 
 fn main() {
     let len: i64 = 1024;
-    let python = std::env::var("PYO3_PYTHON").unwrap_or_else(|_| "python3".to_string());
+    // The subprocess tier now talks iceoryx2, so its interpreter needs `iceoryx2` + `numpy`
+    // (PYO3_PYTHON — the FT build interpreter — usually lacks iceoryx2). Point it at an
+    // iceoryx2-capable python via GOOFI_SUBPROC_PYTHON; else fall back to PYO3_PYTHON/python3.
+    let python = std::env::var("GOOFI_SUBPROC_PYTHON")
+        .or_else(|_| std::env::var("PYO3_PYTHON"))
+        .unwrap_or_else(|_| "python3".to_string());
     let backends: [(&str, &'static NodeManifest); 3] = [
         ("1. native Rust", &NATIVE_M),
         ("2. in-process FT Python", &FTPY_M),
