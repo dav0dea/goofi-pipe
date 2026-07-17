@@ -490,6 +490,20 @@ impl Graph {
         unreachable!()
     }
 
+    /// A display name for a freshly-minted sub-patch instance. Prefers the dense `subpatch{uid}`
+    /// form, but falls back to a uniqueness-checked `fresh_name` if a leaf was already renamed onto
+    /// it (leaves + instances share one display-name namespace — a collision would collapse two
+    /// members onto one local key on a later group and orphan one). The instance isn't inserted yet,
+    /// so it can't self-collide.
+    fn mint_subpatch_name(&self, uid: Uid) -> String {
+        let base = format!("subpatch{}", uid.0);
+        if self.name_in_use(&base) {
+            self.fresh_name("subpatch")
+        } else {
+            base
+        }
+    }
+
     pub fn name(&self, uid: Uid) -> Option<&str> {
         self.nodes.get(&uid).map(|e| e.name.as_str())
     }
@@ -856,7 +870,7 @@ impl Graph {
         // 4. Mint + register. Members stay live; only membership re-tags.
         let def_id = self.mint_def();
         let inst_uid = self.mint();
-        let disp = format!("subpatch{}", inst_uid.0);
+        let disp = self.mint_subpatch_name(inst_uid);
         self.defs.insert(
             def_id,
             subpatch::SubPatchDef { name: disp.clone(), members: def_members, links: internal, interface },
@@ -1167,7 +1181,7 @@ impl Graph {
                     .collect()
             })
             .unwrap_or_default();
-        let disp = format!("subpatch{}", inst_uid.0);
+        let disp = self.mint_subpatch_name(inst_uid);
         self.instances.insert(
             inst_uid,
             subpatch::Instance { uid: inst_uid, name: disp, def_id, pos, members },
@@ -4211,6 +4225,30 @@ mod tests {
         let inst = g.group_nodes(&[b], [0.0, 0.0]).unwrap();
         let inst_name = g.instance(inst).unwrap().name.clone();
         assert!(g.rename_node(a, &inst_name).is_err(), "cannot rename a leaf onto an instance's name");
+    }
+
+    #[test]
+    fn group_nodes_mints_a_unique_instance_name_avoiding_a_future_leaf_collision() {
+        // rename_node guards a leaf against colliding with an EXISTING instance name, but the mint
+        // side was unguarded: a leaf renamed to `subpatch{N}` where N is a not-yet-minted uid is
+        // allowed, then the instance minted at Uid(N) would take the same display name — collapsing
+        // the two into one member local key on a later group and orphaning the leaf. The mint must
+        // pick a unique name.
+        let mut g = Graph::new();
+        let a = g.add_node("_TestConst", None).unwrap(); // uid 1
+        let b = g.add_node("_TestConst", None).unwrap(); // uid 2 → the next mint() is uid 3
+        // Rename a leaf to the name the next instance WOULD mint. Allowed today (nothing is named it).
+        g.rename_node(a, "subpatch3").unwrap();
+        let inst = g.group_nodes(&[b], [0.0, 0.0]).unwrap();
+        // The instance name must NOT collide with the leaf's display name.
+        assert_ne!(g.instance(inst).unwrap().name, g.name(a).unwrap(), "minted instance name must be unique");
+        // And grouping the leaf + the instance keeps the leaf a REAL member (not orphaned).
+        let outer = g.group_nodes(&[a, inst], [0.0, 0.0]).unwrap();
+        assert_eq!(g.scope_of(a), Some(outer));
+        assert!(
+            g.instance(outer).unwrap().members.values().any(|&u| u == a),
+            "the leaf stays a real member of the outer instance"
+        );
     }
 
     #[test]
