@@ -28,6 +28,22 @@ function docClearLinks(g: GraphStore): void {
 	const a = linksArray(g.doc);
 	a.delete(0, a.length);
 }
+/** Seed/update an instance's position in the doc — instance placement is doc-owned (Phase 2). */
+function docSetInstancePos(g: GraphStore, uid: string, pos: [number, number]): void {
+	const instances = g.doc.getMap('instances') as Y.Map<Y.Map<unknown>>;
+	let inst = instances.get(uid);
+	if (!inst) {
+		inst = new Y.Map<unknown>();
+		instances.set(uid, inst);
+	}
+	let p = inst.get('pos') as Y.Map<unknown> | undefined;
+	if (!p) {
+		p = new Y.Map<unknown>();
+		inst.set('pos', p);
+	}
+	p.set('x', pos[0]);
+	p.set('y', pos[1]);
+}
 
 function nodeInfo(name: string, type = 'Oscillator'): NodeInstanceInfo {
 	return {
@@ -913,7 +929,7 @@ describe('sub-patch synth node identity (viewer re-instantiation bug)', () => {
 		const g = new GraphStore(fc);
 		withInstance(g, fc, { out0: { dir: 'out', dtype: 'ARRAY', inner_node: 'm0', inner_slot: 'out' } });
 		const a = g.nodeById('subpatch0')!;
-		fc.emit({ event: 'node_moved', payload: { node: 'subpatch0', pos: [120, 80] } });
+		docSetInstancePos(g, 'subpatch0', [120, 80]); // position is doc-owned now
 		const b = g.nodeById('subpatch0')!;
 		expect(b).toBe(a); // same identity across a move
 		expect(b.pos).toEqual([120, 80]); // but position is current

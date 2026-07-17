@@ -31,7 +31,7 @@ import { history, type Action, type ExprState } from './history.svelte';
 import { captureNavContext } from '$lib/workspace/navContext';
 import { ROOT_ID } from '$lib/editor/subpatchScene';
 import { SyncClient } from '$lib/crdt/syncClient';
-import { linkViews } from '$lib/crdt/graphDoc';
+import { linkViews, nodeViews, instanceViews } from '$lib/crdt/graphDoc';
 import type * as Y from 'yjs';
 
 /** Safety net: if a node never reports a ⟳ refresh done (it crashed mid-scan, or
@@ -97,12 +97,12 @@ export class GraphStore {
 		this.ctl = ctl;
 		ctl.onConnect((c) => (this.connected = c));
 		ctl.on((ev) => this._handle(ev));
-		// Mount the CRDT replica and source `links` from it. The manager mirrors every link
-		// mutation into the doc and syncs the delta, so a doc transaction (local seed or remote
-		// delta) re-derives the reactive link list.
+		// Mount the CRDT replica and source doc-owned subtrees from it. The manager mirrors every
+		// control mutation into the doc and syncs the delta, so a doc transaction (local seed or
+		// remote delta) re-derives the reactive state for each subtree cut over to the doc.
 		this._sync = new SyncClient(ctl);
 		this._sync.doc.on('afterTransaction', (txn: Y.Transaction) => {
-			if (txn.changed.size > 0) this._syncLinksFromDoc();
+			if (txn.changed.size > 0) this._syncFromDoc();
 		});
 		this._sync.start();
 	}
@@ -112,9 +112,23 @@ export class GraphStore {
 		return this._sync.doc;
 	}
 
-	/** Re-derive `links` from the doc (Phase 2 read-path cutover for the links subtree). */
-	private _syncLinksFromDoc(): void {
-		this.links = linkViews(this._sync.doc);
+	/** Re-derive every doc-owned subtree from the CRDT doc (Phase 2 read-path cutover). Runs on
+	 * every doc transaction (remote delta or local seed). Subtrees migrate here one at a time;
+	 * runtime state (error/stage/ufreq) and catalog metadata (slots/category) stay event-sourced. */
+	private _syncFromDoc(): void {
+		const doc = this._sync.doc;
+		// links: the whole set is replaced from the doc.
+		this.links = linkViews(doc);
+		// positions: node + instance placement is doc-owned (retired `node_moved`). Overlay onto
+		// the existing objects so a move re-renders without a wholesale node/instance rebuild.
+		for (const nv of nodeViews(doc)) {
+			const n = this._realNode(nv.uid);
+			if (n && (n.pos[0] !== nv.pos[0] || n.pos[1] !== nv.pos[1])) n.pos = nv.pos;
+		}
+		for (const iv of instanceViews(doc)) {
+			const inst = this.instances[iv.uid];
+			if (inst && (inst.pos[0] !== iv.pos[0] || inst.pos[1] !== iv.pos[1])) inst.pos = iv.pos;
+		}
 	}
 
 	/** Apply a wholesale snapshot. Returns whether it came from a *new* backend
@@ -310,18 +324,9 @@ export class GraphStore {
 				// Empty any Parameters/Viewer/Metadata panel linked to this node.
 				workspace().clearNodeRefs(ev.payload.node);
 				break;
-			case 'node_moved': {
-				// Instances first: nodeById synthesizes a throwaway node for an instance
-				// id, so checking it first would write pos to a discarded object and the
-				// group node would snap back.
-				if (this.instances[ev.payload.node]) {
-					this.instances[ev.payload.node].pos = ev.payload.pos;
-				} else {
-					const target = this._realNode(ev.payload.node);
-					if (target) target.pos = ev.payload.pos;
-				}
-				break;
-			}
+			// node_moved retired: node + instance positions are read from the CRDT doc (Phase 2,
+			// see _syncFromDoc). The manager mirrors every move into the doc; the sync delta
+			// updates the placement without a wholesale rebuild.
 			// link_added / link_removed retired: links are read from the CRDT doc (Phase 2). The
 			// manager mirrors every link mutation into the doc; the sync delta updates `links`.
 			case 'state_update': {
