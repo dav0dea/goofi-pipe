@@ -553,6 +553,39 @@ async fn a_client_replica_converges_via_the_binary_sync_relay() {
 }
 
 #[tokio::test]
+async fn two_tabs_on_one_slot_share_the_reducer_over_the_wire() {
+    // Thalamus G1/G2 end-to-end: two /data connections to the SAME (node, slot) each receive
+    // reduced frames from a single shared reducer (not one reduce loop per connection).
+    let base = start_server().await;
+    let (mut ws, _) = connect_async(format!("{base}/control")).await.unwrap();
+    let _hello = recv_text(&mut ws).await;
+    let uid = |v: &Value| v["result"].as_str().unwrap().to_string();
+    let osc = uid(&call(&mut ws, 1, "add_node", json!({ "type": "Oscillator" })).await);
+    let buf = uid(&call(&mut ws, 2, "add_node", json!({ "type": "Buffer" })).await);
+    call(&mut ws, 3, "add_link", json!({ "node_out": osc, "slot_out": "out", "node_in": buf, "slot_in": "data" })).await;
+
+    // Two independent viewers of buf/out (two browser tabs).
+    let (mut a, _) = connect_async(format!("{base}/data/{buf}/out")).await.unwrap();
+    let (mut b, _) = connect_async(format!("{base}/data/{buf}/out")).await.unwrap();
+
+    // Both receive a decodable frame — the shared reducer fans out to every subscriber.
+    for (name, sock) in [("a", &mut a), ("b", &mut b)] {
+        let got = tokio::time::timeout(Duration::from_secs(8), async {
+            loop {
+                if let Message::Binary(bytes) = sock.next().await.unwrap().unwrap() {
+                    if goofi_codec::decode(&bytes).is_ok() {
+                        return true;
+                    }
+                }
+            }
+        })
+        .await
+        .unwrap_or(false);
+        assert!(got, "viewer {name} received a frame from the shared reducer");
+    }
+}
+
+#[tokio::test]
 async fn an_ephemeral_frame_is_relayed_to_other_clients() {
     // The awareness channel: a client's ephemeral frame (presence/live-drag/preview) is
     // relayed verbatim to other clients, never touching the doc. Two clients A and B: A sends

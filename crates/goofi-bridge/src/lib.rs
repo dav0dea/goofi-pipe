@@ -7,6 +7,7 @@
 //! (`frontend/build`, or `GOOFI_FRONTEND_BUILD`) via `ServeDir`.
 
 mod crdt_mirror;
+mod reducer;
 mod schemas;
 
 use std::collections::{HashMap, HashSet};
@@ -46,6 +47,9 @@ pub struct AppState {
     /// The doc's state vector as of the last broadcast delta — the baseline the next delta
     /// is computed against (guarded together with `crdt`: always lock `crdt` first).
     pub last_sync_sv: Arc<Mutex<Vec<u8>>>,
+    /// Shared per-slot data reducers (thalamus G1/G2): one reduction per active (node, slot),
+    /// fanned out to every viewer, so N tabs on one slot cost one reduce+encode, not N.
+    pub reducers: reducer::SlotReducers,
 }
 
 impl Default for AppState {
@@ -65,14 +69,17 @@ impl AppState {
         let (ephemeral, _) = broadcast::channel(256);
         let crdt = goofi_crdt::GraphDoc::new();
         let last_sync_sv = Arc::new(Mutex::new(crdt.state_vector()));
+        let graph = Arc::new(Mutex::new(Graph::new()));
+        let reducers = reducer::SlotReducers::new(graph.clone());
         AppState {
-            graph: Arc::new(Mutex::new(Graph::new())),
+            graph,
             events,
             instance_id: Arc::from(format!("{iid:x}").as_str()),
             crdt: Arc::new(Mutex::new(crdt)),
             sync_updates,
             ephemeral,
             last_sync_sv,
+            reducers,
         }
     }
 }
@@ -889,41 +896,35 @@ async fn handle_data(socket: WebSocket, state: AppState, node: String, slot: Str
         return;
     };
 
-    // This connection's viewers' ViewSpecs (merged at plan time). Empty until the first
-    // inband `{op:"view"}` arrives — full-resolution passthrough until then.
-    let mut specs: Vec<goofi_view::ViewSpec> = Vec::new();
-    let mut ticker = tokio::time::interval(Duration::from_millis(16));
+    // Subscribe to the SHARED per-slot reducer: the frame is reduced ONCE for this slot (to
+    // the union of every subscriber's ViewSpecs) and fanned out, so N tabs on one slot cost
+    // one reduce+encode, not N. This connection just forwards the reduced frames to its socket
+    // and pushes its own ViewSpecs into the union (latest-wins) on each inband `{op:"view"}`.
+    let key: reducer::SlotKey = (stream_uid, stream_slot);
+    let conn = state.reducers.new_conn();
+    let mut frames = state.reducers.subscribe(key.clone(), conn);
     loop {
         tokio::select! {
-            _ = ticker.tick() => {
-                // Hold the graph lock only for the cheap `latest_frame` Arc clone; PLAN,
-                // REDUCE, and ENCODE run AFTER the guard drops, so a viewer reducing a large
-                // kHz/HD frame never serializes against the scheduler tick or other viewers.
-                let d = {
-                    let g = state.graph.lock().unwrap();
-                    g.latest_frame(stream_uid, &stream_slot)
-                };
-                let Some(d) = d else { continue };
-                // Reduce to the merged need of this connection's viewers (one reduction per
-                // slot); passthrough while no specs have been declared.
-                let out = if specs.is_empty() {
-                    d
-                } else {
-                    let plan = goofi_view::plan(&specs, &d);
-                    goofi_core::reduce::reduce_for_view(&d, &plan)
-                };
-                if tx.send(Message::Binary(goofi_codec::encode(&out).into())).await.is_err() {
-                    break;
+            frame = frames.recv() => match frame {
+                Ok(bytes) => {
+                    if tx.send(Message::Binary(bytes.to_vec().into())).await.is_err() {
+                        break;
+                    }
                 }
-            }
+                // A slow viewer that lagged the reducer's fan-out simply drops frames (latest-
+                // wins, like the node↔node plane) — never stalls the shared reducer.
+                Err(broadcast::error::RecvError::Lagged(_)) => {}
+                Err(broadcast::error::RecvError::Closed) => break,
+            },
             incoming = rx.next() => match incoming {
                 Some(Ok(Message::Close(_))) | None => break,
                 Some(Err(_)) => break,
-                // Inband ViewSpec negotiation: latest-wins replace this connection's specs.
+                // Inband ViewSpec negotiation: latest-wins replace this connection's contribution
+                // to the slot's spec union.
                 Some(Ok(Message::Text(t))) => {
                     if let Ok(m) = serde_json::from_str::<ViewMsg>(t.as_str()) {
                         if m.op == "view" {
-                            specs = m.specs;
+                            state.reducers.set_specs(&key, conn, m.specs);
                         }
                     }
                 }
@@ -931,6 +932,8 @@ async fn handle_data(socket: WebSocket, state: AppState, node: String, slot: Str
             },
         }
     }
+    // Deregister so the reducer tears down when the last viewer of this slot leaves.
+    state.reducers.unsubscribe(&key, conn);
 }
 
 #[cfg(test)]
