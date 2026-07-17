@@ -3,7 +3,8 @@
 //! engine `Graph`; it is the sync structure clients will later replicate. Pure: depends
 //! only on `yrs` + `serde_json`, no engine/payload types.
 
-use yrs::{Any, Array, ArrayRef, Doc, Map, MapPrelim, MapRef, Out, Transact};
+use yrs::updates::decoder::Decode;
+use yrs::{Any, Array, ArrayRef, Doc, Map, MapPrelim, MapRef, Out, ReadTxn, Transact};
 
 /// An expression binding as mirrored into the doc.
 #[derive(Clone, Debug, PartialEq)]
@@ -225,6 +226,28 @@ impl GraphDoc {
             })
             .collect()
     }
+
+    pub fn remove_node(&mut self, uid: &str) {
+        let mut txn = self.doc.transact_mut();
+        self.nodes.remove(&mut txn, uid);
+    }
+
+    /// The full document state as a v1 update (what a joining client would receive).
+    pub fn encode_state(&self) -> Vec<u8> {
+        let txn = self.doc.transact();
+        txn.encode_state_as_update_v1(&yrs::StateVector::default())
+    }
+
+    /// Build a fresh doc and apply a v1 update (state) to it.
+    pub fn from_update(update: &[u8]) -> GraphDoc {
+        let this = GraphDoc::new();
+        {
+            let mut txn = this.doc.transact_mut();
+            let u = yrs::Update::decode_v1(update).expect("valid v1 update");
+            txn.apply_update(u).expect("apply update");
+        }
+        this
+    }
 }
 
 impl Default for GraphDoc {
@@ -290,5 +313,19 @@ mod tests {
         assert_eq!(doc.links()[0].slot_in, "data");
         doc.replace_links(vec![]);
         assert!(doc.links().is_empty());
+    }
+
+    #[test]
+    fn remove_node_and_state_round_trip() {
+        let mut doc = GraphDoc::new();
+        doc.upsert_node("1", "Oscillator", "osc", [0.0, 0.0]);
+        doc.upsert_node("2", "Buffer", "buf", [1.0, 2.0]);
+        doc.remove_node("1");
+        assert_eq!(doc.node_ids(), vec!["2"]);
+
+        let bytes = doc.encode_state();
+        let copy = GraphDoc::from_update(&bytes);
+        assert_eq!(copy.node_ids(), vec!["2"]);
+        assert_eq!(copy.node_name("2").as_deref(), Some("buf"));
     }
 }
