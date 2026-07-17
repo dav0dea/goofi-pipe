@@ -110,7 +110,9 @@ export class GraphStore {
 		// control mutation into the doc and syncs the delta, so a doc transaction (local seed or
 		// remote delta) re-derives the reactive state for each subtree cut over to the doc.
 		this._sync = new SyncClient(ctl);
-		this._sync.doc.on('afterTransaction', (txn: Y.Transaction) => {
+		// Register via onDocChange (not doc.on directly) so the observer follows the doc across a
+		// reset() — a fresh backend session swaps in a new empty doc.
+		this._sync.onDocChange((txn: Y.Transaction) => {
 			if (txn.changed.size > 0) this._syncFromDoc();
 		});
 		this._sync.start();
@@ -271,7 +273,15 @@ export class GraphStore {
 				this.hadHello = true;
 				// A reconnect to the *same* backend must not re-fit the view or wipe
 				// the error history; a new backend session (or first connect) should.
-				if (fresh) this._onWholesaleLoad();
+				if (fresh) {
+					// A NEW backend session mints uids from 1 again — the stale replica must NOT
+					// survive: answering the server's SV would push stale param/pos/expr leaves onto
+					// the reused uids (silent corruption), and the reconnect would merge new content
+					// into the stale doc (ghost edges). Reset to a fresh empty doc NOW, synchronously,
+					// so it happens before this connection answers the server's binary hello SV.
+					this._sync.reset();
+					this._onWholesaleLoad();
+				}
 				void this._refreshNodeTypes();
 				break;
 			}

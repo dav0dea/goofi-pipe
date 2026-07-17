@@ -157,6 +157,47 @@ describe('SyncClient', () => {
 		expect(paramValue(server, '1', 'common', 'freq')).toBe(9);
 	});
 
+	it('reset() replaces the replica with a fresh empty doc that pushes nothing stale', () => {
+		const ctl = new FakeControl();
+		const client = new SyncClient(ctl);
+		client.start();
+		// Give the replica session-A content (a node the OLD backend had).
+		seedClientNode(client);
+		const oldDoc = client.doc;
+		const oldClientId = client.clientId;
+		expect(client.doc.getMap('nodes').size).toBe(1);
+
+		client.reset();
+
+		// A brand-new, EMPTY doc with a fresh client id — the stale session-A content is gone.
+		expect(client.doc).not.toBe(oldDoc);
+		expect(client.doc.getMap('nodes').size).toBe(0);
+		expect(client.clientId).not.toBe(oldClientId);
+
+		// Answering a NEW backend's state vector must serialize nothing (no stale push into the new
+		// session): the fresh doc holds no content the server lacks.
+		const serverB = new Y.Doc(); // the new session's (empty-ish) replica
+		ctl.sentSyncFrames.length = 0;
+		client.onFrame(syncHello(serverB)); // server advertises its SV → client answers
+		const answer = ctl.sentSyncFrames.map(decodeSyncMsg).find((m) => m?.kind === 'update');
+		// The update (if any) carries an EMPTY payload — the fresh doc has nothing to push.
+		if (answer) expect(answer.payload).toEqual(new Uint8Array([0, 0]));
+	});
+
+	it('reset() keeps the graph-store doc-change callback wired to the fresh doc', () => {
+		const ctl = new FakeControl();
+		const client = new SyncClient(ctl);
+		let fired = 0;
+		client.onDocChange((txn) => {
+			if (txn.changed.size > 0) fired++;
+		});
+		client.start();
+		client.reset();
+		// A transaction on the FRESH doc still notifies the store (the observer was re-attached).
+		seedClientNode(client);
+		expect(fired).toBeGreaterThan(0);
+	});
+
 	it('stamps applied remote updates with REMOTE_ORIGIN', () => {
 		const ctl = new FakeControl();
 		const client = new SyncClient(ctl);
