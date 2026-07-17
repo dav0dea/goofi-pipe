@@ -104,17 +104,19 @@ pub struct InstanceRecord {
 
 /// The merge-safe leaves a client's incremental update changed — what the manager pushes into the
 /// engine `Graph` after applying a client doc write. Params carry `(uid, group, name, value)`;
-/// positions carry `(uid, [x, y])` for each node or instance box that moved.
+/// positions carry `(uid, [x, y])` for each node or instance box that moved; viewers carry
+/// `(uid, blob)` for each node whose per-slot viewer view-state changed.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct ClientChanges {
     pub params: Vec<(String, String, String, serde_json::Value)>,
     pub positions: Vec<(String, [f64; 2])>,
+    pub viewers: Vec<(String, serde_json::Value)>,
 }
 
 impl ClientChanges {
     /// No leaf changed — the manager has nothing to push.
     pub fn is_empty(&self) -> bool {
-        self.params.is_empty() && self.positions.is_empty()
+        self.params.is_empty() && self.positions.is_empty() && self.viewers.is_empty()
     }
 }
 
@@ -361,18 +363,18 @@ impl GraphDoc {
     /// Store a node's opaque per-slot viewer blob as a JSON string (typed in a later phase).
     /// Idempotent in place: the re-mirror re-asserts this after every op, so a no-op write must
     /// produce no doc delta — an unguarded insert would churn the key on every unrelated edit (and
-    /// race a client's viewer leaf-write). `serde_json`'s default (BTreeMap-backed) object order is
-    /// canonical, so equal blobs serialize to equal strings.
+    /// race a client's viewer leaf-write). The guard compares the PARSED value, not the string, so a
+    /// client's leaf-write in a different key order / number format is accepted as-is and never
+    /// re-canonicalized (which would churn on every later edit).
     pub fn set_viewers(&mut self, uid: &str, viewers: &serde_json::Value) {
         let mut txn = self.doc.transact_mut();
         if let Some(node) = self.nodes.get(&txn, uid).and_then(|v| v.cast::<MapRef>().ok()) {
-            let s = viewers.to_string();
             let cur = match node.get(&txn, "viewers") {
-                Some(Out::Any(Any::String(c))) => Some(c.to_string()),
+                Some(Out::Any(Any::String(c))) => serde_json::from_str::<serde_json::Value>(&c).ok(),
                 _ => None,
             };
-            if cur.as_deref() != Some(s.as_str()) {
-                node.insert(&mut txn, "viewers", s);
+            if cur.as_ref() != Some(viewers) {
+                node.insert(&mut txn, "viewers", viewers.to_string());
             }
         }
     }
@@ -633,11 +635,23 @@ impl GraphDoc {
         out
     }
 
+    /// Every node's viewer blob `(uid, json)` currently in the doc — the before/after basis for
+    /// detecting a client's view-state edit. Compared as parsed JSON so key order is irrelevant.
+    fn viewers_snapshot(&self) -> Vec<(String, serde_json::Value)> {
+        let mut out = Vec::new();
+        for uid in self.node_ids() {
+            if let Some(v) = self.viewers_json(&uid) {
+                out.push((uid, v));
+            }
+        }
+        out
+    }
+
     /// Apply a client's incremental update to this replica and return the merge-safe leaves that
-    /// changed — param values and node/instance positions — so the manager can push exactly those
-    /// into the engine `Graph`. The diff is loop-safe: the manager's subsequent graph→doc
-    /// re-mirror writes the same values, which yrs records as no change. `Err` only if the update
-    /// bytes are malformed.
+    /// changed — param values, node/instance positions, and viewer blobs — so the manager can push
+    /// exactly those into the engine `Graph`. The diff is loop-safe: the manager's subsequent
+    /// graph→doc re-mirror writes the same values, which yrs records as no change. `Err` only if the
+    /// update bytes are malformed.
     pub fn apply_client_update(&mut self, update: &[u8]) -> Result<ClientChanges, String> {
         let params_before: HashMap<(String, String, String), serde_json::Value> = self
             .param_snapshot()
@@ -645,6 +659,8 @@ impl GraphDoc {
             .map(|(u, g, n, v)| ((u, g, n), v))
             .collect();
         let pos_before: HashMap<String, [f64; 2]> = self.pos_snapshot().into_iter().collect();
+        let viewers_before: HashMap<String, serde_json::Value> =
+            self.viewers_snapshot().into_iter().collect();
         self.apply_update(update)?;
         let params = self
             .param_snapshot()
@@ -656,7 +672,12 @@ impl GraphDoc {
             .into_iter()
             .filter(|(u, p)| pos_before.get(u) != Some(p))
             .collect();
-        Ok(ClientChanges { params, positions })
+        let viewers = self
+            .viewers_snapshot()
+            .into_iter()
+            .filter(|(u, v)| viewers_before.get(u) != Some(v))
+            .collect();
+        Ok(ClientChanges { params, positions, viewers })
     }
 
     /// The message to send a peer on connect: this replica's state vector, framed. The peer
@@ -1038,6 +1059,37 @@ mod tests {
         assert!(changed.params.is_empty(), "no param changed");
         assert_eq!(server.node_pos("1"), Some([100.0, 200.0]), "doc updated");
         assert_eq!(server.node_pos("2"), Some([5.0, 5.0]), "untouched node unchanged");
+
+        // Idempotent: re-applying reports nothing further.
+        assert!(server.apply_client_update(&update).unwrap().is_empty());
+    }
+
+    #[test]
+    fn apply_client_update_reports_changed_viewers() {
+        use serde_json::json;
+        // A client picks a viewer kind / collapses a slot / edits settings — the per-node viewer
+        // blob is a merge-safe leaf (§4). The manager applies it and learns which nodes' view-state
+        // changed, so it can push each into the engine Graph (set_node_viewers → persists to .gfi).
+        let mut server = GraphDoc::new();
+        server.upsert_node("1", "Oscillator", "osc", [0.0, 0.0]);
+        server.upsert_node("2", "Buffer", "buf", [0.0, 0.0]);
+        server.set_viewers("1", &json!({"out": {"kind": "line", "collapsed": false}}));
+
+        let mut client = GraphDoc::new();
+        client.apply_update(&server.diff(&client.state_vector())).unwrap();
+        client.set_viewers("1", &json!({"out": {"kind": "spectrum", "collapsed": true}}));
+        let update = client.diff(&server.state_vector());
+
+        let changed = server.apply_client_update(&update).unwrap();
+        assert_eq!(
+            changed.viewers,
+            vec![("1".into(), json!({"out": {"kind": "spectrum", "collapsed": true}}))]
+        );
+        assert!(changed.params.is_empty() && changed.positions.is_empty(), "only viewers changed");
+        assert_eq!(
+            server.viewers_json("1"),
+            Some(json!({"out": {"kind": "spectrum", "collapsed": true}}))
+        );
 
         // Idempotent: re-applying reports nothing further.
         assert!(server.apply_client_update(&update).unwrap().is_empty());

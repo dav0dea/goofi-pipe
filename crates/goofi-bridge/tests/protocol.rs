@@ -1153,50 +1153,47 @@ async fn data_plane_streams_an_output_boundary_via_the_inner_leaf() {
 }
 
 #[tokio::test]
-async fn set_node_viewers_persists_and_echoes_the_view_state() {
-    // The editor's per-slot viewer view-state (kind/settings) is server-authoritative:
-    // set_node_viewers stores it, echoes it back, and it survives a serialize round-trip.
+async fn a_client_viewers_leaf_write_persists_the_view_state() {
+    // Phase 3 (writer half, viewers): the editor's per-slot viewer view-state (kind/settings/
+    // collapsed) is a merge-safe leaf the client writes straight to the doc — no set_node_viewers
+    // RPC. The manager applies it via set_node_viewers and it survives a .gfi serialize round-trip.
+    use goofi_crdt::{GraphDoc, SyncMsg};
+
     let base = start_server().await;
     let (mut ws, _) = connect_async(format!("{base}/control")).await.unwrap();
     let _hello = recv_text(&mut ws).await;
+    let _sv = recv_binary(&mut ws).await;
+    let mut wdoc = GraphDoc::new();
+    ws.send(Message::Binary(wdoc.sync_hello().into())).await.unwrap();
+    wdoc.on_sync(SyncMsg::decode(&recv_binary(&mut ws).await).unwrap());
 
     let osc = call(&mut ws, 1, "add_node", json!({ "type": "Oscillator" })).await["result"]
         .as_str()
         .unwrap()
         .to_string();
+    wdoc.on_sync(SyncMsg::decode(&recv_binary(&mut ws).await).unwrap());
+    assert!(wdoc.node_ids().contains(&osc), "writer's replica has the node");
 
+    // Write the viewer blob into the replica and send the delta.
     let viewers = json!({ "out": { "collapsed": false, "kind": "line", "settings": { "yScale": 2 } } });
-    ws.send(Message::Text(
-        json!({ "id": 2, "op": "set_node_viewers", "payload": { "node": osc, "viewers": viewers } })
-            .to_string(),
-    ))
-    .await
-    .unwrap();
+    let before = wdoc.state_vector();
+    wdoc.set_viewers(&osc, &viewers);
+    ws.send(Message::Binary(SyncMsg::Update(wdoc.diff(&before)).encode().into())).await.unwrap();
 
-    // The reply dispatches (not 404) and the change is echoed as node_viewers.
-    let mut ok = false;
-    let mut echoed: Option<Value> = None;
-    for _ in 0..10 {
-        let m = recv_text(&mut ws).await;
-        if m.get("id").and_then(|v| v.as_i64()) == Some(2) {
-            assert_eq!(m["result"]["ok"], true, "set_node_viewers must dispatch");
-            ok = true;
-        } else if m["event"] == "node_viewers" && m["payload"]["node"] == json!(osc) {
-            echoed = Some(m["payload"]["viewers"].clone());
-        }
-        if ok && echoed.is_some() {
+    // It reaches the graph and persists into the serialized .gfi (poll: the write is async).
+    let mut persisted = false;
+    for i in 4..14 {
+        let yaml = call(&mut ws, i, "serialize", json!({})).await["result"]["yaml"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        if yaml.contains("yScale") {
+            persisted = true;
             break;
         }
+        tokio::time::sleep(Duration::from_millis(50)).await;
     }
-    assert!(ok, "reply must arrive");
-    assert_eq!(echoed.expect("node_viewers echo"), viewers, "view-state echoed verbatim");
-
-    // It persists into the serialized .gfi.
-    let yaml = call(&mut ws, 3, "serialize", json!({})).await["result"]["yaml"]
-        .as_str()
-        .unwrap()
-        .to_string();
-    assert!(yaml.contains("yScale"), "view-state persisted to .gfi; got:\n{yaml}");
+    assert!(persisted, "the client's viewer leaf write reached the graph and persisted to .gfi");
 }
 
 #[tokio::test]

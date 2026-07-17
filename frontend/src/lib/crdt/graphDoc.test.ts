@@ -11,7 +11,9 @@ import {
 	instancesMap,
 	instanceView,
 	instanceViews,
-	setNodePos
+	setNodePos,
+	setViewers,
+	viewersJson
 } from './graphDoc';
 
 /** Build a doc in the exact shape the Rust `GraphDoc` mirror writes. */
@@ -182,6 +184,30 @@ describe('graphDoc.setNodePos — committed-drag leaf write', () => {
 		// doc's full delete set, so it's non-empty once any value has been overwritten.)
 		const sv = Y.encodeStateVector(doc);
 		setNodePos(doc, 'a', [111, 222]);
+		expect(Y.encodeStateVector(doc)).toEqual(sv);
+	});
+});
+
+describe('graphDoc.setViewers — view-state leaf write', () => {
+	it('writes a node viewer blob and reads it back', () => {
+		const doc = seedDoc();
+		const blob = { out: { collapsed: false, kind: 'line', settings: {} } };
+		expect(setViewers(doc, 'a', blob)).toBe(true);
+		expect(viewersJson(doc, 'a')).toEqual(blob);
+	});
+
+	it('no-ops (returns false) when the node is absent — never mint a phantom', () => {
+		const doc = seedDoc();
+		expect(setViewers(doc, 'ghost', { out: {} })).toBe(false);
+		expect(nodesMap(doc).get('ghost')).toBeUndefined();
+	});
+
+	it('is idempotent — re-writing the same blob creates no new struct', () => {
+		const doc = seedDoc();
+		const blob = { out: { collapsed: true, kind: 'spectrum', settings: { db: -60 } } };
+		setViewers(doc, 'a', blob);
+		const sv = Y.encodeStateVector(doc);
+		setViewers(doc, 'a', blob);
 		expect(Y.encodeStateVector(doc)).toEqual(sv);
 	});
 });

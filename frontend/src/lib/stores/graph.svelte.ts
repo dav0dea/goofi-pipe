@@ -37,7 +37,8 @@ import {
 	instanceViews,
 	paramValue,
 	setParamValue,
-	setNodePos as docSetNodePos
+	setNodePos as docSetNodePos,
+	setViewers as docSetViewers
 } from '$lib/crdt/graphDoc';
 import type * as Y from 'yjs';
 
@@ -236,9 +237,10 @@ export class GraphStore {
 	}
 
 	private _viewerPushTimers = new Map<string, ReturnType<typeof setTimeout>>();
-	/** Debounced push of a node's full viewer state (collapse / kind / settings)
-	 * to the backend, so it round-trips into the .gfi on save. Soft UI state — the
-	 * bridge op deliberately doesn't mark the patch unsaved. */
+	/** Debounced client leaf-write of a node's full viewer state (collapse / kind / settings) into
+	 * the CRDT doc (Phase 3 — replaces the `set_node_viewers` RPC). The manager applies it via
+	 * `set_node_viewers` (which persists it into the .gfi on save) and re-mirrors. Soft, client-
+	 * originated, human-rate UI state — the debounce keeps it well under the CRDT's human-rate tier. */
 	pushNodeViewers(node: string): void {
 		clearTimeout(this._viewerPushTimers.get(node));
 		this._viewerPushTimers.set(
@@ -256,7 +258,7 @@ export class GraphStore {
 						settings: view.settings
 					};
 				}
-				void this.ctl.call('set_node_viewers', { node, viewers }).catch(() => {});
+				this._sync.commit((doc) => docSetViewers(doc, node, viewers));
 			}, 250)
 		);
 	}

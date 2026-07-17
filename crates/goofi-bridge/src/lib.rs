@@ -646,18 +646,9 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
                 }
                 Ok(json!({ "ok": true }))
             }
-            // `set_node_pos` retired (Phase 3): node/instance position is a merge-safe leaf the
-            // client writes directly to the doc (`apply_client_write` → `set_member_pos`).
-            "set_node_viewers" => {
-                // Opaque per-slot viewer view-state (kind/settings/collapsed). The backend is
-                // the persistence authority (it lands in `.gfi`); it stores + echoes the blob
-                // verbatim without interpreting it. Echo so any observer reconciles.
-                let uid = parse_uid(&payload, "node")?;
-                let viewers = payload.get("viewers").cloned().unwrap_or_else(|| json!({}));
-                g.set_node_viewers(uid, viewers.clone())?;
-                events.push(event("node_viewers", json!({ "node": uid.to_hex(), "viewers": viewers })));
-                Ok(json!({ "ok": true }))
-            }
+            // `set_node_pos` / `set_node_viewers` retired (Phase 3): node/instance position and the
+            // per-slot viewer blob are merge-safe leaves the client writes directly to the doc
+            // (`apply_client_write` → `set_member_pos` / `set_node_viewers`).
             "rename_node" => {
                 let uid = parse_uid(&payload, "node")?;
                 let name = payload.get("name").and_then(|v| v.as_str()).ok_or("missing name")?;
@@ -868,6 +859,12 @@ fn apply_client_write(state: &AppState, update: &[u8]) {
         // `set_member_pos` moves a ROOT node, an instance box, or a shared member (mirroring to
         // siblings) — the same authority the retired `set_node_pos` RPC used.
         let _ = g.set_member_pos(uid, *pos);
+    }
+    for (uid_hex, blob) in &changed.viewers {
+        let Some(uid) = Uid::from_hex(uid_hex) else { continue };
+        // Opaque per-slot view-state — stored + persisted to .gfi verbatim (the retired
+        // `set_node_viewers` RPC's authority).
+        let _ = g.set_node_viewers(uid, blob.clone());
     }
     remirror_and_broadcast_locked(state, &g, &mut doc);
 }

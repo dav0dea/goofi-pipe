@@ -186,6 +186,33 @@ export function setNodePos(doc: Y.Doc, uid: string, pos: [number, number]): bool
 	return true;
 }
 
+/** A node's opaque per-slot viewer blob (`{slot: {collapsed, kind, settings}}`), or `undefined`. */
+export function viewersJson(doc: Y.Doc, uid: string): unknown {
+	const v = nodesMap(doc).get(uid)?.get('viewers');
+	if (typeof v !== 'string') return undefined;
+	try {
+		return JSON.parse(v);
+	} catch {
+		return undefined;
+	}
+}
+
+/** Write a node's opaque per-slot viewer blob into the doc IN PLACE as a JSON string, matching the
+ * Rust `GraphDoc::set_viewers` representation, so the manager's `apply_client_update` detects it
+ * and persists it (set_node_viewers → .gfi). A client leaf-write (§4) — the view-state is soft,
+ * client-originated, human-rate (debounced on the caller). No-op if the node is absent (never mint
+ * a phantom). Idempotent: re-writing the same blob writes nothing. Returns whether it landed.
+ *
+ * The blob stays an opaque STRING for now (typed per-slot G4 comes with multi-user): the manager's
+ * `set_viewers` guard parse-compares, so a differently-ordered write is accepted as-is. */
+export function setViewers(doc: Y.Doc, uid: string, viewers: unknown): boolean {
+	const node = nodesMap(doc).get(uid);
+	if (!node) return false;
+	const s = JSON.stringify(viewers ?? {});
+	if (node.get('viewers') !== s) node.set('viewers', s);
+	return true;
+}
+
 /** The `instances` root map (the sub-patch forest). */
 export function instancesMap(doc: Y.Doc): Y.Map<Y.Map<unknown>> {
 	return doc.getMap('instances') as Y.Map<Y.Map<unknown>>;
