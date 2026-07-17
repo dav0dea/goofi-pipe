@@ -382,6 +382,24 @@ mod tests {
     }
 
     #[test]
+    fn re_setting_a_param_without_an_expr_prunes_the_old_binding() {
+        // The mirror re-syncs a param by re-calling set_param. When a binding is cleared, the
+        // whole entry is replaced, so the stale `expr` must NOT linger in the doc (else a
+        // cleared expression would resurrect on a client). Guards the re-sync prune contract.
+        use serde_json::json;
+        let mut doc = GraphDoc::new();
+        doc.upsert_node("1", "Oscillator", "osc", [0.0, 0.0]);
+        doc.set_param(
+            "1", "g", "p", &json!(1.0),
+            Some(ExprRecord { source: "nd('x')".into(), enabled: true, triggers: false }),
+        );
+        assert_eq!(doc.param_expr_source("1", "g", "p").as_deref(), Some("nd('x')"));
+        doc.set_param("1", "g", "p", &json!(2.0), None);
+        assert_eq!(doc.param_value("1", "g", "p"), Some(json!(2.0)), "value updated");
+        assert_eq!(doc.param_expr_source("1", "g", "p"), None, "stale binding pruned");
+    }
+
+    #[test]
     fn viewers_blob_and_links_round_trip() {
         use serde_json::json;
         let mut doc = GraphDoc::new();
