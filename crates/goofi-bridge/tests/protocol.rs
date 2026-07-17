@@ -477,6 +477,39 @@ async fn group_and_expand_project_the_instance_forest() {
 }
 
 #[tokio::test]
+async fn connecting_to_a_boundary_creates_a_flat_leaf_link() {
+    // Wiring a top-level node to an instance's input boundary must resolve to a flat leaf→leaf
+    // link on the inner member — the boundary is a naming indirection, the runtime link is flat.
+    let base = start_server().await;
+    let (mut ws, _) = connect_async(format!("{base}/control")).await.unwrap();
+    let _hello = recv_text(&mut ws).await;
+
+    let uid = |v: &Value| v["result"].as_str().unwrap().to_string();
+    let osc = uid(&call(&mut ws, 1, "add_node", json!({ "type": "Oscillator" })).await);
+    let buf = uid(&call(&mut ws, 2, "add_node", json!({ "type": "Buffer" })).await);
+    // Group the buffer alone (no links yet → no auto boundaries), then author an input port.
+    let inst = call(&mut ws, 3, "group_nodes", json!({ "members": [buf], "pos": [0.0, 0.0] })).await["result"]["inst_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let bnd = call(&mut ws, 4, "add_boundary", json!({ "inst_id": inst, "dir": "in", "dtype": "ARRAY", "pos": [0.0, 0.0] })).await
+        ["result"]["bnd_id"].as_str().unwrap().to_string();
+    call(&mut ws, 5, "wire_boundary", json!({ "inst_id": inst, "bnd_id": bnd, "inner_node": buf, "inner_slot": "data" })).await;
+
+    // Connect osc.out → inst::in0. The bridge translates it to osc.out → buf.data.
+    call(&mut ws, 6, "add_link", json!({ "node_out": osc, "slot_out": "out", "node_in": inst, "slot_in": bnd })).await;
+    let added = loop {
+        let m = recv_text(&mut ws).await;
+        if m.get("event").and_then(|v| v.as_str()) == Some("link_added") {
+            break m;
+        }
+    };
+    assert_eq!(added["payload"]["node_in"], json!(buf), "resolved to the inner buffer leaf, not the instance");
+    assert_eq!(added["payload"]["slot_in"], "data", "resolved to the inner slot");
+    assert_eq!(added["payload"]["node_out"], json!(osc), "the plain endpoint passes through");
+}
+
+#[tokio::test]
 async fn boundary_authoring_over_the_wire() {
     // add_boundary → wire_boundary → rename_boundary, reflected in the snapshot interface.
     let base = start_server().await;

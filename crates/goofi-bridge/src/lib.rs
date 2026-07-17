@@ -328,6 +328,19 @@ fn parse_link(p: &Value) -> Result<(Uid, String, Uid, String), String> {
     Ok((node_out, slot_out, node_in, slot_in))
 }
 
+/// Translate a link endpoint that names a sub-patch instance's boundary port into the flat
+/// inner leaf it resolves to. A top-level node wired to `inst::bnd` becomes a real leaf→leaf
+/// link — the boundary is a naming indirection resolved here, so the runtime/persisted link is
+/// always flat. A plain `(node, slot)` passes through unchanged.
+fn resolve_link_endpoint(g: &goofi_engine::Graph, uid: Uid, slot: &str) -> (Uid, String) {
+    if g.instance(uid).is_some() {
+        if let Some(leaf) = g.resolve_boundary(uid, slot) {
+            return leaf;
+        }
+    }
+    (uid, slot.to_string())
+}
+
 /// Coerce a JSON number to i64, ROUNDING a fractional value to nearest. serde's
 /// `as_i64()` returns `None` for a float like `5.5`, which the old `unwrap_or(0)`
 /// silently snapped to 0 — so editing an Int param to a fractional value reset it.
@@ -406,6 +419,9 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
             }
             "add_link" => {
                 let (a, so, b, si) = parse_link(&payload)?;
+                // Resolve either endpoint through a sub-patch boundary → flat leaf→leaf.
+                let (a, so) = resolve_link_endpoint(&g, a, &so);
+                let (b, si) = resolve_link_endpoint(&g, b, &si);
                 g.add_link(a, &so, b, &si)?;
                 events.push(event(
                     "link_added",
@@ -415,6 +431,8 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
             }
             "remove_link" => {
                 let (a, so, b, si) = parse_link(&payload)?;
+                let (a, so) = resolve_link_endpoint(&g, a, &so);
+                let (b, si) = resolve_link_endpoint(&g, b, &si);
                 g.remove_link(a, &so, b, &si)?;
                 events.push(event(
                     "link_removed",
