@@ -996,6 +996,59 @@ impl Graph {
         Ok(new_inst)
     }
 
+    /// Every member that mirrors `member` under a SHARED def: the member itself plus its
+    /// counterparts (same template-local) in every other instance of the same def. Just
+    /// `[member]` when `member` is a ROOT node or a member of a UNIQUE def (no peers).
+    pub fn shared_member_peers(&self, member: Uid) -> Vec<Uid> {
+        let Some(inst_uid) = self.scope_of(member) else { return vec![member] };
+        let (Some(inst), Some(local)) = (self.instances.get(&inst_uid), self.local_of(member)) else {
+            return vec![member];
+        };
+        let def_id = inst.def_id;
+        if self.def_refcount(def_id) < 2 {
+            return vec![member];
+        }
+        let local = local.to_string();
+        self.instances
+            .values()
+            .filter(|i| i.def_id == def_id)
+            .filter_map(|i| i.members.get(&local).copied())
+            .collect()
+    }
+
+    /// Re-capture a leaf member's live decl into its def (params/expressions/pos), so a later
+    /// `duplicate_shared` and a save/load carry the edited value. No-op for a ROOT node or a
+    /// nested-instance member.
+    fn sync_def_member(&mut self, member: Uid) {
+        let Some(inst_uid) = self.scope_of(member) else { return };
+        if self.instances.contains_key(&member) {
+            return; // a nested instance member syncs through its own edits
+        }
+        let (Some(def_id), Some(local)) = (
+            self.instances.get(&inst_uid).map(|i| i.def_id),
+            self.local_of(member).map(|s| s.to_string()),
+        ) else {
+            return;
+        };
+        let Some(leaf) = self.capture_leaf_decl(member) else { return };
+        if let Some(def) = self.defs.get_mut(&def_id) {
+            def.members.insert(local, subpatch::MemberDecl::Leaf(leaf));
+        }
+    }
+
+    /// Apply a param edit, re-projecting to every shared sibling (§4.5): the def is the SSOT for
+    /// a shared member, so an edit hits ALL its instances and syncs the def's stored decl.
+    /// Returns the uids actually updated (for per-node `state_update` broadcast). A ROOT node or
+    /// unique member updates only itself — identical to `update_param`.
+    pub fn update_member_param(&mut self, uid: Uid, group: &str, name: &str, value: Param) -> Result<Vec<Uid>, String> {
+        let peers = self.shared_member_peers(uid);
+        for &peer in &peers {
+            self.update_param(peer, group, name, value.clone())?;
+        }
+        self.sync_def_member(uid);
+        Ok(peers)
+    }
+
     /// Fork a shared instance's def to a fresh private copy (refcount 1) and repoint the
     /// instance. Pure bookkeeping — the live leaves already match the fork, so nothing respawns.
     pub fn make_unique(&mut self, inst: Uid) -> Result<subpatch::DefId, String> {
@@ -3475,6 +3528,44 @@ mod tests {
         let linked = g.links_view().iter().any(|l| sib_uids.contains(&l.node_out) && sib_uids.contains(&l.node_in));
         assert!(linked, "the sibling's internal link is live");
         assert_eq!(g.links_view().len(), 2, "one internal link per instance, external untouched");
+    }
+
+    #[test]
+    fn shared_param_edit_reprojects_to_every_sibling() {
+        // A param edit on one shared member mirrors to the sibling (def is the SSOT), and the
+        // def's stored decl is synced so a further duplicate inherits the edit.
+        let mut g = Graph::new();
+        let a = g.add_node("_TestConst", None).unwrap();
+        let inst = g.group_nodes(&[a], [0.0, 0.0]).unwrap();
+        let sib = g.duplicate_shared(inst, [10.0, 10.0]).unwrap();
+        let a2 = *g.instance(sib).unwrap().members.values().next().unwrap();
+
+        // Peers = both instances' members of that local.
+        let peers = g.shared_member_peers(a);
+        assert_eq!(peers.len(), 2, "shared member has one sibling peer");
+
+        // Edit the constant on the original member → both members update.
+        let updated = g.update_member_param(a, "constant", "value", Param::float(9.0, -1e9, 1e9)).unwrap();
+        assert_eq!(updated.len(), 2, "both siblings updated");
+        let val = |g: &Graph, u| goofi_node::param(g.params(u).unwrap(), "constant", "value").unwrap().as_f64();
+        assert_eq!(val(&g, a), Some(9.0), "edited member");
+        assert_eq!(val(&g, a2), Some(9.0), "sibling mirrored");
+
+        // The def carries the edit: a fresh duplicate inherits 9.0.
+        let sib3 = g.duplicate_shared(inst, [20.0, 20.0]).unwrap();
+        let a3 = *g.instance(sib3).unwrap().members.values().next().unwrap();
+        assert_eq!(val(&g, a3), Some(9.0), "a new sibling inherits the edited param from the def");
+    }
+
+    #[test]
+    fn shared_member_peers_are_only_the_node_itself_when_unique() {
+        // A ROOT node and a unique-instance member have no peers (edits stay local).
+        let mut g = Graph::new();
+        let root = g.add_node("_TestConst", None).unwrap();
+        assert_eq!(g.shared_member_peers(root), vec![root], "ROOT node: no peers");
+        let inst = g.group_nodes(&[root], [0.0, 0.0]).unwrap();
+        let _ = inst;
+        assert_eq!(g.shared_member_peers(root), vec![root], "unique-def member: no peers");
     }
 
     #[test]

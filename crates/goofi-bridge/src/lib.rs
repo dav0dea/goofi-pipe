@@ -459,19 +459,23 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
                     .cloned()
                     .ok_or("no such param")?;
                 let newp = param_from_json(&existing, vjson);
-                g.update_param(uid, group, name, newp)?;
-                events.push(event(
-                    "state_update",
-                    json!({
-                        "node": uid.to_hex(),
-                        "params": schemas::describe_node_params(&g, uid),
-                        "output_subscribers": {},
-                        "stage": "ready",
-                        "error": g.last_error(uid),
-                        "log_endpoint": Value::Null,
-                        "refreshed_params": [],
-                    }),
-                ));
+                // Re-project to every shared sibling (§4.5): a shared member's edit hits all its
+                // instances. A ROOT / unique-member edit updates only itself.
+                let updated = g.update_member_param(uid, group, name, newp)?;
+                for peer in updated {
+                    events.push(event(
+                        "state_update",
+                        json!({
+                            "node": peer.to_hex(),
+                            "params": schemas::describe_node_params(&g, peer),
+                            "output_subscribers": {},
+                            "stage": "ready",
+                            "error": g.last_error(peer),
+                            "log_endpoint": Value::Null,
+                            "refreshed_params": [],
+                        }),
+                    ));
+                }
                 Ok(json!({ "ok": true }))
             }
             "set_expression" => {
