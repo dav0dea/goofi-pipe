@@ -74,35 +74,6 @@ pub struct LinkRecord {
     pub slot_in: String,
 }
 
-/// One exposed sub-patch boundary port, as mirrored into the doc.
-#[derive(Clone, Debug, PartialEq)]
-pub struct BoundaryRecord {
-    pub bnd_id: String,
-    pub dir: String,   // "in" | "out"
-    pub dtype: String, // "ARRAY" | "STRING" | "TABLE"
-    pub name: String,
-    pub pos: [f64; 2],
-    /// The wired inner leaf (hex uid + slot), or `None` when the boundary is unwired.
-    pub inner_node: Option<String>,
-    pub inner_slot: Option<String>,
-}
-
-/// A sub-patch instance as mirrored into the doc — the manager-written forest (§4.2). Identity +
-/// parentage + placement + the local→uid member map + the exposed interface. Runtime-derived
-/// fields (error, siblings, resolved slot types) stay on the event/runtime plane.
-#[derive(Clone, Debug, PartialEq)]
-pub struct InstanceRecord {
-    pub name: String,
-    /// The shared def id (hex) when the instance is shared; `None` when unique.
-    pub def_id: Option<String>,
-    /// Parent scope (hex uid, or "__root__" for a top-level instance).
-    pub parent: String,
-    pub pos: [f64; 2],
-    /// local name → live member uid (hex). The SSOT for member identity.
-    pub members: Vec<(String, String)>,
-    pub interface: Vec<BoundaryRecord>,
-}
-
 /// The merge-safe leaves a client's incremental update changed — what the manager pushes into the
 /// engine `Graph` after applying a client doc write. Params carry `(uid, group, name, value)`;
 /// positions carry `(uid, [x, y])` for each node or instance box that moved; viewers carry
@@ -341,105 +312,30 @@ impl GraphDoc {
         }
     }
 
-    fn node_map(&self, txn: &yrs::Transaction, uid: &str) -> Option<MapRef> {
-        self.nodes.get(txn, uid).and_then(|v| v.cast::<MapRef>().ok())
-    }
-
-    pub fn node_name(&self, uid: &str) -> Option<String> {
-        let txn = self.doc.transact();
-        match self.node_map(&txn, uid)?.get(&txn, "name") {
-            Some(Out::Any(Any::String(s))) => Some(s.to_string()),
-            _ => None,
-        }
-    }
-
-    pub fn node_type(&self, uid: &str) -> Option<String> {
-        let txn = self.doc.transact();
-        match self.node_map(&txn, uid)?.get(&txn, "type") {
-            Some(Out::Any(Any::String(s))) => Some(s.to_string()),
-            _ => None,
-        }
-    }
-
-    pub fn node_pos(&self, uid: &str) -> Option<[f64; 2]> {
-        let txn = self.doc.transact();
-        let p = self.node_map(&txn, uid)?.get(&txn, "pos").and_then(|v| v.cast::<MapRef>().ok())?;
-        let f = |k| match p.get(&txn, k) {
-            Some(Out::Any(Any::Number(n))) => Some(n),
-            _ => None,
-        };
-        Some([f("x")?, f("y")?])
-    }
-
-    fn param_entry(
-        &self,
-        txn: &yrs::Transaction,
-        uid: &str,
-        group: &str,
-        name: &str,
-    ) -> Option<MapRef> {
-        self.node_map(txn, uid)?
-            .get(txn, "params")
-            .and_then(|v| v.cast::<MapRef>().ok())?
-            .get(txn, group)
-            .and_then(|v| v.cast::<MapRef>().ok())?
-            .get(txn, name)
-            .and_then(|v| v.cast::<MapRef>().ok())
-    }
-
-    pub fn param_value(&self, uid: &str, group: &str, name: &str) -> Option<serde_json::Value> {
-        let txn = self.doc.transact();
-        match self.param_entry(&txn, uid, group, name)?.get(&txn, "value") {
-            Some(Out::Any(Any::Number(n))) => Some(serde_json::json!(n)),
-            Some(Out::Any(Any::Bool(b))) => Some(serde_json::json!(b)),
-            Some(Out::Any(Any::String(s))) => Some(serde_json::json!(s.to_string())),
-            _ => None,
-        }
-    }
-
-    pub fn param_expr_source(&self, uid: &str, group: &str, name: &str) -> Option<String> {
-        let txn = self.doc.transact();
-        let ex = self
-            .param_entry(&txn, uid, group, name)?
-            .get(&txn, "expr")
-            .and_then(|v| v.cast::<MapRef>().ok())?;
-        match ex.get(&txn, "source") {
-            Some(Out::Any(Any::String(s))) => Some(s.to_string()),
-            _ => None,
-        }
-    }
-
-    /// A param's full expression binding `{source, enabled, triggers}`, or `None` if unbound.
-    pub fn param_expr(&self, uid: &str, group: &str, name: &str) -> Option<ExprRecord> {
-        let txn = self.doc.transact();
-        let ex = self
-            .param_entry(&txn, uid, group, name)?
-            .get(&txn, "expr")
-            .and_then(|v| v.cast::<MapRef>().ok())?;
-        let source = match ex.get(&txn, "source") {
-            Some(Out::Any(Any::String(s))) => s.to_string(),
-            _ => return None,
-        };
-        let flag = |k| matches!(ex.get(&txn, k), Some(Out::Any(Any::Bool(true))));
-        Some(ExprRecord { source, enabled: flag("enabled"), triggers: flag("triggers") })
-    }
-
-    pub fn viewers_json(&self, uid: &str) -> Option<serde_json::Value> {
-        let txn = self.doc.transact();
-        match self.node_map(&txn, uid)?.get(&txn, "viewers") {
-            Some(Out::Any(Any::String(s))) => serde_json::from_str(&s).ok(),
-            _ => None,
-        }
-    }
-
     /// Replace the whole link set (wholesale; a fine-grained incremental diff comes later). Guarded
     /// idempotent: the re-mirror re-asserts this after every op, so when the set is UNCHANGED (the
     /// common case — links change far less often than params/positions) it must produce no doc ops.
     /// An unguarded remove-all+re-push would churn the link array (new items + tombstones) on every
     /// unrelated edit, defeating the empty-diff broadcast-skip for any patch that has links.
     pub fn replace_links(&mut self, links: Vec<LinkRecord>) {
-        if self.links() == links {
-            return; // unchanged — no wholesale rewrite (order-sensitive equality)
+        // Compare against the current link array read through the generic `ToJson` bridge (not a
+        // typed getter): order-sensitive array equality, string leaves, no numeric normalization.
+        let target = serde_json::Value::Array(
+            links
+                .iter()
+                .map(|l| {
+                    serde_json::json!({
+                        "node_out": l.node_out, "slot_out": l.slot_out,
+                        "node_in": l.node_in, "slot_in": l.slot_in,
+                    })
+                })
+                .collect(),
+        );
+        {
+            let txn = self.doc.transact();
+            if any_to_json(self.links.to_json(&txn)) == target {
+                return; // unchanged — no wholesale rewrite (order-sensitive equality)
+            }
         }
         let mut txn = self.doc.transact_mut();
         let len = self.links.len(&txn);
@@ -453,78 +349,10 @@ impl GraphDoc {
         }
     }
 
-    pub fn links(&self) -> Vec<LinkRecord> {
-        let txn = self.doc.transact();
-        let s = |m: &MapRef, k| match m.get(&txn, k) {
-            Some(Out::Any(Any::String(v))) => v.to_string(),
-            _ => String::new(),
-        };
-        self.links
-            .iter(&txn)
-            .filter_map(|v| v.cast::<MapRef>().ok())
-            .map(|m| LinkRecord {
-                node_out: s(&m, "node_out"),
-                slot_out: s(&m, "slot_out"),
-                node_in: s(&m, "node_in"),
-                slot_in: s(&m, "slot_in"),
-            })
-            .collect()
-    }
-
     /// The uids of all sub-patch instances currently in the doc.
     pub fn instance_ids(&self) -> Vec<String> {
         let txn = self.doc.transact();
         self.instances.keys(&txn).map(|k| k.to_string()).collect()
-    }
-
-    /// Read back a mirrored instance record (for tests / a manager-side reader).
-    pub fn instance_record(&self, uid: &str) -> Option<InstanceRecord> {
-        let txn = self.doc.transact();
-        let inst = self.instances.get(&txn, uid).and_then(|v| v.cast::<MapRef>().ok())?;
-        let s = |m: &MapRef, k: &str| match m.get(&txn, k) {
-            Some(Out::Any(Any::String(v))) => Some(v.to_string()),
-            _ => None,
-        };
-        let pos_of = |m: &MapRef| -> [f64; 2] {
-            let p = m.get(&txn, "pos").and_then(|v| v.cast::<MapRef>().ok());
-            let f = |k: &str| match p.as_ref().and_then(|pm| pm.get(&txn, k)) {
-                Some(Out::Any(Any::Number(n))) => n,
-                _ => 0.0,
-            };
-            [f("x"), f("y")]
-        };
-        let mut members = Vec::new();
-        if let Some(mm) = inst.get(&txn, "members").and_then(|v| v.cast::<MapRef>().ok()) {
-            for local in mm.keys(&txn) {
-                if let Some(uid) = s(&mm, local) {
-                    members.push((local.to_string(), uid));
-                }
-            }
-        }
-        let mut interface = Vec::new();
-        if let Some(im) = inst.get(&txn, "interface").and_then(|v| v.cast::<MapRef>().ok()) {
-            for bnd in im.keys(&txn) {
-                if let Some(bm) = im.get(&txn, bnd).and_then(|v| v.cast::<MapRef>().ok()) {
-                    interface.push(BoundaryRecord {
-                        bnd_id: bnd.to_string(),
-                        dir: s(&bm, "dir").unwrap_or_default(),
-                        dtype: s(&bm, "dtype").unwrap_or_default(),
-                        name: s(&bm, "name").unwrap_or_default(),
-                        pos: pos_of(&bm),
-                        inner_node: s(&bm, "inner_node"),
-                        inner_slot: s(&bm, "inner_slot"),
-                    });
-                }
-            }
-        }
-        Some(InstanceRecord {
-            name: s(&inst, "name").unwrap_or_default(),
-            def_id: s(&inst, "def_id"),
-            parent: s(&inst, "parent").unwrap_or_default(),
-            pos: pos_of(&inst),
-            members,
-            interface,
-        })
     }
 
     /// The full document state as a v1 update (what a joining client would receive).
@@ -571,87 +399,77 @@ impl GraphDoc {
         txn.apply_update(u).map_err(|e| e.to_string())
     }
 
-    /// Every param value in the doc, as `(uid, group, name, value)` — the snapshot the
-    /// client-update diff is computed against. Order is doc key order (deterministic).
-    pub fn param_snapshot(&self) -> Vec<(String, String, String, serde_json::Value)> {
-        let txn = self.doc.transact();
-        let mut out = Vec::new();
-        for uid in self.nodes.keys(&txn) {
-            let Some(node) = self.nodes.get(&txn, uid).and_then(|v| v.cast::<MapRef>().ok()) else {
-                continue;
-            };
-            let Some(params) = node.get(&txn, "params").and_then(|v| v.cast::<MapRef>().ok()) else {
-                continue;
-            };
-            for group in params.keys(&txn) {
-                let Some(g) = params.get(&txn, group).and_then(|v| v.cast::<MapRef>().ok()) else {
-                    continue;
-                };
-                for name in g.keys(&txn) {
-                    if let Some(v) = self.param_value(uid, group, name) {
-                        out.push((uid.to_string(), group.to_string(), name.to_string(), v));
+    /// Derive the four merge-safe leaf snapshots — params, node/instance positions, viewer blobs,
+    /// and expression bindings — from a SINGLE [`Self::to_json`] walk. This is the before/after
+    /// basis for [`Self::apply_client_update`]; each list reproduces what the retired typed
+    /// snapshots yielded, except values now carry `to_json`'s shortest-number form (a whole `30.0`
+    /// reads back as integer `30`). Positions cover ROOT nodes AND sub-patch instance boxes (both
+    /// carry a top-level `pos`; a node needs both coords numeric, an instance box defaults to 0.0);
+    /// viewers parse the opaque STRING leaf; an expression requires a string `source`.
+    fn client_leaves(
+        &self,
+    ) -> (
+        Vec<(String, String, String, serde_json::Value)>,
+        Vec<(String, [f64; 2])>,
+        Vec<(String, serde_json::Value)>,
+        Vec<(String, String, String, ExprRecord)>,
+    ) {
+        let doc = self.to_json();
+        let mut params = Vec::new();
+        let mut positions = Vec::new();
+        let mut viewers = Vec::new();
+        let mut exprs = Vec::new();
+
+        let coord = |m: &serde_json::Value, k| m.get("pos").and_then(|p| p.get(k)).and_then(|v| v.as_f64());
+
+        if let Some(nodes) = doc.get("nodes").and_then(|v| v.as_object()) {
+            for (uid, node) in nodes {
+                // Position — only when both coords are numeric (matches the retired `node_pos`).
+                if let (Some(x), Some(y)) = (coord(node, "x"), coord(node, "y")) {
+                    positions.push((uid.clone(), [x, y]));
+                }
+                // Viewers — an opaque STRING leaf, parsed to JSON (skip a node without it).
+                if let Some(v) =
+                    node.get("viewers").and_then(|v| v.as_str()).and_then(|s| serde_json::from_str(s).ok())
+                {
+                    viewers.push((uid.clone(), v));
+                }
+                // Param values (scalar leaves) + expression bindings.
+                if let Some(groups) = node.get("params").and_then(|v| v.as_object()) {
+                    for (group, g) in groups {
+                        let Some(names) = g.as_object() else { continue };
+                        for (name, entry) in names {
+                            if let Some(val) = entry.get("value") {
+                                if val.is_number() || val.is_boolean() || val.is_string() {
+                                    params.push((uid.clone(), group.clone(), name.clone(), val.clone()));
+                                }
+                            }
+                            if let Some(expr) = entry.get("expr") {
+                                if let Some(source) = expr.get("source").and_then(|v| v.as_str()) {
+                                    let flag = |k| expr.get(k) == Some(&serde_json::Value::Bool(true));
+                                    exprs.push((
+                                        uid.clone(),
+                                        group.clone(),
+                                        name.clone(),
+                                        ExprRecord {
+                                            source: source.to_string(),
+                                            enabled: flag("enabled"),
+                                            triggers: flag("triggers"),
+                                        },
+                                    ));
+                                }
+                            }
+                        }
                     }
                 }
             }
         }
-        out
-    }
-
-    /// Every param that currently has an expression binding, as `(uid, group, name, ExprRecord)` —
-    /// the before/after basis for detecting a client's expression edit.
-    fn expr_snapshot(&self) -> Vec<(String, String, String, ExprRecord)> {
-        let txn = self.doc.transact();
-        let mut out = Vec::new();
-        for uid in self.nodes.keys(&txn) {
-            let Some(node) = self.nodes.get(&txn, uid).and_then(|v| v.cast::<MapRef>().ok()) else {
-                continue;
-            };
-            let Some(params) = node.get(&txn, "params").and_then(|v| v.cast::<MapRef>().ok()) else {
-                continue;
-            };
-            for group in params.keys(&txn) {
-                let Some(g) = params.get(&txn, group).and_then(|v| v.cast::<MapRef>().ok()) else {
-                    continue;
-                };
-                for name in g.keys(&txn) {
-                    if let Some(e) = self.param_expr(uid, group, name) {
-                        out.push((uid.to_string(), group.to_string(), name.to_string(), e));
-                    }
-                }
+        if let Some(instances) = doc.get("instances").and_then(|v| v.as_object()) {
+            for (uid, inst) in instances {
+                positions.push((uid.clone(), [coord(inst, "x").unwrap_or(0.0), coord(inst, "y").unwrap_or(0.0)]));
             }
         }
-        out
-    }
-
-    /// Every node/instance position `(uid, [x, y])` currently in the doc — the before/after
-    /// basis for detecting a client's committed drag. Covers ROOT nodes and sub-patch instance
-    /// boxes (both carry a top-level `pos`); boundary positions are nested and handled via their
-    /// own RPC.
-    fn pos_snapshot(&self) -> Vec<(String, [f64; 2])> {
-        let mut out = Vec::new();
-        for uid in self.node_ids() {
-            if let Some(p) = self.node_pos(&uid) {
-                out.push((uid, p));
-            }
-        }
-        for uid in self.instance_ids() {
-            if let Some(r) = self.instance_record(&uid) {
-                out.push((uid, r.pos));
-            }
-        }
-        out
-    }
-
-    /// Every node's viewer blob `(uid, json)` currently in the doc — the before/after basis for
-    /// detecting a client's view-state edit. Compared as parsed JSON so key order is irrelevant.
-    fn viewers_snapshot(&self) -> Vec<(String, serde_json::Value)> {
-        let mut out = Vec::new();
-        for uid in self.node_ids() {
-            if let Some(v) = self.viewers_json(&uid) {
-                out.push((uid, v));
-            }
-        }
-        out
+        (params, positions, viewers, exprs)
     }
 
     /// Apply a client's incremental update to this replica and return the merge-safe leaves that
@@ -660,42 +478,27 @@ impl GraphDoc {
     /// manager's subsequent graph→doc re-mirror writes the same values, which yrs records as no
     /// change. `Err` only if the update bytes are malformed.
     pub fn apply_client_update(&mut self, update: &[u8]) -> Result<ClientChanges, String> {
-        let params_before: HashMap<(String, String, String), serde_json::Value> = self
-            .param_snapshot()
-            .into_iter()
-            .map(|(u, g, n, v)| ((u, g, n), v))
-            .collect();
-        let pos_before: HashMap<String, [f64; 2]> = self.pos_snapshot().into_iter().collect();
-        let viewers_before: HashMap<String, serde_json::Value> =
-            self.viewers_snapshot().into_iter().collect();
-        let expr_before: HashMap<(String, String, String), ExprRecord> = self
-            .expr_snapshot()
-            .into_iter()
-            .map(|(u, g, n, e)| ((u, g, n), e))
-            .collect();
+        let (params_b, pos_b, viewers_b, expr_b) = self.client_leaves();
+        let params_before: HashMap<(String, String, String), serde_json::Value> =
+            params_b.into_iter().map(|(u, g, n, v)| ((u, g, n), v)).collect();
+        let pos_before: HashMap<String, [f64; 2]> = pos_b.into_iter().collect();
+        let viewers_before: HashMap<String, serde_json::Value> = viewers_b.into_iter().collect();
+        let expr_before: HashMap<(String, String, String), ExprRecord> =
+            expr_b.into_iter().map(|(u, g, n, e)| ((u, g, n), e)).collect();
+
         self.apply_update(update)?;
-        let params = self
-            .param_snapshot()
+
+        let (params_a, pos_a, viewers_a, expr_a) = self.client_leaves();
+        let params = params_a
             .into_iter()
             .filter(|(u, g, n, v)| params_before.get(&(u.clone(), g.clone(), n.clone())) != Some(v))
             .collect();
-        let positions = self
-            .pos_snapshot()
-            .into_iter()
-            .filter(|(u, p)| pos_before.get(u) != Some(p))
-            .collect();
-        let viewers = self
-            .viewers_snapshot()
-            .into_iter()
-            .filter(|(u, v)| viewers_before.get(u) != Some(v))
-            .collect();
+        let positions = pos_a.into_iter().filter(|(u, p)| pos_before.get(u) != Some(p)).collect();
+        let viewers = viewers_a.into_iter().filter(|(u, v)| viewers_before.get(u) != Some(v)).collect();
         // Expressions: an added/edited binding appears in `after` with a value differing from
         // `before`; a CLEARED binding is a key in `before` no longer in `after` → reported as None.
-        let expr_after: HashMap<(String, String, String), ExprRecord> = self
-            .expr_snapshot()
-            .into_iter()
-            .map(|(u, g, n, e)| ((u, g, n), e))
-            .collect();
+        let expr_after: HashMap<(String, String, String), ExprRecord> =
+            expr_a.into_iter().map(|(u, g, n, e)| ((u, g, n), e)).collect();
         let mut expressions: Vec<(String, String, String, Option<ExprRecord>)> = Vec::new();
         for ((u, g, n), e) in &expr_after {
             if expr_before.get(&(u.clone(), g.clone(), n.clone())) != Some(e) {
@@ -752,6 +555,41 @@ impl Default for GraphDoc {
 mod tests {
     use super::*;
 
+    // ---- test shims: read leaves through the generic reader (the typed getters were removed) ----
+    // Numbers come back from `to_json` in shortest form (a whole f64 `30.0` reads as integer `30`),
+    // so numeric assertions compare via `as_f64`, not exact `json!` equality.
+    fn nstr(doc: &GraphDoc, uid: &str, key: &str) -> Option<String> {
+        doc.read_at(&["nodes", uid, key]).and_then(|v| v.as_str().map(String::from))
+    }
+    fn npos(doc: &GraphDoc, root: &str, uid: &str) -> Option<[f64; 2]> {
+        let x = doc.read_at(&[root, uid, "pos", "x"])?.as_f64()?;
+        let y = doc.read_at(&[root, uid, "pos", "y"])?.as_f64()?;
+        Some([x, y])
+    }
+    fn pval(doc: &GraphDoc, uid: &str, g: &str, n: &str) -> Option<serde_json::Value> {
+        doc.read_at(&["nodes", uid, "params", g, n, "value"])
+    }
+    fn pnum(doc: &GraphDoc, uid: &str, g: &str, n: &str) -> Option<f64> {
+        pval(doc, uid, g, n).and_then(|v| v.as_f64())
+    }
+    fn pexpr_src(doc: &GraphDoc, uid: &str, g: &str, n: &str) -> Option<String> {
+        doc.read_at(&["nodes", uid, "params", g, n, "expr", "source"])
+            .and_then(|v| v.as_str().map(String::from))
+    }
+    fn pexpr(doc: &GraphDoc, uid: &str, g: &str, n: &str) -> Option<ExprRecord> {
+        let e = doc.read_at(&["nodes", uid, "params", g, n, "expr"])?;
+        let source = e.get("source")?.as_str()?.to_string();
+        let flag = |k| e.get(k) == Some(&serde_json::Value::Bool(true));
+        Some(ExprRecord { source, enabled: flag("enabled"), triggers: flag("triggers") })
+    }
+    fn viewers(doc: &GraphDoc, uid: &str) -> Option<serde_json::Value> {
+        doc.read_at(&["nodes", uid, "viewers"])
+            .and_then(|v| v.as_str().and_then(|s| serde_json::from_str(s).ok()))
+    }
+    fn links(doc: &GraphDoc) -> Vec<serde_json::Value> {
+        doc.read_at(&["links"]).and_then(|v| v.as_array().cloned()).unwrap_or_default()
+    }
+
     #[test]
     fn a_fresh_doc_has_no_nodes() {
         let doc = GraphDoc::new();
@@ -762,14 +600,14 @@ mod tests {
     fn viewers_blob_and_links_round_trip() {
         use serde_json::json;
         // A node's viewers blob is a STRING leaf; build it via the generic reconciler and read it
-        // back through `viewers_json`, then exercise the (kept) wholesale link replace.
+        // back through the generic reader (parsing the string), then exercise the wholesale replace.
         let mut doc = GraphDoc::new();
         doc.reconcile_root(&json!({
             "nodes": { "1": { "type": "Oscillator", "name": "osc", "pos": {"x": 0.0, "y": 0.0},
                 "params": {}, "viewers": "{\"out\":{\"kind\":\"line\"}}" } },
             "links": [], "instances": {}
         }));
-        assert_eq!(doc.viewers_json("1"), Some(json!({"out": {"kind": "line"}})));
+        assert_eq!(viewers(&doc, "1"), Some(json!({"out": {"kind": "line"}})));
 
         doc.replace_links(vec![LinkRecord {
             node_out: "1".into(),
@@ -777,10 +615,10 @@ mod tests {
             node_in: "2".into(),
             slot_in: "data".into(),
         }]);
-        assert_eq!(doc.links().len(), 1);
-        assert_eq!(doc.links()[0].slot_in, "data");
+        assert_eq!(links(&doc).len(), 1);
+        assert_eq!(links(&doc)[0]["slot_in"], json!("data"));
         doc.replace_links(vec![]);
-        assert!(doc.links().is_empty());
+        assert!(links(&doc).is_empty());
     }
 
     #[test]
@@ -806,7 +644,7 @@ mod tests {
         // A real change (an added link) still applies.
         doc.replace_links(vec![l("1", "2"), l("2", "3"), l("3", "4")]);
         assert!(!doc.is_empty_diff(&doc.diff(&sv)), "a real link change produces a delta");
-        assert_eq!(doc.links().len(), 3);
+        assert_eq!(links(&doc).len(), 3);
         // Order matters — a reordering is a real change.
         let sv2 = doc.state_vector();
         doc.replace_links(vec![l("3", "4"), l("1", "2"), l("2", "3")]);
@@ -829,7 +667,7 @@ mod tests {
         let bytes = doc.encode_state();
         let copy = GraphDoc::from_update(&bytes);
         assert_eq!(copy.node_ids(), vec!["2"]);
-        assert_eq!(copy.node_name("2").as_deref(), Some("buf"));
+        assert_eq!(nstr(&copy, "2", "name").as_deref(), Some("buf"));
     }
 
     #[test]
@@ -847,13 +685,13 @@ mod tests {
         let diff = server.diff(&client.state_vector());
         let mut client = client;
         client.apply_update(&diff).unwrap();
-        assert_eq!(client.node_name("1").as_deref(), Some("osc"), "client converged via diff");
+        assert_eq!(nstr(&client, "1", "name").as_deref(), Some("osc"), "client converged via diff");
 
         // A later incremental edit on the server produces a small diff the client applies.
         server.reconcile_root(&node("osc2"));
         let diff2 = server.diff(&client.state_vector());
         client.apply_update(&diff2).unwrap();
-        assert_eq!(client.node_name("1").as_deref(), Some("osc2"));
+        assert_eq!(nstr(&client, "1", "name").as_deref(), Some("osc2"));
     }
 
     #[test]
@@ -893,7 +731,7 @@ mod tests {
         for m in to_client {
             client.on_sync(m);
         }
-        assert_eq!(client.node_name("1").as_deref(), Some("osc"), "client converged via on_sync");
+        assert_eq!(nstr(&client, "1", "name").as_deref(), Some("osc"), "client converged via on_sync");
 
         // A live server edit, relayed as one Update, lands on the client. reconcile_root is
         // wholesale, so add node 2 while KEEPING node 1 (omitting it would prune it).
@@ -903,7 +741,7 @@ mod tests {
             "links": [], "instances": {} }));
         let live = server.diff(&client.state_vector());
         client.on_sync(SyncMsg::Update(live));
-        assert_eq!(client.node_name("2").as_deref(), Some("buf"));
+        assert_eq!(nstr(&client, "2", "name").as_deref(), Some("buf"));
     }
 
     #[test]
@@ -941,10 +779,15 @@ mod tests {
 
         // The manager applies it and is told precisely what changed.
         let changed = server.apply_client_update(&update).unwrap();
-        assert_eq!(changed.params, vec![("1".into(), "common".into(), "max_frequency".into(), json!(25.0))]);
+        // The changed value is reported in `to_json`'s shortest-number form (whole 25.0 → `25`), so
+        // check the tuple identity and the value numerically rather than by exact `json!` equality.
+        assert_eq!(changed.params.len(), 1);
+        let (u, g, n, v) = &changed.params[0];
+        assert_eq!((u.as_str(), g.as_str(), n.as_str()), ("1", "common", "max_frequency"));
+        assert_eq!(v.as_f64(), Some(25.0));
         assert!(changed.positions.is_empty(), "no node moved");
-        assert_eq!(server.param_value("1", "common", "max_frequency"), Some(json!(25.0)), "doc updated");
-        assert_eq!(server.param_value("1", "oscillator", "amplitude"), Some(json!(1.0)), "untouched param unchanged");
+        assert_eq!(pnum(&server, "1", "common", "max_frequency"), Some(25.0), "doc updated");
+        assert_eq!(pnum(&server, "1", "oscillator", "amplitude"), Some(1.0), "untouched param unchanged");
 
         // Re-applying the SAME update reports no further changes (idempotent, no phantom loop).
         assert!(server.apply_client_update(&update).unwrap().is_empty());
@@ -974,7 +817,7 @@ mod tests {
         }));
         // A shared instance's def_id round-trips through the generic reconciler + reader.
         assert_eq!(
-            server.instance_record("00000000000000ff").unwrap().def_id.as_deref(),
+            server.read_at(&["instances", "00000000000000ff", "def_id"]).as_ref().and_then(|v| v.as_str()),
             Some("00000000000000aa")
         );
 
@@ -992,8 +835,8 @@ mod tests {
             vec![("00000000000000ff".into(), [30.0, 40.0]), ("1".into(), [100.0, 200.0])]
         );
         assert!(changed.params.is_empty(), "no param changed");
-        assert_eq!(server.node_pos("1"), Some([100.0, 200.0]), "doc updated");
-        assert_eq!(server.node_pos("2"), Some([5.0, 5.0]), "untouched node unchanged");
+        assert_eq!(npos(&server, "nodes", "1"), Some([100.0, 200.0]), "doc updated");
+        assert_eq!(npos(&server, "nodes", "2"), Some([5.0, 5.0]), "untouched node unchanged");
 
         // Idempotent: re-applying reports nothing further.
         assert!(server.apply_client_update(&update).unwrap().is_empty());
@@ -1042,10 +885,10 @@ mod tests {
         );
         assert!(changed.params.is_empty(), "values unchanged");
         assert_eq!(
-            server.param_expr("1", "common", "frequency"),
+            pexpr(&server, "1", "common", "frequency"),
             Some(ExprRecord { source: "nd('f')".into(), enabled: true, triggers: true })
         );
-        assert_eq!(server.param_expr("1", "common", "amplitude"), None, "binding cleared");
+        assert_eq!(pexpr(&server, "1", "common", "amplitude"), None, "binding cleared");
 
         // Idempotent.
         assert!(server.apply_client_update(&update).unwrap().expressions.is_empty());
@@ -1078,7 +921,7 @@ mod tests {
         );
         assert!(changed.params.is_empty() && changed.positions.is_empty(), "only viewers changed");
         assert_eq!(
-            server.viewers_json("1"),
+            viewers(&server, "1"),
             Some(json!({"out": {"kind": "spectrum", "collapsed": true}}))
         );
 
@@ -1117,9 +960,9 @@ mod tests {
         };
         client.apply_update(&full).unwrap();
         assert_eq!(client.node_ids().len(), 2, "gapped node arrived");
-        assert_eq!(client.node_name("1").as_deref(), Some("renamed"), "dependent change resolved");
-        assert_eq!(client.node_name("2").as_deref(), Some("buf"));
-        assert_eq!(client.param_value("1", "common", "max_frequency"), Some(json!(50.0)));
+        assert_eq!(nstr(&client, "1", "name").as_deref(), Some("renamed"), "dependent change resolved");
+        assert_eq!(nstr(&client, "2", "name").as_deref(), Some("buf"));
+        assert_eq!(pnum(&client, "1", "common", "max_frequency"), Some(50.0));
     }
 
     // ---- generic reconcile_root: the single writer that subsumes the typed writer zoo ----
@@ -1160,27 +1003,33 @@ mod tests {
         let mut doc = GraphDoc::new();
         doc.reconcile_root(&full_projection());
 
-        // Nodes + identity + params (value AND binding) + viewers, via the existing readers.
+        // Nodes + identity + params (value AND binding) + viewers, via the generic reader.
         assert_eq!(doc.node_ids().len(), 2);
-        assert_eq!(doc.node_type("1").as_deref(), Some("Oscillator"));
-        assert_eq!(doc.node_name("1").as_deref(), Some("osc"));
-        assert_eq!(doc.node_pos("1"), Some([10.0, 20.0]));
-        assert_eq!(doc.param_value("1", "common", "max_frequency"), Some(json!(30.0)));
-        assert_eq!(doc.param_value("1", "oscillator", "waveform"), Some(json!("sine")));
-        assert_eq!(doc.param_expr_source("1", "oscillator", "waveform").as_deref(), Some("nd('lfo')"));
-        assert_eq!(doc.viewers_json("1"), Some(json!({"out": {"kind": "line"}})));
+        assert_eq!(nstr(&doc, "1", "type").as_deref(), Some("Oscillator"));
+        assert_eq!(nstr(&doc, "1", "name").as_deref(), Some("osc"));
+        assert_eq!(npos(&doc, "nodes", "1"), Some([10.0, 20.0]));
+        assert_eq!(pnum(&doc, "1", "common", "max_frequency"), Some(30.0));
+        assert_eq!(pval(&doc, "1", "oscillator", "waveform"), Some(json!("sine")));
+        assert_eq!(pexpr_src(&doc, "1", "oscillator", "waveform").as_deref(), Some("nd('lfo')"));
+        assert_eq!(viewers(&doc, "1"), Some(json!({"out": {"kind": "line"}})));
         // Links.
-        assert_eq!(doc.links().len(), 1);
-        assert_eq!(doc.links()[0].node_in, "2");
-        // The sub-patch forest.
-        let rec = doc.instance_record("i1").expect("instance mirrored");
-        assert_eq!(rec.parent, "__root__");
-        assert_eq!(rec.pos, [5.0, 6.0]);
-        assert_eq!(rec.def_id, None);
-        assert_eq!(rec.members, vec![("buffer0".to_string(), "2".to_string())]);
-        let out = rec.interface.iter().find(|b| b.dir == "out").expect("output boundary");
-        assert_eq!(out.inner_node.as_deref(), Some("2"));
-        assert_eq!(out.inner_slot.as_deref(), Some("out"));
+        assert_eq!(links(&doc).len(), 1);
+        assert_eq!(links(&doc)[0]["node_in"], json!("2"));
+        // The sub-patch forest — read the instance object from the generic reader.
+        let j = doc.to_json();
+        let rec = &j["instances"]["i1"];
+        assert_eq!(rec["parent"], json!("__root__"));
+        assert_eq!(npos(&doc, "instances", "i1"), Some([5.0, 6.0]));
+        assert!(rec.get("def_id").is_none(), "a unique instance omits def_id");
+        assert_eq!(rec["members"], json!({ "buffer0": "2" }));
+        let out = rec["interface"]
+            .as_object()
+            .unwrap()
+            .values()
+            .find(|b| b["dir"] == json!("out"))
+            .expect("output boundary");
+        assert_eq!(out["inner_node"], json!("2"));
+        assert_eq!(out["inner_slot"], json!("out"));
     }
 
     #[test]
@@ -1217,7 +1066,7 @@ mod tests {
         use serde_json::json;
         let mut doc = GraphDoc::new();
         doc.reconcile_root(&full_projection());
-        assert!(doc.param_expr_source("1", "oscillator", "waveform").is_some());
+        assert!(pexpr_src(&doc, "1", "oscillator", "waveform").is_some());
 
         // A shrunk projection: node 2 gone, node 1's expr binding cleared, the instance's member
         // dropped, and the instance itself removed. Every stale key must be pruned.
@@ -1229,9 +1078,9 @@ mod tests {
         });
         doc.reconcile_root(&shrunk);
         assert_eq!(doc.node_ids(), vec!["1"], "node 2 pruned");
-        assert_eq!(doc.param_expr_source("1", "oscillator", "waveform"), None, "cleared binding pruned");
-        assert!(doc.param_value("1", "common", "max_frequency").is_none(), "removed param group pruned");
-        assert!(doc.links().is_empty(), "links cleared");
+        assert_eq!(pexpr_src(&doc, "1", "oscillator", "waveform"), None, "cleared binding pruned");
+        assert!(pval(&doc, "1", "common", "max_frequency").is_none(), "removed param group pruned");
+        assert!(links(&doc).is_empty(), "links cleared");
         assert!(doc.instance_ids().is_empty(), "instance pruned");
     }
 
@@ -1258,8 +1107,8 @@ mod tests {
         server.reconcile_root(&proj(30.0));
         server.apply_update(&edit).unwrap();
         assert_eq!(
-            server.param_value("1", "common", "max_frequency"),
-            Some(json!(99.0)),
+            pnum(&server, "1", "common", "max_frequency"),
+            Some(99.0),
             "the concurrent param leaf-write survives the intervening re-mirror"
         );
     }
@@ -1300,7 +1149,7 @@ mod tests {
         doc.reconcile_root(&full_projection());
         // A client edits one param value — the single-path counterpart of reconcile_root.
         doc.write_at(&["nodes", "1", "params", "common", "max_frequency", "value"], Some(&json!(42.0)));
-        assert_eq!(doc.param_value("1", "common", "max_frequency"), Some(json!(42.0)));
+        assert_eq!(pnum(&doc, "1", "common", "max_frequency"), Some(42.0));
         // Idempotent: re-writing the same value is a no-op.
         let sv = doc.state_vector();
         doc.write_at(&["nodes", "1", "params", "common", "max_frequency", "value"], Some(&json!(42.0)));
@@ -1317,10 +1166,10 @@ mod tests {
             &["nodes", "1", "params", "common", "max_frequency", "expr"],
             Some(&json!({ "source": "nd('x')", "enabled": true, "triggers": false })),
         );
-        assert_eq!(doc.param_expr_source("1", "common", "max_frequency").as_deref(), Some("nd('x')"));
+        assert_eq!(pexpr_src(&doc, "1", "common", "max_frequency").as_deref(), Some("nd('x')"));
         // Clear it with None — the key is removed.
         doc.write_at(&["nodes", "1", "params", "common", "max_frequency", "expr"], None);
-        assert_eq!(doc.param_expr_source("1", "common", "max_frequency"), None);
+        assert_eq!(pexpr_src(&doc, "1", "common", "max_frequency"), None);
     }
 
     #[test]
@@ -1329,9 +1178,9 @@ mod tests {
         let mut doc = GraphDoc::new();
         doc.reconcile_root(&full_projection());
         doc.write_at(&["nodes", "1", "pos"], Some(&json!({ "x": 111.0, "y": 222.0 })));
-        assert_eq!(doc.node_pos("1"), Some([111.0, 222.0]));
+        assert_eq!(npos(&doc, "nodes", "1"), Some([111.0, 222.0]));
         doc.write_at(&["instances", "i1", "pos"], Some(&json!({ "x": 7.0, "y": 8.0 })));
-        assert_eq!(doc.instance_record("i1").unwrap().pos, [7.0, 8.0]);
+        assert_eq!(npos(&doc, "instances", "i1"), Some([7.0, 8.0]));
     }
 
     #[test]

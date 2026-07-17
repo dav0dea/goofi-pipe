@@ -121,15 +121,24 @@ mod tests {
         let mut doc = GraphDoc::new();
         sync_graph_to_doc(&g, &mut doc);
 
+        // Read leaves through the generic reader (the typed getters were removed); whole-number
+        // params come back as integers from `to_json`, so the value compares via `as_f64`.
+        let ah = a.to_hex();
+        let bh = b.to_hex();
         assert_eq!(doc.node_ids().len(), 2);
-        assert_eq!(doc.node_name(&a.to_hex()).as_deref(), Some("osc"));
-        assert_eq!(doc.node_type(&a.to_hex()).as_deref(), Some("Oscillator"));
+        assert_eq!(doc.read_at(&["nodes", ah.as_str(), "name"]).as_ref().and_then(|v| v.as_str()), Some("osc"));
         assert_eq!(
-            doc.param_value(&a.to_hex(), "common", "max_frequency"),
-            Some(serde_json::json!(30.0))
+            doc.read_at(&["nodes", ah.as_str(), "type"]).as_ref().and_then(|v| v.as_str()),
+            Some("Oscillator")
         );
-        assert_eq!(doc.links().len(), 1);
-        assert_eq!(doc.links()[0].node_in, b.to_hex());
+        assert_eq!(
+            doc.read_at(&["nodes", ah.as_str(), "params", "common", "max_frequency", "value"])
+                .and_then(|v| v.as_f64()),
+            Some(30.0)
+        );
+        let j = doc.to_json();
+        assert_eq!(j["links"].as_array().unwrap().len(), 1);
+        assert_eq!(j["links"][0]["node_in"].as_str(), Some(bh.as_str()));
     }
 
     #[test]
@@ -150,15 +159,27 @@ mod tests {
         sync_graph_to_doc(&g, &mut doc);
 
         assert_eq!(doc.instance_ids(), vec![inst.to_hex()]);
-        let rec = doc.instance_record(&inst.to_hex()).expect("instance mirrored");
-        assert_eq!(rec.parent, ROOT_ID, "top-level instance parents to ROOT");
-        assert_eq!(rec.pos, [5.0, 6.0]);
-        assert_eq!(rec.def_id, None, "single reference ⇒ unique");
-        assert!(rec.members.iter().any(|(_, u)| *u == buf.to_hex()), "buf is a member");
+        // Read the mirrored instance object through the generic reader.
+        let ih = inst.to_hex();
+        let bh = buf.to_hex();
+        let j = doc.to_json();
+        let rec = &j["instances"][ih.as_str()];
+        assert_eq!(rec["parent"].as_str(), Some(ROOT_ID), "top-level instance parents to ROOT");
+        assert_eq!((rec["pos"]["x"].as_f64(), rec["pos"]["y"].as_f64()), (Some(5.0), Some(6.0)));
+        assert!(rec.get("def_id").is_none(), "single reference ⇒ unique");
+        assert!(
+            rec["members"].as_object().unwrap().values().any(|v| v.as_str() == Some(bh.as_str())),
+            "buf is a member"
+        );
         // The output boundary resolves to the inner buffer leaf.
-        let out = rec.interface.iter().find(|b| b.dir == "out").expect("output boundary");
-        assert_eq!(out.inner_node.as_deref(), Some(buf.to_hex()).as_deref());
-        assert_eq!(out.inner_slot.as_deref(), Some("out"));
+        let out = rec["interface"]
+            .as_object()
+            .unwrap()
+            .values()
+            .find(|b| b["dir"].as_str() == Some("out"))
+            .expect("output boundary");
+        assert_eq!(out["inner_node"].as_str(), Some(bh.as_str()));
+        assert_eq!(out["inner_slot"].as_str(), Some("out"));
 
         // Expanding the instance removes it from the doc forest.
         g.expand_instance(inst).unwrap();

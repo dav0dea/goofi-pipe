@@ -16,6 +16,17 @@ type Ws = tokio_tungstenite::WebSocketStream<
     tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
 >;
 
+// Read leaves through the generic CRDT reader (the typed getters were removed). A whole-number
+// param comes back as an integer from `to_json`, so numeric reads compare via `as_f64`.
+fn doc_param_f64(doc: &goofi_crdt::GraphDoc, uid: &str, group: &str, name: &str) -> Option<f64> {
+    doc.read_at(&["nodes", uid, "params", group, name, "value"]).and_then(|v| v.as_f64())
+}
+fn doc_node_pos(doc: &goofi_crdt::GraphDoc, uid: &str) -> Option<[f64; 2]> {
+    let x = doc.read_at(&["nodes", uid, "pos", "x"])?.as_f64()?;
+    let y = doc.read_at(&["nodes", uid, "pos", "y"])?.as_f64()?;
+    Some([x, y])
+}
+
 async fn start_server() -> String {
     let state = AppState::new();
     spawn_tick(state.graph.clone());
@@ -565,7 +576,11 @@ async fn a_client_replica_converges_via_the_binary_sync_relay() {
         }
         if let Some(u) = &uid {
             if client.node_ids().contains(u) {
-                assert_eq!(client.node_type(u).as_deref(), Some("Oscillator"), "delta carried the node");
+                assert_eq!(
+                    client.read_at(&["nodes", u.as_str(), "type"]).as_ref().and_then(|v| v.as_str()),
+                    Some("Oscillator"),
+                    "delta carried the node"
+                );
                 return;
             }
         }
@@ -683,7 +698,7 @@ async fn a_client_leaf_write_reaches_the_graph_and_other_clients() {
             if let Some(m) = SyncMsg::decode(&b) {
                 rdoc.on_sync(m);
             }
-            if rdoc.param_value(&osc, "common", "max_frequency") == Some(json!(12.0)) {
+            if doc_param_f64(&rdoc, &osc, "common", "max_frequency") == Some(12.0) {
                 return true;
             }
         }
@@ -736,7 +751,7 @@ async fn a_client_position_leaf_write_reaches_the_graph_and_other_clients() {
             if let Some(m) = SyncMsg::decode(&b) {
                 rdoc.on_sync(m);
             }
-            if rdoc.node_pos(&osc) == Some([123.0, 456.0]) {
+            if doc_node_pos(&rdoc, &osc) == Some([123.0, 456.0]) {
                 return true;
             }
         }
@@ -799,7 +814,7 @@ async fn crdt_doc_tracks_an_rpc_node_add_and_param_edit() {
                     sent_param = true;
                 }
                 if client.node_ids().contains(&o)
-                    && client.param_value(&o, "common", "max_frequency") == Some(json!(25.0))
+                    && doc_param_f64(&client, &o, "common", "max_frequency") == Some(25.0)
                 {
                     return true;
                 }
@@ -1416,7 +1431,7 @@ async fn many_clients_concurrently_leaf_write_and_all_converge() {
         }
         if uids
             .iter()
-            .all(|u| rdoc.param_value(u, "common", "max_frequency") == Some(json!(ROUNDS as f64)))
+            .all(|u| doc_param_f64(&rdoc, u, "common", "max_frequency") == Some(ROUNDS as f64))
         {
             converged = true;
             break;
@@ -1425,7 +1440,7 @@ async fn many_clients_concurrently_leaf_write_and_all_converge() {
     if !converged {
         let got: Vec<_> = uids
             .iter()
-            .map(|u| rdoc.param_value(u, "common", "max_frequency"))
+            .map(|u| doc_param_f64(&rdoc, u, "common", "max_frequency"))
             .collect();
         panic!("not converged; final max_frequency per node = {got:?}");
     }
@@ -1518,13 +1533,13 @@ async fn many_clients_concurrently_drag_and_all_converge() {
             Ok(_) => break,
             Err(_) => {}
         }
-        if uids.iter().all(|u| rdoc.node_pos(u) == Some([ROUNDS as f64, ROUNDS as f64])) {
+        if uids.iter().all(|u| doc_node_pos(&rdoc, u) == Some([ROUNDS as f64, ROUNDS as f64])) {
             converged = true;
             break;
         }
     }
     if !converged {
-        let got: Vec<_> = uids.iter().map(|u| rdoc.node_pos(u)).collect();
+        let got: Vec<_> = uids.iter().map(|u| doc_node_pos(&rdoc, u)).collect();
         panic!("not converged; final position per node = {got:?}");
     }
 }
