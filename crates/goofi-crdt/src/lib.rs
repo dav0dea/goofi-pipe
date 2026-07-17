@@ -3,7 +3,7 @@
 //! engine `Graph`; it is the sync structure clients will later replicate. Pure: depends
 //! only on `yrs` + `serde_json`, no engine/payload types.
 
-use yrs::{Any, Doc, Map, MapPrelim, MapRef, Out, Transact};
+use yrs::{Any, Array, ArrayRef, Doc, Map, MapPrelim, MapRef, Out, Transact};
 
 /// An expression binding as mirrored into the doc.
 #[derive(Clone, Debug, PartialEq)]
@@ -11,6 +11,15 @@ pub struct ExprRecord {
     pub source: String,
     pub enabled: bool,
     pub triggers: bool,
+}
+
+/// A link as mirrored into the doc (hex uids + slot names).
+#[derive(Clone, Debug, PartialEq)]
+pub struct LinkRecord {
+    pub node_out: String,
+    pub slot_out: String,
+    pub node_in: String,
+    pub slot_in: String,
 }
 
 /// Insert a scalar json value (number/bool/string; anything else → Null) into a yrs map.
@@ -44,13 +53,15 @@ fn get_or_insert_map(parent: &MapRef, txn: &mut yrs::TransactionMut, key: &str) 
 pub struct GraphDoc {
     doc: Doc,
     nodes: MapRef,
+    links: ArrayRef,
 }
 
 impl GraphDoc {
     pub fn new() -> GraphDoc {
         let doc = Doc::new();
         let nodes = doc.get_or_insert_map("nodes");
-        GraphDoc { doc, nodes }
+        let links = doc.get_or_insert_array("links");
+        GraphDoc { doc, nodes, links }
     }
 
     /// The uids of all nodes currently in the doc.
@@ -166,6 +177,54 @@ impl GraphDoc {
             _ => None,
         }
     }
+
+    /// Store a node's opaque per-slot viewer blob as a JSON string (typed in a later phase).
+    pub fn set_viewers(&mut self, uid: &str, viewers: &serde_json::Value) {
+        let mut txn = self.doc.transact_mut();
+        if let Some(node) = self.nodes.get(&txn, uid).and_then(|v| v.cast::<MapRef>().ok()) {
+            node.insert(&mut txn, "viewers", viewers.to_string());
+        }
+    }
+
+    pub fn viewers_json(&self, uid: &str) -> Option<serde_json::Value> {
+        let txn = self.doc.transact();
+        match self.node_map(&txn, uid)?.get(&txn, "viewers") {
+            Some(Out::Any(Any::String(s))) => serde_json::from_str(&s).ok(),
+            _ => None,
+        }
+    }
+
+    /// Replace the whole link set (Phase 1 mirror is wholesale; incremental comes later).
+    pub fn replace_links(&mut self, links: Vec<LinkRecord>) {
+        let mut txn = self.doc.transact_mut();
+        let len = self.links.len(&txn);
+        self.links.remove_range(&mut txn, 0, len);
+        for l in links {
+            let m: MapRef = self.links.push_back(&mut txn, MapPrelim::default());
+            m.insert(&mut txn, "node_out", l.node_out.as_str());
+            m.insert(&mut txn, "slot_out", l.slot_out.as_str());
+            m.insert(&mut txn, "node_in", l.node_in.as_str());
+            m.insert(&mut txn, "slot_in", l.slot_in.as_str());
+        }
+    }
+
+    pub fn links(&self) -> Vec<LinkRecord> {
+        let txn = self.doc.transact();
+        let s = |m: &MapRef, k| match m.get(&txn, k) {
+            Some(Out::Any(Any::String(v))) => v.to_string(),
+            _ => String::new(),
+        };
+        self.links
+            .iter(&txn)
+            .filter_map(|v| v.cast::<MapRef>().ok())
+            .map(|m| LinkRecord {
+                node_out: s(&m, "node_out"),
+                slot_out: s(&m, "slot_out"),
+                node_in: s(&m, "node_in"),
+                slot_in: s(&m, "slot_in"),
+            })
+            .collect()
+    }
 }
 
 impl Default for GraphDoc {
@@ -211,5 +270,25 @@ mod tests {
         assert_eq!(doc.param_value("1", "oscillator", "waveform"), Some(json!("sine")));
         assert_eq!(doc.param_expr_source("1", "oscillator", "waveform").as_deref(), Some("nd('lfo')"));
         assert_eq!(doc.param_expr_source("1", "common", "max_frequency"), None);
+    }
+
+    #[test]
+    fn viewers_blob_and_links_round_trip() {
+        use serde_json::json;
+        let mut doc = GraphDoc::new();
+        doc.upsert_node("1", "Oscillator", "osc", [0.0, 0.0]);
+        doc.set_viewers("1", &json!({"out": {"kind": "line"}}));
+        assert_eq!(doc.viewers_json("1"), Some(json!({"out": {"kind": "line"}})));
+
+        doc.replace_links(vec![LinkRecord {
+            node_out: "1".into(),
+            slot_out: "out".into(),
+            node_in: "2".into(),
+            slot_in: "data".into(),
+        }]);
+        assert_eq!(doc.links().len(), 1);
+        assert_eq!(doc.links()[0].slot_in, "data");
+        doc.replace_links(vec![]);
+        assert!(doc.links().is_empty());
     }
 }
