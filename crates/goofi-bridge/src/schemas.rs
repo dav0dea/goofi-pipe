@@ -121,12 +121,13 @@ pub fn expression_value_map(g: &Graph, uid: Uid) -> Value {
     Value::Object(groups)
 }
 
+/// Project `(slot_name, dtype_name)` pairs into a `{name: dtype}` JSON object — shared by
+/// [`input_slots`] / [`output_slots`], whose only difference was the source collection.
+fn slot_map<'a>(slots: impl Iterator<Item = (&'a str, &'a str)>) -> Value {
+    Value::Object(slots.map(|(name, dtype)| (name.to_string(), json!(dtype))).collect())
+}
 fn input_slots(m: &NodeManifest) -> Value {
-    let mut o = Map::new();
-    for s in m.inputs {
-        o.insert(s.name.to_string(), json!(s.kind.name()));
-    }
-    Value::Object(o)
+    slot_map(m.inputs.iter().map(|s| (s.name, s.kind.name())))
 }
 
 /// The names of the node type's `multi` (variadic) input slots — static shape the
@@ -136,11 +137,7 @@ fn input_multi(m: &NodeManifest) -> Value {
     Value::Array(m.inputs.iter().filter(|s| s.multi).map(|s| json!(s.name)).collect())
 }
 fn output_slots(m: &NodeManifest) -> Value {
-    let mut o = Map::new();
-    for s in m.outputs {
-        o.insert(s.name.to_string(), json!(s.kind.name()));
-    }
-    Value::Object(o)
+    slot_map(m.outputs.iter().map(|s| (s.name, s.kind.name())))
 }
 
 pub fn node_type_info(m: &NodeManifest) -> Value {

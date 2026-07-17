@@ -445,6 +445,13 @@ fn parse_uid(payload: &Value, key: &str) -> Result<Uid, String> {
         .ok_or_else(|| format!("missing/invalid uid `{key}`"))
 }
 
+/// A required string field from an RPC payload, erroring `missing {key}` if absent or non-string —
+/// the sibling of [`parse_uid`] for plain string args. (The op is recoverable from the request, so
+/// the error needs no per-op prefix.)
+fn parse_str<'a>(payload: &'a Value, key: &str) -> Result<&'a str, String> {
+    payload.get(key).and_then(|v| v.as_str()).ok_or_else(|| format!("missing {key}"))
+}
+
 fn parse_slot_type(s: &str) -> Option<goofi_core::SlotType> {
     match s {
         "ARRAY" => Some(goofi_core::SlotType::Array),
@@ -598,8 +605,8 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
             // re-mirrors like the structural RPCs, so it carries no lost-update risk.
             "update_param" => {
                 let uid = parse_uid(&payload, "node")?;
-                let group = payload.get("group").and_then(|v| v.as_str()).ok_or("missing group")?;
-                let name = payload.get("name").and_then(|v| v.as_str()).ok_or("missing name")?;
+                let group = parse_str(&payload, "group")?;
+                let name = parse_str(&payload, "name")?;
                 let vjson = payload.get("value").ok_or("missing value")?;
                 let existing = g
                     .params(uid)
@@ -624,7 +631,7 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
             // (`apply_client_write` → `set_member_pos` / `set_node_viewers`).
             "rename_node" => {
                 let uid = parse_uid(&payload, "node")?;
-                let name = payload.get("name").and_then(|v| v.as_str()).ok_or("missing name")?;
+                let name = parse_str(&payload, "name")?;
                 let referrers = g.rename_node(uid, name)?;
                 events.push(event("node_renamed", json!({ "node": uid.to_hex(), "name": name })));
                 // Any expression that referenced the old name was rewritten to nd('new'):
@@ -670,31 +677,31 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
             }
             "wire_boundary" => {
                 let inst = parse_uid(&payload, "inst_id")?;
-                let bnd = payload.get("bnd_id").and_then(|v| v.as_str()).ok_or("wire_boundary: missing bnd_id")?;
+                let bnd = parse_str(&payload, "bnd_id")?;
                 let inner = parse_uid(&payload, "inner_node")?;
-                let slot = payload.get("inner_slot").and_then(|v| v.as_str()).ok_or("wire_boundary: missing inner_slot")?;
+                let slot = parse_str(&payload, "inner_slot")?;
                 g.wire_boundary(inst, bnd, inner, slot)?;
                 events.push(event("subpatch_changed", schemas::snapshot(&g, &state.instance_id, false)));
                 Ok(json!({ "ok": true }))
             }
             "remove_boundary" => {
                 let inst = parse_uid(&payload, "inst_id")?;
-                let bnd = payload.get("bnd_id").and_then(|v| v.as_str()).ok_or("remove_boundary: missing bnd_id")?;
+                let bnd = parse_str(&payload, "bnd_id")?;
                 g.remove_boundary(inst, bnd)?;
                 events.push(event("subpatch_changed", schemas::snapshot(&g, &state.instance_id, false)));
                 Ok(json!({ "ok": true }))
             }
             "rename_boundary" => {
                 let inst = parse_uid(&payload, "inst_id")?;
-                let bnd = payload.get("bnd_id").and_then(|v| v.as_str()).ok_or("rename_boundary: missing bnd_id")?;
-                let name = payload.get("name").and_then(|v| v.as_str()).ok_or("rename_boundary: missing name")?;
+                let bnd = parse_str(&payload, "bnd_id")?;
+                let name = parse_str(&payload, "name")?;
                 g.rename_boundary(inst, bnd, name)?;
                 events.push(event("subpatch_changed", schemas::snapshot(&g, &state.instance_id, false)));
                 Ok(json!({ "ok": true }))
             }
             "set_boundary_pos" => {
                 let inst = parse_uid(&payload, "inst_id")?;
-                let bnd = payload.get("bnd_id").and_then(|v| v.as_str()).ok_or("set_boundary_pos: missing bnd_id")?;
+                let bnd = parse_str(&payload, "bnd_id")?;
                 let pos = payload.get("pos").and_then(parse_pos).ok_or("set_boundary_pos: missing pos")?;
                 g.set_boundary_pos(inst, bnd, pos)?;
                 events.push(event("boundary_moved", json!({ "inst_id": inst.to_hex(), "bnd_id": bnd, "pos": pos })));
