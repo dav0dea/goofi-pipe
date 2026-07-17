@@ -5,7 +5,7 @@
 //! `--subproc-nodes DIR` (discover isolated-GIL subprocess Python nodes, runs on
 //! `--subproc-python` (default `python3`)).
 
-use goofi_bridge::{resolve_frontend_dir, serve_app, spawn_tick, AppState};
+use goofi_bridge::{resolve_frontend_dir, serve_app, spawn_workers, AppState};
 
 #[tokio::main]
 async fn main() {
@@ -77,7 +77,7 @@ async fn main() {
     register_python(&state, python_nodes.as_deref());
     register_subproc(&state, subproc_nodes.as_deref(), &subproc_python);
     register_auto(&state, auto_nodes.as_deref(), &subproc_python);
-    spawn_tick(state.graph.clone());
+    spawn_workers(&state); // adaptive tick loop + 2 Hz node-stats (header ufreq + error transitions)
 
     let listener = match tokio::net::TcpListener::bind((bind.as_str(), port)).await {
         Ok(l) => l,

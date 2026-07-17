@@ -6,7 +6,7 @@
 use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
-use goofi_bridge::{serve_listener, spawn_tick, AppState};
+use goofi_bridge::{serve_listener, spawn_tick, spawn_workers, AppState};
 use goofi_view::Reducible; // shape()/ndim() accessors on a decoded frame
 use serde_json::{json, Value};
 use tokio_tungstenite::connect_async;
@@ -517,6 +517,48 @@ async fn group_and_expand_project_the_instance_forest() {
         "instance gone after expand");
     let osc_after = snap2["payload"]["nodes"].as_array().unwrap().iter().find(|n| n["uid"] == json!(osc)).unwrap();
     assert_eq!(osc_after["membership"]["instance"], "__root__", "member back at ROOT");
+}
+
+#[tokio::test]
+async fn node_stats_broadcasts_the_measured_ufreq() {
+    // Regression: `spawn_workers` (what the binary runs at startup) must wire `spawn_stats`,
+    // else the node header never shows a live update rate — the `node_stats` producer was
+    // orphaned in the now-removed `serve()` and the CLI called only `spawn_tick`.
+    let state = AppState::new();
+    spawn_workers(&state); // tick loop + 2 Hz stats, exactly as the CLI startup does
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        serve_listener(listener, state).await.unwrap();
+    });
+    let base = format!("ws://{addr}");
+
+    let (mut ws, _) = connect_async(format!("{base}/control")).await.unwrap();
+    let _hello = recv_text(&mut ws).await;
+    // A free-running source measures a ufreq after a few ticks.
+    let src = call(&mut ws, 1, "add_node", json!({ "type": "Oscillator" })).await["result"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // Within a few 2 Hz stats periods a `node_stats` for the source arrives carrying its rate.
+    let stats = tokio::time::timeout(Duration::from_secs(8), async {
+        loop {
+            let m = recv_text(&mut ws).await;
+            if m.get("event").and_then(|v| v.as_str()) == Some("node_stats")
+                && m["payload"]["node"] == json!(src)
+            {
+                return m;
+            }
+        }
+    })
+    .await
+    .expect("a node_stats event for the source must arrive (spawn_stats wired)");
+    assert!(
+        stats["payload"]["stats"]["updates_per_second"].is_number(),
+        "node_stats carries a numeric measured ufreq; got {:?}",
+        stats["payload"]
+    );
 }
 
 #[tokio::test]

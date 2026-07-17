@@ -195,14 +195,17 @@ pub fn resolve_frontend_dir() -> Option<PathBuf> {
     }
 }
 
-/// Bind and serve (used by the CLI). Ticks adaptively (paced by node `max_frequency`,
-/// no fixed ceiling); serves the SPA if found.
-pub async fn serve(bind: &str, port: u16, state: AppState) -> std::io::Result<()> {
+/// Start the background workers a live server needs: the adaptive tick loop AND the 2 Hz
+/// node-stats broadcaster — the latter pushes each node's measured ufreq to the node header
+/// and the async error-transition that reddens a node border mid-run. The binary calls this
+/// once at startup (alongside its own bind + `serve_app`), so both are wired in one place;
+/// `serve_app` itself stays pure, letting a test bind an ephemeral listener without the stats
+/// thread when it doesn't need it. (This replaces the old bundled `serve()`, which the CLI
+/// couldn't use — it must register evaluators/nodes and print the URL around the bind — so the
+/// stats worker rotted into dead code and the header rate silently stopped updating.)
+pub fn spawn_workers(state: &AppState) {
     spawn_tick(state.graph.clone());
-    spawn_stats(state.graph.clone(), state.events.clone(), 2); // node-header update rate
-
-    let listener = tokio::net::TcpListener::bind((bind, port)).await?;
-    serve_app(listener, state, resolve_frontend_dir()).await
+    spawn_stats(state.graph.clone(), state.events.clone(), 2);
 }
 
 /// Serve on an already-bound listener, API only (used by tests for an ephemeral port).
