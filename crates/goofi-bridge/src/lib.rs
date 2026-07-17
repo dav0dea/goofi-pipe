@@ -287,6 +287,24 @@ fn event(name: &str, payload: Value) -> String {
     json!({ "event": name, "payload": payload }).to_string()
 }
 
+/// A per-node `state_update` event carrying a node's current params + error. Emitted for every
+/// peer a §4.5 shared-member edit touches (param value, position, expression), so any observer
+/// reconciles each mirrored sibling.
+fn param_state_update(g: &Graph, peer: Uid) -> String {
+    event(
+        "state_update",
+        json!({
+            "node": peer.to_hex(),
+            "params": schemas::describe_node_params(g, peer),
+            "output_subscribers": {},
+            "stage": "ready",
+            "error": g.last_error(peer),
+            "log_endpoint": Value::Null,
+            "refreshed_params": [],
+        }),
+    )
+}
+
 fn parse_uid(payload: &Value, key: &str) -> Result<Uid, String> {
     payload
         .get(key)
@@ -463,18 +481,7 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
                 // instances. A ROOT / unique-member edit updates only itself.
                 let updated = g.update_member_param(uid, group, name, newp)?;
                 for peer in updated {
-                    events.push(event(
-                        "state_update",
-                        json!({
-                            "node": peer.to_hex(),
-                            "params": schemas::describe_node_params(&g, peer),
-                            "output_subscribers": {},
-                            "stage": "ready",
-                            "error": g.last_error(peer),
-                            "log_endpoint": Value::Null,
-                            "refreshed_params": [],
-                        }),
-                    ));
+                    events.push(param_state_update(&g, peer));
                 }
                 Ok(json!({ "ok": true }))
             }
@@ -495,18 +502,7 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
                 // hits all its instances. A ROOT / unique-member edit updates only itself.
                 let updated = g.set_member_expression(uid, group, name, expression, enabled, triggers)?;
                 for peer in updated {
-                    events.push(event(
-                        "state_update",
-                        json!({
-                            "node": peer.to_hex(),
-                            "params": schemas::describe_node_params(&g, peer),
-                            "output_subscribers": {},
-                            "stage": "ready",
-                            "error": g.last_error(peer),
-                            "log_endpoint": Value::Null,
-                            "refreshed_params": [],
-                        }),
-                    ));
+                    events.push(param_state_update(&g, peer));
                 }
                 Ok(json!({ "ok": true }))
             }
