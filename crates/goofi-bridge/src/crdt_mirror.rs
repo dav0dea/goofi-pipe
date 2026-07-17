@@ -1,109 +1,106 @@
 //! Keep a `GraphDoc` in agreement with the engine `Graph`. Phase 1 is a full re-sync after
 //! each mutating RPC — correctness first; incremental/direct writes come in later phases.
 
-use std::collections::HashSet;
-
-use goofi_crdt::{BoundaryRecord, ExprRecord, GraphDoc, InstanceRecord, LinkRecord};
+use goofi_crdt::GraphDoc;
 use goofi_engine::subpatch::Dir;
 use goofi_engine::Graph;
+use serde_json::{json, Map, Value};
 
 use crate::schemas::{param_value_json, ROOT_ID};
 
-/// Rebuild `doc` to mirror `g`'s control-plane state (nodes, params, pos, viewers, links).
+/// Rebuild `doc` to mirror `g`'s control-plane state (nodes, params, pos, viewers, links, forest).
+/// Builds ONE JSON projection of the engine graph — exactly the doc's field shape — and hands it to
+/// the generic, idempotent, in-place [`GraphDoc::reconcile_root`]. The manager stays the sole author
+/// of every structural field (§4.2); merge-safe leaves a client writes directly are preserved by the
+/// reconciler's recurse-in-place discipline.
 pub fn sync_graph_to_doc(g: &Graph, doc: &mut GraphDoc) {
-    let live: HashSet<String> = g.node_uids().iter().map(|u| u.to_hex()).collect();
-    // Drop nodes no longer in the graph.
-    for id in doc.node_ids() {
-        if !live.contains(&id) {
-            doc.remove_node(&id);
-        }
-    }
+    let pos_json = |p: [f64; 2]| json!({ "x": p[0], "y": p[1] });
+
+    let mut nodes = Map::new();
     for uid in g.node_uids() {
-        let id = uid.to_hex();
-        let ty = g.type_name(uid).unwrap_or("");
-        let name = g.name(uid).unwrap_or("");
-        let pos = g.pos(uid).unwrap_or([0.0, 0.0]);
-        doc.upsert_node(&id, ty, name, pos);
-        if let Some(params) = g.params(uid) {
-            for (group, pg) in params {
+        let mut node = Map::new();
+        node.insert("type".into(), json!(g.type_name(uid).unwrap_or("")));
+        node.insert("name".into(), json!(g.name(uid).unwrap_or("")));
+        node.insert("pos".into(), pos_json(g.pos(uid).unwrap_or([0.0, 0.0])));
+        let mut params = Map::new();
+        if let Some(ps) = g.params(uid) {
+            for (group, pg) in ps {
+                let mut gmap = Map::new();
                 for (pname, p) in pg {
-                    let value = param_value_json(p);
-                    let expr = g.param_expression(uid, group, pname).map(|e| ExprRecord {
-                        source: e.source,
-                        enabled: e.enabled,
-                        triggers: e.triggers_process,
-                    });
-                    doc.set_param(&id, group, pname, &value, expr);
+                    let mut entry = Map::new();
+                    entry.insert("value".into(), param_value_json(p));
+                    // A cleared binding omits `expr` entirely → the reconciler prunes any stale one.
+                    if let Some(e) = g.param_expression(uid, group, pname) {
+                        entry.insert(
+                            "expr".into(),
+                            json!({ "source": e.source, "enabled": e.enabled, "triggers": e.triggers_process }),
+                        );
+                    }
+                    gmap.insert(pname.clone(), Value::Object(entry));
                 }
+                params.insert(group.clone(), Value::Object(gmap));
             }
         }
+        node.insert("params".into(), Value::Object(params));
+        // Viewers ride as an opaque JSON string leaf (typed view-state is a later step). Omitted
+        // when the node has none → pruned from the doc.
         if let Some(v) = g.viewers(uid) {
-            doc.set_viewers(&id, v);
+            node.insert("viewers".into(), json!(v.to_string()));
         }
+        nodes.insert(uid.to_hex(), Value::Object(node));
     }
-    doc.replace_links(
-        g.links_view()
-            .into_iter()
-            .map(|l| LinkRecord {
-                node_out: l.node_out.to_hex(),
-                slot_out: l.slot_out.to_string(),
-                node_in: l.node_in.to_hex(),
-                slot_in: l.slot_in.to_string(),
-            })
-            .collect(),
-    );
 
-    // Mirror the sub-patch forest (§4.2 — the manager is the sole author of structural fields).
-    let live_inst: HashSet<String> = g.instance_uids().iter().map(|u| u.to_hex()).collect();
-    for id in doc.instance_ids() {
-        if !live_inst.contains(&id) {
-            doc.remove_instance(&id);
-        }
-    }
+    let links: Vec<Value> = g
+        .links_view()
+        .into_iter()
+        .map(|l| {
+            json!({
+                "node_out": l.node_out.to_hex(), "slot_out": l.slot_out.to_string(),
+                "node_in": l.node_in.to_hex(), "slot_in": l.slot_in.to_string(),
+            })
+        })
+        .collect();
+
+    // The sub-patch forest — the manager is the sole author of structural fields (§4.2).
+    let mut instances = Map::new();
     for uid in g.instance_uids() {
         let Some(inst) = g.instance(uid) else { continue };
-        // Shared iff more than one instance references the def (matches `describe_instance`).
-        let shared = g.def_refcount(inst.def_id) > 1;
-        let parent = g
-            .scope_of(uid)
-            .map(|p| p.to_hex())
-            .unwrap_or_else(|| ROOT_ID.to_string());
-        let members = inst
-            .members
-            .iter()
-            .map(|(local, muid)| (local.clone(), muid.to_hex()))
-            .collect();
-        let mut interface = Vec::new();
+        let mut irec = Map::new();
+        irec.insert("name".into(), json!(inst.name));
+        // Shared iff >1 instance references the def (matches `describe_instance`); unique omits def_id.
+        if g.def_refcount(inst.def_id) > 1 {
+            irec.insert("def_id".into(), json!(inst.def_id.to_hex()));
+        }
+        let parent = g.scope_of(uid).map(|p| p.to_hex()).unwrap_or_else(|| ROOT_ID.to_string());
+        irec.insert("parent".into(), json!(parent));
+        irec.insert("pos".into(), pos_json(inst.pos));
+        let mut members = Map::new();
+        for (local, muid) in inst.members.iter() {
+            members.insert(local.clone(), json!(muid.to_hex()));
+        }
+        irec.insert("members".into(), Value::Object(members));
+        let mut iface = Map::new();
         if let Some(def) = g.def(inst.def_id) {
             for (bnd, b) in def.interface.iter() {
                 let resolved = g.resolve_boundary(uid, bnd);
-                interface.push(BoundaryRecord {
-                    bnd_id: bnd.clone(),
-                    dir: match b.dir {
-                        Dir::In => "in",
-                        Dir::Out => "out",
-                    }
-                    .to_string(),
-                    dtype: b.dtype.name().to_string(),
-                    name: b.name.clone(),
-                    pos: b.pos,
-                    inner_node: resolved.as_ref().map(|(u, _)| u.to_hex()),
-                    inner_slot: resolved.as_ref().map(|(_, s)| s.clone()),
-                });
+                let mut bm = Map::new();
+                bm.insert("dir".into(), json!(match b.dir { Dir::In => "in", Dir::Out => "out" }));
+                bm.insert("dtype".into(), json!(b.dtype.name()));
+                bm.insert("name".into(), json!(b.name));
+                bm.insert("pos".into(), pos_json(b.pos));
+                // Unwired boundary → no inner_node/inner_slot → the reconciler prunes any stale pair.
+                if let Some((u, s)) = resolved.as_ref() {
+                    bm.insert("inner_node".into(), json!(u.to_hex()));
+                    bm.insert("inner_slot".into(), json!(s));
+                }
+                iface.insert(bnd.clone(), Value::Object(bm));
             }
         }
-        doc.upsert_instance(
-            &uid.to_hex(),
-            &InstanceRecord {
-                name: inst.name.clone(),
-                def_id: if shared { Some(inst.def_id.to_hex()) } else { None },
-                parent,
-                pos: inst.pos,
-                members,
-                interface,
-            },
-        );
+        irec.insert("interface".into(), Value::Object(iface));
+        instances.insert(uid.to_hex(), Value::Object(irec));
     }
+
+    doc.reconcile_root(&json!({ "nodes": nodes, "links": links, "instances": instances }));
 }
 
 #[cfg(test)]
