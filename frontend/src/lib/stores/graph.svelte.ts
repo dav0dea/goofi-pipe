@@ -478,6 +478,40 @@ export class GraphStore {
 	}
 
 	async removeNode(uid: string, captureLinks = true): Promise<void> {
+		// Deleting a collapsed sub-patch INSTANCE tears down a whole subtree — members, internal
+		// links, boundaries, and external wires (which reference inner-leaf uids, so they are not
+		// even caught by a uid link filter). nodeById(instanceUid) is only a SYNTHETIC node
+		// (type 'Sub-patch'), so a generic remove_node action would replay an uninstantiable
+		// add_node{type:'Sub-patch'} on undo and lose the subtree forever. Record it as a
+		// full-graph checkpoint instead — the proven load_patch machinery restores any subtree
+		// (nested/shared/external wires) exactly, with no fragile hand-reconstruction.
+		const inst = this.instances[uid];
+		if (inst && uid !== ROOT_ID) {
+			const record = !history().isSuspended;
+			const before = record ? await this._loadCheckpointBefore() : null;
+			await this.ctl.call('remove_node', { node: uid });
+			if (record && before) {
+				let afterYaml = '';
+				try {
+					afterYaml = (await this.serialize()).yaml;
+				} catch {
+					/* whole graph gone — empty after-state */
+				}
+				this._record({
+					kind: 'load_patch',
+					label: `Delete ${inst.name}`,
+					domain: 'graph',
+					context: captureNavContext(),
+					payload: {
+						beforeYaml: before.yaml,
+						afterYaml,
+						beforeLayout: before.layout as WorkspaceState | null,
+						afterLayout: workspace().serialize() as WorkspaceState | null
+					}
+				});
+			}
+			return;
+		}
 		// Capture the full node + its links BEFORE the backend tears them down.
 		// A batch delete (removeNodes) passes captureLinks=false and records the links
 		// as separate remove_link actions ordered first, so undo restores every node
