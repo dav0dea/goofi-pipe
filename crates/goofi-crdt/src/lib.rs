@@ -322,6 +322,15 @@ impl GraphDoc {
         SyncMsg::StateVector(self.state_vector()).encode()
     }
 
+    /// A framed `Update` carrying this replica's ENTIRE state — the recovery payload for a
+    /// peer that has fallen behind (broadcast lag) or reconnected. Applying it is idempotent
+    /// and resolves any gap, including updates a client buffered as pending because they
+    /// depended on a dropped one. Recovery must use this, NOT [`Self::sync_hello`]: a reader
+    /// answers a bare state vector with an empty diff and never pulls what it is missing.
+    pub fn full_state_frame(&self) -> Vec<u8> {
+        SyncMsg::Update(self.encode_state()).encode()
+    }
+
     /// Drive the pairwise sync handshake for one inbound message, returning the messages to
     /// send back. Receiving a peer's `StateVector` yields the `Update` it lacks; receiving an
     /// `Update` applies it and replies with nothing. Symmetric — both ends run this.
@@ -502,5 +511,37 @@ mod tests {
         // Diff against an empty replica = the whole doc → NOT empty.
         let fresh = GraphDoc::new();
         assert!(!doc.is_empty_diff(&doc.diff(&fresh.state_vector())));
+    }
+
+    #[test]
+    fn full_state_frame_recovers_a_gapped_replica() {
+        // The recovery contract: when a client has missed deltas (lag/reconnect), the server
+        // ships its FULL STATE as an Update; applying it converges the client regardless of
+        // what it missed — including a change that DEPENDS on a missed one (which yrs would
+        // otherwise buffer as an unresolvable pending update). This is why recovery must send
+        // full state, not the server's state vector (which a reader answers with an empty diff).
+        use serde_json::json;
+        let mut server = GraphDoc::new();
+        server.upsert_node("1", "Oscillator", "osc", [0.0, 0.0]);
+
+        let mut client = GraphDoc::new();
+        client.apply_update(&server.diff(&client.state_vector())).unwrap();
+        assert_eq!(client.node_ids(), vec!["1"], "client synced node 1");
+
+        // The client now MISSES everything below (dropped deltas): a new node, a param edit,
+        // and a rename of node 1 (a struct that chains off the earlier one).
+        server.upsert_node("2", "Buffer", "buf", [0.0, 0.0]);
+        server.set_param("1", "common", "max_frequency", &json!(50.0), None);
+        server.upsert_node("1", "Oscillator", "renamed", [0.0, 0.0]);
+
+        // Recovery: apply the framed full state. Convergence, not divergence.
+        let SyncMsg::Update(full) = SyncMsg::decode(&server.full_state_frame()).unwrap() else {
+            panic!("full_state_frame is an Update");
+        };
+        client.apply_update(&full).unwrap();
+        assert_eq!(client.node_ids().len(), 2, "gapped node arrived");
+        assert_eq!(client.node_name("1").as_deref(), Some("renamed"), "dependent change resolved");
+        assert_eq!(client.node_name("2").as_deref(), Some("buf"));
+        assert_eq!(client.param_value("1", "common", "max_frequency"), Some(json!(50.0)));
     }
 }

@@ -23,13 +23,23 @@ export class SyncClient {
 		this.doc = doc;
 	}
 
-	/** Begin syncing: subscribe to inbound frames and advertise our state vector so the
-	 * manager sends the diff we lack. Call again after a reconnect (idempotent). */
+	/** Begin syncing: subscribe to inbound frames, and advertise our state vector on connect
+	 * AND on every reconnect so we re-pull anything the manager changed while we were
+	 * disconnected. Advertising only once at mount would leave the replica silently diverged
+	 * after any WS drop (the manager re-sends only its own SV on reconnect, which a reader
+	 * answers with an empty diff — so the client must be the one to re-advertise). Idempotent. */
 	start(): void {
 		if (this.unsub) return;
-		this.unsub = this.control.onSyncFrame((bytes) => this.onFrame(bytes));
-		// Advertise our SV; the manager answers with the diff (its full doc on first join).
-		this.control.sendSync(syncHello(this.doc));
+		const offFrame = this.control.onSyncFrame((bytes) => this.onFrame(bytes));
+		// onConnect fires immediately with the current state (initial mount) and again on each
+		// reconnect; each `true` re-advertises our SV, prompting the manager's diff.
+		const offConn = this.control.onConnect((connected) => {
+			if (connected) this.control.sendSync(syncHello(this.doc));
+		});
+		this.unsub = () => {
+			offFrame();
+			offConn();
+		};
 	}
 
 	/** Stop syncing (unsubscribe). The doc is retained. */

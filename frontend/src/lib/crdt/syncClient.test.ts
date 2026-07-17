@@ -61,6 +61,23 @@ describe('SyncClient', () => {
 		expect(nodeView(server, '9')).toMatchObject({ type: 'Buffer' });
 	});
 
+	it('re-advertises its state vector on every reconnect', () => {
+		// Regression for a permanent-desync bug: advertising only once at mount leaves the
+		// replica diverged after a WS drop, since the manager re-sends only its own SV on
+		// reconnect (which a reader answers with an empty diff). The client must re-advertise.
+		const ctl = new FakeControl();
+		const client = new SyncClient(ctl);
+		client.start();
+		expect(ctl.sentSyncFrames.length).toBe(1); // initial advertise (onConnect fires true)
+
+		ctl.setConnected(false); // WS drops
+		ctl.setConnected(true); // ...and reconnects
+		expect(ctl.sentSyncFrames.length).toBe(2); // re-advertised, so the manager re-syncs us
+
+		const msg = decodeSyncMsg(ctl.sentSyncFrames.at(-1)!);
+		expect(msg?.kind).toBe('sv');
+	});
+
 	it('stamps applied remote updates with REMOTE_ORIGIN', () => {
 		const ctl = new FakeControl();
 		const client = new SyncClient(ctl);

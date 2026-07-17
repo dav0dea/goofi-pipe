@@ -340,11 +340,13 @@ async fn handle_control(socket: WebSocket, state: AppState) {
                         break;
                     }
                 }
-                // A lagged client missed one or more deltas — re-advertise the server SV so it
-                // re-handshakes and catches up on the exact diff it needs (no silent desync).
+                // A lagged client missed one or more deltas the broadcast channel already
+                // dropped. Send the FULL current state (idempotent, resolves any gap incl.
+                // pending updates) — NOT the server's state vector, which a reader answers
+                // with an empty diff and so never actually catches up (permanent desync).
                 Err(broadcast::error::RecvError::Lagged(_)) => {
-                    let hello_sv = state.crdt.lock().unwrap().sync_hello();
-                    if tx.send(Message::Binary(hello_sv.into())).await.is_err() {
+                    let full = state.crdt.lock().unwrap().full_state_frame();
+                    if tx.send(Message::Binary(full.into())).await.is_err() {
                         break;
                     }
                 }

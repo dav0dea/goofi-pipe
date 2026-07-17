@@ -14,6 +14,9 @@ export class FakeControl implements Control {
 	private syncListeners = new Set<(bytes: Uint8Array) => void>();
 	private results = new Map<string, unknown>();
 	private failing = new Set<string>();
+	// Starts connected — matches the real ControlClient, whose `onConnect` fires immediately
+	// with the current state so a fresh subscriber learns it's already connected.
+	private _connected = true;
 	/** Binary sync frames the code under test sent via `sendSync` (for assertions). */
 	sentSyncFrames: Uint8Array[] = [];
 
@@ -43,6 +46,7 @@ export class FakeControl implements Control {
 
 	onConnect(fn: (c: boolean) => void): () => void {
 		this.connectListeners.add(fn);
+		fn(this._connected); // fire immediately, like the real ControlClient
 		return () => this.connectListeners.delete(fn);
 	}
 
@@ -66,8 +70,9 @@ export class FakeControl implements Control {
 		for (const fn of this.listeners) fn(ev);
 	}
 
-	/** Drive connection listeners (rarely needed in executor tests). */
+	/** Drive connection listeners (e.g. simulate a reconnect: setConnected(false) then true). */
 	setConnected(c: boolean): void {
+		this._connected = c;
 		for (const fn of this.connectListeners) fn(c);
 	}
 
