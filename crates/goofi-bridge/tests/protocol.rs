@@ -77,6 +77,16 @@ async fn recv_text(ws: &mut Ws) -> Value {
     }
 }
 
+/// Receive until the named event arrives, returning it (skipping RPC replies/other events).
+async fn drain_event(ws: &mut Ws, event: &str) -> Value {
+    loop {
+        let m = recv_text(ws).await;
+        if m.get("event").and_then(|v| v.as_str()) == Some(event) {
+            return m;
+        }
+    }
+}
+
 /// Send an RPC and return the reply for its id (skipping interleaved events).
 async fn call(ws: &mut Ws, id: i64, op: &str, payload: Value) -> Value {
     ws.send(Message::Text(
@@ -474,6 +484,42 @@ async fn group_and_expand_project_the_instance_forest() {
         "instance gone after expand");
     let osc_after = snap2["payload"]["nodes"].as_array().unwrap().iter().find(|n| n["uid"] == json!(osc)).unwrap();
     assert_eq!(osc_after["membership"]["instance"], "__root__", "member back at ROOT");
+}
+
+#[tokio::test]
+async fn duplicate_shared_then_make_unique_over_the_wire() {
+    // Group → duplicate_shared surfaces a sibling and marks both instances "shared";
+    // make_unique on one returns it to "unique".
+    let base = start_server().await;
+    let (mut ws, _) = connect_async(format!("{base}/control")).await.unwrap();
+    let _hello = recv_text(&mut ws).await;
+
+    let uid = |v: &Value| v["result"].as_str().unwrap().to_string();
+    let osc = uid(&call(&mut ws, 1, "add_node", json!({ "type": "Oscillator" })).await);
+    let buf = uid(&call(&mut ws, 2, "add_node", json!({ "type": "Buffer" })).await);
+    call(&mut ws, 3, "add_link", json!({ "node_out": osc, "slot_out": "out", "node_in": buf, "slot_in": "data" })).await;
+    let inst = call(&mut ws, 4, "group_nodes", json!({ "members": [osc, buf], "pos": [0.0, 0.0] })).await["result"]["inst_id"]
+        .as_str().unwrap().to_string();
+    drain_event(&mut ws, "subpatch_changed").await;
+
+    // Duplicate → a sibling instance, both now "shared".
+    let dup = call(&mut ws, 5, "duplicate_shared", json!({ "inst_id": inst, "pos": [200.0, 0.0] })).await;
+    let sib = dup["result"]["inst_id"].as_str().expect("sibling inst_id").to_string();
+    assert_ne!(sib, inst, "a fresh sibling instance");
+    let snap = drain_event(&mut ws, "subpatch_changed").await;
+    assert_eq!(snap["payload"]["instances"][&inst]["kind"], "shared", "original now shared");
+    assert_eq!(snap["payload"]["instances"][&sib]["kind"], "shared", "sibling shared");
+    // The sibling has its own two members, distinct from the original's.
+    let sib_members = snap["payload"]["instances"][&sib]["members"].as_object().unwrap();
+    assert_eq!(sib_members.len(), 2, "sibling has both members");
+    // Four flat leaves total now (2 original + 2 sibling).
+    assert_eq!(snap["payload"]["nodes"].as_array().unwrap().len(), 4, "sibling leaves spawned");
+
+    // make_unique the sibling → back to "unique".
+    call(&mut ws, 6, "make_unique", json!({ "inst_id": sib })).await;
+    let snap2 = drain_event(&mut ws, "subpatch_changed").await;
+    assert_eq!(snap2["payload"]["instances"][&sib]["kind"], "unique", "sibling forked to unique");
+    assert_eq!(snap2["payload"]["instances"][&inst]["kind"], "unique", "original back to unique too");
 }
 
 #[tokio::test]

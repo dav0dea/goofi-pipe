@@ -584,6 +584,30 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
                 events.push(event("boundary_moved", json!({ "inst_id": inst.to_hex(), "bnd_id": bnd, "pos": pos })));
                 Ok(json!({ "ok": true }))
             }
+            "duplicate_shared" => {
+                let inst = parse_uid(&payload, "inst_id")?;
+                let pos = payload.get("pos").and_then(parse_pos).unwrap_or([0.0, 0.0]);
+                let sib = g.duplicate_shared(inst, pos)?;
+                events.push(event("subpatch_changed", schemas::snapshot(&g, &state.instance_id, false)));
+                Ok(json!({ "inst_id": sib.to_hex() }))
+            }
+            "make_unique" => {
+                let inst = parse_uid(&payload, "inst_id")?;
+                let def = g.make_unique(inst)?;
+                events.push(event("subpatch_changed", schemas::snapshot(&g, &state.instance_id, false)));
+                Ok(json!({ "def_id": def.to_hex() }))
+            }
+            "re_share_instance" => {
+                let inst = parse_uid(&payload, "inst_id")?;
+                let def = payload
+                    .get("def_id")
+                    .and_then(|v| v.as_str())
+                    .and_then(goofi_engine::subpatch::DefId::from_hex)
+                    .ok_or("re_share_instance: bad def_id")?;
+                let out = g.re_share_instance(inst, def)?;
+                events.push(event("subpatch_changed", schemas::snapshot(&g, &state.instance_id, false)));
+                Ok(json!({ "inst_id": out.to_hex() }))
+            }
             "serialize" => Ok(json!({ "yaml": g.serialize() })),
             "save" => {
                 let yaml = g.serialize();
