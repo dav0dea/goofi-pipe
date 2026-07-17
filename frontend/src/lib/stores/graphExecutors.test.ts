@@ -9,7 +9,7 @@ import { setInlineKind, rawInlineView } from '$lib/viewers/inlineView.svelte';
 import { ui } from '$lib/stores/ui.svelte';
 import type { NodeInstanceInfo, LinkInfo } from '$lib/api/control';
 import * as Y from 'yjs';
-import { linksArray, paramValue } from '$lib/crdt/graphDoc';
+import { linksArray, paramValue, nodeView } from '$lib/crdt/graphDoc';
 
 /** Seed a node into the store's CRDT doc so a param leaf-write targeting it lands. */
 function docAddNode(g: GraphStore, uid: string): void {
@@ -327,9 +327,10 @@ describe('graph executors — simple kinds', () => {
 		expect(paramValue(g.doc, 'osc0', 'common', 'frequency')).toBe(1);
 	});
 
-	it('set_node_pos inverse restores the old position', async () => {
+	it('set_node_pos inverse writes the old position to the doc (retired RPC)', async () => {
 		const fc = new FakeControl();
 		const g = new GraphStore(fc);
+		docAddNode(g, 'osc0'); // the doc node the leaf-write targets
 		const action: Action = {
 			kind: 'set_node_pos',
 			label: 'Move osc0',
@@ -338,7 +339,9 @@ describe('graph executors — simple kinds', () => {
 			payload: { uid: 'osc0', oldPos: [10, 20], newPos: [99, 99] }
 		};
 		await graphExecutors['set_node_pos'].inverse(action, deps(fc, g));
-		expect(fc.recordedCalls()).toEqual([{ op: 'set_node_pos', payload: { node: 'osc0', pos: [10, 20] } }]);
+		// The retired set_node_pos RPC is gone; the old position lands in the CRDT doc instead.
+		expect(fc.recordedCalls().some((c) => c.op === 'set_node_pos')).toBe(false);
+		expect(nodeView(g.doc, 'osc0')!.pos).toEqual([10, 20]);
 	});
 });
 

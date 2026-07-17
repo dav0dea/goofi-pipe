@@ -673,6 +673,59 @@ async fn a_client_leaf_write_reaches_the_graph_and_other_clients() {
 }
 
 #[tokio::test]
+async fn a_client_position_leaf_write_reaches_the_graph_and_other_clients() {
+    // Phase 3 (writer half, positions): a client drags a node and commits the new position by
+    // writing `nodes[uid].pos` into its OWN replica and sending the update — no `set_node_pos`
+    // RPC. The manager applies it via `set_member_pos` and broadcasts, so a second client sees
+    // the moved position.
+    use goofi_crdt::{GraphDoc, SyncMsg};
+
+    let base = start_server().await;
+
+    let (mut w, _) = connect_async(format!("{base}/control")).await.unwrap();
+    let _ = recv_text(&mut w).await;
+    let _ = recv_binary(&mut w).await; // server hello SV
+    let mut wdoc = GraphDoc::new();
+    w.send(Message::Binary(wdoc.sync_hello().into())).await.unwrap();
+    wdoc.on_sync(SyncMsg::decode(&recv_binary(&mut w).await).unwrap());
+
+    let osc = call(&mut w, 1, "add_node", json!({ "type": "Oscillator" })).await["result"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    wdoc.on_sync(SyncMsg::decode(&recv_binary(&mut w).await).unwrap());
+    assert!(wdoc.node_ids().contains(&osc), "writer's replica has the node");
+
+    // Commit a drag: move the node to [123, 456] in the replica, send the update.
+    let before = wdoc.state_vector();
+    wdoc.set_node_pos(&osc, [123.0, 456.0]);
+    let upd = wdoc.diff(&before);
+    w.send(Message::Binary(SyncMsg::Update(upd).encode().into())).await.unwrap();
+
+    // A fresh reader converges on the moved position.
+    let (mut r, _) = connect_async(format!("{base}/control")).await.unwrap();
+    let _ = recv_text(&mut r).await;
+    let _ = recv_binary(&mut r).await;
+    let mut rdoc = GraphDoc::new();
+    r.send(Message::Binary(rdoc.sync_hello().into())).await.unwrap();
+
+    let converged = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let b = recv_binary(&mut r).await;
+            if let Some(m) = SyncMsg::decode(&b) {
+                rdoc.on_sync(m);
+            }
+            if rdoc.node_pos(&osc) == Some([123.0, 456.0]) {
+                return true;
+            }
+        }
+    })
+    .await
+    .unwrap_or(false);
+    assert!(converged, "the client's position leaf write reached the graph and a second client");
+}
+
+#[tokio::test]
 async fn crdt_doc_tracks_an_rpc_node_add_and_param_edit() {
     // The server-side CRDT mirror tracks RPC-driven control edits: after an add_node +
     // update_param over the /control RPC path, a synced client replica reflects BOTH the node

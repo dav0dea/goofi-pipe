@@ -134,11 +134,11 @@ const setExpression: Executor = {
 const setNodePos: Executor = {
 	async forward(action, deps) {
 		const a = as<'set_node_pos'>(action);
-		await deps.control.call('set_node_pos', { node: a.payload.uid, pos: a.payload.newPos });
+		deps.graph.writeNodePos(a.payload.uid, a.payload.newPos);
 	},
 	async inverse(action, deps) {
 		const a = as<'set_node_pos'>(action);
-		await deps.control.call('set_node_pos', { node: a.payload.uid, pos: a.payload.oldPos });
+		deps.graph.writeNodePos(a.payload.uid, a.payload.oldPos);
 	}
 };
 

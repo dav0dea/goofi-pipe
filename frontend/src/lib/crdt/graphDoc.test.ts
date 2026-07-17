@@ -10,7 +10,8 @@ import {
 	linkViews,
 	instancesMap,
 	instanceView,
-	instanceViews
+	instanceViews,
+	setNodePos
 } from './graphDoc';
 
 /** Build a doc in the exact shape the Rust `GraphDoc` mirror writes. */
@@ -143,5 +144,44 @@ describe('graphDoc readers', () => {
 			.get('max_frequency')!
 			.set('value', 42);
 		expect(paramValue(doc, 'a', 'common', 'max_frequency')).toBe(42);
+	});
+});
+
+describe('graphDoc.setNodePos — committed-drag leaf write', () => {
+	it('writes a node position in place and the reader reflects it', () => {
+		const doc = seedDoc();
+		expect(setNodePos(doc, 'a', [111, 222])).toBe(true);
+		expect(nodeView(doc, 'a')!.pos).toEqual([111, 222]);
+		// Identity fields are untouched — only pos moved.
+		expect(nodeView(doc, 'a')!.type).toBe('Oscillator');
+	});
+
+	it('writes a sub-patch instance box position in place', () => {
+		const doc = new Y.Doc();
+		const inst = new Y.Map<unknown>();
+		inst.set('name', 'subpatch0');
+		inst.set('parent', '__root__');
+		instancesMap(doc).set('i1', inst);
+
+		expect(setNodePos(doc, 'i1', [30, 40])).toBe(true);
+		expect(instanceView(doc, 'i1')!.pos).toEqual([30, 40]);
+	});
+
+	it('no-ops (returns false) when the uid is in neither map — never mint a phantom', () => {
+		const doc = seedDoc();
+		expect(setNodePos(doc, 'ghost', [1, 2])).toBe(false);
+		expect(nodesMap(doc).get('ghost')).toBeUndefined();
+		expect(instancesMap(doc).get('ghost')).toBeUndefined();
+	});
+
+	it('is idempotent — re-writing the current position creates no new struct', () => {
+		const doc = seedDoc();
+		setNodePos(doc, 'a', [111, 222]);
+		// The state vector counts each client's struct clock; a real write bumps it, a guarded
+		// no-op leaves it untouched. (An update payload can't be used — it always carries the
+		// doc's full delete set, so it's non-empty once any value has been overwritten.)
+		const sv = Y.encodeStateVector(doc);
+		setNodePos(doc, 'a', [111, 222]);
+		expect(Y.encodeStateVector(doc)).toEqual(sv);
 	});
 });

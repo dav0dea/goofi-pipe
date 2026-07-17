@@ -303,7 +303,6 @@ export type ControlEvent =
 			// ROOT for a top-level node), so the store drops it from that scope's members map.
 			payload: { node: string; membership: { instance: string; local_name: string } | null };
 	  }
-	| { event: 'node_moved'; payload: { node: string; pos: [number, number] } }
 	| { event: 'link_added'; payload: LinkInfo }
 	| { event: 'link_removed'; payload: LinkInfo }
 	| {

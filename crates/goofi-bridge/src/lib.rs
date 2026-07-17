@@ -646,17 +646,8 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
                 }
                 Ok(json!({ "ok": true }))
             }
-            "set_node_pos" => {
-                let uid = parse_uid(&payload, "node")?;
-                let pos = payload.get("pos").and_then(parse_pos).ok_or("missing pos")?;
-                // A shared member's move mirrors to every sibling (§4.5); a ROOT node or the
-                // instance box moves only itself.
-                let moved = g.set_member_pos(uid, pos)?;
-                for peer in moved {
-                    events.push(event("node_moved", json!({ "node": peer.to_hex(), "pos": pos })));
-                }
-                Ok(json!({ "ok": true }))
-            }
+            // `set_node_pos` retired (Phase 3): node/instance position is a merge-safe leaf the
+            // client writes directly to the doc (`apply_client_write` → `set_member_pos`).
             "set_node_viewers" => {
                 // Opaque per-slot viewer view-state (kind/settings/collapsed). The backend is
                 // the persistence authority (it lands in `.gfi`); it stores + echoes the blob
@@ -863,7 +854,7 @@ fn apply_client_write(state: &AppState, update: &[u8]) {
     if changed.is_empty() {
         return;
     }
-    for (uid_hex, group, name, value) in &changed {
+    for (uid_hex, group, name, value) in &changed.params {
         let Some(uid) = Uid::from_hex(uid_hex) else { continue };
         let Some(existing) = g.params(uid).and_then(|p| goofi_node::param(p, group, name)).cloned()
         else {
@@ -871,6 +862,12 @@ fn apply_client_write(state: &AppState, update: &[u8]) {
         };
         let newp = param_from_json(&existing, value);
         let _ = g.update_member_param(uid, group, name, newp);
+    }
+    for (uid_hex, pos) in &changed.positions {
+        let Some(uid) = Uid::from_hex(uid_hex) else { continue };
+        // `set_member_pos` moves a ROOT node, an instance box, or a shared member (mirroring to
+        // siblings) — the same authority the retired `set_node_pos` RPC used.
+        let _ = g.set_member_pos(uid, *pos);
     }
     remirror_and_broadcast_locked(state, &g, &mut doc);
 }

@@ -31,7 +31,14 @@ import { history, type Action, type ExprState } from './history.svelte';
 import { captureNavContext } from '$lib/workspace/navContext';
 import { ROOT_ID } from '$lib/editor/subpatchScene';
 import { SyncClient } from '$lib/crdt/syncClient';
-import { linkViews, nodeViews, instanceViews, paramValue, setParamValue } from '$lib/crdt/graphDoc';
+import {
+	linkViews,
+	nodeViews,
+	instanceViews,
+	paramValue,
+	setParamValue,
+	setNodePos as docSetNodePos
+} from '$lib/crdt/graphDoc';
 import type * as Y from 'yjs';
 
 /** Safety net: if a node never reports a ⟳ refresh done (it crashed mid-scan, or
@@ -729,7 +736,16 @@ export class GraphStore {
 			context: captureNavContext(),
 			payload: { uid, oldPos: [oldPos[0], oldPos[1]], newPos: pos }
 		});
-		await this.ctl.call('set_node_pos', { node: uid, pos });
+		this.writeNodePos(uid, pos);
+	}
+
+	/** Client leaf-write of a committed node/instance position into the CRDT doc (Phase 3 —
+	 * replaces the `set_node_pos` RPC). The manager applies it via `set_member_pos` (mirroring
+	 * shared members to siblings) and re-mirrors; the doc-pos overlay in `_syncFromDoc` reflects
+	 * it. Records no history — callers (setNodePos, the executor) own that. Committed on drag-stop
+	 * only; live drag stays local to Svelte Flow (never the doc). */
+	writeNodePos(uid: string, pos: [number, number]): void {
+		this._sync.commit((doc) => docSetNodePos(doc, uid, pos));
 	}
 
 	/** Set a node's mutable display name (uid identity is unchanged). */

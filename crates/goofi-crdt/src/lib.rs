@@ -102,6 +102,22 @@ pub struct InstanceRecord {
     pub interface: Vec<BoundaryRecord>,
 }
 
+/// The merge-safe leaves a client's incremental update changed — what the manager pushes into the
+/// engine `Graph` after applying a client doc write. Params carry `(uid, group, name, value)`;
+/// positions carry `(uid, [x, y])` for each node or instance box that moved.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ClientChanges {
+    pub params: Vec<(String, String, String, serde_json::Value)>,
+    pub positions: Vec<(String, [f64; 2])>,
+}
+
+impl ClientChanges {
+    /// No leaf changed — the manager has nothing to push.
+    pub fn is_empty(&self) -> bool {
+        self.params.is_empty() && self.positions.is_empty()
+    }
+}
+
 /// Insert a scalar json value (number/bool/string; anything else → Null) into a yrs map.
 fn insert_scalar(map: &MapRef, txn: &mut yrs::TransactionMut, key: &str, v: &serde_json::Value) {
     match v {
@@ -241,6 +257,17 @@ impl GraphDoc {
             _ => None,
         };
         Some([f("x")?, f("y")?])
+    }
+
+    /// Write a node's committed position `[x, y]` in place (a merge-safe leaf, §4) — the symmetric
+    /// Rust counterpart of the frontend's `setNodePos`. No-op if the node is absent (never mint a
+    /// phantom node). Idempotent: re-writing the current position produces no doc op.
+    pub fn set_node_pos(&mut self, uid: &str, pos: [f64; 2]) {
+        let mut txn = self.doc.transact_mut();
+        let Some(node) = self.nodes.get(&txn, uid).and_then(|v| v.cast::<MapRef>().ok()) else {
+            return;
+        };
+        set_pos_if_changed(&node, &mut txn, pos);
     }
 
     /// Set (or replace) a param's `{value, expr?}` under `nodes[uid].params[group][name]`.
@@ -576,26 +603,49 @@ impl GraphDoc {
         out
     }
 
-    /// Apply a client's incremental update to this replica and return the param leaves whose
-    /// value changed — so the manager can push exactly those into the engine `Graph`. The
-    /// diff is loop-safe: the manager's subsequent graph→doc re-mirror writes the same values,
-    /// which yrs records as no change. `Err` only if the update bytes are malformed.
-    pub fn apply_client_update(
-        &mut self,
-        update: &[u8],
-    ) -> Result<Vec<(String, String, String, serde_json::Value)>, String> {
-        let before: HashMap<(String, String, String), serde_json::Value> = self
+    /// Every node/instance position `(uid, [x, y])` currently in the doc — the before/after
+    /// basis for detecting a client's committed drag. Covers ROOT nodes and sub-patch instance
+    /// boxes (both carry a top-level `pos`); boundary positions are nested and handled via their
+    /// own RPC.
+    fn pos_snapshot(&self) -> Vec<(String, [f64; 2])> {
+        let mut out = Vec::new();
+        for uid in self.node_ids() {
+            if let Some(p) = self.node_pos(&uid) {
+                out.push((uid, p));
+            }
+        }
+        for uid in self.instance_ids() {
+            if let Some(r) = self.instance_record(&uid) {
+                out.push((uid, r.pos));
+            }
+        }
+        out
+    }
+
+    /// Apply a client's incremental update to this replica and return the merge-safe leaves that
+    /// changed — param values and node/instance positions — so the manager can push exactly those
+    /// into the engine `Graph`. The diff is loop-safe: the manager's subsequent graph→doc
+    /// re-mirror writes the same values, which yrs records as no change. `Err` only if the update
+    /// bytes are malformed.
+    pub fn apply_client_update(&mut self, update: &[u8]) -> Result<ClientChanges, String> {
+        let params_before: HashMap<(String, String, String), serde_json::Value> = self
             .param_snapshot()
             .into_iter()
             .map(|(u, g, n, v)| ((u, g, n), v))
             .collect();
+        let pos_before: HashMap<String, [f64; 2]> = self.pos_snapshot().into_iter().collect();
         self.apply_update(update)?;
-        let changed = self
+        let params = self
             .param_snapshot()
             .into_iter()
-            .filter(|(u, g, n, v)| before.get(&(u.clone(), g.clone(), n.clone())) != Some(v))
+            .filter(|(u, g, n, v)| params_before.get(&(u.clone(), g.clone(), n.clone())) != Some(v))
             .collect();
-        Ok(changed)
+        let positions = self
+            .pos_snapshot()
+            .into_iter()
+            .filter(|(u, p)| pos_before.get(u) != Some(p))
+            .collect();
+        Ok(ClientChanges { params, positions })
     }
 
     /// The message to send a peer on connect: this replica's state vector, framed. The peer
@@ -917,11 +967,46 @@ mod tests {
 
         // The manager applies it and is told precisely what changed.
         let changed = server.apply_client_update(&update).unwrap();
-        assert_eq!(changed, vec![("1".into(), "common".into(), "max_frequency".into(), json!(25.0))]);
+        assert_eq!(changed.params, vec![("1".into(), "common".into(), "max_frequency".into(), json!(25.0))]);
+        assert!(changed.positions.is_empty(), "no node moved");
         assert_eq!(server.param_value("1", "common", "max_frequency"), Some(json!(25.0)), "doc updated");
         assert_eq!(server.param_value("1", "oscillator", "amplitude"), Some(json!(1.0)), "untouched param unchanged");
 
         // Re-applying the SAME update reports no further changes (idempotent, no phantom loop).
+        assert!(server.apply_client_update(&update).unwrap().is_empty());
+    }
+
+    #[test]
+    fn apply_client_update_reports_changed_positions() {
+        // Dragging a node or a sub-patch instance box commits its new position as a merge-safe
+        // leaf write (§4). The manager applies it and learns exactly which uids moved, so it can
+        // push each into the engine Graph (set_member_pos) — the same diff-based, loop-safe path
+        // as params. A ROOT node and an instance box are both reported.
+        let mut server = GraphDoc::new();
+        server.upsert_node("1", "Oscillator", "osc", [0.0, 0.0]);
+        server.upsert_node("2", "Buffer", "buf", [5.0, 5.0]);
+        server.upsert_instance("00000000000000ff", &sample_instance()); // box at [10, 20]
+
+        let mut client = GraphDoc::new();
+        client.apply_update(&server.diff(&client.state_vector())).unwrap();
+        // Move node 1 and the instance box; leave node 2 where it is.
+        client.upsert_node("1", "Oscillator", "osc", [100.0, 200.0]);
+        let mut moved_inst = sample_instance();
+        moved_inst.pos = [30.0, 40.0];
+        client.upsert_instance("00000000000000ff", &moved_inst);
+        let update = client.diff(&server.state_vector());
+
+        let mut changed = server.apply_client_update(&update).unwrap();
+        changed.positions.sort_by(|a, b| a.0.cmp(&b.0)); // Y.Map key order isn't guaranteed; uids unique
+        assert_eq!(
+            changed.positions,
+            vec![("00000000000000ff".into(), [30.0, 40.0]), ("1".into(), [100.0, 200.0])]
+        );
+        assert!(changed.params.is_empty(), "no param changed");
+        assert_eq!(server.node_pos("1"), Some([100.0, 200.0]), "doc updated");
+        assert_eq!(server.node_pos("2"), Some([5.0, 5.0]), "untouched node unchanged");
+
+        // Idempotent: re-applying reports nothing further.
         assert!(server.apply_client_update(&update).unwrap().is_empty());
     }
 

@@ -166,6 +166,26 @@ export function setParamValue(
 	return true;
 }
 
+/** Write a committed node/instance position `[x, y]` into the doc IN PLACE, matching the Rust
+ * `GraphDoc::set_node_pos` / `set_pos_if_changed` structure (`{uid}.pos.{x,y}`), so the manager's
+ * `apply_client_update` detects the move and applies it via `set_member_pos`. A client leaf-write
+ * (§4) committed on drag-stop — live drag stays local (Svelte Flow), never the doc. The uid is a
+ * real node OR a sub-patch instance box (both carry a top-level `pos`). No-op if the uid is in
+ * neither map (never mint a phantom). Idempotent: re-writing the current position writes nothing.
+ * Returns whether the write landed. */
+export function setNodePos(doc: Y.Doc, uid: string, pos: [number, number]): boolean {
+	const target = nodesMap(doc).get(uid) ?? instancesMap(doc).get(uid);
+	if (!target) return false;
+	let p = target.get('pos') as Y.Map<unknown> | undefined;
+	if (!p) {
+		p = new Y.Map<unknown>();
+		target.set('pos', p);
+	}
+	if (p.get('x') !== pos[0]) p.set('x', pos[0]);
+	if (p.get('y') !== pos[1]) p.set('y', pos[1]);
+	return true;
+}
+
 /** The `instances` root map (the sub-patch forest). */
 export function instancesMap(doc: Y.Doc): Y.Map<Y.Map<unknown>> {
 	return doc.getMap('instances') as Y.Map<Y.Map<unknown>>;
