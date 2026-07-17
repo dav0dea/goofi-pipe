@@ -365,6 +365,34 @@ mod tests {
     }
 
     #[test]
+    fn golden_wire_shape_specs_deserialize_and_merge() {
+        // G6: pin the merge against the EXACT JSON wire shape the frontend sends (viewSpecForKind
+        // / the inband {op:"view"} specs). Guards serde compatibility AND the merge algebra
+        // together: a line viewer wanting the last axis enveloped to 128, plus a channel viewer
+        // subsampling dim 0 to 64, on a 2-D (channels × samples) frame.
+        let wire = r#"[
+            {"dtype":"array","ndim":[["le",2]],"dims":[],
+             "reduce":[{"dim":0,"max":64,"method":"subsample"},
+                       {"dim":-1,"max":128,"method":"envelope"}]},
+            {"dtype":"array","ndim":[["le",2]],"dims":[],
+             "reduce":[{"dim":-1,"max":256,"method":"envelope"}]}
+        ]"#;
+        let specs: Vec<ViewSpec> = serde_json::from_str(wire).expect("wire specs deserialize");
+        // 8 channels × 4000 samples.
+        let plan = plan(&specs, &Frame::array(&[8, 4000]));
+        // Dim 0 (channels): only the first viewer touches it → subsample to 64 (but 8 < 64, so
+        // that axis is admitted-but-won't-shrink; it still appears in the plan at max 64).
+        // Dim 1 (samples): max(128, 256) = 256, envelope (richest).
+        assert_eq!(
+            plan.axes,
+            vec![
+                PlannedAxis { dim: 0, max: 64, method: ReduceMethod::Subsample },
+                PlannedAxis { dim: 1, max: 256, method: ReduceMethod::Envelope },
+            ]
+        );
+    }
+
+    #[test]
     fn merge_takes_largest_need_and_richest_method_per_dim() {
         // Two viewers on the same axis: max(max)=300, richest method = envelope (> subsample).
         let a = ViewSpec {

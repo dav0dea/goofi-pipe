@@ -13,7 +13,7 @@
 //! Each returns `None` when it would not actually reduce the axis, so the caller leaves that
 //! axis untouched.
 
-use crate::{Data, DType, Meta, MetaValue, Value};
+use crate::{Coord, Data, DType, Meta, MetaValue, Value};
 use goofi_view::{MergedViewSpec, ReduceMethod};
 use std::collections::BTreeMap;
 
@@ -54,12 +54,27 @@ pub fn reduce_for_view(frame: &Data, plan: &MergedViewSpec) -> Data {
             continue; // this axis did not shrink
         };
         let orig_len = shape[ax.dim];
+        // Capture the ORIGINAL coords before slicing — for a small subsampled axis they are
+        // carried verbatim (G5) so the inspector reconstructs exact labels, not approximations.
+        let verbatim = (ax.method == ReduceMethod::Subsample && orig_len <= 4096)
+            .then(|| axes.get(ax.dim).and_then(|a| a.coords.clone()))
+            .flatten();
         bytes = r.bytes;
         shape[ax.dim] = r.new_len;
         axes = axes.sliced(ax.dim, &r.centers);
         let mut entry = BTreeMap::new();
         entry.insert("orig_len".to_string(), MetaValue::Uint(orig_len as u64));
         entry.insert("method".to_string(), MetaValue::Str(method_name(ax.method).to_string()));
+        if let Some(coords) = verbatim {
+            let list = coords
+                .iter()
+                .map(|c| match c {
+                    Coord::Num(n) => MetaValue::Float(*n),
+                    Coord::Str(s) => MetaValue::Str(s.to_string()),
+                })
+                .collect();
+            entry.insert("orig_coord".to_string(), MetaValue::List(list));
+        }
         reduced.insert(ax.dim.to_string(), MetaValue::Map(entry));
     }
     if reduced.is_empty() {
@@ -405,6 +420,45 @@ mod tests {
         assert_eq!(as_f32(s.as_bytes()), vec![10.0, 11.0, 30.0, 31.0], "kept channels 0 and 2");
         let coords = r.meta().channels.get(0).and_then(|a| a.coords.clone()).expect("coords co-reduced");
         assert_eq!(coords.as_ref(), &[Coord::Str("a".into()), Coord::Str("c".into())]);
+    }
+
+    #[test]
+    fn reduce_for_view_carries_verbatim_coords_for_small_subsample_axes() {
+        // G5: a subsampled axis with ≤4096 original entries carries its ORIGINAL coord labels
+        // verbatim in meta.reduced, so the inspector reconstructs exact labels (not
+        // approximations). Only for subsample (channels/trajectory), only when small.
+        let ch = Axes::new().with(
+            0,
+            Axis::coords(vec![Coord::Str("a".into()), Coord::Str("b".into()), Coord::Str("c".into())]),
+        );
+        let meta = Meta { channels: ch, ..Default::default() };
+        let f = f32_frame(vec![3, 2], &[10.0, 11.0, 20.0, 21.0, 30.0, 31.0], meta);
+        let plan = MergedViewSpec { axes: vec![PlannedAxis { dim: 0, max: 2, method: ReduceMethod::Subsample }] };
+        let r = reduce_for_view(&f, &plan);
+        let Some(MetaValue::Map(reduced)) = r.meta().reduced.as_ref() else { panic!("reduced meta") };
+        let MetaValue::Map(entry) = reduced.get("0").expect("dim 0 reduced") else { panic!("map") };
+        assert_eq!(
+            entry.get("orig_coord"),
+            Some(&MetaValue::List(vec![
+                MetaValue::Str("a".into()),
+                MetaValue::Str("b".into()),
+                MetaValue::Str("c".into()),
+            ])),
+            "the three original channel labels are carried verbatim"
+        );
+    }
+
+    #[test]
+    fn reduce_for_view_omits_verbatim_coords_for_non_subsample_or_large_axes() {
+        // Envelope (not subsample) → no verbatim coords, even when small.
+        let ch = Axes::new().with(0, Axis::coords((0..8).map(|i| Coord::Num(i as f64)).collect::<Vec<_>>()));
+        let meta = Meta { channels: ch, ..Default::default() };
+        let f = f32_frame(vec![8], &[1.0, 4.0, 2.0, 3.0, 8.0, 5.0, 7.0, 6.0], meta);
+        let plan = MergedViewSpec { axes: vec![PlannedAxis { dim: 0, max: 2, method: ReduceMethod::Envelope }] };
+        let r = reduce_for_view(&f, &plan);
+        let Some(MetaValue::Map(reduced)) = r.meta().reduced.as_ref() else { panic!("reduced meta") };
+        let MetaValue::Map(entry) = reduced.get("0").unwrap() else { panic!("map") };
+        assert!(entry.get("orig_coord").is_none(), "envelope axis carries no verbatim coords");
     }
 
     #[test]
