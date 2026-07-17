@@ -493,6 +493,7 @@ dependencies = [
  "goofi-view",
  "serde",
  "serde_json",
+ "socket2",
  "tokio",
  "tokio-tungstenite 0.24.0",
  "tower-http",

@@ -362,7 +362,21 @@ async fn handle_control(socket: WebSocket, state: AppState) {
                         break;
                     }
                 }
-                Err(broadcast::error::RecvError::Lagged(_)) => {}
+                // A slow client lagged past the shared 256-slot channel and dropped events the
+                // ring already evicted. A dropped structural event (node/link add/remove) would
+                // permanently desync its JSON mirror — there is no gap detection. Recover exactly
+                // as the sync_updates plane does: re-send a full `hello` snapshot (the frontend
+                // applies it as a full reset; idempotent apply branches absorb any still-buffered
+                // events delivered after it).
+                Err(broadcast::error::RecvError::Lagged(_)) => {
+                    let hello = {
+                        let g = state.graph.lock().unwrap();
+                        event("hello", schemas::snapshot(&g, &state.instance_id, true))
+                    };
+                    if tx.send(Message::Text(hello.into())).await.is_err() {
+                        break;
+                    }
+                }
                 Err(broadcast::error::RecvError::Closed) => break,
             },
             sync = sync_updates.recv() => match sync {

@@ -1177,6 +1177,88 @@ async fn serialize_and_load_roundtrip() {
     );
 }
 
+/// Connect a `/control` client whose TCP receive buffer is pinned tiny, so a stalled reader
+/// deterministically lags the server's broadcast ring (setting SO_RCVBUF also disables the
+/// kernel's autotuning that would otherwise absorb the whole flood).
+async fn connect_small_rcvbuf(base: &str) -> Ws {
+    let addr: std::net::SocketAddr = base.trim_start_matches("ws://").parse().unwrap();
+    let sock =
+        socket2::Socket::new(socket2::Domain::IPV4, socket2::Type::STREAM, Some(socket2::Protocol::TCP))
+            .unwrap();
+    sock.set_recv_buffer_size(2048).unwrap();
+    sock.connect(&addr.into()).unwrap();
+    sock.set_nonblocking(true).unwrap();
+    let std_stream: std::net::TcpStream = sock.into();
+    let tokio_stream = tokio::net::TcpStream::from_std(std_stream).unwrap();
+    let (ws, _) = tokio_tungstenite::client_async(
+        format!("{base}/control"),
+        tokio_tungstenite::MaybeTlsStream::Plain(tokio_stream),
+    )
+    .await
+    .unwrap();
+    ws
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_lagged_control_client_recovers_via_a_fresh_snapshot() {
+    // The JSON `events` plane must recover a client that lagged past the shared broadcast ring,
+    // exactly as the sync_updates plane does — otherwise a dropped structural event permanently
+    // desyncs its mirror. Victim A has a tiny receive buffer and STOPS reading; flooder B pumps
+    // state_update events (constant value → the sync plane stays quiet, isolating the events
+    // plane) far past A's 256-slot ring; when A resumes it must receive a fresh `hello` snapshot.
+    let base = start_server().await;
+
+    // Victim A: tiny recv buffer, read the initial hello (+ its sync SV), then stall.
+    let mut a = connect_small_rcvbuf(&base).await;
+    let h0 = recv_text(&mut a).await;
+    assert_eq!(h0["event"], "hello", "initial hello");
+    let _a_sv = recv_binary(&mut a).await;
+
+    // Flooder B: add one node, then background-drain so B itself never blocks the server.
+    let (mut b, _) = connect_async(format!("{base}/control")).await.unwrap();
+    let _ = recv_text(&mut b).await;
+    let _ = recv_binary(&mut b).await;
+    let osc = call(&mut b, 1, "add_node", json!({ "type": "Oscillator" })).await["result"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let (mut btx, mut brx) = b.split();
+    let drain = tokio::spawn(async move { while let Some(Ok(_)) = brx.next().await {} });
+
+    // Flood: id-less (no reply) update_param with a CONSTANT value — each still pushes a
+    // state_update on the events plane. A's 2 KB receive buffer blocks its server task after a
+    // few frames, so while A stays idle the ring only needs ~256 of these to overflow. The stall
+    // below (not any single wall-clock value) is what forces the lag: A must NOT drain while the
+    // ring overflows, or it would keep pace and never lag.
+    for _ in 0..2000 {
+        btx.send(Message::Text(
+            json!({ "op": "update_param", "payload": {
+                "node": osc, "group": "common", "name": "max_frequency", "value": 7.0
+            }})
+            .to_string(),
+        ))
+        .await
+        .unwrap();
+    }
+    // Hold A idle long enough for the server to broadcast past the 256-slot ring even under a
+    // saturated parallel-suite; it only needs to process ~256 of the flood, far less than all.
+    tokio::time::sleep(Duration::from_millis(2000)).await;
+
+    // A resumes: among the buffered frames it MUST receive a recovery hello (the second one).
+    let recovered = tokio::time::timeout(Duration::from_secs(8), async {
+        loop {
+            let m = recv_text(&mut a).await;
+            if m.get("event").and_then(|v| v.as_str()) == Some("hello") {
+                return true;
+            }
+        }
+    })
+    .await
+    .unwrap_or(false);
+    drain.abort();
+    assert!(recovered, "a lagged control client must recover via a fresh hello snapshot");
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn many_clients_concurrently_leaf_write_and_all_converge() {
     // Stress + multi-user correctness for the CRDT write path. N clients each OWN one node and
