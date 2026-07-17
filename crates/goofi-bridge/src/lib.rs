@@ -625,27 +625,10 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
                 }
                 Ok(json!({ "ok": true }))
             }
-            "set_expression" => {
-                let uid = parse_uid(&payload, "node")?;
-                let group = payload.get("group").and_then(|v| v.as_str()).ok_or("missing group")?;
-                let name = payload.get("name").and_then(|v| v.as_str()).ok_or("missing name")?;
-                let expression = payload.get("expression").and_then(|v| v.as_str()).unwrap_or("");
-                let enabled = payload
-                    .get("expression_enabled")
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or(false);
-                let triggers = payload
-                    .get("expression_triggers_process")
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or(false);
-                // Re-project to every shared sibling (§4.5): a shared member's expression edit
-                // hits all its instances. A ROOT / unique-member edit updates only itself.
-                let updated = g.set_member_expression(uid, group, name, expression, enabled, triggers)?;
-                for peer in updated {
-                    events.push(param_state_update(&g, peer));
-                }
-                Ok(json!({ "ok": true }))
-            }
+            // `set_expression` retired (Phase 3): the expression binding is a merge-safe leaf the
+            // client writes directly to the doc. `apply_client_write` applies it via
+            // `set_member_expression` (re-projecting to shared siblings) and echoes the same
+            // runtime-enriched `state_update` (carrying `expression_error`) this handler used to.
             // `set_node_pos` / `set_node_viewers` retired (Phase 3): node/instance position and the
             // per-slot viewer blob are merge-safe leaves the client writes directly to the doc
             // (`apply_client_write` → `set_member_pos` / `set_node_viewers`).
@@ -866,7 +849,29 @@ fn apply_client_write(state: &AppState, update: &[u8]) {
         // `set_node_viewers` RPC's authority).
         let _ = g.set_node_viewers(uid, blob.clone());
     }
+    // Expression bindings: the doc is the SSOT for the binding (source/enabled/triggers), but the
+    // per-param `expression_error` is RUNTIME-derived and never enters the doc. So after applying
+    // each binding (re-projected to shared siblings), echo the runtime-enriched param descriptor as
+    // the same `state_update` the retired `set_expression` RPC emitted — the client's fx toggle and
+    // field error indicator refresh exactly as before, with no read-path change.
+    let mut expr_peers: Vec<Uid> = Vec::new();
+    for (uid_hex, group, name, binding) in &changed.expressions {
+        let Some(uid) = Uid::from_hex(uid_hex) else { continue };
+        let (source, enabled, triggers) = match binding {
+            Some(e) => (e.source.as_str(), e.enabled, e.triggers),
+            None => ("", false, false), // a cleared binding — revert to the literal value
+        };
+        if let Ok(updated) = g.set_member_expression(uid, group, name, source, enabled, triggers) {
+            expr_peers.extend(updated);
+        }
+    }
     remirror_and_broadcast_locked(state, &g, &mut doc);
+    // Emit after the re-mirror so the doc + graph are consistent; dedup so one descriptor per node.
+    expr_peers.sort_by_key(|u| u.to_hex());
+    expr_peers.dedup();
+    for peer in expr_peers {
+        let _ = state.events.send(param_state_update(&g, peer));
+    }
 }
 
 // ---------------------------------------------------------------------------

@@ -116,6 +116,37 @@ async fn call(ws: &mut Ws, id: i64, op: &str, payload: Value) -> Value {
     }
 }
 
+/// Bind an ENABLED expression on a param via a client doc leaf-write — the `set_expression` RPC is
+/// retired (Phase 3), so tests that need a binding as SETUP write it to the doc like the frontend
+/// does. Advertises a fresh replica's SV, drains binary frames until the target node is present
+/// (robust to interleaved broadcast deltas the earlier `call`s skipped), then leaf-writes the
+/// binding (value unchanged) and sends the delta. The manager applies it via `set_member_expression`.
+async fn leaf_write_expression(ws: &mut Ws, node: &str, group: &str, name: &str, source: &str) {
+    use goofi_crdt::{ExprRecord, GraphDoc, SyncMsg};
+    let mut doc = GraphDoc::new();
+    ws.send(Message::Binary(doc.sync_hello().into())).await.unwrap();
+    // The SV-diff response is a complete, self-contained update; applying it makes every node
+    // present in one shot. (Partial broadcast deltas queued ahead just apply/buffer harmlessly.)
+    for _ in 0..40 {
+        if let Some(m) = SyncMsg::decode(&recv_binary(ws).await) {
+            doc.on_sync(m);
+        }
+        if doc.node_ids().iter().any(|u| u == node) {
+            break;
+        }
+    }
+    let value = doc.param_value(node, group, name).unwrap_or(json!(0.0));
+    let before = doc.state_vector();
+    doc.set_param(
+        node,
+        group,
+        name,
+        &value,
+        Some(ExprRecord { source: source.into(), enabled: true, triggers: false }),
+    );
+    ws.send(Message::Binary(SyncMsg::Update(doc.diff(&before)).encode().into())).await.unwrap();
+}
+
 #[tokio::test]
 async fn runtime_registered_type_reaches_the_palette_over_the_wire() {
     // The full serving path a browser sees: a runtime type registered into the
@@ -425,62 +456,60 @@ async fn data_plane_reduces_to_the_declared_viewspec() {
 }
 
 #[tokio::test]
-async fn set_expression_binds_and_reflects_over_the_wire() {
-    // Regression guard for the "unknown op `set_expression`" bug: the op must dispatch
-    // (not 404), store the binding, and echo it back in the node's param descriptor —
-    // including `expression_error` (the field indicator) and with NO `expression_autoeval`
-    // key (auto-eval is always on, so there is no autoeval flag on the wire).
+async fn a_client_expression_leaf_write_binds_and_echoes_the_descriptor() {
+    // Phase 3 (writer half, expressions): the client writes the binding straight into the doc — no
+    // set_expression RPC. The manager applies it via set_member_expression and echoes the runtime-
+    // enriched param descriptor as a `state_update`: the binding round-trips AND carries
+    // `expression_error` (the field indicator; runtime-derived, never in the doc), with NO
+    // `expression_autoeval` key.
+    use goofi_crdt::{ExprRecord, GraphDoc, SyncMsg};
+
     let base = start_server().await;
     let (mut ws, _) = connect_async(format!("{base}/control")).await.unwrap();
     let _hello = recv_text(&mut ws).await;
+    let _sv = recv_binary(&mut ws).await;
+    let mut wdoc = GraphDoc::new();
+    ws.send(Message::Binary(wdoc.sync_hello().into())).await.unwrap();
+    wdoc.on_sync(SyncMsg::decode(&recv_binary(&mut ws).await).unwrap());
 
     let osc = call(&mut ws, 1, "add_node", json!({ "type": "Oscillator" }))
         .await["result"]
         .as_str()
         .unwrap()
         .to_string();
+    wdoc.on_sync(SyncMsg::decode(&recv_binary(&mut ws).await).unwrap());
+    assert!(wdoc.node_ids().contains(&osc), "writer's replica has the node");
 
-    // Bind an expression on the universal common.max_frequency param.
-    ws.send(Message::Text(
-        json!({
-            "id": 2,
-            "op": "set_expression",
-            "payload": {
-                "node": osc,
-                "group": "common",
-                "name": "max_frequency",
-                "expression": "1 + 2",
-                "expression_enabled": true,
-                "expression_triggers_process": false
-            }
-        })
-        .to_string(),
-    ))
-    .await
-    .unwrap();
+    // Bind an expression on common.max_frequency (value unchanged) and send the delta.
+    let value = wdoc.param_value(&osc, "common", "max_frequency").unwrap_or(json!(0.0));
+    let before = wdoc.state_vector();
+    wdoc.set_param(
+        &osc,
+        "common",
+        "max_frequency",
+        &value,
+        Some(ExprRecord { source: "1 + 2".into(), enabled: true, triggers: false }),
+    );
+    ws.send(Message::Binary(SyncMsg::Update(wdoc.diff(&before)).encode().into())).await.unwrap();
 
-    // Collect both the id=2 reply and the state_update broadcast (either order).
-    let mut ok = false;
+    // The manager echoes the descriptor as a state_update (the same one the retired RPC emitted).
     let mut descriptor: Option<Value> = None;
-    for _ in 0..10 {
+    for _ in 0..40 {
         let m = recv_text(&mut ws).await;
-        if m.get("id").and_then(|v| v.as_i64()) == Some(2) {
-            assert_eq!(m["result"]["ok"], true, "set_expression must dispatch, not 404 as unknown op");
-            ok = true;
-        } else if m["event"] == "state_update" && m["payload"]["node"] == json!(osc) {
-            descriptor = Some(m["payload"]["params"]["common"]["max_frequency"].clone());
-        }
-        if ok && descriptor.is_some() {
-            break;
+        if m["event"] == "state_update" && m["payload"]["node"] == json!(osc) {
+            let d = m["payload"]["params"]["common"]["max_frequency"].clone();
+            if d["expression"] == "1 + 2" {
+                descriptor = Some(d);
+                break;
+            }
         }
     }
-    assert!(ok, "set_expression reply must arrive");
-    let d = descriptor.expect("state_update carrying the param descriptor");
+    let d = descriptor.expect("state_update carrying the bound param descriptor");
     assert_eq!(d["expression"], "1 + 2", "source round-trips");
     assert_eq!(d["expression_enabled"], true);
     assert_eq!(d["expression_triggers_process"], false);
-    // This harness injects no evaluator, so the binding round-trips WITH an error — the
-    // point is the field exists as a string to drive the per-param red indicator.
+    // This harness injects no evaluator, so the binding round-trips WITH an error — the point is
+    // the field exists as a string to drive the per-param red indicator.
     assert!(
         d["expression_error"].is_string(),
         "expression_error must be present for the field indicator; got {:?}",
@@ -804,17 +833,8 @@ async fn renaming_a_node_rewrites_referrers_nd_expressions_over_the_wire() {
     let consumer = uid(&call(&mut ws, 2, "add_node", json!({ "type": "Oscillator" })).await);
     call(&mut ws, 3, "rename_node", json!({ "node": producer, "name": "src" })).await;
 
-    // consumer.common.max_frequency = nd('src')
-    call(
-        &mut ws,
-        4,
-        "set_expression",
-        json!({
-            "node": consumer, "group": "common", "name": "max_frequency",
-            "expression": "nd('src')", "expression_enabled": true, "expression_triggers_process": false
-        }),
-    )
-    .await;
+    // consumer.common.max_frequency = nd('src') — via a client doc leaf-write (RPC retired).
+    leaf_write_expression(&mut ws, &consumer, "common", "max_frequency", "nd('src')").await;
 
     // Rename the producer; the reply is fire-and-forget, the rewrite rides a state_update.
     call(&mut ws, 5, "rename_node", json!({ "node": producer, "name": "signal" })).await;
@@ -958,16 +978,8 @@ async fn param_values_broadcasts_live_expression_values() {
         .as_str()
         .unwrap()
         .to_string();
-    call(
-        &mut ws,
-        2,
-        "set_expression",
-        json!({
-            "node": osc, "group": "common", "name": "max_frequency",
-            "expression": "1 + 2", "expression_enabled": true, "expression_triggers_process": false
-        }),
-    )
-    .await;
+    // Bind an enabled expression via a client doc leaf-write (set_expression RPC retired).
+    leaf_write_expression(&mut ws, &osc, "common", "max_frequency", "1 + 2").await;
 
     let ev = tokio::time::timeout(Duration::from_secs(8), async {
         loop {

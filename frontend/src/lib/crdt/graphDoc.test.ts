@@ -6,7 +6,9 @@ import {
 	nodeView,
 	nodeViews,
 	paramValue,
+	paramExpr,
 	paramExprSource,
+	setParamExpr,
 	linkViews,
 	instancesMap,
 	instanceView,
@@ -184,6 +186,45 @@ describe('graphDoc.setNodePos — committed-drag leaf write', () => {
 		// doc's full delete set, so it's non-empty once any value has been overwritten.)
 		const sv = Y.encodeStateVector(doc);
 		setNodePos(doc, 'a', [111, 222]);
+		expect(Y.encodeStateVector(doc)).toEqual(sv);
+	});
+});
+
+describe('graphDoc.setParamExpr — expression-binding leaf write', () => {
+	it('writes a binding in place and paramExpr reads it back', () => {
+		const doc = seedDoc();
+		expect(setParamExpr(doc, 'a', 'common', 'max_frequency', { source: "nd('f')", enabled: true, triggers: false })).toBe(
+			true
+		);
+		expect(paramExpr(doc, 'a', 'common', 'max_frequency')).toEqual({
+			source: "nd('f')",
+			enabled: true,
+			triggers: false
+		});
+		// The committed value is untouched — only the binding was written.
+		expect(paramValue(doc, 'a', 'common', 'max_frequency')).toBe(30);
+	});
+
+	it('clears a binding when passed null', () => {
+		const doc = seedDoc();
+		// `waveform` is seeded WITH an expr in seedDoc.
+		expect(paramExpr(doc, 'a', 'oscillator', 'waveform')).toBeDefined();
+		expect(setParamExpr(doc, 'a', 'oscillator', 'waveform', null)).toBe(true);
+		expect(paramExpr(doc, 'a', 'oscillator', 'waveform')).toBeUndefined();
+	});
+
+	it('no-ops (returns false) when the node is absent — never mint a phantom', () => {
+		const doc = seedDoc();
+		expect(setParamExpr(doc, 'ghost', 'common', 'x', { source: 'nd()', enabled: true, triggers: false })).toBe(false);
+		expect(nodesMap(doc).get('ghost')).toBeUndefined();
+	});
+
+	it('is idempotent — re-writing the same binding creates no new struct', () => {
+		const doc = seedDoc();
+		const b = { source: "nd('lfo')", enabled: true, triggers: true };
+		setParamExpr(doc, 'a', 'common', 'max_frequency', b);
+		const sv = Y.encodeStateVector(doc);
+		setParamExpr(doc, 'a', 'common', 'max_frequency', b);
 		expect(Y.encodeStateVector(doc)).toEqual(sv);
 	});
 });

@@ -8,7 +8,7 @@
  * Per-kind recipes are specified in the design spec §3.
  */
 import { paramValues } from '$lib/api/control';
-import type { Executor, ExecutorDeps, ExprState, GraphAction } from './history.svelte';
+import type { Executor, ExecutorDeps, GraphAction } from './history.svelte';
 
 /** Narrow a generic Action to a specific graph kind for an executor body. */
 function as<K extends GraphAction['kind']>(a: unknown): Extract<GraphAction, { kind: K }> {
@@ -109,25 +109,14 @@ const updateParam: Executor = {
 	}
 };
 
-function exprCall(node: string, group: string, name: string, e: ExprState): Record<string, unknown> {
-	return {
-		node,
-		group,
-		name,
-		expression: e.expression,
-		expression_enabled: e.enabled,
-		expression_triggers_process: e.triggers_process
-	};
-}
-
 const setExpression: Executor = {
 	async forward(action, deps) {
 		const a = as<'set_expression'>(action);
-		await deps.control.call('set_expression', exprCall(a.payload.node, a.payload.group, a.payload.name, a.payload.newExpr));
+		deps.graph.writeExpression(a.payload.node, a.payload.group, a.payload.name, a.payload.newExpr);
 	},
 	async inverse(action, deps) {
 		const a = as<'set_expression'>(action);
-		await deps.control.call('set_expression', exprCall(a.payload.node, a.payload.group, a.payload.name, a.payload.oldExpr));
+		deps.graph.writeExpression(a.payload.node, a.payload.group, a.payload.name, a.payload.oldExpr);
 	}
 };
 

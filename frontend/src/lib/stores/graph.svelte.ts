@@ -37,6 +37,7 @@ import {
 	instanceViews,
 	paramValue,
 	setParamValue,
+	setParamExpr as docSetParamExpr,
 	setNodePos as docSetNodePos,
 	setViewers as docSetViewers
 } from '$lib/crdt/graphDoc';
@@ -719,14 +720,26 @@ export class GraphStore {
 			context: captureNavContext(),
 			payload: { node, group, name, oldExpr, newExpr }
 		});
-		await this.ctl.call('set_expression', {
-			node,
-			group,
-			name,
-			expression,
-			expression_enabled: newExpr.enabled,
-			expression_triggers_process: newExpr.triggers_process
-		});
+		this.writeExpression(node, group, name, newExpr);
+	}
+
+	/** Client leaf-write of a param's expression binding into the CRDT doc (Phase 3 — replaces the
+	 * `set_expression` RPC). The manager applies it via `set_member_expression` (re-projecting to
+	 * shared siblings) and echoes the runtime-enriched param descriptor as a `state_update`, so the
+	 * fx toggle + `expression_error` indicator refresh exactly as before. Records no history —
+	 * callers (setExpression, the executor) own that. A null/empty expression clears the binding. */
+	writeExpression(node: string, group: string, name: string, expr: ExprState): void {
+		this._sync.commit((doc) =>
+			docSetParamExpr(
+				doc,
+				node,
+				group,
+				name,
+				expr.expression
+					? { source: expr.expression, enabled: expr.enabled, triggers: expr.triggers_process }
+					: null
+			)
+		);
 	}
 
 	async setNodePos(uid: string, pos: [number, number]): Promise<void> {

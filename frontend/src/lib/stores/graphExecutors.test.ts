@@ -9,7 +9,7 @@ import { setInlineKind, rawInlineView } from '$lib/viewers/inlineView.svelte';
 import { ui } from '$lib/stores/ui.svelte';
 import type { NodeInstanceInfo, LinkInfo } from '$lib/api/control';
 import * as Y from 'yjs';
-import { linksArray, paramValue, nodeView } from '$lib/crdt/graphDoc';
+import { linksArray, paramValue, nodeView, paramExpr, setParamExpr } from '$lib/crdt/graphDoc';
 
 /** Seed a node into the store's CRDT doc so a param leaf-write targeting it lands. */
 function docAddNode(g: GraphStore, uid: string): void {
@@ -278,9 +278,12 @@ describe('graph executors — simple kinds', () => {
 		expect(fc.recordedCalls()).toEqual([{ op: 'add_link', payload: { ...link } }]);
 	});
 
-	it('set_expression inverse restores the prior expression state', async () => {
+	it('set_expression inverse writes the prior expression binding to the doc (retired RPC)', async () => {
 		const fc = new FakeControl();
 		const g = new GraphStore(fc);
+		docAddNode(g, 'osc0');
+		// A current binding the inverse (oldExpr = null) must clear.
+		setParamExpr(g.doc, 'osc0', 'common', 'frequency', { source: 'nd("a")', enabled: true, triggers: false });
 		const action: Action = {
 			kind: 'set_expression',
 			label: 'Set expression',
@@ -295,19 +298,9 @@ describe('graph executors — simple kinds', () => {
 			}
 		};
 		await graphExecutors['set_expression'].inverse(action, deps(fc, g));
-		expect(fc.recordedCalls()).toEqual([
-			{
-				op: 'set_expression',
-				payload: {
-					node: 'osc0',
-					group: 'common',
-					name: 'frequency',
-					expression: null,
-					expression_enabled: false,
-					expression_triggers_process: false
-				}
-			}
-		]);
+		// The retired set_expression RPC is gone; the old (cleared) binding lands in the CRDT doc.
+		expect(fc.recordedCalls().some((c) => c.op === 'set_expression')).toBe(false);
+		expect(paramExpr(g.doc, 'osc0', 'common', 'frequency')).toBeUndefined();
 	});
 
 	it('update_param inverse writes the old value to the doc (leaf-write)', async () => {

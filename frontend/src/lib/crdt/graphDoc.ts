@@ -149,20 +149,59 @@ export function setParamValue(
 	name: string,
 	value: number | string | boolean
 ): boolean {
-	const node = nodesMap(doc).get(uid);
-	if (!node) return false;
-	const getMap = (parent: Y.Map<unknown>, key: string): Y.Map<unknown> => {
-		let m = parent.get(key) as Y.Map<unknown> | undefined;
-		if (!m) {
-			m = new Y.Map<unknown>();
-			parent.set(key, m);
-		}
-		return m;
-	};
-	const params = getMap(node, 'params');
-	const g = getMap(params, group);
-	const entry = getMap(g, name);
+	const entry = paramEntryForWrite(doc, uid, group, name);
+	if (!entry) return false;
 	if (entry.get('value') !== value) entry.set('value', value);
+	return true;
+}
+
+/** Get-or-insert the (stable) `Y.Map` at `parent[key]`. Never replaces an existing map, so nested
+ * leaves survive. */
+function getOrInsertMap(parent: Y.Map<unknown>, key: string): Y.Map<unknown> {
+	let m = parent.get(key) as Y.Map<unknown> | undefined;
+	if (!m) {
+		m = new Y.Map<unknown>();
+		parent.set(key, m);
+	}
+	return m;
+}
+
+/** The `nodes[uid].params[group][name]` entry map, get-or-inserted, or `undefined` if the node is
+ * absent from this replica (never mint a phantom node — the diff would create a conflicting node). */
+function paramEntryForWrite(
+	doc: Y.Doc,
+	uid: string,
+	group: string,
+	name: string
+): Y.Map<unknown> | undefined {
+	const node = nodesMap(doc).get(uid);
+	if (!node) return undefined;
+	return getOrInsertMap(getOrInsertMap(getOrInsertMap(node, 'params'), group), name);
+}
+
+/** Write (or clear) a param's expression binding into the doc IN PLACE, matching the Rust
+ * `GraphDoc::set_param` expr structure (`…params[group][name].expr = {source, enabled, triggers}`),
+ * so the manager's `apply_client_update` detects it and applies it via `set_member_expression`. A
+ * client leaf-write (§4). `null` clears the binding. No-op if the node is absent. Returns whether it
+ * landed. The runtime `expression_error` is NOT in the doc — it rides the `state_update` echo the
+ * manager emits after applying, exactly as the retired `set_expression` RPC did. */
+export function setParamExpr(
+	doc: Y.Doc,
+	uid: string,
+	group: string,
+	name: string,
+	expr: { source: string; enabled: boolean; triggers: boolean } | null
+): boolean {
+	const entry = paramEntryForWrite(doc, uid, group, name);
+	if (!entry) return false;
+	if (expr) {
+		const ex = getOrInsertMap(entry, 'expr');
+		if (ex.get('source') !== expr.source) ex.set('source', expr.source);
+		if (ex.get('enabled') !== expr.enabled) ex.set('enabled', expr.enabled);
+		if (ex.get('triggers') !== expr.triggers) ex.set('triggers', expr.triggers);
+	} else if (entry.get('expr') !== undefined) {
+		entry.delete('expr');
+	}
 	return true;
 }
 

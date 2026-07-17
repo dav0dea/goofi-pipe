@@ -105,18 +105,23 @@ pub struct InstanceRecord {
 /// The merge-safe leaves a client's incremental update changed — what the manager pushes into the
 /// engine `Graph` after applying a client doc write. Params carry `(uid, group, name, value)`;
 /// positions carry `(uid, [x, y])` for each node or instance box that moved; viewers carry
-/// `(uid, blob)` for each node whose per-slot viewer view-state changed.
+/// `(uid, blob)` for each node whose per-slot viewer view-state changed; expressions carry
+/// `(uid, group, name, binding)` — `Some` for a bound/edited expression, `None` when it was cleared.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct ClientChanges {
     pub params: Vec<(String, String, String, serde_json::Value)>,
     pub positions: Vec<(String, [f64; 2])>,
     pub viewers: Vec<(String, serde_json::Value)>,
+    pub expressions: Vec<(String, String, String, Option<ExprRecord>)>,
 }
 
 impl ClientChanges {
     /// No leaf changed — the manager has nothing to push.
     pub fn is_empty(&self) -> bool {
-        self.params.is_empty() && self.positions.is_empty() && self.viewers.is_empty()
+        self.params.is_empty()
+            && self.positions.is_empty()
+            && self.viewers.is_empty()
+            && self.expressions.is_empty()
     }
 }
 
@@ -358,6 +363,21 @@ impl GraphDoc {
             Some(Out::Any(Any::String(s))) => Some(s.to_string()),
             _ => None,
         }
+    }
+
+    /// A param's full expression binding `{source, enabled, triggers}`, or `None` if unbound.
+    pub fn param_expr(&self, uid: &str, group: &str, name: &str) -> Option<ExprRecord> {
+        let txn = self.doc.transact();
+        let ex = self
+            .param_entry(&txn, uid, group, name)?
+            .get(&txn, "expr")
+            .and_then(|v| v.cast::<MapRef>().ok())?;
+        let source = match ex.get(&txn, "source") {
+            Some(Out::Any(Any::String(s))) => s.to_string(),
+            _ => return None,
+        };
+        let flag = |k| matches!(ex.get(&txn, k), Some(Out::Any(Any::Bool(true))));
+        Some(ExprRecord { source, enabled: flag("enabled"), triggers: flag("triggers") })
     }
 
     /// Store a node's opaque per-slot viewer blob as a JSON string (typed in a later phase).
@@ -616,6 +636,32 @@ impl GraphDoc {
         out
     }
 
+    /// Every param that currently has an expression binding, as `(uid, group, name, ExprRecord)` —
+    /// the before/after basis for detecting a client's expression edit.
+    fn expr_snapshot(&self) -> Vec<(String, String, String, ExprRecord)> {
+        let txn = self.doc.transact();
+        let mut out = Vec::new();
+        for uid in self.nodes.keys(&txn) {
+            let Some(node) = self.nodes.get(&txn, uid).and_then(|v| v.cast::<MapRef>().ok()) else {
+                continue;
+            };
+            let Some(params) = node.get(&txn, "params").and_then(|v| v.cast::<MapRef>().ok()) else {
+                continue;
+            };
+            for group in params.keys(&txn) {
+                let Some(g) = params.get(&txn, group).and_then(|v| v.cast::<MapRef>().ok()) else {
+                    continue;
+                };
+                for name in g.keys(&txn) {
+                    if let Some(e) = self.param_expr(uid, group, name) {
+                        out.push((uid.to_string(), group.to_string(), name.to_string(), e));
+                    }
+                }
+            }
+        }
+        out
+    }
+
     /// Every node/instance position `(uid, [x, y])` currently in the doc — the before/after
     /// basis for detecting a client's committed drag. Covers ROOT nodes and sub-patch instance
     /// boxes (both carry a top-level `pos`); boundary positions are nested and handled via their
@@ -648,10 +694,10 @@ impl GraphDoc {
     }
 
     /// Apply a client's incremental update to this replica and return the merge-safe leaves that
-    /// changed — param values, node/instance positions, and viewer blobs — so the manager can push
-    /// exactly those into the engine `Graph`. The diff is loop-safe: the manager's subsequent
-    /// graph→doc re-mirror writes the same values, which yrs records as no change. `Err` only if the
-    /// update bytes are malformed.
+    /// changed — param values, node/instance positions, viewer blobs, and expression bindings — so
+    /// the manager can push exactly those into the engine `Graph`. The diff is loop-safe: the
+    /// manager's subsequent graph→doc re-mirror writes the same values, which yrs records as no
+    /// change. `Err` only if the update bytes are malformed.
     pub fn apply_client_update(&mut self, update: &[u8]) -> Result<ClientChanges, String> {
         let params_before: HashMap<(String, String, String), serde_json::Value> = self
             .param_snapshot()
@@ -661,6 +707,11 @@ impl GraphDoc {
         let pos_before: HashMap<String, [f64; 2]> = self.pos_snapshot().into_iter().collect();
         let viewers_before: HashMap<String, serde_json::Value> =
             self.viewers_snapshot().into_iter().collect();
+        let expr_before: HashMap<(String, String, String), ExprRecord> = self
+            .expr_snapshot()
+            .into_iter()
+            .map(|(u, g, n, e)| ((u, g, n), e))
+            .collect();
         self.apply_update(update)?;
         let params = self
             .param_snapshot()
@@ -677,7 +728,25 @@ impl GraphDoc {
             .into_iter()
             .filter(|(u, v)| viewers_before.get(u) != Some(v))
             .collect();
-        Ok(ClientChanges { params, positions, viewers })
+        // Expressions: an added/edited binding appears in `after` with a value differing from
+        // `before`; a CLEARED binding is a key in `before` no longer in `after` → reported as None.
+        let expr_after: HashMap<(String, String, String), ExprRecord> = self
+            .expr_snapshot()
+            .into_iter()
+            .map(|(u, g, n, e)| ((u, g, n), e))
+            .collect();
+        let mut expressions: Vec<(String, String, String, Option<ExprRecord>)> = Vec::new();
+        for ((u, g, n), e) in &expr_after {
+            if expr_before.get(&(u.clone(), g.clone(), n.clone())) != Some(e) {
+                expressions.push((u.clone(), g.clone(), n.clone(), Some(e.clone())));
+            }
+        }
+        for (k, _) in &expr_before {
+            if !expr_after.contains_key(k) {
+                expressions.push((k.0.clone(), k.1.clone(), k.2.clone(), None));
+            }
+        }
+        Ok(ClientChanges { params, positions, viewers, expressions })
     }
 
     /// The message to send a peer on connect: this replica's state vector, framed. The peer
@@ -1062,6 +1131,62 @@ mod tests {
 
         // Idempotent: re-applying reports nothing further.
         assert!(server.apply_client_update(&update).unwrap().is_empty());
+    }
+
+    #[test]
+    fn apply_client_update_reports_changed_expressions() {
+        use serde_json::json;
+        // A client binds / edits / clears an nd() expression on a param — the binding is a merge-safe
+        // leaf (§4). The manager applies each via set_member_expression and echoes the runtime-
+        // enriched param descriptor (carrying expression_error). An added/edited binding is reported
+        // as Some; a cleared one as None.
+        let mut server = GraphDoc::new();
+        server.upsert_node("1", "Oscillator", "osc", [0.0, 0.0]);
+        server.set_param("1", "common", "frequency", &json!(10.0), None);
+        server.set_param(
+            "1",
+            "common",
+            "amplitude",
+            &json!(1.0),
+            Some(ExprRecord { source: "nd('a')".into(), enabled: true, triggers: false }),
+        );
+
+        let mut client = GraphDoc::new();
+        client.apply_update(&server.diff(&client.state_vector())).unwrap();
+        // Bind frequency (value unchanged), clear amplitude's binding.
+        client.set_param(
+            "1",
+            "common",
+            "frequency",
+            &json!(10.0),
+            Some(ExprRecord { source: "nd('f')".into(), enabled: true, triggers: true }),
+        );
+        client.set_param("1", "common", "amplitude", &json!(1.0), None);
+        let update = client.diff(&server.state_vector());
+
+        let mut changed = server.apply_client_update(&update).unwrap();
+        changed.expressions.sort_by(|a, b| a.2.cmp(&b.2)); // by param name — deterministic compare
+        assert_eq!(
+            changed.expressions,
+            vec![
+                ("1".into(), "common".into(), "amplitude".into(), None),
+                (
+                    "1".into(),
+                    "common".into(),
+                    "frequency".into(),
+                    Some(ExprRecord { source: "nd('f')".into(), enabled: true, triggers: true })
+                ),
+            ]
+        );
+        assert!(changed.params.is_empty(), "values unchanged");
+        assert_eq!(
+            server.param_expr("1", "common", "frequency"),
+            Some(ExprRecord { source: "nd('f')".into(), enabled: true, triggers: true })
+        );
+        assert_eq!(server.param_expr("1", "common", "amplitude"), None, "binding cleared");
+
+        // Idempotent.
+        assert!(server.apply_client_update(&update).unwrap().expressions.is_empty());
     }
 
     #[test]
