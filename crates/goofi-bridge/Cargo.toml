@@ -11,6 +11,7 @@ goofi-node = { path = "../goofi-node" }
 goofi-engine = { path = "../goofi-engine" }
 goofi-nodes = { path = "../goofi-nodes" }
 goofi-view = { path = "../goofi-view" }
+goofi-crdt = { path = "../goofi-crdt" }
 axum = { version = "0.8", features = ["ws"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "sync"] }
 tower-http = { version = "0.6", features = ["fs"] }

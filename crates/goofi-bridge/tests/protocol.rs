@@ -458,6 +458,32 @@ async fn set_expression_binds_and_reflects_over_the_wire() {
 }
 
 #[tokio::test]
+async fn crdt_doc_tracks_a_node_add_and_param_edit() {
+    // Phase 1: the server-side CRDT mirror tracks control edits. A node-add + param-edit is
+    // reflected in the doc (read via the temporary `debug_crdt` diagnostic op).
+    let base = start_server().await;
+    let (mut ws, _) = connect_async(format!("{base}/control")).await.unwrap();
+    let _hello = recv_text(&mut ws).await;
+
+    let osc = call(&mut ws, 1, "add_node", json!({ "type": "Oscillator" })).await["result"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    call(
+        &mut ws,
+        2,
+        "update_param",
+        json!({ "node": osc, "group": "common", "name": "max_frequency", "value": 25.0 }),
+    )
+    .await;
+
+    let doc = call(&mut ws, 3, "debug_crdt", json!({})).await;
+    let ids = doc["result"]["node_ids"].as_array().unwrap();
+    assert!(ids.iter().any(|v| v == &json!(osc)), "doc has the added node");
+    assert_eq!(doc["result"]["max_frequency"], json!(25.0), "doc mirrors the param edit");
+}
+
+#[tokio::test]
 async fn renaming_a_node_rewrites_referrers_nd_expressions_over_the_wire() {
     // A node referenced by `nd('old')` in another node's expression: renaming it must
     // rewrite the reference to `nd('new')` AND rebroadcast the referrer's params so its

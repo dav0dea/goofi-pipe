@@ -6,6 +6,7 @@
 //! as broadcast events the client applies. The built SPA is served from disk
 //! (`frontend/build`, or `GOOFI_FRONTEND_BUILD`) via `ServeDir`.
 
+mod crdt_mirror;
 mod schemas;
 
 use std::collections::{HashMap, HashSet};
@@ -31,6 +32,9 @@ pub struct AppState {
     pub graph: Arc<Mutex<Graph>>,
     pub events: broadcast::Sender<String>,
     pub instance_id: Arc<str>,
+    /// Server-side CRDT mirror of the graph's control state (Phase 1: not client-facing;
+    /// re-synced after every successful control op). The future shared source of truth.
+    pub crdt: Arc<Mutex<goofi_crdt::GraphDoc>>,
 }
 
 impl Default for AppState {
@@ -50,6 +54,7 @@ impl AppState {
             graph: Arc::new(Mutex::new(Graph::new())),
             events,
             instance_id: Arc::from(format!("{iid:x}").as_str()),
+            crdt: Arc::new(Mutex::new(goofi_crdt::GraphDoc::new())),
         }
     }
 }
@@ -666,9 +671,27 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
                 ));
                 Ok(json!({ "ok": true }))
             }
+            // Phase 1 diagnostic (removed once the client reads the doc directly in Phase 2):
+            // expose the server-side CRDT mirror so a protocol test can prove it tracks edits.
+            "debug_crdt" => {
+                let doc = state.crdt.lock().unwrap();
+                let mf = doc
+                    .node_ids()
+                    .first()
+                    .and_then(|id| doc.param_value(id, "common", "max_frequency"));
+                Ok(json!({ "node_ids": doc.node_ids(), "max_frequency": mf.unwrap_or(json!(null)) }))
+            }
             other => Err(format!("unknown op `{other}`")),
         }
     })();
+
+    // Phase 1: keep the server-side CRDT doc in agreement with the graph after any
+    // successful control op (full re-sync — correctness first; incremental writes Phase 3).
+    if result.is_ok() {
+        let g = state.graph.lock().unwrap();
+        let mut doc = state.crdt.lock().unwrap();
+        crdt_mirror::sync_graph_to_doc(&g, &mut doc);
+    }
 
     for e in events {
         let _ = state.events.send(e);
