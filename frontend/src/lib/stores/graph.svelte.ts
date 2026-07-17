@@ -44,6 +44,7 @@ import {
 	setViewers as docSetViewers
 } from '$lib/crdt/graphDoc';
 import { assembleNode, type RuntimeOverlay } from '$lib/crdt/nodeAssembly';
+import { assembleInstances } from '$lib/crdt/instanceAssembly';
 import type { StringParam } from '$lib/api/types';
 import type * as Y from 'yjs';
 
@@ -135,14 +136,16 @@ export class GraphStore {
 		// links: the whole set is replaced from the doc.
 		this.links = linkViews(doc);
 		if (this.nodeTypes?.length) {
-			// Catalog present (always in production) → the doc is AUTHORITATIVE for node identity:
-			// build `this.nodes` from the doc + catalog + runtime. Node existence/type/name/pos/param
-			// value+expr come from the doc; descriptors from the catalog; runtime stays event-sourced.
+			// Catalog present (always in production) → the doc is AUTHORITATIVE for node AND sub-patch
+			// identity: build `this.nodes` + `this.instances` from the doc (+ catalog + runtime). Node
+			// existence/type/name/pos/param value+expr and the whole sub-patch forest come from the doc;
+			// descriptors from the catalog; runtime (error/stage/…) stays event-sourced.
 			this._reconcileNodesFromDoc();
+			this._reconcileInstancesFromDoc();
 		} else {
 			// Transition/catalog-loading fallback: overlay only doc pos + committed values onto the
-			// event-sourced nodes (node_added still creates them). Production leaves this once the
-			// catalog lands on hello.
+			// event-sourced nodes + instances (node_added / subpatch_changed still create them).
+			// Production leaves this once the catalog lands on hello.
 			for (const nv of nodeViews(doc)) {
 				const n = this._realNode(nv.uid);
 				if (!n) continue;
@@ -156,15 +159,15 @@ export class GraphStore {
 					}
 				}
 			}
-		}
-		for (const iv of instanceViews(doc)) {
-			const inst = this.instances[iv.uid];
-			if (!inst) continue;
-			if (inst.pos[0] !== iv.pos[0] || inst.pos[1] !== iv.pos[1]) inst.pos = iv.pos;
-			// Boundary positions are doc-owned too (retired `boundary_moved`).
-			for (const b of iv.interface) {
-				const port = inst.interface?.[b.bnd_id];
-				if (port && (port.pos[0] !== b.pos[0] || port.pos[1] !== b.pos[1])) port.pos = b.pos;
+			for (const iv of instanceViews(doc)) {
+				const inst = this.instances[iv.uid];
+				if (!inst) continue;
+				if (inst.pos[0] !== iv.pos[0] || inst.pos[1] !== iv.pos[1]) inst.pos = iv.pos;
+				// Boundary positions are doc-owned too (retired `boundary_moved`).
+				for (const b of iv.interface) {
+					const port = inst.interface?.[b.bnd_id];
+					if (port && (port.pos[0] !== b.pos[0] || port.pos[1] !== b.pos[1])) port.pos = b.pos;
+				}
 			}
 		}
 	}
@@ -302,6 +305,11 @@ export class GraphStore {
 				this._captureLoadAfterLayout();
 				break;
 			case 'subpatch_changed': {
+				// Structure (nodes + links + the sub-patch forest) is doc-owned once the catalog is
+				// present — the mirror carries a group/expand/share/make-unique into the doc, and the
+				// doc-reconcile (`_reconcileNodesFromDoc` + `_reconcileInstancesFromDoc`) rebuilds both.
+				// The event retires to the catalog-loading transition.
+				if (this.nodeTypes?.length) break;
 				// Group/expand/share/make-unique rewrote the STRUCTURE, but the live node
 				// processes are unchanged — only membership/names/instances moved. Reconcile
 				// nodes, links and instances by STABLE uid IN PLACE (never a wholesale array
@@ -521,8 +529,9 @@ export class GraphStore {
 			const result = await this.ctl.call<{ types: NodeTypeInfo[] }>('list_nodes');
 			this.nodeTypes = result.types;
 			// The catalog supplies node descriptors — with it in hand the doc becomes authoritative
-			// for node identity, so (re)build the node set from the doc now (Phase-2 read cutover).
+			// for node + sub-patch identity, so (re)build both from the doc now (Phase-2 read cutover).
 			this._reconcileNodesFromDoc();
+			this._reconcileInstancesFromDoc();
 		} catch (e) {
 			console.warn('list_nodes failed', e);
 		}
@@ -1218,6 +1227,31 @@ export class GraphStore {
 			return assembleNode(nv, docParams(doc, nv.uid), viewers, catalog, runtime);
 		});
 		this._reconcileNodes(next);
+	}
+
+	/** Build `this.instances` (the whole sub-patch forest, INCLUDING the synthetic ROOT scope) from
+	 * the CRDT doc (Phase-2 instances read cutover). Every structural field is reconstructed from the
+	 * doc to match the backend's `describe_instance`/`root_instance`; `error` is a runtime overlay
+	 * preserved from the current record (kept fresh by the `error` event, never in the doc). Wraps
+	 * `_reconcileInstances` with the same vanished-teardown + seed-only-new lifecycle the
+	 * `subpatch_changed` handler applied, so a collapsed sub-patch's live viewer state survives. */
+	private _reconcileInstancesFromDoc(): void {
+		if (!this.nodeTypes?.length) return; // no catalog yet → keep event-sourced instances
+		const doc = this._sync.doc;
+		const nodes = nodeViews(doc).map((n) => ({ uid: n.uid, name: n.name }));
+		const next = assembleInstances(instanceViews(doc), nodes, (uid) => this.instances[uid]?.error ?? null);
+		// Vanished instances fire no per-node event — clear any panel still bound to one (mirror of the
+		// retired `subpatch_changed` wrap; `_reconcileInstances` itself drops the map entry + synth cache).
+		const before = new Set(Object.keys(this.instances));
+		for (const iid of before) if (!(iid in next)) workspace().clearNodeRefs(iid);
+		this._reconcileInstances(next);
+		// Seed viewer state for a genuinely-NEW instance's output-boundary slots (its synth node carries
+		// the blob) — never a survivor (would clobber its live, un-pushed collapse/kind).
+		for (const iid of Object.keys(this.instances)) {
+			if (before.has(iid)) continue;
+			const sn = this.nodeById(iid);
+			if (sn) this._seedNodeViewerState(sn);
+		}
 	}
 
 	/** Reconcile the instances map IN PLACE by uid: mutate an existing record's fields
