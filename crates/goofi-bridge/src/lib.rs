@@ -23,7 +23,6 @@ use axum::response::Response;
 use axum::routing::{any, get};
 use axum::{Json, Router};
 use futures_util::{SinkExt, StreamExt};
-use goofi_core::Param;
 use goofi_engine::{Graph, Uid};
 use serde_json::{json, Value};
 use tokio::sync::broadcast;
@@ -492,43 +491,6 @@ fn resolve_link_endpoint(g: &goofi_engine::Graph, uid: Uid, slot: &str) -> (Uid,
     (uid, slot.to_string())
 }
 
-/// Coerce a JSON number to i64, ROUNDING a fractional value to nearest. serde's
-/// `as_i64()` returns `None` for a float like `5.5`, which the old `unwrap_or(0)`
-/// silently snapped to 0 — so editing an Int param to a fractional value reset it.
-fn json_to_i64(v: &Value) -> i64 {
-    v.as_i64()
-        .or_else(|| v.as_f64().map(|f| f.round() as i64))
-        .unwrap_or(0)
-}
-
-/// Build a `Param` from a JSON value, keeping the existing param's type + bounds.
-fn param_from_json(existing: &Param, v: &Value) -> Param {
-    match existing {
-        Param::Float { vmin, vmax, .. } => Param::Float {
-            value: v.as_f64().unwrap_or(0.0),
-            vmin: *vmin,
-            vmax: *vmax,
-        },
-        Param::Int { vmin, vmax, .. } => Param::Int {
-            value: json_to_i64(v),
-            vmin: *vmin,
-            vmax: *vmax,
-        },
-        Param::Bool { .. } => Param::Bool {
-            value: v.as_bool().unwrap_or(false),
-        },
-        Param::Trigger { .. } => Param::Trigger {
-            fired: v.as_bool().unwrap_or(false),
-        },
-        Param::Str {
-            options, refresh, ..
-        } => Param::Str {
-            value: v.as_str().unwrap_or("").to_string(),
-            options: options.clone(),
-            refresh: *refresh,
-        },
-    }
-}
 
 /// Dispatch one control RPC. Mutates the graph, queues broadcast events, and
 /// returns the `{id,result}`/`{id,error}` reply (only when `id` is numeric).
@@ -571,7 +533,7 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
                             if let Some(existing) =
                                 g.params(uid).and_then(|p| goofi_node::param(p, group, name)).cloned()
                             {
-                                let newp = param_from_json(&existing, vjson);
+                                let newp = goofi_engine::param_from_json(&existing, vjson, true);
                                 let _ = g.update_member_param(uid, group, name, newp);
                             }
                         }
@@ -644,7 +606,7 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
                     .and_then(|p| goofi_node::param(p, group, name))
                     .cloned()
                     .ok_or("no such param")?;
-                let newp = param_from_json(&existing, vjson);
+                let newp = goofi_engine::param_from_json(&existing, vjson, true);
                 // Re-project to every shared sibling (§4.5): a shared member's edit hits all its
                 // instances. A ROOT / unique-member edit updates only itself.
                 let updated = g.update_member_param(uid, group, name, newp)?;
@@ -862,7 +824,7 @@ fn apply_client_write(state: &AppState, update: &[u8]) {
         else {
             continue; // unknown param (e.g. a stale/bogus client write) — ignore
         };
-        let newp = param_from_json(&existing, value);
+        let newp = goofi_engine::param_from_json(&existing, value, true);
         let _ = g.update_member_param(uid, group, name, newp);
     }
     for (uid_hex, pos) in &changed.positions {
@@ -1001,15 +963,17 @@ async fn handle_data(socket: WebSocket, state: AppState, node: String, slot: Str
 #[cfg(test)]
 mod param_coerce_tests {
     use super::*;
+    use goofi_core::Param;
     use serde_json::json;
 
     #[test]
     fn int_param_rounds_fractional_instead_of_zeroing() {
+        // The coercion now lives in goofi_engine (SSOT); the bridge's RPC/CRDT writes go through it
+        // with fire_triggers=true. This locks the bridge's dependency on the rounding behavior.
         let p = Param::int(3, 0, 100);
-        // The bug: a fractional value snapped the Int param to 0. Now it rounds.
-        assert_eq!(param_from_json(&p, &json!(5.5)).as_i64(), Some(6));
-        assert_eq!(param_from_json(&p, &json!(5.4)).as_i64(), Some(5));
-        assert_eq!(param_from_json(&p, &json!(7)).as_i64(), Some(7), "plain int unaffected");
+        assert_eq!(goofi_engine::param_from_json(&p, &json!(5.5), true).as_i64(), Some(6));
+        assert_eq!(goofi_engine::param_from_json(&p, &json!(5.4), true).as_i64(), Some(5));
+        assert_eq!(goofi_engine::param_from_json(&p, &json!(7), true).as_i64(), Some(7), "plain int unaffected");
     }
 
     fn ev(uid: &str, err: Option<&str>) -> (String, Option<String>) {

@@ -147,6 +147,30 @@ fn param_value_json(p: &Param) -> serde_json::Value {
     }
 }
 
+/// Coerce a JSON scalar into a `Param` of `existing`'s type, preserving its bounds/options — the
+/// inverse of [`param_value_json`], and the SSOT for the engine load path (`set_param_from_json`)
+/// and the bridge's RPC/CRDT param writes. An Int rounds a fractional value to nearest (rather than
+/// zeroing it, which a hand-edited `.gfi` used to do). `fire_triggers` gates the Trigger arm: a live
+/// UI edit passes `true` (the trigger button fires), a `.gfi` load passes `false` (a persisted or
+/// hand-edited value must never trip a node's trigger on load).
+pub fn param_from_json(existing: &Param, v: &serde_json::Value, fire_triggers: bool) -> Param {
+    match existing {
+        Param::Float { vmin, vmax, .. } => Param::Float { value: v.as_f64().unwrap_or(0.0), vmin: *vmin, vmax: *vmax },
+        Param::Int { vmin, vmax, .. } => Param::Int {
+            value: v.as_i64().or_else(|| v.as_f64().map(|f| f.round() as i64)).unwrap_or(0),
+            vmin: *vmin,
+            vmax: *vmax,
+        },
+        Param::Bool { .. } => Param::Bool { value: v.as_bool().unwrap_or(false) },
+        Param::Trigger { .. } => Param::Trigger { fired: fire_triggers && v.as_bool().unwrap_or(false) },
+        Param::Str { options, refresh, .. } => Param::Str {
+            value: v.as_str().unwrap_or("").to_string(),
+            options: options.clone(),
+            refresh: *refresh,
+        },
+    }
+}
+
 /// A node factory that can capture runtime state (a Python class handle, a device
 /// descriptor). Used for node types discovered at runtime rather than compiled
 /// into the `inventory` catalog — a bare `fn` pointer can't close over such state.
@@ -1674,34 +1698,8 @@ impl Graph {
         let Some(existing) = existing else {
             return;
         };
-        let newp = match existing {
-            Param::Float { vmin, vmax, .. } => Param::Float {
-                value: val.as_f64().unwrap_or(0.0),
-                vmin,
-                vmax,
-            },
-            Param::Int { vmin, vmax, .. } => Param::Int {
-                // Round a fractional value to nearest (as_i64 is None for e.g. 5.5,
-                // which the old unwrap_or(0) snapped to 0 on a hand-edited .gfi).
-                value: val
-                    .as_i64()
-                    .or_else(|| val.as_f64().map(|f| f.round() as i64))
-                    .unwrap_or(0),
-                vmin,
-                vmax,
-            },
-            Param::Bool { .. } => Param::Bool {
-                value: val.as_bool().unwrap_or(false),
-            },
-            Param::Trigger { .. } => Param::Trigger { fired: false },
-            Param::Str {
-                options, refresh, ..
-            } => Param::Str {
-                value: val.as_str().unwrap_or("").to_string(),
-                options,
-                refresh,
-            },
-        };
+        // Load path: never fire a trigger on load (fire_triggers = false).
+        let newp = param_from_json(&existing, val, false);
         let _ = self.update_param(uid, group, name, newp);
     }
 
@@ -2589,6 +2587,32 @@ mod tests {
 
     /// Empty param declaration, shared by the many test nodes with no own params.
     static NO_PARAMS: &[ParamDecl] = &[];
+
+    #[test]
+    fn param_from_json_coerces_each_type_and_gates_trigger_firing() {
+        use serde_json::json;
+        // Float: takes as_f64, preserves bounds.
+        assert!(matches!(
+            param_from_json(&Param::float(0.0, -1.0, 2.0), &json!(0.5), true),
+            Param::Float { value, vmin, vmax } if value == 0.5 && vmin == -1.0 && vmax == 2.0
+        ));
+        // Int: rounds a fractional value to nearest (not zero); a plain int passes through.
+        assert!(matches!(param_from_json(&Param::int(0, -10, 10), &json!(5.5), true), Param::Int { value: 6, .. }));
+        assert!(matches!(param_from_json(&Param::int(0, -10, 10), &json!(5.4), true), Param::Int { value: 5, .. }));
+        assert!(matches!(param_from_json(&Param::int(0, -10, 10), &json!(7), true), Param::Int { value: 7, .. }));
+        // Bool.
+        assert!(matches!(param_from_json(&Param::boolean(false), &json!(true), true), Param::Bool { value: true }));
+        // Str preserves options + refresh.
+        let s = Param::Str { value: "a".into(), options: Some(vec!["a".into(), "b".into()]), refresh: true };
+        assert!(matches!(
+            param_from_json(&s, &json!("b"), true),
+            Param::Str { value, options: Some(o), refresh: true } if value == "b" && o == vec!["a".to_string(), "b".to_string()]
+        ));
+        // Trigger fires only on a live edit (`fire_triggers`); a load (false) never fires, even if the
+        // value says true — a persisted/hand-edited `.gfi` must not trip a node's trigger on load.
+        assert!(matches!(param_from_json(&Param::Trigger { fired: false }, &json!(true), true), Param::Trigger { fired: true }));
+        assert!(matches!(param_from_json(&Param::Trigger { fired: false }, &json!(true), false), Param::Trigger { fired: false }));
+    }
 
     // A test-only passthrough node (ARRAY "in" -> ARRAY "out") to exercise links.
     #[derive(Default)]
