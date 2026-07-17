@@ -206,63 +206,67 @@ pub fn decode(frame: &[u8]) -> std::result::Result<Data, String> {
     }
 }
 
+/// A forward-only reader over a body slice. Every read bounds-checks with `checked_add` + `.get()`,
+/// so a truncated or hostile frame yields `Err` — never a panic or a wrapping over-read. This is the
+/// codec's must-never-panic contract in ONE place, instead of a hand-written check per field.
+struct Cursor<'a> {
+    body: &'a [u8],
+    off: usize,
+}
+
+impl<'a> Cursor<'a> {
+    fn new(body: &'a [u8]) -> Cursor<'a> {
+        Cursor { body, off: 0 }
+    }
+    /// The next `n` bytes, advancing past them; `Err(what truncated)` if the body is too short.
+    fn take(&mut self, n: usize, what: &str) -> std::result::Result<&'a [u8], String> {
+        let end = self.off.checked_add(n).ok_or_else(|| format!("{what} length overflow"))?;
+        let s = self.body.get(self.off..end).ok_or_else(|| format!("{what} truncated"))?;
+        self.off = end;
+        Ok(s)
+    }
+    fn u8(&mut self, what: &str) -> std::result::Result<usize, String> {
+        Ok(self.take(1, what)?[0] as usize)
+    }
+    fn u16(&mut self, what: &str) -> std::result::Result<usize, String> {
+        Ok(u16::from_le_bytes(self.take(2, what)?.try_into().unwrap()) as usize)
+    }
+    fn u32(&mut self, what: &str) -> std::result::Result<usize, String> {
+        Ok(u32::from_le_bytes(self.take(4, what)?.try_into().unwrap()) as usize)
+    }
+    /// Everything from the cursor to the end (consumes the cursor).
+    fn rest(self) -> &'a [u8] {
+        &self.body[self.off..]
+    }
+}
+
 fn decode_array(body: &[u8], meta: goofi_core::Meta) -> std::result::Result<Data, String> {
     // [u8 ndim][u8 dtype_str_len][dtype_str][ndim × u32 shape][raw bytes]
-    if body.len() < 2 {
-        return Err("array body too small".into());
-    }
-    let ndim = body[0] as usize;
-    let dslen = body[1] as usize;
-    let mut off = 2;
-    if body.len() < off + dslen {
-        return Err("array dtype string truncated".into());
-    }
-    let dstr = std::str::from_utf8(&body[off..off + dslen]).map_err(|e| e.to_string())?;
+    let mut cur = Cursor::new(body);
+    let ndim = cur.u8("array ndim")?;
+    let dslen = cur.u8("array dtype len")?;
+    let dstr = std::str::from_utf8(cur.take(dslen, "array dtype string")?).map_err(|e| e.to_string())?;
     let dtype = goofi_core::DType::from_numpy_typestr(dstr)
         .ok_or_else(|| format!("unsupported dtype `{dstr}`"))?;
-    off += dslen;
     let mut shape = Vec::with_capacity(ndim);
     for _ in 0..ndim {
-        if body.len() < off + 4 {
-            return Err("array shape truncated".into());
-        }
-        shape.push(u32::from_le_bytes(body[off..off + 4].try_into().unwrap()) as usize);
-        off += 4;
+        shape.push(cur.u32("array shape")?);
     }
-    let buf = body[off..].to_vec();
-    Data::from_array_bytes(dtype, shape, buf, meta).map_err(|e| e.to_string())
+    // The shape×itemsize overflow guard lives in from_array_bytes — kept there deliberately.
+    Data::from_array_bytes(dtype, shape, cur.rest().to_vec(), meta).map_err(|e| e.to_string())
 }
 
 fn decode_table(body: &[u8], meta: goofi_core::Meta) -> std::result::Result<Data, String> {
-    if body.len() < 4 {
-        return Err("table body too small".into());
-    }
-    let n = u32::from_le_bytes(body[0..4].try_into().unwrap()) as usize;
-    let mut off = 4;
+    let mut cur = Cursor::new(body);
+    let n = cur.u32("table count")?;
     let mut map: indexmap::IndexMap<String, Data> = indexmap::IndexMap::new();
     for _ in 0..n {
-        if body.len() < off + 2 {
-            return Err("table key length truncated".into());
-        }
-        let klen = u16::from_le_bytes(body[off..off + 2].try_into().unwrap()) as usize;
-        off += 2;
-        if body.len() < off + klen {
-            return Err("table key truncated".into());
-        }
-        let key = std::str::from_utf8(&body[off..off + klen])
+        let klen = cur.u16("table key length")?;
+        let key = std::str::from_utf8(cur.take(klen, "table key")?)
             .map_err(|e| e.to_string())?
             .to_string();
-        off += klen;
-        if body.len() < off + 4 {
-            return Err("table value length truncated".into());
-        }
-        let vlen = u32::from_le_bytes(body[off..off + 4].try_into().unwrap()) as usize;
-        off += 4;
-        if body.len() < off + vlen {
-            return Err("table value frame truncated".into());
-        }
-        let child = decode(&body[off..off + vlen])?;
-        off += vlen;
+        let vlen = cur.u32("table value length")?;
+        let child = decode(cur.take(vlen, "table value frame")?)?;
         map.insert(key, child);
     }
     Ok(Data::table(map, meta))
