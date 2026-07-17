@@ -356,14 +356,30 @@ impl Graph {
     }
 
     /// Build a `NodeEntry` from a manifest + a constructed node, run its `setup`,
-    /// seed its I/O buffers, assign a fresh name, and insert it. Shared by the
+    /// seed its I/O buffers, assign a fresh name + minted uid, and insert it. Shared by the
     /// catalog and runtime instantiation paths.
     fn insert_node(
         &mut self,
         manifest: &'static NodeManifest,
-        mut node: Box<dyn goofi_node::Node>,
+        node: Box<dyn goofi_node::Node>,
         params: ParamGroups,
     ) -> Uid {
+        let uid = self.mint();
+        let name = self.fresh_name(&manifest.type_name.to_lowercase());
+        self.insert_node_at(uid, name, manifest, node, params);
+        uid
+    }
+
+    /// Insert a constructed node at a SPECIFIC uid + display name — the reconcile path, which
+    /// spawns sub-patch members at their deterministic uids. The uid must be free.
+    fn insert_node_at(
+        &mut self,
+        uid: Uid,
+        name: String,
+        manifest: &'static NodeManifest,
+        mut node: Box<dyn goofi_node::Node>,
+        params: ParamGroups,
+    ) {
         let mut ctx = NodeCtx::new();
         // Seed the node by replaying `on_param_changed` for each declared param
         // (not `common`, which is the scheduler's), then run derived one-time init.
@@ -390,10 +406,8 @@ impl Graph {
             manifest.inputs.iter().filter(|s| s.multi).map(|s| (s.name, Vec::new())).collect();
         let outputs = manifest.output_buffer();
 
-        let name = self.fresh_name(&manifest.type_name.to_lowercase());
         let has_trigger_inputs = manifest.inputs.iter().any(|i| i.trigger_process);
         let run_policy = RunPolicy::from_params(&params);
-        let uid = self.mint();
         self.nodes.insert(
             uid,
             NodeEntry {
@@ -418,7 +432,6 @@ impl Graph {
                 last_run: None,
             },
         );
-        uid
     }
 
     /// Lowest `{base}{N}` display name not already in use (globally unique).
@@ -820,6 +833,166 @@ impl Graph {
             .ok_or("set_boundary_pos: no such boundary")?;
         b.pos = pos;
         Ok(())
+    }
+
+    // ── reconcile + sharing: spawn subtrees / re-project shared defs ──────────────
+    // reconcile is the engine of SPAWNING (a fresh sibling, a loaded instance) and of shared
+    // topology edits. Grouping/expand never call it (their members are already live).
+
+    /// Instantiate one planned leaf at its deterministic uid, applying its params then its
+    /// captured expressions.
+    fn insert_planned_leaf(&mut self, pn: &subpatch::PlannedLeaf) -> Result<(), String> {
+        let (manifest, params, node): (&'static NodeManifest, ParamGroups, Box<dyn goofi_node::Node>) =
+            if let Some(m) = goofi_node::find(&pn.type_name) {
+                (m, goofi_node::with_common(pn.params.clone()), (m.factory)())
+            } else if let Some(dt) = self.dyn_types.get(pn.type_name.as_str()) {
+                let p = goofi_node::with_common(pn.params.clone());
+                let n = (dt.factory)(&p);
+                (dt.manifest, p, n)
+            } else {
+                return Err(format!("reconcile: unknown node type `{}`", pn.type_name));
+            };
+        let name = self.fresh_name(&manifest.type_name.to_lowercase());
+        self.insert_node_at(pn.uid, name, manifest, node, params);
+        for ex in &pn.expressions {
+            let _ = self.set_expression(pn.uid, &ex.group, &ex.name, &ex.source, ex.enabled, ex.triggers_process);
+        }
+        Ok(())
+    }
+
+    /// Bring the live flat graph into agreement with `plan` (the forest projection). Validation
+    /// runs before any mutation. Diffs by uid: a surviving member keeps its `NodeEntry`
+    /// (buffers, ufreq, bindings, `/data` subs); only the delta spawns/drops. Links whose BOTH
+    /// endpoints are members of a covered scope are managed to match the plan; external flat
+    /// links (one endpoint outside every covered scope) are untouched.
+    fn reconcile(&mut self, plan: subpatch::FlatPlan) -> Result<(), String> {
+        for pn in &plan.nodes {
+            let known = goofi_node::find(&pn.type_name).is_some()
+                || self.dyn_types.contains_key(pn.type_name.as_str());
+            if !known {
+                return Err(format!("reconcile: unknown node type `{}`", pn.type_name));
+            }
+        }
+        let covered: std::collections::HashSet<Uid> = plan.nodes.iter().map(|n| n.scope).collect();
+        let planned: std::collections::HashSet<Uid> = plan.nodes.iter().map(|n| n.uid).collect();
+        let is_covered = |g: &Graph, u: Uid| {
+            g.scope_of.get(&u).copied().flatten().is_some_and(|s| covered.contains(&s))
+        };
+
+        // 1. Remove live members of covered scopes the plan dropped.
+        let stale: Vec<Uid> = self
+            .nodes
+            .keys()
+            .copied()
+            .filter(|&u| is_covered(self, u) && !planned.contains(&u))
+            .collect();
+        for u in stale {
+            self.remove_node(u)?;
+        }
+
+        // 2. Insert planned members not yet live; (re)tag membership/local/pos for all.
+        for pn in &plan.nodes {
+            if !self.nodes.contains_key(&pn.uid) {
+                self.insert_planned_leaf(pn)?;
+            }
+            self.scope_of.insert(pn.uid, Some(pn.scope));
+            self.local_of.insert(pn.uid, pn.local.clone());
+            let _ = self.set_node_pos(pn.uid, pn.pos);
+        }
+
+        // 3. Managed links → exactly the plan's links.
+        let desired: std::collections::HashSet<(Uid, String, Uid, String)> = plan
+            .links
+            .iter()
+            .map(|l| (l.out, l.out_slot.clone(), l.in_, l.in_slot.clone()))
+            .collect();
+        let current: Vec<(Uid, &'static str, Uid, &'static str)> = self
+            .links
+            .iter()
+            .filter(|l| is_covered(self, l.node_out) && is_covered(self, l.node_in))
+            .map(|l| (l.node_out, l.slot_out, l.node_in, l.slot_in))
+            .collect();
+        for (a, so, b, si) in current {
+            if !desired.contains(&(a, so.to_string(), b, si.to_string())) {
+                self.remove_link(a, so, b, si)?;
+            }
+        }
+        for l in &plan.links {
+            let _ = self.add_link(l.out, &l.out_slot, l.in_, &l.in_slot);
+        }
+        Ok(())
+    }
+
+    /// Allocate the deterministic member uids for a fresh instance, salt-rehashing on collision
+    /// with any live uid (so determinism means *stability*, not literal hash equality).
+    fn alloc_member_uids(&self, inst_uid: Uid, def_id: subpatch::DefId) -> IndexMap<subpatch::Local, Uid> {
+        let mut members = IndexMap::new();
+        if let Some(def) = self.defs.get(&def_id) {
+            for local in def.members.keys() {
+                let mut salt = 0u64;
+                loop {
+                    let seed = inst_uid.0 ^ salt.wrapping_mul(0x9e37_79b9_7f4a_7c15);
+                    let uid = Uid(subpatch::fold_u64(seed, local));
+                    let clash = self.nodes.contains_key(&uid)
+                        || self.instances.contains_key(&uid)
+                        || members.values().any(|&u| u == uid);
+                    if !clash {
+                        members.insert(local.clone(), uid);
+                        break;
+                    }
+                    salt += 1;
+                }
+            }
+        }
+        members
+    }
+
+    /// Promote an instance's def to shared and spawn a strict-mirror sibling (deterministic
+    /// member uids, `reconcile`d live + wired). The original's leaves are untouched.
+    pub fn duplicate_shared(&mut self, inst: Uid, pos: [f64; 2]) -> Result<Uid, String> {
+        let (def_id, parent) = {
+            let i = self.instances.get(&inst).ok_or_else(|| format!("duplicate_shared: no such instance {inst}"))?;
+            (i.def_id, i.parent)
+        };
+        let new_inst = self.mint();
+        let members = self.alloc_member_uids(new_inst, def_id);
+        let disp = format!("subpatch{}", new_inst.0);
+        self.instances.insert(
+            new_inst,
+            subpatch::Instance { uid: new_inst, name: disp, def_id, parent, pos, members },
+        );
+        self.scope_of.insert(new_inst, parent);
+        let plan = subpatch::materialize(&self.defs, &self.instances);
+        self.reconcile(plan)?;
+        Ok(new_inst)
+    }
+
+    /// Fork a shared instance's def to a fresh private copy (refcount 1) and repoint the
+    /// instance. Pure bookkeeping — the live leaves already match the fork, so nothing respawns.
+    pub fn make_unique(&mut self, inst: Uid) -> Result<subpatch::DefId, String> {
+        let old_def = self.instances.get(&inst).ok_or_else(|| format!("make_unique: no such instance {inst}"))?.def_id;
+        let body = self.defs.get(&old_def).ok_or("make_unique: missing def")?.clone();
+        let new_def = self.mint_def();
+        self.defs.insert(new_def, body);
+        self.instances.get_mut(&inst).unwrap().def_id = new_def;
+        if self.def_refcount(old_def) == 0 {
+            self.defs.shift_remove(&old_def);
+        }
+        Ok(new_def)
+    }
+
+    /// Inverse of `make_unique`: repoint a unique instance back onto a target def (bump its
+    /// refcount, GC the abandoned private fork). Pure bookkeeping — live leaves already match.
+    pub fn re_share_instance(&mut self, inst: Uid, def_id: subpatch::DefId) -> Result<Uid, String> {
+        if !self.defs.contains_key(&def_id) {
+            return Err(format!("re_share_instance: no such def {}", def_id.to_hex()));
+        }
+        let old_def = self.instances.get(&inst).ok_or_else(|| format!("re_share_instance: no such instance {inst}"))?.def_id;
+        self.instances.get_mut(&inst).unwrap().def_id = def_id;
+        if old_def != def_id && self.def_refcount(old_def) == 0 {
+            self.defs.shift_remove(&old_def);
+        }
+        Ok(inst)
     }
 
     /// All links as resolved views (snapshot projection).
@@ -3082,6 +3255,55 @@ mod tests {
         // wiring a non-member is rejected.
         let outsider = g.add_node("_TestConst", None).unwrap();
         assert!(g.wire_boundary(inst, &bnd, outsider, "in").is_err(), "non-member rejected");
+    }
+
+    #[test]
+    fn duplicate_shared_spawns_a_wired_sibling() {
+        let mut g = Graph::new();
+        let a = g.add_node("_TestConst", None).unwrap();
+        let b = g.add_node("_TestEcho", None).unwrap();
+        g.add_link(a, "out", b, "in").unwrap(); // internal to the group
+        let inst = g.group_nodes(&[a, b], [0.0, 0.0]).unwrap();
+        let def_id = g.instance(inst).unwrap().def_id;
+        assert_eq!(g.node_uids().len(), 2, "grouping spawned nothing");
+        assert_eq!(g.def_refcount(def_id), 1, "unique before duplication");
+
+        let sib = g.duplicate_shared(inst, [50.0, 50.0]).unwrap();
+        assert_eq!(g.def_refcount(def_id), 2, "the def is now shared");
+        assert_eq!(g.node_uids().len(), 4, "the sibling's two members were spawned");
+
+        let orig: std::collections::HashSet<Uid> = g.instance(inst).unwrap().members.values().copied().collect();
+        let sibs: std::collections::HashSet<Uid> = g.instance(sib).unwrap().members.values().copied().collect();
+        assert!(orig.is_disjoint(&sibs), "sibling has its own distinct member uids");
+        assert_eq!(orig, [a, b].into_iter().collect(), "the original's leaves are untouched");
+
+        // The sibling's internal link (const'→echo') was projected live.
+        let sib_uids: Vec<Uid> = g.instance(sib).unwrap().members.values().copied().collect();
+        let linked = g.links_view().iter().any(|l| sib_uids.contains(&l.node_out) && sib_uids.contains(&l.node_in));
+        assert!(linked, "the sibling's internal link is live");
+        assert_eq!(g.links_view().len(), 2, "one internal link per instance, external untouched");
+    }
+
+    #[test]
+    fn make_unique_forks_a_shared_def_and_re_share_inverts_it() {
+        let mut g = Graph::new();
+        let a = g.add_node("_TestConst", None).unwrap();
+        let inst = g.group_nodes(&[a], [0.0, 0.0]).unwrap();
+        let shared_def = g.instance(inst).unwrap().def_id;
+        let sib = g.duplicate_shared(inst, [10.0, 10.0]).unwrap();
+        assert_eq!(g.def_refcount(shared_def), 2);
+        let node_count = g.node_uids().len();
+
+        let new_def = g.make_unique(sib).unwrap();
+        assert_ne!(new_def, shared_def, "a fresh private def");
+        assert_eq!(g.def_refcount(shared_def), 1, "original instance still shares the old def");
+        assert_eq!(g.def_refcount(new_def), 1, "the sibling is now on its private fork");
+        assert_eq!(g.node_uids().len(), node_count, "no respawn — pure bookkeeping");
+
+        // re_share_instance is the exact inverse: repoint back + GC the fork.
+        g.re_share_instance(sib, shared_def).unwrap();
+        assert_eq!(g.def_refcount(shared_def), 2, "re-shared onto the original def");
+        assert!(g.def(new_def).is_none(), "the abandoned private fork is GC'd");
     }
 
     #[test]
