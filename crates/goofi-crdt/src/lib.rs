@@ -359,10 +359,21 @@ impl GraphDoc {
     }
 
     /// Store a node's opaque per-slot viewer blob as a JSON string (typed in a later phase).
+    /// Idempotent in place: the re-mirror re-asserts this after every op, so a no-op write must
+    /// produce no doc delta — an unguarded insert would churn the key on every unrelated edit (and
+    /// race a client's viewer leaf-write). `serde_json`'s default (BTreeMap-backed) object order is
+    /// canonical, so equal blobs serialize to equal strings.
     pub fn set_viewers(&mut self, uid: &str, viewers: &serde_json::Value) {
         let mut txn = self.doc.transact_mut();
         if let Some(node) = self.nodes.get(&txn, uid).and_then(|v| v.cast::<MapRef>().ok()) {
-            node.insert(&mut txn, "viewers", viewers.to_string());
+            let s = viewers.to_string();
+            let cur = match node.get(&txn, "viewers") {
+                Some(Out::Any(Any::String(c))) => Some(c.to_string()),
+                _ => None,
+            };
+            if cur.as_deref() != Some(s.as_str()) {
+                node.insert(&mut txn, "viewers", s);
+            }
         }
     }
 
@@ -857,6 +868,28 @@ mod tests {
         assert_eq!(doc.links()[0].slot_in, "data");
         doc.replace_links(vec![]);
         assert!(doc.links().is_empty());
+    }
+
+    #[test]
+    fn set_viewers_is_idempotent() {
+        use serde_json::json;
+        // Like params, the re-mirror re-asserts viewers after EVERY op. Re-setting the same blob
+        // must produce NO doc op — otherwise the blanket re-mirror churns the viewers key on every
+        // unrelated edit (and would race a client's viewer leaf-write, the params lesson).
+        let mut doc = GraphDoc::new();
+        doc.upsert_node("1", "Oscillator", "osc", [0.0, 0.0]);
+        doc.set_viewers("1", &json!({"out": {"kind": "line", "collapsed": false}}));
+
+        let sv = doc.state_vector();
+        doc.set_viewers("1", &json!({"out": {"kind": "line", "collapsed": false}}));
+        assert!(
+            doc.is_empty_diff(&doc.diff(&sv)),
+            "re-setting the same viewers blob must be a no-op"
+        );
+        // A real change still applies.
+        doc.set_viewers("1", &json!({"out": {"kind": "spectrum"}}));
+        assert!(!doc.is_empty_diff(&doc.diff(&sv)), "a real viewers change produces a delta");
+        assert_eq!(doc.viewers_json("1"), Some(json!({"out": {"kind": "spectrum"}})));
     }
 
     #[test]
