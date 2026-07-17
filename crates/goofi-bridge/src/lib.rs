@@ -293,6 +293,16 @@ async fn control_ws(ws: WebSocketUpgrade, State(state): State<AppState>) -> Resp
 async fn handle_control(socket: WebSocket, state: AppState) {
     let (mut tx, mut rx) = socket.split();
 
+    // Subscribe to every broadcast plane BEFORE snapshotting. If we snapshotted first and
+    // subscribed second, a mutation landing in that window would be neither in the snapshot nor
+    // delivered — the client's mirror would silently desync. Subscribing first can at worst
+    // re-deliver an event already reflected in the snapshot, which every apply branch absorbs
+    // idempotently (node_added filters its uid; link_added dedups; removes/moves reconcile). The
+    // CRDT plane subscribes first for the same reason.
+    let mut events = state.events.subscribe();
+    let mut sync_updates = state.sync_updates.subscribe();
+    let mut ephemeral = state.ephemeral.subscribe();
+
     let hello = {
         let g = state.graph.lock().unwrap();
         event("hello", schemas::snapshot(&g, &state.instance_id, true))
@@ -300,10 +310,6 @@ async fn handle_control(socket: WebSocket, state: AppState) {
     if tx.send(Message::Text(hello.into())).await.is_err() {
         return;
     }
-
-    let mut events = state.events.subscribe();
-    let mut sync_updates = state.sync_updates.subscribe();
-    let mut ephemeral = state.ephemeral.subscribe();
 
     // CRDT sync handshake: advertise the server replica's state vector as a binary frame.
     // The client answers with its own state vector; `on_sync` then ships the diff it lacks.
