@@ -1390,11 +1390,53 @@ impl Graph {
             .iter()
             .map(|l| json!([l.node_out.to_hex(), l.slot_out, l.node_in.to_hex(), l.slot_in]))
             .collect();
-        let root = json!({ "nodes": Value::Object(nodes), "links": links, "instances": {} });
+
+        // Sub-patch forest. Only the non-derivable structure is persisted: def NAME + INTERFACE
+        // (boundaries) and per-instance {def, parent, pos, members}. A def's member bodies and
+        // internal links are re-captured from the flat nodes/links on load (which stay in
+        // `nodes`/`links` above), so there is no param duplication or staleness.
+        let mut definitions = Map::new();
+        for (def_id, def) in &self.defs {
+            let mut iface = Map::new();
+            for (bnd, b) in &def.interface {
+                iface.insert(
+                    bnd.clone(),
+                    json!({
+                        "dir": match b.dir { subpatch::Dir::In => "in", subpatch::Dir::Out => "out" },
+                        "pillar": b.pillar.name(),
+                        "dtype": b.dtype.name(),
+                        "inner_local": b.inner.as_ref().map(|(l, _)| l.clone()),
+                        "inner_slot": b.inner.as_ref().map(|(_, s)| s.clone()),
+                        "pos": b.pos,
+                        "name": b.name,
+                    }),
+                );
+            }
+            definitions.insert(def_id.to_hex(), json!({ "name": def.name, "interface": Value::Object(iface) }));
+        }
+        let mut inst_map = Map::new();
+        for (uid, inst) in &self.instances {
+            let mut members = Map::new();
+            for (local, muid) in &inst.members {
+                members.insert(local.clone(), json!(muid.to_hex()));
+            }
+            inst_map.insert(
+                uid.to_hex(),
+                json!({
+                    "name": inst.name,
+                    "def": inst.def_id.to_hex(),
+                    "parent": inst.parent.map(|p| p.to_hex()),
+                    "pos": inst.pos,
+                    "members": Value::Object(members),
+                }),
+            );
+        }
+
+        let root = json!({ "nodes": Value::Object(nodes), "links": links, "instances": Value::Object(inst_map) });
         let doc = json!({
             "version": 4,
             "pillar_default": "signal",
-            "definitions": {},
+            "definitions": Value::Object(definitions),
             "root": root,
         });
         serde_yaml_ng::to_string(&doc).unwrap_or_default()
@@ -1482,7 +1524,129 @@ impl Graph {
                 }
             }
         }
+        // Reconstruct the sub-patch forest (v4). The members are already live flat nodes; here
+        // we re-tag membership and rebuild each def's body from those live nodes + links (the
+        // interface is the only serialized-verbatim part). idmap maps a persisted flat uid to
+        // its live one; instances + defs are minted fresh (uids remap, structure preserved).
+        let root_v = doc.get("root");
+        let insts_v = root_v.and_then(|r| r.get("instances")).and_then(|v| v.as_object());
+        let defs_v = doc.get("definitions").and_then(|v| v.as_object());
+        self.reload_forest(insts_v, defs_v, &idmap);
         Ok(())
+    }
+
+    /// Rebuild `instances`/`defs`/`scope_of`/`local_of` from a loaded v4 document, after the
+    /// flat nodes/links are live. Uids are remapped (instances/defs minted fresh); member uids
+    /// resolve through `idmap` (a flat leaf) or a freshly-minted instance uid (a nested member).
+    fn reload_forest(
+        &mut self,
+        insts_v: Option<&serde_json::Map<String, serde_json::Value>>,
+        defs_v: Option<&serde_json::Map<String, serde_json::Value>>,
+        idmap: &HashMap<String, Uid>,
+    ) {
+        use subpatch::{Boundary, Dir, LocalLink, MemberDecl, NestedDecl, Pillar};
+        let (Some(insts), Some(defs)) = (insts_v, defs_v) else { return };
+
+        // Mint fresh ids first, so nested member refs + parent refs resolve regardless of order.
+        let mut instmap: HashMap<String, Uid> = HashMap::new();
+        for old in insts.keys() {
+            instmap.insert(old.clone(), self.mint());
+        }
+        let mut defmap: HashMap<String, subpatch::DefId> = HashMap::new();
+        for old in defs.keys() {
+            defmap.insert(old.clone(), self.mint_def());
+        }
+        let resolve_uid = |s: &str| idmap.get(s).copied().or_else(|| instmap.get(s).copied());
+
+        // 1. Instance records + membership tags.
+        for (old, rec) in insts {
+            let uid = instmap[old];
+            let Some(def_id) = rec.get("def").and_then(|v| v.as_str()).and_then(|d| defmap.get(d)).copied() else {
+                continue;
+            };
+            let name = rec.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let parent = rec.get("parent").and_then(|v| v.as_str()).and_then(|s| instmap.get(s)).copied();
+            let pos = rec
+                .get("pos")
+                .and_then(|v| v.as_array())
+                .and_then(|a| Some([a.first()?.as_f64()?, a.get(1)?.as_f64()?]))
+                .unwrap_or([0.0, 0.0]);
+            let mut members: IndexMap<subpatch::Local, Uid> = IndexMap::new();
+            if let Some(m) = rec.get("members").and_then(|v| v.as_object()) {
+                for (local, mv) in m {
+                    if let Some(ru) = mv.as_str().and_then(resolve_uid) {
+                        members.insert(local.clone(), ru);
+                    }
+                }
+            }
+            for (local, &muid) in &members {
+                self.scope_of.insert(muid, Some(uid));
+                self.local_of.insert(muid, local.clone());
+            }
+            self.scope_of.insert(uid, parent);
+            self.instances.insert(uid, subpatch::Instance { uid, name, def_id, parent, pos, members });
+        }
+
+        // 2. Def bodies: interface deserialized; members + local links re-captured from the live
+        //    flat nodes/links of one instance that references the def (siblings are identical).
+        for (old, rec) in defs {
+            let def_id = defmap[old];
+            let def_name = rec.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let mut interface: IndexMap<subpatch::BndId, Boundary> = IndexMap::new();
+            if let Some(iface) = rec.get("interface").and_then(|v| v.as_object()) {
+                for (bnd, b) in iface {
+                    let dir = if b.get("dir").and_then(|v| v.as_str()) == Some("in") { Dir::In } else { Dir::Out };
+                    let dtype = match b.get("dtype").and_then(|v| v.as_str()) {
+                        Some("STRING") => goofi_core::SlotType::String,
+                        Some("TABLE") => goofi_core::SlotType::Table,
+                        _ => goofi_core::SlotType::Array,
+                    };
+                    let inner = match (
+                        b.get("inner_local").and_then(|v| v.as_str()),
+                        b.get("inner_slot").and_then(|v| v.as_str()),
+                    ) {
+                        (Some(l), Some(s)) => Some((l.to_string(), s.to_string())),
+                        _ => None,
+                    };
+                    let pos = b
+                        .get("pos")
+                        .and_then(|v| v.as_array())
+                        .and_then(|a| Some([a.first()?.as_f64()?, a.get(1)?.as_f64()?]))
+                        .unwrap_or([0.0, 0.0]);
+                    let name = b.get("name").and_then(|v| v.as_str()).unwrap_or(bnd).to_string();
+                    interface.insert(bnd.clone(), Boundary { dir, pillar: Pillar::Signal, dtype, inner, pos, name });
+                }
+            }
+            // Re-capture members + internal links from a referencing instance's live nodes.
+            let mut members: IndexMap<subpatch::Local, MemberDecl> = IndexMap::new();
+            let mut links: Vec<LocalLink> = Vec::new();
+            if let Some(inst) = self.instances.values().find(|i| i.def_id == def_id).cloned() {
+                for (local, &muid) in &inst.members {
+                    let decl = if let Some(nested) = self.instances.get(&muid) {
+                        MemberDecl::Nested(NestedDecl { def_id: nested.def_id, pos: nested.pos })
+                    } else if let Some(leaf) = self.capture_leaf_decl(muid) {
+                        MemberDecl::Leaf(leaf)
+                    } else {
+                        continue;
+                    };
+                    members.insert(local.clone(), decl);
+                }
+                let member_uids: std::collections::HashSet<Uid> = inst.members.values().copied().collect();
+                for l in &self.links {
+                    if member_uids.contains(&l.node_out) && member_uids.contains(&l.node_in) {
+                        if let (Some(ol), Some(il)) = (self.local_of.get(&l.node_out), self.local_of.get(&l.node_in)) {
+                            links.push(LocalLink {
+                                out: ol.clone(),
+                                out_slot: l.slot_out.to_string(),
+                                in_: il.clone(),
+                                in_slot: l.slot_in.to_string(),
+                            });
+                        }
+                    }
+                }
+            }
+            self.defs.insert(def_id, subpatch::SubPatchDef { name: def_name, members, links, interface });
+        }
     }
 
     /// BFS topological layering (producers before consumers). Each returned level
@@ -3325,6 +3489,41 @@ mod tests {
         assert!(g.def(def_id).is_none(), "def GC'd");
         // The flat a→b link survived the round-trip.
         assert_eq!(g.links_view().len(), 1, "external/internal links intact");
+    }
+
+    #[test]
+    fn sub_patch_forest_survives_a_gfi_roundtrip() {
+        let mut g = Graph::new();
+        let a = g.add_node("_TestConst", None).unwrap();
+        let b = g.add_node("_TestEcho", None).unwrap();
+        g.add_link(a, "out", b, "in").unwrap();
+        let inst = g.group_nodes(&[a, b], [10.0, 20.0]).unwrap();
+        g.duplicate_shared(inst, [200.0, 0.0]).unwrap();
+        let def0 = g.instance(inst).unwrap().def_id;
+        assert_eq!(g.def_refcount(def0), 2, "shared before save");
+
+        let yaml = g.serialize();
+        assert!(yaml.contains("instances:"), "forest persisted");
+        assert!(yaml.contains("definitions:"), "defs persisted");
+
+        let mut g2 = Graph::new();
+        g2.load_doc(&yaml).unwrap();
+        assert_eq!(g2.node_uids().len(), 4, "all four member leaves restored");
+        assert_eq!(g2.instance_uids().len(), 2, "both instances restored");
+        assert_eq!(g2.links_view().len(), 2, "each instance's internal link restored");
+
+        // Both instances still share ONE def (refcount 2) — sharing survives the round-trip.
+        let insts = g2.instance_uids();
+        let (d0, d1) = (g2.instance(insts[0]).unwrap().def_id, g2.instance(insts[1]).unwrap().def_id);
+        assert_eq!(d0, d1, "both instances reference the same reconstructed def");
+        assert_eq!(g2.def_refcount(d0), 2, "shared refcount preserved");
+        assert_eq!(g2.instance(insts[0]).unwrap().members.len(), 2, "members restored");
+
+        // Proof the def BODY was reconstructed (not just its shell): it can spawn a new sibling
+        // with its two members + internal link.
+        let before = g2.node_uids().len();
+        g2.duplicate_shared(insts[0], [0.0, 0.0]).unwrap();
+        assert_eq!(g2.node_uids().len(), before + 2, "reconstructed def spawns a wired sibling");
     }
 
     #[test]
