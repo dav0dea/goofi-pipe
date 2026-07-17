@@ -87,6 +87,42 @@ fn real_python_node_runs_inside_the_engine_graph() {
 }
 
 #[test]
+fn real_evaluator_resolves_a_param_expression_end_to_end() {
+    // The user-facing path: the pyo3 PyExprEvaluator injected via `set_evaluator` (exactly what
+    // the CLI's `--features python` startup does) must actually evaluate a param expression each
+    // tick and drive the node — not just compile. Without the evaluator wired the binding errors
+    // "no expression evaluator available"; this proves the real evaluator resolves it.
+    assert!(!PyNode::gil_enabled().unwrap(), "interpreter must be free-threaded");
+    let mut g = Graph::new();
+    g.set_evaluator(std::sync::Arc::new(goofi_py::PyExprEvaluator::new().unwrap()));
+
+    let n = g.add_node("_TestConst", None).unwrap();
+    g.update_param(n, "constant", "value", Param::float(1.0, -1e9, 1e9)).unwrap();
+    g.update_param(n, "constant", "length", Param::int(3, 1, 1_000_000)).unwrap();
+
+    // Bind `value` to a NON-literal expression: the engine must evaluate it via the real
+    // evaluator and drive the output with the result (40+2 = 42, not the literal 1.0).
+    g.set_expression(n, "constant", "value", "40 + 2", true, false).unwrap();
+    assert!(
+        g.param_expression(n, "constant", "value").unwrap().error.is_none(),
+        "the real evaluator compiled the expression cleanly (got {:?})",
+        g.param_expression(n, "constant", "value").unwrap().error
+    );
+    g.tick();
+    assert_eq!(
+        first_f32(&g.latest_frame(n, "out").unwrap()),
+        42.0,
+        "the expression evaluated and drove the node's output (not the literal 1.0)"
+    );
+
+    // A time expression resolves too (proves `t` is exposed, not only constants).
+    g.set_expression(n, "constant", "value", "t*0 + 7", true, false).unwrap();
+    g.tick();
+    assert_eq!(first_f32(&g.latest_frame(n, "out").unwrap()), 7.0, "time expression resolves");
+    assert!(!PyNode::gil_enabled().unwrap(), "GIL stays disabled");
+}
+
+#[test]
 fn discovers_and_hosts_python_nodes_from_a_directory() {
     // A directory of node files, some valid, some not.
     let dir = std::env::temp_dir().join(format!("goofi_pydisc_{}", std::process::id()));

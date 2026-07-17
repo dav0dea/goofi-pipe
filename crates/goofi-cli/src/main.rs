@@ -117,8 +117,11 @@ fn register_evaluator(state: &AppState) {
 
 #[cfg(not(feature = "python"))]
 fn register_evaluator(_state: &AppState) {
-    // Without the `python` feature there is no embedded interpreter; expression
-    // bindings are stored but not evaluated (the graph reports the missing evaluator).
+    // Without the `python` feature there is no embedded interpreter; expression bindings are
+    // stored but not evaluated — the node reports "no expression evaluator available". Announce
+    // it at startup so that error isn't a mystery (the pyo3 evaluator needs a free-threaded 3.14t
+    // interpreter, hence the opt-in feature).
+    println!("  param expressions DISABLED — rebuild with `--features python` to enable the evaluator");
 }
 
 /// Discover and register in-process Python node types into the live graph.
