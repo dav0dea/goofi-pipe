@@ -28,6 +28,9 @@ export interface ParamRuntime {
 	expression_error?: string | null;
 	/** Refreshed StringParam options (device/stream pickers) — override the catalog default. */
 	options?: string[] | null;
+	/** For an expression-enabled param: its LIVE evaluated value (from `param_values`), which never
+	 * enters the doc. Overrides the committed leaf so the inspector preview tracks each evaluation. */
+	liveValue?: unknown;
 }
 
 /** Node-level runtime overlay (event-sourced from state_update/error/node_stage/node_stats/…). */
@@ -81,6 +84,10 @@ function mergeParam(
 	// Runtime overlay: expression_error always; refreshed options only for a StringParam.
 	p.expression_error = runtime?.expression_error ?? null;
 	if (p.type === 'string' && runtime?.options !== undefined) p.options = runtime.options;
+	// An enabled expression's displayed value is the LIVE evaluated one (param_values), not the
+	// committed doc leaf — override it when the runtime carries one (see _extractRuntime).
+	if (p.expression_enabled && runtime?.liveValue !== undefined)
+		(p as { value: unknown }).value = runtime.liveValue;
 	return p;
 }
 

@@ -1173,6 +1173,11 @@ export class GraphStore {
 					expression_error: p.expression_error
 				};
 				if (p.type === 'string') pr.options = (p as StringParam).options;
+				// An expression param's DISPLAYED value is the live evaluated one (from param_values),
+				// which is never written to the doc. Carry it across the rebuild — else the re-assemble
+				// reverts it to the doc's committed literal (the fallback path's `expression_enabled`
+				// skip, ported to the doc-authoritative path).
+				if (p.expression_enabled) pr.liveValue = p.value;
 				params[group][name] = pr;
 			}
 		}

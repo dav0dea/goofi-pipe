@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { FakeControl } from '$lib/test/fakeControl';
 import { GraphStore } from './graph.svelte';
-import { nodesMap, setParamValue } from '$lib/crdt/graphDoc';
+import { nodesMap, setParamValue, setParamExpr } from '$lib/crdt/graphDoc';
 import type { NodeTypeInfo, GraphSnapshot } from '$lib/api/control';
 import type { ParamDescriptor } from '$lib/api/types';
 import * as Y from 'yjs';
@@ -178,6 +178,35 @@ describe('node-identity read cutover — nodes built from the doc when the catal
 		// Fallback: no descriptors, but the node still exists (doesn't crash the reconcile).
 		expect(n!.input_slots).toEqual({});
 		expect(n!.output_slots).toEqual({});
+	});
+});
+
+describe('expression live value survives a doc rebuild', () => {
+	it('an expression param keeps its param_values live value across an unrelated doc rebuild', () => {
+		const fc = new FakeControl();
+		const g = new GraphStore(fc);
+		g.nodeTypes = catalog();
+		docSeedNode(g, 'n1', 'Oscillator', 'osc0', [0, 0]);
+		// Committed leaf value 99 + an ENABLED expression binding: the displayed value should track
+		// the LIVE evaluation, not this committed literal.
+		setParamValue(g.doc, 'n1', 'common', 'max_frequency', 99);
+		setParamExpr(g.doc, 'n1', 'common', 'max_frequency', {
+			source: "nd('lfo')",
+			enabled: true,
+			triggers: false
+		});
+
+		// A param_values event delivers the live evaluated value (7) — never written to the doc.
+		fc.emit({ event: 'param_values', payload: { node: 'n1', values: { common: { max_frequency: 7 } } } });
+		expect(g.nodeById('n1')!.params.common.max_frequency.value).toBe(7);
+
+		// An unrelated doc change rebuilds every node from the doc. The live value must NOT revert to
+		// the committed leaf (99) — the retired fallback path guarded this; the doc path must too.
+		docSeedNode(g, 'n2', 'Oscillator', 'osc1', [1, 1]);
+		expect(
+			g.nodeById('n1')!.params.common.max_frequency.value,
+			'live expression value preserved across the doc rebuild'
+		).toBe(7);
 	});
 });
 
