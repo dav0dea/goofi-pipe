@@ -4,7 +4,7 @@ import { FakeControl } from '$lib/test/fakeControl';
 import { SyncClient, REMOTE_ORIGIN } from './syncClient';
 import { decodeSyncMsg, encodeSyncMsg, syncHello } from './syncProtocol';
 import { encodeEphemeral } from './ephemeral';
-import { nodeView } from './graphDoc';
+import { nodeView, paramValue, setParamValue } from './graphDoc';
 
 /** A stand-in for the manager's authoritative replica, driven by hand in the test. */
 function serverWithNode(): Y.Doc {
@@ -14,6 +14,14 @@ function serverWithNode(): Y.Doc {
 	n.set('name', 'osc');
 	(server.getMap('nodes') as Y.Map<unknown>).set('1', n);
 	return server;
+}
+
+/** Seed the same node into a client's own replica so leaf-writes land. */
+function seedClientNode(client: SyncClient): void {
+	const n = new Y.Map<unknown>();
+	n.set('type', 'Oscillator');
+	n.set('name', 'osc');
+	(client.doc.getMap('nodes') as Y.Map<unknown>).set('1', n);
 }
 
 describe('SyncClient', () => {
@@ -105,6 +113,48 @@ describe('SyncClient', () => {
 		const own = encodeSyncMsg({ kind: 'ephemeral', payload: encodeEphemeral({ client: client.clientId, state: { x: 1 } }) });
 		client.onFrame(own);
 		expect(client.ephemeral.get(client.clientId)).toBeUndefined();
+	});
+
+	it('commit skips a guarded no-op even after prior overwrites (tombstone-proof)', () => {
+		const ctl = new FakeControl();
+		const client = new SyncClient(ctl);
+		seedClientNode(client);
+
+		// Two real writes: the second overwrites the first, tombstoning the old value. An update
+		// payload ALWAYS carries the doc's full delete set, so from here `encodeStateAsUpdate`
+		// is never the 2-byte empty update — a byte-length skip check would be defeated.
+		client.commit((doc) => setParamValue(doc, '1', 'common', 'freq', 1));
+		client.commit((doc) => setParamValue(doc, '1', 'common', 'freq', 2));
+		ctl.sentSyncFrames.length = 0;
+
+		// The guarded writer makes this mutate a no-op (value already 2) → no transaction change →
+		// nothing to broadcast, despite the tombstones sitting in the doc.
+		const sent = client.commit((doc) => setParamValue(doc, '1', 'common', 'freq', 2));
+		expect(sent).toBe(false);
+		expect(ctl.sentSyncFrames.length).toBe(0);
+	});
+
+	it('commit broadcasts a real write as a precise delta (not the whole delete set)', () => {
+		const ctl = new FakeControl();
+		const client = new SyncClient(ctl);
+		seedClientNode(client);
+		// Prior overwrite → tombstone present.
+		client.commit((doc) => setParamValue(doc, '1', 'common', 'freq', 1));
+		client.commit((doc) => setParamValue(doc, '1', 'common', 'freq', 2));
+
+		// A server replica caught up to the client's current state.
+		const server = new Y.Doc();
+		Y.applyUpdate(server, Y.encodeStateAsUpdate(client.doc));
+		ctl.sentSyncFrames.length = 0;
+
+		const sent = client.commit((doc) => setParamValue(doc, '1', 'common', 'freq', 9));
+		expect(sent).toBe(true);
+		expect(ctl.sentSyncFrames.length).toBe(1);
+		const msg = decodeSyncMsg(ctl.sentSyncFrames[0]);
+		expect(msg?.kind).toBe('update');
+		// Applying the broadcast delta advances the (already-synced) server to the new value.
+		Y.applyUpdate(server, msg!.payload);
+		expect(paramValue(server, '1', 'common', 'freq')).toBe(9);
 	});
 
 	it('stamps applied remote updates with REMOTE_ORIGIN', () => {

@@ -74,12 +74,25 @@ export class SyncClient {
 	 * it back (idempotent). Local doc observers fire synchronously, so a reader overlay reflects
 	 * the change optimistically before the round-trip. Returns whether a non-empty delta was sent. */
 	commit(mutate: (doc: Y.Doc) => void): boolean {
-		const before = Y.encodeStateVector(this.doc);
-		mutate(this.doc);
-		const update = Y.encodeStateAsUpdate(this.doc, before);
-		// An empty v1 update is 2 bytes ([0,0]) — skip a no-op mutation.
-		if (update.length <= 2) return false;
-		this.control.sendSync(encodeSyncMsg({ kind: 'update', payload: update }));
+		// Capture the delta from the `update` event, not `encodeStateAsUpdate(doc, before)`: the
+		// latter ALWAYS embeds the doc's full delete set (a state vector can't encode deletions),
+		// so once any value has been overwritten it is never the 2-byte empty update — a byte-length
+		// skip would send a frame for every guarded no-op, each re-shipping the whole tombstone set.
+		// The transaction's `update` event fires ONLY when something actually changed, and carries
+		// just that transaction's delta.
+		let delta: Uint8Array | null = null;
+		const capture = (update: Uint8Array, origin: unknown) => {
+			if (origin === REMOTE_ORIGIN) return; // defensive — no remote apply interleaves this sync mutate
+			delta = delta ? Y.mergeUpdates([delta, update]) : update;
+		};
+		this.doc.on('update', capture);
+		try {
+			this.doc.transact(() => mutate(this.doc));
+		} finally {
+			this.doc.off('update', capture);
+		}
+		if (!delta) return false; // a guarded no-op wrote nothing → no event → nothing to broadcast
+		this.control.sendSync(encodeSyncMsg({ kind: 'update', payload: delta }));
 		return true;
 	}
 
