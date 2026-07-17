@@ -221,19 +221,21 @@ impl GraphDoc {
         self.nodes.keys(&txn).map(|k| k.to_string()).collect()
     }
 
-    /// Insert or update a node's identity fields. Creates the node map on first call;
-    /// on later calls updates the scalar fields in place (keeps nested params/viewers).
+    /// Insert or update a node's identity fields. Creates the node map on first call; on later
+    /// calls updates the scalar fields IN PLACE (keeps nested params/viewers). Idempotent — the
+    /// re-mirror re-asserts every node after every op, so an unchanged re-assert must produce no doc
+    /// ops. Critically, the `pos` map is never REPLACED (only its x/y are set-if-changed): replacing
+    /// it would orphan a client's in-flight position leaf-write onto the old map, losing the edit
+    /// (the same lost-update the guarded set_param/set_viewers/upsert_instance avoid).
     pub fn upsert_node(&mut self, uid: &str, ty: &str, name: &str, pos: [f64; 2]) {
         let mut txn = self.doc.transact_mut();
         let node = match self.nodes.get(&txn, uid).and_then(|v| v.cast::<MapRef>().ok()) {
             Some(n) => n,
             None => self.nodes.insert(&mut txn, uid, MapPrelim::default()),
         };
-        node.insert(&mut txn, "type", ty);
-        node.insert(&mut txn, "name", name);
-        let posv: MapRef = node.insert(&mut txn, "pos", MapPrelim::default());
-        posv.insert(&mut txn, "x", pos[0]);
-        posv.insert(&mut txn, "y", pos[1]);
+        set_scalar_if_changed(&node, &mut txn, "type", &serde_json::json!(ty));
+        set_scalar_if_changed(&node, &mut txn, "name", &serde_json::json!(name));
+        set_pos_if_changed(&node, &mut txn, pos);
     }
 
     fn node_map(&self, txn: &yrs::Transaction, uid: &str) -> Option<MapRef> {
@@ -904,6 +906,56 @@ mod tests {
         doc.upsert_node("000000000001", "Oscillator", "osc-renamed", [10.0, 20.0]);
         assert_eq!(doc.node_ids().len(), 1);
         assert_eq!(doc.node_name("000000000001").as_deref(), Some("osc-renamed"));
+    }
+
+    #[test]
+    fn upsert_node_is_idempotent_and_writes_in_place() {
+        // The re-mirror re-asserts every node after every op (crdt_mirror::sync_graph_to_doc). Like
+        // set_param/set_viewers/upsert_instance, re-asserting an UNCHANGED node must produce NO doc
+        // ops — else the blanket re-mirror churns type/name/pos on every unrelated edit (defeating
+        // the empty-diff broadcast-skip + growing tombstones) AND manufactures a competing write on
+        // the `pos` map that races a client's in-flight position leaf-write.
+        let mut doc = GraphDoc::new();
+        doc.upsert_node("000000000001", "Oscillator", "osc", [10.0, 20.0]);
+        let sv = doc.state_vector();
+        doc.upsert_node("000000000001", "Oscillator", "osc", [10.0, 20.0]);
+        assert!(
+            doc.is_empty_diff(&doc.diff(&sv)),
+            "re-asserting an unchanged node must be a no-op"
+        );
+        // A genuine field change still applies.
+        doc.upsert_node("000000000001", "Oscillator", "osc", [11.0, 22.0]);
+        assert!(!doc.is_empty_diff(&doc.diff(&sv)), "a real pos change produces a delta");
+        assert_eq!(doc.node_pos("000000000001"), Some([11.0, 22.0]));
+    }
+
+    #[test]
+    fn a_concurrent_pos_leaf_write_survives_an_intervening_re_mirror() {
+        // The params lesson, for positions. A client drags a node (in-place x/y writes onto the
+        // CURRENT pos map). Before the manager applies that frame, an unrelated op triggers a
+        // re-mirror that re-asserts the node at its still-old position. The re-mirror must NOT
+        // orphan the client's edit — a wholesale pos-map replacement would, snapping the node back.
+        let mut server = GraphDoc::new();
+        server.upsert_node("1", "Oscillator", "osc", [0.0, 0.0]);
+
+        let mut client = GraphDoc::new();
+        client.apply_update(&server.diff(&client.state_vector())).unwrap();
+
+        // Client commits a drag to [99, 99] against the pos map it currently holds.
+        let cbefore = client.state_vector();
+        client.set_node_pos("1", [99.0, 99.0]);
+        let drag = client.diff(&cbefore);
+
+        // Interleaving: the manager re-mirrors the node at the STILL-OLD [0, 0] (an unrelated edit).
+        server.upsert_node("1", "Oscillator", "osc", [0.0, 0.0]);
+        // Then it applies the client's in-flight drag.
+        server.apply_update(&drag).unwrap();
+
+        assert_eq!(
+            server.node_pos("1"),
+            Some([99.0, 99.0]),
+            "the concurrent position leaf-write must survive the intervening re-mirror"
+        );
     }
 
     #[test]
