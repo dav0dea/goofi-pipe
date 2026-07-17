@@ -1213,6 +1213,14 @@ impl Graph {
     /// layout is shared) and syncing the def's stored pos. A ROOT node or the instance box itself
     /// (not a shared member) moves only itself — identical to `set_node_pos`.
     pub fn set_member_pos(&mut self, uid: Uid, pos: [f64; 2]) -> Result<Vec<Uid>, String> {
+        // A sub-patch instance box lives in `instances`, not `nodes`, and carries its OWN
+        // position independent of sibling instances (two shared instances sit at different
+        // spots on the canvas). Move just this instance — delegating to set_node_pos would fail
+        // with "no such node" and abort the whole drag RPC.
+        if let Some(inst) = self.instances.get_mut(&uid) {
+            inst.pos = pos;
+            return Ok(vec![uid]);
+        }
         let peers = self.shared_member_peers(uid);
         for &peer in &peers {
             self.set_node_pos(peer, pos)?;
@@ -4677,5 +4685,22 @@ mod tests {
             "panic must be captured as an error"
         );
         assert_eq!(first_f32(&g.latest_frame(ok, "out").unwrap()), 9.0);
+    }
+
+    #[test]
+    fn set_member_pos_moves_a_sub_patch_instance_box() {
+        // Dragging a collapsed sub-patch instance box routes set_node_pos → set_member_pos with
+        // the INSTANCE uid. An instance lives in `instances`, not `nodes`, so the old delegation
+        // to set_node_pos returned Err("no such node") and the box never moved. It must update
+        // the instance's own pos and report the instance uid as moved.
+        let mut g = Graph::new();
+        let a = g.add_node("_TestConst", None).unwrap();
+        let b = g.add_node("_TestConst", None).unwrap();
+        let inst = g.group_nodes(&[a, b], [10.0, 20.0]).unwrap();
+        assert_eq!(g.instance(inst).unwrap().pos, [10.0, 20.0]);
+
+        let moved = g.set_member_pos(inst, [77.0, 88.0]).expect("moving an instance box succeeds");
+        assert_eq!(moved, vec![inst], "the instance uid is reported moved");
+        assert_eq!(g.instance(inst).unwrap().pos, [77.0, 88.0], "the box position updated");
     }
 }
