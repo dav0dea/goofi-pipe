@@ -636,7 +636,17 @@ impl Graph {
         if member == endpoint {
             slot.to_string()
         } else {
-            self.boundary_exposing(member, endpoint, slot, dir).unwrap_or_else(|| slot.to_string())
+            // Invariant: a link crossing a nested member's edge exists BECAUSE that member exposes a
+            // boundary to the buried leaf (grouping created it), so this always resolves. The raw-slot
+            // fallback would produce a LocalLink whose local names an instance but whose slot names a
+            // leaf slot — which resolve_endpoint silently drops. Assert in debug; stay safe in release.
+            self.boundary_exposing(member, endpoint, slot, dir).unwrap_or_else(|| {
+                debug_assert!(
+                    false,
+                    "endpoint_slot: nested member {member:?} exposes no boundary for {endpoint:?}/{slot} (capture invariant violated)"
+                );
+                slot.to_string()
+            })
         }
     }
 
@@ -698,6 +708,10 @@ impl Graph {
             let out_m = self.containing_member(l.node_out, &member_set);
             let in_m = self.containing_member(l.node_in, &member_set);
             match (out_m, in_m) {
+                // A link with both endpoints buried inside ONE nested-instance member belongs to
+                // that member's own def (captured there), not this enclosing def — skip it, else it
+                // becomes an invalid self-loop (subpatchN.out → subpatchN.in) the runtime drops.
+                (Some(om), Some(im)) if om == im && self.instances.contains_key(&om) => {}
                 (Some(om), Some(im)) => internal.push(LocalLink {
                     out: local_by_uid[&om].clone(),
                     out_slot: self.endpoint_slot(om, l.node_out, l.slot_out, Dir::Out),
@@ -1176,7 +1190,14 @@ impl Graph {
 
     /// Fork a shared instance's def to a fresh private copy (refcount 1) and repoint the
     /// instance. Pure bookkeeping — the live leaves already match the fork, so nothing respawns.
+    /// Only a ROOT instance may be forked: a nested instance's def id is mirrored in its parent
+    /// def's `NestedDecl`, so forking it in isolation would leave the parent projecting siblings
+    /// against a stale def. Re-sharing that correctly needs a parent-def cascade — reject instead
+    /// of silently corrupting (make the enclosing instance unique first).
     pub fn make_unique(&mut self, inst: Uid) -> Result<subpatch::DefId, String> {
+        if self.scope_of(inst).is_some() {
+            return Err("make_unique: cannot fork a nested instance — make its enclosing sub-patch unique first".into());
+        }
         let old_def = self.instances.get(&inst).ok_or_else(|| format!("make_unique: no such instance {inst}"))?.def_id;
         let body = self.defs.get(&old_def).ok_or("make_unique: missing def")?.clone();
         let new_def = self.mint_def();
@@ -1190,7 +1211,12 @@ impl Graph {
 
     /// Inverse of `make_unique`: repoint a unique instance back onto a target def (bump its
     /// refcount, GC the abandoned private fork). Pure bookkeeping — live leaves already match.
+    /// Root-only, symmetric with `make_unique`: repointing a nested instance would desync its
+    /// parent def's `NestedDecl`.
     pub fn re_share_instance(&mut self, inst: Uid, def_id: subpatch::DefId) -> Result<Uid, String> {
+        if self.scope_of(inst).is_some() {
+            return Err("re_share_instance: cannot re-share a nested instance — operate on its enclosing sub-patch".into());
+        }
         if !self.defs.contains_key(&def_id) {
             return Err(format!("re_share_instance: no such def {}", def_id.to_hex()));
         }
@@ -1828,10 +1854,12 @@ impl Graph {
             self.defs.insert(def_id, subpatch::SubPatchDef { name: def_name, members: IndexMap::new(), links: vec![], interface });
         }
 
-        // 2b. Re-capture each def's member bodies + internal links from a referencing instance's
-        //     live nodes/links (siblings are identical). A link endpoint buried in a NESTED member
-        //     is named by that member's boundary id (`endpoint_slot`), so nested internal links
-        //     survive the round-trip — the load-side analogue of the group_nodes capture.
+        // 2b. Populate every def's member bodies (Leaf/Nested) from a referencing instance's live
+        //     members, BEFORE any link capture. Link capture (2c) resolves nested-boundary
+        //     endpoints via `resolve_boundary`, which reads a nested CHILD def's members to tell
+        //     Leaf from Nested — so all members must exist first, else a def whose id exceeds its
+        //     nested child's (e.g. a `make_unique` fork) would resolve against empty members and
+        //     silently drop the interior link. Interfaces (2a) + members (2b) → 2c is order-free.
         for old in defs.keys() {
             let def_id = defmap[old];
             let Some(inst) = self.instances.values().find(|i| i.def_id == def_id).cloned() else { continue };
@@ -1846,6 +1874,18 @@ impl Graph {
                 };
                 members.insert(local.clone(), decl);
             }
+            if let Some(def) = self.defs.get_mut(&def_id) {
+                def.members = members;
+            }
+        }
+
+        // 2c. Capture each def's internal links from a referencing instance's live links. With all
+        //     interfaces + members present, `endpoint_slot`/`boundary_exposing` resolve nested
+        //     endpoints regardless of def order. A link with BOTH endpoints buried inside ONE
+        //     nested member belongs to that member's own def — skip it (else an invalid self-loop).
+        for old in defs.keys() {
+            let def_id = defmap[old];
+            let Some(inst) = self.instances.values().find(|i| i.def_id == def_id).cloned() else { continue };
             let member_set: std::collections::HashSet<Uid> = inst.members.values().copied().collect();
             let mut links: Vec<LocalLink> = Vec::new();
             for l in &self.links {
@@ -1854,6 +1894,9 @@ impl Graph {
                 else {
                     continue;
                 };
+                if om == im && self.instances.contains_key(&om) {
+                    continue; // fully inside a nested member — captured in that member's own def
+                }
                 if let (Some(ol), Some(il)) = (self.local_of.get(&om).cloned(), self.local_of.get(&im).cloned()) {
                     links.push(LocalLink {
                         out: ol,
@@ -1864,7 +1907,6 @@ impl Graph {
                 }
             }
             if let Some(def) = self.defs.get_mut(&def_id) {
-                def.members = members;
                 def.links = links;
             }
         }
@@ -3926,6 +3968,47 @@ mod tests {
         assert!(g.instance(inner).is_some(), "inner survives as a now-root instance");
         assert_eq!(g.scope_of(inner), None, "inner re-tagged to ROOT scope");
         assert_eq!(g.instance(inner).unwrap().parent, None, "parent field re-tagged in lockstep");
+    }
+
+    #[test]
+    fn grouping_a_nested_member_does_not_capture_its_private_internal_link() {
+        // `inner` has a FULLY-internal link (a→mid, both buried inside inner). Grouping [inner]
+        // into `outer` must NOT sweep that buried link into outer's def as an invalid self-loop —
+        // it belongs to inner's own def. Regression for the transitive-containment over-capture.
+        let mut g = Graph::new();
+        let a = g.add_node("_TestConst", None).unwrap();
+        let mid = g.add_node("_TestEcho", None).unwrap();
+        g.add_link(a, "out", mid, "in").unwrap();
+        let inner = g.group_nodes(&[a, mid], [0.0, 0.0]).unwrap(); // a→mid fully internal to inner
+        assert!(g.def(g.instance(inner).unwrap().def_id).unwrap().interface.is_empty(), "inner exposes nothing");
+
+        let outer = g.group_nodes(&[inner], [100.0, 0.0]).unwrap();
+        let outer_def = g.def(g.instance(outer).unwrap().def_id).unwrap();
+        assert!(outer_def.links.is_empty(), "the buried a→mid link is NOT captured into outer (no self-loop)");
+        assert!(outer_def.interface.is_empty(), "outer exposes nothing either");
+
+        // Sharing outer still projects each sibling's own a→mid — no phantom/duplicated links.
+        g.duplicate_shared(outer, [200.0, 0.0]).unwrap();
+        assert_eq!(g.node_uids().len(), 4, "sibling spawned its own a'/mid'");
+        assert_eq!(g.links_view().len(), 2, "each instance's a→mid is live; no spurious link");
+    }
+
+    #[test]
+    fn make_unique_and_re_share_reject_a_nested_instance() {
+        // Forking a nested instance in isolation would desync its parent def's NestedDecl, so both
+        // make_unique and re_share reject it (root-only). The enclosing root instance still forks.
+        let mut g = Graph::new();
+        let a = g.add_node("_TestConst", None).unwrap();
+        let b = g.add_node("_TestEcho", None).unwrap();
+        g.add_link(a, "out", b, "in").unwrap();
+        let inner = g.group_nodes(&[a], [0.0, 0.0]).unwrap();
+        let outer = g.group_nodes(&[inner, b], [10.0, 0.0]).unwrap();
+        assert_eq!(g.scope_of(inner), Some(outer), "inner is nested");
+
+        assert!(g.make_unique(inner).is_err(), "cannot fork a nested instance");
+        let some_def = g.instance(outer).unwrap().def_id;
+        assert!(g.re_share_instance(inner, some_def).is_err(), "cannot re-share a nested instance");
+        assert!(g.make_unique(outer).is_ok(), "a ROOT instance still forks");
     }
 
     #[test]
