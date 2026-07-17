@@ -15,7 +15,8 @@ import {
 	instanceViews,
 	setNodePos,
 	setViewers,
-	viewersJson
+	viewersJson,
+	docParams
 } from './graphDoc';
 
 /** Build a doc in the exact shape the Rust `GraphDoc` mirror writes. */
@@ -139,6 +140,19 @@ describe('graphDoc readers', () => {
 			]
 		});
 		expect(instanceView(doc, 'missing')).toBeNull();
+	});
+
+	it('reads a node param leaves (value + expression binding) via docParams', () => {
+		const doc = seedDoc();
+		const p = docParams(doc, 'a');
+		expect(p.common.max_frequency).toEqual({ value: 30 });
+		// waveform in seedDoc carries a value AND an expr binding.
+		expect(p.oscillator.waveform).toEqual({
+			value: 'sine',
+			expr: { source: "nd('lfo')", enabled: true, triggers: false }
+		});
+		// A node with no params → empty.
+		expect(docParams(doc, 'b')).toEqual({});
 	});
 
 	it('reflects live edits (the reactive-read contract)', () => {

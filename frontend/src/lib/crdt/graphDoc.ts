@@ -113,6 +113,38 @@ export interface ParamExpr {
 	triggers: boolean;
 }
 
+/** The doc-owned param leaves for one node: value + optional expression binding, per group/name.
+ * Exactly the `{value, expr?}` structure the doc stores (nodeAssembly merges these with the catalog
+ * descriptor + runtime overlay). */
+export type DocParamLeaves = Record<
+	string,
+	Record<string, { value?: number | string | boolean; expr?: ParamExpr }>
+>;
+
+/** Read a node's committed param leaves (value + expression binding) from the doc, per group/name. */
+export function docParams(doc: Y.Doc, uid: string): DocParamLeaves {
+	const out: DocParamLeaves = {};
+	const params = nodesMap(doc).get(uid)?.get('params') as
+		| Y.Map<Y.Map<Y.Map<unknown>>>
+		| undefined;
+	if (!params) return out;
+	for (const [group, g] of params.entries()) {
+		out[group] = {};
+		for (const [name, entry] of g.entries()) {
+			const leaf: DocParamLeaves[string][string] = {};
+			const v = entry.get('value');
+			if (typeof v === 'number' || typeof v === 'string' || typeof v === 'boolean') leaf.value = v;
+			const expr = entry.get('expr') as Y.Map<unknown> | undefined;
+			const s = expr?.get('source');
+			if (typeof s === 'string') {
+				leaf.expr = { source: s, enabled: expr!.get('enabled') === true, triggers: expr!.get('triggers') === true };
+			}
+			out[group][name] = leaf;
+		}
+	}
+	return out;
+}
+
 /** A param's full expression binding `{source, enabled, triggers}`, or `undefined` if unbound. */
 export function paramExpr(doc: Y.Doc, uid: string, group: string, name: string): ParamExpr | undefined {
 	const expr = paramEntry(doc, uid, group, name)?.get('expr') as Y.Map<unknown> | undefined;

@@ -16,19 +16,9 @@
  */
 import type { NodeInstanceInfo, NodeTypeInfo, NodeStage, NodeStats } from '$lib/api/control';
 import type { ParamDescriptor } from '$lib/api/types';
-import type { NodeView } from './graphDoc';
+import type { NodeView, DocParamLeaves } from './graphDoc';
 
-/** The doc-owned param leaves for one node: value + optional expression binding, per group/name. */
-export type DocParamLeaves = Record<
-	string,
-	Record<
-		string,
-		{
-			value?: number | string | boolean;
-			expr?: { source: string; enabled: boolean; triggers: boolean };
-		}
-	>
->;
+export type { DocParamLeaves };
 
 /** The persisted per-slot viewer blob (seeded into ui/inlineView by the store, not rendered here). */
 export type ViewersBlob = NodeInstanceInfo['viewers'];
