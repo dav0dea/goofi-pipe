@@ -8,7 +8,6 @@
 import {
 	getControl,
 	paramValues,
-	sameLink,
 	type Control,
 	type ControlEvent,
 	type DirListing,
@@ -31,6 +30,9 @@ import type { ViewerKind } from '$lib/viewers/kind';
 import { history, type Action, type ExprState } from './history.svelte';
 import { captureNavContext } from '$lib/workspace/navContext';
 import { ROOT_ID } from '$lib/editor/subpatchScene';
+import { SyncClient } from '$lib/crdt/syncClient';
+import { linkViews } from '$lib/crdt/graphDoc';
+import type * as Y from 'yjs';
 
 /** Safety net: if a node never reports a ⟳ refresh done (it crashed mid-scan, or
  * the option list was so trivially unchanged the push was coalesced away), lift the
@@ -86,10 +88,33 @@ export class GraphStore {
 	/** The control client (injectable for tests; defaults to the live WS one). */
 	private ctl: Control;
 
+	/** The CRDT sync driver — the browser replica of the manager's control-plane doc. Phase 2:
+	 * `links` are READ from the doc (the retired `link_added`/`link_removed` events no longer
+	 * drive them); other subtrees migrate onto the doc one at a time. */
+	private _sync: SyncClient;
+
 	constructor(ctl: Control = getControl()) {
 		this.ctl = ctl;
 		ctl.onConnect((c) => (this.connected = c));
 		ctl.on((ev) => this._handle(ev));
+		// Mount the CRDT replica and source `links` from it. The manager mirrors every link
+		// mutation into the doc and syncs the delta, so a doc transaction (local seed or remote
+		// delta) re-derives the reactive link list.
+		this._sync = new SyncClient(ctl);
+		this._sync.doc.on('afterTransaction', (txn: Y.Transaction) => {
+			if (txn.changed.size > 0) this._syncLinksFromDoc();
+		});
+		this._sync.start();
+	}
+
+	/** The CRDT control-plane document (the SSOT clients read; exposed for doc-driven reads). */
+	get doc(): Y.Doc {
+		return this._sync.doc;
+	}
+
+	/** Re-derive `links` from the doc (Phase 2 read-path cutover for the links subtree). */
+	private _syncLinksFromDoc(): void {
+		this.links = linkViews(this._sync.doc);
 	}
 
 	/** Apply a wholesale snapshot. Returns whether it came from a *new* backend
@@ -104,7 +129,8 @@ export class GraphStore {
 		}
 		for (const n of snap.nodes) this._seedNodeViewerState(n);
 		this.nodes = snap.nodes;
-		this.links = snap.links;
+		// `links` are sourced from the CRDT doc (Phase 2), not the snapshot — the doc syncs the
+		// current link set alongside this hello/graph_replaced echo.
 		this._reconcileInstances(snap.instances ?? {});
 		// Seed collapse/kind/settings for each instance's output-boundary slots (its
 		// synth node carries inst.viewers) so a sub-patch viewer state round-trips.
@@ -296,14 +322,8 @@ export class GraphStore {
 				}
 				break;
 			}
-			case 'link_added':
-				if (!this.links.some((l) => sameLink(l, ev.payload))) {
-					this.links = [...this.links, ev.payload];
-				}
-				break;
-			case 'link_removed':
-				this.links = this.links.filter((l) => !sameLink(l, ev.payload));
-				break;
+			// link_added / link_removed retired: links are read from the CRDT doc (Phase 2). The
+			// manager mirrors every link mutation into the doc; the sync delta updates `links`.
 			case 'state_update': {
 				const t = this.nodeById(ev.payload.node);
 				if (t) {

@@ -8,8 +8,26 @@ import { collectPanels } from '$lib/workspace/model';
 import { setInlineKind, rawInlineView } from '$lib/viewers/inlineView.svelte';
 import { ui } from '$lib/stores/ui.svelte';
 import type { NodeInstanceInfo, LinkInfo } from '$lib/api/control';
+import * as Y from 'yjs';
+import { linksArray } from '$lib/crdt/graphDoc';
 
 const EMPTY_CTX: NavContext = { activeWorkspaceId: 'w', activePanelId: null, enteredPath: {}, selection: {} };
+
+/** Seed a link into the store's CRDT doc — links are read from the doc (Phase 2), so a test
+ * simulates the manager's link mirror by writing the doc (Yjs observers fire synchronously). */
+function docAddLink(g: GraphStore, link: LinkInfo): void {
+	const m = new Y.Map<unknown>();
+	m.set('node_out', link.node_out);
+	m.set('slot_out', link.slot_out);
+	m.set('node_in', link.node_in);
+	m.set('slot_in', link.slot_in);
+	linksArray(g.doc).push([m]);
+}
+/** Clear all links from the store's CRDT doc (mirror of the manager tearing links down). */
+function docClearLinks(g: GraphStore): void {
+	const a = linksArray(g.doc);
+	a.delete(0, a.length);
+}
 
 function nodeInfo(name: string, type = 'Oscillator'): NodeInstanceInfo {
 	return {
@@ -115,7 +133,7 @@ describe('graph executors — simple kinds', () => {
 		fc.emit({ event: 'node_added', payload: nodeInfo('osc0') });
 		fc.emit({ event: 'node_added', payload: nodeInfo('buffer0', 'Buffer') });
 		const link: LinkInfo = { node_out: 'osc0', slot_out: 'out', node_in: 'buffer0', slot_in: 'in' };
-		fc.emit({ event: 'link_added', payload: link });
+		docAddLink(g, link);
 
 		// Build the remove_node action capturing pre-state from the store (the
 		// recording wrapper does this in production; here we do it explicitly).
@@ -136,7 +154,7 @@ describe('graph executors — simple kinds', () => {
 
 		await graphExecutors['remove_node'].forward(action, deps(fc, g));
 		fc.emit({ event: 'node_removed', payload: { node: 'osc0', membership: null } });
-		fc.emit({ event: 'link_removed', payload: link });
+		docClearLinks(g);
 		expect(g.nodes.find((n) => n.name === 'osc0')).toBeUndefined();
 		expect(g.links).toHaveLength(0);
 
@@ -147,7 +165,7 @@ describe('graph executors — simple kinds', () => {
 		expect(fc.recordedCalls().some((c) => c.op === 'add_link')).toBe(true);
 		// simulate the backend echo
 		fc.emit({ event: 'node_added', payload: nodeInfo('osc0') });
-		fc.emit({ event: 'link_added', payload: link });
+		docAddLink(g, link);
 		expect(g.nodes.find((n) => n.name === 'osc0')).toBeDefined();
 		expect(g.links).toHaveLength(1);
 	});
@@ -632,7 +650,7 @@ describe('graph store — recording wrappers + undo replay', () => {
 		fc.emit({ event: 'node_added', payload: nodeInfo('osc0') });
 		fc.emit({ event: 'node_added', payload: nodeInfo('buffer0', 'Buffer') });
 		const link: LinkInfo = { node_out: 'osc0', slot_out: 'out', node_in: 'buffer0', slot_in: 'in' };
-		fc.emit({ event: 'link_added', payload: link });
+		docAddLink(g, link);
 
 		await g.removeNode('osc0');
 		expect(history().canUndo).toBe(true);
@@ -656,11 +674,11 @@ describe('graph store — recording wrappers + undo replay', () => {
 		fc.emit({ event: 'node_added', payload: nodeInfo('osc0') });
 		fc.emit({ event: 'node_added', payload: nodeInfo('buffer0', 'Buffer') });
 		const link: LinkInfo = { node_out: 'osc0', slot_out: 'out', node_in: 'buffer0', slot_in: 'in' };
-		fc.emit({ event: 'link_added', payload: link });
+		docAddLink(g, link);
 
 		// Delete BOTH linked nodes as one batch, then mirror the backend teardown.
 		await g.removeNodes(['osc0', 'buffer0']);
-		fc.emit({ event: 'link_removed', payload: link });
+		docClearLinks(g);
 		fc.emit({ event: 'node_removed', payload: { node: 'osc0', membership: null } });
 		fc.emit({ event: 'node_removed', payload: { node: 'buffer0', membership: null } });
 

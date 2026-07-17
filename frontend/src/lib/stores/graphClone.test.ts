@@ -2,6 +2,18 @@ import { describe, it, expect } from 'vitest';
 import { FakeControl } from '$lib/test/fakeControl';
 import { GraphStore } from './graph.svelte';
 import type { NodeInstanceInfo, LinkInfo } from '$lib/api/control';
+import * as Y from 'yjs';
+import { linksArray } from '$lib/crdt/graphDoc';
+
+/** Links are read from the CRDT doc (Phase 2); seed one by writing the doc. */
+function docAddLink(g: GraphStore, link: LinkInfo): void {
+	const m = new Y.Map<unknown>();
+	m.set('node_out', link.node_out);
+	m.set('slot_out', link.slot_out);
+	m.set('node_in', link.node_in);
+	m.set('slot_in', link.slot_in);
+	linksArray(g.doc).push([m]);
+}
 
 function nodeInfo(uid: string, name: string, type = 'Oscillator'): NodeInstanceInfo {
 	return {
@@ -28,7 +40,7 @@ describe('cloneNodes — identity is the uid, not the display name', () => {
 		fc.emit({ event: 'node_added', payload: nodeInfo('uidA', 'oscillator0') });
 		fc.emit({ event: 'node_added', payload: nodeInfo('uidB', 'buffer0', 'Buffer') });
 		const link: LinkInfo = { node_out: 'uidA', slot_out: 'out', node_in: 'uidB', slot_in: 'in' };
-		fc.emit({ event: 'link_added', payload: link });
+		docAddLink(g, link);
 
 		fc.setCallResult('add_node', 'NEW'); // each clone resolves to this new uid
 
