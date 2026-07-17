@@ -560,14 +560,14 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
                     events.push(event("subpatch_changed", schemas::snapshot(&g, &state.instance_id, false)));
                     Ok(json!({ "ok": true }))
                 } else {
-                    let name = g.name(uid).unwrap_or("").to_string();
+                    // Capture the node's REAL scope before removal — the frontend drops the
+                    // member from this scope's index, so hardcoding ROOT would leave a member of
+                    // a sub-patch scope stale (inflated count badge + latent index entry).
+                    let membership = schemas::membership(&g, uid);
                     g.remove_node(uid)?;
                     events.push(event(
                         "node_removed",
-                        json!({
-                            "node": uid.to_hex(),
-                            "membership": { "instance": schemas::ROOT_ID, "local_name": name },
-                        }),
+                        json!({ "node": uid.to_hex(), "membership": membership }),
                     ));
                     Ok(json!({ "ok": true }))
                 }

@@ -176,6 +176,19 @@ pub fn catalog_types(g: &Graph) -> Value {
     Value::Array(items.into_iter().map(|(_, _, v)| v).collect())
 }
 
+/// A node's scope membership: which instance it lives in (ROOT if top-level) and the
+/// template-local name it is keyed by within that scope. The frontend folds `node_added` into
+/// and drops `node_removed` from that scope's members index, so BOTH events must carry this same
+/// shape — a `node_removed` that hardcodes ROOT would fail to drop a member from a sub-patch
+/// scope (stale member badge + index entry). Capture it BEFORE removing the node.
+pub fn membership(g: &Graph, uid: Uid) -> Value {
+    let name = g.name(uid).unwrap_or("").to_string();
+    json!({
+        "instance": g.scope_of(uid).map(|s| s.to_hex()).unwrap_or_else(|| ROOT_ID.to_string()),
+        "local_name": g.local_of(uid).unwrap_or(&name),
+    })
+}
+
 pub fn node_instance_info(g: &Graph, uid: Uid) -> Value {
     let m = g.manifest(uid).expect("node exists");
     let name = g.name(uid).unwrap_or("").to_string();
@@ -193,10 +206,7 @@ pub fn node_instance_info(g: &Graph, uid: Uid) -> Value {
         "pos": g.pos(uid).unwrap_or([0.0, 0.0]),
         "viewers": g.viewers(uid).cloned().unwrap_or_else(|| json!({})),
         "inputs": {},
-        "membership": {
-            "instance": g.scope_of(uid).map(|s| s.to_hex()).unwrap_or_else(|| ROOT_ID.to_string()),
-            "local_name": g.local_of(uid).unwrap_or(&name),
-        },
+        "membership": membership(g, uid),
         "error": g.last_error(uid),
         "stage": "ready",
         "stats": Value::Null,

@@ -1375,3 +1375,34 @@ async fn many_clients_concurrently_leaf_write_and_all_converge() {
         panic!("not converged; final max_frequency per node = {got:?}");
     }
 }
+
+#[tokio::test]
+async fn node_removed_reports_the_members_real_scope() {
+    // Removing a node that lives inside a sub-patch must broadcast node_removed with that
+    // member's REAL scope, so the frontend drops it from the right members index. The handler
+    // used to hardcode the ROOT scope, leaving the member stale in its sub-patch (inflated
+    // count badge + latent index entry).
+    let base = start_server().await;
+    let (mut ws, _) = connect_async(format!("{base}/control")).await.unwrap();
+    let _hello = recv_text(&mut ws).await;
+
+    let uid = |v: &Value| v["result"].as_str().unwrap().to_string();
+    let osc = uid(&call(&mut ws, 1, "add_node", json!({ "type": "Oscillator" })).await);
+    let buf = uid(&call(&mut ws, 2, "add_node", json!({ "type": "Buffer" })).await);
+    let inst = call(&mut ws, 3, "group_nodes", json!({ "members": [osc, buf], "pos": [0.0, 0.0] }))
+        .await["result"]["inst_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    drain_event(&mut ws, "subpatch_changed").await;
+
+    // Remove the grouped member `osc`; node_removed must name the sub-patch instance as its scope.
+    call(&mut ws, 4, "remove_node", json!({ "node": osc })).await;
+    let removed = drain_event(&mut ws, "node_removed").await;
+    assert_eq!(removed["payload"]["node"], json!(osc));
+    assert_eq!(
+        removed["payload"]["membership"]["instance"],
+        json!(inst),
+        "the removed member's real sub-patch scope is reported, not ROOT"
+    );
+}
