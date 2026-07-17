@@ -520,6 +520,14 @@ async fn duplicate_shared_then_make_unique_over_the_wire() {
     let snap2 = drain_event(&mut ws, "subpatch_changed").await;
     assert_eq!(snap2["payload"]["instances"][&sib]["kind"], "unique", "sibling forked to unique");
     assert_eq!(snap2["payload"]["instances"][&inst]["kind"], "unique", "original back to unique too");
+
+    // Undo-of-duplicate routes remove_node on the sibling INSTANCE uid → the whole subtree is
+    // torn down (the undo/redo executor relies on this).
+    call(&mut ws, 7, "remove_node", json!({ "node": sib })).await;
+    let snap3 = drain_event(&mut ws, "subpatch_changed").await;
+    assert!(snap3["payload"]["instances"].get(&sib).is_none() || snap3["payload"]["instances"][&sib].is_null(),
+        "sibling instance removed");
+    assert_eq!(snap3["payload"]["nodes"].as_array().unwrap().len(), 2, "only the original's two leaves remain");
 }
 
 #[tokio::test]

@@ -406,16 +406,24 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
             }
             "remove_node" => {
                 let uid = parse_uid(&payload, "node")?;
-                let name = g.name(uid).unwrap_or("").to_string();
-                g.remove_node(uid)?;
-                events.push(event(
-                    "node_removed",
-                    json!({
-                        "node": uid.to_hex(),
-                        "membership": { "instance": schemas::ROOT_ID, "local_name": name },
-                    }),
-                ));
-                Ok(json!({ "ok": true }))
+                // Delete-on-an-instance (and the inverse of duplicate_shared) routes here with an
+                // instance uid — tear down the whole subtree and broadcast the new snapshot.
+                if g.instance(uid).is_some() {
+                    g.remove_instance(uid)?;
+                    events.push(event("subpatch_changed", schemas::snapshot(&g, &state.instance_id, false)));
+                    Ok(json!({ "ok": true }))
+                } else {
+                    let name = g.name(uid).unwrap_or("").to_string();
+                    g.remove_node(uid)?;
+                    events.push(event(
+                        "node_removed",
+                        json!({
+                            "node": uid.to_hex(),
+                            "membership": { "instance": schemas::ROOT_ID, "local_name": name },
+                        }),
+                    ));
+                    Ok(json!({ "ok": true }))
+                }
             }
             "add_link" => {
                 let (a, so, b, si) = parse_link(&payload)?;

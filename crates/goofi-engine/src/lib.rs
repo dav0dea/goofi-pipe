@@ -726,6 +726,32 @@ impl Graph {
         Ok(restored)
     }
 
+    /// Delete a whole sub-patch instance: remove every member (recursing into nested
+    /// instances, tearing down leaves), drop the instance, and GC its def if now unreferenced.
+    /// The frontend routes Delete-on-an-instance and the inverse of `duplicate_shared` here.
+    pub fn remove_instance(&mut self, inst: Uid) -> Result<(), String> {
+        let instance = self
+            .instances
+            .get(&inst)
+            .ok_or_else(|| format!("remove_instance: no such instance {inst}"))?;
+        let def_id = instance.def_id;
+        let members: Vec<Uid> = instance.members.values().copied().collect();
+        for m in members {
+            if self.instances.contains_key(&m) {
+                self.remove_instance(m)?; // nested instance subtree
+            } else {
+                let _ = self.remove_node(m); // leaf (tolerate an already-gone member)
+            }
+        }
+        self.instances.shift_remove(&inst);
+        self.scope_of.remove(&inst);
+        self.local_of.remove(&inst);
+        if self.def_refcount(def_id) == 0 {
+            self.defs.shift_remove(&def_id);
+        }
+        Ok(())
+    }
+
     // ── Boundary authoring (interface entries on a def; never live nodes) ─────────
     // A boundary is a naming indirection over an inner leaf slot. All edits mutate the
     // instance's DEF, so on a shared def they mirror to every sibling for free (the def is
@@ -3446,6 +3472,30 @@ mod tests {
         let linked = g.links_view().iter().any(|l| sib_uids.contains(&l.node_out) && sib_uids.contains(&l.node_in));
         assert!(linked, "the sibling's internal link is live");
         assert_eq!(g.links_view().len(), 2, "one internal link per instance, external untouched");
+    }
+
+    #[test]
+    fn remove_instance_tears_down_the_whole_subtree() {
+        let mut g = Graph::new();
+        let a = g.add_node("_TestConst", None).unwrap();
+        let b = g.add_node("_TestEcho", None).unwrap();
+        g.add_link(a, "out", b, "in").unwrap();
+        let inst = g.group_nodes(&[a, b], [0.0, 0.0]).unwrap();
+        let def_id = g.instance(inst).unwrap().def_id;
+        let sib = g.duplicate_shared(inst, [50.0, 50.0]).unwrap();
+        assert_eq!(g.node_uids().len(), 4);
+
+        // Removing the sibling removes ONLY its two members; the original survives.
+        g.remove_instance(sib).unwrap();
+        assert!(g.instance(sib).is_none(), "sibling instance gone");
+        assert_eq!(g.node_uids().len(), 2, "only the sibling's members were removed");
+        assert!(g.instance(inst).is_some(), "original instance untouched");
+        assert_eq!(g.def_refcount(def_id), 1, "def back to unique (still referenced by the original)");
+
+        // Removing the original tears down the rest + GCs the def.
+        g.remove_instance(inst).unwrap();
+        assert_eq!(g.node_uids().len(), 0, "all leaves torn down");
+        assert!(g.def(def_id).is_none(), "def GC'd once unreferenced");
     }
 
     #[test]
