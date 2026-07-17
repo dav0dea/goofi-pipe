@@ -138,59 +138,36 @@ fn data_to_py(py: Python<'_>, d: &Data) -> PyResult<Py<PyAny>> {
     }
 }
 
-/// Extract a scalar `f64` from an expression result. goofi Data force-promotes every
-/// scalar to a shape-[1] array, and numpy 2.x rejects `float(np.array([x]))` (only 0-d
-/// arrays convert), so the direct extract fails for the most natural expressions (bare
-/// `nd('x')`, `nd('a')*nd('b')`). Fall back to `np.asarray(x).item()` for any size-1
-/// array; a genuinely multi-element result is a real error.
-fn to_scalar_f64(result: &Bound<'_, PyAny>) -> Result<f64, String> {
-    if let Ok(v) = result.extract::<f64>() {
+/// Extract a scalar `T` from an expression result. goofi Data force-promotes every scalar to a
+/// shape-[1] array, and numpy 2.x rejects `float(np.array([x]))` (only 0-d arrays convert), so the
+/// direct extract fails for the most natural expressions (bare `nd('x')`, `nd('a')*nd('b')`, a
+/// comparison over a bare `nd()`). Fall back to `np.asarray(x).item()` for any size-1 array; a
+/// genuinely multi-element result is a real error. `noun` names the target type in error messages.
+fn to_scalar<'py, T>(result: &Bound<'py, PyAny>, noun: &str) -> Result<T, String>
+where
+    T: for<'a> FromPyObject<'a, 'py, Error = PyErr>,
+{
+    if let Ok(v) = result.extract::<T>() {
         return Ok(v);
     }
+    let not_a = || format!("expression result is not a {noun}");
     let np = PyModule::import(result.py(), "numpy").map_err(|e| e.to_string())?;
-    let a = np
-        .getattr("asarray")
-        .and_then(|f| f.call1((result,)))
-        .map_err(|_| "expression result is not a number".to_string())?;
-    let size: usize =
-        a.getattr("size").and_then(|s| s.extract()).map_err(|_| "expression result is not a number".to_string())?;
+    let a = np.getattr("asarray").and_then(|f| f.call1((result,))).map_err(|_| not_a())?;
+    let size: usize = a.getattr("size").and_then(|s| s.extract()).map_err(|_| not_a())?;
     if size != 1 {
-        return Err(format!("expression result is not a scalar (size {size})"));
+        return Err(format!("expression result is not a scalar {noun} (size {size})"));
     }
-    a.call_method0("item")
-        .and_then(|it| it.extract::<f64>())
-        .map_err(|_| "expression result is not a number".to_string())
-}
-
-/// Extract a scalar `bool` from a result, squeezing a size-1 array (comparisons over a
-/// bare `nd()` yield a shape-[1] bool array) — mirrors [`to_scalar_f64`].
-fn to_scalar_bool(result: &Bound<'_, PyAny>) -> Result<bool, String> {
-    if let Ok(v) = result.extract::<bool>() {
-        return Ok(v);
-    }
-    let np = PyModule::import(result.py(), "numpy").map_err(|e| e.to_string())?;
-    let a = np
-        .getattr("asarray")
-        .and_then(|f| f.call1((result,)))
-        .map_err(|_| "expression result is not a bool".to_string())?;
-    let size: usize =
-        a.getattr("size").and_then(|s| s.extract()).map_err(|_| "expression result is not a bool".to_string())?;
-    if size != 1 {
-        return Err(format!("expression result is not a scalar bool (size {size})"));
-    }
-    a.call_method0("item")
-        .and_then(|it| it.extract::<bool>())
-        .map_err(|_| "expression result is not a bool".to_string())
+    a.call_method0("item").and_then(|it| it.extract::<T>()).map_err(|_| not_a())
 }
 
 /// Coerce the Python result to the target param's type.
 fn coerce(result: &Bound<'_, PyAny>, target: &Param) -> Result<Param, String> {
     match target {
         Param::Float { vmin, vmax, .. } => {
-            Ok(Param::Float { value: to_scalar_f64(result)?, vmin: *vmin, vmax: *vmax })
+            Ok(Param::Float { value: to_scalar::<f64>(result, "number")?, vmin: *vmin, vmax: *vmax })
         }
         Param::Int { vmin, vmax, .. } => {
-            let v = to_scalar_f64(result)?;
+            let v = to_scalar::<f64>(result, "number")?;
             // `as i64` saturates NaN→0 and ±inf→±i64::MAX/MIN silently; error instead,
             // consistent with the other type-mismatch arms.
             if !v.is_finite() {
@@ -198,10 +175,10 @@ fn coerce(result: &Bound<'_, PyAny>, target: &Param) -> Result<Param, String> {
             }
             Ok(Param::Int { value: v.round() as i64, vmin: *vmin, vmax: *vmax })
         }
-        Param::Bool { .. } => Ok(Param::Bool { value: to_scalar_bool(result)? }),
+        Param::Bool { .. } => Ok(Param::Bool { value: to_scalar::<bool>(result, "bool")? }),
         // A Trigger errors on a non-bool result (like the other arms) rather than
         // silently swallowing it into `fired: false`.
-        Param::Trigger { .. } => Ok(Param::Trigger { fired: to_scalar_bool(result)? }),
+        Param::Trigger { .. } => Ok(Param::Trigger { fired: to_scalar::<bool>(result, "bool")? }),
         Param::Str { options, refresh, .. } => {
             let v: String = result.extract().map_err(|_| "expression result is not a string".to_string())?;
             Ok(Param::Str { value: v, options: options.clone(), refresh: *refresh })
