@@ -333,6 +333,27 @@ impl Graph {
         u
     }
 
+    /// Construct (but do not insert) a node by type name — the shared front half of `add_node` /
+    /// `add_node_at`. Resolves the compile-time catalog or a runtime-registered type and builds its
+    /// params (defaulting to the type's defaults).
+    fn build_node(
+        &self,
+        type_name: &str,
+        params: Option<ParamGroups>,
+    ) -> Result<(&'static NodeManifest, ParamGroups, Box<dyn goofi_node::Node>), String> {
+        if let Some(m) = goofi_node::find(type_name) {
+            let p = goofi_node::with_common(params.unwrap_or_else(|| m.default_params()));
+            let n = (m.factory)();
+            Ok((m, p, n))
+        } else if let Some(dt) = self.dyn_types.get(type_name) {
+            let p = goofi_node::with_common(params.unwrap_or_else(|| dt.manifest.default_params()));
+            let n = (dt.factory)(&p);
+            Ok((dt.manifest, p, n))
+        } else {
+            Err(format!("unknown node type `{type_name}`"))
+        }
+    }
+
     /// Instantiate a node by type name (compile-time catalog or a
     /// runtime-registered type). `params` defaults to the type's defaults.
     pub fn add_node(
@@ -340,19 +361,35 @@ impl Graph {
         type_name: &str,
         params: Option<ParamGroups>,
     ) -> Result<Uid, String> {
-        let (manifest, params, node): (&'static NodeManifest, ParamGroups, Box<dyn goofi_node::Node>) =
-            if let Some(m) = goofi_node::find(type_name) {
-                let p = goofi_node::with_common(params.unwrap_or_else(|| m.default_params()));
-                let n = (m.factory)();
-                (m, p, n)
-            } else if let Some(dt) = self.dyn_types.get(type_name) {
-                let p = goofi_node::with_common(params.unwrap_or_else(|| dt.manifest.default_params()));
-                let n = (dt.factory)(&p);
-                (dt.manifest, p, n)
-            } else {
-                return Err(format!("unknown node type `{type_name}`"));
-            };
+        let (manifest, params, node) = self.build_node(type_name, params)?;
         Ok(self.insert_node(manifest, node, params))
+    }
+
+    /// Instantiate a node at a SPECIFIC uid + display name — the undo/redo restoration path, so
+    /// uid-keyed links and panels reconnect to the same node (redo-of-add, undo-of-delete). The uid
+    /// must be free; `next_uid` is advanced past it so a later mint can never collide. A requested
+    /// name already in use falls back to a fresh unique name (the uniqueness invariant wins).
+    pub fn add_node_at(
+        &mut self,
+        type_name: &str,
+        params: Option<ParamGroups>,
+        uid: Uid,
+        name: &str,
+    ) -> Result<Uid, String> {
+        if self.contains(uid) {
+            return Err(format!("add_node_at: uid {} already in use", uid.to_hex()));
+        }
+        let (manifest, params, node) = self.build_node(type_name, params)?;
+        let name = if name.is_empty() || self.name_in_use(name) {
+            self.fresh_name(&manifest.type_name.to_lowercase())
+        } else {
+            name.to_string()
+        };
+        self.insert_node_at(uid, name, manifest, node, params);
+        if uid.0 >= self.next_uid {
+            self.next_uid = uid.0 + 1;
+        }
+        Ok(uid)
     }
 
     /// Build a `NodeEntry` from a manifest + a constructed node, run its `setup`,

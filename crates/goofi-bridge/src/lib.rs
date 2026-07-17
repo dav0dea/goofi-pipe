@@ -555,7 +555,16 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
                     .get("type")
                     .and_then(|v| v.as_str())
                     .ok_or("add_node: missing type")?;
-                let uid = g.add_node(ty, None)?;
+                // Redo-of-add / undo-of-delete replay the ORIGINAL uid (member_uid) + name so
+                // uid-keyed links + panels reconnect to the same node; a plain add mints a fresh uid.
+                // (inst_id sub-patch member placement is not yet restored here — ROOT nodes only.)
+                let uid = match payload.get("member_uid").and_then(|v| v.as_str()).and_then(Uid::from_hex) {
+                    Some(restore) => {
+                        let name = payload.get("name").and_then(|v| v.as_str()).unwrap_or("");
+                        g.add_node_at(ty, None, restore, name)?
+                    }
+                    None => g.add_node(ty, None)?,
+                };
                 // Optional inline params (paste/duplicate replay + undo-of-delete): apply at creation
                 // UNDER THE GRAPH LOCK so the node is born configured. A post-add update_param would
                 // now be a doc leaf-write that no-ops until the node has synced into the client's

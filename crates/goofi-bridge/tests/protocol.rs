@@ -1578,6 +1578,50 @@ async fn add_node_applies_inline_params_at_creation() {
 }
 
 #[tokio::test]
+async fn add_node_restores_a_specific_uid_and_name() {
+    // Undo-of-delete and redo-of-add replay add_node with the ORIGINAL uid (member_uid) + display
+    // name so uid-keyed links/panels reconnect. Without honoring them the backend mints a FRESH uid
+    // and the follow-up add_link (which references the old uid) fails — the restored node comes back
+    // disconnected. Repro the delete→undo shape: add a node, remove it (freeing its uid), then
+    // restore at the same uid + a chosen name.
+    let base = start_server().await;
+    let (mut ws, _) = connect_async(format!("{base}/control")).await.unwrap();
+    let _hello = recv_text(&mut ws).await;
+
+    let a = call(&mut ws, 1, "add_node", json!({ "type": "Oscillator" })).await["result"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    call(&mut ws, 2, "remove_node", json!({ "node": a })).await;
+
+    // Restore at the SAME uid + a specific name (what removeNode's inverse sends).
+    ws.send(Message::Text(
+        json!({ "id": 3, "op": "add_node", "payload": {
+            "type": "Oscillator", "member_uid": a, "name": "restored_osc"
+        }})
+        .to_string(),
+    ))
+    .await
+    .unwrap();
+    let mut uid: Option<String> = None;
+    let mut name: Option<Value> = None;
+    for _ in 0..20 {
+        let m = recv_text(&mut ws).await;
+        if m.get("id").and_then(|v| v.as_i64()) == Some(3) {
+            uid = m["result"].as_str().map(str::to_string);
+        }
+        if m["event"] == "node_added" {
+            name = Some(m["payload"]["name"].clone());
+        }
+        if uid.is_some() && name.is_some() {
+            break;
+        }
+    }
+    assert_eq!(uid.as_deref(), Some(a.as_str()), "add_node must restore the requested uid");
+    assert_eq!(name, Some(json!("restored_osc")), "add_node must restore the requested name");
+}
+
+#[tokio::test]
 async fn node_removed_reports_the_members_real_scope() {
     // Removing a node that lives inside a sub-patch must broadcast node_removed with that
     // member's REAL scope, so the frontend drops it from the right members index. The handler
