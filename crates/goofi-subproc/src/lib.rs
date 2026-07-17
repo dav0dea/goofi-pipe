@@ -24,8 +24,6 @@
 
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::mpsc::{Receiver, RecvTimeoutError};
-use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use iceoryx2::prelude::*;
@@ -149,16 +147,50 @@ while True:
     last_seq = seq
 "#;
 
-/// The spawned child plus a single **io thread** that owns the iceoryx2 ports (they are
-/// single-threaded, so they live on one thread and never cross it). `roundtrip` hands it a
-/// `(frame, timeout)` over a channel and waits for the response; the io thread bounds itself to
-/// `timeout` (publish → poll for the matching-sequence response), so a dead/hung child never
-/// strands the caller.
+/// The iceoryx2 node + request publisher + response subscriber. Held directly on [`Running`]
+/// because `ipc_threadsafe::Service` makes the ports `Send` — the previous design pushed them onto a
+/// dedicated io thread solely to confine the `!Send` single-threaded (`ipc::Service`) ports. The node
+/// must outlive the ports, so it rides along.
+struct Ports {
+    _node: iceoryx2::node::Node<ipc_threadsafe::Service>,
+    req_pub: BytePublisher,
+    resp_sub: ByteSubscriber,
+}
+
+/// The spawned child plus the iceoryx2 ports it talks over. `roundtrip` publishes a frame and polls
+/// for the matching-sequence response inline (bounded by `timeout`), so a dead/hung child never
+/// strands the caller — the port-owning io thread is gone.
 struct Running {
     child: Child,
-    tx_req: Option<std::sync::mpsc::Sender<(Vec<u8>, Duration)>>,
-    rx_resp: Receiver<std::io::Result<Vec<u8>>>,
-    io_thread: Option<JoinHandle<()>>,
+    ports: Ports,
+    seq: u32,
+}
+
+/// Build the iceoryx2 node + `<id>_req` publisher + `<id>_resp` subscriber.
+fn build_ports(req_name: &str, resp_name: &str) -> std::result::Result<Ports, String> {
+    let node = NodeBuilder::new()
+        .create::<ipc_threadsafe::Service>()
+        .map_err(|e| format!("iox node: {e}"))?;
+    let mk_pubsub = |name: &str| {
+        node.service_builder(&name.try_into().map_err(|e| format!("bad service name `{name}`: {e:?}"))?)
+            .publish_subscribe::<[u8]>()
+            .enable_safe_overflow(true)
+            .max_publishers(1)
+            .max_subscribers(16)
+            .open_or_create()
+            .map_err(|e| format!("service `{name}`: {e}"))
+    };
+    let req_pub = mk_pubsub(req_name)?
+        .publisher_builder()
+        .initial_max_slice_len(MAX_PAYLOAD)
+        .allocation_strategy(AllocationStrategy::PowerOfTwo)
+        .create()
+        .map_err(|e| format!("req publisher: {e}"))?;
+    let resp_sub = mk_pubsub(resp_name)?
+        .subscriber_builder()
+        .create()
+        .map_err(|e| format!("resp subscriber: {e}"))?;
+    Ok(Ports { _node: node, req_pub, resp_sub })
 }
 
 impl Running {
@@ -168,7 +200,7 @@ impl Running {
         let resp_name = format!("{id}_resp");
         // No stdin/stdout protocol anymore — the child talks over iceoryx2. stdout/stderr are
         // inherited so node prints/tracebacks surface (the worker routes fd 1 to stderr).
-        let child = Command::new(python)
+        let mut child = Command::new(python)
             .arg("-c")
             .arg(WORKER_SRC)
             .env("GOOFI_USER_SRC", source)
@@ -179,109 +211,34 @@ impl Running {
             .stderr(Stdio::inherit())
             .spawn()
             .map_err(|e| format!("spawn `{python}`: {e}"))?;
-        let (tx_req, rx_req) = std::sync::mpsc::channel::<(Vec<u8>, Duration)>();
-        let (tx_resp, rx_resp) = std::sync::mpsc::channel::<std::io::Result<Vec<u8>>>();
-        let io_thread = std::thread::spawn(move || io_loop(req_name, resp_name, rx_req, tx_resp));
-        Ok(Running {
-            child,
-            tx_req: Some(tx_req),
-            rx_resp,
-            io_thread: Some(io_thread),
-        })
-    }
-
-    /// Hand one frame to the io thread; wait for the response. The io thread bounds itself to
-    /// `timeout`, so the caller waits a hair longer as a backstop; on timeout the child is killed
-    /// (the next tick respawns a fresh one).
-    fn roundtrip(&mut self, frame: &[u8], timeout: Duration) -> std::result::Result<Vec<u8>, String> {
-        match self.tx_req.as_ref() {
-            Some(tx) if tx.send((frame.to_vec(), timeout)).is_ok() => {}
-            _ => return Err("subprocess io thread ended".into()),
-        }
-        match self.rx_resp.recv_timeout(timeout + Duration::from_secs(1)) {
-            Ok(Ok(buf)) => Ok(buf),
-            Ok(Err(e)) => Err(format!("subprocess io: {e}")),
-            Err(RecvTimeoutError::Timeout) => {
-                let _ = self.child.kill();
-                Err(format!("subprocess did not respond within {timeout:?}"))
+        match build_ports(&req_name, &resp_name) {
+            Ok(ports) => Ok(Running { child, ports, seq: 0 }),
+            // A port-setup failure would strand the child with no peer — reap it before erroring.
+            Err(e) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                Err(e)
             }
-            Err(RecvTimeoutError::Disconnected) => Err("subprocess io thread ended".into()),
         }
     }
 
-    /// Kill + reap the child, close the request channel (so an idle io thread
-    /// wakes), and join the io thread.
+    /// Publish one frame and wait (bounded by `timeout`) for the matching-sequence response. On any
+    /// error the caller ([`RemoteNode::process`]) reaps the child so the next tick respawns a fresh one.
+    fn roundtrip(&mut self, frame: &[u8], timeout: Duration) -> std::result::Result<Vec<u8>, String> {
+        self.seq = self.seq.wrapping_add(1);
+        one_roundtrip(&self.ports.req_pub, &self.ports.resp_sub, self.seq, frame, timeout)
+            .map_err(|e| format!("subprocess io: {e}"))
+    }
+
+    /// Kill + reap the child. The ports drop with `self`.
     fn shutdown(&mut self) {
         let _ = self.child.kill();
-        self.tx_req = None; // wakes an io thread blocked in rx_req.recv()
         let _ = self.child.wait();
-        if let Some(h) = self.io_thread.take() {
-            let _ = h.join();
-        }
     }
 }
 
-/// The io thread: build the iceoryx2 node + `<id>_req` publisher + `<id>_resp` subscriber on
-/// this thread, then serve one request at a time. A setup failure fails every request with the
-/// error (so it surfaces on the node's error channel rather than panicking the thread).
-fn io_loop(
-    req_name: String,
-    resp_name: String,
-    rx_req: Receiver<(Vec<u8>, Duration)>,
-    tx_resp: std::sync::mpsc::Sender<std::io::Result<Vec<u8>>>,
-) {
-    let ports = (|| -> Result<_, String> {
-        let node = NodeBuilder::new()
-            .create::<ipc::Service>()
-            .map_err(|e| format!("iox node: {e}"))?;
-        let mk_pubsub = |name: &str| {
-            node.service_builder(
-                &name.try_into().map_err(|e| format!("bad service name `{name}`: {e:?}"))?,
-            )
-            .publish_subscribe::<[u8]>()
-            .enable_safe_overflow(true)
-            .max_publishers(1)
-            .max_subscribers(16)
-            .open_or_create()
-            .map_err(|e| format!("service `{name}`: {e}"))
-        };
-        let req_pub = mk_pubsub(&req_name)?
-            .publisher_builder()
-            .initial_max_slice_len(MAX_PAYLOAD)
-            .allocation_strategy(AllocationStrategy::PowerOfTwo)
-            .create()
-            .map_err(|e| format!("req publisher: {e}"))?;
-        let resp_sub = mk_pubsub(&resp_name)?
-            .subscriber_builder()
-            .create()
-            .map_err(|e| format!("resp subscriber: {e}"))?;
-        Ok((node, req_pub, resp_sub))
-    })();
-
-    let (_node, req_pub, resp_sub) = match ports {
-        Ok(x) => x,
-        Err(e) => {
-            while rx_req.recv().is_ok() {
-                if tx_resp.send(Err(std::io::Error::other(e.clone()))).is_err() {
-                    break;
-                }
-            }
-            return;
-        }
-    };
-
-    let mut seq: u32 = 0;
-    while let Ok((frame, timeout)) = rx_req.recv() {
-        seq = seq.wrapping_add(1);
-        let result = one_roundtrip(&req_pub, &resp_sub, seq, &frame, timeout);
-        if tx_resp.send(result).is_err() {
-            break; // caller gone
-        }
-    }
-}
-
-type BytePublisher = iceoryx2::port::publisher::Publisher<ipc::Service, [u8], ()>;
-type ByteSubscriber = iceoryx2::port::subscriber::Subscriber<ipc::Service, [u8], ()>;
+type BytePublisher = iceoryx2::port::publisher::Publisher<ipc_threadsafe::Service, [u8], ()>;
+type ByteSubscriber = iceoryx2::port::subscriber::Subscriber<ipc_threadsafe::Service, [u8], ()>;
 
 /// One request/response: publish `[seq][frame]` and poll `<resp>` for the sample whose leading
 /// sequence matches. Re-publishes each idle millisecond (so the child gets it even if its
@@ -549,6 +506,15 @@ mod tests {
     use super::*;
     use goofi_core::{DType, Data, Meta, Value};
     use indexmap::IndexMap;
+
+    /// A `RemoteNode` holds its iceoryx2 ports directly (via `ipc_threadsafe::Service`), so it must
+    /// stay `Send` for the scheduler. This compile-time guard fails loudly if the ports ever revert to
+    /// the `!Send` `ipc::Service` — the whole reason the port-owning io thread could be removed.
+    #[test]
+    fn remote_node_stays_send() {
+        fn _assert_send<T: Send>() {}
+        _assert_send::<RemoteNode>();
+    }
 
     /// A python with BOTH numpy and iceoryx2 (the subprocess transport), or None (the tier
     /// test is skipped then). Prefers `$GOOFI_SUBPROC_TEST_PYTHON`, then the repo's iceoryx2
