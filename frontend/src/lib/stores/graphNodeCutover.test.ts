@@ -2,9 +2,23 @@ import { describe, it, expect } from 'vitest';
 import { FakeControl } from '$lib/test/fakeControl';
 import { GraphStore } from './graph.svelte';
 import { nodesMap, setParamValue } from '$lib/crdt/graphDoc';
-import type { NodeTypeInfo } from '$lib/api/control';
+import type { NodeTypeInfo, GraphSnapshot } from '$lib/api/control';
 import type { ParamDescriptor } from '$lib/api/types';
 import * as Y from 'yjs';
+
+/** A minimal hello/graph_replaced snapshot; `node_types` optionally carries the palette inline. */
+function helloSnap(node_types?: NodeTypeInfo[]): GraphSnapshot {
+	return {
+		nodes: [],
+		links: [],
+		instances: {},
+		node_types,
+		save_path: null,
+		unsaved_changes: false,
+		instance_id: 'sess1',
+		layout: null
+	} as unknown as GraphSnapshot;
+}
 
 /** The catalog (list_nodes) the manager provides — the static per-type descriptor source. */
 function catalog(): NodeTypeInfo[] {
@@ -164,5 +178,26 @@ describe('node-identity read cutover — nodes built from the doc when the catal
 		// Fallback: no descriptors, but the node still exists (doesn't crash the reconcile).
 		expect(n!.input_slots).toEqual({});
 		expect(n!.output_slots).toEqual({});
+	});
+});
+
+describe('catalog-in-hello — the palette rides on the snapshot, no async list_nodes', () => {
+	it('a hello carrying node_types sets the catalog synchronously (doc-authoritative from render 1)', () => {
+		const fc = new FakeControl();
+		const g = new GraphStore(fc);
+		fc.emit({ event: 'hello', payload: helloSnap(catalog()) });
+		// The catalog is in hand immediately — the doc becomes authoritative with no fallback window.
+		expect(g.nodeTypes?.length).toBe(1);
+		// …and no async round-trip was issued for it.
+		expect(fc.recordedCalls().some((c) => c.op === 'list_nodes')).toBe(false);
+	});
+
+	it('an older backend (hello without node_types) still fetches list_nodes async', () => {
+		const fc = new FakeControl();
+		fc.setCallResult('list_nodes', { types: catalog() });
+		const g = new GraphStore(fc);
+		fc.emit({ event: 'hello', payload: helloSnap(undefined) });
+		// Backward-compat: the async fetch is the fallback when the snapshot omits the palette.
+		expect(fc.recordedCalls().some((c) => c.op === 'list_nodes')).toBe(true);
 	});
 });

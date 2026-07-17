@@ -284,6 +284,11 @@ export interface GraphSnapshot {
 	instance_id: string;
 	nodes: NodeInstanceInfo[];
 	links: LinkInfo[];
+	/** The node palette (same list `list_nodes` returns), carried on `hello` /
+	 * `graph_replaced` so the client has descriptors in hand immediately — no async
+	 * round-trip before it can build nodes from the CRDT doc. Absent on an older
+	 * backend (the client then falls back to fetching `list_nodes`). */
+	node_types?: NodeTypeInfo[];
 	/** Sub-patch instances keyed by instance id. */
 	instances?: Record<string, InstanceInfo>;
 	save_path: string | null;

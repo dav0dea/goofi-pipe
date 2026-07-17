@@ -365,6 +365,12 @@ pub fn snapshot(g: &Graph, instance_id: &str, with_protocol: bool) -> Value {
     });
     if with_protocol {
         snap["protocol_version"] = json!(PROTOCOL_VERSION);
+        // hello / graph_replaced carry the node palette so the client has descriptors in hand
+        // immediately — no async `list_nodes` round-trip, so the doc is authoritative for node
+        // identity from the first render (no catalog-loading fallback window). Structural echoes
+        // (subpatch_changed, with_protocol=false) omit it — the catalog changes only when a
+        // runtime type registers, which arrives on the next hello/graph_replaced.
+        snap["node_types"] = catalog_types(g);
     }
     snap
 }
@@ -421,6 +427,25 @@ mod tests {
         );
         // Native catalog types remain present alongside the runtime ones.
         assert!(arr.iter().any(|v| ty(v).as_deref() == Some("Oscillator")));
+    }
+
+    #[test]
+    fn hello_snapshot_embeds_the_node_catalog() {
+        let g = Graph::new();
+        // hello / graph_replaced (with_protocol=true) carry the palette so the client needs no
+        // async `list_nodes` round-trip before it can build nodes from the doc (retires the
+        // catalog-loading fallback window).
+        let hello = snapshot(&g, "iid", true);
+        assert_eq!(
+            hello["node_types"],
+            catalog_types(&g),
+            "hello embeds the same palette `list_nodes` returns"
+        );
+        assert!(hello["node_types"].as_array().is_some_and(|a| !a.is_empty()));
+        // A structural echo (subpatch_changed, with_protocol=false) must NOT re-ship the whole
+        // catalog on every group/expand/share — it changes only when a runtime type registers.
+        let echo = snapshot(&g, "iid", false);
+        assert!(echo.get("node_types").is_none(), "structural echoes omit the catalog");
     }
 
     #[test]

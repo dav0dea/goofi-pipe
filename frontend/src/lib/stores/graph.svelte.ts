@@ -176,6 +176,13 @@ export class GraphStore {
 	 * session (changed `instance_id`) — the caller uses that to decide whether to
 	 * re-fit / clear history (a same-session reconnect must leave both alone). */
 	private _replaceSnapshot(snap: GraphSnapshot): boolean {
+		// The node palette rides on hello/graph_replaced (Phase-2 read cutover) so the doc is
+		// authoritative for node identity from the first render — no async `list_nodes` window.
+		// Absent → an older backend; keep whatever the async fetch set. We do NOT reconcile from the
+		// doc here (it isn't synced yet at snapshot time — the binary SV exchange follows); the
+		// snapshot's nodes/instances are the pre-doc render, and the doc's afterTransaction reconciles
+		// once it lands (see `_syncFromDoc`).
+		if (snap.node_types?.length) this.nodeTypes = snap.node_types;
 		// Drop ui bookkeeping for any node that's about to disappear, then
 		// re-seed viewer state (collapse / kind / settings) for every node.
 		for (const old of this.nodes) {
@@ -292,7 +299,9 @@ export class GraphStore {
 					this._sync.reset();
 					this._onWholesaleLoad();
 				}
-				void this._refreshNodeTypes();
+				// The catalog usually rides on the hello snapshot (`_replaceSnapshot`); only fetch it
+				// async when an older backend omitted it, so the doc-authoritative path still boots.
+				if (!this.nodeTypes?.length) void this._refreshNodeTypes();
 				break;
 			}
 			case 'graph_replaced':
