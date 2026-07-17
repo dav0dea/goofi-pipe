@@ -253,25 +253,20 @@ const FREQ_MODE_SECONDS_PER_UPDATE: &str = "seconds-per-update";
 /// the others) — instead the scheduler *gates* each node's run on elapsed
 /// wall-clock, so a node capped at N Hz simply runs on the ticks where its period
 /// has elapsed and is skipped on the rest.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Default)]
 pub struct RunPolicy {
     /// Run every allowed tick even with no fresh input — a free-running producer.
     /// Only takes effect when the node has no *wired* triggering input; a node
     /// whose trigger input is connected runs on that input's rate regardless (the
     /// engine enforces this, since wiring isn't visible here). See [`Self::should_run`].
+    /// Defaults to `false` (triggered).
     pub autotrigger: bool,
-    /// Max run rate in **updates-per-second** (Hz). `<= 0` is unbounded: an
+    /// Max run rate in **updates-per-second** (Hz). `<= 0` is unbounded (the default): an
     /// input-triggered node then runs at its input's rate, a free-running one every
     /// tick (so it must set a finite cap to not saturate the loop). A node authored
     /// in `seconds-per-update` mode is normalized to Hz by [`Self::from_params`], so
     /// this is always a rate — the mode is a pure input convenience.
     pub max_frequency: f64,
-}
-
-impl Default for RunPolicy {
-    fn default() -> RunPolicy {
-        RunPolicy { autotrigger: false, max_frequency: 0.0 }
-    }
 }
 
 impl RunPolicy {

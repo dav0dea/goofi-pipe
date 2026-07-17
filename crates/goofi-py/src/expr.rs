@@ -261,35 +261,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn extract_refs_finds_distinct_node_names() {
+    fn extract_refs_maps_scanned_names_to_slotless_refs() {
+        // The goofi-py-specific contract: extract_refs delegates the scan to
+        // goofi_node::nd_ref_names (whose word-boundary/quote behavior is tested there)
+        // and maps each name to an ExprRef with an unresolved slot.
         let refs = extract_refs("nd('lfo') * 2 + nd(\"psd\").out.mean() + nd('lfo')[0]");
         let names: Vec<&str> = refs.iter().map(|r| r.node.as_str()).collect();
         assert_eq!(names, vec!["lfo", "psd"], "distinct node names, deduped");
         assert!(refs.iter().all(|r| r.slot.is_none()), "slot resolution is engine-side");
-    }
-
-    #[test]
-    fn extract_refs_empty_for_refless() {
-        assert!(extract_refs("t * 2").is_empty());
-    }
-
-    #[test]
-    fn extract_refs_requires_a_word_boundary() {
-        // A standalone `nd(...)` is a ref; an identifier merely ending in "nd" is not.
-        assert_eq!(names(&extract_refs("nd('s').find('sub')")), vec!["s"]);
-        assert!(extract_refs("round('x')").is_empty(), "round( is not nd(");
-        assert!(extract_refs("s.rfind('y')").is_empty(), "rfind( is not nd(");
-        assert!(extract_refs("grand('z')").is_empty(), "grand( is not nd(");
-    }
-
-    #[test]
-    fn extract_refs_tolerates_whitespace_before_paren() {
-        // `nd ('sig')` is a valid Python call.
-        assert_eq!(names(&extract_refs("nd ('sig') * 2")), vec!["sig"]);
-    }
-
-    fn names(refs: &[ExprRef]) -> Vec<&str> {
-        refs.iter().map(|r| r.node.as_str()).collect()
     }
 
     // The tests below drive the real embedded interpreter (numpy required), matching
