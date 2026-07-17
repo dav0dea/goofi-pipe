@@ -1061,6 +1061,29 @@ impl Graph {
         Ok(peers)
     }
 
+    /// Bind (or unbind) a member's param expression, re-projecting to every shared sibling
+    /// (§4.5 — a shared sub-patch's authored logic is shared) and syncing the def's stored
+    /// decl so a further duplicate inherits it. A ROOT node or unique member binds only
+    /// itself — identical to `set_expression`. Returns the uids actually updated (for the
+    /// per-node `state_update` broadcast). `nd()` refs resolve by global name as elsewhere,
+    /// so the source is projected verbatim — consistent with `update_member_param`.
+    pub fn set_member_expression(
+        &mut self,
+        uid: Uid,
+        group: &str,
+        name: &str,
+        source: &str,
+        enabled: bool,
+        triggers_process: bool,
+    ) -> Result<Vec<Uid>, String> {
+        let peers = self.shared_member_peers(uid);
+        for &peer in &peers {
+            self.set_expression(peer, group, name, source, enabled, triggers_process)?;
+        }
+        self.sync_def_member(uid);
+        Ok(peers)
+    }
+
     /// Fork a shared instance's def to a fresh private copy (refcount 1) and repoint the
     /// instance. Pure bookkeeping — the live leaves already match the fork, so nothing respawns.
     pub fn make_unique(&mut self, inst: Uid) -> Result<subpatch::DefId, String> {
@@ -3613,6 +3636,40 @@ mod tests {
         let sib3 = g.duplicate_shared(inst, [20.0, 20.0]).unwrap();
         let a3 = *g.instance(sib3).unwrap().members.values().next().unwrap();
         assert_eq!(val(&g, a3), Some(9.0), "a new sibling inherits the edited param from the def");
+    }
+
+    #[test]
+    fn shared_expression_edit_reprojects_to_every_sibling() {
+        // Binding a param to an expression on one shared member mirrors the binding to every
+        // sibling (the def is the SSOT), and the def's stored decl is synced so a further
+        // duplicate inherits it — the §4.5 analogue of the literal-param re-projection.
+        // Uses a disabled binding so the source round-trips without needing the pyo3 evaluator.
+        let mut g = Graph::new();
+        let a = g.add_node("_TestConst", None).unwrap();
+        let inst = g.group_nodes(&[a], [0.0, 0.0]).unwrap();
+        let sib = g.duplicate_shared(inst, [10.0, 10.0]).unwrap();
+        let a2 = *g.instance(sib).unwrap().members.values().next().unwrap();
+
+        let updated = g
+            .set_member_expression(a, "constant", "value", "sin(t)", false, false)
+            .unwrap();
+        assert_eq!(updated.len(), 2, "both siblings received the binding");
+        let src = |g: &Graph, u| g.param_expression(u, "constant", "value").map(|e| e.source);
+        assert_eq!(src(&g, a).as_deref(), Some("sin(t)"), "edited member bound");
+        assert_eq!(src(&g, a2).as_deref(), Some("sin(t)"), "sibling mirrored the binding");
+
+        // The def carries the binding: a fresh duplicate inherits the expression.
+        let sib3 = g.duplicate_shared(inst, [20.0, 20.0]).unwrap();
+        let a3 = *g.instance(sib3).unwrap().members.values().next().unwrap();
+        assert_eq!(src(&g, a3).as_deref(), Some("sin(t)"), "a new sibling inherits the expression from the def");
+
+        // Unbinding on one member likewise clears it on every sibling.
+        let updated = g
+            .set_member_expression(a, "constant", "value", "", false, false)
+            .unwrap();
+        assert_eq!(updated.len(), 3, "all three siblings cleared");
+        assert_eq!(src(&g, a2), None, "sibling unbound");
+        assert_eq!(src(&g, a3), None, "sibling unbound");
     }
 
     #[test]

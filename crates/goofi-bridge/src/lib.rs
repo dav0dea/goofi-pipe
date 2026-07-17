@@ -491,19 +491,23 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
                     .get("expression_triggers_process")
                     .and_then(|v| v.as_bool())
                     .unwrap_or(false);
-                g.set_expression(uid, group, name, expression, enabled, triggers)?;
-                events.push(event(
-                    "state_update",
-                    json!({
-                        "node": uid.to_hex(),
-                        "params": schemas::describe_node_params(&g, uid),
-                        "output_subscribers": {},
-                        "stage": "ready",
-                        "error": g.last_error(uid),
-                        "log_endpoint": Value::Null,
-                        "refreshed_params": [],
-                    }),
-                ));
+                // Re-project to every shared sibling (§4.5): a shared member's expression edit
+                // hits all its instances. A ROOT / unique-member edit updates only itself.
+                let updated = g.set_member_expression(uid, group, name, expression, enabled, triggers)?;
+                for peer in updated {
+                    events.push(event(
+                        "state_update",
+                        json!({
+                            "node": peer.to_hex(),
+                            "params": schemas::describe_node_params(&g, peer),
+                            "output_subscribers": {},
+                            "stage": "ready",
+                            "error": g.last_error(peer),
+                            "log_endpoint": Value::Null,
+                            "refreshed_params": [],
+                        }),
+                    ));
+                }
                 Ok(json!({ "ok": true }))
             }
             "set_node_pos" => {
