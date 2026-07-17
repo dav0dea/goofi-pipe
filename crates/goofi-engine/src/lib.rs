@@ -509,6 +509,23 @@ impl Graph {
                 touched.push(ruid);
             }
         }
+        // Shared sub-patch definitions store EXTERNAL nd() refs verbatim by display name, so a
+        // renamed external producer must follow into the def too — else a later duplicate is
+        // instantiated from the stale name (Python: _rewrite_record_nd over the definitions).
+        // Templates aren't compiled, so rewrite the stored source string in place.
+        for def in self.defs.values_mut() {
+            for member in def.members.values_mut() {
+                if let subpatch::MemberDecl::Leaf(leaf) = member {
+                    for ex in &mut leaf.expressions {
+                        if let Some(src) =
+                            goofi_node::rewrite_nd_refs(&ex.source, |n| (n == old).then(|| new.to_string()))
+                        {
+                            ex.source = src;
+                        }
+                    }
+                }
+            }
+        }
         touched
     }
 
@@ -3935,6 +3952,35 @@ mod tests {
         assert_eq!(updated.len(), 3, "all three siblings cleared");
         assert_eq!(src(&g, a2), None, "sibling unbound");
         assert_eq!(src(&g, a3), None, "sibling unbound");
+    }
+
+    #[test]
+    fn renaming_an_external_producer_follows_into_shared_defs() {
+        // A shared sub-patch member references an external node via nd('ext'). Renaming that
+        // external node must rewrite the reference in the DEFINITION too, not only in the
+        // live bindings — else a later duplicate is instantiated from the stale name (Python:
+        // _rewrite_record_nd over the definitions). Disabled binding => no evaluator needed.
+        let mut g = Graph::new();
+        let ext = g.add_node("_TestConst", None).unwrap();
+        g.rename_node(ext, "ext").unwrap();
+        let a = g.add_node("_TestConst", None).unwrap();
+        let inst = g.group_nodes(&[a], [0.0, 0.0]).unwrap();
+        g.duplicate_shared(inst, [10.0, 10.0]).unwrap(); // 2 instances -> the def is the SSOT
+        g.set_member_expression(a, "constant", "value", "nd('ext')", false, false).unwrap();
+
+        let touched = g.rename_node(ext, "signal").unwrap();
+        let src = |g: &Graph, u| g.param_expression(u, "constant", "value").map(|e| e.source);
+        assert_eq!(src(&g, a).as_deref(), Some("nd('signal')"), "live member binding rewritten");
+        assert!(touched.contains(&a), "the live member is reported as a referrer");
+
+        // The def followed the rename: a fresh duplicate inherits nd('signal'), not nd('ext').
+        let sib3 = g.duplicate_shared(inst, [20.0, 20.0]).unwrap();
+        let a3 = *g.instance(sib3).unwrap().members.values().next().unwrap();
+        assert_eq!(
+            src(&g, a3).as_deref(),
+            Some("nd('signal')"),
+            "a fresh duplicate inherits the rewritten ref from the def, not the stale name"
+        );
     }
 
     #[test]
