@@ -106,6 +106,17 @@ pub fn router(state: AppState) -> Router {
 /// cede for today's single-mutex architecture (~10 kHz, 166× the old 60 Hz ceiling),
 /// NOT a rate policy; genuinely unbounded ticking wants the data plane decoupled from
 /// the graph lock (future work).
+///
+/// KNOWN LIMITATION (architectural, tracked in `docs/analysis/tick-lock-subprocess-stall.md`):
+/// `g.tick()` runs every node's `process()` inline while holding this mutex — including a
+/// [`goofi_subproc::RemoteNode`], whose `process()` blocks on an iceoryx2 roundtrip. A subprocess
+/// node's FIRST tick pays child cold-start (python+numpy+iceoryx2 import, ~1-2 s) and a hung
+/// child strands up to `DEFAULT_TIMEOUT` (10 s) + 1 s. For that whole window the graph lock is
+/// held, so control dispatch, the reducer's `latest_frame`, and stats all block — the UI freezes.
+/// The bound (kill-on-timeout) keeps it finite but a multi-second freeze on a normal action is
+/// real. A proper fix is the same lock decoupling as above (release the lock across node
+/// `process()` / async node bootstrap staging), not a patch here — a rushed change to this
+/// load-bearing path would risk correctness.
 pub fn spawn_tick(graph: Arc<Mutex<Graph>>) {
     std::thread::spawn(move || {
         const IDLE_POLL: Duration = Duration::from_millis(50);
