@@ -127,7 +127,13 @@ export class GraphStore {
 		}
 		for (const iv of instanceViews(doc)) {
 			const inst = this.instances[iv.uid];
-			if (inst && (inst.pos[0] !== iv.pos[0] || inst.pos[1] !== iv.pos[1])) inst.pos = iv.pos;
+			if (!inst) continue;
+			if (inst.pos[0] !== iv.pos[0] || inst.pos[1] !== iv.pos[1]) inst.pos = iv.pos;
+			// Boundary positions are doc-owned too (retired `boundary_moved`).
+			for (const b of iv.interface) {
+				const port = inst.interface?.[b.bnd_id];
+				if (port && (port.pos[0] !== b.pos[0] || port.pos[1] !== b.pos[1])) port.pos = b.pos;
+			}
 		}
 	}
 
@@ -286,12 +292,8 @@ export class GraphStore {
 				}
 				break;
 			}
-			case 'boundary_moved': {
-				const inst = this.instances[ev.payload.inst_id];
-				const port = inst?.interface?.[ev.payload.bnd_id];
-				if (port) port.pos = ev.payload.pos;
-				break;
-			}
+			// boundary_moved retired: boundary positions are read from the CRDT doc forest
+			// (Phase 2, see _syncFromDoc). The manager mirrors every boundary move into the doc.
 			case 'node_renamed': {
 				// Only the display name changed — the uid (the key everything uses) is
 				// stable, so nothing else moves. Just update the label in place.
