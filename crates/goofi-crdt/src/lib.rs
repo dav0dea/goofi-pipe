@@ -303,6 +303,12 @@ impl GraphDoc {
         self.doc.transact().encode_state_as_update_v1(&sv)
     }
 
+    /// Whether `delta` (a v1 update) carries no changes — the canonical empty update this
+    /// doc's own encoder produces for an up-to-date peer. Used to skip no-op broadcasts.
+    pub fn is_empty_diff(&self, delta: &[u8]) -> bool {
+        delta == self.diff(&self.state_vector()).as_slice()
+    }
+
     /// Apply a peer's incremental v1 update into this replica. `Err` if it is malformed.
     pub fn apply_update(&mut self, update: &[u8]) -> Result<(), String> {
         let u = yrs::Update::decode_v1(update).map_err(|e| e.to_string())?;
@@ -467,5 +473,16 @@ mod tests {
         let live = server.diff(&client.state_vector());
         client.on_sync(SyncMsg::Update(live));
         assert_eq!(client.node_name("2").as_deref(), Some("buf"));
+    }
+
+    #[test]
+    fn is_empty_diff_detects_no_op_deltas() {
+        let mut doc = GraphDoc::new();
+        doc.upsert_node("1", "Oscillator", "osc", [0.0, 0.0]);
+        // Diff against the current SV = nothing new → empty.
+        assert!(doc.is_empty_diff(&doc.diff(&doc.state_vector())));
+        // Diff against an empty replica = the whole doc → NOT empty.
+        let fresh = GraphDoc::new();
+        assert!(!doc.is_empty_diff(&doc.diff(&fresh.state_vector())));
     }
 }

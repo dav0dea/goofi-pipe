@@ -32,9 +32,15 @@ pub struct AppState {
     pub graph: Arc<Mutex<Graph>>,
     pub events: broadcast::Sender<String>,
     pub instance_id: Arc<str>,
-    /// Server-side CRDT mirror of the graph's control state (Phase 1: not client-facing;
-    /// re-synced after every successful control op). The future shared source of truth.
+    /// Server-side CRDT mirror of the graph's control state, re-synced after every
+    /// successful control op. The shared source of truth clients replicate (Phase 2+).
     pub crdt: Arc<Mutex<goofi_crdt::GraphDoc>>,
+    /// Binary sync-update fan-out: each mutation broadcasts the CRDT delta as a framed
+    /// [`goofi_crdt::SyncMsg::Update`] to every connected client's replica.
+    pub sync_updates: broadcast::Sender<Vec<u8>>,
+    /// The doc's state vector as of the last broadcast delta — the baseline the next delta
+    /// is computed against (guarded together with `crdt`: always lock `crdt` first).
+    pub last_sync_sv: Arc<Mutex<Vec<u8>>>,
 }
 
 impl Default for AppState {
@@ -50,11 +56,16 @@ impl AppState {
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_nanos())
             .unwrap_or(0);
+        let (sync_updates, _) = broadcast::channel(256);
+        let crdt = goofi_crdt::GraphDoc::new();
+        let last_sync_sv = Arc::new(Mutex::new(crdt.state_vector()));
         AppState {
             graph: Arc::new(Mutex::new(Graph::new())),
             events,
             instance_id: Arc::from(format!("{iid:x}").as_str()),
-            crdt: Arc::new(Mutex::new(goofi_crdt::GraphDoc::new())),
+            crdt: Arc::new(Mutex::new(crdt)),
+            sync_updates,
+            last_sync_sv,
         }
     }
 }
@@ -277,6 +288,17 @@ async fn handle_control(socket: WebSocket, state: AppState) {
     }
 
     let mut events = state.events.subscribe();
+    let mut sync_updates = state.sync_updates.subscribe();
+
+    // CRDT sync handshake: advertise the server replica's state vector as a binary frame.
+    // The client answers with its own state vector; `on_sync` then ships the diff it lacks.
+    {
+        let hello_sv = state.crdt.lock().unwrap().sync_hello();
+        if tx.send(Message::Binary(hello_sv.into())).await.is_err() {
+            return;
+        }
+    }
+
     loop {
         tokio::select! {
             incoming = rx.next() => match incoming {
@@ -284,6 +306,18 @@ async fn handle_control(socket: WebSocket, state: AppState) {
                     if let Some(reply) = dispatch(&state, t.as_str()) {
                         if tx.send(Message::Text(reply.into())).await.is_err() {
                             break;
+                        }
+                    }
+                }
+                Some(Ok(Message::Binary(b))) => {
+                    // A CRDT sync frame from the client. Drive the pairwise handshake and
+                    // send back any replies (a diff for the client's advertised state vector).
+                    if let Some(msg) = goofi_crdt::SyncMsg::decode(&b) {
+                        let replies = state.crdt.lock().unwrap().on_sync(msg);
+                        for r in replies {
+                            if tx.send(Message::Binary(r.encode().into())).await.is_err() {
+                                return;
+                            }
                         }
                     }
                 }
@@ -298,6 +332,22 @@ async fn handle_control(socket: WebSocket, state: AppState) {
                     }
                 }
                 Err(broadcast::error::RecvError::Lagged(_)) => {}
+                Err(broadcast::error::RecvError::Closed) => break,
+            },
+            sync = sync_updates.recv() => match sync {
+                Ok(update) => {
+                    if tx.send(Message::Binary(update.into())).await.is_err() {
+                        break;
+                    }
+                }
+                // A lagged client missed one or more deltas — re-advertise the server SV so it
+                // re-handshakes and catches up on the exact diff it needs (no silent desync).
+                Err(broadcast::error::RecvError::Lagged(_)) => {
+                    let hello_sv = state.crdt.lock().unwrap().sync_hello();
+                    if tx.send(Message::Binary(hello_sv.into())).await.is_err() {
+                        break;
+                    }
+                }
                 Err(broadcast::error::RecvError::Closed) => break,
             },
         }
@@ -685,12 +735,20 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
         }
     })();
 
-    // Phase 1: keep the server-side CRDT doc in agreement with the graph after any
-    // successful control op (full re-sync — correctness first; incremental writes Phase 3).
+    // Keep the server-side CRDT doc in agreement with the graph after any successful control
+    // op (full re-sync — correctness first; incremental writes come in Phase 3), then
+    // broadcast the resulting delta so every connected client's replica converges.
     if result.is_ok() {
         let g = state.graph.lock().unwrap();
         let mut doc = state.crdt.lock().unwrap();
         crdt_mirror::sync_graph_to_doc(&g, &mut doc);
+        let mut last_sv = state.last_sync_sv.lock().unwrap();
+        let delta = doc.diff(&last_sv);
+        // A no-op mutation yields a trivial empty-diff; only broadcast a real change.
+        if !doc.is_empty_diff(&delta) {
+            *last_sv = doc.state_vector();
+            let _ = state.sync_updates.send(goofi_crdt::SyncMsg::Update(delta).encode());
+        }
     }
 
     for e in events {
