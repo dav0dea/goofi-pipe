@@ -248,6 +248,27 @@ impl GraphDoc {
         }
         this
     }
+
+    /// This replica's state vector (v1), which a peer advertises so the other side can
+    /// compute the minimal diff. Opaque bytes — the sync relay just shuttles them.
+    pub fn state_vector(&self) -> Vec<u8> {
+        use yrs::updates::encoder::Encode;
+        self.doc.transact().state_vector().encode_v1()
+    }
+
+    /// The minimal v1 update carrying everything this doc has that the peer (described by
+    /// its `state_vector`) lacks. `Err` if the state-vector bytes are malformed.
+    pub fn diff(&self, peer_state_vector: &[u8]) -> Vec<u8> {
+        let sv = yrs::StateVector::decode_v1(peer_state_vector).unwrap_or_default();
+        self.doc.transact().encode_state_as_update_v1(&sv)
+    }
+
+    /// Apply a peer's incremental v1 update into this replica. `Err` if it is malformed.
+    pub fn apply_update(&mut self, update: &[u8]) -> Result<(), String> {
+        let u = yrs::Update::decode_v1(update).map_err(|e| e.to_string())?;
+        let mut txn = self.doc.transact_mut();
+        txn.apply_update(u).map_err(|e| e.to_string())
+    }
 }
 
 impl Default for GraphDoc {
@@ -327,5 +348,25 @@ mod tests {
         let copy = GraphDoc::from_update(&bytes);
         assert_eq!(copy.node_ids(), vec!["2"]);
         assert_eq!(copy.node_name("2").as_deref(), Some("buf"));
+    }
+
+    #[test]
+    fn sync_diff_converges_two_replicas() {
+        // The relay handshake: a peer advertises its state vector, the other returns a diff,
+        // the peer applies it and converges — the primitive the /control sync relay uses.
+        let mut server = GraphDoc::new();
+        server.upsert_node("1", "Oscillator", "osc", [0.0, 0.0]);
+
+        let client = GraphDoc::new(); // empty replica just joined
+        let diff = server.diff(&client.state_vector());
+        let mut client = client;
+        client.apply_update(&diff).unwrap();
+        assert_eq!(client.node_name("1").as_deref(), Some("osc"), "client converged via diff");
+
+        // A later incremental edit on the server produces a small diff the client applies.
+        server.upsert_node("1", "Oscillator", "osc2", [0.0, 0.0]);
+        let diff2 = server.diff(&client.state_vector());
+        client.apply_update(&diff2).unwrap();
+        assert_eq!(client.node_name("1").as_deref(), Some("osc2"));
     }
 }
