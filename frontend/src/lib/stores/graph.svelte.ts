@@ -703,10 +703,14 @@ export class GraphStore {
 		opts: { enabled?: boolean; triggers_process?: boolean } = {}
 	): Promise<void> {
 		const d = this.nodeById(node)?.params?.[group]?.[name];
+		// Guard on the param's EXISTENCE (like updateParam): a missing param (agent typo, or a call
+		// racing node hydration) would otherwise leaf-write an `expr` onto a phantom param entry the
+		// graph rejects and the re-mirror never prunes — an orphan binding lingering in the doc.
+		if (!d) throw new Error(`set_expression: no param ${group}.${name} on node ${node}`);
 		const oldExpr: ExprState = {
-			expression: d?.expression ?? null,
-			enabled: d?.expression_enabled ?? false,
-			triggers_process: d?.expression_triggers_process ?? false
+			expression: d.expression ?? null,
+			enabled: d.expression_enabled ?? false,
+			triggers_process: d.expression_triggers_process ?? false
 		};
 		const newExpr: ExprState = {
 			expression,

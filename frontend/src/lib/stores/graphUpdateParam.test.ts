@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { FakeControl } from '$lib/test/fakeControl';
 import { GraphStore } from './graph.svelte';
 import { history } from './history.svelte';
+import { paramExpr } from '$lib/crdt/graphDoc';
 import type { NodeInstanceInfo } from '$lib/api/control';
 import * as Y from 'yjs';
 
@@ -61,6 +62,23 @@ describe('GraphStore.updateParam — guards a non-existent param', () => {
 		await g.updateParam('uidA', 'common', 'frequency', 5);
 		expect(g.nodeById('uidA')!.params.common.frequency.value).toBe(5);
 		expect(history().canUndo).toBe(true);
+	});
+});
+
+describe('GraphStore.setExpression — guards a non-existent param', () => {
+	beforeEach(() => history().reset());
+
+	it('throws (recording nothing, minting no phantom doc binding) when the param does not exist', async () => {
+		const fc = new FakeControl();
+		const g = new GraphStore(fc);
+		fc.emit({ event: 'node_added', payload: nodeWithParam('uidA', 0) });
+		docAddNode(g, 'uidA'); // the node exists in the doc; the PARAM does not
+
+		// A missing group/name (agent typo, or a call racing hydration) must not leaf-write an
+		// `expr` onto a phantom param entry — the graph rejects it and the re-mirror never prunes it.
+		await expect(g.setExpression('uidA', 'nope', 'missing', "nd('x')")).rejects.toThrow();
+		expect(history().canUndo).toBe(false);
+		expect(paramExpr(g.doc, 'uidA', 'nope', 'missing')).toBeUndefined();
 	});
 });
 
