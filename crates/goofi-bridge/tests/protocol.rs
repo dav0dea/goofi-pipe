@@ -271,6 +271,35 @@ async fn native_chain_streams_frames_over_the_data_plane() {
 }
 
 #[tokio::test]
+async fn data_plane_sustains_streaming_over_a_window() {
+    // Stability/throughput smoke: a live Oscillator→Buffer chain must keep delivering frames
+    // over a wall-clock window (not just one), proving the tick + data plane sustain streaming
+    // without stalling. Loose lower bound so it's not CI-timing-flaky; the measured rate is
+    // logged for a latency/throughput read.
+    let base = start_server().await;
+    let (mut ws, _) = connect_async(format!("{base}/control")).await.unwrap();
+    let _hello = recv_text(&mut ws).await;
+    let uid = |v: &Value| v["result"].as_str().unwrap().to_string();
+    let osc = uid(&call(&mut ws, 1, "add_node", json!({ "type": "Oscillator" })).await);
+    let buf = uid(&call(&mut ws, 2, "add_node", json!({ "type": "Buffer" })).await);
+    call(&mut ws, 3, "add_link", json!({ "node_out": osc, "slot_out": "out", "node_in": buf, "slot_in": "data" })).await;
+
+    let (mut data, _) = connect_async(format!("{base}/data/{buf}/out")).await.unwrap();
+    let window = Duration::from_millis(400);
+    let mut frames = 0u32;
+    let deadline = tokio::time::Instant::now() + window;
+    while tokio::time::Instant::now() < deadline {
+        match tokio::time::timeout(Duration::from_millis(200), data.next()).await {
+            Ok(Some(Ok(Message::Binary(b)))) if &b[0..4] == b"GOOF" => frames += 1,
+            Ok(Some(Ok(_))) => {}
+            _ => break,
+        }
+    }
+    eprintln!("data-plane throughput: {frames} frames in {}ms", window.as_millis());
+    assert!(frames >= 3, "the data plane must sustain streaming (got {frames} frames in {window:?})");
+}
+
+#[tokio::test]
 async fn data_plane_reduces_to_the_declared_viewspec() {
     // A viewer declares its need inband on the /data socket (line: array, ≤2-D, envelope
     // dim -1 → 32). The bridge reduces the buffered frame ONCE for this connection and
