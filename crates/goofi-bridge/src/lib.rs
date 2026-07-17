@@ -38,6 +38,11 @@ pub struct AppState {
     /// Binary sync-update fan-out: each mutation broadcasts the CRDT delta as a framed
     /// [`goofi_crdt::SyncMsg::Update`] to every connected client's replica.
     pub sync_updates: broadcast::Sender<Vec<u8>>,
+    /// Ephemeral/awareness fan-out: presence, live-drag values, previews, active viewer specs.
+    /// Separate from `sync_updates` because it is fire-and-forget — a lagged ephemeral frame is
+    /// simply dropped (never triggers doc recovery). Relayed verbatim; peers self-filter their
+    /// own client id.
+    pub ephemeral: broadcast::Sender<Vec<u8>>,
     /// The doc's state vector as of the last broadcast delta — the baseline the next delta
     /// is computed against (guarded together with `crdt`: always lock `crdt` first).
     pub last_sync_sv: Arc<Mutex<Vec<u8>>>,
@@ -57,6 +62,7 @@ impl AppState {
             .map(|d| d.as_nanos())
             .unwrap_or(0);
         let (sync_updates, _) = broadcast::channel(256);
+        let (ephemeral, _) = broadcast::channel(256);
         let crdt = goofi_crdt::GraphDoc::new();
         let last_sync_sv = Arc::new(Mutex::new(crdt.state_vector()));
         AppState {
@@ -65,6 +71,7 @@ impl AppState {
             instance_id: Arc::from(format!("{iid:x}").as_str()),
             crdt: Arc::new(Mutex::new(crdt)),
             sync_updates,
+            ephemeral,
             last_sync_sv,
         }
     }
@@ -289,6 +296,7 @@ async fn handle_control(socket: WebSocket, state: AppState) {
 
     let mut events = state.events.subscribe();
     let mut sync_updates = state.sync_updates.subscribe();
+    let mut ephemeral = state.ephemeral.subscribe();
 
     // CRDT sync handshake: advertise the server replica's state vector as a binary frame.
     // The client answers with its own state vector; `on_sync` then ships the diff it lacks.
@@ -323,6 +331,11 @@ async fn handle_control(socket: WebSocket, state: AppState) {
                             }
                         }
                         Some(goofi_crdt::SyncMsg::Update(u)) => apply_client_write(&state, &u),
+                        Some(eph @ goofi_crdt::SyncMsg::Ephemeral(_)) => {
+                            // Presence/preview: relay verbatim to every client (peers self-filter
+                            // their own id). Fire-and-forget — no doc write, no recovery.
+                            let _ = state.ephemeral.send(eph.encode());
+                        }
                         None => {}
                     }
                 }
@@ -355,6 +368,17 @@ async fn handle_control(socket: WebSocket, state: AppState) {
                         break;
                     }
                 }
+                Err(broadcast::error::RecvError::Closed) => break,
+            },
+            eph = ephemeral.recv() => match eph {
+                Ok(frame) => {
+                    if tx.send(Message::Binary(frame.into())).await.is_err() {
+                        break;
+                    }
+                }
+                // Fire-and-forget: a lagged ephemeral frame is simply skipped (presence/preview
+                // is latest-wins, never recovered).
+                Err(broadcast::error::RecvError::Lagged(_)) => {}
                 Err(broadcast::error::RecvError::Closed) => break,
             },
         }

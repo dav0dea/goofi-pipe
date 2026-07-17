@@ -3,6 +3,7 @@ import * as Y from 'yjs';
 import { FakeControl } from '$lib/test/fakeControl';
 import { SyncClient, REMOTE_ORIGIN } from './syncClient';
 import { decodeSyncMsg, encodeSyncMsg, syncHello } from './syncProtocol';
+import { encodeEphemeral } from './ephemeral';
 import { nodeView } from './graphDoc';
 
 /** A stand-in for the manager's authoritative replica, driven by hand in the test. */
@@ -76,6 +77,34 @@ describe('SyncClient', () => {
 
 		const msg = decodeSyncMsg(ctl.sentSyncFrames.at(-1)!);
 		expect(msg?.kind).toBe('sv');
+	});
+
+	it('publishes ephemeral state framed with its client id', () => {
+		const ctl = new FakeControl();
+		const client = new SyncClient(ctl);
+		client.publishEphemeral({ cursor: [3, 4] });
+		const msg = decodeSyncMsg(ctl.sentSyncFrames.at(-1)!);
+		expect(msg?.kind).toBe('ephemeral');
+	});
+
+	it('routes an inbound ephemeral frame to the store (never the doc) and self-filters', () => {
+		const ctl = new FakeControl();
+		const client = new SyncClient(ctl);
+		let notified = 0;
+		client.setEphemeralListener(() => notified++);
+
+		// A peer's presence arrives → tracked in the store.
+		const peer = encodeSyncMsg({ kind: 'ephemeral', payload: encodeEphemeral({ client: 999, state: { name: 'peer' } }) });
+		client.onFrame(peer);
+		expect(client.ephemeral.get(999)).toEqual({ name: 'peer' });
+		expect(notified).toBe(1);
+		// The doc is untouched by ephemeral frames.
+		expect(client.doc.getMap('nodes').size).toBe(0);
+
+		// Our own echoed frame is ignored (self-filter).
+		const own = encodeSyncMsg({ kind: 'ephemeral', payload: encodeEphemeral({ client: client.clientId, state: { x: 1 } }) });
+		client.onFrame(own);
+		expect(client.ephemeral.get(client.clientId)).toBeUndefined();
 	});
 
 	it('stamps applied remote updates with REMOTE_ORIGIN', () => {

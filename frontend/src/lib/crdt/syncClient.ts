@@ -7,7 +7,8 @@
  */
 import * as Y from 'yjs';
 import type { Control } from '$lib/api/control';
-import { decodeSyncMsg, onSync, syncHello } from './syncProtocol';
+import { decodeSyncMsg, encodeSyncMsg, onSync, syncHello } from './syncProtocol';
+import { EphemeralStore, encodeEphemeral, decodeEphemeral } from './ephemeral';
 
 /** Origin tag stamped on transactions produced by applying a REMOTE (synced) update, so
  * doc observers can distinguish the manager's changes from this client's own local edits. */
@@ -15,12 +16,32 @@ export const REMOTE_ORIGIN = 'goofi:remote';
 
 export class SyncClient {
 	readonly doc: Y.Doc;
+	/** This client's stable id for the ephemeral/awareness channel (Yjs' per-doc clientID). */
+	readonly clientId: number;
+	/** Remote clients' presence/preview state (self-filtered). */
+	readonly ephemeral: EphemeralStore;
 	private control: Control;
 	private unsub: (() => void) | null = null;
+	private onEphemeralChange: (() => void) | null = null;
 
 	constructor(control: Control, doc: Y.Doc = new Y.Doc()) {
 		this.control = control;
 		this.doc = doc;
+		this.clientId = doc.clientID;
+		this.ephemeral = new EphemeralStore(this.clientId);
+	}
+
+	/** Register a callback fired whenever a remote client's ephemeral state changes (for
+	 * reactive presence/preview rendering). */
+	setEphemeralListener(fn: () => void): void {
+		this.onEphemeralChange = fn;
+	}
+
+	/** Publish this client's ephemeral state (cursor, live-drag value, active viewer specs).
+	 * Relayed to peers; pass `null` to clear (departure). Fire-and-forget. */
+	publishEphemeral(state: unknown | null): void {
+		const payload = encodeEphemeral({ client: this.clientId, state });
+		this.control.sendSync(encodeSyncMsg({ kind: 'ephemeral', payload }));
 	}
 
 	/** Begin syncing: subscribe to inbound frames, and advertise our state vector on connect
@@ -53,6 +74,15 @@ export class SyncClient {
 	onFrame(bytes: Uint8Array): void {
 		const msg = decodeSyncMsg(bytes);
 		if (!msg) return;
+		if (msg.kind === 'ephemeral') {
+			// Presence/preview from a peer — apply to the store (self-filtered), never the doc.
+			const update = decodeEphemeral(msg.payload);
+			if (update) {
+				this.ephemeral.apply(update);
+				this.onEphemeralChange?.();
+			}
+			return;
+		}
 		const replies = onSync(this.doc, msg, REMOTE_ORIGIN);
 		for (const r of replies) this.control.sendSync(r);
 	}

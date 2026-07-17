@@ -10,19 +10,22 @@
  */
 import * as Y from 'yjs';
 
-/** Tag bytes — must match `SYNC_TAG_SV` / `SYNC_TAG_UPDATE` in the Rust crate. */
+/** Tag bytes — must match `SYNC_TAG_*` in the Rust crate. */
 export const SYNC_TAG_SV = 0;
 export const SYNC_TAG_UPDATE = 1;
+export const SYNC_TAG_EPHEMERAL = 2;
 
 export type SyncMsg =
 	| { kind: 'sv'; payload: Uint8Array }
-	| { kind: 'update'; payload: Uint8Array };
+	| { kind: 'update'; payload: Uint8Array }
+	| { kind: 'ephemeral'; payload: Uint8Array };
+
+const TAG_BY_KIND = { sv: SYNC_TAG_SV, update: SYNC_TAG_UPDATE, ephemeral: SYNC_TAG_EPHEMERAL };
 
 /** Frame a message as `[tag, ...payload]`. */
 export function encodeSyncMsg(msg: SyncMsg): Uint8Array {
-	const tag = msg.kind === 'sv' ? SYNC_TAG_SV : SYNC_TAG_UPDATE;
 	const out = new Uint8Array(msg.payload.length + 1);
-	out[0] = tag;
+	out[0] = TAG_BY_KIND[msg.kind];
 	out.set(msg.payload, 1);
 	return out;
 }
@@ -33,6 +36,7 @@ export function decodeSyncMsg(bytes: Uint8Array): SyncMsg | null {
 	const payload = bytes.subarray(1);
 	if (bytes[0] === SYNC_TAG_SV) return { kind: 'sv', payload };
 	if (bytes[0] === SYNC_TAG_UPDATE) return { kind: 'update', payload };
+	if (bytes[0] === SYNC_TAG_EPHEMERAL) return { kind: 'ephemeral', payload };
 	return null;
 }
 
@@ -55,7 +59,10 @@ export function onSync(doc: Y.Doc, msg: SyncMsg, origin: unknown = 'remote'): Ui
 	if (msg.kind === 'sv') {
 		return [encodeSyncMsg({ kind: 'update', payload: Y.encodeStateAsUpdate(doc, msg.payload) })];
 	}
-	// Applying with a distinct origin lets observers ignore remote echoes of their own writes.
-	Y.applyUpdate(doc, msg.payload, origin);
+	if (msg.kind === 'update') {
+		// Applying with a distinct origin lets observers ignore remote echoes of their own writes.
+		Y.applyUpdate(doc, msg.payload, origin);
+	}
+	// An ephemeral frame is never a doc update — it is routed to the EphemeralStore, not here.
 	return [];
 }
