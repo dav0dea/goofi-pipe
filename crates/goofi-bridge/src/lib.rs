@@ -606,6 +606,13 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
                 ));
                 Ok(json!({ "ok": true }))
             }
+            // Retained deliberately, unlike its 3 leaf-write siblings (set_node_pos/viewers/
+            // expression), whose handlers were removed: the frontend no longer calls update_param
+            // (params are leaf-written to the doc), but this handler is the tested reference for the
+            // uniform mutating-RPC → graph → re-mirror invariant (crdt_doc_tracks_an_rpc_node_add_
+            // and_param_edit) and the constant-value push-flood test — behaviours a leaf-write's
+            // skip-if-unchanged deliberately can't reproduce. It runs under the graph lock and
+            // re-mirrors like the structural RPCs, so it carries no lost-update risk.
             "update_param" => {
                 let uid = parse_uid(&payload, "node")?;
                 let group = payload.get("group").and_then(|v| v.as_str()).ok_or("missing group")?;
