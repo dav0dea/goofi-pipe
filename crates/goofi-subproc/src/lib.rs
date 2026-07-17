@@ -620,6 +620,48 @@ mod tests {
     }
 
     #[test]
+    fn subprocess_roundtrip_latency_and_stability() {
+        // Concrete latency/stability read for the iceoryx2 subprocess tier: after cold start,
+        // run many round-trips of a realistic EEG-sized frame and report the latency
+        // distribution. Loose upper bound so it isn't CI-timing-flaky; every tick must succeed
+        // (stability) and steady-state latency must stay well under the tick budget.
+        let Some(py) = usable_python() else {
+            eprintln!("SKIP: no python with numpy + iceoryx2");
+            return;
+        };
+        let mut node = RemoteNode::spawn(&py, "def process(x):\n    return x * 1.0\n").unwrap();
+        // A 32-channel × 256-sample float32 frame (~32 KB) — a typical EEG buffer.
+        let (c, t) = (32usize, 256usize);
+        let buf: Vec<u8> = (0..c * t).flat_map(|i| (i as f32).to_le_bytes()).collect();
+        let make = || Data::from_array_bytes(DType::F32, vec![c, t], buf.clone(), Meta::empty()).unwrap();
+
+        // Warm up: the first tick pays cold start (spawn + numpy/iceoryx2 import + service open).
+        let cold = std::time::Instant::now();
+        let _ = run(&mut node, make());
+        let cold_ms = cold.elapsed().as_secs_f64() * 1e3;
+
+        let iters = 300usize;
+        let mut lat: Vec<f64> = Vec::with_capacity(iters);
+        for _ in 0..iters {
+            let t0 = std::time::Instant::now();
+            let out = run(&mut node, make());
+            lat.push(t0.elapsed().as_secs_f64() * 1e3);
+            assert_eq!(floats(&out).len(), c * t, "every tick round-trips intact (stability)");
+        }
+        lat.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        let mean = lat.iter().sum::<f64>() / iters as f64;
+        let p = |q: f64| lat[((iters as f64 * q) as usize).min(iters - 1)];
+        eprintln!(
+            "subproc iceoryx2 latency (32x256 f32, {iters} ticks): cold={cold_ms:.1}ms  \
+             min={:.3}ms  p50={:.3}ms  p99={:.3}ms  max={:.3}ms  mean={mean:.3}ms",
+            lat[0], p(0.50), p(0.99), lat[iters - 1]
+        );
+        // Steady-state p99 must be a small fraction of a 60 Hz tick (16.6 ms) — a generous
+        // ceiling that still catches a regression to blocking/second-scale latency.
+        assert!(p(0.99) < 10.0, "p99 round-trip {:.3}ms exceeds the budget", p(0.99));
+    }
+
+    #[test]
     fn channels_preserved_on_2d_length_preserving_node() {
         // Audit #1: the canonical EEG case. A [2,3] array with dim0 channel labels
         // through a length-preserving node must come back [2,3] with channels
