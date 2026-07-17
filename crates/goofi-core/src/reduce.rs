@@ -54,17 +54,21 @@ pub fn reduce_for_view(frame: &Data, plan: &MergedViewSpec) -> Data {
             continue; // this axis did not shrink
         };
         let orig_len = shape[ax.dim];
-        // Capture the ORIGINAL coords before slicing — for a small subsampled axis they are
-        // carried verbatim (G5) so the inspector reconstructs exact labels, not approximations.
-        let verbatim = (ax.method == ReduceMethod::Subsample && orig_len <= 4096)
+        // Record the method that ACTUALLY ran (`r.method`), not the planned `ax.method` — they
+        // differ when an F16 envelope/area degrades to subsample. The meta must describe the
+        // real body layout, or the viewer's envelope-band path would mis-draw subsampled data.
+        // The G5 verbatim-coord capture likewise keys on the actual method: capture the ORIGINAL
+        // coords before slicing so a small subsampled axis keeps exact labels.
+        let verbatim = (r.method == ReduceMethod::Subsample && orig_len <= 4096)
             .then(|| axes.get(ax.dim).and_then(|a| a.coords.clone()))
             .flatten();
+        let method = r.method;
         bytes = r.bytes;
         shape[ax.dim] = r.new_len;
         axes = axes.sliced(ax.dim, &r.centers);
         let mut entry = BTreeMap::new();
         entry.insert("orig_len".to_string(), MetaValue::Uint(orig_len as u64));
-        entry.insert("method".to_string(), MetaValue::Str(method_name(ax.method).to_string()));
+        entry.insert("method".to_string(), MetaValue::Str(method_name(method).to_string()));
         if let Some(coords) = verbatim {
             let list = coords
                 .iter()
@@ -154,6 +158,10 @@ pub struct AxisReduction {
     pub bytes: Vec<u8>,
     pub new_len: usize,
     pub centers: Vec<usize>,
+    /// The method that ACTUALLY ran — may differ from the planned one (F16 envelope/area
+    /// degrade to subsample). Callers must record THIS in meta, not the plan, so the reduced
+    /// meta always describes the real body layout.
+    pub method: ReduceMethod,
 }
 
 /// Row-major strides for reducing dimension `dim` of `shape`: (outer count, axis length,
@@ -207,7 +215,7 @@ fn subsample_axis(bytes: &[u8], shape: &[usize], dtype: DType, dim: usize, max: 
             out.extend_from_slice(&bytes[start..start + block]);
         }
     }
-    Some(AxisReduction { bytes: out, new_len: idx.len(), centers: idx })
+    Some(AxisReduction { bytes: out, new_len: idx.len(), centers: idx, method: ReduceMethod::Subsample })
 }
 
 /// Integer bin edges: `bins+1` boundaries evenly spanning `0..axis`.
@@ -254,7 +262,7 @@ fn envelope_axis(bytes: &[u8], shape: &[usize], dtype: DType, dim: usize, max: u
             }
         }
     }
-    Some(AxisReduction { bytes: out, new_len: 2 * w, centers })
+    Some(AxisReduction { bytes: out, new_len: 2 * w, centers, method: ReduceMethod::Envelope })
 }
 
 fn area_axis(bytes: &[u8], shape: &[usize], dtype: DType, dim: usize, max: usize) -> Option<AxisReduction> {
@@ -281,7 +289,7 @@ fn area_axis(bytes: &[u8], shape: &[usize], dtype: DType, dim: usize, max: usize
             }
         }
     }
-    Some(AxisReduction { bytes: out, new_len: m, centers })
+    Some(AxisReduction { bytes: out, new_len: m, centers, method: ReduceMethod::Area })
 }
 
 #[cfg(test)]
@@ -459,6 +467,29 @@ mod tests {
         let Some(MetaValue::Map(reduced)) = r.meta().reduced.as_ref() else { panic!("reduced meta") };
         let MetaValue::Map(entry) = reduced.get("0").unwrap() else { panic!("map") };
         assert!(entry.get("orig_coord").is_none(), "envelope axis carries no verbatim coords");
+    }
+
+    #[test]
+    fn reduce_for_view_records_the_actual_method_when_f16_downgrades() {
+        // An F16 axis planned as envelope actually runs SUBSAMPLE (no f64 view of f16). The
+        // meta must say "subsample" (the real body layout), not "envelope" — else the viewer's
+        // envelope-band path mis-draws the subsampled body. And, being subsample + small, it
+        // now carries verbatim coords (G5). F16 subsample is a pure byte-gather, so the element
+        // values are irrelevant here — 6 arbitrary 2-byte elements suffice.
+        let bytes = vec![0u8; 6 * 2];
+        let ch = Axes::new().with(0, Axis::coords((0..6).map(|i| Coord::Num(i as f64)).collect::<Vec<_>>()));
+        let meta = Meta { channels: ch, ..Default::default() };
+        let f = Data::from_array_bytes(DType::F16, vec![6], bytes, meta).unwrap();
+        let plan = MergedViewSpec { axes: vec![PlannedAxis { dim: 0, max: 2, method: ReduceMethod::Envelope }] };
+        let r = reduce_for_view(&f, &plan);
+        let Some(MetaValue::Map(reduced)) = r.meta().reduced.as_ref() else { panic!("reduced meta") };
+        let MetaValue::Map(entry) = reduced.get("0").expect("dim 0 reduced") else { panic!("map") };
+        assert_eq!(
+            entry.get("method"),
+            Some(&MetaValue::Str("subsample".into())),
+            "the ACTUAL method (subsample) is recorded, not the planned envelope"
+        );
+        assert!(entry.get("orig_coord").is_some(), "the downgraded-to-subsample axis carries verbatim coords");
     }
 
     #[test]

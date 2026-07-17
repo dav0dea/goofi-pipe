@@ -362,12 +362,18 @@
 		setSeries(indexAxis(m, base), ySeries);
 	}
 
+	// The single "draw this frame" seam, used by BOTH the data effect and the settings-rebuild
+	// re-seed. It must live in one place: if the data plane envelope-reduced the last axis, the
+	// received min/max band is drawn directly (thalamus G3) rather than re-decimated — and BOTH
+	// draw paths must compute that, or a settings change would redraw an enveloped frame through
+	// the raw path (wrong x-span/labels, hidpi double-decimation).
+	function drawFrame(f: DataFrame): void {
+		const arr = f.data as ArrayData;
+		pushData(arr, readEnvelope(f.meta, arr.shape.length));
+	}
+
 	$effect(() => {
-		if (!frame) return;
-		const arr = frame.data as ArrayData;
-		// If the data plane envelope-reduced the last axis, draw the received min/max band
-		// directly rather than re-decimating (thalamus G3). Non-enveloped frames → null.
-		pushData(arr, readEnvelope(frame.meta, arr.shape.length));
+		if (frame) drawFrame(frame);
 	});
 
 	$effect(() => {
@@ -393,7 +399,7 @@
 			// frame re-run this effect and rebuild the whole plot — thrashing uPlot
 			// (and, under a log scale, breaking the hover crosshair).
 			const f = untrack(() => frame);
-			if (f) pushData(f.data as ArrayData);
+			if (f) drawFrame(f);
 		}
 	});
 
