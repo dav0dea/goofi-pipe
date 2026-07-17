@@ -673,29 +673,68 @@ async fn a_client_leaf_write_reaches_the_graph_and_other_clients() {
 }
 
 #[tokio::test]
-async fn crdt_doc_tracks_a_node_add_and_param_edit() {
-    // Phase 1: the server-side CRDT mirror tracks control edits. A node-add + param-edit is
-    // reflected in the doc (read via the temporary `debug_crdt` diagnostic op).
+async fn crdt_doc_tracks_an_rpc_node_add_and_param_edit() {
+    // The server-side CRDT mirror tracks RPC-driven control edits: after an add_node +
+    // update_param over the /control RPC path, a synced client replica reflects BOTH the node
+    // and the new param value — read via the binary sync relay (not a diagnostic op).
+    use goofi_crdt::{GraphDoc, SyncMsg};
+
     let base = start_server().await;
     let (mut ws, _) = connect_async(format!("{base}/control")).await.unwrap();
     let _hello = recv_text(&mut ws).await;
+    let _server_sv = recv_binary(&mut ws).await;
+    let mut client = GraphDoc::new();
+    ws.send(Message::Binary(client.sync_hello().into())).await.unwrap();
+    client.on_sync(SyncMsg::decode(&recv_binary(&mut ws).await).expect("a sync frame"));
 
-    let osc = call(&mut ws, 1, "add_node", json!({ "type": "Oscillator" })).await["result"]
-        .as_str()
-        .unwrap()
-        .to_string();
-    call(
-        &mut ws,
-        2,
-        "update_param",
-        json!({ "node": osc, "group": "common", "name": "max_frequency", "value": 25.0 }),
-    )
-    .await;
-
-    let doc = call(&mut ws, 3, "debug_crdt", json!({})).await;
-    let ids = doc["result"]["node_ids"].as_array().unwrap();
-    assert!(ids.iter().any(|v| v == &json!(osc)), "doc has the added node");
-    assert_eq!(doc["result"]["max_frequency"], json!(25.0), "doc mirrors the param edit");
+    // Drive add_node then update_param, absorbing BOTH the text replies (for the uid) and the
+    // binary sync deltas in one loop — `call` would discard the interleaved binary frames.
+    ws.send(Message::Text(
+        json!({ "id": 1, "op": "add_node", "payload": { "type": "Oscillator" } }).to_string(),
+    ))
+    .await
+    .unwrap();
+    let mut osc: Option<String> = None;
+    let mut sent_param = false;
+    let tracked = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            match ws.next().await.expect("stream").expect("ws") {
+                Message::Text(t) => {
+                    let v: Value = serde_json::from_str(t.as_str()).unwrap();
+                    if v.get("id").and_then(|x| x.as_i64()) == Some(1) {
+                        osc = v["result"].as_str().map(str::to_string);
+                    }
+                }
+                Message::Binary(b) => {
+                    if let Some(m) = SyncMsg::decode(&b) {
+                        client.on_sync(m);
+                    }
+                }
+                _ => {}
+            }
+            if let Some(o) = osc.clone() {
+                if !sent_param {
+                    ws.send(Message::Text(
+                        json!({ "id": 2, "op": "update_param", "payload": {
+                            "node": o, "group": "common", "name": "max_frequency", "value": 25.0
+                        }})
+                        .to_string(),
+                    ))
+                    .await
+                    .unwrap();
+                    sent_param = true;
+                }
+                if client.node_ids().contains(&o)
+                    && client.param_value(&o, "common", "max_frequency") == Some(json!(25.0))
+                {
+                    return true;
+                }
+            }
+        }
+    })
+    .await
+    .unwrap_or(false);
+    assert!(tracked, "the mirror tracked the RPC node add + param edit");
 }
 
 #[tokio::test]

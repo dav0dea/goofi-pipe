@@ -765,23 +765,16 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
                 ));
                 Ok(json!({ "ok": true }))
             }
-            // Phase 1 diagnostic (removed once the client reads the doc directly in Phase 2):
-            // expose the server-side CRDT mirror so a protocol test can prove it tracks edits.
-            "debug_crdt" => {
-                let doc = state.crdt.lock().unwrap();
-                let mf = doc
-                    .node_ids()
-                    .first()
-                    .and_then(|id| doc.param_value(id, "common", "max_frequency"));
-                Ok(json!({ "node_ids": doc.node_ids(), "max_frequency": mf.unwrap_or(json!(null)) }))
-            }
             other => Err(format!("unknown op `{other}`")),
         }
     })();
 
-    // Keep the server-side CRDT doc in agreement with the graph after any successful control
-    // op, then broadcast the resulting delta so every connected client's replica converges.
-    if result.is_ok() {
+    // Keep the server-side CRDT doc in agreement with the graph after any successful MUTATING
+    // control op, then broadcast the resulting delta so every connected client's replica
+    // converges. A non-empty `events` is exactly the "this op changed the graph" signal — every
+    // mutating arm pushes at least one event, while read-only ops (list_nodes, serialize, save)
+    // push none, so this skips a full-graph re-mirror walk on every read.
+    if result.is_ok() && !events.is_empty() {
         resync_and_broadcast(state);
     }
 
