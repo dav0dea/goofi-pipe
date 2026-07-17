@@ -239,15 +239,12 @@ impl NodeCtx {
 // RunPolicy — the scheduler's projection of the `common` param group
 // ---------------------------------------------------------------------------
 
-/// How `common.max_frequency` is interpreted.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
-pub enum FrequencyMode {
-    /// `max_frequency` is a rate in Hz — the node runs at most that many times/sec.
-    #[default]
-    UpdatesPerSecond,
-    /// `max_frequency` is a period in seconds — the node runs once per that many sec.
-    SecondsPerUpdate,
-}
+/// The two ways a user can author `common.max_frequency`. These are pure *input*
+/// conventions — [`RunPolicy`] normalizes both to updates-per-second, so the scheduler
+/// only ever reasons in Hz (the sentinels live here so `with_common` and `from_params`
+/// agree on the one spelling).
+const FREQ_MODE_UPDATES_PER_SECOND: &str = "updates-per-second";
+const FREQ_MODE_SECONDS_PER_UPDATE: &str = "seconds-per-update";
 
 /// When a node's `process` may run, lifted out of the params so the tick path
 /// never does a map lookup. This is the single-process engine's adaptation of the
@@ -263,20 +260,17 @@ pub struct RunPolicy {
     /// whose trigger input is connected runs on that input's rate regardless (the
     /// engine enforces this, since wiring isn't visible here). See [`Self::should_run`].
     pub autotrigger: bool,
-    /// Max run rate. `<= 0` is unbounded: an input-triggered node then runs at its
-    /// input's rate, a free-running one every tick (so it must set a finite cap to
-    /// not saturate the loop).
+    /// Max run rate in **updates-per-second** (Hz). `<= 0` is unbounded: an
+    /// input-triggered node then runs at its input's rate, a free-running one every
+    /// tick (so it must set a finite cap to not saturate the loop). A node authored
+    /// in `seconds-per-update` mode is normalized to Hz by [`Self::from_params`], so
+    /// this is always a rate — the mode is a pure input convenience.
     pub max_frequency: f64,
-    pub frequency_mode: FrequencyMode,
 }
 
 impl Default for RunPolicy {
     fn default() -> RunPolicy {
-        RunPolicy {
-            autotrigger: false,
-            max_frequency: 0.0,
-            frequency_mode: FrequencyMode::UpdatesPerSecond,
-        }
+        RunPolicy { autotrigger: false, max_frequency: 0.0 }
     }
 }
 
@@ -284,13 +278,7 @@ impl RunPolicy {
     /// The minimum seconds between runs, or `None` when unbounded (`max_frequency
     /// <= 0`). Ported from the Python `_rate_limit_sleep` period computation.
     pub fn period(&self) -> Option<f64> {
-        if self.max_frequency <= 0.0 {
-            return None;
-        }
-        Some(match self.frequency_mode {
-            FrequencyMode::UpdatesPerSecond => 1.0 / self.max_frequency,
-            FrequencyMode::SecondsPerUpdate => self.max_frequency,
-        })
+        (self.max_frequency > 0.0).then(|| 1.0 / self.max_frequency)
     }
 
     /// Whether a node that already wants to run this tick is admitted by its rate
@@ -313,23 +301,20 @@ impl RunPolicy {
 
     /// Read the policy from a node's `common` param group, defaulting each field
     /// when the group or a key is absent (so a node without a `common` group is a
-    /// triggered, unbounded node — the safe default).
+    /// triggered, unbounded node — the safe default). A `seconds-per-update` period is
+    /// normalized to a Hz rate here (`1/period`), so `max_frequency` is always a rate.
     pub fn from_params(p: &ParamGroups) -> RunPolicy {
         let autotrigger = param(p, "common", "autotrigger")
             .and_then(Param::as_bool)
             .unwrap_or(false);
-        let max_frequency = param(p, "common", "max_frequency")
+        let raw = param(p, "common", "max_frequency")
             .and_then(Param::as_f64)
             .unwrap_or(0.0);
-        let frequency_mode = match param(p, "common", "frequency_mode").and_then(Param::as_str) {
-            Some("seconds-per-update") => FrequencyMode::SecondsPerUpdate,
-            _ => FrequencyMode::UpdatesPerSecond,
-        };
-        RunPolicy {
-            autotrigger,
-            max_frequency,
-            frequency_mode,
-        }
+        let seconds_per_update = param(p, "common", "frequency_mode").and_then(Param::as_str)
+            == Some(FREQ_MODE_SECONDS_PER_UPDATE);
+        // A period P seconds is a rate of 1/P Hz; `raw <= 0` stays unbounded in either mode.
+        let max_frequency = if seconds_per_update && raw > 0.0 { 1.0 / raw } else { raw };
+        RunPolicy { autotrigger, max_frequency }
     }
 }
 
@@ -347,14 +332,14 @@ pub fn with_common(params: ParamGroups) -> ParamGroups {
         .or_insert_with(|| Param::boolean(false));
     common
         .entry("max_frequency".to_string())
-        .or_insert_with(|| Param::float(0.0, 0.0, 60.0));
+        .or_insert_with(|| Param::float(0.0, 0.0, 100.0));
     common
         .entry("frequency_mode".to_string())
         .or_insert_with(|| Param::Str {
-            value: "updates-per-second".to_string(),
+            value: FREQ_MODE_UPDATES_PER_SECOND.to_string(),
             options: Some(vec![
-                "updates-per-second".to_string(),
-                "seconds-per-update".to_string(),
+                FREQ_MODE_UPDATES_PER_SECOND.to_string(),
+                FREQ_MODE_SECONDS_PER_UPDATE.to_string(),
             ]),
             refresh: false,
         });
@@ -697,19 +682,12 @@ mod tests {
     }
 
     #[test]
-    fn run_policy_period_by_mode() {
+    fn run_policy_period_is_reciprocal_of_rate() {
         // Unbounded when max_frequency <= 0.
         assert_eq!(RunPolicy::default().period(), None);
-        // updates-per-second: period = 1/f.
+        // `max_frequency` is always a Hz rate now: period = 1/f.
         let ups = RunPolicy { max_frequency: 4.0, ..Default::default() };
         assert_eq!(ups.period(), Some(0.25));
-        // seconds-per-update: period = f.
-        let spu = RunPolicy {
-            max_frequency: 2.0,
-            frequency_mode: FrequencyMode::SecondsPerUpdate,
-            ..Default::default()
-        };
-        assert_eq!(spu.period(), Some(2.0));
     }
 
     #[test]
@@ -737,17 +715,24 @@ mod tests {
 
     #[test]
     fn run_policy_from_params_reads_common_group() {
-        let mut common = IndexMap::new();
-        common.insert("autotrigger".to_string(), Param::boolean(true));
-        common.insert("max_frequency".to_string(), Param::float(30.0, 0.0, 60.0));
-        common.insert("frequency_mode".to_string(), Param::str_free("seconds-per-update"));
-        let mut groups: ParamGroups = IndexMap::new();
-        groups.insert("common".to_string(), common);
-        let p = RunPolicy::from_params(&groups);
-        assert_eq!(
-            p,
-            RunPolicy { autotrigger: true, max_frequency: 30.0, frequency_mode: FrequencyMode::SecondsPerUpdate }
-        );
+        let policy = |freq: f64, mode: &str| {
+            let mut common = IndexMap::new();
+            common.insert("autotrigger".to_string(), Param::boolean(true));
+            common.insert("max_frequency".to_string(), Param::float(freq, 0.0, 60.0));
+            common.insert("frequency_mode".to_string(), Param::str_free(mode));
+            let mut groups: ParamGroups = IndexMap::new();
+            groups.insert("common".to_string(), common);
+            RunPolicy::from_params(&groups)
+        };
+        // seconds-per-update is normalized to a Hz rate: a 30s period runs at 1/30 Hz,
+        // i.e. `period()` still yields 30s.
+        let spu = policy(30.0, "seconds-per-update");
+        assert!(spu.autotrigger);
+        assert_eq!(spu.period(), Some(30.0));
+        // updates-per-second is taken verbatim as the rate.
+        assert_eq!(policy(4.0, "updates-per-second").period(), Some(0.25));
+        // A zero cap stays unbounded even in seconds-per-update mode (no 1/0).
+        assert_eq!(policy(0.0, "seconds-per-update").period(), None);
         // A node with no `common` group defaults to triggered + unbounded.
         assert_eq!(RunPolicy::from_params(&ParamGroups::new()), RunPolicy::default());
     }
