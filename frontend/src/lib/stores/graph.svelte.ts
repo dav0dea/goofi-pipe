@@ -1181,6 +1181,8 @@ export class GraphStore {
 				params[group][name] = pr;
 			}
 		}
+		// `membership` is intentionally NOT extracted here — the caller (`_reconcileNodesFromDoc`)
+		// always re-derives it from the doc's instance forest, so carrying it would be dead.
 		return {
 			error: node.error,
 			stage: node.stage,
@@ -1189,7 +1191,6 @@ export class GraphStore {
 			crashExit: node.crashExit,
 			stats: node.stats,
 			log_endpoint: node.log_endpoint,
-			membership: node.membership ?? null,
 			params
 		};
 	}
