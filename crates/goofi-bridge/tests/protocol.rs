@@ -494,6 +494,10 @@ async fn group_and_expand_project_the_instance_forest() {
     let inst_info = &snap["payload"]["instances"][&inst];
     assert_eq!(inst_info["kind"], "unique", "one reference ⇒ unique");
     assert_eq!(inst_info["members"].as_object().unwrap().len(), 2, "both members in the instance scope");
+    // A top-level instance's parent MUST be ROOT_ID (not null): the editor's `childrenOfScope`
+    // renders an instance at the root canvas only when `instance.parent === ROOT_ID`. Reporting
+    // null here hides the grouped sub-patch's virtual node (it groups but never appears).
+    assert_eq!(inst_info["parent"], json!("__root__"), "top-level instance parented to ROOT so the canvas renders it");
     // The osc member's node info reports its new membership.
     let nodes = snap["payload"]["nodes"].as_array().unwrap();
     let osc_node = nodes.iter().find(|n| n["uid"] == json!(osc)).unwrap();

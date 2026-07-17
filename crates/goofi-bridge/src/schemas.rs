@@ -296,7 +296,10 @@ pub fn describe_instance(g: &Graph, uid: Uid) -> Value {
         "name": inst.name,
         "kind": if shared { "shared" } else { "unique" },
         "def_id": if shared { json!(def_id.to_hex()) } else { Value::Null },
-        "parent": g.scope_of(uid).map(|p| json!(p.to_hex())).unwrap_or(Value::Null),
+        // A top-level instance (no engine scope) parents to ROOT_ID, not null — the editor's
+        // `childrenOfScope` renders an instance on the root canvas iff `instance.parent === ROOT_ID`
+        // (nodes go via ROOT membership, but instances are filtered by their own parent field).
+        "parent": g.scope_of(uid).map(|p| json!(p.to_hex())).unwrap_or_else(|| json!(ROOT_ID)),
         "pos": inst.pos,
         "interface": Value::Object(interface),
         "members": Value::Object(members),
