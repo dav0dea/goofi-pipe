@@ -77,6 +77,20 @@ async fn recv_text(ws: &mut Ws) -> Value {
     }
 }
 
+/// Receive the next BINARY frame (skipping text), with a timeout.
+async fn recv_binary(ws: &mut Ws) -> Vec<u8> {
+    loop {
+        let msg = tokio::time::timeout(Duration::from_secs(5), ws.next())
+            .await
+            .expect("recv timed out")
+            .expect("stream ended")
+            .expect("ws error");
+        if let Message::Binary(b) = msg {
+            return b.to_vec();
+        }
+    }
+}
+
 /// Receive until the named event arrives, returning it (skipping RPC replies/other events).
 async fn drain_event(ws: &mut Ws, event: &str) -> Value {
     loop {
@@ -347,21 +361,42 @@ async fn data_plane_reduces_to_the_declared_viewspec() {
     .await
     .unwrap();
 
-    // Wait for a frame that carries reduced meta — the definitive proof the plan was
-    // applied (passthrough never stamps it). Bounded so a stuck plane fails loudly.
+    // Wait for a frame that carries reduced meta AND genuinely shrank on the last axis —
+    // the definitive proof the plan was applied (passthrough never stamps it). Requiring a
+    // real shrink (not merely `reduced.is_some()`) avoids a boundary race: envelope fires at
+    // axis len ≥ 2·W = 64 producing exactly 64 samples, so a frame caught with the Buffer at
+    // *exactly* 64 (which happens when the tick thread is starved under parallel test load)
+    // has orig_len == output == 64 — reduced-meta present but no shrink. Keep consuming until
+    // the buffer has grown past the envelope floor, so the assertions below see a true
+    // reduction. Bounded so a stuck plane still fails loudly.
+    let last_dim_shrank = |d: &goofi_core::Data| -> bool {
+        let Some(goofi_core::MetaValue::Map(dims)) = d.meta().reduced.as_ref() else {
+            return false;
+        };
+        let last = d.ndim() - 1;
+        let Some(goofi_core::MetaValue::Map(entry)) = dims.get(&last.to_string()) else {
+            return false;
+        };
+        let orig = match entry.get("orig_len") {
+            Some(goofi_core::MetaValue::Uint(n)) => *n as i64,
+            Some(goofi_core::MetaValue::Int(n)) => *n,
+            _ => return false,
+        };
+        (d.shape()[last] as i64) < orig
+    };
     let reduced = tokio::time::timeout(Duration::from_secs(8), async {
         loop {
             let msg = data.next().await.expect("stream ended").expect("ws error");
             if let Message::Binary(b) = msg {
                 let d = goofi_codec::decode(&b).expect("decodable GOOF frame");
-                if d.meta().reduced.is_some() {
+                if last_dim_shrank(&d) {
                     break d;
                 }
             }
         }
     })
     .await
-    .expect("a reduced frame must arrive");
+    .expect("a genuinely-reduced frame must arrive");
 
     let goofi_core::MetaValue::Map(dims) = reduced.meta().reduced.as_ref().unwrap() else {
         panic!("reduced meta is a per-dim map");
@@ -455,6 +490,66 @@ async fn set_expression_binds_and_reflects_over_the_wire() {
         d.get("expression_autoeval").is_none(),
         "no autoeval flag on the wire (auto-eval is always on)"
     );
+}
+
+#[tokio::test]
+async fn a_client_replica_converges_via_the_binary_sync_relay() {
+    // Phase 2: a browser Yjs replica (here a Rust GraphDoc standing in for it) mounts, syncs
+    // the current graph over the /control binary channel, and receives live deltas as the
+    // graph mutates — the reader half of the CRDT control plane.
+    use goofi_crdt::{GraphDoc, SyncMsg};
+
+    let base = start_server().await;
+    let (mut ws, _) = connect_async(format!("{base}/control")).await.unwrap();
+    let _hello = recv_text(&mut ws).await; // JSON hello (existing snapshot event)
+    let _server_sv = recv_binary(&mut ws).await; // server's sync_hello (its state vector)
+
+    // The client mounts an empty replica and advertises its state vector; the server replies
+    // with the diff it lacks (the full current doc — empty graph so far).
+    let mut client = GraphDoc::new();
+    ws.send(Message::Binary(client.sync_hello().into())).await.unwrap();
+    let diff = recv_binary(&mut ws).await;
+    client.on_sync(SyncMsg::decode(&diff).expect("a sync frame"));
+    assert!(client.node_ids().is_empty(), "converged to the empty graph");
+
+    // Mutate the graph via a normal RPC; the server broadcasts the delta on the binary channel.
+    ws.send(Message::Text(
+        json!({ "id": 1, "op": "add_node", "payload": { "type": "Oscillator" } }).to_string(),
+    ))
+    .await
+    .unwrap();
+
+    // Collect frames until the client's replica reflects the new node (the text reply carries
+    // its uid; the binary delta carries the CRDT change).
+    let mut uid: Option<String> = None;
+    for _ in 0..20 {
+        let msg = tokio::time::timeout(Duration::from_secs(5), ws.next())
+            .await
+            .expect("timeout")
+            .expect("stream")
+            .expect("ws");
+        match msg {
+            Message::Text(t) => {
+                let v: Value = serde_json::from_str(t.as_str()).unwrap();
+                if v.get("id").and_then(|x| x.as_i64()) == Some(1) {
+                    uid = v["result"].as_str().map(str::to_string);
+                }
+            }
+            Message::Binary(b) => {
+                if let Some(m) = SyncMsg::decode(&b) {
+                    client.on_sync(m);
+                }
+            }
+            _ => {}
+        }
+        if let Some(u) = &uid {
+            if client.node_ids().contains(u) {
+                assert_eq!(client.node_type(u).as_deref(), Some("Oscillator"), "delta carried the node");
+                return;
+            }
+        }
+    }
+    panic!("client replica never converged on the added node (uid={uid:?})");
 }
 
 #[tokio::test]
