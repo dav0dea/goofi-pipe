@@ -553,6 +553,60 @@ async fn a_client_replica_converges_via_the_binary_sync_relay() {
 }
 
 #[tokio::test]
+async fn a_client_leaf_write_reaches_the_graph_and_other_clients() {
+    // Phase 3 (writer half): a client writes a param value into its OWN Yjs replica and sends
+    // the update over the /control binary channel. The manager applies it to the authoritative
+    // graph AND broadcasts it so a second client converges — no RPC involved.
+    use goofi_crdt::{GraphDoc, SyncMsg};
+
+    let base = start_server().await;
+
+    // Writer client: connect, sync, add a node via RPC (so it exists), then leaf-write a param.
+    let (mut w, _) = connect_async(format!("{base}/control")).await.unwrap();
+    let _ = recv_text(&mut w).await;
+    let _ = recv_binary(&mut w).await; // server hello SV
+    let mut wdoc = GraphDoc::new();
+    w.send(Message::Binary(wdoc.sync_hello().into())).await.unwrap();
+    wdoc.on_sync(SyncMsg::decode(&recv_binary(&mut w).await).unwrap());
+
+    let osc = call(&mut w, 1, "add_node", json!({ "type": "Oscillator" })).await["result"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    // Absorb the broadcast delta so wdoc learns the node (needed to write into its param map).
+    wdoc.on_sync(SyncMsg::decode(&recv_binary(&mut w).await).unwrap());
+    assert!(wdoc.node_ids().contains(&osc), "writer's replica has the node");
+
+    // Leaf-write common.max_frequency = 12.0 directly into the replica, send the update.
+    let before = wdoc.state_vector();
+    wdoc.set_param(&osc, "common", "max_frequency", &json!(12.0), None);
+    let upd = wdoc.diff(&before);
+    w.send(Message::Binary(SyncMsg::Update(upd).encode().into())).await.unwrap();
+
+    // The manager applies it to the graph: a fresh reader client sees max_frequency == 12.
+    let (mut r, _) = connect_async(format!("{base}/control")).await.unwrap();
+    let _ = recv_text(&mut r).await;
+    let _ = recv_binary(&mut r).await;
+    let mut rdoc = GraphDoc::new();
+    r.send(Message::Binary(rdoc.sync_hello().into())).await.unwrap();
+
+    let converged = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let b = recv_binary(&mut r).await;
+            if let Some(m) = SyncMsg::decode(&b) {
+                rdoc.on_sync(m);
+            }
+            if rdoc.param_value(&osc, "common", "max_frequency") == Some(json!(12.0)) {
+                return true;
+            }
+        }
+    })
+    .await
+    .unwrap_or(false);
+    assert!(converged, "the client's leaf write reached the graph and a second client");
+}
+
+#[tokio::test]
 async fn crdt_doc_tracks_a_node_add_and_param_edit() {
     // Phase 1: the server-side CRDT mirror tracks control edits. A node-add + param-edit is
     // reflected in the doc (read via the temporary `debug_crdt` diagnostic op).

@@ -3,6 +3,8 @@
 //! engine `Graph`; it is the sync structure clients will later replicate. Pure: depends
 //! only on `yrs` + `serde_json`, no engine/payload types.
 
+use std::collections::HashMap;
+
 use yrs::updates::decoder::Decode;
 use yrs::{Any, Array, ArrayRef, Doc, Map, MapPrelim, MapRef, Out, ReadTxn, Transact};
 
@@ -316,6 +318,54 @@ impl GraphDoc {
         txn.apply_update(u).map_err(|e| e.to_string())
     }
 
+    /// Every param value in the doc, as `(uid, group, name, value)` — the snapshot the
+    /// client-update diff is computed against. Order is doc key order (deterministic).
+    pub fn param_snapshot(&self) -> Vec<(String, String, String, serde_json::Value)> {
+        let txn = self.doc.transact();
+        let mut out = Vec::new();
+        for uid in self.nodes.keys(&txn) {
+            let Some(node) = self.nodes.get(&txn, uid).and_then(|v| v.cast::<MapRef>().ok()) else {
+                continue;
+            };
+            let Some(params) = node.get(&txn, "params").and_then(|v| v.cast::<MapRef>().ok()) else {
+                continue;
+            };
+            for group in params.keys(&txn) {
+                let Some(g) = params.get(&txn, group).and_then(|v| v.cast::<MapRef>().ok()) else {
+                    continue;
+                };
+                for name in g.keys(&txn) {
+                    if let Some(v) = self.param_value(uid, group, name) {
+                        out.push((uid.to_string(), group.to_string(), name.to_string(), v));
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    /// Apply a client's incremental update to this replica and return the param leaves whose
+    /// value changed — so the manager can push exactly those into the engine `Graph`. The
+    /// diff is loop-safe: the manager's subsequent graph→doc re-mirror writes the same values,
+    /// which yrs records as no change. `Err` only if the update bytes are malformed.
+    pub fn apply_client_update(
+        &mut self,
+        update: &[u8],
+    ) -> Result<Vec<(String, String, String, serde_json::Value)>, String> {
+        let before: HashMap<(String, String, String), serde_json::Value> = self
+            .param_snapshot()
+            .into_iter()
+            .map(|(u, g, n, v)| ((u, g, n), v))
+            .collect();
+        self.apply_update(update)?;
+        let changed = self
+            .param_snapshot()
+            .into_iter()
+            .filter(|(u, g, n, v)| before.get(&(u.clone(), g.clone(), n.clone())) != Some(v))
+            .collect();
+        Ok(changed)
+    }
+
     /// The message to send a peer on connect: this replica's state vector, framed. The peer
     /// answers with the diff it owes (via [`Self::on_sync`]).
     pub fn sync_hello(&self) -> Vec<u8> {
@@ -511,6 +561,33 @@ mod tests {
         // Diff against an empty replica = the whole doc → NOT empty.
         let fresh = GraphDoc::new();
         assert!(!doc.is_empty_diff(&doc.diff(&fresh.state_vector())));
+    }
+
+    #[test]
+    fn apply_client_update_reports_changed_param_leaves() {
+        use serde_json::json;
+        // The manager applies a client's leaf write to its replica and learns exactly which
+        // params changed, so it can push them to the engine Graph. Diff-based: loop-safe,
+        // because the subsequent graph->doc re-mirror writes the same values (idempotent).
+        let mut server = GraphDoc::new();
+        server.upsert_node("1", "Oscillator", "osc", [0.0, 0.0]);
+        server.set_param("1", "common", "max_frequency", &json!(10.0), None);
+        server.set_param("1", "oscillator", "amplitude", &json!(1.0), None);
+
+        // A client replica syncs, then edits ONE param locally, producing an update.
+        let mut client = GraphDoc::new();
+        client.apply_update(&server.diff(&client.state_vector())).unwrap();
+        client.set_param("1", "common", "max_frequency", &json!(25.0), None);
+        let update = client.diff(&server.state_vector());
+
+        // The manager applies it and is told precisely what changed.
+        let changed = server.apply_client_update(&update).unwrap();
+        assert_eq!(changed, vec![("1".into(), "common".into(), "max_frequency".into(), json!(25.0))]);
+        assert_eq!(server.param_value("1", "common", "max_frequency"), Some(json!(25.0)), "doc updated");
+        assert_eq!(server.param_value("1", "oscillator", "amplitude"), Some(json!(1.0)), "untouched param unchanged");
+
+        // Re-applying the SAME update reports no further changes (idempotent, no phantom loop).
+        assert!(server.apply_client_update(&update).unwrap().is_empty());
     }
 
     #[test]

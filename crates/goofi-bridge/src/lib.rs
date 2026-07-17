@@ -310,15 +310,20 @@ async fn handle_control(socket: WebSocket, state: AppState) {
                     }
                 }
                 Some(Ok(Message::Binary(b))) => {
-                    // A CRDT sync frame from the client. Drive the pairwise handshake and
-                    // send back any replies (a diff for the client's advertised state vector).
-                    if let Some(msg) = goofi_crdt::SyncMsg::decode(&b) {
-                        let replies = state.crdt.lock().unwrap().on_sync(msg);
-                        for r in replies {
-                            if tx.send(Message::Binary(r.encode().into())).await.is_err() {
-                                return;
+                    // A CRDT sync frame from the client. A StateVector drives the pairwise
+                    // handshake (reply with the diff it lacks); an Update is a client leaf
+                    // write — apply it to the graph and reconcile/broadcast to all clients.
+                    match goofi_crdt::SyncMsg::decode(&b) {
+                        Some(msg @ goofi_crdt::SyncMsg::StateVector(_)) => {
+                            let replies = state.crdt.lock().unwrap().on_sync(msg);
+                            for r in replies {
+                                if tx.send(Message::Binary(r.encode().into())).await.is_err() {
+                                    return;
+                                }
                             }
                         }
+                        Some(goofi_crdt::SyncMsg::Update(u)) => apply_client_write(&state, &u),
+                        None => {}
                     }
                 }
                 Some(Ok(Message::Close(_))) | None => break,
@@ -738,19 +743,9 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
     })();
 
     // Keep the server-side CRDT doc in agreement with the graph after any successful control
-    // op (full re-sync — correctness first; incremental writes come in Phase 3), then
-    // broadcast the resulting delta so every connected client's replica converges.
+    // op, then broadcast the resulting delta so every connected client's replica converges.
     if result.is_ok() {
-        let g = state.graph.lock().unwrap();
-        let mut doc = state.crdt.lock().unwrap();
-        crdt_mirror::sync_graph_to_doc(&g, &mut doc);
-        let mut last_sv = state.last_sync_sv.lock().unwrap();
-        let delta = doc.diff(&last_sv);
-        // A no-op mutation yields a trivial empty-diff; only broadcast a real change.
-        if !doc.is_empty_diff(&delta) {
-            *last_sv = doc.state_vector();
-            let _ = state.sync_updates.send(goofi_crdt::SyncMsg::Update(delta).encode());
-        }
+        resync_and_broadcast(state);
     }
 
     for e in events {
@@ -764,6 +759,54 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
         }),
         _ => None,
     }
+}
+
+/// Re-sync the CRDT doc from the (authoritative) graph and broadcast the resulting delta to
+/// every connected client, advancing the shared broadcast baseline. Called after any graph
+/// mutation — an RPC dispatch or an applied client doc-write. The re-mirror also RECONCILES
+/// the doc back to the graph's authoritative structure, so a client's out-of-band structural
+/// write (a bogus node/link) is reverted here rather than diverging the graph.
+fn resync_and_broadcast(state: &AppState) {
+    let g = state.graph.lock().unwrap();
+    let mut doc = state.crdt.lock().unwrap();
+    crdt_mirror::sync_graph_to_doc(&g, &mut doc);
+    let mut last_sv = state.last_sync_sv.lock().unwrap();
+    let delta = doc.diff(&last_sv);
+    // A no-op mutation yields a trivial empty-diff; only broadcast a real change.
+    if !doc.is_empty_diff(&delta) {
+        *last_sv = doc.state_vector();
+        let _ = state.sync_updates.send(goofi_crdt::SyncMsg::Update(delta).encode());
+    }
+}
+
+/// Apply a client's CRDT leaf write (a binary `SyncMsg::Update`) to the graph: apply it to
+/// the server replica, learn exactly which param values changed, push each into the engine
+/// `Graph` (coerced to the param's type, re-projected to shared siblings), then re-mirror +
+/// broadcast so every client — including the writer — converges on the authoritative result.
+/// Only param VALUES are honored from clients here; structural writes are reverted by the
+/// re-mirror (see [`resync_and_broadcast`]). Expression edits still flow via the RPC path.
+fn apply_client_write(state: &AppState, update: &[u8]) {
+    let changed = {
+        let mut doc = state.crdt.lock().unwrap();
+        doc.apply_client_update(update).unwrap_or_default()
+    };
+    if changed.is_empty() {
+        return;
+    }
+    {
+        let mut g = state.graph.lock().unwrap();
+        for (uid_hex, group, name, value) in &changed {
+            let Some(uid) = Uid::from_hex(uid_hex) else { continue };
+            let Some(existing) =
+                g.params(uid).and_then(|p| goofi_node::param(p, group, name)).cloned()
+            else {
+                continue; // unknown param (e.g. a stale/bogus client write) — ignore
+            };
+            let newp = param_from_json(&existing, value);
+            let _ = g.update_member_param(uid, group, name, newp);
+        }
+    }
+    resync_and_broadcast(state);
 }
 
 // ---------------------------------------------------------------------------
