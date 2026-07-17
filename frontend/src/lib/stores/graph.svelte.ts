@@ -35,7 +35,6 @@ import {
 	linkViews,
 	nodeViews,
 	instanceViews,
-	paramValue,
 	docParams,
 	viewersJson,
 	setParamValue,
@@ -135,41 +134,14 @@ export class GraphStore {
 		const doc = this._sync.doc;
 		// links: the whole set is replaced from the doc.
 		this.links = linkViews(doc);
-		if (this.nodeTypes?.length) {
-			// Catalog present (always in production) → the doc is AUTHORITATIVE for node AND sub-patch
-			// identity: build `this.nodes` + `this.instances` from the doc (+ catalog + runtime). Node
-			// existence/type/name/pos/param value+expr and the whole sub-patch forest come from the doc;
-			// descriptors from the catalog; runtime (error/stage/…) stays event-sourced.
-			this._reconcileNodesFromDoc();
-			this._reconcileInstancesFromDoc();
-		} else {
-			// Transition/catalog-loading fallback: overlay only doc pos + committed values onto the
-			// event-sourced nodes + instances (node_added / subpatch_changed still create them).
-			// Production leaves this once the catalog lands on hello.
-			for (const nv of nodeViews(doc)) {
-				const n = this._realNode(nv.uid);
-				if (!n) continue;
-				if (n.pos[0] !== nv.pos[0] || n.pos[1] !== nv.pos[1]) n.pos = nv.pos;
-				for (const group of Object.keys(n.params)) {
-					for (const name of Object.keys(n.params[group])) {
-						const p = n.params[group][name];
-						if (p.expression_enabled) continue;
-						const v = paramValue(doc, nv.uid, group, name);
-						if (v !== undefined && p.value !== v) (p as { value: unknown }).value = v;
-					}
-				}
-			}
-			for (const iv of instanceViews(doc)) {
-				const inst = this.instances[iv.uid];
-				if (!inst) continue;
-				if (inst.pos[0] !== iv.pos[0] || inst.pos[1] !== iv.pos[1]) inst.pos = iv.pos;
-				// Boundary positions are doc-owned too (retired `boundary_moved`).
-				for (const b of iv.interface) {
-					const port = inst.interface?.[b.bnd_id];
-					if (port && (port.pos[0] !== b.pos[0] || port.pos[1] !== b.pos[1])) port.pos = b.pos;
-				}
-			}
-		}
+		// The catalog is always present in production (it rides on `hello`), so the doc is authoritative
+		// for node AND sub-patch identity: build `this.nodes` + `this.instances` from the doc (+ catalog
+		// + runtime). Existence/type/name/pos/param value+expr and the whole sub-patch forest come from
+		// the doc; descriptors from the catalog; runtime (error/stage/…) stays event-sourced. Both
+		// reconcilers self-guard on an absent catalog (the pre-`hello` window) → they no-op until it
+		// lands, then `_replaceSnapshot`/`_refreshNodeTypes` rebuild from the doc.
+		this._reconcileNodesFromDoc();
+		this._reconcileInstancesFromDoc();
 	}
 
 	/** Apply a wholesale snapshot. Returns whether it came from a *new* backend
@@ -313,98 +285,20 @@ export class GraphStore {
 				// the precise post-load arrangement (backlog #20).
 				this._captureLoadAfterLayout();
 				break;
-			case 'subpatch_changed': {
-				// Structure (nodes + links + the sub-patch forest) is doc-owned once the catalog is
-				// present — the mirror carries a group/expand/share/make-unique into the doc, and the
-				// doc-reconcile (`_reconcileNodesFromDoc` + `_reconcileInstancesFromDoc`) rebuilds both.
-				// The event retires to the catalog-loading transition.
-				if (this.nodeTypes?.length) break;
-				// Group/expand/share/make-unique rewrote the STRUCTURE, but the live node
-				// processes are unchanged — only membership/names/instances moved. Reconcile
-				// nodes, links and instances by STABLE uid IN PLACE (never a wholesale array
-				// swap) so a surviving node/instance keeps its object identity and its inline
-				// viewer never re-subscribes. NOT layout / re-fit — an in-place edit, not a load.
-				const snap = ev.payload;
-				// Vanished instances fire only this event (no per-node node_removed): clear any
-				// panel still bound to one. Vanished member NODES are cleared inside
-				// _reconcileNodes; their stable minted uids are never reused, so gone means gone.
-				const afterInst = new Set(Object.keys(snap.instances ?? {}));
-				for (const iid of Object.keys(this.instances)) {
-					if (!afterInst.has(iid)) workspace().clearNodeRefs(iid);
-				}
-				// Instances present BEFORE this resync — seed viewer state only for the
-				// genuinely-new ones (mirror of _reconcileNodes' seed-only-new rule). Re-seeding
-				// a SURVIVING instance every subpatch_changed would overwrite its live, un-pushed
-				// collapse/kind (seedNodeViewers/seedInlineView clobber unconditionally), re-popping
-				// a collapsed viewer open → remounting its ViewerFeed → churning the data sub.
-				const knownInst = new Set(Object.keys(this.instances));
-				this._reconcileNodes(snap.nodes);
-				this.links = snap.links;
-				this._reconcileInstances(snap.instances ?? {});
-				// Seed collapse/kind/settings for a NEW instance's output-boundary slots (its synth
-				// node carries inst.viewers) so a freshly-created sub-patch's viewer state applies.
-				for (const iid of Object.keys(this.instances)) {
-					if (knownInst.has(iid)) continue;
-					const sn = this.nodeById(iid);
-					if (sn) this._seedNodeViewerState(sn);
-				}
-				break;
-			}
-			// boundary_moved retired: boundary positions are read from the CRDT doc forest
-			// (Phase 2, see _syncFromDoc). The manager mirrors every boundary move into the doc.
-			case 'node_renamed': {
-				// Name is doc-owned once the catalog is present — the doc-reconcile applies it. Only
-				// the catalog-loading transition uses the event.
-				if (this.nodeTypes?.length) break;
-				const t = this.nodeById(ev.payload.node);
-				if (t) t.name = ev.payload.name;
-				break;
-			}
-			case 'node_added':
-				// Node EXISTENCE is doc-owned once the catalog is present — the doc-reconcile creates
-				// this node (from the mirror delta) + seeds its viewer state. node_added is retired to
-				// the catalog-loading transition (below).
-				if (this.nodeTypes?.length) break;
-				// Seed view state for this node's output slots — from the saved
-				// patch (`viewers`) if present, else the defaults in the stores.
-				this._seedNodeViewerState(ev.payload);
-				this.nodes = [...this.nodes.filter((n) => n.uid !== ev.payload.uid), ev.payload];
-				// Every node is a member of SOME scope (ROOT for a top-level one). Fold it
-				// into the owning instance's members map — the index the canvas renders that
-				// scope's children from — so an incremental add keeps the scope's child set
-				// in sync without a wholesale subpatch_changed snapshot.
-				this._addScopeMember(ev.payload.membership ?? null, ev.payload.uid);
-				break;
-			case 'node_removed':
-				// Removal is doc-owned once the catalog is present — the mirror drops the node from
-				// the doc, and the reconcile removes it + tears down its ui/inline/console/panel refs.
-				if (this.nodeTypes?.length) break;
-				this.nodes = this.nodes.filter((n) => n.uid !== ev.payload.node);
-				this.links = this.links.filter(
-					(l) => l.node_in !== ev.payload.node && l.node_out !== ev.payload.node
-				);
-				// Drop it from the owning scope's members map (mirror of node_added) so the
-				// scope stays in sync without a snapshot.
-				this._removeScopeMember(ev.payload.membership ?? null);
-				ui().forget(ev.payload.node);
-				forgetInlineView(ev.payload.node);
-				consoleStore().forgetNodeDedup(ev.payload.node);
-				// Empty any Parameters/Viewer/Metadata panel linked to this node.
-				workspace().clearNodeRefs(ev.payload.node);
-				break;
-			// node_moved retired: node + instance positions are read from the CRDT doc (Phase 2,
-			// see _syncFromDoc). The manager mirrors every move into the doc; the sync delta
-			// updates the placement without a wholesale rebuild.
-			// link_added / link_removed retired: links are read from the CRDT doc (Phase 2). The
-			// manager mirrors every link mutation into the doc; the sync delta updates `links`.
+			// Structure (node existence/name, the sub-patch forest, positions, links) is entirely
+			// doc-owned (Phase-2 read cutover): the manager mirrors every group/expand/share/
+			// make-unique/add/remove/rename/move into the doc, and `_syncFromDoc`'s doc-reconcile
+			// rebuilds `this.nodes` + `this.instances` + `this.links` in place from the delta. The
+			// `subpatch_changed` / `node_added` / `node_removed` / `node_renamed` / `boundary_moved` /
+			// `node_moved` / `link_added` / `link_removed` events are therefore all retired — the store
+			// no longer handles them (the catalog is always present, so there is no fallback window).
 			case 'state_update': {
 				const t = this.nodeById(ev.payload.node);
 				if (t) {
-					// Params are doc-owned once the catalog is present: merge ONLY the runtime bits
+					// Params are doc-owned (the catalog is always present): merge ONLY the runtime bits
 					// (expression_error / refreshed options), never wholesale-replace (which would
-					// clobber the reconcile's value+descriptor assembly). Else the old wholesale path.
-					if (this.nodeTypes?.length) this._mergeParamRuntime(t, ev.payload.params);
-					else t.params = ev.payload.params;
+					// clobber the reconcile's value+descriptor assembly).
+					this._mergeParamRuntime(t, ev.payload.params);
 					// Lifecycle stage rides every state rebroadcast (authoritative:
 					// the manager-side ref derives it from the node's own pushes).
 					if (ev.payload.stage) t.stage = ev.payload.stage;
@@ -1296,39 +1190,6 @@ export class GraphStore {
 				this._synthCache.delete(uid); // cache lifetime tracks the instances map
 			}
 		}
-	}
-
-	/** Fold an entity into its owning scope's members map.
-	 * Root ≡ a scope: a top-level node carries membership {instance: ROOT_ID, …}, a member
-	 * carries {instance: <sub-patch>, …}. The map (local -> {uid, is_instance}) is the index
-	 * the editor renders a scope's direct children from, so an incremental add/remove must
-	 * update it exactly as a subpatch_changed snapshot would. A node is never a nested
-	 * instance, so is_instance is always false here. */
-	private _addScopeMember(
-		membership: { instance: string; local_name: string } | null,
-		uid: string
-	): void {
-		if (!membership) return;
-		const inst = this.instances[membership.instance];
-		// An instance always exists before its members' events (it's created via
-		// group_nodes/subpatch_changed first), so a miss is a real backend↔store desync,
-		// not a normal case — surface it instead of silently orphaning the node.
-		if (!inst) {
-			console.warn(`_addScopeMember: unknown scope ${membership.instance} for ${uid}`);
-			return;
-		}
-		inst.members[membership.local_name] = { uid, is_instance: false };
-	}
-
-	/** Drop an entity from its owning scope's members map (mirror of _addScopeMember). */
-	private _removeScopeMember(membership: { instance: string; local_name: string } | null): void {
-		if (!membership) return;
-		const inst = this.instances[membership.instance];
-		if (!inst) {
-			console.warn(`_removeScopeMember: unknown scope ${membership.instance}`);
-			return;
-		}
-		delete inst.members[membership.local_name];
 	}
 
 	/** Build the virtual NodeInstanceInfo that stands in for a sub-patch instance
