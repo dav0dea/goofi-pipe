@@ -434,11 +434,19 @@ impl Graph {
         );
     }
 
+    /// Whether a display name is taken by any live leaf node OR sub-patch instance. The two share
+    /// one display-name namespace — both become member local keys when captured into a def — so
+    /// uniqueness must span both, else a leaf renamed to an instance's `subpatch{N}` name collapses
+    /// onto the same local key on grouping and silently drops a member.
+    fn name_in_use(&self, name: &str) -> bool {
+        self.nodes.values().any(|e| e.name == name) || self.instances.values().any(|i| i.name == name)
+    }
+
     /// Lowest `{base}{N}` display name not already in use (globally unique).
     fn fresh_name(&self, base: &str) -> String {
         for n in 0.. {
             let cand = format!("{base}{n}");
-            if !self.nodes.values().any(|e| e.name == cand) {
+            if !self.name_in_use(&cand) {
                 return cand;
             }
         }
@@ -458,7 +466,7 @@ impl Graph {
     }
 
     pub fn rename_node(&mut self, uid: Uid, name: &str) -> Result<(), String> {
-        if self.nodes.values().any(|e| e.name == name) {
+        if self.name_in_use(name) {
             return Err(format!("display name `{name}` already in use"));
         }
         let e = self
@@ -3985,6 +3993,18 @@ mod tests {
         g.duplicate_shared(outer, [200.0, 0.0]).unwrap();
         assert_eq!(g.node_uids().len(), 4, "sibling spawned its own a'/mid'");
         assert_eq!(g.links_view().len(), 2, "each instance's a→mid is live; no spurious link");
+    }
+
+    #[test]
+    fn rename_rejects_collision_with_a_sub_patch_instance_name() {
+        // Leaves and instances share one display-name namespace; renaming a leaf onto an instance's
+        // `subpatch{N}` name would collapse them to one member local key on grouping and drop one.
+        let mut g = Graph::new();
+        let a = g.add_node("_TestConst", None).unwrap();
+        let b = g.add_node("_TestConst", None).unwrap();
+        let inst = g.group_nodes(&[b], [0.0, 0.0]).unwrap();
+        let inst_name = g.instance(inst).unwrap().name.clone();
+        assert!(g.rename_node(a, &inst_name).is_err(), "cannot rename a leaf onto an instance's name");
     }
 
     #[test]
