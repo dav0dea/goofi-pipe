@@ -174,7 +174,8 @@ pub fn param_from_json(existing: &Param, v: &serde_json::Value, fire_triggers: b
 /// A node factory that can capture runtime state (a Python class handle, a device
 /// descriptor). Used for node types discovered at runtime rather than compiled
 /// into the `inventory` catalog — a bare `fn` pointer can't close over such state.
-pub type NodeFactory = Box<dyn Fn(&ParamGroups) -> Box<dyn goofi_node::Node> + Send + Sync>;
+/// One definition in goofi-node, shared with every discovery backend.
+pub use goofi_node::discover::NodeFactory;
 
 /// A runtime-registered node type: its (leaked-`'static`) manifest plus the
 /// factory that builds instances of it. Its `manifest.factory` is never called.

@@ -9,10 +9,8 @@
 
 use std::path::Path;
 
-use goofi_node::{
-    Inputs, Isolation, Node, NodeCtx, NodeError, NodeManifest, NodeResult, OutputDecl, Outputs,
-    ParamDecl, ParamGroups, Params, SlotDecl,
-};
+use goofi_node::discover::{camel, leak_process_manifest, NodeFactory};
+use goofi_node::{Inputs, Isolation, Node, NodeCtx, NodeError, NodeManifest, NodeResult, Outputs, Params};
 
 use crate::PyNode;
 
@@ -50,48 +48,13 @@ fn build_py_node(source: &str) -> Box<dyn Node> {
     }
 }
 
-// Shared slot shape for a `process(x) -> array` node. Truly `'static` (no leak).
-static PY_IN: &[SlotDecl] = &[SlotDecl {
-    name: "data",
-    kind: goofi_core::SlotType::Array,
-    trigger_process: true,
-    multi: false,
-}];
-static PY_OUT: &[OutputDecl] = &[OutputDecl {
-    name: "out",
-    kind: goofi_core::SlotType::Array,
-}];
-
-static PY_PARAMS: &[ParamDecl] = &[];
-fn py_stub_factory() -> Box<dyn Node> {
-    unreachable!("a discovered Python node is built by its factory, not manifest.factory")
-}
-
-/// Builds a node instance from its params (mirrors the engine's `NodeFactory`;
-/// duplicated here so goofi-py needn't depend on goofi-engine).
-pub type PyNodeFactory = Box<dyn Fn(&ParamGroups) -> Box<dyn Node> + Send + Sync>;
-
 /// A discovered Python node type, ready to register into a `Graph`.
 pub struct PyNodeType {
     /// The type's manifest (leaked to `'static`; discovery runs once at startup
     /// and the set of Python node types is bounded — catalog lifetime).
     pub manifest: &'static NodeManifest,
     /// Builds a fresh instance (recompiles the source per instance).
-    pub factory: PyNodeFactory,
-}
-
-/// Convert a `snake_case` file stem to a `CamelCase` palette type name.
-fn camel(stem: &str) -> String {
-    stem.split('_')
-        .filter(|s| !s.is_empty())
-        .map(|w| {
-            let mut c = w.chars();
-            match c.next() {
-                Some(f) => f.to_uppercase().collect::<String>() + c.as_str(),
-                None => String::new(),
-            }
-        })
-        .collect()
+    pub factory: NodeFactory,
 }
 
 /// Build an in-process Python node type from a single file, or `None` if it is
@@ -112,19 +75,13 @@ pub fn discover_one(path: &Path) -> Option<PyNodeType> {
         return None;
     }
 
-    let type_name: &'static str = Box::leak(camel(stem).into_boxed_str());
-    let doc: &'static str = Box::leak(format!("Python node from {}", path.display()).into_boxed_str());
-    let manifest: &'static NodeManifest = Box::leak(Box::new(NodeManifest {
-        type_name,
-        category: "python",
-        doc,
-        inputs: PY_IN,
-        outputs: PY_OUT,
-        params: PY_PARAMS,
-        isolation: Isolation::InProcess,
-        factory: py_stub_factory,
-    }));
-    let factory: PyNodeFactory = Box::new(move |_p| build_py_node(&source));
+    let manifest = leak_process_manifest(
+        camel(stem),
+        format!("Python node from {}", path.display()),
+        "python",
+        Isolation::InProcess,
+    );
+    let factory: NodeFactory = Box::new(move |_p| build_py_node(&source));
     Some(PyNodeType { manifest, factory })
 }
 
@@ -140,13 +97,9 @@ pub fn discover(dir: &Path) -> std::io::Result<Vec<PyNodeType>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use goofi_node::ParamGroups;
 
-    #[test]
-    fn camel_case_conversion() {
-        assert_eq!(camel("double"), "Double");
-        assert_eq!(camel("my_band_filter"), "MyBandFilter");
-        assert_eq!(camel("psd"), "Psd");
-    }
+    // `camel` is unit-tested in goofi-node (its owner); no need to re-test the re-export here.
 
     #[test]
     fn a_broken_python_source_builds_an_error_node_instead_of_panicking() {

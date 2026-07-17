@@ -414,45 +414,14 @@ sys.stdout.flush()
 // factory spawns a RemoteNode instead of an in-process PyNode).
 // ---------------------------------------------------------------------------
 
-use goofi_node::{Isolation, NodeManifest, OutputDecl, ParamGroups, SlotDecl};
-
-static PY_IN: &[SlotDecl] = &[SlotDecl {
-    name: "data",
-    kind: goofi_core::SlotType::Array,
-    trigger_process: true,
-    multi: false,
-}];
-static PY_OUT: &[OutputDecl] = &[OutputDecl {
-    name: "out",
-    kind: goofi_core::SlotType::Array,
-}];
-static SP_PARAMS: &[goofi_node::ParamDecl] = &[];
-fn sp_stub_factory() -> Box<dyn Node> {
-    unreachable!("a discovered subprocess node is built by its factory")
-}
-
-/// Builds a node instance (spawns lazily on first tick).
-pub type SubprocFactory = Box<dyn Fn(&ParamGroups) -> Box<dyn Node> + Send + Sync>;
+use goofi_node::discover::{camel, leak_process_manifest, NodeFactory};
+use goofi_node::{Isolation, NodeManifest};
 
 /// A discovered subprocess node type, ready to `register_dyn_type` into a Graph.
 pub struct SubprocNodeType {
     pub manifest: &'static NodeManifest,
-    pub factory: SubprocFactory,
-}
-
-/// `snake_case` file stem -> `CamelCase` type name (matches `goofi_py::discover`
-/// so the same file yields the same type name whichever backend hosts it).
-fn camel(stem: &str) -> String {
-    stem.split('_')
-        .filter(|s| !s.is_empty())
-        .map(|w| {
-            let mut c = w.chars();
-            match c.next() {
-                Some(f) => f.to_uppercase().collect::<String>() + c.as_str(),
-                None => String::new(),
-            }
-        })
-        .collect()
+    /// Builds a node instance (spawns lazily on first tick).
+    pub factory: NodeFactory,
 }
 
 /// Build a subprocess-backed node type from a single file (running on `python`),
@@ -474,21 +443,14 @@ pub fn discover_one(path: &std::path::Path, python: &str) -> Option<SubprocNodeT
         return None;
     }
 
-    let type_name: &'static str = Box::leak(camel(stem).into_boxed_str());
-    let doc: &'static str =
-        Box::leak(format!("Subprocess Python node from {}", path.display()).into_boxed_str());
-    let manifest: &'static NodeManifest = Box::leak(Box::new(NodeManifest {
-        type_name,
-        category: "subprocess",
-        doc,
-        inputs: PY_IN,
-        outputs: PY_OUT,
-        params: SP_PARAMS,
-        isolation: Isolation::Subprocess,
-        factory: sp_stub_factory,
-    }));
+    let manifest = leak_process_manifest(
+        camel(stem),
+        format!("Subprocess Python node from {}", path.display()),
+        "subprocess",
+        Isolation::Subprocess,
+    );
     let python = python.to_string();
-    let factory: SubprocFactory =
+    let factory: NodeFactory =
         Box::new(move |_p| Box::new(RemoteNode::new(&python, &source)) as Box<dyn Node>);
     Some(SubprocNodeType { manifest, factory })
 }
@@ -505,6 +467,7 @@ pub fn discover(dir: &std::path::Path, python: &str) -> std::io::Result<Vec<Subp
 mod tests {
     use super::*;
     use goofi_core::{DType, Data, Meta, Value};
+    use goofi_node::ParamGroups;
     use indexmap::IndexMap;
 
     /// A `RemoteNode` holds its iceoryx2 ports directly (via `ipc_threadsafe::Service`), so it must
@@ -829,11 +792,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn camel_matches_the_inprocess_naming() {
-        assert_eq!(camel("triple"), "Triple");
-        assert_eq!(camel("my_band_filter"), "MyBandFilter");
-    }
+    // `camel` is now the one shared goofi_node::discover fn both backends re-export, so the
+    // in-process/subprocess type-name parity is guaranteed by construction (unit-tested in goofi-node).
 
     #[test]
     fn discover_yields_subprocess_types_that_run() {

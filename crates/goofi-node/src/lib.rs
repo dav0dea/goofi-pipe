@@ -13,6 +13,9 @@ use std::fmt;
 use goofi_core::{Data, Param, SlotType};
 use indexmap::IndexMap;
 
+/// Runtime node-discovery scaffolding shared by the discovery backends (goofi-py, goofi-subproc).
+pub mod discover;
+
 // ---------------------------------------------------------------------------
 // Errors
 // ---------------------------------------------------------------------------
