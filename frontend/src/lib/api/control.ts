@@ -308,8 +308,6 @@ export type ControlEvent =
 			// ROOT for a top-level node), so the store drops it from that scope's members map.
 			payload: { node: string; membership: { instance: string; local_name: string } | null };
 	  }
-	| { event: 'link_added'; payload: LinkInfo }
-	| { event: 'link_removed'; payload: LinkInfo }
 	| {
 			event: 'state_update';
 			payload: {
@@ -343,7 +341,6 @@ export type ControlEvent =
 	| { event: 'save_path_changed'; payload: { save_path: string | null } }
 	| { event: 'graph_replaced'; payload: GraphSnapshot }
 	| { event: 'subpatch_changed'; payload: GraphSnapshot }
-	| { event: 'boundary_moved'; payload: { inst_id: string; bnd_id: string; pos: [number, number] } }
 	| { event: 'node_renamed'; payload: { node: string; name: string } }
 	| { event: 'layout'; payload: { layout: unknown } }
 	| { event: 'manager_shutdown'; payload: Record<string, never> };
