@@ -9,9 +9,46 @@
 
 use std::path::Path;
 
-use goofi_node::{Isolation, Node, NodeManifest, OutputDecl, ParamDecl, ParamGroups, SlotDecl};
+use goofi_node::{
+    Inputs, Isolation, Node, NodeCtx, NodeError, NodeManifest, NodeResult, OutputDecl, Outputs,
+    ParamDecl, ParamGroups, Params, SlotDecl,
+};
 
 use crate::PyNode;
+
+/// A stand-in for a Python node whose per-instance construction failed (its module re-exec raised).
+/// It surfaces the error TERMINALLY from `setup()` — the node's bootstrap-error channel — instead of
+/// the factory panicking. Discovery validates only the FIRST module exec; a repeat can still fail
+/// (e.g. a top-level import acquiring an exclusive device/port on the 2nd instance). A panic in the
+/// factory would be catastrophic: it runs under the manager's graph mutex (`add_node` holds it), so
+/// it would POISON the mutex and take the whole control plane down.
+struct FailedNode(String);
+
+impl Node for FailedNode {
+    fn setup(&mut self, _ctx: &mut NodeCtx, _p: &Params<'_>) -> NodeResult {
+        Err(NodeError(self.0.clone()))
+    }
+    fn process(
+        &mut self,
+        _inp: &Inputs<'_>,
+        _out: &mut Outputs<'_>,
+        _ctx: &mut NodeCtx,
+        _p: &Params<'_>,
+    ) -> NodeResult {
+        Err(NodeError(self.0.clone()))
+    }
+}
+
+/// Build a Python node instance by re-execing its source. On failure returns a [`FailedNode`] that
+/// reports the error via the bootstrap channel — it NEVER panics, because the factory runs under the
+/// manager's graph mutex and a panic there poisons it (killing the control plane). This upholds the
+/// module's stated contract: a broken node greys out / errors, it does not crash the graph.
+fn build_py_node(source: &str) -> Box<dyn Node> {
+    match PyNode::from_source(source, "process") {
+        Ok(n) => Box::new(n),
+        Err(e) => Box::new(FailedNode(format!("Python node construction failed: {e}"))),
+    }
+}
 
 // Shared slot shape for a `process(x) -> array` node. Truly `'static` (no leak).
 static PY_IN: &[SlotDecl] = &[SlotDecl {
@@ -87,10 +124,7 @@ pub fn discover_one(path: &Path) -> Option<PyNodeType> {
         isolation: Isolation::InProcess,
         factory: py_stub_factory,
     }));
-    let factory: PyNodeFactory = Box::new(move |_p| {
-        Box::new(PyNode::from_source(&source, "process").expect("validated at discovery"))
-            as Box<dyn Node>
-    });
+    let factory: PyNodeFactory = Box::new(move |_p| build_py_node(&source));
     Some(PyNodeType { manifest, factory })
 }
 
@@ -112,5 +146,17 @@ mod tests {
         assert_eq!(camel("double"), "Double");
         assert_eq!(camel("my_band_filter"), "MyBandFilter");
         assert_eq!(camel("psd"), "Psd");
+    }
+
+    #[test]
+    fn a_broken_python_source_builds_an_error_node_instead_of_panicking() {
+        // The factory runs under the manager's graph mutex; a panic on a per-instance construction
+        // failure would poison it and kill the whole control plane. build_py_node must instead
+        // return a node that surfaces the failure terminally on setup() (the bootstrap channel).
+        let mut node = build_py_node("def process(:\n    pass\n"); // invalid syntax → from_source Err
+        let mut ctx = NodeCtx::new();
+        let params = ParamGroups::new();
+        let err = node.setup(&mut ctx, &Params::new(&params)).expect_err("construction failure must error");
+        assert!(err.0.contains("construction failed"), "the error surfaces on setup: {}", err.0);
     }
 }
