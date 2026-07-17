@@ -14,6 +14,46 @@ pub struct ExprRecord {
     pub triggers: bool,
 }
 
+/// A framed sync message on the `/control` binary channel. Two kinds, one leading tag
+/// byte: a peer advertises what it has (`StateVector`) and ships what the other lacks
+/// (`Update`). This is the minimal equivalent of the Yjs sync protocol — both ends drive
+/// their doc by hand (`Y.encodeStateVector` / `Y.encodeStateAsUpdate` / `Y.applyUpdate` on
+/// the browser), so no `y-protocols` dependency is needed on either side.
+#[derive(Clone, Debug, PartialEq)]
+pub enum SyncMsg {
+    /// A replica's state vector — "here is what I already have; send me the rest."
+    StateVector(Vec<u8>),
+    /// An incremental doc update — a diff reply, or a live change to apply.
+    Update(Vec<u8>),
+}
+
+const SYNC_TAG_SV: u8 = 0;
+const SYNC_TAG_UPDATE: u8 = 1;
+
+impl SyncMsg {
+    /// Frame as `[tag, payload…]`.
+    pub fn encode(self) -> Vec<u8> {
+        let (tag, mut body) = match self {
+            SyncMsg::StateVector(b) => (SYNC_TAG_SV, b),
+            SyncMsg::Update(b) => (SYNC_TAG_UPDATE, b),
+        };
+        let mut out = Vec::with_capacity(body.len() + 1);
+        out.push(tag);
+        out.append(&mut body);
+        out
+    }
+
+    /// Parse a framed message; `None` on empty input or an unknown tag.
+    pub fn decode(bytes: &[u8]) -> Option<SyncMsg> {
+        let (tag, body) = bytes.split_first()?;
+        match *tag {
+            SYNC_TAG_SV => Some(SyncMsg::StateVector(body.to_vec())),
+            SYNC_TAG_UPDATE => Some(SyncMsg::Update(body.to_vec())),
+            _ => None,
+        }
+    }
+}
+
 /// A link as mirrored into the doc (hex uids + slot names).
 #[derive(Clone, Debug, PartialEq)]
 pub struct LinkRecord {
@@ -269,6 +309,25 @@ impl GraphDoc {
         let mut txn = self.doc.transact_mut();
         txn.apply_update(u).map_err(|e| e.to_string())
     }
+
+    /// The message to send a peer on connect: this replica's state vector, framed. The peer
+    /// answers with the diff it owes (via [`Self::on_sync`]).
+    pub fn sync_hello(&self) -> Vec<u8> {
+        SyncMsg::StateVector(self.state_vector()).encode()
+    }
+
+    /// Drive the pairwise sync handshake for one inbound message, returning the messages to
+    /// send back. Receiving a peer's `StateVector` yields the `Update` it lacks; receiving an
+    /// `Update` applies it and replies with nothing. Symmetric — both ends run this.
+    pub fn on_sync(&mut self, msg: SyncMsg) -> Vec<SyncMsg> {
+        match msg {
+            SyncMsg::StateVector(sv) => vec![SyncMsg::Update(self.diff(&sv))],
+            SyncMsg::Update(u) => {
+                let _ = self.apply_update(&u);
+                Vec::new()
+            }
+        }
+    }
 }
 
 impl Default for GraphDoc {
@@ -368,5 +427,45 @@ mod tests {
         let diff2 = server.diff(&client.state_vector());
         client.apply_update(&diff2).unwrap();
         assert_eq!(client.node_name("1").as_deref(), Some("osc2"));
+    }
+
+    #[test]
+    fn sync_msg_encode_decode_round_trip() {
+        for m in [SyncMsg::StateVector(vec![1, 2, 3]), SyncMsg::Update(vec![9, 8])] {
+            let bytes = m.clone().encode();
+            assert_eq!(SyncMsg::decode(&bytes), Some(m));
+        }
+        assert_eq!(SyncMsg::decode(&[]), None, "empty is not a message");
+        assert_eq!(SyncMsg::decode(&[7, 0]), None, "unknown tag rejected");
+    }
+
+    #[test]
+    fn on_sync_pairwise_handshake_converges() {
+        // The symmetric handshake: each side sends its SV on connect; receiving a peer's SV
+        // yields an Update carrying what the peer lacks; receiving an Update applies it.
+        let mut server = GraphDoc::new();
+        server.upsert_node("1", "Oscillator", "osc", [0.0, 0.0]);
+        let mut client = GraphDoc::new();
+
+        // Connect: both emit their SV.
+        let server_hello = server.sync_hello();
+        let client_hello = client.sync_hello();
+
+        // Server receives client's SV → replies with the diff the client is missing.
+        let to_client = server.on_sync(SyncMsg::decode(&client_hello).unwrap());
+        // Client receives server's SV → replies with the diff the server is missing (none here).
+        let _to_server = client.on_sync(SyncMsg::decode(&server_hello).unwrap());
+
+        // Client applies the server's diff → converges.
+        for m in to_client {
+            client.on_sync(m);
+        }
+        assert_eq!(client.node_name("1").as_deref(), Some("osc"), "client converged via on_sync");
+
+        // A live server edit, relayed as one Update, lands on the client.
+        server.upsert_node("2", "Buffer", "buf", [0.0, 0.0]);
+        let live = server.diff(&client.state_vector());
+        client.on_sync(SyncMsg::Update(live));
+        assert_eq!(client.node_name("2").as_deref(), Some("buf"));
     }
 }
