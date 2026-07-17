@@ -606,6 +606,56 @@ async fn node_stats_broadcasts_the_measured_ufreq() {
 }
 
 #[tokio::test]
+async fn param_values_broadcasts_live_expression_values() {
+    // A param with an ENABLED expression is broadcast on the `param_values` event so the
+    // inspector preview tracks each re-evaluation. (No evaluator is injected here, so the
+    // value stays the literal — the point is the seam exists and carries the bound param.)
+    let state = AppState::new();
+    spawn_workers(&state); // tick loop + 2 Hz stats/param_values, as the CLI startup does
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        serve_listener(listener, state).await.unwrap();
+    });
+    let base = format!("ws://{addr}");
+    let (mut ws, _) = connect_async(format!("{base}/control")).await.unwrap();
+    let _hello = recv_text(&mut ws).await;
+
+    let osc = call(&mut ws, 1, "add_node", json!({ "type": "Oscillator" })).await["result"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    call(
+        &mut ws,
+        2,
+        "set_expression",
+        json!({
+            "node": osc, "group": "common", "name": "max_frequency",
+            "expression": "1 + 2", "expression_enabled": true, "expression_triggers_process": false
+        }),
+    )
+    .await;
+
+    let ev = tokio::time::timeout(Duration::from_secs(8), async {
+        loop {
+            let m = recv_text(&mut ws).await;
+            if m.get("event").and_then(|v| v.as_str()) == Some("param_values")
+                && m["payload"]["node"] == json!(osc)
+            {
+                return m;
+            }
+        }
+    })
+    .await
+    .expect("a param_values event for the node with an active expression must arrive");
+    assert!(
+        ev["payload"]["values"]["common"]["max_frequency"].is_number(),
+        "the bound param's live value is carried; got {:?}",
+        ev["payload"]["values"]
+    );
+}
+
+#[tokio::test]
 async fn duplicate_shared_then_make_unique_over_the_wire() {
     // Group → duplicate_shared surfaces a sibling and marks both instances "shared";
     // make_unique on one returns it to "unique".

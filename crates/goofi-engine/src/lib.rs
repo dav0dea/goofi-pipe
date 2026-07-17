@@ -1427,6 +1427,26 @@ impl Graph {
         })
     }
 
+    /// The current values of the params driven by an ENABLED expression binding on `uid`,
+    /// as `(group, name, value)`. Empty when the node has no active expressions. Feeds the
+    /// live inspector preview (`param_values` event) so a bound param's displayed value
+    /// tracks each re-evaluation, not just the value captured at edit time. A disabled
+    /// binding is excluded — its value is the static literal, already on the descriptor.
+    pub fn expression_values(&self, uid: Uid) -> Vec<(&str, &str, &Param)> {
+        let Some(entry) = self.nodes.get(&uid) else {
+            return Vec::new();
+        };
+        entry
+            .bindings
+            .iter()
+            .filter(|(_, b)| b.enabled)
+            .filter_map(|(key, _)| {
+                let p = entry.params.get(&key.group)?.get(&key.name)?;
+                Some((key.group.as_str(), key.name.as_str(), p))
+            })
+            .collect()
+    }
+
     /// Resolve a node display name to its uid (for `nd('name')` references).
     fn uid_by_name(&self, name: &str) -> Option<Uid> {
         self.nodes.iter().find(|(_, e)| e.name == name).map(|(u, _)| *u)
@@ -3535,6 +3555,24 @@ mod tests {
         // And it still resolves end-to-end through the new name.
         g.tick();
         assert_eq!(first_f32(&g.latest_frame(host, "out").unwrap()), 3.0, "resolves via nd('signal')");
+    }
+
+    #[test]
+    fn expression_values_report_live_evaluated_params() {
+        // The live preview seam: after a tick, the evaluated value of each ENABLED binding
+        // is reported (a plain literal param is not), and a disabled binding drops out.
+        let mut g = eval_graph();
+        let n = g.add_node("_TestConst", None).unwrap();
+        g.set_expression(n, "constant", "value", "7", true, false).unwrap();
+        g.tick();
+        let vals = g.expression_values(n);
+        assert_eq!(vals.len(), 1, "only the expression-bound param is reported");
+        let (group, name, p) = vals[0];
+        assert_eq!((group, name), ("constant", "value"));
+        assert!(matches!(p, Param::Float { value, .. } if (value - 7.0).abs() < 1e-9), "carries the evaluated value");
+        // Disabling the binding removes it from the live set (its value is now the literal).
+        g.set_expression(n, "constant", "value", "7", false, false).unwrap();
+        assert!(g.expression_values(n).is_empty(), "disabled binding is not a live value");
     }
 
     #[test]

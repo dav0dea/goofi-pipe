@@ -10,18 +10,24 @@ use serde_json::{json, Map, Value};
 pub const ROOT_ID: &str = "__root__";
 pub const PROTOCOL_VERSION: i64 = 1;
 
-/// A single param descriptor (discriminated on `type`). `expr` is the instance's
-/// expression binding (or `None` for a plain literal / a palette type-level param).
-pub fn describe_param(p: &Param, expr: Option<&ExprInfo>) -> Value {
-    let mut m = Map::new();
-    let value = match p {
+/// A single param's current value as the frontend's `descriptor.value` JSON. The one
+/// place param → wire-value lives, shared by [`describe_param`] and the live
+/// `param_values` projection so the preview and the descriptor always agree.
+pub fn param_value_json(p: &Param) -> Value {
+    match p {
         Param::Float { value, .. } => json!(value),
         Param::Int { value, .. } => json!(value),
         Param::Bool { value } => json!(value),
         Param::Trigger { fired } => json!(fired),
         Param::Str { value, .. } => json!(value),
-    };
-    m.insert("value".into(), value);
+    }
+}
+
+/// A single param descriptor (discriminated on `type`). `expr` is the instance's
+/// expression binding (or `None` for a plain literal / a palette type-level param).
+pub fn describe_param(p: &Param, expr: Option<&ExprInfo>) -> Value {
+    let mut m = Map::new();
+    m.insert("value".into(), param_value_json(p));
     m.insert("doc".into(), Value::Null);
     m.insert("save_param".into(), json!(true));
     m.insert(
@@ -95,6 +101,22 @@ pub fn describe_node_params(g: &Graph, uid: Uid) -> Value {
             names.insert(n.clone(), describe_param(param, expr.as_ref()));
         }
         groups.insert(gname.clone(), Value::Object(names));
+    }
+    Value::Object(groups)
+}
+
+/// The live values of a node's expression-driven params, shaped `{group: {name: value}}`
+/// for the `param_values` event. Empty object when the node has no active expressions.
+/// Unlike [`describe_node_params`] this carries ONLY the evaluated values (no descriptor
+/// metadata), so the frontend applies it surgically — it can never clobber a concurrent
+/// edit the way a full-params replace would.
+pub fn expression_value_map(g: &Graph, uid: Uid) -> Value {
+    let mut groups = Map::new();
+    for (group, name, p) in g.expression_values(uid) {
+        let entry = groups.entry(group.to_string()).or_insert_with(|| Value::Object(Map::new()));
+        if let Value::Object(names) = entry {
+            names.insert(name.to_string(), param_value_json(p));
+        }
     }
     Value::Object(groups)
 }

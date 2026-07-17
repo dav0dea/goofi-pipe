@@ -129,24 +129,36 @@ fn error_transitions(
 /// the same node (both ride the one broadcast channel, and the frontend replaces params
 /// wholesale). The per-param expression-error field refreshes on the next RPC; the node
 /// border + console update live here.
+///
+/// It also pushes the live values of expression-driven params as a `param_values` event,
+/// so the inspector preview tracks each re-evaluation instead of freezing at the
+/// edit-time value. That is safe where a full-params snapshot is not: it carries ONLY the
+/// evaluated values (not descriptors) and the frontend applies them surgically to
+/// expression-bound params — which are never user-editable literals, so there is no
+/// concurrent edit to clobber.
 pub fn spawn_stats(graph: Arc<Mutex<Graph>>, events: broadcast::Sender<String>, hz: u64) {
     std::thread::spawn(move || {
         let period = Duration::from_secs_f64(1.0 / hz as f64);
         let mut last_errors: HashMap<String, Option<String>> = HashMap::new();
         loop {
             std::thread::sleep(period);
-            let (rates, errs) = {
+            let (rates, errs, expr_vals) = {
                 let g = graph.lock().unwrap();
                 let mut rates: Vec<(String, f64)> = Vec::new();
                 let mut errs: Vec<(String, Option<String>)> = Vec::new();
+                let mut expr_vals: Vec<(String, Value)> = Vec::new();
                 for u in g.node_uids() {
                     let hex = u.to_hex();
                     if let Some(f) = g.node_ufreq(u) {
                         rates.push((hex.clone(), f));
                     }
+                    let vals = schemas::expression_value_map(&g, u);
+                    if vals.as_object().is_some_and(|o| !o.is_empty()) {
+                        expr_vals.push((hex.clone(), vals));
+                    }
                     errs.push((hex, g.last_error(u).map(str::to_string)));
                 }
-                (rates, errs)
+                (rates, errs, expr_vals)
             };
             // Diff + build payloads after releasing the lock (both inputs are owned).
             let changed = error_transitions(&errs, &mut last_errors);
@@ -158,6 +170,9 @@ pub fn spawn_stats(graph: Arc<Mutex<Graph>>, events: broadcast::Sender<String>, 
                     "payload": { "node": node, "stats": { "updates_per_second": ufreq } }
                 });
                 let _ = events.send(ev.to_string());
+            }
+            for (node, values) in expr_vals {
+                let _ = events.send(event("param_values", json!({ "node": node, "values": values })));
             }
             for hex in changed {
                 let err = errs.iter().find(|(h, _)| *h == hex).and_then(|(_, e)| e.clone());

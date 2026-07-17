@@ -368,6 +368,26 @@ export class GraphStore {
 				if (t) t.stats = ev.payload.stats;
 				break;
 			}
+			case 'param_values': {
+				// Live evaluated values of a node's expression-driven params. Applied
+				// surgically to the existing descriptors (never a wholesale `params` replace
+				// like state_update) so the inspector preview tracks each re-evaluation
+				// without clobbering a concurrent edit on a sibling param. These params are
+				// in expression mode — never user-editable literals — so there's nothing to
+				// race with.
+				const t = this.nodeById(ev.payload.node);
+				if (t) {
+					for (const [group, names] of Object.entries(ev.payload.values)) {
+						for (const [name, value] of Object.entries(names)) {
+							const p = t.params[group]?.[name];
+							// Widen past the discriminated union's narrowed `value` — the
+							// backend guarantees the value matches the param's own type.
+							if (p) (p as { value: unknown }).value = value;
+						}
+					}
+				}
+				break;
+			}
 			case 'error': {
 				// Live snapshot — drives the node's red border, the floating error
 				// chip, and the inspector's current-error section. Always on, via the

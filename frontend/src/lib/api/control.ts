@@ -328,6 +328,13 @@ export type ControlEvent =
 	| { event: 'node_crashed'; payload: { node: string; exitcode: number | null; restarts: number } }
 	| { event: 'node_stage'; payload: { node: string; stage: NodeStage; error?: string } }
 	| { event: 'node_stats'; payload: { node: string; stats: NodeStats } }
+	// Live evaluated values of a node's expression-driven params (`{group: {name: value}}`),
+	// pushed at the stats cadence so the inspector preview tracks each re-evaluation. Applied
+	// surgically (only these params' `value`), never a wholesale params replace.
+	| {
+			event: 'param_values';
+			payload: { node: string; values: Record<string, Record<string, number | string | boolean>> };
+	  }
 	| { event: 'unsaved_changes'; payload: { unsaved_changes: boolean } }
 	| { event: 'save_path_changed'; payload: { save_path: string | null } }
 	| { event: 'graph_replaced'; payload: GraphSnapshot }
