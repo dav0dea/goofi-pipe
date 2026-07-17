@@ -196,6 +196,50 @@ fn retain_keys<T: ReadTxn>(map: &MapRef, txn_keys: &T, keep: &std::collections::
     map.keys(txn_keys).map(|k| k.to_string()).filter(|k| !keep.contains(k)).collect()
 }
 
+/// The single generic writer behind the graph→doc mirror: recursively reconcile a live Y.Map to
+/// match `target` (a JSON object). For each target key — a nested object recurses INTO the existing
+/// sub-map (get-or-insert; the sub-map is NEVER replaced, so a concurrent client leaf-write into a
+/// sibling key survives — the "params lesson"); a scalar/string is written only when its Any-space
+/// value differs (idempotent, with int/float normalized by [`scalar_unchanged`]). Finally every doc
+/// key absent from `target` is pruned. An unchanged re-assert produces zero doc ops — which is what
+/// keeps the re-mirror from churning tombstones or manufacturing a write that races a client's edit.
+fn reconcile_map(
+    txn: &mut yrs::TransactionMut,
+    map: &MapRef,
+    target: &serde_json::Map<String, serde_json::Value>,
+) {
+    for (key, val) in target {
+        match val {
+            serde_json::Value::Object(obj) => {
+                let child = get_or_insert_map(map, txn, key);
+                reconcile_map(txn, &child, obj);
+            }
+            scalar => {
+                if !scalar_unchanged(map, txn, key, scalar) {
+                    insert_scalar(map, txn, key, scalar);
+                }
+            }
+        }
+    }
+    let keep: std::collections::HashSet<&str> = target.keys().map(String::as_str).collect();
+    let stale: Vec<String> =
+        map.keys(&*txn).filter(|k| !keep.contains(*k)).map(|k| k.to_string()).collect();
+    for k in stale {
+        map.remove(txn, k.as_str());
+    }
+}
+
+/// Parse a `{node_out, slot_out, node_in, slot_in}` projection entry into a [`LinkRecord`].
+fn link_record_from_json(v: &serde_json::Value) -> Option<LinkRecord> {
+    let s = |k: &str| -> Option<String> { v.get(k)?.as_str().map(str::to_string) };
+    Some(LinkRecord {
+        node_out: s("node_out")?,
+        slot_out: s("slot_out")?,
+        node_in: s("node_in")?,
+        slot_in: s("slot_in")?,
+    })
+}
+
 /// The control-plane document. `nodes` is a Map<uid, {type, name, pos, params, viewers}>,
 /// `links` an Array of {node_out, slot_out, node_in, slot_in}, and `instances` the sub-patch
 /// forest — a Map<uid, {name, def_id?, parent, pos, members:Map<local,uid>, interface:Map<bnd,…>}>.
@@ -236,6 +280,31 @@ impl GraphDoc {
         set_scalar_if_changed(&node, &mut txn, "type", &serde_json::json!(ty));
         set_scalar_if_changed(&node, &mut txn, "name", &serde_json::json!(name));
         set_pos_if_changed(&node, &mut txn, pos);
+    }
+
+    /// Reconcile the ENTIRE control-plane doc from one JSON projection of the engine graph — the
+    /// generic mirror that replaces the typed writer zoo. `target` carries exactly the doc's shape:
+    /// `{ nodes: {uid: {type, name, pos, params, viewers}}, links: [{node_out,…}],
+    ///    instances: {uid: {name, def_id?, parent, pos, members, interface}} }`.
+    /// Idempotent and in-place (see [`reconcile_map`]); optional keys omitted from the projection
+    /// (a cleared `expr`, an unwired boundary's `inner_node`, a unique instance's `def_id`) are pruned.
+    pub fn reconcile_root(&mut self, target: &serde_json::Value) {
+        let empty = serde_json::Map::new();
+        let nodes = target.get("nodes").and_then(|v| v.as_object()).unwrap_or(&empty);
+        let instances = target.get("instances").and_then(|v| v.as_object()).unwrap_or(&empty);
+        {
+            let mut txn = self.doc.transact_mut();
+            reconcile_map(&mut txn, &self.nodes, nodes);
+            reconcile_map(&mut txn, &self.instances, instances);
+        }
+        // Links are an ordered, manager-authoritative array (no client leaf-merge) → the idempotent
+        // skip-if-equal wholesale replace, reused verbatim.
+        let links = target
+            .get("links")
+            .and_then(|v| v.as_array())
+            .map(|arr| arr.iter().filter_map(link_record_from_json).collect())
+            .unwrap_or_default();
+        self.replace_links(links);
     }
 
     fn node_map(&self, txn: &yrs::Transaction, uid: &str) -> Option<MapRef> {
@@ -1339,5 +1408,147 @@ mod tests {
         assert_eq!(client.node_name("1").as_deref(), Some("renamed"), "dependent change resolved");
         assert_eq!(client.node_name("2").as_deref(), Some("buf"));
         assert_eq!(client.param_value("1", "common", "max_frequency"), Some(json!(50.0)));
+    }
+
+    // ---- generic reconcile_root: the single writer that subsumes the typed writer zoo ----
+
+    /// A doc-projection covering every shape the reconciler must handle: a node with params (one
+    /// plain, one expression-bound), a viewers blob, a link, and a sub-patch instance with a member
+    /// and a wired output boundary. Exactly the doc's field set — no runtime fields.
+    fn full_projection() -> serde_json::Value {
+        serde_json::json!({
+            "nodes": {
+                "1": {
+                    "type": "Oscillator", "name": "osc", "pos": {"x": 10.0, "y": 20.0},
+                    "params": {
+                        "common": { "max_frequency": { "value": 30.0 } },
+                        "oscillator": { "waveform": { "value": "sine",
+                            "expr": { "source": "nd('lfo')", "enabled": true, "triggers": false } } }
+                    },
+                    "viewers": "{\"out\":{\"kind\":\"line\"}}"
+                },
+                "2": { "type": "Buffer", "name": "buf", "pos": {"x": 0.0, "y": 0.0}, "params": {} }
+            },
+            "links": [ { "node_out": "1", "slot_out": "out", "node_in": "2", "slot_in": "data" } ],
+            "instances": {
+                "i1": {
+                    "name": "subpatch0", "parent": ROOT_MARK, "pos": {"x": 5.0, "y": 6.0},
+                    "members": { "buffer0": "2" },
+                    "interface": { "out0": { "dir": "out", "dtype": "ARRAY", "name": "wave",
+                        "pos": {"x": 1.0, "y": 2.0}, "inner_node": "2", "inner_slot": "out" } }
+                }
+            }
+        })
+    }
+    const ROOT_MARK: &str = "__root__";
+
+    #[test]
+    fn reconcile_root_builds_the_whole_graph() {
+        use serde_json::json;
+        let mut doc = GraphDoc::new();
+        doc.reconcile_root(&full_projection());
+
+        // Nodes + identity + params (value AND binding) + viewers, via the existing readers.
+        assert_eq!(doc.node_ids().len(), 2);
+        assert_eq!(doc.node_type("1").as_deref(), Some("Oscillator"));
+        assert_eq!(doc.node_name("1").as_deref(), Some("osc"));
+        assert_eq!(doc.node_pos("1"), Some([10.0, 20.0]));
+        assert_eq!(doc.param_value("1", "common", "max_frequency"), Some(json!(30.0)));
+        assert_eq!(doc.param_value("1", "oscillator", "waveform"), Some(json!("sine")));
+        assert_eq!(doc.param_expr_source("1", "oscillator", "waveform").as_deref(), Some("nd('lfo')"));
+        assert_eq!(doc.viewers_json("1"), Some(json!({"out": {"kind": "line"}})));
+        // Links.
+        assert_eq!(doc.links().len(), 1);
+        assert_eq!(doc.links()[0].node_in, "2");
+        // The sub-patch forest.
+        let rec = doc.instance_record("i1").expect("instance mirrored");
+        assert_eq!(rec.parent, "__root__");
+        assert_eq!(rec.pos, [5.0, 6.0]);
+        assert_eq!(rec.def_id, None);
+        assert_eq!(rec.members, vec![("buffer0".to_string(), "2".to_string())]);
+        let out = rec.interface.iter().find(|b| b.dir == "out").expect("output boundary");
+        assert_eq!(out.inner_node.as_deref(), Some("2"));
+        assert_eq!(out.inner_slot.as_deref(), Some("out"));
+    }
+
+    #[test]
+    fn reconcile_root_is_idempotent() {
+        // The load-bearing invariant: re-asserting an UNCHANGED projection produces ZERO doc ops
+        // (else the re-mirror churns tombstones and manufactures competing writes that race a
+        // client's leaf-edit — the "params lesson" the typed writers hand-rolled per field).
+        let mut doc = GraphDoc::new();
+        doc.reconcile_root(&full_projection());
+        let sv = doc.state_vector();
+        doc.reconcile_root(&full_projection());
+        assert!(doc.is_empty_diff(&doc.diff(&sv)), "re-reconciling an unchanged graph is a no-op");
+    }
+
+    #[test]
+    fn reconcile_normalizes_int_vs_float_numbers() {
+        use serde_json::json;
+        // Numbers are stored as f64. A projection carrying an INT param value (e.g. Buffer.size)
+        // must not churn against its stored f64 form on the next re-mirror.
+        let mut doc = GraphDoc::new();
+        let mut proj = json!({ "nodes": { "1": { "type": "Buffer", "name": "buf",
+            "pos": {"x": 0.0, "y": 0.0}, "params": { "buffer": { "size": { "value": 1000 } } } } },
+            "links": [], "instances": {} });
+        doc.reconcile_root(&proj);
+        let sv = doc.state_vector();
+        // Re-assert with the value as a float — the same number, different JSON repr.
+        proj["nodes"]["1"]["params"]["buffer"]["size"]["value"] = json!(1000.0);
+        doc.reconcile_root(&proj);
+        assert!(doc.is_empty_diff(&doc.diff(&sv)), "int 1000 vs f64 1000.0 is not a change");
+    }
+
+    #[test]
+    fn reconcile_prunes_removed_keys() {
+        use serde_json::json;
+        let mut doc = GraphDoc::new();
+        doc.reconcile_root(&full_projection());
+        assert!(doc.param_expr_source("1", "oscillator", "waveform").is_some());
+
+        // A shrunk projection: node 2 gone, node 1's expr binding cleared, the instance's member
+        // dropped, and the instance itself removed. Every stale key must be pruned.
+        let shrunk = json!({
+            "nodes": { "1": { "type": "Oscillator", "name": "osc", "pos": {"x": 10.0, "y": 20.0},
+                "params": { "oscillator": { "waveform": { "value": "sine" } } } } },
+            "links": [],
+            "instances": {}
+        });
+        doc.reconcile_root(&shrunk);
+        assert_eq!(doc.node_ids(), vec!["1"], "node 2 pruned");
+        assert_eq!(doc.param_expr_source("1", "oscillator", "waveform"), None, "cleared binding pruned");
+        assert!(doc.param_value("1", "common", "max_frequency").is_none(), "removed param group pruned");
+        assert!(doc.links().is_empty(), "links cleared");
+        assert!(doc.instance_ids().is_empty(), "instance pruned");
+    }
+
+    #[test]
+    fn reconcile_preserves_a_concurrent_leaf_write() {
+        // The no-clobber invariant via the generic path: a client commits a param leaf-write; an
+        // intervening re-mirror at the OLD value must not orphan it (recurse-in-place, never replace
+        // the entry map). Then applying the client's delta lands the new value.
+        use serde_json::json;
+        let mut server = GraphDoc::new();
+        let proj = |v: f64| json!({ "nodes": { "1": { "type": "Oscillator", "name": "osc",
+            "pos": {"x": 0.0, "y": 0.0}, "params": { "common": { "max_frequency": { "value": v } } } } },
+            "links": [], "instances": {} });
+        server.reconcile_root(&proj(30.0));
+
+        let mut client = GraphDoc::new();
+        client.apply_update(&server.diff(&client.state_vector())).unwrap();
+        // Client edits the value to 99 against the entry map it currently holds.
+        let cbefore = client.state_vector();
+        client.set_param("1", "common", "max_frequency", &json!(99.0), None);
+        let edit = client.diff(&cbefore);
+
+        // Interleaved re-mirror at the still-old 30, then the client's in-flight edit applies.
+        server.reconcile_root(&proj(30.0));
+        server.apply_update(&edit).unwrap();
+        assert_eq!(
+            server.param_value("1", "common", "max_frequency"),
+            Some(json!(99.0)),
+            "the concurrent param leaf-write survives the intervening re-mirror"
+        );
     }
 }
