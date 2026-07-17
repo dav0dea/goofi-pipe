@@ -1053,16 +1053,9 @@ impl Graph {
     /// Instantiate one planned leaf at its deterministic uid, applying its params then its
     /// captured expressions.
     fn insert_planned_leaf(&mut self, pn: &subpatch::PlannedLeaf) -> Result<(), String> {
-        let (manifest, params, node): (&'static NodeManifest, ParamGroups, Box<dyn goofi_node::Node>) =
-            if let Some(m) = goofi_node::find(&pn.type_name) {
-                (m, goofi_node::with_common(pn.params.clone()), (m.factory)())
-            } else if let Some(dt) = self.dyn_types.get(pn.type_name.as_str()) {
-                let p = goofi_node::with_common(pn.params.clone());
-                let n = (dt.factory)(&p);
-                (dt.manifest, p, n)
-            } else {
-                return Err(format!("reconcile: unknown node type `{}`", pn.type_name));
-            };
+        // Shares `build_node`'s catalog-or-dyn resolution; `reconcile` pre-validates every type, so
+        // the unknown-type branch is unreachable here.
+        let (manifest, params, node) = self.build_node(&pn.type_name, Some(pn.params.clone()))?;
         let name = self.fresh_name(&manifest.type_name.to_lowercase());
         self.insert_node_at(pn.uid, name, manifest, node, params);
         for ex in &pn.expressions {
@@ -1078,9 +1071,7 @@ impl Graph {
     /// links (one endpoint outside every covered scope) are untouched.
     fn reconcile(&mut self, plan: subpatch::FlatPlan) -> Result<(), String> {
         for pn in &plan.nodes {
-            let known = goofi_node::find(&pn.type_name).is_some()
-                || self.dyn_types.contains_key(pn.type_name.as_str());
-            if !known {
+            if !self.known_type(&pn.type_name) {
                 return Err(format!("reconcile: unknown node type `{}`", pn.type_name));
             }
         }
