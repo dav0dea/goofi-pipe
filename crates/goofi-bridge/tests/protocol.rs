@@ -1438,6 +1438,104 @@ async fn many_clients_concurrently_leaf_write_and_all_converge() {
     }
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn many_clients_concurrently_drag_and_all_converge() {
+    // Stress the POSITION leaf-write path against the re-mirror — the exact interleaving the audit
+    // found losing drags before upsert_node was made idempotent. N clients each own a node and
+    // hammer ROUNDS position writes concurrently; EACH write triggers a manager re-mirror that
+    // re-asserts EVERY node's pos (upsert_node). With the wholesale pos-map replacement this test
+    // would drop drags (a fresh reader would not converge on all N final positions); with the
+    // idempotent in-place upsert_node every concurrent drag survives.
+    use goofi_crdt::{GraphDoc, SyncMsg};
+
+    const N: usize = 8;
+    const ROUNDS: usize = 5;
+
+    let base = start_server().await;
+
+    let (mut setup, _) = connect_async(format!("{base}/control")).await.unwrap();
+    let _ = recv_text(&mut setup).await;
+    let _ = recv_binary(&mut setup).await;
+    let mut uids = Vec::new();
+    for i in 0..N {
+        let u = call(&mut setup, i as i64 + 1, "add_node", json!({ "type": "Oscillator" })).await
+            ["result"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        uids.push(u);
+    }
+
+    let mut handles = Vec::new();
+    for i in 0..N {
+        let base = base.clone();
+        let uids = uids.clone();
+        handles.push(tokio::spawn(async move {
+            let (mut w, _) = connect_async(format!("{base}/control")).await.unwrap();
+            let _ = recv_text(&mut w).await;
+            let _ = recv_binary(&mut w).await;
+            let mut doc = GraphDoc::new();
+            w.send(Message::Binary(doc.sync_hello().into())).await.unwrap();
+            tokio::time::timeout(Duration::from_secs(10), async {
+                loop {
+                    let b = recv_binary(&mut w).await;
+                    if let Some(m) = SyncMsg::decode(&b) {
+                        doc.on_sync(m);
+                    }
+                    if doc.node_ids().contains(&uids[i]) {
+                        return;
+                    }
+                }
+            })
+            .await
+            .expect("writer replica learns its node");
+
+            // Ramp this node's position; each frame is an in-place x/y write onto the pos map the
+            // replica currently holds — the map a concurrent re-mirror must NOT orphan.
+            for r in 1..=ROUNDS {
+                let before = doc.state_vector();
+                doc.set_node_pos(&uids[i], [r as f64, r as f64]);
+                let upd = doc.diff(&before);
+                w.send(Message::Binary(SyncMsg::Update(upd).encode().into()))
+                    .await
+                    .unwrap();
+            }
+            call(&mut w, 1000 + i as i64, "serialize", json!({})).await; // barrier
+        }));
+    }
+    for h in handles {
+        h.await.unwrap();
+    }
+
+    let (mut r, _) = connect_async(format!("{base}/control")).await.unwrap();
+    let _ = recv_text(&mut r).await;
+    let _ = recv_binary(&mut r).await;
+    let mut rdoc = GraphDoc::new();
+    r.send(Message::Binary(rdoc.sync_hello().into())).await.unwrap();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
+    let mut converged = false;
+    while tokio::time::Instant::now() < deadline {
+        match tokio::time::timeout(Duration::from_millis(500), r.next()).await {
+            Ok(Some(Ok(Message::Binary(b)))) => {
+                if let Some(m) = SyncMsg::decode(&b) {
+                    rdoc.on_sync(m);
+                }
+            }
+            Ok(Some(Ok(_))) => continue,
+            Ok(_) => break,
+            Err(_) => {}
+        }
+        if uids.iter().all(|u| rdoc.node_pos(u) == Some([ROUNDS as f64, ROUNDS as f64])) {
+            converged = true;
+            break;
+        }
+    }
+    if !converged {
+        let got: Vec<_> = uids.iter().map(|u| rdoc.node_pos(u)).collect();
+        panic!("not converged; final position per node = {got:?}");
+    }
+}
+
 #[tokio::test]
 async fn node_removed_reports_the_members_real_scope() {
     // Removing a node that lives inside a sub-patch must broadcast node_removed with that
