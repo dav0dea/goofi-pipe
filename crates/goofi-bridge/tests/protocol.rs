@@ -122,7 +122,7 @@ async fn call(ws: &mut Ws, id: i64, op: &str, payload: Value) -> Value {
 /// (robust to interleaved broadcast deltas the earlier `call`s skipped), then leaf-writes the
 /// binding (value unchanged) and sends the delta. The manager applies it via `set_member_expression`.
 async fn leaf_write_expression(ws: &mut Ws, node: &str, group: &str, name: &str, source: &str) {
-    use goofi_crdt::{ExprRecord, GraphDoc, SyncMsg};
+    use goofi_crdt::{GraphDoc, SyncMsg};
     let mut doc = GraphDoc::new();
     ws.send(Message::Binary(doc.sync_hello().into())).await.unwrap();
     // The SV-diff response is a complete, self-contained update; applying it makes every node
@@ -135,14 +135,10 @@ async fn leaf_write_expression(ws: &mut Ws, node: &str, group: &str, name: &str,
             break;
         }
     }
-    let value = doc.param_value(node, group, name).unwrap_or(json!(0.0));
     let before = doc.state_vector();
-    doc.set_param(
-        node,
-        group,
-        name,
-        &value,
-        Some(ExprRecord { source: source.into(), enabled: true, triggers: false }),
+    doc.write_at(
+        &["nodes", node, "params", group, name, "expr"],
+        Some(&json!({ "source": source, "enabled": true, "triggers": false })),
     );
     ws.send(Message::Binary(SyncMsg::Update(doc.diff(&before)).encode().into())).await.unwrap();
 }
@@ -462,7 +458,7 @@ async fn a_client_expression_leaf_write_binds_and_echoes_the_descriptor() {
     // enriched param descriptor as a `state_update`: the binding round-trips AND carries
     // `expression_error` (the field indicator; runtime-derived, never in the doc), with NO
     // `expression_autoeval` key.
-    use goofi_crdt::{ExprRecord, GraphDoc, SyncMsg};
+    use goofi_crdt::{GraphDoc, SyncMsg};
 
     let base = start_server().await;
     let (mut ws, _) = connect_async(format!("{base}/control")).await.unwrap();
@@ -481,14 +477,10 @@ async fn a_client_expression_leaf_write_binds_and_echoes_the_descriptor() {
     assert!(wdoc.node_ids().contains(&osc), "writer's replica has the node");
 
     // Bind an expression on common.max_frequency (value unchanged) and send the delta.
-    let value = wdoc.param_value(&osc, "common", "max_frequency").unwrap_or(json!(0.0));
     let before = wdoc.state_vector();
-    wdoc.set_param(
-        &osc,
-        "common",
-        "max_frequency",
-        &value,
-        Some(ExprRecord { source: "1 + 2".into(), enabled: true, triggers: false }),
+    wdoc.write_at(
+        &["nodes", &osc, "params", "common", "max_frequency", "expr"],
+        Some(&json!({ "source": "1 + 2", "enabled": true, "triggers": false })),
     );
     ws.send(Message::Binary(SyncMsg::Update(wdoc.diff(&before)).encode().into())).await.unwrap();
 
@@ -674,7 +666,7 @@ async fn a_client_leaf_write_reaches_the_graph_and_other_clients() {
 
     // Leaf-write common.max_frequency = 12.0 directly into the replica, send the update.
     let before = wdoc.state_vector();
-    wdoc.set_param(&osc, "common", "max_frequency", &json!(12.0), None);
+    wdoc.write_at(&["nodes", &osc, "params", "common", "max_frequency", "value"], Some(&json!(12.0)));
     let upd = wdoc.diff(&before);
     w.send(Message::Binary(SyncMsg::Update(upd).encode().into())).await.unwrap();
 
@@ -727,7 +719,7 @@ async fn a_client_position_leaf_write_reaches_the_graph_and_other_clients() {
 
     // Commit a drag: move the node to [123, 456] in the replica, send the update.
     let before = wdoc.state_vector();
-    wdoc.set_node_pos(&osc, [123.0, 456.0]);
+    wdoc.write_at(&["nodes", &osc, "pos"], Some(&json!({ "x": 123.0, "y": 456.0 })));
     let upd = wdoc.diff(&before);
     w.send(Message::Binary(SyncMsg::Update(upd).encode().into())).await.unwrap();
 
@@ -1186,10 +1178,11 @@ async fn a_client_viewers_leaf_write_persists_the_view_state() {
     wdoc.on_sync(SyncMsg::decode(&recv_binary(&mut ws).await).unwrap());
     assert!(wdoc.node_ids().contains(&osc), "writer's replica has the node");
 
-    // Write the viewer blob into the replica and send the delta.
+    // Write the viewer blob into the replica and send the delta. viewers is a STRING leaf, so the
+    // client writes its `.to_string()` form (the browser's `graphDoc` does the same).
     let viewers = json!({ "out": { "collapsed": false, "kind": "line", "settings": { "yScale": 2 } } });
     let before = wdoc.state_vector();
-    wdoc.set_viewers(&osc, &viewers);
+    wdoc.write_at(&["nodes", &osc, "viewers"], Some(&json!(viewers.to_string())));
     ws.send(Message::Binary(SyncMsg::Update(wdoc.diff(&before)).encode().into())).await.unwrap();
 
     // It reaches the graph and persists into the serialized .gfi (poll: the write is async).
@@ -1387,7 +1380,7 @@ async fn many_clients_concurrently_leaf_write_and_all_converge() {
 
             for r in 1..=ROUNDS {
                 let before = doc.state_vector();
-                doc.set_param(&uids[i], "common", "max_frequency", &json!(r as f64), None);
+                doc.write_at(&["nodes", &uids[i], "params", "common", "max_frequency", "value"], Some(&json!(r as f64)));
                 let upd = doc.diff(&before);
                 w.send(Message::Binary(SyncMsg::Update(upd).encode().into()))
                     .await
@@ -1494,7 +1487,7 @@ async fn many_clients_concurrently_drag_and_all_converge() {
             // replica currently holds — the map a concurrent re-mirror must NOT orphan.
             for r in 1..=ROUNDS {
                 let before = doc.state_vector();
-                doc.set_node_pos(&uids[i], [r as f64, r as f64]);
+                doc.write_at(&["nodes", &uids[i], "pos"], Some(&json!({ "x": r as f64, "y": r as f64 })));
                 let upd = doc.diff(&before);
                 w.send(Message::Binary(SyncMsg::Update(upd).encode().into()))
                     .await

@@ -174,29 +174,6 @@ fn get_or_insert_map(parent: &MapRef, txn: &mut yrs::TransactionMut, key: &str) 
     }
 }
 
-/// Idempotent scalar write: only touch `key` when its stored value actually differs. Every
-/// re-mirror (which re-asserts the whole graph after each op) then produces zero ops for an
-/// unchanged field — no churn and, load-bearing, no concurrent competing write that could race a
-/// client's edit (the same discipline as the in-place [`GraphDoc::set_param`]).
-fn set_scalar_if_changed(map: &MapRef, txn: &mut yrs::TransactionMut, key: &str, v: &serde_json::Value) {
-    if !scalar_unchanged(map, txn, key, v) {
-        insert_scalar(map, txn, key, v);
-    }
-}
-
-/// Idempotent `[x, y]` write onto a nested `pos` map.
-fn set_pos_if_changed(parent: &MapRef, txn: &mut yrs::TransactionMut, pos: [f64; 2]) {
-    let m = get_or_insert_map(parent, txn, "pos");
-    set_scalar_if_changed(&m, txn, "x", &serde_json::json!(pos[0]));
-    set_scalar_if_changed(&m, txn, "y", &serde_json::json!(pos[1]));
-}
-
-/// Remove every key of `map` not present in `keep` (used to prune stale members/boundaries when
-/// a re-mirror shrinks a collection).
-fn retain_keys<T: ReadTxn>(map: &MapRef, txn_keys: &T, keep: &std::collections::HashSet<String>) -> Vec<String> {
-    map.keys(txn_keys).map(|k| k.to_string()).filter(|k| !keep.contains(k)).collect()
-}
-
 /// The single generic writer behind the graph→doc mirror: recursively reconcile a live Y.Map to
 /// match `target` (a JSON object). For each target key — a nested object recurses INTO the existing
 /// sub-map (get-or-insert; the sub-map is NEVER replaced, so a concurrent client leaf-write into a
@@ -272,23 +249,6 @@ impl GraphDoc {
     pub fn node_ids(&self) -> Vec<String> {
         let txn = self.doc.transact();
         self.nodes.keys(&txn).map(|k| k.to_string()).collect()
-    }
-
-    /// Insert or update a node's identity fields. Creates the node map on first call; on later
-    /// calls updates the scalar fields IN PLACE (keeps nested params/viewers). Idempotent — the
-    /// re-mirror re-asserts every node after every op, so an unchanged re-assert must produce no doc
-    /// ops. Critically, the `pos` map is never REPLACED (only its x/y are set-if-changed): replacing
-    /// it would orphan a client's in-flight position leaf-write onto the old map, losing the edit
-    /// (the same lost-update the guarded set_param/set_viewers/upsert_instance avoid).
-    pub fn upsert_node(&mut self, uid: &str, ty: &str, name: &str, pos: [f64; 2]) {
-        let mut txn = self.doc.transact_mut();
-        let node = match self.nodes.get(&txn, uid).and_then(|v| v.cast::<MapRef>().ok()) {
-            Some(n) => n,
-            None => self.nodes.insert(&mut txn, uid, MapPrelim::default()),
-        };
-        set_scalar_if_changed(&node, &mut txn, "type", &serde_json::json!(ty));
-        set_scalar_if_changed(&node, &mut txn, "name", &serde_json::json!(name));
-        set_pos_if_changed(&node, &mut txn, pos);
     }
 
     /// Reconcile the ENTIRE control-plane doc from one JSON projection of the engine graph — the
@@ -411,67 +371,6 @@ impl GraphDoc {
         Some([f("x")?, f("y")?])
     }
 
-    /// Write a node's committed position `[x, y]` in place (a merge-safe leaf, §4) — the symmetric
-    /// Rust counterpart of the frontend's `setNodePos`. No-op if the node is absent (never mint a
-    /// phantom node). Idempotent: re-writing the current position produces no doc op.
-    pub fn set_node_pos(&mut self, uid: &str, pos: [f64; 2]) {
-        let mut txn = self.doc.transact_mut();
-        let Some(node) = self.nodes.get(&txn, uid).and_then(|v| v.cast::<MapRef>().ok()) else {
-            return;
-        };
-        set_pos_if_changed(&node, &mut txn, pos);
-    }
-
-    /// Set (or replace) a param's `{value, expr?}` under `nodes[uid].params[group][name]`.
-    pub fn set_param(
-        &mut self,
-        uid: &str,
-        group: &str,
-        name: &str,
-        value: &serde_json::Value,
-        expr: Option<ExprRecord>,
-    ) {
-        let mut txn = self.doc.transact_mut();
-        let Some(node) = self.nodes.get(&txn, uid).and_then(|v| v.cast::<MapRef>().ok()) else {
-            return;
-        };
-        let params = get_or_insert_map(&node, &mut txn, "params");
-        let g = get_or_insert_map(&params, &mut txn, group);
-        // Get-or-insert a STABLE entry map — never replace it. Replacing minted a fresh nested
-        // map on every write, so the manager's blanket re-mirror and a client's direct leaf write
-        // became competing same-key insertions in the CRDT; the winner was decided by map/client
-        // identity, not recency, and could silently drop a concurrent client update. Writing the
-        // scalar fields in place instead keeps one entry per param, and each writer's edits form a
-        // single causal chain that converges.
-        let entry = get_or_insert_map(&g, &mut txn, name);
-        // Idempotent: only touch a field when it actually changed. A re-mirror of an unchanged
-        // param then produces ZERO ops — so it never manufactures a concurrent write that could
-        // race (and lose to) a client's in-flight edit, and the doc does not churn/grow per tick.
-        if !scalar_unchanged(&entry, &txn, "value", value) {
-            insert_scalar(&entry, &mut txn, "value", value);
-        }
-        match expr {
-            Some(e) => {
-                let ex = get_or_insert_map(&entry, &mut txn, "expr");
-                if !scalar_unchanged(&ex, &txn, "source", &serde_json::json!(e.source)) {
-                    ex.insert(&mut txn, "source", e.source.as_str());
-                }
-                if !scalar_unchanged(&ex, &txn, "enabled", &serde_json::json!(e.enabled)) {
-                    ex.insert(&mut txn, "enabled", e.enabled);
-                }
-                if !scalar_unchanged(&ex, &txn, "triggers", &serde_json::json!(e.triggers)) {
-                    ex.insert(&mut txn, "triggers", e.triggers);
-                }
-            }
-            // Clearing an expression drops the whole sub-map (only when one is present).
-            None => {
-                if entry.get(&txn, "expr").is_some() {
-                    entry.remove(&mut txn, "expr");
-                }
-            }
-        }
-    }
-
     fn param_entry(
         &self,
         txn: &yrs::Transaction,
@@ -525,25 +424,6 @@ impl GraphDoc {
         Some(ExprRecord { source, enabled: flag("enabled"), triggers: flag("triggers") })
     }
 
-    /// Store a node's opaque per-slot viewer blob as a JSON string (typed in a later phase).
-    /// Idempotent in place: the re-mirror re-asserts this after every op, so a no-op write must
-    /// produce no doc delta — an unguarded insert would churn the key on every unrelated edit (and
-    /// race a client's viewer leaf-write). The guard compares the PARSED value, not the string, so a
-    /// client's leaf-write in a different key order / number format is accepted as-is and never
-    /// re-canonicalized (which would churn on every later edit).
-    pub fn set_viewers(&mut self, uid: &str, viewers: &serde_json::Value) {
-        let mut txn = self.doc.transact_mut();
-        if let Some(node) = self.nodes.get(&txn, uid).and_then(|v| v.cast::<MapRef>().ok()) {
-            let cur = match node.get(&txn, "viewers") {
-                Some(Out::Any(Any::String(c))) => serde_json::from_str::<serde_json::Value>(&c).ok(),
-                _ => None,
-            };
-            if cur.as_ref() != Some(viewers) {
-                node.insert(&mut txn, "viewers", viewers.to_string());
-            }
-        }
-    }
-
     pub fn viewers_json(&self, uid: &str) -> Option<serde_json::Value> {
         let txn = self.doc.transact();
         match self.node_map(&txn, uid)?.get(&txn, "viewers") {
@@ -591,81 +471,10 @@ impl GraphDoc {
             .collect()
     }
 
-    pub fn remove_node(&mut self, uid: &str) {
-        let mut txn = self.doc.transact_mut();
-        self.nodes.remove(&mut txn, uid);
-    }
-
     /// The uids of all sub-patch instances currently in the doc.
     pub fn instance_ids(&self) -> Vec<String> {
         let txn = self.doc.transact();
         self.instances.keys(&txn).map(|k| k.to_string()).collect()
-    }
-
-    /// Insert or update a sub-patch instance's mirror record, IN PLACE (stable maps, per-field
-    /// skip-if-unchanged), so a re-mirror of an unchanged instance produces zero ops — same
-    /// idempotency discipline as [`Self::set_param`], and required for the same reason (the
-    /// mirror re-asserts the whole forest after every op).
-    pub fn upsert_instance(&mut self, uid: &str, rec: &InstanceRecord) {
-        use std::collections::HashSet;
-        let mut txn = self.doc.transact_mut();
-        let inst = match self.instances.get(&txn, uid).and_then(|v| v.cast::<MapRef>().ok()) {
-            Some(m) => m,
-            None => self.instances.insert(&mut txn, uid, MapPrelim::default()),
-        };
-        set_scalar_if_changed(&inst, &mut txn, "name", &serde_json::json!(rec.name));
-        set_scalar_if_changed(&inst, &mut txn, "parent", &serde_json::json!(rec.parent));
-        match &rec.def_id {
-            Some(d) => set_scalar_if_changed(&inst, &mut txn, "def_id", &serde_json::json!(d)),
-            None if inst.get(&txn, "def_id").is_some() => {
-                inst.remove(&mut txn, "def_id");
-            }
-            None => {}
-        }
-        set_pos_if_changed(&inst, &mut txn, rec.pos);
-
-        // members: Map<local, uid> — set-if-changed, prune stale locals.
-        let members = get_or_insert_map(&inst, &mut txn, "members");
-        let keep: HashSet<String> = rec.members.iter().map(|(l, _)| l.clone()).collect();
-        for k in retain_keys(&members, &txn, &keep) {
-            members.remove(&mut txn, &k);
-        }
-        for (local, muid) in &rec.members {
-            set_scalar_if_changed(&members, &mut txn, local, &serde_json::json!(muid));
-        }
-
-        // interface: Map<bnd_id, {dir, dtype, name, pos, inner_node?, inner_slot?}>.
-        let iface = get_or_insert_map(&inst, &mut txn, "interface");
-        let keep_b: HashSet<String> = rec.interface.iter().map(|b| b.bnd_id.clone()).collect();
-        for k in retain_keys(&iface, &txn, &keep_b) {
-            iface.remove(&mut txn, &k);
-        }
-        for b in &rec.interface {
-            let bm = get_or_insert_map(&iface, &mut txn, &b.bnd_id);
-            set_scalar_if_changed(&bm, &mut txn, "dir", &serde_json::json!(b.dir));
-            set_scalar_if_changed(&bm, &mut txn, "dtype", &serde_json::json!(b.dtype));
-            set_scalar_if_changed(&bm, &mut txn, "name", &serde_json::json!(b.name));
-            set_pos_if_changed(&bm, &mut txn, b.pos);
-            match &b.inner_node {
-                Some(n) => set_scalar_if_changed(&bm, &mut txn, "inner_node", &serde_json::json!(n)),
-                None if bm.get(&txn, "inner_node").is_some() => {
-                    bm.remove(&mut txn, "inner_node");
-                }
-                None => {}
-            }
-            match &b.inner_slot {
-                Some(s) => set_scalar_if_changed(&bm, &mut txn, "inner_slot", &serde_json::json!(s)),
-                None if bm.get(&txn, "inner_slot").is_some() => {
-                    bm.remove(&mut txn, "inner_slot");
-                }
-                None => {}
-            }
-        }
-    }
-
-    pub fn remove_instance(&mut self, uid: &str) {
-        let mut txn = self.doc.transact_mut();
-        self.instances.remove(&mut txn, uid);
     }
 
     /// Read back a mirrored instance record (for tests / a manager-side reader).
@@ -950,204 +759,16 @@ mod tests {
     }
 
     #[test]
-    fn set_param_is_idempotent_and_writes_in_place() {
-        // The re-mirror re-asserts every param after every op. Re-setting a param to its CURRENT
-        // value must produce NO doc ops (an empty diff) — otherwise the manager's blanket
-        // re-mirror manufactures a concurrent write on the value key that can race, and lose to,
-        // a client's in-flight edit (the concurrent-leaf-write lost-update bug). It must also not
-        // grow the doc unboundedly per tick.
-        use serde_json::json;
-        let mut doc = GraphDoc::new();
-        doc.upsert_node("000000000001", "Oscillator", "osc", [0.0, 0.0]);
-        doc.set_param("000000000001", "common", "max_frequency", &json!(30.0), None);
-
-        let sv = doc.state_vector();
-        // Re-assert the SAME value (what a re-mirror does): no change ⇒ empty diff.
-        doc.set_param("000000000001", "common", "max_frequency", &json!(30.0), None);
-        assert!(
-            doc.is_empty_diff(&doc.diff(&sv)),
-            "re-setting a param to its current value must be a no-op"
-        );
-        // An i64 that equals the stored f64 must also be treated as unchanged.
-        doc.set_param("000000000001", "common", "max_frequency", &json!(30), None);
-        assert!(
-            doc.is_empty_diff(&doc.diff(&sv)),
-            "an int equal to the stored float is unchanged"
-        );
-        // A genuine change is still applied.
-        doc.set_param("000000000001", "common", "max_frequency", &json!(42.0), None);
-        assert!(!doc.is_empty_diff(&doc.diff(&sv)), "a real change produces a delta");
-        assert_eq!(
-            doc.param_value("000000000001", "common", "max_frequency"),
-            Some(json!(42.0))
-        );
-    }
-
-    fn sample_instance() -> InstanceRecord {
-        InstanceRecord {
-            name: "subpatch0".into(),
-            def_id: Some("00000000000000aa".into()),
-            parent: "__root__".into(),
-            pos: [10.0, 20.0],
-            members: vec![("buffer0".into(), "000000000001".into()), ("osc0".into(), "000000000002".into())],
-            interface: vec![BoundaryRecord {
-                bnd_id: "out0".into(),
-                dir: "out".into(),
-                dtype: "ARRAY".into(),
-                name: "wave".into(),
-                pos: [1.0, 2.0],
-                inner_node: Some("000000000001".into()),
-                inner_slot: Some("out".into()),
-            }],
-        }
-    }
-
-    #[test]
-    fn upsert_instance_round_trips_the_forest_record() {
-        let mut doc = GraphDoc::new();
-        let rec = sample_instance();
-        doc.upsert_instance("00000000000000f0", &rec);
-        assert_eq!(doc.instance_ids(), vec!["00000000000000f0"]);
-        // members/interface are read back from Y.Maps (key order not guaranteed), so normalize by
-        // sorting before comparing — consumers key them by name/bnd_id, not position.
-        let mut got = doc.instance_record("00000000000000f0").expect("mirrored");
-        got.members.sort();
-        got.interface.sort_by(|a, b| a.bnd_id.cmp(&b.bnd_id));
-        let mut want = rec;
-        want.members.sort();
-        want.interface.sort_by(|a, b| a.bnd_id.cmp(&b.bnd_id));
-        assert_eq!(got, want);
-        assert_eq!(doc.instance_record("nope"), None);
-    }
-
-    #[test]
-    fn upsert_instance_is_idempotent_and_prunes_removed_members() {
-        // The forest mirror re-asserts every instance after every op, so re-upserting an
-        // unchanged record must produce NO doc ops (empty diff) — same discipline as set_param.
-        let mut doc = GraphDoc::new();
-        doc.upsert_instance("00000000000000f0", &sample_instance());
-        let sv = doc.state_vector();
-        doc.upsert_instance("00000000000000f0", &sample_instance());
-        assert!(doc.is_empty_diff(&doc.diff(&sv)), "re-upserting an unchanged instance is a no-op");
-
-        // Dropping a member + unwiring the boundary prunes stale keys and updates in place.
-        let mut shrunk = sample_instance();
-        shrunk.members.pop(); // remove osc0
-        shrunk.interface[0].inner_node = None;
-        shrunk.interface[0].inner_slot = None;
-        doc.upsert_instance("00000000000000f0", &shrunk);
-        let got = doc.instance_record("00000000000000f0").unwrap();
-        assert_eq!(got.members.len(), 1, "stale member pruned");
-        assert_eq!(got.members[0].0, "buffer0");
-        assert_eq!(got.interface[0].inner_node, None, "boundary unwired in place");
-
-        doc.remove_instance("00000000000000f0");
-        assert!(doc.instance_ids().is_empty());
-    }
-
-    #[test]
-    fn upsert_node_writes_and_reads_back() {
-        let mut doc = GraphDoc::new();
-        doc.upsert_node("000000000001", "Oscillator", "osc0", [10.0, 20.0]);
-        assert_eq!(doc.node_ids(), vec!["000000000001"]);
-        assert_eq!(doc.node_name("000000000001").as_deref(), Some("osc0"));
-        assert_eq!(doc.node_type("000000000001").as_deref(), Some("Oscillator"));
-        assert_eq!(doc.node_pos("000000000001"), Some([10.0, 20.0]));
-        doc.upsert_node("000000000001", "Oscillator", "osc-renamed", [10.0, 20.0]);
-        assert_eq!(doc.node_ids().len(), 1);
-        assert_eq!(doc.node_name("000000000001").as_deref(), Some("osc-renamed"));
-    }
-
-    #[test]
-    fn upsert_node_is_idempotent_and_writes_in_place() {
-        // The re-mirror re-asserts every node after every op (crdt_mirror::sync_graph_to_doc). Like
-        // set_param/set_viewers/upsert_instance, re-asserting an UNCHANGED node must produce NO doc
-        // ops — else the blanket re-mirror churns type/name/pos on every unrelated edit (defeating
-        // the empty-diff broadcast-skip + growing tombstones) AND manufactures a competing write on
-        // the `pos` map that races a client's in-flight position leaf-write.
-        let mut doc = GraphDoc::new();
-        doc.upsert_node("000000000001", "Oscillator", "osc", [10.0, 20.0]);
-        let sv = doc.state_vector();
-        doc.upsert_node("000000000001", "Oscillator", "osc", [10.0, 20.0]);
-        assert!(
-            doc.is_empty_diff(&doc.diff(&sv)),
-            "re-asserting an unchanged node must be a no-op"
-        );
-        // A genuine field change still applies.
-        doc.upsert_node("000000000001", "Oscillator", "osc", [11.0, 22.0]);
-        assert!(!doc.is_empty_diff(&doc.diff(&sv)), "a real pos change produces a delta");
-        assert_eq!(doc.node_pos("000000000001"), Some([11.0, 22.0]));
-    }
-
-    #[test]
-    fn a_concurrent_pos_leaf_write_survives_an_intervening_re_mirror() {
-        // The params lesson, for positions. A client drags a node (in-place x/y writes onto the
-        // CURRENT pos map). Before the manager applies that frame, an unrelated op triggers a
-        // re-mirror that re-asserts the node at its still-old position. The re-mirror must NOT
-        // orphan the client's edit — a wholesale pos-map replacement would, snapping the node back.
-        let mut server = GraphDoc::new();
-        server.upsert_node("1", "Oscillator", "osc", [0.0, 0.0]);
-
-        let mut client = GraphDoc::new();
-        client.apply_update(&server.diff(&client.state_vector())).unwrap();
-
-        // Client commits a drag to [99, 99] against the pos map it currently holds.
-        let cbefore = client.state_vector();
-        client.set_node_pos("1", [99.0, 99.0]);
-        let drag = client.diff(&cbefore);
-
-        // Interleaving: the manager re-mirrors the node at the STILL-OLD [0, 0] (an unrelated edit).
-        server.upsert_node("1", "Oscillator", "osc", [0.0, 0.0]);
-        // Then it applies the client's in-flight drag.
-        server.apply_update(&drag).unwrap();
-
-        assert_eq!(
-            server.node_pos("1"),
-            Some([99.0, 99.0]),
-            "the concurrent position leaf-write must survive the intervening re-mirror"
-        );
-    }
-
-    #[test]
-    fn set_param_writes_value_and_expression() {
-        use serde_json::json;
-        let mut doc = GraphDoc::new();
-        doc.upsert_node("1", "Oscillator", "osc", [0.0, 0.0]);
-        doc.set_param("1", "common", "max_frequency", &json!(30.0), None);
-        doc.set_param(
-            "1", "oscillator", "waveform", &json!("sine"),
-            Some(ExprRecord { source: "nd('lfo')".into(), enabled: true, triggers: false }),
-        );
-        assert_eq!(doc.param_value("1", "common", "max_frequency"), Some(json!(30.0)));
-        assert_eq!(doc.param_value("1", "oscillator", "waveform"), Some(json!("sine")));
-        assert_eq!(doc.param_expr_source("1", "oscillator", "waveform").as_deref(), Some("nd('lfo')"));
-        assert_eq!(doc.param_expr_source("1", "common", "max_frequency"), None);
-    }
-
-    #[test]
-    fn re_setting_a_param_without_an_expr_prunes_the_old_binding() {
-        // The mirror re-syncs a param by re-calling set_param. When a binding is cleared, the
-        // whole entry is replaced, so the stale `expr` must NOT linger in the doc (else a
-        // cleared expression would resurrect on a client). Guards the re-sync prune contract.
-        use serde_json::json;
-        let mut doc = GraphDoc::new();
-        doc.upsert_node("1", "Oscillator", "osc", [0.0, 0.0]);
-        doc.set_param(
-            "1", "g", "p", &json!(1.0),
-            Some(ExprRecord { source: "nd('x')".into(), enabled: true, triggers: false }),
-        );
-        assert_eq!(doc.param_expr_source("1", "g", "p").as_deref(), Some("nd('x')"));
-        doc.set_param("1", "g", "p", &json!(2.0), None);
-        assert_eq!(doc.param_value("1", "g", "p"), Some(json!(2.0)), "value updated");
-        assert_eq!(doc.param_expr_source("1", "g", "p"), None, "stale binding pruned");
-    }
-
-    #[test]
     fn viewers_blob_and_links_round_trip() {
         use serde_json::json;
+        // A node's viewers blob is a STRING leaf; build it via the generic reconciler and read it
+        // back through `viewers_json`, then exercise the (kept) wholesale link replace.
         let mut doc = GraphDoc::new();
-        doc.upsert_node("1", "Oscillator", "osc", [0.0, 0.0]);
-        doc.set_viewers("1", &json!({"out": {"kind": "line"}}));
+        doc.reconcile_root(&json!({
+            "nodes": { "1": { "type": "Oscillator", "name": "osc", "pos": {"x": 0.0, "y": 0.0},
+                "params": {}, "viewers": "{\"out\":{\"kind\":\"line\"}}" } },
+            "links": [], "instances": {}
+        }));
         assert_eq!(doc.viewers_json("1"), Some(json!({"out": {"kind": "line"}})));
 
         doc.replace_links(vec![LinkRecord {
@@ -1193,33 +814,16 @@ mod tests {
     }
 
     #[test]
-    fn set_viewers_is_idempotent() {
-        use serde_json::json;
-        // Like params, the re-mirror re-asserts viewers after EVERY op. Re-setting the same blob
-        // must produce NO doc op — otherwise the blanket re-mirror churns the viewers key on every
-        // unrelated edit (and would race a client's viewer leaf-write, the params lesson).
-        let mut doc = GraphDoc::new();
-        doc.upsert_node("1", "Oscillator", "osc", [0.0, 0.0]);
-        doc.set_viewers("1", &json!({"out": {"kind": "line", "collapsed": false}}));
-
-        let sv = doc.state_vector();
-        doc.set_viewers("1", &json!({"out": {"kind": "line", "collapsed": false}}));
-        assert!(
-            doc.is_empty_diff(&doc.diff(&sv)),
-            "re-setting the same viewers blob must be a no-op"
-        );
-        // A real change still applies.
-        doc.set_viewers("1", &json!({"out": {"kind": "spectrum"}}));
-        assert!(!doc.is_empty_diff(&doc.diff(&sv)), "a real viewers change produces a delta");
-        assert_eq!(doc.viewers_json("1"), Some(json!({"out": {"kind": "spectrum"}})));
-    }
-
-    #[test]
     fn remove_node_and_state_round_trip() {
+        use serde_json::json;
+        let node2 = || json!({ "type": "Buffer", "name": "buf", "pos": {"x": 1.0, "y": 2.0}, "params": {} });
         let mut doc = GraphDoc::new();
-        doc.upsert_node("1", "Oscillator", "osc", [0.0, 0.0]);
-        doc.upsert_node("2", "Buffer", "buf", [1.0, 2.0]);
-        doc.remove_node("1");
+        doc.reconcile_root(&json!({ "nodes": {
+            "1": { "type": "Oscillator", "name": "osc", "pos": {"x": 0.0, "y": 0.0}, "params": {} },
+            "2": node2()
+        }, "links": [], "instances": {} }));
+        // Removal is wholesale: re-mirror the projection with node 1 omitted → it is pruned.
+        doc.reconcile_root(&json!({ "nodes": { "2": node2() }, "links": [], "instances": {} }));
         assert_eq!(doc.node_ids(), vec!["2"]);
 
         let bytes = doc.encode_state();
@@ -1230,10 +834,14 @@ mod tests {
 
     #[test]
     fn sync_diff_converges_two_replicas() {
+        use serde_json::json;
         // The relay handshake: a peer advertises its state vector, the other returns a diff,
         // the peer applies it and converges — the primitive the /control sync relay uses.
+        let node = |name: &str| json!({ "nodes": {
+            "1": { "type": "Oscillator", "name": name, "pos": {"x": 0.0, "y": 0.0}, "params": {} } },
+            "links": [], "instances": {} });
         let mut server = GraphDoc::new();
-        server.upsert_node("1", "Oscillator", "osc", [0.0, 0.0]);
+        server.reconcile_root(&node("osc"));
 
         let client = GraphDoc::new(); // empty replica just joined
         let diff = server.diff(&client.state_vector());
@@ -1242,7 +850,7 @@ mod tests {
         assert_eq!(client.node_name("1").as_deref(), Some("osc"), "client converged via diff");
 
         // A later incremental edit on the server produces a small diff the client applies.
-        server.upsert_node("1", "Oscillator", "osc2", [0.0, 0.0]);
+        server.reconcile_root(&node("osc2"));
         let diff2 = server.diff(&client.state_vector());
         client.apply_update(&diff2).unwrap();
         assert_eq!(client.node_name("1").as_deref(), Some("osc2"));
@@ -1264,10 +872,12 @@ mod tests {
 
     #[test]
     fn on_sync_pairwise_handshake_converges() {
+        use serde_json::json;
         // The symmetric handshake: each side sends its SV on connect; receiving a peer's SV
         // yields an Update carrying what the peer lacks; receiving an Update applies it.
+        let node1 = || json!({ "type": "Oscillator", "name": "osc", "pos": {"x": 0.0, "y": 0.0}, "params": {} });
         let mut server = GraphDoc::new();
-        server.upsert_node("1", "Oscillator", "osc", [0.0, 0.0]);
+        server.reconcile_root(&json!({ "nodes": { "1": node1() }, "links": [], "instances": {} }));
         let mut client = GraphDoc::new();
 
         // Connect: both emit their SV.
@@ -1285,8 +895,12 @@ mod tests {
         }
         assert_eq!(client.node_name("1").as_deref(), Some("osc"), "client converged via on_sync");
 
-        // A live server edit, relayed as one Update, lands on the client.
-        server.upsert_node("2", "Buffer", "buf", [0.0, 0.0]);
+        // A live server edit, relayed as one Update, lands on the client. reconcile_root is
+        // wholesale, so add node 2 while KEEPING node 1 (omitting it would prune it).
+        server.reconcile_root(&json!({ "nodes": {
+            "1": node1(),
+            "2": { "type": "Buffer", "name": "buf", "pos": {"x": 0.0, "y": 0.0}, "params": {} } },
+            "links": [], "instances": {} }));
         let live = server.diff(&client.state_vector());
         client.on_sync(SyncMsg::Update(live));
         assert_eq!(client.node_name("2").as_deref(), Some("buf"));
@@ -1294,8 +908,11 @@ mod tests {
 
     #[test]
     fn is_empty_diff_detects_no_op_deltas() {
+        use serde_json::json;
         let mut doc = GraphDoc::new();
-        doc.upsert_node("1", "Oscillator", "osc", [0.0, 0.0]);
+        doc.reconcile_root(&json!({ "nodes": {
+            "1": { "type": "Oscillator", "name": "osc", "pos": {"x": 0.0, "y": 0.0}, "params": {} } },
+            "links": [], "instances": {} }));
         // Diff against the current SV = nothing new → empty.
         assert!(doc.is_empty_diff(&doc.diff(&doc.state_vector())));
         // Diff against an empty replica = the whole doc → NOT empty.
@@ -1310,14 +927,16 @@ mod tests {
         // params changed, so it can push them to the engine Graph. Diff-based: loop-safe,
         // because the subsequent graph->doc re-mirror writes the same values (idempotent).
         let mut server = GraphDoc::new();
-        server.upsert_node("1", "Oscillator", "osc", [0.0, 0.0]);
-        server.set_param("1", "common", "max_frequency", &json!(10.0), None);
-        server.set_param("1", "oscillator", "amplitude", &json!(1.0), None);
+        server.reconcile_root(&json!({ "nodes": { "1": {
+            "type": "Oscillator", "name": "osc", "pos": {"x": 0.0, "y": 0.0},
+            "params": { "common": { "max_frequency": { "value": 10.0 } },
+                        "oscillator": { "amplitude": { "value": 1.0 } } } } },
+            "links": [], "instances": {} }));
 
-        // A client replica syncs, then edits ONE param locally, producing an update.
+        // A client replica syncs, then edits ONE param leaf locally, producing an update.
         let mut client = GraphDoc::new();
         client.apply_update(&server.diff(&client.state_vector())).unwrap();
-        client.set_param("1", "common", "max_frequency", &json!(25.0), None);
+        client.write_at(&["nodes", "1", "params", "common", "max_frequency", "value"], Some(&json!(25.0)));
         let update = client.diff(&server.state_vector());
 
         // The manager applies it and is told precisely what changed.
@@ -1333,22 +952,37 @@ mod tests {
 
     #[test]
     fn apply_client_update_reports_changed_positions() {
+        use serde_json::json;
         // Dragging a node or a sub-patch instance box commits its new position as a merge-safe
         // leaf write (§4). The manager applies it and learns exactly which uids moved, so it can
         // push each into the engine Graph (set_member_pos) — the same diff-based, loop-safe path
         // as params. A ROOT node and an instance box are both reported.
         let mut server = GraphDoc::new();
-        server.upsert_node("1", "Oscillator", "osc", [0.0, 0.0]);
-        server.upsert_node("2", "Buffer", "buf", [5.0, 5.0]);
-        server.upsert_instance("00000000000000ff", &sample_instance()); // box at [10, 20]
+        server.reconcile_root(&json!({
+            "nodes": {
+                "1": { "type": "Oscillator", "name": "osc", "pos": {"x": 0.0, "y": 0.0}, "params": {} },
+                "2": { "type": "Buffer", "name": "buf", "pos": {"x": 5.0, "y": 5.0}, "params": {} }
+            },
+            "links": [],
+            "instances": { "00000000000000ff": { // box at [10, 20]
+                "name": "subpatch0", "def_id": "00000000000000aa", "parent": "__root__",
+                "pos": {"x": 10.0, "y": 20.0},
+                "members": { "buffer0": "000000000001", "osc0": "000000000002" },
+                "interface": { "out0": { "dir": "out", "dtype": "ARRAY", "name": "wave",
+                    "pos": {"x": 1.0, "y": 2.0}, "inner_node": "000000000001", "inner_slot": "out" } }
+            } }
+        }));
+        // A shared instance's def_id round-trips through the generic reconciler + reader.
+        assert_eq!(
+            server.instance_record("00000000000000ff").unwrap().def_id.as_deref(),
+            Some("00000000000000aa")
+        );
 
         let mut client = GraphDoc::new();
         client.apply_update(&server.diff(&client.state_vector())).unwrap();
-        // Move node 1 and the instance box; leave node 2 where it is.
-        client.upsert_node("1", "Oscillator", "osc", [100.0, 200.0]);
-        let mut moved_inst = sample_instance();
-        moved_inst.pos = [30.0, 40.0];
-        client.upsert_instance("00000000000000ff", &moved_inst);
+        // Move node 1 and the instance box (in-place pos leaf writes); leave node 2 where it is.
+        client.write_at(&["nodes", "1", "pos"], Some(&json!({"x": 100.0, "y": 200.0})));
+        client.write_at(&["instances", "00000000000000ff", "pos"], Some(&json!({"x": 30.0, "y": 40.0})));
         let update = client.diff(&server.state_vector());
 
         let mut changed = server.apply_client_update(&update).unwrap();
@@ -1373,27 +1007,23 @@ mod tests {
         // enriched param descriptor (carrying expression_error). An added/edited binding is reported
         // as Some; a cleared one as None.
         let mut server = GraphDoc::new();
-        server.upsert_node("1", "Oscillator", "osc", [0.0, 0.0]);
-        server.set_param("1", "common", "frequency", &json!(10.0), None);
-        server.set_param(
-            "1",
-            "common",
-            "amplitude",
-            &json!(1.0),
-            Some(ExprRecord { source: "nd('a')".into(), enabled: true, triggers: false }),
-        );
+        server.reconcile_root(&json!({ "nodes": { "1": {
+            "type": "Oscillator", "name": "osc", "pos": {"x": 0.0, "y": 0.0},
+            "params": { "common": {
+                "frequency": { "value": 10.0 },
+                "amplitude": { "value": 1.0,
+                    "expr": { "source": "nd('a')", "enabled": true, "triggers": false } }
+            } } } },
+            "links": [], "instances": {} }));
 
         let mut client = GraphDoc::new();
         client.apply_update(&server.diff(&client.state_vector())).unwrap();
-        // Bind frequency (value unchanged), clear amplitude's binding.
-        client.set_param(
-            "1",
-            "common",
-            "frequency",
-            &json!(10.0),
-            Some(ExprRecord { source: "nd('f')".into(), enabled: true, triggers: true }),
+        // Bind frequency (an expr leaf write; value unchanged), clear amplitude's binding.
+        client.write_at(
+            &["nodes", "1", "params", "common", "frequency", "expr"],
+            Some(&json!({ "source": "nd('f')", "enabled": true, "triggers": true })),
         );
-        client.set_param("1", "common", "amplitude", &json!(1.0), None);
+        client.write_at(&["nodes", "1", "params", "common", "amplitude", "expr"], None);
         let update = client.diff(&server.state_vector());
 
         let mut changed = server.apply_client_update(&update).unwrap();
@@ -1428,13 +1058,17 @@ mod tests {
         // blob is a merge-safe leaf (§4). The manager applies it and learns which nodes' view-state
         // changed, so it can push each into the engine Graph (set_node_viewers → persists to .gfi).
         let mut server = GraphDoc::new();
-        server.upsert_node("1", "Oscillator", "osc", [0.0, 0.0]);
-        server.upsert_node("2", "Buffer", "buf", [0.0, 0.0]);
-        server.set_viewers("1", &json!({"out": {"kind": "line", "collapsed": false}}));
+        server.reconcile_root(&json!({ "nodes": {
+            "1": { "type": "Oscillator", "name": "osc", "pos": {"x": 0.0, "y": 0.0}, "params": {},
+                "viewers": json!({"out": {"kind": "line", "collapsed": false}}).to_string() },
+            "2": { "type": "Buffer", "name": "buf", "pos": {"x": 0.0, "y": 0.0}, "params": {} } },
+            "links": [], "instances": {} }));
 
         let mut client = GraphDoc::new();
         client.apply_update(&server.diff(&client.state_vector())).unwrap();
-        client.set_viewers("1", &json!({"out": {"kind": "spectrum", "collapsed": true}}));
+        // The viewer blob is a STRING leaf — the client writes its `.to_string()` form.
+        let blob = json!({"out": {"kind": "spectrum", "collapsed": true}});
+        client.write_at(&["nodes", "1", "viewers"], Some(&json!(blob.to_string())));
         let update = client.diff(&server.state_vector());
 
         let changed = server.apply_client_update(&update).unwrap();
@@ -1461,17 +1095,21 @@ mod tests {
         // full state, not the server's state vector (which a reader answers with an empty diff).
         use serde_json::json;
         let mut server = GraphDoc::new();
-        server.upsert_node("1", "Oscillator", "osc", [0.0, 0.0]);
+        server.reconcile_root(&json!({ "nodes": {
+            "1": { "type": "Oscillator", "name": "osc", "pos": {"x": 0.0, "y": 0.0}, "params": {} } },
+            "links": [], "instances": {} }));
 
         let mut client = GraphDoc::new();
         client.apply_update(&server.diff(&client.state_vector())).unwrap();
         assert_eq!(client.node_ids(), vec!["1"], "client synced node 1");
 
-        // The client now MISSES everything below (dropped deltas): a new node, a param edit,
-        // and a rename of node 1 (a struct that chains off the earlier one).
-        server.upsert_node("2", "Buffer", "buf", [0.0, 0.0]);
-        server.set_param("1", "common", "max_frequency", &json!(50.0), None);
-        server.upsert_node("1", "Oscillator", "renamed", [0.0, 0.0]);
+        // The client now MISSES everything below (dropped deltas): a new node, a param edit, and a
+        // rename of node 1 (a struct that chains off the earlier one). One wholesale re-mirror.
+        server.reconcile_root(&json!({ "nodes": {
+            "1": { "type": "Oscillator", "name": "renamed", "pos": {"x": 0.0, "y": 0.0},
+                "params": { "common": { "max_frequency": { "value": 50.0 } } } },
+            "2": { "type": "Buffer", "name": "buf", "pos": {"x": 0.0, "y": 0.0}, "params": {} } },
+            "links": [], "instances": {} }));
 
         // Recovery: apply the framed full state. Convergence, not divergence.
         let SyncMsg::Update(full) = SyncMsg::decode(&server.full_state_frame()).unwrap() else {
@@ -1613,7 +1251,7 @@ mod tests {
         client.apply_update(&server.diff(&client.state_vector())).unwrap();
         // Client edits the value to 99 against the entry map it currently holds.
         let cbefore = client.state_vector();
-        client.set_param("1", "common", "max_frequency", &json!(99.0), None);
+        client.write_at(&["nodes", "1", "params", "common", "max_frequency", "value"], Some(&json!(99.0)));
         let edit = client.diff(&cbefore);
 
         // Interleaved re-mirror at the still-old 30, then the client's in-flight edit applies.
