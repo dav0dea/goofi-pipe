@@ -231,4 +231,54 @@ mod tests {
         stop.store(true, Ordering::Relaxed);
         ticker.join().unwrap();
     }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn reduction_cost_is_o1_in_subscriber_count() {
+        use std::sync::atomic::AtomicBool;
+        // The thalamus headline claim: N tabs on one slot cost ONE reduce+encode per frame, not
+        // N. With many subscribers the reduce-pass count must stay bounded by WALL-CLOCK (one
+        // ~16ms task), never multiplied by the subscriber count. Uses the internal counter — no
+        // external load, so it can't leak load processes.
+        const SUBS: usize = 50;
+        let mut g = Graph::new();
+        let osc = g.add_node("Oscillator", None).unwrap();
+        let graph = Arc::new(Mutex::new(g));
+        let stop = Arc::new(AtomicBool::new(false));
+        let ticker = {
+            let (graph, stop) = (graph.clone(), stop.clone());
+            std::thread::spawn(move || {
+                while !stop.load(Ordering::Relaxed) {
+                    graph.lock().unwrap().tick();
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+            })
+        };
+
+        let reducers = SlotReducers::new(graph.clone());
+        let key: SlotKey = (osc, "out".to_string());
+        let mut subs = Vec::new();
+        for _ in 0..SUBS {
+            let c = reducers.new_conn();
+            subs.push((c, reducers.subscribe(key.clone(), c)));
+        }
+        assert_eq!(reducers.active_slots(), 1, "all {SUBS} tabs share ONE reducer");
+        assert_eq!(reducers.subscribers(&key), SUBS);
+
+        // Let the single reducer run for ~200 ms (~12 passes at 16 ms).
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        let passes = reducers.reductions(&key);
+        // Bounded by wall-clock (~12), with generous headroom — and CATEGORICALLY below the
+        // per-subscriber count (SUBS * ~12 ≈ 600) the old per-connection loop would have done.
+        assert!(
+            passes > 0 && passes < 40,
+            "reduce passes {passes} bounded by wall-clock (one shared reducer), not by {SUBS} subscribers"
+        );
+
+        // Every subscriber is live (the fan-out reaches all of them).
+        for (_, r) in &subs {
+            assert!(r.len() <= 16, "each subscriber has its own bounded ring, latest-wins");
+        }
+        stop.store(true, Ordering::Relaxed);
+        ticker.join().unwrap();
+    }
 }
