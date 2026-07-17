@@ -36,11 +36,15 @@ import {
 	nodeViews,
 	instanceViews,
 	paramValue,
+	docParams,
+	viewersJson,
 	setParamValue,
 	setParamExpr as docSetParamExpr,
 	setNodePos as docSetNodePos,
 	setViewers as docSetViewers
 } from '$lib/crdt/graphDoc';
+import { assembleNode, type RuntimeOverlay } from '$lib/crdt/nodeAssembly';
+import type { StringParam } from '$lib/api/types';
 import type * as Y from 'yjs';
 
 /** Safety net: if a node never reports a ⟳ refresh done (it crashed mid-scan, or
@@ -130,23 +134,26 @@ export class GraphStore {
 		const doc = this._sync.doc;
 		// links: the whole set is replaced from the doc.
 		this.links = linkViews(doc);
-		// positions: node + instance placement is doc-owned (retired `node_moved`). Overlay onto
-		// the existing objects so a move re-renders without a wholesale node/instance rebuild.
-		for (const nv of nodeViews(doc)) {
-			const n = this._realNode(nv.uid);
-			if (!n) continue;
-			if (n.pos[0] !== nv.pos[0] || n.pos[1] !== nv.pos[1]) n.pos = nv.pos;
-			// Committed param values are doc-owned leaves (§4.1). Overlay them so a client's
-			// DIRECT leaf-write (apply_client_write) is reflected — the manager does NOT emit a
-			// state_update for a doc-write, so this is the only read path for it. Skip
-			// expression-enabled params: their displayed value is the LIVE evaluated value
-			// (param_values), not the committed literal, so overlaying would flicker it.
-			for (const group of Object.keys(n.params)) {
-				for (const name of Object.keys(n.params[group])) {
-					const p = n.params[group][name];
-					if (p.expression_enabled) continue;
-					const v = paramValue(doc, nv.uid, group, name);
-					if (v !== undefined && p.value !== v) (p as { value: unknown }).value = v;
+		if (this.nodeTypes?.length) {
+			// Catalog present (always in production) → the doc is AUTHORITATIVE for node identity:
+			// build `this.nodes` from the doc + catalog + runtime. Node existence/type/name/pos/param
+			// value+expr come from the doc; descriptors from the catalog; runtime stays event-sourced.
+			this._reconcileNodesFromDoc();
+		} else {
+			// Transition/catalog-loading fallback: overlay only doc pos + committed values onto the
+			// event-sourced nodes (node_added still creates them). Production leaves this once the
+			// catalog lands on hello.
+			for (const nv of nodeViews(doc)) {
+				const n = this._realNode(nv.uid);
+				if (!n) continue;
+				if (n.pos[0] !== nv.pos[0] || n.pos[1] !== nv.pos[1]) n.pos = nv.pos;
+				for (const group of Object.keys(n.params)) {
+					for (const name of Object.keys(n.params[group])) {
+						const p = n.params[group][name];
+						if (p.expression_enabled) continue;
+						const v = paramValue(doc, nv.uid, group, name);
+						if (v !== undefined && p.value !== v) (p as { value: unknown }).value = v;
+					}
 				}
 			}
 		}
@@ -329,13 +336,18 @@ export class GraphStore {
 			// boundary_moved retired: boundary positions are read from the CRDT doc forest
 			// (Phase 2, see _syncFromDoc). The manager mirrors every boundary move into the doc.
 			case 'node_renamed': {
-				// Only the display name changed — the uid (the key everything uses) is
-				// stable, so nothing else moves. Just update the label in place.
+				// Name is doc-owned once the catalog is present — the doc-reconcile applies it. Only
+				// the catalog-loading transition uses the event.
+				if (this.nodeTypes?.length) break;
 				const t = this.nodeById(ev.payload.node);
 				if (t) t.name = ev.payload.name;
 				break;
 			}
 			case 'node_added':
+				// Node EXISTENCE is doc-owned once the catalog is present — the doc-reconcile creates
+				// this node (from the mirror delta) + seeds its viewer state. node_added is retired to
+				// the catalog-loading transition (below).
+				if (this.nodeTypes?.length) break;
 				// Seed view state for this node's output slots — from the saved
 				// patch (`viewers`) if present, else the defaults in the stores.
 				this._seedNodeViewerState(ev.payload);
@@ -347,6 +359,9 @@ export class GraphStore {
 				this._addScopeMember(ev.payload.membership ?? null, ev.payload.uid);
 				break;
 			case 'node_removed':
+				// Removal is doc-owned once the catalog is present — the mirror drops the node from
+				// the doc, and the reconcile removes it + tears down its ui/inline/console/panel refs.
+				if (this.nodeTypes?.length) break;
 				this.nodes = this.nodes.filter((n) => n.uid !== ev.payload.node);
 				this.links = this.links.filter(
 					(l) => l.node_in !== ev.payload.node && l.node_out !== ev.payload.node
@@ -368,7 +383,11 @@ export class GraphStore {
 			case 'state_update': {
 				const t = this.nodeById(ev.payload.node);
 				if (t) {
-					t.params = ev.payload.params;
+					// Params are doc-owned once the catalog is present: merge ONLY the runtime bits
+					// (expression_error / refreshed options), never wholesale-replace (which would
+					// clobber the reconcile's value+descriptor assembly). Else the old wholesale path.
+					if (this.nodeTypes?.length) this._mergeParamRuntime(t, ev.payload.params);
+					else t.params = ev.payload.params;
 					// Lifecycle stage rides every state rebroadcast (authoritative:
 					// the manager-side ref derives it from the node's own pushes).
 					if (ev.payload.stage) t.stage = ev.payload.stage;
@@ -501,6 +520,9 @@ export class GraphStore {
 		try {
 			const result = await this.ctl.call<{ types: NodeTypeInfo[] }>('list_nodes');
 			this.nodeTypes = result.types;
+			// The catalog supplies node descriptors — with it in hand the doc becomes authoritative
+			// for node identity, so (re)build the node set from the doc now (Phase-2 read cutover).
+			this._reconcileNodesFromDoc();
 		} catch (e) {
 			console.warn('list_nodes failed', e);
 		}
@@ -1118,6 +1140,84 @@ export class GraphStore {
 			this._seedNodeViewerState(n); // genuinely new node — seed its inline view state
 			return n;
 		});
+	}
+
+	/** Pull the RUNTIME (event-sourced, never-in-the-doc) fields off an existing node so a doc
+	 * re-assemble preserves them — error/stage/crash/stats/log_endpoint/membership at node level, and
+	 * per-param expression_error + refreshed StringParam options. */
+	private _extractRuntime(node: NodeInstanceInfo): RuntimeOverlay {
+		const params: NonNullable<RuntimeOverlay['params']> = {};
+		for (const group of Object.keys(node.params)) {
+			params[group] = {};
+			for (const name of Object.keys(node.params[group])) {
+				const p = node.params[group][name];
+				const pr: NonNullable<RuntimeOverlay['params']>[string][string] = {
+					expression_error: p.expression_error
+				};
+				if (p.type === 'string') pr.options = (p as StringParam).options;
+				params[group][name] = pr;
+			}
+		}
+		return {
+			error: node.error,
+			stage: node.stage,
+			crashed: node.crashed,
+			restarts: node.restarts,
+			crashExit: node.crashExit,
+			stats: node.stats,
+			log_endpoint: node.log_endpoint,
+			membership: node.membership ?? null,
+			params
+		};
+	}
+
+	/** Merge ONLY the runtime param bits (expression_error + refreshed StringParam options) from a
+	 * state_update's descriptor map onto the existing node — used when the catalog is authoritative,
+	 * so the doc-reconcile's value/descriptor assembly is not clobbered by a wholesale replace. */
+	private _mergeParamRuntime(
+		t: NodeInstanceInfo,
+		params: Record<string, Record<string, unknown>>
+	): void {
+		for (const [group, names] of Object.entries(params)) {
+			for (const [name, desc] of Object.entries(names)) {
+				const p = t.params[group]?.[name];
+				if (!p) continue;
+				const d = desc as { expression_error?: string | null; options?: string[] | null };
+				(p as { expression_error: string | null }).expression_error = d.expression_error ?? null;
+				if (p.type === 'string') (p as StringParam).options = d.options ?? null;
+			}
+		}
+	}
+
+	/** Derive a node's sub-patch membership from the doc's mirrored instance forest (the reverse of
+	 * `instances[inst].members[local] = uid`). ROOT nodes → null. */
+	private _membershipFromDoc(uid: string): { instance: string; local_name: string } | null {
+		for (const iv of instanceViews(this._sync.doc)) {
+			for (const [local, muid] of Object.entries(iv.members)) {
+				if (muid === uid) return { instance: iv.uid, local_name: local };
+			}
+		}
+		return null;
+	}
+
+	/** Build `this.nodes` from the CRDT doc (Phase-2 node-identity read cutover): each real node is
+	 * assembled from the doc (existence/type/name/pos/param value+expr) + the catalog descriptor (by
+	 * type) + the runtime overlay (kept off the doc). Reuses `_reconcileNodes` so survivors keep
+	 * object identity (inline viewers don't re-subscribe) and their runtime, new nodes seed viewer
+	 * state, and vanished nodes tear down. Called on every doc transaction and when the catalog
+	 * (which supplies descriptors) arrives. */
+	private _reconcileNodesFromDoc(): void {
+		if (!this.nodeTypes?.length) return; // no catalog yet → keep the current nodes; rebuild when it lands
+		const doc = this._sync.doc;
+		const next: NodeInstanceInfo[] = nodeViews(doc).map((nv) => {
+			const existing = this._realNode(nv.uid);
+			const catalog = this.nodeTypes?.find((t) => t.type === nv.type);
+			const runtime: RuntimeOverlay = existing ? this._extractRuntime(existing) : {};
+			runtime.membership = this._membershipFromDoc(nv.uid);
+			const viewers = (viewersJson(doc, nv.uid) ?? {}) as NodeInstanceInfo['viewers'];
+			return assembleNode(nv, docParams(doc, nv.uid), viewers, catalog, runtime);
+		});
+		this._reconcileNodes(next);
 	}
 
 	/** Reconcile the instances map IN PLACE by uid: mutate an existing record's fields
