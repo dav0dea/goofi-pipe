@@ -61,43 +61,42 @@ pub fn sync_graph_to_doc(g: &Graph, doc: &mut GraphDoc) {
         })
         .collect();
 
-    // The sub-patch forest — the manager is the sole author of structural fields (§4.2).
+    // The sub-patch scopes (a flat organizational overlay) — the manager is the sole author of
+    // structural fields (§4.2). Kept under the doc's `instances` key; each record is a scope:
+    // {name, parent, pos, members:{uid:{is_instance}}, stubs:{id:{dir,dtype,name,pos,inner_node?,
+    // inner_slot?}}}. Membership is a MAP keyed by member uid (the CRDT reconciler handles nested
+    // maps, not arrays-in-records). A stub's parent side is not stored — the frontend derives
+    // facade-port edges from the flat links + each stub's resolved inner leaf.
     let mut instances = Map::new();
-    for uid in g.instance_uids() {
-        let Some(inst) = g.instance(uid) else { continue };
-        let mut irec = Map::new();
-        irec.insert("name".into(), json!(inst.name));
-        // Shared iff >1 instance references the def (matches `describe_instance`); unique omits def_id.
-        if g.def_refcount(inst.def_id) > 1 {
-            irec.insert("def_id".into(), json!(inst.def_id.to_hex()));
-        }
+    for uid in g.scope_uids() {
+        let Some(scope) = g.scope(uid) else { continue };
+        let mut srec = Map::new();
+        srec.insert("name".into(), json!(scope.name));
         let parent = g.scope_of(uid).map(|p| p.to_hex()).unwrap_or_else(|| ROOT_ID.to_string());
-        irec.insert("parent".into(), json!(parent));
-        irec.insert("pos".into(), pos_json(inst.pos));
+        srec.insert("parent".into(), json!(parent));
+        srec.insert("pos".into(), pos_json(scope.pos));
         let mut members = Map::new();
-        for (local, muid) in inst.members.iter() {
-            members.insert(local.clone(), json!(muid.to_hex()));
+        for m in g.scope_members(uid) {
+            members.insert(m.to_hex(), json!({ "is_instance": g.scope(m).is_some() }));
         }
-        irec.insert("members".into(), Value::Object(members));
-        let mut iface = Map::new();
-        if let Some(def) = g.def(inst.def_id) {
-            for (bnd, b) in def.interface.iter() {
-                let resolved = g.resolve_boundary(uid, bnd);
-                let mut bm = Map::new();
-                bm.insert("dir".into(), json!(match b.dir { Dir::In => "in", Dir::Out => "out" }));
-                bm.insert("dtype".into(), json!(b.dtype.name()));
-                bm.insert("name".into(), json!(b.name));
-                bm.insert("pos".into(), pos_json(b.pos));
-                // Unwired boundary → no inner_node/inner_slot → the reconciler prunes any stale pair.
-                if let Some((u, s)) = resolved.as_ref() {
-                    bm.insert("inner_node".into(), json!(u.to_hex()));
-                    bm.insert("inner_slot".into(), json!(s));
-                }
-                iface.insert(bnd.clone(), Value::Object(bm));
+        srec.insert("members".into(), Value::Object(members));
+        let mut stubs = Map::new();
+        for (id, st) in scope.stubs.iter() {
+            let resolved = g.resolve_stub(uid, id);
+            let mut sm = Map::new();
+            sm.insert("dir".into(), json!(match st.dir { Dir::In => "in", Dir::Out => "out" }));
+            sm.insert("dtype".into(), json!(st.dtype.name()));
+            sm.insert("name".into(), json!(st.name));
+            sm.insert("pos".into(), pos_json(st.pos));
+            // Unwired stub → no inner_node/inner_slot → the reconciler prunes any stale pair.
+            if let Some((u, s)) = resolved.as_ref() {
+                sm.insert("inner_node".into(), json!(u.to_hex()));
+                sm.insert("inner_slot".into(), json!(s));
             }
+            stubs.insert(id.clone(), Value::Object(sm));
         }
-        irec.insert("interface".into(), Value::Object(iface));
-        instances.insert(uid.to_hex(), Value::Object(irec));
+        srec.insert("stubs".into(), Value::Object(stubs));
+        instances.insert(uid.to_hex(), Value::Object(srec));
     }
 
     // Globals (system + user) — `{name: {value, type, system}}`. `global_to_json` gives `{value,
@@ -173,16 +172,16 @@ mod tests {
     }
 
     #[test]
-    fn mirror_reflects_the_sub_patch_forest() {
-        // Grouping two linked nodes surfaces one instance (with an auto boundary on the cut
-        // link). The mirror must carry it: identity, ROOT parent, both members, and the boundary
+    fn mirror_reflects_the_sub_patch_scope() {
+        // Grouping a node with a cut output link surfaces one scope (with an auto Out stub). The
+        // mirror must carry it: identity, ROOT parent, the member `nodes` list, and the stub
         // resolved to its inner leaf — the doc's forest coverage (§4.2).
         let mut g = Graph::new();
         let osc = g.add_node("Oscillator", None).unwrap();
         let buf = g.add_node("Buffer", None).unwrap();
         let sink = g.add_node("Buffer", None).unwrap();
         g.add_link(osc, "out", buf, "data").unwrap();
-        // buf.out → sink makes buf's output a CUT link when buf is grouped → an output boundary.
+        // buf.out → sink makes buf's output a CUT link when buf is grouped → an output stub.
         g.add_link(buf, "out", sink, "data").unwrap();
         let inst = g.group_nodes(&[buf], [5.0, 6.0]).unwrap();
 
@@ -190,31 +189,27 @@ mod tests {
         sync_graph_to_doc(&g, &mut doc);
 
         assert_eq!(doc.instance_ids(), vec![inst.to_hex()]);
-        // Read the mirrored instance object through the generic reader.
         let ih = inst.to_hex();
         let bh = buf.to_hex();
         let j = doc.to_json();
         let rec = &j["instances"][ih.as_str()];
-        assert_eq!(rec["parent"].as_str(), Some(ROOT_ID), "top-level instance parents to ROOT");
+        assert_eq!(rec["parent"].as_str(), Some(ROOT_ID), "top-level scope parents to ROOT");
         assert_eq!((rec["pos"]["x"].as_f64(), rec["pos"]["y"].as_f64()), (Some(5.0), Some(6.0)));
-        assert!(rec.get("def_id").is_none(), "single reference ⇒ unique");
-        assert!(
-            rec["members"].as_object().unwrap().values().any(|v| v.as_str() == Some(bh.as_str())),
-            "buf is a member"
-        );
-        // The output boundary resolves to the inner buffer leaf.
-        let out = rec["interface"]
+        assert!(rec.get("def_id").is_none(), "no sharing — no def_id");
+        assert!(rec["members"].as_object().unwrap().contains_key(bh.as_str()), "buf is a member");
+        // The output stub resolves to the inner buffer leaf.
+        let out = rec["stubs"]
             .as_object()
             .unwrap()
             .values()
             .find(|b| b["dir"].as_str() == Some("out"))
-            .expect("output boundary");
+            .expect("output stub");
         assert_eq!(out["inner_node"].as_str(), Some(bh.as_str()));
         assert_eq!(out["inner_slot"].as_str(), Some("out"));
 
-        // Expanding the instance removes it from the doc forest.
+        // Expanding the scope removes it from the doc forest.
         g.expand_instance(inst).unwrap();
         sync_graph_to_doc(&g, &mut doc);
-        assert!(doc.instance_ids().is_empty(), "expanded instance dropped from the forest");
+        assert!(doc.instance_ids().is_empty(), "expanded scope dropped from the forest");
     }
 }

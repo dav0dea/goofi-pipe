@@ -901,12 +901,13 @@ async fn group_and_expand_project_the_instance_forest() {
     let doc = sync_replica(&mut ws, |d| d.instance_ids().iter().any(|u| *u == inst)).await;
     let j = doc.to_json();
     let rec = &j["instances"][&inst];
-    assert_eq!(rec["parent"], json!("__root__"), "top-level instance parented to ROOT so the canvas renders it");
-    assert!(rec.get("def_id").is_none(), "one reference ⇒ unique (no def_id)");
-    assert_eq!(rec["members"].as_object().unwrap().len(), 2, "both members in the instance scope");
+    assert_eq!(rec["parent"], json!("__root__"), "top-level scope parented to ROOT so the canvas renders it");
+    assert!(rec.get("def_id").is_none(), "no sharing ⇒ no def_id");
+    // The flat scope's `members` map is keyed by member uid → {is_instance}.
+    assert_eq!(rec["members"].as_object().unwrap().len(), 2, "both members in the scope");
     assert!(
-        rec["members"].as_object().unwrap().values().any(|v| v.as_str() == Some(osc.as_str())),
-        "member osc re-tagged into the instance scope; got {:?}", rec["members"]
+        rec["members"].as_object().unwrap().contains_key(osc.as_str()),
+        "member osc re-tagged into the scope; got {:?}", rec["members"]
     );
 
     // Expand restores both members to ROOT → the instance drops out of the doc forest, leaves remain.
@@ -1005,54 +1006,6 @@ async fn param_values_broadcasts_live_expression_values() {
 }
 
 #[tokio::test]
-async fn duplicate_shared_then_make_unique_over_the_wire() {
-    // Group → duplicate_shared surfaces a sibling and marks both instances "shared";
-    // make_unique on one returns it to "unique".
-    let base = start_server().await;
-    let (mut ws, _) = connect_async(format!("{base}/control")).await.unwrap();
-    let _hello = recv_text(&mut ws).await;
-
-    let uid = |v: &Value| v["result"].as_str().unwrap().to_string();
-    let osc = uid(&call(&mut ws, 1, "add_node", json!({ "type": "Oscillator" })).await);
-    let buf = uid(&call(&mut ws, 2, "add_node", json!({ "type": "Buffer" })).await);
-    call(&mut ws, 3, "add_link", json!({ "node_out": osc, "slot_out": "out", "node_in": buf, "slot_in": "data" })).await;
-    let inst = call(&mut ws, 4, "group_nodes", json!({ "members": [osc, buf], "pos": [0.0, 0.0] })).await["result"]["inst_id"]
-        .as_str().unwrap().to_string();
-
-    // Duplicate → a sibling instance, both now "shared". Shared ⇔ a `def_id` on the doc's instance
-    // record (refcount > 1); unique omits it (subpatch_changed retired — read the forest from the doc).
-    let dup = call(&mut ws, 5, "duplicate_shared", json!({ "inst_id": inst, "pos": [200.0, 0.0] })).await;
-    let sib = dup["result"]["inst_id"].as_str().expect("sibling inst_id").to_string();
-    assert_ne!(sib, inst, "a fresh sibling instance");
-    let doc = sync_replica(&mut ws, |d| d.instance_ids().iter().any(|u| *u == sib)).await;
-    let j = doc.to_json();
-    assert!(j["instances"][&inst].get("def_id").is_some(), "original now shared (def_id present)");
-    assert!(j["instances"][&sib].get("def_id").is_some(), "sibling shared (def_id present)");
-    // The sibling has its own two members, distinct from the original's.
-    assert_eq!(j["instances"][&sib]["members"].as_object().unwrap().len(), 2, "sibling has both members");
-    // Four flat leaves total now (2 original + 2 sibling).
-    assert_eq!(doc.node_ids().len(), 4, "sibling leaves spawned");
-
-    // make_unique the sibling → back to "unique" (def_id dropped on both, refcount back to 1).
-    call(&mut ws, 6, "make_unique", json!({ "inst_id": sib })).await;
-    let doc2 = sync_replica(&mut ws, |d| {
-        d.instance_ids().iter().any(|u| *u == sib) && d.to_json()["instances"][&sib].get("def_id").is_none()
-    }).await;
-    let j2 = doc2.to_json();
-    assert!(j2["instances"][&sib].get("def_id").is_none(), "sibling forked to unique");
-    assert!(j2["instances"][&inst].get("def_id").is_none(), "original back to unique too");
-
-    // Undo-of-duplicate routes remove_node on the sibling INSTANCE uid → the whole subtree is
-    // torn down (the undo/redo executor relies on this).
-    call(&mut ws, 7, "remove_node", json!({ "node": sib })).await;
-    // Anchor on the leaf count settling to 2 (a completed sync) — post-removal server state is 2
-    // leaves + the original (unique) instance; the torn-down sibling can't reappear.
-    let doc3 = sync_replica(&mut ws, |d| d.node_ids().len() == 2).await;
-    assert!(doc3.to_json()["instances"].get(&sib).is_none(), "sibling instance removed");
-    assert_eq!(doc3.node_ids().len(), 2, "only the original's two leaves remain");
-}
-
-#[tokio::test]
 async fn connecting_to_a_boundary_creates_a_flat_leaf_link() {
     // Wiring a top-level node to an instance's input boundary must resolve to a flat leaf→leaf
     // link on the inner member — the boundary is a naming indirection, the runtime link is flat.
@@ -1123,19 +1076,19 @@ async fn boundary_authoring_over_the_wire() {
     let rn = call(&mut ws, 7, "rename_boundary", json!({ "inst_id": inst, "bnd_id": bnd, "name": "wave" })).await;
     assert_eq!(rn["result"]["ok"], true);
 
-    // The doc forest's interface carries the wired, renamed boundary (bnd_id unchanged) — read it
-    // from a synced replica (subpatch_changed retired).
+    // The doc scope's stubs carry the wired, renamed stub (StubId unchanged) — read it from a
+    // synced replica (subpatch_changed retired).
     let doc = sync_replica(&mut ws, |d| {
-        d.read_at(&["instances", inst.as_str(), "interface", bnd.as_str(), "name"])
+        d.read_at(&["instances", inst.as_str(), "stubs", bnd.as_str(), "name"])
             .and_then(|v| v.as_str().map(String::from))
             == Some("wave".into())
     })
     .await;
-    let port = doc.read_at(&["instances", inst.as_str(), "interface", bnd.as_str()]).unwrap();
+    let port = doc.read_at(&["instances", inst.as_str(), "stubs", bnd.as_str()]).unwrap();
     assert_eq!(port["dir"], "out");
     assert_eq!(port["inner_node"], json!(buf), "wired to the buffer leaf");
     assert_eq!(port["inner_slot"], "out");
-    assert_eq!(port["name"], "wave", "renamed; bnd_id preserved");
+    assert_eq!(port["name"], "wave", "renamed; StubId preserved");
 }
 
 #[tokio::test]
@@ -1158,12 +1111,12 @@ async fn data_plane_streams_an_output_boundary_via_the_inner_leaf() {
 
     let reply = call(&mut ws, 7, "group_nodes", json!({ "members": [buf], "pos": [0.0, 0.0] })).await;
     let inst = reply["result"]["inst_id"].as_str().unwrap().to_string();
-    // The instance must expose out0 (buf.out) as an output boundary — read it from the doc forest
+    // The scope must expose out0 (buf.out) as an output stub — read it from the doc forest
     // (subpatch_changed retired). This also barriers the group before the /data subscription below.
-    let doc = sync_replica(&mut ws, |d| d.read_at(&["instances", inst.as_str(), "interface", "out0"]).is_some()).await;
+    let doc = sync_replica(&mut ws, |d| d.read_at(&["instances", inst.as_str(), "stubs", "out0"]).is_some()).await;
     assert!(
-        doc.read_at(&["instances", inst.as_str(), "interface", "out0"]).is_some(),
-        "output boundary out0 present in the doc forest"
+        doc.read_at(&["instances", inst.as_str(), "stubs", "out0"]).is_some(),
+        "output stub out0 present in the doc forest"
     );
 
     // Subscribe to the boundary port; frames come from the inner Buffer leaf.
@@ -1234,7 +1187,7 @@ async fn serialize_and_load_roundtrip() {
     call(&mut ws, 1, "add_node", json!({ "type": "Oscillator" })).await;
     let ser = call(&mut ws, 2, "serialize", json!({})).await;
     let yaml = ser["result"]["yaml"].as_str().unwrap().to_string();
-    assert!(yaml.contains("version: 5"), "gfi v5 header");
+    assert!(yaml.contains("version: 6"), "gfi v6 header");
     assert!(yaml.contains("Oscillator"), "node persisted");
     assert!(yaml.contains("default_ufreq"), "globals block persisted");
 

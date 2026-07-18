@@ -495,8 +495,8 @@ fn parse_link(p: &Value) -> Result<(Uid, String, Uid, String), String> {
 /// link — the boundary is a naming indirection resolved here, so the runtime/persisted link is
 /// always flat. A plain `(node, slot)` passes through unchanged.
 fn resolve_link_endpoint(g: &goofi_engine::Graph, uid: Uid, slot: &str) -> (Uid, String) {
-    if g.instance(uid).is_some() {
-        if let Some(leaf) = g.resolve_boundary(uid, slot) {
+    if g.scope(uid).is_some() {
+        if let Some(leaf) = g.resolve_stub(uid, slot) {
             return leaf;
         }
     }
@@ -569,7 +569,7 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
                 // the whole forest from the doc).
                 if g.scope_of(uid).is_some() {
                     g.remove_member(uid)?;
-                } else if g.instance(uid).is_some() {
+                } else if g.scope(uid).is_some() {
                     g.remove_instance(uid)?;
                 } else {
                     g.remove_node(uid)?;
@@ -703,27 +703,8 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
                 // Boundary positions are read from the CRDT doc forest (retired `boundary_moved`).
                 Ok(json!({ "ok": true }))
             }
-            "duplicate_shared" => {
-                let inst = parse_uid(&payload, "inst_id")?;
-                let pos = payload.get("pos").and_then(parse_pos).unwrap_or([0.0, 0.0]);
-                let sib = g.duplicate_shared(inst, pos)?;
-                Ok(json!({ "inst_id": sib.to_hex() }))
-            }
-            "make_unique" => {
-                let inst = parse_uid(&payload, "inst_id")?;
-                let def = g.make_unique(inst)?;
-                Ok(json!({ "def_id": def.to_hex() }))
-            }
-            "re_share_instance" => {
-                let inst = parse_uid(&payload, "inst_id")?;
-                let def = payload
-                    .get("def_id")
-                    .and_then(|v| v.as_str())
-                    .and_then(goofi_engine::subpatch::DefId::from_hex)
-                    .ok_or("re_share_instance: bad def_id")?;
-                let out = g.re_share_instance(inst, def)?;
-                Ok(json!({ "inst_id": out.to_hex() }))
-            }
+            // duplicate_shared / make_unique / re_share_instance are gone — sub-patch sharing was
+            // dropped in the flat-scope re-architecture (sub-patches are organizational facades now).
             "serialize" => Ok(json!({ "yaml": g.serialize() })),
             "save" => {
                 let yaml = g.serialize();
@@ -928,15 +909,15 @@ async fn handle_data(socket: WebSocket, state: AppState, node: String, slot: Str
         }
     };
     // Resolve the physical stream target. Either `(node, slot)` is a real output slot, or
-    // `node` is a sub-patch instance and `slot` is a wired OUTPUT boundary — chain-resolved to
-    // its single inner leaf `(uid, slot)`. Either way exactly one physical leaf slot is streamed,
-    // so a boundary viewer and an inner-scope viewer coalesce onto the same reducer (spec §5).
+    // `node` is a sub-patch scope and `slot` is a wired OUTPUT stub — chain-resolved to its single
+    // inner leaf `(uid, slot)`. Either way exactly one physical leaf slot is streamed, so a stub
+    // viewer and an inner-scope viewer coalesce onto the same reducer (spec §5).
     let target = {
         let g = state.graph.lock().unwrap();
         if g.manifest(uid).map(|m| m.outputs.iter().any(|o| o.name == slot)).unwrap_or(false) {
             Some((uid, slot.clone()))
         } else {
-            g.resolve_boundary(uid, &slot)
+            g.resolve_stub(uid, &slot)
         }
     };
     let Some((stream_uid, stream_slot)) = target else {
