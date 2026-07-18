@@ -2830,6 +2830,23 @@ mod tests {
     }
 
     #[test]
+    fn binding_common_max_frequency_to_a_global_re_rates_the_run_policy() {
+        // The producer story end-to-end: a `common.max_frequency` bound to `globals.default_ufreq`
+        // rates the scheduler at the global, and a global EDIT re-rates it immediately — even though
+        // the node is under a rate cap (the dirty-reset opens the closed eval gate). This is exactly
+        // how editing default_ufreq re-paces every Oscillator.
+        use goofi_core::globals::GlobalValue;
+        let mut g = eval_graph();
+        let n = g.add_node("_TestConst", None).unwrap();
+        g.set_expression(n, "common", "max_frequency", "globals.default_ufreq", true, false).unwrap();
+        g.tick();
+        assert_eq!(g.nodes.get(&n).unwrap().run_policy.max_frequency, 30.0, "rated by the global");
+        g.apply_global_change("default_ufreq", Some(GlobalValue::Float(12.0))).unwrap();
+        g.tick();
+        assert_eq!(g.nodes.get(&n).unwrap().run_policy.max_frequency, 12.0, "re-rates on a global edit");
+    }
+
+    #[test]
     fn restore_path_does_not_reseed_default_expr() {
         // A restore/load supplies explicit params (the doc is authoritative) → NO auto-binding; the
         // doc's own captured expressions are what get restored (separately). `add_node_at(Some(..))`

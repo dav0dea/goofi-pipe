@@ -144,6 +144,16 @@ static PARAMS: &[ParamDecl] = &[
         spec: ParamSpec::Str { default: "sine", options: &["sine", "square", "sawtooth", "triangle"], refresh: false },
         default_expr: None,
     },
+    // The producer contract: free-running, paced by the patch's `default_ufreq` global (30 Hz by
+    // default). The 30.0 literal is the no-evaluator fallback; the `default_expr` binding makes a
+    // live `globals.default_ufreq` edit re-rate every Oscillator. `autotrigger` marks it a source.
+    ParamDecl { group: "common", name: "autotrigger", spec: ParamSpec::Bool { default: true }, default_expr: None },
+    ParamDecl {
+        group: "common",
+        name: "max_frequency",
+        spec: ParamSpec::Float { default: 30.0, min: 0.0, max: 1000.0 },
+        default_expr: Some("globals.default_ufreq"),
+    },
 ];
 static OUTPUTS: &[OutputDecl] = &[OutputDecl {
     name: "out",
@@ -332,5 +342,24 @@ mod tests {
         let m = goofi_node::find("Oscillator").expect("Oscillator registered");
         assert!(m.inputs.is_empty(), "oscillator is a producer with no input slots; got {:?}",
             m.inputs.iter().map(|s| s.name).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn defaults_to_the_producer_update_rate() {
+        use goofi_node::{with_common, RunPolicy};
+        let m = goofi_node::find("Oscillator").expect("Oscillator registered");
+        // The live default is the global — editing globals.default_ufreq re-rates every Oscillator
+        // (the P5 seeding mechanism drives the binding); the 30.0 literal is the graceful fallback.
+        let decl = m
+            .params
+            .iter()
+            .find(|d| d.group == "common" && d.name == "max_frequency")
+            .expect("oscillator declares common.max_frequency");
+        assert_eq!(decl.default_expr, Some("globals.default_ufreq"));
+        // Without an evaluator, the fallback literal must still pace it at the producer default
+        // (30 Hz) and free-run it — never unbounded (which would saturate the tick loop).
+        let policy = RunPolicy::from_params(&with_common(m.default_params()));
+        assert_eq!(policy.max_frequency, 30.0, "fallback rate is the producer default");
+        assert!(policy.autotrigger, "the oscillator is a free-running producer");
     }
 }
