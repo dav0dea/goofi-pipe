@@ -1,5 +1,0 @@
-# mediapipe models
-*.task
-
-# EEG embedding model
-eeg_encoder_55-95_40_classes/
