@@ -617,26 +617,38 @@ export class GraphStore {
 	// `apply_global_change` and mirrors it back. Human-rate panel edits — direct doc writes with no
 	// undo history (like the viewer-state pushes), so they stay out of the graph/layout undo domains.
 
+	// Each returns the WRITER's "landed" boolean (not `commit`'s delta-broadcast flag): an idempotent
+	// value set / same-name rename lands but broadcasts nothing, and the agent-façade contract keys
+	// `false` on invalid-name / collision / protected-system — not on an at-target no-op.
+
 	/** Add a new user global (name validated + collision-checked in the writer). Returns whether it
 	 * landed (false ⇒ invalid name or a name collision). */
 	addGlobal(name: string, value: number | string | boolean, type: GlobalType): boolean {
-		return this._sync.commit((doc) => docAddGlobal(doc, name, value, type));
+		let ok = false;
+		this._sync.commit((doc) => (ok = docAddGlobal(doc, name, value, type)));
+		return ok;
 	}
 
 	/** Edit an existing global's value (system or user); the declared type + system flag are kept. */
 	setGlobalValue(name: string, value: number | string | boolean): boolean {
-		return this._sync.commit((doc) => docSetGlobalValue(doc, name, value));
+		let ok = false;
+		this._sync.commit((doc) => (ok = docSetGlobalValue(doc, name, value)));
+		return ok;
 	}
 
 	/** Remove a user global (a system global is refused by the writer). */
 	removeGlobal(name: string): boolean {
-		return this._sync.commit((doc) => docRemoveGlobal(doc, name));
+		let ok = false;
+		this._sync.commit((doc) => (ok = docRemoveGlobal(doc, name)));
+		return ok;
 	}
 
 	/** Rename a user global (delete-old + add-new; refs are not rewritten — a stale `globals.<old>`
 	 * throws at eval time, per spec). Returns whether it landed. */
 	renameGlobal(oldName: string, newName: string): boolean {
-		return this._sync.commit((doc) => docRenameGlobal(doc, oldName, newName));
+		let ok = false;
+		this._sync.commit((doc) => (ok = docRenameGlobal(doc, oldName, newName)));
+		return ok;
 	}
 
 	/** Ask a live node to re-evaluate a param's options (device / stream pickers).

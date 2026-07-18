@@ -56,6 +56,20 @@ describe('GraphStore globals mutators — the seam the panel + agent drive', () 
 		expect(g.globals.map((v) => v.name)).toEqual(['default_ufreq']);
 	});
 
+	it('reports landed (true) for an idempotent value set / same-name rename', () => {
+		// The writer's "landed" contract, not commit()'s delta flag: an at-target edit lands even
+		// though it broadcasts nothing — the agent façade keys false on invalid/collision/system only.
+		const fc = new FakeControl();
+		const g = new GraphStore(fc);
+		seedSystemGlobal(g, 'default_ufreq', 30);
+		g.addGlobal('gain', 2, 'float');
+
+		expect(g.setGlobalValue('default_ufreq', 30)).toBe(true); // unchanged value still landed
+		expect(g.renameGlobal('gain', 'gain')).toBe(true); // same-name rename is a no-op that landed
+		// A genuine failure still reports false.
+		expect(g.setGlobalValue('ghost', 1)).toBe(false);
+	});
+
 	it('renames a user global (carrying value+type), refusing system + collisions', () => {
 		const fc = new FakeControl();
 		const g = new GraphStore(fc);
