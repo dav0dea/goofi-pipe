@@ -174,10 +174,10 @@ pub fn catalog_types(g: &Graph) -> Value {
 }
 
 /// A node's scope membership: which instance it lives in (ROOT if top-level) and the
-/// template-local name it is keyed by within that scope. The frontend folds `node_added` into
-/// and drops `node_removed` from that scope's members index, so BOTH events must carry this same
-/// shape — a `node_removed` that hardcodes ROOT would fail to drop a member from a sub-patch
-/// scope (stale member badge + index entry). Capture it BEFORE removing the node.
+/// template-local name it is keyed by within that scope. Rides the `membership` field of every node
+/// payload (`node_added` + the `hello`/`graph_replaced` snapshot). Removal no longer carries it —
+/// `node_removed` is retired (Phase 4) and the frontend reconciles each member's scope from the doc
+/// forest.
 pub fn membership(g: &Graph, uid: Uid) -> Value {
     let name = g.name(uid).unwrap_or("").to_string();
     json!({

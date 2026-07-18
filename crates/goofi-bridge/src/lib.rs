@@ -563,18 +563,13 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
                 // instance uid — tear down the whole subtree and broadcast the new snapshot.
                 if g.instance(uid).is_some() {
                     g.remove_instance(uid)?;
-                    events.push(event("subpatch_changed", schemas::snapshot(&g, &state.instance_id, false)));
+                    // The torn-down subtree reaches clients via the post-dispatch re-mirror.
                     Ok(json!({ "ok": true }))
                 } else {
-                    // Capture the node's REAL scope before removal — the frontend drops the
-                    // member from this scope's index, so hardcoding ROOT would leave a member of
-                    // a sub-patch scope stale (inflated count badge + latent index entry).
-                    let membership = schemas::membership(&g, uid);
                     g.remove_node(uid)?;
-                    events.push(event(
-                        "node_removed",
-                        json!({ "node": uid.to_hex(), "membership": membership }),
-                    ));
+                    // The removal reaches clients via the post-dispatch re-mirror (node_removed
+                    // retired): the frontend reconciles the whole forest from the doc, so it needs
+                    // no per-op echo carrying the member's scope.
                     Ok(json!({ "ok": true }))
                 }
             }
@@ -632,14 +627,19 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
                 let uid = parse_uid(&payload, "node")?;
                 let name = parse_str(&payload, "name")?;
                 let referrers = g.rename_node(uid, name)?;
-                events.push(event("node_renamed", json!({ "node": uid.to_hex(), "name": name })));
-                // Any expression that referenced the old name was rewritten to nd('new'):
-                // push each referrer's fresh params so its inspector reflects the rewrite.
+                // The new name reaches clients via the post-dispatch re-mirror (node_renamed retired).
+                // The nd('new') rewrite of any referring expression is itself a doc leaf, but push each
+                // referrer's fresh params so a runtime `expression_error` from re-evaluating the rewrite
+                // still surfaces on its inspector (the doc carries the source, not the runtime error).
                 for r in referrers {
                     events.push(param_state_update(&g, r));
                 }
                 Ok(json!({ "ok": true }))
             }
+            // The sub-patch structural ops (group/expand/boundary authoring/share) mutate the forest
+            // and return; the mutated forest reaches every client via the post-dispatch re-mirror,
+            // which the frontend reconciles from the doc. The old `subpatch_changed` snapshot echo is
+            // retired (Phase 4) — the doc read-path covers it.
             "group_nodes" => {
                 let members = payload
                     .get("members")
@@ -651,13 +651,11 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
                 }
                 let pos = payload.get("pos").and_then(parse_pos).unwrap_or([0.0, 0.0]);
                 let inst = g.group_nodes(&uids, pos)?;
-                events.push(event("subpatch_changed", schemas::snapshot(&g, &state.instance_id, false)));
                 Ok(json!({ "inst_id": inst.to_hex() }))
             }
             "expand_instance" => {
                 let inst = parse_uid(&payload, "inst_id")?;
                 let restored = g.expand_instance(inst)?;
-                events.push(event("subpatch_changed", schemas::snapshot(&g, &state.instance_id, false)));
                 Ok(json!({ "restored": restored.iter().map(|u| u.to_hex()).collect::<Vec<_>>() }))
             }
             "add_boundary" => {
@@ -671,7 +669,6 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
                     .ok_or("add_boundary: bad dtype")?;
                 let pos = payload.get("pos").and_then(parse_pos).unwrap_or([0.0, 0.0]);
                 let bnd = g.add_boundary(inst, dir, dtype, pos)?;
-                events.push(event("subpatch_changed", schemas::snapshot(&g, &state.instance_id, false)));
                 Ok(json!({ "bnd_id": bnd }))
             }
             "wire_boundary" => {
@@ -680,14 +677,12 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
                 let inner = parse_uid(&payload, "inner_node")?;
                 let slot = parse_str(&payload, "inner_slot")?;
                 g.wire_boundary(inst, bnd, inner, slot)?;
-                events.push(event("subpatch_changed", schemas::snapshot(&g, &state.instance_id, false)));
                 Ok(json!({ "ok": true }))
             }
             "remove_boundary" => {
                 let inst = parse_uid(&payload, "inst_id")?;
                 let bnd = parse_str(&payload, "bnd_id")?;
                 g.remove_boundary(inst, bnd)?;
-                events.push(event("subpatch_changed", schemas::snapshot(&g, &state.instance_id, false)));
                 Ok(json!({ "ok": true }))
             }
             "rename_boundary" => {
@@ -695,7 +690,6 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
                 let bnd = parse_str(&payload, "bnd_id")?;
                 let name = parse_str(&payload, "name")?;
                 g.rename_boundary(inst, bnd, name)?;
-                events.push(event("subpatch_changed", schemas::snapshot(&g, &state.instance_id, false)));
                 Ok(json!({ "ok": true }))
             }
             "set_boundary_pos" => {
@@ -710,13 +704,11 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
                 let inst = parse_uid(&payload, "inst_id")?;
                 let pos = payload.get("pos").and_then(parse_pos).unwrap_or([0.0, 0.0]);
                 let sib = g.duplicate_shared(inst, pos)?;
-                events.push(event("subpatch_changed", schemas::snapshot(&g, &state.instance_id, false)));
                 Ok(json!({ "inst_id": sib.to_hex() }))
             }
             "make_unique" => {
                 let inst = parse_uid(&payload, "inst_id")?;
                 let def = g.make_unique(inst)?;
-                events.push(event("subpatch_changed", schemas::snapshot(&g, &state.instance_id, false)));
                 Ok(json!({ "def_id": def.to_hex() }))
             }
             "re_share_instance" => {
@@ -727,7 +719,6 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
                     .and_then(goofi_engine::subpatch::DefId::from_hex)
                     .ok_or("re_share_instance: bad def_id")?;
                 let out = g.re_share_instance(inst, def)?;
-                events.push(event("subpatch_changed", schemas::snapshot(&g, &state.instance_id, false)));
                 Ok(json!({ "inst_id": out.to_hex() }))
             }
             "serialize" => Ok(json!({ "yaml": g.serialize() })),
