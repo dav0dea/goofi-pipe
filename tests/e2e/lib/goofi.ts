@@ -34,6 +34,16 @@ export function nodeParams(page: Page, uid: string): Promise<any> {
 	return page.evaluate((u) => (window as any).goofi.query.nodeParams(u), uid);
 }
 
+/** Wait until a node with `uid` is ABSENT from the reactive graph (an undo-of-add / delete
+ * round-trip has landed). */
+export async function waitForNoNode(page: Page, uid: string): Promise<void> {
+	await page.waitForFunction(
+		(u) => !((window as any).goofi.query.graph().nodes as Array<{ uid: string }>).some((n) => n.uid === u),
+		uid,
+		{ timeout: 10_000 }
+	);
+}
+
 /** Edit a committed param value (a doc leaf-write). */
 export function updateParam(
 	page: Page,
@@ -46,4 +56,46 @@ export function updateParam(
 		([u, g, n, v]) => (window as any).goofi.commands.updateParam(u, g, n, v),
 		[uid, group, name, value] as const
 	);
+}
+
+/** Undo the last action (custom history today; Y.UndoManager after Phase 5). */
+export function undo(page: Page): Promise<void> {
+	return page.evaluate(() => (window as any).goofi.commands.undo());
+}
+/** Redo the last undone action. */
+export function redo(page: Page): Promise<void> {
+	return page.evaluate(() => (window as any).goofi.commands.redo());
+}
+/** Whether an undo is available. */
+export function canUndo(page: Page): Promise<boolean> {
+	return page.evaluate(() => (window as any).goofi.query.canUndo());
+}
+/** Add a user global; returns whether it landed. */
+export function addGlobal(
+	page: Page,
+	name: string,
+	value: number | string | boolean,
+	type: 'float' | 'int' | 'bool' | 'string'
+): Promise<boolean> {
+	return page.evaluate(
+		([n, v, t]) => (window as any).goofi.commands.addGlobal(n, v, t),
+		[name, value, type] as const
+	);
+}
+/** Edit an existing global's value; returns whether it landed. */
+export function setGlobalValue(
+	page: Page,
+	name: string,
+	value: number | string | boolean
+): Promise<boolean> {
+	return page.evaluate(
+		([n, v]) => (window as any).goofi.commands.setGlobalValue(n, v),
+		[name, value] as const
+	);
+}
+/** All patch globals (system + user). */
+export function globals(
+	page: Page
+): Promise<Array<{ name: string; value: unknown; type: string; system: boolean }>> {
+	return page.evaluate(() => (window as any).goofi.query.globals());
 }
