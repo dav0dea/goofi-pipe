@@ -33,6 +33,11 @@ export interface PanelType {
 	/** True if a node dragged from an editor can be dropped onto this panel to
 	 * bind it (Parameters / Viewer / Metadata). */
 	acceptsNode?: boolean;
+	/** True if the panel draws its OWN active-panel outline around its content (below the header bar),
+	 * so `Panel` skips the frame outline whose top 1px would sit behind the header. Node-linked panels
+	 * get this implicitly (they draw it via NodeLinkedPanel); a non-node panel that wants the same
+	 * clean outline sets this explicitly. */
+	contentOutline?: boolean;
 }
 
 const registry = new Map<string, PanelType>();

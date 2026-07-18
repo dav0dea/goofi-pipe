@@ -191,7 +191,7 @@
 <section
 	class="panel"
 	class:active
-	class:content-outline={type?.acceptsNode}
+	class:content-outline={type?.acceptsNode || type?.contentOutline}
 	onpointerdowncapture={() => ws.setActive(node.id)}
 	ondragover={onNodeDragOver}
 	ondragleave={onNodeDragLeave}

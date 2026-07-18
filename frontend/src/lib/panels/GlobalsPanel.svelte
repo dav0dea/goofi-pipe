@@ -12,8 +12,7 @@
 	import { graph } from '$lib/stores/graph.svelte';
 	import { isValidGlobalName, type GlobalType, type GlobalView } from '$lib/crdt/graphDoc';
 
-	// eslint-disable-next-line @typescript-eslint/no-unused-vars
-	let { panelId }: PanelProps = $props();
+	let { active }: PanelProps = $props();
 	const g = graph();
 	const globals = $derived(g.globals);
 
@@ -61,7 +60,7 @@
 	}
 </script>
 
-<div class="wrap" data-testid="globals-panel">
+<div class="wrap" class:active data-testid="globals-panel">
 	<div class="scroll">
 		<table>
 			<thead>
@@ -166,10 +165,23 @@
 
 <style>
 	.wrap {
+		position: relative;
 		height: 100%;
 		display: flex;
 		flex-direction: column;
 		min-height: 0;
+	}
+	/* Active-panel accent, drawn as an overlay around the content so its top edge sits
+	   flush under PanelHeader (not clipped behind it, unlike the panel-frame outline).
+	   Mirrors NodeLinkedPanel: square at the top, rounded at the panel's bottom corners. */
+	.wrap.active::after {
+		content: '';
+		position: absolute;
+		inset: 0;
+		pointer-events: none;
+		border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
+		border-radius: 0 0 var(--radius-sm) var(--radius-sm);
+		z-index: 4;
 	}
 	.scroll {
 		flex: 1;

@@ -62,7 +62,10 @@ export function registerAppPanels(): void {
 		id: 'globals',
 		title: 'Globals',
 		icon: '⧉',
-		component: GlobalsPanel
+		component: GlobalsPanel,
+		// Not a node-drop target, but draws its own active outline around the content
+		// (below the header bar) so the top edge isn't clipped by PanelHeader.
+		contentOutline: true
 	});
 	// The old dockable "Errors" panel was removed — the Console (filterable,
 	// accumulating, stderr-aware) supersedes it, and a legacy `errors` panel type
