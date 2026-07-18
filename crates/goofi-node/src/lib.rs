@@ -238,6 +238,9 @@ pub struct NodeCtx {
     /// first tick). Wall-clock-paced generators (audio) read this to emit exactly
     /// the samples that elapsed, drift-free; most nodes ignore it.
     pub now: f64,
+    /// The patch globals as of this tick. `process` reads them live (a mid-run edit is seen next
+    /// tick); `setup` latches them once at setup time. Empty for a node run outside a graph.
+    pub globals: goofi_core::globals::GlobalsSnapshot,
 }
 
 impl NodeCtx {
@@ -433,6 +436,9 @@ pub struct ExprRef {
 pub struct Compiled {
     pub id: BindingId,
     pub refs: Vec<ExprRef>,
+    /// The distinct `globals.<name>` names the snippet reads, so the engine re-evaluates this
+    /// binding exactly when one of those globals changes (an unrelated global edit costs nothing).
+    pub global_refs: Vec<String>,
 }
 
 /// Per-evaluation context handed to [`ExprEvaluator::eval`].
@@ -445,6 +451,8 @@ pub struct EvalCtx<'a> {
     pub t: f64,
     /// The param being driven, a type template the evaluator coerces its result to.
     pub target: &'a Param,
+    /// The patch globals — expressions read them as `globals.<name>` (missing → a natural error).
+    pub globals: &'a goofi_core::globals::GlobalsSnapshot,
 }
 
 /// Evaluates param expressions. Implemented by `goofi-py` against the free-threaded
@@ -521,6 +529,39 @@ pub fn nd_ref_names(source: &str) -> Vec<String> {
     for (_, _, name) in scan_nd_calls(source) {
         if !name.is_empty() && !names.iter().any(|n| n == name) {
             names.push(name.to_string());
+        }
+    }
+    names
+}
+
+/// Extract the distinct `globals.<name>` names an expression reads — the source of truth for both the
+/// eval-namespace injection and the engine's dirty-tracking (a binding re-evaluates exactly when one
+/// of these globals changes). Matches `globals` at a word boundary followed by `.<identifier>`. A
+/// byte scan (like `nd_ref_names`): a match inside a string literal only causes a harmless extra
+/// re-eval, never a missed one.
+pub fn global_ref_names(source: &str) -> Vec<String> {
+    let is_ident = |b: u8| b.is_ascii_alphanumeric() || b == b'_';
+    let bytes = source.as_bytes();
+    let mut names: Vec<String> = Vec::new();
+    let mut i = 0;
+    while let Some(pos) = source[i..].find("globals.") {
+        let start = i + pos;
+        i = start + "globals.".len();
+        // Word boundary before `globals` (so `myglobals.x` doesn't match).
+        if start > 0 && is_ident(bytes[start - 1]) {
+            continue;
+        }
+        let name_start = start + "globals.".len();
+        let mut end = name_start;
+        while end < bytes.len() && is_ident(bytes[end]) {
+            end += 1;
+        }
+        // A valid identifier: non-empty and not starting with a digit.
+        if end > name_start && !bytes[name_start].is_ascii_digit() {
+            let name = &source[name_start..end];
+            if !names.iter().any(|n| n == name) {
+                names.push(name.to_string());
+            }
         }
     }
     names
@@ -731,6 +772,21 @@ mod tests {
         assert!(nd_ref_names("round('x')").is_empty(), "round( is not nd(");
         assert!(nd_ref_names("grand('z')").is_empty(), "grand( is not nd(");
         assert_eq!(nd_ref_names("nd ('sig') * 2"), vec!["sig"], "whitespace before ( tolerated");
+    }
+
+    #[test]
+    fn global_ref_names_are_distinct_ordered_and_word_bounded() {
+        assert_eq!(
+            global_ref_names("globals.a + nd('x') * globals.b + globals.a"),
+            vec!["a", "b"],
+            "distinct global names in first-seen order"
+        );
+        assert!(global_ref_names("nd('x') + t").is_empty(), "no globals referenced");
+        // Word boundary before `globals` (so an attribute named `myglobals.x` doesn't match) and a
+        // valid identifier after the dot (a trailing dot / digit-led name is not a ref).
+        assert!(global_ref_names("myglobals.foo").is_empty(), "only the `globals` namespace matches");
+        assert_eq!(global_ref_names("globals.default_ufreq * 2"), vec!["default_ufreq"]);
+        assert!(global_ref_names("globals.").is_empty(), "a bare `globals.` is not a ref");
     }
 
     #[test]

@@ -115,7 +115,7 @@ pub fn is_valid_global_name(name: &str) -> bool {
 /// An immutable, cheaply-cloned view of the patch globals, handed to node setup/process
 /// (`NodeCtx.globals`) and expression eval (`EvalCtx.globals`). Backed by an `Arc` so passing it into
 /// every tick's `NodeCtx` is a refcount bump, not a map clone.
-#[derive(Clone, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct GlobalsSnapshot {
     map: Arc<IndexMap<String, GlobalValue>>,
 }

@@ -73,13 +73,26 @@ class _NdProxy:
     def __ne__(self, o): return self._bare() != o
     __hash__ = None  # defining __eq__ makes it unhashable; proxies are never dict keys
 
+class _Globals:
+    # The `globals` namespace an expression reads as `globals.<name>`. A missing name raises
+    # NameError — the natural "not defined" error, per the spec: no rename cascade, a stale
+    # reference just throws at eval time.
+    __slots__ = ("_d",)
+    def __init__(self, d):
+        self._d = d
+    def __getattr__(self, name):
+        d = self._d
+        if name in d:
+            return d[name]
+        raise NameError("global '%s' is not defined" % name)
+
 def __goofi_compile(source):
     return compile(source, "<goofi-expr>", "eval")
 
-def __goofi_eval(code, refs, t):
+def __goofi_eval(code, refs, t, gvals):
     def nd(name):
         return _NdProxy(name, refs)
-    return eval(code, {"nd": nd, "t": t, "np": np})
+    return eval(code, {"nd": nd, "t": t, "np": np, "globals": _Globals(gvals)})
 "#;
 
 /// The pyo3 evaluator. Holds the harness functions + a registry of compiled code
@@ -189,6 +202,9 @@ fn coerce(result: &Bound<'_, PyAny>, target: &Param) -> Result<Param, String> {
 impl ExprEvaluator for PyExprEvaluator {
     fn compile(&self, source: &str) -> Result<Compiled, ExprError> {
         let refs = extract_refs(source);
+        // The `globals.<name>` reads, so the engine re-evaluates this binding exactly when one of
+        // those globals changes. Same scan as the eval-namespace injection, so they can't disagree.
+        let global_refs = goofi_node::global_ref_names(source);
         Python::attach(|py| -> Result<Compiled, ExprError> {
             let code = self
                 .compile_fn
@@ -197,7 +213,7 @@ impl ExprEvaluator for PyExprEvaluator {
                 .map_err(|e| ExprError(e.to_string()))?;
             let id = self.next.fetch_add(1, Ordering::Relaxed) + 1;
             self.codes.lock().unwrap().insert(id, code.unbind());
-            Ok(Compiled { id, refs })
+            Ok(Compiled { id, refs, global_refs })
         })
     }
 
@@ -219,10 +235,23 @@ impl ExprEvaluator for PyExprEvaluator {
                 refs.set_item((name.as_str(), slot.as_deref()), val)
                     .map_err(|e| ExprError(e.to_string()))?;
             }
+            // The `globals` namespace, as native Python scalars (float/int/bool/str). A missing
+            // `globals.<name>` raises NameError inside the harness — the natural "not defined" error.
+            let gvals = PyDict::new(py);
+            for (name, value) in ctx.globals.iter() {
+                use goofi_core::globals::GlobalValue as G;
+                let set = match value {
+                    G::Float(f) => gvals.set_item(name.as_str(), *f),
+                    G::Int(i) => gvals.set_item(name.as_str(), *i),
+                    G::Bool(b) => gvals.set_item(name.as_str(), *b),
+                    G::Str(s) => gvals.set_item(name.as_str(), s.as_str()),
+                };
+                set.map_err(|e| ExprError(e.to_string()))?;
+            }
             let result = self
                 .eval_fn
                 .bind(py)
-                .call1((code.bind(py), &refs, ctx.t))
+                .call1((code.bind(py), &refs, ctx.t, &gvals))
                 .map_err(|e| ExprError(e.to_string()))?;
             coerce(&result, ctx.target).map_err(ExprError)
         })
@@ -250,8 +279,18 @@ mod tests {
 
     // The tests below drive the real embedded interpreter (numpy required), matching
     // the crate's existing `host.rs` embed-test posture.
+    use goofi_core::globals::{GlobalValue, GlobalsSnapshot};
     use goofi_core::{DType, Meta};
+    use indexmap::IndexMap;
     use std::collections::HashMap;
+
+    fn snap(pairs: &[(&str, GlobalValue)]) -> GlobalsSnapshot {
+        let mut m = IndexMap::new();
+        for (k, v) in pairs {
+            m.insert((*k).to_string(), v.clone());
+        }
+        GlobalsSnapshot::new(m)
+    }
 
     type Refs = HashMap<(String, Option<String>), Option<Data>>;
 
@@ -263,9 +302,18 @@ mod tests {
         Param::Float { value: 0.0, vmin: -1e9, vmax: 1e9 }
     }
     fn eval_once(src: &str, t: f64, refs: Refs, target: &Param) -> Result<Param, ExprError> {
+        eval_with_globals(src, t, refs, target, &GlobalsSnapshot::default())
+    }
+    fn eval_with_globals(
+        src: &str,
+        t: f64,
+        refs: Refs,
+        target: &Param,
+        globals: &GlobalsSnapshot,
+    ) -> Result<Param, ExprError> {
         let ev = PyExprEvaluator::new().expect("interpreter");
         let c = ev.compile(src)?;
-        let out = ev.eval(c.id, &EvalCtx { refs: &refs, t, target });
+        let out = ev.eval(c.id, &EvalCtx { refs: &refs, t, target, globals });
         ev.release(c.id);
         out
     }
@@ -381,5 +429,34 @@ mod tests {
         assert!(eval_once("float('inf')", 0.0, Refs::new(), &ip).is_err(), "inf into Int errors, not i64::MAX");
         let tp = Param::Trigger { fired: false };
         assert!(eval_once("1.5", 0.0, Refs::new(), &tp).is_err(), "non-bool into Trigger errors, not silent false");
+    }
+
+    #[test]
+    fn globals_are_readable_as_a_namespace() {
+        // The spec's headline: an expression reads a global as `globals.<name>`, typed natively.
+        let g = snap(&[("default_ufreq", GlobalValue::Float(30.0)), ("gain", GlobalValue::Int(4))]);
+        let r = eval_with_globals("globals.default_ufreq * globals.gain", 0.0, Refs::new(), &fparam(), &g).unwrap();
+        assert!(matches!(r, Param::Float { value, .. } if (value - 120.0).abs() < 1e-9));
+        // A string global reads as a Python str.
+        let gs = snap(&[("subject", GlobalValue::Str("P07".into()))]);
+        let sp = Param::Str { value: String::new(), options: None, refresh: false };
+        let rs = eval_with_globals("globals.subject", 0.0, Refs::new(), &sp, &gs).unwrap();
+        assert!(matches!(rs, Param::Str { value, .. } if value == "P07"));
+    }
+
+    #[test]
+    fn missing_global_raises_a_not_defined_error() {
+        // Per the spec: no rename cascade — a stale `globals.<old>` just throws at eval time.
+        let g = snap(&[("default_ufreq", GlobalValue::Float(30.0))]);
+        let err = eval_with_globals("globals.gone + 1", 0.0, Refs::new(), &fparam(), &g).unwrap_err();
+        assert!(err.0.contains("not defined"), "got: {}", err.0);
+    }
+
+    #[test]
+    fn compile_extracts_global_refs() {
+        let ev = PyExprEvaluator::new().expect("interpreter");
+        let c = ev.compile("globals.a + nd('x') * globals.b + globals.a").unwrap();
+        assert_eq!(c.global_refs, vec!["a", "b"], "distinct global names, in order");
+        ev.release(c.id);
     }
 }

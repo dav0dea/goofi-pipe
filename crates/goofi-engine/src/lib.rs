@@ -226,6 +226,9 @@ struct ExprBinding {
     id: Option<goofi_node::BindingId>,
     /// Statically-extracted `nd()` references (empty for a ref-less/time expression).
     refs: Vec<goofi_node::ExprRef>,
+    /// Statically-extracted `globals.<name>` reads, so a change to one of those globals forces a
+    /// re-eval of this binding (and only these) on the next tick — see [`Graph::apply_global_change`].
+    global_refs: Vec<String>,
     /// The referenced producers' emit `index` seen at the last eval, for the dirty check.
     last_seen: HashMap<(String, Option<String>), Option<u64>>,
     /// Wall-clock of the last eval, for the per-node `max_frequency` eval gate.
@@ -314,14 +317,24 @@ impl Graph {
     }
 
     /// Apply one mirrored client global change (`Some` = set/add, `None` = remove). System deletes
-    /// are rejected. (Phase 4 will additionally mark the param bindings that read this global dirty
-    /// so producers re-rate live.)
+    /// are rejected. Every expression binding that reads this global is forced to re-evaluate on the
+    /// next tick, so a producer bound to `globals.default_ufreq` re-rates live — and only those
+    /// bindings pay (an unrelated global edit touches nothing). Resetting `last_eval` opens both the
+    /// due check and the per-node eval-rate gate, giving exactly one immediate re-eval.
     pub fn apply_global_change(
         &mut self,
         name: &str,
         value: Option<goofi_core::globals::GlobalValue>,
     ) -> Result<(), String> {
-        self.globals.apply_change(name, value)
+        self.globals.apply_change(name, value)?;
+        for entry in self.nodes.values_mut() {
+            for b in entry.bindings.values_mut() {
+                if b.global_refs.iter().any(|g| g == name) {
+                    b.last_eval = None;
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Inject the param-expression evaluator (pyo3, from goofi-py). Wired by the CLI at
@@ -503,6 +516,8 @@ impl Graph {
         params: ParamGroups,
     ) {
         let mut ctx = NodeCtx::new();
+        // `setup` latches the globals as of insert time (`process` reads them live each tick).
+        ctx.globals = self.globals.snapshot();
         // Seed the node by replaying `on_param_changed` for each declared param
         // (not `common`, which is the scheduler's), then run derived one-time init.
         // The FIRST error from replay-or-setup becomes the node's bootstrap error;
@@ -1550,16 +1565,18 @@ impl Graph {
         }
         // Compile only when enabled; a disabled binding is preserved (source round-trips)
         // but carries no handle/refs/error and is skipped by the scheduling + eval guards.
-        let (id, refs, error) = if enabled {
+        let (id, refs, global_refs, error) = if enabled {
             match &self.evaluator {
                 Some(ev) => match ev.compile(source) {
-                    Ok(c) => (Some(c.id), c.refs, None),
-                    Err(e) => (None, Vec::new(), Some(e.0)),
+                    Ok(c) => (Some(c.id), c.refs, c.global_refs, None),
+                    Err(e) => (None, Vec::new(), Vec::new(), Some(e.0)),
                 },
-                None => (None, Vec::new(), Some("no expression evaluator available".to_string())),
+                None => {
+                    (None, Vec::new(), Vec::new(), Some("no expression evaluator available".to_string()))
+                }
             }
         } else {
-            (None, Vec::new(), None)
+            (None, Vec::new(), Vec::new(), None)
         };
         let binding = ExprBinding {
             source: source.to_string(),
@@ -1567,6 +1584,7 @@ impl Graph {
             triggers_process,
             id,
             refs,
+            global_refs,
             last_seen: HashMap::new(),
             last_eval: None,
             error,
@@ -2243,7 +2261,13 @@ impl Graph {
     /// level via `scheduling_edges`) has already emitted this tick; a cycle back-edge
     /// reads the producer's still-previous `last_outputs`. Two phases (read then apply)
     /// so the immutable cross-node reads don't collide with the per-node param write.
-    fn resolve_level_bindings(&mut self, level: &[Uid], now: Instant, now_secs: f64) {
+    fn resolve_level_bindings(
+        &mut self,
+        level: &[Uid],
+        now: Instant,
+        now_secs: f64,
+        globals: &goofi_core::globals::GlobalsSnapshot,
+    ) {
         let Some(ev) = self.evaluator.clone() else { return };
 
         enum Outcome {
@@ -2316,7 +2340,7 @@ impl Graph {
                 else {
                     continue;
                 };
-                let ctx = goofi_node::EvalCtx { refs: &refs_map, t: now_secs, target: &target };
+                let ctx = goofi_node::EvalCtx { refs: &refs_map, t: now_secs, target: &target, globals };
                 match ev.eval(id, &ctx) {
                     Ok(p) => results.push((uid, key.clone(), Outcome::Value(p, seen))),
                     Err(e) => results.push((uid, key.clone(), Outcome::Error(e.0))),
@@ -2421,13 +2445,16 @@ impl Graph {
         // Seconds since the first-ever tick — the monotonic wall clock nodes read.
         let start = *self.start.get_or_insert(now);
         let now_secs = now.duration_since(start).as_secs_f64();
+        // One globals snapshot for the whole tick — an Arc-backed view every binding eval and every
+        // running node's `ctx` shares (globals don't change mid-tick; edits land between ticks).
+        let globals = self.globals.snapshot();
         let wired = self.wired_trigger_nodes();
         let levels = self.topo_levels();
         for level in levels {
             // Resolve this level's expression-bound params BEFORE it runs, using the
             // (already-run) earlier levels' fresh outputs. May set `trigger_pending` for
             // a `triggers_process` binding, so it must precede Phase A's run decision.
-            self.resolve_level_bindings(&level, now, now_secs);
+            self.resolve_level_bindings(&level, now, now_secs, &globals);
             let set: std::collections::HashSet<Uid> = level.iter().copied().collect();
 
             // Phase A — run every runnable node in this level in parallel. Each
@@ -2452,6 +2479,8 @@ impl Graph {
                     .map(|(uid, e)| {
                         e.last_run = Some(now);
                         e.ctx.now = now_secs;
+                        // Live globals for `process` (Arc bump); `setup` latched them at insert time.
+                        e.ctx.globals = globals.clone();
                         (*uid, e)
                     })
                     .collect();
@@ -2692,6 +2721,59 @@ mod tests {
         g.clear();
         assert!(g.globals().get("u").is_none(), "user globals cleared on load");
         assert_eq!(g.globals().get("default_ufreq"), Some(&GlobalValue::Float(30.0)), "system re-seeded");
+    }
+
+    #[test]
+    fn node_process_reads_live_globals_from_ctx() {
+        use goofi_core::globals::GlobalValue;
+        let mut g = Graph::new();
+        let n = g.add_node("_TestGlobal", None).unwrap();
+        g.tick();
+        assert_eq!(first_f32(&g.latest_frame(n, "out").unwrap()), 30.0, "reads the seeded default_ufreq");
+        // A mid-run edit is visible on the next tick — `process` reads globals live, not latched.
+        g.apply_global_change("default_ufreq", Some(GlobalValue::Float(45.0))).unwrap();
+        g.tick();
+        assert_eq!(first_f32(&g.latest_frame(n, "out").unwrap()), 45.0, "sees the edited value next tick");
+    }
+
+    #[test]
+    fn expression_binding_reads_globals_and_tracks_edits() {
+        use goofi_core::globals::GlobalValue;
+        let mut g = eval_graph();
+        let n = g.add_node("_TestConst", None).unwrap();
+        g.set_expression(n, "constant", "value", "globals.default_ufreq", true, false).unwrap();
+        g.tick();
+        assert_eq!(first_f32(&g.latest_frame(n, "out").unwrap()), 30.0, "the binding reads the global");
+        g.apply_global_change("default_ufreq", Some(GlobalValue::Float(48.0))).unwrap();
+        g.tick();
+        assert_eq!(first_f32(&g.latest_frame(n, "out").unwrap()), 48.0, "the bound param re-rates on a global edit");
+    }
+
+    #[test]
+    fn editing_a_referenced_global_forces_only_that_bindings_reeval() {
+        // White-box: a global edit resets `last_eval` (→ due + gate-open) for exactly the bindings
+        // that read it, and leaves unrelated bindings untouched — the targeted dirty-tracking that
+        // makes the mixed `nd('x') * globals.gain` case re-rate even when its ref hasn't re-emitted.
+        use goofi_core::globals::GlobalValue;
+        let mut g = eval_graph();
+        let n = g.add_node("_TestConst", None).unwrap();
+        g.set_expression(n, "constant", "value", "globals.default_ufreq", true, false).unwrap();
+        let key = ParamKey::new("constant", "value");
+        g.tick();
+        assert!(g.nodes.get(&n).unwrap().bindings.get(&key).unwrap().last_eval.is_some(), "evaluated once");
+        // Editing the referenced global forces an immediate re-eval.
+        g.apply_global_change("default_ufreq", Some(GlobalValue::Float(50.0))).unwrap();
+        assert!(
+            g.nodes.get(&n).unwrap().bindings.get(&key).unwrap().last_eval.is_none(),
+            "a referenced-global edit resets the eval gate"
+        );
+        // An UNrelated global edit must not disturb the binding.
+        g.tick(); // re-evaluates → last_eval Some again
+        g.apply_global_change("unrelated", Some(GlobalValue::Float(1.0))).unwrap();
+        assert!(
+            g.nodes.get(&n).unwrap().bindings.get(&key).unwrap().last_eval.is_some(),
+            "an unrelated global edit leaves the binding alone"
+        );
     }
 
     #[test]
@@ -3042,6 +3124,33 @@ mod tests {
             params: NO_PARAMS,
             isolation: Isolation::InProcess,
             factory: default_factory::<NowSource>,
+        }
+    }
+
+    // A source that emits the live `default_ufreq` global from its NodeCtx — proving the
+    // engine feeds `process` the current globals snapshot each tick (a mid-run edit is seen
+    // on the next run, not latched at setup).
+    #[derive(Default)]
+    struct GlobalSource;
+    impl Node for GlobalSource {
+        fn process(&mut self, _i: &Inputs<'_>, out: &mut Outputs<'_>, c: &mut NodeCtx, _p: &Params<'_>) -> NodeResult {
+            let v = c.globals.f64("default_ufreq").unwrap_or(-1.0) as f32;
+            let d = Data::from_array_bytes(DType::F32, vec![1], v.to_le_bytes().to_vec(), Meta::empty())
+                .map_err(|e| e.to_string())?;
+            out.set("out", d);
+            Ok(())
+        }
+    }
+    inventory::submit! {
+        NodeManifest {
+            type_name: "_TestGlobal",
+            category: "test",
+            doc: "emits ctx.globals['default_ufreq']",
+            inputs: &[],
+            outputs: G_OUT,
+            params: NO_PARAMS,
+            isolation: Isolation::InProcess,
+            factory: default_factory::<GlobalSource>,
         }
     }
 
@@ -3658,8 +3767,8 @@ mod tests {
 
     // A deterministic stand-in for the pyo3 evaluator, so the engine's binding lifecycle
     // + scheduling + resolution are testable without a Python interpreter. It recognizes
-    // `nd('name')` (first f32 of that node's single output), a bare number (a constant),
-    // and `ERR` (a compile failure).
+    // `nd('name')` (first f32 of that node's single output), `globals.name` (that global's
+    // numeric value), a bare number (a constant), and `ERR` (a compile failure).
     #[derive(Default)]
     struct MockEval {
         exprs: std::sync::Mutex<HashMap<u64, MockExpr>>,
@@ -3668,6 +3777,7 @@ mod tests {
     #[derive(Clone)]
     enum MockExpr {
         Ref(String),
+        Global(String),
         Const(f64),
     }
     impl goofi_node::ExprEvaluator for MockEval {
@@ -3679,13 +3789,16 @@ mod tests {
                 source.strip_prefix("nd('").and_then(|s| s.strip_suffix("')"))
             {
                 (MockExpr::Ref(name.to_string()), vec![goofi_node::ExprRef { node: name.to_string(), slot: None }])
+            } else if let Some(name) = source.strip_prefix("globals.") {
+                (MockExpr::Global(name.to_string()), vec![])
             } else {
                 let v: f64 = source.parse().map_err(|_| goofi_node::ExprError("mock: not a number".into()))?;
                 (MockExpr::Const(v), vec![])
             };
             let id = self.next.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
             self.exprs.lock().unwrap().insert(id, expr);
-            Ok(goofi_node::Compiled { id, refs })
+            // The same scanner the real evaluator uses, so dirty-tracking is exercised faithfully.
+            Ok(goofi_node::Compiled { id, refs, global_refs: goofi_node::global_ref_names(source) })
         }
         fn eval(&self, id: u64, ctx: &goofi_node::EvalCtx<'_>) -> Result<Param, goofi_node::ExprError> {
             let expr = self.exprs.lock().unwrap().get(&id).cloned().ok_or_else(|| goofi_node::ExprError("mock: no such id".into()))?;
@@ -3694,6 +3807,10 @@ mod tests {
                 MockExpr::Ref(node) => match ctx.refs.get(&(node.clone(), None)).and_then(|o| o.clone()) {
                     Some(data) => first_f32(&data) as f64,
                     None => return Err(goofi_node::ExprError(format!("mock: nd('{node}') missing"))),
+                },
+                MockExpr::Global(name) => match ctx.globals.f64(&name) {
+                    Some(v) => v,
+                    None => return Err(goofi_node::ExprError(format!("mock: globals.{name} missing"))),
                 },
             };
             Ok(match ctx.target {
