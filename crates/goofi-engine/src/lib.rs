@@ -2861,6 +2861,30 @@ mod tests {
     }
 
     #[test]
+    fn default_expr_binding_round_trips_and_load_does_not_reseed() {
+        // A seeded default_expr binding must persist through the .gfi like any expression, and load
+        // must RESTORE it from the doc — not re-synthesize it (which would risk a double-seed). One
+        // binding out, one binding in, still evaluating to the global.
+        let mut g = eval_graph();
+        let n = g.add_node("_TestDefaultExpr", None).unwrap();
+        assert_eq!(g.param_expression(n, "control", "rate").unwrap().source, "globals.default_ufreq");
+        let doc = g.serialize();
+
+        let mut g2 = eval_graph();
+        g2.load_doc(&doc).unwrap();
+        let restored = g2
+            .node_uids()
+            .into_iter()
+            .find(|u| g2.type_name(*u) == Some("_TestDefaultExpr"))
+            .expect("node restored");
+        let info = g2.param_expression(restored, "control", "rate").expect("binding restored from the doc");
+        assert_eq!(info.source, "globals.default_ufreq");
+        assert!(info.error.is_none(), "restored binding is healthy (not double-seeded / errored)");
+        g2.tick();
+        assert_eq!(first_f32(&g2.latest_frame(restored, "out").unwrap()), 30.0, "evaluates to the global after load");
+    }
+
+    #[test]
     fn param_from_json_coerces_each_type_and_gates_trigger_firing() {
         use serde_json::json;
         // Float: takes as_f64, preserves bounds.
