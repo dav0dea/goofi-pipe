@@ -285,19 +285,20 @@ pub fn describe_instance(g: &Graph, uid: Uid) -> Value {
     let mut in_slots = Map::new();
     let mut out_slots = Map::new();
     for (id, st) in scope.stubs.iter() {
-        let resolved = g.resolve_stub(uid, id);
+        // Emit the stub's DIRECT inner (member uid + direct slot/nested-StubId), not the chain-
+        // resolved leaf — the editor reroutes per level. (The data plane resolves server-side.)
         interface.insert(
             id.clone(),
             json!({
                 "dir": match st.dir { Dir::In => "in", Dir::Out => "out" },
                 "dtype": st.dtype.name(),
-                "inner_node": resolved.as_ref().map(|(u, _)| u.to_hex()),
-                "inner_slot": resolved.as_ref().map(|(_, s)| s.clone()),
+                "inner_node": st.inner.as_ref().map(|(u, _)| u.to_hex()),
+                "inner_slot": st.inner.as_ref().map(|(_, s)| s.clone()),
                 "pos": st.pos,
                 "name": st.name,
             }),
         );
-        if resolved.is_some() {
+        if st.inner.is_some() {
             match st.dir {
                 Dir::In => in_slots.insert(id.clone(), json!(st.dtype.name())),
                 Dir::Out => out_slots.insert(id.clone(), json!(st.dtype.name())),

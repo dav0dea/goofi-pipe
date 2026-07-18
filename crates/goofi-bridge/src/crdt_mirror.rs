@@ -82,14 +82,17 @@ pub fn sync_graph_to_doc(g: &Graph, doc: &mut GraphDoc) {
         srec.insert("members".into(), Value::Object(members));
         let mut stubs = Map::new();
         for (id, st) in scope.stubs.iter() {
-            let resolved = g.resolve_stub(uid, id);
             let mut sm = Map::new();
             sm.insert("dir".into(), json!(match st.dir { Dir::In => "in", Dir::Out => "out" }));
             sm.insert("dtype".into(), json!(st.dtype.name()));
             sm.insert("name".into(), json!(st.name));
             sm.insert("pos".into(), pos_json(st.pos));
+            // The stub's DIRECT inner (a member uid + its real slot, or a nested scope facade uid +
+            // that scope's StubId) — NOT the chain-resolved deep leaf. The editor's per-level
+            // `drawEndpoint` reroute matches each stub against its direct child, so it needs the
+            // direct reference; the data plane / link authoring chain-resolve server-side.
             // Unwired stub → no inner_node/inner_slot → the reconciler prunes any stale pair.
-            if let Some((u, s)) = resolved.as_ref() {
+            if let Some((u, s)) = st.inner.as_ref() {
                 sm.insert("inner_node".into(), json!(u.to_hex()));
                 sm.insert("inner_slot".into(), json!(s));
             }
