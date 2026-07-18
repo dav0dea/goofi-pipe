@@ -21,7 +21,7 @@ use goofi_node::{param, ParamGroups};
 pub enum Outcome {
     /// A plain success (`{ ok: true }` on the wire).
     Ok,
-    /// A minted/affected uid — `add_node` returns the node uid, `group` the instance uid, etc.
+    /// A minted/affected uid — `add_node` returns the node uid, etc.
     Uid(Uid),
 }
 
@@ -84,6 +84,14 @@ pub enum Command {
     RenameGlobal {
         from: String,
         to: String,
+    },
+    /// Restore the whole graph from a `.gfi` serialization; its inverse is the graph as it was
+    /// before. The wholesale-`load` inverse. NOT used for group/expand/etc.: `load_doc` re-mints
+    /// uids (an idmap), which would invalidate other history entries' uid references — a load, by
+    /// contrast, resets the session's history, so re-minting is harmless there. Uid-stable clean
+    /// inverses for the structural ops (group↔expand, boundaries, share) are a focused follow-up.
+    Checkpoint {
+        yaml: String,
     },
 }
 
@@ -201,6 +209,12 @@ impl Command {
                 g.apply_global_change(&from, None)?;
                 g.apply_global_change(&to, Some(value))?;
                 Ok((Outcome::Ok, Command::RenameGlobal { from: to, to: from }))
+            }
+
+            Command::Checkpoint { yaml } => {
+                let before = g.serialize();
+                g.load_doc(&yaml)?;
+                Ok((Outcome::Ok, Command::Checkpoint { yaml: before }))
             }
         }
     }
@@ -393,6 +407,21 @@ mod tests {
         // Undo the add → the global is gone again.
         undo_add.execute(&mut g).unwrap();
         assert_eq!(g.globals().get("subj"), None, "add undone");
+    }
+
+    #[test]
+    fn checkpoint_restores_a_serialized_graph_and_its_inverse_restores_the_prior() {
+        let mut g = Graph::new();
+        g.add_node("Oscillator", None).unwrap();
+        let state_a = g.serialize(); // one node
+        g.add_node("Buffer", None).unwrap(); // two nodes
+        assert_eq!(g.node_uids().len(), 2);
+
+        // Checkpoint to state A → one node; its inverse restores state B (two nodes).
+        let (_r, back_to_b) = Command::Checkpoint { yaml: state_a }.execute(&mut g).unwrap();
+        assert_eq!(g.node_uids().len(), 1, "restored to the one-node snapshot");
+        back_to_b.execute(&mut g).unwrap();
+        assert_eq!(g.node_uids().len(), 2, "inverse restored the two-node state");
     }
 
     #[test]
