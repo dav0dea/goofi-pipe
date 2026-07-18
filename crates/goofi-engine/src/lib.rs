@@ -20,6 +20,10 @@ use rayon::prelude::*;
 /// `materialize`/`resolve_boundary`, not yet wired into the live graph.
 pub mod subpatch;
 
+/// Semantic patch commands with exact inverses — the manager's undo/redo unit.
+pub mod command;
+pub use command::{Command, Outcome};
+
 /// A stable node identity. Encoded as a 12-hex string for the `.gfi` / frontend
 /// (the same key those use), a `u64` internally.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
