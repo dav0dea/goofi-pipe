@@ -302,6 +302,29 @@ mod tests {
     }
 
     #[test]
+    fn oscillation_frequency_is_independent_of_sfreq() {
+        // The emitted signal's real-world frequency (cycles per wall-clock second) is set SOLELY by
+        // `frequency`; `sfreq` only changes how many samples represent that second. Measure it by
+        // counting upward zero-crossings over one wall-second of ticks, at two very different sfreqs.
+        // (The perceived "sfreq changes the frequency" is a DISPLAY artifact — a fixed-sample Buffer +
+        // a sample-index viewer x-axis shrinks the visible time window as sfreq rises — not the DSP.)
+        fn cycles_in_one_second(sfreq: f64) -> usize {
+            let (mut node, m, params) = build(3.0, sfreq, 1.0, "sine"); // 3 Hz
+            let mut all: Vec<f32> = Vec::new();
+            for k in 0..=30 {
+                if let Some(v) = run_at(&mut node, m, &params, k as f64 / 30.0) {
+                    all.extend(v);
+                }
+            }
+            all.windows(2).filter(|w| w[0] <= 0.0 && w[1] > 0.0).count()
+        }
+        let low = cycles_in_one_second(80.0);
+        let high = cycles_in_one_second(2000.0);
+        assert_eq!(low, high, "cycles/sec must not depend on sfreq: {low} (80 Hz) vs {high} (2 kHz)");
+        assert!((3..=4).contains(&low), "frequency=3 -> ~3 cycles per wall-second, got {low}");
+    }
+
+    #[test]
     fn has_no_control_input_slots() {
         // The `frequency` control-input slot is gone — its role is now served by a param
         // expression (frequency = nd('lfo')...), so the oscillator is a pure producer.
