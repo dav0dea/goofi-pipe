@@ -786,14 +786,23 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
 /// whole apply→re-mirror critical section atomic so no concurrent writer can observe a doc
 /// leaf the graph has not yet caught up to.
 fn remirror_and_broadcast_locked(state: &AppState, g: &Graph, doc: &mut goofi_crdt::GraphDoc) {
+    // Gate the broadcast on whether the mirror changed the doc's LOGICAL state (`to_json` before vs
+    // after). `is_empty_diff` cannot do this: it is deletion-blind — a Yjs delete does not advance the
+    // state vector, so a delete-only `diff(last_sv)` is byte-identical to the empty baseline
+    // `diff(current_sv)`, and every node/link/instance/global REMOVAL was silently dropped from the
+    // broadcast. `to_json` equality catches adds, edits, and deletes alike (the same lesson the
+    // frontend `SyncClient.commit` learned about the always-embedded delete set).
+    let before = doc.to_json();
     crdt_mirror::sync_graph_to_doc(g, doc);
-    let mut last_sv = state.last_sync_sv.lock().unwrap();
-    let delta = doc.diff(&last_sv);
-    // A no-op mutation yields a trivial empty-diff; only broadcast a real change.
-    if !doc.is_empty_diff(&delta) {
-        *last_sv = doc.state_vector();
-        let _ = state.sync_updates.send(goofi_crdt::SyncMsg::Update(delta).encode());
+    if doc.to_json() == before {
+        return; // no logical change → nothing to broadcast (no tombstone churn)
     }
+    let mut last_sv = state.last_sync_sv.lock().unwrap();
+    // `diff(last_sv)` carries the missing structs AND the full delete set — so a peer at `last_sv`
+    // applies the removal even though the state vector is unchanged by it.
+    let delta = doc.diff(&last_sv);
+    *last_sv = doc.state_vector();
+    let _ = state.sync_updates.send(goofi_crdt::SyncMsg::Update(delta).encode());
 }
 
 /// Re-sync the CRDT doc from the (authoritative) graph and broadcast the resulting delta to
@@ -986,6 +995,33 @@ mod param_coerce_tests {
     use super::*;
     use goofi_core::Param;
     use serde_json::json;
+
+    #[test]
+    fn removing_a_node_broadcasts_a_delta() {
+        // A node REMOVAL must broadcast a delta to clients. Regression: the broadcast gate used
+        // `is_empty_diff`, which is deletion-blind (a Yjs delete doesn't advance the state vector, so
+        // a delete-only delta looked identical to the empty baseline) — so removals silently never
+        // reached clients in the doc read-path. Caught by the e2e undo flow (undo didn't remove).
+        let state = AppState::new();
+        let mut rx = state.sync_updates.subscribe();
+
+        let uid = {
+            let mut g = state.graph.lock().unwrap();
+            let uid = g.add_node("Buffer", None).unwrap();
+            let mut doc = state.crdt.lock().unwrap();
+            remirror_and_broadcast_locked(&state, &g, &mut doc);
+            uid
+        };
+        rx.try_recv().expect("adding a node broadcasts a delta");
+
+        {
+            let mut g = state.graph.lock().unwrap();
+            g.remove_node(uid).unwrap();
+            let mut doc = state.crdt.lock().unwrap();
+            remirror_and_broadcast_locked(&state, &g, &mut doc);
+        }
+        assert!(rx.try_recv().is_ok(), "removing a node must broadcast a delta, not be skipped as empty");
+    }
 
     #[test]
     fn fresh_appstate_mirrors_seeded_globals_into_the_doc() {
