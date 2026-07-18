@@ -237,6 +237,9 @@ pub struct Graph {
     /// leaf/instance uid → its template-local name within its scope (absent ⇒ use the node name).
     local_of: HashMap<Uid, subpatch::Local>,
     next_def: u64,
+    /// Patch-scoped globals (system + user). System globals are seeded here; a `clear`/load
+    /// re-asserts them. Read by param expressions + node setup/process; persisted to `.gfi`.
+    globals: goofi_core::globals::GlobalStore,
 }
 
 impl Default for Graph {
@@ -261,7 +264,33 @@ impl Graph {
             scope_of: HashMap::new(),
             local_of: HashMap::new(),
             next_def: 1,
+            globals: goofi_core::globals::GlobalStore::new(),
         }
+    }
+
+    // ── Globals ─────────────────────────────────────────────────────────────────────────────
+    // Patch-scoped named scalars. System globals (`default_ufreq`) are seeded + delete-protected;
+    // user globals are add/edit/remove/rename. Read by expressions (`globals.<name>`) + node ctx.
+
+    /// A read-only snapshot of the current globals for expression eval / node setup+process.
+    pub fn globals_snapshot(&self) -> goofi_core::globals::GlobalsSnapshot {
+        self.globals.snapshot()
+    }
+
+    /// Every global in order, tagged `(name, value, is_system)` — for the CRDT mirror + `.gfi`.
+    pub fn globals(&self) -> &goofi_core::globals::GlobalStore {
+        &self.globals
+    }
+
+    /// Apply one mirrored client global change (`Some` = set/add, `None` = remove). System deletes
+    /// are rejected. (Phase 4 will additionally mark the param bindings that read this global dirty
+    /// so producers re-rate live.)
+    pub fn apply_global_change(
+        &mut self,
+        name: &str,
+        value: Option<goofi_core::globals::GlobalValue>,
+    ) -> Result<(), String> {
+        self.globals.apply_change(name, value)
     }
 
     /// Inject the param-expression evaluator (pyo3, from goofi-py). Wired by the CLI at
@@ -1682,6 +1711,9 @@ impl Graph {
         self.instances.clear();
         self.scope_of.clear();
         self.local_of.clear();
+        // Globals are patch content: a load starts from a fresh system-seeded store (load_doc then
+        // repopulates user globals from the `.gfi`). `dyn_types` stays (catalog, not content).
+        self.globals = goofi_core::globals::GlobalStore::new();
     }
 
     fn force_set_name(&mut self, uid: Uid, name: &str) {
@@ -2588,6 +2620,29 @@ mod tests {
 
     /// Empty param declaration, shared by the many test nodes with no own params.
     static NO_PARAMS: &[ParamDecl] = &[];
+
+    #[test]
+    fn graph_seeds_and_edits_globals() {
+        use goofi_core::globals::GlobalValue;
+        let mut g = Graph::new();
+        // A fresh graph carries the system globals.
+        assert_eq!(g.globals().get("default_ufreq"), Some(&GlobalValue::Float(30.0)));
+        assert!(g.globals().is_system("default_ufreq"));
+        // Edit a system global's value; add + remove a user global.
+        g.apply_global_change("default_ufreq", Some(GlobalValue::Int(60))).unwrap(); // coerces to Float
+        assert_eq!(g.globals_snapshot().f64("default_ufreq"), Some(60.0));
+        g.apply_global_change("subject", Some(GlobalValue::Str("P07".into()))).unwrap();
+        assert_eq!(g.globals_snapshot().str("subject"), Some("P07"));
+        g.apply_global_change("subject", None).unwrap();
+        assert!(g.globals().get("subject").is_none());
+        // System globals can't be deleted.
+        assert!(g.apply_global_change("default_ufreq", None).is_err());
+        // A load (clear) resets globals to the fresh system-seeded store.
+        g.apply_global_change("u", Some(GlobalValue::Bool(true))).unwrap();
+        g.clear();
+        assert!(g.globals().get("u").is_none(), "user globals cleared on load");
+        assert_eq!(g.globals().get("default_ufreq"), Some(&GlobalValue::Float(30.0)), "system re-seeded");
+    }
 
     #[test]
     fn param_from_json_coerces_each_type_and_gates_trigger_firing() {
