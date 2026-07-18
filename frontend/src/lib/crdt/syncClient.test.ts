@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import * as Y from 'yjs';
 import { FakeControl } from '$lib/test/fakeControl';
-import { SyncClient, REMOTE_ORIGIN } from './syncClient';
+import { SyncClient, REMOTE_ORIGIN, LOCAL_ORIGIN } from './syncClient';
 import { decodeSyncMsg, encodeSyncMsg, syncHello } from './syncProtocol';
 import { encodeEphemeral } from './ephemeral';
 import { nodeView, paramValue, setParamValue } from './graphDoc';
@@ -155,6 +155,16 @@ describe('SyncClient', () => {
 		// Applying the broadcast delta advances the (already-synced) server to the new value.
 		Y.applyUpdate(server, msg!.payload);
 		expect(paramValue(server, '1', 'common', 'freq')).toBe(9);
+	});
+
+	it('tags a local commit with LOCAL_ORIGIN so the UndoManager can scope it', () => {
+		const ctl = new FakeControl();
+		const client = new SyncClient(ctl);
+		seedClientNode(client); // seeded before we attach the observer
+		let origin: unknown = 'unset';
+		client.doc.on('afterTransaction', (txn) => (origin = txn.origin));
+		client.commit((doc) => setParamValue(doc, '1', 'common', 'freq', 3));
+		expect(origin).toBe(LOCAL_ORIGIN);
 	});
 
 	it('reset() replaces the replica with a fresh empty doc that pushes nothing stale', () => {

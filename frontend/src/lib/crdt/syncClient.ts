@@ -14,6 +14,11 @@ import { EphemeralStore, encodeEphemeral, decodeEphemeral } from './ephemeral';
  * doc observers can distinguish the manager's changes from this client's own local edits. */
 export const REMOTE_ORIGIN = 'goofi:remote';
 
+/** Origin tag stamped on this client's OWN leaf-write transactions (`commit`). Lets a
+ * client-scoped `Y.UndoManager` track only my edits — undo reverses my last change, ignoring the
+ * manager's structural writes and other clients' edits (both `REMOTE_ORIGIN`). See `undoManager.ts`. */
+export const LOCAL_ORIGIN = 'goofi:local';
+
 export class SyncClient {
 	/** The replica doc. Swapped by `reset()` on a fresh backend session, so read it via the getter
 	 * (never cache the reference across a reset). */
@@ -123,7 +128,9 @@ export class SyncClient {
 		};
 		this.doc.on('update', capture);
 		try {
-			this.doc.transact(() => mutate(this.doc));
+			// Tag with LOCAL_ORIGIN so the client's UndoManager captures this leaf write as one of
+			// MY edits (structural writes arrive under REMOTE_ORIGIN and are ignored by undo).
+			this.doc.transact(() => mutate(this.doc), LOCAL_ORIGIN);
 		} finally {
 			this.doc.off('update', capture);
 		}
