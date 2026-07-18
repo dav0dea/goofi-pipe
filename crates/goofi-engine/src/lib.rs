@@ -1068,6 +1068,51 @@ impl Graph {
         Ok(())
     }
 
+    /// Remove a MEMBER of a sub-patch (a leaf or nested instance living inside an instance's
+    /// scope). Unlike `remove_node`/`remove_instance` — which only tear down a live entity —
+    /// this also edits the member's DEF so the removal is permanent and mirror-correct:
+    ///   1. drop the member's decl from the def, any internal link touching it, and any boundary
+    ///      whose inner endpoint is it (that port loses its target);
+    ///   2. detach it from every instance of the def (the original + all strict-mirror siblings)
+    ///      and tear down each detached live entity (nested subtree via `remove_instance`, leaf via
+    ///      `remove_node`, which also drops the external flat links into it).
+    /// The instance(s) survive their remaining members; a member with no scope never reaches here.
+    /// Because the def is the shared SSOT, editing it once cascades to every sibling for free — the
+    /// same strict-mirror discipline `update_member_param` / boundary authoring follow. Editing the
+    /// def is also what stops a save/reload from re-materializing the removed member.
+    pub fn remove_member(&mut self, member: Uid) -> Result<(), String> {
+        let inst = self
+            .scope_of(member)
+            .ok_or_else(|| format!("remove_member: {member} is not a sub-patch member"))?;
+        let local = self
+            .member_local(inst, member)
+            .ok_or_else(|| format!("remove_member: {member} not found in its instance"))?;
+        let def_id = self.def_id_of(inst)?;
+        // 1. Edit the shared def.
+        let def = self.defs.get_mut(&def_id).ok_or("remove_member: missing def")?;
+        def.members.shift_remove(&local);
+        def.links.retain(|l| l.out != local && l.in_ != local);
+        def.interface.retain(|_, b| b.inner.as_ref().map(|(l, _)| *l != local).unwrap_or(true));
+        // 2. Detach the member from every instance of this def (original + siblings), collecting the
+        //    live uids to tear down (the members-map edit ends the borrow before step 3 mutates self).
+        let victims: Vec<Uid> = self
+            .instances
+            .values_mut()
+            .filter(|i| i.def_id == def_id)
+            .filter_map(|i| i.members.shift_remove(&local))
+            .collect();
+        // 3. Tear down each detached entity: a nested instance subtree, else a leaf (tolerate an
+        //    already-gone uid, mirroring `remove_instance`'s member teardown).
+        for uid in victims {
+            if self.instances.contains_key(&uid) {
+                self.remove_instance(uid)?;
+            } else {
+                let _ = self.remove_node(uid);
+            }
+        }
+        Ok(())
+    }
+
     // ── Boundary authoring (interface entries on a def; never live nodes) ─────────
     // A boundary is a naming indirection over an inner leaf slot. All edits mutate the
     // instance's DEF, so on a shared def they mirror to every sibling for free (the def is
@@ -4529,6 +4574,94 @@ mod tests {
         g.remove_instance(inst).unwrap();
         assert_eq!(g.node_uids().len(), 0, "all leaves torn down");
         assert!(g.def(def_id).is_none(), "def GC'd once unreferenced");
+    }
+
+    #[test]
+    fn remove_member_drops_a_leaf_from_a_unique_subpatch() {
+        // Deleting a node INSIDE a sub-patch removes it from the def AND the instance, keeping the
+        // sub-patch and its other members. The def must no longer declare it (else a reload
+        // resurrects it), and the instance's members map must not keep a dangling entry.
+        let mut g = Graph::new();
+        let a = g.add_node("_TestConst", None).unwrap();
+        let b = g.add_node("_TestEcho", None).unwrap();
+        g.add_link(a, "out", b, "in").unwrap();
+        let inst = g.group_nodes(&[a, b], [0.0, 0.0]).unwrap();
+        let def_id = g.instance(inst).unwrap().def_id;
+        assert_eq!(g.node_uids().len(), 2);
+
+        g.remove_member(a).unwrap();
+
+        assert!(!g.node_uids().iter().any(|&u| u == a), "the member leaf is gone");
+        assert_eq!(g.node_uids().len(), 1, "only the other member remains");
+        let i = g.instance(inst).unwrap();
+        assert_eq!(i.members.len(), 1, "instance keeps just its other member");
+        assert!(!i.members.values().any(|&u| u == a), "no dangling member uid");
+        assert_eq!(g.def(def_id).unwrap().members.len(), 1, "the def no longer declares the removed member");
+        assert!(g.instance(inst).is_some(), "the sub-patch itself survives");
+    }
+
+    #[test]
+    fn a_removed_member_is_not_resurrected_on_reload() {
+        // The def is what a reload re-materializes from — if it still declared the removed member,
+        // the member would come back. Round-trip the patch and assert it does not.
+        let mut g = Graph::new();
+        let a = g.add_node("_TestConst", None).unwrap();
+        let b = g.add_node("_TestEcho", None).unwrap();
+        g.add_link(a, "out", b, "in").unwrap();
+        let inst = g.group_nodes(&[a, b], [0.0, 0.0]).unwrap();
+        g.remove_member(a).unwrap();
+        let _ = inst;
+
+        let yaml = g.serialize();
+        let mut g2 = Graph::new();
+        g2.load_doc(&yaml).unwrap();
+        assert_eq!(g2.node_uids().len(), 1, "reload does not resurrect the removed member");
+        let inst2 = g2.instance_uids()[0];
+        assert_eq!(g2.instance(inst2).unwrap().members.len(), 1, "one member after reload");
+    }
+
+    #[test]
+    fn remove_member_of_a_shared_subpatch_cascades_to_every_sibling() {
+        // A shared sub-patch strict-mirrors: removing a member from one instance removes the
+        // mirrored member from every sibling (the def is the shared SSOT).
+        let mut g = Graph::new();
+        let a = g.add_node("_TestConst", None).unwrap();
+        let b = g.add_node("_TestEcho", None).unwrap();
+        g.add_link(a, "out", b, "in").unwrap();
+        let inst = g.group_nodes(&[a, b], [0.0, 0.0]).unwrap();
+        let def_id = g.instance(inst).unwrap().def_id;
+        let sib = g.duplicate_shared(inst, [50.0, 50.0]).unwrap();
+        assert_eq!(g.node_uids().len(), 4, "two members per sibling");
+
+        g.remove_member(a).unwrap(); // `a` is the original's member; the sibling mirrors it
+
+        assert_eq!(g.node_uids().len(), 2, "the mirrored member is removed from BOTH siblings");
+        assert_eq!(g.instance(inst).unwrap().members.len(), 1, "original has one member");
+        assert_eq!(g.instance(sib).unwrap().members.len(), 1, "sibling has one member");
+        assert_eq!(g.def(def_id).unwrap().members.len(), 1, "the shared def declares one member");
+    }
+
+    #[test]
+    fn remove_member_drops_a_boundary_exposing_it_and_its_external_wire() {
+        // Group only `b` so a.out → b.in becomes an INPUT boundary fed by the external `a`. Removing
+        // `b` (the boundary's inner target) drops the boundary AND the external flat link.
+        let mut g = Graph::new();
+        let a = g.add_node("_TestConst", None).unwrap();
+        let b = g.add_node("_TestEcho", None).unwrap();
+        g.add_link(a, "out", b, "in").unwrap();
+        let inst = g.group_nodes(&[b], [0.0, 0.0]).unwrap();
+        let def_id = g.instance(inst).unwrap().def_id;
+        assert_eq!(g.def(def_id).unwrap().interface.len(), 1, "one input boundary onto b");
+        assert_eq!(g.links_view().len(), 1, "the external wire resolved to a flat a.out → b.in");
+
+        g.remove_member(b).unwrap();
+
+        let def = g.def(def_id).unwrap();
+        assert_eq!(def.members.len(), 0, "no members left");
+        assert_eq!(def.interface.len(), 0, "the boundary exposing the removed member is dropped");
+        assert!(!g.node_uids().iter().any(|&u| u == b), "member gone");
+        assert_eq!(g.links_view().len(), 0, "the external wire to the removed member is dropped");
+        assert!(g.instance(inst).is_some(), "the (now-empty) instance survives");
     }
 
     #[test]

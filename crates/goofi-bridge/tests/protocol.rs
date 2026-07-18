@@ -1640,15 +1640,11 @@ async fn add_node_restores_a_specific_uid_and_name() {
 }
 
 #[tokio::test]
-async fn removing_a_grouped_member_reaches_the_client_via_the_doc() {
-    // Removing a node that lives inside a sub-patch reaches the client through the doc, not the
-    // retired `node_removed` event: the node drops out of the doc's `nodes`, and the instance
-    // survives its other member. (The scope-carrying `node_removed` payload was needed only by the
-    // old client-side member index, which the doc-authoritative reconcile replaced.)
-    // NOTE: `remove_node` does not prune the vanished uid from the instance's `members` map — the
-    // forest keeps a dangling entry. That's a pre-existing quirk (the frontend has ignored
-    // `node_removed` since the Phase-2 read cutover, so Phase 4 doesn't change it), flagged for the
-    // post-migration audit; this test deliberately asserts only the node-level removal.
+async fn removing_a_grouped_member_updates_the_instance_forest_in_the_doc() {
+    // Removing a node inside a sub-patch reaches the client through the doc, not the retired
+    // `node_removed` event: the node drops out of the doc's `nodes`, and — because `remove_member`
+    // edits the def — out of the instance's `members` map too (no dangling entry). The instance
+    // survives its other member.
     let base = start_server().await;
     let (mut ws, _) = connect_async(format!("{base}/control")).await.unwrap();
     let _hello = recv_text(&mut ws).await;
@@ -1662,13 +1658,18 @@ async fn removing_a_grouped_member_reaches_the_client_via_the_doc() {
         .unwrap()
         .to_string();
 
-    // Remove the grouped member `osc`. Anchor on the leaf count settling to 1 (buf) — a completed
-    // sync — rather than osc's absence (true of an empty replica) or the pre-removal 2-leaf sync.
+    // Remove the grouped member `osc`. Anchor on the surviving instance settling to its single
+    // remaining member (buf) — a completed sync — rather than osc's absence (true of an empty replica).
     call(&mut ws, 4, "remove_node", json!({ "node": osc })).await;
-    let doc = sync_replica(&mut ws, |d| d.node_ids().len() == 1).await;
+    let doc = sync_replica(&mut ws, |d| {
+        d.to_json()["instances"][&inst]["members"].as_object().map(|m| m.len()) == Some(1)
+    })
+    .await;
+    let members = doc.to_json()["instances"][&inst]["members"].as_object().unwrap().clone();
     assert!(
-        !doc.node_ids().iter().any(|u| *u == osc),
-        "osc removed from the graph — the removal reaches the client via the doc"
+        !members.values().any(|v| v.as_str() == Some(osc.as_str())),
+        "osc dropped from the instance's members (no dangling entry); got {members:?}"
     );
+    assert!(!doc.node_ids().iter().any(|u| *u == osc), "osc gone from the graph");
     assert!(doc.instance_ids().iter().any(|u| *u == inst), "the instance survives its other member");
 }

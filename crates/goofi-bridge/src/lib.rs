@@ -559,19 +559,22 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
             }
             "remove_node" => {
                 let uid = parse_uid(&payload, "node")?;
-                // Delete-on-an-instance (and the inverse of duplicate_shared) routes here with an
-                // instance uid — tear down the whole subtree and broadcast the new snapshot.
-                if g.instance(uid).is_some() {
+                // Route by what the uid is. A sub-patch MEMBER (leaf or nested instance living in an
+                // instance's scope) is removed from its def AND every strict-mirror sibling via
+                // remove_member — so deleting a node inside a sub-patch doesn't leave a dangling
+                // member the def would resurrect on reload. A TOP-LEVEL instance (collapsed sub-patch
+                // delete, or the inverse of duplicate_shared) tears down its subtree; a top-level leaf
+                // is a plain remove. Every result reaches clients via the post-dispatch re-mirror
+                // (the node_removed / subpatch_changed echoes are retired — the frontend reconciles
+                // the whole forest from the doc).
+                if g.scope_of(uid).is_some() {
+                    g.remove_member(uid)?;
+                } else if g.instance(uid).is_some() {
                     g.remove_instance(uid)?;
-                    // The torn-down subtree reaches clients via the post-dispatch re-mirror.
-                    Ok(json!({ "ok": true }))
                 } else {
                     g.remove_node(uid)?;
-                    // The removal reaches clients via the post-dispatch re-mirror (node_removed
-                    // retired): the frontend reconciles the whole forest from the doc, so it needs
-                    // no per-op echo carrying the member's scope.
-                    Ok(json!({ "ok": true }))
                 }
+                Ok(json!({ "ok": true }))
             }
             // Links are read from the CRDT doc (Phase 2) — the resolved flat link rides the re-mirror
             // after dispatch. The old `link_added`/`link_removed` events had no client consumer.
