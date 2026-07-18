@@ -1,0 +1,13 @@
+{
+	"name": "goofi-e2e",
+	"private": true,
+	"description": "Playwright end-to-end suite driving the real goofi-pipe backend + SPA.",
+	"scripts": {
+		"build:backend": "cargo build --manifest-path ../../Cargo.toml -p goofi-cli",
+		"e2e": "npm run build:backend && playwright test",
+		"test": "playwright test"
+	},
+	"devDependencies": {
+		"@playwright/test": "^1.61.0"
+	}
+}
