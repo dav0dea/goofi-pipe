@@ -77,11 +77,17 @@ class _Globals:
     # The `globals` namespace an expression reads as `globals.<name>`. A missing name raises
     # NameError — the natural "not defined" error, per the spec: no rename cascade, a stale
     # reference just throws at eval time.
+    #
+    # Overrides __getattribute__ (not __getattr__), so EVERY name routes through the dict — a global
+    # legally named like the internal slot (`_d`) or an object dunder (`__class__`) would otherwise be
+    # served by normal attribute lookup and never reach the dict. `is_valid_global_name` permits
+    # leading-underscore names, so this is reachable. The slot is read via the base impl to avoid
+    # recursing back through __getattribute__.
     __slots__ = ("_d",)
     def __init__(self, d):
-        self._d = d
-    def __getattr__(self, name):
-        d = self._d
+        object.__setattr__(self, "_d", d)
+    def __getattribute__(self, name):
+        d = object.__getattribute__(self, "_d")
         if name in d:
             return d[name]
         raise NameError("global '%s' is not defined" % name)
@@ -442,6 +448,15 @@ mod tests {
         let sp = Param::Str { value: String::new(), options: None, refresh: false };
         let rs = eval_with_globals("globals.subject", 0.0, Refs::new(), &sp, &gs).unwrap();
         assert!(matches!(rs, Param::Str { value, .. } if value == "P07"));
+    }
+
+    #[test]
+    fn a_global_named_like_a_slot_or_dunder_is_still_readable() {
+        // `is_valid_global_name` permits leading-underscore names, so `_d` (the proxy's internal slot
+        // name) and dunder-ish names must still read from the dict, not the proxy's own attributes.
+        let g = snap(&[("_d", GlobalValue::Float(5.0)), ("__class__", GlobalValue::Int(9))]);
+        let r = eval_with_globals("globals._d + globals.__class__", 0.0, Refs::new(), &fparam(), &g).unwrap();
+        assert!(matches!(r, Param::Float { value, .. } if (value - 14.0).abs() < 1e-9));
     }
 
     #[test]
