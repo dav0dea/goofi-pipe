@@ -171,6 +171,37 @@ pub fn param_from_json(existing: &Param, v: &serde_json::Value, fire_triggers: b
     }
 }
 
+/// A global's value as a `{value, type}` JSON object — the shape used in the `.gfi` and the CRDT
+/// doc. The `type` tag preserves float-vs-int after JSON's whole-float normalization. SSOT reused by
+/// the bridge's CRDT mirror (like [`param_from_json`]).
+pub fn global_to_json(v: &goofi_core::globals::GlobalValue) -> serde_json::Value {
+    use goofi_core::globals::GlobalValue;
+    use serde_json::json;
+    let value = match v {
+        GlobalValue::Float(x) => json!(x),
+        GlobalValue::Int(x) => json!(x),
+        GlobalValue::Bool(x) => json!(x),
+        GlobalValue::Str(s) => json!(s),
+    };
+    json!({ "value": value, "type": v.type_tag() })
+}
+
+/// Parse a `{value, type}` JSON entry into a [`goofi_core::globals::GlobalValue`] (type-directed);
+/// `None` if malformed. Inverse of [`global_to_json`].
+pub fn global_from_json(entry: &serde_json::Value) -> Option<goofi_core::globals::GlobalValue> {
+    use goofi_core::globals::GlobalValue;
+    let value = entry.get("value")?;
+    match entry.get("type").and_then(|t| t.as_str())? {
+        "float" => Some(GlobalValue::Float(value.as_f64()?)),
+        "int" => Some(GlobalValue::Int(
+            value.as_i64().or_else(|| value.as_f64().map(|f| f.round() as i64))?,
+        )),
+        "bool" => Some(GlobalValue::Bool(value.as_bool()?)),
+        "string" => Some(GlobalValue::Str(value.as_str()?.to_string())),
+        _ => None,
+    }
+}
+
 /// A node factory that can capture runtime state (a Python class handle, a device
 /// descriptor). Used for node types discovered at runtime rather than compiled
 /// into the `inventory` catalog — a bare `fn` pointer can't close over such state.
@@ -1828,9 +1859,17 @@ impl Graph {
         }
 
         let root = json!({ "nodes": Value::Object(nodes), "links": links, "instances": Value::Object(inst_map) });
+        // Globals (system + user) as `{name: {value, type}}`. On load, entries `set` existing system
+        // globals and `add` user ones, then `reassert_system` back-fills; so a system global always
+        // round-trips and an older patch simply picks up any new system default.
+        let mut globals = serde_json::Map::new();
+        for (name, value, _is_system) in self.globals.entries() {
+            globals.insert(name.to_string(), global_to_json(value));
+        }
         let doc = json!({
-            "version": 4,
+            "version": 5,
             "pillar_default": "signal",
+            "globals": Value::Object(globals),
             "definitions": Value::Object(definitions),
             "root": root,
         });
@@ -1845,11 +1884,12 @@ impl Graph {
         let doc: serde_json::Value = serde_yaml_ng::from_str(text).map_err(|e| e.to_string())?;
         let (nodes_v, links_v) = match doc.get("version").and_then(|v| v.as_i64()) {
             Some(3) => (doc.get("nodes"), doc.get("links")),
-            Some(4) => {
+            // v4 and v5 share the `root` nesting; v5 adds the top-level `globals` block (loaded below).
+            Some(4) | Some(5) => {
                 let root = doc.get("root");
                 (root.and_then(|r| r.get("nodes")), root.and_then(|r| r.get("links")))
             }
-            _ => return Err("unsupported .gfi version (expected 3 or 4)".into()),
+            _ => return Err("unsupported .gfi version (expected 3, 4, or 5)".into()),
         };
         let nodes = nodes_v.and_then(|v| v.as_object()).ok_or("missing `nodes`")?;
         for rec in nodes.values() {
@@ -1860,6 +1900,16 @@ impl Graph {
         }
 
         self.clear();
+        // Globals load BEFORE nodes so a node's `globals.*` param default-expression resolves at
+        // instantiation. `clear()` already re-seeded the system globals; each entry sets an existing
+        // (system) global or adds a user one. Malformed entries are skipped (best-effort load).
+        if let Some(globals) = doc.get("globals").and_then(|v| v.as_object()) {
+            for (name, entry) in globals {
+                if let Some(value) = global_from_json(entry) {
+                    let _ = self.globals.apply_change(name, Some(value));
+                }
+            }
+        }
         let mut idmap: HashMap<String, Uid> = HashMap::new();
         for (old, rec) in nodes {
             let ty = rec["type"].as_str().unwrap();
@@ -3297,7 +3347,7 @@ mod tests {
         g.add_link(c, "out", echo, "in").unwrap();
 
         let yaml = g.serialize();
-        assert!(yaml.contains("version: 4"));
+        assert!(yaml.contains("version: 5"));
 
         let mut g2 = Graph::new();
         g2.load_doc(&yaml).unwrap();
@@ -3813,14 +3863,14 @@ mod tests {
     }
 
     #[test]
-    fn serialize_emits_v4_root_nested_and_roundtrips() {
-        // .gfi v4: version 4, a `pillar_default`, and nodes/links nested under `root`
-        // (the recursive multi-pillar envelope). A signal-only patch round-trips.
+    fn serialize_emits_v5_root_nested_and_roundtrips() {
+        // .gfi v5: version 5, a `pillar_default`, nodes/links nested under `root`, plus a `globals`
+        // block (the recursive multi-pillar envelope). A signal-only patch round-trips.
         let mut g = Graph::new();
         let n = g.add_node("_TestConst", None).unwrap();
         g.update_param(n, "constant", "value", Param::float(7.0, -1.0e9, 1.0e9)).unwrap();
         let yaml = g.serialize();
-        assert!(yaml.contains("version: 4"), "emits v4; got:\n{yaml}");
+        assert!(yaml.contains("version: 5"), "emits v5; got:\n{yaml}");
         assert!(yaml.contains("pillar_default: signal"), "carries the default pillar");
         assert!(yaml.contains("root:"), "nodes/links nested under root");
         let mut g2 = Graph::new();
@@ -3830,7 +3880,41 @@ mod tests {
         assert_eq!(
             goofi_node::param(g2.params(uid2).unwrap(), "constant", "value").unwrap().as_f64(),
             Some(7.0),
-            "param round-trips through v4",
+            "param round-trips through v5",
+        );
+    }
+
+    #[test]
+    fn globals_round_trip_through_gfi_v5() {
+        use goofi_core::globals::GlobalValue;
+        let mut g = Graph::new();
+        g.apply_global_change("default_ufreq", Some(GlobalValue::Float(60.0))).unwrap();
+        g.apply_global_change("subject", Some(GlobalValue::Str("P07".into()))).unwrap();
+        g.apply_global_change("trials", Some(GlobalValue::Int(12))).unwrap();
+        g.apply_global_change("live", Some(GlobalValue::Bool(true))).unwrap();
+        let yaml = g.serialize();
+
+        let mut g2 = Graph::new();
+        g2.load_doc(&yaml).unwrap();
+        assert_eq!(g2.globals().get("default_ufreq"), Some(&GlobalValue::Float(60.0)), "edited system value");
+        assert!(g2.globals().is_system("default_ufreq"), "still system after load");
+        assert_eq!(g2.globals().get("subject"), Some(&GlobalValue::Str("P07".into())));
+        assert_eq!(g2.globals().get("trials"), Some(&GlobalValue::Int(12)), "int type preserved (not floated)");
+        assert_eq!(g2.globals().get("live"), Some(&GlobalValue::Bool(true)));
+        assert!(!g2.globals().is_system("subject"), "user global loads as user");
+    }
+
+    #[test]
+    fn v4_patch_loads_with_system_globals_seeded() {
+        // A pre-globals v4 patch (no `globals` block) loads fine — the system defaults are seeded.
+        let v4 = "version: 4\npillar_default: signal\ndefinitions: {}\nroot:\n  nodes:\n    n0: { type: _TestConst, name: c0, pos: [1.0, 2.0], params: {} }\n  links: []\n  instances: {}\n";
+        let mut g = Graph::new();
+        g.load_doc(v4).unwrap();
+        assert_eq!(g.node_uids().len(), 1, "v4 nodes load");
+        assert_eq!(
+            g.globals().get("default_ufreq"),
+            Some(&goofi_core::globals::GlobalValue::Float(30.0)),
+            "system default seeded on a globals-less patch",
         );
     }
 

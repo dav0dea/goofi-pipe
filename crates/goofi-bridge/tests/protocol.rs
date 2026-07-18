@@ -1238,8 +1238,9 @@ async fn serialize_and_load_roundtrip() {
     call(&mut ws, 1, "add_node", json!({ "type": "Oscillator" })).await;
     let ser = call(&mut ws, 2, "serialize", json!({})).await;
     let yaml = ser["result"]["yaml"].as_str().unwrap().to_string();
-    assert!(yaml.contains("version: 4"), "gfi v4 header");
+    assert!(yaml.contains("version: 5"), "gfi v5 header");
     assert!(yaml.contains("Oscillator"), "node persisted");
+    assert!(yaml.contains("default_ufreq"), "globals block persisted");
 
     // load_text replaces the graph and broadcasts graph_replaced.
     ws.send(Message::Text(
