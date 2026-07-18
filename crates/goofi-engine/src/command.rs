@@ -11,6 +11,7 @@
 //! `Compound` that re-adds the node with its uid + params, then re-adds its links).
 
 use crate::{Graph, Uid};
+use goofi_core::globals::GlobalValue;
 use goofi_core::Param;
 use goofi_node::{param, ParamGroups};
 
@@ -58,6 +59,31 @@ pub enum Command {
         group: String,
         name: String,
         value: Param,
+    },
+    RenameNode {
+        uid: Uid,
+        name: String,
+    },
+    MoveNode {
+        uid: Uid,
+        pos: [f64; 2],
+    },
+    SetExpression {
+        uid: Uid,
+        group: String,
+        name: String,
+        source: String,
+        enabled: bool,
+        triggers: bool,
+    },
+    /// Upsert (`Some`) or remove (`None`) a global — one command covers add / edit / delete.
+    SetGlobal {
+        name: String,
+        value: Option<GlobalValue>,
+    },
+    RenameGlobal {
+        from: String,
+        to: String,
     },
 }
 
@@ -122,6 +148,59 @@ impl Command {
                     .ok_or_else(|| format!("set_param: no param {group}.{name} on {}", uid.to_hex()))?;
                 g.update_param(uid, &group, &name, value)?;
                 Ok((Outcome::Ok, Command::SetParam { uid, group, name, value: old }))
+            }
+
+            Command::RenameNode { uid, name } => {
+                if !g.contains(uid) {
+                    return Ok((Outcome::Ok, Command::Compound(vec![]))); // idempotent: node gone
+                }
+                let old = g.name(uid).unwrap_or("").to_string();
+                g.rename_node(uid, &name)?;
+                Ok((Outcome::Ok, Command::RenameNode { uid, name: old }))
+            }
+
+            Command::MoveNode { uid, pos } => {
+                let Some(old) = g.pos(uid) else {
+                    return Ok((Outcome::Ok, Command::Compound(vec![]))); // idempotent: node gone
+                };
+                g.set_node_pos(uid, pos)?;
+                Ok((Outcome::Ok, Command::MoveNode { uid, pos: old }))
+            }
+
+            Command::SetExpression { uid, group, name, source, enabled, triggers } => {
+                if !g.contains(uid) {
+                    return Ok((Outcome::Ok, Command::Compound(vec![]))); // idempotent: node gone
+                }
+                let old = g.param_expression(uid, &group, &name);
+                g.set_expression(uid, &group, &name, &source, enabled, triggers)?;
+                let inverse = match old {
+                    Some(e) => Command::SetExpression {
+                        uid,
+                        group,
+                        name,
+                        source: e.source,
+                        enabled: e.enabled,
+                        triggers: e.triggers_process,
+                    },
+                    // No prior binding → the inverse is a clear (empty source unbinds).
+                    None => Command::SetExpression { uid, group, name, source: String::new(), enabled: false, triggers: false },
+                };
+                Ok((Outcome::Ok, inverse))
+            }
+
+            Command::SetGlobal { name, value } => {
+                let old = g.globals().get(&name).cloned();
+                g.apply_global_change(&name, value)?;
+                Ok((Outcome::Ok, Command::SetGlobal { name, value: old }))
+            }
+
+            Command::RenameGlobal { from, to } => {
+                let Some(value) = g.globals().get(&from).cloned() else {
+                    return Ok((Outcome::Ok, Command::Compound(vec![]))); // idempotent: nothing to rename
+                };
+                g.apply_global_change(&from, None)?;
+                g.apply_global_change(&to, Some(value))?;
+                Ok((Outcome::Ok, Command::RenameGlobal { from: to, to: from }))
             }
         }
     }
@@ -247,5 +326,86 @@ mod tests {
 
         inverse.execute(&mut g).unwrap();
         assert_eq!(g.links_view().len(), 0, "inverse removed the link");
+    }
+
+    #[test]
+    fn rename_node_round_trips() {
+        let mut g = Graph::new();
+        let osc = g.add_node("Oscillator", None).unwrap();
+        let before = g.name(osc).unwrap().to_string();
+
+        let (_r, inverse) = Command::RenameNode { uid: osc, name: "renamed".into() }.execute(&mut g).unwrap();
+        assert_eq!(g.name(osc), Some("renamed"));
+        inverse.execute(&mut g).unwrap();
+        assert_eq!(g.name(osc), Some(before.as_str()), "inverse restores the old name");
+    }
+
+    #[test]
+    fn move_node_round_trips() {
+        let mut g = Graph::new();
+        let osc = g.add_node("Oscillator", None).unwrap();
+        g.set_node_pos(osc, [3.0, 4.0]).unwrap();
+
+        let (_r, inverse) = Command::MoveNode { uid: osc, pos: [10.0, 20.0] }.execute(&mut g).unwrap();
+        assert_eq!(g.pos(osc), Some([10.0, 20.0]));
+        inverse.execute(&mut g).unwrap();
+        assert_eq!(g.pos(osc), Some([3.0, 4.0]), "inverse restores the old position");
+    }
+
+    #[test]
+    fn set_expression_inverse_clears_a_freshly_bound_param() {
+        let mut g = Graph::new();
+        let osc = g.add_node("Oscillator", None).unwrap();
+        assert!(g.param_expression(osc, "common", "max_frequency").is_none());
+
+        let (_r, inverse) = Command::SetExpression {
+            uid: osc,
+            group: "common".into(),
+            name: "max_frequency".into(),
+            source: "globals.default_ufreq".into(),
+            enabled: true,
+            triggers: false,
+        }
+        .execute(&mut g)
+        .unwrap();
+        assert_eq!(g.param_expression(osc, "common", "max_frequency").map(|e| e.source), Some("globals.default_ufreq".into()));
+
+        inverse.execute(&mut g).unwrap();
+        assert!(g.param_expression(osc, "common", "max_frequency").is_none(), "inverse cleared the binding");
+    }
+
+    #[test]
+    fn set_global_covers_add_edit_remove_with_inverses() {
+        let mut g = Graph::new();
+        // Add a fresh user global; the inverse removes it (old was absent).
+        let (_r, undo_add) = Command::SetGlobal { name: "subj".into(), value: Some(GlobalValue::Str("P01".into())) }
+            .execute(&mut g)
+            .unwrap();
+        assert_eq!(g.globals().get("subj"), Some(&GlobalValue::Str("P01".into())));
+
+        // Edit it; the inverse restores the prior value.
+        let (_r, undo_edit) = Command::SetGlobal { name: "subj".into(), value: Some(GlobalValue::Str("P02".into())) }
+            .execute(&mut g)
+            .unwrap();
+        undo_edit.execute(&mut g).unwrap();
+        assert_eq!(g.globals().get("subj"), Some(&GlobalValue::Str("P01".into())), "edit undone");
+
+        // Undo the add → the global is gone again.
+        undo_add.execute(&mut g).unwrap();
+        assert_eq!(g.globals().get("subj"), None, "add undone");
+    }
+
+    #[test]
+    fn rename_global_round_trips() {
+        let mut g = Graph::new();
+        g.apply_global_change("subj", Some(GlobalValue::Int(7))).unwrap();
+
+        let (_r, inverse) = Command::RenameGlobal { from: "subj".into(), to: "subject".into() }.execute(&mut g).unwrap();
+        assert_eq!(g.globals().get("subj"), None);
+        assert_eq!(g.globals().get("subject"), Some(&GlobalValue::Int(7)), "value moved to the new name");
+
+        inverse.execute(&mut g).unwrap();
+        assert_eq!(g.globals().get("subject"), None);
+        assert_eq!(g.globals().get("subj"), Some(&GlobalValue::Int(7)), "inverse restores the old name + value");
     }
 }
