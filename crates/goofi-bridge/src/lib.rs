@@ -66,9 +66,14 @@ impl AppState {
             .unwrap_or(0);
         let (sync_updates, _) = broadcast::channel(256);
         let (ephemeral, _) = broadcast::channel(256);
-        let crdt = goofi_crdt::GraphDoc::new();
+        // Mirror the INITIAL graph (empty nodes + the seeded system globals) into the doc so a client
+        // connecting to a fresh backend syncs the current state immediately (e.g. `default_ufreq`),
+        // rather than an empty doc that stays blank until the first mutation re-mirrors.
+        let graph_val = Graph::new();
+        let mut crdt = goofi_crdt::GraphDoc::new();
+        crdt_mirror::sync_graph_to_doc(&graph_val, &mut crdt);
         let last_sync_sv = Arc::new(Mutex::new(crdt.state_vector()));
-        let graph = Arc::new(Mutex::new(Graph::new()));
+        let graph = Arc::new(Mutex::new(graph_val));
         let reducers = reducer::SlotReducers::new(graph.clone());
         AppState {
             graph,
@@ -981,6 +986,20 @@ mod param_coerce_tests {
     use super::*;
     use goofi_core::Param;
     use serde_json::json;
+
+    #[test]
+    fn fresh_appstate_mirrors_seeded_globals_into_the_doc() {
+        // A fresh backend must serve a doc that already carries the seeded system globals, so a
+        // client connecting BEFORE any mutation syncs `default_ufreq` — not an empty doc that stays
+        // blank until the first edit. (Regression: the e2e globals-panel flow saw an empty doc.)
+        let state = AppState::new();
+        let doc = state.crdt.lock().unwrap();
+        let j = doc.to_json();
+        assert!(
+            j.get("globals").and_then(|g| g.get("default_ufreq")).is_some(),
+            "fresh doc must carry the seeded system global; got {j}"
+        );
+    }
 
     #[test]
     fn int_param_rounds_fractional_instead_of_zeroing() {
