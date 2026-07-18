@@ -124,9 +124,8 @@ impl GlobalsSnapshot {
     pub fn new(map: IndexMap<String, GlobalValue>) -> GlobalsSnapshot {
         GlobalsSnapshot { map: Arc::new(map) }
     }
-    pub fn get(&self, name: &str) -> Option<&GlobalValue> {
-        self.map.get(name)
-    }
+    // Typed scalar reads — the node-authoring surface (`ctx.globals.f64("default_ufreq")`), mirroring
+    // the four `Params<'a>` readers. `iter()` is the eval-namespace escape hatch (expr injection).
     pub fn f64(&self, name: &str) -> Option<f64> {
         self.map.get(name)?.as_f64()
     }
@@ -142,15 +141,13 @@ impl GlobalsSnapshot {
     pub fn iter(&self) -> impl Iterator<Item = (&String, &GlobalValue)> {
         self.map.iter()
     }
-    pub fn is_empty(&self) -> bool {
-        self.map.is_empty()
-    }
 }
 
 /// The engine's authoritative globals map + the system-set invariant. System globals are seeded on
-/// construction (and re-asserted after a load); they may be edited but never removed or renamed.
-/// User globals may be added, edited, removed, and renamed. Insertion order (system first, then user
-/// in creation order) is preserved for a stable panel.
+/// construction (and re-asserted after a load); they may be edited but never removed. User globals
+/// may be added, edited, and removed. (Rename is not a store op — it arrives as a remove + add
+/// through the CRDT diff, since a CRDT map can't rename a key in place.) Insertion order (system
+/// first, then user in creation order) is preserved for a stable panel.
 #[derive(Clone)]
 pub struct GlobalStore {
     values: IndexMap<String, GlobalValue>,
@@ -243,31 +240,6 @@ impl GlobalStore {
         Ok(())
     }
 
-    /// Rename a USER global (references are NOT rewritten — a stale `globals.<old>` throws the natural
-    /// missing-key error at eval time). Errors if system, absent, the new name is invalid, or it
-    /// collides. Preserves position (rename in place).
-    pub fn rename(&mut self, old: &str, new: &str) -> Result<(), String> {
-        if self.system.contains(old) {
-            return Err(format!("cannot rename system global `{old}`"));
-        }
-        if old == new {
-            return Ok(());
-        }
-        if !is_valid_global_name(new) {
-            return Err(format!("invalid global name `{new}`"));
-        }
-        if self.values.contains_key(new) {
-            return Err(format!("global `{new}` already exists"));
-        }
-        let Some(idx) = self.values.get_index_of(old) else {
-            return Err(format!("no such global `{old}`"));
-        };
-        let value = self.values.shift_remove(old).unwrap();
-        // Re-insert at the old position so the panel row doesn't jump to the bottom on rename.
-        self.values.shift_insert(idx, new.to_string(), value);
-        Ok(())
-    }
-
     /// Apply one mirrored client change: `Some(v)` sets an existing global or adds a new user one;
     /// `None` removes (rejected for system globals). The single entry point the manager calls per
     /// changed doc leaf, so add/edit/delete/rename (delete+add) all route through here uniformly.
@@ -344,27 +316,10 @@ mod tests {
     fn system_globals_are_delete_protected_and_reasserted() {
         let mut s = GlobalStore::new();
         assert!(s.remove("default_ufreq").is_err(), "system global cannot be deleted");
-        assert!(s.rename("default_ufreq", "x").is_err(), "system global cannot be renamed");
         // Even if it were somehow dropped, reassert_system back-fills it to its default.
         s.values.shift_remove("default_ufreq");
         s.reassert_system();
         assert_eq!(s.get("default_ufreq"), Some(&GlobalValue::Float(30.0)));
-    }
-
-    #[test]
-    fn rename_user_global_in_place() {
-        let mut s = GlobalStore::new();
-        s.add("gain_a", GlobalValue::Float(2.0)).unwrap();
-        s.add("other", GlobalValue::Int(1)).unwrap();
-        s.rename("gain_a", "gain").unwrap();
-        assert_eq!(s.get("gain"), Some(&GlobalValue::Float(2.0)));
-        assert!(!s.contains("gain_a"));
-        // Order preserved (system, gain, other) — rename didn't move the row to the bottom.
-        let names: Vec<&str> = s.entries().map(|(n, _, _)| n).collect();
-        assert_eq!(names, vec!["default_ufreq", "gain", "other"]);
-        // Collision + invalid renames are rejected.
-        assert!(s.rename("gain", "other").is_err());
-        assert!(s.rename("gain", "1bad").is_err());
     }
 
     #[test]

@@ -306,12 +306,8 @@ impl Graph {
     // Patch-scoped named scalars. System globals (`default_ufreq`) are seeded + delete-protected;
     // user globals are add/edit/remove/rename. Read by expressions (`globals.<name>`) + node ctx.
 
-    /// A read-only snapshot of the current globals for expression eval / node setup+process.
-    pub fn globals_snapshot(&self) -> goofi_core::globals::GlobalsSnapshot {
-        self.globals.snapshot()
-    }
-
-    /// Every global in order, tagged `(name, value, is_system)` — for the CRDT mirror + `.gfi`.
+    /// The authoritative globals store — its `entries()`/`snapshot()` serve the CRDT mirror, the
+    /// `.gfi`, and (via `snapshot()`) expression eval + node setup/process.
     pub fn globals(&self) -> &goofi_core::globals::GlobalStore {
         &self.globals
     }
@@ -2740,9 +2736,9 @@ mod tests {
         assert!(g.globals().is_system("default_ufreq"));
         // Edit a system global's value; add + remove a user global.
         g.apply_global_change("default_ufreq", Some(GlobalValue::Int(60))).unwrap(); // coerces to Float
-        assert_eq!(g.globals_snapshot().f64("default_ufreq"), Some(60.0));
+        assert_eq!(g.globals().snapshot().f64("default_ufreq"), Some(60.0));
         g.apply_global_change("subject", Some(GlobalValue::Str("P07".into()))).unwrap();
-        assert_eq!(g.globals_snapshot().str("subject"), Some("P07"));
+        assert_eq!(g.globals().snapshot().str("subject"), Some("P07"));
         g.apply_global_change("subject", None).unwrap();
         assert!(g.globals().get("subject").is_none());
         // System globals can't be deleted.
