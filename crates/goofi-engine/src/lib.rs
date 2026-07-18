@@ -4079,6 +4079,56 @@ mod tests {
     }
 
     #[test]
+    fn three_deep_nesting_survives_a_gfi_roundtrip() {
+        // a → b → c → d. Nest c three scopes deep; the outermost Out stub chains s3→s2→s1→c.out.
+        let mut g = Graph::new();
+        let a = g.add_node("_TestEcho", None).unwrap();
+        let b = g.add_node("_TestEcho", None).unwrap();
+        let c = g.add_node("_TestEcho", None).unwrap();
+        let d = g.add_node("_TestEcho", None).unwrap();
+        g.add_link(a, "out", b, "in").unwrap();
+        g.add_link(b, "out", c, "in").unwrap();
+        g.add_link(c, "out", d, "in").unwrap();
+        let s1 = g.group_nodes(&[c], [0.0, 0.0]).unwrap();
+        let s2 = g.group_nodes(&[b, s1], [0.0, 0.0]).unwrap();
+        let s3 = g.group_nodes(&[a, s2], [0.0, 0.0]).unwrap();
+        let (out3, _) =
+            g.scope(s3).unwrap().stubs.iter().find(|(_, st)| st.dir == subpatch::Dir::Out).unwrap();
+        assert_eq!(g.resolve_stub(s3, out3), Some((c, "out".to_string())), "3-deep chain → c.out");
+
+        let mut g2 = Graph::new();
+        g2.load_doc(&g.serialize()).unwrap();
+        assert_eq!(g2.node_uids().len(), 4, "all four leaves restored");
+        assert_eq!(g2.scope_uids().len(), 3, "all three scopes restored");
+        // Find the outermost scope (parent = ROOT) and confirm its Out stub still resolves 3-deep.
+        let root_scope = g2.scope_uids().into_iter().find(|s| g2.scope_of(*s).is_none()).unwrap();
+        let (out3b, _) =
+            g2.scope(root_scope).unwrap().stubs.iter().find(|(_, st)| st.dir == subpatch::Dir::Out).unwrap();
+        let (leaf, slot) = g2.resolve_stub(root_scope, out3b).expect("3-deep chain resolves after reload");
+        assert_eq!(slot, "out", "resolves to a leaf's out slot after reload");
+        assert!(g2.name(leaf).is_some(), "the resolved endpoint is a live leaf");
+    }
+
+    #[test]
+    fn a_half_wired_stub_survives_a_gfi_roundtrip() {
+        use subpatch::Dir;
+        let mut g = Graph::new();
+        let a = g.add_node("_TestEcho", None).unwrap();
+        let b = g.add_node("_TestEcho", None).unwrap();
+        g.add_link(a, "out", b, "in").unwrap();
+        let s = g.group_nodes(&[a], [0.0, 0.0]).unwrap(); // auto out0 (a.out → b cut)
+        let unwired = g.add_boundary(s, Dir::In, goofi_core::SlotType::Array, [0.0, 0.0]).unwrap();
+        assert!(g.scope(s).unwrap().stubs[&unwired].inner.is_none(), "born unwired");
+
+        let mut g2 = Graph::new();
+        g2.load_doc(&g.serialize()).unwrap();
+        let s2 = g2.scope_uids()[0];
+        assert_eq!(g2.scope(s2).unwrap().stubs.len(), 2, "wired + half-wired stubs both restored");
+        let dangling = g2.scope(s2).unwrap().stubs.values().filter(|st| st.inner.is_none()).count();
+        assert_eq!(dangling, 1, "the half-wired stub round-trips as present-but-dangling");
+    }
+
+    #[test]
     fn v3_document_upconverts_and_loads() {
         // A legacy flat v3 document (nodes/links at the top level) still loads — the loader
         // up-converts it (wraps under `root`) so old patches keep working.
