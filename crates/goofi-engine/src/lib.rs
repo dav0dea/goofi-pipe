@@ -1956,7 +1956,13 @@ impl Graph {
         let mut idmap: HashMap<String, Uid> = HashMap::new();
         for (old, rec) in nodes {
             let ty = rec["type"].as_str().unwrap();
-            let uid = self.add_node(ty, None)?;
+            // NON-seeding instantiation: load is a restore, so the doc is authoritative for BOTH
+            // params and expressions. Going through `add_node` (which seeds `default_expr` bindings)
+            // would re-synthesize a binding for any `default_expr` param the user had UNBOUND to a
+            // literal — the reseed would then clobber the saved literal on the next tick. The doc's
+            // own `expressions` block (restored below) round-trips every binding the user actually has.
+            let (manifest, params, node) = self.build_node(ty, None)?;
+            let uid = self.insert_node(manifest, node, params);
             idmap.insert(old.clone(), uid);
             if let Some(name) = rec.get("name").and_then(|v| v.as_str()) {
                 self.force_set_name(uid, name);
@@ -2882,6 +2888,38 @@ mod tests {
         assert!(info.error.is_none(), "restored binding is healthy (not double-seeded / errored)");
         g2.tick();
         assert_eq!(first_f32(&g2.latest_frame(restored, "out").unwrap()), 30.0, "evaluates to the global after load");
+    }
+
+    #[test]
+    fn load_preserves_a_literal_that_overrode_a_default_expr_binding() {
+        // A user who UNBINDS a default_expr param (clearing the binding) and sets a fixed literal must
+        // keep that literal across save/load — load must NOT re-seed the default_expr binding, which
+        // would clobber the literal on the next tick and silently re-rate the node to the global.
+        let mut g = eval_graph();
+        let n = g.add_node("_TestDefaultExpr", None).unwrap();
+        // Clear the seeded binding (empty source removes it) and pin a fixed literal.
+        g.set_expression(n, "control", "rate", "", false, false).unwrap();
+        assert!(g.param_expression(n, "control", "rate").is_none(), "binding cleared");
+        g.update_param(n, "control", "rate", Param::float(100.0, 0.0, 1000.0)).unwrap();
+        let doc = g.serialize();
+
+        let mut g2 = eval_graph();
+        g2.load_doc(&doc).unwrap();
+        let restored = g2
+            .node_uids()
+            .into_iter()
+            .find(|u| g2.type_name(*u) == Some("_TestDefaultExpr"))
+            .expect("node restored");
+        assert!(
+            g2.param_expression(restored, "control", "rate").is_none(),
+            "load must not re-seed a binding the user removed — the doc is authoritative"
+        );
+        g2.tick();
+        assert_eq!(
+            first_f32(&g2.latest_frame(restored, "out").unwrap()),
+            100.0,
+            "the saved literal survives (not re-rated to the global)"
+        );
     }
 
     #[test]
