@@ -102,16 +102,6 @@ async fn recv_binary(ws: &mut Ws) -> Vec<u8> {
     }
 }
 
-/// Receive until the named event arrives, returning it (skipping RPC replies/other events).
-async fn drain_event(ws: &mut Ws, event: &str) -> Value {
-    loop {
-        let m = recv_text(ws).await;
-        if m.get("event").and_then(|v| v.as_str()) == Some(event) {
-            return m;
-        }
-    }
-}
-
 /// Send an RPC and return the reply for its id (skipping interleaved events).
 async fn call(ws: &mut Ws, id: i64, op: &str, payload: Value) -> Value {
     ws.send(Message::Text(
@@ -152,6 +142,27 @@ async fn leaf_write_expression(ws: &mut Ws, node: &str, group: &str, name: &str,
         Some(&json!({ "source": source, "enabled": true, "triggers": false })),
     );
     ws.send(Message::Binary(SyncMsg::Update(doc.diff(&before)).encode().into())).await.unwrap();
+}
+
+/// Sync a FRESH CRDT replica from the server over `ws` and drain binary sync frames until
+/// `ready(&doc)` holds, returning the replica for forest/graph reads. The structural broadcast
+/// events (`subpatch_changed`/`node_removed`) are retired — the forest reaches clients via the doc,
+/// so tests read it here (the pattern `leaf_write_expression`/`connecting_to_a_boundary_…` use). A
+/// fresh replica advertises an empty state vector, so the server's `sync_hello` reply is the COMPLETE
+/// current doc; `ready` is always satisfiable once the preceding RPC's effect has landed.
+async fn sync_replica(ws: &mut Ws, ready: impl Fn(&goofi_crdt::GraphDoc) -> bool) -> goofi_crdt::GraphDoc {
+    use goofi_crdt::{GraphDoc, SyncMsg};
+    let mut doc = GraphDoc::new();
+    ws.send(Message::Binary(doc.sync_hello().into())).await.unwrap();
+    for _ in 0..60 {
+        if let Some(m) = SyncMsg::decode(&recv_binary(ws).await) {
+            doc.on_sync(m);
+        }
+        if ready(&doc) {
+            break;
+        }
+    }
+    doc
 }
 
 #[tokio::test]
@@ -884,43 +895,29 @@ async fn group_and_expand_project_the_instance_forest() {
     let reply = call(&mut ws, 4, "group_nodes", json!({ "members": [osc, buf], "pos": [50.0, 50.0] })).await;
     let inst = reply["result"]["inst_id"].as_str().expect("inst_id returned").to_string();
 
-    // The subpatch_changed snapshot: ROOT holds the instance (not the members); the instance
-    // scope holds both members.
-    let snap = loop {
-        let m = recv_text(&mut ws).await;
-        if m.get("event").and_then(|v| v.as_str()) == Some("subpatch_changed") {
-            break m;
-        }
-    };
-    let root = &snap["payload"]["instances"]["__root__"];
-    assert!(root["members"].as_object().unwrap().values().any(|v| v["uid"] == json!(inst) && v["is_instance"] == true),
-        "ROOT lists the instance; got {:?}", root["members"]);
-    let inst_info = &snap["payload"]["instances"][&inst];
-    assert_eq!(inst_info["kind"], "unique", "one reference ⇒ unique");
-    assert_eq!(inst_info["members"].as_object().unwrap().len(), 2, "both members in the instance scope");
-    // A top-level instance's parent MUST be ROOT_ID (not null): the editor's `childrenOfScope`
-    // renders an instance at the root canvas only when `instance.parent === ROOT_ID`. Reporting
-    // null here hides the grouped sub-patch's virtual node (it groups but never appears).
-    assert_eq!(inst_info["parent"], json!("__root__"), "top-level instance parented to ROOT so the canvas renders it");
-    // The osc member's node info reports its new membership.
-    let nodes = snap["payload"]["nodes"].as_array().unwrap();
-    let osc_node = nodes.iter().find(|n| n["uid"] == json!(osc)).unwrap();
-    assert_eq!(osc_node["membership"]["instance"], json!(inst), "member membership re-tagged");
+    // The forest reaches the client via the doc (subpatch_changed retired). A top-level instance's
+    // parent MUST be ROOT_ID (not null): the editor's `childrenOfScope` renders it at the root canvas
+    // only when `instance.parent === ROOT_ID`. Unique ⇔ no def_id; both members in the instance scope.
+    let doc = sync_replica(&mut ws, |d| d.instance_ids().iter().any(|u| *u == inst)).await;
+    let j = doc.to_json();
+    let rec = &j["instances"][&inst];
+    assert_eq!(rec["parent"], json!("__root__"), "top-level instance parented to ROOT so the canvas renders it");
+    assert!(rec.get("def_id").is_none(), "one reference ⇒ unique (no def_id)");
+    assert_eq!(rec["members"].as_object().unwrap().len(), 2, "both members in the instance scope");
+    assert!(
+        rec["members"].as_object().unwrap().values().any(|v| v.as_str() == Some(osc.as_str())),
+        "member osc re-tagged into the instance scope; got {:?}", rec["members"]
+    );
 
-    // Expand restores both members to ROOT.
+    // Expand restores both members to ROOT → the instance drops out of the doc forest, leaves remain.
     let ex = call(&mut ws, 5, "expand_instance", json!({ "inst_id": inst })).await;
     let restored = ex["result"]["restored"].as_array().unwrap();
     assert_eq!(restored.len(), 2, "both members restored");
-    let snap2 = loop {
-        let m = recv_text(&mut ws).await;
-        if m.get("event").and_then(|v| v.as_str()) == Some("subpatch_changed") {
-            break m;
-        }
-    };
-    assert!(snap2["payload"]["instances"].get(&inst).is_none() || snap2["payload"]["instances"][&inst].is_null(),
-        "instance gone after expand");
-    let osc_after = snap2["payload"]["nodes"].as_array().unwrap().iter().find(|n| n["uid"] == json!(osc)).unwrap();
-    assert_eq!(osc_after["membership"]["instance"], "__root__", "member back at ROOT");
+    // Anchor on osc being present (a completed sync) — an "absence" predicate would be satisfied by
+    // the empty replica before the data frame lands. After expand: 2 leaves, 0 instances.
+    let doc2 = sync_replica(&mut ws, |d| d.node_ids().iter().any(|u| *u == osc) && d.instance_ids().is_empty()).await;
+    assert!(doc2.to_json()["instances"].get(&inst).is_none(), "instance gone after expand");
+    assert!(doc2.node_ids().iter().any(|u| *u == osc), "osc back as a top-level leaf");
 }
 
 #[tokio::test]
@@ -1021,34 +1018,38 @@ async fn duplicate_shared_then_make_unique_over_the_wire() {
     call(&mut ws, 3, "add_link", json!({ "node_out": osc, "slot_out": "out", "node_in": buf, "slot_in": "data" })).await;
     let inst = call(&mut ws, 4, "group_nodes", json!({ "members": [osc, buf], "pos": [0.0, 0.0] })).await["result"]["inst_id"]
         .as_str().unwrap().to_string();
-    drain_event(&mut ws, "subpatch_changed").await;
 
-    // Duplicate → a sibling instance, both now "shared".
+    // Duplicate → a sibling instance, both now "shared". Shared ⇔ a `def_id` on the doc's instance
+    // record (refcount > 1); unique omits it (subpatch_changed retired — read the forest from the doc).
     let dup = call(&mut ws, 5, "duplicate_shared", json!({ "inst_id": inst, "pos": [200.0, 0.0] })).await;
     let sib = dup["result"]["inst_id"].as_str().expect("sibling inst_id").to_string();
     assert_ne!(sib, inst, "a fresh sibling instance");
-    let snap = drain_event(&mut ws, "subpatch_changed").await;
-    assert_eq!(snap["payload"]["instances"][&inst]["kind"], "shared", "original now shared");
-    assert_eq!(snap["payload"]["instances"][&sib]["kind"], "shared", "sibling shared");
+    let doc = sync_replica(&mut ws, |d| d.instance_ids().iter().any(|u| *u == sib)).await;
+    let j = doc.to_json();
+    assert!(j["instances"][&inst].get("def_id").is_some(), "original now shared (def_id present)");
+    assert!(j["instances"][&sib].get("def_id").is_some(), "sibling shared (def_id present)");
     // The sibling has its own two members, distinct from the original's.
-    let sib_members = snap["payload"]["instances"][&sib]["members"].as_object().unwrap();
-    assert_eq!(sib_members.len(), 2, "sibling has both members");
+    assert_eq!(j["instances"][&sib]["members"].as_object().unwrap().len(), 2, "sibling has both members");
     // Four flat leaves total now (2 original + 2 sibling).
-    assert_eq!(snap["payload"]["nodes"].as_array().unwrap().len(), 4, "sibling leaves spawned");
+    assert_eq!(doc.node_ids().len(), 4, "sibling leaves spawned");
 
-    // make_unique the sibling → back to "unique".
+    // make_unique the sibling → back to "unique" (def_id dropped on both, refcount back to 1).
     call(&mut ws, 6, "make_unique", json!({ "inst_id": sib })).await;
-    let snap2 = drain_event(&mut ws, "subpatch_changed").await;
-    assert_eq!(snap2["payload"]["instances"][&sib]["kind"], "unique", "sibling forked to unique");
-    assert_eq!(snap2["payload"]["instances"][&inst]["kind"], "unique", "original back to unique too");
+    let doc2 = sync_replica(&mut ws, |d| {
+        d.instance_ids().iter().any(|u| *u == sib) && d.to_json()["instances"][&sib].get("def_id").is_none()
+    }).await;
+    let j2 = doc2.to_json();
+    assert!(j2["instances"][&sib].get("def_id").is_none(), "sibling forked to unique");
+    assert!(j2["instances"][&inst].get("def_id").is_none(), "original back to unique too");
 
     // Undo-of-duplicate routes remove_node on the sibling INSTANCE uid → the whole subtree is
     // torn down (the undo/redo executor relies on this).
     call(&mut ws, 7, "remove_node", json!({ "node": sib })).await;
-    let snap3 = drain_event(&mut ws, "subpatch_changed").await;
-    assert!(snap3["payload"]["instances"].get(&sib).is_none() || snap3["payload"]["instances"][&sib].is_null(),
-        "sibling instance removed");
-    assert_eq!(snap3["payload"]["nodes"].as_array().unwrap().len(), 2, "only the original's two leaves remain");
+    // Anchor on the leaf count settling to 2 (a completed sync) — post-removal server state is 2
+    // leaves + the original (unique) instance; the torn-down sibling can't reappear.
+    let doc3 = sync_replica(&mut ws, |d| d.node_ids().len() == 2).await;
+    assert!(doc3.to_json()["instances"].get(&sib).is_none(), "sibling instance removed");
+    assert_eq!(doc3.node_ids().len(), 2, "only the original's two leaves remain");
 }
 
 #[tokio::test]
@@ -1122,17 +1123,15 @@ async fn boundary_authoring_over_the_wire() {
     let rn = call(&mut ws, 7, "rename_boundary", json!({ "inst_id": inst, "bnd_id": bnd, "name": "wave" })).await;
     assert_eq!(rn["result"]["ok"], true);
 
-    // The latest snapshot's interface carries the wired, renamed boundary (bnd_id unchanged).
-    let snap = loop {
-        let m = recv_text(&mut ws).await;
-        if m.get("event").and_then(|v| v.as_str()) == Some("subpatch_changed") {
-            let iface = &m["payload"]["instances"][&inst]["interface"];
-            if iface.get(&bnd).and_then(|b| b.get("name")) == Some(&json!("wave")) {
-                break m;
-            }
-        }
-    };
-    let port = &snap["payload"]["instances"][&inst]["interface"][&bnd];
+    // The doc forest's interface carries the wired, renamed boundary (bnd_id unchanged) — read it
+    // from a synced replica (subpatch_changed retired).
+    let doc = sync_replica(&mut ws, |d| {
+        d.read_at(&["instances", inst.as_str(), "interface", bnd.as_str(), "name"])
+            .and_then(|v| v.as_str().map(String::from))
+            == Some("wave".into())
+    })
+    .await;
+    let port = doc.read_at(&["instances", inst.as_str(), "interface", bnd.as_str()]).unwrap();
     assert_eq!(port["dir"], "out");
     assert_eq!(port["inner_node"], json!(buf), "wired to the buffer leaf");
     assert_eq!(port["inner_slot"], "out");
@@ -1159,16 +1158,13 @@ async fn data_plane_streams_an_output_boundary_via_the_inner_leaf() {
 
     let reply = call(&mut ws, 7, "group_nodes", json!({ "members": [buf], "pos": [0.0, 0.0] })).await;
     let inst = reply["result"]["inst_id"].as_str().unwrap().to_string();
-    // drain the subpatch_changed event
-    loop {
-        let m = recv_text(&mut ws).await;
-        if m.get("event").and_then(|v| v.as_str()) == Some("subpatch_changed") {
-            // The interface must expose out0 (buf.out) as an output boundary.
-            let iface = &m["payload"]["instances"][&inst]["interface"];
-            assert!(iface.get("out0").is_some(), "output boundary out0 present; got {iface:?}");
-            break;
-        }
-    }
+    // The instance must expose out0 (buf.out) as an output boundary — read it from the doc forest
+    // (subpatch_changed retired). This also barriers the group before the /data subscription below.
+    let doc = sync_replica(&mut ws, |d| d.read_at(&["instances", inst.as_str(), "interface", "out0"]).is_some()).await;
+    assert!(
+        doc.read_at(&["instances", inst.as_str(), "interface", "out0"]).is_some(),
+        "output boundary out0 present in the doc forest"
+    );
 
     // Subscribe to the boundary port; frames come from the inner Buffer leaf.
     let (mut data, _) = connect_async(format!("{base}/data/{inst}/out0")).await.unwrap();
@@ -1644,11 +1640,15 @@ async fn add_node_restores_a_specific_uid_and_name() {
 }
 
 #[tokio::test]
-async fn node_removed_reports_the_members_real_scope() {
-    // Removing a node that lives inside a sub-patch must broadcast node_removed with that
-    // member's REAL scope, so the frontend drops it from the right members index. The handler
-    // used to hardcode the ROOT scope, leaving the member stale in its sub-patch (inflated
-    // count badge + latent index entry).
+async fn removing_a_grouped_member_reaches_the_client_via_the_doc() {
+    // Removing a node that lives inside a sub-patch reaches the client through the doc, not the
+    // retired `node_removed` event: the node drops out of the doc's `nodes`, and the instance
+    // survives its other member. (The scope-carrying `node_removed` payload was needed only by the
+    // old client-side member index, which the doc-authoritative reconcile replaced.)
+    // NOTE: `remove_node` does not prune the vanished uid from the instance's `members` map — the
+    // forest keeps a dangling entry. That's a pre-existing quirk (the frontend has ignored
+    // `node_removed` since the Phase-2 read cutover, so Phase 4 doesn't change it), flagged for the
+    // post-migration audit; this test deliberately asserts only the node-level removal.
     let base = start_server().await;
     let (mut ws, _) = connect_async(format!("{base}/control")).await.unwrap();
     let _hello = recv_text(&mut ws).await;
@@ -1661,15 +1661,14 @@ async fn node_removed_reports_the_members_real_scope() {
         .as_str()
         .unwrap()
         .to_string();
-    drain_event(&mut ws, "subpatch_changed").await;
 
-    // Remove the grouped member `osc`; node_removed must name the sub-patch instance as its scope.
+    // Remove the grouped member `osc`. Anchor on the leaf count settling to 1 (buf) — a completed
+    // sync — rather than osc's absence (true of an empty replica) or the pre-removal 2-leaf sync.
     call(&mut ws, 4, "remove_node", json!({ "node": osc })).await;
-    let removed = drain_event(&mut ws, "node_removed").await;
-    assert_eq!(removed["payload"]["node"], json!(osc));
-    assert_eq!(
-        removed["payload"]["membership"]["instance"],
-        json!(inst),
-        "the removed member's real sub-patch scope is reported, not ROOT"
+    let doc = sync_replica(&mut ws, |d| d.node_ids().len() == 1).await;
+    assert!(
+        !doc.node_ids().iter().any(|u| *u == osc),
+        "osc removed from the graph — the removal reaches the client via the doc"
     );
+    assert!(doc.instance_ids().iter().any(|u| *u == inst), "the instance survives its other member");
 }
