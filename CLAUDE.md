@@ -165,8 +165,9 @@ npm run test     # vitest (unit)
 npm run check    # svelte-check + tsc strict — keep 0 errors
 npm run build    # static SPA → frontend/build/  (what the bridge serves)
 
-# e2e (frontend/../e2e/, GITIGNORED): Playwright + a real Manager, driven via
-# window.goofi. Boots the full stack; use plain grep (not git grep) to find refs.
+# e2e (tests/e2e/, COMMITTED): Playwright (TS) + the real goofi-pipe binary,
+# driven via window.goofi. `cd tests/e2e && npm run e2e` builds the binary +
+# runs the suite (spawns goofi-pipe headless, tears it down). One worker, headless.
 ```
 
 If `/dev/shm/iox2_*` accumulates after a crash:
