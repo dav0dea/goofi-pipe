@@ -76,6 +76,9 @@ pub struct ClientChanges {
     pub positions: Vec<(String, [f64; 2])>,
     pub viewers: Vec<(String, serde_json::Value)>,
     pub expressions: Vec<(String, String, String, Option<ExprRecord>)>,
+    /// Globals: `(name, entry)` — `Some({value, type, ...})` for an added/edited global, `None` when
+    /// it was deleted. The manager coerces the entry to a `GlobalValue` and applies it to the engine.
+    pub globals: Vec<(String, Option<serde_json::Value>)>,
 }
 
 impl ClientChanges {
@@ -85,6 +88,7 @@ impl ClientChanges {
             && self.positions.is_empty()
             && self.viewers.is_empty()
             && self.expressions.is_empty()
+            && self.globals.is_empty()
     }
 }
 
@@ -196,6 +200,9 @@ pub struct GraphDoc {
     nodes: MapRef,
     links: ArrayRef,
     instances: MapRef,
+    /// Patch globals — a Map<name, {value, type, system}>. System globals carry `system: true` (the
+    /// panel disables their delete). Reconciled from the engine like `nodes`/`instances`.
+    globals: MapRef,
 }
 
 impl GraphDoc {
@@ -204,7 +211,8 @@ impl GraphDoc {
         let nodes = doc.get_or_insert_map("nodes");
         let links = doc.get_or_insert_array("links");
         let instances = doc.get_or_insert_map("instances");
-        GraphDoc { doc, nodes, links, instances }
+        let globals = doc.get_or_insert_map("globals");
+        GraphDoc { doc, nodes, links, instances, globals }
     }
 
     /// The uids of all nodes currently in the doc.
@@ -223,10 +231,12 @@ impl GraphDoc {
         let empty = serde_json::Map::new();
         let nodes = target.get("nodes").and_then(|v| v.as_object()).unwrap_or(&empty);
         let instances = target.get("instances").and_then(|v| v.as_object()).unwrap_or(&empty);
+        let globals = target.get("globals").and_then(|v| v.as_object()).unwrap_or(&empty);
         {
             let mut txn = self.doc.transact_mut();
             reconcile_map(&mut txn, &self.nodes, nodes);
             reconcile_map(&mut txn, &self.instances, instances);
+            reconcile_map(&mut txn, &self.globals, globals);
         }
         // Links are an ordered, manager-authoritative array (no client leaf-merge) → the idempotent
         // skip-if-equal wholesale replace, reused verbatim, straight from the projection's JSON array.
@@ -241,6 +251,7 @@ impl GraphDoc {
             "nodes": any_to_json(self.nodes.to_json(&txn)),
             "links": any_to_json(self.links.to_json(&txn)),
             "instances": any_to_json(self.instances.to_json(&txn)),
+            "globals": any_to_json(self.globals.to_json(&txn)),
         })
     }
 
@@ -296,6 +307,38 @@ impl GraphDoc {
                 }
             }
         }
+    }
+
+    /// Write (or remove) a whole global entry at `globals[name]` — the CRDT twin of the panel's global
+    /// add / edit / delete. `Some(obj)` reconciles the `{value, type, system}` entry IN PLACE (so a
+    /// value-only edit is one leaf op that a concurrent re-mirror preserves); `None` deletes the entry.
+    /// Unlike [`Self::write_at`], this MAY mint a top-level entry — a user adds a global by naming a new
+    /// one. (System globals can't be deleted; the manager rejects that and the re-mirror re-asserts.)
+    pub fn write_global(&mut self, name: &str, entry: Option<&serde_json::Value>) {
+        let mut txn = self.doc.transact_mut();
+        match entry {
+            Some(serde_json::Value::Object(obj)) => {
+                let child = get_or_insert_map(&self.globals, &mut txn, name);
+                reconcile_map(&mut txn, &child, obj);
+            }
+            Some(_) => {} // a global entry is always an object; ignore a malformed scalar
+            None => {
+                if self.globals.get(&txn, name).is_some() {
+                    self.globals.remove(&mut txn, name);
+                }
+            }
+        }
+    }
+
+    /// The client-writable global entries `(name, {value, type, system})` for each global in the doc —
+    /// the manager diffs these before/after a client update to detect add/edit (entry differs) and
+    /// delete (name gone).
+    fn client_globals(&self) -> Vec<(String, serde_json::Value)> {
+        let doc = self.to_json();
+        let Some(globals) = doc.get("globals").and_then(|v| v.as_object()) else {
+            return Vec::new();
+        };
+        globals.iter().map(|(n, e)| (n.clone(), e.clone())).collect()
     }
 
     /// Replace the whole link set (wholesale; a fine-grained incremental diff comes later). Guarded
@@ -450,6 +493,7 @@ impl GraphDoc {
         let viewers_before: HashMap<String, serde_json::Value> = viewers_b.into_iter().collect();
         let expr_before: HashMap<(String, String, String), ExprRecord> =
             expr_b.into_iter().map(|(u, g, n, e)| ((u, g, n), e)).collect();
+        let globals_before: HashMap<String, serde_json::Value> = self.client_globals().into_iter().collect();
 
         self.apply_update(update)?;
 
@@ -475,7 +519,21 @@ impl GraphDoc {
                 expressions.push((k.0.clone(), k.1.clone(), k.2.clone(), None));
             }
         }
-        Ok(ClientChanges { params, positions, viewers, expressions })
+        // Globals: an added/edited entry differs from `before`; a deleted one is a `before` name gone
+        // from `after` → reported as None.
+        let globals_after: HashMap<String, serde_json::Value> = self.client_globals().into_iter().collect();
+        let mut globals: Vec<(String, Option<serde_json::Value>)> = Vec::new();
+        for (name, entry) in &globals_after {
+            if globals_before.get(name) != Some(entry) {
+                globals.push((name.clone(), Some(entry.clone())));
+            }
+        }
+        for name in globals_before.keys() {
+            if !globals_after.contains_key(name) {
+                globals.push((name.clone(), None));
+            }
+        }
+        Ok(ClientChanges { params, positions, viewers, expressions, globals })
     }
 
     /// The message to send a peer on connect: this replica's state vector, framed. The peer
@@ -956,6 +1014,67 @@ mod tests {
         })
     }
     const ROOT_MARK: &str = "__root__";
+
+    #[test]
+    fn reconcile_mirrors_globals_and_is_idempotent() {
+        use serde_json::json;
+        let proj = || json!({
+            "nodes": {}, "links": [], "instances": {},
+            "globals": {
+                "default_ufreq": { "value": 30.0, "type": "float", "system": true },
+                "subject": { "value": "P07", "type": "string", "system": false },
+            }
+        });
+        let mut doc = GraphDoc::new();
+        doc.reconcile_root(&proj());
+        assert_eq!(doc.read_at(&["globals", "default_ufreq", "value"]).and_then(|v| v.as_f64()), Some(30.0));
+        assert_eq!(doc.read_at(&["globals", "default_ufreq", "system"]), Some(json!(true)));
+        assert_eq!(doc.read_at(&["globals", "subject", "value"]).and_then(|v| v.as_str().map(str::to_string)), Some("P07".into()));
+        // Idempotent: re-mirroring the same globals produces no doc ops (empty diff) — the params lesson.
+        let sv = doc.state_vector();
+        doc.reconcile_root(&proj());
+        assert!(doc.is_empty_diff(&doc.diff(&sv)), "re-mirroring identical globals is a no-op");
+    }
+
+    #[test]
+    fn reconcile_prunes_a_removed_global() {
+        use serde_json::json;
+        let mut doc = GraphDoc::new();
+        doc.reconcile_root(&json!({ "nodes": {}, "links": [], "instances": {},
+            "globals": { "g": { "value": 1, "type": "int", "system": false } } }));
+        assert!(doc.read_at(&["globals", "g", "value"]).is_some());
+        // A re-mirror without `g` prunes it (mirror of a user delete applied to the engine).
+        doc.reconcile_root(&json!({ "nodes": {}, "links": [], "instances": {}, "globals": {} }));
+        assert!(doc.read_at(&["globals", "g"]).is_none());
+    }
+
+    #[test]
+    fn apply_client_update_reports_global_add_edit_delete() {
+        use serde_json::json;
+        let mut server = GraphDoc::new();
+        server.reconcile_root(&json!({ "nodes": {}, "links": [], "instances": {},
+            "globals": { "default_ufreq": { "value": 30.0, "type": "float", "system": true } } }));
+        let mut client = GraphDoc::new();
+        client.apply_update(&server.encode_state()).unwrap();
+
+        // Client ADDS a user global + EDITS the system value in one update.
+        let before = client.state_vector();
+        client.write_global("gain", Some(&json!({ "value": 2.0, "type": "float", "system": false })));
+        client.write_global("default_ufreq", Some(&json!({ "value": 60.0, "type": "float", "system": true })));
+        let changes = server.apply_client_update(&client.diff(&before)).unwrap();
+        let g: std::collections::HashMap<_, _> = changes.globals.iter().cloned().collect();
+        // `to_json` normalizes a whole f64 (2.0) to int 2; the entry's `type: "float"` tag is what the
+        // manager reads (via global_from_json) to reconstruct a Float — so compare the value via as_f64.
+        assert_eq!(g.get("gain").unwrap().as_ref().unwrap()["value"].as_f64(), Some(2.0));
+        assert_eq!(g.get("gain").unwrap().as_ref().unwrap()["type"], json!("float"));
+        assert_eq!(g.get("default_ufreq").unwrap().as_ref().unwrap()["value"].as_f64(), Some(60.0));
+
+        // Client DELETES the user global → reported as None.
+        let before2 = client.state_vector();
+        client.write_global("gain", None);
+        let changes2 = server.apply_client_update(&client.diff(&before2)).unwrap();
+        assert_eq!(changes2.globals, vec![("gain".to_string(), None)]);
+    }
 
     #[test]
     fn reconcile_root_builds_the_whole_graph() {

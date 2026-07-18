@@ -859,6 +859,18 @@ fn apply_client_write(state: &AppState, update: &[u8]) {
             expr_peers.extend(updated);
         }
     }
+    // Globals: `Some(entry)` sets/adds, `None` deletes. A system-delete is rejected by the engine and
+    // re-asserted by the re-mirror below — so a client's attempt to delete a system global reappears.
+    for (name, entry) in &changed.globals {
+        let value = match entry {
+            Some(e) => match goofi_engine::global_from_json(e) {
+                Some(v) => Some(v),
+                None => continue, // malformed entry — ignore
+            },
+            None => None,
+        };
+        let _ = g.apply_global_change(name, value);
+    }
     remirror_and_broadcast_locked(state, &g, &mut doc);
     // Emit after the re-mirror so the doc + graph are consistent; dedup so one descriptor per node.
     expr_peers.sort_by_key(|u| u.to_hex());

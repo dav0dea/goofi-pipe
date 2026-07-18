@@ -100,7 +100,19 @@ pub fn sync_graph_to_doc(g: &Graph, doc: &mut GraphDoc) {
         instances.insert(uid.to_hex(), Value::Object(irec));
     }
 
-    doc.reconcile_root(&json!({ "nodes": nodes, "links": links, "instances": instances }));
+    // Globals (system + user) — `{name: {value, type, system}}`. `global_to_json` gives `{value,
+    // type}` (the type tag preserves float↔int); the `system` flag lets the panel disable
+    // delete/rename. Reconciled like any other root map (idempotent, in-place, prunes user deletes).
+    let mut globals = Map::new();
+    for (name, value, is_system) in g.globals().entries() {
+        let mut entry = goofi_engine::global_to_json(value);
+        if let Value::Object(m) = &mut entry {
+            m.insert("system".into(), json!(is_system));
+        }
+        globals.insert(name.to_string(), entry);
+    }
+
+    doc.reconcile_root(&json!({ "nodes": nodes, "links": links, "instances": instances, "globals": globals }));
 }
 
 #[cfg(test)]
@@ -139,6 +151,25 @@ mod tests {
         let j = doc.to_json();
         assert_eq!(j["links"].as_array().unwrap().len(), 1);
         assert_eq!(j["links"][0]["node_in"].as_str(), Some(bh.as_str()));
+    }
+
+    #[test]
+    fn mirror_reflects_globals_with_system_flag() {
+        use goofi_core::globals::GlobalValue;
+        let mut g = Graph::new();
+        g.apply_global_change("default_ufreq", Some(GlobalValue::Float(45.0))).unwrap();
+        g.apply_global_change("subject", Some(GlobalValue::Str("P07".into()))).unwrap();
+
+        let mut doc = GraphDoc::new();
+        sync_graph_to_doc(&g, &mut doc);
+
+        // System global carries system:true + its edited value; type tag present.
+        assert_eq!(doc.read_at(&["globals", "default_ufreq", "system"]), Some(json!(true)));
+        assert_eq!(doc.read_at(&["globals", "default_ufreq", "value"]).and_then(|v| v.as_f64()), Some(45.0));
+        assert_eq!(doc.read_at(&["globals", "default_ufreq", "type"]).as_ref().and_then(|v| v.as_str()), Some("float"));
+        // User global carries system:false.
+        assert_eq!(doc.read_at(&["globals", "subject", "system"]), Some(json!(false)));
+        assert_eq!(doc.read_at(&["globals", "subject", "value"]).as_ref().and_then(|v| v.as_str()), Some("P07"));
     }
 
     #[test]
