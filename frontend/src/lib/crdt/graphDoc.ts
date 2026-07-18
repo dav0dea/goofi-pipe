@@ -330,3 +330,107 @@ export function linkViews(doc: Y.Doc): LinkView[] {
 			slot_in: str(m, 'slot_in')
 		}));
 }
+
+// ── Globals ────────────────────────────────────────────────────────────────────────────────────
+// The `globals` root map — patch-scoped named scalars, the fourth doc root beside nodes/links/
+// instances. Each entry is `{value, type, system}` (the Rust `GraphDoc` globals mirror). `type`
+// disambiguates float↔int after JS's number normalization; `system` marks a code-owned global that
+// the panel locks (no delete/rename) and the manager refuses to delete.
+
+/** A global's declared scalar type — mirrors `GlobalValue::type_tag` on the Rust side. */
+export type GlobalType = 'float' | 'int' | 'bool' | 'string';
+
+export interface GlobalView {
+	name: string;
+	value: number | string | boolean;
+	type: GlobalType;
+	/** A system global (editable value, but never deletable/renamable). */
+	system: boolean;
+}
+
+/** The `globals` root map. */
+export function globalsMap(doc: Y.Doc): Y.Map<Y.Map<unknown>> {
+	return doc.getMap('globals') as Y.Map<Y.Map<unknown>>;
+}
+
+/** All globals, in the doc's key order (system-first, then user in creation order). */
+export function globalViews(doc: Y.Doc): GlobalView[] {
+	const out: GlobalView[] = [];
+	for (const [name, g] of globalsMap(doc).entries()) {
+		const value = g.get('value');
+		const type = g.get('type');
+		if (
+			(typeof value === 'number' || typeof value === 'string' || typeof value === 'boolean') &&
+			(type === 'float' || type === 'int' || type === 'bool' || type === 'string')
+		) {
+			out.push({ name, value, type, system: g.get('system') === true });
+		}
+	}
+	return out;
+}
+
+/** Whether `name` is a legal global identifier — the exact mirror of the Rust `is_valid_global_name`:
+ * `[A-Za-z_][A-Za-z0-9_]*`, and not the reserved namespace token `globals`. The panel gates a
+ * rename/add on this so an illegal name never reaches the doc (the manager would reject it anyway). */
+export function isValidGlobalName(name: string): boolean {
+	return name !== 'globals' && /^[A-Za-z_][A-Za-z0-9_]*$/.test(name);
+}
+
+/** Edit an EXISTING global's value in place (system or user), matching the Rust globals mirror so the
+ * manager's `apply_client_update` detects it and routes it through `apply_global_change`. Leaves
+ * `type`/`system` untouched (a system global stays system, its type stable). No-op if the global is
+ * absent (never mint via this path — use `addGlobal`). Idempotent. Returns whether it landed. */
+export function setGlobalValue(doc: Y.Doc, name: string, value: number | string | boolean): boolean {
+	const entry = globalsMap(doc).get(name);
+	if (!entry) return false;
+	if (entry.get('value') !== value) entry.set('value', value);
+	return true;
+}
+
+/** Mint a NEW user global (the panel's "add row"). Refuses an invalid name or a collision with an
+ * existing global (system or user). The manager's diff sees the new top-level entry and adds it via
+ * `apply_global_change(name, Some(..))`. Returns whether it landed. */
+export function addGlobal(
+	doc: Y.Doc,
+	name: string,
+	value: number | string | boolean,
+	type: GlobalType
+): boolean {
+	const g = globalsMap(doc);
+	if (!isValidGlobalName(name) || g.has(name)) return false;
+	const entry = new Y.Map<unknown>();
+	entry.set('value', value);
+	entry.set('type', type);
+	entry.set('system', false);
+	g.set(name, entry);
+	return true;
+}
+
+/** Remove a USER global. Refuses a system global (the panel also locks it; the manager rejects it
+ * regardless) or an absent one. Returns whether it landed. */
+export function removeGlobal(doc: Y.Doc, name: string): boolean {
+	const g = globalsMap(doc);
+	const entry = g.get(name);
+	if (!entry || entry.get('system') === true) return false;
+	g.delete(name);
+	return true;
+}
+
+/** Rename a USER global, carrying its value + type to the new key. A CRDT map can't rename in place,
+ * so this is delete-old + add-new — the manager sees a remove + an add, exactly the spec's "no rename
+ * cascade": a stale `globals.<old>` then throws the natural missing-key error at eval time. Refuses a
+ * system global, an invalid/colliding new name, or an absent old one. Returns whether it landed. */
+export function renameGlobal(doc: Y.Doc, oldName: string, newName: string): boolean {
+	const g = globalsMap(doc);
+	const entry = g.get(oldName);
+	if (!entry || entry.get('system') === true) return false;
+	if (oldName === newName) return true;
+	if (!isValidGlobalName(newName) || g.has(newName)) return false;
+	const next = new Y.Map<unknown>();
+	next.set('value', entry.get('value'));
+	next.set('type', entry.get('type'));
+	next.set('system', false);
+	g.set(newName, next);
+	g.delete(oldName);
+	return true;
+}

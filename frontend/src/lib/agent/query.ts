@@ -18,6 +18,7 @@ import { reconstructMeta } from '$lib/editor/metaFormat';
 import { summaryOf } from '$lib/viewers/viewMeta';
 import { ROOT_ID } from '$lib/editor/subpatchScene';
 import type { InstanceInfo, LinkInfo, NodeInstanceInfo, NodeTypeInfo } from '$lib/api/control';
+import type { GlobalView } from '$lib/crdt/graphDoc';
 
 export interface FrameSummary {
 	dtype: string;
@@ -86,6 +87,9 @@ export const query = {
 		};
 	},
 	nodeTypes: (): NodeTypeInfo[] | null => graph().nodeTypes,
+	/** Every patch global (system + user), doc-authoritative, in system-first/creation order.
+	 * Each is `{name, value, type, system}` — expressions read them as `globals.<name>`. */
+	globals: (): GlobalView[] => graph().globals,
 	/** Every sub-patch instance, keyed by uid (the universal node key). Each is the
 	 * server-computed record (parent, members{local:{uid,is_instance}}, slots, siblings,
 	 * error, …) the editor mirrors. ROOT (the materialized root scope) is excluded — it's

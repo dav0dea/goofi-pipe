@@ -19,6 +19,7 @@ import { recordViewChange } from '$lib/viewers/viewExecutors';
 import type { SettingsMap } from '$lib/viewers/settingsSchema';
 import type { ViewerKind } from '$lib/viewers/kind';
 import type { LinkInfo } from '$lib/api/control';
+import type { GlobalType } from '$lib/crdt/graphDoc';
 
 /** Raw (pre-resolution) inline view snapshot, for undo capture. */
 function inlineSnap(node: string, slot: string): { kind?: ViewerKind; settings: SettingsMap } {
@@ -77,6 +78,17 @@ export const commands = {
 	): Promise<void> => graph().wireBoundary(instId, bndId, innerNode, innerSlot),
 	removeBoundary: (instId: string, bndId: string): Promise<void> =>
 		graph().removeBoundary(instId, bndId),
+
+	// --- globals -----------------------------------------------------------
+	// Patch-scoped named scalars (client leaf-writes into the CRDT `globals` root, same path as the
+	// Globals panel). Each returns whether the write landed (false ⇒ invalid name / collision / a
+	// protected system global). Expressions read them as `globals.<name>`.
+	addGlobal: (name: string, value: number | string | boolean, type: GlobalType): boolean =>
+		graph().addGlobal(name, value, type),
+	setGlobalValue: (name: string, value: number | string | boolean): boolean =>
+		graph().setGlobalValue(name, value),
+	removeGlobal: (name: string): boolean => graph().removeGlobal(name),
+	renameGlobal: (oldName: string, newName: string): boolean => graph().renameGlobal(oldName, newName),
 
 	// --- patch persistence -------------------------------------------------
 	save: (path?: string): Promise<{ path: string; yaml: string }> =>

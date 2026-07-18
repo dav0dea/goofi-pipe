@@ -9,6 +9,7 @@ import ParametersPanel from './ParametersPanel.svelte';
 import ViewerPanel from './ViewerPanel.svelte';
 import MetadataInspectorPanel from './MetadataInspectorPanel.svelte';
 import ConsolePanel from './ConsolePanel.svelte';
+import GlobalsPanel from './GlobalsPanel.svelte';
 
 let done = false;
 
@@ -54,6 +55,14 @@ export function registerAppPanels(): void {
 		component: ConsolePanel,
 		// Dropping a node filters the console to just that node's output.
 		acceptsNode: true
+	});
+	// Patch globals (default_ufreq + user-defined scalars). Not in the default layout —
+	// opened on demand from the panel-type menu (like a secondary inspector).
+	registerPanel({
+		id: 'globals',
+		title: 'Globals',
+		icon: '⧉',
+		component: GlobalsPanel
 	});
 	// The old dockable "Errors" panel was removed — the Console (filterable,
 	// accumulating, stderr-aware) supersedes it, and a legacy `errors` panel type

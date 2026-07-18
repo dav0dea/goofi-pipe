@@ -40,7 +40,14 @@ import {
 	setParamValue,
 	setParamExpr as docSetParamExpr,
 	setNodePos as docSetNodePos,
-	setViewers as docSetViewers
+	setViewers as docSetViewers,
+	globalViews,
+	setGlobalValue as docSetGlobalValue,
+	addGlobal as docAddGlobal,
+	removeGlobal as docRemoveGlobal,
+	renameGlobal as docRenameGlobal,
+	type GlobalView,
+	type GlobalType
 } from '$lib/crdt/graphDoc';
 import { assembleNode, type RuntimeOverlay } from '$lib/crdt/nodeAssembly';
 import { assembleInstances, instanceError } from '$lib/crdt/instanceAssembly';
@@ -68,6 +75,10 @@ export class GraphStore {
 	unsavedChanges = $state(false);
 	connected = $state(false);
 	hadHello = $state(false);
+
+	/** Patch globals (system + user), doc-authoritative, in system-first/creation order. Derived from
+	 * the CRDT `globals` root on every doc transaction; the Globals panel reads + edits this. */
+	globals = $state<GlobalView[]>([]);
 
 	/** Bumps on every *wholesale* graph load (hello / graph_replaced), never on
 	 * incremental node add/remove. Editor panels watch it to fit the view to a
@@ -134,6 +145,8 @@ export class GraphStore {
 		const doc = this._sync.doc;
 		// links: the whole set is replaced from the doc.
 		this.links = linkViews(doc);
+		// globals: the whole set is replaced from the doc (system-first, then user).
+		this.globals = globalViews(doc);
 		// The catalog is always present in production (it rides on `hello`), so the doc is authoritative
 		// for node AND sub-patch identity: build `this.nodes` + `this.instances` from the doc (+ catalog
 		// + runtime). Existence/type/name/pos/param value+expr and the whole sub-patch forest come from
@@ -597,6 +610,33 @@ export class GraphStore {
 		this._sync.commit((doc) => {
 			setParamValue(doc, node, group, name, value as number | string | boolean);
 		});
+	}
+
+	// ── Globals mutators ────────────────────────────────────────────────────────────────────────
+	// Client leaf-writes into the CRDT `globals` root; the manager applies each via
+	// `apply_global_change` and mirrors it back. Human-rate panel edits — direct doc writes with no
+	// undo history (like the viewer-state pushes), so they stay out of the graph/layout undo domains.
+
+	/** Add a new user global (name validated + collision-checked in the writer). Returns whether it
+	 * landed (false ⇒ invalid name or a name collision). */
+	addGlobal(name: string, value: number | string | boolean, type: GlobalType): boolean {
+		return this._sync.commit((doc) => docAddGlobal(doc, name, value, type));
+	}
+
+	/** Edit an existing global's value (system or user); the declared type + system flag are kept. */
+	setGlobalValue(name: string, value: number | string | boolean): boolean {
+		return this._sync.commit((doc) => docSetGlobalValue(doc, name, value));
+	}
+
+	/** Remove a user global (a system global is refused by the writer). */
+	removeGlobal(name: string): boolean {
+		return this._sync.commit((doc) => docRemoveGlobal(doc, name));
+	}
+
+	/** Rename a user global (delete-old + add-new; refs are not rewritten — a stale `globals.<old>`
+	 * throws at eval time, per spec). Returns whether it landed. */
+	renameGlobal(oldName: string, newName: string): boolean {
+		return this._sync.commit((doc) => docRenameGlobal(doc, oldName, newName));
 	}
 
 	/** Ask a live node to re-evaluate a param's options (device / stream pickers).

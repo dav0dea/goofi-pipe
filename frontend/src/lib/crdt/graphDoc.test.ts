@@ -14,7 +14,14 @@ import {
 	setNodePos,
 	setViewers,
 	viewersJson,
-	docParams
+	docParams,
+	globalsMap,
+	globalViews,
+	isValidGlobalName,
+	setGlobalValue,
+	addGlobal,
+	removeGlobal,
+	renameGlobal
 } from './graphDoc';
 
 /** Build a doc in the exact shape the Rust `GraphDoc` mirror writes. */
@@ -262,5 +269,91 @@ describe('graphDoc.setViewers — view-state leaf write', () => {
 		const sv = Y.encodeStateVector(doc);
 		setViewers(doc, 'a', blob);
 		expect(Y.encodeStateVector(doc)).toEqual(sv);
+	});
+});
+
+/** Seed a globals root in the exact `{value, type, system}` shape the Rust mirror writes. */
+function seedGlobals(doc: Y.Doc): void {
+	const g = globalsMap(doc);
+	const uf = new Y.Map<unknown>();
+	uf.set('value', 30);
+	uf.set('type', 'float');
+	uf.set('system', true);
+	g.set('default_ufreq', uf);
+	const subj = new Y.Map<unknown>();
+	subj.set('value', 'P07');
+	subj.set('type', 'string');
+	subj.set('system', false);
+	g.set('subject', subj);
+}
+
+describe('graphDoc globals', () => {
+	it('reads global views (system-first, typed, with the system flag)', () => {
+		const doc = new Y.Doc();
+		seedGlobals(doc);
+		expect(globalViews(doc)).toEqual([
+			{ name: 'default_ufreq', value: 30, type: 'float', system: true },
+			{ name: 'subject', value: 'P07', type: 'string', system: false }
+		]);
+	});
+
+	it('validates global names like the Rust identifier rule', () => {
+		expect(isValidGlobalName('default_ufreq')).toBe(true);
+		expect(isValidGlobalName('_x1')).toBe(true);
+		expect(isValidGlobalName('')).toBe(false);
+		expect(isValidGlobalName('1x')).toBe(false);
+		expect(isValidGlobalName('a b')).toBe(false);
+		expect(isValidGlobalName('a.b')).toBe(false);
+		expect(isValidGlobalName('globals')).toBe(false);
+	});
+
+	it('edits an existing value in place, keeping type + system', () => {
+		const doc = new Y.Doc();
+		seedGlobals(doc);
+		expect(setGlobalValue(doc, 'default_ufreq', 45)).toBe(true);
+		expect(globalViews(doc)[0]).toEqual({ name: 'default_ufreq', value: 45, type: 'float', system: true });
+		// Absent global → no-op (never mint via this path).
+		expect(setGlobalValue(doc, 'ghost', 1)).toBe(false);
+	});
+
+	it('adds a new user global, refusing collisions + invalid names', () => {
+		const doc = new Y.Doc();
+		seedGlobals(doc);
+		expect(addGlobal(doc, 'gain', 2.5, 'float')).toBe(true);
+		expect(globalViews(doc).find((v) => v.name === 'gain')).toEqual({
+			name: 'gain',
+			value: 2.5,
+			type: 'float',
+			system: false
+		});
+		expect(addGlobal(doc, 'default_ufreq', 1, 'float')).toBe(false); // collision (system)
+		expect(addGlobal(doc, 'subject', 'x', 'string')).toBe(false); // collision (user)
+		expect(addGlobal(doc, '1bad', 0, 'int')).toBe(false); // invalid name
+	});
+
+	it('removes a user global but refuses a system one', () => {
+		const doc = new Y.Doc();
+		seedGlobals(doc);
+		expect(removeGlobal(doc, 'subject')).toBe(true);
+		expect(globalsMap(doc).has('subject')).toBe(false);
+		expect(removeGlobal(doc, 'default_ufreq')).toBe(false); // system, protected
+		expect(globalsMap(doc).has('default_ufreq')).toBe(true);
+	});
+
+	it('renames a user global (delete+add, carrying value+type), refusing bad cases', () => {
+		const doc = new Y.Doc();
+		seedGlobals(doc);
+		addGlobal(doc, 'gain', 2.0, 'float');
+		expect(renameGlobal(doc, 'gain', 'gain_a')).toBe(true);
+		expect(globalsMap(doc).has('gain')).toBe(false);
+		expect(globalViews(doc).find((v) => v.name === 'gain_a')).toEqual({
+			name: 'gain_a',
+			value: 2.0,
+			type: 'float',
+			system: false
+		});
+		expect(renameGlobal(doc, 'default_ufreq', 'x')).toBe(false); // system
+		expect(renameGlobal(doc, 'gain_a', 'subject')).toBe(false); // collision
+		expect(renameGlobal(doc, 'gain_a', '1bad')).toBe(false); // invalid
 	});
 });
