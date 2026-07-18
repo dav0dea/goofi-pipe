@@ -220,6 +220,72 @@ impl Command {
     }
 }
 
+/// A per-session undo/redo history over a shared [`Graph`]. Each entry holds a single `toggle`
+/// command — the command that flips the entry's applied/undone state — plus the session that issued
+/// it. Executing a toggle returns the NEXT toggle (its own inverse), so an entry ping-pongs
+/// forward↔inverse and stays **uid-stable**: an `AddNode`'s first execution mints uid X, and undo
+/// captures the uid-stable restore (via `RemoveNode{X}`'s inverse), so redo restores X — never a
+/// fresh uid. Undo/redo are scoped to a session, so one client's timeline is independent of another's
+/// over the single shared history (multi-client). Layout is NOT here — it stays client-local.
+#[derive(Default)]
+pub struct CommandHistory {
+    entries: Vec<HistoryEntry>,
+}
+
+struct HistoryEntry {
+    /// The command that flips this entry's state: its inverse when applied, its forward when undone.
+    toggle: Command,
+    session: String,
+    undone: bool,
+}
+
+impl CommandHistory {
+    pub fn new() -> CommandHistory {
+        CommandHistory::default()
+    }
+
+    /// Execute `cmd` against `g`, record its inverse tagged with `session`, and return the outcome.
+    /// A new command clears THIS session's redo run (its trailing undone entries) — a fresh edit
+    /// invalidates that session's redo future, but never another session's.
+    pub fn apply(&mut self, g: &mut Graph, session: &str, cmd: Command) -> Result<Outcome, String> {
+        let (outcome, inverse) = cmd.execute(g)?;
+        self.entries.retain(|e| !(e.session == session && e.undone));
+        self.entries.push(HistoryEntry { toggle: inverse, session: session.to_string(), undone: false });
+        Ok(outcome)
+    }
+
+    /// Undo the session's most-recent applied command. `Ok(false)` if it has nothing to undo.
+    pub fn undo(&mut self, g: &mut Graph, session: &str) -> Result<bool, String> {
+        let Some(idx) = self.entries.iter().rposition(|e| e.session == session && !e.undone) else {
+            return Ok(false);
+        };
+        self.flip(g, idx, true)
+    }
+
+    /// Redo the session's most-recently-undone command. `Ok(false)` if it has nothing to redo.
+    pub fn redo(&mut self, g: &mut Graph, session: &str) -> Result<bool, String> {
+        let Some(idx) = self.entries.iter().position(|e| e.session == session && e.undone) else {
+            return Ok(false);
+        };
+        self.flip(g, idx, false)
+    }
+
+    fn flip(&mut self, g: &mut Graph, idx: usize, undone: bool) -> Result<bool, String> {
+        let (_out, next) = self.entries[idx].toggle.clone().execute(g)?;
+        self.entries[idx].toggle = next;
+        self.entries[idx].undone = undone;
+        Ok(true)
+    }
+
+    pub fn can_undo(&self, session: &str) -> bool {
+        self.entries.iter().any(|e| e.session == session && !e.undone)
+    }
+
+    pub fn can_redo(&self, session: &str) -> bool {
+        self.entries.iter().any(|e| e.session == session && e.undone)
+    }
+}
+
 /// Build the inverse of removing `uid`, captured BEFORE removal: re-add the node (same uid + name +
 /// params) then re-add every link that touched it (so a downstream endpoint reconnects).
 fn capture_restore(g: &Graph, uid: Uid) -> Command {
@@ -436,5 +502,72 @@ mod tests {
         inverse.execute(&mut g).unwrap();
         assert_eq!(g.globals().get("subject"), None);
         assert_eq!(g.globals().get("subj"), Some(&GlobalValue::Int(7)), "inverse restores the old name + value");
+    }
+
+    // ── CommandHistory ───────────────────────────────────────────────────────────────────────────
+
+    fn add_node(name: &str) -> Command {
+        Command::AddNode { type_name: name.into(), pos: [0.0, 0.0], uid: None, name: None, params: None }
+    }
+
+    #[test]
+    fn history_undo_redo_is_uid_stable() {
+        // The whole reason for the toggle model: redo must restore the SAME uid (a checkpoint could
+        // not). AddNode mints uid X; undo captures the uid-stable restore; redo brings X back.
+        let mut g = Graph::new();
+        let mut h = CommandHistory::new();
+        let Outcome::Uid(uid) = h.apply(&mut g, "s1", add_node("Oscillator")).unwrap() else {
+            panic!("add_node returns a uid")
+        };
+        assert!(g.contains(uid));
+
+        assert!(h.undo(&mut g, "s1").unwrap());
+        assert!(!g.contains(uid), "undo removed the node");
+        assert!(h.redo(&mut g, "s1").unwrap());
+        assert!(g.contains(uid), "redo restored the SAME uid");
+        assert!(h.undo(&mut g, "s1").unwrap());
+        assert!(!g.contains(uid), "undo again still works after a redo");
+    }
+
+    #[test]
+    fn history_undo_is_scoped_per_session() {
+        let mut g = Graph::new();
+        let mut h = CommandHistory::new();
+        let Outcome::Uid(a) = h.apply(&mut g, "s1", add_node("Oscillator")).unwrap() else { unreachable!() };
+        let Outcome::Uid(b) = h.apply(&mut g, "s2", add_node("Buffer")).unwrap() else { unreachable!() };
+
+        // s1's undo touches only s1's node; s2's is untouched.
+        assert!(h.undo(&mut g, "s1").unwrap());
+        assert!(!g.contains(a) && g.contains(b), "only s1's node undone");
+        assert!(!h.undo(&mut g, "s1").unwrap(), "s1 has nothing left to undo");
+
+        // s2 undoes its own.
+        assert!(h.undo(&mut g, "s2").unwrap());
+        assert!(!g.contains(b));
+    }
+
+    #[test]
+    fn history_new_command_clears_that_sessions_redo() {
+        let mut g = Graph::new();
+        let mut h = CommandHistory::new();
+        h.apply(&mut g, "s1", add_node("Oscillator")).unwrap();
+        h.undo(&mut g, "s1").unwrap();
+        assert!(h.can_redo("s1"), "an undone command is redoable");
+
+        // A fresh command invalidates the redo future.
+        h.apply(&mut g, "s1", add_node("Buffer")).unwrap();
+        assert!(!h.can_redo("s1"), "the new command cleared the redo run");
+        assert!(!h.redo(&mut g, "s1").unwrap());
+    }
+
+    #[test]
+    fn history_reports_can_undo_can_redo() {
+        let mut g = Graph::new();
+        let mut h = CommandHistory::new();
+        assert!(!h.can_undo("s1") && !h.can_redo("s1"));
+        h.apply(&mut g, "s1", add_node("Oscillator")).unwrap();
+        assert!(h.can_undo("s1") && !h.can_redo("s1"));
+        h.undo(&mut g, "s1").unwrap();
+        assert!(!h.can_undo("s1") && h.can_redo("s1"));
     }
 }

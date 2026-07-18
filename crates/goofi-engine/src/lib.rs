@@ -22,7 +22,7 @@ pub mod subpatch;
 
 /// Semantic patch commands with exact inverses — the manager's undo/redo unit.
 pub mod command;
-pub use command::{Command, Outcome};
+pub use command::{Command, CommandHistory, Outcome};
 
 /// A stable node identity. Encoded as a 12-hex string for the `.gfi` / frontend
 /// (the same key those use), a `u64` internally.
