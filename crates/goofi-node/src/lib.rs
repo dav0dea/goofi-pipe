@@ -87,6 +87,11 @@ pub struct ParamDecl {
     pub group: &'static str,
     pub name: &'static str,
     pub spec: ParamSpec,
+    /// An optional default *expression* (e.g. `"globals.default_ufreq"`): when a node is freshly
+    /// instantiated, the engine seeds a live binding on this param instead of a plain literal, so it
+    /// tracks the referenced globals/refs. The `spec` default is the graceful fallback (used verbatim
+    /// when no evaluator is wired). `None` ⇒ an ordinary literal-default param.
+    pub default_expr: Option<&'static str>,
 }
 
 /// The kind + defaults of a declared param.
@@ -716,10 +721,10 @@ mod tests {
     }
 
     static DECL_PARAMS: &[ParamDecl] = &[
-        ParamDecl { group: "g", name: "freq", spec: ParamSpec::Float { default: 1.0, min: 0.0, max: 10.0 } },
-        ParamDecl { group: "g", name: "n", spec: ParamSpec::Int { default: 4, min: 1, max: 9 } },
-        ParamDecl { group: "g", name: "wave", spec: ParamSpec::Str { default: "sine", options: &["sine", "saw"], refresh: false } },
-        ParamDecl { group: "z", name: "on", spec: ParamSpec::Bool { default: true } },
+        ParamDecl { group: "g", name: "freq", spec: ParamSpec::Float { default: 1.0, min: 0.0, max: 10.0 }, default_expr: None },
+        ParamDecl { group: "g", name: "n", spec: ParamSpec::Int { default: 4, min: 1, max: 9 }, default_expr: None },
+        ParamDecl { group: "g", name: "wave", spec: ParamSpec::Str { default: "sine", options: &["sine", "saw"], refresh: false }, default_expr: None },
+        ParamDecl { group: "z", name: "on", spec: ParamSpec::Bool { default: true }, default_expr: None },
     ];
 
     #[test]

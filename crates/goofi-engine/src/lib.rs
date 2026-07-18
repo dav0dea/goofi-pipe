@@ -459,8 +459,13 @@ impl Graph {
         type_name: &str,
         params: Option<ParamGroups>,
     ) -> Result<Uid, String> {
+        let seed = params.is_none();
         let (manifest, params, node) = self.build_node(type_name, params)?;
-        Ok(self.insert_node(manifest, node, params))
+        let uid = self.insert_node(manifest, node, params);
+        if seed {
+            self.seed_default_expressions(uid, manifest);
+        }
+        Ok(uid)
     }
 
     /// Instantiate a node at a SPECIFIC uid + display name — the undo/redo restoration path, so
@@ -477,17 +482,37 @@ impl Graph {
         if self.contains(uid) {
             return Err(format!("add_node_at: uid {} already in use", uid.to_hex()));
         }
+        let params_arg_was_none = params.is_none();
         let (manifest, params, node) = self.build_node(type_name, params)?;
         let name = if name.is_empty() || self.name_in_use(name) {
             self.fresh_name(&manifest.type_name.to_lowercase())
         } else {
             name.to_string()
         };
+        let seed = params_arg_was_none;
         self.insert_node_at(uid, name, manifest, node, params);
         if uid.0 >= self.next_uid {
             self.next_uid = uid.0 + 1;
         }
+        if seed {
+            self.seed_default_expressions(uid, manifest);
+        }
         Ok(uid)
+    }
+
+    /// Seed a live expression binding for each of the type's `default_expr` params — the fresh-add
+    /// analogue of a literal default. Skipped entirely without an evaluator (the `spec` literal is the
+    /// graceful fallback, never an errored "no evaluator" binding). Only fresh adds (`params == None`)
+    /// call this; a restore/load supplies explicit params + its own captured expressions.
+    fn seed_default_expressions(&mut self, uid: Uid, manifest: &'static NodeManifest) {
+        if self.evaluator.is_none() {
+            return;
+        }
+        for decl in manifest.params {
+            if let Some(expr) = decl.default_expr {
+                let _ = self.set_expression(uid, decl.group, decl.name, expr, true, false);
+            }
+        }
     }
 
     /// Build a `NodeEntry` from a manifest + a constructed node, run its `setup`,
@@ -2777,6 +2802,48 @@ mod tests {
     }
 
     #[test]
+    fn fresh_add_seeds_a_default_expr_binding_that_tracks_globals() {
+        use goofi_core::globals::GlobalValue;
+        let mut g = eval_graph();
+        let n = g.add_node("_TestDefaultExpr", None).unwrap();
+        // The declared default_expr became a real, live binding (not a literal).
+        let info = g.param_expression(n, "control", "rate").expect("default_expr seeded a binding");
+        assert_eq!(info.source, "globals.default_ufreq");
+        assert!(info.enabled && info.error.is_none(), "seeded binding is enabled + healthy");
+        g.tick();
+        assert_eq!(first_f32(&g.latest_frame(n, "out").unwrap()), 30.0, "evaluates to the global");
+        // Editing the referenced global re-rates the producer live.
+        g.apply_global_change("default_ufreq", Some(GlobalValue::Float(42.0))).unwrap();
+        g.tick();
+        assert_eq!(first_f32(&g.latest_frame(n, "out").unwrap()), 42.0, "re-rates on a global edit");
+    }
+
+    #[test]
+    fn default_expr_falls_back_to_the_literal_without_an_evaluator() {
+        // No evaluator wired ⇒ no binding is minted; the param keeps its spec-default literal (5.0),
+        // never an errored "no evaluator" binding. Graceful degrade for headless / eval-less runs.
+        let mut g = Graph::new();
+        let n = g.add_node("_TestDefaultExpr", None).unwrap();
+        assert!(g.param_expression(n, "control", "rate").is_none(), "no binding without an evaluator");
+        g.tick();
+        assert_eq!(first_f32(&g.latest_frame(n, "out").unwrap()), 5.0, "the literal fallback is used");
+    }
+
+    #[test]
+    fn restore_path_does_not_reseed_default_expr() {
+        // A restore/load supplies explicit params (the doc is authoritative) → NO auto-binding; the
+        // doc's own captured expressions are what get restored (separately). `add_node_at(Some(..))`
+        // models the restore entry point.
+        let mut g = eval_graph();
+        let params = goofi_node::with_common(goofi_node::find("_TestDefaultExpr").unwrap().default_params());
+        let n = g.add_node_at("_TestDefaultExpr", Some(params), Uid(0xD15C), "restored").unwrap();
+        assert!(
+            g.param_expression(n, "control", "rate").is_none(),
+            "restore must not auto-bind — the doc is the source of truth"
+        );
+    }
+
+    #[test]
     fn param_from_json_coerces_each_type_and_gates_trigger_firing() {
         use serde_json::json;
         // Float: takes as_f64, preserves bounds.
@@ -2855,6 +2922,7 @@ mod tests {
         group: "control",
         name: "value",
         spec: ParamSpec::Float { default: 0.0, min: -1.0e9, max: 1.0e9 },
+        default_expr: None,
     }];
     inventory::submit! {
         NodeManifest {
@@ -3056,8 +3124,8 @@ mod tests {
     }
     // 10 Hz (-> 0.1s), autotriggering. `frequency_mode` is filled by `with_common`.
     static CAPPED_PARAMS: &[ParamDecl] = &[
-        ParamDecl { group: "common", name: "autotrigger", spec: ParamSpec::Bool { default: true } },
-        ParamDecl { group: "common", name: "max_frequency", spec: ParamSpec::Float { default: 10.0, min: 0.0, max: 60.0 } },
+        ParamDecl { group: "common", name: "autotrigger", spec: ParamSpec::Bool { default: true }, default_expr: None },
+        ParamDecl { group: "common", name: "max_frequency", spec: ParamSpec::Float { default: 10.0, min: 0.0, max: 60.0 }, default_expr: None },
     ];
     inventory::submit! {
         NodeManifest {
@@ -3154,6 +3222,39 @@ mod tests {
         }
     }
 
+    // A source whose `control.rate` param declares a `default_expr` — proving a fresh add seeds a
+    // live binding (not a plain literal). It emits the param's current value so a test can watch the
+    // binding evaluate + re-rate; the 5.0 spec default is the no-evaluator fallback.
+    #[derive(Default)]
+    struct DefaultExprSource;
+    impl Node for DefaultExprSource {
+        fn process(&mut self, _i: &Inputs<'_>, out: &mut Outputs<'_>, _c: &mut NodeCtx, p: &Params<'_>) -> NodeResult {
+            let v = p.f64("control", "rate").unwrap_or(-1.0) as f32;
+            let d = Data::from_array_bytes(DType::F32, vec![1], v.to_le_bytes().to_vec(), Meta::empty())
+                .map_err(|e| e.to_string())?;
+            out.set("out", d);
+            Ok(())
+        }
+    }
+    static DEFAULT_EXPR_PARAMS: &[ParamDecl] = &[ParamDecl {
+        group: "control",
+        name: "rate",
+        spec: ParamSpec::Float { default: 5.0, min: 0.0, max: 1000.0 },
+        default_expr: Some("globals.default_ufreq"),
+    }];
+    inventory::submit! {
+        NodeManifest {
+            type_name: "_TestDefaultExpr",
+            category: "test",
+            doc: "control.rate has a default_expr binding",
+            inputs: &[],
+            outputs: G_OUT,
+            params: DEFAULT_EXPR_PARAMS,
+            isolation: Isolation::InProcess,
+            factory: default_factory::<DefaultExprSource>,
+        }
+    }
+
     // A pure source with two output slots at different cadences: "fast" emits every
     // run, "slow" every other run — to prove the node-level ufreq is stamped identically
     // on every slot (not each slot's own cadence).
@@ -3214,6 +3315,7 @@ mod tests {
         group: "common",
         name: "autotrigger",
         spec: ParamSpec::Bool { default: true },
+        default_expr: None,
     }];
     static COLLECT_IN: &[SlotDecl] = &[SlotDecl {
         name: "ins",

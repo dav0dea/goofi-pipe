@@ -20,3 +20,28 @@ mod test_source;
 pub fn native_node_count() -> usize {
     goofi_node::catalog().count()
 }
+
+#[cfg(test)]
+mod tests {
+    /// Catalog validation: every `default_expr` a node declares must target a param that actually
+    /// exists on that node — either one it declares, or a `common.*` scheduling param synthesized by
+    /// `with_common`. Otherwise the fresh-add seeding would silently no-op (`set_expression` rejects
+    /// an unknown param). Cheap, evaluator-free, and runs over the whole linked catalog.
+    #[test]
+    fn every_default_expr_targets_a_declared_param() {
+        for m in goofi_node::catalog() {
+            for decl in m.params {
+                let Some(expr) = decl.default_expr else { continue };
+                assert!(!expr.trim().is_empty(), "{}: {}/{} has an empty default_expr", m.type_name, decl.group, decl.name);
+                let targets_declared = m.params.iter().any(|d| d.group == decl.group && d.name == decl.name);
+                assert!(
+                    targets_declared || decl.group == "common",
+                    "{}: default_expr on undeclared param {}/{}",
+                    m.type_name,
+                    decl.group,
+                    decl.name
+                );
+            }
+        }
+    }
+}

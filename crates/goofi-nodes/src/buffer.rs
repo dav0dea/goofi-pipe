@@ -55,6 +55,7 @@ static PARAMS: &[ParamDecl] = &[ParamDecl {
     group: "buffer",
     name: "size",
     spec: ParamSpec::Int { default: 1000, min: 1, max: 10_000_000 },
+    default_expr: None,
 }];
 static INPUTS: &[SlotDecl] = &[SlotDecl {
     name: "data",

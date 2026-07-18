@@ -30,8 +30,8 @@ impl Node for TestConst {
 }
 
 static PARAMS: &[ParamDecl] = &[
-    ParamDecl { group: "constant", name: "value", spec: ParamSpec::Float { default: 0.0, min: -1.0e9, max: 1.0e9 } },
-    ParamDecl { group: "constant", name: "length", spec: ParamSpec::Int { default: 1, min: 1, max: 1_000_000 } },
+    ParamDecl { group: "constant", name: "value", spec: ParamSpec::Float { default: 0.0, min: -1.0e9, max: 1.0e9 }, default_expr: None },
+    ParamDecl { group: "constant", name: "length", spec: ParamSpec::Int { default: 1, min: 1, max: 1_000_000 }, default_expr: None },
 ];
 static OUTPUTS: &[OutputDecl] = &[OutputDecl {
     name: "out",
