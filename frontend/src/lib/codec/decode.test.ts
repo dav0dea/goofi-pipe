@@ -4,10 +4,11 @@ import { describe, expect, it } from 'vitest';
 import { decodeData, type ArrayData, type DataFrame } from './decode';
 
 /**
- * Cross-language codec parity. The fixture (tests/codec_golden.json) is generated
- * by the PYTHON encoder (the wire-format source of truth) and is also asserted by
- * tests/test_codec.py. Decoding it here proves the hand-mirrored TS port stays in
- * lock-step with the Python encoder — any drift in tag/header/body fails both.
+ * Cross-language codec parity. The fixture (tests/codec_golden.json) is a static golden of the
+ * STABLE GOOF wire format — hex-encoded frames + their expected decodings. Decoding it here proves
+ * the hand-mirrored TS port stays in lock-step with the canonical encoder (`goofi-codec`, the Rust
+ * source of truth); any drift in tag/header/body fails this test. (The golden originated from the
+ * now-removed Python encoder; the wire format is fixed, so the bytes remain canonical.)
  */
 const GOLDEN = JSON.parse(
 	readFileSync(fileURLToPath(new URL('../../../../tests/codec_golden.json', import.meta.url)), 'utf-8')
