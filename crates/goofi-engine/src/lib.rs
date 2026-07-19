@@ -910,8 +910,16 @@ impl Graph {
     /// that once exposed it — `remove_boundary` drops the stub but LEAVES the leaf→leaf link — so a
     /// later re-group must reconstruct the port rather than assert a now-broken invariant (the old
     /// `debug_assert` panicked in dev/CI, poisoning the graph mutex, and minted a dangling stub in
-    /// release).
-    fn expose_in_nested_member(&mut self, member: Uid, leaf: Uid, slot: &str, dir: subpatch::Dir) -> subpatch::StubId {
+    /// release). Every port MINTED here is recorded in `minted` so the group's inverse can un-mint it
+    /// (else group→undo would leave the reconstructed port resurrected on the nested member).
+    fn expose_in_nested_member(
+        &mut self,
+        member: Uid,
+        leaf: Uid,
+        slot: &str,
+        dir: subpatch::Dir,
+        minted: &mut Vec<(Uid, subpatch::StubId)>,
+    ) -> subpatch::StubId {
         if member == leaf {
             return slot.to_string();
         }
@@ -924,7 +932,7 @@ impl Graph {
         let inner = if child == leaf {
             (leaf, slot.to_string())
         } else {
-            let child_stub = self.expose_in_nested_member(child, leaf, slot, dir);
+            let child_stub = self.expose_in_nested_member(child, leaf, slot, dir, minted);
             (child, child_stub)
         };
         let dtype = match dir {
@@ -941,6 +949,7 @@ impl Graph {
         if let Some(s) = self.scopes.get_mut(&member) {
             s.stubs
                 .insert(id.clone(), subpatch::Stub { dir, dtype, inner: Some(inner), pos, name: id.clone() });
+            minted.push((member, id.clone()));
         }
         id
     }
@@ -974,6 +983,19 @@ impl Graph {
     /// uid-stable by construction; the crossing flat links stay verbatim (they resolve through the
     /// new stubs).
     pub fn group_nodes(&mut self, members: &[Uid], pos: [f64; 2]) -> Result<Uid, String> {
+        self.group_nodes_capturing(members, pos, &mut Vec::new())
+    }
+
+    /// Like [`Self::group_nodes`], but records into `minted` every stub it has to MINT on a
+    /// pre-existing nested member (to re-expose an orphaned crossing link). The `Group` command
+    /// threads this into its inverse so undo un-mints them — else group→undo would leave those ports
+    /// resurrected on the nested member (an inexact inverse).
+    pub fn group_nodes_capturing(
+        &mut self,
+        members: &[Uid],
+        pos: [f64; 2],
+        minted: &mut Vec<(Uid, subpatch::StubId)>,
+    ) -> Result<Uid, String> {
         use subpatch::{Dir, Scope, Stub};
         // 1. Validate BEFORE any mutation: each exists, and all share one parent scope.
         let parent = self.common_parent(members)?;
@@ -1001,7 +1023,7 @@ impl Graph {
                         continue;
                     }
                     let dtype = self.output_slot_type(l.node_out, l.slot_out).unwrap_or(goofi_core::SlotType::Array);
-                    let inner_slot = self.expose_in_nested_member(om, l.node_out, l.slot_out, Dir::Out);
+                    let inner_slot = self.expose_in_nested_member(om, l.node_out, l.slot_out, Dir::Out, minted);
                     let id = format!("out{out_n}");
                     stubs.insert(
                         id.clone(),
@@ -1020,7 +1042,7 @@ impl Graph {
                         continue;
                     }
                     let dtype = self.input_slot_type(l.node_in, l.slot_in).unwrap_or(goofi_core::SlotType::Array);
-                    let inner_slot = self.expose_in_nested_member(im, l.node_in, l.slot_in, Dir::In);
+                    let inner_slot = self.expose_in_nested_member(im, l.node_in, l.slot_in, Dir::In, minted);
                     let id = format!("in{in_n}");
                     stubs.insert(
                         id.clone(),

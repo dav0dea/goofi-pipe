@@ -373,13 +373,28 @@ impl Command {
             }
 
             Command::Group { members, pos, restore } => {
+                // `minted` collects any stub group_nodes must add to a PRE-EXISTING nested member to
+                // re-expose an orphaned crossing link — a side effect on a scope OUTSIDE the new one,
+                // which Expand alone would not undo. Only a fresh group (restore=None) can mint.
+                let mut minted: Vec<(Uid, StubId)> = Vec::new();
                 let scope = match restore {
-                    None => g.group_nodes(&members, pos)?,
+                    None => g.group_nodes_capturing(&members, pos, &mut minted)?,
                     // Idempotent: the exact scope is already live (a redo racing another client) — reuse it.
                     Some(r) if g.scope(r.scope_id).is_some() => r.scope_id,
                     Some(r) => g.restore_scope(r.scope_id, r.name, pos, &members, r.stubs, r.parent)?,
                 };
-                Ok((Outcome::Uid(scope), Command::Expand { scope }))
+                // Inverse: expand the new scope, then RemoveStub each minted port so group→undo is
+                // exact (redo re-adds them before re-grouping, since Compound reverses child inverses).
+                let inverse = if minted.is_empty() {
+                    Command::Expand { scope }
+                } else {
+                    let mut cmds = vec![Command::Expand { scope }];
+                    cmds.extend(
+                        minted.into_iter().map(|(mscope, id)| Command::RemoveStub { scope: mscope, stub_id: id }),
+                    );
+                    Command::Compound(cmds)
+                };
+                Ok((Outcome::Uid(scope), inverse))
             }
 
             Command::Expand { scope } => {
@@ -1328,6 +1343,32 @@ mod tests {
         assert_eq!(res2, Outcome::Uid(scope), "redo restored the SAME scope uid");
         assert_eq!(g.scope_of(osc), Some(scope), "osc regrouped under the same scope");
         assert_eq!(g.scope(scope).unwrap().stubs.len(), stub_count, "stubs restored verbatim");
+    }
+
+    #[test]
+    fn group_undo_un_mints_the_stub_it_added_to_a_nested_member() {
+        // Round-1's group_nodes MINTS a re-exposing stub on a nested member when a crossing link's
+        // port was previously removed. Group's inverse (Expand) must UN-MINT it — else group→undo
+        // leaves a spurious boundary port resurrected on the nested member (not an exact inverse).
+        let mut g = Graph::new();
+        let a = g.add_node("_TestEcho", None).unwrap();
+        let x = g.add_node("_TestEcho", None).unwrap();
+        g.add_link(a, "out", x, "in").unwrap();
+        let s = g.group_nodes(&[a], [0.0, 0.0]).unwrap();
+        g.remove_boundary(s, "out0").unwrap(); // drop the port; the flat link a.out→x.in survives
+        assert!(g.scope(s).unwrap().stubs.is_empty(), "s starts with no port");
+
+        // Group [s] — group_nodes re-mints a stub on s to expose the orphaned crossing link.
+        let (_r, inverse) =
+            Command::Group { members: vec![s], pos: [1.0, 1.0], restore: None }.execute(&mut g).unwrap();
+        assert!(!g.scope(s).unwrap().stubs.is_empty(), "group re-minted a port on s");
+
+        // Undo — dissolves the new scope AND un-mints the stub the group added to s.
+        inverse.execute(&mut g).unwrap();
+        assert!(
+            g.scope(s).unwrap().stubs.is_empty(),
+            "group→undo removed the re-minted port (an exact inverse, no resurrected boundary)"
+        );
     }
 
     #[test]
