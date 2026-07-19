@@ -87,6 +87,30 @@ fn real_python_node_runs_inside_the_engine_graph() {
 }
 
 #[test]
+fn lempel_ziv_discovers_and_runs_in_process_inline() {
+    // A discovered Python node file (CamelCase type name from its stem) runs on the
+    // UNCHANGED inline tier — the guard that off-tick detachment leaves InProcess nodes alone.
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/lempel_ziv.py");
+    let ty = goofi_py::discover_one(&path).expect("lempel_ziv.py discovers as a Python node");
+    assert_eq!(ty.manifest.type_name, "LempelZiv", "CamelCase type name from the file stem");
+    assert_eq!(ty.manifest.isolation, Isolation::InProcess, "in-process tier");
+
+    let mut g = Graph::new();
+    g.register_dyn_type(ty.manifest, ty.factory);
+    let src = g.add_node("_TestConst", None).unwrap();
+    g.update_param(src, "constant", "length", Param::int(8, 1, 1_000_000)).unwrap();
+    let lz = g.add_node("LempelZiv", None).unwrap();
+    g.add_link(src, "out", lz, "data").unwrap();
+
+    g.tick();
+
+    // LZ76 of a constant (mean-thresholded to all-zeros, length 8) is 2 — a finite result
+    // from real numpy running inline on the tick.
+    assert_eq!(first_f32(&g.latest_frame(lz, "out").expect("LempelZiv produced a frame")), 2.0);
+    assert!(!PyNode::gil_enabled().unwrap(), "GIL stayed disabled");
+}
+
+#[test]
 fn real_evaluator_resolves_a_param_expression_end_to_end() {
     // The user-facing path: the pyo3 PyExprEvaluator injected via `set_evaluator` (exactly what
     // the CLI's `--features python` startup does) must actually evaluate a param expression each
