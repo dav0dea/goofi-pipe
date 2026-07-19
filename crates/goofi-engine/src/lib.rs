@@ -1816,17 +1816,26 @@ impl Graph {
         }
 
         let root = json!({ "nodes": Value::Object(nodes), "links": links, "scopes": Value::Object(scope_map) });
-        // Globals (system + user) as `{name: {value, type}}`. On load, entries `set` existing system
-        // globals and `add` user ones, then `reassert_system` back-fills; so a system global always
+        // Globals (system + user) as an ORDERED array of `{name, value, type}` — a serde_json::Map is
+        // a BTreeMap here (no `preserve_order`), which would alphabetize keys and silently lose the
+        // observable creation/system-first order. On load, entries `set` existing system globals and
+        // `add` user ones in file order, then `reassert_system` back-fills; so a system global always
         // round-trips and an older patch simply picks up any new system default.
-        let mut globals = serde_json::Map::new();
-        for (name, value, _is_system) in self.globals.entries() {
-            globals.insert(name.to_string(), global_to_json(value));
-        }
+        let globals: Vec<Value> = self
+            .globals
+            .entries()
+            .map(|(name, value, _is_system)| {
+                let mut e = global_to_json(value); // {value, type}
+                if let Value::Object(ref mut m) = e {
+                    m.insert("name".to_string(), Value::String(name.to_string()));
+                }
+                e
+            })
+            .collect();
         let doc = json!({
             "version": 6,
             "pillar_default": "signal",
-            "globals": Value::Object(globals),
+            "globals": Value::Array(globals),
             "root": root,
         });
         serde_yaml_ng::to_string(&doc).unwrap_or_default()
@@ -1859,13 +1868,28 @@ impl Graph {
         self.clear();
         // Globals load BEFORE nodes so a node's `globals.*` param default-expression resolves at
         // instantiation. `clear()` already re-seeded the system globals; each entry sets an existing
-        // (system) global or adds a user one. Malformed entries are skipped (best-effort load).
-        if let Some(globals) = doc.get("globals").and_then(|v| v.as_object()) {
-            for (name, entry) in globals {
-                if let Some(value) = global_from_json(entry) {
-                    let _ = self.globals.apply_change(name, Some(value));
+        // (system) global or adds a user one, IN FILE ORDER (so the observable order round-trips).
+        // Malformed entries are skipped (best-effort load).
+        match doc.get("globals") {
+            // v6+ ordered array of `{name, value, type}`.
+            Some(serde_json::Value::Array(arr)) => {
+                for entry in arr {
+                    if let (Some(name), Some(value)) =
+                        (entry.get("name").and_then(|v| v.as_str()), global_from_json(entry))
+                    {
+                        let _ = self.globals.apply_change(name, Some(value));
+                    }
                 }
             }
+            // Legacy `{name: {value, type}}` object (alphabetized; order was not preserved).
+            Some(serde_json::Value::Object(obj)) => {
+                for (name, entry) in obj {
+                    if let Some(value) = global_from_json(entry) {
+                        let _ = self.globals.apply_change(name, Some(value));
+                    }
+                }
+            }
+            _ => {}
         }
         let mut idmap: HashMap<String, Uid> = HashMap::new();
         for (old, rec) in nodes {
@@ -4034,6 +4058,28 @@ mod tests {
         assert_eq!(g2.globals().get("trials"), Some(&GlobalValue::Int(12)), "int type preserved (not floated)");
         assert_eq!(g2.globals().get("live"), Some(&GlobalValue::Bool(true)));
         assert!(!g2.globals().is_system("subject"), "user global loads as user");
+    }
+
+    #[test]
+    fn globals_keep_their_ordered_position_across_a_gfi_round_trip() {
+        use goofi_core::globals::GlobalValue;
+        // Global order is observable (the panel, the mirror, expression-eval iteration). Seed user
+        // globals in a NON-alphabetical order and confirm serialize→load preserves it — a
+        // serde_json::Map (BTreeMap) would silently alphabetize them.
+        let mut g = Graph::new();
+        g.apply_global_change("zebra", Some(GlobalValue::Int(1))).unwrap();
+        g.apply_global_change("apple", Some(GlobalValue::Int(2))).unwrap();
+        g.apply_global_change("mango", Some(GlobalValue::Int(3))).unwrap();
+        let order = |g: &Graph| g.globals().entries().map(|(k, _, _)| k.to_string()).collect::<Vec<_>>();
+        let before = order(&g);
+        let mut alphabetical = before.clone();
+        alphabetical.sort();
+        assert_ne!(before, alphabetical, "the seed order must be non-alphabetical for this test to bite");
+
+        let text = g.serialize();
+        let mut g2 = Graph::new();
+        g2.load_doc(&text).unwrap();
+        assert_eq!(order(&g2), before, "user global order survives the round trip (not alphabetized)");
     }
 
     #[test]

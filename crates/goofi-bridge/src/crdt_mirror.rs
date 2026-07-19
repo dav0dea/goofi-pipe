@@ -175,6 +175,26 @@ mod tests {
     }
 
     #[test]
+    fn mirror_preserves_global_creation_order_in_the_doc() {
+        // The frontend reads globals in the doc's key order (system-first, then user creation order).
+        // A full/startup mirror must NOT alphabetize them: a serde_json::Map without `preserve_order`
+        // (a BTreeMap) sorts keys, so a loaded patch would show globals alphabetically, not as saved.
+        use goofi_core::globals::GlobalValue;
+        let mut g = Graph::new();
+        g.apply_global_change("zebra", Some(GlobalValue::Int(1))).unwrap();
+        g.apply_global_change("apple", Some(GlobalValue::Int(2))).unwrap();
+
+        let mut doc = GraphDoc::new();
+        sync_graph_to_doc(&g, &mut doc);
+
+        let json = doc.to_json();
+        let keys: Vec<String> = json["globals"].as_object().unwrap().keys().cloned().collect();
+        let zi = keys.iter().position(|k| k == "zebra").expect("zebra present");
+        let ai = keys.iter().position(|k| k == "apple").expect("apple present");
+        assert!(zi < ai, "zebra (created first) precedes apple in the doc — not alphabetized; got {keys:?}");
+    }
+
+    #[test]
     fn mirror_reflects_the_sub_patch_scope() {
         // Grouping a node with a cut output link surfaces one scope (with an auto Out stub). The
         // mirror must carry it: identity, ROOT parent, the member `nodes` list, and the stub

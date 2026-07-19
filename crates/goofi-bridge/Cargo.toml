@@ -17,7 +17,11 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time",
 tower-http = { version = "0.6", features = ["fs"] }
 futures-util = "0.3"
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+# `preserve_order`: serde_json::Map keeps INSERTION order (IndexMap, not BTreeMap). The CRDT mirror
+# feeds the doc's `globals`/`nodes` Y.Maps from these maps, and the frontend reads globals in the
+# doc's key order (system-first, then user creation order) — a BTreeMap would alphabetize them on a
+# full/startup sync. Cargo unifies this feature across the workspace's serde_json.
+serde_json = { version = "1", features = ["preserve_order"] }
 
 [dev-dependencies]
 tokio-tungstenite = "0.24"
