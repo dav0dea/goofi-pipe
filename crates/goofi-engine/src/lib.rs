@@ -24,6 +24,9 @@ pub mod subpatch;
 pub mod command;
 pub use command::{Command, CommandHistory, ExprState, Outcome};
 
+/// The isolated-node execution tier (off-tick detached workers + latest-wins mailboxes).
+mod detached;
+
 /// A stable node identity. Encoded as a 12-hex string for the `.gfi` / frontend
 /// (the same key those use), a `u64` internally.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
