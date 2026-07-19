@@ -1,9 +1,9 @@
 /**
  * Pure scene algebra for rendering a recursive sub-patch tree on the canvas.
  *
- * The backend ships a recursive instance tree (each instance has a `parent` and
- * `members` keyed by template-local). The editor renders ONE scope at a time — the
- * direct children of the entered instance — drawing real nodes and nested instances as
+ * The backend ships a recursive scope tree (each scope has a `parent` and `members`
+ * keyed by member uid — the flat model has no template-local names). The editor renders
+ * ONE scope at a time — the direct children of the entered scope — drawing real nodes and nested scopes as
  * peers, and rerouting any link that crosses a sub-patch boundary to the nearest VISIBLE
  * boundary port. The root patch is just another scope: ROOT_ID names the first-class
  * root instance (parent=null, no boundaries) whose members are every top-level entity, so
@@ -57,21 +57,21 @@ export function parseBoundaryNodeId(id: string, entered: string | null): string 
 
 export interface ScenePort {
 	dir: 'in' | 'out';
-	inner_node: string | null; // a member's template-local (node OR nested instance), or null when unwired
-	inner_slot: string | null; // the member's slot, or — for a nested-instance member — that instance's boundary id
+	inner_node: string | null; // the DIRECT inner member uid (a node OR nested scope), or null when unwired
+	inner_slot: string | null; // the member's slot, or — for a nested-scope member — that scope's stub id
 }
 
 export interface SceneInstance {
 	parent: string | null;
-	/** template-local -> { member uid, whether the member is itself a nested instance } */
+	/** member uid -> { uid, whether the member is itself a nested scope } (flat model: keyed by uid) */
 	members: Record<string, { uid: string; is_instance: boolean }>;
 	interface: Record<string, ScenePort>;
 }
 
-/** What an entity (node or nested instance) is, indexed by uid. */
+/** What an entity (node or nested scope) is, indexed by uid. */
 export interface MemberEntry {
-	instId: string; // the instance that directly contains this entity
-	local: string; // its template-local within that instance
+	instId: string; // the scope that directly contains this entity
+	local: string; // its key in that scope's members map — its own uid in the flat model
 	// Carried for parity with the snapshot's member shape; node-vs-instance classification
 	// for rendering is done by childrenOfScope (real nodes vs Object.keys(instances)).
 	is_instance: boolean;

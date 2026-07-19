@@ -62,25 +62,29 @@ interface Bnd {
 	inner_slot?: string;
 }
 
-/** Seed an instance into the doc in the exact shape the Rust mirror (`upsert_instance`) writes it. */
+/** Seed a scope into the doc in the flat shape the Rust mirror writes: members keyed by uid →
+ * {is_instance}, stubs keyed by id. */
 function seedInstance(
 	insts: Y.Map<Y.Map<unknown>>,
 	uid: string,
-	o: { name: string; parent?: string; def_id?: string; pos?: [number, number]; members?: Record<string, string>; interface?: Bnd[] }
+	o: { name: string; parent?: string; pos?: [number, number]; members?: Record<string, boolean>; stubs?: Bnd[] }
 ): void {
 	const m = new Y.Map<unknown>();
 	m.set('name', o.name);
 	m.set('parent', o.parent ?? ROOT_ID);
-	if (o.def_id !== undefined) m.set('def_id', o.def_id);
 	const p = new Y.Map<unknown>();
 	p.set('x', (o.pos ?? [0, 0])[0]);
 	p.set('y', (o.pos ?? [0, 0])[1]);
 	m.set('pos', p);
-	const mem = new Y.Map<unknown>();
-	for (const [local, muid] of Object.entries(o.members ?? {})) mem.set(local, muid);
+	const mem = new Y.Map<Y.Map<unknown>>();
+	for (const [muid, isInst] of Object.entries(o.members ?? {})) {
+		const e = new Y.Map<unknown>();
+		e.set('is_instance', isInst);
+		mem.set(muid, e);
+	}
 	m.set('members', mem);
-	const iface = new Y.Map<Y.Map<unknown>>();
-	for (const b of o.interface ?? []) {
+	const stubs = new Y.Map<Y.Map<unknown>>();
+	for (const b of o.stubs ?? []) {
 		const bm = new Y.Map<unknown>();
 		bm.set('dir', b.dir);
 		bm.set('dtype', b.dtype);
@@ -91,9 +95,9 @@ function seedInstance(
 		bm.set('pos', bp);
 		if (b.inner_node !== undefined) bm.set('inner_node', b.inner_node);
 		if (b.inner_slot !== undefined) bm.set('inner_slot', b.inner_slot);
-		iface.set(b.bnd_id, bm);
+		stubs.set(b.bnd_id, bm);
 	}
-	m.set('interface', iface);
+	m.set('stubs', stubs);
 	insts.set(uid, m);
 }
 
@@ -619,56 +623,7 @@ describe('graph executors — composite + sub-patch kinds', () => {
 		).toBe(true);
 	});
 
-	it('duplicate_shared: inverse removes the new sibling and re-uniques the source', async () => {
-		const fc = new FakeControl();
-		const g = new GraphStore(fc);
-		fc.setCallResult('duplicate_shared', { def_id: 'd', inst_id: 'subpatch2' });
-		const action: Action = {
-			kind: 'duplicate_shared',
-			label: 'Duplicate shared',
-			domain: 'graph',
-			context: EMPTY_CTX,
-			payload: { instId: 'subpatch0', newInstId: '', wasUnique: true }
-		};
-		await graphExecutors['duplicate_shared'].forward(action, deps(fc, g));
-		expect((action.payload as { newInstId: string }).newInstId).toBe('subpatch2');
-		await graphExecutors['duplicate_shared'].inverse(action, deps(fc, g));
-		const ops = fc.recordedCalls();
-		expect(ops.some((c) => c.op === 'remove_node' && c.payload.node === 'subpatch2')).toBe(true);
-		expect(ops.some((c) => c.op === 'make_unique' && c.payload.inst_id === 'subpatch0')).toBe(true);
-	});
-
-	it('make_unique: inverse re-attaches to the original def (re_share_instance), not duplicate_shared', async () => {
-		const fc = new FakeControl();
-		const g = new GraphStore(fc);
-		const action: Action = {
-			kind: 'make_unique',
-			label: 'Make unique',
-			domain: 'graph',
-			context: EMPTY_CTX,
-			payload: { instId: 'subpatch0', defIdBefore: 'd' }
-		};
-		await graphExecutors['make_unique'].inverse(action, deps(fc, g));
-		// re-attach to the SAME def (reunite the family), not duplicate_shared (which minted
-		// a fresh def + spawned an extra sibling).
-		expect(fc.recordedCalls()).toEqual([
-			{ op: 're_share_instance', payload: { inst_id: 'subpatch0', def_id: 'd' } }
-		]);
-	});
-
-	it('make_unique: inverse is a no-op when it was already unique', async () => {
-		const fc = new FakeControl();
-		const g = new GraphStore(fc);
-		const action: Action = {
-			kind: 'make_unique',
-			label: 'Make unique',
-			domain: 'graph',
-			context: EMPTY_CTX,
-			payload: { instId: 'subpatch0', defIdBefore: null }
-		};
-		await graphExecutors['make_unique'].inverse(action, deps(fc, g));
-		expect(fc.recordedCalls()).toEqual([]);
-	});
+	// (sharing removed: duplicate_shared / make_unique / re_share_instance executors are gone.)
 });
 
 describe('history.transaction — compound actions', () => {
@@ -1005,8 +960,8 @@ describe('sub-patch synth node identity (viewer re-instantiation bug)', () => {
 			seedNode(nodesMap(g.doc), 'm0', 'Buffer', 'osc0m');
 			seedInstance(instancesMap(g.doc), 'subpatch0', {
 				name: 'subpatch0',
-				members: { oscillator0: 'm0' },
-				interface: [{ bnd_id: 'out0', dir: 'out', dtype: 'ARRAY', name: 'out0', inner_node: 'm0', inner_slot: 'out' }]
+				members: { m0: false },
+				stubs: [{ bnd_id: 'out0', dir: 'out', dtype: 'ARRAY', name: 'out0', inner_node: 'm0', inner_slot: 'out' }]
 			});
 		});
 		const a = g.nodeById('subpatch0')!;

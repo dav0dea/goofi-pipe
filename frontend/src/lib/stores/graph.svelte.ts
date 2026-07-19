@@ -868,32 +868,6 @@ export class GraphStore {
 		});
 	}
 
-	/** Promote an instance to shared and spawn a strict-mirror sibling copy. */
-	async duplicateShared(instId: string, pos?: [number, number]): Promise<void> {
-		const wasUnique = !this.instances[instId]?.def_id;
-		const r = await this.ctl.call<{ inst_id: string }>('duplicate_shared', { inst_id: instId, pos });
-		this._record({
-			kind: 'duplicate_shared',
-			label: 'Duplicate shared',
-			domain: 'graph',
-			context: captureNavContext(),
-			payload: { instId, newInstId: r?.inst_id ?? '', wasUnique, pos }
-		});
-	}
-
-	/** Detach a shared instance into its own private (unique) copy. */
-	async makeUnique(instId: string): Promise<void> {
-		const defIdBefore = this.instances[instId]?.def_id ?? null;
-		this._record({
-			kind: 'make_unique',
-			label: 'Make unique',
-			domain: 'graph',
-			context: captureNavContext(),
-			payload: { instId, defIdBefore }
-		});
-		await this.ctl.call('make_unique', { inst_id: instId });
-	}
-
 	/** Add a virtual In/Out boundary node to a sub-patch (unwired). Returns its id. */
 	async addBoundary(
 		instId: string,
@@ -1052,10 +1026,11 @@ export class GraphStore {
 	 * its inline viewer re-subscribed/flickered. The cache restores that stability. */
 	private _synthCache = new Map<string, { sig: string; node: NodeInstanceInfo }>();
 
-	/** The uid of a member given its template-local name within `instId` — a direct
-	 * read now that members is keyed local -> {uid, is_instance}. */
-	memberUid(instId: string, local: string): string | null {
-		return this.instances[instId]?.members[local]?.uid ?? null;
+	/** Validate that `uid` is a direct member of `instId` and return it (flat model: members are
+	 * keyed by uid, so this is an identity-with-membership-check — used to draw a stub's inner edge
+	 * only when its `inner_node` is genuinely a member). */
+	memberUid(instId: string, uid: string): string | null {
+		return this.instances[instId]?.members[uid]?.uid ?? null;
 	}
 
 	/** Reconcile the flat node list IN PLACE by uid (mirror of _reconcileInstances):
@@ -1153,13 +1128,11 @@ export class GraphStore {
 		}
 	}
 
-	/** Derive a node's sub-patch membership from the doc's mirrored instance forest (the reverse of
-	 * `instances[inst].members[local] = uid`). ROOT nodes → null. */
+	/** Derive a node's sub-patch membership from the doc's mirrored scope forest. Flat model:
+	 * `members` is keyed by uid, so `local_name` is just the uid (no template locals). ROOT → null. */
 	private _membershipFromDoc(uid: string): { instance: string; local_name: string } | null {
 		for (const iv of instanceViews(this._sync.doc)) {
-			for (const [local, muid] of Object.entries(iv.members)) {
-				if (muid === uid) return { instance: iv.uid, local_name: local };
-			}
+			if (uid in iv.members) return { instance: iv.uid, local_name: uid };
 		}
 		return null;
 	}
@@ -1252,7 +1225,6 @@ export class GraphStore {
 	 * member's stream). Live sharing state is recomputed by the inspector from
 	 * `instances`; the marker just rides the id + glyph/badge bits. */
 	private _synthSubpatchNode(instId: string, inst: InstanceInfo): NodeInstanceInfo {
-		const shared = Boolean(inst.def_id);
 		const error = inst.error ?? null;
 		const memberCount = Object.keys(inst.members).length;
 		// Signature of everything the synth node RENDERS except position — which is
@@ -1264,7 +1236,7 @@ export class GraphStore {
 		const labelSig = Object.entries(inst.interface)
 			.map(([bid, p]) => `${bid}=${p.name ?? ''}`)
 			.join(',');
-		const sig = `${inst.name}|${inst.kind}|${error ?? ''}|${memberCount}|${JSON.stringify(inst.slots)}|${labelSig}`;
+		const sig = `${inst.name}|${error ?? ''}|${memberCount}|${JSON.stringify(inst.slots)}|${labelSig}`;
 
 		const cached = this._synthCache.get(instId);
 		if (cached && cached.sig === sig) {
@@ -1288,7 +1260,7 @@ export class GraphStore {
 			uid: instId,
 			// Display label is the instance's separate name (the uid is opaque).
 			name: inst.name ?? instId,
-			type: shared ? 'Shared sub-patch' : 'Sub-patch',
+			type: 'Sub-patch',
 			category: 'subpatch',
 			doc: '',
 			input_slots,
@@ -1299,7 +1271,7 @@ export class GraphStore {
 			viewers: inst.viewers ?? {},
 			membership: null,
 			error,
-			subpatch: { instId, shared, memberCount }
+			subpatch: { instId, memberCount }
 		};
 		this._synthCache.set(instId, { sig, node });
 		return node;

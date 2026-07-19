@@ -96,8 +96,9 @@ describe('graphDoc readers', () => {
 		]);
 	});
 
-	it('reads the sub-patch forest (instances, members, interface)', () => {
-		// Build an instance in the exact shape the Rust mirror writes.
+	it('reads the sub-patch forest (scopes, members, stubs)', () => {
+		// Build a scope in the exact flat shape the Rust mirror writes: members keyed by uid →
+		// {is_instance}, stubs keyed by id.
 		const doc = new Y.Doc();
 		const inst = new Y.Map<unknown>();
 		inst.set('name', 'subpatch0');
@@ -107,9 +108,11 @@ describe('graphDoc readers', () => {
 		ipos.set('y', 6);
 		inst.set('pos', ipos);
 		const members = new Y.Map<unknown>();
-		members.set('buffer0', 'm1');
+		const m1 = new Y.Map<unknown>();
+		m1.set('is_instance', false);
+		members.set('m1', m1);
 		inst.set('members', members);
-		const iface = new Y.Map<unknown>();
+		const stubs = new Y.Map<unknown>();
 		const out0 = new Y.Map<unknown>();
 		out0.set('dir', 'out');
 		out0.set('dtype', 'ARRAY');
@@ -120,18 +123,17 @@ describe('graphDoc readers', () => {
 		out0.set('pos', bpos);
 		out0.set('inner_node', 'm1');
 		out0.set('inner_slot', 'out');
-		iface.set('out0', out0);
-		inst.set('interface', iface);
+		stubs.set('out0', out0);
+		inst.set('stubs', stubs);
 		instancesMap(doc).set('i1', inst);
 
 		expect(instanceViews(doc).map((i) => i.uid)).toEqual(['i1']);
 		expect(instanceView(doc, 'i1')).toEqual({
 			uid: 'i1',
 			name: 'subpatch0',
-			def_id: undefined,
 			parent: '__root__',
 			pos: [5, 6],
-			members: { buffer0: 'm1' },
+			members: { m1: false },
 			interface: [
 				{
 					bnd_id: 'out0',

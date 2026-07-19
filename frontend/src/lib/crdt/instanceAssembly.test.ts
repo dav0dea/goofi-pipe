@@ -3,11 +3,11 @@ import { assembleInstances, assembleInstance, assembleRoot } from './instanceAss
 import type { InstanceView } from './graphDoc';
 import { ROOT_ID } from '$lib/editor/subpatchScene';
 
-/** A doc instance view in the exact shape `instanceViews(doc)` returns. */
+/** A doc scope view in the exact shape `instanceViews(doc)` returns (flat model: members keyed by
+ * uid → is_instance; no def_id/kind/siblings). */
 function inst(over: Partial<InstanceView> & { uid: string }): InstanceView {
 	return {
 		name: over.name ?? over.uid,
-		def_id: over.def_id,
 		parent: over.parent ?? ROOT_ID,
 		pos: over.pos ?? [0, 0],
 		members: over.members ?? {},
@@ -16,13 +16,13 @@ function inst(over: Partial<InstanceView> & { uid: string }): InstanceView {
 	};
 }
 
-describe('instanceAssembly — real instance from a doc view', () => {
-	it('derives kind/def_id/parent/slots/interface/members/viewers for a unique instance', () => {
+describe('instanceAssembly — a scope from a doc view', () => {
+	it('derives parent/slots/interface/members/viewers for a scope', () => {
 		const view = inst({
 			uid: 'i1',
 			name: 'subpatch0',
 			pos: [5, 6],
-			members: { buffer0: 'm1' },
+			members: { m1: false },
 			interface: [
 				{
 					bnd_id: 'out0',
@@ -35,15 +35,13 @@ describe('instanceAssembly — real instance from a doc view', () => {
 				}
 			]
 		});
-		const info = assembleInstance(view, new Set(['i1']), [view], null);
+		const info = assembleInstance(view, new Set(['i1']), null);
 
 		expect(info.uid).toBe('i1');
 		expect(info.name).toBe('subpatch0');
-		expect(info.kind).toBe('unique'); // no def_id in the doc → unique
-		expect(info.def_id).toBeNull();
-		expect(info.parent).toBe(ROOT_ID); // top-level real instance parents to ROOT_ID, not null
+		expect(info.parent).toBe(ROOT_ID); // top-level scope parents to ROOT_ID, not null
 		expect(info.pos).toEqual([5, 6]);
-		// Interface maps the boundary array → Record<bnd_id, SubPatchPort>.
+		// Interface maps the stub array → Record<stub_id, SubPatchPort>.
 		expect(info.interface.out0).toEqual({
 			dir: 'out',
 			dtype: 'ARRAY',
@@ -52,28 +50,27 @@ describe('instanceAssembly — real instance from a doc view', () => {
 			pos: [1, 2],
 			name: 'wave'
 		});
-		// A WIRED output boundary (inner_node != null) becomes an output slot.
+		// A WIRED output stub (inner_node != null) becomes an output slot.
 		expect(info.slots).toEqual({ input: {}, output: { out0: 'ARRAY' } });
-		// members local→uid gains is_instance (m1 is a plain node here).
-		expect(info.members).toEqual({ buffer0: { uid: 'm1', is_instance: false } });
-		expect(info.siblings).toEqual([]);
-		expect(info.viewers).toEqual({}); // instance viewers are a backend stub ({} end-to-end)
+		// members keyed by uid → {uid, is_instance} (m1 is a plain node here).
+		expect(info.members).toEqual({ m1: { uid: 'm1', is_instance: false } });
+		expect(info.viewers).toEqual({});
 		expect(info.error).toBeNull();
 	});
 
-	it('an UNWIRED boundary renders in the interface but is not a slot', () => {
+	it('an UNWIRED stub renders in the interface but is not a slot', () => {
 		const view = inst({
 			uid: 'i1',
 			interface: [
 				{ bnd_id: 'in0', dir: 'in', dtype: 'ARRAY', name: 'x', pos: [0, 0] } // no inner_node
 			]
 		});
-		const info = assembleInstance(view, new Set(['i1']), [view], null);
+		const info = assembleInstance(view, new Set(['i1']), null);
 		expect(info.interface.in0.inner_node).toBeNull();
 		expect(info.slots).toEqual({ input: {}, output: {} }); // unwired → no slot
 	});
 
-	it('splits wired boundaries into input vs output slots by dir', () => {
+	it('splits wired stubs into input vs output slots by dir', () => {
 		const view = inst({
 			uid: 'i1',
 			interface: [
@@ -81,48 +78,26 @@ describe('instanceAssembly — real instance from a doc view', () => {
 				{ bnd_id: 'out0', dir: 'out', dtype: 'STRING', name: 'y', pos: [0, 0], inner_node: 'm1', inner_slot: 'out' }
 			]
 		});
-		const info = assembleInstance(view, new Set(['i1']), [view], null);
+		const info = assembleInstance(view, new Set(['i1']), null);
 		expect(info.slots).toEqual({ input: { in0: 'ARRAY' }, output: { out0: 'STRING' } });
 	});
 
-	it('a member that is itself an instance gets is_instance=true', () => {
-		const parent = inst({ uid: 'i1', members: { nested0: 'i2' } });
-		const nested = inst({ uid: 'i2', parent: 'i1' });
-		const info = assembleInstance(parent, new Set(['i1', 'i2']), [parent, nested], null);
-		expect(info.members).toEqual({ nested0: { uid: 'i2', is_instance: true } });
+	it('a member that is itself a scope gets is_instance=true', () => {
+		const parent = inst({ uid: 'i1', members: { i2: true } });
+		const info = assembleInstance(parent, new Set(['i1', 'i2']), null);
+		expect(info.members).toEqual({ i2: { uid: 'i2', is_instance: true } });
 	});
 
 	it('overlays the runtime error from the lookup', () => {
 		const view = inst({ uid: 'i1' });
-		const info = assembleInstance(view, new Set(['i1']), [view], 'member boom');
+		const info = assembleInstance(view, new Set(['i1']), 'member boom');
 		expect(info.error).toBe('member boom');
 	});
 });
 
-describe('instanceAssembly — shared family siblings', () => {
-	it('two instances sharing a def_id reference each other; kind=shared', () => {
-		const a = inst({ uid: 'ia', def_id: 'defX' });
-		const b = inst({ uid: 'ib', def_id: 'defX' });
-		const all = [a, b];
-		const ia = assembleInstance(a, new Set(['ia', 'ib']), all, null);
-		const ib = assembleInstance(b, new Set(['ia', 'ib']), all, null);
-		expect(ia.kind).toBe('shared');
-		expect(ia.def_id).toBe('defX');
-		expect(ia.siblings).toEqual(['ib']);
-		expect(ib.siblings).toEqual(['ia']);
-	});
-
-	it('a unique instance (no def_id) has no siblings even if another unique exists', () => {
-		const a = inst({ uid: 'ia' });
-		const b = inst({ uid: 'ib' });
-		const info = assembleInstance(a, new Set(['ia', 'ib']), [a, b], null);
-		expect(info.siblings).toEqual([]);
-	});
-});
-
 describe('instanceAssembly — synthetic ROOT', () => {
-	it('ROOT members are the top-level nodes + instances, keyed by name; members of an instance are excluded', () => {
-		const i1 = inst({ uid: 'i1', name: 'subpatch0', members: { buffer0: 'm1' } });
+	it('ROOT members are the top-level nodes + scopes, keyed by uid; members of a scope are excluded', () => {
+		const i1 = inst({ uid: 'i1', name: 'subpatch0', members: { m1: false } });
 		const nodes = [
 			{ uid: 'n0', name: 'osc0' }, // top-level node
 			{ uid: 'm1', name: 'buffer0' } // MEMBER of i1 — must NOT be in ROOT
@@ -131,53 +106,51 @@ describe('instanceAssembly — synthetic ROOT', () => {
 
 		expect(root.uid).toBe(ROOT_ID);
 		expect(root.name).toBe('root');
-		expect(root.kind).toBe('unique');
-		expect(root.def_id).toBeNull();
-		expect(root.parent).toBeNull(); // ROOT itself parents to null (unlike real top-level instances)
+		expect(root.parent).toBeNull(); // ROOT itself parents to null (unlike real top-level scopes)
 		expect(root.error).toBeNull();
-		// osc0 (top-level node) + subpatch0 (top-level instance); buffer0 (a member) excluded.
+		// n0 (top-level node) + i1 (top-level scope); m1 (a member) excluded — keyed by uid.
 		expect(root.members).toEqual({
-			osc0: { uid: 'n0', is_instance: false },
-			subpatch0: { uid: 'i1', is_instance: true }
+			n0: { uid: 'n0', is_instance: false },
+			i1: { uid: 'i1', is_instance: true }
 		});
 	});
 
-	it('a nested instance is excluded from ROOT (it is a member of its parent)', () => {
-		const i1 = inst({ uid: 'i1', name: 'outer', members: { inner0: 'i2' } });
+	it('a nested scope is excluded from ROOT (it is a member of its parent)', () => {
+		const i1 = inst({ uid: 'i1', name: 'outer', members: { i2: true } });
 		const i2 = inst({ uid: 'i2', name: 'inner', parent: 'i1' });
 		const root = assembleRoot([], [i1, i2]);
-		// Only the outer instance is top-level; inner is i1's member.
-		expect(Object.keys(root.members)).toEqual(['outer']);
-		expect(root.members.outer).toEqual({ uid: 'i1', is_instance: true });
+		// Only the outer scope is top-level; inner is i1's member.
+		expect(Object.keys(root.members)).toEqual(['i1']);
+		expect(root.members.i1).toEqual({ uid: 'i1', is_instance: true });
 	});
 });
 
 describe('instanceAssembly — assembleInstances (full map incl. ROOT)', () => {
-	it('returns ROOT + every real instance, deriving each instance error from its member nodes', () => {
-		const i1 = inst({ uid: 'i1', name: 'sp0', members: { buffer0: 'm1' } });
+	it('returns ROOT + every scope, deriving each scope error from its member nodes', () => {
+		const i1 = inst({ uid: 'i1', name: 'sp0', members: { m1: false } });
 		const nodes = [
 			{ uid: 'n0', name: 'osc0' },
 			{ uid: 'm1', name: 'buffer0' }
 		];
-		// The lookup answers per NODE uid; the instance's deep error is derived from its member m1.
+		// The lookup answers per NODE uid; the scope's deep error is derived from its member m1.
 		const map = assembleInstances([i1], nodes, (uid) => (uid === 'm1' ? 'member boom' : null));
 
 		expect(Object.keys(map).sort()).toEqual([ROOT_ID, 'i1'].sort());
-		expect(map[ROOT_ID].members.osc0).toEqual({ uid: 'n0', is_instance: false });
-		expect(map[ROOT_ID].members.sp0).toEqual({ uid: 'i1', is_instance: true });
+		expect(map[ROOT_ID].members.n0).toEqual({ uid: 'n0', is_instance: false });
+		expect(map[ROOT_ID].members.i1).toEqual({ uid: 'i1', is_instance: true });
 		expect(map.i1.error).toBe('member boom');
-		expect(map.i1.members.buffer0).toEqual({ uid: 'm1', is_instance: false });
+		expect(map.i1.members.m1).toEqual({ uid: 'm1', is_instance: false });
 	});
 
-	it('derives a nested instance error up through the parent (recursion-correct)', () => {
-		// i1 contains nested instance i2; i2 contains member node m2 which is in error. i1's deep
+	it('derives a nested scope error up through the parent (recursion-correct)', () => {
+		// i1 contains nested scope i2; i2 contains member node m2 which is in error. i1's deep
 		// error must surface m2's error through the two levels.
-		const i2 = inst({ uid: 'i2', name: 'inner', parent: 'i1', members: { buf: 'm2' } });
-		const i1 = inst({ uid: 'i1', name: 'outer', members: { inner0: 'i2' } });
+		const i2 = inst({ uid: 'i2', name: 'inner', parent: 'i1', members: { m2: false } });
+		const i1 = inst({ uid: 'i1', name: 'outer', members: { i2: true } });
 		const map = assembleInstances([i1, i2], [{ uid: 'm2', name: 'buf' }], (uid) =>
 			uid === 'm2' ? 'deep boom' : null
 		);
 		expect(map.i2.error).toBe('deep boom');
-		expect(map.i1.error, 'error propagates up through the nested instance').toBe('deep boom');
+		expect(map.i1.error, 'error propagates up through the nested scope').toBe('deep boom');
 	});
 });

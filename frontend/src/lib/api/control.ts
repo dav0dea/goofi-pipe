@@ -113,20 +113,17 @@ export interface NodeInstanceInfo {
 	 * advertises via STATE_UPDATE. Null/absent until its first state push, or
 	 * when capture is off (headless). The Console subscribes to it directly. */
 	log_endpoint?: string | null;
-	/** Set only on a *virtual* node synthesized for a sub-patch instance (see
+	/** Set only on a *virtual* node synthesized for a sub-patch scope (see
 	 * `graph.nodeById`). Lets the node layers — selection, inspector, drag —
-	 * treat a sub-patch like a node while the inspector renders sharing controls
+	 * treat a sub-patch like a node while the inspector renders its controls
 	 * instead of param groups. Absent/null for real nodes. */
 	subpatch?: SubpatchMeta | null;
 }
 
-/** Marks a virtual node as standing in for a sub-patch instance. Only the id
- * rides along — live sharing state (kind, def_id, siblings, member count) is
- * recomputed from the `instances` map so it never goes stale. */
+/** Marks a virtual node as standing in for a sub-patch scope. Only the id rides
+ * along — member count is recomputed from the `instances` map so it never goes stale. */
 export interface SubpatchMeta {
 	instId: string;
-	/** Strict-mirror shared instance (vs a unique/inline sub-patch). */
-	shared: boolean;
 	/** Number of member nodes (shown as a badge on the collapsed group node). */
 	memberCount: number;
 }
@@ -196,27 +193,22 @@ export function boundarySpec(type: string): BoundarySpec | null {
  * This is a server-COMPUTED record (see bridge `describe_instance`) that the frontend
  * MIRRORS — every field below is computed once on the backend, never re-derived here. */
 export interface InstanceInfo {
-	/** The instance's stable uid (also its key in the instances map). */
+	/** The scope's stable uid (also its key in the instances map, and its facade node's uid). */
 	uid: string;
 	/** Display label, e.g. "subpatch0" — separate from the uid key. */
 	name: string;
-	kind: string;
-	/** Definition id when shared (strict-mirror sibling), null/absent when unique. */
-	def_id?: string | null;
-	/** Parent instance uid (the nesting tree edge); null at the top level. */
+	/** Parent scope uid (the nesting tree edge); null at the top level. */
 	parent: string | null;
-	/** boundary handle name -> port (dtype RESOLVED chain-to-leaf server-side) */
+	/** stub id -> port (the scope's boundary stubs; `inner_node` is the DIRECT inner member uid). */
 	interface: Record<string, SubPatchPort>;
 	pos: [number, number];
-	/** template-local name -> { member uid, whether the member is itself a nested
-	 * instance }. Inverted from the backend's uid->local so the editor can split
-	 * direct children into plain nodes vs nested collapsed instances. */
+	/** member uid -> { uid, whether the member is itself a nested scope } (flat model: keyed by
+	 * uid, no template-local names) — lets the editor split direct children into plain nodes vs
+	 * nested collapsed sub-patches. */
 	members: Record<string, { uid: string; is_instance: boolean }>;
-	/** External ports computed from WIRED boundaries: boundary id -> dtype. Mirror the
-	 * collapsed group node's input/output slots (a pure passthrough). */
+	/** External ports computed from WIRED stubs: stub id -> dtype. Mirror the collapsed facade
+	 * node's input/output slots (a pure passthrough). */
 	slots: { input: Record<string, string>; output: Record<string, string> };
-	/** Other instance uids in this instance's strict-mirror family (shared def); []. */
-	siblings: string[];
 	/** First errored DESCENDANT across the whole subtree (recursion-correct), or null. */
 	error: string | null;
 	/** Per-output-boundary view state persisted in the .gfi patch (round-trips), keyed

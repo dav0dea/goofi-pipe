@@ -36,13 +36,13 @@ export interface BoundaryView {
 export interface InstanceView {
 	uid: string;
 	name: string;
-	/** Shared def id, or `undefined` when the instance is unique. */
-	def_id?: string;
-	/** Parent scope uid, or `'__root__'` for a top-level instance. */
+	/** Parent scope uid, or `'__root__'` for a top-level scope. */
 	parent: string;
 	pos: [number, number];
-	/** local name → live member uid. */
-	members: Record<string, string>;
+	/** member uid → whether the member is itself a nested scope (flat model: keyed by uid, no
+	 * template-local names). */
+	members: Record<string, boolean>;
+	/** The scope's boundary stubs (read from the doc's `stubs` map). */
 	interface: BoundaryView[];
 }
 
@@ -277,11 +277,11 @@ function pos2(m: Y.Map<unknown> | undefined): [number, number] {
 export function instanceView(doc: Y.Doc, uid: string): InstanceView | null {
 	const inst = instancesMap(doc).get(uid);
 	if (!inst) return null;
-	const members: Record<string, string> = {};
-	const mm = inst.get('members') as Y.Map<unknown> | undefined;
-	if (mm) for (const [local, u] of mm.entries()) if (typeof u === 'string') members[local] = u;
+	const members: Record<string, boolean> = {};
+	const mm = inst.get('members') as Y.Map<Y.Map<unknown>> | undefined;
+	if (mm) for (const [muid, m] of mm.entries()) members[muid] = Boolean(m?.get('is_instance'));
 	const iface: BoundaryView[] = [];
-	const im = inst.get('interface') as Y.Map<Y.Map<unknown>> | undefined;
+	const im = inst.get('stubs') as Y.Map<Y.Map<unknown>> | undefined;
 	if (im) {
 		for (const [bnd, b] of im.entries()) {
 			const inner_node = b.get('inner_node');
@@ -297,11 +297,9 @@ export function instanceView(doc: Y.Doc, uid: string): InstanceView | null {
 			});
 		}
 	}
-	const def = inst.get('def_id');
 	return {
 		uid,
 		name: str(inst, 'name'),
-		def_id: typeof def === 'string' ? def : undefined,
 		parent: str(inst, 'parent'),
 		pos: pos2(inst),
 		members,

@@ -258,43 +258,6 @@ const renameBoundary: Executor = {
 	}
 };
 
-const duplicateShared: Executor = {
-	async forward(action, deps) {
-		const a = as<'duplicate_shared'>(action);
-		const r = await deps.control.call<{ inst_id: string }>('duplicate_shared', {
-			inst_id: a.payload.instId,
-			pos: a.payload.pos
-		});
-		if (r?.inst_id) a.payload.newInstId = r.inst_id;
-	},
-	async inverse(action, deps) {
-		const a = as<'duplicate_shared'>(action);
-		// remove_node routes to remove_instance for an instance id (bridge).
-		if (a.payload.newInstId) await deps.control.call('remove_node', { node: a.payload.newInstId });
-		// If the source was unique before, sharing it left a residual definition —
-		// detach it again so the graph matches the pre-duplicate state.
-		if (a.payload.wasUnique) await deps.control.call('make_unique', { inst_id: a.payload.instId });
-	}
-};
-
-const makeUnique: Executor = {
-	async forward(action, deps) {
-		const a = as<'make_unique'>(action);
-		await deps.control.call('make_unique', { inst_id: a.payload.instId });
-	},
-	async inverse(action, deps) {
-		const a = as<'make_unique'>(action);
-		// Re-attach the instance to its ORIGINAL definition (reuniting the strict-mirror
-		// family), instead of minting a fresh def + sibling. The backend re-shares to the
-		// surviving def, or mints a fresh one if make_unique GC'd it (last instance).
-		if (a.payload.defIdBefore)
-			await deps.control.call('re_share_instance', {
-				inst_id: a.payload.instId,
-				def_id: a.payload.defIdBefore
-			});
-	}
-};
-
 const loadPatch: Executor = {
 	async forward(action, deps) {
 		const a = as<'load_patch'>(action);
@@ -326,7 +289,5 @@ export const graphExecutors: Record<string, Executor> = {
 	wire_boundary: wireBoundary,
 	remove_boundary: removeBoundary,
 	rename_boundary: renameBoundary,
-	set_boundary_pos: setBoundaryPos,
-	duplicate_shared: duplicateShared,
-	make_unique: makeUnique
+	set_boundary_pos: setBoundaryPos
 };

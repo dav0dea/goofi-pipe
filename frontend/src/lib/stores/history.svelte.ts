@@ -121,12 +121,6 @@ export type GraphAction =
 			payload: { instId: string; restoredMembers: string[]; interface: Record<string, SubPatchPort> };
 	  })
 	| (BaseAction & {
-			kind: 'duplicate_shared';
-			domain: 'graph';
-			payload: { instId: string; newInstId: string; wasUnique: boolean; pos?: [number, number] };
-	  })
-	| (BaseAction & { kind: 'make_unique'; domain: 'graph'; payload: { instId: string; defIdBefore: string | null } })
-	| (BaseAction & {
 			kind: 'add_boundary';
 			domain: 'graph';
 			payload: { instId: string; bndId: string; dir: 'in' | 'out'; dtype: string; pos: [number, number] };
