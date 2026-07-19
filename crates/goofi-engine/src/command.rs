@@ -232,6 +232,15 @@ impl Command {
             }
 
             Command::AddLink { node_out, slot_out, node_in, slot_in } => {
+                // Idempotent: an endpoint node is gone (a peer deleted it) → the wire cannot exist,
+                // so restoring it is a benign no-op. AddLink is the RemoveLink inverse AND the
+                // trailing child of the RemoveNode-inverse Compound, so without this a concurrent
+                // endpoint delete would error through flip() — wedging the session AND leaving the
+                // earlier Compound child (a restored node) applied but unbroadcast (a phantom). A
+                // forward user add_link to a missing node is impossible from a well-formed client.
+                if !g.contains(node_out) || !g.contains(node_in) {
+                    return Ok((Outcome::Ok, Command::Compound(vec![])));
+                }
                 // Idempotent: the exact wire already exists → the forward `add_link` is a silent
                 // no-op, so its inverse must be one too. A bare RemoveLink would DESTROY the
                 // pre-existing wire on undo (the inverse of a no-op is not a mutation).
@@ -428,7 +437,20 @@ impl Command {
                 // restores the exact pre-wire state (unwire alone would leave the wired slot's dtype).
                 let old_inner = st.inner.clone();
                 let old_dtype = st.dtype;
-                g.set_stub_inner(scope, &stub_id, inner)?;
+                match inner {
+                    // A wire (inner=Some) can become non-applicable under a concurrent peer edit — the
+                    // target is no longer a member, or another stub already exposes that inner slot.
+                    // Tolerate it as a recoverable no-op (like the stub-gone guard) instead of erroring
+                    // through flip() and wedging. set_stub_inner validates before mutating, so a failed
+                    // attempt leaves the stub untouched.
+                    Some(target) => {
+                        if g.set_stub_inner(scope, &stub_id, Some(target)).is_err() {
+                            return Ok((Outcome::Ok, Command::Compound(vec![])));
+                        }
+                    }
+                    // An unwire always applies (the stub exists — checked above).
+                    None => g.set_stub_inner(scope, &stub_id, None)?,
+                }
                 if let Some(dt) = dtype {
                     g.set_stub_dtype(scope, &stub_id, dt)?; // inverse path: force the captured dtype back
                 }
@@ -872,6 +894,26 @@ mod tests {
         assert_eq!(g.links_view().len(), 1, "link added");
         inverse.execute(&mut g).unwrap();
         assert_eq!(g.links_view().len(), 0, "inverse removed the link");
+    }
+
+    #[test]
+    fn add_link_is_idempotent_when_an_endpoint_node_is_gone() {
+        // AddLink is both the RemoveLink inverse AND the trailing child of the RemoveNode-inverse
+        // Compound (restore the node, then re-add its links). A concurrent peer that deleted the
+        // OTHER endpoint makes the wire un-creatable — this must be a benign no-op, not an Err that
+        // both wedges the session AND (mid-Compound) leaves a phantom restored node with no broadcast.
+        let mut g = Graph::new();
+        let osc = g.add_node("Oscillator", None).unwrap();
+        let buf = g.add_node("Buffer", None).unwrap();
+        g.remove_node(buf).unwrap(); // the peer deleted the input endpoint
+
+        let (res, inverse) =
+            Command::AddLink { node_out: osc, slot_out: "out".into(), node_in: buf, slot_in: "data".into() }
+                .execute(&mut g)
+                .unwrap();
+        assert!(matches!(res, Outcome::Ok));
+        assert!(matches!(inverse, Command::Compound(ref v) if v.is_empty()), "endpoint gone → no-op inverse");
+        assert_eq!(g.links_view().len(), 0, "no phantom wire created");
     }
 
     #[test]
@@ -1367,6 +1409,33 @@ mod tests {
             goofi_core::SlotType::String,
             "dtype restored to the pre-wire provisional (not left as the wired Array)"
         );
+    }
+
+    #[test]
+    fn wire_stub_tolerates_a_non_applicable_redo() {
+        // Multi-client: after undoing a wire (sa unwired), a peer wires a DIFFERENT stub (sb) to the
+        // same inner slot. Replaying sa's wire (a redo) is now non-applicable — that inner slot is
+        // already exposed by sb. It must be a recoverable no-op, not an Err that wedges the session.
+        let mut g = Graph::new();
+        let l = g.add_node("_TestEcho", None).unwrap();
+        let s = g.group_nodes(&[l], [0.0, 0.0]).unwrap();
+        let sa = g.add_boundary(s, Dir::Out, goofi_core::SlotType::Array, [0.0, 0.0]).unwrap();
+        let sb = g.add_boundary(s, Dir::Out, goofi_core::SlotType::Array, [0.0, 0.0]).unwrap();
+
+        // A peer wires sb → (l, out); that inner slot is now exposed.
+        g.set_stub_inner(s, &sb, Some((l, "out".to_string()))).unwrap();
+
+        let (res, inverse) = Command::WireStub {
+            scope: s,
+            stub_id: sa.clone(),
+            inner: Some((l, "out".to_string())),
+            dtype: None,
+        }
+        .execute(&mut g)
+        .unwrap();
+        assert!(matches!(res, Outcome::Ok));
+        assert!(matches!(inverse, Command::Compound(ref v) if v.is_empty()), "non-applicable wire → no-op");
+        assert!(g.scope(s).unwrap().stubs[&sa].inner.is_none(), "sa left untouched (still unwired)");
     }
 
     #[test]
