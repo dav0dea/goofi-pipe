@@ -981,10 +981,9 @@ fn remirror_and_broadcast_locked(state: &AppState, g: &Graph, doc: &mut goofi_cr
 }
 
 /// Re-sync the CRDT doc from the (authoritative) graph and broadcast the resulting delta to
-/// every connected client, advancing the shared broadcast baseline. Called after any graph
-/// mutation — an RPC dispatch or an applied client doc-write. The re-mirror also RECONCILES
-/// the doc back to the graph's authoritative structure, so a client's out-of-band structural
-/// write (a bogus node/link) is reverted here rather than diverging the graph.
+/// every connected client, advancing the shared broadcast baseline. Called after an RPC dispatch
+/// mutates the graph. The re-mirror also RECONCILES the doc back to the graph's authoritative
+/// structure (idempotent), so any stale doc leaf converges to the graph.
 fn resync_and_broadcast(state: &AppState) {
     let g = state.graph.lock().unwrap();
     let mut doc = state.crdt.lock().unwrap();

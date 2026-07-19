@@ -42,9 +42,10 @@ pub fn sync_graph_to_doc(g: &Graph, doc: &mut GraphDoc) {
             }
         }
         node.insert("params".into(), Value::Object(params));
-        // Viewers ride as an opaque JSON string leaf (typed view-state is a later step). Omitted
-        // when the node has none → pruned from the doc.
-        if let Some(v) = g.viewers(uid) {
+        // Viewers ride as an opaque JSON string leaf (typed view-state is a later step). `g.viewers`
+        // returns Some for EVERY node, so the emptiness gate (matching serialize) — not the Option —
+        // is what keeps a viewerless node's leaf out of the doc; the reconciler prunes any stale one.
+        if let Some(v) = g.viewers(uid).filter(|v| v.as_object().is_some_and(|m| !m.is_empty())) {
             node.insert("viewers".into(), json!(v.to_string()));
         }
         nodes.insert(uid.to_hex(), Value::Object(node));
@@ -172,6 +173,18 @@ mod tests {
         // User global carries system:false.
         assert_eq!(doc.read_at(&["globals", "subject", "system"]), Some(json!(false)));
         assert_eq!(doc.read_at(&["globals", "subject", "value"]).as_ref().and_then(|v| v.as_str()), Some("P07"));
+    }
+
+    #[test]
+    fn mirror_omits_the_viewers_leaf_for_a_node_with_no_view_state() {
+        // g.viewers(uid) returns Some({}) for EVERY node, so an unconditional insert would stamp a
+        // viewers:"{}" leaf on every node. Gate on non-emptiness (like serialize) — a viewerless
+        // node carries no viewers leaf (the frontend reads a missing leaf as "no viewers").
+        let mut g = Graph::new();
+        let a = g.add_node("Oscillator", None).unwrap();
+        let mut doc = GraphDoc::new();
+        sync_graph_to_doc(&g, &mut doc);
+        assert_eq!(doc.read_at(&["nodes", a.to_hex().as_str(), "viewers"]), None, "no viewers leaf when empty");
     }
 
     #[test]
