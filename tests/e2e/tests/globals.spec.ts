@@ -11,9 +11,10 @@ test('globals: default_ufreq is seeded, a user global adds, edits round-trip', a
 	const seeded = (await globals(page)).find((g) => g.name === 'default_ufreq')!;
 	expect(seeded).toMatchObject({ system: true, type: 'float' });
 
-	// Add a user global + edit the system one; both round-trip through the doc.
-	expect(await addGlobal(page, 'subject', 'P07', 'string')).toBe(true);
-	expect(await setGlobalValue(page, 'default_ufreq', 45)).toBe(true);
+	// Add a user global + edit the system one (command ops — server-validated, resolve void);
+	// both round-trip through the doc.
+	await addGlobal(page, 'subject', 'P07', 'string');
+	await setGlobalValue(page, 'default_ufreq', 45);
 	await expect
 		.poll(async () => (await globals(page)).find((g) => g.name === 'subject')?.value)
 		.toBe('P07');

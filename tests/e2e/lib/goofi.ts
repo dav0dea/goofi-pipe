@@ -76,18 +76,19 @@ export function addGlobal(
 	name: string,
 	value: number | string | boolean,
 	type: 'float' | 'int' | 'bool' | 'string'
-): Promise<boolean> {
+): Promise<void> {
+	// A command op — resolves void on success, rejects on a server refusal (invalid/collision).
 	return page.evaluate(
 		([n, v, t]) => (window as any).goofi.commands.addGlobal(n, v, t),
 		[name, value, type] as const
 	);
 }
-/** Edit an existing global's value; returns whether it landed. */
+/** Edit an existing global's value (command op — resolves void, rejects on refusal). */
 export function setGlobalValue(
 	page: Page,
 	name: string,
 	value: number | string | boolean
-): Promise<boolean> {
+): Promise<void> {
 	return page.evaluate(
 		([n, v]) => (window as any).goofi.commands.setGlobalValue(n, v),
 		[name, value] as const
