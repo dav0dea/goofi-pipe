@@ -106,11 +106,11 @@ describe('GraphStore.updateParam — guards a non-existent param', () => {
 		docSeedNode(g, 'uidA', 'Oscillator', 'osc0', [0, 0]);
 		setParamValue(g.doc, 'uidA', 'common', 'frequency', 0); // the current value the guard must treat as present
 
-		// The guard keys on the param's existence, not the truthiness of its value, so
-		// editing a param whose current value is 0/false/'' still works. The leaf-write lands
-		// in the doc and the reader overlay reflects it in the store.
+		// The guard keys on the param's EXISTENCE, not the truthiness of its value, so editing a
+		// param whose current value is 0/false/'' still issues the command (a missing param throws).
 		await g.updateParam('uidA', 'common', 'frequency', 5);
-		expect(g.nodeById('uidA')!.params.common.frequency.value).toBe(5);
+		const call = fc.recordedCalls().find((c) => c.op === 'update_param');
+		expect(call?.payload).toEqual({ node: 'uidA', group: 'common', name: 'frequency', value: 5 });
 		expect(history().canUndo).toBe(true);
 	});
 });

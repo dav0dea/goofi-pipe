@@ -7,13 +7,7 @@ import { workspace } from '$lib/workspace/workspace.svelte';
 import { history, type Action, type NavContext } from '$lib/stores/history.svelte';
 
 const ctx: NavContext = { activeWorkspaceId: 'w', activePanelId: null, enteredPath: {}, selection: {} };
-const mk = (label: string): Action => ({
-	kind: 'add_node',
-	label,
-	domain: 'graph',
-	context: ctx,
-	payload: { type: 'X', category: 'c', pos: [0, 0], uid: 'x0' }
-});
+const mk = (label: string): Action => ({ kind: 'graph_cmd', label, domain: 'graph', context: ctx });
 
 describe('agent surface — undo/redo', () => {
 	beforeEach(() => {

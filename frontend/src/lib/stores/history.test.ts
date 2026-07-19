@@ -3,26 +3,10 @@ import { history, type Action } from './history.svelte';
 import { FakeControl } from '$lib/test/fakeControl';
 import { GraphStore } from './graph.svelte';
 import { workspace } from '$lib/workspace/workspace.svelte';
-import * as Y from 'yjs';
-
-/** Seed a node into the store's CRDT doc so a param leaf-write targeting it lands + sends a frame. */
-function docAddNode(g: GraphStore, uid: string): void {
-	const nodes = g.doc.getMap('nodes') as Y.Map<Y.Map<unknown>>;
-	if (nodes.get(uid)) return;
-	const n = new Y.Map<unknown>();
-	n.set('type', 'Oscillator');
-	n.set('name', uid);
-	nodes.set(uid, n);
-}
 
 const ctx = { activeWorkspaceId: 'w', activePanelId: null, enteredPath: {}, selection: {} };
-const mk = (label: string): Action => ({
-	kind: 'add_node',
-	label,
-	domain: 'graph',
-	context: ctx,
-	payload: { type: 'X', category: 'c', pos: [0, 0] }
-});
+// A graph history entry marks a step; its undo/redo delegate to the manager (B3).
+const mk = (label: string): Action => ({ kind: 'graph_cmd', label, domain: 'graph', context: ctx });
 
 describe('HistoryStore — Phase 1 core', () => {
 	beforeEach(() => history().reset());
@@ -74,58 +58,49 @@ describe('HistoryStore — Phase 1 core', () => {
 describe('HistoryStore — re-entrancy (report B13: held Ctrl+Z)', () => {
 	beforeEach(() => history().reset());
 
-	const paramAction = (): Action => ({
-		kind: 'update_param',
-		label: 'Set freq',
-		domain: 'graph',
-		context: ctx,
-		payload: { node: 'osc0', group: 'common', name: 'frequency', oldValue: 1, newValue: 5 }
-	});
+	const undoCalls = (fc: FakeControl) => fc.recordedCalls().filter((c) => c.op === 'undo');
+	const redoCalls = (fc: FakeControl) => fc.recordedCalls().filter((c) => c.op === 'redo');
 
-	it('undo() fired twice before the first settles replays the inverse exactly once', async () => {
+	it('undo() fired twice before the first settles delegates to the manager exactly once', async () => {
 		const fc = new FakeControl();
 		const g = new GraphStore(fc);
 		const h = history();
 		h.configureDeps(() => ({ control: fc, graph: g, workspace: workspace() }));
-		docAddNode(g, 'osc0'); // the doc node the inverse leaf-write targets
-		h.record(paramAction());
+		h.record(mk('Set freq'));
 		expect(h.canUndo).toBe(true);
-		fc.sentSyncFrames.length = 0; // exclude the connect-time syncHello
 
-		// Two awaits sit between reading the top action and pop(); a held key
-		// fires undo() again before the first pops. The guard must drop it.
+		// Two awaits sit between reading the top action and pop(); a held key fires undo() again
+		// before the first pops. The guard must drop the second.
 		const p1 = h.undo();
 		const p2 = h.undo();
 		await Promise.all([p1, p2]);
 
-		// The inverse leaf-write (a doc update frame) went out exactly once — the guard dropped
-		// the second undo() before it re-ran the executor.
-		expect(fc.sentSyncFrames).toHaveLength(1);
+		// The manager undo delegate (control.call('undo')) went out exactly once.
+		expect(undoCalls(fc)).toHaveLength(1);
 		expect(h.canUndo).toBe(false);
 		expect(h.canRedo).toBe(true);
 
 		// And exactly one action round-trips: a single redo empties the redo stack.
 		await h.redo();
+		expect(redoCalls(fc)).toHaveLength(1);
 		expect(h.canRedo).toBe(false);
 		expect(h.canUndo).toBe(true);
 	});
 
-	it('redo() fired twice before the first settles replays the forward exactly once', async () => {
+	it('redo() fired twice before the first settles delegates to the manager exactly once', async () => {
 		const fc = new FakeControl();
 		const g = new GraphStore(fc);
 		const h = history();
 		h.configureDeps(() => ({ control: fc, graph: g, workspace: workspace() }));
-		docAddNode(g, 'osc0'); // the doc node the forward leaf-write targets
-		h.record(paramAction());
+		h.record(mk('Set freq'));
 		await h.undo(); // move the action onto the redo stack
-		fc.sentSyncFrames.length = 0;
 
 		const p1 = h.redo();
 		const p2 = h.redo();
 		await Promise.all([p1, p2]);
 
-		// The forward leaf-write went out exactly once — the guard dropped the second redo().
-		expect(fc.sentSyncFrames).toHaveLength(1);
+		// The manager redo delegate went out exactly once — the guard dropped the second redo().
+		expect(redoCalls(fc)).toHaveLength(1);
 		expect(h.canRedo).toBe(false);
 		expect(h.canUndo).toBe(true);
 	});
@@ -153,8 +128,7 @@ describe('HistoryStore — transaction atomicity on throw', () => {
 				throw new Error('boom'); // …then the transaction fails partway
 			})
 		).rejects.toThrow('boom');
-		// A failed transaction is not atomic, so it must leave NO undo step behind —
-		// a partial compound could inverse ops the backend never applied.
+		// A failed transaction is not atomic, so it must leave NO undo step behind.
 		expect(h.canUndo).toBe(false);
 		expect(h.undoLabel).toBe(null);
 	});

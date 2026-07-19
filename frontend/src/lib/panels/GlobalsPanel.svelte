@@ -27,14 +27,19 @@
 		return type === 'bool' ? false : type === 'string' ? '' : 0;
 	}
 
-	function add(): void {
+	async function add(): Promise<void> {
 		if (!canAdd) return;
-		if (g.addGlobal(newName, zeroFor(newType), newType)) newName = '';
+		try {
+			await g.addGlobal(newName, zeroFor(newType), newType);
+			newName = '';
+		} catch {
+			/* server rejected (invalid name / collision) — keep the field for correction */
+		}
 	}
 
 	// Commit a value edit, parsing the raw widget value into the global's declared type.
-	// A non-numeric entry into a number type is rejected (the doc is left unchanged, and the
-	// input snaps back to the committed value on the next render).
+	// A non-numeric entry into a number type is rejected locally; a server rejection snaps the
+	// input back to the committed value on the next render (the mirrored doc is the source of truth).
 	function commitValue(gv: GlobalView, raw: string | boolean): void {
 		let val: number | string | boolean;
 		if (gv.type === 'bool') val = raw === true;
@@ -44,15 +49,19 @@
 			if (!Number.isFinite(n)) return;
 			val = gv.type === 'int' ? Math.round(n) : n;
 		}
-		g.setGlobalValue(gv.name, val);
+		void g.setGlobalValue(gv.name, val).catch(() => {
+			/* rejected — the input reverts on the next mirror-back render */
+		});
 	}
 
-	// Commit a rename (user globals only). On rejection (invalid / collision) the input is
+	// Commit a rename (user globals only). On rejection (invalid / collision / system) the input is
 	// snapped back to the current name — the store is the source of truth.
 	function commitName(gv: GlobalView, input: HTMLInputElement): void {
 		const next = input.value.trim();
 		if (next === gv.name) return;
-		if (!g.renameGlobal(gv.name, next)) input.value = gv.name;
+		void g.renameGlobal(gv.name, next).catch(() => {
+			input.value = gv.name;
+		});
 	}
 
 	function numberDisplay(gv: GlobalView): number {
@@ -126,7 +135,7 @@
 									data-testid="global-delete"
 									title="Delete global"
 									aria-label="Delete {gv.name}"
-									onclick={() => g.removeGlobal(gv.name)}>✕</button
+									onclick={() => void g.removeGlobal(gv.name)}>✕</button
 								>
 							{/if}
 						</td>

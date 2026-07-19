@@ -27,7 +27,7 @@ import { seedInlineView, forgetInlineView, rawInlineView } from '$lib/viewers/in
 import { resolveKind } from '$lib/viewers/kind';
 import type { SettingsMap } from '$lib/viewers/settingsSchema';
 import type { ViewerKind } from '$lib/viewers/kind';
-import { history, type Action, type ExprState } from './history.svelte';
+import { history, type Action } from './history.svelte';
 import { captureNavContext } from '$lib/workspace/navContext';
 import { ROOT_ID } from '$lib/editor/subpatchScene';
 import { SyncClient } from '$lib/crdt/syncClient';
@@ -37,15 +37,7 @@ import {
 	instanceViews,
 	docParams,
 	viewersJson,
-	setParamValue,
-	setParamExpr as docSetParamExpr,
-	setNodePos as docSetNodePos,
-	setViewers as docSetViewers,
 	globalViews,
-	setGlobalValue as docSetGlobalValue,
-	addGlobal as docAddGlobal,
-	removeGlobal as docRemoveGlobal,
-	renameGlobal as docRenameGlobal,
 	type GlobalView,
 	type GlobalType
 } from '$lib/crdt/graphDoc';
@@ -101,13 +93,6 @@ export class GraphStore {
 	 * not a transient reconnect — so a layout-less snapshot must reset the
 	 * layout instead of preserving the previous session's arrangement. */
 	private _lastInstanceId: string | null = null;
-
-	/** A just-recorded `load_patch` action awaiting its post-load layout. The
-	 * loaded patch's arrangement settles asynchronously — the `graph_replaced`
-	 * echo hydrates it AFTER we record the action — so we stash the payload here
-	 * and fill `afterLayout` once that echo lands, letting redo reproduce the
-	 * exact post-load layout instead of falling back to the YAML's default. */
-	private _pendingLoadAfter: { afterLayout: WorkspaceState | null } | null = null;
 
 	/** The control client (injectable for tests; defaults to the live WS one). */
 	private ctl: Control;
@@ -200,15 +185,10 @@ export class GraphStore {
 		} else if (freshSession) {
 			workspace().reset();
 		}
-		// A new backend session replaced the authoritative world out-of-band —
-		// replaying old RPCs is meaningless, so drop the history. The one
-		// exception to "never auto-clear" (an in-session load keeps its history
-		// as a `load_patch` checkpoint; same instance_id → not fresh).
-		if (freshSession) {
-			history().reset();
-			// History (and any load_patch action awaiting its after-layout) is gone.
-			this._pendingLoadAfter = null;
-		}
+		// A new backend session (fresh instance_id, incl. after a load — which resets the manager's
+		// history too) makes the client's stacks meaningless, so drop them. A same-session reconnect
+		// keeps them.
+		if (freshSession) history().reset();
 		return freshSession;
 	}
 
@@ -242,10 +222,9 @@ export class GraphStore {
 	}
 
 	private _viewerPushTimers = new Map<string, ReturnType<typeof setTimeout>>();
-	/** Debounced client leaf-write of a node's full viewer state (collapse / kind / settings) into
-	 * the CRDT doc (Phase 3 — replaces the `set_node_viewers` RPC). The manager applies it via
-	 * `set_node_viewers` (which persists it into the .gfi on save) and re-mirrors. Soft, client-
-	 * originated, human-rate UI state — the debounce keeps it well under the CRDT's human-rate tier. */
+	/** Debounced push of a node's full viewer state (collapse / kind / settings) via the
+	 * `set_node_viewers` op. The manager stores it (persisted into the .gfi on save) and re-mirrors.
+	 * Soft, human-rate view state — NOT a command (not undoable); the debounce keeps it sparse. */
 	pushNodeViewers(node: string): void {
 		clearTimeout(this._viewerPushTimers.get(node));
 		this._viewerPushTimers.set(
@@ -263,7 +242,9 @@ export class GraphStore {
 						settings: view.settings
 					};
 				}
-				this._sync.commit((doc) => docSetViewers(doc, node, viewers));
+				void this.ctl.call('set_node_viewers', { node, viewers }).catch(() => {
+					/* soft view state — a dropped push is harmless (re-pushed on the next edit) */
+				});
 			}, 250)
 		);
 	}
@@ -290,13 +271,10 @@ export class GraphStore {
 				break;
 			}
 			case 'graph_replaced':
-				// A patch was loaded/replaced wholesale — always re-fit + reset history.
+				// A patch was loaded/replaced wholesale — always re-fit + reset history (a load is
+				// not undoable across; the manager cleared its history too).
 				this._replaceSnapshot(ev.payload);
 				this._onWholesaleLoad();
-				// The loaded patch's layout has now settled — stamp it onto the
-				// load_patch action we recorded just before this echo, so redo restores
-				// the precise post-load arrangement (backlog #20).
-				this._captureLoadAfterLayout();
 				break;
 			// Structure (node existence/name, the sub-patch forest, positions, links) is entirely
 			// doc-owned (Phase-2 read cutover): the manager mirrors every group/expand/share/
@@ -456,6 +434,17 @@ export class GraphStore {
 		if (!history().isSuspended) history().record(action);
 	}
 
+	/** Record ONE graph command on the client history. The manager owns the exact inverse (it
+	 * captured the pre-state), so this entry only marks the step — its undo/redo DELEGATE to the
+	 * manager's session history (B3) — and carries any client-local layout side-effect (panels
+	 * emptied when a node vanished) to re-bind on undo. */
+	private _recordGraphCmd(
+		label: string,
+		boundPanels: Array<{ panelId: string; state: unknown }> = []
+	): void {
+		this._record({ kind: 'graph_cmd', domain: 'graph', label, context: captureNavContext(), boundPanels });
+	}
+
 	async addNode(
 		type: string,
 		category: string,
@@ -470,79 +459,21 @@ export class GraphStore {
 		const uid =
 			(await this.ctl.call<string>('add_node', { type, category, pos, inst_id: instId, params })) ??
 			'';
-		// Record AFTER the call so we know the backend-assigned uid + display name —
-		// a redo restores both so links/panels reconnect to the same node.
-		if (uid)
-			this._record({
-				kind: 'add_node',
-				label: `Add ${type}`,
-				domain: 'graph',
-				context: captureNavContext(),
-				payload: { type, category, pos, instId, uid, name: this.nodeById(uid)?.name }
-			});
+		// The manager recorded the add (its inverse is a subtree-capturing RemoveNode); mark the step.
+		if (uid) this._recordGraphCmd(`Add ${type}`);
 		return uid;
 	}
 
-	async removeNode(uid: string, captureLinks = true): Promise<void> {
-		// Deleting a collapsed sub-patch INSTANCE tears down a whole subtree — members, internal
-		// links, boundaries, and external wires (which reference inner-leaf uids, so they are not
-		// even caught by a uid link filter). nodeById(instanceUid) is only a SYNTHETIC node
-		// (type 'Sub-patch'), so a generic remove_node action would replay an uninstantiable
-		// add_node{type:'Sub-patch'} on undo and lose the subtree forever. Record it as a
-		// full-graph checkpoint instead — the proven load_patch machinery restores any subtree
-		// (nested/shared/external wires) exactly, with no fragile hand-reconstruction.
-		const inst = this.instances[uid];
-		if (inst && uid !== ROOT_ID) {
-			const record = !history().isSuspended;
-			const before = record ? await this._loadCheckpointBefore() : null;
-			await this.ctl.call('remove_node', { node: uid });
-			if (record && before) {
-				let afterYaml = '';
-				try {
-					afterYaml = (await this.serialize()).yaml;
-				} catch {
-					/* whole graph gone — empty after-state */
-				}
-				this._record({
-					kind: 'load_patch',
-					label: `Delete ${inst.name}`,
-					domain: 'graph',
-					context: captureNavContext(),
-					payload: {
-						beforeYaml: before.yaml,
-						afterYaml,
-						beforeLayout: before.layout as WorkspaceState | null,
-						afterLayout: workspace().serialize() as WorkspaceState | null
-					}
-				});
-			}
-			return;
-		}
-		// Capture the full node + its links BEFORE the backend tears them down.
-		// A batch delete (removeNodes) passes captureLinks=false and records the links
-		// as separate remove_link actions ordered first, so undo restores every node
-		// before any link (a link to a co-deleted node can't be re-added until both
-		// endpoints are back).
-		const node = this.nodeById(uid);
-		if (node && !history().isSuspended) {
-			const links = captureLinks
-				? this.links.filter((l) => l.node_in === uid || l.node_out === uid).map((l) => ({ ...l }))
-				: [];
-			this._record({
-				kind: 'remove_node',
-				label: `Delete ${node.name}`,
-				domain: 'graph',
-				context: captureNavContext(),
-				payload: {
-					uid,
-					node: structuredClone($state.snapshot(node)),
-					links,
-					membership: node.membership ?? null,
-					boundPanels: workspace().panelsBoundTo(uid)
-				}
-			});
-		}
+	async removeNode(uid: string): Promise<void> {
+		// The manager's RemoveNode captures the WHOLE subtree (members, params, links, stubs,
+		// membership) for a leaf, a sub-patch member, OR a collapsed instance alike (B3b), so its
+		// inverse restores it uid-stably — the client just marks the step and carries the panels the
+		// delete will empty (re-bound on undo, since the doc-reconcile won't restore a binding). The
+		// label reads the (real or synthetic) node's name before it vanishes.
+		const label = `Delete ${this.nodeById(uid)?.name ?? uid}`;
+		const boundPanels = history().isSuspended ? [] : workspace().panelsBoundTo(uid);
 		await this.ctl.call('remove_node', { node: uid });
+		this._recordGraphCmd(label, boundPanels);
 	}
 
 	/** Respawn a (typically crashed) node: the backend restarts its process IN PLACE,
@@ -556,99 +487,56 @@ export class GraphStore {
 	}
 
 	async addLink(link: LinkInfo): Promise<void> {
-		// The single-source rule may displace an existing wire on the input — capture
-		// it before the add so undo can restore it. A MULTI input slot accepts many
-		// wires (the backend appends, never evicts), so nothing is displaced there.
-		const targetMulti = this._realNode(link.node_in)?.input_multi?.includes(link.slot_in) ?? false;
-		const displaced = targetMulti
-			? null
-			: (this.links.find((l) => l.node_in === link.node_in && l.slot_in === link.slot_in) ?? null);
-		this._record({
-			kind: 'add_link',
-			label: 'Connect',
-			domain: 'graph',
-			context: captureNavContext(),
-			payload: { link: { ...link }, displaced: displaced ? { ...displaced } : null }
-		});
+		// The manager's AddLink captures any wire its single-source rule displaces, so its inverse
+		// restores it — the client just marks the step.
 		await this.ctl.call('add_link', link as unknown as Record<string, unknown>);
+		this._recordGraphCmd('Connect');
 	}
 
 	async removeLink(link: LinkInfo): Promise<void> {
-		this._record({
-			kind: 'remove_link',
-			label: 'Disconnect',
-			domain: 'graph',
-			context: captureNavContext(),
-			payload: { link: { ...link } }
-		});
 		await this.ctl.call('remove_link', link as unknown as Record<string, unknown>);
+		this._recordGraphCmd('Disconnect');
 	}
 
 	async updateParam(node: string, group: string, name: string, value: unknown): Promise<void> {
-		// Key on the param's EXISTENCE, not its value's truthiness — a real param may hold
-		// 0/false/''. A missing param (agent typo, or a call racing node hydration) would
-		// otherwise record oldValue=undefined, and the undo's update_param drops `value`
-		// from the JSON entirely → backend KeyError. Fail loudly instead of poisoning undo.
+		// Guard on the param's EXISTENCE (a real param may hold 0/false/''): a missing param (agent
+		// typo, or a call racing node hydration) would otherwise send a bogus edit the manager rejects.
 		const param = this.nodeById(node)?.params?.[group]?.[name];
 		if (!param) throw new Error(`update_param: no param ${group}.${name} on node ${node}`);
-		const oldValue = param.value;
-		this._record({
-			kind: 'update_param',
-			label: `Set ${name}`,
-			domain: 'graph',
-			context: captureNavContext(),
-			payload: { node, group, name, oldValue, newValue: value }
-		});
-		this.writeParamValue(node, group, name, value);
-	}
-
-	/** Client leaf-write of a committed param value into the CRDT doc (Phase 3 — replaces the
-	 * `update_param` RPC). The manager applies it to the graph via `apply_client_write` (re-
-	 * projecting to shared siblings) and mirrors it back; the reader overlay reflects it locally
-	 * and on the mirror-back. Records no history — callers (updateParam, the executor) own that. */
-	writeParamValue(node: string, group: string, name: string, value: unknown): void {
-		this._sync.commit((doc) => {
-			setParamValue(doc, node, group, name, value as number | string | boolean);
-		});
+		await this.ctl.call('update_param', { node, group, name, value });
+		this._recordGraphCmd(`Set ${name}`);
 	}
 
 	// ── Globals mutators ────────────────────────────────────────────────────────────────────────
-	// Client leaf-writes into the CRDT `globals` root; the manager applies each via
-	// `apply_global_change` and mirrors it back. Human-rate panel edits — direct doc writes with no
-	// undo history (like the viewer-state pushes), so they stay out of the graph/layout undo domains.
+	// Command ops (EditGlobal / a Compound rename) — undoable, and validated server-side (invalid
+	// name / collision / protected-system reject the RPC). Each resolves on success and REJECTS on a
+	// server refusal, so callers `await` + catch to surface/undo an invalid edit.
 
-	// Each returns the WRITER's "landed" boolean (not `commit`'s delta-broadcast flag): an idempotent
-	// value set / same-name rename lands but broadcasts nothing, and the agent-façade contract keys
-	// `false` on invalid-name / collision / protected-system — not on an at-target no-op.
-
-	/** Add a new user global (name validated + collision-checked in the writer). Returns whether it
-	 * landed (false ⇒ invalid name or a name collision). */
-	addGlobal(name: string, value: number | string | boolean, type: GlobalType): boolean {
-		let ok = false;
-		this._sync.commit((doc) => (ok = docAddGlobal(doc, name, value, type)));
-		return ok;
+	/** Add a new user global. Rejects on an invalid name or a collision (server-validated). */
+	async addGlobal(name: string, value: number | string | boolean, type: GlobalType): Promise<void> {
+		await this.ctl.call('set_global', { name, value, type });
+		this._recordGraphCmd(`Add global ${name}`);
 	}
 
 	/** Edit an existing global's value (system or user); the declared type + system flag are kept. */
-	setGlobalValue(name: string, value: number | string | boolean): boolean {
-		let ok = false;
-		this._sync.commit((doc) => (ok = docSetGlobalValue(doc, name, value)));
-		return ok;
+	async setGlobalValue(name: string, value: number | string | boolean): Promise<void> {
+		const type = this.globals.find((g) => g.name === name)?.type;
+		if (!type) throw new Error(`set_global: no global ${name}`);
+		await this.ctl.call('set_global', { name, value, type });
+		this._recordGraphCmd(`Set global ${name}`);
 	}
 
-	/** Remove a user global (a system global is refused by the writer). */
-	removeGlobal(name: string): boolean {
-		let ok = false;
-		this._sync.commit((doc) => (ok = docRemoveGlobal(doc, name)));
-		return ok;
+	/** Remove a user global (a system global is refused by the server). */
+	async removeGlobal(name: string): Promise<void> {
+		await this.ctl.call('remove_global', { name });
+		this._recordGraphCmd(`Remove global ${name}`);
 	}
 
-	/** Rename a user global (delete-old + add-new; refs are not rewritten — a stale `globals.<old>`
-	 * throws at eval time, per spec). Returns whether it landed. */
-	renameGlobal(oldName: string, newName: string): boolean {
-		let ok = false;
-		this._sync.commit((doc) => (ok = docRenameGlobal(doc, oldName, newName)));
-		return ok;
+	/** Rename a user global (add-new + remove-old as one undo step; refs are not rewritten — a stale
+	 * `globals.<old>` throws at eval time, per spec). Rejects on a system global or a collision. */
+	async renameGlobal(oldName: string, newName: string): Promise<void> {
+		await this.ctl.call('rename_global', { old: oldName, new: newName });
+		this._recordGraphCmd(`Rename global ${oldName} → ${newName}`);
 	}
 
 	/** Ask a live node to re-evaluate a param's options (device / stream pickers).
@@ -698,82 +586,32 @@ export class GraphStore {
 	): Promise<void> {
 		const d = this.nodeById(node)?.params?.[group]?.[name];
 		// Guard on the param's EXISTENCE (like updateParam): a missing param (agent typo, or a call
-		// racing node hydration) would otherwise leaf-write an `expr` onto a phantom param entry the
-		// graph rejects and the re-mirror never prunes — an orphan binding lingering in the doc.
+		// racing node hydration) would otherwise send a binding for a phantom param the manager rejects.
 		if (!d) throw new Error(`set_expression: no param ${group}.${name} on node ${node}`);
-		const oldExpr: ExprState = {
-			expression: d.expression ?? null,
-			enabled: d.expression_enabled ?? false,
-			triggers_process: d.expression_triggers_process ?? false
-		};
-		const newExpr: ExprState = {
+		await this.ctl.call('set_expression', {
+			node,
+			group,
+			name,
 			expression,
 			enabled: opts.enabled ?? false,
-			triggers_process: opts.triggers_process ?? false
-		};
-		this._record({
-			kind: 'set_expression',
-			label: `Set ${name} expression`,
-			domain: 'graph',
-			context: captureNavContext(),
-			payload: { node, group, name, oldExpr, newExpr }
+			triggers: opts.triggers_process ?? false
 		});
-		this.writeExpression(node, group, name, newExpr);
-	}
-
-	/** Client leaf-write of a param's expression binding into the CRDT doc (Phase 3 — replaces the
-	 * `set_expression` RPC). The manager applies it via `set_member_expression` (re-projecting to
-	 * shared siblings) and echoes the runtime-enriched param descriptor as a `state_update`, so the
-	 * fx toggle + `expression_error` indicator refresh exactly as before. Records no history —
-	 * callers (setExpression, the executor) own that. A null/empty expression clears the binding. */
-	writeExpression(node: string, group: string, name: string, expr: ExprState): void {
-		this._sync.commit((doc) =>
-			docSetParamExpr(
-				doc,
-				node,
-				group,
-				name,
-				expr.expression
-					? { source: expr.expression, enabled: expr.enabled, triggers: expr.triggers_process }
-					: null
-			)
-		);
+		this._recordGraphCmd(`Set ${name} expression`);
 	}
 
 	async setNodePos(uid: string, pos: [number, number]): Promise<void> {
-		const oldPos = this.nodeById(uid)?.pos ?? [0, 0];
-		this._record({
-			kind: 'set_node_pos',
-			label: `Move ${this.nodeById(uid)?.name ?? uid}`,
-			domain: 'graph',
-			context: captureNavContext(),
-			payload: { uid, oldPos: [oldPos[0], oldPos[1]], newPos: pos }
-		});
-		this.writeNodePos(uid, pos);
-	}
-
-	/** Client leaf-write of a committed node/instance position into the CRDT doc (Phase 3 —
-	 * replaces the `set_node_pos` RPC). The manager applies it via `set_member_pos` (mirroring
-	 * shared members to siblings) and re-mirrors; the doc-pos overlay in `_syncFromDoc` reflects
-	 * it. Records no history — callers (setNodePos, the executor) own that. Committed on drag-stop
-	 * only; live drag stays local to Svelte Flow (never the doc). */
-	writeNodePos(uid: string, pos: [number, number]): void {
-		this._sync.commit((doc) => docSetNodePos(doc, uid, pos));
+		// Committed on drag-stop only; live drag stays local to Svelte Flow. The manager's EditNode
+		// captures the prior pos so its inverse restores it. Handles a node OR an instance facade.
+		await this.ctl.call('set_node_pos', { node: uid, pos });
+		this._recordGraphCmd(`Move ${this.nodeById(uid)?.name ?? uid}`);
 	}
 
 	/** Set a node's mutable display name (uid identity is unchanged). */
 	async renameNode(uid: string, name: string): Promise<void> {
-		const node = this.nodeById(uid);
-		const oldName = node?.name ?? '';
+		const oldName = this.nodeById(uid)?.name ?? '';
 		if (oldName === name) return;
-		this._record({
-			kind: 'rename_node',
-			label: `Rename ${oldName} → ${name}`,
-			domain: 'graph',
-			context: captureNavContext(),
-			payload: { uid, oldName, newName: name }
-		});
 		await this.ctl.call('rename_node', { node: uid, name });
+		this._recordGraphCmd(`Rename ${oldName} → ${name}`);
 	}
 
 	/** Push the current workspace layout into the running patch (manager memory)
@@ -798,74 +636,24 @@ export class GraphStore {
 		return this.ctl.call('save', { path, overwrite, layout });
 	}
 
+	/** Load a patch, replacing the current graph. Loading fully RESETS the session (the manager
+	 * clears its command history; the client's stacks reset on the `graph_replaced` wholesale-load),
+	 * so there is nothing to undo across it — no history entry (spec §3: no load command). */
 	async loadText(content: string): Promise<void> {
-		const before = await this._loadCheckpointBefore();
 		await this.ctl.call('load_text', { content });
-		this._recordLoadPatch(before, content);
 	}
 
-	/** Raw patch swap used by the load_patch undo executor — bypasses recording. */
-	async applyLoadCheckpoint(yaml: string): Promise<void> {
-		await this.ctl.call('load_text', { content: yaml });
-	}
-
-	/** Snapshot the current patch + layout before a destructive load. */
-	private async _loadCheckpointBefore(): Promise<{ yaml: string; layout: unknown }> {
-		let yaml = '';
-		try {
-			yaml = (await this.serialize()).yaml;
-		} catch {
-			/* nothing loaded yet — empty before-state */
-		}
-		return { yaml, layout: workspace().serialize() };
-	}
-
-	private _recordLoadPatch(before: { yaml: string; layout: unknown }, afterYaml: string): void {
-		const payload = {
-			beforeYaml: before.yaml,
-			afterYaml,
-			beforeLayout: before.layout as WorkspaceState | null,
-			afterLayout: null as WorkspaceState | null
-		};
-		this._record({ kind: 'load_patch', label: 'Load patch', domain: 'graph', context: captureNavContext(), payload });
-		// The post-load layout hasn't settled yet (the graph_replaced echo hydrates
-		// it next); capture it onto this payload when it lands so redo is exact.
-		this._pendingLoadAfter = payload;
-	}
-
-	/** Fill a pending load_patch's `afterLayout` with the now-settled arrangement.
-	 * Called once the wholesale-load echo has hydrated the loaded patch's layout. */
-	private _captureLoadAfterLayout(): void {
-		if (!this._pendingLoadAfter) return;
-		this._pendingLoadAfter.afterLayout = workspace().serialize();
-		this._pendingLoadAfter = null;
-	}
-
-	/** Group the named nodes into a unique (inline) sub-patch. Returns its instance id. */
+	/** Group the named nodes into a sub-patch. Returns its instance id. */
 	async groupNodes(members: string[], pos?: [number, number]): Promise<string> {
 		const r = await this.ctl.call<{ inst_id: string }>('group_nodes', { members, pos });
-		if (r?.inst_id)
-			this._record({
-				kind: 'group_nodes',
-				label: 'Group nodes',
-				domain: 'graph',
-				context: captureNavContext(),
-				payload: { members: [...members], instId: r.inst_id, pos }
-			});
+		if (r?.inst_id) this._recordGraphCmd('Group nodes');
 		return r.inst_id;
 	}
 
 	/** Dissolve a sub-patch instance back into its member nodes. */
 	async expandInstance(instId: string): Promise<void> {
-		const iface = structuredClone($state.snapshot(this.instances[instId]?.interface ?? {}));
-		const r = await this.ctl.call<{ restored: string[] }>('expand_instance', { inst_id: instId });
-		this._record({
-			kind: 'expand_instance',
-			label: 'Ungroup',
-			domain: 'graph',
-			context: captureNavContext(),
-			payload: { instId, restoredMembers: r?.restored ?? [], interface: iface }
-		});
+		await this.ctl.call<{ restored: string[] }>('expand_instance', { inst_id: instId });
+		this._recordGraphCmd('Ungroup');
 	}
 
 	/** Add a virtual In/Out boundary node to a sub-patch (unwired). Returns its id. */
@@ -881,14 +669,7 @@ export class GraphStore {
 			dtype,
 			pos
 		});
-		if (r?.bnd_id)
-			this._record({
-				kind: 'add_boundary',
-				label: 'Add boundary',
-				domain: 'graph',
-				context: captureNavContext(),
-				payload: { instId, bndId: r.bnd_id, dir, dtype, pos }
-			});
+		if (r?.bnd_id) this._recordGraphCmd('Add boundary');
 		return r.bnd_id;
 	}
 
@@ -899,68 +680,35 @@ export class GraphStore {
 		innerNode: string | null,
 		innerSlot: string | null
 	): Promise<void> {
-		const prev = this.instances[instId]?.interface?.[bndId];
-		this._record({
-			kind: 'wire_boundary',
-			label: 'Wire boundary',
-			domain: 'graph',
-			context: captureNavContext(),
-			payload: {
-				instId,
-				bndId,
-				oldInner: { node: prev?.inner_node ?? null, slot: prev?.inner_slot ?? null },
-				newInner: { node: innerNode, slot: innerSlot }
-			}
-		});
 		await this.ctl.call('wire_boundary', {
 			inst_id: instId,
 			bnd_id: bndId,
 			inner_node: innerNode,
 			inner_slot: innerSlot
 		});
+		this._recordGraphCmd('Wire boundary');
 	}
 
 	/** Delete an In/Out boundary node (tears down its external wires). */
 	async removeBoundary(instId: string, bndId: string): Promise<void> {
-		const port = this.instances[instId]?.interface?.[bndId];
-		if (port)
-			this._record({
-				kind: 'remove_boundary',
-				label: 'Remove boundary',
-				domain: 'graph',
-				context: captureNavContext(),
-				payload: { instId, bndId, port: structuredClone($state.snapshot(port)) }
-			});
 		await this.ctl.call('remove_boundary', { inst_id: instId, bnd_id: bndId });
+		this._recordGraphCmd('Remove boundary');
 	}
 
-	/** Rename an In/Out portal (its label + the sub-patch's exposed slot name). The
-	 * routing key (bndId) is unchanged, so external wires survive. Records undo only
-	 * AFTER the RPC lands, so a rejected rename (blank/duplicate) doesn't poison history. */
+	/** Rename an In/Out portal (its label + the sub-patch's exposed slot name). The routing key
+	 * (bndId) is unchanged, so external wires survive. Records AFTER the RPC lands so a rejected
+	 * rename (blank/duplicate) doesn't poison history. */
 	async renameBoundary(instId: string, bndId: string, name: string): Promise<void> {
 		const oldName = this.instances[instId]?.interface?.[bndId]?.name ?? bndId;
 		if (name === oldName) return;
 		await this.ctl.call('rename_boundary', { inst_id: instId, bnd_id: bndId, name });
-		this._record({
-			kind: 'rename_boundary',
-			label: 'Rename boundary',
-			domain: 'graph',
-			context: captureNavContext(),
-			payload: { instId, bndId, oldName, newName: name }
-		});
+		this._recordGraphCmd('Rename boundary');
 	}
 
-	/** Move an In/Out pill inside the entered view (mirrors across shared siblings). */
+	/** Move an In/Out pill inside the entered view. */
 	async setBoundaryPos(instId: string, bndId: string, pos: [number, number]): Promise<void> {
-		const old = this.instances[instId]?.interface?.[bndId]?.pos ?? [0, 0];
-		this._record({
-			kind: 'set_boundary_pos',
-			label: 'Move boundary',
-			domain: 'graph',
-			context: captureNavContext(),
-			payload: { instId, bndId, oldPos: [old[0], old[1]], newPos: pos }
-		});
 		await this.ctl.call('set_boundary_pos', { inst_id: instId, bnd_id: bndId, pos });
+		this._recordGraphCmd('Move boundary');
 	}
 
 	/** List one directory level on the BACKEND filesystem (full FS, no jail). */
@@ -973,18 +721,10 @@ export class GraphStore {
 		return this.ctl.call<{ entries: FsEntry[] }>('list_examples');
 	}
 
-	/** Load a patch from a BACKEND filesystem path (destructive — replaces the graph). */
+	/** Load a patch from a BACKEND filesystem path (destructive — replaces the graph). Like
+	 * {@link loadText}, a load resets the session, so it is not undoable (no history entry). */
 	async load(path: string): Promise<void> {
-		const before = await this._loadCheckpointBefore();
 		await this.ctl.call('load', { path });
-		// The loaded patch's YAML, for redo (re-applying the same load).
-		let afterYaml = '';
-		try {
-			afterYaml = (await this.serialize()).yaml;
-		} catch {
-			/* ignore */
-		}
-		this._recordLoadPatch(before, afterYaml);
 	}
 
 	/** Current patch as `.gfi` YAML, without writing to disk (for browser download). */
@@ -1363,51 +1103,13 @@ export class GraphStore {
 	async removeNodes(uids: Iterable<string>): Promise<void> {
 		const uidList = [...uids];
 		if (uidList.length === 0) return;
-		const uidSet = new Set(uidList);
 		const label = `Delete ${uidList.length} node${uidList.length > 1 ? 's' : ''}`;
-
-		// A collapsed sub-patch instance in the batch forces the WHOLE batch to be ONE full-graph
-		// checkpoint. Deleting an instance is undone by reloading the patch, and load_doc re-mints
-		// every uid on reload — which cannot compose with the incremental, uid-referencing
-		// link/node inverses of a compound transaction: a trailing add_link inverse would target a
-		// re-minted survivor's now-dead uid, abort the replay mid-way, and half-revert the graph.
-		// Capture one before/after checkpoint and suspend the per-child records; the backend
-		// cascades link cleanup on node/instance removal, so no explicit remove_link is needed
-		// (undo restores every link from the checkpoint YAML).
-		if (uidList.some((u) => this.instances[u] && u !== ROOT_ID) && !history().isSuspended) {
-			const before = await this._loadCheckpointBefore();
-			await history().suspend(async () => {
-				for (const uid of uidList) await this.removeNode(uid, false);
-			});
-			let afterYaml = '';
-			try {
-				afterYaml = (await this.serialize()).yaml;
-			} catch {
-				/* whole graph gone — empty after-state */
-			}
-			this._record({
-				kind: 'load_patch',
-				label,
-				domain: 'graph',
-				context: captureNavContext(),
-				payload: {
-					beforeYaml: before.yaml,
-					afterYaml,
-					beforeLayout: before.layout as WorkspaceState | null,
-					afterLayout: workspace().serialize() as WorkspaceState | null
-				}
-			});
-			return;
-		}
-
-		// Snapshot the affected links up front (one read — not re-derived between the
-		// awaits below, where the store may not have caught up to each removal yet).
-		const links = this.links
-			.filter((l) => uidSet.has(l.node_in) || uidSet.has(l.node_out))
-			.map((l) => ({ ...l }));
+		// Each removeNode is a manager RemoveNode command that captures its OWN subtree (members +
+		// params + links + stubs), so a batch — even one containing collapsed instances — is just a
+		// transaction of deletes folded into one undo step. A link into a co-deleted node rides with
+		// whichever endpoint owns it, so delete order is immaterial.
 		await history().transaction(label, async () => {
-			for (const link of links) await this.removeLink(link);
-			for (const uid of uidList) await this.removeNode(uid, false);
+			for (const uid of uidList) await this.removeNode(uid);
 		});
 	}
 

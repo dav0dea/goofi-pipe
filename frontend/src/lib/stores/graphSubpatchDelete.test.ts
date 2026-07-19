@@ -80,17 +80,17 @@ function withInstance(): { fc: FakeControl; g: GraphStore } {
 	return { fc, g };
 }
 
-describe('deleting a collapsed sub-patch instance is undoable (no data loss)', () => {
+describe('deleting a collapsed sub-patch instance is undoable (manager owns the subtree capture)', () => {
 	beforeEach(() => history().reset());
 
-	it('records a load_patch checkpoint, not a remove_node whose undo replays add_node{Sub-patch}', async () => {
+	it('deletes the instance via remove_node and records one undoable step', async () => {
 		const { fc, g } = withInstance();
 		history().configureDeps(() => ({ control: fc, graph: g, workspace: workspace() }));
-		fc.setCallResult('serialize', { yaml: 'PATCH_WITH_SUBPATCH' });
 
 		await g.removeNode('sub');
 
-		// Forward: the instance IS actually deleted via remove_node (routes to remove_instance).
+		// Forward: the instance IS deleted via remove_node (the manager's RemoveNode captures the
+		// whole subtree for its inverse — B3b).
 		expect(fc.recordedCalls().some((c) => c.op === 'remove_node' && c.payload.node === 'sub')).toBe(
 			true
 		);
@@ -100,32 +100,25 @@ describe('deleting a collapsed sub-patch instance is undoable (no data loss)', (
 		expect(history().canUndo).toBe(true);
 	});
 
-	it('undo restores the subtree via a full-graph checkpoint (never a broken add_node)', async () => {
+	it('undo DELEGATES to the manager (no client-side checkpoint / add_node replay)', async () => {
 		const { fc, g } = withInstance();
 		history().configureDeps(() => ({ control: fc, graph: g, workspace: workspace() }));
-		fc.setCallResult('serialize', { yaml: 'PATCH_WITH_SUBPATCH' });
 
 		await g.removeNode('sub');
+		const before = fc.recordedCalls().length;
 		await history().undo();
 
-		const calls = fc.recordedCalls();
-		// Undo replays the checkpoint (load_text with the pre-delete YAML) — reconstructing the
-		// entire subtree — and NEVER the uninstantiable add_node{type:'Sub-patch'} that lost data.
-		const load = calls.find((c) => c.op === 'load_text');
-		expect(load, 'undo restores via load_text checkpoint').toBeTruthy();
-		expect(load!.payload.content).toBe('PATCH_WITH_SUBPATCH');
-		expect(
-			calls.some((c) => c.op === 'add_node' && c.payload.type === 'Sub-patch'),
-			'must never replay the uninstantiable Sub-patch add_node'
-		).toBe(false);
+		const undoCalls = fc.recordedCalls().slice(before);
+		// Undo just asks the manager to undo its session command (which restores the whole subtree
+		// from the inverse it captured) — never a client-side load_text checkpoint or a fragile
+		// add_node{Sub-patch} replay.
+		expect(undoCalls.some((c) => c.op === 'undo')).toBe(true);
+		expect(undoCalls.some((c) => c.op === 'load_text')).toBe(false);
+		expect(undoCalls.some((c) => c.op === 'add_node')).toBe(false);
 		expect(history().canRedo).toBe(true);
 	});
 
-	it('a MIXED batch (instance + node) records ONE checkpoint, not a compound that aborts on undo', async () => {
-		// Regression guard: deleting an instance is undone by a full reload, which re-mints every
-		// uid. If that checkpoint were a compound child alongside incremental link/node inverses,
-		// undo would replay an add_link against a re-minted survivor's dead uid and abort mid-way,
-		// dropping the link and half-reverting. The whole batch must be ONE checkpoint instead.
+	it('a MIXED batch (instance + node) is ONE undo step delegating per child', async () => {
 		const fc = new FakeControl();
 		const g = new GraphStore(fc);
 		const root = instInfo(ROOT_ID, 'root', null, {
@@ -144,7 +137,6 @@ describe('deleting a collapsed sub-patch instance is undoable (no data loss)', (
 			)
 		});
 		history().configureDeps(() => ({ control: fc, graph: g, workspace: workspace() }));
-		fc.setCallResult('serialize', { yaml: 'PATCH_MIXED' });
 
 		await g.removeNodes(['n1', 'sub']);
 
@@ -155,19 +147,16 @@ describe('deleting a collapsed sub-patch instance is undoable (no data loss)', (
 			.map((c) => c.payload.node);
 		expect(removed).toContain('n1');
 		expect(removed).toContain('sub');
-		// ONE undoable checkpoint entry — never a compound.
+		// ONE undoable entry (a transaction folded to a compound of two graph_cmd children).
 		expect(history().length).toBe(1);
 		expect(history().undoLabel).toBe('Delete 2 nodes');
 
-		// Undo is a single checkpoint reload — no incremental add_link/add_node inverses to abort.
+		// Undo runs the compound: one manager `undo` per child (two), no client-side reload.
 		const before = fc.recordedCalls().length;
 		await history().undo();
 		const undoCalls = fc.recordedCalls().slice(before);
-		expect(undoCalls.some((c) => c.op === 'load_text' && c.payload.content === 'PATCH_MIXED')).toBe(
-			true
-		);
-		expect(undoCalls.some((c) => c.op === 'add_link')).toBe(false);
-		expect(undoCalls.some((c) => c.op === 'add_node')).toBe(false);
+		expect(undoCalls.filter((c) => c.op === 'undo')).toHaveLength(2);
+		expect(undoCalls.some((c) => c.op === 'load_text')).toBe(false);
 		expect(history().canRedo).toBe(true);
 	});
 });

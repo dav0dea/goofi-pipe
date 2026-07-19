@@ -8,21 +8,13 @@
  * `NavContext` restored on undo/redo so the change is highlighted where it
  * happened. See `docs/superpowers/specs/2026-06-19-undo-redo-redesign-design.md`.
  */
-import type {
-	Control,
-	ControlEvent,
-	InstanceInfo,
-	LinkInfo,
-	NodeInstanceInfo,
-	SubPatchPort
-} from '$lib/api/control';
+import type { Control, ControlEvent, InstanceInfo } from '$lib/api/control';
 import { getControl } from '$lib/api/control';
 import type { WorkspaceState } from '$lib/workspace/model';
 import type { ViewerKind } from '$lib/viewers/kind';
 import type { SettingsMap } from '$lib/viewers/settingsSchema';
 import { graph } from './graph.svelte';
 import { workspace } from '$lib/workspace/workspace.svelte';
-import { graphExecutors } from './graphExecutors';
 import { layoutExecutors } from '$lib/workspace/layoutExecutors';
 import { viewExecutors } from '$lib/viewers/viewExecutors';
 import { restoreNavContext } from '$lib/workspace/navContext';
@@ -41,12 +33,6 @@ export interface NavContext {
 	selection: Record<string, { nodes: string[]; edges: string[] }>;
 }
 
-export interface ExprState {
-	expression: string | null;
-	enabled: boolean;
-	triggers_process: boolean;
-}
-
 export interface BaseAction {
 	kind: string;
 	/** Human label for the undo/redo button + tooltip. */
@@ -61,101 +47,17 @@ export interface BaseAction {
 	coalesceKey?: string;
 }
 
-// --- graph domain: replayed as RPCs ------------------------------------------
-export type GraphAction =
-	| (BaseAction & {
-			kind: 'add_node';
-			domain: 'graph';
-			payload: {
-				type: string;
-				category: string;
-				pos: [number, number];
-				instId?: string;
-				// Filled after the first forward: the node's stable uid + display name,
-				// so a redo restores the SAME identity (links/panels reconnect).
-				uid?: string;
-				name?: string;
-			};
-	  })
-	| (BaseAction & {
-			kind: 'remove_node';
-			domain: 'graph';
-			payload: {
-				uid: string;
-				node: NodeInstanceInfo;
-				links: LinkInfo[];
-				membership: { instance: string; local_name: string } | null;
-				boundPanels: Array<{ panelId: string; state: unknown }>;
-			};
-	  })
-	| (BaseAction & { kind: 'add_link'; domain: 'graph'; payload: { link: LinkInfo; displaced: LinkInfo | null } })
-	| (BaseAction & { kind: 'remove_link'; domain: 'graph'; payload: { link: LinkInfo } })
-	| (BaseAction & {
-			kind: 'update_param';
-			domain: 'graph';
-			payload: { node: string; group: string; name: string; oldValue: unknown; newValue: unknown };
-	  })
-	| (BaseAction & {
-			kind: 'set_expression';
-			domain: 'graph';
-			payload: { node: string; group: string; name: string; oldExpr: ExprState; newExpr: ExprState };
-	  })
-	| (BaseAction & {
-			kind: 'set_node_pos';
-			domain: 'graph';
-			payload: { uid: string; oldPos: [number, number]; newPos: [number, number] };
-	  })
-	| (BaseAction & {
-			kind: 'rename_node';
-			domain: 'graph';
-			payload: { uid: string; oldName: string; newName: string };
-	  })
-	| (BaseAction & {
-			kind: 'group_nodes';
-			domain: 'graph';
-			payload: { members: string[]; instId: string; pos?: [number, number] };
-	  })
-	| (BaseAction & {
-			kind: 'expand_instance';
-			domain: 'graph';
-			payload: { instId: string; restoredMembers: string[]; interface: Record<string, SubPatchPort> };
-	  })
-	| (BaseAction & {
-			kind: 'add_boundary';
-			domain: 'graph';
-			payload: { instId: string; bndId: string; dir: 'in' | 'out'; dtype: string; pos: [number, number] };
-	  })
-	| (BaseAction & {
-			kind: 'wire_boundary';
-			domain: 'graph';
-			payload: {
-				instId: string;
-				bndId: string;
-				oldInner: { node: string | null; slot: string | null };
-				newInner: { node: string | null; slot: string | null };
-			};
-	  })
-	| (BaseAction & { kind: 'remove_boundary'; domain: 'graph'; payload: { instId: string; bndId: string; port: SubPatchPort } })
-	| (BaseAction & {
-			kind: 'rename_boundary';
-			domain: 'graph';
-			payload: { instId: string; bndId: string; oldName: string; newName: string };
-	  })
-	| (BaseAction & {
-			kind: 'set_boundary_pos';
-			domain: 'graph';
-			payload: { instId: string; bndId: string; oldPos: [number, number]; newPos: [number, number] };
-	  })
-	| (BaseAction & {
-			kind: 'load_patch';
-			domain: 'graph';
-			payload: {
-				beforeYaml: string;
-				afterYaml: string;
-				beforeLayout: WorkspaceState | null;
-				afterLayout: WorkspaceState | null;
-			};
-	  });
+// --- graph domain: the MANAGER owns the inverse; the client entry just marks the step -----------
+// Every graph mutation is applied by a manager command RPC (the manager captured its exact
+// pre-state and recorded the inverse in its per-session history). So a graph history entry carries
+// no inverse payload — its undo/redo DELEGATE to the manager's `undo`/`redo` and the UI re-renders
+// from the synced doc. The only client-local state is `boundPanels`: panels a delete emptied,
+// re-bound on undo (the doc-reconcile won't restore a binding the delete cleared).
+export type GraphAction = BaseAction & {
+	kind: 'graph_cmd';
+	domain: 'graph';
+	boundPanels?: Array<{ panelId: string; state: unknown }>;
+};
 
 // --- layout domain: replayed as WorkspaceState snapshot restores -------------
 export type LayoutActionKind =
@@ -241,11 +143,27 @@ const compoundExecutor: Executor = {
 	}
 };
 
-/** The merged dispatch registry. Graph executors land here in Phase 2/3; layout
- * executors are spread in by Phase 4 (widening cast — each narrows internally);
- * the compound executor groups several primitives into one step. */
+/** The one GRAPH executor (B3). The manager owns the exact inverse (it captured the pre-state), so
+ * undo/redo just DELEGATE to its per-session command history — the UI re-renders from the synced
+ * doc. The client-local extra is re-binding panels a delete emptied (undo direction only; a redo's
+ * re-delete empties them again via the doc-reconcile). One `graph_cmd` child inside a transaction's
+ * compound maps to one manager undo/redo, and the N children pop the N contiguous session commands
+ * in the right order. */
+const graphExecutor: Executor = {
+	async forward(_action, deps) {
+		await deps.control.call('redo', {});
+	},
+	async inverse(action, deps) {
+		await deps.control.call('undo', {});
+		const a = action as GraphAction;
+		for (const bp of a.boundPanels ?? []) deps.workspace.setPanelState(bp.panelId, bp.state);
+	}
+};
+
+/** The merged dispatch registry: the single graph executor (delegating to the manager) + the
+ * client-local layout/view snapshot executors + the compound grouper. */
 export const executors: Record<string, Executor> = {
-	...graphExecutors,
+	graph_cmd: graphExecutor,
 	...(layoutExecutors as Record<string, Executor>),
 	...viewExecutors,
 	compound: compoundExecutor

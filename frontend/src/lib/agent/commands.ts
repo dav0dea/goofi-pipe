@@ -77,15 +77,16 @@ export const commands = {
 		graph().removeBoundary(instId, bndId),
 
 	// --- globals -----------------------------------------------------------
-	// Patch-scoped named scalars (client leaf-writes into the CRDT `globals` root, same path as the
-	// Globals panel). Each returns whether the write landed (false ⇒ invalid name / collision / a
-	// protected system global). Expressions read them as `globals.<name>`.
-	addGlobal: (name: string, value: number | string | boolean, type: GlobalType): boolean =>
+	// Patch-scoped named scalars (EditGlobal command ops, same path as the Globals panel — undoable).
+	// Each REJECTS on a server refusal (invalid name / collision / a protected system global).
+	// Expressions read them as `globals.<name>`.
+	addGlobal: (name: string, value: number | string | boolean, type: GlobalType): Promise<void> =>
 		graph().addGlobal(name, value, type),
-	setGlobalValue: (name: string, value: number | string | boolean): boolean =>
+	setGlobalValue: (name: string, value: number | string | boolean): Promise<void> =>
 		graph().setGlobalValue(name, value),
-	removeGlobal: (name: string): boolean => graph().removeGlobal(name),
-	renameGlobal: (oldName: string, newName: string): boolean => graph().renameGlobal(oldName, newName),
+	removeGlobal: (name: string): Promise<void> => graph().removeGlobal(name),
+	renameGlobal: (oldName: string, newName: string): Promise<void> =>
+		graph().renameGlobal(oldName, newName),
 
 	// --- patch persistence -------------------------------------------------
 	save: (path?: string): Promise<{ path: string; yaml: string }> =>

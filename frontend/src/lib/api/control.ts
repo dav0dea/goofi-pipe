@@ -358,9 +358,28 @@ export interface Control {
 	sendSync(bytes: Uint8Array): void;
 }
 
+/** This tab's stable command-session id (scopes the manager's per-client undo/redo). Minted once
+ * per tab in `sessionStorage` so it survives WS reconnects but is unique across tabs; a fallback
+ * id covers a non-browser context (SSR/tests) where `sessionStorage` is absent. */
+function readOrMintSession(): string {
+	try {
+		const KEY = 'goofi:session';
+		let s = sessionStorage.getItem(KEY);
+		if (!s) {
+			s = crypto?.randomUUID?.() ?? `s${Date.now()}-${Math.floor(Math.random() * 1e9)}`;
+			sessionStorage.setItem(KEY, s);
+		}
+		return s;
+	} catch {
+		return `s${Date.now()}-${Math.floor(Math.random() * 1e9)}`;
+	}
+}
+
 export class ControlClient implements Control {
 	private ws: WebSocket | null = null;
 	private url: string;
+	/** This tab's undo/redo session tag, sent on every request (see {@link readOrMintSession}). */
+	readonly session = readOrMintSession();
 	private nextId = 1;
 	private pending = new Map<number, Pending>();
 	private handlers = new Set<EventHandler>();
@@ -516,7 +535,9 @@ export class ControlClient implements Control {
 		const id = this.nextId++;
 		return new Promise<T>((resolve, reject) => {
 			this.pending.set(id, { resolve: resolve as (v: unknown) => void, reject });
-			this.ws!.send(JSON.stringify({ id, op, payload }));
+			// `session` rides every request at the top level (a sibling of op/payload) — the manager
+			// scopes its command history's undo/redo by it. Harmless on read-only ops.
+			this.ws!.send(JSON.stringify({ id, op, payload, session: this.session }));
 		});
 	}
 }
