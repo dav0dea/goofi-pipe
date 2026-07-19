@@ -29,6 +29,9 @@ pub enum Outcome {
     Uid(Uid),
     /// A minted/restored stub id — `add_stub` returns the stub's id (`in0`/`out0`).
     StubId(StubId),
+    /// Nodes the command touched that need a runtime echo — `EditNode`'s rename returns the
+    /// referrers whose `nd()` expressions were rewritten, so the bridge re-broadcasts their params.
+    Nodes(Vec<Uid>),
 }
 
 /// A param's expression binding, as carried by [`Command::EditParam`]. An empty `source` clears the
@@ -210,13 +213,17 @@ impl Command {
                 }
                 let old_name = name.as_ref().map(|_| g.name(uid).unwrap_or("").to_string());
                 let old_pos = pos.map(|_| g.pos(uid).unwrap_or([0.0, 0.0]));
+                // A rename rewrites `nd('old')` → `nd('new')` in referring expressions; report the
+                // touched referrers so the bridge re-broadcasts their runtime-enriched descriptors.
+                let mut referrers = Vec::new();
                 if let Some(n) = &name {
-                    g.rename_node(uid, n)?;
+                    referrers = g.rename_node(uid, n)?;
                 }
                 if let Some(p) = pos {
                     g.set_node_pos(uid, p)?;
                 }
-                Ok((Outcome::Ok, Command::EditNode { uid, name: old_name, pos: old_pos }))
+                let out = if referrers.is_empty() { Outcome::Ok } else { Outcome::Nodes(referrers) };
+                Ok((out, Command::EditNode { uid, name: old_name, pos: old_pos }))
             }
 
             Command::EditParam { uid, group, name, value, expr } => {
@@ -374,6 +381,12 @@ impl CommandHistory {
         self.entries.retain(|e| !(e.session == session && e.undone));
         self.entries.push(HistoryEntry { toggle: inverse, session: session.to_string(), undone: false });
         Ok(outcome)
+    }
+
+    /// Drop the entire history (every session's entries). Loading a patch fully resets the
+    /// session — there is nothing to undo across a `load_text` — so the manager clears here.
+    pub fn clear(&mut self) {
+        self.entries.clear();
     }
 
     /// Undo the session's most-recent applied command. `Ok(false)` if it has nothing to undo.

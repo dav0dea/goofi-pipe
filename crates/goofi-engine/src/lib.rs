@@ -22,7 +22,7 @@ pub mod subpatch;
 
 /// Semantic patch commands with exact inverses — the manager's undo/redo unit.
 pub mod command;
-pub use command::{Command, CommandHistory, Outcome};
+pub use command::{Command, CommandHistory, ExprState, Outcome};
 
 /// A stable node identity. Encoded as a 12-hex string for the `.gfi` / frontend
 /// (the same key those use), a `u64` internally.
@@ -1155,38 +1155,10 @@ impl Graph {
         Ok(())
     }
 
-    // ── Member edits (no sharing) ─────────────────────────────────────────────────
-    // With sharing gone, a member is just a live node; these are thin wrappers over the single-node
-    // ops that preserve the "returns the affected uids" contract the bridge broadcasts on. A scope
-    // facade carries its own pos in `scopes[uid].pos` (not a live node), handled in set_member_pos.
-
-    /// Apply a param edit to a single node. Returns `[uid]` (the affected uids) for the per-node
-    /// broadcast — identical to `update_param`, kept as the bridge's mutation seam.
-    pub fn update_member_param(&mut self, uid: Uid, group: &str, name: &str, value: Param) -> Result<Vec<Uid>, String> {
-        self.update_param(uid, group, name, value)?;
-        Ok(vec![uid])
-    }
-
-    /// Move a node OR a scope facade (`set_node_pos` handles both). Returns the affected uid.
-    pub fn set_member_pos(&mut self, uid: Uid, pos: [f64; 2]) -> Result<Vec<Uid>, String> {
-        self.set_node_pos(uid, pos)?;
-        Ok(vec![uid])
-    }
-
-    /// Bind (or unbind) a single node's param expression. Returns `[uid]`; identical to
-    /// `set_expression`, kept as the bridge's mutation seam.
-    pub fn set_member_expression(
-        &mut self,
-        uid: Uid,
-        group: &str,
-        name: &str,
-        source: &str,
-        enabled: bool,
-        triggers_process: bool,
-    ) -> Result<Vec<Uid>, String> {
-        self.set_expression(uid, group, name, source, enabled, triggers_process)?;
-        Ok(vec![uid])
-    }
+    // The `update_member_param` / `set_member_pos` / `set_member_expression` wrappers are gone
+    // (B3a): with sharing dropped a member is just a live node, and every mutation now routes through
+    // an `EditParam` / `EditNode` command over `update_param` / `set_node_pos` / `set_expression`
+    // directly — the client-doc-write leaf path they served was retired with `apply_client_write`.
 
     /// All links as resolved views (snapshot projection).
     pub fn links_view(&self) -> Vec<LinkView> {
@@ -4128,13 +4100,12 @@ mod tests {
     }
 
     #[test]
-    fn set_member_pos_moves_a_scope_facade() {
+    fn set_node_pos_moves_a_scope_facade() {
         let mut g = Graph::new();
         let a = g.add_node("_TestConst", None).unwrap();
         let s = g.group_nodes(&[a], [1.0, 2.0]).unwrap();
-        let touched = g.set_member_pos(s, [7.0, 8.0]).unwrap();
-        assert_eq!(touched, vec![s], "the scope facade moved");
-        assert_eq!(g.scope(s).unwrap().pos, [7.0, 8.0], "scope pos updated in place");
+        g.set_node_pos(s, [7.0, 8.0]).unwrap();
+        assert_eq!(g.scope(s).unwrap().pos, [7.0, 8.0], "scope facade pos updated in place");
     }
 
     #[test]

@@ -344,9 +344,11 @@ async fn handle_control(socket: WebSocket, state: AppState) {
                     }
                 }
                 Some(Ok(Message::Binary(b))) => {
-                    // A CRDT sync frame from the client. A StateVector drives the pairwise
-                    // handshake (reply with the diff it lacks); an Update is a client leaf
-                    // write — apply it to the graph and reconcile/broadcast to all clients.
+                    // A CRDT sync frame from the client. The client replica is READ-ONLY (B3):
+                    // every mutation is a command RPC, so a StateVector drives the pairwise sync
+                    // handshake (reply with the diff it lacks) and an Ephemeral relays presence —
+                    // a client `Update` is never expected and is IGNORED (the doc is manager-authored;
+                    // an out-of-band leaf write would just be reverted by the next re-mirror anyway).
                     match goofi_crdt::SyncMsg::decode(&b) {
                         Some(msg @ goofi_crdt::SyncMsg::StateVector(_)) => {
                             let replies = state.crdt.lock().unwrap().on_sync(msg);
@@ -356,7 +358,7 @@ async fn handle_control(socket: WebSocket, state: AppState) {
                                 }
                             }
                         }
-                        Some(goofi_crdt::SyncMsg::Update(u)) => apply_client_write(&state, &u),
+                        Some(goofi_crdt::SyncMsg::Update(_)) => {} // read-only client — ignored
                         Some(eph @ goofi_crdt::SyncMsg::Ephemeral(_)) => {
                             // Presence/preview: relay verbatim to every client (peers self-filter
                             // their own id). Fire-and-forget — no doc write, no recovery.
@@ -564,7 +566,7 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
                                 g.params(uid).and_then(|p| goofi_node::param(p, group, name)).cloned()
                             {
                                 let newp = goofi_engine::param_from_json(&existing, vjson, true);
-                                let _ = g.update_member_param(uid, group, name, newp);
+                                let _ = g.update_param(uid, group, name, newp);
                             }
                         }
                     }
@@ -623,50 +625,127 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
                 )?;
                 Ok(json!({ "ok": true }))
             }
-            // Retained deliberately, unlike its 3 leaf-write siblings (set_node_pos/viewers/
-            // expression), whose handlers were removed: the frontend no longer calls update_param
-            // (params are leaf-written to the doc), but this handler is the tested reference for the
-            // uniform mutating-RPC → graph → re-mirror invariant (crdt_doc_tracks_an_rpc_node_add_
-            // and_param_edit) and the constant-value push-flood test — behaviours a leaf-write's
-            // skip-if-unchanged deliberately can't reproduce. It runs under the graph lock and
-            // re-mirrors like the structural RPCs, so it carries no lost-update risk.
+            // The leaf edits (param value / expression / node+instance pos / rename / globals) route
+            // through the command history so each is undoable (B3a). The mutation reaches clients via
+            // the post-dispatch re-mirror; only the runtime-derived, doc-invisible bits (a param's
+            // `expression_error`, a rename's nd()-rewrite echo) are pushed as `state_update` events.
             "update_param" => {
                 let uid = parse_uid(&payload, "node")?;
-                let group = parse_str(&payload, "group")?;
-                let name = parse_str(&payload, "name")?;
+                let group = parse_str(&payload, "group")?.to_string();
+                let name = parse_str(&payload, "name")?.to_string();
                 let vjson = payload.get("value").ok_or("missing value")?;
                 let existing = g
                     .params(uid)
-                    .and_then(|p| goofi_node::param(p, group, name))
+                    .and_then(|p| goofi_node::param(p, &group, &name))
                     .cloned()
                     .ok_or("no such param")?;
                 let newp = goofi_engine::param_from_json(&existing, vjson, true);
-                // Re-project to every shared sibling (§4.5): a shared member's edit hits all its
-                // instances. A ROOT / unique-member edit updates only itself.
-                let updated = g.update_member_param(uid, group, name, newp)?;
-                for peer in updated {
-                    events.push(param_state_update(&g, peer));
+                state.history.lock().unwrap().apply(
+                    &mut g,
+                    &session,
+                    goofi_engine::Command::EditParam { uid, group, name, value: Some(newp), expr: None },
+                )?;
+                Ok(json!({ "ok": true }))
+            }
+            "set_expression" => {
+                let uid = parse_uid(&payload, "node")?;
+                let group = parse_str(&payload, "group")?.to_string();
+                let name = parse_str(&payload, "name")?.to_string();
+                // An absent/null/empty `expression` clears the binding (revert to the literal);
+                // `enabled`/`triggers` default false.
+                let source = payload.get("expression").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let enabled = payload.get("enabled").and_then(|v| v.as_bool()).unwrap_or(false);
+                let triggers = payload.get("triggers").and_then(|v| v.as_bool()).unwrap_or(false);
+                state.history.lock().unwrap().apply(
+                    &mut g,
+                    &session,
+                    goofi_engine::Command::EditParam {
+                        uid,
+                        group,
+                        name,
+                        value: None,
+                        expr: Some(goofi_engine::ExprState { source, enabled, triggers }),
+                    },
+                )?;
+                // The binding source rides the doc re-mirror; the runtime `expression_error` is
+                // doc-invisible, so echo the enriched descriptor (what the retired leaf path did).
+                events.push(param_state_update(&g, uid));
+                Ok(json!({ "ok": true }))
+            }
+            "set_node_pos" => {
+                let uid = parse_uid(&payload, "node")?;
+                let pos = payload.get("pos").and_then(parse_pos).ok_or("set_node_pos: missing pos")?;
+                state.history.lock().unwrap().apply(
+                    &mut g,
+                    &session,
+                    goofi_engine::Command::EditNode { uid, name: None, pos: Some(pos) },
+                )?;
+                Ok(json!({ "ok": true }))
+            }
+            "set_node_viewers" => {
+                // Soft per-slot view-state (kind/settings/collapse) persisted to `.gfi` — NOT a
+                // command (not undoable). Written to the graph; the re-mirror persists + broadcasts.
+                let uid = parse_uid(&payload, "node")?;
+                let viewers = payload.get("viewers").cloned().ok_or("set_node_viewers: missing viewers")?;
+                g.set_node_viewers(uid, viewers)?;
+                Ok(json!({ "ok": true }))
+            }
+            "rename_node" => {
+                let uid = parse_uid(&payload, "node")?;
+                let name = parse_str(&payload, "name")?.to_string();
+                let out = state.history.lock().unwrap().apply(
+                    &mut g,
+                    &session,
+                    goofi_engine::Command::EditNode { uid, name: Some(name), pos: None },
+                )?;
+                // The new name rides the re-mirror; each referrer whose nd() expression was rewritten
+                // needs its runtime-enriched descriptor re-pushed (the source is in the doc, the
+                // runtime error is not).
+                if let goofi_engine::Outcome::Nodes(referrers) = out {
+                    for r in referrers {
+                        events.push(param_state_update(&g, r));
+                    }
                 }
                 Ok(json!({ "ok": true }))
             }
-            // `set_expression` retired (Phase 3): the expression binding is a merge-safe leaf the
-            // client writes directly to the doc. `apply_client_write` applies it via
-            // `set_member_expression` (re-projecting to shared siblings) and echoes the same
-            // runtime-enriched `state_update` (carrying `expression_error`) this handler used to.
-            // `set_node_pos` / `set_node_viewers` retired (Phase 3): node/instance position and the
-            // per-slot viewer blob are merge-safe leaves the client writes directly to the doc
-            // (`apply_client_write` → `set_member_pos` / `set_node_viewers`).
-            "rename_node" => {
-                let uid = parse_uid(&payload, "node")?;
-                let name = parse_str(&payload, "name")?;
-                let referrers = g.rename_node(uid, name)?;
-                // The new name reaches clients via the post-dispatch re-mirror (node_renamed retired).
-                // The nd('new') rewrite of any referring expression is itself a doc leaf, but push each
-                // referrer's fresh params so a runtime `expression_error` from re-evaluating the rewrite
-                // still surfaces on its inspector (the doc carries the source, not the runtime error).
-                for r in referrers {
-                    events.push(param_state_update(&g, r));
-                }
+            "set_global" => {
+                // Wire shape `{ name, value, type }`; build the typed GlobalValue from the value+type
+                // pair (add-or-edit — the engine keeps a system global's declared type).
+                let name = parse_str(&payload, "name")?.to_string();
+                let val = payload.get("value").ok_or("set_global: missing value")?;
+                let ty = payload.get("type").and_then(|v| v.as_str()).ok_or("set_global: missing type")?;
+                let value = goofi_engine::global_from_json(&json!({ "value": val, "type": ty }))
+                    .ok_or("set_global: malformed value")?;
+                state.history.lock().unwrap().apply(
+                    &mut g,
+                    &session,
+                    goofi_engine::Command::EditGlobal { name, value: Some(value) },
+                )?;
+                Ok(json!({ "ok": true }))
+            }
+            "remove_global" => {
+                let name = parse_str(&payload, "name")?.to_string();
+                state.history.lock().unwrap().apply(
+                    &mut g,
+                    &session,
+                    goofi_engine::Command::EditGlobal { name, value: None },
+                )?;
+                Ok(json!({ "ok": true }))
+            }
+            "rename_global" => {
+                let old = parse_str(&payload, "old")?.to_string();
+                let new = parse_str(&payload, "new")?.to_string();
+                // A rename = add-new(with the old value) + remove-old, folded into one undo step.
+                // The manager reads the old value so the client sends only the two names.
+                let value = g.globals().get(&old).cloned().ok_or("rename_global: no such global")?;
+                state.history.lock().unwrap().apply(
+                    &mut g,
+                    &session,
+                    goofi_engine::Command::Compound(vec![
+                        goofi_engine::Command::EditGlobal { name: new, value: Some(value) },
+                        goofi_engine::Command::EditGlobal { name: old, value: None },
+                    ]),
+                )?;
                 Ok(json!({ "ok": true }))
             }
             // The sub-patch structural ops (group/expand/boundary authoring/share) mutate the forest
@@ -790,6 +869,9 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
                     .and_then(|v| v.as_str())
                     .ok_or("load_text: missing content")?;
                 g.load_doc(content)?;
+                // A load fully resets the session — there is nothing to undo across it (spec §3:
+                // no load command / no checkpoint), so drop every session's command history.
+                state.history.lock().unwrap().clear();
                 events.push(event(
                     "graph_replaced",
                     schemas::snapshot(&g, &state.instance_id, false),
@@ -872,84 +954,6 @@ fn resync_and_broadcast(state: &AppState) {
     let g = state.graph.lock().unwrap();
     let mut doc = state.crdt.lock().unwrap();
     remirror_and_broadcast_locked(state, &g, &mut doc);
-}
-
-/// Apply a client's CRDT leaf write (a binary `SyncMsg::Update`) to the graph: apply it to
-/// the server replica, learn exactly which param values changed, push each into the engine
-/// `Graph` (coerced to the param's type, re-projected to shared siblings), then re-mirror +
-/// broadcast so every client — including the writer — converges on the authoritative result.
-/// Only param VALUES are honored from clients here; structural writes are reverted by the
-/// re-mirror (see [`resync_and_broadcast`]). Expression edits still flow via the RPC path.
-///
-/// The ENTIRE apply→graph-push→re-mirror→broadcast runs under a single `graph`+`crdt` critical
-/// section. This is load-bearing under concurrent writers: if the `crdt` lock were released
-/// after `apply_client_update` (so another writer could apply its leaf to the doc) before this
-/// writer's graph push landed, the subsequent blanket re-mirror would read a graph still behind
-/// that other leaf and clobber it back to the stale value — a lost update. Holding both locks
-/// throughout keeps graph and doc consistent at every release point.
-fn apply_client_write(state: &AppState, update: &[u8]) {
-    let mut g = state.graph.lock().unwrap();
-    let mut doc = state.crdt.lock().unwrap();
-    let changed = doc.apply_client_update(update).unwrap_or_default();
-    if changed.is_empty() {
-        return;
-    }
-    for (uid_hex, group, name, value) in &changed.params {
-        let Some(uid) = Uid::from_hex(uid_hex) else { continue };
-        let Some(existing) = g.params(uid).and_then(|p| goofi_node::param(p, group, name)).cloned()
-        else {
-            continue; // unknown param (e.g. a stale/bogus client write) — ignore
-        };
-        let newp = goofi_engine::param_from_json(&existing, value, true);
-        let _ = g.update_member_param(uid, group, name, newp);
-    }
-    for (uid_hex, pos) in &changed.positions {
-        let Some(uid) = Uid::from_hex(uid_hex) else { continue };
-        // `set_member_pos` moves a ROOT node, an instance box, or a shared member (mirroring to
-        // siblings) — the same authority the retired `set_node_pos` RPC used.
-        let _ = g.set_member_pos(uid, *pos);
-    }
-    for (uid_hex, blob) in &changed.viewers {
-        let Some(uid) = Uid::from_hex(uid_hex) else { continue };
-        // Opaque per-slot view-state — stored + persisted to .gfi verbatim (the retired
-        // `set_node_viewers` RPC's authority).
-        let _ = g.set_node_viewers(uid, blob.clone());
-    }
-    // Expression bindings: the doc is the SSOT for the binding (source/enabled/triggers), but the
-    // per-param `expression_error` is RUNTIME-derived and never enters the doc. So after applying
-    // each binding (re-projected to shared siblings), echo the runtime-enriched param descriptor as
-    // the same `state_update` the retired `set_expression` RPC emitted — the client's fx toggle and
-    // field error indicator refresh exactly as before, with no read-path change.
-    let mut expr_peers: Vec<Uid> = Vec::new();
-    for (uid_hex, group, name, binding) in &changed.expressions {
-        let Some(uid) = Uid::from_hex(uid_hex) else { continue };
-        let (source, enabled, triggers) = match binding {
-            Some(e) => (e.source.as_str(), e.enabled, e.triggers),
-            None => ("", false, false), // a cleared binding — revert to the literal value
-        };
-        if let Ok(updated) = g.set_member_expression(uid, group, name, source, enabled, triggers) {
-            expr_peers.extend(updated);
-        }
-    }
-    // Globals: `Some(entry)` sets/adds, `None` deletes. A system-delete is rejected by the engine and
-    // re-asserted by the re-mirror below — so a client's attempt to delete a system global reappears.
-    for (name, entry) in &changed.globals {
-        let value = match entry {
-            Some(e) => match goofi_engine::global_from_json(e) {
-                Some(v) => Some(v),
-                None => continue, // malformed entry — ignore
-            },
-            None => None,
-        };
-        let _ = g.apply_global_change(name, value);
-    }
-    remirror_and_broadcast_locked(state, &g, &mut doc);
-    // Emit after the re-mirror so the doc + graph are consistent; dedup so one descriptor per node.
-    expr_peers.sort_by_key(|u| u.to_hex());
-    expr_peers.dedup();
-    for peer in expr_peers {
-        let _ = state.events.send(param_state_update(&g, peer));
-    }
 }
 
 // ---------------------------------------------------------------------------

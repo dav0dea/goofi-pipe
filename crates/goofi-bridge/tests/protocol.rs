@@ -117,31 +117,17 @@ async fn call(ws: &mut Ws, id: i64, op: &str, payload: Value) -> Value {
     }
 }
 
-/// Bind an ENABLED expression on a param via a client doc leaf-write — the `set_expression` RPC is
-/// retired (Phase 3), so tests that need a binding as SETUP write it to the doc like the frontend
-/// does. Advertises a fresh replica's SV, drains binary frames until the target node is present
-/// (robust to interleaved broadcast deltas the earlier `call`s skipped), then leaf-writes the
-/// binding (value unchanged) and sends the delta. The manager applies it via `set_member_expression`.
-async fn leaf_write_expression(ws: &mut Ws, node: &str, group: &str, name: &str, source: &str) {
-    use goofi_crdt::{GraphDoc, SyncMsg};
-    let mut doc = GraphDoc::new();
-    ws.send(Message::Binary(doc.sync_hello().into())).await.unwrap();
-    // The SV-diff response is a complete, self-contained update; applying it makes every node
-    // present in one shot. (Partial broadcast deltas queued ahead just apply/buffer harmlessly.)
-    for _ in 0..40 {
-        if let Some(m) = SyncMsg::decode(&recv_binary(ws).await) {
-            doc.on_sync(m);
-        }
-        if doc.node_ids().iter().any(|u| u == node) {
-            break;
-        }
-    }
-    let before = doc.state_vector();
-    doc.write_at(
-        &["nodes", node, "params", group, name, "expr"],
-        Some(&json!({ "source": source, "enabled": true, "triggers": false })),
-    );
-    ws.send(Message::Binary(SyncMsg::Update(doc.diff(&before)).encode().into())).await.unwrap();
+/// Bind an ENABLED expression on a param via the `set_expression` command op — the shape the
+/// frontend sends (B3; the client-doc-write leaf path is retired). The manager routes it through an
+/// `EditParam` command and echoes the runtime-enriched descriptor as a `state_update`.
+async fn bind_expression(ws: &mut Ws, id: i64, node: &str, group: &str, name: &str, source: &str) {
+    call(
+        ws,
+        id,
+        "set_expression",
+        json!({ "node": node, "group": group, "name": name, "expression": source, "enabled": true, "triggers": false }),
+    )
+    .await;
 }
 
 /// Sync a FRESH CRDT replica from the server over `ws` and drain binary sync frames until
@@ -283,6 +269,83 @@ async fn a_link_add_is_undoable_over_the_wire() {
     .await;
     assert!(doc2.read_at(&["links"]).unwrap().as_array().unwrap().is_empty(), "undo removed the link");
     assert_eq!(doc2.node_ids().len(), 2, "both nodes survive the link undo");
+}
+
+#[tokio::test]
+async fn a_param_edit_is_undoable_over_the_wire() {
+    // update_param routes through the command history (EditParam); undo restores the PRIOR value,
+    // redo re-applies — read back from the synced doc.
+    let base = start_server().await;
+    let (mut ws, _) = connect_async(format!("{base}/control")).await.unwrap();
+    let _hello = recv_text(&mut ws).await;
+
+    let osc = call_session(&mut ws, 1, "add_node", json!({ "type": "Oscillator" }), "s1").await["result"]
+        .as_str().unwrap().to_string();
+    call_session(&mut ws, 2, "update_param", json!({ "node": osc, "group": "common", "name": "max_frequency", "value": 20.0 }), "s1").await;
+    call_session(&mut ws, 3, "update_param", json!({ "node": osc, "group": "common", "name": "max_frequency", "value": 33.0 }), "s1").await;
+    let doc = sync_replica(&mut ws, |d| doc_param_f64(d, &osc, "common", "max_frequency") == Some(33.0)).await;
+    assert_eq!(doc_param_f64(&doc, &osc, "common", "max_frequency"), Some(33.0), "second edit applied");
+
+    call_session(&mut ws, 4, "undo", json!({}), "s1").await;
+    let doc2 = sync_replica(&mut ws, |d| doc_param_f64(d, &osc, "common", "max_frequency") == Some(20.0)).await;
+    assert_eq!(doc_param_f64(&doc2, &osc, "common", "max_frequency"), Some(20.0), "undo restored the prior value");
+
+    call_session(&mut ws, 5, "redo", json!({}), "s1").await;
+    let doc3 = sync_replica(&mut ws, |d| doc_param_f64(d, &osc, "common", "max_frequency") == Some(33.0)).await;
+    assert_eq!(doc_param_f64(&doc3, &osc, "common", "max_frequency"), Some(33.0), "redo re-applied");
+}
+
+#[tokio::test]
+async fn a_global_add_is_undoable_over_the_wire() {
+    // set_global routes through the history (EditGlobal); undo removes the added global. The
+    // default_ufreq SYSTEM global always remains, so anchor the post-undo sync on its presence.
+    let base = start_server().await;
+    let (mut ws, _) = connect_async(format!("{base}/control")).await.unwrap();
+    let _hello = recv_text(&mut ws).await;
+
+    call_session(&mut ws, 1, "set_global", json!({ "name": "subj", "value": "P01", "type": "string" }), "s1").await;
+    let doc = sync_replica(&mut ws, |d| d.read_at(&["globals", "subj", "value"]).is_some()).await;
+    assert_eq!(
+        doc.read_at(&["globals", "subj", "value"]).and_then(|v| v.as_str().map(str::to_string)),
+        Some("P01".to_string()),
+        "global added"
+    );
+
+    call_session(&mut ws, 2, "undo", json!({}), "s1").await;
+    let doc2 = sync_replica(&mut ws, |d| {
+        d.read_at(&["globals", "default_ufreq", "value"]).is_some()
+            && d.read_at(&["globals", "subj", "value"]).is_none()
+    })
+    .await;
+    assert!(doc2.read_at(&["globals", "subj", "value"]).is_none(), "undo removed the added global");
+}
+
+#[tokio::test]
+async fn a_global_rename_folds_into_one_undo_step() {
+    // rename_global is add-new(with the old value) + remove-old composed into ONE Compound command,
+    // so a single undo reverts the whole rename (old name + value back, new name gone).
+    let base = start_server().await;
+    let (mut ws, _) = connect_async(format!("{base}/control")).await.unwrap();
+    let _hello = recv_text(&mut ws).await;
+
+    call_session(&mut ws, 1, "set_global", json!({ "name": "subj", "value": "P01", "type": "string" }), "s1").await;
+    call_session(&mut ws, 2, "rename_global", json!({ "old": "subj", "new": "participant" }), "s1").await;
+    let doc = sync_replica(&mut ws, |d| d.read_at(&["globals", "participant", "value"]).is_some()).await;
+    assert!(doc.read_at(&["globals", "subj", "value"]).is_none(), "old name gone after rename");
+    assert_eq!(
+        doc.read_at(&["globals", "participant", "value"]).and_then(|v| v.as_str().map(str::to_string)),
+        Some("P01".to_string()),
+        "value carried to the new name"
+    );
+
+    call_session(&mut ws, 3, "undo", json!({}), "s1").await;
+    let doc2 = sync_replica(&mut ws, |d| d.read_at(&["globals", "subj", "value"]).is_some()).await;
+    assert!(doc2.read_at(&["globals", "participant", "value"]).is_none(), "new name gone after one undo");
+    assert_eq!(
+        doc2.read_at(&["globals", "subj", "value"]).and_then(|v| v.as_str().map(str::to_string)),
+        Some("P01".to_string()),
+        "old name + value restored in a single step"
+    );
 }
 
 #[tokio::test]
@@ -660,39 +723,26 @@ async fn data_plane_reduces_to_the_declared_viewspec() {
 }
 
 #[tokio::test]
-async fn a_client_expression_leaf_write_binds_and_echoes_the_descriptor() {
-    // Phase 3 (writer half, expressions): the client writes the binding straight into the doc — no
-    // set_expression RPC. The manager applies it via set_member_expression and echoes the runtime-
-    // enriched param descriptor as a `state_update`: the binding round-trips AND carries
-    // `expression_error` (the field indicator; runtime-derived, never in the doc), with NO
-    // `expression_autoeval` key.
-    use goofi_crdt::{GraphDoc, SyncMsg};
-
+async fn setting_an_expression_binds_and_echoes_the_descriptor() {
+    // The `set_expression` command op binds a param to an expression: the manager routes it through
+    // an `EditParam` command and echoes the runtime-enriched param descriptor as a `state_update` —
+    // the binding round-trips AND carries `expression_error` (the field indicator; runtime-derived,
+    // never in the doc), with NO `expression_autoeval` key.
     let base = start_server().await;
     let (mut ws, _) = connect_async(format!("{base}/control")).await.unwrap();
     let _hello = recv_text(&mut ws).await;
     let _sv = recv_binary(&mut ws).await;
-    let mut wdoc = GraphDoc::new();
-    ws.send(Message::Binary(wdoc.sync_hello().into())).await.unwrap();
-    wdoc.on_sync(SyncMsg::decode(&recv_binary(&mut ws).await).unwrap());
 
     let osc = call(&mut ws, 1, "add_node", json!({ "type": "Oscillator" }))
         .await["result"]
         .as_str()
         .unwrap()
         .to_string();
-    wdoc.on_sync(SyncMsg::decode(&recv_binary(&mut ws).await).unwrap());
-    assert!(wdoc.node_ids().contains(&osc), "writer's replica has the node");
 
-    // Bind an expression on common.max_frequency (value unchanged) and send the delta.
-    let before = wdoc.state_vector();
-    wdoc.write_at(
-        &["nodes", &osc, "params", "common", "max_frequency", "expr"],
-        Some(&json!({ "source": "1 + 2", "enabled": true, "triggers": false })),
-    );
-    ws.send(Message::Binary(SyncMsg::Update(wdoc.diff(&before)).encode().into())).await.unwrap();
+    // Bind an expression on common.max_frequency via the command op.
+    bind_expression(&mut ws, 2, &osc, "common", "max_frequency", "1 + 2").await;
 
-    // The manager echoes the descriptor as a state_update (the same one the retired RPC emitted).
+    // The manager echoes the descriptor as a state_update (arrives after the command reply).
     let mut descriptor: Option<Value> = None;
     for _ in 0..40 {
         let m = recv_text(&mut ws).await;
@@ -852,35 +902,30 @@ async fn an_ephemeral_frame_is_relayed_to_other_clients() {
 }
 
 #[tokio::test]
-async fn a_client_leaf_write_reaches_the_graph_and_other_clients() {
-    // Phase 3 (writer half): a client writes a param value into its OWN Yjs replica and sends
-    // the update over the /control binary channel. The manager applies it to the authoritative
-    // graph AND broadcasts it so a second client converges — no RPC involved.
+async fn a_param_command_reaches_the_graph_and_other_clients() {
+    // A client commits a param edit via the `update_param` command op. The manager routes it
+    // through an `EditParam` command, applies it to the authoritative graph, and broadcasts the
+    // resulting doc delta so a second client converges — no client doc write involved.
     use goofi_crdt::{GraphDoc, SyncMsg};
 
     let base = start_server().await;
 
-    // Writer client: connect, sync, add a node via RPC (so it exists), then leaf-write a param.
+    // Writer client: connect, add a node, then edit a param via the command op.
     let (mut w, _) = connect_async(format!("{base}/control")).await.unwrap();
     let _ = recv_text(&mut w).await;
     let _ = recv_binary(&mut w).await; // server hello SV
-    let mut wdoc = GraphDoc::new();
-    w.send(Message::Binary(wdoc.sync_hello().into())).await.unwrap();
-    wdoc.on_sync(SyncMsg::decode(&recv_binary(&mut w).await).unwrap());
 
     let osc = call(&mut w, 1, "add_node", json!({ "type": "Oscillator" })).await["result"]
         .as_str()
         .unwrap()
         .to_string();
-    // Absorb the broadcast delta so wdoc learns the node (needed to write into its param map).
-    wdoc.on_sync(SyncMsg::decode(&recv_binary(&mut w).await).unwrap());
-    assert!(wdoc.node_ids().contains(&osc), "writer's replica has the node");
-
-    // Leaf-write common.max_frequency = 12.0 directly into the replica, send the update.
-    let before = wdoc.state_vector();
-    wdoc.write_at(&["nodes", &osc, "params", "common", "max_frequency", "value"], Some(&json!(12.0)));
-    let upd = wdoc.diff(&before);
-    w.send(Message::Binary(SyncMsg::Update(upd).encode().into())).await.unwrap();
+    call(
+        &mut w,
+        2,
+        "update_param",
+        json!({ "node": osc, "group": "common", "name": "max_frequency", "value": 12.0 }),
+    )
+    .await;
 
     // The manager applies it to the graph: a fresh reader client sees max_frequency == 12.
     let (mut r, _) = connect_async(format!("{base}/control")).await.unwrap();
@@ -906,11 +951,10 @@ async fn a_client_leaf_write_reaches_the_graph_and_other_clients() {
 }
 
 #[tokio::test]
-async fn a_client_position_leaf_write_reaches_the_graph_and_other_clients() {
-    // Phase 3 (writer half, positions): a client drags a node and commits the new position by
-    // writing `nodes[uid].pos` into its OWN replica and sending the update — no `set_node_pos`
-    // RPC. The manager applies it via `set_member_pos` and broadcasts, so a second client sees
-    // the moved position.
+async fn a_position_command_reaches_the_graph_and_other_clients() {
+    // A client commits a drag by sending the `set_node_pos` command op — no client doc write. The
+    // manager routes it through an `EditNode` command and broadcasts, so a second client sees the
+    // moved position.
     use goofi_crdt::{GraphDoc, SyncMsg};
 
     let base = start_server().await;
@@ -918,22 +962,13 @@ async fn a_client_position_leaf_write_reaches_the_graph_and_other_clients() {
     let (mut w, _) = connect_async(format!("{base}/control")).await.unwrap();
     let _ = recv_text(&mut w).await;
     let _ = recv_binary(&mut w).await; // server hello SV
-    let mut wdoc = GraphDoc::new();
-    w.send(Message::Binary(wdoc.sync_hello().into())).await.unwrap();
-    wdoc.on_sync(SyncMsg::decode(&recv_binary(&mut w).await).unwrap());
 
     let osc = call(&mut w, 1, "add_node", json!({ "type": "Oscillator" })).await["result"]
         .as_str()
         .unwrap()
         .to_string();
-    wdoc.on_sync(SyncMsg::decode(&recv_binary(&mut w).await).unwrap());
-    assert!(wdoc.node_ids().contains(&osc), "writer's replica has the node");
-
-    // Commit a drag: move the node to [123, 456] in the replica, send the update.
-    let before = wdoc.state_vector();
-    wdoc.write_at(&["nodes", &osc, "pos"], Some(&json!({ "x": 123.0, "y": 456.0 })));
-    let upd = wdoc.diff(&before);
-    w.send(Message::Binary(SyncMsg::Update(upd).encode().into())).await.unwrap();
+    // Commit a drag: move the node to [123, 456] via the command op.
+    call(&mut w, 2, "set_node_pos", json!({ "node": osc, "pos": [123.0, 456.0] })).await;
 
     // A fresh reader converges on the moved position.
     let (mut r, _) = connect_async(format!("{base}/control")).await.unwrap();
@@ -1037,8 +1072,8 @@ async fn renaming_a_node_rewrites_referrers_nd_expressions_over_the_wire() {
     let consumer = uid(&call(&mut ws, 2, "add_node", json!({ "type": "Oscillator" })).await);
     call(&mut ws, 3, "rename_node", json!({ "node": producer, "name": "src" })).await;
 
-    // consumer.common.max_frequency = nd('src') — via a client doc leaf-write (RPC retired).
-    leaf_write_expression(&mut ws, &consumer, "common", "max_frequency", "nd('src')").await;
+    // consumer.common.max_frequency = nd('src') — via the set_expression command op.
+    bind_expression(&mut ws, 4, &consumer, "common", "max_frequency", "nd('src')").await;
 
     // Rename the producer; the reply is fire-and-forget, the rewrite rides a state_update.
     call(&mut ws, 5, "rename_node", json!({ "node": producer, "name": "signal" })).await;
@@ -1169,8 +1204,8 @@ async fn param_values_broadcasts_live_expression_values() {
         .as_str()
         .unwrap()
         .to_string();
-    // Bind an enabled expression via a client doc leaf-write (set_expression RPC retired).
-    leaf_write_expression(&mut ws, &osc, "common", "max_frequency", "1 + 2").await;
+    // Bind an enabled expression via the set_expression command op.
+    bind_expression(&mut ws, 2, &osc, "common", "max_frequency", "1 + 2").await;
 
     let ev = tokio::time::timeout(Duration::from_secs(8), async {
         loop {
@@ -1320,33 +1355,23 @@ async fn data_plane_streams_an_output_boundary_via_the_inner_leaf() {
 }
 
 #[tokio::test]
-async fn a_client_viewers_leaf_write_persists_the_view_state() {
-    // Phase 3 (writer half, viewers): the editor's per-slot viewer view-state (kind/settings/
-    // collapsed) is a merge-safe leaf the client writes straight to the doc — no set_node_viewers
-    // RPC. The manager applies it via set_node_viewers and it survives a .gfi serialize round-trip.
-    use goofi_crdt::{GraphDoc, SyncMsg};
-
+async fn set_node_viewers_persists_the_view_state() {
+    // The editor's per-slot viewer view-state (kind/settings/collapsed) is pushed via the
+    // `set_node_viewers` op — soft view state (not undoable). The manager stores it on the node and
+    // it survives a .gfi serialize round-trip.
     let base = start_server().await;
     let (mut ws, _) = connect_async(format!("{base}/control")).await.unwrap();
     let _hello = recv_text(&mut ws).await;
     let _sv = recv_binary(&mut ws).await;
-    let mut wdoc = GraphDoc::new();
-    ws.send(Message::Binary(wdoc.sync_hello().into())).await.unwrap();
-    wdoc.on_sync(SyncMsg::decode(&recv_binary(&mut ws).await).unwrap());
 
     let osc = call(&mut ws, 1, "add_node", json!({ "type": "Oscillator" })).await["result"]
         .as_str()
         .unwrap()
         .to_string();
-    wdoc.on_sync(SyncMsg::decode(&recv_binary(&mut ws).await).unwrap());
-    assert!(wdoc.node_ids().contains(&osc), "writer's replica has the node");
 
-    // Write the viewer blob into the replica and send the delta. viewers is a STRING leaf, so the
-    // client writes its `.to_string()` form (the browser's `graphDoc` does the same).
+    // Push the viewer blob via the command surface (a JSON object, the graph's stored shape).
     let viewers = json!({ "out": { "collapsed": false, "kind": "line", "settings": { "yScale": 2 } } });
-    let before = wdoc.state_vector();
-    wdoc.write_at(&["nodes", &osc, "viewers"], Some(&json!(viewers.to_string())));
-    ws.send(Message::Binary(SyncMsg::Update(wdoc.diff(&before)).encode().into())).await.unwrap();
+    call(&mut ws, 2, "set_node_viewers", json!({ "node": osc, "viewers": viewers })).await;
 
     // It reaches the graph and persists into the serialized .gfi (poll: the write is async).
     let mut persisted = false;
@@ -1444,15 +1469,17 @@ async fn a_lagged_control_client_recovers_via_a_fresh_snapshot() {
     let (mut btx, mut brx) = b.split();
     let drain = tokio::spawn(async move { while let Some(Ok(_)) = brx.next().await {} });
 
-    // Flood: id-less (no reply) update_param with a CONSTANT value — each still pushes a
-    // state_update on the events plane. A's 2 KB receive buffer blocks its server task after a
-    // few frames, so while A stays idle the ring only needs ~256 of these to overflow. The stall
-    // below (not any single wall-clock value) is what forces the lag: A must NOT drain while the
-    // ring overflows, or it would keep pace and never lag.
+    // Flood: id-less (no reply) set_expression re-binding the SAME constant expression — each pushes
+    // a state_update on the events plane, while the unchanged binding leaves the sync plane quiet
+    // (isolating the events plane). A's 2 KB receive buffer blocks its server task after a few
+    // frames, so while A stays idle the ring only needs ~256 of these to overflow. The stall below
+    // (not any single wall-clock value) is what forces the lag: A must NOT drain while the ring
+    // overflows, or it would keep pace and never lag.
     for _ in 0..2000 {
         btx.send(Message::Text(
-            json!({ "op": "update_param", "payload": {
-                "node": osc, "group": "common", "name": "max_frequency", "value": 7.0
+            json!({ "op": "set_expression", "payload": {
+                "node": osc, "group": "common", "name": "max_frequency",
+                "expression": "7", "enabled": true, "triggers": false
             }})
             .to_string(),
         ))
@@ -1479,20 +1506,18 @@ async fn a_lagged_control_client_recovers_via_a_fresh_snapshot() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn many_clients_concurrently_leaf_write_and_all_converge() {
-    // Stress + multi-user correctness for the CRDT write path. N clients each OWN one node and
-    // hammer `ROUNDS` leaf writes into their own replica concurrently, all racing through the
-    // manager's `apply_client_write → graph → resync_and_broadcast` path (the shared
-    // graph→crdt→last_sync_sv mutex chain). Two properties are proven at once:
+async fn many_clients_concurrently_edit_params_and_all_converge() {
+    // Stress + multi-user correctness for the command write path. N clients each OWN one node and
+    // hammer `ROUNDS` `update_param` command RPCs concurrently, all racing through the manager's
+    // `EditParam → graph → resync_and_broadcast` path (the shared graph→crdt→last_sync_sv mutex
+    // chain). Two properties are proven at once:
     //   * liveness — the contended mutex chain never deadlocks (the whole test completes);
     //   * no-loss   — a fresh reader converges on ALL N distinct final values, so not one of
-    //                 the N·ROUNDS concurrent writes was dropped or clobbered by the re-mirror.
+    //                 the N·ROUNDS concurrent commands was dropped or clobbered by the re-mirror.
     //
-    // Determinism hinges on a happens-before barrier: `handle_control` reads one incoming
-    // message per socket at a time, so a text RPC reply on a socket proves every prior binary
-    // leaf-write on that SAME socket was already applied. Each writer ends with a `serialize`
-    // RPC round-trip; once all writers return, every write is guaranteed live server-side, so
-    // the reader's first full-state sync already carries them (the timeout loop is just slack).
+    // Determinism hinges on the awaited command reply: `handle_control` reads one incoming message
+    // per socket at a time, so each `call` reply proves that command was applied. Once all writers
+    // return, every edit is live server-side, so the reader's first full-state sync carries them.
     use goofi_crdt::{GraphDoc, SyncMsg};
 
     const N: usize = 8;
@@ -1525,33 +1550,17 @@ async fn many_clients_concurrently_leaf_write_and_all_converge() {
             let (mut w, _) = connect_async(format!("{base}/control")).await.unwrap();
             let _ = recv_text(&mut w).await; // hello
             let _ = recv_binary(&mut w).await; // server sync_hello
-            let mut doc = GraphDoc::new();
-            w.send(Message::Binary(doc.sync_hello().into())).await.unwrap();
-            // Absorb sync frames until this writer's replica has learned its own node.
-            tokio::time::timeout(Duration::from_secs(10), async {
-                loop {
-                    let b = recv_binary(&mut w).await;
-                    if let Some(m) = SyncMsg::decode(&b) {
-                        doc.on_sync(m);
-                    }
-                    if doc.node_ids().contains(&uids[i]) {
-                        return;
-                    }
-                }
-            })
-            .await
-            .expect("writer replica learns its node");
-
+            // Ramp this node's max_frequency 1 → ROUNDS via the update_param command op; awaiting
+            // each reply proves the graph applied it (the happens-before barrier writers race on).
             for r in 1..=ROUNDS {
-                let before = doc.state_vector();
-                doc.write_at(&["nodes", &uids[i], "params", "common", "max_frequency", "value"], Some(&json!(r as f64)));
-                let upd = doc.diff(&before);
-                w.send(Message::Binary(SyncMsg::Update(upd).encode().into()))
-                    .await
-                    .unwrap();
+                call(
+                    &mut w,
+                    r as i64,
+                    "update_param",
+                    json!({ "node": uids[i], "group": "common", "name": "max_frequency", "value": r as f64 }),
+                )
+                .await;
             }
-            // Barrier: the reply proves all prior binary writes on this socket were applied.
-            call(&mut w, 1000 + i as i64, "serialize", json!({})).await;
         }));
     }
     for h in handles {
@@ -1597,9 +1606,9 @@ async fn many_clients_concurrently_leaf_write_and_all_converge() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn many_clients_concurrently_drag_and_all_converge() {
-    // Stress the POSITION leaf-write path against the re-mirror — the exact interleaving the audit
+    // Stress the POSITION command path against the re-mirror — the exact interleaving the audit
     // found losing drags before upsert_node was made idempotent. N clients each own a node and
-    // hammer ROUNDS position writes concurrently; EACH write triggers a manager re-mirror that
+    // hammer ROUNDS `set_node_pos` commands concurrently; EACH triggers a manager re-mirror that
     // re-asserts EVERY node's pos (upsert_node). With the wholesale pos-map replacement this test
     // would drop drags (a fresh reader would not converge on all N final positions); with the
     // idempotent in-place upsert_node every concurrent drag survives.
@@ -1631,33 +1640,18 @@ async fn many_clients_concurrently_drag_and_all_converge() {
             let (mut w, _) = connect_async(format!("{base}/control")).await.unwrap();
             let _ = recv_text(&mut w).await;
             let _ = recv_binary(&mut w).await;
-            let mut doc = GraphDoc::new();
-            w.send(Message::Binary(doc.sync_hello().into())).await.unwrap();
-            tokio::time::timeout(Duration::from_secs(10), async {
-                loop {
-                    let b = recv_binary(&mut w).await;
-                    if let Some(m) = SyncMsg::decode(&b) {
-                        doc.on_sync(m);
-                    }
-                    if doc.node_ids().contains(&uids[i]) {
-                        return;
-                    }
-                }
-            })
-            .await
-            .expect("writer replica learns its node");
-
-            // Ramp this node's position; each frame is an in-place x/y write onto the pos map the
-            // replica currently holds — the map a concurrent re-mirror must NOT orphan.
+            // Ramp this node's position 1 → ROUNDS via the set_node_pos command op; awaiting each
+            // reply proves the re-mirror re-asserted every node's pos without orphaning a concurrent
+            // writer's drag.
             for r in 1..=ROUNDS {
-                let before = doc.state_vector();
-                doc.write_at(&["nodes", &uids[i], "pos"], Some(&json!({ "x": r as f64, "y": r as f64 })));
-                let upd = doc.diff(&before);
-                w.send(Message::Binary(SyncMsg::Update(upd).encode().into()))
-                    .await
-                    .unwrap();
+                call(
+                    &mut w,
+                    r as i64,
+                    "set_node_pos",
+                    json!({ "node": uids[i], "pos": [r as f64, r as f64] }),
+                )
+                .await;
             }
-            call(&mut w, 1000 + i as i64, "serialize", json!({})).await; // barrier
         }));
     }
     for h in handles {
