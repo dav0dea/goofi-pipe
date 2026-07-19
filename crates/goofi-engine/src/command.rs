@@ -51,6 +51,9 @@ pub struct ScopeRestore {
     pub scope_id: Uid,
     pub name: String,
     pub stubs: IndexMap<StubId, Stub>,
+    /// The scope's parent, captured explicitly (not derived from members) so an EMPTY scope — a
+    /// sub-patch whose members were all deleted — restores at the right place. `None` = ROOT.
+    pub parent: Option<Uid>,
 }
 
 /// One semantic patch edit. Every variant has an exact inverse (see [`Command::execute`]).
@@ -67,6 +70,11 @@ pub enum Command {
         name: Option<String>,
         /// `Some` restores captured params (a `RemoveNode` inverse); `None` uses the type's defaults.
         params: Option<ParamGroups>,
+        /// Captured expression bindings `(group, name, binding)` to re-apply — restores a node's
+        /// live-driven params on a `RemoveNode` inverse. Empty for a user add.
+        exprs: Vec<(String, String, ExprState)>,
+        /// Captured viewer view-state blob to restore; `None` for a user add (defaults to empty).
+        viewers: Option<serde_json::Value>,
     },
     RemoveNode {
         uid: Uid,
@@ -175,7 +183,7 @@ impl Command {
                 Ok((last, Command::Compound(inverses)))
             }
 
-            Command::AddNode { type_name, pos, uid, name, params } => {
+            Command::AddNode { type_name, pos, uid, name, params, exprs, viewers } => {
                 let u = match uid {
                     // Idempotent: the uid is already present (a redo racing another client's add) — reuse it.
                     Some(u) if g.contains(u) => u,
@@ -189,6 +197,14 @@ impl Command {
                     }
                 };
                 let _ = g.set_node_pos(u, pos);
+                // Re-apply captured expression bindings + viewer state (a RemoveNode inverse restores
+                // them; a user add carries none). Bindings are separate node state from param values.
+                for (group, name, e) in &exprs {
+                    let _ = g.set_expression(u, group, name, &e.source, e.enabled, e.triggers);
+                }
+                if let Some(v) = viewers {
+                    let _ = g.set_node_viewers(u, v);
+                }
                 Ok((Outcome::Uid(u), Command::RemoveNode { uid: u }))
             }
 
@@ -309,7 +325,7 @@ impl Command {
                     None => g.group_nodes(&members, pos)?,
                     // Idempotent: the exact scope is already live (a redo racing another client) — reuse it.
                     Some(r) if g.scope(r.scope_id).is_some() => r.scope_id,
-                    Some(r) => g.restore_scope(r.scope_id, r.name, pos, &members, r.stubs)?,
+                    Some(r) => g.restore_scope(r.scope_id, r.name, pos, &members, r.stubs, r.parent)?,
                 };
                 Ok((Outcome::Uid(scope), Command::Expand { scope }))
             }
@@ -322,6 +338,7 @@ impl Command {
                 let name = s.name.clone();
                 let spos = s.pos;
                 let stubs = s.stubs.clone();
+                let sparent = g.scope_of(scope); // the scope's parent, captured before it dissolves
                 let members = g.scope_members(scope);
                 g.expand_instance(scope)?;
                 Ok((
@@ -329,7 +346,7 @@ impl Command {
                     Command::Group {
                         members,
                         pos: spos,
-                        restore: Some(ScopeRestore { scope_id: scope, name, stubs }),
+                        restore: Some(ScopeRestore { scope_id: scope, name, stubs, parent: sparent }),
                     },
                 ))
             }
@@ -490,20 +507,32 @@ fn capture_subtree_restore(g: &Graph, root: Uid) -> Command {
 
     let mut cmds: Vec<Command> = Vec::new();
 
-    // 1. Recreate every leaf (any depth) at ROOT, uid-stable, with its params.
+    // 1. Recreate every leaf (any depth) at ROOT, uid-stable, with its FULL persisted state —
+    //    params, expression bindings, and viewer view-state (not just literal param values).
     for &u in &leaves {
+        let exprs = g
+            .param_bindings(u)
+            .into_iter()
+            .map(|(group, name, source, enabled, triggers)| {
+                (group, name, ExprState { source, enabled, triggers })
+            })
+            .collect();
+        let viewers = g.viewers(u).filter(|v| v.as_object().is_some_and(|m| !m.is_empty())).cloned();
         cmds.push(Command::AddNode {
             type_name: g.type_name(u).unwrap_or("").to_string(),
             pos: g.pos(u).unwrap_or([0.0, 0.0]),
             uid: Some(u),
             name: g.name(u).map(str::to_string),
             params: g.params(u).cloned(),
+            exprs,
+            viewers,
         });
     }
 
     // 2. Recreate every scope INNERMOST-FIRST (a nested scope must exist before its parent groups
-    //    it). `scopes` is root-first, so reverse ⇒ deepest-first. Each Group re-parents its direct
-    //    members into it; the whole subtree lands at ROOT.
+    //    it). `scopes` is root-first, so reverse ⇒ deepest-first. Each carries its captured parent,
+    //    so it lands in place (a nested scope re-nests, an EMPTY scope restores without a []-Group
+    //    choking on `common_parent`).
     for &s in scopes.iter().rev() {
         cmds.push(Command::Group {
             members: g.scope_members(s),
@@ -512,6 +541,7 @@ fn capture_subtree_restore(g: &Graph, root: Uid) -> Command {
                 scope_id: s,
                 name: g.name(s).unwrap_or("").to_string(),
                 stubs: g.scope(s).map(|sc| sc.stubs.clone()).unwrap_or_default(),
+                parent: g.scope_of(s),
             }),
         });
     }
@@ -572,6 +602,8 @@ mod tests {
             uid: None,
             name: None,
             params: None,
+            exprs: vec![],
+            viewers: None,
         }
         .execute(&mut g)
         .unwrap();
@@ -673,6 +705,68 @@ mod tests {
         assert!(g.scope(inner).is_some() && g.contains(b), "nested subtree restored");
         assert_eq!(g.scope_of(inner), Some(outer), "inner re-nested in outer");
         assert_eq!(g.scope_of(b), Some(inner), "b back inside inner");
+    }
+
+    #[test]
+    fn remove_node_inverse_restores_expression_bindings_and_viewers() {
+        // params carry only the literal value — a node's expression BINDINGS and viewer view-state
+        // are separate node state. The RemoveNode inverse must restore them too (else delete→undo
+        // silently freezes a live-driven param to a literal and blanks its viewer).
+        let mut g = Graph::new();
+        let osc = g.add_node("Oscillator", None).unwrap();
+        g.set_expression(osc, "common", "max_frequency", "globals.default_ufreq", true, false).unwrap();
+        g.set_node_viewers(osc, serde_json::json!({ "out": { "kind": "line" } })).unwrap();
+        assert!(g.param_expression(osc, "common", "max_frequency").is_some(), "bound before delete");
+
+        let (_r, inverse) = Command::RemoveNode { uid: osc }.execute(&mut g).unwrap();
+        assert!(!g.contains(osc), "node removed");
+
+        inverse.execute(&mut g).unwrap();
+        let binding = g.param_expression(osc, "common", "max_frequency");
+        assert!(binding.is_some(), "expression binding restored on undo");
+        assert_eq!(binding.unwrap().source, "globals.default_ufreq", "binding source restored");
+        assert_eq!(
+            g.viewers(osc),
+            Some(&serde_json::json!({ "out": { "kind": "line" } })),
+            "viewer view-state restored"
+        );
+    }
+
+    #[test]
+    fn remove_an_empty_instance_is_undoable() {
+        // A sub-patch whose members were all deleted is a live EMPTY scope. Deleting it must still
+        // undo — the restore's []-member Group must not choke on `common_parent([])`.
+        let mut g = Graph::new();
+        let b = g.add_node("Buffer", None).unwrap();
+        let scope = g.group_nodes(&[b], [1.0, 2.0]).unwrap();
+        Command::RemoveNode { uid: b }.execute(&mut g).unwrap(); // empty the scope
+        assert!(g.scope(scope).is_some() && g.scope_members(scope).is_empty(), "live empty scope");
+
+        let (_r, inverse) = Command::RemoveNode { uid: scope }.execute(&mut g).unwrap();
+        assert!(g.scope(scope).is_none(), "empty scope deleted");
+        inverse.execute(&mut g).unwrap(); // must NOT error 'group: empty selection'
+        assert!(g.scope(scope).is_some() && g.scope_members(scope).is_empty(), "empty scope restored");
+        assert_eq!(g.pos(scope), Some([1.0, 2.0]), "pos restored");
+    }
+
+    #[test]
+    fn remove_instance_with_an_empty_nested_scope_is_undoable() {
+        // A deleted subtree can contain an empty nested scope; the whole delete must still undo.
+        let mut g = Graph::new();
+        let a = g.add_node("Oscillator", None).unwrap();
+        let b = g.add_node("Buffer", None).unwrap();
+        let inner = g.group_nodes(&[b], [0.0, 0.0]).unwrap();
+        let outer = g.group_nodes(&[a, inner], [0.0, 0.0]).unwrap();
+        Command::RemoveNode { uid: b }.execute(&mut g).unwrap(); // empty the inner scope
+        assert!(g.scope(inner).is_some() && g.scope_members(inner).is_empty(), "live empty inner scope");
+
+        let (_r, inverse) = Command::RemoveNode { uid: outer }.execute(&mut g).unwrap();
+        assert!(g.scope(outer).is_none() && g.scope(inner).is_none(), "subtree gone");
+        inverse.execute(&mut g).unwrap();
+        assert!(g.scope(outer).is_some() && g.scope(inner).is_some(), "both scopes restored");
+        assert_eq!(g.scope_of(inner), Some(outer), "inner re-nested in outer");
+        assert!(g.scope_members(inner).is_empty(), "inner restored empty");
+        assert_eq!(g.scope_of(a), Some(outer), "a restored in outer");
     }
 
     #[test]
@@ -871,7 +965,15 @@ mod tests {
     // ── CommandHistory ───────────────────────────────────────────────────────────────────────────
 
     fn add_node(name: &str) -> Command {
-        Command::AddNode { type_name: name.into(), pos: [0.0, 0.0], uid: None, name: None, params: None }
+        Command::AddNode {
+            type_name: name.into(),
+            pos: [0.0, 0.0],
+            uid: None,
+            name: None,
+            params: None,
+            exprs: vec![],
+            viewers: None,
+        }
     }
 
     #[test]

@@ -973,14 +973,19 @@ impl Graph {
         pos: [f64; 2],
         members: &[Uid],
         stubs: IndexMap<subpatch::StubId, subpatch::Stub>,
+        parent: Option<Uid>,
     ) -> Result<Uid, String> {
         if self.scopes.contains_key(&scope_id) {
             return Err(format!("restore_scope: scope {scope_id} already live"));
         }
-        let parent = self.common_parent(members)?;
+        // The parent is captured explicitly (not derived from members via `common_parent`), so an
+        // EMPTY scope restores fine and a subtree restore need not thread parentage through member
+        // placement. Re-tag only members that actually exist (a redo-race may have dropped one).
         self.scopes.insert(scope_id, subpatch::Scope { name, pos, stubs });
         for &m in members {
-            self.set_member_scope(m, Some(scope_id));
+            if self.nodes.contains_key(&m) || self.scopes.contains_key(&m) {
+                self.set_member_scope(m, Some(scope_id));
+            }
         }
         self.scope_of.insert(scope_id, parent);
         Ok(scope_id)
@@ -1341,6 +1346,23 @@ impl Graph {
             triggers_process: b.triggers_process,
             error: b.error.clone(),
         })
+    }
+
+    /// Every expression binding on a node as `(group, name, source, enabled, triggers)` — the
+    /// bindings a delete's inverse must re-apply (params alone carry only the literal value, so
+    /// without this a restored node loses its live-driven params).
+    pub fn param_bindings(&self, uid: Uid) -> Vec<(String, String, String, bool, bool)> {
+        self.nodes
+            .get(&uid)
+            .map(|e| {
+                e.bindings
+                    .iter()
+                    .map(|(k, b)| {
+                        (k.group.clone(), k.name.clone(), b.source.clone(), b.enabled, b.triggers_process)
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
     /// The current values of the params driven by an ENABLED expression binding on `uid`,

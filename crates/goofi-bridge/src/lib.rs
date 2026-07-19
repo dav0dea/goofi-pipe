@@ -549,6 +549,8 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
                     uid: restore,
                     name: (!name.is_empty()).then_some(name),
                     params: None,
+                    exprs: vec![],
+                    viewers: None,
                 };
                 let uid = match state.history.lock().unwrap().apply(&mut g, &session, cmd)? {
                     goofi_engine::Outcome::Uid(u) => u,
