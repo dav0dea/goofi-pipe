@@ -1245,13 +1245,6 @@ impl Graph {
         Ok(id)
     }
 
-    /// Point a stub at an inner member slot (one stub per inner slot). `inner_node` must be a direct
-    /// member of `scope`; the stub's dtype is resolved from that slot. A thin wrapper over
-    /// [`set_stub_inner`] (the canonical wire/unwire the command layer uses).
-    pub fn wire_boundary(&mut self, scope: Uid, stub: &str, inner_node: Uid, inner_slot: &str) -> Result<(), String> {
-        self.set_stub_inner(scope, stub, Some((inner_node, inner_slot.to_string())))
-    }
-
     /// Set (`Some`) or clear (`None`) a stub's inner target — the canonical wire/unwire. Wiring
     /// validates membership + one-stub-per-inner-slot and resolves the port dtype from the slot;
     /// unwiring just clears it. The command layer captures the old inner for the exact inverse.
@@ -1816,9 +1809,9 @@ impl Graph {
         }
 
         let root = json!({ "nodes": Value::Object(nodes), "links": links, "scopes": Value::Object(scope_map) });
-        // Globals (system + user) as an ORDERED array of `{name, value, type}` — a serde_json::Map is
-        // a BTreeMap here (no `preserve_order`), which would alphabetize keys and silently lose the
-        // observable creation/system-first order. On load, entries `set` existing system globals and
+        // Globals (system + user) as an ORDERED array of `{name, value, type}` — order is observable
+        // (panel / eval iteration), and a keyed serde_json::Map (a BTreeMap here) would alphabetize
+        // the keys and silently lose it. On load, entries `set` existing system globals and
         // `add` user ones in file order, then `reassert_system` back-fills; so a system global always
         // round-trips and an older patch simply picks up any new system default.
         let globals: Vec<Value> = self
@@ -4227,12 +4220,12 @@ mod tests {
         assert_eq!(g.scope(s).unwrap().stubs.len(), before + 1, "stub added");
         assert!(g.scope(s).unwrap().stubs[&stub].inner.is_none(), "born unwired");
 
-        g.wire_boundary(s, &stub, a, "in").unwrap();
+        g.set_stub_inner(s, &stub, Some((a, "in".to_string()))).unwrap();
         assert_eq!(g.resolve_stub(s, &stub), Some((a, "in".to_string())), "wired stub resolves to a.in");
 
         // One stub per inner slot: a.in is exposed by `stub`, a second wiring is rejected.
         let extra = g.add_boundary(s, Dir::In, goofi_core::SlotType::Array, [0.0, 0.0]).unwrap();
-        let err = g.wire_boundary(s, &extra, a, "in").unwrap_err();
+        let err = g.set_stub_inner(s, &extra, Some((a, "in".to_string()))).unwrap_err();
         assert!(err.contains("already exposed"), "one-stub-per-inner enforced; got {err}");
 
         // rename keeps the StubId (external wires survive), only the label changes.
@@ -4242,7 +4235,7 @@ mod tests {
 
         // wiring a non-member is rejected.
         let outsider = g.add_node("_TestConst", None).unwrap();
-        assert!(g.wire_boundary(s, &stub, outsider, "in").is_err(), "non-member rejected");
+        assert!(g.set_stub_inner(s, &stub, Some((outsider, "in".to_string()))).is_err(), "non-member rejected");
     }
 
     #[test]

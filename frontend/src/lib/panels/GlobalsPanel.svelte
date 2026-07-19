@@ -5,8 +5,9 @@
 
      System globals (e.g. `default_ufreq`) are editable in value but locked for
      delete/rename (badged 🔒); user globals can be added, renamed, retyped-by-recreation,
-     and removed. All edits are client leaf-writes into the doc — the manager applies each
-     via `apply_global_change` and mirrors it back. -->
+     and removed. All edits are command RPCs (add_global / set_global / rename_global /
+     remove_global); the manager applies each and mirrors the result back into the doc,
+     which this panel reads. -->
 <script lang="ts">
 	import type { PanelProps } from '$lib/workspace/registry';
 	import { graph } from '$lib/stores/graph.svelte';

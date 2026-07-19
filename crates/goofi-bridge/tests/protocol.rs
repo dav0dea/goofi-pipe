@@ -1227,9 +1227,7 @@ async fn group_and_expand_project_the_instance_forest() {
     );
 
     // Expand restores both members to ROOT → the instance drops out of the doc forest, leaves remain.
-    let ex = call(&mut ws, 5, "expand_instance", json!({ "inst_id": inst })).await;
-    let restored = ex["result"]["restored"].as_array().unwrap();
-    assert_eq!(restored.len(), 2, "both members restored");
+    call(&mut ws, 5, "expand_instance", json!({ "inst_id": inst })).await;
     // Anchor on osc being present (a completed sync) — an "absence" predicate would be satisfied by
     // the empty replica before the data frame lands. After expand: 2 leaves, 0 instances.
     let doc2 = sync_replica(&mut ws, |d| d.node_ids().iter().any(|u| *u == osc) && d.instance_ids().is_empty()).await;

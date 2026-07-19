@@ -812,15 +812,12 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
             }
             "expand_instance" => {
                 let inst = parse_uid(&payload, "inst_id")?;
-                // Capture the members BEFORE the command dissolves the scope — the legacy client
-                // expand executor (until Task B3) reads `restored` to record its own inverse.
-                let restored = g.scope_members(inst);
                 state
                     .history
                     .lock()
                     .unwrap()
                     .apply(&mut g, &session, goofi_engine::Command::Expand { scope: inst })?;
-                Ok(json!({ "restored": restored.iter().map(|u| u.to_hex()).collect::<Vec<_>>() }))
+                Ok(json!({ "ok": true }))
             }
             "add_boundary" => {
                 let inst = parse_uid(&payload, "inst_id")?;

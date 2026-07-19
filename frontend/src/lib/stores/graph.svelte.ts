@@ -656,7 +656,7 @@ export class GraphStore {
 
 	/** Dissolve a sub-patch instance back into its member nodes. */
 	async expandInstance(instId: string): Promise<void> {
-		await this.ctl.call<{ restored: string[] }>('expand_instance', { inst_id: instId });
+		await this.ctl.call('expand_instance', { inst_id: instId });
 		this._recordGraphCmd('Ungroup');
 	}
 
