@@ -320,6 +320,26 @@ impl Graph {
         value: Option<goofi_core::globals::GlobalValue>,
     ) -> Result<(), String> {
         self.globals.apply_change(name, value)?;
+        self.invalidate_bindings_reading(name);
+        Ok(())
+    }
+
+    /// Re-add a previously-removed user global at its ORIGINAL ordered position — the
+    /// position-preserving inverse of a delete/rename (order feeds the `.gfi`, mirror, and panel).
+    pub fn insert_global_at(
+        &mut self,
+        name: &str,
+        value: goofi_core::globals::GlobalValue,
+        at: usize,
+    ) -> Result<(), String> {
+        self.globals.add_at(name, value, at)?;
+        self.invalidate_bindings_reading(name);
+        Ok(())
+    }
+
+    /// Force every expression binding that reads global `name` to re-evaluate on the next tick, so a
+    /// producer bound to it re-rates live (only those bindings pay). Shared by the global mutators.
+    fn invalidate_bindings_reading(&mut self, name: &str) {
         for entry in self.nodes.values_mut() {
             for b in entry.bindings.values_mut() {
                 if b.global_refs.iter().any(|g| g == name) {
@@ -327,7 +347,6 @@ impl Graph {
                 }
             }
         }
-        Ok(())
     }
 
     /// Inject the param-expression evaluator (pyo3, from goofi-py). Wired by the CLI at

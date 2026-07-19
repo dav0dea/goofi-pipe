@@ -229,6 +229,26 @@ impl GlobalStore {
         Ok(())
     }
 
+    /// Current ordered position of `name`, if present. The order is observable (it feeds the `.gfi`,
+    /// the CRDT mirror, and the Globals panel), so a delete's inverse captures this to re-add the
+    /// global at its original slot rather than the tail.
+    pub fn index_of(&self, name: &str) -> Option<usize> {
+        self.values.get_index_of(name)
+    }
+
+    /// Add a NEW user global at ordered position `at` (clamped to the current length) — the
+    /// position-preserving re-add used by a delete/rename undo. Same validation as [`Self::add`].
+    pub fn add_at(&mut self, name: &str, value: GlobalValue, at: usize) -> Result<(), String> {
+        if !is_valid_global_name(name) {
+            return Err(format!("invalid global name `{name}`"));
+        }
+        if self.values.contains_key(name) {
+            return Err(format!("global `{name}` already exists"));
+        }
+        self.values.shift_insert(at.min(self.values.len()), name.to_string(), value);
+        Ok(())
+    }
+
     /// Remove a USER global. Errors if the global is system (protected) or absent.
     pub fn remove(&mut self, name: &str) -> Result<(), String> {
         if self.system.contains(name) {

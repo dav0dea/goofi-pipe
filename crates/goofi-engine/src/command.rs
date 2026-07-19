@@ -108,10 +108,14 @@ pub enum Command {
         expr: Option<ExprState>,
     },
     /// Add / edit / remove a global: `Some(value)` upserts, `None` removes. A rename is two of these
-    /// (add-new then remove-old), composed into one undo step via [`Command::Compound`].
+    /// (add-new then remove-old), composed into one undo step via [`Command::Compound`]. `at` is the
+    /// ordered slot to re-add at — `None` for every user-issued mutation (an add appends); `Some(i)`
+    /// only on a delete's captured inverse, so undo restores the global to its original position
+    /// (order is observable via `.gfi`/mirror/panel) rather than the tail.
     EditGlobal {
         name: String,
         value: Option<GlobalValue>,
+        at: Option<usize>,
     },
     /// Re-parent a node or scope into `scope` (`None` = ROOT). The one membership move — used inside
     /// a delete's inverse to restore a member back INSIDE its scope. Inverse re-parents to the old
@@ -334,10 +338,20 @@ impl Command {
                 Ok((Outcome::Ok, Command::EditParam { uid, group, name, value: old_value, expr: old_expr }))
             }
 
-            Command::EditGlobal { name, value } => {
+            Command::EditGlobal { name, value, at } => {
                 let old = g.globals().get(&name).cloned();
-                g.apply_global_change(&name, value)?;
-                Ok((Outcome::Ok, Command::EditGlobal { name, value: old }))
+                let old_index = g.globals().index_of(&name);
+                let was_delete = value.is_none();
+                match (&value, at) {
+                    // Re-add at a captured slot (the inverse of a delete/rename) — preserve order.
+                    (Some(v), Some(i)) if !g.globals().contains(&name) => {
+                        g.insert_global_at(&name, v.clone(), i)?;
+                    }
+                    _ => g.apply_global_change(&name, value)?,
+                }
+                // A delete's inverse re-adds at the removed index; add/edit inverses carry no slot.
+                let inv_at = if was_delete { old_index } else { None };
+                Ok((Outcome::Ok, Command::EditGlobal { name, value: old, at: inv_at }))
             }
 
             Command::SetScope { uid, scope } => {
@@ -1043,13 +1057,13 @@ mod tests {
     fn edit_global_covers_add_edit_remove_with_inverses() {
         let mut g = Graph::new();
         // Add a fresh user global; the inverse removes it (old was absent).
-        let (_r, undo_add) = Command::EditGlobal { name: "subj".into(), value: Some(GlobalValue::Str("P01".into())) }
+        let (_r, undo_add) = Command::EditGlobal { name: "subj".into(), value: Some(GlobalValue::Str("P01".into())), at: None }
             .execute(&mut g)
             .unwrap();
         assert_eq!(g.globals().get("subj"), Some(&GlobalValue::Str("P01".into())));
 
         // Edit it; the inverse restores the prior value.
-        let (_r, undo_edit) = Command::EditGlobal { name: "subj".into(), value: Some(GlobalValue::Str("P02".into())) }
+        let (_r, undo_edit) = Command::EditGlobal { name: "subj".into(), value: Some(GlobalValue::Str("P02".into())), at: None }
             .execute(&mut g)
             .unwrap();
         undo_edit.execute(&mut g).unwrap();
@@ -1067,8 +1081,8 @@ mod tests {
         g.apply_global_change("subj", Some(GlobalValue::Int(7))).unwrap();
 
         let rename = Command::Compound(vec![
-            Command::EditGlobal { name: "subject".into(), value: Some(GlobalValue::Int(7)) },
-            Command::EditGlobal { name: "subj".into(), value: None },
+            Command::EditGlobal { name: "subject".into(), value: Some(GlobalValue::Int(7)), at: None },
+            Command::EditGlobal { name: "subj".into(), value: None, at: None },
         ]);
         let (_r, inverse) = rename.execute(&mut g).unwrap();
         assert_eq!(g.globals().get("subj"), None);
@@ -1077,6 +1091,52 @@ mod tests {
         inverse.execute(&mut g).unwrap();
         assert_eq!(g.globals().get("subject"), None);
         assert_eq!(g.globals().get("subj"), Some(&GlobalValue::Int(7)), "one undo restores the old name + value");
+    }
+
+    /// The ordered list of global names — the projection that feeds the `.gfi`, the CRDT mirror, and
+    /// the Globals panel (so its order is observable and must survive an undo).
+    fn global_order(g: &Graph) -> Vec<String> {
+        g.globals().entries().map(|(k, _, _)| k.to_string()).collect()
+    }
+
+    #[test]
+    fn edit_global_delete_undo_restores_the_ordered_position() {
+        // Deleting a MIDDLE global and undoing must return it to its original slot, not append it at
+        // the tail (globals are ordered; the order is observable).
+        let mut g = Graph::new();
+        g.apply_global_change("a", Some(GlobalValue::Int(1))).unwrap();
+        g.apply_global_change("gain", Some(GlobalValue::Int(2))).unwrap();
+        g.apply_global_change("b", Some(GlobalValue::Int(3))).unwrap();
+        let before = global_order(&g);
+
+        let (_r, inverse) =
+            Command::EditGlobal { name: "gain".into(), value: None, at: None }.execute(&mut g).unwrap();
+        assert!(!g.globals().contains("gain"), "deleted");
+
+        inverse.execute(&mut g).unwrap();
+        assert_eq!(global_order(&g), before, "gain restored to its original slot, not the tail");
+    }
+
+    #[test]
+    fn rename_global_undo_restores_the_ordered_position() {
+        // A rename is the bridge's Compound [add-new, remove-old]. Undoing it must put the old name
+        // back at its original slot (the remove-old inverse captures the removed index).
+        let mut g = Graph::new();
+        g.apply_global_change("a", Some(GlobalValue::Int(1))).unwrap();
+        g.apply_global_change("gain", Some(GlobalValue::Int(2))).unwrap();
+        g.apply_global_change("b", Some(GlobalValue::Int(3))).unwrap();
+        let before = global_order(&g);
+
+        let (_r, inverse) = Command::Compound(vec![
+            Command::EditGlobal { name: "gain2".into(), value: Some(GlobalValue::Int(2)), at: None },
+            Command::EditGlobal { name: "gain".into(), value: None, at: None },
+        ])
+        .execute(&mut g)
+        .unwrap();
+        assert!(g.globals().contains("gain2") && !g.globals().contains("gain"), "renamed");
+
+        inverse.execute(&mut g).unwrap();
+        assert_eq!(global_order(&g), before, "undo restores gain to its original slot");
     }
 
     // ── CommandHistory ───────────────────────────────────────────────────────────────────────────

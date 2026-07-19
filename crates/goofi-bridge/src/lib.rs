@@ -725,7 +725,7 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
                 state.history.lock().unwrap().apply(
                     &mut g,
                     &session,
-                    goofi_engine::Command::EditGlobal { name, value: Some(value) },
+                    goofi_engine::Command::EditGlobal { name, value: Some(value), at: None },
                 )?;
                 Ok(json!({ "ok": true }))
             }
@@ -743,7 +743,7 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
                 state.history.lock().unwrap().apply(
                     &mut g,
                     &session,
-                    goofi_engine::Command::EditGlobal { name, value: Some(value) },
+                    goofi_engine::Command::EditGlobal { name, value: Some(value), at: None },
                 )?;
                 Ok(json!({ "ok": true }))
             }
@@ -752,7 +752,7 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
                 state.history.lock().unwrap().apply(
                     &mut g,
                     &session,
-                    goofi_engine::Command::EditGlobal { name, value: None },
+                    goofi_engine::Command::EditGlobal { name, value: None, at: None },
                 )?;
                 Ok(json!({ "ok": true }))
             }
@@ -777,8 +777,8 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
                     &mut g,
                     &session,
                     goofi_engine::Command::Compound(vec![
-                        goofi_engine::Command::EditGlobal { name: new, value: Some(value) },
-                        goofi_engine::Command::EditGlobal { name: old, value: None },
+                        goofi_engine::Command::EditGlobal { name: new, value: Some(value), at: None },
+                        goofi_engine::Command::EditGlobal { name: old, value: None, at: None },
                     ]),
                 )?;
                 Ok(json!({ "ok": true }))
