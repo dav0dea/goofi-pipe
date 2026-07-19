@@ -5,23 +5,15 @@ import {
 	linksArray,
 	nodeView,
 	nodeViews,
-	paramValue,
 	setParamExpr,
 	linkViews,
 	instancesMap,
 	instanceView,
 	instanceViews,
-	setNodePos,
-	setViewers,
-	viewersJson,
 	docParams,
 	globalsMap,
 	globalViews,
-	isValidGlobalName,
-	setGlobalValue,
-	addGlobal,
-	removeGlobal,
-	renameGlobal
+	isValidGlobalName
 } from './graphDoc';
 
 /** Build a doc in the exact shape the Rust `GraphDoc` mirror writes. */
@@ -82,9 +74,9 @@ describe('graphDoc readers', () => {
 
 	it('reads param values and expression sources', () => {
 		const doc = seedDoc();
-		expect(paramValue(doc, 'a', 'common', 'max_frequency')).toBe(30);
-		expect(paramValue(doc, 'a', 'oscillator', 'waveform')).toBe('sine');
-		expect(paramValue(doc, 'a', 'common', 'nope')).toBeUndefined();
+		expect(docParams(doc, 'a').common?.max_frequency?.value).toBe(30);
+		expect(docParams(doc, 'a').oscillator?.waveform?.value).toBe('sine');
+		expect(docParams(doc, 'a').common?.nope?.value).toBeUndefined();
 		expect(docParams(doc, 'a').oscillator?.waveform?.expr?.source).toBe("nd('lfo')");
 		expect(docParams(doc, 'a').common?.max_frequency?.expr?.source).toBeUndefined();
 	});
@@ -168,46 +160,7 @@ describe('graphDoc readers', () => {
 			.get('common')!
 			.get('max_frequency')!
 			.set('value', 42);
-		expect(paramValue(doc, 'a', 'common', 'max_frequency')).toBe(42);
-	});
-});
-
-describe('graphDoc.setNodePos — committed-drag leaf write', () => {
-	it('writes a node position in place and the reader reflects it', () => {
-		const doc = seedDoc();
-		expect(setNodePos(doc, 'a', [111, 222])).toBe(true);
-		expect(nodeView(doc, 'a')!.pos).toEqual([111, 222]);
-		// Identity fields are untouched — only pos moved.
-		expect(nodeView(doc, 'a')!.type).toBe('Oscillator');
-	});
-
-	it('writes a sub-patch instance box position in place', () => {
-		const doc = new Y.Doc();
-		const inst = new Y.Map<unknown>();
-		inst.set('name', 'subpatch0');
-		inst.set('parent', '__root__');
-		instancesMap(doc).set('i1', inst);
-
-		expect(setNodePos(doc, 'i1', [30, 40])).toBe(true);
-		expect(instanceView(doc, 'i1')!.pos).toEqual([30, 40]);
-	});
-
-	it('no-ops (returns false) when the uid is in neither map — never mint a phantom', () => {
-		const doc = seedDoc();
-		expect(setNodePos(doc, 'ghost', [1, 2])).toBe(false);
-		expect(nodesMap(doc).get('ghost')).toBeUndefined();
-		expect(instancesMap(doc).get('ghost')).toBeUndefined();
-	});
-
-	it('is idempotent — re-writing the current position creates no new struct', () => {
-		const doc = seedDoc();
-		setNodePos(doc, 'a', [111, 222]);
-		// The state vector counts each client's struct clock; a real write bumps it, a guarded
-		// no-op leaves it untouched. (An update payload can't be used — it always carries the
-		// doc's full delete set, so it's non-empty once any value has been overwritten.)
-		const sv = Y.encodeStateVector(doc);
-		setNodePos(doc, 'a', [111, 222]);
-		expect(Y.encodeStateVector(doc)).toEqual(sv);
+		expect(docParams(doc, 'a').common?.max_frequency?.value).toBe(42);
 	});
 });
 
@@ -223,7 +176,7 @@ describe('graphDoc.setParamExpr — expression-binding leaf write', () => {
 			triggers: false
 		});
 		// The committed value is untouched — only the binding was written.
-		expect(paramValue(doc, 'a', 'common', 'max_frequency')).toBe(30);
+		expect(docParams(doc, 'a').common?.max_frequency?.value).toBe(30);
 	});
 
 	it('clears a binding when passed null', () => {
@@ -246,30 +199,6 @@ describe('graphDoc.setParamExpr — expression-binding leaf write', () => {
 		setParamExpr(doc, 'a', 'common', 'max_frequency', b);
 		const sv = Y.encodeStateVector(doc);
 		setParamExpr(doc, 'a', 'common', 'max_frequency', b);
-		expect(Y.encodeStateVector(doc)).toEqual(sv);
-	});
-});
-
-describe('graphDoc.setViewers — view-state leaf write', () => {
-	it('writes a node viewer blob and reads it back', () => {
-		const doc = seedDoc();
-		const blob = { out: { collapsed: false, kind: 'line', settings: {} } };
-		expect(setViewers(doc, 'a', blob)).toBe(true);
-		expect(viewersJson(doc, 'a')).toEqual(blob);
-	});
-
-	it('no-ops (returns false) when the node is absent — never mint a phantom', () => {
-		const doc = seedDoc();
-		expect(setViewers(doc, 'ghost', { out: {} })).toBe(false);
-		expect(nodesMap(doc).get('ghost')).toBeUndefined();
-	});
-
-	it('is idempotent — re-writing the same blob creates no new struct', () => {
-		const doc = seedDoc();
-		const blob = { out: { collapsed: true, kind: 'spectrum', settings: { db: -60 } } };
-		setViewers(doc, 'a', blob);
-		const sv = Y.encodeStateVector(doc);
-		setViewers(doc, 'a', blob);
 		expect(Y.encodeStateVector(doc)).toEqual(sv);
 	});
 });
@@ -309,53 +238,4 @@ describe('graphDoc globals', () => {
 		expect(isValidGlobalName('globals')).toBe(false);
 	});
 
-	it('edits an existing value in place, keeping type + system', () => {
-		const doc = new Y.Doc();
-		seedGlobals(doc);
-		expect(setGlobalValue(doc, 'default_ufreq', 45)).toBe(true);
-		expect(globalViews(doc)[0]).toEqual({ name: 'default_ufreq', value: 45, type: 'float', system: true });
-		// Absent global → no-op (never mint via this path).
-		expect(setGlobalValue(doc, 'ghost', 1)).toBe(false);
-	});
-
-	it('adds a new user global, refusing collisions + invalid names', () => {
-		const doc = new Y.Doc();
-		seedGlobals(doc);
-		expect(addGlobal(doc, 'gain', 2.5, 'float')).toBe(true);
-		expect(globalViews(doc).find((v) => v.name === 'gain')).toEqual({
-			name: 'gain',
-			value: 2.5,
-			type: 'float',
-			system: false
-		});
-		expect(addGlobal(doc, 'default_ufreq', 1, 'float')).toBe(false); // collision (system)
-		expect(addGlobal(doc, 'subject', 'x', 'string')).toBe(false); // collision (user)
-		expect(addGlobal(doc, '1bad', 0, 'int')).toBe(false); // invalid name
-	});
-
-	it('removes a user global but refuses a system one', () => {
-		const doc = new Y.Doc();
-		seedGlobals(doc);
-		expect(removeGlobal(doc, 'subject')).toBe(true);
-		expect(globalsMap(doc).has('subject')).toBe(false);
-		expect(removeGlobal(doc, 'default_ufreq')).toBe(false); // system, protected
-		expect(globalsMap(doc).has('default_ufreq')).toBe(true);
-	});
-
-	it('renames a user global (delete+add, carrying value+type), refusing bad cases', () => {
-		const doc = new Y.Doc();
-		seedGlobals(doc);
-		addGlobal(doc, 'gain', 2.0, 'float');
-		expect(renameGlobal(doc, 'gain', 'gain_a')).toBe(true);
-		expect(globalsMap(doc).has('gain')).toBe(false);
-		expect(globalViews(doc).find((v) => v.name === 'gain_a')).toEqual({
-			name: 'gain_a',
-			value: 2.0,
-			type: 'float',
-			system: false
-		});
-		expect(renameGlobal(doc, 'default_ufreq', 'x')).toBe(false); // system
-		expect(renameGlobal(doc, 'gain_a', 'subject')).toBe(false); // collision
-		expect(renameGlobal(doc, 'gain_a', '1bad')).toBe(false); // invalid
-	});
 });

@@ -83,18 +83,6 @@ export function nodeViews(doc: Y.Doc): NodeView[] {
 	return out;
 }
 
-/** A single param's current value (`number | string | boolean`), or `undefined`. */
-export function paramValue(
-	doc: Y.Doc,
-	uid: string,
-	group: string,
-	name: string
-): number | string | boolean | undefined {
-	const entry = paramEntry(doc, uid, group, name);
-	const v = entry?.get('value');
-	return typeof v === 'number' || typeof v === 'string' || typeof v === 'boolean' ? v : undefined;
-}
-
 export interface ParamExpr {
 	source: string;
 	enabled: boolean;
@@ -133,22 +121,11 @@ export function docParams(doc: Y.Doc, uid: string): DocParamLeaves {
 	return out;
 }
 
-function paramEntry(
-	doc: Y.Doc,
-	uid: string,
-	group: string,
-	name: string
-): Y.Map<unknown> | undefined {
-	const params = nodesMap(doc).get(uid)?.get('params') as Y.Map<Y.Map<unknown>> | undefined;
-	const g = params?.get(group) as Y.Map<Y.Map<unknown>> | undefined;
-	return g?.get(name) as Y.Map<unknown> | undefined;
-}
-
-/** Write a committed param value into the doc IN PLACE, matching the Rust `GraphDoc::set_param`
- * structure (`nodes[uid].params[group][name].value`) so the manager's `apply_client_update`
- * detects and applies it. A client leaf-write (§4.1). No-op if the node is not in this replica
- * yet (never mint a phantom node — the diff would create a conflicting node on the manager).
- * Returns whether the write landed. */
+/** Write a param value into the doc IN PLACE at `nodes[uid].params[group][name].value`, matching
+ * the Rust `GraphDoc` mirror structure. The browser replica is read-only in production (the manager
+ * owns all writes); this remains a TEST-SEED double, letting store tests write a value into the doc
+ * to simulate the manager's mirror. No-op (returns false) if the node is absent — never mint a
+ * phantom. Returns whether the write landed. */
 export function setParamValue(
 	doc: Y.Doc,
 	uid: string,
@@ -174,7 +151,7 @@ function getOrInsertMap(parent: Y.Map<unknown>, key: string): Y.Map<unknown> {
 }
 
 /** The `nodes[uid].params[group][name]` entry map, get-or-inserted, or `undefined` if the node is
- * absent from this replica (never mint a phantom node — the diff would create a conflicting node). */
+ * absent from this replica (never mint a phantom node). Backs the test-seed `setParam*` doubles. */
 function paramEntryForWrite(
 	doc: Y.Doc,
 	uid: string,
@@ -186,12 +163,12 @@ function paramEntryForWrite(
 	return getOrInsertMap(getOrInsertMap(getOrInsertMap(node, 'params'), group), name);
 }
 
-/** Write (or clear) a param's expression binding into the doc IN PLACE, matching the Rust
- * `GraphDoc::set_param` expr structure (`…params[group][name].expr = {source, enabled, triggers}`),
- * so the manager's `apply_client_update` detects it and applies it via `set_member_expression`. A
- * client leaf-write (§4). `null` clears the binding. No-op if the node is absent. Returns whether it
- * landed. The runtime `expression_error` is NOT in the doc — it rides the `state_update` echo the
- * manager emits after applying, exactly as the retired `set_expression` RPC did. */
+/** Write (or clear) a param's expression binding into the doc IN PLACE at
+ * `…params[group][name].expr = {source, enabled, triggers}`, matching the Rust `GraphDoc` mirror.
+ * The browser replica is read-only in production (the manager owns all writes); this remains a
+ * TEST-SEED double, letting store tests write a binding into the doc to simulate the manager's
+ * mirror. `null` clears the binding. No-op (returns false) if the node is absent — never mint a
+ * phantom. Returns whether it landed. */
 export function setParamExpr(
 	doc: Y.Doc,
 	uid: string,
@@ -212,26 +189,6 @@ export function setParamExpr(
 	return true;
 }
 
-/** Write a committed node/instance position `[x, y]` into the doc IN PLACE, matching the Rust
- * `GraphDoc::set_node_pos` / `set_pos_if_changed` structure (`{uid}.pos.{x,y}`), so the manager's
- * `apply_client_update` detects the move and applies it via `set_member_pos`. A client leaf-write
- * (§4) committed on drag-stop — live drag stays local (Svelte Flow), never the doc. The uid is a
- * real node OR a sub-patch instance box (both carry a top-level `pos`). No-op if the uid is in
- * neither map (never mint a phantom). Idempotent: re-writing the current position writes nothing.
- * Returns whether the write landed. */
-export function setNodePos(doc: Y.Doc, uid: string, pos: [number, number]): boolean {
-	const target = nodesMap(doc).get(uid) ?? instancesMap(doc).get(uid);
-	if (!target) return false;
-	let p = target.get('pos') as Y.Map<unknown> | undefined;
-	if (!p) {
-		p = new Y.Map<unknown>();
-		target.set('pos', p);
-	}
-	if (p.get('x') !== pos[0]) p.set('x', pos[0]);
-	if (p.get('y') !== pos[1]) p.set('y', pos[1]);
-	return true;
-}
-
 /** A node's opaque per-slot viewer blob (`{slot: {collapsed, kind, settings}}`), or `undefined`. */
 export function viewersJson(doc: Y.Doc, uid: string): unknown {
 	const v = nodesMap(doc).get(uid)?.get('viewers');
@@ -241,22 +198,6 @@ export function viewersJson(doc: Y.Doc, uid: string): unknown {
 	} catch {
 		return undefined;
 	}
-}
-
-/** Write a node's opaque per-slot viewer blob into the doc IN PLACE as a JSON string, matching the
- * Rust `GraphDoc::set_viewers` representation, so the manager's `apply_client_update` detects it
- * and persists it (set_node_viewers → .gfi). A client leaf-write (§4) — the view-state is soft,
- * client-originated, human-rate (debounced on the caller). No-op if the node is absent (never mint
- * a phantom). Idempotent: re-writing the same blob writes nothing. Returns whether it landed.
- *
- * The blob stays an opaque STRING for now (typed per-slot G4 comes with multi-user): the manager's
- * `set_viewers` guard parse-compares, so a differently-ordered write is accepted as-is. */
-export function setViewers(doc: Y.Doc, uid: string, viewers: unknown): boolean {
-	const node = nodesMap(doc).get(uid);
-	if (!node) return false;
-	const s = JSON.stringify(viewers ?? {});
-	if (node.get('viewers') !== s) node.set('viewers', s);
-	return true;
 }
 
 /** The `instances` root map (the sub-patch forest). */
@@ -372,63 +313,4 @@ export function globalViews(doc: Y.Doc): GlobalView[] {
  * rename/add on this so an illegal name never reaches the doc (the manager would reject it anyway). */
 export function isValidGlobalName(name: string): boolean {
 	return name !== 'globals' && /^[A-Za-z_][A-Za-z0-9_]*$/.test(name);
-}
-
-/** Edit an EXISTING global's value in place (system or user), matching the Rust globals mirror so the
- * manager's `apply_client_update` detects it and routes it through `apply_global_change`. Leaves
- * `type`/`system` untouched (a system global stays system, its type stable). No-op if the global is
- * absent (never mint via this path — use `addGlobal`). Idempotent. Returns whether it landed. */
-export function setGlobalValue(doc: Y.Doc, name: string, value: number | string | boolean): boolean {
-	const entry = globalsMap(doc).get(name);
-	if (!entry) return false;
-	if (entry.get('value') !== value) entry.set('value', value);
-	return true;
-}
-
-/** Mint a NEW user global (the panel's "add row"). Refuses an invalid name or a collision with an
- * existing global (system or user). The manager's diff sees the new top-level entry and adds it via
- * `apply_global_change(name, Some(..))`. Returns whether it landed. */
-export function addGlobal(
-	doc: Y.Doc,
-	name: string,
-	value: number | string | boolean,
-	type: GlobalType
-): boolean {
-	const g = globalsMap(doc);
-	if (!isValidGlobalName(name) || g.has(name)) return false;
-	const entry = new Y.Map<unknown>();
-	entry.set('value', value);
-	entry.set('type', type);
-	entry.set('system', false);
-	g.set(name, entry);
-	return true;
-}
-
-/** Remove a USER global. Refuses a system global (the panel also locks it; the manager rejects it
- * regardless) or an absent one. Returns whether it landed. */
-export function removeGlobal(doc: Y.Doc, name: string): boolean {
-	const g = globalsMap(doc);
-	const entry = g.get(name);
-	if (!entry || entry.get('system') === true) return false;
-	g.delete(name);
-	return true;
-}
-
-/** Rename a USER global, carrying its value + type to the new key. A CRDT map can't rename in place,
- * so this is delete-old + add-new — the manager sees a remove + an add, exactly the spec's "no rename
- * cascade": a stale `globals.<old>` then throws the natural missing-key error at eval time. Refuses a
- * system global, an invalid/colliding new name, or an absent old one. Returns whether it landed. */
-export function renameGlobal(doc: Y.Doc, oldName: string, newName: string): boolean {
-	const g = globalsMap(doc);
-	const entry = g.get(oldName);
-	if (!entry || entry.get('system') === true) return false;
-	if (oldName === newName) return true;
-	if (!isValidGlobalName(newName) || g.has(newName)) return false;
-	const next = new Y.Map<unknown>();
-	next.set('value', entry.get('value'));
-	next.set('type', entry.get('type'));
-	next.set('system', false);
-	g.set(newName, next);
-	g.delete(oldName);
-	return true;
 }
