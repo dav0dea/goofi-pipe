@@ -92,14 +92,16 @@ NONE_INDEX = (1 << 64) - 1
 # Transport body: [f64 sfreq (NaN=none)][u64 index (MAX=none)][u8 ndim][u8 dtype_len][dtype]
 # [ndim x u32 shape][raw bytes] — matches goofi_codec::{encode,decode}_array_body + a typed prefix.
 def decode_body(body):
+    # `body` is a READ-ONLY memoryview over the shared-memory sample. The array is a numpy
+    # VIEW straight into it (no copy); the sample is held for the duration of process(). A
+    # node must not stash `x` across ticks — the buffer is released after the response is sent.
     sfreq = struct.unpack('<d', body[0:8])[0]
     index = struct.unpack('<Q', body[8:16])[0]
-    ab = body[16:]
-    ndim = ab[0]; dl = ab[1]; off = 2
-    dtype = ab[off:off + dl].decode(); off += dl
-    shape = [struct.unpack('<I', ab[off + 4 * i:off + 4 * i + 4])[0] for i in range(ndim)]
+    ndim = body[16]; dl = body[17]; off = 18
+    dtype = bytes(body[off:off + dl]).decode(); off += dl
+    shape = [struct.unpack('<I', body[off + 4 * i:off + 4 * i + 4])[0] for i in range(ndim)]
     off += 4 * ndim
-    arr = np.frombuffer(ab[off:], dtype=np.dtype(dtype)).reshape(shape).copy()
+    arr = np.frombuffer(body[off:], dtype=np.dtype(dtype)).reshape(shape)
     meta = {'sfreq': None if sfreq != sfreq else sfreq,
             'index': None if index == NONE_INDEX else index}
     return arr, meta
@@ -134,19 +136,20 @@ _resp_pub = (_byte_service(os.environ['GOOFI_IOX_RESP']).publisher_builder()
              .allocation_strategy(iox2.AllocationStrategy.PowerOfTwo)
              .create())
 
-def _sample_bytes(s):
+def _view(s):
     p = s.payload()
     n = p.number_of_elements
-    return bytes((ctypes.c_uint8 * n).from_address(p.data_ptr))
+    # A read-only memoryview over the sample's shared memory — numpy frombuffer views it in place.
+    return memoryview((ctypes.c_uint8 * n).from_address(p.data_ptr)).toreadonly()
 
-def _take_latest():
+def _latest():
     latest = None
     while True:
         s = _req_sub.receive()
         if s is None:
             break
         latest = s
-    return None if latest is None else _sample_bytes(latest)
+    return latest
 
 def _send(payload):
     loan = _resp_pub.loan_slice_uninit(len(payload))
@@ -164,16 +167,20 @@ process = ns['process']
 
 last_seq = None
 while True:
-    m = _take_latest()
-    if m is None:
+    s = None  # drop the prior input sample before draining (bounds borrowed samples)
+    s = _latest()
+    if s is None:
         time.sleep(0.0005)  # idle poll; a request wakes it within ~0.5 ms
         continue
-    seq = struct.unpack('<I', m[:4])[0]
+    mv = _view(s)
+    seq = struct.unpack('<I', mv[0:4])[0]
     if seq == last_seq:
         continue  # a re-publish of an already-answered request — its response is in the buffer
-    arr, goofi_meta = decode_body(m[4:])
+    arr, goofi_meta = decode_body(mv[4:])
     ns['goofi_meta'] = goofi_meta  # sfreq/index exposed to the node (read only if it needs them)
-    # Preserve the output shape (do NOT ravel — that would flatten [C,T] channel data).
+    # Preserve the output shape (do NOT ravel — that would flatten [C,T] channel data). res is
+    # materialized + copied into the response before `s` is released next iteration, so a node
+    # that returns the input view is still safe.
     res = np.ascontiguousarray(np.asarray(process(arr), dtype=arr.dtype))
     # Propagate index only when the shape is preserved (a length-changing node breaks the
     # timeline); sfreq passes through unless the node overwrote goofi_meta['sfreq'].
@@ -537,6 +544,16 @@ mod tests {
             }
             _ => panic!("expected array"),
         }
+    }
+
+    #[test]
+    fn worker_src_views_the_input_without_a_copy_or_msgpack() {
+        // The child reads the request sample in place (a read-only numpy view over SHM), with
+        // no msgpack and no defensive input copy — the Part B zero-copy-oriented win.
+        assert!(!WORKER_SRC.contains("msgpack"), "no msgpack in the child");
+        assert!(WORKER_SRC.contains("toreadonly"), "the input is a read-only SHM view");
+        assert!(!WORKER_SRC.contains(".copy()"), "no defensive input copy on the hot path");
+        assert!(!WORKER_SRC.contains("_sample_bytes"), "the input is not copied into a Python bytes");
     }
 
     /// A `RemoteNode` holds its iceoryx2 ports directly (via `ipc_threadsafe::Service`), so it must
