@@ -65,9 +65,18 @@ struct UfreqMeter {
 /// that wire's latest-wins frame (`None` until it first emits).
 type WireCell = (Uid, &'static str, Option<Data>);
 
+/// How a node's `process()` is executed. An `Isolation::InProcess` node runs inline on
+/// the tick's rayon pool (`Inline`); an `Isolation::Subprocess` node runs on a dedicated
+/// off-tick worker (`Detached`, wired in the next step) so a blocking backend can't stall
+/// the tick or the graph lock. The tick decides *whether* every node runs identically —
+/// only the execution site differs.
+enum Execution {
+    Inline(Box<dyn goofi_node::Node>),
+}
+
 struct NodeEntry {
     manifest: &'static NodeManifest,
-    node: Box<dyn goofi_node::Node>,
+    exec: Execution,
     params: ParamGroups,
     inputs: IndexMap<&'static str, Option<Data>>,
     /// Per-wire latest-wins cells for each `multi` input slot, in connection order:
@@ -575,7 +584,7 @@ impl Graph {
             uid,
             NodeEntry {
                 manifest,
-                node,
+                exec: Execution::Inline(node),
                 params,
                 inputs,
                 multi_inputs,
@@ -1408,10 +1417,8 @@ impl Graph {
             entry.run_policy = RunPolicy::from_params(&entry.params);
             return Ok(());
         }
-        entry
-            .node
-            .on_param_changed(&ParamKey::new(group, name), &value)
-            .map_err(|e| e.0)
+        let Execution::Inline(node) = &mut entry.exec;
+        node.on_param_changed(&ParamKey::new(group, name), &value).map_err(|e| e.0)
     }
 
     /// Bind (or unbind) a param to an expression. An **empty** `source` unbinds (the stored
@@ -2453,9 +2460,10 @@ fn run_node(entry: &mut NodeEntry) {
         .iter()
         .map(|(k, cells)| (*k, cells.iter().filter_map(|(_, _, o)| o.clone()).collect()))
         .collect();
+    let Execution::Inline(node) = &mut entry.exec;
     entry.last_error = execute_node(
         entry.manifest,
-        &mut entry.node,
+        node,
         &entry.params,
         &entry.inputs,
         &multis,
@@ -3830,6 +3838,15 @@ mod tests {
         g.tick();
         let d = g.next_run_delay(Instant::now()).expect("a capped producer still wants to run");
         assert!(d <= Duration::from_millis(100), "within the 10 Hz period, got {d:?}");
+    }
+
+    #[test]
+    fn inline_node_still_ticks_through_execution_enum() {
+        // An InProcess node runs via Execution::Inline unchanged.
+        let mut g = Graph::new();
+        let c = g.add_node("_TestConst", None).unwrap();
+        g.tick_at(std::time::Instant::now());
+        assert!(g.latest_frame(c, "out").is_some(), "inline execution path intact");
     }
 
     #[test]
