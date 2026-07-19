@@ -297,13 +297,13 @@ async fn a_param_edit_is_undoable_over_the_wire() {
 
 #[tokio::test]
 async fn a_global_add_is_undoable_over_the_wire() {
-    // set_global routes through the history (EditGlobal); undo removes the added global. The
+    // add_global routes through the history (EditGlobal); undo removes the added global. The
     // default_ufreq SYSTEM global always remains, so anchor the post-undo sync on its presence.
     let base = start_server().await;
     let (mut ws, _) = connect_async(format!("{base}/control")).await.unwrap();
     let _hello = recv_text(&mut ws).await;
 
-    call_session(&mut ws, 1, "set_global", json!({ "name": "subj", "value": "P01", "type": "string" }), "s1").await;
+    call_session(&mut ws, 1, "add_global", json!({ "name": "subj", "value": "P01", "type": "string" }), "s1").await;
     let doc = sync_replica(&mut ws, |d| d.read_at(&["globals", "subj", "value"]).is_some()).await;
     assert_eq!(
         doc.read_at(&["globals", "subj", "value"]).and_then(|v| v.as_str().map(str::to_string)),
@@ -328,7 +328,7 @@ async fn a_global_rename_folds_into_one_undo_step() {
     let (mut ws, _) = connect_async(format!("{base}/control")).await.unwrap();
     let _hello = recv_text(&mut ws).await;
 
-    call_session(&mut ws, 1, "set_global", json!({ "name": "subj", "value": "P01", "type": "string" }), "s1").await;
+    call_session(&mut ws, 1, "add_global", json!({ "name": "subj", "value": "P01", "type": "string" }), "s1").await;
     call_session(&mut ws, 2, "rename_global", json!({ "old": "subj", "new": "participant" }), "s1").await;
     let doc = sync_replica(&mut ws, |d| d.read_at(&["globals", "participant", "value"]).is_some()).await;
     assert!(doc.read_at(&["globals", "subj", "value"]).is_none(), "old name gone after rename");
@@ -346,6 +346,44 @@ async fn a_global_rename_folds_into_one_undo_step() {
         Some("P01".to_string()),
         "old name + value restored in a single step"
     );
+}
+
+#[tokio::test]
+async fn add_global_rejects_a_collision_instead_of_silently_upserting() {
+    // add_global must REJECT a name that already exists (a distinct op from set_global) — else the
+    // agent seam `window.goofi.commands.addGlobal('default_ufreq', …)` would silently clobber a
+    // system value while resolving success.
+    let base = start_server().await;
+    let (mut ws, _) = connect_async(format!("{base}/control")).await.unwrap();
+    let _hello = recv_text(&mut ws).await;
+
+    call(&mut ws, 1, "add_global", json!({ "name": "subj", "value": "P01", "type": "string" })).await;
+    let dup = call(&mut ws, 2, "add_global", json!({ "name": "subj", "value": "P02", "type": "string" })).await;
+    assert!(dup.get("error").is_some(), "a colliding add is rejected; got {dup}");
+    let sys = call(&mut ws, 3, "add_global", json!({ "name": "default_ufreq", "value": 5, "type": "int" })).await;
+    assert!(sys.get("error").is_some(), "cannot add over the system global; got {sys}");
+    // The originally-added value is untouched by the rejected duplicate.
+    let doc = sync_replica(&mut ws, |d| d.read_at(&["globals", "subj", "value"]).is_some()).await;
+    assert_eq!(
+        doc.read_at(&["globals", "subj", "value"]).and_then(|v| v.as_str().map(str::to_string)),
+        Some("P01".to_string()),
+        "the first value survives the rejected duplicate"
+    );
+}
+
+#[tokio::test]
+async fn rename_global_rejects_a_system_name_without_leaking_a_phantom() {
+    // Renaming a system global must be rejected AND must not leave the add-new half applied (the
+    // Compound is not atomic — the guard runs before it).
+    let base = start_server().await;
+    let (mut ws, _) = connect_async(format!("{base}/control")).await.unwrap();
+    let _hello = recv_text(&mut ws).await;
+
+    let reply = call(&mut ws, 1, "rename_global", json!({ "old": "default_ufreq", "new": "foo" })).await;
+    assert!(reply.get("error").is_some(), "system rename rejected; got {reply}");
+    let doc = sync_replica(&mut ws, |d| d.read_at(&["globals", "default_ufreq", "value"]).is_some()).await;
+    assert!(doc.read_at(&["globals", "foo", "value"]).is_none(), "no phantom 'foo' global leaked");
+    assert!(doc.read_at(&["globals", "default_ufreq", "value"]).is_some(), "system global intact");
 }
 
 #[tokio::test]

@@ -699,12 +699,38 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
                 }
                 Ok(json!({ "ok": true }))
             }
+            // Globals validation is server-side now (the retired client `docAddGlobal`/`docRename`
+            // guards moved here): `add_global` REJECTS a collision, `set_global` edits an EXISTING
+            // one, `rename_global` refuses a system/colliding/invalid target up front (its Compound
+            // is not atomic, so a mid-sequence failure would leave a phantom). Wire shape carries the
+            // typed value as `{ name, value, type }`.
+            "add_global" => {
+                let name = parse_str(&payload, "name")?.to_string();
+                let val = payload.get("value").ok_or("add_global: missing value")?;
+                let ty = payload.get("type").and_then(|v| v.as_str()).ok_or("add_global: missing type")?;
+                if g.globals().contains(&name) {
+                    return Err(format!("add_global: global `{name}` already exists"));
+                }
+                // On an ABSENT name, EditGlobal routes through GlobalStore::add, which validates the
+                // name (an invalid name still rejects).
+                let value = goofi_engine::global_from_json(&json!({ "value": val, "type": ty }))
+                    .ok_or("add_global: malformed value")?;
+                state.history.lock().unwrap().apply(
+                    &mut g,
+                    &session,
+                    goofi_engine::Command::EditGlobal { name, value: Some(value) },
+                )?;
+                Ok(json!({ "ok": true }))
+            }
             "set_global" => {
-                // Wire shape `{ name, value, type }`; build the typed GlobalValue from the value+type
-                // pair (add-or-edit — the engine keeps a system global's declared type).
+                // EDIT an existing global's value (system or user); rejects a non-existent name so it
+                // cannot silently create one (that is `add_global`'s job).
                 let name = parse_str(&payload, "name")?.to_string();
                 let val = payload.get("value").ok_or("set_global: missing value")?;
                 let ty = payload.get("type").and_then(|v| v.as_str()).ok_or("set_global: missing type")?;
+                if !g.globals().contains(&name) {
+                    return Err(format!("set_global: no such global `{name}`"));
+                }
                 let value = goofi_engine::global_from_json(&json!({ "value": val, "type": ty }))
                     .ok_or("set_global: malformed value")?;
                 state.history.lock().unwrap().apply(
@@ -726,9 +752,20 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
             "rename_global" => {
                 let old = parse_str(&payload, "old")?.to_string();
                 let new = parse_str(&payload, "new")?.to_string();
-                // A rename = add-new(with the old value) + remove-old, folded into one undo step.
-                // The manager reads the old value so the client sends only the two names.
+                // Validate the WHOLE rename up front (the Compound is NOT atomic — a mid-sequence
+                // failure would leave the add-new applied as a phantom). Refuse a missing/system
+                // source and a colliding/invalid target, so both children are guaranteed to succeed.
                 let value = g.globals().get(&old).cloned().ok_or("rename_global: no such global")?;
+                if g.globals().is_system(&old) {
+                    return Err(format!("rename_global: cannot rename system global `{old}`"));
+                }
+                if g.globals().contains(&new) {
+                    return Err(format!("rename_global: `{new}` already exists"));
+                }
+                if !goofi_core::globals::is_valid_global_name(&new) {
+                    return Err(format!("rename_global: invalid name `{new}`"));
+                }
+                // A rename = add-new(with the old value) + remove-old, folded into one undo step.
                 state.history.lock().unwrap().apply(
                     &mut g,
                     &session,

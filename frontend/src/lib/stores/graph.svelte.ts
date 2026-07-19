@@ -515,9 +515,10 @@ export class GraphStore {
 	// name / collision / protected-system reject the RPC). Each resolves on success and REJECTS on a
 	// server refusal, so callers `await` + catch to surface/undo an invalid edit.
 
-	/** Add a new user global. Rejects on an invalid name or a collision (server-validated). */
+	/** Add a NEW user global. Rejects on an invalid name or a collision (server-validated — a
+	 * distinct op from `set_global` so an add can't silently overwrite an existing/system global). */
 	async addGlobal(name: string, value: number | string | boolean, type: GlobalType): Promise<void> {
-		await this.ctl.call('set_global', { name, value, type });
+		await this.ctl.call('add_global', { name, value, type });
 		this._recordGraphCmd(`Add global ${name}`);
 	}
 
