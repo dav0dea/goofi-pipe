@@ -212,8 +212,27 @@ impl Command {
             }
 
             Command::AddLink { node_out, slot_out, node_in, slot_in } => {
+                // A single-input connect EVICTS a prior wire on that input — capture the displaced
+                // wire so the inverse RESTORES it (else undo-of-reconnect leaves the input empty). A
+                // multi input appends (nothing displaced); reconnecting the same wire displaces nothing.
+                let displaced = g
+                    .single_input_source(node_in, &slot_in)
+                    .filter(|(o, s)| !(*o == node_out && *s == slot_out));
                 g.add_link(node_out, &slot_out, node_in, &slot_in)?;
-                Ok((Outcome::Ok, Command::RemoveLink { node_out, slot_out, node_in, slot_in }))
+                let remove_new = Command::RemoveLink {
+                    node_out,
+                    slot_out: slot_out.clone(),
+                    node_in,
+                    slot_in: slot_in.clone(),
+                };
+                let inverse = match displaced {
+                    Some((dout, dslot)) => Command::Compound(vec![
+                        remove_new,
+                        Command::AddLink { node_out: dout, slot_out: dslot.to_string(), node_in, slot_in },
+                    ]),
+                    None => remove_new,
+                };
+                Ok((Outcome::Ok, inverse))
             }
 
             Command::RemoveLink { node_out, slot_out, node_in, slot_in } => {
@@ -664,6 +683,33 @@ mod tests {
         let (res, inverse) = Command::RemoveNode { uid: osc }.execute(&mut g).unwrap();
         assert_eq!(res, Outcome::Ok);
         assert_eq!(inverse, Command::Compound(vec![]));
+    }
+
+    #[test]
+    fn add_link_inverse_restores_a_displaced_single_input_wire() {
+        // Connecting a second source to an occupied SINGLE input evicts the first wire. The inverse
+        // must RESTORE the displaced wire (not just remove the new one), else undo-of-reconnect
+        // leaves the input empty. (This is the manager's job now that the client delegates undo.)
+        let mut g = Graph::new();
+        let a = g.add_node("Oscillator", None).unwrap();
+        let b = g.add_node("Oscillator", None).unwrap();
+        let buf = g.add_node("Buffer", None).unwrap();
+        g.add_link(a, "out", buf, "data").unwrap(); // a → buf.data occupies the input
+
+        let (_r, inverse) =
+            Command::AddLink { node_out: b, slot_out: "out".into(), node_in: buf, slot_in: "data".into() }
+                .execute(&mut g)
+                .unwrap();
+        assert_eq!(g.links_view().len(), 1, "b displaced a — still one wire");
+        assert!(g.links_view().iter().any(|l| l.node_out == b), "b now feeds buf");
+
+        inverse.execute(&mut g).unwrap();
+        assert_eq!(g.links_view().len(), 1, "one wire after undo");
+        assert!(
+            g.links_view().iter().any(|l| l.node_out == a && l.node_in == buf),
+            "the displaced wire a → buf was restored"
+        );
+        assert!(!g.links_view().iter().any(|l| l.node_out == b), "the new wire was removed");
     }
 
     #[test]

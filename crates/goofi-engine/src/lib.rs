@@ -1382,6 +1382,20 @@ impl Graph {
         self.find_input(uid, slot).is_some_and(|i| i.multi)
     }
 
+    /// The wire currently feeding a SINGLE input `(node_in, slot)` — the wire an `add_link` would
+    /// evict. `None` for a multi input (append, no eviction) or an empty input. Lets the `AddLink`
+    /// command capture the displaced wire so its inverse restores it.
+    pub fn single_input_source(&self, node_in: Uid, slot: &str) -> Option<(Uid, &'static str)> {
+        let slot = self.resolve_input(node_in, slot)?;
+        if self.is_multi_input(node_in, slot) {
+            return None;
+        }
+        self.links
+            .iter()
+            .find(|l| l.node_in == node_in && l.slot_in == slot)
+            .map(|l| (l.node_out, l.slot_out))
+    }
+
     pub fn add_link(
         &mut self,
         node_out: Uid,
