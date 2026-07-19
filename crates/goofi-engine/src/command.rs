@@ -482,6 +482,12 @@ impl CommandHistory {
     /// invalidates that session's redo future, but never another session's.
     pub fn apply(&mut self, g: &mut Graph, session: &str, cmd: Command) -> Result<Outcome, String> {
         let (outcome, inverse) = cmd.execute(g)?;
+        // A no-op forward command yields an empty-Compound inverse (an idempotent guard fired — the
+        // wire/node/scope was already in the requested state). It changed nothing, so it must record
+        // nothing: neither push a phantom undo entry nor clear this session's redo run.
+        if matches!(inverse, Command::Compound(ref v) if v.is_empty()) {
+            return Ok(outcome);
+        }
         self.entries.retain(|e| !(e.session == session && e.undone));
         self.entries.push(HistoryEntry { toggle: inverse, session: session.to_string(), undone: false });
         Ok(outcome)
@@ -1209,6 +1215,36 @@ mod tests {
         assert!(h.can_undo("s1") && !h.can_redo("s1"));
         h.undo(&mut g, "s1").unwrap();
         assert!(!h.can_undo("s1") && h.can_redo("s1"));
+    }
+
+    #[test]
+    fn history_apply_of_a_noop_command_records_nothing_and_preserves_redo() {
+        // A no-op forward command (its execute returns an empty-Compound inverse — e.g. removing an
+        // already-absent wire, now reachable on the forward RPC path since the round-1 link
+        // idempotency fix) must NOT push a phantom undo entry NOR clear the session's redo run.
+        let mut g = Graph::new();
+        let mut h = CommandHistory::new();
+        let osc = g.add_node("Oscillator", None).unwrap();
+        let buf = g.add_node("Buffer", None).unwrap();
+        // Establish a redo run: apply a real command, then undo it.
+        h.apply(
+            &mut g,
+            "s1",
+            Command::AddLink { node_out: osc, slot_out: "out".into(), node_in: buf, slot_in: "data".into() },
+        )
+        .unwrap();
+        h.undo(&mut g, "s1").unwrap();
+        assert!(h.can_redo("s1"), "one redo pending");
+
+        // Remove the (now absent) wire — a no-op. It must record nothing.
+        h.apply(
+            &mut g,
+            "s1",
+            Command::RemoveLink { node_out: osc, slot_out: "out".into(), node_in: buf, slot_in: "data".into() },
+        )
+        .unwrap();
+        assert!(h.can_redo("s1"), "the pending redo survived the no-op command");
+        assert!(!h.can_undo("s1"), "the no-op pushed no undoable entry");
     }
 
     // ── structural commands (flat scope model) ────────────────────────────────────
