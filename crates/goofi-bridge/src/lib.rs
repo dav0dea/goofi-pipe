@@ -737,7 +737,7 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
                 state.history.lock().unwrap().apply(
                     &mut g,
                     &session,
-                    goofi_engine::Command::WireStub { scope: inst, stub_id: bnd, inner: Some((inner, slot)) },
+                    goofi_engine::Command::WireStub { scope: inst, stub_id: bnd, inner: Some((inner, slot)), dtype: None },
                 )?;
                 Ok(json!({ "ok": true }))
             }

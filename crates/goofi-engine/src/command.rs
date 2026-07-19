@@ -130,11 +130,14 @@ pub enum Command {
         scope: Uid,
         stub_id: StubId,
     },
-    /// Wire (`Some`) or unwire (`None`) a stub's inner target. Inverse restores the old inner.
+    /// Wire (`Some`) or unwire (`None`) a stub's inner target. `dtype` is `None` on a user wire (the
+    /// dtype is resolved from the wired slot); the inverse carries the old dtype so unwire restores
+    /// the exact pre-wire advertised type. Inverse restores the old inner + dtype.
     WireStub {
         scope: Uid,
         stub_id: StubId,
         inner: Option<(Uid, String)>,
+        dtype: Option<goofi_core::SlotType>,
     },
     /// Edit a stub's display name and/or pill pos. A `None` field is left untouched; the inverse
     /// restores whichever were set.
@@ -281,6 +284,12 @@ impl Command {
             Command::AddStub { scope, dir, dtype, pos, restore } => {
                 let id = match restore {
                     None => g.add_boundary(scope, dir, dtype, pos)?,
+                    // Idempotent: the scope was dissolved (a concurrent expand) → the restore is moot,
+                    // like every sibling structural inverse. (A user add to a missing scope still errors
+                    // via `add_boundary` above — that is a caller mistake, not a redo race.)
+                    Some(_) if g.scope(scope).is_none() => {
+                        return Ok((Outcome::Ok, Command::Compound(vec![])));
+                    }
                     Some((id, stub)) => {
                         g.insert_stub(scope, id.clone(), stub)?;
                         id
@@ -298,13 +307,19 @@ impl Command {
                 Ok((Outcome::Ok, Command::AddStub { scope, dir, dtype, pos, restore: Some((stub_id, stub)) }))
             }
 
-            Command::WireStub { scope, stub_id, inner } => {
-                let Some(old) = g.scope(scope).and_then(|s| s.stubs.get(&stub_id)).map(|st| st.inner.clone())
-                else {
+            Command::WireStub { scope, stub_id, inner, dtype } => {
+                let Some(st) = g.scope(scope).and_then(|s| s.stubs.get(&stub_id)) else {
                     return Ok((Outcome::Ok, Command::Compound(vec![]))); // idempotent: stub gone
                 };
+                // Capture BOTH sides wiring mutates — inner and the resolved dtype — so the inverse
+                // restores the exact pre-wire state (unwire alone would leave the wired slot's dtype).
+                let old_inner = st.inner.clone();
+                let old_dtype = st.dtype;
                 g.set_stub_inner(scope, &stub_id, inner)?;
-                Ok((Outcome::Ok, Command::WireStub { scope, stub_id, inner: old }))
+                if let Some(dt) = dtype {
+                    g.set_stub_dtype(scope, &stub_id, dt)?; // inverse path: force the captured dtype back
+                }
+                Ok((Outcome::Ok, Command::WireStub { scope, stub_id, inner: old_inner, dtype: Some(old_dtype) }))
             }
 
             Command::EditStub { scope, stub_id, name, pos } => {
@@ -758,26 +773,58 @@ mod tests {
     }
 
     #[test]
-    fn wire_stub_inverse_restores_the_old_inner() {
+    fn wire_stub_inverse_restores_the_old_inner_and_dtype() {
         let mut g = Graph::new();
         let a = g.add_node("Buffer", None).unwrap();
         let b = g.add_node("Buffer", None).unwrap();
         g.add_link(a, "out", b, "data").unwrap();
         let scope = g.group_nodes(&[a], [0.0, 0.0]).unwrap(); // auto out stub on a.out
-        let stub = g.add_boundary(scope, Dir::In, goofi_core::SlotType::Array, [0.0, 0.0]).unwrap();
+        // A provisional STRING In stub — wiring to a's ARRAY input slot will coerce dtype to Array.
+        let stub = g.add_boundary(scope, Dir::In, goofi_core::SlotType::String, [0.0, 0.0]).unwrap();
         assert!(g.scope(scope).unwrap().stubs[&stub].inner.is_none(), "born unwired");
+        assert_eq!(g.scope(scope).unwrap().stubs[&stub].dtype, goofi_core::SlotType::String, "provisional dtype");
 
         let (_res, undo) = Command::WireStub {
             scope,
             stub_id: stub.clone(),
             inner: Some((a, "data".to_string())),
+            dtype: None,
         }
         .execute(&mut g)
         .unwrap();
         assert_eq!(g.resolve_stub(scope, &stub), Some((a, "data".to_string())), "wired");
+        assert_eq!(g.scope(scope).unwrap().stubs[&stub].dtype, goofi_core::SlotType::Array, "dtype resolved to the wired slot's");
 
-        undo.execute(&mut g).unwrap(); // inverse restores the OLD inner (None)
+        undo.execute(&mut g).unwrap(); // inverse restores the OLD inner (None) AND the OLD dtype (String)
         assert!(g.scope(scope).unwrap().stubs[&stub].inner.is_none(), "unwired back to the old state");
+        assert_eq!(
+            g.scope(scope).unwrap().stubs[&stub].dtype,
+            goofi_core::SlotType::String,
+            "dtype restored to the pre-wire provisional (not left as the wired Array)"
+        );
+    }
+
+    #[test]
+    fn add_stub_restore_is_idempotent_when_the_scope_is_gone() {
+        // Multi-client: undo-of-add records an AddStub{restore}; a concurrent expand dissolves the
+        // scope; replaying that AddStub{restore} must be a benign no-op, not an Err (redo would stick).
+        let (mut g, _osc, buf, _sink) = grouped_chain();
+        let scope = g.group_nodes(&[buf], [0.0, 0.0]).unwrap();
+        let stub = g.add_boundary(scope, Dir::In, goofi_core::SlotType::Array, [0.0, 0.0]).unwrap();
+        let captured = g.scope(scope).unwrap().stubs[&stub].clone();
+        g.expand_instance(scope).unwrap(); // scope dissolved out from under the pending restore
+
+        let (res, inv) = Command::AddStub {
+            scope,
+            dir: Dir::In,
+            dtype: goofi_core::SlotType::Array,
+            pos: [0.0, 0.0],
+            restore: Some((stub, captured)),
+        }
+        .execute(&mut g)
+        .unwrap(); // must NOT Err
+        assert_eq!(res, Outcome::Ok);
+        assert_eq!(inv, Command::Compound(vec![]), "no-op inverse when the scope is gone");
     }
 
     #[test]

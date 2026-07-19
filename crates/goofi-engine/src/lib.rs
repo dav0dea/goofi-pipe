@@ -827,6 +827,28 @@ impl Graph {
         }
     }
 
+    /// The single common parent scope of `members` (each must exist as a node or scope), or an error
+    /// if the set is empty or spans multiple scopes. Shared validation for `group_nodes` (mint) and
+    /// `restore_scope` (undo/redo) so the check lives in one place.
+    fn common_parent(&self, members: &[Uid]) -> Result<Option<Uid>, String> {
+        if members.is_empty() {
+            return Err("group: empty selection".into());
+        }
+        let mut parent: Option<Option<Uid>> = None;
+        for &m in members {
+            if !self.nodes.contains_key(&m) && !self.scopes.contains_key(&m) {
+                return Err(format!("group: no such member {m}"));
+            }
+            let s = self.scope_of(m);
+            match parent {
+                None => parent = Some(s),
+                Some(prev) if prev != s => return Err("group: members span multiple scopes".into()),
+                _ => {}
+            }
+        }
+        Ok(parent.unwrap())
+    }
+
     /// Group `members` (leaf nodes and/or existing scopes, all in ONE scope) into a new sub-patch
     /// scope. Pure reference-move bookkeeping: mint a scope, mint a stub for every flat link that
     /// crosses the new boundary (its `inner` = the crossing member + slot), and re-tag membership.
@@ -835,25 +857,8 @@ impl Graph {
     /// new stubs).
     pub fn group_nodes(&mut self, members: &[Uid], pos: [f64; 2]) -> Result<Uid, String> {
         use subpatch::{Dir, Scope, Stub};
-        if members.is_empty() {
-            return Err("group_nodes: empty selection".into());
-        }
         // 1. Validate BEFORE any mutation: each exists, and all share one parent scope.
-        let mut parent_scope: Option<Option<Uid>> = None;
-        for &m in members {
-            if !self.nodes.contains_key(&m) && !self.scopes.contains_key(&m) {
-                return Err(format!("group_nodes: no such node {m}"));
-            }
-            let s = self.scope_of(m);
-            match parent_scope {
-                None => parent_scope = Some(s),
-                Some(prev) if prev != s => {
-                    return Err("group_nodes: members span multiple scopes".into())
-                }
-                _ => {}
-            }
-        }
-        let parent = parent_scope.unwrap();
+        let parent = self.common_parent(members)?;
         let member_set: std::collections::HashSet<Uid> = members.iter().copied().collect();
         let scope_uid = self.mint();
 
@@ -935,22 +940,7 @@ impl Graph {
         if self.scopes.contains_key(&scope_id) {
             return Err(format!("restore_scope: scope {scope_id} already live"));
         }
-        if members.is_empty() {
-            return Err("restore_scope: empty members".into());
-        }
-        let mut parent: Option<Option<Uid>> = None;
-        for &m in members {
-            if !self.nodes.contains_key(&m) && !self.scopes.contains_key(&m) {
-                return Err(format!("restore_scope: no such member {m}"));
-            }
-            let s = self.scope_of(m);
-            match parent {
-                None => parent = Some(s),
-                Some(prev) if prev != s => return Err("restore_scope: members span multiple scopes".into()),
-                _ => {}
-            }
-        }
-        let parent = parent.unwrap();
+        let parent = self.common_parent(members)?;
         self.scopes.insert(scope_id, subpatch::Scope { name, pos, stubs });
         for &m in members {
             self.set_member_scope(m, Some(scope_id));
@@ -1099,6 +1089,19 @@ impl Graph {
     pub fn insert_stub(&mut self, scope: Uid, stub_id: subpatch::StubId, stub: subpatch::Stub) -> Result<(), String> {
         let s = self.scopes.get_mut(&scope).ok_or("insert_stub: no such scope")?;
         s.stubs.insert(stub_id, stub);
+        Ok(())
+    }
+
+    /// Force a stub's advertised dtype. Wiring resolves the dtype from the inner slot, so the
+    /// `WireStub` inverse uses this to restore the EXACT pre-wire dtype on unwire (else an unwired
+    /// pill would keep the wired slot's type instead of its provisional one).
+    pub fn set_stub_dtype(&mut self, scope: Uid, stub: &str, dtype: goofi_core::SlotType) -> Result<(), String> {
+        let st = self
+            .scopes
+            .get_mut(&scope)
+            .and_then(|s| s.stubs.get_mut(stub))
+            .ok_or("set_stub_dtype: no such stub")?;
+        st.dtype = dtype;
         Ok(())
     }
 
