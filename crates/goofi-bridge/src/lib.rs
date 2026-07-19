@@ -962,11 +962,11 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
 /// leaf the graph has not yet caught up to.
 fn remirror_and_broadcast_locked(state: &AppState, g: &Graph, doc: &mut goofi_crdt::GraphDoc) {
     // Gate the broadcast on whether the mirror changed the doc's LOGICAL state (`to_json` before vs
-    // after). `is_empty_diff` cannot do this: it is deletion-blind — a Yjs delete does not advance the
-    // state vector, so a delete-only `diff(last_sv)` is byte-identical to the empty baseline
-    // `diff(current_sv)`, and every node/link/instance/global REMOVAL was silently dropped from the
-    // broadcast. `to_json` equality catches adds, edits, and deletes alike (the same lesson the
-    // frontend `SyncClient.commit` learned about the always-embedded delete set).
+    // after). A state-vector empty-diff check cannot do this: it is deletion-blind — a Yjs delete
+    // does not advance the state vector, so a delete-only `diff(last_sv)` is byte-identical to the
+    // empty baseline `diff(current_sv)`, and every node/link/instance/global REMOVAL would be
+    // silently dropped from the broadcast. `to_json` equality catches adds, edits, and deletes alike
+    // (the same lesson the frontend `SyncClient.commit` learned about the always-embedded delete set).
     let before = doc.to_json();
     crdt_mirror::sync_graph_to_doc(g, doc);
     if doc.to_json() == before {
@@ -1095,10 +1095,11 @@ mod param_coerce_tests {
 
     #[test]
     fn removing_a_node_broadcasts_a_delta() {
-        // A node REMOVAL must broadcast a delta to clients. Regression: the broadcast gate used
-        // `is_empty_diff`, which is deletion-blind (a Yjs delete doesn't advance the state vector, so
-        // a delete-only delta looked identical to the empty baseline) — so removals silently never
-        // reached clients in the doc read-path. Caught by the e2e undo flow (undo didn't remove).
+        // A node REMOVAL must broadcast a delta to clients. Regression: the broadcast gate once used
+        // a state-vector empty-diff check, which is deletion-blind (a Yjs delete doesn't advance the
+        // state vector, so a delete-only delta looked identical to the empty baseline) — so removals
+        // silently never reached clients in the doc read-path. Caught by the e2e undo flow (undo
+        // didn't remove); the gate now compares `to_json` before/after instead.
         let state = AppState::new();
         let mut rx = state.sync_updates.subscribe();
 

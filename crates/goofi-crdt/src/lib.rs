@@ -272,27 +272,6 @@ impl GraphDoc {
         }
     }
 
-    /// Write (or remove) a whole global entry at `globals[name]` — the CRDT twin of the panel's global
-    /// add / edit / delete. `Some(obj)` reconciles the `{value, type, system}` entry IN PLACE (so a
-    /// value-only edit is one leaf op that a concurrent re-mirror preserves); `None` deletes the entry.
-    /// Unlike [`Self::write_at`], this MAY mint a top-level entry — a user adds a global by naming a new
-    /// one. (System globals can't be deleted; the manager rejects that and the re-mirror re-asserts.)
-    pub fn write_global(&mut self, name: &str, entry: Option<&serde_json::Value>) {
-        let mut txn = self.doc.transact_mut();
-        match entry {
-            Some(serde_json::Value::Object(obj)) => {
-                let child = get_or_insert_map(&self.globals, &mut txn, name);
-                reconcile_map(&mut txn, &child, obj);
-            }
-            Some(_) => {} // a global entry is always an object; ignore a malformed scalar
-            None => {
-                if self.globals.get(&txn, name).is_some() {
-                    self.globals.remove(&mut txn, name);
-                }
-            }
-        }
-    }
-
     /// Replace the whole link set (wholesale; a fine-grained incremental diff comes later). Guarded
     /// idempotent: the re-mirror re-asserts this after every op, so when the set is UNCHANGED (the
     /// common case — links change far less often than params/positions) it must produce no doc ops.
@@ -344,12 +323,6 @@ impl GraphDoc {
     pub fn diff(&self, peer_state_vector: &[u8]) -> Vec<u8> {
         let sv = yrs::StateVector::decode_v1(peer_state_vector).unwrap_or_default();
         self.doc.transact().encode_state_as_update_v1(&sv)
-    }
-
-    /// Whether `delta` (a v1 update) carries no changes — the canonical empty update this
-    /// doc's own encoder produces for an up-to-date peer. Used to skip no-op broadcasts.
-    pub fn is_empty_diff(&self, delta: &[u8]) -> bool {
-        delta == self.diff(&self.state_vector()).as_slice()
     }
 
     /// Apply a peer's incremental v1 update into this replica. `Err` if it is malformed.
@@ -469,20 +442,17 @@ mod tests {
         };
         doc.replace_links(&[l("1", "2"), l("2", "3")]);
 
-        let sv = doc.state_vector();
+        let before = doc.to_json();
         doc.replace_links(&[l("1", "2"), l("2", "3")]);
-        assert!(
-            doc.is_empty_diff(&doc.diff(&sv)),
-            "re-asserting the same link set must be a no-op"
-        );
+        assert_eq!(doc.to_json(), before, "re-asserting the same link set must be a no-op");
         // A real change (an added link) still applies.
         doc.replace_links(&[l("1", "2"), l("2", "3"), l("3", "4")]);
-        assert!(!doc.is_empty_diff(&doc.diff(&sv)), "a real link change produces a delta");
+        assert_ne!(doc.to_json(), before, "a real link change is a logical change");
         assert_eq!(links(&doc).len(), 3);
         // Order matters — a reordering is a real change.
-        let sv2 = doc.state_vector();
+        let before2 = doc.to_json();
         doc.replace_links(&[l("3", "4"), l("1", "2"), l("2", "3")]);
-        assert!(!doc.is_empty_diff(&doc.diff(&sv2)), "a reordering is a change");
+        assert_ne!(doc.to_json(), before2, "a reordering is a change");
     }
 
     #[test]
@@ -580,20 +550,6 @@ mod tests {
     }
 
     #[test]
-    fn is_empty_diff_detects_no_op_deltas() {
-        use serde_json::json;
-        let mut doc = GraphDoc::new();
-        doc.reconcile_root(&json!({ "nodes": {
-            "1": { "type": "Oscillator", "name": "osc", "pos": {"x": 0.0, "y": 0.0}, "params": {} } },
-            "links": [], "instances": {} }));
-        // Diff against the current SV = nothing new → empty.
-        assert!(doc.is_empty_diff(&doc.diff(&doc.state_vector())));
-        // Diff against an empty replica = the whole doc → NOT empty.
-        let fresh = GraphDoc::new();
-        assert!(!doc.is_empty_diff(&doc.diff(&fresh.state_vector())));
-    }
-
-    #[test]
     fn full_state_frame_recovers_a_gapped_replica() {
         // The recovery contract: when a client has missed deltas (lag/reconnect), the server
         // ships its FULL STATE as an Update; applying it converges the client regardless of
@@ -676,10 +632,10 @@ mod tests {
         assert_eq!(doc.read_at(&["globals", "default_ufreq", "value"]).and_then(|v| v.as_f64()), Some(30.0));
         assert_eq!(doc.read_at(&["globals", "default_ufreq", "system"]), Some(json!(true)));
         assert_eq!(doc.read_at(&["globals", "subject", "value"]).and_then(|v| v.as_str().map(str::to_string)), Some("P07".into()));
-        // Idempotent: re-mirroring the same globals produces no doc ops (empty diff) — the params lesson.
-        let sv = doc.state_vector();
+        // Idempotent: re-mirroring the same globals produces no logical change — the params lesson.
+        let before = doc.to_json();
         doc.reconcile_root(&proj());
-        assert!(doc.is_empty_diff(&doc.diff(&sv)), "re-mirroring identical globals is a no-op");
+        assert_eq!(doc.to_json(), before, "re-mirroring identical globals is a no-op");
     }
 
     #[test]
@@ -736,9 +692,9 @@ mod tests {
         // client's leaf-edit — the "params lesson" the typed writers hand-rolled per field).
         let mut doc = GraphDoc::new();
         doc.reconcile_root(&full_projection());
-        let sv = doc.state_vector();
+        let before = doc.to_json();
         doc.reconcile_root(&full_projection());
-        assert!(doc.is_empty_diff(&doc.diff(&sv)), "re-reconciling an unchanged graph is a no-op");
+        assert_eq!(doc.to_json(), before, "re-reconciling an unchanged graph is a no-op");
     }
 
     #[test]
@@ -751,11 +707,11 @@ mod tests {
             "pos": {"x": 0.0, "y": 0.0}, "params": { "buffer": { "size": { "value": 1000 } } } } },
             "links": [], "instances": {} });
         doc.reconcile_root(&proj);
-        let sv = doc.state_vector();
+        let before = doc.to_json();
         // Re-assert with the value as a float — the same number, different JSON repr.
         proj["nodes"]["1"]["params"]["buffer"]["size"]["value"] = json!(1000.0);
         doc.reconcile_root(&proj);
-        assert!(doc.is_empty_diff(&doc.diff(&sv)), "int 1000 vs f64 1000.0 is not a change");
+        assert_eq!(doc.to_json(), before, "int 1000 vs f64 1000.0 is not a change");
     }
 
     #[test]
@@ -848,9 +804,9 @@ mod tests {
         doc.write_at(&["nodes", "1", "params", "common", "max_frequency", "value"], Some(&json!(42.0)));
         assert_eq!(pnum(&doc, "1", "common", "max_frequency"), Some(42.0));
         // Idempotent: re-writing the same value is a no-op.
-        let sv = doc.state_vector();
+        let before = doc.to_json();
         doc.write_at(&["nodes", "1", "params", "common", "max_frequency", "value"], Some(&json!(42.0)));
-        assert!(doc.is_empty_diff(&doc.diff(&sv)), "re-writing the same leaf is a no-op");
+        assert_eq!(doc.to_json(), before, "re-writing the same leaf is a no-op");
     }
 
     #[test]
