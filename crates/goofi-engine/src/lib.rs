@@ -596,6 +596,15 @@ impl Graph {
         self.nodes.values().any(|e| e.name == name) || self.scopes.values().any(|s| s.name == name)
     }
 
+    /// Is `name` already a display name of a node OR scope facade OTHER than `except`? The bridge
+    /// pre-validates a forward rename with this: `Command::EditNode` tolerates a rename collision as
+    /// a no-op (so a stale undo-replay converges instead of wedging the stack), so the user-facing
+    /// duplicate-name error must be raised up front at the RPC boundary.
+    pub fn name_taken(&self, name: &str, except: Uid) -> bool {
+        self.nodes.iter().any(|(u, e)| *u != except && e.name == name)
+            || self.scopes.iter().any(|(u, s)| *u != except && s.name == name)
+    }
+
     /// Lowest `{base}{N}` display name not already in use (globally unique).
     fn fresh_name(&self, base: &str) -> String {
         for n in 0.. {

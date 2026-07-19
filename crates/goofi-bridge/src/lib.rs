@@ -684,6 +684,13 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
             "rename_node" => {
                 let uid = parse_uid(&payload, "node")?;
                 let name = parse_str(&payload, "name")?.to_string();
+                // Reject a duplicate display name up front (mirrors `rename_global`). The engine's
+                // `Command::EditNode` tolerates a rename collision as a no-op so a stale undo-replay
+                // converges instead of wedging the stack — so the user-facing error must be raised
+                // here, at the forward RPC boundary.
+                if g.name_taken(&name, uid) {
+                    return Err(format!("rename_node: display name `{name}` already in use"));
+                }
                 let out = state.history.lock().unwrap().apply(
                     &mut g,
                     &session,

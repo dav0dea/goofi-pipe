@@ -1167,6 +1167,28 @@ async fn renaming_a_node_rewrites_referrers_nd_expressions_over_the_wire() {
 }
 
 #[tokio::test]
+async fn rename_node_rejects_a_duplicate_display_name_up_front() {
+    // The engine's Command::EditNode tolerates a rename collision as a no-op (so a stale undo-replay
+    // converges instead of wedging the stack). The forward user error must therefore be raised at
+    // the RPC boundary: renaming a node onto a name another node already holds is rejected, and the
+    // target node keeps its name.
+    let base = start_server().await;
+    let (mut ws, _) = connect_async(format!("{base}/control")).await.unwrap();
+    let _hello = recv_text(&mut ws).await;
+
+    let uid = |v: &Value| v["result"].as_str().unwrap().to_string();
+    let a = uid(&call(&mut ws, 1, "add_node", json!({ "type": "Oscillator" })).await);
+    let _b = uid(&call(&mut ws, 2, "add_node", json!({ "type": "Buffer" })).await); // "buffer0"
+
+    let reply = call(&mut ws, 3, "rename_node", json!({ "node": a, "name": "buffer0" })).await;
+    assert!(reply.get("error").is_some(), "a duplicate rename is rejected; got {reply}");
+
+    // A itself keeps its own name — a unique rename still succeeds.
+    let ok = call(&mut ws, 4, "rename_node", json!({ "node": a, "name": "myosc" })).await;
+    assert!(ok.get("error").is_none(), "a unique rename still succeeds; got {ok}");
+}
+
+#[tokio::test]
 async fn group_and_expand_project_the_instance_forest() {
     // Grouping two nodes surfaces one instance in the snapshot (ROOT membership re-tagged,
     // the members moved into the instance's scope); expanding restores them to ROOT.

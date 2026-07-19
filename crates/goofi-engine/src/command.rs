@@ -275,19 +275,35 @@ impl Command {
                 if !g.contains(uid) && g.scope(uid).is_none() {
                     return Ok((Outcome::Ok, Command::Compound(vec![]))); // idempotent: node/scope gone
                 }
-                let old_name = name.as_ref().map(|_| g.name(uid).unwrap_or("").to_string());
                 let old_pos = pos.map(|_| g.pos(uid).unwrap_or([0.0, 0.0]));
                 // A rename rewrites `nd('old')` → `nd('new')` in referring expressions; report the
                 // touched referrers so the bridge re-broadcasts their runtime-enriched descriptors.
                 let mut referrers = Vec::new();
-                if let Some(n) = &name {
-                    referrers = g.rename_node(uid, n)?;
-                }
+                // Capture the pre-rename name only if the rename actually lands. A concurrent peer
+                // may have reclaimed the target name since this toggle was recorded (undo of a
+                // rename after another client minted a node onto the freed base name). Tolerate that
+                // collision as a recoverable no-op — propagating Err would flow through flip() and
+                // permanently wedge the session's undo stack (undo re-selects the un-flippable
+                // entry forever). A FORWARD user rename is pre-validated at the bridge, so a
+                // collision reaching this arm is always a stale-toggle replay.
+                let inv_name = match &name {
+                    None => None,
+                    Some(n) => {
+                        let old = g.name(uid).unwrap_or("").to_string();
+                        match g.rename_node(uid, n) {
+                            Ok(touched) => {
+                                referrers = touched;
+                                Some(old)
+                            }
+                            Err(_) => None, // collision → no-op; the inverse touches no name
+                        }
+                    }
+                };
                 if let Some(p) = pos {
                     g.set_node_pos(uid, p)?;
                 }
                 let out = if referrers.is_empty() { Outcome::Ok } else { Outcome::Nodes(referrers) };
-                Ok((out, Command::EditNode { uid, name: old_name, pos: old_pos }))
+                Ok((out, Command::EditNode { uid, name: inv_name, pos: old_pos }))
             }
 
             Command::EditParam { uid, group, name, value, expr } => {
@@ -934,6 +950,50 @@ mod tests {
         inverse.execute(&mut g).unwrap();
         assert_eq!(g.name(scope), Some(old_name.as_str()), "scope name restored");
         assert_eq!(g.pos(scope), Some([1.0, 2.0]), "scope pos restored");
+    }
+
+    #[test]
+    fn edit_node_rename_inverse_no_ops_on_a_collision_instead_of_erroring() {
+        // Multi-client: client-1 renames A "oscillator0" → "myosc" (its inverse restores
+        // "oscillator0"). A peer then mints a node that reclaims the freed "oscillator0". Replaying
+        // the inverse rename now collides — it MUST be a recoverable no-op (Ok), not an Err that
+        // propagates through flip() and wedges the whole session's undo stack.
+        let mut g = Graph::new();
+        let a = g.add_node("Oscillator", None).unwrap();
+        assert_eq!(g.name(a), Some("oscillator0"));
+
+        let (_r, inverse) =
+            Command::EditNode { uid: a, name: Some("myosc".into()), pos: None }.execute(&mut g).unwrap();
+        assert_eq!(g.name(a), Some("myosc"));
+
+        let b = g.add_node("Oscillator", None).unwrap();
+        assert_eq!(g.name(b), Some("oscillator0"), "peer reclaimed the freed base name");
+
+        // The inverse rename collides with the peer's node — recoverable no-op, not Err.
+        let (_r2, _redo) = inverse.execute(&mut g).expect("inverse-rename collision must not error");
+        assert_eq!(g.name(a), Some("myosc"), "A keeps its current name; the undo did not wedge");
+        assert_eq!(g.name(b), Some("oscillator0"), "the peer's node is untouched");
+    }
+
+    #[test]
+    fn a_stale_rename_undo_does_not_wedge_the_session_stack() {
+        // The session-level guarantee behind the fix above: a rename whose inverse can no longer
+        // apply must not block the entries BENEATH it. After the colliding rename-undo, the earlier
+        // step is still undoable.
+        let mut g = Graph::new();
+        let mut h = CommandHistory::new();
+        let buf = g.add_node("Buffer", None).unwrap();
+        let a = g.add_node("Oscillator", None).unwrap();
+        h.apply(&mut g, "s1", Command::EditNode { uid: buf, name: Some("mybuf".into()), pos: None }).unwrap();
+        h.apply(&mut g, "s1", Command::EditNode { uid: a, name: Some("myosc".into()), pos: None }).unwrap();
+
+        // A peer reclaims "oscillator0" (now free since A → "myosc").
+        let _peer = g.add_node("Oscillator", None).unwrap();
+
+        // Undo the rename (its inverse collides) → Ok, not Err; then the earlier step is still undoable.
+        assert!(h.undo(&mut g, "s1").unwrap(), "colliding rename-undo returns Ok(true), not Err");
+        assert!(h.undo(&mut g, "s1").unwrap(), "the earlier step is still undoable — the stack is not wedged");
+        assert_eq!(g.name(buf), Some("buffer0"), "the earlier rename was undone");
     }
 
     #[test]
