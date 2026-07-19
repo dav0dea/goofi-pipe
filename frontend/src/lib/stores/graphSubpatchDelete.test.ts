@@ -80,6 +80,27 @@ function withInstance(): { fc: FakeControl; g: GraphStore } {
 	return { fc, g };
 }
 
+describe('a wholesale load resets the client history (lockstep with the manager)', () => {
+	beforeEach(() => history().reset());
+	const ctx = { activeWorkspaceId: 'w', activePanelId: null, enteredPath: {}, selection: {} };
+
+	it('graph_replaced (in-session load) drops pre-load undo steps', () => {
+		const fc = new FakeControl();
+		const g = new GraphStore(fc);
+		// Establish the session, then record a pre-load graph step.
+		fc.emit({ event: 'hello', payload: snapshot([], {}) });
+		history().record({ kind: 'graph_cmd', domain: 'graph', label: 'Add X', context: ctx });
+		expect(history().canUndo).toBe(true);
+
+		// A load replaces the graph in the SAME backend session — the manager cleared its command
+		// history (load_text → CommandHistory::clear), so the client's stale entries would pop
+		// mismatched. graph_replaced must reset the client history too.
+		fc.emit({ event: 'graph_replaced', payload: snapshot([], {}) });
+		expect(history().canUndo).toBe(false);
+		void g;
+	});
+});
+
 describe('deleting a collapsed sub-patch instance is undoable (manager owns the subtree capture)', () => {
 	beforeEach(() => history().reset());
 

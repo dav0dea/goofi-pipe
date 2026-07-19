@@ -185,10 +185,8 @@ export class GraphStore {
 		} else if (freshSession) {
 			workspace().reset();
 		}
-		// A new backend session (fresh instance_id, incl. after a load — which resets the manager's
-		// history too) makes the client's stacks meaningless, so drop them. A same-session reconnect
-		// keeps them.
-		if (freshSession) history().reset();
+		// (History reset happens in `_onWholesaleLoad`, which runs on BOTH a fresh session and an
+		// in-session load — a same-session reconnect skips it and keeps its history.)
 		return freshSession;
 	}
 
@@ -199,6 +197,11 @@ export class GraphStore {
 	 * reused node name's count across sessions. */
 	private _onWholesaleLoad(): void {
 		this.loadEpoch += 1;
+		// The client's undo/redo stacks are meaningless across a wholesale load: a fresh backend
+		// session mints new uids, and an in-session load clears the manager's command history
+		// (load_text → CommandHistory::clear), so keeping client entries would pop mismatched. Reset
+		// here — this runs on a fresh session AND an in-session load, but NOT a same-session reconnect.
+		history().reset();
 		consoleStore().clear();
 		// Drop stale per-panel selection/inspector state: a loaded layout keeps
 		// its saved panel ids, which can collide with ids used earlier this

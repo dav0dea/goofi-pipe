@@ -142,4 +142,20 @@ describe('HistoryStore — transaction atomicity on throw', () => {
 		expect(h.canUndo).toBe(true);
 		expect(h.undoLabel).toBe('Add'); // two children → one compound under the tx label
 	});
+
+	it('folds records that land only AFTER an awaited step (the store records post-RPC)', async () => {
+		// A store mutator records its graph_cmd only after its command RPC resolves; the caller
+		// (e.g. a multi-node drag transaction) MUST await each mutator so the records land in the
+		// buffer before flush. Awaited async records fold into one compound; un-awaited would leak
+		// out as separate top-level steps.
+		const h = history();
+		await h.transaction('Move 2 nodes', async () => {
+			for (const label of ['a', 'b']) {
+				await Promise.resolve(); // stands in for the awaited command RPC
+				h.record(mk(label));
+			}
+		});
+		expect(h.canUndo).toBe(true);
+		expect(h.undoLabel).toBe('Move 2 nodes'); // folded, not two separate 'Move' steps
+	});
 });

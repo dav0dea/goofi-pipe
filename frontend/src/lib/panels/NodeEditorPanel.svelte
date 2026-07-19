@@ -594,17 +594,18 @@
 					return { ...n, position: { x: c.x + dx, y: c.y + dy } };
 				});
 			}
-			// One transaction so moving N selected nodes is a single Ctrl+Z (each
-			// set*Pos records synchronously, so they fold into one history entry).
+			// One transaction so moving N selected nodes is a single Ctrl+Z. Each set*Pos records
+			// AFTER its command RPC resolves (B3), so the calls must be AWAITED inside the transaction
+			// — else the buffer is empty at flush and each records its own top-level step.
 			const label = args.nodes.length > 1 ? `Move ${args.nodes.length} nodes` : 'Move node';
 			void history().transaction(label, async () => {
 				for (const n of args.nodes) {
 					const pos: [number, number] = [Math.round(n.position.x + dx), Math.round(n.position.y + dy)];
 					const bnd = parseBoundary(n.id);
 					if (bnd && entered) {
-						void g.setBoundaryPos(entered, bnd, pos).catch(() => {});
+						await g.setBoundaryPos(entered, bnd, pos).catch(() => {});
 					} else {
-						void g.setNodePos(n.id, pos);
+						await g.setNodePos(n.id, pos);
 					}
 				}
 			});
