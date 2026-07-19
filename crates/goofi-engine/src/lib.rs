@@ -1418,6 +1418,18 @@ impl Graph {
             .map(|l| (l.node_out, l.slot_out))
     }
 
+    /// Does this exact (resolved) wire already exist? False if either slot fails to resolve
+    /// (`add_link` will surface the real error). Lets a command detect an idempotent AddLink no-op
+    /// so its inverse can be a no-op too, instead of destroying the pre-existing wire.
+    pub fn has_link(&self, node_out: Uid, slot_out: &str, node_in: Uid, slot_in: &str) -> bool {
+        let (Some(slot_out), Some(slot_in)) =
+            (self.resolve_output(node_out, slot_out), self.resolve_input(node_in, slot_in))
+        else {
+            return false;
+        };
+        self.links.contains(&Link { node_out, slot_out, node_in, slot_in })
+    }
+
     pub fn add_link(
         &mut self,
         node_out: Uid,

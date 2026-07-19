@@ -228,6 +228,12 @@ impl Command {
             }
 
             Command::AddLink { node_out, slot_out, node_in, slot_in } => {
+                // Idempotent: the exact wire already exists → the forward `add_link` is a silent
+                // no-op, so its inverse must be one too. A bare RemoveLink would DESTROY the
+                // pre-existing wire on undo (the inverse of a no-op is not a mutation).
+                if g.has_link(node_out, &slot_out, node_in, &slot_in) {
+                    return Ok((Outcome::Ok, Command::Compound(vec![])));
+                }
                 // A single-input connect EVICTS a prior wire on that input — capture the displaced
                 // wire so the inverse RESTORES it (else undo-of-reconnect leaves the input empty). A
                 // multi input appends (nothing displaced); reconnecting the same wire displaces nothing.
@@ -252,7 +258,14 @@ impl Command {
             }
 
             Command::RemoveLink { node_out, slot_out, node_in, slot_in } => {
-                g.remove_link(node_out, &slot_out, node_in, &slot_in)?;
+                // Idempotent: the wire is already gone (a peer removed it, or undo/redo racing a
+                // concurrent delete) → benign no-op. Erroring here would propagate through flip()
+                // and permanently wedge the session's undo stack (undo keeps re-selecting the
+                // un-flippable entry). RemoveLink is the inverse of every user add_link, so this
+                // guard is what lets multi-client undo of a connect converge.
+                if g.remove_link(node_out, &slot_out, node_in, &slot_in).is_err() {
+                    return Ok((Outcome::Ok, Command::Compound(vec![])));
+                }
                 Ok((Outcome::Ok, Command::AddLink { node_out, slot_out, node_in, slot_in }))
             }
 
@@ -823,6 +836,50 @@ mod tests {
         assert_eq!(g.links_view().len(), 1, "link added");
         inverse.execute(&mut g).unwrap();
         assert_eq!(g.links_view().len(), 0, "inverse removed the link");
+    }
+
+    #[test]
+    fn remove_link_is_idempotent_when_the_wire_is_already_gone() {
+        // A peer may drop a wire between one client's add_link and that client's undo (whose inverse
+        // is RemoveLink). Executing RemoveLink on an absent wire must be a benign no-op — not an Err
+        // that propagates through flip() and permanently wedges the session's undo stack.
+        let mut g = Graph::new();
+        let osc = g.add_node("Oscillator", None).unwrap();
+        let buf = g.add_node("Buffer", None).unwrap();
+
+        let (res, inverse) = Command::RemoveLink {
+            node_out: osc,
+            slot_out: "out".into(),
+            node_in: buf,
+            slot_in: "data".into(),
+        }
+        .execute(&mut g)
+        .unwrap();
+        assert!(matches!(res, Outcome::Ok));
+        assert!(matches!(inverse, Command::Compound(ref v) if v.is_empty()), "absent wire → no-op inverse");
+    }
+
+    #[test]
+    fn add_link_of_an_existing_wire_records_a_noop_inverse() {
+        // add_link is a silent no-op when the exact wire already exists. Its recorded inverse must
+        // therefore ALSO be a no-op — a bare RemoveLink would DESTROY the pre-existing wire on undo.
+        let mut g = Graph::new();
+        let osc = g.add_node("Oscillator", None).unwrap();
+        let buf = g.add_node("Buffer", None).unwrap();
+        g.add_link(osc, "out", buf, "data").unwrap(); // wire already present
+
+        let (_r, inverse) = Command::AddLink {
+            node_out: osc,
+            slot_out: "out".into(),
+            node_in: buf,
+            slot_in: "data".into(),
+        }
+        .execute(&mut g)
+        .unwrap();
+        assert_eq!(g.links_view().len(), 1, "still one wire (the forward add was a no-op)");
+
+        inverse.execute(&mut g).unwrap();
+        assert_eq!(g.links_view().len(), 1, "undo of a no-op add must NOT destroy the pre-existing wire");
     }
 
     #[test]
