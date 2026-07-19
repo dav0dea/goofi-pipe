@@ -538,12 +538,13 @@ impl CommandHistory {
     /// invalidates that session's redo future, but never another session's.
     pub fn apply(&mut self, g: &mut Graph, session: &str, cmd: Command) -> Result<Outcome, String> {
         let (outcome, inverse) = cmd.execute(g)?;
-        // A no-op forward command yields an empty-Compound inverse (an idempotent guard fired — the
-        // wire/node/scope was already in the requested state). It changed nothing, so it must record
-        // nothing: neither push a phantom undo entry nor clear this session's redo run.
-        if matches!(inverse, Command::Compound(ref v) if v.is_empty()) {
-            return Ok(outcome);
-        }
+        // Record EVERY successful command — including a forward no-op (an idempotent guard fired,
+        // yielding an empty-Compound inverse). The delegating client records exactly one graph_cmd
+        // per successful mutation RPC, UNCONDITIONALLY, and its undo delegates back to this history;
+        // so the two stacks must stay 1:1. Skipping the no-op here would desync them — a later undo
+        // would flip the WRONG (earlier) entry. A no-op's toggle is an empty Compound, so undoing/
+        // redoing it is itself a benign no-op; and a fresh command clearing this session's redo run
+        // mirrors the client clearing its own redo on any recorded action.
         self.entries.retain(|e| !(e.session == session && e.undone));
         self.entries.push(HistoryEntry { toggle: inverse, session: session.to_string(), undone: false });
         Ok(outcome)
@@ -1295,33 +1296,30 @@ mod tests {
     }
 
     #[test]
-    fn history_apply_of_a_noop_command_records_nothing_and_preserves_redo() {
-        // A no-op forward command (its execute returns an empty-Compound inverse — e.g. removing an
-        // already-absent wire, now reachable on the forward RPC path since the round-1 link
-        // idempotency fix) must NOT push a phantom undo entry NOR clear the session's redo run.
+    fn history_apply_records_even_a_noop_to_stay_aligned_with_the_client() {
+        // The delegating client records ONE graph_cmd per successful mutation RPC, UNCONDITIONALLY,
+        // and its undo delegates back to this history — so the client↔manager stacks must stay 1:1.
+        // A forward no-op (an idempotent guard fired, e.g. removing an already-absent wire) therefore
+        // STILL records an entry here, matching the client's record; skipping it would desync the two
+        // stacks so a later undo flips the wrong entry. Its toggle is an empty Compound, so undoing/
+        // redoing it is itself a benign no-op.
         let mut g = Graph::new();
         let mut h = CommandHistory::new();
         let osc = g.add_node("Oscillator", None).unwrap();
         let buf = g.add_node("Buffer", None).unwrap();
-        // Establish a redo run: apply a real command, then undo it.
-        h.apply(
-            &mut g,
-            "s1",
-            Command::AddLink { node_out: osc, slot_out: "out".into(), node_in: buf, slot_in: "data".into() },
-        )
-        .unwrap();
-        h.undo(&mut g, "s1").unwrap();
-        assert!(h.can_redo("s1"), "one redo pending");
 
-        // Remove the (now absent) wire — a no-op. It must record nothing.
+        assert!(!h.can_undo("s1"));
         h.apply(
             &mut g,
             "s1",
             Command::RemoveLink { node_out: osc, slot_out: "out".into(), node_in: buf, slot_in: "data".into() },
         )
         .unwrap();
-        assert!(h.can_redo("s1"), "the pending redo survived the no-op command");
-        assert!(!h.can_undo("s1"), "the no-op pushed no undoable entry");
+        assert!(h.can_undo("s1"), "a no-op still records an entry (1:1 with the client's graph_cmd)");
+
+        // Undoing the no-op entry succeeds and is a benign no-op (empty-Compound toggle), then redoable.
+        assert!(h.undo(&mut g, "s1").unwrap(), "undo of the no-op entry succeeds");
+        assert!(h.can_redo("s1"), "and it is redoable");
     }
 
     // ── structural commands (flat scope model) ────────────────────────────────────
