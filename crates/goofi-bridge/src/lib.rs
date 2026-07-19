@@ -550,7 +550,7 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
                 };
                 let uid = match state.history.lock().unwrap().apply(&mut g, &session, cmd)? {
                     goofi_engine::Outcome::Uid(u) => u,
-                    goofi_engine::Outcome::Ok => return Err("add_node: no uid returned".into()),
+                    _ => return Err("add_node: no uid returned".into()),
                 };
                 // Optional inline params (paste/duplicate replay + undo-of-delete): apply at creation
                 // UNDER THE GRAPH LOCK so the node is born configured (same coercion as update_param).
@@ -673,6 +673,8 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
             // and return; the mutated forest reaches every client via the post-dispatch re-mirror,
             // which the frontend reconciles from the doc. The old `subpatch_changed` snapshot echo is
             // retired (Phase 4) — the doc read-path covers it.
+            // The structural sub-patch ops route through the command history (undoable, uid-stable on
+            // the flat model). Each parses a Command, applies it, and maps the Outcome to the reply.
             "group_nodes" => {
                 let members = payload
                     .get("members")
@@ -683,12 +685,27 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
                     return Err("group_nodes: malformed member uid".into());
                 }
                 let pos = payload.get("pos").and_then(parse_pos).unwrap_or([0.0, 0.0]);
-                let inst = g.group_nodes(&uids, pos)?;
+                let out = state.history.lock().unwrap().apply(
+                    &mut g,
+                    &session,
+                    goofi_engine::Command::Group { members: uids, pos, restore: None },
+                )?;
+                let inst = match out {
+                    goofi_engine::Outcome::Uid(u) => u,
+                    _ => return Err("group_nodes: no scope uid returned".into()),
+                };
                 Ok(json!({ "inst_id": inst.to_hex() }))
             }
             "expand_instance" => {
                 let inst = parse_uid(&payload, "inst_id")?;
-                let restored = g.expand_instance(inst)?;
+                // Capture the members BEFORE the command dissolves the scope — the legacy client
+                // expand executor (until Task B3) reads `restored` to record its own inverse.
+                let restored = g.scope_members(inst);
+                state
+                    .history
+                    .lock()
+                    .unwrap()
+                    .apply(&mut g, &session, goofi_engine::Command::Expand { scope: inst })?;
                 Ok(json!({ "restored": restored.iter().map(|u| u.to_hex()).collect::<Vec<_>>() }))
             }
             "add_boundary" => {
@@ -701,36 +718,59 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
                 let dtype = parse_slot_type(payload.get("dtype").and_then(|v| v.as_str()).unwrap_or("ARRAY"))
                     .ok_or("add_boundary: bad dtype")?;
                 let pos = payload.get("pos").and_then(parse_pos).unwrap_or([0.0, 0.0]);
-                let bnd = g.add_boundary(inst, dir, dtype, pos)?;
+                let out = state.history.lock().unwrap().apply(
+                    &mut g,
+                    &session,
+                    goofi_engine::Command::AddStub { scope: inst, dir, dtype, pos, restore: None },
+                )?;
+                let bnd = match out {
+                    goofi_engine::Outcome::StubId(id) => id,
+                    _ => return Err("add_boundary: no stub id returned".into()),
+                };
                 Ok(json!({ "bnd_id": bnd }))
             }
             "wire_boundary" => {
                 let inst = parse_uid(&payload, "inst_id")?;
-                let bnd = parse_str(&payload, "bnd_id")?;
+                let bnd = parse_str(&payload, "bnd_id")?.to_string();
                 let inner = parse_uid(&payload, "inner_node")?;
-                let slot = parse_str(&payload, "inner_slot")?;
-                g.wire_boundary(inst, bnd, inner, slot)?;
+                let slot = parse_str(&payload, "inner_slot")?.to_string();
+                state.history.lock().unwrap().apply(
+                    &mut g,
+                    &session,
+                    goofi_engine::Command::WireStub { scope: inst, stub_id: bnd, inner: Some((inner, slot)) },
+                )?;
                 Ok(json!({ "ok": true }))
             }
             "remove_boundary" => {
                 let inst = parse_uid(&payload, "inst_id")?;
-                let bnd = parse_str(&payload, "bnd_id")?;
-                g.remove_boundary(inst, bnd)?;
+                let bnd = parse_str(&payload, "bnd_id")?.to_string();
+                state.history.lock().unwrap().apply(
+                    &mut g,
+                    &session,
+                    goofi_engine::Command::RemoveStub { scope: inst, stub_id: bnd },
+                )?;
                 Ok(json!({ "ok": true }))
             }
             "rename_boundary" => {
                 let inst = parse_uid(&payload, "inst_id")?;
-                let bnd = parse_str(&payload, "bnd_id")?;
-                let name = parse_str(&payload, "name")?;
-                g.rename_boundary(inst, bnd, name)?;
+                let bnd = parse_str(&payload, "bnd_id")?.to_string();
+                let name = parse_str(&payload, "name")?.to_string();
+                state.history.lock().unwrap().apply(
+                    &mut g,
+                    &session,
+                    goofi_engine::Command::EditStub { scope: inst, stub_id: bnd, name: Some(name), pos: None },
+                )?;
                 Ok(json!({ "ok": true }))
             }
             "set_boundary_pos" => {
                 let inst = parse_uid(&payload, "inst_id")?;
-                let bnd = parse_str(&payload, "bnd_id")?;
+                let bnd = parse_str(&payload, "bnd_id")?.to_string();
                 let pos = payload.get("pos").and_then(parse_pos).ok_or("set_boundary_pos: missing pos")?;
-                g.set_boundary_pos(inst, bnd, pos)?;
-                // Boundary positions are read from the CRDT doc forest (retired `boundary_moved`).
+                state.history.lock().unwrap().apply(
+                    &mut g,
+                    &session,
+                    goofi_engine::Command::EditStub { scope: inst, stub_id: bnd, name: None, pos: Some(pos) },
+                )?;
                 Ok(json!({ "ok": true }))
             }
             // duplicate_shared / make_unique / re_share_instance are gone — sub-patch sharing was

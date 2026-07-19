@@ -919,6 +919,46 @@ impl Graph {
         Ok(scope_uid)
     }
 
+    /// Recreate a scope EXACTLY — a specific `scope_id`, name, pos, and stubs — re-tagging `members`
+    /// into it. The inverse of `expand_instance` (undo-of-expand / redo-of-group): the members are
+    /// currently in the grandparent scope (where expand left them); this moves them back under
+    /// `scope_id` with the captured stubs verbatim, so undo/redo is uid-stable. A `scope_id` already
+    /// live is rejected (the command layer guards redo races before calling).
+    pub fn restore_scope(
+        &mut self,
+        scope_id: Uid,
+        name: String,
+        pos: [f64; 2],
+        members: &[Uid],
+        stubs: IndexMap<subpatch::StubId, subpatch::Stub>,
+    ) -> Result<Uid, String> {
+        if self.scopes.contains_key(&scope_id) {
+            return Err(format!("restore_scope: scope {scope_id} already live"));
+        }
+        if members.is_empty() {
+            return Err("restore_scope: empty members".into());
+        }
+        let mut parent: Option<Option<Uid>> = None;
+        for &m in members {
+            if !self.nodes.contains_key(&m) && !self.scopes.contains_key(&m) {
+                return Err(format!("restore_scope: no such member {m}"));
+            }
+            let s = self.scope_of(m);
+            match parent {
+                None => parent = Some(s),
+                Some(prev) if prev != s => return Err("restore_scope: members span multiple scopes".into()),
+                _ => {}
+            }
+        }
+        let parent = parent.unwrap();
+        self.scopes.insert(scope_id, subpatch::Scope { name, pos, stubs });
+        for &m in members {
+            self.set_member_scope(m, Some(scope_id));
+        }
+        self.scope_of.insert(scope_id, parent);
+        Ok(scope_id)
+    }
+
     /// Inline a scope back into its parent: re-tag each member to the parent scope, then drop the
     /// scope + its stubs. The crossing flat links already point at the members leaf→leaf, so they
     /// survive verbatim — nothing to reconnect. Returns the restored member uids. Uid-stable.
@@ -1007,30 +1047,58 @@ impl Graph {
     }
 
     /// Point a stub at an inner member slot (one stub per inner slot). `inner_node` must be a direct
-    /// member of `scope`; the stub's dtype is resolved from that slot.
+    /// member of `scope`; the stub's dtype is resolved from that slot. A thin wrapper over
+    /// [`set_stub_inner`] (the canonical wire/unwire the command layer uses).
     pub fn wire_boundary(&mut self, scope: Uid, stub: &str, inner_node: Uid, inner_slot: &str) -> Result<(), String> {
-        if !self.is_member_of(scope, inner_node) {
-            return Err("wire_boundary: inner is not a member of this scope".into());
+        self.set_stub_inner(scope, stub, Some((inner_node, inner_slot.to_string())))
+    }
+
+    /// Set (`Some`) or clear (`None`) a stub's inner target — the canonical wire/unwire. Wiring
+    /// validates membership + one-stub-per-inner-slot and resolves the port dtype from the slot;
+    /// unwiring just clears it. The command layer captures the old inner for the exact inverse.
+    pub fn set_stub_inner(&mut self, scope: Uid, stub: &str, inner: Option<(Uid, String)>) -> Result<(), String> {
+        match inner {
+            Some((inner_node, inner_slot)) => {
+                if !self.is_member_of(scope, inner_node) {
+                    return Err("set_stub_inner: inner is not a member of this scope".into());
+                }
+                let dir = self
+                    .scopes
+                    .get(&scope)
+                    .and_then(|s| s.stubs.get(stub))
+                    .map(|st| st.dir)
+                    .ok_or("set_stub_inner: no such stub")?;
+                let dtype = match dir {
+                    subpatch::Dir::In => self.input_slot_type(inner_node, &inner_slot),
+                    subpatch::Dir::Out => self.output_slot_type(inner_node, &inner_slot),
+                }
+                .ok_or("set_stub_inner: no such inner slot")?;
+                let target = (inner_node, inner_slot);
+                let s = self.scopes.get_mut(&scope).ok_or("set_stub_inner: no such scope")?;
+                if s.stubs.iter().any(|(id, st)| id != stub && st.inner.as_ref() == Some(&target)) {
+                    return Err("set_stub_inner: that inner slot is already exposed by another stub".into());
+                }
+                let st = s.stubs.get_mut(stub).ok_or("set_stub_inner: no such stub")?;
+                st.inner = Some(target);
+                st.dtype = dtype;
+                Ok(())
+            }
+            None => {
+                let st = self
+                    .scopes
+                    .get_mut(&scope)
+                    .and_then(|s| s.stubs.get_mut(stub))
+                    .ok_or("set_stub_inner: no such stub")?;
+                st.inner = None;
+                Ok(())
+            }
         }
-        let dir = self
-            .scopes
-            .get(&scope)
-            .and_then(|s| s.stubs.get(stub))
-            .map(|st| st.dir)
-            .ok_or("wire_boundary: no such stub")?;
-        let dtype = match dir {
-            subpatch::Dir::In => self.input_slot_type(inner_node, inner_slot),
-            subpatch::Dir::Out => self.output_slot_type(inner_node, inner_slot),
-        }
-        .ok_or("wire_boundary: no such inner slot")?;
-        let target = (inner_node, inner_slot.to_string());
-        let s = self.scopes.get_mut(&scope).ok_or("wire_boundary: no such scope")?;
-        if s.stubs.iter().any(|(id, st)| id != stub && st.inner.as_ref() == Some(&target)) {
-            return Err("wire_boundary: that inner slot is already exposed by another stub".into());
-        }
-        let st = s.stubs.get_mut(stub).ok_or("wire_boundary: no such stub")?;
-        st.inner = Some(target);
-        st.dtype = dtype;
+    }
+
+    /// Insert a full captured stub at a specific id — the restore inverse of removing a stub.
+    pub fn insert_stub(&mut self, scope: Uid, stub_id: subpatch::StubId, stub: subpatch::Stub) -> Result<(), String> {
+        let s = self.scopes.get_mut(&scope).ok_or("insert_stub: no such scope")?;
+        s.stubs.insert(stub_id, stub);
         Ok(())
     }
 

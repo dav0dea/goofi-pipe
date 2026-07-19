@@ -286,6 +286,72 @@ async fn a_link_add_is_undoable_over_the_wire() {
 }
 
 #[tokio::test]
+async fn group_undo_redo_over_the_wire_is_uid_stable() {
+    // group routes through the command history: undo expands the scope (members back at root), redo
+    // regroups at the SAME scope uid with the crossing stub restored.
+    let base = start_server().await;
+    let (mut ws, _) = connect_async(format!("{base}/control")).await.unwrap();
+    let _hello = recv_text(&mut ws).await;
+
+    let uid = |v: &Value| v["result"].as_str().unwrap().to_string();
+    let osc = uid(&call_session(&mut ws, 1, "add_node", json!({ "type": "Oscillator" }), "s1").await);
+    let buf = uid(&call_session(&mut ws, 2, "add_node", json!({ "type": "Buffer" }), "s1").await);
+    let sink = uid(&call_session(&mut ws, 3, "add_node", json!({ "type": "Buffer" }), "s1").await);
+    call_session(&mut ws, 4, "add_link", json!({ "node_out": osc, "slot_out": "out", "node_in": buf, "slot_in": "data" }), "s1").await;
+    call_session(&mut ws, 5, "add_link", json!({ "node_out": buf, "slot_out": "out", "node_in": sink, "slot_in": "data" }), "s1").await;
+
+    // Group [osc, buf] → one scope with an Out stub (the buf→sink cut).
+    let scope = call_session(&mut ws, 6, "group_nodes", json!({ "members": [osc, buf], "pos": [0.0, 0.0] }), "s1").await
+        ["result"]["inst_id"].as_str().unwrap().to_string();
+    let doc = sync_replica(&mut ws, |d| d.instance_ids().iter().any(|u| *u == scope)).await;
+    let has_stub = |d: &goofi_crdt::GraphDoc, s: &str| {
+        d.to_json()["instances"][s]["stubs"].as_object().map(|m| !m.is_empty()).unwrap_or(false)
+    };
+    assert!(has_stub(&doc, &scope), "grouped scope exposes a stub");
+
+    // Undo → expand: scope gone, all three leaves remain at root (positive-presence anchor).
+    call_session(&mut ws, 7, "undo", json!({}), "s1").await;
+    let doc2 = sync_replica(&mut ws, |d| d.node_ids().len() == 3 && d.instance_ids().is_empty()).await;
+    assert!(doc2.instance_ids().is_empty(), "undo expanded the scope");
+    assert_eq!(doc2.node_ids().len(), 3, "all leaves remain");
+
+    // Redo → regroup at the SAME scope uid with the stub restored.
+    call_session(&mut ws, 8, "redo", json!({}), "s1").await;
+    let doc3 = sync_replica(&mut ws, |d| d.instance_ids().iter().any(|u| *u == scope) && has_stub(d, &scope)).await;
+    assert!(doc3.instance_ids().iter().any(|u| *u == scope), "redo restored the SAME scope uid");
+    assert!(has_stub(&doc3, &scope), "stub restored verbatim");
+}
+
+#[tokio::test]
+async fn add_boundary_is_undoable_over_the_wire() {
+    // A stub add routes through the command history; undo removes it (the scope survives).
+    let base = start_server().await;
+    let (mut ws, _) = connect_async(format!("{base}/control")).await.unwrap();
+    let _hello = recv_text(&mut ws).await;
+
+    let uid = |v: &Value| v["result"].as_str().unwrap().to_string();
+    let buf = uid(&call_session(&mut ws, 1, "add_node", json!({ "type": "Buffer" }), "s1").await);
+    let scope = call_session(&mut ws, 2, "group_nodes", json!({ "members": [buf], "pos": [0.0, 0.0] }), "s1").await
+        ["result"]["inst_id"].as_str().unwrap().to_string();
+    let doc0 = sync_replica(&mut ws, |d| d.instance_ids().iter().any(|u| *u == scope)).await;
+    let stubs0 = doc0.to_json()["instances"][&scope]["stubs"].as_object().map(|m| m.len()).unwrap_or(0);
+
+    let bnd = call_session(&mut ws, 3, "add_boundary", json!({ "inst_id": scope, "dir": "in", "dtype": "ARRAY", "pos": [0.0, 0.0] }), "s1").await
+        ["result"]["bnd_id"].as_str().unwrap().to_string();
+    let doc = sync_replica(&mut ws, |d| d.read_at(&["instances", scope.as_str(), "stubs", bnd.as_str()]).is_some()).await;
+    assert!(doc.read_at(&["instances", scope.as_str(), "stubs", bnd.as_str()]).is_some(), "stub added");
+
+    // Undo → the stub is gone; the scope (positive-presence anchor) survives with the original stub count.
+    call_session(&mut ws, 4, "undo", json!({}), "s1").await;
+    let doc2 = sync_replica(&mut ws, |d| {
+        d.instance_ids().iter().any(|u| *u == scope)
+            && d.read_at(&["instances", scope.as_str(), "stubs"]).and_then(|v| v.as_object().map(|m| m.len())) == Some(stubs0)
+    })
+    .await;
+    assert!(doc2.read_at(&["instances", scope.as_str(), "stubs", bnd.as_str()]).is_none(), "undo removed the stub");
+}
+
+#[tokio::test]
 async fn runtime_registered_type_reaches_the_palette_over_the_wire() {
     // The full serving path a browser sees: a runtime type registered into the
     // live graph (as the CLI's --python-nodes does) surfaces via list_nodes.

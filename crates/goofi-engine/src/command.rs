@@ -12,10 +12,12 @@
 //! Inverses are **idempotent** where multi-client convergence needs it: an edit/remove against an
 //! already-absent node is a benign no-op, so two clients undoing the same change converge.
 
+use crate::subpatch::{Dir, Stub, StubId};
 use crate::{Graph, Uid};
 use goofi_core::globals::GlobalValue;
 use goofi_core::Param;
 use goofi_node::{param, ParamGroups};
+use indexmap::IndexMap;
 
 /// What a command produced, for the caller (the RPC reply). Kept serde-free so the engine needs no
 /// JSON dep — the bridge maps it to the wire.
@@ -23,8 +25,10 @@ use goofi_node::{param, ParamGroups};
 pub enum Outcome {
     /// A plain success (`{ ok: true }` on the wire).
     Ok,
-    /// A minted/affected uid — `add_node` returns the node uid.
+    /// A minted/affected uid — `add_node`/`group` return the node/scope uid.
     Uid(Uid),
+    /// A minted/restored stub id — `add_stub` returns the stub's id (`in0`/`out0`).
+    StubId(StubId),
 }
 
 /// A param's expression binding, as carried by [`Command::EditParam`]. An empty `source` clears the
@@ -34,6 +38,16 @@ pub struct ExprState {
     pub source: String,
     pub enabled: bool,
     pub triggers: bool,
+}
+
+/// The captured state to recreate a scope EXACTLY — carried by [`Command::Group`]'s restore form
+/// (the inverse of [`Command::Expand`]). Redo-of-group / undo-of-expand restores the exact scope id
+/// + stubs (uid-stable), never a freshly-minted one.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ScopeRestore {
+    pub scope_id: Uid,
+    pub name: String,
+    pub stubs: IndexMap<StubId, Stub>,
 }
 
 /// One semantic patch edit. Every variant has an exact inverse (see [`Command::execute`]).
@@ -87,6 +101,48 @@ pub enum Command {
     EditGlobal {
         name: String,
         value: Option<GlobalValue>,
+    },
+
+    // ── Structural sub-patch commands (uid-stable on the flat scope model) ─────────
+    /// Group `members` into a new sub-patch scope at `pos`. `restore` is `None` for a user group
+    /// (mints the scope + derives crossing stubs); `Some` recreates an exact scope (the inverse of
+    /// `Expand`). Returns the scope uid.
+    Group {
+        members: Vec<Uid>,
+        pos: [f64; 2],
+        restore: Option<ScopeRestore>,
+    },
+    /// Expand (dissolve) a scope back into its parent. Inverse = the `Group` that recreates it.
+    Expand {
+        scope: Uid,
+    },
+    /// Add a boundary stub to a scope. `restore` is `None` for a user add (mints an unwired stub);
+    /// `Some((id, stub))` recreates an exact captured stub (the inverse of `RemoveStub`).
+    AddStub {
+        scope: Uid,
+        dir: Dir,
+        dtype: goofi_core::SlotType,
+        pos: [f64; 2],
+        restore: Option<(StubId, Stub)>,
+    },
+    /// Remove a stub. Inverse = `AddStub` restoring the captured stub.
+    RemoveStub {
+        scope: Uid,
+        stub_id: StubId,
+    },
+    /// Wire (`Some`) or unwire (`None`) a stub's inner target. Inverse restores the old inner.
+    WireStub {
+        scope: Uid,
+        stub_id: StubId,
+        inner: Option<(Uid, String)>,
+    },
+    /// Edit a stub's display name and/or pill pos. A `None` field is left untouched; the inverse
+    /// restores whichever were set.
+    EditStub {
+        scope: Uid,
+        stub_id: StubId,
+        name: Option<String>,
+        pos: Option<[f64; 2]>,
     },
 }
 
@@ -190,6 +246,80 @@ impl Command {
                 let old = g.globals().get(&name).cloned();
                 g.apply_global_change(&name, value)?;
                 Ok((Outcome::Ok, Command::EditGlobal { name, value: old }))
+            }
+
+            Command::Group { members, pos, restore } => {
+                let scope = match restore {
+                    None => g.group_nodes(&members, pos)?,
+                    // Idempotent: the exact scope is already live (a redo racing another client) — reuse it.
+                    Some(r) if g.scope(r.scope_id).is_some() => r.scope_id,
+                    Some(r) => g.restore_scope(r.scope_id, r.name, pos, &members, r.stubs)?,
+                };
+                Ok((Outcome::Uid(scope), Command::Expand { scope }))
+            }
+
+            Command::Expand { scope } => {
+                let Some(s) = g.scope(scope) else {
+                    return Ok((Outcome::Ok, Command::Compound(vec![]))); // idempotent: already expanded/gone
+                };
+                // Capture the scope verbatim BEFORE dissolving, so the inverse re-groups it exactly.
+                let name = s.name.clone();
+                let spos = s.pos;
+                let stubs = s.stubs.clone();
+                let members = g.scope_members(scope);
+                g.expand_instance(scope)?;
+                Ok((
+                    Outcome::Ok,
+                    Command::Group {
+                        members,
+                        pos: spos,
+                        restore: Some(ScopeRestore { scope_id: scope, name, stubs }),
+                    },
+                ))
+            }
+
+            Command::AddStub { scope, dir, dtype, pos, restore } => {
+                let id = match restore {
+                    None => g.add_boundary(scope, dir, dtype, pos)?,
+                    Some((id, stub)) => {
+                        g.insert_stub(scope, id.clone(), stub)?;
+                        id
+                    }
+                };
+                Ok((Outcome::StubId(id.clone()), Command::RemoveStub { scope, stub_id: id }))
+            }
+
+            Command::RemoveStub { scope, stub_id } => {
+                let Some(stub) = g.scope(scope).and_then(|s| s.stubs.get(&stub_id).cloned()) else {
+                    return Ok((Outcome::Ok, Command::Compound(vec![]))); // idempotent: already gone
+                };
+                g.remove_boundary(scope, &stub_id)?;
+                let (dir, dtype, pos) = (stub.dir, stub.dtype, stub.pos);
+                Ok((Outcome::Ok, Command::AddStub { scope, dir, dtype, pos, restore: Some((stub_id, stub)) }))
+            }
+
+            Command::WireStub { scope, stub_id, inner } => {
+                let Some(old) = g.scope(scope).and_then(|s| s.stubs.get(&stub_id)).map(|st| st.inner.clone())
+                else {
+                    return Ok((Outcome::Ok, Command::Compound(vec![]))); // idempotent: stub gone
+                };
+                g.set_stub_inner(scope, &stub_id, inner)?;
+                Ok((Outcome::Ok, Command::WireStub { scope, stub_id, inner: old }))
+            }
+
+            Command::EditStub { scope, stub_id, name, pos } => {
+                let Some(st) = g.scope(scope).and_then(|s| s.stubs.get(&stub_id)) else {
+                    return Ok((Outcome::Ok, Command::Compound(vec![]))); // idempotent: stub gone
+                };
+                let old_name = name.as_ref().map(|_| st.name.clone());
+                let old_pos = pos.map(|_| st.pos);
+                if let Some(n) = &name {
+                    g.rename_boundary(scope, &stub_id, n)?;
+                }
+                if let Some(p) = pos {
+                    g.set_boundary_pos(scope, &stub_id, p)?;
+                }
+                Ok((Outcome::Ok, Command::EditStub { scope, stub_id, name: old_name, pos: old_pos }))
             }
         }
     }
@@ -535,5 +665,167 @@ mod tests {
         assert!(h.can_undo("s1") && !h.can_redo("s1"));
         h.undo(&mut g, "s1").unwrap();
         assert!(!h.can_undo("s1") && h.can_redo("s1"));
+    }
+
+    // ── structural commands (flat scope model) ────────────────────────────────────
+
+    /// osc → buf → sink; group [osc, buf] cuts buf→sink into one Out stub.
+    fn grouped_chain() -> (Graph, Uid, Uid, Uid) {
+        let mut g = Graph::new();
+        let osc = g.add_node("Oscillator", None).unwrap();
+        let buf = g.add_node("Buffer", None).unwrap();
+        let sink = g.add_node("Buffer", None).unwrap();
+        g.add_link(osc, "out", buf, "data").unwrap();
+        g.add_link(buf, "out", sink, "data").unwrap();
+        (g, osc, buf, sink)
+    }
+
+    #[test]
+    fn group_undo_expands_and_redo_regroups_uid_stable() {
+        let (mut g, osc, buf, _sink) = grouped_chain();
+        let nodes_before = g.node_uids();
+        let links_before = g.links_view().len();
+
+        let (res, undo) = Command::Group { members: vec![osc, buf], pos: [5.0, 6.0], restore: None }
+            .execute(&mut g)
+            .unwrap();
+        let Outcome::Uid(scope) = res else { panic!("group returns the scope uid") };
+        assert_eq!(g.scope_of(osc), Some(scope), "osc grouped");
+        let stub_count = g.scope(scope).unwrap().stubs.len();
+        assert_eq!(stub_count, 1, "one Out stub for the buf→sink cut");
+
+        // Undo → expand: members back at ROOT, scope gone, flat graph identical.
+        let (_r, redo) = undo.execute(&mut g).unwrap();
+        assert!(g.scope(scope).is_none(), "scope dissolved");
+        assert_eq!(g.scope_of(osc), None, "osc back at ROOT");
+        assert_eq!(g.node_uids(), nodes_before, "leaf uids unchanged");
+        assert_eq!(g.links_view().len(), links_before, "flat links intact");
+
+        // Redo → regroup at the SAME scope uid with the SAME stubs.
+        let (res2, _u2) = redo.execute(&mut g).unwrap();
+        assert_eq!(res2, Outcome::Uid(scope), "redo restored the SAME scope uid");
+        assert_eq!(g.scope_of(osc), Some(scope), "osc regrouped under the same scope");
+        assert_eq!(g.scope(scope).unwrap().stubs.len(), stub_count, "stubs restored verbatim");
+    }
+
+    #[test]
+    fn expand_command_undo_regroups_exactly() {
+        let (mut g, osc, buf, _sink) = grouped_chain();
+        let scope = g.group_nodes(&[osc, buf], [1.0, 2.0]).unwrap();
+        let stub_count = g.scope(scope).unwrap().stubs.len();
+
+        let (_res, undo) = Command::Expand { scope }.execute(&mut g).unwrap();
+        assert!(g.scope(scope).is_none(), "expanded");
+        assert_eq!(g.scope_of(osc), None);
+
+        undo.execute(&mut g).unwrap(); // undo-of-expand = re-group exactly
+        assert_eq!(g.scope_of(osc), Some(scope), "re-grouped under the same scope uid");
+        assert_eq!(g.scope(scope).unwrap().stubs.len(), stub_count, "stubs restored");
+    }
+
+    #[test]
+    fn expand_is_idempotent_when_the_scope_is_gone() {
+        let (mut g, osc, buf, _sink) = grouped_chain();
+        let scope = g.group_nodes(&[osc, buf], [0.0, 0.0]).unwrap();
+        g.expand_instance(scope).unwrap();
+        let (res, inv) = Command::Expand { scope }.execute(&mut g).unwrap();
+        assert_eq!(res, Outcome::Ok);
+        assert_eq!(inv, Command::Compound(vec![]), "no-op inverse when already expanded");
+    }
+
+    #[test]
+    fn add_stub_and_remove_stub_are_inverses() {
+        let (mut g, osc, buf, _sink) = grouped_chain();
+        let scope = g.group_nodes(&[buf], [0.0, 0.0]).unwrap(); // osc→buf cut + buf→sink cut auto-stub
+        let _ = osc;
+        let before = g.scope(scope).unwrap().stubs.len();
+
+        let (_res, undo) = Command::AddStub {
+            scope,
+            dir: Dir::In,
+            dtype: goofi_core::SlotType::Array,
+            pos: [3.0, 4.0],
+            restore: None,
+        }
+        .execute(&mut g)
+        .unwrap();
+        assert_eq!(g.scope(scope).unwrap().stubs.len(), before + 1, "stub added");
+
+        let (_r, redo) = undo.execute(&mut g).unwrap();
+        assert_eq!(g.scope(scope).unwrap().stubs.len(), before, "inverse removed it");
+        redo.execute(&mut g).unwrap();
+        assert_eq!(g.scope(scope).unwrap().stubs.len(), before + 1, "redo restored the stub");
+    }
+
+    #[test]
+    fn wire_stub_inverse_restores_the_old_inner() {
+        let mut g = Graph::new();
+        let a = g.add_node("Buffer", None).unwrap();
+        let b = g.add_node("Buffer", None).unwrap();
+        g.add_link(a, "out", b, "data").unwrap();
+        let scope = g.group_nodes(&[a], [0.0, 0.0]).unwrap(); // auto out stub on a.out
+        let stub = g.add_boundary(scope, Dir::In, goofi_core::SlotType::Array, [0.0, 0.0]).unwrap();
+        assert!(g.scope(scope).unwrap().stubs[&stub].inner.is_none(), "born unwired");
+
+        let (_res, undo) = Command::WireStub {
+            scope,
+            stub_id: stub.clone(),
+            inner: Some((a, "data".to_string())),
+        }
+        .execute(&mut g)
+        .unwrap();
+        assert_eq!(g.resolve_stub(scope, &stub), Some((a, "data".to_string())), "wired");
+
+        undo.execute(&mut g).unwrap(); // inverse restores the OLD inner (None)
+        assert!(g.scope(scope).unwrap().stubs[&stub].inner.is_none(), "unwired back to the old state");
+    }
+
+    #[test]
+    fn edit_stub_round_trips_name_and_pos() {
+        let (mut g, _osc, buf, _sink) = grouped_chain();
+        let scope = g.group_nodes(&[buf], [0.0, 0.0]).unwrap();
+        let stub = g.scope(scope).unwrap().stubs.keys().next().unwrap().clone();
+        let (old_name, old_pos) = {
+            let st = &g.scope(scope).unwrap().stubs[&stub];
+            (st.name.clone(), st.pos)
+        };
+
+        let (_res, undo) = Command::EditStub {
+            scope,
+            stub_id: stub.clone(),
+            name: Some("wave".into()),
+            pos: Some([9.0, 9.0]),
+        }
+        .execute(&mut g)
+        .unwrap();
+        assert_eq!(g.scope(scope).unwrap().stubs[&stub].name, "wave");
+        assert_eq!(g.scope(scope).unwrap().stubs[&stub].pos, [9.0, 9.0]);
+
+        undo.execute(&mut g).unwrap();
+        assert_eq!(g.scope(scope).unwrap().stubs[&stub].name, old_name, "name restored");
+        assert_eq!(g.scope(scope).unwrap().stubs[&stub].pos, old_pos, "pos restored");
+    }
+
+    #[test]
+    fn group_expand_interleave_in_one_session_history() {
+        // Structural + leaf commands share one session's history and undo in order.
+        let (mut g, osc, buf, _sink) = grouped_chain();
+        let mut h = CommandHistory::new();
+        let scope = match h
+            .apply(&mut g, "s1", Command::Group { members: vec![osc, buf], pos: [0.0, 0.0], restore: None })
+            .unwrap()
+        {
+            Outcome::Uid(u) => u,
+            _ => panic!("group returns a uid"),
+        };
+        h.apply(&mut g, "s1", add_node("Oscillator")).unwrap(); // a later leaf edit
+        assert!(g.scope(scope).is_some());
+
+        h.undo(&mut g, "s1").unwrap(); // undo the leaf add
+        assert!(g.scope(scope).is_some(), "group still stands");
+        h.undo(&mut g, "s1").unwrap(); // undo the group → expand
+        assert!(g.scope(scope).is_none(), "group undone");
+        h.redo(&mut g, "s1").unwrap(); // redo the group → same uid
+        assert!(g.scope(scope).is_some(), "group redone at the same scope uid");
     }
 }
