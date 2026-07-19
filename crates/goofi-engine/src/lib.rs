@@ -854,23 +854,76 @@ impl Graph {
             .map(|(id, _)| id.clone())
     }
 
-    /// The inner endpoint slot for a crossing link whose direct group member is `member` and whose
-    /// buried leaf endpoint is `(endpoint, slot)`: the real slot when `member` IS the leaf endpoint,
-    /// else the nested member scope's stub id exposing it. The nested-member invariant (the crossing
-    /// link exists BECAUSE the nested scope exposes a stub to the buried leaf) makes the lookup
-    /// total; assert in debug, stay safe in release.
-    fn inner_endpoint_slot(&self, member: Uid, endpoint: Uid, slot: &str, dir: subpatch::Dir) -> String {
-        if member == endpoint {
-            slot.to_string()
-        } else {
-            self.stub_exposing(member, endpoint, slot, dir).unwrap_or_else(|| {
-                debug_assert!(
-                    false,
-                    "inner_endpoint_slot: nested member {member:?} exposes no stub for {endpoint:?}/{slot} (capture invariant violated)"
-                );
-                slot.to_string()
-            })
+    /// The direct member of `scope` on the path from `leaf` up the `scope_of` tree — the child of
+    /// `scope` that (transitively) contains `leaf`, or `leaf` itself when it is a direct member.
+    /// `None` if `leaf` is not inside `scope`.
+    fn direct_child_containing(&self, scope: Uid, leaf: Uid) -> Option<Uid> {
+        let mut cur = leaf;
+        loop {
+            let parent = self.scope_of(cur)?;
+            if parent == scope {
+                return Some(cur);
+            }
+            cur = parent;
         }
+    }
+
+    /// Lowest `in{n}`/`out{n}` stub id not already used on `scope`.
+    fn fresh_stub_id(&self, scope: Uid, dir: subpatch::Dir) -> subpatch::StubId {
+        let stubs = self.scopes.get(&scope).map(|s| &s.stubs);
+        for n in 0.. {
+            let cand = format!("{}{n}", dir.name());
+            if stubs.map(|st| !st.contains_key(&cand)).unwrap_or(true) {
+                return cand;
+            }
+        }
+        unreachable!()
+    }
+
+    /// The inner-slot key that a group boundary stub should reference for a crossing link whose
+    /// direct group member is `member` and whose buried leaf endpoint is `(leaf, slot)`:
+    /// * `member == leaf` — the member IS the leaf endpoint: the real slot.
+    /// * `member` is a nested scope already exposing the leaf: its existing stub id.
+    /// * otherwise — MINT the missing chain of stubs (one fresh port per nesting level) down to the
+    ///   leaf and return the top one's id.
+    ///
+    /// The last case keeps `group_nodes` TOTAL. A crossing flat link can outlive the boundary port
+    /// that once exposed it — `remove_boundary` drops the stub but LEAVES the leaf→leaf link — so a
+    /// later re-group must reconstruct the port rather than assert a now-broken invariant (the old
+    /// `debug_assert` panicked in dev/CI, poisoning the graph mutex, and minted a dangling stub in
+    /// release).
+    fn expose_in_nested_member(&mut self, member: Uid, leaf: Uid, slot: &str, dir: subpatch::Dir) -> subpatch::StubId {
+        if member == leaf {
+            return slot.to_string();
+        }
+        if let Some(id) = self.stub_exposing(member, leaf, slot, dir) {
+            return id;
+        }
+        // No port exposes the leaf — mint one. Its inner is the leaf directly when the leaf is a
+        // direct member, else the (recursively ensured) port on the intermediate nested scope.
+        let child = self.direct_child_containing(member, leaf).unwrap_or(leaf);
+        let inner = if child == leaf {
+            (leaf, slot.to_string())
+        } else {
+            let child_stub = self.expose_in_nested_member(child, leaf, slot, dir);
+            (child, child_stub)
+        };
+        let dtype = match dir {
+            subpatch::Dir::Out => self.output_slot_type(leaf, slot),
+            subpatch::Dir::In => self.input_slot_type(leaf, slot),
+        }
+        .unwrap_or(goofi_core::SlotType::Array);
+        let id = self.fresh_stub_id(member, dir);
+        let base = self.pos(member).unwrap_or([0.0, 0.0]);
+        let pos = match dir {
+            subpatch::Dir::Out => [base[0] + 220.0, base[1]],
+            subpatch::Dir::In => [base[0] - 40.0, base[1]],
+        };
+        if let Some(s) = self.scopes.get_mut(&member) {
+            s.stubs
+                .insert(id.clone(), subpatch::Stub { dir, dtype, inner: Some(inner), pos, name: id.clone() });
+        }
+        id
     }
 
     /// The single common parent scope of `members` (each must exist as a node or scope), or an error
@@ -916,7 +969,11 @@ impl Graph {
         let mut stubs: IndexMap<subpatch::StubId, Stub> = IndexMap::new();
         let mut seen: std::collections::HashSet<(Uid, &'static str, bool)> = std::collections::HashSet::new();
         let (mut in_n, mut out_n) = (0usize, 0usize);
-        for l in &self.links {
+        // Snapshot the links: `expose_in_nested_member` may MINT an intermediate stub on a nested
+        // member (re-exposing a leaf whose port was dropped by `remove_boundary`), which needs
+        // `&mut self` — so the classification can't hold a borrow on `self.links`.
+        let links = self.links.clone();
+        for l in &links {
             let out_m = self.containing_member(l.node_out, &member_set);
             let in_m = self.containing_member(l.node_in, &member_set);
             match (out_m, in_m) {
@@ -925,13 +982,14 @@ impl Graph {
                         continue;
                     }
                     let dtype = self.output_slot_type(l.node_out, l.slot_out).unwrap_or(goofi_core::SlotType::Array);
+                    let inner_slot = self.expose_in_nested_member(om, l.node_out, l.slot_out, Dir::Out);
                     let id = format!("out{out_n}");
                     stubs.insert(
                         id.clone(),
                         Stub {
                             dir: Dir::Out,
                             dtype,
-                            inner: Some((om, self.inner_endpoint_slot(om, l.node_out, l.slot_out, Dir::Out))),
+                            inner: Some((om, inner_slot)),
                             pos: [pos[0] + 220.0, pos[1] + 40.0 * out_n as f64],
                             name: id,
                         },
@@ -943,13 +1001,14 @@ impl Graph {
                         continue;
                     }
                     let dtype = self.input_slot_type(l.node_in, l.slot_in).unwrap_or(goofi_core::SlotType::Array);
+                    let inner_slot = self.expose_in_nested_member(im, l.node_in, l.slot_in, Dir::In);
                     let id = format!("in{in_n}");
                     stubs.insert(
                         id.clone(),
                         Stub {
                             dir: Dir::In,
                             dtype,
-                            inner: Some((im, self.inner_endpoint_slot(im, l.node_in, l.slot_in, Dir::In))),
+                            inner: Some((im, inner_slot)),
                             pos: [pos[0] - 40.0, pos[1] + 40.0 * in_n as f64],
                             name: id,
                         },
@@ -4148,6 +4207,46 @@ mod tests {
         let (id, _) =
             g.scope(s2).unwrap().stubs.iter().find(|(_, st)| st.dir == subpatch::Dir::Out).unwrap();
         assert_eq!(g.resolve_stub(s2, id), Some((b, "out".to_string())), "chain resolves to b.out");
+    }
+
+    #[test]
+    fn grouping_a_scope_with_an_orphaned_crossing_link_re_exposes_the_buried_leaf() {
+        // remove_boundary drops a boundary port but LEAVES the external flat link (leaf→leaf, by
+        // design — the data path is untouched). Re-grouping that scope used to trip the
+        // capture-invariant debug_assert (a panic poisoning the graph mutex → a dev/CI DoS) and mint
+        // a dangling stub in release. group_nodes must instead re-mint the missing exposing stub on
+        // the nested member so the outer boundary chain-resolves to the buried leaf.
+        let mut g = Graph::new();
+        let a = g.add_node("_TestEcho", None).unwrap();
+        let x = g.add_node("_TestEcho", None).unwrap();
+        g.add_link(a, "out", x, "in").unwrap();
+
+        let s = g.group_nodes(&[a], [0.0, 0.0]).unwrap();
+        assert_eq!(g.resolve_stub(s, "out0"), Some((a, "out".to_string())), "s exposes a.out as out0");
+
+        // Drop the port; the flat link a.out→x.in survives leaf→leaf (documented remove_boundary).
+        g.remove_boundary(s, "out0").unwrap();
+        assert!(g.scope(s).unwrap().stubs.is_empty(), "boundary port removed");
+        assert!(
+            g.links_view().iter().any(|l| l.node_out == a && l.node_in == x),
+            "the external flat link survives the port removal"
+        );
+
+        // Re-group the orphaned scope — must NOT panic, and the new boundary must chain to a.out.
+        let t = g.group_nodes(&[s], [1.0, 1.0]).unwrap();
+        let tid = g
+            .scope(t)
+            .unwrap()
+            .stubs
+            .iter()
+            .find(|(_, st)| st.dir == subpatch::Dir::Out)
+            .map(|(id, _)| id.clone())
+            .expect("t exposes an Out boundary for the crossing link");
+        assert_eq!(
+            g.resolve_stub(t, &tid),
+            Some((a, "out".to_string())),
+            "t's boundary chain-resolves to the buried leaf a.out (a fresh stub was minted on s)"
+        );
     }
 
     #[test]
