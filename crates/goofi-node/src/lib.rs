@@ -235,7 +235,7 @@ impl<'a> Outputs<'a> {
 }
 
 /// Per-tick engine context handed to a node.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct NodeCtx {
     /// Monotonic tick counter for this node.
     pub tick: u64,

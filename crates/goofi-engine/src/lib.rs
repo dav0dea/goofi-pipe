@@ -56,7 +56,8 @@ const UFREQ_EMA_ALPHA: f64 = 0.2;
 /// (`ctx.now`) of the node's previous productive emit and the smoothed inter-emit
 /// interval; `ufreq = 1/ema`. `last_emit == None` until the first emit, `ema == None`
 /// until the second gives one interval to seed it.
-struct UfreqMeter {
+#[derive(Default)]
+pub(crate) struct UfreqMeter {
     last_emit: Option<f64>,
     ema: Option<f64>,
 }
@@ -72,6 +73,7 @@ type WireCell = (Uid, &'static str, Option<Data>);
 /// only the execution site differs.
 enum Execution {
     Inline(Box<dyn goofi_node::Node>),
+    Detached(detached::DetachedHandle),
 }
 
 struct NodeEntry {
@@ -567,10 +569,6 @@ impl Graph {
         let mut ctx = NodeCtx::new();
         // `setup` latches the globals as of insert time (`process` reads them live each tick).
         ctx.globals = self.globals.snapshot();
-        // Seed the node (replay `on_param_changed` for each declared param, then run
-        // derived one-time `setup`). The FIRST error becomes the node's bootstrap error;
-        // the node is still inserted (no restart loop), matching the setup pipe.
-        let last_error = seed_node(&mut *node, &params, &mut ctx);
 
         let inputs: IndexMap<&'static str, Option<Data>> =
             manifest.inputs.iter().filter(|s| !s.multi).map(|s| (s.name, None)).collect();
@@ -580,11 +578,28 @@ impl Graph {
 
         let has_trigger_inputs = manifest.inputs.iter().any(|i| i.trigger_process);
         let run_policy = RunPolicy::from_params(&params);
+
+        // Route on isolation. An InProcess node is seeded synchronously (replay
+        // `on_param_changed` then `setup`) and runs inline. A Subprocess node is detached
+        // onto an off-tick worker that seeds ITSELF (its setup / first-tick spawn may
+        // block) and surfaces a bootstrap error via its first `Done` — so its
+        // `last_error` starts None here.
+        let (exec, last_error) = match manifest.isolation {
+            goofi_node::Isolation::InProcess => {
+                let err = seed_node(&mut *node, &params, &mut ctx);
+                (Execution::Inline(node), err)
+            }
+            goofi_node::Isolation::Subprocess => {
+                let handle = detached::DetachedHandle::spawn(node, manifest, params.clone(), ctx.clone());
+                (Execution::Detached(handle), None)
+            }
+        };
+
         self.nodes.insert(
             uid,
             NodeEntry {
                 manifest,
-                exec: Execution::Inline(node),
+                exec,
                 params,
                 inputs,
                 multi_inputs,
@@ -1417,8 +1432,16 @@ impl Graph {
             entry.run_policy = RunPolicy::from_params(&entry.params);
             return Ok(());
         }
-        let Execution::Inline(node) = &mut entry.exec;
-        node.on_param_changed(&ParamKey::new(group, name), &value).map_err(|e| e.0)
+        match &mut entry.exec {
+            Execution::Inline(node) => {
+                node.on_param_changed(&ParamKey::new(group, name), &value).map_err(|e| e.0)
+            }
+            // A detached node's instance lives on its worker; the edit is stored in
+            // `entry.params` and rides the next Job's cold read. Live `on_param_changed`
+            // propagation to the worker is deferred (the subprocess backend ignores params
+            // — full multi-slot/params is effort II).
+            Execution::Detached(_) => Ok(()),
+        }
     }
 
     /// Bind (or unbind) a param to an expression. An **empty** `source` unbinds (the stored
@@ -2335,15 +2358,67 @@ impl Graph {
             self.resolve_level_bindings(&level, now, now_secs, &globals);
             let set: std::collections::HashSet<Uid> = level.iter().copied().collect();
 
-            // Phase A — run every runnable node in this level in parallel. Each
+            // Detached tier — drain each detached node's completed output (→ `ran`, so
+            // Phase B propagates it like any fresh frame) and dispatch fresh work. The
+            // SAME wants_run/should_run gate as inline; only the execution site differs, so
+            // a detached node never enters Phase A. `last_run` is set on *dispatch*, so the
+            // worker is never fed faster than the node's cap; a still-busy worker coalesces
+            // to the newest inputs (the mailbox is latest-wins).
+            let mut ran: Vec<Uid> = Vec::new();
+            for &uid in &level {
+                let Some(entry) = self.nodes.get_mut(&uid) else { continue };
+                if !matches!(entry.exec, Execution::Detached(_)) {
+                    continue;
+                }
+                let done = match &entry.exec {
+                    Execution::Detached(h) => h.take_output(),
+                    Execution::Inline(_) => None,
+                };
+                if let Some(done) = done {
+                    entry.outputs = done.outputs;
+                    for (slot, o) in entry.outputs.iter() {
+                        if let Some(d) = o {
+                            entry.last_outputs.insert(*slot, d.clone());
+                        }
+                    }
+                    entry.last_error = done.error;
+                    if entry.outputs.values().any(|o| o.is_some()) {
+                        ran.push(uid);
+                    }
+                }
+                let wants_run = entry.trigger_pending
+                    || !entry.has_trigger_inputs
+                    || (entry.run_policy.autotrigger && !wired.contains(&uid));
+                let since_last = entry.last_run.map(|t| now.saturating_duration_since(t).as_secs_f64());
+                if entry.run_policy.should_run(since_last, wants_run) {
+                    entry.last_run = Some(now);
+                    entry.trigger_pending = false;
+                    let multis: IndexMap<&'static str, Vec<Data>> = entry
+                        .multi_inputs
+                        .iter()
+                        .map(|(k, cells)| (*k, cells.iter().filter_map(|(_, _, o)| o.clone()).collect()))
+                        .collect();
+                    let job = detached::Job {
+                        inputs: entry.inputs.clone(),
+                        multis,
+                        params: entry.params.clone(),
+                        now: now_secs,
+                    };
+                    if let Execution::Detached(h) = &entry.exec {
+                        h.dispatch(job);
+                    }
+                }
+            }
+
+            // Phase A — run every runnable INLINE node in this level in parallel. Each
             // closure touches only its own entry (disjoint `&mut`), so there is no
             // shared state and the result is independent of thread scheduling.
-            let ran: Vec<Uid> = {
+            {
                 let batch: Vec<(Uid, &mut NodeEntry)> = self
                     .nodes
                     .iter_mut()
                     .filter(|(uid, e)| {
-                        if !set.contains(uid) {
+                        if !set.contains(uid) || !matches!(e.exec, Execution::Inline(_)) {
                             return false;
                         }
                         // A pure source free-runs; a fresh trigger fires; autotrigger
@@ -2362,10 +2437,9 @@ impl Graph {
                         (*uid, e)
                     })
                     .collect();
-                let ran: Vec<Uid> = batch.iter().map(|(u, _)| *u).collect();
+                ran.extend(batch.iter().map(|(u, _)| *u));
                 batch.into_par_iter().for_each(|(_, entry)| run_node(entry));
-                ran
-            };
+            }
 
             // Phase B — propagate this level's fresh frames to their consumers
             // (serial; one-wire-per-input means each input has a single writer).
@@ -2460,7 +2534,8 @@ fn run_node(entry: &mut NodeEntry) {
         .iter()
         .map(|(k, cells)| (*k, cells.iter().filter_map(|(_, _, o)| o.clone()).collect()))
         .collect();
-    let Execution::Inline(node) = &mut entry.exec;
+    // A detached node runs on its own worker (see `tick_at`), never inline here.
+    let Execution::Inline(node) = &mut entry.exec else { return };
     entry.last_error = execute_node(
         entry.manifest,
         node,
@@ -3624,6 +3699,206 @@ mod tests {
         g.tick();
         assert_eq!(first_f32(&g.latest_frame(ea, "out").unwrap()), 3.0);
         assert_eq!(first_f32(&g.latest_frame(eb, "out").unwrap()), 4.0);
+    }
+
+    // ---- detached (Subprocess-isolated) execution scaffolding ----
+    //
+    // A blocking test node that runs on the detached worker WITHOUT a real subprocess: it
+    // records each job's arrival (the input's first f32) then waits for a permit, so a test
+    // controls exactly when the worker proceeds. `open()` releases the gate for good — used
+    // at teardown so a blocked worker can drain + idle and `Drop` can join it.
+    struct Gate {
+        mtx: std::sync::Mutex<GateInner>,
+        cv: std::sync::Condvar,
+    }
+    struct GateInner {
+        permits: u32,
+        calls: Vec<f32>,
+    }
+    impl Gate {
+        fn new() -> std::sync::Arc<Gate> {
+            std::sync::Arc::new(Gate {
+                mtx: std::sync::Mutex::new(GateInner { permits: 0, calls: Vec::new() }),
+                cv: std::sync::Condvar::new(),
+            })
+        }
+        fn release(&self) {
+            self.mtx.lock().unwrap().permits += 1;
+            self.cv.notify_one();
+        }
+        fn open(&self) {
+            self.mtx.lock().unwrap().permits = u32::MAX;
+            self.cv.notify_all();
+        }
+        fn calls(&self) -> Vec<f32> {
+            self.mtx.lock().unwrap().calls.clone()
+        }
+        /// Block the test thread until the worker has started at least `n` jobs.
+        fn wait_calls(&self, n: usize) {
+            for _ in 0..1000 {
+                if self.calls().len() >= n {
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(2));
+            }
+            panic!("worker never reached {n} calls (got {})", self.calls().len());
+        }
+    }
+
+    struct GateNode {
+        gate: std::sync::Arc<Gate>,
+        // Bumped on Drop so a teardown test can observe the worker dropping its node.
+        on_drop: Option<std::sync::Arc<std::sync::atomic::AtomicUsize>>,
+        fail: bool,
+    }
+    impl Drop for GateNode {
+        fn drop(&mut self) {
+            if let Some(c) = &self.on_drop {
+                c.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }
+        }
+    }
+    impl Node for GateNode {
+        fn process(&mut self, inp: &Inputs<'_>, out: &mut Outputs<'_>, _c: &mut NodeCtx, _p: &Params<'_>) -> NodeResult {
+            let first = inp
+                .get("data")
+                .and_then(|d| match d.value() {
+                    Value::Array(s) => Some(f32::from_le_bytes(s.as_bytes()[0..4].try_into().unwrap())),
+                    _ => None,
+                })
+                .unwrap_or(0.0);
+            self.gate.mtx.lock().unwrap().calls.push(first); // record arrival before blocking
+            if self.fail {
+                return Err("gate failure".into());
+            }
+            {
+                let mut g = self.gate.mtx.lock().unwrap();
+                while g.permits == 0 {
+                    g = self.gate.cv.wait(g).unwrap();
+                }
+                g.permits -= 1;
+            }
+            let d = Data::from_array_bytes(DType::F32, vec![1], first.to_le_bytes().to_vec(), Meta::empty())
+                .map_err(|e| e.to_string())?;
+            out.set("out", d);
+            Ok(())
+        }
+    }
+
+    static GATE_IN: &[SlotDecl] =
+        &[SlotDecl { name: "data", kind: SlotType::Array, trigger_process: true, multi: false }];
+    static GATE_OUT: &[OutputDecl] = &[OutputDecl { name: "out", kind: SlotType::Array }];
+    static GATE_MANIFEST: NodeManifest = NodeManifest {
+        type_name: "GateSubproc",
+        category: "test",
+        doc: "blocking detached test node (no real subprocess)",
+        inputs: GATE_IN,
+        outputs: GATE_OUT,
+        params: NO_PARAMS,
+        isolation: Isolation::Subprocess,
+        factory: rt_stub_factory,
+    };
+
+    fn register_gate(
+        g: &mut Graph,
+        gate: std::sync::Arc<Gate>,
+        on_drop: Option<std::sync::Arc<std::sync::atomic::AtomicUsize>>,
+        fail: bool,
+    ) {
+        g.register_dyn_type(
+            &GATE_MANIFEST,
+            Box::new(move |_p| Box::new(GateNode { gate: gate.clone(), on_drop: on_drop.clone(), fail })),
+        );
+    }
+
+    #[test]
+    fn detached_node_does_not_block_the_tick() {
+        let gate = Gate::new();
+        let mut g = Graph::new();
+        register_gate(&mut g, gate.clone(), None, false);
+        let src = g.add_node("_TestConst", None).unwrap();
+        let det = g.add_node("GateSubproc", None).unwrap();
+        g.add_link(src, "out", det, "data").unwrap();
+
+        let t0 = Instant::now();
+        g.tick_at(t0); // dispatches a job; the worker will block on the permit
+        assert!(t0.elapsed() < Duration::from_millis(50), "tick did not block on the busy worker");
+        gate.wait_calls(1); // the worker took the job (proving it ran off-tick)
+
+        gate.open(); // let it (and future jobs) complete
+        let mut got = false;
+        for i in 1..200 {
+            g.tick_at(t0 + Duration::from_millis(10 * i));
+            if g.latest_frame(det, "out").is_some() {
+                got = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(3));
+        }
+        assert!(got, "the detached node's output propagated on a later tick");
+    }
+
+    #[test]
+    fn detached_dispatch_coalesces_latest_wins() {
+        // While the worker is blocked on job 1, three more dispatches with changing values
+        // collapse in the latest-wins inbox — the worker runs the FIRST and the LAST only.
+        let gate = Gate::new();
+        let mut g = Graph::new();
+        register_gate(&mut g, gate.clone(), None, false);
+        let src = g.add_node("_TestConst", None).unwrap();
+        g.update_param(src, "constant", "value", Param::float(1.0, -1.0e9, 1.0e9)).unwrap();
+        let det = g.add_node("GateSubproc", None).unwrap();
+        g.add_link(src, "out", det, "data").unwrap();
+
+        let t0 = Instant::now();
+        g.tick_at(t0); // dispatch job(value=1); worker takes it and blocks
+        gate.wait_calls(1);
+        for (i, v) in [2.0f32, 3.0, 4.0].iter().enumerate() {
+            g.update_param(src, "constant", "value", Param::float(*v as f64, -1.0e9, 1.0e9)).unwrap();
+            g.tick_at(t0 + Duration::from_millis(10 * (i as u64 + 1))); // 2 and 3 coalesce into 4
+        }
+        gate.release(); // finish job 1 → worker takes the coalesced job(value=4)
+        gate.wait_calls(2);
+        assert_eq!(gate.calls(), vec![1.0, 4.0], "middle jobs coalesced; only first + last ran");
+        gate.open(); // teardown: let the worker drain + idle so Drop can join it
+    }
+
+    #[test]
+    fn removing_a_detached_node_joins_its_worker() {
+        // No tick → the worker seeds then idles on the inbox. remove_node drops the handle,
+        // which signals shutdown + joins; the idle worker exits and drops the node.
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let gate = Gate::new();
+        let dropped = std::sync::Arc::new(AtomicUsize::new(0));
+        let mut g = Graph::new();
+        register_gate(&mut g, gate.clone(), Some(dropped.clone()), false);
+        let det = g.add_node("GateSubproc", None).unwrap();
+        assert_eq!(dropped.load(Ordering::SeqCst), 0, "node still alive on its worker");
+
+        g.remove_node(det).unwrap();
+        assert_eq!(dropped.load(Ordering::SeqCst), 1, "worker exited and dropped its node");
+    }
+
+    #[test]
+    fn detached_process_error_surfaces_on_the_error_channel() {
+        let gate = Gate::new();
+        let mut g = Graph::new();
+        register_gate(&mut g, gate.clone(), None, true); // process() returns Err immediately
+        let src = g.add_node("_TestConst", None).unwrap();
+        let det = g.add_node("GateSubproc", None).unwrap();
+        g.add_link(src, "out", det, "data").unwrap();
+
+        let t0 = Instant::now();
+        let mut err = None;
+        for i in 0..200 {
+            g.tick_at(t0 + Duration::from_millis(5 * i));
+            if let Some(e) = g.last_error(det) {
+                err = Some(e.to_string());
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        assert_eq!(err.as_deref(), Some("gate failure"), "the detached process error surfaced");
     }
 
     // A runtime source built by a captured closure (not a bare fn pointer) —
