@@ -101,6 +101,39 @@ describe('a wholesale load resets the client history (lockstep with the manager)
 	});
 });
 
+describe('undo of a delete re-binds panels the delete emptied', () => {
+	beforeEach(() => {
+		history().reset();
+		workspace().reset();
+	});
+
+	it('captures bound panels on removeNode and re-binds them on undo', async () => {
+		const fc = new FakeControl();
+		const g = new GraphStore(fc);
+		const ws = workspace();
+		fc.emit({ event: 'node_added', payload: nodeInfo('osc0', 'osc0') });
+		history().configureDeps(() => ({ control: fc, graph: g, workspace: ws }));
+
+		// Bind a Parameters panel to the node, then isolate the delete (drop the layout entry).
+		const panelId = ws.activePanelId!;
+		ws.setType(panelId, 'parameters');
+		ws.linkNodeToPanel(panelId, 'osc0');
+		expect(ws.panelsBoundTo('osc0').map((p) => p.panelId)).toContain(panelId);
+		history().reset();
+
+		// Delete: removeNode captures the bound panels BEFORE the RPC; the doc-reconcile then empties
+		// them when the node vanishes (simulated here — FakeControl doesn't mutate the doc).
+		await g.removeNode('osc0');
+		ws.clearNodeRefs('osc0');
+		expect(ws.panelsBoundTo('osc0')).toHaveLength(0);
+
+		// Undo delegates to the manager AND re-binds the emptied panel (the graph executor's only
+		// client-local side-effect).
+		await history().undo();
+		expect(ws.panelsBoundTo('osc0').map((p) => p.panelId)).toContain(panelId);
+	});
+});
+
 describe('deleting a collapsed sub-patch instance is undoable (manager owns the subtree capture)', () => {
 	beforeEach(() => history().reset());
 
@@ -179,5 +212,13 @@ describe('deleting a collapsed sub-patch instance is undoable (manager owns the 
 		expect(undoCalls.filter((c) => c.op === 'undo')).toHaveLength(2);
 		expect(undoCalls.some((c) => c.op === 'load_text')).toBe(false);
 		expect(history().canRedo).toBe(true);
+
+		// Redo runs the compound FORWARD: one manager `redo` per child (two), re-deleting both.
+		const beforeRedo = fc.recordedCalls().length;
+		await history().redo();
+		const redoCalls = fc.recordedCalls().slice(beforeRedo);
+		expect(redoCalls.filter((c) => c.op === 'redo')).toHaveLength(2);
+		expect(history().canRedo).toBe(false);
+		expect(history().canUndo).toBe(true);
 	});
 });
