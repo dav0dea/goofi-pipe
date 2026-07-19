@@ -203,8 +203,10 @@ impl Command {
             }
 
             Command::EditNode { uid, name, pos } => {
-                if !g.contains(uid) {
-                    return Ok((Outcome::Ok, Command::Compound(vec![]))); // idempotent: node gone
+                // A node OR a scope facade (collapsed instance) is editable here; only a truly
+                // vanished uid is the idempotent no-op (a redo racing a delete).
+                if !g.contains(uid) && g.scope(uid).is_none() {
+                    return Ok((Outcome::Ok, Command::Compound(vec![]))); // idempotent: node/scope gone
                 }
                 let old_name = name.as_ref().map(|_| g.name(uid).unwrap_or("").to_string());
                 let old_pos = pos.map(|_| g.pos(uid).unwrap_or([0.0, 0.0]));
@@ -533,6 +535,30 @@ mod tests {
         let (_r, inverse) = Command::EditNode { uid: osc, name: None, pos: Some([9.0, 9.0]) }.execute(&mut g).unwrap();
         assert_eq!(inverse, Command::EditNode { uid: osc, name: None, pos: Some([0.0, 0.0]) });
         assert_eq!(g.name(osc), Some(name.as_str()), "name untouched");
+    }
+
+    #[test]
+    fn edit_node_moves_and_renames_a_scope_facade() {
+        // A collapsed sub-patch instance is a scope, not a live node. EditNode must move + rename
+        // its facade (`scopes[uid]`) uniformly, and its inverse must restore both — this is the
+        // instance-drag / instance-rename path the client drives through the same set_node_pos /
+        // rename_node seam as a plain node.
+        let mut g = Graph::new();
+        let a = g.add_node("Oscillator", None).unwrap();
+        let scope = g.group_nodes(&[a], [1.0, 2.0]).unwrap();
+        let old_name = g.name(scope).unwrap().to_string();
+        assert_eq!(g.pos(scope), Some([1.0, 2.0]), "facade starts at the group pos");
+
+        let (_r, inverse) =
+            Command::EditNode { uid: scope, name: Some("myscope".into()), pos: Some([50.0, 60.0]) }
+                .execute(&mut g)
+                .unwrap();
+        assert_eq!(g.name(scope), Some("myscope"), "scope renamed");
+        assert_eq!(g.pos(scope), Some([50.0, 60.0]), "scope facade moved");
+
+        inverse.execute(&mut g).unwrap();
+        assert_eq!(g.name(scope), Some(old_name.as_str()), "scope name restored");
+        assert_eq!(g.pos(scope), Some([1.0, 2.0]), "scope pos restored");
     }
 
     #[test]

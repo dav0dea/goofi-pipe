@@ -621,12 +621,21 @@ impl Graph {
         }
     }
 
+    /// Display name of a node OR a scope facade (a collapsed sub-patch instance). Uniform so
+    /// `EditNode` reads either through one seam.
     pub fn name(&self, uid: Uid) -> Option<&str> {
-        self.nodes.get(&uid).map(|e| e.name.as_str())
+        self.nodes
+            .get(&uid)
+            .map(|e| e.name.as_str())
+            .or_else(|| self.scopes.get(&uid).map(|s| s.name.as_str()))
     }
 
+    /// Position of a node OR a scope facade (whose pos lives in `scopes[uid].pos`, not a live node).
     pub fn pos(&self, uid: Uid) -> Option<[f64; 2]> {
-        self.nodes.get(&uid).map(|e| e.pos)
+        self.nodes
+            .get(&uid)
+            .map(|e| e.pos)
+            .or_else(|| self.scopes.get(&uid).map(|s| s.pos))
     }
 
     pub fn params(&self, uid: Uid) -> Option<&ParamGroups> {
@@ -641,6 +650,12 @@ impl Graph {
     pub fn rename_node(&mut self, uid: Uid, name: &str) -> Result<Vec<Uid>, String> {
         if self.name_in_use(name) {
             return Err(format!("display name `{name}` already in use"));
+        }
+        // A scope facade (collapsed sub-patch instance) carries its own display name; `nd()`
+        // expressions only reference leaf-node names, so a scope rename rewrites nothing.
+        if let Some(s) = self.scopes.get_mut(&uid) {
+            s.name = name.to_string();
+            return Ok(vec![]);
         }
         let old_name = self
             .nodes
@@ -683,6 +698,11 @@ impl Graph {
     }
 
     pub fn set_node_pos(&mut self, uid: Uid, pos: [f64; 2]) -> Result<(), String> {
+        // A scope facade's pos lives in `scopes[uid].pos` (it is not a live node) — move it there.
+        if let Some(s) = self.scopes.get_mut(&uid) {
+            s.pos = pos;
+            return Ok(());
+        }
         let e = self
             .nodes
             .get_mut(&uid)
@@ -1147,13 +1167,8 @@ impl Graph {
         Ok(vec![uid])
     }
 
-    /// Move a node OR a scope facade. A scope's pos lives in `scopes[uid].pos` (it is not a live
-    /// node); a plain node delegates to `set_node_pos`. Returns the affected uid.
+    /// Move a node OR a scope facade (`set_node_pos` handles both). Returns the affected uid.
     pub fn set_member_pos(&mut self, uid: Uid, pos: [f64; 2]) -> Result<Vec<Uid>, String> {
-        if let Some(s) = self.scopes.get_mut(&uid) {
-            s.pos = pos;
-            return Ok(vec![uid]);
-        }
         self.set_node_pos(uid, pos)?;
         Ok(vec![uid])
     }
