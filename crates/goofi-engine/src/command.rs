@@ -54,6 +54,10 @@ pub struct ScopeRestore {
     /// The scope's parent, captured explicitly (not derived from members) so an EMPTY scope — a
     /// sub-patch whose members were all deleted — restores at the right place. `None` = ROOT.
     pub parent: Option<Uid>,
+    /// Parent-scope stubs `Expand` re-pointed away from this scope (`(parent, stub_id, old_inner)`),
+    /// so the Group inverse re-points them back exactly. Empty for a delete-undo (which prunes, not
+    /// re-points) — see [`Graph::parent_stubs_referencing`].
+    pub parent_stubs: Vec<(Uid, StubId, Option<(Uid, String)>)>,
 }
 
 /// One semantic patch edit. Every variant has an exact inverse (see [`Command::execute`]).
@@ -379,9 +383,21 @@ impl Command {
                 let mut minted: Vec<(Uid, StubId)> = Vec::new();
                 let scope = match restore {
                     None => g.group_nodes_capturing(&members, pos, &mut minted)?,
-                    // Idempotent: the exact scope is already live (a redo racing another client) — reuse it.
-                    Some(r) if g.scope(r.scope_id).is_some() => r.scope_id,
-                    Some(r) => g.restore_scope(r.scope_id, r.name, pos, &members, r.stubs, r.parent)?,
+                    Some(r) => {
+                        // Idempotent: the exact scope is already live (a redo racing another client) —
+                        // reuse it; otherwise recreate it uid-stable.
+                        let scope = if g.scope(r.scope_id).is_some() {
+                            r.scope_id
+                        } else {
+                            g.restore_scope(r.scope_id, r.name, pos, &members, r.stubs, r.parent)?
+                        };
+                        // Re-point parent stubs Expand re-pointed away — the exact reversal of
+                        // expand_instance (empty for a delete-undo, which prunes rather than re-points).
+                        for (p, sid, inner) in r.parent_stubs {
+                            g.restore_stub_inner(p, &sid, inner);
+                        }
+                        scope
+                    }
                 };
                 // Inverse: expand the new scope, then RemoveStub each minted port so group→undo is
                 // exact (redo re-adds them before re-grouping, since Compound reverses child inverses).
@@ -406,6 +422,9 @@ impl Command {
                 let spos = s.pos;
                 let stubs = s.stubs.clone();
                 let sparent = g.scope_of(scope); // the scope's parent, captured before it dissolves
+                // Parent stubs expand_instance is about to re-point — captured BEFORE, so the Group
+                // inverse re-points them back exactly.
+                let parent_stubs = g.parent_stubs_referencing(scope);
                 let members = g.scope_members(scope);
                 g.expand_instance(scope)?;
                 Ok((
@@ -413,7 +432,7 @@ impl Command {
                     Command::Group {
                         members,
                         pos: spos,
-                        restore: Some(ScopeRestore { scope_id: scope, name, stubs, parent: sparent }),
+                        restore: Some(ScopeRestore { scope_id: scope, name, stubs, parent: sparent, parent_stubs }),
                     },
                 ))
             }
@@ -628,6 +647,7 @@ fn capture_subtree_restore(g: &Graph, root: Uid) -> Command {
                 name: g.name(s).unwrap_or("").to_string(),
                 stubs: g.scope(s).map(|sc| sc.stubs.clone()).unwrap_or_default(),
                 parent: g.scope_of(s),
+                parent_stubs: vec![], // a delete-undo prunes enclosing stubs (AddStub, below), never re-points
             }),
         });
     }

@@ -1100,6 +1100,35 @@ impl Graph {
         Ok(scope_id)
     }
 
+    /// The parent-scope stubs that currently expose `scope` (each as `(parent, stub_id, inner)`).
+    /// `Expand` captures these BEFORE dissolving so its `Group` inverse can re-point them back
+    /// exactly (Expand re-points them forward to the child stub's inner). Empty if `scope` is at ROOT
+    /// or no parent stub references it.
+    pub fn parent_stubs_referencing(&self, scope: Uid) -> Vec<(Uid, subpatch::StubId, Option<(Uid, String)>)> {
+        let Some(p) = self.scope_of(scope) else {
+            return vec![];
+        };
+        self.scopes
+            .get(&p)
+            .map(|ps| {
+                ps.stubs
+                    .iter()
+                    .filter(|(_, st)| st.inner.as_ref().map(|(u, _)| *u == scope).unwrap_or(false))
+                    .map(|(id, st)| (p, id.clone(), st.inner.clone()))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Directly set a stub's `inner` with NO validation — the restore path for re-pointing a parent
+    /// stub during a Group/Expand round-trip, where the target is a known-good captured state (which
+    /// may name a nested scope, unlike the validated `set_stub_inner` wire path).
+    pub fn restore_stub_inner(&mut self, scope: Uid, stub_id: &str, inner: Option<(Uid, String)>) {
+        if let Some(st) = self.scopes.get_mut(&scope).and_then(|s| s.stubs.get_mut(stub_id)) {
+            st.inner = inner;
+        }
+    }
+
     /// Inline a scope back into its parent: re-tag each member to the parent scope, then drop the
     /// scope + its stubs. The crossing flat links already point at the members leaf→leaf, so they
     /// survive verbatim — nothing to reconnect. Returns the restored member uids. Uid-stable.
@@ -1109,6 +1138,35 @@ impl Graph {
         }
         let restored = self.scope_members(scope);
         let parent = self.scope_of(scope); // the grandparent scope members fall back to
+        // Re-point any PARENT-scope stub that exposed this scope's port. The scope dissolves but its
+        // members survive (they move up to `parent`), so a parent stub whose inner==(scope, child_id)
+        // must FOLLOW to the physical leaf that child resolved to — else it dangles at a scope that no
+        // longer exists. (remove_member PRUNES the analogous stub because ITS member is deleted; here
+        // the leaf lives on, so we re-point.)
+        if let Some(p) = parent {
+            let targets: Vec<(subpatch::StubId, String)> = self
+                .scopes
+                .get(&p)
+                .map(|ps| {
+                    ps.stubs
+                        .iter()
+                        .filter_map(|(id, st)| {
+                            st.inner.as_ref().and_then(|(u, cid)| (*u == scope).then(|| (id.clone(), cid.clone())))
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            for (id, cid) in targets {
+                // Re-point to the child stub's OWN inner (ONE level down) — that direct member of
+                // `scope` becomes a direct member of `p` after expand, so the parent stub stays
+                // structurally valid. (Using the fully-resolved leaf would be wrong when the leaf is
+                // buried in a NESTED scope that only moves up one level.)
+                let child_inner = self.scopes.get(&scope).and_then(|s| s.stubs.get(&cid)).and_then(|st| st.inner.clone());
+                if let Some(st) = self.scopes.get_mut(&p).and_then(|ps| ps.stubs.get_mut(&id)) {
+                    st.inner = child_inner;
+                }
+            }
+        }
         for &m in &restored {
             self.set_member_scope(m, parent);
         }
@@ -4303,6 +4361,81 @@ mod tests {
         assert_eq!(g.scope_of(s1), None, "s1 re-parented to ROOT");
         assert_eq!(g.scope_of(a), None, "a re-parented to ROOT");
         assert!(g.scope(s1).is_some(), "the nested scope itself survives");
+    }
+
+    #[test]
+    fn expanding_an_inner_scope_re_points_the_parent_stub_that_referenced_it() {
+        // a→b→c; group[b]→s1; group[a,s1]→s2 with an Out stub inner=(s1, out0) for the b→c cut.
+        // Expanding the INNER scope s1 dissolves it and moves b UP into s2 — s2's stub must FOLLOW to
+        // (b, out), not dangle at the vanished s1. (remove_member PRUNES such a stub because its
+        // member is deleted; expand RE-POINTS because the leaf survives.)
+        let mut g = Graph::new();
+        let a = g.add_node("_TestEcho", None).unwrap();
+        let b = g.add_node("_TestEcho", None).unwrap();
+        let c = g.add_node("_TestEcho", None).unwrap();
+        g.add_link(a, "out", b, "in").unwrap();
+        g.add_link(b, "out", c, "in").unwrap();
+        let s1 = g.group_nodes(&[b], [0.0, 0.0]).unwrap();
+        let s2 = g.group_nodes(&[a, s1], [0.0, 0.0]).unwrap();
+        let sid = g
+            .scope(s2)
+            .unwrap()
+            .stubs
+            .iter()
+            .find(|(_, st)| st.dir == subpatch::Dir::Out)
+            .map(|(id, _)| id.clone())
+            .unwrap();
+        assert_eq!(g.scope(s2).unwrap().stubs[&sid].inner, Some((s1, "out0".to_string())), "points at s1's port");
+        assert_eq!(g.resolve_stub(s2, &sid), Some((b, "out".to_string())), "chain resolves to b.out");
+
+        g.expand_instance(s1).unwrap();
+        assert_eq!(g.scope_of(b), Some(s2), "b moved up into s2");
+        assert_eq!(
+            g.scope(s2).unwrap().stubs[&sid].inner,
+            Some((b, "out".to_string())),
+            "the parent stub re-pointed to the direct member (leaf b), not the vanished scope s1"
+        );
+        assert_eq!(g.resolve_stub(s2, &sid), Some((b, "out".to_string())), "still resolves after expand");
+    }
+
+    #[test]
+    fn expand_command_undo_restores_the_parent_stub_exactly() {
+        // The Command::Expand round-trip must be EXACT: expand_instance re-points a parent stub, so
+        // Expand's Group inverse must re-point it BACK to (scope, child_id) — not leave it at the
+        // resolved leaf (which resolves the same but is structurally non-canonical).
+        use crate::Command;
+        let mut g = Graph::new();
+        let a = g.add_node("_TestEcho", None).unwrap();
+        let b = g.add_node("_TestEcho", None).unwrap();
+        let c = g.add_node("_TestEcho", None).unwrap();
+        g.add_link(a, "out", b, "in").unwrap();
+        g.add_link(b, "out", c, "in").unwrap();
+        let s1 = g.group_nodes(&[b], [0.0, 0.0]).unwrap();
+        let s2 = g.group_nodes(&[a, s1], [0.0, 0.0]).unwrap();
+        let sid = g
+            .scope(s2)
+            .unwrap()
+            .stubs
+            .iter()
+            .find(|(_, st)| st.dir == subpatch::Dir::Out)
+            .map(|(id, _)| id.clone())
+            .unwrap();
+        let before = g.scope(s2).unwrap().stubs[&sid].inner.clone(); // Some((s1, out0))
+
+        let (_r, undo) = Command::Expand { scope: s1 }.execute(&mut g).unwrap();
+        assert_ne!(g.scope(s2).unwrap().stubs[&sid].inner, before, "expand re-pointed the parent stub");
+
+        let (_r2, redo) = undo.execute(&mut g).unwrap();
+        assert_eq!(
+            g.scope(s2).unwrap().stubs[&sid].inner,
+            before,
+            "undo restored the parent stub EXACTLY to (s1, out0)"
+        );
+
+        // Redo re-expands and re-points again (the cycle is stable).
+        redo.execute(&mut g).unwrap();
+        assert_eq!(g.scope_of(b), Some(s2), "redo re-expanded s1");
+        assert_eq!(g.resolve_stub(s2, &sid), Some((b, "out".to_string())), "and still resolves");
     }
 
     #[test]
