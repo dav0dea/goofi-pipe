@@ -165,6 +165,126 @@ async fn sync_replica(ws: &mut Ws, ready: impl Fn(&goofi_crdt::GraphDoc) -> bool
     doc
 }
 
+/// Like `call`, but tags the request with a `session` (the undo/redo scope).
+async fn call_session(ws: &mut Ws, id: i64, op: &str, payload: Value, session: &str) -> Value {
+    ws.send(Message::Text(
+        json!({ "id": id, "op": op, "payload": payload, "session": session }).to_string(),
+    ))
+    .await
+    .unwrap();
+    loop {
+        let m = recv_text(ws).await;
+        if m.get("id").and_then(|v| v.as_i64()) == Some(id) {
+            return m;
+        }
+    }
+}
+
+#[tokio::test]
+async fn add_undo_redo_over_the_wire_is_uid_stable() {
+    // A command-backed add records an inverse; undo removes the node from the synced doc; redo
+    // restores it at the SAME uid (the toggle-model history is uid-stable). can_undo/can_redo track.
+    let base = start_server().await;
+    let (mut ws, _) = connect_async(format!("{base}/control")).await.unwrap();
+    let _hello = recv_text(&mut ws).await;
+
+    let osc = call_session(&mut ws, 1, "add_node", json!({ "type": "Oscillator" }), "s1").await["result"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let doc = sync_replica(&mut ws, |d| d.node_ids().iter().any(|u| *u == osc)).await;
+    assert!(doc.node_ids().iter().any(|u| *u == osc), "node added");
+
+    // Undo → the node is gone from the doc; the reply reports the session can now redo, not undo.
+    let u = call_session(&mut ws, 2, "undo", json!({}), "s1").await;
+    assert_eq!(u["result"]["changed"], json!(true), "undo changed the graph");
+    assert_eq!(u["result"]["can_undo"], json!(false), "nothing left to undo");
+    assert_eq!(u["result"]["can_redo"], json!(true), "can redo the undone add");
+    let doc2 = sync_replica(&mut ws, |d| d.node_ids().is_empty()).await;
+    assert!(doc2.node_ids().is_empty(), "undo removed the node");
+
+    // Redo → the node returns at the SAME uid.
+    let r = call_session(&mut ws, 3, "redo", json!({}), "s1").await;
+    assert_eq!(r["result"]["changed"], json!(true), "redo changed the graph");
+    let doc3 = sync_replica(&mut ws, |d| d.node_ids().iter().any(|u| *u == osc)).await;
+    assert!(doc3.node_ids().iter().any(|u| *u == osc), "redo restored the SAME uid");
+}
+
+#[tokio::test]
+async fn undo_is_scoped_per_session() {
+    // Two sessions add a node each over one shared history; each session's undo reverts only ITS
+    // own add (per-session filtering), never the other's.
+    let base = start_server().await;
+    let (mut ws, _) = connect_async(format!("{base}/control")).await.unwrap();
+    let _hello = recv_text(&mut ws).await;
+
+    let a = call_session(&mut ws, 1, "add_node", json!({ "type": "Oscillator" }), "s1").await["result"]
+        .as_str().unwrap().to_string();
+    let b = call_session(&mut ws, 2, "add_node", json!({ "type": "Buffer" }), "s2").await["result"]
+        .as_str().unwrap().to_string();
+    let doc = sync_replica(&mut ws, |d| d.node_ids().len() == 2).await;
+    assert!(doc.node_ids().iter().any(|u| *u == a) && doc.node_ids().iter().any(|u| *u == b));
+
+    // s1 undo → only A is removed; B (s2's) survives.
+    call_session(&mut ws, 3, "undo", json!({}), "s1").await;
+    let doc2 = sync_replica(&mut ws, |d| d.node_ids().len() == 1).await;
+    assert!(!doc2.node_ids().iter().any(|u| *u == a), "s1 undo removed A");
+    assert!(doc2.node_ids().iter().any(|u| *u == b), "s2's B is untouched by s1 undo");
+
+    // s2 undo → B removed; graph empty.
+    call_session(&mut ws, 4, "undo", json!({}), "s2").await;
+    let doc3 = sync_replica(&mut ws, |d| d.node_ids().is_empty()).await;
+    assert!(doc3.node_ids().is_empty(), "s2 undo removed B");
+}
+
+#[tokio::test]
+async fn a_new_command_clears_the_sessions_redo_run() {
+    // Undo then a fresh command discards the session's redo future (single-stack semantics).
+    let base = start_server().await;
+    let (mut ws, _) = connect_async(format!("{base}/control")).await.unwrap();
+    let _hello = recv_text(&mut ws).await;
+
+    call_session(&mut ws, 1, "add_node", json!({ "type": "Oscillator" }), "s1").await;
+    sync_replica(&mut ws, |d| d.node_ids().len() == 1).await;
+    call_session(&mut ws, 2, "undo", json!({}), "s1").await;
+    sync_replica(&mut ws, |d| d.node_ids().is_empty()).await;
+
+    // A fresh add clears the redo run — redo is now a no-op (changed:false, can_redo:false).
+    call_session(&mut ws, 3, "add_node", json!({ "type": "Buffer" }), "s1").await;
+    sync_replica(&mut ws, |d| d.node_ids().len() == 1).await;
+    let r = call_session(&mut ws, 4, "redo", json!({}), "s1").await;
+    assert_eq!(r["result"]["changed"], json!(false), "redo run was cleared by the new command");
+    assert_eq!(r["result"]["can_redo"], json!(false));
+}
+
+#[tokio::test]
+async fn a_link_add_is_undoable_over_the_wire() {
+    // add_link routes through the history (on the resolved flat link); undo removes it.
+    let base = start_server().await;
+    let (mut ws, _) = connect_async(format!("{base}/control")).await.unwrap();
+    let _hello = recv_text(&mut ws).await;
+
+    let osc = call_session(&mut ws, 1, "add_node", json!({ "type": "Oscillator" }), "s1").await["result"]
+        .as_str().unwrap().to_string();
+    let buf = call_session(&mut ws, 2, "add_node", json!({ "type": "Buffer" }), "s1").await["result"]
+        .as_str().unwrap().to_string();
+    call_session(&mut ws, 3, "add_link", json!({ "node_out": osc, "slot_out": "out", "node_in": buf, "slot_in": "data" }), "s1").await;
+    let doc = sync_replica(&mut ws, |d| d.read_at(&["links"]).and_then(|v| v.as_array().map(|a| a.len())) == Some(1)).await;
+    assert_eq!(doc.read_at(&["links"]).unwrap().as_array().unwrap().len(), 1, "link added");
+
+    // Undo the link (the most recent s1 command) → back to zero links, both nodes intact. Anchor on
+    // a POSITIVE presence (both nodes) a completed sync guarantees — an "empty links" predicate alone
+    // is satisfied by the initial empty replica before any data frame lands.
+    call_session(&mut ws, 4, "undo", json!({}), "s1").await;
+    let doc2 = sync_replica(&mut ws, |d| {
+        d.node_ids().len() == 2
+            && d.read_at(&["links"]).and_then(|v| v.as_array().map(|a| a.is_empty())).unwrap_or(false)
+    })
+    .await;
+    assert!(doc2.read_at(&["links"]).unwrap().as_array().unwrap().is_empty(), "undo removed the link");
+    assert_eq!(doc2.node_ids().len(), 2, "both nodes survive the link undo");
+}
+
 #[tokio::test]
 async fn runtime_registered_type_reaches_the_palette_over_the_wire() {
     // The full serving path a browser sees: a runtime type registered into the

@@ -49,6 +49,10 @@ pub struct AppState {
     /// Shared per-slot data reducers (thalamus G1/G2): one reduction per active (node, slot),
     /// fanned out to every viewer, so N tabs on one slot cost one reduce+encode, not N.
     pub reducers: reducer::SlotReducers,
+    /// The single central per-session command history (unified-command API). A command-backed op
+    /// applies through here (recording its inverse tagged with the caller's session); `undo`/`redo`
+    /// replay the inverse/forward for that session. Locked AFTER `graph`, BEFORE `crdt`.
+    pub history: Arc<Mutex<goofi_engine::CommandHistory>>,
 }
 
 impl Default for AppState {
@@ -84,6 +88,7 @@ impl AppState {
             ephemeral,
             last_sync_sv,
             reducers,
+            history: Arc::new(Mutex::new(goofi_engine::CommandHistory::new())),
         }
     }
 }
@@ -511,6 +516,9 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
     let id = req.get("id").cloned().unwrap_or(Value::Null);
     let op = req.get("op")?.as_str()?.to_string();
     let payload = req.get("payload").cloned().unwrap_or_else(|| json!({}));
+    // The caller's session tag (a browser tab's stable id) scopes the command history's undo/redo.
+    // Absent ⇒ a single shared "default" session, so a client that never presents one still works.
+    let session = req.get("session").and_then(|v| v.as_str()).unwrap_or("default").to_string();
 
     let mut events: Vec<String> = Vec::new();
     let result: Result<Value, String> = (|| {
@@ -521,23 +529,33 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
                 let ty = payload
                     .get("type")
                     .and_then(|v| v.as_str())
-                    .ok_or("add_node: missing type")?;
+                    .ok_or("add_node: missing type")?
+                    .to_string();
                 // Redo-of-add / undo-of-delete replay the ORIGINAL uid (member_uid) + name so
                 // uid-keyed links + panels reconnect to the same node; a plain add mints a fresh uid.
                 // (inst_id sub-patch member placement is not yet restored here — ROOT nodes only.)
-                let uid = match payload.get("member_uid").and_then(|v| v.as_str()).and_then(Uid::from_hex) {
-                    Some(restore) => {
-                        let name = payload.get("name").and_then(|v| v.as_str()).unwrap_or("");
-                        g.add_node_at(ty, None, restore, name)?
-                    }
-                    None => g.add_node(ty, None)?,
+                let restore = payload.get("member_uid").and_then(|v| v.as_str()).and_then(Uid::from_hex);
+                let name = payload.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let pos = payload.get("pos").and_then(parse_pos).unwrap_or([0.0, 0.0]);
+                // Route through the command history so the add is undoable (its inverse is a
+                // RemoveNode). Inline params are applied AFTER (below): RemoveNode's inverse
+                // capture_restores the LIVE node — INCLUDING those params — so an undo→redo restores
+                // the configured values without threading them through the command here.
+                let cmd = goofi_engine::Command::AddNode {
+                    type_name: ty,
+                    pos,
+                    uid: restore,
+                    name: (!name.is_empty()).then_some(name),
+                    params: None,
+                };
+                let uid = match state.history.lock().unwrap().apply(&mut g, &session, cmd)? {
+                    goofi_engine::Outcome::Uid(u) => u,
+                    goofi_engine::Outcome::Ok => return Err("add_node: no uid returned".into()),
                 };
                 // Optional inline params (paste/duplicate replay + undo-of-delete): apply at creation
-                // UNDER THE GRAPH LOCK so the node is born configured. A post-add update_param would
-                // now be a doc leaf-write that no-ops until the node has synced into the client's
-                // replica — silently dropping the replayed values (same coercion as the update_param
-                // arm). node_added is emitted after, so it carries the configured values, and the
-                // resync mirrors them into the doc.
+                // UNDER THE GRAPH LOCK so the node is born configured (same coercion as update_param).
+                // node_added is emitted after, so it carries the configured values, and the resync
+                // mirrors them into the doc.
                 if let Some(groups) = payload.get("params").and_then(|v| v.as_object()) {
                     for (group, names) in groups {
                         let Some(names) = names.as_object() else { continue };
@@ -550,9 +568,6 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
                             }
                         }
                     }
-                }
-                if let Some(pos) = payload.get("pos").and_then(parse_pos) {
-                    let _ = g.set_node_pos(uid, pos);
                 }
                 events.push(event("node_added", schemas::node_instance_info(&g, uid)));
                 Ok(json!(uid.to_hex()))
@@ -568,11 +583,17 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
                 // (the node_removed / subpatch_changed echoes are retired — the frontend reconciles
                 // the whole forest from the doc).
                 if g.scope_of(uid).is_some() {
-                    g.remove_member(uid)?;
+                    g.remove_member(uid)?; // sub-patch member — structural, command-ified in Task B2
                 } else if g.scope(uid).is_some() {
-                    g.remove_instance(uid)?;
+                    g.remove_instance(uid)?; // collapsed sub-patch — structural, Task B2
                 } else {
-                    g.remove_node(uid)?;
+                    // A top-level leaf: route through the history so it's undoable (its inverse
+                    // capture_restores the node + its links).
+                    state
+                        .history
+                        .lock()
+                        .unwrap()
+                        .apply(&mut g, &session, goofi_engine::Command::RemoveNode { uid })?;
                 }
                 Ok(json!({ "ok": true }))
             }
@@ -580,17 +601,26 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
             // after dispatch. The old `link_added`/`link_removed` events had no client consumer.
             "add_link" => {
                 let (a, so, b, si) = parse_link(&payload)?;
-                // Resolve either endpoint through a sub-patch boundary → flat leaf→leaf.
+                // Resolve either endpoint through a sub-patch boundary → flat leaf→leaf, THEN route
+                // the resolved flat link through the history (undoable; inverse is a RemoveLink).
                 let (a, so) = resolve_link_endpoint(&g, a, &so);
                 let (b, si) = resolve_link_endpoint(&g, b, &si);
-                g.add_link(a, &so, b, &si)?;
+                state.history.lock().unwrap().apply(
+                    &mut g,
+                    &session,
+                    goofi_engine::Command::AddLink { node_out: a, slot_out: so, node_in: b, slot_in: si },
+                )?;
                 Ok(json!({ "ok": true }))
             }
             "remove_link" => {
                 let (a, so, b, si) = parse_link(&payload)?;
                 let (a, so) = resolve_link_endpoint(&g, a, &so);
                 let (b, si) = resolve_link_endpoint(&g, b, &si);
-                g.remove_link(a, &so, b, &si)?;
+                state.history.lock().unwrap().apply(
+                    &mut g,
+                    &session,
+                    goofi_engine::Command::RemoveLink { node_out: a, slot_out: so, node_in: b, slot_in: si },
+                )?;
                 Ok(json!({ "ok": true }))
             }
             // Retained deliberately, unlike its 3 leaf-write siblings (set_node_pos/viewers/
@@ -725,6 +755,19 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
                     schemas::snapshot(&g, &state.instance_id, false),
                 ));
                 Ok(json!({ "ok": true }))
+            }
+            // Session-scoped undo/redo over the central command history. The graph mutation reaches
+            // clients via the post-dispatch re-mirror (doc-authoritative); the reply carries the
+            // session's fresh can-undo/can-redo so the UI can enable its buttons.
+            "undo" => {
+                let mut hist = state.history.lock().unwrap();
+                let changed = hist.undo(&mut g, &session)?;
+                Ok(json!({ "changed": changed, "can_undo": hist.can_undo(&session), "can_redo": hist.can_redo(&session) }))
+            }
+            "redo" => {
+                let mut hist = state.history.lock().unwrap();
+                let changed = hist.redo(&mut g, &session)?;
+                Ok(json!({ "changed": changed, "can_undo": hist.can_undo(&session), "can_redo": hist.can_redo(&session) }))
             }
             other => Err(format!("unknown op `{other}`")),
         }
