@@ -349,6 +349,41 @@ async fn a_global_rename_folds_into_one_undo_step() {
 }
 
 #[tokio::test]
+async fn deleting_a_sub_patch_instance_is_undoable_over_the_wire() {
+    // Deleting a collapsed sub-patch instance tears down its whole subtree; undo must restore the
+    // scope + its members uid-stably (B3b closed the delete-undo gap).
+    let base = start_server().await;
+    let (mut ws, _) = connect_async(format!("{base}/control")).await.unwrap();
+    let _hello = recv_text(&mut ws).await;
+
+    let a = call_session(&mut ws, 1, "add_node", json!({ "type": "Oscillator" }), "s1").await["result"]
+        .as_str().unwrap().to_string();
+    let b = call_session(&mut ws, 2, "add_node", json!({ "type": "Buffer" }), "s1").await["result"]
+        .as_str().unwrap().to_string();
+    call_session(&mut ws, 3, "add_link", json!({ "node_out": a, "slot_out": "out", "node_in": b, "slot_in": "data" }), "s1").await;
+    let inst = call_session(&mut ws, 4, "group_nodes", json!({ "members": [a, b], "pos": [0.0, 0.0] }), "s1").await
+        ["result"]["inst_id"].as_str().unwrap().to_string();
+    // The scope is live with 2 members hidden under it.
+    sync_replica(&mut ws, |d| d.instance_ids().iter().any(|i| *i == inst) && d.node_ids().len() == 2).await;
+
+    // Delete the instance → its whole subtree is gone.
+    call_session(&mut ws, 5, "remove_node", json!({ "node": inst }), "s1").await;
+    let gone = sync_replica(&mut ws, |d| d.instance_ids().is_empty() && d.node_ids().is_empty()).await;
+    assert!(gone.node_ids().is_empty() && gone.instance_ids().is_empty(), "subtree torn down");
+
+    // Undo restores the scope + both members uid-stably.
+    call_session(&mut ws, 6, "undo", json!({}), "s1").await;
+    let back = sync_replica(&mut ws, |d| {
+        d.instance_ids().iter().any(|i| *i == inst)
+            && d.node_ids().iter().any(|u| *u == a)
+            && d.node_ids().iter().any(|u| *u == b)
+    })
+    .await;
+    assert!(back.instance_ids().iter().any(|i| *i == inst), "scope restored under the same uid");
+    assert!(back.node_ids().iter().any(|u| *u == a) && back.node_ids().iter().any(|u| *u == b), "members restored uid-stable");
+}
+
+#[tokio::test]
 async fn group_undo_redo_over_the_wire_is_uid_stable() {
     // group routes through the command history: undo expands the scope (members back at root), redo
     // regroups at the SAME scope uid with the crossing stub restored.

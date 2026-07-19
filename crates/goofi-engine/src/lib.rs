@@ -788,6 +788,23 @@ impl Graph {
         self.find_input(uid, slot).map(|s| s.kind)
     }
 
+    /// Move a node or scope into `scope` (`None` = ROOT), returning its prior membership. The one
+    /// validated re-parent seam a `SetScope` command drives (restoring a member back inside its
+    /// scope on a delete-undo). Errors on an unknown uid or a `scope` that is not a live scope.
+    pub fn reparent(&mut self, uid: Uid, scope: Option<Uid>) -> Result<Option<Uid>, String> {
+        if !self.nodes.contains_key(&uid) && !self.scopes.contains_key(&uid) {
+            return Err(format!("reparent: no such node/scope {uid}"));
+        }
+        if let Some(s) = scope {
+            if !self.scopes.contains_key(&s) {
+                return Err(format!("reparent: no such scope {s}"));
+            }
+        }
+        let old = self.scope_of(uid);
+        self.set_member_scope(uid, scope);
+        Ok(old)
+    }
+
     /// Re-tag a member's scope. `scope_of` is the single source of truth for parentage, so this is
     /// the one place membership changes. `None` = ROOT scope.
     fn set_member_scope(&mut self, member: Uid, scope: Option<Uid>) {
@@ -1190,6 +1207,9 @@ impl Graph {
             return Err(format!("no such node {uid}"));
         };
         self.release_entry_bindings(&removed);
+        // Drop any membership tag: a removed node has no scope. Leaving it dangling would make a
+        // reused uid (a delete→undo that restores the scope) self-parent via `common_parent`.
+        self.scope_of.remove(&uid);
         // Drop links touching the node; clear any downstream input it fed.
         let dropped: Vec<Link> = self
             .links

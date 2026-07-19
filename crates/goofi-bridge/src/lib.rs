@@ -576,27 +576,16 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
             }
             "remove_node" => {
                 let uid = parse_uid(&payload, "node")?;
-                // Route by what the uid is. A sub-patch MEMBER (leaf or nested instance living in an
-                // instance's scope) is removed from its def AND every strict-mirror sibling via
-                // remove_member — so deleting a node inside a sub-patch doesn't leave a dangling
-                // member the def would resurrect on reload. A TOP-LEVEL instance (collapsed sub-patch
-                // delete, or the inverse of duplicate_shared) tears down its subtree; a top-level leaf
-                // is a plain remove. Every result reaches clients via the post-dispatch re-mirror
-                // (the node_removed / subpatch_changed echoes are retired — the frontend reconciles
-                // the whole forest from the doc).
-                if g.scope_of(uid).is_some() {
-                    g.remove_member(uid)?; // sub-patch member — structural, command-ified in Task B2
-                } else if g.scope(uid).is_some() {
-                    g.remove_instance(uid)?; // collapsed sub-patch — structural, Task B2
-                } else {
-                    // A top-level leaf: route through the history so it's undoable (its inverse
-                    // capture_restores the node + its links).
-                    state
-                        .history
-                        .lock()
-                        .unwrap()
-                        .apply(&mut g, &session, goofi_engine::Command::RemoveNode { uid })?;
-                }
+                // A top-level leaf, a sub-patch member (leaf or nested instance), or a collapsed
+                // instance — RemoveNode dispatches internally and CAPTURES the whole subtree
+                // (members + params + links + stubs + membership) so its inverse restores it
+                // uid-stably (undoable; B3b closed the delete-undo gap). The result reaches clients
+                // via the post-dispatch re-mirror.
+                state
+                    .history
+                    .lock()
+                    .unwrap()
+                    .apply(&mut g, &session, goofi_engine::Command::RemoveNode { uid })?;
                 Ok(json!({ "ok": true }))
             }
             // Links are read from the CRDT doc (Phase 2) — the resolved flat link rides the re-mirror

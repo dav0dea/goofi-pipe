@@ -105,6 +105,13 @@ pub enum Command {
         name: String,
         value: Option<GlobalValue>,
     },
+    /// Re-parent a node or scope into `scope` (`None` = ROOT). The one membership move — used inside
+    /// a delete's inverse to restore a member back INSIDE its scope. Inverse re-parents to the old
+    /// scope.
+    SetScope {
+        uid: Uid,
+        scope: Option<Uid>,
+    },
 
     // ── Structural sub-patch commands (uid-stable on the flat scope model) ─────────
     /// Group `members` into a new sub-patch scope at `pos`. `restore` is `None` for a user group
@@ -186,12 +193,21 @@ impl Command {
             }
 
             Command::RemoveNode { uid } => {
-                if !g.contains(uid) {
-                    // Idempotent: already gone → no-op, and a no-op inverse (nothing to restore).
+                // Handles a plain leaf, a sub-patch member (leaf or nested scope), OR a top-level
+                // instance — nothing live at this uid is the idempotent no-op.
+                if !g.contains(uid) && g.scope(uid).is_none() {
                     return Ok((Outcome::Ok, Command::Compound(vec![])));
                 }
-                let inverse = capture_restore(g, uid);
-                g.remove_node(uid)?;
+                let inverse = capture_subtree_restore(g, uid);
+                // A scope MEMBER routes through remove_member (prunes the enclosing scope's stubs); a
+                // top-level scope tears down its subtree; a plain leaf is a single-node removal.
+                if g.scope_of(uid).is_some() {
+                    g.remove_member(uid)?;
+                } else if g.scope(uid).is_some() {
+                    g.remove_instance(uid)?;
+                } else {
+                    g.remove_node(uid)?;
+                }
                 Ok((Outcome::Ok, inverse))
             }
 
@@ -258,6 +274,15 @@ impl Command {
                 let old = g.globals().get(&name).cloned();
                 g.apply_global_change(&name, value)?;
                 Ok((Outcome::Ok, Command::EditGlobal { name, value: old }))
+            }
+
+            Command::SetScope { uid, scope } => {
+                // Idempotent: the uid is gone (a redo racing a delete) → no-op.
+                if !g.contains(uid) && g.scope(uid).is_none() {
+                    return Ok((Outcome::Ok, Command::Compound(vec![])));
+                }
+                let old = g.reparent(uid, scope)?;
+                Ok((Outcome::Ok, Command::SetScope { uid, scope: old }))
             }
 
             Command::Group { members, pos, restore } => {
@@ -423,14 +448,82 @@ impl CommandHistory {
 
 /// Build the inverse of removing `uid`, captured BEFORE removal: re-add the node (same uid + name +
 /// params) then re-add every link that touched it (so a downstream endpoint reconnects).
-fn capture_restore(g: &Graph, uid: Uid) -> Command {
-    let type_name = g.type_name(uid).unwrap_or("").to_string();
-    let name = g.name(uid).map(str::to_string);
-    let pos = g.pos(uid).unwrap_or([0.0, 0.0]);
-    let params = g.params(uid).cloned();
-    let mut cmds = vec![Command::AddNode { type_name, pos, uid: Some(uid), name, params }];
+/// Capture the exact inverse to restore the subtree rooted at `root` — a plain leaf, a scope member
+/// (leaf or nested scope), or a top-level instance — BEFORE the caller removes it. The Compound
+/// recreates every node (uid + params), every scope (innermost-first), the deleted top's membership,
+/// any enclosing-scope stub the removal will prune, and every link touching the subtree — uid-stable.
+fn capture_subtree_restore(g: &Graph, root: Uid) -> Command {
+    // Where the restored top returns to: `None` = ROOT (a top-level instance / leaf).
+    let orig_parent = g.scope_of(root);
+
+    // Walk the subtree (root + all descendants), splitting live nodes from scopes.
+    let mut leaves: Vec<Uid> = Vec::new();
+    let mut scopes: Vec<Uid> = Vec::new(); // discovery order (root first)
+    let mut stack = vec![root];
+    while let Some(u) = stack.pop() {
+        if g.scope(u).is_some() {
+            scopes.push(u);
+            stack.extend(g.scope_members(u));
+        } else {
+            leaves.push(u);
+        }
+    }
+
+    let mut cmds: Vec<Command> = Vec::new();
+
+    // 1. Recreate every leaf (any depth) at ROOT, uid-stable, with its params.
+    for &u in &leaves {
+        cmds.push(Command::AddNode {
+            type_name: g.type_name(u).unwrap_or("").to_string(),
+            pos: g.pos(u).unwrap_or([0.0, 0.0]),
+            uid: Some(u),
+            name: g.name(u).map(str::to_string),
+            params: g.params(u).cloned(),
+        });
+    }
+
+    // 2. Recreate every scope INNERMOST-FIRST (a nested scope must exist before its parent groups
+    //    it). `scopes` is root-first, so reverse ⇒ deepest-first. Each Group re-parents its direct
+    //    members into it; the whole subtree lands at ROOT.
+    for &s in scopes.iter().rev() {
+        cmds.push(Command::Group {
+            members: g.scope_members(s),
+            pos: g.pos(s).unwrap_or([0.0, 0.0]),
+            restore: Some(ScopeRestore {
+                scope_id: s,
+                name: g.name(s).unwrap_or("").to_string(),
+                stubs: g.scope(s).map(|sc| sc.stubs.clone()).unwrap_or_default(),
+            }),
+        });
+    }
+
+    // 3. Move the restored top back INSIDE its enclosing scope (a member delete); a top-level
+    //    instance already lands at ROOT.
+    if orig_parent.is_some() {
+        cmds.push(Command::SetScope { uid: root, scope: orig_parent });
+    }
+
+    // 4. Re-add any enclosing-scope stub the removal will prune (a stub whose inner named `root`).
+    if let Some(parent) = orig_parent {
+        if let Some(psc) = g.scope(parent) {
+            for (id, st) in &psc.stubs {
+                if st.inner.as_ref().map(|(u, _)| *u == root).unwrap_or(false) {
+                    cmds.push(Command::AddStub {
+                        scope: parent,
+                        dir: st.dir,
+                        dtype: st.dtype,
+                        pos: st.pos,
+                        restore: Some((id.clone(), st.clone())),
+                    });
+                }
+            }
+        }
+    }
+
+    // 5. Recreate every link touching the subtree (internal + crossing), after all endpoints exist.
+    let subtree: std::collections::HashSet<Uid> = leaves.iter().chain(scopes.iter()).copied().collect();
     for l in g.links_view() {
-        if l.node_out == uid || l.node_in == uid {
+        if subtree.contains(&l.node_out) || subtree.contains(&l.node_in) {
             cmds.push(Command::AddLink {
                 node_out: l.node_out,
                 slot_out: l.slot_out.to_string(),
@@ -439,6 +532,7 @@ fn capture_restore(g: &Graph, uid: Uid) -> Command {
             });
         }
     }
+
     Command::Compound(cmds)
 }
 
@@ -489,6 +583,77 @@ mod tests {
         assert!(g.contains(osc), "node restored under the same uid");
         assert_eq!(freq(osc, &g), before, "params restored exactly");
         assert_eq!(g.links_view().len(), 1, "link restored");
+    }
+
+    #[test]
+    fn remove_instance_is_undoable_restoring_the_whole_subtree() {
+        // Deleting a collapsed sub-patch instance tears down its subtree (members + internal links +
+        // stubs). RemoveNode must capture it all so the inverse restores the scope, its members, and
+        // their links UID-STABLY — and a redo re-deletes cleanly.
+        let mut g = Graph::new();
+        let a = g.add_node("Oscillator", None).unwrap();
+        let b = g.add_node("Buffer", None).unwrap();
+        g.add_link(a, "out", b, "data").unwrap();
+        let scope = g.group_nodes(&[a, b], [5.0, 6.0]).unwrap(); // a→b stays internal (both inside)
+
+        let (_r, inverse) = Command::RemoveNode { uid: scope }.execute(&mut g).unwrap();
+        assert!(g.scope(scope).is_none(), "scope gone");
+        assert!(!g.contains(a) && !g.contains(b), "members torn down");
+        assert_eq!(g.links_view().len(), 0, "internal link went with them");
+
+        let (_r2, redo) = inverse.execute(&mut g).unwrap();
+        assert!(g.scope(scope).is_some(), "scope restored under the same uid");
+        assert!(g.contains(a) && g.contains(b), "members restored uid-stable");
+        assert_eq!(g.scope_members(scope).len(), 2, "both members back inside the scope");
+        assert_eq!(g.scope_of(a), Some(scope), "a re-parented into the scope");
+        assert_eq!(g.links_view().len(), 1, "internal link restored");
+        assert_eq!(g.pos(scope), Some([5.0, 6.0]), "scope pos restored");
+
+        // Redo re-deletes the whole subtree.
+        redo.execute(&mut g).unwrap();
+        assert!(g.scope(scope).is_none() && !g.contains(a) && !g.contains(b), "redo re-deleted the subtree");
+    }
+
+    #[test]
+    fn remove_member_leaf_is_undoable_restoring_membership() {
+        // Deleting a LEAF inside a sub-patch must restore it back INSIDE the scope (not orphaned at
+        // ROOT) on undo, with its internal link.
+        let mut g = Graph::new();
+        let a = g.add_node("Oscillator", None).unwrap();
+        let b = g.add_node("Buffer", None).unwrap();
+        g.add_link(a, "out", b, "data").unwrap();
+        let scope = g.group_nodes(&[a, b], [0.0, 0.0]).unwrap();
+
+        let (_r, inverse) = Command::RemoveNode { uid: b }.execute(&mut g).unwrap();
+        assert!(!g.contains(b), "member leaf removed");
+        assert_eq!(g.scope_of(a), Some(scope), "sibling a still a member");
+        assert_eq!(g.links_view().len(), 0, "the internal link went with b");
+
+        inverse.execute(&mut g).unwrap();
+        assert!(g.contains(b), "member restored");
+        assert_eq!(g.scope_of(b), Some(scope), "restored back INSIDE its scope, not at ROOT");
+        assert_eq!(g.links_view().len(), 1, "internal link a→b restored");
+    }
+
+    #[test]
+    fn remove_nested_instance_member_is_undoable() {
+        // Deleting a nested sub-patch (a scope that is a MEMBER of another scope) restores the nested
+        // subtree back inside its parent scope.
+        let mut g = Graph::new();
+        let a = g.add_node("Oscillator", None).unwrap();
+        let b = g.add_node("Buffer", None).unwrap();
+        let inner = g.group_nodes(&[b], [0.0, 0.0]).unwrap(); // inner scope holds b
+        let outer = g.group_nodes(&[a, inner], [1.0, 1.0]).unwrap(); // outer holds a + inner
+        assert_eq!(g.scope_of(inner), Some(outer), "inner nested in outer");
+
+        let (_r, inverse) = Command::RemoveNode { uid: inner }.execute(&mut g).unwrap();
+        assert!(g.scope(inner).is_none() && !g.contains(b), "nested subtree gone");
+        assert_eq!(g.scope_of(a), Some(outer), "outer's other member survives");
+
+        inverse.execute(&mut g).unwrap();
+        assert!(g.scope(inner).is_some() && g.contains(b), "nested subtree restored");
+        assert_eq!(g.scope_of(inner), Some(outer), "inner re-nested in outer");
+        assert_eq!(g.scope_of(b), Some(inner), "b back inside inner");
     }
 
     #[test]
