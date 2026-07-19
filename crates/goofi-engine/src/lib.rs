@@ -558,24 +558,10 @@ impl Graph {
         let mut ctx = NodeCtx::new();
         // `setup` latches the globals as of insert time (`process` reads them live each tick).
         ctx.globals = self.globals.snapshot();
-        // Seed the node by replaying `on_param_changed` for each declared param
-        // (not `common`, which is the scheduler's), then run derived one-time init.
-        // The FIRST error from replay-or-setup becomes the node's bootstrap error;
+        // Seed the node (replay `on_param_changed` for each declared param, then run
+        // derived one-time `setup`). The FIRST error becomes the node's bootstrap error;
         // the node is still inserted (no restart loop), matching the setup pipe.
-        let mut last_error = None;
-        for (group, entries) in &params {
-            if group == "common" {
-                continue;
-            }
-            for (name, value) in entries {
-                if let Err(e) = node.on_param_changed(&ParamKey::new(group.as_str(), name.as_str()), value) {
-                    last_error.get_or_insert(e.0);
-                }
-            }
-        }
-        if let Err(e) = node.setup(&mut ctx, &goofi_node::Params::new(&params)) {
-            last_error.get_or_insert(e.0);
-        }
+        let last_error = seed_node(&mut *node, &params, &mut ctx);
 
         let inputs: IndexMap<&'static str, Option<Data>> =
             manifest.inputs.iter().filter(|s| !s.multi).map(|s| (s.name, None)).collect();
@@ -2432,12 +2418,33 @@ impl Graph {
 /// the scheduler (and, in the bridge, poisoning the graph mutex). Called from the
 /// parallel phase, so it touches only `entry` (index stamping included — the
 /// counter and both I/O buffers all live in `entry`, so it stays disjoint).
+/// Seed a freshly-built node: replay `on_param_changed` for each declared param (skipping
+/// `common`, the scheduler's), then run `setup`. Returns the FIRST bootstrap error, if any.
+/// Shared by the inline insert path and the detached worker (which seeds off-tick).
+pub(crate) fn seed_node(
+    node: &mut dyn goofi_node::Node,
+    params: &ParamGroups,
+    ctx: &mut NodeCtx,
+) -> Option<String> {
+    let mut last_error = None;
+    for (group, entries) in params {
+        if group == "common" {
+            continue;
+        }
+        for (name, value) in entries {
+            if let Err(e) = node.on_param_changed(&ParamKey::new(group.as_str(), name.as_str()), value) {
+                last_error.get_or_insert(e.0);
+            }
+        }
+    }
+    if let Err(e) = node.setup(ctx, &goofi_node::Params::new(params)) {
+        last_error.get_or_insert(e.0);
+    }
+    last_error
+}
+
 fn run_node(entry: &mut NodeEntry) {
     entry.trigger_pending = false;
-    entry.ctx.tick += 1;
-    for v in entry.outputs.values_mut() {
-        *v = None;
-    }
     // Materialize each multi slot's present frames in connection order for the node
     // (Arc-bump clones). Empty for nodes with no multi slots — the common case pays
     // nothing beyond an empty map.
@@ -2446,32 +2453,68 @@ fn run_node(entry: &mut NodeEntry) {
         .iter()
         .map(|(k, cells)| (*k, cells.iter().filter_map(|(_, _, o)| o.clone()).collect()))
         .collect();
-    let inp = Inputs::with_multi(&entry.inputs, &multis);
-    let params = goofi_node::Params::new(&entry.params);
-    let node = &mut entry.node;
-    let ctx = &mut entry.ctx;
-    let mut out = Outputs::new(&mut entry.outputs);
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        node.process(&inp, &mut out, ctx, &params)
-    }));
-    // The process/bootstrap error channel. A binding error is NOT folded in here — it is
-    // derived on read by `last_error()`, so a binding that recovers surfaces even on a node
-    // that never runs process again (an idle node's run_node is not called).
-    entry.last_error = match result {
+    entry.last_error = execute_node(
+        entry.manifest,
+        &mut entry.node,
+        &entry.params,
+        &entry.inputs,
+        &multis,
+        &mut entry.outputs,
+        &mut entry.last_outputs,
+        &mut entry.ctx,
+        &mut entry.index_counters,
+        &mut entry.ufreq_meter,
+    );
+}
+
+/// Run a node's `process()` + engine meta-stamping in place against its live state.
+/// Shared by the inline tick path ([`run_node`]) and the detached worker, so both stamp
+/// index/ufreq identically. `catch_unwind` keeps a faulty node from unwinding the
+/// scheduler (and, in the bridge, poisoning the graph mutex). Returns the process/panic
+/// error (`None` on success); a binding error is NOT folded in here — it is derived on
+/// read by `last_error()`, so a recovered binding surfaces even on a node that no longer
+/// runs. The caller owns `trigger_pending`.
+// The parts are the node's live per-tick state, passed individually so both a `NodeEntry`
+// (inline) and a detached worker — which owns the same parts separately — can call it.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn execute_node(
+    manifest: &'static NodeManifest,
+    node: &mut Box<dyn goofi_node::Node>,
+    params: &ParamGroups,
+    inputs: &IndexMap<&'static str, Option<Data>>,
+    multis: &IndexMap<&'static str, Vec<Data>>,
+    outputs: &mut IndexMap<&'static str, Option<Data>>,
+    last_outputs: &mut IndexMap<&'static str, Data>,
+    ctx: &mut NodeCtx,
+    index_counters: &mut HashMap<&'static str, u64>,
+    ufreq_meter: &mut UfreqMeter,
+) -> Option<String> {
+    ctx.tick += 1;
+    for v in outputs.values_mut() {
+        *v = None;
+    }
+    let inp = Inputs::with_multi(inputs, multis);
+    let p = goofi_node::Params::new(params);
+    // Scope the `Outputs` borrow so `outputs` is free again for stamping below.
+    let result = {
+        let mut out = Outputs::new(outputs);
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| node.process(&inp, &mut out, ctx, &p)))
+    };
+    let err = match result {
         Ok(Ok(())) => None,
         Ok(Err(e)) => Some(e.0),
-        Err(p) => Some(panic_message(p)),
+        Err(pnc) => Some(panic_message(pnc)),
     };
-    stamp_meta(entry);
+    stamp_meta_parts(manifest, inputs, outputs, ctx.now, index_counters, ufreq_meter);
     // Persist each freshly-emitted (stamped) frame so `latest_frame` keeps returning it
     // on later ticks where this node emits nothing — viewers of a sparse producer never
-    // blink to None. Disjoint field borrows.
-    let (outputs, last) = (&entry.outputs, &mut entry.last_outputs);
+    // blink to None.
     for (slot, out) in outputs.iter() {
         if let Some(d) = out {
-            last.insert(*slot, d.clone());
+            last_outputs.insert(*slot, d.clone());
         }
     }
+    err
 }
 
 /// The number of frames a `Data` spans — its total element count (numpy `.size`
@@ -2504,24 +2547,29 @@ fn frame_count(d: &Data) -> usize {
 /// emitting ≥1 output), and the same value stamped onto every emitted slot — ufreq
 /// describes how often the node updates, not a per-slot cadence. Authoritative —
 /// overwritten every emit, never inherited from upstream meta.
-fn stamp_meta(entry: &mut NodeEntry) {
+fn stamp_meta_parts(
+    manifest: &'static NodeManifest,
+    inputs: &IndexMap<&'static str, Option<Data>>,
+    outputs: &mut IndexMap<&'static str, Option<Data>>,
+    now: f64,
+    counters: &mut HashMap<&'static str, u64>,
+    ufreq_meter: &mut UfreqMeter,
+) {
     // Nothing emitted this tick → no meta to stamp, and the ufreq meter only advances
     // on a productive emit. Skip the whole index-timeline scan (the common case for a
     // rate-gated or idle node that ran but produced nothing).
-    if entry.outputs.values().all(|o| o.is_none()) {
+    if outputs.values().all(|o| o.is_none()) {
         return;
     }
     // Only triggering inputs carry the data timeline; control inputs are excluded.
-    let triggering: std::collections::HashSet<&str> = entry
-        .manifest
+    let triggering: std::collections::HashSet<&str> = manifest
         .inputs
         .iter()
         .filter(|s| s.trigger_process)
         .map(|s| s.name)
         .collect();
     // Snapshot the index-bearing triggering inputs (index, frame_count) — no borrow held.
-    let input_frames: Vec<(u64, usize)> = entry
-        .inputs
+    let input_frames: Vec<(u64, usize)> = inputs
         .iter()
         .filter(|(name, _)| triggering.contains(*name))
         .filter_map(|(_, o)| o.as_ref())
@@ -2529,9 +2577,8 @@ fn stamp_meta(entry: &mut NodeEntry) {
         .collect();
     // Node-level ufreq: EMA of the inter-emit interval, inverted. `None` until the
     // second emit; a non-advancing clock (`dt <= 0`) keeps the prior estimate.
-    let now = entry.ctx.now;
     let node_ufreq = {
-        let m = &mut entry.ufreq_meter;
+        let m = ufreq_meter;
         match m.last_emit {
             None => {
                 m.last_emit = Some(now); // first emit: no interval yet
@@ -2550,9 +2597,7 @@ fn stamp_meta(entry: &mut NodeEntry) {
             }
         }
     };
-    // Disjoint field borrows: rewrite outputs while advancing the index counters.
-    let outputs = &mut entry.outputs;
-    let counters = &mut entry.index_counters;
+    // Rewrite outputs while advancing the index counters.
     for (slot, slot_opt) in outputs.iter_mut() {
         let Some(d) = slot_opt else { continue };
         let of = frame_count(d);
@@ -3785,6 +3830,20 @@ mod tests {
         g.tick();
         let d = g.next_run_delay(Instant::now()).expect("a capped producer still wants to run");
         assert!(d <= Duration::from_millis(100), "within the 10 Hz period, got {d:?}");
+    }
+
+    #[test]
+    fn execute_node_stamps_index_like_the_inline_path() {
+        // A pure source (no matching triggering input) gets a fresh per-output counter:
+        // index 0 on its first emit, advancing to 1 on the second — proving the extracted
+        // execute_node/stamp_meta_parts preserve the inline stamping behavior.
+        let mut g = Graph::new();
+        let c = g.add_node("_TestConst", None).unwrap();
+        g.tick_at(std::time::Instant::now());
+        let first = g.latest_frame(c, "out").unwrap().meta().index;
+        g.tick_at(std::time::Instant::now());
+        let second = g.latest_frame(c, "out").unwrap().meta().index;
+        assert_eq!((first, second), (Some(0), Some(1)), "fresh per-output counter advances");
     }
 
     #[test]
