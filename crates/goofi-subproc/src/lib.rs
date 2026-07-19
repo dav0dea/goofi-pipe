@@ -8,11 +8,12 @@
 //!
 //! Each tick is one request/response over **iceoryx2 shared memory** (the spec's
 //! subprocess-boundary transport — the same zero-copy plane the Python backend uses).
-//! The input `Data` is GOOF-encoded ([`goofi_codec::encode`]), prefixed with a 4-byte
-//! request sequence, and published to the child's per-node `<id>_req` byte-slice service;
-//! the child runs `process(x)` and publishes `[seq][GOOF]` back on `<id>_resp`, which we
-//! decode ([`goofi_codec::decode`]). The sequence disambiguates responses so a re-publish
-//! (needed while the child's subscriber is still connecting) never returns a stale frame.
+//! The input `Data` is written as a compact typed body ([`encode_body`] — sfreq/index +
+//! the shared [`goofi_codec::encode_array_body`] layout, no msgpack), prefixed with a
+//! 4-byte request sequence, and published to the child's per-node `<id>_req` byte-slice
+//! service; the child runs `process(x)` and publishes `[seq][body]` back on `<id>_resp`,
+//! which we [`decode_body`]. The sequence disambiguates responses so a re-publish (needed
+//! while the child's subscriber is still connecting) never returns a stale frame.
 //!
 //! Rust parent uses the iceoryx2 **Rust crate**; the Python child uses the iceoryx2 Python
 //! binding directly (same 0.9.3 ABI — `[u8]` ⇄ `Slice[c_uint8]`, validated by a cross-language
@@ -28,6 +29,7 @@ use std::time::{Duration, Instant};
 
 use iceoryx2::prelude::*;
 
+use goofi_core::Data;
 use goofi_node::{Inputs, Node, NodeCtx, NodeResult, Outputs};
 
 /// Per-process counter giving each spawned subprocess a unique iceoryx2 service-name base
@@ -43,42 +45,76 @@ const MAX_PAYLOAD: usize = 64 * 1024;
 /// scheduler (and, in the bridge, the graph mutex) indefinitely.
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// The Python worker: a self-contained GOOF-array codec (meta passed through
-/// opaquely — the Rust decoder re-derives shape/dtype from the body) that runs
-/// the user's `process(x)` over **iceoryx2 shared memory**. Needs `iceoryx2` +
-/// `numpy` (no msgpack — meta bytes are never parsed here). Service names arrive
-/// via `GOOFI_IOX_REQ`/`GOOFI_IOX_RESP`; the 4-byte request sequence is echoed so
-/// the parent can dedup re-publishes.
+/// The subprocess transport payload: `[sfreq: f64 LE, NaN=none][index: u64 LE, u64::MAX=none]` then
+/// the shared [`goofi_codec::encode_array_body`] layout. This REPLACES the GOOF frame on this
+/// boundary — parent and child are co-versioned (the worker source is embedded in this binary), so no
+/// magic/version/msgpack is needed. Meta rides as two typed fields: `sfreq` (PSD-class nodes read it)
+/// and `index` (always carried now, fixing subprocess continuity across the boundary). One transport
+/// copy replaces the encode→Vec→msgpack chain; the child views the input in place (see `WORKER_SRC`).
+fn encode_body(d: &Data) -> Vec<u8> {
+    let mut out = Vec::new();
+    out.extend_from_slice(&d.meta().sfreq.unwrap_or(f64::NAN).to_le_bytes());
+    out.extend_from_slice(&d.meta().index.unwrap_or(u64::MAX).to_le_bytes());
+    if let goofi_core::Value::Array(store) = d.value() {
+        goofi_codec::encode_array_body(store, &mut out);
+    }
+    out
+}
+
+fn decode_body(buf: &[u8]) -> std::result::Result<Data, String> {
+    if buf.len() < 16 {
+        return Err(format!("short transport body ({} bytes)", buf.len()));
+    }
+    let sfreq = f64::from_le_bytes(buf[0..8].try_into().unwrap());
+    let index = u64::from_le_bytes(buf[8..16].try_into().unwrap());
+    let meta = goofi_core::Meta {
+        sfreq: (!sfreq.is_nan()).then_some(sfreq),
+        index: (index != u64::MAX).then_some(index),
+        ..Default::default()
+    };
+    goofi_codec::decode_array_body(&buf[16..], meta)
+}
+
+/// The Python worker: a self-contained typed-body codec (sfreq/index as two typed
+/// fields — NO msgpack, NO GOOF magic; parent+child are co-versioned) that runs the
+/// user's `process(x)` over **iceoryx2 shared memory**. `sfreq`/`index` are exposed to
+/// the node via a module-level `goofi_meta` dict (a PSD-class node reads `sfreq`). Needs
+/// `iceoryx2` + `numpy`. Service names arrive via `GOOFI_IOX_REQ`/`GOOFI_IOX_RESP`; the
+/// 4-byte request sequence is echoed so the parent can dedup re-publishes.
 const WORKER_SRC: &str = r#"
 import sys, os, struct, ctypes, time
 import numpy as np
 import iceoryx2 as iox2
 
-MAGIC = b'GOOF'; VER = 2
 MAX_PAYLOAD = 64 * 1024
+NONE_INDEX = (1 << 64) - 1
 
-def decode_array(frame):
-    assert frame[:4] == MAGIC and frame[4] == VER and frame[5] == 0, "not a GOOF array frame"
-    ml = struct.unpack('<I', frame[6:10])[0]
-    bl = struct.unpack('<I', frame[10:14])[0]
-    meta = frame[14:14 + ml]
-    body = frame[14 + ml:14 + ml + bl]
-    ndim = body[0]; dl = body[1]; off = 2
-    dtype = body[off:off + dl].decode(); off += dl
-    shape = [struct.unpack('<I', body[off + 4 * i:off + 4 * i + 4])[0] for i in range(ndim)]
+# Transport body: [f64 sfreq (NaN=none)][u64 index (MAX=none)][u8 ndim][u8 dtype_len][dtype]
+# [ndim x u32 shape][raw bytes] — matches goofi_codec::{encode,decode}_array_body + a typed prefix.
+def decode_body(body):
+    sfreq = struct.unpack('<d', body[0:8])[0]
+    index = struct.unpack('<Q', body[8:16])[0]
+    ab = body[16:]
+    ndim = ab[0]; dl = ab[1]; off = 2
+    dtype = ab[off:off + dl].decode(); off += dl
+    shape = [struct.unpack('<I', ab[off + 4 * i:off + 4 * i + 4])[0] for i in range(ndim)]
     off += 4 * ndim
-    arr = np.frombuffer(body[off:], dtype=np.dtype(dtype)).reshape(shape).copy()
+    arr = np.frombuffer(ab[off:], dtype=np.dtype(dtype)).reshape(shape).copy()
+    meta = {'sfreq': None if sfreq != sfreq else sfreq,
+            'index': None if index == NONE_INDEX else index}
     return arr, meta
 
-def encode_array(arr, meta):
+def encode_body(arr, meta):
     arr = np.ascontiguousarray(arr)
     dtype = arr.dtype.str.encode()
-    body = bytes([arr.ndim, len(dtype)]) + dtype
+    sfreq = meta.get('sfreq'); index = meta.get('index')
+    out = struct.pack('<d', float('nan') if sfreq is None else sfreq)
+    out += struct.pack('<Q', NONE_INDEX if index is None else index)
+    out += bytes([arr.ndim, len(dtype)]) + dtype
     for d in arr.shape:
-        body += struct.pack('<I', d)
-    body += arr.tobytes()
-    hdr = MAGIC + bytes([VER, 0]) + struct.pack('<I', len(meta)) + struct.pack('<I', len(body))
-    return hdr + meta + body
+        out += struct.pack('<I', d)
+    out += arr.tobytes()
+    return out
 
 # iceoryx2 byte-slice service open (mirrors the Python backend's transport.py config so the
 # Rust `[u8]` publisher/subscriber on the same service are ABI-compatible).
@@ -135,15 +171,16 @@ while True:
     seq = struct.unpack('<I', m[:4])[0]
     if seq == last_seq:
         continue  # a re-publish of an already-answered request — its response is in the buffer
-    frame = m[4:]
-    arr, meta = decode_array(frame)
-    # Preserve the output shape (do NOT ravel — that would flatten [C,T] channel data and
-    # fail the decoder's channel-length check with the carried channels meta).
+    arr, goofi_meta = decode_body(m[4:])
+    ns['goofi_meta'] = goofi_meta  # sfreq/index exposed to the node (read only if it needs them)
+    # Preserve the output shape (do NOT ravel — that would flatten [C,T] channel data).
     res = np.ascontiguousarray(np.asarray(process(arr), dtype=arr.dtype))
-    # The carried meta describes the INPUT; if the node changed the shape it is stale (its
-    # channels would mismatch), so drop it — else sfreq/index/channels ride through.
-    out_meta = meta if res.shape == arr.shape else b''
-    _send(struct.pack('<I', seq) + encode_array(res, out_meta))
+    # Propagate index only when the shape is preserved (a length-changing node breaks the
+    # timeline); sfreq passes through unless the node overwrote goofi_meta['sfreq'].
+    out_meta = dict(goofi_meta)
+    if res.shape != arr.shape:
+        out_meta['index'] = None
+    _send(struct.pack('<I', seq) + encode_body(res, out_meta))
     last_seq = seq
 "#;
 
@@ -344,7 +381,7 @@ impl Node for RemoteNode {
         let Some(d) = inp.get("data") else {
             return Ok(());
         };
-        let frame = goofi_codec::encode(d);
+        let frame = encode_body(d);
         let timeout = self.timeout;
         // A dead/hung child (io error or timeout) is reaped so the NEXT tick spawns
         // a fresh subprocess, instead of leaving a zombie and erroring forever.
@@ -355,7 +392,7 @@ impl Node for RemoteNode {
                 return Err(e.into());
             }
         };
-        let data = goofi_codec::decode(&resp)?;
+        let data = decode_body(&resp)?;
         out.set("out", data);
         Ok(())
     }
@@ -469,6 +506,38 @@ mod tests {
     use goofi_core::{DType, Data, Meta, Value};
     use goofi_node::ParamGroups;
     use indexmap::IndexMap;
+
+    #[test]
+    fn transport_roundtrips_array_sfreq_and_index() {
+        let bytes: Vec<u8> = (0..6).flat_map(|i| (i as f32).to_le_bytes()).collect();
+        let meta = Meta { sfreq: Some(250.0), index: Some(7), ..Default::default() };
+        let d = Data::from_array_bytes(DType::F32, vec![2, 3], bytes, meta).unwrap();
+        let back = decode_body(&encode_body(&d)).unwrap();
+        assert_eq!(back.meta().sfreq, Some(250.0));
+        assert_eq!(back.meta().index, Some(7));
+        match back.value() {
+            Value::Array(s) => {
+                assert_eq!(s.dtype(), DType::F32);
+                assert_eq!(s.shape(), &[2, 3]);
+                assert_eq!(f32::from_le_bytes(s.as_bytes()[4..8].try_into().unwrap()), 1.0);
+            }
+            _ => panic!("expected array"),
+        }
+    }
+
+    #[test]
+    fn transport_encodes_absent_sfreq_and_index_as_sentinels() {
+        let d = Data::from_array_bytes(DType::F32, vec![1], 3.5f32.to_le_bytes().to_vec(), Meta::empty()).unwrap();
+        let back = decode_body(&encode_body(&d)).unwrap();
+        assert_eq!(back.meta().sfreq, None, "NaN sentinel decodes to None");
+        assert_eq!(back.meta().index, None, "u64::MAX sentinel decodes to None");
+        match back.value() {
+            Value::Array(s) => {
+                assert_eq!(f32::from_le_bytes(s.as_bytes()[0..4].try_into().unwrap()), 3.5)
+            }
+            _ => panic!("expected array"),
+        }
+    }
 
     /// A `RemoteNode` holds its iceoryx2 ports directly (via `ipc_threadsafe::Service`), so it must
     /// stay `Send` for the scheduler. This compile-time guard fails loudly if the ports ever revert to

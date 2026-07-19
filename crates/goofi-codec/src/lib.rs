@@ -48,7 +48,7 @@ pub fn encode(d: &Data) -> Vec<u8> {
 
 fn write_body(d: &Data, out: &mut Vec<u8>) {
     match d.value() {
-        Value::Array(store) => write_array_body(store, out),
+        Value::Array(store) => encode_array_body(store, out),
         Value::Str(s) => out.extend_from_slice(s.as_bytes()),
         Value::Table(map) => {
             out.extend_from_slice(&(map.len() as u32).to_le_bytes());
@@ -64,7 +64,10 @@ fn write_body(d: &Data, out: &mut Vec<u8>) {
     }
 }
 
-fn write_array_body(store: &ArrayStore, out: &mut Vec<u8>) {
+/// The array-body layout `[u8 ndim][u8 dtype_str_len][dtype_str][ndim × u32 shape][raw bytes]`,
+/// shared by the GOOF frame body and the subprocess transport (which reuses it verbatim, with a
+/// typed sfreq/index prefix instead of msgpack meta). Inverse: [`decode_array_body`].
+pub fn encode_array_body(store: &ArrayStore, out: &mut Vec<u8>) {
     let dtype_str = store.dtype().numpy_typestr().as_bytes();
     let shape = store.shape();
     out.push(shape.len() as u8);
@@ -196,7 +199,7 @@ pub fn decode(frame: &[u8]) -> std::result::Result<Data, String> {
     let (tag, meta_bytes, body) = split_frame(frame)?;
     let meta = parse_meta(meta_bytes)?;
     match tag {
-        0 => decode_array(body, meta),
+        0 => decode_array_body(body, meta),
         1 => {
             let s = std::str::from_utf8(body).map_err(|e| e.to_string())?;
             Ok(Data::string(s, meta))
@@ -240,7 +243,9 @@ impl<'a> Cursor<'a> {
     }
 }
 
-fn decode_array(body: &[u8], meta: goofi_core::Meta) -> std::result::Result<Data, String> {
+/// Decode the array-body layout written by [`encode_array_body`] into a `Data` carrying `meta`.
+/// Shared by the GOOF frame decoder and the subprocess transport.
+pub fn decode_array_body(body: &[u8], meta: goofi_core::Meta) -> std::result::Result<Data, String> {
     // [u8 ndim][u8 dtype_str_len][dtype_str][ndim × u32 shape][raw bytes]
     let mut cur = Cursor::new(body);
     let ndim = cur.u8("array ndim")?;
