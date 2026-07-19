@@ -8,8 +8,9 @@
 //!
 //! Each tick is one request/response over **iceoryx2 shared memory** (the spec's
 //! subprocess-boundary transport — the same zero-copy plane the Python backend uses).
-//! The input `Data` is written as a compact typed body ([`encode_body`] — sfreq/index +
-//! the shared [`goofi_codec::encode_array_body`] layout, no msgpack), prefixed with a
+//! The input `Data` is written as a compact body ([`encode_body`] — a typed `sfreq` prefix,
+//! then the full meta as an OPAQUE `goofi_codec` blob the child echoes unchanged so channels
+//! survive, then the shared [`goofi_codec::encode_array_body`] layout), prefixed with a
 //! 4-byte request sequence, and published to the child's per-node `<id>_req` byte-slice
 //! service; the child runs `process(x)` and publishes `[seq][body]` back on `<id>_resp`,
 //! which we [`decode_body`]. The sequence disambiguates responses so a re-publish (needed
@@ -45,16 +46,19 @@ const MAX_PAYLOAD: usize = 64 * 1024;
 /// scheduler (and, in the bridge, the graph mutex) indefinitely.
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// The subprocess transport payload: `[sfreq: f64 LE, NaN=none][index: u64 LE, u64::MAX=none]` then
-/// the shared [`goofi_codec::encode_array_body`] layout. This REPLACES the GOOF frame on this
-/// boundary — parent and child are co-versioned (the worker source is embedded in this binary), so no
-/// magic/version/msgpack is needed. Meta rides as two typed fields: `sfreq` (PSD-class nodes read it)
-/// and `index` (always carried now, fixing subprocess continuity across the boundary). One transport
-/// copy replaces the encode→Vec→msgpack chain; the child views the input in place (see `WORKER_SRC`).
+/// The subprocess transport payload: `[sfreq: f64 LE, NaN=none][meta_len: u32 LE][meta msgpack]` then
+/// the shared [`goofi_codec::encode_array_body`] layout. The meta blob is [`goofi_codec::pack_meta`] —
+/// OPAQUE to the child (it echoes it unchanged, so channels/index survive) while Rust round-trips it
+/// via [`goofi_codec::parse_meta`]. `sfreq` is ALSO carried as a typed prefix purely so the child can
+/// read it (a PSD-class node needs it) without a msgpack parser; it overlays the parsed meta on the
+/// way back, so it survives even when a shape-changing node drops the opaque meta. The array body is
+/// viewed in place by the child (see `WORKER_SRC`).
 fn encode_body(d: &Data) -> Vec<u8> {
     let mut out = Vec::new();
     out.extend_from_slice(&d.meta().sfreq.unwrap_or(f64::NAN).to_le_bytes());
-    out.extend_from_slice(&d.meta().index.unwrap_or(u64::MAX).to_le_bytes());
+    let meta = goofi_codec::pack_meta(d);
+    out.extend_from_slice(&(meta.len() as u32).to_le_bytes());
+    out.extend_from_slice(&meta);
     if let goofi_core::Value::Array(store) = d.value() {
         goofi_codec::encode_array_body(store, &mut out);
     }
@@ -62,56 +66,57 @@ fn encode_body(d: &Data) -> Vec<u8> {
 }
 
 fn decode_body(buf: &[u8]) -> std::result::Result<Data, String> {
-    if buf.len() < 16 {
+    if buf.len() < 12 {
         return Err(format!("short transport body ({} bytes)", buf.len()));
     }
     let sfreq = f64::from_le_bytes(buf[0..8].try_into().unwrap());
-    let index = u64::from_le_bytes(buf[8..16].try_into().unwrap());
-    let meta = goofi_core::Meta {
-        sfreq: (!sfreq.is_nan()).then_some(sfreq),
-        index: (index != u64::MAX).then_some(index),
-        ..Default::default()
-    };
-    goofi_codec::decode_array_body(&buf[16..], meta)
+    let meta_len = u32::from_le_bytes(buf[8..12].try_into().unwrap()) as usize;
+    let meta_end = 12 + meta_len;
+    let meta_bytes = buf.get(12..meta_end).ok_or("transport meta truncated")?;
+    let mut meta = goofi_codec::parse_meta(meta_bytes)?;
+    // The typed sfreq survives even when a shape-changing node emptied the opaque meta.
+    if !sfreq.is_nan() {
+        meta.sfreq = Some(sfreq);
+    }
+    goofi_codec::decode_array_body(&buf[meta_end..], meta)
 }
 
-/// The Python worker: a self-contained typed-body codec (sfreq/index as two typed
-/// fields — NO msgpack, NO GOOF magic; parent+child are co-versioned) that runs the
-/// user's `process(x)` over **iceoryx2 shared memory**. `sfreq`/`index` are exposed to
-/// the node via a module-level `goofi_meta` dict (a PSD-class node reads `sfreq`). Needs
-/// `iceoryx2` + `numpy`. Service names arrive via `GOOFI_IOX_REQ`/`GOOFI_IOX_RESP`; the
-/// 4-byte request sequence is echoed so the parent can dedup re-publishes.
+/// The Python worker: a self-contained body codec (a typed `sfreq` prefix the child reads,
+/// the meta as an opaque blob it echoes unchanged, then the array layout; NO GOOF magic —
+/// parent+child are co-versioned) that runs the user's `process(x)` over **iceoryx2 shared
+/// memory**. `sfreq` is exposed to the node via a module-level `goofi_meta` dict (a PSD-class
+/// node reads it) and the input array is a read-only VIEW into the sample. Needs `iceoryx2` +
+/// `numpy`. Service names arrive via `GOOFI_IOX_REQ`/`GOOFI_IOX_RESP`; the 4-byte request
+/// sequence is echoed so the parent can dedup re-publishes.
 const WORKER_SRC: &str = r#"
 import sys, os, struct, ctypes, time
 import numpy as np
 import iceoryx2 as iox2
 
 MAX_PAYLOAD = 64 * 1024
-NONE_INDEX = (1 << 64) - 1
-
-# Transport body: [f64 sfreq (NaN=none)][u64 index (MAX=none)][u8 ndim][u8 dtype_len][dtype]
-# [ndim x u32 shape][raw bytes] — matches goofi_codec::{encode,decode}_array_body + a typed prefix.
+# Transport body: [f64 sfreq (NaN=none)][u32 meta_len][meta blob][u8 ndim][u8 dtype_len]
+# [dtype][ndim x u32 shape][raw bytes]. The meta blob is OPAQUE here (a goofi_codec-encoded map) —
+# the child echoes it unchanged so channels/index survive; only `sfreq` is read (typed prefix).
 def decode_body(body):
     # `body` is a READ-ONLY memoryview over the shared-memory sample. The array is a numpy
     # VIEW straight into it (no copy); the sample is held for the duration of process(). A
     # node must not stash `x` across ticks — the buffer is released after the response is sent.
     sfreq = struct.unpack('<d', body[0:8])[0]
-    index = struct.unpack('<Q', body[8:16])[0]
-    ndim = body[16]; dl = body[17]; off = 18
+    ml = struct.unpack('<I', body[8:12])[0]
+    meta = bytes(body[12:12 + ml])  # opaque; tiny (channel labels), echoed as-is
+    off = 12 + ml
+    ndim = body[off]; dl = body[off + 1]; off += 2
     dtype = bytes(body[off:off + dl]).decode(); off += dl
     shape = [struct.unpack('<I', body[off + 4 * i:off + 4 * i + 4])[0] for i in range(ndim)]
     off += 4 * ndim
     arr = np.frombuffer(body[off:], dtype=np.dtype(dtype)).reshape(shape)
-    meta = {'sfreq': None if sfreq != sfreq else sfreq,
-            'index': None if index == NONE_INDEX else index}
-    return arr, meta
+    return arr, meta, (None if sfreq != sfreq else sfreq)
 
-def encode_body(arr, meta):
+def encode_body(arr, meta, sfreq):
     arr = np.ascontiguousarray(arr)
     dtype = arr.dtype.str.encode()
-    sfreq = meta.get('sfreq'); index = meta.get('index')
     out = struct.pack('<d', float('nan') if sfreq is None else sfreq)
-    out += struct.pack('<Q', NONE_INDEX if index is None else index)
+    out += struct.pack('<I', len(meta)) + bytes(meta)
     out += bytes([arr.ndim, len(dtype)]) + dtype
     for d in arr.shape:
         out += struct.pack('<I', d)
@@ -139,8 +144,10 @@ _resp_pub = (_byte_service(os.environ['GOOFI_IOX_RESP']).publisher_builder()
 def _view(s):
     p = s.payload()
     n = p.number_of_elements
-    # A read-only memoryview over the sample's shared memory — numpy frombuffer views it in place.
-    return memoryview((ctypes.c_uint8 * n).from_address(p.data_ptr)).toreadonly()
+    # A read-only memoryview over the sample's shared memory — numpy frombuffer views it in
+    # place. `.cast('B')` normalizes the ctypes format ('<B') to plain unsigned bytes, which
+    # `bytes()` / `np.frombuffer` accept (a '<B' memoryview raises "unsupported format").
+    return memoryview((ctypes.c_uint8 * n).from_address(p.data_ptr)).toreadonly().cast('B')
 
 def _latest():
     latest = None
@@ -176,18 +183,16 @@ while True:
     seq = struct.unpack('<I', mv[0:4])[0]
     if seq == last_seq:
         continue  # a re-publish of an already-answered request — its response is in the buffer
-    arr, goofi_meta = decode_body(mv[4:])
-    ns['goofi_meta'] = goofi_meta  # sfreq/index exposed to the node (read only if it needs them)
+    arr, meta_bytes, sfreq = decode_body(mv[4:])
+    ns['goofi_meta'] = {'sfreq': sfreq}  # sfreq exposed to the node (read only if it needs it)
     # Preserve the output shape (do NOT ravel — that would flatten [C,T] channel data). res is
     # materialized + copied into the response before `s` is released next iteration, so a node
     # that returns the input view is still safe.
     res = np.ascontiguousarray(np.asarray(process(arr), dtype=arr.dtype))
-    # Propagate index only when the shape is preserved (a length-changing node breaks the
-    # timeline); sfreq passes through unless the node overwrote goofi_meta['sfreq'].
-    out_meta = dict(goofi_meta)
-    if res.shape != arr.shape:
-        out_meta['index'] = None
-    _send(struct.pack('<I', seq) + encode_body(res, out_meta))
+    # Echo the opaque meta (channels/index) only when the shape is preserved — a length-changing
+    # node's carried channels/index are stale. sfreq rides the typed prefix regardless.
+    out_meta = meta_bytes if res.shape == arr.shape else b''
+    _send(struct.pack('<I', seq) + encode_body(res, out_meta, sfreq))
     last_seq = seq
 "#;
 
@@ -515,13 +520,24 @@ mod tests {
     use indexmap::IndexMap;
 
     #[test]
-    fn transport_roundtrips_array_sfreq_and_index() {
+    fn transport_roundtrips_array_sfreq_index_and_channels() {
         let bytes: Vec<u8> = (0..6).flat_map(|i| (i as f32).to_le_bytes()).collect();
-        let meta = Meta { sfreq: Some(250.0), index: Some(7), ..Default::default() };
+        let mut meta = Meta { sfreq: Some(250.0), index: Some(7), ..Default::default() };
+        // Channels ride in the opaque meta blob (the regression this guards: the typed-only
+        // transport dropped them, losing EEG channel labels across the boundary).
+        meta.channels = goofi_core::Axes::new().with(
+            0,
+            goofi_core::Axis::coords(vec![
+                goofi_core::Coord::Str("Fz".into()),
+                goofi_core::Coord::Str("Cz".into()),
+            ]),
+        );
         let d = Data::from_array_bytes(DType::F32, vec![2, 3], bytes, meta).unwrap();
         let back = decode_body(&encode_body(&d)).unwrap();
         assert_eq!(back.meta().sfreq, Some(250.0));
         assert_eq!(back.meta().index, Some(7));
+        let ch = back.meta().channels.get(0).and_then(|a| a.coords.clone()).expect("dim0 channels survive");
+        assert_eq!(ch.len(), 2);
         match back.value() {
             Value::Array(s) => {
                 assert_eq!(s.dtype(), DType::F32);
@@ -554,6 +570,48 @@ mod tests {
         assert!(WORKER_SRC.contains("toreadonly"), "the input is a read-only SHM view");
         assert!(!WORKER_SRC.contains(".copy()"), "no defensive input copy on the hot path");
         assert!(!WORKER_SRC.contains("_sample_bytes"), "the input is not copied into a Python bytes");
+    }
+
+    #[test]
+    fn psd_runs_over_the_transport_reading_sfreq() {
+        let Some(py) = usable_python() else {
+            eprintln!("SKIP: no python with numpy + iceoryx2");
+            return;
+        };
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/psd.py");
+        // Discovery: CamelCase "Psd" on the subprocess tier.
+        let ty = discover_one(&path, &py).expect("psd.py discovers as a subprocess node");
+        assert_eq!(ty.manifest.type_name, "Psd");
+        assert_eq!(ty.manifest.isolation, Isolation::Subprocess);
+
+        // A 1x64 unit sine at exactly 8 cycles (bin 8, independent of sfreq); sfreq=1000 in
+        // meta only scales the PSD magnitude, so a small peak proves the child read sfreq.
+        let n = 64usize;
+        let sfreq = 1000.0f64;
+        let samples: Vec<u8> = (0..n)
+            .flat_map(|i| ((2.0 * std::f64::consts::PI * 8.0 * i as f64 / n as f64).sin() as f32).to_le_bytes())
+            .collect();
+        let meta = Meta { sfreq: Some(sfreq), ..Default::default() };
+        let d = Data::from_array_bytes(DType::F32, vec![1, n], samples, meta).unwrap();
+
+        let src = std::fs::read_to_string(&path).unwrap();
+        let mut node = RemoteNode::new(&py, &src);
+        let out = run(&mut node, d);
+
+        match out.value() {
+            Value::Array(s) => {
+                assert_eq!(s.shape(), &[1, n / 2 + 1], "channels preserved; rfft bins");
+                let psd: Vec<f32> =
+                    s.as_bytes().chunks_exact(4).map(|c| f32::from_le_bytes(c.try_into().unwrap())).collect();
+                let peak = (0..psd.len()).max_by(|a, b| psd[*a].total_cmp(&psd[*b])).unwrap();
+                assert_eq!(peak, 8, "spectral peak at the input frequency bin");
+                // sfreq=1000 normalization -> a small peak; the fallback sfreq=1 would be ~1000x larger.
+                assert!(psd[peak] < 1.0, "peak {} implies sfreq=1000 reached the child, not the fallback", psd[peak]);
+            }
+            _ => panic!("expected array"),
+        }
+        // sfreq also rides back through the typed transport meta.
+        assert_eq!(out.meta().sfreq, Some(sfreq), "sfreq round-trips through the typed transport");
     }
 
     /// A `RemoteNode` holds its iceoryx2 ports directly (via `ipc_threadsafe::Service`), so it must

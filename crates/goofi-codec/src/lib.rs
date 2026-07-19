@@ -83,7 +83,10 @@ pub fn encode_array_body(store: &ArrayStore, out: &mut Vec<u8>) {
 // Meta projection (typed Meta + derived shape/dtype -> msgpack map)
 // ---------------------------------------------------------------------------
 
-fn pack_meta(d: &Data) -> Vec<u8> {
+/// Serialize a `Data`'s `Meta` (channels/sfreq/index/extra) to the msgpack map used in a GOOF
+/// frame. Shared with the subprocess transport, where it is the opaque meta blob the child echoes
+/// unchanged (preserving channels) while Rust round-trips it via [`parse_meta`].
+pub fn pack_meta(d: &Data) -> Vec<u8> {
     let meta = d.meta();
     let mut entries: Vec<(Mp, Mp)> = Vec::new();
 
@@ -277,7 +280,9 @@ fn decode_table(body: &[u8], meta: goofi_core::Meta) -> std::result::Result<Data
     Ok(Data::table(map, meta))
 }
 
-fn parse_meta(bytes: &[u8]) -> std::result::Result<goofi_core::Meta, String> {
+/// Parse the msgpack meta map written by [`pack_meta`] back into a typed `Meta` (shape/dtype are
+/// re-derived from the body, never these keys). Shared with the subprocess transport.
+pub fn parse_meta(bytes: &[u8]) -> std::result::Result<goofi_core::Meta, String> {
     let mut meta = goofi_core::Meta::empty();
     if bytes.is_empty() {
         return Ok(meta);
