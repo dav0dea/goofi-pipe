@@ -6,6 +6,7 @@
 #![cfg(any(feature = "extension-module", feature = "host"))]
 
 mod data;
+mod introspect;
 mod node;
 mod params;
 
@@ -33,5 +34,6 @@ pub fn goofi(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<params::FloatParam>()?;
     m.add_class::<params::BoolParam>()?;
     m.add_class::<params::StringParam>()?;
+    m.add_function(wrap_pyfunction!(introspect::introspect, m)?)?;
     Ok(())
 }
