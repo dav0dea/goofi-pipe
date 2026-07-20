@@ -5,9 +5,12 @@
 use pyo3::prelude::*;
 
 /// `goofi.DataType.ARRAY|STRING|TABLE` — the slot element type. `.value` is the
-/// wire name (`"ARRAY"`/…) so introspect serializes it directly.
+/// wire name (`"ARRAY"`/…) so introspect serializes it directly. The variant names
+/// are the Python-facing API (`goofi.DataType.ARRAY`) + wire names, so they stay
+/// screaming-case despite the acronym lint.
 #[pyclass(eq, eq_int)]
 #[derive(PartialEq)]
+#[allow(clippy::upper_case_acronyms)]
 pub enum DataType {
     ARRAY,
     STRING,
