@@ -255,6 +255,10 @@ impl Running {
             .env("GOOFI_USER_SRC", source)
             .env("GOOFI_IOX_REQ", &req_name)
             .env("GOOFI_IOX_RESP", &resp_name)
+            // A subprocess node runs its OWN interpreter; a host `PYTHONPATH` (e.g. the pyo3/FT
+            // tier's, injected by `.cargo/config.toml`) must not leak in and shadow the child's
+            // numpy with an incompatible build. The child uses its interpreter's site-packages.
+            .env_remove("PYTHONPATH")
             .stdin(Stdio::null())
             .stdout(Stdio::inherit())
             .stderr(Stdio::inherit())
@@ -574,10 +578,7 @@ mod tests {
 
     #[test]
     fn psd_runs_over_the_transport_reading_sfreq() {
-        let Some(py) = usable_python() else {
-            eprintln!("SKIP: no python with numpy + iceoryx2");
-            return;
-        };
+        let py = require_python();
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/psd.py");
         // Discovery: CamelCase "Psd" on the subprocess tier.
         let ty = discover_one(&path, &py).expect("psd.py discovers as a subprocess node");
@@ -623,9 +624,11 @@ mod tests {
         _assert_send::<RemoteNode>();
     }
 
-    /// A python with BOTH numpy and iceoryx2 (the subprocess transport), or None (the tier
-    /// test is skipped then). Prefers `$GOOFI_SUBPROC_TEST_PYTHON`, then the repo's iceoryx2
-    /// venv, then a PATH python that happens to have iceoryx2.
+    /// A python with BOTH numpy and iceoryx2 (the subprocess transport), or None. Prefers
+    /// `$GOOFI_SUBPROC_TEST_PYTHON`, then the repo's iceoryx2 `.venv`, then a PATH python. The
+    /// probe strips `PYTHONPATH` exactly like the real child spawn ([`Running::spawn`]), so a
+    /// host/pyo3 `PYTHONPATH` can't produce a false negative (it once masked real bugs by making
+    /// the `.venv` python import an incompatible numpy → every tier test silently SKIPPED).
     fn usable_python() -> Option<String> {
         let mut cands: Vec<String> = Vec::new();
         if let Ok(p) = std::env::var("GOOFI_SUBPROC_TEST_PYTHON") {
@@ -638,6 +641,7 @@ mod tests {
             if let Ok(out) = Command::new(&cand)
                 .arg("-c")
                 .arg("import numpy, iceoryx2")
+                .env_remove("PYTHONPATH")
                 .stdout(Stdio::null())
                 .stderr(Stdio::null())
                 .status()
@@ -648,6 +652,19 @@ mod tests {
             }
         }
         None
+    }
+
+    /// Like [`usable_python`] but PANICS with an actionable message when none is found — the
+    /// subprocess tier tests HARD-REQUIRE a python (numpy + iceoryx2) rather than silently
+    /// skipping, so a missing/misconfigured interpreter fails loudly instead of hiding bugs.
+    fn require_python() -> String {
+        usable_python().unwrap_or_else(|| {
+            panic!(
+                "no python with numpy + iceoryx2 found (checked $GOOFI_SUBPROC_TEST_PYTHON, \
+                 ./.venv/bin/python, python3, python). Provision ./.venv or set \
+                 GOOFI_SUBPROC_TEST_PYTHON. The subprocess-tier tests require one."
+            )
+        })
     }
 
     fn run(node: &mut RemoteNode, d: Data) -> Data {
@@ -698,10 +715,7 @@ mod tests {
         // run many round-trips of a realistic EEG-sized frame and report the latency
         // distribution. Loose upper bound so it isn't CI-timing-flaky; every tick must succeed
         // (stability) and steady-state latency must stay well under the tick budget.
-        let Some(py) = usable_python() else {
-            eprintln!("SKIP: no python with numpy + iceoryx2");
-            return;
-        };
+        let py = require_python();
         let mut node = RemoteNode::spawn(&py, "def process(x):\n    return x * 1.0\n").unwrap();
         // A 32-channel × 256-sample float32 frame (~32 KB) — a typical EEG buffer.
         let (c, t) = (32usize, 256usize);
@@ -740,10 +754,7 @@ mod tests {
         // through a length-preserving node must come back [2,3] with channels
         // intact — the old `.ravel()` flattened it to [6] and the decoder rejected
         // the frame (channels len 2 != shape 6).
-        let Some(py) = usable_python() else {
-            eprintln!("SKIP: no python3 with numpy");
-            return;
-        };
+        let py = require_python();
         let mut node = RemoteNode::spawn(&py, "def process(x):\n    return x * 2.0\n").unwrap();
 
         let mut meta = Meta::empty();
@@ -772,10 +783,7 @@ mod tests {
         // The protocol rides fd 1. A node that writes to stdout (here a flushed
         // print, but equally a C-extension's printf — the very kind this tier
         // hosts) must NOT inject bytes into the length-prefixed frame stream.
-        let Some(py) = usable_python() else {
-            eprintln!("SKIP: no python3 with numpy");
-            return;
-        };
+        let py = require_python();
         let mut node = RemoteNode::spawn(
             &py,
             "def process(x):\n    import sys\n    print('debug from the node', flush=True)\n    sys.stdout.flush()\n    return x * 2.0\n",
@@ -793,10 +801,7 @@ mod tests {
     fn crashed_child_is_reaped_and_respawns() {
         // Audit #2: a tick whose worker raises must Err, then a later tick must
         // succeed (a fresh subprocess is spawned) rather than being wedged forever.
-        let Some(py) = usable_python() else {
-            eprintln!("SKIP: no python3 with numpy");
-            return;
-        };
+        let py = require_python();
         let mut node = RemoteNode::spawn(
             &py,
             "def process(x):\n    if x[0] < 0:\n        raise ValueError('boom')\n    return x * 2.0\n",
@@ -815,10 +820,7 @@ mod tests {
     fn hung_subprocess_times_out_instead_of_hanging() {
         // Audit #4: a worker that never responds must not block forever; with a
         // short timeout the tick returns an error promptly.
-        let Some(py) = usable_python() else {
-            eprintln!("SKIP: no python3 with numpy");
-            return;
-        };
+        let py = require_python();
         let mut node = RemoteNode::new(
             &py,
             "import time\ndef process(x):\n    while True:\n        time.sleep(1)\n",
@@ -837,10 +839,7 @@ mod tests {
         // Audit R2-#1: the worker blocks at module import (never enters its read
         // loop) AND the frame exceeds the OS pipe buffer (~64 KiB), so the WRITE
         // would block forever without a write-side timeout. Must error, not hang.
-        let Some(py) = usable_python() else {
-            eprintln!("SKIP: no python3 with numpy");
-            return;
-        };
+        let py = require_python();
         let mut node = RemoteNode::new(
             &py,
             "import time\ntime.sleep(30)\ndef process(x):\n    return x\n",
@@ -861,10 +860,7 @@ mod tests {
     fn large_frame_round_trips_over_shared_memory() {
         // A frame far larger than the 64 KiB initial slice must round-trip — iceoryx2 grows the
         // publisher's segment (PowerOfTwo), and the 4-byte sequence framing survives a big body.
-        let Some(py) = usable_python() else {
-            eprintln!("SKIP: no python with numpy + iceoryx2");
-            return;
-        };
+        let py = require_python();
         let mut node = RemoteNode::spawn(&py, "def process(x):\n    return x * 2.0\n").unwrap();
         let n = 100_000usize; // 400 KB body
         let buf: Vec<u8> = (0..n).flat_map(|i| (i as f32).to_le_bytes()).collect();
@@ -879,10 +875,7 @@ mod tests {
 
     #[test]
     fn remote_node_runs_a_python_node_in_a_subprocess() {
-        let Some(py) = usable_python() else {
-            eprintln!("SKIP: no python3 with numpy available");
-            return;
-        };
+        let py = require_python();
         let mut node =
             RemoteNode::spawn(&py, "def process(x):\n    return x * 2.0 + 1.0\n").unwrap();
 
@@ -941,10 +934,7 @@ mod tests {
 
     #[test]
     fn discover_yields_subprocess_types_that_run() {
-        let Some(py) = usable_python() else {
-            eprintln!("SKIP: no python3 with numpy available");
-            return;
-        };
+        let py = require_python();
         let dir = std::env::temp_dir().join(format!("goofi_subdisc_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
