@@ -75,6 +75,24 @@ impl SrcDtype {
         }
     }
 
+    /// numpy `str(dtype)` — the human name, used in the ingest cast warning.
+    pub fn numpy_name(self) -> &'static str {
+        match self {
+            SrcDtype::F16 => "float16",
+            SrcDtype::F32 => "float32",
+            SrcDtype::F64 => "float64",
+            SrcDtype::I8 => "int8",
+            SrcDtype::I16 => "int16",
+            SrcDtype::I32 => "int32",
+            SrcDtype::I64 => "int64",
+            SrcDtype::U8 => "uint8",
+            SrcDtype::U16 => "uint16",
+            SrcDtype::U32 => "uint32",
+            SrcDtype::U64 => "uint64",
+            SrcDtype::Bool => "bool",
+        }
+    }
+
     /// Parse a numpy typestring (`<f4`, `|u1`, `=i8`, …). Big-endian (`>`) rejected.
     pub fn from_numpy_typestr(s: &str) -> Option<SrcDtype> {
         let core = match s.as_bytes().first() {
@@ -154,6 +172,23 @@ pub fn cast_to_f32(src: SrcDtype, bytes: &[u8]) -> Result<(Vec<u8>, bool)> {
         out.extend_from_slice(&src.read_f32(bytes, i).to_le_bytes());
     }
     Ok((out, true))
+}
+
+/// Emit a one-time operator warning that a node's `slot` output was cast to f32 from a
+/// foreign dtype `src`. Deduped via `warned` (keyed by dtype) so a node emitting e.g. f64
+/// every tick warns exactly once. No-op (returns `false`) when `src` is already f32 or was
+/// warned before; returns `true` on the tick it actually warns. The node/slot identity a
+/// caller has is folded into the message (there is no per-node UI warning channel yet).
+pub fn warn_cast_once(warned: &mut std::collections::HashSet<SrcDtype>, slot: &str, src: SrcDtype) -> bool {
+    if src == SrcDtype::F32 || !warned.insert(src) {
+        return false;
+    }
+    eprintln!(
+        "warning: node output slot `{slot}` produced {} — cast to float32 (further {} casts suppressed)",
+        src.numpy_name(),
+        src.numpy_name(),
+    );
+    true
 }
 
 // ---------------------------------------------------------------------------
@@ -606,6 +641,16 @@ mod tests {
             reduce: vec![],
         };
         assert!(!image.admits(&d));
+    }
+
+    #[test]
+    fn warn_cast_once_dedups_per_dtype() {
+        use std::collections::HashSet;
+        let mut w: HashSet<SrcDtype> = HashSet::new();
+        assert!(warn_cast_once(&mut w, "out", SrcDtype::F64), "first f64 warns");
+        assert!(!warn_cast_once(&mut w, "out", SrcDtype::F64), "second f64 suppressed");
+        assert!(warn_cast_once(&mut w, "out", SrcDtype::I16), "a different dtype still warns");
+        assert!(!warn_cast_once(&mut w, "out", SrcDtype::F32), "f32 never warns");
     }
 
     #[test]

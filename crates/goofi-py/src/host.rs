@@ -1,6 +1,6 @@
 use std::ffi::CString;
 
-use goofi_core::{Data, Meta, Value};
+use goofi_core::{Data, Meta, SrcDtype, Value};
 use goofi_node::{Inputs, Node, NodeCtx, NodeResult, Outputs, Params};
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyModule};
@@ -13,10 +13,12 @@ import numpy as np
 def __goofi_wrap(process, raw, shape):
     # Feed the node its input at its REAL shape (not flattened) and preserve the
     # output shape (no ravel) — mirroring the subprocess worker so both backends
-    # produce identical output for the same node source. Returns (bytes, shape).
+    # produce identical output for the same node source. Return the NATIVE dtype
+    # (no forced float32) so Rust owns the cast-to-f32 guard, like the subprocess
+    # tier. Returns (bytes, shape, dtype_str).
     x = np.frombuffer(raw, dtype=np.float32).reshape(shape).copy()
-    y = np.ascontiguousarray(np.asarray(process(x), dtype=np.float32))
-    return (y.tobytes(), list(y.shape))
+    y = np.ascontiguousarray(process(x))
+    return (y.tobytes(), list(y.shape), y.dtype.str)
 "#;
 
 /// A Python node running in-process on the free-threaded interpreter.
@@ -26,6 +28,8 @@ pub struct PyNode {
     /// Whether the runtime GIL tripwire has run yet (it checks once, on the first
     /// `process`, so the steady-state hot path pays nothing).
     gil_checked: bool,
+    /// Source dtypes already warned about (dedup for the ingest cast warning).
+    cast_warned: std::collections::HashSet<SrcDtype>,
 }
 
 impl PyNode {
@@ -50,6 +54,7 @@ impl PyNode {
                 process,
                 wrap,
                 gil_checked: false,
+                cast_warned: std::collections::HashSet::new(),
             })
         })
     }
@@ -105,8 +110,8 @@ impl Node for PyNode {
         // for ALL in-process nodes — a whole-host hazard the discovery probe can't
         // see. Steady-state ticks skip the check, so the hot path pays nothing.
         let check_gil = !self.gil_checked;
-        let (out_bytes, out_shape, tripped): (Vec<u8>, Vec<usize>, bool) =
-            Python::attach(|py| -> Result<(Vec<u8>, Vec<usize>, bool), String> {
+        let (native_bytes, out_shape, dtype_str, tripped): (Vec<u8>, Vec<usize>, String, bool) =
+            Python::attach(|py| -> Result<(Vec<u8>, Vec<usize>, String, bool), String> {
                 // Copy the Rust buffer straight into Python bytes (no intermediate
                 // Vec) — `store` is borrowed from the live input for this call.
                 let raw = PyBytes::new(py, store.as_bytes());
@@ -114,10 +119,11 @@ impl Node for PyNode {
                     .wrap
                     .call1(py, (&self.process, raw, in_shape.clone()))
                     .map_err(|e| e.to_string())?;
-                // WRAP returns (bytes, shape) so the node's output shape is preserved.
-                let (bytes, shape) = ret
+                // WRAP returns (bytes, shape, dtype_str): shape preserved, native dtype so
+                // Rust owns the cast-to-f32 guard (like the subprocess tier).
+                let (bytes, shape, dstr) = ret
                     .bind(py)
-                    .extract::<(Vec<u8>, Vec<usize>)>()
+                    .extract::<(Vec<u8>, Vec<usize>, String)>()
                     .map_err(|e| e.to_string())?;
                 let tripped = check_gil
                     && PyModule::import(py, "sys")
@@ -125,7 +131,7 @@ impl Node for PyNode {
                         .and_then(|f| f.call0())
                         .and_then(|v| v.extract::<bool>())
                         .unwrap_or(false);
-                Ok((bytes, shape, tripped))
+                Ok((bytes, shape, dstr, tripped))
             })?;
         self.gil_checked = true;
         if tripped {
@@ -133,6 +139,12 @@ impl Node for PyNode {
                 "node re-enabled the GIL at runtime; quarantine it to the subprocess tier".into(),
             );
         }
+
+        // The ingest cast guard: a foreign output dtype is cast to f32 here (deduped warning).
+        let src = SrcDtype::from_numpy_typestr(&dtype_str)
+            .ok_or_else(|| format!("node output has unsupported dtype `{dtype_str}`"))?;
+        let (out_bytes, _did_cast) = goofi_core::cast_to_f32(src, &native_bytes).map_err(|e| e.to_string())?;
+        goofi_core::warn_cast_once(&mut self.cast_warned, "out", src);
 
         // Mirror the subprocess backend: carry the input meta through a
         // length-preserving node (same shape → sfreq/channels/index stay valid), and
@@ -232,6 +244,19 @@ mod tests {
         let mut node = PyNode::from_source(src, "process").expect("compile python node");
         assert_eq!(run(&mut node, &[1.0, 2.0, 3.0]), vec![3.0, 5.0, 7.0]);
         assert!(!PyNode::gil_enabled().unwrap(), "GIL must stay disabled after running");
+    }
+
+    #[test]
+    fn casts_non_f32_node_output_to_f32() {
+        // A node returning float64 must have its output cast to f32 at the Rust ingest
+        // boundary — values preserved. (The dedup warning is unit-tested in goofi-core.)
+        let src = "import numpy as np\ndef process(x):\n    return x.astype(np.float64) * 2.0\n";
+        let mut node = PyNode::from_source(src, "process").unwrap();
+        assert_eq!(run(&mut node, &[1.0, 2.0, 3.0]), vec![2.0, 4.0, 6.0]);
+        // An int-returning node is likewise cast to f32.
+        let src2 = "import numpy as np\ndef process(x):\n    return (x * 10).astype(np.int32)\n";
+        let mut node2 = PyNode::from_source(src2, "process").unwrap();
+        assert_eq!(run(&mut node2, &[1.0, 2.0, 3.0]), vec![10.0, 20.0, 30.0]);
     }
 
     #[test]

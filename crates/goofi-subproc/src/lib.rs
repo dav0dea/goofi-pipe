@@ -65,7 +65,10 @@ fn encode_body(d: &Data) -> Vec<u8> {
     out
 }
 
-fn decode_body(buf: &[u8]) -> std::result::Result<Data, String> {
+/// Decode a transport body into `(Data, source dtype)`. The array is cast to f32 at the
+/// ingest boundary; the source dtype is returned so `RemoteNode` can warn (deduped) when a
+/// foreign dtype was cast.
+fn decode_body(buf: &[u8]) -> std::result::Result<(Data, goofi_core::SrcDtype), String> {
     if buf.len() < 12 {
         return Err(format!("short transport body ({} bytes)", buf.len()));
     }
@@ -78,9 +81,7 @@ fn decode_body(buf: &[u8]) -> std::result::Result<Data, String> {
     if !sfreq.is_nan() {
         meta.sfreq = Some(sfreq);
     }
-    // The child casts foreign dtypes to f32 at ingest; the source dtype is dropped here
-    // (the dedup cast-warning is wired at RemoteNode in the following step).
-    goofi_codec::decode_array_body(&buf[meta_end..], meta).map(|(d, _)| d)
+    goofi_codec::decode_array_body(&buf[meta_end..], meta)
 }
 
 /// The Python worker: a self-contained body codec (a typed `sfreq` prefix the child reads,
@@ -352,6 +353,8 @@ pub struct RemoteNode {
     source: String,
     timeout: Duration,
     proc: Option<Running>,
+    /// Source dtypes already warned about (dedup for the ingest cast warning).
+    cast_warned: std::collections::HashSet<goofi_core::SrcDtype>,
 }
 
 impl RemoteNode {
@@ -363,6 +366,7 @@ impl RemoteNode {
             source: source.into(),
             timeout: DEFAULT_TIMEOUT,
             proc: None,
+            cast_warned: std::collections::HashSet::new(),
         }
     }
 
@@ -410,7 +414,8 @@ impl Node for RemoteNode {
                 return Err(e.into());
             }
         };
-        let data = decode_body(&resp)?;
+        let (data, src) = decode_body(&resp)?;
+        goofi_core::warn_cast_once(&mut self.cast_warned, "out", src);
         out.set("out", data);
         Ok(())
     }
@@ -539,7 +544,7 @@ mod tests {
             ]),
         );
         let d = Data::array_f32(vec![2, 3], bytes, meta).unwrap();
-        let back = decode_body(&encode_body(&d)).unwrap();
+        let (back, _) = decode_body(&encode_body(&d)).unwrap();
         assert_eq!(back.meta().sfreq, Some(250.0));
         assert_eq!(back.meta().index, Some(7));
         let ch = back.meta().channels.get(0).and_then(|a| a.coords.clone()).expect("dim0 channels survive");
@@ -556,7 +561,7 @@ mod tests {
     #[test]
     fn transport_encodes_absent_sfreq_and_index_as_sentinels() {
         let d = Data::array_f32(vec![1], 3.5f32.to_le_bytes().to_vec(), Meta::empty()).unwrap();
-        let back = decode_body(&encode_body(&d)).unwrap();
+        let (back, _) = decode_body(&encode_body(&d)).unwrap();
         assert_eq!(back.meta().sfreq, None, "NaN sentinel decodes to None");
         assert_eq!(back.meta().index, None, "u64::MAX sentinel decodes to None");
         match back.value() {
