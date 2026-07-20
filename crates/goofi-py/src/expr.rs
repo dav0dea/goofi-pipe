@@ -148,7 +148,7 @@ fn data_to_py(py: Python<'_>, d: &Data) -> PyResult<Py<PyAny>> {
         Value::Array(s) => {
             let np = PyModule::import(py, "numpy")?;
             let raw = PyBytes::new(py, s.as_bytes());
-            let arr = np.getattr("frombuffer")?.call1((raw, s.dtype().numpy_typestr()))?;
+            let arr = np.getattr("frombuffer")?.call1((raw, "<f4"))?; // arrays are always f32
             let shape: Vec<usize> = s.shape().to_vec();
             Ok(arr.call_method1("reshape", (shape,))?.unbind())
         }
@@ -286,7 +286,7 @@ mod tests {
     // The tests below drive the real embedded interpreter (numpy required), matching
     // the crate's existing `host.rs` embed-test posture.
     use goofi_core::globals::{GlobalValue, GlobalsSnapshot};
-    use goofi_core::{DType, Meta};
+    use goofi_core::{Meta};
     use indexmap::IndexMap;
     use std::collections::HashMap;
 
@@ -302,7 +302,7 @@ mod tests {
 
     fn f32_1d(vals: &[f32]) -> Data {
         let bytes: Vec<u8> = vals.iter().flat_map(|v| v.to_le_bytes()).collect();
-        Data::from_array_bytes(DType::F32, vec![vals.len()], bytes, Meta::empty()).unwrap()
+        Data::array_f32(vec![vals.len()], bytes, Meta::empty()).unwrap()
     }
     fn fparam() -> Param {
         Param::Float { value: 0.0, vmin: -1e9, vmax: 1e9 }

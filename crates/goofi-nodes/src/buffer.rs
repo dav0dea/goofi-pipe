@@ -3,7 +3,7 @@
 //! uses eight of these. Length-changing, so only `sfreq` is carried through.
 
 use goofi_core::SlotType;
-use goofi_core::{Data, DType, Meta, Value};
+use goofi_core::{Data, Meta, Value};
 use goofi_node::{
     default_factory, Inputs, Isolation, Node, NodeCtx, NodeManifest, NodeResult, OutputDecl,
     Outputs, ParamDecl, ParamSpec, Params, SlotDecl,
@@ -25,9 +25,6 @@ impl Node for Buffer {
         let Value::Array(store) = d.value() else {
             return Ok(());
         };
-        if store.dtype() != DType::F32 {
-            return Ok(()); // native Buffer handles float32 for now
-        }
         for chunk in store.as_bytes().chunks_exact(4) {
             self.ring.push(f32::from_le_bytes(chunk.try_into().unwrap()));
         }
@@ -44,7 +41,7 @@ impl Node for Buffer {
             sfreq: d.meta().sfreq,
             ..Default::default()
         };
-        let data = Data::from_array_bytes(DType::F32, vec![self.ring.len()], buf, meta)
+        let data = Data::array_f32(vec![self.ring.len()], buf, meta)
             .map_err(|e| e.to_string())?;
         out.set("out", data);
         Ok(())
@@ -83,13 +80,13 @@ inventory::submit! {
 
 #[cfg(test)]
 mod tests {
-    use goofi_core::{Data, DType, Meta, Param, Value};
+    use goofi_core::{Data, Meta, Param, Value};
     use goofi_node::{Inputs, NodeCtx, Outputs, ParamGroups, Params};
     use indexmap::IndexMap;
 
     fn f32_frame(vals: &[f32]) -> Data {
         let buf: Vec<u8> = vals.iter().flat_map(|v| v.to_le_bytes()).collect();
-        Data::from_array_bytes(DType::F32, vec![vals.len()], buf, Meta::empty()).unwrap()
+        Data::array_f32(vec![vals.len()], buf, Meta::empty()).unwrap()
     }
 
     /// Params with `buffer.size` = `size` (cold-read live by `process`).

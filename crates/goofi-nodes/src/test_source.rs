@@ -8,7 +8,7 @@
 //! no `on_param_changed`).
 
 use goofi_core::SlotType;
-use goofi_core::{Data, DType, Meta};
+use goofi_core::{Data, Meta};
 use goofi_node::{
     default_factory, Inputs, Isolation, Node, NodeCtx, NodeManifest, NodeResult, OutputDecl,
     Outputs, ParamDecl, ParamSpec, Params, SlotDecl,
@@ -22,7 +22,7 @@ impl Node for TestConst {
         let value = p.f64("constant", "value").unwrap_or(0.0) as f32;
         let length = p.i64("constant", "length").unwrap_or(1).max(1) as usize;
         let buf: Vec<u8> = (0..length).flat_map(|_| value.to_le_bytes()).collect();
-        let data = Data::from_array_bytes(DType::F32, vec![length], buf, Meta::empty())
+        let data = Data::array_f32(vec![length], buf, Meta::empty())
             .map_err(|e| e.to_string())?;
         out.set("out", data);
         Ok(())
@@ -54,7 +54,7 @@ inventory::submit! {
 
 #[cfg(test)]
 mod tests {
-    use goofi_core::{DType, Param, Value};
+    use goofi_core::{Param, Value};
     use goofi_node::{Inputs, NodeCtx, Outputs, ParamGroups, Params};
     use indexmap::IndexMap;
 
@@ -77,7 +77,6 @@ mod tests {
 
         match emit(&mut node, m, &params) {
             Value::Array(s) => {
-                assert_eq!(s.dtype(), DType::F32);
                 assert_eq!(s.shape(), &[4]);
                 assert_eq!(f32::from_le_bytes(s.as_bytes()[0..4].try_into().unwrap()), 2.5);
             }

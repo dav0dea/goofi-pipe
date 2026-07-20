@@ -78,7 +78,9 @@ fn decode_body(buf: &[u8]) -> std::result::Result<Data, String> {
     if !sfreq.is_nan() {
         meta.sfreq = Some(sfreq);
     }
-    goofi_codec::decode_array_body(&buf[meta_end..], meta)
+    // The child casts foreign dtypes to f32 at ingest; the source dtype is dropped here
+    // (the dedup cast-warning is wired at RemoteNode in the following step).
+    goofi_codec::decode_array_body(&buf[meta_end..], meta).map(|(d, _)| d)
 }
 
 /// The Python worker: a self-contained body codec (a typed `sfreq` prefix the child reads,
@@ -519,7 +521,7 @@ pub fn discover(dir: &std::path::Path, python: &str) -> std::io::Result<Vec<Subp
 #[cfg(test)]
 mod tests {
     use super::*;
-    use goofi_core::{DType, Data, Meta, Value};
+    use goofi_core::{Data, Meta, Value};
     use goofi_node::ParamGroups;
     use indexmap::IndexMap;
 
@@ -536,7 +538,7 @@ mod tests {
                 goofi_core::Coord::Str("Cz".into()),
             ]),
         );
-        let d = Data::from_array_bytes(DType::F32, vec![2, 3], bytes, meta).unwrap();
+        let d = Data::array_f32(vec![2, 3], bytes, meta).unwrap();
         let back = decode_body(&encode_body(&d)).unwrap();
         assert_eq!(back.meta().sfreq, Some(250.0));
         assert_eq!(back.meta().index, Some(7));
@@ -544,7 +546,6 @@ mod tests {
         assert_eq!(ch.len(), 2);
         match back.value() {
             Value::Array(s) => {
-                assert_eq!(s.dtype(), DType::F32);
                 assert_eq!(s.shape(), &[2, 3]);
                 assert_eq!(f32::from_le_bytes(s.as_bytes()[4..8].try_into().unwrap()), 1.0);
             }
@@ -554,7 +555,7 @@ mod tests {
 
     #[test]
     fn transport_encodes_absent_sfreq_and_index_as_sentinels() {
-        let d = Data::from_array_bytes(DType::F32, vec![1], 3.5f32.to_le_bytes().to_vec(), Meta::empty()).unwrap();
+        let d = Data::array_f32(vec![1], 3.5f32.to_le_bytes().to_vec(), Meta::empty()).unwrap();
         let back = decode_body(&encode_body(&d)).unwrap();
         assert_eq!(back.meta().sfreq, None, "NaN sentinel decodes to None");
         assert_eq!(back.meta().index, None, "u64::MAX sentinel decodes to None");
@@ -593,7 +594,7 @@ mod tests {
             .flat_map(|i| ((2.0 * std::f64::consts::PI * 8.0 * i as f64 / n as f64).sin() as f32).to_le_bytes())
             .collect();
         let meta = Meta { sfreq: Some(sfreq), ..Default::default() };
-        let d = Data::from_array_bytes(DType::F32, vec![1, n], samples, meta).unwrap();
+        let d = Data::array_f32(vec![1, n], samples, meta).unwrap();
 
         let src = std::fs::read_to_string(&path).unwrap();
         let mut node = RemoteNode::new(&py, &src);
@@ -720,7 +721,7 @@ mod tests {
         // A 32-channel × 256-sample float32 frame (~32 KB) — a typical EEG buffer.
         let (c, t) = (32usize, 256usize);
         let buf: Vec<u8> = (0..c * t).flat_map(|i| (i as f32).to_le_bytes()).collect();
-        let make = || Data::from_array_bytes(DType::F32, vec![c, t], buf.clone(), Meta::empty()).unwrap();
+        let make = || Data::array_f32(vec![c, t], buf.clone(), Meta::empty()).unwrap();
 
         // Warm up: the first tick pays cold start (spawn + numpy/iceoryx2 import + service open).
         let cold = std::time::Instant::now();
@@ -766,7 +767,7 @@ mod tests {
             ]),
         );
         let buf: Vec<u8> = (0..6).flat_map(|i| (i as f32).to_le_bytes()).collect();
-        let d = Data::from_array_bytes(DType::F32, vec![2, 3], buf, meta).unwrap();
+        let d = Data::array_f32(vec![2, 3], buf, meta).unwrap();
 
         let out = try_run(&mut node, d).expect("2-D channel frame must round-trip");
         match out.value() {
@@ -789,11 +790,11 @@ mod tests {
             "def process(x):\n    import sys\n    print('debug from the node', flush=True)\n    sys.stdout.flush()\n    return x * 2.0\n",
         )
         .unwrap();
-        let d = Data::from_array_bytes(DType::F32, vec![3], (0..3).flat_map(|i| (i as f32).to_le_bytes()).collect(), Meta::empty()).unwrap();
+        let d = Data::array_f32(vec![3], (0..3).flat_map(|i| (i as f32).to_le_bytes()).collect(), Meta::empty()).unwrap();
         let out = try_run(&mut node, d).expect("a node that prints must still round-trip");
         assert_eq!(floats(&out), vec![0.0, 2.0, 4.0]);
         // A second tick proves the stream stayed in sync (not just the first frame).
-        let d2 = Data::from_array_bytes(DType::F32, vec![2], [5.0f32, 6.0].iter().flat_map(|v| v.to_le_bytes()).collect(), Meta::empty()).unwrap();
+        let d2 = Data::array_f32(vec![2], [5.0f32, 6.0].iter().flat_map(|v| v.to_le_bytes()).collect(), Meta::empty()).unwrap();
         assert_eq!(floats(&try_run(&mut node, d2).expect("second tick in sync")), vec![10.0, 12.0]);
     }
 
@@ -808,10 +809,10 @@ mod tests {
         )
         .unwrap();
 
-        let bad = Data::from_array_bytes(DType::F32, vec![1], (-1.0f32).to_le_bytes().to_vec(), Meta::empty()).unwrap();
+        let bad = Data::array_f32(vec![1], (-1.0f32).to_le_bytes().to_vec(), Meta::empty()).unwrap();
         assert!(try_run(&mut node, bad).is_err(), "worker raise must surface as an error");
 
-        let good = Data::from_array_bytes(DType::F32, vec![1], 3.0f32.to_le_bytes().to_vec(), Meta::empty()).unwrap();
+        let good = Data::array_f32(vec![1], 3.0f32.to_le_bytes().to_vec(), Meta::empty()).unwrap();
         let out = try_run(&mut node, good).expect("must respawn and succeed on the next tick");
         assert_eq!(floats(&out), vec![6.0]);
     }
@@ -827,7 +828,7 @@ mod tests {
         )
         .with_timeout(Duration::from_millis(600));
 
-        let d = Data::from_array_bytes(DType::F32, vec![1], 1.0f32.to_le_bytes().to_vec(), Meta::empty()).unwrap();
+        let d = Data::array_f32(vec![1], 1.0f32.to_le_bytes().to_vec(), Meta::empty()).unwrap();
         let t = std::time::Instant::now();
         let r = try_run(&mut node, d);
         assert!(r.is_err(), "a hung subprocess must error, not hang");
@@ -848,7 +849,7 @@ mod tests {
 
         let n = 40_000usize; // 160 KB >> the 64 KiB initial slice — a big frame to a stuck child
         let buf: Vec<u8> = (0..n).flat_map(|i| (i as f32).to_le_bytes()).collect();
-        let d = Data::from_array_bytes(DType::F32, vec![n], buf, Meta::empty()).unwrap();
+        let d = Data::array_f32(vec![n], buf, Meta::empty()).unwrap();
 
         let t = std::time::Instant::now();
         let r = try_run(&mut node, d);
@@ -864,7 +865,7 @@ mod tests {
         let mut node = RemoteNode::spawn(&py, "def process(x):\n    return x * 2.0\n").unwrap();
         let n = 100_000usize; // 400 KB body
         let buf: Vec<u8> = (0..n).flat_map(|i| (i as f32).to_le_bytes()).collect();
-        let d = Data::from_array_bytes(DType::F32, vec![n], buf, Meta::empty()).unwrap();
+        let d = Data::array_f32(vec![n], buf, Meta::empty()).unwrap();
         let out = run(&mut node, d);
         let vals = floats(&out);
         assert_eq!(vals.len(), n, "shape preserved across the SHM round-trip");
@@ -884,7 +885,7 @@ mod tests {
         meta.sfreq = Some(128.0);
         meta.index = Some(7);
         let buf: Vec<u8> = [1.0f32, 2.0, 3.0].iter().flat_map(|x| x.to_le_bytes()).collect();
-        let d = Data::from_array_bytes(DType::F32, vec![3], buf, meta).unwrap();
+        let d = Data::array_f32(vec![3], buf, meta).unwrap();
 
         // Two ticks on the same long-lived subprocess (proves it stays alive).
         let out1 = run(&mut node, d.clone());
@@ -897,7 +898,6 @@ mod tests {
         assert_eq!(out1.meta().index, Some(7));
         match out1.value() {
             Value::Array(s) => {
-                assert_eq!(s.dtype(), DType::F32);
                 assert_eq!(s.shape(), &[3]);
             }
             _ => panic!("expected array"),
@@ -951,7 +951,7 @@ mod tests {
         // The factory builds a working node.
         let mut node = (types[0].factory)(&ParamGroups::new());
         let buf: Vec<u8> = [1.0f32, -2.0].iter().flat_map(|x| x.to_le_bytes()).collect();
-        let d = Data::from_array_bytes(DType::F32, vec![2], buf, Meta::empty()).unwrap();
+        let d = Data::array_f32(vec![2], buf, Meta::empty()).unwrap();
         let mut inmap: IndexMap<&'static str, Option<Data>> = IndexMap::new();
         inmap.insert("data", Some(d));
         let inp = Inputs::new(&inmap);

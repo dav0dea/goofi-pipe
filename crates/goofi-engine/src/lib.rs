@@ -2704,7 +2704,7 @@ fn stamp_meta_parts(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use goofi_core::{DType, Meta, SlotType, Value};
+    use goofi_core::{Meta, SlotType, Value};
     use goofi_node::{
         default_factory, Isolation, Node, NodeManifest, NodeResult, OutputDecl, ParamDecl,
         ParamSpec, Params, SlotDecl,
@@ -3008,7 +3008,7 @@ mod tests {
             let emit = self.n % 2 == 0;
             self.n += 1;
             if emit {
-                let d = Data::from_array_bytes(DType::F32, vec![1], 1.0f32.to_le_bytes().to_vec(), Meta::empty())
+                let d = Data::array_f32(vec![1], 1.0f32.to_le_bytes().to_vec(), Meta::empty())
                     .map_err(|e| e.to_string())?;
                 out.set("out", d);
             }
@@ -3040,7 +3040,7 @@ mod tests {
     impl Node for Counter {
         fn process(&mut self, _i: &Inputs<'_>, out: &mut Outputs<'_>, _c: &mut NodeCtx, _p: &Params<'_>) -> NodeResult {
             self.runs += 1;
-            let d = Data::from_array_bytes(DType::F32, vec![1], (self.runs as f32).to_le_bytes().to_vec(), Meta::empty())
+            let d = Data::array_f32(vec![1], (self.runs as f32).to_le_bytes().to_vec(), Meta::empty())
                 .map_err(|e| e.to_string())?;
             out.set("out", d);
             Ok(())
@@ -3080,7 +3080,7 @@ mod tests {
                 return Ok(());
             };
             let sum = first_f32(a) + first_f32(b);
-            let d = Data::from_array_bytes(DType::F32, vec![1], sum.to_le_bytes().to_vec(), Meta::empty())
+            let d = Data::array_f32(vec![1], sum.to_le_bytes().to_vec(), Meta::empty())
                 .map_err(|e| e.to_string())?;
             out.set("out", d);
             Ok(())
@@ -3120,7 +3120,7 @@ mod tests {
     impl Node for Slow {
         fn process(&mut self, _i: &Inputs<'_>, out: &mut Outputs<'_>, _c: &mut NodeCtx, _p: &Params<'_>) -> NodeResult {
             std::thread::sleep(std::time::Duration::from_millis(self.ms));
-            let d = Data::from_array_bytes(DType::F32, vec![1], 1.0f32.to_le_bytes().to_vec(), Meta::empty())
+            let d = Data::array_f32(vec![1], 1.0f32.to_le_bytes().to_vec(), Meta::empty())
                 .map_err(|e| e.to_string())?;
             out.set("out", d);
             Ok(())
@@ -3177,7 +3177,7 @@ mod tests {
     impl Node for CappedSource {
         fn process(&mut self, _i: &Inputs<'_>, out: &mut Outputs<'_>, _c: &mut NodeCtx, _p: &Params<'_>) -> NodeResult {
             self.runs += 1;
-            let d = Data::from_array_bytes(DType::F32, vec![1], (self.runs as f32).to_le_bytes().to_vec(), Meta::empty())
+            let d = Data::array_f32(vec![1], (self.runs as f32).to_le_bytes().to_vec(), Meta::empty())
                 .map_err(|e| e.to_string())?;
             out.set("out", d);
             Ok(())
@@ -3208,7 +3208,7 @@ mod tests {
     struct RefLenChange;
     impl Node for RefLenChange {
         fn process(&mut self, _i: &Inputs<'_>, out: &mut Outputs<'_>, _c: &mut NodeCtx, _p: &Params<'_>) -> NodeResult {
-            let d = Data::from_array_bytes(DType::F32, vec![1], 1.0f32.to_le_bytes().to_vec(), Meta::empty())
+            let d = Data::array_f32(vec![1], 1.0f32.to_le_bytes().to_vec(), Meta::empty())
                 .map_err(|e| e.to_string())?;
             out.set("out", d);
             Ok(())
@@ -3237,7 +3237,7 @@ mod tests {
     struct NowSource;
     impl Node for NowSource {
         fn process(&mut self, _i: &Inputs<'_>, out: &mut Outputs<'_>, c: &mut NodeCtx, _p: &Params<'_>) -> NodeResult {
-            let d = Data::from_array_bytes(DType::F32, vec![1], (c.now as f32).to_le_bytes().to_vec(), Meta::empty())
+            let d = Data::array_f32(vec![1], (c.now as f32).to_le_bytes().to_vec(), Meta::empty())
                 .map_err(|e| e.to_string())?;
             out.set("out", d);
             Ok(())
@@ -3264,7 +3264,7 @@ mod tests {
     impl Node for GlobalSource {
         fn process(&mut self, _i: &Inputs<'_>, out: &mut Outputs<'_>, c: &mut NodeCtx, _p: &Params<'_>) -> NodeResult {
             let v = c.globals.f64("default_ufreq").unwrap_or(-1.0) as f32;
-            let d = Data::from_array_bytes(DType::F32, vec![1], v.to_le_bytes().to_vec(), Meta::empty())
+            let d = Data::array_f32(vec![1], v.to_le_bytes().to_vec(), Meta::empty())
                 .map_err(|e| e.to_string())?;
             out.set("out", d);
             Ok(())
@@ -3291,7 +3291,7 @@ mod tests {
     impl Node for DefaultExprSource {
         fn process(&mut self, _i: &Inputs<'_>, out: &mut Outputs<'_>, _c: &mut NodeCtx, p: &Params<'_>) -> NodeResult {
             let v = p.f64("control", "rate").unwrap_or(-1.0) as f32;
-            let d = Data::from_array_bytes(DType::F32, vec![1], v.to_le_bytes().to_vec(), Meta::empty())
+            let d = Data::array_f32(vec![1], v.to_le_bytes().to_vec(), Meta::empty())
                 .map_err(|e| e.to_string())?;
             out.set("out", d);
             Ok(())
@@ -3327,7 +3327,7 @@ mod tests {
         fn process(&mut self, _i: &Inputs<'_>, out: &mut Outputs<'_>, _c: &mut NodeCtx, _p: &Params<'_>) -> NodeResult {
             self.n += 1;
             let mk = || {
-                Data::from_array_bytes(DType::F32, vec![1], 1.0f32.to_le_bytes().to_vec(), Meta::empty())
+                Data::array_f32(vec![1], 1.0f32.to_le_bytes().to_vec(), Meta::empty())
                     .map_err(|e| e.to_string())
             };
             out.set("fast", mk()?);
@@ -3366,7 +3366,7 @@ mod tests {
             let mut vals: Vec<f32> = vec![items.len() as f32];
             vals.extend(items.iter().map(first_f32));
             let bytes: Vec<u8> = vals.iter().flat_map(|v| v.to_le_bytes()).collect();
-            let d = Data::from_array_bytes(DType::F32, vec![vals.len()], bytes, Meta::empty())
+            let d = Data::array_f32(vec![vals.len()], bytes, Meta::empty())
                 .map_err(|e| e.to_string())?;
             out.set("out", d);
             Ok(())
@@ -3778,7 +3778,7 @@ mod tests {
                 }
                 g.permits -= 1;
             }
-            let d = Data::from_array_bytes(DType::F32, vec![1], first.to_le_bytes().to_vec(), Meta::empty())
+            let d = Data::array_f32(vec![1], first.to_le_bytes().to_vec(), Meta::empty())
                 .map_err(|e| e.to_string())?;
             out.set("out", d);
             Ok(())
@@ -3908,7 +3908,7 @@ mod tests {
     }
     impl Node for RtSource {
         fn process(&mut self, _i: &Inputs<'_>, out: &mut Outputs<'_>, _c: &mut NodeCtx, _p: &Params<'_>) -> NodeResult {
-            let d = Data::from_array_bytes(DType::F32, vec![1], self.base.to_le_bytes().to_vec(), Meta::empty())
+            let d = Data::array_f32(vec![1], self.base.to_le_bytes().to_vec(), Meta::empty())
                 .map_err(|e| e.to_string())?;
             out.set("out", d);
             Ok(())

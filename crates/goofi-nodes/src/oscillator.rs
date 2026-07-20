@@ -12,7 +12,7 @@
 //! pacing, so it is mirrored to a field via `on_param_changed`.
 
 use goofi_core::SlotType;
-use goofi_core::{Data, DType, Meta};
+use goofi_core::{Data, Meta};
 use goofi_node::{
     default_factory, Inputs, Isolation, Node, NodeCtx, NodeManifest, NodeResult, OutputDecl,
     Outputs, ParamDecl, ParamKey, ParamSpec, Params,
@@ -109,7 +109,7 @@ impl Node for Oscillator {
         self.phase = self.phase.rem_euclid(TAU); // keep bounded over long runs
 
         let meta = Meta { sfreq: Some(sfreq), ..Default::default() };
-        let data = Data::from_array_bytes(DType::F32, vec![n], buf, meta).map_err(|e| e.to_string())?;
+        let data = Data::array_f32(vec![n], buf, meta).map_err(|e| e.to_string())?;
         out.set("out", data);
         Ok(())
     }

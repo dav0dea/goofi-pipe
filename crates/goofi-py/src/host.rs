@@ -1,6 +1,6 @@
 use std::ffi::CString;
 
-use goofi_core::{Data, DType, Meta, Value};
+use goofi_core::{Data, Meta, Value};
 use goofi_node::{Inputs, Node, NodeCtx, NodeResult, Outputs, Params};
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyModule};
@@ -98,9 +98,6 @@ impl Node for PyNode {
         let Value::Array(store) = d.value() else {
             return Ok(());
         };
-        if store.dtype() != DType::F32 {
-            return Ok(());
-        }
         let in_shape: Vec<usize> = store.shape().to_vec();
 
         // Check the GIL once (first tick): if running this node re-enabled it (an
@@ -142,7 +139,7 @@ impl Node for PyNode {
         // drop it when the node changed the shape (stale channel coords would fail
         // Data validation). In-process we clone the meta directly — no re-serialization.
         let out_meta = if out_shape == in_shape { d.meta().clone() } else { Meta::empty() };
-        let data = Data::from_array_bytes(DType::F32, out_shape, out_bytes, out_meta)
+        let data = Data::array_f32(out_shape, out_bytes, out_meta)
             .map_err(|e| e.to_string())?;
         out.set("out", data);
         Ok(())
@@ -160,7 +157,7 @@ mod tests {
     }
 
     fn run(node: &mut PyNode, input: &[f32]) -> Vec<f32> {
-        let frame = Data::from_array_bytes(DType::F32, vec![input.len()], f32s(input), Meta::empty()).unwrap();
+        let frame = Data::array_f32(vec![input.len()], f32s(input), Meta::empty()).unwrap();
         let mut inmap: IndexMap<&'static str, Option<Data>> = IndexMap::new();
         inmap.insert("data", Some(frame));
         let inp = Inputs::new(&inmap);
@@ -184,7 +181,7 @@ mod tests {
     }
 
     fn try_run(node: &mut PyNode, input: &[f32]) -> Result<(), String> {
-        let frame = Data::from_array_bytes(DType::F32, vec![input.len()], f32s(input), Meta::empty()).unwrap();
+        let frame = Data::array_f32(vec![input.len()], f32s(input), Meta::empty()).unwrap();
         let mut inmap: IndexMap<&'static str, Option<Data>> = IndexMap::new();
         inmap.insert("data", Some(frame));
         let inp = Inputs::new(&inmap);
@@ -205,7 +202,7 @@ mod tests {
         let mut node = PyNode::from_source(src, "process").expect("compile python node");
         let mut meta = Meta::empty();
         meta.sfreq = Some(250.0);
-        let d = Data::from_array_bytes(DType::F32, vec![2, 3], f32s(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]), meta).unwrap();
+        let d = Data::array_f32(vec![2, 3], f32s(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]), meta).unwrap();
         let mut inmap: IndexMap<&'static str, Option<Data>> = IndexMap::new();
         inmap.insert("data", Some(d));
         let inp = Inputs::new(&inmap);

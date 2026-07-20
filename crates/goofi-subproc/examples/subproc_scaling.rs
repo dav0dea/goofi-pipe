@@ -7,7 +7,7 @@
 //!   cargo run -p goofi-subproc --example subproc_scaling --release
 use std::time::Instant;
 
-use goofi_core::{Data, DType, Meta};
+use goofi_core::{Data, Meta};
 use goofi_node::{Inputs, Node, NodeCtx, Outputs, ParamGroups, Params};
 use goofi_subproc::RemoteNode;
 use indexmap::IndexMap;
@@ -30,7 +30,7 @@ fn main() {
     let py = "python3";
     let len = 1024usize;
     let buf: Vec<u8> = (0..len).flat_map(|i| (i as f32).to_le_bytes()).collect();
-    let d = Data::from_array_bytes(DType::F32, vec![len], buf, Meta::empty()).unwrap();
+    let d = Data::array_f32(vec![len], buf, Meta::empty()).unwrap();
 
     let rounds = 300u32;
     println!("subprocess tier — {rounds} rounds, len={len}, real numpy per call");

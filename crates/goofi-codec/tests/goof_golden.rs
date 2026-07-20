@@ -9,13 +9,13 @@
 use std::collections::BTreeMap;
 
 use goofi_codec::{encode, split_frame};
-use goofi_core::{Axes, Axis, Coord, Data, DType, Meta};
+use goofi_core::{Axes, Axis, Coord, Data, Meta};
 use indexmap::IndexMap;
 
-// ------- typed array builders -------
+// ------- f32 array builders (arrays are always f32) -------
 
-fn arr(dtype: DType, shape: &[usize], buf: Vec<u8>, meta: Meta) -> Data {
-    Data::from_array_bytes(dtype, shape.to_vec(), buf, meta).unwrap()
+fn arr(shape: &[usize], buf: Vec<u8>, meta: Meta) -> Data {
+    Data::array_f32(shape.to_vec(), buf, meta).unwrap()
 }
 
 fn f32s(vals: &[f32]) -> Vec<u8> {
@@ -34,83 +34,19 @@ fn build_cases() -> Vec<(&'static str, Data)> {
     };
 
     let mut table = IndexMap::new();
-    table.insert("a".to_string(), arr(DType::F32, &[2], f32s(&[1.0, 2.0]), Meta::empty()));
+    table.insert("a".to_string(), arr(&[2], f32s(&[1.0, 2.0]), Meta::empty()));
     table.insert("b".to_string(), Data::string("x", Meta::empty()));
 
     vec![
-        ("f32_1d", arr(DType::F32, &[3], f32s(&[1.0, 2.0, 3.0]), Meta::empty())),
-        ("u8_2d", arr(DType::U8, &[2, 3], vec![1, 2, 3, 4, 5, 6], Meta::empty())),
-        (
-            "i16_1d",
-            arr(
-                DType::I16,
-                &[3],
-                [-1i16, 0, 32767].iter().flat_map(|v| v.to_le_bytes()).collect(),
-                Meta::empty(),
-            ),
-        ),
-        (
-            "i32_3d",
-            arr(
-                DType::I32,
-                &[2, 3, 4],
-                (0i32..24).flat_map(|v| v.to_le_bytes()).collect(),
-                Meta::empty(),
-            ),
-        ),
-        (
-            "u32_1d",
-            arr(
-                DType::U32,
-                &[3],
-                [0u32, 1, 4294967295].iter().flat_map(|v| v.to_le_bytes()).collect(),
-                Meta::empty(),
-            ),
-        ),
-        (
-            "i64_1d",
-            arr(
-                DType::I64,
-                &[3],
-                [1i64, -2, 3].iter().flat_map(|v| v.to_le_bytes()).collect(),
-                Meta::empty(),
-            ),
-        ),
-        (
-            "u64_1d",
-            arr(
-                DType::U64,
-                &[3],
-                [0u64, 1, u64::MAX].iter().flat_map(|v| v.to_le_bytes()).collect(),
-                Meta::empty(),
-            ),
-        ),
-        (
-            "f64_narrow",
-            arr(
-                DType::F64,
-                &[2],
-                [1.5f64, 2.5].iter().flat_map(|v| v.to_le_bytes()).collect(),
-                Meta::empty(),
-            ),
-        ),
-        (
-            "f16_1d",
-            // IEEE-754 half: 1.0 = 0x3C00, 2.0 = 0x4000 (little-endian bytes)
-            arr(DType::F16, &[2], vec![0x00, 0x3C, 0x00, 0x40], Meta::empty()),
-        ),
-        ("bool_1d", arr(DType::Bool, &[3], vec![1, 0, 1], Meta::empty())),
+        ("f32_1d", arr(&[3], f32s(&[1.0, 2.0, 3.0]), Meta::empty())),
         // 0-d scalar promotes to shape (1,)
-        ("scalar_0d", arr(DType::F32, &[], f32s(&[3.0]), Meta::empty())),
-        ("empty_array", arr(DType::F32, &[0], vec![], Meta::empty())),
+        ("scalar_0d", arr(&[], f32s(&[3.0]), Meta::empty())),
+        ("empty_array", arr(&[0], vec![], Meta::empty())),
         (
             "with_sfreq_channels",
-            arr(DType::F32, &[2, 3], f32s(&[0.0, 1.0, 2.0, 3.0, 4.0, 5.0]), meta_sfreq_ch),
+            arr(&[2, 3], f32s(&[0.0, 1.0, 2.0, 3.0, 4.0, 5.0]), meta_sfreq_ch),
         ),
-        (
-            "with_index",
-            arr(DType::F32, &[4], f32s(&[1.0, 2.0, 3.0, 4.0]), meta_index),
-        ),
+        ("with_index", arr(&[4], f32s(&[1.0, 2.0, 3.0, 4.0]), meta_index)),
         ("string", Data::string("hello world éà", Meta::empty())),
         ("string_empty", Data::string("", Meta::empty())),
         ("table", Data::table(table, Meta::empty())),

@@ -14,7 +14,7 @@
 
 use std::time::Instant;
 
-use goofi_core::{Data, DType, Param, Value};
+use goofi_core::{Data, Param, Value};
 use goofi_engine::Graph;
 use goofi_node::{
     Inputs, Isolation, Node, NodeCtx, NodeManifest, NodeResult, OutputDecl, Outputs, ParamDecl,
@@ -41,7 +41,7 @@ impl Node for NativeMul {
             let x = f32::from_le_bytes(c.try_into().unwrap());
             buf.extend_from_slice(&(x * 2.0 + 1.0).to_le_bytes());
         }
-        let data = Data::from_array_bytes(DType::F32, s.shape().to_vec(), buf, d.meta().clone())
+        let data = Data::array_f32(s.shape().to_vec(), buf, d.meta().clone())
             .map_err(|e| e.to_string())?;
         out.set("out", data);
         Ok(())

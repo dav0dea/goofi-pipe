@@ -30,16 +30,9 @@ def arr(a):
 
 
 cases = {}
+# Arrays are always float32 — foreign dtypes are cast to f32 at the ingest boundary,
+# so the wire only ever carries <f4. Non-f32 cases are intentionally absent.
 cases["f32_1d"] = arr(np.array([1.0, 2.0, 3.0], dtype=np.float32))
-cases["u8_2d"] = arr(np.array([[1, 2, 3], [4, 5, 6]], dtype=np.uint8))
-cases["i16_1d"] = arr(np.array([-1, 0, 32767], dtype=np.int16))
-cases["i32_3d"] = arr(np.arange(24, dtype=np.int32).reshape(2, 3, 4))
-cases["u32_1d"] = arr(np.array([0, 1, 4294967295], dtype=np.uint32))
-cases["i64_1d"] = arr(np.array([1, -2, 3], dtype=np.int64))
-cases["u64_1d"] = arr(np.array([0, 1, 18446744073709551615], dtype=np.uint64))
-cases["f64_narrow"] = arr(np.array([1.5, 2.5], dtype=np.float64))  # -> float32
-cases["f16_1d"] = arr(np.array([1.0, 2.0], dtype=np.float16))
-cases["bool_1d"] = arr(np.array([True, False, True], dtype=np.bool_))
 cases["scalar_0d"] = Data(DataType.ARRAY, np.float32(3.0), {})  # 0-d -> shape (1,)
 cases["empty_array"] = arr(np.array([], dtype=np.float32))  # shape (0,), 0 body bytes
 cases["with_sfreq_channels"] = Data(

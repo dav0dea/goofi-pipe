@@ -666,7 +666,7 @@ pub fn find(type_name: &str) -> Option<&'static NodeManifest> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use goofi_core::{Data, DType, Meta, SlotType};
+    use goofi_core::{Data, Meta, SlotType};
 
     #[test]
     fn inputs_and_outputs_tick_io() {
@@ -676,7 +676,7 @@ mod tests {
         assert!(inp.get("data").is_none());
         assert!(inp.get("missing").is_none());
 
-        let d = Data::from_array_bytes(DType::F32, vec![1], 1.0f32.to_le_bytes().to_vec(), Meta::empty())
+        let d = Data::array_f32(vec![1], 1.0f32.to_le_bytes().to_vec(), Meta::empty())
             .unwrap();
         let mut outmap: IndexMap<&'static str, Option<Data>> = IndexMap::new();
         outmap.insert("out", None);
@@ -691,7 +691,7 @@ mod tests {
     #[test]
     fn get_multi_returns_present_frames_in_connection_order() {
         fn mk(v: f32) -> Data {
-            Data::from_array_bytes(DType::F32, vec![1], v.to_le_bytes().to_vec(), Meta::empty()).unwrap()
+            Data::array_f32(vec![1], v.to_le_bytes().to_vec(), Meta::empty()).unwrap()
         }
         fn val(d: &Data) -> f32 {
             match d.value() {

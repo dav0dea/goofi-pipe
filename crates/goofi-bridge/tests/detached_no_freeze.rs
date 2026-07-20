@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use goofi_bridge::spawn_tick;
-use goofi_core::{Data, DType, Meta, SlotType};
+use goofi_core::{Data, Meta, SlotType};
 use goofi_engine::Graph;
 use goofi_node::{
     Inputs, Isolation, Node, NodeCtx, NodeManifest, NodeResult, OutputDecl, Outputs, Params,
@@ -20,7 +20,7 @@ struct SlowNode;
 impl Node for SlowNode {
     fn process(&mut self, _i: &Inputs<'_>, out: &mut Outputs<'_>, _c: &mut NodeCtx, _p: &Params<'_>) -> NodeResult {
         std::thread::sleep(Duration::from_millis(300));
-        let d = Data::from_array_bytes(DType::F32, vec![1], 1.0f32.to_le_bytes().to_vec(), Meta::empty())
+        let d = Data::array_f32(vec![1], 1.0f32.to_le_bytes().to_vec(), Meta::empty())
             .map_err(|e| e.to_string())?;
         out.set("out", d);
         Ok(())

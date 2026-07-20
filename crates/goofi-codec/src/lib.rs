@@ -68,7 +68,7 @@ fn write_body(d: &Data, out: &mut Vec<u8>) {
 /// shared by the GOOF frame body and the subprocess transport (which reuses it verbatim, with a
 /// typed sfreq/index prefix instead of msgpack meta). Inverse: [`decode_array_body`].
 pub fn encode_array_body(store: &ArrayStore, out: &mut Vec<u8>) {
-    let dtype_str = store.dtype().numpy_typestr().as_bytes();
+    let dtype_str: &[u8] = b"<f4"; // arrays are always f32
     let shape = store.shape();
     out.push(shape.len() as u8);
     out.push(dtype_str.len() as u8);
@@ -99,7 +99,7 @@ pub fn pack_meta(d: &Data) -> Vec<u8> {
         Value::Array(store) => {
             let shape: Vec<Mp> = store.shape().iter().map(|&d| Mp::from(d as u64)).collect();
             entries.push((Mp::from("shape"), Mp::Array(shape)));
-            entries.push((Mp::from("dtype"), Mp::from(store.dtype().numpy_name())));
+            entries.push((Mp::from("dtype"), Mp::from("float32"))); // arrays are always f32
             entries.push((Mp::from("channels"), channels_to_mp(&meta.channels)));
         }
         Value::Str(_) => {
@@ -202,7 +202,7 @@ pub fn decode(frame: &[u8]) -> std::result::Result<Data, String> {
     let (tag, meta_bytes, body) = split_frame(frame)?;
     let meta = parse_meta(meta_bytes)?;
     match tag {
-        0 => decode_array_body(body, meta),
+        0 => decode_array_body(body, meta).map(|(d, _)| d),
         1 => {
             let s = std::str::from_utf8(body).map_err(|e| e.to_string())?;
             Ok(Data::string(s, meta))
@@ -247,21 +247,30 @@ impl<'a> Cursor<'a> {
 }
 
 /// Decode the array-body layout written by [`encode_array_body`] into a `Data` carrying `meta`.
-/// Shared by the GOOF frame decoder and the subprocess transport.
-pub fn decode_array_body(body: &[u8], meta: goofi_core::Meta) -> std::result::Result<Data, String> {
+/// Shared by the GOOF frame decoder and the subprocess transport. This is the **ingest boundary**:
+/// a foreign source dtype is cast to f32 here (the only place a dtype is parsed), and the source
+/// dtype is returned so the caller — which knows the node/slot identity — can warn when a cast
+/// happened (`src != SrcDtype::F32`).
+pub fn decode_array_body(
+    body: &[u8],
+    meta: goofi_core::Meta,
+) -> std::result::Result<(Data, goofi_core::SrcDtype), String> {
     // [u8 ndim][u8 dtype_str_len][dtype_str][ndim × u32 shape][raw bytes]
     let mut cur = Cursor::new(body);
     let ndim = cur.u8("array ndim")?;
     let dslen = cur.u8("array dtype len")?;
     let dstr = std::str::from_utf8(cur.take(dslen, "array dtype string")?).map_err(|e| e.to_string())?;
-    let dtype = goofi_core::DType::from_numpy_typestr(dstr)
+    let src = goofi_core::SrcDtype::from_numpy_typestr(dstr)
         .ok_or_else(|| format!("unsupported dtype `{dstr}`"))?;
     let mut shape = Vec::with_capacity(ndim);
     for _ in 0..ndim {
         shape.push(cur.u32("array shape")?);
     }
-    // The shape×itemsize overflow guard lives in from_array_bytes — kept there deliberately.
-    Data::from_array_bytes(dtype, shape, cur.rest().to_vec(), meta).map_err(|e| e.to_string())
+    // Cast the foreign body to f32, then construct. The shape×4 overflow guard lives in
+    // array_f32 — kept there deliberately.
+    let (f32_bytes, _did_cast) = goofi_core::cast_to_f32(src, cur.rest()).map_err(|e| e.to_string())?;
+    let data = Data::array_f32(shape, f32_bytes, meta).map_err(|e| e.to_string())?;
+    Ok((data, src))
 }
 
 fn decode_table(body: &[u8], meta: goofi_core::Meta) -> std::result::Result<Data, String> {
@@ -369,11 +378,11 @@ fn mp_to_mv(v: &Mp) -> MetaValue {
 #[cfg(test)]
 mod decode_tests {
     use super::*;
-    use goofi_core::{Axes, Axis, Coord, DType, Data, Meta, MetaValue, Value};
+    use goofi_core::{Axes, Axis, Coord, Data, Meta, MetaValue, Value};
 
-    fn arr_bytes(d: &Data) -> (DType, Vec<usize>, Vec<u8>) {
+    fn arr_bytes(d: &Data) -> (Vec<usize>, Vec<u8>) {
         match d.value() {
-            Value::Array(s) => (s.dtype(), s.shape().to_vec(), s.as_bytes().to_vec()),
+            Value::Array(s) => (s.shape().to_vec(), s.as_bytes().to_vec()),
             _ => panic!("not array"),
         }
     }
@@ -387,13 +396,12 @@ mod decode_tests {
         meta.extra.insert("label".into(), MetaValue::Str("eeg".into()));
         meta.channels = Axes::new().with(0, Axis::coords(vec![Coord::Str("Fz".into()), Coord::Str("Cz".into())]));
         let buf: Vec<u8> = [1.0f32, 2.0].iter().flat_map(|x| x.to_le_bytes()).collect();
-        let d = Data::from_array_bytes(DType::F32, vec![2], buf, meta).unwrap();
+        let d = Data::array_f32(vec![2], buf, meta).unwrap();
 
         let back = decode(&encode(&d)).expect("decode");
-        let (dt, sh, by) = arr_bytes(&back);
-        assert_eq!(dt, DType::F32);
+        let (sh, by) = arr_bytes(&back);
         assert_eq!(sh, vec![2]);
-        assert_eq!(arr_bytes(&d).2, by);
+        assert_eq!(arr_bytes(&d).1, by);
         assert_eq!(back.meta().sfreq, Some(256.0));
         assert_eq!(back.meta().ufreq, Some(128.0));
         assert_eq!(back.meta().index, Some(42));
@@ -404,10 +412,37 @@ mod decode_tests {
     }
 
     #[test]
+    fn decode_array_body_casts_foreign_dtype_to_f32_and_reports_src() {
+        // A `<i2` (int16) body: ndim=1, dtype "<i2", shape [2], values [3, -4].
+        let mut body = vec![1u8]; // ndim
+        let dstr = b"<i2";
+        body.push(dstr.len() as u8);
+        body.extend_from_slice(dstr);
+        body.extend_from_slice(&2u32.to_le_bytes()); // shape[0]
+        body.extend_from_slice(&3i16.to_le_bytes());
+        body.extend_from_slice(&(-4i16).to_le_bytes());
+
+        let (data, src) = decode_array_body(&body, Meta::empty()).expect("decode int16 body");
+        assert_eq!(src, goofi_core::SrcDtype::I16, "reports the source dtype for the warning");
+        let (sh, by) = arr_bytes(&data);
+        assert_eq!(sh, vec![2]);
+        let vals: Vec<f32> = by.chunks_exact(4).map(|c| f32::from_le_bytes(c.try_into().unwrap())).collect();
+        assert_eq!(vals, vec![3.0, -4.0], "int16 body was cast to f32");
+
+        // An f32 body reports no cast (src == F32).
+        let mut fbody = vec![1u8, 3u8];
+        fbody.extend_from_slice(b"<f4");
+        fbody.extend_from_slice(&1u32.to_le_bytes());
+        fbody.extend_from_slice(&1.5f32.to_le_bytes());
+        let (_d, src) = decode_array_body(&fbody, Meta::empty()).unwrap();
+        assert_eq!(src, goofi_core::SrcDtype::F32);
+    }
+
+    #[test]
     fn ufreq_none_is_absent_from_the_wire() {
         // An unmeasured slot (ufreq == None) must not emit the key, so frames that
         // predate ufreq (and the Python-golden fixtures) stay byte-identical.
-        let d = Data::from_array_bytes(DType::F32, vec![1], 1.0f32.to_le_bytes().to_vec(), Meta::empty()).unwrap();
+        let d = Data::array_f32(vec![1], 1.0f32.to_le_bytes().to_vec(), Meta::empty()).unwrap();
         assert_eq!(d.meta().ufreq, None);
         let bytes = encode(&d);
         assert!(
@@ -419,7 +454,7 @@ mod decode_tests {
         // A measured slot emits the key.
         let mut meta = Meta::empty();
         meta.ufreq = Some(60.0);
-        let d2 = Data::from_array_bytes(DType::F32, vec![1], 1.0f32.to_le_bytes().to_vec(), meta).unwrap();
+        let d2 = Data::array_f32(vec![1], 1.0f32.to_le_bytes().to_vec(), meta).unwrap();
         assert!(encode(&d2).windows(5).any(|w| w == b"ufreq"), "measured ufreq must appear");
     }
 
@@ -438,7 +473,7 @@ mod decode_tests {
         let mut map = indexmap::IndexMap::new();
         map.insert(
             "a".to_string(),
-            Data::from_array_bytes(DType::F32, vec![1], 3.0f32.to_le_bytes().to_vec(), Meta::empty()).unwrap(),
+            Data::array_f32(vec![1], 3.0f32.to_le_bytes().to_vec(), Meta::empty()).unwrap(),
         );
         map.insert("b".to_string(), Data::string("x", Meta::empty()));
         let d = Data::table(map, Meta::empty());
@@ -479,7 +514,7 @@ mod decode_tests {
         let mut meta = Meta::empty();
         meta.sfreq = Some(64.0);
         let buf: Vec<u8> = (0..8).flat_map(|i| (i as f32).to_le_bytes()).collect();
-        let d = Data::from_array_bytes(DType::F32, vec![2, 4], buf, meta).unwrap();
+        let d = Data::array_f32(vec![2, 4], buf, meta).unwrap();
         let frame = encode(&d);
         for n in 0..frame.len() {
             // Any strict prefix is incomplete → must Err, must not panic.

@@ -150,11 +150,11 @@ fn main() {
 
 /// One process() call driving `bytes` through the node's `data` input.
 fn run_once(node: &mut PyNode, bytes: &[u8]) {
-    use goofi_core::{Data, DType, Meta};
+    use goofi_core::{Data, Meta};
     use goofi_node::{Inputs, NodeCtx, Outputs, Params};
     use indexmap::IndexMap;
     let frame =
-        Data::from_array_bytes(DType::F32, vec![bytes.len() / 4], bytes.to_vec(), Meta::empty()).unwrap();
+        Data::array_f32(vec![bytes.len() / 4], bytes.to_vec(), Meta::empty()).unwrap();
     let mut inmap: IndexMap<&'static str, Option<Data>> = IndexMap::new();
     inmap.insert("data", Some(frame));
     let inp = Inputs::new(&inmap);
