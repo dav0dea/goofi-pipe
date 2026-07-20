@@ -193,6 +193,81 @@ fn param_decl(p: &ParamJson) -> ParamDecl {
     ParamDecl { group: leak_str(&p.group), name: leak_str(&p.name), spec, default_expr: None }
 }
 
+// ---------------------------------------------------------------------------
+// The unified probe-based discoverer: run `goofi.introspect` per node file, parse
+// the JSON, and leak a manifest. Shared by the in-process + subprocess backends
+// (which attach their own per-instance factory + route on `gil_safe` in M2/M3).
+// ---------------------------------------------------------------------------
+
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+
+/// A discovered Python node type: its rich manifest + the routing flag (`gil_safe`
+/// → in-process, else subprocess). The per-instance factory is attached by the
+/// backend in M2/M3; M1 produces the manifest.
+pub struct Discovered {
+    pub manifest: &'static NodeManifest,
+    pub gil_safe: bool,
+    pub source: PathBuf,
+}
+
+/// Run `goofi.introspect(path)` in `python` and parse the result. `None` on ANY
+/// failure — a bad interpreter, a failed import (missing dep), no `Node` subclass,
+/// or malformed JSON — so a broken node greys out instead of crashing the catalog.
+pub fn probe_introspect(path: &Path, python: &str) -> Option<Introspection> {
+    const PROBE: &str =
+        "import goofi, os, sys; sys.stdout.write(goofi.introspect(os.environ['GOOFI_INTROSPECT_PATH']))";
+    let out = Command::new(python)
+        .arg("-c")
+        .arg(PROBE)
+        .env("GOOFI_INTROSPECT_PATH", path)
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let json = String::from_utf8(out.stdout).ok()?;
+    parse_introspection(&json).ok()
+}
+
+/// Discover one Python node file: non-`.py`, `_`-prefixed (hidden), or a probe
+/// failure → `None`. The type name is the `CamelCase` file stem.
+pub fn discover_one(
+    path: &Path,
+    python: &str,
+    category: &'static str,
+    isolation: Isolation,
+) -> Option<Discovered> {
+    if path.extension().and_then(|e| e.to_str()) != Some("py") {
+        return None;
+    }
+    let stem = path.file_stem().and_then(|s| s.to_str())?;
+    if stem.starts_with('_') {
+        return None;
+    }
+    let intro = probe_introspect(path, python)?;
+    let manifest = leak_manifest(camel(stem), &intro, category, isolation);
+    Some(Discovered { manifest, gil_safe: intro.gil_safe, source: path.to_path_buf() })
+}
+
+/// Scan `dir` for node files (skipping `_`-prefixed / non-`.py` / probe failures),
+/// deterministic order so type names are stable.
+pub fn discover(
+    dir: &Path,
+    python: &str,
+    category: &'static str,
+    isolation: Isolation,
+) -> std::io::Result<Vec<Discovered>> {
+    let mut entries: Vec<_> = std::fs::read_dir(dir)?.filter_map(|e| e.ok()).collect();
+    entries.sort_by_key(|e| e.file_name());
+    Ok(entries
+        .iter()
+        .filter_map(|e| discover_one(&e.path(), python, category, isolation))
+        .collect())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
