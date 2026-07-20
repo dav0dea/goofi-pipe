@@ -1,0 +1,22 @@
+[package]
+name = "goofi-pymod"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "goofi"
+# cdylib -> the importable extension (goofi.so, wheel); rlib -> linked into the host.
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+goofi-core = { path = "../goofi-core" }
+pyo3 = { version = "0.28", optional = true }
+
+[features]
+# Default build is python-free (empty crate) so `cargo build --workspace` needs no
+# interpreter. The wheel build turns on extension-module (+ abi3, no libpython link);
+# the host build turns on auto-initialize (links the FT interpreter directly).
+default = []
+extension-module = ["dep:pyo3", "pyo3/extension-module", "pyo3/abi3-py38"]
+host = ["dep:pyo3", "pyo3/auto-initialize"]
