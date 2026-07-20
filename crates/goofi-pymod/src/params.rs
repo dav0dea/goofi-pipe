@@ -7,7 +7,7 @@ use pyo3::prelude::*;
 /// `goofi.DataType.ARRAY|STRING|TABLE` — the slot element type. `.value` is the
 /// wire name (`"ARRAY"`/…) so introspect serializes it directly.
 #[pyclass(eq, eq_int)]
-#[derive(Clone, PartialEq)]
+#[derive(PartialEq)]
 pub enum DataType {
     ARRAY,
     STRING,
@@ -27,7 +27,6 @@ impl DataType {
 }
 
 #[pyclass]
-#[derive(Clone)]
 pub struct IntParam {
     #[pyo3(get)]
     pub default: i64,
@@ -46,7 +45,6 @@ impl IntParam {
 }
 
 #[pyclass]
-#[derive(Clone)]
 pub struct FloatParam {
     #[pyo3(get)]
     pub default: f64,
@@ -65,7 +63,6 @@ impl FloatParam {
 }
 
 #[pyclass]
-#[derive(Clone)]
 pub struct BoolParam {
     #[pyo3(get)]
     pub default: bool,
@@ -80,7 +77,6 @@ impl BoolParam {
 }
 
 #[pyclass]
-#[derive(Clone)]
 pub struct StringParam {
     #[pyo3(get)]
     pub default: String,

@@ -5,6 +5,7 @@
 
 #![cfg(any(feature = "extension-module", feature = "host"))]
 
+mod node;
 mod params;
 
 use pyo3::prelude::*;
@@ -24,6 +25,7 @@ fn gil_disabled(py: Python<'_>) -> PyResult<bool> {
 #[pymodule]
 pub fn goofi(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(gil_disabled, m)?)?;
+    m.add_class::<node::Node>()?;
     m.add_class::<params::DataType>()?;
     m.add_class::<params::IntParam>()?;
     m.add_class::<params::FloatParam>()?;
