@@ -2209,7 +2209,7 @@ impl Graph {
                 names.dedup();
                 for nm in names {
                     let mut put = |k: (String, Option<String>), data: Option<Data>| {
-                        seen.insert(k.clone(), data.as_ref().and_then(|d| d.meta().index));
+                        seen.insert(k.clone(), data.as_ref().and_then(|d| d.meta().index()));
                         refs_map.insert(k, data);
                     };
                     match self.uid_by_name(nm) {
@@ -2656,7 +2656,7 @@ fn stamp_meta_parts(
         .iter()
         .filter(|(name, _)| triggering.contains(*name))
         .filter_map(|(_, o)| o.as_ref())
-        .filter_map(|d| d.meta().index.map(|i| (i, frame_count(d))))
+        .filter_map(|d| d.meta().index().map(|i| (i, frame_count(d))))
         .collect();
     // Node-level ufreq: EMA of the inter-emit interval, inverted. `None` until the
     // second emit; a non-advancing clock (`dt <= 0`) keeps the prior estimate.
@@ -4087,7 +4087,7 @@ mod tests {
             g.tick();
         }
         let f = g.latest_frame(src, "out").expect("frame");
-        assert_eq!(f.meta().index, Some(2), "3 emits -> indices 0,1,2 (latest 2)");
+        assert_eq!(f.meta().index(), Some(2), "3 emits -> indices 0,1,2 (latest 2)");
     }
 
     #[test]
@@ -4132,9 +4132,9 @@ mod tests {
         let mut g = Graph::new();
         let c = g.add_node("_TestConst", None).unwrap();
         g.tick_at(std::time::Instant::now());
-        let first = g.latest_frame(c, "out").unwrap().meta().index;
+        let first = g.latest_frame(c, "out").unwrap().meta().index();
         g.tick_at(std::time::Instant::now());
-        let second = g.latest_frame(c, "out").unwrap().meta().index;
+        let second = g.latest_frame(c, "out").unwrap().meta().index();
         assert_eq!((first, second), (Some(0), Some(1)), "fresh per-output counter advances");
     }
 
@@ -5003,7 +5003,7 @@ mod tests {
         g.add_link(src, "out", echo, "in").unwrap();
         g.tick(); // src -> index 3; echo runs, matches len -> propagates 3
         let f = g.latest_frame(echo, "out").expect("echo ran");
-        assert_eq!(f.meta().index, Some(3), "propagates the source's index, not fresh 0");
+        assert_eq!(f.meta().index(), Some(3), "propagates the source's index, not fresh 0");
     }
 
     #[test]
@@ -5020,7 +5020,7 @@ mod tests {
         let mut idx = Vec::new();
         for _ in 0..4 {
             g.tick();
-            idx.push(g.latest_frame(buf, "out").unwrap().meta().index.unwrap());
+            idx.push(g.latest_frame(buf, "out").unwrap().meta().index().unwrap());
         }
         assert_eq!(idx, vec![0, 1, 2, 3], "buffer index must be a monotonic fresh timeline");
     }
@@ -5040,7 +5040,7 @@ mod tests {
         g.add_link(src, "out", cnt, "in").unwrap();
         g.tick(); // src -> index 3; counter runs, len mismatch -> fresh index 0
         let f = g.latest_frame(cnt, "out").expect("counter ran");
-        assert_eq!(f.meta().index, Some(0), "fresh counter, not the source's 3");
+        assert_eq!(f.meta().index(), Some(0), "fresh counter, not the source's 3");
     }
 
     #[test]
@@ -5072,7 +5072,7 @@ mod tests {
         g.tick_at(t0 + Duration::from_millis(50)); // skip
         g.tick_at(t0 + Duration::from_millis(100)); // run -> index 1
         g.tick_at(t0 + Duration::from_millis(210)); // run -> index 2
-        assert_eq!(g.latest_frame(c, "out").unwrap().meta().index, Some(2), "capped to 3 emits");
+        assert_eq!(g.latest_frame(c, "out").unwrap().meta().index(), Some(2), "capped to 3 emits");
     }
 
     #[test]
@@ -5096,7 +5096,7 @@ mod tests {
         g2.tick_at(t0);
         g2.tick_at(t0 + Duration::from_millis(50)); // skip -> gate active after load
         g2.tick_at(t0 + Duration::from_millis(100));
-        assert_eq!(g2.latest_frame(c2, "out").unwrap().meta().index, Some(1), "gate active post-load");
+        assert_eq!(g2.latest_frame(c2, "out").unwrap().meta().index(), Some(1), "gate active post-load");
     }
 
     #[test]
@@ -5172,7 +5172,7 @@ mod tests {
     }
 
     fn ufreq(g: &Graph, uid: Uid, slot: &str) -> Option<f64> {
-        g.latest_frame(uid, slot).unwrap().meta().ufreq
+        g.latest_frame(uid, slot).unwrap().meta().ufreq()
     }
 
     #[test]
@@ -5272,12 +5272,12 @@ mod tests {
         g.tick_at(t0);
         g.tick_at(t0 + Duration::from_millis(10)); // steady 100 Hz
         let frame = g.latest_frame(src, "out").unwrap();
-        assert!((frame.meta().ufreq.unwrap() - 100.0).abs() < 1e-6);
+        assert!((frame.meta().ufreq().unwrap() - 100.0).abs() < 1e-6);
 
         let wire = goofi_codec::encode(&frame);
         let back = goofi_codec::decode(&wire).expect("data-plane frame decodes");
-        assert_eq!(back.meta().ufreq, frame.meta().ufreq, "ufreq round-trips the data plane");
-        assert!((back.meta().ufreq.unwrap() - 100.0).abs() < 1e-6);
+        assert_eq!(back.meta().ufreq(), frame.meta().ufreq(), "ufreq round-trips the data plane");
+        assert!((back.meta().ufreq().unwrap() - 100.0).abs() < 1e-6);
     }
 
     #[test]
@@ -5293,7 +5293,7 @@ mod tests {
             g.tick_at(t0 + Duration::from_nanos(i)); // clock essentially frozen
         }
         // 5 emits -> the generator's index advanced to 4 (ran every tick).
-        assert_eq!(g.latest_frame(src, "out").unwrap().meta().index, Some(4));
+        assert_eq!(g.latest_frame(src, "out").unwrap().meta().index(), Some(4));
     }
 
     #[test]
@@ -5316,7 +5316,7 @@ mod tests {
         g.add_link(ds, "out", c, "data").unwrap();
         g.tick(); // rs -> index 3 (len 1); ds -> index 0 (len 4); c emits len 1
         let f = g.latest_frame(c, "out").expect("consumer ran");
-        assert_eq!(f.meta().index, Some(0), "control input must not be the timeline");
+        assert_eq!(f.meta().index(), Some(0), "control input must not be the timeline");
     }
 
     #[test]

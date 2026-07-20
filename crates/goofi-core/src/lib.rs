@@ -302,7 +302,9 @@ impl Axes {
     }
 }
 
-/// An arbitrary meta value (the open map the inspector renders).
+/// A meta value (the open map the inspector renders). The `Axes` variant carries the
+/// structured channel labels so `channels` keeps its typed slicing API *inside* the map;
+/// it only ever appears as the top-level `channels` value.
 #[derive(Clone, Debug, PartialEq)]
 pub enum MetaValue {
     Null,
@@ -314,33 +316,155 @@ pub enum MetaValue {
     Bytes(Vec<u8>),
     List(Vec<MetaValue>),
     Map(BTreeMap<String, MetaValue>),
+    Axes(Axes),
 }
 
-/// Typed hot fields (never a hashmap lookup on the tick path) plus an open map
-/// for arbitrary keys. `shape`/`dtype` are intentionally absent — they are
-/// derived from the array store and projected into the wire meta at encode time.
-#[derive(Clone, Debug, Default)]
-pub struct Meta {
-    /// Intra-frame sample rate — samples *per second within one emitted frame*
-    /// (biosignals). Distinct from [`ufreq`](Self::ufreq), the frame-emit rate.
-    pub sfreq: Option<f64>,
-    /// Measured update frequency: the producer slot's actual emit rate in Hz,
-    /// smoothed and stamped by the engine (like [`index`](Self::index) — the node
-    /// never sets it). `None` until the slot has emitted at least twice. The
-    /// default frequency-of-record for a slot; `sfreq` only overrides it for
-    /// signals carrying more samples per frame than the emit cadence.
-    pub ufreq: Option<f64>,
-    pub index: Option<u64>,
-    pub channels: Axes,
-    pub reduced: Option<MetaValue>,
-    /// Arbitrary keys, including the `/^__.*__$/` hidden-internal namespace.
-    /// Reserved keys (shape/dtype/channels/sfreq/ufreq/index/reduced) never live here.
-    pub extra: BTreeMap<String, MetaValue>,
+/// Reserved builtin meta keys — always present in a [`Meta`] at runtime (`Null`/empty when
+/// unset), so a lookup never distinguishes "absent" from "unset". `shape`/`dtype` are NOT
+/// keys — they are derived from the array and projected only at encode time.
+pub const META_SFREQ: &str = "sfreq";
+pub const META_UFREQ: &str = "ufreq";
+pub const META_INDEX: &str = "index";
+pub const META_CHANNELS: &str = "channels";
+pub const META_REDUCED: &str = "reduced";
+const BUILTIN_KEYS: [&str; 5] = [META_SFREQ, META_UFREQ, META_INDEX, META_CHANNELS, META_REDUCED];
+
+static EMPTY_AXES: Axes = Axes(Vec::new());
+
+/// A `Data`'s metadata sidecar: an insertion-ordered map from key to [`MetaValue`], with the
+/// builtin keys guaranteed present. Typed accessors read/write the builtins without the caller
+/// touching string keys; `sfreq`/`ufreq`/`index` are the hot ones (a small map lookup, not a
+/// struct field — a deliberate uniformity-for-speed trade). `channels` is stored as a
+/// [`MetaValue::Axes`] so it keeps its typed API. The codec skips `Null` at encode time so an
+/// unset builtin stays off the wire.
+#[derive(Clone, Debug)]
+pub struct Meta(IndexMap<String, MetaValue>);
+
+impl Default for Meta {
+    fn default() -> Meta {
+        Meta::new()
+    }
 }
 
 impl Meta {
+    /// A meta with the builtin keys present but unset (`Null`, empty channels).
+    pub fn new() -> Meta {
+        let mut m = IndexMap::with_capacity(BUILTIN_KEYS.len());
+        m.insert(META_SFREQ.to_string(), MetaValue::Null);
+        m.insert(META_UFREQ.to_string(), MetaValue::Null);
+        m.insert(META_INDEX.to_string(), MetaValue::Null);
+        m.insert(META_CHANNELS.to_string(), MetaValue::Axes(Axes::new()));
+        m.insert(META_REDUCED.to_string(), MetaValue::Null);
+        Meta(m)
+    }
     pub fn empty() -> Meta {
-        Meta::default()
+        Meta::new()
+    }
+
+    /// Whether `key` is a reserved builtin.
+    pub fn is_builtin(key: &str) -> bool {
+        BUILTIN_KEYS.contains(&key)
+    }
+
+    // --- generic map access ---
+
+    /// The value at `key`, or `None` if absent OR present-but-`Null` (an unset builtin).
+    pub fn get(&self, key: &str) -> Option<&MetaValue> {
+        self.0.get(key).filter(|v| !matches!(v, MetaValue::Null))
+    }
+    /// Insert/overwrite `key`.
+    pub fn set(&mut self, key: impl Into<String>, v: MetaValue) {
+        self.0.insert(key.into(), v);
+    }
+    /// Clear `key`: a builtin resets to unset (`Null`/empty, stays present); an extra is removed.
+    pub fn remove(&mut self, key: &str) {
+        if BUILTIN_KEYS.contains(&key) {
+            let null = if key == META_CHANNELS { MetaValue::Axes(Axes::new()) } else { MetaValue::Null };
+            self.0.insert(key.to_string(), null);
+        } else {
+            self.0.shift_remove(key);
+        }
+    }
+    /// Iterate ALL entries (builtins + extras), including `Null` builtins.
+    pub fn iter(&self) -> impl Iterator<Item = (&String, &MetaValue)> {
+        self.0.iter()
+    }
+
+    // --- typed builtin accessors (coerce leniently; a round-tripped Int reads as its number) ---
+
+    pub fn sfreq(&self) -> Option<f64> {
+        as_f64(self.0.get(META_SFREQ))
+    }
+    pub fn set_sfreq(&mut self, v: Option<f64>) {
+        self.set(META_SFREQ, v.map_or(MetaValue::Null, MetaValue::Float));
+    }
+    pub fn ufreq(&self) -> Option<f64> {
+        as_f64(self.0.get(META_UFREQ))
+    }
+    pub fn set_ufreq(&mut self, v: Option<f64>) {
+        self.set(META_UFREQ, v.map_or(MetaValue::Null, MetaValue::Float));
+    }
+    pub fn index(&self) -> Option<u64> {
+        match self.0.get(META_INDEX) {
+            Some(MetaValue::Uint(u)) => Some(*u),
+            Some(MetaValue::Int(i)) if *i >= 0 => Some(*i as u64),
+            _ => None,
+        }
+    }
+    pub fn set_index(&mut self, v: Option<u64>) {
+        self.set(META_INDEX, v.map_or(MetaValue::Null, MetaValue::Uint));
+    }
+    pub fn channels(&self) -> &Axes {
+        match self.0.get(META_CHANNELS) {
+            Some(MetaValue::Axes(a)) => a,
+            _ => &EMPTY_AXES,
+        }
+    }
+    pub fn set_channels(&mut self, ch: Axes) {
+        self.set(META_CHANNELS, MetaValue::Axes(ch));
+    }
+    pub fn reduced(&self) -> Option<&MetaValue> {
+        self.get(META_REDUCED)
+    }
+    pub fn set_reduced(&mut self, v: Option<MetaValue>) {
+        self.set(META_REDUCED, v.unwrap_or(MetaValue::Null));
+    }
+
+    // --- builders (replace the `Meta { field, ..Default::default() }` literals) ---
+
+    pub fn with_sfreq(mut self, v: Option<f64>) -> Meta {
+        self.set_sfreq(v);
+        self
+    }
+    pub fn with_ufreq(mut self, v: Option<f64>) -> Meta {
+        self.set_ufreq(v);
+        self
+    }
+    pub fn with_index(mut self, v: Option<u64>) -> Meta {
+        self.set_index(v);
+        self
+    }
+    pub fn with_channels(mut self, ch: Axes) -> Meta {
+        self.set_channels(ch);
+        self
+    }
+    pub fn with_reduced(mut self, v: Option<MetaValue>) -> Meta {
+        self.set_reduced(v);
+        self
+    }
+    pub fn with(mut self, key: impl Into<String>, v: MetaValue) -> Meta {
+        self.set(key, v);
+        self
+    }
+}
+
+/// Coerce a meta value to f64 (a wire round-trip may deliver an integer for a rate).
+fn as_f64(v: Option<&MetaValue>) -> Option<f64> {
+    match v {
+        Some(MetaValue::Float(f)) => Some(*f),
+        Some(MetaValue::Int(i)) => Some(*i as f64),
+        Some(MetaValue::Uint(u)) => Some(*u as f64),
+        _ => None,
     }
 }
 
@@ -422,8 +546,8 @@ impl Data {
     /// (overwritten, never inherited). `ufreq` is `None` before a rate is measured.
     pub fn with_stamps(&self, index: u64, ufreq: Option<f64>) -> Data {
         let mut meta = self.0.meta.clone();
-        meta.index = Some(index);
-        meta.ufreq = ufreq;
+        meta.set_index(Some(index));
+        meta.set_ufreq(ufreq);
         Data(Arc::new(DataInner {
             value: self.0.value.clone(),
             meta,
@@ -471,14 +595,14 @@ impl Data {
 
         // Validate positional axis coords against the array shape: no more axes than
         // dimensions, and each labeled dim's coord count matches its extent.
-        if meta.channels.0.len() > shape.len() {
+        if meta.channels().0.len() > shape.len() {
             return Err(GoofiError::Invalid(format!(
                 "channels has {} axes, exceeds ndim {}",
-                meta.channels.0.len(),
+                meta.channels().0.len(),
                 shape.len()
             )));
         }
-        for (dim, axis) in meta.channels.0.iter().enumerate() {
+        for (dim, axis) in meta.channels().0.iter().enumerate() {
             if let Some(coords) = &axis.coords {
                 if coords.len() != shape[dim] {
                     return Err(GoofiError::Invalid(format!(
@@ -644,6 +768,43 @@ mod tests {
     }
 
     #[test]
+    fn meta_map_builtins_accessors_and_builders() {
+        // Builtins are guaranteed present at construction (as unset).
+        let m = Meta::new();
+        assert_eq!(m.sfreq(), None);
+        assert_eq!(m.index(), None);
+        assert!(m.channels().is_empty());
+        assert!(m.get("sfreq").is_none(), "an unset builtin reads as absent");
+        let keys: Vec<String> = m.iter().map(|(k, _)| k.clone()).collect();
+        for b in [META_SFREQ, META_UFREQ, META_INDEX, META_CHANNELS, META_REDUCED] {
+            assert!(keys.iter().any(|k| k == b), "builtin `{b}` always present in the map");
+        }
+        // Typed builders + generic set round-trip.
+        let m = Meta::new()
+            .with_sfreq(Some(250.0))
+            .with_index(Some(7))
+            .with("label", MetaValue::Str("eeg".into()));
+        assert_eq!(m.sfreq(), Some(250.0));
+        assert_eq!(m.index(), Some(7));
+        assert_eq!(m.get("label"), Some(&MetaValue::Str("eeg".into())));
+        // channels lives in the map as a MetaValue::Axes (keeps its typed API).
+        let m = Meta::new().with_channels(Axes::new().with(0, Axis::coords(vec![Coord::Num(1.0)])));
+        assert!(matches!(m.get("channels"), Some(MetaValue::Axes(_))));
+        assert_eq!(m.channels().0.len(), 1);
+        // Lenient coercion: an index delivered as msgpack Int still reads as u64.
+        let mut m = Meta::new();
+        m.set(META_INDEX, MetaValue::Int(42));
+        assert_eq!(m.index(), Some(42));
+        // remove() resets a builtin to unset (stays present) but drops an extra.
+        let mut m = Meta::new().with_sfreq(Some(1.0)).with("x", MetaValue::Bool(true));
+        m.remove(META_SFREQ);
+        m.remove("x");
+        assert_eq!(m.sfreq(), None);
+        assert!(m.iter().any(|(k, _)| k == META_SFREQ), "builtin stays present after remove");
+        assert!(!m.iter().any(|(k, _)| k == "x"), "extra is dropped");
+    }
+
+    #[test]
     fn warn_cast_once_dedups_per_dtype() {
         use std::collections::HashSet;
         let mut w: HashSet<SrcDtype> = HashSet::new();
@@ -706,10 +867,7 @@ mod tests {
     #[test]
     fn channel_length_must_match_shape() {
         // dim0 labeled with 1 coord but shape[0] == 2 -> reject.
-        let meta = Meta {
-            channels: Axes::new().with(0, Axis::coords(vec![Coord::Str("a".into())])),
-            ..Default::default()
-        };
+        let meta = Meta::new().with_channels(Axes::new().with(0, Axis::coords(vec![Coord::Str("a".into())])));
         let buf: Vec<u8> = [1.0f32, 2.0].iter().flat_map(|v| v.to_le_bytes()).collect(); // shape[0]=2
         assert!(Data::array_f32(vec![2], buf, meta).is_err());
     }
@@ -717,10 +875,8 @@ mod tests {
     #[test]
     fn too_many_axes_for_ndim_is_rejected() {
         // Two labeled axes on a 1-D array -> reject (axes.len() > ndim).
-        let meta = Meta {
-            channels: Axes(vec![Axis::default(), Axis::coords(vec![Coord::Num(1.0)])]),
-            ..Default::default()
-        };
+        let meta =
+            Meta::new().with_channels(Axes(vec![Axis::default(), Axis::coords(vec![Coord::Num(1.0)])]));
         let buf: Vec<u8> = 1.0f32.to_le_bytes().to_vec();
         assert!(Data::array_f32(vec![1], buf, meta).is_err());
     }
@@ -763,13 +919,13 @@ mod tests {
     #[test]
     fn with_stamps_sets_engine_meta_and_shares_buffer() {
         let d = Data::array_f32(vec![2], vec![0u8; 8], Meta::empty()).unwrap();
-        assert_eq!(d.meta().index, None);
-        assert_eq!(d.meta().ufreq, None);
+        assert_eq!(d.meta().index(), None);
+        assert_eq!(d.meta().ufreq(), None);
         let stamped = d.with_stamps(7, Some(50.0));
-        assert_eq!(stamped.meta().index, Some(7));
-        assert_eq!(stamped.meta().ufreq, Some(50.0));
-        assert_eq!(d.meta().index, None, "original is untouched (immutable)");
-        assert_eq!(d.meta().ufreq, None, "original is untouched (immutable)");
+        assert_eq!(stamped.meta().index(), Some(7));
+        assert_eq!(stamped.meta().ufreq(), Some(50.0));
+        assert_eq!(d.meta().index(), None, "original is untouched (immutable)");
+        assert_eq!(d.meta().ufreq(), None, "original is untouched (immutable)");
         // The value buffer is shared, not copied (Arc bump).
         if let (Value::Array(a), Value::Array(b)) = (d.value(), stamped.value()) {
             assert_eq!(a.as_bytes().as_ptr(), b.as_bytes().as_ptr());
@@ -782,8 +938,8 @@ mod tests {
     fn with_stamps_none_ufreq_leaves_field_none() {
         let d = Data::array_f32(vec![2], vec![0u8; 8], Meta::empty()).unwrap();
         let stamped = d.with_stamps(3, None);
-        assert_eq!(stamped.meta().index, Some(3));
-        assert_eq!(stamped.meta().ufreq, None, "no measurement yet ⇒ no ufreq stamped");
+        assert_eq!(stamped.meta().index(), Some(3));
+        assert_eq!(stamped.meta().ufreq(), None, "no measurement yet ⇒ no ufreq stamped");
     }
 
     #[test]

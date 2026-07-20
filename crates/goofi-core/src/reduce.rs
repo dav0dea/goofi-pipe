@@ -13,7 +13,7 @@
 //! Each returns `None` when it would not actually reduce the axis, so the caller leaves that
 //! axis untouched.
 
-use crate::{Coord, Data, Meta, MetaValue, Value};
+use crate::{Coord, Data, MetaValue, Value};
 use goofi_view::{MergedViewSpec, ReduceMethod};
 use std::collections::BTreeMap;
 
@@ -42,7 +42,7 @@ pub fn reduce_for_view(frame: &Data, plan: &MergedViewSpec) -> Data {
     }
     let mut bytes = store.as_bytes().to_vec();
     let mut shape = store.shape().to_vec();
-    let mut axes = frame.meta().channels.clone();
+    let mut axes = frame.meta().channels().clone();
     let mut reduced: BTreeMap<String, MetaValue> = BTreeMap::new();
 
     // Descending dim so a reduction never invalidates a not-yet-processed lower dim.
@@ -79,15 +79,11 @@ pub fn reduce_for_view(frame: &Data, plan: &MergedViewSpec) -> Data {
     if reduced.is_empty() {
         return frame.clone(); // nothing actually reduced (all axes already small enough)
     }
-    let src = frame.meta();
-    let meta = Meta {
-        sfreq: src.sfreq,
-        ufreq: src.ufreq,
-        index: src.index,
-        channels: axes,
-        reduced: Some(MetaValue::Map(reduced)),
-        extra: src.extra.clone(),
-    };
+    // Carry the source timeline (sfreq/ufreq/index) and any extras verbatim; override only
+    // channels (co-reduced) and reduced.
+    let mut meta = frame.meta().clone();
+    meta.set_channels(axes);
+    meta.set_reduced(Some(MetaValue::Map(reduced)));
     Data::array_f32(shape, bytes, meta).unwrap_or_else(|_| frame.clone())
 }
 
@@ -341,7 +337,7 @@ mod tests {
     fn reduce_for_view_applies_plan_and_records_meta() {
         // 8-sample waveform, envelope to W=2 → 4 body samples; meta.reduced["0"] recorded;
         // source timeline (index/ufreq/sfreq) carried verbatim.
-        let meta = Meta { sfreq: Some(250.0), ufreq: Some(30.0), index: Some(7), ..Default::default() };
+        let meta = Meta::new().with_sfreq(Some(250.0)).with_ufreq(Some(30.0)).with_index(Some(7));
         let f = f32_frame(vec![8], &[1.0, 4.0, 2.0, 3.0, 8.0, 5.0, 7.0, 6.0], meta);
         let plan = MergedViewSpec { axes: vec![PlannedAxis { dim: 0, max: 2, method: ReduceMethod::Envelope }] };
         let r = reduce_for_view(&f, &plan);
@@ -349,11 +345,11 @@ mod tests {
         assert_eq!(s.shape(), &[4], "envelope 2W=4");
         assert_eq!(as_f32(s.as_bytes()), vec![1.0, 4.0, 5.0, 8.0]);
         // Source timeline verbatim.
-        assert_eq!(r.meta().sfreq, Some(250.0));
-        assert_eq!(r.meta().ufreq, Some(30.0));
-        assert_eq!(r.meta().index, Some(7), "index rides through untouched");
+        assert_eq!(r.meta().sfreq(), Some(250.0));
+        assert_eq!(r.meta().ufreq(), Some(30.0));
+        assert_eq!(r.meta().index(), Some(7), "index rides through untouched");
         // reduced meta records the original length + method.
-        let Some(MetaValue::Map(m)) = &r.meta().reduced else { panic!("reduced meta set") };
+        let Some(MetaValue::Map(m)) = &r.meta().reduced() else { panic!("reduced meta set") };
         let Some(MetaValue::Map(e)) = m.get("0") else { panic!("dim 0 recorded") };
         assert_eq!(e.get("orig_len"), Some(&MetaValue::Uint(8)));
         assert_eq!(e.get("method"), Some(&MetaValue::Str("envelope".into())));
@@ -366,14 +362,14 @@ mod tests {
             0,
             Axis::coords(vec![Coord::Str("a".into()), Coord::Str("b".into()), Coord::Str("c".into())]),
         );
-        let meta = Meta { channels: ch, ..Default::default() };
+        let meta = Meta::new().with_channels(ch);
         let f = f32_frame(vec![3, 2], &[10.0, 11.0, 20.0, 21.0, 30.0, 31.0], meta);
         let plan = MergedViewSpec { axes: vec![PlannedAxis { dim: 0, max: 2, method: ReduceMethod::Subsample }] };
         let r = reduce_for_view(&f, &plan);
         let Value::Array(s) = r.value() else { panic!() };
         assert_eq!(s.shape(), &[2, 2]);
         assert_eq!(as_f32(s.as_bytes()), vec![10.0, 11.0, 30.0, 31.0], "kept channels 0 and 2");
-        let coords = r.meta().channels.get(0).and_then(|a| a.coords.clone()).expect("coords co-reduced");
+        let coords = r.meta().channels().get(0).and_then(|a| a.coords.clone()).expect("coords co-reduced");
         assert_eq!(coords.as_ref(), &[Coord::Str("a".into()), Coord::Str("c".into())]);
     }
 
@@ -386,11 +382,11 @@ mod tests {
             0,
             Axis::coords(vec![Coord::Str("a".into()), Coord::Str("b".into()), Coord::Str("c".into())]),
         );
-        let meta = Meta { channels: ch, ..Default::default() };
+        let meta = Meta::new().with_channels(ch);
         let f = f32_frame(vec![3, 2], &[10.0, 11.0, 20.0, 21.0, 30.0, 31.0], meta);
         let plan = MergedViewSpec { axes: vec![PlannedAxis { dim: 0, max: 2, method: ReduceMethod::Subsample }] };
         let r = reduce_for_view(&f, &plan);
-        let Some(MetaValue::Map(reduced)) = r.meta().reduced.as_ref() else { panic!("reduced meta") };
+        let Some(MetaValue::Map(reduced)) = r.meta().reduced().as_ref() else { panic!("reduced meta") };
         let MetaValue::Map(entry) = reduced.get("0").expect("dim 0 reduced") else { panic!("map") };
         assert_eq!(
             entry.get("orig_coord"),
@@ -407,11 +403,11 @@ mod tests {
     fn reduce_for_view_omits_verbatim_coords_for_non_subsample_or_large_axes() {
         // Envelope (not subsample) → no verbatim coords, even when small.
         let ch = Axes::new().with(0, Axis::coords((0..8).map(|i| Coord::Num(i as f64)).collect::<Vec<_>>()));
-        let meta = Meta { channels: ch, ..Default::default() };
+        let meta = Meta::new().with_channels(ch);
         let f = f32_frame(vec![8], &[1.0, 4.0, 2.0, 3.0, 8.0, 5.0, 7.0, 6.0], meta);
         let plan = MergedViewSpec { axes: vec![PlannedAxis { dim: 0, max: 2, method: ReduceMethod::Envelope }] };
         let r = reduce_for_view(&f, &plan);
-        let Some(MetaValue::Map(reduced)) = r.meta().reduced.as_ref() else { panic!("reduced meta") };
+        let Some(MetaValue::Map(reduced)) = r.meta().reduced().as_ref() else { panic!("reduced meta") };
         let MetaValue::Map(entry) = reduced.get("0").unwrap() else { panic!("map") };
         assert!(entry.get("orig_coord").is_none(), "envelope axis carries no verbatim coords");
     }
@@ -426,6 +422,6 @@ mod tests {
         let r = reduce_for_view(&f, &MergedViewSpec::default());
         let Value::Array(s2) = r.value() else { panic!() };
         assert_eq!(s2.shape(), &[4]);
-        assert!(r.meta().reduced.is_none(), "no reduction, no reduced meta");
+        assert!(r.meta().reduced().is_none(), "no reduction, no reduced meta");
     }
 }

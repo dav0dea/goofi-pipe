@@ -23,15 +23,10 @@ fn f32s(vals: &[f32]) -> Vec<u8> {
 }
 
 fn build_cases() -> Vec<(&'static str, Data)> {
-    let meta_sfreq_ch = Meta {
-        sfreq: Some(250.0),
-        channels: Axes::new().with(0, Axis::coords(vec![Coord::Str("Fz".into()), Coord::Str("Cz".into())])),
-        ..Default::default()
-    };
-    let meta_index = Meta {
-        index: Some(42),
-        ..Default::default()
-    };
+    let meta_sfreq_ch = Meta::new()
+        .with_sfreq(Some(250.0))
+        .with_channels(Axes::new().with(0, Axis::coords(vec![Coord::Str("Fz".into()), Coord::Str("Cz".into())])));
+    let meta_index = Meta::new().with_index(Some(42));
 
     let mut table = IndexMap::new();
     table.insert("a".to_string(), arr(&[2], f32s(&[1.0, 2.0]), Meta::empty()));

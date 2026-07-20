@@ -37,10 +37,7 @@ impl Node for Buffer {
         for v in &self.ring {
             buf.extend_from_slice(&v.to_le_bytes());
         }
-        let meta = Meta {
-            sfreq: d.meta().sfreq,
-            ..Default::default()
-        };
+        let meta = Meta::new().with_sfreq(d.meta().sfreq());
         let data = Data::array_f32(vec![self.ring.len()], buf, meta)
             .map_err(|e| e.to_string())?;
         out.set("out", data);

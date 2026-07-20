@@ -213,7 +213,7 @@ mod tests {
         let src = "def process(x):\n    return x * 2.0\n";
         let mut node = PyNode::from_source(src, "process").expect("compile python node");
         let mut meta = Meta::empty();
-        meta.sfreq = Some(250.0);
+        meta.set_sfreq(Some(250.0));
         let d = Data::array_f32(vec![2, 3], f32s(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]), meta).unwrap();
         let mut inmap: IndexMap<&'static str, Option<Data>> = IndexMap::new();
         inmap.insert("data", Some(d));
@@ -234,7 +234,7 @@ mod tests {
             }
             _ => panic!("expected array"),
         }
-        assert_eq!(outd.meta().sfreq, Some(250.0), "length-preserving node carries input meta");
+        assert_eq!(outd.meta().sfreq(), Some(250.0), "length-preserving node carries input meta");
     }
 
     #[test]

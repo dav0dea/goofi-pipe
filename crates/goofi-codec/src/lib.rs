@@ -90,17 +90,23 @@ pub fn pack_meta(d: &Data) -> Vec<u8> {
     let meta = d.meta();
     let mut entries: Vec<(Mp, Mp)> = Vec::new();
 
-    // Arbitrary keys first (sorted, from BTreeMap iteration).
-    for (k, v) in meta.extra.iter() {
+    // Every meta entry (builtins + extras), skipping unset (`Null`) builtins — so an unset
+    // ufreq/index stays off the wire. `channels` is projected per value-kind below (arrays
+    // only, matching the wire contract), never here.
+    for (k, v) in meta.iter() {
+        if k == goofi_core::META_CHANNELS || matches!(v, MetaValue::Null) {
+            continue;
+        }
         entries.push((Mp::from(k.as_str()), mv_to_mp(v)));
     }
 
+    // Derived shape/dtype (never stored in Meta), plus channels for arrays (always, even empty).
     match d.value() {
         Value::Array(store) => {
             let shape: Vec<Mp> = store.shape().iter().map(|&d| Mp::from(d as u64)).collect();
             entries.push((Mp::from("shape"), Mp::Array(shape)));
             entries.push((Mp::from("dtype"), Mp::from("float32"))); // arrays are always f32
-            entries.push((Mp::from("channels"), channels_to_mp(&meta.channels)));
+            entries.push((Mp::from("channels"), channels_to_mp(meta.channels())));
         }
         Value::Str(_) => {
             entries.push((Mp::from("dtype"), Mp::from("str")));
@@ -108,19 +114,6 @@ pub fn pack_meta(d: &Data) -> Vec<u8> {
         Value::Table(_) => {
             entries.push((Mp::from("dtype"), Mp::from("table")));
         }
-    }
-
-    if let Some(sf) = meta.sfreq {
-        entries.push((Mp::from("sfreq"), Mp::from(sf)));
-    }
-    if let Some(uf) = meta.ufreq {
-        entries.push((Mp::from("ufreq"), Mp::from(uf)));
-    }
-    if let Some(ix) = meta.index {
-        entries.push((Mp::from("index"), Mp::from(ix)));
-    }
-    if let Some(r) = &meta.reduced {
-        entries.push((Mp::from("reduced"), mv_to_mp(r)));
     }
 
     let mut buf = Vec::new();
@@ -162,6 +155,8 @@ fn mv_to_mp(v: &MetaValue) -> Mp {
         MetaValue::Map(m) => {
             Mp::Map(m.iter().map(|(k, v)| (Mp::from(k.as_str()), mv_to_mp(v))).collect())
         }
+        // `channels` (the only Axes) is projected via channels_to_mp, never through here.
+        MetaValue::Axes(_) => Mp::Nil,
     }
 }
 
@@ -306,14 +301,10 @@ pub fn parse_meta(bytes: &[u8]) -> std::result::Result<goofi_core::Meta, String>
         match key {
             // shape/dtype are derived from the body — ignore the redundant keys.
             "shape" | "dtype" => {}
-            "channels" => meta.channels = parse_channels(&val),
-            "sfreq" => meta.sfreq = val.as_f64(),
-            "ufreq" => meta.ufreq = val.as_f64(),
-            "index" => meta.index = val.as_u64(),
-            "reduced" => meta.reduced = Some(mp_to_mv(&val)),
-            other => {
-                meta.extra.insert(other.to_string(), mp_to_mv(&val));
-            }
+            "channels" => meta.set_channels(parse_channels(&val)),
+            // sfreq/ufreq/index/reduced and all extras are stored generically; the typed
+            // accessors coerce them on read.
+            other => meta.set(other, mp_to_mv(&val)),
         }
     }
     Ok(meta)
@@ -390,11 +381,11 @@ mod decode_tests {
     #[test]
     fn array_roundtrips_with_meta() {
         let mut meta = Meta::empty();
-        meta.sfreq = Some(256.0);
-        meta.ufreq = Some(128.0);
-        meta.index = Some(42);
-        meta.extra.insert("label".into(), MetaValue::Str("eeg".into()));
-        meta.channels = Axes::new().with(0, Axis::coords(vec![Coord::Str("Fz".into()), Coord::Str("Cz".into())]));
+        meta.set_sfreq(Some(256.0));
+        meta.set_ufreq(Some(128.0));
+        meta.set_index(Some(42));
+        meta.set("label", MetaValue::Str("eeg".into()));
+        meta.set_channels(Axes::new().with(0, Axis::coords(vec![Coord::Str("Fz".into()), Coord::Str("Cz".into())])));
         let buf: Vec<u8> = [1.0f32, 2.0].iter().flat_map(|x| x.to_le_bytes()).collect();
         let d = Data::array_f32(vec![2], buf, meta).unwrap();
 
@@ -402,12 +393,11 @@ mod decode_tests {
         let (sh, by) = arr_bytes(&back);
         assert_eq!(sh, vec![2]);
         assert_eq!(arr_bytes(&d).1, by);
-        assert_eq!(back.meta().sfreq, Some(256.0));
-        assert_eq!(back.meta().ufreq, Some(128.0));
-        assert_eq!(back.meta().index, Some(42));
-        assert_eq!(back.meta().extra.get("label"), Some(&MetaValue::Str("eeg".into())));
-        assert!(!back.meta().extra.contains_key("ufreq"), "ufreq is a typed field, never extra");
-        let ch = back.meta().channels.get(0).and_then(|a| a.coords.clone()).expect("dim0 channels");
+        assert_eq!(back.meta().sfreq(), Some(256.0));
+        assert_eq!(back.meta().ufreq(), Some(128.0));
+        assert_eq!(back.meta().index(), Some(42));
+        assert_eq!(back.meta().get("label"), Some(&MetaValue::Str("eeg".into())));
+        let ch = back.meta().channels().get(0).and_then(|a| a.coords.clone()).expect("dim0 channels");
         assert_eq!(ch.as_ref(), &[Coord::Str("Fz".into()), Coord::Str("Cz".into())]);
     }
 
@@ -443,17 +433,17 @@ mod decode_tests {
         // An unmeasured slot (ufreq == None) must not emit the key, so frames that
         // predate ufreq (and the Python-golden fixtures) stay byte-identical.
         let d = Data::array_f32(vec![1], 1.0f32.to_le_bytes().to_vec(), Meta::empty()).unwrap();
-        assert_eq!(d.meta().ufreq, None);
+        assert_eq!(d.meta().ufreq(), None);
         let bytes = encode(&d);
         assert!(
             !bytes.windows(5).any(|w| w == b"ufreq"),
             "None ufreq must not appear in the encoded meta"
         );
-        assert_eq!(decode(&bytes).unwrap().meta().ufreq, None);
+        assert_eq!(decode(&bytes).unwrap().meta().ufreq(), None);
 
         // A measured slot emits the key.
         let mut meta = Meta::empty();
-        meta.ufreq = Some(60.0);
+        meta.set_ufreq(Some(60.0));
         let d2 = Data::array_f32(vec![1], 1.0f32.to_le_bytes().to_vec(), meta).unwrap();
         assert!(encode(&d2).windows(5).any(|w| w == b"ufreq"), "measured ufreq must appear");
     }
@@ -512,7 +502,7 @@ mod decode_tests {
         // Every strict prefix of a real frame is incomplete and must Err —
         // never panic or read out of bounds.
         let mut meta = Meta::empty();
-        meta.sfreq = Some(64.0);
+        meta.set_sfreq(Some(64.0));
         let buf: Vec<u8> = (0..8).flat_map(|i| (i as f32).to_le_bytes()).collect();
         let d = Data::array_f32(vec![2, 4], buf, meta).unwrap();
         let frame = encode(&d);

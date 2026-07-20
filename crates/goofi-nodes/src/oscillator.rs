@@ -108,7 +108,7 @@ impl Node for Oscillator {
         }
         self.phase = self.phase.rem_euclid(TAU); // keep bounded over long runs
 
-        let meta = Meta { sfreq: Some(sfreq), ..Default::default() };
+        let meta = Meta::new().with_sfreq(Some(sfreq));
         let data = Data::array_f32(vec![n], buf, meta).map_err(|e| e.to_string())?;
         out.set("out", data);
         Ok(())
@@ -259,7 +259,7 @@ mod tests {
         let mut o1 = m.output_buffer();
         node.process(&inp, &mut Outputs::new(&mut o1), &mut NodeCtx { tick: 1, now: 0.004, ..Default::default() }, &Params::new(&params)).unwrap();
         let d = o1.get("out").unwrap().as_ref().unwrap();
-        assert_eq!(d.meta().sfreq, Some(1000.0));
+        assert_eq!(d.meta().sfreq(), Some(1000.0));
         if let Value::Array(s) = d.value() {
             assert_eq!(s.shape(), &[4]);
             let v = |i: usize| f32::from_le_bytes(s.as_bytes()[i * 4..i * 4 + 4].try_into().unwrap());

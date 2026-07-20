@@ -55,7 +55,7 @@ const DEFAULT_TIMEOUT: Duration = Duration::from_secs(10);
 /// viewed in place by the child (see `WORKER_SRC`).
 fn encode_body(d: &Data) -> Vec<u8> {
     let mut out = Vec::new();
-    out.extend_from_slice(&d.meta().sfreq.unwrap_or(f64::NAN).to_le_bytes());
+    out.extend_from_slice(&d.meta().sfreq().unwrap_or(f64::NAN).to_le_bytes());
     let meta = goofi_codec::pack_meta(d);
     out.extend_from_slice(&(meta.len() as u32).to_le_bytes());
     out.extend_from_slice(&meta);
@@ -79,7 +79,7 @@ fn decode_body(buf: &[u8]) -> std::result::Result<(Data, goofi_core::SrcDtype), 
     let mut meta = goofi_codec::parse_meta(meta_bytes)?;
     // The typed sfreq survives even when a shape-changing node emptied the opaque meta.
     if !sfreq.is_nan() {
-        meta.sfreq = Some(sfreq);
+        meta.set_sfreq(Some(sfreq));
     }
     goofi_codec::decode_array_body(&buf[meta_end..], meta)
 }
@@ -533,21 +533,21 @@ mod tests {
     #[test]
     fn transport_roundtrips_array_sfreq_index_and_channels() {
         let bytes: Vec<u8> = (0..6).flat_map(|i| (i as f32).to_le_bytes()).collect();
-        let mut meta = Meta { sfreq: Some(250.0), index: Some(7), ..Default::default() };
+        let mut meta = Meta::new().with_sfreq(Some(250.0)).with_index(Some(7));
         // Channels ride in the opaque meta blob (the regression this guards: the typed-only
         // transport dropped them, losing EEG channel labels across the boundary).
-        meta.channels = goofi_core::Axes::new().with(
+        meta.set_channels(goofi_core::Axes::new().with(
             0,
             goofi_core::Axis::coords(vec![
                 goofi_core::Coord::Str("Fz".into()),
                 goofi_core::Coord::Str("Cz".into()),
             ]),
-        );
+        ));
         let d = Data::array_f32(vec![2, 3], bytes, meta).unwrap();
         let (back, _) = decode_body(&encode_body(&d)).unwrap();
-        assert_eq!(back.meta().sfreq, Some(250.0));
-        assert_eq!(back.meta().index, Some(7));
-        let ch = back.meta().channels.get(0).and_then(|a| a.coords.clone()).expect("dim0 channels survive");
+        assert_eq!(back.meta().sfreq(), Some(250.0));
+        assert_eq!(back.meta().index(), Some(7));
+        let ch = back.meta().channels().get(0).and_then(|a| a.coords.clone()).expect("dim0 channels survive");
         assert_eq!(ch.len(), 2);
         match back.value() {
             Value::Array(s) => {
@@ -562,8 +562,8 @@ mod tests {
     fn transport_encodes_absent_sfreq_and_index_as_sentinels() {
         let d = Data::array_f32(vec![1], 3.5f32.to_le_bytes().to_vec(), Meta::empty()).unwrap();
         let (back, _) = decode_body(&encode_body(&d)).unwrap();
-        assert_eq!(back.meta().sfreq, None, "NaN sentinel decodes to None");
-        assert_eq!(back.meta().index, None, "u64::MAX sentinel decodes to None");
+        assert_eq!(back.meta().sfreq(), None, "NaN sentinel decodes to None");
+        assert_eq!(back.meta().index(), None, "u64::MAX sentinel decodes to None");
         match back.value() {
             Value::Array(s) => {
                 assert_eq!(f32::from_le_bytes(s.as_bytes()[0..4].try_into().unwrap()), 3.5)
@@ -598,7 +598,7 @@ mod tests {
         let samples: Vec<u8> = (0..n)
             .flat_map(|i| ((2.0 * std::f64::consts::PI * 8.0 * i as f64 / n as f64).sin() as f32).to_le_bytes())
             .collect();
-        let meta = Meta { sfreq: Some(sfreq), ..Default::default() };
+        let meta = Meta::new().with_sfreq(Some(sfreq));
         let d = Data::array_f32(vec![1, n], samples, meta).unwrap();
 
         let src = std::fs::read_to_string(&path).unwrap();
@@ -618,7 +618,7 @@ mod tests {
             _ => panic!("expected array"),
         }
         // sfreq also rides back through the typed transport meta.
-        assert_eq!(out.meta().sfreq, Some(sfreq), "sfreq round-trips through the typed transport");
+        assert_eq!(out.meta().sfreq(), Some(sfreq), "sfreq round-trips through the typed transport");
     }
 
     /// A `RemoteNode` holds its iceoryx2 ports directly (via `ipc_threadsafe::Service`), so it must
@@ -764,13 +764,13 @@ mod tests {
         let mut node = RemoteNode::spawn(&py, "def process(x):\n    return x * 2.0\n").unwrap();
 
         let mut meta = Meta::empty();
-        meta.channels = goofi_core::Axes::new().with(
+        meta.set_channels(goofi_core::Axes::new().with(
             0,
             goofi_core::Axis::coords(vec![
                 goofi_core::Coord::Str("Fz".into()),
                 goofi_core::Coord::Str("Cz".into()),
             ]),
-        );
+        ));
         let buf: Vec<u8> = (0..6).flat_map(|i| (i as f32).to_le_bytes()).collect();
         let d = Data::array_f32(vec![2, 3], buf, meta).unwrap();
 
@@ -780,7 +780,7 @@ mod tests {
             _ => panic!("expected array"),
         }
         assert_eq!(floats(&out), vec![0.0, 2.0, 4.0, 6.0, 8.0, 10.0]);
-        let ch = out.meta().channels.get(0).and_then(|a| a.coords.clone()).expect("dim0 channels preserved");
+        let ch = out.meta().channels().get(0).and_then(|a| a.coords.clone()).expect("dim0 channels preserved");
         assert_eq!(ch.len(), 2);
     }
 
@@ -887,8 +887,8 @@ mod tests {
 
         // Input carries sfreq/index; the worker passes meta through opaquely.
         let mut meta = Meta::empty();
-        meta.sfreq = Some(128.0);
-        meta.index = Some(7);
+        meta.set_sfreq(Some(128.0));
+        meta.set_index(Some(7));
         let buf: Vec<u8> = [1.0f32, 2.0, 3.0].iter().flat_map(|x| x.to_le_bytes()).collect();
         let d = Data::array_f32(vec![3], buf, meta).unwrap();
 
@@ -899,8 +899,8 @@ mod tests {
         assert_eq!(floats(&out2), vec![3.0, 5.0, 7.0]);
 
         // Meta (sfreq/index) survived the opaque round-trip; dtype stayed f32.
-        assert_eq!(out1.meta().sfreq, Some(128.0));
-        assert_eq!(out1.meta().index, Some(7));
+        assert_eq!(out1.meta().sfreq(), Some(128.0));
+        assert_eq!(out1.meta().index(), Some(7));
         match out1.value() {
             Value::Array(s) => {
                 assert_eq!(s.shape(), &[3]);

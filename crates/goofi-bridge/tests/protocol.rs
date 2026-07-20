@@ -741,7 +741,7 @@ async fn data_plane_reduces_to_the_declared_viewspec() {
     // the buffer has grown past the envelope floor, so the assertions below see a true
     // reduction. Bounded so a stuck plane still fails loudly.
     let last_dim_shrank = |d: &goofi_core::Data| -> bool {
-        let Some(goofi_core::MetaValue::Map(dims)) = d.meta().reduced.as_ref() else {
+        let Some(goofi_core::MetaValue::Map(dims)) = d.meta().reduced().as_ref() else {
             return false;
         };
         let last = d.ndim() - 1;
@@ -769,7 +769,7 @@ async fn data_plane_reduces_to_the_declared_viewspec() {
     .await
     .expect("a genuinely-reduced frame must arrive");
 
-    let goofi_core::MetaValue::Map(dims) = reduced.meta().reduced.as_ref().unwrap() else {
+    let goofi_core::MetaValue::Map(dims) = reduced.meta().reduced().as_ref().unwrap() else {
         panic!("reduced meta is a per-dim map");
     };
     let last = reduced.ndim() - 1;
