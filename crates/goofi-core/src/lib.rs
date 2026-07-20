@@ -638,6 +638,15 @@ impl SlotType {
             SlotType::Table => "TABLE",
         }
     }
+    /// Parse the frontend-facing slot name (`"ARRAY"`/`"STRING"`/`"TABLE"`).
+    pub fn from_name(name: &str) -> Option<SlotType> {
+        match name {
+            "ARRAY" => Some(SlotType::Array),
+            "STRING" => Some(SlotType::String),
+            "TABLE" => Some(SlotType::Table),
+            _ => None,
+        }
+    }
     pub fn tag(self) -> u8 {
         match self {
             SlotType::Array => 0,
@@ -914,6 +923,14 @@ mod tests {
         assert_eq!(SlotType::Array.name(), "ARRAY");
         assert_eq!(SlotType::String.name(), "STRING");
         assert_eq!(SlotType::Table.tag(), 2);
+    }
+
+    #[test]
+    fn slot_type_from_name_roundtrips() {
+        assert_eq!(SlotType::from_name("ARRAY"), Some(SlotType::Array));
+        assert_eq!(SlotType::from_name("STRING"), Some(SlotType::String));
+        assert_eq!(SlotType::from_name("TABLE"), Some(SlotType::Table));
+        assert_eq!(SlotType::from_name("nope"), None);
     }
 
     #[test]
