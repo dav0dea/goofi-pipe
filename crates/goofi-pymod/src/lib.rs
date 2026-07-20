@@ -5,6 +5,8 @@
 
 #![cfg(any(feature = "extension-module", feature = "host"))]
 
+mod params;
+
 use pyo3::prelude::*;
 
 /// Whether the running interpreter has the GIL disabled (free-threaded proof).
@@ -22,5 +24,10 @@ fn gil_disabled(py: Python<'_>) -> PyResult<bool> {
 #[pymodule]
 pub fn goofi(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(gil_disabled, m)?)?;
+    m.add_class::<params::DataType>()?;
+    m.add_class::<params::IntParam>()?;
+    m.add_class::<params::FloatParam>()?;
+    m.add_class::<params::BoolParam>()?;
+    m.add_class::<params::StringParam>()?;
     Ok(())
 }
