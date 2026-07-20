@@ -138,6 +138,118 @@ impl DType {
 }
 
 // ---------------------------------------------------------------------------
+// SrcDtype — the ingest-only source dtype. NEVER stored on a `Data` (storage is
+// always f32); used solely at the boundary to cast a foreign numpy array to f32.
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
+pub enum SrcDtype {
+    F16,
+    F32,
+    F64,
+    I8,
+    I16,
+    I32,
+    I64,
+    U8,
+    U16,
+    U32,
+    U64,
+    Bool,
+}
+
+impl SrcDtype {
+    pub fn itemsize(self) -> usize {
+        match self {
+            SrcDtype::Bool | SrcDtype::I8 | SrcDtype::U8 => 1,
+            SrcDtype::F16 | SrcDtype::I16 | SrcDtype::U16 => 2,
+            SrcDtype::F32 | SrcDtype::I32 | SrcDtype::U32 => 4,
+            SrcDtype::F64 | SrcDtype::I64 | SrcDtype::U64 => 8,
+        }
+    }
+
+    /// Parse a numpy typestring (`<f4`, `|u1`, `=i8`, …). Big-endian (`>`) rejected.
+    pub fn from_numpy_typestr(s: &str) -> Option<SrcDtype> {
+        let core = match s.as_bytes().first() {
+            Some(b'<') | Some(b'=') | Some(b'|') => &s[1..],
+            Some(b'>') => return None,
+            _ => s,
+        };
+        Some(match core {
+            "f2" => SrcDtype::F16,
+            "f4" => SrcDtype::F32,
+            "f8" => SrcDtype::F64,
+            "i1" => SrcDtype::I8,
+            "i2" => SrcDtype::I16,
+            "i4" => SrcDtype::I32,
+            "i8" => SrcDtype::I64,
+            "u1" => SrcDtype::U8,
+            "u2" => SrcDtype::U16,
+            "u4" => SrcDtype::U32,
+            "u8" => SrcDtype::U64,
+            "b1" => SrcDtype::Bool,
+            _ => return None,
+        })
+    }
+
+    /// Read element `i` of a raw little-endian buffer as `f32`.
+    fn read_f32(self, b: &[u8], i: usize) -> f32 {
+        let sz = self.itemsize();
+        let s = &b[i * sz..i * sz + sz];
+        match self {
+            SrcDtype::F32 => f32::from_le_bytes(s.try_into().unwrap()),
+            SrcDtype::F64 => f64::from_le_bytes(s.try_into().unwrap()) as f32,
+            SrcDtype::F16 => f16_to_f32(u16::from_le_bytes(s.try_into().unwrap())),
+            SrcDtype::I8 => s[0] as i8 as f32,
+            SrcDtype::I16 => i16::from_le_bytes(s.try_into().unwrap()) as f32,
+            SrcDtype::I32 => i32::from_le_bytes(s.try_into().unwrap()) as f32,
+            SrcDtype::I64 => i64::from_le_bytes(s.try_into().unwrap()) as f32,
+            SrcDtype::U8 | SrcDtype::Bool => s[0] as f32,
+            SrcDtype::U16 => u16::from_le_bytes(s.try_into().unwrap()) as f32,
+            SrcDtype::U32 => u32::from_le_bytes(s.try_into().unwrap()) as f32,
+            SrcDtype::U64 => u64::from_le_bytes(s.try_into().unwrap()) as f32,
+        }
+    }
+}
+
+/// Decode an IEEE-754 half (raw bits) to f32 — handles subnormals, inf, NaN.
+fn f16_to_f32(bits: u16) -> f32 {
+    let sign = (bits >> 15) & 1;
+    let exp = ((bits >> 10) & 0x1f) as i32;
+    let frac = (bits & 0x3ff) as f32;
+    let val = if exp == 0 {
+        frac * (2f32).powi(-24) // subnormal / zero
+    } else if exp == 0x1f {
+        if frac == 0.0 { f32::INFINITY } else { f32::NAN }
+    } else {
+        (1.0 + frac / 1024.0) * (2f32).powi(exp - 15)
+    };
+    if sign == 1 { -val } else { val }
+}
+
+/// Reinterpret a foreign little-endian array buffer as f32 LE bytes. `did_cast`
+/// is false only when `src == SrcDtype::F32` (bytes returned unchanged). Errors if
+/// `bytes.len()` is not a multiple of the source itemsize (never a silent misread).
+pub fn cast_to_f32(src: SrcDtype, bytes: &[u8]) -> Result<(Vec<u8>, bool)> {
+    let sz = src.itemsize();
+    if bytes.len() % sz != 0 {
+        return Err(GoofiError::Invalid(format!(
+            "buffer length {} is not a multiple of {sz}-byte {src:?}",
+            bytes.len()
+        )));
+    }
+    if src == SrcDtype::F32 {
+        return Ok((bytes.to_vec(), false));
+    }
+    let n = bytes.len() / sz;
+    let mut out = Vec::with_capacity(n * 4);
+    for i in 0..n {
+        out.extend_from_slice(&src.read_f32(bytes, i).to_le_bytes());
+    }
+    Ok((out, true))
+}
+
+// ---------------------------------------------------------------------------
 // Array storage
 // ---------------------------------------------------------------------------
 
@@ -650,6 +762,43 @@ mod tests {
         assert_eq!(DType::from_numpy_typestr("|u1"), Some(DType::U8));
         assert_eq!(DType::from_numpy_typestr(">f4"), None); // big-endian rejected
         assert_eq!(DType::from_numpy_typestr("<x9"), None);
+    }
+
+    #[test]
+    fn cast_to_f32_converts_each_source_dtype() {
+        fn as_f32(b: &[u8]) -> Vec<f32> {
+            b.chunks_exact(4).map(|c| f32::from_le_bytes(c.try_into().unwrap())).collect()
+        }
+        // f32 passes through unchanged; did_cast is false.
+        let f: Vec<u8> = [1.5f32, -2.0].iter().flat_map(|v| v.to_le_bytes()).collect();
+        let (out, did) = cast_to_f32(SrcDtype::F32, &f).unwrap();
+        assert_eq!(out, f);
+        assert!(!did, "f32 in -> no cast");
+        // f64 -> f32.
+        let d: Vec<u8> = [1.5f64, -2.0].iter().flat_map(|v| v.to_le_bytes()).collect();
+        let (out, did) = cast_to_f32(SrcDtype::F64, &d).unwrap();
+        assert_eq!(as_f32(&out), vec![1.5, -2.0]);
+        assert!(did);
+        // signed int -> f32.
+        let i: Vec<u8> = [3i16, -4].iter().flat_map(|v| v.to_le_bytes()).collect();
+        assert_eq!(as_f32(&cast_to_f32(SrcDtype::I16, &i).unwrap().0), vec![3.0, -4.0]);
+        // unsigned byte + bool -> f32.
+        assert_eq!(as_f32(&cast_to_f32(SrcDtype::U8, &[10u8, 20]).unwrap().0), vec![10.0, 20.0]);
+        assert_eq!(as_f32(&cast_to_f32(SrcDtype::Bool, &[1u8, 0]).unwrap().0), vec![1.0, 0.0]);
+        // f16 -> f32 (0x3C00 = 1.0, 0x4000 = 2.0, little-endian).
+        assert_eq!(as_f32(&cast_to_f32(SrcDtype::F16, &[0x00, 0x3C, 0x00, 0x40]).unwrap().0), vec![1.0, 2.0]);
+        // a buffer length not a multiple of itemsize is an error, never a silent misread.
+        assert!(cast_to_f32(SrcDtype::F32, &[0u8; 3]).is_err());
+        assert!(cast_to_f32(SrcDtype::F64, &[0u8; 4]).is_err());
+    }
+
+    #[test]
+    fn src_dtype_parses_numpy_typestrings() {
+        assert_eq!(SrcDtype::from_numpy_typestr("<f4"), Some(SrcDtype::F32));
+        assert_eq!(SrcDtype::from_numpy_typestr("|u1"), Some(SrcDtype::U8));
+        assert_eq!(SrcDtype::from_numpy_typestr("<f8"), Some(SrcDtype::F64));
+        assert_eq!(SrcDtype::from_numpy_typestr(">f4"), None, "big-endian rejected");
+        assert_eq!(SrcDtype::from_numpy_typestr("<x9"), None);
     }
 
     #[test]
