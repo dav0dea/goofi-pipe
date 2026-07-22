@@ -11,6 +11,7 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 goofi-core = { path = "../goofi-core" }
+indexmap = "2"
 pyo3 = { version = "0.28", optional = true }
 
 [features]

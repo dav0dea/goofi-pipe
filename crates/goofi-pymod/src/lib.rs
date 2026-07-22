@@ -6,9 +6,13 @@
 #![cfg(any(feature = "extension-module", feature = "host"))]
 
 mod data;
+pub mod exec;
 mod introspect;
+pub mod loader;
 mod node;
 mod params;
+
+pub use data::Data;
 
 use pyo3::prelude::*;
 

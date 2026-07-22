@@ -57,9 +57,22 @@ impl Data {
     }
 }
 
+impl Data {
+    /// Wrap an existing core `Data` (no numpy round-trip) — the seam the in-process
+    /// executor + the subprocess serve loop use to hand a node its inputs and to read
+    /// its `goofi.Data` outputs back out.
+    pub fn from_core(inner: CoreData) -> Data {
+        Data { inner }
+    }
+    /// The wrapped core `Data`.
+    pub fn core(&self) -> &CoreData {
+        &self.inner
+    }
+}
+
 /// Build a `Meta` from a Python dict. `channels` (a `{dimN: [...]}` dict) → `Axes`;
 /// everything else → a scalar/list `MetaValue`.
-fn dict_to_meta(d: &Bound<'_, PyDict>) -> PyResult<Meta> {
+pub(crate) fn dict_to_meta(d: &Bound<'_, PyDict>) -> PyResult<Meta> {
     let mut m = Meta::new();
     for (k, v) in d.iter() {
         let key: String = k.extract()?;

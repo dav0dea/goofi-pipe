@@ -4,17 +4,17 @@
 //! as JSON. Raises on any failure so the Rust discoverer greys the node out.
 
 use pyo3::prelude::*;
-use pyo3::types::{PyDict, PyModule, PyType};
+use pyo3::types::PyDict;
 
-use crate::node::Node;
+use crate::loader::{find_node_class, module_from_path};
 
 #[pyfunction]
 pub fn introspect(py: Python<'_>, path: &str) -> PyResult<String> {
     // Load the module from an arbitrary file path via importlib.util.
-    let module = load_module(py, path)?;
+    let module = module_from_path(py, path)?;
 
     // Find the single goofi.Node subclass defined in the module, instantiate it.
-    let cls = find_node_subclass(py, &module)?;
+    let cls = find_node_class(py, &module)?;
     let instance = cls.call0()?;
 
     let inputs = slots_json(&instance.call_method0("config_input_slots")?, true)?;
@@ -38,31 +38,6 @@ pub fn introspect(py: Python<'_>, path: &str) -> PyResult<String> {
         r#"{{"gil_safe":{gil_safe},"doc":{doc},"inputs":{inputs},"outputs":{outputs},"params":{params}}}"#,
         doc = json_str(&doc),
     ))
-}
-
-fn load_module<'py>(py: Python<'py>, path: &str) -> PyResult<Bound<'py, PyModule>> {
-    let util = py.import("importlib.util")?;
-    let spec = util.call_method1("spec_from_file_location", ("goofi_probe_mod", path))?;
-    if spec.is_none() {
-        return Err(pyo3::exceptions::PyImportError::new_err(format!("cannot load {path}")));
-    }
-    let module = util.call_method1("module_from_spec", (&spec,))?;
-    spec.getattr("loader")?.call_method1("exec_module", (&module,))?;
-    module.cast_into::<PyModule>().map_err(Into::into)
-}
-
-/// The first strict `goofi.Node` subclass defined in the module, else raise.
-fn find_node_subclass<'py>(py: Python<'py>, module: &Bound<'py, PyModule>) -> PyResult<Bound<'py, PyType>> {
-    let node_ty = py.get_type::<Node>();
-    for (_name, val) in module.dict().iter() {
-        let Ok(ty) = val.cast_into::<PyType>() else {
-            continue;
-        };
-        if !ty.is(&node_ty) && ty.is_subclass(&node_ty)? {
-            return Ok(ty);
-        }
-    }
-    Err(pyo3::exceptions::PyTypeError::new_err("no goofi.Node subclass in module"))
 }
 
 /// `{name: DataType}` → a JSON array of slot objects. Inputs get `trigger`/`multi`

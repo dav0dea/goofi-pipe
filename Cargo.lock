@@ -557,6 +557,8 @@ dependencies = [
  "goofi-core",
  "indexmap",
  "inventory",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -577,6 +579,15 @@ dependencies = [
  "goofi-engine",
  "goofi-node",
  "goofi-subproc",
+ "indexmap",
+ "pyo3",
+]
+
+[[package]]
+name = "goofi-pymod"
+version = "0.0.0"
+dependencies = [
+ "goofi-core",
  "indexmap",
  "pyo3",
 ]
