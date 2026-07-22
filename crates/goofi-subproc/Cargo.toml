@@ -8,9 +8,10 @@ license.workspace = true
 # (for deps that aren't free-threading-safe, and — per the latency finding — for
 # parallel heavy-Python compute, since a separate interpreter has its own object
 # ownership and sidesteps free-threaded biased-refcount contention). No pyo3 here;
-# frames cross the boundary as GOOF (goofi-codec) over iceoryx2 shared memory — the
-# spec's subprocess-boundary transport (Rust crate ⇄ the Python iceoryx2 binding,
-# same 0.9.3 ABI). The child interpreter needs `iceoryx2` + `numpy`.
+# this is the PARENT — it speaks goofi-codec request/response frames over iceoryx2
+# shared memory (the Rust crate on BOTH ends: the child runs `goofi.serve` from the
+# abi3 wheel, same 0.9.3 ABI — the Python iceoryx2 binding is gone). The child
+# interpreter needs `goofi` (the wheel) + `numpy`.
 
 [dependencies]
 goofi-core = { path = "../goofi-core" }

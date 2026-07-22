@@ -64,10 +64,10 @@ fn write_body(d: &Data, out: &mut Vec<u8>) {
     }
 }
 
-/// The array-body layout `[u8 ndim][u8 dtype_str_len][dtype_str][ndim × u32 shape][raw bytes]`,
-/// shared by the GOOF frame body and the subprocess transport (which reuses it verbatim, with a
-/// typed sfreq/index prefix instead of msgpack meta). Inverse: [`decode_array_body`].
-pub fn encode_array_body(store: &ArrayStore, out: &mut Vec<u8>) {
+/// The array-body layout `[u8 ndim][u8 dtype_str_len][dtype_str][ndim × u32 shape][raw bytes]`
+/// inside a GOOF frame body. Inverse: [`decode_array_body`]. (Module-internal: the subprocess
+/// tier now sends whole GOOF frames, so it no longer reuses this layout directly.)
+fn encode_array_body(store: &ArrayStore, out: &mut Vec<u8>) {
     let dtype_str: &[u8] = b"<f4"; // arrays are always f32
     let shape = store.shape();
     out.push(shape.len() as u8);
@@ -84,9 +84,8 @@ pub fn encode_array_body(store: &ArrayStore, out: &mut Vec<u8>) {
 // ---------------------------------------------------------------------------
 
 /// Serialize a `Data`'s `Meta` (channels/sfreq/index/extra) to the msgpack map used in a GOOF
-/// frame. Shared with the subprocess transport, where it is the opaque meta blob the child echoes
-/// unchanged (preserving channels) while Rust round-trips it via [`parse_meta`].
-pub fn pack_meta(d: &Data) -> Vec<u8> {
+/// frame body. Inverse: [`parse_meta`]. (Module-internal.)
+fn pack_meta(d: &Data) -> Vec<u8> {
     let meta = d.meta();
     let mut entries: Vec<(Mp, Mp)> = Vec::new();
 
@@ -197,7 +196,7 @@ pub fn decode(frame: &[u8]) -> std::result::Result<Data, String> {
     let (tag, meta_bytes, body) = split_frame(frame)?;
     let meta = parse_meta(meta_bytes)?;
     match tag {
-        0 => decode_array_body(body, meta).map(|(d, _)| d),
+        0 => decode_array_body(body, meta),
         1 => {
             let s = std::str::from_utf8(body).map_err(|e| e.to_string())?;
             Ok(Data::string(s, meta))
@@ -242,14 +241,10 @@ impl<'a> Cursor<'a> {
 }
 
 /// Decode the array-body layout written by [`encode_array_body`] into a `Data` carrying `meta`.
-/// Shared by the GOOF frame decoder and the subprocess transport. This is the **ingest boundary**:
-/// a foreign source dtype is cast to f32 here (the only place a dtype is parsed), and the source
-/// dtype is returned so the caller — which knows the node/slot identity — can warn when a cast
-/// happened (`src != SrcDtype::F32`).
-pub fn decode_array_body(
-    body: &[u8],
-    meta: goofi_core::Meta,
-) -> std::result::Result<(Data, goofi_core::SrcDtype), String> {
+/// This is the ingest boundary: a foreign source dtype is cast to f32 here (the only place a dtype
+/// is parsed). The subprocess tier's cast-warning now lives at the pyo3 boundary (`goofi-pymod`),
+/// so the source dtype is no longer surfaced to a caller. (Module-internal.)
+fn decode_array_body(body: &[u8], meta: goofi_core::Meta) -> std::result::Result<Data, String> {
     // [u8 ndim][u8 dtype_str_len][dtype_str][ndim × u32 shape][raw bytes]
     let mut cur = Cursor::new(body);
     let ndim = cur.u8("array ndim")?;
@@ -264,8 +259,7 @@ pub fn decode_array_body(
     // Cast the foreign body to f32, then construct. The shape×4 overflow guard lives in
     // array_f32 — kept there deliberately.
     let (f32_bytes, _did_cast) = goofi_core::cast_to_f32(src, cur.rest()).map_err(|e| e.to_string())?;
-    let data = Data::array_f32(shape, f32_bytes, meta).map_err(|e| e.to_string())?;
-    Ok((data, src))
+    Data::array_f32(shape, f32_bytes, meta).map_err(|e| e.to_string())
 }
 
 fn decode_table(body: &[u8], meta: goofi_core::Meta) -> std::result::Result<Data, String> {
@@ -285,8 +279,8 @@ fn decode_table(body: &[u8], meta: goofi_core::Meta) -> std::result::Result<Data
 }
 
 /// Parse the msgpack meta map written by [`pack_meta`] back into a typed `Meta` (shape/dtype are
-/// re-derived from the body, never these keys). Shared with the subprocess transport.
-pub fn parse_meta(bytes: &[u8]) -> std::result::Result<goofi_core::Meta, String> {
+/// re-derived from the body, never these keys). (Module-internal.)
+fn parse_meta(bytes: &[u8]) -> std::result::Result<goofi_core::Meta, String> {
     let mut meta = goofi_core::Meta::empty();
     if bytes.is_empty() {
         return Ok(meta);
@@ -504,8 +498,8 @@ mod decode_tests {
     }
 
     #[test]
-    fn decode_array_body_casts_foreign_dtype_to_f32_and_reports_src() {
-        // A `<i2` (int16) body: ndim=1, dtype "<i2", shape [2], values [3, -4].
+    fn decode_array_body_casts_foreign_dtype_to_f32() {
+        // A `<i2` (int16) body: ndim=1, dtype "<i2", shape [2], values [3, -4] — cast to f32.
         let mut body = vec![1u8]; // ndim
         let dstr = b"<i2";
         body.push(dstr.len() as u8);
@@ -514,20 +508,19 @@ mod decode_tests {
         body.extend_from_slice(&3i16.to_le_bytes());
         body.extend_from_slice(&(-4i16).to_le_bytes());
 
-        let (data, src) = decode_array_body(&body, Meta::empty()).expect("decode int16 body");
-        assert_eq!(src, goofi_core::SrcDtype::I16, "reports the source dtype for the warning");
+        let data = decode_array_body(&body, Meta::empty()).expect("decode int16 body");
         let (sh, by) = arr_bytes(&data);
         assert_eq!(sh, vec![2]);
         let vals: Vec<f32> = by.chunks_exact(4).map(|c| f32::from_le_bytes(c.try_into().unwrap())).collect();
         assert_eq!(vals, vec![3.0, -4.0], "int16 body was cast to f32");
 
-        // An f32 body reports no cast (src == F32).
+        // An f32 body decodes unchanged.
         let mut fbody = vec![1u8, 3u8];
         fbody.extend_from_slice(b"<f4");
         fbody.extend_from_slice(&1u32.to_le_bytes());
         fbody.extend_from_slice(&1.5f32.to_le_bytes());
-        let (_d, src) = decode_array_body(&fbody, Meta::empty()).unwrap();
-        assert_eq!(src, goofi_core::SrcDtype::F32);
+        assert_eq!(arr_bytes(&decode_array_body(&fbody, Meta::empty()).unwrap()).1,
+                   1.5f32.to_le_bytes().to_vec());
     }
 
     #[test]
