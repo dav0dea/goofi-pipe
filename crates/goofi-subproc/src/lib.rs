@@ -500,9 +500,9 @@ class Double(goofi.Node):
         usable_python().unwrap_or_else(|| {
             panic!(
                 "no python with goofi + numpy found (checked $GOOFI_SUBPROC_TEST_PYTHON, \
-                 ./.venv/bin/python, python3, python). Install the goofi abi3 wheel into the \
-                 interpreter: `maturin build -i <python> -o target/wheels && uv pip install \
-                 --python <python> target/wheels/goofi-*.whl`. The subprocess-tier tests require one."
+                 ./.venv/bin/python, python3, python). Provision it with \
+                 ./scripts/provision-goofi-py.sh (builds + installs the goofi wheel into the \
+                 repo venvs). The subprocess-tier tests require one."
             )
         })
     }

@@ -107,7 +107,8 @@ fn provision_python() {
     println!("cargo:rerun-if-env-changed=GOOFI_SKIP_PY_SETUP");
     let py = venv.join("bin").join("python");
     if py.exists() && config.is_file() {
-        return; // already provisioned
+        warn_if_goofi_missing(&py); // provisioned, but goofi may still be uninstalled
+        return;
     }
     if matches!(std::env::var("GOOFI_SKIP_PY_SETUP").as_deref(), Ok("1") | Ok("true")) {
         return;
@@ -137,7 +138,7 @@ fn provision_python() {
         println!("cargo:warning=couldn't query the .ftvenv interpreter; skipping .cargo/config.toml generation");
         return;
     };
-    let py_str = std::fs::canonicalize(&py).unwrap_or(py).display().to_string();
+    let py_str = std::fs::canonicalize(&py).unwrap_or_else(|_| py.clone()).display().to_string();
     let target = std::env::var("TARGET").unwrap_or_default();
     // `{x:?}` debug-quotes each path into a valid TOML string literal.
     let contents = format!(
@@ -159,6 +160,22 @@ fn provision_python() {
             "cargo:warning=provisioned .ftvenv + .cargo/config.toml for the free-threaded \
              interpreter — RE-RUN your cargo command so it links against it (cargo reads \
              .cargo/config.toml only at startup)"
+        );
+    }
+    warn_if_goofi_missing(&py); // a freshly-made venv has numpy but not yet goofi
+}
+
+/// The `goofi` package (the goofi-pymod wheel) must be importable in `.ftvenv` for the
+/// introspection PROBE to discover Python nodes (`--python-nodes`/`--auto-nodes`). build.rs
+/// can't build it — maturin invokes cargo, which would deadlock nested under this build
+/// script — so on a missing package it points at the standalone provisioning script instead
+/// of letting node discovery silently grey out.
+fn warn_if_goofi_missing(py: &Path) {
+    if query(py, "import goofi; print('ok')").as_deref() != Some("ok") {
+        println!(
+            "cargo:warning=the `goofi` Python package is not importable in .ftvenv — Python \
+             node discovery (--python-nodes/--auto-nodes) will grey out. Run \
+             ./scripts/provision-goofi-py.sh to build + install it into the venvs."
         );
     }
 }
