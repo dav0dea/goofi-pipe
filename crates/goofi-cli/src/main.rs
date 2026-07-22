@@ -3,9 +3,24 @@
 //! 127.0.0.1), `--headless` (accepted; no UI difference yet), `--python-nodes DIR`
 //! (discover in-process Python nodes; requires the `python` feature),
 //! `--subproc-nodes DIR` (discover isolated-GIL subprocess Python nodes, runs on
-//! `--subproc-python` (default `python3`)).
+//! `--subproc-python`). With no `--*-nodes` flag it auto-discovers the default
+//! `nodes/` directory; `--subproc-python` defaults to the repo-local `.venv`.
 
 use goofi_bridge::{resolve_frontend_dir, serve_app, spawn_workers, AppState};
+
+/// The default node directory, auto-discovered (gil-gate routed) when no `--*-nodes` flag is given.
+const DEFAULT_NODES_DIR: &str = "nodes";
+/// The default subprocess-node interpreter — the repo-local `.venv` (the project convention).
+const DEFAULT_VENV_PYTHON: &str = ".venv/bin/python";
+
+/// The default subprocess interpreter: the repo-local `.venv` if present, else `python3`.
+fn default_subproc_python() -> String {
+    if std::path::Path::new(DEFAULT_VENV_PYTHON).is_file() {
+        DEFAULT_VENV_PYTHON.to_string()
+    } else {
+        "python3".to_string()
+    }
+}
 
 #[tokio::main]
 async fn main() {
@@ -14,7 +29,7 @@ async fn main() {
     let mut python_nodes: Option<String> = None;
     let mut subproc_nodes: Option<String> = None;
     let mut auto_nodes: Option<String> = None;
-    let mut subproc_python = String::from("python3");
+    let mut subproc_python: Option<String> = None;
     let mut list_nodes = false;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -42,9 +57,7 @@ async fn main() {
                 auto_nodes = args.next();
             }
             "--subproc-python" => {
-                if let Some(v) = args.next() {
-                    subproc_python = v;
-                }
+                subproc_python = args.next();
             }
             "--headless" => {}
             "--list-nodes" => list_nodes = true,
@@ -52,7 +65,11 @@ async fn main() {
                 println!(
                     "usage: goofi-pipe [--port N] [--bind HOST] [--headless] \
                      [--python-nodes DIR] [--subproc-nodes DIR] [--auto-nodes DIR] \
-                     [--subproc-python BIN]"
+                     [--subproc-python BIN]\n\
+                     \n  \
+                     With no --*-nodes flag, auto-discovers `{DEFAULT_NODES_DIR}/` (each node routed \
+                     in-process if free-threading-safe, else to a subprocess).\n  \
+                     --subproc-python defaults to `{DEFAULT_VENV_PYTHON}` when present, else `python3`."
                 );
                 return;
             }
@@ -61,6 +78,15 @@ async fn main() {
                 std::process::exit(2);
             }
         }
+    }
+
+    // Resolve defaults: the repo-local `.venv` for the subprocess tier (the project convention),
+    // and — when no explicit node source was given — auto-route the default `nodes/` directory.
+    let subproc_python = subproc_python.unwrap_or_else(default_subproc_python);
+    if python_nodes.is_none() && subproc_nodes.is_none() && auto_nodes.is_none()
+        && std::path::Path::new(DEFAULT_NODES_DIR).is_dir()
+    {
+        auto_nodes = Some(DEFAULT_NODES_DIR.to_string());
     }
 
     if list_nodes {

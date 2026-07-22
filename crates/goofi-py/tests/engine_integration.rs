@@ -103,7 +103,7 @@ fn real_python_node_runs_inside_the_engine_graph() {
 fn lempel_ziv_runs_in_process_inline() {
     // The migrated class-contract LempelZiv fixture, hosted + ticked by the engine on the
     // in-process tier (probe-based discovery is covered in the discovery test).
-    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/lempel_ziv.py");
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../nodes/lempel_ziv.py");
     let source: &'static str = Box::leak(std::fs::read_to_string(&path).unwrap().into_boxed_str());
 
     let mut g = Graph::new();

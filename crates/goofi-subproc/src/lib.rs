@@ -591,7 +591,7 @@ class Scale(goofi.Node):
     #[test]
     fn psd_runs_over_the_transport_reading_sfreq() {
         let py = require_python();
-        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/psd.py");
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../nodes/psd.py");
         // Discovery: CamelCase "Psd" on the subprocess tier, with its declared welch.nperseg param.
         let ty = discover_one(&path, &py).expect("psd.py discovers as a subprocess node");
         assert_eq!(ty.manifest.type_name, "Psd");
