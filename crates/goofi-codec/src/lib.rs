@@ -366,6 +366,84 @@ fn mp_to_mv(v: &Mp) -> MetaValue {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Subprocess multi-slot request/response frames — the shared wire between the
+// parent (`goofi-subproc` RemoteNode) and the child (`goofi.serve` in pymod).
+// A request carries the live params + the present input slots; a response the
+// output slots. Each slot's `Data` is a self-describing GOOF frame ([`encode`]/
+// [`decode`]), so channels/sfreq/index/dtype cross with full fidelity — no
+// opaque-echo or typed-sfreq-prefix hacks (those existed only because the old
+// Python child couldn't parse meta; the Rust child now shares this codec). Params
+// serialize via serde (`Param` derives it), so there is no per-variant juggling.
+// The transport-level `seq` (re-publish dedup) is an OUTER prefix owned by the
+// caller (`one_roundtrip` / `serve`), never part of these frames.
+// ---------------------------------------------------------------------------
+
+/// `group -> name -> Param` — structurally identical to `goofi_node::ParamGroups`
+/// (the codec has no goofi-node dep, so it is spelled out here). The parent passes
+/// its live `p.groups()` directly.
+pub type ParamMap = indexmap::IndexMap<String, indexmap::IndexMap<String, goofi_core::Param>>;
+
+/// Append a named-slot list: `[u16 n]` then n × `[u16 name_len][name][u32 frame_len][GOOF frame]`.
+pub fn encode_slots(slots: &[(&str, &Data)], out: &mut Vec<u8>) {
+    out.extend_from_slice(&(slots.len() as u16).to_le_bytes());
+    for (name, d) in slots {
+        let nb = name.as_bytes();
+        out.extend_from_slice(&(nb.len() as u16).to_le_bytes());
+        out.extend_from_slice(nb);
+        let frame = encode(d);
+        out.extend_from_slice(&(frame.len() as u32).to_le_bytes());
+        out.extend_from_slice(&frame);
+    }
+}
+
+/// Decode the named-slot list written by [`encode_slots`]. Bounds-safe via [`Cursor`].
+pub fn decode_slots(body: &[u8]) -> std::result::Result<Vec<(String, Data)>, String> {
+    let mut cur = Cursor::new(body);
+    let n = cur.u16("slot count")?;
+    let mut out = Vec::with_capacity(n);
+    for _ in 0..n {
+        let nlen = cur.u16("slot name length")?;
+        let name = std::str::from_utf8(cur.take(nlen, "slot name")?).map_err(|e| e.to_string())?.to_string();
+        let flen = cur.u32("slot frame length")?;
+        let data = decode(cur.take(flen, "slot frame")?)?;
+        out.push((name, data));
+    }
+    Ok(out)
+}
+
+/// Encode a request frame: `[u32 params_len][params msgpack][slots]`.
+pub fn encode_request(params: &ParamMap, slots: &[(&str, &Data)]) -> Vec<u8> {
+    let pbytes = rmp_serde::to_vec(params).expect("param serialize (Param derives Serialize)");
+    let mut out = Vec::new();
+    out.extend_from_slice(&(pbytes.len() as u32).to_le_bytes());
+    out.extend_from_slice(&pbytes);
+    encode_slots(slots, &mut out);
+    out
+}
+
+/// Decode a request frame written by [`encode_request`].
+pub fn decode_request(buf: &[u8]) -> std::result::Result<(ParamMap, Vec<(String, Data)>), String> {
+    let mut cur = Cursor::new(buf);
+    let plen = cur.u32("params length")?;
+    let pbytes = cur.take(plen, "params blob")?;
+    let params: ParamMap = rmp_serde::from_slice(pbytes).map_err(|e| e.to_string())?;
+    let slots = decode_slots(cur.rest())?;
+    Ok((params, slots))
+}
+
+/// Encode a response frame: the output slots (no params).
+pub fn encode_response(slots: &[(&str, &Data)]) -> Vec<u8> {
+    let mut out = Vec::new();
+    encode_slots(slots, &mut out);
+    out
+}
+
+/// Decode a response frame written by [`encode_response`].
+pub fn decode_response(buf: &[u8]) -> std::result::Result<Vec<(String, Data)>, String> {
+    decode_slots(buf)
+}
+
 #[cfg(test)]
 mod decode_tests {
     use super::*;
@@ -580,5 +658,86 @@ mod decode_tests {
         f2.extend_from_slice(&0u32.to_le_bytes());
         f2.extend_from_slice(&0u32.to_le_bytes());
         assert!(decode(&f2).is_err());
+    }
+}
+
+#[cfg(test)]
+mod frame_tests {
+    //! The subprocess multi-slot request/response frames — the shared wire between the
+    //! parent (`goofi-subproc` RemoteNode) and the child (`goofi.serve` in pymod).
+    use super::*;
+    use goofi_core::{Axes, Axis, Coord, Data, Meta, Param, Value};
+    use indexmap::IndexMap;
+
+    fn arr(shape: Vec<usize>, vals: &[f32], meta: Meta) -> Data {
+        Data::array_f32(shape, vals.iter().flat_map(|v| v.to_le_bytes()).collect(), meta).unwrap()
+    }
+    fn floats(d: &Data) -> Vec<f32> {
+        match d.value() {
+            Value::Array(s) => s.as_bytes().chunks_exact(4).map(|c| f32::from_le_bytes(c.try_into().unwrap())).collect(),
+            _ => panic!("not array"),
+        }
+    }
+
+    #[test]
+    fn request_roundtrips_multislot_data_and_params() {
+        // Slot A: [2,3] with dim0 channels + sfreq + index (the EEG regression case).
+        let mut ma = Meta::empty();
+        ma.set_sfreq(Some(250.0));
+        ma.set_index(Some(9));
+        ma.set_channels(Axes::new().with(0, Axis::coords(vec![Coord::Str("Fz".into()), Coord::Str("Cz".into())])));
+        let a = arr(vec![2, 3], &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], ma);
+        // Slot B: plain [4].
+        let b = arr(vec![4], &[7.0, 8.0, 9.0, 10.0], Meta::empty());
+
+        // Two param groups, one of every scalar variant.
+        let mut params: IndexMap<String, IndexMap<String, Param>> = IndexMap::new();
+        let mut welch = IndexMap::new();
+        welch.insert("nperseg".to_string(), Param::int(256, 16, 4096));
+        welch.insert("scale".to_string(), Param::float(1.5, 0.0, 10.0));
+        params.insert("welch".to_string(), welch);
+        let mut flags = IndexMap::new();
+        flags.insert("norm".to_string(), Param::boolean(true));
+        flags.insert("mode".to_string(), Param::str_free("welch"));
+        params.insert("flags".to_string(), flags);
+
+        let frame = encode_request(&params, &[("data", &a), ("aux", &b)]);
+        let (p2, slots) = decode_request(&frame).expect("decode request");
+
+        // Params survived value-for-value.
+        assert_eq!(p2, params, "params round-trip losslessly via serde");
+
+        // Slots survived (order, names, shapes, values, meta).
+        assert_eq!(slots.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>(), vec!["data", "aux"]);
+        assert_eq!(floats(&slots[0].1), vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+        match slots[0].1.value() {
+            Value::Array(s) => assert_eq!(s.shape(), &[2, 3]),
+            _ => panic!("expected array"),
+        }
+        assert_eq!(slots[0].1.meta().sfreq(), Some(250.0));
+        assert_eq!(slots[0].1.meta().index(), Some(9));
+        let ch = slots[0].1.meta().channels().get(0).and_then(|a| a.coords.clone()).expect("dim0 channels survive");
+        assert_eq!(ch.len(), 2);
+        assert_eq!(floats(&slots[1].1), vec![7.0, 8.0, 9.0, 10.0]);
+    }
+
+    #[test]
+    fn response_roundtrips_slots() {
+        let a = arr(vec![2], &[1.0, 2.0], Meta::empty());
+        let b = arr(vec![1, 3], &[3.0, 4.0, 5.0], Meta::empty());
+        let out = decode_response(&encode_response(&[("psd", &a), ("extra", &b)])).expect("decode response");
+        assert_eq!(out.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>(), vec!["psd", "extra"]);
+        assert_eq!(floats(&out[0].1), vec![1.0, 2.0]);
+        assert_eq!(floats(&out[1].1), vec![3.0, 4.0, 5.0]);
+    }
+
+    #[test]
+    fn empty_params_and_single_slot() {
+        let params: IndexMap<String, IndexMap<String, Param>> = IndexMap::new();
+        let a = arr(vec![1], &[42.0], Meta::empty());
+        let (p2, slots) = decode_request(&encode_request(&params, &[("data", &a)])).unwrap();
+        assert!(p2.is_empty());
+        assert_eq!(slots.len(), 1);
+        assert_eq!(floats(&slots[0].1), vec![42.0]);
     }
 }

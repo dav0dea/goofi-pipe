@@ -671,7 +671,7 @@ impl SlotType {
 // lifted into RunPolicy elsewhere and is NOT a Param).
 // ---------------------------------------------------------------------------
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum Param {
     Float {
         value: f64,
