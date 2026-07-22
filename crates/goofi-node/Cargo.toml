@@ -8,5 +8,6 @@ license.workspace = true
 goofi-core = { path = "../goofi-core" }
 indexmap = "2"
 inventory = "0.3"
-serde = { version = "1", features = ["derive"] }
+# Only `serde_json::from_str` is used (the probe schema's Deserialize impl comes from
+# goofi-core); no direct `serde` derive here anymore.
 serde_json = "1"

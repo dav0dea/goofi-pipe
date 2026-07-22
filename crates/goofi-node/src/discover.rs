@@ -4,8 +4,8 @@
 //! seam — the validate predicate + the factory closure + its category/isolation — so the same file
 //! yields the same palette type name whichever backend hosts it.
 
+use goofi_core::probe;
 use goofi_core::SlotType;
-use serde::Deserialize;
 
 use crate::{Isolation, Node, NodeManifest, OutputDecl, ParamDecl, ParamGroups, ParamSpec, SlotDecl};
 
@@ -70,50 +70,9 @@ pub fn leak_process_manifest(
 // params read from a node's `config_*` hooks. See the unification spec.
 // ---------------------------------------------------------------------------
 
-/// The JSON `goofi.introspect` emits for one node file.
-#[derive(Debug, Deserialize)]
-pub struct Introspection {
-    pub gil_safe: bool,
-    #[serde(default)]
-    pub doc: String,
-    pub inputs: Vec<SlotJson>,
-    pub outputs: Vec<OutSlotJson>,
-    pub params: Vec<ParamJson>,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct SlotJson {
-    pub name: String,
-    pub kind: String,
-    pub trigger: bool,
-    pub multi: bool,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct OutSlotJson {
-    pub name: String,
-    pub kind: String,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct ParamJson {
-    pub group: String,
-    pub name: String,
-    pub kind: String,
-    #[serde(default)]
-    pub default: serde_json::Value,
-    #[serde(default)]
-    pub min: serde_json::Value,
-    #[serde(default)]
-    pub max: serde_json::Value,
-    #[serde(default)]
-    pub options: Vec<String>,
-    #[serde(default)]
-    pub refresh: bool,
-}
-
-/// Parse the introspection JSON. Any malformed field is an error (→ grey-out).
-pub fn parse_introspection(json: &str) -> Result<Introspection, String> {
+/// Parse the introspection JSON (the shared [`Introspection`] schema). Any malformed field is
+/// an error (→ grey-out).
+pub fn parse_introspection(json: &str) -> Result<probe::Introspection, String> {
     serde_json::from_str(json).map_err(|e| e.to_string())
 }
 
@@ -128,7 +87,7 @@ fn leak_str(s: &str) -> &'static str {
 /// never `manifest.factory`.
 pub fn leak_manifest(
     type_name: String,
-    intro: &Introspection,
+    intro: &probe::Introspection,
     category: &'static str,
     isolation: Isolation,
 ) -> &'static NodeManifest {
@@ -167,26 +126,23 @@ pub fn leak_manifest(
     }))
 }
 
-fn param_decl(p: &ParamJson) -> ParamDecl {
-    let spec = match p.kind.as_str() {
-        "int" => ParamSpec::Int {
-            default: p.default.as_i64().unwrap_or(0),
-            min: p.min.as_i64().unwrap_or(i64::MIN),
-            max: p.max.as_i64().unwrap_or(i64::MAX),
-        },
-        "float" => ParamSpec::Float {
-            default: p.default.as_f64().unwrap_or(0.0),
-            min: p.min.as_f64().unwrap_or(f64::MIN),
-            max: p.max.as_f64().unwrap_or(f64::MAX),
-        },
-        "bool" => ParamSpec::Bool { default: p.default.as_bool().unwrap_or(false) },
-        _ => {
-            // str (and any unknown kind degrades to a free string).
-            let opts: Vec<&'static str> = p.options.iter().map(|s| leak_str(s)).collect();
+fn param_decl(p: &probe::Param) -> ParamDecl {
+    // Exhaustive over the tagged variants — each carries exactly its own fields, so there is
+    // no defaulting/unknown-kind path (the old `serde_json::Value` juggling is gone).
+    let spec = match &p.spec {
+        probe::ParamSpec::Int { default, min, max } => {
+            ParamSpec::Int { default: *default, min: *min, max: *max }
+        }
+        probe::ParamSpec::Float { default, min, max } => {
+            ParamSpec::Float { default: *default, min: *min, max: *max }
+        }
+        probe::ParamSpec::Bool { default } => ParamSpec::Bool { default: *default },
+        probe::ParamSpec::Str { default, options, refresh } => {
+            let opts: Vec<&'static str> = options.iter().map(|s| leak_str(s)).collect();
             ParamSpec::Str {
-                default: leak_str(p.default.as_str().unwrap_or("")),
+                default: leak_str(default),
                 options: Box::leak(opts.into_boxed_slice()),
-                refresh: p.refresh,
+                refresh: *refresh,
             }
         }
     };
@@ -214,7 +170,7 @@ pub struct Discovered {
 /// Run `goofi.introspect(path)` in `python` and parse the result. `None` on ANY
 /// failure — a bad interpreter, a failed import (missing dep), no `Node` subclass,
 /// or malformed JSON — so a broken node greys out instead of crashing the catalog.
-pub fn probe_introspect(path: &Path, python: &str) -> Option<Introspection> {
+pub fn probe_introspect(path: &Path, python: &str) -> Option<probe::Introspection> {
     const PROBE: &str =
         "import goofi, os, sys; sys.stdout.write(goofi.introspect(os.environ['GOOFI_INTROSPECT_PATH']))";
     let out = Command::new(python)

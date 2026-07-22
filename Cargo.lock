@@ -525,6 +525,7 @@ version = "0.0.0"
 dependencies = [
  "goofi-view",
  "indexmap",
+ "serde",
 ]
 
 [[package]]
@@ -557,7 +558,6 @@ dependencies = [
  "goofi-core",
  "indexmap",
  "inventory",
- "serde",
  "serde_json",
 ]
 
@@ -591,6 +591,7 @@ dependencies = [
  "goofi-core",
  "indexmap",
  "pyo3",
+ "serde_json",
 ]
 
 [[package]]

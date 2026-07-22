@@ -13,6 +13,7 @@ crate-type = ["cdylib", "rlib"]
 goofi-core = { path = "../goofi-core" }
 indexmap = "2"
 pyo3 = { version = "0.28", optional = true }
+serde_json = "1"
 
 [features]
 # Default build is python-free (empty crate) so `cargo build --workspace` needs no
