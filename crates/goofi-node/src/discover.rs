@@ -29,45 +29,10 @@ pub fn camel(stem: &str) -> String {
         .collect()
 }
 
-/// The fixed I/O of a discovered `process(x)` node: one ARRAY `data` input that triggers a tick,
-/// one ARRAY `out` output.
-pub static PROCESS_IN: &[SlotDecl] = &[SlotDecl {
-    name: "data",
-    kind: SlotType::Array,
-    trigger_process: true,
-    multi: false,
-}];
-pub static PROCESS_OUT: &[OutputDecl] = &[OutputDecl { name: "out", kind: SlotType::Array }];
-
-/// Leak a `'static` [`NodeManifest`] for a discovered process-node type. The I/O shape, empty
-/// params, and an unreachable stub `factory` (a runtime type is built by its registered
-/// [`NodeFactory`], never `manifest.factory`) are fixed; `category` / `isolation` / `doc` vary per
-/// backend. The leak is bounded — one manifest per discovered type, catalog-lifetime.
-pub fn leak_process_manifest(
-    type_name: String,
-    doc: String,
-    category: &'static str,
-    isolation: Isolation,
-) -> &'static NodeManifest {
-    fn stub() -> Box<dyn Node> {
-        unreachable!("a discovered node is built by its registered factory, not manifest.factory")
-    }
-    Box::leak(Box::new(NodeManifest {
-        type_name: Box::leak(type_name.into_boxed_str()),
-        category,
-        doc: Box::leak(doc.into_boxed_str()),
-        inputs: PROCESS_IN,
-        outputs: PROCESS_OUT,
-        params: &[],
-        isolation,
-        factory: stub,
-    }))
-}
-
 // ---------------------------------------------------------------------------
-// Rich manifests from a `goofi.introspect` probe (the pymod discovery path).
-// Generalizes `leak_process_manifest` (single-slot, no params) to multi-slot +
-// params read from a node's `config_*` hooks. See the unification spec.
+// Rich manifests from a `goofi.introspect` probe (the pymod discovery path) —
+// the ONE manifest path both backends use: multi-slot + params read from a
+// node's `config_*` hooks. See the unification spec.
 // ---------------------------------------------------------------------------
 
 /// Parse the introspection JSON (the shared [`Introspection`] schema). Any malformed field is
@@ -81,10 +46,9 @@ fn leak_str(s: &str) -> &'static str {
     Box::leak(s.to_string().into_boxed_str())
 }
 
-/// Build a rich, multi-slot + param `'static NodeManifest` from an introspection.
-/// Generalizes [`leak_process_manifest`]; the `factory` field is the same
-/// unreachable stub — a discovered node is built by its registered [`NodeFactory`],
-/// never `manifest.factory`.
+/// Build a rich, multi-slot + param `'static NodeManifest` from an introspection. The `factory`
+/// field is an unreachable stub — a discovered node is built by its registered [`NodeFactory`],
+/// never `manifest.factory`. The leak is bounded (one manifest per discovered type, catalog-lifetime).
 pub fn leak_manifest(
     type_name: String,
     intro: &probe::Introspection,
