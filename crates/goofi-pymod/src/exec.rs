@@ -6,13 +6,13 @@
 
 use std::collections::HashSet;
 
-use goofi_core::{cast_to_f32, warn_cast_once, Data as CoreData, Meta, Param, SrcDtype, Value};
+use goofi_core::{warn_cast_once, Data as CoreData, Meta, Param, SrcDtype, Value};
 use indexmap::IndexMap;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyTuple};
 use pyo3::IntoPyObjectExt;
 
-use crate::data::{dict_to_meta, Data};
+use crate::data::{array_to_f32, dict_to_meta, Data};
 
 /// `group -> name -> Param`. Structurally identical to `goofi_node::ParamGroups` (a type
 /// alias over the same `indexmap`/`goofi_core::Param`), so a caller passes its
@@ -33,10 +33,12 @@ pub fn run_setup(py: Python<'_>, instance: &Bound<'_, PyAny>, params: &Groups) -
 /// caller's per-node dedup set for the cast-to-f32 warning.
 ///
 /// Return coercion, per slot value:
-/// - a `goofi.Data`      → its (already-f32) core, verbatim;
-/// - a `(array, meta)`   → `array` cast to f32 (+ warn) with the explicit meta dict;
-/// - a bare array-like   → cast to f32 (+ warn); meta carried from the first present
+///
+/// - a `goofi.Data`    → its (already-f32) core, verbatim;
+/// - a `(array, meta)` → `array` cast to f32 (+ warn) with the explicit meta dict;
+/// - a bare array-like → cast to f32 (+ warn); meta carried from the first present
 ///   input iff the output shape matches it, else empty.
+///
 /// A `None` return emits nothing.
 pub fn run_process(
     py: Python<'_>,
@@ -141,25 +143,17 @@ fn value_to_core(
         .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))
 }
 
-/// `np.ascontiguousarray(arr)` → `(shape, f32 bytes)`, casting a foreign dtype to f32 at
-/// the ingest boundary (deduped warning via `warned`). Mirrors the retired `WRAP_SRC`,
-/// now Rust-owned so both tiers share the one cast guard.
+/// `np.ascontiguousarray(arr)` → `(shape, f32 bytes)` via the shared [`array_to_f32`]
+/// funnel, adding the deduped cast warning (Rust-owned, so both tiers share the one
+/// guard — replaces the retired `WRAP_SRC`). The `Data::new` path uses the same funnel
+/// but elides the warn.
 fn array_f32_bytes(
     py: Python<'_>,
     arr: &Bound<'_, PyAny>,
     slot: &str,
     warned: &mut HashSet<SrcDtype>,
 ) -> PyResult<(Vec<usize>, Vec<u8>)> {
-    let np = py.import("numpy")?;
-    let c = np.getattr("ascontiguousarray")?.call1((arr,))?;
-    let dtype_str: String = c.getattr("dtype")?.getattr("str")?.extract()?;
-    let shape: Vec<usize> = c.getattr("shape")?.extract()?;
-    let raw: Vec<u8> = c.call_method0("tobytes")?.extract()?;
-    let src = SrcDtype::from_numpy_typestr(&dtype_str).ok_or_else(|| {
-        pyo3::exceptions::PyValueError::new_err(format!("node output has unsupported dtype `{dtype_str}`"))
-    })?;
-    let (bytes, _did_cast) =
-        cast_to_f32(src, &raw).map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+    let (src, shape, bytes) = array_to_f32(py, arr)?;
     warn_cast_once(warned, slot, src);
     Ok((shape, bytes))
 }

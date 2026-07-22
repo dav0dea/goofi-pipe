@@ -21,16 +21,7 @@ impl Data {
     #[new]
     #[pyo3(signature = (array, meta=None))]
     fn new(py: Python<'_>, array: &Bound<'_, PyAny>, meta: Option<&Bound<'_, PyDict>>) -> PyResult<Data> {
-        // np.ascontiguousarray(array) then read its dtype string + bytes.
-        let np = py.import("numpy")?;
-        let arr = np.getattr("ascontiguousarray")?.call1((array,))?;
-        let dtype_str: String = arr.getattr("dtype")?.getattr("str")?.extract()?;
-        let shape: Vec<usize> = arr.getattr("shape")?.extract()?;
-        let raw: Vec<u8> = arr.call_method0("tobytes")?.extract()?;
-        let src = SrcDtype::from_numpy_typestr(&dtype_str)
-            .ok_or_else(|| pyo3::exceptions::PyValueError::new_err(format!("unsupported dtype {dtype_str}")))?;
-        let (f32_bytes, _cast) = cast_to_f32(src, &raw)
-            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+        let (_src, shape, f32_bytes) = array_to_f32(py, array)?;
         let m = meta.map(dict_to_meta).transpose()?.unwrap_or_else(Meta::new);
         let inner = CoreData::array_f32(shape, f32_bytes, m)
             .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
@@ -68,6 +59,26 @@ impl Data {
     pub fn core(&self) -> &CoreData {
         &self.inner
     }
+}
+
+/// `np.ascontiguousarray(array)` → `(source dtype, shape, f32 bytes)` — the ONE numpy→f32
+/// funnel at the pyo3 boundary: read the native dtype + bytes, cast to f32 via the core
+/// guard. Returns the `SrcDtype` so the caller can decide whether to dedup-warn on a
+/// foreign dtype (the executor does; `Data::new` does not — see the cast-warn design note).
+pub(crate) fn array_to_f32(
+    py: Python<'_>,
+    array: &Bound<'_, PyAny>,
+) -> PyResult<(SrcDtype, Vec<usize>, Vec<u8>)> {
+    let np = py.import("numpy")?;
+    let arr = np.getattr("ascontiguousarray")?.call1((array,))?;
+    let dtype_str: String = arr.getattr("dtype")?.getattr("str")?.extract()?;
+    let shape: Vec<usize> = arr.getattr("shape")?.extract()?;
+    let raw: Vec<u8> = arr.call_method0("tobytes")?.extract()?;
+    let src = SrcDtype::from_numpy_typestr(&dtype_str)
+        .ok_or_else(|| pyo3::exceptions::PyValueError::new_err(format!("unsupported dtype {dtype_str}")))?;
+    let (bytes, _did_cast) = cast_to_f32(src, &raw)
+        .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+    Ok((src, shape, bytes))
 }
 
 /// Build a `Meta` from a Python dict. `channels` (a `{dimN: [...]}` dict) → `Axes`;
