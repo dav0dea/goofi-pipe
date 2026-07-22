@@ -243,8 +243,14 @@ fn register_auto(state: &AppState, dir: Option<&str>, subproc_python: &str) {
                 if g.register_dyn_type(t.manifest, t.factory) {
                     n_in += 1;
                 }
+                continue;
             }
-        } else if let Some(t) = goofi_subproc::discover_one(&path, subproc_python) {
+            // `gil_safe` judged the SOURCE safe (its imports left the GIL disabled), but the FT
+            // probe couldn't introspect the node — typically a dep present on the subproc python
+            // but absent on the FT interpreter (gil_safe execs in try/except and cannot see an
+            // import failure). Fall through to the subprocess tier rather than dropping the node.
+        }
+        if let Some(t) = goofi_subproc::discover_one(&path, subproc_python) {
             if g.register_dyn_type(t.manifest, t.factory) {
                 n_sub += 1;
             }
@@ -271,13 +277,16 @@ fn auto_type_names(dir: Option<&str>, subproc_python: &str) -> Vec<String> {
             .as_deref()
             .map(|ft| goofi_subproc::gil_safe(ft, &source).unwrap_or(false))
             .unwrap_or(false);
-        let named = if safe {
-            ft.as_deref()
-                .and_then(|ftp| goofi_py::discover_one(&path, ftp))
-                .map(|t| (t.manifest.type_name, "in-proc"))
-        } else {
-            goofi_subproc::discover_one(&path, subproc_python).map(|t| (t.manifest.type_name, "subproc"))
-        };
+        // In-process if FT-safe AND the FT probe introspects it; otherwise (unsafe, OR safe but
+        // the FT probe failed — an FT-missing dep) fall back to the subprocess tier. Mirrors
+        // register_auto so --list-nodes reflects what actually registers.
+        let named = safe
+            .then(|| ft.as_deref().and_then(|ftp| goofi_py::discover_one(&path, ftp)))
+            .flatten()
+            .map(|t| (t.manifest.type_name, "in-proc"))
+            .or_else(|| {
+                goofi_subproc::discover_one(&path, subproc_python).map(|t| (t.manifest.type_name, "subproc"))
+            });
         if let Some((n, where_)) = named {
             names.push(format!("{n} ({where_})"));
         }

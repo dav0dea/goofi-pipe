@@ -203,28 +203,22 @@ fn one_roundtrip(
 pub struct RemoteNode {
     python: String,
     source: String,
-    /// This node's declared input / output slot names (from its manifest) — the keys the
-    /// engine's `Inputs`/`Outputs` use, so `process` knows which slots to gather/emit.
+    /// This node's declared INPUT slot names (from its manifest) — the keys `process` gathers
+    /// from `Inputs`. Outputs are set by the child-returned slot names (the child is authoritative
+    /// for output naming, via its `config_output_slots`), so the parent keeps no output list.
     in_slots: Vec<&'static str>,
-    out_slots: Vec<&'static str>,
     timeout: Duration,
     proc: Option<Running>,
 }
 
 impl RemoteNode {
     /// A remote node backed by `python` running `source` (a `goofi.Node` subclass), with the
-    /// engine-facing input/output slot names from its manifest. No process spawns until the first tick.
-    pub fn new(
-        python: impl Into<String>,
-        source: impl Into<String>,
-        in_slots: Vec<&'static str>,
-        out_slots: Vec<&'static str>,
-    ) -> RemoteNode {
+    /// engine-facing INPUT slot names from its manifest. No process spawns until the first tick.
+    pub fn new(python: impl Into<String>, source: impl Into<String>, in_slots: Vec<&'static str>) -> RemoteNode {
         RemoteNode {
             python: python.into(),
             source: source.into(),
             in_slots,
-            out_slots,
             timeout: DEFAULT_TIMEOUT,
             proc: None,
         }
@@ -237,13 +231,8 @@ impl RemoteNode {
     }
 
     /// Eagerly spawn (convenience for direct use / tests). Returns the spawn error.
-    pub fn spawn(
-        python: &str,
-        source: &str,
-        in_slots: Vec<&'static str>,
-        out_slots: Vec<&'static str>,
-    ) -> std::io::Result<RemoteNode> {
-        let mut node = RemoteNode::new(python, source, in_slots, out_slots);
+    pub fn spawn(python: &str, source: &str, in_slots: Vec<&'static str>) -> std::io::Result<RemoteNode> {
+        let mut node = RemoteNode::new(python, source, in_slots);
         node.ensure().map_err(std::io::Error::other)?;
         Ok(node)
     }
@@ -366,11 +355,10 @@ pub struct SubprocNodeType {
 fn subproc_type_from_discovered(python: &str, d: Discovered) -> SubprocNodeType {
     let manifest = d.manifest;
     let in_slots: Vec<&'static str> = manifest.inputs.iter().map(|s| s.name).collect();
-    let out_slots: Vec<&'static str> = manifest.outputs.iter().map(|o| o.name).collect();
     let source = std::fs::read_to_string(&d.source).unwrap_or_default();
     let python = python.to_string();
     let factory: NodeFactory = Box::new(move |_p| {
-        Box::new(RemoteNode::new(&python, &source, in_slots.clone(), out_slots.clone())) as Box<dyn Node>
+        Box::new(RemoteNode::new(&python, &source, in_slots.clone())) as Box<dyn Node>
     });
     SubprocNodeType { manifest, factory }
 }
@@ -535,7 +523,7 @@ class Affine(goofi.Node):
     def process(self, data):
         return {"out": data.data * 2.0 + 1.0}
 "#;
-        let mut node = RemoteNode::spawn(&py, src, vec!["data"], vec!["out"]).unwrap();
+        let mut node = RemoteNode::spawn(&py, src, vec!["data"]).unwrap();
 
         // Input carries sfreq/index; a length-preserving node carries the input meta back.
         let mut meta = Meta::empty();
@@ -579,7 +567,7 @@ class Scale(goofi.Node):
     def process(self, data):
         return {"out": data.data * self.params.gain.factor + self._base}
 "#;
-        let mut node = RemoteNode::spawn(&py, src, vec!["data"], vec!["out"]).unwrap();
+        let mut node = RemoteNode::spawn(&py, src, vec!["data"]).unwrap();
 
         let mut params = ParamGroups::new();
         let mut gain = IndexMap::new();
@@ -616,7 +604,7 @@ class Scale(goofi.Node):
         let d = arr(vec![1, n], &samples, Meta::new().with_sfreq(Some(sfreq)));
 
         let src = std::fs::read_to_string(&path).unwrap();
-        let mut node = RemoteNode::new(&py, &src, vec!["data"], vec!["psd"]);
+        let mut node = RemoteNode::new(&py, &src, vec!["data"]);
         let m = tick(&mut node, vec![("data", d)], &["psd"], &ParamGroups::new()).expect("psd tick");
         let out = m.get("psd").unwrap().as_ref().unwrap();
 
@@ -644,7 +632,7 @@ class Scale(goofi.Node):
         // The canonical EEG case: a [2,3] array with dim0 channel labels through a length-preserving
         // node must come back [2,3] with channels intact (the shared full-meta codec carries them).
         let py = require_python();
-        let mut node = RemoteNode::spawn(&py, DOUBLE, vec!["data"], vec!["out"]).unwrap();
+        let mut node = RemoteNode::spawn(&py, DOUBLE, vec!["data"]).unwrap();
 
         let mut meta = Meta::empty();
         meta.set_channels(goofi_core::Axes::new().with(
@@ -683,7 +671,7 @@ class Ident(goofi.Node):
     def process(self, data):
         return {"out": data.data * 1.0}
 "#;
-        let mut node = RemoteNode::spawn(&py, ident, vec!["data"], vec!["out"]).unwrap();
+        let mut node = RemoteNode::spawn(&py, ident, vec!["data"]).unwrap();
         // A 32-channel × 256-sample float32 frame (~32 KB) — a typical EEG buffer.
         let (c, t) = (32usize, 256usize);
         let vals: Vec<f32> = (0..c * t).map(|i| i as f32).collect();
@@ -736,7 +724,7 @@ class Chatty(goofi.Node):
         sys.stdout.flush()
         return {"out": data.data * 2.0}
 "#;
-        let mut node = RemoteNode::spawn(&py, src, vec!["data"], vec!["out"]).unwrap();
+        let mut node = RemoteNode::spawn(&py, src, vec!["data"]).unwrap();
         let out = try_run(&mut node, arr(vec![3], &[0.0, 1.0, 2.0], Meta::empty())).expect("a printing node still round-trips");
         assert_eq!(floats(&out), vec![0.0, 2.0, 4.0]);
         // A second tick proves the stream stayed in sync (not just the first frame).
@@ -763,7 +751,7 @@ class Boom(goofi.Node):
             raise ValueError("boom")
         return {"out": data.data * 2.0}
 "#;
-        let mut node = RemoteNode::spawn(&py, src, vec!["data"], vec!["out"]).unwrap();
+        let mut node = RemoteNode::spawn(&py, src, vec!["data"]).unwrap();
 
         assert!(try_run(&mut node, arr(vec![1], &[-1.0], Meta::empty())).is_err(), "node raise must surface as an error");
         let out = try_run(&mut node, arr(vec![1], &[3.0], Meta::empty())).expect("must respawn and succeed on the next tick");
@@ -788,7 +776,7 @@ class Hang(goofi.Node):
         while True:
             time.sleep(1)
 "#;
-        let mut node = RemoteNode::new(&py, src, vec!["data"], vec!["out"]).with_timeout(Duration::from_millis(600));
+        let mut node = RemoteNode::new(&py, src, vec!["data"]).with_timeout(Duration::from_millis(600));
         let t = std::time::Instant::now();
         let r = try_run(&mut node, arr(vec![1], &[1.0], Meta::empty()));
         assert!(r.is_err(), "a hung subprocess must error, not hang");
@@ -814,7 +802,7 @@ class Slow(goofi.Node):
     def process(self, data):
         return {"out": data.data}
 "#;
-        let mut node = RemoteNode::new(&py, src, vec!["data"], vec!["out"]).with_timeout(Duration::from_millis(600));
+        let mut node = RemoteNode::new(&py, src, vec!["data"]).with_timeout(Duration::from_millis(600));
         let n = 40_000usize; // 160 KB >> the 64 KiB initial slice — a big frame to a stuck child
         let vals: Vec<f32> = (0..n).map(|i| i as f32).collect();
         let t = std::time::Instant::now();
@@ -828,7 +816,7 @@ class Slow(goofi.Node):
         // A frame far larger than the 64 KiB initial slice must round-trip — iceoryx2 grows the
         // publisher's segment (PowerOfTwo), and the 4-byte sequence framing survives a big body.
         let py = require_python();
-        let mut node = RemoteNode::spawn(&py, DOUBLE, vec!["data"], vec!["out"]).unwrap();
+        let mut node = RemoteNode::spawn(&py, DOUBLE, vec!["data"]).unwrap();
         let n = 100_000usize; // 400 KB body
         let vals: Vec<f32> = (0..n).map(|i| i as f32).collect();
         let out = run(&mut node, arr(vec![n], &vals, Meta::empty()));

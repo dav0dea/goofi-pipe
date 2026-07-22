@@ -179,7 +179,7 @@ fn rebuild(m: &'static NodeManifest, python: &str) -> Factory {
         "bench_ftpy" => Box::new(|_| Box::new(PyNode::from_source(PY_SRC, vec!["data"], vec!["out"]).expect("PyNode")) as Box<dyn Node>),
         _ => {
             let py = python.to_string();
-            Box::new(move |_| Box::new(RemoteNode::new(py.clone(), PY_SRC, vec!["data"], vec!["out"])) as Box<dyn Node>)
+            Box::new(move |_| Box::new(RemoteNode::new(py.clone(), PY_SRC, vec!["data"])) as Box<dyn Node>)
         }
     }
 }

@@ -52,7 +52,7 @@ fn main() {
         let d = d.clone();
         let src = src.to_string();
         // Warm: spawn + first import numpy is slow; pay it before timing.
-        let mut warm = RemoteNode::spawn(py, &src, vec!["data"], vec!["out"]).unwrap();
+        let mut warm = RemoteNode::spawn(py, &src, vec!["data"]).unwrap();
         one_tick(&mut warm, &d);
         drop(warm);
 
@@ -62,7 +62,7 @@ fn main() {
                 let d = d.clone();
                 let src = src.clone();
                 s.spawn(move || {
-                    let mut node = RemoteNode::spawn(py, &src, vec!["data"], vec!["out"]).unwrap();
+                    let mut node = RemoteNode::spawn(py, &src, vec!["data"]).unwrap();
                     one_tick(&mut node, &d); // amortize this thread's spawn
                     let t = Instant::now();
                     for _ in 0..rounds {

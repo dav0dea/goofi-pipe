@@ -85,7 +85,7 @@ fn in_process_and_subprocess_produce_identical_output() {
     let a = tick(&mut inproc, input(), &p);
 
     // Subprocess: the child runs setup lazily on the first request.
-    let mut remote = RemoteNode::new(&subpy, SRC, vec!["data"], vec!["out"]);
+    let mut remote = RemoteNode::new(&subpy, SRC, vec!["data"]);
     let b = tick(&mut remote, input(), &p);
 
     // Identical values — int32 cast to f32, with the param (3) + setup base (10) applied:
