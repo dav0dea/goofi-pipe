@@ -3,9 +3,9 @@
 //!
 //! Discovery runs the `goofi.introspect` probe (M1) on a free-threaded interpreter per
 //! file: the probe's rich manifest carries the node's declared multi-slot inputs/outputs
-//! + params, and the factory builds a class-contract [`PyNode`] bound to those slot names.
-//! A file that isn't `.py`, is `_`-prefixed (hidden), or whose probe fails (missing dep /
-//! no `Node` subclass) is skipped — greyed out, never a catalog crash.
+//! and params, and the factory builds a class-contract [`PyNode`] bound to those slot
+//! names. A file that isn't `.py`, is `_`-prefixed (hidden), or whose probe fails (missing
+//! dep / no `Node` subclass) is skipped — greyed out, never a catalog crash.
 
 use std::path::Path;
 

@@ -112,7 +112,7 @@ pub struct PyExprEvaluator {
 
 impl PyExprEvaluator {
     pub fn new() -> PyResult<PyExprEvaluator> {
-        Python::attach(|py| {
+        crate::attach(|py| {
             let m = PyModule::from_code(
                 py,
                 CString::new(EVAL_SRC)?.as_c_str(),
@@ -211,7 +211,7 @@ impl ExprEvaluator for PyExprEvaluator {
         // The `globals.<name>` reads, so the engine re-evaluates this binding exactly when one of
         // those globals changes. Same scan as the eval-namespace injection, so they can't disagree.
         let global_refs = goofi_node::global_ref_names(source);
-        Python::attach(|py| -> Result<Compiled, ExprError> {
+        crate::attach(|py| -> Result<Compiled, ExprError> {
             let code = self
                 .compile_fn
                 .bind(py)
@@ -224,7 +224,7 @@ impl ExprEvaluator for PyExprEvaluator {
     }
 
     fn eval(&self, id: BindingId, ctx: &EvalCtx<'_>) -> Result<Param, ExprError> {
-        Python::attach(|py| -> Result<Param, ExprError> {
+        crate::attach(|py| -> Result<Param, ExprError> {
             let code = self
                 .codes
                 .lock()

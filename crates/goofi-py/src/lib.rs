@@ -6,8 +6,44 @@
 //! including numpy — in-process, in parallel with native nodes, behind the same
 //! `Node` trait. The GIL stays disabled, verifiable via [`PyNode::gil_enabled`].
 //!
-//! This first cut uses a dependency-light bytes bridge (numpy `frombuffer` /
-//! `tobytes`); the zero-copy `rust-numpy` view path is a follow-on optimization.
+//! Node values cross the boundary via numpy `frombuffer` / `tobytes` copies (the
+//! zero-copy `rust-numpy` view path is a follow-on optimization).
+
+/// Interpreter bootstrap: register the `goofi` module into the embedded interpreter's
+/// inittab exactly once, BEFORE the interpreter is initialized. Every Python entry point
+/// in this crate — the expression evaluator AND node building — attaches via [`attach`],
+/// so whichever runs first registers `goofi` before pyo3's auto-initialize calls
+/// `Py_Initialize`. Registering after init would panic (`append_to_inittab` requires an
+/// un-initialized interpreter), which is exactly the M2 startup-order hazard this closes:
+/// `main()` constructs the evaluator (initializing the interpreter) before any node.
+#[cfg(feature = "embed")]
+mod pyinit {
+    use std::sync::Once;
+
+    use goofi_pymod::goofi as goofi_module;
+    use pyo3::prelude::*;
+
+    fn ensure_goofi_module() {
+        static INIT: Once = Once::new();
+        INIT.call_once(|| {
+            // Runs before the first `Python::attach` in the process (all attaches funnel
+            // through `attach`), so the interpreter is not yet initialized here.
+            pyo3::append_to_inittab!(goofi_module);
+        });
+    }
+
+    /// `Python::attach` preceded by the one-time inittab registration.
+    pub(crate) fn attach<F, R>(f: F) -> R
+    where
+        F: for<'py> FnOnce(Python<'py>) -> R,
+    {
+        ensure_goofi_module();
+        Python::attach(f)
+    }
+}
+
+#[cfg(feature = "embed")]
+pub(crate) use pyinit::attach;
 
 #[cfg(feature = "embed")]
 mod host;

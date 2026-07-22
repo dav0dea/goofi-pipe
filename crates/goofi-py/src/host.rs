@@ -1,29 +1,12 @@
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Once;
 
 use goofi_core::{Data, SrcDtype};
 use goofi_node::{Inputs, Node, NodeCtx, NodeError, NodeResult, Outputs, Params};
 use pyo3::prelude::*;
 use pyo3::types::PyModule;
 
-// The `#[pymodule] pub fn goofi` lives in goofi-pymod under its `[lib] name = "goofi"`.
-// `append_to_inittab!` needs the module init fn in scope under a local name.
-use goofi_pymod::goofi as goofi_module;
-
-/// Register the `goofi` module into the embedded interpreter's inittab, exactly once,
-/// BEFORE the interpreter is initialized. Every entry point that touches Python calls
-/// this first, so `import goofi` (in a node module, and for `goofi.Data`) resolves to
-/// the linked-in pymod (rlib, `host`) rather than a wheel — which on the free-threaded
-/// build is essential: a wheel-loaded extension would re-enable the GIL.
-fn ensure_goofi_module() {
-    static INIT: Once = Once::new();
-    INIT.call_once(|| {
-        // Safe: called before the first `Python::attach` in this process (all Python
-        // entry points below funnel through here first).
-        pyo3::append_to_inittab!(goofi_module);
-    });
-}
+use crate::attach;
 
 /// A Python node running in-process on the free-threaded interpreter: a live
 /// `goofi.Node` subclass instance the engine tick drives. Multi-slot inputs + params +
@@ -51,15 +34,18 @@ impl PyNode {
         in_slots: Vec<&'static str>,
         out_slots: Vec<&'static str>,
     ) -> PyResult<PyNode> {
-        ensure_goofi_module();
         // A unique module name per instance: `PyModule::from_code` registers the module
         // under this name, so a shared name would let concurrently-built nodes (and repeat
         // builds) clobber each other's module object in the one interpreter.
         static SEQ: AtomicU64 = AtomicU64::new(0);
         let name = format!("goofi_user_{}", SEQ.fetch_add(1, Ordering::Relaxed));
-        Python::attach(|py| {
+        attach(|py| {
             let module = goofi_pymod::loader::module_from_source(py, &name, source)?;
             let instance = goofi_pymod::loader::instantiate(py, &module)?;
+            // `from_code` inserts the module into `sys.modules` under `name`; the instance
+            // keeps its own module alive via the class `__globals__`, so evict the
+            // `sys.modules` entry to avoid unbounded growth as nodes are (re)built.
+            py.import("sys")?.getattr("modules")?.call_method1("pop", (&name, py.None()))?;
             Ok(PyNode {
                 instance: instance.unbind(),
                 in_slots,
@@ -73,8 +59,7 @@ impl PyNode {
     /// Whether the embedded interpreter currently has the GIL enabled (should be `false`
     /// on a free-threaded build — the whole point).
     pub fn gil_enabled() -> PyResult<bool> {
-        ensure_goofi_module();
-        Python::attach(|py| {
+        attach(|py| {
             PyModule::import(py, "sys")?.getattr("_is_gil_enabled")?.call0()?.extract()
         })
     }
@@ -90,15 +75,14 @@ pub fn interpreter_path() -> Option<String> {
             return Some(p.to_string());
         }
     }
-    ensure_goofi_module();
-    Python::attach(|py| {
+    attach(|py| {
         PyModule::import(py, "sys").ok()?.getattr("executable").ok()?.extract::<String>().ok()
     })
 }
 
 impl Node for PyNode {
     fn setup(&mut self, _ctx: &mut NodeCtx, p: &Params<'_>) -> NodeResult {
-        Python::attach(|py| {
+        attach(|py| {
             goofi_pymod::exec::run_setup(py, self.instance.bind(py), p.groups())
                 .map_err(|e: PyErr| NodeError(e.to_string()))
         })
@@ -110,7 +94,7 @@ impl Node for PyNode {
             self.in_slots.iter().filter_map(|name| inp.get(name).map(|d| (*name, d))).collect();
 
         let check_gil = !self.gil_checked;
-        let (outs, tripped): (Vec<(String, Data)>, bool) = Python::attach(|py| -> Result<_, String> {
+        let (outs, tripped): (Vec<(String, Data)>, bool) = attach(|py| -> Result<_, String> {
             let outs = goofi_pymod::exec::run_process(
                 py,
                 self.instance.bind(py),
