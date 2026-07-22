@@ -432,16 +432,40 @@ pub fn decode_request(buf: &[u8]) -> std::result::Result<(ParamMap, Vec<(String,
     Ok((params, slots))
 }
 
-/// Encode a response frame: the output slots (no params).
+/// A decoded subprocess response: the node's output slots, or a per-tick node error message.
+/// A `process()`/`setup()` raise is reported as [`Response::NodeError`] so the parent surfaces
+/// it like the in-process tier's `Ok(Err)` — WITHOUT killing + respawning the child (which
+/// would lose node state + the real exception text). A malformed frame is the outer `Err` of
+/// [`decode_response`] instead.
+pub enum Response {
+    Slots(Vec<(String, Data)>),
+    NodeError(String),
+}
+
+/// Encode an OK response: `[0][slots]`.
 pub fn encode_response(slots: &[(&str, &Data)]) -> Vec<u8> {
-    let mut out = Vec::new();
+    let mut out = vec![0u8];
     encode_slots(slots, &mut out);
     out
 }
 
-/// Decode a response frame written by [`encode_response`].
-pub fn decode_response(buf: &[u8]) -> std::result::Result<Vec<(String, Data)>, String> {
-    decode_slots(buf)
+/// Encode a node-error response: `[1][utf8 message]` — a per-tick `process()`/`setup()` raise
+/// the child reports instead of dying, carrying the real Python exception text.
+pub fn encode_error_response(msg: &str) -> Vec<u8> {
+    let mut out = vec![1u8];
+    out.extend_from_slice(msg.as_bytes());
+    out
+}
+
+/// Decode a response frame ([`encode_response`] / [`encode_error_response`]). The outer `Err`
+/// is a malformed/hostile frame; `Response::NodeError` is a node-reported per-tick error.
+pub fn decode_response(buf: &[u8]) -> std::result::Result<Response, String> {
+    let (&tag, rest) = buf.split_first().ok_or("empty response frame")?;
+    match tag {
+        0 => Ok(Response::Slots(decode_slots(rest)?)),
+        1 => Ok(Response::NodeError(String::from_utf8_lossy(rest).into_owned())),
+        other => Err(format!("unknown response tag {other}")),
+    }
 }
 
 #[cfg(test)]
@@ -725,10 +749,26 @@ mod frame_tests {
     fn response_roundtrips_slots() {
         let a = arr(vec![2], &[1.0, 2.0], Meta::empty());
         let b = arr(vec![1, 3], &[3.0, 4.0, 5.0], Meta::empty());
-        let out = decode_response(&encode_response(&[("psd", &a), ("extra", &b)])).expect("decode response");
-        assert_eq!(out.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>(), vec!["psd", "extra"]);
-        assert_eq!(floats(&out[0].1), vec![1.0, 2.0]);
-        assert_eq!(floats(&out[1].1), vec![3.0, 4.0, 5.0]);
+        match decode_response(&encode_response(&[("psd", &a), ("extra", &b)])).expect("decode response") {
+            Response::Slots(out) => {
+                assert_eq!(out.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>(), vec!["psd", "extra"]);
+                assert_eq!(floats(&out[0].1), vec![1.0, 2.0]);
+                assert_eq!(floats(&out[1].1), vec![3.0, 4.0, 5.0]);
+            }
+            Response::NodeError(e) => panic!("expected slots, got error {e}"),
+        }
+    }
+
+    #[test]
+    fn error_response_roundtrips_the_message() {
+        // A per-tick node raise crosses as a NodeError variant (distinct from an OK slots
+        // response and from a malformed frame), carrying the exception text verbatim.
+        match decode_response(&encode_error_response("ValueError: boom")).expect("decode error response") {
+            Response::NodeError(msg) => assert_eq!(msg, "ValueError: boom"),
+            Response::Slots(_) => panic!("expected a NodeError"),
+        }
+        // An empty buffer is a malformed frame (outer Err), NOT a silent empty slots response.
+        assert!(decode_response(&[]).is_err(), "empty response frame is malformed");
     }
 
     #[test]

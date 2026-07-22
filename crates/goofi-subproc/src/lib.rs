@@ -34,7 +34,7 @@ use std::time::{Duration, Instant};
 use iceoryx2::prelude::*;
 
 use goofi_core::Data;
-use goofi_node::{Inputs, Node, NodeCtx, NodeResult, Outputs, Params};
+use goofi_node::{Inputs, Node, NodeCtx, NodeError, NodeResult, Outputs, Params};
 
 /// Per-process counter giving each spawned subprocess a unique iceoryx2 service-name base
 /// (`goofi_sub_<pid>_<n>`), so concurrent nodes — and a respawn after a reset — never collide.
@@ -273,10 +273,18 @@ impl Node for RemoteNode {
                 return Err(e.into());
             }
         };
-        for (slot, data) in goofi_codec::decode_response(&resp)? {
-            out.set(&slot, data);
+        // A node RAISE comes back as a NodeError WITHOUT killing the child: surface it like the
+        // in-process tier's `Ok(Err)` and leave the child alive — node state preserved, error
+        // reported instantly (no 10s respawn-timeout loop, no lost exception text).
+        match goofi_codec::decode_response(&resp).map_err(NodeError)? {
+            goofi_codec::Response::Slots(outs) => {
+                for (slot, data) in outs {
+                    out.set(&slot, data);
+                }
+                Ok(())
+            }
+            goofi_codec::Response::NodeError(msg) => Err(NodeError(msg)),
         }
-        Ok(())
     }
 }
 
@@ -733,9 +741,10 @@ class Chatty(goofi.Node):
     }
 
     #[test]
-    fn crashed_child_is_reaped_and_respawns() {
-        // A tick whose node raises must Err, then a later tick must succeed (a fresh subprocess is
-        // spawned) rather than being wedged forever.
+    fn node_error_surfaces_fast_without_killing_the_child() {
+        // A per-tick node RAISE must surface as an error FAST (not via a 10s respawn-timeout) and
+        // must NOT kill the child — the SAME subprocess handles the next tick with state intact,
+        // matching the in-process tier's Ok(Err). The Python exception text rides back.
         let py = require_python();
         let src = r#"
 import goofi
@@ -746,15 +755,57 @@ class Boom(goofi.Node):
     @staticmethod
     def config_output_slots():
         return {"out": goofi.DataType.ARRAY}
+    def setup(self):
+        self._ticks = 0
     def process(self, data):
+        self._ticks += 1
         if data.data[0] < 0:
             raise ValueError("boom")
-        return {"out": data.data * 2.0}
+        return {"out": data.data + self._ticks}
 "#;
         let mut node = RemoteNode::spawn(&py, src, vec!["data"]).unwrap();
 
-        assert!(try_run(&mut node, arr(vec![1], &[-1.0], Meta::empty())).is_err(), "node raise must surface as an error");
-        let out = try_run(&mut node, arr(vec![1], &[3.0], Meta::empty())).expect("must respawn and succeed on the next tick");
+        // A good tick: setup ran (ticks 0 -> 1), so 10 + 1 = 11.
+        assert_eq!(floats(&run(&mut node, arr(vec![1], &[10.0], Meta::empty()))), vec![11.0]);
+
+        // A raise: fast error carrying the exception text; the child stays alive.
+        let t = std::time::Instant::now();
+        let err = try_run(&mut node, arr(vec![1], &[-1.0], Meta::empty())).expect_err("a raise surfaces as an error");
+        assert!(t.elapsed() < Duration::from_secs(2), "the error must surface fast, not via a respawn timeout");
+        assert!(err.contains("boom"), "the Python exception text rides back: {err}");
+
+        // The SAME child continues with state intact: ticks went 1 -> 2 (raised, still counted)
+        // -> 3 here, so 10 + 3 = 13 proves NO respawn (a respawn would reset _ticks + re-run setup).
+        assert_eq!(
+            floats(&run(&mut node, arr(vec![1], &[10.0], Meta::empty()))),
+            vec![13.0],
+            "child survived the raise with its state (no respawn)"
+        );
+    }
+
+    #[test]
+    fn a_dead_child_is_reaped_and_respawns() {
+        // If the child PROCESS actually dies (not a catchable raise — here os._exit), the tick
+        // times out, the child is reaped, and a later tick respawns a fresh one.
+        let py = require_python();
+        let src = r#"
+import os
+import goofi
+class Killer(goofi.Node):
+    @staticmethod
+    def config_input_slots():
+        return {"data": goofi.DataType.ARRAY}
+    @staticmethod
+    def config_output_slots():
+        return {"out": goofi.DataType.ARRAY}
+    def process(self, data):
+        if data.data[0] < 0:
+            os._exit(1)
+        return {"out": data.data * 2.0}
+"#;
+        let mut node = RemoteNode::new(&py, src, vec!["data"]).with_timeout(Duration::from_millis(800));
+        assert!(try_run(&mut node, arr(vec![1], &[-1.0], Meta::empty())).is_err(), "a dead child surfaces as an error");
+        let out = try_run(&mut node, arr(vec![1], &[3.0], Meta::empty())).expect("must respawn on the next tick");
         assert_eq!(floats(&out), vec![6.0]);
     }
 

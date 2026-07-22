@@ -16,7 +16,7 @@
 use std::collections::HashSet;
 use std::time::Duration;
 
-use goofi_codec::{decode_request, encode_response};
+use goofi_codec::{decode_request, encode_error_response, encode_response};
 use goofi_core::{Data as CoreData, SrcDtype};
 use iceoryx2::prelude::*;
 use pyo3::prelude::*;
@@ -131,8 +131,12 @@ fn run_loop(
     }
 }
 
-/// Decode one request → run the node (setup once, on the first request, with its params
-/// available) → encode the response. The cast-to-f32 warning is deduped in `run_process`.
+/// Decode one request → run the node → encode the response. A MALFORMED request is a fatal
+/// protocol error (the `?` kills the child). A node RAISE in `setup()`/`process()` is a
+/// per-tick error reported back as an error response — the parent surfaces it like the
+/// in-process `Ok(Err)` WITHOUT respawning the child (preserving node state + the real
+/// exception text, using the SAME `e.to_string()` the in-process tier uses, so the two tiers'
+/// error channels agree). The cast-to-f32 warning is deduped in `run_process`.
 fn handle(
     py: Python<'_>,
     instance: &Bound<'_, PyAny>,
@@ -143,11 +147,30 @@ fn handle(
 ) -> PyResult<Vec<u8>> {
     let (params, inputs) = decode_request(body).map_err(pyo3::exceptions::PyValueError::new_err)?;
     let present: Vec<(&str, &CoreData)> = inputs.iter().map(|(n, d)| (n.as_str(), d)).collect();
-    if !*did_setup {
-        crate::exec::run_setup(py, instance, &params)?;
-        *did_setup = true;
+    match run_node(py, instance, &params, &present, out_slots, warned, did_setup) {
+        Ok(outs) => {
+            let slots: Vec<(&str, &CoreData)> = outs.iter().map(|(n, d)| (n.as_str(), d)).collect();
+            Ok(encode_response(&slots))
+        }
+        Err(e) => Ok(encode_error_response(&e.to_string())),
     }
-    let outs = crate::exec::run_process(py, instance, &params, &present, out_slots, warned)?;
-    let slots: Vec<(&str, &CoreData)> = outs.iter().map(|(n, d)| (n.as_str(), d)).collect();
-    Ok(encode_response(&slots))
+}
+
+/// Run `setup()` (once, on the first request) then `process()`; a raise in either is the node
+/// error. `did_setup` is set BEFORE running setup so a setup raise is reported per-tick, not
+/// retried forever (matching the in-process tier's run-once semantics).
+fn run_node(
+    py: Python<'_>,
+    instance: &Bound<'_, PyAny>,
+    params: &crate::exec::Groups,
+    present: &[(&str, &CoreData)],
+    out_slots: &[&str],
+    warned: &mut HashSet<SrcDtype>,
+    did_setup: &mut bool,
+) -> PyResult<Vec<(String, CoreData)>> {
+    if !*did_setup {
+        *did_setup = true;
+        crate::exec::run_setup(py, instance, params)?;
+    }
+    crate::exec::run_process(py, instance, params, present, out_slots, warned)
 }
