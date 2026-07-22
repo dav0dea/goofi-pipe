@@ -589,7 +589,9 @@ dependencies = [
 name = "goofi-pymod"
 version = "0.0.0"
 dependencies = [
+ "goofi-codec",
  "goofi-core",
+ "iceoryx2",
  "indexmap",
  "pyo3",
  "pythonize",

@@ -16,11 +16,16 @@ pyo3 = { version = "0.28", optional = true }
 # serde<->PyObject: pythonizes the meta map to/from a Python dict (with pyo3, so gated).
 pythonize = { version = "0.28", optional = true }
 serde_json = "1"
+# The `goofi.serve` subprocess child loop (wheel only): the shared request/response
+# frame codec + the Rust iceoryx2 transport. Enabled by `extension-module`, NOT `host`
+# — the FT-host rlib never runs serve, so it stays free of iceoryx2.
+goofi-codec = { path = "../goofi-codec", optional = true }
+iceoryx2 = { version = "0.9.3", optional = true }
 
 [features]
 # Default build is python-free (empty crate) so `cargo build --workspace` needs no
 # interpreter. The wheel build turns on extension-module (+ abi3, no libpython link);
 # the host build turns on auto-initialize (links the FT interpreter directly).
 default = []
-extension-module = ["dep:pyo3", "dep:pythonize", "pyo3/extension-module", "pyo3/abi3-py38"]
+extension-module = ["dep:pyo3", "dep:pythonize", "dep:goofi-codec", "dep:iceoryx2", "pyo3/extension-module", "pyo3/abi3-py38"]
 host = ["dep:pyo3", "dep:pythonize", "pyo3/auto-initialize"]

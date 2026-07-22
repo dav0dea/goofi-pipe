@@ -11,6 +11,9 @@ mod introspect;
 pub mod loader;
 mod node;
 mod params;
+// The subprocess child loop (Rust iceoryx2 + shared codec) — wheel only.
+#[cfg(feature = "extension-module")]
+mod serve;
 
 pub use data::Data;
 
@@ -39,5 +42,8 @@ pub fn goofi(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<params::BoolParam>()?;
     m.add_class::<params::StringParam>()?;
     m.add_function(wrap_pyfunction!(introspect::introspect, m)?)?;
+    // The subprocess child entry point (`goofi.serve()`), only in the wheel.
+    #[cfg(feature = "extension-module")]
+    m.add_function(wrap_pyfunction!(serve::serve, m)?)?;
     Ok(())
 }
