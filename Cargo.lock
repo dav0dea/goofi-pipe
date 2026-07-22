@@ -578,6 +578,7 @@ dependencies = [
  "goofi-core",
  "goofi-engine",
  "goofi-node",
+ "goofi-pymod",
  "goofi-subproc",
  "indexmap",
  "pyo3",

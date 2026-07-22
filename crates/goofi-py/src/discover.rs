@@ -42,7 +42,7 @@ impl Node for FailedNode {
 /// manager's graph mutex and a panic there poisons it (killing the control plane). This upholds the
 /// module's stated contract: a broken node greys out / errors, it does not crash the graph.
 fn build_py_node(source: &str) -> Box<dyn Node> {
-    match PyNode::from_source(source, "process") {
+    match PyNode::from_source(source, vec!["data"], vec!["out"]) {
         Ok(n) => Box::new(n),
         Err(e) => Box::new(FailedNode(format!("Python node construction failed: {e}"))),
     }
@@ -70,8 +70,8 @@ pub fn discover_one(path: &Path) -> Option<PyNodeType> {
         return None;
     }
     let source = std::fs::read_to_string(path).ok()?;
-    // Validate: must compile and define `process` (fail-fast at discovery).
-    if PyNode::from_source(&source, "process").is_err() {
+    // Validate: must compile and define a `goofi.Node` subclass (fail-fast at discovery).
+    if PyNode::from_source(&source, vec!["data"], vec!["out"]).is_err() {
         return None;
     }
 

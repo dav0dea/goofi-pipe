@@ -10,11 +10,14 @@ license.workspace = true
 #     cargo test -p goofi-py --features embed
 [features]
 default = []
-embed = ["dep:pyo3"]
+embed = ["dep:pyo3", "dep:goofi_pymod"]
 
 [dependencies]
 goofi-core = { path = "../goofi-core" }
 goofi-node = { path = "../goofi-node" }
+# The dual-built goofi pyclass crate, linked (rlib, `host`) into the embedded FT
+# interpreter. Its `[lib] name` is `goofi`; the dep key renames it to `goofi_pymod`.
+goofi_pymod = { path = "../goofi-pymod", package = "goofi-pymod", features = ["host"], optional = true }
 pyo3 = { version = "0.28", features = ["auto-initialize"], optional = true }
 
 [dev-dependencies]

@@ -42,7 +42,7 @@ fn build(n: usize, src: &'static str, len: i64) -> Graph {
     let mut g = Graph::new();
     g.register_dyn_type(
         &PY_MANIFEST,
-        Box::new(move |_| Box::new(PyNode::from_source(src, "process").unwrap()) as Box<dyn Node>),
+        Box::new(move |_| Box::new(PyNode::from_source(src, vec!["data"], vec!["out"]).unwrap()) as Box<dyn Node>),
     );
     let osc = g.add_node("_TestConst", None).unwrap();
     g.update_param(osc, "constant", "value", Param::float(0.5, -1e9, 1e9)).unwrap();
@@ -98,7 +98,17 @@ fn main() {
     }
 
     // Real numpy work, length-preserving (the common signal-node shape).
-    let work = "import numpy as np\ndef process(x):\n    return np.tanh(x) * 2.0 - x.mean()\n";
+    let work = concat!(
+        "import goofi\n",
+        "import numpy as np\n",
+        "class Work(goofi.Node):\n",
+        "    def config_input_slots(self):\n",
+        "        return {'data': goofi.DataType.ARRAY}\n",
+        "    def config_output_slots(self):\n",
+        "        return {'out': goofi.DataType.ARRAY}\n",
+        "    def process(self, data):\n",
+        "        return {'out': np.tanh(data.data) * 2.0 - data.data.mean()}\n",
+    );
 
     // (1) Single-node per-tick latency at a few array sizes.
     for len in [64i64, 1024, 16384] {
@@ -124,7 +134,7 @@ fn main() {
         let rounds = 2000u32;
         // Warm.
         {
-            let mut nd = PyNode::from_source(work, "process").unwrap();
+            let mut nd = PyNode::from_source(work, vec!["data"], vec!["out"]).unwrap();
             run_once(&mut nd, &bytes);
         }
         let t = Instant::now();
@@ -132,7 +142,7 @@ fn main() {
             for _ in 0..n {
                 let b = bytes.clone();
                 s.spawn(move || {
-                    let mut nd = PyNode::from_source(work, "process").unwrap();
+                    let mut nd = PyNode::from_source(work, vec!["data"], vec!["out"]).unwrap();
                     for _ in 0..rounds {
                         run_once(&mut nd, &b);
                     }

@@ -24,7 +24,17 @@ use goofi_py::PyNode;
 use goofi_subproc::RemoteNode;
 
 /// The identical workload every backend computes, so the comparison is apples-to-apples.
-const PY_SRC: &str = "def process(x):\n    return x * 2 + 1\n";
+const PY_SRC: &str = concat!(
+    "import goofi\n",
+    "import numpy as np\n",
+    "class Bench(goofi.Node):\n",
+    "    def config_input_slots(self):\n",
+    "        return {'data': goofi.DataType.ARRAY}\n",
+    "    def config_output_slots(self):\n",
+    "        return {'out': goofi.DataType.ARRAY}\n",
+    "    def process(self, data):\n",
+    "        return {'out': data.data * 2 + 1}\n",
+);
 
 /// Native Rust equivalent of `x * 2 + 1`, element-wise over a float32 array.
 struct NativeMul;
@@ -166,7 +176,7 @@ fn main() {
 fn rebuild(m: &'static NodeManifest, python: &str) -> Factory {
     match m.type_name {
         "bench_native" => Box::new(|_| Box::new(NativeMul) as Box<dyn Node>),
-        "bench_ftpy" => Box::new(|_| Box::new(PyNode::from_source(PY_SRC, "process").expect("PyNode")) as Box<dyn Node>),
+        "bench_ftpy" => Box::new(|_| Box::new(PyNode::from_source(PY_SRC, vec!["data"], vec!["out"]).expect("PyNode")) as Box<dyn Node>),
         _ => {
             let py = python.to_string();
             Box::new(move |_| Box::new(RemoteNode::new(py.clone(), PY_SRC)) as Box<dyn Node>)
