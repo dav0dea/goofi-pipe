@@ -3,7 +3,7 @@
 //! Python compute in parallel WITHOUT the free-threaded biased-refcount penalty
 //! that flattened the in-process path (10us -> 250us on a worker thread).
 //!
-//! Run (needs a python3 with numpy on PATH):
+//! Run (needs a python3 with the goofi abi3 wheel + numpy on PATH):
 //!   cargo run -p goofi-subproc --example subproc_scaling --release
 use std::time::Instant;
 
@@ -25,8 +25,21 @@ fn one_tick(node: &mut RemoteNode, d: &Data) {
 }
 
 fn main() {
-    // Non-trivial numpy work, length-preserving so the opaque meta stays valid.
-    let src = "import numpy as np\ndef process(x):\n    return np.tanh(x) * 2.0 - x.mean()\n";
+    // Non-trivial numpy work, length-preserving. Authored to the goofi.Node class contract.
+    let src = concat!(
+        "import numpy as np\n",
+        "import goofi\n",
+        "class Tanh(goofi.Node):\n",
+        "    @staticmethod\n",
+        "    def config_input_slots():\n",
+        "        return {'data': goofi.DataType.ARRAY}\n",
+        "    @staticmethod\n",
+        "    def config_output_slots():\n",
+        "        return {'out': goofi.DataType.ARRAY}\n",
+        "    def process(self, data):\n",
+        "        x = data.data\n",
+        "        return {'out': np.tanh(x) * 2.0 - x.mean()}\n",
+    );
     let py = "python3";
     let len = 1024usize;
     let buf: Vec<u8> = (0..len).flat_map(|i| (i as f32).to_le_bytes()).collect();
@@ -39,7 +52,7 @@ fn main() {
         let d = d.clone();
         let src = src.to_string();
         // Warm: spawn + first import numpy is slow; pay it before timing.
-        let mut warm = RemoteNode::spawn(py, &src).unwrap();
+        let mut warm = RemoteNode::spawn(py, &src, vec!["data"], vec!["out"]).unwrap();
         one_tick(&mut warm, &d);
         drop(warm);
 
@@ -49,7 +62,7 @@ fn main() {
                 let d = d.clone();
                 let src = src.clone();
                 s.spawn(move || {
-                    let mut node = RemoteNode::spawn(py, &src).unwrap();
+                    let mut node = RemoteNode::spawn(py, &src, vec!["data"], vec!["out"]).unwrap();
                     one_tick(&mut node, &d); // amortize this thread's spawn
                     let t = Instant::now();
                     for _ in 0..rounds {
