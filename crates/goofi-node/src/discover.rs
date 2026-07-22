@@ -177,6 +177,11 @@ pub fn probe_introspect(path: &Path, python: &str) -> Option<probe::Introspectio
         .arg("-c")
         .arg(PROBE)
         .env("GOOFI_INTROSPECT_PATH", path)
+        // The probe interpreter must import ITS OWN installed goofi + deps. A host `PYTHONPATH`
+        // (e.g. `.cargo/config.toml` points the embedded FT interpreter at .ftvenv) must not leak
+        // in and shadow the probe python's packages with an incompatible cross-version build —
+        // that would silently fail every import and grey out discovery. Mirrors the child spawn.
+        .env_remove("PYTHONPATH")
         .stdin(Stdio::null())
         .stderr(Stdio::null())
         .output()

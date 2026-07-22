@@ -65,3 +65,30 @@ fn discover_dir_skips_hidden_and_broken() {
     assert!(!names.iter().any(|n| *n == "Hidden"), "_hidden.py is skipped");
     assert!(!names.iter().any(|n| *n == "Broken"), "missing-dep node greyed out");
 }
+
+#[test]
+#[ignore = "needs GOOFI_PYMOD_TEST_PYTHON"]
+fn probe_ignores_a_host_pythonpath() {
+    // The probe interpreter must import ITS OWN installed goofi, not one leaked in via a host
+    // `PYTHONPATH` (as `.cargo/config.toml` sets for the embedded FT interpreter). A poison
+    // `goofi/` on PYTHONPATH — the shape of a cross-version site-packages — must NOT shadow the
+    // probe's goofi. Without the env-strip the probe imports the poison and discovery silently
+    // finds nothing; with it, discovery works regardless of the host PYTHONPATH.
+    let py = test_python();
+    let poison = std::env::temp_dir().join(format!("goofi_poison_{}", std::process::id()));
+    std::fs::create_dir_all(poison.join("goofi")).unwrap();
+    std::fs::write(
+        poison.join("goofi").join("__init__.py"),
+        "raise RuntimeError('a host-PYTHONPATH goofi must be ignored by the probe')\n",
+    )
+    .unwrap();
+
+    // This test is the only one in its process that touches PYTHONPATH; post-fix every probe
+    // Command strips it, so setting it here cannot leak into sibling tests.
+    std::env::set_var("PYTHONPATH", &poison);
+    let d = discover_one(&fixtures().join("negate.py"), &py, "python", Isolation::Subprocess);
+    std::env::remove_var("PYTHONPATH");
+    let _ = std::fs::remove_dir_all(&poison);
+
+    assert!(d.is_some(), "discovery must ignore a poison goofi on the host PYTHONPATH");
+}

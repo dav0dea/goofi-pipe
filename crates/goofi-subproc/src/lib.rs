@@ -330,6 +330,10 @@ sys.stdout.flush()
         .arg("-c")
         .arg(PROBE)
         .env("GOOFI_PROBE_SRC", source)
+        // Strip a host `PYTHONPATH` so the probe judges the target interpreter's OWN imports,
+        // not ones leaked in from a cross-version site-packages. Mirrors the child spawn + the
+        // introspection probe.
+        .env_remove("PYTHONPATH")
         .stdin(Stdio::null())
         .stderr(Stdio::null())
         .output()?;
