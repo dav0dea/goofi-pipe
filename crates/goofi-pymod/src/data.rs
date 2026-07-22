@@ -6,7 +6,6 @@
 
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict, PyList};
-use pyo3::IntoPyObjectExt;
 
 use goofi_core::{cast_to_f32, Axes, Axis, Coord, Data as CoreData, Meta, MetaValue, SrcDtype, Value};
 
@@ -81,8 +80,8 @@ pub(crate) fn array_to_f32(
     Ok((src, shape, bytes))
 }
 
-/// Build a `Meta` from a Python dict. `channels` (a `{dimN: [...]}` dict) → `Axes`;
-/// everything else → a scalar/list `MetaValue`.
+/// Build a `Meta` from a Python dict. `channels` (a `{dimN: [...]}` dict) → `Axes` via the
+/// dedicated mapping; every other value → a `MetaValue` via `depythonize` (serde).
 pub(crate) fn dict_to_meta(d: &Bound<'_, PyDict>) -> PyResult<Meta> {
     let mut m = Meta::new();
     for (k, v) in d.iter() {
@@ -90,7 +89,7 @@ pub(crate) fn dict_to_meta(d: &Bound<'_, PyDict>) -> PyResult<Meta> {
         if key == goofi_core::META_CHANNELS {
             m.set_channels(dict_to_axes(&v)?);
         } else {
-            m.set(key, py_to_mv(&v)?);
+            m.set(key, pythonize::depythonize(&v)?);
         }
     }
     Ok(m)
@@ -118,31 +117,13 @@ fn dict_to_axes(v: &Bound<'_, PyAny>) -> PyResult<Axes> {
     Ok(axes)
 }
 
-fn py_to_mv(v: &Bound<'_, PyAny>) -> PyResult<MetaValue> {
-    if v.is_none() {
-        Ok(MetaValue::Null)
-    } else if let Ok(b) = v.extract::<bool>() {
-        Ok(MetaValue::Bool(b))
-    } else if let Ok(i) = v.extract::<i64>() {
-        Ok(MetaValue::Int(i))
-    } else if let Ok(f) = v.extract::<f64>() {
-        Ok(MetaValue::Float(f))
-    } else if let Ok(s) = v.extract::<String>() {
-        Ok(MetaValue::Str(s))
-    } else if let Ok(list) = v.cast::<PyList>() {
-        Ok(MetaValue::List(list.iter().map(|it| py_to_mv(&it)).collect::<PyResult<_>>()?))
-    } else {
-        Ok(MetaValue::Null)
-    }
-}
-
 fn meta_to_dict<'py>(py: Python<'py>, m: &Meta) -> PyResult<Bound<'py, PyDict>> {
     let d = PyDict::new(py);
     for (k, v) in m.iter() {
         if k == goofi_core::META_CHANNELS {
             d.set_item(k, axes_to_dict(py, m.channels())?)?;
         } else if !matches!(v, MetaValue::Null) {
-            d.set_item(k, mv_to_py(py, v)?)?;
+            d.set_item(k, pythonize::pythonize(py, v)?)?;
         }
     }
     Ok(d)
@@ -165,30 +146,3 @@ fn axes_to_dict<'py>(py: Python<'py>, axes: &Axes) -> PyResult<Bound<'py, PyDict
     Ok(d)
 }
 
-fn mv_to_py<'py>(py: Python<'py>, v: &MetaValue) -> PyResult<Bound<'py, PyAny>> {
-    Ok(match v {
-        MetaValue::Null => py.None().into_bound(py),
-        MetaValue::Bool(b) => b.into_bound_py_any(py)?,
-        MetaValue::Int(i) => i.into_bound_py_any(py)?,
-        MetaValue::Uint(u) => u.into_bound_py_any(py)?,
-        MetaValue::Float(f) => f.into_bound_py_any(py)?,
-        MetaValue::Str(s) => s.into_bound_py_any(py)?,
-        MetaValue::Bytes(b) => PyBytes::new(py, b).into_any(),
-        MetaValue::List(l) => {
-            let list = PyList::empty(py);
-            for it in l {
-                list.append(mv_to_py(py, it)?)?;
-            }
-            list.into_any()
-        }
-        MetaValue::Map(mp) => {
-            let d = PyDict::new(py);
-            for (k, val) in mp {
-                d.set_item(k, mv_to_py(py, val)?)?;
-            }
-            d.into_any()
-        }
-        // Only the top-level `channels` is Axes; handled by meta_to_dict directly.
-        MetaValue::Axes(_) => py.None().into_bound(py),
-    })
-}

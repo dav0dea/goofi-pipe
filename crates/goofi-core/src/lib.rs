@@ -306,7 +306,14 @@ impl Axes {
 /// A meta value (the open map the inspector renders). The `Axes` variant carries the
 /// structured channel labels so `channels` keeps its typed slicing API *inside* the map;
 /// it only ever appears as the top-level `channels` value.
-#[derive(Clone, Debug, PartialEq)]
+///
+/// serde is `untagged`, so a value serializes as itself (`250.0`, not `{"Float":250.0}`) —
+/// this is how pymod pythonizes the meta map to/from a Python dict. `Bytes`/`Axes` are
+/// `skip`ped from serde: `channels` (the only `Axes`) is (de)serialized by pymod's dedicated
+/// `{dimN:[…]}` mapping, and `Bytes` never appears in a Python-facing meta value — skipping
+/// both avoids the untagged list/bytes ambiguity and needs no serde on `Axes`/`Coord`.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(untagged)]
 pub enum MetaValue {
     Null,
     Bool(bool),
@@ -314,9 +321,11 @@ pub enum MetaValue {
     Uint(u64),
     Float(f64),
     Str(String),
-    Bytes(Vec<u8>),
     List(Vec<MetaValue>),
     Map(BTreeMap<String, MetaValue>),
+    #[serde(skip)]
+    Bytes(Vec<u8>),
+    #[serde(skip)]
     Axes(Axes),
 }
 
