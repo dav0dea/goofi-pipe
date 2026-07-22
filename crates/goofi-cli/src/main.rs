@@ -128,7 +128,11 @@ fn register_evaluator(_state: &AppState) {
 #[cfg(feature = "python")]
 fn register_python(state: &AppState, dir: Option<&str>) {
     let Some(dir) = dir else { return };
-    match goofi_py::discover(std::path::Path::new(dir)) {
+    let Some(ft) = goofi_py::interpreter_path() else {
+        eprintln!("--python-nodes: no free-threaded interpreter to probe with");
+        return;
+    };
+    match goofi_py::discover(std::path::Path::new(dir), &ft) {
         Ok(types) => {
             let mut g = state.graph.lock().unwrap();
             // Count only registrations that succeeded (a name colliding with a
@@ -156,7 +160,8 @@ fn register_python(_state: &AppState, dir: Option<&str>) {
 #[cfg(feature = "python")]
 fn python_type_names(dir: Option<&str>) -> Vec<String> {
     let Some(dir) = dir else { return Vec::new() };
-    match goofi_py::discover(std::path::Path::new(dir)) {
+    let Some(ft) = goofi_py::interpreter_path() else { return Vec::new() };
+    match goofi_py::discover(std::path::Path::new(dir), &ft) {
         Ok(types) => types.iter().map(|t| t.manifest.type_name.to_string()).collect(),
         Err(e) => {
             eprintln!("failed to discover python nodes in {dir}: {e}");
@@ -234,7 +239,7 @@ fn register_auto(state: &AppState, dir: Option<&str>, subproc_python: &str) {
             .map(|ft| goofi_subproc::gil_safe(ft, &source).unwrap_or(false))
             .unwrap_or(false);
         if safe {
-            if let Some(t) = goofi_py::discover_one(&path) {
+            if let Some(t) = ft.as_deref().and_then(|ftp| goofi_py::discover_one(&path, ftp)) {
                 if g.register_dyn_type(t.manifest, t.factory) {
                     n_in += 1;
                 }
@@ -267,7 +272,9 @@ fn auto_type_names(dir: Option<&str>, subproc_python: &str) -> Vec<String> {
             .map(|ft| goofi_subproc::gil_safe(ft, &source).unwrap_or(false))
             .unwrap_or(false);
         let named = if safe {
-            goofi_py::discover_one(&path).map(|t| (t.manifest.type_name, "in-proc"))
+            ft.as_deref()
+                .and_then(|ftp| goofi_py::discover_one(&path, ftp))
+                .map(|t| (t.manifest.type_name, "in-proc"))
         } else {
             goofi_subproc::discover_one(&path, subproc_python).map(|t| (t.manifest.type_name, "subproc"))
         };

@@ -193,27 +193,43 @@ fn renaming_a_producer_keeps_the_real_evaluator_expression_resolving() {
     assert!(!PyNode::gil_enabled().unwrap(), "GIL stays disabled");
 }
 
+/// The FT interpreter with `goofi` importable, for the discovery probe. Prefers
+/// $GOOFI_PYMOD_TEST_PYTHON, else the build-time PYO3_PYTHON (`.ftvenv` must have goofi).
+fn probe_python() -> String {
+    if let Ok(p) = std::env::var("GOOFI_PYMOD_TEST_PYTHON") {
+        if !p.is_empty() {
+            return p;
+        }
+    }
+    goofi_py::interpreter_path().expect("no FT interpreter (PYO3_PYTHON) for the discovery probe")
+}
+
 #[test]
-#[ignore = "probe-based discovery — migrated + un-ignored in M2 Task 4"]
+#[ignore = "needs an FT venv with `goofi` importable (see M3 wheel provisioning)"]
 fn discovers_and_hosts_python_nodes_from_a_directory() {
-    // A directory of node files, some valid, some not.
+    let py = probe_python();
     let dir = std::env::temp_dir().join(format!("goofi_pydisc_{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
-    std::fs::write(
-        dir.join("triple.py"),
-        "import numpy as np\ndef process(x):\n    return x * 3.0\n",
-    )
-    .unwrap();
-    std::fs::write(dir.join("_hidden.py"), "def process(x):\n    return x\n").unwrap();
-    std::fs::write(dir.join("broken.py"), "def not_process(x):\n    return x\n").unwrap();
+    let triple = concat!(
+        "import goofi\n",
+        "import numpy as np\n",
+        "class Triple(goofi.Node):\n",
+        "    def config_input_slots(self):\n",
+        "        return {'data': goofi.DataType.ARRAY}\n",
+        "    def config_output_slots(self):\n",
+        "        return {'out': goofi.DataType.ARRAY}\n",
+        "    def process(self, data):\n",
+        "        return {'out': data.data * 3.0}\n",
+    );
+    std::fs::write(dir.join("triple.py"), triple).unwrap();
+    std::fs::write(dir.join("_hidden.py"), triple.replace("Triple", "Hidden")).unwrap();
+    std::fs::write(dir.join("broken.py"), "import nonexistent_dep_xyz\n").unwrap();
 
-    let types = goofi_py::discover(&dir).unwrap();
-    // Only triple.py is a valid, non-hidden node defining `process`.
+    let types = goofi_py::discover(&dir, &py).unwrap();
     let names: Vec<&str> = types.iter().map(|t| t.manifest.type_name).collect();
-    assert_eq!(names, vec!["Triple"]);
+    assert_eq!(names, vec!["Triple"], "only the valid, non-hidden node discovers");
 
-    // Register the discovered types into a graph and drive one end-to-end.
     let mut g = Graph::new();
     for t in types {
         g.register_dyn_type(t.manifest, t.factory);
@@ -221,10 +237,10 @@ fn discovers_and_hosts_python_nodes_from_a_directory() {
     let src = g.add_node("_TestConst", None).unwrap();
     g.update_param(src, "constant", "value", Param::float(2.0, -1e9, 1e9)).unwrap();
     g.update_param(src, "constant", "length", Param::int(3, 1, 1_000_000)).unwrap();
-    let py = g.add_node("Triple", None).unwrap();
-    g.add_link(src, "out", py, "data").unwrap();
+    let py_node = g.add_node("Triple", None).unwrap();
+    g.add_link(src, "out", py_node, "data").unwrap();
     g.tick();
-    assert_eq!(first_f32(&g.latest_frame(py, "out").unwrap()), 6.0);
+    assert_eq!(first_f32(&g.latest_frame(py_node, "out").unwrap()), 6.0);
 
     let _ = std::fs::remove_dir_all(&dir);
 }
