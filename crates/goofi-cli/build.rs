@@ -138,7 +138,16 @@ fn provision_python() {
         println!("cargo:warning=couldn't query the .ftvenv interpreter; skipping .cargo/config.toml generation");
         return;
     };
-    let py_str = std::fs::canonicalize(&py).unwrap_or_else(|_| py.clone()).display().to_string();
+    // Keep the venv `python` SYMLINK (do NOT `canonicalize` it — that would deref to the base
+    // uv interpreter). A spawned probe/subprocess child must run the VENV so it self-detects the
+    // venv's site-packages (goofi/numpy); the base interpreter doesn't see them. Resolve `..` via
+    // the venv dir, but preserve the `python` symlink leaf. pyo3 still links fine (the symlink
+    // python reports the shared base libdir, which the rpath below points at).
+    let py_str = std::fs::canonicalize(&venv)
+        .map(|v| v.join("bin").join("python"))
+        .unwrap_or_else(|_| py.clone())
+        .display()
+        .to_string();
     let target = std::env::var("TARGET").unwrap_or_default();
     // `{x:?}` debug-quotes each path into a valid TOML string literal.
     let contents = format!(
