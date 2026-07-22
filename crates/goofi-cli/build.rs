@@ -106,8 +106,18 @@ fn provision_python() {
     println!("cargo:rerun-if-changed={}", config.display());
     println!("cargo:rerun-if-env-changed=GOOFI_SKIP_PY_SETUP");
     let py = venv.join("bin").join("python");
-    if py.exists() && config.is_file() {
-        warn_if_goofi_missing(&py); // provisioned, but goofi may still be uninstalled
+    // The PYO3_PYTHON the config MUST carry: the venv symlink (dir-resolved, symlink leaf kept).
+    // Computed here so the early-return can be content-aware — an existing config left by an older
+    // generator (e.g. a canonicalized BASE-interpreter path) would, combined with the probe's
+    // PYTHONPATH strip, silently grey out all Python-node discovery, and an existence-only guard
+    // would never rewrite it.
+    let expected_py = std::fs::canonicalize(&venv)
+        .map(|v| v.join("bin").join("python"))
+        .unwrap_or_else(|_| py.clone())
+        .display()
+        .to_string();
+    if py.exists() && config_pyo3_python_matches(&config, &expected_py) {
+        warn_if_goofi_missing(&py); // provisioned + config current, but goofi may still be uninstalled
         return;
     }
     if matches!(std::env::var("GOOFI_SKIP_PY_SETUP").as_deref(), Ok("1") | Ok("true")) {
@@ -138,16 +148,9 @@ fn provision_python() {
         println!("cargo:warning=couldn't query the .ftvenv interpreter; skipping .cargo/config.toml generation");
         return;
     };
-    // Keep the venv `python` SYMLINK (do NOT `canonicalize` it — that would deref to the base
-    // uv interpreter). A spawned probe/subprocess child must run the VENV so it self-detects the
-    // venv's site-packages (goofi/numpy); the base interpreter doesn't see them. Resolve `..` via
-    // the venv dir, but preserve the `python` symlink leaf. pyo3 still links fine (the symlink
-    // python reports the shared base libdir, which the rpath below points at).
-    let py_str = std::fs::canonicalize(&venv)
-        .map(|v| v.join("bin").join("python"))
-        .unwrap_or_else(|_| py.clone())
-        .display()
-        .to_string();
+    // The venv `python` SYMLINK (NOT the canonicalized base — see `expected_py` above): a spawned
+    // probe/subprocess child must run the VENV so it self-detects the venv site-packages.
+    let py_str = expected_py;
     let target = std::env::var("TARGET").unwrap_or_default();
     // `{x:?}` debug-quotes each path into a valid TOML string literal.
     let contents = format!(
@@ -172,6 +175,17 @@ fn provision_python() {
         );
     }
     warn_if_goofi_missing(&py); // a freshly-made venv has numpy but not yet goofi
+}
+
+/// Whether `config` exists and its `PYO3_PYTHON` already equals `expected` — the self-heal guard
+/// so build.rs rewrites a config left by an older generator (a stale base-interpreter path)
+/// instead of trusting mere existence. Mirrors the `PYO3_PYTHON = {py_str:?}` line the generator
+/// writes (debug-quoted path).
+fn config_pyo3_python_matches(config: &Path, expected: &str) -> bool {
+    let want = format!("PYO3_PYTHON = {expected:?}");
+    std::fs::read_to_string(config)
+        .map(|s| s.lines().any(|l| l.trim() == want))
+        .unwrap_or(false)
 }
 
 /// The `goofi` package (the goofi-pymod wheel) must be importable in `.ftvenv` for the
