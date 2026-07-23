@@ -493,18 +493,42 @@ class Double(goofi.Node):
         None
     }
 
+    /// Serializes the subprocess-tier tests. Cargo runs a crate's tests on parallel threads and
+    /// every one of these spawns a Python interpreter, so without this the latency measurement
+    /// below is taken while a dozen siblings are booting numpy on the same cores — it measured
+    /// the test harness, not the transport, and failed its budget at ~7 ms median.
+    static TIER: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// The interpreter to spawn children with, plus the tier lock — held until the value drops,
+    /// i.e. for the rest of the test. Derefs to `&str`, so call sites read as a plain path.
+    struct Tier {
+        py: String,
+        _lock: std::sync::MutexGuard<'static, ()>,
+    }
+
+    impl std::ops::Deref for Tier {
+        type Target = str;
+        fn deref(&self) -> &str {
+            &self.py
+        }
+    }
+
     /// Like [`usable_python`] but PANICS with an actionable message when none is found — the
     /// subprocess tier tests HARD-REQUIRE a python (goofi + numpy) rather than silently
     /// skipping, so a missing/misconfigured interpreter fails loudly instead of hiding bugs.
-    fn require_python() -> String {
-        usable_python().unwrap_or_else(|| {
+    fn require_python() -> Tier {
+        // A panicking test poisons the mutex; recover rather than cascade its failure onto
+        // every sibling, which would bury the one real error.
+        let _lock = TIER.lock().unwrap_or_else(|e| e.into_inner());
+        let py = usable_python().unwrap_or_else(|| {
             panic!(
                 "no python with goofi + numpy found (checked $GOOFI_SUBPROC_TEST_PYTHON, \
                  ./.venv/bin/python, python3, python). Provision it with \
                  ./scripts/provision-goofi-py.sh (builds + installs the goofi wheel into the \
                  repo venvs). The subprocess-tier tests require one."
             )
-        })
+        });
+        Tier { py, _lock }
     }
 
     /// A `RemoteNode` holds its iceoryx2 ports directly (via `ipc_threadsafe::Service`), so it must
@@ -612,7 +636,7 @@ class Scale(goofi.Node):
         let d = arr(vec![1, n], &samples, Meta::new().with_sfreq(Some(sfreq)));
 
         let src = std::fs::read_to_string(&path).unwrap();
-        let mut node = RemoteNode::new(&py, &src, vec!["data"]);
+        let mut node = RemoteNode::new(&*py, &src, vec!["data"]);
         let m = tick(&mut node, vec![("data", d)], &["psd"], &ParamGroups::new()).expect("psd tick");
         let out = m.get("psd").unwrap().as_ref().unwrap();
 
@@ -803,7 +827,7 @@ class Killer(goofi.Node):
             os._exit(1)
         return {"out": data.data * 2.0}
 "#;
-        let mut node = RemoteNode::new(&py, src, vec!["data"]).with_timeout(Duration::from_millis(800));
+        let mut node = RemoteNode::new(&*py, src, vec!["data"]).with_timeout(Duration::from_millis(800));
         assert!(try_run(&mut node, arr(vec![1], &[-1.0], Meta::empty())).is_err(), "a dead child surfaces as an error");
         let out = try_run(&mut node, arr(vec![1], &[3.0], Meta::empty())).expect("must respawn on the next tick");
         assert_eq!(floats(&out), vec![6.0]);
@@ -827,7 +851,7 @@ class Hang(goofi.Node):
         while True:
             time.sleep(1)
 "#;
-        let mut node = RemoteNode::new(&py, src, vec!["data"]).with_timeout(Duration::from_millis(600));
+        let mut node = RemoteNode::new(&*py, src, vec!["data"]).with_timeout(Duration::from_millis(600));
         let t = std::time::Instant::now();
         let r = try_run(&mut node, arr(vec![1], &[1.0], Meta::empty()));
         assert!(r.is_err(), "a hung subprocess must error, not hang");
@@ -853,7 +877,7 @@ class Slow(goofi.Node):
     def process(self, data):
         return {"out": data.data}
 "#;
-        let mut node = RemoteNode::new(&py, src, vec!["data"]).with_timeout(Duration::from_millis(600));
+        let mut node = RemoteNode::new(&*py, src, vec!["data"]).with_timeout(Duration::from_millis(600));
         let n = 40_000usize; // 160 KB >> the 64 KiB initial slice — a big frame to a stuck child
         let vals: Vec<f32> = (0..n).map(|i| i as f32).collect();
         let t = std::time::Instant::now();
