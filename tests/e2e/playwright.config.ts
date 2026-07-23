@@ -25,7 +25,7 @@ export default defineConfig({
 	// clearing any stale iceoryx2 SHM first. `cargo build` happens via `npm run e2e` BEFORE
 	// this, since webServer starts ahead of globalSetup. Playwright kills the process on teardown.
 	webServer: {
-		command: `bash -c "rm -f /dev/shm/iox2* 2>/dev/null || true; exec target/debug/goofi-pipe --headless --bind 127.0.0.1 --port ${PORT}"`,
+		command: `bash -c "rm -f /dev/shm/iox2* 2>/dev/null || true; exec target/debug/goofi-pipe --bind 127.0.0.1 --port ${PORT}"`,
 		cwd: REPO_ROOT,
 		url: BASE_URL,
 		reuseExistingServer: false,

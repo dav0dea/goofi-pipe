@@ -14,8 +14,8 @@ npm run e2e                      # builds the backend, then runs the suite
 ```
 
 `npm run e2e` = `cargo build -p goofi-cli` (via the workspace) then `playwright test`.
-Playwright spawns `goofi-pipe --headless` on port 8399 (override `GOOFI_E2E_PORT`), waits
-for it, runs the specs, and tears it down. One worker, headless, deterministic.
+Playwright spawns `goofi-pipe` on port 8399 (override `GOOFI_E2E_PORT`), waits
+for it, runs the specs, and tears it down. One worker, headless browser, deterministic.
 
 ## Layout
 - `playwright.config.ts` — port, `webServer` spawn/teardown, iceoryx2 SHM hygiene.

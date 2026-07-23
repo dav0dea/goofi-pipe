@@ -1,6 +1,6 @@
 //! `goofi-pipe` — launches the Rust engine + bridge, serving the SPA and the two
 //! WebSocket planes. Flags: `--port N` (default 8000), `--bind HOST` (default
-//! 127.0.0.1), `--headless` (accepted; no UI difference yet), `--python-nodes DIR`
+//! 127.0.0.1), `--python-nodes DIR`
 //! (discover in-process Python nodes; requires the `python` feature),
 //! `--subproc-nodes DIR` (discover isolated-GIL subprocess Python nodes, runs on
 //! `--subproc-python`). With no `--*-nodes` flag it auto-discovers the default
@@ -59,11 +59,10 @@ async fn main() {
             "--subproc-python" => {
                 subproc_python = args.next();
             }
-            "--headless" => {}
             "--list-nodes" => list_nodes = true,
             "-h" | "--help" => {
                 println!(
-                    "usage: goofi-pipe [--port N] [--bind HOST] [--headless] \
+                    "usage: goofi-pipe [--port N] [--bind HOST] \
                      [--python-nodes DIR] [--subproc-nodes DIR] [--auto-nodes DIR] \
                      [--subproc-python BIN]\n\
                      \n  \

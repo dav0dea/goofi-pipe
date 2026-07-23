@@ -2809,7 +2809,8 @@ mod tests {
     #[test]
     fn default_expr_falls_back_to_the_literal_without_an_evaluator() {
         // No evaluator wired ⇒ no binding is minted; the param keeps its spec-default literal (5.0),
-        // never an errored "no evaluator" binding. Graceful degrade for headless / eval-less runs.
+        // never an errored "no evaluator" binding. Graceful degrade for eval-less runs (a build
+        // without the `python` feature, or an interpreter the evaluator could not initialize).
         let mut g = Graph::new();
         let n = g.add_node("_TestDefaultExpr", None).unwrap();
         assert!(g.param_expression(n, "control", "rate").is_none(), "no binding without an evaluator");
