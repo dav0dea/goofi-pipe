@@ -563,7 +563,7 @@ impl Graph {
         uid: Uid,
         name: String,
         manifest: &'static NodeManifest,
-        mut node: Box<dyn goofi_node::Node>,
+        node: Box<dyn goofi_node::Node>,
         params: ParamGroups,
     ) {
         let mut ctx = NodeCtx::new();
@@ -579,21 +579,7 @@ impl Graph {
         let has_trigger_inputs = manifest.inputs.iter().any(|i| i.trigger_process);
         let run_policy = RunPolicy::from_params(&params);
 
-        // Route on isolation. An InProcess node is seeded synchronously (replay
-        // `on_param_changed` then `setup`) and runs inline. A Subprocess node is detached
-        // onto an off-tick worker that seeds ITSELF (its setup / first-tick spawn may
-        // block) and surfaces a bootstrap error via its first `Done` — so its
-        // `last_error` starts None here.
-        let (exec, last_error) = match manifest.isolation {
-            goofi_node::Isolation::InProcess => {
-                let err = seed_node(&mut *node, &params, &mut ctx);
-                (Execution::Inline(node), err)
-            }
-            goofi_node::Isolation::Subprocess => {
-                let handle = detached::DetachedHandle::spawn(node, manifest, params.clone(), ctx.clone());
-                (Execution::Detached(handle), None)
-            }
-        };
+        let (exec, last_error) = make_exec(manifest, node, &params, &mut ctx);
 
         self.nodes.insert(
             uid,
@@ -1407,6 +1393,67 @@ impl Graph {
                 self.clear_input(l.node_in, l.slot_in);
             }
         }
+        Ok(())
+    }
+
+    /// Respawn a node's live instance IN PLACE — the recovery action behind the inspector's
+    /// restart button, for a node that crashed or whose backing `.py` was fixed on disk.
+    ///
+    /// Everything that identifies the node *in the patch* survives: uid (so uid-keyed links and
+    /// panels stay connected), display name (expressions reference it), position, params,
+    /// expression bindings, viewer state, and scope membership. Only the instance and its
+    /// per-run state are replaced. Remove+add is NOT a substitute — it drops the links, the
+    /// bindings and the sub-patch membership, and would land the node back at root.
+    ///
+    /// Deliberately **not** a `Command`: it changes no persisted patch state, so it has no
+    /// meaningful inverse, and the client records no history entry for it.
+    pub fn restart_node(&mut self, uid: Uid) -> Result<(), String> {
+        let entry = self.nodes.get(&uid).ok_or_else(|| format!("no such node {uid}"))?;
+        let type_name = entry.manifest.type_name;
+        let params = entry.params.clone();
+        // Construct BEFORE touching the entry: a type that no longer resolves leaves the old
+        // instance running rather than half-killing the node.
+        let (manifest, params, node) = self.build_node(type_name, Some(params))?;
+        let mut ctx = NodeCtx::new();
+        ctx.globals = self.globals.snapshot();
+        let (exec, last_error) = make_exec(manifest, node, &params, &mut ctx);
+
+        // The per-wire cells live in the entry while the wires themselves live on the graph, so
+        // they must be rebuilt from `links` (in connection order) — a fresh empty map would
+        // leave the multi slot silently dead with every link still shown in the editor.
+        let multi_inputs: IndexMap<&'static str, Vec<WireCell>> = manifest
+            .inputs
+            .iter()
+            .filter(|s| s.multi)
+            .map(|s| {
+                let wires = self
+                    .links
+                    .iter()
+                    .filter(|l| l.node_in == uid && l.slot_in == s.name)
+                    .map(|l| (l.node_out, l.slot_out, None))
+                    .collect();
+                (s.name, wires)
+            })
+            .collect();
+
+        let entry = self.nodes.get_mut(&uid).expect("looked up above");
+        // The old `Execution` drops here: a detached worker is signalled and joined, which reaps
+        // the child process through the node's own `Drop`.
+        entry.exec = exec;
+        entry.params = params;
+        entry.inputs = manifest.inputs.iter().filter(|s| !s.multi).map(|s| (s.name, None)).collect();
+        entry.multi_inputs = multi_inputs;
+        entry.outputs = manifest.output_buffer();
+        entry.ctx = ctx;
+        entry.last_error = last_error;
+        entry.trigger_pending = false;
+        entry.ufreq_meter = UfreqMeter { last_emit: None, ema: None };
+        entry.run_policy = RunPolicy::from_params(&entry.params);
+        entry.last_run = None;
+        // `index_counters` deliberately CARRY OVER: `meta["index"]` is a stream-position counter,
+        // and restarting it at 0 would regress the index downstream consumers dirty-check on.
+        // `bindings` are left untouched — their compiled handles are evaluator-owned and may only
+        // be dropped through `release_entry_bindings`. `last_outputs` stays so viewers don't blink.
         Ok(())
     }
 
@@ -2502,6 +2549,31 @@ impl Graph {
 /// Seed a freshly-built node: replay `on_param_changed` for each declared param (skipping
 /// `common`, the scheduler's), then run `setup`. Returns the FIRST bootstrap error, if any.
 /// Shared by the inline insert path and the detached worker (which seeds off-tick).
+/// Route a constructed node onto its execution tier — the ONE place the isolation split
+/// lives, shared by insertion and [`Graph::restart_node`] so the two cannot diverge.
+///
+/// An InProcess node is seeded synchronously (replay `on_param_changed`, then `setup`) and
+/// runs inline. A Subprocess node is detached onto an off-tick worker that seeds ITSELF (its
+/// setup / first-tick spawn may block) and surfaces a bootstrap error via its first `Done` —
+/// so its `last_error` starts `None` here.
+fn make_exec(
+    manifest: &'static NodeManifest,
+    mut node: Box<dyn goofi_node::Node>,
+    params: &ParamGroups,
+    ctx: &mut NodeCtx,
+) -> (Execution, Option<String>) {
+    match manifest.isolation {
+        goofi_node::Isolation::InProcess => {
+            let err = seed_node(&mut *node, params, ctx);
+            (Execution::Inline(node), err)
+        }
+        goofi_node::Isolation::Subprocess => {
+            let handle = detached::DetachedHandle::spawn(node, manifest, params.clone(), ctx.clone());
+            (Execution::Detached(handle), None)
+        }
+    }
+}
+
 pub(crate) fn seed_node(
     node: &mut dyn goofi_node::Node,
     params: &ParamGroups,
@@ -3900,6 +3972,147 @@ mod tests {
             std::thread::sleep(Duration::from_millis(2));
         }
         assert_eq!(err.as_deref(), Some("gate failure"), "the detached process error surfaced");
+    }
+
+    // ---- restart_node (in-place respawn) ----
+
+    #[test]
+    fn restart_rebuilds_the_instance_and_clears_the_error() {
+        // A dyn type standing in for a Python node: its factory counts constructions and the
+        // FIRST instance fails setup, so the restart's fresh instance is observably different.
+        static BOOT: NodeManifest = NodeManifest {
+            type_name: "_RestartBoot",
+            category: "runtime",
+            doc: "fails setup once, then succeeds",
+            inputs: &[],
+            outputs: RT_OUT,
+            params: RT_PARAMS,
+            isolation: Isolation::InProcess,
+            factory: rt_stub_factory,
+        };
+        struct Boot {
+            fail: bool,
+        }
+        impl Node for Boot {
+            fn setup(&mut self, _c: &mut NodeCtx, _p: &Params<'_>) -> NodeResult {
+                if self.fail {
+                    return Err("boot failed".into());
+                }
+                Ok(())
+            }
+            fn process(&mut self, _i: &Inputs<'_>, out: &mut Outputs<'_>, _c: &mut NodeCtx, _p: &Params<'_>) -> NodeResult {
+                let d = Data::array_f32(vec![1], 7.0f32.to_le_bytes().to_vec(), Meta::empty())
+                    .map_err(|e| e.to_string())?;
+                out.set("out", d);
+                Ok(())
+            }
+        }
+        let builds = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let b = builds.clone();
+        let mut g = Graph::new();
+        g.register_dyn_type(
+            &BOOT,
+            Box::new(move |_p| {
+                let n = b.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Box::new(Boot { fail: n == 0 })
+            }),
+        );
+
+        let uid = g.add_node("_RestartBoot", None).unwrap();
+        assert_eq!(g.last_error(uid), Some("boot failed"), "the first instance failed to boot");
+
+        g.restart_node(uid).unwrap();
+
+        assert_eq!(builds.load(std::sync::atomic::Ordering::SeqCst), 2, "a fresh instance was built");
+        assert_eq!(g.last_error(uid), None, "restart clears the recovered node's error");
+        g.tick();
+        assert_eq!(first_f32(&g.latest_frame(uid, "out").unwrap()), 7.0, "the new instance runs");
+    }
+
+    #[test]
+    fn restart_preserves_identity_position_viewers_and_scope() {
+        let mut g = Graph::new();
+        let uid = const_src(&mut g, 5.0);
+        g.rename_node(uid, "my source").unwrap();
+        g.set_node_pos(uid, [12.0, 34.0]).unwrap();
+        g.set_node_viewers(uid, serde_json::json!({ "out": { "kind": "line" } })).unwrap();
+        let scope = g.group_nodes(&[uid], [0.0, 0.0]).unwrap();
+
+        g.restart_node(uid).unwrap();
+
+        assert_eq!(g.name(uid), Some("my source"), "the display name survives (nd() refs it)");
+        assert_eq!(g.pos(uid), Some([12.0, 34.0]));
+        assert_eq!(g.viewers(uid), Some(&serde_json::json!({ "out": { "kind": "line" } })));
+        assert_eq!(g.scope_of(uid), Some(scope), "a sub-patch member stays in its scope");
+        // The param edit const_src made must reach the fresh instance, not the type default.
+        g.tick();
+        assert_eq!(first_f32(&g.latest_frame(uid, "out").unwrap()), 5.0, "params carried over");
+    }
+
+    #[test]
+    fn restart_keeps_every_wire_of_a_multi_input_in_connection_order() {
+        // The per-wire cells live inside the node entry while the links live on the graph: a
+        // restart that forgets to rebuild them leaves the slot silently dead.
+        let mut g = Graph::new();
+        let a = const_src(&mut g, 1.0);
+        let b = const_src(&mut g, 2.0);
+        let c = const_src(&mut g, 3.0);
+        let col = g.add_node("_TestCollect", None).unwrap();
+        g.add_link(a, "out", col, "ins").unwrap();
+        g.add_link(b, "out", col, "ins").unwrap();
+        g.add_link(c, "out", col, "ins").unwrap();
+        g.tick();
+        assert_eq!(as_f32_vec(&g.latest_frame(col, "out").unwrap()), vec![3.0, 1.0, 2.0, 3.0]);
+
+        g.restart_node(col).unwrap();
+        g.tick();
+
+        assert_eq!(
+            as_f32_vec(&g.latest_frame(col, "out").unwrap()),
+            vec![3.0, 1.0, 2.0, 3.0],
+            "all three wires still feed the restarted node, in connection order"
+        );
+    }
+
+    #[test]
+    fn restart_keeps_a_param_expression_binding_live() {
+        let mut g = eval_graph();
+        let uid = const_src(&mut g, 1.0);
+        g.set_expression(uid, "constant", "value", "42", true, false).unwrap();
+        g.tick();
+        assert_eq!(first_f32(&g.latest_frame(uid, "out").unwrap()), 42.0);
+
+        g.restart_node(uid).unwrap();
+        g.tick();
+
+        assert_eq!(
+            g.param_expression(uid, "constant", "value").map(|e| e.source),
+            Some("42".to_string()),
+            "the compiled binding is untouched by a restart"
+        );
+        assert_eq!(first_f32(&g.latest_frame(uid, "out").unwrap()), 42.0);
+    }
+
+    #[test]
+    fn restarting_a_detached_node_joins_the_old_worker() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let gate = Gate::new();
+        gate.open();
+        let dropped = std::sync::Arc::new(AtomicUsize::new(0));
+        let mut g = Graph::new();
+        register_gate(&mut g, gate.clone(), Some(dropped.clone()), false);
+        let det = g.add_node("GateSubproc", None).unwrap();
+
+        g.restart_node(det).unwrap();
+
+        // The replaced handle joins its worker on drop, which reaps the child process.
+        assert_eq!(dropped.load(Ordering::SeqCst), 1, "exactly the old instance was dropped");
+    }
+
+    #[test]
+    fn restarting_an_unknown_node_is_an_error() {
+        let mut g = Graph::new();
+        assert!(g.restart_node(Uid(999)).is_err());
     }
 
     // A runtime source built by a captured closure (not a bare fn pointer) —

@@ -597,6 +597,17 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
                     .apply(&mut g, &session, goofi_engine::Command::RemoveNode { uid })?;
                 Ok(json!({ "ok": true }))
             }
+            // Recovery, not an edit: respawn the node's instance in place, keeping its uid, name,
+            // params, expressions, viewers, scope and links. NOT routed through the command history
+            // — the client records no `graph_cmd` for a restart, and the two stacks must stay 1:1.
+            "restart_node" => {
+                let uid = parse_uid(&payload, "node")?;
+                g.restart_node(uid)?;
+                // Push the cleared error straight away so the node's red border lifts on the click
+                // rather than on the next 2 Hz error-transition sweep.
+                events.push(param_state_update(&g, uid));
+                Ok(json!({ "ok": true }))
+            }
             // Links are read from the CRDT doc (Phase 2) — the resolved flat link rides the re-mirror
             // after dispatch. The old `link_added`/`link_removed` events had no client consumer.
             "add_link" => {

@@ -1992,3 +1992,36 @@ async fn load_reports_a_missing_file_instead_of_replacing_the_graph() {
     );
     let _ = std::fs::remove_file(&junk);
 }
+
+#[tokio::test]
+async fn restart_node_respawns_in_place_without_touching_undo() {
+    let base = start_server().await;
+    let (mut ws, _) = connect_async(format!("{base}/control")).await.unwrap();
+    let _hello = recv_text(&mut ws).await;
+
+    let osc = call(&mut ws, 1, "add_node", json!({ "type": "Oscillator" })).await["result"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let buf = call(&mut ws, 2, "add_node", json!({ "type": "Buffer" })).await["result"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    call(&mut ws, 3, "add_link", json!({ "node_out": osc, "slot_out": "out", "node_in": buf, "slot_in": "data" })).await;
+
+    let reply = call(&mut ws, 4, "restart_node", json!({ "node": buf })).await;
+    assert!(reply.get("error").is_none(), "restart_node is served; got {reply:?}");
+
+    // A restart is a recovery action, not an edit: the client records no history entry for it,
+    // so the manager must not record one either — else undo would flip the restart instead of
+    // the user's last real edit. Undo here must remove the LINK.
+    call(&mut ws, 5, "undo", json!({})).await;
+    // Anchor on a POSITIVE presence (both nodes) as well as the link's absence — an absence-only
+    // predicate is already true of the initial empty replica, before any sync frame lands.
+    let doc = sync_replica(&mut ws, |d| {
+        d.node_ids().len() == 2
+            && d.read_at(&["links"]).and_then(|v| v.as_array().map(|a| a.is_empty())).unwrap_or(false)
+    })
+    .await;
+    assert_eq!(doc.node_ids().len(), 2, "both nodes survive; only the link was undone");
+}
