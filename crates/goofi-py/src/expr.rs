@@ -271,9 +271,11 @@ impl ExprEvaluator for PyExprEvaluator {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testlock::interp;
 
     #[test]
     fn extract_refs_maps_scanned_names_to_slotless_refs() {
+        let _interp = interp();
         // The goofi-py-specific contract: extract_refs delegates the scan to
         // goofi_node::nd_ref_names (whose word-boundary/quote behavior is tested there)
         // and maps each name to an ExprRef with an unresolved slot.
@@ -326,18 +328,21 @@ mod tests {
 
     #[test]
     fn constant_expression_coerces_to_float() {
+        let _interp = interp();
         let r = eval_once("1 + 2", 0.0, Refs::new(), &fparam()).unwrap();
         assert!(matches!(r, Param::Float { value, .. } if (value - 3.0).abs() < 1e-9));
     }
 
     #[test]
     fn time_expression_reads_t() {
+        let _interp = interp();
         let r = eval_once("t * 2", 4.0, Refs::new(), &fparam()).unwrap();
         assert!(matches!(r, Param::Float { value, .. } if (value - 8.0).abs() < 1e-9));
     }
 
     #[test]
     fn bare_nd_single_output_delegates_numpy_methods() {
+        let _interp = interp();
         let mut refs = Refs::new();
         refs.insert(("osc".into(), None), Some(f32_1d(&[3.0, 5.0])));
         let r = eval_once("nd('osc').mean()", 0.0, refs, &fparam()).unwrap();
@@ -346,6 +351,7 @@ mod tests {
 
     #[test]
     fn nd_slot_access_selects_the_output() {
+        let _interp = interp();
         let mut refs = Refs::new();
         refs.insert(("psd".into(), Some("out".into())), Some(f32_1d(&[10.0, 20.0])));
         refs.insert(("psd".into(), None), Some(f32_1d(&[10.0, 20.0])));
@@ -355,6 +361,7 @@ mod tests {
 
     #[test]
     fn bare_nd_on_multi_output_is_error() {
+        let _interp = interp();
         // Only slot keys present, no bare (name, None) -> bare use must raise.
         let mut refs = Refs::new();
         refs.insert(("m".into(), Some("a".into())), Some(f32_1d(&[1.0])));
@@ -364,6 +371,7 @@ mod tests {
 
     #[test]
     fn missing_ref_is_error() {
+        let _interp = interp();
         let mut refs = Refs::new();
         refs.insert(("ghost".into(), None), None);
         assert!(eval_once("nd('ghost') + 1", 0.0, refs, &fparam()).is_err());
@@ -371,6 +379,7 @@ mod tests {
 
     #[test]
     fn result_coerces_to_int_and_bool() {
+        let _interp = interp();
         let ir = eval_once("2.7", 0.0, Refs::new(), &Param::Int { value: 0, vmin: -100, vmax: 100 })
             .unwrap();
         assert!(matches!(ir, Param::Int { value: 3, .. }), "float result rounds to nearest int");
@@ -380,12 +389,14 @@ mod tests {
 
     #[test]
     fn compile_error_surfaces() {
+        let _interp = interp();
         let ev = PyExprEvaluator::new().expect("interpreter");
         assert!(ev.compile("1 +").is_err(), "a syntax error must fail compile");
     }
 
     #[test]
     fn bare_nd_size1_array_coerces_to_scalar_float() {
+        let _interp = interp();
         // The canonical case: a producer emits shape [1]; bare nd('x') drives a Float.
         let mut refs = Refs::new();
         refs.insert(("x".into(), None), Some(f32_1d(&[3.5])));
@@ -395,6 +406,7 @@ mod tests {
 
     #[test]
     fn arithmetic_over_size1_refs_coerces_to_float() {
+        let _interp = interp();
         let mut refs = Refs::new();
         refs.insert(("a".into(), None), Some(f32_1d(&[2.0])));
         refs.insert(("b".into(), None), Some(f32_1d(&[3.0])));
@@ -404,6 +416,7 @@ mod tests {
 
     #[test]
     fn comparison_operators_on_bare_nd_drive_a_bool() {
+        let _interp = interp();
         let bp = Param::Bool { value: false };
         let refs = || {
             let mut r = Refs::new();
@@ -418,6 +431,7 @@ mod tests {
 
     #[test]
     fn pow_mod_floordiv_abs_delegate() {
+        let _interp = interp();
         let mut refs = Refs::new();
         refs.insert(("a".into(), None), Some(f32_1d(&[-3.0])));
         let f = |src: &str, r: Refs| match eval_once(src, 0.0, r, &fparam()).unwrap() {
@@ -431,6 +445,7 @@ mod tests {
 
     #[test]
     fn nonfinite_int_and_nonbool_trigger_error() {
+        let _interp = interp();
         let ip = Param::Int { value: 0, vmin: -100, vmax: 100 };
         assert!(eval_once("float('inf')", 0.0, Refs::new(), &ip).is_err(), "inf into Int errors, not i64::MAX");
         let tp = Param::Trigger { fired: false };
@@ -439,6 +454,7 @@ mod tests {
 
     #[test]
     fn globals_are_readable_as_a_namespace() {
+        let _interp = interp();
         // The spec's headline: an expression reads a global as `globals.<name>`, typed natively.
         let g = snap(&[("default_ufreq", GlobalValue::Float(30.0)), ("gain", GlobalValue::Int(4))]);
         let r = eval_with_globals("globals.default_ufreq * globals.gain", 0.0, Refs::new(), &fparam(), &g).unwrap();
@@ -452,6 +468,7 @@ mod tests {
 
     #[test]
     fn a_global_named_like_a_slot_or_dunder_is_still_readable() {
+        let _interp = interp();
         // `is_valid_global_name` permits leading-underscore names, so `_d` (the proxy's internal slot
         // name) and dunder-ish names must still read from the dict, not the proxy's own attributes.
         let g = snap(&[("_d", GlobalValue::Float(5.0)), ("__class__", GlobalValue::Int(9))]);
@@ -461,6 +478,7 @@ mod tests {
 
     #[test]
     fn missing_global_raises_a_not_defined_error() {
+        let _interp = interp();
         // Per the spec: no rename cascade — a stale `globals.<old>` just throws at eval time.
         let g = snap(&[("default_ufreq", GlobalValue::Float(30.0))]);
         let err = eval_with_globals("globals.gone + 1", 0.0, Refs::new(), &fparam(), &g).unwrap_err();
@@ -469,6 +487,7 @@ mod tests {
 
     #[test]
     fn compile_extracts_global_refs() {
+        let _interp = interp();
         let ev = PyExprEvaluator::new().expect("interpreter");
         let c = ev.compile("globals.a + nd('x') * globals.b + globals.a").unwrap();
         assert_eq!(c.global_refs, vec!["a", "b"], "distinct global names, in order");

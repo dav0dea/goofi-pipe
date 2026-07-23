@@ -265,14 +265,17 @@
 		</div>
 	{:else if descriptor.type === 'string'}
 		<div class="control">
-			{#if descriptor.options && descriptor.options.length > 0}
+			<!-- A refreshable param keeps the dropdown + ⟳ even with an EMPTY option list: a scan
+			     that found nothing (no devices, no streams) must still be re-runnable, and falling
+			     back to the plain text input would delete the only affordance for re-scanning. -->
+			{#if (descriptor.options && descriptor.options.length > 0) || (descriptor.refreshable && onRefresh)}
 				<div class="select-row">
 					<select
 						value={String(local ?? '')}
 						disabled={refreshing}
 						onchange={(e) => commit((e.currentTarget as HTMLSelectElement).value)}
 					>
-						{#each selectOptions(descriptor.options, String(local ?? '')) as opt}
+						{#each selectOptions(descriptor.options ?? [], String(local ?? '')) as opt}
 							<option value={opt}>{opt}</option>
 						{/each}
 					</select>

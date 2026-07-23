@@ -12,7 +12,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use goofi_core::{Data, Param};
-use goofi_node::{Inputs, NodeCtx, NodeManifest, Outputs, ParamGroups, ParamKey, RunPolicy};
+use goofi_node::{Inputs, NodeCtx, NodeManifest, Outputs, ParamGroups, ParamKey, Params, RunPolicy};
 use indexmap::IndexMap;
 use rayon::prelude::*;
 
@@ -1407,6 +1407,11 @@ impl Graph {
     ///
     /// Deliberately **not** a `Command`: it changes no persisted patch state, so it has no
     /// meaningful inverse, and the client records no history entry for it.
+    ///
+    /// Two limits worth knowing: a Python node re-runs the SOURCE CAPTURED AT DISCOVERY, so
+    /// editing the `.py` and restarting does not pick up the edit (rediscovery does); and the
+    /// `index_counters` carried over below are engine-side, so a Subprocess node's own child-side
+    /// numbering still restarts with its new process.
     pub fn restart_node(&mut self, uid: Uid) -> Result<(), String> {
         let entry = self.nodes.get(&uid).ok_or_else(|| format!("no such node {uid}"))?;
         let type_name = entry.manifest.type_name;
@@ -1420,7 +1425,11 @@ impl Graph {
 
         // The per-wire cells live in the entry while the wires themselves live on the graph, so
         // they must be rebuilt from `links` (in connection order) — a fresh empty map would
-        // leave the multi slot silently dead with every link still shown in the editor.
+        // leave the multi slot silently dead with every link still shown in the editor. Each
+        // wire KEEPS the frame it was last given: these cells are latest-wins caches, not
+        // instance state, and dropping them stalls the node until every upstream happens to emit
+        // again (for a slow or rate-capped producer, potentially a very long time).
+        let held = &self.nodes.get(&uid).expect("looked up above").multi_inputs;
         let multi_inputs: IndexMap<&'static str, Vec<WireCell>> = manifest
             .inputs
             .iter()
@@ -1430,18 +1439,33 @@ impl Graph {
                     .links
                     .iter()
                     .filter(|l| l.node_in == uid && l.slot_in == s.name)
-                    .map(|l| (l.node_out, l.slot_out, None))
+                    .map(|l| {
+                        let frame = held
+                            .get(s.name)
+                            .and_then(|cells| {
+                                cells.iter().find(|(u, slot, _)| *u == l.node_out && *slot == l.slot_out)
+                            })
+                            .and_then(|(_, _, frame)| frame.clone());
+                        (l.node_out, l.slot_out, frame)
+                    })
                     .collect();
                 (s.name, wires)
             })
             .collect();
 
         let entry = self.nodes.get_mut(&uid).expect("looked up above");
-        // The old `Execution` drops here: a detached worker is signalled and joined, which reaps
-        // the child process through the node's own `Drop`.
-        entry.exec = exec;
+        // Reap the old instance OFF the caller's thread. Dropping a `DetachedHandle` signals its
+        // worker and joins it, and the worker only observes that signal between jobs — so a
+        // worker parked inside a blocking `process()` (a subprocess roundtrip waits out its
+        // timeout) would hold the graph mutex for that whole window, freezing the tick, every
+        // viewer and every other RPC. The restart must never be the thing that freezes the app it
+        // is rescuing. An inline node's drop is trivial, so this costs one short-lived thread.
+        let old = std::mem::replace(&mut entry.exec, exec);
+        std::thread::spawn(move || drop(old));
         entry.params = params;
-        entry.inputs = manifest.inputs.iter().filter(|s| !s.multi).map(|s| (s.name, None)).collect();
+        // `inputs` is left as it stands: the manifest is unchanged (same registered type), so its
+        // slots already match, and each holds the last frame delivered — same rationale as the
+        // multi cells above.
         entry.multi_inputs = multi_inputs;
         entry.outputs = manifest.output_buffer();
         entry.ctx = ctx;
@@ -1521,12 +1545,20 @@ impl Graph {
         if !matches!(param, Param::Str { refresh: true, .. }) {
             return Err(format!("param `{group}.{name}` is not refreshable"));
         }
+        // Disjoint field borrows: the instance mutably, its live params immutably.
+        let live = Params::new(&entry.params);
         let fresh = match &mut entry.exec {
-            Execution::Inline(node) => node.on_param_refreshed(&ParamKey::new(group, name)),
+            Execution::Inline(node) => node.on_param_refreshed(&ParamKey::new(group, name), &live),
             // A detached node's instance lives on its worker and the request/response codec has
-            // no refresh op — same deferral as live `on_param_changed` propagation. The caller
-            // still reports completion, so the UI's spinner clears instead of hanging.
-            Execution::Detached(_) => None,
+            // no refresh op — the same deferral as live `on_param_changed` propagation. SAY SO
+            // rather than returning Ok with the old list: a silent success would present stale
+            // options as freshly scanned, which is worse than a visible refusal.
+            Execution::Detached(_) => {
+                return Err(format!(
+                    "`{group}.{name}` cannot be refreshed on the subprocess tier yet — its \
+                     request/response codec has no refresh op"
+                ))
+            }
         };
         if let Some(options) = &fresh {
             if let Some(Param::Str { options: slot, .. }) =
@@ -4155,8 +4187,109 @@ mod tests {
 
         g.restart_node(det).unwrap();
 
-        // The replaced handle joins its worker on drop, which reaps the child process.
-        assert_eq!(dropped.load(Ordering::SeqCst), 1, "exactly the old instance was dropped");
+        // The replaced handle still joins its worker (which reaps the child process through the
+        // node's own Drop) — just on a reaper thread rather than under the caller's graph lock,
+        // so this is a bounded wait rather than an immediate read.
+        for _ in 0..500 {
+            if dropped.load(Ordering::SeqCst) == 1 {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        panic!("the replaced instance was never dropped (got {})", dropped.load(Ordering::SeqCst));
+    }
+
+    // A Subprocess-isolated type WITH a refreshable param, for the tier-refusal test.
+    static GATE_PICKER_PARAMS: &[ParamDecl] = &[ParamDecl {
+        group: "audio",
+        name: "device",
+        spec: ParamSpec::Str { default: "none", options: &["none"], refresh: true },
+        default_expr: None,
+        doc: None,
+    }];
+    static GATE_PICKER_MANIFEST: NodeManifest = NodeManifest {
+        type_name: "GateSubprocPicker",
+        category: "test",
+        doc: "detached node with a refreshable param",
+        inputs: GATE_IN,
+        outputs: GATE_OUT,
+        params: GATE_PICKER_PARAMS,
+        isolation: Isolation::Subprocess,
+        factory: rt_stub_factory,
+    };
+
+    #[test]
+    fn restarting_a_busy_detached_node_does_not_block_the_graph() {
+        // The whole point of the restart button is rescuing a node that is stuck. Dropping the old
+        // handle JOINS its worker, and the worker only observes the shutdown signal between jobs —
+        // so reaping it inline would hold the graph mutex for the rest of a blocked process() call
+        // (up to a subprocess roundtrip's 10s timeout), freezing the tick, every viewer and every
+        // other RPC. The restart must never be the thing that freezes the app it is rescuing.
+        let gate = Gate::new();
+        let mut g = Graph::new();
+        register_gate(&mut g, gate.clone(), None, false);
+        let src = g.add_node("_TestConst", None).unwrap();
+        let det = g.add_node("GateSubproc", None).unwrap();
+        g.add_link(src, "out", det, "data").unwrap();
+        g.tick(); // dispatches a job; the worker blocks on the permit, inside process()
+        gate.wait_calls(1);
+
+        let t0 = Instant::now();
+        g.restart_node(det).unwrap();
+        let blocked_for = t0.elapsed();
+
+        assert!(
+            blocked_for < Duration::from_millis(500),
+            "restart returned only after {blocked_for:?} — it waited on the busy worker"
+        );
+        gate.open(); // let the reaped worker finish rather than leaking it
+    }
+
+    #[test]
+    fn restart_keeps_the_frames_already_delivered_to_its_inputs() {
+        // Input cells are latest-wins caches, not instance state. Keep one producer running and
+        // silence the other: if a restart dropped the cells, the silent producer's wire would
+        // vanish from the fan-in and the node would emit a SHORTER list. (Asserting on
+        // `latest_frame` alone cannot see this — it replays the last emitted frame when the node
+        // does not run at all.)
+        let mut g = Graph::new();
+        let fast = const_src(&mut g, 1.0);
+        let slow = const_src(&mut g, 2.0);
+        let col = g.add_node("_TestCollect", None).unwrap();
+        g.add_link(fast, "out", col, "ins").unwrap();
+        g.add_link(slow, "out", col, "ins").unwrap();
+        g.tick();
+        assert_eq!(as_f32_vec(&g.latest_frame(col, "out").unwrap()), vec![2.0, 1.0, 2.0]);
+
+        // Park the slow producer: a rate cap of 0.001 Hz means it will not run again in this
+        // test. (Clearing `autotrigger` would NOT silence it — a node with no triggering input
+        // has nothing to wait for and free-runs regardless.)
+        g.update_param(slow, "common", "max_frequency", Param::float(0.001, 0.0, 1e9)).unwrap();
+        g.restart_node(col).unwrap();
+        g.tick(); // `fast` emits again and re-triggers the node; `slow` stays quiet
+
+        assert_eq!(
+            as_f32_vec(&g.latest_frame(col, "out").unwrap()),
+            vec![2.0, 1.0, 2.0],
+            "the silent wire kept the frame it was given before the restart"
+        );
+    }
+
+    #[test]
+    fn refreshing_a_param_on_the_subprocess_tier_reports_that_it_cannot() {
+        // The request/response codec has no refresh op, so a detached node cannot answer one.
+        // Reporting success would echo a stale list as though it had just been re-scanned.
+        let gate = Gate::new();
+        let mut g = Graph::new();
+        g.register_dyn_type(
+            &GATE_PICKER_MANIFEST,
+            Box::new(move |_p| Box::new(GateNode { gate: gate.clone(), on_drop: None, fail: false })),
+        );
+        let det = g.add_node("GateSubprocPicker", None).unwrap();
+
+        let err = g.refresh_param(det, "audio", "device").unwrap_err();
+
+        assert!(err.contains("subprocess"), "the error names the tier that cannot answer: {err}");
     }
 
     #[test]
@@ -4200,7 +4333,7 @@ mod tests {
         scans: usize,
     }
     impl Node for Picker {
-        fn on_param_refreshed(&mut self, key: &goofi_node::ParamKey) -> Option<Vec<String>> {
+        fn on_param_refreshed(&mut self, key: &goofi_node::ParamKey, _p: &Params<'_>) -> Option<Vec<String>> {
             if key.name != "device" {
                 return None;
             }
@@ -4267,13 +4400,45 @@ mod tests {
     }
 
     #[test]
-    fn refresh_param_on_a_node_without_the_hook_yields_no_options() {
-        // The default trait hook returns None: the param stays as declared. The UI still needs
-        // its spinner cleared, which the bridge echo — not this return — is responsible for.
+    fn refresh_param_rejects_a_string_param_a_node_never_declared_refreshable() {
         let mut g = Graph::new();
         let uid = g.add_node("Oscillator", None).unwrap();
-        // Oscillator's `waveform` is a string param, but not declared refreshable.
+        // Oscillator's `waveform` is a string param with a FIXED list — the UI shows no button.
         assert!(g.refresh_param(uid, "oscillator", "waveform").is_err());
+    }
+
+    #[test]
+    fn refresh_param_on_a_node_without_the_hook_succeeds_with_no_options() {
+        // A node may declare a param refreshable and implement no hook (the default returns
+        // None). That is a successful "nothing new to offer", NOT an error: the param keeps the
+        // options it had, and the caller still reports completion so the UI's spinner clears.
+        static NO_HOOK: NodeManifest = NodeManifest {
+            type_name: "_RefreshNoHook",
+            category: "runtime",
+            doc: "declares a refreshable param but implements no hook",
+            inputs: &[],
+            outputs: RT_OUT,
+            params: PICKER_PARAMS,
+            isolation: Isolation::InProcess,
+            factory: rt_stub_factory,
+        };
+        #[derive(Default)]
+        struct NoHook;
+        impl Node for NoHook {
+            fn process(&mut self, _i: &Inputs<'_>, _o: &mut Outputs<'_>, _c: &mut NodeCtx, _p: &Params<'_>) -> NodeResult {
+                Ok(())
+            }
+        }
+        let mut g = Graph::new();
+        g.register_dyn_type(&NO_HOOK, Box::new(|_p| Box::<NoHook>::default()));
+        let uid = g.add_node("_RefreshNoHook", None).unwrap();
+
+        assert_eq!(g.refresh_param(uid, "audio", "device"), Ok(None));
+        assert_eq!(
+            options_of(&g, uid, "audio", "device"),
+            Some(vec!["none".to_string()]),
+            "the declared options are left exactly as they were"
+        );
     }
 
     // A runtime source built by a captured closure (not a bare fn pointer) —
@@ -4858,6 +5023,11 @@ mod tests {
         };
         let osc = g.add_node("Oscillator", None).unwrap();
         unbounded(&mut g, osc);
+        // A sample rate far above the tick rate, so the Oscillator has whole samples to emit on
+        // EVERY tick. At its 250 Hz default an unbounded tick loop outruns the generator and the
+        // node early-returns with nothing — the buffers would then never trigger and the
+        // measurement would be dominated by empty ticks doing no work at all.
+        g.update_param(osc, "oscillator", "sfreq", Param::float(1.0e6, 1.0, 1.0e9)).unwrap();
         for _ in 0..8 {
             let b = g.add_node("Buffer", None).unwrap();
             g.update_param(b, "buffer", "size", Param::int(256, 1, 1_000_000)).unwrap();
@@ -4868,6 +5038,14 @@ mod tests {
         for _ in 0..100 {
             g.tick(); // warm up (buffers fill, buffers/paths hot)
         }
+        // A buffer's emitted frame carries a source-origin `index`; it advances only on a tick
+        // that actually propagated, so comparing it across the loop proves the ticks did work.
+        let buf_index = |g: &Graph, u: Uid| {
+            g.latest_frame(u, "out").and_then(|d| d.meta().index()).unwrap_or(0)
+        };
+        let a_buffer = *g.node_uids().iter().find(|&&u| g.type_name(u) == Some("Buffer")).unwrap();
+        let index_before = buf_index(&g, a_buffer);
+
         let iters = 3000usize;
         let mut lat: Vec<f64> = Vec::with_capacity(iters);
         for _ in 0..iters {
@@ -4875,8 +5053,17 @@ mod tests {
             g.tick();
             lat.push(t0.elapsed().as_secs_f64() * 1e6); // microseconds
         }
+        let advanced = buf_index(&g, a_buffer).saturating_sub(index_before);
         // Every buffer produced a frame (stability — the graph propagated end-to-end each tick).
         assert!(g.node_uids().iter().all(|&u| g.latest_frame(u, "out").is_some()), "all nodes emit");
+        // …and the timed ticks were PRODUCTIVE, so the distribution below measures the fan-out
+        // doing real work rather than a graph that idled through most of the loop. (At the
+        // Oscillator's 250 Hz default an unbounded loop outruns the generator and most ticks
+        // emit nothing — the measurement then says nothing about the fan-out cost.)
+        assert!(
+            advanced as usize >= iters,
+            "only {advanced} of {iters} timed ticks propagated — the benchmark is measuring idle ticks"
+        );
 
         lat.sort_by(|a, b| a.partial_cmp(b).unwrap());
         let mean = lat.iter().sum::<f64>() / iters as f64;
@@ -4886,15 +5073,12 @@ mod tests {
              min={:.1}us  p50={:.1}us  p99={:.1}us  max={:.1}us  mean={mean:.1}us",
             lat[0], p(0.50), p(0.99), lat[iters - 1]
         );
-        // A full 9-node graph tick must stay a tiny fraction of a 60 Hz budget (16.6 ms) — a
-        // generous ceiling that still catches a regression to millisecond-scale per-tick cost.
-        //
         // Gate on the MEDIAN, not p99. Cargo runs 150+ sibling tests across every core while this
-        // loop is timed, so the tail is dominated by scheduler preemption — p99 swings 2.4-2.7 ms
-        // on a busy desktop and well under it on an idle one, which would make this test track
-        // machine load rather than the code. The median barely moves (measured 506-519 us across
-        // loaded and idle runs), so a 4x headroom here is a real regression gate that does not flap.
-        assert!(p(0.50) < 2000.0, "median tick {:.1}us exceeds the budget", p(0.50));
+        // loop is timed, so the tail is scheduler preemption, not code: p99 swings 0.5-0.8 ms and
+        // max touches 3.5 ms under suite load while the median barely moves (measured 299-319 us
+        // loaded, 305 us idle). A 3x ceiling on the median is tight enough to catch a real
+        // regression in the fan-out path and loose enough not to track machine load.
+        assert!(p(0.50) < 1000.0, "median tick {:.1}us exceeds the budget", p(0.50));
     }
 
     #[test]

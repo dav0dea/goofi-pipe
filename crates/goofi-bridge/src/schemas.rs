@@ -438,6 +438,42 @@ mod tests {
         factory: stub_factory,
     };
 
+    static OVERRIDE_PARAMS: &[ParamDecl] = &[ParamDecl {
+        group: "common",
+        name: "autotrigger",
+        spec: goofi_node::ParamSpec::Bool { default: true },
+        default_expr: None,
+        doc: Some("On by default: this node is a source."),
+    }];
+    static OVERRIDE_MANIFEST: NodeManifest = NodeManifest {
+        type_name: "OverridesCommon",
+        category: "test",
+        doc: "declares its own common.autotrigger",
+        inputs: &[],
+        outputs: T_OUT,
+        params: OVERRIDE_PARAMS,
+        isolation: Isolation::InProcess,
+        factory: stub_factory,
+    };
+
+    #[test]
+    fn a_nodes_own_doc_wins_over_the_universal_common_one() {
+        // A node that redeclares a `common.*` param owns its help text too — otherwise a source
+        // node's "on by default" tooltip would be replaced by the generic explanation of what
+        // autotrigger means in general.
+        let mut g = Graph::new();
+        g.register_dyn_type(&OVERRIDE_MANIFEST, Box::new(|_| unreachable!()));
+        let cat = catalog_types(&g);
+        let ty = cat.as_array().unwrap().iter().find(|v| v["type"] == "OverridesCommon").unwrap();
+
+        assert_eq!(ty["params"]["common"]["autotrigger"]["doc"], json!("On by default: this node is a source."));
+        // The params it did NOT redeclare still get the universal text.
+        assert!(
+            ty["params"]["common"]["max_frequency"]["doc"].as_str().unwrap().contains("Rate cap"),
+            "the fallback still applies to the rest of the group"
+        );
+    }
+
     #[test]
     fn the_catalog_carries_each_params_doc() {
         // The frontend renders a param tooltip from the CATALOG descriptor (the instance path

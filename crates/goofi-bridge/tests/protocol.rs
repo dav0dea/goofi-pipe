@@ -1947,14 +1947,25 @@ async fn load_reads_a_patch_from_a_backend_path() {
 
     let mut replaced = None;
     let mut save_path = None;
+    let mut order: Vec<&str> = Vec::new();
     while replaced.is_none() || save_path.is_none() {
         let m = recv_text(&mut ws).await;
         match m.get("event").and_then(|v| v.as_str()) {
-            Some("graph_replaced") => replaced = Some(m),
-            Some("save_path_changed") => save_path = Some(m),
+            Some("graph_replaced") => {
+                order.push("graph_replaced");
+                replaced = Some(m);
+            }
+            Some("save_path_changed") => {
+                order.push("save_path_changed");
+                save_path = Some(m);
+            }
             _ => {}
         }
     }
+    // ORDER MATTERS: the graph_replaced snapshot carries `save_path: null` (the manager keeps no
+    // save-path state), and the client applies it wholesale — so announcing the path first would
+    // be immediately clobbered and the title bar would forget the file it just loaded.
+    assert_eq!(order, ["graph_replaced", "save_path_changed"], "the path is announced last");
     let types: Vec<String> = replaced.unwrap()["payload"]["nodes"]
         .as_array()
         .unwrap()
@@ -1991,6 +2002,89 @@ async fn load_reports_a_missing_file_instead_of_replacing_the_graph() {
         "the pre-load graph survives both failures"
     );
     let _ = std::fs::remove_file(&junk);
+}
+
+// A node whose FIRST instance fails to boot and whose second succeeds — so a restart is
+// observable over the wire rather than just "the op did not error".
+static FLAKY_MANIFEST: goofi_node::NodeManifest = goofi_node::NodeManifest {
+    type_name: "FlakyBoot",
+    category: "python",
+    doc: "fails setup once, then succeeds",
+    inputs: &[],
+    outputs: SERVE_OUT,
+    params: SERVE_PARAMS,
+    isolation: goofi_node::Isolation::InProcess,
+    factory: stub_factory,
+};
+
+struct FlakyBoot {
+    fail: bool,
+}
+impl goofi_node::Node for FlakyBoot {
+    fn setup(&mut self, _c: &mut goofi_node::NodeCtx, _p: &goofi_node::Params<'_>) -> goofi_node::NodeResult {
+        if self.fail {
+            return Err("boot failed".into());
+        }
+        Ok(())
+    }
+    fn process(
+        &mut self,
+        _i: &goofi_node::Inputs<'_>,
+        _o: &mut goofi_node::Outputs<'_>,
+        _c: &mut goofi_node::NodeCtx,
+        _p: &goofi_node::Params<'_>,
+    ) -> goofi_node::NodeResult {
+        Ok(())
+    }
+}
+
+async fn start_server_with_flaky_type() -> String {
+    let state = AppState::new();
+    let builds = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    state.graph.lock().unwrap().register_dyn_type(
+        &FLAKY_MANIFEST,
+        Box::new(move |_| {
+            let n = builds.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Box::new(FlakyBoot { fail: n == 0 })
+        }),
+    );
+    spawn_tick(state.graph.clone());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        serve_app(listener, state, None).await.unwrap();
+    });
+    format!("ws://{addr}")
+}
+
+#[tokio::test]
+async fn restart_node_rebuilds_the_instance_and_clears_the_error() {
+    // The button exists to rescue a crashed node, so the wire-level proof is that the node's
+    // error goes away — not merely that the op returned Ok.
+    let base = start_server_with_flaky_type().await;
+    let (mut ws, _) = connect_async(format!("{base}/control")).await.unwrap();
+    let _hello = recv_text(&mut ws).await;
+
+    let uid = call(&mut ws, 1, "add_node", json!({ "type": "FlakyBoot" })).await["result"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    ws.send(Message::Text(
+        json!({ "id": 2, "op": "restart_node", "payload": { "node": uid } }).to_string(),
+    ))
+    .await
+    .unwrap();
+
+    let update = loop {
+        let m = recv_text(&mut ws).await;
+        if m.get("event").and_then(|v| v.as_str()) == Some("state_update")
+            && m["payload"]["node"] == json!(uid)
+            && m["payload"]["error"].is_null()
+        {
+            break m;
+        }
+    };
+    assert!(update["payload"]["error"].is_null(), "the second instance booted clean");
 }
 
 #[tokio::test]
@@ -2048,7 +2142,11 @@ static PICKER_MANIFEST: goofi_node::NodeManifest = goofi_node::NodeManifest {
 #[derive(Default)]
 struct Picker;
 impl goofi_node::Node for Picker {
-    fn on_param_refreshed(&mut self, key: &goofi_node::ParamKey) -> Option<Vec<String>> {
+    fn on_param_refreshed(
+        &mut self,
+        key: &goofi_node::ParamKey,
+        _p: &goofi_node::Params<'_>,
+    ) -> Option<Vec<String>> {
         (key.name == "device").then(|| vec!["mic".to_string(), "line-in".to_string()])
     }
     fn process(
@@ -2060,6 +2158,48 @@ impl goofi_node::Node for Picker {
     ) -> goofi_node::NodeResult {
         Ok(())
     }
+}
+
+// The same refreshable param, on a node that implements NO refresh hook.
+static MUTE_MANIFEST: goofi_node::NodeManifest = goofi_node::NodeManifest {
+    type_name: "MutePicker",
+    category: "python",
+    doc: "declares a refreshable device list but implements no hook",
+    inputs: &[],
+    outputs: SERVE_OUT,
+    params: PICKER_PARAMS,
+    isolation: goofi_node::Isolation::InProcess,
+    factory: stub_factory,
+};
+
+#[derive(Default)]
+struct MutePicker;
+impl goofi_node::Node for MutePicker {
+    fn process(
+        &mut self,
+        _i: &goofi_node::Inputs<'_>,
+        _o: &mut goofi_node::Outputs<'_>,
+        _c: &mut goofi_node::NodeCtx,
+        _p: &goofi_node::Params<'_>,
+    ) -> goofi_node::NodeResult {
+        Ok(())
+    }
+}
+
+async fn start_server_with_picker_lacking_a_hook() -> String {
+    let state = AppState::new();
+    state
+        .graph
+        .lock()
+        .unwrap()
+        .register_dyn_type(&MUTE_MANIFEST, Box::new(|_| Box::<MutePicker>::default()));
+    spawn_tick(state.graph.clone());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        serve_app(listener, state, None).await.unwrap();
+    });
+    format!("ws://{addr}")
 }
 
 async fn start_server_with_picker() -> String {
@@ -2115,9 +2255,7 @@ async fn refresh_param_echoes_fresh_options_and_clears_the_spinner() {
 }
 
 #[tokio::test]
-async fn refresh_param_reports_completion_even_when_the_node_offers_nothing() {
-    // The hook returning nothing must still clear the spinner, or the UI stalls for its full
-    // 15s safety timeout on every node that declares a refreshable param without a hook.
+async fn refresh_param_rejects_a_param_that_is_not_refreshable() {
     let base = start_server_with_runtime_type().await;
     let (mut ws, _) = connect_async(format!("{base}/control")).await.unwrap();
     let _hello = recv_text(&mut ws).await;
@@ -2131,4 +2269,38 @@ async fn refresh_param_reports_completion_even_when_the_node_offers_nothing() {
     // Oscillator's waveform is a fixed list: refusing is right, and the frontend lifts the
     // spinner on a rejected call.
     assert!(reply["error"].as_str().unwrap().contains("not refreshable"), "got {reply:?}");
+}
+
+#[tokio::test]
+async fn refresh_param_reports_completion_even_when_the_node_offers_nothing() {
+    // A node that declares a refreshable param but implements no hook must still get its echo:
+    // the ⟳ spinner is cleared by `refreshed_params`, so without it the button spins for its
+    // full 15s safety timeout on every such node.
+    let base = start_server_with_picker_lacking_a_hook().await;
+    let (mut ws, _) = connect_async(format!("{base}/control")).await.unwrap();
+    let _hello = recv_text(&mut ws).await;
+
+    let uid = call(&mut ws, 1, "add_node", json!({ "type": "MutePicker" })).await["result"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    ws.send(Message::Text(
+        json!({ "id": 2, "op": "refresh_param", "payload": { "node": uid, "group": "audio", "name": "device" } })
+            .to_string(),
+    ))
+    .await
+    .unwrap();
+
+    let update = loop {
+        let m = recv_text(&mut ws).await;
+        if m.get("event").and_then(|v| v.as_str()) == Some("state_update") && m["payload"]["node"] == json!(uid) {
+            break m;
+        }
+    };
+    assert_eq!(update["payload"]["refreshed_params"], json!([["audio", "device"]]), "the spinner is cleared");
+    assert_eq!(
+        update["payload"]["params"]["audio"]["device"]["options"],
+        json!(["none"]),
+        "and the declared options are left as they were"
+    );
 }

@@ -37,10 +37,18 @@ pub fn run_setup(py: Python<'_>, instance: &Bound<'_, PyAny>, params: &Groups) -
 pub fn run_refresh(
     py: Python<'_>,
     instance: &Bound<'_, PyAny>,
+    params: &Groups,
     group: &str,
     name: &str,
 ) -> Option<Vec<String>> {
     let method = instance.getattr(format!("refresh_{group}_{name}").as_str()).ok()?;
+    // Enumerate against the node's CURRENT settings, exactly as `process` would see them — a
+    // node whose input is unwired never ticks, so without this its `self.params` would be frozen
+    // at construction time forever.
+    if let Err(e) = apply_params(py, instance, params) {
+        eprintln!("refresh_{group}_{name}: could not apply params: {e}");
+        return None;
+    }
     match method.call0() {
         Ok(v) => match v.extract::<Vec<String>>() {
             Ok(options) => Some(options),
@@ -52,7 +60,7 @@ pub fn run_refresh(
         Err(e) => {
             // No UI warn channel exists for this (the ⟳ button reports only "no new options"),
             // so surface the traceback on stderr rather than swallowing it whole.
-            eprintln!("refresh_{group}_{name}() raised: {}", e.value(py));
+            eprintln!("refresh_{group}_{name}() raised: {e}");
             None
         }
     }

@@ -9,7 +9,7 @@
 //! error, which reads as "the click did nothing".
 
 use serde_json::{json, Value};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 /// One directory level, shaped as the frontend's `DirListing`.
 pub fn list_dir(path: Option<&str>) -> Value {
@@ -21,6 +21,14 @@ pub fn list_dir(path: Option<&str>) -> Value {
         "entries": entries(&base),
         "roots": roots(),
     })
+}
+
+/// Interpret a user-supplied path the same way the browser does — `~` expanded, made absolute
+/// and symlink-free — so a path that can be navigated to is also one that can be saved to or
+/// loaded from. Shared with the `save` / `load` arms; without it those take `~/patches` literally
+/// and create (or fail to find) a directory named `~`.
+pub fn resolve(path: &str) -> String {
+    display(&normalize(&expand_tilde(path)))
 }
 
 /// The directory a request lands in: `~` expanded, made absolute and symlink-free, and
@@ -58,6 +66,9 @@ fn normalize(path: &Path) -> PathBuf {
     if let Ok(real) = abs.canonicalize() {
         return real;
     }
+    // Not on disk, so resolve `.`/`..` ourselves before walking ancestors: `Path::file_name()`
+    // is None for `..`, which would drop the component silently and land somewhere else entirely.
+    let abs = lexical(&abs);
     let mut tail = Vec::new();
     let mut cur = abs.as_path();
     while let Some(parent) = cur.parent() {
@@ -69,6 +80,22 @@ fn normalize(path: &Path) -> PathBuf {
         cur = parent;
     }
     abs
+}
+
+/// Resolve `.` and `..` textually. Only used for paths that are NOT on disk — an existing path
+/// goes through `canonicalize`, which resolves them symlink-aware.
+fn lexical(path: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for c in path.components() {
+        match c {
+            Component::ParentDir => {
+                out.pop();
+            }
+            Component::CurDir => {}
+            other => out.push(other.as_os_str()),
+        }
+    }
+    out
 }
 
 fn home() -> PathBuf {
@@ -107,7 +134,10 @@ fn entries(base: &Path) -> Value {
         // `metadata()` follows symlinks (unlike `entry.file_type()`), so a link to a directory
         // browses as one. A broken link or an unreadable child errors here and is skipped.
         let Ok(meta) = path.metadata() else { continue };
-        let name = entry.file_name().to_string_lossy().into_owned();
+        // A name that is not valid UTF-8 cannot survive the JSON round trip: lossy-encoding it
+        // yields an entry the browser can neither open nor key uniquely (two different names can
+        // collapse to the same replacement string). Skip it rather than show something broken.
+        let Some(name) = entry.file_name().to_str().map(str::to_owned) else { continue };
         let is_dir = meta.is_dir();
         let mtime = meta
             .modified()
@@ -196,7 +226,11 @@ mod tests {
 
         let listing = list_dir(Some(&patch.to_string_lossy()));
 
-        assert_eq!(listing["path"].as_str().unwrap(), display(&normalize(tmp.path())));
+        // Compare against a literal built from the temp dir itself, NOT against `normalize(..)`
+        // — asserting with the function under test on both sides would accept, for example, a
+        // normalize that reversed the path segments it re-attaches.
+        let expected = std::fs::canonicalize(tmp.path()).unwrap().to_string_lossy().into_owned();
+        assert_eq!(listing["path"].as_str().unwrap(), expected);
         assert_eq!(names(&listing), ["patch.gfi"]);
     }
 
@@ -275,7 +309,60 @@ mod tests {
         let listing = list_dir(Some("/definitely/not/a/directory"));
 
         assert_eq!(names(&listing), Vec::<String>::new());
-        assert!(listing["path"].as_str().unwrap().starts_with('/'));
+        // The path echoes back EXACTLY, in order — this is the only test that reaches
+        // `normalize`'s not-on-disk branch, so it has to pin the reassembled segments rather
+        // than settle for "looks absolute".
+        assert_eq!(listing["path"].as_str().unwrap(), "/definitely/not/a/directory");
+    }
+
+    #[test]
+    fn a_not_yet_existing_path_under_a_real_directory_keeps_its_segments() {
+        // The Save-As case: the parent exists, the rest does not. `normalize` canonicalizes the
+        // longest existing ancestor and re-attaches the tail — in the right order.
+        let tmp = TempDir::new("newpath");
+        let real = std::fs::canonicalize(tmp.path()).unwrap();
+        let target = tmp.path().join("new/deeper");
+
+        let listing = list_dir(Some(&target.to_string_lossy()));
+
+        assert_eq!(listing["path"].as_str().unwrap(), real.join("new/deeper").to_string_lossy());
+    }
+
+    #[test]
+    fn a_parent_dir_component_resolves_instead_of_vanishing() {
+        // `..` has no `file_name()`, so the ancestor walk would silently drop it and land in a
+        // different directory than the user typed.
+        let tmp = TempDir::new("dotdot");
+        let real = std::fs::canonicalize(tmp.path()).unwrap();
+        let target = tmp.path().join("missing/../also-missing");
+
+        let listing = list_dir(Some(&target.to_string_lossy()));
+
+        assert_eq!(listing["path"].as_str().unwrap(), real.join("also-missing").to_string_lossy());
+    }
+
+    #[test]
+    fn a_non_utf8_entry_name_is_skipped_rather_than_mangled() {
+        use std::os::unix::ffi::OsStrExt;
+        let tmp = TempDir::new("badname");
+        tmp.file("fine.txt");
+        // 0xFF is not valid UTF-8; lossy-encoding it would emit an entry that cannot be opened
+        // and whose `path` key can collide with another undecodable name.
+        let bad = tmp.path().join(std::ffi::OsStr::from_bytes(b"bad\xff"));
+        std::fs::write(&bad, b"x").unwrap();
+
+        let listing = list_dir(Some(&tmp.path().to_string_lossy()));
+
+        assert_eq!(names(&listing), ["fine.txt"]);
+    }
+
+    #[test]
+    fn resolve_expands_a_tilde_for_the_save_and_load_arms() {
+        // `save`/`load` share this with the browser, so a path the user can navigate to is a
+        // path they can write to. Compared against the raw HOME string, not against `home()`.
+        let home = std::env::var("HOME").expect("HOME is set in the test environment");
+        assert_eq!(resolve("~/patches/x.gfi"), format!("{home}/patches/x.gfi"));
+        assert_eq!(resolve("/tmp"), "/tmp", "an absolute path is untouched");
     }
 
     #[test]

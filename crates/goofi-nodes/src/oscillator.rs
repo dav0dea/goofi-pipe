@@ -155,8 +155,8 @@ static PARAMS: &[ParamDecl] = &[
         spec: ParamSpec::Float { default: 250.0, min: 1.0, max: 10_000.0 },
         default_expr: None,
         doc: Some(
-            "Sample rate WITHIN each emitted frame, in Hz. With the rate cap below it also sets \
-             how many samples a frame carries.",
+            "Sample rate WITHIN each emitted frame, in Hz. Together with this node's update rate \
+             (common.max_frequency) it decides how many samples each frame carries.",
         ),
     },
     ParamDecl {

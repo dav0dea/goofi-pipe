@@ -96,12 +96,14 @@ fn py_type_from_discovered(path: &Path, d: Discovered) -> PyNodeType {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testlock::interp;
     use goofi_node::ParamGroups;
 
     // `camel` is unit-tested in goofi-node (its owner); no need to re-test the re-export here.
 
     #[test]
     fn a_broken_python_source_builds_an_error_node_instead_of_panicking() {
+        let _interp = interp();
         // The factory runs under the manager's graph mutex; a panic on a per-instance construction
         // failure would poison it and kill the whole control plane. build_py_node must instead
         // return a node that surfaces the failure terminally on setup() (the bootstrap channel).

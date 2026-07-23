@@ -88,8 +88,10 @@ impl Node for PyNode {
         })
     }
 
-    fn on_param_refreshed(&mut self, key: &goofi_node::ParamKey) -> Option<Vec<String>> {
-        attach(|py| goofi_pymod::exec::run_refresh(py, self.instance.bind(py), &key.group, &key.name))
+    fn on_param_refreshed(&mut self, key: &goofi_node::ParamKey, p: &Params<'_>) -> Option<Vec<String>> {
+        attach(|py| {
+            goofi_pymod::exec::run_refresh(py, self.instance.bind(py), p.groups(), &key.group, &key.name)
+        })
     }
 
     fn process(&mut self, inp: &Inputs<'_>, out: &mut Outputs<'_>, _c: &mut NodeCtx, p: &Params<'_>) -> NodeResult {
@@ -179,16 +181,7 @@ mod tests {
         PyNode::from_source(src, vec!["data"], vec!["out"]).expect("compile node")
     }
 
-    /// These tests share ONE embedded interpreter while cargo runs them on parallel threads, so
-    /// a test that reads process-global interpreter state (`sys._is_gil_enabled`) can observe a
-    /// sibling mid-import and fail spuriously. Every test that compiles or runs a node takes
-    /// this lock for its duration, which makes the GIL assertions mean what they say.
-    static INTERP: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
-    fn interp() -> std::sync::MutexGuard<'static, ()> {
-        // Recover from a poisoned lock: one failing test must not cascade into all the others.
-        INTERP.lock().unwrap_or_else(|e| e.into_inner())
-    }
+    use crate::testlock::interp;
 
     // A device picker: the node supplies fresh options through the `refresh_<group>_<name>`
     // method convention, which is how a Python node answers the UI's re-enumerate button.
@@ -208,11 +201,46 @@ mod tests {
     );
 
     #[test]
+    fn a_refresh_hook_sees_the_params_as_they_are_now() {
+        // The hook is how a picker enumerates against its CURRENT settings (a host, a driver, a
+        // directory). Without applying the live params first it reads whatever they were at the
+        // last setup/process — permanently stale for a node whose input is unwired, since such a
+        // node never ticks.
+        const SCOPED: &str = concat!(
+            "import goofi\n",
+            "class Scoped(goofi.Node):\n",
+            "    def config_input_slots(self):\n",
+            "        return {'data': goofi.DataType.ARRAY}\n",
+            "    def config_output_slots(self):\n",
+            "        return {'out': goofi.DataType.ARRAY}\n",
+            "    def config_params(self):\n",
+            "        return {'audio': {'host': goofi.StringParam('alsa'),\n",
+            "                          'device': goofi.StringParam('none', refresh=True)}}\n",
+            "    def refresh_audio_device(self):\n",
+            "        return [self.params.audio.host + ':0']\n",
+            "    def process(self, data):\n",
+            "        return {'out': data.data}\n",
+        );
+        let _interp = interp();
+        let mut node = mk(SCOPED);
+        let mut params = ParamGroups::new();
+        let mut audio = IndexMap::new();
+        audio.insert("host".to_string(), Param::Str { value: "jack".into(), options: None, refresh: false });
+        params.insert("audio".to_string(), audio);
+
+        assert_eq!(
+            node.on_param_refreshed(&ParamKey::new("audio", "device"), &Params::new(&params)),
+            Some(vec!["jack:0".to_string()]),
+            "the hook enumerated against the live `host`, not the value it was constructed with"
+        );
+    }
+
+    #[test]
     fn python_node_supplies_fresh_options_by_method_convention() {
         let _interp = interp();
         let mut node = mk(PICKER);
         assert_eq!(
-            node.on_param_refreshed(&ParamKey::new("audio", "device")),
+            node.on_param_refreshed(&ParamKey::new("audio", "device"), &Params::new(&ParamGroups::new())),
             Some(vec!["mic".to_string(), "line-in".to_string()])
         );
     }
@@ -223,7 +251,7 @@ mod tests {
         // Reported as "no options", never as an error: the button must not break a node that
         // simply does not implement the convention.
         let mut node = mk(DOUBLE);
-        assert_eq!(node.on_param_refreshed(&ParamKey::new("audio", "device")), None);
+        assert_eq!(node.on_param_refreshed(&ParamKey::new("audio", "device"), &Params::new(&ParamGroups::new())), None);
     }
 
     #[test]
@@ -242,7 +270,7 @@ mod tests {
             "        return {'out': data.data}\n",
         );
         let mut node = mk(BAD);
-        assert_eq!(node.on_param_refreshed(&ParamKey::new("audio", "device")), None);
+        assert_eq!(node.on_param_refreshed(&ParamKey::new("audio", "device"), &Params::new(&ParamGroups::new())), None);
     }
 
     #[test]
@@ -261,7 +289,7 @@ mod tests {
             "        return {'out': data.data * 2.0}\n",
         );
         let mut node = mk(RAISER);
-        assert_eq!(node.on_param_refreshed(&ParamKey::new("audio", "device")), None);
+        assert_eq!(node.on_param_refreshed(&ParamKey::new("audio", "device"), &Params::new(&ParamGroups::new())), None);
         assert_eq!(run(&mut node, &[1.0, 2.0]), vec![2.0, 4.0], "the node still ticks");
     }
 

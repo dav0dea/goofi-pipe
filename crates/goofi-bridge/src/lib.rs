@@ -925,8 +925,10 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
             "serialize" => Ok(json!({ "yaml": g.serialize() })),
             "save" => {
                 let yaml = g.serialize();
-                let path = payload.get("path").and_then(|v| v.as_str());
-                if let Some(p) = path {
+                // Expand `~` exactly as the browser does, or a path the user could navigate to
+                // would not be writable — the two must agree on what a path means.
+                let path = payload.get("path").and_then(|v| v.as_str()).map(fsbrowse::resolve);
+                if let Some(p) = &path {
                     std::fs::write(p, &yaml).map_err(|e| format!("save failed: {e}"))?;
                 }
                 Ok(json!({ "path": path, "yaml": yaml }))
@@ -936,11 +938,10 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
             // reset history, announce — must not drift between them, so they share an arm.
             "load_text" | "load" => {
                 let (content, from_path) = if op == "load" {
-                    let path = payload
-                        .get("path")
-                        .and_then(|v| v.as_str())
-                        .ok_or("load: missing path")?;
-                    let yaml = std::fs::read_to_string(path)
+                    let path = fsbrowse::resolve(
+                        payload.get("path").and_then(|v| v.as_str()).ok_or("load: missing path")?,
+                    );
+                    let yaml = std::fs::read_to_string(&path)
                         .map_err(|e| format!("load failed: {e}"))?;
                     (yaml, Some(path))
                 } else {
@@ -953,11 +954,6 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
                 // Parse BEFORE announcing: a rejected patch must not leave the title bar naming
                 // a file the graph was never loaded from.
                 g.load_doc(&content)?;
-                if let Some(path) = from_path {
-                    // The patch now has a home on disk — the title bar names it and a later
-                    // plain Save overwrites it without re-prompting.
-                    events.push(event("save_path_changed", json!({ "save_path": path })));
-                }
                 // A load fully resets the session — there is nothing to undo across it (spec §3:
                 // no load command / no checkpoint), so drop every session's command history.
                 state.history.lock().unwrap().clear();
@@ -965,6 +961,14 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
                     "graph_replaced",
                     schemas::snapshot(&g, &state.instance_id, false),
                 ));
+                if let Some(path) = from_path {
+                    // The patch now has a home on disk — the title bar names it and a later plain
+                    // Save overwrites it without re-prompting. AFTER `graph_replaced`, whose
+                    // snapshot carries `save_path: null` (the manager keeps no save-path state)
+                    // and is applied wholesale by the client — announcing first would be
+                    // immediately clobbered.
+                    events.push(event("save_path_changed", json!({ "save_path": path })));
+                }
                 Ok(json!({ "ok": true }))
             }
             // Session-scoped undo/redo over the central command history. The graph mutation reaches

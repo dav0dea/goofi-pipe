@@ -197,12 +197,32 @@ fn renaming_a_producer_keeps_the_real_evaluator_expression_resolving() {
 /// $GOOFI_PYMOD_TEST_PYTHON, else the build-time PYO3_PYTHON (the `.ftvenv` build.rs points
 /// pyo3 at, which `./scripts/provision-goofi-py.sh` installs `goofi` into).
 fn probe_python() -> String {
+    let mut cands: Vec<String> = Vec::new();
     if let Ok(p) = std::env::var("GOOFI_PYMOD_TEST_PYTHON") {
         if !p.is_empty() {
-            return p;
+            cands.push(p);
         }
     }
-    goofi_py::interpreter_path().expect("no FT interpreter (PYO3_PYTHON) for the discovery probe")
+    cands.extend(goofi_py::interpreter_path());
+    for cand in &cands {
+        let ok = std::process::Command::new(cand)
+            .args(["-c", "import goofi"])
+            .env_remove("PYTHONPATH")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        if ok {
+            return cand.clone();
+        }
+    }
+    // Check the precondition HERE: without it this fails far downstream as an empty discovery
+    // result, which reads like a discovery bug rather than a missing wheel.
+    panic!(
+        "no python with `goofi` importable for the discovery probe (tried {cands:?}). \
+         Provision one with ./scripts/provision-goofi-py.sh, or set GOOFI_PYMOD_TEST_PYTHON."
+    )
 }
 
 #[test]

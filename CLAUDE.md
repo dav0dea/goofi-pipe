@@ -207,10 +207,14 @@ tense with its measured duration for exactly that reason.
 - `.ftvenv` — free-threaded 3.14t: the in-process host **and** the introspection probe.
 - `.venv` — a GIL python: the subprocess child.
 
-Both need the `goofi` wheel; provision reproducibly with `scripts/provision-goofi-py.sh`.
-Python-tier tests need env vars or they **silently skip**:
-`GOOFI_SUBPROC_TEST_PYTHON=.venv/bin/python`, and for the `#[ignore]`d cross-lang probes
-`GOOFI_PYMOD_TEST_PYTHON=.ftvenv/bin/python`.
+Both need the `goofi` wheel; provision reproducibly with `scripts/provision-goofi-py.sh`
+— **re-run it after any `goofi-pymod` change**, or the probe still runs the old wheel and a
+node using a new authoring feature (a `doc=` kwarg, say) silently disappears from the palette.
+
+The cross-language tests find these interpreters themselves and **fail with an actionable
+message** when none can `import goofi` — they never skip, and nothing in the suite is
+`#[ignore]`d. `GOOFI_SUBPROC_TEST_PYTHON` / `GOOFI_PYMOD_TEST_PYTHON` / `GOOFI_FT_PYTHON`
+override the interpreter choice.
 
 If `/dev/shm/iox2_*` accumulates after a crash, delete the stale files before rerunning.
 
@@ -271,8 +275,11 @@ multi-second device scan stalls the tick. Not yet wired for the subprocess tier.
 Plain top-level imports for all deps. The same file works on **both** Python tiers —
 the discovery probe imports it in a real interpreter and reports whether it is
 free-threading-safe; a node that isn't (or whose deps are missing on `.ftvenv`)
-routes to the subprocess tier and shows as `Name (subproc)`. A missing dep greys the
-palette entry; a raise inside `process()` is a per-tick error frame, not a crash.
+routes to the subprocess tier, where the palette groups it under the `subprocess` category.
+A node whose deps are missing on BOTH interpreters fails its probe and is not registered at
+all — it simply does not appear (the catalog has no "unavailable" state), so check the
+startup log if a node you wrote is missing. A raise inside `process()` is a per-tick error
+frame, not a crash.
 
 ---
 

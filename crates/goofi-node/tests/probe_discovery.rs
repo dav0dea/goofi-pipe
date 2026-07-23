@@ -103,3 +103,25 @@ fn probe_ignores_a_host_pythonpath() {
 
     assert!(d.is_some(), "discovery must ignore a poison goofi on the host PYTHONPATH");
 }
+
+#[test]
+fn every_param_kind_carries_its_doc_across_the_probe() {
+    // `doc=` is declared in Python, serialized by the wheel's introspect, and parsed back into
+    // ParamDecl — one arm per param kind on each side. Only the Int arm was covered by any test
+    // that a documented command actually runs, so all four are pinned here.
+    let py = test_python();
+    let d = discover_one(&fixtures().join("documented.py"), &py, "python", Isolation::Subprocess)
+        .expect("documented.py discovers");
+    let doc = |name: &str| {
+        d.manifest
+            .params
+            .iter()
+            .find(|p| p.name == name)
+            .unwrap_or_else(|| panic!("param `{name}` discovered"))
+            .doc
+    };
+    assert_eq!(doc("count"), Some("how many"));
+    assert_eq!(doc("gain"), Some("how loud"));
+    assert_eq!(doc("enabled"), Some("whether to run"));
+    assert_eq!(doc("mode"), Some("which mode"));
+}

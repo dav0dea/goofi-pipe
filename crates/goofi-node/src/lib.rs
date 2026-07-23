@@ -428,8 +428,11 @@ pub trait Node: Send {
         Ok(())
     }
     /// Optional: re-enumerate a `Str` param's options for the UI's ⟳ button
-    /// (device/stream pickers). Paired with `on_param_changed` by name.
-    fn on_param_refreshed(&mut self, _key: &ParamKey) -> Option<Vec<String>> {
+    /// (device/stream pickers). Paired with `on_param_changed` by name. `p` is the node's LIVE
+    /// params — a picker usually enumerates against its current settings (which host, which
+    /// driver, which directory), and a node that never ticks would otherwise see only the values
+    /// it was constructed with.
+    fn on_param_refreshed(&mut self, _key: &ParamKey, _p: &Params<'_>) -> Option<Vec<String>> {
         None
     }
     // Teardown is `impl Drop for TheNode`, not a trait method — it runs automatically
@@ -750,6 +753,46 @@ mod tests {
         assert_eq!(val(&inp2.get_multi("one")[0]), 9.0);
         assert!(inp2.get_multi("empty").is_empty());
         assert!(inp2.get_multi("missing").is_empty());
+    }
+
+    #[test]
+    fn with_common_materializes_the_documented_defaults_exactly() {
+        // Every node in the system carries this group, and its values are persisted into every
+        // `.gfi`. A bound or default edited here changes behavior everywhere, silently — so pin
+        // the materialized values, not just their presence.
+        let common = with_common(ParamGroups::new());
+        let c = common.get("common").expect("the group is always present");
+
+        assert_eq!(c.get("autotrigger"), Some(&Param::boolean(false)));
+        assert_eq!(c.get("max_frequency"), Some(&Param::float(0.0, 0.0, 100.0)));
+        assert_eq!(
+            c.get("frequency_mode"),
+            Some(&Param::Str {
+                value: FREQ_MODE_UPDATES_PER_SECOND.to_string(),
+                options: Some(vec![
+                    FREQ_MODE_UPDATES_PER_SECOND.to_string(),
+                    FREQ_MODE_SECONDS_PER_UPDATE.to_string(),
+                ]),
+                refresh: false,
+            })
+        );
+        assert_eq!(c.len(), 3, "no param silently joins the universal group");
+        assert_eq!(common.keys().next().map(String::as_str), Some("common"), "placed first");
+    }
+
+    #[test]
+    fn with_common_keeps_a_param_the_node_declared_itself() {
+        // Oscillator declares its own `common.autotrigger` (true, because it is a source); the
+        // universal fallback must not overwrite it.
+        let mut declared = ParamGroups::new();
+        let mut group = IndexMap::new();
+        group.insert("autotrigger".to_string(), Param::boolean(true));
+        declared.insert("common".to_string(), group);
+
+        let common = with_common(declared);
+
+        assert_eq!(common["common"].get("autotrigger"), Some(&Param::boolean(true)));
+        assert!(common["common"].contains_key("max_frequency"), "the rest is still filled in");
     }
 
     static DECL_PARAMS: &[ParamDecl] = &[

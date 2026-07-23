@@ -15,4 +15,11 @@ describe('selectOptions — a string dropdown never renders blank for its own va
 	it('does not prepend an empty value', () => {
 		expect(selectOptions(['a', 'b'], '')).toEqual(['a', 'b']);
 	});
+
+	it('renders the active value alone when a scan came back empty', () => {
+		// A refreshable picker whose scan found nothing (no devices, no LSL streams) still has
+		// to render — and stay refreshable — rather than collapsing to a blank dropdown.
+		expect(selectOptions([], 'mic')).toEqual(['mic']);
+		expect(selectOptions([], '')).toEqual([]);
+	});
 });
