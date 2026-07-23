@@ -436,6 +436,13 @@ fn event(name: &str, payload: Value) -> String {
 /// peer a §4.5 shared-member edit touches (param value, position, expression), so any observer
 /// reconciles each mirrored sibling.
 fn param_state_update(g: &Graph, peer: Uid) -> String {
+    param_state_update_refreshed(g, peer, &[])
+}
+
+/// As [`param_state_update`], naming the params whose ⟳ refresh just completed. The frontend
+/// clears each one's spinner off this list, so it must be sent on EVERY outcome — including a
+/// refresh that turned up nothing — or the button spins until its 15s safety timeout.
+fn param_state_update_refreshed(g: &Graph, peer: Uid, refreshed: &[(&str, &str)]) -> String {
     event(
         "state_update",
         json!({
@@ -445,7 +452,7 @@ fn param_state_update(g: &Graph, peer: Uid) -> String {
             "stage": "ready",
             "error": g.last_error(peer),
             "log_endpoint": Value::Null,
-            "refreshed_params": [],
+            "refreshed_params": refreshed.iter().map(|(g, n)| json!([g, n])).collect::<Vec<_>>(),
         }),
     )
 }
@@ -638,6 +645,17 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
             // through the command history so each is undoable (B3a). The mutation reaches clients via
             // the post-dispatch re-mirror; only the runtime-derived, doc-invisible bits (a param's
             // `expression_error`, a rename's nd()-rewrite echo) are pushed as `state_update` events.
+            // Re-enumerate a refreshable string param (a device/stream picker). NOT a command —
+            // options are runtime-only, never persisted, so there is nothing to undo. They are
+            // also invisible to the CRDT doc, so this echo is the ONLY way they reach the client.
+            "refresh_param" => {
+                let uid = parse_uid(&payload, "node")?;
+                let group = parse_str(&payload, "group")?.to_string();
+                let name = parse_str(&payload, "name")?.to_string();
+                g.refresh_param(uid, &group, &name)?;
+                events.push(param_state_update_refreshed(&g, uid, &[(&group, &name)]));
+                Ok(json!({ "ok": true }))
+            }
             "update_param" => {
                 let uid = parse_uid(&payload, "node")?;
                 let group = parse_str(&payload, "group")?.to_string();

@@ -1491,6 +1491,53 @@ impl Graph {
         }
     }
 
+    /// Re-enumerate a refreshable `Str` param's options by asking the node — the ⟳ button behind
+    /// a device or stream picker, whose choices are only knowable at runtime. Returns the fresh
+    /// list, or `None` when the node declares the param refreshable but implements no hook.
+    ///
+    /// A refresh never changes the SELECTION: it rewrites `options` and nothing else, so a device
+    /// that has disappeared stays selected (the UI keeps showing it) rather than silently
+    /// re-pointing the node at a different one.
+    ///
+    /// Not a command: nothing persisted changes (options never reach the `.gfi` or the doc), so
+    /// there is nothing to undo.
+    ///
+    /// NOTE: this runs under the graph lock, so a node that blocks here (a slow device scan, an
+    /// LSL resolve) stalls the tick for that long. Node authors must keep the hook quick.
+    pub fn refresh_param(
+        &mut self,
+        uid: Uid,
+        group: &str,
+        name: &str,
+    ) -> Result<Option<Vec<String>>, String> {
+        let entry = self.nodes.get_mut(&uid).ok_or_else(|| format!("no such node {uid}"))?;
+        let param = entry
+            .params
+            .get(group)
+            .and_then(|g| g.get(name))
+            .ok_or_else(|| format!("no such param `{group}.{name}`"))?;
+        // Refreshing a param the node never declared refreshable would call a hook it does not
+        // implement and report success — reject it instead (the UI shows no button for one).
+        if !matches!(param, Param::Str { refresh: true, .. }) {
+            return Err(format!("param `{group}.{name}` is not refreshable"));
+        }
+        let fresh = match &mut entry.exec {
+            Execution::Inline(node) => node.on_param_refreshed(&ParamKey::new(group, name)),
+            // A detached node's instance lives on its worker and the request/response codec has
+            // no refresh op — same deferral as live `on_param_changed` propagation. The caller
+            // still reports completion, so the UI's spinner clears instead of hanging.
+            Execution::Detached(_) => None,
+        };
+        if let Some(options) = &fresh {
+            if let Some(Param::Str { options: slot, .. }) =
+                entry.params.get_mut(group).and_then(|g| g.get_mut(name))
+            {
+                *slot = Some(options.clone());
+            }
+        }
+        Ok(fresh)
+    }
+
     /// Bind (or unbind) a param to an expression. An **empty** `source` unbinds (the stored
     /// literal is used again). A non-empty source with `enabled == false` PRESERVES the
     /// authored binding, disabled — so a UI fx toggle-off then -on keeps the user's code —
@@ -4113,6 +4160,115 @@ mod tests {
     fn restarting_an_unknown_node_is_an_error() {
         let mut g = Graph::new();
         assert!(g.restart_node(Uid(999)).is_err());
+    }
+
+    // ---- refresh_param (the UI's re-enumerate button) ----
+
+    /// A node whose refreshable `device` param re-enumerates a growing device list, so a test
+    /// can tell a first refresh from a second.
+    static PICKER: NodeManifest = NodeManifest {
+        type_name: "_RefreshPicker",
+        category: "runtime",
+        doc: "a refreshable string param",
+        inputs: &[],
+        outputs: RT_OUT,
+        params: PICKER_PARAMS,
+        isolation: Isolation::InProcess,
+        factory: rt_stub_factory,
+    };
+    static PICKER_PARAMS: &[ParamDecl] = &[
+        ParamDecl {
+            group: "audio",
+            name: "device",
+            spec: ParamSpec::Str { default: "none", options: &["none"], refresh: true },
+            default_expr: None,
+        },
+        ParamDecl {
+            group: "audio",
+            name: "fixed",
+            spec: ParamSpec::Str { default: "a", options: &["a", "b"], refresh: false },
+            default_expr: None,
+        },
+    ];
+    #[derive(Default)]
+    struct Picker {
+        scans: usize,
+    }
+    impl Node for Picker {
+        fn on_param_refreshed(&mut self, key: &goofi_node::ParamKey) -> Option<Vec<String>> {
+            if key.name != "device" {
+                return None;
+            }
+            self.scans += 1;
+            Some((0..self.scans).map(|i| format!("dev{i}")).collect())
+        }
+        fn process(&mut self, _i: &Inputs<'_>, _o: &mut Outputs<'_>, _c: &mut NodeCtx, _p: &Params<'_>) -> NodeResult {
+            Ok(())
+        }
+    }
+
+    fn picker_graph() -> (Graph, Uid) {
+        let mut g = Graph::new();
+        g.register_dyn_type(&PICKER, Box::new(|_p| Box::<Picker>::default()));
+        let uid = g.add_node("_RefreshPicker", None).unwrap();
+        (g, uid)
+    }
+
+    fn options_of(g: &Graph, uid: Uid, group: &str, name: &str) -> Option<Vec<String>> {
+        match g.params(uid).unwrap().get(group).unwrap().get(name).unwrap() {
+            Param::Str { options, .. } => options.clone(),
+            other => panic!("not a string param: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn refresh_param_asks_the_node_and_stores_the_fresh_options() {
+        let (mut g, uid) = picker_graph();
+        assert_eq!(options_of(&g, uid, "audio", "device"), Some(vec!["none".to_string()]));
+
+        let fresh = g.refresh_param(uid, "audio", "device").unwrap();
+
+        assert_eq!(fresh, Some(vec!["dev0".to_string()]));
+        assert_eq!(options_of(&g, uid, "audio", "device"), Some(vec!["dev0".to_string()]));
+        // A second click re-scans rather than replaying a cached list.
+        g.refresh_param(uid, "audio", "device").unwrap();
+        assert_eq!(options_of(&g, uid, "audio", "device"), Some(vec!["dev0".into(), "dev1".into()]));
+    }
+
+    #[test]
+    fn refresh_param_keeps_the_selected_value_and_the_refreshable_flag() {
+        let (mut g, uid) = picker_graph();
+        let declared = Param::Str { value: "none".into(), options: Some(vec!["none".into()]), refresh: true };
+        g.update_param(uid, "audio", "device", declared).unwrap();
+
+        g.refresh_param(uid, "audio", "device").unwrap();
+
+        match g.params(uid).unwrap().get("audio").unwrap().get("device").unwrap() {
+            Param::Str { value, refresh, .. } => {
+                assert_eq!(value, "none", "a refresh re-enumerates options; it never changes the selection");
+                assert!(*refresh, "the param stays refreshable");
+            }
+            other => panic!("not a string param: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn refresh_param_rejects_a_param_that_is_not_refreshable() {
+        let (mut g, uid) = picker_graph();
+
+        assert!(g.refresh_param(uid, "audio", "fixed").is_err(), "the UI shows no button for it");
+        assert!(g.refresh_param(uid, "audio", "nope").is_err(), "unknown param");
+        assert!(g.refresh_param(Uid(999), "audio", "device").is_err(), "unknown node");
+    }
+
+    #[test]
+    fn refresh_param_on_a_node_without_the_hook_yields_no_options() {
+        // The default trait hook returns None: the param stays as declared. The UI still needs
+        // its spinner cleared, which the bridge echo — not this return — is responsible for.
+        let mut g = Graph::new();
+        let uid = g.add_node("Oscillator", None).unwrap();
+        // Oscillator's `waveform` is a string param, but not declared refreshable.
+        assert!(g.refresh_param(uid, "oscillator", "waveform").is_err());
     }
 
     // A runtime source built by a captured closure (not a bare fn pointer) —

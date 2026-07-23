@@ -264,6 +264,10 @@ seeds a live binding instead of a literal.
 
 **Python (`nodes/`).** Subclass `goofi.Node`: declare `config_input_slots()` /
 `config_output_slots()` / `config_params()`, implement `setup()` and `process()`.
+A `StringParam(..., refresh=True)` gets a ⟳ button in the UI; the node answers it with a
+`refresh_{group}_{name}(self) -> list[str]` method (the Rust analogue is
+`Node::on_param_refreshed`). The hook runs under the graph lock, so keep it quick — a
+multi-second device scan stalls the tick. Not yet wired for the subprocess tier.
 Plain top-level imports for all deps. The same file works on **both** Python tiers —
 the discovery probe imports it in a real interpreter and reports whether it is
 free-threading-safe; a node that isn't (or whose deps are missing on `.ftvenv`)

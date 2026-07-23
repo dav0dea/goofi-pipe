@@ -2025,3 +2025,109 @@ async fn restart_node_respawns_in_place_without_touching_undo() {
     .await;
     assert_eq!(doc.node_ids().len(), 2, "both nodes survive; only the link was undone");
 }
+
+// A refreshable string param whose node re-enumerates it — the device-picker shape.
+static PICKER_PARAMS: &[goofi_node::ParamDecl] = &[goofi_node::ParamDecl {
+    group: "audio",
+    name: "device",
+    spec: goofi_node::ParamSpec::Str { default: "none", options: &["none"], refresh: true },
+    default_expr: None,
+}];
+static PICKER_MANIFEST: goofi_node::NodeManifest = goofi_node::NodeManifest {
+    type_name: "DevicePicker",
+    category: "python",
+    doc: "a node with a refreshable device list",
+    inputs: &[],
+    outputs: SERVE_OUT,
+    params: PICKER_PARAMS,
+    isolation: goofi_node::Isolation::InProcess,
+    factory: stub_factory,
+};
+
+#[derive(Default)]
+struct Picker;
+impl goofi_node::Node for Picker {
+    fn on_param_refreshed(&mut self, key: &goofi_node::ParamKey) -> Option<Vec<String>> {
+        (key.name == "device").then(|| vec!["mic".to_string(), "line-in".to_string()])
+    }
+    fn process(
+        &mut self,
+        _i: &goofi_node::Inputs<'_>,
+        _o: &mut goofi_node::Outputs<'_>,
+        _c: &mut goofi_node::NodeCtx,
+        _p: &goofi_node::Params<'_>,
+    ) -> goofi_node::NodeResult {
+        Ok(())
+    }
+}
+
+async fn start_server_with_picker() -> String {
+    let state = AppState::new();
+    state
+        .graph
+        .lock()
+        .unwrap()
+        .register_dyn_type(&PICKER_MANIFEST, Box::new(|_| Box::<Picker>::default()));
+    spawn_tick(state.graph.clone());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        serve_app(listener, state, None).await.unwrap();
+    });
+    format!("ws://{addr}")
+}
+
+#[tokio::test]
+async fn refresh_param_echoes_fresh_options_and_clears_the_spinner() {
+    let base = start_server_with_picker().await;
+    let (mut ws, _) = connect_async(format!("{base}/control")).await.unwrap();
+    let _hello = recv_text(&mut ws).await;
+
+    let uid = call(&mut ws, 1, "add_node", json!({ "type": "DevicePicker" })).await["result"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    ws.send(Message::Text(
+        json!({ "id": 2, "op": "refresh_param", "payload": { "node": uid, "group": "audio", "name": "device" } })
+            .to_string(),
+    ))
+    .await
+    .unwrap();
+
+    // Options live only in runtime state (never in the doc), so they reach the browser ONLY via
+    // this echo — and `refreshed_params` is what lifts the ⟳ spinner.
+    let update = loop {
+        let m = recv_text(&mut ws).await;
+        if m.get("event").and_then(|v| v.as_str()) == Some("state_update")
+            && m["payload"]["node"] == json!(uid)
+        {
+            break m;
+        }
+    };
+    assert_eq!(
+        update["payload"]["params"]["audio"]["device"]["options"],
+        json!(["mic", "line-in"]),
+        "the re-enumerated list reached the client"
+    );
+    assert_eq!(update["payload"]["refreshed_params"], json!([["audio", "device"]]));
+}
+
+#[tokio::test]
+async fn refresh_param_reports_completion_even_when_the_node_offers_nothing() {
+    // The hook returning nothing must still clear the spinner, or the UI stalls for its full
+    // 15s safety timeout on every node that declares a refreshable param without a hook.
+    let base = start_server_with_runtime_type().await;
+    let (mut ws, _) = connect_async(format!("{base}/control")).await.unwrap();
+    let _hello = recv_text(&mut ws).await;
+
+    let osc = call(&mut ws, 1, "add_node", json!({ "type": "Oscillator" })).await["result"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let reply = call(&mut ws, 2, "refresh_param", json!({ "node": osc, "group": "oscillator", "name": "waveform" })).await;
+
+    // Oscillator's waveform is a fixed list: refusing is right, and the frontend lifts the
+    // spinner on a rejected call.
+    assert!(reply["error"].as_str().unwrap().contains("not refreshable"), "got {reply:?}");
+}

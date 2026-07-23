@@ -26,6 +26,38 @@ pub fn run_setup(py: Python<'_>, instance: &Bound<'_, PyAny>, params: &Groups) -
     Ok(())
 }
 
+/// Re-enumerate a refreshable string param's options by calling the node's
+/// `refresh_{group}_{name}()` method — the Python side of the UI's ⟳ button, and the analogue
+/// of the Rust `Node::on_param_refreshed` hook. Method naming (rather than a declared callback)
+/// keeps the introspection probe carrying a plain `refresh: bool`.
+///
+/// `None` for every non-answer — no such method, a raise, or a return that isn't a list of
+/// strings. A picker that can't enumerate right now (no soundcard, no LSL stream) is an ordinary
+/// state, not a node failure: the param simply keeps the options it had.
+pub fn run_refresh(
+    py: Python<'_>,
+    instance: &Bound<'_, PyAny>,
+    group: &str,
+    name: &str,
+) -> Option<Vec<String>> {
+    let method = instance.getattr(format!("refresh_{group}_{name}").as_str()).ok()?;
+    match method.call0() {
+        Ok(v) => match v.extract::<Vec<String>>() {
+            Ok(options) => Some(options),
+            Err(_) => {
+                eprintln!("refresh_{group}_{name}() must return a list of strings; ignoring");
+                None
+            }
+        },
+        Err(e) => {
+            // No UI warn channel exists for this (the ⟳ button reports only "no new options"),
+            // so surface the traceback on stderr rather than swallowing it whole.
+            eprintln!("refresh_{group}_{name}() raised: {}", e.value(py));
+            None
+        }
+    }
+}
+
 /// Apply the live params, call `node.process(**present)`, and marshal the return into
 /// per-slot `Data`. `present` is `(slot, &Data)` for each PRESENT input slot (built into
 /// `goofi.Data` kwargs). `out_slots` are the node's declared output slot names (used when

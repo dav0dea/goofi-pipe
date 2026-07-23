@@ -235,4 +235,16 @@ mod tests {
             crate::ParamSpec::Str { default: "a", options: [_, _], refresh: false }
         ));
     }
+
+    #[test]
+    fn a_refreshable_string_param_crosses_the_probe() {
+        // `StringParam(..., refresh=True)` on a Python node must reach the manifest as a
+        // refreshable spec, or the UI never renders the re-enumerate button for it.
+        const PICKER: &str = r#"{"gil_safe":true,"doc":"Audio",
+            "inputs":[],"outputs":[{"name":"out","kind":"ARRAY"}],
+            "params":[{"group":"audio","name":"device","kind":"str","default":"none","options":[],"refresh":true}]}"#;
+        let intro = parse_introspection(PICKER).expect("parse");
+        let m = leak_manifest("Audio".into(), &intro, "python", Isolation::Subprocess);
+        assert!(matches!(m.params[0].spec, crate::ParamSpec::Str { refresh: true, .. }));
+    }
 }
