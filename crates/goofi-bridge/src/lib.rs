@@ -7,6 +7,7 @@
 //! (`frontend/build`, or `GOOFI_FRONTEND_BUILD`) via `ServeDir`.
 
 mod crdt_mirror;
+mod fsbrowse;
 mod reducer;
 mod schemas;
 
@@ -524,6 +525,12 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
 
     let mut events: Vec<String> = Vec::new();
     let result: Result<Value, String> = (|| {
+        // Ops that read no graph state are served WITHOUT the graph mutex. `list_dir` walks a
+        // directory and stats every child, which can block for a long time on a huge or network
+        // path — under the lock that would stall the tick thread for the whole walk.
+        if op == "list_dir" {
+            return Ok(fsbrowse::list_dir(payload.get("path").and_then(|v| v.as_str())));
+        }
         let mut g = state.graph.lock().unwrap();
         match op.as_str() {
             "list_nodes" => Ok(json!({ "types": schemas::catalog_types(&g) })),
@@ -895,12 +902,33 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
                 }
                 Ok(json!({ "path": path, "yaml": yaml }))
             }
-            "load_text" => {
-                let content = payload
-                    .get("content")
-                    .and_then(|v| v.as_str())
-                    .ok_or("load_text: missing content")?;
-                g.load_doc(content)?;
+            // One load path for both sources: `load_text` carries the YAML inline (a browser
+            // upload), `load` names a file the BACKEND reads. Everything after the read — replace,
+            // reset history, announce — must not drift between them, so they share an arm.
+            "load_text" | "load" => {
+                let (content, from_path) = if op == "load" {
+                    let path = payload
+                        .get("path")
+                        .and_then(|v| v.as_str())
+                        .ok_or("load: missing path")?;
+                    let yaml = std::fs::read_to_string(path)
+                        .map_err(|e| format!("load failed: {e}"))?;
+                    (yaml, Some(path))
+                } else {
+                    let content = payload
+                        .get("content")
+                        .and_then(|v| v.as_str())
+                        .ok_or("load_text: missing content")?;
+                    (content.to_string(), None)
+                };
+                // Parse BEFORE announcing: a rejected patch must not leave the title bar naming
+                // a file the graph was never loaded from.
+                g.load_doc(&content)?;
+                if let Some(path) = from_path {
+                    // The patch now has a home on disk — the title bar names it and a later
+                    // plain Save overwrites it without re-prompting.
+                    events.push(event("save_path_changed", json!({ "save_path": path })));
+                }
                 // A load fully resets the session — there is nothing to undo across it (spec §3:
                 // no load command / no checkpoint), so drop every session's command history.
                 state.history.lock().unwrap().clear();
@@ -934,7 +962,7 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
     // `link_added`/`boundary_moved` events are retired). Read-only ops touch nothing and skip the
     // expensive full-graph walk; any other op re-mirrors (an unchanged re-mirror is a no-op empty
     // diff that broadcasts nothing, so defaulting a new op to re-mirror is safe).
-    let read_only = matches!(op.as_str(), "list_nodes" | "serialize" | "save");
+    let read_only = matches!(op.as_str(), "list_nodes" | "serialize" | "save" | "list_dir");
     if result.is_ok() && !read_only {
         resync_and_broadcast(state);
     }

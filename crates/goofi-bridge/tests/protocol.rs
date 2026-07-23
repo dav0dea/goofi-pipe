@@ -1899,3 +1899,96 @@ async fn removing_a_grouped_member_updates_the_instance_forest_in_the_doc() {
     assert!(!doc.node_ids().iter().any(|u| *u == osc), "osc gone from the graph");
     assert!(doc.instance_ids().iter().any(|u| *u == inst), "the instance survives its other member");
 }
+
+#[tokio::test]
+async fn list_dir_browses_the_backend_filesystem() {
+    let base = start_server().await;
+    let (mut ws, _) = connect_async(format!("{base}/control")).await.unwrap();
+    let _hello = recv_text(&mut ws).await;
+
+    // No path ⇒ home, which is where the Save/Load modal opens on a fresh patch.
+    let home = call(&mut ws, 1, "list_dir", json!({})).await;
+    let home = &home["result"];
+    assert!(home["path"].as_str().unwrap().starts_with('/'), "an absolute path; got {home:?}");
+    assert!(
+        home["roots"].as_array().unwrap().iter().any(|r| r["label"] == "Home"),
+        "the sidebar needs at least a Home root; got {:?}",
+        home["roots"]
+    );
+
+    // Navigating to the repo's own directory finds this crate, shaped as the browser expects.
+    let repo = std::env::current_dir().unwrap();
+    let listing = call(&mut ws, 2, "list_dir", json!({ "path": repo.to_string_lossy() })).await;
+    let entries = listing["result"]["entries"].as_array().unwrap();
+    let src = entries.iter().find(|e| e["name"] == "src").expect("goofi-bridge has a src/ dir");
+    assert_eq!(src["kind"], json!("dir"));
+    assert_eq!(src["is_gfi"], json!(false));
+    assert_eq!(src["hidden"], json!(false));
+    assert_eq!(listing["result"]["parent"].as_str(), repo.parent().map(|p| p.to_str().unwrap()));
+}
+
+#[tokio::test]
+async fn load_reads_a_patch_from_a_backend_path() {
+    let base = start_server().await;
+    let (mut ws, _) = connect_async(format!("{base}/control")).await.unwrap();
+    let _hello = recv_text(&mut ws).await;
+
+    let path = std::env::temp_dir().join(format!("goofi-load-{}.gfi", std::process::id()));
+    call(&mut ws, 1, "add_node", json!({ "type": "Oscillator" })).await;
+    call(&mut ws, 2, "save", json!({ "path": path.to_string_lossy() })).await;
+
+    // Diverge from the saved patch, then load it back off disk.
+    call(&mut ws, 3, "add_node", json!({ "type": "Buffer" })).await;
+    ws.send(Message::Text(
+        json!({ "id": 4, "op": "load", "payload": { "path": path.to_string_lossy() } }).to_string(),
+    ))
+    .await
+    .unwrap();
+
+    let mut replaced = None;
+    let mut save_path = None;
+    while replaced.is_none() || save_path.is_none() {
+        let m = recv_text(&mut ws).await;
+        match m.get("event").and_then(|v| v.as_str()) {
+            Some("graph_replaced") => replaced = Some(m),
+            Some("save_path_changed") => save_path = Some(m),
+            _ => {}
+        }
+    }
+    let types: Vec<String> = replaced.unwrap()["payload"]["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|n| n["type"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(types, ["Oscillator"], "the on-disk patch replaced the diverged graph");
+    // The title bar names the loaded patch, so the manager reports where it came from.
+    assert_eq!(save_path.unwrap()["payload"]["save_path"].as_str(), path.to_str());
+
+    let _ = std::fs::remove_file(&path);
+}
+
+#[tokio::test]
+async fn load_reports_a_missing_file_instead_of_replacing_the_graph() {
+    let base = start_server().await;
+    let (mut ws, _) = connect_async(format!("{base}/control")).await.unwrap();
+    let _hello = recv_text(&mut ws).await;
+
+    call(&mut ws, 1, "add_node", json!({ "type": "Oscillator" })).await;
+    let reply = call(&mut ws, 2, "load", json!({ "path": "/definitely/not/a/patch.gfi" })).await;
+
+    assert!(reply["error"].as_str().unwrap().contains("load failed"), "got {reply:?}");
+
+    // A readable file that is not a patch fails at the parse, leaving the graph untouched.
+    let junk = std::env::temp_dir().join(format!("goofi-junk-{}.gfi", std::process::id()));
+    std::fs::write(&junk, "this: is: not: a patch").unwrap();
+    let reply = call(&mut ws, 3, "load", json!({ "path": junk.to_string_lossy() })).await;
+    assert!(reply.get("error").is_some(), "a malformed patch is rejected; got {reply:?}");
+
+    let ser = call(&mut ws, 4, "serialize", json!({})).await;
+    assert!(
+        ser["result"]["yaml"].as_str().unwrap().contains("Oscillator"),
+        "the pre-load graph survives both failures"
+    );
+    let _ = std::fs::remove_file(&junk);
+}
