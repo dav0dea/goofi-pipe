@@ -75,13 +75,23 @@ fn sync_frontend() {
         return;
     }
 
-    // Present tense: cargo replays a build script's `cargo:warning` lines on every build until the
-    // script next re-runs, so this can reappear on a no-op build even though npm did not run (a
-    // sub-second `Finished` is the tell). Wording stays accurate whether or not the build succeeds.
-    println!("cargo:warning=frontend sources changed — rebuilding the served SPA (frontend/build)");
+    // Report AFTER the build, in the PAST tense with the measured duration. Cargo caches a build
+    // script's `cargo:warning` lines and REPLAYS them on every later build until the script next
+    // re-runs — so a present-tense "rebuilding…" reads as a fresh claim on a no-op build where npm
+    // never ran (the confusing case: the line appears, then cargo finishes in milliseconds). Past
+    // tense + a duration describe a completed event, so the line stays true when it is replayed.
+    // Nothing is printed before the build because cargo captures build-script output and only shows
+    // it once the script finishes — a pre-announcement could not act as live progress anyway.
     let npm = if cfg!(windows) { "npm.cmd" } else { "npm" };
+    let started = SystemTime::now();
     match Command::new(npm).args(["run", "build"]).current_dir(&frontend).status() {
-        Ok(s) if s.success() => {}
+        Ok(s) if s.success() => {
+            let secs = started.elapsed().map(|d| d.as_secs_f32()).unwrap_or(0.0);
+            println!(
+                "cargo:warning=rebuilt the served SPA (frontend/build) from changed sources in \
+                 {secs:.1}s — cargo REPLAYS this line on later no-op builds, where npm did not re-run"
+            );
+        }
         Ok(s) => println!("cargo:warning=`npm run build` failed ({s}); serving the previous frontend/build"),
         Err(e) => println!("cargo:warning=could not run `npm` ({e}); serving the previous frontend/build"),
     }
