@@ -50,6 +50,7 @@ static PARAMS: &[ParamDecl] = &[ParamDecl {
     name: "size",
     spec: ParamSpec::Int { default: 1000, min: 1, max: 10_000_000 },
     default_expr: None,
+    doc: Some("How many of the most recent samples to keep along the time axis."),
 }];
 static INPUTS: &[SlotDecl] = &[SlotDecl {
     name: "data",

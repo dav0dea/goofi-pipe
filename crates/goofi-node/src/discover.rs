@@ -110,7 +110,13 @@ fn param_decl(p: &probe::Param) -> ParamDecl {
             }
         }
     };
-    ParamDecl { group: leak_str(&p.group), name: leak_str(&p.name), spec, default_expr: None }
+    ParamDecl {
+        group: leak_str(&p.group),
+        name: leak_str(&p.name),
+        spec,
+        default_expr: None,
+        doc: p.doc.as_deref().map(leak_str),
+    }
 }
 
 // ---------------------------------------------------------------------------

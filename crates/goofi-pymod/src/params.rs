@@ -37,13 +37,16 @@ pub struct IntParam {
     pub min: i64,
     #[pyo3(get)]
     pub max: i64,
+    #[pyo3(get)]
+    pub doc: Option<String>,
 }
 
 #[pymethods]
 impl IntParam {
     #[new]
-    fn new(default: i64, min: i64, max: i64) -> IntParam {
-        IntParam { default, min, max }
+    #[pyo3(signature = (default, min, max, doc=None))]
+    fn new(default: i64, min: i64, max: i64, doc: Option<String>) -> IntParam {
+        IntParam { default, min, max, doc }
     }
 }
 
@@ -55,13 +58,16 @@ pub struct FloatParam {
     pub min: f64,
     #[pyo3(get)]
     pub max: f64,
+    #[pyo3(get)]
+    pub doc: Option<String>,
 }
 
 #[pymethods]
 impl FloatParam {
     #[new]
-    fn new(default: f64, min: f64, max: f64) -> FloatParam {
-        FloatParam { default, min, max }
+    #[pyo3(signature = (default, min, max, doc=None))]
+    fn new(default: f64, min: f64, max: f64, doc: Option<String>) -> FloatParam {
+        FloatParam { default, min, max, doc }
     }
 }
 
@@ -69,13 +75,16 @@ impl FloatParam {
 pub struct BoolParam {
     #[pyo3(get)]
     pub default: bool,
+    #[pyo3(get)]
+    pub doc: Option<String>,
 }
 
 #[pymethods]
 impl BoolParam {
     #[new]
-    fn new(default: bool) -> BoolParam {
-        BoolParam { default }
+    #[pyo3(signature = (default, doc=None))]
+    fn new(default: bool, doc: Option<String>) -> BoolParam {
+        BoolParam { default, doc }
     }
 }
 
@@ -87,13 +96,15 @@ pub struct StringParam {
     pub options: Vec<String>,
     #[pyo3(get)]
     pub refresh: bool,
+    #[pyo3(get)]
+    pub doc: Option<String>,
 }
 
 #[pymethods]
 impl StringParam {
     #[new]
-    #[pyo3(signature = (default, options=None, refresh=false))]
-    fn new(default: String, options: Option<Vec<String>>, refresh: bool) -> StringParam {
-        StringParam { default, options: options.unwrap_or_default(), refresh }
+    #[pyo3(signature = (default, options=None, refresh=false, doc=None))]
+    fn new(default: String, options: Option<Vec<String>>, refresh: bool, doc: Option<String>) -> StringParam {
+        StringParam { default, options: options.unwrap_or_default(), refresh, doc }
     }
 }

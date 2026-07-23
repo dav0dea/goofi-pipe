@@ -92,6 +92,10 @@ pub struct ParamDecl {
     /// tracks the referenced globals/refs. The `spec` default is the graceful fallback (used verbatim
     /// when no evaluator is wired). `None` ⇒ an ordinary literal-default param.
     pub default_expr: Option<&'static str>,
+    /// Help text for the UI's tooltip. Static per-type metadata, so it lives here and never on
+    /// the runtime [`Param`] — a doc string on the value would be copied into the CRDT doc, the
+    /// `.gfi`, and every param clone.
+    pub doc: Option<&'static str>,
 }
 
 /// The kind + defaults of a declared param.
@@ -332,6 +336,47 @@ impl RunPolicy {
     }
 }
 
+/// The universal `common` scheduling group, declared once. Both [`with_common`] (which
+/// materializes the values) and the bridge's doc lookup read these, so the group's help text
+/// lives in exactly one place — a node that declares its own `common.*` param overrides the
+/// whole declaration, matching `with_common`'s keep-what-the-node-declared rule.
+pub static COMMON_DECLS: &[ParamDecl] = &[
+    ParamDecl {
+        group: "common",
+        name: "autotrigger",
+        spec: ParamSpec::Bool { default: false },
+        default_expr: None,
+        doc: Some(
+            "Run every tick on the node's own schedule, instead of waiting for an input frame. \
+             Turn this on for sources; leave it off for transforms driven by their input.",
+        ),
+    },
+    ParamDecl {
+        group: "common",
+        name: "max_frequency",
+        spec: ParamSpec::Float { default: 0.0, min: 0.0, max: 100.0 },
+        default_expr: None,
+        doc: Some(
+            "Rate cap for this node, read through `frequency_mode`. 0 means uncapped — the node \
+             runs as often as the scheduler and its inputs allow.",
+        ),
+    },
+    ParamDecl {
+        group: "common",
+        name: "frequency_mode",
+        spec: ParamSpec::Str {
+            default: FREQ_MODE_UPDATES_PER_SECOND,
+            options: &[FREQ_MODE_UPDATES_PER_SECOND, FREQ_MODE_SECONDS_PER_UPDATE],
+            refresh: false,
+        },
+        default_expr: None,
+        doc: Some(
+            "How to read `max_frequency`: as a rate in Hz (updates per second), or as a period \
+             in seconds between updates — convenient for very slow nodes.",
+        ),
+    },
+];
+
 /// Guarantee a node's params carry the universal `common` scheduling group (the
 /// engine's equivalent of Python's `DEFAULT_PARAMS["common"]`), so rate controls
 /// exist on every node uniformly. Any keys a node already declared are kept;
@@ -341,22 +386,9 @@ impl RunPolicy {
 /// the palette (the bridge), so type-level and instance-level params agree.
 pub fn with_common(params: ParamGroups) -> ParamGroups {
     let mut common = params.get("common").cloned().unwrap_or_default();
-    common
-        .entry("autotrigger".to_string())
-        .or_insert_with(|| Param::boolean(false));
-    common
-        .entry("max_frequency".to_string())
-        .or_insert_with(|| Param::float(0.0, 0.0, 100.0));
-    common
-        .entry("frequency_mode".to_string())
-        .or_insert_with(|| Param::Str {
-            value: FREQ_MODE_UPDATES_PER_SECOND.to_string(),
-            options: Some(vec![
-                FREQ_MODE_UPDATES_PER_SECOND.to_string(),
-                FREQ_MODE_SECONDS_PER_UPDATE.to_string(),
-            ]),
-            refresh: false,
-        });
+    for d in COMMON_DECLS {
+        common.entry(d.name.to_string()).or_insert_with(|| d.spec.to_param());
+    }
     let mut merged = ParamGroups::new();
     merged.insert("common".to_string(), common);
     for (k, v) in params {
@@ -721,10 +753,10 @@ mod tests {
     }
 
     static DECL_PARAMS: &[ParamDecl] = &[
-        ParamDecl { group: "g", name: "freq", spec: ParamSpec::Float { default: 1.0, min: 0.0, max: 10.0 }, default_expr: None },
-        ParamDecl { group: "g", name: "n", spec: ParamSpec::Int { default: 4, min: 1, max: 9 }, default_expr: None },
-        ParamDecl { group: "g", name: "wave", spec: ParamSpec::Str { default: "sine", options: &["sine", "saw"], refresh: false }, default_expr: None },
-        ParamDecl { group: "z", name: "on", spec: ParamSpec::Bool { default: true }, default_expr: None },
+        ParamDecl { group: "g", name: "freq", spec: ParamSpec::Float { default: 1.0, min: 0.0, max: 10.0 }, default_expr: None, doc: None },
+        ParamDecl { group: "g", name: "n", spec: ParamSpec::Int { default: 4, min: 1, max: 9 }, default_expr: None, doc: None },
+        ParamDecl { group: "g", name: "wave", spec: ParamSpec::Str { default: "sine", options: &["sine", "saw"], refresh: false }, default_expr: None, doc: None },
+        ParamDecl { group: "z", name: "on", spec: ParamSpec::Bool { default: true }, default_expr: None, doc: None },
     ];
 
     #[test]

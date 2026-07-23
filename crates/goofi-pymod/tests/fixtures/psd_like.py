@@ -13,7 +13,7 @@ class PSD(goofi.Node):
     def config_params(self):
         return {
             "welch": {
-                "nperseg": goofi.IntParam(256, 16, 4096),
+                "nperseg": goofi.IntParam(256, 16, 4096, doc="Window length in samples."),
                 "average": goofi.BoolParam(True),
             }
         }

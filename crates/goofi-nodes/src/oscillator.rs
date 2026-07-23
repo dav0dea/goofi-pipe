@@ -135,24 +135,56 @@ impl Node for Oscillator {
 
 static PARAMS: &[ParamDecl] = &[
     // LFO / biosignal regime — a slow frequency slider, biosignal-typical sample rate.
-    ParamDecl { group: "oscillator", name: "frequency", spec: ParamSpec::Float { default: 1.0, min: 0.0, max: 100.0 }, default_expr: None },
-    ParamDecl { group: "oscillator", name: "amplitude", spec: ParamSpec::Float { default: 1.0, min: 0.0, max: 1.0e6 }, default_expr: None },
-    ParamDecl { group: "oscillator", name: "sfreq", spec: ParamSpec::Float { default: 250.0, min: 1.0, max: 10_000.0 }, default_expr: None },
+    ParamDecl {
+        group: "oscillator",
+        name: "frequency",
+        spec: ParamSpec::Float { default: 1.0, min: 0.0, max: 100.0 },
+        default_expr: None,
+        doc: Some("Oscillation frequency in Hz, within the signal band rather than the audio band."),
+    },
+    ParamDecl {
+        group: "oscillator",
+        name: "amplitude",
+        spec: ParamSpec::Float { default: 1.0, min: 0.0, max: 1.0e6 },
+        default_expr: None,
+        doc: Some("Peak value of the waveform; it swings between -amplitude and +amplitude."),
+    },
+    ParamDecl {
+        group: "oscillator",
+        name: "sfreq",
+        spec: ParamSpec::Float { default: 250.0, min: 1.0, max: 10_000.0 },
+        default_expr: None,
+        doc: Some(
+            "Sample rate WITHIN each emitted frame, in Hz. With the rate cap below it also sets \
+             how many samples a frame carries.",
+        ),
+    },
     ParamDecl {
         group: "oscillator",
         name: "waveform",
         spec: ParamSpec::Str { default: "sine", options: &["sine", "square", "sawtooth", "triangle"], refresh: false },
         default_expr: None,
+        doc: Some("Shape of one cycle."),
     },
     // The producer contract: free-running, paced by the patch's `default_ufreq` global (30 Hz by
     // default). The 30.0 literal is the no-evaluator fallback; the `default_expr` binding makes a
     // live `globals.default_ufreq` edit re-rate every Oscillator. `autotrigger` marks it a source.
-    ParamDecl { group: "common", name: "autotrigger", spec: ParamSpec::Bool { default: true }, default_expr: None },
+    ParamDecl {
+        group: "common",
+        name: "autotrigger",
+        spec: ParamSpec::Bool { default: true },
+        default_expr: None,
+        doc: Some("On by default: the Oscillator is a source, so it runs on its own schedule."),
+    },
     ParamDecl {
         group: "common",
         name: "max_frequency",
         spec: ParamSpec::Float { default: 30.0, min: 0.0, max: 1000.0 },
         default_expr: Some("globals.default_ufreq"),
+        doc: Some(
+            "How many frames per second to emit. Bound to the patch's `default_ufreq` global by \
+             default, so editing that global re-rates every Oscillator at once.",
+        ),
     },
 ];
 static OUTPUTS: &[OutputDecl] = &[OutputDecl {

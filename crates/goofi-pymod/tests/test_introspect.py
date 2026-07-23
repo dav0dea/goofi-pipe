@@ -20,11 +20,13 @@ def test_psd_like_declarations():
     assert m["params"][0] == {
         "group": "welch",
         "name": "nperseg",
+        "doc": "Window length in samples.",
         "kind": "int",
         "default": 256,
         "min": 16,
         "max": 4096,
     }
+    # An undocumented param omits the key entirely, so the JSON an older node emits is unchanged.
     assert m["params"][1] == {"group": "welch", "name": "average", "kind": "bool", "default": True}
     assert isinstance(m["gil_safe"], bool)
 

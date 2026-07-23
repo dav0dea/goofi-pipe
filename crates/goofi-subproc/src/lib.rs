@@ -621,9 +621,18 @@ class Scale(goofi.Node):
         assert_eq!(ty.manifest.type_name, "Psd");
         assert_eq!(ty.manifest.isolation, Isolation::Subprocess);
         assert_eq!(ty.manifest.outputs[0].name, "psd");
+        let nperseg = ty
+            .manifest
+            .params
+            .iter()
+            .find(|p| p.group == "welch" && p.name == "nperseg")
+            .expect("the welch.nperseg param is discovered into the manifest");
+        // End-to-end for `doc=`: authored in the .py, emitted by the installed wheel's probe,
+        // parsed here into the manifest the UI renders its tooltip from.
         assert!(
-            ty.manifest.params.iter().any(|p| p.group == "welch" && p.name == "nperseg"),
-            "the welch.nperseg param is discovered into the manifest"
+            nperseg.doc.is_some_and(|d| d.contains("Window length")),
+            "the param's doc= crossed the probe; got {:?}",
+            nperseg.doc
         );
 
         // A 1x64 unit sine at exactly 8 cycles (bin 8, independent of sfreq); sfreq=1000 in

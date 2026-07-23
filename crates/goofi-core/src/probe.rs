@@ -32,6 +32,12 @@ pub struct OutSlot {
 pub struct Param {
     pub group: String,
     pub name: String,
+    /// Help text for the UI tooltip. `#[serde(default)]` is load-bearing: an older installed
+    /// `goofi` wheel emits no `doc` key, and a hard parse failure would silently grey out every
+    /// node it discovers (the probe swallows failures by design). Skipped when absent so an
+    /// undocumented param's JSON is unchanged from before the field existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub doc: Option<String>,
     #[serde(flatten)]
     pub spec: ParamSpec,
 }

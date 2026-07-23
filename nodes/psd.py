@@ -23,7 +23,13 @@ class Psd(goofi.Node):
 
     @staticmethod
     def config_params():
-        return {"welch": {"nperseg": goofi.IntParam(256, 16, 4096)}}
+        return {
+            "welch": {
+                "nperseg": goofi.IntParam(
+                    256, 16, 4096, doc="Window length in samples: longer windows resolve finer frequencies."
+                )
+            }
+        }
 
     def process(self, data):
         x = np.asarray(data.data, dtype=np.float64)

@@ -2032,6 +2032,7 @@ static PICKER_PARAMS: &[goofi_node::ParamDecl] = &[goofi_node::ParamDecl {
     name: "device",
     spec: goofi_node::ParamSpec::Str { default: "none", options: &["none"], refresh: true },
     default_expr: None,
+    doc: Some("Which input device to capture from."),
 }];
 static PICKER_MANIFEST: goofi_node::NodeManifest = goofi_node::NodeManifest {
     type_name: "DevicePicker",

@@ -30,8 +30,20 @@ impl Node for TestConst {
 }
 
 static PARAMS: &[ParamDecl] = &[
-    ParamDecl { group: "constant", name: "value", spec: ParamSpec::Float { default: 0.0, min: -1.0e9, max: 1.0e9 }, default_expr: None },
-    ParamDecl { group: "constant", name: "length", spec: ParamSpec::Int { default: 1, min: 1, max: 1_000_000 }, default_expr: None },
+    ParamDecl {
+        group: "constant",
+        name: "value",
+        spec: ParamSpec::Float { default: 0.0, min: -1.0e9, max: 1.0e9 },
+        default_expr: None,
+        doc: Some("The value every element of the emitted array carries."),
+    },
+    ParamDecl {
+        group: "constant",
+        name: "length",
+        spec: ParamSpec::Int { default: 1, min: 1, max: 1_000_000 },
+        default_expr: None,
+        doc: Some("How many elements the emitted array has."),
+    },
 ];
 static OUTPUTS: &[OutputDecl] = &[OutputDecl {
     name: "out",

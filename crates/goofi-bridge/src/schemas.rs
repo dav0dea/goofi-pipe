@@ -24,11 +24,12 @@ pub fn param_value_json(p: &Param) -> Value {
 }
 
 /// A single param descriptor (discriminated on `type`). `expr` is the instance's
-/// expression binding (or `None` for a plain literal / a palette type-level param).
-pub fn describe_param(p: &Param, expr: Option<&ExprInfo>) -> Value {
+/// expression binding (or `None` for a plain literal / a palette type-level param); `doc` is
+/// the static help text from the type's declaration, which the runtime [`Param`] cannot carry.
+pub fn describe_param(p: &Param, expr: Option<&ExprInfo>, doc: Option<&str>) -> Value {
     let mut m = Map::new();
     m.insert("value".into(), param_value_json(p));
-    m.insert("doc".into(), Value::Null);
+    m.insert("doc".into(), doc.map(|d| json!(d)).unwrap_or(Value::Null));
     m.insert("save_param".into(), json!(true));
     m.insert(
         "refreshable".into(),
@@ -74,13 +75,25 @@ pub fn describe_param(p: &Param, expr: Option<&ExprInfo>) -> Value {
     Value::Object(m)
 }
 
-/// Type-level / literal params (no expression bindings) — used for the palette.
-pub fn describe_params(p: &ParamGroups) -> Value {
+/// Look up a param's declared help text. A node's own declaration wins over the universal
+/// `common` fallback, matching `with_common`'s keep-what-the-node-declared rule.
+fn param_doc(decls: &[goofi_node::ParamDecl], group: &str, name: &str) -> Option<&'static str> {
+    decls
+        .iter()
+        .chain(goofi_node::COMMON_DECLS)
+        .find(|d| d.group == group && d.name == name)
+        .and_then(|d| d.doc)
+}
+
+/// Type-level / literal params (no expression bindings) — used for the palette. This is the
+/// projection the frontend renders param tooltips from: the instance descriptors override only
+/// value/expression/options, so `doc` has to be right *here*.
+pub fn describe_params(p: &ParamGroups, decls: &[goofi_node::ParamDecl]) -> Value {
     let mut groups = Map::new();
     for (gname, g) in p {
         let mut names = Map::new();
         for (n, param) in g {
-            names.insert(n.clone(), describe_param(param, None));
+            names.insert(n.clone(), describe_param(param, None, param_doc(decls, gname, n)));
         }
         groups.insert(gname.clone(), Value::Object(names));
     }
@@ -93,12 +106,13 @@ pub fn describe_node_params(g: &Graph, uid: Uid) -> Value {
     let Some(params) = g.params(uid) else {
         return Value::Object(Map::new());
     };
+    let decls = g.manifest(uid).map(|m| m.params).unwrap_or(&[]);
     let mut groups = Map::new();
     for (gname, group) in params {
         let mut names = Map::new();
         for (n, param) in group {
             let expr = g.param_expression(uid, gname, n);
-            names.insert(n.clone(), describe_param(param, expr.as_ref()));
+            names.insert(n.clone(), describe_param(param, expr.as_ref(), param_doc(decls, gname, n)));
         }
         groups.insert(gname.clone(), Value::Object(names));
     }
@@ -156,7 +170,7 @@ pub fn node_type_info(m: &NodeManifest) -> Value {
         "output_slots": output_slots(m),
         // Project the same universal `common` group instances carry, so the palette
         // and an instantiated node agree on a type's params.
-        "params": describe_params(&goofi_node::with_common(m.default_params())),
+        "params": describe_params(&goofi_node::with_common(m.default_params()), m.params),
     })
 }
 
@@ -405,6 +419,47 @@ mod tests {
         isolation: Isolation::InProcess,
         factory: stub_factory,
     };
+
+    static DOCUMENTED_PARAMS: &[ParamDecl] = &[ParamDecl {
+        group: "welch",
+        name: "nperseg",
+        spec: goofi_node::ParamSpec::Int { default: 256, min: 16, max: 4096 },
+        default_expr: None,
+        doc: Some("Samples per Welch segment: longer means finer frequency resolution."),
+    }];
+    static DOCUMENTED_MANIFEST: NodeManifest = NodeManifest {
+        type_name: "DocumentedThing",
+        category: "test",
+        doc: "has a documented param",
+        inputs: &[],
+        outputs: T_OUT,
+        params: DOCUMENTED_PARAMS,
+        isolation: Isolation::InProcess,
+        factory: stub_factory,
+    };
+
+    #[test]
+    fn the_catalog_carries_each_params_doc() {
+        // The frontend renders a param tooltip from the CATALOG descriptor (the instance path
+        // only overrides value/expression/options), so this is the projection that matters.
+        let mut g = Graph::new();
+        g.register_dyn_type(&DOCUMENTED_MANIFEST, Box::new(|_| unreachable!()));
+        let cat = catalog_types(&g);
+        let ty = cat
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|v| v["type"] == "DocumentedThing")
+            .expect("type registered")
+            .clone();
+
+        assert_eq!(
+            ty["params"]["welch"]["nperseg"]["doc"],
+            json!("Samples per Welch segment: longer means finer frequency resolution.")
+        );
+        // An undocumented param stays null rather than "" so the UI shows no tooltip at all.
+        assert_eq!(ty["params"]["common"]["autotrigger"]["doc"].is_null(), false, "common params are documented too");
+    }
 
     #[test]
     fn catalog_includes_runtime_registered_types() {
