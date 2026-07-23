@@ -88,6 +88,10 @@ impl Node for PyNode {
         })
     }
 
+    fn on_param_refreshed(&mut self, key: &goofi_node::ParamKey) -> Option<Vec<String>> {
+        attach(|py| goofi_pymod::exec::run_refresh(py, self.instance.bind(py), &key.group, &key.name))
+    }
+
     fn process(&mut self, inp: &Inputs<'_>, out: &mut Outputs<'_>, _c: &mut NodeCtx, p: &Params<'_>) -> NodeResult {
         // Gather the present input slots (single-source; M2's manifests are all single).
         let present: Vec<(&str, &Data)> =
@@ -175,8 +179,95 @@ mod tests {
         PyNode::from_source(src, vec!["data"], vec!["out"]).expect("compile node")
     }
 
+    /// These tests share ONE embedded interpreter while cargo runs them on parallel threads, so
+    /// a test that reads process-global interpreter state (`sys._is_gil_enabled`) can observe a
+    /// sibling mid-import and fail spuriously. Every test that compiles or runs a node takes
+    /// this lock for its duration, which makes the GIL assertions mean what they say.
+    static INTERP: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn interp() -> std::sync::MutexGuard<'static, ()> {
+        // Recover from a poisoned lock: one failing test must not cascade into all the others.
+        INTERP.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    // A device picker: the node supplies fresh options through the `refresh_<group>_<name>`
+    // method convention, which is how a Python node answers the UI's re-enumerate button.
+    const PICKER: &str = concat!(
+        "import goofi\n",
+        "class Picker(goofi.Node):\n",
+        "    def config_input_slots(self):\n",
+        "        return {'data': goofi.DataType.ARRAY}\n",
+        "    def config_output_slots(self):\n",
+        "        return {'out': goofi.DataType.ARRAY}\n",
+        "    def config_params(self):\n",
+        "        return {'audio': {'device': goofi.StringParam('none', refresh=True)}}\n",
+        "    def refresh_audio_device(self):\n",
+        "        return ['mic', 'line-in']\n",
+        "    def process(self, data):\n",
+        "        return {'out': data.data}\n",
+    );
+
+    #[test]
+    fn python_node_supplies_fresh_options_by_method_convention() {
+        let _interp = interp();
+        let mut node = mk(PICKER);
+        assert_eq!(
+            node.on_param_refreshed(&ParamKey::new("audio", "device")),
+            Some(vec!["mic".to_string(), "line-in".to_string()])
+        );
+    }
+
+    #[test]
+    fn a_python_node_without_the_refresh_method_offers_nothing() {
+        let _interp = interp();
+        // Reported as "no options", never as an error: the button must not break a node that
+        // simply does not implement the convention.
+        let mut node = mk(DOUBLE);
+        assert_eq!(node.on_param_refreshed(&ParamKey::new("audio", "device")), None);
+    }
+
+    #[test]
+    fn a_refresh_method_returning_junk_is_ignored_rather_than_crashing_the_node() {
+        let _interp = interp();
+        const BAD: &str = concat!(
+            "import goofi\n",
+            "class Bad(goofi.Node):\n",
+            "    def config_input_slots(self):\n",
+            "        return {'data': goofi.DataType.ARRAY}\n",
+            "    def config_output_slots(self):\n",
+            "        return {'out': goofi.DataType.ARRAY}\n",
+            "    def refresh_audio_device(self):\n",
+            "        return 17\n",
+            "    def process(self, data):\n",
+            "        return {'out': data.data}\n",
+        );
+        let mut node = mk(BAD);
+        assert_eq!(node.on_param_refreshed(&ParamKey::new("audio", "device")), None);
+    }
+
+    #[test]
+    fn a_raising_refresh_method_offers_nothing_and_the_node_keeps_running() {
+        let _interp = interp();
+        const RAISER: &str = concat!(
+            "import goofi\n",
+            "class Raiser(goofi.Node):\n",
+            "    def config_input_slots(self):\n",
+            "        return {'data': goofi.DataType.ARRAY}\n",
+            "    def config_output_slots(self):\n",
+            "        return {'out': goofi.DataType.ARRAY}\n",
+            "    def refresh_audio_device(self):\n",
+            "        raise RuntimeError('no soundcard')\n",
+            "    def process(self, data):\n",
+            "        return {'out': data.data * 2.0}\n",
+        );
+        let mut node = mk(RAISER);
+        assert_eq!(node.on_param_refreshed(&ParamKey::new("audio", "device")), None);
+        assert_eq!(run(&mut node, &[1.0, 2.0]), vec![2.0, 4.0], "the node still ticks");
+    }
+
     #[test]
     fn class_node_runs_in_process_gil_free() {
+        let _interp = interp();
         assert!(!PyNode::gil_enabled().unwrap(), "interpreter must be free-threaded");
         let mut node = mk(DOUBLE);
         assert_eq!(run(&mut node, &[1.0, 2.0, 3.0]), vec![2.0, 4.0, 6.0]);
@@ -185,6 +276,7 @@ mod tests {
 
     #[test]
     fn length_preserving_node_carries_input_meta() {
+        let _interp = interp();
         // A [2,3] input with sfreq through a shape-preserving node returns [2,3] and
         // carries the input meta (sfreq) — matching the subprocess backend.
         let mut node = mk(DOUBLE);
@@ -211,6 +303,7 @@ mod tests {
 
     #[test]
     fn casts_non_f32_node_output_to_f32() {
+        let _interp = interp();
         let f64_src = concat!(
             "import goofi\n",
             "import numpy as np\n",
@@ -239,6 +332,7 @@ mod tests {
 
     #[test]
     fn setup_runs_once_and_a_param_reaches_process() {
+        let _interp = interp();
         // `setup` seeds `self._base`; `process` reads a live param `gain.factor`. Proves
         // setup ran (its value shows up) AND that a param edit reaches process.
         let src = concat!(
@@ -287,6 +381,7 @@ mod tests {
 
     #[test]
     fn python_nodes_run_concurrently_on_native_threads() {
+        let _interp = interp();
         let src = concat!(
             "import goofi\n",
             "import numpy as np\n",
