@@ -1,33 +1,48 @@
 //! Probe-based discovery over the real `goofi` extension. REQUIRES a python with
-//! `goofi` importable — set GOOFI_PYMOD_TEST_PYTHON to that interpreter (e.g. the
-//! maturin-develop venv). The tests are `#[ignore]` so a plain `cargo test` stays
-//! green without the venv; run them explicitly with `-- --ignored`. When run, they
-//! error (never silent-skip) if the env var is unset/unusable, so a green run is a
-//! real cross-language check (mirrors the goofi-subproc convention).
+//! `goofi` importable; it finds one itself (the repo venvs), so these run on a plain
+//! `cargo test`. Override with GOOFI_PYMOD_TEST_PYTHON. When no usable interpreter
+//! exists they FAIL with an actionable message rather than skipping — a green run has
+//! to mean the cross-language path actually ran (the goofi-subproc convention).
 
 use std::path::Path;
 
 use goofi_node::discover::{discover, discover_one, probe_introspect};
 use goofi_node::Isolation;
 
+/// The first interpreter that can `import goofi`: an explicit override, then the repo's two
+/// provisioned venvs (either works — the probe only imports `goofi`), then the system python.
 fn test_python() -> String {
-    let py = std::env::var("GOOFI_PYMOD_TEST_PYTHON").unwrap_or_default();
-    assert!(
-        !py.is_empty(),
-        "set GOOFI_PYMOD_TEST_PYTHON to a python with `goofi` installed \
-         (e.g. `maturin develop` venv); refusing to silent-skip"
-    );
-    // Sanity: `import goofi` must work in that interpreter.
-    let out = std::process::Command::new(&py)
-        .args(["-c", "import goofi"])
-        .output()
-        .expect("spawn probe python");
-    assert!(
-        out.status.success(),
-        "`import goofi` failed in {py}: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    py
+    let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let mut cands: Vec<String> = Vec::new();
+    if let Ok(p) = std::env::var("GOOFI_PYMOD_TEST_PYTHON") {
+        if !p.is_empty() {
+            cands.push(p);
+        }
+    }
+    for venv in [".ftvenv", ".venv"] {
+        cands.push(repo.join(venv).join("bin/python").to_string_lossy().into_owned());
+    }
+    cands.push("python3".to_string());
+    for cand in &cands {
+        let ok = std::process::Command::new(cand)
+            .args(["-c", "import goofi"])
+            // A host PYTHONPATH would shadow the candidate's own goofi and make this
+            // probe disagree with the one under test, which strips it.
+            .env_remove("PYTHONPATH")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        if ok {
+            return cand.clone();
+        }
+    }
+    panic!(
+        "no python with `goofi` importable (tried {cands:?}). Provision one with \
+         ./scripts/provision-goofi-py.sh, or set GOOFI_PYMOD_TEST_PYTHON. Refusing to \
+         silent-skip a cross-language test."
+    )
 }
 
 fn fixtures() -> std::path::PathBuf {
@@ -35,7 +50,6 @@ fn fixtures() -> std::path::PathBuf {
 }
 
 #[test]
-#[ignore = "needs GOOFI_PYMOD_TEST_PYTHON"]
 fn discovers_a_valid_node_with_declarations() {
     let py = test_python();
     let d = discover_one(&fixtures().join("negate.py"), &py, "python", Isolation::Subprocess)
@@ -47,7 +61,6 @@ fn discovers_a_valid_node_with_declarations() {
 }
 
 #[test]
-#[ignore = "needs GOOFI_PYMOD_TEST_PYTHON"]
 fn missing_dep_greys_out_instead_of_crashing() {
     let py = test_python();
     // The probe import fails -> None, never a panic/crash.
@@ -56,7 +69,6 @@ fn missing_dep_greys_out_instead_of_crashing() {
 }
 
 #[test]
-#[ignore = "needs GOOFI_PYMOD_TEST_PYTHON"]
 fn discover_dir_skips_hidden_and_broken() {
     let py = test_python();
     let found = discover(&fixtures(), &py, "python", Isolation::Subprocess).expect("scan");
@@ -67,7 +79,6 @@ fn discover_dir_skips_hidden_and_broken() {
 }
 
 #[test]
-#[ignore = "needs GOOFI_PYMOD_TEST_PYTHON"]
 fn probe_ignores_a_host_pythonpath() {
     // The probe interpreter must import ITS OWN installed goofi, not one leaked in via a host
     // `PYTHONPATH` (as `.cargo/config.toml` sets for the embedded FT interpreter). A poison

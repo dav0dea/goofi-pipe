@@ -194,7 +194,8 @@ fn renaming_a_producer_keeps_the_real_evaluator_expression_resolving() {
 }
 
 /// The FT interpreter with `goofi` importable, for the discovery probe. Prefers
-/// $GOOFI_PYMOD_TEST_PYTHON, else the build-time PYO3_PYTHON (`.ftvenv` must have goofi).
+/// $GOOFI_PYMOD_TEST_PYTHON, else the build-time PYO3_PYTHON (the `.ftvenv` build.rs points
+/// pyo3 at, which `./scripts/provision-goofi-py.sh` installs `goofi` into).
 fn probe_python() -> String {
     if let Ok(p) = std::env::var("GOOFI_PYMOD_TEST_PYTHON") {
         if !p.is_empty() {
@@ -205,7 +206,6 @@ fn probe_python() -> String {
 }
 
 #[test]
-#[ignore = "needs an FT venv with `goofi` importable (see M3 wheel provisioning)"]
 fn discovers_and_hosts_python_nodes_from_a_directory() {
     let py = probe_python();
     let dir = std::env::temp_dir().join(format!("goofi_pydisc_{}", std::process::id()));
