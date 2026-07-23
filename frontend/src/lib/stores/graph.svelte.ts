@@ -11,7 +11,6 @@ import {
 	type Control,
 	type ControlEvent,
 	type DirListing,
-	type FsEntry,
 	type GraphSnapshot,
 	type InstanceInfo,
 	type LinkInfo,
@@ -718,11 +717,6 @@ export class GraphStore {
 	/** List one directory level on the BACKEND filesystem (full FS, no jail). */
 	async listDir(path?: string): Promise<DirListing> {
 		return this.ctl.call<DirListing>('list_dir', { path });
-	}
-
-	/** The bundled example patches (empty under a wheel without examples/). */
-	async listExamples(): Promise<{ entries: FsEntry[] }> {
-		return this.ctl.call<{ entries: FsEntry[] }>('list_examples');
 	}
 
 	/** Load a patch from a BACKEND filesystem path (destructive — replaces the graph). Like

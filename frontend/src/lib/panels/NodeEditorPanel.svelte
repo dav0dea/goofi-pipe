@@ -1070,7 +1070,6 @@
 				<div class="eh-title">{entered ? 'This sub-patch is empty' : 'Empty patch'}</div>
 				<div class="eh-body">
 					Double-click the canvas or press <kbd>+</kbd> to add a node.
-					{#if !entered}<br />Load an example from the <strong>Examples ▾</strong> menu to get started.{/if}
 				</div>
 			</div>
 		{/if}
