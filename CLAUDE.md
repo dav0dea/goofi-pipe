@@ -1,15 +1,20 @@
 # goofi-pipe
 
 A real-time, node-based data-processing platform for biosignals (EEG, ECG,
-audio, video). Users build **patches** in a browser node-graph: each node is a
-process that ingests, transforms, or emits `Data` objects; edges carry data
-between nodes' output and input slots. The platform targets live, high-rate
-streams (kHz EEG, HD video) with many simultaneous viewers.
+audio, video). Users build **patches** in a browser node-graph: each node ingests,
+transforms, or emits `Data` objects; edges carry data between nodes' output and
+input slots. The platform targets live, high-rate streams (kHz EEG, HD video)
+with many simultaneous viewers.
+
+**This branch (`rust-rewrite`) is a ground-up Rust rewrite of the backend.** The
+original Python implementation is *deleted from this branch* — it lives on `main`
+and, for reference, at `../../goofi-pipe/`. The frontend (SvelteKit) carried over
+and is the only UI.
 
 This file is the orientation for a Claude session working in this repo. Read it
-end-to-end before touching code, then read the specific subsystem you're
-changing. **The "How we work" section is not optional — it is how changes are
-expected to be made here.**
+end-to-end before touching code, then read the specific subsystem you're changing.
+**The "How we work" section is not optional — it is how changes are expected to be
+made here.**
 
 ---
 
@@ -21,9 +26,10 @@ These are hard expectations, in priority order. They override speed.
    Write the test, watch it fail for the right reason, write the minimal code to
    pass, then refactor green. This is the Iron Law for new behavior, bug fixes,
    and refactors alike. A bug fix starts with a test that reproduces the bug.
-   - Pure logic (codec, reducers, geometry, stores' core) is unit-tested directly.
+   - Rust: unit tests in-module (`#[cfg(test)]`), cross-crate behavior in
+     `tests/` (the bridge's `protocol.rs` drives the real WS surface).
    - Svelte component/rune glue can't mount in vitest — verify it by typecheck +
-     an `e2e/` Playwright test, and keep the testable logic in a `.ts`/`.svelte.ts`
+     a `tests/e2e/` Playwright test, and keep the testable logic in a `.ts`/`.svelte.ts`
      module that *is* unit-tested.
 
 2. **Root cause before fix.** Investigate until you understand *why* something
@@ -33,21 +39,30 @@ These are hard expectations, in priority order. They override speed.
 
 3. **Structural edits over shallow hacks.** Prefer the change that makes the
    codebase *correct by construction* over the one that silences the symptom.
-   When two code paths should agree, unify them at one source of truth instead of
-   duplicating a workaround in both. A larger, well-reasoned refactor is welcome
-   when it removes a class of bugs — the user does not gate refactor scope.
+   Condense by making errors **compile-time-impossible** (typed extraction, serde,
+   a shared schema, an unconstructible invalid state) rather than by adding
+   defensive runtime handling — but keep genuine boundary errors: a Python node
+   *can* raise, so propagate it, never panic. When two code paths should agree,
+   unify them at one source of truth instead of duplicating a workaround in both.
+   A larger, well-reasoned refactor is welcome when it removes a class of bugs —
+   the user does not gate refactor scope.
 
 4. **Deep code analysis.** Before changing a subsystem, hold enough of it in
    context to reason about the change's blast radius. Trust documented internal
-   contracts; verify the ones you're about to depend on. Skim the relevant spec
-   in `docs/superpowers/specs/` — most subsystems have one.
+   contracts; verify the ones you're about to depend on. Skim the relevant spec in
+   `docs/superpowers/specs/` (**gitignored** — present on disk, not in git).
 
 5. **Minimum diff, maximum clarity.** Match the surrounding code's idiom, naming,
    and comment density. Comments explain *why*, not *what*. Don't reformat code
-   you aren't changing. **Never run Prettier on this repo** — there is no config
-   and its defaults fight the codebase's tabs + single-quotes style; hand-match.
+   you aren't changing. Rust is **4 spaces**; the frontend is **tabs + single
+   quotes**. There is no rustfmt.toml and no Prettier config — **never run
+   Prettier**, and hand-match style instead.
 
-6. **Honest reporting.** If tests fail, say so with the output. If a step was
+6. **Zero warnings.** A task is not done at "Finished" — grep the build output for
+   `warning:` (dead_code, unused, clippy) and clear it. Remove the dead field or
+   function; do not silence it with a `_` prefix or an `#[allow]`.
+
+7. **Honest reporting.** If tests fail, say so with the output. If a step was
    skipped, say that. State what is verified plainly; don't claim done what you
    haven't run.
 
@@ -61,27 +76,24 @@ verify every candidate** before believing it.
 - **Top model only.** Every finder *and* verifier runs on the most capable model
   (Opus, or Fable when available) — never Haiku/Sonnet, even for cheap breadth; a
   weaker finder under-finds. The `Explore` agent type pins Haiku in its frontmatter,
-  so pass `model: 'opus'` to override it (or drop `agentType`). Verify the run's
-  reported per-agent model is never haiku/sonnet.
+  so pass `model: 'opus'` to override it (or drop `agentType`).
 - **Verify is a gate, not a rubber stamp.** Each finding earns an explicit verdict:
   - *correctness* → `real && reachable`. The hard lesson: a verifier readily confirms
     "this path crashes" but misses "**is it reachable**" — so it must trace a real
-    caller (bridge RPC routing, the supervisor thread, frontend events, a normal node
+    caller (bridge RPC dispatch, the tick thread, a frontend event, a normal node
     tick) and **check the upstream guards**, not just the local function.
   - *leanness* → `safe && !falsePositive && !servesArchitecture && !overAbstraction`.
-    Treat the system as an architecture with a purpose; cut **inflation** (dead code,
-    duplication, parallel paths) but **reject reshapes / speculative abstractions** —
-    over-abstraction is itself inflation. Before calling anything dead, clear this
-    codebase's *dynamic dispatch*: node auto-discovery (the AST catalog in
-    `registry.py` — specs, not imports; multiple Node classes per file; underscore
-    modules skipped), string-keyed RPC ops, the graph-executor + viewer-kind
-    registries, the `window.goofi`/`$lib/agent` façade + the **gitignored** `e2e/`
-    (plain `grep`, not `git grep`), Svelte-template usage, `Data`/codec meta string keys.
+    Cut **inflation** (dead code, duplication, parallel paths) but **reject reshapes /
+    speculative abstractions** — over-abstraction is itself inflation. Before calling
+    anything dead, clear this codebase's *dynamic dispatch*: `inventory`-registered
+    native nodes, string-keyed RPC ops, the Python introspection probe (a manifest, not
+    an import), the `window.goofi`/`$lib/agent` façade, the **committed** `tests/e2e/`,
+    Svelte-template usage, and `Meta`/codec string keys.
 - **Iterate to convergence, don't chase zero.** Re-run after each fix round.
   Convergence shows as the confirmed count shrinking *and* shifting from structural to
-  trivial (e.g. 16→4, or 11→9→4→3). An adversarial finder always surfaces *something*
-  marginal — stop when only trivial/over-abstraction items remain; don't manufacture
-  churn. Re-auditing also catches regressions a fix itself introduced.
+  trivial (e.g. 16→4, or 11→9→4→3, or 7→10→7→0). An adversarial finder always surfaces
+  *something* marginal — stop when only trivial/over-abstraction items remain; don't
+  manufacture churn. Re-auditing also catches regressions a fix itself introduced.
 - **Fix under the Iron Law.** Each confirmed finding is fixed TDD-first (or with a
   characterization test where coverage was missing), behind green suites, committed in
   small focused steps. Verifiers reliably *correct* finder over-reaches (a dropped
@@ -92,7 +104,8 @@ verify every candidate** before believing it.
 
 ## Architecture
 
-Three layers, connected by two transports.
+One Rust process holds the graph, the engine, and the web server. Node execution
+is tiered; the browser is a read-only replica driven by commands.
 
 ```
    ┌──────────────── browser ────────────────┐
@@ -102,218 +115,220 @@ Three layers, connected by two transports.
    │   · dockable workspace panels            │
    │   · undo/redo, params, sub-patches       │
    └───────┬───────────────────────┬──────────┘
-           │ HTTP + /control WS     │ /data/<node>/<slot>/<kind> WS
-           │ (JSON RPC + events)    │ (binary GOOF frames)
+           │ /control WS            │ /data/<node>/<slot> WS
+           │ JSON commands +        │ (binary GOOF frames,
+           │ binary CRDT sync       │  ViewSpec-reduced)
    ┌───────▼───────────────────────▼──────────┐
-   │  goofi.bridge  (src/goofi/bridge/)        │
-   │   aiohttp server in the manager process   │
-   │   serves the built SPA + the two planes   │
+   │  goofi-bridge  (axum)                     │
+   │   · command dispatch + per-session history│
+   │   · CRDT mirror of graph state (yrs)      │
+   │   · ViewSpec reduction, off the tick path │
+   │   · serves the built SPA from frontend/build/
    └───────┬───────────────────────────────────┘
-           │ Python calls
-   ┌───────▼───────────────┐   iceoryx2 (zero-copy SHM)
-   │  Manager + NodeRefs    │◄──────────────────────────┐
-   │  (graph, links, .gfi)  │   ctrl pub / status sub    │
-   └────────────────────────┘                            │
-   ┌─────────────────────────────────────────────────────▼─┐
-   │  Node processes (1 per node, or shared process group)  │
-   │   each runs its own tick loop; publishes Data to SHM    │
-   └────────────────────────────────────────────────────────┘
+   ┌───────▼───────────────────────────────────┐
+   │  goofi-engine — Graph, scheduler, scopes   │
+   │   adaptive tick under one graph mutex      │
+   └───┬───────────────┬───────────────┬────────┘
+       │ native Rust   │ in-process    │ detached worker
+       │ (inventory)   │ Python (FT)   │ + iceoryx2 SHM
+       ▼               ▼               ▼
+    goofi-nodes    goofi-py/PyNode   goofi-subproc → `python -c "import goofi; goofi.serve()"`
 ```
 
-- **Backend is Python, process-per-node**, orchestrated by the **manager**, which
-  owns the graph and persists patches as `.gfi` YAML. Nodes talk to each other
-  over **iceoryx2** shared memory (zero-copy publish). The backend transport and
-  wire format are stable; treat them as fixed (see Hard constraints).
-- **The bridge** lives in the manager process and exposes the manager's API +
-  live data to the browser over HTTP/WebSocket. It serves the built SPA from
-  `frontend/build/`.
-- **The frontend** is the only UI (the old dearpygui GUI is gone). One manager ↔
-  one browser tab.
-
 ### Control plane — `/control` WS
-JSON, bidirectional. Client sends RPCs (`add_node`, `add_link`, `update_param`,
-`group_nodes`, `save`, `load`, …); server broadcasts events (`hello`,
-`state_update`, `node_added`, `graph_replaced`, `error`, …). The browser is never
-authoritative — it issues RPCs and reconciles from the echoed events. Undo/redo
-replays inverse/forward RPCs; the backend never learns "undo" exists.
+Two interleaved channels on one socket: **JSON** (RPC requests + `hello`/`error`
+events) and **binary** (CRDT sync frames). A client's replica of the graph is
+**read-only** — it never writes the doc. Every mutation is a **command** sent as an
+RPC; the manager applies it, re-mirrors the graph into the doc, and broadcasts the
+delta. Reads come from the doc, not from event echoes.
 
-### Data plane — `/data/<node>/<slot>/<kind>` WS
-One binary WS per (node, slot, viewer-kind) a client is viewing. The bridge
-decodes each slot **once**, runs the **viewer adapter** for each subscribed kind
-(image→uint8, line/trajectory/topomap→float16, string/table passthrough), and
-re-encodes once per kind — float range/stats ride in `meta["__view__"]` so
-viewers and the metadata inspector stay float-accurate. Latest-wins backpressure
-(drop oldest) mirrors iceoryx2. See `docs/superpowers/specs/2026-06-21-viewer-adapters-design.md`.
+**Undo/redo is manager-owned.** Each browser tab mints a `sessionStorage` session id
+sent on every request. `goofi-engine/src/command.rs` gives every command an exact
+inverse; `CommandHistory` stores one *toggle* per entry (its inverse when applied,
+the forward when undone) so redo is uid-stable, filtered per session. The client
+records exactly one `graph_cmd` per successful mutating RPC and delegates
+undo/redo to the manager — **so `CommandHistory::apply` must record every command,
+including a forward no-op**, or the two stacks desync 1:1. Layout/view undo (panels,
+tabs, viewport) stays client-local.
+
+### Data plane — `/data/<node>/<slot>` WS
+**One stream per (node, output slot)**, regardless of how many viewers watch it.
+Each viewer publishes a **ViewSpec** — a payload-free constraint algebra (dtype,
+dim-count comparisons, per-dim length comparisons, a desired reduction length per
+dim) — inband as `{op:"view", specs:[…]}`. The bridge folds all specs against the
+real frame (richest-per-dim: envelope > area > subsample), reduces **after the graph
+lock drops** so it never blocks a tick, and ships one reduced frame to all
+subscribers. Array `Data` is always **f32**; viewers render full-dtype reduced
+frames (there are no per-kind adapters and no `__view__` sidecar).
+
+### Node execution tiers
+| tier | where | when |
+|---|---|---|
+| **native Rust** | inline on the tick thread | `goofi-nodes`, registered via `inventory` |
+| **in-process Python** | inline, free-threaded 3.14t via pyo3 | a node whose imports are free-threading-safe |
+| **subprocess Python** | a **detached off-tick worker**, iceoryx2 SHM | a node that needs the GIL or is missing on the FT interpreter |
+
+Both Python tiers run the **same `goofi.Node` contract** and share one marshalling
+seam (`goofi_pymod::exec::{run_setup, run_process}`), so they cannot drift — proven
+by a cross-tier parity test. The detached tier is why a slow or hung subprocess node
+can no longer stall the tick.
 
 ---
 
 ## Running, testing, building
 
 ```bash
-# Backend + bridge (serves the prebuilt SPA, prints the URL to open):
-uv run goofi-pipe                      # launches manager + bridge
-uv run goofi-pipe --headless test.gfi  # no UI; run a patch
-uv run goofi-pipe --headless --duration 5 test.gfi   # auto-stop
-#   flags: --port N (default 8000), --bind HOST (default 127.0.0.1)
+cargo run                       # launches the backend + bridge, prints the URL
+#   flags: --port N (default 8000), --bind HOST (default 127.0.0.1),
+#          --python-nodes DIR | --subproc-nodes DIR | --auto-nodes DIR,
+#          --subproc-python BIN, --list-nodes
+# With no --*-nodes flag it auto-discovers ./nodes/ and routes each node by tier.
+# --subproc-python defaults to the repo-local .venv when present.
 
-# Backend tests (must stay green; ~990 pass):
-.venv/bin/python -m pytest tests/
+cargo test --workspace                      # must stay green, and warning-free
+cargo test -p goofi-py --features embed     # in-process Python host (needs .ftvenv)
+cargo build -p goofi-cli 2>&1 | grep warning:   # ALWAYS check before declaring done
 
-# Frontend (run from frontend/):
-npm run dev      # Vite dev server; proxies /control + /data to the bridge
-npm run test     # vitest (unit)
+# Frontend (from frontend/):
 npm run check    # svelte-check + tsc strict — keep 0 errors
+npm run test     # vitest (unit)
 npm run build    # static SPA → frontend/build/  (what the bridge serves)
 
-# e2e (tests/e2e/, COMMITTED): Playwright (TS) + the real goofi-pipe binary,
-# driven via window.goofi. `cd tests/e2e && npm run e2e` builds the binary +
-# runs the suite (spawns goofi-pipe headless, tears it down). One worker, headless.
+# e2e (tests/e2e/, COMMITTED): Playwright + the real binary via window.goofi
+cd tests/e2e && npm run e2e     # builds the backend, spawns it, runs, tears down
 ```
 
-If `/dev/shm/iox2_*` accumulates after a crash:
-```bash
-.venv/bin/python -c "import iceoryx2 as i; i.Node.try_cleanup_dead_nodes(i.ServiceType.Ipc, i.config.global_config())"
-```
+`goofi-cli/build.rs` rebuilds `frontend/build/` automatically when a frontend source
+changed (skip with `GOOFI_SKIP_FRONTEND_BUILD=1`). Cargo **replays** a build script's
+`cargo:warning` lines on later no-op builds — the rebuild line is written in the past
+tense with its measured duration for exactly that reason.
 
-The reference stress-patch shape is Oscillator + PSD + 8 Buffers (+
-VideoStream); build one via the UI or the agent façade and save it — patches
-are gitignored, so don't assume a `test.gfi` exists on disk.
+**Python interpreters (machine-local, gitignored, `uv` venvs — use `uv pip`, never `pip`):**
+- `.ftvenv` — free-threaded 3.14t: the in-process host **and** the introspection probe.
+- `.venv` — a GIL python: the subprocess child.
 
-Node authoring: plain top-level imports for ALL deps (never defer into
-`setup()`; no import guards). Config hooks (`config_*`) may reference only
-builtins, `goofi.params`/`DataType`/slot types, and same-file static
-declarations — the AST registry execs them without importing the module
-(runtime state like device lists goes behind a try/except fallback there).
-Multiple `Node` classes per file are fine; type names are globally unique.
-A missing dep greys the palette entry; a broken one fails the node's
-bootstrap and surfaces on its error channel. A param-change hook
-`{group}_{name}_changed(self, value)` runs on a param edit, and a
-`StringParam(refresh="_method")` wires a ⟳ button to a node method that
-re-evaluates its options — both method names are validated at catalog build.
+Both need the `goofi` wheel; provision reproducibly with `scripts/provision-goofi-py.sh`.
+Python-tier tests need env vars or they **silently skip**:
+`GOOFI_SUBPROC_TEST_PYTHON=.venv/bin/python`, and for the `#[ignore]`d cross-lang probes
+`GOOFI_PYMOD_TEST_PYTHON=.ftvenv/bin/python`.
+
+If `/dev/shm/iox2_*` accumulates after a crash, delete the stale files before rerunning.
+
+**Never** background CPU load with `(cmd &)` subshells when benchmarking — leaked
+processes outlive the test and corrupt every later latency measurement.
 
 ---
 
-## Backend map (`src/goofi/`)
+## Backend map (`crates/`)
 
-| file | owns |
+| crate | owns |
 |---|---|
-| `transport.py` | iceoryx2 `Publisher`/`Subscriber`/`Listener`/`Notifier`/`WaitSet` + a thread variant. **Stable — do not touch.** |
-| `codec.py` | the binary `Data` wire format (12-byte header, msgpack meta, dtype body). **Stable.** Mirrored in `frontend/src/lib/codec/`. |
-| `data.py` | the `Data` object (dtype, value, meta) + meta conventions (`channels`, coords). |
-| `params.py` | `Float/Int/Bool/StringParam` descriptors + serialization. |
-| `node.py` | the node base: tick `_processing_loop`, slots, SHM publish, ctrl handling. |
-| `node_helpers.py` | `NodeRef` — the manager-side proxy: ctrl pub/notifier (+ pre-ready ctrl queue), status sub, lifecycle `stage`, the per-NodeRef data pump that decodes slot frames for the bridge. |
-| `registry.py` | the AST node catalog: `NodeSpec` + `build_catalog`. **The manager never imports node modules** — config hooks are exec'd from the AST in a whitelisted namespace (`__import__` blocked); implementations import only in the node's child process. Purity contract enforced at build + by `tests/test_registry_parity.py`. |
-| `manager.py` | `Manager` + `NodeContainer`: graph, `_links`, async spawn/teardown (add returns immediately; stages creating→setup→ready/error), save/load, sub-patch runtime (group/expand/share, `_instances`/`_definitions`), bridge bootstrap. |
-| `node_log.py` | per-node SSE log server (peer-to-peer; the proven template for the future P2P data plane). |
-| `patch_format.py` | `.gfi` v2 (recursive, sub-patch-aware) build/expand. |
-| `bridge/server.py` | aiohttp HTTP + WS server; routes; static SPA serving. |
-| `bridge/control.py` | `/control` RPC dispatch + state/event broadcast. |
-| `bridge/data.py` | `/data` plane: `_SlotMux` decode-once + per-kind adapt/encode fan-out. |
-| `bridge/adapters.py` | the viewer adapters (float→uint8/float16, `__view__` stats). |
-| `bridge/fsbrowse.py` | filesystem browse RPC for save/load. |
-| `bridge/schemas.py` | request/response + snapshot shapes. |
-| `nodes/` | the node library (analysis, array, inputs, misc, outputs, signal). |
-| `audio/` | audio-synthesis pure cores: `clock.py` (`SampleClock` — exact, drift-free per-tick sample count), `ring.py` (`AudioRing` SPSC jitter buffer), `continuity.py` (`meta["index"]` + equal-power `crossfade`), `drift.py` (`DriftCorrector` stuff/drop). Consumed by the Oscillator generator + AudioOut sink. |
+| `goofi-core` | `Data` (always-f32 arrays, string, table) + `Meta` (an `IndexMap` with typed accessors; builtin keys `sfreq`/`ufreq`/`index`/`channels`/`reduced`), `Param`, reduction kernels, globals, the introspection probe schema. |
+| `goofi-codec` | the binary `Data` wire format (GOOF frame: header, msgpack meta, f32 body) + the subprocess request/response frames. Mirrored in `frontend/src/lib/codec/`. |
+| `goofi-node` | the `Node` trait, `NodeManifest`, `SlotDecl`/`OutputDecl`/`ParamDecl`, the `ExprEvaluator` seam, and `discover.rs` (the Python introspection probe → a rich multi-slot + param manifest). |
+| `goofi-nodes` | the native node library — deliberately **Oscillator + Buffer** (+ a test source) after the tabula-rasa reset. |
+| `goofi-engine` | `Graph`: nodes, links, scheduling (adaptive tick, `next_run_delay`), param expressions (`nd()`), `.gfi` v6 save/load, `subpatch.rs` (flat scopes + stubs), `command.rs` (commands + inverses + `CommandHistory`), `detached.rs` (the off-tick worker tier). |
+| `goofi-view` | the payload-free ViewSpec algebra: `plan(specs, frame)` folds many viewers' constraints into one reduction. |
+| `goofi-crdt` | the yrs document: graph mirror, sync handshake, idempotent reconcile. |
+| `goofi-bridge` | the axum server: `/control` dispatch + CRDT mirror + `/data` reduction/fan-out + `schemas.rs` (wire shapes) + the tick/stats workers. |
+| `goofi-py` | the in-process Python tier: `PyNode` (a `Node` adapter over a live `goofi.Node`), the pyo3 param-expression evaluator, discovery. Feature-gated `embed`. |
+| `goofi-pymod` | the `goofi` Python package itself, in Rust (pyo3): `Node`/`Data`/`Meta`/params, `introspect()`, the shared `exec` marshalling, and `serve()` — the iceoryx2 child loop. Dual-built: an abi3 wheel for GIL pythons, an rlib linked into the FT host. |
+| `goofi-subproc` | `RemoteNode` — the manager side of the subprocess tier (spawn, seq-framed iceoryx2 round-trip, error frames). |
+| `goofi-cli` | the `goofi-pipe` binary: arg parsing, tier routing/registration, `build.rs` (frontend build + pyo3 config). |
 
 ## Frontend map (`frontend/src/lib/`)
 
 | dir | owns |
 |---|---|
-| `api/` | transport clients: `control.ts` (RPC + events), `data.ts`/`dataWorker.ts` (binary stream, off-thread decode), `frames.ts` (rAF paint coalescer + per-slot latest frame), `perfStats`/`rateMeter` (fps HUD), `awaitEvent`. |
-| `codec/` | the TS port of `codec.py` (`decode.ts`, incl. float16). |
-| `stores/` | reactive state (Svelte 5 runes): `graph.svelte.ts` (server-authoritative graph mirror), `history.svelte.ts` + `graphExecutors.ts` (unified undo/redo), `selection`, `ui`, `console`, `flash`, `logStream`. |
-| `editor/` | the Svelte Flow canvas: `GoofiNode.svelte` (every node, incl. sub-patch instances — **one component, no per-kind branches**), `snap.ts` + `nodeMetrics.ts` (alignment snapping), placement, boundary nodes. |
-| `viewers/` | one component per viewer kind (`ArrayViewer`, `ImageViewer`, `TopomapViewer`, `TrajectoryViewer`, `StringViewer`, `TableViewer`) + `ViewerFeed` (subscribe lifecycle), `kind.ts`, `decimate.ts`, `imageGL.ts`. |
-| `params/` | parameter widgets + expression editor. |
-| `panels/` | dockable panel content (node-editor, parameters, viewer, metadata, console, errors) + the panel registry. |
-| `workspace/` | the panel layout engine: `model.ts` (pure tree algebra), `workspace.svelte.ts`, `navContext.ts` (undo focus restore). |
+| `api/` | transport clients: `control.ts` (commands + events + session id), `data.ts`/`dataWorker.ts` (binary stream, off-thread decode), `frames.ts` (rAF paint coalescer), `perfStats`/`rateMeter`. |
+| `crdt/` | the client replica: `SyncClient` (read-only) + the doc readers. |
+| `codec/` | the TS port of the GOOF frame decoder (incl. float16). |
+| `stores/` | reactive state (Svelte 5 runes): `graph.svelte.ts` (doc-authoritative mirror), `history.svelte.ts` (one linear client stack; graph steps delegate to the manager), `selection`, `ui`, `console`, `flash`, `logStream`. |
+| `editor/` | the Svelte Flow canvas: `GoofiNode.svelte` (every node, incl. sub-patch instances), `snap.ts` + `nodeMetrics.ts`, placement, boundary nodes. |
+| `viewers/` | one component per viewer kind + `ViewerFeed` (subscribe lifecycle), `capacity.ts` (emits the backend-shaped ViewSpec), `decimate.ts`, `imageGL.ts`. |
+| `params/` | parameter widgets + the expression editor. |
+| `panels/` | dockable panel content (node-editor, parameters, viewer, metadata, console, errors, globals) + the panel registry. |
+| `workspace/` | the panel layout engine: `model.ts` (pure tree algebra), `workspace.svelte.ts`, `navContext.ts`. |
 | `fs/` | the filesystem browser for save/load. |
-| `agent/` | the automation façade (`window.goofi`: commands + query) — the seam e2e drives, and the basis for a planned in-app AI-agent panel. |
+| `agent/` | the automation façade (`window.goofi`) — the seam `tests/e2e/` drives. |
+
+---
+
+## Authoring a node
+
+**Native (Rust).** Static declarations + `Default`-and-replay construction:
+`static PARAMS: &[ParamDecl]`, slots as `&[SlotDecl]`/`&[OutputDecl]`, teardown via
+`Drop`, positional axes labels. Register with `inventory` so the catalog finds it.
+A param may declare a `default_expr` (e.g. `"globals.default_ufreq"`) — the engine
+seeds a live binding instead of a literal.
+
+**Python (`nodes/`).** Subclass `goofi.Node`: declare `config_input_slots()` /
+`config_output_slots()` / `config_params()`, implement `setup()` and `process()`.
+Plain top-level imports for all deps. The same file works on **both** Python tiers —
+the discovery probe imports it in a real interpreter and reports whether it is
+free-threading-safe; a node that isn't (or whose deps are missing on `.ftvenv`)
+routes to the subprocess tier and shows as `Name (subproc)`. A missing dep greys the
+palette entry; a raise inside `process()` is a per-tick error frame, not a crash.
 
 ---
 
 ## Key subsystems & their specs
 
-Most non-trivial subsystems have a design doc in `docs/superpowers/specs/`. Read
-the relevant one before changing the area.
+Specs live in `docs/superpowers/specs/` (**gitignored** — on disk only). Read the
+relevant one before changing the area.
 
-- **Undo/redo** (`2026-06-19-undo-redo-redesign-design.md`) — one history stack
-  spanning the graph domain (replayed as inverse/forward RPCs) and the layout
-  domain (restored as `WorkspaceState` snapshots). `history().transaction()` folds
-  N records into one entry. Each action carries a `NavContext` so undo reorients
-  to where the change happened.
-- **Sub-patches** (`2026-06-17-persistence-subpatch-design.md`,
-  `2026-06-18-virtual-subpatch-nodes.md`) — group/expand/share; a sub-patch
-  instance is a **virtual node** that renders through `GoofiNode` with no
-  special-casing (its wired boundaries are its slots; its sharing/expand controls
-  live in the inspector). Shared instances strict-mirror across siblings. v2
-  `.gfi` is recursive. Invariant: the synth node `nodeByName(instId)` returns a
-  **stable reference** when unchanged, like a real node.
-- **Viewer adapters** (`2026-06-21-viewer-adapters-design.md`) — the data-plane
-  reduction described above.
-- **Per-viewer view state** (`2026-06-18-per-viewer-instance-view-state-design.md`)
-  — each slot's chosen viewer kind + settings, persisted into the `.gfi`.
-- **In/Out authoring** (`2026-06-18-inout-authoring.md`) — sub-patch boundary
-  ports.
-- **Node discovery & instantiation**
-  (`2026-07-06-node-discovery-instantiation-design.md`) — the AST registry
-  (`registry.py`), child-side imports, async `add_node` with lifecycle stages
-  (creating→setup→ready/error), pre-ready ctrl queue, bootstrap-error pipe
-  (no restart loop), node-authoritative `param_options` reconciliation.
-- **Param refresh** (`2026-07-07-param-refresh-design.md`) — a `StringParam` can
-  declare `refresh="_method"` (a node method → `list[str]`); the UI's ⟳ button
-  sends `REFRESH_PARAM`, the node re-evaluates and pushes fresh options over the
-  existing `param_options` STATE_UPDATE seam. `build_catalog` validates the
-  method exists (like the `{group}_{name}_changed` guard). Used by
-  AudioStream/AudioOut (`device`) and LSLClient (`source_name`).
-- **Audio synthesis infrastructure**
-  (`2026-07-13-audio-synthesis-infrastructure-design.md`) — distributed,
-  pure-Python generative audio without an AUDIO dtype. Four axes: (1) **per-input-slot
-  delivery mode** — `InputSlot.queue` (lossless FIFO drained frame-by-frame) vs the
-  default latest-wins; the manager sizes the iceoryx2 channel from the *consumer's*
-  flag and reallocates on change (GUI/agent-overridable, persisted to `.gfi`).
-  (2) **SampleClock-paced generators** (`audio/clock.py`) — exact, drift-free per-tick
-  sample counts. (3) Cross-cutting **`meta["index"]`** — a source-origin emit counter,
-  base-stamped on every published frame and propagated unchanged through
-  length-preserving nodes, so an upstream drop stays visible at the sink. (4) **process
-  `common.priority`** — `gc.freeze()`+switchinterval after warm-up, GC-disable+SCHED_FIFO
-  on `realtime`. The one leaf is **AudioOut**: a non-blocking callback + `AudioRing`
-  jitter buffer, primed before start, index-driven crossfade on discontinuity, and
-  steady-state stuff/drop drift correction (`audio/{ring,continuity,drift}.py`).
+- **Rust backend architecture** (`2026-07-16-rust-backend-architecture.md`) — the
+  adopted design + the M1–M9 build plan.
+- **ViewSpec data-plane reduction** (`2026-07-16-viewspec-data-plane-reduction-design.md`)
+  — one stream per slot, constraint merge, reduce off the tick path.
+- **Flat sub-patch scopes** (`2026-07-18-flat-subpatch-scopes-design.md`) — a scope
+  tree of uids + `Stub` symlinks; `scope_of` is the single SSOT; sharing was
+  deliberately **dropped**. `.gfi` v6.
+- **Unified command API** (`2026-07-18-unified-command-api-design.md`) — everything
+  is a manager command with an exact inverse; per-session history; the client replica
+  is read-only.
+- **CRDT control plane** (`2026-07-17-crdt-control-plane-design.md`) — the doc as the
+  control-plane SSOT, mirror/reconcile, sync handshake.
+- **Param expressions** (`2026-07-16-param-expressions-design.md`) — `nd('node')`
+  in a param, lifted into the DAG so the reference runs first (same-tick, no latency).
+- **Globals panel** (`2026-07-17-globals-panel-design.md`) — patch-scoped system +
+  user globals as a doc root; `default_ufreq` is the producer rate reference.
+- **Isolated node tier** (`2026-07-19-isolated-node-tier-design.md`) — off-tick
+  detached execution + the typed-sfreq/opaque-meta SHM transport.
+- **Python node unification** (`2026-07-20-python-node-unification-design.md`) — one
+  `goofi.Node` contract across both tiers, `goofi.serve`, the shared exec seam.
+- **f32-only + Meta-as-map** (`2026-07-20-f32-only-and-meta-map-design.md`).
+- **ufreq convention** (`2026-07-16-ufreq-meta-design.md`) — the measured update
+  frequency is the rate of record; `sfreq` is intra-frame only.
 
-Analysis reports live in `docs/analysis/`. The performance ceiling and a future,
-more aggressive data plane are tracked in **§ Future** below.
+Analysis reports live in `docs/analysis/` (also gitignored).
 
 ---
 
 ## Hard constraints
 
-- **Do not touch** `transport.py`, `codec.py`, or the iceoryx2 setup unless
-  truly unavoidable (and surface it first). The node↔node zero-copy publish path
-  is load-bearing.
-- **Leave `main` alone.** Work happens on the `frontend` branch. Don't push or
-  force-push without authorization; branch before committing on a default branch.
+- **Work happens on `rust-rewrite`. Leave `main` alone.** Never push or force-push
+  without explicit authorization; branch before committing on a default branch.
+- **`docs/` is gitignored on this branch** — specs and plans are on disk, not in git.
+  Don't be surprised when `git status` ignores them, and don't "restore" them.
+- Commit in small, focused, readable steps at green checkpoints — not one mega-commit.
+- Commit messages end with: `Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>`.
 - No auth on the WS endpoints — single-user, local/trusted-LAN app.
 - Desktop browser only (no mobile/touch). One theme, done well (no dark-mode toggle).
-- Don't reintroduce dearpygui or zmq.
-- Commit messages end with: `Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>`.
-- Commit in small, focused, readable steps — not one mega-commit.
+- Don't reintroduce dearpygui, zmq, or a Python manager.
+- The iceoryx2 transport and the GOOF wire format are load-bearing; changing either
+  means changing `frontend/src/lib/codec/` in lockstep (`codec_golden.json` pins it).
 
 ---
 
-## Future: P2P data plane + node-side thalamus (designed, not built)
+## Current state
 
-`docs/p2p-data-thalamus-spec.md` is an implementation-ready, self-contained spec
-for the **next major architecture step**: move the
-viewer-data path **peer-to-peer** (browser connects directly to the node
-process), and reduce each stream **inside the node** to exactly what the viewer
-can display (per-axis: envelope for waveforms, area for images, subsample for
-channels) on a dedicated reducer thread — removing the manager from the data
-path entirely.
+The **framework** is essentially complete and has been audited to convergence
+several times: CRDT control plane, unified commands + manager-owned undo/redo, flat
+sub-patches, the ViewSpec data plane, globals, both Python node tiers, e2e.
 
-It **supersedes** the shipped viewer-adapters plane (its §9.1 deletes
-`bridge/data.py`): the adapters do a bridge-side dtype downcast with the manager
-still transcoding; the thalamus does node-side capacity reduction P2P (~1300× for
-a kHz buffer) and directly removes the measured perf ceiling. It is a clean
-10-step plan, not a rebase — undertake it as its own project when prioritized.
+The **node library is a deliberate tabula rasa** — Oscillator + Buffer only. Growing
+it (sinks, filters/PSD, real biosignal inputs, recording, array math) is the next
+major project, and is meant to be **co-designed with the user**, not chosen
+unilaterally. Longer-horizon: the audio and video pillars (each its own runtime,
+sharing the core graph/`.gfi`/undo/sub-patch machinery), designed but not built.
