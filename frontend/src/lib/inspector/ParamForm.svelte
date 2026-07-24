@@ -244,7 +244,7 @@
 			{#if activeParams.length === 0}
 				<div class="pf-empty-group" data-testid="param-empty-group">No parameters in this group.</div>
 			{:else}
-				{#each activeParams as [paramName, descriptor] (paramName)}
+				{#each activeParams as [paramName, descriptor] (node.uid + '/' + paramName)}
 					<ParamField
 						{paramName}
 						{descriptor}

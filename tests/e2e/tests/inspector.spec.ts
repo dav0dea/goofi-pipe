@@ -75,4 +75,81 @@ test.describe('Inspector (real node)', () => {
 		await panel(page).getByTestId('docs-toggle').click();
 		await expect(panel(page).getByTestId('docstring')).toBeVisible();
 	});
+
+	// --- state-coupling seam (audit findings #1/#2/#11) ------------------------------------------
+	// The ParamForm rows must be keyed by node identity, and the fx editor's global standdown must be
+	// ref-counted + released when a field leaves expression mode. These two cases drive the REAL two-node
+	// switch that the per-instance ParamField state used to survive.
+
+	const modalOpen = (page: Page): Promise<boolean> =>
+		page.evaluate(() => (window as any).goofi.query.modalOpen());
+	const historyLen = (page: Page): Promise<number> =>
+		page.evaluate(() => (window as any).goofi.query.historyLength());
+
+	test('a node switch tears down an open fx editor and frees global undo/redo', async ({ page }) => {
+		await page.goto('/');
+		await waitForApp(page);
+		// Two oscillators: A gets an open fx editor; B keeps fx OFF on the same-named param.
+		const a = await addNode(page, 'Oscillator', 'inputs');
+		await waitForNode(page, a);
+		const b = await addNode(page, 'Oscillator', 'inputs', [280, 0]);
+		await waitForNode(page, b);
+
+		await page.evaluate((u) => (window as any).goofi.commands.select([u]), a);
+		await expect(panel(page)).toHaveClass(/open/);
+
+		// Enable fx on amplitude and grow the in-panel multi-line editor — it owns the keyboard, so the
+		// global undo/redo stands down.
+		const ampA = panel(page).getByTestId('param-field-amplitude');
+		await ampA.getByTestId('param-fx-toggle').click();
+		await ampA.getByTestId('param-expr-expand').click();
+		await expect(ampA.getByTestId('param-expr-multiline')).toBeVisible();
+		await expect.poll(() => modalOpen(page)).toBe(true);
+
+		// Switch selection to B (fx OFF on its amplitude). The field must tear down: no lingering editor,
+		// and the standdown must lift (before the fix `modalOpen` stayed stuck true → undo went dead).
+		await page.evaluate((u) => (window as any).goofi.commands.select([u]), b);
+		await expect(panel(page).getByTestId('param-expr-multiline')).toHaveCount(0);
+		await expect.poll(() => modalOpen(page)).toBe(false);
+
+		// End-to-end proof the standdown lifted: a real Ctrl-Z now performs an undo through the app's
+		// keybinding path (AppShell → undoKeyAction(ui().modalOpen)), which was dead while modalOpen stuck.
+		const before = await historyLen(page);
+		await page.keyboard.press('Control+z');
+		await expect.poll(() => historyLen(page)).toBeLessThan(before);
+	});
+
+	test('a node switch does not leak an open fx buffer onto another node’s param', async ({ page }) => {
+		await page.goto('/');
+		await waitForApp(page);
+		const a = await addNode(page, 'Oscillator', 'inputs');
+		await waitForNode(page, a);
+		const b = await addNode(page, 'Oscillator', 'inputs', [280, 0]);
+		await waitForNode(page, b);
+
+		// Give B its OWN fx expression on amplitude, so B's row also renders the expression control.
+		await page.evaluate((u) => (window as any).goofi.commands.select([u]), b);
+		await panel(page).getByTestId('param-field-amplitude').getByTestId('param-fx-toggle').click();
+		await expect
+			.poll(async () => (await nodeParams(page, b))?.oscillator?.amplitude?.expression_enabled)
+			.toBe(true);
+		const bExpr: string = (await nodeParams(page, b))?.oscillator?.amplitude?.expression ?? '';
+
+		// On A: enable fx, open the multi-line editor, type a DISTINCTIVE expression — but do NOT apply.
+		await page.evaluate((u) => (window as any).goofi.commands.select([u]), a);
+		const ampA = panel(page).getByTestId('param-field-amplitude');
+		await ampA.getByTestId('param-fx-toggle').click();
+		await ampA.getByTestId('param-expr-expand').click();
+		await ampA.getByTestId('param-expr-multiline').fill('nd("LEAK_FROM_A").out.data');
+
+		// Switch to B (whose amplitude also has fx on). Before the fix the SAME field survived, keeping A's
+		// buffer in an open textarea now wired to B — one apply-click from silently corrupting B.
+		await page.evaluate((u) => (window as any).goofi.commands.select([u]), b);
+		const ampB = panel(page).getByTestId('param-field-amplitude');
+		// The field remounted for B: no editor carries A's buffer; B shows its own inline expression.
+		await expect(ampB.getByTestId('param-expr-multiline')).toHaveCount(0);
+		await expect(ampB.getByTestId('param-expr-input')).toHaveValue(bExpr);
+		// And B's committed expression was never overwritten with A's.
+		expect((await nodeParams(page, b))?.oscillator?.amplitude?.expression).not.toContain('LEAK_FROM_A');
+	});
 });
