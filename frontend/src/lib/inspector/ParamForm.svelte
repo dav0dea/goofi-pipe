@@ -181,7 +181,7 @@
 		<SubPatchInspector {node} />
 	{:else}
 		{#if showHeader}
-			<Bar class="pf-header">
+			<Bar>
 				{#snippet start()}
 					<div class="pf-identity">
 						<div class="pf-title">
@@ -189,6 +189,7 @@
 								<!-- svelte-ignore a11y_autofocus -->
 								<input
 									class="pf-rename"
+									aria-label="Node name"
 									value={nameDraft}
 									oninput={(e) => (nameDraft = e.currentTarget.value)}
 									onblur={commitRename}
@@ -219,7 +220,7 @@
 			</Bar>
 
 			{#if node.doc}
-				<Disclosure class="pf-docs">
+				<Disclosure>
 					{#snippet summary()}
 						<span data-testid="docs-toggle">docs</span>
 					{/snippet}
@@ -235,12 +236,18 @@
 				items={tabItems}
 				active={activeGroup ?? undefined}
 				onSelect={(id) => (activeGroup = id)}
-				class="pf-tabs"
 				data-testid="param-tabs"
 			/>
 		{/if}
 
-		<div class="pf-rows" role="tabpanel" data-testid="param-rows">
+		<!-- The panel is a tabpanel only when a tablist exists (a zero-param node renders no tabs — an
+		     orphaned `tabpanel` role would have no owning tablist); named by its active group. -->
+		<div
+			class="pf-rows"
+			role={tabItems.length > 0 ? 'tabpanel' : undefined}
+			aria-label={activeGroup ?? undefined}
+			data-testid="param-rows"
+		>
 			{#if activeParams.length === 0}
 				<div class="pf-empty-group" data-testid="param-empty-group">No parameters in this group.</div>
 			{:else}
@@ -336,5 +343,21 @@
 		font-size: var(--fs-small);
 		text-align: center;
 		padding: var(--space-6) 0;
+	}
+	/* Touch: the name's only editable cue is a hover underline, invisible on a coarse pointer — give
+	   it a resting dotted underline so it reads as editable without a hover. */
+	@media (pointer: coarse) {
+		.pf-name {
+			text-decoration: underline;
+			text-decoration-style: dotted;
+			text-underline-offset: 2px;
+		}
+	}
+	/* Touch: lift the rename input to 16px so focusing it does not force-zoom iOS (the desktop
+	   --fs-strong size below 16px is kept). Mirrors app.css's coarse input/textarea floor. */
+	@media (hover: none) and (pointer: coarse) {
+		.pf-rename {
+			font-size: 16px;
+		}
 	}
 </style>

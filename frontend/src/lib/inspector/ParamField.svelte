@@ -25,6 +25,7 @@
   (and any attribute) forward to the Field root via `...rest`.
 -->
 <script lang="ts">
+	import { tick } from 'svelte';
 	import type { HTMLAttributes } from 'svelte/elements';
 	import type { ParamDescriptor } from '$lib/api/types';
 	import {
@@ -90,6 +91,9 @@
 	// The in-panel multi-line editor (D-N4: no modal — it grows in place so the graph stays visible).
 	let multilineOpen = $state(false);
 	let multilineBuf = $state('');
+	// A ref to the fx control region so, on collapse, focus returns to the ⤢ expand button (which only
+	// exists in the collapsed inline branch) instead of dropping to <body>.
+	let fxRegionEl = $state<HTMLDivElement | null>(null);
 
 	// A stable per-field id so the global standdown is REF-COUNTED, not a shared boolean: two fields
 	// with an open editor each register their own id, and the standdown lifts only when the last one
@@ -165,12 +169,20 @@
 		multilineBuf = descriptor.expression ?? '';
 		multilineOpen = true;
 	}
-	function applyMultiline(): void {
+	async function applyMultiline(): Promise<void> {
 		onSetExpression(multilineBuf, currentFlags());
 		multilineOpen = false;
+		await restoreExpandFocus();
 	}
-	function cancelMultiline(): void {
+	async function cancelMultiline(): Promise<void> {
 		multilineOpen = false;
+		await restoreExpandFocus();
+	}
+	// Escape/⌃⏎/collapse-click all route through the two functions above; after the textarea unmounts,
+	// return focus to the ⤢ expand affordance (mirrors autofocus-on-expand) so it never falls to <body>.
+	async function restoreExpandFocus(): Promise<void> {
+		await tick();
+		fxRegionEl?.querySelector<HTMLElement>('[data-testid="param-expr-expand"]')?.focus();
 	}
 	function multilineKeydown(e: KeyboardEvent): void {
 		if (e.key === 'Escape') {
@@ -229,10 +241,11 @@
 	{#if kind === 'expression'}
 		<!-- The fx editor takes over the control region (spec §3): the buffered expr input (or, expanded,
 		     the in-panel multi-line textarea — D-N4, no modal), with a preview / error row below. -->
-		<div class="fx-region">
+		<div class="fx-region" bind:this={fxRegionEl}>
 			{#if multilineOpen}
 				<textarea
 					class="fx-multiline"
+					aria-label={`${paramName} expression`}
 					use:autofocus
 					bind:value={multilineBuf}
 					spellcheck="false"
@@ -339,6 +352,13 @@
 	.fx-multiline:focus {
 		outline: none;
 		border-color: var(--accent);
+	}
+	/* Touch: lift the multi-line editor to 16px so focusing it does not force-zoom iOS (the desktop
+	   --fs-micro size above is kept). Mirrors app.css's coarse input/textarea floor. */
+	@media (hover: none) and (pointer: coarse) {
+		.fx-multiline {
+			font-size: 16px;
+		}
 	}
 	.fx-actions {
 		display: flex;
