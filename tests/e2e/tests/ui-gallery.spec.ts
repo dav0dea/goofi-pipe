@@ -250,6 +250,30 @@ test.describe('UI NumberInput drag-to-scrub', () => {
 		await expect(number, 'a click focuses the input to type').toBeFocused();
 		await expect(page.getByTestId('ui-compose-value'), 'a click commits nothing').toHaveText('0.3');
 	});
+
+	// Finding 2: a cancelled gesture (a touch scroll reclaims the pointer → the browser fires
+	// `pointercancel`) must tear the scrub down. Pre-fix there is no cancel handler and the listeners
+	// live on `window`, so the scrub keeps committing under the cancelled pointer — the value tracks the
+	// cursor after the cancel. RED here; GREEN once pointer capture + the cancel teardown land.
+	test('a pointercancel tears the scrub down (no tracking under a cancelled pointer)', async ({ page }) => {
+		await page.goto('/dev/ui');
+		const number = page.getByTestId('ui-compose-number');
+		const c = await centre(page);
+		await page.mouse.move(c.x, c.y);
+		await page.mouse.down();
+		await page.mouse.move(c.x + 40, c.y); // latch the scrub
+		const atCancel = await readValue(page);
+		expect(atCancel, 'the scrub latched and moved the value').toBeGreaterThan(0.3);
+
+		await number.dispatchEvent('pointercancel'); // abort the gesture, the way a touch-scroll steal does
+		await page.mouse.move(c.x + 80, c.y); // keep moving — a torn-down scrub must NOT follow
+		expect(await readValue(page), 'the value is frozen after the cancel').toBeCloseTo(atCancel, 5);
+		await page.mouse.up(); // release Playwright's tracked button state
+
+		// The control still works afterwards — the latch self-healed, it was not left stranded.
+		await scrub(page, 30);
+		expect(await readValue(page), 'a fresh scrub works after the cancel').toBeGreaterThan(atCancel);
+	});
 });
 
 // Tabs (the connected bar) + Disclosure (Task 4). The Tabs assertions verify the REAL connected-look

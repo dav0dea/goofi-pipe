@@ -11,7 +11,7 @@
   merged, `data-testid` (and any other input attribute) forwarded via `...rest`.
 -->
 <script lang="ts">
-	import { untrack } from 'svelte';
+	import { untrack, onDestroy } from 'svelte';
 	import type { HTMLInputAttributes } from 'svelte/elements';
 	import { useLiveValue } from './liveValue.svelte';
 	import { claimFieldControlId } from './field';
@@ -76,6 +76,10 @@
 	// Suppress native focus on press; decide click-vs-scrub on move. A click (no drag past the
 	// threshold) focuses to type; a drag scrubs the value live and never focuses.
 	let scrubbing = $state(false);
+	// The in-flight scrub's teardown (detach listeners + release the latch). Non-null only between
+	// pointerdown and its resolution, so a cancelled gesture or an unmount can never leak a listener
+	// or strand the editing latch open.
+	let teardownScrub: (() => void) | null = null;
 	function onScrubDown(e: PointerEvent): void {
 		if (!scrub || disabled || e.button !== 0) return;
 		e.preventDefault();
@@ -83,7 +87,12 @@
 		const startX = e.clientX;
 		const startVal = live.value;
 		let active = false;
+		// Capture the pointer so move/up/cancel land on `el` even when the cursor leaves the window —
+		// without it a mouse released outside the window never delivers `up`, leaking the listeners and
+		// stranding the latch.
+		el.setPointerCapture(e.pointerId);
 		const move = (ev: PointerEvent) => {
+			if (ev.buttons === 0) return; // the button is no longer down (released off-window) — ignore
 			const dx = ev.clientX - startX;
 			if (!active && Math.abs(dx) < 3) return;
 			if (!active) {
@@ -95,9 +104,14 @@
 			text = fmt(v);
 			live.commit(v);
 		};
+		const detach = () => {
+			el.removeEventListener('pointermove', move);
+			el.removeEventListener('pointerup', up);
+			el.removeEventListener('pointercancel', cancel);
+			teardownScrub = null;
+		};
 		const up = () => {
-			window.removeEventListener('pointermove', move);
-			window.removeEventListener('pointerup', up);
+			detach();
 			if (active) {
 				scrubbing = false;
 				live.end();
@@ -105,9 +119,22 @@
 				el.focus(); // a click, not a drag → focus to type
 			}
 		};
-		window.addEventListener('pointermove', move);
-		window.addEventListener('pointerup', up);
+		// A cancelled gesture (e.g. a touch scroll reclaims the pointer) runs the same teardown as `up`
+		// but never focuses — the gesture was aborted, not a click. Also the unmount-in-flight teardown.
+		const cancel = () => {
+			detach();
+			if (active) {
+				scrubbing = false;
+				live.end();
+			}
+		};
+		teardownScrub = cancel;
+		el.addEventListener('pointermove', move);
+		el.addEventListener('pointerup', up);
+		el.addEventListener('pointercancel', cancel);
 	}
+	// If the input unmounts mid-scrub, detach the still-attached listeners and release the latch.
+	onDestroy(() => teardownScrub?.());
 </script>
 
 <input
@@ -136,9 +163,11 @@
 		color: var(--text);
 		font-variant-numeric: tabular-nums;
 	}
-	/* Scrub-enabled inputs hint the horizontal drag with the resize cursor. */
+	/* Scrub-enabled inputs hint the horizontal drag with the resize cursor. On touch, claim the
+	   horizontal drag while letting a vertical scroll gesture pan the panel (matching Slider). */
 	.ui-number-scrub {
 		cursor: ew-resize;
+		touch-action: pan-y;
 	}
 	.ui-number:disabled {
 		opacity: var(--disabled-opacity);
