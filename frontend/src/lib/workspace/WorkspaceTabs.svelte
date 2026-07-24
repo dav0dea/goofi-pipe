@@ -173,11 +173,11 @@
 		border: 1px solid transparent;
 	}
 	.tab:hover {
-		background: var(--bg-elev-2);
+		background: var(--surface-2);
 		color: var(--text);
 	}
 	.tab.active {
-		background: var(--bg-elev-3);
+		background: var(--surface-3);
 		color: var(--text);
 		border-color: var(--border);
 	}
@@ -213,7 +213,7 @@
 		background: transparent;
 		border: none;
 		border-radius: var(--radius-sm);
-		color: var(--text-faint);
+		color: var(--text-muted);
 		opacity: 0;
 		cursor: pointer;
 	}
@@ -224,7 +224,7 @@
 		opacity: 1;
 	}
 	.close:hover {
-		background: var(--bg-elev-1);
+		background: var(--surface-1);
 		color: var(--danger);
 	}
 	.add {
@@ -241,7 +241,7 @@
 		cursor: pointer;
 	}
 	.add:hover {
-		background: var(--bg-elev-2);
+		background: var(--surface-2);
 		color: var(--text);
 	}
 </style>

@@ -120,7 +120,7 @@
 		right: 0;
 		top: 0;
 		bottom: 0;
-		background: color-mix(in srgb, var(--bg-elev-1) 96%, transparent);
+		background: color-mix(in srgb, var(--surface-1) 96%, transparent);
 		backdrop-filter: blur(8px);
 		border-left: 1px solid var(--border);
 		display: flex;
@@ -156,7 +156,7 @@
 	.node-error {
 		padding: 12px;
 		border-top: 1px solid var(--border);
-		background: var(--bg-elev-1);
+		background: var(--surface-1);
 	}
 	.err-head {
 		display: flex;

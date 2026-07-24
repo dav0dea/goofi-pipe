@@ -47,9 +47,6 @@ describe('text tiers on --bg', () => {
 		expect(contrastRatio(token('text-dim'), token('surface-4'))).toBeGreaterThanOrEqual(3);
 		expect(contrastRatio(token('text-muted'), token('surface-3'))).toBeGreaterThanOrEqual(3);
 	});
-	it('--text-faint is bridged to the muted value (no 3.0:1 failure)', () => {
-		expect(relativeLuminance(token('text-faint'))).toBeCloseTo(relativeLuminance(token('text-muted')), 5);
-	});
 });
 
 describe('borders read as a light hairline, never an inverted groove', () => {

@@ -293,7 +293,7 @@
 		content: '';
 		position: absolute;
 		inset: 0;
-		background: var(--text-faint);
+		background: var(--text-muted);
 		opacity: 0.5;
 	}
 	.panel-body:hover .corner {

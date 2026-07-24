@@ -186,7 +186,7 @@
 		overflow: hidden;
 		display: flex;
 		flex-direction: column;
-		background: var(--bg-elev-1);
+		background: var(--surface-1);
 		border: 1px solid var(--border);
 		border-radius: var(--radius-md);
 		transition:

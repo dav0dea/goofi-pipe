@@ -1173,7 +1173,7 @@
 		gap: 8px;
 		text-align: center;
 		pointer-events: none;
-		color: var(--text-faint);
+		color: var(--text-muted);
 		z-index: 1;
 	}
 	.eh-title {
@@ -1192,7 +1192,7 @@
 		padding: 1px 5px;
 		border: 1px solid var(--border);
 		border-radius: 4px;
-		background: var(--bg-elev-1);
+		background: var(--surface-1);
 	}
 	/* Per-editor inspector affordance, parked top-right. Subtle until hovered so
 	   it doesn't compete with the canvas; only shown while the inspector is off. */
@@ -1207,10 +1207,10 @@
 		place-items: center;
 		padding: 0;
 		font-size: 13px;
-		background: color-mix(in srgb, var(--bg-elev-1) 80%, transparent);
+		background: color-mix(in srgb, var(--surface-1) 80%, transparent);
 		border: 1px solid var(--border);
 		border-radius: var(--radius-sm);
-		color: var(--text-faint);
+		color: var(--text-muted);
 		opacity: 0.5;
 		cursor: pointer;
 		transition:
@@ -1241,7 +1241,7 @@
 		gap: 6px;
 		padding: 4px 9px;
 		max-width: 220px;
-		background: var(--bg-elev-2);
+		background: var(--surface-2);
 		border: 1px solid var(--accent);
 		border-radius: var(--radius-sm);
 		box-shadow: var(--shadow-2);
@@ -1276,7 +1276,7 @@
 		padding: 4px 8px;
 		max-width: calc(100% - 90px);
 		overflow: hidden;
-		background: color-mix(in srgb, var(--bg-elev-1) 88%, transparent);
+		background: color-mix(in srgb, var(--surface-1) 88%, transparent);
 		border: 1px solid var(--border);
 		border-radius: var(--radius-sm);
 		box-shadow: var(--shadow-1);
@@ -1305,6 +1305,6 @@
 		cursor: default;
 	}
 	.breadcrumb .sep {
-		color: var(--text-faint);
+		color: var(--text-muted);
 	}
 </style>

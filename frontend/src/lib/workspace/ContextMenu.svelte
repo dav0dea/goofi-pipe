@@ -115,7 +115,7 @@
 		z-index: var(--z-menu);
 		min-width: 180px;
 		padding: 4px;
-		background: var(--bg-elev-2);
+		background: var(--surface-2);
 		border: 1px solid var(--border-strong);
 		border-radius: var(--radius-md);
 		box-shadow: var(--shadow-2);

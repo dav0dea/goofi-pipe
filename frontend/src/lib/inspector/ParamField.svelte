@@ -371,7 +371,7 @@
 		min-width: 0;
 		font-family: var(--font-mono);
 		font-size: var(--fs-micro);
-		color: var(--text-faint);
+		color: var(--text-muted);
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;

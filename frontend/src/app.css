@@ -15,10 +15,6 @@
 	--surface-2: #262626;
 	--surface-3: #303030;
 	--surface-4: #3d3d3d;
-	/* Legacy aliases — every current --bg-elev-* consumer re-skins automatically; M renames call sites. */
-	--bg-elev-1: var(--surface-1);
-	--bg-elev-2: var(--surface-2);
-	--bg-elev-3: var(--surface-3);
 	--surface-glass: rgba(38, 38, 38, 0.85); /* translucent --surface-2 for menu backdrops */
 	/* Borders are a light hairline that reads AGAINST the lighter surfaces (never a dark groove).
 	   Most decorative borders are deleted in M; these must not invert while they exist. */
@@ -27,9 +23,6 @@
 	--text: #d6d6d6;
 	--text-dim: #9a9a9a;
 	--text-muted: #7a7a7a;
-	/* --text-faint is retired; value-bridged to muted now so its 52 uses clear 3:1 with no edit.
-	   M renames the call sites to --text-muted and drops this line. */
-	--text-faint: #7a7a7a;
 	--accent: #50d0a0;
 	--accent-strong: #3fb88a;
 	--success: #50d0a0;
@@ -145,7 +138,7 @@ body {
 
 button {
 	font: inherit;
-	background: var(--bg-elev-2);
+	background: var(--surface-2);
 	color: var(--text);
 	border: 1px solid var(--border);
 	border-radius: var(--radius-sm);
@@ -157,7 +150,7 @@ button {
 		color var(--dur-fast) var(--ease);
 }
 button:hover:not(:disabled) {
-	background: var(--bg-elev-3);
+	background: var(--surface-3);
 	border-color: var(--border-strong);
 }
 button:disabled {
@@ -178,14 +171,14 @@ button.ghost {
 	border-color: transparent;
 }
 button.ghost:hover:not(:disabled) {
-	background: var(--bg-elev-2);
+	background: var(--surface-2);
 }
 
 input,
 select,
 textarea {
 	font: inherit;
-	background: var(--bg-elev-1);
+	background: var(--surface-1);
 	color: var(--text);
 	border: 1px solid var(--border);
 	border-radius: var(--radius-sm);
@@ -220,7 +213,7 @@ textarea:focus {
 	background: transparent;
 }
 ::-webkit-scrollbar-thumb {
-	background: var(--bg-elev-3);
+	background: var(--surface-3);
 	border-radius: 6px;
 }
 ::-webkit-scrollbar-thumb:hover {
@@ -237,17 +230,17 @@ textarea:focus {
 .svelte-flow__controls {
 	border-radius: var(--radius-sm);
 	overflow: hidden;
-	background: var(--bg-elev-1) !important;
+	background: var(--surface-1) !important;
 	border: 1px solid var(--border);
 	box-shadow: var(--shadow-1);
 }
 .svelte-flow__controls-button {
-	background: var(--bg-elev-1) !important;
+	background: var(--surface-1) !important;
 	color: var(--text) !important;
 	border-bottom: 1px solid var(--border) !important;
 }
 .svelte-flow__controls-button:hover {
-	background: var(--bg-elev-3) !important;
+	background: var(--surface-3) !important;
 }
 /* Connectors — "magnet" pills: a small dtype-coloured capsule sitting on the
    node border, inside an oversized transparent hit-area so cables are easy to
@@ -272,7 +265,7 @@ textarea:focus {
 	height: 9px;
 	border-radius: 999px;
 	background: var(--dtype, var(--border-strong));
-	box-shadow: 0 0 0 2px var(--bg-elev-1);
+	box-shadow: 0 0 0 2px var(--surface-1);
 	transition:
 		width 90ms ease,
 		height 90ms ease,
@@ -282,7 +275,7 @@ textarea:focus {
 	width: 16px;
 	height: 11px;
 	box-shadow:
-		0 0 0 2px var(--bg-elev-1),
+		0 0 0 2px var(--surface-1),
 		0 0 8px var(--dtype, var(--accent));
 }
 .svelte-flow__edge-path {

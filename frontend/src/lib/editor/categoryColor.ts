@@ -20,7 +20,7 @@ export function dtypeColor(dtype: string | undefined | null): string {
 		case 'TABLE':
 			return 'var(--dtype-table)';
 		default:
-			return 'var(--text-faint)';
+			return 'var(--text-muted)';
 	}
 }
 

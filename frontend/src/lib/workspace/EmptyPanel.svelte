@@ -46,7 +46,7 @@
 		background: var(--bg);
 	}
 	.prompt {
-		color: var(--text-faint);
+		color: var(--text-muted);
 		font-size: 0.75rem;
 		text-transform: uppercase;
 		letter-spacing: 0.06em;
@@ -64,7 +64,7 @@
 		align-items: center;
 		gap: 8px;
 		padding: 14px 10px;
-		background: var(--bg-elev-1);
+		background: var(--surface-1);
 		border: 1px solid var(--border);
 		border-radius: var(--radius-md);
 		color: var(--text);
@@ -75,7 +75,7 @@
 	}
 	.choice:hover {
 		border-color: var(--accent);
-		background: var(--bg-elev-2);
+		background: var(--surface-2);
 	}
 	.icon {
 		font-size: 1.3rem;

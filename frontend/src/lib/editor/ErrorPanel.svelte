@@ -53,7 +53,7 @@
 		align-items: center;
 		gap: 6px;
 		padding: 4px 10px;
-		background: color-mix(in srgb, var(--danger) 18%, var(--bg-elev-1));
+		background: color-mix(in srgb, var(--danger) 18%, var(--surface-1));
 		border: 1px solid var(--danger);
 		color: var(--text);
 		font-size: 11px;
@@ -75,7 +75,7 @@
 		width: 320px;
 		max-height: 60vh;
 		overflow-y: auto;
-		background: var(--bg-elev-2);
+		background: var(--surface-2);
 		border: 1px solid var(--border-strong);
 		border-radius: var(--radius-sm);
 		box-shadow: var(--shadow-2);
@@ -99,7 +99,7 @@
 		font-family: var(--font-mono);
 	}
 	.prow:hover {
-		background: var(--bg-elev-3);
+		background: var(--surface-3);
 	}
 	.row-name {
 		color: var(--accent);

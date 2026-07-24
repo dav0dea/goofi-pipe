@@ -60,11 +60,11 @@
 		cursor: pointer;
 	}
 	.caret {
-		color: var(--text-faint);
+		color: var(--text-muted);
 		width: 10px;
 	}
 	.k {
-		color: var(--text-faint);
+		color: var(--text-muted);
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;
@@ -74,7 +74,7 @@
 		color: var(--text-dim);
 	}
 	.count {
-		color: var(--text-faint);
+		color: var(--text-muted);
 		font-size: 9px;
 	}
 	.v {

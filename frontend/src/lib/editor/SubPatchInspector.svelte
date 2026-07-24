@@ -52,7 +52,7 @@
 		align-items: center;
 		padding: 10px 12px;
 		border-bottom: 1px solid var(--border);
-		background: var(--bg-elev-1);
+		background: var(--surface-1);
 	}
 	.glyph {
 		font-size: 14px;
@@ -70,7 +70,7 @@
 		white-space: nowrap;
 	}
 	.sub {
-		color: var(--text-faint);
+		color: var(--text-muted);
 		font-family: var(--font-mono);
 		font-size: 10px;
 		overflow: hidden;

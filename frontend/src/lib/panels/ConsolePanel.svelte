@@ -342,7 +342,7 @@
 		gap: 6px;
 		flex: 0 0 auto;
 		padding: 4px 8px;
-		background: var(--bg-elev-1);
+		background: var(--surface-1);
 		border-bottom: 1px solid var(--border);
 		font-size: 0.78rem;
 	}
@@ -356,13 +356,13 @@
 		border-radius: 999px;
 		border: 1px solid var(--border);
 		background: transparent;
-		color: var(--text-faint);
+		color: var(--text-muted);
 		cursor: pointer;
 	}
 	.chip.on {
 		color: var(--text);
 		border-color: var(--border-strong);
-		background: var(--bg-elev-3);
+		background: var(--surface-3);
 	}
 	.chip.err.on {
 		color: var(--danger);
@@ -370,7 +370,7 @@
 		background: color-mix(in srgb, var(--danger) 14%, transparent);
 	}
 	.fl {
-		color: var(--text-faint);
+		color: var(--text-muted);
 	}
 	.fn {
 		font-family: var(--font-mono);
@@ -390,12 +390,12 @@
 		background: transparent;
 		border: none;
 		border-radius: var(--radius-sm);
-		color: var(--text-faint);
+		color: var(--text-muted);
 		cursor: pointer;
 	}
 	.clearf:hover {
 		color: var(--danger);
-		background: var(--bg-elev-2);
+		background: var(--surface-2);
 	}
 	.scroll {
 		flex: 1;
@@ -430,7 +430,7 @@
 		flex: 0 0 auto;
 		width: 10px;
 		line-height: 16px;
-		color: var(--text-faint);
+		color: var(--text-muted);
 		font-size: 9px;
 	}
 	.node {
@@ -478,7 +478,7 @@
 		line-height: 16px;
 		font-size: 10px;
 		color: var(--text);
-		background: var(--bg-elev-3);
+		background: var(--surface-3);
 		border: 1px solid var(--border-strong);
 		border-radius: 999px;
 		padding: 0 6px;
@@ -493,7 +493,7 @@
 		padding: 0;
 		font-size: 11px;
 		line-height: 1;
-		background: var(--bg-elev-3);
+		background: var(--surface-3);
 		border: 1px solid var(--border-strong);
 		border-radius: var(--radius-sm);
 		color: var(--text-dim);
@@ -512,7 +512,7 @@
 		border-color: var(--accent);
 	}
 	.empty {
-		color: var(--text-faint);
+		color: var(--text-muted);
 		font-size: 11px;
 		padding: 10px;
 	}
@@ -530,7 +530,7 @@
 		line-height: 1;
 		border-radius: 999px;
 		border: 1px solid var(--border-strong);
-		background: var(--bg-elev-3);
+		background: var(--surface-3);
 		color: var(--text);
 		cursor: pointer;
 		box-shadow: var(--shadow-1);

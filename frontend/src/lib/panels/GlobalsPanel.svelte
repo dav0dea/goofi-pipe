@@ -207,7 +207,7 @@
 	th {
 		text-align: left;
 		font-weight: 500;
-		color: var(--text-faint);
+		color: var(--text-muted);
 		font-size: 0.7rem;
 		text-transform: uppercase;
 		letter-spacing: 0.04em;
@@ -249,7 +249,7 @@
 		font-family: var(--font-mono);
 		font-size: 0.78rem;
 		padding: 2px 5px;
-		background: var(--bg-elev-1);
+		background: var(--surface-1);
 		border: 1px solid var(--border);
 		border-radius: var(--radius-sm);
 		color: var(--text);
@@ -265,7 +265,7 @@
 	.type {
 		font-family: var(--font-mono);
 		font-size: 0.66rem;
-		color: var(--text-faint);
+		color: var(--text-muted);
 		margin-right: 6px;
 	}
 	.del {
@@ -278,12 +278,12 @@
 		background: transparent;
 		border: none;
 		border-radius: var(--radius-sm);
-		color: var(--text-faint);
+		color: var(--text-muted);
 		cursor: pointer;
 	}
 	.del:hover {
 		color: var(--danger);
-		background: var(--bg-elev-2);
+		background: var(--surface-2);
 	}
 	.add {
 		display: flex;
@@ -298,7 +298,7 @@
 		font-family: var(--font-mono);
 		font-size: 0.76rem;
 		padding: 2px 4px;
-		background: var(--bg-elev-1);
+		background: var(--surface-1);
 		border: 1px solid var(--border);
 		border-radius: var(--radius-sm);
 		color: var(--text);
@@ -306,7 +306,7 @@
 	.addbtn {
 		font-size: 0.76rem;
 		padding: 3px 12px;
-		background: var(--bg-elev-3);
+		background: var(--surface-3);
 		border: 1px solid var(--border-strong);
 		border-radius: var(--radius-sm);
 		color: var(--text);

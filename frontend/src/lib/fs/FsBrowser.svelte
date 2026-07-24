@@ -189,7 +189,7 @@
 		height: min(560px, 86vh);
 		display: flex;
 		flex-direction: column;
-		background: var(--bg-elev-1);
+		background: var(--surface-1);
 		border: 1px solid var(--border-strong);
 		border-radius: var(--radius-md);
 		box-shadow: var(--shadow-2);
@@ -252,7 +252,7 @@
 	}
 	.pathbar .up {
 		flex: 0 0 auto;
-		background: var(--bg-elev-2);
+		background: var(--surface-2);
 		border: 1px solid var(--border);
 		border-radius: var(--radius-sm);
 		color: var(--text);
@@ -262,7 +262,7 @@
 	.pathbar input {
 		flex: 1;
 		min-width: 0;
-		background: var(--bg-elev-2);
+		background: var(--surface-2);
 		border: 1px solid var(--border);
 		border-radius: var(--radius-sm);
 		color: var(--text);
@@ -309,7 +309,7 @@
 		color: var(--accent);
 	}
 	.empty {
-		color: var(--text-faint);
+		color: var(--text-muted);
 		padding: 12px;
 		text-align: center;
 		list-style: none;
@@ -325,7 +325,7 @@
 		flex: 1;
 	}
 	.fname {
-		background: var(--bg-elev-2);
+		background: var(--surface-2);
 		border: 1px solid var(--border);
 		border-radius: var(--radius-sm);
 		color: var(--text);
@@ -333,7 +333,7 @@
 		font-family: var(--font-mono);
 	}
 	.ext {
-		color: var(--text-faint);
+		color: var(--text-muted);
 		font-family: var(--font-mono);
 	}
 	button.ghost,
@@ -351,7 +351,7 @@
 	button.primary {
 		background: var(--accent);
 		border: 1px solid var(--accent);
-		color: var(--bg-elev-1);
+		color: var(--surface-1);
 	}
 	button.primary:disabled {
 		opacity: 0.5;

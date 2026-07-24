@@ -108,7 +108,7 @@
 		padding: 0;
 		background: none;
 		border: 0;
-		color: var(--text-faint);
+		color: var(--text-muted);
 		cursor: pointer;
 		transition: color 80ms ease;
 	}
@@ -139,7 +139,7 @@
 	.vs-empty {
 		padding: 8px;
 		font-size: 11px;
-		color: var(--text-faint);
+		color: var(--text-muted);
 		text-align: center;
 	}
 	.grp + .grp {
@@ -165,7 +165,7 @@
 	}
 	.grp-head:hover {
 		color: var(--text);
-		background: var(--bg-elev-2);
+		background: var(--surface-2);
 	}
 	.tri {
 		font-size: 9px;
@@ -191,7 +191,7 @@
 		border-radius: 3px;
 	}
 	.row:hover {
-		background: var(--bg-elev-2);
+		background: var(--surface-2);
 	}
 	.lbl {
 		color: var(--text-dim);

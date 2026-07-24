@@ -189,14 +189,14 @@
 		list-style-position: inside;
 	}
 	.meta-field > summary:hover {
-		background: var(--bg-elev-2);
+		background: var(--surface-2);
 	}
 	.mk {
 		color: var(--text);
 		font-weight: 600;
 	}
 	.mp {
-		color: var(--text-faint);
+		color: var(--text-muted);
 		font-size: 10px;
 		overflow: hidden;
 		text-overflow: ellipsis;
@@ -213,7 +213,7 @@
 		padding: 2px 0 6px 16px;
 	}
 	.hint {
-		color: var(--text-faint);
+		color: var(--text-muted);
 		font-size: 11px;
 	}
 </style>

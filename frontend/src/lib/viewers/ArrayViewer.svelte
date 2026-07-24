@@ -471,7 +471,7 @@
 		font-size: 9px;
 		padding: 2px 6px;
 		background: color-mix(in srgb, var(--bg) 78%, transparent);
-		border: 1px solid color-mix(in srgb, var(--text-faint) 30%, transparent);
+		border: 1px solid color-mix(in srgb, var(--text-muted) 30%, transparent);
 		border-radius: 3px;
 		color: var(--text-dim);
 		pointer-events: none;
@@ -482,7 +482,7 @@
 		z-index: 2;
 	}
 	.cursor-x {
-		color: var(--text-faint);
+		color: var(--text-muted);
 	}
 	.cursor-y {
 		font-variant-numeric: tabular-nums;

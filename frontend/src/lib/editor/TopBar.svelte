@@ -108,7 +108,7 @@
 		align-items: center;
 		gap: 14px;
 		padding: 0 12px;
-		background: var(--bg-elev-1);
+		background: var(--surface-1);
 		border-bottom: 1px solid var(--border);
 		height: 44px;
 		font-size: 12px;

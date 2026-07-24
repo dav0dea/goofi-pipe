@@ -105,7 +105,7 @@
 		height: var(--panel-header-h, 26px);
 		flex: 0 0 auto;
 		padding: 0 4px 0 4px;
-		background: var(--bg-elev-1);
+		background: var(--surface-1);
 		border-bottom: 1px solid var(--border);
 		gap: 2px;
 		user-select: none;
@@ -128,7 +128,7 @@
 		cursor: pointer;
 	}
 	.content-btn:hover {
-		background: var(--bg-elev-3);
+		background: var(--surface-3);
 		border-color: var(--border);
 	}
 	.content-btn .ic {
@@ -158,7 +158,7 @@
 		cursor: pointer;
 	}
 	.hdr-btn:hover:not(:disabled) {
-		background: var(--bg-elev-3);
+		background: var(--surface-3);
 		color: var(--text);
 	}
 	.hdr-btn:disabled {

@@ -29,7 +29,7 @@
 		font-family: var(--font-mono);
 		font-size: 11px;
 		color: var(--text);
-		background: var(--bg-elev-1);
+		background: var(--surface-1);
 		margin: 0;
 		padding: 6px 8px;
 		border-radius: 4px;

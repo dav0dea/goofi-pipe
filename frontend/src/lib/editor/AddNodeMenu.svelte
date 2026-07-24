@@ -189,7 +189,7 @@
 		align-items: center;
 		gap: 6px;
 		padding: 4px 12px;
-		color: var(--text-faint);
+		color: var(--text-muted);
 		font-size: 10px;
 		text-transform: uppercase;
 		letter-spacing: 0.06em;
@@ -198,7 +198,7 @@
 		width: 6px;
 		height: 6px;
 		border-radius: 50%;
-		background: var(--cat, var(--text-faint));
+		background: var(--cat, var(--text-muted));
 	}
 	.item {
 		background: transparent;
@@ -234,13 +234,13 @@
 		flex-grow: 1;
 	}
 	.t-cat {
-		color: var(--text-faint);
+		color: var(--text-muted);
 		font-size: 9px;
 		text-transform: lowercase;
 	}
 	.empty {
 		text-align: center;
-		color: var(--text-faint);
+		color: var(--text-muted);
 		padding: 16px;
 	}
 	.seed-chip {
@@ -257,7 +257,7 @@
 		color: var(--accent);
 	}
 	.seed-from {
-		color: var(--text-faint);
+		color: var(--text-muted);
 	}
 	.seed-ref {
 		color: var(--text);

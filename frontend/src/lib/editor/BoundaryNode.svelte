@@ -87,7 +87,7 @@
 		font-family: var(--font-mono);
 		font-size: 11px;
 		color: var(--text);
-		background: var(--bg-elev-2);
+		background: var(--surface-2);
 		border: 1px solid var(--dtype, var(--border-strong));
 		border-radius: 999px;
 	}
@@ -116,7 +116,7 @@
 		font-size: 11px;
 		font-weight: 600;
 		color: var(--text);
-		background: var(--bg-elev-1);
+		background: var(--surface-1);
 		border: 1px solid var(--dtype, var(--accent));
 		border-radius: 3px;
 		padding: 0 3px;
@@ -124,7 +124,7 @@
 		outline: none;
 	}
 	.dt {
-		color: var(--text-faint);
+		color: var(--text-muted);
 		font-size: 9px;
 	}
 </style>

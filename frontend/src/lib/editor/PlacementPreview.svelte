@@ -164,7 +164,7 @@
 		overflow: hidden;
 		display: flex;
 		flex-direction: column;
-		background: var(--bg-elev-1);
+		background: var(--surface-1);
 		border: 1.5px dashed var(--accent);
 		border-radius: var(--radius-md);
 		box-shadow: var(--shadow-1);
@@ -223,7 +223,7 @@
 		height: 9px;
 		border-radius: 999px;
 		background: var(--dtype, var(--border-strong));
-		box-shadow: 0 0 0 2px var(--bg-elev-1);
+		box-shadow: 0 0 0 2px var(--surface-1);
 	}
 	.pin.in {
 		left: 0;

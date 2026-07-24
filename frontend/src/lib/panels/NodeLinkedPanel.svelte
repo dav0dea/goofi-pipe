@@ -93,7 +93,7 @@
 		gap: 6px;
 		flex: 0 0 auto;
 		padding: 4px 8px;
-		background: var(--bg-elev-1);
+		background: var(--surface-1);
 		border-bottom: 1px solid var(--border);
 		font-size: 0.78rem;
 	}
@@ -140,12 +140,12 @@
 		background: transparent;
 		border: none;
 		border-radius: var(--radius-sm);
-		color: var(--text-faint);
+		color: var(--text-muted);
 		cursor: pointer;
 	}
 	.unlink:hover {
 		color: var(--danger);
-		background: var(--bg-elev-2);
+		background: var(--surface-2);
 	}
 	.body {
 		position: relative;
@@ -166,7 +166,7 @@
 		place-items: center;
 		padding: 16px;
 		text-align: center;
-		color: var(--text-faint);
+		color: var(--text-muted);
 	}
 	/* Active-panel accent — framed around just the content below the inner
 	   header bar (not the bars themselves). Drawn as an overlay so it stays

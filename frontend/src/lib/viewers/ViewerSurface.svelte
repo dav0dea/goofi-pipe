@@ -64,7 +64,7 @@
 		flex: 1;
 		display: grid;
 		place-items: center;
-		color: var(--text-faint);
+		color: var(--text-muted);
 		font-size: 0.82rem;
 	}
 </style>
