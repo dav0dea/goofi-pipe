@@ -6,6 +6,7 @@
 <script lang="ts">
 	import type { DataFrame } from '$lib/codec/decode';
 	import { leafSummary, tableChildren } from './tableTree';
+	import { Badge } from '$lib/ui';
 	import Self from './TableTree.svelte';
 
 	type Props = { name: string; frame: DataFrame; decimals: number; depth?: number };
@@ -23,7 +24,7 @@
 		<button class="row toggle" onclick={() => (toggled = !expanded)} aria-expanded={expanded}>
 			<span class="caret">{expanded ? '▾' : '▸'}</span>
 			<span class="k">{name}</span>
-			<span class="count">{children.length}</span>
+			<Badge>{children.length}</Badge>
 		</button>
 		{#if expanded}
 			{#each children as [ck, cv] (ck)}
@@ -72,10 +73,6 @@
 	.toggle .k {
 		grid-column: 2 / 4;
 		color: var(--text-dim);
-	}
-	.count {
-		color: var(--text-muted);
-		font-size: 9px;
 	}
 	.v {
 		color: var(--text);
