@@ -80,7 +80,7 @@
 		border-color: var(--accent);
 	}
 	.ui-chip.t-success {
-		background: color-mix(in srgb, var(--success) 16%, transparent);
+		background: var(--success-fill);
 		border-color: color-mix(in srgb, var(--success) 40%, transparent);
 		color: var(--success);
 	}
@@ -89,7 +89,7 @@
 		border-color: var(--success);
 	}
 	.ui-chip.t-warning {
-		background: color-mix(in srgb, var(--warning) 16%, transparent);
+		background: var(--warning-fill);
 		border-color: color-mix(in srgb, var(--warning) 40%, transparent);
 		color: var(--warning);
 	}

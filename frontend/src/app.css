@@ -37,6 +37,8 @@
 	--danger: #f06080;
 	--accent-fill: color-mix(in srgb, var(--accent) 18%, transparent);
 	--danger-fill: color-mix(in srgb, var(--danger) 16%, transparent);
+	--success-fill: color-mix(in srgb, var(--success) 16%, transparent);
+	--warning-fill: color-mix(in srgb, var(--warning) 16%, transparent);
 
 	/* Spacing — rem, ~2px grid (audit §5: 78% already on grid). --space-8 (24) is the one
 	   extrapolated step for empty-state/modal padding. */

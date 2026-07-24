@@ -2,8 +2,8 @@
   Badge — a small, static tone pill (spec §2.5): an uppercase, letter-spaced micro label that
   colour-codes status/kind at a glance. Non-interactive (a plain <span>); its pressable sibling is
   <Chip>, which shares this tone scale. Each tone paints a tinted fill + a legible same-hue text from
-  the F semantic tokens — neutral leans on the surface/dim pair, accent/danger reuse the ready-made
-  --accent-fill/--danger-fill, and success/warning mix their own tint in the same idiom. `class`
+  the F semantic tokens — neutral leans on the surface/dim pair, and the four coloured tones reuse the
+  ready-made --accent-fill/--danger-fill/--success-fill/--warning-fill (one source per tint). `class`
   merged (not replaced), `data-testid` (and any other attribute) forwarded via `...rest`.
 -->
 <script module lang="ts">
@@ -57,12 +57,12 @@
 		color: var(--accent);
 	}
 	.ui-badge.t-success {
-		background: color-mix(in srgb, var(--success) 16%, transparent);
+		background: var(--success-fill);
 		border-color: color-mix(in srgb, var(--success) 40%, transparent);
 		color: var(--success);
 	}
 	.ui-badge.t-warning {
-		background: color-mix(in srgb, var(--warning) 16%, transparent);
+		background: var(--warning-fill);
 		border-color: color-mix(in srgb, var(--warning) 40%, transparent);
 		color: var(--warning);
 	}
