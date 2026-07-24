@@ -208,25 +208,23 @@
 		     a handful of lines. Moving either drives the other; the label focuses the first control. -->
 		<div class="form">
 			<Field label="cutoff" hint="filter corner frequency" data-testid="ui-compose-field">
-				<Row gap={4}>
-					<Slider
-						value={cutoff}
-						onChange={(v) => (cutoff = v)}
-						min={0}
-						max={1}
-						step={0.01}
-						data-testid="ui-compose-slider"
-					/>
-					<NumberInput
-						value={cutoff}
-						onChange={(v) => (cutoff = v)}
-						min={0}
-						max={1}
-						step={0.01}
-						scrub
-						data-testid="ui-compose-number"
-					/>
-				</Row>
+				<Slider
+					value={cutoff}
+					onChange={(v) => (cutoff = v)}
+					min={0}
+					max={1}
+					step={0.01}
+					data-testid="ui-compose-slider"
+				/>
+				<NumberInput
+					value={cutoff}
+					onChange={(v) => (cutoff = v)}
+					min={0}
+					max={1}
+					step={0.01}
+					scrub
+					data-testid="ui-compose-number"
+				/>
 			</Field>
 			<span class="readout" data-testid="ui-compose-value">{cutoff}</span>
 		</div>

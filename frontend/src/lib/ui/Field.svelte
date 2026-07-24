@@ -88,7 +88,8 @@
 		gap: var(--space-2);
 	}
 	/* A horizontal control row by default (a lone control fills it; a Slider+NumberInput pair sits
-	   side by side). */
+	   side by side). Paired controls must be DIRECT Field children — the @container column-flip below
+	   restacks `.ui-field-control`'s direct children, so a wrapper (e.g. a Row) around them defeats it. */
 	.ui-field-control {
 		display: flex;
 		align-items: center;
