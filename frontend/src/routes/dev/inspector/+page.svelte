@@ -6,7 +6,10 @@
 -->
 <script lang="ts">
 	import ParamField from '$lib/inspector/ParamField.svelte';
-	import type { ParamDescriptor } from '$lib/api/types';
+	import ParamForm from '$lib/inspector/ParamForm.svelte';
+	import type { ShowWhenPredicate } from '$lib/inspector/showWhen';
+	import type { NodeInstanceInfo } from '$lib/api/control';
+	import type { FloatParam, ParamDescriptor, StringParam } from '$lib/api/types';
 
 	// The fx-OFF envelope shared by every synthetic descriptor (Task 2 exercises no expression state).
 	const fxOff = {
@@ -114,10 +117,70 @@
 		refreshable: true
 	});
 	const unknownDesc = $derived<ParamDescriptor>({ ...fxOff, type: 'unknown', value: unknownVal });
+
+	// --- ParamForm (spec §4, N-Task 4) — the node-driven assembler over a synthetic multi-group node.
+	// `mode` is the controller; a gallery-owned toggle flips it (the in-form select commits to the
+	// store, which is offline here). show_when hides `depth` (same-group) and `cutoff` (cross-group,
+	// the filter group's sole field) unless mode==='filter' — proving the reactive field/tab filter.
+	const floatP = (value: number, vmin: number, vmax: number): FloatParam => ({
+		...fxOff,
+		type: 'float',
+		value,
+		vmin,
+		vmax
+	});
+	const stringP = (value: string, options: string[] | null): StringParam => ({
+		...fxOff,
+		type: 'string',
+		value,
+		options
+	});
+
+	let formMode = $state('pass');
+	const formNode = $derived<NodeInstanceInfo>({
+		uid: 'osc-form',
+		name: 'oscillator0',
+		type: 'sine_oscillator',
+		category: 'signal',
+		doc: 'A sine oscillator. Emits a periodic waveform on its out slot.',
+		input_slots: {},
+		output_slots: { out: 'array' },
+		params: {
+			// Alphabetical with `common` LAST → tab order filter · signal · common.
+			signal: {
+				mode: stringP(formMode, ['pass', 'filter']),
+				gain: floatP(0.5, 0, 1),
+				depth: floatP(0.2, 0, 1)
+			},
+			filter: { cutoff: floatP(200, 0, 1000) },
+			common: { label: stringP('my-osc', null) }
+		},
+		pos: [0, 0],
+		viewers: {},
+		error: null
+	});
+	const formShowWhen: Record<string, ShowWhenPredicate> = {
+		cutoff: { param: 'mode', equals: 'filter' },
+		depth: { param: 'mode', equals: 'filter' }
+	};
+
+	function toggleMode(): void {
+		formMode = formMode === 'filter' ? 'pass' : 'filter';
+	}
 </script>
 
 <main class="gallery">
 	<h1>Inspector fields</h1>
+
+	<section>
+		<h2>form — the node-driven assembler (header · tabs · show_when)</h2>
+		<div class="form-demo">
+			<button class="mode-toggle" data-testid="form-toggle-mode" onclick={toggleMode}>
+				mode = {formMode} (toggle)
+			</button>
+			<ParamForm node={formNode} showWhen={formShowWhen} data-testid="inspector-form" />
+		</div>
+	</section>
 
 	<section>
 		<h2>numeric — float (with bounds)</h2>
@@ -297,5 +360,29 @@
 		font-size: var(--fs-micro);
 		color: var(--text-muted);
 		font-variant-numeric: tabular-nums;
+	}
+	/* The ParamForm demo at a realistic panel width, with a gallery-owned mode toggle above it (the
+	   in-form select commits to the offline store, so this drives the show_when controller instead). */
+	.form-demo {
+		display: flex;
+		flex-direction: column;
+		gap: var(--space-4);
+		width: 20rem;
+		max-width: 100%;
+	}
+	.mode-toggle {
+		align-self: flex-start;
+		font-family: var(--font-mono);
+		font-size: var(--fs-micro);
+		color: var(--text-dim);
+		background: var(--surface-2);
+		border: 1px solid var(--border);
+		border-radius: var(--radius-sm);
+		padding: var(--space-2) var(--space-4);
+		cursor: pointer;
+	}
+	.mode-toggle:hover {
+		color: var(--text);
+		border-color: var(--accent);
 	}
 </style>
