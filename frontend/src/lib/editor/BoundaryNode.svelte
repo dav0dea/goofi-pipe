@@ -121,7 +121,8 @@
 		border-radius: 3px;
 		padding: 0 3px;
 		width: 7ch;
-		outline: none;
+		/* No outline suppression: the app-wide :focus-visible accent ring (app.css) is the one
+		   focus convention — a keyboard rename must show it. */
 	}
 	.dt {
 		color: var(--text-muted);

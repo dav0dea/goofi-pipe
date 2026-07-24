@@ -5,6 +5,7 @@
 	import type { NodeTypeInfo } from '$lib/api/control';
 	import type { SlotClickSeed } from '$lib/stores/ui.svelte';
 	import { onMount, tick } from 'svelte';
+	import { EmptyState } from '$lib/ui';
 
 	type Props = {
 		onPick: (type: NodeTypeInfo) => void;
@@ -150,7 +151,9 @@
 				</button>
 			{/each}
 			{#if filtered.length === 0}
-				<div class="empty">No matches.</div>
+				<EmptyState>
+					{#snippet hint()}No matches.{/snippet}
+				</EmptyState>
 			{/if}
 		{/if}
 	</div>
@@ -221,7 +224,7 @@
 	/* Missing dependency (registry availability probe): visible but not addable;
 	   the title names the missing package. */
 	.item.unavailable {
-		opacity: 0.35;
+		opacity: var(--disabled-opacity);
 		cursor: not-allowed;
 	}
 	.cat-dot {
@@ -237,11 +240,6 @@
 		color: var(--text-muted);
 		font-size: 9px;
 		text-transform: lowercase;
-	}
-	.empty {
-		text-align: center;
-		color: var(--text-muted);
-		padding: 16px;
 	}
 	.seed-chip {
 		display: flex;
