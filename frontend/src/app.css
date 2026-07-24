@@ -153,15 +153,16 @@ button {
 	padding: 4px 10px;
 	cursor: pointer;
 	transition:
-		background 80ms ease,
-		border-color 80ms ease;
+		background var(--dur-fast) var(--ease),
+		border-color var(--dur-fast) var(--ease),
+		color var(--dur-fast) var(--ease);
 }
 button:hover:not(:disabled) {
 	background: var(--bg-elev-3);
 	border-color: var(--border-strong);
 }
 button:disabled {
-	opacity: 0.5;
+	opacity: var(--disabled-opacity);
 	cursor: not-allowed;
 }
 button.primary {
@@ -198,6 +199,19 @@ select:focus,
 textarea:focus {
 	border-color: var(--accent);
 }
+
+/* Keyboard focus is visible app-wide (accent = state, meaning #2). Applies only to keyboard
+   focus, so mouse clicks stay quiet. Components must not `outline: none` without this fallback. */
+:focus-visible {
+	outline: 2px solid var(--accent);
+	outline-offset: 1px;
+}
+
+/* Ring convention (for P's Panel/Node): the active-panel / selected-node ring MUST be an overlay
+   layer (a ::after with `inset: 0; box-shadow: inset 0 0 0 1px var(--accent); pointer-events: none`
+   at a higher stacking level), NEVER an inset box-shadow on the element itself — an inset shadow
+   paints below child content, so a header bar occludes its top edge. The ring colour is --accent
+   (state, meaning #1). */
 
 ::-webkit-scrollbar {
 	width: 10px;
