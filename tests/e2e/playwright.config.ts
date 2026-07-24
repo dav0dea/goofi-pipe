@@ -1,4 +1,4 @@
-import { defineConfig } from '@playwright/test';
+import { defineConfig, devices } from '@playwright/test';
 import path from 'node:path';
 
 // Fixed test port (overridable) so webServer.url is concrete; one worker + one backend
@@ -21,6 +21,18 @@ export default defineConfig({
 		headless: true,
 		trace: 'on-first-retry'
 	},
+	// Two projects share the top-level `use`. `default` runs every existing spec EXCEPT the
+	// touch-scoped ones (fine-pointer desktop chrome); `touch` runs only `touch-*` under Pixel 7
+	// emulation, whose hasTouch+isMobile+viewport flip (pointer:coarse)/(hover:none) true so the
+	// coarse density floor engages. R extends the `touch` project.
+	projects: [
+		{ name: 'default', testIgnore: /touch-.*\.spec\.ts/ },
+		{
+			name: 'touch',
+			testMatch: /touch-.*\.spec\.ts/,
+			use: { ...devices['Pixel 7'] }
+		}
+	],
 	// Spawn the PREBUILT binary from the repo root (so it serves frontend/build/ correctly),
 	// clearing any stale iceoryx2 SHM first. `cargo build` happens via `npm run e2e` BEFORE
 	// this, since webServer starts ahead of globalSetup. Playwright kills the process on teardown.

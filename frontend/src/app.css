@@ -60,6 +60,12 @@
 	--ease: ease;
 	--disabled-opacity: 0.45;
 
+	/* Hit-target geometry — documentary fine-pointer defaults. The touch floor only applies under
+	   (pointer: coarse), in the @media block at the end of this file. */
+	--hit: 28px; /* documentary default; the floor only applies under (pointer: coarse) below */
+	--splitter-size: 6px; /* was referenced-but-undefined; declared now, larger under coarse */
+	--panel-header-h: 26px; /* was referenced-but-undefined */
+
 	/* dtype palette — slot pins/labels colour-code at a glance. */
 	--dtype-array: #50d0a0;
 	--dtype-string: #f0c050;
@@ -300,5 +306,31 @@ textarea:focus {
 		animation-duration: 0.01ms !important;
 		animation-iteration-count: 1 !important;
 		transition-duration: 0.01ms !important;
+	}
+}
+
+/* Touch density. Gated on a real touch device (no hover + coarse pointer) so fine-pointer
+   desktop chrome keeps its natural, compact geometry. */
+@media (hover: none) and (pointer: coarse) {
+	:root {
+		--hit: 44px;
+		--splitter-size: 14px;
+		/* raise the type floor to the iOS focus-zoom threshold */
+		font-size: clamp(14px, 0.9vw + 0.3vh, 16px);
+	}
+	button,
+	input,
+	select,
+	textarea {
+		min-height: var(--hit);
+	}
+	input,
+	select,
+	textarea {
+		font-size: 16px; /* below 16px iOS force-zooms on focus */
+	}
+	/* safe-area padding for notches/home indicators */
+	body {
+		padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
 	}
 }
