@@ -94,9 +94,9 @@ class Smooth(goofi.Node):
 The same file runs on either Python tier — a discovery probe imports it in a real
 interpreter and reports whether it is free-threading-safe. If it isn't, it routes to a
 subprocess automatically and appears in the palette under the `subprocess` category. A node
-whose dependencies are missing everywhere fails its probe and is not registered at all; an
-exception inside `process()` surfaces on the node's error channel instead of taking
-anything down.
+whose dependencies are missing everywhere fails its probe and is listed as `unavailable` —
+greyed out, naming the missing module — rather than silently vanishing. An exception inside
+`process()` surfaces on the node's error channel instead of taking anything down.
 
 The interpreters are conventionally `.ftvenv` (free-threaded 3.14t, in-process) and
 `.venv` (any GIL Python, subprocess); `scripts/provision-goofi-py.sh` builds and

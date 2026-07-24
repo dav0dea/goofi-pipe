@@ -142,6 +142,17 @@ events) and **binary** (CRDT sync frames). A client's replica of the graph is
 RPC; the manager applies it, re-mirrors the graph into the doc, and broadcasts the
 delta. Reads come from the doc, not from event echoes.
 
+**The doc is the ONLY graph projection.** The `hello`/`graph_replaced` snapshot carries
+no nodes, links or sub-patch forest — those live in the doc alone, and the client
+assembles each node from doc + catalog. (It once carried both; they drifted, keying
+scope members by display name on one side and by uid on the other.) What the snapshot
+does carry is the session frame — instance id, palette, save path, layout — plus a
+`runtime` overlay (`{uid: {stage, error}}`): the one per-node truth the doc never holds,
+seeded here because its live stream (the 2 Hz sweep) pushes only *transitions*, so a
+client joining a running graph would otherwise draw an errored node as healthy.
+`node_added` is a bare `{uid}` announcement. **Do not re-add graph state to a payload** —
+if a client needs it, it is in the doc.
+
 **Undo/redo is manager-owned.** Each browser tab mints a `sessionStorage` session id
 sent on every request. `goofi-engine/src/command.rs` gives every command an exact
 inverse; `CommandHistory` stores one *toggle* per entry (its inverse when applied,
@@ -231,7 +242,7 @@ processes outlive the test and corrupt every later latency measurement.
 | `goofi-codec` | the binary `Data` wire format (GOOF frame: header, msgpack meta, f32 body) + the subprocess request/response frames. Mirrored in `frontend/src/lib/codec/`. |
 | `goofi-node` | the `Node` trait, `NodeManifest`, `SlotDecl`/`OutputDecl`/`ParamDecl`, the `ExprEvaluator` seam, and `discover.rs` (the Python introspection probe → a rich multi-slot + param manifest). |
 | `goofi-nodes` | the native node library — deliberately **Oscillator + Buffer** (+ a test source) after the tabula-rasa reset. |
-| `goofi-engine` | `Graph`: nodes, links, scheduling (adaptive tick, `next_run_delay`), param expressions (`nd()`), `.gfi` v6 save/load, `subpatch.rs` (flat scopes + stubs), `command.rs` (commands + inverses + `CommandHistory`), `detached.rs` (the off-tick worker tier). |
+| `goofi-engine` | `Graph`: nodes, links, scheduling (adaptive tick, `next_run_delay`), param expressions (`nd()`), `.gfi` v6 save/load (incl. the opaque frontend `layout` blob), `subpatch.rs` (flat scopes + stubs), `command.rs` (commands + inverses + `CommandHistory`), `detached.rs` (the off-tick worker tier). |
 | `goofi-view` | the payload-free ViewSpec algebra: `plan(specs, frame)` folds many viewers' constraints into one reduction. |
 | `goofi-crdt` | the yrs document: graph mirror, sync handshake, idempotent reconcile. |
 | `goofi-bridge` | the axum server: `/control` dispatch + CRDT mirror + `/data` reduction/fan-out + `schemas.rs` (wire shapes) + the tick/stats workers. |
@@ -247,7 +258,7 @@ processes outlive the test and corrupt every later latency measurement.
 | `api/` | transport clients: `control.ts` (commands + events + session id), `data.ts`/`dataWorker.ts` (binary stream, off-thread decode), `frames.ts` (rAF paint coalescer), `perfStats`/`rateMeter`. |
 | `crdt/` | the client replica: `SyncClient` (read-only) + the doc readers. |
 | `codec/` | the TS port of the GOOF frame decoder (arrays are always f32). |
-| `stores/` | reactive state (Svelte 5 runes): `graph.svelte.ts` (doc-authoritative mirror), `history.svelte.ts` (one linear client stack; graph steps delegate to the manager), `selection`, `ui`, `console`, `flash`, `logStream`. |
+| `stores/` | reactive state (Svelte 5 runes): `graph.svelte.ts` (doc-authoritative mirror), `history.svelte.ts` (one linear client stack; graph steps delegate to the manager), `selection`, `ui`, `console`, `flash`. |
 | `editor/` | the Svelte Flow canvas: `GoofiNode.svelte` (every node, incl. sub-patch instances), `snap.ts` + `nodeMetrics.ts`, placement, boundary nodes. |
 | `viewers/` | one component per viewer kind + `ViewerFeed` (subscribe lifecycle), `capacity.ts` (emits the backend-shaped ViewSpec), `decimate.ts`, `imageGL.ts`. |
 | `params/` | parameter widgets + the expression editor. |
@@ -276,10 +287,11 @@ Plain top-level imports for all deps. The same file works on **both** Python tie
 the discovery probe imports it in a real interpreter and reports whether it is
 free-threading-safe; a node that isn't (or whose deps are missing on `.ftvenv`)
 routes to the subprocess tier, where the palette groups it under the `subprocess` category.
-A node whose deps are missing on BOTH interpreters fails its probe and is not registered at
-all — it simply does not appear (the catalog has no "unavailable" state), so check the
-startup log if a node you wrote is missing. A raise inside `process()` is a per-tick error
-frame, not a crash.
+A node whose deps are missing on BOTH interpreters fails its probe and is registered as
+**unavailable**: it appears in the palette greyed and unclickable under the `unavailable`
+category, its tooltip naming the missing module — a node that cannot load explains itself
+instead of silently vanishing. A raise inside `process()` is a per-tick error frame, not a
+crash.
 
 ---
 
@@ -336,7 +348,11 @@ Analysis reports live in `docs/analysis/` (also gitignored).
 
 The **framework** is essentially complete and has been audited to convergence
 several times: CRDT control plane, unified commands + manager-owned undo/redo, flat
-sub-patches, the ViewSpec data plane, globals, both Python node tiers, e2e.
+sub-patches, the ViewSpec data plane, globals, both Python node tiers, e2e. The most
+recent pass (2026-07-23) was a leanness audit executed end to end: it cut every plane
+the frontend carried that the backend never grew, built the four the user wanted real
+(palette availability, layout persistence, dirty tracking, detached bootstrap stage),
+and collapsed the snapshot's duplicate graph projection onto the doc.
 
 The **node library is a deliberate tabula rasa** — Oscillator + Buffer only. Growing
 it (sinks, filters/PSD, real biosignal inputs, recording, array math) is the next

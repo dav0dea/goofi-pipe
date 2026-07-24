@@ -1,0 +1,88 @@
+globals:
+- name: default_ufreq
+  type: float
+  value: 30.0
+layout:
+  activeWorkspaceId: ws-3
+  workspaces:
+  - id: ws-3
+    name: Layout
+    root:
+      id: panel-4
+      kind: panel
+      panelType: node-editor
+  - id: ws-5
+    name: Layout 2
+    root:
+      children:
+      - children:
+        - id: panel-11
+          kind: panel
+          panelType: viewer
+          state:
+            node: '000000000001'
+        - id: panel-6
+          kind: panel
+          panelType: viewer
+          state:
+            node: '000000000002'
+        direction: column
+        id: split-12
+        kind: split
+        sizes:
+        - 0.5233681684552536
+        - 0.4766318315447464
+      - id: panel-9
+        kind: panel
+        panelType: node-editor
+      direction: row
+      id: split-10
+      kind: split
+      sizes:
+      - 0.47040957663483807
+      - 0.5295904233651619
+pillar_default: signal
+root:
+  links:
+  - - '000000000001'
+    - out
+    - '000000000002'
+    - data
+  nodes:
+    '000000000001':
+      expressions:
+      - enabled: true
+        group: common
+        name: max_frequency
+        source: globals.default_ufreq
+        triggers_process: false
+      name: oscillator0
+      params:
+        common:
+          autotrigger: true
+          frequency_mode: updates-per-second
+          max_frequency: 30.0
+        oscillator:
+          amplitude: 1.0
+          frequency: 1.0
+          sfreq: 250.0
+          waveform: sine
+      pos:
+      - 686.0
+      - 417.0
+      type: Oscillator
+    '000000000002':
+      name: buffer0
+      params:
+        buffer:
+          size: 1000
+        common:
+          autotrigger: false
+          frequency_mode: updates-per-second
+          max_frequency: 0.0
+      pos:
+      - 977.0
+      - 417.0
+      type: Buffer
+  scopes: {}
+version: 6
