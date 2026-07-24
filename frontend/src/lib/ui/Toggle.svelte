@@ -106,4 +106,14 @@
 	.ui-toggle-input:disabled ~ .ui-toggle-track {
 		opacity: var(--disabled-opacity);
 	}
+	/* Coarse-pointer hit-rect guarantee (mirrors IconButton): extend the clickable area outward to at
+	   least --hit WITHOUT widening the painted 2.4rem track (the knob's checked translate is tied to
+	   that width, so growing the box would distort the switch). A no-op under a fine pointer. */
+	@media (pointer: coarse) {
+		.ui-toggle::after {
+			content: '';
+			position: absolute;
+			inset: calc((var(--hit) - 100%) / -2);
+		}
+	}
 </style>

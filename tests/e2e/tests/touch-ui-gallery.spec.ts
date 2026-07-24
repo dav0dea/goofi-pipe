@@ -40,6 +40,21 @@ test('Field controls meet the 44px coarse tap target', async ({ page }) => {
 	const tbox = await toggle.boundingBox();
 	expect(tbox, 'the Toggle has a rendered box').not.toBeNull();
 	expect(tbox!.height, 'Toggle height >= 44 under coarse').toBeGreaterThanOrEqual(44);
+
+	// Width too: the painted track stays a switch-sized 2.4rem (< 44px under the coarse html base), so
+	// the coarse floor is met by the `::after` hit-rect overlay (mirroring IconButton), NOT by widening
+	// the box. Measure the effective tap target: the element box grown by the pseudo's negative insets.
+	const tap = await toggle.evaluate((el) => {
+		const r = el.getBoundingClientRect();
+		const cs = getComputedStyle(el, '::after');
+		const px = (v: string) => parseFloat(v) || 0;
+		return { width: r.width - px(cs.left) - px(cs.right), height: r.height - px(cs.top) - px(cs.bottom) };
+	});
+	// Round to the nearest device pixel: the calc()-derived rect resolves to exactly --hit in math but
+	// getBoundingClientRect/getComputedStyle report sub-pixel noise (e.g. 43.99999). Pre-fix ≈33.6 → 34,
+	// still well under the floor, so the RED guard holds.
+	expect(Math.round(tap.width), 'Toggle coarse tap-target width >= 44 (via the ::after hit-rect)').toBeGreaterThanOrEqual(44);
+	expect(Math.round(tap.height), 'Toggle coarse tap-target height >= 44').toBeGreaterThanOrEqual(44);
 });
 
 // Tabs and Disclosure are chrome R renders on phones — each tab and the disclosure summary must be a
