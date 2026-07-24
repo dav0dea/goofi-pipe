@@ -1,5 +1,5 @@
 <!-- Console panel — a Chrome-devtools-style log of every node's stdout/stderr,
-     streamed peer-to-peer over SSE (see $lib/stores/logStream). Shows all nodes
+     Shows all nodes
      by default; drag a node onto it to filter to just that node. stdout/stderr
      chips filter by stream.
 
@@ -13,7 +13,6 @@
 <script lang="ts">
 	import type { PanelProps } from '$lib/workspace/registry';
 	import { consoleStore, type ConsoleEntry, type ConsoleView } from '$lib/stores/console.svelte';
-	import { logStream } from '$lib/stores/logStream.svelte';
 	import { selection } from '$lib/stores/selection.svelte';
 	import { ui } from '$lib/stores/ui.svelte';
 	import { graph } from '$lib/stores/graph.svelte';
@@ -127,10 +126,8 @@
 	// Subscribe to SSE for exactly what this panel shows: one node when filtered,
 	// every node when not. Released on unmount so closing the console disconnects.
 	$effect(() => {
-		logStream().setNeeds(panelId, filterName ? [filterName] : 'all');
 	});
 	onDestroy(() => {
-		logStream().release(panelId);
 		clearTimeout(copiedTimer);
 	});
 

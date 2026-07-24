@@ -109,10 +109,6 @@ export interface NodeInstanceInfo {
 	 * the node's first NODE_STATS push; populated by the `node_stats` event and
 	 * present in the snapshot for a freshly-connected client. Runtime UI state. */
 	stats?: NodeStats | null;
-	/** Peer-to-peer SSE log endpoint (`http://127.0.0.1:<port>/<node>`) the node
-	 * advertises via STATE_UPDATE. Null/absent until its first state push, or
-	 * when capture is off (headless). The Console subscribes to it directly. */
-	log_endpoint?: string | null;
 	/** Set only on a *virtual* node synthesized for a sub-patch scope (see
 	 * `graph.nodeById`). Lets the node layers — selection, inspector, drag —
 	 * treat a sub-patch like a node while the inspector renders its controls
@@ -311,7 +307,6 @@ export type ControlEvent =
 				// plane so a lost first PROCESSING_ERROR still surfaces and a healthy
 				// respawn's clear (null) lifts a stale chip.
 				error?: string | null;
-				log_endpoint?: string | null;
 				// Params (`[group, name]`) whose ⟳ refresh just completed on this push —
 				// the node re-scanned its options and reports done (success or failure),
 				// so the UI can clear the per-param spinner exactly when fresh options land.
@@ -334,8 +329,7 @@ export type ControlEvent =
 	| { event: 'graph_replaced'; payload: GraphSnapshot }
 	| { event: 'subpatch_changed'; payload: GraphSnapshot }
 	| { event: 'node_renamed'; payload: { node: string; name: string } }
-	| { event: 'layout'; payload: { layout: unknown } }
-	| { event: 'manager_shutdown'; payload: Record<string, never> };
+	| { event: 'layout'; payload: { layout: unknown } };
 
 type EventHandler = (ev: ControlEvent) => void;
 

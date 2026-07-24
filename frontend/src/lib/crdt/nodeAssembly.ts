@@ -11,7 +11,7 @@
  *             default options/value). The adopted "static PARAMS" node-authoring pattern guarantees
  *             a node instance's param group/name set equals its type's — so the catalog is a
  *             reliable structural source.
- *   RUNTIME — event-sourced state that never enters the doc: error/stage/crashed/stats/log_endpoint/
+ *   RUNTIME — event-sourced state that never enters the doc: error/stage/crashed/stats/
  *             membership, and per-param expression_error + refreshed StringParam options.
  */
 import type { NodeInstanceInfo, NodeTypeInfo, NodeStage, NodeStats } from '$lib/api/control';
@@ -41,7 +41,6 @@ export interface RuntimeOverlay {
 	restarts?: number;
 	crashExit?: number | null;
 	stats?: NodeStats | null;
-	log_endpoint?: string | null;
 	membership?: { instance: string; local_name: string } | null;
 	params?: Record<string, Record<string, ParamRuntime>>;
 }
@@ -133,7 +132,6 @@ export function assembleNode(
 		restarts: runtime.restarts,
 		crashExit: runtime.crashExit,
 		stage: runtime.stage,
-		stats: runtime.stats ?? null,
-		log_endpoint: runtime.log_endpoint ?? null
+		stats: runtime.stats ?? null
 	};
 }

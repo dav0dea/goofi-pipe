@@ -941,38 +941,6 @@ async fn two_tabs_on_one_slot_share_the_reducer_over_the_wire() {
     }
 }
 
-#[tokio::test]
-async fn an_ephemeral_frame_is_relayed_to_other_clients() {
-    // The awareness channel: a client's ephemeral frame (presence/live-drag/preview) is
-    // relayed verbatim to other clients, never touching the doc. Two clients A and B: A sends
-    // an ephemeral frame; B receives it; the graph/doc is unaffected.
-    use goofi_crdt::SyncMsg;
-
-    let base = start_server().await;
-    let (mut a, _) = connect_async(format!("{base}/control")).await.unwrap();
-    let _ = recv_text(&mut a).await;
-    let _ = recv_binary(&mut a).await; // hello SV
-    let (mut b, _) = connect_async(format!("{base}/control")).await.unwrap();
-    let _ = recv_text(&mut b).await;
-    let _ = recv_binary(&mut b).await;
-
-    // A publishes an ephemeral payload (opaque to the manager).
-    let payload = b"\x07\x00\x00\x00\x00\x00\x00\x00cursor".to_vec(); // client-id + state (browser-defined)
-    a.send(Message::Binary(SyncMsg::Ephemeral(payload.clone()).encode().into())).await.unwrap();
-
-    // B receives it, decoded as the same Ephemeral frame.
-    let got = tokio::time::timeout(Duration::from_secs(5), async {
-        loop {
-            let bytes = recv_binary(&mut b).await;
-            if let Some(SyncMsg::Ephemeral(p)) = SyncMsg::decode(&bytes) {
-                return p;
-            }
-        }
-    })
-    .await
-    .expect("B must receive A's ephemeral frame");
-    assert_eq!(got, payload, "ephemeral payload relayed verbatim");
-}
 
 #[tokio::test]
 async fn a_param_command_reaches_the_graph_and_other_clients() {

@@ -243,7 +243,6 @@ pub fn node_instance_info(g: &Graph, uid: Uid) -> Value {
         "stage": g.node_stage(uid),
         "stats": Value::Null,
         "restarts": 0,
-        "log_endpoint": Value::Null,
     })
 }
 

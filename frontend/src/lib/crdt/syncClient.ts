@@ -8,7 +8,6 @@
 import * as Y from 'yjs';
 import type { Control } from '$lib/api/control';
 import { decodeSyncMsg, encodeSyncMsg, onSync, syncHello } from './syncProtocol';
-import { EphemeralStore, encodeEphemeral, decodeEphemeral } from './ephemeral';
 
 /** Origin tag stamped on transactions produced by applying a REMOTE (synced) update, so
  * doc observers can distinguish the manager's changes from this client's own local edits. */
@@ -21,22 +20,14 @@ export class SyncClient {
 	get doc(): Y.Doc {
 		return this._doc;
 	}
-	/** This client's stable id for the ephemeral/awareness channel (Yjs' per-doc clientID). Changes
-	 * on `reset()` (the fresh doc mints a new id). */
-	clientId: number;
-	/** Remote clients' presence/preview state (self-filtered). Fresh on `reset()`. */
-	ephemeral: EphemeralStore;
 	private control: Control;
 	private unsub: (() => void) | null = null;
-	private onEphemeralChange: (() => void) | null = null;
 	/** The graph-store's reactive doc-change observer — re-attached to the fresh doc on `reset()`. */
 	private docObserver: ((txn: Y.Transaction) => void) | null = null;
 
 	constructor(control: Control, doc: Y.Doc = new Y.Doc()) {
 		this.control = control;
 		this._doc = doc;
-		this.clientId = doc.clientID;
-		this.ephemeral = new EphemeralStore(this.clientId);
 	}
 
 	/** Register the store's reactive doc-change callback (fired on every doc transaction). Survives
@@ -61,24 +52,11 @@ export class SyncClient {
 		if (this.docObserver) this._doc.off('afterTransaction', this.docObserver);
 		this._doc.destroy();
 		this._doc = new Y.Doc();
-		this.clientId = this._doc.clientID;
-		this.ephemeral = new EphemeralStore(this.clientId);
 		if (this.docObserver) this._doc.on('afterTransaction', this.docObserver);
 		if (wasRunning) this.start();
 	}
 
-	/** Register a callback fired whenever a remote client's ephemeral state changes (for
-	 * reactive presence/preview rendering). */
-	setEphemeralListener(fn: () => void): void {
-		this.onEphemeralChange = fn;
-	}
 
-	/** Publish this client's ephemeral state (cursor, live-drag value, active viewer specs).
-	 * Relayed to peers; pass `null` to clear (departure). Fire-and-forget. */
-	publishEphemeral(state: unknown | null): void {
-		const payload = encodeEphemeral({ client: this.clientId, state });
-		this.control.sendSync(encodeSyncMsg({ kind: 'ephemeral', payload }));
-	}
 
 	/** Begin syncing: subscribe to inbound frames, and advertise our state vector on connect
 	 * AND on every reconnect so we re-pull anything the manager changed while we were
@@ -110,15 +88,6 @@ export class SyncClient {
 	onFrame(bytes: Uint8Array): void {
 		const msg = decodeSyncMsg(bytes);
 		if (!msg) return;
-		if (msg.kind === 'ephemeral') {
-			// Presence/preview from a peer — apply to the store (self-filtered), never the doc.
-			const update = decodeEphemeral(msg.payload);
-			if (update) {
-				this.ephemeral.apply(update);
-				this.onEphemeralChange?.();
-			}
-			return;
-		}
 		const replies = onSync(this.doc, msg, REMOTE_ORIGIN);
 		for (const r of replies) this.control.sendSync(r);
 	}

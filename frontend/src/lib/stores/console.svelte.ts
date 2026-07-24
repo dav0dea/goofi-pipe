@@ -1,7 +1,7 @@
 /**
  * Console log store — bounded, virtualizable transcripts of node stdout/stderr.
  *
- * Fed by the per-node SSE streams (see `$lib/stores/logStream`) plus processing
+ * Fed by processing
  * errors mirrored as stderr (see the graph store's `error` handler). Designed to
  * stay smooth at ~100k entries.
  *
@@ -20,7 +20,7 @@
  *   appends triggers one re-render, not one per line. Entries are plain objects
  *   (the panel renders shallow copies of the visible window so an in-place
  *   `count` bump re-renders the keyed row).
- * - replay is deduped by a per-node monotonic `seq`, so an SSE reconnect or a
+ * - entries coalesce when a node repeats the same line, so a
  *   panel re-subscribe can't duplicate lines it already holds.
  *
  * The unfiltered view is permanent so logs/errors accumulate even with no
@@ -31,15 +31,6 @@
 
 export type LogStream = 'stdout' | 'stderr';
 
-/** One ingested log record off the wire (or a mirrored error). */
-export interface LogRecord {
-	node: string;
-	stream: LogStream;
-	text: string;
-	/** Per-node monotonic sequence from the backend buffer (replay dedup). */
-	seq: number;
-	ts: number;
-}
 
 export interface ConsoleEntry {
 	/** Monotonic id within its view, stable across eviction — the `{#each}` key. */
@@ -127,9 +118,16 @@ function viewSig(node: string | null, stdout: boolean, stderr: boolean): string 
 	return `${node ?? '*'}|${stdout ? 1 : 0}|${stderr ? 1 : 0}`;
 }
 
+/** One console record: a node's line on a stream, at a timestamp. */
+export interface LogRecord {
+	node: string;
+	stream: LogStream;
+	text: string;
+	ts: number;
+}
+
 export class ConsoleStore {
 	private views = new Map<string, View>();
-	private dedup = new Map<string, number>();
 
 	/** Bumped (rAF-coalesced) whenever any view's visible data changes — drives
 	 * the panel's row re-render (incl. ×count badges). */
@@ -182,30 +180,21 @@ export class ConsoleStore {
 		this.scheduleBump();
 	}
 
-	/** Ingest one SSE record. Synchronous on the data; re-render is rAF-batched. */
+
+	/** Ingest one record. Synchronous on the data; re-render is rAF-batched. */
 	ingest(rec: LogRecord): void {
-		// Replay dedup: drop anything at/below the last seq seen for this node.
-		const seen = this.dedup.get(rec.node);
-		if (seen !== undefined && rec.seq <= seen) return;
-		this.dedup.set(rec.node, rec.seq);
 		this.feed(rec.node, rec.stream, rec.text, rec.ts);
 	}
 
-	/** Mirror a processing-error traceback as a stderr entry (bypasses seq dedup —
-	 * it comes off the control plane, not the SSE stream). Repeats coalesce. */
+	/** Mirror a processing-error traceback as a stderr entry. Repeats coalesce. */
 	ingestError(node: string, text: string, ts: number): void {
-		this.feed(node, 'stderr', text, ts);
+		this.ingest({ node, stream: 'stderr', text, ts });
 	}
 
-	/** Forget a node's dedup cursor (it was removed — a future re-add resets). */
-	forgetNodeDedup(node: string): void {
-		this.dedup.delete(node);
-	}
 
 	clear(): void {
 		// Keep uidSeq monotonic across clears so uids never get reused mid-session.
 		for (const v of this.views.values()) v.ring.clear();
-		this.dedup.clear();
 		this.layoutVersion += 1;
 		this.scheduleBump();
 	}

@@ -39,11 +39,6 @@ pub struct AppState {
     /// Binary sync-update fan-out: each mutation broadcasts the CRDT delta as a framed
     /// [`goofi_crdt::SyncMsg::Update`] to every connected client's replica.
     pub sync_updates: broadcast::Sender<Vec<u8>>,
-    /// Ephemeral/awareness fan-out: presence, live-drag values, previews, active viewer specs.
-    /// Separate from `sync_updates` because it is fire-and-forget — a lagged ephemeral frame is
-    /// simply dropped (never triggers doc recovery). Relayed verbatim; peers self-filter their
-    /// own client id.
-    pub ephemeral: broadcast::Sender<Vec<u8>>,
     /// The doc's state vector as of the last broadcast delta — the baseline the next delta
     /// is computed against (guarded together with `crdt`: always lock `crdt` first).
     pub last_sync_sv: Arc<Mutex<Vec<u8>>>,
@@ -74,7 +69,6 @@ impl AppState {
             .map(|d| d.as_nanos())
             .unwrap_or(0);
         let (sync_updates, _) = broadcast::channel(256);
-        let (ephemeral, _) = broadcast::channel(256);
         // Mirror the INITIAL graph (empty nodes + the seeded system globals) into the doc so a client
         // connecting to a fresh backend syncs the current state immediately (e.g. `default_ufreq`),
         // rather than an empty doc that stays blank until the first mutation re-mirrors.
@@ -90,7 +84,6 @@ impl AppState {
             instance_id: Arc::from(format!("{iid:x}").as_str()),
             crdt: Arc::new(Mutex::new(crdt)),
             sync_updates,
-            ephemeral,
             last_sync_sv,
             dirty: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             reducers,
@@ -331,7 +324,6 @@ async fn handle_control(socket: WebSocket, state: AppState) {
     // CRDT plane subscribes first for the same reason.
     let mut events = state.events.subscribe();
     let mut sync_updates = state.sync_updates.subscribe();
-    let mut ephemeral = state.ephemeral.subscribe();
 
     let hello = {
         let g = state.graph.lock().unwrap();
@@ -376,11 +368,6 @@ async fn handle_control(socket: WebSocket, state: AppState) {
                             }
                         }
                         Some(goofi_crdt::SyncMsg::Update(_)) => {} // read-only client — ignored
-                        Some(eph @ goofi_crdt::SyncMsg::Ephemeral(_)) => {
-                            // Presence/preview: relay verbatim to every client (peers self-filter
-                            // their own id). Fire-and-forget — no doc write, no recovery.
-                            let _ = state.ephemeral.send(eph.encode());
-                        }
                         None => {}
                     }
                 }
@@ -429,17 +416,6 @@ async fn handle_control(socket: WebSocket, state: AppState) {
                 }
                 Err(broadcast::error::RecvError::Closed) => break,
             },
-            eph = ephemeral.recv() => match eph {
-                Ok(frame) => {
-                    if tx.send(Message::Binary(frame.into())).await.is_err() {
-                        break;
-                    }
-                }
-                // Fire-and-forget: a lagged ephemeral frame is simply skipped (presence/preview
-                // is latest-wins, never recovered).
-                Err(broadcast::error::RecvError::Lagged(_)) => {}
-                Err(broadcast::error::RecvError::Closed) => break,
-            },
         }
     }
 }
@@ -481,7 +457,6 @@ fn param_state_update_refreshed(g: &Graph, peer: Uid, refreshed: &[(&str, &str)]
             "output_subscribers": {},
             "stage": g.node_stage(peer),
             "error": g.last_error(peer),
-            "log_endpoint": Value::Null,
             "refreshed_params": refreshed.iter().map(|(g, n)| json!([g, n])).collect::<Vec<_>>(),
         }),
     )

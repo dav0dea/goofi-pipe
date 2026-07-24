@@ -9,11 +9,7 @@ use yrs::{Any, Array, ArrayRef, Doc, Map, MapPrelim, MapRef, Out, ReadTxn, Trans
 
 /// A framed message on the `/control` binary channel, one leading tag byte. Two families:
 /// **doc sync** (`StateVector` / `Update`) — the minimal equivalent of the Yjs sync protocol,
-/// both ends driving their doc by hand (no `y-protocols` dependency); and the **ephemeral /
-/// awareness channel** (`Ephemeral`) — presence-style state (cursors, live-drag values,
-/// expression previews, active viewer specs) that is NOT persisted in the doc and NOT
-/// recovered on lag. The manager relays `Ephemeral` payloads verbatim to all clients; their
-/// internal `{client, state}` structure is owned by the browser (each peer self-filters its
+/// both ends driving their doc by hand (no `y-protocols` dependency).
 /// own client id), so the manager stays an opaque relay until it needs to read viewer specs.
 #[derive(Clone, Debug, PartialEq)]
 pub enum SyncMsg {
@@ -21,13 +17,10 @@ pub enum SyncMsg {
     StateVector(Vec<u8>),
     /// An incremental doc update — a diff reply, or a live change to apply.
     Update(Vec<u8>),
-    /// An ephemeral/awareness update — relayed to peers, never applied to the doc.
-    Ephemeral(Vec<u8>),
 }
 
 const SYNC_TAG_SV: u8 = 0;
 const SYNC_TAG_UPDATE: u8 = 1;
-const SYNC_TAG_EPHEMERAL: u8 = 2;
 
 impl SyncMsg {
     /// Frame as `[tag, payload…]`.
@@ -35,7 +28,6 @@ impl SyncMsg {
         let (tag, mut body) = match self {
             SyncMsg::StateVector(b) => (SYNC_TAG_SV, b),
             SyncMsg::Update(b) => (SYNC_TAG_UPDATE, b),
-            SyncMsg::Ephemeral(b) => (SYNC_TAG_EPHEMERAL, b),
         };
         let mut out = Vec::with_capacity(body.len() + 1);
         out.push(tag);
@@ -49,7 +41,6 @@ impl SyncMsg {
         match *tag {
             SYNC_TAG_SV => Some(SyncMsg::StateVector(body.to_vec())),
             SYNC_TAG_UPDATE => Some(SyncMsg::Update(body.to_vec())),
-            SYNC_TAG_EPHEMERAL => Some(SyncMsg::Ephemeral(body.to_vec())),
             _ => None,
         }
     }
@@ -357,9 +348,6 @@ impl GraphDoc {
                 let _ = self.apply_update(&u);
                 Vec::new()
             }
-            // Ephemeral frames are relayed to peers, never applied to the doc — they must not
-            // reach the doc handshake. Ignore defensively (the relay routes them separately).
-            SyncMsg::Ephemeral(_) => Vec::new(),
         }
     }
 }
@@ -504,7 +492,6 @@ mod tests {
         for m in [
             SyncMsg::StateVector(vec![1, 2, 3]),
             SyncMsg::Update(vec![9, 8]),
-            SyncMsg::Ephemeral(vec![5, 5, 5]),
         ] {
             let bytes = m.clone().encode();
             assert_eq!(SyncMsg::decode(&bytes), Some(m));

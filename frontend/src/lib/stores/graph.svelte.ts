@@ -305,8 +305,6 @@ export class GraphStore {
 					// event fired.
 					if ('error' in ev.payload) t.error = ev.payload.error ?? null;
 					// The node advertises its SSE log endpoint here; surfacing it lets
-					// the Console subscribe peer-to-peer (see $lib/stores/logStream).
-					if (ev.payload.log_endpoint !== undefined) t.log_endpoint = ev.payload.log_endpoint;
 				}
 				// A ⟳ refresh finished for these params on this very push (the node
 				// re-scanned and now carries fresh options) — lift each spinner exactly
@@ -407,9 +405,6 @@ export class GraphStore {
 					selection().forgetAll();
 				}
 				this.loadEpoch += 1;
-				break;
-			case 'manager_shutdown':
-				this.connected = false;
 				break;
 		}
 	}
@@ -784,7 +779,6 @@ export class GraphStore {
 			if (nextUids.has(old.uid)) continue;
 			ui().forget(old.uid);
 			forgetInlineView(old.uid);
-			consoleStore().forgetNodeDedup(old.uid);
 			workspace().clearNodeRefs(old.uid);
 		}
 		this.nodes = next.map((n) => {
@@ -793,7 +787,7 @@ export class GraphStore {
 				// subpatch_changed is a STRUCTURE event (group/expand/share/make-unique):
 				// membership/names/instances moved but the live node processes are
 				// unchanged. Their runtime lifecycle state (stage/error/stats/restarts/
-				// log_endpoint) is owned by the state_update / node_* stream, and this
+				// stats) is owned by the state_update / node_* stream, and this
 				// snapshot was built on a manager thread a later state_update may have
 				// overtaken — so copying its volatile fields would REGRESS them (a ready
 				// node flickering back to a boot spinner, a cleared error chip reappearing,
@@ -803,8 +797,7 @@ export class GraphStore {
 					stage: cur.stage,
 					error: cur.error,
 					stats: cur.stats,
-					restarts: cur.restarts,
-					log_endpoint: cur.log_endpoint
+					restarts: cur.restarts
 				});
 				return cur;
 			}
@@ -814,7 +807,7 @@ export class GraphStore {
 	}
 
 	/** Pull the RUNTIME (event-sourced, never-in-the-doc) fields off an existing node so a doc
-	 * re-assemble preserves them — error/stage/crash/stats/log_endpoint/membership at node level, and
+	 * re-assemble preserves them — error/stage/crash/stats/membership at node level, and
 	 * per-param expression_error + refreshed StringParam options. */
 	private _extractRuntime(node: NodeInstanceInfo): RuntimeOverlay {
 		const params: NonNullable<RuntimeOverlay['params']> = {};
@@ -843,7 +836,6 @@ export class GraphStore {
 			restarts: node.restarts,
 			crashExit: node.crashExit,
 			stats: node.stats,
-			log_endpoint: node.log_endpoint,
 			params
 		};
 	}

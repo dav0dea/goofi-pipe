@@ -1,8 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import { ConsoleStore, type LogStream } from './console.svelte';
 
-function rec(node: string, stream: LogStream, text: string, seq: number, ts = 0) {
-	return { node, stream, text, seq, ts };
+function rec(node: string, stream: LogStream, text: string, _seq: number, ts = 0) {
+	return { node, stream, text, ts };
 }
 
 /** Read an unfiltered view into a plain array. */
@@ -33,29 +33,8 @@ describe('ConsoleStore', () => {
 		expect(all(s).length).toBe(3);
 	});
 
-	it('dedups replay by per-node seq (≤ last seen is dropped)', () => {
-		const s = new ConsoleStore();
-		s.ingest(rec('n', 'stdout', 'a', 5));
-		s.ingest(rec('n', 'stdout', 'b', 3)); // stale replay → dropped
-		s.ingest(rec('n', 'stdout', 'c', 5)); // equal to last → dropped
-		s.ingest(rec('n', 'stdout', 'd', 6)); // fresh → kept
-		expect(all(s).map((e) => e.text)).toEqual(['a', 'd']);
-	});
 
-	it('seq dedup is per node, not global', () => {
-		const s = new ConsoleStore();
-		s.ingest(rec('a', 'stdout', 'a0', 0));
-		s.ingest(rec('b', 'stdout', 'b0', 0)); // node b's own seq space
-		expect(all(s).length).toBe(2);
-	});
 
-	it('forgetNodeDedup lets a re-added node restart its sequence', () => {
-		const s = new ConsoleStore();
-		s.ingest(rec('n', 'stdout', 'old', 9));
-		s.forgetNodeDedup('n');
-		s.ingest(rec('n', 'stdout', 'new', 0)); // would be dropped without forget
-		expect(all(s).map((e) => e.text)).toEqual(['old', 'new']);
-	});
 
 	it('filters by node', () => {
 		const s = new ConsoleStore();
