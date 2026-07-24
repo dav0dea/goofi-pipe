@@ -15,6 +15,7 @@
 	import { graph } from '$lib/stores/graph.svelte';
 	import { ui } from '$lib/stores/ui.svelte';
 	import { linkedNodeName, withLinkedNode } from '$lib/workspace/panelState';
+	import { Bar, IconButton, StatusDot, EmptyState } from '$lib/ui';
 	import type { Snippet } from 'svelte';
 
 	let {
@@ -57,20 +58,27 @@
 	data-testid="node-linked-panel"
 >
 	{#if node}
-		<div class="linkbar">
-			<span class="dot" class:err={node.error}></span>
-			<span class="ln" title={node.type}>{node.name}</span>
-			{#if controls}
-				<div class="controls">{@render controls(node)}</div>
-			{/if}
-			<button class="unlink" title="Unlink node" aria-label="Unlink node" onclick={unlink}>✕</button>
-		</div>
+		<Bar class="linkbar">
+			{#snippet start()}
+				<StatusDot tone={node.error ? 'error' : 'ok'} size="sm" />
+				<span class="ln" title={node.type}>{node.name}</span>
+				{#if controls}
+					<div class="controls">{@render controls(node)}</div>
+				{/if}
+			{/snippet}
+			{#snippet end()}
+				<IconButton variant="ghost" size="sm" label="Unlink node" onclick={unlink}>✕</IconButton>
+			{/snippet}
+		</Bar>
 		<div class="body">
 			{@render content(node)}
 		</div>
 	{:else}
 		<div class="empty">
-			<span class="hint">Drag a node here<br /><small>to show its {label}</small></span>
+			<EmptyState>
+				{#snippet title()}Drag a node here{/snippet}
+				{#snippet hint()}to show its {label}{/snippet}
+			</EmptyState>
 		</div>
 	{/if}
 
@@ -87,28 +95,9 @@
 		height: 100%;
 		min-height: 0;
 	}
-	.linkbar {
-		display: flex;
-		align-items: center;
-		gap: 6px;
-		flex: 0 0 auto;
-		padding: 4px 8px;
-		background: var(--surface-1);
-		border-bottom: 1px solid var(--border);
-		font-size: 0.78rem;
-	}
-	.dot {
-		width: 7px;
-		height: 7px;
-		border-radius: 50%;
-		background: var(--success);
-		flex: 0 0 auto;
-	}
-	.dot.err {
-		background: var(--danger);
-	}
 	.ln {
 		font-family: var(--font-mono);
+		font-size: 0.78rem;
 		color: var(--text);
 		flex: 0 1 auto;
 		overflow: hidden;
@@ -120,7 +109,7 @@
 	   scrolls horizontally if its contents overflow. The left margin keeps the
 	   controls visually separated from the node name. */
 	.controls {
-		flex: 1 1 auto;
+		flex: 0 1 auto;
 		min-width: 0;
 		display: flex;
 		align-items: center;
@@ -129,23 +118,6 @@
 		overflow-x: auto;
 		overflow-y: hidden;
 		scrollbar-width: thin;
-	}
-	.unlink {
-		width: 18px;
-		height: 18px;
-		display: grid;
-		place-items: center;
-		padding: 0;
-		font-size: 0.7rem;
-		background: transparent;
-		border: none;
-		border-radius: var(--radius-sm);
-		color: var(--text-muted);
-		cursor: pointer;
-	}
-	.unlink:hover {
-		color: var(--danger);
-		background: var(--surface-2);
 	}
 	.body {
 		position: relative;
@@ -182,9 +154,6 @@
 		   bottom corners. */
 		border-radius: 0 0 var(--radius-sm) var(--radius-sm);
 		z-index: 4;
-	}
-	.hint small {
-		color: var(--text-dim);
 	}
 	/* Dashed outline marks the panel as a drop target while a node is dragged;
 	   fills in when the cursor is over it. */
