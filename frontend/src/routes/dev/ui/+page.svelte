@@ -21,6 +21,9 @@
 		Toggle,
 		Tabs,
 		Disclosure,
+		Popover,
+		Dialog,
+		PanelShell,
 		type ButtonVariant,
 		type ButtonSize,
 		type TabItem
@@ -61,6 +64,12 @@
 	// Disclosure: bound open state, plus an onToggle read-out so the e2e can observe the callback.
 	let disclosureOpen = $state(false);
 	let disclosureToggles = $state(0);
+
+	// --- Surfaces (Task 5). The Popover's trigger is anchored near the RIGHT edge so a naive
+	// placement would overflow — proving `clampToViewport` shifts it back on-screen. ---
+	let popoverAnchor = $state<HTMLElement | null>(null);
+	let popoverOpen = $state(false);
+	let dialogOpen = $state(false);
 
 	function doRefresh(): void {
 		// Simulate a device/stream re-scan: spin briefly, then land a fresh option set.
@@ -314,6 +323,76 @@
 			<span class="readout" data-testid="ui-disclosure-toggles">{disclosureToggles}</span>
 		</div>
 	</section>
+
+	<section>
+		<h2>Popover (anchored + clamped)</h2>
+		<!-- The trigger hugs the right edge so a naive drop would overflow; the Popover's clamp shifts
+		     it back on-screen (the e2e asserts its box stays within innerWidth/innerHeight). Escape and
+		     an outside pointerdown both dismiss it. -->
+		<div class="pop-row">
+			<span class="pop-anchor" bind:this={popoverAnchor}>
+				<Button onclick={() => (popoverOpen = !popoverOpen)} data-testid="ui-popover-trigger">
+					{popoverOpen ? 'Close' : 'Open'} popover
+				</Button>
+			</span>
+		</div>
+		<Popover
+			anchor={popoverAnchor}
+			open={popoverOpen}
+			onDismiss={() => (popoverOpen = false)}
+			data-testid="ui-popover"
+		>
+			<div class="pop-content" data-testid="ui-popover-content">
+				<strong>Anchored overlay</strong>
+				<p>Portalled, clamped on-screen, self-dismissing on Escape or an outside click.</p>
+			</div>
+		</Popover>
+	</section>
+
+	<section>
+		<h2>Dialog (centered + focus-trap)</h2>
+		<div class="form">
+			<Button onclick={() => (dialogOpen = true)} data-testid="ui-dialog-trigger">Open dialog</Button>
+		</div>
+		<Dialog open={dialogOpen} onClose={() => (dialogOpen = false)} data-testid="ui-dialog">
+			<div class="dialog-content" data-testid="ui-dialog-content">
+				<h3>Confirm action</h3>
+				<p>A centered modal: focus is trapped inside, Escape and a backdrop click both close it.</p>
+				<Row gap={4} justify="end">
+					<Button onclick={() => (dialogOpen = false)} data-testid="ui-dialog-cancel">Cancel</Button>
+					<Button variant="primary" onclick={() => (dialogOpen = false)} data-testid="ui-dialog-confirm">
+						Confirm
+					</Button>
+				</Row>
+			</div>
+		</Dialog>
+	</section>
+
+	<section>
+		<h2>PanelShell (one header row)</h2>
+		<!-- Title + toolbar + actions all compose into ONE header row (the Bar pusher pattern); the body
+		     composes a ScrollArea so it scrolls independently. The e2e asserts exactly one header. -->
+		<div class="shell-frame">
+			<PanelShell title="Parameters" data-testid="ui-panelshell">
+				{#snippet toolbar()}
+					<Row gap={2} data-testid="ui-panelshell-toolbar">
+						<Button size="sm">common</Button>
+						<Button size="sm">advanced</Button>
+					</Row>
+				{/snippet}
+				{#snippet actions()}
+					<IconButton size="sm" label="Panel settings" data-testid="ui-panelshell-actions">⚙</IconButton>
+				{/snippet}
+				<ScrollArea data-testid="ui-panelshell-body">
+					<Stack gap={2}>
+						{#each Array.from({ length: 24 }, (_, i) => i) as i (i)}
+							<div class="box">row {i}</div>
+						{/each}
+					</Stack>
+				</ScrollArea>
+			</PanelShell>
+		</div>
+	</section>
 </main>
 
 <style>
@@ -395,5 +474,44 @@
 		margin: 0;
 		color: var(--text-dim);
 		font-size: var(--fs-small);
+	}
+	/* Push the Popover trigger to the right edge so its overflow clamp is exercised. */
+	.pop-row {
+		display: flex;
+		justify-content: flex-end;
+	}
+	.pop-anchor {
+		display: inline-flex;
+	}
+	.pop-content {
+		display: flex;
+		flex-direction: column;
+		gap: var(--space-3);
+		max-width: 16rem;
+	}
+	.pop-content p,
+	.dialog-content p {
+		margin: 0;
+		color: var(--text-dim);
+		font-size: var(--fs-small);
+	}
+	.dialog-content {
+		display: flex;
+		flex-direction: column;
+		gap: var(--space-6);
+	}
+	.dialog-content h3 {
+		margin: 0;
+		font-size: var(--fs-strong);
+		color: var(--text);
+	}
+	/* Bounded frame so the PanelShell's ScrollArea body has a height to scroll within. */
+	.shell-frame {
+		height: 14rem;
+		width: 20rem;
+		max-width: 100%;
+		border: 1px solid var(--border);
+		border-radius: var(--radius-sm);
+		overflow: hidden;
 	}
 </style>

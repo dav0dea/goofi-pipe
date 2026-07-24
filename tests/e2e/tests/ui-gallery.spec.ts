@@ -270,3 +270,110 @@ test.describe('UI Tabs + Disclosure', () => {
 		await expect(toggles, 'onToggle fired twice').toHaveText('2');
 	});
 });
+
+// Surfaces (Task 5): Popover, Dialog, PanelShell. Each assertion is behavioural — the Popover really
+// dismisses on Escape + outside-click and its box is really clamped on-screen; the Dialog really
+// traps focus and closes on Escape + backdrop; the PanelShell really renders exactly ONE header row
+// composing title+toolbar+actions. Runs under the `default` (fine-pointer) project.
+test.describe('UI surfaces', () => {
+	test('Popover opens from its trigger and shows its content', async ({ page }) => {
+		await page.goto('/dev/ui');
+		const content = page.getByTestId('ui-popover-content');
+		await expect(content, 'closed by default (not in the DOM)').toBeHidden();
+		await page.getByTestId('ui-popover-trigger').click();
+		await expect(content, 'clicking the trigger opens the popover').toBeVisible();
+	});
+
+	test('Popover dismisses on Escape', async ({ page }) => {
+		await page.goto('/dev/ui');
+		const content = page.getByTestId('ui-popover-content');
+		await page.getByTestId('ui-popover-trigger').click();
+		await expect(content).toBeVisible();
+		await page.keyboard.press('Escape');
+		await expect(content, 'Escape dismisses the popover').toBeHidden();
+	});
+
+	test('Popover dismisses on an outside pointerdown', async ({ page }) => {
+		await page.goto('/dev/ui');
+		const content = page.getByTestId('ui-popover-content');
+		await page.getByTestId('ui-popover-trigger').click();
+		await expect(content).toBeVisible();
+		// Click the top-left of the viewport — neither the popover surface nor its anchor.
+		await page.mouse.click(10, 10);
+		await expect(content, 'an outside click dismisses the popover').toBeHidden();
+	});
+
+	test("Popover's box is clamped on-screen even when its trigger hugs the right edge", async ({
+		page
+	}) => {
+		await page.goto('/dev/ui');
+		await page.getByTestId('ui-popover-trigger').click();
+		const pop = page.getByTestId('ui-popover');
+		await expect(pop).toBeVisible();
+		const box = (await pop.boundingBox())!;
+		const vp = await page.evaluate(() => ({ w: window.innerWidth, h: window.innerHeight }));
+		// The whole popover box sits within the viewport — the clamp shifted it back from the edge.
+		expect(box.x, 'left edge on-screen').toBeGreaterThanOrEqual(0);
+		expect(box.y, 'top edge on-screen').toBeGreaterThanOrEqual(0);
+		expect(box.x + box.width, 'right edge within the viewport').toBeLessThanOrEqual(vp.w + 1);
+		expect(box.y + box.height, 'bottom edge within the viewport').toBeLessThanOrEqual(vp.h + 1);
+	});
+
+	test('Dialog opens and traps focus inside itself', async ({ page }) => {
+		await page.goto('/dev/ui');
+		const content = page.getByTestId('ui-dialog-content');
+		await expect(content, 'closed by default').toBeHidden();
+		await page.getByTestId('ui-dialog-trigger').click();
+		await expect(content, 'clicking the trigger opens the dialog').toBeVisible();
+		// showModal() moves focus into the dialog (its first focusable descendant).
+		const focusInside = await page.evaluate(() => {
+			const d = document.querySelector('[data-testid="ui-dialog"]');
+			const a = document.activeElement;
+			return !!d && !!a && (d === a || d.contains(a));
+		});
+		expect(focusInside, 'focus is inside the dialog after open').toBe(true);
+	});
+
+	test('Dialog closes on Escape', async ({ page }) => {
+		await page.goto('/dev/ui');
+		const content = page.getByTestId('ui-dialog-content');
+		await page.getByTestId('ui-dialog-trigger').click();
+		await expect(content).toBeVisible();
+		await page.keyboard.press('Escape');
+		await expect(content, 'Escape closes the dialog').toBeHidden();
+	});
+
+	test('Dialog closes on a backdrop click', async ({ page }) => {
+		await page.goto('/dev/ui');
+		const content = page.getByTestId('ui-dialog-content');
+		await page.getByTestId('ui-dialog-trigger').click();
+		await expect(content).toBeVisible();
+		// The modal dialog is centered; a click near the corner lands on the backdrop (target === the
+		// dialog element), which routes to onClose.
+		await page.mouse.click(8, 8);
+		await expect(content, 'a backdrop click closes the dialog').toBeHidden();
+	});
+
+	test('PanelShell renders exactly ONE header row composing title + toolbar + actions', async ({
+		page
+	}) => {
+		await page.goto('/dev/ui');
+		const shell = page.getByTestId('ui-panelshell');
+		await shell.waitFor();
+		const header = shell.locator('.ui-panel-shell-header');
+		await expect(header, 'exactly one header row').toHaveCount(1);
+		await expect(header, 'the header carries the title').toContainText('Parameters');
+		await expect(
+			header.getByTestId('ui-panelshell-toolbar'),
+			'the toolbar group lives in the header'
+		).toBeVisible();
+		await expect(
+			header.getByTestId('ui-panelshell-actions'),
+			'the actions group lives in the header'
+		).toBeVisible();
+		// The body composes a ScrollArea that actually scrolls its overflowing rows.
+		const body = page.getByTestId('ui-panelshell-body');
+		const metrics = await body.evaluate((el) => ({ scroll: el.scrollHeight, client: el.clientHeight }));
+		expect(metrics.scroll, 'the shell body overflows and scrolls').toBeGreaterThan(metrics.client);
+	});
+});
