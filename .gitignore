@@ -179,3 +179,6 @@ openai.key
 # the free-threaded 3.14t venv + the cargo config pointing pyo3 at it.
 .ftvenv/
 .cargo/config.toml
+
+# superpowers brainstorming visual companion (throwaway mockups)
+.superpowers/
