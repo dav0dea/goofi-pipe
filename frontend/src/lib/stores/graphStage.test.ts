@@ -51,13 +51,13 @@ describe('node lifecycle stage', () => {
 
 		fc.emit({
 			event: 'state_update',
-			payload: { node: 'n1', params: {}, output_subscribers: {}, stage: 'setup' }
+			payload: { node: 'n1', params: {}, stage: 'setup' }
 		});
 		expect(g.nodeById('n1')?.stage).toBe('setup');
 
 		fc.emit({
 			event: 'state_update',
-			payload: { node: 'n1', params: {}, output_subscribers: {}, stage: 'ready' }
+			payload: { node: 'n1', params: {}, stage: 'ready' }
 		});
 		expect(g.nodeById('n1')?.stage).toBe('ready');
 	});
@@ -74,7 +74,6 @@ describe('node lifecycle stage', () => {
 			payload: {
 				node: 'n1',
 				params: {},
-				output_subscribers: {},
 				stage: 'setup',
 				error: 'RuntimeError: setup boom'
 			}
@@ -84,7 +83,7 @@ describe('node lifecycle stage', () => {
 		// a healthy respawn's state push carries error=null -> the chip clears
 		fc.emit({
 			event: 'state_update',
-			payload: { node: 'n1', params: {}, output_subscribers: {}, stage: 'ready', error: null }
+			payload: { node: 'n1', params: {}, stage: 'ready', error: null }
 		});
 		expect(g.nodeById('n1')?.error).toBe(null);
 	});

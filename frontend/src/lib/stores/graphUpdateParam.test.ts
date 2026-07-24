@@ -38,7 +38,6 @@ function catalog(): NodeTypeInfo[] {
 						vmin: 0,
 						vmax: 1000,
 						doc: null,
-						save_param: true,
 						refreshable: false,
 						expression: null,
 						expression_enabled: false,
@@ -165,7 +164,6 @@ describe('GraphStore refresh spinner — the entry stays disabled until fresh op
 			payload: {
 				node: 'uidA',
 				params: {},
-				output_subscribers: {},
 				refreshed_params: [['audio', 'device']]
 			}
 		});
@@ -186,7 +184,6 @@ describe('GraphStore refresh spinner — the entry stays disabled until fresh op
 			payload: {
 				node: 'uidA',
 				params: {},
-				output_subscribers: {},
 				refreshed_params: [['lsl', 'source_name']]
 			}
 		});
@@ -199,7 +196,6 @@ describe('GraphStore refresh spinner — the entry stays disabled until fresh op
 			payload: {
 				node: 'uidA',
 				params: {},
-				output_subscribers: {},
 				refreshed_params: [['audio', 'device']]
 			}
 		});

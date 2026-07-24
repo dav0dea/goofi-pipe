@@ -30,7 +30,6 @@ pub fn describe_param(p: &Param, expr: Option<&ExprInfo>, doc: Option<&str>) -> 
     let mut m = Map::new();
     m.insert("value".into(), param_value_json(p));
     m.insert("doc".into(), doc.map(|d| json!(d)).unwrap_or(Value::Null));
-    m.insert("save_param".into(), json!(true));
     m.insert(
         "refreshable".into(),
         json!(matches!(p, Param::Str { refresh: true, .. })),

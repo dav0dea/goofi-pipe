@@ -49,7 +49,6 @@ function unknownParam(): ParamDescriptor {
 		type: 'unknown',
 		value: undefined,
 		doc: null,
-		save_param: true,
 		refreshable: false,
 		expression: null,
 		expression_enabled: false,

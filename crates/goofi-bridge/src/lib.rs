@@ -454,7 +454,6 @@ fn param_state_update_refreshed(g: &Graph, peer: Uid, refreshed: &[(&str, &str)]
         json!({
             "node": peer.to_hex(),
             "params": schemas::describe_node_params(g, peer),
-            "output_subscribers": {},
             "stage": g.node_stage(peer),
             "error": g.last_error(peer),
             "refreshed_params": refreshed.iter().map(|(g, n)| json!([g, n])).collect::<Vec<_>>(),

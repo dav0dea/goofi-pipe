@@ -3,7 +3,6 @@
 export interface BaseParam {
 	value: unknown;
 	doc: string | null;
-	save_param: boolean;
 	/** True when the node declared a refresh method for this param (device /
 	 * stream pickers) — the UI shows a ⟳ button that re-evaluates the options. */
 	refreshable: boolean;

@@ -24,7 +24,6 @@ function catalog(): NodeTypeInfo[] {
 		vmin: 0,
 		vmax: 1000,
 		doc: null,
-		save_param: true,
 		refreshable: false,
 		expression: null,
 		expression_enabled: false,

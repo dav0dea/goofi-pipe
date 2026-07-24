@@ -38,7 +38,6 @@ function catalog(): NodeTypeInfo[] {
 						vmin: 0,
 						vmax: 1000,
 						doc: null,
-						save_param: true,
 						refreshable: false,
 						expression: null,
 						expression_enabled: false,
@@ -135,7 +134,6 @@ describe('node-identity read cutover — nodes built from the doc when the catal
 					string,
 					Record<string, ParamDescriptor>
 				>,
-				output_subscribers: {},
 				stage: 'ready',
 				error: null
 			}

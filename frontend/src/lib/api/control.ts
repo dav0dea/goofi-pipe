@@ -281,7 +281,6 @@ export type ControlEvent =
 			payload: {
 				node: string;
 				params: Record<string, Record<string, ParamDescriptor>>;
-				output_subscribers: Record<string, number>;
 				stage?: NodeStage;
 				// The node's current error, carried on the (always-on, re-pushed) state
 				// plane so a lost first PROCESSING_ERROR still surfaces and a healthy
