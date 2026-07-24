@@ -4,10 +4,10 @@
   tracks the responsive type clamp); the ring colour is --accent over a --border track, both
   per-instance overridable (--spinner-size / --spinner-track / --spinner-color).
 
-  The global prefers-reduced-motion guard neutralises transitions, but a @keyframes loop needs its
-  OWN explicit stop — the guard below freezes the ring when the user asks for reduced motion.
-  Presentational: aria-hidden by default; pass an `aria-label` to voice a loading state. `class`
-  merged, `data-testid` (+ any attribute) forwarded.
+  The global prefers-reduced-motion rule already all-but-freezes the loop (duration 0.01ms, one
+  iteration); the guard below stops it outright so the ring's reduced-motion behaviour is self-evident
+  here and does not silently depend on that distant global. Presentational: aria-hidden by default;
+  pass an `aria-label` to voice a loading state. `class` merged, `data-testid` (+ any attribute) forwarded.
 -->
 <script module lang="ts">
 	export type SpinnerSize = 'sm' | 'md';
@@ -57,7 +57,7 @@
 			transform: rotate(360deg);
 		}
 	}
-	/* A keyframe loop is not covered by transition-only neutralisation, so stop it explicitly. */
+	/* Stop the loop outright — clearer here than leaning on the global reduced-motion longhands. */
 	@media (prefers-reduced-motion: reduce) {
 		.ui-spinner {
 			animation: none;
