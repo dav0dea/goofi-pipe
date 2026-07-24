@@ -26,6 +26,28 @@ test.describe('Inspector field gallery', () => {
 		await expect(range, 'the slider max auto-extends to span the live value').toHaveAttribute('max', '5');
 	});
 
+	// D-N7: the ParamField→NumberInput `scrub` pass-through. Every other numeric case commits via
+	// fill()+Enter, leaving the drag-to-scrub forwarding unexercised through the inspector. This drives
+	// a real pointer drag on the float sample's NumberInput and asserts the read-out climbs — pinning
+	// that ParamField renders the numeric NumberInput with `scrub` enabled. (The scrub arithmetic and
+	// pointer lifecycle are already P-tested against the primitive; this only proves the forwarding.)
+	test('numeric drag-scrub forwards through ParamField to the NumberInput (D-N7)', async ({ page }) => {
+		await page.goto('/dev/inspector');
+		const number = page.getByTestId('inspector-float').getByTestId('param-number');
+		const readout = page.getByTestId('inspector-float-value');
+		await expect(readout, 'seeded 0.3').toHaveText('0.3');
+		const box = (await number.boundingBox())!;
+		const cx = box.x + box.width / 2;
+		const cy = box.y + box.height / 2;
+		await page.mouse.move(cx, cy);
+		await page.mouse.down();
+		await page.mouse.move(cx + 40, cy); // rightward past the 3px threshold → the value climbs
+		await page.mouse.up();
+		await expect
+			.poll(async () => Number(await readout.textContent()), { message: 'the scrub committed a higher value' })
+			.toBeGreaterThan(0.3);
+	});
+
 	test('numeric (int) commits a typed integer', async ({ page }) => {
 		await page.goto('/dev/inspector');
 		const number = page.getByTestId('inspector-int').getByTestId('param-number');

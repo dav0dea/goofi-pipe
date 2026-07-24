@@ -68,6 +68,24 @@ test.describe('Inspector (real node)', () => {
 		await expect.poll(() => nodeName(page, uid)).toBe('my_osc');
 	});
 
+	// The commit/cancel dance against the REAL store (the node's name IS store-bound, unlike the
+	// gallery's offline sample): Escape must NOT commit. cancelRename nulls the captured uid so the
+	// unmount-blur it triggers is a no-op — if commitRename lost that guard, the blur would wrongly
+	// rename the node to the discarded draft.
+	test('Escape during a header rename cancels — the store name stays unchanged', async ({ page }) => {
+		const uid = await addAndSelect(page);
+		const original = await nodeName(page, uid);
+		await panel(page).getByTestId('node-name').click();
+		const input = panel(page).getByTestId('node-name-input');
+		await input.fill('DRAFT_DISCARD_ME'); // a draft DISTINCT from the current name
+		await input.press('Escape');
+		// The editor closes and the store name is unchanged — the unmount-blur committed nothing.
+		await expect(panel(page).getByTestId('node-name-input'), 'Escape closes the editor').toHaveCount(0);
+		await expect
+			.poll(() => nodeName(page, uid), { message: 'a cancel must never commit the draft' })
+			.toBe(original);
+	});
+
 	test('opens the docs disclosure to reveal the node docstring', async ({ page }) => {
 		await addAndSelect(page);
 		// The Disclosure keeps its body out of the DOM until opened.
