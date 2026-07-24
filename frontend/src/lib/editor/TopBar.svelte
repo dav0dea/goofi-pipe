@@ -130,7 +130,7 @@
 	}
 	.logo {
 		font-size: 18px;
-		color: var(--accent);
+		color: var(--text);
 		font-weight: 600;
 	}
 	.name {

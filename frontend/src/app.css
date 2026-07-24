@@ -315,6 +315,8 @@ textarea:focus {
 	:root {
 		--hit: 44px;
 		--splitter-size: 14px;
+		/* grow the header bar to fit the floored controls it hosts */
+		--panel-header-h: 44px;
 		/* raise the type floor to the iOS focus-zoom threshold */
 		font-size: clamp(14px, 0.9vw + 0.3vh, 16px);
 	}
