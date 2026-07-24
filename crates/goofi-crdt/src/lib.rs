@@ -219,50 +219,6 @@ impl GraphDoc {
         Some(cur)
     }
 
-    /// Write (or remove) one value at a `["nodes"|"instances", uid, …, leaf]` path, IN PLACE — the
-    /// generic merge-safe leaf write, the single-path counterpart of [`Self::reconcile_root`] and the
-    /// Rust twin of the browser's `graphDoc` setters. `Some(object)` reconciles that subtree,
-    /// `Some(scalar)` set-if-changed, `None` removes the key. No-op when the addressed ENTITY
-    /// (`root[uid]`) is absent — the manager owns entity existence, so a leaf write never mints a
-    /// phantom node/instance. Idempotent; intermediate maps below the entity are created on demand.
-    pub fn write_at(&mut self, path: &[&str], value: Option<&serde_json::Value>) {
-        // Need at least [root, uid, leaf]; only the two nested maps carry client-writable leaves.
-        if path.len() < 3 {
-            return;
-        }
-        let root = match path[0] {
-            "nodes" => &self.nodes,
-            "instances" => &self.instances,
-            _ => return,
-        };
-        let mut txn = self.doc.transact_mut();
-        let Some(entity) = root.get(&txn, path[1]).and_then(|v| v.cast::<MapRef>().ok()) else {
-            return; // absent entity → never mint a phantom
-        };
-        // Walk/create the intermediate maps between the entity and the leaf.
-        let mut cur = entity;
-        for seg in &path[2..path.len() - 1] {
-            cur = get_or_insert_map(&cur, &mut txn, seg);
-        }
-        let leaf = path[path.len() - 1];
-        match value {
-            None => {
-                if cur.get(&txn, leaf).is_some() {
-                    cur.remove(&mut txn, leaf);
-                }
-            }
-            Some(serde_json::Value::Object(obj)) => {
-                let child = get_or_insert_map(&cur, &mut txn, leaf);
-                reconcile_map(&mut txn, &child, obj);
-            }
-            Some(scalar) => {
-                if !scalar_unchanged(&cur, &txn, leaf, scalar) {
-                    insert_scalar(&cur, &mut txn, leaf, scalar);
-                }
-            }
-        }
-    }
-
     /// Replace the whole link set (wholesale; a fine-grained incremental diff comes later). Guarded
     /// idempotent: the re-mirror re-asserts this after every op, so when the set is UNCHANGED (the
     /// common case — links change far less often than params/positions) it must produce no doc ops.
@@ -724,36 +680,7 @@ mod tests {
         assert!(doc.instance_ids().is_empty(), "instance pruned");
     }
 
-    #[test]
-    fn reconcile_preserves_a_concurrent_leaf_write() {
-        // The no-clobber invariant via the generic path: a client commits a param leaf-write; an
-        // intervening re-mirror at the OLD value must not orphan it (recurse-in-place, never replace
-        // the entry map). Then applying the client's delta lands the new value.
-        use serde_json::json;
-        let mut server = GraphDoc::new();
-        let proj = |v: f64| json!({ "nodes": { "1": { "type": "Oscillator", "name": "osc",
-            "pos": {"x": 0.0, "y": 0.0}, "params": { "common": { "max_frequency": { "value": v } } } } },
-            "links": [], "instances": {} });
-        server.reconcile_root(&proj(30.0));
-
-        let mut client = GraphDoc::new();
-        client.apply_update(&server.diff(&client.state_vector())).unwrap();
-        // Client edits the value to 99 against the entry map it currently holds.
-        let cbefore = client.state_vector();
-        client.write_at(&["nodes", "1", "params", "common", "max_frequency", "value"], Some(&json!(99.0)));
-        let edit = client.diff(&cbefore);
-
-        // Interleaved re-mirror at the still-old 30, then the client's in-flight edit applies.
-        server.reconcile_root(&proj(30.0));
-        server.apply_update(&edit).unwrap();
-        assert_eq!(
-            pnum(&server, "1", "common", "max_frequency"),
-            Some(99.0),
-            "the concurrent param leaf-write survives the intervening re-mirror"
-        );
-    }
-
-    // ---- generic read (to_json / read_at) + generic single-path write (write_at) ----
+    // ---- generic read (to_json / read_at) ----
 
     #[test]
     fn to_json_and_read_at_expose_the_whole_doc_generically() {
@@ -780,56 +707,5 @@ mod tests {
     // Small shim so the test reads a path without repeating the join.
     fn read_at_val(doc: &GraphDoc, path: &[&str]) -> Option<serde_json::Value> {
         doc.read_at(path)
-    }
-
-    #[test]
-    fn write_at_sets_a_scalar_leaf_in_place() {
-        use serde_json::json;
-        let mut doc = GraphDoc::new();
-        doc.reconcile_root(&full_projection());
-        // A client edits one param value — the single-path counterpart of reconcile_root.
-        doc.write_at(&["nodes", "1", "params", "common", "max_frequency", "value"], Some(&json!(42.0)));
-        assert_eq!(pnum(&doc, "1", "common", "max_frequency"), Some(42.0));
-        // Idempotent: re-writing the same value is a no-op.
-        let before = doc.to_json();
-        doc.write_at(&["nodes", "1", "params", "common", "max_frequency", "value"], Some(&json!(42.0)));
-        assert_eq!(doc.to_json(), before, "re-writing the same leaf is a no-op");
-    }
-
-    #[test]
-    fn write_at_sets_and_clears_a_nested_object() {
-        use serde_json::json;
-        let mut doc = GraphDoc::new();
-        doc.reconcile_root(&full_projection());
-        // Set an expression binding (a nested object) on the plain param.
-        doc.write_at(
-            &["nodes", "1", "params", "common", "max_frequency", "expr"],
-            Some(&json!({ "source": "nd('x')", "enabled": true, "triggers": false })),
-        );
-        assert_eq!(pexpr_src(&doc, "1", "common", "max_frequency").as_deref(), Some("nd('x')"));
-        // Clear it with None — the key is removed.
-        doc.write_at(&["nodes", "1", "params", "common", "max_frequency", "expr"], None);
-        assert_eq!(pexpr_src(&doc, "1", "common", "max_frequency"), None);
-    }
-
-    #[test]
-    fn write_at_writes_a_node_position_and_an_instance_position() {
-        use serde_json::json;
-        let mut doc = GraphDoc::new();
-        doc.reconcile_root(&full_projection());
-        doc.write_at(&["nodes", "1", "pos"], Some(&json!({ "x": 111.0, "y": 222.0 })));
-        assert_eq!(npos(&doc, "nodes", "1"), Some([111.0, 222.0]));
-        doc.write_at(&["instances", "i1", "pos"], Some(&json!({ "x": 7.0, "y": 8.0 })));
-        assert_eq!(npos(&doc, "instances", "i1"), Some([7.0, 8.0]));
-    }
-
-    #[test]
-    fn write_at_never_mints_a_phantom_entity() {
-        use serde_json::json;
-        let mut doc = GraphDoc::new();
-        doc.reconcile_root(&full_projection());
-        // Writing under an ABSENT node/instance is a no-op (the manager owns entity existence).
-        doc.write_at(&["nodes", "ghost", "params", "g", "p", "value"], Some(&json!(1.0)));
-        assert!(!doc.node_ids().contains(&"ghost".to_string()), "no phantom node minted");
     }
 }
