@@ -9,20 +9,34 @@
 	color-scheme: dark;
 
 	--bg: #111111;
-	--bg-elev-1: #161616;
-	--bg-elev-2: #191919;
-	--bg-elev-3: #1f1f1f;
-	--surface-glass: rgba(25, 25, 25, 0.85);
-	--border: #242424;
-	--border-strong: #2c2c2c;
-	--text: #d0d0d0;
-	--text-dim: #888;
-	--text-faint: #606060;
+	/* Mid-grey elevation ladder (D5) — surface steps carry separation so 1px lines disappear.
+	   Exact values approved in the design mockup; each adjacent step ≥1.08:1 (see tokens.test.ts). */
+	--surface-1: #1c1c1c;
+	--surface-2: #262626;
+	--surface-3: #303030;
+	--surface-4: #3d3d3d;
+	/* Legacy aliases — every current --bg-elev-* consumer re-skins automatically; M renames call sites. */
+	--bg-elev-1: var(--surface-1);
+	--bg-elev-2: var(--surface-2);
+	--bg-elev-3: var(--surface-3);
+	--surface-glass: rgba(38, 38, 38, 0.85); /* translucent --surface-2 for menu backdrops */
+	/* Borders are a light hairline that reads AGAINST the lighter surfaces (never a dark groove).
+	   Most decorative borders are deleted in M; these must not invert while they exist. */
+	--border: #484848;
+	--border-strong: #565656;
+	--text: #d6d6d6;
+	--text-dim: #9a9a9a;
+	--text-muted: #7a7a7a;
+	/* --text-faint is retired; value-bridged to muted now so its 52 uses clear 3:1 with no edit.
+	   M renames the call sites to --text-muted and drops this line. */
+	--text-faint: #7a7a7a;
 	--accent: #50d0a0;
 	--accent-strong: #3fb88a;
 	--success: #50d0a0;
 	--warning: #f0c050;
 	--danger: #f06080;
+	--accent-fill: color-mix(in srgb, var(--accent) 18%, transparent);
+	--danger-fill: color-mix(in srgb, var(--danger) 16%, transparent);
 
 	/* node category palette — distinguishable on the #111 background and
 	   colour-blind safe at the saturations used here. */
