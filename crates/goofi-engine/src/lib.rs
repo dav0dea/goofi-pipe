@@ -305,6 +305,26 @@ impl Default for Graph {
     }
 }
 
+/// The present frames on each `multi` input slot, in wire order — the shape both execution
+/// tiers hand a node's `process` (inline here, or packed into a detached [`detached::Job`]).
+/// Absent wires are dropped, so a node sees only the frames that actually arrived.
+fn materialize_multis(entry: &NodeEntry) -> IndexMap<&'static str, Vec<Data>> {
+    entry
+        .multi_inputs
+        .iter()
+        .map(|(k, cells)| (*k, cells.iter().filter_map(|(_, _, o)| o.clone()).collect()))
+        .collect()
+}
+
+/// The "this node wants to run" predicate, shared by the tick's two execution sites and the
+/// pacer that decides how long to sleep before the next one. A pure source free-runs; a fresh
+/// trigger fires; `autotrigger` free-runs a node only when it has no *WIRED* trigger input
+/// (Python parity). The three callers MUST agree — the pacer sets the sleep while the other two
+/// decide who runs, so a term added to one alone means spinning hot or sleeping through work.
+fn wants_run(e: &NodeEntry, uid: &Uid, wired: &std::collections::HashSet<Uid>) -> bool {
+    e.trigger_pending || !e.has_trigger_inputs || (e.run_policy.autotrigger && !wired.contains(uid))
+}
+
 impl Graph {
     pub fn new() -> Graph {
         // Reference goofi-nodes so the linker keeps its inventory registrations.
@@ -547,13 +567,11 @@ impl Graph {
         type_name: &str,
         params: Option<ParamGroups>,
     ) -> Result<Uid, String> {
-        let seed = params.is_none();
-        let (manifest, params, node) = self.build_node(type_name, params)?;
-        let uid = self.insert_node(manifest, node, params);
-        if seed {
-            self.seed_default_expressions(uid, manifest);
-        }
-        Ok(uid)
+        // A fresh mint + an empty name is exactly what `add_node_at` treats as "pick them for me",
+        // so the two paths share one body. (An unknown type now burns the minted uid — harmless:
+        // uids are u64 and never user-visible.)
+        let uid = self.mint();
+        self.add_node_at(type_name, params, uid, "")
     }
 
     /// Instantiate a node at a SPECIFIC uid + display name — the undo/redo restoration path, so
@@ -1295,13 +1313,13 @@ impl Graph {
         dtype: goofi_core::SlotType,
         pos: [f64; 2],
     ) -> Result<subpatch::StubId, String> {
-        let s = self.scopes.get_mut(&scope).ok_or_else(|| format!("add_boundary: no such scope {scope}"))?;
-        let prefix = dir.name();
-        let mut n = 0;
-        while s.stubs.contains_key(&format!("{prefix}{n}")) {
-            n += 1;
+        if !self.scopes.contains_key(&scope) {
+            return Err(format!("add_boundary: no such scope {scope}"));
         }
-        let id = format!("{prefix}{n}");
+        // StubIds are persisted into the `.gfi`, so the two minting sites must agree forever —
+        // hence the shared `fresh_stub_id` rather than a second inline scan.
+        let id = self.fresh_stub_id(scope, dir);
+        let s = self.scopes.get_mut(&scope).expect("checked above");
         s.stubs.insert(id.clone(), subpatch::Stub { dir, dtype, inner: None, pos, name: id.clone() });
         Ok(id)
     }
@@ -2497,11 +2515,7 @@ impl Graph {
         let wired = self.wired_trigger_nodes();
         let mut soonest: Option<Duration> = None;
         for (uid, e) in &self.nodes {
-            // Same "wants to run" predicate the tick uses (minus a consumed trigger).
-            let wants_run = e.trigger_pending
-                || !e.has_trigger_inputs
-                || (e.run_policy.autotrigger && !wired.contains(uid));
-            if !wants_run {
+            if !wants_run(e, uid, &wired) {
                 continue;
             }
             let remaining = match e.run_policy.period() {
@@ -2583,18 +2597,11 @@ impl Graph {
                         ran.push(uid);
                     }
                 }
-                let wants_run = entry.trigger_pending
-                    || !entry.has_trigger_inputs
-                    || (entry.run_policy.autotrigger && !wired.contains(&uid));
                 let since_last = entry.last_run.map(|t| now.saturating_duration_since(t).as_secs_f64());
-                if entry.run_policy.should_run(since_last, wants_run) {
+                if entry.run_policy.should_run(since_last, wants_run(entry, &uid, &wired)) {
                     entry.last_run = Some(now);
                     entry.trigger_pending = false;
-                    let multis: IndexMap<&'static str, Vec<Data>> = entry
-                        .multi_inputs
-                        .iter()
-                        .map(|(k, cells)| (*k, cells.iter().filter_map(|(_, _, o)| o.clone()).collect()))
-                        .collect();
+                    let multis = materialize_multis(entry);
                     let job = detached::Job {
                         inputs: entry.inputs.clone(),
                         multis,
@@ -2618,13 +2625,8 @@ impl Graph {
                         if !set.contains(uid) || !matches!(e.exec, Execution::Inline(_)) {
                             return false;
                         }
-                        // A pure source free-runs; a fresh trigger fires; autotrigger
-                        // free-runs only a node with no *wired* trigger (Python parity).
-                        let wants_run = e.trigger_pending
-                            || !e.has_trigger_inputs
-                            || (e.run_policy.autotrigger && !wired.contains(uid));
                         let since_last = e.last_run.map(|t| now.saturating_duration_since(t).as_secs_f64());
-                        e.run_policy.should_run(since_last, wants_run)
+                        e.run_policy.should_run(since_last, wants_run(e, uid, &wired))
                     })
                     .map(|(uid, e)| {
                         e.last_run = Some(now);
@@ -2751,11 +2753,7 @@ fn run_node(entry: &mut NodeEntry) {
     // Materialize each multi slot's present frames in connection order for the node
     // (Arc-bump clones). Empty for nodes with no multi slots — the common case pays
     // nothing beyond an empty map.
-    let multis: IndexMap<&'static str, Vec<Data>> = entry
-        .multi_inputs
-        .iter()
-        .map(|(k, cells)| (*k, cells.iter().filter_map(|(_, _, o)| o.clone()).collect()))
-        .collect();
+    let multis = materialize_multis(entry);
     // A detached node runs on its own worker (see `tick_at`), never inline here.
     let Execution::Inline(node) = &mut entry.exec else { return };
     entry.last_error = execute_node(
