@@ -82,6 +82,17 @@ describe('scale tokens exist and are ordered', () => {
 	it('--font-sans is deleted (collapsed to --font-mono)', () => expect(css).not.toMatch(/--font-sans\s*:/));
 });
 
+describe('the success green is differentiated from the accent (D-M1)', () => {
+	// --success and --accent were byte-identical #50d0a0, so a selected+healthy node's accent ring
+	// and its success health dot read as one colour. M nudges --success to a distinct green.
+	it('--success is not the same colour as --accent', () => {
+		expect(token('success')).not.toBe(token('accent'));
+	});
+	it('--success and --accent are perceptually separated (>1.1:1)', () => {
+		expect(contrastRatio(token('success'), token('accent'))).toBeGreaterThan(1.1);
+	});
+});
+
 describe('category colour system is gone', () => {
 	it('no --cat-* tokens remain in app.css', () => {
 		expect(css).not.toMatch(/--cat-[a-z]+\s*:/);

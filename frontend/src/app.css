@@ -25,7 +25,10 @@
 	--text-muted: #7a7a7a;
 	--accent: #50d0a0;
 	--accent-strong: #3fb88a;
-	--success: #50d0a0;
+	/* A grass-green shifted off the mint --accent (D-M1) so "healthy/OK" reads distinct from
+	   "selected/accent" where they meet (a selected+healthy node's ring vs its health dot).
+	   Kept above the 3:1 floor on --surface-4; --success-fill color-mixes from it. */
+	--success: #6bdd8c;
 	--warning: #f0c050;
 	--danger: #f06080;
 	--accent-fill: color-mix(in srgb, var(--accent) 18%, transparent);
