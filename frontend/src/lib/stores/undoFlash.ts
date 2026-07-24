@@ -1,39 +1,19 @@
 /**
  * Post-undo/redo highlight pulse (backlog #19). After a replay reorients to the
- * affected nodes, briefly flash them. A node already on the canvas flashes at
- * once; one being re-created by the inverse/forward (e.g. undo of a delete) is
- * flashed only once its `node_added` echo lands — so the pulse starts when the
- * node actually appears, via `awaitEvent`, rather than racing the backend.
+ * affected nodes, briefly flash the ones already on the canvas.
  */
-import { awaitEvent } from '$lib/api/awaitEvent';
 import { flash } from './flash.svelte';
-import type { ControlEvent } from '$lib/api/control';
 import type { ExecutorDeps, NavContext } from './history.svelte';
-
-/** Window to wait for a re-created node to echo before giving up on its flash. */
-const ECHO_TIMEOUT_MS = 2000;
 
 export function pulseRestored(ctx: NavContext, deps: ExecutorDeps): void {
 	const names = new Set<string>();
 	for (const s of Object.values(ctx.selection)) for (const n of s.nodes) names.add(n);
 	if (!names.size) return;
 
+	// Nodes a replay *re-creates* are not flashed: undo/redo reach the client as a whole-doc
+	// re-mirror, with no per-node event to wait on. (The previous code awaited a `node_added`
+	// echo that a replay never emits, so it could only ever time out.)
 	for (const name of names) {
-		if (deps.graph.nodeById(name)) {
-			flash().pulse([name]);
-			continue;
-		}
-		// Re-created by the replay — flash when its node_added echo arrives. The
-		// selection set holds uids, so match the echo on its uid (identity), not
-		// its mutable display name.
-		void awaitEvent<ControlEvent>(
-			(cb) => deps.control.on(cb),
-			(ev) => ev.event === 'node_added' && (ev.payload as { uid?: string }).uid === name,
-			ECHO_TIMEOUT_MS
-		)
-			.then(() => flash().pulse([name]))
-			.catch(() => {
-				/* node never reappeared within the window — no flash */
-			});
+		if (deps.graph.nodeById(name)) flash().pulse([name]);
 	}
 }

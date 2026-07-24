@@ -5,7 +5,7 @@ import { workspace } from '$lib/workspace/workspace.svelte';
 import { flash } from './flash.svelte';
 import { pulseRestored } from './undoFlash';
 import type { NavContext } from './history.svelte';
-import type { NodeInstanceInfo, NodeTypeInfo } from '$lib/api/control';
+import type { NodeTypeInfo } from '$lib/api/control';
 import { nodesMap } from '$lib/crdt/graphDoc';
 import * as Y from 'yjs';
 
@@ -42,31 +42,13 @@ function docSeedNode(g: GraphStore, uid: string, type: string, name: string, pos
 	});
 }
 
-// uid is the identity; name is a separate, mutable display label. The fixture
-// keeps them DISTINCT so a matcher that compares the echo's display name to a
-// selection uid is caught.
-function nodeInfo(uid: string, name: string): NodeInstanceInfo {
-	return {
-		uid,
-		name,
-		type: 'Oscillator',
-		category: 'inputs',
-		doc: '',
-		input_slots: {},
-		output_slots: { out: 'ARRAY' },
-		params: {},
-		pos: [0, 0],
-		viewers: {},
-		membership: null,
-		error: null
-	};
-}
-
 describe('pulseRestored', () => {
-	it('pulses a present node immediately and an absent one once its node_added echoes (matched by uid)', async () => {
+	it('pulses the selected nodes that are on the canvas, and skips the ones that are not', () => {
 		const fc = new FakeControl();
 		const g = new GraphStore(fc);
 		g.nodeTypes = catalog(); // catalog present → the doc is authoritative for node identity
+		// uid is the identity, name a separate mutable display label — kept DISTINCT so a
+		// lookup that confuses the two is caught.
 		docSeedNode(g, 'uf_present', 'Oscillator', 'display-present', [0, 0]);
 
 		// Selection sets are keyed by uid.
@@ -79,13 +61,6 @@ describe('pulseRestored', () => {
 		pulseRestored(ctx, { control: fc, graph: g, workspace: workspace() });
 
 		expect(flash().active('uf_present')).toBe(true);
-		expect(flash().active('uf_absent')).toBe(false); // not in the graph yet
-
-		// The re-created node echoes with its uid AND a display name that differs
-		// from the uid — the flash must key on the uid, not the display name.
-		fc.emit({ event: 'node_added', payload: nodeInfo('uf_absent', 'display-absent') });
-		await Promise.resolve();
-		await Promise.resolve();
-		expect(flash().active('uf_absent')).toBe(true);
+		expect(flash().active('uf_absent')).toBe(false); // not in the graph — no flash, no throw
 	});
 });
