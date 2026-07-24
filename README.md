@@ -52,9 +52,9 @@ cargo run          # builds the SPA if needed, starts the server, prints the URL
 ```
 
 Flags: `--port N` (default 8000), `--bind HOST` (default 127.0.0.1),
-`--python-nodes DIR` / `--subproc-nodes DIR` / `--auto-nodes DIR`,
-`--subproc-python BIN`, `--list-nodes`. With no `--*-nodes` flag it auto-discovers
-`./nodes/` and routes each node to the tier it can run on.
+`--subproc-nodes DIR` / `--auto-nodes DIR`, `--subproc-python BIN`,
+`--list-nodes`. With no `--*-nodes` flag it auto-discovers `./nodes/` and routes
+each node to the tier it can run on.
 
 ### Python nodes
 
