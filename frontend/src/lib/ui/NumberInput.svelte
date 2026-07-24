@@ -114,7 +114,10 @@
 			detach();
 			if (active) {
 				scrubbing = false;
-				live.end();
+				// A scrub started on an already-focused input keeps focus; ending the latch there would
+				// let the idle effect re-sync `text` and clobber in-progress typed text. Only release the
+				// latch once focus has left (blur/Enter then drives commitText). `scrubbing` is already clear.
+				if (document.activeElement !== el) live.end();
 			} else {
 				el.focus(); // a click, not a drag → focus to type
 			}

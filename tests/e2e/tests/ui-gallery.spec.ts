@@ -274,6 +274,29 @@ test.describe('UI NumberInput drag-to-scrub', () => {
 		await scrub(page, 30);
 		expect(await readValue(page), 'a fresh scrub works after the cancel').toBeGreaterThan(atCancel);
 	});
+
+	// Finding 4: a scrub started on an ALREADY-FOCUSED input keeps focus, so it must keep the editing
+	// latch — otherwise the next external `value` change re-syncs the visible buffer and clobbers an
+	// in-progress typed edit (the echo-under-cursor bug `useLiveValue` exists to prevent). Pre-fix the
+	// scrub's pointerup ends the latch unconditionally, so the sibling Slider's change overwrites the
+	// typed text. RED here; GREEN once the release is gated on focus having left.
+	test('a scrub on a focused input keeps the edit latched against external echoes', async ({ page }) => {
+		await page.goto('/dev/ui');
+		const number = page.getByTestId('ui-compose-number');
+		await number.focus(); // focus to type FIRST (no pointer), so the scrub keeps focus
+		await scrub(page, 20); // scrub while focused — must not drop the latch on release
+		await number.fill('9'); // a typed edit that diverges from the committed value
+		// An external echo to the shared cutoff — the Slider's own oninput drives cutoff, dispatched
+		// WITHOUT focusing the Slider (a real `.fill()`/tap would blur the NumberInput and commit, which
+		// is a different path). While the input stays focused this echo must NOT re-sync the typed buffer.
+		await page.getByTestId('ui-compose-slider').locator('input[type=range]').evaluate((el) => {
+			const range = el as HTMLInputElement;
+			range.value = '0.7';
+			range.dispatchEvent(new Event('input', { bubbles: true }));
+		});
+		await expect(page.getByTestId('ui-compose-value'), 'the external echo landed on the shared value').toHaveText('0.7');
+		expect(await number.inputValue(), 'the in-progress typed edit survives the external echo').toBe('9');
+	});
 });
 
 // Tabs (the connected bar) + Disclosure (Task 4). The Tabs assertions verify the REAL connected-look
