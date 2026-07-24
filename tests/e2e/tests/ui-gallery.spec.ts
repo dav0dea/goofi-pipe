@@ -132,6 +132,15 @@ test.describe('UI Field family', () => {
 		await expect(page.getByTestId('ui-field-number')).toBeVisible();
 	});
 
+	test('a doc-less Field emits no title attribute (no spurious title="")', async ({ page }) => {
+		await page.goto('/dev/ui');
+		const field = page.getByTestId('ui-field-single'); // label="gain", no `doc`
+		await field.waitFor();
+		// Field must emit `title` only when `doc` (or a forwarded rest `title`) is set — a doc-less Field
+		// emitting title="" both litters the DOM and clobbers a consumer's own rest-forwarded title.
+		await expect(field, 'no spurious empty title on a doc-less Field').not.toHaveAttribute('title');
+	});
+
 	test("clicking a Field's label focuses its control (real <label for>)", async ({ page }) => {
 		await page.goto('/dev/ui');
 		const field = page.getByTestId('ui-field-single');

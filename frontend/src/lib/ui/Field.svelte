@@ -41,7 +41,7 @@
 	provideFieldControlId(controlId);
 </script>
 
-<div {...rest} class={`ui-field ${klass}`.trim()} title={doc ?? ''}>
+<div {...rest} class={`ui-field ${klass}`.trim()} title={doc ?? rest.title}>
 	<div class="ui-field-head">
 		<label class="ui-field-label" for={controlId}>{label}</label>
 		{#if adornment}
