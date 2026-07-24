@@ -177,7 +177,7 @@
 		align-items: center;
 		gap: 8px;
 		padding: 0 10px;
-		background: var(--surface-3);
+		background: var(--surface-2);
 		border-bottom: 1px solid var(--border);
 	}
 	.health {
@@ -186,7 +186,6 @@
 		border-radius: 50%;
 		background: var(--accent);
 		flex-shrink: 0;
-		box-shadow: 0 0 5px currentColor;
 	}
 	.name {
 		font-weight: 600;

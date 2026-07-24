@@ -81,9 +81,10 @@
 	   viewer plot is 233/φ ≈ 144 (a golden rectangle), making an open slot 7u —
 	   i.e. seven collapsed slots stack to one open viewer. */
 	/* UNIT-SYSTEM BOUNDARY (design D1): everything ABOVE here is chrome — size it in `rem` so it
-	   scales with the html clamp and the coarse-pointer floor. Everything from --node-* DOWN is the
-	   node canvas — a fixed-`px` spatial coordinate system mirrored in nodeMetrics.ts/snap.ts on the
-	   connector hot path. Do not convert the --node-* ladder to rem. */
+	   scales with the html clamp and the coarse-pointer floor. The four --node-* lines that follow
+	   are the node canvas coordinate system — fixed `px`, mirrored in nodeMetrics.ts/snap.ts on the
+	   connector hot path; do not convert them to rem. Chrome tokens (--shadow-*, --radius-*, the
+	   --z-* scale, --font-mono) resume immediately below them and are rem/unitless as usual. */
 	--node-w: 233px; /* standard node width */
 	--node-header: 36px; /* title-bar height (1.5u) */
 	--node-u: 24px; /* slot unit: collapsed slot + input connector pitch */
@@ -192,7 +193,7 @@ textarea {
 	border-radius: var(--radius-sm);
 	padding: 4px 8px;
 	outline: none;
-	transition: border-color 80ms ease;
+	transition: border-color var(--dur-fast) var(--ease);
 }
 input:focus,
 select:focus,

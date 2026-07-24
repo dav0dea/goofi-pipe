@@ -257,7 +257,7 @@
 		align-items: center;
 		gap: 8px;
 		padding: 0 10px;
-		background: var(--surface-3);
+		background: var(--surface-2);
 		border-bottom: 1px solid var(--border);
 		cursor: pointer;
 		user-select: none;
