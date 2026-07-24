@@ -37,3 +37,10 @@ export { useLiveValue, displayValue, type LiveValue } from './liveValue.svelte';
 export { default as Tabs } from './Tabs.svelte';
 export { default as Disclosure } from './Disclosure.svelte';
 export { resolveActive, nextIndex, type TabItem, type ArrowKey } from './tabsState';
+
+// Surfaces / overlays (Task 5): the anchored popover, the centered modal dialog, and the panel
+// header shell — plus the pure clamp the Popover positions against.
+export { default as Popover } from './Popover.svelte';
+export { default as Dialog } from './Dialog.svelte';
+export { default as PanelShell } from './PanelShell.svelte';
+export { clampToViewport, type AnchorRect, type Size, type Placement } from './clampToViewport';
