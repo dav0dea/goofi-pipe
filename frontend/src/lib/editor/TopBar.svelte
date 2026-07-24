@@ -5,6 +5,7 @@
 	import type { MenuItem } from '$lib/workspace/menu';
 	import ContextMenu from '$lib/workspace/ContextMenu.svelte';
 	import PerfHud from './PerfHud.svelte';
+	import { Button, IconButton, Badge } from '$lib/ui';
 
 	type Props = {
 		onAddNode: () => void;
@@ -44,9 +45,9 @@
 	<div class="brand">
 		<span class="logo">⟁</span>
 		<span class="name">goofi-pipe</span>
-		<span class="status" class:online={g.connected} class:offline={!g.connected}>
+		<Badge tone={g.connected ? 'success' : 'warning'}>
 			{g.connected ? 'connected' : 'connecting…'}
-		</span>
+		</Badge>
 		<PerfHud />
 		{#if g.savePath}
 			<span class="path" title={g.savePath}
@@ -62,34 +63,37 @@
 	{/if}
 
 	<div class="actions">
-		<button
-			class="ghost icon"
+		<IconButton
+			variant="ghost"
 			data-testid="topbar-undo"
 			disabled={!h.canUndo}
 			title={h.undoLabel ? `Undo ${h.undoLabel}` : 'Nothing to undo'}
-			aria-label="Undo"
-			onclick={() => void h.undo()}>↶</button
+			label="Undo"
+			onclick={() => void h.undo()}>↶</IconButton
 		>
-		<button
-			class="ghost icon"
+		<IconButton
+			variant="ghost"
 			data-testid="topbar-redo"
 			disabled={!h.canRedo}
 			title={h.redoLabel ? `Redo ${h.redoLabel}` : 'Nothing to redo'}
-			aria-label="Redo"
-			onclick={() => void h.redo()}>↷</button
+			label="Redo"
+			onclick={() => void h.redo()}>↷</IconButton
 		>
-		<button class="ghost" data-testid="topbar-add" onclick={onAddNode}>＋ Add node</button>
-		<button class="ghost" data-testid="topbar-fit" onclick={onFitView}>Fit</button>
+		<Button variant="ghost" data-testid="topbar-add" onclick={onAddNode}>＋ Add node</Button>
+		<Button variant="ghost" data-testid="topbar-fit" onclick={onFitView}>Fit</Button>
 		<div class="split">
-			<button class="ghost main" data-testid="topbar-save" onclick={onSave}>Save</button>
-			<button
-				class="ghost caret"
+			<Button variant="ghost" class="seg-main" data-testid="topbar-save" onclick={onSave}
+				>Save</Button
+			>
+			<IconButton
+				variant="ghost"
+				class="seg-caret"
 				data-testid="topbar-save-caret"
-				aria-label="Save options"
-				onclick={openSaveMenu}>▾</button
+				label="Save options"
+				onclick={openSaveMenu}>▾</IconButton
 			>
 		</div>
-		<button class="ghost" data-testid="topbar-load" onclick={onLoad}>Load…</button>
+		<Button variant="ghost" data-testid="topbar-load" onclick={onLoad}>Load…</Button>
 	</div>
 </div>
 
@@ -136,21 +140,6 @@
 	.name {
 		font-weight: 600;
 	}
-	.status {
-		font-size: 10px;
-		padding: 2px 6px;
-		border-radius: 4px;
-		text-transform: uppercase;
-		letter-spacing: 0.04em;
-	}
-	.status.online {
-		background: color-mix(in srgb, var(--success) 20%, transparent);
-		color: var(--success);
-	}
-	.status.offline {
-		background: color-mix(in srgb, var(--warning) 20%, transparent);
-		color: var(--warning);
-	}
 	.path {
 		color: var(--text-dim);
 		font-family: var(--font-mono);
@@ -162,26 +151,18 @@
 		gap: 4px;
 		flex: 0 0 auto;
 	}
-	.icon {
-		font-size: 15px;
-		line-height: 1;
-		padding: 4px 7px;
-	}
-	.icon:disabled {
-		opacity: 0.35;
-		cursor: default;
-	}
+	/* Save split — two adjacent Buttons sharing a seam: the touching corners are
+	   squared so the main action + its caret read as one segmented control. */
 	.split {
 		position: relative;
-		display: flex;
-		align-items: center;
+		display: inline-flex;
+		align-items: stretch;
 	}
-	.split .main {
+	.split :global(.seg-main) {
 		border-top-right-radius: 0;
 		border-bottom-right-radius: 0;
 	}
-	.split .caret {
-		padding: 0 5px;
+	.split :global(.seg-caret) {
 		border-top-left-radius: 0;
 		border-bottom-left-radius: 0;
 	}
