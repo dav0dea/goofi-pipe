@@ -44,8 +44,48 @@
 		}, 80);
 	}
 
-	// The fx commit callback the contract requires; wired for real in N-Task 3 (fx is off throughout).
+	// The fx commit callback the contract requires; the non-expression samples above never enable it.
 	const noExpr = (): void => {};
+
+	// --- fx (expression) sample — starts OFF; every expression flag is a mutable read-out so the e2e
+	// observes each toggle/commit. onSetExpression writes the flags the way the store would. ---
+	let fxValue = $state(0.5);
+	let fxExpr = $state<string | null>(null);
+	let fxEnabled = $state(false);
+	let fxTriggers = $state(false);
+
+	function fxSetExpression(
+		expression: string | null,
+		opts?: { enabled?: boolean; triggers_process?: boolean }
+	): void {
+		fxExpr = expression;
+		if (opts?.enabled !== undefined) fxEnabled = opts.enabled;
+		if (opts?.triggers_process !== undefined) fxTriggers = opts.triggers_process;
+	}
+
+	const fxDesc = $derived<ParamDescriptor>({
+		...fxOff,
+		type: 'float',
+		value: fxValue,
+		vmin: 0,
+		vmax: 1,
+		doc: 'gain',
+		expression: fxExpr,
+		expression_enabled: fxEnabled,
+		expression_triggers_process: fxTriggers
+	});
+
+	// A fixed errored expression — the fx chip goes danger-toned, the message lands in the error row.
+	const fxErrorDesc: ParamDescriptor = {
+		...fxOff,
+		type: 'float',
+		value: 0,
+		vmin: 0,
+		vmax: 1,
+		expression: 'nd("missing").out.data',
+		expression_enabled: true,
+		expression_error: 'NameError: name "nd" is not defined'
+	};
 
 	// Descriptors are derived so a commit flows back into the control (echo) as well as the read-out.
 	const floatDesc = $derived<ParamDescriptor>({
@@ -189,6 +229,35 @@
 				onCommit={() => {}}
 				onSetExpression={noExpr}
 				data-testid="inspector-unknown"
+			/>
+		</div>
+	</section>
+
+	<section>
+		<h2>fx — expression binding (off → on)</h2>
+		<div class="form">
+			<ParamField
+				paramName="gain"
+				descriptor={fxDesc}
+				onCommit={(v) => (fxValue = Number(v))}
+				onSetExpression={fxSetExpression}
+				data-testid="inspector-fx"
+			/>
+			<span class="readout" data-testid="inspector-fx-expr">{fxExpr ?? 'null'}</span>
+			<span class="readout" data-testid="inspector-fx-enabled">{fxEnabled}</span>
+			<span class="readout" data-testid="inspector-fx-triggers">{fxTriggers}</span>
+		</div>
+	</section>
+
+	<section>
+		<h2>fx — expression error</h2>
+		<div class="form">
+			<ParamField
+				paramName="broken"
+				descriptor={fxErrorDesc}
+				onCommit={() => {}}
+				onSetExpression={noExpr}
+				data-testid="inspector-fx-error"
 			/>
 		</div>
 	</section>
