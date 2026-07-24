@@ -196,23 +196,21 @@ fn register_auto(state: &AppState, dir: Option<&str>, subproc_python: &str) -> V
     let (mut n_in, mut n_sub, mut n_bad) = (0u32, 0u32, 0u32);
     let mut names = Vec::new();
     for path in sorted_dir(dir) {
-        let Ok(source) = std::fs::read_to_string(&path) else { continue };
-        let safe = ft
-            .as_deref()
-            .map(|ft| goofi_subproc::gil_safe(ft, &source).unwrap_or(false))
-            .unwrap_or(false);
-        if safe {
-            if let Some(t) = ft.as_deref().and_then(|ftp| goofi_py::discover_one(&path, ftp)) {
+        // ONE free-threaded probe answers both questions: it imports the module and constructs the
+        // class (so a dep missing on the FT interpreter shows up as a failed probe), then reports
+        // whether the GIL is still disabled — `gil_safe` IS the routing gate.
+        if let goofi_py::Discovery::Found(d) = ft.as_deref().map_or(goofi_py::Discovery::Skip, |ftp| goofi_py::probe(&path, ftp)) {
+            if d.gil_safe {
+                let t = goofi_py::node_type_from(d);
                 if g.register_dyn_type(t.manifest, t.factory) {
                     n_in += 1;
                     names.push(format!("{} (in-proc)", t.manifest.type_name));
                 }
                 continue;
             }
-            // `gil_safe` judged the SOURCE safe (its imports left the GIL disabled), but the FT
-            // probe couldn't introspect the node — typically a dep present on the subproc python
-            // but absent on the FT interpreter (gil_safe execs in try/except and cannot see an
-            // import failure). Fall through to the subprocess tier rather than dropping the node.
+            // Loading it re-enabled the GIL — quarantine it to the subprocess tier below. (So does a
+            // failed FT probe: typically a dep present on the subproc python but absent on the FT
+            // interpreter, which must fall through rather than drop the node.)
         }
         // One probe, both outcomes: the subprocess tier is the last chance, so its result decides
         // between "registered" and "listed as unavailable".

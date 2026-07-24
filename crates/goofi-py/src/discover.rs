@@ -57,13 +57,28 @@ pub struct PyNodeType {
     pub factory: NodeFactory,
 }
 
+/// Probe one file for this tier, reporting all three outcomes. A caller routing between tiers uses
+/// this rather than [`discover_one`]: the [`Discovered`] it yields carries `gil_safe`, which IS the
+/// routing gate (the probe imported the module and constructed the class on `ft_python`, then read
+/// whether the GIL is still disabled) — so one spawn answers both "can it load here" and "may it".
+pub fn probe(path: &Path, ft_python: &str) -> Discovery {
+    probe_discover_one(path, ft_python, "python", Isolation::InProcess)
+}
+
+/// Turn a probe-[`Discovered`] into an in-process [`PyNodeType`]. Public so a caller that already
+/// ran [`probe`] can build the type without a second spawn (mirrors `goofi_subproc::node_type_from`).
+pub fn node_type_from(d: Discovered) -> PyNodeType {
+    let path = d.source.clone();
+    py_type_from_discovered(&path, d)
+}
+
 /// Build an in-process Python node type from a single file by running the `goofi.introspect`
 /// probe on `ft_python` (a free-threaded interpreter with `goofi` importable): the probe's
 /// rich manifest gives multi-slot + params; the factory builds a class-contract [`PyNode`]
 /// bound to that manifest's slot names. `None` if it is not a node file or the probe fails
 /// (missing dep / no `Node` subclass) — greyed out, never a catalog crash.
 pub fn discover_one(path: &Path, ft_python: &str) -> Option<PyNodeType> {
-    let Discovery::Found(d) = probe_discover_one(path, ft_python, "python", Isolation::InProcess) else {
+    let Discovery::Found(d) = probe(path, ft_python) else {
         return None;
     };
     Some(py_type_from_discovered(path, d))

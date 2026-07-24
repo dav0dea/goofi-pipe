@@ -45,6 +45,54 @@ fn test_python() -> String {
     )
 }
 
+/// The FREE-THREADED interpreter (the in-process tier's host), for the routing gate's SAFE half:
+/// an explicit override, else the repo's `.ftvenv`. Panics rather than skipping — this gate decides
+/// which tier every Python node lands on, so leaving a branch uncovered is not acceptable.
+fn ft_python() -> String {
+    let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let mut cands: Vec<String> = Vec::new();
+    if let Ok(p) = std::env::var("GOOFI_FT_PYTHON") {
+        if !p.is_empty() {
+            cands.push(p);
+        }
+    }
+    cands.push(repo.join(".ftvenv/bin/python").to_string_lossy().into_owned());
+    for cand in &cands {
+        // Free-threaded builds are exactly the ones where sys._is_gil_enabled() is False.
+        let ft = std::process::Command::new(cand)
+            .args(["-c", "import sys; sys.exit(0 if not sys._is_gil_enabled() else 1)"])
+            .env_remove("PYTHONPATH")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        if ft {
+            return cand.clone();
+        }
+    }
+    panic!(
+        "no free-threaded python found (tried {cands:?}). Provision one with \
+         ./scripts/provision-goofi-py.sh, or set GOOFI_FT_PYTHON."
+    )
+}
+
+/// The GIL interpreter (the subprocess tier's host) — the repo's `.venv`.
+fn gil_python() -> String {
+    let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let p = repo.join(".venv/bin/python");
+    let ok = std::process::Command::new(&p)
+        .args(["-c", "import goofi"])
+        .env_remove("PYTHONPATH")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+    assert!(ok, "no `.venv` python with goofi importable ({}). Run ./scripts/provision-goofi-py.sh", p.display());
+    p.to_string_lossy().into_owned()
+}
+
 fn fixtures() -> std::path::PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures")
 }
@@ -145,4 +193,23 @@ fn every_param_kind_carries_its_doc_across_the_probe() {
     assert_eq!(doc("gain"), Some("how loud"));
     assert_eq!(doc("enabled"), Some("whether to run"));
     assert_eq!(doc("mode"), Some("which mode"));
+}
+
+#[test]
+fn the_probe_itself_is_the_gil_routing_gate() {
+    // `Discovered.gil_safe` is the ONE oracle deciding which tier a Python node runs on: the probe
+    // interpreter imports the module, constructs the class, and reports whether the GIL is still
+    // disabled afterwards. Both directions are pinned, since a wrong answer either quarantines a
+    // fast node forever or re-enables the GIL process-wide for every other in-process node.
+    let node = fixtures().join("negate.py");
+
+    let Discovery::Found(ft) = discover_one(&node, &ft_python(), "python", Isolation::InProcess) else {
+        panic!("negate.py discovers on the free-threaded interpreter")
+    };
+    assert!(ft.gil_safe, "a free-threaded probe whose imports left the GIL disabled → in-process tier");
+
+    let Discovery::Found(gil) = discover_one(&node, &gil_python(), "python", Isolation::Subprocess) else {
+        panic!("negate.py discovers on the GIL interpreter")
+    };
+    assert!(!gil.gil_safe, "a GIL interpreter can never host in-process → subprocess tier");
 }

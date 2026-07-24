@@ -299,46 +299,6 @@ impl Drop for RemoteNode {
 // safe to host in-process (free-threaded) or must be quarantined to a subprocess.
 // ---------------------------------------------------------------------------
 
-/// Probe whether running `source` (a node's module-level code — chiefly its
-/// imports) leaves the interpreter's GIL DISABLED.
-///
-/// The probe runs in an ISOLATED subprocess on purpose: importing a C-extension
-/// that lacks `Py_MOD_GIL_NOT_USED` silently re-enables the GIL *process-wide*
-/// (the free-threaded footgun), so the check must never touch the host
-/// interpreter that other in-process nodes share.
-///
-/// Returns `true` when `python` is free-threaded and the source's imports left
-/// the GIL disabled — i.e. the node is safe to run in-process. Returns `false`
-/// when the GIL is (or became) enabled, meaning the node must be routed to the
-/// subprocess tier. A non-free-threaded interpreter (no `sys._is_gil_enabled`)
-/// naturally reports enabled → `false`.
-pub fn gil_safe(python: &str, source: &str) -> std::io::Result<bool> {
-    const PROBE: &str = r#"
-import sys, os
-try:
-    exec(compile(os.environ.get('GOOFI_PROBE_SRC', ''), '<node>', 'exec'), {})
-except Exception:
-    pass  # an import *error* is a separate concern; here we only judge GIL state
-enabled = sys._is_gil_enabled() if hasattr(sys, '_is_gil_enabled') else True
-sys.stdout.write('0' if not enabled else '1')
-sys.stdout.flush()
-"#;
-    let out = Command::new(python)
-        .arg("-c")
-        .arg(PROBE)
-        .env("GOOFI_PROBE_SRC", source)
-        // Strip a host `PYTHONPATH` so the probe judges the target interpreter's OWN imports,
-        // not ones leaked in from a cross-version site-packages. Mirrors the child spawn + the
-        // introspection probe.
-        .env_remove("PYTHONPATH")
-        .stdin(Stdio::null())
-        .stderr(Stdio::null())
-        .output()?;
-    // Exactly "0" means the GIL stayed disabled → safe. Anything else (enabled,
-    // empty output, a crash) is treated as unsafe → quarantine to subprocess.
-    Ok(out.status.success() && out.stdout.trim_ascii() == b"0")
-}
-
 // ---------------------------------------------------------------------------
 // Discovery — turn a directory of `goofi.Node` files into subprocess node types the
 // engine hosts via `register_dyn_type`. Uses the SAME probe-based discoverer as the
@@ -927,53 +887,6 @@ class Slow(goofi.Node):
         assert_eq!(got[1], 2.0, "1 * 2");
         assert_eq!(got[10], 20.0, "10 * 2");
         assert_eq!(got[n - 1], (n - 1) as f32 * 2.0, "last element doubled");
-    }
-
-    /// The free-threaded interpreter, for the SAFE half of the routing gate: an explicit
-    /// override, else the repo's `.ftvenv`. Panics rather than skipping — this gate decides which
-    /// tier every Python node lands on, so leaving its true branch uncovered is not acceptable.
-    fn require_ft_python() -> String {
-        let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-        let mut cands: Vec<String> = Vec::new();
-        if let Ok(p) = std::env::var("GOOFI_FT_PYTHON") {
-            if !p.is_empty() {
-                cands.push(p);
-            }
-        }
-        cands.push(repo.join(".ftvenv/bin/python").to_string_lossy().into_owned());
-        for cand in &cands {
-            // Free-threaded builds are exactly the ones where sys._is_gil_enabled() is False.
-            let ft = Command::new(cand)
-                .args(["-c", "import sys; sys.exit(0 if not sys._is_gil_enabled() else 1)"])
-                .env_remove("PYTHONPATH")
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .status()
-                .map(|s| s.success())
-                .unwrap_or(false);
-            if ft {
-                return cand.clone();
-            }
-        }
-        panic!(
-            "no free-threaded python found (tried {cands:?}). Provision one with \
-             ./scripts/provision-goofi-py.sh, or set GOOFI_FT_PYTHON."
-        )
-    }
-
-    #[test]
-    fn gil_safe_distinguishes_free_threaded_from_gil_interpreters() {
-        // This gate decides which tier a Python node runs on, so BOTH directions are pinned.
-        let gil = require_python();
-        assert!(
-            !gil_safe(&gil, "import numpy").unwrap(),
-            "a GIL interpreter must be judged unsafe for in-process hosting"
-        );
-
-        // A free-threaded interpreter importing an FT-safe dep keeps the GIL disabled → SAFE.
-        let ft = require_ft_python();
-        assert!(gil_safe(&ft, "import numpy").unwrap(), "free-threaded + FT-safe deps must be judged safe");
-        assert!(gil_safe(&ft, "x = 1\n").unwrap(), "a bare source is trivially safe on a free-threaded build");
     }
 
     #[test]
