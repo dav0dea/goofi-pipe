@@ -246,7 +246,7 @@ processes outlive the test and corrupt every later latency measurement.
 |---|---|
 | `api/` | transport clients: `control.ts` (commands + events + session id), `data.ts`/`dataWorker.ts` (binary stream, off-thread decode), `frames.ts` (rAF paint coalescer), `perfStats`/`rateMeter`. |
 | `crdt/` | the client replica: `SyncClient` (read-only) + the doc readers. |
-| `codec/` | the TS port of the GOOF frame decoder (incl. float16). |
+| `codec/` | the TS port of the GOOF frame decoder (arrays are always f32). |
 | `stores/` | reactive state (Svelte 5 runes): `graph.svelte.ts` (doc-authoritative mirror), `history.svelte.ts` (one linear client stack; graph steps delegate to the manager), `selection`, `ui`, `console`, `flash`, `logStream`. |
 | `editor/` | the Svelte Flow canvas: `GoofiNode.svelte` (every node, incl. sub-patch instances), `snap.ts` + `nodeMetrics.ts`, placement, boundary nodes. |
 | `viewers/` | one component per viewer kind + `ViewerFeed` (subscribe lifecycle), `capacity.ts` (emits the backend-shaped ViewSpec), `decimate.ts`, `imageGL.ts`. |

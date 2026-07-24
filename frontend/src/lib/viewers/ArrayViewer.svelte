@@ -315,22 +315,21 @@
 			return; // higher-D handled by parent fallback
 		}
 
-		// Hand typed arrays straight to uPlot — no per-frame number[] copy. BigInt
-		// dtypes (i8/u8) aren't numbers to uPlot, so only those fall back to a copy.
+		// Hand typed arrays straight to uPlot — no per-frame number[] copy (the wire is
+		// f32-only, so `values` is always a Float32Array of real numbers).
 		const v = arr.values as ArrayLike<number> & {
 			subarray?: (start: number, end: number) => ArrayLike<number>;
 		};
-		const isBig = flatLen > 0 && typeof v[0] === 'bigint';
 		const ySeries: ArrayLike<number>[] = [];
 		if (nSeries === 1) {
-			ySeries.push(isBig ? Array.from(v, Number) : v);
+			ySeries.push(v);
 		} else {
 			for (let c = 0; c < nSeries; c++) {
-				if (!isBig && v.subarray) {
+				if (v.subarray) {
 					ySeries.push(v.subarray(c * m, (c + 1) * m));
 				} else {
 					const row = new Array<number>(m);
-					for (let i = 0; i < m; i++) row[i] = Number(v[c * m + i]);
+					for (let i = 0; i < m; i++) row[i] = v[c * m + i];
 					ySeries.push(row);
 				}
 			}

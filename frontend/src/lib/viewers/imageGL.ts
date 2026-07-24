@@ -7,12 +7,12 @@
  * normalization, and — by sizing the drawing buffer to the element's CSS box —
  * the GPU downsamples an HD frame to the ~70× fewer on-screen pixels.
  *
- * Handles the high-value cases: uint8 RGB/RGBA (HD video) and float/uint8
- * grayscale (heatmaps). Float RGB and gray+alpha fall back to the 2D path in
- * ImageViewer (rare, and RGB32F textures aren't core-guaranteed). Returns null
- * from tryCreate() when WebGL2 is unavailable so the caller degrades to 2D.
+ * The wire is f32-only, so every texture here is a float texture. Grayscale (R32F)
+ * and RGBA (RGBA32F) go through the GPU; RGB and gray+alpha fall back to the 2D path
+ * in ImageViewer (RGB32F is not core-guaranteed). Returns null from tryCreate() when
+ * WebGL2 is unavailable so the caller degrades to 2D.
  */
-import { isFloatDtype, isU8Dtype } from '$lib/codec/decode';
+import { isFloatDtype } from '$lib/codec/decode';
 
 const VERT = `#version 300 es
 const vec2 verts[3] = vec2[3](vec2(-1.0, -1.0), vec2(3.0, -1.0), vec2(-1.0, 3.0));
@@ -32,11 +32,10 @@ uniform sampler2D u_lut;
 uniform int u_mode;          // 0 = grayscale+colormap, 1 = rgb, 2 = rgba
 uniform float u_lo;
 uniform float u_span;
-uniform float u_sampleScale; // 255 for uint8 gray (sample is normalized), 1 for float
 out vec4 outColor;
 void main() {
 	if (u_mode == 0) {
-		float g = texture(u_tex, v_uv).r * u_sampleScale;
+		float g = texture(u_tex, v_uv).r;
 		float t = clamp((g - u_lo) / u_span, 0.0, 1.0);
 		outColor = vec4(texture(u_lut, vec2(t, 0.5)).rgb, 1.0);
 	} else if (u_mode == 1) {
@@ -55,20 +54,14 @@ export interface RenderOpts {
 	cssH: number;
 }
 
-/** Whether the GL path supports a given (channels, dtype). The rest fall to 2D.
- *
- * Only uint8 and float32/64 are handled: other integer dtypes (u2/i2/u4/i4)
- * would need different texture types than the UNSIGNED_BYTE the renderer uploads
- * (wrong normalization otherwise), and i8/u8 decode to BigInt arrays which
- * texImage2D rejects outright. The 2D path coerces all of those via Number(). */
+/** Whether the GL path supports a given (channels, dtype). The rest fall to 2D. */
 export function glSupports(c: number, dtype: string): boolean {
-	const isFloat = isFloatDtype(dtype);
-	const isU8 = isU8Dtype(dtype);
-	if (!isFloat && !isU8) return false;
-	if (c === 1) return true; // R8 / R32F
-	if (c === 3) return !isFloat; // RGB8 (RGB32F not core-guaranteed)
-	if (c === 4) return true; // RGBA8 / RGBA32F
-	return false; // c === 2 (gray+alpha)
+	if (!isFloatDtype(dtype)) return false; // the wire is f32-only; anything else is a bug upstream
+	if (c === 1) return true; // R32F
+	if (c === 4) return true; // RGBA32F
+	// KNOWN PERF GAP: c === 3 (RGB video) always falls to the slow 2D path, because RGB32F is not
+	// a core-guaranteed renderable/filterable format. Tracked separately from the f32 fold.
+	return false; // c === 2 (gray+alpha), c === 3 (RGB)
 }
 
 function compile(gl: WebGL2RenderingContext, type: number, src: string): WebGLShader | null {
@@ -91,7 +84,6 @@ export class GLImageRenderer {
 	private uMode: WebGLUniformLocation | null;
 	private uLo: WebGLUniformLocation | null;
 	private uSpan: WebGLUniformLocation | null;
-	private uScale: WebGLUniformLocation | null;
 	private floatLinear: boolean;
 	private lutName = '';
 
@@ -105,7 +97,6 @@ export class GLImageRenderer {
 		this.uMode = gl.getUniformLocation(prog, 'u_mode');
 		this.uLo = gl.getUniformLocation(prog, 'u_lo');
 		this.uSpan = gl.getUniformLocation(prog, 'u_span');
-		this.uScale = gl.getUniformLocation(prog, 'u_sampleScale');
 		gl.uniform1i(gl.getUniformLocation(prog, 'u_tex'), 0);
 		gl.uniform1i(gl.getUniformLocation(prog, 'u_lut'), 1);
 		gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
@@ -137,14 +128,7 @@ export class GLImageRenderer {
 		return new GLImageRenderer(gl, prog);
 	}
 
-	render(
-		values: ArrayLike<number>,
-		w: number,
-		h: number,
-		c: number,
-		isFloat: boolean,
-		opts: RenderOpts
-	): void {
+	render(values: ArrayLike<number>, w: number, h: number, c: number, opts: RenderOpts): void {
 		const gl = this.gl;
 		const canvas = gl.canvas as HTMLCanvasElement;
 		// Drawing buffer = the data scaled to fit the on-screen box, preserving
@@ -159,39 +143,18 @@ export class GLImageRenderer {
 		}
 
 		const mode = c === 1 ? 0 : c === 3 ? 1 : 2;
-		let internal: number, format: number, type: number;
-		if (isFloat) {
-			type = gl.FLOAT;
-			if (c === 1) {
-				internal = gl.R32F;
-				format = gl.RED;
-			} else {
-				internal = gl.RGBA32F;
-				format = gl.RGBA;
-			}
-		} else {
-			type = gl.UNSIGNED_BYTE;
-			if (c === 1) {
-				internal = gl.R8;
-				format = gl.RED;
-			} else if (c === 3) {
-				internal = gl.RGB8;
-				format = gl.RGB;
-			} else {
-				internal = gl.RGBA8;
-				format = gl.RGBA;
-			}
-		}
+		// f32-only wire → always a float texture (`glSupports` admits c === 1 and c === 4).
+		const internal = c === 1 ? gl.R32F : gl.RGBA32F;
+		const format = c === 1 ? gl.RED : gl.RGBA;
 
 		gl.activeTexture(gl.TEXTURE0);
 		gl.bindTexture(gl.TEXTURE_2D, this.tex);
-		const filter = !isFloat || this.floatLinear ? gl.LINEAR : gl.NEAREST;
+		const filter = this.floatLinear ? gl.LINEAR : gl.NEAREST;
 		gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, filter);
 		gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, filter);
 		gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
 		gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-		// ArrayBufferView upload — Uint8Array for u1, Float32Array for f4, etc.
-		gl.texImage2D(gl.TEXTURE_2D, 0, internal, w, h, 0, format, type, values as unknown as ArrayBufferView);
+		gl.texImage2D(gl.TEXTURE_2D, 0, internal, w, h, 0, format, gl.FLOAT, values as unknown as ArrayBufferView);
 
 		if (mode === 0) {
 			if (this.lutName !== opts.colormap) {
@@ -204,7 +167,6 @@ export class GLImageRenderer {
 			gl.useProgram(this.prog);
 			gl.uniform1f(this.uLo, opts.lo);
 			gl.uniform1f(this.uSpan, span);
-			gl.uniform1f(this.uScale, isFloat ? 1 : 255);
 		}
 		gl.useProgram(this.prog);
 		gl.uniform1i(this.uMode, mode);

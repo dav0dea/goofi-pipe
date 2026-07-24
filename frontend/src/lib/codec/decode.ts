@@ -1,7 +1,7 @@
 /**
  * TypeScript port of goofi.codec — decode side only.
  *
- * Mirrors the GOOF wire format documented in src/goofi/codec.py:
+ * Mirrors the GOOF wire format, whose source of truth is crates/goofi-codec/src/lib.rs:
  *
  *   offset  size  field
  *   ------  ----  ----------------------------------------------
@@ -20,7 +20,7 @@
  * TABLE body:
  *   u32 n, then repeated: u16 key_len, key utf-8, u32 value_len, encoded Data
  *
- * NOTE: in Python the DataType enum starts at ARRAY=0 — see goofi/data.py.
+ * ARRAY bodies are always `<f4`: the engine casts every array to f32 at ingest.
  */
 import { decode as msgpackDecode } from '@msgpack/msgpack';
 
@@ -164,35 +164,13 @@ function readTypedArray(
 	// Slice into a fresh buffer so the consumer can outlive the WS message
 	// frame (which may be reused by the runtime).
 	const slice = buffer.slice(byteOffset, byteOffset + nBytes);
-	switch (kind + itemsize) {
-		case 'f4':
-			return new Float32Array(slice, 0, count);
-		case 'f8':
-			return new Float64Array(slice, 0, count);
-		case 'i1':
-		case 'b1':
-			return new Int8Array(slice, 0, count);
-		case 'i2':
-			return new Int16Array(slice, 0, count);
-		case 'i4':
-			return new Int32Array(slice, 0, count);
-		case 'i8':
-			return new BigInt64Array(slice, 0, count) as unknown as ArrayLike<number> & {
-				length: number;
-			};
-		case 'u1':
-			return new Uint8Array(slice, 0, count);
-		case 'u2':
-			return new Uint16Array(slice, 0, count);
-		case 'u4':
-			return new Uint32Array(slice, 0, count);
-		case 'u8':
-			return new BigUint64Array(slice, 0, count) as unknown as ArrayLike<number> & {
-				length: number;
-			};
-		default:
-			throw new Error(`Unsupported numpy dtype: ${dtypeStr}`);
+	if (kind + itemsize !== 'f4') {
+		// The canonical encoder (`crates/goofi-codec`) writes `<f4` for EVERY array — the engine
+		// casts at ingest (`cast_to_f32`), so there is no other array dtype on the wire. Anything
+		// else means the encoder changed without this port; fail loudly rather than mis-read bytes.
+		throw new Error(`Unsupported numpy dtype: ${dtypeStr} (the wire is f32-only)`);
 	}
+	return new Float32Array(slice, 0, count);
 }
 
 /** Helpers consumed by viewers. */
@@ -202,10 +180,6 @@ export function isArrayFrame(f: DataFrame): f is DataFrame & { data: ArrayData }
 /** True if a numpy dtype string names a (little-endian / byte-agnostic) float. */
 export function isFloatDtype(dtype: string): boolean {
 	return dtype.startsWith('<f') || dtype.startsWith('|f') || dtype.startsWith('=f');
-}
-/** True if a numpy dtype string names an 8-bit unsigned integer (a raw image byte). */
-export function isU8Dtype(dtype: string): boolean {
-	return dtype === '<u1' || dtype === '|u1' || dtype === '=u1';
 }
 export function isStringFrame(f: DataFrame): f is DataFrame & { data: string } {
 	return f.dtype === 'STRING';

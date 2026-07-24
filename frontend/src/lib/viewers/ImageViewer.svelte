@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { isFloatDtype, isU8Dtype, type DataFrame, type ArrayData } from '$lib/codec/decode';
+	import { type DataFrame, type ArrayData } from '$lib/codec/decode';
 	import type { SettingsMap } from './settingsSchema';
 	import { makeLUTCache } from './colormaps';
 	import { GLImageRenderer, glSupports } from './imageGL';
@@ -91,14 +91,13 @@
 		const dims = shapeOf(arr);
 		if (!dims) return;
 		const [h, w, c] = dims;
-		const isFloat = isFloatDtype(arr.dtype);
 
 		if (renderer && glSupports(c, arr.dtype)) {
 			useGl = true;
 			let lo = 0;
 			let hi = 1;
 			if (c === 1) [lo, hi] = grayRange(arr.values, w * h, 1);
-			renderer.render(arr.values, w, h, c, isFloat, {
+			renderer.render(arr.values, w, h, c, {
 				colormap,
 				lut: lutFor(colormap),
 				lo,
@@ -109,10 +108,10 @@
 			return;
 		}
 		useGl = false;
-		paint2d(arr, h, w, c, isFloat);
+		paint2d(arr, h, w, c);
 	}
 
-	function paint2d(arr: ArrayData, h: number, w: number, c: number, isFloat: boolean): void {
+	function paint2d(arr: ArrayData, h: number, w: number, c: number): void {
 		if (!canvas2d) return;
 		const ctx = canvas2d.getContext('2d');
 		if (!ctx) return;
@@ -125,12 +124,8 @@
 
 		const dst = img.data;
 		const src = arr.values;
-		const isU8 = isU8Dtype(arr.dtype);
-		const scale: (v: number) => number = isU8
-			? (v) => v
-			: isFloat
-				? (v) => Math.max(0, Math.min(255, Math.round(v * 255)))
-				: (v) => Math.max(0, Math.min(255, Math.round(v)));
+		// The wire is f32-only, so a colour sample is always a [0,1] float.
+		const scale = (v: number): number => Math.max(0, Math.min(255, Math.round(v * 255)));
 		const n = w * h;
 
 		if (c === 1 || c === 2) {

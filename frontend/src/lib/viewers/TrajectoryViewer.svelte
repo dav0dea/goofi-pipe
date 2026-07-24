@@ -66,7 +66,6 @@
 		const n = shape[0];
 		const nT = shape[1];
 		const src = arr.values as ArrayLike<number>;
-		const big = src.length > 0 && typeof src[0] === 'bigint';
 
 		const parsed: number[][] = [];
 		let mn = Infinity;
@@ -74,7 +73,7 @@
 		for (let i = 0; i < n; i++) {
 			const row = new Array<number>(nT);
 			for (let t = 0; t < nT; t++) {
-				const v = big ? Number(src[i * nT + t]) : (src[i * nT + t] as number);
+				const v = src[i * nT + t];
 				row[t] = v;
 				if (Number.isFinite(v)) {
 					if (v < mn) mn = v;
