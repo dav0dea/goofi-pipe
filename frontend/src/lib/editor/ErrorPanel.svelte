@@ -6,6 +6,7 @@
      indicator, independent of whether a Console is open. -->
 <script lang="ts">
 	import { graph } from '$lib/stores/graph.svelte';
+	import { Chip, StatusDot, Popover } from '$lib/ui';
 
 	type Props = { onFocus: (uid: string) => void };
 	const { onFocus }: Props = $props();
@@ -14,6 +15,9 @@
 	const activeNodes = $derived(g.nodes.filter((n) => n.error));
 
 	let chipOpen = $state(false);
+	// The chip is the popover's anchor; wrapping it lets the Popover clamp against a real element
+	// and exclude it from its own outside-dismiss (so the toggle click never dismisses-then-reopens).
+	let anchorEl = $state<HTMLElement | null>(null);
 	function focus(uid: string): void {
 		onFocus(uid);
 		chipOpen = false;
@@ -22,13 +26,15 @@
 
 {#if activeNodes.length > 0}
 	<div class="chip-host" data-testid="error-chip">
-		<button class="chip" onclick={() => (chipOpen = !chipOpen)}>
-			<span class="dot"></span>
-			{activeNodes.length}
-			{activeNodes.length === 1 ? 'error' : 'errors'}
-		</button>
-		{#if chipOpen}
-			<div class="popover">
+		<span class="chip-anchor" bind:this={anchorEl}>
+			<Chip tone="danger" onclick={() => (chipOpen = !chipOpen)}>
+				<StatusDot tone="error" size="sm" />
+				{activeNodes.length}
+				{activeNodes.length === 1 ? 'error' : 'errors'}
+			</Chip>
+		</span>
+		<Popover anchor={anchorEl} open={chipOpen} onDismiss={() => (chipOpen = false)}>
+			<div class="error-list" data-testid="error-popover">
 				{#each activeNodes as n (n.uid)}
 					<button class="prow" onclick={() => focus(n.uid)}>
 						<span class="row-name">{n.name}</span>
@@ -36,7 +42,7 @@
 					</button>
 				{/each}
 			</div>
-		{/if}
+		</Popover>
 	</div>
 {/if}
 
@@ -48,38 +54,15 @@
 		z-index: var(--z-chip);
 		font-family: var(--font-mono);
 	}
-	.chip {
-		display: flex;
-		align-items: center;
-		gap: 6px;
-		padding: 4px 10px;
-		background: color-mix(in srgb, var(--danger) 18%, var(--surface-1));
-		border: 1px solid var(--danger);
-		color: var(--text);
-		font-size: 11px;
-		border-radius: 999px;
-		cursor: pointer;
-		box-shadow: 0 2px 12px rgba(240, 96, 128, 0.25);
+	.chip-anchor {
+		display: inline-flex;
 	}
-	.chip .dot {
-		width: 6px;
-		height: 6px;
-		border-radius: 50%;
-		background: var(--danger);
-		box-shadow: 0 0 6px var(--danger);
-	}
-	.popover {
-		position: absolute;
-		left: 0;
-		bottom: calc(100% + 6px);
+	/* The popover surface + dismissal come from the Popover primitive; this just sizes and
+	   scrolls the error list inside it. */
+	.error-list {
 		width: 320px;
 		max-height: 60vh;
 		overflow-y: auto;
-		background: var(--surface-2);
-		border: 1px solid var(--border-strong);
-		border-radius: var(--radius-sm);
-		box-shadow: var(--shadow-2);
-		padding: 4px;
 		display: flex;
 		flex-direction: column;
 		gap: 2px;
