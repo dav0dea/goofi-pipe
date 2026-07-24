@@ -47,6 +47,10 @@ pub struct AppState {
     /// The doc's state vector as of the last broadcast delta — the baseline the next delta
     /// is computed against (guarded together with `crdt`: always lock `crdt` first).
     pub last_sync_sv: Arc<Mutex<Vec<u8>>>,
+    /// Whether the patch has been mutated since it was last saved or loaded — the title-bar dot
+    /// and the unload guard. DERIVED, not stored: nothing persists it, so a fresh session starts
+    /// clean and every successful mutating op sets it.
+    dirty: Arc<std::sync::atomic::AtomicBool>,
     /// Shared per-slot data reducers (thalamus G1/G2): one reduction per active (node, slot),
     /// fanned out to every viewer, so N tabs on one slot cost one reduce+encode, not N.
     pub reducers: reducer::SlotReducers,
@@ -88,6 +92,7 @@ impl AppState {
             sync_updates,
             ephemeral,
             last_sync_sv,
+            dirty: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             reducers,
             history: Arc::new(Mutex::new(goofi_engine::CommandHistory::new())),
         }
@@ -319,7 +324,7 @@ async fn handle_control(socket: WebSocket, state: AppState) {
 
     let hello = {
         let g = state.graph.lock().unwrap();
-        event("hello", schemas::snapshot(&g, &state.instance_id, true))
+        event("hello", schemas::snapshot(&g, &state.instance_id, true, state.is_dirty()))
     };
     if tx.send(Message::Text(hello.into())).await.is_err() {
         return;
@@ -387,7 +392,7 @@ async fn handle_control(socket: WebSocket, state: AppState) {
                 Err(broadcast::error::RecvError::Lagged(_)) => {
                     let hello = {
                         let g = state.graph.lock().unwrap();
-                        event("hello", schemas::snapshot(&g, &state.instance_id, true))
+                        event("hello", schemas::snapshot(&g, &state.instance_id, true, state.is_dirty()))
                     };
                     if tx.send(Message::Text(hello.into())).await.is_err() {
                         break;
@@ -425,6 +430,20 @@ async fn handle_control(socket: WebSocket, state: AppState) {
                 Err(broadcast::error::RecvError::Closed) => break,
             },
         }
+    }
+}
+
+impl AppState {
+    /// Whether the patch differs from its last saved/loaded state.
+    pub fn is_dirty(&self) -> bool {
+        self.dirty.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Set the dirty flag, returning an `unsaved_changes` event ONLY when it actually changed —
+    /// every mutation would otherwise re-broadcast the same value.
+    fn set_dirty(&self, dirty: bool) -> Option<String> {
+        let was = self.dirty.swap(dirty, std::sync::atomic::Ordering::Relaxed);
+        (was != dirty).then(|| event("unsaved_changes", json!({ "unsaved_changes": dirty })))
     }
 }
 
@@ -709,6 +728,13 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
                 )?;
                 Ok(json!({ "ok": true }))
             }
+            // Patch-scoped editor layout, stored opaquely (the node-`viewers` rule). NOT a command
+            // — view state is not undoable — and not dirtying on its own beyond the shared gate.
+            "set_layout" => {
+                let layout = payload.get("layout").cloned().unwrap_or(Value::Null);
+                g.set_layout(layout);
+                Ok(json!({ "ok": true }))
+            }
             "set_node_viewers" => {
                 // Soft per-slot view-state (kind/settings/collapse) persisted to `.gfi` — NOT a
                 // command (not undoable). Written to the graph; the re-mirror persists + broadcasts.
@@ -930,6 +956,9 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
                 let path = payload.get("path").and_then(|v| v.as_str()).map(fsbrowse::resolve);
                 if let Some(p) = &path {
                     std::fs::write(p, &yaml).map_err(|e| format!("save failed: {e}"))?;
+                    // Written to disk ⇒ clean. A save with no path is a browser download, which
+                    // does not give the patch a home, so it leaves the flag alone.
+                    events.extend(state.set_dirty(false));
                 }
                 Ok(json!({ "path": path, "yaml": yaml }))
             }
@@ -957,9 +986,10 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
                 // A load fully resets the session — there is nothing to undo across it (spec §3:
                 // no load command / no checkpoint), so drop every session's command history.
                 state.history.lock().unwrap().clear();
+                events.extend(state.set_dirty(false));
                 events.push(event(
                     "graph_replaced",
-                    schemas::snapshot(&g, &state.instance_id, false),
+                    schemas::snapshot(&g, &state.instance_id, false, false),
                 ));
                 if let Some(path) = from_path {
                     // The patch now has a home on disk — the title bar names it and a later plain
@@ -998,6 +1028,11 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
     let read_only = matches!(op.as_str(), "list_nodes" | "serialize" | "save" | "list_dir");
     if result.is_ok() && !read_only {
         resync_and_broadcast(state);
+        // The same gate that decides "this could have changed the graph" decides "the patch now
+        // differs from disk" — one rule, so the two can never disagree. `load`/`load_text` clear
+        // the flag inside their arm, which runs first and is then re-set here; re-clear it.
+        let cleared = matches!(op.as_str(), "load" | "load_text");
+        events.extend(state.set_dirty(!cleared));
     }
 
     for e in events {

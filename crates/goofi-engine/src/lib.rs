@@ -272,6 +272,10 @@ pub struct Graph {
     /// Node types registered at runtime (e.g. discovered Python nodes), keyed by
     /// type name. Survives `clear()`/`load_doc` — these are catalog, not content.
     dyn_types: HashMap<&'static str, DynType>,
+    /// The editor's panel layout for this patch — an OPAQUE blob the engine stores, persists and
+    /// round-trips but never interprets, exactly like a node's `viewers`. Patch-scoped UI state:
+    /// which tabs exist and how their panels are split. `Null` until the editor sets one.
+    layout: serde_json::Value,
     /// Node types that EXIST on disk but cannot load here, keyed by type name → reason (a
     /// missing module name, or the exception line). They appear in the palette, greyed, so a
     /// node that needs an uninstalled dependency explains itself instead of silently not
@@ -311,6 +315,7 @@ impl Graph {
             next_uid: 1,
             dyn_types: HashMap::new(),
             unavailable: std::collections::BTreeMap::new(),
+            layout: serde_json::Value::Null,
             start: None,
             evaluator: None,
             scopes: IndexMap::new(),
@@ -411,6 +416,17 @@ impl Graph {
     /// The manifests of all runtime-registered node types, sorted by type name
     /// (the compile-time catalog is enumerated separately via `goofi_node::catalog`).
     /// Used by the bridge to include runtime types in the editor palette.
+    /// The editor's stored panel layout (`Null` when the patch has none).
+    pub fn layout(&self) -> &serde_json::Value {
+        &self.layout
+    }
+
+    /// Store the editor's panel layout verbatim. Never interpreted — cross-cutting UI state, not
+    /// pillar logic (the `viewers` blob's rule).
+    pub fn set_layout(&mut self, layout: serde_json::Value) {
+        self.layout = layout;
+    }
+
     /// Record a node type that could not be loaded, with the reason. Refused if a working type
     /// already owns the name — a real node always wins over a broken one.
     pub fn register_unavailable(&mut self, type_name: String, reason: String) -> bool {
@@ -1995,12 +2011,18 @@ impl Graph {
                 e
             })
             .collect();
-        let doc = json!({
+        let mut doc = json!({
             "version": 6,
             "pillar_default": "signal",
             "globals": Value::Array(globals),
             "root": root,
         });
+        // The editor layout rides along when there is one; an empty patch keeps the file clean.
+        if !self.layout.is_null() {
+            if let Value::Object(ref mut m) = doc {
+                m.insert("layout".to_string(), self.layout.clone());
+            }
+        }
         serde_yaml_ng::to_string(&doc).unwrap_or_default()
     }
 
@@ -2124,6 +2146,9 @@ impl Graph {
         // stubs (remapping the stored inner uid). No def bodies to rehydrate — the runtime is flat.
         let scopes_v = doc.get("root").and_then(|r| r.get("scopes")).and_then(|v| v.as_object());
         self.reload_scopes(scopes_v, &idmap);
+        // A patch without a stored layout clears the previous one rather than inheriting it — the
+        // loaded patch's own arrangement (or the editor's default) is what should be shown.
+        self.layout = doc.get("layout").cloned().unwrap_or(serde_json::Value::Null);
         Ok(())
     }
 
@@ -5027,6 +5052,32 @@ mod tests {
             Some(&goofi_core::globals::GlobalValue::Float(30.0)),
             "system default seeded on a globals-less patch",
         );
+    }
+
+    #[test]
+    fn the_editor_layout_round_trips_through_gfi_untouched() {
+        // Patch-scoped UI state, stored opaquely like a node's `viewers`: the backend persists and
+        // returns it verbatim and never looks inside.
+        let mut g = Graph::new();
+        assert_eq!(g.layout(), &serde_json::Value::Null, "no layout until the editor sets one");
+        assert!(!g.serialize().contains("layout"), "an unset layout stays out of the file");
+
+        let layout = serde_json::json!({
+            "workspaces": [{ "id": "ws-1", "name": "Main", "root": { "kind": "panel", "panel": "editor" } }],
+            "activeWorkspaceId": "ws-1"
+        });
+        g.set_layout(layout.clone());
+        let text = g.serialize();
+
+        let mut g2 = Graph::new();
+        g2.load_doc(&text).unwrap();
+        assert_eq!(g2.layout(), &layout, "stored verbatim, byte for byte");
+
+        // Loading a patch that has none clears it, rather than leaving the previous one showing.
+        let mut g3 = Graph::new();
+        g3.set_layout(layout);
+        g3.load_doc(&Graph::new().serialize()).unwrap();
+        assert_eq!(g3.layout(), &serde_json::Value::Null);
     }
 
     #[test]

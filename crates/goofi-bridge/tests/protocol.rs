@@ -2304,3 +2304,67 @@ async fn refresh_param_reports_completion_even_when_the_node_offers_nothing() {
         "and the declared options are left as they were"
     );
 }
+
+#[tokio::test]
+async fn unsaved_changes_tracks_mutations_and_clears_on_save() {
+    // The title-bar dot and the unload guard both read this. It is derived, not stored: any
+    // successful mutation dirties the patch, saving it (or loading another) makes it clean.
+    let base = start_server().await;
+    let (mut ws, _) = connect_async(format!("{base}/control")).await.unwrap();
+    let hello = recv_text(&mut ws).await;
+    assert_eq!(hello["payload"]["unsaved_changes"], json!(false), "a fresh session is clean");
+
+    ws.send(Message::Text(
+        json!({ "id": 1, "op": "add_node", "payload": { "type": "Oscillator" } }).to_string(),
+    ))
+    .await
+    .unwrap();
+    let dirty = loop {
+        let m = recv_text(&mut ws).await;
+        if m.get("event").and_then(|v| v.as_str()) == Some("unsaved_changes") {
+            break m;
+        }
+    };
+    assert_eq!(dirty["payload"]["unsaved_changes"], json!(true), "adding a node dirties the patch");
+
+    let path = std::env::temp_dir().join(format!("goofi-dirty-{}.gfi", std::process::id()));
+    ws.send(Message::Text(
+        json!({ "id": 2, "op": "save", "payload": { "path": path.to_string_lossy() } }).to_string(),
+    ))
+    .await
+    .unwrap();
+    let clean = loop {
+        let m = recv_text(&mut ws).await;
+        if m.get("event").and_then(|v| v.as_str()) == Some("unsaved_changes") {
+            break m;
+        }
+    };
+    assert_eq!(clean["payload"]["unsaved_changes"], json!(false), "saving makes it clean");
+
+    // A read-only op must not re-dirty it.
+    call(&mut ws, 3, "list_nodes", json!({})).await;
+    let listing = call(&mut ws, 4, "serialize", json!({})).await;
+    assert!(listing["result"]["yaml"].is_string());
+
+    let _ = std::fs::remove_file(&path);
+}
+
+#[tokio::test]
+async fn the_editor_layout_persists_into_the_patch_and_comes_back_on_hello() {
+    let base = start_server().await;
+    let (mut ws, _) = connect_async(format!("{base}/control")).await.unwrap();
+    let hello = recv_text(&mut ws).await;
+    assert!(hello["payload"]["layout"].is_null(), "a fresh session has no stored layout");
+
+    let layout = json!({ "workspaces": [{ "id": "ws-1", "name": "Main" }], "activeWorkspaceId": "ws-1" });
+    call(&mut ws, 1, "set_layout", json!({ "layout": layout })).await;
+
+    // It rides the patch, so a save carries it…
+    let ser = call(&mut ws, 2, "serialize", json!({})).await;
+    assert!(ser["result"]["yaml"].as_str().unwrap().contains("ws-1"), "layout is in the .gfi");
+
+    // …and a fresh client sees it on connect, which is what makes it a per-patch arrangement.
+    let (mut ws2, _) = connect_async(format!("{base}/control")).await.unwrap();
+    let hello2 = recv_text(&mut ws2).await;
+    assert_eq!(hello2["payload"]["layout"]["activeWorkspaceId"], json!("ws-1"));
+}

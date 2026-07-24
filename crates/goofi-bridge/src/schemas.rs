@@ -371,7 +371,7 @@ pub fn describe_instance(g: &Graph, uid: Uid) -> Value {
 }
 
 /// The full graph snapshot (`hello` / `graph_replaced` payload).
-pub fn snapshot(g: &Graph, instance_id: &str, with_protocol: bool) -> Value {
+pub fn snapshot(g: &Graph, instance_id: &str, with_protocol: bool, unsaved: bool) -> Value {
     let nodes: Vec<Value> = g.node_uids().iter().map(|u| node_instance_info(g, *u)).collect();
     let links: Vec<Value> = g.links_view().iter().map(link_info).collect();
     let mut instances = Map::new();
@@ -388,8 +388,8 @@ pub fn snapshot(g: &Graph, instance_id: &str, with_protocol: bool) -> Value {
         "links": links,
         "instances": Value::Object(instances),
         "save_path": Value::Null,
-        "unsaved_changes": false,
-        "layout": Value::Null,
+        "unsaved_changes": unsaved,
+        "layout": g.layout().clone(),
     });
     if with_protocol {
         snap["protocol_version"] = json!(PROTOCOL_VERSION);
@@ -559,7 +559,7 @@ mod tests {
         // hello / graph_replaced (with_protocol=true) carry the palette so the client needs no
         // async `list_nodes` round-trip before it can build nodes from the doc (retires the
         // catalog-loading fallback window).
-        let hello = snapshot(&g, "iid", true);
+        let hello = snapshot(&g, "iid", true, false);
         assert_eq!(
             hello["node_types"],
             catalog_types(&g),
@@ -568,7 +568,7 @@ mod tests {
         assert!(hello["node_types"].as_array().is_some_and(|a| !a.is_empty()));
         // A structural echo (subpatch_changed, with_protocol=false) must NOT re-ship the whole
         // catalog on every group/expand/share — it changes only when a runtime type registers.
-        let echo = snapshot(&g, "iid", false);
+        let echo = snapshot(&g, "iid", false, false);
         assert!(echo.get("node_types").is_none(), "structural echoes omit the catalog");
     }
 
