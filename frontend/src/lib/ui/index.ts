@@ -21,3 +21,14 @@ export {
 	type AlignSetting,
 	type JustifySetting
 } from './layout';
+
+// The Field family — the north-star core (Task 3). Dumb controls (value in / change out) that opt
+// into the shared `useLiveValue` echo-suppression latch, composed inside a labelled `Field`.
+export { default as Field } from './Field.svelte';
+export { default as NumberInput } from './NumberInput.svelte';
+export { default as Slider } from './Slider.svelte';
+export { default as Select } from './Select.svelte';
+export { default as TextInput } from './TextInput.svelte';
+export { default as Trigger } from './Trigger.svelte';
+export { default as Toggle } from './Toggle.svelte';
+export { useLiveValue, displayValue, type LiveValue } from './liveValue.svelte';

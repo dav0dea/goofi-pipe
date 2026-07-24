@@ -5,7 +5,23 @@
   extend this route + its specs. Each sample carries a distinct `data-testid`.
 -->
 <script lang="ts">
-	import { Button, IconButton, Stack, Row, ScrollArea, Bar, type ButtonVariant, type ButtonSize } from '$lib/ui';
+	import {
+		Button,
+		IconButton,
+		Stack,
+		Row,
+		ScrollArea,
+		Bar,
+		Field,
+		NumberInput,
+		Slider,
+		Select,
+		TextInput,
+		Trigger,
+		Toggle,
+		type ButtonVariant,
+		type ButtonSize
+	} from '$lib/ui';
 
 	const variants: ButtonVariant[] = ['default', 'primary', 'ghost', 'danger'];
 	const sizes: ButtonSize[] = ['sm', 'md'];
@@ -16,6 +32,30 @@
 		ghost: '⟳', // refresh
 		danger: '×' // multiplication sign
 	};
+
+	// --- Field-family demo state. Each control drives a piece of $state; the composition proves a
+	// Slider + NumberInput share ONE value in a handful of lines. `*-committed` read-outs let the
+	// e2e observe commit timing (a NumberInput must not update its committed value per keystroke). ---
+	let gain = $state(1);
+	let cutoff = $state(0.3);
+	let refreshValue = $state('sine');
+	let refreshing = $state(false);
+	let refreshCount = $state(0);
+	let textText = $state('hello');
+	let textDecimal = $state('3.14');
+	let textSearch = $state('');
+	let textPath = $state('/home/user/patch.gfi');
+	let triggerCount = $state(0);
+	let toggled = $state(false);
+
+	function doRefresh(): void {
+		// Simulate a device/stream re-scan: spin briefly, then land a fresh option set.
+		refreshing = true;
+		refreshCount += 1;
+		setTimeout(() => {
+			refreshing = false;
+		}, 150);
+	}
 </script>
 
 <main class="gallery">
@@ -107,6 +147,126 @@
 			{/snippet}
 		</Bar>
 	</section>
+
+	<section>
+		<h2>Field composition (the north star)</h2>
+		<!-- The proof: a Slider + NumberInput sharing ONE `cutoff` value inside a labelled Field, in
+		     a handful of lines. Moving either drives the other; the label focuses the first control. -->
+		<div class="form">
+			<Field label="cutoff" hint="filter corner frequency" data-testid="ui-compose-field">
+				<Row gap={4}>
+					<Slider
+						value={cutoff}
+						onChange={(v) => (cutoff = v)}
+						min={0}
+						max={1}
+						step={0.01}
+						data-testid="ui-compose-slider"
+					/>
+					<NumberInput
+						value={cutoff}
+						onChange={(v) => (cutoff = v)}
+						min={0}
+						max={1}
+						step={0.01}
+						scrub
+						data-testid="ui-compose-number"
+					/>
+				</Row>
+			</Field>
+			<span class="readout" data-testid="ui-compose-value">{cutoff}</span>
+		</div>
+	</section>
+
+	<section>
+		<h2>Field + NumberInput (commit-on-blur)</h2>
+		<!-- A single-control Field: clicking the label focuses the input (real <label for>), and the
+		     committed value updates on blur/Enter, NOT per keystroke — both asserted by the e2e. -->
+		<div class="form">
+			<Field label="gain" data-testid="ui-field-single">
+				<NumberInput value={gain} onChange={(v) => (gain = v)} data-testid="ui-field-number" />
+			</Field>
+			<span class="readout" data-testid="ui-field-committed">{gain}</span>
+		</div>
+	</section>
+
+	<section>
+		<h2>Slider</h2>
+		<div class="form">
+			<Slider
+				value={cutoff}
+				onChange={(v) => (cutoff = v)}
+				min={0}
+				max={1}
+				step={0.01}
+				data-testid="ui-slider"
+			/>
+		</div>
+	</section>
+
+	<section>
+		<h2>Select (with refresh)</h2>
+		<div class="form">
+			<Field label="waveform" data-testid="ui-select-field">
+				<Select
+					value={refreshValue}
+					onChange={(v) => (refreshValue = v)}
+					options={['sine', 'square', 'saw', 'triangle']}
+					onRefresh={doRefresh}
+					{refreshing}
+					data-testid="ui-select"
+				/>
+			</Field>
+			<span class="readout" data-testid="ui-select-refreshes">{refreshCount}</span>
+		</div>
+	</section>
+
+	<section>
+		<h2>TextInput (inputmode variants)</h2>
+		<div class="form">
+			<Field label="text">
+				<TextInput value={textText} onChange={(v) => (textText = v)} inputmode="text" data-testid="ui-text-text" />
+			</Field>
+			<Field label="decimal">
+				<TextInput
+					value={textDecimal}
+					onChange={(v) => (textDecimal = v)}
+					inputmode="decimal"
+					data-testid="ui-text-decimal"
+				/>
+			</Field>
+			<Field label="search">
+				<TextInput
+					value={textSearch}
+					onChange={(v) => (textSearch = v)}
+					inputmode="search"
+					placeholder="search…"
+					data-testid="ui-text-search"
+				/>
+			</Field>
+			<Field label="path">
+				<TextInput value={textPath} onChange={(v) => (textPath = v)} inputmode="path" data-testid="ui-text-path" />
+			</Field>
+		</div>
+	</section>
+
+	<section>
+		<h2>Trigger</h2>
+		<div class="form">
+			<Trigger onclick={() => (triggerCount += 1)} data-testid="ui-trigger">reset</Trigger>
+			<span class="readout" data-testid="ui-trigger-count">{triggerCount}</span>
+		</div>
+	</section>
+
+	<section>
+		<h2>Toggle</h2>
+		<div class="form">
+			<Field label="enabled" data-testid="ui-toggle-field">
+				<Toggle value={toggled} onChange={(v) => (toggled = v)} data-testid="ui-toggle" />
+			</Field>
+			<span class="readout" data-testid="ui-toggle-value">{toggled ? 'on' : 'off'}</span>
+		</div>
+	</section>
 </main>
 
 <style>
@@ -154,5 +314,21 @@
 		border: 1px solid var(--border);
 		border-radius: var(--radius-sm);
 		padding: var(--space-4);
+	}
+	/* Bounded column the Field-family samples live in — a panel-width form so the labelled controls
+	   size realistically (they fill their Field). */
+	.form {
+		display: flex;
+		flex-direction: column;
+		gap: var(--space-6);
+		width: 18rem;
+		max-width: 100%;
+	}
+	/* A committed-value read-out the e2e reads to observe commit timing. */
+	.readout {
+		font-family: var(--font-mono);
+		font-size: var(--fs-micro);
+		color: var(--text-muted);
+		font-variant-numeric: tabular-nums;
 	}
 </style>

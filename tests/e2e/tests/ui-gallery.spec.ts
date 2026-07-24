@@ -116,3 +116,89 @@ test.describe('UI layout primitives gallery', () => {
 		).toBeLessThan(barBox.width * 0.2);
 	});
 });
+
+// The Field family + `useLiveValue` (Task 3) — the north-star core. Each assertion is behavioural,
+// not "renders": the real <label> must focus its control, a typed NumberInput must commit on blur
+// (not per keystroke), the inputmode variant must set the right keyboard, and a Field must compose a
+// Slider + NumberInput onto one shared value. Runs under the `default` (fine-pointer) project.
+test.describe('UI Field family', () => {
+	test('renders each Field-family control sample', async ({ page }) => {
+		await page.goto('/dev/ui');
+		await expect(page.getByTestId('ui-slider')).toBeVisible();
+		await expect(page.getByTestId('ui-select')).toBeVisible();
+		await expect(page.getByTestId('ui-trigger')).toBeVisible();
+		await expect(page.getByTestId('ui-toggle')).toBeVisible();
+		await expect(page.getByTestId('ui-field-number')).toBeVisible();
+	});
+
+	test("clicking a Field's label focuses its control (real <label for>)", async ({ page }) => {
+		await page.goto('/dev/ui');
+		const field = page.getByTestId('ui-field-single');
+		await field.waitFor();
+		const input = page.getByTestId('ui-field-number');
+		await expect(input).not.toBeFocused();
+		// Click the label text (NOT the input) — the native for= linkage must forward focus.
+		await field.locator('label.ui-field-label').click();
+		await expect(input, 'clicking the Field label focuses the wrapped control').toBeFocused();
+	});
+
+	test('NumberInput commits on blur/Enter, not per keystroke', async ({ page }) => {
+		await page.goto('/dev/ui');
+		const committed = page.getByTestId('ui-field-committed');
+		await expect(committed, 'seed value shown').toHaveText('1');
+		const input = page.getByTestId('ui-field-number');
+		await input.focus();
+		await input.fill('7'); // buffers the edit + fires input — but must NOT commit yet
+		await expect(committed, 'a typed value does not echo-commit per keystroke').toHaveText('1');
+		await input.press('Enter'); // Enter commits (blurs)
+		await expect(committed, 'Enter commits the buffered value').toHaveText('7');
+	});
+
+	test('TextInput sets the inputmode + enterkeyhint per variant', async ({ page }) => {
+		await page.goto('/dev/ui');
+		await expect(page.getByTestId('ui-text-text')).toHaveAttribute('inputmode', 'text');
+		await expect(page.getByTestId('ui-text-decimal')).toHaveAttribute('inputmode', 'decimal');
+		await expect(page.getByTestId('ui-text-search')).toHaveAttribute('inputmode', 'search');
+		// `path` maps to the `url` virtual keyboard (surfaces `/` + `.`, drops space) — a distinct
+		// inputmode per variant so this mapping is unambiguous.
+		await expect(page.getByTestId('ui-text-path')).toHaveAttribute('inputmode', 'url');
+		await expect(page.getByTestId('ui-text-search')).toHaveAttribute('enterkeyhint', 'search');
+	});
+
+	test('a Field composes a Slider + NumberInput onto one shared value', async ({ page }) => {
+		await page.goto('/dev/ui');
+		const value = page.getByTestId('ui-compose-value');
+		const number = page.getByTestId('ui-compose-number');
+		await number.focus();
+		await number.fill('0.5');
+		await number.press('Enter');
+		// The shared state updated, and the sibling Slider (bound to the SAME value) followed.
+		await expect(value, 'the shared value committed').toHaveText('0.5');
+		const range = page.getByTestId('ui-compose-slider').locator('input[type=range]');
+		await expect(range, 'the paired Slider tracks the same value').toHaveValue('0.5');
+	});
+
+	test('Trigger fires its action on click', async ({ page }) => {
+		await page.goto('/dev/ui');
+		const count = page.getByTestId('ui-trigger-count');
+		await expect(count).toHaveText('0');
+		await page.getByTestId('ui-trigger').click();
+		await expect(count).toHaveText('1');
+	});
+
+	test('Toggle flips its value on click', async ({ page }) => {
+		await page.goto('/dev/ui');
+		const val = page.getByTestId('ui-toggle-value');
+		await expect(val).toHaveText('off');
+		await page.getByTestId('ui-toggle').click();
+		await expect(val).toHaveText('on');
+	});
+
+	test('Select fires onRefresh from the ⟳ button', async ({ page }) => {
+		await page.goto('/dev/ui');
+		const refreshes = page.getByTestId('ui-select-refreshes');
+		await expect(refreshes).toHaveText('0');
+		await page.getByTestId('ui-select').getByRole('button', { name: /re-scan/i }).click();
+		await expect(refreshes, 'the refresh affordance re-scans even from a live list').toHaveText('1');
+	});
+});

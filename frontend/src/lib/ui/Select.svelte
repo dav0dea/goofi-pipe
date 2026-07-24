@@ -1,0 +1,105 @@
+<!--
+  Select — a dumb dropdown (spec §2.2): `value` in, `onChange` out, plus an optional refresh (⟳)
+  affordance for device / stream pickers. A native <select> commits on `change` and can't echo-jump
+  mid-interaction, so it needs no `useLiveValue` latch. The current value is always kept in the list
+  (prepended if the options don't contain it) so a stale-but-live value still renders.
+
+  The ⟳ appears only when `onRefresh` is given — even with an EMPTY option list, so a scan that found
+  nothing is still re-runnable (the device/stream re-scan). It is the `IconButton` primitive; while a
+  refresh is in flight the <select> dims and the button spins a CSS ring. The <select> claims the
+  enclosing Field's label id. `class` merged, `data-testid` (and any other attribute) forwarded.
+-->
+<script lang="ts">
+	import type { HTMLAttributes } from 'svelte/elements';
+	import IconButton from './IconButton.svelte';
+	import { claimFieldControlId } from './field';
+
+	let {
+		value,
+		onChange,
+		options,
+		onRefresh,
+		refreshing = false,
+		disabled = false,
+		class: klass = '',
+		...rest
+	}: HTMLAttributes<HTMLDivElement> & {
+		value: string;
+		onChange: (v: string) => void;
+		options: string[];
+		/** Provide to show the ⟳ re-scan button (kept even when `options` is empty). */
+		onRefresh?: () => void;
+		/** A ⟳ re-scan is in flight — dim the select and spin the button. */
+		refreshing?: boolean;
+		disabled?: boolean;
+	} = $props();
+
+	const fieldId = claimFieldControlId();
+	// Keep the live value selectable even if it isn't among the options (a stale-but-live value).
+	const items = $derived(options.includes(value) ? options : [value, ...options]);
+</script>
+
+<div {...rest} class={`ui-select ${klass}`.trim()}>
+	<select
+		id={fieldId}
+		class="ui-select-input"
+		{value}
+		disabled={disabled || refreshing}
+		onchange={(e) => onChange((e.currentTarget as HTMLSelectElement).value)}
+	>
+		{#each items as opt (opt)}
+			<option value={opt}>{opt}</option>
+		{/each}
+	</select>
+	{#if onRefresh}
+		<IconButton
+			size="sm"
+			label={refreshing ? 'Re-scanning…' : 'Re-scan for options'}
+			disabled={refreshing}
+			aria-busy={refreshing}
+			onclick={() => onRefresh()}
+		>
+			{#if refreshing}
+				<span class="ui-select-spinner" aria-hidden="true"></span>
+			{:else}
+				⟳
+			{/if}
+		</IconButton>
+	{/if}
+</div>
+
+<style>
+	.ui-select {
+		display: flex;
+		align-items: stretch;
+		gap: var(--space-2);
+		flex: 1 1 auto;
+		min-width: 0;
+	}
+	/* Inherits the app-wide select chrome + coarse --hit floor; just fill the row. */
+	.ui-select-input {
+		flex: 1 1 auto;
+		min-width: 0;
+		color: var(--text);
+	}
+	.ui-select-input:disabled {
+		opacity: var(--disabled-opacity);
+		cursor: default;
+	}
+	/* The ⟳ glyph is swapped for a CSS ring while spinning — a geometric circle rotates dead-centred
+	   where a text glyph pivots off its baseline (same ring as the node boot-spinner). */
+	.ui-select-spinner {
+		width: 0.85em;
+		height: 0.85em;
+		border-radius: 50%;
+		box-sizing: border-box;
+		border: 1.5px solid color-mix(in srgb, var(--accent) 40%, transparent);
+		border-top-color: var(--accent);
+		animation: ui-select-spin 0.8s linear infinite;
+	}
+	@keyframes ui-select-spin {
+		to {
+			transform: rotate(360deg);
+		}
+	}
+</style>

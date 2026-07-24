@@ -21,3 +21,22 @@ test('IconButton meets the 44px coarse tap target while its glyph stays small', 
 	expect(gbox!.width, 'the glyph stays small (not the tap target)').toBeLessThan(24);
 	expect(gbox!.height, 'the glyph stays small (not the tap target)').toBeLessThan(24);
 });
+
+// The Field-family controls must also honour the coarse --hit floor: a NumberInput inherits the
+// app.css `min-height: var(--hit)` (44px under a coarse pointer), and the Toggle sizes its box to
+// --hit. Both must be real tap targets on touch — the Field family is what R renders on phones.
+test('Field controls meet the 44px coarse tap target', async ({ page }) => {
+	await page.goto('/dev/ui');
+
+	const num = page.getByTestId('ui-field-number');
+	await num.waitFor();
+	const nbox = await num.boundingBox();
+	expect(nbox, 'the NumberInput has a rendered box').not.toBeNull();
+	expect(nbox!.height, 'NumberInput height >= 44 under coarse').toBeGreaterThanOrEqual(44);
+
+	const toggle = page.getByTestId('ui-toggle');
+	await toggle.waitFor();
+	const tbox = await toggle.boundingBox();
+	expect(tbox, 'the Toggle has a rendered box').not.toBeNull();
+	expect(tbox!.height, 'Toggle height >= 44 under coarse').toBeGreaterThanOrEqual(44);
+});
