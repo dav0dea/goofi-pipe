@@ -416,6 +416,27 @@ impl Graph {
     /// The manifests of all runtime-registered node types, sorted by type name
     /// (the compile-time catalog is enumerated separately via `goofi_node::catalog`).
     /// Used by the bridge to include runtime types in the editor palette.
+    /// A node's lifecycle stage for the editor: `creating` / `setup` / `ready` / `error`.
+    ///
+    /// Only the DETACHED tier has a real bootstrap to report — an inline node is seeded
+    /// synchronously before it is ever visible, so it is `ready` (or `error`) from the first
+    /// frame the editor sees. A detached node's `setup()` runs on its worker and a Python child
+    /// is spawn + import + setup, which is where the spinner earns its keep.
+    pub fn node_stage(&self, uid: Uid) -> &'static str {
+        let Some(entry) = self.nodes.get(&uid) else { return "error" };
+        if entry.last_error.is_some() {
+            return "error";
+        }
+        match &entry.exec {
+            Execution::Inline(_) => "ready",
+            Execution::Detached(h) => match h.stage() {
+                detached::STAGE_CREATING => "creating",
+                detached::STAGE_SETUP => "setup",
+                _ => "ready",
+            },
+        }
+    }
+
     /// The editor's stored panel layout (`Null` when the patch has none).
     pub fn layout(&self) -> &serde_json::Value {
         &self.layout
@@ -4004,6 +4025,44 @@ mod tests {
         factory: rt_stub_factory,
     };
 
+    /// A detached node that blocks inside `setup()` — the shape of a Python child paying its
+    /// spawn + import cost, which is what the boot spinner is for.
+    struct SeedingNode {
+        gate: std::sync::Arc<Gate>,
+    }
+    impl Node for SeedingNode {
+        fn setup(&mut self, _c: &mut NodeCtx, _p: &Params<'_>) -> NodeResult {
+            self.gate.mtx.lock().unwrap().calls.push(0.0); // announce arrival, then block
+            self.gate.cv.notify_all();
+            let mut g = self.gate.mtx.lock().unwrap();
+            while g.permits == 0 {
+                g = self.gate.cv.wait(g).unwrap();
+            }
+            g.permits -= 1;
+            Ok(())
+        }
+        fn process(&mut self, _i: &Inputs<'_>, _o: &mut Outputs<'_>, _c: &mut NodeCtx, _p: &Params<'_>) -> NodeResult {
+            Ok(())
+        }
+    }
+    static SEEDING_MANIFEST: NodeManifest = NodeManifest {
+        type_name: "GateSeeding",
+        category: "test",
+        doc: "detached node that blocks in setup()",
+        inputs: &[],
+        outputs: GATE_OUT,
+        params: NO_PARAMS,
+        isolation: Isolation::Subprocess,
+        factory: rt_stub_factory,
+    };
+
+    fn register_gate_seeding(g: &mut Graph, gate: std::sync::Arc<Gate>) {
+        g.register_dyn_type(
+            &SEEDING_MANIFEST,
+            Box::new(move |_p| Box::new(SeedingNode { gate: gate.clone() })),
+        );
+    }
+
     fn register_gate(
         g: &mut Graph,
         gate: std::sync::Arc<Gate>,
@@ -4267,6 +4326,38 @@ mod tests {
         isolation: Isolation::Subprocess,
         factory: rt_stub_factory,
     };
+
+    #[test]
+    fn a_detached_node_reports_its_bootstrap_stage() {
+        // The spinner exists for this: a Python child is spawn + import + setup. The gate holds
+        // the worker inside setup, so the stage is observable rather than a race.
+        let gate = Gate::new();
+        let mut g = Graph::new();
+        register_gate_seeding(&mut g, gate.clone());
+        let det = g.add_node("GateSeeding", None).unwrap();
+
+        // The worker is parked in its `setup()`.
+        gate.wait_calls(1);
+        assert_eq!(g.node_stage(det), "setup", "still booting");
+
+        gate.open();
+        for _ in 0..500 {
+            if g.node_stage(det) == "ready" {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        assert_eq!(g.node_stage(det), "ready", "bootstrap finished");
+    }
+
+    #[test]
+    fn an_inline_node_is_ready_immediately_and_errors_are_reported_as_such() {
+        // Nothing to wait for: an inline node is seeded before it is visible.
+        let mut g = Graph::new();
+        let n = g.add_node("_TestConst", None).unwrap();
+        assert_eq!(g.node_stage(n), "ready");
+        assert_eq!(g.node_stage(Uid(9999)), "error", "an unknown node is not `ready`");
+    }
 
     #[test]
     fn restarting_a_busy_detached_node_does_not_block_the_graph() {

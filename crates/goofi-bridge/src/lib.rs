@@ -196,12 +196,16 @@ pub fn spawn_stats(graph: Arc<Mutex<Graph>>, events: broadcast::Sender<String>, 
     std::thread::spawn(move || {
         let period = Duration::from_secs_f64(1.0 / hz as f64);
         let mut last_errors: HashMap<String, Option<String>> = HashMap::new();
+        // A detached node bootstraps off-tick, so its stage changes with no RPC to ride on —
+        // same reason the error transition is pushed here.
+        let mut last_stages: HashMap<String, &'static str> = HashMap::new();
         loop {
             std::thread::sleep(period);
-            let (rates, errs, expr_vals) = {
+            let (rates, errs, expr_vals, stages) = {
                 let g = graph.lock().unwrap();
                 let mut rates: Vec<(String, f64)> = Vec::new();
                 let mut errs: Vec<(String, Option<String>)> = Vec::new();
+                let mut stages: Vec<(String, &'static str)> = Vec::new();
                 let mut expr_vals: Vec<(String, Value)> = Vec::new();
                 for u in g.node_uids() {
                     let hex = u.to_hex();
@@ -212,9 +216,10 @@ pub fn spawn_stats(graph: Arc<Mutex<Graph>>, events: broadcast::Sender<String>, 
                     if vals.as_object().is_some_and(|o| !o.is_empty()) {
                         expr_vals.push((hex.clone(), vals));
                     }
+                    stages.push((hex.clone(), g.node_stage(u)));
                     errs.push((hex, g.last_error(u).map(str::to_string)));
                 }
-                (rates, errs, expr_vals)
+                (rates, errs, expr_vals, stages)
             };
             // Diff + build payloads after releasing the lock (both inputs are owned).
             let changed = error_transitions(&errs, &mut last_errors);
@@ -234,6 +239,12 @@ pub fn spawn_stats(graph: Arc<Mutex<Graph>>, events: broadcast::Sender<String>, 
                 let err = errs.iter().find(|(h, _)| *h == hex).and_then(|(_, e)| e.clone());
                 let _ = events.send(event("error", json!({ "node": hex, "error": err })));
             }
+            for (node, stage) in stages {
+                if last_stages.insert(node.clone(), stage) != Some(stage) {
+                    let _ = events.send(event("node_stage", json!({ "node": node, "stage": stage })));
+                }
+            }
+            last_stages.retain(|h, _| errs.iter().any(|(e, _)| e == h));
         }
     });
 }
@@ -468,7 +479,7 @@ fn param_state_update_refreshed(g: &Graph, peer: Uid, refreshed: &[(&str, &str)]
             "node": peer.to_hex(),
             "params": schemas::describe_node_params(g, peer),
             "output_subscribers": {},
-            "stage": "ready",
+            "stage": g.node_stage(peer),
             "error": g.last_error(peer),
             "log_endpoint": Value::Null,
             "refreshed_params": refreshed.iter().map(|(g, n)| json!([g, n])).collect::<Vec<_>>(),

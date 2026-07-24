@@ -89,7 +89,17 @@ pub(crate) struct DetachedHandle {
     inbox: Arc<Mailbox<Job>>,
     outbox: Arc<Mailbox<Done>>,
     thread: Option<JoinHandle<()>>,
+    /// How far the worker has got through its own bootstrap. Unlike an inline node — seeded
+    /// synchronously before `insert_node_at` returns — a detached node's `setup()` runs off-tick
+    /// and can take a while (a Python child is spawn + import + setup, measured in hundreds of
+    /// milliseconds), so the editor shows a spinner until this reaches `Ready`.
+    stage: Arc<std::sync::atomic::AtomicU8>,
 }
+
+/// `DetachedHandle::stage` values. Ordered: a worker only moves forward.
+pub(crate) const STAGE_CREATING: u8 = 0;
+pub(crate) const STAGE_SETUP: u8 = 1;
+pub(crate) const STAGE_READY: u8 = 2;
 
 impl DetachedHandle {
     /// Spawn the worker, moving the boxed node onto it. `params0`/`ctx0` seed it off-tick.
@@ -101,12 +111,18 @@ impl DetachedHandle {
     ) -> DetachedHandle {
         let inbox = Arc::new(Mailbox::new());
         let outbox = Arc::new(Mailbox::new());
-        let (ib, ob) = (inbox.clone(), outbox.clone());
+        let stage = Arc::new(std::sync::atomic::AtomicU8::new(STAGE_CREATING));
+        let (ib, ob, st) = (inbox.clone(), outbox.clone(), stage.clone());
         let thread = std::thread::Builder::new()
             .name(format!("goofi-detached-{}", manifest.type_name))
-            .spawn(move || worker(node, manifest, params0, ctx0, ib, ob))
+            .spawn(move || worker(node, manifest, params0, ctx0, ib, ob, st))
             .expect("spawn detached worker");
-        DetachedHandle { inbox, outbox, thread: Some(thread) }
+        DetachedHandle { inbox, outbox, thread: Some(thread), stage }
+    }
+
+    /// How far the worker's bootstrap has got (`STAGE_*`).
+    pub(crate) fn stage(&self) -> u8 {
+        self.stage.load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// Post fresh inputs (latest-wins — a still-pending job is overwritten).
@@ -142,6 +158,7 @@ fn worker(
     mut ctx: NodeCtx,
     inbox: Arc<Mailbox<Job>>,
     outbox: Arc<Mailbox<Done>>,
+    stage: Arc<std::sync::atomic::AtomicU8>,
 ) {
     let mut index_counters: HashMap<&'static str, u64> = HashMap::new();
     let mut ufreq_meter = UfreqMeter::default();
@@ -149,9 +166,13 @@ fn worker(
     let mut last_outputs: IndexMap<&'static str, Data> = IndexMap::new();
     // Seed off-tick (its `setup` / first-tick spawn may block). A failure surfaces via an
     // unsolicited Done so the node border reddens like an inline bootstrap error.
+    stage.store(STAGE_SETUP, std::sync::atomic::Ordering::Relaxed);
     if let Some(e) = seed_node(&mut *node, &params0, &mut ctx) {
         outbox.post(Done { outputs: IndexMap::new(), error: Some(e) });
     }
+    // Bootstrapped either way — a failed setup reports through the error channel, not by
+    // leaving the node spinning forever.
+    stage.store(STAGE_READY, std::sync::atomic::Ordering::Relaxed);
     while let Some(job) = inbox.wait() {
         ctx.now = job.now;
         let err = execute_node(

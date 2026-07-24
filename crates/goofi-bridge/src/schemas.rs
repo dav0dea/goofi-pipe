@@ -240,7 +240,7 @@ pub fn node_instance_info(g: &Graph, uid: Uid) -> Value {
         "inputs": {},
         "membership": membership(g, uid),
         "error": g.last_error(uid),
-        "stage": "ready",
+        "stage": g.node_stage(uid),
         "stats": Value::Null,
         "restarts": 0,
         "log_endpoint": Value::Null,
