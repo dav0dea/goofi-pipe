@@ -18,6 +18,7 @@
 	import { graph } from '$lib/stores/graph.svelte';
 	import { linkedNodeName, withLinkedNode } from '$lib/workspace/panelState';
 	import { copyText } from '$lib/clipboard';
+	import { Bar, Chip, Badge, IconButton, EmptyState } from '$lib/ui';
 	import { onDestroy, tick } from 'svelte';
 
 	let { panelId, state: linkState, setState }: PanelProps = $props();
@@ -227,32 +228,41 @@
 </script>
 
 <div class="wrap" data-testid="console-panel">
-	<div class="bar">
-		<button
-			class="chip"
-			class:on={showStdout}
-			onclick={() => (showStdout = !showStdout)}
-			title="Show stdout">out</button
-		>
-		<button
-			class="chip err"
-			class:on={showStderr}
-			onclick={() => (showStderr = !showStderr)}
-			title="Show stderr">err</button
-		>
-		<span class="spacer"></span>
-		{#if filterName}
-			<span class="fl">filtering</span>
-			<span class="fn" title={filterLabel}>{filterLabel}</span>
-			<button class="clearf" title="Show all nodes" aria-label="Clear filter" onclick={clearFilter}
-				>✕</button
+	<Bar>
+		{#snippet start()}
+			<Chip
+				tone={showStdout ? 'accent' : 'neutral'}
+				aria-pressed={showStdout}
+				onclick={() => (showStdout = !showStdout)}
+				title="Show stdout">out</Chip
 			>
-		{/if}
-	</div>
+			<Chip
+				tone={showStderr ? 'danger' : 'neutral'}
+				aria-pressed={showStderr}
+				onclick={() => (showStderr = !showStderr)}
+				title="Show stderr">err</Chip
+			>
+		{/snippet}
+		{#snippet end()}
+			{#if filterName}
+				<span class="fl">filtering</span>
+				<span class="fn" title={filterLabel}>{filterLabel}</span>
+				<IconButton
+					variant="ghost"
+					size="sm"
+					title="Show all nodes"
+					label="Clear filter"
+					onclick={clearFilter}>✕</IconButton
+				>
+			{/if}
+		{/snippet}
+	</Bar>
 
 	<div class="scroll" bind:this={scrollEl} bind:clientHeight={viewportH} onscroll={onScroll}>
 		{#if layout.n === 0}
-			<div class="empty">No output{filterName ? ' for this node' : ''} yet.</div>
+			<EmptyState>
+				{#snippet hint()}No output{filterName ? ' for this node' : ''} yet.{/snippet}
+			</EmptyState>
 		{:else}
 			<div style="height:{topPad}px"></div>
 			{#each windowRows as row (row.e.uid)}
@@ -291,20 +301,22 @@
 					<pre class="txt" class:clamp={!row.exp}>{row.e.text}</pre>
 					<div class="actions">
 						{#if row.e.count > 1}
-							<span class="cnt" data-testid="console-count" title="{row.e.count} occurrences"
-								>×{row.e.count}</span
+							<Badge data-testid="console-count" title="{row.e.count} occurrences"
+								>×{row.e.count}</Badge
 							>
 						{/if}
-						<button
-							class="copy"
+						<!-- TODO(R): hover-only reveal, needs a coarse-pointer door -->
+						<IconButton
+							class="console-copy-btn"
+							size="sm"
 							data-testid="console-copy"
 							title="Copy message"
-							aria-label="Copy message"
+							label="Copy message"
 							onmousedown={(ev) => ev.stopPropagation()}
 							onclick={(ev) => {
 								ev.stopPropagation();
 								copy(row.e.text, row.e.uid);
-							}}>{copiedUid === row.e.uid ? '✓' : '⧉'}</button
+							}}>{copiedUid === row.e.uid ? '✓' : '⧉'}</IconButton
 						>
 					</div>
 				</div>
@@ -314,12 +326,12 @@
 	</div>
 
 	{#if !stuck && layout.n > 0}
-		<button
-			class="to-bottom"
+		<IconButton
+			class="to-bottom-fab"
 			data-testid="console-to-bottom"
 			title="Scroll to bottom"
-			aria-label="Scroll to bottom"
-			onclick={scrollToBottom}>↓</button
+			label="Scroll to bottom"
+			onclick={scrollToBottom}>↓</IconButton
 		>
 	{/if}
 
@@ -336,67 +348,22 @@
 		flex-direction: column;
 		min-height: 0;
 	}
-	.bar {
-		display: flex;
-		align-items: center;
-		gap: 6px;
-		flex: 0 0 auto;
-		padding: 4px 8px;
-		background: var(--surface-1);
-		border-bottom: 1px solid var(--border);
-		font-size: 0.78rem;
-	}
-	.spacer {
-		flex: 1 1 auto;
-	}
-	.chip {
-		font-family: var(--font-mono);
-		font-size: 10px;
-		padding: 1px 8px;
-		border-radius: 999px;
-		border: 1px solid var(--border);
-		background: transparent;
-		color: var(--text-muted);
-		cursor: pointer;
-	}
-	.chip.on {
-		color: var(--text);
-		border-color: var(--border-strong);
-		background: var(--surface-3);
-	}
-	.chip.err.on {
-		color: var(--danger);
-		border-color: color-mix(in srgb, var(--danger) 50%, transparent);
-		background: color-mix(in srgb, var(--danger) 14%, transparent);
-	}
 	.fl {
 		color: var(--text-muted);
+		font-size: 0.78rem;
 	}
 	.fn {
 		font-family: var(--font-mono);
+		font-size: 0.78rem;
 		color: var(--text);
 		max-width: 140px;
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;
 	}
-	.clearf {
-		width: 18px;
-		height: 18px;
-		display: grid;
-		place-items: center;
-		padding: 0;
-		font-size: 0.7rem;
-		background: transparent;
-		border: none;
-		border-radius: var(--radius-sm);
-		color: var(--text-muted);
-		cursor: pointer;
-	}
-	.clearf:hover {
-		color: var(--danger);
-		background: var(--surface-2);
-	}
+	/* The virtual scroller keeps its own DOM handle (scrollTop / measured heights / onscroll),
+	   so the container stays a native div rather than the ScrollArea component — it only adopts
+	   ScrollArea's thin app-palette scrollbar chrome. */
 	.scroll {
 		flex: 1;
 		overflow-y: auto;
@@ -404,6 +371,21 @@
 		min-height: 0;
 		font-family: var(--font-mono);
 		font-size: 11px;
+		scrollbar-width: thin;
+		scrollbar-color: var(--surface-3) transparent;
+	}
+	.scroll::-webkit-scrollbar {
+		width: 8px;
+	}
+	.scroll::-webkit-scrollbar-track {
+		background: transparent;
+	}
+	.scroll::-webkit-scrollbar-thumb {
+		background: var(--surface-3);
+		border-radius: var(--radius-md);
+	}
+	.scroll::-webkit-scrollbar-thumb:hover {
+		background: var(--border-strong);
 	}
 	.row {
 		display: flex;
@@ -474,71 +456,28 @@
 		align-items: center;
 		gap: 4px;
 	}
-	.cnt {
-		line-height: 16px;
-		font-size: 10px;
-		color: var(--text);
-		background: var(--surface-3);
-		border: 1px solid var(--border-strong);
-		border-radius: 999px;
-		padding: 0 6px;
-	}
-	/* Hover-only per-message copy. Always occupies its slot (no reflow on hover);
-	   only fades in — and becomes clickable — when the row is hovered/focused. */
-	.copy {
-		width: 18px;
-		height: 18px;
-		display: grid;
-		place-items: center;
-		padding: 0;
-		font-size: 11px;
-		line-height: 1;
-		background: var(--surface-3);
-		border: 1px solid var(--border-strong);
-		border-radius: var(--radius-sm);
-		color: var(--text-dim);
-		cursor: pointer;
+	/* Hover-only per-message copy (an IconButton). Always occupies its slot (no reflow on hover);
+	   only fades in — and becomes clickable — when the row is hovered/focused.
+	   TODO(R): hover-only reveal, needs a coarse-pointer door (CLAUDE.md forbids hover-only). */
+	.row :global(.console-copy-btn) {
 		opacity: 0;
 		pointer-events: none;
 		transition: opacity 0.1s;
 	}
-	.row:hover .copy,
-	.row:focus-within .copy {
+	.row:hover :global(.console-copy-btn),
+	.row:focus-within :global(.console-copy-btn) {
 		opacity: 1;
 		pointer-events: auto;
 	}
-	.copy:hover {
-		color: var(--text);
-		border-color: var(--accent);
-	}
-	.empty {
-		color: var(--text-muted);
-		font-size: 11px;
-		padding: 10px;
-	}
-	/* Appears only while scrolled up; jumps back to the live tail. */
-	.to-bottom {
+	/* Appears only while scrolled up; jumps back to the live tail. Round FAB chrome on top of
+	   the IconButton primitive. */
+	.wrap :global(.to-bottom-fab) {
 		position: absolute;
 		right: 12px;
 		bottom: 12px;
-		width: 30px;
-		height: 30px;
-		display: grid;
-		place-items: center;
-		padding: 0;
-		font-size: 15px;
-		line-height: 1;
 		border-radius: 999px;
-		border: 1px solid var(--border-strong);
-		background: var(--surface-3);
-		color: var(--text);
-		cursor: pointer;
 		box-shadow: var(--shadow-1);
 		z-index: 2;
-	}
-	.to-bottom:hover {
-		border-color: var(--accent);
-		color: var(--accent);
 	}
 	.drop-hint {
 		position: absolute;
