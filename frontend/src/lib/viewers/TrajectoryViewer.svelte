@@ -3,6 +3,7 @@
 	import type { SettingsMap } from './settingsSchema';
 	import { onMount, onDestroy } from 'svelte';
 	import { formatTick as fmtTick } from './format';
+	import { SERIES } from './palette';
 
 	type Props = { frame: DataFrame; settings?: SettingsMap };
 	const { frame, settings = {} }: Props = $props();
@@ -37,10 +38,6 @@
 	// Last parsed rows (n × nTime), kept so a resize or settings change can
 	// redraw without waiting for a fresh data frame.
 	let rows: number[][] = [];
-
-	const PALETTE = ['#7ab7ff', '#b58cff', '#5dd09a', '#ffb761', '#ff7aa2', '#9aa3b3', '#c5c8d6'];
-
-
 
 	/** All i<j row pairs → one trajectory each, matching the old viewer's
 	 * n*(n-1)/2 behaviour (row i is x, row j is y). Capped for safety. */
@@ -206,7 +203,7 @@
 				const [i, j] = pairs[k];
 				const xr = rows[i];
 				const yr = rows[j];
-				const color = PALETTE[k % PALETTE.length];
+				const color = SERIES[k % SERIES.length];
 
 				ctx.strokeStyle = color;
 				ctx.lineWidth = 1.4;

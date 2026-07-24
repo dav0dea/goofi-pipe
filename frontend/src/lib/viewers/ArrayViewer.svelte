@@ -7,6 +7,7 @@
 	import { decimateMinMax } from './decimate';
 	import { readEnvelope, envelopeBand } from './envelope';
 	import { formatTick as fmtTick } from './format';
+	import { SERIES } from './palette';
 
 	type Props = { frame: DataFrame; settings?: SettingsMap };
 	const { frame, settings = {} }: Props = $props();
@@ -75,24 +76,12 @@
 	let cursorValues = $state<(number | null)[]>([]);
 	let cursorXValue = $state<number | null>(null);
 
-
-	const PALETTE = [
-		'#7ab7ff',
-		'#b58cff',
-		'#5dd09a',
-		'#ffb761',
-		'#ff7aa2',
-		'#9aa3b3',
-		'#c5c8d6',
-		'#6e7686'
-	];
-
 	function buildSeries(nSeries: number): uPlot.Series[] {
 		const out: uPlot.Series[] = [{ label: 'x' }];
 		for (let i = 0; i < nSeries; i++) {
 			out.push({
 				label: `c${i}`,
-				stroke: PALETTE[i % PALETTE.length],
+				stroke: SERIES[i % SERIES.length],
 				width: 1,
 				points: { show: mPoints, size: 4 }
 			});
@@ -185,7 +174,7 @@
 						: { auto: false, distr: mLogY ? 3 : 1, range: [mYMin, mYMax] }
 				};
 		const series: uPlot.Series[] = scalarMode
-			? [{ label: 'x' }, { label: 'v', stroke: PALETTE[0], width: 2, points: { show: false } }]
+			? [{ label: 'x' }, { label: 'v', stroke: SERIES[0], width: 2, points: { show: false } }]
 			: buildSeries(nSeries);
 		const opts: uPlot.Options = {
 			width: Math.max(60, width),
@@ -449,7 +438,7 @@
 		<div class="cursor-chip" data-testid="cursor-chip">
 			<span class="cursor-x">x={cursorXValue !== null ? fmtTick(cursorXValue) : '—'}</span>
 			{#each cursorValues as v, i (i)}
-				<span class="cursor-y" style="color: {PALETTE[i % PALETTE.length]};">
+				<span class="cursor-y" style="color: {SERIES[i % SERIES.length]};">
 					{v !== null ? fmtTick(v) : '—'}
 				</span>
 			{/each}
