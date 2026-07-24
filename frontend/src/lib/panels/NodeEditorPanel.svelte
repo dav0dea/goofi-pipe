@@ -68,6 +68,7 @@
 	import { registerEditor, unregisterEditor } from './editorCommands';
 	import InspectorOverlay from './InspectorOverlay.svelte';
 	import { asStateObject } from '$lib/workspace/panelState';
+	import { Button, IconButton, EmptyState } from '$lib/ui';
 	import { onMount, untrack } from 'svelte';
 
 	let { panelId, state: panelState, setState }: PanelProps = $props();
@@ -970,17 +971,18 @@
 		{#if enteredPath.length > 0}
 			<!-- Sub-patch breadcrumb: where in the patch hierarchy this editor is. -->
 			<nav class="breadcrumb" data-testid="subpatch-breadcrumb" aria-label="Sub-patch path">
-				<button class="crumb" onclick={() => exitToDepth(0)} title="Back to the top-level patch"
-					>Patch</button
+				<Button variant="ghost" size="sm" onclick={() => exitToDepth(0)} title="Back to the top-level patch"
+					>Patch</Button
 				>
 				{#each enteredPath as inst, i (inst)}
 					{@const label = g.instances[inst]?.name ?? inst}
 					<span class="sep">›</span>
-					<button
-						class="crumb"
-						class:current={i === enteredPath.length - 1}
+					<Button
+						variant="ghost"
+						size="sm"
+						class={i === enteredPath.length - 1 ? 'crumb-current' : ''}
 						onclick={() => exitToDepth(i + 1)}
-						title="Go to {label}">{label}</button
+						title="Go to {label}">{label}</Button
 					>
 				{/each}
 			</nav>
@@ -1067,10 +1069,10 @@
 			<!-- First-run / empty-canvas hint. pointer-events:none so double-click
 			     (open add-node menu) and panning still reach the canvas underneath. -->
 			<div class="empty-hint" data-testid="empty-hint">
-				<div class="eh-title">{entered ? 'This sub-patch is empty' : 'Empty patch'}</div>
-				<div class="eh-body">
-					Double-click the canvas or press <kbd>+</kbd> to add a node.
-				</div>
+				<EmptyState>
+					{#snippet title()}{entered ? 'This sub-patch is empty' : 'Empty patch'}{/snippet}
+					{#snippet hint()}Double-click the canvas or press <kbd>+</kbd> to add a node.{/snippet}
+				</EmptyState>
 			</div>
 		{/if}
 
@@ -1121,17 +1123,16 @@
 		<!-- Always-visible affordance to toggle this editor's inspector. While the
 		     inspector is open (a node selected) the pane covers this icon — that's
 		     fine; deselecting brings it back into reach. -->
-		<button
+		<IconButton
 			class="inspector-toggle"
-			class:on={inspectorOn}
+			label="Toggle inspector"
 			title={inspectorOn ? 'Hide the inspector' : 'Show the inspector when a node is selected'}
-			aria-label="Toggle inspector"
 			aria-pressed={inspectorOn}
 			data-testid="inspector-toggle"
 			onclick={() => sel.toggleInspectorFor(panelId)}
 		>
 			◧
-		</button>
+		</IconButton>
 
 		<!-- Per-editor selection inspector — slides in within this panel. -->
 		<InspectorOverlay node={selectedNode} enabled={inspectorOn} />
@@ -1167,26 +1168,12 @@
 		position: absolute;
 		inset: 0;
 		display: flex;
-		flex-direction: column;
 		align-items: center;
 		justify-content: center;
-		gap: 8px;
-		text-align: center;
 		pointer-events: none;
-		color: var(--text-muted);
 		z-index: 1;
 	}
-	.eh-title {
-		font-size: 15px;
-		font-weight: 600;
-		color: var(--text-dim);
-	}
-	.eh-body {
-		font-size: 12px;
-		line-height: 1.6;
-		max-width: 320px;
-	}
-	.eh-body kbd {
+	.empty-hint kbd {
 		font-family: var(--font-mono);
 		font-size: 11px;
 		padding: 1px 5px;
@@ -1194,41 +1181,18 @@
 		border-radius: 4px;
 		background: var(--surface-1);
 	}
-	/* Per-editor inspector affordance, parked top-right. Subtle until hovered so
-	   it doesn't compete with the canvas; only shown while the inspector is off. */
-	.inspector-toggle {
+	/* Per-editor inspector affordance (an IconButton), parked top-right. Subtle until hovered so
+	   it doesn't compete with the canvas; brought forward while the inspector is on (aria-pressed). */
+	.editor-panel :global(.inspector-toggle) {
 		position: absolute;
 		top: 10px;
 		right: 10px;
 		z-index: 5;
-		width: 26px;
-		height: 26px;
-		display: grid;
-		place-items: center;
-		padding: 0;
-		font-size: 13px;
-		background: color-mix(in srgb, var(--surface-1) 80%, transparent);
-		border: 1px solid var(--border);
-		border-radius: var(--radius-sm);
-		color: var(--text-muted);
 		opacity: 0.5;
-		cursor: pointer;
-		transition:
-			opacity 100ms ease,
-			color 100ms ease,
-			border-color 100ms ease;
 	}
-	.inspector-toggle:hover {
+	.editor-panel :global(.inspector-toggle:hover),
+	.editor-panel :global(.inspector-toggle[aria-pressed='true']) {
 		opacity: 1;
-		color: var(--text);
-		border-color: var(--accent);
-	}
-	/* Subtly indicate the inspector is enabled (it's just hidden because nothing
-	   is selected) vs. disabled. */
-	.inspector-toggle.on {
-		opacity: 0.9;
-		color: var(--text);
-		border-color: var(--accent);
 	}
 	.link-ghost {
 		position: fixed;
@@ -1283,26 +1247,11 @@
 		font-family: var(--font-mono);
 		font-size: 11px;
 	}
-	.breadcrumb .crumb {
-		background: transparent;
-		border: none;
-		padding: 1px 4px;
-		border-radius: var(--radius-sm);
-		color: var(--text-dim);
-		cursor: pointer;
-		white-space: nowrap;
-		overflow: hidden;
-		text-overflow: ellipsis;
-		max-width: 160px;
-	}
-	.breadcrumb .crumb:hover {
-		color: var(--text);
-		background: color-mix(in srgb, var(--accent) 16%, transparent);
-	}
-	.breadcrumb .crumb.current {
-		color: var(--text);
+	/* The current (deepest) crumb reads as where-you-are: bold. The crumbs are ghost Buttons,
+	   so this targets the primitive's element via :global. */
+	.breadcrumb :global(.crumb-current) {
 		font-weight: 600;
-		cursor: default;
+		color: var(--text);
 	}
 	.breadcrumb .sep {
 		color: var(--text-muted);
