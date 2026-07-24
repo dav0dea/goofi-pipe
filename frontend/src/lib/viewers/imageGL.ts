@@ -7,10 +7,10 @@
  * normalization, and — by sizing the drawing buffer to the element's CSS box —
  * the GPU downsamples an HD frame to the ~70× fewer on-screen pixels.
  *
- * The wire is f32-only, so every texture here is a float texture. Grayscale (R32F)
- * and RGBA (RGBA32F) go through the GPU; RGB and gray+alpha fall back to the 2D path
- * in ImageViewer (RGB32F is not core-guaranteed). Returns null from tryCreate() when
- * WebGL2 is unavailable so the caller degrades to 2D.
+ * The wire is f32-only, so every texture here is a float texture: grayscale (R32F),
+ * RGB (RGB32F) and RGBA (RGBA32F) all go through the GPU. Only gray+alpha falls back
+ * to the 2D path in ImageViewer. Returns null from tryCreate() when WebGL2 is
+ * unavailable so the caller degrades to 2D.
  */
 import { isFloatDtype } from '$lib/codec/decode';
 
@@ -54,14 +54,16 @@ export interface RenderOpts {
 	cssH: number;
 }
 
-/** Whether the GL path supports a given (channels, dtype). The rest fall to 2D. */
+/** Whether the GL path supports a given (channels, dtype). The rest fall to 2D.
+ *
+ * RGB32F is a REQUIRED sized internal format for textures in WebGL2 (ES 3.0 table 3.13) — it is
+ * merely not color-renderable and not texture-filterable, neither of which this renderer needs
+ * (it only samples, and already drops to NEAREST without `OES_texture_float_linear`). RGB used to
+ * be excluded on the renderability grounds, which sent every video frame down the 2D path's
+ * w*h*3-iteration JS loop. */
 export function glSupports(c: number, dtype: string): boolean {
 	if (!isFloatDtype(dtype)) return false; // the wire is f32-only; anything else is a bug upstream
-	if (c === 1) return true; // R32F
-	if (c === 4) return true; // RGBA32F
-	// KNOWN PERF GAP: c === 3 (RGB video) always falls to the slow 2D path, because RGB32F is not
-	// a core-guaranteed renderable/filterable format. Tracked separately from the f32 fold.
-	return false; // c === 2 (gray+alpha), c === 3 (RGB)
+	return c === 1 || c === 3 || c === 4; // R32F / RGB32F / RGBA32F — c === 2 (gray+alpha) is 2D
 }
 
 function compile(gl: WebGL2RenderingContext, type: number, src: string): WebGLShader | null {
@@ -143,9 +145,9 @@ export class GLImageRenderer {
 		}
 
 		const mode = c === 1 ? 0 : c === 3 ? 1 : 2;
-		// f32-only wire → always a float texture (`glSupports` admits c === 1 and c === 4).
-		const internal = c === 1 ? gl.R32F : gl.RGBA32F;
-		const format = c === 1 ? gl.RED : gl.RGBA;
+		// f32-only wire → always a float texture, one per channel count (`glSupports` gates c).
+		const internal = c === 1 ? gl.R32F : c === 3 ? gl.RGB32F : gl.RGBA32F;
+		const format = c === 1 ? gl.RED : c === 3 ? gl.RGB : gl.RGBA;
 
 		gl.activeTexture(gl.TEXTURE0);
 		gl.bindTexture(gl.TEXTURE_2D, this.tex);
