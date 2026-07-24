@@ -35,6 +35,9 @@
 	--danger-fill: color-mix(in srgb, var(--danger) 16%, transparent);
 	--success-fill: color-mix(in srgb, var(--success) 16%, transparent);
 	--warning-fill: color-mix(in srgb, var(--warning) 16%, transparent);
+	/* Ink that sits ON a filled semantic surface (accent button/menu-hover, danger banner/toast). */
+	--on-accent: #0a0c10; /* near-black text on --accent fills */
+	--on-danger: #ffffff; /* light text on --danger fills */
 
 	/* Spacing — rem, ~2px grid (audit §5: 78% already on grid). --space-8 (24) is the one
 	   extrapolated step for empty-state/modal padding. */
@@ -162,7 +165,7 @@ button:disabled {
 }
 button.primary {
 	background: var(--accent);
-	color: #0a0c10;
+	color: var(--on-accent);
 	border-color: var(--accent);
 	font-weight: 600;
 }

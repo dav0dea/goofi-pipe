@@ -224,7 +224,7 @@
 	.boot-label {
 		flex: 0 0 auto;
 		font-size: 9px;
-		color: var(--text-muted, #8a8f98);
+		color: var(--text-muted);
 		font-style: italic;
 	}
 	/* Undo/redo just reoriented here — a one-shot ring pulse to catch the eye
@@ -285,7 +285,7 @@
 	.rate {
 		flex: 0 0 auto;
 		font-size: 9px;
-		color: var(--text-muted, #8a8f98);
+		color: var(--text-muted);
 		font-variant-numeric: tabular-nums;
 		opacity: 0.3;
 		transition: opacity 120ms ease;

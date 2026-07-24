@@ -262,14 +262,14 @@
 		justify-content: center;
 		gap: 0.75rem;
 		padding: 0.4rem 0.75rem;
-		background: var(--danger, #c0392b);
-		color: #fff;
+		background: var(--danger);
+		color: var(--on-danger);
 		font-size: 0.85rem;
 	}
 	.proto-banner button {
-		border: 1px solid #fff;
+		border: 1px solid var(--on-danger);
 		background: transparent;
-		color: #fff;
+		color: var(--on-danger);
 		border-radius: 4px;
 		padding: 0.15rem 0.6rem;
 		cursor: pointer;

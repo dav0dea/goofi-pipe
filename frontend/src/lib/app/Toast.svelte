@@ -34,7 +34,7 @@
 		border: none;
 		border-radius: 6px;
 		background: var(--danger);
-		color: #fff;
+		color: var(--on-danger);
 		font: inherit;
 		font-size: 0.85rem;
 		text-align: left;

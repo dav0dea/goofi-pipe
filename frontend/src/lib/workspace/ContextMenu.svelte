@@ -140,7 +140,7 @@
 	}
 	.item:hover:not(:disabled) {
 		background: var(--accent);
-		color: #0a0c10;
+		color: var(--on-accent);
 	}
 	.item:disabled {
 		opacity: 0.4;
