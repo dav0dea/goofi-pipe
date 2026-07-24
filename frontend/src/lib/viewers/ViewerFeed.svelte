@@ -12,6 +12,7 @@
 	import type { DataFrame } from '$lib/codec/decode';
 	import ViewerSurface from './ViewerSurface.svelte';
 	import type { ViewBinding } from './viewBinding';
+	import { EmptyState } from '$lib/ui';
 	import { onMount } from 'svelte';
 
 	let { node, slot, binding }: { node: string; slot: string | null; binding: ViewBinding } =
@@ -87,7 +88,9 @@
 
 <div class="viewer-feed" bind:this={container}>
 	{#if !slot}
-		<div class="placeholder">node has no output slots</div>
+		<EmptyState>
+			{#snippet hint()}node has no output slots{/snippet}
+		</EmptyState>
 	{:else}
 		<ViewerSurface {frame} {kind} {settings} />
 	{/if}
@@ -107,12 +110,5 @@
 		flex: 1;
 		min-width: 0;
 		min-height: 0;
-	}
-	.placeholder {
-		flex: 1;
-		display: grid;
-		place-items: center;
-		color: var(--text-muted);
-		font-size: 0.82rem;
 	}
 </style>

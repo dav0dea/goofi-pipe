@@ -13,6 +13,7 @@
 	import { isRenderable, type ViewerKind } from './kind';
 	import { summaryOf } from './viewMeta';
 	import type { SettingsMap } from './settingsSchema';
+	import { EmptyState } from '$lib/ui';
 	import ArrayViewer from './ArrayViewer.svelte';
 	import ImageViewer from './ImageViewer.svelte';
 	import TrajectoryViewer from './TrajectoryViewer.svelte';
@@ -40,7 +41,9 @@
 </script>
 
 {#if !frame}
-	<div class="vs-placeholder">no data yet</div>
+	<EmptyState>
+		{#snippet hint()}no data yet{/snippet}
+	</EmptyState>
 {:else if summary}
 	<HighDimFallback {summary} />
 {:else if isArrayFrame(frame)}
@@ -59,12 +62,3 @@
 	<TableViewer {frame} {settings} />
 {/if}
 
-<style>
-	.vs-placeholder {
-		flex: 1;
-		display: grid;
-		place-items: center;
-		color: var(--text-muted);
-		font-size: 0.82rem;
-	}
-</style>
