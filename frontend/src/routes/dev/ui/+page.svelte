@@ -24,13 +24,27 @@
 		Popover,
 		Dialog,
 		PanelShell,
+		Badge,
+		Chip,
+		StatusDot,
+		Spinner,
+		EmptyState,
 		type ButtonVariant,
 		type ButtonSize,
-		type TabItem
+		type TabItem,
+		type BadgeTone,
+		type StatusTone,
+		type StatusDotSize,
+		type SpinnerSize
 	} from '$lib/ui';
 
 	const variants: ButtonVariant[] = ['default', 'primary', 'ghost', 'danger'];
 	const sizes: ButtonSize[] = ['sm', 'md'];
+	// Display primitives (Task 6): every tone/size axis, driven from typed unions.
+	const badgeTones: BadgeTone[] = ['neutral', 'accent', 'success', 'warning', 'danger'];
+	const statusTones: StatusTone[] = ['ok', 'error', 'warn'];
+	const dotSizes: StatusDotSize[] = ['sm', 'md'];
+	const spinnerSizes: SpinnerSize[] = ['sm', 'md'];
 	// Single-character glyphs so the IconButton glyph stays visibly small.
 	const glyphs: Record<ButtonVariant, string> = {
 		default: '⚙', // gear
@@ -70,6 +84,9 @@
 	let popoverAnchor = $state<HTMLElement | null>(null);
 	let popoverOpen = $state(false);
 	let dialogOpen = $state(false);
+
+	// Display: the Chip is the one pressable display primitive — a click read-out proves it fires.
+	let chipCount = $state(0);
 
 	function doRefresh(): void {
 		// Simulate a device/stream re-scan: spin briefly, then land a fresh option set.
@@ -393,6 +410,73 @@
 			</PanelShell>
 		</div>
 	</section>
+
+	<section>
+		<h2>Badge (static tone pill)</h2>
+		<!-- The five tones; success shares the accent token by design, so the e2e checks the four
+		     meaningfully-distinct tones resolve to distinct text colours. -->
+		<div class="grid">
+			{#each badgeTones as tone (tone)}
+				<Badge {tone} data-testid={`ui-badge-${tone}`}>{tone}</Badge>
+			{/each}
+		</div>
+	</section>
+
+	<section>
+		<h2>Chip (pressable tone pill)</h2>
+		<div class="grid">
+			{#each badgeTones as tone (tone)}
+				<Chip {tone} data-testid={`ui-chip-${tone}`}>{tone}</Chip>
+			{/each}
+		</div>
+		<div class="form">
+			<Chip tone="accent" onclick={() => (chipCount += 1)} data-testid="ui-chip">click me</Chip>
+			<span class="readout" data-testid="ui-chip-count">{chipCount}</span>
+		</div>
+	</section>
+
+	<section>
+		<h2>StatusDot (no glow)</h2>
+		<!-- Each tone is a plain filled circle — NO box-shadow halo (the health-dot regression guard). -->
+		<Row gap={6}>
+			{#each statusTones as tone (tone)}
+				<Row gap={2}>
+					<StatusDot {tone} data-testid={`ui-statusdot-${tone}`} />
+					<span class="readout">{tone}</span>
+				</Row>
+			{/each}
+		</Row>
+		<Row gap={6}>
+			{#each dotSizes as size (size)}
+				<StatusDot tone="ok" {size} data-testid={`ui-statusdot-size-${size}`} />
+			{/each}
+		</Row>
+	</section>
+
+	<section>
+		<h2>Spinner (CSS ring)</h2>
+		<Row gap={6}>
+			{#each spinnerSizes as size (size)}
+				<Spinner {size} data-testid={`ui-spinner-${size}`} />
+			{/each}
+		</Row>
+	</section>
+
+	<section>
+		<h2>EmptyState (centred placeholder)</h2>
+		<!-- Full: icon + title + hint, centred on both axes inside a bounded frame. -->
+		<div class="empty-frame">
+			<EmptyState data-testid="ui-emptystate">
+				{#snippet icon()}◎{/snippet}
+				{#snippet title()}No nodes yet{/snippet}
+				{#snippet hint()}Add a node from the palette to get started.{/snippet}
+			</EmptyState>
+		</div>
+		<!-- Bare: no snippets — must still render as a valid (empty) centred box. -->
+		<div class="empty-frame">
+			<EmptyState data-testid="ui-emptystate-bare" />
+		</div>
+	</section>
 </main>
 
 <style>
@@ -513,5 +597,16 @@
 		border: 1px solid var(--border);
 		border-radius: var(--radius-sm);
 		overflow: hidden;
+	}
+	/* Bounded frame the EmptyState fills (single grid cell → stretches both axes), so its own
+	   both-axis centering is what's measured. */
+	.empty-frame {
+		display: grid;
+		height: 10rem;
+		width: 20rem;
+		max-width: 100%;
+		margin-top: var(--space-4);
+		border: 1px solid var(--border);
+		border-radius: var(--radius-sm);
 	}
 </style>

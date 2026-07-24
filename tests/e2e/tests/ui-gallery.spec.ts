@@ -377,3 +377,85 @@ test.describe('UI surfaces', () => {
 		expect(metrics.scroll, 'the shell body overflows and scrolls').toBeGreaterThan(metrics.client);
 	});
 });
+
+// Display primitives (Task 6): Badge, Chip, StatusDot, Spinner, EmptyState. Each assertion is
+// behavioural, not "renders": tones resolve to distinct colours, the pressable Chip fires its click,
+// the StatusDot carries NO glow (the named health-dot regression guard), and the EmptyState centres
+// on both axes. Runs under the `default` (fine-pointer) project like the rest of this file.
+test.describe('UI display primitives', () => {
+	const cssColor = (loc: import('@playwright/test').Locator, prop: 'color' | 'backgroundColor') =>
+		loc.evaluate((el, p) => getComputedStyle(el)[p], prop);
+
+	test('renders every Badge tone, and the meaningful tones are visually distinct', async ({ page }) => {
+		await page.goto('/dev/ui');
+		for (const tone of ['neutral', 'accent', 'success', 'warning', 'danger']) {
+			await expect(page.getByTestId(`ui-badge-${tone}`)).toBeVisible();
+		}
+		// success shares the accent token by design, so it is excluded — the four semantically-distinct
+		// tones must resolve to four distinct text colours (not all defaulting to one).
+		const colors = await Promise.all(
+			['neutral', 'accent', 'warning', 'danger'].map((t) => cssColor(page.getByTestId(`ui-badge-${t}`), 'color'))
+		);
+		expect(new Set(colors).size, 'neutral/accent/warning/danger badges are visually distinct').toBe(4);
+	});
+
+	test('renders every Chip tone', async ({ page }) => {
+		await page.goto('/dev/ui');
+		for (const tone of ['neutral', 'accent', 'success', 'warning', 'danger']) {
+			await expect(page.getByTestId(`ui-chip-${tone}`)).toBeVisible();
+		}
+	});
+
+	test('Chip is a real <button> and fires its onclick', async ({ page }) => {
+		await page.goto('/dev/ui');
+		const chip = page.getByTestId('ui-chip');
+		await expect(chip).toHaveJSProperty('tagName', 'BUTTON');
+		const count = page.getByTestId('ui-chip-count');
+		await expect(count).toHaveText('0');
+		await chip.click();
+		await expect(count, 'clicking the Chip fired its onclick').toHaveText('1');
+	});
+
+	test('StatusDot has NO glow (box-shadow none) — the health-dot regression guard', async ({ page }) => {
+		await page.goto('/dev/ui');
+		for (const tone of ['ok', 'error', 'warn']) {
+			const dot = page.getByTestId(`ui-statusdot-${tone}`);
+			await expect(dot).toBeVisible();
+			const shadow = await dot.evaluate((el) => getComputedStyle(el).boxShadow);
+			expect(shadow, `StatusDot ${tone} must carry no glow`).toBe('none');
+		}
+		// ok/error/warn are semantically different states → three distinct fill colours.
+		const fills = await Promise.all(
+			['ok', 'error', 'warn'].map((t) => cssColor(page.getByTestId(`ui-statusdot-${t}`), 'backgroundColor'))
+		);
+		expect(new Set(fills).size, 'ok/error/warn dots are distinct colours').toBe(3);
+	});
+
+	test('renders the Spinner in each size', async ({ page }) => {
+		await page.goto('/dev/ui');
+		await expect(page.getByTestId('ui-spinner-sm')).toBeVisible();
+		await expect(page.getByTestId('ui-spinner-md')).toBeVisible();
+	});
+
+	test('EmptyState centres its content on both axes and renders bare without snippets', async ({ page }) => {
+		await page.goto('/dev/ui');
+		const empty = page.getByTestId('ui-emptystate');
+		await expect(empty).toBeVisible();
+		const layout = await empty.evaluate((el) => {
+			const s = getComputedStyle(el);
+			return { display: s.display, direction: s.flexDirection, align: s.alignItems, justify: s.justifyContent };
+		});
+		expect(layout.display, 'a flex column').toBe('flex');
+		expect(layout.direction, 'stacked vertically').toBe('column');
+		expect(layout.align, 'cross-axis centred').toBe('center');
+		expect(layout.justify, 'main-axis centred').toBe('center');
+		// The content actually sits centred within the frame (not hugging the left edge).
+		const frameBox = (await empty.boundingBox())!;
+		const titleBox = (await page.getByTestId('ui-emptystate').getByText('No nodes yet').boundingBox())!;
+		const titleMid = titleBox.x + titleBox.width / 2;
+		const frameMid = frameBox.x + frameBox.width / 2;
+		expect(Math.abs(titleMid - frameMid), 'the title is horizontally centred in the frame').toBeLessThan(2);
+		// A bare EmptyState (no icon/title/hint snippets) still renders as a valid centred box.
+		await expect(page.getByTestId('ui-emptystate-bare')).toBeVisible();
+	});
+});
