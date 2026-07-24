@@ -18,7 +18,7 @@ export function slotKey(node: string, slot: string): string {
 	return `${node}|${slot}`;
 }
 
-class UIStore {
+export class UIStore {
 	/** Per-slot expand state. Keys are `${node}|${slot}`; entries are the
 	 * explicit user-set values. Slots without an entry default to expanded
 	 * — viewers should be visible the moment a node arrives, and the user
@@ -26,9 +26,19 @@ class UIStore {
 	 */
 	expanded = $state<Record<string, boolean>>({});
 
-	/** True while a modal (e.g. the expression editor) owns the keyboard, so
-	 * global shortcuts — undo/redo in particular — stand down. */
-	modalOpen = $state(false);
+	/** Ids of the in-panel editors (the fx multi-line) that currently own the
+	 * keyboard. A ref-count, not a shared boolean: each open editor registers
+	 * its own id, so collapsing one never yanks another's standdown, and a leaked
+	 * `true` from a field that unmounted mid-edit can't strand the flag. Reassigned
+	 * (never mutated in place) so `modalOpen` tracks it reactively. */
+	openEditors = $state(new Set<string>());
+
+	/** True while any in-panel editor owns the keyboard, so global shortcuts —
+	 * undo/redo in particular — stand down. Derived from `openEditors` so the two
+	 * readers (undoKeys, AppShell) keep reading `.modalOpen` unchanged. */
+	get modalOpen(): boolean {
+		return this.openEditors.size > 0;
+	}
 
 	/** Bubbled-up "user clicked an unconnected port" intent. Editor.svelte
 	 * watches this via $effect and pops the add-node menu pre-seeded for
@@ -44,6 +54,22 @@ class UIStore {
 	/** Id of the linkable panel the dragged node is currently over, so that
 	 * panel can show the active drop highlight. Null when over none. */
 	nodeDragTarget = $state<string | null>(null);
+
+	/** Register an open in-panel editor by a stable id (idempotent). */
+	openEditor(id: string): void {
+		if (this.openEditors.has(id)) return;
+		const next = new Set(this.openEditors);
+		next.add(id);
+		this.openEditors = next;
+	}
+
+	/** Unregister an editor when it collapses or unmounts (idempotent). */
+	closeEditor(id: string): void {
+		if (!this.openEditors.has(id)) return;
+		const next = new Set(this.openEditors);
+		next.delete(id);
+		this.openEditors = next;
+	}
 
 	requestSlotClick(seed: SlotClickSeed): void {
 		this.pendingSlotClick = seed;

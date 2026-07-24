@@ -8,6 +8,7 @@
  */
 import { graph } from '$lib/stores/graph.svelte';
 import { selection } from '$lib/stores/selection.svelte';
+import { ui } from '$lib/stores/ui.svelte';
 import { workspace } from '$lib/workspace/workspace.svelte';
 import { history } from '$lib/stores/history.svelte';
 import { latestFrame } from '$lib/api/frames';
@@ -125,6 +126,10 @@ export const query = {
 				kind: typeof s.kind === 'string' ? s.kind : null
 			};
 		}),
+
+	/** True while an in-panel editor (the fx multi-line) holds the keyboard, so global undo/redo
+	 * stands down. Exposed so the e2e can assert the standdown lifted after a node switch. */
+	modalOpen: (): boolean => ui().modalOpen,
 
 	// --- history -----------------------------------------------------------
 	canUndo: (): boolean => history().canUndo,

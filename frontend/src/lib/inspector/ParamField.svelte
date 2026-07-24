@@ -92,13 +92,28 @@
 	let multilineOpen = $state(false);
 	let multilineBuf = $state('');
 
+	// A stable per-field id so the global standdown is REF-COUNTED, not a shared boolean: two fields
+	// with an open editor each register their own id, and the standdown lifts only when the last one
+	// unregisters (§ inspector fix #3).
+	const editorId = $props.id();
+
+	// If the field leaves expression mode while its editor is open — fx toggled off via the adornment
+	// Chip, or an external descriptor change swaps this row to a non-expression param — drop the editor.
+	// This re-runs the standdown effect below so its cleanup fires and the field stops holding down
+	// global undo/redo (§ inspector fix #2A), instead of stranding `multilineOpen` on an unmounted
+	// textarea.
+	$effect(() => {
+		if (!fxActive && multilineOpen) multilineOpen = false;
+	});
+
 	// While the multi-line editor is open the global undo/redo stands down (else Ctrl-Z fights the
-	// textarea). Tying it to `multilineOpen` clears the flag on collapse AND on unmount (e.g. a node
-	// switch) via the effect's cleanup — the same coupling the old ExpressionModal had on mount/unmount.
+	// textarea). Registering by `editorId` clears the standdown on collapse AND on unmount (e.g. a node
+	// switch remounts this field) via the effect's cleanup — and ref-counts, so collapsing one editor
+	// never lifts another's standdown.
 	$effect(() => {
 		if (multilineOpen) {
-			ui().modalOpen = true;
-			return () => (ui().modalOpen = false);
+			ui().openEditor(editorId);
+			return () => ui().closeEditor(editorId);
 		}
 	});
 
