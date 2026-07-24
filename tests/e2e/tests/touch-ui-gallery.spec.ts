@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test';
+import { SAMPLES, controlLocator } from '../lib/uiSweep';
 
 // Runs ONLY under the `touch` project (Pixel 7 emulation → hasTouch+isMobile flip
 // (pointer:coarse)/(hover:none) true), so app.css floors --hit to 44px. The IconButton's
@@ -57,4 +58,22 @@ test('Tabs + Disclosure meet the 44px coarse tap target', async ({ page }) => {
 	const sbox = await summary.boundingBox();
 	expect(sbox, 'the disclosure summary has a rendered box').not.toBeNull();
 	expect(sbox!.height, 'disclosure summary height >= 44 under coarse').toBeGreaterThanOrEqual(44);
+});
+
+// The whole-library touch roll-up (Task 8). The named tests above spot-check a spread; this one
+// enumerates EVERY interactive primitive off the shared registry (pinned to `$lib/ui`'s barrel by the
+// default-project sweep) and asserts each one's real control meets the coarse 44px floor — so a future
+// interactive primitive is held to the touch floor automatically, not only if someone remembers to add
+// a case here. The control is the actual tappable element (a tab, a Disclosure summary, the range/select
+// inside a wrapper), not the sample wrapper.
+test('every interactive primitive meets the 44px coarse tap target', async ({ page }) => {
+	await page.goto('/dev/ui');
+	for (const [name, sample] of Object.entries(SAMPLES)) {
+		if (!sample.interactive) continue;
+		const control = controlLocator(page, sample);
+		await control.first().waitFor();
+		const box = await control.first().boundingBox();
+		expect(box, `${name} has a rendered control box`).not.toBeNull();
+		expect(box!.height, `${name} coarse tap-target height >= 44`).toBeGreaterThanOrEqual(44);
+	}
 });

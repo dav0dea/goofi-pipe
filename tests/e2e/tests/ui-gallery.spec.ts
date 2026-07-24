@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test';
+import { exportedPrimitives, SAMPLES } from '../lib/uiSweep';
 
 // The /dev/ui primitive gallery is a static, backend-free showcase, so we do NOT wait on
 // window.goofi (the AppShell/control-WS readiness gate the graph specs use) — we wait on the
@@ -497,5 +498,58 @@ test.describe('UI @container responsiveness', () => {
 		expect(wNumber.y, 'wide: they share the same row (vertical overlap)').toBeLessThan(
 			wSlider.y + wSlider.height
 		);
+	});
+});
+
+// The final whole-library sweep (Task 8). Earlier describes assert each primitive's BEHAVIOUR; this
+// one asserts the library as a SURFACE: the sample registry is pinned to `$lib/ui`'s export barrel,
+// every exported primitive has a visible gallery sample, and a keyboard-focused interactive control
+// rings. Its point is the enumeration — a future `export { default as Foo }` with no gallery entry
+// fails HERE, so the sweep can never silently skip a new primitive. The coarse touch-target roll-up
+// lives in `touch-ui-gallery.spec.ts` (only that file runs under the `touch` project). Default project.
+test.describe('UI library sweep (the whole export surface)', () => {
+	test('the sample registry covers exactly the exported primitive surface', () => {
+		// The SSOT is index.ts. If a primitive is exported without a registry entry (hence no gallery
+		// sample), or a stale entry points at a deleted primitive, these two sets diverge and this fails
+		// RED — the guard that keeps the render/touch roll-ups below honest about the full surface.
+		expect(Object.keys(SAMPLES).sort(), 'the registry mirrors the export barrel, 1:1').toEqual(
+			exportedPrimitives()
+		);
+	});
+
+	test('every exported primitive renders a representative sample in the gallery', async ({ page }) => {
+		await page.goto('/dev/ui');
+		for (const [name, sample] of Object.entries(SAMPLES)) {
+			await expect(page.getByTestId(sample.testid), `${name} has a visible gallery sample`).toBeVisible();
+		}
+	});
+
+	test('a keyboard-focused interactive primitive shows the app accent focus ring', async ({ page }) => {
+		await page.goto('/dev/ui');
+		await page.getByTestId(SAMPLES.Button.testid).waitFor(); // the page has rendered
+		// A real keyboard Tab (not programmatic focus) so :focus-visible engages; the first focusable
+		// element on this static page is a gallery interactive-control sample. The sweep asserts the
+		// invariant "an interactive primitive rings" against whatever control Tab reaches, rather than
+		// re-pinning one blessed control.
+		await page.keyboard.press('Tab');
+		const ring = await page.evaluate(() => {
+			const el = document.activeElement as HTMLElement | null;
+			if (!el || el === document.body) return { tag: '', testid: '', outlineWidth: '', outlineColor: '' };
+			const s = getComputedStyle(el);
+			return {
+				tag: el.tagName,
+				testid: el.closest('[data-testid]')?.getAttribute('data-testid') ?? '',
+				outlineWidth: s.outlineWidth,
+				outlineColor: s.outlineColor
+			};
+		});
+		expect(['BUTTON', 'INPUT', 'SELECT', 'TEXTAREA'], 'Tab lands on a real interactive control').toContain(
+			ring.tag
+		);
+		expect(ring.testid, 'the focused control is a gallery UI-primitive sample').toMatch(/^ui-/);
+		// The app rule specifically (2px solid --accent = #50d0a0), not merely "some outline", so a
+		// future UA-default outline could not pass this as a tautology.
+		expect(ring.outlineWidth, 'the app :focus-visible ring is 2px').toBe('2px');
+		expect(ring.outlineColor, 'the ring colour is --accent (#50d0a0)').toBe('rgb(80, 208, 160)');
 	});
 });
