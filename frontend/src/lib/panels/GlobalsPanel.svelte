@@ -12,6 +12,7 @@
 	import type { PanelProps } from '$lib/workspace/registry';
 	import { graph } from '$lib/stores/graph.svelte';
 	import { isValidGlobalName, type GlobalType, type GlobalView } from '$lib/crdt/graphDoc';
+	import { Button, IconButton, Select, NumberInput, TextInput, Toggle, ScrollArea } from '$lib/ui';
 
 	let { active }: PanelProps = $props();
 	const g = graph();
@@ -41,7 +42,7 @@
 	// Commit a value edit, parsing the raw widget value into the global's declared type.
 	// A non-numeric entry into a number type is rejected locally; a server rejection snaps the
 	// input back to the committed value on the next render (the mirrored doc is the source of truth).
-	function commitValue(gv: GlobalView, raw: string | boolean): void {
+	function commitValue(gv: GlobalView, raw: string | number | boolean): void {
 		let val: number | string | boolean;
 		if (gv.type === 'bool') val = raw === true;
 		else if (gv.type === 'string') val = String(raw);
@@ -55,13 +56,13 @@
 		});
 	}
 
-	// Commit a rename (user globals only). On rejection (invalid / collision / system) the input is
-	// snapped back to the current name — the store is the source of truth.
-	function commitName(gv: GlobalView, input: HTMLInputElement): void {
-		const next = input.value.trim();
+	// Commit a rename (user globals only). On rejection (invalid / collision / system) the store keeps
+	// the current name, so the control's live-value latch snaps the field back on the next render.
+	function commitName(gv: GlobalView, raw: string): void {
+		const next = raw.trim();
 		if (next === gv.name) return;
 		void g.renameGlobal(gv.name, next).catch(() => {
-			input.value = gv.name;
+			/* rejected — the field reverts to gv.name on the next mirror-back render */
 		});
 	}
 
@@ -71,106 +72,101 @@
 </script>
 
 <div class="wrap" class:active data-testid="globals-panel">
-	<div class="scroll">
-		<table>
-			<thead>
-				<tr>
-					<th class="c-name">Name</th>
-					<th class="c-val">Value</th>
-					<th class="c-act" aria-label="Actions"></th>
-				</tr>
-			</thead>
-			<tbody>
-				{#each globals as gv (gv.name)}
-					<tr data-testid="global-row" data-name={gv.name} data-system={gv.system}>
-						<td class="c-name">
-							{#if gv.system}
-								<span class="sysname" title="System global — value editable, name locked">
-									<span class="lock" aria-hidden="true">🔒</span>{gv.name}
-								</span>
-							{:else}
-								<input
-									class="name"
-									data-testid="global-name"
-									value={gv.name}
-									spellcheck="false"
-									autocomplete="off"
-									onchange={(e) => commitName(gv, e.currentTarget)}
-								/>
-							{/if}
-						</td>
-						<td class="c-val">
-							{#if gv.type === 'bool'}
-								<input
-									type="checkbox"
-									data-testid="global-value"
-									checked={gv.value === true}
-									onchange={(e) => commitValue(gv, e.currentTarget.checked)}
-								/>
-							{:else if gv.type === 'string'}
-								<input
-									class="val"
-									type="text"
-									data-testid="global-value"
-									value={String(gv.value)}
-									spellcheck="false"
-									autocomplete="off"
-									onchange={(e) => commitValue(gv, e.currentTarget.value)}
-								/>
-							{:else}
-								<input
-									class="val"
-									type="number"
-									data-testid="global-value"
-									step={gv.type === 'int' ? '1' : 'any'}
-									value={numberDisplay(gv)}
-									onchange={(e) => commitValue(gv, e.currentTarget.value)}
-								/>
-							{/if}
-						</td>
-						<td class="c-act">
-							<span class="type" title="type">{gv.type}</span>
-							{#if !gv.system}
-								<button
-									class="del"
-									data-testid="global-delete"
-									title="Delete global"
-									aria-label="Delete {gv.name}"
-									onclick={() => void g.removeGlobal(gv.name)}>✕</button
-								>
-							{/if}
-						</td>
+	<ScrollArea>
+		<div class="gp-body">
+			<table>
+				<thead>
+					<tr>
+						<th class="c-name">Name</th>
+						<th class="c-val">Value</th>
+						<th class="c-act" aria-label="Actions"></th>
 					</tr>
-				{/each}
-			</tbody>
-		</table>
+				</thead>
+				<tbody>
+					{#each globals as gv (gv.name)}
+						<tr data-testid="global-row" data-name={gv.name} data-system={gv.system}>
+							<td class="c-name">
+								{#if gv.system}
+									<span class="sysname" title="System global — value editable, name locked">
+										<span class="lock" aria-hidden="true">🔒</span>{gv.name}
+									</span>
+								{:else}
+									<TextInput
+										inputmode="search"
+										data-testid="global-name"
+										value={gv.name}
+										autocomplete="off"
+										onChange={(v) => commitName(gv, v)}
+									/>
+								{/if}
+							</td>
+							<td class="c-val">
+								{#if gv.type === 'bool'}
+									<Toggle
+										data-testid="global-value"
+										value={gv.value === true}
+										onChange={(v) => commitValue(gv, v)}
+									/>
+								{:else if gv.type === 'string'}
+									<TextInput
+										data-testid="global-value"
+										value={String(gv.value)}
+										onChange={(v) => commitValue(gv, v)}
+									/>
+								{:else}
+									<NumberInput
+										data-testid="global-value"
+										value={numberDisplay(gv)}
+										onChange={(v) => commitValue(gv, v)}
+									/>
+								{/if}
+							</td>
+							<td class="c-act">
+								<span class="type" title="type">{gv.type}</span>
+								{#if !gv.system}
+									<IconButton
+										variant="ghost"
+										size="sm"
+										data-testid="global-delete"
+										title="Delete global"
+										label="Delete {gv.name}"
+										onclick={() => void g.removeGlobal(gv.name)}>✕</IconButton
+									>
+								{/if}
+							</td>
+						</tr>
+					{/each}
+				</tbody>
+			</table>
 
-		<div class="add" data-testid="global-add">
-			<input
-				class="name"
-				data-testid="global-add-name"
-				placeholder="new_global"
-				bind:value={newName}
-				spellcheck="false"
-				autocomplete="off"
-				onkeydown={(e) => {
-					if (e.key === 'Enter') add();
-				}}
-			/>
-			<select class="type-sel" data-testid="global-add-type" bind:value={newType}>
-				<option value="float">float</option>
-				<option value="int">int</option>
-				<option value="bool">bool</option>
-				<option value="string">string</option>
-			</select>
-			<button class="addbtn" data-testid="global-add-btn" disabled={!canAdd} onclick={add}>Add</button>
+			<div class="add" data-testid="global-add">
+				<input
+					class="name"
+					data-testid="global-add-name"
+					placeholder="new_global"
+					bind:value={newName}
+					spellcheck="false"
+					autocomplete="off"
+					onkeydown={(e) => {
+						if (e.key === 'Enter') add();
+					}}
+				/>
+				<Select
+					style="flex: 0 1 auto"
+					data-testid="global-add-type"
+					value={newType}
+					onChange={(v) => (newType = v as GlobalType)}
+					options={['float', 'int', 'bool', 'string']}
+				/>
+				<Button size="sm" data-testid="global-add-btn" disabled={!canAdd} onclick={add}>Add</Button>
+			</div>
+			{#if newName && !isValidGlobalName(newName)}
+				<div class="hint bad">Not a valid identifier (letters, digits, _; can't start with a digit; not “globals”).</div>
+			{:else if nameTaken}
+				<div class="hint bad">A global named “{newName}” already exists.</div>
+			{/if}
 		</div>
-		{#if newName && !isValidGlobalName(newName)}
-			<div class="hint bad">Not a valid identifier (letters, digits, _; can't start with a digit; not “globals”).</div>
-		{:else if nameTaken}
-			<div class="hint bad">A global named “{newName}” already exists.</div>
-		{/if}
-	</div>
+	</ScrollArea>
 </div>
 
 <style>
@@ -193,10 +189,7 @@
 		border-radius: 0 0 var(--radius-sm) var(--radius-sm);
 		z-index: 4;
 	}
-	.scroll {
-		flex: 1;
-		overflow-y: auto;
-		min-height: 0;
+	.gp-body {
 		padding: 6px 8px 10px;
 	}
 	table {
@@ -224,6 +217,8 @@
 	}
 	.c-val {
 		width: 40%;
+		/* let the bare NumberInput fill the cell instead of its default fixed width */
+		--number-width: 100%;
 	}
 	.c-act {
 		width: 15%;
@@ -242,8 +237,9 @@
 		filter: grayscale(1);
 		opacity: 0.7;
 	}
-	input.name,
-	input.val {
+	/* The add-row name field is the one remaining native input (kept native for its live
+	   per-keystroke validation + Enter-to-add); the table cells are now ui primitives. */
+	input.name {
 		width: 100%;
 		box-sizing: border-box;
 		font-family: var(--font-mono);
@@ -254,36 +250,14 @@
 		border-radius: var(--radius-sm);
 		color: var(--text);
 	}
-	input.name:focus,
-	input.val:focus {
-		outline: none;
+	input.name:focus-visible {
 		border-color: var(--accent);
-	}
-	input[type='number'] {
-		text-align: right;
 	}
 	.type {
 		font-family: var(--font-mono);
 		font-size: 0.66rem;
 		color: var(--text-muted);
 		margin-right: 6px;
-	}
-	.del {
-		width: 18px;
-		height: 18px;
-		display: inline-grid;
-		place-items: center;
-		padding: 0;
-		font-size: 0.7rem;
-		background: transparent;
-		border: none;
-		border-radius: var(--radius-sm);
-		color: var(--text-muted);
-		cursor: pointer;
-	}
-	.del:hover {
-		color: var(--danger);
-		background: var(--surface-2);
 	}
 	.add {
 		display: flex;
@@ -293,32 +267,6 @@
 	}
 	.add .name {
 		flex: 1 1 auto;
-	}
-	.type-sel {
-		font-family: var(--font-mono);
-		font-size: 0.76rem;
-		padding: 2px 4px;
-		background: var(--surface-1);
-		border: 1px solid var(--border);
-		border-radius: var(--radius-sm);
-		color: var(--text);
-	}
-	.addbtn {
-		font-size: 0.76rem;
-		padding: 3px 12px;
-		background: var(--surface-3);
-		border: 1px solid var(--border-strong);
-		border-radius: var(--radius-sm);
-		color: var(--text);
-		cursor: pointer;
-	}
-	.addbtn:disabled {
-		opacity: 0.45;
-		cursor: not-allowed;
-	}
-	.addbtn:not(:disabled):hover {
-		border-color: var(--accent);
-		color: var(--accent);
 	}
 	.hint {
 		margin-top: 6px;
