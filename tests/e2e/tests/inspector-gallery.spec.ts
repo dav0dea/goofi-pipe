@@ -190,3 +190,101 @@ test.describe('Inspector fx (expression) binding', () => {
 		await expect(err).toContainText('NameError');
 	});
 });
+
+// ParamForm (spec §4, N-Task 4): the node-driven assembler — identity header + inline rename + docs
+// Disclosure, the connected P Tabs bar it now OWNS, and show_when field/tab filtering — mounted in the
+// gallery against a synthetic multi-group node (`inspector-form`) with a showWhen prop that hides
+// `depth`/`cutoff` unless mode==='filter'. ParamForm binds the real store; in this backend-free gallery
+// the in-form commits are inert, so the controlling `mode` value is driven through a gallery-owned
+// toggle (`form-toggle-mode`) — proving the show_when reactive filter + the all-hidden-group tab rule.
+// Runs under the `default` (fine-pointer) project.
+test.describe('Inspector ParamForm', () => {
+	const bg = (loc: import('@playwright/test').Locator) =>
+		loc.evaluate((el) => getComputedStyle(el).backgroundColor);
+
+	test('owns the connected group tabs — the active tab drops to the body surface, and tabs switch groups', async ({
+		page
+	}) => {
+		await page.goto('/dev/inspector');
+		const form = page.getByTestId('inspector-form');
+		const tabs = form.getByTestId('param-tabs');
+		// `common` sorts LAST; `filter` is all-hidden while mode=pass, so the first visible tab is `signal`.
+		const active = tabs.getByRole('tab', { selected: true });
+		await expect(active, 'the first visible group is active').toHaveText('signal');
+		// Connected: the active tab paints the SAME surface as the rows body flush beneath it (merged);
+		// an inactive tab sits at the header surface, a different colour (the drop actually happened).
+		const rowsBg = await bg(form.getByTestId('param-rows'));
+		const activeBg = await bg(active);
+		const inactiveBg = await bg(tabs.getByRole('tab', { selected: false }).first());
+		expect(activeBg, 'active tab background equals the body surface (merged)').toBe(rowsBg);
+		expect(inactiveBg, 'an inactive tab sits at the header surface, not the body').not.toBe(activeBg);
+		// Switching tabs swaps the rendered fields: `signal` shows `gain`; `common` shows `label`.
+		await expect(form.getByTestId('param-field-gain')).toBeVisible();
+		await expect(form.getByTestId('param-field-label')).toHaveCount(0);
+		await tabs.getByRole('tab', { name: 'common' }).click();
+		await expect(form.getByTestId('param-field-label'), 'the common tab renders its field').toBeVisible();
+		await expect(form.getByTestId('param-field-gain'), 'the signal field is gone').toHaveCount(0);
+	});
+
+	test('show_when hides a dependent field and its all-hidden group tab, then reveals both live', async ({
+		page
+	}) => {
+		await page.goto('/dev/inspector');
+		const form = page.getByTestId('inspector-form');
+		const tabs = form.getByTestId('param-tabs');
+		// mode=pass: `depth` (a same-group signal dependent) is hidden, and the `filter` group — whose
+		// only field `cutoff` is hidden — renders NO tab (never a live tab over an all-hidden group).
+		await expect(form.getByTestId('param-field-depth'), 'the dependent field is hidden').toHaveCount(0);
+		await expect(tabs.getByRole('tab', { name: 'filter' }), 'the all-hidden group shows no tab').toHaveCount(0);
+		// Flip the controlling `mode` to `filter`; show_when re-evaluates live off the node's live values.
+		await page.getByTestId('form-toggle-mode').click();
+		await expect(form.getByTestId('param-field-depth'), 'the same-group dependent appears live, no tab switch').toBeVisible();
+		await expect(tabs.getByRole('tab', { name: 'filter' }), 'the refilled group tab appears').toBeVisible();
+		// The revealed cross-group dependent renders once its tab is selected (liveValues cross groups).
+		await tabs.getByRole('tab', { name: 'filter' }).click();
+		await expect(form.getByTestId('param-field-cutoff'), 'the cross-group dependent renders under its tab').toBeVisible();
+		// Flip back to `pass`: the filter group empties → its tab disappears AND the active group falls
+		// back to a still-visible tab (activeGroup revalidation), never leaving `filter` active.
+		await page.getByTestId('form-toggle-mode').click();
+		await expect(tabs.getByRole('tab', { name: 'filter' }), 'the emptied group tab disappears').toHaveCount(0);
+		await expect(
+			tabs.getByRole('tab', { selected: true }),
+			'the active group falls back off the vanished filter tab'
+		).not.toHaveText('filter');
+		await expect(form.getByTestId('param-field-depth'), 'the same-group dependent hides again live').toHaveCount(0);
+	});
+
+	test('the docstring hides behind a Disclosure that toggles', async ({ page }) => {
+		await page.goto('/dev/inspector');
+		const form = page.getByTestId('inspector-form');
+		await expect(form.getByTestId('docstring'), 'the docstring starts collapsed').toHaveCount(0);
+		await form.getByTestId('docs-toggle').click();
+		await expect(form.getByTestId('docstring'), 'the disclosure reveals the docstring').toBeVisible();
+		await form.getByTestId('docs-toggle').click();
+		await expect(form.getByTestId('docstring'), 'toggling again collapses it').toHaveCount(0);
+	});
+
+	// The inline rename null-first commit/cancel dance: Escape reverts (no commit); Enter runs the commit
+	// path then closes the editor (the unmount-blur it triggers is a null-guarded no-op — no double-commit).
+	test('inline rename opens on click; Escape reverts and Enter commits then closes the editor', async ({
+		page
+	}) => {
+		await page.goto('/dev/inspector');
+		const form = page.getByTestId('inspector-form');
+		await expect(form.getByTestId('node-name'), 'the display name shows').toHaveText('oscillator0');
+		// Open the editor; the draft seeds from the current name.
+		await form.getByTestId('node-name').click();
+		await expect(form.getByTestId('node-name-input')).toHaveValue('oscillator0');
+		// Escape cancels — the editor closes and the name is unchanged (no commit).
+		await form.getByTestId('node-name-input').fill('discard-me');
+		await form.getByTestId('node-name-input').press('Escape');
+		await expect(form.getByTestId('node-name-input'), 'Escape closes the editor').toHaveCount(0);
+		await expect(form.getByTestId('node-name'), 'the name is unchanged on cancel').toHaveText('oscillator0');
+		// Enter runs the commit path (null-first) and closes the editor — the read-only name returns.
+		await form.getByTestId('node-name').click();
+		await form.getByTestId('node-name-input').fill('renamed');
+		await form.getByTestId('node-name-input').press('Enter');
+		await expect(form.getByTestId('node-name-input'), 'Enter closes the editor after committing').toHaveCount(0);
+		await expect(form.getByTestId('node-name'), 'the read-only name button returns').toBeVisible();
+	});
+});
