@@ -337,7 +337,19 @@ Analysis reports live in `docs/analysis/` (also gitignored).
 - Commit in small, focused, readable steps at green checkpoints — not one mega-commit.
 - Commit messages end with: `Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>`.
 - No auth on the WS endpoints — single-user, local/trusted-LAN app.
-- Desktop browser only (no mobile/touch). One theme, done well (no dark-mode toggle).
+- **Responsive and touch-capable across desktop, tablet and phone** (both orientations).
+  Desktop is the primary target and its behaviour is the reference — but "desktop only"
+  is retired, so don't write a mouse-only affordance. Concretely: no interaction may exist
+  *solely* behind `:hover`, right-click or a keyboard chord; touch needs its own door in,
+  gated on `(pointer: coarse)` so the desktop path is untouched. Panel width is independent
+  of viewport width, so `@container` is the default tool and `@media` is reserved for real
+  device-class questions (pointer, hover, orientation). Size in `rem`/relative units — the
+  `html` base is a responsive `clamp()`. One theme, done well (no dark-mode toggle).
+- **The workspace/panel system and the cable-drag feel are frozen UX.** Restyle them, don't
+  redesign them. On phones the *same* tree renders through an **ephemeral, display-only**
+  projection (foregrounded panel + touch navigation sugar) — never persisted, never an input
+  to `resizeSplit`/`setPanelState`/the `.gfi` `layout` blob, so a phone session cannot write
+  a phone-shaped layout into a user's patch.
 - Don't reintroduce dearpygui, zmq, or a Python manager.
 - The iceoryx2 transport and the GOOF wire format are load-bearing; changing either
   means changing `frontend/src/lib/codec/` in lockstep (`codec_golden.json` pins it).
