@@ -16,7 +16,9 @@ const INDEX_TS = path.resolve(__dirname, '../../../frontend/src/lib/ui/index.ts'
 export function exportedPrimitives(): string[] {
 	const src = fs.readFileSync(INDEX_TS, 'utf8');
 	const names: string[] = [];
-	const re = /export\s*\{([^}]*)\}\s*from\s*'\.\/[A-Za-z]+\.svelte'/g;
+	// `[\w/]+` so the guard still catches a primitive exported from a subdirectory or with a
+	// digit in its name — not just today's flat, letters-only files.
+	const re = /export\s*\{([^}]*)\}\s*from\s*'\.\/[\w/]+\.svelte'/g;
 	for (let m = re.exec(src); m !== null; m = re.exec(src)) {
 		const d = /default as (\w+)/.exec(m[1]);
 		if (d) names.push(d[1]);
