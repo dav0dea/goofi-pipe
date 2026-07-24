@@ -88,12 +88,22 @@
 		gap: var(--space-2);
 	}
 	/* A horizontal control row by default (a lone control fills it; a Slider+NumberInput pair sits
-	   side by side inside a Row). Task 7 adds the narrow-panel @container single-column rule. */
+	   side by side). */
 	.ui-field-control {
 		display: flex;
 		align-items: center;
 		gap: var(--space-4);
 		min-width: 0;
+	}
+	/* When the enclosing query container (the panel body, or any `container-type` ancestor) is too
+	   narrow to seat a paired control side by side, stack the controls into one column. 240px is the
+	   width below which a Slider + NumberInput pair stops fitting comfortably — a structural threshold
+	   (allowed as literal px, like the F `clamp()` breakpoints), not a themeable token. */
+	@container (max-width: 240px) {
+		.ui-field-control {
+			flex-direction: column;
+			align-items: stretch;
+		}
 	}
 	.ui-field-hint {
 		color: var(--text-muted);

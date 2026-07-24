@@ -58,6 +58,10 @@
 	// e2e observe commit timing (a NumberInput must not update its committed value per keystroke). ---
 	let gain = $state(1);
 	let cutoff = $state(0.3);
+	// The @container demo (Task 7): one shared value driven from a Slider + NumberInput placed as
+	// DIRECT Field children, so `.ui-field-control`'s own flex-direction lays them out — and the
+	// narrow-container query can flip it to a single column.
+	let cqValue = $state(0.4);
 	let refreshValue = $state('sine');
 	let refreshing = $state(false);
 	let refreshCount = $state(0);
@@ -477,6 +481,56 @@
 			<EmptyState data-testid="ui-emptystate-bare" />
 		</div>
 	</section>
+
+	<section>
+		<h2>Field in a narrow @container (single-column stack)</h2>
+		<!-- The `@container` enablement (Task 7): the Field's control row stacks to a single column
+		     when its query container is narrower than the threshold, and stays a row when wide. Each
+		     wrapper is its OWN `container-type: inline-size` context standing in for a narrow vs wide
+		     panel body (the real query container is `.panel-body`), so the SAME Field responds to its
+		     container's width. The Slider + NumberInput are DIRECT Field children so `.ui-field-control`
+		     itself lays them out. -->
+		<div class="cq-box cq-narrow" data-testid="ui-cq-narrow">
+			<Field label="cutoff" data-testid="ui-cq-narrow-field">
+				<Slider
+					value={cqValue}
+					onChange={(v) => (cqValue = v)}
+					min={0}
+					max={1}
+					step={0.01}
+					data-testid="ui-cq-narrow-slider"
+				/>
+				<NumberInput
+					value={cqValue}
+					onChange={(v) => (cqValue = v)}
+					min={0}
+					max={1}
+					step={0.01}
+					data-testid="ui-cq-narrow-number"
+				/>
+			</Field>
+		</div>
+		<div class="cq-box cq-wide" data-testid="ui-cq-wide">
+			<Field label="cutoff" data-testid="ui-cq-wide-field">
+				<Slider
+					value={cqValue}
+					onChange={(v) => (cqValue = v)}
+					min={0}
+					max={1}
+					step={0.01}
+					data-testid="ui-cq-wide-slider"
+				/>
+				<NumberInput
+					value={cqValue}
+					onChange={(v) => (cqValue = v)}
+					min={0}
+					max={1}
+					step={0.01}
+					data-testid="ui-cq-wide-number"
+				/>
+			</Field>
+		</div>
+	</section>
 </main>
 
 <style>
@@ -597,6 +651,23 @@
 		border: 1px solid var(--border);
 		border-radius: var(--radius-sm);
 		overflow: hidden;
+	}
+	/* Query-container demo wrappers. Each establishes its OWN inline-size container so the Field's
+	   `@container` rule resolves against it. The widths are structural px chosen to sit either side of
+	   the 240px threshold (like the threshold itself, an allowed structural literal). */
+	.cq-box {
+		container-type: inline-size;
+		box-sizing: border-box;
+		margin-top: var(--space-4);
+		padding: var(--space-4);
+		border: 1px dashed var(--border);
+		border-radius: var(--radius-sm);
+	}
+	.cq-narrow {
+		width: 200px;
+	}
+	.cq-wide {
+		width: 360px;
 	}
 	/* Bounded frame the EmptyState fills (single grid cell → stretches both axes), so its own
 	   both-axis centering is what's measured. */

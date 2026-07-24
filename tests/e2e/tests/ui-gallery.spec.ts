@@ -459,3 +459,43 @@ test.describe('UI display primitives', () => {
 		await expect(page.getByTestId('ui-emptystate-bare')).toBeVisible();
 	});
 });
+
+// The `@container` enablement (Task 7). A Field's control row must stack to a single column when its
+// query container is narrower than the threshold and stay a row when wide — the FIRST consumer of the
+// `container-type: inline-size` the panel body now establishes. The assertion is geometric AND on the
+// computed flex-direction, so it fails hard before the Field `@container` rule exists. Runs under the
+// `default` (fine-pointer) project like the rest of this file.
+test.describe('UI @container responsiveness', () => {
+	const controlDirection = (field: import('@playwright/test').Locator) =>
+		field.locator('.ui-field-control').evaluate((el) => getComputedStyle(el).flexDirection);
+
+	test('a Field control row stacks to one column in a narrow container and stays a row when wide', async ({
+		page
+	}) => {
+		await page.goto('/dev/ui');
+		const narrow = page.getByTestId('ui-cq-narrow-field');
+		const wide = page.getByTestId('ui-cq-wide-field');
+		await narrow.waitFor();
+
+		// The control row's computed flex-direction responds to its query container's width.
+		expect(await controlDirection(narrow), 'narrow container stacks the controls').toBe('column');
+		expect(await controlDirection(wide), 'wide container keeps the controls in a row').toBe('row');
+
+		// And the geometry follows (a real layout assertion, not just the computed property): in the
+		// narrow container the NumberInput sits BELOW the Slider; in the wide one they sit side by side.
+		const nSlider = (await page.getByTestId('ui-cq-narrow-slider').boundingBox())!;
+		const nNumber = (await page.getByTestId('ui-cq-narrow-number').boundingBox())!;
+		expect(nNumber.y, 'narrow: the NumberInput is below the Slider (stacked)').toBeGreaterThanOrEqual(
+			nSlider.y + nSlider.height - 1
+		);
+
+		const wSlider = (await page.getByTestId('ui-cq-wide-slider').boundingBox())!;
+		const wNumber = (await page.getByTestId('ui-cq-wide-number').boundingBox())!;
+		expect(wNumber.x, 'wide: the NumberInput is right of the Slider (a row)').toBeGreaterThan(
+			wSlider.x + wSlider.width - 1
+		);
+		expect(wNumber.y, 'wide: they share the same row (vertical overlap)').toBeLessThan(
+			wSlider.y + wSlider.height
+		);
+	});
+});
