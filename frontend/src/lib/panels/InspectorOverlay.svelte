@@ -12,7 +12,7 @@
   follow the active editor's selection instead.
 -->
 <script lang="ts">
-	import ParamPanel from '$lib/params/ParamPanel.svelte';
+	import ParamForm from '$lib/inspector/ParamForm.svelte';
 	import MetadataPanel from '$lib/editor/MetadataPanel.svelte';
 	import { graph } from '$lib/stores/graph.svelte';
 	import type { NodeInstanceInfo } from '$lib/api/control';
@@ -92,7 +92,7 @@
 			data-testid="panel-resize-handle"
 		></div>
 		<div class="panel-scroll">
-			<ParamPanel {node} />
+			<ParamForm {node} />
 			{#if node && !node.subpatch}
 				<MetadataPanel {node} />
 				{#if node.error}
