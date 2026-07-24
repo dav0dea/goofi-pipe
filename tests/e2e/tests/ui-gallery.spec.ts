@@ -204,6 +204,54 @@ test.describe('UI Field family', () => {
 	});
 });
 
+// NumberInput drag-to-scrub. The scrub interaction (the 3px click-vs-scrub threshold, the dx→value
+// math, the live per-move commit, the pointer lifecycle) had ZERO pointer-driven coverage: these drive
+// `ui-compose-number` with a REAL pointer sequence off the paired `ui-compose-slider`/`ui-compose-value`.
+// The first two are the characterization safety net (the normal path, green on any correct build); the
+// last two reproduce the pointer-lifecycle + latch bugs and go RED on the pre-fix code. Runs under the
+// `default` (fine-pointer) project like the rest of this file.
+test.describe('UI NumberInput drag-to-scrub', () => {
+	const readValue = (page: import('@playwright/test').Page) =>
+		page.getByTestId('ui-compose-value').textContent().then((t) => Number(t));
+
+	// The scrub input's centre, so a press lands on it and a drag starts from a known origin.
+	async function centre(page: import('@playwright/test').Page): Promise<{ x: number; y: number }> {
+		const box = (await page.getByTestId('ui-compose-number').boundingBox())!;
+		return { x: box.x + box.width / 2, y: box.y + box.height / 2 };
+	}
+
+	// A full press → drag-by-dx → release, from the input's centre.
+	async function scrub(page: import('@playwright/test').Page, dx: number): Promise<void> {
+		const c = await centre(page);
+		await page.mouse.move(c.x, c.y);
+		await page.mouse.down();
+		await page.mouse.move(c.x + dx, c.y); // past the 3px click-vs-scrub threshold
+		await page.mouse.up();
+	}
+
+	test('a horizontal drag scrubs the value and the paired Slider follows', async ({ page }) => {
+		await page.goto('/dev/ui');
+		await expect(page.getByTestId('ui-compose-value'), 'seed value').toHaveText('0.3');
+		await scrub(page, 40); // +40px right → the value climbs
+		const after = await readValue(page);
+		expect(after, 'the drag scrubbed the value upward').toBeGreaterThan(0.3);
+		// The paired Slider (bound to the SAME cutoff) tracked the scrub.
+		const range = page.getByTestId('ui-compose-slider').locator('input[type=range]');
+		expect(Number(await range.inputValue()), 'the paired Slider followed the scrub').toBeCloseTo(after, 5);
+	});
+
+	test('a bare click (no drag) focuses to type and does NOT commit', async ({ page }) => {
+		await page.goto('/dev/ui');
+		const number = page.getByTestId('ui-compose-number');
+		const c = await centre(page);
+		await page.mouse.move(c.x, c.y);
+		await page.mouse.down();
+		await page.mouse.up(); // no movement → a click, not a scrub
+		await expect(number, 'a click focuses the input to type').toBeFocused();
+		await expect(page.getByTestId('ui-compose-value'), 'a click commits nothing').toHaveText('0.3');
+	});
+});
+
 // Tabs (the connected bar) + Disclosure (Task 4). The Tabs assertions verify the REAL connected-look
 // mechanism (the active tab's background equals the panel body's, and differs from an inactive tab's)
 // and arrow-key navigation — not merely "renders". Disclosure toggles children visibility + aria.
