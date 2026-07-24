@@ -74,6 +74,8 @@
 	// An EMPTY current value: the truthy-guarded prepend must NOT add a blank leading option (N's
 	// device pickers before a scan) — the empty-value rule `selectOptions` used to own, now at the P source.
 	let emptyPick = $state('');
+	// A `labels` map: the option value stays the raw key ('out0') while the dropdown shows a friendly label.
+	let labelledPick = $state('out0');
 	let textText = $state('hello');
 	let textDecimal = $state('3.14');
 	let textSearch = $state('');
@@ -304,6 +306,18 @@
 					data-testid="ui-select-empty"
 				/>
 			</Field>
+			<!-- A `labels` map: the committed value stays the raw option key while the dropdown shows a
+			     friendlier label (e.g. a sub-patch port's user name + dtype). -->
+			<Field label="labelled" data-testid="ui-select-labelled-field">
+				<Select
+					value={labelledPick}
+					onChange={(v) => (labelledPick = v)}
+					options={['out0', 'out1']}
+					labels={{ out0: 'envelope · array', out1: 'trigger · array' }}
+					data-testid="ui-select-labelled"
+				/>
+			</Field>
+			<span class="readout" data-testid="ui-select-labelled-value">{labelledPick}</span>
 		</div>
 	</section>
 

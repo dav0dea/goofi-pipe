@@ -80,6 +80,12 @@
 			value={slot ?? ''}
 			onChange={(v) => pick(v)}
 			options={Object.keys(node.output_slots)}
+			labels={Object.fromEntries(
+				Object.entries(node.output_slots).map(([name, dt]) => [
+					name,
+					`${node.slot_labels?.[name] ?? name} · ${dt.toLowerCase()}`
+				])
+			)}
 			data-testid="viewer-slot"
 		/>
 		{#if slot && dtype}

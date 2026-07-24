@@ -22,6 +22,7 @@
 		value,
 		onChange,
 		options,
+		labels,
 		onRefresh,
 		refreshing = false,
 		refreshTestid,
@@ -32,6 +33,9 @@
 		value: string;
 		onChange: (v: string) => void;
 		options: string[];
+		/** Optional display text per option value (`labels[opt] ?? opt`) — the committed value stays the
+		 * raw option key while the dropdown shows a friendlier label (e.g. a port's user name + dtype). */
+		labels?: Record<string, string>;
 		/** Provide to show the ⟳ re-scan button (kept even when `options` is empty). */
 		onRefresh?: () => void;
 		/** A ⟳ re-scan is in flight — dim the select and spin the button. */
@@ -56,7 +60,7 @@
 		onchange={(e) => onChange((e.currentTarget as HTMLSelectElement).value)}
 	>
 		{#each items as opt (opt)}
-			<option value={opt}>{opt}</option>
+			<option value={opt}>{labels?.[opt] ?? opt}</option>
 		{/each}
 	</select>
 	{#if onRefresh}

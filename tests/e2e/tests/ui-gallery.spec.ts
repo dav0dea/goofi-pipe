@@ -291,6 +291,22 @@ test.describe('UI Field family', () => {
 			'the first option is a real one, not a blank prepend'
 		).toHaveText('sine');
 	});
+
+	// A `labels` map decouples the option's committed VALUE (the raw key) from its displayed TEXT — the
+	// sub-patch port picker case (value 'out0', shown as the port's user name + dtype). Regression guard
+	// for M-Task-4's slot-picker fix: the label must render while the committed value stays the key.
+	test('Select renders labels while committing the raw option value', async ({ page }) => {
+		await page.goto('/dev/ui');
+		const select = page.getByTestId('ui-select-labelled').locator('select');
+		const value = page.getByTestId('ui-select-labelled-value');
+		await expect(value, 'commits the raw key, not the label').toHaveText('out0');
+		await expect(
+			select.locator('option[value="out0"]'),
+			'the option shows the friendly label, not the raw key'
+		).toHaveText('envelope · array');
+		await select.selectOption('out1'); // drive by VALUE, not label
+		await expect(value, 'selecting commits the raw key').toHaveText('out1');
+	});
 });
 
 // NumberInput drag-to-scrub. The scrub interaction (the 3px click-vs-scrub threshold, the dx→value

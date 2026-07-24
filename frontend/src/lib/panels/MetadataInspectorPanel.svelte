@@ -30,6 +30,7 @@
 				value={curSlot(node) ?? ''}
 				onChange={(v) => props.setState({ ...st(), slot: v })}
 				options={slots}
+				labels={node.slot_labels}
 				data-testid="metadata-slot"
 			/>
 		{/if}
