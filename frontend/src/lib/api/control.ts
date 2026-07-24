@@ -218,15 +218,6 @@ export function linkKey(l: LinkInfo): string {
 	return `${l.node_out}.${l.slot_out}→${l.node_in}.${l.slot_in}`;
 }
 
-/** Structural equality of two links (all four endpoints match). */
-export function sameLink(a: LinkInfo, b: LinkInfo): boolean {
-	return (
-		a.node_out === b.node_out &&
-		a.node_in === b.node_in &&
-		a.slot_out === b.slot_out &&
-		a.slot_in === b.slot_in
-	);
-}
 
 export interface FsEntry {
 	name: string;
@@ -270,15 +261,16 @@ export interface GraphSnapshot {
 	 * letting the graph store distinguish a fresh session (reset the layout)
 	 * from a transient reconnect to the same one (keep the current layout). */
 	instance_id: string;
-	nodes: NodeInstanceInfo[];
-	links: LinkInfo[];
+	/** Per-node RUNTIME state (`{uid: {stage, error}}`) — the event-sourced overlay the CRDT doc
+	 * never holds. Seeded here because its live stream pushes only transitions, so a client that
+	 * connects to a *running* graph would otherwise render an errored node as healthy. The graph
+	 * STRUCTURE is deliberately absent: nodes, links and the sub-patch forest live in the doc. */
+	runtime: Record<string, { stage?: NodeStage; error?: string | null }>;
 	/** The node palette (same list `list_nodes` returns), carried on `hello` /
 	 * `graph_replaced` so the client has descriptors in hand immediately — no async
 	 * round-trip before it can build nodes from the CRDT doc. Absent on an older
 	 * backend (the client then falls back to fetching `list_nodes`). */
 	node_types?: NodeTypeInfo[];
-	/** Sub-patch instances keyed by instance id. */
-	instances?: Record<string, InstanceInfo>;
 	save_path: string | null;
 	unsaved_changes: boolean;
 	/** Opaque frontend workspace-layout blob restored from the .gfi patch.
@@ -289,13 +281,9 @@ export interface GraphSnapshot {
 
 export type ControlEvent =
 	| { event: 'hello'; payload: GraphSnapshot }
-	| { event: 'node_added'; payload: NodeInstanceInfo }
-	| {
-			event: 'node_removed';
-			// `membership` is the scope the node was a member of ({instance, local_name} —
-			// ROOT for a top-level node), so the store drops it from that scope's members map.
-			payload: { node: string; membership: { instance: string; local_name: string } | null };
-	  }
+	// A bare "a node was created" announcement (the node itself arrives via the doc). Kept as the
+	// one hook a client can act on at creation time; carries no projection of the node.
+	| { event: 'node_added'; payload: { uid: string } }
 	| {
 			event: 'state_update';
 			payload: {
@@ -327,8 +315,6 @@ export type ControlEvent =
 	| { event: 'unsaved_changes'; payload: { unsaved_changes: boolean } }
 	| { event: 'save_path_changed'; payload: { save_path: string | null } }
 	| { event: 'graph_replaced'; payload: GraphSnapshot }
-	| { event: 'subpatch_changed'; payload: GraphSnapshot }
-	| { event: 'node_renamed'; payload: { node: string; name: string } }
 	| { event: 'layout'; payload: { layout: unknown } };
 
 type EventHandler = (ev: ControlEvent) => void;

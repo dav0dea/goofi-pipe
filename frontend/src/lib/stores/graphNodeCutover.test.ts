@@ -7,12 +7,10 @@ import type { ParamDescriptor } from '$lib/api/types';
 import * as Y from 'yjs';
 
 /** A minimal hello/graph_replaced snapshot; `node_types` optionally carries the palette inline. */
-function helloSnap(node_types?: NodeTypeInfo[]): GraphSnapshot {
+function helloSnap(node_types?: NodeTypeInfo[], runtime: GraphSnapshot['runtime'] = {}): GraphSnapshot {
 	return {
-		nodes: [],
-		links: [],
-		instances: {},
 		node_types,
+		runtime,
 		save_path: null,
 		unsaved_changes: false,
 		instance_id: 'sess1',
@@ -107,34 +105,16 @@ describe('node-identity read cutover — nodes built from the doc when the catal
 		expect(g.nodeById('n1'), 'node removed from the doc → dropped from the store').toBeFalsy();
 	});
 
-	it('ignores node_added / node_removed events when the catalog is authoritative', () => {
+	it('ignores a node_added announcement — the doc owns node existence', () => {
 		const fc = new FakeControl();
 		const g = new GraphStore(fc);
 		g.nodeTypes = catalog();
 		docSeedNode(g, 'n1', 'Oscillator', 'osc0', [0, 0]);
 
-		// A node_added for a node NOT in the doc must not mint a phantom — the reconcile owns
-		// existence (else the manager's node_added would race/duplicate the doc mirror).
-		fc.emit({
-			event: 'node_added',
-			payload: {
-				uid: 'ghost',
-				name: 'ghost0',
-				type: 'Oscillator',
-				category: 'inputs',
-				doc: '',
-				input_slots: {},
-				output_slots: {},
-				params: {},
-				pos: [0, 0],
-				viewers: {},
-				membership: null,
-				error: null
-			}
-		});
+		// node_added for a node NOT in the doc must not mint a phantom — the reconcile owns
+		// existence (else the announcement would race/duplicate the doc mirror).
+		fc.emit({ event: 'node_added', payload: { uid: 'ghost' } });
 		expect(g.nodeById('ghost')).toBeFalsy();
-		// And a node_removed for a node still IN the doc must not drop it.
-		fc.emit({ event: 'node_removed', payload: { node: 'n1', membership: null } });
 		expect(g.nodeById('n1')).toBeDefined();
 	});
 
@@ -219,6 +199,23 @@ describe('catalog-in-hello — the palette rides on the snapshot, no async list_
 		expect(g.nodeTypes?.length).toBe(1);
 		// …and no async round-trip was issued for it.
 		expect(fc.recordedCalls().some((c) => c.op === 'list_nodes')).toBe(false);
+	});
+
+	it('seeds the event-sourced runtime overlay from the snapshot', () => {
+		// The runtime stream (the stats sweep) pushes only TRANSITIONS, so a client connecting to a
+		// running graph would render an errored node as healthy without this seed. Structure still
+		// comes from the doc alone — the snapshot carries no node list to fall back on.
+		const fc = new FakeControl();
+		const g = new GraphStore(fc);
+		fc.emit({
+			event: 'hello',
+			payload: helloSnap(catalog(), { n1: { stage: 'error', error: 'ImportError: no scipy' } })
+		});
+		docSeedNode(g, 'n1', 'Oscillator', 'osc0', [0, 0]);
+
+		const n = g.nodeById('n1')!;
+		expect(n.error).toBe('ImportError: no scipy');
+		expect(n.stage).toBe('error');
 	});
 
 	it('an older backend (hello without node_types) still fetches list_nodes async', () => {

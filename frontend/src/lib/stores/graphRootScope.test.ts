@@ -2,71 +2,40 @@ import { describe, it, expect } from 'vitest';
 import { FakeControl } from '$lib/test/fakeControl';
 import { GraphStore } from './graph.svelte';
 import { ROOT_ID } from '$lib/editor/subpatchScene';
-import type { NodeInstanceInfo, InstanceInfo, GraphSnapshot } from '$lib/api/control';
+import { nodesMap } from '$lib/crdt/graphDoc';
+import type { NodeTypeInfo } from '$lib/api/control';
+import * as Y from 'yjs';
 
-function nodeInfo(
-	uid: string,
-	name: string,
-	membership: { instance: string; local_name: string } | null = null
-): NodeInstanceInfo {
-	return {
-		uid,
-		name,
-		type: 'Buffer',
-		category: 'signal',
-		doc: '',
-		input_slots: { in: 'ARRAY' },
-		output_slots: { out: 'ARRAY' },
-		params: {},
-		pos: [0, 0],
-		viewers: {},
-		membership,
-		error: null
-	};
+/** The catalog makes the doc authoritative for node + scope identity (see the node cutover). */
+function catalog(): NodeTypeInfo[] {
+	return [
+		{
+			type: 'Buffer',
+			category: 'signal',
+			doc: '',
+			available: true,
+			dynamic: false,
+			missing_deps: [],
+			input_slots: { in: 'ARRAY' },
+			output_slots: { out: 'ARRAY' },
+			params: {}
+		}
+	];
 }
 
-function instInfo(
-	uid: string,
-	name: string,
-	parent: string | null,
-	members: Record<string, { uid: string; is_instance: boolean }> = {}
-): InstanceInfo {
-	return {
-		uid,
-		name,
-		kind: 'subpatch',
-		def_id: null,
-		parent,
-		interface: {},
-		pos: [0, 0],
-		members,
-		slots: { input: {}, output: {} },
-		siblings: [],
-		error: null,
-		viewers: {}
-	} as InstanceInfo;
-}
-
-function snapshot(
-	nodes: NodeInstanceInfo[],
-	instances: Record<string, InstanceInfo>
-): GraphSnapshot {
-	return {
-		nodes,
-		links: [],
-		instances,
-		save_path: null,
-		unsaved_changes: false,
-		instance_id: 'sess1',
-		layout: null
-	} as never;
-}
-
-describe('root-as-scope: ROOT ships as an instance the editor renders from', () => {
+describe('root-as-scope: ROOT is synthesized as the canvas scope', () => {
 	it('nodeById(ROOT_ID) is null — ROOT is the canvas, never a synth group node', () => {
 		const fc = new FakeControl();
 		const g = new GraphStore(fc);
-		fc.emit({ event: 'hello', payload: snapshot([], { [ROOT_ID]: instInfo(ROOT_ID, 'root', null) }) });
+		g.nodeTypes = catalog();
+		// Any doc transaction runs the reconcile, which synthesizes the ROOT scope.
+		Y.transact(g.doc, () => {
+			const n = new Y.Map<unknown>();
+			n.set('type', 'Buffer');
+			n.set('name', 'buffer0');
+			nodesMap(g.doc).set('m1', n);
+		});
+
 		expect(g.instances[ROOT_ID]).toBeDefined(); // ROOT is in the mirror
 		expect(g.nodeById(ROOT_ID)).toBe(null); // …but never synthesized as a node
 	});
@@ -74,11 +43,6 @@ describe('root-as-scope: ROOT ships as an instance the editor renders from', () 
 	it('restartNode respawns in place via the restart_node RPC (keeps scope, no cascade)', async () => {
 		const fc = new FakeControl();
 		const g = new GraphStore(fc);
-		// a crashed sub-patch member
-		fc.emit({
-			event: 'node_added',
-			payload: nodeInfo('m1', 'buffer0', { instance: 'sub', local_name: 'buffer0' })
-		});
 
 		await g.restartNode('m1');
 

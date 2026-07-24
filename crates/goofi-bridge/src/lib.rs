@@ -576,9 +576,8 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
                     _ => return Err("add_node: no uid returned".into()),
                 };
                 // Optional inline params (paste/duplicate replay + undo-of-delete): apply at creation
-                // UNDER THE GRAPH LOCK so the node is born configured (same coercion as update_param).
-                // node_added is emitted after, so it carries the configured values, and the resync
-                // mirrors them into the doc.
+                // UNDER THE GRAPH LOCK so the node is born configured (same coercion as update_param),
+                // before the resync mirrors them into the doc.
                 if let Some(groups) = payload.get("params").and_then(|v| v.as_object()) {
                     for (group, names) in groups {
                         let Some(names) = names.as_object() else { continue };
@@ -592,7 +591,9 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
                         }
                     }
                 }
-                events.push(event("node_added", schemas::node_instance_info(&g, uid)));
+                // A bare uid announcement: the node itself arrives via the doc mirror, so anything
+                // more would be a second, drift-prone projection of it.
+                events.push(event("node_added", json!({ "uid": uid.to_hex() })));
                 Ok(json!(uid.to_hex()))
             }
             "remove_node" => {

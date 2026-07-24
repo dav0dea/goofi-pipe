@@ -131,36 +131,6 @@ describe('scope-forest read cutover — scopes built from the doc when the catal
 		expect(g.instances[ROOT_ID].members.m1).toEqual({ uid: 'm1', is_instance: false });
 	});
 
-	it('ignores a subpatch_changed event when the catalog is authoritative', () => {
-		const fc = new FakeControl();
-		const g = new GraphStore(fc);
-		g.nodeTypes = catalog();
-		Y.transact(g.doc, () => seedNode(nodesMap(g.doc), 'n0', 'Oscillator', 'osc0'));
-
-		// A phantom scope in a subpatch_changed snapshot must NOT appear — the doc owns the forest.
-		fc.emit({
-			event: 'subpatch_changed',
-			payload: {
-				nodes: [],
-				links: [],
-				instances: {
-					ghost: {
-						uid: 'ghost',
-						name: 'ghost0',
-						parent: ROOT_ID,
-						interface: {},
-						pos: [0, 0],
-						members: {},
-						slots: { input: {}, output: {} },
-						error: null,
-						viewers: {}
-					}
-				}
-			} as unknown as GraphSnapshot
-		});
-		expect(g.instances.ghost).toBeUndefined();
-	});
-
 	it('derives a collapsed scope deep-error from a member NODE error (recursion-correct)', () => {
 		const fc = new FakeControl();
 		const g = new GraphStore(fc);

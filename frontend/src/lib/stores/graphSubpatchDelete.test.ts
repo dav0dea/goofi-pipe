@@ -4,59 +4,31 @@ import { GraphStore } from './graph.svelte';
 import { history } from './history.svelte';
 import { workspace } from '$lib/workspace/workspace.svelte';
 import { ROOT_ID } from '$lib/editor/subpatchScene';
-import type { NodeInstanceInfo, InstanceInfo, GraphSnapshot } from '$lib/api/control';
+import { nodesMap, instancesMap } from '$lib/crdt/graphDoc';
+import type { NodeTypeInfo, GraphSnapshot } from '$lib/api/control';
+import * as Y from 'yjs';
 
-function nodeInfo(
-	uid: string,
-	name: string,
-	membership: { instance: string; local_name: string } | null = null
-): NodeInstanceInfo {
-	return {
-		uid,
-		name,
-		type: 'Buffer',
-		category: 'signal',
-		doc: '',
-		input_slots: { in: 'ARRAY' },
-		output_slots: { out: 'ARRAY' },
-		params: {},
-		pos: [0, 0],
-		viewers: {},
-		membership,
-		error: null
-	} as NodeInstanceInfo;
+/** Minimal catalog — its presence flips the store to doc-authoritative identity. */
+function catalog(): NodeTypeInfo[] {
+	return [
+		{
+			type: 'Buffer',
+			category: 'signal',
+			doc: '',
+			available: true,
+			dynamic: false,
+			missing_deps: [],
+			input_slots: { in: 'ARRAY' },
+			output_slots: { out: 'ARRAY' },
+			params: {}
+		}
+	];
 }
 
-function instInfo(
-	uid: string,
-	name: string,
-	parent: string | null,
-	members: Record<string, { uid: string; is_instance: boolean }> = {}
-): InstanceInfo {
+/** A hello/graph_replaced snapshot — session frame + runtime overlay only (structure is the doc's). */
+function snapshot(): GraphSnapshot {
 	return {
-		uid,
-		name,
-		kind: 'subpatch',
-		def_id: null,
-		parent,
-		interface: {},
-		pos: [0, 0],
-		members,
-		slots: { input: {}, output: {} },
-		siblings: [],
-		error: null,
-		viewers: {}
-	} as InstanceInfo;
-}
-
-function snapshot(
-	nodes: NodeInstanceInfo[],
-	instances: Record<string, InstanceInfo>
-): GraphSnapshot {
-	return {
-		nodes,
-		links: [],
-		instances,
+		runtime: {},
 		save_path: null,
 		unsaved_changes: false,
 		instance_id: 'sess1',
@@ -68,14 +40,23 @@ function snapshot(
 function withInstance(): { fc: FakeControl; g: GraphStore } {
 	const fc = new FakeControl();
 	const g = new GraphStore(fc);
-	const root = instInfo(ROOT_ID, 'root', null, { subpatch0: { uid: 'sub', is_instance: true } });
-	const sub = instInfo('sub', 'subpatch0', ROOT_ID, { buffer0: { uid: 'm1', is_instance: false } });
-	fc.emit({
-		event: 'hello',
-		payload: snapshot([nodeInfo('m1', 'buffer0', { instance: 'sub', local_name: 'buffer0' })], {
-			[ROOT_ID]: root,
-			sub
-		})
+	g.nodeTypes = catalog();
+	// Seed the doc exactly as the manager's mirror writes it — the scope forest's single source.
+	Y.transact(g.doc, () => {
+		const n = new Y.Map<unknown>();
+		n.set('type', 'Buffer');
+		n.set('name', 'buffer0');
+		nodesMap(g.doc).set('m1', n);
+
+		const inst = new Y.Map<unknown>();
+		inst.set('name', 'subpatch0');
+		inst.set('parent', ROOT_ID);
+		const members = new Y.Map<Y.Map<unknown>>();
+		const entry = new Y.Map<unknown>();
+		entry.set('is_instance', false);
+		members.set('m1', entry);
+		inst.set('members', members);
+		instancesMap(g.doc).set('sub', inst);
 	});
 	return { fc, g };
 }
@@ -88,14 +69,14 @@ describe('a wholesale load resets the client history (lockstep with the manager)
 		const fc = new FakeControl();
 		const g = new GraphStore(fc);
 		// Establish the session, then record a pre-load graph step.
-		fc.emit({ event: 'hello', payload: snapshot([], {}) });
+		fc.emit({ event: 'hello', payload: snapshot() });
 		history().record({ kind: 'graph_cmd', domain: 'graph', label: 'Add X', context: ctx });
 		expect(history().canUndo).toBe(true);
 
 		// A load replaces the graph in the SAME backend session — the manager cleared its command
 		// history (load_text → CommandHistory::clear), so the client's stale entries would pop
 		// mismatched. graph_replaced must reset the client history too.
-		fc.emit({ event: 'graph_replaced', payload: snapshot([], {}) });
+		fc.emit({ event: 'graph_replaced', payload: snapshot() });
 		expect(history().canUndo).toBe(false);
 		void g;
 	});
@@ -111,7 +92,6 @@ describe('undo of a delete re-binds panels the delete emptied', () => {
 		const fc = new FakeControl();
 		const g = new GraphStore(fc);
 		const ws = workspace();
-		fc.emit({ event: 'node_added', payload: nodeInfo('osc0', 'osc0') });
 		history().configureDeps(() => ({ control: fc, graph: g, workspace: ws }));
 
 		// Bind a Parameters panel to the node, then isolate the delete (drop the layout entry).
@@ -173,22 +153,13 @@ describe('deleting a collapsed sub-patch instance is undoable (manager owns the 
 	});
 
 	it('a MIXED batch (instance + node) is ONE undo step delegating per child', async () => {
-		const fc = new FakeControl();
-		const g = new GraphStore(fc);
-		const root = instInfo(ROOT_ID, 'root', null, {
-			subpatch0: { uid: 'sub', is_instance: true },
-			buffer1: { uid: 'n1', is_instance: false }
-		});
-		const sub = instInfo('sub', 'subpatch0', ROOT_ID, { buffer0: { uid: 'm1', is_instance: false } });
-		fc.emit({
-			event: 'hello',
-			payload: snapshot(
-				[
-					nodeInfo('n1', 'buffer1', { instance: ROOT_ID, local_name: 'buffer1' }),
-					nodeInfo('m1', 'buffer0', { instance: 'sub', local_name: 'buffer0' })
-				],
-				{ [ROOT_ID]: root, sub }
-			)
+		// `sub` (holding member `m1`) plus a top-level node `n1`.
+		const { fc, g } = withInstance();
+		Y.transact(g.doc, () => {
+			const n = new Y.Map<unknown>();
+			n.set('type', 'Buffer');
+			n.set('name', 'buffer1');
+			nodesMap(g.doc).set('n1', n);
 		});
 		history().configureDeps(() => ({ control: fc, graph: g, workspace: workspace() }));
 

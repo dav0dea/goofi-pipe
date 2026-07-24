@@ -513,13 +513,13 @@ async fn control_and_data_plane_end_to_end() {
     let base = start_server().await;
     let (mut ws, _) = connect_async(format!("{base}/control")).await.unwrap();
 
-    // 1. hello: protocol_version + instance_id + ROOT instance.
+    // 1. hello: protocol_version + instance_id + an empty runtime overlay.
     let hello = recv_text(&mut ws).await;
     assert_eq!(hello["event"], "hello");
     assert_eq!(hello["payload"]["protocol_version"], 1);
     assert!(hello["payload"]["instance_id"].is_string());
-    assert!(hello["payload"]["instances"]["__root__"].is_object());
-    assert_eq!(hello["payload"]["nodes"].as_array().unwrap().len(), 0);
+    // No graph projection rides the snapshot — structure is the doc's alone.
+    assert!(hello["payload"]["runtime"].as_object().is_some_and(|m| m.is_empty()));
     // The backend advertises the pillars it hosts (signal-only for now).
     assert_eq!(hello["payload"]["pillars"], json!(["signal"]));
 
@@ -549,7 +549,7 @@ async fn control_and_data_plane_end_to_end() {
     // Test-only nodes are hidden.
     assert!(!types.iter().any(|t| t["type"] == "_TestEcho"));
 
-    // 3. add_node -> uid result + node_added broadcast.
+    // 3. add_node -> uid result + node_added announcement.
     ws.send(Message::Text(
         json!({"id": 2, "op": "add_node", "payload": {"type": "Oscillator", "category": "inputs", "pos": [10.0, 20.0]}})
             .to_string(),
@@ -565,8 +565,9 @@ async fn control_and_data_plane_end_to_end() {
             uid = Some(m["result"].as_str().unwrap().to_string());
         } else if m["event"] == "node_added" {
             saw_added = true;
-            assert_eq!(m["payload"]["type"], "Oscillator");
-            assert_eq!(m["payload"]["pos"][0], 10.0);
+            // A bare uid announcement — the node's type/pos/params reach clients via the doc.
+            assert_eq!(m["payload"].as_object().map(|o| o.len()), Some(1));
+            assert!(m["payload"]["uid"].is_string());
         }
         if uid.is_some() && saw_added {
             break;
@@ -1475,10 +1476,15 @@ async fn serialize_and_load_roundtrip() {
             break m;
         }
     };
-    let nodes = replaced["payload"]["nodes"].as_array().unwrap();
-    assert!(
-        nodes.iter().any(|n| n["type"] == "Oscillator"),
-        "graph_replaced snapshot contains the restored node"
+    assert!(replaced["payload"]["runtime"].is_object(), "graph_replaced seeds the runtime overlay");
+    // The restored GRAPH arrives through the doc — the snapshot deliberately carries no second
+    // projection of it.
+    let doc = sync_replica(&mut ws, |d| d.node_ids().len() == 1).await;
+    let uid = doc.node_ids()[0].clone();
+    assert_eq!(
+        doc.read_at(&["nodes", uid.as_str(), "type"]).as_ref().and_then(|v| v.as_str()),
+        Some("Oscillator"),
+        "the loaded node reaches the client through the doc"
     );
 }
 
@@ -1769,24 +1775,30 @@ async fn add_node_applies_inline_params_at_creation() {
     .await
     .unwrap();
 
-    // Capture BOTH the reply (uid) and the node_added broadcast (either order) — node_added must
-    // already carry the applied value.
+    // Capture BOTH the reply (uid) and the node_added announcement (either order); the VALUE is
+    // then read from the doc, the single source clients render from.
     let mut uid: Option<String> = None;
-    let mut val: Option<Value> = None;
+    let mut announced = false;
     for _ in 0..20 {
         let m = recv_text(&mut ws).await;
         if m.get("id").and_then(|v| v.as_i64()) == Some(1) {
             uid = m["result"].as_str().map(str::to_string);
         }
         if m["event"] == "node_added" {
-            val = Some(m["payload"]["params"]["common"]["max_frequency"]["value"].clone());
+            assert_eq!(m["payload"]["uid"], json!(uid.clone().unwrap_or_default()));
+            announced = true;
         }
-        if uid.is_some() && val.is_some() {
+        if uid.is_some() && announced {
             break;
         }
     }
-    assert!(uid.is_some(), "add_node reply must arrive");
-    assert_eq!(val, Some(json!(42.0)), "add_node applied the inline param at creation");
+    let uid = uid.expect("add_node reply must arrive");
+    let doc = sync_replica(&mut ws, |d| d.node_ids().len() == 1).await;
+    assert_eq!(
+        doc_param_f64(&doc, &uid, "common", "max_frequency"),
+        Some(42.0),
+        "add_node applied the inline param at creation"
+    );
 }
 
 #[tokio::test]
@@ -1816,21 +1828,20 @@ async fn add_node_restores_a_specific_uid_and_name() {
     .await
     .unwrap();
     let mut uid: Option<String> = None;
-    let mut name: Option<Value> = None;
     for _ in 0..20 {
         let m = recv_text(&mut ws).await;
         if m.get("id").and_then(|v| v.as_i64()) == Some(3) {
             uid = m["result"].as_str().map(str::to_string);
-        }
-        if m["event"] == "node_added" {
-            name = Some(m["payload"]["name"].clone());
-        }
-        if uid.is_some() && name.is_some() {
             break;
         }
     }
     assert_eq!(uid.as_deref(), Some(a.as_str()), "add_node must restore the requested uid");
-    assert_eq!(name, Some(json!("restored_osc")), "add_node must restore the requested name");
+    let doc = sync_replica(&mut ws, |d| d.node_ids().len() == 1).await;
+    assert_eq!(
+        doc.read_at(&["nodes", a.as_str(), "name"]).as_ref().and_then(|v| v.as_str()),
+        Some("restored_osc"),
+        "add_node must restore the requested name"
+    );
 }
 
 #[tokio::test]
@@ -1934,13 +1945,15 @@ async fn load_reads_a_patch_from_a_backend_path() {
     // save-path state), and the client applies it wholesale — so announcing the path first would
     // be immediately clobbered and the title bar would forget the file it just loaded.
     assert_eq!(order, ["graph_replaced", "save_path_changed"], "the path is announced last");
-    let types: Vec<String> = replaced.unwrap()["payload"]["nodes"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|n| n["type"].as_str().unwrap().to_string())
-        .collect();
-    assert_eq!(types, ["Oscillator"], "the on-disk patch replaced the diverged graph");
+    assert!(replaced.unwrap()["payload"]["runtime"].is_object());
+    // The replaced graph itself arrives through the doc (the snapshot carries no node list).
+    let doc = sync_replica(&mut ws, |d| d.node_ids().len() == 1).await;
+    let uid = doc.node_ids()[0].clone();
+    assert_eq!(
+        doc.read_at(&["nodes", uid.as_str(), "type"]).as_ref().and_then(|v| v.as_str()),
+        Some("Oscillator"),
+        "the on-disk patch replaced the diverged graph"
+    );
     // The title bar names the loaded patch, so the manager reports where it came from.
     assert_eq!(save_path.unwrap()["payload"]["save_path"].as_str(), path.to_str());
 

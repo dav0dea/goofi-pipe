@@ -93,6 +93,10 @@ export class GraphStore {
 	 * layout instead of preserving the previous session's arrangement. */
 	private _lastInstanceId: string | null = null;
 
+	/** The last snapshot's per-node runtime overlay, consumed by `_seedRuntime` as each node
+	 * materializes from the doc (the doc syncs *after* the snapshot event). */
+	private _snapshotRuntime: GraphSnapshot['runtime'] = {};
+
 	/** The control client (injectable for tests; defaults to the live WS one). */
 	private ctl: Control;
 
@@ -147,28 +151,13 @@ export class GraphStore {
 	private _replaceSnapshot(snap: GraphSnapshot): boolean {
 		// The node palette rides on hello/graph_replaced (Phase-2 read cutover) so the doc is
 		// authoritative for node identity from the first render — no async `list_nodes` window.
-		// Absent → an older backend; keep whatever the async fetch set. We do NOT reconcile from the
-		// doc here (it isn't synced yet at snapshot time — the binary SV exchange follows); the
-		// snapshot's nodes/instances are the pre-doc render, and the doc's afterTransaction reconciles
-		// once it lands (see `_syncFromDoc`).
+		// Absent → an older backend; keep whatever the async fetch set.
 		if (snap.node_types?.length) this.nodeTypes = snap.node_types;
-		// Drop ui bookkeeping for any node that's about to disappear, then
-		// re-seed viewer state (collapse / kind / settings) for every node.
-		for (const old of this.nodes) {
-			ui().forget(old.uid);
-			forgetInlineView(old.uid);
-		}
-		for (const n of snap.nodes) this._seedNodeViewerState(n);
-		this.nodes = snap.nodes;
-		// `links` are sourced from the CRDT doc (Phase 2), not the snapshot — the doc syncs the
-		// current link set alongside this hello/graph_replaced echo.
-		this._reconcileInstances(snap.instances ?? {});
-		// Seed collapse/kind/settings for each instance's output-boundary slots (its
-		// synth node carries inst.viewers) so a sub-patch viewer state round-trips.
-		for (const iid of Object.keys(this.instances)) {
-			const sn = this.nodeById(iid);
-			if (sn) this._seedNodeViewerState(sn);
-		}
+		// The snapshot carries NO graph structure: nodes, links and the sub-patch forest all reach
+		// us through the CRDT doc, whose binary sync follows this event and drives `_syncFromDoc`.
+		// What it does carry is the runtime overlay — stash it so the reconcile can seed each node
+		// as it materializes from the doc (see `_seedRuntime`).
+		this._snapshotRuntime = snap.runtime ?? {};
 		this.savePath = snap.save_path;
 		this.unsavedChanges = snap.unsaved_changes;
 
@@ -806,6 +795,15 @@ export class GraphStore {
 		});
 	}
 
+	/** The runtime overlay for a node materializing from the doc for the FIRST time: whatever the
+	 * last snapshot reported for that uid. Only the seed — from then on `_extractRuntime` carries
+	 * the live, event-sourced state forward. Empty for a node created after the snapshot (its
+	 * runtime arrives on the stream). */
+	private _seedRuntime(uid: string): RuntimeOverlay {
+		const seed = this._snapshotRuntime[uid];
+		return seed ? { stage: seed.stage, error: seed.error ?? null } : {};
+	}
+
 	/** Pull the RUNTIME (event-sourced, never-in-the-doc) fields off an existing node so a doc
 	 * re-assemble preserves them — error/stage/crash/stats/membership at node level, and
 	 * per-param expression_error + refreshed StringParam options. */
@@ -879,7 +877,7 @@ export class GraphStore {
 		const next: NodeInstanceInfo[] = nodeViews(doc).map((nv) => {
 			const existing = this._realNode(nv.uid);
 			const catalog = this.nodeTypes?.find((t) => t.type === nv.type);
-			const runtime: RuntimeOverlay = existing ? this._extractRuntime(existing) : {};
+			const runtime: RuntimeOverlay = existing ? this._extractRuntime(existing) : this._seedRuntime(nv.uid);
 			runtime.membership = this._membershipFromDoc(nv.uid);
 			const viewers = (viewersJson(doc, nv.uid) ?? {}) as NodeInstanceInfo['viewers'];
 			return assembleNode(nv, docParams(doc, nv.uid), viewers, catalog, runtime);

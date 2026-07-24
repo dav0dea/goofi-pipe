@@ -3,7 +3,7 @@
 //! and shapes aligned with the frontend or co-edit it.
 
 use goofi_core::Param;
-use goofi_engine::{ExprInfo, Graph, LinkView, Uid};
+use goofi_engine::{ExprInfo, Graph, Uid};
 use goofi_node::{NodeManifest, ParamGroups};
 use serde_json::{json, Map, Value};
 
@@ -209,183 +209,32 @@ pub fn catalog_types(g: &Graph) -> Value {
     Value::Array(items.into_iter().map(|(_, _, v)| v).collect())
 }
 
-/// A node's scope membership: which scope it lives in (ROOT if top-level). Rides the `membership`
-/// field of every node payload (`node_added` + the `hello`/`graph_replaced` snapshot). The frontend
-/// reconciles each member's scope from the doc forest; `local_name` is just the display name now (no
-/// template locals in the flat model).
-pub fn membership(g: &Graph, uid: Uid) -> Value {
-    let name = g.name(uid).unwrap_or("").to_string();
-    json!({
-        "instance": g.scope_of(uid).map(|s| s.to_hex()).unwrap_or_else(|| ROOT_ID.to_string()),
-        "local_name": name,
-    })
-}
-
-pub fn node_instance_info(g: &Graph, uid: Uid) -> Value {
-    let m = g.manifest(uid).expect("node exists");
-    let name = g.name(uid).unwrap_or("").to_string();
-    json!({
-        "uid": uid.to_hex(),
-        "name": name,
-        "type": g.type_name(uid).unwrap_or(""),
-        "pillar": "signal",
-        "category": m.category,
-        "doc": m.doc,
-        "input_slots": input_slots(m),
-        "input_multi": input_multi(m),
-        "output_slots": output_slots(m),
-        "params": describe_node_params(g, uid),
-        "pos": g.pos(uid).unwrap_or([0.0, 0.0]),
-        "viewers": g.viewers(uid).cloned().unwrap_or_else(|| json!({})),
-        "inputs": {},
-        "membership": membership(g, uid),
-        "error": g.last_error(uid),
-        "stage": g.node_stage(uid),
-        "stats": Value::Null,
-        "restarts": 0,
-    })
-}
-
-pub fn link_info(l: &LinkView) -> Value {
-    json!({
-        "node_out": l.node_out.to_hex(),
-        "slot_out": l.slot_out,
-        "node_in": l.node_in.to_hex(),
-        "slot_in": l.slot_in,
-    })
-}
-
-/// The ROOT scope the editor renders its canvas from: ROOT-scoped leaf nodes plus top-level
-/// sub-patch instances (`is_instance: true`). Nodes/instances inside a sub-patch are NOT
-/// members of ROOT — they belong to their instance's scope.
-fn root_instance(g: &Graph) -> Value {
-    let mut members = Map::new();
+/// The per-node RUNTIME overlay: the event-sourced state that never enters the CRDT doc, keyed by
+/// node uid. Rides the `hello`/`graph_replaced` snapshot because its live stream (the stats sweep)
+/// pushes only *transitions* — without this seed a client that connects to a running graph would
+/// show an errored node as healthy until it happened to change.
+pub fn runtime_overlay(g: &Graph) -> Value {
+    let mut m = Map::new();
     for uid in g.node_uids() {
-        if g.scope_of(uid).is_none() {
-            let name = g.name(uid).unwrap_or("").to_string();
-            members.insert(name, json!({ "uid": uid.to_hex(), "is_instance": false }));
-        }
-    }
-    for scope in g.scope_uids() {
-        if g.scope_of(scope).is_none() {
-            if let Some(s) = g.scope(scope) {
-                members.insert(s.name.clone(), json!({ "uid": scope.to_hex(), "is_instance": true }));
-            }
-        }
-    }
-    json!({
-        "uid": ROOT_ID,
-        "name": "root",
-        "kind": "unique",
-        "def_id": Value::Null,
-        "parent": Value::Null,
-        "pos": [0.0, 0.0],
-        "interface": {},
-        "members": Value::Object(members),
-        "slots": { "input": {}, "output": {} },
-        "siblings": [],
-        "error": Value::Null,
-        "viewers": {},
-    })
-}
-
-/// The first errored descendant of a scope (recursing into nested scopes), for the collapsed
-/// sub-patch's error badge. `Null` if the whole subtree is healthy.
-fn instance_error(g: &Graph, uid: Uid) -> Value {
-    if g.scope(uid).is_none() {
-        return Value::Null;
-    }
-    for muid in g.scope_members(uid) {
-        if g.scope(muid).is_some() {
-            let e = instance_error(g, muid);
-            if !e.is_null() {
-                return e;
-            }
-        } else if let Some(err) = g.last_error(muid) {
-            return json!(err);
-        }
-    }
-    Value::Null
-}
-
-/// The `InstanceInfo` the frontend types (`control.ts`): a scope's stubs chain-resolved to their
-/// inner leaf, wired stubs projected as input/output slots, its member list, and the deep error.
-/// With sharing dropped, `kind` is always unique and there are no siblings/def_id. (The frontend is
-/// doc-authoritative for the live forest; this rides the snapshot for the initial render.)
-pub fn describe_instance(g: &Graph, uid: Uid) -> Value {
-    use goofi_engine::subpatch::Dir;
-    let Some(scope) = g.scope(uid) else { return Value::Null };
-
-    let mut interface = Map::new();
-    let mut in_slots = Map::new();
-    let mut out_slots = Map::new();
-    for (id, st) in scope.stubs.iter() {
-        // Emit the stub's DIRECT inner (member uid + direct slot/nested-StubId), not the chain-
-        // resolved leaf — the editor reroutes per level. (The data plane resolves server-side.)
-        interface.insert(
-            id.clone(),
-            json!({
-                "dir": match st.dir { Dir::In => "in", Dir::Out => "out" },
-                "dtype": st.dtype.name(),
-                "inner_node": st.inner.as_ref().map(|(u, _)| u.to_hex()),
-                "inner_slot": st.inner.as_ref().map(|(_, s)| s.clone()),
-                "pos": st.pos,
-                "name": st.name,
-            }),
+        m.insert(
+            uid.to_hex(),
+            json!({ "stage": g.node_stage(uid), "error": g.last_error(uid) }),
         );
-        if st.inner.is_some() {
-            match st.dir {
-                Dir::In => in_slots.insert(id.clone(), json!(st.dtype.name())),
-                Dir::Out => out_slots.insert(id.clone(), json!(st.dtype.name())),
-            };
-        }
     }
-
-    let mut members = Map::new();
-    for muid in g.scope_members(uid) {
-        let name = g
-            .name(muid)
-            .map(str::to_string)
-            .or_else(|| g.scope(muid).map(|s| s.name.clone()))
-            .unwrap_or_default();
-        members.insert(name, json!({ "uid": muid.to_hex(), "is_instance": g.scope(muid).is_some() }));
-    }
-
-    json!({
-        "uid": uid.to_hex(),
-        "name": scope.name,
-        "kind": "unique",
-        "def_id": Value::Null,
-        // A top-level scope (no engine parent) parents to ROOT_ID, not null — the editor's
-        // `childrenOfScope` renders a facade on the root canvas iff `instance.parent === ROOT_ID`.
-        "parent": g.scope_of(uid).map(|p| json!(p.to_hex())).unwrap_or_else(|| json!(ROOT_ID)),
-        "pos": scope.pos,
-        "interface": Value::Object(interface),
-        "members": Value::Object(members),
-        "slots": { "input": Value::Object(in_slots), "output": Value::Object(out_slots) },
-        "siblings": [],
-        "error": instance_error(g, uid),
-        "viewers": {},
-    })
+    Value::Object(m)
 }
 
-/// The full graph snapshot (`hello` / `graph_replaced` payload).
+/// The snapshot (`hello` / `graph_replaced` payload). Deliberately carries NO graph structure:
+/// nodes, links and the sub-patch forest live in the CRDT doc alone (the client assembles them
+/// from doc + catalog). What it does carry is the session frame — instance id, palette, save
+/// path, layout — plus [`runtime_overlay`], the one piece of per-node truth the doc never holds.
 pub fn snapshot(g: &Graph, instance_id: &str, with_protocol: bool, unsaved: bool) -> Value {
-    let nodes: Vec<Value> = g.node_uids().iter().map(|u| node_instance_info(g, *u)).collect();
-    let links: Vec<Value> = g.links_view().iter().map(link_info).collect();
-    let mut instances = Map::new();
-    instances.insert(ROOT_ID.to_string(), root_instance(g));
-    for scope in g.scope_uids() {
-        instances.insert(scope.to_hex(), describe_instance(g, scope));
-    }
     let mut snap = json!({
         "instance_id": instance_id,
         // The pillars this backend build actually hosts — the frontend shows only these
         // editors. Signal-only for now; audio/video are added as their runtimes land.
         "pillars": ["signal"],
-        "nodes": nodes,
-        "links": links,
-        "instances": Value::Object(instances),
+        "runtime": runtime_overlay(g),
         "save_path": Value::Null,
         "unsaved_changes": unsaved,
         "layout": g.layout().clone(),
@@ -569,6 +418,33 @@ mod tests {
         // catalog on every group/expand/share — it changes only when a runtime type registers.
         let echo = snapshot(&g, "iid", false, false);
         assert!(echo.get("node_types").is_none(), "structural echoes omit the catalog");
+    }
+
+    #[test]
+    fn the_snapshot_carries_no_second_graph_projection_only_the_runtime_overlay() {
+        // SSOT: structure (nodes/links/scopes) lives in the CRDT doc ONLY. The snapshot carries
+        // just what the doc cannot: the event-sourced per-node runtime, whose stream (the stats
+        // sweep) emits transitions and so has no value to give a freshly-connected client.
+        let mut g = Graph::new();
+        let a = g.add_node("Oscillator", None).unwrap();
+        let b = g.add_node("Buffer", None).unwrap();
+        g.add_link(a, "out", b, "data").unwrap();
+        g.set_expression(a, "common", "max_frequency", "@@@ not an expression @@@", true, false).unwrap();
+
+        let snap = snapshot(&g, "iid", true, false);
+        for dead in ["nodes", "links", "instances"] {
+            assert!(snap.get(dead).is_none(), "`{dead}` is the doc's job, not the snapshot's");
+        }
+
+        let rt = &snap["runtime"];
+        assert_eq!(rt.as_object().map(|m| m.len()), Some(2), "one entry per node");
+        assert_eq!(rt[b.to_hex()]["error"], Value::Null);
+        assert_eq!(rt[b.to_hex()]["stage"], json!("ready"));
+        assert!(
+            rt[a.to_hex()]["error"].as_str().is_some_and(|e| !e.is_empty()),
+            "a reconnecting client learns the node is errored: {:?}",
+            rt[a.to_hex()]["error"]
+        );
     }
 
     #[test]
