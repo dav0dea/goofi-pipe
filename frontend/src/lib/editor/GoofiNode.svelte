@@ -44,20 +44,15 @@
 	}
 
 	const accent = $derived(categoryColor(node?.category));
-	// Health: ok / error (code) / crashed (process died, auto-restarting). The
-	// crash state is distinct so a transient, self-recovering crash (amber, pulsing)
-	// reads differently from a persistent code error (red border).
+	// Health: ok / error (code, red border) / booting.
 	const health = $derived(nodeHealth(node));
 	const isError = $derived(health.kind === 'error');
-	const isCrashed = $derived(health.kind === 'crashed');
 	// Still coming up (child importing its implementation / running setup()) —
 	// spinner + stage label instead of the status dot, body slightly dimmed.
 	const isBooting = $derived(health.kind === 'booting');
 	// Brief "this just changed" pulse after an undo/redo reorients here (#19).
 	const flashing = $derived(flash().active(node?.uid));
-	const healthColor = $derived(
-		isCrashed ? 'var(--warning, #d8932b)' : isError ? 'var(--danger)' : 'var(--success)'
-	);
+	const healthColor = $derived(isError ? 'var(--danger)' : 'var(--success)');
 	// Glanceable update rate at the right of the header — faint by default, brought
 	// forward on hover. Null until the node's first NODE_STATS push. Adds no height.
 	const rateLabel = $derived(formatUpdateRate(node?.stats));
@@ -98,7 +93,6 @@
 	class="goofi-node"
 	class:selected
 	class:has-error={isError}
-	class:crashing={isCrashed}
 	class:booting={isBooting}
 	class:undo-flash={flashing}
 	style="--accent: {accent}; min-height: calc(var(--node-header) + {minBody} * var(--node-u));"
@@ -112,7 +106,7 @@
 			{#if isBooting}
 				<span class="boot-spinner" title={health.title} data-testid="boot-spinner"></span>
 			{:else}
-				<span class="health" class:pulse={isCrashed} style="background: {healthColor};" title={health.title}></span>
+				<span class="health" style="background: {healthColor};" title={health.title}></span>
 			{/if}
 			<span class="name">{label}</span>
 			{#if isBooting}
@@ -208,11 +202,6 @@
 	.goofi-node.has-error .surface {
 		border-color: var(--danger);
 	}
-	/* A crashed (auto-restarting) node: amber surface + a pulsing status dot, so a
-	   transient process crash reads as "recovering", distinct from a red code error. */
-	.goofi-node.crashing .surface {
-		border-color: var(--warning, #d8932b);
-	}
 	/* A booting node (child importing / running setup): dimmed body + a small
 	   spinner and stage label in the header. Fully shaped from spec metadata —
 	   slots and params render normally — just not live yet. */
@@ -240,18 +229,6 @@
 		color: var(--text-muted, #8a8f98);
 		font-style: italic;
 	}
-	.health.pulse {
-		animation: health-pulse 1s ease-in-out infinite;
-	}
-	@keyframes health-pulse {
-		0%,
-		100% {
-			opacity: 1;
-		}
-		50% {
-			opacity: 0.25;
-		}
-	}
 	/* Undo/redo just reoriented here — a one-shot ring pulse to catch the eye
 	   (#19). The class is removed after the window, so the animation re-fires on
 	   the next undo/redo that lands on this node. */
@@ -268,9 +245,6 @@
 	}
 	@media (prefers-reduced-motion: reduce) {
 		.goofi-node.undo-flash .surface {
-			animation: none;
-		}
-		.health.pulse {
 			animation: none;
 		}
 		.boot-spinner {

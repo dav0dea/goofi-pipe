@@ -102,18 +102,4 @@ describe('node lifecycle stage', () => {
 		expect(g.nodeById('n1')?.stage).toBe('error');
 		expect(g.nodeById('n1')?.error).toContain('ModuleNotFoundError');
 	});
-
-	it('node_stage error clears a lingering crashed flag (boot failure after a crash)', () => {
-		const fc = new FakeControl();
-		const g = new GraphStore(fc);
-		g.nodeTypes = catalog();
-		docSeedNode(g, 'n1', 'PSD', 'psd0', [0, 0]);
-		fc.emit({ event: 'node_crashed', payload: { node: 'n1', exitcode: -9, restarts: 1 } });
-		expect(g.nodeById('n1')?.crashed).toBe(true);
-
-		// the respawn dies during import before its first state push -> terminal error.
-		fc.emit({ event: 'node_stage', payload: { node: 'n1', stage: 'error', error: 'boot tb' } });
-		expect(g.nodeById('n1')?.crashed).toBe(false); // not stuck 'restarting' forever
-		expect(g.nodeById('n1')?.error).toContain('boot tb');
-	});
 });

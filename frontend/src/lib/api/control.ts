@@ -91,14 +91,6 @@ export interface NodeInstanceInfo {
 	 * collapsed instance are hidden from the canvas (the group node stands in). */
 	membership?: { instance: string; local_name: string } | null;
 	error: string | null;
-	/** Distinct crash state (vs a code `error`): set when the node's OS process
-	 * died and the manager is auto-restarting it; cleared on the respawned node's
-	 * first healthy state push. `restarts` is the cumulative restart count. These
-	 * are transient runtime UI state, populated by the `node_crashed` event — not
-	 * part of the persisted snapshot. */
-	crashed?: boolean;
-	restarts?: number;
-	crashExit?: number | null;
 	/** Lifecycle stage — seeded by node_added/snapshot, updated by state_update
 	 * and node_stage events. Drives the boot spinner ('creating'/'setup') and
 	 * the terminal boot-error badge. Backend always sends it for real nodes;
@@ -302,7 +294,6 @@ export type ControlEvent =
 			};
 	  }
 	| { event: 'error'; payload: { node: string; error: string | null } }
-	| { event: 'node_crashed'; payload: { node: string; exitcode: number | null; restarts: number } }
 	| { event: 'node_stage'; payload: { node: string; stage: NodeStage; error?: string } }
 	| { event: 'node_stats'; payload: { node: string; stats: NodeStats } }
 	// Live evaluated values of a node's expression-driven params (`{group: {name: value}}`),

@@ -284,9 +284,6 @@ export class GraphStore {
 					// Lifecycle stage rides every state rebroadcast (authoritative:
 					// the manager-side ref derives it from the node's own pushes).
 					if (ev.payload.stage) t.stage = ev.payload.stage;
-					// A healthy state push means the (possibly just-respawned) node is
-					// running again — lift any crash indicator.
-					if (t.crashed) t.crashed = false;
 					// The node carries its current error on the state plane (always on,
 					// re-pushed): a lost first PROCESSING_ERROR still surfaces here, and a
 					// healthy respawn's null clears the stale chip. Applied unconditionally
@@ -310,25 +307,6 @@ export class GraphStore {
 				if (t) {
 					t.stage = ev.payload.stage;
 					if (ev.payload.error !== undefined) t.error = ev.payload.error;
-						// A terminal boot failure after a crash: lift the transient crash
-						// indicator (which outranks 'error' in nodeHealth) so the traceback
-						// shows instead of a 'restarting…' badge that never resolves.
-						if (ev.payload.stage === 'error' && t.crashed) {
-							t.crashed = false;
-							t.crashExit = null;
-						}
-				}
-				break;
-			}
-			case 'node_crashed': {
-				// The node's OS process died; the manager is auto-restarting it. Show
-				// a distinct, self-recovering crash state (cleared by the next healthy
-				// state_update above), not a code error.
-				const t = this.nodeById(ev.payload.node);
-				if (t) {
-					t.crashed = true;
-					t.restarts = ev.payload.restarts;
-					t.crashExit = ev.payload.exitcode;
 				}
 				break;
 			}
@@ -782,12 +760,7 @@ export class GraphStore {
 				// node flickering back to a boot spinner, a cleared error chip reappearing,
 				// live stats blanked). Refresh the structural fields in place; keep the
 				// survivor's runtime state, which its authoritative stream owns.
-				Object.assign(cur, n, {
-					stage: cur.stage,
-					error: cur.error,
-					stats: cur.stats,
-					restarts: cur.restarts
-				});
+				Object.assign(cur, n, { stage: cur.stage, error: cur.error, stats: cur.stats });
 				return cur;
 			}
 			this._seedNodeViewerState(n); // genuinely new node — seed its inline view state
@@ -805,7 +778,7 @@ export class GraphStore {
 	}
 
 	/** Pull the RUNTIME (event-sourced, never-in-the-doc) fields off an existing node so a doc
-	 * re-assemble preserves them — error/stage/crash/stats/membership at node level, and
+	 * re-assemble preserves them — error/stage/stats/membership at node level, and
 	 * per-param expression_error + refreshed StringParam options. */
 	private _extractRuntime(node: NodeInstanceInfo): RuntimeOverlay {
 		const params: NonNullable<RuntimeOverlay['params']> = {};
@@ -830,9 +803,6 @@ export class GraphStore {
 		return {
 			error: node.error,
 			stage: node.stage,
-			crashed: node.crashed,
-			restarts: node.restarts,
-			crashExit: node.crashExit,
 			stats: node.stats,
 			params
 		};
