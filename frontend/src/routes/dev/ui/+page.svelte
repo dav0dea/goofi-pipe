@@ -62,9 +62,15 @@
 	// DIRECT Field children, so `.ui-field-control`'s own flex-direction lays them out — and the
 	// narrow-container query can flip it to a single column.
 	let cqValue = $state(0.4);
+	// A Slider seeded OUTSIDE its [min,max] so the track auto-extends (Slider.svelte:44-48) instead of
+	// clipping — the e2e reads the range's extended min/max attributes.
+	let sliderExtend = $state(5);
 	let refreshValue = $state('sine');
 	let refreshing = $state(false);
 	let refreshCount = $state(0);
+	// A Select value that is NOT among its options — the stale-but-live case N's device/stream pickers
+	// hit; Select.svelte:39 prepends it so it still renders selected.
+	let stalePick = $state('unplugged-device');
 	let textText = $state('hello');
 	let textDecimal = $state('3.14');
 	let textSearch = $state('');
@@ -249,6 +255,15 @@
 				step={0.01}
 				data-testid="ui-slider"
 			/>
+			<!-- Seeded at 5 on a [0,1] track: the thumb renders in range because the track auto-extends its
+			     min/max to span the live value instead of clipping at the edge. -->
+			<Slider
+				value={sliderExtend}
+				onChange={(v) => (sliderExtend = v)}
+				min={0}
+				max={1}
+				data-testid="ui-slider-extend"
+			/>
 		</div>
 	</section>
 
@@ -266,6 +281,18 @@
 				/>
 			</Field>
 			<span class="readout" data-testid="ui-select-refreshes">{refreshCount}</span>
+			<!-- The committed value the <select>'s onchange emits — the e2e reads it to prove onChange fires. -->
+			<span class="readout" data-testid="ui-select-value">{refreshValue}</span>
+			<!-- A value NOT in its options (a stale-but-live device id): it still renders selected because
+			     the Select prepends the current value to the list. -->
+			<Field label="stale value" data-testid="ui-select-stale-field">
+				<Select
+					value={stalePick}
+					onChange={(v) => (stalePick = v)}
+					options={['sine', 'square', 'saw', 'triangle']}
+					data-testid="ui-select-stale"
+				/>
+			</Field>
 		</div>
 	</section>
 
@@ -295,6 +322,9 @@
 			<Field label="path">
 				<TextInput value={textPath} onChange={(v) => (textPath = v)} inputmode="path" data-testid="ui-text-path" />
 			</Field>
+			<!-- The committed value of the text field — onChange fires on blur/Enter, NOT per keystroke, so
+			     the e2e reads it to observe commit timing (typing buffers; blur/Enter commits). -->
+			<span class="readout" data-testid="ui-text-committed">{textText}</span>
 		</div>
 	</section>
 

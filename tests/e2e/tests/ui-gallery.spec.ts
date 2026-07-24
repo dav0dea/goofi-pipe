@@ -166,6 +166,21 @@ test.describe('UI Field family', () => {
 		await expect(page.getByTestId('ui-text-search')).toHaveAttribute('enterkeyhint', 'search');
 	});
 
+	// The value-OUT path: typing buffers via `live.input` (echoes suppressed), and the committed value
+	// updates only on blur/Enter via `live.commit(live.value)` — never the stale `value` prop, never per
+	// keystroke. The mirror of the NumberInput commit test above, for the text control.
+	test('TextInput commits on Enter, not per keystroke', async ({ page }) => {
+		await page.goto('/dev/ui');
+		const committed = page.getByTestId('ui-text-committed');
+		await expect(committed, 'seed value shown').toHaveText('hello');
+		const input = page.getByTestId('ui-text-text');
+		await input.focus();
+		await input.fill('world'); // buffers via live.input — must NOT commit yet
+		await expect(committed, 'typing buffers without committing (echo suppressed)').toHaveText('hello');
+		await input.press('Enter'); // Enter blurs → live.commit(live.value)
+		await expect(committed, 'Enter commits the buffered value').toHaveText('world');
+	});
+
 	test('a Field composes a Slider + NumberInput onto one shared value', async ({ page }) => {
 		await page.goto('/dev/ui');
 		const value = page.getByTestId('ui-compose-value');
@@ -177,6 +192,32 @@ test.describe('UI Field family', () => {
 		await expect(value, 'the shared value committed').toHaveText('0.5');
 		const range = page.getByTestId('ui-compose-slider').locator('input[type=range]');
 		await expect(range, 'the paired Slider tracks the same value').toHaveValue('0.5');
+	});
+
+	// The MIRROR of the compose test: drive the SLIDER (not the NumberInput) and assert the value flows
+	// OUT through its own `oninput → live.commit → onChange`. `range.fill` fires a real input event, so
+	// this exercises the Slider's actual emit — the wiring the compose test only reads INTO the Slider.
+	test('a Slider commits its value out through onChange (the sibling NumberInput follows)', async ({ page }) => {
+		await page.goto('/dev/ui');
+		const value = page.getByTestId('ui-compose-value');
+		await expect(value, 'seed value shown').toHaveText('0.3');
+		const range = page.getByTestId('ui-compose-slider').locator('input[type=range]');
+		await range.fill('0.75'); // fires the range's input event → live.commit(0.75) → onChange
+		// The shared cutoff committed, and the paired NumberInput (bound to the SAME value) followed.
+		await expect(value, 'the Slider emitted its value').toHaveText('0.75');
+		await expect(page.getByTestId('ui-compose-number'), 'the paired NumberInput tracks the emit').toHaveValue('0.75');
+	});
+
+	// The track auto-extends when the live value lies outside [min,max] (Slider.svelte:44-48): a value of
+	// 5 on a [0,1] slider renders in range because the range's min/max stretch to span it, not clip at 1.
+	test('a Slider auto-extends its track to a live value outside [min,max]', async ({ page }) => {
+		await page.goto('/dev/ui');
+		const range = page.getByTestId('ui-slider-extend').locator('input[type=range]');
+		await range.waitFor();
+		await expect(range, 'the thumb sits on the out-of-range live value, not clipped at max').toHaveValue('5');
+		// min stays at the declared floor; max stretched up from 1 to the live value so 5 is in range.
+		await expect(range, 'min stays at the declared floor').toHaveAttribute('min', '0');
+		await expect(range, 'max stretched to span the out-of-range value').toHaveAttribute('max', '5');
 	});
 
 	test('Trigger fires its action on click', async ({ page }) => {
@@ -201,6 +242,32 @@ test.describe('UI Field family', () => {
 		await expect(refreshes).toHaveText('0');
 		await page.getByTestId('ui-select').getByRole('button', { name: /re-scan/i }).click();
 		await expect(refreshes, 'the refresh affordance re-scans even from a live list').toHaveText('1');
+	});
+
+	// The value-OUT path: selecting an option fires the native <select> `change` → `onChange`, committing
+	// the new value. `selectOption` drives the real change event on a real option (not a shortcut) — the
+	// mirror of the onRefresh coverage above, which only exercised the ⟳ side.
+	test('Select commits the chosen option through onChange', async ({ page }) => {
+		await page.goto('/dev/ui');
+		const value = page.getByTestId('ui-select-value');
+		await expect(value, 'seed value shown').toHaveText('sine');
+		await page.getByTestId('ui-select').locator('select').selectOption('square');
+		await expect(value, 'choosing an option commits it via onChange').toHaveText('square');
+	});
+
+	// The stale-but-live prepend (Select.svelte:39): a bound value absent from `options` is kept
+	// selectable by prepending it — what N's device/stream pickers rely on so an unplugged device still
+	// shows as the current selection instead of the <select> silently switching to the first option.
+	test('Select keeps a value that is not among its options selectable', async ({ page }) => {
+		await page.goto('/dev/ui');
+		const select = page.getByTestId('ui-select-stale').locator('select');
+		// A <select> drops a value with no matching <option>, so resolving to the absent value IS proof an
+		// <option> for it was prepended.
+		await expect(select, 'the absent value is still the selection').toHaveValue('unplugged-device');
+		await expect(
+			select.locator('option').first(),
+			'the current value is prepended as the first option'
+		).toHaveText('unplugged-device');
 	});
 });
 
