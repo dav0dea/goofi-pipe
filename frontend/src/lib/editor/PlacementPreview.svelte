@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { untrack } from 'svelte';
 	import { ViewportPortal, useSvelteFlow } from '@xyflow/svelte';
-	import { categoryColor, dtypeColor } from './categoryColor';
+	import { dtypeColor } from './categoryColor';
 	import SnapGuides from './SnapGuides.svelte';
 	import {
 		computeSnapDelta,
@@ -28,7 +28,6 @@
 	let { typeInfo, initialClient, targets, onCommit, onCancel }: Props = $props();
 
 	const { screenToFlowPosition } = useSvelteFlow();
-	const accent = $derived(categoryColor(typeInfo.category));
 
 	let mouseClient = $state<{ x: number; y: number }>(untrack(() => ({ x: initialClient.x, y: initialClient.y })));
 	let altKey = $state(false);
@@ -104,7 +103,7 @@
 		class="ghost"
 		bind:offsetWidth={ghostW}
 		bind:offsetHeight={ghostH}
-		style="transform: translate({snappedX}px, {snappedY}px); --accent: {accent}; min-height: calc(var(--node-header) + {Math.max(inputs.length, 1)} * var(--node-u));"
+		style="transform: translate({snappedX}px, {snappedY}px); min-height: calc(var(--node-header) + {Math.max(inputs.length, 1)} * var(--node-u));"
 		data-testid="placement-ghost"
 	>
 		<!-- Mirror of GoofiNode: a clipped surface plus an unclipped pin overlay. -->
@@ -178,7 +177,7 @@
 		align-items: center;
 		gap: 8px;
 		padding: 0 10px;
-		background: linear-gradient(180deg, color-mix(in srgb, var(--accent) 18%, transparent), transparent);
+		background: var(--surface-3);
 		border-bottom: 1px solid var(--border);
 	}
 	.health {

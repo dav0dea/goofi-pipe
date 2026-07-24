@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { Handle, Position, type NodeProps } from '@xyflow/svelte';
-	import { categoryColor, dtypeColor } from './categoryColor';
+	import { dtypeColor } from './categoryColor';
 	import SlotViewer from '$lib/viewers/SlotViewer.svelte';
 	import { ui } from '$lib/stores/ui.svelte';
 	import { flash } from '$lib/stores/flash.svelte';
@@ -43,7 +43,6 @@
 		uiStore.requestSlotClick({ node: node.uid, slot, dtype, side: 'source', clientX: e.clientX, clientY: e.clientY });
 	}
 
-	const accent = $derived(categoryColor(node?.category));
 	// Health: ok / error (code, red border) / booting.
 	const health = $derived(nodeHealth(node));
 	const isError = $derived(health.kind === 'error');
@@ -95,7 +94,7 @@
 	class:has-error={isError}
 	class:booting={isBooting}
 	class:undo-flash={flashing}
-	style="--accent: {accent}; min-height: calc(var(--node-header) + {minBody} * var(--node-u));"
+	style="min-height: calc(var(--node-header) + {minBody} * var(--node-u));"
 	data-testid={node?.subpatch ? 'subpatch-node' : undefined}
 >
 	<!-- Visual surface: clipped to the rounded node shape, so the header's top
@@ -190,7 +189,6 @@
 		background: var(--bg-elev-1);
 		border: 1px solid var(--border);
 		border-radius: var(--radius-md);
-		box-shadow: var(--shadow-1);
 		transition:
 			border-color 80ms ease,
 			box-shadow 80ms ease;
@@ -259,7 +257,7 @@
 		align-items: center;
 		gap: 8px;
 		padding: 0 10px;
-		background: linear-gradient(180deg, color-mix(in srgb, var(--accent) 18%, transparent), transparent);
+		background: var(--surface-3);
 		border-bottom: 1px solid var(--border);
 		cursor: pointer;
 		user-select: none;
@@ -269,7 +267,6 @@
 		height: 8px;
 		border-radius: 50%;
 		flex-shrink: 0;
-		box-shadow: 0 0 5px currentColor;
 	}
 	.name {
 		font-weight: 600;

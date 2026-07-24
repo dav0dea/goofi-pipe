@@ -1,23 +1,8 @@
-/** Map a node category to a CSS color variable. */
-export function categoryColor(category: string | undefined | null): string {
-	switch ((category ?? '').toLowerCase()) {
-		case 'analysis':
-			return 'var(--cat-analysis)';
-		case 'array':
-			return 'var(--cat-array)';
-		case 'inputs':
-			return 'var(--cat-inputs)';
-		case 'misc':
-			return 'var(--cat-misc)';
-		case 'outputs':
-			return 'var(--cat-outputs)';
-		case 'signal':
-			return 'var(--cat-signal)';
-		case 'subpatch':
-			return 'var(--cat-misc)';
-		default:
-			return 'var(--cat-viewer)';
-	}
+/** Node categories no longer drive colour (design overhaul D4). Every node/dot renders
+ * neutral; category still groups the palette, just without a hue. Kept as the single
+ * call site so ParamPanel/AddNodeMenu dots neutralise with no markup change. */
+export function categoryColor(_category: string | undefined | null): string {
+	return 'var(--text-muted)';
 }
 
 /** Map a goofi DataType (ARRAY/STRING/TABLE/…) to a CSS color variable.
