@@ -84,3 +84,9 @@ describe('scale tokens exist and are ordered', () => {
 	it('--radius-lg is deleted', () => expect(css).not.toMatch(/--radius-lg\s*:/));
 	it('--font-sans is deleted (collapsed to --font-mono)', () => expect(css).not.toMatch(/--font-sans\s*:/));
 });
+
+describe('category colour system is gone', () => {
+	it('no --cat-* tokens remain in app.css', () => {
+		expect(css).not.toMatch(/--cat-[a-z]+\s*:/);
+	});
+});

@@ -60,16 +60,6 @@
 	--ease: ease;
 	--disabled-opacity: 0.45;
 
-	/* node category palette — distinguishable on the #111 background and
-	   colour-blind safe at the saturations used here. */
-	--cat-analysis: #b080f0;
-	--cat-array: #50d0a0;
-	--cat-inputs: #f0c050;
-	--cat-misc: #888888;
-	--cat-outputs: #f06080;
-	--cat-signal: #7ab7ff;
-	--cat-viewer: #606060;
-
 	/* dtype palette — slot pins/labels colour-code at a glance. */
 	--dtype-array: #50d0a0;
 	--dtype-string: #f0c050;

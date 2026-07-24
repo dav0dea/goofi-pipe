@@ -130,10 +130,8 @@
 	}
 	.logo {
 		font-size: 18px;
-		background: linear-gradient(120deg, var(--accent), var(--cat-array));
-		-webkit-background-clip: text;
-		background-clip: text;
-		color: transparent;
+		color: var(--accent);
+		font-weight: 600;
 	}
 	.name {
 		font-weight: 600;

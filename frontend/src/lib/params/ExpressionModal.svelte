@@ -392,15 +392,7 @@
 		height: 14px;
 		cursor: nwse-resize;
 		touch-action: none;
-		/* A subtle diagonal hash so the affordance is visible without
-		   shouting. Two stacked lines drawn via repeating-linear-gradient. */
-		background: repeating-linear-gradient(
-			135deg,
-			transparent 0,
-			transparent 3px,
-			var(--text-faint) 3px,
-			var(--text-faint) 4px
-		);
+		background: var(--surface-3);
 		opacity: 0.5;
 		transition: opacity 100ms ease;
 	}
