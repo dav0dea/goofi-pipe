@@ -1,8 +1,10 @@
 <!--
   Select — a dumb dropdown (spec §2.2): `value` in, `onChange` out, plus an optional refresh (⟳)
   affordance for device / stream pickers. A native <select> commits on `change` and can't echo-jump
-  mid-interaction, so it needs no `useLiveValue` latch. The current value is always kept in the list
-  (prepended if the options don't contain it) so a stale-but-live value still renders.
+  mid-interaction, so it needs no `useLiveValue` latch. A truthy current value is kept in the list
+  (prepended when the options don't contain it) so a stale-but-live value still renders — but an
+  EMPTY/falsy value is NOT prepended, so it never shows as a blank leading option (the empty-value
+  rule N's deleted `selectOptions` helper used to own, now enforced at this one P source of truth).
 
   The ⟳ appears only when `onRefresh` is given — even with an EMPTY option list, so a scan that found
   nothing is still re-runnable (the device/stream re-scan). It is the `IconButton` primitive; while a
@@ -35,8 +37,9 @@
 	} = $props();
 
 	const fieldId = claimFieldControlId();
-	// Keep the live value selectable even if it isn't among the options (a stale-but-live value).
-	const items = $derived(options.includes(value) ? options : [value, ...options]);
+	// Keep the live value selectable even if it isn't among the options (a stale-but-live value). The
+	// truthy guard keeps an empty/falsy value from being prepended as a blank leading option.
+	const items = $derived(!value || options.includes(value) ? options : [value, ...options]);
 </script>
 
 <div {...rest} class={`ui-select ${klass}`.trim()}>

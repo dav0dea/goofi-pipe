@@ -71,6 +71,9 @@
 	// A Select value that is NOT among its options — the stale-but-live case N's device/stream pickers
 	// hit; Select.svelte:39 prepends it so it still renders selected.
 	let stalePick = $state('unplugged-device');
+	// An EMPTY current value: the truthy-guarded prepend must NOT add a blank leading option (N's
+	// device pickers before a scan) — the empty-value rule `selectOptions` used to own, now at the P source.
+	let emptyPick = $state('');
 	let textText = $state('hello');
 	let textDecimal = $state('3.14');
 	let textSearch = $state('');
@@ -289,6 +292,16 @@
 					onChange={(v) => (stalePick = v)}
 					options={['sine', 'square', 'saw', 'triangle']}
 					data-testid="ui-select-stale"
+				/>
+			</Field>
+			<!-- An EMPTY current value: the truthy-guarded prepend leaves the list untouched, so there is
+			     no blank leading option (unlike a naive `includes` check, which would prepend ''). -->
+			<Field label="empty value" data-testid="ui-select-empty-field">
+				<Select
+					value={emptyPick}
+					onChange={(v) => (emptyPick = v)}
+					options={['sine', 'square', 'saw', 'triangle']}
+					data-testid="ui-select-empty"
 				/>
 			</Field>
 		</div>

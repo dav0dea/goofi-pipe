@@ -278,6 +278,19 @@ test.describe('UI Field family', () => {
 			'the current value is prepended as the first option'
 		).toHaveText('unplugged-device');
 	});
+
+	// The truthy-guarded prepend (Select.svelte:39): an EMPTY current value must NOT be prepended as a
+	// blank leading option — the empty-value rule the deleted `selectOptions` helper used to own, now
+	// enforced at the one P source of truth. Without the guard the list would gain a leading '' option.
+	test('Select does not prepend a blank option for an empty current value', async ({ page }) => {
+		await page.goto('/dev/ui');
+		const select = page.getByTestId('ui-select-empty').locator('select');
+		await expect(select.locator('option'), 'exactly the four options — none prepended').toHaveCount(4);
+		await expect(
+			select.locator('option').first(),
+			'the first option is a real one, not a blank prepend'
+		).toHaveText('sine');
+	});
 });
 
 // NumberInput drag-to-scrub. The scrub interaction (the 3px click-vs-scrub threshold, the dx→value
