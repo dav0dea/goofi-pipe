@@ -6,11 +6,14 @@ import { addNode, waitForNode, waitForNoNode } from '../lib/goofi';
 // toggle from the chip — no Escape, no outside-click. It now delegates to the Popover primitive,
 // so this asserts the NEW behaviour on the REAL panel, driven by a REAL node error.
 //
-// The error is reachable: a Python node's construction failure surfaces as a node `error` (the same
-// field a process() raise sets), which drives the floating error chip. In the e2e runtime the
-// in-process Python tier can't import numpy, so adding a Python node deterministically errors —
-// exactly the "a node that raises" case the panel exists to surface. The node is torn down after
-// each test so the shared backend graph stays clean for later specs.
+// The error is reachable and environment-independent: the tier calls `node.process(**present)` with
+// only the CONNECTED inputs as kwargs (goofi-pymod exec.rs `run_process`), and `LempelZiv.process`
+// has a required `data` param — so a node added with nothing connected raises a missing-argument
+// TypeError on its first tick. That is a per-tick Python-node error, exactly the "a node that raises"
+// case the panel exists to surface (it sets the same `error` field that drives the floating chip).
+// It does NOT depend on any missing dependency (numpy is present in both venvs) — it is the
+// unconnected-required-input raise, which is permanent. The node is torn down after each test so the
+// shared backend graph stays clean for later specs.
 test.describe('ErrorPanel dismissal (delegated to Popover)', () => {
 	let created: string[] = [];
 
@@ -25,7 +28,8 @@ test.describe('ErrorPanel dismissal (delegated to Popover)', () => {
 	async function summonErrorChip(page: Page) {
 		await page.goto('/');
 		await waitForApp(page);
-		// A Python node — construction fails in the in-process tier (no numpy), so it errors on add.
+		// A Python node whose process() needs a connected ARRAY input; added with none, it raises on
+		// its first tick and the error surfaces as the floating chip.
 		const uid = await addNode(page, 'LempelZiv', 'python');
 		created.push(uid);
 		await waitForNode(page, uid);
