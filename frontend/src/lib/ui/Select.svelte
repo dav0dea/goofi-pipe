@@ -8,8 +8,10 @@
 
   The ⟳ appears only when `onRefresh` is given — even with an EMPTY option list, so a scan that found
   nothing is still re-runnable (the device/stream re-scan). It is the `IconButton` primitive; while a
-  refresh is in flight the <select> dims and the button spins a CSS ring. The <select> claims the
-  enclosing Field's label id. `class` merged, `data-testid` (and any other attribute) forwarded.
+  refresh is in flight the <select> dims and the button spins a CSS ring. Pass `refreshTestid` to stamp
+  a `data-testid` on that ⟳ button (a consumer delegating its own refresh affordance keeps its testid).
+  The <select> claims the enclosing Field's label id. `class` merged, `data-testid` (and any other
+  attribute) forwarded onto the wrapper.
 -->
 <script lang="ts">
 	import type { HTMLAttributes } from 'svelte/elements';
@@ -22,6 +24,7 @@
 		options,
 		onRefresh,
 		refreshing = false,
+		refreshTestid,
 		disabled = false,
 		class: klass = '',
 		...rest
@@ -33,6 +36,8 @@
 		onRefresh?: () => void;
 		/** A ⟳ re-scan is in flight — dim the select and spin the button. */
 		refreshing?: boolean;
+		/** `data-testid` stamped on the ⟳ button (undefined → no attribute). */
+		refreshTestid?: string;
 		disabled?: boolean;
 	} = $props();
 
@@ -60,6 +65,7 @@
 			label={refreshing ? 'Re-scanning…' : 'Re-scan for options'}
 			disabled={refreshing}
 			aria-busy={refreshing}
+			data-testid={refreshTestid}
 			onclick={() => onRefresh()}
 		>
 			{#if refreshing}

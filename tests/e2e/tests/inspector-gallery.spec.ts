@@ -72,6 +72,19 @@ test.describe('Inspector field gallery', () => {
 		await expect(readout, 'choosing an option commits it').toHaveText('square');
 	});
 
+	// The gate (audit finding #3): a NON-refreshable select renders NO ⟳, even though ParamForm — which
+	// this sample mirrors — wires `onRefresh` UNCONDITIONALLY. The ⟳ is gated on `descriptor.refreshable`,
+	// not the mere presence of `onRefresh`; before the gate every select showed a ⟳ that the engine would
+	// reject by contract.
+	test('a non-refreshable select renders NO ⟳ even though onRefresh is wired', async ({ page }) => {
+		await page.goto('/dev/inspector');
+		const field = page.getByTestId('inspector-options');
+		// The select itself still renders (and still commits), but there is no refresh affordance.
+		await expect(field.getByTestId('param-select').locator('select')).toBeVisible();
+		await expect(field.getByTestId('param-refresh'), 'no ⟳ on a non-refreshable param').toHaveCount(0);
+		await expect(page.getByTestId('inspector-options-refreshes'), 'onRefresh was never invokable').toHaveText('0');
+	});
+
 	// The refreshable select: a stale-but-live current value absent from the options stays selected (P
 	// Select prepends it), and the ⟳ button (param-refresh) fires onRefresh, which re-scans the options.
 	test('a refreshable select keeps a stale value selected and ⟳ re-scans the options', async ({ page }) => {

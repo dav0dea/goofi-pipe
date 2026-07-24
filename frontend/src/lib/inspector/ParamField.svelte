@@ -36,7 +36,6 @@
 		Select,
 		TextInput,
 		IconButton,
-		Spinner,
 		Chip,
 		type BadgeTone
 	} from '$lib/ui';
@@ -287,29 +286,18 @@
 	{:else if kind === 'toggle'}
 		<Toggle value={Boolean(descriptor.value)} onChange={onCommit} data-testid="param-toggle" />
 	{:else if kind === 'select'}
+		<!-- Delegate the ⟳ to the P Select (its built-in refresh affordance), gated on
+		     `descriptor.refreshable`: a non-refreshable dropdown passes `onRefresh={undefined}` so no ⟳
+		     renders (the engine rejects a refresh for a non-refreshable param by contract). -->
 		<Select
 			{options}
 			value={String(descriptor.value)}
 			onChange={onCommit}
-			disabled={refreshing}
+			onRefresh={descriptor.refreshable ? onRefresh : undefined}
+			{refreshing}
+			refreshTestid="param-refresh"
 			data-testid="param-select"
 		/>
-		{#if onRefresh}
-			<IconButton
-				size="sm"
-				label={refreshing ? 'Re-scanning…' : 'Re-scan for options'}
-				disabled={refreshing}
-				aria-busy={refreshing}
-				data-testid="param-refresh"
-				onclick={onRefresh}
-			>
-				{#if refreshing}
-					<Spinner size="sm" />
-				{:else}
-					⟳
-				{/if}
-			</IconButton>
-		{/if}
 	{:else if kind === 'text'}
 		<TextInput value={String(descriptor.value)} onChange={onCommit} data-testid="param-text" />
 	{:else}

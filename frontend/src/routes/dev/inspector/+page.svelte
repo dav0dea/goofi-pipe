@@ -28,6 +28,9 @@
 	let triggerCount = $state(0);
 	let textVal = $state('hello');
 	let optionVal = $state('sine');
+	// A refresh counter for the NON-refreshable select: onRefresh is wired (as ParamForm always wires
+	// it), so this proves the gate suppresses the ⟳ entirely — the count can never leave 0.
+	let optionRefreshCount = $state(0);
 	// A stale-but-live device id, absent from the seeded options below — the P Select prepends it.
 	let deviceVal = $state('mic-1');
 	const unknownVal = { channels: ['Fz', 'Cz'], n: 2 };
@@ -253,16 +256,21 @@
 	</section>
 
 	<section>
-		<h2>select — string with options</h2>
+		<h2>select — non-refreshable string with options (no ⟳)</h2>
 		<div class="form">
+			<!-- `onRefresh` is wired UNCONDITIONALLY, exactly as ParamForm passes it to every field. The ⟳
+			     must still NOT render, because the descriptor is non-refreshable — the gate is
+			     `descriptor.refreshable`, not the mere presence of `onRefresh`. -->
 			<ParamField
 				paramName="waveform"
 				descriptor={optionsDesc}
 				onCommit={(v) => (optionVal = String(v))}
 				onSetExpression={noExpr}
+				onRefresh={() => (optionRefreshCount += 1)}
 				data-testid="inspector-options"
 			/>
 			<span class="readout" data-testid="inspector-options-value">{optionVal}</span>
+			<span class="readout" data-testid="inspector-options-refreshes">{optionRefreshCount}</span>
 		</div>
 	</section>
 
