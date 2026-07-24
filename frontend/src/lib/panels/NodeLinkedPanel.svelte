@@ -58,7 +58,7 @@
 	data-testid="node-linked-panel"
 >
 	{#if node}
-		<Bar class="linkbar">
+		<Bar>
 			{#snippet start()}
 				<StatusDot tone={node.error ? 'error' : 'ok'} size="sm" />
 				<span class="ln" title={node.type}>{node.name}</span>
