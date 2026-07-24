@@ -245,7 +245,7 @@ mod tests {
         let inputs_map = IndexMap::new();
         let inp = Inputs::new(&inputs_map);
         let mut outbuf = m.output_buffer();
-        let mut ctx = NodeCtx { tick: 0, now, ..Default::default() };
+        let mut ctx = NodeCtx { now, ..Default::default() };
         {
             let mut out = Outputs::new(&mut outbuf);
             node.process(&inp, &mut out, &mut ctx, &Params::new(params)).unwrap();
@@ -287,9 +287,9 @@ mod tests {
         let inputs_map = IndexMap::new();
         let inp = Inputs::new(&inputs_map);
         let mut o0 = m.output_buffer();
-        node.process(&inp, &mut Outputs::new(&mut o0), &mut NodeCtx { tick: 0, now: 0.0, ..Default::default() }, &Params::new(&params)).unwrap();
+        node.process(&inp, &mut Outputs::new(&mut o0), &mut NodeCtx { now: 0.0, ..Default::default() }, &Params::new(&params)).unwrap();
         let mut o1 = m.output_buffer();
-        node.process(&inp, &mut Outputs::new(&mut o1), &mut NodeCtx { tick: 1, now: 0.004, ..Default::default() }, &Params::new(&params)).unwrap();
+        node.process(&inp, &mut Outputs::new(&mut o1), &mut NodeCtx { now: 0.004, ..Default::default() }, &Params::new(&params)).unwrap();
         let d = o1.get("out").unwrap().as_ref().unwrap();
         assert_eq!(d.meta().sfreq(), Some(1000.0));
         if let Value::Array(s) = d.value() {
@@ -311,9 +311,9 @@ mod tests {
         let inputs_map = IndexMap::new();
         let inp = Inputs::new(&inputs_map);
         let mut o0 = m.output_buffer();
-        node.process(&inp, &mut Outputs::new(&mut o0), &mut NodeCtx { tick: 0, now: 0.0, ..Default::default() }, &Params::new(&params)).unwrap();
+        node.process(&inp, &mut Outputs::new(&mut o0), &mut NodeCtx { now: 0.0, ..Default::default() }, &Params::new(&params)).unwrap();
         let mut o1 = m.output_buffer();
-        node.process(&inp, &mut Outputs::new(&mut o1), &mut NodeCtx { tick: 1, now: 0.004, ..Default::default() }, &Params::new(&params)).unwrap();
+        node.process(&inp, &mut Outputs::new(&mut o1), &mut NodeCtx { now: 0.004, ..Default::default() }, &Params::new(&params)).unwrap();
         if let Value::Array(s) = o1.get("out").unwrap().as_ref().unwrap().value() {
             let v: Vec<f32> = s.as_bytes().chunks_exact(4).map(|c| f32::from_le_bytes(c.try_into().unwrap())).collect();
             assert!(v.iter().all(|x| x.abs() == 1.0), "square is ±1, got {v:?}");

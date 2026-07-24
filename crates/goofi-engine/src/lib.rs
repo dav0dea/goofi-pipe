@@ -1,11 +1,10 @@
-//! goofi-engine — the graph + a minimal single-threaded tick scheduler (M1).
+//! goofi-engine — the graph and its tick scheduler.
 //!
-//! Grows into the work-stealing compute pool + reserved RT sub-pool + timer-wheel
-//! autotrigger in M2. For now: instantiate catalog nodes, wire one-wire-per-input
-//! links, and `tick()` all nodes once in topological order, moving each node's
-//! outputs into its consumers' inputs (latest-wins) so a single pass propagates
-//! through an acyclic graph. Each node's latest output frame is exposed for the
-//! data plane.
+//! `tick()` walks the graph in topological LEVELS, running each level's nodes in
+//! parallel (rayon) and then moving their outputs into their consumers' inputs
+//! (latest-wins), so one pass propagates through an acyclic graph. Nodes land on
+//! one of two execution tiers (see `make_exec`): inline, or detached onto an
+//! off-tick worker. Each node's latest output frame is exposed for the data plane.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -16,8 +15,7 @@ use goofi_node::{Inputs, NodeCtx, NodeManifest, Outputs, ParamGroups, ParamKey, 
 use indexmap::IndexMap;
 use rayon::prelude::*;
 
-/// Sub-patch forest model + pure projector (see `subpatch.rs`). Phase 1: types +
-/// `materialize`/`resolve_boundary`, not yet wired into the live graph.
+/// Sub-patch forest model + stub resolution (see `subpatch.rs`).
 pub mod subpatch;
 
 /// Semantic patch commands with exact inverses — the manager's undo/redo unit.
@@ -2692,15 +2690,6 @@ impl Graph {
     }
 }
 
-/// Run a single node's `process` in place: clear its outputs, tick its context,
-/// stamp each emitted frame's continuity index, and capture any error or panic on
-/// its error channel. Panic isolation keeps one faulty node from unwinding through
-/// the scheduler (and, in the bridge, poisoning the graph mutex). Called from the
-/// parallel phase, so it touches only `entry` (index stamping included — the
-/// counter and both I/O buffers all live in `entry`, so it stays disjoint).
-/// Seed a freshly-built node: replay `on_param_changed` for each declared param (skipping
-/// `common`, the scheduler's), then run `setup`. Returns the FIRST bootstrap error, if any.
-/// Shared by the inline insert path and the detached worker (which seeds off-tick).
 /// Route a constructed node onto its execution tier — the ONE place the isolation split
 /// lives, shared by insertion and [`Graph::restart_node`] so the two cannot diverge.
 ///
@@ -2792,7 +2781,6 @@ pub(crate) fn execute_node(
     index_counters: &mut HashMap<&'static str, u64>,
     ufreq_meter: &mut UfreqMeter,
 ) -> Option<String> {
-    ctx.tick += 1;
     for v in outputs.values_mut() {
         *v = None;
     }

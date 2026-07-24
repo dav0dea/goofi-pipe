@@ -62,12 +62,6 @@ pub struct Scope {
     pub stubs: IndexMap<StubId, Stub>,
 }
 
-impl Scope {
-    pub fn new(name: String, pos: [f64; 2]) -> Scope {
-        Scope { name, pos, stubs: IndexMap::new() }
-    }
-}
-
 /// Chain-to-leaf: resolve `(scope_uid, stub_id)` to the single physical inner leaf `(uid, slot)` it
 /// exposes, walking through nested-scope stubs. `None` if the stub (or any stub in its chain) is
 /// unwired, or the ids don't resolve. This is the resolution the data plane performs before
@@ -100,7 +94,7 @@ mod tests {
     /// A scope (uid 10) exposing leaf 2's `out` slot as `out0`.
     fn one_scope() -> IndexMap<Uid, Scope> {
         let mut scopes = IndexMap::new();
-        let mut s = Scope::new("subpatch0".to_string(), [0.0, 0.0]);
+        let mut s = Scope { name: "subpatch0".to_string(), pos: [0.0, 0.0], stubs: IndexMap::new() };
         s.stubs.insert("out0".to_string(), out_stub(Uid(2), "out"));
         scopes.insert(Uid(10), s);
         scopes
@@ -122,7 +116,7 @@ mod tests {
     fn resolve_stub_walks_two_deep_nesting() {
         // outer scope 20 exposes child scope 10's `out0` as its own `out0`; child 10 exposes leaf 2.
         let mut scopes = one_scope();
-        let mut outer = Scope::new("outer0".to_string(), [0.0, 0.0]);
+        let mut outer = Scope { name: "outer0".to_string(), pos: [0.0, 0.0], stubs: IndexMap::new() };
         outer.stubs.insert("out0".to_string(), out_stub(Uid(10), "out0"));
         scopes.insert(Uid(20), outer);
         assert_eq!(
