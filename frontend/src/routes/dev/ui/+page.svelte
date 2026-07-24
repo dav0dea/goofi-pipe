@@ -87,6 +87,10 @@
 	// placement would overflow — proving `clampToViewport` shifts it back on-screen. ---
 	let popoverAnchor = $state<HTMLElement | null>(null);
 	let popoverOpen = $state(false);
+	// A second sample proving the primitive imposes no role: this consumer declares role="menu"
+	// via rest, and (nothing overriding it) that role reaches the surface.
+	let menuPopoverAnchor = $state<HTMLElement | null>(null);
+	let menuPopoverOpen = $state(false);
 	let dialogOpen = $state(false);
 
 	// Display: the Chip is the one pressable display primitive — a click read-out proves it fires.
@@ -366,6 +370,31 @@
 			<div class="pop-content" data-testid="ui-popover-content">
 				<strong>Anchored overlay</strong>
 				<p>Portalled, clamped on-screen, self-dismissing on Escape or an outside click.</p>
+			</div>
+		</Popover>
+
+		<!-- Same primitive, but the consumer declares its own semantics: `role="menu"` flows through
+		     `...rest` and reaches the surface, proving the Popover forces no role of its own. -->
+		<div class="pop-row">
+			<span class="pop-anchor" bind:this={menuPopoverAnchor}>
+				<Button
+					onclick={() => (menuPopoverOpen = !menuPopoverOpen)}
+					data-testid="ui-menu-popover-trigger"
+				>
+					{menuPopoverOpen ? 'Close' : 'Open'} menu popover
+				</Button>
+			</span>
+		</div>
+		<Popover
+			anchor={menuPopoverAnchor}
+			open={menuPopoverOpen}
+			onDismiss={() => (menuPopoverOpen = false)}
+			role="menu"
+			data-testid="ui-menu-popover"
+		>
+			<div class="pop-content" data-testid="ui-menu-popover-content">
+				<strong>Menu-role overlay</strong>
+				<p>The consumer passes role="menu" via rest; the primitive imposes nothing over it.</p>
 			</div>
 		</Popover>
 	</section>

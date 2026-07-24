@@ -415,6 +415,31 @@ test.describe('UI surfaces', () => {
 		expect(box.y + box.height, 'bottom edge within the viewport').toBeLessThanOrEqual(vp.h + 1);
 	});
 
+	// The Popover is an anchored, self-dismissing surface (NOT the modal Dialog), so it imposes no
+	// role of its own — the consumer/content declares the fitting semantics via rest. These two guard
+	// the contract: (a) a consumer-declared role wins, (b) the default surface claims no unnamed dialog.
+	test('Popover applies a consumer-declared role through rest', async ({ page }) => {
+		await page.goto('/dev/ui');
+		await page.getByTestId('ui-menu-popover-trigger').click();
+		const menuPop = page.getByTestId('ui-menu-popover');
+		await expect(menuPop).toBeVisible();
+		// rest is spread with nothing overriding it, so role="menu" reaches the surface.
+		await expect(menuPop, 'a consumer role flows through rest and wins').toHaveAttribute(
+			'role',
+			'menu'
+		);
+	});
+
+	test('Popover imposes no unnamed dialog role of its own', async ({ page }) => {
+		await page.goto('/dev/ui');
+		await page.getByTestId('ui-popover-trigger').click();
+		const pop = page.getByTestId('ui-popover');
+		await expect(pop).toBeVisible();
+		// A dialog role demands a name + focus context the anchored primitive supplies neither of;
+		// the default surface must not claim it (WCAG 4.1.2).
+		await expect(pop, 'no imposed, unnamed dialog role').not.toHaveAttribute('role', 'dialog');
+	});
+
 	test('Dialog opens and traps focus inside itself', async ({ page }) => {
 		await page.goto('/dev/ui');
 		const content = page.getByTestId('ui-dialog-content');

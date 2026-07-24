@@ -9,6 +9,12 @@
   pointerdown that also hit the anchor would dismiss-then-reopen). Surface chrome is F tokens, each
   a `var(--popover-*, <token>)` per-instance hook (spec §1). `class` merged, `data-testid` (and any
   other attribute) forwarded via `...rest`.
+
+  Semantics are the consumer's, not the primitive's: this is an unstyled-semantics positioned
+  surface that imposes NO role of its own — the anchored, self-dismissing model, not the modal,
+  focus-trapping `Dialog` (that primitive owns the name + focus context a `role="dialog"` demands).
+  A consumer declares the fitting role/name (`role="menu"`, `aria-label`, …) via `...rest`, or lets
+  the interactive children carry their own roles.
 -->
 <script lang="ts">
 	import type { Snippet } from 'svelte';
@@ -78,7 +84,6 @@
 		class={`ui-popover ${klass}`.trim()}
 		style="left:{pos.left}px; top:{pos.top}px; visibility:{placed ? 'visible' : 'hidden'}"
 		use:portal
-		role="dialog"
 	>
 		{@render children?.()}
 	</div>
