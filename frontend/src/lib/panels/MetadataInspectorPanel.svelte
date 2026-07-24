@@ -7,6 +7,7 @@
 	import NodeLinkedPanel from './NodeLinkedPanel.svelte';
 	import MetadataPanel from '$lib/editor/MetadataPanel.svelte';
 	import { asStateObject } from '$lib/workspace/panelState';
+	import { Select } from '$lib/ui';
 
 	let props: PanelProps = $props();
 
@@ -25,16 +26,12 @@
 	{#snippet controls(node)}
 		{@const slots = Object.keys(node.output_slots ?? {})}
 		{#if slots.length > 0}
-			<select
-				class="slot-pick"
+			<Select
 				value={curSlot(node) ?? ''}
-				onchange={(e) => props.setState({ ...st(), slot: e.currentTarget.value })}
+				onChange={(v) => props.setState({ ...st(), slot: v })}
+				options={slots}
 				data-testid="metadata-slot"
-			>
-				{#each slots as s (s)}
-					<option value={s}>{node.slot_labels?.[s] ?? s}</option>
-				{/each}
-			</select>
+			/>
 		{/if}
 	{/snippet}
 
@@ -50,12 +47,5 @@
 		height: 100%;
 		overflow-y: auto;
 		min-height: 0;
-	}
-	.slot-pick {
-		flex: 0 1 auto;
-		min-width: 0;
-		font-family: var(--font-mono);
-		font-size: 0.78rem;
-		padding: 2px 6px;
 	}
 </style>

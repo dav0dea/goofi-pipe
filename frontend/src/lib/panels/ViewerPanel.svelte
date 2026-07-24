@@ -17,6 +17,7 @@
 	import { asStateObject } from '$lib/workspace/panelState';
 	import type { ViewerKind } from '$lib/viewers/kind';
 	import type { SettingsMap } from '$lib/viewers/settingsSchema';
+	import { Select } from '$lib/ui';
 
 	interface ViewerState {
 		node?: string | null;
@@ -75,16 +76,12 @@
 <NodeLinkedPanel {...props} label="data">
 	{#snippet controls(node)}
 		{@const { slot, dtype, binding } = view(node)}
-		<select
-			class="slot-pick"
+		<Select
 			value={slot ?? ''}
-			onchange={(e) => pick(e.currentTarget.value)}
+			onChange={(v) => pick(v)}
+			options={Object.keys(node.output_slots)}
 			data-testid="viewer-slot"
-		>
-			{#each Object.entries(node.output_slots) as [name, dt] (name)}
-				<option value={name}>{node.slot_labels?.[name] ?? name} · {dt.toLowerCase()}</option>
-			{/each}
-		</select>
+		/>
 		{#if slot && dtype}
 			<ViewerControls {dtype} {binding} />
 		{/if}
@@ -97,12 +94,6 @@
 </NodeLinkedPanel>
 
 <style>
-	.slot-pick {
-		flex: 0 1 auto;
-		min-width: 0;
-		font-size: 0.78rem;
-		padding: 2px 6px;
-	}
 	.vp-body {
 		flex: 1;
 		min-height: 0;
