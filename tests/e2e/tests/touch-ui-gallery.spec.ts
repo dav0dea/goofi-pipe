@@ -40,3 +40,21 @@ test('Field controls meet the 44px coarse tap target', async ({ page }) => {
 	expect(tbox, 'the Toggle has a rendered box').not.toBeNull();
 	expect(tbox!.height, 'Toggle height >= 44 under coarse').toBeGreaterThanOrEqual(44);
 });
+
+// Tabs and Disclosure are chrome R renders on phones — each tab and the disclosure summary must be a
+// real 44px tap target under a coarse pointer (both size their control to var(--hit)).
+test('Tabs + Disclosure meet the 44px coarse tap target', async ({ page }) => {
+	await page.goto('/dev/ui');
+
+	const tab = page.getByTestId('ui-tabs').getByRole('tab').first();
+	await tab.waitFor();
+	const tabBox = await tab.boundingBox();
+	expect(tabBox, 'the tab has a rendered box').not.toBeNull();
+	expect(tabBox!.height, 'tab height >= 44 under coarse').toBeGreaterThanOrEqual(44);
+
+	const summary = page.getByTestId('ui-disclosure').getByRole('button');
+	await summary.waitFor();
+	const sbox = await summary.boundingBox();
+	expect(sbox, 'the disclosure summary has a rendered box').not.toBeNull();
+	expect(sbox!.height, 'disclosure summary height >= 44 under coarse').toBeGreaterThanOrEqual(44);
+});

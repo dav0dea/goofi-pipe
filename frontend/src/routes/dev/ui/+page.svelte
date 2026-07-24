@@ -19,8 +19,11 @@
 		TextInput,
 		Trigger,
 		Toggle,
+		Tabs,
+		Disclosure,
 		type ButtonVariant,
-		type ButtonSize
+		type ButtonSize,
+		type TabItem
 	} from '$lib/ui';
 
 	const variants: ButtonVariant[] = ['default', 'primary', 'ghost', 'danger'];
@@ -47,6 +50,17 @@
 	let textPath = $state('/home/user/patch.gfi');
 	let triggerCount = $state(0);
 	let toggled = $state(false);
+
+	// Tabs: the connected bar drives which body renders below it (active tab merges into the body).
+	const tabItems: TabItem[] = [
+		{ id: 'signal', label: 'Signal' },
+		{ id: 'audio', label: 'Audio' },
+		{ id: 'video', label: 'Video' }
+	];
+	let activeTab = $state('signal');
+	// Disclosure: bound open state, plus an onToggle read-out so the e2e can observe the callback.
+	let disclosureOpen = $state(false);
+	let disclosureToggles = $state(0);
 
 	function doRefresh(): void {
 		// Simulate a device/stream re-scan: spin briefly, then land a fresh option set.
@@ -267,6 +281,39 @@
 			<span class="readout" data-testid="ui-toggle-value">{toggled ? 'on' : 'off'}</span>
 		</div>
 	</section>
+
+	<section>
+		<h2>Tabs (the connected bar)</h2>
+		<!-- The active tab drops to the body surface and merges with the panel body flush beneath it —
+		     the `.tabs-body` paints the SAME `--surface-1` the active tab drops to (no line between
+		     them). The e2e asserts the active tab's computed background equals the body's (connected),
+		     and differs from an inactive tab's (the drop happened). -->
+		<div class="tabs-demo">
+			<Tabs items={tabItems} active={activeTab} onSelect={(id) => (activeTab = id)} data-testid="ui-tabs" />
+			<div class="tabs-body" data-testid="ui-tabs-body">
+				<span data-testid="ui-tabs-active">{activeTab}</span> panel content
+			</div>
+		</div>
+	</section>
+
+	<section>
+		<h2>Disclosure</h2>
+		<div class="form">
+			<Disclosure
+				bind:open={disclosureOpen}
+				onToggle={() => (disclosureToggles += 1)}
+				data-testid="ui-disclosure"
+			>
+				{#snippet summary()}
+					Advanced options
+				{/snippet}
+				<p class="disclosure-content" data-testid="ui-disclosure-content">
+					Collapsed by default; the caret rotates and this region mounts on toggle.
+				</p>
+			</Disclosure>
+			<span class="readout" data-testid="ui-disclosure-toggles">{disclosureToggles}</span>
+		</div>
+	</section>
 </main>
 
 <style>
@@ -330,5 +377,23 @@
 		font-size: var(--fs-micro);
 		color: var(--text-muted);
 		font-variant-numeric: tabular-nums;
+	}
+	/* The Tabs demo panel: the body paints the SAME surface the active tab drops to (--surface-1,
+	   the Tabs `--tabs-body` default), so the active tab merges into it seamlessly. */
+	.tabs-demo {
+		width: 22rem;
+		max-width: 100%;
+	}
+	.tabs-body {
+		padding: var(--space-7);
+		background: var(--surface-1);
+		border-radius: 0 0 var(--radius-sm) var(--radius-sm);
+		color: var(--text-dim);
+		font-size: var(--fs-small);
+	}
+	.disclosure-content {
+		margin: 0;
+		color: var(--text-dim);
+		font-size: var(--fs-small);
 	}
 </style>

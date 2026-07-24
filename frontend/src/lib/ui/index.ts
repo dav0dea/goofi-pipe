@@ -32,3 +32,8 @@ export { default as TextInput } from './TextInput.svelte';
 export { default as Trigger } from './Trigger.svelte';
 export { default as Toggle } from './Toggle.svelte';
 export { useLiveValue, displayValue, type LiveValue } from './liveValue.svelte';
+
+// Surfaces / overlays (Task 4): the connected tab bar + the collapse control.
+export { default as Tabs } from './Tabs.svelte';
+export { default as Disclosure } from './Disclosure.svelte';
+export { resolveActive, nextIndex, type TabItem, type ArrowKey } from './tabsState';

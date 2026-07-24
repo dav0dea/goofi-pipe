@@ -202,3 +202,71 @@ test.describe('UI Field family', () => {
 		await expect(refreshes, 'the refresh affordance re-scans even from a live list').toHaveText('1');
 	});
 });
+
+// Tabs (the connected bar) + Disclosure (Task 4). The Tabs assertions verify the REAL connected-look
+// mechanism (the active tab's background equals the panel body's, and differs from an inactive tab's)
+// and arrow-key navigation — not merely "renders". Disclosure toggles children visibility + aria.
+// Runs under the `default` (fine-pointer) project like the rest of this file.
+test.describe('UI Tabs + Disclosure', () => {
+	test('the active tab drops to the body surface (the connected look)', async ({ page }) => {
+		await page.goto('/dev/ui');
+		const tabs = page.getByTestId('ui-tabs');
+		await tabs.waitFor();
+		const bg = (loc: import('@playwright/test').Locator) =>
+			loc.evaluate((el) => getComputedStyle(el).backgroundColor);
+
+		const activeTab = tabs.getByRole('tab', { selected: true });
+		const inactiveTab = tabs.getByRole('tab', { selected: false }).first();
+		const bodyBg = await bg(page.getByTestId('ui-tabs-body'));
+		const activeBg = await bg(activeTab);
+		const inactiveBg = await bg(inactiveTab);
+
+		// Connected: the active tab paints the SAME surface as the body flush beneath it (two
+		// independent elements resolving to the same token — not a tautology).
+		expect(activeBg, 'active tab background equals the body surface (merged)').toBe(bodyBg);
+		// And the drop actually happened — an inactive tab sits at the header surface, a different colour.
+		expect(inactiveBg, 'an inactive tab sits at the header surface, not the body').not.toBe(activeBg);
+	});
+
+	test('arrow keys move the active tab (roving tablist)', async ({ page }) => {
+		await page.goto('/dev/ui');
+		const tabs = page.getByTestId('ui-tabs');
+		await tabs.waitFor();
+		const active = page.getByTestId('ui-tabs-active');
+		await expect(active, 'first tab active initially').toHaveText('signal');
+
+		// Focus the active tab, then ArrowRight advances the selection (automatic activation).
+		await tabs.getByRole('tab', { selected: true }).focus();
+		await page.keyboard.press('ArrowRight');
+		await expect(active, 'ArrowRight selects the next tab').toHaveText('audio');
+		// aria-selected followed the selection onto the newly active tab.
+		await expect(tabs.getByRole('tab', { name: 'Audio' })).toHaveAttribute('aria-selected', 'true');
+		// ArrowLeft from the first wraps to the last.
+		await page.keyboard.press('ArrowLeft');
+		await expect(active, 'ArrowLeft retreats').toHaveText('signal');
+		await page.keyboard.press('ArrowLeft');
+		await expect(active, 'ArrowLeft wraps past the start to the last tab').toHaveText('video');
+	});
+
+	test('Disclosure toggles its children + aria-expanded', async ({ page }) => {
+		await page.goto('/dev/ui');
+		const summary = page.getByTestId('ui-disclosure').getByRole('button');
+		await summary.waitFor();
+		const content = page.getByTestId('ui-disclosure-content');
+		const toggles = page.getByTestId('ui-disclosure-toggles');
+
+		// Collapsed by default: content is not in the DOM, aria-expanded=false.
+		await expect(content, 'children hidden when closed').toBeHidden();
+		await expect(summary).toHaveAttribute('aria-expanded', 'false');
+
+		await summary.click();
+		await expect(content, 'children revealed on open').toBeVisible();
+		await expect(summary).toHaveAttribute('aria-expanded', 'true');
+		await expect(toggles, 'onToggle fired once').toHaveText('1');
+
+		await summary.click();
+		await expect(content, 'children hidden again on close').toBeHidden();
+		await expect(summary).toHaveAttribute('aria-expanded', 'false');
+		await expect(toggles, 'onToggle fired twice').toHaveText('2');
+	});
+});
