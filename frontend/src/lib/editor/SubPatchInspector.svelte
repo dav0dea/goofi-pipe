@@ -7,6 +7,7 @@
 <script lang="ts">
 	import type { NodeInstanceInfo } from '$lib/api/control';
 	import { graph } from '$lib/stores/graph.svelte';
+	import { Button, Badge } from '$lib/ui';
 
 	let { node }: { node: NodeInstanceInfo } = $props();
 
@@ -30,12 +31,12 @@
 			<div class="title">Sub-patch</div>
 			<div class="sub">{inst?.name ?? instId}</div>
 		</div>
-		<span class="badge">{memberCount} member{memberCount === 1 ? '' : 's'}</span>
+		<Badge tone="accent" class="member-badge">{memberCount} member{memberCount === 1 ? '' : 's'}</Badge>
 	</header>
 
 	<div class="rows">
-		<button class="act ghost" data-testid="subpatch-expand-inspector" onclick={expand}
-			>Expand (dissolve into nodes)</button
+		<Button variant="ghost" data-testid="subpatch-expand-inspector" onclick={expand}
+			>Expand (dissolve into nodes)</Button
 		>
 	</div>
 </section>
@@ -77,16 +78,7 @@
 		text-overflow: ellipsis;
 		white-space: nowrap;
 	}
-	.badge {
-		font-family: var(--font-mono);
-		font-size: 9px;
-		text-transform: uppercase;
-		letter-spacing: 0.05em;
-		padding: 2px 6px;
-		border-radius: 999px;
-		color: var(--text-dim);
-		background: color-mix(in srgb, var(--accent) 14%, transparent);
-		border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent);
+	header :global(.member-badge) {
 		flex-shrink: 0;
 	}
 	.rows {
@@ -94,22 +86,5 @@
 		flex-direction: column;
 		gap: 12px;
 		padding: 12px;
-	}
-	.act {
-		background: transparent;
-		border: 1px solid var(--border);
-		border-radius: var(--radius-sm);
-		color: var(--text);
-		cursor: pointer;
-		font-size: 11px;
-		padding: 5px 9px;
-		white-space: nowrap;
-	}
-	.act:hover {
-		border-color: var(--accent);
-	}
-	.act.ghost {
-		color: var(--text-dim);
-		justify-content: center;
 	}
 </style>

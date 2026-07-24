@@ -4,6 +4,7 @@
 	import type { DataFrame } from '$lib/codec/decode';
 	import { metaEntries, formatMetaValue, metaPreview, isLarge } from './metaFormat';
 	import { nodeStatsRows } from './nodeStats';
+	import { Select, EmptyState } from '$lib/ui';
 
 	type Props = {
 		node: NodeInstanceInfo;
@@ -79,11 +80,12 @@
 		<header>
 			<span>Metadata</span>
 			{#if slots.length > 0}
-				<select bind:value={internalSlot}>
-					{#each slots as s}
-						<option value={s}>{s}</option>
-					{/each}
-				</select>
+				<Select
+					class="slot-select"
+					value={internalSlot ?? ''}
+					onChange={(v) => (internalSlot = v)}
+					options={slots}
+				/>
 			{/if}
 		</header>
 	{/if}
@@ -101,7 +103,9 @@
 
 	{#if lastFrame}
 		{#if fields.length === 0}
-			<div class="hint">No metadata</div>
+			<EmptyState>
+				{#snippet hint()}No metadata{/snippet}
+			</EmptyState>
 		{:else}
 			<div class="meta-tree">
 				{#each fields as f (f.key)}
@@ -120,7 +124,9 @@
 			</div>
 		{/if}
 	{:else}
-		<div class="hint">Waiting for data…</div>
+		<EmptyState>
+			{#snippet hint()}Waiting for data…{/snippet}
+		</EmptyState>
 	{/if}
 </section>
 
@@ -140,10 +146,9 @@
 		font-weight: 600;
 		margin-bottom: 8px;
 	}
-	header select {
-		font-family: var(--font-mono);
-		font-size: 10px;
-		padding: 2px 6px;
+	/* Bare header picker — sits at natural width on the right, not stretched across the bar. */
+	header :global(.slot-select) {
+		flex: 0 0 auto;
 	}
 	/* Node execution telemetry — a compact key/value strip directly under the
 	   "Metadata" heading, updated ~1 Hz from the node's NODE_STATS push. */
@@ -211,9 +216,5 @@
 		white-space: pre-wrap;
 		overflow-wrap: anywhere;
 		padding: 2px 0 6px 16px;
-	}
-	.hint {
-		color: var(--text-muted);
-		font-size: 11px;
 	}
 </style>
