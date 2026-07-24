@@ -56,3 +56,21 @@ describe('semantic + dtype colours stay legible on the lightest surface', () => 
 		it(`--${t} ≥ 3:1 on --surface-4`, () => expect(contrastRatio(token(t), s4)).toBeGreaterThanOrEqual(3));
 	}
 });
+
+describe('scale tokens exist and are ordered', () => {
+	function px(name: string): number {
+		const m = new RegExp(`--${name}\\s*:\\s*([0-9.]+)rem`).exec(css);
+		if (!m) throw new Error(`--${name} not a rem token`);
+		return parseFloat(m[1]);
+	}
+	it('spacing is an 8-step ascending rem scale', () => {
+		const steps = [1, 2, 3, 4, 5, 6, 7, 8].map((n) => px(`space-${n}`));
+		for (let i = 1; i < steps.length; i++) expect(steps[i]).toBeGreaterThan(steps[i - 1]);
+	});
+	it('type is a 5-step ascending rem scale', () => {
+		const steps = ['micro', 'small', 'body', 'strong', 'title'].map((r) => px(`fs-${r}`));
+		for (let i = 1; i < steps.length; i++) expect(steps[i]).toBeGreaterThan(steps[i - 1]);
+	});
+	it('--radius-lg is deleted', () => expect(css).not.toMatch(/--radius-lg\s*:/));
+	it('--font-sans is deleted (collapsed to --font-mono)', () => expect(css).not.toMatch(/--font-sans\s*:/));
+});

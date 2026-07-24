@@ -38,6 +38,28 @@
 	--accent-fill: color-mix(in srgb, var(--accent) 18%, transparent);
 	--danger-fill: color-mix(in srgb, var(--danger) 16%, transparent);
 
+	/* Spacing — rem, ~2px grid (audit §5: 78% already on grid). --space-8 (24) is the one
+	   extrapolated step for empty-state/modal padding. */
+	--space-1: 0.125rem;
+	--space-2: 0.25rem;
+	--space-3: 0.375rem;
+	--space-4: 0.5rem;
+	--space-5: 0.625rem;
+	--space-6: 0.75rem;
+	--space-7: 1rem;
+	--space-8: 1.5rem;
+	/* Type — rem against the html clamp. --fs-strong keeps ParamField's "a notch larger" name. */
+	--fs-micro: 0.72rem;
+	--fs-small: 0.82rem;
+	--fs-body: 0.92rem;
+	--fs-strong: 1rem;
+	--fs-title: 1.15rem;
+	/* Motion — two durations, one curve. */
+	--dur-fast: 80ms;
+	--dur-slow: 120ms;
+	--ease: ease;
+	--disabled-opacity: 0.45;
+
 	/* node category palette — distinguishable on the #111 background and
 	   colour-blind safe at the saturations used here. */
 	--cat-analysis: #b080f0;
@@ -58,6 +80,10 @@
 	   A collapsed output slot and each input both occupy one --node-u; an open
 	   viewer plot is 233/φ ≈ 144 (a golden rectangle), making an open slot 7u —
 	   i.e. seven collapsed slots stack to one open viewer. */
+	/* UNIT-SYSTEM BOUNDARY (design D1): everything ABOVE here is chrome — size it in `rem` so it
+	   scales with the html clamp and the coarse-pointer floor. Everything from --node-* DOWN is the
+	   node canvas — a fixed-`px` spatial coordinate system mirrored in nodeMetrics.ts/snap.ts on the
+	   connector hot path. Do not convert the --node-* ladder to rem. */
 	--node-w: 233px; /* standard node width */
 	--node-header: 36px; /* title-bar height (1.5u) */
 	--node-u: 24px; /* slot unit: collapsed slot + input connector pitch */
@@ -68,7 +94,6 @@
 
 	--radius-sm: 4px;
 	--radius-md: 6px;
-	--radius-lg: 10px;
 
 	/* Z-index scale — single source of truth for stacking. Every overlay
 	   references one of these so layers never collide. Ascending:
@@ -87,15 +112,7 @@
 	--z-tab-drag: 250; /* a tab being dragged to reorder */
 	--z-toast: 260; /* transient toast (undo/redo errors) — above everything */
 
-	/* JetBrains Mono throughout — goofi3 aesthetic. Sans falls back to mono
-	   in case any component still references --font-sans explicitly. */
-	--font-sans:
-		'JetBrains Mono',
-		ui-monospace,
-		SFMono-Regular,
-		Menlo,
-		Consolas,
-		monospace;
+	/* JetBrains Mono throughout — goofi3 aesthetic. */
 	--font-mono:
 		'JetBrains Mono',
 		ui-monospace,
@@ -115,7 +132,7 @@ body {
 	padding: 0;
 	background: var(--bg);
 	color: var(--text);
-	font-family: var(--font-sans);
+	font-family: var(--font-mono);
 	/* Responsive base size — matches goofi3's clamp so the UI scales with
 	   the viewport without losing readability on small screens. */
 	font-size: clamp(11px, 0.9vw + 0.3vh, 14px);
@@ -268,4 +285,15 @@ textarea:focus {
 }
 .svelte-flow__attribution {
 	display: none;
+}
+
+/* One real reduced-motion guard covering every animation/transition (audit: today's covers 2 of 8). */
+@media (prefers-reduced-motion: reduce) {
+	*,
+	*::before,
+	*::after {
+		animation-duration: 0.01ms !important;
+		animation-iteration-count: 1 !important;
+		transition-duration: 0.01ms !important;
+	}
 }
