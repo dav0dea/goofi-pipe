@@ -2,8 +2,8 @@
 	import type { NodeInstanceInfo } from '$lib/api/control';
 
 	/** Parameter group names in display order: node-specific groups alphabetical,
-	 * 'common' last. Module-exported so the dedicated Parameters panel (N-Task 5)
-	 * can still import it. */
+	 * 'common' last. Exported as module API (spec §6) and used internally to build the
+	 * tab strip — ParamForm now owns the tabs, so both mounts share this one ordering. */
 	export function paramGroupNames(node: NodeInstanceInfo | null): string[] {
 		if (!node) return [];
 		return Object.keys(node.params).sort((a, b) => {
