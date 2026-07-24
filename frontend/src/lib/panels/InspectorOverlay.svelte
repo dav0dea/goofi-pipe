@@ -14,6 +14,7 @@
 <script lang="ts">
 	import ParamForm from '$lib/inspector/ParamForm.svelte';
 	import MetadataPanel from '$lib/editor/MetadataPanel.svelte';
+	import { Button, ScrollArea } from '$lib/ui';
 	import { graph } from '$lib/stores/graph.svelte';
 	import type { NodeInstanceInfo } from '$lib/api/control';
 
@@ -91,7 +92,7 @@
 			onpointerdown={startPanelResize}
 			data-testid="panel-resize-handle"
 		></div>
-		<div class="panel-scroll">
+		<ScrollArea>
 			<ParamForm {node} />
 			{#if node && !node.subpatch}
 				<MetadataPanel {node} />
@@ -99,18 +100,19 @@
 					<section class="node-error" data-testid="inspector-error">
 						<div class="err-head">
 							<header>Error</header>
-							<button
-								class="restart"
+							<Button
+								variant="danger"
+								size="sm"
 								onclick={restart}
 								title="Restart this node (respawn with the same params + links)"
-								data-testid="inspector-restart">↻ Restart</button
+								data-testid="inspector-restart">↻ Restart</Button
 							>
 						</div>
 						<pre>{node.error}</pre>
 					</section>
 				{/if}
 			{/if}
-		</div>
+		</ScrollArea>
 	</aside>
 {/if}
 
@@ -146,11 +148,6 @@
 	.side-panel.resizing * {
 		user-select: none;
 	}
-	.panel-scroll {
-		flex: 1;
-		overflow-y: auto;
-		min-height: 0;
-	}
 	/* Current processing error for the selected node — a simple snapshot, shown
 	   only while the node is errored, after the metadata section. */
 	.node-error {
@@ -169,19 +166,6 @@
 		font-weight: 600;
 		font-size: 11px;
 		color: var(--danger);
-	}
-	.restart {
-		flex: 0 0 auto;
-		font-size: 10px;
-		padding: 2px 8px;
-		border-radius: var(--radius-sm);
-		border: 1px solid color-mix(in srgb, var(--danger) 45%, transparent);
-		background: color-mix(in srgb, var(--danger) 12%, transparent);
-		color: var(--text);
-		cursor: pointer;
-	}
-	.restart:hover {
-		background: color-mix(in srgb, var(--danger) 22%, transparent);
 	}
 	.node-error pre {
 		font-family: var(--font-mono);
