@@ -223,6 +223,7 @@
 					bind:value={multilineBuf}
 					spellcheck="false"
 					autocapitalize="off"
+					{...{ autocorrect: 'off' }}
 					onkeydown={multilineKeydown}
 					data-testid="param-expr-multiline"
 				></textarea>
