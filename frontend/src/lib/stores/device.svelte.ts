@@ -23,7 +23,7 @@ class DeviceStore {
 		coarse.addEventListener('change', onPointer);
 
 		const onResize = () => {
-			const c = classify(window.innerWidth, window.innerHeight, { coarse: coarse.matches });
+			const c = classify(window.innerWidth, window.innerHeight);
 			this.size = c.size;
 			this.short = c.short;
 			this.stamp();

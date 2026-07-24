@@ -4,7 +4,7 @@
 export type SizeClass = 'phone' | 'compact' | 'full';
 
 /** Size class from the viewport box. `phone` if either axis is small; then width bands. */
-export function classify(width: number, height: number, _opts?: { coarse?: boolean }): { size: SizeClass; short: boolean } {
+export function classify(width: number, height: number): { size: SizeClass; short: boolean } {
 	const short = height <= 480;
 	let size: SizeClass;
 	if (width <= 600 || height <= 480) size = 'phone';
