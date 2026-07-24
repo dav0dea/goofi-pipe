@@ -137,10 +137,25 @@ pub struct Discovered {
     pub source: PathBuf,
 }
 
-/// Run `goofi.introspect(path)` in `python` and parse the result. `None` on ANY
-/// failure — a bad interpreter, a failed import (missing dep), no `Node` subclass,
-/// or malformed JSON — so a broken node greys out instead of crashing the catalog.
-pub fn probe_introspect(path: &Path, python: &str) -> Option<probe::Introspection> {
+/// Why a node file could not be introspected, phrased for the palette tooltip. A
+/// `ModuleNotFoundError` becomes just the module name (the UI renders "missing dependency: X");
+/// anything else keeps its first line, which is the exception line of the traceback.
+fn probe_reason(stderr: &str) -> String {
+    if let Some(rest) = stderr.split("No module named ").nth(1) {
+        let name: String = rest.trim_start().trim_matches(['\'', '"']).chars()
+            .take_while(|c| c.is_alphanumeric() || *c == '_' || *c == '.')
+            .collect();
+        if !name.is_empty() {
+            return name;
+        }
+    }
+    stderr.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or("probe failed").trim().to_string()
+}
+
+/// Run `goofi.introspect(path)` in `python` and parse the result. `Err` carries WHY it failed —
+/// a bad interpreter, a failed import (missing dep), no `Node` subclass, or malformed JSON — so
+/// the palette can say what is wrong instead of the node silently not existing.
+pub fn probe_introspect(path: &Path, python: &str) -> Result<probe::Introspection, String> {
     const PROBE: &str =
         "import goofi, os, sys; sys.stdout.write(goofi.introspect(os.environ['GOOFI_INTROSPECT_PATH']))";
     let out = Command::new(python)
@@ -153,34 +168,51 @@ pub fn probe_introspect(path: &Path, python: &str) -> Option<probe::Introspectio
         // that would silently fail every import and grey out discovery. Mirrors the child spawn.
         .env_remove("PYTHONPATH")
         .stdin(Stdio::null())
-        .stderr(Stdio::null())
         .output()
-        .ok()?;
+        .map_err(|e| format!("could not run `{python}`: {e}"))?;
     if !out.status.success() {
-        return None;
+        return Err(probe_reason(&String::from_utf8_lossy(&out.stderr)));
     }
-    let json = String::from_utf8(out.stdout).ok()?;
-    parse_introspection(&json).ok()
+    let json = String::from_utf8(out.stdout).map_err(|_| "probe emitted non-UTF-8".to_string())?;
+    parse_introspection(&json).map_err(|e| format!("malformed introspection: {e}"))
 }
 
-/// Discover one Python node file: non-`.py`, `_`-prefixed (hidden), or a probe
-/// failure → `None`. The type name is the `CamelCase` file stem.
+/// What a node file turned out to be. Three outcomes, not two: a file that is not a node at all
+/// is different from a node that exists but cannot load, and the palette shows the latter.
+pub enum Discovery {
+    /// Not a node file: not `.py`, or `_`-prefixed (hidden).
+    Skip,
+    /// A node file whose probe failed — it is real, it just cannot run here. `reason` is a
+    /// module name for a missing dependency, else the exception line.
+    Unavailable { type_name: String, reason: String },
+    Found(Discovered),
+}
+
+/// Discover one Python node file. The type name is the `CamelCase` file stem.
 pub fn discover_one(
     path: &Path,
     python: &str,
     category: &'static str,
     isolation: Isolation,
-) -> Option<Discovered> {
+) -> Discovery {
     if path.extension().and_then(|e| e.to_str()) != Some("py") {
-        return None;
+        return Discovery::Skip;
     }
-    let stem = path.file_stem().and_then(|s| s.to_str())?;
+    let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else { return Discovery::Skip };
     if stem.starts_with('_') {
-        return None;
+        return Discovery::Skip;
     }
-    let intro = probe_introspect(path, python)?;
-    let manifest = leak_manifest(camel(stem), &intro, category, isolation);
-    Some(Discovered { manifest, gil_safe: intro.gil_safe, source: path.to_path_buf() })
+    match probe_introspect(path, python) {
+        Ok(intro) => {
+            let manifest = leak_manifest(camel(stem), &intro, category, isolation);
+            Discovery::Found(Discovered {
+                manifest,
+                gil_safe: intro.gil_safe,
+                source: path.to_path_buf(),
+            })
+        }
+        Err(reason) => Discovery::Unavailable { type_name: camel(stem), reason },
+    }
 }
 
 /// Scan `dir` for node files (skipping `_`-prefixed / non-`.py` / probe failures),
@@ -195,7 +227,10 @@ pub fn discover(
     entries.sort_by_key(|e| e.file_name());
     Ok(entries
         .iter()
-        .filter_map(|e| discover_one(&e.path(), python, category, isolation))
+        .filter_map(|e| match discover_one(&e.path(), python, category, isolation) {
+            Discovery::Found(d) => Some(d),
+            Discovery::Skip | Discovery::Unavailable { .. } => None,
+        })
         .collect())
 }
 

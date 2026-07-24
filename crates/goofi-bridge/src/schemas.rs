@@ -178,12 +178,34 @@ pub fn node_type_info(m: &NodeManifest) -> Value {
 /// the compile-time catalog and the graph's runtime-registered types (e.g.
 /// discovered Python nodes). Hidden test nodes (`_`-prefixed) are excluded.
 pub fn catalog_types(g: &Graph) -> Value {
-    let mut items: Vec<(&'static str, &'static str, Value)> = goofi_node::catalog()
+    let mut items: Vec<(String, String, Value)> = goofi_node::catalog()
         .chain(g.dyn_type_manifests())
         .filter(|m| !m.type_name.starts_with('_'))
-        .map(|m| (m.category, m.type_name, node_type_info(m)))
+        .map(|m| (m.category.to_string(), m.type_name.to_string(), node_type_info(m)))
         .collect();
-    items.sort_by(|a, b| a.0.cmp(b.0).then(a.1.cmp(b.1)));
+    // Node files that exist but cannot load are listed too, greyed and with the reason. Dropping
+    // them would leave the author of a node with an uninstalled dependency staring at a palette
+    // where it simply is not, which reads as "my file was ignored".
+    items.extend(g.unavailable_types().map(|(name, reason)| {
+        (
+            "unavailable".to_string(),
+            name.to_string(),
+            json!({
+                "type": name,
+                "pillar": "signal",
+                "category": "unavailable",
+                "doc": format!("This node could not be loaded: {reason}"),
+                "available": false,
+                "dynamic": true,
+                "missing_deps": [reason],
+                "input_slots": {},
+                "input_multi": [],
+                "output_slots": {},
+                "params": {},
+            }),
+        )
+    }));
+    items.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
     Value::Array(items.into_iter().map(|(_, _, v)| v).collect())
 }
 
@@ -472,6 +494,25 @@ mod tests {
             ty["params"]["common"]["max_frequency"]["doc"].as_str().unwrap().contains("Rate cap"),
             "the fallback still applies to the rest of the group"
         );
+    }
+
+    #[test]
+    fn an_unloadable_node_is_listed_greyed_with_its_reason() {
+        let mut g = Graph::new();
+        g.register_unavailable("PsdScipy".into(), "scipy".into());
+        let cat = catalog_types(&g);
+        let ty = cat
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|v| v["type"] == "PsdScipy")
+            .expect("an unloadable node is still listed");
+
+        assert_eq!(ty["available"], json!(false));
+        assert_eq!(ty["missing_deps"], json!(["scipy"]), "the UI renders `missing dependency: X`");
+        assert!(ty["doc"].as_str().unwrap().contains("scipy"));
+        // No slots or params are known — the probe never got far enough to report them.
+        assert_eq!(ty["input_slots"], json!({}));
     }
 
     #[test]

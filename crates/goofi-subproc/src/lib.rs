@@ -358,8 +358,22 @@ pub struct SubprocNodeType {
     pub factory: NodeFactory,
 }
 
+pub use goofi_node::discover::Discovery;
+
+/// Probe one file for this tier, reporting all three outcomes. The CLI uses this (rather than
+/// [`discover_one`]) because it needs the failure REASON to list the node as unavailable, and one
+/// probe spawn must answer both questions.
+pub fn probe(path: &Path, python: &str) -> Discovery {
+    goofi_node::discover::discover_one(path, python, "subprocess", Isolation::Subprocess)
+}
+
 /// Turn a probe-[`Discovered`] (rich manifest + source path) into a subprocess [`SubprocNodeType`]:
 /// the factory reads the file's source + builds a [`RemoteNode`] bound to the manifest's slot names.
+/// Public so a caller that already ran [`probe`] can build the type without a second spawn.
+pub fn node_type_from(python: &str, d: Discovered) -> SubprocNodeType {
+    subproc_type_from_discovered(python, d)
+}
+
 fn subproc_type_from_discovered(python: &str, d: Discovered) -> SubprocNodeType {
     let manifest = d.manifest;
     let in_slots: Vec<&'static str> = manifest.inputs.iter().map(|s| s.name).collect();
@@ -376,7 +390,11 @@ fn subproc_type_from_discovered(python: &str, d: Discovered) -> SubprocNodeType 
 /// gives multi-slot + params; the factory spawns a [`RemoteNode`]. `None` if it is not a node
 /// file or the probe fails (missing dep / no `Node` subclass) — greyed out, never a catalog crash.
 pub fn discover_one(path: &Path, python: &str) -> Option<SubprocNodeType> {
-    let d = goofi_node::discover::discover_one(path, python, "subprocess", Isolation::Subprocess)?;
+    let goofi_node::discover::Discovery::Found(d) =
+        goofi_node::discover::discover_one(path, python, "subprocess", Isolation::Subprocess)
+    else {
+        return None;
+    };
     Some(subproc_type_from_discovered(python, d))
 }
 

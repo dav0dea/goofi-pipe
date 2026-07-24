@@ -9,7 +9,7 @@
 
 use std::path::Path;
 
-use goofi_node::discover::{discover as probe_discover, discover_one as probe_discover_one, Discovered, NodeFactory};
+use goofi_node::discover::{discover as probe_discover, discover_one as probe_discover_one, Discovered, Discovery, NodeFactory};
 use goofi_node::{Inputs, Isolation, Node, NodeCtx, NodeError, NodeManifest, NodeResult, Outputs, Params};
 
 use crate::PyNode;
@@ -63,7 +63,9 @@ pub struct PyNodeType {
 /// bound to that manifest's slot names. `None` if it is not a node file or the probe fails
 /// (missing dep / no `Node` subclass) — greyed out, never a catalog crash.
 pub fn discover_one(path: &Path, ft_python: &str) -> Option<PyNodeType> {
-    let d = probe_discover_one(path, ft_python, "python", Isolation::InProcess)?;
+    let Discovery::Found(d) = probe_discover_one(path, ft_python, "python", Isolation::InProcess) else {
+        return None;
+    };
     Some(py_type_from_discovered(path, d))
 }
 

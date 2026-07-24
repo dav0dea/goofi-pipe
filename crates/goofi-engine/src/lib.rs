@@ -272,6 +272,11 @@ pub struct Graph {
     /// Node types registered at runtime (e.g. discovered Python nodes), keyed by
     /// type name. Survives `clear()`/`load_doc` — these are catalog, not content.
     dyn_types: HashMap<&'static str, DynType>,
+    /// Node types that EXIST on disk but cannot load here, keyed by type name → reason (a
+    /// missing module name, or the exception line). They appear in the palette, greyed, so a
+    /// node that needs an uninstalled dependency explains itself instead of silently not
+    /// existing. Catalog-only: they can never be instantiated.
+    unavailable: std::collections::BTreeMap<String, String>,
     /// Wall-clock reference, anchored at the first tick, so `NodeCtx::now` is
     /// seconds-since-start (deterministic under an injected clock).
     start: Option<Instant>,
@@ -305,6 +310,7 @@ impl Graph {
             links: Vec::new(),
             next_uid: 1,
             dyn_types: HashMap::new(),
+            unavailable: std::collections::BTreeMap::new(),
             start: None,
             evaluator: None,
             scopes: IndexMap::new(),
@@ -405,6 +411,21 @@ impl Graph {
     /// The manifests of all runtime-registered node types, sorted by type name
     /// (the compile-time catalog is enumerated separately via `goofi_node::catalog`).
     /// Used by the bridge to include runtime types in the editor palette.
+    /// Record a node type that could not be loaded, with the reason. Refused if a working type
+    /// already owns the name — a real node always wins over a broken one.
+    pub fn register_unavailable(&mut self, type_name: String, reason: String) -> bool {
+        if self.known_type(&type_name) {
+            return false;
+        }
+        self.unavailable.insert(type_name, reason);
+        true
+    }
+
+    /// The unloadable types, `(type_name, reason)`, sorted by name.
+    pub fn unavailable_types(&self) -> impl Iterator<Item = (&str, &str)> {
+        self.unavailable.iter().map(|(k, v)| (k.as_str(), v.as_str()))
+    }
+
     pub fn dyn_type_manifests(&self) -> Vec<&'static NodeManifest> {
         let mut ms: Vec<&'static NodeManifest> =
             self.dyn_types.values().map(|dt| dt.manifest).collect();
@@ -473,6 +494,10 @@ impl Graph {
             let p = goofi_node::with_common(params.unwrap_or_else(|| dt.manifest.default_params()));
             let n = (dt.factory)(&p);
             Ok((dt.manifest, p, n))
+        } else if let Some(reason) = self.unavailable.get(type_name) {
+            // Known, but unloadable — say why rather than "unknown type", which would send the
+            // user looking for a typo instead of a missing dependency.
+            Err(format!("node type `{type_name}` is unavailable: {reason}"))
         } else {
             Err(format!("unknown node type `{type_name}`"))
         }
@@ -4484,6 +4509,27 @@ mod tests {
         isolation: Isolation::InProcess,
         factory: rt_stub_factory,
     };
+
+    #[test]
+    fn an_unavailable_type_appears_in_the_catalog_but_cannot_be_added() {
+        // A node file whose dependency is missing must not vanish: the palette shows it with the
+        // reason, and trying to add it says why rather than "unknown node type".
+        let mut g = Graph::new();
+        assert!(g.register_unavailable("PsdScipy".into(), "scipy".into()));
+        assert_eq!(g.unavailable_types().collect::<Vec<_>>(), [("PsdScipy", "scipy")]);
+
+        let err = g.add_node("PsdScipy", None).unwrap_err();
+        assert!(err.contains("unavailable"), "names the state: {err}");
+        assert!(err.contains("scipy"), "names the missing dependency: {err}");
+    }
+
+    #[test]
+    fn a_working_type_wins_over_an_unavailable_one_of_the_same_name() {
+        let mut g = Graph::new();
+        assert!(!g.register_unavailable("Oscillator".into(), "nope".into()));
+        assert_eq!(g.unavailable_types().count(), 0);
+        assert!(g.add_node("Oscillator", None).is_ok(), "the real type still instantiates");
+    }
 
     #[test]
     fn register_dyn_type_refuses_collisions() {

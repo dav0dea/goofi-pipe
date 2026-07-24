@@ -256,7 +256,7 @@ fn register_auto(state: &AppState, dir: Option<&str>, subproc_python: &str) {
     let Some(dir) = dir else { return };
     let ft = goofi_py::interpreter_path(); // the embedded FT interpreter, for probing
     let mut g = state.graph.lock().unwrap();
-    let (mut n_in, mut n_sub) = (0u32, 0u32);
+    let (mut n_in, mut n_sub, mut n_bad) = (0u32, 0u32, 0u32);
     for path in sorted_dir(dir) {
         let Ok(source) = std::fs::read_to_string(&path) else { continue };
         let safe = ft
@@ -275,13 +275,29 @@ fn register_auto(state: &AppState, dir: Option<&str>, subproc_python: &str) {
             // but absent on the FT interpreter (gil_safe execs in try/except and cannot see an
             // import failure). Fall through to the subprocess tier rather than dropping the node.
         }
-        if let Some(t) = goofi_subproc::discover_one(&path, subproc_python) {
-            if g.register_dyn_type(t.manifest, t.factory) {
-                n_sub += 1;
+        // One probe, both outcomes: the subprocess tier is the last chance, so its result decides
+        // between "registered" and "listed as unavailable".
+        match goofi_subproc::probe(&path, subproc_python) {
+            goofi_subproc::Discovery::Found(d) => {
+                let t = goofi_subproc::node_type_from(subproc_python, d);
+                if g.register_dyn_type(t.manifest, t.factory) {
+                    n_sub += 1;
+                }
             }
+            // Neither tier could load it. Register it as unavailable WITH the reason so the
+            // palette explains itself — a node file that silently does not appear reads as
+            // "goofi ignored my file" rather than "install this dependency".
+            goofi_subproc::Discovery::Unavailable { type_name, reason } => {
+                eprintln!("  node `{type_name}` unavailable: {reason}");
+                if g.register_unavailable(type_name, reason) {
+                    n_bad += 1;
+                }
+            }
+            goofi_subproc::Discovery::Skip => {}
         }
     }
-    println!("  auto-routed {n_in} in-process + {n_sub} subprocess node type(s) from {dir}");
+    let bad = if n_bad > 0 { format!(", {n_bad} unavailable") } else { String::new() };
+    println!("  auto-routed {n_in} in-process + {n_sub} subprocess node type(s) from {dir}{bad}");
 }
 
 #[cfg(not(feature = "python"))]

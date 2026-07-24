@@ -6,7 +6,7 @@
 
 use std::path::Path;
 
-use goofi_node::discover::{discover, discover_one, probe_introspect};
+use goofi_node::discover::{discover, discover_one, probe_introspect, Discovery};
 use goofi_node::Isolation;
 
 /// The first interpreter that can `import goofi`: an explicit override, then the repo's two
@@ -52,8 +52,10 @@ fn fixtures() -> std::path::PathBuf {
 #[test]
 fn discovers_a_valid_node_with_declarations() {
     let py = test_python();
-    let d = discover_one(&fixtures().join("negate.py"), &py, "python", Isolation::Subprocess)
-        .expect("negate.py discovers");
+    let Discovery::Found(d) = discover_one(&fixtures().join("negate.py"), &py, "python", Isolation::Subprocess)
+    else {
+        panic!("negate.py discovers")
+    };
     assert_eq!(d.manifest.type_name, "Negate");
     assert_eq!(d.manifest.doc, "Negate the input.");
     assert_eq!(d.manifest.inputs[0].name, "data");
@@ -63,9 +65,22 @@ fn discovers_a_valid_node_with_declarations() {
 #[test]
 fn missing_dep_greys_out_instead_of_crashing() {
     let py = test_python();
-    // The probe import fails -> None, never a panic/crash.
-    assert!(probe_introspect(&fixtures().join("missing_dep.py"), &py).is_none());
-    assert!(discover_one(&fixtures().join("missing_dep.py"), &py, "python", Isolation::Subprocess).is_none());
+    // The probe import fails -> the REASON, never a panic/crash — and the node is reported as
+    // unavailable rather than silently skipped, so the palette can explain itself.
+    let err = probe_introspect(&fixtures().join("missing_dep.py"), &py).unwrap_err();
+    assert_eq!(err, "definitely_not_installed_pkg", "a missing import names the module");
+    match discover_one(&fixtures().join("missing_dep.py"), &py, "python", Isolation::Subprocess) {
+        Discovery::Unavailable { type_name, reason } => {
+            assert_eq!(type_name, "MissingDep");
+            assert_eq!(reason, "definitely_not_installed_pkg");
+        }
+        _ => panic!("a node whose dep is missing is Unavailable, not skipped"),
+    }
+    // A file that is not a node at all is a different outcome entirely.
+    assert!(matches!(
+        discover_one(&fixtures().join("_hidden.py"), &py, "python", Isolation::Subprocess),
+        Discovery::Skip
+    ));
 }
 
 #[test]
@@ -101,7 +116,10 @@ fn probe_ignores_a_host_pythonpath() {
     std::env::remove_var("PYTHONPATH");
     let _ = std::fs::remove_dir_all(&poison);
 
-    assert!(d.is_some(), "discovery must ignore a poison goofi on the host PYTHONPATH");
+    assert!(
+        matches!(d, Discovery::Found(_)),
+        "discovery must ignore a poison goofi on the host PYTHONPATH"
+    );
 }
 
 #[test]
@@ -110,8 +128,11 @@ fn every_param_kind_carries_its_doc_across_the_probe() {
     // ParamDecl — one arm per param kind on each side. Only the Int arm was covered by any test
     // that a documented command actually runs, so all four are pinned here.
     let py = test_python();
-    let d = discover_one(&fixtures().join("documented.py"), &py, "python", Isolation::Subprocess)
-        .expect("documented.py discovers");
+    let Discovery::Found(d) =
+        discover_one(&fixtures().join("documented.py"), &py, "python", Isolation::Subprocess)
+    else {
+        panic!("documented.py discovers")
+    };
     let doc = |name: &str| {
         d.manifest
             .params
