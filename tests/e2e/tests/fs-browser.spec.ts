@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { waitForApp } from '../lib/app';
-import { addNode, nodes, nodeParams, updateParam, waitForNode } from '../lib/goofi';
+import { addNode, nodes, nodeParams, updateParam, waitForNode, waitForNoNode } from '../lib/goofi';
 
 /**
  * The file browser is the app's ONLY persistence UI — Save/Load of `.gfi` patches — and it had
@@ -61,6 +61,9 @@ async function openBrowser(page: Page, mode: 'save' | 'load'): Promise<Locator> 
 		'aria-label',
 		mode === 'save' ? 'Save patch' : 'Load patch'
 	);
+	// The modal renders before its first `listDir` lands — the path bar is empty until it does.
+	// Wait for that echo here so a test that navigates immediately isn't racing it.
+	await expect(modal.getByTestId('fs-path-input'), 'the initial listing landed').not.toHaveValue('');
 	return modal;
 }
 
@@ -226,6 +229,73 @@ test.describe('modal dismissal (the behaviours M-Task 6b re-homes onto Dialog)',
 			reopened.getByTestId('fs-filename'),
 			'today: the draft filename does not survive a dismissal'
 		).toHaveValue('');
+	});
+});
+
+/**
+ * The browser is a MODAL, so while it owns the screen the app's global chords must stand down.
+ * They did not: `undoKeyAction`'s typing guard only covers INPUT/TEXTAREA/SELECT, and FsBrowser
+ * never raised `ui().modalOpen` — so a Ctrl+Z after clicking a file row (a <button>) fell straight
+ * through to the graph history and undid a command behind the modal (M-Task 6a, C29). Ctrl+S/Ctrl+O
+ * had the same hole: AppShell re-ran its handler with the browser already up (C31).
+ */
+test.describe('global shortcuts stand down while the browser owns the screen', () => {
+	const historyLength = (page: Page): Promise<number> =>
+		page.evaluate(() => (window as any).goofi.query.historyLength());
+
+	test('Ctrl+Z does not reach the graph behind the modal', async ({ page }) => {
+		await page.goto('/');
+		await waitForApp(page);
+		await clearGraph(page);
+
+		const uid = await addNode(page, 'Buffer', 'signal');
+		await waitForNode(page, uid);
+		const before = await historyLength(page);
+
+		const modal = await openBrowser(page, 'load');
+		await navigateTo(page, modal, scratch);
+		// Click a file row to put focus on a <button> — the case the typing guard does NOT cover.
+		await modal.getByTestId('fs-entry').filter({ hasText: 'nested' }).click();
+		await expect
+			.poll(() => page.evaluate(() => (window as any).goofi.query.modalOpen()), {
+				message: 'the open browser holds the global standdown'
+			})
+			.toBe(true);
+
+		await page.keyboard.press('Control+z');
+		// Proving a NON-event needs a settle window: an undo is a WS round trip to a backend on
+		// localhost (single-digit ms), so 400ms is orders of magnitude more than it would need.
+		await page.waitForTimeout(400);
+		expect(await historyLength(page), 'no undo was consumed behind the modal').toBe(before);
+		expect(
+			(await nodes(page)).map((n) => n.uid),
+			'the graph is untouched while the browser is open'
+		).toContain(uid);
+
+		// Positive control: the SAME chord undoes once the browser is dismissed — so the assertion
+		// above is about the standdown, not about the key never reaching the app at all.
+		await page.keyboard.press('Escape');
+		await expect(modal).toBeHidden();
+		await page.keyboard.press('Control+z');
+		await waitForNoNode(page, uid);
+
+		await clearGraph(page);
+	});
+
+	test('Ctrl+S does not re-trigger Save while the browser is already open', async ({ page }) => {
+		await page.goto('/');
+		await waitForApp(page);
+		const modal = await openBrowser(page, 'load');
+		await page.keyboard.press('Control+s');
+		// Before the fix AppShell ran triggerSave() again and flipped the open browser into save mode
+		// (and, on a named patch, would have written the file behind it).
+		await page.waitForTimeout(400);
+		await expect(modal, 'the Load browser stayed the Load browser').toHaveAttribute(
+			'aria-label',
+			'Load patch'
+		);
+		await page.keyboard.press('Escape');
+		await expect(modal).toBeHidden();
 	});
 });
 

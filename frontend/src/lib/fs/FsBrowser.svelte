@@ -5,6 +5,7 @@
 -->
 <script lang="ts">
 	import { graph } from '$lib/stores/graph.svelte';
+	import { ui } from '$lib/stores/ui.svelte';
 	import type { FsEntry, FsRoot } from '$lib/api/control';
 	import { onMount, tick, untrack } from 'svelte';
 
@@ -29,17 +30,35 @@
 	let error = $state<string | null>(null);
 	let firstInput = $state<HTMLInputElement | null>(null);
 
+	// This browser is a MODAL: while it is up the app's global chords stand down, so a Ctrl+Z on a
+	// focused file row can't undo a graph command behind it (and Ctrl+S can't re-enter Save). Held in
+	// the ui store's ref-counted editor set — the same standdown the inspector's fx editor uses — and
+	// released by the effect's cleanup when AppShell unmounts the browser.
+	const standdownId = $props.id();
+	$effect(() => {
+		ui().openEditor(standdownId);
+		return () => ui().closeEditor(standdownId);
+	});
+
+	// Monotonic navigation token: a slower earlier listing must not clobber the directory the user
+	// has since navigated to (open the browser, immediately type a path → the in-flight initial
+	// listDir used to land last and bounce them home).
+	let navSeq = 0;
+
 	async function go(path?: string | null): Promise<void> {
+		const seq = ++navSeq;
 		error = null;
 		selected = null;
 		try {
 			const res = await g.listDir(path ?? undefined);
+			if (seq !== navSeq) return; // superseded by a newer navigation
 			cwd = res.path;
 			pathDraft = res.path;
 			parent = res.parent;
 			entries = res.entries;
 			roots = res.roots;
 		} catch (e) {
+			if (seq !== navSeq) return;
 			error = e instanceof Error ? e.message : String(e);
 		}
 	}

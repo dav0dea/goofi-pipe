@@ -133,13 +133,18 @@
 	}
 
 	function onKeydown(e: KeyboardEvent): void {
+		// A modal (the file browser) or an in-panel expression editor owns the keyboard while it is
+		// up, so EVERY app-global chord stands down — not just undo/redo. Ctrl+S used to re-enter
+		// triggerSave() with the browser already open, flipping a Load browser into Save mode (and,
+		// on a named patch, writing the file behind it).
+		const standdown = ui().modalOpen;
 		const meta = e.ctrlKey || e.metaKey;
-		if (meta && e.key.toLowerCase() === 's') {
+		if (meta && !standdown && e.key.toLowerCase() === 's') {
 			e.preventDefault();
 			void triggerSave();
 			return;
 		}
-		if (meta && e.key.toLowerCase() === 'o') {
+		if (meta && !standdown && e.key.toLowerCase() === 'o') {
 			e.preventDefault();
 			triggerLoad();
 			return;
@@ -152,7 +157,7 @@
 				shiftKey: e.shiftKey,
 				targetTag: (e.target as HTMLElement | null)?.tagName ?? ''
 			},
-			ui().modalOpen
+			standdown
 		);
 		if (undoRedo === 'undo') {
 			e.preventDefault();
