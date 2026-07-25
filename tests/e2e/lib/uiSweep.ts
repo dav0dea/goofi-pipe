@@ -75,12 +75,9 @@ export const SAMPLES: Record<string, Sample> = {
 	},
 
 	// Static display / layout primitives (rendered, never a tap target of their own).
-	Stack: { testid: 'ui-stack-gap4', interactive: false },
-	Row: { testid: 'ui-row-gap4', interactive: false },
 	ScrollArea: { testid: 'ui-scrollarea', interactive: false },
 	Bar: { testid: 'ui-bar', interactive: false },
 	Field: { testid: 'ui-field-single', interactive: false },
-	PanelShell: { testid: 'ui-panelshell', interactive: false },
 	Badge: { testid: 'ui-badge-neutral', interactive: false },
 	StatusDot: { testid: 'ui-statusdot-ok', interactive: false },
 	EmptyState: { testid: 'ui-emptystate', interactive: false }

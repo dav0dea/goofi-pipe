@@ -8,8 +8,6 @@
 	import {
 		Button,
 		IconButton,
-		Stack,
-		Row,
 		ScrollArea,
 		Bar,
 		Field,
@@ -23,7 +21,6 @@
 		Disclosure,
 		Popover,
 		Dialog,
-		PanelShell,
 		Badge,
 		Chip,
 		StatusDot,
@@ -155,36 +152,17 @@
 	</section>
 
 	<section>
-		<h2>Row</h2>
-		<!-- gap=4 (the default) → var(--space-4); the e2e measures the inter-child gap against the token. -->
-		<Row gap={4} data-testid="ui-row-gap4">
-			<div class="box" data-testid="ui-row-child-a">A</div>
-			<div class="box" data-testid="ui-row-child-b">B</div>
-			<div class="box">C</div>
-		</Row>
-	</section>
-
-	<section>
-		<h2>Stack</h2>
-		<Stack gap={4} data-testid="ui-stack-gap4">
-			<div class="box" data-testid="ui-stack-child-a">A</div>
-			<div class="box" data-testid="ui-stack-child-b">B</div>
-			<div class="box">C</div>
-		</Stack>
-	</section>
-
-	<section>
 		<h2>ScrollArea</h2>
 		<!-- A bounded flex frame; the ScrollArea fills it (flex:1 + min-height:0, which it owns) and
 		     scrolls its overflowing content. The frame lives in the gallery's own markup so its height
 		     is scoped here — the primitive itself stays unopinionated about its outer size. -->
 		<div class="scroll-frame">
 			<ScrollArea data-testid="ui-scrollarea">
-				<Stack gap={2}>
+				<div class="rows">
 					{#each Array.from({ length: 30 }, (_, i) => i) as i (i)}
 						<div class="box">row {i}</div>
 					{/each}
-				</Stack>
+				</div>
 			</ScrollArea>
 		</div>
 	</section>
@@ -196,10 +174,10 @@
 				<span data-testid="ui-bar-start">Title</span>
 			{/snippet}
 			{#snippet end()}
-				<Row gap={4} data-testid="ui-bar-end">
+				<div class="grid" data-testid="ui-bar-end">
 					<Button size="sm">Save</Button>
 					<IconButton size="sm" label="Settings">⚙</IconButton>
-				</Row>
+				</div>
 			{/snippet}
 		</Bar>
 	</section>
@@ -468,40 +446,14 @@
 						Overflowing line {i + 1} — the dialog scrolls its own content.
 					{/each}
 				</p>
-				<Row gap={4} justify="end">
+				<div class="grid end">
 					<Button onclick={() => (dialogOpen = false)} data-testid="ui-dialog-cancel">Cancel</Button>
 					<Button variant="primary" onclick={() => (dialogOpen = false)} data-testid="ui-dialog-confirm">
 						Confirm
 					</Button>
-				</Row>
+				</div>
 			</div>
 		</Dialog>
-	</section>
-
-	<section>
-		<h2>PanelShell (one header row)</h2>
-		<!-- Title + toolbar + actions all compose into ONE header row (the Bar pusher pattern); the body
-		     composes a ScrollArea so it scrolls independently. The e2e asserts exactly one header. -->
-		<div class="shell-frame">
-			<PanelShell title="Parameters" data-testid="ui-panelshell">
-				{#snippet toolbar()}
-					<Row gap={2} data-testid="ui-panelshell-toolbar">
-						<Button size="sm">common</Button>
-						<Button size="sm">advanced</Button>
-					</Row>
-				{/snippet}
-				{#snippet actions()}
-					<IconButton size="sm" label="Panel settings" data-testid="ui-panelshell-actions">⚙</IconButton>
-				{/snippet}
-				<ScrollArea data-testid="ui-panelshell-body">
-					<Stack gap={2}>
-						{#each Array.from({ length: 24 }, (_, i) => i) as i (i)}
-							<div class="box">row {i}</div>
-						{/each}
-					</Stack>
-				</ScrollArea>
-			</PanelShell>
-		</div>
 	</section>
 
 	<section>
@@ -531,19 +483,19 @@
 	<section>
 		<h2>StatusDot (no glow)</h2>
 		<!-- Each tone is a plain filled circle — NO box-shadow halo (the health-dot regression guard). -->
-		<Row gap={6}>
+		<div class="grid">
 			{#each statusTones as tone (tone)}
-				<Row gap={2}>
+				<div class="dot-label">
 					<StatusDot {tone} data-testid={`ui-statusdot-${tone}`} />
 					<span class="readout">{tone}</span>
-				</Row>
+				</div>
 			{/each}
-		</Row>
-		<Row gap={6}>
+		</div>
+		<div class="grid">
 			{#each dotSizes as size (size)}
 				<StatusDot tone="ok" {size} data-testid={`ui-statusdot-size-${size}`} />
 			{/each}
-		</Row>
+		</div>
 	</section>
 
 	<section>
@@ -639,7 +591,22 @@
 		align-items: center;
 		gap: var(--space-6);
 	}
-	/* Gallery-local demo children — plain boxes so the layout primitives' spacing is what's measured. */
+	.grid.end {
+		justify-content: flex-end;
+	}
+	/* A status dot beside its name. */
+	.dot-label {
+		display: flex;
+		align-items: center;
+		gap: var(--space-2);
+	}
+	/* The ScrollArea sample's overflowing content. */
+	.rows {
+		display: flex;
+		flex-direction: column;
+		gap: var(--space-1);
+	}
+	/* Gallery-local demo children — plain boxes so a sample's own spacing is what's measured. */
 	.box {
 		display: grid;
 		place-items: center;
@@ -725,15 +692,6 @@
 		margin: 0;
 		font-size: var(--fs-strong);
 		color: var(--text);
-	}
-	/* Bounded frame so the PanelShell's ScrollArea body has a height to scroll within. */
-	.shell-frame {
-		height: 14rem;
-		width: 20rem;
-		max-width: 100%;
-		border: 1px solid var(--border);
-		border-radius: var(--radius-sm);
-		overflow: hidden;
 	}
 	/* Query-container demo wrappers. Each establishes its OWN inline-size container so the Field's
 	   `@container` rule resolves against it. The widths are structural px chosen to sit either side of

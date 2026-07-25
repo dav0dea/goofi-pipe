@@ -13,19 +13,13 @@ export {
 	type ButtonDensity
 } from './variantClass';
 
-// Layout primitives (Task 2).
-export { default as Stack } from './Stack.svelte';
-export { default as Row } from './Row.svelte';
+// Layout primitives (Task 2). `Stack`/`Row` were retired here (D-M6): a scoped `display: flex`
+// rule already says the same thing in the component that needs it, and 86 of the app's 104 flex
+// rules also carry position/overflow/padding a frame prop cannot own — adopting them would have
+// meant a bespoke override at nearly every site. What survives is the two that carry real
+// behaviour: the slim scroller and the pusher bar.
 export { default as ScrollArea } from './ScrollArea.svelte';
 export { default as Bar } from './Bar.svelte';
-export {
-	resolveSpace,
-	alignItems,
-	justifyContent,
-	type SpaceScale,
-	type AlignSetting,
-	type JustifySetting
-} from './layout';
 
 // The Field family — the north-star core (Task 3). Dumb controls (value in / change out) that opt
 // into the shared `useLiveValue` echo-suppression latch, composed inside a labelled `Field`.
@@ -43,11 +37,11 @@ export { default as Tabs } from './Tabs.svelte';
 export { default as Disclosure } from './Disclosure.svelte';
 export { resolveActive, nextIndex, type TabItem, type ArrowKey } from './tabsState';
 
-// Surfaces / overlays (Task 5): the anchored popover, the centered modal dialog, and the panel
-// header shell — plus the pure clamp the Popover positions against.
+// Surfaces / overlays (Task 5): the anchored popover and the centered modal dialog — plus the pure
+// clamp the Popover positions against. (`PanelShell` was retired here too, D-M6: its one-header-row
+// contract is `Bar`'s, which every real panel already composes directly.)
 export { default as Popover } from './Popover.svelte';
 export { default as Dialog } from './Dialog.svelte';
-export { default as PanelShell } from './PanelShell.svelte';
 export { clampToViewport, type AnchorRect, type Size, type Placement } from './clampToViewport';
 
 // Display primitives (Task 6): the uppercase tone pill (static Badge / pressable Chip), the
