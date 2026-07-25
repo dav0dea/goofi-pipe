@@ -9,6 +9,7 @@
 -->
 <script lang="ts">
 	import { workspace } from './workspace.svelte';
+	import { IconButton } from '$lib/ui';
 
 	const ws = workspace();
 	const tabs = $derived(ws.state.workspaces);
@@ -117,14 +118,15 @@
 			{:else}
 				<span class="name">{tab.name}</span>
 				{#if tabs.length > 1}
-					<button
+					<IconButton
+						variant="ghost"
+						size="sm"
 						class="close"
-						title="Close tab"
-						aria-label="Close tab"
+						label="Close tab"
 						onclick={(e) => {
 							e.stopPropagation();
 							ws.closeTab(tab.id);
-						}}>✕</button
+						}}>✕</IconButton
 					>
 				{/if}
 			{/if}
@@ -133,7 +135,7 @@
 	{#if showPreview && dropIndex === tabs.length}
 		<div class="tab-preview" aria-hidden="true"></div>
 	{/if}
-	<button class="add" onclick={() => ws.addTab()} title="New tab" aria-label="New tab">＋</button>
+	<IconButton variant="ghost" size="sm" label="New tab" onclick={() => ws.addTab()}>＋</IconButton>
 </div>
 
 <style>
@@ -165,7 +167,7 @@
 		padding: 5px 10px;
 		border-radius: var(--radius-sm);
 		color: var(--text-dim);
-		font-size: 0.82rem;
+		font-size: var(--fs-small);
 		line-height: 1;
 		white-space: nowrap;
 		cursor: pointer;
@@ -196,52 +198,32 @@
 		width: 9ch;
 		padding: 1px 4px;
 		font: inherit;
-		font-size: 0.82rem;
+		font-size: var(--fs-small);
 	}
-	.close {
-		display: grid;
-		place-items: center;
-		/* Collapsed when hidden so an inactive tab stays evenly padded; expands
-		   (with its left gap) only on hover / when active. */
+	/* Collapsed when hidden so an inactive tab stays evenly padded; expands (with its left
+	   gap) only on hover / when active. The collapse forces the box under the primitive's
+	   --hit floor, and `overflow: hidden` also clips IconButton's coarse hit-rect ::after.
+	   TODO(R): this reveal is hover-only AND sub-floor on touch — it needs a coarse-pointer
+	   door of its own, not a patch here. */
+	.tab :global(.close) {
 		width: 0;
+		min-width: 0;
 		height: 16px;
+		min-height: 16px;
 		margin-left: 0;
 		overflow: hidden;
-		padding: 0;
-		font-size: 0.7rem;
 		line-height: 1;
-		background: transparent;
-		border: none;
-		border-radius: var(--radius-sm);
 		color: var(--text-muted);
 		opacity: 0;
-		cursor: pointer;
 	}
-	.tab:hover .close,
-	.tab.active .close {
+	.tab:hover :global(.close),
+	.tab.active :global(.close) {
 		width: 16px;
-		margin-left: 4px;
+		margin-left: var(--space-2);
 		opacity: 1;
 	}
-	.close:hover {
-		background: var(--surface-1);
+	/* Only the colour; the hover surface is the primitive's. */
+	.tab :global(.close:hover) {
 		color: var(--danger);
-	}
-	.add {
-		align-self: center;
-		width: 22px;
-		height: 22px;
-		display: grid;
-		place-items: center;
-		padding: 0;
-		background: transparent;
-		border: none;
-		border-radius: var(--radius-sm);
-		color: var(--text-dim);
-		cursor: pointer;
-	}
-	.add:hover {
-		background: var(--surface-2);
-		color: var(--text);
 	}
 </style>
