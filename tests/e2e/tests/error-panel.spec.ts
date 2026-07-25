@@ -60,4 +60,51 @@ test.describe('ErrorPanel dismissal (delegated to Popover)', () => {
 		await page.mouse.click(10, 10);
 		await expect(popover, 'an outside click dismisses the popover (new behaviour)').toBeHidden();
 	});
+
+	// The row inside the popover is the one M kept bespoke here (a stacked name-over-message list
+	// row, not an action). M-Task 7 strips app.css's base `button` SKIN, so it must render from its
+	// own rule alone — including the fade on its hover fill, which it was inheriting from that skin
+	// until the strip made the dependency visible. This is the only place the row is reachable.
+	test('the kept-bespoke error row renders from its own rule, not the base skin', async ({
+		page
+	}) => {
+		const chipHost = await summonErrorChip(page);
+		await chipHost.locator('button').click();
+		const row = page.locator('.error-list .prow').first();
+		await expect(row).toBeVisible();
+		// The chip sits directly under the popover it opens, so the click leaves the cursor ON the
+		// first row — park it elsewhere, and poll until the hover fill has faded back out (the row's
+		// own transition), or the probe samples a mid-fade colour rather than the rest state.
+		await page.mouse.move(5, 5);
+		await expect
+			.poll(() => row.evaluate((el) => getComputedStyle(el).backgroundColor), {
+				message: 'the row is transparent at rest'
+			})
+			.toBe('rgba(0, 0, 0, 0)');
+		const s = await row.evaluate((el) => {
+			const cs = getComputedStyle(el);
+			return {
+				fontFamily: cs.fontFamily,
+				fontSize: parseFloat(cs.fontSize),
+				background: cs.backgroundColor,
+				borderWidth: cs.borderTopWidth,
+				radius: cs.borderTopLeftRadius,
+				padTop: parseFloat(cs.paddingTop),
+				padLeft: parseFloat(cs.paddingLeft),
+				transition: cs.transitionProperty,
+				rem: parseFloat(getComputedStyle(document.documentElement).fontSize)
+			};
+		});
+		expect(s.fontFamily, 'the error row renders in the app mono face').toContain('JetBrains Mono');
+		expect(s.fontSize, 'it inherits the popover surface size (`font: inherit`)').toBeCloseTo(
+			0.82 * s.rem,
+			0
+		);
+		expect(s.background, 'transparent at rest').toBe('rgba(0, 0, 0, 0)');
+		expect(s.borderWidth, 'borderless').toBe('0px');
+		expect(s.radius, 'its hover fill is rounded (--radius-sm)').toBe('4px');
+		expect(s.padTop).toBeCloseTo(0.375 * s.rem, 0);
+		expect(s.padLeft).toBeCloseTo(0.625 * s.rem, 0);
+		expect(s.transition, 'the hover fill fades in').toContain('background');
+	});
 });

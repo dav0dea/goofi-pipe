@@ -1,5 +1,6 @@
-import { test, expect } from '@playwright/test';
+import { test, expect, type Locator } from '@playwright/test';
 import { waitForApp } from '../lib/app';
+import { addNode, waitForNode, waitForNoNode } from '../lib/goofi';
 
 // The workspace panel system is FROZEN UX; sub-project M restyled its chrome onto the
 // `$lib/ui` primitives (PanelHeader's dropdown + maximize/close, the tab strip's ✕/＋).
@@ -166,4 +167,150 @@ test('the panel header dropdown keeps its frozen geometry over the primitive pad
 		0.375 * rem,
 		0
 	);
+});
+
+// ── The kept-bespoke button population, characterized (M-Task 7) ────────────────────────────
+//
+// M-Task 7 strips app.css's base `button` SKIN — background/color/border/border-radius/padding/
+// transition plus `:hover`/`:disabled`/`.primary`/`.ghost` — and keeps only the RESET
+// (`font: inherit; cursor: pointer`), the same class of rule as `input,select,textarea{font:inherit}`.
+// The migrated `<Button>`/`<IconButton>` population provably cannot regress: it styles itself. The
+// population that CAN is the deliberately-kept bespoke rows/tiles, which must render from their own
+// rule alone. This pins each one's real appearance so a strip that silently hands one back to the
+// UA (or drops a radius/transition it was inheriting) fails here instead of in a screenshot nobody
+// takes. `--fs-*`/`--space-*` are rem, so the expectations are stated against the live root size.
+
+/** The properties the base skin used to supply, read off one rendered element. */
+async function skin(loc: Locator) {
+	await expect(loc).toBeVisible();
+	return loc.evaluate((el) => {
+		const cs = getComputedStyle(el);
+		return {
+			fontFamily: cs.fontFamily,
+			fontSize: parseFloat(cs.fontSize),
+			fontWeight: cs.fontWeight,
+			background: cs.backgroundColor,
+			borderWidth: cs.borderTopWidth,
+			radius: cs.borderTopLeftRadius,
+			padTop: parseFloat(cs.paddingTop),
+			padLeft: parseFloat(cs.paddingLeft),
+			transition: cs.transitionProperty,
+			rem: parseFloat(getComputedStyle(document.documentElement).fontSize)
+		};
+	});
+}
+
+/** Every kept-bespoke button renders in the app face, never the UA's `400 13.333px Arial`. */
+function expectAppFace(s: { fontFamily: string }, who: string) {
+	expect(s.fontFamily, `${who} renders in the app mono face`).toContain('JetBrains Mono');
+}
+
+test('the kept-bespoke chrome buttons render from their own rules, not the base skin', async ({
+	page
+}) => {
+	await page.goto('/');
+	await waitForApp(page);
+	const header = page.getByTestId('panel-header').first();
+	await header.waitFor();
+
+	// 1. ContextMenu `.item` — a full-bleed menu row: transparent, borderless, --radius-sm so the
+	//    accent hover fill has round corners, --space-3/--space-4 pads, its own bg+color transition.
+	await header.locator('.content-btn').click();
+	const item = await skin(page.locator('.context-menu .item').first());
+	expectAppFace(item, 'the context-menu row');
+	expect(item.fontSize, 'the row takes the menu --fs-small').toBeCloseTo(0.82 * item.rem, 0);
+	expect(item.background, 'the row is transparent at rest').toBe('rgba(0, 0, 0, 0)');
+	expect(item.borderWidth, 'the row is borderless').toBe('0px');
+	expect(item.radius, 'the row rounds its hover fill (--radius-sm)').toBe('4px');
+	expect(item.padTop).toBeCloseTo(0.375 * item.rem, 0);
+	expect(item.padLeft).toBeCloseTo(0.5 * item.rem, 0);
+	expect(item.transition, 'the row fades its own hover fill').toContain('background');
+	await page.keyboard.press('Escape');
+
+	// 2. AddNodeMenu `.item` — the same shape, deliberately square (`border-radius: 0`) because the
+	//    rows are full-bleed inside the menu surface. The FIRST row is `.hl`, so probe an unhighlit one.
+	await page.getByTestId('topbar-add').click();
+	await page.getByTestId('add-menu-list').waitFor();
+	const addItem = await skin(page.locator('.add-menu .item:not(.hl)').first());
+	expectAppFace(addItem, 'the add-node row');
+	expect(addItem.fontSize).toBeCloseTo(0.82 * addItem.rem, 0);
+	expect(addItem.background, 'unhighlighted rows are transparent').toBe('rgba(0, 0, 0, 0)');
+	expect(addItem.borderWidth).toBe('0px');
+	expect(addItem.radius, 'the add-menu rows are deliberately square').toBe('0px');
+	expect(addItem.padTop).toBeCloseTo(0.375 * addItem.rem, 0);
+	expect(addItem.padLeft).toBeCloseTo(0.75 * addItem.rem, 0);
+	expect(addItem.transition, 'the highlight fades in as the cursor moves').toContain('background');
+	await page.keyboard.press('Escape');
+
+	// 3+4. FsBrowser `.root` (sidebar shortcut) and `.entry` (file row) — both list rows whose
+	//      hover/selected fill is a rounded accent wash, so the radius is load-bearing here.
+	await page.getByTestId('topbar-load').click();
+	await page.getByTestId('fs-list').waitFor();
+	const root = await skin(page.locator('.roots .root:not(.active)').first());
+	expectAppFace(root, 'the fs sidebar root');
+	expect(root.fontSize).toBeCloseTo(0.82 * root.rem, 0);
+	expect(root.background, 'an inactive root is transparent').toBe('rgba(0, 0, 0, 0)');
+	expect(root.borderWidth).toBe('0px');
+	expect(root.radius, 'its hover wash is rounded').toBe('4px');
+	expect(root.padTop).toBeCloseTo(0.375 * root.rem, 0);
+	expect(root.padLeft).toBeCloseTo(0.5 * root.rem, 0);
+	expect(root.transition).toContain('background');
+
+	const entry = await skin(page.getByTestId('fs-entry').first());
+	expectAppFace(entry, 'the fs file row');
+	expect(entry.fontSize).toBeCloseTo(0.82 * entry.rem, 0);
+	expect(entry.background, 'an unselected entry is transparent').toBe('rgba(0, 0, 0, 0)');
+	expect(entry.borderWidth).toBe('0px');
+	expect(entry.radius, 'its hover/selected wash is rounded').toBe('4px');
+	expect(entry.padTop).toBeCloseTo(0.25 * entry.rem, 0);
+	expect(entry.padLeft).toBeCloseTo(0.75 * entry.rem, 0);
+	expect(entry.transition).toContain('background');
+	await page.keyboard.press('Escape');
+
+	// 5. EmptyPanel `.choice` — a tile, not a row: the --surface-1 face IS the affordance, the
+	//    border is the hover accent alone, and --radius-md rounds the card. Split last (it leaves
+	//    the extra panel behind, and every locator above is scoped to `.first()`).
+	await header.click({ button: 'right' });
+	await page.locator('.context-menu .item', { hasText: 'Split Right' }).click();
+	const choice = await skin(page.getByTestId('empty-panel').locator('.choice').first());
+	expectAppFace(choice, 'the empty-panel tile');
+	expect(choice.fontSize, 'the tile takes the body size').toBeCloseTo(choice.rem, 0);
+	expect(choice.background, 'the tile face is --surface-1').toBe('rgb(28, 28, 28)');
+	expect(choice.borderWidth, 'a 1px border it colours only on hover').toBe('1px');
+	expect(choice.radius, 'the card is --radius-md').toBe('6px');
+	expect(choice.padTop).toBeCloseTo(0.75 * choice.rem, 0);
+	expect(choice.padLeft).toBeCloseTo(0.625 * choice.rem, 0);
+	expect(choice.transition).toContain('background');
+});
+
+test('the kept-bespoke node-scoped buttons render from their own rules', async ({ page }) => {
+	await page.goto('/');
+	await waitForApp(page);
+	const uid = await addNode(page, 'Oscillator', 'inputs');
+	await waitForNode(page, uid);
+
+	// 6. SlotViewer `.tri` — the disclosure triangle on a node's output slot. Frozen node-canvas
+	//    geometry: a 16px chromeless box at the canvas's fixed 10px type size.
+	const tri = await skin(page.locator('.slot-viewer .tri').first());
+	expectAppFace(tri, 'the slot disclosure triangle');
+	expect(tri.fontSize, 'the node canvas is a fixed-px coordinate system').toBe(10);
+	expect(tri.background, 'no button chrome at all').toBe('rgba(0, 0, 0, 0)');
+	expect(tri.borderWidth).toBe('0px');
+	expect(tri.padTop).toBe(0);
+	expect(tri.padLeft).toBe(0);
+
+	// 7. ParamForm `.pf-name` — the inspector's click-to-rename title. It must read as the heading
+	//    it replaced (600 weight, --fs-strong, no chrome), not as a button.
+	await page.evaluate((u) => (window as any).goofi.commands.select([u]), uid);
+	const name = await skin(page.getByTestId('auto-side-panel').getByTestId('node-name'));
+	expectAppFace(name, 'the inspector rename title');
+	expect(name.fontSize, 'the title is --fs-strong').toBeCloseTo(name.rem, 0);
+	expect(name.fontWeight, 'it reads as a heading').toBe('600');
+	expect(name.background, 'it carries no button surface').toBe('rgba(0, 0, 0, 0)');
+	expect(name.borderWidth).toBe('0px');
+	expect(name.padTop).toBe(0);
+	expect(name.padLeft).toBe(0);
+
+	await page.evaluate((u) => (window as any).goofi.commands.removeNode(u), uid);
+	await waitForNoNode(page, uid);
 });

@@ -18,6 +18,36 @@ test.describe('UI primitives gallery', () => {
 		await expect(page.getByTestId('ui-icon-danger-sm')).toBeVisible();
 	});
 
+	// C19 / M-Task 7: `Button` sizes its box from `line-height + padding + border`, and it used to
+	// take that line-height by INHERITANCE through app.css's base `button { font: inherit }`. The
+	// skin strip keeps that reset, but a primitive documented as "fully self-styled" must not depend
+	// on it — so `.ui-btn` states the app body ratio itself. This pins the resulting geometry: a
+	// silently-`normal` line-height shortens every Button in the app by 1-2px, which nothing else
+	// in the suite would notice.
+	test('a Button box is line-height + padding + border, at the app body ratio', async ({ page }) => {
+		await page.goto('/dev/ui');
+		const btn = page.getByTestId('ui-button-default-md');
+		await btn.waitFor();
+		const m = await btn.evaluate((el) => {
+			const cs = getComputedStyle(el);
+			return {
+				fontSize: parseFloat(cs.fontSize),
+				lineHeight: parseFloat(cs.lineHeight),
+				padTop: parseFloat(cs.paddingTop),
+				border: parseFloat(cs.borderTopWidth),
+				height: el.getBoundingClientRect().height
+			};
+		});
+		expect(m.lineHeight / m.fontSize, 'the app body line ratio, not the UA `normal`').toBeCloseTo(
+			1.35,
+			2
+		);
+		expect(m.height, 'the box is exactly its content box plus padding and border').toBeCloseTo(
+			m.lineHeight + 2 * m.padTop + 2 * m.border,
+			1
+		);
+	});
+
 	test('a keyboard-focused Button shows the app accent focus ring', async ({ page }) => {
 		await page.goto('/dev/ui');
 		await page.getByTestId('ui-button-default-sm').waitFor();
