@@ -118,8 +118,11 @@
 		cursor: grabbing;
 	}
 	/* The primitives keep the frozen 20px control geometry of the 26px bar. Under a coarse
-	   pointer the bar itself grows to --hit (app.css), so the floors apply unchanged there. */
-	.panel-header :global(.content-btn) {
+	   pointer the bar itself grows to --hit (app.css), so the floors apply unchanged there.
+	   The `button` tag qualifier is load-bearing: without it this ties with the primitive's own
+	   `.ui-btn.s-md` padding, and the two rules live in separate built CSS chunks — a tie there
+	   is settled by the emitted <link> order, not by the source. */
+	.panel-header :global(button.content-btn) {
 		height: 20px;
 		padding: 0 var(--space-3);
 		gap: var(--space-2);

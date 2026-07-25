@@ -96,3 +96,27 @@ test('the kept-bespoke menu row and panel tile declare their own font', async ({
 		'JetBrains Mono'
 	);
 });
+
+test('the panel header dropdown keeps its frozen geometry over the primitive padding', async ({
+	page
+}) => {
+	await page.goto('/');
+	await waitForApp(page);
+
+	// The header's pin and the primitive's own `.ui-btn.s-md` padding live in separate built CSS
+	// chunks, so a specificity tie between them would be settled by the emitted <link> order
+	// rather than the source — and the control would silently take --space-6 sides (double).
+	const btn = page.getByTestId('panel-header').first().locator('.content-btn');
+	await btn.waitFor();
+	const box = (await btn.boundingBox())!;
+	expect(box.height, 'the header dropdown keeps the 26px bar geometry').toBe(20);
+
+	const { padLeft, rem } = await btn.evaluate((el) => ({
+		padLeft: parseFloat(getComputedStyle(el).paddingLeft),
+		rem: parseFloat(getComputedStyle(document.documentElement).fontSize)
+	}));
+	expect(padLeft, 'the header pins --space-3 sides, not the primitive --space-6').toBeCloseTo(
+		0.375 * rem,
+		0
+	);
+});
