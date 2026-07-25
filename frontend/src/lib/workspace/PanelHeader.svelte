@@ -109,10 +109,10 @@
 		align-items: center;
 		height: var(--panel-header-h);
 		flex: 0 0 auto;
-		padding: 0 4px 0 4px;
+		padding: 0 var(--space-2);
 		background: var(--surface-1);
 		border-bottom: 1px solid var(--border);
-		gap: 2px;
+		gap: var(--space-1);
 		user-select: none;
 		cursor: grab;
 	}
@@ -138,6 +138,8 @@
 	.panel-header :global(.hdr-btn:hover:not(:disabled)) {
 		color: var(--text);
 	}
+	/* opacity: intentional — the glyph and the caret are quieted BELOW the title they sit beside
+	   (a hierarchy, not a disabled state); --disabled-opacity would read as "this header is inert". */
 	.ic {
 		opacity: 0.85;
 	}
@@ -146,7 +148,7 @@
 	}
 	.caret {
 		opacity: 0.5;
-		font-size: 0.7em;
+		font-size: var(--fs-micro);
 	}
 	.spacer {
 		flex: 1;

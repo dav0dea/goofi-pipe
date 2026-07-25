@@ -151,11 +151,11 @@
 		   the header (no own background / bottom border), matches its height. */
 		display: flex;
 		align-items: center;
-		gap: 2px;
+		gap: var(--space-1);
 		height: 100%;
 		flex: 1 1 auto;
 		min-width: 0;
-		padding: 0 4px;
+		padding: 0 var(--space-2);
 		background: transparent;
 		overflow-x: auto;
 		overflow-y: hidden;
@@ -171,7 +171,7 @@
 		gap: 0;
 		/* Even padding on all sides; vertically centred in the header (no margin)
 		   so the pill sits neatly inside the bar rather than filling its height. */
-		padding: 5px 10px;
+		padding: var(--space-3) var(--space-6);
 		border-radius: var(--radius-sm);
 		color: var(--text-dim);
 		font-size: var(--fs-small);
@@ -203,7 +203,7 @@
 	}
 	.rename {
 		width: 9ch;
-		padding: 1px 4px;
+		padding: 1px var(--space-2);
 		font: inherit;
 		font-size: var(--fs-small);
 	}

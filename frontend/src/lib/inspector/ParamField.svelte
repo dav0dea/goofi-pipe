@@ -401,6 +401,8 @@
 		color: var(--text-muted);
 	}
 	.fx-preview .prefix {
+		/* opacity: intentional — the `=` lead-in recedes behind the evaluated value it introduces;
+		   the preview itself is live, not disabled. */
 		opacity: 0.6;
 	}
 	.fx-preview .value {

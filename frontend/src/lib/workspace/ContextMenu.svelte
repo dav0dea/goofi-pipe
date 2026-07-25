@@ -169,7 +169,7 @@
 	.check {
 		width: 12px;
 		flex: 0 0 12px;
-		font-size: 0.8em;
+		font-size: var(--fs-micro);
 	}
 	.ic {
 		width: 14px;
@@ -180,8 +180,10 @@
 		white-space: nowrap;
 	}
 	.arrow {
+		/* opacity: intentional — the submarker is quieter than the label it follows; the row it
+		   sits in is fully enabled (a disabled row dims wholesale via --disabled-opacity). */
 		opacity: 0.6;
-		font-size: 0.8em;
+		font-size: var(--fs-micro);
 	}
 	.sep {
 		height: 1px;

@@ -33,7 +33,7 @@
 		min-width: 0;
 		min-height: 0;
 		display: flex;
-		padding: 4px;
+		padding: var(--space-2);
 		gap: 0;
 	}
 	.workspace :global(> *) {
