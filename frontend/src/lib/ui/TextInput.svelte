@@ -30,7 +30,6 @@
 		value,
 		onChange,
 		inputmode = 'text',
-		disabled = false,
 		class: klass = '',
 		...rest
 	}: Omit<HTMLInputAttributes, 'value' | 'type' | 'inputmode' | 'oninput' | 'onchange'> & {
@@ -52,7 +51,6 @@
 	{...modeAttrs}
 	id={fieldId}
 	type="text"
-	{disabled}
 	class={`ui-text ${klass}`.trim()}
 	value={live.value}
 	onfocus={() => live.begin()}

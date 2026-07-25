@@ -1,6 +1,6 @@
 <!--
   Slider — a dumb range control (spec §2.2): `value` in, `onChange` out. `min`/`max`/`step`, an
-  accent track, and optional bounds labels. It opts into `useLiveValue` so a live backend echo can't
+  accent track, and the min/max bound labels. It opts into `useLiveValue` so a live backend echo can't
   yank the thumb mid-drag: `editing` is latched on pointer-down and released on pointer-up, and each
   drag step commits live.
 
@@ -20,8 +20,6 @@
 		min = 0,
 		max = 1,
 		step,
-		bounds = true,
-		disabled = false,
 		class: klass = '',
 		...rest
 	}: HTMLAttributes<HTMLDivElement> & {
@@ -30,9 +28,6 @@
 		min?: number;
 		max?: number;
 		step?: number;
-		/** Show the min/max bound labels flanking the track. */
-		bounds?: boolean;
-		disabled?: boolean;
 	} = $props();
 
 	const fieldId = claimFieldControlId();
@@ -55,9 +50,7 @@
 </script>
 
 <div {...rest} class={`ui-slider ${klass}`.trim()}>
-	{#if bounds}
-		<span class="ui-slider-bound" aria-hidden="true">{fmtBound(lo)}</span>
-	{/if}
+	<span class="ui-slider-bound" aria-hidden="true">{fmtBound(lo)}</span>
 	<input
 		id={fieldId}
 		class="ui-slider-range"
@@ -66,14 +59,11 @@
 		max={hi}
 		step={stp}
 		value={live.value}
-		{disabled}
 		onpointerdown={() => live.begin()}
 		onpointerup={() => live.end()}
 		oninput={(e) => live.commit(Number((e.currentTarget as HTMLInputElement).value))}
 	/>
-	{#if bounds}
-		<span class="ui-slider-bound" aria-hidden="true">{fmtBound(hi)}</span>
-	{/if}
+	<span class="ui-slider-bound" aria-hidden="true">{fmtBound(hi)}</span>
 </div>
 
 <style>
@@ -93,10 +83,6 @@
 		border: none;
 		/* Let vertical scroll gestures pass through on touch while horizontal drags the thumb. */
 		touch-action: pan-y;
-	}
-	.ui-slider-range:disabled {
-		opacity: var(--disabled-opacity);
-		cursor: not-allowed;
 	}
 	.ui-slider-bound {
 		flex-shrink: 0;

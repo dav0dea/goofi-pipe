@@ -26,7 +26,6 @@
 		onRefresh,
 		refreshing = false,
 		refreshTestid,
-		disabled = false,
 		class: klass = '',
 		...rest
 	}: HTMLAttributes<HTMLDivElement> & {
@@ -42,7 +41,6 @@
 		refreshing?: boolean;
 		/** `data-testid` stamped on the ⟳ button (undefined → no attribute). */
 		refreshTestid?: string;
-		disabled?: boolean;
 	} = $props();
 
 	const fieldId = claimFieldControlId();
@@ -56,7 +54,7 @@
 		id={fieldId}
 		class="ui-select-input"
 		{value}
-		disabled={disabled || refreshing}
+		disabled={refreshing}
 		onchange={(e) => onChange((e.currentTarget as HTMLSelectElement).value)}
 	>
 		{#each items as opt (opt)}

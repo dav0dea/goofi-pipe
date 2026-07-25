@@ -23,7 +23,6 @@
 		max,
 		step = 1,
 		scrub = false,
-		disabled = false,
 		class: klass = '',
 		...rest
 	}: Omit<HTMLInputAttributes, 'value' | 'type' | 'inputmode' | 'min' | 'max' | 'step' | 'oninput'> & {
@@ -81,7 +80,7 @@
 	// or strand the editing latch open.
 	let teardownScrub: (() => void) | null = null;
 	function onScrubDown(e: PointerEvent): void {
-		if (!scrub || disabled || e.button !== 0) return;
+		if (!scrub || e.button !== 0) return;
 		e.preventDefault();
 		const el = e.currentTarget as HTMLInputElement;
 		const startX = e.clientX;
@@ -145,7 +144,6 @@
 	id={fieldId}
 	type="text"
 	inputmode="decimal"
-	{disabled}
 	class={`ui-number ${scrub ? 'ui-number-scrub' : ''} ${klass}`.trim()}
 	value={text}
 	onfocus={() => live.begin()}

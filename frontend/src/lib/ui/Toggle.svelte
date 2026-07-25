@@ -15,13 +15,11 @@
 	let {
 		value,
 		onChange,
-		disabled = false,
 		class: klass = '',
 		...rest
 	}: Omit<HTMLLabelAttributes, 'onchange'> & {
 		value: boolean;
 		onChange: (v: boolean) => void;
-		disabled?: boolean;
 	} = $props();
 
 	const fieldId = claimFieldControlId();
@@ -33,7 +31,6 @@
 		class="ui-toggle-input"
 		type="checkbox"
 		checked={value}
-		{disabled}
 		onchange={(e) => onChange((e.currentTarget as HTMLInputElement).checked)}
 	/>
 	<span class="ui-toggle-track" aria-hidden="true"></span>
@@ -58,9 +55,6 @@
 		height: 100%;
 		opacity: 0;
 		cursor: pointer;
-	}
-	.ui-toggle-input:disabled {
-		cursor: not-allowed;
 	}
 	.ui-toggle-track {
 		position: absolute;
@@ -102,9 +96,6 @@
 	.ui-toggle-input:focus-visible ~ .ui-toggle-track {
 		outline: 2px solid var(--accent);
 		outline-offset: 2px;
-	}
-	.ui-toggle-input:disabled ~ .ui-toggle-track {
-		opacity: var(--disabled-opacity);
 	}
 	/* Coarse-pointer hit-rect guarantee (mirrors IconButton): extend the clickable area outward to at
 	   least --hit WITHOUT widening the painted 2.4rem track (the knob's checked translate is tied to
