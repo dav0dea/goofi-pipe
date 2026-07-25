@@ -203,6 +203,9 @@
 		border-radius: 50%;
 		background: var(--text-muted);
 	}
+	/* A full-bleed menu row, deliberately square (the wash runs edge to edge of the menu surface).
+	   The fade on that wash is declared here because M-Task 7 stripped the base `button` skin it
+	   used to come from — without it the highlight snaps between rows as the cursor sweeps. */
 	.item {
 		background: transparent;
 		color: var(--text);
@@ -217,6 +220,7 @@
 		font-family: var(--font-mono);
 		font-size: var(--fs-small);
 		cursor: pointer;
+		transition: background var(--dur-fast) var(--ease);
 	}
 	.item.hl {
 		background: color-mix(in srgb, var(--accent) 12%, transparent);

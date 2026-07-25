@@ -253,8 +253,10 @@
 		background: var(--surface-2);
 		overflow-y: auto;
 	}
-	/* `.root` / `.entry` are list rows, not actions, so they stay bespoke — but they must declare
-	   their own font: the base `button` rule keeps only that reset, and M-Task 7 strips its skin. */
+	/* `.root` / `.entry` are list rows, not actions, so they stay bespoke — which means stating the
+	   whole of their appearance. Both wash accent on hover/selection, so the radius that rounds that
+	   wash and the fade that eases it in are theirs to declare: they came from app.css's base
+	   `button` skin until M-Task 7 stripped it (only the `font: inherit` reset survives there). */
 	.root {
 		font: inherit;
 		background: transparent;
@@ -264,6 +266,7 @@
 		padding: var(--space-3) var(--space-4);
 		border-radius: var(--radius-sm);
 		cursor: pointer;
+		transition: background var(--dur-fast) var(--ease);
 	}
 	.root.active,
 	.root:hover {
@@ -301,9 +304,11 @@
 		text-align: left;
 		background: transparent;
 		border: none;
+		border-radius: var(--radius-sm);
 		color: var(--text);
 		padding: var(--space-2) var(--space-6);
 		cursor: pointer;
+		transition: background var(--dur-fast) var(--ease);
 	}
 	.entry:hover {
 		background: color-mix(in srgb, var(--accent) 8%, transparent);

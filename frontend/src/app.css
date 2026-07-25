@@ -144,42 +144,15 @@ body {
 	text-rendering: optimizeLegibility;
 }
 
+/* A RESET, not a skin (M §4). The appearance a <button> wears is its own component's business —
+   `$lib/ui`'s Button/IconButton for actions, a complete bespoke rule for the menu/list/tile rows
+   that are not actions. What stays here is only what no component can state for itself: a UA
+   `font` DECLARATION beats inheritance, so without this line every button in the app falls back
+   to `400 13.333px Arial`. Exactly the same reason the input/select/textarea rule below keeps its
+   own `font: inherit`. */
 button {
 	font: inherit;
-	background: var(--surface-2);
-	color: var(--text);
-	border: 1px solid var(--border);
-	border-radius: var(--radius-sm);
-	padding: 4px 10px;
 	cursor: pointer;
-	transition:
-		background var(--dur-fast) var(--ease),
-		border-color var(--dur-fast) var(--ease),
-		color var(--dur-fast) var(--ease);
-}
-button:hover:not(:disabled) {
-	background: var(--surface-3);
-	border-color: var(--border-strong);
-}
-button:disabled {
-	opacity: var(--disabled-opacity);
-	cursor: not-allowed;
-}
-button.primary {
-	background: var(--accent);
-	color: var(--on-accent);
-	border-color: var(--accent);
-	font-weight: 600;
-}
-button.primary:hover:not(:disabled) {
-	background: var(--accent-strong);
-}
-button.ghost {
-	background: transparent;
-	border-color: transparent;
-}
-button.ghost:hover:not(:disabled) {
-	background: var(--surface-2);
 }
 
 input,

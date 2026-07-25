@@ -80,8 +80,10 @@
 		cursor: pointer;
 		color: var(--text);
 		/* The whole font, not just the family: a <button> inherits none, so the size and
-		   line-height would drop to the UA default when M-Task 7 strips app.css's base rule. */
+		   line-height would drop to the UA default were app.css's base reset not there. */
 		font: inherit;
+		/* Likewise the fade on the hover fill below — it came from the base skin M-Task 7 stripped. */
+		transition: background var(--dur-fast) var(--ease);
 	}
 	.prow:hover {
 		background: var(--surface-3);
