@@ -83,7 +83,6 @@ export const SAMPLES: Record<string, Sample> = {
 	PanelShell: { testid: 'ui-panelshell', interactive: false },
 	Badge: { testid: 'ui-badge-neutral', interactive: false },
 	StatusDot: { testid: 'ui-statusdot-ok', interactive: false },
-	Spinner: { testid: 'ui-spinner-md', interactive: false },
 	EmptyState: { testid: 'ui-emptystate', interactive: false }
 };
 

@@ -51,9 +51,8 @@ export { default as PanelShell } from './PanelShell.svelte';
 export { clampToViewport, type AnchorRect, type Size, type Placement } from './clampToViewport';
 
 // Display primitives (Task 6): the uppercase tone pill (static Badge / pressable Chip), the
-// glow-free status dot, the CSS ring spinner, and the centred empty-state placeholder.
+// glow-free status dot, and the centred empty-state placeholder.
 export { default as Badge, type BadgeTone } from './Badge.svelte';
 export { default as Chip } from './Chip.svelte';
 export { default as StatusDot, type StatusTone, type StatusDotSize } from './StatusDot.svelte';
-export { default as Spinner, type SpinnerSize } from './Spinner.svelte';
 export { default as EmptyState } from './EmptyState.svelte';

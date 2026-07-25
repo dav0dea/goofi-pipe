@@ -27,15 +27,13 @@
 		Badge,
 		Chip,
 		StatusDot,
-		Spinner,
 		EmptyState,
 		type ButtonVariant,
 		type ButtonSize,
 		type TabItem,
 		type BadgeTone,
 		type StatusTone,
-		type StatusDotSize,
-		type SpinnerSize
+		type StatusDotSize
 	} from '$lib/ui';
 
 	const variants: ButtonVariant[] = ['default', 'primary', 'ghost', 'danger'];
@@ -44,7 +42,6 @@
 	const badgeTones: BadgeTone[] = ['neutral', 'accent', 'success', 'warning', 'danger'];
 	const statusTones: StatusTone[] = ['ok', 'error', 'warn'];
 	const dotSizes: StatusDotSize[] = ['sm', 'md'];
-	const spinnerSizes: SpinnerSize[] = ['sm', 'md'];
 	// Single-character glyphs so the IconButton glyph stays visibly small.
 	const glyphs: Record<ButtonVariant, string> = {
 		default: '⚙', // gear
@@ -545,15 +542,6 @@
 		<Row gap={6}>
 			{#each dotSizes as size (size)}
 				<StatusDot tone="ok" {size} data-testid={`ui-statusdot-size-${size}`} />
-			{/each}
-		</Row>
-	</section>
-
-	<section>
-		<h2>Spinner (CSS ring)</h2>
-		<Row gap={6}>
-			{#each spinnerSizes as size (size)}
-				<Spinner {size} data-testid={`ui-spinner-${size}`} />
 			{/each}
 		</Row>
 	</section>

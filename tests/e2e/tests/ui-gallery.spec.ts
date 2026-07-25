@@ -641,7 +641,7 @@ test.describe('UI surfaces', () => {
 	});
 });
 
-// Display primitives (Task 6): Badge, Chip, StatusDot, Spinner, EmptyState. Each assertion is
+// Display primitives (Task 6): Badge, Chip, StatusDot, EmptyState. Each assertion is
 // behavioural, not "renders": tones resolve to distinct colours, the pressable Chip fires its click,
 // the StatusDot carries NO glow (the named health-dot regression guard), and the EmptyState centres
 // on both axes. Runs under the `default` (fine-pointer) project like the rest of this file.
@@ -692,12 +692,6 @@ test.describe('UI display primitives', () => {
 			['ok', 'error', 'warn'].map((t) => cssColor(page.getByTestId(`ui-statusdot-${t}`), 'backgroundColor'))
 		);
 		expect(new Set(fills).size, 'ok/error/warn dots are distinct colours').toBe(3);
-	});
-
-	test('renders the Spinner in each size', async ({ page }) => {
-		await page.goto('/dev/ui');
-		await expect(page.getByTestId('ui-spinner-sm')).toBeVisible();
-		await expect(page.getByTestId('ui-spinner-md')).toBeVisible();
 	});
 
 	test('EmptyState centres its content on both axes and renders bare without snippets', async ({ page }) => {
