@@ -23,22 +23,25 @@
 {/if}
 
 <style>
+	/* Kept bespoke on purpose: the button IS the toast surface (fixed, centred, self-styled), which
+	   no Button variant expresses. `font: inherit` is its own — the base rule keeps only that reset
+	   today and M-Task 7 strips the rest of the skin. */
 	.toast {
 		position: fixed;
-		bottom: 18px;
+		bottom: var(--space-8);
 		left: 50%;
 		transform: translateX(-50%);
 		z-index: var(--z-toast);
 		max-width: 60ch;
-		padding: 8px 14px;
+		padding: var(--space-4) var(--space-7);
 		border: none;
-		border-radius: 6px;
+		border-radius: var(--radius-md);
 		background: var(--danger);
 		color: var(--on-danger);
 		font: inherit;
-		font-size: 0.85rem;
+		font-size: var(--fs-small);
 		text-align: left;
-		box-shadow: 0 6px 20px rgb(0 0 0 / 0.35);
+		box-shadow: var(--shadow-1);
 		cursor: pointer;
 	}
 </style>

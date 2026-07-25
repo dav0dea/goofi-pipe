@@ -24,6 +24,7 @@
 	import { history } from '$lib/stores/history.svelte';
 	import { undoKeyAction } from '$lib/app/undoKeys';
 	import { exposeAgentApi } from '$lib/agent';
+	import { Button } from '$lib/ui';
 	import { getControl } from '$lib/api/control';
 	import { onMount } from 'svelte';
 
@@ -213,7 +214,9 @@
 	{#if protocolMismatch}
 		<div class="proto-banner" role="alert">
 			<span>This page is out of date with the backend. Reload to continue.</span>
-			<button type="button" onclick={() => location.reload()}>Reload</button>
+			<!-- The banner IS the danger surface, so the action inside it takes the neutral variant:
+			     a `danger` fill on a --danger banner would be the same colour twice. -->
+			<Button size="sm" onclick={() => location.reload()}>Reload</Button>
 		</div>
 	{/if}
 	<TopBar
@@ -265,18 +268,10 @@
 		display: flex;
 		align-items: center;
 		justify-content: center;
-		gap: 0.75rem;
-		padding: 0.4rem 0.75rem;
+		gap: var(--space-6);
+		padding: var(--space-3) var(--space-6);
 		background: var(--danger);
 		color: var(--on-danger);
-		font-size: 0.85rem;
-	}
-	.proto-banner button {
-		border: 1px solid var(--on-danger);
-		background: transparent;
-		color: var(--on-danger);
-		border-radius: 4px;
-		padding: 0.15rem 0.6rem;
-		cursor: pointer;
+		font-size: var(--fs-small);
 	}
 </style>
