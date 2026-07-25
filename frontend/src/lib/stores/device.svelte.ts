@@ -1,7 +1,8 @@
 /** Device-class store — the app's ONLY classifier. A rune singleton (like ui()). It owns the
  * matchMedia + visualViewport subscriptions and stamps document.documentElement so both
- * consumers see one truth: components read the rune, global CSS reads the data-* attributes
- * (mirrors data-theme). All pure arithmetic is in deviceClassify.ts. */
+ * consumers see one truth: components read the rune, and the stamps are there for global CSS /
+ * out-of-component overrides to select on (R's shell is the intended consumer — nothing in
+ * frontend/src reads them yet). All pure arithmetic is in deviceClassify.ts. */
 import { classify, kbInset, type SizeClass } from './deviceClassify';
 
 class DeviceStore {

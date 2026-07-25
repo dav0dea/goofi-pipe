@@ -67,8 +67,8 @@
 	/* Hit-target geometry — documentary fine-pointer defaults. The touch floor only applies under
 	   (pointer: coarse), in the @media block at the end of this file. */
 	--hit: 28px; /* documentary default; the floor only applies under (pointer: coarse) below */
-	--splitter-size: 6px; /* was referenced-but-undefined; declared now, larger under coarse */
-	--panel-header-h: 26px; /* was referenced-but-undefined */
+	--splitter-size: 6px; /* larger under coarse */
+	--panel-header-h: 26px;
 
 	/* dtype palette — slot pins/labels colour-code at a glance. */
 	--dtype-array: #50d0a0;
@@ -99,7 +99,7 @@
 	/* Z-index scale — single source of truth for stacking. Every overlay
 	   references one of these so layers never collide. Ascending:
 	   panel content → side-panel → layout chrome → error chip → menus →
-	   add-node menu → split/join drag ghost → modals → tab drag.
+	   add-node menu → split/join drag ghost → tab drag.
 	   Layout chrome (splitters + corner grips) sits ABOVE panel content so the
 	   split/join handles are always reachable, even under the slide-in
 	   inspector — the layout owns the panel, not its contents. */
@@ -109,7 +109,6 @@
 	--z-menu: 100; /* context menus */
 	--z-addmenu: 110; /* node-editor add-node menu + its capture overlay */
 	--z-drag-ghost: 150; /* live split/join preview while corner-dragging */
-	--z-modal: 200; /* expression editor + other modals */
 	--z-tab-drag: 250; /* a tab being dragged to reorder */
 	--z-toast: 260; /* transient toast (undo/redo errors) — above everything */
 

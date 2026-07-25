@@ -1,12 +1,6 @@
 /** Canvas colour palette. Canvas 2D/WebGL cannot read CSS custom properties, so the
- * series + dtype ink live here in TS. palette.test.ts pins DTYPE_INK to the --dtype-*
- * tokens so the two can never drift (they did: an 8-vs-7 series copy, audit §5). */
-
-export const DTYPE_INK = {
-	array: '#50d0a0',
-	string: '#f0c050',
-	table: '#e08060',
-} as const;
+ * series palette lives here in TS, at one source of truth so its copies can never
+ * drift (they did: an 8-vs-7 series copy, audit §5). */
 
 // The canonical multi-series line palette — the set ArrayViewer's uPlot lines use.
 // TrajectoryViewer had drifted to a 7-colour copy (missing the last); both now share this.

@@ -107,7 +107,7 @@
 	.panel-header {
 		display: flex;
 		align-items: center;
-		height: var(--panel-header-h, 26px);
+		height: var(--panel-header-h);
 		flex: 0 0 auto;
 		padding: 0 4px 0 4px;
 		background: var(--surface-1);

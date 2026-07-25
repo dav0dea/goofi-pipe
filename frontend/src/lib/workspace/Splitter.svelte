@@ -57,7 +57,7 @@
 
 <style>
 	.splitter {
-		flex: 0 0 var(--splitter-size, 6px);
+		flex: 0 0 var(--splitter-size);
 		position: relative;
 		z-index: var(--z-chrome);
 		touch-action: none;

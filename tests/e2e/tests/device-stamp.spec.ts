@@ -2,7 +2,7 @@ import { test, expect } from '@playwright/test';
 import { waitForApp } from '../lib/app';
 
 // The device seam stamps <html> so global CSS / SvelteFlow overrides (outside any component)
-// can read the device class. Mirrors the data-theme precedent.
+// can read the device class.
 test('the device store stamps data-* on <html>', async ({ page }) => {
 	await page.goto('/');
 	await waitForApp(page);

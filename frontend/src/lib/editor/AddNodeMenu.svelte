@@ -115,7 +115,7 @@
 	<div class="list" bind:this={listEl} data-testid="add-menu-list">
 		{#if groups}
 			{#each Object.entries(groups) as [cat, items] (cat)}
-				<div class="group-header" style="--cat: {categoryColor(cat)};">
+				<div class="group-header">
 					<span class="dot"></span>{cat}
 				</div>
 				{#each items as t (t.type)}
@@ -201,7 +201,7 @@
 		width: 6px;
 		height: 6px;
 		border-radius: 50%;
-		background: var(--cat, var(--text-muted));
+		background: var(--text-muted);
 	}
 	.item {
 		background: transparent;
