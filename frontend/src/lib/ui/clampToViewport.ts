@@ -1,10 +1,11 @@
 /**
- * `clampToViewport` — the one correct anchored-overlay clamp (spec §3), the SSOT the `Popover`
- * primitive positions against. Lifted verbatim from `ContextMenu.svelte`'s measured viewport math
- * and generalised from a spawn point to an anchor rect: a popover opens flush under the anchor's
- * bottom-left, then shifts back on-screen — never past a small viewport `MARGIN` — if it would
- * overflow the right or bottom edge. Pure, so it is unit-tested without a DOM (the component just
- * feeds it real `getBoundingClientRect()` measurements).
+ * `clampToViewport` — the one correct anchored-overlay clamp (spec §3), the SSOT both the `Popover`
+ * primitive and `ContextMenu` position against. Lifted verbatim from `ContextMenu.svelte`'s measured
+ * viewport math and generalised from a spawn point to an anchor rect: a popover opens flush under the
+ * anchor's bottom-left, then shifts back on-screen — never past a small viewport `MARGIN` — if it
+ * would overflow the right or bottom edge. A point anchor is just the degenerate rect
+ * (`left == right`, `top == bottom`, zero-sized), which is how ContextMenu spends it. Pure, so it is
+ * unit-tested without a DOM (the component just feeds it real `getBoundingClientRect()` measurements).
  *
  * The shift (not a flip) mirrors ContextMenu exactly; `Math.max(MARGIN, …)` floors an
  * overflowing/oversized menu to the margin so it is never pushed off-screen (never negative).

@@ -16,6 +16,7 @@
 	import { untrack } from 'svelte';
 	import type { MenuItem } from './menu';
 	import { portal } from './portal';
+	import { clampToViewport } from '$lib/ui';
 	import Self from './ContextMenu.svelte';
 
 	let {
@@ -40,11 +41,14 @@
 	$effect(() => {
 		if (!menuEl) return;
 		const r = menuEl.getBoundingClientRect();
-		let nx = x;
-		let ny = y;
-		if (nx + r.width > window.innerWidth - 6) nx = Math.max(6, window.innerWidth - r.width - 6);
-		if (ny + r.height > window.innerHeight - 6) ny = Math.max(6, window.innerHeight - r.height - 6);
-		pos = { x: nx, y: ny };
+		// The spawn point is a degenerate anchor rect — `left`/`bottom` are the point itself, so
+		// the shared clamp's "flush under the anchor's bottom-left" origin IS the click position.
+		const p = clampToViewport(
+			{ left: x, top: y, right: x, bottom: y, width: 0, height: 0 },
+			{ width: r.width, height: r.height },
+			{ width: window.innerWidth, height: window.innerHeight }
+		);
+		pos = { x: p.left, y: p.top };
 	});
 
 	function pick(item: MenuItem): void {
