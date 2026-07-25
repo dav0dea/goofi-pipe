@@ -312,9 +312,6 @@
 		border: 1px solid var(--accent);
 		border-radius: var(--radius-sm);
 	}
-	.pf-rename:focus {
-		outline: none;
-	}
 	.pf-type {
 		color: var(--text-muted);
 		font-family: var(--font-mono);

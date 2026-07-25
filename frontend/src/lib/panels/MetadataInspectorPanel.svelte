@@ -7,7 +7,7 @@
 	import NodeLinkedPanel from './NodeLinkedPanel.svelte';
 	import MetadataPanel from '$lib/editor/MetadataPanel.svelte';
 	import { asStateObject } from '$lib/workspace/panelState';
-	import { Select } from '$lib/ui';
+	import { ScrollArea, Select } from '$lib/ui';
 
 	let props: PanelProps = $props();
 
@@ -37,16 +37,8 @@
 	{/snippet}
 
 	{#snippet content(node)}
-		<div class="scroll">
-			<MetadataPanel {node} showHeader={false} slot={curSlot(node)} />
-		</div>
+		<ScrollArea>
+			<MetadataPanel {node} showHeader={false} slotName={curSlot(node)} />
+		</ScrollArea>
 	{/snippet}
 </NodeLinkedPanel>
-
-<style>
-	.scroll {
-		height: 100%;
-		overflow-y: auto;
-		min-height: 0;
-	}
-</style>

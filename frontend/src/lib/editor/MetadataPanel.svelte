@@ -10,12 +10,13 @@
 		node: NodeInstanceInfo;
 		/** Show the "Metadata" header + slot dropdown. True in the editor's
 		 * slide-in inspector; false in the dedicated Metadata panel, which drives
-		 * the slot from its own header bar via `slot`. */
+		 * the slot from its own header bar via `slotName`. */
 		showHeader?: boolean;
-		/** Externally-controlled slot (used with `showHeader = false`). */
-		slot?: string | null;
+		/** Externally-controlled slot (used with `showHeader = false`). NOT named `slot`:
+		 * that is Svelte's legacy slot attribute, which must be a static value. */
+		slotName?: string | null;
 	};
-	const { node, showHeader = true, slot: slotProp = null }: Props = $props();
+	const { node, showHeader = true, slotName = null }: Props = $props();
 
 	const slots = $derived(Object.keys(node.output_slots ?? {}));
 	let internalSlot = $state<string | null>(null);
@@ -28,7 +29,7 @@
 		if (internalSlot === null || !slots.includes(internalSlot)) internalSlot = fst;
 	});
 
-	const activeSlot = $derived(showHeader ? internalSlot : slotProp);
+	const activeSlot = $derived(showHeader ? internalSlot : slotName);
 
 	$effect(() => {
 		lastFrame = null;

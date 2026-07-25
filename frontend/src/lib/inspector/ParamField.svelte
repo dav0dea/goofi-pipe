@@ -350,7 +350,6 @@
 		tab-size: 4;
 	}
 	.fx-multiline:focus {
-		outline: none;
 		border-color: var(--accent);
 	}
 	/* Touch: lift the multi-line editor to 16px so focusing it does not force-zoom iOS (the desktop

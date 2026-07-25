@@ -236,9 +236,6 @@ textarea:focus {
 .svelte-flow {
 	background: var(--bg) !important;
 }
-.svelte-flow__background {
-	color: rgba(255, 255, 255, 0.035) !important;
-}
 .svelte-flow__controls {
 	border-radius: var(--radius-sm);
 	overflow: hidden;

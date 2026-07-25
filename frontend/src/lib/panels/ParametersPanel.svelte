@@ -5,22 +5,15 @@
 	import type { PanelProps } from '$lib/workspace/registry';
 	import NodeLinkedPanel from './NodeLinkedPanel.svelte';
 	import ParamForm from '$lib/inspector/ParamForm.svelte';
+	import { ScrollArea } from '$lib/ui';
 
 	let props: PanelProps = $props();
 </script>
 
 <NodeLinkedPanel {...props} label="parameters">
 	{#snippet content(node)}
-		<div class="scroll">
+		<ScrollArea>
 			<ParamForm {node} showHeader={false} />
-		</div>
+		</ScrollArea>
 	{/snippet}
 </NodeLinkedPanel>
-
-<style>
-	.scroll {
-		height: 100%;
-		overflow-y: auto;
-		min-height: 0;
-	}
-</style>
