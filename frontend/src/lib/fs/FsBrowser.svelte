@@ -1,13 +1,18 @@
 <!--
   Backend filesystem browser modal. Two modes: 'save' (pick a directory + type a
   filename) and 'load' (pick an existing .gfi). Full-FS, no jail (trusted LAN).
-  Renders in the top-level modal band above all other chrome.
+
+  The modal shell is the `Dialog` primitive: it owns the backdrop, Escape, the focus
+  trap and the native top layer, so this component keeps no overlay, no window key
+  handler and no z-index of its own. The nav rows (`.root` / `.entry`) stay bespoke —
+  they are list rows, not actions — while every real control is a ui primitive.
 -->
 <script lang="ts">
 	import { graph } from '$lib/stores/graph.svelte';
 	import { ui } from '$lib/stores/ui.svelte';
 	import type { FsEntry, FsRoot } from '$lib/api/control';
-	import { onMount, tick, untrack } from 'svelte';
+	import { Bar, Button, Dialog, EmptyState, IconButton, ScrollArea, TextInput } from '$lib/ui';
+	import { onMount, untrack } from 'svelte';
 
 	type Props = {
 		mode: 'save' | 'load';
@@ -28,7 +33,7 @@
 	let filename = $state(untrack(() => suggestedName)); // initial draft; user edits own it
 	let selected = $state<string | null>(null);
 	let error = $state<string | null>(null);
-	let firstInput = $state<HTMLInputElement | null>(null);
+	let pathBarEl = $state<HTMLDivElement | null>(null);
 
 	// This browser is a MODAL: while it is up the app's global chords stand down, so a Ctrl+Z on a
 	// focused file row can't undo a graph command behind it (and Ctrl+S can't re-enter Save). Held in
@@ -63,6 +68,13 @@
 		}
 	}
 
+	// Adopt the typed path BEFORE navigating: it is what `confirmSave` treats as authoritative, and
+	// the listing is a round trip away. A failed `go()` leaves it standing, so the user can correct it.
+	function commitPath(path: string): void {
+		pathDraft = path;
+		void go(path);
+	}
+
 	function openEntry(entry: FsEntry): void {
 		if (entry.kind === 'dir') {
 			void go(entry.path);
@@ -95,161 +107,161 @@
 		if (selected) onPick(selected);
 	}
 
-	function onKeydown(e: KeyboardEvent): void {
-		if (e.key === 'Escape') {
-			e.preventDefault();
-			onClose();
-		}
-	}
-
 	onMount(() => {
-		void go(initialPath);
-		tick().then(() => firstInput?.focus());
+		// Focus the path bar once the first listing has landed: focusing earlier latches the input's
+		// live-value into editing mode, which would suppress that very echo. `showModal()` has already
+		// moved focus into the dialog — this only puts it where typing is useful.
+		void go(initialPath).then(() => pathBarEl?.querySelector('input')?.focus());
 	});
 
 	const visible = $derived(entries.filter((e) => !e.hidden));
+	const title = $derived(mode === 'save' ? 'Save patch' : 'Load patch');
 </script>
 
-<svelte:window onkeydown={onKeydown} />
-
-<div class="fs-backdrop" onclick={onClose} role="presentation"></div>
-<div
-	class="fs-modal"
-	role="dialog"
-	aria-label={mode === 'save' ? 'Save patch' : 'Load patch'}
+<Dialog
+	open
+	{onClose}
+	style="--dialog-pad: 0; --dialog-bg: var(--surface-1); --dialog-max-width: min(720px, 92vw); width: 100%"
+	aria-label={title}
 	data-testid="fs-browser"
 >
-	<header>
-		<span class="title">{mode === 'save' ? 'Save patch' : 'Load patch'}</span>
-		<button class="x" onclick={onClose} aria-label="Close">✕</button>
-	</header>
+	<div class="frame">
+		<Bar>
+			{#snippet start()}
+				<span class="title">{title}</span>
+			{/snippet}
+			{#snippet end()}
+				<IconButton variant="ghost" size="sm" label="Close" onclick={onClose}>✕</IconButton>
+			{/snippet}
+		</Bar>
 
-	<div class="body">
-		<nav class="roots">
-			{#each roots as r (r.path)}
-				<button class="root" class:active={cwd === r.path} onclick={() => go(r.path)}>{r.label}</button>
-			{/each}
-		</nav>
-
-		<section class="files">
-			<div class="pathbar">
-				<button class="up" disabled={!parent} onclick={() => go(parent)} title="Up one level">↑</button>
-				<input
-					bind:this={firstInput}
-					bind:value={pathDraft}
-					onkeydown={(e) => {
-						if (e.key === 'Enter') void go(pathDraft);
-					}}
-					spellcheck="false"
-					autocomplete="off"
-					data-testid="fs-path-input"
-				/>
-			</div>
-
-			{#if error}
-				<div class="err" data-testid="fs-error">{error}</div>
-			{/if}
-
-			<ul class="list" data-testid="fs-list">
-				{#each visible as entry (entry.path)}
-					<li>
-						<button
-							class="entry"
-							class:dir={entry.kind === 'dir'}
-							class:gfi={entry.is_gfi}
-							class:sel={selected === entry.path}
-							onclick={() => clickEntry(entry)}
-							ondblclick={() => openEntry(entry)}
-							data-testid="fs-entry"
-						>
-							<span class="ico">{entry.kind === 'dir' ? '📁' : entry.is_gfi ? '◆' : '·'}</span>
-							<span class="nm">{entry.name}</span>
-						</button>
-					</li>
+		<div class="body">
+			<nav class="roots">
+				{#each roots as r (r.path)}
+					<button class="root" class:active={cwd === r.path} onclick={() => go(r.path)}>{r.label}</button>
 				{/each}
-				{#if visible.length === 0}
-					<li class="empty">Empty folder.</li>
-				{/if}
-			</ul>
-		</section>
-	</div>
+			</nav>
 
-	<footer>
-		{#if mode === 'save'}
-			<input class="fname" bind:value={filename} placeholder="patch name" data-testid="fs-filename" />
-			<span class="ext">.gfi</span>
-			<div class="spacer"></div>
-			<button class="ghost" onclick={onClose}>Cancel</button>
-			<button class="primary" onclick={confirmSave} data-testid="fs-save">Save</button>
-		{:else}
-			{#if onUpload}
-				<button class="ghost" onclick={onUpload} data-testid="fs-upload">Upload from this computer…</button>
-			{/if}
-			<div class="spacer"></div>
-			<button class="ghost" onclick={onClose}>Cancel</button>
-			<button class="primary" disabled={!selected} onclick={confirmOpen} data-testid="fs-open">Open</button>
-		{/if}
-	</footer>
-</div>
+			<section class="files">
+				<div class="pathbar" bind:this={pathBarEl}>
+					<IconButton
+						variant="ghost"
+						size="sm"
+						label="Up one level"
+						disabled={!parent}
+						onclick={() => go(parent)}>↑</IconButton
+					>
+					<TextInput
+						inputmode="path"
+						value={pathDraft}
+						onChange={commitPath}
+						autocomplete="off"
+						data-testid="fs-path-input"
+					/>
+				</div>
+
+				{#if error}
+					<div class="err" data-testid="fs-error">{error}</div>
+				{/if}
+
+				<ScrollArea data-testid="fs-list">
+					<ul class="rows">
+						{#each visible as entry (entry.path)}
+							<li>
+								<button
+									class="entry"
+									class:gfi={entry.is_gfi}
+									class:sel={selected === entry.path}
+									onclick={() => clickEntry(entry)}
+									ondblclick={() => openEntry(entry)}
+									data-testid="fs-entry"
+								>
+									<span class="ico">{entry.kind === 'dir' ? '📁' : entry.is_gfi ? '◆' : '·'}</span>
+									<span class="nm">{entry.name}</span>
+								</button>
+							</li>
+						{/each}
+					</ul>
+					{#if visible.length === 0}
+						<EmptyState>
+							{#snippet hint()}Empty folder.{/snippet}
+						</EmptyState>
+					{/if}
+				</ScrollArea>
+			</section>
+		</div>
+
+		<Bar>
+			{#snippet start()}
+				{#if mode === 'save'}
+					<TextInput
+						style="width: 14rem; flex: 0 0 auto"
+						value={filename}
+						onChange={(v) => (filename = v)}
+						placeholder="patch name"
+						data-testid="fs-filename"
+					/>
+					<span class="ext">.gfi</span>
+				{:else if onUpload}
+					<Button variant="ghost" onclick={onUpload} data-testid="fs-upload">
+						Upload from this computer…
+					</Button>
+				{/if}
+			{/snippet}
+			{#snippet end()}
+				<Button variant="ghost" onclick={onClose}>Cancel</Button>
+				{#if mode === 'save'}
+					<Button variant="primary" onclick={confirmSave} data-testid="fs-save">Save</Button>
+				{:else}
+					<Button variant="primary" disabled={!selected} onclick={confirmOpen} data-testid="fs-open">
+						Open
+					</Button>
+				{/if}
+			{/snippet}
+		</Bar>
+	</div>
+</Dialog>
 
 <style>
-	.fs-backdrop {
-		position: fixed;
-		inset: 0;
-		background: rgba(0, 0, 0, 0.45);
-		z-index: 1000;
-	}
-	.fs-modal {
-		position: fixed;
-		top: 50%;
-		left: 50%;
-		transform: translate(-50%, -50%);
-		width: min(720px, 92vw);
-		height: min(560px, 86vh);
+	.frame {
 		display: flex;
 		flex-direction: column;
-		background: var(--surface-1);
-		border: 1px solid var(--border-strong);
-		border-radius: var(--radius-md);
-		box-shadow: var(--shadow-2);
-		z-index: 1001;
-		font-size: 12px;
-		overflow: hidden;
+		min-width: 0;
+		font-size: var(--fs-small);
+		/* Both Bars here are chrome strips: one surface step above the dialog body, which separates
+		   them without a hairline (D5). Set once on the frame — custom properties inherit. */
+		--bar-bg: var(--surface-2);
+		--bar-border: none;
 	}
-	header {
-		display: flex;
-		align-items: center;
-		justify-content: space-between;
-		padding: 10px 12px;
-		border-bottom: 1px solid var(--border);
+	.title {
 		font-weight: 600;
 	}
-	header .x {
-		background: transparent;
-		border: none;
-		color: var(--text-dim);
-		cursor: pointer;
-		font-size: 13px;
-	}
 	.body {
-		flex: 1;
 		display: flex;
 		min-height: 0;
+		/* The list is the only scroller, and a fixed body height keeps the modal from resizing as
+		   the user walks directories of different lengths. */
+		height: min(24rem, 55vh);
 	}
+	/* Root shortcuts read as a sidebar off the same surface step as the bars — no divider needed. */
 	.roots {
-		flex: 0 0 140px;
-		border-right: 1px solid var(--border);
+		flex: 0 0 8.75rem;
 		display: flex;
 		flex-direction: column;
-		padding: 8px 6px;
-		gap: 2px;
+		gap: var(--space-1);
+		padding: var(--space-4) var(--space-3);
+		background: var(--surface-2);
+		overflow-y: auto;
 	}
+	/* `.root` / `.entry` are list rows, not actions, so they stay bespoke — but they must declare
+	   their own font: the base `button` rule keeps only that reset, and M-Task 7 strips its skin. */
 	.root {
+		font: inherit;
 		background: transparent;
 		border: none;
 		color: var(--text);
 		text-align: left;
-		padding: 6px 8px;
+		padding: var(--space-3) var(--space-4);
 		border-radius: var(--radius-sm);
 		cursor: pointer;
 	}
@@ -265,53 +277,33 @@
 	}
 	.pathbar {
 		display: flex;
-		gap: 6px;
-		padding: 8px;
-		border-bottom: 1px solid var(--border);
-	}
-	.pathbar .up {
-		flex: 0 0 auto;
-		background: var(--surface-2);
-		border: 1px solid var(--border);
-		border-radius: var(--radius-sm);
-		color: var(--text);
-		cursor: pointer;
-		padding: 0 8px;
-	}
-	.pathbar input {
-		flex: 1;
-		min-width: 0;
-		background: var(--surface-2);
-		border: 1px solid var(--border);
-		border-radius: var(--radius-sm);
-		color: var(--text);
-		padding: 4px 8px;
-		font-family: var(--font-mono);
+		align-items: center;
+		gap: var(--space-3);
+		padding: var(--space-4);
 	}
 	.err {
 		color: var(--warning);
-		padding: 6px 10px;
+		padding: var(--space-3) var(--space-5);
 		font-family: var(--font-mono);
 	}
-	.list {
-		flex: 1;
-		overflow-y: auto;
+	.rows {
 		list-style: none;
 		margin: 0;
-		padding: 4px 0;
+		padding: var(--space-2) 0;
 	}
 	.entry {
+		font: inherit;
+		font-family: var(--font-mono);
 		display: flex;
 		align-items: center;
-		gap: 8px;
+		gap: var(--space-4);
 		width: 100%;
 		text-align: left;
 		background: transparent;
 		border: none;
 		color: var(--text);
-		padding: 5px 12px;
+		padding: var(--space-2) var(--space-6);
 		cursor: pointer;
-		font-family: var(--font-mono);
 	}
 	.entry:hover {
 		background: color-mix(in srgb, var(--accent) 8%, transparent);
@@ -321,59 +313,21 @@
 	}
 	.entry .ico {
 		flex: 0 0 auto;
-		width: 14px;
+		width: 1rem;
 		text-align: center;
 	}
 	.entry.gfi .ico {
 		color: var(--accent);
 	}
-	.empty {
-		color: var(--text-muted);
-		padding: 12px;
-		text-align: center;
-		list-style: none;
-	}
-	footer {
-		display: flex;
-		align-items: center;
-		gap: 8px;
-		padding: 10px 12px;
-		border-top: 1px solid var(--border);
-	}
-	footer .spacer {
-		flex: 1;
-	}
-	.fname {
-		background: var(--surface-2);
-		border: 1px solid var(--border);
-		border-radius: var(--radius-sm);
-		color: var(--text);
-		padding: 4px 8px;
-		font-family: var(--font-mono);
+	/* The scroller clips horizontally, so a long name ellipsis's instead of being cut mid-glyph. */
+	.entry .nm {
+		min-width: 0;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
 	}
 	.ext {
 		color: var(--text-muted);
 		font-family: var(--font-mono);
-	}
-	button.ghost,
-	button.primary {
-		border-radius: var(--radius-sm);
-		padding: 5px 12px;
-		cursor: pointer;
-		font-size: 12px;
-	}
-	button.ghost {
-		background: transparent;
-		border: 1px solid var(--border);
-		color: var(--text);
-	}
-	button.primary {
-		background: var(--accent);
-		border: 1px solid var(--accent);
-		color: var(--surface-1);
-	}
-	button.primary:disabled {
-		opacity: 0.5;
-		cursor: default;
 	}
 </style>
