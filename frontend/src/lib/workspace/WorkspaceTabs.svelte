@@ -135,7 +135,9 @@
 	{#if showPreview && dropIndex === tabs.length}
 		<div class="tab-preview" aria-hidden="true"></div>
 	{/if}
-	<IconButton variant="ghost" size="sm" label="New tab" onclick={() => ws.addTab()}>＋</IconButton>
+	<IconButton variant="ghost" size="sm" class="add" label="New tab" onclick={() => ws.addTab()}
+		>＋</IconButton
+	>
 </div>
 
 <style>
@@ -228,5 +230,18 @@
 	/* Only the colour; the hover surface is the primitive's. */
 	.tab :global(.close:hover) {
 		color: var(--danger);
+	}
+	/* The frozen 22px box: the ~23px tab pills sit beside it, so the primitive's --hit floor
+	   (28px fine) would leave the ＋ standing taller than the strip it belongs to. Under a
+	   coarse pointer the floor is restored — touch keeps a real tap target. */
+	.tabs :global(.add) {
+		min-width: 22px;
+		min-height: 22px;
+	}
+	@media (hover: none) and (pointer: coarse) {
+		.tabs :global(.add) {
+			min-width: var(--hit);
+			min-height: var(--hit);
+		}
 	}
 </style>

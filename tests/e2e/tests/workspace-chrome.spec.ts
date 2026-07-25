@@ -49,3 +49,19 @@ test('a collapsed tab close button occupies zero width (the even-padding invaria
 	await close.locator('xpath=..').hover();
 	await expect.poll(async () => (await close.boundingBox())?.width).toBe(16);
 });
+
+test('the tab strip ＋ keeps its frozen 22px box (not the primitive --hit floor)', async ({
+	page
+}) => {
+	await page.goto('/');
+	await waitForApp(page);
+
+	// IconButton floors its box to --hit (28px on a fine pointer). The tab pills are ~23px
+	// tall, so an unpinned ＋ would stand visibly taller than the tabs beside it — the tab
+	// strip is frozen geometry and pins it back to 22, exactly as `.close` pins 16.
+	const add = page.getByTestId('workspace-tabs').getByRole('button', { name: 'New tab' });
+	await add.waitFor();
+	const box = (await add.boundingBox())!;
+	expect(box.width, 'the ＋ keeps its pre-migration 22px width').toBe(22);
+	expect(box.height, 'the ＋ keeps its pre-migration 22px height').toBe(22);
+});
