@@ -58,7 +58,7 @@ export function updateParam(
 	);
 }
 
-/** Undo the last action (custom history today; Y.UndoManager after Phase 5). */
+/** Undo the last action. */
 export function undo(page: Page): Promise<void> {
 	return page.evaluate(() => (window as any).goofi.commands.undo());
 }

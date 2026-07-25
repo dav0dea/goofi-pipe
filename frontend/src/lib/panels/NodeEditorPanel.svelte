@@ -1083,7 +1083,7 @@
 			     is now a `container-type` query container, and though `inline-size` containment alone
 			     does not trap fixed descendants, this keeps the menu correct if the body ever gains a
 			     real containing-block trigger (a transform/filter) — matching the sibling overlays
-			     (ViewerSettingsMenu / ExpressionModal / the link-ghost) which all portal for this reason. -->
+			     (ViewerSettingsMenu / the link-ghost) which all portal for this reason. -->
 			<div
 				class="menu-overlay"
 				use:portal

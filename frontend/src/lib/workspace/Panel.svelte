@@ -276,7 +276,7 @@
 		/* The query container every panel's content sizes against (`@container` in the UI
 		   primitives). `inline-size` (not `size`) contains only the inline axis, so the body's
 		   height keeps flowing from its flex parent. NB: the panel's fixed-position overlays (the
-		   add-node menu, ViewerSettingsMenu, ExpressionModal, the link-ghost) all portal to <body>
+		   add-node menu, ViewerSettingsMenu, the link-ghost) all portal to <body>
 		   so a future containing-block trigger here can never re-anchor them off the viewport. */
 		container-type: inline-size;
 	}

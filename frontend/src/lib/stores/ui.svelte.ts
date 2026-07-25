@@ -40,7 +40,7 @@ export class UIStore {
 		return this.openEditors.size > 0;
 	}
 
-	/** Bubbled-up "user clicked an unconnected port" intent. Editor.svelte
+	/** Bubbled-up "user clicked an unconnected port" intent. NodeEditorPanel.svelte
 	 * watches this via $effect and pops the add-node menu pre-seeded for
 	 * auto-link. Cleared by the consumer once handled. */
 	pendingSlotClick = $state<SlotClickSeed | null>(null);

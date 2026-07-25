@@ -1,6 +1,6 @@
 <!--
   Inspector body for a selected sub-patch (virtual) node. Stands in for the param
-  groups in ParamPanel. A sub-patch is a purely organizational facade now (no
+  groups in ParamForm. A sub-patch is a purely organizational facade now (no
   sharing), so this shows its name + member count and the one structural action:
   Expand (dissolve back into plain nodes).
 -->

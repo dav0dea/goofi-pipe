@@ -1,9 +1,9 @@
 /**
  * `useLiveValue` — the shared commit / echo-suppression discipline for the Field controls
- * (spec §3). Generalised from `ParamField.svelte:29-37`: while the user is actively editing
- * (focused / dragging), backend echoes are suppressed so the value doesn't jump under the
- * cursor; on blur / Enter the edit is committed and syncing resumes. Every live control opts
- * into this rune instead of re-implementing the latch (and re-introducing the bug).
+ * (spec §3). While the user is actively editing (focused / dragging), backend echoes are
+ * suppressed so the value doesn't jump under the cursor; on blur / Enter the edit is committed
+ * and syncing resumes. Every live control opts into this rune instead of re-implementing the
+ * latch (and re-introducing the bug).
  *
  * The one decision — which value to show — is the PURE `displayValue`, unit-tested in
  * `liveValue.test.ts`. The rune below is the thin Svelte-reactive wrapper (`$state`/`$effect`)
