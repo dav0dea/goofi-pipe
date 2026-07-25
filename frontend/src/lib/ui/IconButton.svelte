@@ -43,6 +43,10 @@
 
 <style>
 	.ui-icon-btn {
+		/* A <button> inherits no font of its own — without this the glyph would fall back to the
+		   UA face once M-Task 7 strips app.css's base `button` rule. `line-height` below still
+		   wins over the shorthand's inherited one (later declaration). */
+		font: inherit;
 		position: relative; /* anchor for the coarse-pointer hit-rect ::after */
 		display: inline-grid;
 		place-items: center;

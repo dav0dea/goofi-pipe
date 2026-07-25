@@ -55,8 +55,11 @@
 		max-width: 340px;
 	}
 	/* A tile, not a Button: an icon-over-label card whose whole face is the affordance. The
-	   surface step carries the separation (D5) and the border is the hover accent alone. */
+	   surface step carries the separation (D5) and the border is the hover accent alone. It owns
+	   its font for the same reason a menu row does — buttons don't inherit one, and app.css's
+	   base `button` rule goes away at M-Task 7. */
 	.choice {
+		font: inherit;
 		display: flex;
 		flex-direction: column;
 		align-items: center;

@@ -79,7 +79,9 @@
 		text-align: left;
 		cursor: pointer;
 		color: var(--text);
-		font-family: var(--font-mono);
+		/* The whole font, not just the family: a <button> inherits none, so the size and
+		   line-height would drop to the UA default when M-Task 7 strips app.css's base rule. */
+		font: inherit;
 	}
 	.prow:hover {
 		background: var(--surface-3);

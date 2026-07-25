@@ -138,8 +138,11 @@
 		user-select: none;
 	}
 	/* A menu row, not a Button: it keeps its own complete style (full-bleed, left-aligned,
-	   accent-filled on hover) — the same carve-out the other list/menu rows take. */
+	   accent-filled on hover) — the same carve-out the other list/menu rows take. "Complete"
+	   includes the font: a <button> does NOT inherit one, so without this the row falls back to
+	   the UA face the moment M-Task 7 strips app.css's base `button { font: inherit }`. */
 	.item {
+		font: inherit;
 		display: flex;
 		align-items: center;
 		gap: var(--space-3);

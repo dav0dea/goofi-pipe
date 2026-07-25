@@ -65,3 +65,34 @@ test('the tab strip ＋ keeps its frozen 22px box (not the primitive --hit floor
 	expect(box.width, 'the ＋ keeps its pre-migration 22px width').toBe(22);
 	expect(box.height, 'the ＋ keeps its pre-migration 22px height').toBe(22);
 });
+
+// The two rows M deliberately kept bespoke (a context-menu item, an empty-panel tile) are
+// styled entirely by their own class — including the font. `app.css`'s base `button` rule is
+// what M-Task 7 strips, and buttons do NOT inherit font by default, so each must declare
+// `font: inherit` itself or fall back to the UA default (Arial 13.333px) the moment it goes.
+// The rule is still there today, so the guard SIMULATES its removal: `font: revert` at the same
+// (0,0,1) specificity, injected last, hands any button that declares no font back to the UA.
+test('the kept-bespoke menu row and panel tile declare their own font', async ({ page }) => {
+	await page.goto('/');
+	await waitForApp(page);
+	await page.addStyleTag({ content: 'button { font: revert; }' });
+
+	const header = page.getByTestId('panel-header').first();
+	await header.locator('.content-btn').click();
+	const item = page.locator('.context-menu .item').first();
+	await expect(item).toBeVisible();
+	const itemFont = await item.evaluate((el) => getComputedStyle(el).fontFamily);
+	expect(itemFont, 'the context-menu row renders in the app mono face').toContain('JetBrains Mono');
+	await page.keyboard.press('Escape');
+
+	// A freshly split panel starts empty, which is what renders the choice tiles.
+	const menu = page.locator('.context-menu');
+	await header.click({ button: 'right' });
+	await menu.locator('.item', { hasText: 'Split Right' }).click();
+	const choice = page.getByTestId('empty-panel').locator('.choice').first();
+	await expect(choice).toBeVisible();
+	const choiceFont = await choice.evaluate((el) => getComputedStyle(el).fontFamily);
+	expect(choiceFont, 'the empty-panel tile renders in the app mono face').toContain(
+		'JetBrains Mono'
+	);
+});
