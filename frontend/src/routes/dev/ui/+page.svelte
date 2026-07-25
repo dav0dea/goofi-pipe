@@ -463,6 +463,14 @@
 			<div class="dialog-content" data-testid="ui-dialog-content">
 				<h3>Confirm action</h3>
 				<p>A centered modal: focus is trapped inside, Escape and a backdrop click both close it.</p>
+				<!-- Deliberately taller than `--dialog-max-height`, so the dialog paints its OWN
+				     scrollbar: a click there targets the dialog element exactly like a backdrop click
+				     does, and the e2e pins that it does not dismiss. -->
+				<p class="filler">
+					{#each { length: 40 } as _, i (i)}
+						Overflowing line {i + 1} — the dialog scrolls its own content.
+					{/each}
+				</p>
 				<Row gap={4} justify="end">
 					<Button onclick={() => (dialogOpen = false)} data-testid="ui-dialog-cancel">Cancel</Button>
 					<Button variant="primary" onclick={() => (dialogOpen = false)} data-testid="ui-dialog-confirm">
@@ -721,6 +729,9 @@
 		display: flex;
 		flex-direction: column;
 		gap: var(--space-6);
+	}
+	.dialog-content .filler {
+		color: var(--text-muted);
 	}
 	.dialog-content h3 {
 		margin: 0;

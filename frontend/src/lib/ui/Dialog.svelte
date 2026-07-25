@@ -8,10 +8,11 @@
 
   The parent owns `open` (the SSOT): an `$effect` syncs the element's modal state to it, and every
   user dismissal — Escape (`cancel`) or a backdrop click — routes to `onClose` so the parent flips
-  `open` (never the element behind its back, which would desync). Backdrop clicks are detected by
-  `e.target === dialogEl` (a click on content targets a child); the body has no padding of its own so
-  that check is unambiguous. Surface chrome is F tokens via `var(--dialog-*, <token>)` hooks. `class`
-  merged, `data-testid` (and any other attribute) forwarded via `...rest`.
+  `open` (never the element behind its back, which would desync). A backdrop click is one that
+  targets the dialog element itself (a click on content targets a child) AND lands outside its border
+  box — the coordinate half matters because the dialog's own scrollbar is targeted exactly like the
+  backdrop is. Surface chrome is F tokens via `var(--dialog-*, <token>)` hooks. `class` merged,
+  `data-testid` (and any other attribute) forwarded via `...rest`.
 -->
 <script lang="ts">
 	import type { Snippet } from 'svelte';
@@ -47,8 +48,15 @@
 		onClose();
 	}
 	function onDialogClick(e: MouseEvent): void {
-		// A click whose target is the dialog element itself (not the body/content) is a backdrop click.
-		if (e.target === dialogEl) onClose();
+		// A click whose target is the dialog element itself (not the body/content) is a CANDIDATE
+		// backdrop click — but the dialog's own scrollbar is targeted the same way (it belongs to the
+		// scroller, not to a child), so target alone would dismiss on a scrollbar grab. Confirm with
+		// the coordinates: only a click landing outside the border box is really the backdrop.
+		if (e.target !== dialogEl || !dialogEl) return;
+		const r = dialogEl.getBoundingClientRect();
+		const inside =
+			e.clientX >= r.left && e.clientX <= r.right && e.clientY >= r.top && e.clientY <= r.bottom;
+		if (!inside) onClose();
 	}
 </script>
 

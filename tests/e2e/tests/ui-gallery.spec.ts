@@ -580,6 +580,43 @@ test.describe('UI surfaces', () => {
 		await expect(content, 'a backdrop click closes the dialog').toBeHidden();
 	});
 
+	// Carryover C11 (P audit): backdrop detection used to be `e.target === dialogEl` alone, and a
+	// click on the dialog's OWN scrollbar satisfies that — the scrollbar belongs to the scroller (the
+	// dialog box), not to a child. Any dialog whose content exceeds --dialog-max-height could
+	// therefore be dismissed by grabbing its scrollbar. The guard is now coordinate-based: a click
+	// INSIDE the border box is content, however it is targeted; only one outside it is backdrop.
+	//
+	// Headless Chromium paints OVERLAY scrollbars (the dialog's clientWidth is its border box minus
+	// the borders — no gutter), so a real mouse click on the track can't be produced here: it lands
+	// on the body child. The dispatch below is exactly the event a platform with classic scrollbars
+	// delivers — target = the dialog element, coordinates inside its border box.
+	test("a click on the Dialog's own scrollbar does not dismiss it", async ({ page }) => {
+		await page.goto('/dev/ui');
+		const content = page.getByTestId('ui-dialog-content');
+		await page.getByTestId('ui-dialog-trigger').click();
+		await expect(content).toBeVisible();
+
+		const dlg = page.getByTestId('ui-dialog');
+		const overflows = await dlg.evaluate((d) => d.scrollHeight > d.clientHeight);
+		expect(overflows, 'the gallery dialog really overflows (else this proves nothing)').toBe(true);
+
+		const stillOpen = await dlg.evaluate(async (d) => {
+			const r = d.getBoundingClientRect();
+			d.dispatchEvent(
+				new MouseEvent('click', {
+					bubbles: true,
+					clientX: r.right - 3,
+					clientY: r.top + r.height / 2
+				})
+			);
+			// Let the parent's `open` flip and the syncing effect run before reading the element.
+			await new Promise((res) => requestAnimationFrame(() => requestAnimationFrame(res)));
+			return (d as HTMLDialogElement).open;
+		});
+		expect(stillOpen, 'the scrollbar is part of the dialog, not the backdrop').toBe(true);
+		await expect(content).toBeVisible();
+	});
+
 	test('PanelShell renders exactly ONE header row composing title + toolbar + actions', async ({
 		page
 	}) => {
