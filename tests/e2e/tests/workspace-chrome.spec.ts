@@ -7,6 +7,53 @@ import { waitForApp } from '../lib/app';
 // the two invariants a primitive swap can silently break: the header dropdown's ContextMenu
 // wiring, and the tab strip's zero-width collapsed close.
 
+// The active-panel ring must actually be PAINTED, and only a pixel readback can tell: the rule
+// was present all along (an `inset box-shadow` in the accent), but an inset shadow paints BELOW
+// child content, so on the node editor the header covered its top edge and `.svelte-flow`'s opaque
+// background covered the other three. A DOM/class/computed-style assertion passes on that broken
+// code — this one samples what the compositor actually produced.
+test('an active node-editor panel paints the accent ring at its inner edge', async ({ page }) => {
+	await page.goto('/');
+	await waitForApp(page);
+	// The flow canvas is the occluder — probe only once it has painted, or an unpainted body
+	// would let the old inset shadow show through and green the probe for the wrong reason.
+	await page.locator('.svelte-flow').first().waitFor();
+
+	const panel = page.locator('.panel[data-panel-type="node-editor"]').first();
+	await expect(panel, 'the sole default panel is the active one').toHaveClass(/\bactive\b/);
+	const box = (await panel.boundingBox())!;
+
+	// Decode the screenshot in-page (the browser owns a PNG decoder; this Node process does not)
+	// and scan the 3px band just inside the panel's left edge, below the header and above the
+	// flow Controls at bottom-left. --accent (#50d0a0) at 45% over --bg composites to about
+	// rgb(45,103,81), so green leads red by ~58; every neutral in that band leads by 0.
+	const png = (await page.screenshot()).toString('base64');
+	const greenLead = await page.evaluate(
+		async ({ png, x, yTop, yBot }) => {
+			const img = new Image();
+			img.src = `data:image/png;base64,${png}`;
+			await img.decode();
+			const scale = img.width / window.innerWidth;
+			const canvas = document.createElement('canvas');
+			canvas.width = img.width;
+			canvas.height = img.height;
+			const ctx = canvas.getContext('2d')!;
+			ctx.drawImage(img, 0, 0);
+			const { data } = ctx.getImageData(
+				Math.round(x * scale),
+				Math.round(yTop * scale),
+				Math.max(1, Math.round(3 * scale)),
+				Math.round((yBot - yTop) * scale)
+			);
+			let lead = 0;
+			for (let i = 0; i < data.length; i += 4) lead = Math.max(lead, data[i + 1] - data[i]);
+			return lead;
+		},
+		{ png, x: box.x, yTop: box.y + 60, yBot: box.y + box.height / 2 }
+	);
+	expect(greenLead, 'the accent ring is painted on the panel inner left edge').toBeGreaterThan(20);
+});
+
 test('the panel header dropdown opens the context menu and Escape dismisses it', async ({ page }) => {
 	await page.goto('/');
 	await waitForApp(page);

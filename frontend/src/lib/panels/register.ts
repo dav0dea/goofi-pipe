@@ -32,28 +32,33 @@ export function registerAppPanels(): void {
 		title: 'Parameters',
 		icon: '☰',
 		component: ParametersPanel,
-		acceptsNode: true
+		acceptsNode: true,
+		// Rings its own content via NodeLinkedPanel (as do Viewer and Metadata).
+		contentOutline: true
 	});
 	registerPanel({
 		id: 'viewer',
 		title: 'Viewer',
 		icon: '◫',
 		component: ViewerPanel,
-		acceptsNode: true
+		acceptsNode: true,
+		contentOutline: true
 	});
 	registerPanel({
 		id: 'metadata',
 		title: 'Metadata',
 		icon: 'ⓘ',
 		component: MetadataInspectorPanel,
-		acceptsNode: true
+		acceptsNode: true,
+		contentOutline: true
 	});
 	registerPanel({
 		id: 'console',
 		title: 'Console',
 		icon: '▤',
 		component: ConsolePanel,
-		// Dropping a node filters the console to just that node's output.
+		// Dropping a node filters the console to just that node's output. No `contentOutline`:
+		// it draws no ring of its own, so it takes the panel frame ring like the node editor.
 		acceptsNode: true
 	});
 	// Patch globals (default_ufreq + user-defined scalars). Not in the default layout —
@@ -63,8 +68,8 @@ export function registerAppPanels(): void {
 		title: 'Globals',
 		icon: '⧉',
 		component: GlobalsPanel,
-		// Not a node-drop target, but draws its own active outline around the content
-		// (below the header bar) so the top edge isn't clipped by PanelHeader.
+		// Not a node-drop target, but rings its own content (below the header bar) like the
+		// node-linked panels do, so it opts out of the panel frame ring the same way.
 		contentOutline: true
 	});
 	// The old dockable "Errors" panel was removed — the Console (filterable,

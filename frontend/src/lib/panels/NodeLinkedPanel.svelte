@@ -149,7 +149,7 @@
 		position: absolute;
 		inset: 0;
 		pointer-events: none;
-		border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
+		border: 1px solid var(--ring-accent);
 		/* Square at the top (meets the inner header bar), rounded at the panel's
 		   bottom corners. */
 		border-radius: 0 0 var(--radius-sm) var(--radius-sm);

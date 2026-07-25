@@ -191,7 +191,7 @@
 <section
 	class="panel"
 	class:active
-	class:content-outline={type?.acceptsNode || type?.contentOutline}
+	class:content-outline={type?.contentOutline}
 	onpointerdowncapture={() => ws.setActive(node.id)}
 	ondragover={onNodeDragOver}
 	ondragleave={onNodeDragLeave}
@@ -252,14 +252,20 @@
 		border: 1px solid var(--border);
 		border-radius: var(--radius-sm);
 		overflow: hidden;
-		box-shadow: inset 0 0 0 1px transparent;
-		transition: box-shadow 100ms ease;
+		outline: 1px solid transparent;
+		outline-offset: -1px;
+		transition: outline-color 100ms ease;
 	}
-	/* Active-panel accent. Node-linked panels (parameters / viewer / metadata)
-	   opt out here and draw their own outline around just the content below
-	   their inner header bar (see NodeLinkedPanel). */
+	/* Active-panel accent, drawn as an OUTLINE, not an inset box-shadow: an inset shadow paints
+	   below child content, so the header bar and the editor's opaque `.svelte-flow` background
+	   hid every edge of it (app.css's ring convention). An outline is painted last in its stacking
+	   context, so it clears both without a pseudo-element — which also matters here, since `.panel`
+	   is a flex container (a ::after would become a flex item) whose `position: static` the body's
+	   fixed-position overlays rely on. `outline-offset: -1px` lands the line just inside the 1px
+	   border, exactly where the shadow used to sit. Panels that ring their own content instead
+	   (NodeLinkedPanel, GlobalsPanel) opt out via `content-outline`. */
 	.panel.active:not(.content-outline) {
-		box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 45%, transparent);
+		outline-color: var(--ring-accent);
 	}
 	.panel-body {
 		position: relative;

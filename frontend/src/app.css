@@ -35,6 +35,9 @@
 	--danger-fill: color-mix(in srgb, var(--danger) 16%, transparent);
 	--success-fill: color-mix(in srgb, var(--success) 16%, transparent);
 	--warning-fill: color-mix(in srgb, var(--warning) 16%, transparent);
+	/* The active-panel / linked-content ring line (see the ring convention below). One token, so
+	   the panel frame and the panels that ring their own content cannot drift apart. */
+	--ring-accent: color-mix(in srgb, var(--accent) 45%, transparent);
 	/* Ink that sits ON a filled semantic surface (accent button/menu-hover, danger banner/toast). */
 	--on-accent: #0a0c10; /* near-black text on --accent fills */
 	--on-danger: #ffffff; /* light text on --danger fills */
@@ -205,11 +208,14 @@ textarea:focus {
 	outline-offset: 1px;
 }
 
-/* Ring convention (for P's Panel/Node): the active-panel / selected-node ring MUST be an overlay
-   layer (a ::after with `inset: 0; box-shadow: inset 0 0 0 1px var(--accent); pointer-events: none`
-   at a higher stacking level), NEVER an inset box-shadow on the element itself — an inset shadow
-   paints below child content, so a header bar occludes its top edge. The ring colour is --accent
-   (state, meaning #1). */
+/* Ring convention (for P's Panel/Node): the active-panel / selected-node ring MUST paint ABOVE the
+   element's descendants, NEVER as an inset box-shadow on the element itself — an inset shadow paints
+   below child content, so a header bar (or an opaque canvas) occludes it. Two sanctioned forms:
+   an overlay layer (a ::after with `inset: 0; box-shadow: inset 0 0 0 1px; pointer-events: none` at
+   a higher stacking level) when the ring frames a sub-region, or `outline: 1px solid; outline-offset:
+   -1px` on the framed element when it frames the whole box — outlines are painted last in their
+   stacking context, so they need no pseudo-element, no z-index and no containing block. The colour
+   is --ring-accent (--accent = state, meaning #1). */
 
 ::-webkit-scrollbar {
 	width: 10px;
