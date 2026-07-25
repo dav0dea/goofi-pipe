@@ -125,6 +125,9 @@
 		--popover-bg: var(--surface-glass);
 		--popover-pad: var(--space-2);
 		--popover-min-width: 0;
+		/* This menu overhangs a small cog inside the viewer chrome, not a wide panel — Popover's
+		   default --radius-md rounds it visibly more than the pre-migration menu did (C13). */
+		--popover-radius: var(--radius-sm);
 		width: 212px;
 		max-height: 70vh;
 		display: flex;

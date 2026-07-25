@@ -23,9 +23,9 @@
 		min-height: 80px;
 		display: flex;
 		flex-direction: column;
-		gap: 2px;
-		padding: 6px 4px;
-		font-size: 10px;
+		gap: var(--space-1);
+		padding: var(--space-3) var(--space-2);
+		font-size: var(--fs-micro);
 		font-family: var(--font-mono);
 		overflow: auto;
 	}

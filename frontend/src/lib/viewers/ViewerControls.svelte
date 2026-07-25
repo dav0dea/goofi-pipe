@@ -41,13 +41,13 @@
 	.viewer-controls {
 		display: inline-flex;
 		align-items: center;
-		gap: 6px;
+		gap: var(--space-3);
 		flex: 0 0 auto;
 	}
 	.kind {
 		appearance: none;
 		font-family: var(--font-mono);
-		font-size: 0.85em;
+		font-size: var(--fs-small);
 		/* The value text rode high at this smaller font-size because the browser
 		   floors a <select>'s height (UA min-height), leaving the short line box
 		   top-aligned in an over-tall control. Pin the content box to exactly the
@@ -62,8 +62,8 @@
 		color: var(--text-dim);
 		background: color-mix(in srgb, var(--bg) 55%, transparent);
 		border: 1px solid var(--border);
-		border-radius: 3px;
-		padding: 0 4px;
+		border-radius: var(--radius-sm);
+		padding: 0 var(--space-2);
 		cursor: pointer;
 	}
 	.kind:hover {

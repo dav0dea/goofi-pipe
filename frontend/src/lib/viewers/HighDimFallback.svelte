@@ -29,18 +29,18 @@
 <style>
 	.fallback {
 		font-family: var(--font-mono);
-		font-size: 10px;
+		font-size: var(--fs-micro);
 		color: var(--text-dim);
-		padding: 6px 8px;
+		padding: var(--space-3) var(--space-5);
 		display: flex;
 		flex-direction: column;
-		gap: 2px;
+		gap: var(--space-1);
 		align-self: stretch;
 	}
 	.title {
 		color: var(--warning);
 		font-weight: 600;
-		margin-bottom: 4px;
+		margin-bottom: var(--space-2);
 	}
 	code {
 		color: var(--text);

@@ -466,10 +466,10 @@
 		left: 50%;
 		transform: translateX(-50%);
 		display: flex;
-		gap: 6px;
+		gap: var(--space-3);
 		font-family: var(--font-mono);
-		font-size: 9px;
-		padding: 2px 6px;
+		font-size: var(--fs-micro);
+		padding: var(--space-1) var(--space-3);
 		background: color-mix(in srgb, var(--bg) 78%, transparent);
 		border: 1px solid color-mix(in srgb, var(--text-muted) 30%, transparent);
 		border-radius: 3px;

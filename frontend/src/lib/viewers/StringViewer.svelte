@@ -27,12 +27,12 @@
 		height: 100%;
 		min-height: 80px;
 		font-family: var(--font-mono);
-		font-size: 11px;
+		font-size: var(--fs-small);
 		color: var(--text);
 		background: var(--surface-1);
 		margin: 0;
-		padding: 6px 8px;
-		border-radius: 4px;
+		padding: var(--space-3) var(--space-5);
+		border-radius: var(--radius-sm);
 		overflow: auto;
 		box-sizing: border-box;
 	}
@@ -47,6 +47,9 @@
 	.md {
 		line-height: 1.5;
 	}
+	/* The rendered document's own type scale is deliberately `em`-relative: headings, lists and
+	   quotes size against the viewer root (which IS on --fs-*), so the prose keeps its internal
+	   hierarchy at every root size. Absolute rungs here would flatten it. */
 	.md :global(h1),
 	.md :global(h2),
 	.md :global(h3) {
@@ -71,14 +74,14 @@
 	.md :global(code) {
 		background: var(--bg);
 		border: 1px solid var(--border);
-		border-radius: 3px;
-		padding: 0 3px;
+		border-radius: var(--radius-sm);
+		padding: 0 var(--space-2);
 	}
 	.md :global(pre) {
 		background: var(--bg);
 		border: 1px solid var(--border);
-		border-radius: 4px;
-		padding: 6px 8px;
+		border-radius: var(--radius-sm);
+		padding: var(--space-3) var(--space-5);
 		overflow: auto;
 	}
 	.md :global(pre code) {
