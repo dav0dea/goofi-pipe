@@ -82,6 +82,7 @@
 	<div class="spacer"></div>
 	<IconButton
 		variant="ghost"
+		density="chrome"
 		class="hdr-btn"
 		title={isMax ? 'Restore' : 'Maximize'}
 		label={isMax ? 'Restore panel' : 'Maximize panel'}
@@ -89,6 +90,7 @@
 	>
 	<IconButton
 		variant="ghost"
+		density="chrome"
 		class="hdr-btn"
 		title="Close panel"
 		label="Close panel"
@@ -121,25 +123,20 @@
 	   pointer the bar itself grows to --hit (app.css), so the floors apply unchanged there.
 	   The `button` tag qualifier is load-bearing: without it this ties with the primitive's own
 	   `.ui-btn.s-md` padding, and the two rules live in separate built CSS chunks — a tie there
-	   is settled by the emitted <link> order, not by the source. */
+	   is settled by the emitted <link> order, not by the source.
+	   (Button has no density axis: this pin is padding + gap geometry, not a hit floor.) */
 	.panel-header :global(button.content-btn) {
 		height: 20px;
 		padding: 0 var(--space-3);
 		gap: var(--space-2);
 	}
+	/* The icon buttons state only their box — `density="chrome"` owns the coarse-pointer floor. */
 	.panel-header :global(.hdr-btn) {
-		min-width: 20px;
-		min-height: 20px;
+		--icon-btn-size: 20px;
 		color: var(--text-dim);
 	}
 	.panel-header :global(.hdr-btn:hover:not(:disabled)) {
 		color: var(--text);
-	}
-	@media (hover: none) and (pointer: coarse) {
-		.panel-header :global(.hdr-btn) {
-			min-width: var(--hit);
-			min-height: var(--hit);
-		}
 	}
 	.ic {
 		opacity: 0.85;

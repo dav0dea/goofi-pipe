@@ -135,8 +135,13 @@
 	{#if showPreview && dropIndex === tabs.length}
 		<div class="tab-preview" aria-hidden="true"></div>
 	{/if}
-	<IconButton variant="ghost" size="sm" class="add" label="New tab" onclick={() => ws.addTab()}
-		>＋</IconButton
+	<IconButton
+		variant="ghost"
+		size="sm"
+		density="chrome"
+		class="add"
+		label="New tab"
+		onclick={() => ws.addTab()}>＋</IconButton
 	>
 </div>
 
@@ -207,6 +212,9 @@
 	   --hit floor, and `overflow: hidden` also clips IconButton's coarse hit-rect ::after.
 	   `border: 0` because under border-box a 1px border clamps `width: 0` to 2px — the ghost
 	   border is invisible anyway, and without this every inactive tab gains 2px.
+	   Deliberately NOT `density="chrome"` (which the ＋ above uses): that density means "dense on
+	   fine, floored back to --hit on coarse", and this control is sub-floor on BOTH pointers — the
+	   collapse needs `min-width: 0` to reach zero width, which the density's floor would undo.
 	   TODO(R): this reveal is hover-only AND sub-floor on touch — it needs a coarse-pointer
 	   door of its own, not a patch here. */
 	.tab :global(.close) {
@@ -232,16 +240,9 @@
 		color: var(--danger);
 	}
 	/* The frozen 22px box: the ~23px tab pills sit beside it, so the primitive's --hit floor
-	   (28px fine) would leave the ＋ standing taller than the strip it belongs to. Under a
-	   coarse pointer the floor is restored — touch keeps a real tap target. */
+	   (28px fine) would leave the ＋ standing taller than the strip it belongs to. Stating the
+	   box is all this strip does — `density="chrome"` restores the floor under a coarse pointer. */
 	.tabs :global(.add) {
-		min-width: 22px;
-		min-height: 22px;
-	}
-	@media (hover: none) and (pointer: coarse) {
-		.tabs :global(.add) {
-			min-width: var(--hit);
-			min-height: var(--hit);
-		}
+		--icon-btn-size: 22px;
 	}
 </style>
