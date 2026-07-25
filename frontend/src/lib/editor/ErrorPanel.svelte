@@ -65,17 +65,17 @@
 		overflow-y: auto;
 		display: flex;
 		flex-direction: column;
-		gap: 2px;
+		gap: var(--space-1);
 	}
 	.prow {
 		display: flex;
 		flex-direction: column;
 		align-items: flex-start;
-		gap: 4px;
+		gap: var(--space-2);
 		background: transparent;
 		border: none;
 		border-radius: var(--radius-sm);
-		padding: 6px 8px;
+		padding: var(--space-3) var(--space-5);
 		text-align: left;
 		cursor: pointer;
 		color: var(--text);
@@ -88,11 +88,11 @@
 	}
 	.row-name {
 		color: var(--accent);
-		font-size: 11px;
+		font-size: var(--fs-small);
 	}
 	.row-error {
 		color: var(--text-dim);
-		font-size: 10px;
+		font-size: var(--fs-micro);
 		white-space: pre-wrap;
 		overflow: hidden;
 		text-overflow: ellipsis;

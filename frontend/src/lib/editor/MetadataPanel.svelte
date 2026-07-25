@@ -133,7 +133,7 @@
 
 <style>
 	.panel {
-		padding: 12px;
+		padding: var(--space-6);
 		border-top: 1px solid var(--border);
 	}
 	/* Dedicated Metadata panel: no stacked-inspector divider or header. */
@@ -145,7 +145,7 @@
 		align-items: center;
 		justify-content: space-between;
 		font-weight: 600;
-		margin-bottom: 8px;
+		margin-bottom: var(--space-5);
 	}
 	/* Bare header picker — sits at natural width on the right, not stretched across the bar. */
 	header :global(.slot-select) {
@@ -154,26 +154,26 @@
 	/* Node execution telemetry — a compact key/value strip directly under the
 	   "Metadata" heading, updated ~1 Hz from the node's NODE_STATS push. */
 	.stats {
-		margin: 0 0 8px;
-		padding: 0 0 8px;
+		margin: 0 0 var(--space-5);
+		padding: 0 0 var(--space-5);
 		display: flex;
 		flex-wrap: wrap;
-		gap: 2px 16px;
+		gap: var(--space-1) var(--space-7);
 		border-bottom: 1px solid var(--border);
 	}
 	.stats .stat {
 		display: flex;
-		gap: 6px;
+		gap: var(--space-3);
 		align-items: baseline;
 		font-family: var(--font-mono);
 	}
 	.stats dt {
-		font-size: 10px;
+		font-size: var(--fs-micro);
 		color: var(--text-dim);
 	}
 	.stats dd {
 		margin: 0;
-		font-size: 11px;
+		font-size: var(--fs-small);
 		color: var(--text);
 		font-variant-numeric: tabular-nums;
 	}
@@ -186,12 +186,12 @@
 	.meta-field > summary {
 		display: flex;
 		align-items: baseline;
-		gap: 8px;
+		gap: var(--space-5);
 		cursor: pointer;
-		padding: 3px 2px;
+		padding: var(--space-2) var(--space-1);
 		font-family: var(--font-mono);
-		font-size: 11px;
-		border-radius: 3px;
+		font-size: var(--fs-small);
+		border-radius: var(--radius-sm);
 		list-style-position: inside;
 	}
 	.meta-field > summary:hover {
@@ -203,19 +203,19 @@
 	}
 	.mp {
 		color: var(--text-muted);
-		font-size: 10px;
+		font-size: var(--fs-micro);
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;
 	}
 	.mv {
 		font-family: var(--font-mono);
-		font-size: 10px;
+		font-size: var(--fs-micro);
 		color: var(--text-dim);
 		/* Preserve the dict indentation/newlines, but wrap long inline lists so
 		   they fill the panel width instead of one entry per line. */
 		white-space: pre-wrap;
 		overflow-wrap: anywhere;
-		padding: 2px 0 6px 16px;
+		padding: var(--space-1) 0 var(--space-3) var(--space-7);
 	}
 </style>

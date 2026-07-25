@@ -167,16 +167,16 @@
 		border-radius: var(--radius-md);
 		box-shadow: var(--shadow-2);
 		overflow: hidden;
-		font-size: 12px;
+		font-size: var(--fs-body);
 	}
 	input {
 		width: 100%;
 		border: none;
 		background: transparent;
-		padding: 10px 12px;
+		padding: var(--space-5) var(--space-6);
 		border-bottom: 1px solid var(--border);
 		border-radius: 0;
-		font-size: 13px;
+		font-size: var(--fs-body);
 	}
 	input:focus {
 		border-color: transparent;
@@ -185,15 +185,15 @@
 	.list {
 		max-height: 360px;
 		overflow-y: auto;
-		padding: 4px 0;
+		padding: var(--space-2) 0;
 	}
 	.group-header {
 		display: flex;
 		align-items: center;
-		gap: 6px;
-		padding: 4px 12px;
+		gap: var(--space-3);
+		padding: var(--space-2) var(--space-6);
 		color: var(--text-muted);
-		font-size: 10px;
+		font-size: var(--fs-micro);
 		text-transform: uppercase;
 		letter-spacing: 0.06em;
 	}
@@ -210,12 +210,12 @@
 		border-radius: 0;
 		display: flex;
 		align-items: center;
-		gap: 8px;
-		padding: 6px 12px;
+		gap: var(--space-5);
+		padding: var(--space-3) var(--space-6);
 		width: 100%;
 		text-align: left;
 		font-family: var(--font-mono);
-		font-size: 11px;
+		font-size: var(--fs-small);
 		cursor: pointer;
 	}
 	.item.hl {
@@ -238,17 +238,17 @@
 	}
 	.t-cat {
 		color: var(--text-muted);
-		font-size: 9px;
+		font-size: var(--fs-micro);
 		text-transform: lowercase;
 	}
 	.seed-chip {
 		display: flex;
 		align-items: center;
-		gap: 6px;
-		padding: 6px 12px;
+		gap: var(--space-3);
+		padding: var(--space-3) var(--space-6);
 		background: color-mix(in srgb, var(--accent) 14%, transparent);
 		border-bottom: 1px solid var(--border);
-		font-size: 10px;
+		font-size: var(--fs-micro);
 		font-family: var(--font-mono);
 	}
 	.seed-arrow {

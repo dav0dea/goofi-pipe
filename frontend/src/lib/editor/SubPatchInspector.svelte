@@ -49,14 +49,14 @@
 	}
 	header {
 		display: flex;
-		gap: 10px;
+		gap: var(--space-6);
 		align-items: center;
-		padding: 10px 12px;
+		padding: var(--space-5) var(--space-6);
 		border-bottom: 1px solid var(--border);
 		background: var(--surface-1);
 	}
 	.glyph {
-		font-size: 14px;
+		font-size: var(--fs-strong);
 		color: var(--accent);
 	}
 	.titles {
@@ -64,7 +64,7 @@
 		flex: 1;
 	}
 	.title {
-		font-size: 14px;
+		font-size: var(--fs-strong);
 		font-weight: 600;
 		overflow: hidden;
 		text-overflow: ellipsis;
@@ -73,7 +73,7 @@
 	.sub {
 		color: var(--text-muted);
 		font-family: var(--font-mono);
-		font-size: 10px;
+		font-size: var(--fs-micro);
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;
@@ -84,7 +84,7 @@
 	.rows {
 		display: flex;
 		flex-direction: column;
-		gap: 12px;
-		padding: 12px;
+		gap: var(--space-6);
+		padding: var(--space-6);
 	}
 </style>

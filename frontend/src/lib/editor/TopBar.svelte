@@ -110,18 +110,20 @@
 	.topbar {
 		display: flex;
 		align-items: center;
-		gap: 14px;
-		padding: 0 12px;
+		gap: var(--space-7);
+		padding: 0 var(--space-6);
 		background: var(--surface-1);
 		border-bottom: 1px solid var(--border);
+		/* Frozen: 44px is the coarse --hit floor, so the bar already fits a touch-sized
+		   control without growing — a rem height would break that flush relationship. */
 		height: 44px;
-		font-size: 12px;
+		font-size: var(--fs-body);
 		z-index: 10;
 	}
 	.brand {
 		display: flex;
 		align-items: center;
-		gap: 10px;
+		gap: var(--space-6);
 		flex: 0 0 auto;
 	}
 	/* The tab strip fills the slack between the filename and the actions. */
@@ -133,7 +135,7 @@
 		align-items: stretch;
 	}
 	.logo {
-		font-size: 18px;
+		font-size: var(--fs-title);
 		color: var(--text);
 		font-weight: 600;
 	}
@@ -143,12 +145,12 @@
 	.path {
 		color: var(--text-dim);
 		font-family: var(--font-mono);
-		font-size: 11px;
+		font-size: var(--fs-small);
 	}
 	.actions {
 		display: flex;
 		align-items: center;
-		gap: 4px;
+		gap: var(--space-2);
 		flex: 0 0 auto;
 	}
 	/* Save split — two adjacent Buttons sharing a seam: the touching corners are
