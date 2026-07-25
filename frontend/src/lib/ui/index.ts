@@ -6,7 +6,12 @@
  */
 export { default as Button } from './Button.svelte';
 export { default as IconButton } from './IconButton.svelte';
-export { variantClass, type ButtonVariant, type ButtonSize } from './variantClass';
+export {
+	variantClass,
+	type ButtonVariant,
+	type ButtonSize,
+	type ButtonDensity
+} from './variantClass';
 
 // Layout primitives (Task 2).
 export { default as Stack } from './Stack.svelte';

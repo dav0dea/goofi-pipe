@@ -8,7 +8,22 @@
  */
 export type ButtonVariant = 'default' | 'primary' | 'ghost' | 'danger';
 export type ButtonSize = 'sm' | 'md';
+/**
+ * Box density — orthogonal to `size` (which sets the *type scale* of the label/glyph).
+ *
+ * `comfortable` is the default box every call site gets: floored to the F `--hit` target.
+ * `chrome` is the dense box a window-chrome strip needs — a tab bar or a panel header, whose
+ * own height is smaller than `--hit` — sized per instance via the `--icon-btn-size` hook on a
+ * fine pointer and floored back to `--hit` under a coarse one. Emitting no class for the
+ * default keeps a comfortable control's class list exactly as it was.
+ */
+export type ButtonDensity = 'comfortable' | 'chrome';
 
-export function variantClass(variant: ButtonVariant, size: ButtonSize): string {
-	return `v-${variant} s-${size}`;
+export function variantClass(
+	variant: ButtonVariant,
+	size: ButtonSize,
+	density: ButtonDensity = 'comfortable'
+): string {
+	const base = `v-${variant} s-${size}`;
+	return density === 'comfortable' ? base : `${base} d-${density}`;
 }

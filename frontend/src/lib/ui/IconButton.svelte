@@ -8,15 +8,26 @@
   glyph stays visually small. Additionally, under a coarse pointer an `::after` overlay
   guarantees a >= --hit clickable area even if a consumer shrinks the visual box below the
   floor; under a fine pointer that overlay does not exist (a genuine no-op).
+
+  `density="chrome"` is the one supported way to go *under* that floor: a window-chrome strip
+  (a tab bar, a panel header) is itself shorter than --hit, so it sets the box per instance with
+  `--icon-btn-size` and the primitive restores the --hit floor under a coarse pointer. A chrome
+  strip therefore never writes a `min-width`/`min-height` pin or a pointer media query of its own.
 -->
 <script lang="ts">
 	import type { Snippet } from 'svelte';
 	import type { HTMLButtonAttributes } from 'svelte/elements';
-	import { variantClass, type ButtonVariant, type ButtonSize } from './variantClass';
+	import {
+		variantClass,
+		type ButtonVariant,
+		type ButtonSize,
+		type ButtonDensity
+	} from './variantClass';
 
 	let {
 		variant = 'default',
 		size = 'md',
+		density = 'comfortable',
 		type = 'button',
 		label,
 		class: klass = '',
@@ -25,6 +36,8 @@
 	}: HTMLButtonAttributes & {
 		variant?: ButtonVariant;
 		size?: ButtonSize;
+		/** Box density. `chrome` takes its fine-pointer box from `--icon-btn-size`. */
+		density?: ButtonDensity;
 		/** Accessible name — required; the visible content is a glyph. */
 		label: string;
 		children?: Snippet;
@@ -34,7 +47,7 @@
 <button
 	{...rest}
 	{type}
-	class={`ui-icon-btn ${variantClass(variant, size)} ${klass}`.trim()}
+	class={`ui-icon-btn ${variantClass(variant, size, density)} ${klass}`.trim()}
 	aria-label={label}
 	title={rest.title ?? label}
 >
@@ -69,6 +82,23 @@
 	.ui-icon-btn:disabled {
 		opacity: var(--disabled-opacity);
 		cursor: not-allowed;
+	}
+
+	/* Chrome density — the ONE expression of "dense in a strip, still tappable on touch".
+	   The consumer states only the box it wants (`--icon-btn-size: 22px`); the floor below is
+	   the primitive's business. Unset, the hook resolves to --hit, so `density="chrome"` alone
+	   is a no-op rather than a collapsed box. */
+	.ui-icon-btn.d-chrome {
+		min-width: var(--icon-btn-size, var(--hit));
+		min-height: var(--icon-btn-size, var(--hit));
+	}
+	/* Gated exactly like app.css's --hit floor (a real touch device: no hover + coarse), so the
+	   dense box is a fine-pointer affordance only and touch always gets the full target back. */
+	@media (hover: none) and (pointer: coarse) {
+		.ui-icon-btn.d-chrome {
+			min-width: var(--hit);
+			min-height: var(--hit);
+		}
 	}
 
 	/* The glyph stays visually small regardless of the tap-target size. */
