@@ -36,6 +36,12 @@
 <style>
 	.ui-btn {
 		font-family: var(--font-mono);
+		/* The app body ratio (app.css `body`), stated rather than inherited (C19). The box height IS
+		   this plus the padding and border, and app.css's base `button` rule keeps only a `font:
+		   inherit` reset — so leaving it implicit makes every Button's height a property of whatever
+		   it happens to be nested in, and `normal` (the UA value under any stricter reset) shortens
+		   the lot by 1-2px. `s-md`/`s-sm` scale it by setting only `font-size`. */
+		line-height: 1.35;
 		display: inline-flex;
 		align-items: center;
 		justify-content: center;
