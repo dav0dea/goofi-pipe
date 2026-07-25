@@ -4,6 +4,13 @@
   checked marker, separators, and disabled items. Closes on Escape or any
   pointerdown outside any `.context-menu` element (so submenu clicks count as
   inside). Shared by panel headers, the content dropdown, and tab menus.
+
+  Deliberately NOT built on the `Popover` primitive: this menu is anchored to a
+  *point* (a right-click's clientX/clientY) where Popover clamps against an anchor
+  *element*, and each submenu portals to <body> as its own root — so Popover's
+  `menuEl.contains(target)` outside-test would read a submenu click as outside and
+  dismiss the menu. The `.context-menu` closest() test above is what makes submenus
+  work. Popover would buy the clamp and cost the submenus.
 -->
 <script lang="ts">
 	import { untrack } from 'svelte';
@@ -113,8 +120,9 @@
 	.context-menu {
 		position: fixed;
 		z-index: var(--z-menu);
+		/* px, not rem: TopBar's save-menu spawn point clamps against this same 180. */
 		min-width: 180px;
-		padding: 4px;
+		padding: var(--space-2);
 		background: var(--surface-2);
 		border: 1px solid var(--border-strong);
 		border-radius: var(--radius-md);
@@ -122,29 +130,34 @@
 		display: flex;
 		flex-direction: column;
 		gap: 1px;
-		font-size: 0.85rem;
+		font-size: var(--fs-small);
 		user-select: none;
 	}
+	/* A menu row, not a Button: it keeps its own complete style (full-bleed, left-aligned,
+	   accent-filled on hover) — the same carve-out the other list/menu rows take. */
 	.item {
 		display: flex;
 		align-items: center;
-		gap: 6px;
+		gap: var(--space-3);
 		width: 100%;
-		padding: 5px 8px;
+		padding: var(--space-3) var(--space-4);
 		background: transparent;
 		border: none;
 		border-radius: var(--radius-sm);
 		color: var(--text);
 		text-align: left;
 		cursor: pointer;
+		transition:
+			background var(--dur-fast) var(--ease),
+			color var(--dur-fast) var(--ease);
 	}
 	.item:hover:not(:disabled) {
 		background: var(--accent);
 		color: var(--on-accent);
 	}
 	.item:disabled {
-		opacity: 0.4;
-		cursor: default;
+		opacity: var(--disabled-opacity);
+		cursor: not-allowed;
 	}
 	.check {
 		width: 12px;
@@ -165,7 +178,7 @@
 	}
 	.sep {
 		height: 1px;
-		margin: 3px 4px;
+		margin: var(--space-1) var(--space-2);
 		background: var(--border);
 	}
 </style>
