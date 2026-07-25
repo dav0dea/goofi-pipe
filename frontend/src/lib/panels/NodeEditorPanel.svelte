@@ -1175,10 +1175,10 @@
 	}
 	.empty-hint kbd {
 		font-family: var(--font-mono);
-		font-size: 11px;
-		padding: 1px 5px;
+		font-size: var(--fs-small);
+		padding: 1px var(--space-3);
 		border: 1px solid var(--border);
-		border-radius: 4px;
+		border-radius: var(--radius-sm);
 		background: var(--surface-1);
 	}
 	/* Per-editor inspector affordance (an IconButton), parked top-right. Subtle until hovered so
@@ -1188,6 +1188,8 @@
 		top: 10px;
 		right: 10px;
 		z-index: 5;
+		/* opacity: intentional — a ghosted affordance over the canvas, not a disabled control;
+		   it rises to 1 on hover and while the inspector is on. */
 		opacity: 0.5;
 	}
 	.editor-panel :global(.inspector-toggle:hover),
@@ -1202,22 +1204,22 @@
 		pointer-events: none;
 		display: flex;
 		align-items: center;
-		gap: 6px;
-		padding: 4px 9px;
+		gap: var(--space-3);
+		padding: var(--space-2) var(--space-5);
 		max-width: 220px;
 		background: var(--surface-2);
 		border: 1px solid var(--accent);
 		border-radius: var(--radius-sm);
 		box-shadow: var(--shadow-2);
 		font-family: var(--font-mono);
-		font-size: 0.78rem;
+		font-size: var(--fs-small);
 		color: var(--text);
 		white-space: nowrap;
 		overflow: hidden;
 		text-overflow: ellipsis;
 	}
 	.lg-icon {
-		font-size: 0.8rem;
+		font-size: var(--fs-small);
 	}
 	.menu-overlay {
 		position: fixed;
@@ -1236,8 +1238,8 @@
 		z-index: 6;
 		display: flex;
 		align-items: center;
-		gap: 4px;
-		padding: 4px 8px;
+		gap: var(--space-2);
+		padding: var(--space-2) var(--space-5);
 		max-width: calc(100% - 90px);
 		overflow: hidden;
 		background: color-mix(in srgb, var(--surface-1) 88%, transparent);
@@ -1245,7 +1247,7 @@
 		border-radius: var(--radius-sm);
 		box-shadow: var(--shadow-1);
 		font-family: var(--font-mono);
-		font-size: 11px;
+		font-size: var(--fs-small);
 	}
 	/* The current (deepest) crumb reads as where-you-are: bold. The crumbs are ghost Buttons,
 	   so this targets the primitive's element via :global. */

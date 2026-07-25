@@ -97,7 +97,7 @@
 	}
 	.ln {
 		font-family: var(--font-mono);
-		font-size: 0.78rem;
+		font-size: var(--fs-small);
 		color: var(--text);
 		flex: 0 1 auto;
 		overflow: hidden;
@@ -113,8 +113,8 @@
 		min-width: 0;
 		display: flex;
 		align-items: center;
-		gap: 6px;
-		margin-left: 10px;
+		gap: var(--space-3);
+		margin-left: var(--space-6);
 		overflow-x: auto;
 		overflow-y: hidden;
 		scrollbar-width: thin;
@@ -136,7 +136,7 @@
 		flex: 1;
 		display: grid;
 		place-items: center;
-		padding: 16px;
+		padding: var(--space-7);
 		text-align: center;
 		color: var(--text-muted);
 	}

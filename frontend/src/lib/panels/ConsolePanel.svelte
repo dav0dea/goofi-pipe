@@ -258,7 +258,12 @@
 		{/snippet}
 	</Bar>
 
-	<div class="scroll" bind:this={scrollEl} bind:clientHeight={viewportH} onscroll={onScroll}>
+	<div
+		class="scroll thin-scrollbar"
+		bind:this={scrollEl}
+		bind:clientHeight={viewportH}
+		onscroll={onScroll}
+	>
 		{#if layout.n === 0}
 			<EmptyState>
 				{#snippet hint()}No output{filterName ? ' for this node' : ''} yet.{/snippet}
@@ -350,48 +355,36 @@
 	}
 	.fl {
 		color: var(--text-muted);
-		font-size: 0.78rem;
+		font-size: var(--fs-small);
 	}
 	.fn {
 		font-family: var(--font-mono);
-		font-size: 0.78rem;
+		font-size: var(--fs-small);
 		color: var(--text);
 		max-width: 140px;
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;
 	}
-	/* The virtual scroller keeps its own DOM handle (scrollTop / measured heights / onscroll),
-	   so the container stays a native div rather than the ScrollArea component — it only adopts
-	   ScrollArea's thin app-palette scrollbar chrome. */
+	/* The virtual scroller keeps its own DOM handle (scrollTop / measured heights / onscroll), so
+	   the container stays a native div rather than the ScrollArea component; it wears the shared
+	   `.thin-scrollbar` skin (app.css) instead of restating it. */
 	.scroll {
 		flex: 1;
 		overflow-y: auto;
 		overflow-x: hidden;
 		min-height: 0;
 		font-family: var(--font-mono);
-		font-size: 11px;
-		scrollbar-width: thin;
-		scrollbar-color: var(--surface-3) transparent;
-	}
-	.scroll::-webkit-scrollbar {
-		width: 8px;
-	}
-	.scroll::-webkit-scrollbar-track {
-		background: transparent;
-	}
-	.scroll::-webkit-scrollbar-thumb {
-		background: var(--surface-3);
-		border-radius: var(--radius-md);
-	}
-	.scroll::-webkit-scrollbar-thumb:hover {
-		background: var(--border-strong);
+		font-size: var(--fs-small);
 	}
 	.row {
 		display: flex;
 		align-items: flex-start;
-		gap: 8px;
-		padding: 2px 10px;
+		gap: var(--space-5);
+		/* The 2px sides are mirrored by `PAD = 4` above (and `line-height: 16px` by `LINE_H`):
+		   the pre-measurement height estimate is computed in px, so a rem here would make the
+		   estimate wrong at every root size but 14. */
+		padding: 2px var(--space-6);
 		border-bottom: 1px solid color-mix(in srgb, var(--border) 55%, transparent);
 		box-sizing: border-box;
 	}
@@ -413,7 +406,7 @@
 		width: 10px;
 		line-height: 16px;
 		color: var(--text-muted);
-		font-size: 9px;
+		font-size: var(--fs-micro);
 	}
 	.node {
 		flex: 0 0 auto;
@@ -423,7 +416,7 @@
 		line-height: 16px;
 		color: var(--accent);
 		font-family: var(--font-mono);
-		font-size: 10px;
+		font-size: var(--fs-micro);
 		cursor: pointer;
 		max-width: 160px;
 		overflow: hidden;
@@ -435,7 +428,7 @@
 		min-width: 0;
 		margin: 0;
 		font-family: var(--font-mono);
-		font-size: 11px;
+		font-size: var(--fs-small);
 		line-height: 16px;
 		white-space: pre-wrap;
 		word-break: break-word;
@@ -454,7 +447,7 @@
 		flex: 0 0 auto;
 		display: flex;
 		align-items: center;
-		gap: 4px;
+		gap: var(--space-2);
 	}
 	/* Hover-only per-message copy (an IconButton). Always occupies its slot (no reflow on hover);
 	   only fades in — and becomes clickable — when the row is hovered/focused.

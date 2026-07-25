@@ -231,6 +231,27 @@ textarea:focus {
 	background: var(--border-strong);
 }
 
+/* The slim in-panel scrollbar skin. The `ScrollArea` primitive carries it, and so does the one
+   scroller that must stay a native element — ConsolePanel's virtual list owns its own scrollTop
+   and onscroll handle. Global rather than duplicated per component, so the two cannot drift. */
+.thin-scrollbar {
+	scrollbar-width: thin;
+	scrollbar-color: var(--surface-3) transparent;
+}
+.thin-scrollbar::-webkit-scrollbar {
+	width: 8px;
+}
+.thin-scrollbar::-webkit-scrollbar-track {
+	background: transparent;
+}
+.thin-scrollbar::-webkit-scrollbar-thumb {
+	background: var(--surface-3);
+	border-radius: var(--radius-md);
+}
+.thin-scrollbar::-webkit-scrollbar-thumb:hover {
+	background: var(--border-strong);
+}
+
 /* Svelte Flow theming overrides */
 .svelte-flow {
 	background: var(--bg) !important;

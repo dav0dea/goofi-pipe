@@ -4,9 +4,9 @@
   node selected, showing its parameters, errors, and metadata. Width is
   drag-resizable.
 
-  Visibility is per-editor: `enabled` is owned by the host NodeEditorPanel
-  (turned on by the editor's own corner control, off by this pane's close
-  button) — there is no global header toggle.
+  Visibility is per-editor: `enabled` is owned by the host NodeEditorPanel and
+  toggled by that editor's own `inspector-toggle` corner control — both ways.
+  This pane has no close button of its own, and there is no global header toggle.
 
   This is additive to the placeable Parameters/Metadata/Errors panels — those
   follow the active editor's selection instead.
@@ -151,7 +151,7 @@
 	/* Current processing error for the selected node — a simple snapshot, shown
 	   only while the node is errored, after the metadata section. */
 	.node-error {
-		padding: 12px;
+		padding: var(--space-6);
 		border-top: 1px solid var(--border);
 		background: var(--surface-1);
 	}
@@ -159,17 +159,17 @@
 		display: flex;
 		align-items: center;
 		justify-content: space-between;
-		gap: 8px;
-		margin-bottom: 6px;
+		gap: var(--space-5);
+		margin-bottom: var(--space-3);
 	}
 	.node-error header {
 		font-weight: 600;
-		font-size: 11px;
+		font-size: var(--fs-small);
 		color: var(--danger);
 	}
 	.node-error pre {
 		font-family: var(--font-mono);
-		font-size: 10px;
+		font-size: var(--fs-micro);
 		color: var(--text-dim);
 		white-space: pre-wrap;
 		word-break: break-word;

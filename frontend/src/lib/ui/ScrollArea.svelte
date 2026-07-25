@@ -5,8 +5,9 @@
   space by default — its dominant use — while a consumer can bound it with an explicit height via
   the merged `class`. Snippet `children`, merged `class`, forwarded `data-testid` via `...rest`.
 
-  The scrollbar is thin and matches the app scrollbar palette (F surface/border tokens): a slim
-  Firefox `scrollbar-width: thin` plus a WebKit thumb, so it reads as the app's, not the browser's.
+  The scrollbar skin is the global `.thin-scrollbar` (app.css) — shared with the one scroller that
+  cannot be this component (ConsolePanel's virtual list owns its own scrollTop handle), so the app
+  has one slim scrollbar, not a copy per scroller.
 -->
 <script lang="ts">
 	import type { Snippet } from 'svelte';
@@ -21,7 +22,7 @@
 	} = $props();
 </script>
 
-<div {...rest} class={`ui-scrollarea ${klass}`.trim()}>
+<div {...rest} class={`ui-scrollarea thin-scrollbar ${klass}`.trim()}>
 	{@render children?.()}
 </div>
 
@@ -33,21 +34,5 @@
 		min-height: 0;
 		overflow-y: auto;
 		overflow-x: hidden;
-		/* Thin scrollbar matching the app palette (F tokens), not the browser default. */
-		scrollbar-width: thin;
-		scrollbar-color: var(--surface-3) transparent;
-	}
-	.ui-scrollarea::-webkit-scrollbar {
-		width: 8px;
-	}
-	.ui-scrollarea::-webkit-scrollbar-track {
-		background: transparent;
-	}
-	.ui-scrollarea::-webkit-scrollbar-thumb {
-		background: var(--surface-3);
-		border-radius: var(--radius-md);
-	}
-	.ui-scrollarea::-webkit-scrollbar-thumb:hover {
-		background: var(--border-strong);
 	}
 </style>

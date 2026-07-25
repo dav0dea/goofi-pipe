@@ -190,25 +190,25 @@
 		z-index: 4;
 	}
 	.gp-body {
-		padding: 6px 8px 10px;
+		padding: var(--space-3) var(--space-5) var(--space-6);
 	}
 	table {
 		width: 100%;
 		border-collapse: collapse;
-		font-size: 0.8rem;
+		font-size: var(--fs-small);
 	}
 	th {
 		text-align: left;
 		font-weight: 500;
 		color: var(--text-muted);
-		font-size: 0.7rem;
+		font-size: var(--fs-micro);
 		text-transform: uppercase;
 		letter-spacing: 0.04em;
-		padding: 2px 6px 6px;
+		padding: var(--space-1) var(--space-3) var(--space-3);
 		border-bottom: 1px solid var(--border);
 	}
 	td {
-		padding: 3px 6px;
+		padding: var(--space-2) var(--space-3);
 		border-bottom: 1px solid color-mix(in srgb, var(--border) 55%, transparent);
 		vertical-align: middle;
 	}
@@ -228,13 +228,15 @@
 	.sysname {
 		display: inline-flex;
 		align-items: center;
-		gap: 4px;
+		gap: var(--space-2);
 		font-family: var(--font-mono);
 		color: var(--text);
 	}
 	.lock {
-		font-size: 0.7rem;
+		font-size: var(--fs-micro);
 		filter: grayscale(1);
+		/* opacity: intentional — the padlock is a quiet affordance beside the name, not a
+		   disabled control; --disabled-opacity would read as "this row is inert". */
 		opacity: 0.7;
 	}
 	/* The add-row name field is the one remaining native input (kept native for its live
@@ -243,8 +245,8 @@
 		width: 100%;
 		box-sizing: border-box;
 		font-family: var(--font-mono);
-		font-size: 0.78rem;
-		padding: 2px 5px;
+		font-size: var(--fs-small);
+		padding: var(--space-1) var(--space-3);
 		background: var(--surface-1);
 		border: 1px solid var(--border);
 		border-radius: var(--radius-sm);
@@ -255,22 +257,22 @@
 	}
 	.type {
 		font-family: var(--font-mono);
-		font-size: 0.66rem;
+		font-size: var(--fs-micro);
 		color: var(--text-muted);
-		margin-right: 6px;
+		margin-right: var(--space-3);
 	}
 	.add {
 		display: flex;
-		gap: 6px;
+		gap: var(--space-3);
 		align-items: center;
-		margin-top: 10px;
+		margin-top: var(--space-6);
 	}
 	.add .name {
 		flex: 1 1 auto;
 	}
 	.hint {
-		margin-top: 6px;
-		font-size: 0.72rem;
+		margin-top: var(--space-3);
+		font-size: var(--fs-micro);
 	}
 	.hint.bad {
 		color: var(--danger);

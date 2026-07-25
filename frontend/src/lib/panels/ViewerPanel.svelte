@@ -104,6 +104,6 @@
 		flex: 1;
 		min-height: 0;
 		display: flex;
-		padding: 6px;
+		padding: var(--space-3);
 	}
 </style>
