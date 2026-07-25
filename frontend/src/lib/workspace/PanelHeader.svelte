@@ -10,6 +10,7 @@
 	import { listPanelTypes, resolvePanelType } from './registry';
 	import type { MenuItem } from './menu';
 	import ContextMenu from './ContextMenu.svelte';
+	import { Button, IconButton } from '$lib/ui';
 
 	let { node }: { node: PanelNode } = $props();
 	const ws = workspace();
@@ -73,24 +74,26 @@
 	aria-label="Panel header"
 	data-testid="panel-header"
 >
-	<button class="content-btn" onclick={openContent} title="Change panel content">
+	<Button variant="ghost" class="content-btn" onclick={openContent} title="Change panel content">
 		{#if type.icon}<span class="ic">{type.icon}</span>{/if}
 		<span class="title">{type.title}</span>
 		<span class="caret">▾</span>
-	</button>
+	</Button>
 	<div class="spacer"></div>
-	<button
+	<IconButton
+		variant="ghost"
 		class="hdr-btn"
 		title={isMax ? 'Restore' : 'Maximize'}
-		onclick={() => ws.toggleMaximize(node.id)}
-		aria-label={isMax ? 'Restore panel' : 'Maximize panel'}>⤢</button
+		label={isMax ? 'Restore panel' : 'Maximize panel'}
+		onclick={() => ws.toggleMaximize(node.id)}>⤢</IconButton
 	>
-	<button
+	<IconButton
+		variant="ghost"
 		class="hdr-btn"
 		title="Close panel"
+		label="Close panel"
 		disabled={!canClose}
-		onclick={() => ws.close(node.id)}
-		aria-label="Close panel">✕</button
+		onclick={() => ws.close(node.id)}>✕</IconButton
 	>
 </div>
 
@@ -114,55 +117,38 @@
 	.panel-header:active {
 		cursor: grabbing;
 	}
-	.content-btn {
-		display: flex;
-		align-items: center;
-		gap: 5px;
+	/* The primitives keep the frozen 20px control geometry of the 26px bar. Under a coarse
+	   pointer the bar itself grows to --hit (app.css), so the floors apply unchanged there. */
+	.panel-header :global(.content-btn) {
 		height: 20px;
-		padding: 0 6px;
-		background: transparent;
-		border: 1px solid transparent;
-		border-radius: var(--radius-sm);
+		padding: 0 var(--space-3);
+		gap: var(--space-2);
+	}
+	.panel-header :global(.hdr-btn) {
+		min-width: 20px;
+		min-height: 20px;
+		color: var(--text-dim);
+	}
+	.panel-header :global(.hdr-btn:hover:not(:disabled)) {
 		color: var(--text);
-		font-size: 0.82rem;
-		cursor: pointer;
 	}
-	.content-btn:hover {
-		background: var(--surface-3);
-		border-color: var(--border);
+	@media (hover: none) and (pointer: coarse) {
+		.panel-header :global(.hdr-btn) {
+			min-width: var(--hit);
+			min-height: var(--hit);
+		}
 	}
-	.content-btn .ic {
+	.ic {
 		opacity: 0.85;
 	}
-	.content-btn .title {
+	.title {
 		font-weight: 500;
 	}
-	.content-btn .caret {
+	.caret {
 		opacity: 0.5;
 		font-size: 0.7em;
 	}
 	.spacer {
 		flex: 1;
-	}
-	.hdr-btn {
-		width: 20px;
-		height: 20px;
-		display: grid;
-		place-items: center;
-		padding: 0;
-		background: transparent;
-		border: none;
-		border-radius: var(--radius-sm);
-		color: var(--text-dim);
-		font-size: 0.85rem;
-		cursor: pointer;
-	}
-	.hdr-btn:hover:not(:disabled) {
-		background: var(--surface-3);
-		color: var(--text);
-	}
-	.hdr-btn:disabled {
-		opacity: 0.3;
-		cursor: default;
 	}
 </style>
