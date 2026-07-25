@@ -203,6 +203,8 @@
 	/* Collapsed when hidden so an inactive tab stays evenly padded; expands (with its left
 	   gap) only on hover / when active. The collapse forces the box under the primitive's
 	   --hit floor, and `overflow: hidden` also clips IconButton's coarse hit-rect ::after.
+	   `border: 0` because under border-box a 1px border clamps `width: 0` to 2px — the ghost
+	   border is invisible anyway, and without this every inactive tab gains 2px.
 	   TODO(R): this reveal is hover-only AND sub-floor on touch — it needs a coarse-pointer
 	   door of its own, not a patch here. */
 	.tab :global(.close) {
@@ -211,6 +213,7 @@
 		height: 16px;
 		min-height: 16px;
 		margin-left: 0;
+		border: 0;
 		overflow: hidden;
 		line-height: 1;
 		color: var(--text-muted);
