@@ -43,7 +43,8 @@
 		refreshTestid?: string;
 	} = $props();
 
-	const fieldId = claimFieldControlId();
+	const ownId = $props.id();
+	const fieldId = claimFieldControlId(ownId);
 	// Keep the live value selectable even if it isn't among the options (a stale-but-live value). The
 	// truthy guard keeps an empty/falsy value from being prepended as a blank leading option.
 	const items = $derived(!value || options.includes(value) ? options : [value, ...options]);

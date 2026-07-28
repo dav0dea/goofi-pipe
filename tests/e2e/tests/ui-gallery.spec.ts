@@ -143,6 +143,50 @@ test.describe('UI Field family', () => {
 		await expect(input, 'clicking the Field label focuses the wrapped control').toBeFocused();
 	});
 
+	// The north star's literal contract — "labels and text fields natively hook up" — under the shape
+	// the inspector actually uses: ONE persistent Field whose control region is an {#if} chain (the fx
+	// toggle, the ⤢ expand). A claim held for the Field's LIFETIME orphans the label on the first swap
+	// and strips the incoming control's only accessible name. Svelte's {#if} even mounts the new branch
+	// BEFORE tearing the old one down, so a claim that is merely releasable is not enough — the id has
+	// to follow the control that is actually alive.
+	test("a Field's label follows a swapped control region, in both directions", async ({ page }) => {
+		await page.goto('/dev/ui');
+		const field = page.getByTestId('ui-field-swap');
+		await field.waitFor();
+		const label = field.locator('label.ui-field-label');
+		const fx = page.getByTestId('ui-field-swap-fx');
+		const expand = page.getByTestId('ui-field-swap-expand');
+
+		await label.click();
+		await expect(page.getByTestId('ui-field-swap-number'), 'the seeded control owns the label').toBeFocused();
+
+		await fx.click(); // number → text
+		await label.click();
+		await expect(
+			page.getByTestId('ui-field-swap-text'),
+			'the incoming control inherits the label'
+		).toBeFocused();
+
+		await fx.click(); // text → number (the other direction)
+		await label.click();
+		await expect(
+			page.getByTestId('ui-field-swap-number'),
+			'swapping back hands the label back'
+		).toBeFocused();
+
+		// The expand detour: the raw control claims nothing (it names itself), and collapsing must
+		// restore the linkage rather than leave the id stranded on a destroyed control.
+		await fx.click(); // → text
+		await expand.click(); // → raw textarea, no claim
+		await expect(page.getByTestId('ui-field-swap-raw')).toBeVisible();
+		await expand.click(); // → text again
+		await label.click();
+		await expect(
+			page.getByTestId('ui-field-swap-text'),
+			'collapsing back re-links the label'
+		).toBeFocused();
+	});
+
 	test('NumberInput commits on blur/Enter, not per keystroke', async ({ page }) => {
 		await page.goto('/dev/ui');
 		const committed = page.getByTestId('ui-field-committed');

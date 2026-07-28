@@ -59,6 +59,11 @@
 	// A Slider seeded OUTSIDE its [min,max] so the track auto-extends (Slider.svelte:44-48) instead of
 	// clipping — the e2e reads the range's extended min/max attributes.
 	let sliderExtend = $state(5);
+	// The swapping-control-region demo: ONE Field, three control kinds in an {#if} chain (the
+	// inspector's fx toggle + ⤢ expand shape). The label's `for=` claim has to survive the swap.
+	let swapMode = $state<'number' | 'text' | 'raw'>('number');
+	let swapNum = $state(2);
+	let swapText = $state('sin(x)');
 	let refreshValue = $state('sine');
 	let refreshing = $state(false);
 	let refreshCount = $state(0);
@@ -219,6 +224,51 @@
 				<NumberInput value={gain} onChange={(v) => (gain = v)} data-testid="ui-field-number" />
 			</Field>
 			<span class="readout" data-testid="ui-field-committed">{gain}</span>
+		</div>
+	</section>
+
+	{#snippet swapChips()}
+		<Chip
+			tone={swapMode === 'number' ? 'neutral' : 'accent'}
+			onclick={() => (swapMode = swapMode === 'number' ? 'text' : 'number')}
+			data-testid="ui-field-swap-fx">fx</Chip
+		>
+		<Chip
+			onclick={() => (swapMode = swapMode === 'raw' ? 'text' : 'raw')}
+			data-testid="ui-field-swap-expand">⤢</Chip
+		>
+	{/snippet}
+
+	<section>
+		<h2>Field with a swapping control region (the ParamField shape)</h2>
+		<!-- ONE persistent Field whose control region is an {#if} chain flipped by an adornment Chip —
+		     exactly how the inspector's fx toggle and its ⤢ expand behave. The label's `for=` must
+		     follow whichever control is actually mounted, in BOTH directions, and must come back after
+		     a detour through a raw control that claims nothing (the multi-line textarea's shape). -->
+		<div class="form">
+			<Field label="swap" data-testid="ui-field-swap" adornment={swapChips}>
+				{#if swapMode === 'number'}
+					<NumberInput
+						value={swapNum}
+						onChange={(v) => (swapNum = v)}
+						data-testid="ui-field-swap-number"
+					/>
+				{:else if swapMode === 'text'}
+					<TextInput
+						value={swapText}
+						onChange={(v) => (swapText = v)}
+						data-testid="ui-field-swap-text"
+					/>
+				{:else}
+					<!-- Claims nothing, like ParamField's expanded multi-line editor; it carries its own name. -->
+					<textarea
+						rows="2"
+						aria-label="swap raw"
+						bind:value={swapText}
+						data-testid="ui-field-swap-raw"
+					></textarea>
+				{/if}
+			</Field>
 		</div>
 	</section>
 

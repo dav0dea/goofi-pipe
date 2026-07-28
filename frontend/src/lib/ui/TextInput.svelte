@@ -38,7 +38,8 @@
 		inputmode?: InputModeVariant;
 	} = $props();
 
-	const fieldId = claimFieldControlId();
+	const ownId = $props.id();
+	const fieldId = claimFieldControlId(ownId);
 	const live = useLiveValue<string>(
 		() => value,
 		(v) => onChange(v)

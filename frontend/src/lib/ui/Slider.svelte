@@ -30,7 +30,8 @@
 		step?: number;
 	} = $props();
 
-	const fieldId = claimFieldControlId();
+	const ownId = $props.id();
+	const fieldId = claimFieldControlId(ownId);
 	const live = useLiveValue<number>(
 		() => value,
 		(v) => onChange(v)

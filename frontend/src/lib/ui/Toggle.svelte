@@ -22,7 +22,8 @@
 		onChange: (v: boolean) => void;
 	} = $props();
 
-	const fieldId = claimFieldControlId();
+	const ownId = $props.id();
+	const fieldId = claimFieldControlId(ownId);
 </script>
 
 <label {...rest} class={`ui-toggle ${klass}`.trim()}>

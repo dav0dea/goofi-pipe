@@ -6,8 +6,8 @@
   a SIBLING of the label, never inside it, so its button can't steal the label's focus target), the
   control(s) as `children`, and an optional `hint`. `doc` becomes the hover tooltip.
 
-  The `for=` id is minted here and claimed by the first control via the field context (see field.ts),
-  so N writes `<Field label='cutoff'><Slider/><NumberInput/></Field>` with zero id plumbing. Gap and
+  The `for=` id is the first LIVE control's, tracked through the field context (see field.ts), so N
+  writes `<Field label='cutoff'><Slider/><NumberInput/></Field>` with zero id plumbing. Gap and
   chrome are F tokens exposed as `var(--field-*, <token>)` per-instance hooks. `class` merged,
   `data-testid` (and any other attribute) forwarded via `...rest`.
 -->
@@ -35,10 +35,10 @@
 		children?: Snippet;
 	} = $props();
 
-	// A stable, SSR/hydration-safe id so the real <label for> links to the wrapped control. The
-	// first control in the field claims it (see field.ts) — no duplicate ids when two controls pair.
-	const controlId = $props.id();
-	provideFieldControlId(controlId);
+	// The label points at whichever control is currently alive and first in the field (see field.ts),
+	// so an {#if}-swapped control region hands the linkage over instead of orphaning the label.
+	let controlId = $state<string | undefined>(undefined);
+	provideFieldControlId((id) => (controlId = id));
 </script>
 
 <div {...rest} class={`ui-field ${klass}`.trim()} title={doc ?? rest.title}>
