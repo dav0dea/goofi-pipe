@@ -137,6 +137,84 @@ test.describe('Inspector (real node)', () => {
 		await expect.poll(() => historyLen(page)).toBeLessThan(before);
 	});
 
+	// M-audit CRITICAL. `openEditor`/`closeEditor` READ the `$state` Set they then reassign, so every
+	// caller's `$effect` becomes a dependency of what it writes. Svelte runs an effect's teardown BEFORE
+	// its body on re-run, so each re-run writes twice — harmless while there is ONE registrant (the
+	// `has(id)` guard short-circuits), but with TWO the effects invalidate each other forever until the
+	// flush guard throws `effect_update_depth_exceeded` and leaves the batch dead: every later state
+	// change silently stops applying. Two ordinary clicks reach it. The suite never caught it because
+	// `ui.svelte.test.ts` calls the mutators outside any effect and every e2e opened only one editor.
+	test('two concurrently open fx editors do not kill the reactive graph', async ({ page }) => {
+		const pageErrors: string[] = [];
+		page.on('pageerror', (e) => pageErrors.push(e.message));
+
+		await page.goto('/');
+		await waitForApp(page);
+		const uid = await addNode(page, 'Oscillator', 'inputs');
+		await waitForNode(page, uid);
+		await page.evaluate((u) => (window as any).goofi.commands.select([u]), uid);
+		await expect(panel(page)).toHaveClass(/open/);
+
+		// Two registrants at once — one multi-line fx editor on each of two params of the SAME node.
+		// ParamForm renders one ParamField per param with no single-open coordination, and each mints a
+		// globally unique `$props.id()`, so the idempotence guard cannot absorb the second.
+		for (const name of ['amplitude', 'frequency']) {
+			const field = panel(page).getByTestId(`param-field-${name}`);
+			await field.getByTestId('param-fx-toggle').click();
+			await field.getByTestId('param-expr-expand').click();
+			await expect(field.getByTestId('param-expr-multiline')).toBeVisible();
+		}
+		expect(pageErrors).toEqual([]);
+
+		// The real proof is that state still FLOWS. Collapse one editor: the other still holds the
+		// standdown, so modalOpen must stay true — and it can only stay/settle correctly if the batch is
+		// alive. With the batch dead these polls never observe another change.
+		await panel(page)
+			.getByTestId('param-field-amplitude')
+			.getByTestId('param-expr-collapse')
+			.click();
+		await expect.poll(() => modalOpen(page)).toBe(true);
+
+		await panel(page)
+			.getByTestId('param-field-frequency')
+			.getByTestId('param-expr-collapse')
+			.click();
+		await expect.poll(() => modalOpen(page)).toBe(false);
+		expect(pageErrors).toEqual([]);
+	});
+
+	// The second reachable pairing: an open fx editor plus the file browser, which registers the same
+	// standdown. The TopBar buttons are NOT gated on modalOpen (only the Ctrl+S/Ctrl+O chords are), so
+	// the Parameters panel and its live effect stay mounted underneath.
+	test('opening the file browser over an fx editor does not kill the reactive graph', async ({
+		page
+	}) => {
+		const pageErrors: string[] = [];
+		page.on('pageerror', (e) => pageErrors.push(e.message));
+
+		await page.goto('/');
+		await waitForApp(page);
+		const uid = await addNode(page, 'Oscillator', 'inputs');
+		await waitForNode(page, uid);
+		await page.evaluate((u) => (window as any).goofi.commands.select([u]), uid);
+		await expect(panel(page)).toHaveClass(/open/);
+
+		const amp = panel(page).getByTestId('param-field-amplitude');
+		await amp.getByTestId('param-fx-toggle').click();
+		await amp.getByTestId('param-expr-expand').click();
+		await expect(amp.getByTestId('param-expr-multiline')).toBeVisible();
+
+		await page.getByTestId('topbar-load').click();
+		await expect(page.getByTestId('fs-browser')).toBeVisible();
+		expect(pageErrors).toEqual([]);
+
+		// Dismiss the browser; the fx editor still holds the standdown, which requires a live batch.
+		await page.keyboard.press('Escape');
+		await expect(page.getByTestId('fs-browser')).toHaveCount(0);
+		await expect.poll(() => modalOpen(page)).toBe(true);
+		expect(pageErrors).toEqual([]);
+	});
+
 	test('a node switch does not leak an open fx buffer onto another node’s param', async ({ page }) => {
 		await page.goto('/');
 		await waitForApp(page);
