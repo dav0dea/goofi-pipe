@@ -36,8 +36,8 @@
 	let showStderr = $state(true);
 
 	const LINE_H = 16; // px per text line
-	const PAD = 4; // row vertical padding
-	const ROW = LINE_H + PAD; // a single-line row
+	const PAD = 4; // row vertical padding (2px each side)
+	const BORDER = 1; // the row's own bottom hairline — part of its box, so part of the estimate
 	const COLLAPSE_LINES = 3; // lines shown before a row collapses
 	const OVERSCAN = 8;
 
@@ -48,7 +48,7 @@
 
 	function estimateH(e: ConsoleEntry, exp: boolean): number {
 		const lines = exp ? e.lines : Math.min(e.lines, COLLAPSE_LINES);
-		return lines * LINE_H + PAD;
+		return lines * LINE_H + PAD + BORDER;
 	}
 	function heightOf(e: ConsoleEntry): number {
 		return measured.get(e.uid)?.h ?? estimateH(e, expanded.has(e.uid));
@@ -314,6 +314,7 @@
 						<IconButton
 							class="console-copy-btn"
 							size="sm"
+							density="chrome"
 							data-testid="console-copy"
 							title="Copy message"
 							label="Copy message"
@@ -451,8 +452,13 @@
 	}
 	/* Hover-only per-message copy (an IconButton). Always occupies its slot (no reflow on hover);
 	   only fades in — and becomes clickable — when the row is hovered/focused.
+	   A row IS a chrome strip: it is one 16px text line tall, shorter than --hit, so the button
+	   states its box through the primitive's `density="chrome"` seam. Anything taller drives the
+	   row's height instead of the text and desyncs `estimateH`'s model. IconButton restores the
+	   --hit floor under a coarse pointer by itself (which is where C16 must be closed).
 	   TODO(R): hover-only reveal, needs a coarse-pointer door (CLAUDE.md forbids hover-only). */
 	.row :global(.console-copy-btn) {
+		--icon-btn-size: 16px;
 		opacity: 0;
 		pointer-events: none;
 		transition: opacity 0.1s;
