@@ -166,7 +166,7 @@ textarea {
 	color: var(--text);
 	border: 1px solid var(--border);
 	border-radius: var(--radius-sm);
-	padding: 4px 8px;
+	padding: var(--space-2) var(--space-4);
 	outline: none;
 	transition: border-color var(--dur-fast) var(--ease);
 }
@@ -201,7 +201,7 @@ textarea:focus {
 }
 ::-webkit-scrollbar-thumb {
 	background: var(--surface-3);
-	border-radius: 6px;
+	border-radius: var(--radius-md);
 }
 ::-webkit-scrollbar-thumb:hover {
 	background: var(--border-strong);

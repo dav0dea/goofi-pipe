@@ -5,11 +5,15 @@ import { fileURLToPath } from 'node:url';
 
 /* The style-vocabulary guard.
  *
- * `tokens.test.ts` proves the ladder in `app.css` is well-formed; this proves the components
- * actually SPEAK it. Every spacing and type value in a component's <style> must resolve through
+ * `tokens.test.ts` proves the ladder in `app.css` is well-formed; this proves the CSS that
+ * consumes it actually SPEAKS it. Every spacing and type value must resolve through
  * `--space-*` / `--fs-*`, so a density or type-scale change is one edit in `app.css` rather than
  * a codebase-wide hunt. Sub-project M swept the four properties that carry the vocabulary —
  * `font-size`, `gap`, `padding`, `margin` — and this test is what stops them drifting back.
+ *
+ * `app.css` itself is scanned, not just the components: the north star calls it the CENTRAL
+ * styling module, and leaving it outside the guard is how the app's most-inherited control
+ * padding (`input, select, textarea`) sat there as a raw `4px 8px`.
  *
  * Deliberately NOT scanned: `width`/`height`/`inset`/`border-*` (structural geometry, not
  * vocabulary — a 22px tab ＋ or a 1px hairline is a shape, not a spacing rung), and breakpoints
@@ -18,6 +22,7 @@ import { fileURLToPath } from 'node:url';
  */
 
 const LIB = fileURLToPath(new URL('..', import.meta.url));
+const APP_CSS = fileURLToPath(new URL('../../app.css', import.meta.url));
 
 /** Whole files exempt from the sweep, each with the reason it stays in raw units. */
 const ALLOW_FILE: Record<string, string> = {
@@ -56,6 +61,18 @@ const ALLOW_VALUE: { file: string; prop?: RegExp; value: RegExp; why: string }[]
 		file: 'viewers/StringViewer.svelte',
 		value: /em$/,
 		why: 'rendered-markdown prose scale: headings/lists size RELATIVE to the viewer root, which is itself on --fs-*; absolute rungs would flatten the document hierarchy'
+	},
+	{
+		file: 'app.css',
+		prop: /^font-size$/,
+		value: /^(11px|14px|0\.9vw|0\.3vh)$/,
+		why: 'the responsive root clamp IS the rem every --fs-*/--space-* rung is measured in — a rung cannot express the size of its own unit'
+	},
+	{
+		file: 'app.css',
+		prop: /^font-size$/,
+		value: /^16px$/,
+		why: 'iOS force-zooms a focused input below 16px — an absolute threshold, not a scale rung (the same carve-out ParamField/ParamForm already hold)'
 	}
 ];
 
@@ -93,12 +110,27 @@ function svelteFiles(dir: string): string[] {
 	return out.sort();
 }
 
-/** Every `<style>` block's CSS, comments stripped so a commented-out rule never trips the scan. */
+/** Comments stripped, so a commented-out rule never trips the scan. */
+function stripComments(css: string): string {
+	return css.replace(/\/\*[\s\S]*?\*\//g, ' ');
+}
+
+/** Every `<style>` block's CSS. */
 function styleCss(src: string): string {
-	return [...src.matchAll(/<style[^>]*>([\s\S]*?)<\/style>/g)]
-		.map((m) => m[1])
-		.join('\n')
-		.replace(/\/\*[\s\S]*?\*\//g, ' ');
+	return stripComments(
+		[...src.matchAll(/<style[^>]*>([\s\S]*?)<\/style>/g)].map((m) => m[1]).join('\n')
+	);
+}
+
+/** Everything the guard scans: the central module, then every component `<style>`. */
+function sources(): { rel: string; css: string }[] {
+	return [
+		{ rel: 'app.css', css: stripComments(readFileSync(APP_CSS, 'utf8')) },
+		...svelteFiles(LIB).map((p) => ({
+			rel: p.slice(LIB.length),
+			css: styleCss(readFileSync(p, 'utf8'))
+		}))
+	];
 }
 
 /** The raw numeric literals in one declaration value, with `var(--token)` references removed. */
@@ -113,11 +145,9 @@ function literals(value: string): string[] {
 
 function drift(): string[] {
 	const found: string[] = [];
-	for (const path of svelteFiles(LIB)) {
-		const rel = path.slice(LIB.length);
+	for (const { rel, css } of sources()) {
 		if (rel in ALLOW_FILE) continue;
 		const allowed = ALLOW_VALUE.filter((a) => a.file === rel);
-		const css = styleCss(readFileSync(path, 'utf8'));
 		const decl = new RegExp(`(?:^|[;{}])\\s*(${PROPS})\\s*:\\s*([^;}]+)`, 'g');
 		for (const m of css.matchAll(decl)) {
 			const raw = literals(m[2]).filter(
@@ -141,16 +171,20 @@ describe('style vocabulary', () => {
 		for (const a of ALLOW_VALUE) expect(a.why.length).toBeGreaterThan(0);
 	});
 
-	it('scans the components it claims to (a guard against a silently empty sweep)', () => {
-		expect(svelteFiles(LIB).length).toBeGreaterThan(40);
+	it('scans the central module and the components it claims to (no silently empty sweep)', () => {
+		const scanned = sources();
+		expect(scanned.length).toBeGreaterThan(40);
+		const app = scanned.find((s) => s.rel === 'app.css');
+		expect(app, 'app.css is in the sweep, not exempt from it').toBeDefined();
+		expect(app!.css).toContain('--space-1');
 	});
 
 	// F stripped every gradient: the surface ladder carries elevation now, and a gradient reads as
 	// a different material sitting on the flat palette. Nothing but this stops one coming back.
 	it('paints surfaces flat — no gradients anywhere (C4)', () => {
-		const offenders = svelteFiles(LIB)
-			.filter((p) => /gradient\(/.test(styleCss(readFileSync(p, 'utf8'))))
-			.map((p) => p.slice(LIB.length));
+		const offenders = sources()
+			.filter((s) => /gradient\(/.test(s.css))
+			.map((s) => s.rel);
 		expect(offenders).toEqual([]);
 	});
 });
