@@ -1,9 +1,11 @@
 <!--
-  Popover — one anchored, self-dismissing overlay (spec §2.4). The SSOT that replaces the ~10
-  hand-rolled popovers (6 with their own re-implemented clamp): it portals its content to <body>
+  Popover — one anchored, self-dismissing overlay (spec §2.4). It portals its content to <body>
   (escaping panel/SvelteFlow transform + clip contexts), positions it against the `anchor` element
-  via the pure `clampToViewport`, and dismisses on Escape OR a pointerdown outside both the surface
-  and the anchor (calling `onDismiss` — the parent owns the open state).
+  via the pure `clampToViewport` SSOT, and dismisses on Escape OR a pointerdown outside both the
+  surface and the anchor (calling `onDismiss` — the parent owns the open state). Its product
+  consumers are the error chip's list and the per-slot viewer settings menu; the two POINT-anchored
+  menus (ContextMenu and the add-node menu) keep their own shells and share only the clamp — see
+  D-M2, and each file's own note on why.
 
   The anchor is excluded from "outside" so the trigger's own onclick toggles cleanly (an outside
   pointerdown that also hit the anchor would dismiss-then-reopen). Surface chrome is F tokens, each
@@ -27,6 +29,7 @@
 		open,
 		onDismiss,
 		flip = false,
+		catcher = false,
 		class: klass = '',
 		children,
 		...rest
@@ -37,6 +40,8 @@
 		onDismiss: () => void;
 		/** Let the surface flip ABOVE a bottom-anchored trigger rather than shift up and cover it. */
 		flip?: boolean;
+		/** Render a full-screen catcher under the surface so a dismissing click ONLY dismisses. */
+		catcher?: boolean;
 		children?: Snippet;
 	} = $props();
 
@@ -82,6 +87,15 @@
 />
 
 {#if open}
+	{#if catcher}
+		<!-- Opt-in click catcher: a portalled full-screen layer one step under the surface, so a
+		     dismissing click is CONSUMED instead of also acting on whatever it landed on. The window
+		     listener alone cannot do this — the handler under the pointer still fires, and a target
+		     that stops propagation (the slot header, which must keep SvelteFlow from starting a node
+		     drag) never lets the listener see the event at all. Mirrors the add-node menu's overlay.
+		     It reads --popover-z from the portal root, exactly as the surface does. -->
+		<div class="ui-popover-catcher" use:portal onclick={onDismiss} role="presentation"></div>
+	{/if}
 	<div
 		{...rest}
 		bind:this={menuEl}
@@ -94,6 +108,11 @@
 {/if}
 
 <style>
+	.ui-popover-catcher {
+		position: fixed;
+		inset: 0;
+		z-index: calc(var(--popover-z, var(--z-menu)) - 1);
+	}
 	.ui-popover {
 		position: fixed;
 		z-index: var(--popover-z, var(--z-menu));

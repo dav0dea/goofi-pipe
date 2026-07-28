@@ -54,6 +54,7 @@
 		size="sm"
 		class={open ? 'vs-cog on' : 'vs-cog'}
 		label="viewer settings"
+		data-testid="viewer-settings-cog"
 		onclick={toggle}
 	>
 		<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -63,7 +64,15 @@
 	</IconButton>
 </span>
 
-<Popover {anchor} {open} onDismiss={() => (open = false)} role="menu" class="vs-menu">
+<Popover
+	{anchor}
+	{open}
+	onDismiss={() => (open = false)}
+	catcher
+	role="menu"
+	class="vs-menu"
+	data-testid="viewer-settings-menu"
+>
 	<ScrollArea>
 		{#if groups.length === 0}
 			<EmptyState>
