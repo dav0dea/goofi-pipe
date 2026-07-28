@@ -140,14 +140,14 @@
 		// on a named patch, writing the file behind it).
 		const standdown = ui().modalOpen;
 		const meta = e.ctrlKey || e.metaKey;
-		if (meta && !standdown && e.key.toLowerCase() === 's') {
+		const key = e.key.toLowerCase();
+		if (meta && (key === 's' || key === 'o')) {
+			// The chord is ALWAYS the app's, standdown or not: claiming it is what keeps Chrome's own
+			// "Save page as…" / "Open file…" off the screen. Standing down means not acting on it.
 			e.preventDefault();
-			void triggerSave();
-			return;
-		}
-		if (meta && !standdown && e.key.toLowerCase() === 'o') {
-			e.preventDefault();
-			triggerLoad();
+			if (standdown) return;
+			if (key === 's') void triggerSave();
+			else triggerLoad();
 			return;
 		}
 		const undoRedo = undoKeyAction(

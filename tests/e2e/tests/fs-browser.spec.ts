@@ -297,6 +297,37 @@ test.describe('global shortcuts stand down while the browser owns the screen', (
 		await page.keyboard.press('Escape');
 		await expect(modal).toBeHidden();
 	});
+
+	test('Ctrl+S / Ctrl+O are still swallowed while the standdown is up', async ({ page }) => {
+		await page.goto('/');
+		await waitForApp(page);
+		const modal = await openBrowser(page, 'load');
+		// A window listener registered AFTER AppShell's runs second on the same target/phase, so it
+		// observes whether the app called preventDefault(). Standing down from ACTING on the chord is
+		// not the same as letting it through: unprevented, Chrome runs its own Save-page / Open-file
+		// accelerator over the app (invisible headless, which is why this shipped).
+		await page.evaluate(() => {
+			(window as any).__chords = [] as { key: string; prevented: boolean }[];
+			window.addEventListener('keydown', (e) => {
+				const k = e.key.toLowerCase();
+				if ((e.ctrlKey || e.metaKey) && (k === 's' || k === 'o'))
+					(window as any).__chords.push({ key: k, prevented: e.defaultPrevented });
+			});
+		});
+
+		await page.keyboard.press('Control+s');
+		await page.keyboard.press('Control+o');
+		expect(
+			await page.evaluate(() => (window as any).__chords),
+			'both app chords were consumed rather than falling through to the browser'
+		).toEqual([
+			{ key: 's', prevented: true },
+			{ key: 'o', prevented: true }
+		]);
+
+		await page.keyboard.press('Escape');
+		await expect(modal).toBeHidden();
+	});
 });
 
 test('the path bar and the up button navigate the backend filesystem', async ({ page }) => {
