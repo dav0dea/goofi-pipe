@@ -38,9 +38,12 @@
 	/* The active-panel / linked-content ring line (see the ring convention below). One token, so
 	   the panel frame and the panels that ring their own content cannot drift apart. */
 	--ring-accent: color-mix(in srgb, var(--accent) 45%, transparent);
-	/* Ink that sits ON a filled semantic surface (accent button/menu-hover, danger banner/toast). */
+	/* Ink that sits ON a filled semantic surface (accent menu-hover, danger banner/toast, and the
+	   filled `$lib/ui` primitives). ONE answer, deliberately: both semantic fills are light enough
+	   that near-black is the legible ink (10.13:1 on --accent, 6.24:1 on --danger), and white on
+	   --danger is a WCAG AA failure at 3.14:1. Asserted in theme/tokens.test.ts. */
 	--on-accent: #0a0c10; /* near-black text on --accent fills */
-	--on-danger: #ffffff; /* light text on --danger fills */
+	--on-danger: var(--on-accent); /* same ink — a filled --danger surface is light, not dark */
 
 	/* Spacing — rem, ~2px grid (audit §5: 78% already on grid). --space-8 (24) is the one
 	   extrapolated step for empty-state/modal padding. */

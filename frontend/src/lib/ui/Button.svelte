@@ -81,7 +81,7 @@
 	.ui-btn.v-primary {
 		background: var(--accent);
 		border-color: var(--accent);
-		color: var(--bg);
+		color: var(--on-accent);
 		font-weight: 600;
 	}
 	.ui-btn.v-primary:hover:not(:disabled) {
@@ -98,7 +98,7 @@
 	.ui-btn.v-danger {
 		background: var(--danger);
 		border-color: var(--danger);
-		color: var(--bg);
+		color: var(--on-danger);
 		font-weight: 600;
 	}
 	.ui-btn.v-danger:hover:not(:disabled) {

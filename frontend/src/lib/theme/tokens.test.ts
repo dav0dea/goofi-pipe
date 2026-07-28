@@ -64,6 +64,17 @@ describe('semantic + dtype colours stay legible on the lightest surface', () => 
 	}
 });
 
+describe('ink on a filled semantic surface is one answer, and AA-legible', () => {
+	// `--on-accent` / `--on-danger` are the ONLY answer to "what colour is text on a filled accent
+	// or danger surface" — the `$lib/ui` primitives read them too. `--on-danger` was #ffffff, which
+	// on --danger (#f06080) is 3.14:1: a WCAG AA failure shipping on the Toast and the proto banner,
+	// both at --fs-small, while <Button variant="danger"> on the identical fill rendered near-black.
+	for (const t of ['accent', 'danger']) {
+		it(`--on-${t} clears AA (4.5:1) on --${t}`, () =>
+			expect(contrastRatio(token(`on-${t}`), token(t))).toBeGreaterThanOrEqual(4.5));
+	}
+});
+
 describe('scale tokens exist and are ordered', () => {
 	function px(name: string): number {
 		const m = new RegExp(`--${name}\\s*:\\s*([0-9.]+)rem`).exec(css);

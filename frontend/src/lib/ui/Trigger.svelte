@@ -54,7 +54,7 @@
 	.ui-trigger:active:not(:disabled) {
 		background: var(--accent);
 		border-color: var(--accent);
-		color: var(--bg);
+		color: var(--on-accent);
 	}
 	.ui-trigger:disabled {
 		opacity: var(--disabled-opacity);

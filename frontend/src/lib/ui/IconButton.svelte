@@ -122,7 +122,7 @@
 	.ui-icon-btn.v-primary {
 		background: var(--accent);
 		border-color: var(--accent);
-		color: var(--bg);
+		color: var(--on-accent);
 	}
 	.ui-icon-btn.v-primary:hover:not(:disabled) {
 		background: var(--accent-strong);
@@ -138,7 +138,7 @@
 	.ui-icon-btn.v-danger {
 		background: var(--danger);
 		border-color: var(--danger);
-		color: var(--bg);
+		color: var(--on-danger);
 	}
 	.ui-icon-btn.v-danger:hover:not(:disabled) {
 		background: color-mix(in srgb, var(--danger) 85%, var(--bg));
