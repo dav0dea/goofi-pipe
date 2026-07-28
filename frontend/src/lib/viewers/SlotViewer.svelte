@@ -145,7 +145,7 @@
 		font-size: 10px;
 		cursor: pointer;
 		user-select: none;
-		transition: background 80ms ease;
+		transition: background var(--dur-fast) var(--ease);
 	}
 	header:hover {
 		background: color-mix(in srgb, var(--dtype, var(--accent)) 20%, var(--bg));
@@ -173,8 +173,8 @@
 		fill: var(--text-dim);
 		transform: rotate(0deg);
 		transition:
-			transform 120ms ease,
-			fill 80ms ease;
+			transform var(--dur-slow) var(--ease),
+			fill var(--dur-fast) var(--ease);
 	}
 	.tri.open svg {
 		transform: rotate(90deg);
@@ -193,7 +193,7 @@
 		cursor: pointer;
 		border-radius: 3px;
 		padding: 0 2px;
-		transition: background 80ms ease;
+		transition: background var(--dur-fast) var(--ease);
 	}
 	.slot-name:hover {
 		background: color-mix(in srgb, var(--dtype, var(--accent)) 22%, transparent);

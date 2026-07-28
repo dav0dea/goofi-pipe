@@ -254,7 +254,7 @@
 		overflow: hidden;
 		outline: 1px solid transparent;
 		outline-offset: -1px;
-		transition: outline-color 100ms ease;
+		transition: outline-color var(--dur-fast) var(--ease);
 	}
 	/* Active-panel accent, drawn as an OUTLINE, not an inset box-shadow: an inset shadow paints
 	   below child content, so the header bar and the editor's opaque `.svelte-flow` background
@@ -292,7 +292,7 @@
 		height: 16px;
 		z-index: var(--z-chrome);
 		opacity: 0;
-		transition: opacity 120ms ease;
+		transition: opacity var(--dur-slow) var(--ease);
 	}
 	/* A faint triangular tab in each corner, brightening on hover. */
 	.corner::after {

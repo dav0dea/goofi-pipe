@@ -74,7 +74,7 @@
 		content: '';
 		position: absolute;
 		background: var(--border);
-		transition: background 100ms ease;
+		transition: background var(--dur-fast) var(--ease);
 	}
 	.splitter.row::after {
 		top: 0;

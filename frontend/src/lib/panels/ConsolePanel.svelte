@@ -461,7 +461,7 @@
 		--icon-btn-size: 16px;
 		opacity: 0;
 		pointer-events: none;
-		transition: opacity 0.1s;
+		transition: opacity var(--dur-fast) var(--ease);
 	}
 	.row:hover :global(.console-copy-btn),
 	.row:focus-within :global(.console-copy-btn) {

@@ -272,9 +272,9 @@ textarea:focus {
 	background: var(--dtype, var(--border-strong));
 	box-shadow: 0 0 0 2px var(--surface-1);
 	transition:
-		width 90ms ease,
-		height 90ms ease,
-		box-shadow 90ms ease;
+		width var(--dur-fast) var(--ease),
+		height var(--dur-fast) var(--ease),
+		box-shadow var(--dur-fast) var(--ease);
 }
 .svelte-flow__handle:hover::before {
 	width: 16px;

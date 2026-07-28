@@ -190,8 +190,8 @@
 		border: 1px solid var(--border);
 		border-radius: var(--radius-md);
 		transition:
-			border-color 80ms ease,
-			box-shadow 80ms ease;
+			border-color var(--dur-fast) var(--ease),
+			box-shadow var(--dur-fast) var(--ease);
 	}
 	.goofi-node.selected .surface {
 		border-color: var(--accent);
@@ -288,7 +288,7 @@
 		color: var(--text-muted);
 		font-variant-numeric: tabular-nums;
 		opacity: 0.3;
-		transition: opacity 120ms ease;
+		transition: opacity var(--dur-slow) var(--ease);
 	}
 	.goofi-node:hover .rate {
 		opacity: 0.85;
@@ -353,7 +353,7 @@
 		white-space: nowrap;
 		pointer-events: none;
 		opacity: 0;
-		transition: opacity 90ms ease;
+		transition: opacity var(--dur-fast) var(--ease);
 	}
 	.conn.in:hover .conn-label {
 		opacity: 1;

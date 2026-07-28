@@ -129,7 +129,7 @@
 		flex-direction: column;
 		min-width: 0;
 		transform: translateX(100%);
-		transition: transform 180ms ease;
+		transition: transform var(--dur-slow) var(--ease);
 		box-shadow: -8px 0 24px rgba(0, 0, 0, 0.35);
 		z-index: var(--z-side-panel);
 	}
@@ -193,7 +193,7 @@
 		bottom: 0;
 		width: 2px;
 		background: transparent;
-		transition: background 100ms ease;
+		transition: background var(--dur-fast) var(--ease);
 	}
 	.resize-handle:hover::after,
 	.side-panel.resizing .resize-handle::after {

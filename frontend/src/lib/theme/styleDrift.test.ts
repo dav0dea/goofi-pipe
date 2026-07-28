@@ -24,7 +24,9 @@ import { fileURLToPath } from 'node:url';
 const LIB = fileURLToPath(new URL('..', import.meta.url));
 const APP_CSS = fileURLToPath(new URL('../../app.css', import.meta.url));
 
-/** Whole files exempt from the sweep, each with the reason it stays in raw units. */
+/* Files whose raw **px** are exempt, each with the reason it stays in raw units. The exemption is
+   px-scoped on purpose: every one of these is a fixed-px coordinate system, and none of them has
+   any business bypassing a rung that is not a px at all — a `--dur-*` duration, say. */
 const ALLOW_FILE: Record<string, string> = {
 	// The node canvas is a fixed-px coordinate system (--node-w/-header/-u/-viewer in app.css),
 	// mirrored in editor/nodeMetrics.ts + snap.ts on the connector hot path. Its paddings and type
@@ -73,6 +75,12 @@ const ALLOW_VALUE: { file: string; prop?: RegExp; value: RegExp; why: string }[]
 		prop: /^font-size$/,
 		value: /^16px$/,
 		why: 'iOS force-zooms a focused input below 16px — an absolute threshold, not a scale rung (the same carve-out ParamField/ParamForm already hold)'
+	},
+	{
+		file: 'app.css',
+		prop: /^transition-duration$/,
+		value: /^0\.01$/,
+		why: 'the prefers-reduced-motion kill switch: 0.01ms is "off", not a rung — routing it through --dur-fast would restore the motion it exists to remove'
 	}
 ];
 
@@ -86,6 +94,11 @@ const PROPS = [
 	'column-gap',
 	'padding',
 	'margin',
+	// Motion is vocabulary too: `--dur-fast`/`--dur-slow` are the whole ladder, and every
+	// `lib/ui` primitive already speaks it. `animation`/`animation-duration` stay OUT — the three
+	// keyframed spinners/flashes F blessed are their own timings, not transitions.
+	'transition',
+	'transition-duration',
 	...['padding', 'margin'].flatMap((p) => [
 		`${p}-top`,
 		`${p}-right`,
@@ -146,13 +159,14 @@ function literals(value: string): string[] {
 function drift(): string[] {
 	const found: string[] = [];
 	for (const { rel, css } of sources()) {
-		if (rel in ALLOW_FILE) continue;
+		const pxExempt = rel in ALLOW_FILE;
 		const allowed = ALLOW_VALUE.filter((a) => a.file === rel);
 		const decl = new RegExp(`(?:^|[;{}])\\s*(${PROPS})\\s*:\\s*([^;}]+)`, 'g');
 		for (const m of css.matchAll(decl)) {
 			const raw = literals(m[2]).filter(
 				(n) =>
 					!INVARIANT.has(n) &&
+					!(pxExempt && n.endsWith('px')) &&
 					!allowed.some((a) => (a.prop?.test(m[1]) ?? true) && a.value.test(n))
 			);
 			if (raw.length) found.push(`${rel}  ${m[1]}: ${m[2].trim()}`);
