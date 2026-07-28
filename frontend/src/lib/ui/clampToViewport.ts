@@ -2,8 +2,8 @@
  * `clampToViewport` — the one correct anchored-overlay clamp (spec §3), the SSOT both the `Popover`
  * primitive and `ContextMenu` position against. Lifted verbatim from `ContextMenu.svelte`'s measured
  * viewport math and generalised from a spawn point to an anchor rect: a popover opens flush under the
- * anchor's bottom-left, then shifts back on-screen — never past a small viewport `MARGIN` — if it
- * would overflow the right or bottom edge. A point anchor is just the degenerate rect
+ * anchor's bottom-left, then shifts back on-screen — never past a small viewport `MARGIN` on ANY
+ * edge — if it would overflow. A point anchor is just the degenerate rect
  * (`left == right`, `top == bottom`, zero-sized), which is how ContextMenu spends it. Pure, so it is
  * unit-tested without a DOM (the component just feeds it real `getBoundingClientRect()` measurements).
  *
@@ -58,5 +58,8 @@ export function clampToViewport(
 		const above = anchor.top - menu.height - MARGIN;
 		top = flip && above >= MARGIN ? above : Math.max(MARGIN, viewport.height - menu.height - MARGIN);
 	}
-	return { left, top };
+	// The near edges get the same floor the far ones already have. An anchor rect can start off-screen
+	// (a caller that aligns the menu's RIGHT edge or its centre to a point near x = 0 computes a
+	// negative origin), and "clamp to viewport" has to mean all four edges or it means nothing.
+	return { left: Math.max(MARGIN, left), top: Math.max(MARGIN, top) };
 }

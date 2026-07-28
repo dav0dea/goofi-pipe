@@ -68,7 +68,7 @@
 	import { registerEditor, unregisterEditor } from './editorCommands';
 	import InspectorOverlay from './InspectorOverlay.svelte';
 	import { asStateObject } from '$lib/workspace/panelState';
-	import { Button, IconButton, EmptyState } from '$lib/ui';
+	import { Button, IconButton, EmptyState, clampToViewport } from '$lib/ui';
 	import { onMount, untrack } from 'svelte';
 
 	let { panelId, state: panelState, setState }: PanelProps = $props();
@@ -111,9 +111,51 @@
 
 	let rootEl = $state<HTMLDivElement | null>(null);
 
+	/** Which edge of the menu's own box the requested open point names. */
+	type MenuAlign = 'start' | 'center' | 'end';
+
 	let menuOpen = $state(false);
+	// The REQUESTED spawn point (what a call site asked for) and the RENDERED one (what the measured
+	// clamp settled on) are separate, so the placement effect never writes its own dependency.
+	let menuAt = $state<{ x: number; y: number; align: MenuAlign }>({ x: 120, y: 120, align: 'start' });
 	let menuPos = $state<{ x: number; y: number }>({ x: 120, y: 120 });
 	let menuSeed = $state<SlotClickSeed | null>(null);
+	let menuEl = $state<HTMLDivElement | null>(null);
+
+	/**
+	 * Open the add-node menu at a viewport point — the ONE placement path for all four entry points
+	 * (a port click, a canvas double-click, Tab, the TopBar button). The point names the menu's left,
+	 * centre or right edge; the effect below measures the rendered menu and clamps it on-screen
+	 * through the shared `clampToViewport` (D-M2: the point-anchored menus keep their own shell and
+	 * share only the clamp SSOT). No call site knows the menu's size.
+	 */
+	function openAddMenu(
+		x: number,
+		y: number,
+		align: MenuAlign = 'start',
+		seed: SlotClickSeed | null = null
+	): void {
+		menuAt = { x, y, align };
+		menuPos = { x, y }; // a known spawn point to start from, corrected below before paint
+		menuSeed = seed;
+		menuOpen = true;
+	}
+
+	// ContextMenu's idiom: measure the mounted menu, then re-clamp. A spawn point is the degenerate
+	// anchor rect the shared clamp already understands (`left`/`bottom` ARE the point).
+	$effect(() => {
+		if (!menuEl) return;
+		const at = menuAt;
+		const r = menuEl.getBoundingClientRect();
+		const left =
+			at.align === 'center' ? at.x - r.width / 2 : at.align === 'end' ? at.x - r.width : at.x;
+		const p = clampToViewport(
+			{ left, top: at.y, right: left, bottom: at.y, width: 0, height: 0 },
+			{ width: r.width, height: r.height },
+			{ width: window.innerWidth, height: window.innerHeight }
+		);
+		menuPos = { x: p.left, y: p.top };
+	});
 
 	// Watch ui.pendingSlotClick — when a node's port is clicked, open the
 	// menu near the port and seed it with the dtype filter + auto-link. Only
@@ -123,13 +165,15 @@
 		if (!seed) return;
 		if (!isActive()) return;
 		uiStore.consumeSlotClick();
-		menuSeed = seed;
-		const offsetX = seed.side === 'source' ? 12 : -332;
-		menuPos = {
-			x: Math.max(8, Math.min(window.innerWidth - 332, seed.clientX + offsetX)),
-			y: Math.max(8, Math.min(window.innerHeight - 360, seed.clientY - 24))
-		};
-		menuOpen = true;
+		// A source port hangs the menu to its right, a target port to its left — 12px of clearance
+		// either way, with the alignment (not a hardcoded width) doing the mirroring.
+		const source = seed.side === 'source';
+		openAddMenu(
+			seed.clientX + (source ? 12 : -12),
+			seed.clientY - 24,
+			source ? 'start' : 'end',
+			seed
+		);
 	});
 
 	let snapGuides = $state<Guide[]>([]);
@@ -630,12 +674,7 @@
 		const close = ddx * ddx + ddy * ddy < 30 * 30;
 		if (dt < DOUBLE_CLICK_MS && close) {
 			// Double-click on empty canvas → open add-node menu at the click.
-			menuPos = {
-				x: Math.max(8, Math.min(window.innerWidth - 332, here.x - 8)),
-				y: Math.max(8, Math.min(window.innerHeight - 360, here.y + 8))
-			};
-			menuSeed = null;
-			menuOpen = true;
+			openAddMenu(here.x - 8, here.y + 8);
 			lastPaneClickAt = 0;
 			return;
 		}
@@ -757,7 +796,7 @@
 			void groupSelection();
 		} else if (e.key === 'Tab') {
 			e.preventDefault();
-			openMenuAtCursor();
+			openAddMenu(mouseX, mouseY);
 		} else if (e.key === 'Escape') {
 			if (menuOpen) {
 				menuOpen = false;
@@ -819,19 +858,11 @@
 		if (created.length > 0) sel.selectNodes(panelId, created);
 	}
 
-	function openMenuAtCursor(): void {
-		menuPos = { x: mouseX, y: mouseY };
-		menuSeed = null;
-		menuOpen = true;
-	}
-
 	/** Open the add-node menu centered over this panel (TopBar "Add node"). */
 	function openAddMenuCentered(): void {
 		const r = rootEl?.getBoundingClientRect();
-		if (r) menuPos = { x: r.left + r.width / 2 - 160, y: r.top + 60 };
-		else menuPos = { x: window.innerWidth / 2 - 160, y: 80 };
-		menuSeed = null;
-		menuOpen = true;
+		if (r) openAddMenu(r.left + r.width / 2, r.top + 60, 'center');
+		else openAddMenu(window.innerWidth / 2, 80, 'center');
 	}
 
 	async function autoLink(
@@ -1095,6 +1126,7 @@
 			></div>
 			<div
 				class="menu-anchor"
+				bind:this={menuEl}
 				use:portal
 				data-testid="add-node-menu-anchor"
 				style="left: {menuPos.x}px; top: {menuPos.y}px"

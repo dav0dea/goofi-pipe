@@ -54,10 +54,19 @@ describe('clampToViewport', () => {
 		expect(pos.top).toBeGreaterThanOrEqual(0);
 	});
 
-	it('leaves an anchor hugging the top-left corner unshifted (stays on-screen)', () => {
+	it('floors an anchor hugging the top-left corner at the margin', () => {
 		const anchor = rect(2, 2, 40, 12); // bottom = 14
 		const pos = clampToViewport(anchor, { width: 120, height: 80 }, { width: 1000, height: 800 });
-		expect(pos).toEqual({ left: 2, top: 14 });
+		expect(pos).toEqual({ left: 6, top: 14 }); // left floored to MARGIN; top already clears it
+	});
+
+	// The near edges carry the same floor as the far ones. A caller that aligns the menu's RIGHT edge
+	// (or its centre) to a point near x = 0 hands in a negative origin, and an unfloored clamp would
+	// hand it straight back — the add-node menu ran ~158px off the left edge that way.
+	it('floors a negative origin at the margin instead of returning it', () => {
+		const off = rect(-158, 300, 0, 0); // an end-aligned point anchor near the left edge
+		const pos = clampToViewport(off, { width: 320, height: 200 }, { width: 1000, height: 800 });
+		expect(pos).toEqual({ left: 6, top: 300 });
 	});
 
 	// The opt-in flip. Shifting alone is wrong for a BOTTOM-anchored trigger: the surface slides up
