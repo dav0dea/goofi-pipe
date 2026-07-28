@@ -413,7 +413,6 @@
 	   value never forces a horizontal scroll. */
 	.unknown {
 		min-width: 0;
-		font-family: var(--font-mono);
 		font-size: var(--fs-micro);
 		color: var(--text-muted);
 		word-break: break-all;

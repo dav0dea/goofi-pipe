@@ -428,7 +428,6 @@
 		flex: 1 1 auto;
 		min-width: 0;
 		margin: 0;
-		font-family: var(--font-mono);
 		font-size: var(--fs-small);
 		line-height: 16px;
 		white-space: pre-wrap;

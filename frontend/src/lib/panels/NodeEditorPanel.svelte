@@ -1206,7 +1206,6 @@
 		z-index: 1;
 	}
 	.empty-hint kbd {
-		font-family: var(--font-mono);
 		font-size: var(--fs-small);
 		padding: 1px var(--space-3);
 		border: 1px solid var(--border);

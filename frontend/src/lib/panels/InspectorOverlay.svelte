@@ -168,7 +168,6 @@
 		color: var(--danger);
 	}
 	.node-error pre {
-		font-family: var(--font-mono);
 		font-size: var(--fs-micro);
 		color: var(--text-dim);
 		white-space: pre-wrap;
