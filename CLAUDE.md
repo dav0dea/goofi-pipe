@@ -346,10 +346,19 @@ Analysis reports live in `docs/analysis/` (also gitignored).
   device-class questions (pointer, hover, orientation). Size in `rem`/relative units — the
   `html` base is a responsive `clamp()`. One theme, done well (no dark-mode toggle).
 - **The workspace/panel system and the cable-drag feel are frozen UX.** Restyle them, don't
-  redesign them. On phones the *same* tree renders through an **ephemeral, display-only**
-  projection (foregrounded panel + touch navigation sugar) — never persisted, never an input
-  to `resizeSplit`/`setPanelState`/the `.gfi` `layout` blob, so a phone session cannot write
-  a phone-shaped layout into a user's patch.
+  redesign them. **There is no phone-only layout mode** (reversed 2026-07-28 — an earlier
+  "ephemeral display-only projection" plan was dropped by the user before it was built). A phone
+  renders the *same* panel tree as the desktop; **panel maximize is the small-screen mechanism**,
+  since it already shows one panel at a time and provably never persists (`toggleMaximize` touches
+  `maximizedPanelId` only, which is not in `WorkspaceState`). The work is to make maximize/restore
+  and the rest of the chrome touch-friendly — not to build a second navigation model.
+- **Mobile and desktop are ONE system with different UI representations, never two tracks.** The
+  infrastructure is shared — including dirty tracking and undo/redo. When a behaviour is wrong on
+  phone, fix it for both; a phone-only guard is the wrong shape. Corollary the user set explicitly:
+  **navigation must not dirty the patch on either platform** — entering a sub-patch is navigation
+  (must not dirty), changing a viewer *type* is a real view setting (dirties). Today both ride the
+  same `setPanelState` → `set_layout` write, which dirties indiscriminately; that taxonomy is the
+  fix, not a per-device suppression.
 - Don't reintroduce dearpygui, zmq, or a Python manager.
 - The iceoryx2 transport and the GOOF wire format are load-bearing; changing either
   means changing `frontend/src/lib/codec/` in lockstep (`codec_golden.json` pins it).
