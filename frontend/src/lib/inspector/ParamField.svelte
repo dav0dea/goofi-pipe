@@ -349,9 +349,6 @@
 		border-radius: var(--radius-sm);
 		tab-size: 4;
 	}
-	.fx-multiline:focus {
-		border-color: var(--accent);
-	}
 	/* Touch: lift the multi-line editor to 16px so focusing it does not force-zoom iOS (the desktop
 	   --fs-micro size above is kept). Mirrors app.css's coarse input/textarea floor. */
 	@media (hover: none) and (pointer: coarse) {

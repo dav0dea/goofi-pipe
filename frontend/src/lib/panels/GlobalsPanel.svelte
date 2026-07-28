@@ -252,9 +252,6 @@
 		border-radius: var(--radius-sm);
 		color: var(--text);
 	}
-	input.name:focus-visible {
-		border-color: var(--accent);
-	}
 	.type {
 		font-family: var(--font-mono);
 		font-size: var(--fs-micro);

@@ -168,16 +168,17 @@ textarea {
 	border-radius: var(--radius-sm);
 	padding: var(--space-2) var(--space-4);
 	outline: none;
+	/* Kept for the border-colour changes components DO make on these elements (the viewer-kind
+	   select's hover, say) — focus is not one of them; see the ring below. */
 	transition: border-color var(--dur-fast) var(--ease);
-}
-input:focus,
-select:focus,
-textarea:focus {
-	border-color: var(--accent);
 }
 
 /* Keyboard focus is visible app-wide (accent = state, meaning #2). Applies only to keyboard
-   focus, so mouse clicks stay quiet. Components must not `outline: none` without this fallback. */
+   focus, so mouse clicks stay quiet. Components must not `outline: none` without this fallback.
+   It is also the ONLY focus signal a field gets: `input:focus { border-color: var(--accent) }`
+   used to live here at (0,0,1) and therefore did not replace this (0,1,0) rule, it stacked with
+   it — 1px accent border, 1px gap, 2px accent outline, the loudest ink in the palette fired twice
+   for one state. */
 :focus-visible {
 	outline: 2px solid var(--accent);
 	outline-offset: 1px;

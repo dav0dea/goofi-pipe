@@ -20,3 +20,33 @@ test('a keyboard-focused element shows the app accent focus ring', async ({ page
 	expect(ring.outlineWidth, 'the app :focus-visible ring is 2px').toBe('2px');
 	expect(ring.outlineColor, 'the ring colour is --accent (#50d0a0)').toBe('rgb(80, 208, 160)');
 });
+
+// ...and shows it exactly ONCE. app.css's `input:focus { border-color: var(--accent) }` (0,0,1) does
+// not beat `:focus-visible` (0,1,0), so a focused field used to paint the accent twice: a 1px accent
+// border, a 1px gap, then the 2px accent outline. Against the "too salient" brief that fires the
+// loudest ink in the palette — the same ink as node selection and the active-panel ring — twice for
+// one state. Only a computed readback can tell the two rings apart.
+test('a focused text field paints ONE accent ring, not two concentric ones', async ({ page }) => {
+	await page.goto('/dev/ui');
+	const input = page.getByTestId('ui-field-number');
+	await input.waitFor();
+	await input.click();
+
+	const ring = await input.evaluate((el) => {
+		const s = getComputedStyle(el);
+		return {
+			focused: document.activeElement === el,
+			outlineWidth: s.outlineWidth,
+			outlineColor: s.outlineColor,
+			borderColor: s.borderTopColor
+		};
+	});
+	expect(ring.focused, 'clicking the field focuses it').toBe(true);
+	// Browsers match :focus-visible on a text input even under mouse focus (a UA heuristic), so the
+	// outline half is the real, rendered ring — not a proxy for it.
+	expect(ring.outlineWidth, 'the single ring is the 2px :focus-visible outline').toBe('2px');
+	expect(ring.outlineColor, 'and it is --accent').toBe('rgb(80, 208, 160)');
+	expect(ring.borderColor, 'the field keeps its resting --border hairline (no second ring)').toBe(
+		'rgb(72, 72, 72)'
+	);
+});

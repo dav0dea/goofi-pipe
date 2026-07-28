@@ -70,8 +70,8 @@
 		color: var(--text);
 		border-color: var(--accent);
 	}
-	/* Focus chrome is the app-wide base: `select:focus` already brightens the border and the global
-	   `:focus-visible` restores the accent keyboard ring — the old `.kind:focus { outline: none }`
-	   only suppressed that ring (0,2,0 beat the 0,1,0 global rule), so it is dropped, not renamed
-	   (a literal `:focus-visible { outline: none }` would keep suppressing it). */
+	/* Focus chrome is the app-wide base: the global `:focus-visible` accent ring, and nothing else —
+	   the old `.kind:focus { outline: none }` only suppressed that ring (0,2,0 beat the 0,1,0 global
+	   rule), so it is dropped, not renamed (a literal `:focus-visible { outline: none }` would keep
+	   suppressing it). The border stays at rest under focus on purpose: one ring, not two. */
 </style>
