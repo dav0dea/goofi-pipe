@@ -60,6 +60,56 @@ describe('clampToViewport', () => {
 		expect(pos).toEqual({ left: 2, top: 14 });
 	});
 
+	// The opt-in flip. Shifting alone is wrong for a BOTTOM-anchored trigger: the surface slides up
+	// until it fits and then encloses the very chip that opened it, so the toggle-to-close is
+	// unreachable and the click lands on a row instead. Opt-in because ContextMenu shares this
+	// function with a degenerate point anchor, where "above the anchor" is not a placement anyone asked
+	// for — its bottom-edge behaviour must stay byte-identical.
+	describe('the opt-in flip', () => {
+		it('flips above a bottom-anchored trigger instead of enclosing it', () => {
+			const anchor = rect(12, 760, 90, 28); // a chip 12px off the bottom: bottom = 788
+			const pos = clampToViewport(
+				anchor,
+				{ width: 320, height: 200 },
+				{ width: 1000, height: 800 },
+				{ flip: true }
+			);
+			// 788 + 200 > 800 - 6 → flip: top = 760 - 200 - 6 = 554, so the surface ends 6px ABOVE
+			// the anchor's top edge and the two boxes cannot intersect.
+			expect(pos).toEqual({ left: 12, top: 554 });
+			expect(pos.top + 200, 'the surface clears the anchor').toBeLessThanOrEqual(anchor.top);
+		});
+
+		it('leaves the default (unflipped) placement untouched — ContextMenu shares this function', () => {
+			const anchor = rect(12, 760, 90, 28);
+			const shifted = clampToViewport(anchor, { width: 320, height: 200 }, { width: 1000, height: 800 });
+			expect(shifted).toEqual({ left: 12, top: 594 }); // 800 - 200 - 6, the pre-existing shift
+		});
+
+		it('falls back to the shift when there is no room above either', () => {
+			const anchor = rect(12, 100, 90, 28); // bottom = 128, but the surface is 760 tall
+			const pos = clampToViewport(
+				anchor,
+				{ width: 320, height: 760 },
+				{ width: 1000, height: 800 },
+				{ flip: true }
+			);
+			// Above would start at 100 - 760 - 6 = -666 → off-screen, so the shift wins.
+			expect(pos).toEqual({ left: 12, top: 34 });
+		});
+
+		it('does not flip when the popover already fits below', () => {
+			const anchor = rect(12, 100, 90, 28);
+			const pos = clampToViewport(
+				anchor,
+				{ width: 320, height: 200 },
+				{ width: 1000, height: 800 },
+				{ flip: true }
+			);
+			expect(pos).toEqual({ left: 12, top: 128 });
+		});
+	});
+
 	it('is pure — identical input yields identical output', () => {
 		const anchor = rect(300, 200, 60, 24);
 		const a = clampToViewport(anchor, { width: 150, height: 90 }, { width: 800, height: 600 });

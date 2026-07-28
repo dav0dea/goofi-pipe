@@ -33,7 +33,10 @@
 				{activeNodes.length === 1 ? 'error' : 'errors'}
 			</Chip>
 		</span>
-		<Popover anchor={anchorEl} open={chipOpen} onDismiss={() => (chipOpen = false)}>
+		<!-- `flip`: the chip is anchored to the BOTTOM of the editor, so the plain shift would slide the
+		     surface up until it fit and then enclose the chip — burying its own toggle-to-close and the
+		     live error count. Opening upward is what this panel did before it delegated to Popover. -->
+		<Popover anchor={anchorEl} open={chipOpen} onDismiss={() => (chipOpen = false)} flip>
 			<div class="error-list" data-testid="error-popover">
 				{#each activeNodes as n (n.uid)}
 					<button class="prow" onclick={() => focus(n.uid)}>

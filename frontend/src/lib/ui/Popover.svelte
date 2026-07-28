@@ -26,6 +26,7 @@
 		anchor,
 		open,
 		onDismiss,
+		flip = false,
 		class: klass = '',
 		children,
 		...rest
@@ -34,6 +35,8 @@
 		anchor: HTMLElement | null;
 		open: boolean;
 		onDismiss: () => void;
+		/** Let the surface flip ABOVE a bottom-anchored trigger rather than shift up and cover it. */
+		flip?: boolean;
 		children?: Snippet;
 	} = $props();
 
@@ -53,7 +56,8 @@
 		pos = clampToViewport(
 			a,
 			{ width: m.width, height: m.height },
-			{ width: window.innerWidth, height: window.innerHeight }
+			{ width: window.innerWidth, height: window.innerHeight },
+			{ flip }
 		);
 		placed = true;
 	});

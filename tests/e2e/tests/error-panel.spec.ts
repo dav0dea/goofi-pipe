@@ -61,6 +61,39 @@ test.describe('ErrorPanel dismissal (delegated to Popover)', () => {
 		await expect(popover, 'an outside click dismisses the popover (new behaviour)').toBeHidden();
 	});
 
+	// The chip is anchored to the BOTTOM of the editor (`bottom: 12px`), and the clamp only ever
+	// shifted — never flipped — so the surface slid up until it fit and then ENCLOSED the chip on both
+	// axes at a higher z-index. Two consequences: the chip's toggle-to-close (the pre-M panel's only
+	// dismissal) became unreachable, and the click was not inert — it landed on the first error row and
+	// focused a node the user never asked for. Pre-M this panel opened upward.
+	test('the popover opens clear of its own chip, and the chip still toggles it closed', async ({
+		page
+	}) => {
+		const chipHost = await summonErrorChip(page);
+		const chip = chipHost.locator('button');
+		const popover = page.getByTestId('error-popover');
+
+		await chip.click();
+		await expect(popover).toBeVisible();
+		const chipBox = (await chip.boundingBox())!;
+		// The Popover primitive positions the surface itself; measure the surface, not the list inside.
+		const menuBox = (await page.locator('.ui-popover').boundingBox())!;
+		const overlaps =
+			chipBox.x < menuBox.x + menuBox.width &&
+			menuBox.x < chipBox.x + chipBox.width &&
+			chipBox.y < menuBox.y + menuBox.height &&
+			menuBox.y < chipBox.y + chipBox.height;
+		expect(overlaps, 'the popover does not cover the chip that opens it').toBe(false);
+
+		const before = await page.evaluate(() => (window as any).goofi.query.selection());
+		await chip.click(); // the toggle-to-close — must reach the chip, and must be inert otherwise
+		await expect(popover, 'the chip toggles its own popover closed').toBeHidden();
+		expect(
+			await page.evaluate(() => (window as any).goofi.query.selection()),
+			'closing the popover selected nothing behind it'
+		).toEqual(before);
+	});
+
 	// The row inside the popover is the one M kept bespoke here (a stacked name-over-message list
 	// row, not an action). M-Task 7 strips app.css's base `button` SKIN, so it must render from its
 	// own rule alone — including the fade on its hover fill, which it was inheriting from that skin
@@ -72,9 +105,8 @@ test.describe('ErrorPanel dismissal (delegated to Popover)', () => {
 		await chipHost.locator('button').click();
 		const row = page.locator('.error-list .prow').first();
 		await expect(row).toBeVisible();
-		// The chip sits directly under the popover it opens, so the click leaves the cursor ON the
-		// first row — park it elsewhere, and poll until the hover fill has faded back out (the row's
-		// own transition), or the probe samples a mid-fade colour rather than the rest state.
+		// Park the cursor away from the list and poll until the hover fill has faded back out (the
+		// row's own transition), or the probe samples a mid-fade colour rather than the rest state.
 		await page.mouse.move(5, 5);
 		await expect
 			.poll(() => row.evaluate((el) => getComputedStyle(el).backgroundColor), {

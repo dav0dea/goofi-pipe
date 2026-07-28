@@ -9,6 +9,7 @@
  *
  * The shift (not a flip) mirrors ContextMenu exactly; `Math.max(MARGIN, …)` floors an
  * overflowing/oversized menu to the margin so it is never pushed off-screen (never negative).
+ * A caller whose anchor sits at the BOTTOM of the screen opts into `{ flip: true }` — see below.
  */
 
 /** The gap kept between a clamped popover and the viewport edge — ContextMenu's 6px. */
@@ -28,7 +29,23 @@ export interface Placement {
 	top: number;
 }
 
-export function clampToViewport(anchor: AnchorRect, menu: Size, viewport: Size): Placement {
+export interface ClampOptions {
+	/**
+	 * Allow the popover to flip ABOVE the anchor when it does not fit below but does fit above.
+	 * Opt-in, because the shift is wrong only for a BOTTOM-anchored trigger: shifting slides the
+	 * surface up until it fits and then encloses the very trigger that opened it (the floating error
+	 * chip), making the toggle-to-close unreachable. A point anchor (ContextMenu) has no trigger to
+	 * enclose, so it keeps the plain shift.
+	 */
+	flip?: boolean;
+}
+
+export function clampToViewport(
+	anchor: AnchorRect,
+	menu: Size,
+	viewport: Size,
+	{ flip = false }: ClampOptions = {}
+): Placement {
 	// Preferred origin: flush under the anchor's bottom-left (the popover hangs below its trigger).
 	let left = anchor.left;
 	let top = anchor.bottom;
@@ -36,7 +53,10 @@ export function clampToViewport(anchor: AnchorRect, menu: Size, viewport: Size):
 		left = Math.max(MARGIN, viewport.width - menu.width - MARGIN);
 	}
 	if (top + menu.height > viewport.height - MARGIN) {
-		top = Math.max(MARGIN, viewport.height - menu.height - MARGIN);
+		// Above the anchor, keeping the same MARGIN as a gap — taken only when it lands fully
+		// on-screen under the module's own margin rule, else the shift below stands.
+		const above = anchor.top - menu.height - MARGIN;
+		top = flip && above >= MARGIN ? above : Math.max(MARGIN, viewport.height - menu.height - MARGIN);
 	}
 	return { left, top };
 }
