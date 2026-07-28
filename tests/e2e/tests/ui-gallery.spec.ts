@@ -252,6 +252,37 @@ test.describe('UI Field family', () => {
 		await expect(page.getByTestId('ui-compose-number'), 'the paired NumberInput tracks the emit').toHaveValue('0.75');
 	});
 
+	// The Slider's twin of the NumberInput pointercancel guard below. `touch-action: pan-y` exists
+	// precisely so a vertical scroll gesture passes through — and a UA that claims the pointer for that
+	// pan fires `pointercancel`, never `pointerup`. Wiring only pointerdown/pointerup therefore strands
+	// the `useLiveValue` latch, and the thumb stops following the backend (an expression-driven param,
+	// an undo, the sibling NumberInput) until another full press. Both product mounts put the Slider
+	// inside a vertical ScrollArea, so "touch a slider, then scroll the panel" is the failing gesture.
+	test('a pointercancel releases the Slider latch (the thumb keeps following the source)', async ({
+		page
+	}) => {
+		await page.goto('/dev/ui');
+		const range = page.getByTestId('ui-compose-slider').locator('input[type=range]');
+		// An external echo on the SHARED value, driven from the standalone `ui-slider` bound to the same
+		// state — no pointer on the control under test, so only its own latch decides whether it follows.
+		const echo = async (v: string) => {
+			await page.getByTestId('ui-slider').locator('input[type=range]').evaluate((el, val) => {
+				const r = el as HTMLInputElement;
+				r.value = val;
+				r.dispatchEvent(new Event('input', { bubbles: true }));
+			}, v);
+			await expect(page.getByTestId('ui-compose-value')).toHaveText(v);
+		};
+
+		await range.dispatchEvent('pointerdown'); // latch, as a drag would
+		await echo('0.6');
+		await expect(range, 'the latch is engaged — the echo is suppressed mid-drag').toHaveValue('0.3');
+
+		await range.dispatchEvent('pointercancel'); // the UA claims the pointer for a scroll pan
+		await echo('0.8');
+		await expect(range, 'the cancelled gesture released the latch').toHaveValue('0.8');
+	});
+
 	// The track auto-extends when the live value lies outside [min,max] (Slider.svelte:44-48): a value of
 	// 5 on a [0,1] slider renders in range because the range's min/max stretch to span it, not clip at 1.
 	test('a Slider auto-extends its track to a live value outside [min,max]', async ({ page }) => {

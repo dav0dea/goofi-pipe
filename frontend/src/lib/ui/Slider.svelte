@@ -1,8 +1,9 @@
 <!--
   Slider — a dumb range control (spec §2.2): `value` in, `onChange` out. `min`/`max`/`step`, an
   accent track, and the min/max bound labels. It opts into `useLiveValue` so a live backend echo can't
-  yank the thumb mid-drag: `editing` is latched on pointer-down and released on pointer-up, and each
-  drag step commits live.
+  yank the thumb mid-drag: `editing` is latched on pointer-down and released on pointer-up OR
+  pointer-cancel (`touch-action: pan-y` below lets a vertical scroll gesture through, and the UA
+  claiming the pointer for that pan fires cancel, not up), and each drag step commits live.
 
   The track auto-extends when the live value lies outside [min, max] (as goofi3 / ParamField do) so a
   value of 5 on a [0, 1] slider renders in range instead of clipping at the edge. The wrapping row is
@@ -62,6 +63,7 @@
 		value={live.value}
 		onpointerdown={() => live.begin()}
 		onpointerup={() => live.end()}
+		onpointercancel={() => live.end()}
 		oninput={(e) => live.commit(Number((e.currentTarget as HTMLInputElement).value))}
 	/>
 	<span class="ui-slider-bound" aria-hidden="true">{fmtBound(hi)}</span>
