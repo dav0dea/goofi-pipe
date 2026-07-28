@@ -64,5 +64,10 @@ test('a console row is sized by its text, not by its action buttons', async ({ p
 			(id) => (window as any).goofi.commands.setPanelType(id, 'node-editor'),
 			panelId
 		);
+		await expect(page.locator('.canvas-wrap').first(), 'the editor panel is back').toBeVisible();
+		// AppShell pushes the layout into the RUNNING PATCH on a 400ms debounce, and the patch outlives
+		// this page. Leaving before the restore is pushed persists a console-shaped workspace that
+		// every later spec then boots into — so settle past the debounce before the page goes away.
+		await page.waitForTimeout(700);
 	}
 });
