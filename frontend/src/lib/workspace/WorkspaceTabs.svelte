@@ -71,7 +71,7 @@
 </script>
 
 <div
-	class="tabs"
+	class="tabs thin-scrollbar"
 	data-testid="workspace-tabs"
 	class:dragover={!!ws.dragging}
 	ondragover={onBarDragOver}
@@ -159,7 +159,6 @@
 		background: transparent;
 		overflow-x: auto;
 		overflow-y: hidden;
-		scrollbar-width: thin;
 	}
 	.tabs.dragover {
 		background: color-mix(in srgb, var(--accent) 7%, transparent);

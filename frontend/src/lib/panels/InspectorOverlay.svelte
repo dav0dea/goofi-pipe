@@ -130,7 +130,7 @@
 		min-width: 0;
 		transform: translateX(100%);
 		transition: transform var(--dur-slow) var(--ease);
-		box-shadow: -8px 0 24px rgba(0, 0, 0, 0.35);
+		box-shadow: var(--shadow-side);
 		z-index: var(--z-side-panel);
 	}
 	.side-panel.open {

@@ -1,10 +1,3 @@
-/** Node categories no longer drive colour (design overhaul D4). Every node/dot renders
- * neutral; category still groups the palette, just without a hue. Kept as the single
- * call site so AddNodeMenu dots neutralise with no markup change. */
-export function categoryColor(_category: string | undefined | null): string {
-	return 'var(--text-muted)';
-}
-
 /** Map a goofi DataType (ARRAY/STRING/TABLE/…) to a CSS color variable.
  *
  * Communicates dtype at a glance on every slot pin/label. Palette borrowed

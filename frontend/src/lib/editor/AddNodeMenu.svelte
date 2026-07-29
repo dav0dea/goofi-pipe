@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { graph } from '$lib/stores/graph.svelte';
-	import { categoryColor, dtypeColor } from './categoryColor';
+	import { dtypeColor } from './categoryColor';
 	import { rankNodeTypes } from './nodeSearch';
 	import type { NodeTypeInfo } from '$lib/api/control';
 	import type { SlotClickSeed } from '$lib/stores/ui.svelte';
@@ -128,7 +128,7 @@
 						onmouseenter={() => (highlighted = filtered.indexOf(t))}
 						onclick={() => pick(t)}
 					>
-						<span class="cat-dot" style="background: {categoryColor(cat)};"></span>
+						<span class="cat-dot"></span>
 						<span class="t-name">{t.type}</span>
 						<span class="t-cat">{cat}</span>
 					</button>
@@ -145,7 +145,7 @@
 					onmouseenter={() => (highlighted = idx)}
 					onclick={() => pick(t)}
 				>
-					<span class="cat-dot" style="background: {categoryColor(t.category)};"></span>
+					<span class="cat-dot"></span>
 					<span class="t-name">{t.type}</span>
 					<span class="t-cat">{t.category}</span>
 				</button>
@@ -231,9 +231,13 @@
 		opacity: var(--disabled-opacity);
 		cursor: not-allowed;
 	}
+	/* Categories group the palette but no longer colour it (D4), so the dot is one neutral
+	   ink stated here — not a per-item inline style routed through a function that ignored
+	   its argument. */
 	.cat-dot {
 		width: 6px;
 		height: 6px;
+		background: var(--text-muted);
 		border-radius: 50%;
 		flex-shrink: 0;
 	}

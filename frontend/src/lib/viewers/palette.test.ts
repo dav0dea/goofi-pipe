@@ -16,9 +16,14 @@ function consumers(): { rel: string; src: string }[] {
 }
 
 describe('canvas series palette', () => {
-	it('SERIES is a single non-empty list of #rrggbb (no 8-vs-7 drift)', () => {
+	it('SERIES is one non-empty list of distinct #rrggbb', () => {
 		expect(SERIES.length).toBeGreaterThan(0);
 		for (const c of SERIES) expect(c).toMatch(/^#[0-9a-fA-F]{6}$/);
+		// A repeat would silently give two series the same line — the palette's whole job is to
+		// tell them apart. Its LENGTH is deliberately unpinned: with one exported const and its
+		// importers, the 8-vs-7 drift is impossible by construction, and pinning it would only
+		// fail the next deliberate extension.
+		expect(new Set(SERIES).size, 'no two series share a colour').toBe(SERIES.length);
 	});
 });
 

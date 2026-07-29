@@ -63,7 +63,7 @@
 				<StatusDot tone={node.error ? 'error' : 'ok'} size="sm" />
 				<span class="ln" title={node.type}>{node.name}</span>
 				{#if controls}
-					<div class="controls">{@render controls(node)}</div>
+					<div class="controls thin-scrollbar">{@render controls(node)}</div>
 				{/if}
 			{/snippet}
 			{#snippet end()}
@@ -117,7 +117,6 @@
 		margin-left: var(--space-6);
 		overflow-x: auto;
 		overflow-y: hidden;
-		scrollbar-width: thin;
 	}
 	.body {
 		position: relative;

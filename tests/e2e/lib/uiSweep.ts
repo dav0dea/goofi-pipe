@@ -10,7 +10,7 @@ const INDEX_TS = path.resolve(__dirname, '../../../frontend/src/lib/ui/index.ts'
 /**
  * The primitive component names re-exported from `$lib/ui`, parsed straight from index.ts. A
  * primitive is a `export { default as X } from './X.svelte'` line; the named logic re-exports
- * (variantClass, layout, tabsState, …) and the `.svelte.ts` rune module carry no `default as`, so
+ * (variantClass, clampToViewport, tabsState, …) and the `.svelte.ts` rune module carry no `default as`, so
  * they are excluded. Sorted for a stable set comparison against the sample registry.
  */
 export function exportedPrimitives(): string[] {

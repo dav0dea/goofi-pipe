@@ -76,6 +76,10 @@
 	--panel-header-h: 26px;
 
 	/* dtype palette — slot pins/labels colour-code at a glance. */
+	/* --dtype-array is byte-identical to --accent. Deliberate and safe: the two never co-occur on
+	   one element — a slot pin is dtype ink, never the state ink the ring (#1) and focus (#2)
+	   meanings below own. Recorded because the coincidence looks like drift and is not; the
+	   --dtype-* channel is frozen, so any nudge is the user's call, not a sweep's. */
 	--dtype-array: #50d0a0;
 	--dtype-string: #f0c050;
 	--dtype-table: #e08060;
@@ -97,6 +101,9 @@
 
 	--shadow-1: 0 4px 18px rgba(0, 0, 0, 0.45);
 	--shadow-2: 0 12px 36px rgba(0, 0, 0, 0.55);
+	/* Cast leftward by a panel that slides in from the right edge, so it reads as depth against
+	   the body rather than as a drop under a floating surface. */
+	--shadow-side: -8px 0 24px rgba(0, 0, 0, 0.35);
 
 	--radius-sm: 4px;
 	--radius-md: 6px;
@@ -228,8 +235,11 @@ textarea {
 	scrollbar-width: thin;
 	scrollbar-color: var(--surface-3) transparent;
 }
+/* Both axes: the two horizontal wearers (the tab strip, the panel-header control strip) need the
+   height, and it is inert for the vertical ones, which pin `overflow-x: hidden`. */
 .thin-scrollbar::-webkit-scrollbar {
 	width: 8px;
+	height: 8px;
 }
 .thin-scrollbar::-webkit-scrollbar-track {
 	background: transparent;

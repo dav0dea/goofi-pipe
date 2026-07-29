@@ -5,9 +5,10 @@
   space by default — its dominant use — while a consumer can bound it with an explicit height via
   the merged `class`. Snippet `children`, merged `class`, forwarded `data-testid` via `...rest`.
 
-  The scrollbar skin is the global `.thin-scrollbar` (app.css) — shared with the one scroller that
-  cannot be this component (ConsolePanel's virtual list owns its own scrollTop handle), so the app
-  has one slim scrollbar, not a copy per scroller.
+  The scrollbar skin is the global `.thin-scrollbar` (app.css), worn by this component and by the
+  scrollers that cannot be one — ConsolePanel's virtual list (it owns its own scrollTop handle) and
+  the two horizontal chrome strips — so the slim scrollbar is one rule, not a copy per scroller.
+  The other auto-overflow scrollers in the tree opt out on purpose and keep the default skin.
 -->
 <script lang="ts">
 	import type { Snippet } from 'svelte';
