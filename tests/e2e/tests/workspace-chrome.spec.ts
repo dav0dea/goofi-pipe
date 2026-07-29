@@ -1,6 +1,18 @@
-import { test, expect, type Locator } from '@playwright/test';
+import { test, expect, type Locator, type Page } from '@playwright/test';
 import { waitForApp } from '../lib/app';
 import { addNode, waitForNode, waitForNoNode } from '../lib/goofi';
+
+/**
+ * Put the workspace back after a Split Right. `ws.split` re-arms AppShell's 400ms `set_layout`
+ * debounce, which writes into the RUNNING PATCH — one backend for the whole run — so a spec that
+ * splits and leaves early persists a 2-panel workspace that every later spec then boots into.
+ * It passes alone and depends on nothing but timing, which is why it belongs in a `finally`.
+ */
+async function closeSplit(page: Page): Promise<void> {
+	await page.getByTestId('panel-header').nth(1).getByRole('button', { name: 'Close panel' }).click();
+	await expect(page.locator('.panel'), 'the workspace is back to one panel').toHaveCount(1);
+	await page.waitForTimeout(700); // past AppShell's 400ms set_layout debounce
+}
 
 // The workspace panel system is FROZEN UX; sub-project M restyled its chrome onto the
 // `$lib/ui` primitives (PanelHeader's dropdown + maximize/close, the tab strip's ✕/＋).
@@ -137,12 +149,16 @@ test('the kept-bespoke menu row and panel tile declare their own font', async ({
 	const menu = page.locator('.context-menu');
 	await header.click({ button: 'right' });
 	await menu.locator('.item', { hasText: 'Split Right' }).click();
-	const choice = page.getByTestId('empty-panel').locator('.choice').first();
-	await expect(choice).toBeVisible();
-	const choiceFont = await choice.evaluate((el) => getComputedStyle(el).fontFamily);
-	expect(choiceFont, 'the empty-panel tile renders in the app mono face').toContain(
-		'JetBrains Mono'
-	);
+	try {
+		const choice = page.getByTestId('empty-panel').locator('.choice').first();
+		await expect(choice).toBeVisible();
+		const choiceFont = await choice.evaluate((el) => getComputedStyle(el).fontFamily);
+		expect(choiceFont, 'the empty-panel tile renders in the app mono face').toContain(
+			'JetBrains Mono'
+		);
+	} finally {
+		await closeSplit(page);
+	}
 });
 
 test('the panel header dropdown keeps its frozen geometry over the primitive padding', async ({
@@ -268,19 +284,23 @@ test('the kept-bespoke chrome buttons render from their own rules, not the base 
 	await page.keyboard.press('Escape');
 
 	// 5. EmptyPanel `.choice` — a tile, not a row: the --surface-1 face IS the affordance, the
-	//    border is the hover accent alone, and --radius-md rounds the card. Split last (it leaves
-	//    the extra panel behind, and every locator above is scoped to `.first()`).
+	//    border is the hover accent alone, and --radius-md rounds the card. Split last, since every
+	//    locator above is scoped to `.first()`; the `finally` hands the workspace back either way.
 	await header.click({ button: 'right' });
 	await page.locator('.context-menu .item', { hasText: 'Split Right' }).click();
-	const choice = await skin(page.getByTestId('empty-panel').locator('.choice').first());
-	expectAppFace(choice, 'the empty-panel tile');
-	expect(choice.fontSize, 'the tile takes the body size').toBeCloseTo(choice.rem, 0);
-	expect(choice.background, 'the tile face is --surface-1').toBe('rgb(28, 28, 28)');
-	expect(choice.borderWidth, 'a 1px border it colours only on hover').toBe('1px');
-	expect(choice.radius, 'the card is --radius-md').toBe('6px');
-	expect(choice.padTop).toBeCloseTo(0.75 * choice.rem, 0);
-	expect(choice.padLeft).toBeCloseTo(0.625 * choice.rem, 0);
-	expect(choice.transition).toContain('background');
+	try {
+		const choice = await skin(page.getByTestId('empty-panel').locator('.choice').first());
+		expectAppFace(choice, 'the empty-panel tile');
+		expect(choice.fontSize, 'the tile takes the body size').toBeCloseTo(choice.rem, 0);
+		expect(choice.background, 'the tile face is --surface-1').toBe('rgb(28, 28, 28)');
+		expect(choice.borderWidth, 'a 1px border it colours only on hover').toBe('1px');
+		expect(choice.radius, 'the card is --radius-md').toBe('6px');
+		expect(choice.padTop).toBeCloseTo(0.75 * choice.rem, 0);
+		expect(choice.padLeft).toBeCloseTo(0.625 * choice.rem, 0);
+		expect(choice.transition).toContain('background');
+	} finally {
+		await closeSplit(page);
+	}
 });
 
 test('the kept-bespoke node-scoped buttons render from their own rules', async ({ page }) => {

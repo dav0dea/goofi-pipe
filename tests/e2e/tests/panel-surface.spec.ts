@@ -26,6 +26,18 @@ async function splitRight(page: Page): Promise<void> {
 	await expect(page.locator('.panel')).toHaveCount(2);
 }
 
+/**
+ * Put the workspace back, through the split panel's own ✕. `ws.split` re-arms AppShell's 400ms
+ * `set_layout` debounce, which writes into the RUNNING PATCH — one backend for the whole run — so a
+ * spec that splits and leaves early persists a 2-panel workspace that every later spec boots into.
+ * It passes alone and depends on nothing but screenshot latency, which is why it must be a `finally`.
+ */
+async function closeSplit(page: Page): Promise<void> {
+	await page.getByTestId('panel-header').nth(1).getByRole('button', { name: 'Close panel' }).click();
+	await expect(page.locator('.panel'), 'the workspace is back to one panel').toHaveCount(1);
+	await page.waitForTimeout(700); // past AppShell's 400ms set_layout debounce
+}
+
 test('a panel is a surface on the ground, not a rectangle drawn on it', async ({ page }) => {
 	await page.goto('/');
 	await waitForApp(page);
@@ -60,7 +72,15 @@ test('a split seam paints one neutral hairline, not a stack of them', async ({ p
 	await page.goto('/');
 	await waitForApp(page);
 	await splitRight(page);
+	try {
+		await seamRunsAreOne(page);
+	} finally {
+		await closeSplit(page);
+	}
+});
 
+/** The pixel readback, factored out so the split above can be undone in a `finally`. */
+async function seamRunsAreOne(page: Page): Promise<void> {
 	const splitter = page.locator('.splitter.row').first();
 	await splitter.waitFor();
 	const seam = (await splitter.boundingBox())!;
@@ -107,4 +127,4 @@ test('a split seam paints one neutral hairline, not a stack of them', async ({ p
 	// Exactly one: the splitter's own rule. (Before, this scan read the two panel borders as well —
 	// three lines across an 8px span, the third of them tinted by the active panel's ring.)
 	expect(runs, 'the seam reads through the splitter rule alone').toBe(1);
-});
+}
