@@ -1345,10 +1345,14 @@
 		bottom: var(--space-8);
 		left: var(--space-8);
 	}
-	/* On touch every control button is floored to --hit (44px), so the cluster is a slab rather
-	   than a strip and a desktop-sized inset parks it well inside the canvas instead of in its
-	   corner. It tucks in — still clear of the grip, whose 16px box is clipped to its lower-left
-	   triangle, so a cluster cornered at (g, g) misses it entirely once g + g > 16. */
+	/* On touch every control button is floored to --hit in BOTH axes — `min-height` from app.css's
+	   blanket coarse rule and `min-width` from the scoped one beside it, because SvelteFlow's own
+	   stylesheet sizes them 26×26. (This comment claimed the slab before the width half existed,
+	   which is very plausibly why nobody re-measured it; the 44×44 is now a row in
+	   `tests/e2e/tests/touch-hit-floor.spec.ts`'s SITES registry rather than a claim here.) So the
+	   cluster is a slab rather than a strip, and a desktop-sized inset parks it well inside the
+	   canvas instead of in its corner. It tucks in — still clear of the grip, whose 16px box is
+	   clipped to its lower-left triangle, so a cluster cornered at (g, g) misses it once g + g > 16. */
 	@media (hover: none) and (pointer: coarse) {
 		.editor-panel :global(.svelte-flow__controls) {
 			bottom: var(--space-6);

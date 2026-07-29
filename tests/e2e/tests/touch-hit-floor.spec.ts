@@ -173,6 +173,15 @@ const SITES: Site[] = [
 		control: (p) => p.getByTestId('node-linked-panel').locator('select.kind')
 	},
 	{
+		// SvelteFlow's own stylesheet sizes these 26×26 and the app's coarse floor was `min-height`
+		// ONLY, so each was 26×44 — the one §3.1c site in neither the fixed nor the declined column,
+		// and never measured because a comment beside its insets asserted the opposite. It is also
+		// the last Fit door touch has: D-R6 deleted the global one on the argument that every node
+		// editor carries its own, `f` is a chord, and `zoomOnDoubleClick` is off.
+		name: 'a flow viewport control',
+		control: (p) => p.locator('.svelte-flow__controls button').first()
+	},
+	{
 		name: 'the inspector resize handle',
 		setup: async (page) => {
 			const uid = await addNode(page, 'Oscillator', 'inputs');

@@ -368,6 +368,16 @@ textarea {
 	textarea {
 		font-size: 16px; /* below 16px iOS force-zooms on focus */
 	}
+	/* The blanket floor above is `min-height` only, and SvelteFlow's own stylesheet sizes its
+	   viewport controls 26×26 — so each of Zoom in / Zoom out / Fit was 26 wide by 44 tall. Scoped
+	   to this cluster rather than folded into the rule above, because three controls inside the
+	   FROZEN node canvas defeat only the height floor on purpose (ViewerControls' kind select,
+	   SlotViewer's ▸, BoundaryNode's rename) and a blanket `min-width` would widen all three. On the
+	   box, not a pseudo: `.svelte-flow__controls` is `overflow: hidden` above, which is exactly what
+	   clipped the tab strip's ✕ (C17). Pinned by touch-hit-floor.spec.ts's SITES registry. */
+	.svelte-flow__controls-button {
+		min-width: var(--hit);
+	}
 	/* safe-area padding for notches/home indicators */
 	body {
 		padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
