@@ -64,7 +64,7 @@
 	   scrolls the error list inside it. */
 	.error-list {
 		width: 320px;
-		max-height: 60vh;
+		max-height: 60dvh;
 		overflow-y: auto;
 		display: flex;
 		flex-direction: column;

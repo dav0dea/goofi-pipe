@@ -155,7 +155,10 @@ body {
 	font-size: clamp(11px, 0.9vw + 0.3vh, 14px);
 	line-height: 1.35;
 	overflow: hidden;
-	height: 100vh;
+	/* `dvh`, not `vh`: on a phone `vh` is the LARGEST viewport (browser chrome retracted), so a
+	   100vh shell is taller than the screen for as long as the address bar is showing — and this
+	   element is `overflow: hidden`, so the bottom of the app is simply cut off. */
+	height: 100dvh;
 	width: 100vw;
 	-webkit-font-smoothing: antialiased;
 	text-rendering: optimizeLegibility;

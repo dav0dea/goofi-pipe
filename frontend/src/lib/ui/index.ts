@@ -28,6 +28,7 @@ export { default as NumberInput } from './NumberInput.svelte';
 export { default as Slider } from './Slider.svelte';
 export { default as Select } from './Select.svelte';
 export { default as TextInput } from './TextInput.svelte';
+export { MODE_ATTRS, type InputModeVariant } from './inputMode';
 export { default as Trigger } from './Trigger.svelte';
 export { default as Toggle } from './Toggle.svelte';
 export { useLiveValue, displayValue, type LiveValue } from './liveValue.svelte';

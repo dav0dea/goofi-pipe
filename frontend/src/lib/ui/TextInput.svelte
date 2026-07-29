@@ -14,17 +14,9 @@
 	import type { HTMLInputAttributes } from 'svelte/elements';
 	import { useLiveValue } from './liveValue.svelte';
 	import { claimFieldControlId } from './field';
-
-	type InputModeVariant = 'text' | 'decimal' | 'search' | 'path';
-
-	// One source of truth for the per-variant keyboard + editing hints. `autocorrect` is Safari's
-	// non-standard attribute; carried as a plain attribute bag so it applies without a typed slot.
-	const MODE_ATTRS: Record<InputModeVariant, Record<string, string>> = {
-		text: { inputmode: 'text', enterkeyhint: 'done', autocapitalize: 'sentences', autocorrect: 'on', spellcheck: 'true' },
-		decimal: { inputmode: 'decimal', enterkeyhint: 'done', autocapitalize: 'off', autocorrect: 'off', spellcheck: 'false' },
-		search: { inputmode: 'search', enterkeyhint: 'search', autocapitalize: 'off', autocorrect: 'off', spellcheck: 'false' },
-		path: { inputmode: 'url', enterkeyhint: 'go', autocapitalize: 'off', autocorrect: 'off', spellcheck: 'false' }
-	};
+	// One source of truth for the per-variant keyboard + editing hints — shared with the handful of
+	// raw `<input>`s that legitimately stay native (per-keystroke bind + Enter/Escape + autofocus).
+	import { MODE_ATTRS, type InputModeVariant } from './inputMode';
 
 	let {
 		value,

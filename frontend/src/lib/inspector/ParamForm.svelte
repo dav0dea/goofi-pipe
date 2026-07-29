@@ -39,7 +39,7 @@
 	import { evalShowWhen, type ShowWhenPredicate } from './showWhen';
 	import ParamField from './ParamField.svelte';
 	import SubPatchInspector from '$lib/editor/SubPatchInspector.svelte';
-	import { Bar, Tabs, Badge, Disclosure, EmptyState } from '$lib/ui';
+	import { Bar, Tabs, Badge, Disclosure, EmptyState, MODE_ATTRS } from '$lib/ui';
 
 	let {
 		node,
@@ -188,6 +188,7 @@
 							{#if editingName}
 								<!-- svelte-ignore a11y_autofocus -->
 								<input
+									{...MODE_ATTRS.search}
 									class="pf-rename"
 									aria-label="Node name"
 									value={nameDraft}

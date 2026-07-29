@@ -191,11 +191,13 @@
 			</section>
 		</div>
 
-		<Bar>
+		<!-- The one bar in the app whose two groups both have a real minimum — a filename field and
+		     Cancel/Save. It wraps at the width they stop fitting; every other bar keeps `nowrap`. -->
+		<Bar style="--bar-wrap: wrap">
 			{#snippet start()}
 				{#if mode === 'save'}
 					<TextInput
-						style="width: 14rem; flex: 0 0 auto"
+						style="flex: 1 1 8rem; min-width: 0"
 						value={filename}
 						onChange={(v) => (filename = v)}
 						placeholder="patch name"
@@ -228,6 +230,9 @@
 		flex-direction: column;
 		min-width: 0;
 		font-size: var(--fs-small);
+		/* The modal is 92vw, so its own width — not the viewport's, and not a device class — is what
+		   decides whether a sidebar still fits beside the list (D-R6). */
+		container: fs / inline-size;
 	}
 	.title {
 		font-weight: 600;
@@ -236,8 +241,10 @@
 		display: flex;
 		min-height: 0;
 		/* The list is the only scroller, and a fixed body height keeps the modal from resizing as
-		   the user walks directories of different lengths. */
-		height: min(24rem, 55vh);
+		   the user walks directories of different lengths. `dvh`, not `vh`: on a phone `vh` is the
+		   LARGEST viewport (browser chrome retracted), so a `vh`-sized modal overflows the screen
+		   for as long as the address bar is showing. */
+		height: min(24rem, 55dvh);
 	}
 	/* Root shortcuts read as a sidebar off the same surface step as the bars — no divider needed. */
 	.roots {
@@ -330,5 +337,23 @@
 	.ext {
 		color: var(--text-muted);
 		font-family: var(--font-mono);
+	}
+	/* Below the width where a fixed sidebar leaves a usable file list, the roots lie DOWN: a
+	   horizontal strip above the list instead of a column beside it. Same rows, same order, one less
+	   axis — a different representation of one state, not a second layout (D-R2). */
+	@container fs (max-width: 30rem) {
+		.body {
+			flex-direction: column;
+		}
+		.roots {
+			flex: 0 0 auto;
+			flex-direction: row;
+			overflow-x: auto;
+			overflow-y: hidden;
+		}
+		.root {
+			flex: 0 0 auto;
+			white-space: nowrap;
+		}
 	}
 </style>

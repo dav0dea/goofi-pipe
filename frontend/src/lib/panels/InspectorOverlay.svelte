@@ -132,6 +132,11 @@
 		right: 0;
 		top: 0;
 		bottom: 0;
+		/* The width above is JS-inline and clamped only to [260, 720] — never to the host. On an
+		   editor narrower than the stored width the pane covered the whole canvas with its own left
+		   edge clipped off, which is a DEAD END: deselecting (a tap on the canvas) is the only way
+		   to close it. One `--hit` of canvas is exactly the escape hatch it must not eat. */
+		max-width: calc(100% - var(--hit));
 		background: color-mix(in srgb, var(--surface-1) 96%, transparent);
 		backdrop-filter: blur(8px);
 		border-left: 1px solid var(--border);

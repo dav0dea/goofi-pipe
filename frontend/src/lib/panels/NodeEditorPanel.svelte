@@ -70,7 +70,7 @@
 	import { registerEditor, unregisterEditor } from './editorCommands';
 	import InspectorOverlay from './InspectorOverlay.svelte';
 	import { asStateObject } from '$lib/workspace/panelState';
-	import { Button, IconButton, EmptyState, clampToViewport } from '$lib/ui';
+	import { Button, IconButton, EmptyState, clampToViewport, overlayViewport } from '$lib/ui';
 	import { onMount, untrack } from 'svelte';
 
 	let { panelId, state: panelState, setState }: PanelProps = $props();
@@ -173,17 +173,28 @@
 	// ContextMenu's idiom: measure the mounted menu, then re-clamp. A spawn point is the degenerate
 	// anchor rect the shared clamp already understands (`left`/`bottom` ARE the point).
 	$effect(() => {
-		if (!menuEl) return;
+		const el = menuEl;
+		if (!el) return;
 		const at = menuAt;
-		const r = menuEl.getBoundingClientRect();
-		const left =
-			at.align === 'center' ? at.x - r.width / 2 : at.align === 'end' ? at.x - r.width : at.x;
-		const p = clampToViewport(
-			{ left, top: at.y, right: left, bottom: at.y, width: 0, height: 0 },
-			{ width: r.width, height: r.height },
-			{ width: window.innerWidth, height: window.innerHeight }
-		);
-		menuPos = { x: p.left, y: p.top };
+		const place = (): void => {
+			const r = el.getBoundingClientRect();
+			const left =
+				at.align === 'center' ? at.x - r.width / 2 : at.align === 'end' ? at.x - r.width : at.x;
+			// `overlayViewport()`, not `window.innerHeight` — the same measurement Popover and
+			// ContextMenu clamp against. It matters more here than anywhere: this menu FOCUSES its
+			// search on open, so the soft keyboard is on its way up as the menu lands, and the layout
+			// viewport does not shrink to make room for it.
+			const p = clampToViewport(
+				{ left, top: at.y, right: left, bottom: at.y, width: 0, height: 0 },
+				{ width: r.width, height: r.height },
+				overlayViewport()
+			);
+			menuPos = { x: p.left, y: p.top };
+		};
+		place();
+		const vv = window.visualViewport;
+		vv?.addEventListener('resize', place);
+		return () => vv?.removeEventListener('resize', place);
 	});
 
 	// Watch ui.pendingSlotClick — when a node's port is clicked, open the
@@ -1327,7 +1338,9 @@
 	.menu-anchor {
 		position: fixed;
 		z-index: var(--z-addmenu);
-		width: 320px;
+		/* The clamp below can only SHIFT a surface that fits; a 320px menu on a 320px phone cannot
+		   sit inside the clamp's own 6px margins at any offset, so the width has to give first. */
+		width: min(320px, calc(100vw - var(--space-8)));
 	}
 	.breadcrumb {
 		position: absolute;

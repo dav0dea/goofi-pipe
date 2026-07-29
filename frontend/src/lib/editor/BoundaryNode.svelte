@@ -7,6 +7,7 @@
 <script lang="ts">
 	import { Handle, Position, type NodeProps } from '@xyflow/svelte';
 	import { dtypeColor } from './categoryColor';
+	import { MODE_ATTRS } from '$lib/ui';
 
 	let { data, selected }: NodeProps = $props();
 	const dir = $derived(data.dir as 'in' | 'out');
@@ -56,6 +57,7 @@
 	{#if editing}
 		<!-- svelte-ignore a11y_autofocus -->
 		<input
+			{...MODE_ATTRS.search}
 			class="lbl-edit nodrag"
 			bind:value={draft}
 			onkeydown={onKey}

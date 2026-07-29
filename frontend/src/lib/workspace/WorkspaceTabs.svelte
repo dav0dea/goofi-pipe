@@ -9,7 +9,7 @@
 -->
 <script lang="ts">
 	import { workspace } from './workspace.svelte';
-	import { IconButton } from '$lib/ui';
+	import { IconButton, MODE_ATTRS } from '$lib/ui';
 
 	const ws = workspace();
 	const tabs = $derived(ws.state.workspaces);
@@ -105,6 +105,7 @@
 			{#if editing === tab.id}
 				<!-- svelte-ignore a11y_autofocus -->
 				<input
+					{...MODE_ATTRS.search}
 					class="rename"
 					value={editValue}
 					oninput={(e) => (editValue = e.currentTarget.value)}

@@ -156,7 +156,7 @@
 		}
 	}
 	/* The dropdown surface: the shared Popover, tuned to the compact glassy menu it was —
-	   a fixed 212px column that scrolls its groups within 70vh. */
+	   a fixed 212px column that scrolls its groups within 70dvh. */
 	:global(.vs-menu) {
 		--popover-bg: var(--surface-glass);
 		--popover-pad: var(--space-2);
@@ -165,7 +165,7 @@
 		   default --radius-md rounds it visibly more than the pre-migration menu did (C13). */
 		--popover-radius: var(--radius-sm);
 		width: 212px;
-		max-height: 70vh;
+		max-height: 70dvh;
 		display: flex;
 		flex-direction: column;
 		backdrop-filter: blur(10px);

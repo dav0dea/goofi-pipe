@@ -41,6 +41,11 @@
 	.ui-bar {
 		display: flex;
 		align-items: center;
+		/* Opt-in wrapping (default off, so every existing bar is byte-identical). A bar whose two
+		   groups have a real minimum — the file browser's footer is a filename plus Cancel/Save —
+		   has to put the second group on a second line rather than push it off the edge, and
+		   `wrap` does that at the width it actually stops fitting rather than at a device class. */
+		flex-wrap: var(--bar-wrap, nowrap);
 		min-width: 0;
 		min-height: var(--bar-height, var(--panel-header-h));
 		padding: var(--bar-pad-y, var(--space-2)) var(--bar-pad-x, var(--space-4));
@@ -54,6 +59,12 @@
 		align-items: center;
 		gap: var(--bar-gap, var(--space-4));
 		min-width: 0;
+	}
+	/* The `end` group stays right-aligned even once it has wrapped onto its own line, where the
+	   spacer above it is no longer between the two. A no-op on a single line (the spacer already
+	   ate the slack), so nothing moves in the default, non-wrapping bar. */
+	.ui-bar-group:last-child {
+		margin-left: auto;
 	}
 	/* The pusher: eats the slack between start and end, forcing end to the right edge. */
 	.ui-bar-spacer {

@@ -28,11 +28,13 @@
 	   today and M-Task 7 strips the rest of the skin. */
 	.toast {
 		position: fixed;
-		/* Lifted clear of the soft keyboard: this is the ONLY surface an undo/redo failure is
-		   reported on and its only dismissal is a click on itself, so a toast under the keyboard
-		   is an unreadable, undismissable error. `--kb-inset` is 0 whenever the keyboard is down,
-		   so the resting geometry is unchanged. */
-		bottom: calc(var(--space-8) + var(--kb-inset, 0px));
+		/* Lifted clear of the soft keyboard AND of the home indicator / gesture bar: this is the
+		   ONLY surface an undo/redo failure is reported on and its only dismissal is a click on
+		   itself, so a toast under either is an unreadable, undismissable error. `app.css`'s
+		   safe-area padding sits on `body`, which a `position: fixed` element is not laid out
+		   against — so the inset has to be restated here. Both terms are 0 on a desktop and
+		   whenever the keyboard is down, so the resting geometry is unchanged. */
+		bottom: calc(var(--space-8) + var(--kb-inset, 0px) + env(safe-area-inset-bottom, 0px));
 		left: 50%;
 		transform: translateX(-50%);
 		z-index: var(--z-toast);

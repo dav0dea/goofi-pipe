@@ -5,7 +5,7 @@
 	import type { NodeTypeInfo } from '$lib/api/control';
 	import type { SlotClickSeed } from '$lib/stores/ui.svelte';
 	import { onMount, tick } from 'svelte';
-	import { EmptyState } from '$lib/ui';
+	import { EmptyState, MODE_ATTRS } from '$lib/ui';
 
 	type Props = {
 		onPick: (type: NodeTypeInfo) => void;
@@ -100,14 +100,17 @@
 			</span>
 		</div>
 	{/if}
+	<!-- Native, not `TextInput`: this filters per keystroke and owns Enter/Arrow/Escape, which a
+	     commit-on-blur primitive cannot express. It still speaks the primitive's keyboard vocabulary
+	     rather than shipping the UA defaults (sentence caps + a spellcheck squiggle on a node type). -->
 	<input
+		{...MODE_ATTRS.search}
 		bind:this={inputEl}
 		bind:value={query}
 		onkeydown={onKeydown}
 		placeholder={seed
 			? `compatible with ${seed.dtype.toLowerCase()}…`
 			: 'Type to search nodes…'}
-		spellcheck="false"
 		autocomplete="off"
 		data-testid="add-menu-search"
 	/>
@@ -183,9 +186,19 @@
 		border-bottom-color: var(--accent);
 	}
 	.list {
-		max-height: 360px;
+		/* Viewport-relative as well as fixed: 360px is most of a phone's height, and this menu opens
+		   with its search focused, so the soft keyboard is on its way up as it lands. */
+		max-height: min(360px, 45dvh);
 		overflow-y: auto;
 		padding: var(--space-2) 0;
+	}
+	/* Touch: a scoped `input` rule is (0,1,1) and out-specifies app.css's coarse 16px floor (0,0,1),
+	   so this one field defeated it — and it is the field the add-node flow focuses on open, i.e. the
+	   most reliable force-zoom in the app. The threshold is absolute, not a type rung. */
+	@media (hover: none) and (pointer: coarse) {
+		input {
+			font-size: 16px;
+		}
 	}
 	.group-header {
 		display: flex;

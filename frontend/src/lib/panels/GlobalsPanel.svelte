@@ -12,7 +12,16 @@
 	import type { PanelProps } from '$lib/workspace/registry';
 	import { graph } from '$lib/stores/graph.svelte';
 	import { isValidGlobalName, type GlobalType, type GlobalView } from '$lib/crdt/graphDoc';
-	import { Button, IconButton, Select, NumberInput, TextInput, Toggle, ScrollArea } from '$lib/ui';
+	import {
+		Button,
+		IconButton,
+		MODE_ATTRS,
+		NumberInput,
+		ScrollArea,
+		Select,
+		TextInput,
+		Toggle
+	} from '$lib/ui';
 
 	// The globals are patch-scoped, not panel-scoped, so this panel reads none of the panel
 	// contract — but it must still DECLARE it, or its inferred props type is `{}` and the
@@ -150,11 +159,11 @@
 
 			<div class="add" data-testid="global-add">
 				<input
+					{...MODE_ATTRS.search}
 					class="name"
 					data-testid="global-add-name"
 					placeholder="new_global"
 					bind:value={newName}
-					spellcheck="false"
 					autocomplete="off"
 					onkeydown={(e) => {
 						if (e.key === 'Enter') add();

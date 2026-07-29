@@ -83,7 +83,7 @@
 		color: var(--text);
 		box-shadow: var(--dialog-shadow, var(--shadow-2));
 		max-width: var(--dialog-max-width, min(90vw, 32rem));
-		max-height: var(--dialog-max-height, 85vh);
+		max-height: var(--dialog-max-height, 85dvh);
 		overflow: auto;
 	}
 	.ui-dialog::backdrop {
