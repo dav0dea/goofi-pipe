@@ -2,7 +2,7 @@
 	import { graph } from '$lib/stores/graph.svelte';
 	import { history } from '$lib/stores/history.svelte';
 	import { selection } from '$lib/stores/selection.svelte';
-	import { editorAt } from '$lib/panels/editorCommands';
+	import { activeOrOnlyEditor } from '$lib/panels/editorCommands';
 	import { untrack, type Snippet } from 'svelte';
 	import type { MenuItem } from '$lib/workspace/menu';
 	import ContextMenu from '$lib/workspace/ContextMenu.svelte';
@@ -192,15 +192,19 @@
 	/** The canvas commands (D-R4). They are overflow-resident at EVERY width — they have no bar
 	 * slot to lose, which is why one menu serves both jobs.
 	 *
-	 * Addressed through `editorAt` and the selection store's active editor: the editor the user
-	 * last worked in, which is the same one the standalone Parameters/Metadata/Errors panels
-	 * already follow. Strictly — with no editor open there is no unambiguous target, and a row
-	 * that deletes must disable rather than guess which of several editors it meant. */
+	 * Addressed through the selection store's active editor: the editor the user last worked in,
+	 * which is the same one the standalone Parameters/Metadata/Errors panels already follow — or,
+	 * when that id has gone stale and only one editor is open, that one. Never a guess between
+	 * several: a row that deletes disables rather than pick whichever is first in the map. */
 	function canvasItems(): MenuItem[] {
-		const ed = editorAt(sel.activeEditorId);
+		const ed = activeOrOnlyEditor(sel.activeEditorId);
 		const has = ed?.hasSelection() ?? false;
 		return [
 			{ label: 'Select all', icon: '▦', disabled: !ed, action: () => ed?.selectAll() },
+			// Multi-select's way out. With the mode on, a tap on empty canvas no longer clears (it
+			// would wipe the selection the mode is for), and Escape is a keyboard's door only — so
+			// this row is what makes the fold in `clickPane` safe to ship.
+			{ label: 'Clear selection', disabled: !has, action: () => ed?.clearSelection() },
 			{
 				label: 'Multi-select mode',
 				checked: sel.multiSelect,

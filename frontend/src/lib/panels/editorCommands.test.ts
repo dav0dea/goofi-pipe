@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import {
+	activeOrOnlyEditor,
 	editorFor,
 	editorAt,
 	registerEditor,
@@ -13,6 +14,7 @@ function stub(): EditorCommands {
 		fitView: vi.fn(),
 		focusNode: vi.fn(),
 		selectAll: vi.fn(),
+		clearSelection: vi.fn(),
 		deleteSelection: vi.fn(),
 		groupSelection: vi.fn(),
 		copySelection: vi.fn(),
@@ -53,5 +55,43 @@ describe('editorAt — the strict lookup the app header addresses through', () =
 		registerEditor('a', stub());
 		unregisterEditor('a');
 		expect(editorAt('a')).toBeNull();
+	});
+});
+
+/* The header's rows all resolve through the ACTIVE editor id, and that id can name a panel that is
+   no longer an editor: `hydrate` focuses the loaded layout's first panel (and `forgetAll` nulls the
+   id), `selectTab` lands on a tab whose first panel is a console, and `navContext` writes back
+   whatever panel an undo re-oriented to. With one editor on screen every canvas row then went dead
+   — Select all and Paste on `!ed`, and Delete/Group/Copy/Duplicate on the `!has` that follows from
+   it — and the only recovery was a pointerdown somewhere in the editor, which nothing tells you. */
+describe('activeOrOnlyEditor — the header, when the active id has gone stale', () => {
+	beforeEach(() => {
+		unregisterEditor('a');
+		unregisterEditor('b');
+	});
+
+	it('prefers the active editor when the id resolves', () => {
+		const a = stub();
+		const b = stub();
+		registerEditor('a', a);
+		registerEditor('b', b);
+		expect(activeOrOnlyEditor('a')).toBe(a);
+	});
+
+	it('resolves the ONE open editor when the id does not', () => {
+		const a = stub();
+		registerEditor('a', a);
+		expect(activeOrOnlyEditor('stale')).toBe(a);
+		expect(activeOrOnlyEditor(null)).toBe(a);
+	});
+
+	it('still refuses to guess between two', () => {
+		registerEditor('a', stub());
+		registerEditor('b', stub());
+		expect(activeOrOnlyEditor('stale')).toBeNull();
+	});
+
+	it('resolves nothing with no editor open', () => {
+		expect(activeOrOnlyEditor('a')).toBeNull();
 	});
 });

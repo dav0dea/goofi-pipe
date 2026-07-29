@@ -138,8 +138,12 @@ class SelectionStore {
 
 	// --- clearing ----------------------------------------------------------
 
+	/** The same fold `clickNode`/`clickEdge` take, on the biggest target of all. A phone has no
+	 * shift, so with the mode on a stray tap on empty canvas wiped the multi-node selection the
+	 * mode exists to build. Deliberately shipped WITH the header menu's `Clear selection` row: this
+	 * is touch's only clear-all door, since Escape is keyboard-only. */
 	clickPane(panelId: string, shift: boolean): void {
-		if (shift) return;
+		if (shift || this.multiSelect) return;
 		this.clear(panelId);
 	}
 

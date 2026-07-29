@@ -69,6 +69,26 @@ describe('multi-select mode', () => {
 		expect([...sel.edges('p')]).toEqual(['e1']);
 	});
 
+	/* The same fold as the edge case above, for a much larger target: on touch `shiftKey` is always
+	   false, so a plain tap on empty canvas wiped the very selection the mode exists to build. It
+	   ships with a `Clear selection` row in the header menu, because `clickPane` is touch's only
+	   clear-all door (Escape is keyboard-only). */
+	it('keeps a plain tap on empty canvas from wiping the selection the mode is building', () => {
+		const sel = selection();
+		sel.clickNode('p', 'n1', false);
+		sel.toggleMultiSelect();
+		sel.clickNode('p', 'n2', false);
+		sel.clickPane('p', false);
+		expect([...sel.nodes('p')].sort()).toEqual(['n1', 'n2']);
+	});
+
+	it('still clears on a pane click with the mode off', () => {
+		const sel = selection();
+		sel.clickNode('p', 'n1', false);
+		sel.clickPane('p', false);
+		expect([...sel.nodes('p')]).toEqual([]);
+	});
+
 	it('restores replace-on-click when switched off', () => {
 		const sel = selection();
 		sel.toggleMultiSelect();

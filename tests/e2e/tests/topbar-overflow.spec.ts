@@ -244,6 +244,40 @@ test('with multi-select on, a plain click adds instead of replacing', async ({ p
 		await page.evaluate(() => (window as any).goofi.commands.clearSelection());
 		for (const u of uids) await page.locator(`.svelte-flow__node[data-id="${u}"]`).click();
 		await expect.poll(async () => (await selected()).slice().sort()).toEqual([...uids].sort());
+
+		// …and a plain click on empty canvas must not wipe it. `clickPane` took the same fold as
+		// clickNode/clickEdge: on a phone `shiftKey` is always false, so the biggest target on
+		// screen was undoing the very selection the mode exists to build.
+		// Found rather than guessed: the pane's corners are taken (the zoom cluster sits in one) and
+		// the nodes float wherever the fit put them, so scan for a point that really is bare canvas.
+		const empty = await page.evaluate(() => {
+			const r = document.querySelector('.svelte-flow__pane')!.getBoundingClientRect();
+			for (let y = r.bottom - 20; y > r.top; y -= 20)
+				for (let x = r.left + 20; x < r.right; x += 20)
+					if (document.elementFromPoint(x, y)?.classList.contains('svelte-flow__pane'))
+						return { x, y };
+			return null;
+		});
+		expect(empty, 'the canvas has some bare pane to click').not.toBeNull();
+		await page.mouse.click(empty!.x, empty!.y);
+		await expect
+			.poll(async () => (await selected()).slice().sort(), {
+				message: 'a tap on empty canvas leaves the multi-selection alone'
+			})
+			.toEqual([...uids].sort());
+		// …and the CANVAS agrees. SvelteFlow unselects on every pane click, after the callback and
+		// whatever the store decided, so the store keeping the selection is only half the fix: the
+		// other half is that nothing gated on the rendered flags (Delete, Group, Copy, this row)
+		// goes dead while the store still holds the operands.
+		await expect(
+			page.locator('.svelte-flow__node.selected'),
+			'the nodes are still painted selected'
+		).toHaveCount(2);
+
+		// So the way out has to be somewhere a pointer can reach — Escape is a keyboard's door only.
+		await openOverflow(page);
+		await menuRow(page, 'Clear selection').click();
+		await expect.poll(selected, { message: 'the menu row is the mode’s deselect' }).toEqual([]);
 	} finally {
 		await openOverflow(page);
 		await menuRow(page, 'Multi-select mode').click();

@@ -71,7 +71,7 @@
 	import InspectorOverlay from './InspectorOverlay.svelte';
 	import { asStateObject } from '$lib/workspace/panelState';
 	import { Button, IconButton, EmptyState, clampToViewport, overlayViewport } from '$lib/ui';
-	import { onMount, untrack } from 'svelte';
+	import { onMount, tick, untrack } from 'svelte';
 
 	let { panelId, state: panelState, setState }: PanelProps = $props();
 
@@ -726,6 +726,19 @@
 		lastPaneClickPos = here;
 		menuOpen = false;
 		sel.clickPane(panelId, args.event.shiftKey);
+		// SvelteFlow calls `unselectNodesAndEdges()` immediately AFTER this callback, whatever the
+		// store decided — so wherever the store KEEPS the selection (multi-select mode, where a stray
+		// tap on canvas must not undo what the mode is building) the canvas and the store would
+		// disagree: nothing painted as selected, every row gated on the rendered flags reading as
+		// dead, and the store still holding the operands a Delete would take. Re-derive after it.
+		if (sel.nodes(panelId).size || sel.edges(panelId).size) void tick().then(reassertSelection);
+	}
+
+	/** Push the store's selection back onto the rendered `selected` flags. The store is the source
+	 * of truth for everything but a live marquee, which `onSelectionEnd` folds into it. */
+	function reassertSelection(): void {
+		flowNodes = flowNodes.map((n) => ({ ...n, selected: sel.nodes(panelId).has(n.id) }));
+		flowEdges = flowEdges.map((e) => ({ ...e, selected: sel.edges(panelId).has(e.id) }));
 	}
 
 	function onNodeClick(args: { node: Node; event: MouseEvent | TouchEvent }): void {
@@ -1128,6 +1141,7 @@
 			fitView,
 			focusNode,
 			selectAll,
+			clearSelection: () => sel.clear(panelId),
 			deleteSelection,
 			groupSelection: () => void groupSelection(),
 			copySelection: () => void copySelection(),
