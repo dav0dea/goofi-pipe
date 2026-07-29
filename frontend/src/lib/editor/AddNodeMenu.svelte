@@ -23,6 +23,10 @@
 	let inputEl = $state<HTMLInputElement | null>(null);
 	let highlighted = $state(0);
 
+	/** The seed carries the node's UID (the routing key the pick auto-wires through). The chip is a
+	 * label, so it shows the display name — falling back to the uid only if it resolves to nothing. */
+	const seedName = $derived(seed ? (g.nodeById(seed.node)?.name ?? seed.node) : null);
+
 	/** When seeded, narrow `nodeTypes` to those that expose at least one
 	 * opposite-side slot of matching dtype. */
 	function matchesSeed(t: NodeTypeInfo): boolean {
@@ -94,7 +98,7 @@
 		<div class="seed-chip" data-testid="add-menu-seed">
 			<span class="seed-arrow">{seed.side === 'source' ? '→' : '←'}</span>
 			<span class="seed-from">from</span>
-			<span class="seed-ref">{seed.node}.{seed.slot}</span>
+			<span class="seed-ref">{seedName}.{seed.slot}</span>
 			<span class="seed-dtype" style="color: {dtypeColor(seed.dtype)};">
 				{seed.dtype.toLowerCase()}
 			</span>

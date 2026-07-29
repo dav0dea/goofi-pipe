@@ -31,8 +31,10 @@
 	const cs = consoleStore();
 
 	const filterName = $derived(linkedNodeName(linkState)); // the bound node's uid (identity)
-	// The chip shows the readable display name, not the raw uid.
-	const filterLabel = $derived(filterName ? (graph().nodeById(filterName)?.name ?? filterName) : null);
+	/** Every node the console names is keyed by uid (the store ingests what the bridge sends). A
+	 * label shows the display name — the filter chip, and each row's source button. */
+	const nodeLabel = (uid: string): string => graph().nodeById(uid)?.name ?? uid;
+	const filterLabel = $derived(filterName ? nodeLabel(filterName) : null);
 	const dragActive = $derived(uiStore.nodeDrag !== null);
 	const over = $derived(uiStore.nodeDragTarget === panelId);
 
@@ -308,7 +310,7 @@
 							onclick={(ev) => {
 								ev.stopPropagation();
 								focus(row.e.node);
-							}}>{row.e.node}</button
+							}}>{nodeLabel(row.e.node)}</button
 						>
 					{/if}
 					<pre class="txt" class:clamp={!row.exp}>{row.e.text}</pre>
