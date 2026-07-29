@@ -175,6 +175,13 @@ function drift(): string[] {
 	return found;
 }
 
+/** Every `@media` prelude in `css` that asks about the pointer at all. */
+function pointerQueries(css: string): string[] {
+	return [...css.matchAll(/@media([^{]+)\{/g)]
+		.map((m) => m[1].replace(/\s+/g, ' ').trim())
+		.filter((q) => /pointer/.test(q));
+}
+
 /** Every `:global()` selector in `css` that names a `$lib/ui` primitive's own `.ui-*` class. */
 function uiReachIns(css: string): string[] {
 	return [...css.matchAll(/:global\([^)]*\.ui-[\w-]+/g)].map((m) => `${m[0]}…)`);
@@ -244,6 +251,45 @@ describe('style vocabulary', () => {
 			'.tab :global(.close) { width: 0; }'
 		])
 			expect(uiReachIns(css), css).toEqual([]);
+	});
+
+	/* D-R7: ONE coarse-pointer idiom, `(hover: none) and (pointer: coarse)`.
+	 *
+	 * `app.css` states the rationale where it raises `--hit`: the floor is for a real touch device,
+	 * so fine-pointer desktop chrome keeps its natural, compact geometry. A rule gated on
+	 * `(pointer: coarse)` ALONE also fires on a hover-capable touchscreen laptop — where the box it
+	 * grows was never inflated, because app.css's floor did not fire. IconButton shipped both
+	 * spellings in one file for one concern (C18): its density floor two-clause, its `::after` hit
+	 * rect one-clause, so on such a machine the invisible hit rect grew to 44px around a 20px box and
+	 * adjacent header icons' targets overlapped.
+	 *
+	 * `any-pointer: coarse` is rejected outright: it matches when ANY attached device is coarse, so a
+	 * desktop with a drawing tablet plugged in would wear phone chrome. */
+	it('gates every pointer-dependent rule on the single coarse idiom (D-R7)', () => {
+		const offenders = sources().flatMap((s) =>
+			pointerQueries(s.css)
+				.filter((q) => q !== '(hover: none) and (pointer: coarse)')
+				.map((q) => `${s.rel}  @media ${q}`)
+		);
+		expect(offenders).toEqual([]);
+	});
+
+	// The guard above only earns its line if it fires on the spellings that actually drift in.
+	it('spots the one-clause and any-pointer spellings the idiom replaces', () => {
+		for (const css of [
+			'@media (pointer: coarse) { .a { inset: 0; } }',
+			'@media (any-pointer: coarse) { .a { inset: 0; } }',
+			'@media (pointer: coarse) and (hover: hover) { .a { inset: 0; } }'
+		])
+			expect(pointerQueries(css).filter((q) => q !== '(hover: none) and (pointer: coarse)'), css)
+				.toHaveLength(1);
+
+		// …and stays quiet on the idiom itself, however it is wrapped, and on a query about
+		// something else entirely.
+		expect(pointerQueries('@media (hover: none) and (pointer: coarse) {\n\t.a { inset: 0; }\n}')).toEqual(
+			['(hover: none) and (pointer: coarse)']
+		);
+		expect(pointerQueries('@media (prefers-reduced-motion: reduce) { .a { inset: 0; } }')).toEqual([]);
 	});
 
 	// F stripped every gradient: the surface ladder carries elevation now, and a gradient reads as

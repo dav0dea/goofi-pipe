@@ -150,8 +150,13 @@
 	/* Coarse-pointer hit-rect guarantee: extend the clickable area outward to at least
 	   --hit. A no-op once the visual box already meets --hit (inset resolves to 0); only
 	   grows the target if a consumer shrinks the box below the floor. Absent under a fine
-	   pointer, so there it is a genuine no-op. */
-	@media (pointer: coarse) {
+	   pointer, so there it is a genuine no-op.
+
+	   Gated on the SAME two clauses as the density floor above (D-R7). It was one-clause, which
+	   made this file state two idioms for one concern (C18): on a hover-capable touchscreen the
+	   density floor did not fire but this did, so the invisible rect grew to 44px around a 20px
+	   chrome box and two adjacent header icons' targets overlapped. */
+	@media (hover: none) and (pointer: coarse) {
 		.ui-icon-btn::after {
 			content: '';
 			position: absolute;

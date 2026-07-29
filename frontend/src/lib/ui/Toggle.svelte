@@ -98,10 +98,11 @@
 		outline: 2px solid var(--accent);
 		outline-offset: 2px;
 	}
-	/* Coarse-pointer hit-rect guarantee (mirrors IconButton): extend the clickable area outward to at
-	   least --hit WITHOUT widening the painted 2.4rem track (the knob's checked translate is tied to
-	   that width, so growing the box would distort the switch). A no-op under a fine pointer. */
-	@media (pointer: coarse) {
+	/* Coarse-pointer hit-rect guarantee (mirrors IconButton, down to the two-clause gate D-R7
+	   standardises on): extend the clickable area outward to at least --hit WITHOUT widening the
+	   painted 2.4rem track (the knob's checked translate is tied to that width, so growing the box
+	   would distort the switch). A no-op under a fine pointer. */
+	@media (hover: none) and (pointer: coarse) {
 		.ui-toggle::after {
 			content: '';
 			position: absolute;

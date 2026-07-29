@@ -341,9 +341,11 @@
 		text-align: center;
 		padding: var(--space-6) 0;
 	}
-	/* Touch: the name's only editable cue is a hover underline, invisible on a coarse pointer — give
-	   it a resting dotted underline so it reads as editable without a hover. */
-	@media (pointer: coarse) {
+	/* Touch: the name's only editable cue is a hover underline, invisible on a device with no hover
+	   — give it a resting dotted underline so it reads as editable without one. Gated on the app's
+	   single coarse idiom (D-R7): the cue exists BECAUSE hover is unavailable, so a hover-capable
+	   touchscreen neither needs it nor should carry it. */
+	@media (hover: none) and (pointer: coarse) {
 		.pf-name {
 			text-decoration: underline;
 			text-decoration-style: dotted;
