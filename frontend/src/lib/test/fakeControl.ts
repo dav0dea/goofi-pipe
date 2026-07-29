@@ -8,6 +8,9 @@
 import type { Control, ControlEvent } from '$lib/api/control';
 
 export class FakeControl implements Control {
+	/** A fixed stand-in for the tab's `sessionStorage` id — enough for a test to hand back "our
+	 * own" session and assert an echo is skipped. */
+	readonly session = 'fake-session';
 	private calls: Array<{ op: string; payload: Record<string, unknown> }> = [];
 	private listeners = new Set<(ev: ControlEvent) => void>();
 	private connectListeners = new Set<(c: boolean) => void>();

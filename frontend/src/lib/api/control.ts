@@ -305,7 +305,11 @@ export type ControlEvent =
 	| { event: 'unsaved_changes'; payload: { unsaved_changes: boolean } }
 	| { event: 'save_path_changed'; payload: { save_path: string | null } }
 	| { event: 'graph_replaced'; payload: GraphSnapshot }
-	| { event: 'layout'; payload: { layout: unknown } };
+	// Another client AUTHORED the panel arrangement. The layout is not a CRDT doc root — it is
+	// opaque view state, not a command — so this event is the only way it reaches a live peer;
+	// a late joiner still gets it on `hello`. The manager stays silent on a NAVIGATION write, and
+	// tags this one with the session that made it so the author can skip its own echo.
+	| { event: 'layout'; payload: { layout: unknown; session?: string } };
 
 type EventHandler = (ev: ControlEvent) => void;
 
@@ -319,6 +323,10 @@ type Pending = {
  * substitute a fake (see `$lib/test/fakeControl`). `ControlClient` implements
  * it; nothing else needs to. */
 export interface Control {
+	/** This client's stable session tag, sent on every request. Readable here because a broadcast
+	 * reaches its own author too, so a client has to be able to recognize its own echo (the
+	 * `layout` event). */
+	readonly session: string;
 	call<T = unknown>(op: string, payload?: Record<string, unknown>): Promise<T>;
 	on(fn: (ev: ControlEvent) => void): () => void;
 	onConnect(fn: (c: boolean) => void): () => void;

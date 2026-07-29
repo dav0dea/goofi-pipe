@@ -2441,3 +2441,47 @@ async fn an_unclassified_layout_write_still_dirties_the_patch() {
     call(&mut ws, 1, "set_layout", json!({ "layout": layout })).await;
     assert!(is_dirty(&base).await, "an unclassified layout write is treated as authoring");
 }
+
+#[tokio::test]
+async fn an_authored_layout_reaches_other_clients_and_names_its_author() {
+    // The arrangement is NOT a doc root — it is opaque view state, not a command — so the
+    // post-dispatch re-mirror cannot carry it and a peer would otherwise learn it only on `hello`.
+    // This event is how a second tab (or the phone next to the desktop) converges live.
+    //
+    // It rides the SAME axis as the dirty flag: only an *authored* write travels. Navigation is
+    // where the author is LOOKING, and moving a peer's view because someone else entered a
+    // sub-patch is precisely the yank the taxonomy exists to prevent. The originating session
+    // rides along so the author can ignore its own echo instead of re-applying it.
+    let base = start_server().await;
+    let (mut a, _) = connect_async(format!("{base}/control")).await.unwrap();
+    let _ = recv_text(&mut a).await;
+    let (mut b, _) = connect_async(format!("{base}/control")).await.unwrap();
+    let _ = recv_text(&mut b).await;
+
+    let authored = json!({ "workspaces": [{ "id": "ws-split" }], "activeWorkspaceId": "ws-split" });
+    call_session(&mut a, 1, "set_layout", json!({ "layout": authored, "intent": "authored" }), "sA")
+        .await;
+    let ev = loop {
+        let m = recv_text(&mut b).await;
+        if m.get("event").and_then(|v| v.as_str()) == Some("layout") {
+            break m;
+        }
+    };
+    assert_eq!(ev["payload"]["layout"], authored, "the peer receives the arrangement verbatim");
+    assert_eq!(ev["payload"]["session"], json!("sA"), "…tagged with the session that authored it");
+
+    // A navigation write is silent. Proven against a MARKER: the next event B sees after it must
+    // be the marker's, never a layout — an absence asserted by a timeout would only prove slowness.
+    let nav = json!({ "workspaces": [{ "id": "ws-nav" }], "activeWorkspaceId": "ws-nav" });
+    call_session(&mut a, 2, "set_layout", json!({ "layout": nav, "intent": "navigation" }), "sA")
+        .await;
+    call_session(&mut a, 3, "add_node", json!({ "type": "Oscillator" }), "sA").await;
+    loop {
+        let m = recv_text(&mut b).await;
+        match m.get("event").and_then(|v| v.as_str()) {
+            Some("layout") => panic!("a navigation write must not move a peer's view: {m}"),
+            Some("node_added") => break,
+            _ => {}
+        }
+    }
+}

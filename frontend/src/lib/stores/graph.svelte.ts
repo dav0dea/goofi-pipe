@@ -365,19 +365,19 @@ export class GraphStore {
 				this.savePath = ev.payload.save_path;
 				break;
 			case 'layout':
-				// A patch finished loading after we connected — e.g. CLI startup
-				// (`goofi-pipe x.gfi`), whose nodes arrive as node_added events with
-				// no graph_replaced snapshot. Hydrate its layout if any (null → keep
-				// ours), then fit the view to the freshly-loaded graph. No history
-				// reset here: it's the same session, and any load-time errors are
-				// the just-loaded patch's own.
-				if (ev.payload.layout != null) {
-					workspace().hydrate(ev.payload.layout);
-					// New layout's panel ids may collide with ones used earlier
-					// this session — drop stale per-panel state (see _onWholesaleLoad).
-					selection().forgetAll();
-				}
-				this.loadEpoch += 1;
+				// Another client AUTHORED the arrangement — split a panel, added a tab, picked a
+				// viewer kind. The layout is not a doc root, so this event is the only way it
+				// reaches a live peer (a late joiner gets it on `hello`).
+				//
+				// The manager broadcasts to every client including the author, because a broadcast
+				// channel has no other shape — so we skip our own echo here rather than re-adopting
+				// a blob we already have, which would re-seed our panel ids and drain our intent
+				// fold for nothing. And it MERGES: the blob carries the peer's viewpoint as well as
+				// its structure, and only the structure is shared (see `applyRemoteLayout`). Nothing
+				// was loaded, so `loadEpoch` stays put — a peer adding a panel must not re-fit our
+				// viewport, any more than it should move our selection.
+				if (ev.payload.session === this.ctl.session) break;
+				workspace().applyRemoteLayout(ev.payload.layout);
 				break;
 		}
 	}

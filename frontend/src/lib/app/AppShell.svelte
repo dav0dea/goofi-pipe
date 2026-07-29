@@ -169,7 +169,7 @@
 		if (pushTimer) {
 			clearTimeout(pushTimer);
 			pushTimer = null;
-			void g.setLayout(ws.serialize(), ws.takeLayoutIntent());
+			pushLayout();
 		}
 		if (!g.unsavedChanges) return;
 		e.preventDefault();
@@ -182,11 +182,27 @@
 	// window's folded dirty classification (`takeLayoutIntent`), so navigating
 	// persists without marking the patch unsaved.
 	let pushTimer: ReturnType<typeof setTimeout> | null = null;
+
+	// …with one exception: an arrangement a PEER authored is already what the manager holds, so
+	// pushing it back is a round trip that buys nothing and would overwrite the manager's copy with
+	// THIS client's navigation fields. The latch is spent on read, and any local write inside the
+	// same debounce window clears it, so a real edit still gets through.
+	function pushLayout(): void {
+		if (ws.takeRemoteApplied()) return;
+		void g.setLayout(ws.serialize(), ws.takeLayoutIntent());
+	}
+
 	$effect(() => {
 		void ws.state; // track: every layout mutation replaces this reference
 		if (!g.hadHello) return;
 		if (pushTimer) clearTimeout(pushTimer);
-		pushTimer = setTimeout(() => void g.setLayout(ws.serialize(), ws.takeLayoutIntent()), 400);
+		// Cleared as it fires, so `onBeforeUnload` flushes only a push that is genuinely still
+		// PENDING — a spent handle used to make it re-push, which after a remote apply meant
+		// echoing the peer's own arrangement back at the manager on the way out.
+		pushTimer = setTimeout(() => {
+			pushTimer = null;
+			pushLayout();
+		}, 400);
 	});
 
 	onMount(() => {

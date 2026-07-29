@@ -524,17 +524,20 @@ fn resolve_link_endpoint(g: &goofi_engine::Graph, uid: Uid, slot: &str) -> (Uid,
     (uid, slot.to_string())
 }
 
-/// Does a `set_layout` write mean the user CHANGED the patch? Persistence and dirtiness are
-/// separate axes for the editor arrangement: it rides the `.gfi` whichever way it changed, but
-/// only *authoring* it — splitting a panel, picking a viewer kind or a slot — makes the patch
-/// differ from disk. Navigation (entering a sub-patch, switching a layout tab, an undo/redo
-/// re-orientation) and the manager's own layout echoed back on hello leave the file's meaning
-/// intact, so they must not raise the unsaved dot or the unload guard.
+/// Did the user AUTHOR the editor arrangement, or merely navigate it? Persistence is a separate
+/// axis: the layout rides the `.gfi` whichever way it changed, but only *authoring* it — splitting
+/// a panel, picking a viewer kind or a slot — makes the patch differ from disk. Navigation
+/// (entering a sub-patch, switching a layout tab, an undo/redo re-orientation) and the manager's
+/// own layout echoed back on hello leave the file's meaning intact.
+///
+/// Two consumers read this one axis, which is why it names the classification rather than either
+/// effect: the unsaved dot (navigation must not raise it, nor the unload guard) and the `layout`
+/// broadcast (navigation must not move a peer's view — it is where *this* client is looking).
 ///
 /// The client owns the classification — it is the only side that knows what the user did — and
 /// declares it as `intent`. A payload that declares nothing is authoring, so forgetting to
 /// classify can only cost a spurious dot, never a lost change.
-fn layout_write_dirties(payload: &Value) -> bool {
+fn layout_write_is_authored(payload: &Value) -> bool {
     payload.get("intent").and_then(|v| v.as_str()) != Some("navigation")
 }
 
@@ -730,10 +733,17 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
                 Ok(json!({ "ok": true }))
             }
             // Patch-scoped editor layout, stored opaquely (the node-`viewers` rule). NOT a command
-            // — view state is not undoable — and dirtying only when the client says the user
-            // AUTHORED the arrangement rather than navigated it (`layout_write_dirties`).
+            // — view state is not undoable — and both dirtying and broadcasting only when the
+            // client says the user AUTHORED the arrangement (`layout_write_is_authored`).
             "set_layout" => {
                 let layout = payload.get("layout").cloned().unwrap_or(Value::Null);
+                // The layout is deliberately NOT a CRDT doc root, so the post-dispatch re-mirror
+                // cannot carry it and a peer would learn the arrangement only on `hello`. This
+                // event is how every other client converges live. It names its author so that
+                // client can ignore its own echo rather than re-applying it.
+                if layout_write_is_authored(&payload) {
+                    events.push(event("layout", json!({ "layout": layout, "session": session })));
+                }
                 g.set_layout(layout);
                 Ok(json!({ "ok": true }))
             }
@@ -1035,7 +1045,7 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
         // these four are where it is wrong:
         //   `load`/`load_text` clear the flag inside their arm, which runs first and is then
         //     re-set here; re-clear it.
-        //   `set_layout` — persistence and dirtiness are separate axes (see `layout_write_dirties`).
+        //   `set_layout` — persistence and dirtiness are separate axes (`layout_write_is_authored`).
         //   `restart_node` respawns an instance in place, replaying the node's own ParamGroups
         //     verbatim and touching neither name, position, bindings, viewers, links nor scopes, so
         //     `serialize()` is byte-identical. It is RECOVERY, not an edit, and it is reached by one
@@ -1049,7 +1059,7 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
         // Both stay OUT of `read_only`: neither is an edit, but both still need the re-mirror.
         match op.as_str() {
             "load" | "load_text" => events.extend(state.set_dirty(false)),
-            "set_layout" if !layout_write_dirties(&payload) => {}
+            "set_layout" if !layout_write_is_authored(&payload) => {}
             "restart_node" | "refresh_param" => {}
             _ => events.extend(state.set_dirty(true)),
         }
