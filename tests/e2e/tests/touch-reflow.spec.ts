@@ -1,4 +1,4 @@
-import { test, expect, type Page } from '@playwright/test';
+import { test, expect, type Locator, type Page } from '@playwright/test';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -33,6 +33,22 @@ const hit = (page: Page): Promise<number> =>
 	page.evaluate(() =>
 		parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--hit'))
 	);
+
+/** A locator's box once it has stopped moving — two consecutive reads that agree. Anything that
+ *  slides (the inspector) reports a frame of its animation otherwise, and a position read off a
+ *  frame is not a measurement of the layout. */
+async function settledBox(loc: Locator): Promise<{ x: number; y: number; width: number; height: number }> {
+	let prev = { x: NaN, y: NaN, width: 0, height: 0 };
+	await expect
+		.poll(async () => {
+			const b = (await loc.boundingBox())!;
+			const same = Math.abs(b.x - prev.x) < 0.5 && Math.abs(b.width - prev.width) < 0.5;
+			prev = b;
+			return same;
+		}, { message: 'the pane settled' })
+		.toBe(true);
+	return prev;
+}
 
 /** How far `inner` falls outside `outer`, on any side, in px (0 = fully inside). */
 function outside(
@@ -71,10 +87,10 @@ test.afterAll(() => fs.rmSync(scratch, { recursive: true, force: true }));
 /**
  * Save the patch under `CROWDING_NAME`, through the real Save flow.
  *
- * Not `window.goofi.commands.save(path)`, which is the same RPC but leaves the header unnamed:
- * the `save` arm broadcasts no `save_path_changed` (only `load` does), so it is `AppShell` that
- * publishes the new path locally after ITS save — and the façade calls the store directly, below
- * that. So the only way to reach the state this test is about is the flow a user takes.
+ * The façade's `save(path)` would reach the same state — the store is what publishes the new path
+ * now, since the `save` arm broadcasts no `save_path_changed` (only `load` does) — but this file's
+ * subject is what the header does at a real geometry, so it takes the door a user takes. (It used
+ * to be the ONLY door: the `savePath` write lived in `AppShell`, above the seam the façade calls.)
  *
  * `topbar-save` is dispatched rather than tapped because at 412px it has spilled out of the bar
  * and is `display: none`; reaching it through the overflow menu is `topbar-overflow.spec.ts`'s
@@ -228,8 +244,13 @@ test('the inspector leaves the canvas it overlays reachable', async ({ page }) =
 	try {
 		await page.evaluate((u) => (window as any).goofi.commands.select([u]), uid);
 		const pane = page.getByTestId('auto-side-panel');
-		await expect(pane).toBeVisible();
-		const p = (await pane.boundingBox())!;
+		// `.open`, not merely visible: the pane is MOUNTED at every moment (`{#if enabled}`) and
+		// parked at `translateX(100%)` until a selection lands, so `toBeVisible` resolves on a pane
+		// still sitting off the right edge — and every position measured below would be that parked
+		// one rather than the layout's. Then read it SETTLED: the class landing and the transform
+		// having been applied are two different frames.
+		await expect(pane).toHaveClass(/open/);
+		const p = await settledBox(pane);
 		const host = (await page.locator('.editor-panel').first().boundingBox())!;
 		// Before R its clamp was [260, 720] and never the host, so on a ~386px editor it covered the
 		// canvas completely with its own left edge clipped off. Deselecting by tapping the canvas is
@@ -247,8 +268,21 @@ test('the inspector leaves the canvas it overlays reachable', async ({ page }) =
 		// `touch-action: none`, pointer-capturing overlay centred on the handle, so it reached half a
 		// tap target back over the very canvas this clamp keeps free — and the strip's natural aim
 		// point, half a --hit in from the pane, was the dead boundary between them.
+		// Taken at the strip's natural aim point — half a --hit in from the pane — and at whichever
+		// height there is bare canvas, since a node can float anywhere in a strip this narrow. With
+		// the band centred there was no such height: it owned that whole column.
 		const h = await hit(page);
-		await page.touchscreen.tap(p.x - h / 2, p.y + p.height / 2);
+		const x = p.x - h / 2;
+		const y = await page.evaluate(
+			([px, top, bottom]) => {
+				for (let cy = top + 20; cy < bottom - 20; cy += 16)
+					if (document.elementFromPoint(px, cy)?.classList.contains('svelte-flow__pane')) return cy;
+				return null;
+			},
+			[x, p.y, p.y + p.height]
+		);
+		expect(y, 'the strip’s aim point is canvas, not a resize band').not.toBeNull();
+		await page.touchscreen.tap(x, y!);
 		await expect
 			.poll(() => page.evaluate(() => (window as any).goofi.query.selection().nodes.length), {
 				message: 'a tap in the reserved strip reaches the canvas and deselects'
