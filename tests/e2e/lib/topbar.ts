@@ -44,8 +44,9 @@ export async function openOverflow(page: Page): Promise<void> {
 	await expect(page.locator('.context-menu').first()).toBeVisible();
 }
 
-/** One menu row by its exact label. Not `getByRole('menuitem', { name })`: a row's accessible
- *  name also carries its icon glyph and its ✓ marker, so the name is not the label. */
+/** One menu row by its exact label. Not `getByRole('menuitem', { name })`: a checkable row is a
+ *  `menuitemcheckbox`, so one role name cannot reach every row. (The accessible name IS the label
+ *  now — the glyph spans are `aria-hidden` — and `topbar-overflow.spec.ts` asserts that.) */
 export function menuRow(page: Page, label: string): Locator {
 	return page
 		.locator('.context-menu .item')

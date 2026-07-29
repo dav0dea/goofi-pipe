@@ -318,13 +318,15 @@
 			>
 		</div>
 		<!-- Resident at every width: it carries the canvas commands, which have no bar slot to lose.
-		     `aria-pressed` is multi-select mode's always-visible tell — the user asked for a mode,
-		     and a mode you cannot see is a gesture with extra steps. -->
+		     The accent and the title are multi-select mode's always-visible tell — the user asked for
+		     a mode, and a mode you cannot see is a gesture with extra steps. The tell is all this
+		     button carries of it: the STATE belongs to the row that toggles it (`aria-checked`),
+		     while `aria-expanded` is the one thing this button does own and does change. -->
 		<IconButton
 			variant="ghost"
 			data-testid="topbar-overflow"
 			class={sel.multiSelect ? 'multi-on' : ''}
-			aria-pressed={sel.multiSelect}
+			aria-expanded={overflowMenu !== null}
 			title={sel.multiSelect ? 'More actions — multi-select mode is on' : 'More actions'}
 			label="More actions"
 			onclick={openOverflow}>⋯</IconButton

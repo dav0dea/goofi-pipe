@@ -192,21 +192,45 @@ test('multi-select mode is a mode: it stays on, and the header says so', async (
 	await page.goto('/');
 	await waitForApp(page);
 	const trigger = page.getByTestId('topbar-overflow');
-	await expect(trigger).toHaveAttribute('aria-pressed', 'false');
+	// The trigger says the ONE thing it owns and changes on activation: whether the menu is open.
+	// The mode is not its state — it neither owns it nor toggles it — so it carries the mode only
+	// as the visible tell (the accent + the title), and the row that toggles it says `aria-checked`.
+	await expect(trigger).toHaveAttribute('aria-expanded', 'false');
 
 	await openOverflow(page);
-	await menuRow(page, 'Multi-select mode').click();
-	await expect(trigger, 'the always-visible chrome carries the mode').toHaveAttribute(
-		'aria-pressed',
-		'true'
+	await expect(trigger).toHaveAttribute('aria-expanded', 'true');
+	const off = menuRow(page, 'Multi-select mode');
+	await expect(off, 'a checkable row is a checkbox, not a plain item').toHaveAttribute(
+		'aria-checked',
+		'false'
 	);
+	// The ✓ and the ▦ / ✕ / ▣ glyphs are decoration: the row's NAME is its label alone.
+	await expect(off).toHaveAccessibleName('Multi-select mode');
+	await off.click();
+	await expect(trigger, 'the always-visible chrome carries the mode').toHaveClass(/multi-on/);
+	await expect(trigger).toHaveAttribute('title', /multi-select mode is on/);
 
 	// …and the row itself reads back as checked next time the menu is opened.
 	await openOverflow(page);
 	const row = menuRow(page, 'Multi-select mode');
 	await expect(row.locator('.check')).toHaveText('✓');
+	await expect(row).toHaveAttribute('aria-checked', 'true');
+	await expect(row).toHaveAccessibleName('Multi-select mode');
 	await row.click();
-	await expect(trigger).toHaveAttribute('aria-pressed', 'false');
+	await expect(trigger).not.toHaveClass(/multi-on/);
+});
+
+/* One label column per menu. `.check` used to render on every row while `.ic` rendered only where
+   there was an icon, so the one menu that mixes them — this one — laid its labels out in two
+   columns 18px apart, on the phone and on the desktop alike. */
+test('every row in a menu starts its label in the same column', async ({ page }) => {
+	await page.goto('/');
+	await waitForApp(page);
+	await openOverflow(page);
+	const columns = await page
+		.locator('.context-menu .item .label')
+		.evaluateAll((els) => [...new Set(els.map((e) => Math.round(e.getBoundingClientRect().x)))]);
+	expect(columns, 'the labels share one x').toHaveLength(1);
 });
 
 test('with multi-select on, a plain click adds instead of replacing', async ({ page }) => {

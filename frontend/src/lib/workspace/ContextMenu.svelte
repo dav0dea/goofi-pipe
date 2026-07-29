@@ -36,6 +36,15 @@
 		root?: boolean;
 	} = $props();
 
+	// The two gutters are decided ONCE PER MENU, not per row: a row with no icon still reserves the
+	// column its neighbour's icon needs, so every label in a menu starts in the same place — and a
+	// menu with no icons (or nothing checkable) pays for neither. The check gutter used to be
+	// unconditional and the icon gutter per-row, which is exactly backwards: it left two label
+	// columns in the one menu that mixes them (the header's overflow) and a permanent 12px indent
+	// in the ones that check nothing.
+	const checkable = $derived(items.some((it) => it.checked !== undefined));
+	const iconic = $derived(items.some((it) => it.icon));
+
 	let menuEl = $state<HTMLDivElement | null>(null);
 	// Initial spawn point only; the $effect below re-clamps it to the viewport.
 	let pos = $state(untrack(() => ({ x, y })));
@@ -115,18 +124,21 @@
 		{#if item.separator}
 			<div class="sep"></div>
 		{:else}
+			<!-- The three glyph spans are DECORATION: `aria-hidden` keeps them out of the row's
+			     accessible name, which is the label alone. Checked-ness is then said in the tree
+			     rather than drawn with a ✓ only a sighted user can read. -->
 			<button
 				class="item"
-				class:checkable={items.some((it) => it.checked !== undefined)}
 				disabled={item.disabled}
 				onclick={(e) => pick(item, i, e)}
 				onpointerenter={(e) => hover(item, i, e)}
-				role="menuitem"
+				role={item.checked === undefined ? 'menuitem' : 'menuitemcheckbox'}
+				aria-checked={item.checked}
 			>
-				<span class="check">{item.checked ? '✓' : ''}</span>
-				{#if item.icon}<span class="ic">{item.icon}</span>{/if}
+				{#if checkable}<span class="check" aria-hidden="true">{item.checked ? '✓' : ''}</span>{/if}
+				{#if iconic}<span class="ic" aria-hidden="true">{item.icon ?? ''}</span>{/if}
 				<span class="label">{item.label}</span>
-				{#if item.items}<span class="arrow">▸</span>{/if}
+				{#if item.items}<span class="arrow" aria-hidden="true">▸</span>{/if}
 			</button>
 		{/if}
 	{/each}
