@@ -84,6 +84,14 @@ class WorkspaceStore {
 	/** Folded intent of the layout writes not yet pushed to the manager. Plain (not `$state`) —
 	 * it is read once at push time and never rendered. */
 	private _pendingIntent: LayoutIntent = 'navigation';
+	/** Set when `this.state` was last replaced by a PEER's arrangement rather than by a local
+	 * write. Every state replacement re-triggers AppShell's debounced push, and pushing a peer's
+	 * layout back is both a pointless round trip and a way to overwrite the manager's copy with
+	 * THIS client's navigation fields — so the shell reads this at push time and drops that one
+	 * push. Any local write clears it (see `_mark`/`_replaced`), so a real edit landing inside the
+	 * same debounce window still reaches the manager. Plain (not `$state`) for the same reason as
+	 * `_pendingIntent`. */
+	private _remoteApplied = false;
 
 	constructor() {
 		this.activePanelId = firstPanelId(this.active.root);
@@ -93,6 +101,9 @@ class WorkspaceStore {
 	 * anything in it was an edit, the patch really did change — so this can only RAISE. The two
 	 * wholesale replacements below assign instead (see `_replaced`). */
 	private _mark(intent: LayoutIntent): void {
+		// Any LOCAL write is this client's own and has to reach the manager — navigation included,
+		// since persistence is the other axis. So it always clears the remote-apply latch.
+		this._remoteApplied = false;
 		if (intent === 'authored') this._pendingIntent = 'authored';
 	}
 
@@ -104,6 +115,9 @@ class WorkspaceStore {
 	 * way round — after the replacement — edited the state that is now live and still counts. */
 	private _replaced(): void {
 		this._pendingIntent = 'navigation';
+		// A load / reset is still a local event the manager has to hear about, so the latch goes
+		// too. `applyRemoteLayout` re-arms it AFTER calling this.
+		this._remoteApplied = false;
 	}
 
 	/** A whole patch was loaded — a new backend session, or the Load button. The graph the pending
@@ -128,6 +142,14 @@ class WorkspaceStore {
 		const intent = this._pendingIntent;
 		this._pendingIntent = 'navigation';
 		return intent;
+	}
+
+	/** Whether the pending push exists ONLY because a peer's arrangement was applied, then reset.
+	 * AppShell asks this before pushing: true means drop the push (see `_remoteApplied`). */
+	takeRemoteApplied(): boolean {
+		const remote = this._remoteApplied;
+		this._remoteApplied = false;
+		return remote;
 	}
 
 	/** After a structural layout change, drop the maximized view and focus the
@@ -172,22 +194,85 @@ class WorkspaceStore {
 		this._focusFirst(this.active.root);
 	}
 
-	/** Apply a layout restored from a `.gfi` patch (or any external source). */
-	hydrate(state: unknown): void {
-		if (!isValidState(state)) return;
+	/** Ready a layout blob minted OUTSIDE this client — a `.gfi`, or a peer's push. Advances the id
+	 * counter past every id it already uses so a panel we mint next cannot collide, and migrates the
+	 * legacy "errors" panel onto the generalized "console". Shared by `hydrate` and
+	 * `applyRemoteLayout` so the two cannot drift. */
+	private _adopt(state: WorkspaceState): void {
 		reseedIds(state);
-		// Back-compat: the old "errors" panel is now the generalized "console".
 		const migrate = (node: LayoutNode): void => {
 			if (node.kind === 'split') node.children.forEach(migrate);
 			else if (node.panelType === 'errors') node.panelType = 'console';
 		};
 		for (const ws of state.workspaces) migrate(ws.root);
+	}
+
+	/** Apply a layout restored from a `.gfi` patch (or any external source). */
+	hydrate(state: unknown): void {
+		if (!isValidState(state)) return;
+		this._adopt(state);
 		this.state = state;
 		// The manager's own arrangement coming back at us (hello / a loaded patch). Pushing the
 		// re-seeded ids back is an echo, not an edit — classifying it as authoring is what
 		// re-dirtied a patch moments after it was saved.
 		this._replaced();
 		this._focusFirst(this.active.root);
+	}
+
+	/**
+	 * Apply a PEER's authored arrangement — the manager's `layout` event, which fires when another
+	 * client splits a panel, adds a tab, picks a viewer kind. The layout is not a CRDT doc root, so
+	 * this event is the only way it travels between live clients.
+	 *
+	 * A merge, not a `hydrate`. The blob is opaque and carries two different things: the peer's
+	 * panel TREE, which is shared, and wherever that peer happened to be LOOKING when it authored,
+	 * which is not. Replacing wholesale would climb a phone out of the sub-patch it is three levels
+	 * into and drag it onto whichever layout tab the desktop had in front — the same "navigation is
+	 * not authoring" line the dirty taxonomy draws, on the other side of the wire. So this takes the
+	 * structure and keeps this client's viewpoint: the front tab, each surviving panel's sub-patch
+	 * depth, and the focused/maximized panel while it still exists.
+	 *
+	 * A panel we have never seen has no viewpoint of ours to keep, so it arrives as the peer left
+	 * it — a split made from inside a sub-patch opens there on both screens rather than diverging.
+	 */
+	applyRemoteLayout(remote: unknown): void {
+		if (!isValidState(remote)) return;
+		this._adopt(remote);
+
+		const myPath = new Map<string, unknown>();
+		for (const w of this.state.workspaces) {
+			for (const p of collectPanels(w.root)) myPath.set(p.id, asStateObject(p.state).subpatchPath);
+		}
+		const keepMyPath = (node: LayoutNode): void => {
+			if (node.kind === 'split') {
+				node.children.forEach(keepMyPath);
+				return;
+			}
+			if (!myPath.has(node.id)) return;
+			const path = myPath.get(node.id);
+			const state = asStateObject(node.state);
+			node.state =
+				path === undefined
+					? Object.fromEntries(Object.entries(state).filter(([k]) => k !== 'subpatchPath'))
+					: { ...state, subpatchPath: path };
+		};
+		for (const w of remote.workspaces) keepMyPath(w.root);
+
+		const mine = this.state.activeWorkspaceId;
+		this.state = {
+			...remote,
+			activeWorkspaceId: remote.workspaces.some((w) => w.id === mine) ? mine : remote.activeWorkspaceId
+		};
+		this._replaced(); // a peer's arrangement is nobody's local edit
+		this._remoteApplied = true; // …and must not be pushed back (AFTER `_replaced`, which clears it)
+
+		// Focus and maximize are viewpoint too — leave them where they are unless the peer closed
+		// the panel they name. (Ids are never reused, so a stale one can only ever miss.)
+		const root = this.active.root;
+		if (!this.activePanelId || !findPanel(root, this.activePanelId)) {
+			this.activePanelId = firstPanelId(root);
+		}
+		if (this.maximizedPanelId && !findPanel(root, this.maximizedPanelId)) this.maximizedPanelId = null;
 	}
 
 	/** Run a tracked layout mutation `fn`, recording one history entry iff it
