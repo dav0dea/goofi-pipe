@@ -359,6 +359,11 @@ Analysis reports live in `docs/analysis/` (also gitignored).
   (must not dirty), changing a viewer *type* is a real view setting (dirties). Today both ride the
   same `setPanelState` → `set_layout` write, which dirties indiscriminately; that taxonomy is the
   fix, not a per-device suppression.
+- **`$lib/ui` must not import `$lib/stores`.** The primitives are a leaf layer. Importing a store into
+  one reshuffles Vite's CSS chunk graph, which changed the emitted `<link>` order and gave the app a
+  **first-paint FOUC** (caught by `inspector-gallery.spec.ts`, not by any unit test). When a primitive
+  needs device state, read the published DOM/CSS property instead — `ui/clampToViewport.ts`'s
+  `overlayViewport()` is the pattern.
 - Don't reintroduce dearpygui, zmq, or a Python manager.
 - The iceoryx2 transport and the GOOF wire format are load-bearing; changing either
   means changing `frontend/src/lib/codec/` in lockstep (`codec_golden.json` pins it).
