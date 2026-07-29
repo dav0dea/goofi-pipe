@@ -107,6 +107,13 @@ test('changing a docked viewer’s type DOES dirty the patch', async ({ page }) 
 	);
 	const kind = page.locator('.viewer-controls select.kind');
 	await expect(kind, 'the panel is showing the oscillator with its type dropdown').toBeVisible();
+	// Let the SETUP's own push land before saving. Both calls above are authoring, and the folded
+	// intent only resets when the debounced push takes it — so without this wait a save clears the
+	// flag while an `authored` is still pending, and the push that lands ~167ms later dirties the
+	// patch no matter how the viewer-kind write is classified. The assertion below would then be
+	// green against a viewer kind reclassified as navigation, which is the one thing it exists to
+	// catch.
+	await page.waitForTimeout(PAST_DEBOUNCE);
 	await saveClean(page);
 
 	await kind.selectOption('image');

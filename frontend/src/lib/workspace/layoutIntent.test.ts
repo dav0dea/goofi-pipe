@@ -68,6 +68,41 @@ describe('layout write intent', () => {
 		expect(ws.takeLayoutIntent()).toBe('navigation');
 	});
 
+	/**
+	 * …and it must SURVIVE the echo: `_mark` can only raise, so an authored write still pending
+	 * when the manager's layout lands rode the next push and dirtied a patch that matches disk.
+	 * Reachable on `load`: the CRDT delta and the queued JSON events race in the bridge's
+	 * `tokio::select!`, and when the delta wins, `_reconcileNodes` calls `clearNodeRefs` for every
+	 * vanished node still bound to a panel — marking authored moments before `graph_replaced`
+	 * hydrates. A wholesale replacement discards the pending edit along with the state that
+	 * carried it.
+	 */
+	it('drops an authored mark the manager’s layout then throws away', () => {
+		const ws = workspace();
+		const snapshot = ws.serialize();
+		ws.split(ws.activePanelId!, 'row'); // authored, NOT drained
+		ws.hydrate(snapshot);
+		expect(ws.takeLayoutIntent()).toBe('navigation');
+	});
+
+	it('drops an authored mark a reset then throws away', () => {
+		const ws = workspace();
+		ws.split(ws.activePanelId!, 'row');
+		ws.reset();
+		expect(ws.takeLayoutIntent()).toBe('navigation');
+	});
+
+	// The other race order, stated so the fix above cannot be widened into swallowing it: a write
+	// that lands AFTER the hydrate changed the state that was just installed, so it is a real
+	// difference from disk and stays authored.
+	it('keeps a mark that lands after the hydrate — it edited the new state', () => {
+		const ws = workspace();
+		const snapshot = ws.serialize();
+		ws.hydrate(snapshot);
+		ws.split(ws.activePanelId!, 'row');
+		expect(ws.takeLayoutIntent()).toBe('authored');
+	});
+
 	it('lets authoring win a mixed debounce window, whichever order it lands in', () => {
 		const ws = workspace();
 		ws.setPanelState(ws.activePanelId!, { subpatchPath: '/inst0' }, 'navigation');

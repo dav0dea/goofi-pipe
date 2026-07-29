@@ -90,9 +90,20 @@ class WorkspaceStore {
 	}
 
 	/** Classify the layout write that just happened. Authoring wins a mixed debounce window: if
-	 * anything in it was an edit, the patch really did change. */
+	 * anything in it was an edit, the patch really did change — so this can only RAISE. The two
+	 * wholesale replacements below assign instead (see `_replaced`). */
 	private _mark(intent: LayoutIntent): void {
 		if (intent === 'authored') this._pendingIntent = 'authored';
+	}
+
+	/** `hydrate`/`reset` replace `this.state` outright rather than editing it, so they discard any
+	 * pending edit ALONG WITH the state that carried it — the fold has nothing left to be about.
+	 * Marking (which can only raise) let that edit ride the next push and dirty a patch that
+	 * matches disk: on `load` the CRDT delta can beat the queued JSON events, and `clearNodeRefs`
+	 * then marks authored moments before `graph_replaced` hydrates. A write that lands the other
+	 * way round — after the replacement — edited the state that is now live and still counts. */
+	private _replaced(): void {
+		this._pendingIntent = 'navigation';
 	}
 
 	/** The folded intent of every layout write since the last call, then reset. AppShell takes
@@ -115,7 +126,7 @@ class WorkspaceStore {
 	 * arrangement from the previous session doesn't linger in the open tab. */
 	reset(): void {
 		this.state = defaultWorkspaceState();
-		this._mark('navigation'); // a blank session's default arrangement is nobody's edit
+		this._replaced(); // a blank session's default arrangement is nobody's edit
 		this._focusFirst(this.active.root);
 	}
 
@@ -159,7 +170,7 @@ class WorkspaceStore {
 		// The manager's own arrangement coming back at us (hello / a loaded patch). Pushing the
 		// re-seeded ids back is an echo, not an edit — classifying it as authoring is what
 		// re-dirtied a patch moments after it was saved.
-		this._mark('navigation');
+		this._replaced();
 		this._focusFirst(this.active.root);
 	}
 
