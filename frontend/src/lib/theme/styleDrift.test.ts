@@ -193,6 +193,23 @@ describe('style vocabulary', () => {
 		expect(app!.css).toContain('--space-1');
 	});
 
+	/* The sharpest single measure of "is a primitive a primitive": a consumer that reaches into
+	   `$lib/ui`'s own `.ui-*` class to restyle it is not composing the primitive, it is patching it.
+	   Worse, it patches it from a TIE: a fully-`:global()` selector gets no Svelte scope class, so
+	   `.ui-icon-btn.vs-cog` scores exactly what the primitive's own `.ui-icon-btn.svelte-xxx` does —
+	   and the two rules land in different built CSS chunks, where the winner is decided by Vite's
+	   emitted <link> order rather than by anything in the source. Consumers state their own class
+	   under a scoped ancestor (`.row :global(.console-copy-btn)`, which the scope class carries above
+	   the tie) or set a documented custom-property hook; both win by construction. */
+	it('never restyles a `.ui-*` primitive class from outside $lib/ui', () => {
+		const offenders = sources()
+			.filter((s) => !s.rel.startsWith('ui/'))
+			.flatMap((s) =>
+				[...s.css.matchAll(/:global\(\s*\.ui-[\w-]+/g)].map((m) => `${s.rel}  ${m[0]}…)`)
+			);
+		expect(offenders).toEqual([]);
+	});
+
 	// F stripped every gradient: the surface ladder carries elevation now, and a gradient reads as
 	// a different material sitting on the flat palette. Nothing but this stops one coming back.
 	it('paints surfaces flat — no gradients anywhere (C4)', () => {

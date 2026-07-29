@@ -118,14 +118,24 @@
 	/* The cog is the app's icon-button, but the frozen node header wants the original
 	   bare 16px glyph (not the 28px --hit box), so the visual box is pinned back to 16px
 	   — the coarse-pointer ::after still guarantees a --hit tap target. Muted at rest,
-	   brightening on hover / while open. */
-	:global(.ui-icon-btn.vs-cog) {
+	   brightening on hover / while open.
+
+	   Scoped through `.vs-anchor` instead of reaching for `.ui-icon-btn`: a fully-`:global()`
+	   `.ui-icon-btn.vs-cog` scores exactly what the primitive's own `.ui-icon-btn.svelte-xxx`
+	   scores, and the two land in different built CSS chunks where a tie is settled by the emitted
+	   <link> order rather than by the source (the hazard `54de8a1` fixed for `.content-btn`). The
+	   anchor's scope class carries these above the tie in source.
+
+	   Deliberately NOT `density="chrome"` + `--icon-btn-size`: that density restores the box to
+	   --hit under a coarse pointer, which would stand a 44px cog inside this frozen 24px --node-u
+	   header (touch-floor.spec pins that). Bounding the cog's coarse HIT rect is R's, not this. */
+	.vs-anchor :global(.vs-cog) {
 		min-width: 16px;
 		min-height: 16px;
 		color: var(--text-muted);
 	}
-	:global(.ui-icon-btn.vs-cog:hover),
-	:global(.ui-icon-btn.vs-cog.on) {
+	.vs-anchor :global(.vs-cog:hover),
+	.vs-anchor :global(.vs-cog.on) {
 		color: var(--text);
 	}
 	/* The dropdown surface: the shared Popover, tuned to the compact glassy menu it was —
