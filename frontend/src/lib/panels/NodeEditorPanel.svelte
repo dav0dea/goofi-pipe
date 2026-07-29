@@ -867,12 +867,12 @@
 			e.preventDefault();
 			void groupSelection();
 		} else if (e.key === 'Tab' && !e.shiftKey && canvasHasKeys(t)) {
-			// Scoped to the bare canvas (R2-3). Unscoped this was a ONE-WAY TRAP: `{#if menuOpen}` is
-			// unkeyed, so re-entering `openAddMenu` with the menu already open neither remounts it nor
-			// re-fires the search focus that made the FIRST Tab look fine — every press after that was
-			// a bare preventDefault with nothing to refocus, and no chrome outside this canvas was ever
-			// Tab-reachable (WCAG 2.1.2). Shift+Tab is left alone on purpose: it is the way back OUT of
-			// a canvas that nothing has focused yet.
+			// Scoped to the bare canvas (R2-3). Unscoped this was a ONE-WAY TRAP: the menu's #if block
+			// below is unkeyed, so re-entering `openAddMenu` with the menu already open neither
+			// remounts it nor re-fires the search focus that made the FIRST Tab look fine — every press
+			// after that was a bare preventDefault with nothing to refocus, and no chrome outside this
+			// canvas was ever Tab-reachable (WCAG 2.1.2). Shift+Tab is left alone on purpose: it is the
+			// way back OUT of a canvas that nothing has focused yet.
 			e.preventDefault();
 			openAddMenu(mouseX, mouseY);
 		} else if (e.key === 'Escape') {
