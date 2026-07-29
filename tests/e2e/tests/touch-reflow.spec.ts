@@ -217,6 +217,10 @@ async function checkHeaderFits(page: Page): Promise<void> {
    the pane's width is JS-inline and clamped against its HOST, so what it leaves behind is a
    fraction of the editor panel — a different answer in portrait, in landscape and on a tablet. */
 test('the inspector leaves the canvas it overlays reachable', async ({ page }) => {
+	// The pane slides in over `--dur-slow`, and every number below is a POSITION — measured
+	// mid-slide they describe a frame of the animation, not the layout the clamp produced. The app's
+	// own reduced-motion rule collapses the transition, so this reads the settled pane.
+	await page.emulateMedia({ reducedMotion: 'reduce' });
 	await page.goto('/');
 	await waitForApp(page);
 	const uid = await addNode(page, 'Oscillator', 'inputs', [40, 40]);
@@ -238,6 +242,18 @@ test('the inspector leaves the canvas it overlays reachable', async ({ page }) =
 		expect(p.x - host.x, 'the strip is at least one tap target wide').toBeGreaterThanOrEqual(
 			await hit(page)
 		);
+
+		// …and the strip has to be LIVE, not merely empty. The coarse resize band is a
+		// `touch-action: none`, pointer-capturing overlay centred on the handle, so it reached half a
+		// tap target back over the very canvas this clamp keeps free — and the strip's natural aim
+		// point, half a --hit in from the pane, was the dead boundary between them.
+		const h = await hit(page);
+		await page.touchscreen.tap(p.x - h / 2, p.y + p.height / 2);
+		await expect
+			.poll(() => page.evaluate(() => (window as any).goofi.query.selection().nodes.length), {
+				message: 'a tap in the reserved strip reaches the canvas and deselects'
+			})
+			.toBe(0);
 	} finally {
 		await page.evaluate(() => (window as any).goofi.commands.clearSelection());
 		await page.evaluate((u) => (window as any).goofi.commands.removeNode(u), uid);

@@ -75,3 +75,29 @@ test('Escape closes the inspector by clearing the selection', async ({ page }) =
 	await page.keyboard.press('Escape');
 	await expect(pane(page)).not.toHaveClass(/open/);
 });
+
+/**
+ * `{#if enabled}` mounts the pane whenever the inspector is ON, which is the default — so with
+ * nothing selected it sits parked at `translateX(100%)` still carrying `inspector-close`. Its only
+ * guard is `pointer-events: none`, which says nothing about focus or the accessibility tree: an AT
+ * virtual cursor reaches the button in every layout, and Tab reaches it in any split layout where
+ * the editor is not the active panel (the canvas Tab scope early-returns on `!isActive()`). It
+ * flips state the user cannot see. R added the button; before it, the parked subtree held no
+ * authored focusable control at all.
+ */
+test('the parked inspector is out of reach, not merely invisible', async ({ page }) => {
+	await page.goto('/');
+	await waitForApp(page);
+	// The pane is mounted (the inspector is enabled by default) but has nothing to inspect.
+	await expect(pane(page), 'parked, not unmounted').toHaveCount(1);
+	await expect(pane(page)).not.toHaveClass(/open/);
+
+	const close = pane(page).getByTestId('inspector-close');
+	expect(
+		await close.evaluate((el: HTMLElement) => {
+			el.focus();
+			return document.activeElement === el;
+		}),
+		'the parked pane’s ✕ cannot take focus'
+	).toBe(false);
+});

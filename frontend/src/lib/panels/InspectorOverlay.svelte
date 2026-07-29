@@ -96,10 +96,16 @@
 </script>
 
 {#if enabled}
+	<!-- `inert` while there is nothing to inspect. The pane stays MOUNTED and parked off-screen so
+	     the slide plays on the next selection, and `pointer-events: none` already keeps a pointer
+	     out — but that says nothing about focus or the accessibility tree, so this ✕ was Tab-reachable
+	     in any layout where the editor is not the active panel, and an AT virtual cursor found it in
+	     every one. It flips state the user cannot see. -->
 	<aside
 		class="side-panel"
 		class:open={node !== null}
 		class:resizing
+		inert={node === null}
 		style="width: {panelWidth}px"
 		data-testid="auto-side-panel"
 	>
@@ -152,11 +158,16 @@
 		right: 0;
 		top: 0;
 		bottom: 0;
+		/* How far the coarse resize grip below reaches OUTWARD, past the pane's own edge. Zero on a
+		   fine pointer, where the 8px handle is the whole target. */
+		--grip-reach: 0px;
 		/* The width above is JS-inline and clamped only to [260, 720] — never to the host. On an
 		   editor narrower than the stored width the pane covered the whole canvas with its own left
 		   edge clipped off, which is a DEAD END: deselecting (a tap on the canvas) is the only way
-		   to close it. One `--hit` of canvas is exactly the escape hatch it must not eat. */
-		max-width: calc(100% - var(--hit));
+		   to close it. One `--hit` of canvas is exactly the escape hatch it must not eat — and the
+		   grip's outward reach comes out of the pane, not out of the strip, so what is reserved is a
+		   full tap target of LIVE canvas rather than a number the grip then eats half of. */
+		max-width: calc(100% - var(--hit) - var(--grip-reach));
 		background: color-mix(in srgb, var(--surface-1) 96%, transparent);
 		backdrop-filter: blur(8px);
 		border-left: 1px solid var(--border);
@@ -253,12 +264,21 @@
 	/* Touch: an 8px seam is under a fifth of --hit. Widen the HIT area only (a `::before` overlay,
 	   since `::after` is already the painted line), so the line stays at its 3px offset and the
 	   panel's JS-owned width is unaffected. Horizontal only — the handle already spans the full
-	   height, and a symmetric percentage inset would shrink that to --hit. */
+	   height, and a symmetric percentage inset would shrink that to --hit.
+	   ASYMMETRIC, though, and this is the trade the way `Splitter.svelte` states its own: a centred
+	   band reaches 22px back over the escape strip the clamp reserves, which on the 412px project IS
+	   the strip's natural aim point — a reserved target quietly halved. So the band leans inward,
+	   over the pane's own rows, and what it does take outward comes out of the pane's max-width
+	   above rather than out of the strip. Full --hit either way; the strip stays live. */
 	@media (hover: none) and (pointer: coarse) {
+		.side-panel {
+			--grip-reach: 12px;
+		}
 		.resize-handle::before {
 			content: '';
 			position: absolute;
-			inset: 0 calc((var(--hit) - 100%) / -2);
+			/* 12px out + 8px handle + 24px in = --hit. */
+			inset: 0 -24px 0 -12px;
 		}
 		/* …and the seam PAINTS at rest. Transparent-until-hover is the whole of its discoverability
 		   on a fine pointer; with no hover the pane simply had an invisible edge. Quieter than the
