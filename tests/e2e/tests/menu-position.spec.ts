@@ -14,9 +14,10 @@ import { addNode, waitForNode, waitForNoNode } from '../lib/goofi';
 //   2. POSITIONAL — the menu lands at its intended viewport point (not shifted by the panel offset),
 //      which catches any real re-anchoring plus general placement bugs in openAddMenu.
 //
-// The TopBar path centres the menu over the active editor: `openAddMenu(r.left + r.width/2,
-// r.top + 60, 'center')`, where r is the editor root's viewport rect and the half-width comes from
-// the MEASURED menu — so the expected x below is the centre minus half of the menu's own 320px box.
+// The panel-addressed path (`window.goofi`'s `openAddMenu`, which names a panel rather than a
+// point) centres the menu over that editor: `openAddMenu(r.left + r.width/2, r.top + 60, 'center')`,
+// where r is the editor root's viewport rect and the half-width comes from the MEASURED menu — so
+// the expected x below is the centre minus half of the menu's own 320px box.
 test('the add-node menu portals to <body> and opens at its intended viewport point', async ({
 	page
 }) => {
@@ -29,7 +30,7 @@ test('the add-node menu portals to <body> and opens at its intended viewport poi
 	const r = (await editor.boundingBox())!;
 	const expected = { x: r.x + r.width / 2 - 160, y: r.y + 60 };
 
-	// Open the add-node menu through the same façade the TopBar "Add node" button uses.
+	// Open the add-node menu through the panel-addressed façade command.
 	await page.evaluate(() => (window as any).goofi.commands.openAddMenu());
 
 	const anchor = page.getByTestId('add-node-menu-anchor');
@@ -51,7 +52,7 @@ test('the add-node menu portals to <body> and opens at its intended viewport poi
 });
 
 // D-M2's other half: the add-node menu must SHARE the `clampToViewport` SSOT, not re-derive it (or,
-// on two of its four paths, skip it). `Tab` in the active editor opens the 320px menu at the last
+// on two of its paths, skip it). `Tab` in the active editor opens the 320px menu at the last
 // window-level pointer position — so with the cursor near a far corner the menu rendered off-screen
 // and the node could not be picked at all. RED before the four paths were routed through one
 // measured, clamped `openAddMenu`.

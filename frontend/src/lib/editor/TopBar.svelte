@@ -7,19 +7,21 @@
 	import PerfHud from './PerfHud.svelte';
 	import { Button, IconButton, Badge } from '$lib/ui';
 
+	// The header holds APP-GLOBAL actions only: session undo/redo and the patch's save/load.
+	// Anything that acts on one panel belongs to that panel — a node editor already carries its
+	// own fit control and its own add-node doors, and resolving "the active editor" up here only
+	// hid which of several open editors an action would land in.
 	type Props = {
-		onAddNode: () => void;
 		onSave: () => void;
 		onSaveAs: () => void;
 		onSaveInBrowser: () => void;
 		onLoad: () => void;
-		onFitView: () => void;
 		/** Workspace tab strip, rendered in the header's central gap between the
 		 * filename and the action buttons. */
 		tabs?: Snippet;
 	};
 
-	const { onAddNode, onSave, onSaveAs, onSaveInBrowser, onLoad, onFitView, tabs }: Props = $props();
+	const { onSave, onSaveAs, onSaveInBrowser, onLoad, tabs }: Props = $props();
 
 	const g = graph();
 	const h = history();
@@ -79,8 +81,6 @@
 			label="Redo"
 			onclick={() => void h.redo()}>↷</IconButton
 		>
-		<Button variant="ghost" data-testid="topbar-add" onclick={onAddNode}>＋ Add node</Button>
-		<Button variant="ghost" data-testid="topbar-fit" onclick={onFitView}>Fit</Button>
 		<div class="split">
 			<Button variant="ghost" class="seg-main" data-testid="topbar-save" onclick={onSave}
 				>Save</Button

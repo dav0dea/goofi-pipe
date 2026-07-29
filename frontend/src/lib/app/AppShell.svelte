@@ -42,14 +42,6 @@
 	const g = graph();
 	const ws = workspace();
 
-	// TopBar "Add node" / "Fit" drive whichever editor panel is active.
-	function addNode(): void {
-		editorFor(ws.activePanelId)?.openAddMenu();
-	}
-	function fitView(): void {
-		editorFor(ws.activePanelId)?.fitView();
-	}
-
 	// Focus an errored node in the editor the user last touched (keyed by uid).
 	function focusError(uid: string): void {
 		editorFor(ws.activePanelId)?.focusNode(uid);
@@ -222,8 +214,6 @@
 		</div>
 	{/if}
 	<TopBar
-		onAddNode={addNode}
-		onFitView={fitView}
 		onSave={triggerSave}
 		onSaveAs={saveAs}
 		onSaveInBrowser={saveInBrowser}

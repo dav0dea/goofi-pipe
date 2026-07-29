@@ -245,7 +245,9 @@ test('the kept-bespoke chrome buttons render from their own rules, not the base 
 
 	// 2. AddNodeMenu `.item` — the same shape, deliberately square (`border-radius: 0`) because the
 	//    rows are full-bleed inside the menu surface. The FIRST row is `.hl`, so probe an unhighlit one.
-	await page.getByTestId('topbar-add').click();
+	// Opened through the automation façade: adding a node is panel-local behaviour, so the app
+	// header carries no button for it (topbar.spec.ts pins what it does carry).
+	await page.evaluate(() => (window as any).goofi.commands.openAddMenu());
 	await page.getByTestId('add-menu-list').waitFor();
 	const addItem = await skin(page.locator('.add-menu .item:not(.hl)').first());
 	expectAppFace(addItem, 'the add-node row');

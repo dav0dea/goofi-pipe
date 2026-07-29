@@ -1,10 +1,10 @@
 /**
  * Imperative handles a node-editor panel exposes to the rest of the app.
  *
- * The global TopBar has "Add node" and "Fit" buttons, but there can be several
- * node-editor panels open at once. Each registers its handles here keyed by
- * panel id; the TopBar resolves the active panel's handles (falling back to any
- * editor) so its buttons drive whichever editor the user last touched.
+ * Several node-editor panels can be open at once, so each registers its handles here keyed by
+ * panel id and callers resolve one panel's (falling back to any editor). The readers are the
+ * error chip, which focuses an errored node in the editor the user last touched, and the
+ * `window.goofi` automation façade, which addresses a panel explicitly.
  */
 export interface EditorCommands {
 	/** Open the add-node menu centered over this editor. */

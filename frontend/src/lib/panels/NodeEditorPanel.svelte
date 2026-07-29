@@ -888,7 +888,8 @@
 		if (created.length > 0) sel.selectNodes(panelId, created);
 	}
 
-	/** Open the add-node menu centered over this panel (TopBar "Add node"). */
+	/** Open the add-node menu centered over this panel — the `window.goofi` façade's entry point,
+	 * which names a panel rather than a point. */
 	function openAddMenuCentered(): void {
 		const r = rootEl?.getBoundingClientRect();
 		if (r) openAddMenu(r.left + r.width / 2, r.top + 60, 'center');
@@ -994,8 +995,8 @@
 	}
 
 	/** Select a node in this editor (and make it the active selection the
-	 * standalone panels follow). The shared handle the TopBar, the error panel,
-	 * and the agent surface use to focus a node. */
+	 * standalone panels follow). The shared handle the error panel and the agent
+	 * surface use to focus a node. */
 	function focusNode(uid: string): void {
 		// Flow nodes are keyed by uid (id: uid); select by uid, not display name.
 		sel.selectNodes(panelId, [uid]);
