@@ -3,7 +3,7 @@
 	import type { SettingsMap } from './settingsSchema';
 	import { onMount, onDestroy } from 'svelte';
 	import { formatTick as fmtTick } from './format';
-	import { SERIES } from './palette';
+	import { SERIES, AXIS_INK, tickFont } from './palette';
 
 	type Props = { frame: DataFrame; settings?: SettingsMap };
 	const { frame, settings = {} }: Props = $props();
@@ -156,8 +156,8 @@
 
 	function drawCornerTicks(w: number, h: number, lo: number, hi: number): void {
 		if (!ctx) return;
-		ctx.font = '10px "JetBrains Mono", ui-monospace, monospace';
-		ctx.fillStyle = 'rgba(208, 208, 208, 0.55)';
+		ctx.font = tickFont(10);
+		ctx.fillStyle = AXIS_INK;
 		const pad = 4;
 		// y-axis: max top-left, min bottom-left.
 		ctx.textAlign = 'left';

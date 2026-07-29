@@ -12,6 +12,7 @@
 		type PixelCache
 	} from './topomapInterp';
 	import { onMount, onDestroy } from 'svelte';
+	import { tickFont } from './palette';
 
 	type Props = { frame: DataFrame; settings?: SettingsMap };
 	const { frame, settings = {} }: Props = $props();
@@ -39,7 +40,7 @@
 		ctx.fillStyle = '#1c2029';
 		ctx.fillRect(0, 0, w, h);
 		ctx.fillStyle = '#9aa3b3';
-		ctx.font = '11px var(--font-mono)';
+		ctx.font = tickFont(11);
 		ctx.textAlign = 'center';
 		ctx.fillText(msg, w / 2, h / 2);
 	}

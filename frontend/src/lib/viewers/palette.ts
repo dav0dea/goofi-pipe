@@ -14,3 +14,18 @@ export const SERIES: string[] = [
 	'#c5c8d6',
 	'#6e7686'
 ];
+
+// The ink every viewer draws its canvas chrome in — tick labels and corner readouts. Quiet
+// enough to read as a scale annotation rather than as data.
+export const AXIS_INK = 'rgba(208, 208, 208, 0.55)';
+
+/** The app's mono stack at `px`, ready for `ctx.font`.
+ *
+ * The stack has to be spelled out: a canvas context parses `font` as a standalone CSS value with
+ * no element to resolve custom properties against, so `ctx.font = '11px var(--font-mono)'` is
+ * silently discarded and the context keeps the UA's 10px sans-serif. Mirrors app.css's
+ * `--font-mono` — the one restatement, here, instead of a shortened copy per viewer.
+ */
+export function tickFont(px: number): string {
+	return `${px}px "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace`;
+}

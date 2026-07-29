@@ -7,7 +7,7 @@
 	import { decimateMinMax } from './decimate';
 	import { readEnvelope, envelopeBand } from './envelope';
 	import { formatTick as fmtTick } from './format';
-	import { SERIES } from './palette';
+	import { SERIES, AXIS_INK, tickFont } from './palette';
 
 	type Props = { frame: DataFrame; settings?: SettingsMap };
 	const { frame, settings = {} }: Props = $props();
@@ -108,8 +108,8 @@
 		const bottom = u.bbox.top + u.bbox.height;
 
 		ctx.save();
-		ctx.font = `${10 * r}px "JetBrains Mono", ui-monospace, monospace`;
-		ctx.fillStyle = 'rgba(208, 208, 208, 0.55)';
+		ctx.font = tickFont(10 * r);
+		ctx.fillStyle = AXIS_INK;
 		const pad = 4 * r;
 
 		if (scalarMode) {
