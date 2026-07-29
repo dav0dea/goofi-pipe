@@ -122,3 +122,48 @@ test('Popover places against the visual viewport, not under the keyboard', async
 		await waitForNoNode(page, uid);
 	}
 });
+
+/**
+ * The other inset the device seam owns, and the one F shipped as a no-op: the notch / rounded-corner
+ * / home-indicator safe area. `viewport-fit=cover` (app.html) makes the app draw under all three, so
+ * the padding is what keeps the 44px TopBar and the bottom-edge controls out from under them.
+ *
+ * It was stated on `body`. The shell is `position: fixed; inset: 0`, so it is laid out against the
+ * INITIAL CONTAINING BLOCK — nothing on `body` can move it, and phase 1 below pins exactly that, so
+ * the rule cannot drift back onto an ancestor that does not contain the app. Chromium's device
+ * emulation reports `env()` as 0, which is why all four projects were green against a dead rule; the
+ * insets are therefore named as tokens and stamped here, which is also how a surface that has to
+ * restate them (`Toast`, itself fixed) stays in step with the shell.
+ */
+test('the safe-area inset is stated where the app chrome can actually feel it', async ({ page }) => {
+	await page.goto('/');
+	await waitForApp(page);
+	const bar = page.locator('.topbar');
+	const panel = page.locator('.panel').first();
+	const before = (await bar.boundingBox())!;
+	const panelBefore = (await panel.boundingBox())!;
+
+	// 1. Padding on `body` cannot reach a fixed shell — the defect, made permanent as a guard.
+	await page.addStyleTag({ content: 'body { padding: 44px 20px 34px 20px !important; }' });
+	const onBody = (await bar.boundingBox())!;
+	expect(onBody.y, 'a fixed shell is laid out against the viewport, not against body').toBe(before.y);
+	expect(onBody.x, 'in both axes').toBe(before.x);
+
+	// 2. Stated on the shell itself, every edge of the app chrome moves off the unsafe area.
+	await page.evaluate(() => {
+		const s = document.documentElement.style;
+		s.setProperty('--safe-top', '44px');
+		s.setProperty('--safe-right', '20px');
+		s.setProperty('--safe-bottom', '34px');
+		s.setProperty('--safe-left', '20px');
+	});
+	const after = (await bar.boundingBox())!;
+	const panelAfter = (await panel.boundingBox())!;
+	expect(after.y - before.y, 'the top bar clears the notch').toBe(44);
+	expect(after.x - before.x, 'and the rounded left edge').toBe(20);
+	expect(before.width - after.width, 'the bar gives up both side insets').toBe(40);
+	expect(
+		panelBefore.y + panelBefore.height - (panelAfter.y + panelAfter.height),
+		'and the bottom-edge controls clear the home indicator'
+	).toBe(34);
+});

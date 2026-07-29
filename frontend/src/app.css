@@ -74,6 +74,18 @@
 	--ease: ease;
 	--disabled-opacity: 0.45;
 
+	/* Safe area — the notch / rounded corner / home-indicator bands `viewport-fit=cover`
+	   (app.html) lets the app draw under. Named here rather than spelled `env()` at each use, for
+	   two reasons: a `position: fixed` surface is laid out against the initial containing block, so
+	   the shell's padding cannot reach it and it must RESTATE the inset (Toast does) — one name is
+	   what keeps the two in step; and Chromium's device emulation reports `env()` as 0, so a token
+	   is the only thing an e2e can stamp to prove the wiring is live (device-stamp.spec.ts). Zero
+	   on every desktop, so the resting geometry is unchanged. */
+	--safe-top: env(safe-area-inset-top, 0px);
+	--safe-right: env(safe-area-inset-right, 0px);
+	--safe-bottom: env(safe-area-inset-bottom, 0px);
+	--safe-left: env(safe-area-inset-left, 0px);
+
 	/* Hit-target geometry — documentary fine-pointer defaults. The touch floor only applies under
 	   (pointer: coarse), in the @media block at the end of this file. */
 	--hit: 28px; /* documentary default; the floor only applies under (pointer: coarse) below */
@@ -377,9 +389,5 @@ textarea {
 	   clipped the tab strip's ✕ (C17). Pinned by touch-hit-floor.spec.ts's SITES registry. */
 	.svelte-flow__controls-button {
 		min-width: var(--hit);
-	}
-	/* safe-area padding for notches/home indicators */
-	body {
-		padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
 	}
 }

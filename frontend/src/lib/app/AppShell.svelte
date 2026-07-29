@@ -254,6 +254,11 @@
 		flex-direction: column;
 		min-width: 0;
 		min-height: 0;
+		/* The safe area belongs on the shell, not on `body`: this box is laid out against the
+		   initial containing block, so an ancestor's padding cannot reach it (pinned in
+		   device-stamp.spec.ts). Padding rather than `inset`, so the app still paints edge to edge
+		   under a notch and only its CHROME steps clear. Zero on a desktop. */
+		padding: var(--safe-top) var(--safe-right) var(--safe-bottom) var(--safe-left);
 	}
 	.main {
 		position: relative;

@@ -30,11 +30,12 @@
 		position: fixed;
 		/* Lifted clear of the soft keyboard AND of the home indicator / gesture bar: this is the
 		   ONLY surface an undo/redo failure is reported on and its only dismissal is a click on
-		   itself, so a toast under either is an unreadable, undismissable error. `app.css`'s
-		   safe-area padding sits on `body`, which a `position: fixed` element is not laid out
-		   against — so the inset has to be restated here. Both terms are 0 on a desktop and
-		   whenever the keyboard is down, so the resting geometry is unchanged. */
-		bottom: calc(var(--space-8) + var(--kb-inset, 0px) + env(safe-area-inset-bottom, 0px));
+		   itself, so a toast under either is an unreadable, undismissable error. The shell's
+		   safe-area padding cannot reach a `position: fixed` element — it is laid out against the
+		   initial containing block — so the inset is restated here, through the same token the
+		   shell uses. Both terms are 0 on a desktop and whenever the keyboard is down, so the
+		   resting geometry is unchanged. */
+		bottom: calc(var(--space-8) + var(--kb-inset, 0px) + var(--safe-bottom, 0px));
 		left: 50%;
 		transform: translateX(-50%);
 		z-index: var(--z-toast);
