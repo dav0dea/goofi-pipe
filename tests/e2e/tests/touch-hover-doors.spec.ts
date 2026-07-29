@@ -166,6 +166,19 @@ test('the console per-row copy button is reachable without hover', async ({ page
 		);
 		const events = await copy.evaluate((el) => getComputedStyle(el).pointerEvents);
 		expect(events, 'and it is tappable, not merely painted').not.toBe('none');
+
+		// …and it is a GHOST, like every other chrome-density icon button in the app. Resting it
+		// open was the right call; inheriting `.ui-icon-btn`'s filled + outlined base paint with it
+		// was not. On a fine pointer that is invisible (16px at `opacity: 0`); under coarse it puts
+		// a painted 44×44 box on every console row — the highest repetition rate in the app, against
+		// app.css's own rule that a surface step is what carries separation.
+		const paint = await copy.evaluate((el) => {
+			const cs = getComputedStyle(el);
+			return { border: cs.borderTopColor, bg: cs.backgroundColor };
+		});
+		const invisible = /rgba\(0, 0, 0, 0\)|transparent/;
+		expect(paint.border, 'the resting copy button draws no border').toMatch(invisible);
+		expect(paint.bg, 'nor a filled surface').toMatch(invisible);
 	} finally {
 		await page.evaluate((u) => (window as any).goofi.commands.removeNode(u), uid);
 		await waitForNoNode(page, uid).catch(() => {});

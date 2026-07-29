@@ -314,8 +314,15 @@
 								>×{row.e.count}</Badge
 							>
 						{/if}
+						<!-- `ghost`, like every other chrome-density icon button in the app. The coarse
+						     door below rests this one open, and `.ui-icon-btn`'s base paint (a filled
+						     surface plus a border) would then draw a 44×44 box on every console row —
+						     the highest repetition rate anywhere in the UI, against app.css's own rule
+						     that a surface step is what carries separation. On a fine pointer it was
+						     invisible (16px at `opacity: 0`), which is why nobody saw it. -->
 						<IconButton
 							class="console-copy-btn"
+							variant="ghost"
 							size="sm"
 							density="chrome"
 							data-testid="console-copy"
