@@ -1,5 +1,5 @@
 import { test, expect, type Page } from '@playwright/test';
-import { waitForApp } from '../lib/app';
+import { closeAddedTab, waitForApp } from '../lib/app';
 import { addGlobal, setGlobalValue, globals } from '../lib/goofi';
 
 /** Borrow the default node-editor panel as a Globals panel, run `body`, then give it back.
@@ -49,8 +49,14 @@ test('globals: default_ufreq is seeded, a user global adds, edits round-trip', a
 test('the Globals panel renders when opened', async ({ page }) => {
 	await page.goto('/');
 	await waitForApp(page);
+	// This one opens the panel in a NEW TAB rather than borrowing the editor, so the tab is what
+	// has to be handed back — see `closeAddedTab`.
 	await page.evaluate(() => (window as any).goofi.commands.addTab('globals'));
-	await expect(page.getByTestId('globals-panel')).toBeVisible();
+	try {
+		await expect(page.getByTestId('globals-panel')).toBeVisible();
+	} finally {
+		await closeAddedTab(page);
+	}
 });
 
 // A global's VALUE is machine-read: expressions resolve `globals.<name>` and node process()/setup()

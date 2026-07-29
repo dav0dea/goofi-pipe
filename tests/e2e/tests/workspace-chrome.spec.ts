@@ -1,5 +1,5 @@
 import { test, expect, type Locator, type Page } from '@playwright/test';
-import { waitForApp } from '../lib/app';
+import { closeAddedTab, waitForApp } from '../lib/app';
 import { addNode, waitForNode, waitForNoNode } from '../lib/goofi';
 
 /**
@@ -95,19 +95,25 @@ test('a collapsed tab close button occupies zero width (the even-padding invaria
 	const close = tabs.getByRole('button', { name: 'Close tab' }).first();
 	await close.waitFor({ state: 'attached' });
 
-	// Its tab is neither hovered nor active, so the ✕ is collapsed: it must take NO
-	// horizontal space at all, or every inactive tab is padded wider than its neighbours.
-	// (A primitive with a 1px border clamps `width: 0` to 2px under border-box — the exact
-	// regression this guards.)
-	await expect
-		.poll(async () => (await close.boundingBox())?.width, {
-			message: 'the collapsed ✕ takes zero width'
-		})
-		.toBe(0);
+	try {
+		// Its tab is neither hovered nor active, so the ✕ is collapsed: it must take NO
+		// horizontal space at all, or every inactive tab is padded wider than its neighbours.
+		// (A primitive with a 1px border clamps `width: 0` to 2px under border-box — the exact
+		// regression this guards.)
+		await expect
+			.poll(async () => (await close.boundingBox())?.width, {
+				message: 'the collapsed ✕ takes zero width'
+			})
+			.toBe(0);
 
-	// Hovering its tab reveals it at the frozen 16px reveal width.
-	await close.locator('xpath=..').hover();
-	await expect.poll(async () => (await close.boundingBox())?.width).toBe(16);
+		// Hovering its tab reveals it at the frozen 16px reveal width.
+		await close.locator('xpath=..').hover();
+		await expect.poll(async () => (await close.boundingBox())?.width).toBe(16);
+	} finally {
+		// The tab half of the rule `closeSplit` states above — this file is the LAST of `default`,
+		// so a tab left behind here lands on `touch`, three files and a project away.
+		await closeAddedTab(page);
+	}
 });
 
 test('the tab strip ＋ keeps its frozen 22px box (not the primitive --hit floor)', async ({
