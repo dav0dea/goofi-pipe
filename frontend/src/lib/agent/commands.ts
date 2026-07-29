@@ -75,6 +75,11 @@ export const commands = {
 	): Promise<void> => graph().wireBoundary(instId, bndId, innerNode, innerSlot),
 	removeBoundary: (instId: string, bndId: string): Promise<void> =>
 		graph().removeBoundary(instId, bndId),
+	// Relabels the portal WITHOUT re-keying it: the exposed slot is still addressed by `bndId`, so
+	// external wires survive and only what the user reads changes. That split is exactly what the
+	// slot pickers have to honour — label out, boundary id in.
+	renameBoundary: (instId: string, bndId: string, name: string): Promise<void> =>
+		graph().renameBoundary(instId, bndId, name),
 
 	// --- globals -----------------------------------------------------------
 	// Patch-scoped named scalars (EditGlobal command ops, same path as the Globals panel — undoable).

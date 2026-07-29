@@ -76,3 +76,39 @@ test('a string global’s value cell is typed as machine-read, not prose', async
 		await page.evaluate(() => (window as any).goofi.commands.removeGlobal('m15_token'));
 	}
 });
+
+// The panel's own commit path, which `d0f31b1` rebuilt onto the `useLiveValue` latch and which no
+// test has crossed since: globals.spec drives values through the `window.goofi` façade, which
+// bypasses the widgets entirely. Typing is the part that can break — the latch has to hold the
+// buffer while the doc echoes back, and the panel has to parse to the global's DECLARED type
+// rather than to whatever the widget handed it.
+test('the Globals panel commits a typed number as the global’s declared type', async ({ page }) => {
+	await page.goto('/');
+	await waitForApp(page);
+	await addGlobal(page, 'm18_gain', 0, 'float');
+	await addGlobal(page, 'm18_count', 0, 'int');
+	try {
+		await inGlobalsPanel(page, async () => {
+			const gain = page.locator('tr[data-name="m18_gain"]').getByTestId('global-value');
+			await gain.fill('2.5');
+			await gain.blur();
+			await expect
+				.poll(async () => (await globals(page)).find((g) => g.name === 'm18_gain')?.value)
+				.toBeCloseTo(2.5, 5);
+
+			// An int global rounds on commit — the panel parses to the declared type, and 7.6 typed
+			// into an int is 8, not a float that silently retypes the global.
+			const count = page.locator('tr[data-name="m18_count"]').getByTestId('global-value');
+			await count.fill('7.6');
+			await count.blur();
+			await expect
+				.poll(async () => (await globals(page)).find((g) => g.name === 'm18_count')?.value)
+				.toBe(8);
+		});
+	} finally {
+		await page.evaluate(() => {
+			const c = (window as any).goofi.commands;
+			return Promise.all([c.removeGlobal('m18_gain'), c.removeGlobal('m18_count')]);
+		});
+	}
+});
