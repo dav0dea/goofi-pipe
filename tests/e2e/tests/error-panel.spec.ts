@@ -103,6 +103,42 @@ test.describe('ErrorPanel dismissal (delegated to Popover)', () => {
 		).toEqual(before);
 	});
 
+	// M-5 restored the flip, but only as a SNAPSHOT: the Popover measures its surface exactly once
+	// per open, so a node erroring while the list is already open grows the surface DOWNWARD from a
+	// top pinned for the old height — back over the chip, at --z-menu over --z-chip. That is verbatim
+	// the defect M-5 fixed, arriving half a second later: the toggle-to-close is buried and a click at
+	// the chip's coordinates lands on a `.prow` and focuses a node the user never asked for. Pre-M the
+	// panel anchored in pure CSS (`bottom: calc(100% + 6px)`), which self-corrected for ANY height;
+	// the migration replaced that with a measured `top`, and M-5 restored only the initial placement.
+	test('the popover stays clear of its chip when a second node errors while it is open', async ({
+		page
+	}) => {
+		const chipHost = await summonErrorChip(page);
+		const chip = chipHost.locator('button');
+		const popover = page.locator('.ui-popover');
+		const rows = page.locator('.error-list .prow');
+
+		await chip.click();
+		await expect(popover).toBeVisible();
+		await expect(rows, 'one errored node so far').toHaveCount(1);
+
+		// A second erroring node added WHILE the popover is open. `activeNodes` derives live from the
+		// control plane, so the list grows under a surface that was measured for one row.
+		const uid = await addNode(page, 'LempelZiv', 'python');
+		created.push(uid);
+		await waitForNode(page, uid);
+		await expect(rows, 'the open list grew a row').toHaveCount(2);
+
+		const chipBox = (await chip.boundingBox())!;
+		const menuBox = (await popover.boundingBox())!;
+		const overlaps =
+			chipBox.x < menuBox.x + menuBox.width &&
+			menuBox.x < chipBox.x + chipBox.width &&
+			chipBox.y < menuBox.y + menuBox.height &&
+			menuBox.y < chipBox.y + chipBox.height;
+		expect(overlaps, 'the GROWN popover still does not cover the chip that opens it').toBe(false);
+	});
+
 	// The row inside the popover is the one M kept bespoke here (a stacked name-over-message list
 	// row, not an action). M-Task 7 strips app.css's base `button` SKIN, so it must render from its
 	// own rule alone — including the fade on its hover fill, which it was inheriting from that skin

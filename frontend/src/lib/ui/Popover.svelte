@@ -56,15 +56,27 @@
 			placed = false;
 			return;
 		}
-		const a = anchor.getBoundingClientRect();
-		const m = menuEl.getBoundingClientRect();
-		pos = clampToViewport(
-			a,
-			{ width: m.width, height: m.height },
-			{ width: window.innerWidth, height: window.innerHeight },
-			{ flip }
-		);
-		placed = true;
+		const el = menuEl;
+		const a = anchor;
+		const place = (): void => {
+			const ar = a.getBoundingClientRect();
+			const m = el.getBoundingClientRect();
+			pos = clampToViewport(
+				ar,
+				{ width: m.width, height: m.height },
+				{ width: window.innerWidth, height: window.innerHeight },
+				{ flip }
+			);
+			placed = true;
+		};
+		// Measured on every resize, not once per open: the surface's content is the consumer's and can
+		// grow while it is open (the error list derives live from the control plane). With `flip` the
+		// surface is pinned by its TOP, so growth extends DOWNWARD over the very trigger the flip
+		// exists to keep clear. No feedback loop — repositioning a fixed element does not resize it.
+		const ro = new ResizeObserver(place);
+		ro.observe(el);
+		place();
+		return () => ro.disconnect();
 	});
 
 	function onWindowPointerDown(e: PointerEvent): void {
