@@ -56,10 +56,20 @@
 	// lowest priority first, as the width runs out. `overflowFit.ts` owns the arithmetic (and its
 	// three traps); this file owns only the measuring — which boxes to read, and against what.
 	//
-	// The budget is deliberately derived from boxes the plan cannot move: the header's own inner
-	// width, the brand cluster (`flex: 0 0 auto`, so spilling an action never resizes it), and a
-	// reservation for the tab strip. Reading `.actions`' own width instead would be the
-	// oscillation bug: it shrinks the moment an item leaves.
+	// The budget is MEASURED each replan: the header's own inner width, minus the brand cluster's
+	// laid-out rect, minus a reservation for the tab strip. The one width it must never read is
+	// `.actions`' own — that shrinks the moment an item leaves, which is the oscillation bug.
+	//
+	// The brand is not a fixed term (it was `flex: 0 0 auto` when this comment was first written;
+	// `8596297` made it `flex: 0 1 auto` because a live patch's filename otherwise pushed the
+	// overflow trigger off the right edge at 412px). That is exactly why `replan` re-reads its rect
+	// and the observer below watches it. The plan still converges: `.tabslot` is the only growable
+	// box and `.action-zone` is rigid, so a spilled action's width goes to the strip 1:1 — the fit
+	// condition reduces to a monotone width threshold. Where the line is ALREADY overflowing, brand
+	// and strip shrink together, so two adjacent spill sets can both be self-consistent: a narrow
+	// band with hysteresis, settling on whichever direction the width was approached from.
+	// The brand's yielding is measured, not claimed here: `touch-reflow.spec.ts`'s crowding-name
+	// test fails at 412px with `flex: 0 0 auto` put back.
 
 	/** Lowest priority first — the order the bar gives its actions up. D-R6: Undo · Redo · Save ·
 	 * Load… · Save▾ is the keep order, so the caret goes first and the split degrades into a plain

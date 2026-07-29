@@ -10,8 +10,13 @@
  * The one property that matters is that `planOverflow` is a function of its ARGUMENTS. Moving an
  * item out of the bar changes what is rendered, which re-fires the ResizeObserver that decided to
  * move it; if the plan read the bar's own content it would flip-flop forever at exactly the
- * boundary width. It reads cached intrinsic widths and a budget derived from boxes the plan
- * cannot move, so the second pass computes the first pass's answer and writes nothing.
+ * boundary width. It reads cached intrinsic widths and a budget its caller measures off the OTHER
+ * boxes in the header, so the second pass computes the first pass's answer and writes nothing.
+ *
+ * "The other boxes" is not "boxes that cannot move" — the brand cluster shrinks (see TopBar's own
+ * note), so the budget is re-measured rather than assumed constant. What makes it converge is that
+ * the only growable box is the tab strip: a spilled action's width goes there 1:1, leaving the fit
+ * condition a monotone threshold in the container width.
  */
 
 /** One measurable action in the bar, in DOM order. */

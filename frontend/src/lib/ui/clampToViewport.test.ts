@@ -1,4 +1,7 @@
 import { describe, it, expect } from 'vitest';
+import { readdirSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { clampToViewport } from './clampToViewport';
 
 // The one correct Popover clamp (spec §3), lifted from ContextMenu's measured viewport math and
@@ -124,5 +127,39 @@ describe('clampToViewport', () => {
 		const a = clampToViewport(anchor, { width: 150, height: 90 }, { width: 800, height: 600 });
 		const b = clampToViewport(anchor, { width: 150, height: 90 }, { width: 800, height: 600 });
 		expect(a).toEqual(b);
+	});
+});
+
+/**
+ * The layering rule `overlayViewport()` exists to satisfy, measured rather than asserted in prose.
+ *
+ * `$lib/ui` is a leaf layer: a primitive that imports an app store reshuffles Vite's CSS chunk
+ * graph, which changes the emitted `<link>` order and gives the app a first-paint FOUC — caught
+ * once by `inspector-gallery.spec.ts` and promoted to a CLAUDE.md hard constraint, but until now by
+ * no unit test at all. That is why the soft-keyboard inset reaches this module as the `--kb-inset`
+ * custom property `stores/device.svelte.ts` writes onto <html>, and not as an import; the comment
+ * in that file spent a whole sub-project claiming the reverse.
+ */
+describe('$lib/ui is a leaf layer', () => {
+	const dir = fileURLToPath(new URL('.', import.meta.url));
+	/** Every import specifier in a file, from `import …` and `await import(…)` alike. */
+	const specifiers = (src: string): string[] => [
+		...[...src.matchAll(/(?:from|import)\s*\(?\s*['"]([^'"]+)['"]/g)].map((m) => m[1])
+	];
+
+	it('imports no app store, in any file, by any spelling', () => {
+		const offenders: string[] = [];
+		for (const name of readdirSync(dir)) {
+			if (!/\.(ts|svelte)$/.test(name) || name.endsWith('.test.ts')) continue;
+			for (const spec of specifiers(readFileSync(join(dir, name), 'utf8'))) {
+				// `$lib/stores` is the whole store layer; `../stores/` is the same reach spelled
+				// relatively, which an alias-only check would miss.
+				if (/^\$lib\/stores\b/.test(spec) || /(^|\/)\.\.\/stores\//.test(spec))
+					offenders.push(`${name} → ${spec}`);
+			}
+		}
+		expect(offenders, 'read the published DOM/CSS property instead — see overlayViewport()').toEqual(
+			[]
+		);
 	});
 });

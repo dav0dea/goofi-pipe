@@ -1,9 +1,15 @@
 /** Device store — the soft keyboard's overlap of the layout viewport, and nothing else. A rune
- * singleton (like ui()). It owns the `visualViewport` subscription and publishes the measurement
- * twice, because it has two kinds of consumer: as the `--kb-inset` custom property on <html> for
- * CSS (app/Toast.svelte), and as a `$state` field for the two anchored-overlay clamps, which are
- * JS and must re-place when the keyboard opens (ui/Popover.svelte, workspace/ContextMenu.svelte).
- * One measurement, two representations — never two sources of truth.
+ * singleton (like ui()). It owns the `visualViewport` subscription and publishes the measurement as
+ * the `--kb-inset` custom property on <html>.
+ *
+ * The custom property IS the seam, and deliberately so. The anchored-overlay clamps that need this
+ * number are JS (ui/Popover.svelte, workspace/ContextMenu.svelte, and every other caller of
+ * `ui/clampToViewport.ts`'s `overlayViewport()`), and they read it back out of the DOM rather than
+ * importing this file — because `$lib/ui` must stay a leaf layer, on pain of a measured first-paint
+ * FOUC. (This comment used to say the opposite: that those two read the `$state` field below. They
+ * never did after `dd8cc4c` promoted the layering rule to a CLAUDE.md hard constraint, which
+ * `ui/clampToViewport.test.ts` now scans for rather than leaving to prose.) The `$state` field has
+ * no reader outside this file today; it is the leanness queue's to settle, not a second SSOT.
  *
  * This is the whole device seam. `data-pointer` / `data-size` / `data-short` were deleted with
  * `classify()` (D-R8): they had no reader, and every question they encoded is one `@media` query
