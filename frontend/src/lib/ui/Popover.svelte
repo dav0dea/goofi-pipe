@@ -88,13 +88,19 @@
 
 {#if open}
 	{#if catcher}
-		<!-- Opt-in click catcher: a portalled full-screen layer one step under the surface, so a
-		     dismissing click is CONSUMED instead of also acting on whatever it landed on. The window
-		     listener alone cannot do this — the handler under the pointer still fires, and a target
-		     that stops propagation (the slot header, which must keep SvelteFlow from starting a node
-		     drag) never lets the listener see the event at all. Mirrors the add-node menu's overlay.
-		     It reads --popover-z from the portal root, exactly as the surface does. -->
-		<div class="ui-popover-catcher" use:portal onclick={onDismiss} role="presentation"></div>
+		<!-- Opt-in click catcher: a portalled full-screen layer one step under the surface. It carries
+		     no handler, because it needs none — the window `pointerdown` above is what dismisses, and
+		     it is armed exactly when this layer is mounted (both gated on `open`). What the layer does
+		     is ABSORB the pointer event, so a dismissing click CONSUMES instead of also acting on
+		     whatever it landed on. The window listener alone cannot do that: the handler under the
+		     pointer still fires, and a target that stops propagation (the slot header, which must keep
+		     SvelteFlow from starting a node drag) never lets the listener see the event at all. So the
+		     job here is entirely the CSS below; it reads --popover-z from the portal root, exactly as
+		     the surface does. (It once mirrored the add-node menu's overlay and carried an `onclick`
+		     too — dead here: the dismissal unmounts this branch at the microtask checkpoint ending the
+		     pointerdown task, so `click` is never dispatched to it. The add-node menu, which has no
+		     window listener at all, still needs its own.) -->
+		<div class="ui-popover-catcher" use:portal></div>
 	{/if}
 	<div
 		{...rest}
