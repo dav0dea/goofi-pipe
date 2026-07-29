@@ -3,7 +3,12 @@ import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-/* The style-vocabulary guard.
+/* The read-the-CSS-from-disk guard.
+ *
+ * Two families live here because they ask the same question of the same bytes: what does the
+ * stylesheet SAY, before any of it is mounted. `describe('style vocabulary')` guards the token
+ * ladder; `describe('coarse-pointer doors')` guards R's success criteria §5.2 and §5.4 — the two
+ * that are enumerable over the source rather than reachable by a hand-written case.
  *
  * `tokens.test.ts` proves the ladder in `app.css` is well-formed; this proves the CSS that
  * consumes it actually SPEAKS it. Every spacing and type value must resolve through
@@ -135,6 +140,75 @@ function sources(): { rel: string; css: string }[] {
 	];
 }
 
+/** The same components, whole — markup and script included. The door guards need to see which
+ *  element a class is actually ON, and which files bind a right-click. */
+function components(): { rel: string; src: string }[] {
+	return svelteFiles(LIB).map((p) => ({ rel: p.slice(LIB.length), src: readFileSync(p, 'utf8') }));
+}
+
+/** The one coarse-pointer idiom (D-R7), spelled once so every guard below asks it the same way. */
+const COARSE = '(hover: none) and (pointer: coarse)';
+
+/**
+ * Every rule in `css`, with the `@media` prelude it sits under (`null` at top level).
+ *
+ * Deliberately shallow about `@container`: its prelude falls away and its rules read as
+ * top-level. That is the conservative answer for both door guards — a container-scoped rule
+ * still out-specifies `app.css`'s floor, and still is not a coarse door.
+ */
+function rules(css: string): { sel: string; body: string; media: string | null }[] {
+	const out: { sel: string; body: string; media: string | null }[] = [];
+	const decl = /([^{}]+)\{([^{}]*)\}/g;
+	for (let i = 0; i < css.length; ) {
+		const at = css.indexOf('@media', i);
+		const head = css.slice(i, at === -1 ? css.length : at);
+		for (const m of head.matchAll(decl))
+			out.push({ sel: m[1].replace(/\s+/g, ' ').trim(), body: m[2], media: null });
+		if (at === -1) break;
+		const open = css.indexOf('{', at);
+		if (open === -1) break;
+		let depth = 1;
+		let j = open + 1;
+		for (; j < css.length && depth > 0; j++) {
+			if (css[j] === '{') depth++;
+			else if (css[j] === '}') depth--;
+		}
+		const prelude = css.slice(at + '@media'.length, open).replace(/\s+/g, ' ').trim();
+		// Recurse, so a nested query is attributed to ITSELF and cannot inherit a coarse prelude
+		// it does not have.
+		for (const r of rules(css.slice(open + 1, j - 1)))
+			out.push({ ...r, media: r.media ?? prelude });
+		i = j;
+	}
+	return out;
+}
+
+/** The last compound of each comma-separated branch, `:global()` unwrapped — the part of a
+ *  selector that names what the rule actually paints. */
+function keyCompounds(sel: string): string[] {
+	return sel.split(',').map(
+		(one) =>
+			one
+				.replace(/:global\(([^)]*)\)/g, '$1')
+				.trim()
+				.split(/\s*[>+~]\s*|\s+/)
+				.filter(Boolean)
+				.at(-1) ?? ''
+	);
+}
+
+const classesIn = (compound: string): string[] =>
+	[...compound.matchAll(/\.([\w-]+)/g)].map((m) => m[1]);
+
+/** Every class named by a coarse-gated rule's key compound — i.e. everything the file gives a
+ *  coarse resting form to. */
+function coarseTargets(css: string): Set<string> {
+	const out = new Set<string>();
+	for (const r of rules(css))
+		if (r.media === COARSE) for (const c of keyCompounds(r.sel).flatMap(classesIn)) out.add(c);
+	return out;
+}
+
 /** The raw numeric literals in one declaration value, with `var(--token)` references removed. */
 function literals(value: string): string[] {
 	let v = value;
@@ -257,7 +331,7 @@ describe('style vocabulary', () => {
 	it('gates every pointer-dependent rule on the single coarse idiom (D-R7)', () => {
 		const offenders = sources().flatMap((s) =>
 			pointerQueries(s.css)
-				.filter((q) => q !== '(hover: none) and (pointer: coarse)')
+				.filter((q) => q !== COARSE)
 				.map((q) => `${s.rel}  @media ${q}`)
 		);
 		expect(offenders).toEqual([]);
@@ -270,7 +344,7 @@ describe('style vocabulary', () => {
 			'@media (any-pointer: coarse) { .a { inset: 0; } }',
 			'@media (pointer: coarse) and (hover: hover) { .a { inset: 0; } }'
 		])
-			expect(pointerQueries(css).filter((q) => q !== '(hover: none) and (pointer: coarse)'), css)
+			expect(pointerQueries(css).filter((q) => q !== COARSE), css)
 				.toHaveLength(1);
 
 		// …and stays quiet on the idiom itself, however it is wrapped, and on a query about
@@ -288,5 +362,183 @@ describe('style vocabulary', () => {
 			.filter((s) => /gradient\(/.test(s.css))
 			.map((s) => s.rel);
 		expect(offenders).toEqual([]);
+	});
+});
+
+/* ------------------------------------------------------------------------------------------- */
+
+/**
+ * R's success criterion §5.2 — *no interaction exists solely behind hover or right-click* — as a
+ * TEST rather than a claim. Both halves are enumerable over the source, which is worth more than
+ * any number of hand-written cases: a case proves the six doors R built still open; a scan proves
+ * a seventh cannot appear without one.
+ *
+ * `touch-hover-doors.spec.ts` is the other half of this pair and stays: it proves the doors named
+ * here actually open under real touch. This file proves the inventory is closed.
+ */
+
+/** A hover-gated reveal: a rule that turns `opacity`/`visibility` on from behind `:hover`.
+ *
+ *  Only those two properties count. A background or colour change on hover is *feedback* — every
+ *  button in the tree has one, and a device with no hover loses nothing by not seeing it. What a
+ *  coarse pointer cannot survive is a control or a label that is not THERE until hovered. */
+function hoverReveals(css: string): { sel: string; targets: string[] }[] {
+	return rules(css)
+		.filter(
+			(r) =>
+				r.media !== COARSE &&
+				/:hover/.test(r.sel) &&
+				/(?:^|;)\s*(opacity|visibility)\s*:/.test(r.body)
+		)
+		.map((r) => ({ sel: r.sel, targets: keyCompounds(r.sel).flatMap(classesIn) }));
+}
+
+/** Reveals that deliberately have no coarse resting form, each with the reason it is a decision
+ *  and not an oversight. `target` is the class the reveal lands on. */
+const HOVER_ONLY_OK: { file: string; target: string; why: string }[] = [
+	{
+		file: 'workspace/Panel.svelte',
+		target: 'corner',
+		why: 'split/join by corner is a fine-pointer power-user gesture R declined to grow — a --hit grip drops a 44px split-drag triangle over every panel corner, including the one the editor’s zoom cluster sits in — and D-R5 gives touch the header long-press menu as its door instead'
+	},
+	{
+		file: 'panels/NodeEditorPanel.svelte',
+		target: 'inspector-toggle',
+		why: 'it RESTS at opacity .5 — visible and tappable with no hover; the hover only brightens an affordance that is already there, and R-Task 8 removes it outright while the pane it opens is up'
+	}
+];
+
+/** Classes a file puts on a real `<input>`/`<select>`/`<textarea>`, from the markup — the only
+ *  place that link is written down. A rule naming one of these out-specifies `app.css`'s
+ *  `input, select, textarea` floor, which scores (0,0,1) and loses to anything. */
+function controlClasses(src: string): Set<string> {
+	const markup = src.replace(/<script[\s\S]*?<\/script>/g, ' ').replace(/<style[\s\S]*?<\/style>/g, ' ');
+	const out = new Set<string>();
+	for (const [, , attrs] of markup.matchAll(/<(input|select|textarea)\b([^>]*)>/g)) {
+		for (const [, list] of attrs.matchAll(/\bclass=["']([^"']*)["']/g))
+			for (const token of list.split(/\s+/)) if (token && !token.includes('{')) out.add(token);
+		for (const [, name] of attrs.matchAll(/\bclass:([\w-]+)/g)) out.add(name);
+	}
+	return out;
+}
+
+/** What a `font-size` rule lands on, in the vocabulary the floor is written in: the type
+ *  selectors it names plus whichever of this file's control classes it names. Empty ⇒ the rule
+ *  does not paint a form control and cannot defeat the floor. */
+function fontTargets(sel: string, classes: Set<string>): string[] {
+	const out = new Set<string>();
+	for (const key of keyCompounds(sel)) {
+		for (const type of ['input', 'select', 'textarea'])
+			if (new RegExp(`(^|[^-\\w])${type}\\b`).test(key)) out.add(type);
+		for (const c of classesIn(key)) if (classes.has(c)) out.add(c);
+	}
+	return [...out];
+}
+
+/** The largest px literal in a declaration value, or 0 when it names none. `16px` and
+ *  `var(--viewer-kind-fs, 16px)` both answer 16; a bare `var(--fs-small)` answers 0, which is the
+ *  honest answer — a rem rung cannot be proven to clear an absolute device threshold. */
+function maxPx(value: string): number {
+	return [...value.matchAll(/(\d*\.?\d+)px/g)].reduce((a, m) => Math.max(a, parseFloat(m[1])), 0);
+}
+
+/** iOS force-zooms the page when a control under this size takes focus. */
+const FOCUS_ZOOM_FLOOR = 16;
+
+describe('coarse-pointer doors', () => {
+	it('gives every hover-revealed control a coarse resting form (§5.2)', () => {
+		const offenders: string[] = [];
+		for (const { rel, css } of sources()) {
+			const answered = coarseTargets(css);
+			for (const { sel, targets } of hoverReveals(css)) {
+				if (targets.some((t) => answered.has(t))) continue;
+				if (targets.some((t) => HOVER_ONLY_OK.some((e) => e.file === rel && e.target === t)))
+					continue;
+				offenders.push(`${rel}  ${sel}`);
+			}
+		}
+		expect(offenders).toEqual([]);
+	});
+
+	/* PanelHeader's split/join menu is the tree's only right-click, and R-Task 7 gave it a long
+	   press. This keeps that a rule rather than a coincidence. */
+	it('never leaves a right-click as the only door (§5.2)', () => {
+		const offenders = components()
+			.filter((c) => /\boncontextmenu\b/.test(c.src) && !/createLongPress/.test(c.src))
+			.map((c) => c.rel);
+		expect(offenders).toEqual([]);
+	});
+
+	/**
+	 * §5.4, pinned globally rather than site by site. `app.css` floors `input, select, textarea` at
+	 * 16px under the coarse idiom — at (0,0,1), which ANY product class rule out-specifies, which
+	 * is how this failed at seven sites. So: a file that sets `font-size` on one of its own form
+	 * controls must restate a ≥16px size for that control under coarse. `touch-hit-floor.spec.ts`
+	 * measures four of these in the running app; this is what stops an eighth appearing.
+	 */
+	it('never lets a control’s own rule drop it under the focus-zoom floor (§5.4)', () => {
+		const offenders: string[] = [];
+		for (const { rel, src } of [
+			{ rel: 'app.css', src: readFileSync(APP_CSS, 'utf8') },
+			...components()
+		]) {
+			const classes = controlClasses(src);
+			const css = rel === 'app.css' ? stripComments(src) : styleCss(src);
+			const floored = new Set<string>();
+			const declared = new Map<string, string>();
+			for (const r of rules(css)) {
+				for (const [, value] of r.body.matchAll(/(?:^|;)\s*font-size\s*:\s*([^;]+)/g)) {
+					for (const t of fontTargets(r.sel, classes)) {
+						if (r.media === COARSE && maxPx(value) >= FOCUS_ZOOM_FLOOR) floored.add(t);
+						else if (r.media !== COARSE) declared.set(t, `${r.sel} { font-size: ${value.trim()} }`);
+					}
+				}
+			}
+			// De-duplicated by rule: `input.name` names two targets and is still one defect.
+			for (const [t, where] of declared)
+				if (!floored.has(t) && !offenders.includes(`${rel}  ${where}`))
+					offenders.push(`${rel}  ${where}`);
+		}
+		expect(offenders).toEqual([]);
+	});
+
+	it('exempts nothing it cannot justify in one line', () => {
+		for (const e of HOVER_ONLY_OK) expect(e.why.length, `${e.file} .${e.target}`).toBeGreaterThan(0);
+	});
+
+	/* Both guards only earn their lines if they fire on the defect they claim to catch — so each
+	   is shown red against a fixture of exactly that shape, and quiet against the fixed one. */
+	it('spots a reveal whose coarse door is missing', () => {
+		const reveal = '.row:hover :global(.copy) { opacity: 1; }';
+		const door = `@media ${COARSE} { .row :global(.copy) { opacity: 1; } }`;
+		expect(hoverReveals(reveal).map((r) => r.targets)).toEqual([['copy']]);
+		expect(coarseTargets(reveal).has('copy'), 'undoored').toBe(false);
+		expect(coarseTargets(reveal + door).has('copy'), 'doored').toBe(true);
+		// A hover that only recolours is feedback, not a reveal, and needs no door.
+		expect(hoverReveals('.btn:hover { background: red; }')).toEqual([]);
+	});
+
+	it('spots a control that keeps its small type under coarse', () => {
+		const markup = '<input class="name" />';
+		const small = '<style>input.name { font-size: var(--fs-small); }</style>';
+		const raised = `<style>input.name { font-size: var(--fs-small); } @media ${COARSE} { input.name { font-size: 16px; } }</style>`;
+		const scan = (src: string): string[] => {
+			const classes = controlClasses(src);
+			const floored = new Set<string>();
+			const declared = new Set<string>();
+			for (const r of rules(styleCss(src)))
+				for (const [, v] of r.body.matchAll(/(?:^|;)\s*font-size\s*:\s*([^;]+)/g))
+					for (const t of fontTargets(r.sel, classes))
+						if (r.media === COARSE && maxPx(v) >= FOCUS_ZOOM_FLOOR) floored.add(t);
+						else if (r.media !== COARSE) declared.add(t);
+			return [...declared].filter((t) => !floored.has(t));
+		};
+		expect(scan(markup + small), 'unfloored').toEqual(['input', 'name']);
+		expect(scan(markup + raised), 'floored').toEqual([]);
+		// A rem rung under coarse is NOT a floor: it cannot be proven to clear an absolute threshold.
+		expect(
+			scan(markup + raised.replace('font-size: 16px', 'font-size: var(--fs-body)')),
+			'a token is not a floor'
+		).toEqual(['input', 'name']);
 	});
 });
