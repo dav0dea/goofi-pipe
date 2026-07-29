@@ -18,6 +18,7 @@
 	import { graph } from '$lib/stores/graph.svelte';
 	import { linkedNodeName, withLinkedNode } from '$lib/workspace/panelState';
 	import { copyText } from '$lib/clipboard';
+	import { COLLAPSE_LINES, estimateRowHeight } from './consoleRowHeight';
 	import { Bar, Chip, Badge, IconButton, EmptyState } from '$lib/ui';
 	import { onDestroy, tick } from 'svelte';
 
@@ -35,10 +36,6 @@
 	let showStdout = $state(true);
 	let showStderr = $state(true);
 
-	const LINE_H = 16; // px per text line
-	const PAD = 4; // row vertical padding (2px each side)
-	const BORDER = 1; // the row's own bottom hairline — part of its box, so part of the estimate
-	const COLLAPSE_LINES = 3; // lines shown before a row collapses
 	const OVERSCAN = 8;
 
 	// Per-row expansion + measured geometry, keyed by uid. Panel-local: wrapped
@@ -46,12 +43,21 @@
 	let expanded = $state(new Set<number>());
 	let measured = $state(new Map<number, { h: number; trunc: boolean }>());
 
-	function estimateH(e: ConsoleEntry, exp: boolean): number {
-		const lines = exp ? e.lines : Math.min(e.lines, COLLAPSE_LINES);
-		return lines * LINE_H + PAD + BORDER;
+	/**
+	 * The row's content floor, in the px `estimateRowHeight` computes in (C16). A row is one 16px
+	 * text line on a fine pointer, but every control it hosts — the node chip and the copy button —
+	 * is floored to `--hit` under a coarse one, so the row is too while its TEXT still says 16.
+	 *
+	 * Read from the same token, behind the same query, the CSS floors with, so the two cannot drift.
+	 * Not a device branch: a measurement of the floor that is actually in force.
+	 */
+	function contentFloor(): number {
+		if (typeof window === 'undefined') return 0;
+		if (!window.matchMedia('(hover: none) and (pointer: coarse)').matches) return 0;
+		return parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--hit')) || 0;
 	}
-	function heightOf(e: ConsoleEntry): number {
-		return measured.get(e.uid)?.h ?? estimateH(e, expanded.has(e.uid));
+	function heightOf(e: ConsoleEntry, floor: number): number {
+		return measured.get(e.uid)?.h ?? estimateRowHeight(e.lines, expanded.has(e.uid), floor);
 	}
 	function expandable(e: ConsoleEntry): boolean {
 		// Truncated once measured; before that, fall back to logical line count.
@@ -160,7 +166,8 @@
 		const v = view;
 		const n = v ? v.total() : 0;
 		const cum = new Float64Array(n + 1);
-		for (let i = 0; i < n; i++) cum[i + 1] = cum[i] + heightOf(v!.get(i));
+		const floor = contentFloor(); // once per rebuild, not once per row
+		for (let i = 0; i < n; i++) cum[i + 1] = cum[i] + heightOf(v!.get(i), floor);
 		return { n, cum, height: cum[n] };
 	});
 
@@ -382,7 +389,8 @@
 		display: flex;
 		align-items: flex-start;
 		gap: var(--space-5);
-		/* The 2px sides are mirrored by `PAD = 4` above (and `line-height: 16px` by `LINE_H`):
+		/* The 2px sides are mirrored by `PAD = 4` in consoleRowHeight.ts (and `line-height: 16px` by
+		   its `LINE_H`):
 		   the pre-measurement height estimate is computed in px, so a rem here would make the
 		   estimate wrong at every root size but 14. */
 		padding: 2px var(--space-6);
@@ -453,8 +461,9 @@
 	   only fades in — and becomes clickable — when the row is hovered/focused.
 	   A row IS a chrome strip: it is one 16px text line tall, shorter than --hit, so the button
 	   states its box through the primitive's `density="chrome"` seam. Anything taller drives the
-	   row's height instead of the text and desyncs `estimateH`'s model. IconButton restores the
-	   --hit floor under a coarse pointer by itself (which is where C16 must be closed).
+	   row's height instead of the text and desyncs `estimateRowHeight`'s model. IconButton restores
+	   the --hit floor under a coarse pointer by itself, and the row grows with it — which is right
+	   (the row is the tap target) and is why the estimate carries the same floor (C16, closed).
 	   TODO(R): hover-only reveal, needs a coarse-pointer door (CLAUDE.md forbids hover-only). */
 	.row :global(.console-copy-btn) {
 		--icon-btn-size: 16px;
