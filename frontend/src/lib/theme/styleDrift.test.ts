@@ -175,6 +175,11 @@ function drift(): string[] {
 	return found;
 }
 
+/** Every `:global()` selector in `css` that names a `$lib/ui` primitive's own `.ui-*` class. */
+function uiReachIns(css: string): string[] {
+	return [...css.matchAll(/:global\([^)]*\.ui-[\w-]+/g)].map((m) => `${m[0]}…)`);
+}
+
 describe('style vocabulary', () => {
 	it('sizes type and spacing through --fs-* / --space-*, never a raw literal', () => {
 		expect(drift()).toEqual([]);
@@ -200,14 +205,45 @@ describe('style vocabulary', () => {
 	   and the two rules land in different built CSS chunks, where the winner is decided by Vite's
 	   emitted <link> order rather than by anything in the source. Consumers state their own class
 	   under a scoped ancestor (`.row :global(.console-copy-btn)`, which the scope class carries above
-	   the tie) or set a documented custom-property hook; both win by construction. */
+	   the tie) or set a documented custom-property hook; both win by construction.
+
+	   The match is POSITION-INDEPENDENT inside the `:global()` argument, because the hazard is: class
+	   order in a compound selector is semantically void (`:global(.vs-cog.ui-icon-btn)` is the same
+	   selector, the same (0,2,0) and the same cross-chunk tie as the primitive-class-first spelling
+	   M-12 deleted), and a leading tag qualifier is an established idiom here (`PanelHeader.svelte`
+	   pins `:global(button.content-btn)` precisely to clear such a tie). Anchoring `.ui-` to the head
+	   of the argument would have caught only the one spelling that was already gone. */
 	it('never restyles a `.ui-*` primitive class from outside $lib/ui', () => {
 		const offenders = sources()
 			.filter((s) => !s.rel.startsWith('ui/'))
-			.flatMap((s) =>
-				[...s.css.matchAll(/:global\(\s*\.ui-[\w-]+/g)].map((m) => `${s.rel}  ${m[0]}…)`)
-			);
+			.flatMap((s) => uiReachIns(s.css).map((hit) => `${s.rel}  ${hit}`));
 		expect(offenders).toEqual([]);
+	});
+
+	/* The guard above is only worth its line if it fires on the shapes a reach-in actually takes.
+	   These five are the realistic ones; the last three are what a head-anchored `.ui-` missed. */
+	it('spots a `.ui-*` reach-in wherever it sits inside the `:global()` argument', () => {
+		// The primitive class is interpolated so this fixture list is not itself a source hit for
+		// the very spelling the guard exists to keep out of the tree.
+		const UI = '.ui-icon-btn';
+		for (const css of [
+			`.vs-anchor :global(${UI}) { color: red; }`,
+			`:global(${UI}.vs-cog) { padding: 0; }`,
+			`:global(.vs-cog${UI}) { padding: 0; }`, // byte-equivalent CSS to the line above
+			`:global(button${UI}) { padding: 0; }`, // the tag-qualifier idiom PanelHeader uses
+			'.row :global(.foo .ui-btn) { color: red; }'
+		])
+			expect(uiReachIns(css), css).toHaveLength(1);
+
+		// And stays quiet on what is NOT a reach-in: a scoped `.ui-*` (Svelte stamps it, no tie), and
+		// a `:global()` naming someone else's class — including one that merely starts `.u`.
+		for (const css of [
+			'.ui-btn { color: red; }',
+			':global(.uplot, .uplot *) { color: red; }',
+			'.md :global(pre code) { color: red; }',
+			'.tab :global(.close) { width: 0; }'
+		])
+			expect(uiReachIns(css), css).toEqual([]);
 	});
 
 	// F stripped every gradient: the surface ladder carries elevation now, and a gradient reads as
