@@ -318,7 +318,12 @@
 	   clears a 16px triangle and would not clear a 44px one). The split/join corner gesture is a
 	   fine-pointer power-user affordance; on touch the door is the panel header's own menu, which
 	   carries the same operations (D-R5). Growing this would cost a real target to serve a
-	   theoretical one. */
+	   theoretical one.
+	   It gets no `touch-action` either, and that is the same decision seen from the other side: with
+	   the default, a touch that lands on a corner and then moves is reclaimed by the browser as a
+	   pan, which cancels the pointer — and the drag now tears down cleanly on that cancel instead of
+	   arming a split for the next tap to commit. Declaring `touch-action: none` here would take that
+	   pan away to enable a gesture we deliberately do not offer on touch. */
 	.corner {
 		position: absolute;
 		width: 16px;
