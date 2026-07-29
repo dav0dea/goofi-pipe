@@ -4,9 +4,14 @@
   node selected, showing its parameters, errors, and metadata. Width is
   drag-resizable.
 
-  Visibility is per-editor: `enabled` is owned by the host NodeEditorPanel and
-  toggled by that editor's own `inspector-toggle` corner control — both ways.
-  This pane has no close button of its own, and there is no global header toggle.
+  Visibility is per-editor: `enabled` is owned by the host NodeEditorPanel, which offers it two
+  ways — this pane's own dismiss ✕, and the editor's `inspector-toggle` corner control, which the
+  host hides while the pane covers it. There is no global header toggle.
+
+  The ✕ is the whole of D-R9's R1 half. Until R the pane had NO way out of its own: the toggle sat
+  under it in z-order, and deselecting meant tapping canvas the pane covered — a dead end on a
+  phone, and merely obscure on a desktop, which is the same defect (C9: the comment here promised
+  a close button that the markup never had).
 
   This is additive to the placeable Parameters/Metadata/Errors panels — those
   follow the active editor's selection instead.
@@ -14,17 +19,21 @@
 <script lang="ts">
 	import ParamForm from '$lib/inspector/ParamForm.svelte';
 	import MetadataPanel from '$lib/editor/MetadataPanel.svelte';
-	import { beginDrag, Button, ScrollArea } from '$lib/ui';
+	import { beginDrag, Button, IconButton, ScrollArea } from '$lib/ui';
 	import { graph } from '$lib/stores/graph.svelte';
 	import { onDestroy } from 'svelte';
 	import type { NodeInstanceInfo } from '$lib/api/control';
 
 	let {
 		node,
-		enabled
+		enabled,
+		onClose
 	}: {
 		node: NodeInstanceInfo | null;
 		enabled: boolean;
+		/** Turn this editor's inspector off — the same switch the corner toggle flips, so there is
+		 * one piece of state and two doors onto it, never two states. */
+		onClose: () => void;
 	} = $props();
 
 	// Respawn the selected node with the same params + links. The inspector's
@@ -102,6 +111,17 @@
 			onpointerdown={startPanelResize}
 			data-testid="panel-resize-handle"
 		></div>
+		<div class="ins-head">
+			<IconButton
+				variant="ghost"
+				density="chrome"
+				class="ins-close"
+				label="Close inspector"
+				title="Close the inspector"
+				data-testid="inspector-close"
+				onclick={onClose}>✕</IconButton
+			>
+		</div>
 		<ScrollArea>
 			<ParamForm {node} />
 			{#if node && !node.subpatch}
@@ -162,6 +182,23 @@
 	}
 	.side-panel.resizing * {
 		user-select: none;
+	}
+	/* The pane's own dismiss strip. A row rather than a floating corner button: the pane's top-right
+	   is where ParamForm's identity Bar puts the node's state badge, and a control laid over that
+	   would read as belonging to it. Right-aligned and background-free, so it reads as the pane's
+	   own title bar rather than as a third surface rung. */
+	.ins-head {
+		display: flex;
+		justify-content: flex-end;
+		flex: 0 0 auto;
+		padding: var(--space-2) var(--space-2) 0;
+	}
+	.ins-head :global(.ins-close) {
+		--icon-btn-size: 22px;
+		color: var(--text-dim);
+	}
+	.ins-head :global(.ins-close:hover) {
+		color: var(--text);
 	}
 	/* Current processing error for the selected node — a simple snapshot, shown
 	   only while the node is errored, after the metadata section. */

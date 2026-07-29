@@ -1249,22 +1249,29 @@
 			</div>
 		{/if}
 
-		<!-- Always-visible affordance to toggle this editor's inspector. While the
-		     inspector is open (a node selected) the pane covers this icon — that's
-		     fine; deselecting brings it back into reach. -->
-		<IconButton
-			class="inspector-toggle"
-			label="Toggle inspector"
-			title={inspectorOn ? 'Hide the inspector' : 'Show the inspector when a node is selected'}
-			aria-pressed={inspectorOn}
-			data-testid="inspector-toggle"
-			onclick={() => sel.toggleInspectorFor(panelId)}
-		>
-			◧
-		</IconButton>
+		<!-- The affordance that turns this editor's inspector back ON. It is absent exactly while
+		     the pane is open, because the pane covers this corner at every width — leaving it
+		     mounted meant an invisible, tabbable control under an opaque surface (D-R9's z-order
+		     half). While the pane is up, its own ✕ is the door, and it flips the same state. -->
+		{#if !(inspectorOn && selectedNode)}
+			<IconButton
+				class="inspector-toggle"
+				label="Toggle inspector"
+				title={inspectorOn ? 'Hide the inspector' : 'Show the inspector when a node is selected'}
+				aria-pressed={inspectorOn}
+				data-testid="inspector-toggle"
+				onclick={() => sel.toggleInspectorFor(panelId)}
+			>
+				◧
+			</IconButton>
+		{/if}
 
 		<!-- Per-editor selection inspector — slides in within this panel. -->
-		<InspectorOverlay node={selectedNode} enabled={inspectorOn} />
+		<InspectorOverlay
+			node={selectedNode}
+			enabled={inspectorOn}
+			onClose={() => sel.toggleInspectorFor(panelId)}
+		/>
 	</div>
 </SvelteFlowProvider>
 
