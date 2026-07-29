@@ -159,7 +159,12 @@
 		top: 0;
 		bottom: 0;
 		/* How far the coarse resize grip below reaches OUTWARD, past the pane's own edge. Zero on a
-		   fine pointer, where the 8px handle is the whole target. */
+		   fine pointer, where the 8px handle is the whole target.
+		   NOT the same number as the band's own `-12px` left inset: `.resize-handle` is absolutely
+		   positioned against this pane's PADDING box, which sits 1px inside its 1px `border-left`,
+		   so `left: -4px` already starts the handle 3px outside the pane before the band grows at
+		   all. 12 + 3. `touch-reflow.spec.ts` measures the band's used left edge against the host,
+		   which is the only place the two ends of this coupling meet. */
 		--grip-reach: 0px;
 		/* The width above is JS-inline and clamped only to [260, 720] — never to the host. On an
 		   editor narrower than the stored width the pane covered the whole canvas with its own left
@@ -272,7 +277,7 @@
 	   above rather than out of the strip. Full --hit either way; the strip stays live. */
 	@media (hover: none) and (pointer: coarse) {
 		.side-panel {
-			--grip-reach: 12px;
+			--grip-reach: 15px;
 		}
 		.resize-handle::before {
 			content: '';

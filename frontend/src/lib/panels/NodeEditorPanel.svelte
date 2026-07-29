@@ -802,15 +802,17 @@
 	let lastClickAt = 0;
 	let lastClickX = 0;
 	let lastClickY = 0;
-	/** The sub-patch instance a click landed on, or '' — real identity, not a coordinate. */
-	function instanceUnder(target: EventTarget | null): string {
-		const id =
-			(target as HTMLElement | null)?.closest?.('.svelte-flow__node')?.getAttribute('data-id') ?? '';
-		return id && id in g.instances ? id : '';
+	/** The node a click landed on, or '' — real identity, not a coordinate. */
+	function nodeUnder(target: EventTarget | null): string {
+		return (
+			(target as HTMLElement | null)?.closest?.('.svelte-flow__node')?.getAttribute('data-id') ?? ''
+		);
 	}
 	function onCanvasClick(event: MouseEvent): void {
 		const now = performance.now();
-		const here = instanceUnder(event.target);
+		const hereNode = nodeUnder(event.target);
+		// …of which only a sub-patch instance is something this gesture can ENTER.
+		const here = hereNode in g.instances ? hereNode : '';
 		// Per gesture, not per device (D-R2): the same `pointerType` seam the long-press door reads.
 		const slop = (event as PointerEvent).pointerType === 'touch' ? DBL_PX_TOUCH : DBL_PX;
 		if (
@@ -818,9 +820,13 @@
 			now - lastClickAt < DOUBLE_CLICK_MS &&
 			Math.abs(event.clientX - lastClickX) < slop &&
 			Math.abs(event.clientY - lastClickY) < slop &&
-			// A second click that resolves to a DIFFERENT node is that node's first click, not this
-			// one's second — the widened touch slop puts two adjacent nodes inside one window.
-			(here === '' || here === lastClickInst)
+			// A second click that resolves to a DIFFERENT NODE is that node's first click, not this
+			// one's second — the widened touch slop puts two adjacent nodes inside one window. Asked
+			// of the NODE, not of the instance: `g.instances` holds only sub-patches, so an ordinary
+			// node also answered '' and so took the "nothing under the pointer" path this guard
+			// reserves for the inspector having slid over the node mid-gesture. `lastClickInst` is
+			// itself a node id whenever it is non-empty, which is the only case this branch runs in.
+			(hereNode === '' || hereNode === lastClickInst)
 		) {
 			const inst = lastClickInst;
 			lastClickInst = '';

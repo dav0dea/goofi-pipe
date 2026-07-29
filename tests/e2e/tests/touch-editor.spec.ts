@@ -164,6 +164,85 @@ test('a double TAP enters a sub-patch, drift and all, and leaves it standing', a
 	}
 });
 
+/**
+ * The other half of that identity check, and the half the guard did not cover.
+ *
+ * `instanceUnder` answers `''` for two situations it cannot tell apart — no node under the pointer
+ * at all (the inspector-slid-over-the-node case the guard exists for) and *a node that is simply
+ * not a sub-patch instance*, since `g.instances` holds only instances. Both collapsed into the
+ * accept branch, so under the widened touch slop a second tap landing on an adjacent ORDINARY node
+ * was taken as the gesture's second half: the editor navigated into the sub-patch, and because a
+ * recognised second click is consumed in the capture phase, the node the user actually aimed at
+ * was never even selected.
+ */
+test('a tap on a plain neighbour is that node’s tap, not the sub-patch’s second', async ({
+	page
+}) => {
+	await page.goto('/');
+	await waitForApp(page);
+	// Same reason as the sibling case below: with the inspector off nothing slides over the second
+	// node, so this measures the identity guard and only the identity guard.
+	await page.getByTestId('inspector-toggle').click();
+	await expect(page.getByTestId('auto-side-panel')).toHaveCount(0);
+	const a = await groupOneNodeAt(page, [40, 60]);
+	const plain = await addNode(page, 'Oscillator', 'inputs', [40, 60]);
+	await waitForNode(page, plain);
+	try {
+		const ab = (await page.locator(`.svelte-flow__node[data-id="${a.inst}"]`).boundingBox())!;
+		const scale = await page
+			.locator('.svelte-flow__viewport')
+			.first()
+			.evaluate((el) => new DOMMatrixReadOnly(getComputedStyle(el).transform).a);
+		// Parked BELOW rather than beside. Beside it, 14px past the seam lands in the neighbour's
+		// left-edge slot handles, and a tap measured there did not select the node at all — which
+		// would have greened the second assertion below by never delivering the tap. On the vertical
+		// seam both points are node body.
+		await page.evaluate(
+			([u, p]) => (window as any).goofi.commands.setNodePos(u, p),
+			[plain, [40, Math.round(60 + (ab.height + 2) / scale)] as [number, number]] as const
+		);
+		const p1 = { x: Math.round(ab.x + ab.width / 2), y: Math.round(ab.y + ab.height - 6) };
+		const p2 = { x: p1.x, y: p1.y + 14 };
+		await expect
+			.poll(() =>
+				page.evaluate(
+					(pts) =>
+						pts.map((p) =>
+							(document.elementFromPoint(p.x, p.y) as HTMLElement | null)
+								?.closest('.svelte-flow__node')
+								?.getAttribute('data-id')
+						),
+					[p1, p2]
+				)
+			)
+			.toEqual([a.inst, plain]);
+
+		const touch = await touchSession(page);
+		await touch.down(p1);
+		await touch.up();
+		await page.waitForTimeout(120);
+		await touch.down(p2);
+		await touch.up();
+		await page.waitForTimeout(300);
+		await expect(
+			page.getByTestId('subpatch-breadcrumb'),
+			'a plain node is not the sub-patch’s second tap'
+		).toHaveCount(0);
+		expect(
+			await page.evaluate(() => (window as any).goofi.query.selection().nodes),
+			'…and its tap was not swallowed either — it selected the node it landed on'
+		).toEqual([plain]);
+	} finally {
+		const crumb = page.getByTestId('subpatch-breadcrumb');
+		if (await crumb.isVisible())
+			await crumb.getByRole('button', { name: 'Patch', exact: true }).click();
+		await page.evaluate(() => (window as any).goofi.commands.clearSelection());
+		await page.evaluate((u) => (window as any).goofi.commands.removeNode(u), plain);
+		await waitForNoNode(page, plain).catch(() => {});
+		await dissolveAndRemove(page, a.member, a.inst);
+	}
+});
+
 test('two taps on two DIFFERENT sub-patches are not one gesture', async ({ page }) => {
 	await page.goto('/');
 	await waitForApp(page);
@@ -212,6 +291,10 @@ test('two taps on two DIFFERENT sub-patches are not one gesture', async ({ page 
 			page.getByTestId('subpatch-breadcrumb'),
 			'a tap on a NEIGHBOUR is that neighbour’s first tap, not this one’s second'
 		).toHaveCount(0);
+		expect(
+			await page.evaluate(() => (window as any).goofi.query.selection().nodes),
+			'…and it really WAS delivered as a first tap — otherwise this asserts a non-event'
+		).toEqual([b.inst]);
 	} finally {
 		const crumb = page.getByTestId('subpatch-breadcrumb');
 		if (await crumb.isVisible())

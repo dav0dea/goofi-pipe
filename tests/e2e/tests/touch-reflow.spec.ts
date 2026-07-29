@@ -303,6 +303,26 @@ test('the inspector leaves the canvas it overlays reachable', async ({ page }) =
 			[x, p.y, p.y + p.height]
 		);
 		expect(y, 'the strip’s aim point is canvas, not a resize band').not.toBeNull();
+
+		// …and the strip has to be a full tap target WIDE, which that probe cannot see: it aims ONE
+		// point, half a --hit in from the pane, and so stays clear of the band by construction.
+		// `.resize-handle` is absolutely positioned against `.side-panel`'s PADDING box, which sits
+		// 1px inside its 1px `border-left`, so `left: -4px` starts the handle 3px outside the pane
+		// and the coarse `::before` reaches 12px further still — while `max-width` compensates by
+		// `--grip-reach` alone. The band pointer-captures and `preventDefault`s, so every pixel of
+		// it is canvas the escape hatch does not really have. Measured before the tap below, which
+		// deselects and parks the pane.
+		const bandLeft = await page.getByTestId('panel-resize-handle').evaluate((el) => {
+			const cs = getComputedStyle(el, '::before');
+			if (cs.content === 'none') return null;
+			return el.getBoundingClientRect().left + parseFloat(cs.left);
+		});
+		expect(bandLeft, 'the coarse grip band is there to measure').not.toBeNull();
+		expect(
+			bandLeft! - host.x,
+			'the LIVE strip is a full tap target once the grip band is counted'
+		).toBeGreaterThanOrEqual(h);
+
 		await page.touchscreen.tap(x, y!);
 		await expect
 			.poll(() => page.evaluate(() => (window as any).goofi.query.selection().nodes.length), {
