@@ -17,7 +17,9 @@
 	--surface-4: #3d3d3d;
 	--surface-glass: rgba(38, 38, 38, 0.85); /* translucent --surface-2 for menu backdrops */
 	/* Borders are a light hairline that reads AGAINST the lighter surfaces (never a dark groove).
-	   Most decorative borders are deleted in M; these must not invert while they exist. */
+	   Wherever a surface step can carry the separation instead, the border is deleted — the panel
+	   frame, the panel/top bars and the split seams all did. These must not invert where they
+	   remain (control outlines, and the splitter's own rule). */
 	--border: #484848;
 	--border-strong: #565656;
 	--text: #d6d6d6;

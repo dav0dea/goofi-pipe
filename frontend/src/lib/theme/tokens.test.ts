@@ -38,10 +38,10 @@ describe('text tiers on --bg', () => {
 		expect(contrastRatio(token('text-muted'), token('surface-2'))).toBeGreaterThanOrEqual(3);
 	});
 	// F widened the ladder to --surface-3/-4. --surface-3 is the lightest surface TEXT sits on:
-	// --text-muted clears 3:1 there (~3.08:1). --surface-4 is a control-FILL surface (slider track /
-	// topmost hover), NOT a text background — so --text-muted (2.53:1 there) is deliberately NOT
-	// asserted on it, only the two stronger tiers a label overlapping such a control must use. This
-	// encodes the ladder contract so phase M can't silently regress it.
+	// --text-muted clears 3:1 there (~3.08:1). --surface-4 is a control-FILL surface (its one
+	// consumer is `ui/Chip.svelte`'s active fill), NOT a text background — so --text-muted (2.53:1
+	// there) is deliberately NOT asserted on it, only the two stronger tiers a label overlapping
+	// such a control must use. This encodes the ladder contract so phase M can't silently regress it.
 	it('stronger tiers stay legible on the widened surfaces', () => {
 		expect(contrastRatio(token('text'), token('surface-4'))).toBeGreaterThanOrEqual(4.5);
 		expect(contrastRatio(token('text-dim'), token('surface-4'))).toBeGreaterThanOrEqual(3);

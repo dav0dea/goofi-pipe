@@ -6,8 +6,9 @@
 
   Padding, height, gap and chrome are all F tokens, each exposed as a `var(--bar-*, <token>)` hook
   so a consumer can retune one instance from a wrapper — the spec §1 per-instance-theming mechanism.
-  Defaults give the panel-header look (surface-1 strip, hairline bottom border, `--panel-header-h`
-  min-height that grows to the touch floor under a coarse pointer).
+  Defaults give the panel-header look: a `--surface-2` strip one step above the `--surface-1` body
+  it sits on, which separates it WITHOUT a hairline (D5), at a `--panel-header-h` min-height that
+  grows to the touch floor under a coarse pointer.
 -->
 <script lang="ts">
 	import type { Snippet } from 'svelte';
@@ -44,8 +45,8 @@
 		min-height: var(--bar-height, var(--panel-header-h));
 		padding: var(--bar-pad-y, var(--space-2)) var(--bar-pad-x, var(--space-4));
 		gap: var(--bar-gap, var(--space-4));
-		background: var(--bar-bg, var(--surface-1));
-		border-bottom: var(--bar-border, 1px solid var(--border));
+		background: var(--bar-bg, var(--surface-2));
+		border-bottom: var(--bar-border, none);
 	}
 	/* Each group lays its own items in a row and can shrink (so a long label ellipsis's, not overflows). */
 	.ui-bar-group {

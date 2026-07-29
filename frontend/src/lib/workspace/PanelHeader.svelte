@@ -110,8 +110,9 @@
 		height: var(--panel-header-h);
 		flex: 0 0 auto;
 		padding: 0 var(--space-2);
-		background: var(--surface-1);
-		border-bottom: 1px solid var(--border);
+		/* One surface step above the panel body, which separates — so no hairline, and no second
+		   line 26px inside the panel edge. The same trade `Bar` and FsBrowser already ship. */
+		background: var(--surface-2);
 		gap: var(--space-1);
 		user-select: none;
 		cursor: grab;

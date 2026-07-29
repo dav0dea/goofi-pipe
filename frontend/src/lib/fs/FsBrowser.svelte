@@ -228,10 +228,6 @@
 		flex-direction: column;
 		min-width: 0;
 		font-size: var(--fs-small);
-		/* Both Bars here are chrome strips: one surface step above the dialog body, which separates
-		   them without a hairline (D5). Set once on the frame — custom properties inherit. */
-		--bar-bg: var(--surface-2);
-		--bar-border: none;
 	}
 	.title {
 		font-weight: 600;

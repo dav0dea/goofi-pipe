@@ -112,8 +112,9 @@
 		align-items: center;
 		gap: var(--space-7);
 		padding: 0 var(--space-6);
+		/* A surface step above the `--bg` workspace ground below it — that separates, so the hairline
+		   this used to draw is deleted (D5). */
 		background: var(--surface-1);
-		border-bottom: 1px solid var(--border);
 		/* Frozen: 44px is the coarse --hit floor, so the bar already fits a touch-sized
 		   control without growing — a rem height would break that flush relationship. */
 		height: 44px;

@@ -248,8 +248,18 @@
 		height: 100%;
 		min-width: 0;
 		min-height: 0;
-		background: var(--bg);
-		border: 1px solid var(--border);
+		/* D5, applied where it repeats most: the panel is a SURFACE floating on the workspace ground,
+		   not a rectangle drawn on it. The `--bg` gutter between panels is what separates them, so
+		   the frame this used to wear is deleted — with it, every split seam stacked three hairlines
+		   (this border, the splitter's rule, the neighbour's border) across an 8px span. Panels whose
+		   content is a canvas (the node editor, EmptyPanel) still paint `--bg` over this. */
+		background: var(--surface-1);
+		/* Transparent, not deleted (the EmptyPanel/D5 trade): it paints nothing, but it keeps the
+		   1px inset that the active ring below lives in. Chromium paints a non-positioned element's
+		   outline before its positioned descendants, so with the body flush to the panel edge an
+		   opaque content layer (`.svelte-flow`, a canvas) covers the ring — which is the very
+		   failure app.css's ring convention was written about. */
+		border: 1px solid transparent;
 		border-radius: var(--radius-sm);
 		overflow: hidden;
 		outline: 1px solid transparent;
