@@ -122,9 +122,9 @@
 		display: inline-flex;
 	}
 	/* The cog is the app's icon-button, but the frozen node header wants the original
-	   bare 16px glyph (not the 28px --hit box), so the visual box is pinned back to 16px
-	   — the coarse-pointer ::after still guarantees a --hit tap target. Muted at rest,
-	   brightening on hover / while open.
+	   bare 16px glyph (not the 28px --hit box), so the visual box is pinned back to 16px.
+	   Muted at rest, brightening on hover / while open. What a coarse pointer gets is
+	   decided by the block below, per host.
 
 	   Scoped through `.vs-anchor` instead of reaching for `.ui-icon-btn`: a fully-`:global()`
 	   `.ui-icon-btn.vs-cog` scores exactly what the primitive's own `.ui-icon-btn.svelte-xxx`
@@ -134,7 +134,7 @@
 
 	   Deliberately NOT `density="chrome"` + `--icon-btn-size`: that density restores the box to
 	   --hit under a coarse pointer, which would stand a 44px cog inside this frozen 24px --node-u
-	   header (touch-floor.spec pins that). Bounding the cog's coarse HIT rect is R's, not this. */
+	   header (touch-floor.spec pins that). */
 	.vs-anchor :global(.vs-cog) {
 		min-width: 16px;
 		min-height: 16px;

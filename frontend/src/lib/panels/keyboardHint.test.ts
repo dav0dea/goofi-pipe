@@ -37,6 +37,12 @@ describe('the empty-canvas keyboard hint', () => {
 		// first `}`, so a comment inside the branch must not spell one.
 		const branch = new RegExp(`e\\.key === '${esc(key)}'[^{]*\\)\\s*\\{([^}]*)`).exec(SRC);
 		expect(branch, `no keydown branch in this file matches \`${key}\``).not.toBeNull();
-		expect(branch![1], `the \`${key}\` branch is not the add-node menu`).toContain('openAddMenu');
+		// Comments stripped from the CAPTURE before asserting — the branch body is source, and prose
+		// inside it is not the call. R-C put a six-line comment in this very branch whose first line
+		// spells `openAddMenu`, which left the assertion satisfiable by that comment alone: deleting
+		// the real call kept it green. Stripped here rather than from `SRC`, which carries `https://`
+		// and Svelte markup that a blanket strip would eat.
+		const body = branch![1].replace(/\/\/.*$/gm, '');
+		expect(body, `the \`${key}\` branch is not the add-node menu`).toContain('openAddMenu');
 	});
 });
