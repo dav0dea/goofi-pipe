@@ -18,6 +18,15 @@ import { linkedNodeName, withLinkedNode } from './panelState';
  * grabbed again after an aggressive resize. */
 export const MIN_FRACTION = 0.05;
 
+/**
+ * Smallest PIXEL width/height a single child may shrink to (D-R10). A fraction alone is not a
+ * floor: 5% of a 390px phone is a 19.5px sliver, while 5% of a 4K window is 192px — the same rule
+ * meaning two entirely different things. This is the size at which a panel still reads as a panel
+ * (a header with its controls, and something under it), and it is a desktop fix as much as a phone
+ * one — a narrow desktop window collapses a panel exactly the same way.
+ */
+export const MIN_PANEL_PX = 120;
+
 /** `row` = children laid out left→right (vertical splitters between them).
  *  `column` = children stacked top→bottom (horizontal splitters). Matches CSS
  *  `flex-direction` so the renderer can map direction → layout directly. */
@@ -158,13 +167,18 @@ export function setPanelState(root: LayoutNode, panelId: string, state: unknown)
 }
 
 /** Adjust the boundary between children `dividerIndex` and `dividerIndex+1` of
- * the given split by `delta` (a fraction). Clamps both neighbours to
- * MIN_FRACTION, pushing the overflow onto the other side. */
+ * the given split by `delta` (a fraction). Clamps both neighbours to the floor,
+ * pushing the overflow onto the other side.
+ *
+ * `containerPx` is the split's measured size along its axis, which is what turns MIN_FRACTION into
+ * a real MIN_PANEL_PX floor (D-R10). 0 / omitted means "unmeasured" — an undo replay or a unit test
+ * — and keeps the fraction floor alone. */
 export function resizeSplit(
 	root: LayoutNode,
 	splitId: string,
 	dividerIndex: number,
-	delta: number
+	delta: number,
+	containerPx = 0
 ): LayoutNode {
 	return transform(root, splitId, (n) => {
 		if (n.kind !== 'split') return n;
@@ -173,13 +187,21 @@ export function resizeSplit(
 		if (i < 0 || j >= n.sizes.length) return n;
 		let a = n.sizes[i] + delta;
 		let b = n.sizes[j] - delta;
-		if (a < MIN_FRACTION) {
-			b -= MIN_FRACTION - a;
-			a = MIN_FRACTION;
+		// The pair's total is invariant under a boundary move, so half of it is the largest floor
+		// both sides can satisfy — below 2 × MIN_PANEL_PX the seam simply locks to the middle rather
+		// than driving one neighbour negative.
+		const share = n.sizes[i] + n.sizes[j];
+		const floor =
+			containerPx > 0
+				? Math.min(share / 2, Math.max(MIN_FRACTION, MIN_PANEL_PX / containerPx))
+				: MIN_FRACTION;
+		if (a < floor) {
+			b -= floor - a;
+			a = floor;
 		}
-		if (b < MIN_FRACTION) {
-			a -= MIN_FRACTION - b;
-			b = MIN_FRACTION;
+		if (b < floor) {
+			a -= floor - b;
+			b = floor;
 		}
 		const sizes = n.sizes.slice();
 		sizes[i] = a;

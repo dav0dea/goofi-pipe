@@ -7,21 +7,26 @@
 -->
 <script lang="ts">
 	import type { Direction } from './model';
+	import { beginDrag } from '$lib/ui';
+	import { onDestroy } from 'svelte';
 
 	let {
 		direction,
 		onResize
 	}: {
 		direction: Direction;
-		onResize: (deltaFraction: number) => void;
+		/** `containerPx` is the split's measured size along the axis — the pixel floor's denominator. */
+		onResize: (deltaFraction: number, containerPx: number) => void;
 	} = $props();
 
 	let el = $state<HTMLDivElement | null>(null);
 	let dragging = $state(false);
+	/** The in-flight drag's teardown; non-null only between pointerdown and its resolution. */
+	let teardown: (() => void) | null = null;
 
 	function onPointerDown(e: PointerEvent): void {
 		const container = el?.parentElement;
-		if (!container) return;
+		if (!container || !el) return;
 		e.preventDefault();
 		const size = direction === 'row' ? container.clientWidth : container.clientHeight;
 		if (size <= 0) return;
@@ -29,20 +34,25 @@
 		dragging = true;
 		document.body.style.cursor = direction === 'row' ? 'col-resize' : 'row-resize';
 
-		const onMove = (m: PointerEvent): void => {
-			const cur = direction === 'row' ? m.clientX : m.clientY;
-			onResize((cur - last) / size);
-			last = cur;
-		};
-		const onUp = (): void => {
+		// A seam applies its resize incrementally, so there is nothing to roll back — a cancelled
+		// drag and a released one both just stop. What matters is that a cancel STOPS: without it the
+		// listeners outlived the gesture and the next pointer motion kept resizing.
+		const finish = (): void => {
 			dragging = false;
 			document.body.style.cursor = '';
-			window.removeEventListener('pointermove', onMove);
-			window.removeEventListener('pointerup', onUp);
+			teardown = null;
 		};
-		window.addEventListener('pointermove', onMove);
-		window.addEventListener('pointerup', onUp);
+		teardown = beginDrag(el, e.pointerId, {
+			move: (m) => {
+				const cur = direction === 'row' ? m.clientX : m.clientY;
+				onResize((cur - last) / size, size);
+				last = cur;
+			},
+			commit: finish,
+			cancel: finish
+		});
 	}
+	onDestroy(() => teardown?.());
 </script>
 
 <div

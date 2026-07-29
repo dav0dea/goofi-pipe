@@ -14,8 +14,9 @@
 <script lang="ts">
 	import ParamForm from '$lib/inspector/ParamForm.svelte';
 	import MetadataPanel from '$lib/editor/MetadataPanel.svelte';
-	import { Button, ScrollArea } from '$lib/ui';
+	import { beginDrag, Button, ScrollArea } from '$lib/ui';
 	import { graph } from '$lib/stores/graph.svelte';
+	import { onDestroy } from 'svelte';
 	import type { NodeInstanceInfo } from '$lib/api/control';
 
 	let {
@@ -52,28 +53,37 @@
 	let panelWidth = $state(STORED_WIDTH);
 	let resizing = $state(false);
 
+	/** The in-flight resize's teardown; non-null only between pointerdown and its resolution. */
+	let teardownResize: (() => void) | null = null;
+
 	function startPanelResize(e: PointerEvent): void {
 		e.preventDefault();
 		const startX = e.clientX;
 		const startW = panelWidth;
 		resizing = true;
-		const onMove = (m: PointerEvent): void => {
-			const next = startW - (m.clientX - startX);
-			panelWidth = Math.max(MIN_PANEL_WIDTH, Math.min(MAX_PANEL_WIDTH, next));
-		};
-		const onUp = (): void => {
+		// The width is applied live, so there is nothing for a cancel to roll back — and persisting
+		// it either way is what keeps a reload agreeing with what is on screen. A cancel that did NOT
+		// run this teardown is the actual defect: the window listeners outlived the gesture and the
+		// pane kept resizing on the next pointer motion.
+		const finish = (): void => {
 			resizing = false;
-			window.removeEventListener('pointermove', onMove);
-			window.removeEventListener('pointerup', onUp);
+			teardownResize = null;
 			try {
 				localStorage.setItem('goofi.panelWidth', String(Math.round(panelWidth)));
 			} catch {
 				/* private mode; persistence is best-effort */
 			}
 		};
-		window.addEventListener('pointermove', onMove);
-		window.addEventListener('pointerup', onUp);
+		teardownResize = beginDrag(e.currentTarget as HTMLElement, e.pointerId, {
+			move: (m) => {
+				const next = startW - (m.clientX - startX);
+				panelWidth = Math.max(MIN_PANEL_WIDTH, Math.min(MAX_PANEL_WIDTH, next));
+			},
+			commit: finish,
+			cancel: finish
+		});
 	}
+	onDestroy(() => teardownResize?.());
 </script>
 
 {#if enabled}

@@ -15,6 +15,8 @@
 	import { resolvePanelType } from './registry';
 	import { portal } from './portal';
 	import PanelHeader from './PanelHeader.svelte';
+	import { beginDrag } from '$lib/ui';
+	import { onDestroy } from 'svelte';
 
 	let { node }: { node: PanelNode } = $props();
 	const ws = workspace();
@@ -81,6 +83,8 @@
 
 	let ghost = $state<Ghost | null>(null);
 	let intent: Intent = null;
+	/** The in-flight corner drag's teardown; non-null only between pointerdown and its resolution. */
+	let teardownDrag: (() => void) | null = null;
 	const THRESHOLD = 24;
 
 	function isSibling(a: string, b: string): boolean {
@@ -137,7 +141,8 @@
 		e.preventDefault();
 		e.stopPropagation();
 		ws.setActive(node.id);
-		const section = (e.currentTarget as HTMLElement).closest('.panel') as HTMLElement | null;
+		const grip = e.currentTarget as HTMLElement;
+		const section = grip.closest('.panel') as HTMLElement | null;
 		if (!section) return;
 		const rect = section.getBoundingClientRect();
 		const startX = e.clientX;
@@ -171,20 +176,29 @@
 				ghost = gh;
 			}
 		};
-		const onUp = (): void => {
-			window.removeEventListener('pointermove', onMove);
-			window.removeEventListener('pointerup', onUp);
-			const committed = intent;
+		/** Drop the preview and the pending intent, committing nothing. */
+		const abandon = (): void => {
 			intent = null;
 			ghost = null;
-			if (!committed) return;
-			if (committed.mode === 'split')
-				ws.split(node.id, committed.axis, committed.placeBefore, committed.fraction);
-			else ws.close(committed.targetId);
+			teardownDrag = null;
 		};
-		window.addEventListener('pointermove', onMove);
-		window.addEventListener('pointerup', onUp);
+		teardownDrag = beginDrag(grip, e.pointerId, {
+			move: onMove,
+			commit: () => {
+				const committed = intent;
+				abandon();
+				if (!committed) return;
+				if (committed.mode === 'split')
+					ws.split(node.id, committed.axis, committed.placeBefore, committed.fraction);
+				else ws.close(committed.targetId);
+			},
+			// The gesture was taken away (a pan reclaimed the pointer, a system gesture started) or
+			// this panel unmounted mid-drag. Either way the intent it built is not the user's answer:
+			// leaving it armed is what let the NEXT tap anywhere commit a split or a close (H6).
+			cancel: abandon
+		});
 	}
+	onDestroy(() => teardownDrag?.());
 </script>
 
 <!-- svelte-ignore a11y_no_static_element_interactions -->

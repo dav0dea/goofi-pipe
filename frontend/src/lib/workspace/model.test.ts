@@ -12,6 +12,7 @@ import {
 	countPanels,
 	collectPanels,
 	MIN_FRACTION,
+	MIN_PANEL_PX,
 	type LayoutNode,
 	type SplitNode
 } from './model';
@@ -200,6 +201,47 @@ describe('resizeSplit', () => {
 		const next = resizeSplit(root, split.id, 0, 0.9) as SplitNode; // would push child 1 negative
 		expect(next.sizes[1]).toBeCloseTo(MIN_FRACTION, 6);
 		expect(next.sizes[0]).toBeCloseTo(1 - MIN_FRACTION, 6);
+	});
+
+	/* D-R10. A fraction floor is not a floor: 5% of a 390px phone is a 19.5px panel, and 5% of a
+	   4K window is 192px — the same rule producing an unusable sliver at one size and a generous
+	   minimum at another. The split's measured px is what makes the floor mean something. This is a
+	   desktop fix too: a narrow desktop window collapses a panel exactly the same way. */
+	describe('the pixel floor', () => {
+		const twoWay = () => {
+			const a = makePanel('a');
+			const { root } = splitPanel(a, a.id, 'row', false, 'b');
+			return { root, splitId: (root as SplitNode).id };
+		};
+
+		it('floors a child at MIN_PANEL_PX of the split it lives in', () => {
+			const { root, splitId } = twoWay();
+			const next = resizeSplit(root, splitId, 0, 0.9, 800) as SplitNode;
+			expect(next.sizes[1] * 800, 'not 5% of 800 = 40px').toBeCloseTo(MIN_PANEL_PX, 6);
+			expect(sum(next.sizes)).toBeCloseTo(1, 6);
+		});
+
+		it('still allows every size above the floor', () => {
+			const { root, splitId } = twoWay();
+			const next = resizeSplit(root, splitId, 0, 0.2, 800) as SplitNode;
+			expect(next.sizes[0]).toBeCloseTo(0.7, 6);
+		});
+
+		it('never floors past an even split, so a tiny container stays draggable-to-centre', () => {
+			// Below 2 × MIN_PANEL_PX the floor cannot be honoured on both sides; capping it at half
+			// the pair's share keeps the arithmetic sane (and the sizes positive) instead of
+			// producing a negative neighbour.
+			const { root, splitId } = twoWay();
+			const next = resizeSplit(root, splitId, 0, 0.9, 200) as SplitNode;
+			expect(next.sizes[0]).toBeCloseTo(0.5, 6);
+			expect(next.sizes[1]).toBeCloseTo(0.5, 6);
+		});
+
+		it('falls back to the fraction floor when the container size is unknown', () => {
+			const { root, splitId } = twoWay();
+			const next = resizeSplit(root, splitId, 0, 0.9) as SplitNode;
+			expect(next.sizes[1]).toBeCloseTo(MIN_FRACTION, 6);
+		});
 	});
 });
 

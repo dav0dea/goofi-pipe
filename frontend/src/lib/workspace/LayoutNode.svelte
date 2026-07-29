@@ -26,7 +26,7 @@
 			{#if i < node.children.length - 1}
 				<Splitter
 					direction={node.direction}
-					onResize={(delta) => ws.resize(node.id, i, delta)}
+					onResize={(delta, containerPx) => ws.resize(node.id, i, delta, containerPx)}
 				/>
 			{/if}
 		{/each}

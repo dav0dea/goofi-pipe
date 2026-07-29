@@ -238,13 +238,19 @@ class WorkspaceStore {
 		});
 	}
 
-	resize(splitId: string, dividerIndex: number, delta: number): void {
+	/** `containerPx` is the split's measured size along its axis — the denominator of the pixel
+	 * floor (D-R10). The splitter already measures it to convert px into a fraction; passing it on
+	 * is what lets the model floor a panel at a size rather than at a percentage. */
+	resize(splitId: string, dividerIndex: number, delta: number, containerPx = 0): void {
 		// A splitter drag fires this per mousemove — coalesce the whole drag into
 		// one undo step via a stable per-divider key.
 		this._tracked(
 			'resize_split',
 			'Resize',
-			() => this._updateActiveRoot((root) => resizeSplit(root, splitId, dividerIndex, delta)),
+			() =>
+				this._updateActiveRoot((root) =>
+					resizeSplit(root, splitId, dividerIndex, delta, containerPx)
+				),
 			`resize:${splitId}:${dividerIndex}`
 		);
 	}
