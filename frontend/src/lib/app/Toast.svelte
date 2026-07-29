@@ -24,8 +24,8 @@
 
 <style>
 	/* Kept bespoke on purpose: the button IS the toast surface (fixed, centred, self-styled), which
-	   no Button variant expresses. `font: inherit` is its own — the base rule keeps only that reset
-	   today and M-Task 7 strips the rest of the skin. */
+	   no Button variant expresses. `font: inherit` is its own — the base rule kept only that reset
+	   when M-Task 7 stripped the skin, and a bespoke surface states its whole face regardless. */
 	.toast {
 		position: fixed;
 		/* Lifted clear of the soft keyboard AND of the home indicator / gesture bar: this is the

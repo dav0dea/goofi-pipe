@@ -61,7 +61,7 @@
 	// patch has a home (this one and `window.goofi.commands.save`), since the manager keeps no
 	// save-path state and its `save` arm broadcasts nothing.
 	async function saveBackend(path?: string): Promise<void> {
-		await g.save(path ?? g.savePath ?? undefined, true, ws.serialize());
+		await g.save(path ?? g.savePath ?? undefined);
 	}
 
 	// Default Save: silent overwrite when the patch is named, else "Save As".

@@ -97,8 +97,7 @@ export const commands = {
 	// With a path this is the header's Save, whole: the file is written AND the patch is named, so
 	// `query.graph().savePath` reads it back. Without one it only serializes — `path` comes back
 	// null to say the patch got no home.
-	save: (path?: string): Promise<{ path: string | null; yaml: string }> =>
-		graph().save(path, true, workspace().serialize()),
+	save: (path?: string): Promise<{ path: string | null; yaml: string }> => graph().save(path),
 	loadText: (content: string): Promise<void> => graph().loadText(content),
 
 	// --- selection / focus -------------------------------------------------

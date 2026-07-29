@@ -610,19 +610,13 @@ export class GraphStore {
 	 *
 	 * `path: null` comes back when none was given, which is a serialize-only save: no home, so
 	 * nothing to remember (the manager leaves the dirty flag alone for the same reason). */
-	async save(
-		path?: string,
-		overwrite = false,
-		layout?: unknown
-	): Promise<{ path: string | null; yaml: string }> {
-		// `layout` is the frontend workspace arrangement; the backend writes it
-		// into the .gfi. Omitted (undefined) → not sent → backend keeps any
-		// existing layout.
-		const res = await this.ctl.call<{ path: string | null; yaml: string }>('save', {
-			path,
-			overwrite,
-			layout
-		});
+	async save(path?: string): Promise<{ path: string | null; yaml: string }> {
+		// `path` is the whole payload. The arm reads nothing else, and the layout is NOT sent here:
+		// it reaches the patch through AppShell's debounced `set_layout`, which is also what carries
+		// the `LayoutIntent` classification. A second writer on this path would bypass that and
+		// re-dirty a patch the moment it was saved. (`overwrite` rode along too and had no reader
+		// anywhere in `crates/` — a save has always been a silent overwrite.)
+		const res = await this.ctl.call<{ path: string | null; yaml: string }>('save', { path });
 		if (res.path) this.savePath = res.path;
 		return res;
 	}

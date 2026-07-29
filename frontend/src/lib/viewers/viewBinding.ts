@@ -14,9 +14,7 @@
  */
 import { resolveKind, type ViewerKind } from './kind';
 import { resolveSettings, type SettingValue, type SettingsMap } from './settingsSchema';
-// Relative (not $lib) so this rune-free module resolves under vitest, which
-// doesn't honour the SvelteKit $lib alias for runtime imports.
-import { asStateObject } from '../workspace/panelState';
+import { asStateObject } from '$lib/workspace/panelState';
 
 export interface ViewBinding {
 	readonly kind: ViewerKind;

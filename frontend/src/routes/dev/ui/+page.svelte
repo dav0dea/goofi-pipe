@@ -550,10 +550,9 @@
 
 	<section>
 		<h2>EmptyState (centred placeholder)</h2>
-		<!-- Full: icon + title + hint, centred on both axes inside a bounded frame. -->
+		<!-- Full: title + hint, centred on both axes inside a bounded frame. -->
 		<div class="empty-frame">
 			<EmptyState data-testid="ui-emptystate">
-				{#snippet icon()}◎{/snippet}
 				{#snippet title()}No nodes yet{/snippet}
 				{#snippet hint()}Add a node from the palette to get started.{/snippet}
 			</EmptyState>

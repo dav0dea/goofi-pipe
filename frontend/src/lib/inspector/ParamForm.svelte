@@ -53,7 +53,15 @@
 		 * false in the dedicated Parameters panel, which already names the node in its linkbar. */
 		showHeader?: boolean;
 		/** Declarative field-dependency rules, keyed by param NAME (spec §5). Absent → the field
-		 * always shows. Supplied by the mounts' node-type registry; empty in the gallery/default. */
+		 * always shows.
+		 *
+		 * Nothing supplies these in production, and that is the shipped state, not an omission: no
+		 * backend descriptor carries a rule (`grep -rn show_when crates/ nodes/` is empty) and the
+		 * node library is Oscillator + Buffer, neither of which has a dependent parameter. Both
+		 * product mounts pass nothing; `/dev/inspector` is the only supplier, and
+		 * `inspector-gallery.spec.ts` drives it to prove the mechanism live. D-N5: ship the algebra
+		 * and its proof ahead of a consumer, the way P shipped primitives. The node-type registry an
+		 * earlier draft of this line named was specced and never built. */
 		showWhen?: Record<string, ShowWhenPredicate>;
 	} = $props();
 

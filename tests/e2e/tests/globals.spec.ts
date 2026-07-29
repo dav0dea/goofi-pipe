@@ -35,15 +35,24 @@ test('globals: default_ufreq is seeded, a user global adds, edits round-trip', a
 	expect(seeded).toMatchObject({ system: true, type: 'float' });
 
 	// Add a user global + edit the system one (command ops — server-validated, resolve void);
-	// both round-trip through the doc.
-	await addGlobal(page, 'subject', 'P07', 'string');
-	await setGlobalValue(page, 'default_ufreq', 45);
-	await expect
-		.poll(async () => (await globals(page)).find((g) => g.name === 'subject')?.value)
-		.toBe('P07');
-	await expect
-		.poll(async () => (await globals(page)).find((g) => g.name === 'default_ufreq')?.value)
-		.toBeCloseTo(45, 5);
+	// both round-trip through the doc. Handed back in a `finally` like every other resource this
+	// file borrows: globals live in the RUNNING PATCH, one backend for the whole suite, so a
+	// leaked `subject` makes the very next `addGlobal` fail with "already exists" — invisible in a
+	// normal run and instant under `--repeat-each`.
+	try {
+		await addGlobal(page, 'subject', 'P07', 'string');
+		await setGlobalValue(page, 'default_ufreq', 45);
+		await expect
+			.poll(async () => (await globals(page)).find((g) => g.name === 'subject')?.value)
+			.toBe('P07');
+		await expect
+			.poll(async () => (await globals(page)).find((g) => g.name === 'default_ufreq')?.value)
+			.toBeCloseTo(45, 5);
+	} finally {
+		await page.evaluate(() => (window as any).goofi.commands.removeGlobal('subject'));
+		// The system global cannot be removed, so put its seeded value back instead.
+		await setGlobalValue(page, 'default_ufreq', seeded.value as number);
+	}
 });
 
 test('the Globals panel renders when opened', async ({ page }) => {

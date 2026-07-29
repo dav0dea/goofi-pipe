@@ -164,7 +164,7 @@
 
 	/* A proper disclosure triangle: an SVG that rotates open/shut, vertically
 	   centred, no button chrome. `color: inherit` because a <button> is coloured
-	   `buttontext` (white) by the UA once app.css's base skin is gone — invisible
+	   `buttontext` (white) by the UA now that app.css's base skin is gone — invisible
 	   while the only content is a `fill:`-ed SVG, and a trap the moment it isn't. */
 	.tri {
 		display: inline-grid;

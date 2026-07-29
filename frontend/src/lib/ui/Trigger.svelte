@@ -5,7 +5,8 @@
   other button attribute) via `...rest`; N wires it to fire the param. `children` is the label.
 
   Fully self-styled from F tokens (like `Button`) so it renders correctly independent of the app.css
-  base `button` rule — which M strips last. `class` merged, `data-testid` forwarded.
+  base `button` rule, which is a permanent `font: inherit` + `cursor` reset and never a skin.
+  `class` merged, `data-testid` forwarded.
 -->
 <script lang="ts">
 	import type { Snippet } from 'svelte';

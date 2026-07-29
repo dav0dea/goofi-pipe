@@ -183,8 +183,9 @@
 	}
 	/* A menu row, not a Button: it keeps its own complete style (full-bleed, left-aligned,
 	   accent-filled on hover) — the same carve-out the other list/menu rows take. "Complete"
-	   includes the font: a <button> does NOT inherit one, so without this the row falls back to
-	   the UA face the moment M-Task 7 strips app.css's base `button { font: inherit }`. */
+	   includes the font: a <button> does NOT inherit one — a UA `font` declaration beats
+	   inheritance — so a row that leaned on app.css's base reset would be one deletion from the UA
+	   face. It states its own instead. */
 	.item {
 		font: inherit;
 		display: flex;

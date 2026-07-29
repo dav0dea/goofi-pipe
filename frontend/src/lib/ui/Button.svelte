@@ -2,8 +2,9 @@
   Button — the foundation interactive primitive (spec §2.1).
 
   Fully self-styled: its own `.ui-btn` scoped class specifies background/border/padding/
-  radius/font from F tokens, so it renders correctly whether or not `app.css`'s base
-  `button` rule exists (M strips that rule last, after migrating every call site). Variant
+  radius/font from F tokens, so it renders correctly independent of `app.css`'s base
+  `button` rule, which keeps only a `font: inherit` + `cursor` RESET (the skin went at M-Task 7;
+  the reset is permanent — see app.css, and the C19 box-geometry test in ui-gallery.spec.ts). Variant
   + size come from the pure `variantClass` map; `class` is merged (not replaced) and every
   other attribute — `disabled`, `onclick`, `data-testid`, `title`, aria-* — forwards through.
 
