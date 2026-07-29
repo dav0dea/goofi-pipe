@@ -358,7 +358,7 @@
 	{/if}
 
 	{#if dragActive}
-		<div class="drop-hint" class:active={over} data-testid="node-drop-hint"></div>
+		<div class="node-drop-hint" class:active={over} data-testid="node-drop-hint"></div>
 	{/if}
 </div>
 
@@ -417,7 +417,7 @@
 		color: var(--danger);
 	}
 	.row.err.toggleable:hover {
-		background: color-mix(in srgb, var(--danger) 16%, transparent);
+		background: var(--danger-fill);
 	}
 	.caret {
 		flex: 0 0 auto;
@@ -503,17 +503,5 @@
 		border-radius: 999px;
 		box-shadow: var(--shadow-1);
 		z-index: 2;
-	}
-	.drop-hint {
-		position: absolute;
-		inset: 4px;
-		pointer-events: none;
-		border: 2px dashed color-mix(in srgb, var(--accent) 55%, transparent);
-		border-radius: var(--radius-sm);
-		z-index: var(--z-drag-ghost);
-	}
-	.drop-hint.active {
-		border-style: solid;
-		background: color-mix(in srgb, var(--accent) 16%, transparent);
 	}
 </style>

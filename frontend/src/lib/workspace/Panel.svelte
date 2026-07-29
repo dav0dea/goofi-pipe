@@ -378,11 +378,11 @@
 		box-sizing: border-box;
 	}
 	.drag-ghost.split {
-		background: color-mix(in srgb, var(--accent) 18%, transparent);
+		background: var(--accent-fill);
 		border: 1px solid var(--accent);
 	}
 	.drag-ghost.join {
-		background: color-mix(in srgb, var(--danger) 16%, transparent);
+		background: var(--danger-fill);
 		border: 1px solid var(--danger);
 	}
 	/* Live preview of where a dragged tab will land when dropped. */

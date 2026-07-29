@@ -95,7 +95,7 @@
 	}
 	/* Keyboard focus rings the track (the visible surrogate for the hidden checkbox). */
 	.ui-toggle-input:focus-visible ~ .ui-toggle-track {
-		outline: 2px solid var(--accent);
+		outline: var(--focus-width) solid var(--focus-ink);
 		outline-offset: 2px;
 	}
 	/* Coarse-pointer hit-rect guarantee (mirrors IconButton, down to the two-clause gate D-R7

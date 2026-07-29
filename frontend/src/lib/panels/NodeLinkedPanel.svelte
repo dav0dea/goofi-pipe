@@ -51,13 +51,7 @@
 	}
 </script>
 
-<div
-	class="linked"
-	class:dragging={dragActive}
-	class:over
-	role="group"
-	data-testid="node-linked-panel"
->
+<div class="linked" role="group" data-testid="node-linked-panel">
 	{#if node}
 		<Bar>
 			{#snippet start()}
@@ -84,7 +78,7 @@
 	{/if}
 
 	{#if dragActive}
-		<div class="drop-hint" class:active={over} data-testid="node-drop-hint"></div>
+		<div class="node-drop-hint" class:active={over} data-testid="node-drop-hint"></div>
 	{/if}
 </div>
 
@@ -137,19 +131,5 @@
 		padding: var(--space-7);
 		text-align: center;
 		color: var(--text-muted);
-	}
-	/* Dashed outline marks the panel as a drop target while a node is dragged;
-	   fills in when the cursor is over it. */
-	.drop-hint {
-		position: absolute;
-		inset: 4px;
-		pointer-events: none;
-		border: 2px dashed color-mix(in srgb, var(--accent) 55%, transparent);
-		border-radius: var(--radius-sm);
-		z-index: var(--z-drag-ghost);
-	}
-	.drop-hint.active {
-		border-style: solid;
-		background: color-mix(in srgb, var(--accent) 16%, transparent);
 	}
 </style>

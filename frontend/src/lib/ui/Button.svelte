@@ -41,7 +41,7 @@
 		   inherit` reset — so leaving it implicit makes every Button's height a property of whatever
 		   it happens to be nested in, and `normal` (the UA value under any stricter reset) shortens
 		   the lot by 1-2px. `s-md`/`s-sm` scale it by setting only `font-size`. */
-		line-height: 1.35;
+		line-height: var(--lh-text);
 		display: inline-flex;
 		align-items: center;
 		justify-content: center;

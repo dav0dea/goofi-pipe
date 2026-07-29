@@ -107,7 +107,7 @@
 	}
 	/* Keyboard focus ring — the app :focus-visible convention (never suppressed). */
 	.ui-tab:focus-visible {
-		outline: 2px solid var(--accent);
+		outline: var(--focus-width) solid var(--focus-ink);
 		outline-offset: -2px;
 	}
 </style>

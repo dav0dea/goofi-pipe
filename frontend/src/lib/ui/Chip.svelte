@@ -54,7 +54,7 @@
 		cursor: not-allowed;
 	}
 	.ui-chip:focus-visible {
-		outline: 2px solid var(--accent);
+		outline: var(--focus-width) solid var(--focus-ink);
 		outline-offset: 2px;
 	}
 

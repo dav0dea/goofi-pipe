@@ -81,7 +81,7 @@
 		background: var(--surface-2);
 	}
 	.ui-disclosure-summary:focus-visible {
-		outline: 2px solid var(--accent);
+		outline: var(--focus-width) solid var(--focus-ink);
 		outline-offset: -2px;
 	}
 	.ui-disclosure-label {

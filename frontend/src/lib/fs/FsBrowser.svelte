@@ -289,7 +289,7 @@
 	}
 	.root.active,
 	.root:hover {
-		background: color-mix(in srgb, var(--accent) 14%, transparent);
+		background: var(--accent-fill);
 	}
 	.files {
 		flex: 1;
@@ -333,7 +333,7 @@
 		background: color-mix(in srgb, var(--accent) 8%, transparent);
 	}
 	.entry.sel {
-		background: color-mix(in srgb, var(--accent) 18%, transparent);
+		background: var(--accent-fill);
 	}
 	.entry .ico {
 		flex: 0 0 auto;

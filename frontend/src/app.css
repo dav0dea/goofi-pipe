@@ -68,6 +68,18 @@
 	--fs-body: 0.92rem;
 	--fs-strong: 1rem;
 	--fs-title: 1.15rem;
+	/* The app's text leading, and the ONE line-height that is a shared value rather than a local
+	   fact. `ui/Button` has to restate it — C19: a primitive that sizes its box from
+	   `line-height + padding + border` must not take that number by inheritance — so the number
+	   lived twice, unlinked, and only one copy would move on a retune.
+	   There is deliberately no --lh-* LADDER, and no scanner for the family. The other seventeen
+	   line-heights in the tree are not rungs on a scale: `1` is glyph-tight (a Badge/Chip/tab pill
+	   with no leading at all) and `normal` is the UA default restored on the node canvas — both
+	   invariants, like `0` and `100%` are for spacing; `1.5` is prose leading, local to the two
+	   surfaces that render prose; and ConsolePanel's `16px` is a px MIRROR of `LINE_H` in
+	   consoleRowHeight.ts, the same coupling its `PAD = 4` padding already documents. A guard over
+	   that family would need four exemptions to protect two sites. */
+	--lh-text: 1.35;
 	/* Motion — two durations, one curve. */
 	--dur-fast: 80ms;
 	--dur-slow: 120ms;
@@ -85,6 +97,13 @@
 	--safe-right: env(safe-area-inset-right, 0px);
 	--safe-bottom: env(safe-area-inset-bottom, 0px);
 	--safe-left: env(safe-area-inset-left, 0px);
+
+	/* The keyboard focus ring (meaning #2 below). Width and ink are the ring; the OFFSET is not,
+	   and stays per-site — it says how far the ring sits off this particular box, which only that
+	   box knows. Named because the ring is restated by every primitive that needs its own offset,
+	   and five hand-written copies of one line is five chances for them to disagree. */
+	--focus-width: 2px;
+	--focus-ink: var(--accent);
 
 	/* Hit-target geometry — documentary fine-pointer defaults. The touch floor only applies under
 	   (pointer: coarse), in the @media block at the end of this file. */
@@ -165,7 +184,7 @@ body {
 	/* Responsive base size — matches goofi3's clamp so the UI scales with
 	   the viewport without losing readability on small screens. */
 	font-size: clamp(11px, 0.9vw + 0.3vh, 14px);
-	line-height: 1.35;
+	line-height: var(--lh-text);
 	overflow: hidden;
 	/* `dvh`, not `vh`: on a phone `vh` is the LARGEST viewport (browser chrome retracted), so a
 	   100vh shell is taller than the screen for as long as the address bar is showing — and this
@@ -220,7 +239,7 @@ textarea {
    it — 1px accent border, 1px gap, 2px accent outline, the loudest ink in the palette fired twice
    for one state. */
 :focus-visible {
-	outline: 2px solid var(--accent);
+	outline: var(--focus-width) solid var(--focus-ink);
 	outline-offset: 1px;
 }
 
@@ -254,6 +273,24 @@ textarea {
 .thin-scrollbar {
 	scrollbar-width: thin;
 	scrollbar-color: var(--surface-3) transparent;
+}
+
+/* The dashed frame marking a panel as a node drop target while a node is dragged out of an
+   editor; it fills in when the cursor is over that panel. Global for the same reason as the
+   scrollbar skin above: it is ONE affordance worn by two panels (NodeLinkedPanel, serving
+   Parameters/Viewer/Metadata, and ConsolePanel's node filter), and it was byte-identical in both
+   — including the markup line — until this rule replaced the pair. The host must be positioned. */
+.node-drop-hint {
+	position: absolute;
+	inset: 4px;
+	pointer-events: none;
+	border: 2px dashed color-mix(in srgb, var(--accent) 55%, transparent);
+	border-radius: var(--radius-sm);
+	z-index: var(--z-drag-ghost);
+}
+.node-drop-hint.active {
+	border-style: solid;
+	background: color-mix(in srgb, var(--accent) 16%, transparent);
 }
 /* Both axes: the two horizontal wearers (the tab strip, the panel-header control strip) need the
    height, and it is inert for the vertical ones, which pin `overflow-x: hidden`. */

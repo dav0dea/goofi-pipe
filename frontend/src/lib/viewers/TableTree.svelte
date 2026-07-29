@@ -19,7 +19,7 @@
 	const expanded = $derived(toggled ?? depth < 1);
 </script>
 
-<div class="node" style="padding-left: {depth * 12}px">
+<div class="node" style="padding-left: calc(var(--space-6) * {depth})">
 	{#if isTable}
 		<button class="row toggle" onclick={() => (toggled = !expanded)} aria-expanded={expanded}>
 			<span class="caret">{expanded ? '▾' : '▸'}</span>

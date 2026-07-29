@@ -20,10 +20,21 @@ import { fileURLToPath } from 'node:url';
  * styling module, and leaving it outside the guard is how the app's most-inherited control
  * padding (`input, select, textarea`) sat there as a raw `4px 8px`.
  *
- * Deliberately NOT scanned: `width`/`height`/`inset`/`border-*` (structural geometry, not
- * vocabulary — a 22px tab ＋ or a 1px hairline is a shape, not a spacing rung), and breakpoints
- * (`@container (max-width: 240px)` in `ui/Field.svelte` is a layout threshold; it names the
- * width at which a Field's paired controls stop fitting, which no spacing rung can express).
+ * WHAT IS READ. Every `<style>` block AND every inline `style=` attribute (`componentCss`) — a
+ * rung is no less bypassed for being bypassed in the markup. Selectors are read with a balanced
+ * `:global` reader that handles both the `:global(…)` and the Svelte 5 `:global { … }` spellings
+ * and survives a `)` inside the argument; control classes are read from the tag however it spells
+ * them, expression form included. Each of those was once a blind spot, and each has a fixture
+ * below that goes red without it — a scan that quietly matches nothing is worse than no scan,
+ * because it buys the confidence without the cover.
+ *
+ * WHAT IS NOT. `width`/`height`/`inset`/`border-*` (structural geometry, not vocabulary — a 22px
+ * tab ＋ or a 1px hairline is a shape, not a spacing rung); breakpoints (`@container (max-width:
+ * 240px)` in `ui/Field.svelte` names the width at which a Field's paired controls stop fitting,
+ * which no spacing rung can express); `line-height`, which is one shared ratio (`--lh-text`) plus
+ * a set of invariants, reasoned out in `app.css` where the token is defined; and colour BEYOND
+ * the one thing that is unambiguously wrong — re-spelling a tint `app.css` already names. The
+ * per-site strengths are not drift and the final audit ruled that reshape out of scope.
  */
 
 const LIB = fileURLToPath(new URL('..', import.meta.url));
@@ -78,6 +89,15 @@ const ALLOW_VALUE: { file?: string; prop?: RegExp; value: RegExp; why: string }[
 	}
 ];
 
+/** Rules two components are allowed to state identically, each with the reason it is not one
+ *  affordance written twice. */
+const ALLOW_DUPLICATE: { sel: string; why: string }[] = [
+	{
+		sel: '.container',
+		why: 'ArrayViewer and TrajectoryViewer each size their OWN canvas host to fill its slot with a sane minimum — a private box, not a shared affordance. The agreement is what "fill your slot" means, not a vocabulary either of them could look up; hoisting a viewer-internal frame into the CENTRAL stylesheet is the opposite of what that module is for'
+	}
+];
+
 /** Geometric invariants that are not spacing at all: nothing, a hairline, full, a pill, a half. */
 const INVARIANT = new Set(['0', '1px', '100%', '999px', '50%']);
 
@@ -129,13 +149,35 @@ function styleCss(src: string): string {
 	);
 }
 
-/** Everything the guard scans: the central module, then every component `<style>`. */
+/** Every inline `style=` attribute's declarations, as one synthetic rule apiece.
+ *
+ *  A Svelte interpolation is PARENTHESISED (`{depth * 12}px` → `(depth * 12)px`), never blanked:
+ *  blanking would reduce that to `padding-left: px` — a false negative on the very declaration
+ *  that motivates reading attributes at all. Parens keep the number visible to `literals()` while
+ *  leaving `rules()`' brace matching honest. */
+function inlineStyleCss(src: string): string {
+	const markup = src.replace(/<script[\s\S]*?<\/script>/g, ' ').replace(/<style[\s\S]*?<\/style>/g, ' ');
+	const out: string[] = [];
+	for (const m of markup.matchAll(/\bstyle=(?=["'{])/g)) {
+		const value = attrValue(markup, m.index + m[0].length);
+		out.push(`[style] { ${value.slice(1, -1).replace(/[{}]/g, (c) => (c === '{' ? '(' : ')'))} }`);
+	}
+	return stripComments(out.join('\n'));
+}
+
+/** All of a component's CSS: its `<style>` blocks AND its inline `style=` attributes. A rung is
+ *  no less bypassed for being bypassed in the markup. */
+function componentCss(src: string): string {
+	return `${styleCss(src)}\n${inlineStyleCss(src)}`;
+}
+
+/** Everything the guard scans: the central module, then every component's CSS. */
 function sources(): { rel: string; css: string }[] {
 	return [
 		{ rel: 'app.css', css: stripComments(readFileSync(APP_CSS, 'utf8')) },
 		...svelteFiles(LIB).map((p) => ({
 			rel: p.slice(LIB.length),
-			css: styleCss(readFileSync(p, 'utf8'))
+			css: componentCss(readFileSync(p, 'utf8'))
 		}))
 	];
 }
@@ -183,13 +225,37 @@ function rules(css: string): { sel: string; body: string; media: string | null }
 	return out;
 }
 
+/** Every `:global(…)` / `:global { … }` in `css`, as `{ open, body }` — the delimiter it was
+ *  spelled with, and the balanced text inside it.
+ *
+ *  Balanced, not `[^)]*`: an argument can CONTAIN a `)` (`:global(.row:not(.hdr) .ui-btn)`, a
+ *  spelling `PanelHeader.svelte` already ships), and Svelte 5's block form carries no `(` at all.
+ *  Both readers below share this one scan so neither can drift back to the naive spelling. */
+function globalArgs(css: string): { open: string; body: string }[] {
+	const out: { open: string; body: string }[] = [];
+	for (const m of css.matchAll(/:global\s*[({]/g)) {
+		const at = m.index + m[0].length - 1;
+		const close = css[at] === '(' ? ')' : '}';
+		let depth = 0;
+		let i = at;
+		for (; i < css.length; i++) {
+			if (css[i] === css[at]) depth++;
+			else if (css[i] === close && --depth === 0) break;
+		}
+		out.push({ open: css[at], body: css.slice(at + 1, i) });
+	}
+	return out;
+}
+
 /** The last compound of each comma-separated branch, `:global()` unwrapped — the part of a
  *  selector that names what the rule actually paints. */
 function keyCompounds(sel: string): string[] {
-	return sel.split(',').map(
+	let flat = sel;
+	for (const { open, body } of globalArgs(sel))
+		if (open === '(') flat = flat.replace(`:global(${body})`, body);
+	return flat.split(',').map(
 		(one) =>
 			one
-				.replace(/:global\(([^)]*)\)/g, '$1')
 				.trim()
 				.split(/\s*[>+~]\s*|\s+/)
 				.filter(Boolean)
@@ -231,23 +297,55 @@ function literals(value: string): string[] {
 	return v.match(/-?\d*\.?\d+(?:px|rem|em|%|ch|vw|vh|pt)?/g) ?? [];
 }
 
-function drift(): string[] {
+/** One source's offending declarations. `drift()` is this over every source — and the fixtures
+ *  below drive THIS, so they exercise the production scan rather than a copy of it. */
+function driftIn(rel: string, css: string): string[] {
 	const found: string[] = [];
-	for (const { rel, css } of sources()) {
-		const pxExempt = rel in ALLOW_FILE;
-		const allowed = ALLOW_VALUE.filter((a) => a.file === undefined || a.file === rel);
-		const decl = new RegExp(`(?:^|[;{}])\\s*(${PROPS})\\s*:\\s*([^;}]+)`, 'g');
-		for (const m of css.matchAll(decl)) {
-			const raw = literals(m[2]).filter(
-				(n) =>
-					!INVARIANT.has(n) &&
-					!(pxExempt && n.endsWith('px')) &&
-					!allowed.some((a) => (a.prop?.test(m[1]) ?? true) && a.value.test(n))
-			);
-			if (raw.length) found.push(`${rel}  ${m[1]}: ${m[2].trim()}`);
-		}
+	const pxExempt = rel in ALLOW_FILE;
+	const allowed = ALLOW_VALUE.filter((a) => a.file === undefined || a.file === rel);
+	const decl = new RegExp(`(?:^|[;{}])\\s*(${PROPS})\\s*:\\s*([^;}]+)`, 'g');
+	for (const m of css.matchAll(decl)) {
+		const raw = literals(m[2]).filter(
+			(n) =>
+				!INVARIANT.has(n) &&
+				!(pxExempt && n.endsWith('px')) &&
+				!allowed.some((a) => (a.prop?.test(m[1]) ?? true) && a.value.test(n))
+		);
+		if (raw.length) found.push(`${rel}  ${m[1]}: ${m[2].trim()}`);
 	}
 	return found;
+}
+
+function drift(): string[] {
+	return sources().flatMap(({ rel, css }) => driftIn(rel, css));
+}
+
+/** A colour recipe reduced to its bytes: whitespace and case carry no meaning, so two spellings
+ *  of the same mix compare equal. */
+const recipe = (mix: string): string => mix.replace(/\s+/g, '').toLowerCase();
+
+/** Every `color-mix()` in `css`, one level of nesting deep — enough for the `var(--x) N%` form
+ *  every derived tint in this codebase uses. */
+const colorMixes = (css: string): string[] =>
+	css.match(/color-mix\((?:[^()]|\([^()]*\))*\)/g) ?? [];
+
+/** The derived tints `app.css` gives a NAME, keyed by their bytes. */
+function namedRecipes(appCss: string): Map<string, string> {
+	const out = new Map<string, string>();
+	for (const [, name, mix] of appCss.matchAll(/(--[\w-]+)\s*:\s*(color-mix\([^;]*\))\s*;/g))
+		out.set(recipe(mix), name);
+	return out;
+}
+
+/** Every `outline` declaration inside a `:focus-visible` rule, with the rule that carries it. */
+function focusOutlines(css: string): { sel: string; value: string }[] {
+	const out: { sel: string; value: string }[] = [];
+	for (const r of rules(css)) {
+		if (!/:focus-visible/.test(r.sel)) continue;
+		for (const [, value] of r.body.matchAll(/(?:^|;)\s*outline\s*:\s*([^;]+)/g))
+			out.push({ sel: r.sel.replace(/\s+/g, ' '), value: value.trim() });
+	}
+	return out;
 }
 
 /** Every `@media` prelude in `css` that asks about the pointer at all. */
@@ -257,9 +355,12 @@ function pointerQueries(css: string): string[] {
 		.filter((q) => /pointer/.test(q));
 }
 
-/** Every `:global()` selector in `css` that names a `$lib/ui` primitive's own `.ui-*` class. */
+/** Every `:global()` selector — or `:global {}` block — in `css` that names a `$lib/ui`
+ *  primitive's own `.ui-*` class. */
 function uiReachIns(css: string): string[] {
-	return [...css.matchAll(/:global\([^)]*\.ui-[\w-]+/g)].map((m) => `${m[0]}…)`);
+	return globalArgs(css)
+		.filter((g) => /\.ui-[\w-]+/.test(g.body))
+		.map((g) => `:global${g.open}${g.body.replace(/\s+/g, ' ').trim()}${g.open === '(' ? ')' : '}'}`);
 }
 
 describe('style vocabulary', () => {
@@ -267,9 +368,53 @@ describe('style vocabulary', () => {
 		expect(drift()).toEqual([]);
 	});
 
+	/* The guard read `<style>` blocks only, so the byte-identical declaration written as an
+	   ATTRIBUTE was invisible — a rung could be bypassed simply by moving it into the markup, which
+	   is where a computed one naturally lives. The interpolation is PARENTHESISED rather than
+	   blanked: blanking reduces `padding-left: {depth * 12}px` to `padding-left: px`, a false
+	   negative on exactly the line that motivates scanning attributes at all. */
+	it('scans an inline `style=` attribute, interpolation and all', () => {
+		const block = '<style>.n { padding-left: 7px; }</style>';
+		const attr = '<div class="n" style="padding-left: {depth * 12}px"></div>';
+		expect(driftIn('x.svelte', componentCss(block)), 'in a <style> block').toHaveLength(1);
+		const inline = driftIn('x.svelte', componentCss(attr));
+		expect(inline, 'the same declaration as an attribute').toHaveLength(1);
+		expect(inline[0], 'the number survives the interpolation').toContain('12');
+		// A custom property is a hook, not a spacing rung, and never was in scope.
+		expect(driftIn('x.svelte', componentCss('<div style="--dialog-pad: 0"></div>'))).toEqual([]);
+	});
+
+	/* Founding-census row 19: one affordance, written out in two components. `.drop-hint` — the
+	   dashed frame that marks a panel as a node drop target — was byte-identical in ConsolePanel
+	   and NodeLinkedPanel, markup line included, and no spec, plan, report or carryover in the
+	   whole programme ever picked it up. The mechanism for this already existed and was already
+	   used for exactly this (`.thin-scrollbar`, app.css): a global utility, so the two cannot
+	   drift. This is what makes it a rule instead of a one-off cleanup. */
+	it('never states one affordance twice in two components', () => {
+		const seen = new Map<string, string[]>();
+		for (const { rel, css } of sources()) {
+			if (rel === 'app.css') continue;
+			for (const r of rules(css)) {
+				const body = r.body.replace(/\s+/g, ' ').trim();
+				// Short bodies collide by coincidence (`{ flex: 1 }`); a shared affordance does not.
+				if (body.length < 40) continue;
+				if (ALLOW_DUPLICATE.some((a) => a.sel === r.sel)) continue;
+				const key = `${r.sel} { ${body} }`;
+				const files = seen.get(key) ?? [];
+				if (!files.includes(rel)) files.push(rel);
+				seen.set(key, files);
+			}
+		}
+		const offenders = [...seen]
+			.filter(([, files]) => files.length > 1)
+			.map(([key, files]) => `${files.join(' ≡ ')}  ${key.split(' {')[0]}`);
+		expect(offenders).toEqual([]);
+	});
+
 	it('exempts nothing it cannot justify in one line', () => {
 		for (const why of Object.values(ALLOW_FILE)) expect(why.length).toBeGreaterThan(0);
 		for (const a of ALLOW_VALUE) expect(a.why.length).toBeGreaterThan(0);
+		for (const a of ALLOW_DUPLICATE) expect(a.why.length, a.sel).toBeGreaterThan(0);
 	});
 
 	it('scans the central module and the components it claims to (no silently empty sweep)', () => {
@@ -313,7 +458,14 @@ describe('style vocabulary', () => {
 			`:global(${UI}.vs-cog) { padding: 0; }`,
 			`:global(.vs-cog${UI}) { padding: 0; }`, // byte-equivalent CSS to the line above
 			`:global(button${UI}) { padding: 0; }`, // the tag-qualifier idiom PanelHeader uses
-			'.row :global(.foo .ui-btn) { color: red; }'
+			'.row :global(.foo .ui-btn) { color: red; }',
+			// A `)` INSIDE the argument: `[^)]*` cannot cross one, so this whole family read as no
+			// reach-in at all — and `PanelHeader.svelte` already ships `:not(…)` inside `:global()`,
+			// so the spelling is in the tree, one class name away from being a real defect.
+			`:global(.row:not(.hdr) ${UI}) { color: red; }`,
+			`.row :global(${UI}:hover:not(:disabled)) { color: red; }`,
+			// Svelte 5's BLOCK form contains no `:global(` token whatsoever.
+			`:global { ${UI} { padding: 0; } }`
 		])
 			expect(uiReachIns(css), css).toHaveLength(1);
 
@@ -326,6 +478,52 @@ describe('style vocabulary', () => {
 			'.tab :global(.close) { width: 0; }'
 		])
 			expect(uiReachIns(css), css).toEqual([]);
+	});
+
+	/* Colour was the one vocabulary family NOTHING scanned, and it is the one that was actively
+	   drifting: four component rules spelled an existing token's exact bytes by hand, so
+	   retuning `--accent-fill` in `app.css` moved three sites and left a fourth behind.
+
+	   Deliberately narrow — it asks "does this mix already have a NAME?", not "is any inline mix
+	   allowed?". A blanket ban is not reachable and would not be right: 50-odd mixes across the
+	   tree are per-site strengths (Chip's tone ladder, the 40%/55% border alphas, SlotViewer's
+	   dtype washes), and the final audit ruled that reshape out of scope. What is never right is
+	   two spellings of ONE value, because only one of them moves when the value does. */
+	it('never re-spells a tint that already has a name in app.css', () => {
+		const named = namedRecipes(readFileSync(APP_CSS, 'utf8'));
+		expect(named.size, 'app.css still defines the derived tints this looks for').toBeGreaterThan(4);
+		const offenders = sources()
+			.filter((s) => s.rel !== 'app.css')
+			.flatMap((s) =>
+				colorMixes(s.css)
+					.filter((mix) => named.has(recipe(mix)))
+					.map((mix) => `${s.rel}  ${mix} is var(${named.get(recipe(mix))})`)
+			);
+		expect(offenders).toEqual([]);
+	});
+
+	// The guard above only earns its line if it reads through spelling noise the way CSS does.
+	it('matches a re-spelled tint whatever its whitespace and case', () => {
+		const named = namedRecipes('--accent-fill: color-mix(in srgb, var(--accent) 18%, transparent);');
+		expect(named.get(recipe('color-mix(in  SRGB,var(--accent)  18%,transparent)'))).toBe('--accent-fill');
+		expect(named.has(recipe('color-mix(in srgb, var(--accent) 17%, transparent)')), 'a different strength is a different tint').toBe(false);
+		expect(colorMixes('a { background: color-mix(in srgb, var(--x) 4%, transparent); }')).toHaveLength(1);
+	});
+
+	/* The focus ring is ONE line, and it was written out five times — `app.css`'s app-wide rule
+	   plus the four primitives that restate it because they set their own `outline-offset`. That
+	   is four of the twelve raw border-width literals left in the tree, and the only reason the
+	   ring's width and ink could ever disagree between a Chip and everything else. The OFFSET
+	   stays per-site: it is genuinely local (how far the ring sits off this particular box). */
+	it('states the focus ring once — width and ink are tokens everywhere (H3)', () => {
+		const found = sources().flatMap((s) =>
+			focusOutlines(s.css).map((o) => ({ rel: s.rel, ...o }))
+		);
+		expect(found.length, 'the ring is still declared somewhere').toBeGreaterThan(0);
+		const offenders = found
+			.filter((o) => !/var\(--focus-width\)/.test(o.value) || !/var\(--focus-ink\)/.test(o.value))
+			.map((o) => `${o.rel}  ${o.sel} { outline: ${o.value} }`);
+		expect(offenders).toEqual([]);
 	});
 
 	/* D-R7: ONE coarse-pointer idiom, `(hover: none) and (pointer: coarse)`.
@@ -441,15 +639,74 @@ const HOVER_ONLY_OK: { file: string; target: string; why: string }[] = [
 	}
 ];
 
+/** One attribute's value, from its opening `"`, `'` or `{` to the delimiter that closes it,
+ *  delimiters included. Braces nest and quotes suspend them, so a class expression or a
+ *  `style={…}` is read whole rather than cut at the first `}` inside it. */
+function attrValue(src: string, at: number): string {
+	const open = src[at];
+	if (open !== '{') {
+		const end = src.indexOf(open, at + 1);
+		return src.slice(at, end === -1 ? src.length : end + 1);
+	}
+	let depth = 0;
+	let quote = '';
+	let i = at;
+	for (; i < src.length; i++) {
+		const c = src[i];
+		if (quote) {
+			if (c === quote) quote = '';
+		} else if (c === '"' || c === "'" || c === '`') quote = c;
+		else if (c === '{') depth++;
+		else if (c === '}' && --depth === 0) break;
+	}
+	return src.slice(at, i + 1);
+}
+
+/** The attribute text of every `<input>`/`<select>`/`<textarea>`, scanned to the tag's REAL `>`.
+ *
+ *  Not `[^>]*`: a Svelte handler (`onfocus={() => live.begin()}`) contains a `>`, so a naive match
+ *  ends mid-tag and every attribute after the first arrow function is invisible. Quotes and `{}`
+ *  nesting are tracked so only a top-level `>` closes the tag. */
+function controlTagAttrs(markup: string): string[] {
+	const out: string[] = [];
+	for (const m of markup.matchAll(/<(?:input|select|textarea)\b/g)) {
+		const start = m.index + m[0].length;
+		let depth = 0;
+		let quote = '';
+		let i = start;
+		for (; i < markup.length; i++) {
+			const c = markup[i];
+			if (quote) {
+				if (c === quote) quote = '';
+			} else if (c === '"' || c === "'" || c === '`') quote = c;
+			else if (c === '{') depth++;
+			else if (c === '}') depth--;
+			else if (c === '>' && depth === 0) break;
+		}
+		out.push(markup.slice(start, i));
+	}
+	return out;
+}
+
 /** Classes a file puts on a real `<input>`/`<select>`/`<textarea>`, from the markup — the only
  *  place that link is written down. A rule naming one of these out-specifies `app.css`'s
- *  `input, select, textarea` floor, which scores (0,0,1) and loses to anything. */
+ *  `input, select, textarea` floor, which scores (0,0,1) and loses to anything.
+ *
+ *  Read through the attribute's STRING LITERALS, not just a quoted `class="…"` list: the two
+ *  primitives whose control element is the component root (`ui/NumberInput`, `ui/TextInput`)
+ *  compose their class in an expression, so the quoted-only scan returned an empty set for exactly
+ *  the two elements every text and number edit in the app flows through. An identifier spliced
+ *  into a template (`${klass}`) reads as a token too — harmless over-collection, since a name no
+ *  rule mentions can never be a target. */
 function controlClasses(src: string): Set<string> {
 	const markup = src.replace(/<script[\s\S]*?<\/script>/g, ' ').replace(/<style[\s\S]*?<\/style>/g, ' ');
 	const out = new Set<string>();
-	for (const [, , attrs] of markup.matchAll(/<(input|select|textarea)\b([^>]*)>/g)) {
-		for (const [, list] of attrs.matchAll(/\bclass=["']([^"']*)["']/g))
-			for (const token of list.split(/\s+/)) if (token && !token.includes('{')) out.add(token);
+	for (const attrs of controlTagAttrs(markup)) {
+		for (const m of attrs.matchAll(/\bclass=(?=["'{])/g))
+			for (const [, , body] of attrValue(attrs, m.index + m[0].length).matchAll(
+				/(["'`])((?:\\.|(?!\1)[\s\S])*?)\1/g
+			))
+				for (const token of body.split(/[^\w-]+/)) if (token) out.add(token);
 		for (const [, name] of attrs.matchAll(/\bclass:([\w-]+)/g)) out.add(name);
 	}
 	return out;
@@ -567,6 +824,24 @@ describe('coarse-pointer doors', () => {
 		expect(bindsRightClick('<div oncontextmenu={menu}></div>'), 'attribute').toBe(true);
 		expect(bindsRightClick("el.addEventListener('contextmenu', menu);"), 'imperative').toBe(true);
 		expect(bindsRightClick("el.addEventListener('pointerdown', down);"), 'unrelated').toBe(false);
+	});
+
+	/* `controlClasses` reads MARKUP, so its fixture is markup — and it has to read the spelling the
+	   app's own text entry actually uses. `$lib/ui`'s NumberInput and TextInput ARE the control (the
+	   component root is the `<input>`), so they compose their class in an expression instead of a
+	   quoted list. A scan that only understood `class="…"` returned an EMPTY set for both, so the
+	   §5.4 floor above enforced nothing on the two elements every param edit flows through. The
+	   arrow-handler case is the same blindness one level down: `onfocus={() => …}` contains a `>`,
+	   so a tag matched with `[^>]*` ends mid-attribute-list. */
+	it('sees a control class however the tag spells it', () => {
+		const quoted = '<input class="name other" />';
+		const expr = "<input class={`ui-number ${scrub ? 'ui-number-scrub' : ''} ${klass}`.trim()} />";
+		const late = '<input onfocus={() => live.begin()} class="name" />';
+		expect([...controlClasses(quoted)], 'the quoted spelling').toContain('name');
+		expect([...controlClasses(expr)], 'the expression spelling').toContain('ui-number');
+		expect([...controlClasses(expr)], 'a name spliced through a ternary').toContain('ui-number-scrub');
+		expect([...controlClasses(late)], 'an arrow handler’s `>` does not end the tag').toContain('name');
+		expect([...controlClasses('<div class="name"></div>')], 'not a form control').toEqual([]);
 	});
 
 	it('spots a control that keeps its small type under coarse', () => {
