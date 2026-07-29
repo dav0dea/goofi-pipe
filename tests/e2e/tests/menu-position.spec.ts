@@ -81,6 +81,29 @@ test('Tab opens the add-node menu on-screen even with the pointer in the far cor
 	await expect(anchor).toBeHidden();
 });
 
+// The empty-canvas hint is the ONLY <kbd> in the whole UI — the single place the app names a
+// keyboard route — and it named `+`, which no handler in `frontend/src` matches. The route that
+// exists is `Tab` (the test above drives it). So assert the hint's key by USING it: a text
+// comparison would pin today's word, this pins the promise the word makes.
+test('the empty-canvas hint names a key that actually opens the add-node menu', async ({ page }) => {
+	await page.goto('/');
+	await waitForApp(page);
+
+	const hint = page.getByTestId('empty-hint');
+	await expect(hint, 'every spec cleans up its nodes, so the canvas is empty at rest').toBeVisible();
+	const key = (await hint.locator('kbd').innerText()).trim();
+
+	// The chord is gated on the editor being the active panel; the hint is pointer-events:none, so
+	// this click reaches the canvas underneath it exactly as a user's would.
+	await page.locator('.canvas-wrap').first().click({ position: { x: 20, y: 20 } });
+	await page.keyboard.press(key);
+
+	const anchor = page.getByTestId('add-node-menu-anchor');
+	await expect(anchor, `the hint's <kbd>${key}</kbd> opens the add-node menu`).toBeVisible();
+	await page.keyboard.press('Escape');
+	await expect(anchor).toBeHidden();
+});
+
 // The fourth entry point, and the only one whose geometry the unification restated: a TARGET port
 // hangs the menu to its LEFT (the click point is the menu's RIGHT edge + 12px of clearance). That
 // used to be a hardcoded `-332`; it is now the measured width, so this pins the resulting box.

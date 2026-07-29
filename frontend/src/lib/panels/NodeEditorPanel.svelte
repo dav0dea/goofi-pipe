@@ -1102,7 +1102,7 @@
 			<div class="empty-hint" data-testid="empty-hint">
 				<EmptyState>
 					{#snippet title()}{entered ? 'This sub-patch is empty' : 'Empty patch'}{/snippet}
-					{#snippet hint()}Double-click the canvas or press <kbd>+</kbd> to add a node.{/snippet}
+					{#snippet hint()}Double-click the canvas or press <kbd>Tab</kbd> to add a node.{/snippet}
 				</EmptyState>
 			</div>
 		{/if}
