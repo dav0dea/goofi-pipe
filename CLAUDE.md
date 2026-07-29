@@ -253,19 +253,32 @@ processes outlive the test and corrupt every later latency measurement.
 
 ## Frontend map (`frontend/src/lib/`)
 
+`src/app.css` is the **styling SSOT** — every colour, spacing, type, radius and motion token lives
+in its `:root`, and a component states its own layout, never another component's. Build UI by
+composing `$lib/ui` primitives; reach for a bespoke `<style>` only when no primitive expresses it,
+and say why in a comment. `lib/theme/` is the enforcement.
+
 | dir | owns |
 |---|---|
 | `api/` | transport clients: `control.ts` (commands + events + session id), `data.ts`/`dataWorker.ts` (binary stream, off-thread decode), `frames.ts` (rAF paint coalescer), `perfStats`/`rateMeter`. |
 | `crdt/` | the client replica: `SyncClient` (read-only) + the doc readers. |
 | `codec/` | the TS port of the GOOF frame decoder (arrays are always f32). |
-| `stores/` | reactive state (Svelte 5 runes): `graph.svelte.ts` (doc-authoritative mirror), `history.svelte.ts` (one linear client stack; graph steps delegate to the manager), `selection`, `ui`, `console`, `flash`. |
+| `stores/` | reactive state (Svelte 5 runes): `graph.svelte.ts` (doc-authoritative mirror), `history.svelte.ts` (one linear client stack; graph steps delegate to the manager), `selection`, `ui`, `console`, `flash`, `undoFlash`, `device` (the `--kb-inset` seam). |
 | `editor/` | the Svelte Flow canvas: `GoofiNode.svelte` (every node, incl. sub-patch instances), `snap.ts` + `nodeMetrics.ts`, placement, boundary nodes. |
 | `viewers/` | one component per viewer kind + `ViewerFeed` (subscribe lifecycle), `capacity.ts` (emits the backend-shaped ViewSpec), `decimate.ts`, `imageGL.ts`. |
-| `params/` | parameter widgets + the expression editor. |
-| `panels/` | dockable panel content (node-editor, parameters, viewer, metadata, console, errors, globals) + the panel registry. |
-| `workspace/` | the panel layout engine: `model.ts` (pure tree algebra), `workspace.svelte.ts`, `navContext.ts`. |
+| `ui/` | the primitive library — `Button`, `IconButton`, `Chip`, `Badge`, `Field`, `TextInput`, `NumberInput`, `Slider`, `Select`, `Toggle`, `Trigger`, `Tabs`, `Disclosure`, `Popover`, `Dialog`, `Bar`, `ScrollArea`, `StatusDot`, `EmptyState`, plus shared helpers such as `field.ts`'s label⇄control handshake, `liveValue`'s number↔slider latch, `clampToViewport` and `dragGesture`. One barrel (`index.ts`); per-instance CSS-var hooks are the documented escape hatch. |
+| `inspector/` | the parameter inspector, and the north star's own target: `ParamForm` + `ParamField` (a 15-line declarative control dispatch inside one `<Field>`), `controlKind.ts`, `showWhen.ts` (the fail-closed dependency algebra — built and proven in the gallery, not yet exercised by any backend descriptor). |
+| `theme/` | the styling ENFORCEMENT: `styleDrift.test.ts` (raw spacing/type/motion literals, the coarse idiom, `:global(.ui-*)` reach-ins, no gradients, no fault ink on the frame counters) and `tokens.test.ts` (contrast ratios), over the shared `contrast.ts`. Every exemption is one enumerated line with a reason — add the failing fixture BEFORE widening a scanner. |
+| `app/` | the shell: `AppShell.svelte` (mount, layout push, keyboard), `Toast`, `TitleTip` (the coarse-pointer door onto every `title=`), `undoKeys.ts`. |
+| `panels/` | dockable panel content (node-editor, parameters, viewer, metadata, console, globals — there is **no** `errors` panel; a legacy `errors` type migrates to `console` on load) + `register.ts`. |
+| `workspace/` | the panel layout engine: `model.ts` (pure tree algebra), `workspace.svelte.ts`, `navContext.ts`, `registry.ts` (the panel-type seam). |
 | `fs/` | the filesystem browser for save/load. |
 | `agent/` | the automation façade (`window.goofi`) — the seam `tests/e2e/` drives. |
+
+`src/routes/dev/ui` and `src/routes/dev/inspector` are **gallery routes**, not product: they are how
+a primitive is pinned by an e2e before it has a product consumer. They ship in the built SPA (the
+e2e drives them against the real binary) but nothing in the app links to them — a third of the e2e
+suite targets them, which is worth knowing when reading the suite's numbers.
 
 ---
 
@@ -341,7 +354,10 @@ Analysis reports live in `docs/analysis/` (also gitignored).
   Desktop is the primary target and its behaviour is the reference — but "desktop only"
   is retired, so don't write a mouse-only affordance. Concretely: no interaction may exist
   *solely* behind `:hover`, right-click or a keyboard chord; touch needs its own door in,
-  gated on `(pointer: coarse)` so the desktop path is untouched. Panel width is independent
+  gated on `@media (hover: none) and (pointer: coarse)` — the ONE spelling (D-R7), because bare
+  `(pointer: coarse)` catches a hybrid laptop and `any-pointer: coarse` catches a desktop with a
+  drawing tablet plugged in. `theme/styleDrift.test.ts` turns any other spelling red, so this
+  is an enforced rule, not a convention. Panel width is independent
   of viewport width, so `@container` is the default tool and `@media` is reserved for real
   device-class questions (pointer, hover, orientation). Size in `rem`/relative units — the
   `html` base is a responsive `clamp()`. One theme, done well (no dark-mode toggle).
@@ -356,9 +372,13 @@ Analysis reports live in `docs/analysis/` (also gitignored).
   infrastructure is shared — including dirty tracking and undo/redo. When a behaviour is wrong on
   phone, fix it for both; a phone-only guard is the wrong shape. Corollary the user set explicitly:
   **navigation must not dirty the patch on either platform** — entering a sub-patch is navigation
-  (must not dirty), changing a viewer *type* is a real view setting (dirties). Today both ride the
-  same `setPanelState` → `set_layout` write, which dirties indiscriminately; that taxonomy is the
-  fix, not a per-device suppression.
+  (must not dirty), changing a viewer *type* is a real view setting (dirties). That taxonomy
+  shipped: every layout write declares a `LayoutIntent` (`workspace.svelte.ts`), AppShell folds the
+  debounce window and sends it with `set_layout`, and the bridge gates the dirty flag on it
+  (`layout_write_dirties`). Persistence and dirtiness are separate axes — a navigation write still
+  rides the `.gfi`. **Unclassified ⇒ authoring**, so forgetting to classify can only cost a
+  spurious dot, never a lost change; entering a sub-patch and switching a layout tab (D-R11) are
+  the navigation cases. Pinned by `layoutIntent.test.ts` and `tests/e2e/tests/dirty-taxonomy.spec.ts`.
 - **`$lib/ui` must not import `$lib/stores`.** The primitives are a leaf layer. Importing a store into
   one reshuffles Vite's CSS chunk graph, which changed the emitted `<link>` order and gave the app a
   **first-paint FOUC** (caught by `inspector-gallery.spec.ts`, not by any unit test). When a primitive
@@ -374,11 +394,35 @@ Analysis reports live in `docs/analysis/` (also gitignored).
 
 The **framework** is essentially complete and has been audited to convergence
 several times: CRDT control plane, unified commands + manager-owned undo/redo, flat
-sub-patches, the ViewSpec data plane, globals, both Python node tiers, e2e. The most
-recent pass (2026-07-23) was a leanness audit executed end to end: it cut every plane
-the frontend carried that the backend never grew, built the four the user wanted real
-(palette availability, layout persistence, dirty tracking, detached bootstrap stage),
-and collapsed the snapshot's duplicate graph projection onto the doc.
+sub-patches, the ViewSpec data plane, globals, both Python node tiers, e2e. The
+2026-07-23 pass was a leanness audit executed end to end: it cut every plane the frontend
+carried that the backend never grew, built the four the user wanted real (palette
+availability, layout persistence, dirty tracking, detached bootstrap stage), and collapsed
+the snapshot's duplicate graph projection onto the doc.
+
+The **frontend design-system overhaul (F→P→N→M→R) then shipped**, each sub-project
+spec→plan→execute→audit-to-convergence:
+
+- **F — substrate.** `app.css` became the token SSOT; `viewport-fit=cover`, the safe-area insets,
+  `--kb-inset`, the coarse type/hit floors.
+- **P — primitives.** `lib/ui/`, which the panels, editor chrome and inspector now compose;
+  **zero `:global(.ui-*)` consumer reach-ins**, grep-verified and pinned by a test.
+- **N — inspector.** The north star: `lib/params/` → `lib/inspector/`, 1 527 → 857 lines (−44 %)
+  while *gaining* the fx editor, `showWhen` dependency filtering and `@container` reflow.
+  `ParametersPanel.svelte` is 19 lines.
+- **M — migration + saliency.** Panel/node chrome onto the primitives; borders traded for the
+  surface ladder; `gradient(` count is **zero**, pinned.
+- **R — responsive shell.** Phone/tablet made real: progressive TopBar overflow, touch doors for
+  every hover/right-click affordance, the layout `LayoutIntent` taxonomy, four e2e device profiles.
+
+The trade, stated plainly: centralizing **added** production lines — a primitive library and two
+galleries — and a great deal more test code. What it bought is a declarative inspector, no
+component-to-component style reach-ins, and an app usable on a phone. The 2026-07-29 capstone audit
+found **zero critical and zero correctness defects in the graph, data or CRDT planes**; its
+important-tier items are fixed. What it left open is recorded in
+`docs/analysis/2026-07-29-final-frontend-audit.md` §4 — chiefly **C38**, the bridge half of the
+save-path gap (the manager keeps no save-path state, so a second tab or a reload forgets it), which
+needs a design pass with the user rather than a patch.
 
 The **node library is a deliberate tabula rasa** — Oscillator + Buffer only. Growing
 it (sinks, filters/PSD, real biosignal inputs, recording, array math) is the next
