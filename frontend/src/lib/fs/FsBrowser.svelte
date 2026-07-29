@@ -192,12 +192,19 @@
 		</div>
 
 		<!-- The one bar in the app whose two groups both have a real minimum — a filename field and
-		     Cancel/Save. It wraps at the width they stop fitting; every other bar keeps `nowrap`. -->
+		     Cancel/Save. It wraps at the width they stop fitting; every other bar keeps `nowrap`.
+		     The WRAP is what makes the footer fit a 320px phone; the field's 14rem is DESKTOP
+		     geometry and is stated as a width, not as a flex basis. `flex: 1 1 8rem` cost the
+		     desktop ~40px for nothing: the grow can never fire (`.ui-bar-group` is `0 1 auto` and
+		     `.ui-bar-spacer` owns the bar's slack), and a shrinkable item's max-content
+		     CONTRIBUTION collapses toward its own intrinsic size — an `<input>`'s default `size=20`
+		     — so the basis was not what the group asked for either. A definite width is.
+		     `flex: 0 1` + `min-width: 0` keep it shrinkable on the narrow line it wraps onto. -->
 		<Bar style="--bar-wrap: wrap">
 			{#snippet start()}
 				{#if mode === 'save'}
 					<TextInput
-						style="flex: 1 1 8rem; min-width: 0"
+						style="width: 14rem; flex: 0 1 auto; min-width: 0"
 						value={filename}
 						onChange={(v) => (filename = v)}
 						placeholder="patch name"

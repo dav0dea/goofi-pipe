@@ -594,15 +594,31 @@ export class GraphStore {
 		}
 	}
 
+	/** Write the patch, and — when it landed somewhere — remember where.
+	 *
+	 * The `savePath` write belongs HERE, not at a call site: the manager keeps no save-path state
+	 * (its snapshot hard-codes `save_path: null`) and its `save` arm broadcasts no
+	 * `save_path_changed`, so this reply is the only thing that ever tells a client the patch has a
+	 * home. While it lived in `AppShell` the header's Save named the patch and
+	 * `window.goofi.commands.save` — the seam the whole e2e suite drives — could not.
+	 *
+	 * `path: null` comes back when none was given, which is a serialize-only save: no home, so
+	 * nothing to remember (the manager leaves the dirty flag alone for the same reason). */
 	async save(
 		path?: string,
 		overwrite = false,
 		layout?: unknown
-	): Promise<{ path: string; yaml: string }> {
+	): Promise<{ path: string | null; yaml: string }> {
 		// `layout` is the frontend workspace arrangement; the backend writes it
 		// into the .gfi. Omitted (undefined) → not sent → backend keeps any
 		// existing layout.
-		return this.ctl.call('save', { path, overwrite, layout });
+		const res = await this.ctl.call<{ path: string | null; yaml: string }>('save', {
+			path,
+			overwrite,
+			layout
+		});
+		if (res.path) this.savePath = res.path;
+		return res;
 	}
 
 	/** Load a patch, replacing the current graph. Loading fully RESETS the session (the manager

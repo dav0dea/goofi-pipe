@@ -94,7 +94,10 @@ export const commands = {
 		graph().renameGlobal(oldName, newName),
 
 	// --- patch persistence -------------------------------------------------
-	save: (path?: string): Promise<{ path: string; yaml: string }> =>
+	// With a path this is the header's Save, whole: the file is written AND the patch is named, so
+	// `query.graph().savePath` reads it back. Without one it only serializes — `path` comes back
+	// null to say the patch got no home.
+	save: (path?: string): Promise<{ path: string | null; yaml: string }> =>
 		graph().save(path, true, workspace().serialize()),
 	loadText: (content: string): Promise<void> => graph().loadText(content),
 

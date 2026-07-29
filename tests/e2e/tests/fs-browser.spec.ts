@@ -352,3 +352,56 @@ test('the path bar and the up button navigate the backend filesystem', async ({ 
 	);
 	await expect(dir, 'the parent listing is back').toBeVisible();
 });
+
+/**
+ * The filename field is the one control in this dialog with a real minimum, and it is DESKTOP
+ * geometry — R was not supposed to move it. `1ca82f4` changed it from a fixed `14rem` to
+ * `flex: 1 1 8rem` as a side effect of making the footer wrap at 320px, and the grow can never
+ * fire: `.ui-bar-group` declares no `flex` (so `0 1 auto`) while `.ui-bar-spacer` owns all of the
+ * bar's slack, so the field resolved at its `size=20` max-content contribution — about 154px
+ * against the 196px it had. The wrap alone is what fixed the phone; the basis is the desktop's.
+ */
+test('the save dialog keeps its full-width filename field', async ({ page }) => {
+	await page.goto('/');
+	await waitForApp(page);
+	const modal = await openBrowser(page, 'save');
+	const field = modal.getByTestId('fs-filename');
+	const { width, rem } = await field.evaluate((el) => ({
+		width: el.getBoundingClientRect().width,
+		rem: parseFloat(getComputedStyle(document.documentElement).fontSize)
+	}));
+	// Stated in rem, since the root size is a responsive clamp: 14rem is the pre-R fixed width.
+	expect(width, 'the field is 14rem wide, as it was before R').toBeGreaterThanOrEqual(14 * rem - 1);
+	await page.keyboard.press('Escape');
+	await expect(modal).toBeHidden();
+});
+
+/**
+ * `window.goofi.commands.save(path)` is the seam the whole committed suite drives, and it could
+ * not reach the state the UI's own Save reaches: the `savePath` write lived at ONE of the two call
+ * sites (`AppShell.saveBackend`), not at the seam both go through. Nothing else supplies it — the
+ * manager keeps no save-path state (its snapshot hard-codes `save_path: null`) and its `save` arm
+ * broadcasts no `save_path_changed`, whatever `AppShell`'s comment used to claim.
+ */
+test('saving through the automation façade names the patch, exactly as the header does', async ({
+	page
+}) => {
+	await page.goto('/');
+	await waitForApp(page);
+	const target = path.join(scratch, `${patchName}-facade.gfi`);
+	try {
+		await page.evaluate((p) => (window as any).goofi.commands.save(p), target);
+		await expect
+			.poll(() => page.evaluate(() => (window as any).goofi.query.graph().savePath), {
+				message: 'the patch has a home on disk and the client knows it'
+			})
+			.toBe(target);
+		// …and the header agrees, which is what "named" means to a user: a plain Save from here
+		// overwrites silently instead of re-opening the browser.
+		await expect(page.locator('.topbar .path')).toHaveText(new RegExp(`${patchName}-facade\\.gfi$`));
+		await page.getByTestId('topbar-save').click();
+		await expect(browser(page), 'a named patch saves without asking again').toBeHidden();
+	} finally {
+		fs.rmSync(target, { force: true });
+	}
+});

@@ -57,9 +57,11 @@
 		return i > 0 ? p.slice(0, i) : null;
 	}
 
+	// `g.save` remembers the path it wrote to — the store is where BOTH doors onto a save learn the
+	// patch has a home (this one and `window.goofi.commands.save`), since the manager keeps no
+	// save-path state and its `save` arm broadcasts nothing.
 	async function saveBackend(path?: string): Promise<void> {
-		const { path: saved } = await g.save(path ?? g.savePath ?? undefined, true, ws.serialize());
-		g.savePath = saved; // backend also broadcasts save_path_changed; set now for immediacy
+		await g.save(path ?? g.savePath ?? undefined, true, ws.serialize());
 	}
 
 	// Default Save: silent overwrite when the patch is named, else "Save As".
