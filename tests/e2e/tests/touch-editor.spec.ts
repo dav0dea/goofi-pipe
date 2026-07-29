@@ -1,6 +1,7 @@
-import { test, expect } from '@playwright/test';
+import { test, expect, type Page } from '@playwright/test';
 import { waitForApp } from '../lib/app';
 import { controlsInset } from '../lib/editor';
+import { addNode, waitForNode, waitForNoNode } from '../lib/goofi';
 import { emptySpot, touchSession } from '../lib/touch';
 
 /**
@@ -83,4 +84,135 @@ test('a pan is not a press — dragging the canvas opens nothing', async ({ page
 		0
 	);
 	await touch.up();
+});
+
+/**
+ * Entering a sub-patch, the coarse half (the desktop half is `subpatch-entry.spec.ts`).
+ *
+ * `enterInstance`'s one caller is a hand-rolled double-click recogniser whose slop was `6` CSS px —
+ * a 12×12 box, an order of magnitude under any platform's tap slop, so a finger simply could not
+ * hit it twice. R added the CREATE half of sub-patches to touch (`Group into sub-patch` in the
+ * header's overflow menu), so touch could mint a sub-patch it had no way back into. The slop is
+ * chosen per GESTURE off `pointerType`, the same seam the long-press door reads — not per device.
+ */
+
+/** The sub-patch instances the patch currently holds. */
+const instances = (page: Page): Promise<Record<string, unknown>> =>
+	page.evaluate(() => (window as any).goofi.query.instances());
+
+/** A one-member sub-patch at `at`, plus its member uid so the test can put both back. */
+async function groupOneNodeAt(
+	page: Page,
+	at: [number, number]
+): Promise<{ member: string; inst: string }> {
+	const member = await addNode(page, 'Buffer', 'signal', at);
+	await waitForNode(page, member);
+	const inst: string = await page.evaluate(
+		([m, p]) => (window as any).goofi.commands.groupNodes([m], p),
+		[member, at] as const
+	);
+	await expect(page.locator(`.svelte-flow__node[data-id="${inst}"]`)).toBeVisible();
+	return { member, inst };
+}
+
+async function dissolveAndRemove(page: Page, member: string, inst: string): Promise<void> {
+	if (Object.keys(await instances(page)).includes(inst))
+		await page.evaluate((i) => (window as any).goofi.commands.expandInstance(i), inst);
+	await page.evaluate((m) => (window as any).goofi.commands.removeNode(m), member);
+	await waitForNoNode(page, member).catch(() => {});
+}
+
+const centreOf = async (page: Page, uid: string): Promise<{ x: number; y: number }> => {
+	const b = (await page.locator(`.svelte-flow__node[data-id="${uid}"]`).boundingBox())!;
+	return { x: Math.round(b.x + b.width / 2), y: Math.round(b.y + b.height / 2) };
+};
+
+test('a double TAP enters a sub-patch, drift and all, and leaves it standing', async ({ page }) => {
+	await page.goto('/');
+	await waitForApp(page);
+	const { member, inst } = await groupOneNodeAt(page, [80, 80]);
+	try {
+		const touch = await touchSession(page);
+		const at = await centreOf(page, inst);
+		await touch.down(at);
+		await touch.up();
+		await page.waitForTimeout(150);
+		// 8px of drift — nothing on a finger, and twice the old 6px window.
+		await touch.down({ x: at.x + 8, y: at.y + 4 });
+		await touch.up();
+
+		await expect(
+			page.getByTestId('subpatch-breadcrumb'),
+			'the second tap entered the sub-patch'
+		).toBeVisible();
+		// The first tap raises the inspector across all but --hit of a 412px editor, so the second
+		// lands on the pane — including, for a sub-patch, its Expand (dissolve) button.
+		await page.waitForTimeout(400);
+		expect(
+			Object.keys(await instances(page)),
+			'and the pane it landed on did not also act on it'
+		).toContain(inst);
+	} finally {
+		const crumb = page.getByTestId('subpatch-breadcrumb');
+		if (await crumb.isVisible())
+			await crumb.getByRole('button', { name: 'Patch', exact: true }).click();
+		await dissolveAndRemove(page, member, inst);
+	}
+});
+
+test('two taps on two DIFFERENT sub-patches are not one gesture', async ({ page }) => {
+	await page.goto('/');
+	await waitForApp(page);
+	// With the inspector off, nothing slides over the second node — so this measures the slop and
+	// only the slop, which is what widening it put at risk.
+	await page.getByTestId('inspector-toggle').click();
+	await expect(page.getByTestId('auto-side-panel')).toHaveCount(0);
+	const a = await groupOneNodeAt(page, [40, 60]);
+	const b = await groupOneNodeAt(page, [40, 260]);
+	try {
+		// Park B's left edge just past A's right edge, so two points 14px apart — inside the coarse
+		// slop — sit on two different nodes.
+		const ab = (await page.locator(`.svelte-flow__node[data-id="${a.inst}"]`).boundingBox())!;
+		const scale = await page
+			.locator('.svelte-flow__viewport')
+			.first()
+			.evaluate((el) => new DOMMatrixReadOnly(getComputedStyle(el).transform).a);
+		await page.evaluate(
+			([u, p]) => (window as any).goofi.commands.setNodePos(u, p),
+			[b.inst, [Math.round(40 + (ab.width + 2) / scale), 60] as [number, number]] as const
+		);
+		const p1 = { x: Math.round(ab.x + ab.width - 6), y: Math.round(ab.y + ab.height / 2) };
+		const p2 = { x: p1.x + 14, y: p1.y };
+		await expect
+			.poll(() =>
+				page.evaluate(
+					(pts) =>
+						pts.map((p) =>
+							(document.elementFromPoint(p.x, p.y) as HTMLElement | null)
+								?.closest('.svelte-flow__node')
+								?.getAttribute('data-id')
+						),
+					[p1, p2]
+				)
+			)
+			.toEqual([a.inst, b.inst]);
+
+		const touch = await touchSession(page);
+		await touch.down(p1);
+		await touch.up();
+		await page.waitForTimeout(150);
+		await touch.down(p2);
+		await touch.up();
+		await page.waitForTimeout(300);
+		await expect(
+			page.getByTestId('subpatch-breadcrumb'),
+			'a tap on a NEIGHBOUR is that neighbour’s first tap, not this one’s second'
+		).toHaveCount(0);
+	} finally {
+		const crumb = page.getByTestId('subpatch-breadcrumb');
+		if (await crumb.isVisible())
+			await crumb.getByRole('button', { name: 'Patch', exact: true }).click();
+		await dissolveAndRemove(page, a.member, a.inst);
+		await dissolveAndRemove(page, b.member, b.inst);
+	}
 });

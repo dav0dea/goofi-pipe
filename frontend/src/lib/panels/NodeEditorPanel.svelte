@@ -776,31 +776,53 @@
 	// detaches the node element, so dblclick/elementFromPoint resolve to nothing on
 	// the 2nd click). So we detect it ourselves: record the group node hit by the
 	// 1st click, then a 2nd click at the same spot within the threshold enters it.
-	const DBL_PX = 6; // a real double-click barely moves the pointer
+	//
+	// Registered in the CAPTURE phase, and a recognised second click is CONSUMED. The FIRST click
+	// selects the instance, which slides the inspector in over 120ms across all but `--hit` of the
+	// editor — including the node the second click has to land on. In the bubble phase that click
+	// had already actuated whatever control had arrived under the pointer on its way up: for a
+	// sub-patch that is `subpatch-expand-inspector`, which DISSOLVES it. Capturing lets the gesture
+	// claim its own second half before a surface that was not there when the gesture started.
+	const DBL_PX = 6; // a real double-click barely moves the pointer…
+	const DBL_PX_TOUCH = 16; // …but a finger does, and 6px is an order of magnitude under any tap slop
 	let lastClickInst = '';
 	let lastClickAt = 0;
 	let lastClickX = 0;
 	let lastClickY = 0;
+	/** The sub-patch instance a click landed on, or '' — real identity, not a coordinate. */
+	function instanceUnder(target: EventTarget | null): string {
+		const id =
+			(target as HTMLElement | null)?.closest?.('.svelte-flow__node')?.getAttribute('data-id') ?? '';
+		return id && id in g.instances ? id : '';
+	}
 	function onCanvasClick(event: MouseEvent): void {
 		const now = performance.now();
+		const here = instanceUnder(event.target);
+		// Per gesture, not per device (D-R2): the same `pointerType` seam the long-press door reads.
+		const slop = (event as PointerEvent).pointerType === 'touch' ? DBL_PX_TOUCH : DBL_PX;
 		if (
 			lastClickInst &&
 			now - lastClickAt < DOUBLE_CLICK_MS &&
-			Math.abs(event.clientX - lastClickX) < DBL_PX &&
-			Math.abs(event.clientY - lastClickY) < DBL_PX
+			Math.abs(event.clientX - lastClickX) < slop &&
+			Math.abs(event.clientY - lastClickY) < slop &&
+			// A second click that resolves to a DIFFERENT node is that node's first click, not this
+			// one's second — the widened touch slop puts two adjacent nodes inside one window.
+			(here === '' || here === lastClickInst)
 		) {
 			const inst = lastClickInst;
 			lastClickInst = '';
+			// The gesture owns this click: neither the inspector that just slid over the node nor the
+			// pane behind it may also act on it. `preventDefault` covers the activation behaviour a
+			// checkbox would still run with propagation merely stopped.
+			event.stopPropagation();
+			event.preventDefault();
 			enterInstance(inst);
 			return;
 		}
-		const id =
-			(event.target as HTMLElement | null)?.closest('.svelte-flow__node')?.getAttribute('data-id') ??
-			'';
 		lastClickAt = now;
 		lastClickX = event.clientX;
 		lastClickY = event.clientY;
-		lastClickInst = id && id in g.instances ? id : '';
+		lastClickInst = here;
 	}
 
 	const nodeTypes = { goofi: GoofiNode, boundary: BoundaryNode };
@@ -1085,14 +1107,14 @@
 		});
 		window.addEventListener('keydown', onKeydown);
 		window.addEventListener('mousemove', trackMouse);
-		rootEl?.addEventListener('click', onCanvasClick);
+		rootEl?.addEventListener('click', onCanvasClick, true);
 		rootEl?.addEventListener('pointerdown', onCanvasPointerDown);
 		rootEl?.addEventListener('pointermove', canvasPress.move);
 		rootEl?.addEventListener('pointerup', canvasPress.cancel);
 		rootEl?.addEventListener('pointercancel', canvasPress.cancel);
 		return () => {
 			unregisterEditor(panelId);
-			rootEl?.removeEventListener('click', onCanvasClick);
+			rootEl?.removeEventListener('click', onCanvasClick, true);
 			rootEl?.removeEventListener('pointerdown', onCanvasPointerDown);
 			rootEl?.removeEventListener('pointermove', canvasPress.move);
 			rootEl?.removeEventListener('pointerup', canvasPress.cancel);
