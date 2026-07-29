@@ -221,3 +221,45 @@ test('multi-select mode is a mode: it stays on, and the header says so', async (
 	await row.click();
 	await expect(trigger).toHaveAttribute('aria-pressed', 'false');
 });
+
+test('with multi-select on, a plain click adds instead of replacing', async ({ page }) => {
+	await page.goto('/');
+	await waitForApp(page);
+	const uids: string[] = [];
+	// Apart, and to the LEFT: two nodes at one point would cover each other's click target, and the
+	// inspector that opens on the first selection takes the right of the canvas.
+	for (const [type, cat, x] of [
+		['Oscillator', 'inputs', 0],
+		['Buffer', 'signal', 260]
+	] as const) {
+		const uid = await page.evaluate(
+			([t, c, px]) => (window as any).goofi.commands.addNode(t, c, [px as number, 0]),
+			[type, cat, x] as const
+		);
+		await page.waitForFunction(
+			(u) => ((window as any).goofi.query.graph().nodes as { uid: string }[]).some((n) => n.uid === u),
+			uid
+		);
+		uids.push(uid);
+	}
+	const selected = () =>
+		page.evaluate(() => (window as any).goofi.query.selection().nodes as string[]);
+	try {
+		// Baseline: without the mode a second plain click REPLACES — the behaviour a phone is stuck
+		// with, since it has no shift, ctrl or meta.
+		for (const u of uids) await page.locator(`.svelte-flow__node[data-id="${u}"]`).click();
+		await expect.poll(selected).toEqual([uids[1]]);
+
+		await openOverflow(page);
+		await menuRow(page, 'Multi-select mode').click();
+		// From empty: with a node already selected the first click would TOGGLE it back off, which
+		// is the same additive semantics shift-click has and not what this case is about.
+		await page.evaluate(() => (window as any).goofi.commands.clearSelection());
+		for (const u of uids) await page.locator(`.svelte-flow__node[data-id="${u}"]`).click();
+		await expect.poll(async () => (await selected()).slice().sort()).toEqual([...uids].sort());
+	} finally {
+		await openOverflow(page);
+		await menuRow(page, 'Multi-select mode').click();
+		await page.evaluate((u) => (window as any).goofi.commands.removeNodes(u), uids);
+	}
+});

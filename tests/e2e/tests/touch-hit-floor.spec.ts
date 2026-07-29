@@ -15,9 +15,10 @@ import { addNode, waitForNode, waitForNoNode } from '../lib/goofi';
  *     IconButton pattern). `boundingBox()` cannot see that, so the effective rect below is the union
  *     of the element's border box with any positioned, pointer-taking `::before`/`::after`.
  *
- * Measured, not hit-tested: at 412px the TopBar's own actions still overflow the bar (R Task 6 is
- * what fixes that), so an `elementFromPoint` probe would report Task 6's bug at every site. Size is
- * the question here; reachability is Task 6's.
+ * Measured, not hit-tested: size is the question here, reachability is elsewhere. (This once read
+ * "the TopBar's actions are pushed off the right edge, so a hit test would report Task 6's bug at
+ * every site" — Task 6 has since spilled them into the header's overflow menu instead, and
+ * `topbar-overflow.spec.ts` owns proving they are reachable there.)
  *
  * The registry is the extension point — R Task 9 adds rows (and the landscape/tablet projects) here
  * rather than writing another bespoke spec.
@@ -187,9 +188,10 @@ const SITES: Site[] = [
 	}
 ];
 
-/** Open the Load browser. Dispatched in-page rather than tapped, because at 412px the TopBar's own
- *  actions are still pushed off the right edge — R Task 6's bug, not this file's. What is measured
- *  here is the dialog's chrome once it IS open. */
+/** Open the Load browser. Dispatched in-page rather than tapped, because at 412px `Load…` has
+ *  spilled into the header's overflow menu (R-Task 6) and is `display: none` in the bar — reaching
+ *  it through the menu is `topbar-overflow.spec.ts`'s and `touch-authoring.spec.ts`'s question, not
+ *  this file's. What is measured here is the dialog's chrome once it IS open. */
 async function openFileBrowser(page: Page): Promise<Teardown> {
 	await page.getByTestId('topbar-load').evaluate((el: HTMLElement) => el.click());
 	await expect(page.getByTestId('fs-browser')).toBeVisible();

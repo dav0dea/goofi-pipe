@@ -158,7 +158,18 @@
 		// inside a tracked call would make this effect its own dependency — tearing down and
 		// rebuilding the observer on every spill.
 		untrack(replan);
-		return () => ro.disconnect();
+		// The first measurement can land before the webfont does, and a text button is a different
+		// number of pixels in the fallback face — a change no resize and no root-size step reports.
+		let live = true;
+		void document.fonts?.ready.then(() => {
+			if (!live) return;
+			widthCache.invalidate();
+			replan();
+		});
+		return () => {
+			live = false;
+			ro.disconnect();
+		};
 	});
 
 	// --- the overflow menu ---------------------------------------------------
@@ -339,12 +350,23 @@
 		height: 44px;
 		font-size: var(--fs-body);
 		z-index: 10;
+		/* The bar is its own query container, so the wordmark below can stand down on WIDTH rather
+		   than on device class — the same rule the progressive overflow follows (D-R6). Safe as
+		   containment: nothing inside this bar is positioned out of it (both menus portal to
+		   <body>), so the stacking context it establishes traps nothing. */
+		container-type: inline-size;
+		container-name: topbar;
 	}
+	/* Shrinkable, and it was not. The status cluster does not participate in the progressive
+	   overflow (D-R6) — but `flex: 0 0 auto` on a cluster whose widest member is a filename meant
+	   that on a live patch at 412px the brand alone claimed ~375 of 391px and pushed the overflow
+	   trigger, the one control that must always be reachable, clean off the right edge. */
 	.brand {
 		display: flex;
 		align-items: center;
 		gap: var(--space-6);
-		flex: 0 0 auto;
+		flex: 0 1 auto;
+		min-width: 0;
 	}
 	/* The tab strip fills the slack between the filename and the actions. */
 	.tabslot {
@@ -359,13 +381,32 @@
 		color: var(--text);
 		font-weight: 600;
 	}
+	/* `nowrap` is not cosmetic: the brand shrinks now, and a wrapped wordmark is two lines inside a
+	   44px bar. */
 	.name {
 		font-weight: 600;
+		white-space: nowrap;
+		flex: 0 0 auto;
 	}
+	/* Below this the wordmark stands down and the ⟁ carries the identity alone — it is the one
+	   thing in the cluster that says nothing the rest does not, and the ~95px it costs is what the
+	   layout tab strip needs to keep more than its ＋. A width threshold, not a rung. */
+	@container topbar (max-width: 520px) {
+		.name {
+			display: none;
+		}
+	}
+	/* …and the filename is where the brand's shrink is absorbed: it is the longest and by far the
+	   most variable of the cluster, and the only one an ellipsis still leaves readable. */
 	.path {
 		color: var(--text-dim);
 		font-family: var(--font-mono);
 		font-size: var(--fs-small);
+		flex: 0 1 auto;
+		min-width: 0;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
 	}
 	/* The actions and the overflow trigger they spill into. Two boxes, because `.actions` is pinned
 	   by `topbar.spec.ts` as EXACTLY the five app-global actions — the trigger is chrome for the

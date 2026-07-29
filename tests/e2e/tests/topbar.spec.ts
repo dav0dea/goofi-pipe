@@ -10,8 +10,12 @@ import { waitForApp } from '../lib/app';
  * silently pick an arbitrary one when several are open), and every editor panel already offers
  * both locally: the flow controls' own fit button, and four add-node doors of its own.
  *
- * Pinned as an exact ordered list rather than two absence assertions, because the order is also the
- * priority order D-R6's progressive overflow will spill from (lowest priority spills first).
+ * Pinned as an exact ordered list rather than two absence assertions, so the header's contents and
+ * their reading order are both fixed. This is the DOM order, which is NOT the priority order
+ * D-R6's progressive overflow spills from — that is Undo · Redo · Save · Load… · Save▾ (the caret
+ * leaves first, and the split degrades into a plain Save button), and `topbar-overflow` — the
+ * resident menu the spilled actions land in — deliberately lives outside `.actions`.
+ * `topbar-overflow.spec.ts` owns the spill order.
  */
 const HEADER_ACTIONS = [
 	'topbar-undo',

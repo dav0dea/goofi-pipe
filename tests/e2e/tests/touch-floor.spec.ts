@@ -6,6 +6,12 @@ import { addNode, waitForNode, waitForNoNode } from '../lib/goofi';
 // Under a fine pointer (the default project) they must NOT be inflated — verified by the
 // absence of this project from the default run (testMatch scopes it to the `touch` project).
 test('coarse pointer floors control height at 44px', async ({ page }) => {
+	// Wide enough that the header's Save is still IN the bar. Since R-Task 6 the actions spill into
+	// the overflow menu as the width runs out, and at the phone's own 412px every one of them has —
+	// a spilled action is `display: none`, which has no box to measure. The question here is the
+	// coarse floor, not how much bar a phone has (the collapse keys on width, not device class, so
+	// this viewport is as coarse as the default one).
+	await page.setViewportSize({ width: 1000, height: 800 });
 	await page.goto('/');
 	const btn = page.locator('button', { hasText: /save/i }).first();
 	await btn.waitFor();
