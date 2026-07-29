@@ -741,6 +741,33 @@ test.describe('UI display primitives', () => {
 		}
 	});
 
+	/* A Chip's RESTING tone is `neutral`, and `neutral` is the state most Chips in the app spend
+	   most of their life in — the inspector's `fx` chip sits on every parameter row, in every
+	   state, and the console's `out`/`err` filters rest off. Painted as a fill plus a hairline,
+	   that made the loudest thing on a param label row the toggle beside the name, not the name.
+	   So neutral is a GHOST: transparent fill, transparent border, muted glyph — the same call
+	   `Button`/`IconButton` already ship for their ghost variants, and the one R made for the
+	   console copy button so resting it open does not paint a box on every row. The loud tones
+	   stay exactly as loud; that is the whole point of the contrast. */
+	test('a resting Chip is a ghost — the loud tones are what carry a fill', async ({ page }) => {
+		await page.goto('/dev/ui');
+		const transparent = (c: string): boolean => /rgba\(0, 0, 0, 0\)|transparent/.test(c);
+		const neutral = page.getByTestId('ui-chip-neutral');
+		const skin = await neutral.evaluate((el) => {
+			const s = getComputedStyle(el);
+			return { bg: s.backgroundColor, border: s.borderTopColor };
+		});
+		expect(transparent(skin.bg), `neutral Chip fill (${skin.bg}) is a ghost`).toBe(true);
+		expect(transparent(skin.border), `neutral Chip border (${skin.border}) is a ghost`).toBe(true);
+
+		for (const tone of ['accent', 'danger']) {
+			const loud = await page
+				.getByTestId(`ui-chip-${tone}`)
+				.evaluate((el) => getComputedStyle(el).backgroundColor);
+			expect(transparent(loud), `the ${tone} Chip still carries its fill`).toBe(false);
+		}
+	});
+
 	test('Chip is a real <button> and fires its onclick', async ({ page }) => {
 		await page.goto('/dev/ui');
 		const chip = page.getByTestId('ui-chip');

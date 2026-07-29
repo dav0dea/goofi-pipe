@@ -59,15 +59,23 @@
 	}
 
 	/* Tones mirror Badge's fills; hover intensifies the tint (never the sole affordance — the pill is
-	   always visible + clickable, and keyboard focus rings it). */
+	   always visible + clickable, and keyboard focus rings it).
+
+	   `neutral` is the exception, and deliberately so: it is the RESTING state, and most Chips in
+	   this app rest — the inspector's `fx` toggle is on every parameter row in every state, and the
+	   console's `out`/`err` filters rest off. As a fill plus a hairline it made the loudest element
+	   on a param label row the toggle rather than the parameter NAME, which the inspector's own
+	   spec calls the primary scan target. So it is a ghost, the same shape `Button`/`IconButton`
+	   already ship, hovering onto the shared `--hover-fill` that exists for exactly this — a
+	   control with no surface of its own, which must lift whatever rung it happens to sit on. Badge
+	   keeps its filled neutral: it is a static label, not a control at rest. */
 	.ui-chip.t-neutral {
-		background: var(--surface-3);
-		border-color: var(--border);
-		color: var(--text-dim);
+		background: transparent;
+		border-color: transparent;
+		color: var(--text-muted);
 	}
 	.ui-chip.t-neutral:hover:not(:disabled) {
-		background: var(--surface-4);
-		border-color: var(--border-strong);
+		background: var(--hover-fill);
 		color: var(--text);
 	}
 	.ui-chip.t-accent {

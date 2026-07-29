@@ -220,6 +220,7 @@
 	{#if fxActive}
 		<Chip
 			tone={descriptor.expression_triggers_process ? 'accent' : 'neutral'}
+			aria-pressed={descriptor.expression_triggers_process}
 			onclick={toggleTriggersProcess}
 			title="When this expression's value changes, wake the node's process()"
 			data-testid="param-expr-triggers-process"
@@ -227,8 +228,11 @@
 			trig
 		</Chip>
 	{/if}
+	<!-- Both are two-state toggles, so both say so: `trig`'s title is static, which left its state
+	     in the tone alone — i.e. in colour alone. `Chip` forwards the attribute through `...rest`. -->
 	<Chip
 		tone={fxTone}
+		aria-pressed={fxActive}
 		onclick={toggleFx}
 		title={fxActive ? 'Disable expression (keeps the source)' : 'Enable expression'}
 		data-testid="param-fx-toggle"

@@ -90,7 +90,21 @@
 		onDismiss();
 	}
 	function onWindowKeydown(e: KeyboardEvent): void {
-		if (e.key === 'Escape') onDismiss();
+		if (e.key !== 'Escape') return;
+		// CONSUMED, and that is why the listener below is capture-phase. An open surface is the
+		// topmost thing on screen, so the Escape that closes it is ITS event and must not also run
+		// whatever is underneath. `NodeEditorPanel` binds its own window keydown in `onMount` — long
+		// before any popover can mount — so two bubble-phase window listeners run in registration
+		// order and the editor's went first: dismissing the slot-header settings menu also cleared
+		// the canvas selection, or, inside a sub-patch, popped one level. Its guards cannot exclude
+		// this (the trigger is slot-header chrome, so the panel stays active, and a <button> is
+		// neither in the tag allowlist nor inside a `dialog[open]`). Window-capture runs before every
+		// window-bubble listener for a key targeted at a descendant.
+		// Safe inside the surface: no `$lib/ui` control binds Escape — TextInput and NumberInput
+		// commit on blur/Enter. The trade is the same one ContextMenu takes: while a surface is open,
+		// an Escape meant for something under it goes to the surface.
+		e.stopPropagation();
+		onDismiss();
 	}
 </script>
 
@@ -98,7 +112,7 @@
      being conditionally rendered (mirrors ContextMenu). -->
 <svelte:window
 	onpointerdown={open ? onWindowPointerDown : undefined}
-	onkeydown={open ? onWindowKeydown : undefined}
+	onkeydowncapture={open ? onWindowKeydown : undefined}
 />
 
 {#if open}

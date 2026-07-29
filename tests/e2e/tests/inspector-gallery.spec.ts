@@ -171,6 +171,26 @@ test.describe('Inspector fx (expression) binding', () => {
 		await expect(page.getByTestId('inspector-fx-triggers'), 'trig toggles process-on-change').toHaveText('true');
 	});
 
+	/* Both adornment Chips are two-state toggles, so both must SAY so. The pre-overhaul inspector
+	   declared `aria-pressed` on each; the rewrite passed tone/onclick/title/testid and dropped it,
+	   even though `Chip` spreads `...rest` and would have forwarded it. `trig` is the clean loss —
+	   its title is static, so its state lived in the tone alone, which is to say in colour alone.
+	   The convention is intact everywhere else in the app (ConsolePanel's out/err use the same Chip
+	   with the same shape), which is what makes this a regression rather than a decision. */
+	test('the fx and trig chips announce their pressed state', async ({ page }) => {
+		await page.goto('/dev/inspector');
+		const field = page.getByTestId('inspector-fx');
+		const fx = field.getByTestId('param-fx-toggle');
+		await expect(fx, 'fx rests unpressed').toHaveAttribute('aria-pressed', 'false');
+		await fx.click();
+		await expect(fx, 'fx reports itself pressed once active').toHaveAttribute('aria-pressed', 'true');
+
+		const trig = field.getByTestId('param-expr-triggers-process');
+		await expect(trig, 'trig rests unpressed').toHaveAttribute('aria-pressed', 'false');
+		await trig.click();
+		await expect(trig, 'trig reports itself pressed').toHaveAttribute('aria-pressed', 'true');
+	});
+
 	// Enabled-semantic #2 (inline commit FORCES enabled): editing the single-line buffer and committing
 	// (Enter blurs) writes the new source and keeps the expression enabled.
 	test('committing the inline buffer writes the source and keeps it enabled', async ({ page }) => {

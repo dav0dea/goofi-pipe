@@ -160,4 +160,42 @@ test.describe('viewer settings menu (Popover + catcher)', () => {
 			'the viewer being configured is not collapsed by its own dismiss-click'
 		).toHaveAttribute('class', /^((?!collapsed).)*$/);
 	});
+
+	/* Escape is a DISMISSAL, and a dismissal is consumed by the surface that owns it.
+	 *
+	 * `Popover` took Escape at bubble phase and called `onDismiss()` without stopping it, so on the
+	 * canvas host the press reached `NodeEditorPanel`'s own window listener too — and that handler
+	 * cannot exclude it, because the trigger is slot-header chrome, so the panel is still active and
+	 * the press targets a <button> that is in no tag allowlist and inside no open <dialog>. One
+	 * Escape therefore dismissed the menu AND cleared the canvas selection, or — inside a sub-patch,
+	 * with nothing selected — silently popped one level.
+	 *
+	 * `ContextMenu` was fixed out of exactly this at 5a7f468 and carries the reasoning in place;
+	 * `Popover` kept the bug. Both now take the key at window-CAPTURE, which runs before every
+	 * window-bubble listener, and consume it. Safe inside the surface: neither `TextInput` nor
+	 * `NumberInput` binds Escape. */
+	test('Escape dismisses the menu without also reaching the canvas under it', async ({ page }) => {
+		await page.goto('/');
+		await waitForApp(page);
+		const uid = await oscillator(page, [40, 40]);
+		const menu = page.getByTestId('viewer-settings-menu');
+		const selectedCount = async (): Promise<number> =>
+			(await page.evaluate(() => (window as any).goofi.query.selection())).nodes.length;
+
+		// Select the node, so the editor's Escape branch has something to destroy.
+		await page
+			.locator('.goofi-node')
+			.filter({ has: page.locator(`.slot-viewer[data-node="${uid}"]`) })
+			.locator('.header')
+			.first()
+			.click();
+		await expect.poll(selectedCount, { message: 'the node is selected' }).toBe(1);
+
+		await slot(page, uid).getByTestId('viewer-settings-cog').click();
+		await expect(menu).toBeVisible();
+		await page.keyboard.press('Escape');
+
+		await expect(menu, 'Escape dismisses the popover').toBeHidden();
+		expect(await selectedCount(), 'and is consumed — the selection under it survives').toBe(1);
+	});
 });

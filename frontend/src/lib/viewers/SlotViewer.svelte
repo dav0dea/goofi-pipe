@@ -147,6 +147,17 @@
 		user-select: none;
 		transition: background var(--dur-fast) var(--ease);
 	}
+	/* The first slot sits directly under GoofiNode's `.header`, which paints its own
+	   `border-bottom` — so this row's `border-top` abutted it with no margin and the seam rendered
+	   at 2 CSS px, against the node card's own 1px outline. Asked from THIS side rather than the
+	   parent's, so the rule stays inside the component that owns the line: `PlacementPreview`,
+	   documented as mirroring GoofiNode exactly, already ships the same de-duplication as
+	   `.viewers .slot-row:first-child`. GoofiNode's `border-bottom` deliberately stays — `inputUnits`
+	   floors every body at one unit, so a node with NO outputs has no slot row to carry the line.
+	   Geometry-neutral: the header is `box-sizing: border-box` at a fixed `--node-u`. */
+	.slot-viewer:first-child header {
+		border-top: none;
+	}
 	header:hover {
 		background: color-mix(in srgb, var(--dtype, var(--accent)) 20%, var(--bg));
 	}
