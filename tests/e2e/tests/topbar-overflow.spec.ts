@@ -1,4 +1,7 @@
 import { test, expect, type Page } from '@playwright/test';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { waitForApp } from '../lib/app';
 import { AS_ROWS, PRIORITY, inBar, menuRow, openOverflow } from '../lib/topbar';
 
@@ -20,6 +23,44 @@ import { AS_ROWS, PRIORITY, inBar, menuRow, openOverflow } from '../lib/topbar';
  * handles for reading the bar live in `lib/topbar.ts` — `touch-reflow.spec.ts` asks the same
  * question of the same list at three real device geometries.) */
 const SPILL_ORDER = [...PRIORITY].reverse();
+
+/**
+ * How many actions spill depends on the brand's width, and the brand's width depends on whether
+ * the patch has a NAME — which this file never established. It reached three only because
+ * `dirty-taxonomy.spec.ts` and `fs-browser.spec.ts` sort earlier in the single-worker `default`
+ * project and left the backend in a state nothing here asked for; standalone it measured two. So
+ * the one test that counts spills brings its own precondition and hands the backend back unnamed
+ * (a `loadText` — a load with no path — is what resets `save_path` to null).
+ *
+ * The rest of the file is order-independent on purpose: declared order, boundary stability and
+ * bar/menu parity are all statements about a bar at whatever width, not about a particular one.
+ */
+const CROWDING_NAME = 'a-patch-with-a-deliberately-long-name-that-crowds-the-header';
+let scratch = '';
+
+test.beforeAll(() => {
+	scratch = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'goofi-e2e-overflow-')));
+});
+test.afterAll(() => fs.rmSync(scratch, { recursive: true, force: true }));
+
+async function withNamedPatch(page: Page, body: () => Promise<void>): Promise<void> {
+	const file = path.join(scratch, `${CROWDING_NAME}.gfi`);
+	await page.evaluate((p) => (window as any).goofi.commands.save(p), file);
+	await expect(page.locator('.topbar .path'), 'the header is showing the patch name').toHaveText(
+		`${CROWDING_NAME}.gfi`
+	);
+	try {
+		await body();
+	} finally {
+		await page.evaluate(
+			(y) => (window as any).goofi.commands.loadText(y),
+			fs.readFileSync(file, 'utf8')
+		);
+		await expect
+			.poll(() => page.evaluate(() => (window as any).goofi.query.graph().savePath))
+			.toBe(null);
+	}
+}
 
 /** Resize and let the ResizeObserver settle (it runs after layout, before the next paint). */
 async function widthTo(page: Page, width: number): Promise<void> {
@@ -49,24 +90,25 @@ test('a wide window keeps every action in the bar', async ({ page }) => {
 test('actions leave one at a time, lowest priority first', async ({ page }) => {
 	await page.goto('/');
 	await waitForApp(page);
-
-	const left: string[] = [];
-	let prev = new Set<string>(PRIORITY);
-	for (let w = 1400; w >= 320; w -= 20) {
-		await widthTo(page, w);
-		const now = new Set(await inBar(page));
-		for (const id of now) {
-			expect(prev.has(id), `${id} came BACK into the bar at ${w}px`).toBe(true);
+	await withNamedPatch(page, async () => {
+		const left: string[] = [];
+		let prev = new Set<string>(PRIORITY);
+		for (let w = 1400; w >= 320; w -= 20) {
+			await widthTo(page, w);
+			const now = new Set(await inBar(page));
+			for (const id of now) {
+				expect(prev.has(id), `${id} came BACK into the bar at ${w}px`).toBe(true);
+			}
+			for (const id of prev) if (!now.has(id)) left.push(id);
+			prev = now;
 		}
-		for (const id of prev) if (!now.has(id)) left.push(id);
-		prev = now;
-	}
-	// One at a time, in the declared order — a prefix of it, since how many fit at 320px depends
-	// on the root size the responsive clamp lands on, which is not this test's question.
-	expect(left.length, 'the bar does give actions up as it narrows').toBeGreaterThanOrEqual(3);
-	expect(left, 'and it gives them up in the declared priority order').toEqual(
-		SPILL_ORDER.slice(0, left.length)
-	);
+		// One at a time, in the declared order — a prefix of it, since how many fit at 320px depends
+		// on the root size the responsive clamp lands on, which is not this test's question.
+		expect(left.length, 'the bar does give actions up as it narrows').toBeGreaterThanOrEqual(3);
+		expect(left, 'and it gives them up in the declared priority order').toEqual(
+			SPILL_ORDER.slice(0, left.length)
+		);
+	});
 });
 
 test('every spilled action is reachable in the overflow menu — and only those', async ({ page }) => {
@@ -307,4 +349,25 @@ test('with multi-select on, a plain click adds instead of replacing', async ({ p
 		await menuRow(page, 'Multi-select mode').click();
 		await page.evaluate((u) => (window as any).goofi.commands.removeNodes(u), uids);
 	}
+});
+
+/* The hysteresis probe R's audit asked for: where the header's flex line is already overflowing,
+   the brand and the tab strip shrink TOGETHER, so two adjacent spill sets can both be
+   self-consistent and the settled bar could depend on which side the width was approached from.
+   The boundary test above only ever approaches from one step away; this walks in from 40px out on
+   each side, at a named patch (the state where the brand is widest and the band, if there is one,
+   is widest with it). */
+test('one width has one answer, whichever side it is approached from', async ({ page }) => {
+	await page.goto('/');
+	await waitForApp(page);
+	await withNamedPatch(page, async () => {
+		for (let w = 1000; w >= 360; w -= 20) {
+			await widthTo(page, w - 40);
+			await widthTo(page, w);
+			const fromBelow = (await inBar(page)).join();
+			await widthTo(page, w + 40);
+			await widthTo(page, w);
+			expect((await inBar(page)).join(), `at ${w}px, approached from either side`).toBe(fromBelow);
+		}
+	});
 });

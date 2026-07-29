@@ -78,7 +78,16 @@
 	/** The tab strip is not an action and does not participate — but it is what the actions used
 	 * to squeeze to zero width (o1), taking every layout tab and the ＋ with it. Two tap targets
 	 * is the floor they spill against, in the same token that decides what "tappable" means, so it
-	 * scales with the pointer rather than naming a phone. */
+	 * scales with the pointer rather than naming a phone.
+	 *
+	 * It is a term in this BUDGET, and deliberately not a `min-width` on `.tabslot`. The two are
+	 * different questions: this one decides when an action gives up its slot, and the layout that
+	 * follows then shares what is left between a shrinkable brand and a shrinkable strip — which
+	 * lands the strip at 54.4px at 412px with a 60-character filename (measured in
+	 * `touch-reflow.spec.ts`, which asserts the property that actually matters: never below ONE tap
+	 * target, with `.tabs` its own `overflow-x` scroller for the rest). Pinning the layout to this
+	 * same number would take those 34px straight back out of the filename, so the two mechanisms
+	 * would be fighting over one budget. R's audit raised it; this is the verdict. */
 	const TABSLOT_HITS = 2;
 
 	let barEl = $state<HTMLDivElement | null>(null);
@@ -409,6 +418,18 @@
 	   layout tab strip needs to keep more than its ＋. A width threshold, not a rung. */
 	@container topbar (max-width: 520px) {
 		.name {
+			display: none;
+		}
+		/* …and so does the perf HUD. On a LIVE patch it is the widest box in this cluster (82px
+		   measured at 412px, against the Badge's 72 and the ⟁'s 14) and the only one of them that is
+		   a dev diagnostic rather than the patch's own state — `styleDrift`'s own exemption calls it
+		   "sized to be unobtrusive". With it up, the filename — the cluster's sole shrink absorber,
+		   because both chips are `nowrap` with `min-width: auto` and cannot give an inch — was
+		   ellipsised to five or six characters of a sixty-character name. A width rule in the same
+		   query the wordmark stands down in: not a device class, and not a component swap, since
+		   D-R6 keeps the status cluster out of the progressive overflow and this is the only lever
+		   the narrow end has. */
+		.brand :global(.hud) {
 			display: none;
 		}
 	}
