@@ -35,6 +35,15 @@ class SelectionStore {
 	/** Per-editor inspector visibility, keyed by panel id. Absent = enabled (the
 	 * default). Ephemeral — deliberately not persisted to any browser storage. */
 	private inspectorOn = $state<Record<string, boolean>>({});
+	/** While on, a plain click adds to the selection instead of replacing it — the coarse-pointer
+	 * stand-in for shift/ctrl/meta, which a phone has none of (D-R4). A MODE, not a gesture: the
+	 * user asked for something you switch on and see, not a second way to tap. Session-wide and
+	 * deliberately not persisted (it is not the patch's business), so `forgetAll` leaves it. */
+	multiSelect = $state(false);
+
+	toggleMultiSelect(): void {
+		this.multiSelect = !this.multiSelect;
+	}
 
 	private sel(panelId: string | null): PanelSel {
 		return (panelId && this.map[panelId]) || EMPTY;
@@ -84,8 +93,12 @@ class SelectionStore {
 
 	// --- node selection ----------------------------------------------------
 
-	clickNode(panelId: string, name: string, additive: boolean): void {
+	/** A click adds rather than replaces when the caller says so (shift/ctrl/meta) OR while
+	 * multi-select mode is on. Folded in here, not OR-ed in at each call site, so "additive" has
+	 * one definition and a caller cannot be written that forgets the mode. */
+	clickNode(panelId: string, name: string, modifier: boolean): void {
 		const cur = this.sel(panelId);
+		const additive = modifier || this.multiSelect;
 		if (additive) {
 			const nodes = new Set(cur.nodes);
 			if (nodes.has(name)) nodes.delete(name);
@@ -107,8 +120,12 @@ class SelectionStore {
 
 	// --- edge selection ----------------------------------------------------
 
-	clickEdge(panelId: string, id: string, additive: boolean): void {
+	/** Same fold as `clickNode`. The mode covers edges too because the asymmetry it would
+	 * otherwise leave is the surprising one: a plain edge click CLEARS the node selection, so a
+	 * stray tap on a cable would undo the multi-node selection the mode exists to build. */
+	clickEdge(panelId: string, id: string, modifier: boolean): void {
 		const cur = this.sel(panelId);
+		const additive = modifier || this.multiSelect;
 		if (additive) {
 			const edges = new Set(cur.edges);
 			if (edges.has(id)) edges.delete(id);
