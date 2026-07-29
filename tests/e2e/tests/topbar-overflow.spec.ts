@@ -371,3 +371,84 @@ test('one width has one answer, whichever side it is approached from', async ({ 
 		}
 	});
 });
+
+/**
+ * Escape belongs to the surface that is dismissing, and to nothing behind it.
+ *
+ * `ContextMenu` claims Escape on a window keydown listener and does not consume it, while
+ * `NodeEditorPanel` registers its own window listener in `onMount` — long before any menu can
+ * mount — so both bubble-phase handlers run and the editor's goes FIRST. Its guards do not
+ * exclude the case: `TopBar` renders outside the panel tree so `activePanelId` never changes, and
+ * the keydown's target is the overflow `<button>`, which is neither in the tag allowlist nor
+ * inside a `dialog[open]`. So backing out of the menu also ran the editor's Escape ladder — the
+ * same defect the file browser's `dialog[open]` guard fixed, on the surface that is the phone's
+ * ONLY door to the canvas commands.
+ *
+ * Both rungs of that ladder are reachable from this exact menu: the rows that need a selection are
+ * `disabled` without one, so a user who came for `Delete selection` demonstrably HAS one; and with
+ * nothing selected the next rung pops a sub-patch level.
+ */
+test('Escape out of the overflow menu leaves the selection alone', async ({ page }) => {
+	await page.goto('/');
+	await waitForApp(page);
+	const uid = await page.evaluate(() =>
+		(window as any).goofi.commands.addNode('Oscillator', 'inputs', [0, 0])
+	);
+	await page.waitForFunction(
+		(u) => ((window as any).goofi.query.graph().nodes as { uid: string }[]).some((n) => n.uid === u),
+		uid
+	);
+	try {
+		await page.evaluate((u) => (window as any).goofi.commands.select([u]), uid);
+		await openOverflow(page);
+		// The row a user with a selection came for is live, which is what makes this the ordinary path.
+		await expect(menuRow(page, 'Delete selection')).toBeEnabled();
+
+		await page.keyboard.press('Escape');
+		await expect(page.locator('.context-menu')).toHaveCount(0);
+		expect(
+			await page.evaluate(() => (window as any).goofi.query.selection().nodes),
+			'dismissing the menu is not also the canvas’s deselect'
+		).toEqual([uid]);
+	} finally {
+		await page.evaluate(() => (window as any).goofi.commands.clearSelection());
+		await page.evaluate((u) => (window as any).goofi.commands.removeNodes([u]), uid);
+	}
+});
+
+test('Escape out of the overflow menu does not pop a sub-patch level', async ({ page }) => {
+	await page.goto('/');
+	await waitForApp(page);
+	const uid = await page.evaluate(() =>
+		(window as any).goofi.commands.addNode('Oscillator', 'inputs', [0, 0])
+	);
+	await page.waitForFunction(
+		(u) => ((window as any).goofi.query.graph().nodes as { uid: string }[]).some((n) => n.uid === u),
+		uid
+	);
+	const inst: string = await page.evaluate(
+		(u) => (window as any).goofi.commands.groupNodes([u], [140, 140]),
+		uid
+	);
+	const crumbs = page.getByTestId('subpatch-breadcrumb');
+	try {
+		await page.locator(`.svelte-flow__node[data-id="${inst}"]`).dblclick();
+		await expect(crumbs, 'inside the sub-patch').toBeVisible();
+		// The second rung of the ladder needs an EMPTY selection — entering leaves the instance
+		// selected, so clear it first.
+		await page.evaluate(() => (window as any).goofi.commands.clearSelection());
+		await expect
+			.poll(() => page.evaluate(() => (window as any).goofi.query.selection().nodes.length))
+			.toBe(0);
+
+		await openOverflow(page);
+		await page.keyboard.press('Escape');
+		await expect(page.locator('.context-menu')).toHaveCount(0);
+		await expect(crumbs, 'and the editor is still where it was').toBeVisible();
+	} finally {
+		if (await crumbs.isVisible())
+			await crumbs.getByRole('button', { name: 'Patch', exact: true }).click();
+		await page.evaluate((i) => (window as any).goofi.commands.expandInstance(i), inst);
+		await page.evaluate((u) => (window as any).goofi.commands.removeNodes([u]), uid);
+	}
+});

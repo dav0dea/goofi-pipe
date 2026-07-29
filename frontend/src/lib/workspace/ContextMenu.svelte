@@ -99,7 +99,19 @@
 		if (!t || !t.closest('.context-menu')) onClose();
 	}
 	function onWindowKeydown(e: KeyboardEvent): void {
-		if (e.key === 'Escape') onClose();
+		if (e.key !== 'Escape') return;
+		// CONSUMED, and that is why the listener below is capture-phase. `NodeEditorPanel` binds its
+		// own window keydown in `onMount` — long before any menu can mount — so two bubble-phase
+		// window listeners run in registration order and the editor's goes first: dismissing a menu
+		// also cleared the canvas selection, or popped a sub-patch level. Its guards cannot exclude
+		// this (the trigger is header chrome, so the panel stays active, and a <button> is neither in
+		// the tag allowlist nor inside a `dialog[open]`). Window-capture runs before every
+		// window-bubble listener for a key targeted at a descendant, so the surface that owns the
+		// dismissal takes it — the same idiom `NodeEditorPanel`'s double-click recogniser uses.
+		// The trade, deliberately: while a menu is open it is the topmost surface, so an Escape meant
+		// for something under it (a focused fx textarea, say) goes to the menu instead.
+		e.stopPropagation();
+		onClose();
 	}
 </script>
 
@@ -109,7 +121,7 @@
      for submenus rather than the tag being conditionally rendered. -->
 <svelte:window
 	onpointerdown={root ? onWindowPointerDown : undefined}
-	onkeydown={root ? onWindowKeydown : undefined}
+	onkeydowncapture={root ? onWindowKeydown : undefined}
 />
 
 <div

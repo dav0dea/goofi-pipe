@@ -141,6 +141,52 @@ test('Escape dismisses the file browser without also running the editor’s ladd
 	}
 });
 
+/**
+ * The chord the panel's own guard structurally cannot reach. Deletion is deliberately delegated OUT
+ * of `onKeydown` to SvelteFlow (`deleteKey={['Delete','Backspace']}` + `ondelete`), and its
+ * `KeyHandler` is a bare `<svelte:window>` keydown whose only filter is `isInputDOMNode` — neither
+ * "is my panel active" nor "is a dialog up". The browser's roots and entries are plain `<button>`s,
+ * so from the state `openBrowserOnAButton` leaves, Backspace — the reflex a file browser trains for
+ * "go up a folder" — ran `deleteElements` on the canvas behind an opaque modal. Ctrl+Z is itself
+ * stood down while the dialog is up, so it could not even be reversed in place.
+ *
+ * The standdown goes on the MODAL (`.nokey`, which xyflow's `isInputDOMNode` honours via
+ * `closest`), not as a second condition on the editor: FsBrowser is the app's only real modal, and
+ * the surface that takes the keyboard is the one that should say so.
+ */
+for (const key of ['Backspace', 'Delete'] as const) {
+	test(`${key} does not delete the selection behind the file browser`, async ({ page }) => {
+		await page.goto('/');
+		await waitForApp(page);
+		const uid = await addNode(page, 'Oscillator', 'inputs', [40, 40]);
+		await waitForNode(page, uid);
+		try {
+			await page.evaluate((u) => (window as any).goofi.commands.select([u]), uid);
+			expect(await selectedNodes(page)).toEqual([uid]);
+
+			const modal = await openBrowserOnAButton(page);
+			await page.keyboard.press(key);
+			// A non-event needs a settle window; the delete is a command round-trip, so give it one
+			// far longer than the trip takes.
+			await page.waitForTimeout(500);
+			expect(
+				await page.evaluate(
+					(u) => ((window as any).goofi.query.graph().nodes as Array<{ uid: string }>).some((n) => n.uid === u),
+					uid
+				),
+				'the canvas behind the modal still holds the node'
+			).toBe(true);
+
+			await page.keyboard.press('Escape');
+			await expect(modal).toBeHidden();
+		} finally {
+			await page.evaluate(() => (window as any).goofi.commands.clearSelection());
+			await page.evaluate((u) => (window as any).goofi.commands.removeNode(u), uid);
+			await waitForNoNode(page, uid).catch(() => {});
+		}
+	});
+}
+
 test('Ctrl+A does not reach the canvas behind the file browser', async ({ page }) => {
 	await page.goto('/');
 	await waitForApp(page);

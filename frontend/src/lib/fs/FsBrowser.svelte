@@ -118,8 +118,17 @@
 	const title = $derived(mode === 'save' ? 'Save patch' : 'Load patch');
 </script>
 
+<!-- `nokey`: the node editor delegates deletion OUT of its own guarded keydown to SvelteFlow
+     (`deleteKey` + `ondelete`), whose `KeyHandler` is a bare window listener filtered only by
+     "is the target a text field" — so neither of the editor's two standdowns (my panel is active,
+     the press did not come from inside a `dialog[open]`) can reach it. Backspace is what a file
+     browser trains you to press for "up a folder", and behind this modal it deleted the canvas
+     selection, unreversibly in place (Ctrl+Z is stood down while a dialog is up). xyflow honours
+     `closest('.nokey')`, so the standdown goes on the modal that took the keyboard rather than as
+     a third condition on the editor. This is the app's only real modal. -->
 <Dialog
 	open
+	class="nokey"
 	{onClose}
 	style="--dialog-pad: 0; --dialog-bg: var(--surface-1); --dialog-max-width: min(720px, 92vw); width: 100%"
 	aria-label={title}
