@@ -199,6 +199,35 @@ test.describe('UI Field family', () => {
 		await expect(committed, 'Enter commits the buffered value').toHaveText('7');
 	});
 
+	// Incremental adjust, restored. A native `type=number` arrow-stepped on ArrowUp/ArrowDown; the
+	// `type=text` + `inputmode=decimal` box this primitive has to be (so an in-progress "5." is
+	// readable) does not, and `scrub` — its only replacement — is pointer-only. Both migrated
+	// numeric call sites lost the affordance outright for a keyboard user, so it is restored HERE,
+	// once, where every consumer inherits it and the `step` prop stops being scrub-only.
+	test('NumberInput steps on ArrowUp/ArrowDown, on the step grid and inside the bounds', async ({
+		page
+	}) => {
+		await page.goto('/dev/ui');
+		const value = page.getByTestId('ui-compose-value');
+		const number = page.getByTestId('ui-compose-number'); // min 0, max 1, step 0.01
+		await expect(value, 'seed value shown').toHaveText('0.3');
+
+		await number.focus();
+		await number.press('ArrowUp');
+		// A step is a whole gesture, not in-progress typing, so — like a scrub — it commits at once.
+		await expect(value, 'ArrowUp commits one step').toHaveText('0.31');
+		await number.press('ArrowDown');
+		await number.press('ArrowDown');
+		// 0.31 − 0.01 − 0.01 is 0.29, not 0.29000000000000004: the step lands on the step's own grid.
+		await expect(value, 'ArrowDown steps back down, free of float noise').toHaveText('0.29');
+
+		await number.fill('0.995');
+		await number.press('Enter');
+		await number.focus();
+		await number.press('ArrowUp');
+		await expect(value, 'a step stops at max rather than running past it').toHaveText('1');
+	});
+
 	test('TextInput sets the inputmode + enterkeyhint per variant', async ({ page }) => {
 		await page.goto('/dev/ui');
 		await expect(page.getByTestId('ui-text-text')).toHaveAttribute('inputmode', 'text');

@@ -4,6 +4,11 @@
   drag-to-scrub. It opts into the shared `useLiveValue` latch for echo suppression rather than
   re-implementing it.
 
+  Incremental adjust is `step`-sized and comes in two doors, so neither pointer nor keyboard is
+  the only one: ArrowUp/ArrowDown always step (the affordance a native `type=number` spinner gave
+  and this box otherwise would not), and `scrub` adds the horizontal drag. Both commit per
+  gesture; both land on the step's decimal grid.
+
   A `type=text` + `inputmode=decimal` input (not `type=number`) so the raw string is always readable
   while typing — `type=number` reports "" for an in-progress "5." and would drop the point. The
   visible string is buffered locally; it is re-synced from the (echo-suppressed) live value only
@@ -57,6 +62,26 @@
 		if (max !== undefined) n = Math.min(max, n);
 		return n;
 	}
+	/** `n` back on the step's own decimal grid — 0.3 + 0.01 is 0.31, not 0.31000000000000005.
+	 * Only the two INCREMENTAL paths (arrows, scrub) go through it: they compose a value out of
+	 * repeated float additions, where a typed value is exactly what the user meant. */
+	function snap(n: number): number {
+		const decimals = (String(step).split('.')[1] ?? '').length;
+		return decimals ? Number(n.toFixed(decimals)) : n;
+	}
+
+	// Discrete keyboard adjust — the affordance a native `type=number` spinner carried and a
+	// `type=text` box does not. Like a scrub (and unlike typing) each press is a complete gesture,
+	// so it commits at once; the latch is already open because the input has focus. The buffer is
+	// the base, so stepping continues from what is on screen rather than from a stale prop.
+	function stepBy(e: KeyboardEvent, dir: 1 | -1): void {
+		e.preventDefault();
+		const typed = Number(text.trim());
+		const base = text.trim() !== '' && Number.isFinite(typed) ? typed : live.value;
+		const v = clamp(snap(base + dir * step));
+		text = fmt(v);
+		live.commit(v);
+	}
 
 	// Commit the buffer on blur / Enter. An empty or unparseable buffer commits nothing; ending the
 	// edit lets the idle effect re-sync `text` back to the source.
@@ -100,7 +125,7 @@
 				scrubbing = true;
 				live.begin();
 			}
-			const v = clamp(startVal + Math.round(dx / 2) * step);
+			const v = clamp(snap(startVal + Math.round(dx / 2) * step));
 			text = fmt(v);
 			live.commit(v);
 		};
@@ -152,6 +177,8 @@
 	onpointerdown={onScrubDown}
 	onkeydown={(e) => {
 		if (e.key === 'Enter') (e.currentTarget as HTMLInputElement).blur();
+		else if (e.key === 'ArrowUp') stepBy(e, 1);
+		else if (e.key === 'ArrowDown') stepBy(e, -1);
 	}}
 	oninput={(e) => (text = (e.currentTarget as HTMLInputElement).value)}
 />

@@ -108,9 +108,15 @@
 										onChange={(v) => commitValue(gv, v)}
 									/>
 								{:else if gv.type === 'string'}
+									<!-- Machine-read, like the name beside it: expressions resolve `globals.<name>`
+									     and nodes read `ctx.globals`, so the `text` default's autocorrect /
+									     sentence-capitalisation / spellcheck would corrupt or red-underline a
+									     perfectly good value. -->
 									<TextInput
+										inputmode="search"
 										data-testid="global-value"
 										value={String(gv.value)}
+										autocomplete="off"
 										onChange={(v) => commitValue(gv, v)}
 									/>
 								{:else}
