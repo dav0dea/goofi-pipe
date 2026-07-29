@@ -121,3 +121,72 @@ describe('workspace recording wrappers', () => {
 		expect(history().canUndo).toBe(false);
 	});
 });
+
+// Layout undo restores a WHOLE `WorkspaceState` snapshot captured at the tracked action, so an
+// authored write that lands AFTER one and records nothing is in neither `before` nor `after`: the
+// undo destroys it and the redo does not bring it back. Every authored panel-state op therefore
+// has to earn its own entry. These are the ops the panels drive (the ✕ unlink in NodeLinkedPanel
+// and ConsolePanel, the Viewer/Metadata slot pickers).
+describe('authored panel-state ops survive an unrelated layout undo/redo', () => {
+	beforeEach(() => {
+		workspace().reset();
+		history().reset();
+		history().configureDeps(() => ({ control: {} as never, graph: {} as never, workspace: workspace() }));
+	});
+
+	const stateOf = (panelId: string): Record<string, unknown> => {
+		const p = collectPanels(workspace().active.root).find((q) => q.id === panelId);
+		return (p?.state ?? {}) as Record<string, unknown>;
+	};
+
+	it('unlinkNodeFromPanel records an entry, and is the exact inverse of the link', async () => {
+		const ws = workspace();
+		const panel = ws.activePanelId!;
+		ws.setType(panel, 'viewer');
+		ws.linkNodeToPanel(panel, 'osc0');
+		history().reset();
+
+		ws.unlinkNodeFromPanel(panel);
+		expect(history().canUndo).toBe(true);
+		expect(history().undoLabel).toBe('Unbind node from panel');
+		expect(stateOf(panel).node).toBe(null);
+		await history().undo();
+		expect(stateOf(panel).node).toBe('osc0');
+	});
+
+	it('a slot pick made after a split is still there once the split is undone and redone', async () => {
+		const ws = workspace();
+		const panel = ws.activePanelId!;
+		ws.setType(panel, 'viewer');
+		ws.linkNodeToPanel(panel, 'osc0');
+		history().reset();
+
+		ws.split(panel, 'row'); // the unrelated tracked action whose snapshot predates the pick
+		ws.setPanelSlot(panel, 'out');
+		expect(stateOf(panel).slot).toBe('out');
+
+		await history().undo(); // the pick
+		await history().undo(); // the split
+		await history().redo();
+		await history().redo();
+		expect(stateOf(panel).slot).toBe('out');
+		expect(collectPanels(ws.active.root).length).toBe(2);
+	});
+
+	it('an unlink made after a split is still there once the split is undone and redone', async () => {
+		const ws = workspace();
+		const panel = ws.activePanelId!;
+		ws.setType(panel, 'viewer');
+		ws.linkNodeToPanel(panel, 'osc0');
+		history().reset();
+
+		ws.split(panel, 'row');
+		ws.unlinkNodeFromPanel(panel);
+
+		await history().undo(); // the unlink
+		await history().undo(); // the split
+		await history().redo();
+		await history().redo();
+		expect(stateOf(panel).node).toBe(null);
+	});
+});

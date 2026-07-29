@@ -14,14 +14,14 @@
 	import type { NodeInstanceInfo } from '$lib/api/control';
 	import { graph } from '$lib/stores/graph.svelte';
 	import { ui } from '$lib/stores/ui.svelte';
-	import { linkedNodeName, withLinkedNode } from '$lib/workspace/panelState';
+	import { linkedNodeName } from '$lib/workspace/panelState';
+	import { workspace } from '$lib/workspace/workspace.svelte';
 	import { Bar, IconButton, StatusDot, EmptyState } from '$lib/ui';
 	import type { Snippet } from 'svelte';
 
 	let {
 		panelId,
 		state: linkState,
-		setState,
 		label,
 		content,
 		controls
@@ -35,6 +35,7 @@
 
 	const g = graph();
 	const uiStore = ui();
+	const ws = workspace();
 
 	const linkedName = $derived(linkedNodeName(linkState));
 	const node = $derived(linkedName ? g.nodeById(linkedName) : null);
@@ -43,8 +44,10 @@
 	const dragActive = $derived(uiStore.nodeDrag !== null);
 	const over = $derived(uiStore.nodeDragTarget === panelId);
 
+	// Through the store, not the opaque `setState`: unlinking is an edit, and a layout undo
+	// restores a whole snapshot — so an unrecorded one is destroyed by the next Ctrl+Z.
 	function unlink(): void {
-		setState(withLinkedNode(linkState, null));
+		ws.unlinkNodeFromPanel(panelId);
 	}
 </script>
 

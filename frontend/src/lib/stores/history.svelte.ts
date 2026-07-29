@@ -67,6 +67,8 @@ export type LayoutActionKind =
 	| 'move_panel'
 	| 'set_panel_type'
 	| 'link_node_to_panel'
+	| 'unlink_node_from_panel'
+	| 'set_panel_slot'
 	| 'add_tab'
 	| 'close_tab'
 	| 'rename_tab'

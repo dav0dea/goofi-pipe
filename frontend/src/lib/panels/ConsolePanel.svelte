@@ -17,14 +17,16 @@
 	import { selection } from '$lib/stores/selection.svelte';
 	import { ui } from '$lib/stores/ui.svelte';
 	import { graph } from '$lib/stores/graph.svelte';
-	import { linkedNodeName, withLinkedNode } from '$lib/workspace/panelState';
+	import { linkedNodeName } from '$lib/workspace/panelState';
+	import { workspace } from '$lib/workspace/workspace.svelte';
 	import { copyText } from '$lib/clipboard';
 	import { COLLAPSE_LINES, estimateRowHeight } from './consoleRowHeight';
 	import { Bar, Chip, Badge, IconButton, EmptyState } from '$lib/ui';
 	import { onDestroy, tick } from 'svelte';
 
-	let { panelId, state: linkState, setState }: PanelProps = $props();
+	let { panelId, state: linkState }: PanelProps = $props();
 	const sel = selection();
+	const ws = workspace();
 	const uiStore = ui();
 	const cs = consoleStore();
 
@@ -226,8 +228,10 @@
 	function focus(name: string): void {
 		if (sel.activeEditorId) sel.selectNodes(sel.activeEditorId, [name]);
 	}
+	// Through the store (see NodeLinkedPanel): dropping the filter is an edit, so it has to earn a
+	// history entry or the next layout undo silently restores the filter.
 	function clearFilter(): void {
-		setState(withLinkedNode(linkState, null));
+		ws.unlinkNodeFromPanel(panelId);
 	}
 </script>
 

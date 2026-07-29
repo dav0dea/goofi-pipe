@@ -7,9 +7,11 @@
 	import NodeLinkedPanel from './NodeLinkedPanel.svelte';
 	import MetadataPanel from '$lib/editor/MetadataPanel.svelte';
 	import { asStateObject } from '$lib/workspace/panelState';
+	import { workspace } from '$lib/workspace/workspace.svelte';
 	import { ScrollArea, Select } from '$lib/ui';
 
 	let props: PanelProps = $props();
+	const ws = workspace();
 
 	function st(): Record<string, unknown> {
 		return asStateObject(props.state);
@@ -28,7 +30,7 @@
 		{#if slots.length > 0}
 			<Select
 				value={curSlot(node) ?? ''}
-				onChange={(v) => props.setState({ ...st(), slot: v })}
+				onChange={(v) => ws.setPanelSlot(props.panelId, v)}
 				options={slots}
 				labels={node.slot_labels}
 				data-testid="metadata-slot"

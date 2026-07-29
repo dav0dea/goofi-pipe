@@ -15,6 +15,7 @@
 	import { panelBinding, type ViewBinding } from '$lib/viewers/viewBinding';
 	import { recordViewChange } from '$lib/viewers/viewExecutors';
 	import { asStateObject } from '$lib/workspace/panelState';
+	import { workspace } from '$lib/workspace/workspace.svelte';
 	import type { ViewerKind } from '$lib/viewers/kind';
 	import type { SettingsMap } from '$lib/viewers/settingsSchema';
 	import { Select } from '$lib/ui';
@@ -25,6 +26,7 @@
 	}
 
 	let props: PanelProps = $props();
+	const ws = workspace();
 
 	function st(): ViewerState {
 		return asStateObject(props.state) as ViewerState;
@@ -34,8 +36,10 @@
 		const names = Object.keys(node.output_slots);
 		return cur.slot && node.output_slots[cur.slot] ? cur.slot : (names[0] ?? null);
 	}
+	// Tracked (unlike the viewer kind/settings below, whose undo step the view domain owns): an
+	// unrecorded authored write is destroyed by a layout undo of anything that came before it.
 	function pick(slot: string): void {
-		props.setState({ ...st(), slot });
+		ws.setPanelSlot(props.panelId, slot);
 	}
 
 	// Resolve the chosen slot, its dtype, and this panel's binding in one place so

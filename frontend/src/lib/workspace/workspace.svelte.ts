@@ -36,7 +36,7 @@ import {
 	type Workspace,
 	type WorkspaceState
 } from './model';
-import { linkedNodeName, withLinkedNode } from './panelState';
+import { asStateObject, linkedNodeName, withLinkedNode } from './panelState';
 import { history, type LayoutActionKind } from '$lib/stores/history.svelte';
 import { captureNavContext } from './navContext';
 
@@ -272,11 +272,31 @@ class WorkspaceStore {
 		});
 	}
 
-	/** Write a panel's opaque state. Not undoable, but it IS persisted, so it carries the dirty
-	 * classification: authoring by default (a viewer kind, an output slot, an unlink), and
-	 * `'navigation'` only where the write moves the viewpoint — the sub-patch path. */
+	/** Write a panel's opaque state WITHOUT a history entry of its own — for a write that is either
+	 * not an edit (`'navigation'`: the sub-patch path) or whose undo step another domain already
+	 * owns (the view domain's `set_view`, which carries a finer kind/settings payload than a layout
+	 * snapshot, and its own replay). Every OTHER authored panel write must be `_tracked`: layout
+	 * undo restores a whole `WorkspaceState`, so an unrecorded write landing after a tracked action
+	 * is in neither of its snapshots and the undo destroys it. That is what the two ops below are. */
 	setPanelState(panelId: string, state: unknown, intent: LayoutIntent = 'authored'): void {
 		if (this._updateActiveRoot((root) => setPanelState(root, panelId, state))) this._mark(intent);
+	}
+
+	/** Merge `patch` into a panel's state bag as one tracked, undoable edit. The shared body of the
+	 * authored panel-state ops — each names itself so the undo button reads like the click. */
+	private _patchPanelState(
+		kind: LayoutActionKind,
+		label: string,
+		panelId: string,
+		patch: (state: unknown) => Record<string, unknown>
+	): void {
+		this._tracked(kind, label, () => {
+			this._updateActiveRoot((root) => {
+				const p = findPanel(root, panelId);
+				if (!p) return root;
+				return setPanelState(root, panelId, patch(p.state));
+			});
+		});
 	}
 
 	setActive(panelId: string): void {
@@ -286,13 +306,25 @@ class WorkspaceStore {
 	/** Bind a node to a linkable panel (merges `node` into its state, keeping
 	 * any slot/kind). Called when a node is dragged onto the panel. */
 	linkNodeToPanel(panelId: string, nodeName: string): void {
-		this._tracked('link_node_to_panel', 'Bind node to panel', () => {
-			this._updateActiveRoot((root) => {
-				const p = findPanel(root, panelId);
-				if (!p) return root;
-				return setPanelState(root, panelId, withLinkedNode(p.state, nodeName));
-			});
-		});
+		this._patchPanelState('link_node_to_panel', 'Bind node to panel', panelId, (s) =>
+			withLinkedNode(s, nodeName)
+		);
+	}
+
+	/** Release a linkable panel's bound node — the ✕ in NodeLinkedPanel's bar and ConsolePanel's
+	 * filter chip. The exact inverse of `linkNodeToPanel`, and tracked for the same reason. */
+	unlinkNodeFromPanel(panelId: string): void {
+		this._patchPanelState('unlink_node_from_panel', 'Unbind node from panel', panelId, (s) =>
+			withLinkedNode(s, null)
+		);
+	}
+
+	/** Pick the output slot a Viewer / Metadata panel reads from its bound node. */
+	setPanelSlot(panelId: string, slot: string): void {
+		this._patchPanelState('set_panel_slot', 'Select slot', panelId, (s) => ({
+			...asStateObject(s),
+			slot
+		}));
 	}
 
 	/** Every panel currently bound to `nodeName`, with a snapshot of its state.
