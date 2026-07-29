@@ -32,6 +32,16 @@ function flowScale(page: Page): Promise<number> {
 const nodeBox = (page: Page, uid: string) =>
 	page.locator(`.svelte-flow__node[data-id="${uid}"]`).boundingBox();
 
+/** The flow-node id actually on top at a viewport point, or null. */
+const nodeAt = (page: Page, at: { x: number; y: number }): Promise<string | null> =>
+	page.evaluate(
+		(p) =>
+			(document.elementFromPoint(p.x, p.y) as HTMLElement | null)
+				?.closest('.svelte-flow__node')
+				?.getAttribute('data-id') ?? null,
+		at
+	);
+
 /** The inspector pane's current horizontal slide offset in px (0 = fully in). */
 const paneOffset = (page: Page): Promise<number> =>
 	page
@@ -93,6 +103,12 @@ const instances = (page: Page): Promise<Record<string, unknown>> =>
 test('a double-click enters a sub-patch parked under the inspector without dissolving it', async ({
 	page
 }) => {
+	// The pane's 120ms slide is a hazard in BOTH directions here — it is still covering the node
+	// while it parks, and still off it while it arrives — and neither is what this test is about.
+	// The app's own reduced-motion rule collapses every transition to 0.01ms, so the pane's position
+	// is a function of the selection alone and the click interval below is free to be a realistic
+	// double-click rather than a race against a transition.
+	await page.emulateMedia({ reducedMotion: 'reduce' });
 	await page.goto('/');
 	await waitForApp(page);
 	const { osc, buf, inst } = await makeSubPatch(page);
@@ -110,11 +126,15 @@ test('a double-click enters a sub-patch parked under the inspector without disso
 		await page.evaluate(() => (window as any).goofi.commands.clearSelection());
 		await expect(page.getByTestId('auto-side-panel')).not.toHaveClass(/open/);
 		await centreNodeOn(page, inst, [200, 200], target);
+		// Stated as a precondition, not assumed: the FIRST click has to reach the node, so the node
+		// has to be what is actually on top at that point.
+		await expect
+			.poll(() => nodeAt(page, target), { message: 'the group node is the topmost thing there' })
+			.toBe(inst);
 
-		// A normal double-click: two clicks at one point, 150ms apart — long enough for the pane to
-		// have finished its 120ms slide over the node.
+		// A normal double-click: two clicks at one point, ~120ms apart.
 		await page.mouse.click(target.x, target.y);
-		await page.waitForTimeout(150);
+		await page.waitForTimeout(120);
 		await page.mouse.click(target.x, target.y);
 
 		// Settled, not sampled. Today the gesture enters the instance AND actuates Expand under the

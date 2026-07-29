@@ -128,6 +128,10 @@ const centreOf = async (page: Page, uid: string): Promise<{ x: number; y: number
 };
 
 test('a double TAP enters a sub-patch, drift and all, and leaves it standing', async ({ page }) => {
+	// The inspector's 120ms slide is what has to be OVER the node when the second tap lands, and a
+	// race against a transition is not what this test is about. The app's own reduced-motion rule
+	// collapses it to 0.01ms, so the pane's position is a function of the selection alone.
+	await page.emulateMedia({ reducedMotion: 'reduce' });
 	await page.goto('/');
 	await waitForApp(page);
 	const { member, inst } = await groupOneNodeAt(page, [80, 80]);
@@ -136,7 +140,7 @@ test('a double TAP enters a sub-patch, drift and all, and leaves it standing', a
 		const at = await centreOf(page, inst);
 		await touch.down(at);
 		await touch.up();
-		await page.waitForTimeout(150);
+		await page.waitForTimeout(120);
 		// 8px of drift — nothing on a finger, and twice the old 6px window.
 		await touch.down({ x: at.x + 8, y: at.y + 4 });
 		await touch.up();
@@ -200,7 +204,7 @@ test('two taps on two DIFFERENT sub-patches are not one gesture', async ({ page 
 		const touch = await touchSession(page);
 		await touch.down(p1);
 		await touch.up();
-		await page.waitForTimeout(150);
+		await page.waitForTimeout(120);
 		await touch.down(p2);
 		await touch.up();
 		await page.waitForTimeout(300);
