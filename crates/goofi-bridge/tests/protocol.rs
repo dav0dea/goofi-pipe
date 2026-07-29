@@ -2349,3 +2349,54 @@ async fn the_editor_layout_persists_into_the_patch_and_comes_back_on_hello() {
     let hello2 = recv_text(&mut ws2).await;
     assert_eq!(hello2["payload"]["layout"]["activeWorkspaceId"], json!("ws-1"));
 }
+
+/// The manager's authoritative dirty flag, read the way a joining client reads it: a fresh
+/// `hello`. Free of the event-ordering race — an `unsaved_changes` broadcast reaches the socket
+/// through a separate task, so "no event arrived yet" is not the same as "the patch is clean".
+async fn is_dirty(base: &str) -> bool {
+    let (mut ws, _) = connect_async(format!("{base}/control")).await.unwrap();
+    let hello = recv_text(&mut ws).await;
+    hello["payload"]["unsaved_changes"].as_bool().expect("hello carries unsaved_changes")
+}
+
+#[tokio::test]
+async fn navigating_the_layout_persists_it_without_dirtying_the_patch() {
+    // Persistence and dirtiness are SEPARATE axes (R spec §4 / D-R3). The editor arrangement rides
+    // the `.gfi` however it changed, but only *authoring* it — splitting a panel, picking a viewer
+    // kind — makes the patch differ from disk. Entering a sub-patch, switching a layout tab, and
+    // the manager's own layout echoed back on hello are navigation: they must leave the flag
+    // alone, or a user who merely LOOKS around collects an unsaved dot and the unload guard.
+    let base = start_server().await;
+    let (mut ws, _) = connect_async(format!("{base}/control")).await.unwrap();
+    let hello = recv_text(&mut ws).await;
+    assert_eq!(hello["payload"]["unsaved_changes"], json!(false), "a fresh session is clean");
+
+    let nav = json!({ "workspaces": [{ "id": "ws-nav" }], "activeWorkspaceId": "ws-nav" });
+    call(&mut ws, 1, "set_layout", json!({ "layout": nav, "intent": "navigation" })).await;
+    assert!(!is_dirty(&base).await, "navigating the layout must not dirty the patch");
+    // It was stored all the same — the other axis is untouched.
+    let ser = call(&mut ws, 2, "serialize", json!({})).await;
+    assert!(
+        ser["result"]["yaml"].as_str().unwrap().contains("ws-nav"),
+        "a navigation write still rides the .gfi"
+    );
+
+    // The same blob, authored, DOES dirty the patch.
+    let authored = json!({ "workspaces": [{ "id": "ws-split" }], "activeWorkspaceId": "ws-split" });
+    call(&mut ws, 3, "set_layout", json!({ "layout": authored, "intent": "authored" })).await;
+    assert!(is_dirty(&base).await, "authoring the layout dirties the patch");
+}
+
+#[tokio::test]
+async fn an_unclassified_layout_write_still_dirties_the_patch() {
+    // The classification is the CLIENT's to make. A payload that makes none keeps the conservative
+    // behaviour, so a caller that forgets can never lose an unsaved change — only gain a spurious dot.
+    let base = start_server().await;
+    let (mut ws, _) = connect_async(format!("{base}/control")).await.unwrap();
+    let hello = recv_text(&mut ws).await;
+    assert_eq!(hello["payload"]["unsaved_changes"], json!(false), "a fresh session is clean");
+
+    let layout = json!({ "workspaces": [{ "id": "ws-1" }], "activeWorkspaceId": "ws-1" });
+    call(&mut ws, 1, "set_layout", json!({ "layout": layout })).await;
+    assert!(is_dirty(&base).await, "an unclassified layout write is treated as authoring");
+}

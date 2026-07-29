@@ -524,6 +524,19 @@ fn resolve_link_endpoint(g: &goofi_engine::Graph, uid: Uid, slot: &str) -> (Uid,
     (uid, slot.to_string())
 }
 
+/// Does a `set_layout` write mean the user CHANGED the patch? Persistence and dirtiness are
+/// separate axes for the editor arrangement: it rides the `.gfi` whichever way it changed, but
+/// only *authoring* it — splitting a panel, picking a viewer kind or a slot — makes the patch
+/// differ from disk. Navigation (entering a sub-patch, switching a layout tab, an undo/redo
+/// re-orientation) and the manager's own layout echoed back on hello leave the file's meaning
+/// intact, so they must not raise the unsaved dot or the unload guard.
+///
+/// The client owns the classification — it is the only side that knows what the user did — and
+/// declares it as `intent`. A payload that declares nothing is authoring, so forgetting to
+/// classify can only cost a spurious dot, never a lost change.
+fn layout_write_dirties(payload: &Value) -> bool {
+    payload.get("intent").and_then(|v| v.as_str()) != Some("navigation")
+}
 
 /// Dispatch one control RPC. Mutates the graph, queues broadcast events, and
 /// returns the `{id,result}`/`{id,error}` reply (only when `id` is numeric).
@@ -717,7 +730,8 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
                 Ok(json!({ "ok": true }))
             }
             // Patch-scoped editor layout, stored opaquely (the node-`viewers` rule). NOT a command
-            // — view state is not undoable — and not dirtying on its own beyond the shared gate.
+            // — view state is not undoable — and dirtying only when the client says the user
+            // AUTHORED the arrangement rather than navigated it (`layout_write_dirties`).
             "set_layout" => {
                 let layout = payload.get("layout").cloned().unwrap_or(Value::Null);
                 g.set_layout(layout);
@@ -1016,11 +1030,16 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
     let read_only = matches!(op.as_str(), "list_nodes" | "serialize" | "save" | "list_dir");
     if result.is_ok() && !read_only {
         resync_and_broadcast(state);
-        // The same gate that decides "this could have changed the graph" decides "the patch now
-        // differs from disk" — one rule, so the two can never disagree. `load`/`load_text` clear
-        // the flag inside their arm, which runs first and is then re-set here; re-clear it.
-        let cleared = matches!(op.as_str(), "load" | "load_text");
-        events.extend(state.set_dirty(!cleared));
+        // "Could this have changed the graph?" also answers "does the patch now differ from
+        // disk?" for every op but one — so the two share a gate and cannot disagree.
+        // `load`/`load_text` clear the flag inside their arm, which runs first and is then
+        // re-set here; re-clear it. `set_layout` is the exception, and it is a real one:
+        // persistence and dirtiness are separate axes there (see `layout_write_dirties`).
+        match op.as_str() {
+            "load" | "load_text" => events.extend(state.set_dirty(false)),
+            "set_layout" if !layout_write_dirties(&payload) => {}
+            _ => events.extend(state.set_dirty(true)),
+        }
     }
 
     for e in events {
