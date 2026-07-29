@@ -63,6 +63,7 @@
 		parseBoundaryNodeId
 	} from '$lib/editor/subpatchScene';
 	import { nodeSurfaceSize, inputUnits, BOUNDARY } from '$lib/editor/nodeMetrics';
+	import { createLongPress } from '$lib/editor/longPress';
 	import { serializeClipboard, parseClipboard, clipToSpecs } from '$lib/editor/clipboard';
 	import { copyText } from '$lib/clipboard';
 	import { registerEditor, unregisterEditor } from './editorCommands';
@@ -121,11 +122,15 @@
 	let menuPos = $state<{ x: number; y: number }>({ x: 120, y: 120 });
 	let menuSeed = $state<SlotClickSeed | null>(null);
 	let menuEl = $state<HTMLDivElement | null>(null);
+	// A long press opens the menu with the finger still down, so the touchend ENDING that same
+	// gesture arrives as a click on the catcher the press just mounted. Exactly one such click is
+	// swallowed. Every `openAddMenu` sets this, so it can never leak into a later menu.
+	let swallowMenuDismiss = false;
 
 	/**
 	 * Open the add-node menu at a viewport point — the ONE placement path for all four entry points
-	 * (a port click, a canvas double-click, Tab, the TopBar button). The point names the menu's left,
-	 * centre or right edge; the effect below measures the rendered menu and clamps it on-screen
+	 * (a port click, a canvas double-click, Tab, a canvas long press). The point names the menu's
+	 * left, centre or right edge; the effect below measures the rendered menu and clamps it on-screen
 	 * through the shared `clampToViewport` (D-M2: the point-anchored menus keep their own shell and
 	 * share only the clamp SSOT). No call site knows the menu's size.
 	 */
@@ -133,12 +138,35 @@
 		x: number,
 		y: number,
 		align: MenuAlign = 'start',
-		seed: SlotClickSeed | null = null
+		seed: SlotClickSeed | null = null,
+		swallowNextDismiss = false
 	): void {
 		menuAt = { x, y, align };
 		menuPos = { x, y }; // a known spawn point to start from, corrected below before paint
 		menuSeed = seed;
+		swallowMenuDismiss = swallowNextDismiss;
 		menuOpen = true;
+	}
+
+	/**
+	 * The coarse-pointer door onto the add-node menu (R spec §3.2b). The other three routes are all
+	 * fine-pointer or keyboard — double-click, Tab, a port click — so on touch this is the only way
+	 * to put the first node on an empty canvas.
+	 *
+	 * Armed for `touch` alone: a held mouse button is the start of a desktop pan, and desktop
+	 * behaviour is the reference. The recognizer never stops propagation, so the same pointerdown
+	 * still reaches SvelteFlow's pan and `Panel`'s capture-phase `setActive`.
+	 */
+	const canvasPress = createLongPress((at) =>
+		openAddMenu(at.clientX - 8, at.clientY + 8, 'start', null, true)
+	);
+
+	/** Empty canvas only — the pane is the direct target just where nothing else is drawn, so a
+	 * press on a node (which drags) or on the flow controls can never arm the door. */
+	function onCanvasPointerDown(e: PointerEvent): void {
+		if (e.pointerType !== 'touch') return;
+		if (!(e.target as HTMLElement | null)?.classList.contains('svelte-flow__pane')) return;
+		canvasPress.start(e);
 	}
 
 	// ContextMenu's idiom: measure the mounted menu, then re-clamp. A spawn point is the degenerate
@@ -978,9 +1006,18 @@
 		window.addEventListener('keydown', onKeydown);
 		window.addEventListener('mousemove', trackMouse);
 		rootEl?.addEventListener('click', onCanvasClick);
+		rootEl?.addEventListener('pointerdown', onCanvasPointerDown);
+		rootEl?.addEventListener('pointermove', canvasPress.move);
+		rootEl?.addEventListener('pointerup', canvasPress.cancel);
+		rootEl?.addEventListener('pointercancel', canvasPress.cancel);
 		return () => {
 			unregisterEditor(panelId);
 			rootEl?.removeEventListener('click', onCanvasClick);
+			rootEl?.removeEventListener('pointerdown', onCanvasPointerDown);
+			rootEl?.removeEventListener('pointermove', canvasPress.move);
+			rootEl?.removeEventListener('pointerup', canvasPress.cancel);
+			rootEl?.removeEventListener('pointercancel', canvasPress.cancel);
+			canvasPress.cancel(); // a press in flight must not fire into an unmounted editor
 			// NB: do NOT forget this panel's selection here — unmount also fires
 			// on a tab switch (the inactive tab's tree is torn down), and the
 			// selection must survive switching away and back. It only clears
@@ -1121,6 +1158,13 @@
 				class="menu-overlay"
 				use:portal
 				onclick={() => {
+					// A long press mounted this catcher mid-gesture; the release that ends that same
+					// press then lands here as a click. Swallow that one, or the menu closes on the
+					// very release that opened it.
+					if (swallowMenuDismiss) {
+						swallowMenuDismiss = false;
+						return;
+					}
 					menuOpen = false;
 					menuSeed = null;
 				}}
