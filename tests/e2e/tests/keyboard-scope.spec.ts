@@ -191,11 +191,14 @@ test('an expanded fx editor holds the global standdown but not the editor’s ow
 		// Focused, not clicked: a click on the collapse chip would close the very editor under test.
 		await pane.getByTestId('param-expr-collapse').first().focus();
 		await page.keyboard.press('Control+a');
+		// `arrayContaining`, not `toEqual`: Select all takes the whole scope, and the suite's one
+		// shared backend carries whatever earlier specs left on the canvas. What is under test is that
+		// the chord RAN — before it, only `osc` was selected.
 		await expect
-			.poll(() => selectedNodes(page).then((n) => n.slice().sort()), {
+			.poll(() => selectedNodes(page), {
 				message: 'the editor’s own Select all still fires with an fx editor expanded'
 			})
-			.toEqual([osc, buf].sort());
+			.toEqual(expect.arrayContaining([osc, buf]));
 	} finally {
 		await page.evaluate(() => (window as any).goofi.commands.clearSelection());
 		await page.evaluate((ids) => (window as any).goofi.commands.removeNodes(ids), [osc, buf]);
