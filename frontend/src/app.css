@@ -37,6 +37,11 @@
 	--danger-fill: color-mix(in srgb, var(--danger) 16%, transparent);
 	--success-fill: color-mix(in srgb, var(--success) 16%, transparent);
 	--warning-fill: color-mix(in srgb, var(--warning) 16%, transparent);
+	/* The hover fill for a control with NO surface of its own — the `ghost` button variants. A rung
+	   cannot answer this: the same ghost appears on --surface-1 (a panel body), --surface-2 (a Bar)
+	   and --surface-3 (a panel header), so any absolute rung is invisible on one of them and DARKER
+	   than another. Translucent, so it lifts whatever it happens to sit on, by construction. */
+	--hover-fill: color-mix(in srgb, var(--text) 8%, transparent);
 	/* The active-panel / linked-content ring line (see the ring convention below). One token, so
 	   the panel frame and the panels that ring their own content cannot drift apart. */
 	--ring-accent: color-mix(in srgb, var(--accent) 45%, transparent);

@@ -1,5 +1,6 @@
 import { test, expect, type Page } from '@playwright/test';
 import { waitForApp } from '../lib/app';
+import { addNode, waitForNode, waitForNoNode } from '../lib/goofi';
 
 /**
  * The workspace's own written rule (app.css: "surface steps carry separation so 1px lines
@@ -128,3 +129,148 @@ async function seamRunsAreOne(page: Page): Promise<void> {
 	// three lines across an 8px span, the third of them tinted by the active panel's ring.)
 	expect(runs, 'the seam reads through the splitter rule alone').toBe(1);
 }
+
+/** The mean channel value the compositor actually produced over a CSS-px rect, 0–255. */
+async function meanPixel(
+	page: Page,
+	rect: { x: number; y: number; width: number; height: number }
+): Promise<number> {
+	const png = (await page.screenshot()).toString('base64');
+	return page.evaluate(
+		async ({ png, r }) => {
+			const img = new Image();
+			img.src = `data:image/png;base64,${png}`;
+			await img.decode();
+			const scale = img.width / window.innerWidth;
+			const canvas = document.createElement('canvas');
+			canvas.width = img.width;
+			canvas.height = img.height;
+			const ctx = canvas.getContext('2d')!;
+			ctx.drawImage(img, 0, 0);
+			const { data } = ctx.getImageData(
+				Math.round(r.x * scale),
+				Math.round(r.y * scale),
+				Math.max(1, Math.round(r.width * scale)),
+				Math.max(1, Math.round(r.height * scale))
+			);
+			let sum = 0;
+			for (let i = 0; i < data.length; i += 4) sum += (data[i] + data[i + 1] + data[i + 2]) / 3;
+			return sum / (data.length / 4);
+		},
+		{ png, r: rect }
+	);
+}
+
+/** The id of the sole default panel. */
+async function solePanelId(page: Page): Promise<string> {
+	const panels = await page.evaluate(() => (window as any).goofi.query.panels());
+	return panels[0].panelId;
+}
+
+/** Hand the panel back to the node editor, past the layout debounce (see `closeSplit`). */
+async function restoreEditor(page: Page, panelId: string): Promise<void> {
+	await page.evaluate(
+		(id) => (window as any).goofi.commands.setPanelType(id, 'node-editor'),
+		panelId
+	);
+	await expect(page.locator('.canvas-wrap').first(), 'the editor panel is back').toBeVisible();
+	await page.waitForTimeout(700); // past AppShell's 400ms set_layout debounce
+}
+
+/**
+ * The boundary the first test above is blind to. M-10 deleted `.panel-header`'s hairline AND
+ * promoted `Bar` to the header's own `--surface-2`, so on the four panel types that render a `Bar`
+ * flush at the top of the panel body the two strips merged into one undelimited ~92px chrome slab:
+ * no line, and no step either. D5 says a surface step carries the separation *instead of* a border —
+ * deleting the border with nothing behind it is not a saliency win, it is a lost boundary.
+ *
+ * Asserted on the RESULT, not on which token supplies it: whatever the ladder does, these two
+ * adjacent strips must differ, and neither may buy that back with a hairline.
+ */
+test('a content toolbar flush under the panel header is a step off it, not one slab', async ({
+	page
+}) => {
+	await page.goto('/');
+	await waitForApp(page);
+	const panelId = await solePanelId(page);
+	try {
+		await page.evaluate(
+			(id) => (window as any).goofi.commands.setPanelType(id, 'console'),
+			panelId
+		);
+		await expect(page.getByTestId('console-panel')).toBeVisible();
+
+		const m = await page.locator('.panel').first().evaluate((el) => {
+			const cs = (n: Element) => getComputedStyle(n);
+			const header = el.querySelector('.panel-header')!;
+			const body = el.querySelector('.panel-body')!;
+			const bar = el.querySelector('.panel-body .ui-bar')!;
+			return {
+				header: cs(header).backgroundColor,
+				headerBorder: cs(header).borderBottomWidth,
+				bar: cs(bar).backgroundColor,
+				barBorder: cs(bar).borderTopWidth,
+				flush: bar.getBoundingClientRect().top - body.getBoundingClientRect().top
+			};
+		});
+
+		expect(m.flush, 'the toolbar really does sit flush under the header').toBeLessThanOrEqual(1);
+		expect(m.bar, 'so the two strips must be a real surface step apart').not.toBe(m.header);
+		expect(m.headerBorder, 'and the step is what separates them, not a restored hairline').toBe(
+			'0px'
+		);
+		expect(m.barBorder, 'from either side').toBe('0px');
+	} finally {
+		await restoreEditor(page, panelId);
+	}
+});
+
+/**
+ * The same promotion's other half. `IconButton`'s ghost hover fill was the ABSOLUTE `--surface-2` —
+ * which is exactly the strip a ghost in chrome sits on once `Bar` and `.panel-header` took that
+ * rung — so hovering one painted nothing at all. A ghost control has no surface of its own, so its
+ * hover has to LIFT whatever it happens to sit on; naming a rung can only ever be right on one.
+ *
+ * The reachable, uncompensated instance is `NodeLinkedPanel`'s unlink ✕ (the panel header's own
+ * buttons at least brighten their ink). Only a pixel readback can answer "did anything appear" —
+ * a computed `background-color` reads back the declared value whether or not it is visible.
+ */
+test('a ghost icon button on a content toolbar paints a visible hover fill', async ({ page }) => {
+	await page.goto('/');
+	await waitForApp(page);
+	const panelId = await solePanelId(page);
+	const uid = await addNode(page, 'Oscillator', 'inputs');
+	await waitForNode(page, uid);
+	try {
+		// The link is stored as the node UID (stable across rename), not its display name.
+		await page.evaluate(
+			([id, u]) => {
+				(window as any).goofi.commands.setPanelType(id, 'parameters');
+				(window as any).goofi.commands.bindNodeToPanel(id, u);
+			},
+			[panelId, uid] as const
+		);
+
+		const btn = page.getByTestId('node-linked-panel').getByRole('button', { name: 'Unlink node' });
+		await expect(btn).toBeVisible();
+		const box = (await btn.boundingBox())!;
+		// A 4px corner square, clear of the centred glyph, so this reads the FILL and nothing else.
+		const corner = { x: box.x + 1, y: box.y + 1, width: 4, height: 4 };
+
+		await page.mouse.move(5, 5);
+		await page.waitForTimeout(200); // past the --dur-fast fill transition
+		const rest = await meanPixel(page, corner);
+		await btn.hover();
+		await page.waitForTimeout(200);
+		const hovered = await meanPixel(page, corner);
+
+		expect(
+			hovered - rest,
+			'the ghost hover fill lifts the toolbar it sits on, instead of repainting it'
+		).toBeGreaterThan(5);
+	} finally {
+		await page.evaluate((u) => (window as any).goofi.commands.removeNode(u), uid);
+		await waitForNoNode(page, uid).catch(() => {});
+		await restoreEditor(page, panelId);
+	}
+});

@@ -110,9 +110,12 @@
 		height: var(--panel-header-h);
 		flex: 0 0 auto;
 		padding: 0 var(--space-2);
-		/* One surface step above the panel body, which separates — so no hairline, and no second
-		   line 26px inside the panel edge. The same trade `Bar` and FsBrowser already ship. */
-		background: var(--surface-2);
+		/* The TOP rung of the panel's own ladder — body `--surface-1`, content toolbar `--surface-2`,
+		   this `--surface-3` — so each adjacency is a real step and none needs a hairline (D5), not
+		   even the one 26px inside the panel edge. `--surface-2` put this byte-identical to the `Bar`
+		   that four of the six panel types render flush beneath it, which is the same "border deleted,
+		   nothing behind it" defect one level down; a step is what D5 trades the border FOR. */
+		background: var(--surface-3);
 		gap: var(--space-1);
 		user-select: none;
 		cursor: grab;

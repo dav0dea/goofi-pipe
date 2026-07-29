@@ -92,8 +92,10 @@
 		background: transparent;
 		border-color: transparent;
 	}
+	/* A ghost has no surface of its own, so its hover LIFTS its host rather than naming a rung —
+	   `--surface-2` was invisible on every chrome strip these actually sit on (see app.css). */
 	.ui-btn.v-ghost:hover:not(:disabled) {
-		background: var(--surface-2);
+		background: var(--hover-fill);
 	}
 	.ui-btn.v-danger {
 		background: var(--danger);
