@@ -1,6 +1,7 @@
-import { test, expect, type Page } from '@playwright/test';
+import { test, expect } from '@playwright/test';
 import { waitForApp } from '../lib/app';
 import { controlsInset } from '../lib/editor';
+import { emptySpot, touchSession } from '../lib/touch';
 
 /**
  * The node editor's coarse-pointer door for adding a node (R spec §3.2b).
@@ -16,43 +17,6 @@ import { controlsInset } from '../lib/editor';
  * dispatches MOUSE events, whose `pointerType` is `mouse` — exactly the input this door is closed
  * to, so a mouse-driven "long press" would prove nothing.
  */
-
-interface Touch {
-	x: number;
-	y: number;
-}
-
-async function touchSession(page: Page) {
-	const cdp = await page.context().newCDPSession(page);
-	const send = (type: string, touchPoints: Touch[]) =>
-		cdp.send('Input.dispatchTouchEvent', { type, touchPoints } as never);
-	return {
-		down: (p: Touch) => send('touchStart', [p]),
-		moveTo: (p: Touch) => send('touchMove', [p]),
-		up: () => send('touchEnd', [])
-	};
-}
-
-/**
- * A point where the flow pane really is the topmost element. One backend serves the whole run, so
- * the patch may carry nodes left by an earlier spec — a hardcoded centre point could land on a node
- * card (which must NOT arm the door) and green the test for the wrong reason.
- */
-async function emptySpot(page: Page): Promise<Touch> {
-	const spot = await page.locator('.svelte-flow__pane').first().evaluate((pane) => {
-		const r = pane.getBoundingClientRect();
-		for (let fy = 0.25; fy <= 0.75; fy += 0.1) {
-			for (let fx = 0.2; fx <= 0.8; fx += 0.1) {
-				const x = Math.round(r.left + r.width * fx);
-				const y = Math.round(r.top + r.height * fy);
-				if (document.elementFromPoint(x, y) === pane) return { x, y };
-			}
-		}
-		return null;
-	});
-	expect(spot, 'the canvas has some empty space to press on').not.toBeNull();
-	return spot!;
-}
 
 test('a long press on empty canvas opens the add-node menu there', async ({ page }) => {
 	await page.goto('/');

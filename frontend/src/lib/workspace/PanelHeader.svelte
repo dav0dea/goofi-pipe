@@ -10,7 +10,9 @@
 	import { listPanelTypes, resolvePanelType } from './registry';
 	import type { MenuItem } from './menu';
 	import ContextMenu from './ContextMenu.svelte';
+	import { createLongPress } from '$lib/editor/longPress';
 	import { Button, IconButton } from '$lib/ui';
+	import { onDestroy } from 'svelte';
 
 	let { node }: { node: PanelNode } = $props();
 	const ws = workspace();
@@ -54,12 +56,41 @@
 		e.preventDefault();
 		menu = { x: e.clientX, y: e.clientY, items: structuralItems() };
 	}
+
+	/**
+	 * The coarse-pointer door onto the same menu (D-R5). Split Right and Split Down had NO other
+	 * door — the header is a `role="toolbar" tabindex="-1"` with no keydown handler, and its menu
+	 * was `oncontextmenu`-only — so on a phone a panel could not be split at all.
+	 *
+	 * Armed for `touch` alone, and the editor's own recognizer is reused rather than a second
+	 * gesture concept invented. It never calls `stopPropagation`, so the same pointerdown still
+	 * reaches `Panel.svelte`'s capture-phase `setActive` — freezing `activePanelId` is how a
+	 * swallowed press would quietly drift every panel's selection scoping.
+	 */
+	const headerPress = createLongPress((at) => {
+		menu = { x: at.clientX, y: at.clientY, items: structuralItems() };
+	});
+
+	function onHeaderPointerDown(e: PointerEvent): void {
+		if (e.pointerType !== 'touch') return;
+		// The header's own controls keep their own actions: a press that landed on ✕ would both
+		// open a menu and, on release, close the panel the menu describes.
+		if ((e.target as HTMLElement | null)?.closest('button')) return;
+		headerPress.start(e);
+	}
+
+	// A press in flight must not fire into an unmounted panel (a close, a tab switch, a split).
+	onDestroy(headerPress.cancel);
 </script>
 
 <div
 	class="panel-header"
 	draggable="true"
 	oncontextmenu={onHeaderContext}
+	onpointerdown={onHeaderPointerDown}
+	onpointermove={headerPress.move}
+	onpointerup={headerPress.cancel}
+	onpointercancel={headerPress.cancel}
 	ondragstart={(e) => {
 		// Don't start a panel move when the drag begins on a control.
 		if ((e.target as HTMLElement).closest('button, select, input')) {

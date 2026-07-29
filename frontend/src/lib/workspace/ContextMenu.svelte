@@ -1,6 +1,9 @@
 <!--
   Reusable popup menu — portaled to <body> so it stacks above panels and
-  SvelteFlow viewports. Supports one-deep (recursive) submenus on hover, a
+  SvelteFlow viewports. Supports one-deep (recursive) submenus — a mouse opens
+  one by hovering the parent row, any pointer by TAPPING it (R-Task 7: they
+  were `mouseenter`-only and a click on a parent row was an explicit no-op, so
+  "Change content ▸" could not be expanded by touch at all) — plus a
   checked marker, separators, and disabled items. Closes on Escape or any
   pointerdown outside any `.context-menu` element (so submenu clicks count as
   inside). Shared by panel headers, the content dropdown, and tab menus.
@@ -55,19 +58,31 @@
 		pos = { x: p.left, y: p.top };
 	});
 
-	function pick(item: MenuItem): void {
-		if (item.disabled || item.separator || item.items) return;
+	function openSubAt(index: number, row: HTMLElement): void {
+		const r = row.getBoundingClientRect();
+		openSub = { index, x: r.right - 3, y: r.top - 5 };
+	}
+
+	function pick(item: MenuItem, index: number, e: MouseEvent): void {
+		if (item.disabled || item.separator) return;
+		// A parent row OPENS its submenu rather than toggling it: on a fine pointer the hover has
+		// already opened it, and a toggle would make the click that follows the hover close it.
+		if (item.items) {
+			openSubAt(index, e.currentTarget as HTMLElement);
+			return;
+		}
 		item.action?.();
 		onClose();
 	}
 
-	function hover(item: MenuItem, index: number, e: MouseEvent): void {
-		if (item.items && !item.disabled) {
-			const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
-			openSub = { index, x: r.right - 3, y: r.top - 5 };
-		} else {
-			openSub = null;
-		}
+	/** Hover-to-expand, for a MOUSE only. `pointerenter` rather than `mouseenter` so the pointer
+	 * type is knowable: a tap fires the compatibility mouse events too, and it fires them BEFORE
+	 * the click — so an unfiltered hover would open the submenu and the tap that caused it would
+	 * then be the second event on the same row. */
+	function hover(item: MenuItem, index: number, e: PointerEvent): void {
+		if (e.pointerType !== 'mouse') return;
+		if (item.items && !item.disabled) openSubAt(index, e.currentTarget as HTMLElement);
+		else openSub = null;
 	}
 
 	function onWindowPointerDown(e: PointerEvent): void {
@@ -104,8 +119,8 @@
 				class="item"
 				class:checkable={items.some((it) => it.checked !== undefined)}
 				disabled={item.disabled}
-				onclick={() => pick(item)}
-				onmouseenter={(e) => hover(item, i, e)}
+				onclick={(e) => pick(item, i, e)}
+				onpointerenter={(e) => hover(item, i, e)}
 				role="menuitem"
 			>
 				<span class="check">{item.checked ? '✓' : ''}</span>
