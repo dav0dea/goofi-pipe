@@ -200,12 +200,24 @@ function keyCompounds(sel: string): string[] {
 const classesIn = (compound: string): string[] =>
 	[...compound.matchAll(/\.([\w-]+)/g)].map((m) => m[1]);
 
-/** Every class named by a coarse-gated rule's key compound — i.e. everything the file gives a
+/** Does this rule body actually leave its target VISIBLE? The value half of `hoverReveals`'
+ *  property test: a coarse rule that only recolours or resizes NAMES a class without resting it
+ *  open, and counting that as a door made the scan satisfiable by any rule that mentions the
+ *  target. `opacity: var(--token)` reads as a reveal — a token cannot be proven to be zero. */
+function revealsAtRest(body: string): boolean {
+	for (const [, prop, value] of body.matchAll(/(?:^|;)\s*(opacity|visibility)\s*:\s*([^;]+)/g)) {
+		if (prop === 'opacity' ? parseFloat(value) !== 0 : !/hidden|collapse/.test(value)) return true;
+	}
+	return false;
+}
+
+/** Every class named by a coarse-gated rule that rests it open — i.e. everything the file gives a
  *  coarse resting form to. */
 function coarseTargets(css: string): Set<string> {
 	const out = new Set<string>();
 	for (const r of rules(css))
-		if (r.media === COARSE) for (const c of keyCompounds(r.sel).flatMap(classesIn)) out.add(c);
+		if (r.media === COARSE && revealsAtRest(r.body))
+			for (const c of keyCompounds(r.sel).flatMap(classesIn)) out.add(c);
 	return out;
 }
 
@@ -393,6 +405,13 @@ function hoverReveals(css: string): { sel: string; targets: string[] }[] {
 		.map((r) => ({ sel: r.sel, targets: keyCompounds(r.sel).flatMap(classesIn) }));
 }
 
+/** Does this file bind a right-click? Both spellings count: the Svelte attribute, and
+ *  `addEventListener('contextmenu', …)` — which is not a stylistic choice here but the only way
+ *  to reach an element the app does not author, such as the SvelteFlow pane. */
+function bindsRightClick(src: string): boolean {
+	return /\boncontextmenu\b|addEventListener\(\s*['"]contextmenu/.test(src);
+}
+
 /** Reveals that deliberately have no coarse resting form, each with the reason it is a decision
  *  and not an oversight. `target` is the class the reveal lands on. */
 const HOVER_ONLY_OK: { file: string; target: string; why: string }[] = [
@@ -464,7 +483,7 @@ describe('coarse-pointer doors', () => {
 	   press. This keeps that a rule rather than a coincidence. */
 	it('never leaves a right-click as the only door (§5.2)', () => {
 		const offenders = components()
-			.filter((c) => /\boncontextmenu\b/.test(c.src) && !/createLongPress/.test(c.src))
+			.filter((c) => bindsRightClick(c.src) && !/createLongPress/.test(c.src))
 			.map((c) => c.rel);
 		expect(offenders).toEqual([]);
 	});
@@ -516,6 +535,24 @@ describe('coarse-pointer doors', () => {
 		expect(coarseTargets(reveal + door).has('copy'), 'doored').toBe(true);
 		// A hover that only recolours is feedback, not a reveal, and needs no door.
 		expect(hoverReveals('.btn:hover { background: red; }')).toEqual([]);
+		// …and the mirror image: a coarse rule that only recolours or resizes NAMES the class
+		// without resting it open, so it is not a door either. Without this the scan passes on
+		// any coarse rule that happens to mention the target.
+		const cosmetic = `@media ${COARSE} { .row :global(.copy) { color: red; font-size: 16px; } }`;
+		expect(coarseTargets(reveal + cosmetic).has('copy'), 'cosmetic-only').toBe(false);
+		expect(
+			coarseTargets(`@media ${COARSE} { .copy { visibility: visible; } }`).has('copy'),
+			'visibility is the other half of the pair'
+		).toBe(true);
+	});
+
+	/* The right-click guard reads SOURCE, not CSS, so its fixture is a source snippet: both
+	   spellings of "this file binds a right-click" have to register, or a handler wired the way
+	   the SvelteFlow pane must be wired is invisible to it. */
+	it('sees a right-click bound imperatively, not just as an attribute', () => {
+		expect(bindsRightClick('<div oncontextmenu={menu}></div>'), 'attribute').toBe(true);
+		expect(bindsRightClick("el.addEventListener('contextmenu', menu);"), 'imperative').toBe(true);
+		expect(bindsRightClick("el.addEventListener('pointerdown', down);"), 'unrelated').toBe(false);
 	});
 
 	it('spots a control that keeps its small type under coarse', () => {
