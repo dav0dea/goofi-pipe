@@ -1030,14 +1030,27 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
     let read_only = matches!(op.as_str(), "list_nodes" | "serialize" | "save" | "list_dir");
     if result.is_ok() && !read_only {
         resync_and_broadcast(state);
-        // "Could this have changed the graph?" also answers "does the patch now differ from
-        // disk?" for every op but one — so the two share a gate and cannot disagree.
-        // `load`/`load_text` clear the flag inside their arm, which runs first and is then
-        // re-set here; re-clear it. `set_layout` is the exception, and it is a real one:
-        // persistence and dirtiness are separate axes there (see `layout_write_dirties`).
+        // "Could this have changed the graph?" is a good enough answer to "does the patch now
+        // differ from disk?" for most ops that the two share a gate — but it is an INFERENCE, and
+        // these four are where it is wrong:
+        //   `load`/`load_text` clear the flag inside their arm, which runs first and is then
+        //     re-set here; re-clear it.
+        //   `set_layout` — persistence and dirtiness are separate axes (see `layout_write_dirties`).
+        //   `restart_node` respawns an instance in place, replaying the node's own ParamGroups
+        //     verbatim and touching neither name, position, bindings, viewers, links nor scopes, so
+        //     `serialize()` is byte-identical. It is RECOVERY, not an edit, and it is reached by one
+        //     click on the inspector's Restart button after a node raised — exactly where a spurious
+        //     unsaved dot is least distinguishable from a real one.
+        //   `refresh_param` re-enumerates a device/stream picker's options, which are runtime-only
+        //     and never persisted. Latent today (no shipped node declares `refresh: true`, and the
+        //     engine rejects the op for any param that does not, so the `Err` skips this gate
+        //     entirely) — listed here because it is the same op-is-not-an-edit case, not a
+        //     prediction that it currently misfires.
+        // Both stay OUT of `read_only`: neither is an edit, but both still need the re-mirror.
         match op.as_str() {
             "load" | "load_text" => events.extend(state.set_dirty(false)),
             "set_layout" if !layout_write_dirties(&payload) => {}
+            "restart_node" | "refresh_param" => {}
             _ => events.extend(state.set_dirty(true)),
         }
     }

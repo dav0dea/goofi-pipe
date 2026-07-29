@@ -190,6 +190,12 @@ export class GraphStore {
 		// (load_text → CommandHistory::clear), so keeping client entries would pop mismatched. Reset
 		// here — this runs on a fresh session AND an in-session load, but NOT a same-session reconnect.
 		history().reset();
+		// …and the layout fold, for the same reason: it is about the graph that just went away.
+		// `hydrate`/`reset` drain it when the snapshot carries a layout, but a layout-less .gfi
+		// takes neither branch, and the load's CRDT delta has already marked authored by emptying
+		// every panel bound to a uid that vanished. Without this the freshly loaded patch pushes
+		// dirty and the user sees an unsaved dot on a file they just opened.
+		workspace().patchLoaded();
 		consoleStore().clear();
 		// Drop stale per-panel selection/inspector state: a loaded layout keeps
 		// its saved panel ids, which can collide with ids used earlier this

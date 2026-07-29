@@ -2388,6 +2388,47 @@ async fn navigating_the_layout_persists_it_without_dirtying_the_patch() {
 }
 
 #[tokio::test]
+async fn restarting_a_node_recovers_it_without_dirtying_the_patch() {
+    // The dirty gate derives "the patch differs from disk" from "the op could have mutated the
+    // graph". `restart_node` is the one op where that inference is simply false: it respawns the
+    // instance in place and replays the node's own ParamGroups verbatim, leaving name, position,
+    // bindings, viewers, links and scopes untouched — so `serialize()` is byte-identical.
+    //
+    // It matters where it is reached from. A Python node raises, the inspector offers Restart, and
+    // one click arms the unsaved dot and the beforeunload guard on a patch identical to the file —
+    // on the RECOVERY path, where a user is least able to tell a spurious dot from a real one.
+    let base = start_server().await;
+    let (mut ws, _) = connect_async(format!("{base}/control")).await.unwrap();
+    let _hello = recv_text(&mut ws).await;
+
+    call(&mut ws, 1, "add_node", json!({ "type": "Oscillator" })).await;
+    let yaml = call(&mut ws, 2, "serialize", json!({})).await["result"]["yaml"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    // A load is how a patch becomes "the same as disk" without a filesystem.
+    call(&mut ws, 3, "load_text", json!({ "content": yaml })).await;
+    assert!(!is_dirty(&base).await, "a freshly loaded patch matches disk");
+
+    let doc = sync_replica(&mut ws, |d| d.node_ids().len() == 1).await;
+    let uid = doc.node_ids()[0].clone();
+    let before = call(&mut ws, 4, "serialize", json!({})).await["result"]["yaml"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let restarted = call(&mut ws, 5, "restart_node", json!({ "node": uid })).await;
+    assert!(restarted.get("error").is_none(), "restart succeeded: {restarted}");
+
+    let after = call(&mut ws, 6, "serialize", json!({})).await["result"]["yaml"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert_eq!(before, after, "a restart changes nothing that reaches the .gfi");
+    assert!(!is_dirty(&base).await, "recovering a node must not dirty the patch");
+}
+
+#[tokio::test]
 async fn an_unclassified_layout_write_still_dirties_the_patch() {
     // The classification is the CLIENT's to make. A payload that makes none keeps the conservative
     // behaviour, so a caller that forgets can never lose an unsaved change — only gain a spurious dot.

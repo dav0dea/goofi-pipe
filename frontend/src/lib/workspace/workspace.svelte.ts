@@ -106,6 +106,22 @@ class WorkspaceStore {
 		this._pendingIntent = 'navigation';
 	}
 
+	/** A whole patch was loaded — a new backend session, or the Load button. The graph the pending
+	 * fold was about is gone, so whatever it recorded cannot describe a difference from the file
+	 * that just arrived.
+	 *
+	 * `hydrate`/`reset` already drain the fold, and cover the load whose layout applies. This is
+	 * for the loads where NEITHER runs: a layout-less `.gfi` (the engine supports one) landing on
+	 * a same-session `graph_replaced` takes no branch, and a malformed layout makes `hydrate`
+	 * refuse before it drains. Either way the load's own CRDT delta has already emptied every
+	 * panel bound to a vanished uid — `clearNodeRefs`, marking authored, correctly, for a node
+	 * DELETE that in this case is just the load. Called only from the graph store's wholesale-load
+	 * path, which a transient same-session reconnect deliberately does not reach: an edit made
+	 * while the socket was down is still an edit. */
+	patchLoaded(): void {
+		this._replaced();
+	}
+
 	/** The folded intent of every layout write since the last call, then reset. AppShell takes
 	 * this when it pushes `set_layout`, so the manager can tell an edit from a look. */
 	takeLayoutIntent(): LayoutIntent {
