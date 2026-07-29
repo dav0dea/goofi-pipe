@@ -64,6 +64,7 @@
 	} from '$lib/editor/subpatchScene';
 	import { nodeSurfaceSize, inputUnits, BOUNDARY } from '$lib/editor/nodeMetrics';
 	import { createLongPress } from '$lib/editor/longPress';
+	import { eventPoint } from '$lib/editor/eventPoint';
 	import { serializeClipboard, parseClipboard, clipToSpecs } from '$lib/editor/clipboard';
 	import { copyText } from '$lib/clipboard';
 	import { registerEditor, unregisterEditor } from './editorCommands';
@@ -587,9 +588,9 @@
 	/** A node-accepting panel under the cursor, other than this editor — i.e. a
 	 * valid drop target that turns the drag into a reference link. */
 	function linkTargetAt(event: MouseEvent | TouchEvent): { id: string; type: string } | null {
-		const m = event as MouseEvent;
-		if (typeof m.clientX !== 'number') return null;
-		const t = panelUnder(m.clientX, m.clientY);
+		const p = eventPoint(event);
+		if (!p) return null;
+		const t = panelUnder(p.clientX, p.clientY);
 		return t && t.id !== panelId && getPanelType(t.type)?.acceptsNode === true ? t : null;
 	}
 
@@ -616,9 +617,11 @@
 			// Reference drag: snap the node back to its origin and let a ghost
 			// follow the cursor instead — it's a reference, not a coordinate move.
 			uiStore.nodeDragTarget = target.id;
-			const m = args.event as MouseEvent;
+			// Same extraction as `linkTargetAt`: the ghost has to follow the FINGER, not a `clientX`
+			// a TouchEvent does not have (it read `undefined`, so the chip parked at 0,0).
+			const p = eventPoint(args.event) ?? { clientX: 0, clientY: 0 };
 			// `id` is the uid; the floating chip shows the display name.
-			linkGhost = { x: m.clientX, y: m.clientY, name: g.nodeById(args.nodes[0]?.id ?? '')?.name ?? '' };
+			linkGhost = { x: p.clientX, y: p.clientY, name: g.nodeById(args.nodes[0]?.id ?? '')?.name ?? '' };
 			snapGuides = [];
 			revertDragged(dragged);
 			return;
