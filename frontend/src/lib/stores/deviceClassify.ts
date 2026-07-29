@@ -1,19 +1,11 @@
-/** Pure device-class arithmetic (spec §4.2). No DOM — vitest runs in node with no matchMedia,
- * so all the testable logic lives here; device.svelte.ts wires it to the browser. */
+/** Pure device arithmetic. No DOM — vitest runs in node with no visualViewport, so the testable
+ * logic lives here; device.svelte.ts wires it to the browser.
+ *
+ * There is exactly one function, deliberately (D-R8): the size/pointer classes this module used to
+ * compute were write-only, and `@media` answers them natively. The keyboard overlap is the one
+ * device fact CSS cannot see at all. */
 
-export type SizeClass = 'phone' | 'compact' | 'full';
-
-/** Size class from the viewport box. `phone` if either axis is small; then width bands. */
-export function classify(width: number, height: number): { size: SizeClass; short: boolean } {
-	const short = height <= 480;
-	let size: SizeClass;
-	if (width <= 600 || height <= 480) size = 'phone';
-	else if (width < 960) size = 'compact';
-	else size = 'full';
-	return { size, short };
-}
-
-/** Pixels the soft keyboard overlaps the layout (never negative). */
+/** Pixels the soft keyboard overlaps the layout viewport (never negative). */
 export function kbInset(viewportHeight: number, innerHeight: number): number {
 	return Math.max(0, innerHeight - viewportHeight);
 }

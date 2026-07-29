@@ -42,7 +42,13 @@ export { resolveActive, nextIndex, type TabItem, type ArrowKey } from './tabsSta
 // contract is `Bar`'s, which every real panel already composes directly.)
 export { default as Popover } from './Popover.svelte';
 export { default as Dialog } from './Dialog.svelte';
-export { clampToViewport, type AnchorRect, type Size, type Placement } from './clampToViewport';
+export {
+	clampToViewport,
+	overlayViewport,
+	type AnchorRect,
+	type Size,
+	type Placement
+} from './clampToViewport';
 
 // Display primitives (Task 6): the uppercase tone pill (static Badge / pressable Chip), the
 // glow-free status dot, and the centred empty-state placeholder.

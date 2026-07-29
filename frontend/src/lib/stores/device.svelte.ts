@@ -1,14 +1,18 @@
-/** Device-class store — the app's ONLY classifier. A rune singleton (like ui()). It owns the
- * matchMedia + visualViewport subscriptions and stamps document.documentElement so both
- * consumers see one truth: components read the rune, and the stamps are there for global CSS /
- * out-of-component overrides to select on (R's shell is the intended consumer — nothing in
- * frontend/src reads them yet). All pure arithmetic is in deviceClassify.ts. */
-import { classify, kbInset, type SizeClass } from './deviceClassify';
+/** Device store — the soft keyboard's overlap of the layout viewport, and nothing else. A rune
+ * singleton (like ui()). It owns the `visualViewport` subscription and publishes the measurement
+ * twice, because it has two kinds of consumer: as the `--kb-inset` custom property on <html> for
+ * CSS (app/Toast.svelte), and as a `$state` field for the two anchored-overlay clamps, which are
+ * JS and must re-place when the keyboard opens (ui/Popover.svelte, workspace/ContextMenu.svelte).
+ * One measurement, two representations — never two sources of truth.
+ *
+ * This is the whole device seam. `data-pointer` / `data-size` / `data-short` were deleted with
+ * `classify()` (D-R8): they had no reader, and every question they encoded is one `@media` query
+ * away. The keyboard overlap is the one that isn't — it is observable only here. */
+import { kbInset } from './deviceClassify';
 
 class DeviceStore {
-	pointer = $state<'coarse' | 'fine'>('fine');
-	size = $state<SizeClass>('full');
-	short = $state(false);
+	/** Pixels the soft keyboard currently covers, measured from the bottom. 0 when it is down. */
+	kbInset = $state(0);
 	private started = false;
 
 	/** Wire up browser listeners and stamp <html>. Call once, on mount, in the browser. */
@@ -16,36 +20,16 @@ class DeviceStore {
 		if (this.started || typeof window === 'undefined') return;
 		this.started = true;
 
-		const coarse = window.matchMedia('(pointer: coarse)');
-		const onPointer = () => {
-			this.pointer = coarse.matches ? 'coarse' : 'fine';
-			this.stamp();
-		};
-		coarse.addEventListener('change', onPointer);
-
-		const onResize = () => {
-			const c = classify(window.innerWidth, window.innerHeight);
-			this.size = c.size;
-			this.short = c.short;
-			this.stamp();
-		};
-		window.addEventListener('resize', onResize);
-
 		const vv = window.visualViewport;
-		if (vv) vv.addEventListener('resize', () => this.stamp());
-
-		onPointer();
-		onResize();
-	}
-
-	private stamp(): void {
-		const el = document.documentElement;
-		el.setAttribute('data-pointer', this.pointer);
-		el.setAttribute('data-size', this.size);
-		el.toggleAttribute('data-short', this.short);
-		const vv = window.visualViewport;
-		const inset = vv ? kbInset(vv.height, window.innerHeight) : 0;
-		el.style.setProperty('--kb-inset', `${inset}px`);
+		const measure = (): void => {
+			this.kbInset = vv ? kbInset(vv.height, window.innerHeight) : 0;
+			document.documentElement.style.setProperty('--kb-inset', `${this.kbInset}px`);
+		};
+		// Both viewports move it: the visual one shrinks under the keyboard, and the layout one is
+		// the reference the overlap is measured against (it changes on rotate / window resize).
+		vv?.addEventListener('resize', measure);
+		window.addEventListener('resize', measure);
+		measure();
 	}
 }
 

@@ -16,7 +16,7 @@
 	import { untrack } from 'svelte';
 	import type { MenuItem } from './menu';
 	import { portal } from './portal';
-	import { clampToViewport } from '$lib/ui';
+	import { clampToViewport, overlayViewport } from '$lib/ui';
 	import Self from './ContextMenu.svelte';
 
 	let {
@@ -43,10 +43,14 @@
 		const r = menuEl.getBoundingClientRect();
 		// The spawn point is a degenerate anchor rect — `left`/`bottom` are the point itself, so
 		// the shared clamp's "flush under the anchor's bottom-left" origin IS the click position.
+		// `overlayViewport()` is the same measurement Popover clamps against, so a menu opened with
+		// the soft keyboard up does not land underneath it. No visualViewport listener here (Popover
+		// has one): a menu row cannot take focus into a text field, so the keyboard state cannot
+		// change while THIS surface is open — it is only ever wrong at open time.
 		const p = clampToViewport(
 			{ left: x, top: y, right: x, bottom: y, width: 0, height: 0 },
 			{ width: r.width, height: r.height },
-			{ width: window.innerWidth, height: window.innerHeight }
+			overlayViewport()
 		);
 		pos = { x: p.left, y: p.top };
 	});

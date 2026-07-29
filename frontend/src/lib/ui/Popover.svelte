@@ -22,7 +22,7 @@
 	import type { Snippet } from 'svelte';
 	import type { HTMLAttributes } from 'svelte/elements';
 	import { portal } from '$lib/workspace/portal';
-	import { clampToViewport } from './clampToViewport';
+	import { clampToViewport, overlayViewport } from './clampToViewport';
 
 	let {
 		anchor,
@@ -61,12 +61,7 @@
 		const place = (): void => {
 			const ar = a.getBoundingClientRect();
 			const m = el.getBoundingClientRect();
-			pos = clampToViewport(
-				ar,
-				{ width: m.width, height: m.height },
-				{ width: window.innerWidth, height: window.innerHeight },
-				{ flip }
-			);
+			pos = clampToViewport(ar, { width: m.width, height: m.height }, overlayViewport(), { flip });
 			placed = true;
 		};
 		// Measured on every resize, not once per open: the surface's content is the consumer's and can
@@ -75,8 +70,16 @@
 		// exists to keep clear. No feedback loop — repositioning a fixed element does not resize it.
 		const ro = new ResizeObserver(place);
 		ro.observe(el);
+		// …and on every VISUAL-viewport change, because a popover's own content can raise the soft
+		// keyboard (the viewer-settings menu is a form): the surface does not resize, the space under
+		// it disappears. `overlayViewport()` is what reads the new inset; this is what re-asks it.
+		const vv = window.visualViewport;
+		vv?.addEventListener('resize', place);
 		place();
-		return () => ro.disconnect();
+		return () => {
+			ro.disconnect();
+			vv?.removeEventListener('resize', place);
+		};
 	});
 
 	function onWindowPointerDown(e: PointerEvent): void {

@@ -63,3 +63,22 @@ export function clampToViewport(
 	// negative origin), and "clamp to viewport" has to mean all four edges or it means nothing.
 	return { left: Math.max(MARGIN, left), top: Math.max(MARGIN, top) };
 }
+
+/**
+ * The `viewport` both callers feed the clamp: layout WIDTH, but VISUAL HEIGHT. A soft keyboard
+ * covers the bottom of the screen without shrinking `innerHeight`, so an overlay clamped to the
+ * layout height is parked underneath the very keyboard that raised it.
+ *
+ * The overlap is `--kb-inset`, published on <html> by `stores/device.svelte.ts` — the app's one
+ * subscriber to `visualViewport`. It is READ FROM THE DOM here rather than imported, so `$lib/ui`
+ * stays free of app stores: a primitive that reaches up into the store layer pulls that layer into
+ * the primitives' bundle chunk, and the reshuffled CSS emission order costs the app a flash of
+ * unstyled chrome on first paint (measured — it reddened `inspector-gallery.spec.ts`). The published
+ * custom property is the seam; both overlays measure through this one function so they cannot
+ * disagree. The measurement lives beside the pure clamp for that reason, and only that reason.
+ */
+export function overlayViewport(): Size {
+	const inset =
+		parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--kb-inset')) || 0;
+	return { width: window.innerWidth, height: window.innerHeight - inset };
+}

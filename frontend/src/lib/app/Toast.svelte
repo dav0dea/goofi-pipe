@@ -28,7 +28,11 @@
 	   today and M-Task 7 strips the rest of the skin. */
 	.toast {
 		position: fixed;
-		bottom: var(--space-8);
+		/* Lifted clear of the soft keyboard: this is the ONLY surface an undo/redo failure is
+		   reported on and its only dismissal is a click on itself, so a toast under the keyboard
+		   is an unreadable, undismissable error. `--kb-inset` is 0 whenever the keyboard is down,
+		   so the resting geometry is unchanged. */
+		bottom: calc(var(--space-8) + var(--kb-inset, 0px));
 		left: 50%;
 		transform: translateX(-50%);
 		z-index: var(--z-toast);
