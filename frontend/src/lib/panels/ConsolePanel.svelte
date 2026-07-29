@@ -1,5 +1,6 @@
-<!-- Console panel — a Chrome-devtools-style log of every node's stdout/stderr,
-     Shows all nodes
+<!-- Console panel — a Chrome-devtools-style log of every node's stdout/stderr. The lines arrive on
+     the control WS like every other event and are buffered by `stores/console.svelte.ts`, so this
+     panel subscribes to a ring, never to a transport. Shows all nodes
      by default; drag a node onto it to filter to just that node. stdout/stderr
      chips filter by stream.
 
@@ -130,10 +131,6 @@
 		copiedTimer = setTimeout(() => (copiedUid = -1), 1000);
 	}
 
-	// Subscribe to SSE for exactly what this panel shows: one node when filtered,
-	// every node when not. Released on unmount so closing the console disconnects.
-	$effect(() => {
-	});
 	onDestroy(() => {
 		clearTimeout(copiedTimer);
 	});

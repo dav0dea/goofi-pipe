@@ -192,7 +192,7 @@
 		<!-- The proof: a Slider + NumberInput sharing ONE `cutoff` value inside a labelled Field, in
 		     a handful of lines. Moving either drives the other; the label focuses the first control. -->
 		<div class="form">
-			<Field label="cutoff" hint="filter corner frequency" data-testid="ui-compose-field">
+			<Field label="cutoff" data-testid="ui-compose-field">
 				<Slider
 					value={cutoff}
 					onChange={(v) => (cutoff = v)}

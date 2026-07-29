@@ -215,8 +215,8 @@
 	   Deliberately NOT `density="chrome"` (which the ＋ above uses): that density means "dense on
 	   fine, floored back to --hit on coarse", and this control is sub-floor on BOTH pointers — the
 	   collapse needs `min-width: 0` to reach zero width, which the density's floor would undo.
-	   TODO(R): this reveal is hover-only AND sub-floor on touch — it needs a coarse-pointer
-	   door of its own, not a patch here. */
+	   The coarse-pointer door this reveal needs is the additive block at the bottom of this file
+	   (C17) — it rests the ✕ open and releases the clip rather than touching anything here. */
 	.tab :global(.close) {
 		width: 0;
 		min-width: 0;

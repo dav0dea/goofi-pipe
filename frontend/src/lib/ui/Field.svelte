@@ -3,8 +3,8 @@
   shape replacing the app's 3 incompatible labelled-control layouts: a real `<label>` (`for=`-linked
   to the control it wraps, so clicking the label focuses the control — today only 2 real <label>s
   exist app-wide), an optional `adornment` snippet (where N hangs the `fx` expression binding — it is
-  a SIBLING of the label, never inside it, so its button can't steal the label's focus target), the
-  control(s) as `children`, and an optional `hint`. `doc` becomes the hover tooltip.
+  a SIBLING of the label, never inside it, so its button can't steal the label's focus target), and
+  the control(s) as `children`. `doc` becomes the hover tooltip.
 
   The `for=` id is the first LIVE control's, tracked through the field context (see field.ts), so N
   writes `<Field label='cutoff'><Slider/><NumberInput/></Field>` with zero id plumbing. Gap and
@@ -18,7 +18,6 @@
 
 	let {
 		label,
-		hint,
 		doc,
 		adornment,
 		class: klass = '',
@@ -26,8 +25,6 @@
 		...rest
 	}: HTMLAttributes<HTMLDivElement> & {
 		label: string;
-		/** Supporting sub-label under the control. */
-		hint?: string;
 		/** Long-form description — surfaced as the hover tooltip. */
 		doc?: string;
 		/** Trailing control affordance (N hangs the `fx` binding here). */
@@ -49,9 +46,6 @@
 		{/if}
 	</div>
 	<div class="ui-field-control">{@render children?.()}</div>
-	{#if hint}
-		<span class="ui-field-hint">{hint}</span>
-	{/if}
 </div>
 
 <style>
@@ -105,10 +99,5 @@
 			flex-direction: column;
 			align-items: stretch;
 		}
-	}
-	.ui-field-hint {
-		color: var(--text-muted);
-		font-size: var(--fs-micro);
-		min-width: 0;
 	}
 </style>
