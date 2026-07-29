@@ -817,17 +817,7 @@
 		const meta = e.ctrlKey || e.metaKey;
 		if (meta && e.key.toLowerCase() === 'a') {
 			e.preventDefault();
-			// Select what's actually on screen: the entered sub-patch's members, or
-			// every top-level node PLUS the collapsed sub-patch group nodes (which
-			// are virtual nodes — they select like any node).
-			const kids = childrenOfScope(
-				entered ?? ROOT_ID,
-				g.instances,
-				g.nodes.map((n) => n.uid),
-				memberIndex
-			);
-			const names = [...kids.nodeUids, ...kids.instUids];
-			sel.selectNodes(panelId, names);
+			selectAll();
 		} else if (meta && e.key.toLowerCase() === 'c') {
 			void copySelection();
 		} else if (meta && e.key.toLowerCase() === 'v') {
@@ -853,6 +843,70 @@
 		} else if (e.key.toLowerCase() === 'f') {
 			fitView();
 		}
+	}
+
+	/** The single delete path — SvelteFlow's `ondelete` (deleteKey wires Delete+Backspace to it;
+	 * the custom keydown handler no longer deletes) and the app header's Delete row, which is the
+	 * only door a phone has (R-Task 6). Covers app-store AND marquee selection: SvelteFlow filters
+	 * by each element's `selected`, and so does `deleteSelection` below.
+	 * Real nodes are deleted as ONE batch (removeNodes) so undo restores them all BEFORE their
+	 * links; boundary pills are unwired individually. */
+	async function deleteElements({ nodes, edges }: { nodes: Node[]; edges: Edge[] }): Promise<void> {
+		const nodeIds: string[] = [];
+		for (const n of nodes) {
+			const bnd = parseBoundary(n.id);
+			if (bnd && entered) await g.removeBoundary(entered, bnd).catch(() => {});
+			else nodeIds.push(n.id);
+		}
+		const deleted = new Set(nodeIds);
+		await g.removeNodes(nodeIds).catch(() => {});
+		for (const e of edges) {
+			// Deleting an In→member / member→Out edge unwires the boundary (the
+			// pill survives); a normal flat link is removed.
+			const bnd = parseBoundary(e.source) ?? parseBoundary(e.target);
+			if (bnd && entered) {
+				await g.wireBoundary(entered, bnd, null, null).catch(() => {});
+				continue;
+			}
+			// A normal link touching a batch-deleted node was already removed
+			// with it (removeNodes), so don't double-record its removal.
+			if (deleted.has(e.source) || deleted.has(e.target)) continue;
+			const so = e.sourceHandle;
+			const si = e.targetHandle;
+			if (so && si)
+				await g
+					.removeLink({ node_out: e.source, node_in: e.target, slot_out: so, slot_in: si })
+					.catch(() => {});
+		}
+		sel.clear(panelId);
+	}
+
+	/** What the Delete key would delete: the rendered `selected` flags, which is the union of the
+	 * store's selection and a live marquee. */
+	function selectedElements(): { nodes: Node[]; edges: Edge[] } {
+		return { nodes: flowNodes.filter((n) => n.selected), edges: flowEdges.filter((e) => e.selected) };
+	}
+
+	function hasSelection(): boolean {
+		const { nodes, edges } = selectedElements();
+		return nodes.length > 0 || edges.length > 0;
+	}
+
+	function deleteSelection(): void {
+		if (hasSelection()) void deleteElements(selectedElements());
+	}
+
+	/** Select what's actually on screen: the entered sub-patch's members, or every top-level node
+	 * PLUS the collapsed sub-patch group nodes (which are virtual nodes — they select like any
+	 * node). ⌘A's action, and the app header's Select all row. */
+	function selectAll(): void {
+		const kids = childrenOfScope(
+			entered ?? ROOT_ID,
+			g.instances,
+			g.nodes.map((n) => n.uid),
+			memberIndex
+		);
+		sel.selectNodes(panelId, [...kids.nodeUids, ...kids.instUids]);
 	}
 
 	async function copySelection(): Promise<void> {
@@ -1017,7 +1071,18 @@
 	}
 
 	onMount(() => {
-		registerEditor(panelId, { openAddMenu: openAddMenuCentered, fitView, focusNode });
+		registerEditor(panelId, {
+			openAddMenu: openAddMenuCentered,
+			fitView,
+			focusNode,
+			selectAll,
+			deleteSelection,
+			groupSelection: () => void groupSelection(),
+			copySelection: () => void copySelection(),
+			pasteClipboard: () => void pasteClipboard(),
+			duplicateSelection: () => void duplicateSelection(),
+			hasSelection
+		});
 		window.addEventListener('keydown', onKeydown);
 		window.addEventListener('mousemove', trackMouse);
 		rootEl?.addEventListener('click', onCanvasClick);
@@ -1087,40 +1152,7 @@
 			onselectionstart={() => (boxSelecting = true)}
 			onselectionend={onSelectionEnd}
 			onedgeclick={onEdgeClick}
-			ondelete={async ({ nodes, edges }) => {
-				// The single delete path (deleteKey wires Delete+Backspace here; the
-				// custom keydown handler no longer deletes). Covers app-store AND
-				// marquee selection — SvelteFlow filters by each element's `selected`.
-				// Real nodes are deleted as ONE batch (removeNodes) so undo restores
-				// them all BEFORE their links; boundary pills are unwired individually.
-				const nodeIds: string[] = [];
-				for (const n of nodes) {
-					const bnd = parseBoundary(n.id);
-					if (bnd && entered) await g.removeBoundary(entered, bnd).catch(() => {});
-					else nodeIds.push(n.id);
-				}
-				const deleted = new Set(nodeIds);
-				await g.removeNodes(nodeIds).catch(() => {});
-				for (const e of edges) {
-					// Deleting an In→member / member→Out edge unwires the boundary (the
-					// pill survives); a normal flat link is removed.
-					const bnd = parseBoundary(e.source) ?? parseBoundary(e.target);
-					if (bnd && entered) {
-						await g.wireBoundary(entered, bnd, null, null).catch(() => {});
-						continue;
-					}
-					// A normal link touching a batch-deleted node was already removed
-					// with it (removeNodes), so don't double-record its removal.
-					if (deleted.has(e.source) || deleted.has(e.target)) continue;
-					const so = e.sourceHandle;
-					const si = e.targetHandle;
-					if (so && si)
-						await g
-							.removeLink({ node_out: e.source, node_in: e.target, slot_out: so, slot_in: si })
-							.catch(() => {});
-				}
-				sel.clear(panelId);
-			}}
+			ondelete={deleteElements}
 			fitViewOptions={FIT_OPTIONS}
 			minZoom={0.05}
 			maxZoom={4}
