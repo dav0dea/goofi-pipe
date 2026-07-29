@@ -83,6 +83,41 @@ test.describe('viewer settings menu (Popover + catcher)', () => {
 		await expect(menu).toBeHidden();
 	});
 
+	// A wrong role is worse than none for a screen reader. `role="menu"` promises menuitems, and this
+	// surface's content is a ScrollArea → Disclosure (a `<button aria-expanded aria-controls>`) →
+	// Field + Toggle/Select/NumberInput: a settings FORM, with not one menuitem in it and no
+	// accessible name. `Popover` imposes no role of its own precisely so the consumer declares the
+	// fitting one. And the open state — plain to a sighted user from the surface being there — is
+	// exposed on the trigger nowhere in this app today.
+	test('the surface declares what it is, and the cog reports whether it is open', async ({
+		page
+	}) => {
+		await page.goto('/');
+		await waitForApp(page);
+		const uid = await oscillator(page, [40, 40]);
+		const menu = page.getByTestId('viewer-settings-menu');
+		const cog = slot(page, uid).getByTestId('viewer-settings-cog');
+
+		await expect(cog, 'the trigger reports its collapsed state').toHaveAttribute(
+			'aria-expanded',
+			'false'
+		);
+		await cog.click();
+		await expect(cog, 'and its expanded one').toHaveAttribute('aria-expanded', 'true');
+		await expect(menu, 'a NAMED group of settings, which is what it is').toHaveAttribute(
+			'role',
+			'group'
+		);
+		await expect(menu).toHaveAttribute('aria-label', 'viewer settings');
+		await expect(menu.getByRole('menuitem'), 'it never owned a menuitem to be a menu of').toHaveCount(
+			0
+		);
+
+		await page.keyboard.press('Escape');
+		await expect(menu).toBeHidden();
+		await expect(cog, 'and back to collapsed').toHaveAttribute('aria-expanded', 'false');
+	});
+
 	test('a pointerdown on another slot dismisses the menu without toggling that slot', async ({
 		page
 	}) => {

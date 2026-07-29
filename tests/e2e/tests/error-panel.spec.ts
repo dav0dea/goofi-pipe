@@ -41,13 +41,22 @@ test.describe('ErrorPanel dismissal (delegated to Popover)', () => {
 	test('the chip opens the error popover, and Escape dismisses it', async ({ page }) => {
 		const chipHost = await summonErrorChip(page);
 		const popover = page.getByTestId('error-popover');
+		const chip = chipHost.locator('button').first();
 
 		await expect(popover, 'closed by default').toBeHidden();
-		await chipHost.locator('button').click();
+		// The chip is a disclosure trigger, and says so — the surface it opens carries no popup role
+		// by design (its children are plain buttons), so `aria-expanded` is the whole story it can tell.
+		await expect(chip, 'the trigger reports its collapsed state').toHaveAttribute(
+			'aria-expanded',
+			'false'
+		);
+		await chip.click();
 		await expect(popover, 'clicking the chip opens the popover').toBeVisible();
+		await expect(chip, 'and its expanded one').toHaveAttribute('aria-expanded', 'true');
 
 		await page.keyboard.press('Escape');
 		await expect(popover, 'Escape dismisses the popover (new behaviour)').toBeHidden();
+		await expect(chip, 'and back to collapsed').toHaveAttribute('aria-expanded', 'false');
 	});
 
 	test('an outside click dismisses the error popover', async ({ page }) => {

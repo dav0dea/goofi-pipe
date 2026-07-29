@@ -5,6 +5,10 @@
   SvelteFlow viewport, clamped on-screen, self-dismissing on Escape or an outside
   click); each group is a `Disclosure`; each setting is a `Field` + the control its
   type maps to. Writes still go straight to the binding, which owns persistence.
+
+  It reads as a menu and is not one: nothing in it is a menuitem, so it declares the named `group`
+  it actually is — `Popover` imposes no role precisely so the consumer can be accurate — and the
+  cog carries the open state a sighted user reads off the surface simply being there.
 -->
 <script lang="ts">
 	import { settingsSchemaFor, type SettingDescriptor, type SettingValue } from './settingsSchema';
@@ -54,6 +58,7 @@
 		size="sm"
 		class={open ? 'vs-cog on' : 'vs-cog'}
 		label="viewer settings"
+		aria-expanded={open}
 		data-testid="viewer-settings-cog"
 		onclick={toggle}
 	>
@@ -69,7 +74,8 @@
 	{open}
 	onDismiss={() => (open = false)}
 	catcher
-	role="menu"
+	role="group"
+	aria-label="viewer settings"
 	class="vs-menu"
 	data-testid="viewer-settings-menu"
 >
