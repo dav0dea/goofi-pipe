@@ -191,7 +191,6 @@
 <section
 	class="panel"
 	class:active
-	class:content-outline={type?.contentOutline}
 	onpointerdowncapture={() => ws.setActive(node.id)}
 	ondragover={onNodeDragOver}
 	ondragleave={onNodeDragLeave}
@@ -207,7 +206,6 @@
 				panelId={node.id}
 				state={node.state}
 				setState={(s, intent) => ws.setPanelState(node.id, s, intent)}
-				{active}
 			/>
 		{:else}
 			<div class="missing">Unknown panel type: <code>{node.panelType}</code></div>
@@ -272,9 +270,13 @@
 	   context, so it clears both without a pseudo-element — which also matters here, since `.panel`
 	   is a flex container (a ::after would become a flex item) whose `position: static` the body's
 	   fixed-position overlays rely on. `outline-offset: -1px` lands the line just inside the 1px
-	   border, exactly where the shadow used to sit. Panels that ring their own content instead
-	   (NodeLinkedPanel, GlobalsPanel) opt out via `content-outline`. */
-	.panel.active:not(.content-outline) {
+	   border, exactly where the shadow used to sit.
+
+	   This is the ONE place the ring is drawn, for every panel type. Four types used to opt out and
+	   ring just their own body instead, which drew the same state as two different shapes and left
+	   their headers outside the focus indication — the panel is what has focus, so the panel is what
+	   the ring frames. */
+	.panel.active {
 		outline-color: var(--ring-accent);
 	}
 	.panel-body {

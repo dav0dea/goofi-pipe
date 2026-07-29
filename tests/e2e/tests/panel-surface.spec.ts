@@ -177,6 +177,93 @@ async function restoreEditor(page: Page, panelId: string): Promise<void> {
 	await page.waitForTimeout(700); // past AppShell's 400ms set_layout debounce
 }
 
+/** The largest (green − red) the compositor produced over a CSS-px rect. --accent (#50d0a0) at
+ * 45% over any neutral in the chrome leads green by ~58; every neutral leads by 0. */
+async function greenLead(
+	page: Page,
+	rect: { x: number; y: number; width: number; height: number }
+): Promise<number> {
+	const png = (await page.screenshot()).toString('base64');
+	return page.evaluate(
+		async ({ png, r }) => {
+			const img = new Image();
+			img.src = `data:image/png;base64,${png}`;
+			await img.decode();
+			const scale = img.width / window.innerWidth;
+			const canvas = document.createElement('canvas');
+			canvas.width = img.width;
+			canvas.height = img.height;
+			const ctx = canvas.getContext('2d')!;
+			ctx.drawImage(img, 0, 0);
+			const { data } = ctx.getImageData(
+				Math.round(r.x * scale),
+				Math.round(r.y * scale),
+				Math.max(1, Math.round(r.width * scale)),
+				Math.max(1, Math.round(r.height * scale))
+			);
+			let lead = 0;
+			for (let i = 0; i < data.length; i += 4) lead = Math.max(lead, data[i + 1] - data[i]);
+			return lead;
+		},
+		{ png, r: rect }
+	);
+}
+
+/**
+ * The active-panel ring is ONE mechanism, owned by `Panel`, and it frames the WHOLE panel —
+ * header included — whatever the content happens to be.
+ *
+ * Four panel types used to opt out of it (a `contentOutline` flag on the registry entry) and draw
+ * their own ring around just their body instead, so on Viewer/Parameters/Metadata/Globals the panel
+ * header sat OUTSIDE the focus indication while on the Node Editor/Console/Empty it sat inside it —
+ * the same state drawn two different shapes depending on which panel had focus. Only a pixel
+ * readback can tell them apart: both spellings put an `active` class on a live rule.
+ */
+const PANEL_TYPES = ['node-editor', 'console', 'viewer', 'parameters', 'metadata', 'globals', 'empty'];
+
+test('every panel type rings the whole panel, its header included', async ({ page }) => {
+	await page.goto('/');
+	await waitForApp(page);
+	const panelId = await solePanelId(page);
+	const panel = page.locator('.panel').first();
+	try {
+		for (const type of PANEL_TYPES) {
+			await page.evaluate(
+				([id, t]) => (window as any).goofi.commands.setPanelType(id, t),
+				[panelId, type] as const
+			);
+			await expect(panel).toHaveAttribute('data-panel-type', type);
+			await expect(panel, 'the sole panel is the active one').toHaveClass(/\bactive\b/);
+			const box = (await panel.boundingBox())!;
+			const headerH = await panel
+				.locator('.panel-header')
+				.evaluate((el) => el.getBoundingClientRect().height);
+
+			// Beside the header: a 3px band down the panel's left edge, spanning the header's height.
+			const beside = await greenLead(page, {
+				x: box.x,
+				y: box.y + 2,
+				width: 3,
+				height: headerH - 4
+			});
+			expect(beside, `${type}: the ring runs down the panel edge beside its header`).toBeGreaterThan(
+				20
+			);
+
+			// And above it: the panel's own top edge, sampled mid-width clear of the corner radius.
+			const above = await greenLead(page, {
+				x: box.x + box.width / 2 - 20,
+				y: box.y,
+				width: 40,
+				height: 2
+			});
+			expect(above, `${type}: the ring closes above its header`).toBeGreaterThan(20);
+		}
+	} finally {
+		await restoreEditor(page, panelId);
+	}
+});
+
 /**
  * The boundary the first test above is blind to. M-10 deleted `.panel-header`'s hairline AND
  * promoted `Bar` to the header's own `--surface-2`, so on the four panel types that render a `Bar`

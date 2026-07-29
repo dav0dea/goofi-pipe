@@ -22,7 +22,6 @@
 		panelId,
 		state: linkState,
 		setState,
-		active,
 		label,
 		content,
 		controls
@@ -53,7 +52,6 @@
 	class="linked"
 	class:dragging={dragActive}
 	class:over
-	class:active
 	role="group"
 	data-testid="node-linked-panel"
 >
@@ -119,7 +117,6 @@
 		overflow-y: hidden;
 	}
 	.body {
-		position: relative;
 		flex: 1;
 		min-height: 0;
 		overflow: hidden;
@@ -131,28 +128,12 @@
 		min-height: 0;
 	}
 	.empty {
-		position: relative;
 		flex: 1;
 		display: grid;
 		place-items: center;
 		padding: var(--space-7);
 		text-align: center;
 		color: var(--text-muted);
-	}
-	/* Active-panel accent — framed around just the content below the inner
-	   header bar (not the bars themselves). Drawn as an overlay so it stays
-	   visible over opaque viewer content. */
-	.linked.active .body::after,
-	.linked.active .empty::after {
-		content: '';
-		position: absolute;
-		inset: 0;
-		pointer-events: none;
-		border: 1px solid var(--ring-accent);
-		/* Square at the top (meets the inner header bar), rounded at the panel's
-		   bottom corners. */
-		border-radius: 0 0 var(--radius-sm) var(--radius-sm);
-		z-index: 4;
 	}
 	/* Dashed outline marks the panel as a drop target while a node is dragged;
 	   fills in when the cursor is over it. */

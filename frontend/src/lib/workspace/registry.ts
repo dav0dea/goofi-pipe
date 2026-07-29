@@ -21,9 +21,6 @@ export interface PanelProps {
 	 * unlink), and pass `'navigation'` when they only changed what the panel is LOOKING at, such
 	 * as entering a sub-patch. Persistence is unaffected either way. */
 	setState: (s: unknown, intent?: LayoutIntent) => void;
-	/** True when this is the active (last-focused) panel — used to scope
-	 * keyboard shortcuts so only the focused panel reacts. */
-	active: boolean;
 }
 
 export interface PanelType {
@@ -37,12 +34,6 @@ export interface PanelType {
 	/** True if a node dragged from an editor can be dropped onto this panel to
 	 * bind it (Parameters / Viewer / Metadata). */
 	acceptsNode?: boolean;
-	/** True if the panel draws its OWN active-panel ring around just its content (below its inner
-	 * header bar), so `Panel` skips the frame ring rather than drawing two. Declared explicitly by
-	 * every panel that does — it is NOT implied by `acceptsNode`: those are two unrelated concerns,
-	 * and conflating them left the Console (a drop target that draws no ring of its own) with no
-	 * active-panel indication at all. */
-	contentOutline?: boolean;
 }
 
 const registry = new Map<string, PanelType>();
