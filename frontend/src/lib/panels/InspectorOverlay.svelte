@@ -208,5 +208,11 @@
 			position: absolute;
 			inset: 0 calc((var(--hit) - 100%) / -2);
 		}
+		/* …and the seam PAINTS at rest. Transparent-until-hover is the whole of its discoverability
+		   on a fine pointer; with no hover the pane simply had an invisible edge. Quieter than the
+		   accent the hover/drag state uses, so it reads as an edge rather than as active. */
+		.resize-handle::after {
+			background: var(--border-strong);
+		}
 	}
 </style>

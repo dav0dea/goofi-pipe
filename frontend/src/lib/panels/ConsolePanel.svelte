@@ -317,7 +317,6 @@
 								>×{row.e.count}</Badge
 							>
 						{/if}
-						<!-- TODO(R): hover-only reveal, needs a coarse-pointer door -->
 						<IconButton
 							class="console-copy-btn"
 							size="sm"
@@ -463,8 +462,7 @@
 	   states its box through the primitive's `density="chrome"` seam. Anything taller drives the
 	   row's height instead of the text and desyncs `estimateRowHeight`'s model. IconButton restores
 	   the --hit floor under a coarse pointer by itself, and the row grows with it — which is right
-	   (the row is the tap target) and is why the estimate carries the same floor (C16, closed).
-	   TODO(R): hover-only reveal, needs a coarse-pointer door (CLAUDE.md forbids hover-only). */
+	   (the row is the tap target) and is why the estimate carries the same floor (C16, closed). */
 	.row :global(.console-copy-btn) {
 		--icon-btn-size: 16px;
 		opacity: 0;
@@ -475,6 +473,16 @@
 	.row:focus-within :global(.console-copy-btn) {
 		opacity: 1;
 		pointer-events: auto;
+	}
+	/* Touch: copying a log line is an ACTION, and it was reachable by hover or keyboard focus only —
+	   neither of which a phone has, so it did not exist there at all (C15). It rests open instead.
+	   The button already occupies its slot when hidden, so nothing reflows and the row-height model
+	   is untouched. Its own `--hit` floor (IconButton's coarse `::after`) is what makes it tappable. */
+	@media (hover: none) and (pointer: coarse) {
+		.row :global(.console-copy-btn) {
+			opacity: 1;
+			pointer-events: auto;
+		}
 	}
 	/* Appears only while scrolled up; jumps back to the live tail. Round FAB chrome on top of
 	   the IconButton primitive. */

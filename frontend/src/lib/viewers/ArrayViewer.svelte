@@ -396,17 +396,33 @@
 	// the current rect instead of uPlot's transform-stale one. `pointerInside`
 	// tracks whether the pointer is currently over the viewer; the move hook
 	// reads it to decide whether to project the crosshair or hide it.
+	//
+	// POINTER events, not mouse: the value chip is the only per-sample readout this viewer has, and
+	// `mousemove` is dispatched for a mouse alone — so on touch the readout did not exist (R spec
+	// §3.1d, A8). A `PointerEvent` IS a `MouseEvent`, and a mouse still produces the identical
+	// stream, so the fine-pointer path is unchanged.
 	let lastMove: MouseEvent | null = null;
 	let pointerInside = false;
-	function captureMove(e: MouseEvent): void {
+	function captureMove(e: PointerEvent): void {
 		lastMove = e;
 		pointerInside = true;
+		// A touch or pen gesture produces NO `mousemove` while the finger is down — the browser's
+		// compatibility mouse events only arrive after the release — so uPlot's own cursor binding
+		// never fires and the readout could not follow a scrub. Drive the cursor from the pointer
+		// event instead; `move()` below recomputes the real position from `lastMove` regardless of
+		// what is passed here, so any non-negative pair means "the pointer is over the plot".
+		if (e.pointerType !== 'mouse') plot?.setCursor({ left: 0, top: 0 });
 	}
 	// Pointer left the viewer: drop the cached event and retract the crosshair
 	// immediately (don't wait for the next data frame — the stream may be slow
 	// or paused). setCursor → move() returns the hidden sentinel, which nulls
 	// cursor.idx and clears the value chip via the setCursor hook.
-	function handleLeave(): void {
+	function handleLeave(e: PointerEvent): void {
+		// A touch pointer is DESTROYED on release, which fires `pointerleave` the moment the finger
+		// lifts — retracting there would make the readout a flash nobody can read. Touch therefore
+		// keeps its last sample pinned (it stays live: the setCursor hook re-reads that index on
+		// every frame) until the next press moves it. A real `pointercancel` always retracts.
+		if (e.type === 'pointerleave' && e.pointerType !== 'mouse') return;
 		pointerInside = false;
 		lastMove = null;
 		plot?.setCursor({ left: -10, top: -10 });
@@ -415,8 +431,12 @@
 	onMount(() => {
 		if (!container) return;
 		makePlot(container.clientWidth || 200, container.clientHeight || 120, 1);
-		container.addEventListener('mousemove', captureMove, true);
-		container.addEventListener('mouseleave', handleLeave);
+		// `pointerdown` as well as `pointermove`: a tap is a press with no motion of its own, and it
+		// is the whole gesture on touch.
+		container.addEventListener('pointermove', captureMove, true);
+		container.addEventListener('pointerdown', captureMove, true);
+		container.addEventListener('pointerleave', handleLeave);
+		container.addEventListener('pointercancel', handleLeave);
 		resizer = new ResizeObserver(() => {
 			if (!container || !plot) return;
 			plot.setSize({ width: container.clientWidth, height: container.clientHeight });
@@ -425,8 +445,10 @@
 	});
 
 	onDestroy(() => {
-		container?.removeEventListener('mousemove', captureMove, true);
-		container?.removeEventListener('mouseleave', handleLeave);
+		container?.removeEventListener('pointermove', captureMove, true);
+		container?.removeEventListener('pointerdown', captureMove, true);
+		container?.removeEventListener('pointerleave', handleLeave);
+		container?.removeEventListener('pointercancel', handleLeave);
 		resizer?.disconnect();
 		plot?.destroy();
 		plot = null;

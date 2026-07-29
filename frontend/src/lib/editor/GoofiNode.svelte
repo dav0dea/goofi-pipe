@@ -293,6 +293,14 @@
 	.goofi-node:hover .rate {
 		opacity: 0.85;
 	}
+	/* Touch: 0.3 is a "there if you look for it" resting state that hover then resolves. With no
+	   hover there is nothing to resolve it, so the rate rests at the value hover would have given
+	   it. Opacity only — the box, and therefore the frozen header geometry, is untouched. */
+	@media (hover: none) and (pointer: coarse) {
+		.rate {
+			opacity: 0.85;
+		}
+	}
 	.viewers {
 		display: flex;
 		flex-direction: column;
@@ -363,7 +371,19 @@
 		opacity: 0;
 		transition: opacity var(--dur-fast) var(--ease);
 	}
-	.conn.in:hover .conn-label {
+	.conn.in:hover .conn-label,
+	/* The pill is focusable (tabindex="0") but had no reveal of its own, so an input's name was
+	   unreachable by keyboard as well as by touch. */
+	.conn.in:focus-visible .conn-label {
 		opacity: 1;
+	}
+	/* Touch: this label is the ONLY rendering of an input slot's name, and a device with no hover
+	   has no way to ask for it — so it rests open. Purely additive: the label is an absolutely
+	   positioned overlay OUTSIDE the node's painted box (`.ports` is pointer-transparent and the
+	   label hangs left of it), so nothing nodeMetrics.ts/snap.ts measure moves. */
+	@media (hover: none) and (pointer: coarse) {
+		.conn-label {
+			opacity: 1;
+		}
 	}
 </style>

@@ -13,6 +13,7 @@
 	import FsBrowser from '$lib/fs/FsBrowser.svelte';
 	import ErrorPanel from '$lib/editor/ErrorPanel.svelte';
 	import Toast from '$lib/app/Toast.svelte';
+	import TitleTip from '$lib/app/TitleTip.svelte';
 	import WorkspaceTabs from '$lib/workspace/WorkspaceTabs.svelte';
 	import WorkspaceView from '$lib/workspace/WorkspaceView.svelte';
 	import { registerBuiltinPanels } from '$lib/workspace/panels';
@@ -238,6 +239,9 @@
 		/>
 	{/if}
 	<Toast />
+	<!-- The coarse-pointer door onto every `title=` in the app. One layer, mounted once, so a
+	     tooltip anywhere below is reachable without hover. -->
+	<TitleTip />
 </div>
 
 <style>
