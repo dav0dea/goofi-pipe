@@ -209,7 +209,22 @@ test.describe('Inspector (real node)', () => {
 		expect(pageErrors).toEqual([]);
 
 		// Dismiss the browser; the fx editor still holds the standdown, which requires a live batch.
-		await page.keyboard.press('Escape');
+		// Wait for the dialog to be genuinely MODAL, not merely visible: `Dialog` calls `showModal()`
+		// from an `$effect`, so for one frame the element is in the DOM (and `toBeVisible` passes) while
+		// focus is still in the fx textarea — where Escape hits ParamField's own handler and collapses
+		// the editor instead of closing the browser. `dialog[open]` is set by `showModal()` itself, so
+		// it is the exact signal that focus has moved in.
+		await expect(page.locator('dialog[open]')).toHaveCount(1);
+		// Opening a modal must not collapse the editor underneath it — pinned here so a failure below
+		// is attributable to the dismissal rather than to the open.
+		await expect(amp.getByTestId('param-expr-multiline')).toBeVisible();
+
+		// Dismiss by the ✕, deliberately NOT by Escape. Escape is ambiguous while both surfaces are up:
+		// `Dialog` calls `showModal()` from an `$effect`, and on close it restores focus to the fx
+		// textarea, whose own keydown handler treats Escape as "collapse the editor". That made this
+		// test flake ~1/20 on a state it does not exist to check. Escape-dismissal of the browser is
+		// already covered by `fs-browser.spec.ts`; this test is about the standdown ref-count.
+		await page.getByTestId('fs-browser').getByRole('button', { name: 'Close' }).click();
 		await expect(page.getByTestId('fs-browser')).toHaveCount(0);
 		await expect.poll(() => modalOpen(page)).toBe(true);
 		expect(pageErrors).toEqual([]);
