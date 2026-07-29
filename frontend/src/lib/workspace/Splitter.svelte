@@ -94,4 +94,24 @@
 	.splitter.dragging::after {
 		background: var(--accent);
 	}
+	/* Touch: --splitter-size grows to 14px under the coarse floor, which is still 30px short of
+	   --hit, and the `::after` above is the painted hairline, not a grip. So widen the HIT area
+	   alone — an overlay centred on the seam, leaving both the line and the seam's LAYOUT thickness
+	   (which the panels either side are measured against) exactly where they are. Axis-specific,
+	   because a percentage `inset` resolves against the containing block on each axis: a symmetric
+	   one would shrink the long axis to --hit instead of growing the short one.
+	   The band does reach ~15px into each neighbouring panel; that is the trade a draggable seam
+	   makes on touch, and the splitter already sits above panel content at --z-chrome. */
+	@media (hover: none) and (pointer: coarse) {
+		.splitter::before {
+			content: '';
+			position: absolute;
+		}
+		.splitter.row::before {
+			inset: 0 calc((var(--hit) - 100%) / -2);
+		}
+		.splitter.column::before {
+			inset: calc((var(--hit) - 100%) / -2) 0;
+		}
+	}
 </style>

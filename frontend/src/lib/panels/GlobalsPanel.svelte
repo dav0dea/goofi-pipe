@@ -270,4 +270,12 @@
 	.hint.bad {
 		color: var(--danger);
 	}
+	/* Touch: iOS force-zooms the page when a control under 16px takes focus, and `input.name`
+	   (0,1,1) out-specifies app.css's `input` floor (0,0,1) — so this one field defeated it. The
+	   threshold is absolute, not a type rung, which is why it is a literal here as it is there. */
+	@media (hover: none) and (pointer: coarse) {
+		input.name {
+			font-size: 16px;
+		}
+	}
 </style>

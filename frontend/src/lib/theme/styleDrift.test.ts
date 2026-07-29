@@ -41,23 +41,18 @@ const ALLOW_FILE: Record<string, string> = {
 	'editor/PerfHud.svelte': 'dev diagnostic overlay, sized to be unobtrusive, not to the scale'
 };
 
-/** Narrower exemptions: files where only SOME literals are deliberate. */
-const ALLOW_VALUE: { file: string; prop?: RegExp; value: RegExp; why: string }[] = [
+/** Narrower exemptions: `file` omitted means the reason is not one file's, it is the value's. */
+const ALLOW_VALUE: { file?: string; prop?: RegExp; value: RegExp; why: string }[] = [
+	{
+		prop: /^font-size$/,
+		value: /^16px$/,
+		why: 'iOS force-zooms a focused control below 16px — an absolute device threshold, not a scale rung, so it is the one type literal that is right in any file (R raised it at five more sites whose own class rule out-specified the app.css floor)'
+	},
 	{
 		file: 'panels/ConsolePanel.svelte',
 		prop: /^padding$/,
 		value: /^2px$/,
 		why: 'row vertical padding is mirrored by `PAD = 4` in the script, which estimates row heights in px before the ResizeObserver measures them — a rem would make the estimate wrong at every root size but 14'
-	},
-	{
-		file: 'inspector/ParamField.svelte',
-		value: /^16px$/,
-		why: 'iOS force-zooms a focused input below 16px — an absolute threshold, not a scale rung'
-	},
-	{
-		file: 'inspector/ParamForm.svelte',
-		value: /^16px$/,
-		why: 'iOS force-zooms a focused input below 16px — an absolute threshold, not a scale rung'
 	},
 	{
 		file: 'viewers/StringViewer.svelte',
@@ -69,12 +64,6 @@ const ALLOW_VALUE: { file: string; prop?: RegExp; value: RegExp; why: string }[]
 		prop: /^font-size$/,
 		value: /^(11px|14px|0\.9vw|0\.3vh)$/,
 		why: 'the responsive root clamp IS the rem every --fs-*/--space-* rung is measured in — a rung cannot express the size of its own unit'
-	},
-	{
-		file: 'app.css',
-		prop: /^font-size$/,
-		value: /^16px$/,
-		why: 'iOS force-zooms a focused input below 16px — an absolute threshold, not a scale rung (the same carve-out ParamField/ParamForm already hold)'
 	},
 	{
 		file: 'app.css',
@@ -160,7 +149,7 @@ function drift(): string[] {
 	const found: string[] = [];
 	for (const { rel, css } of sources()) {
 		const pxExempt = rel in ALLOW_FILE;
-		const allowed = ALLOW_VALUE.filter((a) => a.file === rel);
+		const allowed = ALLOW_VALUE.filter((a) => a.file === undefined || a.file === rel);
 		const decl = new RegExp(`(?:^|[;{}])\\s*(${PROPS})\\s*:\\s*([^;}]+)`, 'g');
 		for (const m of css.matchAll(decl)) {
 			const raw = literals(m[2]).filter(

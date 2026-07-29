@@ -298,6 +298,13 @@
 		height: 100%;
 		color: var(--text-dim);
 	}
+	/* R's floors sweep left the grip at 16px, deliberately. A --hit grip would put a 44px triangle
+	   of split-drag over every panel corner — including the lower-left one the node editor's zoom
+	   cluster was just moved INTO (`NodeEditorPanel`'s coarse rule tucks it to --space-6, which
+	   clears a 16px triangle and would not clear a 44px one). The split/join corner gesture is a
+	   fine-pointer power-user affordance; on touch the door is the panel header's own menu, which
+	   carries the same operations (D-R5). Growing this would cost a real target to serve a
+	   theoretical one. */
 	.corner {
 		position: absolute;
 		width: 16px;

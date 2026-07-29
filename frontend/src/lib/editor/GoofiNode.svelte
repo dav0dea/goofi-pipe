@@ -300,7 +300,15 @@
 
 	/* Connector overlay — pointer-transparent layer over the whole node; each
 	   .conn re-enables pointer events. Inputs step down the left edge by one unit;
-	   outputs are placed (in px) on their slot's header bar by outPorts above. */
+	   outputs are placed (in px) on their slot's header bar by outPorts above.
+
+	   R's floors sweep deliberately left these BELOW --hit, which is a decision, not an oversight.
+	   Input connectors TILE the left edge at exactly --node-u (24px) — the same pitch nodeMetrics.ts
+	   computes cable anchors from — so a 44px target cannot be centred on one without covering its
+	   neighbours. Growing them would not make the canvas tappable, it would make the WRONG slot
+	   answer the tap, and connecting to the wrong slot is worse than a small target. D1's escape
+	   (grow the hit rect, never the painted ladder) has no room here: the rect is what collides.
+	   The canvas is pinch-zoomable, which is the door touch actually has. */
 	.ports {
 		position: absolute;
 		inset: 0;

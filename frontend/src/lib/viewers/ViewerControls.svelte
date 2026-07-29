@@ -74,4 +74,18 @@
 	   the old `.kind:focus { outline: none }` only suppressed that ring (0,2,0 beat the 0,1,0 global
 	   rule), so it is dropped, not renamed (a literal `:focus-visible { outline: none }` would keep
 	   suppressing it). The border stays at rest under focus on purpose: one ring, not two. */
+
+	/* Touch: `.kind` (0,1,0) out-specifies app.css's `select` floor (0,0,1) on BOTH counts — the
+	   `min-height: 0` above releases the --hit floor, and --fs-small is 11.5px at the coarse root
+	   size, which iOS force-zooms on focus. Restored here.
+	   `--viewer-kind-*` is the frozen host's opt-out, the same seam IconButton spends `--icon-btn-
+	   size` on: a strip that is shorter than --hit BY CONSTRUCTION states the compact box, and every
+	   other host takes the floor. Exactly one host does — SlotViewer's 24px `--node-u` slot header,
+	   which is frozen canvas geometry; the docked ViewerPanel header is real chrome and takes it. */
+	@media (hover: none) and (pointer: coarse) {
+		.kind {
+			min-height: var(--viewer-kind-min-h, var(--hit));
+			font-size: var(--viewer-kind-fs, 16px);
+		}
+	}
 </style>

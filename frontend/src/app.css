@@ -279,7 +279,12 @@ textarea {
 /* Connectors — "magnet" pills: a small dtype-coloured capsule sitting on the
    node border, inside an oversized transparent hit-area so cables are easy to
    grab. Colour comes from --dtype, set on the handle (or inherited) by the node
-   / slot; the visible pill is a ::before so there's no extra DOM per handle. */
+   / slot; the visible pill is a ::before so there's no extra DOM per handle.
+   The `min-width/min-height: 0` below defeats the coarse floor on purpose, and
+   R kept it that way: handles tile the node edge at the --node-u pitch, so a
+   --hit target centred on one would reach over its neighbours and answer their
+   taps (see GoofiNode's `.ports` note). Frozen canvas geometry; pinch-zoom is
+   the door touch has here. */
 .svelte-flow__handle {
 	width: 22px;
 	height: 20px;

@@ -144,6 +144,17 @@
 	.vs-anchor :global(.vs-cog.on) {
 		color: var(--text);
 	}
+	/* R closes the other half (C27). IconButton's coarse hit rect is --hit SQUARE and centred, so
+	   14px of it stands on every side of this 16px cog — in a 24px slot header that reaches over the
+	   rows above and below and quietly takes their taps. Bounded to the header's own unit: still
+	   half again the painted cog, and it cannot touch a neighbour, because the flex gaps either side
+	   (--space-3) are wider than the 4px it grows. A carve-out, not a floor: the surrounding canvas
+	   geometry is frozen, so a target that fits is the most the strip can offer. */
+	@media (hover: none) and (pointer: coarse) {
+		.vs-anchor :global(.vs-cog::after) {
+			inset: calc((var(--node-u) - 100%) / -2);
+		}
+	}
 	/* The dropdown surface: the shared Popover, tuned to the compact glassy menu it was —
 	   a fixed 212px column that scrolls its groups within 70vh. */
 	:global(.vs-menu) {

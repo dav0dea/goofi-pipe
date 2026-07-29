@@ -244,4 +244,28 @@
 	.tabs :global(.add) {
 		--icon-btn-size: 22px;
 	}
+	/* Touch (C17). The ✕ is hover-revealed, sub-floor AND clipped, so on a device with no hover it
+	   is not merely small — it is unreachable. The door is ADDITIVE: every rule above is untouched,
+	   and `workspace-chrome.spec.ts` still pins the zero-width collapse on a fine pointer. Resting
+	   the ✕ open at its frozen 16px paint and releasing the clip is the whole fix — IconButton's own
+	   coarse `::after` is what carries the --hit target, and it was `overflow: hidden` that cut it
+	   off. The TopBar is exactly --hit tall, so the rect the ✕ grows into IS the bar.
+	   The pill takes the floor with it: selecting a tab is this strip's primary action, and a 23px
+	   pill is not a tap target. That also gives the rename input — floored to --hit by app.css, and
+	   raised to 16px below so iOS does not force-zoom the page on focus — somewhere to stand. */
+	@media (hover: none) and (pointer: coarse) {
+		.tab {
+			padding-block: 0;
+			min-height: var(--hit);
+		}
+		.tab :global(.close) {
+			width: 16px;
+			margin-left: var(--space-2);
+			overflow: visible;
+			opacity: 1;
+		}
+		.rename {
+			font-size: 16px;
+		}
+	}
 </style>

@@ -198,4 +198,15 @@
 	.side-panel.resizing .resize-handle::after {
 		background: var(--accent);
 	}
+	/* Touch: an 8px seam is under a fifth of --hit. Widen the HIT area only (a `::before` overlay,
+	   since `::after` is already the painted line), so the line stays at its 3px offset and the
+	   panel's JS-owned width is unaffected. Horizontal only — the handle already spans the full
+	   height, and a symmetric percentage inset would shrink that to --hit. */
+	@media (hover: none) and (pointer: coarse) {
+		.resize-handle::before {
+			content: '';
+			position: absolute;
+			inset: 0 calc((var(--hit) - 100%) / -2);
+		}
+	}
 </style>

@@ -214,4 +214,23 @@
 		min-width: 0;
 		min-height: 0;
 	}
+
+	/* Touch, and the one place in this file where the frozen canvas has to say so out loud. This
+	   header is exactly one `--node-u` (24px) and `.surface` clips it, so nothing inside it can take
+	   the 44px control floor — a floored control is not a bigger target here, it is a control
+	   hanging out of the node with its bottom half cut off.
+	   `.tri` states `height`, not `min-height`, so app.css's coarse floor DID apply and did exactly
+	   that. Released, and the viewer-kind select re-pinned through ViewerControls' documented hook.
+	   The stated exception: both keep their fine-pointer boxes on touch. What actually takes the tap
+	   is the header BAR — full node width, one unit tall, and already the collapse target — and the
+	   canvas is a pinch-zoomable surface, which no other strip in the app is. */
+	@media (hover: none) and (pointer: coarse) {
+		header {
+			--viewer-kind-min-h: 0;
+			--viewer-kind-fs: var(--fs-small);
+		}
+		.tri {
+			min-height: 0;
+		}
+	}
 </style>

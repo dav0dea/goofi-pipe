@@ -128,4 +128,16 @@
 		color: var(--text-muted);
 		font-size: 9px;
 	}
+	/* Touch: `.lbl-edit` (0,1,0) out-specifies app.css's `input` type floor (0,0,1) — so the 11px
+	   face force-zooms iOS on focus — while the `min-height: var(--hit)` it does NOT out-specify
+	   swells the field to 44px inside a 26px pill (BOUNDARY.height, frozen and mirrored in
+	   nodeMetrics.ts for snapping). Both are answered on the pill's terms: 16px type, and the floor
+	   released rather than the canvas grown. The pill does gain a few px while a rename is OPEN,
+	   which is transient, touch-only, and cheaper than a rename nobody can read. */
+	@media (hover: none) and (pointer: coarse) {
+		.lbl-edit {
+			min-height: 0;
+			font-size: 16px;
+		}
+	}
 </style>
