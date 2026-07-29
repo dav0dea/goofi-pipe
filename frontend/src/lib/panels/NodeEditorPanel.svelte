@@ -831,11 +831,19 @@
 	 * `fitViewOptions` prop) and the on-load fit in <FitToGraph>. */
 	const FIT_OPTIONS = { maxZoom: 1, padding: 0.18 } satisfies FitViewOptions;
 
-	/** True when no control owns the keyboard — the bare canvas does, or nothing does. A flow node,
-	 * a slot pill, a header button, an add-menu row: every one of those is the browser's to traverse,
-	 * and Tab is how it does it. */
+	/** True when the CANVAS owns the keyboard rather than a control: nothing focused at all, the pane
+	 * itself, or a node's own wrapper — SvelteFlow gives that `tabindex="0"`, so a plain click on a
+	 * node parks focus there, and "select a node, then Tab to add the next one" is the whole point of
+	 * the shortcut. Deliberately NOT a focusable DESCENDANT of a node: R's `.conn` slot pills are
+	 * inside one and Tab is how a keyboard reaches the next of them (`.conn-label`'s focus reveal).
+	 * A header button, an add-menu row, an inspector control: all the browser's to traverse. */
 	function canvasHasKeys(target: HTMLElement | null): boolean {
-		return target === document.body || target?.classList.contains('svelte-flow__pane') === true;
+		if (!target) return false;
+		return (
+			target === document.body ||
+			target.classList.contains('svelte-flow__pane') ||
+			target.classList.contains('svelte-flow__node')
+		);
 	}
 
 	function onKeydown(e: KeyboardEvent): void {
