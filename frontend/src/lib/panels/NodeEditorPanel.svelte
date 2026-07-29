@@ -831,9 +831,17 @@
 	 * `fitViewOptions` prop) and the on-load fit in <FitToGraph>. */
 	const FIT_OPTIONS = { maxZoom: 1, padding: 0.18 } satisfies FitViewOptions;
 
+	/** True when no control owns the keyboard — the bare canvas does, or nothing does. A flow node,
+	 * a slot pill, a header button, an add-menu row: every one of those is the browser's to traverse,
+	 * and Tab is how it does it. */
+	function canvasHasKeys(target: HTMLElement | null): boolean {
+		return target === document.body || target?.classList.contains('svelte-flow__pane') === true;
+	}
+
 	function onKeydown(e: KeyboardEvent): void {
 		if (!isActive()) return;
-		const tag = (e.target as HTMLElement | null)?.tagName ?? '';
+		const t = e.target as HTMLElement | null;
+		const tag = t?.tagName ?? '';
 		if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
 
 		const meta = e.ctrlKey || e.metaKey;
@@ -850,7 +858,13 @@
 		} else if (meta && e.key.toLowerCase() === 'g') {
 			e.preventDefault();
 			void groupSelection();
-		} else if (e.key === 'Tab') {
+		} else if (e.key === 'Tab' && !e.shiftKey && canvasHasKeys(t)) {
+			// Scoped to the bare canvas (R2-3). Unscoped this was a ONE-WAY TRAP: `{#if menuOpen}` is
+			// unkeyed, so re-entering `openAddMenu` with the menu already open neither remounts it nor
+			// re-fires the search focus that made the FIRST Tab look fine — every press after that was
+			// a bare preventDefault with nothing to refocus, and no chrome outside this canvas was ever
+			// Tab-reachable (WCAG 2.1.2). Shift+Tab is left alone on purpose: it is the way back OUT of
+			// a canvas that nothing has focused yet.
 			e.preventDefault();
 			openAddMenu(mouseX, mouseY);
 		} else if (e.key === 'Escape') {
