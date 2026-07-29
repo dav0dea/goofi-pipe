@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { waitForApp } from '../lib/app';
 import { nodes, nodeParams } from '../lib/goofi';
+import { menuRow } from '../lib/topbar';
 import { emptySpot, touchSession } from '../lib/touch';
 
 /**
@@ -62,13 +63,6 @@ function paletteItem(page: Page, type: string): Locator {
 		.locator('.item')
 		.filter({ has: page.locator('.t-name', { hasText: new RegExp(`^${type}$`) }) })
 		.first();
-}
-
-/** One row of a ContextMenu, by its exact label (the accessible name also carries icon + ✓). */
-function menuRow(page: Page, label: string): Locator {
-	return page
-		.locator('.context-menu .item')
-		.filter({ has: page.locator('.label', { hasText: new RegExp(`^${label}$`) }) });
 }
 
 /** Pick `type` from the open add-node menu and place it with a tap on the canvas. */

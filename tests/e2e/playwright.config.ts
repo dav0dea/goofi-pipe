@@ -21,16 +21,42 @@ export default defineConfig({
 		headless: true,
 		trace: 'on-first-retry'
 	},
-	// Two projects share the top-level `use`. `default` runs every existing spec EXCEPT the
+	// Four projects share the top-level `use`. `default` runs every existing spec EXCEPT the
 	// touch-scoped ones (fine-pointer desktop chrome); `touch` runs only `touch-*` under Pixel 7
 	// emulation, whose hasTouch+isMobile+viewport flip (pointer:coarse)/(hover:none) true so the
-	// coarse density floor engages. R extends the `touch` project.
+	// coarse density floor engages.
+	//
+	// `touch-landscape` and `tablet` deliberately run ONE file — `touch-reflow.spec.ts` — rather
+	// than the whole touch suite. Both orientations of phone and tablet are in scope (CLAUDE.md),
+	// but almost everything the touch suite proves is driven by the coarse media query, which
+	// answers identically at 412px and at 1080px: re-running the hit floors, the hover doors and
+	// the long-press doors in three projects would triple the wall clock to re-measure a constant.
+	// What genuinely differs is what FITS — the header's progressive overflow, the inspector's
+	// clamp against its host, a point-anchored popover's clamp against the screen, and whether a
+	// 360px-tall viewport leaves a canvas at all — and that is exactly this file.
+	//
+	// Tablet LANDSCAPE (1138×712) is not its own project: it is wider than the tablet portrait
+	// geometry and narrower than `default`'s 1280, and every invariant in the reflow file is
+	// monotone in width, so it can only land between two geometries already covered.
+	//
+	// Both new descriptors are Chromium ones (`iPad (gen 7)` would pull in WebKit, which nothing
+	// else in this suite needs and which would have to be downloaded before the suite could run).
 	projects: [
 		{ name: 'default', testIgnore: /touch-.*\.spec\.ts/ },
 		{
 			name: 'touch',
 			testMatch: /touch-.*\.spec\.ts/,
 			use: { ...devices['Pixel 7'] }
+		},
+		{
+			name: 'touch-landscape',
+			testMatch: /touch-reflow\.spec\.ts/,
+			use: { ...devices['Pixel 7 landscape'] }
+		},
+		{
+			name: 'tablet',
+			testMatch: /touch-reflow\.spec\.ts/,
+			use: { ...devices['Galaxy Tab S4'] }
 		}
 	],
 	// Spawn the PREBUILT binary from the repo root (so it serves frontend/build/ correctly),

@@ -12,6 +12,10 @@ import { addGlobal, addNode, waitForNode, waitForNoNode } from '../lib/goofi';
  *
  * Measured against the CONTAINER, never a literal, so the assertions still mean something at any
  * width and cannot be greened by a lucky viewport.
+ *
+ * The two checks that are about the SHAPE of the viewport rather than a row's fixed cost — the
+ * inspector's clamp against its host and the add-node menu's clamp against the screen — moved to
+ * `touch-reflow.spec.ts`, which three projects run at three real device geometries.
  */
 
 /** How far `inner` overflows `outer` horizontally, in px (0 = fully inside). */
@@ -129,59 +133,4 @@ test.describe('at 320px', () => {
 			}
 		});
 	});
-});
-
-test('the inspector leaves the canvas it overlays reachable', async ({ page }) => {
-	await page.goto('/');
-	await waitForApp(page);
-	const uid = await addNode(page, 'Oscillator', 'inputs', [40, 40]);
-	await waitForNode(page, uid);
-	try {
-		await page.evaluate((u) => (window as any).goofi.commands.select([u]), uid);
-		const pane = page.getByTestId('auto-side-panel');
-		await expect(pane).toBeVisible();
-		const p = (await pane.boundingBox())!;
-		const host = (await page.locator('.editor-panel').first().boundingBox())!;
-		// Its width is JS-inline (a stored 420px default) and was clamped only to [260, 720] — never
-		// to the host — so on a ~386px editor it covered the canvas completely with its own left edge
-		// clipped off. Deselecting by tapping the canvas is the ONLY way to close it, so covering the
-		// canvas is a dead end.
-		expect(p.width, 'the pane leaves a strip of canvas').toBeLessThan(host.width);
-		expect(
-			host.x + host.width - (p.x + p.width),
-			'and is not clipped at its own edge'
-		).toBeLessThan(2);
-		expect(p.x - host.x, 'the strip is at least one tap target wide').toBeGreaterThanOrEqual(44);
-	} finally {
-		await page.evaluate(() => (window as any).goofi.commands.clearSelection());
-		await page.evaluate((u) => (window as any).goofi.commands.removeNode(u), uid);
-		await waitForNoNode(page, uid).catch(() => {});
-	}
-});
-
-test('the add-node menu fits the screen it opens on, keyboard and all', async ({ page }) => {
-	await page.goto('/');
-	await waitForApp(page);
-	await page.evaluate(() => (window as any).goofi.commands.openAddMenu());
-	const menu = page.getByTestId('add-node-menu-anchor');
-	await expect(menu).toBeVisible();
-	try {
-		const box = (await menu.boundingBox())!;
-		const vp = page.viewportSize()!;
-		expect(box.x).toBeGreaterThanOrEqual(0);
-		expect(box.x + box.width, 'the menu fits the viewport it opened on').toBeLessThanOrEqual(
-			vp.width
-		);
-		expect(box.y + box.height, 'vertically too').toBeLessThanOrEqual(vp.height);
-
-		// Its search input declared `font-size: var(--fs-body)` as a scoped `input` rule, which
-		// out-specifies app.css's coarse 16px floor (0,0,1) — so focusing it force-zooms iOS.
-		const fs = await page
-			.getByTestId('add-menu-search')
-			.evaluate((el) => parseFloat(getComputedStyle(el).fontSize));
-		expect(fs, 'and focusing its search does not force-zoom iOS').toBeGreaterThanOrEqual(16);
-	} finally {
-		await page.keyboard.press('Escape');
-		await expect(menu).toHaveCount(0);
-	}
 });

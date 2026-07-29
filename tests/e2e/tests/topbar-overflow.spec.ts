@@ -1,5 +1,6 @@
-import { test, expect, type Locator, type Page } from '@playwright/test';
+import { test, expect, type Page } from '@playwright/test';
 import { waitForApp } from '../lib/app';
+import { AS_ROWS, PRIORITY, inBar, menuRow, openOverflow } from '../lib/topbar';
 
 /**
  * The app header's progressive overflow (D-R6) and the canvas commands it carries (D-R4).
@@ -15,18 +16,10 @@ import { waitForApp } from '../lib/app';
  * that nothing the header used to do changed.
  */
 
-/** Priority order, HIGHEST first — the bar keeps these longest, so it gives them up in reverse. */
-const PRIORITY = ['topbar-undo', 'topbar-redo', 'topbar-save', 'topbar-load', 'topbar-save-caret'];
+/** The bar gives its actions up in reverse priority order. (`PRIORITY`, `AS_ROWS` and the
+ * handles for reading the bar live in `lib/topbar.ts` — `touch-reflow.spec.ts` asks the same
+ * question of the same list at three real device geometries.) */
 const SPILL_ORDER = [...PRIORITY].reverse();
-
-/** Which header actions are currently rendered in the bar (a spilled one is `display: none`). */
-async function inBar(page: Page): Promise<string[]> {
-	return page.locator('.topbar .actions').evaluate((el) =>
-		[...el.querySelectorAll<HTMLElement>('button[data-testid]')]
-			.filter((b) => b.offsetParent !== null)
-			.map((b) => b.dataset.testid!)
-	);
-}
 
 /** Resize and let the ResizeObserver settle (it runs after layout, before the next paint). */
 async function widthTo(page: Page, width: number): Promise<void> {
@@ -34,19 +27,6 @@ async function widthTo(page: Page, width: number): Promise<void> {
 	await page.evaluate(
 		() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)))
 	);
-}
-
-async function openOverflow(page: Page): Promise<void> {
-	await page.getByTestId('topbar-overflow').click();
-	await expect(page.locator('.context-menu').first()).toBeVisible();
-}
-
-/** One menu row by its exact label. Not `getByRole('menuitem', { name })`: a row's accessible
- * name also carries its icon glyph and its ✓ marker, so the name is not the label. */
-function menuRow(page: Page, label: string): Locator {
-	return page
-		.locator('.context-menu .item')
-		.filter({ has: page.locator('.label', { hasText: new RegExp(`^${label}$`) }) });
 }
 
 test('the overflow trigger is resident chrome, outside the pinned action list', async ({ page }) => {
@@ -88,16 +68,6 @@ test('actions leave one at a time, lowest priority first', async ({ page }) => {
 		SPILL_ORDER.slice(0, left.length)
 	);
 });
-
-/** The menu rows a spilled action turns into. The caret is not one action but the two options
- * behind it. */
-const AS_ROWS: Record<string, string[]> = {
-	'topbar-undo': ['Undo'],
-	'topbar-redo': ['Redo'],
-	'topbar-save': ['Save'],
-	'topbar-save-caret': ['Save As…', 'Save in browser'],
-	'topbar-load': ['Load…']
-};
 
 test('every spilled action is reachable in the overflow menu — and only those', async ({ page }) => {
 	await page.goto('/');
@@ -166,13 +136,30 @@ test('the layout tab strip keeps a floor to spill against', async ({ page }) => 
 	await expect(page.getByRole('button', { name: 'New tab' })).toBeVisible();
 });
 
+/**
+ * R's §5.2 for the chord half: no interaction may exist solely behind a keyboard chord. This list
+ * is the editor's chord inventory (`NodeEditorPanel.onKeydown`) minus the three that already have
+ * a pointer door of their own — Tab (long-press the canvas), F (the panel's own Fit control) and
+ * Escape (a tap on the canvas, or the inspector's ✕). Everything else is here, at every width,
+ * because the menu is resident chrome rather than a collapse target.
+ */
+const CHORD_ROWS = [
+	'Select all', // ⌘A
+	'Delete selection', // Delete
+	'Group into sub-patch', // ⌘G
+	'Copy', // ⌘C
+	'Paste', // ⌘V
+	'Duplicate', // ⌘D
+	'Multi-select mode' // no chord at all — the touch door for shift-click
+];
+
 test('the canvas commands live in the menu at every width', async ({ page }) => {
 	await page.goto('/');
 	await waitForApp(page);
 	for (const w of [1400, 412]) {
 		await widthTo(page, w);
 		await openOverflow(page);
-		for (const name of ['Select all', 'Delete selection', 'Group into sub-patch', 'Multi-select mode']) {
+		for (const name of CHORD_ROWS) {
 			await expect(menuRow(page, name), `${name} at ${w}px`).toBeVisible();
 		}
 		await page.keyboard.press('Escape');
