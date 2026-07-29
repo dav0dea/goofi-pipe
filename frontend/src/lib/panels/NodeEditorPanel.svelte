@@ -841,6 +841,14 @@
 	function onKeydown(e: KeyboardEvent): void {
 		if (!isActive()) return;
 		const t = e.target as HTMLElement | null;
+		// A modal <dialog> owns the keyboard while it is up, and the DOM is what says so — NOT
+		// `ui().modalOpen`, which is a ref-count that an in-panel fx editor raises for a merely
+		// expanded textarea. Reading that flag here would stand the canvas down for an inspector
+		// field; asking the top layer answers the narrower question exactly. (The file browser opens
+		// with focus on its path field, which the allowlist below covers — but load mode requires a
+		// navigation click, and from that <button> Escape used to dismiss the dialog AND run this
+		// panel's Escape ladder behind it.)
+		if (t?.closest?.('dialog[open]')) return;
 		const tag = t?.tagName ?? '';
 		if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
 
