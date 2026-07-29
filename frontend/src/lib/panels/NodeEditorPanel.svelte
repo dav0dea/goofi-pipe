@@ -1114,7 +1114,11 @@
 			zoomOnDoubleClick={false}
 			autoPanOnNodeDrag={false}
 		>
-			<Controls />
+			<!-- Viewport controls only. `showLock` is Flow's Toggle Interactivity button, which flips
+			     nodesDraggable/nodesConnectable/elementsSelectable off in one click: goofi has no
+			     read-only mode and nothing else in the UI would say the canvas is locked, so it reads
+			     as breakage rather than as a mode. -->
+			<Controls showLock={false} />
 			<FitToGraph options={FIT_OPTIONS} />
 			<FlowApi bind:screenToFlowPosition={screenToFlow} />
 			<SubpatchZoomExit {entered} onExit={() => exitToDepth(enteredPath.length - 1)} />
@@ -1235,11 +1239,24 @@
 		min-width: 0;
 		min-height: 0;
 	}
-	/* Nudge SvelteFlow's controls off the panel corner so the corner grips
-	   (drag-split / drag-join) stay reachable. */
+	/* Nudge SvelteFlow's controls off the panel corner so the 16px corner grips (drag-split /
+	   drag-join) stay reachable — that clearance is the whole reason for an inset here.
+	   `margin: 0` is load-bearing: Flow's own `.svelte-flow__panel` sets `margin: 15px`, which
+	   STACKS on these offsets, so the 20px this rule used to declare rendered as 35px. */
 	.editor-panel :global(.svelte-flow__controls) {
-		bottom: 20px;
-		left: 20px;
+		margin: 0;
+		bottom: var(--space-8);
+		left: var(--space-8);
+	}
+	/* On touch every control button is floored to --hit (44px), so the cluster is a slab rather
+	   than a strip and a desktop-sized inset parks it well inside the canvas instead of in its
+	   corner. It tucks in — still clear of the grip, whose 16px box is clipped to its lower-left
+	   triangle, so a cluster cornered at (g, g) misses it entirely once g + g > 16. */
+	@media (hover: none) and (pointer: coarse) {
+		.editor-panel :global(.svelte-flow__controls) {
+			bottom: var(--space-6);
+			left: var(--space-6);
+		}
 	}
 	/* First-run hint over an empty canvas. Non-interactive so it never eats the
 	   double-click that opens the add-node menu underneath it. */

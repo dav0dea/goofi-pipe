@@ -1,5 +1,6 @@
 import { test, expect, type Page } from '@playwright/test';
 import { waitForApp } from '../lib/app';
+import { controlsInset } from '../lib/editor';
 
 /**
  * The node editor's coarse-pointer door for adding a node (R spec §3.2b).
@@ -82,6 +83,26 @@ test('a long press on empty canvas opens the add-node menu there', async ({ page
 	// capture-phase `setActive` alone rather than swallowing the pointerdown that drives it.
 	await page.keyboard.press('Escape');
 	await expect(menu).toHaveCount(0);
+});
+
+/**
+ * The other half of `editor-controls.spec.ts`'s inset guard. The coarse `--hit` floor makes each
+ * control button 44px tall, so on a 412px phone the cluster is a slab — and it was drawn 35px in
+ * from both edges (a declared 20px plus Flow's own 15px panel margin), which put it well inside the
+ * canvas rather than in its corner. Under coarse it tucks to `--space-6`.
+ *
+ * Still clear of the panel's corner grip, which is what any inset here is for: the grip is a 16px
+ * box clipped to its lower-left triangle, so a cluster whose corner sits at (g, g) misses it
+ * entirely once g + g > 16.
+ */
+test('the editor controls tuck into the corner under a coarse pointer', async ({ page }) => {
+	await page.goto('/');
+	await waitForApp(page);
+	const { left, bottom, rem } = await controlsInset(page);
+	expect(left).toBeCloseTo(0.75 * rem, 0);
+	expect(bottom).toBeCloseTo(0.75 * rem, 0);
+	expect(left + bottom, 'and it still misses the clipped corner grip').toBeGreaterThan(16);
+	expect(left, 'a real tuck, not the fine-pointer inset').toBeLessThan(1.5 * rem);
 });
 
 test('a pan is not a press — dragging the canvas opens nothing', async ({ page }) => {
