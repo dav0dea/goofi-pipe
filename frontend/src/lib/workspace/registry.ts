@@ -8,6 +8,7 @@
  * dropdown, context menu, and layout persistence all pick it up automatically.
  */
 import type { Component } from 'svelte';
+import type { LayoutIntent } from './workspace.svelte';
 
 /** The single prop contract every panel content component receives. */
 export interface PanelProps {
@@ -15,8 +16,11 @@ export interface PanelProps {
 	panelId: string;
 	/** Opaque, persisted per-panel state — `undefined` until the panel sets it. */
 	state: unknown;
-	/** Persist new per-panel state back into the layout tree. */
-	setState: (s: unknown) => void;
+	/** Persist new per-panel state back into the layout tree. `intent` classifies the write for
+	 * the dirty flag: omit it when the user EDITED the panel (a viewer kind, an output slot, an
+	 * unlink), and pass `'navigation'` when they only changed what the panel is LOOKING at, such
+	 * as entering a sub-patch. Persistence is unaffected either way. */
+	setState: (s: unknown, intent?: LayoutIntent) => void;
 	/** True when this is the active (last-focused) panel — used to scope
 	 * keyboard shortcuts so only the focused panel reacts. */
 	active: boolean;

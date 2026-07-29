@@ -52,7 +52,9 @@ export async function restoreNavContext(ctx: NavContext): Promise<void> {
 		if (!p) continue;
 		const want = arrayToPath(path);
 		if (asStateObject(p.state).subpatchPath !== want) {
-			ws.setPanelState(panelId, { ...asStateObject(p.state), subpatchPath: want });
+			// Re-orienting the editor is navigation — the undone command dirties the patch on its
+			// own merits, and a nav restore that undoes nothing must leave the flag alone.
+			ws.setPanelState(panelId, { ...asStateObject(p.state), subpatchPath: want }, 'navigation');
 		}
 	}
 	// Restore the selection on every panel that still exists.

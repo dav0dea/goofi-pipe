@@ -206,7 +206,7 @@
 			<Content
 				panelId={node.id}
 				state={node.state}
-				setState={(s) => ws.setPanelState(node.id, s)}
+				setState={(s, intent) => ws.setPanelState(node.id, s, intent)}
 				{active}
 			/>
 		{:else}

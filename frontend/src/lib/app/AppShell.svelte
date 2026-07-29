@@ -174,7 +174,7 @@
 		if (pushTimer) {
 			clearTimeout(pushTimer);
 			pushTimer = null;
-			void g.setLayout(ws.serialize());
+			void g.setLayout(ws.serialize(), ws.takeLayoutIntent());
 		}
 		if (!g.unsavedChanges) return;
 		e.preventDefault();
@@ -183,13 +183,15 @@
 
 	// Push layout changes into the running patch (debounced — a resize drag or
 	// rapid splits collapse into one push). Only after the initial sync, so we
-	// don't echo before the patch's own layout has arrived.
+	// don't echo before the patch's own layout has arrived. The push carries the
+	// window's folded dirty classification (`takeLayoutIntent`), so navigating
+	// persists without marking the patch unsaved.
 	let pushTimer: ReturnType<typeof setTimeout> | null = null;
 	$effect(() => {
 		void ws.state; // track: every layout mutation replaces this reference
 		if (!g.hadHello) return;
 		if (pushTimer) clearTimeout(pushTimer);
-		pushTimer = setTimeout(() => void g.setLayout(ws.serialize()), 400);
+		pushTimer = setTimeout(() => void g.setLayout(ws.serialize(), ws.takeLayoutIntent()), 400);
 	});
 
 	onMount(() => {

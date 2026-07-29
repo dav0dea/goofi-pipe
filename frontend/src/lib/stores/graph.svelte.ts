@@ -20,7 +20,7 @@ import {
 import { ui } from './ui.svelte';
 import { consoleStore } from './console.svelte';
 import { selection } from './selection.svelte';
-import { workspace } from '$lib/workspace/workspace.svelte';
+import { workspace, type LayoutIntent } from '$lib/workspace/workspace.svelte';
 import type { WorkspaceState } from '$lib/workspace/model';
 import { seedInlineView, forgetInlineView, rawInlineView } from '$lib/viewers/inlineView.svelte';
 import { resolveKind } from '$lib/viewers/kind';
@@ -581,10 +581,14 @@ export class GraphStore {
 
 	/** Push the current workspace layout into the running patch (manager memory)
 	 * so it survives reloads and lands in the .gfi on save. Fire-and-forget:
-	 * layout is soft UI state, so a dropped push is harmless. */
-	async setLayout(layout: unknown): Promise<void> {
+	 * layout is soft UI state, so a dropped push is harmless.
+	 *
+	 * `intent` is the dirty classification of the writes in this push (see
+	 * `LayoutIntent`): persistence and dirtiness are separate axes, so a purely
+	 * navigational push is stored without marking the patch unsaved. */
+	async setLayout(layout: unknown, intent: LayoutIntent): Promise<void> {
 		try {
-			await this.ctl.call('set_layout', { layout });
+			await this.ctl.call('set_layout', { layout, intent });
 		} catch {
 			/* not connected / in flight — ignore */
 		}

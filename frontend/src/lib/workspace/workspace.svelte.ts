@@ -47,6 +47,22 @@ export type DragRef =
 	| { kind: 'panel'; workspaceId: string; panelId: string }
 	| { kind: 'tab'; workspaceId: string };
 
+/**
+ * Why a layout write happened — the axis that decides whether the patch now differs from the file
+ * on disk. Persistence is a SEPARATE axis: every layout write is pushed to the manager and rides
+ * the `.gfi` either way.
+ *
+ * - `'authored'` — the user edited the arrangement: split/close/resize a panel, add or rename a
+ *   tab, pick a viewer kind or an output slot, unlink a node. The patch really did change.
+ * - `'navigation'` — the user only changed what they are LOOKING at (entering a sub-patch,
+ *   switching layout tabs, an undo/redo re-orientation), or the manager echoed its own layout back
+ *   at us on hello/load. Persisted, but the patch still matches disk, so it must not raise the
+ *   unsaved dot or the unload guard.
+ *
+ * The classification follows the WRITE, never the device — phone and desktop share this one rule.
+ */
+export type LayoutIntent = 'navigation' | 'authored';
+
 function isValidState(s: unknown): s is WorkspaceState {
 	if (typeof s !== 'object' || s === null) return false;
 	const obj = s as Record<string, unknown>;
@@ -65,9 +81,26 @@ class WorkspaceStore {
 	 * drop zones and the tab bar accepts the drop, so the dragged node can be
 	 * repositioned in the layout or turned into a tab. */
 	dragging = $state<DragRef | null>(null);
+	/** Folded intent of the layout writes not yet pushed to the manager. Plain (not `$state`) —
+	 * it is read once at push time and never rendered. */
+	private _pendingIntent: LayoutIntent = 'navigation';
 
 	constructor() {
 		this.activePanelId = firstPanelId(this.active.root);
+	}
+
+	/** Classify the layout write that just happened. Authoring wins a mixed debounce window: if
+	 * anything in it was an edit, the patch really did change. */
+	private _mark(intent: LayoutIntent): void {
+		if (intent === 'authored') this._pendingIntent = 'authored';
+	}
+
+	/** The folded intent of every layout write since the last call, then reset. AppShell takes
+	 * this when it pushes `set_layout`, so the manager can tell an edit from a look. */
+	takeLayoutIntent(): LayoutIntent {
+		const intent = this._pendingIntent;
+		this._pendingIntent = 'navigation';
+		return intent;
 	}
 
 	/** After a structural layout change, drop the maximized view and focus the
@@ -82,6 +115,7 @@ class WorkspaceStore {
 	 * arrangement from the previous session doesn't linger in the open tab. */
 	reset(): void {
 		this.state = defaultWorkspaceState();
+		this._mark('navigation'); // a blank session's default arrangement is nobody's edit
 		this._focusFirst(this.active.root);
 	}
 
@@ -107,6 +141,7 @@ class WorkspaceStore {
 	 * default and then overridden by the action's NavContext. */
 	restore(state: WorkspaceState): void {
 		this.state = state;
+		this._mark('authored'); // undoing/redoing an edit to the arrangement is still an edit
 		this._focusFirst(this.active.root);
 	}
 
@@ -121,17 +156,26 @@ class WorkspaceStore {
 		};
 		for (const ws of state.workspaces) migrate(ws.root);
 		this.state = state;
+		// The manager's own arrangement coming back at us (hello / a loaded patch). Pushing the
+		// re-seeded ids back is an echo, not an edit — classifying it as authoring is what
+		// re-dirtied a patch moments after it was saved.
+		this._mark('navigation');
 		this._focusFirst(this.active.root);
 	}
 
 	/** Run a tracked layout mutation `fn`, recording one history entry iff it
 	 * actually changed the state tree (a no-op split / blocked close records
-	 * nothing). `coalesceKey` merges a continuous gesture into one entry. */
+	 * nothing). `coalesceKey` merges a continuous gesture into one entry.
+	 * Undoable ⇒ authored: every mutation that earns a history entry is, by
+	 * definition, the user editing the arrangement. (The intent is marked even
+	 * while history is suspended — a redo still changes the saved layout.) */
 	private _tracked(kind: LayoutActionKind, label: string, fn: () => void, coalesceKey?: string): void {
 		const before = this.serialize();
 		const prev = this.state;
 		fn();
-		if (this.state !== prev && !history().isSuspended) {
+		if (this.state === prev) return;
+		this._mark('authored');
+		if (!history().isSuspended) {
 			history().record({
 				kind,
 				domain: 'layout',
@@ -152,11 +196,13 @@ class WorkspaceStore {
 		};
 	}
 
-	private _updateActiveRoot(fn: (root: LayoutNode) => LayoutNode | null): void {
+	/** Returns whether the tree actually changed, so a caller can classify only real writes. */
+	private _updateActiveRoot(fn: (root: LayoutNode) => LayoutNode | null): boolean {
 		const ws = this.active;
 		const root = fn(ws.root);
-		if (!root || root === ws.root) return;
+		if (!root || root === ws.root) return false;
 		this._setRoot(ws.id, root);
+		return true;
 	}
 
 	// --- layout mutations --------------------------------------------------
@@ -209,8 +255,11 @@ class WorkspaceStore {
 		});
 	}
 
-	setPanelState(panelId: string, state: unknown): void {
-		this._updateActiveRoot((root) => setPanelState(root, panelId, state));
+	/** Write a panel's opaque state. Not undoable, but it IS persisted, so it carries the dirty
+	 * classification: authoring by default (a viewer kind, an output slot, an unlink), and
+	 * `'navigation'` only where the write moves the viewpoint — the sub-patch path. */
+	setPanelState(panelId: string, state: unknown, intent: LayoutIntent = 'authored'): void {
+		if (this._updateActiveRoot((root) => setPanelState(root, panelId, state))) this._mark(intent);
 	}
 
 	setActive(panelId: string): void {
@@ -253,7 +302,9 @@ class WorkspaceStore {
 			changed = true;
 			return { ...w, root };
 		});
-		if (changed) this.state = { ...this.state, workspaces };
+		if (!changed) return;
+		this.state = { ...this.state, workspaces };
+		this._mark('authored'); // the node delete that caused it already changed the patch
 	}
 
 	toggleMaximize(panelId: string): void {
@@ -281,11 +332,16 @@ class WorkspaceStore {
 		});
 	}
 
+	/** D-R11: switching layout tabs is NAVIGATION. It changes which arrangement is in front, not
+	 * what any panel holds — the same "looking elsewhere" as entering a sub-patch, and the move
+	 * `navContext` makes to re-orient an undo. Creating, renaming, reordering or closing a tab is
+	 * still authoring; only the selection is a look. */
 	selectTab(workspaceId: string): void {
 		if (this.state.activeWorkspaceId === workspaceId) return;
 		const ws = this.state.workspaces.find((w) => w.id === workspaceId);
 		if (!ws) return;
 		this.state = { ...this.state, activeWorkspaceId: workspaceId };
+		this._mark('navigation');
 		this._focusFirst(ws.root);
 	}
 
