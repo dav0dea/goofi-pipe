@@ -173,6 +173,15 @@ const SITES: Site[] = [
 		control: (p) => p.getByTestId('node-linked-panel').locator('select.kind')
 	},
 	{
+		// The cog beside it, and the sole door to every per-viewer setting. R-Task 2/3 scoped its
+		// carve-out to SlotViewer's frozen 24px header, but `--node-u` is a `:root` token, so the
+		// 24px bound applied in BOTH hosts — including this 44px panel header, where both its
+		// siblings take the floor.
+		name: 'the docked viewer-settings cog',
+		setup: dockAViewer,
+		control: (p) => p.getByTestId('node-linked-panel').getByTestId('viewer-settings-cog')
+	},
+	{
 		// SvelteFlow's own stylesheet sizes these 26×26 and the app's coarse floor was `min-height`
 		// ONLY, so each was 26×44 — the one §3.1c site in neither the fixed nor the declined column,
 		// and never measured because a comment beside its insets asserted the opposite. It is also

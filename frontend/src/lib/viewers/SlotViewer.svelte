@@ -228,6 +228,10 @@
 		header {
 			--viewer-kind-min-h: 0;
 			--viewer-kind-fs: var(--fs-small);
+			/* …and the cog keeps its frozen 16px paint here for the same reason (its coarse target is
+			   carried outward by a `::after` bounded to this header instead). Every other host — a
+			   docked ViewerPanel header is the one there is — floors the box. */
+			--vs-cog-box: 16px;
 		}
 		.tri {
 			min-height: 0;

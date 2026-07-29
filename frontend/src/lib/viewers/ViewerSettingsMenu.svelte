@@ -144,13 +144,23 @@
 	.vs-anchor :global(.vs-cog.on) {
 		color: var(--text);
 	}
-	/* R closes the other half (C27). IconButton's coarse hit rect is --hit SQUARE and centred, so
-	   14px of it stands on every side of this 16px cog — in a 24px slot header that reaches over the
-	   rows above and below and quietly takes their taps. Bounded to the header's own unit: still
-	   half again the painted cog, and it cannot touch a neighbour, because the flex gaps either side
-	   (--space-3) are wider than the 4px it grows. A carve-out, not a floor: the surrounding canvas
-	   geometry is frozen, so a target that fits is the most the strip can offer. */
+	/* R closes the other half (C27). Two hosts, two answers, one hook.
+	   In REAL chrome — a docked ViewerPanel header, --hit tall, where the Unlink button and the kind
+	   select both take the floor — the cog's own BOX takes it too. A box lays out, so it cannot
+	   reach over the select 6px to its left the way a positioned pseudo would (C18); IconButton's
+	   coarse `::after` then adds nothing, which is exactly right.
+	   `--vs-cog-box` is the frozen host's opt-out: SlotViewer's 24px `--node-u` slot header, where a
+	   44px box is not a bigger target but a control hanging out of the node with its bottom half
+	   clipped. There the carve-out below is what the strip can offer instead — bounded to the
+	   header's own unit, so it cannot reach the rows above and below and take their taps, and it
+	   cannot touch a neighbour either (the flex gaps are wider than the 4px it grows). Bounding it
+	   to `--node-u` unconditionally is what left the docked cog at 24×24: `--node-u` is a `:root`
+	   token, so the frozen host's answer applied in both. */
 	@media (hover: none) and (pointer: coarse) {
+		.vs-anchor :global(.vs-cog) {
+			min-width: var(--vs-cog-box, var(--hit));
+			min-height: var(--vs-cog-box, var(--hit));
+		}
 		.vs-anchor :global(.vs-cog::after) {
 			inset: calc((var(--node-u) - 100%) / -2);
 		}
