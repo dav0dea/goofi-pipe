@@ -22,7 +22,6 @@
 {#if active}
 	<span
 		class="hud"
-		class:dropping={p.dps > 0.5}
 		data-testid="perf-hud"
 		title="Frames painted per second across all visible viewers (drops = latest-wins coalesced frames)"
 	>
@@ -46,10 +45,11 @@
 		background: color-mix(in srgb, var(--text) 6%, transparent);
 		white-space: nowrap;
 	}
-	.hud.dropping {
-		color: var(--warning);
-		background: color-mix(in srgb, var(--warning) 14%, transparent);
-	}
+	/* Weight, not a status ink. A "drop" is latest-wins coalescing — `frames.ts` states that it
+	   costs nothing ("no viewer is starved and no queue grows") and the tooltip above says so to the
+	   user. This used to flip the whole HUD to `--warning`, the same amber the bar beside it paints
+	   on a LOST CONTROL CONNECTION, so a healthy 2-3 node patch sat amber at ~4% coalescing. There
+	   is no threshold that makes a designed behaviour a fault; pinned in theme/styleDrift.test.ts. */
 	.drop {
 		font-weight: 600;
 	}

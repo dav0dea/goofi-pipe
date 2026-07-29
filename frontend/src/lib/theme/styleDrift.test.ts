@@ -375,6 +375,20 @@ describe('style vocabulary', () => {
 			.map((s) => s.rel);
 		expect(offenders).toEqual([]);
 	});
+
+	/* `--warning` is this app's FAULT ink: `TopBar.svelte` paints it on a lost control connection,
+	   three lines above the perf HUD it hosts. The HUD painted the same amber whenever the drop
+	   counter moved — but a "drop" is latest-wins coalescing, which `frames.ts` states outright is
+	   free ("no viewer is starved and no queue grows") and which the HUD's own tooltip calls
+	   "latest-wins coalesced frames". Healthy 2-3 node patches therefore sat amber in every screen
+	   capture. One status cluster cannot carry two contradictory meanings for one token, and there
+	   is no threshold that turns a designed behaviour into a fault — so the counters read in the
+	   neutral ink, and this is the only thing keeping them there. */
+	it('never paints a fault ink on the frame counters (coalescing is by design, not a fault)', () => {
+		const hud = sources().find((s) => s.rel === 'editor/PerfHud.svelte');
+		expect(hud, 'the HUD is still where this guard looks for it').toBeDefined();
+		expect(hud!.css.match(/--(?:warning|danger)\b/g) ?? []).toEqual([]);
+	});
 });
 
 /* ------------------------------------------------------------------------------------------- */
