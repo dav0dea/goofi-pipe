@@ -105,7 +105,7 @@
 
 <div
 	bind:this={menuEl}
-	class="context-menu"
+	class="context-menu thin-scrollbar"
 	style="left:{pos.x}px; top:{pos.y}px"
 	use:portal
 	role="menu"
@@ -145,6 +145,14 @@
 		z-index: var(--z-menu);
 		/* px, not rem: TopBar's save-menu spawn point clamps against this same 180. */
 		min-width: 180px;
+		/* The clamp can only SHIFT a surface that fits — `Math.max(MARGIN, …)` floors an oversized
+		   one at 6px and lets the rest run off the bottom, which is how the TopBar's overflow menu
+		   (13 rows at the 44px coarse floor) put its canvas commands under a 360px landscape phone
+		   with no other pointer door. `12px` is the clamp's own MARGIN on both edges. Submenus
+		   portal to <body> as their own roots, so this scroller cannot clip them. */
+		max-height: calc(100dvh - 12px);
+		overflow-y: auto;
+		overscroll-behavior: contain;
 		padding: var(--space-2);
 		background: var(--surface-2);
 		border: 1px solid var(--border-strong);

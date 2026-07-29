@@ -182,6 +182,32 @@ async function checkHeaderFits(page: Page): Promise<void> {
 				);
 			}
 		}
+
+		// …and nothing was lost BELOW THE FOLD either. `toHaveCount` is green for a row rendered
+		// 250px under the bottom of the screen, which is what a 604px menu is on a 360px landscape
+		// phone: the surface had no `max-height` and no scroller, and `clampToViewport` FLOORS an
+		// oversized menu at its 6px margin rather than fitting it. Those rows are the canvas
+		// commands (D-R4) — the only pointer door there is to Delete / Group / Copy / Paste /
+		// Duplicate — so off the fold is the same as absent.
+		const vp = page.viewportSize()!;
+		const screen = { x: 0, y: 0, width: vp.width, height: vp.height };
+		const menu = page.locator('.context-menu').first();
+		expect(
+			outside((await menu.boundingBox())!, screen),
+			'the overflow menu fits the screen it opened on'
+		).toBeLessThanOrEqual(1);
+		const rows = menu.locator('.item');
+		const n = await rows.count();
+		for (let i = 0; i < n; i++) {
+			const row = rows.nth(i);
+			// Scrolled into view first: once the surface bounds itself, the lower rows are legitimately
+			// off-screen until the menu is scrolled, and REACHABLE is the property under test.
+			await row.scrollIntoViewIfNeeded();
+			expect(
+				outside((await row.boundingBox())!, screen),
+				`the "${await row.locator('.label').innerText()}" row is reachable on screen`
+			).toBeLessThanOrEqual(1);
+		}
 	} finally {
 		await page.keyboard.press('Escape');
 	}
