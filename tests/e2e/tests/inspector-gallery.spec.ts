@@ -293,11 +293,18 @@ test.describe('Inspector ParamForm', () => {
 		await expect(active, 'the first visible group is active').toHaveText('signal');
 		// Connected: the active tab paints the SAME surface as the rows body flush beneath it (merged);
 		// an inactive tab sits at the header surface, a different colour (the drop actually happened).
+		// `.ui-tab` TRANSITIONS `background`, so the active tab's colour is an ANIMATED property and a
+		// one-shot read can land mid-flight — this assertion used to sample 29 or 36 on its way from
+		// --surface-2 (38) to --surface-1 (28) and fail against a value that was merely early. Assert
+		// the SETTLED colour with the retrying matcher; the invariant is unchanged. (The rows' own
+		// background is static, so reading it once is sound.)
 		const rowsBg = await bg(form.getByTestId('param-rows'));
-		const activeBg = await bg(active);
+		await expect(active, 'active tab background equals the body surface (merged)').toHaveCSS(
+			'background-color',
+			rowsBg
+		);
 		const inactiveBg = await bg(tabs.getByRole('tab', { selected: false }).first());
-		expect(activeBg, 'active tab background equals the body surface (merged)').toBe(rowsBg);
-		expect(inactiveBg, 'an inactive tab sits at the header surface, not the body').not.toBe(activeBg);
+		expect(inactiveBg, 'an inactive tab sits at the header surface, not the body').not.toBe(rowsBg);
 		// Switching tabs swaps the rendered fields: `signal` shows `gain`; `common` shows `label`.
 		await expect(form.getByTestId('param-field-gain')).toBeVisible();
 		await expect(form.getByTestId('param-field-label')).toHaveCount(0);

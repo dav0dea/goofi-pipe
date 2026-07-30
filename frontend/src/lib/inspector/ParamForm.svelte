@@ -156,18 +156,25 @@
 
 	const tabItems = $derived(visibleGroupNames.map((name) => ({ id: name, label: name })));
 
-	// This component owns the tabs — keep the active group valid as the node (and its visible groups)
-	// change: default the first visible group; null when none.
-	let activeGroup = $state<string | null>(null);
-	$effect(() => {
+	// This component owns the tabs. The active group is DERIVED — the group in front when it is still
+	// visible, else the first visible one, else none — and an effect then ADOPTS that fallback.
+	//
+	// Both halves earn their place. It used to be an `$effect` assigning `activeGroup` from `null`,
+	// which is why the strip flashed on every open: an effect runs after the first paint, so the
+	// initial render had no `.active` tab, and the class then flipped INTO `.ui-tab`'s `background`
+	// transition — animating --surface-2 → --surface-1. Deriving it puts the right tab in the first
+	// paint, so there is no transition to animate. But a pure derivation is not enough: groups sort
+	// alphabetically, so when a hidden group reappears (`filter` before `signal`) `valid[0]` would
+	// steal the front from a still-valid group. Adopting the fallback keeps it sticky — the front
+	// group only moves when it actually vanishes.
+	let frontGroup = $state<string | null>(null);
+	const activeGroup = $derived.by<string | null>(() => {
 		const valid = visibleGroupNames;
-		if (valid.length === 0) {
-			activeGroup = null;
-			return;
-		}
-		if (!activeGroup || !valid.includes(activeGroup)) {
-			activeGroup = valid[0];
-		}
+		if (valid.length === 0) return null;
+		return frontGroup && valid.includes(frontGroup) ? frontGroup : valid[0];
+	});
+	$effect(() => {
+		if (activeGroup !== frontGroup) frontGroup = activeGroup;
 	});
 
 	const activeParams = $derived.by<[string, ParamDescriptor][]>(() => {
@@ -244,7 +251,7 @@
 			<Tabs
 				items={tabItems}
 				active={activeGroup ?? undefined}
-				onSelect={(id) => (activeGroup = id)}
+				onSelect={(id) => (frontGroup = id)}
 				data-testid="param-tabs"
 			/>
 		{/if}
