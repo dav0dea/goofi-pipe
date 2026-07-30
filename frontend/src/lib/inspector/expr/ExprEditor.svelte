@@ -29,7 +29,8 @@
 		label,
 		placeholder = '',
 		testid,
-		autofocus = false
+		autofocus = false,
+		bindCommit
 	}: {
 		value: string;
 		multiline?: boolean;
@@ -42,6 +43,9 @@
 		/** Lands on the editable element, so a spec drives the editor the way it drove the textarea. */
 		testid: string;
 		autofocus?: boolean;
+		/** Hands the owner a commit-now function (and `null` on teardown) — the seam an out-of-editor
+		 *  `apply` control needs, since the document lives in the editor rather than in a bound string. */
+		bindCommit?: (commit: (() => void) | null) => void;
 	} = $props();
 
 	let host = $state<HTMLDivElement | null>(null);
@@ -69,10 +73,12 @@
 				attributes: { 'data-testid': testid, 'aria-label': label }
 			});
 			handle = mounted;
+			bindCommit?.(() => mounted?.commit());
 			if (autofocus) mounted.focus();
 		});
 		return () => {
 			live = false;
+			bindCommit?.(null);
 			mounted?.destroy();
 			handle = null;
 		};

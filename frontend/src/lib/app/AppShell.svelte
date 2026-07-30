@@ -24,6 +24,7 @@
 	import { ui } from '$lib/stores/ui.svelte';
 	import { history } from '$lib/stores/history.svelte';
 	import { undoKeyAction } from '$lib/app/undoKeys';
+	import { isTextEditingTarget } from '$lib/ui';
 	import { exposeAgentApi } from '$lib/agent';
 	import { Button } from '$lib/ui';
 	import { getControl } from '$lib/api/control';
@@ -151,7 +152,7 @@
 				ctrlKey: e.ctrlKey,
 				metaKey: e.metaKey,
 				shiftKey: e.shiftKey,
-				targetTag: (e.target as HTMLElement | null)?.tagName ?? ''
+				editing: isTextEditingTarget(e.target)
 			},
 			standdown
 		);

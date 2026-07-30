@@ -6,7 +6,7 @@ const ev = (over: Partial<UndoKeyEvent>): UndoKeyEvent => ({
 	ctrlKey: false,
 	metaKey: false,
 	shiftKey: false,
-	targetTag: 'BODY',
+	editing: false,
 	...over
 });
 
@@ -26,8 +26,10 @@ describe('undoKeyAction', () => {
 	it('plain z → none', () => {
 		expect(undoKeyAction(ev({ key: 'z' }), false)).toBe('none');
 	});
-	it('suppressed while typing in an input', () => {
-		expect(undoKeyAction(ev({ ctrlKey: true, key: 'z', targetTag: 'INPUT' }), false)).toBe('none');
+	// `editing` is answered by `isTextEditingTarget`, which since X covers a contenteditable too — the
+	// expression editor's Ctrl+Z has to reach CodeMirror's history, not the graph's (D-X7).
+	it('suppressed while typing in any text-editing surface', () => {
+		expect(undoKeyAction(ev({ ctrlKey: true, key: 'z', editing: true }), false)).toBe('none');
 	});
 	it('suppressed while a modal is open', () => {
 		expect(undoKeyAction(ev({ ctrlKey: true, key: 'z' }), true)).toBe('none');

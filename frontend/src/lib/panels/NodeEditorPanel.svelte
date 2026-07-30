@@ -70,7 +70,14 @@
 	import { registerEditor, unregisterEditor } from './editorCommands';
 	import InspectorOverlay from './InspectorOverlay.svelte';
 	import { asStateObject } from '$lib/workspace/panelState';
-	import { Button, IconButton, EmptyState, clampToViewport, overlayViewport } from '$lib/ui';
+	import {
+		Button,
+		IconButton,
+		EmptyState,
+		clampToViewport,
+		overlayViewport,
+		isTextEditingTarget
+	} from '$lib/ui';
 	import { onMount, tick, untrack } from 'svelte';
 
 	let { panelId, state: panelState, setState }: PanelProps = $props();
@@ -876,8 +883,9 @@
 		// navigation click, and from that <button> Escape used to dismiss the dialog AND run this
 		// panel's Escape ladder behind it.)
 		if (t?.closest?.('dialog[open]')) return;
-		const tag = t?.tagName ?? '';
-		if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+		// Not a tag list: since X the inspector's expression editor is a contenteditable, so Ctrl+A in
+		// it has to take the expression and not every node on the canvas (`ui/textEditing.ts`).
+		if (isTextEditingTarget(t)) return;
 
 		const meta = e.ctrlKey || e.metaKey;
 		if (meta && e.key.toLowerCase() === 'a') {

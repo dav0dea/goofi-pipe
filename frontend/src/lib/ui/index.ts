@@ -55,6 +55,12 @@ export {
 // drag handles share, so a cancelled gesture can never again leak its listeners into the next tap.
 export { beginDrag, type DragPointerTarget, type DragHandlers } from './dragGesture';
 
+// Here for the same reason as `dragGesture`: not a primitive, but the one answer to "does this
+// keystroke belong to a text editor or to the app", shared by the two keyboard scopes that would
+// otherwise each keep their own list of editable tags — and one of them would miss the next
+// contenteditable, as both did before X.
+export { isTextEditingTarget } from './textEditing';
+
 // Display primitives (Task 6): the uppercase tone pill (static Badge / pressable Chip), the
 // glow-free status dot, and the centred empty-state placeholder.
 export { default as Badge, type BadgeTone } from './Badge.svelte';

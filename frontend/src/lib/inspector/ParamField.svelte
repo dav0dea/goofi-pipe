@@ -17,10 +17,12 @@
 
   The always-present fx binding (spec §3, D-N3/D-N4) hangs off the Field's `adornment` snippet — the `fx`
   Chip on every field (accent when active, danger when the expression errors) plus a `trig` Chip while
-  active. When `expression_enabled`, the control region becomes the buffered single-line expr `TextInput`
-  (its echo-suppression INHERITED from the P control's `useLiveValue` latch, not re-hand-rolled) with an
-  expand affordance that grows an IN-PANEL multi-line textarea (no modal — the graph stays visible), and a
-  `= preview` / error row below. The three enabled-semantics are preserved exactly: inline commit FORCES
+  active. When `expression_enabled`, the control region becomes the `ExprEditor` — a real code surface
+  with Python highlighting, one merged completion popup and the compile error as an inline diagnostic
+  (sub-project X) — with an expand affordance that grows the SAME editor into an IN-PANEL multi-line
+  one (no modal — the graph stays visible), and a `= preview` / error row below. The error ROW stays:
+  the squiggle carries the position, the row carries the text, and information that exists only behind
+  a hover is not allowed. The three enabled-semantics are preserved exactly: inline commit FORCES
   `enabled`, the multi-line apply PRESERVES the flags, fx-off STASHES the source. `class`/`data-testid`
   (and any attribute) forward to the Field root via `...rest`.
 -->
@@ -41,6 +43,7 @@
 		type BadgeTone
 	} from '$lib/ui';
 	import { controlKind } from './controlKind';
+	import ExprEditor from './expr/ExprEditor.svelte';
 	import { ui } from '$lib/stores/ui.svelte';
 
 	let {
@@ -90,7 +93,10 @@
 
 	// The in-panel multi-line editor (D-N4: no modal — it grows in place so the graph stays visible).
 	let multilineOpen = $state(false);
-	let multilineBuf = $state('');
+	// The expanded editor OWNS its text (a code editor's document is not a bindable string), so the
+	// `apply` Chip asks it to commit rather than reading a mirrored buffer — which also means the
+	// keystroke stream never re-renders this field.
+	let applyExpanded = $state<(() => void) | null>(null);
 	// A ref to the fx control region so, on collapse, focus returns to the ⤢ expand button (which only
 	// exists in the collapsed inline branch) instead of dropping to <body>.
 	let fxRegionEl = $state<HTMLDivElement | null>(null);
@@ -166,34 +172,29 @@
 	}
 
 	function openMultiline(): void {
-		multilineBuf = descriptor.expression ?? '';
 		multilineOpen = true;
 	}
-	async function applyMultiline(): Promise<void> {
-		onSetExpression(multilineBuf, currentFlags());
-		multilineOpen = false;
-		await restoreExpandFocus();
+	// ⌃⏎ inside the editor lands here — the multi-line apply PRESERVES the flags (enabled-semantic #3),
+	// unlike the inline commit, which forces `enabled`.
+	function applyMultiline(v: string): void {
+		onSetExpression(v, currentFlags());
+		void cancelMultiline();
+	}
+	// The `apply` Chip — the door touch has to the ⌃⏎ chord. Ask the editor to commit (a no-op when
+	// nothing changed, so an untouched apply is not an RPC), then collapse either way.
+	async function applyFromChip(): Promise<void> {
+		applyExpanded?.();
+		await cancelMultiline();
 	}
 	async function cancelMultiline(): Promise<void> {
 		multilineOpen = false;
 		await restoreExpandFocus();
 	}
-	// Escape/⌃⏎/collapse-click all route through the two functions above; after the textarea unmounts,
+	// Escape/⌃⏎/collapse-click all route through the functions above; after the editor unmounts,
 	// return focus to the ⤢ expand affordance (mirrors autofocus-on-expand) so it never falls to <body>.
 	async function restoreExpandFocus(): Promise<void> {
 		await tick();
 		fxRegionEl?.querySelector<HTMLElement>('[data-testid="param-expr-expand"]')?.focus();
-	}
-	function multilineKeydown(e: KeyboardEvent): void {
-		if (e.key === 'Escape') {
-			e.preventDefault();
-			e.stopPropagation();
-			cancelMultiline();
-		} else if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
-			e.preventDefault();
-			e.stopPropagation();
-			applyMultiline();
-		}
 	}
 
 	// The live evaluated value shown under the input — strings truncated ~32 chars (the old preview).
@@ -206,12 +207,6 @@
 		return String(v);
 	}
 
-	// Focus the multi-line editor when it grows in — an action, so there is no a11y `autofocus` warning.
-	function autofocus(el: HTMLTextAreaElement): void {
-		el.focus();
-		const len = el.value.length;
-		el.setSelectionRange(len, len);
-	}
 </script>
 
 <!-- The always-present fx binding: the fx Chip on every field + the trig Chip while active. A SIBLING of
@@ -243,34 +238,36 @@
 
 <Field label={paramName} doc={descriptor.doc ?? undefined} adornment={fx} class={klass} {...rest}>
 	{#if kind === 'expression'}
-		<!-- The fx editor takes over the control region (spec §3): the buffered expr input (or, expanded,
-		     the in-panel multi-line textarea — D-N4, no modal), with a preview / error row below. -->
+		<!-- The fx editor takes over the control region (spec §3): the code surface (or, expanded, the
+		     same editor in its in-panel multi-line mode — D-N4, no modal), with a preview / error row
+		     below. Both branches are `ExprEditor`; only the mode differs (D-X1). -->
 		<div class="fx-region" bind:this={fxRegionEl}>
 			{#if multilineOpen}
-				<textarea
-					class="fx-multiline"
-					aria-label={`${paramName} expression`}
-					use:autofocus
-					bind:value={multilineBuf}
-					spellcheck="false"
-					autocapitalize="off"
-					{...{ autocorrect: 'off' }}
-					onkeydown={multilineKeydown}
-					data-testid="param-expr-multiline"
-				></textarea>
+				<ExprEditor
+					multiline
+					value={descriptor.expression ?? ''}
+					error={descriptor.expression_error}
+					onCommit={applyMultiline}
+					onCancel={cancelMultiline}
+					bindCommit={(c) => (applyExpanded = c)}
+					label={`${paramName} expression`}
+					testid="param-expr-multiline"
+					autofocus
+				/>
 				<div class="fx-actions">
 					<span class="fx-kbd" aria-hidden="true">⌃⏎ apply · esc cancel</span>
 					<Chip onclick={cancelMultiline} data-testid="param-expr-collapse">collapse</Chip>
-					<Chip tone="accent" onclick={applyMultiline} data-testid="param-expr-apply">apply</Chip>
+					<Chip tone="accent" onclick={applyFromChip} data-testid="param-expr-apply">apply</Chip>
 				</div>
 			{:else}
 				<div class="fx-inline">
-					<TextInput
+					<ExprEditor
 						value={descriptor.expression ?? ''}
-						onChange={commitExpr}
-						inputmode="search"
+						error={descriptor.expression_error}
+						onCommit={commitExpr}
+						label={`${paramName} expression`}
 						placeholder="nd('oscillator0').out.data.mean()"
-						data-testid="param-expr-input"
+						testid="param-expr-input"
 					/>
 					<IconButton
 						size="sm"
@@ -337,28 +334,6 @@
 		align-items: stretch;
 		gap: var(--space-2);
 		min-width: 0;
-	}
-	/* The in-panel multi-line editor — grows in place (D-N4), resizable within the panel; no floating window. */
-	.fx-multiline {
-		width: 100%;
-		min-height: 7rem;
-		resize: vertical;
-		padding: var(--space-3);
-		font-family: var(--font-mono);
-		font-size: var(--fs-micro);
-		line-height: 1.5;
-		color: var(--accent);
-		background: var(--surface-2);
-		border: 1px solid var(--border);
-		border-radius: var(--radius-sm);
-		tab-size: 4;
-	}
-	/* Touch: lift the multi-line editor to 16px so focusing it does not force-zoom iOS (the desktop
-	   --fs-micro size above is kept). Mirrors app.css's coarse input/textarea floor. */
-	@media (hover: none) and (pointer: coarse) {
-		.fx-multiline {
-			font-size: 16px;
-		}
 	}
 	.fx-actions {
 		display: flex;

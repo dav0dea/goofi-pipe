@@ -11,17 +11,16 @@ export interface UndoKeyEvent {
 	ctrlKey: boolean;
 	metaKey: boolean;
 	shiftKey: boolean;
-	/** Tag name of the event target (upper-case), for the typing guard. */
-	targetTag: string;
+	/** Whether the event landed in a text-editing surface — `ui/textEditing.ts`'s answer, which covers
+	 *  a contenteditable (X's expression editor) as well as the form elements. */
+	editing: boolean;
 }
 
 export type UndoKeyResult = 'undo' | 'redo' | 'none';
 
-const TYPING_TAGS = new Set(['INPUT', 'TEXTAREA', 'SELECT']);
-
 export function undoKeyAction(e: UndoKeyEvent, modalOpen: boolean): UndoKeyResult {
 	if (modalOpen) return 'none';
-	if (TYPING_TAGS.has(e.targetTag)) return 'none';
+	if (e.editing) return 'none';
 	const meta = e.ctrlKey || e.metaKey;
 	if (!meta) return 'none';
 	const key = e.key.toLowerCase();
