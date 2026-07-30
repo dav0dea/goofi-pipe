@@ -111,3 +111,34 @@ describe('category colour system is gone', () => {
 		expect(css).not.toMatch(/--cat-[a-z]+\s*:/);
 	});
 });
+
+/* The syntax-highlighting family (X, D-X2). Two asks that look opposed and are not: the COLOURS are
+   conventional at full strength (code is read by colour, so the app's reduced-saliency brief stops at
+   the editor's edge), and their LOCATION is still app.css — a CodeMirror theme object carrying hex
+   would be the one palette in the app outside the SSOT.
+   The expression editor sits on --surface-1 (app.css's `input` background, which the editor host
+   keeps), so that is the background every --syn-* is measured against. The floor is AA 4.5:1, not the
+   3:1 the semantic/dtype inks get: those are marks and washes, this is body text being read. */
+describe('syntax colours clear the AA floor on the editor background (D-X2)', () => {
+	const SYN = [
+		'keyword',
+		'name',
+		'function',
+		'literal',
+		'type',
+		'operator',
+		'comment',
+		'string',
+		'punct'
+	];
+	const editorBg = token('surface-1');
+	for (const t of SYN) {
+		it(`--syn-${t} ≥ 4.5:1 on --surface-1`, () =>
+			expect(contrastRatio(token(`syn-${t}`), editorBg)).toBeGreaterThanOrEqual(4.5));
+	}
+	// A conventional scheme's whole value is that the roles are TOLD APART at a glance; two rungs
+	// resolving to one hex would silently collapse two of them.
+	it('names nine distinct inks', () => {
+		expect(new Set(SYN.map((t) => token(`syn-${t}`))).size).toBe(SYN.length);
+	});
+});

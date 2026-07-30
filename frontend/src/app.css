@@ -127,6 +127,26 @@
 	--dtype-string: #f0c050;
 	--dtype-table: #e08060;
 
+	/* Syntax highlighting for the param expression editor (X, D-X2). The ONE place in the app where
+	   the reduced-saliency brief deliberately does not apply: code is scanned by colour, and a muted
+	   scheme makes reading it harder, not calmer. So these are the CONVENTIONAL dark-editor inks (the
+	   One Dark values every CodeMirror user already reads fluently), not a re-derivation from the
+	   accent — but they live HERE, because a theme object carrying its own hex would be the single
+	   palette in the app outside this file.
+	   Named for the ROLE, not the hue, so a retune is a value edit and the highlight mapping in
+	   `inspector/expr/theme.ts` never has to move. Measured against --surface-1 — the editor host
+	   keeps app.css's `input` background — at AA 4.5:1 (tokens.test.ts); the 3:1 the semantic and
+	   dtype inks get is a mark's floor, and this is body text being read. */
+	--syn-keyword: #c678dd; /* def/if/and/None-class keywords */
+	--syn-name: #e06c75; /* a name being read: variable, property */
+	--syn-function: #61afef; /* a callee */
+	--syn-literal: #d19a66; /* True/False/None and other atoms */
+	--syn-type: #e5c07b; /* numbers, class/type names, self */
+	--syn-operator: #56b6c2; /* + - * / and friends */
+	--syn-comment: #7d8799; /* comments and meta */
+	--syn-string: #98c379; /* string literals */
+	--syn-punct: #abb2bf; /* separators and definition names */
+
 	/* node geometry — one harmonic ladder (Fibonacci/φ). Node width is constant
 	   and every height is a multiple of the slot unit, so snap guides line up.
 	   A collapsed output slot and each input both occupy one --node-u; an open
