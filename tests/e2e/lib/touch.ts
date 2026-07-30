@@ -38,6 +38,35 @@ export async function touchSession(page: Page): Promise<TouchSession> {
  * the patch may carry nodes left by an earlier spec — a hardcoded centre point could land on a node
  * card (which must NOT arm the long-press door) and green a test for the wrong reason.
  */
+/**
+ * Fake a soft keyboard by shrinking `visualViewport.height` (an own property shadows the prototype
+ * getter) and firing the resize the real keyboard would fire. `px = 0` restores it.
+ *
+ * Here rather than in a spec because two specs need the same fake: `device-stamp.spec.ts` proves
+ * `--kb-inset` tracks it and that the two anchored-overlay clamps read it, and `touch-expr.spec.ts`
+ * proves the completion popup does. A second copy is a second thing to keep true.
+ */
+export async function setKeyboardInset(page: Page, px: number): Promise<void> {
+	await page.evaluate((n) => {
+		const vv = window.visualViewport as VisualViewport & { height?: number };
+		if (n > 0) {
+			Object.defineProperty(vv, 'height', {
+				configurable: true,
+				get: () => window.innerHeight - n
+			});
+		} else {
+			delete vv.height;
+		}
+		vv.dispatchEvent(new Event('resize'));
+	}, px);
+}
+
+/** The published `--kb-inset`, as the app computed it. */
+export const kbInset = (page: Page): Promise<string> =>
+	page.evaluate(() =>
+		getComputedStyle(document.documentElement).getPropertyValue('--kb-inset').trim()
+	);
+
 export async function emptySpot(page: Page): Promise<TouchPoint> {
 	const spot = await page.locator('.svelte-flow__pane').first().evaluate((pane) => {
 		const r = pane.getBoundingClientRect();

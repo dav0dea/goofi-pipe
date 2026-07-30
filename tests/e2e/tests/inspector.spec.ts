@@ -259,7 +259,8 @@ test.describe('Inspector (real node)', () => {
 		const ampB = panel(page).getByTestId('param-field-amplitude');
 		// The field remounted for B: no editor carries A's buffer; B shows its own inline expression.
 		await expect(ampB.getByTestId('param-expr-multiline')).toHaveCount(0);
-		await expect(ampB.getByTestId('param-expr-input')).toHaveValue(bExpr);
+		// `toHaveText`, not `toHaveValue`: since X the field is a CodeMirror document, not an <input>.
+		await expect(ampB.getByTestId('param-expr-input')).toHaveText(bExpr);
 		// And B's committed expression was never overwritten with A's.
 		expect((await nodeParams(page, b))?.oscillator?.amplitude?.expression).not.toContain('LEAK_FROM_A');
 	});

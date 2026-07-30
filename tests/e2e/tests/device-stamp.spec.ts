@@ -1,6 +1,9 @@
 import { test, expect, type Locator, type Page } from '@playwright/test';
 import { waitForApp } from '../lib/app';
 import { addNode, waitForNode, waitForNoNode } from '../lib/goofi';
+// The fake keyboard lives in `lib/` because `touch-expr.spec.ts` needs the same one (X's completion
+// popup clamps against the visual viewport too), and a second copy is a second thing to keep true.
+import { kbInset, setKeyboardInset } from '../lib/touch';
 
 /**
  * The device seam's ONE surviving output (D-R8): `--kb-inset`, how far the soft keyboard overlaps
@@ -15,28 +18,6 @@ import { addNode, waitForNode, waitForNoNode } from '../lib/goofi';
  */
 
 const MARGIN = 6; // clampToViewport's viewport-edge margin
-
-/** Fake a soft keyboard by shrinking `visualViewport.height` (an own property shadows the
- *  prototype getter) and firing the resize the real keyboard would fire. `px = 0` restores it. */
-async function setKeyboardInset(page: Page, px: number): Promise<void> {
-	await page.evaluate((n) => {
-		const vv = window.visualViewport as VisualViewport & { height?: number };
-		if (n > 0) {
-			Object.defineProperty(vv, 'height', {
-				configurable: true,
-				get: () => window.innerHeight - n
-			});
-		} else {
-			delete vv.height;
-		}
-		vv.dispatchEvent(new Event('resize'));
-	}, px);
-}
-
-const kbInset = (page: Page): Promise<string> =>
-	page.evaluate(() =>
-		getComputedStyle(document.documentElement).getPropertyValue('--kb-inset').trim()
-	);
 
 test('--kb-inset tracks the visual viewport, so the soft keyboard is measurable', async ({
 	page

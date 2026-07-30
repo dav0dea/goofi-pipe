@@ -221,16 +221,41 @@ test.describe('Inspector fx (expression) binding', () => {
 		await expect(field.getByTestId('param-expr-input'), 'the single-line input returns').toBeVisible();
 	});
 
-	// Escape reverts + collapses the multi-line editor without committing.
-	test('Escape reverts and collapses the multi-line editor', async ({ page }) => {
+	/* The `apply` Chip is the door touch has to the ⌃⏎ chord, and since X it takes a different route:
+	   the editor OWNS its document (a CodeMirror document is not a bindable string), so the Chip asks it
+	   to commit through `ExprEditor`'s `bindCommit` seam instead of reading a mirrored buffer. Nothing
+	   covered this control before, and the seam is new — so it is covered now. */
+	test('the apply Chip commits through the editor and collapses', async ({ page }) => {
+		await page.goto('/dev/inspector');
+		const field = page.getByTestId('inspector-fx');
+		await field.getByTestId('param-fx-toggle').click();
+		await field.getByTestId('param-expr-expand').click();
+		const ta = field.getByTestId('param-expr-multiline');
+		await ta.fill("nd('c').out.data.max()");
+		await field.getByTestId('param-expr-apply').click();
+		await expect(ta, 'apply collapses the editor').toHaveCount(0);
+		await expect(page.getByTestId('inspector-fx-expr'), 'the Chip committed the editor’s document').toHaveText("nd('c').out.data.max()");
+		await expect(page.getByTestId('inspector-fx-enabled'), 'apply PRESERVES the flags').toHaveText('true');
+	});
+
+	/* Escape reverts + collapses the multi-line editor without committing — and since X it is LAYERED
+	   (D-X7): a completion popup owns the first Escape, the editor the next. Typing `ME` leaves a popup
+	   open, which is worth asserting for its own sake: the only thing matching it is Python's own
+	   `MemoryError` builtin, so this is the stock language sources answering inside our editor. */
+	test('Escape closes the completion first, then reverts and collapses the editor', async ({ page }) => {
 		await page.goto('/dev/inspector');
 		const field = page.getByTestId('inspector-fx');
 		await field.getByTestId('param-fx-toggle').click();
 		await field.getByTestId('param-expr-expand').click();
 		const ta = field.getByTestId('param-expr-multiline');
 		await ta.fill('DISCARD ME');
+		const popup = page.locator('.cm-tooltip-autocomplete');
+		await expect(popup, 'Python’s own builtins answer for `ME`').toBeVisible();
 		await ta.press('Escape');
-		await expect(ta, 'Escape collapses the editor').toHaveCount(0);
+		await expect(popup, 'the first Escape belongs to the popup').toHaveCount(0);
+		await expect(ta, 'and the editor is still open').toHaveCount(1);
+		await ta.press('Escape');
+		await expect(ta, 'the next Escape collapses the editor').toHaveCount(0);
 		await expect(page.getByTestId('inspector-fx-expr'), 'Escape reverts — the source is unchanged (no commit)').toHaveText('0.5');
 	});
 

@@ -110,15 +110,17 @@
 	// Chip, or an external descriptor change swaps this row to a non-expression param — drop the editor.
 	// This re-runs the standdown effect below so its cleanup fires and the field stops holding down
 	// global undo/redo (§ inspector fix #2A), instead of stranding `multilineOpen` on an unmounted
-	// textarea.
+	// editor.
 	$effect(() => {
 		if (!fxActive && multilineOpen) multilineOpen = false;
 	});
 
-	// While the multi-line editor is open the global undo/redo stands down (else Ctrl-Z fights the
-	// textarea). Registering by `editorId` clears the standdown on collapse AND on unmount (e.g. a node
-	// switch remounts this field) via the effect's cleanup — and ref-counts, so collapsing one editor
-	// never lifts another's standdown.
+	// While the multi-line editor is open EVERY app-global chord stands down — it owns a full-height
+	// code surface, so Ctrl+S is its editor's, not the app's. (Ctrl+Z is separately safe in both modes:
+	// `ui/textEditing.ts` keeps a keystroke aimed at a text-editing surface out of the graph's history.)
+	// Registering by `editorId` clears the standdown on collapse AND on unmount (e.g. a node switch
+	// remounts this field) via the effect's cleanup — and ref-counts, so collapsing one editor never
+	// lifts another's standdown.
 	$effect(() => {
 		if (multilineOpen) {
 			ui().openEditor(editorId);
@@ -181,7 +183,8 @@
 		void cancelMultiline();
 	}
 	// The `apply` Chip — the door touch has to the ⌃⏎ chord. Ask the editor to commit (a no-op when
-	// nothing changed, so an untouched apply is not an RPC), then collapse either way.
+	// nothing changed, so an untouched apply is not an RPC), then collapse either way; the collapse is
+	// idempotent, so it does not matter whether the commit already ran it.
 	async function applyFromChip(): Promise<void> {
 		applyExpanded?.();
 		await cancelMultiline();
