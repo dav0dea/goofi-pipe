@@ -111,17 +111,27 @@ describe('output arity is surfaced, not left to the eval error (D-X10)', () => {
 		expect(e.detail).toMatch(/ambiguous/);
 	});
 
-	// "Prefer the `.slot` form" as behaviour rather than prose: accepting a multi-output node closes
-	// the call and leaves the caret after a dot, so the slot list is the next thing that opens.
-	it('accepting a multi-output node lands on the dot; a single-output one just closes the quote', () => {
+	// "Prefer the `.slot` form" as behaviour rather than prose: accepting finishes the call, and for a
+	// multi-output node it leaves the caret on a dot so the slot list is the next thing that opens.
+	it('accepting finishes the call, and a multi-output node lands on the dot', () => {
 		expect(byLabel("nd('").get('spectrum0')!.apply, 'steers to .slot').toBe("spectrum0').");
-		expect(byLabel("nd('").get('oscillator0')!.apply, 'usable bare — just close the quote').toBe(
-			"oscillator0'"
+		expect(byLabel("nd('").get('oscillator0')!.apply, 'usable bare — just close the call').toBe(
+			"oscillator0')"
 		);
 	});
 
-	// A closed literal must not grow a second quote or paren; the text after the caret is already there.
-	it('inserts the bare name into an already-closed literal', () => {
+	// The literal can be closed while the CALL is not (the user typed both quotes and stopped), and
+	// the two are tracked separately because only the unwritten characters may be added.
+	it('closes only what is not written yet', () => {
+		const c = at("nd('a'", 5)!;
+		expect(new Map(entriesFor(c, CAT).map((o) => [o.label, o])).get('spectrum0')!.apply).toBe(
+			'spectrum0).'
+		);
+	});
+
+	// Both already written: inserting either would corrupt the call, and there is nowhere to put the
+	// steering dot — the `)` is past the caret — so the plain name is the whole answer.
+	it('inserts the bare name into an already-finished call', () => {
 		const c = at("nd('osc')", 5)!;
 		const e = new Map(entriesFor(c, CAT).map((o) => [o.label, o])).get('spectrum0')!;
 		expect(e.apply).toBeUndefined();

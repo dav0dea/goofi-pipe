@@ -39,6 +39,9 @@ export type ExprContext =
 			quote: string;
 			/** Whether the literal already has its closing quote. */
 			terminated: boolean;
+			/** Whether the `nd(` call already has its closing paren. Tracked apart from `terminated`
+			 *  because accepting may only add the characters that are NOT written yet. */
+			callClosed: boolean;
 	  }
 	| { kind: 'slot'; node: string; from: number; to: number }
 	| { kind: 'globals'; from: number; to: number }
@@ -88,7 +91,8 @@ function stringContext(state: EditorState, str: SyntaxNode, pos: number): ExprCo
 	// leave the tail of the old one behind.
 	const from = str.from + 1;
 	const to = terminated ? str.to - 1 : str.to;
-	return pos < from || pos > to ? null : { kind: 'node', from, to, quote, terminated };
+	if (pos < from || pos > to) return null;
+	return { kind: 'node', from, to, quote, terminated, callClosed: !!argList.getChild(')') };
 }
 
 /** The cursor is at `<something>.` or `<something>.parti…` — whose attribute do we know? */
@@ -154,12 +158,16 @@ function nodeEntry(node: CatalogueNode, ctx: Extract<ExprContext, { kind: 'node'
 		: n === 1
 			? '1 output — usable bare'
 			: 'no outputs';
-	// Closing the quote (and the call) is only right while the literal is still open; when it is
-	// already closed those characters are sitting past the caret.
-	const apply = ctx.terminated
-		? undefined
-		: `${node.name}${ctx.quote}${multi ? ').' : ''}`;
-	return { label: node.name, detail, type: 'variable', apply };
+	// Finish exactly what is not written yet. The steering dot rides on the closing paren: when the
+	// call is already closed, that paren sits PAST the caret and a dot inserted here would land inside
+	// it — so a finished call gets the plain name and the user types the dot.
+	const tail = `${ctx.terminated ? '' : ctx.quote}${ctx.callClosed ? '' : `)${multi ? '.' : ''}`}`;
+	return {
+		label: node.name,
+		detail,
+		type: 'variable',
+		apply: tail ? `${node.name}${tail}` : undefined
+	};
 }
 
 /** What the popup is offered at a classified position. Pure — the other half of the §3 seam. */
