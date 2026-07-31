@@ -230,13 +230,6 @@ impl RemoteNode {
         self
     }
 
-    /// Eagerly spawn (convenience for direct use / tests). Returns the spawn error.
-    pub fn spawn(python: &str, source: &str, in_slots: Vec<&'static str>) -> std::io::Result<RemoteNode> {
-        let mut node = RemoteNode::new(python, source, in_slots);
-        node.ensure().map_err(std::io::Error::other)?;
-        Ok(node)
-    }
-
     fn ensure(&mut self) -> std::result::Result<&mut Running, String> {
         if self.proc.is_none() {
             self.proc = Some(Running::spawn(&self.python, &self.source)?);
@@ -293,11 +286,6 @@ impl Drop for RemoteNode {
         self.reset();
     }
 }
-
-// ---------------------------------------------------------------------------
-// GIL gate — the introspection authority that decides whether a Python node is
-// safe to host in-process (free-threaded) or must be quarantined to a subprocess.
-// ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
 // Discovery — turn a directory of `goofi.Node` files into subprocess node types the
@@ -533,7 +521,7 @@ class Affine(goofi.Node):
     def process(self, data):
         return {"out": data.data * 2.0 + 1.0}
 "#;
-        let mut node = RemoteNode::spawn(&py, src, vec!["data"]).unwrap();
+        let mut node = RemoteNode::new(&*py, src, vec!["data"]);
 
         // Input carries sfreq/index; a length-preserving node carries the input meta back.
         let mut meta = Meta::empty();
@@ -577,7 +565,7 @@ class Scale(goofi.Node):
     def process(self, data):
         return {"out": data.data * self.params.gain.factor + self._base}
 "#;
-        let mut node = RemoteNode::spawn(&py, src, vec!["data"]).unwrap();
+        let mut node = RemoteNode::new(&*py, src, vec!["data"]);
 
         let mut params = ParamGroups::new();
         let mut gain = IndexMap::new();
@@ -651,7 +639,7 @@ class Scale(goofi.Node):
         // The canonical EEG case: a [2,3] array with dim0 channel labels through a length-preserving
         // node must come back [2,3] with channels intact (the shared full-meta codec carries them).
         let py = require_python();
-        let mut node = RemoteNode::spawn(&py, DOUBLE, vec!["data"]).unwrap();
+        let mut node = RemoteNode::new(&*py, DOUBLE, vec!["data"]);
 
         let mut meta = Meta::empty();
         meta.set_channels(goofi_core::Axes::new().with(
@@ -690,7 +678,7 @@ class Ident(goofi.Node):
     def process(self, data):
         return {"out": data.data * 1.0}
 "#;
-        let mut node = RemoteNode::spawn(&py, ident, vec!["data"]).unwrap();
+        let mut node = RemoteNode::new(&*py, ident, vec!["data"]);
         // A 32-channel × 256-sample float32 frame (~32 KB) — a typical EEG buffer.
         let (c, t) = (32usize, 256usize);
         let vals: Vec<f32> = (0..c * t).map(|i| i as f32).collect();
@@ -743,7 +731,7 @@ class Chatty(goofi.Node):
         sys.stdout.flush()
         return {"out": data.data * 2.0}
 "#;
-        let mut node = RemoteNode::spawn(&py, src, vec!["data"]).unwrap();
+        let mut node = RemoteNode::new(&*py, src, vec!["data"]);
         let out = try_run(&mut node, arr(vec![3], &[0.0, 1.0, 2.0], Meta::empty())).expect("a printing node still round-trips");
         assert_eq!(floats(&out), vec![0.0, 2.0, 4.0]);
         // A second tick proves the stream stayed in sync (not just the first frame).
@@ -774,7 +762,7 @@ class Boom(goofi.Node):
             raise ValueError("boom")
         return {"out": data.data + self._ticks}
 "#;
-        let mut node = RemoteNode::spawn(&py, src, vec!["data"]).unwrap();
+        let mut node = RemoteNode::new(&*py, src, vec!["data"]);
 
         // A good tick: setup ran (ticks 0 -> 1), so 10 + 1 = 11.
         assert_eq!(floats(&run(&mut node, arr(vec![1], &[10.0], Meta::empty()))), vec![11.0]);
@@ -878,7 +866,7 @@ class Slow(goofi.Node):
         // A frame far larger than the 64 KiB initial slice must round-trip — iceoryx2 grows the
         // publisher's segment (PowerOfTwo), and the 4-byte sequence framing survives a big body.
         let py = require_python();
-        let mut node = RemoteNode::spawn(&py, DOUBLE, vec!["data"]).unwrap();
+        let mut node = RemoteNode::new(&*py, DOUBLE, vec!["data"]);
         let n = 100_000usize; // 400 KB body
         let vals: Vec<f32> = (0..n).map(|i| i as f32).collect();
         let out = run(&mut node, arr(vec![n], &vals, Meta::empty()));

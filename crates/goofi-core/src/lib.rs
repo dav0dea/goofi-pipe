@@ -371,11 +371,6 @@ impl Meta {
         Meta::new()
     }
 
-    /// Whether `key` is a reserved builtin.
-    pub fn is_builtin(key: &str) -> bool {
-        BUILTIN_KEYS.contains(&key)
-    }
-
     // --- generic map access ---
 
     /// The value at `key`, or `None` if absent OR present-but-`Null` (an unset builtin).
