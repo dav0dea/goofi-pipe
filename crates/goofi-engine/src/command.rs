@@ -588,8 +588,6 @@ impl CommandHistory {
     }
 }
 
-/// Build the inverse of removing `uid`, captured BEFORE removal: re-add the node (same uid + name +
-/// params) then re-add every link that touched it (so a downstream endpoint reconnects).
 /// Capture the exact inverse to restore the subtree rooted at `root` — a plain leaf, a scope member
 /// (leaf or nested scope), or a top-level instance — BEFORE the caller removes it. The Compound
 /// recreates every node (uid + params), every scope (innermost-first), the deleted top's membership,

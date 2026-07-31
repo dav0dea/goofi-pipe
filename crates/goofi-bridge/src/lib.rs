@@ -115,16 +115,9 @@ pub fn router(state: AppState) -> Router {
 /// NOT a rate policy; genuinely unbounded ticking wants the data plane decoupled from
 /// the graph lock (future work).
 ///
-/// KNOWN LIMITATION (architectural, tracked in `docs/analysis/tick-lock-subprocess-stall.md`):
-/// `g.tick()` runs every node's `process()` inline while holding this mutex — including a
-/// [`goofi_subproc::RemoteNode`], whose `process()` blocks on an iceoryx2 roundtrip. A subprocess
-/// node's FIRST tick pays child cold-start (python+numpy+iceoryx2 import, ~1-2 s) and a hung
-/// child strands up to `DEFAULT_TIMEOUT` (10 s) + 1 s. For that whole window the graph lock is
-/// held, so control dispatch, the reducer's `latest_frame`, and stats all block — the UI freezes.
-/// The bound (kill-on-timeout) keeps it finite but a multi-second freeze on a normal action is
-/// real. A proper fix is the same lock decoupling as above (release the lock across node
-/// `process()` / async node bootstrap staging), not a patch here — a rushed change to this
-/// load-bearing path would risk correctness.
+/// An INLINE node — native or in-process Python — runs its `process()` under this mutex, so a slow
+/// one paces the lock for every other holder. A Subprocess-isolated node does not: it ticks on its
+/// own detached worker, which `tests/detached_no_freeze.rs` pins.
 pub fn spawn_tick(graph: Arc<Mutex<Graph>>) {
     std::thread::spawn(move || {
         const IDLE_POLL: Duration = Duration::from_millis(50);
@@ -322,8 +315,7 @@ async fn handle_control(socket: WebSocket, state: AppState) {
     // subscribed second, a mutation landing in that window would be neither in the snapshot nor
     // delivered — the client's mirror would silently desync. Subscribing first can at worst
     // re-deliver an event already reflected in the snapshot, which every apply branch absorbs
-    // idempotently (node_added filters its uid; link_added dedups; removes/moves reconcile). The
-    // CRDT plane subscribes first for the same reason.
+    // idempotently. The CRDT plane subscribes first for the same reason.
     let mut events = state.events.subscribe();
     let mut sync_updates = state.sync_updates.subscribe();
 
@@ -488,15 +480,6 @@ fn parse_inner(payload: &Value) -> Result<Option<(Uid, String)>, String> {
         return Ok(None);
     }
     Ok(Some((parse_uid(payload, "inner_node")?, parse_str(payload, "inner_slot")?.to_string())))
-}
-
-fn parse_slot_type(s: &str) -> Option<goofi_core::SlotType> {
-    match s {
-        "ARRAY" => Some(goofi_core::SlotType::Array),
-        "STRING" => Some(goofi_core::SlotType::String),
-        "TABLE" => Some(goofi_core::SlotType::Table),
-        _ => None,
-    }
 }
 
 fn parse_pos(v: &Value) -> Option<[f64; 2]> {
@@ -912,8 +895,10 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
                     Some("out") => goofi_engine::subpatch::Dir::Out,
                     _ => return Err("add_boundary: dir must be \"in\" or \"out\"".into()),
                 };
-                let dtype = parse_slot_type(payload.get("dtype").and_then(|v| v.as_str()).unwrap_or("ARRAY"))
-                    .ok_or("add_boundary: bad dtype")?;
+                let dtype = goofi_core::SlotType::from_name(
+                    payload.get("dtype").and_then(|v| v.as_str()).unwrap_or("ARRAY"),
+                )
+                .ok_or("add_boundary: bad dtype")?;
                 let pos = payload.get("pos").and_then(parse_pos).unwrap_or([0.0, 0.0]);
                 let out = state.history.lock().unwrap().apply(
                     &mut g,
@@ -1191,7 +1176,7 @@ async fn handle_data(socket: WebSocket, state: AppState, node: String, slot: Str
         tokio::select! {
             frame = frames.recv() => match frame {
                 Ok(bytes) => {
-                    if tx.send(Message::Binary(bytes.to_vec().into())).await.is_err() {
+                    if tx.send(Message::Binary(bytes)).await.is_err() {
                         break;
                     }
                 }

@@ -1,5 +1,6 @@
-//! Keep a `GraphDoc` in agreement with the engine `Graph`. Phase 1 is a full re-sync after
-//! each mutating RPC — correctness first; incremental/direct writes come in later phases.
+//! Keep a `GraphDoc` in agreement with the engine `Graph`. The mirror is a full re-sync after
+//! each mutating RPC: `reconcile_root` diffs the whole projection and writes only what differs,
+//! so the doc's own delta is what reaches the wire. The client replica never writes the doc.
 
 use goofi_crdt::GraphDoc;
 use goofi_engine::subpatch::Dir;

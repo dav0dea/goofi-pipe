@@ -66,7 +66,7 @@ type WireCell = (Uid, &'static str, Option<Data>);
 
 /// How a node's `process()` is executed. An `Isolation::InProcess` node runs inline on
 /// the tick's rayon pool (`Inline`); an `Isolation::Subprocess` node runs on a dedicated
-/// off-tick worker (`Detached`, wired in the next step) so a blocking backend can't stall
+/// off-tick worker (`Detached`) so a blocking backend can't stall
 /// the tick or the graph lock. The tick decides *whether* every node runs identically —
 /// only the execution site differs.
 enum Execution {
@@ -431,9 +431,6 @@ impl Graph {
         goofi_node::find(type_name).is_some() || self.dyn_types.contains_key(type_name)
     }
 
-    /// The manifests of all runtime-registered node types, sorted by type name
-    /// (the compile-time catalog is enumerated separately via `goofi_node::catalog`).
-    /// Used by the bridge to include runtime types in the editor palette.
     /// A node's lifecycle stage for the editor: `creating` / `setup` / `ready` / `error`.
     ///
     /// Only the DETACHED tier has a real bootstrap to report — an inline node is seeded
@@ -481,6 +478,9 @@ impl Graph {
         self.unavailable.iter().map(|(k, v)| (k.as_str(), v.as_str()))
     }
 
+    /// The manifests of all runtime-registered node types, sorted by type name
+    /// (the compile-time catalog is enumerated separately via `goofi_node::catalog`).
+    /// Used by the bridge to include runtime types in the editor palette.
     pub fn dyn_type_manifests(&self) -> Vec<&'static NodeManifest> {
         let mut ms: Vec<&'static NodeManifest> =
             self.dyn_types.values().map(|dt| dt.manifest).collect();
@@ -1581,9 +1581,9 @@ impl Graph {
                 node.on_param_changed(&ParamKey::new(group, name), &value).map_err(|e| e.0)
             }
             // A detached node's instance lives on its worker; the edit is stored in
-            // `entry.params` and rides the next Job's cold read. Live `on_param_changed`
-            // propagation to the worker is deferred (the subprocess backend ignores params
-            // — full multi-slot/params is effort II).
+            // `entry.params` and rides the next Job's cold read, which is how a param reaches
+            // the subprocess tier at all. Nothing is lost by not forwarding the notification:
+            // `RemoteNode` implements no `on_param_changed`.
             Execution::Detached(_) => Ok(()),
         }
     }
@@ -2225,11 +2225,13 @@ impl Graph {
             if let Some(sm) = rec.get("stubs").and_then(|v| v.as_object()) {
                 for (id, st) in sm {
                     let dir = if st.get("dir").and_then(|v| v.as_str()) == Some("in") { Dir::In } else { Dir::Out };
-                    let dtype = match st.get("dtype").and_then(|v| v.as_str()) {
-                        Some("STRING") => goofi_core::SlotType::String,
-                        Some("TABLE") => goofi_core::SlotType::Table,
-                        _ => goofi_core::SlotType::Array,
-                    };
+                    // The save side writes `st.dtype.name()`; read it back with that function's own
+                    // inverse. An unknown/absent tag still degrades silently to Array, as before.
+                    let dtype = st
+                        .get("dtype")
+                        .and_then(|v| v.as_str())
+                        .and_then(goofi_core::SlotType::from_name)
+                        .unwrap_or(goofi_core::SlotType::Array);
                     let inner = match (
                         st.get("inner_uid").and_then(|v| v.as_str()).and_then(resolve_uid),
                         st.get("inner_slot").and_then(|v| v.as_str()),
