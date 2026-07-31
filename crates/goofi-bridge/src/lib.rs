@@ -478,6 +478,18 @@ fn parse_str<'a>(payload: &'a Value, key: &str) -> Result<&'a str, String> {
     payload.get(key).and_then(|v| v.as_str()).ok_or_else(|| format!("missing {key}"))
 }
 
+/// A boundary wire's inner target. Both halves named = wire; both absent or `null` = UNWIRE — the
+/// `None` [`goofi_engine::Command::WireStub`] already models ("an unwire always applies"), and the
+/// only shape the edge-delete path sends. Parsing the pair as ONE value is what keeps the
+/// half-specified third state unconstructible: name either half and both are required.
+fn parse_inner(payload: &Value) -> Result<Option<(Uid, String)>, String> {
+    let named = |k: &str| payload.get(k).is_some_and(|v| !v.is_null());
+    if !named("inner_node") && !named("inner_slot") {
+        return Ok(None);
+    }
+    Ok(Some((parse_uid(payload, "inner_node")?, parse_str(payload, "inner_slot")?.to_string())))
+}
+
 fn parse_slot_type(s: &str) -> Option<goofi_core::SlotType> {
     match s {
         "ARRAY" => Some(goofi_core::SlotType::Array),
@@ -917,12 +929,11 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
             "wire_boundary" => {
                 let inst = parse_uid(&payload, "inst_id")?;
                 let bnd = parse_str(&payload, "bnd_id")?.to_string();
-                let inner = parse_uid(&payload, "inner_node")?;
-                let slot = parse_str(&payload, "inner_slot")?.to_string();
+                let inner = parse_inner(&payload)?;
                 state.history.lock().unwrap().apply(
                     &mut g,
                     &session,
-                    goofi_engine::Command::WireStub { scope: inst, stub_id: bnd, inner: Some((inner, slot)), dtype: None },
+                    goofi_engine::Command::WireStub { scope: inst, stub_id: bnd, inner, dtype: None },
                 )?;
                 Ok(json!({ "ok": true }))
             }

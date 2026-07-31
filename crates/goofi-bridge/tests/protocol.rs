@@ -1375,6 +1375,49 @@ async fn boundary_authoring_over_the_wire() {
 }
 
 #[tokio::test]
+async fn unwiring_a_boundary_over_the_wire_prunes_its_inner_target() {
+    // Deleting an In→member / member→Out edge is an UNWIRE: the pill survives, its inner target
+    // clears. `Command::WireStub` models exactly that (`inner: Option<…>`, "an unwire always
+    // applies") and the delete path is the only door to it — so the wire must be able to say it.
+    let base = start_server().await;
+    let (mut ws, _) = connect_async(format!("{base}/control")).await.unwrap();
+    let _hello = recv_text(&mut ws).await;
+
+    let uid = |v: &Value| v["result"].as_str().unwrap().to_string();
+    let buf = uid(&call(&mut ws, 1, "add_node", json!({ "type": "Buffer" })).await);
+    let inst = call(&mut ws, 2, "group_nodes", json!({ "members": [buf], "pos": [0.0, 0.0] })).await["result"]["inst_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let bnd = call(&mut ws, 3, "add_boundary", json!({ "inst_id": inst, "dir": "in", "dtype": "ARRAY", "pos": [0.0, 0.0] })).await
+        ["result"]["bnd_id"].as_str().unwrap().to_string();
+    let wired = call(&mut ws, 4, "wire_boundary", json!({ "inst_id": inst, "bnd_id": bnd, "inner_node": buf, "inner_slot": "data" })).await;
+    assert_eq!(wired["result"]["ok"], true, "wire lands");
+
+    // The frontend sends nulls for both halves to clear the target (graph.svelte.ts wireBoundary).
+    let unwired = call(&mut ws, 5, "wire_boundary", json!({ "inst_id": inst, "bnd_id": bnd, "inner_node": null, "inner_slot": null })).await;
+    assert_eq!(unwired["result"]["ok"], true, "unwire is accepted, not rejected as a missing uid");
+
+    // The mirror writes inner_node/inner_slot only for a WIRED stub, so the leaf must be pruned.
+    // The unwire already returned, so a fresh replica syncs the cleared state directly — but the
+    // predicate must still see the STUB before judging its leaf, or an empty replica passes.
+    let doc = sync_replica(&mut ws, |d| {
+        d.read_at(&["instances", inst.as_str(), "stubs", bnd.as_str(), "dir"]).is_some()
+            && d.read_at(&["instances", inst.as_str(), "stubs", bnd.as_str(), "inner_node"]).is_none()
+    })
+    .await;
+    let port = doc.read_at(&["instances", inst.as_str(), "stubs", bnd.as_str()]).expect("stub survives");
+    assert_eq!(port["inner_node"], Value::Null, "inner_node leaf pruned");
+    assert_eq!(port["inner_slot"], Value::Null, "inner_slot leaf pruned");
+    assert_eq!(port["dir"], "in", "the pill itself survives the unwire");
+
+    // Naming ONE half is the third state the pair must not admit — it is neither a wire nor an
+    // unwire, so it is an error rather than a silently-narrowed one of the two.
+    let half = call(&mut ws, 6, "wire_boundary", json!({ "inst_id": inst, "bnd_id": bnd, "inner_node": buf })).await;
+    assert!(half["error"].is_string(), "a half-specified pair is rejected, got {half}");
+}
+
+#[tokio::test]
 async fn data_plane_streams_an_output_boundary_via_the_inner_leaf() {
     // Group a Buffer whose output is wired downstream → the instance gains an output boundary.
     // A viewer subscribing to /data/{inst}/{bnd} must receive the inner Buffer's frames (spec
