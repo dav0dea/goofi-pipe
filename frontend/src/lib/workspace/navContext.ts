@@ -10,15 +10,8 @@
 import { workspace } from './workspace.svelte';
 import { selection } from '$lib/stores/selection.svelte';
 import { collectPanels, findPanel } from './model';
-import { asStateObject } from './panelState';
+import { arrayToPath, asStateObject, pathToArray } from './panelState';
 import type { NavContext } from '$lib/stores/history.svelte';
-
-function pathToArray(p: unknown): string[] {
-	return typeof p === 'string' ? p.split('/').filter(Boolean) : [];
-}
-function arrayToPath(a: string[]): string {
-	return '/' + a.join('/');
-}
 
 export function captureNavContext(): NavContext {
 	const ws = workspace();

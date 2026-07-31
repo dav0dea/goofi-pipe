@@ -97,9 +97,7 @@ export class UIStore {
 	}
 
 	isSlotExpanded(node: string, slot: string): boolean {
-		const k = slotKey(node, slot);
-		if (Object.prototype.hasOwnProperty.call(this.expanded, k)) return this.expanded[k];
-		return true; // default: visible
+		return this.expanded[slotKey(node, slot)] ?? true; // absent → the default: visible
 	}
 
 	/** Seed expand state for a freshly-arrived node.

@@ -36,3 +36,38 @@ describe('UIStore editor standdown (ref-counted modalOpen)', () => {
 		expect(ui.modalOpen).toBe(false);
 	});
 });
+
+// Slot expand state is stored only for slots a writer has actually touched; an untouched slot
+// answers the default. Every writer stores a real boolean, so absent and false are distinguishable
+// by the stored value alone — which is what lets the lookup be a plain `?? true`.
+describe('UIStore slot expand state', () => {
+	it('an untouched slot defaults to expanded', () => {
+		const ui = new UIStore();
+		expect(ui.isSlotExpanded('n1', 'out')).toBe(true);
+	});
+
+	it('an explicit false is honoured, not mistaken for absent', () => {
+		const ui = new UIStore();
+		ui.setSlotExpanded('n1', 'out', false);
+		expect(ui.isSlotExpanded('n1', 'out')).toBe(false);
+		ui.setSlotExpanded('n1', 'out', true);
+		expect(ui.isSlotExpanded('n1', 'out')).toBe(true);
+	});
+
+	it('toggle flips from the default and back, and is per-slot', () => {
+		const ui = new UIStore();
+		ui.toggleSlotExpanded('n1', 'out');
+		expect(ui.isSlotExpanded('n1', 'out')).toBe(false);
+		expect(ui.isSlotExpanded('n1', 'other'), 'a sibling slot is untouched').toBe(true);
+		ui.toggleSlotExpanded('n1', 'out');
+		expect(ui.isSlotExpanded('n1', 'out')).toBe(true);
+	});
+
+	it('a seeded node applies each saved collapsed flag, and forget drops them again', () => {
+		const ui = new UIStore();
+		ui.seedNodeViewers('n1', ['a', 'b'], { a: { collapsed: true } });
+		expect([ui.isSlotExpanded('n1', 'a'), ui.isSlotExpanded('n1', 'b')]).toEqual([false, true]);
+		ui.forget('n1');
+		expect(ui.isSlotExpanded('n1', 'a'), 'back to the default once forgotten').toBe(true);
+	});
+});

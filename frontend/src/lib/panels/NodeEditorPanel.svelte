@@ -69,7 +69,7 @@
 	import { copyText } from '$lib/clipboard';
 	import { registerEditor, unregisterEditor } from './editorCommands';
 	import InspectorOverlay from './InspectorOverlay.svelte';
-	import { asStateObject } from '$lib/workspace/panelState';
+	import { arrayToPath, asStateObject, pathToArray } from '$lib/workspace/panelState';
 	import {
 		Button,
 		IconButton,
@@ -82,16 +82,6 @@
 
 	let { panelId, state: panelState, setState }: PanelProps = $props();
 
-	// The sub-patch this editor is currently inside, as a path persisted in the
-	// panel's layout state so save/reload (and same-session reconnect) recover the
-	// exact view: '/' is the root patch, '/subpatch0' / '/subpatch0/subpatch1'
-	// descend into nested sub-patches.
-	function pathToArray(p: unknown): string[] {
-		return typeof p === 'string' ? p.split('/').filter(Boolean) : [];
-	}
-	function arrayToPath(a: string[]): string {
-		return '/' + a.join('/');
-	}
 	function samePath(a: string[], b: string[]): boolean {
 		return a.length === b.length && a.every((v, i) => v === b[i]);
 	}

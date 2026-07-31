@@ -1,6 +1,6 @@
 /**
- * `clampToViewport` — the one correct anchored-overlay clamp (spec §3), the SSOT both the `Popover`
- * primitive and `ContextMenu` position against. Lifted verbatim from `ContextMenu.svelte`'s measured
+ * `clampToViewport` — the one correct anchored-overlay clamp (spec §3), the SSOT every anchored
+ * overlay positions against. Lifted verbatim from `ContextMenu.svelte`'s measured
  * viewport math and generalised from a spawn point to an anchor rect: a popover opens flush under the
  * anchor's bottom-left, then shifts back on-screen — never past a small viewport `MARGIN` on ANY
  * edge — if it would overflow. A point anchor is just the degenerate rect
@@ -12,8 +12,10 @@
  * A caller whose anchor sits at the BOTTOM of the screen opts into `{ flip: true }` — see below.
  */
 
-/** The gap kept between a clamped popover and the viewport edge — ContextMenu's 6px. */
-const MARGIN = 6;
+/** The gap kept between a clamped popover and the viewport edge — ContextMenu's 6px. Exported so an
+ * overlay that positions itself (CodeMirror's `tooltipSpace`) keeps the same edge gap by reference
+ * rather than by restating the number. */
+export const MARGIN = 6;
 
 /** The subset of a `DOMRect` the clamp reads — a real `getBoundingClientRect()` satisfies it. */
 export type AnchorRect = Pick<DOMRect, 'left' | 'top' | 'right' | 'bottom' | 'width' | 'height'>;
@@ -65,7 +67,7 @@ export function clampToViewport(
 }
 
 /**
- * The `viewport` both callers feed the clamp: layout WIDTH, but VISUAL HEIGHT. A soft keyboard
+ * The `viewport` every overlay feeds the clamp: layout WIDTH, but VISUAL HEIGHT. A soft keyboard
  * covers the bottom of the screen without shrinking `innerHeight`, so an overlay clamped to the
  * layout height is parked underneath the very keyboard that raised it.
  *
@@ -74,8 +76,9 @@ export function clampToViewport(
  * stays free of app stores: a primitive that reaches up into the store layer pulls that layer into
  * the primitives' bundle chunk, and the reshuffled CSS emission order costs the app a flash of
  * unstyled chrome on first paint (measured — it reddened `inspector-gallery.spec.ts`). The published
- * custom property is the seam; both overlays measure through this one function so they cannot
- * disagree. The measurement lives beside the pure clamp for that reason, and only that reason.
+ * custom property is the seam; every overlay measures through this one function so they cannot
+ * disagree — including the one that does not clamp (CodeMirror's `tooltipSpace`, which places
+ * itself). The measurement lives beside the pure clamp for that reason, and only that reason.
  */
 export function overlayViewport(): Size {
 	const inset =

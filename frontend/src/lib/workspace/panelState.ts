@@ -9,9 +9,11 @@
  *  - node-linked panels (Parameters / Viewer / Metadata) store the bound node's
  *    uid (its stable identity, not the display name) under `node`
  *    (`linkedNodeName` / `withLinkedNode` — names kept for compatibility)
+ *  - a node editor stores its sub-patch depth under `subpatchPath`, encoded by
+ *    `pathToArray` / `arrayToPath`
  *
- * Keeping the `node` key in one module means the model, the workspace store, and
- * every linkable panel agree on where the bound node lives.
+ * Keeping these keys in one module means the model, the workspace store, and
+ * every linkable panel agree on where each one lives.
  */
 
 /** Coerce opaque panel state to a plain object bag (empty when unset/non-object). */
@@ -29,4 +31,16 @@ export function linkedNodeName(state: unknown): string | null {
  * rest of the bag (slot / kind / group). */
 export function withLinkedNode(state: unknown, node: string | null): Record<string, unknown> {
 	return { ...asStateObject(state), node };
+}
+
+// The sub-patch an editor is currently inside, as a path persisted in the
+// panel's layout state so save/reload (and same-session reconnect) recover the
+// exact view: '/' is the root patch, '/subpatch0' / '/subpatch0/subpatch1'
+// descend into nested sub-patches. Written by the panel, read back by the
+// nav-context restore — one encoding so the round trip cannot drift.
+export function pathToArray(p: unknown): string[] {
+	return typeof p === 'string' ? p.split('/').filter(Boolean) : [];
+}
+export function arrayToPath(a: string[]): string {
+	return '/' + a.join('/');
 }

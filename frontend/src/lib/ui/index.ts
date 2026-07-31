@@ -6,12 +6,7 @@
  */
 export { default as Button } from './Button.svelte';
 export { default as IconButton } from './IconButton.svelte';
-export {
-	variantClass,
-	type ButtonVariant,
-	type ButtonSize,
-	type ButtonDensity
-} from './variantClass';
+export { type ButtonVariant, type ButtonSize } from './variantClass';
 
 // Layout primitives (Task 2). `Stack`/`Row` were retired here (D-M6): a scoped `display: flex`
 // rule already says the same thing in the component that needs it, and 86 of the app's 104 flex
@@ -28,32 +23,25 @@ export { default as NumberInput } from './NumberInput.svelte';
 export { default as Slider } from './Slider.svelte';
 export { default as Select } from './Select.svelte';
 export { default as TextInput } from './TextInput.svelte';
-export { MODE_ATTRS, type InputModeVariant } from './inputMode';
+export { MODE_ATTRS } from './inputMode';
 export { default as Trigger } from './Trigger.svelte';
 export { default as Toggle } from './Toggle.svelte';
-export { useLiveValue, displayValue, type LiveValue } from './liveValue.svelte';
 
 // Surfaces / overlays (Task 4): the connected tab bar + the collapse control.
 export { default as Tabs } from './Tabs.svelte';
 export { default as Disclosure } from './Disclosure.svelte';
-export { resolveActive, nextIndex, type TabItem, type ArrowKey } from './tabsState';
+export { type TabItem } from './tabsState';
 
 // Surfaces / overlays (Task 5): the anchored popover and the centered modal dialog — plus the pure
 // clamp the Popover positions against. (`PanelShell` was retired here too, D-M6: its one-header-row
 // contract is `Bar`'s, which every real panel already composes directly.)
 export { default as Popover } from './Popover.svelte';
 export { default as Dialog } from './Dialog.svelte';
-export {
-	clampToViewport,
-	overlayViewport,
-	type AnchorRect,
-	type Size,
-	type Placement
-} from './clampToViewport';
+export { clampToViewport, overlayViewport, MARGIN } from './clampToViewport';
 
 // The shared pointer-drag lifecycle (R §3.1g). Not a primitive but a pure helper the shell's three
 // drag handles share, so a cancelled gesture can never again leak its listeners into the next tap.
-export { beginDrag, type DragPointerTarget, type DragHandlers } from './dragGesture';
+export { beginDrag } from './dragGesture';
 
 // Here for the same reason as `dragGesture`: not a primitive, but the one answer to "does this
 // keystroke belong to a text editor or to the app", shared by the two keyboard scopes that would

@@ -18,15 +18,12 @@ import { python } from '@codemirror/lang-python';
 import { acceptCompletion, autocompletion, closeCompletion } from '@codemirror/autocomplete';
 import { defaultKeymap, history, historyKeymap } from '@codemirror/commands';
 import { setDiagnostics } from '@codemirror/lint';
-import { overlayViewport } from '$lib/ui';
+import { MARGIN, overlayViewport } from '$lib/ui';
 import { goofiLanguageData } from './complete';
 import { expressionDiagnostics } from './diagnostics';
 import { singleLineExpression } from './singleLine';
 import { exprHighlight, exprTheme } from './theme';
 import type { ExprCatalogue } from './catalogue';
-
-/** The margin the popup keeps off every viewport edge — `clampToViewport`'s, so the two agree. */
-const POPUP_MARGIN = 6;
 
 export interface ExprEditorOptions {
 	/** The initial source. */
@@ -117,10 +114,10 @@ export function createExprEditor(host: HTMLElement, opts: ExprEditorOptions): Ex
 			tooltipSpace: () => {
 				const vp = overlayViewport();
 				return {
-					top: POPUP_MARGIN,
-					left: POPUP_MARGIN,
-					bottom: vp.height - POPUP_MARGIN,
-					right: vp.width - POPUP_MARGIN
+					top: MARGIN,
+					left: MARGIN,
+					bottom: vp.height - MARGIN,
+					right: vp.width - MARGIN
 				};
 			}
 		}),
