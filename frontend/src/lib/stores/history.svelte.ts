@@ -198,7 +198,6 @@ export class HistoryStore {
 	/** While a transaction is open, records collect here instead of pushing —
 	 * see `transaction`. Null when no transaction is active. */
 	private txBuffer: Action[] | null = null;
-	private txLabel = '';
 	/** How undo/redo resolve the stores+control to replay against. Defaults to
 	 * the live singletons; tests override it to inject a FakeControl-backed
 	 * store. */
@@ -304,7 +303,6 @@ export class HistoryStore {
 	async transaction<T>(label: string, fn: () => Promise<T>): Promise<T> {
 		if (this.txBuffer || this.suspendDepth > 0) return fn(); // nested / suspended → passthrough
 		this.txBuffer = [];
-		this.txLabel = label;
 		let result: T;
 		try {
 			result = await fn();

@@ -296,7 +296,6 @@ export class GraphStore {
 					// when present so backend truth wins even when no diff-driven `error`
 					// event fired.
 					if ('error' in ev.payload) t.error = ev.payload.error ?? null;
-					// The node advertises its SSE log endpoint here; surfacing it lets
 				}
 				// A ⟳ refresh finished for these params on this very push (the node
 				// re-scanned and now carries fresh options) — lift each spinner exactly
@@ -317,7 +316,7 @@ export class GraphStore {
 				break;
 			}
 			case 'node_stats': {
-				// Low-rate (~1 Hz) self-reported execution telemetry; drives the node's
+				// Low-rate (2 Hz) self-reported execution telemetry; drives the node's
 				// stats overlay + the inspector's stats section. Latest-wins.
 				const t = this.nodeById(ev.payload.node);
 				if (t) t.stats = ev.payload.stats;
@@ -771,16 +770,7 @@ export class GraphStore {
 		this.nodes = next.map((n) => {
 			const cur = byUid.get(n.uid);
 			if (cur) {
-				// subpatch_changed is a STRUCTURE event (group/expand/share/make-unique):
-				// membership/names/instances moved but the live node processes are
-				// unchanged. Their runtime lifecycle state (stage/error/stats/restarts/
-				// stats) is owned by the state_update / node_* stream, and this
-				// snapshot was built on a manager thread a later state_update may have
-				// overtaken — so copying its volatile fields would REGRESS them (a ready
-				// node flickering back to a boot spinner, a cleared error chip reappearing,
-				// live stats blanked). Refresh the structural fields in place; keep the
-				// survivor's runtime state, which its authoritative stream owns.
-				Object.assign(cur, n, { stage: cur.stage, error: cur.error, stats: cur.stats });
+				Object.assign(cur, n);
 				return cur;
 			}
 			this._seedNodeViewerState(n); // genuinely new node — seed its inline view state

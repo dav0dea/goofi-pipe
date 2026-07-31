@@ -188,6 +188,29 @@ describe('expression live value survives a doc rebuild', () => {
 	});
 });
 
+describe('node runtime survives a doc rebuild', () => {
+	it('a survivor keeps its event-sourced stage, error and stats when an unrelated node lands', () => {
+		const fc = new FakeControl();
+		const g = new GraphStore(fc);
+		g.nodeTypes = catalog();
+		docSeedNode(g, 'n1', 'Oscillator', 'osc0', [0, 0]);
+
+		// The three node-level fields the doc never holds, each from its own event.
+		fc.emit({ event: 'state_update', payload: { node: 'n1', params: {}, stage: 'ready', error: 'boom' } });
+		fc.emit({ event: 'node_stats', payload: { node: 'n1', stats: { updates_per_second: 12.4 } } });
+		expect([g.nodeById('n1')!.stage, g.nodeById('n1')!.error]).toEqual(['ready', 'boom']);
+
+		// An unrelated doc write rebuilds every node from doc + catalog. The rebuild carries the
+		// runtime forward through `_extractRuntime` → `assembleNode`, so the survivor must not be
+		// blanked back to a healthy, statless boot state.
+		docSeedNode(g, 'n2', 'Oscillator', 'osc1', [1, 1]);
+		const n = g.nodeById('n1')!;
+		expect(n.stage, 'stage survives the rebuild').toBe('ready');
+		expect(n.error, 'error survives the rebuild').toBe('boom');
+		expect(n.stats, 'stats survive the rebuild').toEqual({ updates_per_second: 12.4 });
+	});
+});
+
 describe('catalog-in-hello — the palette rides on the snapshot, no async list_nodes', () => {
 	it('a hello carrying node_types sets the catalog synchronously (doc-authoritative from render 1)', () => {
 		const fc = new FakeControl();

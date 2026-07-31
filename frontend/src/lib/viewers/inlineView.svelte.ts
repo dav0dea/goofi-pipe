@@ -40,7 +40,6 @@ export function setInlineSetting(node: string, slot: string, k: string, value: S
 	store[id] = { ...cur, settings: { ...cur.settings, [k]: value } };
 }
 
-/** Seed a slot's inline view from a restored patch (no-op when empty). */
 /** Replace a slot's whole inline view (kind + settings) — used by undo/redo to
  * restore a captured snapshot. */
 export function setInlineFullView(
@@ -51,6 +50,7 @@ export function setInlineFullView(
 	store[key(node, slot)] = { kind: view.kind, settings: { ...view.settings } };
 }
 
+/** Seed a slot's inline view from a restored patch (no-op when empty). */
 export function seedInlineView(
 	node: string,
 	slot: string,

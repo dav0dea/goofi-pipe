@@ -63,9 +63,9 @@
 	// default would re-expand a manually-collapsed field on the next node tick.
 	let manualOpen = $state<Record<string, boolean>>({});
 
-	// Node-level execution telemetry (update rate + mean process() time), pushed on
-	// the status plane independent of the data frame — so it shows even while we're
-	// still waiting for the first frame. Empty until the node's first NODE_STATS.
+	// Node-level execution telemetry (the measured update rate), pushed on the status
+	// plane independent of the data frame — so it shows even while we're still waiting
+	// for the first frame. Empty until the node's first NODE_STATS.
 	const statsRows = $derived(nodeStatsRows(node.stats));
 
 	function isOpen(key: string, defaultOpen: boolean): boolean {
@@ -152,7 +152,7 @@
 		flex: 0 0 auto;
 	}
 	/* Node execution telemetry — a compact key/value strip directly under the
-	   "Metadata" heading, updated ~1 Hz from the node's NODE_STATS push. */
+	   "Metadata" heading, updated 2 Hz from the node's NODE_STATS push. */
 	.stats {
 		margin: 0 0 var(--space-5);
 		padding: 0 0 var(--space-5);

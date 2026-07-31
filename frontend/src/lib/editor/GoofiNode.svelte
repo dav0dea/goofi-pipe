@@ -280,7 +280,7 @@
 		min-width: 0;
 	}
 	/* Glanceable update rate, right-aligned. Faint at rest so it doesn't compete
-	   with the name; brought forward when the node is hovered. Tabular so the ~1 Hz
+	   with the name; brought forward when the node is hovered. Tabular so the 2 Hz
 	   number updates don't jitter the layout. */
 	.rate {
 		flex: 0 0 auto;

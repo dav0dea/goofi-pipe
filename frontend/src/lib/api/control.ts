@@ -49,13 +49,9 @@ export interface NodeTypeInfo {
 }
 
 /** A node's self-reported execution telemetry (mirrors the backend NODE_STATS
- * payload). `updates_per_second` is the tick cadence; `mean_process_ms` the mean
- * `process()` wall-time over the window; `total_ticks` the lifetime count. */
+ * payload): the measured tick cadence, which is the only thing the engine measures. */
 export interface NodeStats {
 	updates_per_second: number;
-	/** Optional — not measured by the Rust engine yet, so omitted rather than faked. */
-	mean_process_ms?: number;
-	total_ticks?: number;
 }
 
 export interface NodeInstanceInfo {
@@ -96,10 +92,10 @@ export interface NodeInstanceInfo {
 	 * the terminal boot-error badge. Backend always sends it for real nodes;
 	 * optional so synthesized virtual nodes (sub-patch instances) can omit it. */
 	stage?: NodeStage;
-	/** Rolling execution telemetry the node pushes on the status plane (~1 Hz):
-	 * update rate + mean `process()` duration over the last ~10 ticks. Absent until
-	 * the node's first NODE_STATS push; populated by the `node_stats` event and
-	 * present in the snapshot for a freshly-connected client. Runtime UI state. */
+	/** Rolling execution telemetry the node pushes on the status plane (2 Hz): the
+	 * measured update rate. Absent until the node's first NODE_STATS push, and
+	 * populated only by the `node_stats` event — the snapshot's runtime overlay
+	 * carries stage/error, never stats. Runtime UI state. */
 	stats?: NodeStats | null;
 	/** Set only on a *virtual* node synthesized for a sub-patch scope (see
 	 * `graph.nodeById`). Lets the node layers — selection, inspector, drag —
