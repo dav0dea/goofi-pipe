@@ -1,16 +1,16 @@
-//! `GraphDoc` — a typed façade over a `yrs::Doc` holding goofi's control-plane state
-//! (nodes + nested params/viewers, links). The manager keeps this in agreement with the
-//! engine `Graph`; it is the sync structure clients will later replicate. Pure: depends
-//! only on `yrs` + `serde_json`, no engine/payload types.
+//! `GraphDoc` — a `yrs::Doc` holding goofi's control-plane state, reconciled from and read back
+//! as plain JSON. The crate is deliberately SHAPE-AGNOSTIC: [`reconcile_map`] recurses over
+//! arbitrary JSON, so what the doc's roots actually contain is owned in exactly one place —
+//! `goofi-bridge`'s `crdt_mirror`, which builds the projection. Pure: depends only on `yrs` +
+//! `serde_json`, no engine/payload types.
 
 use yrs::updates::decoder::Decode;
 use yrs::types::ToJson;
 use yrs::{Any, Array, ArrayRef, Doc, Map, MapPrelim, MapRef, Out, ReadTxn, Transact};
 
-/// A framed message on the `/control` binary channel, one leading tag byte. Two families:
-/// **doc sync** (`StateVector` / `Update`) — the minimal equivalent of the Yjs sync protocol,
-/// both ends driving their doc by hand (no `y-protocols` dependency).
-/// own client id), so the manager stays an opaque relay until it needs to read viewer specs.
+/// A framed message on the `/control` binary channel, one leading tag byte: the minimal
+/// equivalent of the Yjs sync protocol, both ends driving their doc by hand (no `y-protocols`
+/// dependency).
 #[derive(Clone, Debug, PartialEq)]
 pub enum SyncMsg {
     /// A replica's state vector — "here is what I already have; send me the rest."
@@ -72,6 +72,9 @@ fn read_scalar<T: ReadTxn>(map: &MapRef, txn: &T, key: &str) -> Option<serde_jso
         Some(Out::Any(Any::Number(n))) => Some(serde_json::json!(n)),
         Some(Out::Any(Any::Bool(b))) => Some(serde_json::json!(b)),
         Some(Out::Any(Any::String(s))) => Some(serde_json::json!(s.to_string())),
+        // The fourth kind [`insert_scalar`] can write. Without it a null leaf reads as absent, so
+        // it compares unequal to the null being written and is rewritten on every re-mirror.
+        Some(Out::Any(Any::Null)) => Some(serde_json::Value::Null),
         _ => None,
     }
 }
@@ -146,9 +149,8 @@ fn canonical_link(v: &serde_json::Value) -> Option<serde_json::Value> {
     }))
 }
 
-/// The control-plane document. `nodes` is a Map<uid, {type, name, pos, params, viewers}>,
-/// `links` an Array of {node_out, slot_out, node_in, slot_in}, and `instances` the sub-patch
-/// forest — a Map<uid, {name, def_id?, parent, pos, members:Map<local,uid>, interface:Map<bnd,…>}>.
+/// The control-plane document: four roots — three maps keyed by uid/name, plus the ordered
+/// `links` array. What each root's values contain is the projection's business, not this crate's.
 pub struct GraphDoc {
     doc: Doc,
     nodes: MapRef,
@@ -176,11 +178,10 @@ impl GraphDoc {
     }
 
     /// Reconcile the ENTIRE control-plane doc from one JSON projection of the engine graph — the
-    /// generic mirror that replaces the typed writer zoo. `target` carries exactly the doc's shape:
-    /// `{ nodes: {uid: {type, name, pos, params, viewers}}, links: [{node_out,…}],
-    ///    instances: {uid: {name, def_id?, parent, pos, members, interface}} }`.
-    /// Idempotent and in-place (see [`reconcile_map`]); optional keys omitted from the projection
-    /// (a cleared `expr`, an unwired boundary's `inner_node`, a unique instance's `def_id`) are pruned.
+    /// generic mirror that replaces the typed writer zoo. `target` is `{nodes, links, instances,
+    /// globals}`, each root's contents opaque here. Idempotent and in-place (see
+    /// [`reconcile_map`]); a key omitted from the projection (a cleared `expr`, an unwired
+    /// boundary's `inner_node`) is pruned.
     pub fn reconcile_root(&mut self, target: &serde_json::Value) {
         let empty = serde_json::Map::new();
         let nodes = target.get("nodes").and_then(|v| v.as_object()).unwrap_or(&empty);
@@ -197,8 +198,8 @@ impl GraphDoc {
         self.replace_links(target.get("links").and_then(|v| v.as_array()).map(|a| a.as_slice()).unwrap_or(&[]));
     }
 
-    /// The entire control-plane doc as plain JSON (`{nodes, links, instances}`) — the generic
-    /// reader, via yrs' own `ToJson`. The manager/tests navigate this instead of the typed getters.
+    /// The entire control-plane doc as plain JSON (`{nodes, links, instances, globals}`) — the
+    /// generic reader, via yrs' own `ToJson`. The manager/tests navigate this instead of typed getters.
     pub fn to_json(&self) -> serde_json::Value {
         let txn = self.doc.transact();
         serde_json::json!({
@@ -638,6 +639,25 @@ mod tests {
         let before = doc.to_json();
         doc.reconcile_root(&full_projection());
         assert_eq!(doc.to_json(), before, "re-reconciling an unchanged graph is a no-op");
+    }
+
+    #[test]
+    fn a_null_leaf_is_idempotent_like_every_other_scalar() {
+        use serde_json::json;
+        // `insert_scalar` stores a JSON null as `Any::Null`, so `read_scalar` must read it back as
+        // a null — otherwise the leaf is forever "changed", `reconcile_map` rewrites it on every
+        // re-mirror, and the idempotence invariant holds for three of the four scalar kinds only.
+        // `to_json` cannot see this (a rewritten null looks identical), so assert on the doc's own
+        // clock: a write bumps the state vector, a no-op does not.
+        let mut doc = GraphDoc::new();
+        let proj = json!({ "nodes": { "1": { "type": "Buffer", "name": "buf",
+            "pos": {"x": 0.0, "y": 0.0},
+            "params": { "buffer": { "size": { "value": null } } } } },
+            "links": [], "instances": {} });
+        doc.reconcile_root(&proj);
+        let sv = doc.state_vector();
+        doc.reconcile_root(&proj);
+        assert_eq!(doc.state_vector(), sv, "re-asserting an unchanged null leaf writes nothing");
     }
 
     #[test]
