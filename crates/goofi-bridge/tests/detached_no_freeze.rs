@@ -72,3 +72,27 @@ fn a_busy_detached_node_never_holds_the_graph_lock() {
         "graph lock stayed responsive (worst {worst:?}) despite a 300ms detached node"
     );
 }
+
+#[test]
+fn deleting_a_busy_detached_node_never_holds_the_graph_lock() {
+    // The other half of the same invariant: it is *teardown*, not just the tick, that must never
+    // wait on a detached worker. `remove_node` runs under the same lock the tick needs, and the
+    // worker only observes shutdown between jobs — so waiting on one parked inside `process()`
+    // would freeze the whole app for that window (a real subprocess node waits out its 10s
+    // timeout). The same lock-acquisition probe answers both halves.
+    let mut g = Graph::new();
+    g.register_dyn_type(&SLOW_MANIFEST, Box::new(|_| Box::new(SlowNode)));
+    let uid = g.add_node("SlowSubproc", None).unwrap();
+    let graph = Arc::new(Mutex::new(g));
+
+    spawn_tick(graph.clone());
+    std::thread::sleep(Duration::from_millis(60)); // let the worker be mid-process()
+
+    let t0 = Instant::now();
+    graph.lock().unwrap().remove_node(uid).unwrap();
+    let held = t0.elapsed();
+    assert!(
+        held < Duration::from_millis(100),
+        "delete returned in {held:?} — it waited on the busy worker under the graph lock"
+    );
+}

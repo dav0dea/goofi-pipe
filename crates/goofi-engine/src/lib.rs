@@ -1532,14 +1532,9 @@ impl Graph {
             .collect();
 
         let entry = self.nodes.get_mut(&uid).expect("looked up above");
-        // Reap the old instance OFF the caller's thread. Dropping a `DetachedHandle` signals its
-        // worker and joins it, and the worker only observes that signal between jobs — so a
-        // worker parked inside a blocking `process()` (a subprocess roundtrip waits out its
-        // timeout) would hold the graph mutex for that whole window, freezing the tick, every
-        // viewer and every other RPC. The restart must never be the thing that freezes the app it
-        // is rescuing. An inline node's drop is trivial, so this costs one short-lived thread.
-        let old = std::mem::replace(&mut entry.exec, exec);
-        std::thread::spawn(move || drop(old));
+        // Dropping the old instance never waits: a `DetachedHandle`'s Drop only signals its
+        // worker, which reaps itself off this thread.
+        entry.exec = exec;
         entry.params = params;
         // `inputs` is left as it stands: the manifest is unchanged (same registered type), so its
         // slots already match, and each holds the last frame delivered — same rationale as the
@@ -3918,7 +3913,7 @@ mod tests {
     // A blocking test node that runs on the detached worker WITHOUT a real subprocess: it
     // records each job's arrival (the input's first f32) then waits for a permit, so a test
     // controls exactly when the worker proceeds. `open()` releases the gate for good — used
-    // at teardown so a blocked worker can drain + idle and `Drop` can join it.
+    // at teardown so a blocked worker can drain, see the shutdown signal and exit.
     struct Gate {
         mtx: std::sync::Mutex<GateInner>,
         cv: std::sync::Condvar,
@@ -4110,13 +4105,15 @@ mod tests {
         gate.release(); // finish job 1 → worker takes the coalesced job(value=4)
         gate.wait_calls(2);
         assert_eq!(gate.calls(), vec![1.0, 4.0], "middle jobs coalesced; only first + last ran");
-        gate.open(); // teardown: let the worker drain + idle so Drop can join it
+        gate.open(); // teardown: let the worker drain + idle so it sees the shutdown signal
     }
 
     #[test]
-    fn removing_a_detached_node_joins_its_worker() {
-        // No tick → the worker seeds then idles on the inbox. remove_node drops the handle,
-        // which signals shutdown + joins; the idle worker exits and drops the node.
+    fn removing_a_detached_node_reaps_its_worker() {
+        // No tick → the worker seeds then idles on the inbox. remove_node drops the handle, which
+        // signals shutdown; the idle worker wakes, exits and drops the node (reaping any child
+        // process through its own Drop). The signal is fire-and-forget — the caller never waits on
+        // the worker — so this is a bounded poll, like its restart sibling.
         use std::sync::atomic::{AtomicUsize, Ordering};
         let gate = Gate::new();
         let dropped = std::sync::Arc::new(AtomicUsize::new(0));
@@ -4126,7 +4123,49 @@ mod tests {
         assert_eq!(dropped.load(Ordering::SeqCst), 0, "node still alive on its worker");
 
         g.remove_node(det).unwrap();
-        assert_eq!(dropped.load(Ordering::SeqCst), 1, "worker exited and dropped its node");
+
+        for _ in 0..500 {
+            if dropped.load(Ordering::SeqCst) == 1 {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        panic!("the removed instance was never dropped (got {})", dropped.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn removing_a_busy_detached_node_does_not_block_the_graph() {
+        // The sibling of `restarting_a_busy_detached_node_does_not_block_the_graph`, for the OTHER
+        // three teardown paths (delete, batch delete, undo-of-add, load). The bridge holds the
+        // graph mutex across `remove_node`, and the worker only observes shutdown between jobs —
+        // so waiting on a worker parked inside a blocked `process()` would freeze the tick, every
+        // viewer and every other RPC for the rest of that call.
+        let gate = Gate::new();
+        let mut g = Graph::new();
+        register_gate(&mut g, gate.clone(), None, false);
+        let src = g.add_node("_TestConst", None).unwrap();
+        let det = g.add_node("GateSubproc", None).unwrap();
+        g.add_link(src, "out", det, "data").unwrap();
+        g.tick(); // dispatches a job; the worker blocks on the permit, inside process()
+        gate.wait_calls(1);
+
+        // Stand in for the backend's own timeout releasing the stuck call (a subprocess roundtrip
+        // gives up after 10s). It bounds the failure so a regression is a measured wait rather
+        // than a hung suite, and doubles as the worker's cleanup.
+        let releaser = gate.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(800));
+            releaser.open();
+        });
+
+        let t0 = Instant::now();
+        g.remove_node(det).unwrap();
+        let blocked_for = t0.elapsed();
+
+        assert!(
+            blocked_for < Duration::from_millis(500),
+            "remove_node returned only after {blocked_for:?} — it waited on the busy worker"
+        );
     }
 
     #[test]
@@ -4271,7 +4310,7 @@ mod tests {
     }
 
     #[test]
-    fn restarting_a_detached_node_joins_the_old_worker() {
+    fn restarting_a_detached_node_reaps_the_old_worker() {
         use std::sync::atomic::{AtomicUsize, Ordering};
         let gate = Gate::new();
         gate.open();
@@ -4282,9 +4321,9 @@ mod tests {
 
         g.restart_node(det).unwrap();
 
-        // The replaced handle still joins its worker (which reaps the child process through the
-        // node's own Drop) — just on a reaper thread rather than under the caller's graph lock,
-        // so this is a bounded wait rather than an immediate read.
+        // The replaced handle's worker still exits and drops the instance (reaping the child
+        // process through the node's own Drop) — on its own thread rather than under the caller's
+        // graph lock, so this is a bounded poll rather than an immediate read.
         for _ in 0..500 {
             if dropped.load(Ordering::SeqCst) == 1 {
                 return;
@@ -4347,11 +4386,11 @@ mod tests {
 
     #[test]
     fn restarting_a_busy_detached_node_does_not_block_the_graph() {
-        // The whole point of the restart button is rescuing a node that is stuck. Dropping the old
-        // handle JOINS its worker, and the worker only observes the shutdown signal between jobs —
-        // so reaping it inline would hold the graph mutex for the rest of a blocked process() call
-        // (up to a subprocess roundtrip's 10s timeout), freezing the tick, every viewer and every
-        // other RPC. The restart must never be the thing that freezes the app it is rescuing.
+        // The whole point of the restart button is rescuing a node that is stuck. The worker only
+        // observes the shutdown signal between jobs, so waiting on the old handle would hold the
+        // graph mutex for the rest of a blocked process() call (up to a subprocess roundtrip's 10s
+        // timeout), freezing the tick, every viewer and every other RPC. The restart must never be
+        // the thing that freezes the app it is rescuing.
         let gate = Gate::new();
         let mut g = Graph::new();
         register_gate(&mut g, gate.clone(), None, false);

@@ -6,7 +6,6 @@
 
 use std::collections::HashMap;
 use std::sync::{Arc, Condvar, Mutex};
-use std::thread::JoinHandle;
 
 use goofi_core::Data;
 use goofi_node::{Node, NodeCtx, NodeManifest, ParamGroups};
@@ -88,7 +87,6 @@ pub(crate) struct Done {
 pub(crate) struct DetachedHandle {
     inbox: Arc<Mailbox<Job>>,
     outbox: Arc<Mailbox<Done>>,
-    thread: Option<JoinHandle<()>>,
     /// How far the worker has got through its own bootstrap. Unlike an inline node — seeded
     /// synchronously before `insert_node_at` returns — a detached node's `setup()` runs off-tick
     /// and can take a while (a Python child is spawn + import + setup, measured in hundreds of
@@ -113,11 +111,11 @@ impl DetachedHandle {
         let outbox = Arc::new(Mailbox::new());
         let stage = Arc::new(std::sync::atomic::AtomicU8::new(STAGE_CREATING));
         let (ib, ob, st) = (inbox.clone(), outbox.clone(), stage.clone());
-        let thread = std::thread::Builder::new()
+        std::thread::Builder::new()
             .name(format!("goofi-detached-{}", manifest.type_name))
             .spawn(move || worker(node, manifest, params0, ctx0, ib, ob, st))
             .expect("spawn detached worker");
-        DetachedHandle { inbox, outbox, thread: Some(thread), stage }
+        DetachedHandle { inbox, outbox, stage }
     }
 
     /// How far the worker's bootstrap has got (`STAGE_*`).
@@ -138,13 +136,13 @@ impl DetachedHandle {
 
 impl Drop for DetachedHandle {
     fn drop(&mut self) {
-        // Signal shutdown, then join. An idle worker (waiting on the inbox) exits
-        // instantly; a busy one finishes its one in-flight `process()` first (bounded by
-        // the backend's own timeout) — vastly better than the pre-fix every-tick freeze.
+        // Signal only — never wait. The worker checks shutdown at `wait()`, so it observes this
+        // BETWEEN jobs; a worker parked inside a blocking `process()` (a subprocess roundtrip
+        // waits out its 10s timeout) would otherwise hold up whoever dropped the handle. Every
+        // teardown path — remove_node, clear, undo-of-add, load, restart — runs under the graph
+        // mutex, so waiting here freezes the tick, every viewer and every other RPC. The worker
+        // owns the boxed node and drops it on its own thread, which reaps any child process.
         self.inbox.shutdown();
-        if let Some(t) = self.thread.take() {
-            let _ = t.join();
-        }
     }
 }
 
