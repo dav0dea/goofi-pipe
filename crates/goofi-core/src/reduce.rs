@@ -15,6 +15,7 @@
 
 use crate::{Coord, Data, MetaValue, Value};
 use goofi_view::{MergedViewSpec, ReduceMethod};
+use std::borrow::Cow;
 use std::collections::BTreeMap;
 
 fn method_name(m: ReduceMethod) -> &'static str {
@@ -40,7 +41,10 @@ pub fn reduce_for_view(frame: &Data, plan: &MergedViewSpec) -> Data {
     if plan.axes.is_empty() {
         return frame.clone();
     }
-    let mut bytes = store.as_bytes().to_vec();
+    // Borrowed until an axis actually shrinks: the no-shrink early return below is the COMMON
+    // path (`plan` emits a PlannedAxis per requested dim without checking whether it would
+    // shrink), so the copy this used to take was usually thrown away unread.
+    let mut bytes = Cow::Borrowed(store.as_bytes());
     let mut shape = store.shape().to_vec();
     let mut axes = frame.meta().channels().clone();
     let mut reduced: BTreeMap<String, MetaValue> = BTreeMap::new();
@@ -58,7 +62,7 @@ pub fn reduce_for_view(frame: &Data, plan: &MergedViewSpec) -> Data {
         let verbatim = (ax.method == ReduceMethod::Subsample && orig_len <= 4096)
             .then(|| axes.get(ax.dim).and_then(|a| a.coords.clone()))
             .flatten();
-        bytes = r.bytes;
+        bytes = Cow::Owned(r.bytes);
         shape[ax.dim] = r.new_len;
         axes = axes.sliced(ax.dim, &r.centers);
         let mut entry = BTreeMap::new();
@@ -84,7 +88,7 @@ pub fn reduce_for_view(frame: &Data, plan: &MergedViewSpec) -> Data {
     let mut meta = frame.meta().clone();
     meta.set_channels(axes);
     meta.set_reduced(Some(MetaValue::Map(reduced)));
-    Data::array_f32(shape, bytes, meta).unwrap_or_else(|_| frame.clone())
+    Data::array_f32(shape, bytes.into_owned(), meta).unwrap_or_else(|_| frame.clone())
 }
 
 /// `m` evenly-spaced indices into `0..n` (inclusive endpoints, like `np.linspace(0,n-1,m)`).

@@ -13,6 +13,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use axum::body::Bytes;
 use goofi_engine::{Graph, Uid};
 use goofi_view::ViewSpec;
 use tokio::sync::broadcast;
@@ -31,8 +32,9 @@ fn union_specs(by_conn: &HashMap<ConnId, Vec<ViewSpec>>) -> Vec<ViewSpec> {
 struct SlotReducer {
     /// Per-connection specs; the reduction plans against their union.
     specs: Arc<Mutex<HashMap<ConnId, Vec<ViewSpec>>>>,
-    /// Encoded reduced-frame fan-out to every subscribing connection.
-    tx: broadcast::Sender<Arc<[u8]>>,
+    /// Encoded reduced-frame fan-out to every subscribing connection. `Bytes` so the socket
+    /// task forwards the SHARED buffer — a per-subscriber copy would undo the dedup.
+    tx: broadcast::Sender<Bytes>,
     /// The driving task (aborted on last-leave teardown).
     task: tokio::task::JoinHandle<()>,
     /// Count of reduce+encode passes — proves dedup in tests (one pass serves all subscribers).
@@ -64,7 +66,7 @@ impl SlotReducers {
 
     /// Subscribe `conn` to `key`'s reduced stream, spawning the slot's reducer task if this is
     /// the first subscriber. Returns the broadcast receiver of encoded frames.
-    pub fn subscribe(&self, key: SlotKey, conn: ConnId) -> broadcast::Receiver<Arc<[u8]>> {
+    pub fn subscribe(&self, key: SlotKey, conn: ConnId) -> broadcast::Receiver<Bytes> {
         let mut map = self.inner.lock().unwrap();
         let reducer = map.entry(key.clone()).or_insert_with(|| {
             let specs = Arc::new(Mutex::new(HashMap::new()));
@@ -129,7 +131,7 @@ impl SlotReducers {
 fn spawn_reducer(
     key: SlotKey,
     specs: Arc<Mutex<HashMap<ConnId, Vec<ViewSpec>>>>,
-    tx: broadcast::Sender<Arc<[u8]>>,
+    tx: broadcast::Sender<Bytes>,
     graph: Arc<Mutex<Graph>>,
     reductions: Arc<AtomicU64>,
 ) -> tokio::task::JoinHandle<()> {
@@ -153,7 +155,7 @@ fn spawn_reducer(
                 goofi_core::reduce::reduce_for_view(&d, &plan)
             };
             reductions.fetch_add(1, Ordering::Relaxed);
-            let bytes: Arc<[u8]> = goofi_codec::encode(&out).into();
+            let bytes = Bytes::from(goofi_codec::encode(&out));
             let _ = tx.send(bytes); // Err only if all receivers are momentarily gone — harmless.
         }
     })
@@ -274,9 +276,13 @@ mod tests {
             "reduce passes {passes} bounded by wall-clock (one shared reducer), not by {SUBS} subscribers"
         );
 
-        // Every subscriber is live (the fan-out reaches all of them).
+        // Every subscriber is live (the fan-out reaches all of them). `len()` is what is QUEUED —
+        // nothing here recv()s, so an empty ring means this subscriber never received, which is
+        // exactly the fan-out bug. The old `<= 16` bound could not catch it (an unreached
+        // subscriber has len 0 and passes) and, being `tail - next`, tracked the pass count this
+        // test deliberately tolerates up to 40 — so it went red on scheduler overrun instead.
         for (_, r) in &subs {
-            assert!(r.len() <= 16, "each subscriber has its own bounded ring, latest-wins");
+            assert!(!r.is_empty(), "every subscriber received the shared reducer's frames");
         }
         stop.store(true, Ordering::Relaxed);
         ticker.join().unwrap();
