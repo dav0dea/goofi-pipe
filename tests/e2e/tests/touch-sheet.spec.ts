@@ -2,7 +2,7 @@ import { test, expect, type Page } from '@playwright/test';
 import { waitForApp } from '../lib/app';
 import { settledBox } from '../lib/geometry';
 import { addNode, waitForNode, waitForNoNode } from '../lib/goofi';
-import { emptySpot, setKeyboardInset } from '../lib/touch';
+import { emptySpot, setKeyboardInset, touchSession } from '../lib/touch';
 
 /**
  * The inspector as a bottom sheet — the `touch` (Pixel 7 portrait) project, where the host editor
@@ -92,6 +92,49 @@ test('the canvas above the sheet still takes a tap that changes the selection', 
 				message: 'the tap reached the canvas and changed the selection'
 			})
 			.toBe(0);
+	} finally {
+		await drop(page, uid);
+	}
+});
+
+/**
+ * The other half of D-I4's "edge drag is for BOTH": the same grip, the same module, the same
+ * persistence idiom — a finger instead of a mouse, and the Y axis instead of X. Nothing about this
+ * gesture is gated on the pointer; what touch adds is the swipe layered on top of it.
+ *
+ * Real CDP touch, not `page.mouse`: under `hasTouch` Playwright's mouse API still reports
+ * `pointerType: 'mouse'`, which would prove the desktop path a second time.
+ */
+test('an edge drag resizes the sheet by TOUCH — the same gesture, the other axis (D-I3)', async ({
+	page
+}) => {
+	await page.emulateMedia({ reducedMotion: 'reduce' });
+	await page.goto('/');
+	await waitForApp(page);
+	const uid = await addAndSelect(page);
+	try {
+		const before = await settledBox(pane(page));
+		const grip = (await page.getByTestId('panel-resize-handle').boundingBox())!;
+		const x = Math.round(grip.x + grip.width / 2);
+		const y0 = Math.round(grip.y + grip.height / 2);
+		const touch = await touchSession(page);
+		// DOWN the screen, i.e. into the sheet, which shrinks it. Upward the 60% ceiling would bind
+		// and what came back would be a measurement of `max-height`, not of the drag.
+		await touch.down({ x, y: y0 });
+		for (let i = 1; i <= 5; i++) await touch.moveTo({ x, y: y0 + i * 20 });
+		await touch.up();
+
+		const after = await settledBox(pane(page));
+		expect(after.height, 'the sheet shrank by exactly the drag').toBeCloseTo(before.height - 100, 0);
+		expect(after.width, 'and stayed the full width of its host').toBeCloseTo(before.width, 0);
+		expect(
+			await page.evaluate(() => localStorage.getItem('goofi.panelHeight')),
+			'persisted under its OWN key, the same idiom as the width (D-I3)'
+		).toBe(String(Math.round(after.height)));
+		expect(
+			await page.evaluate(() => localStorage.getItem('goofi.panelWidth')),
+			'and the other axis was not touched'
+		).toBeNull();
 	} finally {
 		await drop(page, uid);
 	}

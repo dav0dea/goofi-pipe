@@ -144,6 +144,75 @@ test('a narrow, tall DOCKED editor gets the sheet, in a landscape window (spec �
 	}
 });
 
+/**
+ * D-I3/D-I4: the edge drag is not a touch affordance. It is THE resize, identical on both inputs,
+ * and this is the mouse half — driven with `page.mouse`, whose `pointerType` is `mouse`, i.e. the
+ * input every coarse door in the app is closed to.
+ */
+test('an edge drag resizes the pane with a MOUSE, and the size outlives the reload', async ({
+	page
+}) => {
+	await page.emulateMedia({ reducedMotion: 'reduce' });
+	await page.goto('/');
+	await waitForApp(page);
+	const uid = await addAndSelect(page);
+	try {
+		const before = await settledBox(pane(page));
+		const grip = (await page.getByTestId('panel-resize-handle').boundingBox())!;
+		const y = grip.y + grip.height / 2;
+		// Rightward, i.e. INTO the pane, which shrinks it — the same direction of travel that shrinks
+		// the sheet when it is pushed down. Away from the pane the ceiling would bind and the
+		// measurement would be of `max-width`, not of the drag.
+		await page.mouse.move(grip.x + grip.width / 2, y);
+		await page.mouse.down();
+		await page.mouse.move(grip.x + grip.width / 2 + 60, y, { steps: 8 });
+		await page.mouse.up();
+
+		const after = await settledBox(pane(page));
+		expect(after.width, 'the pane shrank by exactly the drag').toBeCloseTo(before.width - 60, 0);
+		expect(
+			await page.evaluate(() => localStorage.getItem('goofi.panelWidth')),
+			'and the RENDERED size is what was stored, so a reload agrees with the screen'
+		).toBe(String(Math.round(after.width)));
+
+		await page.reload();
+		await waitForApp(page);
+		await page.evaluate((u) => (window as any).goofi.commands.select([u]), uid);
+		await expect(pane(page)).toHaveClass(/open/);
+		const restored = await settledBox(pane(page));
+		expect(restored.width, 'and it comes back at that width').toBeCloseTo(after.width, 0);
+	} finally {
+		await drop(page, uid);
+	}
+});
+
+/**
+ * D-I9. The desktop grip is a transparent line until it is hovered, which is the whole of its
+ * discoverability — and CLAUDE.md forbids an affordance that exists solely behind `:hover`. A sheet
+ * with no visible grabber also simply does not read as draggable. On a FINE pointer here, so what
+ * is proved is the portrait rule and not the coarse one `touch-hover-doors.spec.ts` already covers.
+ */
+test('the sheet rests with a visible grabber, not an invisible seam', async ({ page }) => {
+	await page.setViewportSize({ width: 600, height: 1000 });
+	await page.emulateMedia({ reducedMotion: 'reduce' });
+	await page.goto('/');
+	await waitForApp(page);
+	const uid = await addAndSelect(page);
+	try {
+		// The pointer is parked off the pane — no hover anywhere near the grip.
+		await page.mouse.move(5, 5);
+		const pill = await page.getByTestId('panel-resize-handle').evaluate((el) => {
+			const cs = getComputedStyle(el, '::after');
+			return { bg: cs.backgroundColor, width: parseFloat(cs.width), height: parseFloat(cs.height) };
+		});
+		expect(pill.bg, 'the grabber paints at rest').not.toBe('rgba(0, 0, 0, 0)');
+		expect(pill.width, 'and it is a pill across the sheet, not a hairline down its side').
+			toBeGreaterThan(pill.height * 4);
+	} finally {
+		await drop(page, uid);
+	}
+});
+
 test('the ✕ dismisses the pane in either anchor', async ({ page }) => {
 	// `inspector-dismiss.spec.ts` proves the ✕ on the right-hand pane; this is the same door on the
 	// SHEET, and D-I4 is why it must exist there too — the swipe is an extra, never the only way out.

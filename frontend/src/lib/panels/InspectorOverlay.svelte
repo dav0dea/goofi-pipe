@@ -23,6 +23,7 @@
 	import { graph } from '$lib/stores/graph.svelte';
 	import { onDestroy } from 'svelte';
 	import type { NodeInstanceInfo } from '$lib/api/control';
+	import { coordOf, paneSizeAt, type PaneAxis, type PaneDrag } from './paneDrag';
 
 	let {
 		node,
@@ -79,13 +80,28 @@
 		if (!paneEl) return;
 		e.preventDefault();
 		const el = paneEl;
-		const startX = e.clientX;
-		// The RENDERED width, not the stored one: the ceiling lives in CSS, so a value restored from
+		// The axis is the container query's answer, read back off the pane rather than re-derived
+		// here from the host's box — one question, asked once, of the box CSS asked it of.
+		const axis: PaneAxis =
+			getComputedStyle(el).getPropertyValue('--pane-axis').trim() === 'y' ? 'y' : 'x';
+		const vertical = axis === 'y';
+		const box = el.getBoundingClientRect();
+		// The RENDERED size, not the stored one: the ceiling lives in CSS, so a value restored from
 		// a wider screen (or from before D-I6's cap) is not what is on screen — and a drag that began
 		// from it would move the pointer a long way before the pane moved at all.
-		const startW = el.getBoundingClientRect().width;
+		const drag: PaneDrag = {
+			axis,
+			startSize: vertical ? box.height : box.width,
+			startPos: coordOf(axis, e),
+			min: vertical ? MIN_PANEL_HEIGHT : MIN_PANEL_WIDTH
+		};
+		const key = vertical ? 'goofi.panelHeight' : 'goofi.panelWidth';
+		const apply = (size: number): void => {
+			if (vertical) panelHeight = size;
+			else panelWidth = size;
+		};
 		resizing = true;
-		// The width is applied live, so there is nothing for a cancel to roll back — and persisting
+		// The size is applied live, so there is nothing for a cancel to roll back — and persisting
 		// it either way is what keeps a reload agreeing with what is on screen. A cancel that did NOT
 		// run this teardown is the actual defect: the window listeners outlived the gesture and the
 		// pane kept resizing on the next pointer motion.
@@ -93,17 +109,17 @@
 		const finish = (): void => {
 			resizing = false;
 			teardownResize = null;
-			panelWidth = el.getBoundingClientRect().width;
+			const r = el.getBoundingClientRect();
+			const size = vertical ? r.height : r.width;
+			apply(size);
 			try {
-				localStorage.setItem('goofi.panelWidth', String(Math.round(panelWidth)));
+				localStorage.setItem(key, String(Math.round(size)));
 			} catch {
 				/* private mode; persistence is best-effort */
 			}
 		};
 		teardownResize = beginDrag(e.currentTarget as HTMLElement, e.pointerId, {
-			move: (m) => {
-				panelWidth = Math.max(MIN_PANEL_WIDTH, startW - (m.clientX - startX));
-			},
+			move: (m) => apply(paneSizeAt(drag, coordOf(axis, m))),
 			commit: finish,
 			cancel: finish
 		});
