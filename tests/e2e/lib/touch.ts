@@ -34,11 +34,6 @@ export async function touchSession(page: Page): Promise<TouchSession> {
 }
 
 /**
- * A point where the flow pane really is the topmost element. One backend serves the whole run, so
- * the patch may carry nodes left by an earlier spec — a hardcoded centre point could land on a node
- * card (which must NOT arm the long-press door) and green a test for the wrong reason.
- */
-/**
  * Fake a soft keyboard by shrinking `visualViewport.height` (an own property shadows the prototype
  * getter) and firing the resize the real keyboard would fire. `px = 0` restores it.
  *
@@ -67,14 +62,35 @@ export const kbInset = (page: Page): Promise<string> =>
 		getComputedStyle(document.documentElement).getPropertyValue('--kb-inset').trim()
 	);
 
+/**
+ * A point where the flow pane really is the topmost element AND no node card is within a tap target
+ * of it. One backend serves the whole run, so the patch may carry nodes left by an earlier spec — a
+ * hardcoded centre point could land on a node card (which must NOT arm the long-press door) and
+ * green a test for the wrong reason.
+ *
+ * `elementFromPoint` answers "is this bare canvas" exactly. A TOUCH does not ask it that way:
+ * Chromium applies **touch adjustment**, snapping a tap within roughly a finger's radius onto a
+ * nearby clickable box. Measured here at 10px — a tap 10px clear of a node card's right edge came
+ * back as a `click` on the card's edge, so a tap meant to deselect re-selected the node it was
+ * beside and the canvas looked dead when it was not. So the point must clear every rendered card by
+ * a full `--hit` as well as being provably bare.
+ */
 export async function emptySpot(page: Page): Promise<TouchPoint> {
 	const spot = await page.locator('.svelte-flow__pane').first().evaluate((pane) => {
+		const hit = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--hit'));
+		const cards = [...document.querySelectorAll('.svelte-flow__node')].map((n) =>
+			n.getBoundingClientRect()
+		);
+		const clear = (x: number, y: number): boolean =>
+			cards.every(
+				(c) => x < c.left - hit || x > c.right + hit || y < c.top - hit || y > c.bottom + hit
+			);
 		const r = pane.getBoundingClientRect();
 		for (let fy = 0.25; fy <= 0.75; fy += 0.1) {
 			for (let fx = 0.2; fx <= 0.8; fx += 0.1) {
 				const x = Math.round(r.left + r.width * fx);
 				const y = Math.round(r.top + r.height * fy);
-				if (document.elementFromPoint(x, y) === pane) return { x, y };
+				if (document.elementFromPoint(x, y) === pane && clear(x, y)) return { x, y };
 			}
 		}
 		return null;

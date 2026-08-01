@@ -102,10 +102,12 @@ test('412px portrait: add a node, connect it, open its parameters, change one, a
 	// --- 2. PARAMETERS — placing a node selects it, so its inspector is already up ------------
 	const inspector = page.getByTestId('auto-side-panel');
 	await expect(inspector, 'the placed node is inspected').toHaveClass(/open/);
+	// This panel is portrait, so the pane is the bottom sheet: it spans the host's width and stops at
+	// 60% of its height (D-I6), which means the canvas it leaves is ABOVE it rather than beside it.
+	// Height is the safe read mid-slide too — a Y slide moves the box without resizing it.
 	const box = (await inspector.boundingBox())!;
-	expect(box.width, 'and it leaves a strip of canvas beside it').toBeLessThan(
-		page.viewportSize()!.width
-	);
+	const host = (await page.locator('.editor-panel').first().boundingBox())!;
+	expect(box.height, 'and it leaves a strip of canvas above it').toBeLessThan(host.height);
 	await expect(inspector.getByTestId('node-name')).toHaveText(osc.name);
 
 	// --- 3. CHANGE ONE, through the rendered control -----------------------------------------

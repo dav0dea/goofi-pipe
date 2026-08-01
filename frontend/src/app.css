@@ -165,8 +165,11 @@
 	--shadow-1: 0 4px 18px rgba(0, 0, 0, 0.45);
 	--shadow-2: 0 12px 36px rgba(0, 0, 0, 0.55);
 	/* Cast leftward by a panel that slides in from the right edge, so it reads as depth against
-	   the body rather than as a drop under a floating surface. */
+	   the body rather than as a drop under a floating surface. --shadow-sheet is the SAME depth
+	   rotated a quarter turn, for the same panel when its host is portrait and it rises from the
+	   bottom instead (D-I2/D-I8) — one material, two anchors, not two materials. */
 	--shadow-side: -8px 0 24px rgba(0, 0, 0, 0.35);
+	--shadow-sheet: 0 -8px 24px rgba(0, 0, 0, 0.35);
 
 	--radius-sm: 4px;
 	--radius-md: 6px;

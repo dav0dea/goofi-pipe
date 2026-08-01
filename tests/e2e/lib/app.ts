@@ -53,3 +53,27 @@ export async function closeAddedTab(page: Page): Promise<void> {
 	await expect(tabs.locator('.tab'), 'the workspace is back to one tab').toHaveCount(1);
 	await page.waitForTimeout(700);
 }
+
+/** Split the sole default panel to the right, through the real header context menu. Two specs need
+ *  a two-panel workspace — `panel-surface` to read the seam it paints, `inspector-orientation` to
+ *  make the editor a narrow tall column — and a second copy is a second thing to keep true. */
+export async function splitRight(page: Page): Promise<void> {
+	const header = page.getByTestId('panel-header').first();
+	await header.click({ button: 'right' });
+	const item = page.locator('.context-menu .item', { hasText: 'Split Right' }).first();
+	await expect(item).toBeVisible();
+	await item.click();
+	await expect(page.locator('.panel')).toHaveCount(2);
+}
+
+/**
+ * Put the workspace back, through the split panel's own ✕. `ws.split` re-arms AppShell's 400ms
+ * `set_layout` debounce, which writes into the RUNNING PATCH — one backend for the whole run — so a
+ * spec that splits and leaves early persists a 2-panel workspace that every later spec boots into.
+ * It passes alone and depends on nothing but screenshot latency, which is why it must be a `finally`.
+ */
+export async function closeSplit(page: Page): Promise<void> {
+	await page.getByTestId('panel-header').nth(1).getByRole('button', { name: 'Close panel' }).click();
+	await expect(page.locator('.panel'), 'the workspace is back to one panel').toHaveCount(1);
+	await page.waitForTimeout(700); // past AppShell's 400ms set_layout debounce
+}

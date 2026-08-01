@@ -300,11 +300,16 @@
 		min-height: 0;
 		overflow: hidden;
 		/* The query container every panel's content sizes against (`@container` in the UI
-		   primitives). `inline-size` (not `size`) contains only the inline axis, so the body's
-		   height keeps flowing from its flex parent. NB: the panel's fixed-position overlays (the
-		   add-node menu, ViewerSettingsMenu, the link-ghost) all portal to <body>
-		   so a future containing-block trigger here can never re-anchor them off the viewport. */
-		container-type: inline-size;
+		   primitives). `size`, not `inline-size`: the inspector's anchor is decided by whether its
+		   host panel is taller than it is wide (D-I2), and `@container (orientation: …)` needs the
+		   BLOCK axis contained to answer that. Safe here for the reason the three lines above spell
+		   out — `flex: 1; min-height: 0` means this body's height comes from its flex parent and
+		   never from its content, so containing the block axis cannot change its used size; every
+		   `inline-size` consumer (`ui/Field.svelte`) keeps working, since `size` is a superset.
+		   NB: the panel's fixed-position overlays (the add-node menu, ViewerSettingsMenu, the
+		   link-ghost) all portal to <body> so the containing block this establishes can never
+		   re-anchor them off the viewport. */
+		container-type: size;
 	}
 	.missing {
 		display: grid;

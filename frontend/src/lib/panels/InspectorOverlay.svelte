@@ -46,37 +46,54 @@
 			.catch((e) => console.warn('restart failed', e));
 	}
 
+	/** The pane's FLOOR on each axis. The ceilings are CSS's (`max-width` / `max-height` below):
+	 *  they are host- and rem-relative, so the stylesheet is the only place that can evaluate them,
+	 *  and a number here would be a second answer to one question — which is exactly what the old
+	 *  `MAX_PANEL_WIDTH = 720` was, sitting above a host clamp that always bound first. */
 	const MIN_PANEL_WIDTH = 260;
-	const MAX_PANEL_WIDTH = 720;
-	const STORED_WIDTH = (() => {
+	const MIN_PANEL_HEIGHT = 160;
+
+	/** A persisted pane size, or `null` when the user has never dragged one — in which case the
+	 *  resting size is the CSS fallback (`var(--pane-w, 420px)` / `var(--pane-h, 60%)`). Null rather
+	 *  than a literal because the portrait default is a PERCENTAGE of the host, which no number here
+	 *  could express; keeping both defaults in the stylesheet is what lets one idiom serve both. */
+	function storedSize(key: string, min: number): number | null {
 		try {
-			const raw = localStorage.getItem('goofi.panelWidth');
-			if (!raw) return 420;
-			const n = parseInt(raw, 10);
-			if (!Number.isFinite(n)) return 420;
-			return Math.max(MIN_PANEL_WIDTH, Math.min(MAX_PANEL_WIDTH, n));
+			const n = parseInt(localStorage.getItem(key) ?? '', 10);
+			return Number.isFinite(n) ? Math.max(min, n) : null;
 		} catch {
-			return 420;
+			return null; // private mode; persistence is best-effort
 		}
-	})();
-	let panelWidth = $state(STORED_WIDTH);
+	}
+
+	let panelWidth = $state(storedSize('goofi.panelWidth', MIN_PANEL_WIDTH));
+	let panelHeight = $state(storedSize('goofi.panelHeight', MIN_PANEL_HEIGHT));
 	let resizing = $state(false);
+	/** The pane itself — the drag measures its RENDERED box, since the ceilings are CSS's. */
+	let paneEl = $state<HTMLElement | null>(null);
 
 	/** The in-flight resize's teardown; non-null only between pointerdown and its resolution. */
 	let teardownResize: (() => void) | null = null;
 
 	function startPanelResize(e: PointerEvent): void {
+		if (!paneEl) return;
 		e.preventDefault();
+		const el = paneEl;
 		const startX = e.clientX;
-		const startW = panelWidth;
+		// The RENDERED width, not the stored one: the ceiling lives in CSS, so a value restored from
+		// a wider screen (or from before D-I6's cap) is not what is on screen — and a drag that began
+		// from it would move the pointer a long way before the pane moved at all.
+		const startW = el.getBoundingClientRect().width;
 		resizing = true;
 		// The width is applied live, so there is nothing for a cancel to roll back — and persisting
 		// it either way is what keeps a reload agreeing with what is on screen. A cancel that did NOT
 		// run this teardown is the actual defect: the window listeners outlived the gesture and the
 		// pane kept resizing on the next pointer motion.
+		// What is persisted is again the RENDERED size, so the store can never drift above the cap.
 		const finish = (): void => {
 			resizing = false;
 			teardownResize = null;
+			panelWidth = el.getBoundingClientRect().width;
 			try {
 				localStorage.setItem('goofi.panelWidth', String(Math.round(panelWidth)));
 			} catch {
@@ -85,8 +102,7 @@
 		};
 		teardownResize = beginDrag(e.currentTarget as HTMLElement, e.pointerId, {
 			move: (m) => {
-				const next = startW - (m.clientX - startX);
-				panelWidth = Math.max(MIN_PANEL_WIDTH, Math.min(MAX_PANEL_WIDTH, next));
+				panelWidth = Math.max(MIN_PANEL_WIDTH, startW - (m.clientX - startX));
 			},
 			commit: finish,
 			cancel: finish
@@ -106,13 +122,20 @@
 		class:open={node !== null}
 		class:resizing
 		inert={node === null}
-		style="width: {panelWidth}px"
+		bind:this={paneEl}
+		style:--pane-w={panelWidth === null ? null : `${panelWidth}px`}
+		style:--pane-h={panelHeight === null ? null : `${panelHeight}px`}
 		data-testid="auto-side-panel"
 	>
+		<!-- The size arrives as CUSTOM PROPERTIES rather than as a `width`, because which axis it
+		     feeds is the container query's decision below and an inline `width` cannot be beaten by
+		     any query. No `aria-orientation`: this separator takes no keyboard, and the axis it would
+		     name is owned by CSS — an attribute asserting one of them would be wrong half the time,
+		     and re-deriving the orientation in JS to keep it true would be the second source of
+		     truth D-I2 exists to avoid. -->
 		<div
 			class="resize-handle"
 			role="separator"
-			aria-orientation="vertical"
 			aria-label="Resize side panel"
 			onpointerdown={startPanelResize}
 			data-testid="panel-resize-handle"
@@ -158,21 +181,20 @@
 		right: 0;
 		top: 0;
 		bottom: 0;
-		/* How far the coarse resize grip below reaches OUTWARD, past the pane's own edge. Zero on a
-		   fine pointer, where the 8px handle is the whole target.
-		   NOT the same number as the band's own `-12px` left inset: `.resize-handle` is absolutely
-		   positioned against this pane's PADDING box, which sits 1px inside its 1px `border-left`,
-		   so `left: -4px` already starts the handle 3px outside the pane before the band grows at
-		   all. 12 + 3. `touch-reflow.spec.ts` measures the band's used left edge against the host,
-		   which is the only place the two ends of this coupling meet. */
-		--grip-reach: 0px;
-		/* The width above is JS-inline and clamped only to [260, 720] — never to the host. On an
-		   editor narrower than the stored width the pane covered the whole canvas with its own left
-		   edge clipped off, which is a DEAD END: deselecting (a tap on the canvas) is the only way
-		   to close it. One `--hit` of canvas is exactly the escape hatch it must not eat — and the
-		   grip's outward reach comes out of the pane, not out of the strip, so what is reserved is a
-		   full tap target of LIVE canvas rather than a number the grip then eats half of. */
-		max-width: calc(100% - var(--hit) - var(--grip-reach));
+		/* Which axis the grip drags. The container query at the bottom of this file is what DECIDES
+		   the anchor; `startPanelResize` reads this property back instead of re-deriving the
+		   orientation in JS, so the question is asked once, of the box CSS asked it of. */
+		--pane-axis: x;
+		/* The RESTING size is this fallback — the inline `--pane-w` exists only once the user has
+		   dragged one. Both defaults live here rather than in the script because portrait's is a
+		   percentage of the host (see the container query), which no stored number could express. */
+		width: var(--pane-w, 420px);
+		/* The comfort cap in rem AND the small-screen guard in percent (D-I6). The root clamp
+		   saturates at 14px across the whole range that matters, so 30rem is 420px — exactly the
+		   resting width above, which is why the desktop resting size does not move; below a ~1400px
+		   host the percent half binds instead. It replaces `100% - --hit - --grip-reach`, which
+		   guaranteed only that ONE tap target of canvas survived: on a 412px phone, a 44px strip. */
+		max-width: min(30%, 30rem);
 		background: color-mix(in srgb, var(--surface-1) 96%, transparent);
 		backdrop-filter: blur(8px);
 		border-left: 1px solid var(--border);
@@ -268,17 +290,14 @@
 	}
 	/* Touch: an 8px seam is under a fifth of --hit. Widen the HIT area only (a `::before` overlay,
 	   since `::after` is already the painted line), so the line stays at its 3px offset and the
-	   panel's JS-owned width is unaffected. Horizontal only — the handle already spans the full
-	   height, and a symmetric percentage inset would shrink that to --hit.
+	   panel's own size is unaffected. One axis only — the handle already spans the other, and a
+	   symmetric percentage inset would shrink that to --hit.
 	   ASYMMETRIC, though, and this is the trade the way `Splitter.svelte` states its own: a centred
 	   band reaches 22px back over the escape strip the clamp reserves, which on the 412px project IS
 	   the strip's natural aim point — a reserved target quietly halved. So the band leans inward,
-	   over the pane's own rows, and what it does take outward comes out of the pane's max-width
-	   above rather than out of the strip. Full --hit either way; the strip stays live. */
+	   over the pane's own rows, and what it does take outward comes out of the pane rather than out
+	   of the strip. Full --hit either way; the strip stays live. */
 	@media (hover: none) and (pointer: coarse) {
-		.side-panel {
-			--grip-reach: 15px;
-		}
 		.resize-handle::before {
 			content: '';
 			position: absolute;
@@ -290,6 +309,89 @@
 		   accent the hover/drag state uses, so it reads as an edge rather than as active. */
 		.resize-handle::after {
 			background: var(--border-strong);
+		}
+	}
+
+	/* ---------------------------------------------------------------------------------------------
+	   PORTRAIT — the bottom sheet, and the WHOLE of it. Everything that differs is under this one
+	   prelude, so the anchor has exactly one place to be read and one place to be changed.
+
+	   The question is asked of the HOST PANEL (`workspace/Panel.svelte`'s `.panel-body` is the query
+	   container), not of the viewport and not of the device class: "is the surface I live in taller
+	   than it is wide?" That is the only question that matters, and it is right in the two cases a
+	   viewport query gets wrong in opposite directions — a desktop editor docked as a narrow tall
+	   column gets the sheet, and a wide short editor inside a tall window does not.
+
+	   THE FLIP SEAM (spec §6). The desktop consequence is deliberate but visible, and if the user
+	   takes it back the edit is the `@media all` line below and nothing else: make it
+	   `@media (hover: none) and (pointer: coarse)` and the sheet is touch-only again. The no-op
+	   wrapper exists to keep that a one-line change — a container query cannot carry a pointer
+	   feature itself, so without it the flip would mean re-nesting the whole block.
+
+	   Nothing here is gated on the pointer, and that is the point: one component, one continuous
+	   resize, one persistence idiom. Modality gates only the additive swipe. */
+	@media all {
+		@container (orientation: portrait) {
+			.side-panel {
+				--pane-axis: y;
+				top: auto;
+				left: 0;
+				/* The soft keyboard, which CSS cannot see (D-I7): `--kb-inset` is published on <html>
+				   by the device store, and a text field inside a bottom sheet is the case it was kept
+				   for. This is its fourth consumer. */
+				bottom: var(--kb-inset, 0px);
+				width: auto;
+				max-width: none;
+				height: var(--pane-h, 60%);
+				max-height: 60%;
+				padding-bottom: var(--safe-bottom);
+				border-left: none;
+				border-top: 1px solid var(--border);
+				box-shadow: var(--shadow-sheet);
+				/* D-I8: the same motion tokens as the X slide above, a quarter turn round. The
+				   `:not(.open)` park rule and its `pointer-events: none` are axis-free and stand. */
+				transform: translateY(100%);
+			}
+			.side-panel.open {
+				transform: translateY(0);
+			}
+			.resize-handle {
+				left: 0;
+				right: 0;
+				top: -4px;
+				bottom: auto;
+				width: auto;
+				height: 8px;
+				cursor: row-resize;
+			}
+			/* D-I9: a RESTING grabber, not a seam that appears on hover. The desktop line is
+			   transparent until hovered, which CLAUDE.md forbids as the whole of an affordance, and a
+			   sheet with no visible grabber does not read as draggable at all. Same element, turned
+			   into a pill — the hover/drag accent rules above still out-specify it, so the drag still
+			   lights up. */
+			.resize-handle::after {
+				left: 50%;
+				top: 3px;
+				bottom: auto;
+				width: 2.5rem;
+				height: 2px;
+				transform: translateX(-50%);
+				background: var(--border-strong);
+				border-radius: 999px;
+			}
+			/* The coarse hit band turns with it — but it does NOT keep the landscape band's inward
+			   lean. 36px out + 8px handle + 0 in = --hit, entirely in the gutter above the sheet.
+			   Inward is where the pane's own top row is, and in this anchor that row is `.ins-head`:
+			   the band's 24px reach landed on the ✕ (measured: band bottom 418px, ✕ centre 416px) and
+			   swallowed the pane's one pointer door, which D-I4 says must never depend on a gesture.
+			   What it takes outward comes out of the 40% of canvas the cap hands back, where 36px is
+			   an eighth of what is there — the opposite of the landscape case, where outward is the
+			   scarce side. The band always leans away from whatever is scarce. */
+			@media (hover: none) and (pointer: coarse) {
+				.resize-handle::before {
+					inset: -36px 0 0 0;
+				}
+			}
 		}
 	}
 </style>

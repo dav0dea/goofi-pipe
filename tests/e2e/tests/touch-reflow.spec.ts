@@ -1,8 +1,9 @@
-import { test, expect, type Locator, type Page } from '@playwright/test';
+import { test, expect, type Page } from '@playwright/test';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { waitForApp } from '../lib/app';
+import { outside, settledBox } from '../lib/geometry';
 import { addNode, waitForNode, waitForNoNode } from '../lib/goofi';
 import { AS_ROWS, PRIORITY, inBar, menuRow, openOverflow } from '../lib/topbar';
 import { emptySpot } from '../lib/touch';
@@ -33,36 +34,6 @@ const hit = (page: Page): Promise<number> =>
 	page.evaluate(() =>
 		parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--hit'))
 	);
-
-/** A locator's box once it has stopped moving — two consecutive reads that agree. Anything that
- *  slides (the inspector) reports a frame of its animation otherwise, and a position read off a
- *  frame is not a measurement of the layout. */
-async function settledBox(loc: Locator): Promise<{ x: number; y: number; width: number; height: number }> {
-	let prev = { x: NaN, y: NaN, width: 0, height: 0 };
-	await expect
-		.poll(async () => {
-			const b = (await loc.boundingBox())!;
-			const same = Math.abs(b.x - prev.x) < 0.5 && Math.abs(b.width - prev.width) < 0.5;
-			prev = b;
-			return same;
-		}, { message: 'the pane settled' })
-		.toBe(true);
-	return prev;
-}
-
-/** How far `inner` falls outside `outer`, on any side, in px (0 = fully inside). */
-function outside(
-	inner: { x: number; y: number; width: number; height: number },
-	outer: { x: number; y: number; width: number; height: number }
-): number {
-	return Math.max(
-		0,
-		outer.x - inner.x,
-		outer.y - inner.y,
-		inner.x + inner.width - (outer.x + outer.width),
-		inner.y + inner.height - (outer.y + outer.height)
-	);
-}
 
 /**
  * A patch name long enough to crowd the header, and a scratch directory to keep it in.
@@ -250,9 +221,15 @@ async function checkHeaderFits(page: Page): Promise<void> {
 	}
 }
 
-/* Moved here from `touch-narrow.spec.ts` (which keeps the fixed-cost rows it was written for):
-   the pane's width is JS-inline and clamped against its HOST, so what it leaves behind is a
-   fraction of the editor panel — a different answer in portrait, in landscape and on a tablet. */
+/* Moved here from `touch-narrow.spec.ts` (which keeps the fixed-cost rows it was written for): the
+   pane is clamped against its HOST, so what it leaves behind is a fraction of the editor panel — a
+   different answer in portrait, in landscape and on a tablet.
+
+   And since D-I2, so is WHICH EDGE it comes from: the anchor follows the host panel's own shape, so
+   the three projects pointed at this file no longer all get the same one. `touch` (412×839) and
+   `tablet` (712×1138) host a portrait panel and get the bottom sheet; `touch-landscape` (863×360)
+   keeps the right-hand pane. The invariant under test is the same in both — the pane is flush with
+   the edge it slid from, and leaves a full tap target of LIVE canvas on the other side. */
 test('the inspector leaves the canvas it overlays reachable', async ({ page }) => {
 	// The pane slides in over `--dur-slow`, and every number below is a POSITION — measured
 	// mid-slide they describe a frame of the animation, not the layout the clamp produced. The app's
@@ -273,57 +250,82 @@ test('the inspector leaves the canvas it overlays reachable', async ({ page }) =
 		await expect(pane).toHaveClass(/open/);
 		const p = await settledBox(pane);
 		const host = (await page.locator('.editor-panel').first().boundingBox())!;
+		const h = await hit(page);
+		// Asked of the HOST, exactly as `@container (orientation: portrait)` asks it — not of the
+		// viewport, and not of the device class.
+		const portrait = host.height >= host.width;
+
 		// Before R its clamp was [260, 720] and never the host, so on a ~386px editor it covered the
-		// canvas completely with its own left edge clipped off. Deselecting by tapping the canvas is
+		// canvas completely with its own far edge clipped off. Deselecting by tapping the canvas is
 		// the only way to close it, so covering the canvas is a dead end.
-		expect(p.width, 'the pane leaves a strip of canvas').toBeLessThan(host.width);
-		expect(
-			host.x + host.width - (p.x + p.width),
-			'and is not clipped at its own edge'
-		).toBeLessThan(2);
-		expect(p.x - host.x, 'the strip is at least one tap target wide').toBeGreaterThanOrEqual(
-			await hit(page)
-		);
+		if (portrait) {
+			expect(p.height, 'the sheet leaves canvas above it').toBeLessThan(host.height);
+			expect(
+				host.y + host.height - (p.y + p.height),
+				'and is not clipped at its own edge'
+			).toBeLessThan(2);
+			expect(p.height, 'and never takes more than the 60% D-I6 allows').toBeLessThanOrEqual(
+				host.height * 0.6 + 1
+			);
+			expect(p.y - host.y, 'the strip is at least one tap target tall').toBeGreaterThanOrEqual(h);
+		} else {
+			expect(p.width, 'the pane leaves a strip of canvas').toBeLessThan(host.width);
+			expect(
+				host.x + host.width - (p.x + p.width),
+				'and is not clipped at its own edge'
+			).toBeLessThan(2);
+			expect(p.x - host.x, 'the strip is at least one tap target wide').toBeGreaterThanOrEqual(h);
+		}
 
 		// …and the strip has to be LIVE, not merely empty. The coarse resize band is a
-		// `touch-action: none`, pointer-capturing overlay centred on the handle, so it reached half a
-		// tap target back over the very canvas this clamp keeps free — and the strip's natural aim
-		// point, half a --hit in from the pane, was the dead boundary between them.
-		// Taken at the strip's natural aim point — half a --hit in from the pane — and at whichever
-		// height there is bare canvas, since a node can float anywhere in a strip this narrow. With
-		// the band centred there was no such height: it owned that whole column.
-		const h = await hit(page);
-		const x = p.x - h / 2;
-		const y = await page.evaluate(
-			([px, top, bottom]) => {
-				for (let cy = top + 20; cy < bottom - 20; cy += 16)
-					if (document.elementFromPoint(px, cy)?.classList.contains('svelte-flow__pane')) return cy;
-				return null;
-			},
-			[x, p.y, p.y + p.height]
-		);
-		expect(y, 'the strip’s aim point is canvas, not a resize band').not.toBeNull();
+		// `touch-action: none`, pointer-capturing overlay laid over the handle, so it reaches back
+		// over the very canvas this clamp keeps free.
+		//
+		// LANDSCAPE: aimed half a --hit off the pane's left edge, and at whichever height there is
+		// bare canvas, since a node can float anywhere in a strip this narrow. That aim point is the
+		// strip's natural one, and it is exactly what a centred band killed — with the band centred
+		// there was no such height, because it owned that whole column. The band leans INWARD here,
+		// so the aim point is clear of it by construction.
+		//
+		// PORTRAIT: the band cannot lean inward (the sheet's top row is its ✕), so it leans fully
+		// out and half a --hit off the edge is INSIDE it. The strip there is 40% of the host rather
+		// than one tap target, so its natural aim point is not its rim — `emptySpot` finds a live
+		// point in it, which is by construction neither under the sheet nor under the band, and
+		// clear of the node card by a tap target so touch adjustment cannot snap the tap onto it.
+		let spot: { x: number; y: number };
+		if (portrait) spot = await emptySpot(page);
+		else {
+			const found = await page.evaluate(
+				([px, top, bottom]) => {
+					for (let cy = top + 20; cy < bottom - 20; cy += 16)
+						if (document.elementFromPoint(px, cy)?.classList.contains('svelte-flow__pane'))
+							return { x: px, y: cy };
+					return null;
+				},
+				[p.x - h / 2, p.y, p.y + p.height]
+			);
+			expect(found, 'the strip’s aim point is canvas, not a resize band').not.toBeNull();
+			spot = found!;
+		}
 
-		// …and the strip has to be a full tap target WIDE, which that probe cannot see: it aims ONE
-		// point, half a --hit in from the pane, and so stays clear of the band by construction.
-		// `.resize-handle` is absolutely positioned against `.side-panel`'s PADDING box, which sits
-		// 1px inside its 1px `border-left`, so `left: -4px` starts the handle 3px outside the pane
-		// and the coarse `::before` reaches 12px further still — while `max-width` compensates by
-		// `--grip-reach` alone. The band pointer-captures and `preventDefault`s, so every pixel of
-		// it is canvas the escape hatch does not really have. Measured before the tap below, which
-		// deselects and parks the pane.
-		const bandLeft = await page.getByTestId('panel-resize-handle').evaluate((el) => {
+		// …and the strip has to be a full tap target DEEP, which that probe cannot see: it aims
+		// points, not an area. `.resize-handle` is absolutely positioned against `.side-panel`'s
+		// PADDING box, and its coarse `::before` reaches further out still. The band pointer-captures
+		// and `preventDefault`s, so every pixel of it is canvas the escape hatch does not really
+		// have. Measured before the tap below, which deselects and parks the pane.
+		const band = await page.getByTestId('panel-resize-handle').evaluate((el) => {
 			const cs = getComputedStyle(el, '::before');
 			if (cs.content === 'none') return null;
-			return el.getBoundingClientRect().left + parseFloat(cs.left);
+			const r = el.getBoundingClientRect();
+			return { left: r.left + parseFloat(cs.left), top: r.top + parseFloat(cs.top) };
 		});
-		expect(bandLeft, 'the coarse grip band is there to measure').not.toBeNull();
+		expect(band, 'the coarse grip band is there to measure').not.toBeNull();
 		expect(
-			bandLeft! - host.x,
+			portrait ? band!.top - host.y : band!.left - host.x,
 			'the LIVE strip is a full tap target once the grip band is counted'
 		).toBeGreaterThanOrEqual(h);
 
-		await page.touchscreen.tap(x, y!);
+		await page.touchscreen.tap(spot.x, spot.y);
 		await expect
 			.poll(() => page.evaluate(() => (window as any).goofi.query.selection().nodes.length), {
 				message: 'a tap in the reserved strip reaches the canvas and deselects'

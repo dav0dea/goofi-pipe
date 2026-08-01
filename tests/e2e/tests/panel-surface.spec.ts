@@ -1,5 +1,5 @@
 import { test, expect, type Page } from '@playwright/test';
-import { waitForApp } from '../lib/app';
+import { closeSplit, splitRight, waitForApp } from '../lib/app';
 import { addNode, waitForNode, waitForNoNode } from '../lib/goofi';
 
 /**
@@ -16,28 +16,6 @@ import { addNode, waitForNode, waitForNoNode } from '../lib/goofi';
  * seam is counted in real composited pixels, because "how many lines does this seam paint" has no
  * DOM answer.
  */
-
-/** Split the sole default panel to the right, through the real header context menu. */
-async function splitRight(page: Page): Promise<void> {
-	const header = page.getByTestId('panel-header').first();
-	await header.click({ button: 'right' });
-	const item = page.locator('.context-menu .item', { hasText: 'Split Right' }).first();
-	await expect(item).toBeVisible();
-	await item.click();
-	await expect(page.locator('.panel')).toHaveCount(2);
-}
-
-/**
- * Put the workspace back, through the split panel's own ✕. `ws.split` re-arms AppShell's 400ms
- * `set_layout` debounce, which writes into the RUNNING PATCH — one backend for the whole run — so a
- * spec that splits and leaves early persists a 2-panel workspace that every later spec boots into.
- * It passes alone and depends on nothing but screenshot latency, which is why it must be a `finally`.
- */
-async function closeSplit(page: Page): Promise<void> {
-	await page.getByTestId('panel-header').nth(1).getByRole('button', { name: 'Close panel' }).click();
-	await expect(page.locator('.panel'), 'the workspace is back to one panel').toHaveCount(1);
-	await page.waitForTimeout(700); // past AppShell's 400ms set_layout debounce
-}
 
 test('a panel is a surface on the ground, not a rectangle drawn on it', async ({ page }) => {
 	await page.goto('/');
