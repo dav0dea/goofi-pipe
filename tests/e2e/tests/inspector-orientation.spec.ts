@@ -187,6 +187,36 @@ test('an edge drag resizes the pane with a MOUSE, and the size outlives the relo
 });
 
 /**
+ * The mirror of `touch-sheet`'s swipe: the identical gesture, dragged just as far past the floor,
+ * under a MOUSE. It resizes to the floor and the pane stays open, which is what makes the swipe an
+ * *additive* touch affordance rather than a second behaviour the desktop also has to live with.
+ */
+test('the same drag under a mouse resizes to the floor and never dismisses (D-I4)', async ({
+	page
+}) => {
+	await page.emulateMedia({ reducedMotion: 'reduce' });
+	await page.goto('/');
+	await waitForApp(page);
+	const uid = await addAndSelect(page);
+	try {
+		const before = await settledBox(pane(page));
+		const grip = (await page.getByTestId('panel-resize-handle').boundingBox())!;
+		const y = grip.y + grip.height / 2;
+		await page.mouse.move(grip.x + grip.width / 2, y);
+		await page.mouse.down();
+		// Well past the 260px floor AND past a full dismiss overshoot below it.
+		await page.mouse.move(grip.x + grip.width / 2 + before.width + 100, y, { steps: 10 });
+		await page.mouse.up();
+
+		await expect(pane(page), 'the pane is still there').toHaveClass(/open/);
+		const after = await settledBox(pane(page));
+		expect(after.width, 'clamped at the floor, not closed').toBeCloseTo(260, 0);
+	} finally {
+		await drop(page, uid);
+	}
+});
+
+/**
  * D-I9. The desktop grip is a transparent line until it is hovered, which is the whole of its
  * discoverability — and CLAUDE.md forbids an affordance that exists solely behind `:hover`. A sheet
  * with no visible grabber also simply does not read as draggable. On a FINE pointer here, so what

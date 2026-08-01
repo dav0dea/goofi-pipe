@@ -140,6 +140,47 @@ test('an edge drag resizes the sheet by TOUCH — the same gesture, the other ax
 	}
 });
 
+/**
+ * The additive half of D-I4, and the only thing in this pane that input modality gates: the SAME
+ * drag, carried far enough past the floor, closes the sheet instead of resizing it.
+ *
+ * `inspector-orientation.spec.ts` runs the mirror of this under a mouse and proves the pane stays
+ * open — one gesture, one extra meaning, and only for a finger.
+ */
+test('a swipe carried past the floor dismisses the sheet (D-I4)', async ({ page }) => {
+	await page.emulateMedia({ reducedMotion: 'reduce' });
+	await page.goto('/');
+	await waitForApp(page);
+	const uid = await addAndSelect(page);
+	try {
+		const before = await settledBox(pane(page));
+		const grip = (await page.getByTestId('panel-resize-handle').boundingBox())!;
+		const x = Math.round(grip.x + grip.width / 2);
+		const y0 = Math.round(grip.y + grip.height / 2);
+		// Far enough that the size the swipe ASKS for is a full overshoot under the floor — which is
+		// the only thing that distinguishes it from a resize that merely bottomed out, since the pane
+		// clamps and the two look identical on screen.
+		const throwBy = before.height + 100;
+		const touch = await touchSession(page);
+		await touch.down({ x, y: y0 });
+		for (let i = 1; i <= 8; i++) await touch.moveTo({ x, y: Math.round(y0 + (throwBy * i) / 8) });
+		await touch.up();
+
+		// Dismissing turns the inspector OFF, which unmounts the pane — the canvas is genuinely
+		// handed back, exactly as the ✕ hands it back.
+		await expect(pane(page), 'the swipe threw the sheet away').toHaveCount(0);
+		expect(
+			await page.evaluate(() => localStorage.getItem('goofi.panelHeight')),
+			'and a dismiss is not a resize: nothing was persisted, so it comes back its old size'
+		).toBeNull();
+	} finally {
+		// The dismiss flipped this editor's inspector off, which is per-PAGE state (`selection`'s
+		// `inspectorOn`, never the layout blob) — so the next spec's fresh page has it on again and
+		// there is nothing to hand back but the node.
+		await drop(page, uid);
+	}
+});
+
 test('the soft keyboard lifts the sheet off the bottom (D-I7)', async ({ page }) => {
 	// `--kb-inset` is the one thing R kept of the device seam, precisely because CSS cannot see the
 	// soft keyboard — and a text field inside a bottom sheet is the case that needed it. This is its
