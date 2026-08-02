@@ -160,9 +160,13 @@
 	);
 
 	/** Empty canvas only — the pane is the direct target just where nothing else is drawn, so a
-	 * press on a node (which drags) or on the flow controls can never arm the door. */
+	 * press on a node (which drags) or on the flow controls can never arm the door.
+	 *
+	 * And not while a ghost is pending: the canvas belongs to the placement until it is put down, so
+	 * a finger resting on it mid-drag is positioning a node, not asking for a second menu on top of
+	 * the one that produced the ghost. */
 	function onCanvasPointerDown(e: PointerEvent): void {
-		if (e.pointerType !== 'touch') return;
+		if (e.pointerType !== 'touch' || pendingPlacement) return;
 		if (!(e.target as HTMLElement | null)?.classList.contains('svelte-flow__pane')) return;
 		canvasPress.start(e);
 	}

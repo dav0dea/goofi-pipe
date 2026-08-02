@@ -10,6 +10,7 @@
 		DEFAULT_NODE_H,
 		type Bounds
 	} from './snap';
+	import { createTouchPlacement } from './touchPlacement';
 	import type { NodeTypeInfo } from '$lib/api/control';
 
 	interface Props {
@@ -84,16 +85,78 @@
 		e.preventDefault();
 	}
 
+	// --- the same placement, with a finger ---------------------------------------------------
+	// The mouse path above is the reference and is untouched: everything below is reached only by a
+	// pointer whose `pointerType` is `touch`, asked per EVENT so a hybrid device stays right on both
+	// of its inputs. The gesture itself lives in `touchPlacement.ts`, where a unit test can reach it.
+	const touch = createTouchPlacement();
+
+	function onPointerDown(e: PointerEvent): void {
+		const at = touch.down(e, inCanvas(e.target));
+		if (at) mouseClient = at;
+	}
+
+	function onPointerMove(e: PointerEvent): void {
+		const at = touch.move(e);
+		if (at) mouseClient = at;
+	}
+
+	function onPointerUp(e: PointerEvent): void {
+		const at = touch.up(e);
+		if (!at) return;
+		mouseClient = at;
+		// `snappedX/Y` are `$derived`, i.e. pull-based — reading them here re-evaluates them against
+		// the point just assigned, so the commit lands on exactly the snapped position the ghost was
+		// drawn at, through the same `computeSnapDelta` the mouse path and the node drag share.
+		onCommit([Math.round(snappedX), Math.round(snappedY)]);
+	}
+
+	/**
+	 * The pan block AND the synthetic-click suppression — one handler, because they are one problem.
+	 *
+	 * SvelteFlow pans by d3-zoom, which binds `touchstart` on the pane rather than `pointerdown`, so
+	 * the pointer handlers above cannot keep a drag off the panner however they are written. This is
+	 * the touch analogue of the `mousedown` blocker: `stopPropagation` is what stops the pan.
+	 *
+	 * `preventDefault` is the other half, and it is HOW THE SYNTHETIC CLICK IS SUPPRESSED. A touch
+	 * the page does not cancel replays afterwards as a compat mouse cascade — mousemove, mousedown,
+	 * mouseup, click — and by the time it arrives `pointerup` has already committed and torn this
+	 * component down, so the trailing click would land on SvelteFlow's pane and clear the selection
+	 * the commit just made. Cancelling `touchstart` suppresses that whole cascade at its source,
+	 * which is why there is no click guard here racing the unmount to swallow one event.
+	 *
+	 * Gated on the flag the pointer path already set, so it holds back exactly the gesture this
+	 * component is driving: a touch OUTSIDE the canvas is left alone, and its compat click still
+	 * reaches `onWindowClick` and cancels the placement precisely as a mouse click does.
+	 */
+	function onTouchStart(e: TouchEvent): void {
+		if (!touch.active) return;
+		e.stopPropagation();
+		e.preventDefault();
+	}
+
 	$effect(() => {
 		window.addEventListener('mousemove', onMouseMove);
 		window.addEventListener('keydown', onKeyDown, true);
 		window.addEventListener('click', onWindowClick, true);
 		window.addEventListener('mousedown', onWindowMouseDown, true);
+		window.addEventListener('pointerdown', onPointerDown, true);
+		window.addEventListener('pointermove', onPointerMove, true);
+		window.addEventListener('pointerup', onPointerUp, true);
+		window.addEventListener('pointercancel', touch.cancel, true);
+		// `passive: false` is load-bearing: Chromium makes window-level touchstart listeners passive
+		// by default, which would drop the `preventDefault` above — and the click suppression with it.
+		window.addEventListener('touchstart', onTouchStart, { capture: true, passive: false });
 		return () => {
 			window.removeEventListener('mousemove', onMouseMove);
 			window.removeEventListener('keydown', onKeyDown, true);
 			window.removeEventListener('click', onWindowClick, true);
 			window.removeEventListener('mousedown', onWindowMouseDown, true);
+			window.removeEventListener('pointerdown', onPointerDown, true);
+			window.removeEventListener('pointermove', onPointerMove, true);
+			window.removeEventListener('pointerup', onPointerUp, true);
+			window.removeEventListener('pointercancel', touch.cancel, true);
+			window.removeEventListener('touchstart', onTouchStart, true);
 		};
 	});
 </script>
