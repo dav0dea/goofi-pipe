@@ -66,12 +66,8 @@ export async function paneAxis(page: Page): Promise<PaneAxis> {
 /**
  * The pane's FLOOR on whichever axis it is anchored on — read off `--pane-min`, the same property
  * the drag handler reads back, so no test can agree with the gesture while disagreeing with the
- * stylesheet.
- *
- * There is one number for it because there is one place it is declared: beside the ceiling, and
- * written into it (`clamp(var(--pane-min), …)`), so the pane's allowed range cannot be empty. When
- * the floor lived in a JS module instead, this file carried its own copy — and both were 260 while
- * the landscape ceiling resolved to 256.
+ * stylesheet. There is one number for it because there is one place it is declared: beside the
+ * ceiling and written into it, so the pane's allowed range cannot be empty.
  */
 export async function paneMin(page: Page): Promise<number> {
 	const declared = await pane(page).evaluate((el) =>
@@ -218,7 +214,7 @@ export async function swipeGripInward(page: Page, travel: number, steps = 8): Pr
  * geometries cap below that, so the resting size IS the ceiling. Asserting the store is empty first
  * is what makes that inference sound instead of lucky.
  */
-export async function restingCeiling(page: Page, axis: PaneAxis): Promise<number> {
+async function restingCeiling(page: Page, axis: PaneAxis): Promise<number> {
 	for (const a of ['x', 'y'] as const)
 		expect(
 			await page.evaluate((k) => localStorage.getItem(k), PANE_KEYS[a]),
@@ -249,14 +245,11 @@ export async function paneRoom(page: Page): Promise<number> {
  * dimension alone, and persists the RENDERED size under this axis's own key while never writing the
  * other's.
  *
- * `want` is what the drag ASKS for; the travel is clamped to the room the pane actually has
- * (`ceiling − floor`), which is the one quantity here that is NOT the same in the two anchors — not
- * because the gesture differs but because the two bounds are declared in different places and can
- * cross. On a landscape phone they do: `max-width: min(30%, 30rem)` is ~256px of an ~854px host,
- * just under the 260px floor, so the pane has NO room at all and the same drag that resizes the
- * sheet can only bottom the pane out or throw it away. That is a live D-I6 question — the cap and
- * the floor are both numbers the user set — and clamping here is what keeps this file measuring the
- * GESTURE rather than silently re-measuring that conflict.
+ * `want` is dragged in FULL, and the room to do it in is asserted rather than clamped to. It used
+ * to be clamped — `min(want, max(ceiling − floor, 0))` — which on a landscape phone, where the two
+ * bounds had crossed, quietly made this a ZERO-pixel drag: every assertion below then held
+ * trivially, so the one project that could have reported the defect reported a pass instead. A test
+ * that measures a gesture must not silently stop measuring it.
  */
 export async function expectEdgeDragFollowsThePointer(page: Page, want: number): Promise<void> {
 	const axis = await paneAxis(page);
@@ -265,9 +258,12 @@ export async function expectEdgeDragFollowsThePointer(page: Page, want: number):
 	const key = PANE_KEYS[axis];
 	const before = await settledBox(pane(page));
 	const ceiling = await restingCeiling(page, axis);
-	const travel = Math.min(want, Math.max(ceiling - min, 0));
+	expect(
+		ceiling - min,
+		`${axis}: the pane has room for the ${want}px asked of it (floor ${min}, ceiling ${ceiling})`
+	).toBeGreaterThanOrEqual(want);
 
-	await swipeGripInward(page, travel);
+	await swipeGripInward(page, want);
 
 	const after = await settledBox(pane(page));
 	expect(pane(page), 'a drag inside the pane’s own room is a resize, never a dismiss').toHaveClass(
@@ -275,8 +271,8 @@ export async function expectEdgeDragFollowsThePointer(page: Page, want: number):
 	);
 	expect(
 		sizeOn(axis, after),
-		`${axis}: asked for ${ceiling - travel} (floor ${min}, ceiling ${ceiling})`
-	).toBeCloseTo(Math.min(Math.max(ceiling - travel, min), ceiling), 0);
+		`${axis}: asked for ${ceiling - want} (floor ${min}, ceiling ${ceiling})`
+	).toBeCloseTo(ceiling - want, 0);
 	expect(
 		sizeOn(other, after),
 		'and the other dimension is the anchor’s — the drag never touches it'

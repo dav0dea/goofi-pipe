@@ -1,13 +1,16 @@
 import { test, expect } from '@playwright/test';
 import { waitForApp } from '../lib/app';
 import {
+	DISMISS_OVERSHOOT_PX,
 	dropNode,
 	editorHost,
 	expectEdgeDragFollowsThePointer,
 	expectRestingPill,
 	expectSwipeDismisses,
 	openInspector,
-	paneAxis
+	paneAxis,
+	paneMin,
+	paneRoom
 } from '../lib/inspector';
 
 /**
@@ -52,6 +55,30 @@ test('this project’s host panel picks the anchor, and the pane agrees with it'
 	}
 });
 
+/* …and the second anti-vacuity guard, which is the one that was missing: two anchors running one
+   set of assertions proves nothing about an anchor where there is nothing left to assert. On THIS
+   project's 854px host the pane's two bounds crossed — a 256px ceiling under a 260px floor — so the
+   landscape pane had NEGATIVE room, the edge drag below was dragging zero pixels and passing, and a
+   ~40px slip of a finger was already a dismiss. `--pane-min` makes an empty range unspellable; this
+   is what says so out loud, per anchor, if a future edit to either bound crosses them again. */
+test('the pane has real room between its floor and its ceiling', async ({ page }) => {
+	const uid = await openInspector(page);
+	try {
+		const room = await paneRoom(page);
+		expect(
+			room,
+			`${await paneAxis(page)}: ceiling − floor, with the floor at ${await paneMin(page)}`
+		).toBeGreaterThan(0);
+		// And more than a nudge: a pane whose entire range is shorter than the overshoot a dismiss
+		// has to clear is not resizable, it is a throw-away with a preamble.
+		expect(room, 'and more room than a dismiss has to be carried past').toBeGreaterThan(
+			DISMISS_OVERSHOOT_PX
+		);
+	} finally {
+		await dropNode(page, uid);
+	}
+});
+
 test('a coarse pointer rests the SAME grabber pill in either anchor (D-I9)', async ({ page }) => {
 	const uid = await openInspector(page);
 	try {
@@ -69,7 +96,9 @@ test('an edge drag by TOUCH moves the pane to where the pointer asked (D-I3/D-I4
 }) => {
 	const uid = await openInspector(page);
 	try {
-		await expectEdgeDragFollowsThePointer(page, 100);
+		// 60px: inside the room the TIGHTER anchor has (landscape's 82px above its floor), because
+		// the helper now asserts that room rather than clamping the drag down into it.
+		await expectEdgeDragFollowsThePointer(page, 60);
 	} finally {
 		await dropNode(page, uid);
 	}
