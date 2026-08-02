@@ -8,7 +8,7 @@ import {
 	openInspector as addAndSelect,
 	pane,
 	paneAxis,
-	paneMin,
+	paneBound,
 	rootRem as rem,
 	settledGrabber,
 	type Grabber
@@ -57,17 +57,19 @@ test('the desktop resting width does not move off 420px (§4.3)', async ({ page 
 });
 
 /**
- * The other half of D-I6's cap, and the half the small-screen guard exists for: on a host too
- * narrow for the 30rem comfort cap, it is the HOST that binds. Before D-I6 the pane sat at a flat
- * 420px here and its only host clamp was `100% - --hit`, which reserved 28px of canvas out of 1272.
+ * The other half of D-I6's resting size, and the half the small-screen guard exists for: on a host
+ * too narrow for the 30rem comfort cap, it is the HOST that decides. Before D-I6 the pane sat at a
+ * flat 420px here and its only host clamp was `100% - --hit`, which reserved 28px of canvas out of
+ * 1272.
  *
  * No fraction is restated: what is asserted is which of the two halves bound, and that the one that
  * bound still left the pane room. That second assertion is the whole of the floor/ceiling fix — a
- * host-relative cap is free to resolve BELOW the floor it is written against, which is exactly what
- * a landscape phone got (256px under a 260px floor), and `clamp(var(--pane-min), …)` is what stops
- * it. A guard tight enough to cross the floor on a narrow desktop fails right here.
+ * host-relative size is free to resolve BELOW the floor it is measured against, which is exactly
+ * what a landscape phone got (256px under a 260px floor), and stating the floor as the SAME
+ * `clamp()`'s lower bound is what stops it. A guard tight enough to cross the floor on a narrow
+ * desktop fails right here.
  */
-test('a narrower desktop editor caps the pane against its HOST, and still leaves it room', async ({
+test('a narrower desktop editor sizes the pane against its HOST, and still leaves it room', async ({
 	page
 }) => {
 	// 800 wide: narrow enough that the small-screen guard is the tighter half at this root size.
@@ -83,8 +85,8 @@ test('a narrower desktop editor caps the pane against its HOST, and still leaves
 		);
 		expect(
 			p.width,
-			'…and the host cap did not land on or under the floor it is written against'
-		).toBeGreaterThan(await paneMin(page));
+			'…and the host-relative size did not land on or under the floor beside it'
+		).toBeGreaterThan(await paneBound(page, 'floor'));
 	} finally {
 		await drop(page, uid);
 	}
@@ -205,9 +207,9 @@ test('the same drag under a mouse resizes to the floor and never dismisses (D-I4
 	const uid = await addAndSelect(page);
 	try {
 		const before = await settledBox(pane(page));
-		// The floor is the STYLESHEET's — `--pane-min`, read off the pane exactly as the drag handler
-		// reads it, rather than a `260` this file would hold its own copy of.
-		const floor = await paneMin(page);
+		// The floor is the STYLESHEET's — the lower bound of the pane's own `clamp()`, asked of CSS
+		// rather than a `260` this file would hold its own copy of.
+		const floor = await paneBound(page, 'floor');
 		const g = (await grip(page).boundingBox())!;
 		const y = g.y + g.height / 2;
 		await page.mouse.move(g.x + g.width / 2, y);

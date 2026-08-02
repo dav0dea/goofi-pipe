@@ -33,10 +33,9 @@ export const editorHost = (page: Page): Locator => page.locator('.editor-panel')
  * package cannot import the app's source, so a `localStorage` key has to be restated somewhere, and
  * this is the one place.
  *
- * The pane's FLOOR is deliberately NOT here any more: it is the stylesheet's, published as
- * `--pane-min` beside the ceiling it bounds, and `paneMin` below reads it off the pane exactly as
- * the drag handler does. Restating it was how this file came to hold a `260` that the landscape
- * ceiling had already fallen under.
+ * Neither of the pane's BOUNDS is here any more: they are one host-relative `clamp()` per axis in
+ * the stylesheet, and `paneBound` below asks CSS for them. Restating the floor was how this file
+ * came to hold a `260` that the landscape ceiling had already fallen under.
  */
 export const PANE_KEYS: Record<PaneAxis, string> = {
 	x: 'goofi.panelWidth',
@@ -60,19 +59,33 @@ export async function paneAxis(page: Page): Promise<PaneAxis> {
 }
 
 /**
- * The pane's FLOOR on whichever axis it is anchored on — read off `--pane-min`, the same property
- * the drag handler reads back, so no test can agree with the gesture while disagreeing with the
- * stylesheet. There is one number for it because there is one place it is declared: beside the
- * ceiling and written into it, so the pane's allowed range cannot be empty.
+ * The pane's FLOOR or its CEILING on whichever axis it is anchored on — ASKED OF CSS, never
+ * restated here.
+ *
+ * Both bounds are one `clamp()` per axis in the stylesheet and both are HOST-relative, so only the
+ * browser can evaluate them; this file used to hold its own copy of the floor, which is how it came
+ * to assert a 260 the landscape ceiling had already fallen under. Driving the pane's own size
+ * variable to either extreme and measuring what comes back asks the question CSS answers on every
+ * frame, so a retuned limit moves this reading with it rather than against it.
+ *
+ * One `evaluate`, because `getBoundingClientRect` forces layout synchronously: the drive, the read
+ * and the restore are a single task and no frame ever paints the pane at an extreme.
  */
-export async function paneMin(page: Page): Promise<number> {
-	const declared = await pane(page).evaluate((el) =>
-		getComputedStyle(el).getPropertyValue('--pane-min')
+export async function paneBound(page: Page, which: 'floor' | 'ceiling'): Promise<number> {
+	const axis = await paneAxis(page);
+	return pane(page).evaluate(
+		(el, [a, drive]) => {
+			const prop = a === 'y' ? '--pane-h' : '--pane-w';
+			const had = el.style.getPropertyValue(prop);
+			el.style.setProperty(prop, drive);
+			const r = el.getBoundingClientRect();
+			const size = a === 'y' ? r.height : r.width;
+			if (had) el.style.setProperty(prop, had);
+			else el.style.removeProperty(prop);
+			return size;
+		},
+		[axis, which === 'floor' ? '0px' : '1000000px'] as const
 	);
-	const px = parseFloat(declared);
-	expect(px, `the pane publishes the floor its ceiling is written against (got ${declared})`)
-		.toBeGreaterThan(0);
-	return px;
 }
 
 /** A box's size ON `axis` — the one dimension the anchor makes load-bearing. */
@@ -203,32 +216,22 @@ export async function swipeGripInward(page: Page, travel: number, steps = 8): Pr
 }
 
 /**
- * The pane's CEILING on `axis`, which only the stylesheet can evaluate (D-I6) — read off the
- * RESTING pane rather than re-derived here.
+ * The pane's RESTING size on `axis` — the middle term of the stylesheet's `clamp()`, measured off
+ * the pane rather than re-derived here.
  *
- * With nothing stored the pane rests at the CSS fallback (`420px` / `60%`), and both phone
- * geometries cap below that, so the resting size IS the ceiling. Asserting the store is empty first
- * is what makes that inference sound instead of lucky.
+ * It is only the resting size while nothing is stored, since a dragged size replaces it; asserting
+ * the store is empty first is what makes that sound instead of lucky. It used to be the CEILING as
+ * well, because the old cap resolved below the fallback on every geometry the app had met — the
+ * limits are 10 %–90 % now, so the resting size sits strictly inside them and the two are different
+ * numbers.
  */
-async function restingCeiling(page: Page, axis: PaneAxis): Promise<number> {
+async function restingSize(page: Page, axis: PaneAxis): Promise<number> {
 	for (const a of ['x', 'y'] as const)
 		expect(
 			await page.evaluate((k) => localStorage.getItem(k), PANE_KEYS[a]),
-			`nothing is stored on ${a} yet, so the pane rests at its cap`
+			`nothing is stored on ${a} yet, so the pane is at its resting size`
 		).toBeNull();
 	return sizeOn(axis, await settledBox(pane(page)));
-}
-
-/**
- * The ROOM the pane has to be resized in: how far its ceiling sits above its floor, on the axis it
- * is anchored on.
- *
- * The one quantity the two bounds only have together, and the reason they are now declared
- * together. Zero room is an unsatisfiable pane — no drag can move it, and the very next pixel of
- * inward travel is a dismiss rather than a resize.
- */
-export async function paneRoom(page: Page): Promise<number> {
-	return (await restingCeiling(page, await paneAxis(page))) - (await paneMin(page));
 }
 
 /**
@@ -250,25 +253,25 @@ export async function paneRoom(page: Page): Promise<number> {
 export async function expectEdgeDragFollowsThePointer(page: Page, want: number): Promise<void> {
 	const axis = await paneAxis(page);
 	const other = axis === 'y' ? 'x' : 'y';
-	const min = await paneMin(page);
+	const floor = await paneBound(page, 'floor');
 	const key = PANE_KEYS[axis];
 	const before = await settledBox(pane(page));
-	const ceiling = await restingCeiling(page, axis);
+	const resting = await restingSize(page, axis);
 	expect(
-		ceiling - min,
-		`${axis}: the pane has room for the ${want}px asked of it (floor ${min}, ceiling ${ceiling})`
+		resting - floor,
+		`${axis}: the pane has room for the ${want}px asked of it (floor ${floor}, resting ${resting})`
 	).toBeGreaterThanOrEqual(want);
 
 	await swipeGripInward(page, want);
 
 	const after = await settledBox(pane(page));
-	expect(pane(page), 'a drag inside the pane’s own room is a resize, never a dismiss').toHaveClass(
+	expect(pane(page), 'a drag inside the pane’s own room lands where it was asked').toHaveClass(
 		/open/
 	);
 	expect(
 		sizeOn(axis, after),
-		`${axis}: asked for ${ceiling - want} (floor ${min}, ceiling ${ceiling})`
-	).toBeCloseTo(ceiling - want, 0);
+		`${axis}: asked for ${resting - want} (floor ${floor}, resting ${resting})`
+	).toBeCloseTo(resting - want, 0);
 	expect(
 		sizeOn(other, after),
 		'and the other dimension is the anchor’s — the drag never touches it'
@@ -296,9 +299,9 @@ export async function expectEdgeDragFollowsThePointer(page: Page, want: number):
  */
 export async function expectDragPastTheFloorStillResizes(page: Page): Promise<void> {
 	const axis = await paneAxis(page);
-	const min = await paneMin(page);
+	const floor = await paneBound(page, 'floor');
 	const key = PANE_KEYS[axis];
-	const resting = await restingCeiling(page, axis);
+	const resting = await restingSize(page, axis);
 	// As far INTO the pane as the screen allows. Clamped to the viewport because a CDP touch point
 	// off-screen is not a gesture any finger could make — and the assertion below is what proves the
 	// drag really cleared the floor rather than merely approaching it.
@@ -307,7 +310,7 @@ export async function expectDragPastTheFloorStillResizes(page: Page): Promise<vo
 	const from = axis === 'y' ? g.y + g.height / 2 : g.x + g.width / 2;
 	const travel = Math.floor((axis === 'y' ? vp.height : vp.width) - 2 - from);
 	expect(travel, 'the drag carries the pane past its floor, not merely down to it').toBeGreaterThan(
-		resting - min
+		resting - floor
 	);
 
 	await swipeGripInward(page, travel);
@@ -318,9 +321,9 @@ export async function expectDragPastTheFloorStillResizes(page: Page): Promise<vo
 	expect(
 		sizeOn(axis, await settledBox(pane(page))),
 		`${axis}: bottomed out at the floor, not closed`
-	).toBeCloseTo(min, 0);
+	).toBeCloseTo(floor, 0);
 	expect(
 		await page.evaluate((k) => localStorage.getItem(k), key),
 		'and it is a resize like any other, so the floored size is what was persisted'
-	).toBe(String(Math.round(min)));
+	).toBe(String(Math.round(floor)));
 }

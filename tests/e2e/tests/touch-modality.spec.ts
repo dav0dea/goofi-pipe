@@ -1,5 +1,6 @@
 import { test, expect } from '@playwright/test';
 import { waitForApp } from '../lib/app';
+import { settledBox } from '../lib/geometry';
 import {
 	dropNode,
 	editorHost,
@@ -7,9 +8,11 @@ import {
 	expectEdgeDragFollowsThePointer,
 	expectRestingPill,
 	openInspector,
+	pane,
 	paneAxis,
-	paneMin,
-	paneRoom
+	paneBound,
+	rootRem,
+	sizeOn
 } from '../lib/inspector';
 
 /**
@@ -54,20 +57,60 @@ test('this project’s host panel picks the anchor, and the pane agrees with it'
 	}
 });
 
-/* …and the second anti-vacuity guard, which is the one that was missing: two anchors running one
-   set of assertions proves nothing about an anchor where there is nothing left to assert. On THIS
-   project's 854px host the pane's two bounds crossed — a 256px ceiling under a 260px floor — so the
-   landscape pane had NEGATIVE room, the edge drag below was dragging zero pixels and passing, and a
-   ~40px slip of a finger was already a dismiss. `--pane-min` makes an empty range unspellable; this
-   is what says so out loud, per anchor, if a future edit to either bound crosses them again. */
-test('the pane has real room between its floor and its ceiling', async ({ page }) => {
+/* The limits, in whichever anchor: a TENTH of the host at the bottom, NINE TENTHS at the top.
+   Measured off the pane rather than restated, and measured against the HOST panel rather than the
+   viewport — the pane answers to the surface it lives in (D-I2), and on this phone the two are
+   different numbers. One `clamp()` per axis states both, so the floor is below the ceiling by
+   construction and the pair that crossed (a 256px ceiling under a 260px floor, an EMPTY range) is
+   no longer spellable. */
+test('the pane’s floor and its ceiling are a tenth and nine tenths of its HOST', async ({ page }) => {
 	const uid = await openInspector(page);
 	try {
-		const room = await paneRoom(page);
+		const axis = await paneAxis(page);
+		const host = sizeOn(axis, (await editorHost(page).boundingBox())!);
+		expect(await paneBound(page, 'floor'), `${axis}: a tenth of a ${host}px host`).toBeCloseTo(
+			host * 0.1,
+			0
+		);
 		expect(
-			room,
-			`${await paneAxis(page)}: ceiling − floor, with the floor at ${await paneMin(page)}`
-		).toBeGreaterThan(0);
+			await paneBound(page, 'ceiling'),
+			`${axis}: nine tenths of a ${host}px host`
+		).toBeCloseTo(host * 0.9, 0);
+	} finally {
+		await dropNode(page, uid);
+	}
+});
+
+/* …and widening them MOVED NOTHING. The resting size used to EMERGE from the old ceiling clamping
+   a larger fallback, so raising the ceiling is precisely the edit that could have dragged it along;
+   it is stated outright now, and this is what says it did not move.
+
+   Sitting strictly INSIDE both limits is the other half of the same claim, and the ANTI-VACUITY
+   guard the rest of this file rests on: two anchors running one set of assertions prove nothing
+   about an anchor where there is nothing left to assert. On THIS project's 854px host the pane's
+   two bounds once crossed — a 256px ceiling under a 260px floor — so the landscape pane had
+   NEGATIVE room and the edge drag below was dragging zero pixels and passing. */
+test('the resting default did not move, and now sits strictly inside those limits', async ({
+	page
+}) => {
+	const uid = await openInspector(page);
+	try {
+		const axis = await paneAxis(page);
+		const host = (await editorHost(page).boundingBox())!;
+		const resting = sizeOn(axis, await settledBox(pane(page)));
+		expect(
+			resting,
+			axis === 'y' ? '60% of the host' : 'the lesser of 40% of the host and 30rem'
+		).toBeCloseTo(
+			axis === 'y' ? host.height * 0.6 : Math.min(host.width * 0.4, 30 * (await rootRem(page))),
+			0
+		);
+		expect(resting, 'above the floor, so it can be dragged smaller').toBeGreaterThan(
+			await paneBound(page, 'floor')
+		);
+		expect(resting, 'and below the ceiling, so it can be dragged larger').toBeLessThan(
+			await paneBound(page, 'ceiling')
+		);
 	} finally {
 		await dropNode(page, uid);
 	}

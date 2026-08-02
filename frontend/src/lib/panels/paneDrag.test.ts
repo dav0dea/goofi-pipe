@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { PANE_AXES, coordOf, paneMin, paneSizeAt, type PaneDrag } from './paneDrag';
+import { PANE_AXES, coordOf, paneSizeAt, type PaneDrag } from './paneDrag';
 
 /* The inspector pane's resize arithmetic, which is the whole of what a unit test can reach: the
    component cannot be mounted in this repo's vitest, so the rule "a drag toward the pane shrinks it,
@@ -8,7 +8,6 @@ import { PANE_AXES, coordOf, paneMin, paneSizeAt, type PaneDrag } from './paneDr
 const drag = (over: Partial<PaneDrag> = {}): PaneDrag => ({
 	startSize: 400,
 	startPos: 900,
-	min: 260,
 	...over
 });
 
@@ -26,7 +25,7 @@ describe('paneDrag', () => {
 	   floor that mean the same thing on either anchor. */
 	it('shrinks as the grip is pushed toward the pane, whichever axis picked the numbers', () => {
 		expect(paneSizeAt(drag(), 960)).toBe(340);
-		expect(paneSizeAt(drag({ startSize: 445, startPos: 400, min: 160 }), 485)).toBe(360);
+		expect(paneSizeAt(drag({ startSize: 445, startPos: 400 }), 485)).toBe(360);
 	});
 
 	it('grows as the grip is pulled away from it', () => {
@@ -37,23 +36,20 @@ describe('paneDrag', () => {
 		expect(paneSizeAt(drag(), 900)).toBe(400);
 	});
 
-	/* Neither bound is this module's: they are the stylesheet's, TOGETHER, and that is the point.
-	   `clamp(var(--pane-min), 40%, 30rem)` and `max(60%, var(--pane-min))` are host- and
-	   rem-relative, so only the stylesheet can evaluate them — and the floor is written INTO them,
-	   so it cannot end up above them. A floor here was a second, independently-authored answer, and
-	   the two contradicted each other (see `paneMin` below). What this module keeps is the
-	   arithmetic: given a floor, clamp to it. */
-	it('clamps at the floor and never below it, however far the grip is pushed', () => {
+	/* NEITHER bound is this module's, and that is the whole of why it is three lines. Both are one
+	   `clamp(10%, …, 90%)` per axis in `InspectorOverlay.svelte` — host-relative, so only the
+	   stylesheet can evaluate them, and written together, so the floor cannot end up above the
+	   ceiling. A floor HERE was a second, independently-authored answer, and the two contradicted
+	   each other: 260px of floor under a ceiling that resolved to 256px on a landscape phone, an
+	   EMPTY range. So a pointer dragged past either bound is reported UNCLAMPED; what the pane
+	   actually becomes is CSS's answer, and what the gesture persists is the rendered box. */
+	it('imposes neither bound — a pointer past the floor is reported unclamped', () => {
 		expect(paneSizeAt(drag(), 1040)).toBe(260);
-		expect(paneSizeAt(drag(), 5000)).toBe(260);
+		expect(paneSizeAt(drag(), 5000)).toBe(-3700);
 	});
 
-	it('imposes no bound of its own — both are the stylesheet’s (D-I6)', () => {
+	it('…nor a ceiling, however far the grip is pulled out', () => {
 		expect(paneSizeAt(drag(), -5000)).toBe(6300);
-	});
-
-	it('takes its own floor, so the two axes can differ', () => {
-		expect(paneSizeAt(drag({ startSize: 445, startPos: 400, min: 160 }), 900)).toBe(160);
 	});
 });
 
@@ -73,25 +69,5 @@ describe('PANE_AXES', () => {
 
 	it('gives each axis its own key to be remembered under (D-I3)', () => {
 		expect(PANE_AXES.x.key).not.toBe(PANE_AXES.y.key);
-	});
-});
-
-/* THE ONE SOURCE OF TRUTH for the pane's allowed range, and why it is not in this file: a floor
-   here and a ceiling in the stylesheet are two independently-authored numbers, and they crossed —
-   256px of ceiling under 260px of floor on a landscape phone, an EMPTY range. The floor is declared
-   beside the ceiling now and written into it (`InspectorOverlay.svelte`'s `--pane-min`), and this is
-   where the string the pane publishes becomes the number the arithmetic above clamps to. */
-describe('paneMin', () => {
-	it('reads back the floor the stylesheet published', () => {
-		expect(paneMin('260px')).toBe(260);
-		expect(paneMin(' 160px ')).toBe(160);
-	});
-
-	/* A missing declaration is a broken stylesheet, not a runtime condition — and it would otherwise
-	   clamp every size below to NaN, which renders as the CSS fallback and reads as "the drag does
-	   nothing". Failing at the read is what makes the cause nameable. */
-	it('refuses a pane that publishes no floor rather than clamping to NaN', () => {
-		for (const declared of ['', '   ', 'none'])
-			expect(() => paneMin(declared), JSON.stringify(declared)).toThrow(/--pane-min/);
 	});
 });
