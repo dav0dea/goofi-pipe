@@ -1,5 +1,12 @@
 import { describe, it, expect } from 'vitest';
-import { DISMISS_OVERSHOOT_PX, coordOf, endsInDismiss, paneSizeAt, type PaneDrag } from './paneDrag';
+import {
+	DISMISS_OVERSHOOT_PX,
+	PANE_AXES,
+	coordOf,
+	endsInDismiss,
+	paneSizeAt,
+	type PaneDrag
+} from './paneDrag';
 
 /* The inspector pane's resize arithmetic, which is the whole of what a unit test can reach: the
    component cannot be mounted in this repo's vitest, so the rule "a drag toward the pane shrinks it,
@@ -51,6 +58,37 @@ describe('paneDrag', () => {
 
 	it('takes its own floor, so the two axes can differ', () => {
 		expect(paneSizeAt(drag({ axis: 'y', startSize: 445, startPos: 400, min: 160 }), 900)).toBe(160);
+	});
+});
+
+/* Everything the AXIS selects, in one record — which dimension of a box sizes the pane, where its
+   floor is, and which key remembers it. The point of it being a record is that the answer is looked
+   up once, at pointerdown, instead of the same question ("is this the vertical one?") being asked
+   again at every line of the gesture that happens to need a dimension. Scattered that way it read
+   as orientation threaded through the drag; it is one fact.
+
+   ORIENTATION picks the record. INPUT MODALITY never touches it — `endsInDismiss` is the whole of
+   what modality gates, and it takes no axis knowledge at all. */
+describe('PANE_AXES', () => {
+	it('sizes each axis by its own dimension of a box', () => {
+		const box = { width: 400, height: 300 };
+		expect(PANE_AXES.x.sizeOf(box)).toBe(400);
+		expect(PANE_AXES.y.sizeOf(box)).toBe(300);
+	});
+
+	it('gives each axis its own floor, and its own key to be remembered under (D-I3)', () => {
+		expect(PANE_AXES.x.min).toBe(260);
+		expect(PANE_AXES.y.min).toBe(160);
+		expect(PANE_AXES.x.key).not.toBe(PANE_AXES.y.key);
+	});
+
+	/* The floors here are the ones the gesture actually clamps to — the same numbers, not a second
+	   set that could drift from them. */
+	it('is where the floor the gesture clamps to comes from', () => {
+		for (const axis of ['x', 'y'] as const) {
+			const { min } = PANE_AXES[axis];
+			expect(paneSizeAt(drag({ axis, startSize: min + 100, min }), 5000)).toBe(min);
+		}
 	});
 });
 

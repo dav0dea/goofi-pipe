@@ -23,7 +23,14 @@
 	import { graph } from '$lib/stores/graph.svelte';
 	import { onDestroy } from 'svelte';
 	import type { NodeInstanceInfo } from '$lib/api/control';
-	import { coordOf, endsInDismiss, paneSizeAt, type PaneAxis, type PaneDrag } from './paneDrag';
+	import {
+		PANE_AXES,
+		coordOf,
+		endsInDismiss,
+		paneSizeAt,
+		type PaneAxis,
+		type PaneDrag
+	} from './paneDrag';
 
 	let {
 		node,
@@ -47,18 +54,12 @@
 			.catch((e) => console.warn('restart failed', e));
 	}
 
-	/** The pane's FLOOR on each axis. The ceilings are CSS's (`max-width` / `max-height` below):
-	 *  they are host- and rem-relative, so the stylesheet is the only place that can evaluate them,
-	 *  and a number here would be a second answer to one question — which is exactly what the old
-	 *  `MAX_PANEL_WIDTH = 720` was, sitting above a host clamp that always bound first. */
-	const MIN_PANEL_WIDTH = 260;
-	const MIN_PANEL_HEIGHT = 160;
-
 	/** A persisted pane size, or `null` when the user has never dragged one — in which case the
 	 *  resting size is the CSS fallback (`var(--pane-w, 420px)` / `var(--pane-h, 60%)`). Null rather
 	 *  than a literal because the portrait default is a PERCENTAGE of the host, which no number here
 	 *  could express; keeping both defaults in the stylesheet is what lets one idiom serve both. */
-	function storedSize(key: string, min: number): number | null {
+	function storedSize(axis: PaneAxis): number | null {
+		const { key, min } = PANE_AXES[axis];
 		try {
 			const n = parseInt(localStorage.getItem(key) ?? '', 10);
 			return Number.isFinite(n) ? Math.max(min, n) : null;
@@ -67,8 +68,9 @@
 		}
 	}
 
-	let panelWidth = $state(storedSize('goofi.panelWidth', MIN_PANEL_WIDTH));
-	let panelHeight = $state(storedSize('goofi.panelHeight', MIN_PANEL_HEIGHT));
+	/** The pane's size on each axis, keyed exactly as `PANE_AXES` is — so the axis a drag is on
+	 *  selects the state it writes, with no branch of its own. */
+	let paneSize = $state({ x: storedSize('x'), y: storedSize('y') });
 	let resizing = $state(false);
 	/** The pane itself — the drag measures its RENDERED box, since the ceilings are CSS's. */
 	let paneEl = $state<HTMLElement | null>(null);
@@ -81,24 +83,21 @@
 		e.preventDefault();
 		const el = paneEl;
 		// The axis is the container query's answer, read back off the pane rather than re-derived
-		// here from the host's box — one question, asked once, of the box CSS asked it of.
+		// here from the host's box — one question, asked once, of the box CSS asked it of. And asked
+		// ONCE for the whole gesture: `dim` is everything the axis selects (which dimension sizes the
+		// pane, where its floor is, which key remembers it), so "orientation picks the axis" stays one
+		// named fact instead of a condition re-asked at every line below that needs a dimension.
 		const axis: PaneAxis =
 			getComputedStyle(el).getPropertyValue('--pane-axis').trim() === 'y' ? 'y' : 'x';
-		const vertical = axis === 'y';
-		const box = el.getBoundingClientRect();
+		const dim = PANE_AXES[axis];
 		// The RENDERED size, not the stored one: the ceiling lives in CSS, so a value restored from
 		// a wider screen (or from before D-I6's cap) is not what is on screen — and a drag that began
 		// from it would move the pointer a long way before the pane moved at all.
 		const drag: PaneDrag = {
 			axis,
-			startSize: vertical ? box.height : box.width,
+			startSize: dim.sizeOf(el.getBoundingClientRect()),
 			startPos: coordOf(axis, e),
-			min: vertical ? MIN_PANEL_HEIGHT : MIN_PANEL_WIDTH
-		};
-		const key = vertical ? 'goofi.panelHeight' : 'goofi.panelWidth';
-		const apply = (size: number): void => {
-			if (vertical) panelHeight = size;
-			else panelWidth = size;
+			min: dim.min
 		};
 		// Where the pointer got to. The pane CLAMPS at its floor, so the rendered size cannot say how
 		// far a swipe was carried past it — and that overshoot is the whole of the dismiss decision.
@@ -112,11 +111,10 @@
 		const finish = (): void => {
 			resizing = false;
 			teardownResize = null;
-			const r = el.getBoundingClientRect();
-			const size = vertical ? r.height : r.width;
-			apply(size);
+			const size = dim.sizeOf(el.getBoundingClientRect());
+			paneSize[axis] = size;
 			try {
-				localStorage.setItem(key, String(Math.round(size)));
+				localStorage.setItem(dim.key, String(Math.round(size)));
 			} catch {
 				/* private mode; persistence is best-effort */
 			}
@@ -124,7 +122,7 @@
 		teardownResize = beginDrag(e.currentTarget as HTMLElement, e.pointerId, {
 			move: (m) => {
 				at = coordOf(axis, m);
-				apply(paneSizeAt(drag, at));
+				paneSize[axis] = paneSizeAt(drag, at);
 			},
 			commit: () => {
 				// The swipe (D-I4), layered on the very gesture that resizes — same grip, same module,
@@ -157,8 +155,8 @@
 		class:resizing
 		inert={node === null}
 		bind:this={paneEl}
-		style:--pane-w={panelWidth === null ? null : `${panelWidth}px`}
-		style:--pane-h={panelHeight === null ? null : `${panelHeight}px`}
+		style:--pane-w={paneSize.x === null ? null : `${paneSize.x}px`}
+		style:--pane-h={paneSize.y === null ? null : `${paneSize.y}px`}
 		data-testid="auto-side-panel"
 	>
 		<!-- The size arrives as CUSTOM PROPERTIES rather than as a `width`, because which axis it

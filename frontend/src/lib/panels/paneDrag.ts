@@ -18,6 +18,32 @@
 
 export type PaneAxis = 'x' | 'y';
 
+/**
+ * Everything the AXIS selects, and the whole of it.
+ *
+ * A record rather than a condition, because the answer is looked up ONCE — at pointerdown — instead
+ * of the same question ("is this the vertical one?") being asked again at every line of the gesture
+ * that happens to need a dimension. Scattered that way it read as orientation threaded through the
+ * drag; it is one fact, and this is where it is stated.
+ *
+ * ORIENTATION picks the record. INPUT MODALITY never touches it: `endsInDismiss` below is the whole
+ * of what modality gates, and it takes no axis knowledge at all.
+ */
+export interface PaneAxisDims {
+	/** The pane's floor on this axis, in px. The CEILING is deliberately elsewhere — see above. */
+	min: number;
+	/** Where a size dragged on this axis is remembered: one persistence idiom, one key per axis
+	 *  (D-I3), so the two anchors cannot overwrite each other's. */
+	key: string;
+	/** The dimension of a box this axis sizes the pane by. */
+	sizeOf(box: { width: number; height: number }): number;
+}
+
+export const PANE_AXES: Record<PaneAxis, PaneAxisDims> = {
+	x: { min: 260, key: 'goofi.panelWidth', sizeOf: (b) => b.width },
+	y: { min: 160, key: 'goofi.panelHeight', sizeOf: (b) => b.height }
+};
+
 export interface PaneDrag {
 	/** The axis the grip drags, as the container query decided it. */
 	axis: PaneAxis;
