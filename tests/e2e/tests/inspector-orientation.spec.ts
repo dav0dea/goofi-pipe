@@ -1,7 +1,19 @@
-import { test, expect, type Page } from '@playwright/test';
+import { test, expect } from '@playwright/test';
 import { closeSplit, splitRight, waitForApp } from '../lib/app';
 import { settledBox } from '../lib/geometry';
-import { addNode, waitForNode, waitForNoNode } from '../lib/goofi';
+import { addNode, waitForNode } from '../lib/goofi';
+import {
+	dropNode as drop,
+	editorHost as editor,
+	grip,
+	openInspector as addAndSelect,
+	pane,
+	paneAxis,
+	PANE_AXES,
+	rootRem as rem,
+	settledGrabber,
+	type Grabber
+} from '../lib/inspector';
 
 /**
  * The orientation-aware inspector, on the FINE pointer — because the anchor rule contains no device
@@ -10,38 +22,14 @@ import { addNode, waitForNode, waitForNoNode } from '../lib/goofi';
  *
  * That is the point of this file being a `default`-project spec: everything here runs on a mouse,
  * at a landscape desktop window, and one of the cases still gets the bottom sheet. `touch-sheet` and
- * `touch-reflow` cover the phone geometries.
+ * `touch-reflow` cover the phone geometries, and `touch-modality` runs the coarse half of the very
+ * assertions below — off `lib/inspector.ts`, which both files read the pane through, so the mouse
+ * and the finger are measured with one ruler.
  *
  * Sizes are measured against the HOST, never a literal — except where the literal IS the claim
  * (§4.3: the desktop resting width does not move off 420px), and there the viewport is set to a
  * width where `min(30%, 30rem)` provably resolves to the rem half.
  */
-
-const pane = (page: Page) => page.getByTestId('auto-side-panel').first();
-const editor = (page: Page) => page.locator('.editor-panel').first();
-
-/** The root font size the responsive `clamp()` settled on — the px `30rem` is measured in. */
-const rem = (page: Page): Promise<number> =>
-	page.evaluate(() => parseFloat(getComputedStyle(document.documentElement).fontSize));
-
-/** Boot, add an Oscillator, select it so the inspector slides in, and return its uid. The pane
- *  slides over `--dur-slow` and every number here is a POSITION, so the app's own reduced-motion
- *  rule collapses the transition first — a mid-slide read describes a frame, not the layout. */
-async function addAndSelect(page: Page): Promise<string> {
-	const uid = await addNode(page, 'Oscillator', 'inputs', [40, 40]);
-	await waitForNode(page, uid);
-	await page.evaluate((u) => (window as any).goofi.commands.select([u]), uid);
-	// `.open`, not merely visible: the pane is MOUNTED at every moment and parked off-edge until a
-	// selection lands, so `toBeVisible` resolves on a pane that is still off-screen.
-	await expect(pane(page), 'a single selection opens the inspector').toHaveClass(/open/);
-	return uid;
-}
-
-async function drop(page: Page, uid: string): Promise<void> {
-	await page.evaluate(() => (window as any).goofi.commands.clearSelection());
-	await page.evaluate((u) => (window as any).goofi.commands.removeNode(u), uid);
-	await waitForNoNode(page, uid).catch(() => {});
-}
 
 test('the desktop resting width does not move off 420px (§4.3)', async ({ page }) => {
 	// 1600 wide, so `min(30%, 30rem)` resolves to the REM half: 30% of a ~1592px editor is 478px,
@@ -158,14 +146,14 @@ test('an edge drag resizes the pane with a MOUSE, and the size outlives the relo
 	const uid = await addAndSelect(page);
 	try {
 		const before = await settledBox(pane(page));
-		const grip = (await page.getByTestId('panel-resize-handle').boundingBox())!;
-		const y = grip.y + grip.height / 2;
+		const g = (await grip(page).boundingBox())!;
+		const y = g.y + g.height / 2;
 		// Rightward, i.e. INTO the pane, which shrinks it — the same direction of travel that shrinks
 		// the sheet when it is pushed down. Away from the pane the ceiling would bind and the
 		// measurement would be of `max-width`, not of the drag.
-		await page.mouse.move(grip.x + grip.width / 2, y);
+		await page.mouse.move(g.x + g.width / 2, y);
 		await page.mouse.down();
-		await page.mouse.move(grip.x + grip.width / 2 + 60, y, { steps: 8 });
+		await page.mouse.move(g.x + g.width / 2 + 60, y, { steps: 8 });
 		await page.mouse.up();
 
 		const after = await settledBox(pane(page));
@@ -200,47 +188,79 @@ test('the same drag under a mouse resizes to the floor and never dismisses (D-I4
 	const uid = await addAndSelect(page);
 	try {
 		const before = await settledBox(pane(page));
-		const grip = (await page.getByTestId('panel-resize-handle').boundingBox())!;
-		const y = grip.y + grip.height / 2;
-		await page.mouse.move(grip.x + grip.width / 2, y);
+		const g = (await grip(page).boundingBox())!;
+		const y = g.y + g.height / 2;
+		await page.mouse.move(g.x + g.width / 2, y);
 		await page.mouse.down();
 		// Well past the 260px floor AND past a full dismiss overshoot below it.
-		await page.mouse.move(grip.x + grip.width / 2 + before.width + 100, y, { steps: 10 });
+		await page.mouse.move(g.x + g.width / 2 + before.width + 100, y, { steps: 10 });
 		await page.mouse.up();
 
 		await expect(pane(page), 'the pane is still there').toHaveClass(/open/);
 		const after = await settledBox(pane(page));
-		expect(after.width, 'clamped at the floor, not closed').toBeCloseTo(260, 0);
+		expect(after.width, 'clamped at the floor, not closed').toBeCloseTo(PANE_AXES.x.min, 0);
 	} finally {
 		await drop(page, uid);
 	}
 });
 
 /**
- * D-I9. The desktop grip is a transparent line until it is hovered, which is the whole of its
- * discoverability — and CLAUDE.md forbids an affordance that exists solely behind `:hover`. A sheet
- * with no visible grabber also simply does not read as draggable. On a FINE pointer here, so what
- * is proved is the portrait rule and not the coarse one `touch-hover-doors.spec.ts` already covers.
+ * D-I9, and the rule it is one instance of: ORIENTATION decides only the AXIS the pane is anchored
+ * on; INPUT MODALITY decides the gesture and its affordance. The two are independent — so under one
+ * modality the grabber must be the SAME in either anchor, and this reads it in both and compares
+ * them against each other rather than against a number either could drift away from alone.
+ *
+ * It was not. The portrait branch declared a resting pill unconditionally, which is an affordance
+ * chosen by orientation: a phone got a chunky pill standing up and a thin line lying down (the same
+ * finger, two affordances), and a narrow docked desktop column got the touch grabber under a mouse.
+ * The pill belongs to the coarse block — `touch-modality.spec.ts` proves it there, in BOTH anchors —
+ * and what portrait carries is geometry alone.
+ *
+ * What a fine pointer gets is therefore the transparent-until-hover seam in either anchor. That is
+ * not an affordance living solely behind `:hover` in CLAUDE.md's sense: hover is the door this
+ * modality HAS, which is exactly why the door a finger needs is gated on the finger and not on
+ * which way the phone is held.
  */
-test('the sheet rests with a visible grabber, not an invisible seam', async ({ page }) => {
-	await page.setViewportSize({ width: 600, height: 1000 });
+test('one modality, one grabber — the fine seam is identical in either anchor', async ({ page }) => {
 	await page.emulateMedia({ reducedMotion: 'reduce' });
 	await page.goto('/');
 	await waitForApp(page);
-	const uid = await addAndSelect(page);
-	try {
-		// The pointer is parked off the pane — no hover anywhere near the grip.
-		await page.mouse.move(5, 5);
-		const pill = await page.getByTestId('panel-resize-handle').evaluate((el) => {
-			const cs = getComputedStyle(el, '::after');
-			return { bg: cs.backgroundColor, width: parseFloat(cs.width), height: parseFloat(cs.height) };
-		});
-		expect(pill.bg, 'the grabber paints at rest').not.toBe('rgba(0, 0, 0, 0)');
-		expect(pill.width, 'and it is a pill across the sheet, not a hairline down its side').
-			toBeGreaterThan(pill.height * 4);
-	} finally {
-		await drop(page, uid);
+	const seen: Partial<Record<'portrait' | 'landscape', Grabber>> = {};
+	for (const [name, size, axis] of [
+		['portrait', { width: 600, height: 1000 }, 'y'],
+		['landscape', { width: 1280, height: 800 }, 'x']
+	] as const) {
+		await page.setViewportSize(size);
+		const uid = await addAndSelect(page);
+		try {
+			// The pointer is parked off the pane — no hover anywhere near the grip.
+			await page.mouse.move(5, 5);
+			await expect
+				.poll(() => paneAxis(page), { message: `${name} anchors as its host panel is shaped` })
+				.toBe(axis);
+			seen[name] = await settledGrabber(page);
+			// …and the seam is not merely invisible, it is hover-REVEALED, in this anchor too. That
+			// door has to exist wherever the transparent resting state does, or the affordance really
+			// would be nowhere on a fine pointer.
+			await grip(page).hover();
+			await expect
+				.poll(() => settledGrabber(page).then((g) => g.painted), {
+					message: `hovering the ${name} seam lights it`
+				})
+				.toBe(true);
+		} finally {
+			await drop(page, uid);
+		}
 	}
+	expect(seen.portrait, 'one modality, one grabber — whichever axis it is on').toEqual(
+		seen.landscape
+	);
+	expect(
+		seen.portrait!.painted,
+		'a fine pointer rests on the transparent seam, having hover to find it with'
+	).toBe(false);
+	expect(seen.portrait!.length, 'a hairline down the whole seam, never a pill').toBe('seam');
+	expect(seen.portrait!.rounded, 'and uncapped — the pill is the coarse pointer’s').toBe(false);
 });
 
 test('the ✕ dismisses the pane in either anchor', async ({ page }) => {

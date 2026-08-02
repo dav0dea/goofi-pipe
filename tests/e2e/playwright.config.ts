@@ -26,14 +26,22 @@ export default defineConfig({
 	// emulation, whose hasTouch+isMobile+viewport flip (pointer:coarse)/(hover:none) true so the
 	// coarse density floor engages.
 	//
-	// `touch-landscape` and `tablet` deliberately run ONE file — `touch-reflow.spec.ts` — rather
-	// than the whole touch suite. Both orientations of phone and tablet are in scope (CLAUDE.md),
-	// but almost everything the touch suite proves is driven by the coarse media query, which
-	// answers identically at 412px and at 1080px: re-running the hit floors, the hover doors and
-	// the long-press doors in three projects would triple the wall clock to re-measure a constant.
+	// `touch-landscape` and `tablet` deliberately run a NAMED FEW of the touch specs rather than
+	// the whole suite. Both orientations of phone and tablet are in scope (CLAUDE.md), but almost
+	// everything the touch suite proves is driven by the coarse media query, which answers
+	// identically at 412px and at 1080px: re-running the hit floors, the hover doors and the
+	// long-press doors in three projects would triple the wall clock to re-measure a constant.
 	// What genuinely differs is what FITS — the header's progressive overflow, the inspector's
 	// clamp against its host, a point-anchored popover's clamp against the screen, and whether a
-	// 360px-tall viewport leaves a canvas at all — and that is exactly this file.
+	// 360px-tall viewport leaves a canvas at all — and that is `touch-reflow.spec.ts`.
+	//
+	// `touch-modality.spec.ts` joins it in `touch-landscape` for the opposite reason: what it
+	// measures is a CONSTANT that must survive the orientation change. The inspector's rule is that
+	// orientation picks only the anchor and modality picks the gesture and its affordance, so the
+	// same assertions have to come back the same answer in both anchors — and running one file in
+	// the two projects is what makes a re-coupling fail by name instead of going unnoticed. Not in
+	// `tablet`: that project is portrait too, so it would re-measure `touch`'s answer rather than
+	// the other anchor.
 	//
 	// Tablet LANDSCAPE (1138×712) is not its own project: it is wider than the tablet portrait
 	// geometry and narrower than `default`'s 1280, and every invariant in the reflow file is
@@ -50,7 +58,7 @@ export default defineConfig({
 		},
 		{
 			name: 'touch-landscape',
-			testMatch: /touch-reflow\.spec\.ts/,
+			testMatch: /touch-(reflow|modality)\.spec\.ts/,
 			use: { ...devices['Pixel 7 landscape'] }
 		},
 		{

@@ -308,13 +308,29 @@
 		z-index: 1;
 		touch-action: none;
 	}
+	/* ─── THE RULE THIS PANE IS BUILT ON, and the one that must not regress ────────────────────
+	   ORIENTATION decides only the AXIS the pane is anchored on — portrait a bottom sheet,
+	   landscape/desktop the right-hand edge. INPUT MODALITY decides the GESTURE and its
+	   AFFORDANCE — the edge drag is for a mouse AND a finger, the swipe is the finger's extra,
+	   and the resting grabber is what a pointer with no hover needs in order to see the seam at
+	   all. The two are INDEPENDENT: the modality logic is identical in portrait and in landscape.
+
+	   So the grabber is stated here once and re-shaped exactly twice: once by MODALITY (the coarse
+	   block below, which paints it and gives it a length), once by GEOMETRY (the portrait branch,
+	   which says which edge the seam hugs and which of its dimensions carries that length — never
+	   how it is painted). The portrait branch used to declare the pill itself, which is an
+	   affordance chosen by ORIENTATION: one finger got a chunky pill standing up and a thin line
+	   lying down, and a narrow docked desktop column got the touch grabber under a mouse. */
 	.resize-handle::after {
 		content: '';
 		position: absolute;
-		left: 3px;
-		top: 0;
-		bottom: 0;
+		/* Hugs the pane's leading edge and runs the length of the seam. `margin: auto` is what
+		   centres it when it is NOT that full length — i.e. once modality has made it a pill — so
+		   neither axis needs a translate of its own. */
+		inset: 0 auto 0 3px;
+		margin: auto;
 		width: 2px;
+		height: var(--grab-len, 100%);
 		background: transparent;
 		transition: background var(--dur-fast) var(--ease);
 	}
@@ -338,11 +354,16 @@
 			/* 12px out + 8px handle + 24px in = --hit. */
 			inset: 0 -24px 0 -12px;
 		}
-		/* …and the seam PAINTS at rest. Transparent-until-hover is the whole of its discoverability
-		   on a fine pointer; with no hover the pane simply had an invisible edge. Quieter than the
+		/* …and the seam PAINTS at rest, as a grabber. Transparent-until-hover is the whole of its
+		   discoverability on a fine pointer; with no hover the pane simply had an invisible edge,
+		   and a hairline that IS painted still does not read as draggable (D-I9). MODALITY's call,
+		   so it is made once here and holds on BOTH axes — the length lands on whichever dimension
+		   the anchor made the long one, and the pill is the same pill either way. Quieter than the
 		   accent the hover/drag state uses, so it reads as an edge rather than as active. */
 		.resize-handle::after {
+			--grab-len: 2.5rem;
 			background: var(--border-strong);
+			border-radius: 999px;
 		}
 	}
 
@@ -398,20 +419,14 @@
 				height: 8px;
 				cursor: row-resize;
 			}
-			/* D-I9: a RESTING grabber, not a seam that appears on hover. The desktop line is
-			   transparent until hovered, which CLAUDE.md forbids as the whole of an affordance, and a
-			   sheet with no visible grabber does not read as draggable at all. Same element, turned
-			   into a pill — the hover/drag accent rules above still out-specify it, so the drag still
-			   lights up. */
+			/* The seam turns with the anchor, and turning it is ALL this branch has to say about it:
+			   which edge it hugs, and which of its dimensions carries the length. How it is painted
+			   at rest is modality's answer above, which holds here unchanged — as do the hover/drag
+			   accent rules, which out-specify both. */
 			.resize-handle::after {
-				left: 50%;
-				top: 3px;
-				bottom: auto;
-				width: 2.5rem;
+				inset: 3px 0 auto 0;
+				width: var(--grab-len, 100%);
 				height: 2px;
-				transform: translateX(-50%);
-				background: var(--border-strong);
-				border-radius: 999px;
 			}
 			/* The coarse hit band turns with it — but it does NOT keep the landscape band's inward
 			   lean. 36px out + 8px handle + 0 in = --hit, entirely in the gutter above the sheet.
