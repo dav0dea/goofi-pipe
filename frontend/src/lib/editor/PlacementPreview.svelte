@@ -233,4 +233,20 @@
 		right: 0;
 		transform: translate(50%, -50%);
 	}
+
+	/* A fine pointer has a CURSOR, and the ghost riding it is most of what says "not placed yet" —
+	   so 0.9 and a hairline dash are enough there. A finger has no cursor at all: the drawing is the
+	   only thing left to say it, and at 0.9 on a phone this was a node card with a green edge. So a
+	   coarse pointer gets the placeholder stated three ways at once — visibly see-through, the same
+	   heavy dash `.node-drop-hint` uses for "something goes here", and NO elevation, because a node
+	   that is not down yet has not landed on the surface. Desktop is byte-identical. */
+	@media (hover: none) and (pointer: coarse) {
+		.ghost {
+			opacity: 0.6;
+		}
+		.surface {
+			border-width: 2px;
+			box-shadow: none;
+		}
+	}
 </style>
