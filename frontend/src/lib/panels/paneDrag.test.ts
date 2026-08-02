@@ -13,7 +13,6 @@ import {
    on whichever axis, and never below the floor" has to be provable here or nowhere. */
 
 const drag = (over: Partial<PaneDrag> = {}): PaneDrag => ({
-	axis: 'x',
 	startSize: 400,
 	startPos: 900,
 	min: 260,
@@ -29,10 +28,12 @@ describe('paneDrag', () => {
 
 	/* The two anchors are one gesture, not two: the pane sits against the right edge or the bottom
 	   one with its grip on the leading edge, so pushing the grip INTO the pane shrinks it either way
-	   — and the arithmetic is identical once the axis has picked the coordinate. */
-	it('shrinks as the grip is pushed toward the pane, on either axis', () => {
-		expect(paneSizeAt(drag({ axis: 'x' }), 960)).toBe(340);
-		expect(paneSizeAt(drag({ axis: 'y' }), 960)).toBe(340);
+	   — and this module cannot tell which, because a `PaneDrag` carries no axis at all. `PANE_AXES`
+	   and `coordOf` are where the axis is spent; by the time a drag exists it is two numbers and a
+	   floor that mean the same thing on either anchor. */
+	it('shrinks as the grip is pushed toward the pane, whichever axis picked the numbers', () => {
+		expect(paneSizeAt(drag(), 960)).toBe(340);
+		expect(paneSizeAt(drag({ startSize: 445, startPos: 400, min: 160 }), 485)).toBe(360);
 	});
 
 	it('grows as the grip is pulled away from it', () => {
@@ -57,7 +58,7 @@ describe('paneDrag', () => {
 	});
 
 	it('takes its own floor, so the two axes can differ', () => {
-		expect(paneSizeAt(drag({ axis: 'y', startSize: 445, startPos: 400, min: 160 }), 900)).toBe(160);
+		expect(paneSizeAt(drag({ startSize: 445, startPos: 400, min: 160 }), 900)).toBe(160);
 	});
 });
 
@@ -87,7 +88,7 @@ describe('PANE_AXES', () => {
 	it('is where the floor the gesture clamps to comes from', () => {
 		for (const axis of ['x', 'y'] as const) {
 			const { min } = PANE_AXES[axis];
-			expect(paneSizeAt(drag({ axis, startSize: min + 100, min }), 5000)).toBe(min);
+			expect(paneSizeAt(drag({ startSize: min + 100, min }), 5000)).toBe(min);
 		}
 	});
 });
@@ -97,7 +98,7 @@ describe('PANE_AXES', () => {
    tells them apart is the UNCLAMPED size the pointer asked for — which is why `paneSizeAt` is not
    the only thing this module computes. */
 describe('endsInDismiss', () => {
-	const sheet: PaneDrag = { axis: 'y', startSize: 445, startPos: 400, min: 160 };
+	const sheet: PaneDrag = { startSize: 445, startPos: 400, min: 160 };
 	/** The coordinate at which the pointer has asked for `size`. */
 	const asking = (size: number): number => sheet.startPos + (sheet.startSize - size);
 
@@ -128,7 +129,7 @@ describe('endsInDismiss', () => {
 	});
 
 	it('applies to the right-hand pane too — the swipe follows the anchor, not the device', () => {
-		const pane: PaneDrag = { axis: 'x', startSize: 420, startPos: 900, min: 260 };
+		const pane: PaneDrag = { startSize: 420, startPos: 900, min: 260 };
 		expect(endsInDismiss(pane, 900 + 420 - (260 - DISMISS_OVERSHOOT_PX), 'touch')).toBe(true);
 	});
 });

@@ -44,15 +44,20 @@ export const PANE_AXES: Record<PaneAxis, PaneAxisDims> = {
 	y: { min: 160, key: 'goofi.panelHeight', sizeOf: (b) => b.height }
 };
 
+/**
+ * A gesture in flight — and NOT which axis it is on: the axis has already been spent by the time
+ * one of these exists (`PANE_AXES` picked the dimension and the floor, `coordOf` picked the
+ * coordinate), leaving two numbers and a bound that mean the same thing on either anchor. It used
+ * to carry the axis as well, which nothing read — a sixth spelling of a fact this file's whole
+ * point is that the arithmetic does not need.
+ */
 export interface PaneDrag {
-	/** The axis the grip drags, as the container query decided it. */
-	axis: PaneAxis;
-	/** The pane's RENDERED size on `axis` when the gesture began, in px — not its stored size, which
-	 *  may sit above a ceiling only CSS can evaluate. */
+	/** The pane's RENDERED size on the dragged axis when the gesture began, in px — not its stored
+	 *  size, which may sit above a ceiling only CSS can evaluate. */
 	startSize: number;
-	/** The pointer's coordinate on `axis` when the gesture began. */
+	/** The pointer's coordinate on that axis when the gesture began. */
 	startPos: number;
-	/** The floor for `axis`, in px. */
+	/** The floor for it, in px. */
 	min: number;
 }
 

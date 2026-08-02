@@ -94,7 +94,6 @@
 		// a wider screen (or from before D-I6's cap) is not what is on screen — and a drag that began
 		// from it would move the pointer a long way before the pane moved at all.
 		const drag: PaneDrag = {
-			axis,
 			startSize: dim.sizeOf(el.getBoundingClientRect()),
 			startPos: coordOf(axis, e),
 			min: dim.min
