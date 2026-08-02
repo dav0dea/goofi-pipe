@@ -3,6 +3,7 @@ import { waitForApp } from '../lib/app';
 import {
 	dropNode,
 	editorHost,
+	expectEdgeDragFollowsThePointer,
 	expectRestingPill,
 	expectSwipeDismisses,
 	openInspector,
@@ -55,6 +56,20 @@ test('a coarse pointer rests the SAME grabber pill in either anchor (D-I9)', asy
 	const uid = await openInspector(page);
 	try {
 		await expectRestingPill(page);
+	} finally {
+		await dropNode(page, uid);
+	}
+});
+
+/* The other half of D-I4's "edge drag is for BOTH", and the half that was only ever proved on the Y
+   axis: the same grip, the same module, the same persistence idiom, a finger instead of a mouse.
+   `inspector-orientation.spec.ts` runs the mouse in both anchors; this runs the finger in both. */
+test('an edge drag by TOUCH moves the pane to where the pointer asked (D-I3/D-I4)', async ({
+	page
+}) => {
+	const uid = await openInspector(page);
+	try {
+		await expectEdgeDragFollowsThePointer(page, 100);
 	} finally {
 		await dropNode(page, uid);
 	}

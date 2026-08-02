@@ -203,6 +203,57 @@ async function restingCeiling(page: Page, axis: PaneAxis): Promise<number> {
 }
 
 /**
+ * D-I4's UN-GATED half, in whichever anchor: the edge drag is THE resize, the same gesture on a
+ * finger as on a mouse, over arithmetic that takes no axis at all. This is the finger;
+ * `inspector-orientation.spec.ts` runs the mouse.
+ *
+ * Everything asserted is true in both anchors, which is the point of it being one function: a drag
+ * inside the pane's own room lands it where the pointer asked, never dismisses it, leaves the other
+ * dimension alone, and persists the RENDERED size under this axis's own key while never writing the
+ * other's.
+ *
+ * `want` is what the drag ASKS for; the travel is clamped to the room the pane actually has
+ * (`ceiling − floor`), which is the one quantity here that is NOT the same in the two anchors — not
+ * because the gesture differs but because the two bounds are declared in different places and can
+ * cross. On a landscape phone they do: `max-width: min(30%, 30rem)` is ~256px of an ~854px host,
+ * just under the 260px floor, so the pane has NO room at all and the same drag that resizes the
+ * sheet can only bottom the pane out or throw it away. That is a live D-I6 question — the cap and
+ * the floor are both numbers the user set — and clamping here is what keeps this file measuring the
+ * GESTURE rather than silently re-measuring that conflict.
+ */
+export async function expectEdgeDragFollowsThePointer(page: Page, want: number): Promise<void> {
+	const axis = await paneAxis(page);
+	const other = axis === 'y' ? 'x' : 'y';
+	const { min, key } = PANE_AXES[axis];
+	const before = await settledBox(pane(page));
+	const ceiling = await restingCeiling(page, axis);
+	const travel = Math.min(want, Math.max(ceiling - min, 0));
+
+	await swipeGripInward(page, travel);
+
+	const after = await settledBox(pane(page));
+	expect(pane(page), 'a drag inside the pane’s own room is a resize, never a dismiss').toHaveClass(
+		/open/
+	);
+	expect(
+		sizeOn(axis, after),
+		`${axis}: asked for ${ceiling - travel} (floor ${min}, ceiling ${ceiling})`
+	).toBeCloseTo(Math.min(Math.max(ceiling - travel, min), ceiling), 0);
+	expect(
+		sizeOn(other, after),
+		'and the other dimension is the anchor’s — the drag never touches it'
+	).toBeCloseTo(sizeOn(other, before), 0);
+	expect(
+		await page.evaluate((k) => localStorage.getItem(k), key),
+		'the RENDERED size is what was stored, so a reload agrees with the screen'
+	).toBe(String(Math.round(sizeOn(axis, after))));
+	expect(
+		await page.evaluate((k) => localStorage.getItem(k), PANE_AXES[other].key),
+		'…under this axis’s own key: one idiom, two keys, and the other is never written (D-I3)'
+	).toBeNull();
+}
+
+/**
  * D-I4's MODALITY-GATED half, in whichever anchor: the same drag, carried a full overshoot past the
  * floor, throws the pane away instead of resizing it. Nothing is persisted — a dismiss is not a
  * resize, so the pane comes back the size it was.
