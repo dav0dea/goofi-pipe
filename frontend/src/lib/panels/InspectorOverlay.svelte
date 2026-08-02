@@ -8,10 +8,11 @@
   ways — this pane's own dismiss ✕, and the editor's `inspector-toggle` corner control, which the
   host hides while the pane covers it. There is no global header toggle.
 
-  The ✕ is the whole of D-R9's R1 half. Until R the pane had NO way out of its own: the toggle sat
-  under it in z-order, and deselecting meant tapping canvas the pane covered — a dead end on a
-  phone, and merely obscure on a desktop, which is the same defect (C9: the comment here promised
-  a close button that the markup never had).
+  The ✕ is the whole of D-R9's R1 half, and now the ONLY way out of the pane. Until R there was
+  none: the toggle sat under it in z-order, and deselecting meant tapping canvas the pane covered —
+  a dead end on a phone, and merely obscure on a desktop, which is the same defect (C9: the comment
+  here promised a close button that the markup never had). A touch swipe past the floor was briefly
+  a second door; it was removed, so nothing about closing depends on a gesture or on a pointer type.
 
   This is additive to the placeable Parameters/Metadata/Errors panels — those
   follow the active editor's selection instead.
@@ -299,11 +300,11 @@
 		touch-action: none;
 	}
 	/* ─── THE RULE THIS PANE IS BUILT ON, and the one that must not regress ────────────────────
-	   ORIENTATION decides only the AXIS the pane is anchored on — portrait a bottom sheet,
-	   landscape/desktop the right-hand edge. INPUT MODALITY decides the GESTURE and its
-	   AFFORDANCE — the edge drag is for a mouse AND a finger, the swipe is the finger's extra,
-	   and the resting grabber is what a pointer with no hover needs in order to see the seam at
-	   all. The two are INDEPENDENT: the modality logic is identical in portrait and in landscape.
+	   ORIENTATION decides the anchored AXIS — portrait a bottom sheet, landscape/desktop the
+	   right-hand edge. INPUT MODALITY decides only the resting AFFORDANCE: the grabber pill and the
+	   coarse hit band. THE GESTURE IS UNIFORM — edge-drag, identical on a mouse and a finger — and
+	   closing is the explicit ✕ alone. Modality once gated a gesture too (a swipe past the floor
+	   threw the pane away); it is gone, so the two axes of this rule no longer meet anywhere.
 
 	   So the grabber is stated here once and re-shaped exactly twice: once by MODALITY (the coarse
 	   block below, which paints it and gives it a length), once by GEOMETRY (the portrait branch,
@@ -374,7 +375,7 @@
 	   feature itself, so without it the flip would mean re-nesting the whole block.
 
 	   Nothing here is gated on the pointer, and that is the point: one component, one continuous
-	   resize, one persistence idiom. Modality gates only the additive swipe. */
+	   resize, one persistence idiom. Modality gates only the resting affordance — never a gesture. */
 	@media all {
 		@container (orientation: portrait) {
 			.side-panel {

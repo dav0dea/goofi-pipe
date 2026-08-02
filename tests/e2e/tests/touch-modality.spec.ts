@@ -23,11 +23,15 @@ import {
  * normalised to whichever axis the container query anchored the pane on, so the two projects run
  * the same bytes rather than two copies that can drift apart.
  *
- * That IS the guard. The rule is that orientation decides only the axis and modality decides the
- * gesture and its affordance; a change that re-couples them makes exactly one of these projects
- * disagree, immediately and by name. It is what caught the defect this file was written for: a
- * resting grabber declared by the portrait branch, so one finger got a chunky pill standing up and
- * a thin line lying down.
+ * That IS the guard. The rule is that ORIENTATION decides the anchored AXIS, INPUT MODALITY decides
+ * only the resting AFFORDANCE (the grabber pill and the coarse hit band), THE GESTURE IS UNIFORM —
+ * edge-drag, identical on a mouse and a finger — and closing is the explicit ✕ alone. A change that
+ * re-couples any of those makes exactly one of these projects disagree, immediately and by name. It
+ * is what caught the defect this file was written for: a resting grabber declared by the portrait
+ * branch, so one finger got a chunky pill standing up and a thin line lying down.
+ *
+ * The rule used to end "…modality decides the GESTURE and its affordance", because a touch swipe
+ * past the floor closed the pane. That was the only gesture modality ever reached, and it is gone.
  *
  * Only two projects, not three: `tablet` is portrait as well, so it would re-measure `touch`'s
  * answer. What has to be re-run is the OTHER anchor, and there is exactly one of those.

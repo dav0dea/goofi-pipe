@@ -31,7 +31,7 @@ const kbInset = (page: Page): Promise<number> =>
 		() => parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--kb-inset')) || 0
 	);
 
-test('the pane rises from the bottom and stops at 60% of its host (D-I6)', async ({ page }) => {
+test('the pane rises from the bottom and rests at 60% of its host (D-I6)', async ({ page }) => {
 	await page.emulateMedia({ reducedMotion: 'reduce' });
 	await page.goto('/');
 	await waitForApp(page);
@@ -81,12 +81,12 @@ test('the canvas above the sheet still takes a tap that changes the selection', 
 	}
 });
 
-/* The edge drag and the swipe used to be re-stated here, in the Y axis, beside their X-axis twins
-   in `inspector-orientation.spec.ts`. They are `touch-modality.spec.ts`'s now: that file runs one
-   copy of each, normalised to the anchored axis, in BOTH the `touch` and `touch-landscape`
-   projects — which is the only arrangement that can catch the two drifting apart. Two copies each
-   asserting its own orientation is precisely how the resting grabber came to be orientation-gated
-   in the first place. */
+/* The edge drag used to be re-stated here, in the Y axis, beside its X-axis twin in
+   `inspector-orientation.spec.ts`. It is `touch-modality.spec.ts`'s now: that file runs one copy,
+   normalised to the anchored axis, in BOTH the `touch` and `touch-landscape` projects — which is
+   the only arrangement that can catch the two drifting apart. Two copies each asserting its own
+   orientation is precisely how the resting grabber came to be orientation-gated in the first
+   place. */
 
 test('the soft keyboard lifts the sheet off the bottom (D-I7)', async ({ page }) => {
 	// `--kb-inset` is the one thing R kept of the device seam, precisely because CSS cannot see the

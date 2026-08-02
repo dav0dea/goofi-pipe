@@ -37,7 +37,7 @@ export default defineConfig({
 	//
 	// `touch-modality.spec.ts` joins it in `touch-landscape` for the opposite reason: what it
 	// measures is a CONSTANT that must survive the orientation change. The inspector's rule is that
-	// orientation picks only the anchor and modality picks the gesture and its affordance, so the
+	// orientation picks only the anchor and modality picks only the resting affordance, so the
 	// same assertions have to come back the same answer in both anchors — and running one file in
 	// the two projects is what makes a re-coupling fail by name instead of going unnoticed. Not in
 	// `tablet`: that project is portrait too, so it would re-measure `touch`'s answer rather than

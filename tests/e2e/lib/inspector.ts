@@ -6,11 +6,10 @@ import { touchSession } from './touch';
 /**
  * The inspector pane, and THE ONE RULE it is built on:
  *
- *   ORIENTATION decides only the AXIS the pane is anchored on — portrait a bottom sheet,
- *   landscape/desktop the right-hand edge. INPUT MODALITY decides the GESTURE and its AFFORDANCE —
- *   the edge drag is for a mouse AND a finger, the swipe is the finger's extra, and the resting
- *   grabber is what a pointer with no hover needs to see. The two are INDEPENDENT: the modality
- *   logic is identical in portrait and in landscape.
+ *   ORIENTATION decides the anchored AXIS — portrait a bottom sheet, landscape/desktop the
+ *   right-hand edge. INPUT MODALITY decides only the resting AFFORDANCE: the grabber pill and the
+ *   coarse hit band. THE GESTURE IS UNIFORM — edge-drag, identical on a mouse and a finger — and
+ *   closing is the explicit ✕ alone.
  *
  * Which is why every assertion here is written ONCE and normalised to whichever axis the pane came
  * back anchored on, then invoked from both orientations — `touch` (Pixel 7 portrait, the sheet) and

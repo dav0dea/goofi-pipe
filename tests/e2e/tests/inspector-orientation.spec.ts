@@ -194,13 +194,11 @@ test('an edge drag resizes the pane with a MOUSE, and the size outlives the relo
 });
 
 /**
- * The mirror of `touch-sheet`'s swipe: the identical gesture, dragged just as far past the floor,
- * under a MOUSE. It resizes to the floor and the pane stays open, which is what makes the swipe an
- * *additive* touch affordance rather than a second behaviour the desktop also has to live with.
+ * The mouse half of THE GESTURE IS UNIFORM: the drag `touch-modality.spec.ts` carries past the floor
+ * with a finger, carried just as far with a MOUSE. Both resize to the floor and leave the pane open,
+ * which is the whole claim — there is no pointer type for which this gesture means something else.
  */
-test('the same drag under a mouse resizes to the floor and never dismisses (D-I4)', async ({
-	page
-}) => {
+test('a drag carried far past the floor clamps there, on a mouse too (D-I4)', async ({ page }) => {
 	await page.emulateMedia({ reducedMotion: 'reduce' });
 	await page.goto('/');
 	await waitForApp(page);
@@ -214,7 +212,7 @@ test('the same drag under a mouse resizes to the floor and never dismisses (D-I4
 		const y = g.y + g.height / 2;
 		await page.mouse.move(g.x + g.width / 2, y);
 		await page.mouse.down();
-		// Well past the floor AND past a full dismiss overshoot below it.
+		// Past the floor by the pane's whole width again, so nothing about this ends AT the bound.
 		await page.mouse.move(g.x + g.width / 2 + before.width + 100, y, { steps: 10 });
 		await page.mouse.up();
 
@@ -227,10 +225,10 @@ test('the same drag under a mouse resizes to the floor and never dismisses (D-I4
 });
 
 /**
- * D-I9, and the rule it is one instance of: ORIENTATION decides only the AXIS the pane is anchored
- * on; INPUT MODALITY decides the gesture and its affordance. The two are independent — so under one
- * modality the grabber must be the SAME in either anchor, and this reads it in both and compares
- * them against each other rather than against a number either could drift away from alone.
+ * D-I9, and the rule it is one instance of: ORIENTATION decides the anchored AXIS; INPUT MODALITY
+ * decides only the resting AFFORDANCE. The two are independent — so under one modality the grabber
+ * must be the SAME in either anchor, and this reads it in both and compares them against each other
+ * rather than against a number either could drift away from alone.
  *
  * It was not. The portrait branch declared a resting pill unconditionally, which is an affordance
  * chosen by orientation: a phone got a chunky pill standing up and a thin line lying down (the same
@@ -287,7 +285,7 @@ test('one modality, one grabber — the fine seam is identical in either anchor'
 
 test('the ✕ dismisses the pane in either anchor', async ({ page }) => {
 	// `inspector-dismiss.spec.ts` proves the ✕ on the right-hand pane; this is the same door on the
-	// SHEET, and D-I4 is why it must exist there too — the swipe is an extra, never the only way out.
+	// SHEET, and D-I4 is why it must exist there too — it is the ONLY way out, in either anchor.
 	await page.setViewportSize({ width: 600, height: 1000 });
 	await page.emulateMedia({ reducedMotion: 'reduce' });
 	await page.goto('/');

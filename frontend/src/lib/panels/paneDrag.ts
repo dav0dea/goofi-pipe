@@ -4,12 +4,18 @@
  * `InspectorOverlay.svelte` cannot be mounted in this repo's vitest, so whatever a unit test must
  * reach has to live in a `.ts` module. This is it.
  *
- * ONE shape for both anchors, which is the governing principle of the orientation work: the pane
- * sits against the right edge of its host or against the bottom one, with its grip on the leading
- * edge either way, so pushing the grip INTO the pane shrinks it on whichever axis it is on. Nothing
- * here is gated on a device or a pointer type, and the axis is not decided here — `@container
- * (orientation: portrait)` decides it and publishes the answer as `--pane-axis`, which the
- * component reads back rather than re-deriving.
+ * THE RULE THIS PANE IS BUILT ON. ORIENTATION decides the anchored AXIS — portrait a bottom sheet,
+ * landscape/desktop the right-hand edge. INPUT MODALITY decides only the resting AFFORDANCE (the
+ * grabber pill and the coarse hit band, both of them CSS). THE GESTURE IS UNIFORM: edge-drag,
+ * identical on a mouse and a finger. Closing is the explicit ✕ alone.
+ *
+ * So ONE shape serves both anchors: the pane sits against the right edge of its host or against the
+ * bottom one, with its grip on the leading edge either way, so pushing the grip INTO the pane
+ * shrinks it on whichever axis it is on. Nothing here is gated on a device or a pointer type — this
+ * module took a pointer type once, for a swipe past the floor that closed the pane, and that was
+ * the only place modality ever reached a gesture. And the axis is not decided here either:
+ * `@container (orientation: portrait)` decides it and publishes the answer as `--pane-axis`, which
+ * the component reads back rather than re-deriving.
  *
  * NEITHER BOUND lives here, and that is deliberate. Both are one host-relative `clamp()` per axis in
  * `InspectorOverlay.svelte`, which is the only place either can be evaluated and the only
