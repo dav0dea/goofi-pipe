@@ -28,7 +28,7 @@ import {
  * Sizes are measured against the HOST or against what the pane itself publishes, never against a
  * literal — except where the literal IS the claim (§4.3: the desktop resting width does not move
  * off 420px). In particular no test here restates the small-screen guard's PERCENTAGE: which of the
- * ceiling's two halves bound is asserted by measurement, so D-I6 can retune that number without
+ * resting size's two halves bound is asserted by measurement, so D-I6 can retune that number without
  * this file having an opinion about it.
  */
 
