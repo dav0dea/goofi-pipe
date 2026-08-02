@@ -70,7 +70,7 @@
 	 *  selects the state it writes, with no branch of its own. */
 	let paneSize = $state({ x: storedSize('x'), y: storedSize('y') });
 	let resizing = $state(false);
-	/** The pane itself — the drag measures its RENDERED box, since the ceilings are CSS's. */
+	/** The pane itself — the drag measures its RENDERED box, since both bounds are CSS's. */
 	let paneEl = $state<HTMLElement | null>(null);
 
 	/** The in-flight resize's teardown; non-null only between pointerdown and its resolution. */
@@ -100,7 +100,7 @@
 		// it either way is what keeps a reload agreeing with what is on screen. A cancel that did NOT
 		// run this teardown is the actual defect: the window listeners outlived the gesture and the
 		// pane kept resizing on the next pointer motion.
-		// What is persisted is again the RENDERED size, so the store can never drift above the cap.
+		// What is persisted is again the RENDERED size, so the store can never drift outside the bounds.
 		const finish = (): void => {
 			resizing = false;
 			teardownResize = null;

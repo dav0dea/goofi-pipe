@@ -2,6 +2,7 @@ import { test, expect } from '@playwright/test';
 import { waitForApp } from '../lib/app';
 import { settledBox } from '../lib/geometry';
 import {
+	dragGripToTheFloor,
 	dropNode,
 	editorHost,
 	expectDragPastTheFloorStillResizes,
@@ -149,6 +150,42 @@ test('a drag carried past the floor is still a resize, never a dismiss (D-I4)', 
 	const uid = await openInspector(page);
 	try {
 		await expectDragPastTheFloorStillResizes(page);
+	} finally {
+		await dropNode(page, uid);
+	}
+});
+
+/* THE ONE GUARD THE DELETION MADE NECESSARY. The ✕ is the only way out of the pane now, so it has to
+   survive the pane's smallest legal size — and the floor moved down to 10% of the host, which is
+   ~85px of an 854px landscape host and a ~74px sheet in portrait. Neither is a geometry the ✕ has
+   ever had to work in, and the pane is DRAGGED there rather than seeded there, because a stored size
+   restores a pane that was never squeezed.
+
+   Present is not the claim; HITTABLE is. The coarse hit band leans INWARD over the pane's own rows
+   in landscape, and `.ins-head` is a row it could reach: in portrait that reach once landed on this
+   very ✕ (measured then: band bottom 418px, ✕ centre 416px) and swallowed the pane's one pointer
+   door. A tap alone would not notice — Playwright taps the element's box whether or not anything is
+   laid over it — so the topmost element at the ✕'s centre is asserted to be the ✕ itself. */
+test('the ✕ is still there, still hittable, and still closes the pane AT the floor', async ({
+	page
+}) => {
+	const uid = await openInspector(page);
+	try {
+		await dragGripToTheFloor(page);
+
+		const close = pane(page).getByTestId('inspector-close');
+		await expect(close, 'the pane keeps its one door at its smallest size').toBeVisible();
+		const b = (await close.boundingBox())!;
+		expect(
+			await page.evaluate(
+				(p) => document.elementFromPoint(p.x, p.y)?.closest('[data-testid]')?.textContent?.trim(),
+				{ x: b.x + b.width / 2, y: b.y + b.height / 2 }
+			),
+			'nothing is laid over it — a tap at its centre reaches the ✕ itself'
+		).toBe('✕');
+
+		await close.tap();
+		await expect(pane(page), 'and it closes the pane').toHaveCount(0);
 	} finally {
 		await dropNode(page, uid);
 	}

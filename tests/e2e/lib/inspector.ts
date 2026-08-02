@@ -200,6 +200,14 @@ export async function expectRestingPill(page: Page): Promise<void> {
  *
  * Real CDP touch, not `page.mouse`: under `hasTouch` Playwright's mouse API still reports
  * `pointerType: 'mouse'`, which would prove the desktop path a second time.
+ *
+ * THE FINGER COMES TO REST BEFORE IT LIFTS, and that is not decoration. Dispatched back to back, the
+ * moves carry a velocity Chromium reads as a FLING at release — and Chromium eats the next tap
+ * anywhere on the page to stop the fling it thinks is running (measured: after this drag, a tap on
+ * bare canvas far from the pane also did nothing; the same drag with a still finger before release
+ * left the tap intact). No product code is involved: the sequence still arrives complete and
+ * unprevented, Chromium simply synthesizes no `click` from it. A deliberate resize ends with a
+ * finger that has stopped, so holding still is also the more faithful gesture.
  */
 export async function swipeGripInward(page: Page, travel: number, steps = 8): Promise<void> {
 	const axis = await paneAxis(page);
@@ -211,6 +219,8 @@ export async function swipeGripInward(page: Page, travel: number, steps = 8): Pr
 	const touch = await touchSession(page);
 	await touch.down(at(0));
 	for (let i = 1; i <= steps; i++) await touch.moveTo(at((travel * i) / steps));
+	await touch.moveTo(at(travel));
+	await page.waitForTimeout(150);
 	await touch.up();
 }
 
@@ -286,24 +296,22 @@ export async function expectEdgeDragFollowsThePointer(page: Page, want: number):
 }
 
 /**
- * The GESTURE IS UNIFORM, in whichever anchor: a drag carried as far into the pane as the screen
- * allows is still a RESIZE. It bottoms out at the floor, the pane stays open, and the floored size
- * is persisted like any other.
+ * Carry the grip as far INTO the pane as the screen allows, and hand back the floor CSS bottomed it
+ * out at — the pane at its smallest legal size, in whichever anchor.
  *
- * This is where a swipe-past-the-floor used to throw the pane away — the one thing input modality
- * gated in the whole pane. It is gone, and the ✕ is the only way out, so what has to be asserted is
- * the ABSENCE: an overshot resize gives a finger a small pane back, never no pane at all. Stated as
- * an assertion rather than as a deleted test, because that is the only shape in which re-adding a
- * modality-gated gesture fails loudly.
+ * The travel is clamped to the viewport because a CDP touch point off-screen is not a gesture any
+ * finger could make, and asserted against the room the pane actually has, so a drag that merely
+ * reached the floor cannot pass for one that cleared it.
+ *
+ * That the pane is still OPEN afterwards is asserted here rather than left to the callers: this is
+ * exactly where a swipe-past-the-floor used to throw it away, the one thing input modality ever
+ * gated in this pane. It is gone, and stating its absence at the moment the drag resolves is what
+ * makes re-adding it fail loudly instead of turning every later assertion into a missing element.
  */
-export async function expectDragPastTheFloorStillResizes(page: Page): Promise<void> {
+export async function dragGripToTheFloor(page: Page): Promise<number> {
 	const axis = await paneAxis(page);
 	const floor = await paneBound(page, 'floor');
-	const key = PANE_KEYS[axis];
 	const resting = await restingSize(page, axis);
-	// As far INTO the pane as the screen allows. Clamped to the viewport because a CDP touch point
-	// off-screen is not a gesture any finger could make — and the assertion below is what proves the
-	// drag really cleared the floor rather than merely approaching it.
 	const g = (await grip(page).boundingBox())!;
 	const vp = page.viewportSize()!;
 	const from = axis === 'y' ? g.y + g.height / 2 : g.x + g.width / 2;
@@ -321,6 +329,17 @@ export async function expectDragPastTheFloorStillResizes(page: Page): Promise<vo
 		sizeOn(axis, await settledBox(pane(page))),
 		`${axis}: bottomed out at the floor, not closed`
 	).toBeCloseTo(floor, 0);
+	return floor;
+}
+
+/**
+ * The GESTURE IS UNIFORM, in whichever anchor: a drag carried past the floor is still a RESIZE, so
+ * the floored size is persisted like any other. `inspector-orientation.spec.ts` runs the same drag
+ * with a mouse; there is no pointer type for which it means something else.
+ */
+export async function expectDragPastTheFloorStillResizes(page: Page): Promise<void> {
+	const key = PANE_KEYS[await paneAxis(page)];
+	const floor = await dragGripToTheFloor(page);
 	expect(
 		await page.evaluate((k) => localStorage.getItem(k), key),
 		'and it is a resize like any other, so the floored size is what was persisted'
