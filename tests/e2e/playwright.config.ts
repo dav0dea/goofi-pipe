@@ -35,13 +35,15 @@ export default defineConfig({
 	// clamp against its host, a point-anchored popover's clamp against the screen, and whether a
 	// 360px-tall viewport leaves a canvas at all — and that is `touch-reflow.spec.ts`.
 	//
-	// `touch-modality.spec.ts` joins it in `touch-landscape` for the opposite reason: what it
-	// measures is a CONSTANT that must survive the orientation change. The inspector's rule is that
-	// orientation picks only the anchor and modality picks only the resting affordance, so the
-	// same assertions have to come back the same answer in both anchors — and running one file in
-	// the two projects is what makes a re-coupling fail by name instead of going unnoticed. Not in
-	// `tablet`: that project is portrait too, so it would re-measure `touch`'s answer rather than
-	// the other anchor.
+	// `touch-modality.spec.ts` and `touch-placement.spec.ts` join it in `touch-landscape` for the
+	// opposite reason: what they measure is a CONSTANT that must survive the orientation change.
+	// The rule both are built on is that orientation picks only the anchor and INPUT MODALITY picks
+	// the gesture and the affordance, so the same assertions have to come back the same answer in
+	// both anchors — and running one file in the two projects is what makes a re-coupling fail by
+	// name instead of going unnoticed. `touch-placement` is the gesture half of that rule: placing
+	// a node by dragging its ghost is gated on `pointerType`, per event, and a media query anywhere
+	// in that path would show up here as a landscape-only red. Neither is in `tablet`: that project
+	// is portrait too, so it would re-measure `touch`'s answer rather than the other anchor.
 	//
 	// Tablet LANDSCAPE (1138×712) is not its own project: it is wider than the tablet portrait
 	// geometry and narrower than `default`'s 1280, and every invariant in the reflow file is
@@ -58,7 +60,7 @@ export default defineConfig({
 		},
 		{
 			name: 'touch-landscape',
-			testMatch: /touch-(reflow|modality)\.spec\.ts/,
+			testMatch: /touch-(reflow|modality|placement)\.spec\.ts/,
 			use: { ...devices['Pixel 7 landscape'] }
 		},
 		{

@@ -1,11 +1,11 @@
-import { test, expect, type Locator, type Page } from '@playwright/test';
+import { test, expect, type Page } from '@playwright/test';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { waitForApp } from '../lib/app';
 import { nodes, nodeParams } from '../lib/goofi';
+import { openAddMenuByPress, paletteItem } from '../lib/placement';
 import { menuRow } from '../lib/topbar';
-import { emptySpot, touchSession } from '../lib/touch';
 
 /**
  * **The headline test for sub-project R.** Its §5 success criterion, verbatim: at 412px portrait a
@@ -56,15 +56,6 @@ function links(page: Page): Promise<Array<Record<string, string>>> {
 	return page.evaluate(() => (window as any).goofi.query.graph().links);
 }
 
-/** One row of the add-node menu, by node type. */
-function paletteItem(page: Page, type: string): Locator {
-	return page
-		.getByTestId('add-menu-list')
-		.locator('.item')
-		.filter({ has: page.locator('.t-name', { hasText: new RegExp(`^${type}$`) }) })
-		.first();
-}
-
 /** Pick `type` from the open add-node menu and place it with a tap on the canvas. */
 async function pickAndPlace(page: Page, type: string, at: { x: number; y: number }): Promise<void> {
 	await paletteItem(page, type).tap();
@@ -80,13 +71,9 @@ test('412px portrait: add a node, connect it, open its parameters, change one, a
 	await page.goto('/');
 	await waitForApp(page);
 	await clearGraph(page);
-	const touch = await touchSession(page);
 
 	// --- 1. ADD, through the coarse-pointer door -------------------------------------------
-	const spot = await emptySpot(page);
-	await touch.down(spot);
-	await expect(page.getByTestId('add-node-menu-anchor')).toBeVisible();
-	await touch.up();
+	const spot = await openAddMenuByPress(page);
 	await pickAndPlace(page, 'Oscillator', spot);
 	await expect.poll(async () => (await nodes(page)).length, { message: 'a node landed' }).toBe(1);
 
