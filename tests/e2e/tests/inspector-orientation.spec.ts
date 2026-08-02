@@ -4,7 +4,6 @@ import { settledBox } from '../lib/geometry';
 import { addNode, waitForNode } from '../lib/goofi';
 import {
 	dropNode as drop,
-	editorHost as editor,
 	grip,
 	openInspector as addAndSelect,
 	pane,
@@ -26,16 +25,17 @@ import {
  * assertions below — off `lib/inspector.ts`, which both files read the pane through, so the mouse
  * and the finger are measured with one ruler.
  *
- * Sizes are measured against the HOST, never a literal — except where the literal IS the claim
- * (§4.3: the desktop resting width does not move off 420px), and there the viewport is set to a
- * width where `min(30%, 30rem)` provably resolves to the rem half.
+ * Sizes are measured against the HOST or against what the pane itself publishes, never against a
+ * literal — except where the literal IS the claim (§4.3: the desktop resting width does not move
+ * off 420px). In particular no test here restates the small-screen guard's PERCENTAGE: which of the
+ * ceiling's two halves bound is asserted by measurement, so D-I6 can retune that number without
+ * this file having an opinion about it.
  */
 
 test('the desktop resting width does not move off 420px (§4.3)', async ({ page }) => {
-	// 1600 wide, so `min(30%, 30rem)` resolves to the REM half: 30% of a ~1592px editor is 478px,
-	// and the root clamp saturates at 14px anywhere near this size, so 30rem is exactly 420 — the
-	// width the pane has always rested at. Below ~1400px the percent half binds instead, which is
-	// the next case.
+	// 1600 wide, so the ceiling resolves to its REM half: the root clamp saturates at 14px anywhere
+	// near this size, so 30rem is exactly 420 — the width the pane has always rested at. On a
+	// narrower host the small-screen guard binds instead, which is the next case.
 	await page.setViewportSize({ width: 1600, height: 900 });
 	await page.emulateMedia({ reducedMotion: 'reduce' });
 	await page.goto('/');
@@ -45,29 +45,46 @@ test('the desktop resting width does not move off 420px (§4.3)', async ({ page 
 	try {
 		const p = await settledBox(pane(page));
 		expect(p.width, 'the resting pane is 30rem = 420px').toBeCloseTo(420, 0);
-		const host = (await editor(page).boundingBox())!;
-		expect(host.width * 0.3, 'and the percent half is the looser of the two here').toBeGreaterThan(
-			420
-		);
+		// …and 30rem is genuinely the binding half here, MEASURED rather than arithmetic: a wider
+		// host cannot make the pane wider. Stated this way it names no percentage, so it holds for
+		// whatever the small-screen guard is set to — which is the number D-I6 leaves live.
+		await page.setViewportSize({ width: 1900, height: 900 });
+		const wider = await settledBox(pane(page));
+		expect(wider.width, 'and a wider host cannot make it wider').toBeCloseTo(420, 0);
 	} finally {
 		await drop(page, uid);
 	}
 });
 
-test('a narrower desktop editor caps the pane at 30% of it, not at 720px', async ({ page }) => {
-	// The default 1280 viewport: 30% of the editor is ~382px, under the 410px `30rem` resolves to at
-	// this root size, so the PERCENT half binds. Before D-I6 the pane sat at a flat 420px here and
-	// its only host clamp was `100% - --hit`, which reserved 28px of canvas out of 1272.
+/**
+ * The other half of D-I6's cap, and the half the small-screen guard exists for: on a host too
+ * narrow for the 30rem comfort cap, it is the HOST that binds. Before D-I6 the pane sat at a flat
+ * 420px here and its only host clamp was `100% - --hit`, which reserved 28px of canvas out of 1272.
+ *
+ * No fraction is restated: what is asserted is which of the two halves bound, and that the one that
+ * bound still left the pane room. That second assertion is the whole of the floor/ceiling fix — a
+ * host-relative cap is free to resolve BELOW the floor it is written against, which is exactly what
+ * a landscape phone got (256px under a 260px floor), and `clamp(var(--pane-min), …)` is what stops
+ * it. A guard tight enough to cross the floor on a narrow desktop fails right here.
+ */
+test('a narrower desktop editor caps the pane against its HOST, and still leaves it room', async ({
+	page
+}) => {
+	// 800 wide: narrow enough that the small-screen guard is the tighter half at this root size.
+	await page.setViewportSize({ width: 800, height: 720 });
 	await page.emulateMedia({ reducedMotion: 'reduce' });
 	await page.goto('/');
 	await waitForApp(page);
 	const uid = await addAndSelect(page);
 	try {
-		const host = (await editor(page).boundingBox())!;
-		const cap = Math.min(0.3 * host.width, 30 * (await rem(page)));
-		expect(cap, 'the percent half is the tighter of the two here').toBeLessThan(420);
 		const p = await settledBox(pane(page));
-		expect(Math.abs(p.width - cap), `pane ${p.width} vs cap ${cap}`).toBeLessThan(1);
+		expect(p.width, 'the 30rem comfort cap is not what bound it — the host did').toBeLessThan(
+			30 * (await rem(page))
+		);
+		expect(
+			p.width,
+			'…and the host cap did not land on or under the floor it is written against'
+		).toBeGreaterThan(await paneMin(page));
 	} finally {
 		await drop(page, uid);
 	}

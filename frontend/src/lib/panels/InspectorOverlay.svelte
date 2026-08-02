@@ -236,10 +236,16 @@
 		/* The comfort cap in rem AND the small-screen guard in percent (D-I6), over the floor both
 		   are measured against. The root clamp saturates at 14px across the whole range that
 		   matters, so 30rem is 420px — exactly the resting width above, which is why the desktop
-		   resting size does not move; below a ~1400px host the percent half binds instead. It
+		   resting size does not move; below a ~1050px host the percent half binds instead. It
 		   replaces `100% - --hit - --grip-reach`, which guaranteed only that ONE tap target of
-		   canvas survived: on a 412px phone, a 44px strip. */
-		max-width: clamp(var(--pane-min), 30%, 30rem);
+		   canvas survived: on a 412px phone, a 44px strip.
+
+		   THE GUARD IS 40%, not the 30% D-I6 named, and this ONE TOKEN is the whole of that change.
+		   At 30% the landscape phone above lands on the floor the clamp lifts it to, so the pane is
+		   safe but has ZERO room: unresizable, with a dismiss a nudge away. 40% of that host is
+		   342px — 82px of travel above the floor, with 60% of it still canvas. Nothing on the
+		   desktop moves either way: 30rem is the tighter half above a ~1050px host. */
+		max-width: clamp(var(--pane-min), 40%, 30rem);
 		background: color-mix(in srgb, var(--surface-1) 96%, transparent);
 		backdrop-filter: blur(8px);
 		border-left: 1px solid var(--border);
