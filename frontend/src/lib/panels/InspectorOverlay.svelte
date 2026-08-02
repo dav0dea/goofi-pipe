@@ -27,6 +27,7 @@
 		PANE_AXES,
 		coordOf,
 		endsInDismiss,
+		paneMin,
 		paneSizeAt,
 		type PaneAxis,
 		type PaneDrag
@@ -57,12 +58,15 @@
 	/** A persisted pane size, or `null` when the user has never dragged one — in which case the
 	 *  resting size is the CSS fallback (`var(--pane-w, 420px)` / `var(--pane-h, 60%)`). Null rather
 	 *  than a literal because the portrait default is a PERCENTAGE of the host, which no number here
-	 *  could express; keeping both defaults in the stylesheet is what lets one idiom serve both. */
+	 *  could express; keeping both defaults in the stylesheet is what lets one idiom serve both.
+	 *
+	 *  Not re-floored on the way out: what is written below is the RENDERED size, and the pane's
+	 *  range cannot be empty (`--pane-min` is written into both ceilings), so a rendered size is
+	 *  between the two bounds by construction — on this host and on any other. */
 	function storedSize(axis: PaneAxis): number | null {
-		const { key, min } = PANE_AXES[axis];
 		try {
-			const n = parseInt(localStorage.getItem(key) ?? '', 10);
-			return Number.isFinite(n) ? Math.max(min, n) : null;
+			const n = parseInt(localStorage.getItem(PANE_AXES[axis].key) ?? '', 10);
+			return Number.isFinite(n) ? n : null;
 		} catch {
 			return null; // private mode; persistence is best-effort
 		}
@@ -82,13 +86,14 @@
 		if (!paneEl) return;
 		e.preventDefault();
 		const el = paneEl;
-		// The axis is the container query's answer, read back off the pane rather than re-derived
-		// here from the host's box — one question, asked once, of the box CSS asked it of. And asked
-		// ONCE for the whole gesture: `dim` is everything the axis selects (which dimension sizes the
-		// pane, where its floor is, which key remembers it), so "orientation picks the axis" stays one
-		// named fact instead of a condition re-asked at every line below that needs a dimension.
-		const axis: PaneAxis =
-			getComputedStyle(el).getPropertyValue('--pane-axis').trim() === 'y' ? 'y' : 'x';
+		// Both of the pane's own facts, read back off it in ONE question rather than re-derived here:
+		// the axis is the container query's answer, and the floor is the stylesheet's — declared
+		// beside the ceiling it bounds, because that is the only place either can be evaluated and
+		// the only arrangement in which they cannot contradict each other. `dim` is the rest of what
+		// the axis selects (which dimension sizes the pane, which key remembers it), so "orientation
+		// picks the axis" stays one named fact instead of a condition re-asked at every line below.
+		const css = getComputedStyle(el);
+		const axis: PaneAxis = css.getPropertyValue('--pane-axis').trim() === 'y' ? 'y' : 'x';
 		const dim = PANE_AXES[axis];
 		// The RENDERED size, not the stored one: the ceiling lives in CSS, so a value restored from
 		// a wider screen (or from before D-I6's cap) is not what is on screen — and a drag that began
@@ -96,7 +101,7 @@
 		const drag: PaneDrag = {
 			startSize: dim.sizeOf(el.getBoundingClientRect()),
 			startPos: coordOf(axis, e),
-			min: dim.min
+			min: paneMin(css.getPropertyValue('--pane-min'))
 		};
 		// Where the pointer got to. The pane CLAMPS at its floor, so the rendered size cannot say how
 		// far a swipe was carried past it — and that overshoot is the whole of the dismiss decision.
@@ -216,16 +221,25 @@
 		   the anchor; `startPanelResize` reads this property back instead of re-deriving the
 		   orientation in JS, so the question is asked once, of the box CSS asked it of. */
 		--pane-axis: x;
+		/* …and the FLOOR of this anchor, which is the OTHER half of one fact. It sits here, beside
+		   the ceiling below, because a floor and a ceiling authored in two files are two answers to
+		   one question and can cross: `paneDrag.ts` used to state 260px while `min(30%, 30rem)` on
+		   the 854px host of a landscape phone resolved to 256px, so the pane's allowed range was
+		   EMPTY — it could not be resized at all, and a drag started below its own floor with a
+		   dismiss 40px away. Written INTO the ceiling below, that is unspellable. `startPanelResize`
+		   reads this back exactly as it reads `--pane-axis`. */
+		--pane-min: 260px;
 		/* The RESTING size is this fallback — the inline `--pane-w` exists only once the user has
 		   dragged one. Both defaults live here rather than in the script because portrait's is a
 		   percentage of the host (see the container query), which no stored number could express. */
 		width: var(--pane-w, 420px);
-		/* The comfort cap in rem AND the small-screen guard in percent (D-I6). The root clamp
-		   saturates at 14px across the whole range that matters, so 30rem is 420px — exactly the
-		   resting width above, which is why the desktop resting size does not move; below a ~1400px
-		   host the percent half binds instead. It replaces `100% - --hit - --grip-reach`, which
-		   guaranteed only that ONE tap target of canvas survived: on a 412px phone, a 44px strip. */
-		max-width: min(30%, 30rem);
+		/* The comfort cap in rem AND the small-screen guard in percent (D-I6), over the floor both
+		   are measured against. The root clamp saturates at 14px across the whole range that
+		   matters, so 30rem is 420px — exactly the resting width above, which is why the desktop
+		   resting size does not move; below a ~1400px host the percent half binds instead. It
+		   replaces `100% - --hit - --grip-reach`, which guaranteed only that ONE tap target of
+		   canvas survived: on a 412px phone, a 44px strip. */
+		max-width: clamp(var(--pane-min), 30%, 30rem);
 		background: color-mix(in srgb, var(--surface-1) 96%, transparent);
 		backdrop-filter: blur(8px);
 		border-left: 1px solid var(--border);
@@ -386,6 +400,8 @@
 		@container (orientation: portrait) {
 			.side-panel {
 				--pane-axis: y;
+				/* This anchor's floor beside this anchor's ceiling — same pairing, same reason. */
+				--pane-min: 160px;
 				top: auto;
 				left: 0;
 				/* The soft keyboard, which CSS cannot see (D-I7): `--kb-inset` is published on <html>
@@ -395,7 +411,11 @@
 				width: auto;
 				max-width: none;
 				height: var(--pane-h, 60%);
-				max-height: 60%;
+				/* Over the floor, for the same reason the landscape ceiling is: whatever the host's
+				   height, the sheet's range can never come out empty. On every geometry this app has
+				   met 60% is the far larger of the two — which is exactly what the landscape anchor
+				   assumed about ITS pair, and was wrong about. */
+				max-height: max(60%, var(--pane-min));
 				padding-bottom: var(--safe-bottom);
 				border-left: none;
 				border-top: 1px solid var(--border);

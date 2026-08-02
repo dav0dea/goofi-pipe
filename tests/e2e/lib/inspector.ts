@@ -29,13 +29,18 @@ export const grip = (page: Page): Locator => page.getByTestId('panel-resize-hand
 export const editorHost = (page: Page): Locator => page.locator('.editor-panel').first();
 
 /**
- * What the axis selects, mirroring `frontend/src/lib/panels/paneDrag.ts`'s `PANE_AXES`. The e2e
- * package cannot import the app's source, so this is the ONE place those numbers are restated —
- * rather than the several spec sites that each carried their own copy of `260`.
+ * Where each anchor's size is remembered, mirroring `frontend/src/lib/panels/paneDrag.ts` — the e2e
+ * package cannot import the app's source, so a `localStorage` key has to be restated somewhere, and
+ * this is the one place.
+ *
+ * The pane's FLOOR is deliberately NOT here any more: it is the stylesheet's, published as
+ * `--pane-min` beside the ceiling it bounds, and `paneMin` below reads it off the pane exactly as
+ * the drag handler does. Restating it was how this file came to hold a `260` that the landscape
+ * ceiling had already fallen under.
  */
-export const PANE_AXES: Record<PaneAxis, { min: number; key: string }> = {
-	x: { min: 260, key: 'goofi.panelWidth' },
-	y: { min: 160, key: 'goofi.panelHeight' }
+export const PANE_KEYS: Record<PaneAxis, string> = {
+	x: 'goofi.panelWidth',
+	y: 'goofi.panelHeight'
 };
 
 /** `paneDrag.ts`'s `DISMISS_OVERSHOOT_PX`: how far past the floor a swipe must be carried before it
@@ -56,6 +61,26 @@ export async function paneAxis(page: Page): Promise<PaneAxis> {
 	);
 	expect(v, 'the pane publishes the anchor it settled on').toMatch(/^[xy]$/);
 	return v as PaneAxis;
+}
+
+/**
+ * The pane's FLOOR on whichever axis it is anchored on — read off `--pane-min`, the same property
+ * the drag handler reads back, so no test can agree with the gesture while disagreeing with the
+ * stylesheet.
+ *
+ * There is one number for it because there is one place it is declared: beside the ceiling, and
+ * written into it (`clamp(var(--pane-min), …)`), so the pane's allowed range cannot be empty. When
+ * the floor lived in a JS module instead, this file carried its own copy — and both were 260 while
+ * the landscape ceiling resolved to 256.
+ */
+export async function paneMin(page: Page): Promise<number> {
+	const declared = await pane(page).evaluate((el) =>
+		getComputedStyle(el).getPropertyValue('--pane-min')
+	);
+	const px = parseFloat(declared);
+	expect(px, `the pane publishes the floor its ceiling is written against (got ${declared})`)
+		.toBeGreaterThan(0);
+	return px;
 }
 
 /** A box's size ON `axis` — the one dimension the anchor makes load-bearing. */
@@ -193,13 +218,25 @@ export async function swipeGripInward(page: Page, travel: number, steps = 8): Pr
  * geometries cap below that, so the resting size IS the ceiling. Asserting the store is empty first
  * is what makes that inference sound instead of lucky.
  */
-async function restingCeiling(page: Page, axis: PaneAxis): Promise<number> {
+export async function restingCeiling(page: Page, axis: PaneAxis): Promise<number> {
 	for (const a of ['x', 'y'] as const)
 		expect(
-			await page.evaluate((k) => localStorage.getItem(k), PANE_AXES[a].key),
+			await page.evaluate((k) => localStorage.getItem(k), PANE_KEYS[a]),
 			`nothing is stored on ${a} yet, so the pane rests at its cap`
 		).toBeNull();
 	return sizeOn(axis, await settledBox(pane(page)));
+}
+
+/**
+ * The ROOM the pane has to be resized in: how far its ceiling sits above its floor, on the axis it
+ * is anchored on.
+ *
+ * The one quantity the two bounds only have together, and the reason they are now declared
+ * together. Zero room is an unsatisfiable pane — no drag can move it, and the very next pixel of
+ * inward travel is a dismiss rather than a resize.
+ */
+export async function paneRoom(page: Page): Promise<number> {
+	return (await restingCeiling(page, await paneAxis(page))) - (await paneMin(page));
 }
 
 /**
@@ -224,7 +261,8 @@ async function restingCeiling(page: Page, axis: PaneAxis): Promise<number> {
 export async function expectEdgeDragFollowsThePointer(page: Page, want: number): Promise<void> {
 	const axis = await paneAxis(page);
 	const other = axis === 'y' ? 'x' : 'y';
-	const { min, key } = PANE_AXES[axis];
+	const min = await paneMin(page);
+	const key = PANE_KEYS[axis];
 	const before = await settledBox(pane(page));
 	const ceiling = await restingCeiling(page, axis);
 	const travel = Math.min(want, Math.max(ceiling - min, 0));
@@ -248,7 +286,7 @@ export async function expectEdgeDragFollowsThePointer(page: Page, want: number):
 		'the RENDERED size is what was stored, so a reload agrees with the screen'
 	).toBe(String(Math.round(sizeOn(axis, after))));
 	expect(
-		await page.evaluate((k) => localStorage.getItem(k), PANE_AXES[other].key),
+		await page.evaluate((k) => localStorage.getItem(k), PANE_KEYS[other]),
 		'…under this axis’s own key: one idiom, two keys, and the other is never written (D-I3)'
 	).toBeNull();
 }
@@ -264,7 +302,8 @@ export async function expectEdgeDragFollowsThePointer(page: Page, want: number):
  */
 export async function expectSwipeDismisses(page: Page): Promise<void> {
 	const axis = await paneAxis(page);
-	const { min, key } = PANE_AXES[axis];
+	const min = await paneMin(page);
+	const key = PANE_KEYS[axis];
 	const ceiling = await restingCeiling(page, axis);
 	// As far INTO the pane as the screen allows. Clamped to the viewport because a CDP touch point
 	// off-screen is not a gesture any finger could make — and the assertion below is what proves the

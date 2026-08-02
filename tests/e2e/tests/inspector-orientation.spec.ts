@@ -9,7 +9,7 @@ import {
 	openInspector as addAndSelect,
 	pane,
 	paneAxis,
-	PANE_AXES,
+	paneMin,
 	rootRem as rem,
 	settledGrabber,
 	type Grabber
@@ -188,17 +188,20 @@ test('the same drag under a mouse resizes to the floor and never dismisses (D-I4
 	const uid = await addAndSelect(page);
 	try {
 		const before = await settledBox(pane(page));
+		// The floor is the STYLESHEET's — `--pane-min`, read off the pane exactly as the drag handler
+		// reads it, rather than a `260` this file would hold its own copy of.
+		const floor = await paneMin(page);
 		const g = (await grip(page).boundingBox())!;
 		const y = g.y + g.height / 2;
 		await page.mouse.move(g.x + g.width / 2, y);
 		await page.mouse.down();
-		// Well past the 260px floor AND past a full dismiss overshoot below it.
+		// Well past the floor AND past a full dismiss overshoot below it.
 		await page.mouse.move(g.x + g.width / 2 + before.width + 100, y, { steps: 10 });
 		await page.mouse.up();
 
 		await expect(pane(page), 'the pane is still there').toHaveClass(/open/);
 		const after = await settledBox(pane(page));
-		expect(after.width, 'clamped at the floor, not closed').toBeCloseTo(PANE_AXES.x.min, 0);
+		expect(after.width, 'clamped at the floor, not closed').toBeCloseTo(floor, 0);
 	} finally {
 		await drop(page, uid);
 	}

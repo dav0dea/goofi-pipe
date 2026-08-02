@@ -4,6 +4,7 @@ import {
 	PANE_AXES,
 	coordOf,
 	endsInDismiss,
+	paneMin,
 	paneSizeAt,
 	type PaneDrag
 } from './paneDrag';
@@ -44,16 +45,18 @@ describe('paneDrag', () => {
 		expect(paneSizeAt(drag(), 900)).toBe(400);
 	});
 
-	/* The FLOOR is this module's; the ceiling is deliberately not. `max-width: min(30%, 30rem)` and
-	   `max-height: 60%` are host- and rem-relative, so the stylesheet is the only place that can
-	   evaluate them — a number here would be a second answer to one question, which is exactly what
-	   `MAX_PANEL_WIDTH = 720` was, sitting above a host clamp that always bound first. */
+	/* Neither bound is this module's: they are the stylesheet's, TOGETHER, and that is the point.
+	   `clamp(var(--pane-min), 40%, 30rem)` and `max(60%, var(--pane-min))` are host- and
+	   rem-relative, so only the stylesheet can evaluate them — and the floor is written INTO them,
+	   so it cannot end up above them. A floor here was a second, independently-authored answer, and
+	   the two contradicted each other (see `paneMin` below). What this module keeps is the
+	   arithmetic: given a floor, clamp to it. */
 	it('clamps at the floor and never below it, however far the grip is pushed', () => {
 		expect(paneSizeAt(drag(), 1040)).toBe(260);
 		expect(paneSizeAt(drag(), 5000)).toBe(260);
 	});
 
-	it('imposes no ceiling of its own — that is the stylesheet’s (D-I6)', () => {
+	it('imposes no bound of its own — both are the stylesheet’s (D-I6)', () => {
 		expect(paneSizeAt(drag(), -5000)).toBe(6300);
 	});
 
@@ -62,11 +65,11 @@ describe('paneDrag', () => {
 	});
 });
 
-/* Everything the AXIS selects, in one record — which dimension of a box sizes the pane, where its
-   floor is, and which key remembers it. The point of it being a record is that the answer is looked
-   up once, at pointerdown, instead of the same question ("is this the vertical one?") being asked
-   again at every line of the gesture that happens to need a dimension. Scattered that way it read
-   as orientation threaded through the drag; it is one fact.
+/* Everything the AXIS selects, in one record — which dimension of a box sizes the pane, and which
+   key remembers it. The point of it being a record is that the answer is looked up once, at
+   pointerdown, instead of the same question ("is this the vertical one?") being asked again at
+   every line of the gesture that happens to need a dimension. Scattered that way it read as
+   orientation threaded through the drag; it is one fact.
 
    ORIENTATION picks the record. INPUT MODALITY never touches it — `endsInDismiss` is the whole of
    what modality gates, and it takes no axis knowledge at all. */
@@ -77,19 +80,28 @@ describe('PANE_AXES', () => {
 		expect(PANE_AXES.y.sizeOf(box)).toBe(300);
 	});
 
-	it('gives each axis its own floor, and its own key to be remembered under (D-I3)', () => {
-		expect(PANE_AXES.x.min).toBe(260);
-		expect(PANE_AXES.y.min).toBe(160);
+	it('gives each axis its own key to be remembered under (D-I3)', () => {
 		expect(PANE_AXES.x.key).not.toBe(PANE_AXES.y.key);
 	});
+});
 
-	/* The floors here are the ones the gesture actually clamps to — the same numbers, not a second
-	   set that could drift from them. */
-	it('is where the floor the gesture clamps to comes from', () => {
-		for (const axis of ['x', 'y'] as const) {
-			const { min } = PANE_AXES[axis];
-			expect(paneSizeAt(drag({ startSize: min + 100, min }), 5000)).toBe(min);
-		}
+/* THE ONE SOURCE OF TRUTH for the pane's allowed range, and why it is not in this file: a floor
+   here and a ceiling in the stylesheet are two independently-authored numbers, and they crossed —
+   256px of ceiling under 260px of floor on a landscape phone, an EMPTY range. The floor is declared
+   beside the ceiling now and written into it (`InspectorOverlay.svelte`'s `--pane-min`), and this is
+   where the string the pane publishes becomes the number the arithmetic above clamps to. */
+describe('paneMin', () => {
+	it('reads back the floor the stylesheet published', () => {
+		expect(paneMin('260px')).toBe(260);
+		expect(paneMin(' 160px ')).toBe(160);
+	});
+
+	/* A missing declaration is a broken stylesheet, not a runtime condition — and it would otherwise
+	   clamp every size below to NaN, which renders as the CSS fallback and reads as "the drag does
+	   nothing". Failing at the read is what makes the cause nameable. */
+	it('refuses a pane that publishes no floor rather than clamping to NaN', () => {
+		for (const declared of ['', '   ', 'none'])
+			expect(() => paneMin(declared), JSON.stringify(declared)).toThrow(/--pane-min/);
 	});
 });
 

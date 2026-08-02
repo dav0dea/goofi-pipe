@@ -11,9 +11,10 @@
  * (orientation: portrait)` decides it and publishes the answer as `--pane-axis`, which the
  * component reads back rather than re-deriving.
  *
- * The FLOOR lives here. The CEILING deliberately does not: `max-width: min(30%, 30rem)` and
- * `max-height: 60%` are host- and rem-relative, so the stylesheet is the only place that can
- * evaluate them, and a number here would be a second answer to one question.
+ * NEITHER BOUND lives here, and that is deliberate. The ceilings are host- and rem-relative, so
+ * only the stylesheet can evaluate them; the floor is declared beside them and written into them,
+ * so the pane's allowed range cannot come out empty. `paneMin` below is where the published floor
+ * becomes the number this arithmetic clamps to — and why it is published at all.
  */
 
 export type PaneAxis = 'x' | 'y';
@@ -30,8 +31,6 @@ export type PaneAxis = 'x' | 'y';
  * of what modality gates, and it takes no axis knowledge at all.
  */
 export interface PaneAxisDims {
-	/** The pane's floor on this axis, in px. The CEILING is deliberately elsewhere — see above. */
-	min: number;
 	/** Where a size dragged on this axis is remembered: one persistence idiom, one key per axis
 	 *  (D-I3), so the two anchors cannot overwrite each other's. */
 	key: string;
@@ -40,14 +39,32 @@ export interface PaneAxisDims {
 }
 
 export const PANE_AXES: Record<PaneAxis, PaneAxisDims> = {
-	x: { min: 260, key: 'goofi.panelWidth', sizeOf: (b) => b.width },
-	y: { min: 160, key: 'goofi.panelHeight', sizeOf: (b) => b.height }
+	x: { key: 'goofi.panelWidth', sizeOf: (b) => b.width },
+	y: { key: 'goofi.panelHeight', sizeOf: (b) => b.height }
 };
 
 /**
+ * The pane's FLOOR on whichever axis it is anchored on, out of the `--pane-min` it publishes.
+ *
+ * The floor used to be a number in `PANE_AXES` above, one file away from the ceiling that bounds
+ * it — and the two crossed, which cost the landscape pane its entire resize range.
+ * `InspectorOverlay.svelte`'s `--pane-min` declaration is where that is written down and fixed; the
+ * consequence here is that the floor is READ, exactly as the anchor is, rather than restated.
+ */
+export function paneMin(declared: string): number {
+	const px = parseFloat(declared);
+	// A pane that publishes no floor is a broken stylesheet, not a runtime condition — and every
+	// clamp above would silently become NaN, which reads on screen as a drag that does nothing.
+	if (!Number.isFinite(px))
+		throw new Error(`the pane published no --pane-min (got ${JSON.stringify(declared)})`);
+	return px;
+}
+
+/**
  * A gesture in flight — and NOT which axis it is on: the axis has already been spent by the time
- * one of these exists (`PANE_AXES` picked the dimension and the floor, `coordOf` picked the
- * coordinate), leaving two numbers and a bound that mean the same thing on either anchor. It used
+ * one of these exists (`PANE_AXES` picked the dimension, `paneMin` read the floor the anchor
+ * published, `coordOf` picked the coordinate), leaving two numbers and a bound that mean the same
+ * thing on either anchor — which is why the floor is a FIELD here rather than a lookup. It used
  * to carry the axis as well, which nothing read — a sixth spelling of a fact this file's whole
  * point is that the arithmetic does not need.
  */
