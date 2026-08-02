@@ -43,10 +43,6 @@ export const PANE_KEYS: Record<PaneAxis, string> = {
 	y: 'goofi.panelHeight'
 };
 
-/** `paneDrag.ts`'s `DISMISS_OVERSHOOT_PX`: how far past the floor a swipe must be carried before it
- *  is a dismiss rather than a resize that merely bottomed out. */
-export const DISMISS_OVERSHOOT_PX = 44;
-
 /** The root font size the responsive `clamp()` settled on — the px `2.5rem` and `30rem` are
  *  measured in. */
 export const rootRem = (page: Page): Promise<number> =>
@@ -288,37 +284,43 @@ export async function expectEdgeDragFollowsThePointer(page: Page, want: number):
 }
 
 /**
- * D-I4's MODALITY-GATED half, in whichever anchor: the same drag, carried a full overshoot past the
- * floor, throws the pane away instead of resizing it. Nothing is persisted — a dismiss is not a
- * resize, so the pane comes back the size it was.
+ * The GESTURE IS UNIFORM, in whichever anchor: a drag carried as far into the pane as the screen
+ * allows is still a RESIZE. It bottoms out at the floor, the pane stays open, and the floored size
+ * is persisted like any other.
  *
- * The swipe is the ONE thing input modality gates in this whole pane, and it is axis-blind by
- * construction (`endsInDismiss` reads a pointer type and a number, never an anchor). Proving it in
- * both orientations off one function is what keeps that true.
+ * This is where a swipe-past-the-floor used to throw the pane away — the one thing input modality
+ * gated in the whole pane. It is gone, and the ✕ is the only way out, so what has to be asserted is
+ * the ABSENCE: an overshot resize gives a finger a small pane back, never no pane at all. Stated as
+ * an assertion rather than as a deleted test, because that is the only shape in which re-adding a
+ * modality-gated gesture fails loudly.
  */
-export async function expectSwipeDismisses(page: Page): Promise<void> {
+export async function expectDragPastTheFloorStillResizes(page: Page): Promise<void> {
 	const axis = await paneAxis(page);
 	const min = await paneMin(page);
 	const key = PANE_KEYS[axis];
-	const ceiling = await restingCeiling(page, axis);
+	const resting = await restingCeiling(page, axis);
 	// As far INTO the pane as the screen allows. Clamped to the viewport because a CDP touch point
 	// off-screen is not a gesture any finger could make — and the assertion below is what proves the
-	// room left is still more than a dismiss needs, rather than assuming it.
+	// drag really cleared the floor rather than merely approaching it.
 	const g = (await grip(page).boundingBox())!;
 	const vp = page.viewportSize()!;
 	const from = axis === 'y' ? g.y + g.height / 2 : g.x + g.width / 2;
 	const travel = Math.floor((axis === 'y' ? vp.height : vp.width) - 2 - from);
-	expect(travel, 'the swipe clears the floor by more than a full overshoot').toBeGreaterThan(
-		ceiling - min + DISMISS_OVERSHOOT_PX
+	expect(travel, 'the drag carries the pane past its floor, not merely down to it').toBeGreaterThan(
+		resting - min
 	);
 
 	await swipeGripInward(page, travel);
 
-	// Dismissing turns the inspector OFF, which unmounts the pane — the canvas is genuinely handed
-	// back, exactly as the ✕ hands it back.
-	await expect(pane(page), 'the swipe threw the pane away').toHaveCount(0);
+	await expect(pane(page), 'a finger cannot throw the pane away — only the ✕ closes it').toHaveClass(
+		/open/
+	);
+	expect(
+		sizeOn(axis, await settledBox(pane(page))),
+		`${axis}: bottomed out at the floor, not closed`
+	).toBeCloseTo(min, 0);
 	expect(
 		await page.evaluate((k) => localStorage.getItem(k), key),
-		'and a dismiss is not a resize: nothing was persisted, so it comes back its old size'
-	).toBeNull();
+		'and it is a resize like any other, so the floored size is what was persisted'
+	).toBe(String(Math.round(min)));
 }

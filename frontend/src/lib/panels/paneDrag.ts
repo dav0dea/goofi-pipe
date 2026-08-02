@@ -27,8 +27,7 @@ export type PaneAxis = 'x' | 'y';
  * that happens to need a dimension. Scattered that way it read as orientation threaded through the
  * drag; it is one fact, and this is where it is stated.
  *
- * ORIENTATION picks the record. INPUT MODALITY never touches it: `endsInDismiss` below is the whole
- * of what modality gates, and it takes no axis knowledge at all.
+ * ORIENTATION picks the record, and nothing else in this module has an opinion about it.
  */
 export interface PaneAxisDims {
 	/** Where a size dragged on this axis is remembered: one persistence idiom, one key per axis
@@ -91,27 +90,4 @@ function desiredSizeAt(drag: PaneDrag, at: number): number {
 /** …and the size the pane is given for it. */
 export function paneSizeAt(drag: PaneDrag, at: number): number {
 	return Math.max(drag.min, desiredSizeAt(drag, at));
-}
-
-/**
- * How far PAST its floor a drag must pull the pane before the release closes it instead of resizing
- * it. A finger-width of deliberate overshoot: the pane clamps at the floor, so a resize that merely
- * bottoms out and a swipe meant to throw the pane away look identical on screen, and this is the
- * only thing that tells them apart.
- *
- * Its own number rather than `--hit`: that token is how big a tap TARGET must be, and it would move
- * for reasons that have nothing to do with how deliberate a swipe has to feel.
- */
-export const DISMISS_OVERSHOOT_PX = 44;
-
-/**
- * Does this gesture end in a dismiss rather than a resize? (D-I4.)
- *
- * The ONE thing input modality gates in the whole of this pane. The anchor, the clamp, the drag and
- * the persistence are all identical on a mouse and a finger; the swipe is layered on top of the same
- * gesture for touch alone, because a fine pointer already has the ✕ and always did. The ✕ stays in
- * both anchors regardless, so the pointer door never depends on a gesture.
- */
-export function endsInDismiss(drag: PaneDrag, at: number, pointerType: string): boolean {
-	return pointerType === 'touch' && desiredSizeAt(drag, at) <= drag.min - DISMISS_OVERSHOOT_PX;
 }

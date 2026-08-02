@@ -1,13 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import {
-	DISMISS_OVERSHOOT_PX,
-	PANE_AXES,
-	coordOf,
-	endsInDismiss,
-	paneMin,
-	paneSizeAt,
-	type PaneDrag
-} from './paneDrag';
+import { PANE_AXES, coordOf, paneMin, paneSizeAt, type PaneDrag } from './paneDrag';
 
 /* The inspector pane's resize arithmetic, which is the whole of what a unit test can reach: the
    component cannot be mounted in this repo's vitest, so the rule "a drag toward the pane shrinks it,
@@ -71,8 +63,7 @@ describe('paneDrag', () => {
    every line of the gesture that happens to need a dimension. Scattered that way it read as
    orientation threaded through the drag; it is one fact.
 
-   ORIENTATION picks the record. INPUT MODALITY never touches it — `endsInDismiss` is the whole of
-   what modality gates, and it takes no axis knowledge at all. */
+   ORIENTATION picks the record, and nothing else in this module has an opinion about it. */
 describe('PANE_AXES', () => {
 	it('sizes each axis by its own dimension of a box', () => {
 		const box = { width: 400, height: 300 };
@@ -102,46 +93,5 @@ describe('paneMin', () => {
 	it('refuses a pane that publishes no floor rather than clamping to NaN', () => {
 		for (const declared of ['', '   ', 'none'])
 			expect(() => paneMin(declared), JSON.stringify(declared)).toThrow(/--pane-min/);
-	});
-});
-
-/* D-I4's ONE modality gate, and the reason it can be a pure function at all: the pane clamps at its
-   floor, so on screen a drag that bottoms out and a drag that keeps going are the same picture. What
-   tells them apart is the UNCLAMPED size the pointer asked for — which is why `paneSizeAt` is not
-   the only thing this module computes. */
-describe('endsInDismiss', () => {
-	const sheet: PaneDrag = { startSize: 445, startPos: 400, min: 160 };
-	/** The coordinate at which the pointer has asked for `size`. */
-	const asking = (size: number): number => sheet.startPos + (sheet.startSize - size);
-
-	it('closes the pane when a TOUCH pulls a full overshoot past the floor', () => {
-		expect(endsInDismiss(sheet, asking(sheet.min - DISMISS_OVERSHOOT_PX), 'touch')).toBe(true);
-		expect(endsInDismiss(sheet, asking(-500), 'touch')).toBe(true);
-	});
-
-	/* A resize that merely bottoms out is a resize. Without the overshoot every drag to the floor
-	   would close the pane, which is the opposite of a continuous resize that remembers where it was
-	   left (D-I3). */
-	it('does not close it for a drag that only reaches the floor', () => {
-		expect(endsInDismiss(sheet, asking(sheet.min), 'touch')).toBe(false);
-		expect(endsInDismiss(sheet, asking(sheet.min - DISMISS_OVERSHOOT_PX + 1), 'touch')).toBe(false);
-	});
-
-	it('never closes it for a drag that grows the pane, however far', () => {
-		expect(endsInDismiss(sheet, asking(5000), 'touch')).toBe(false);
-	});
-
-	/* The gate. Everything else about this gesture is identical on both inputs — the anchor, the
-	   clamp, the persistence — and the swipe is the one thing layered on top of it for touch, because
-	   a mouse already has the ✕ and the escape hatch it has always had. A mouse dragged to the far
-	   side of the screen must resize to the floor and stay open. */
-	it('is touch-only: the same drag under a mouse or a pen resizes and stays open', () => {
-		for (const pointerType of ['mouse', 'pen', ''])
-			expect(endsInDismiss(sheet, asking(-500), pointerType), pointerType).toBe(false);
-	});
-
-	it('applies to the right-hand pane too — the swipe follows the anchor, not the device', () => {
-		const pane: PaneDrag = { startSize: 420, startPos: 900, min: 260 };
-		expect(endsInDismiss(pane, 900 + 420 - (260 - DISMISS_OVERSHOOT_PX), 'touch')).toBe(true);
 	});
 });

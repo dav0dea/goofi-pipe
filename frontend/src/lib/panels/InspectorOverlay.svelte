@@ -23,15 +23,7 @@
 	import { graph } from '$lib/stores/graph.svelte';
 	import { onDestroy } from 'svelte';
 	import type { NodeInstanceInfo } from '$lib/api/control';
-	import {
-		PANE_AXES,
-		coordOf,
-		endsInDismiss,
-		paneMin,
-		paneSizeAt,
-		type PaneAxis,
-		type PaneDrag
-	} from './paneDrag';
+	import { PANE_AXES, coordOf, paneMin, paneSizeAt, type PaneAxis, type PaneDrag } from './paneDrag';
 
 	let {
 		node,
@@ -103,9 +95,6 @@
 			startPos: coordOf(axis, e),
 			min: paneMin(css.getPropertyValue('--pane-min'))
 		};
-		// Where the pointer got to. The pane CLAMPS at its floor, so the rendered size cannot say how
-		// far a swipe was carried past it — and that overshoot is the whole of the dismiss decision.
-		let at = drag.startPos;
 		resizing = true;
 		// The size is applied live, so there is nothing for a cancel to roll back — and persisting
 		// it either way is what keeps a reload agreeing with what is on screen. A cancel that did NOT
@@ -125,22 +114,12 @@
 		};
 		teardownResize = beginDrag(e.currentTarget as HTMLElement, e.pointerId, {
 			move: (m) => {
-				at = coordOf(axis, m);
-				paneSize[axis] = paneSizeAt(drag, at);
+				paneSize[axis] = paneSizeAt(drag, coordOf(axis, m));
 			},
-			commit: () => {
-				// The swipe (D-I4), layered on the very gesture that resizes — same grip, same module,
-				// one extra meaning, and only for a finger. Nothing is persisted: a dismiss is not a
-				// resize, so the pane comes back the size it was. `onClose` unmounts it, which is what
-				// discards the live shrink the swipe drew.
-				if (endsInDismiss(drag, at, e.pointerType)) {
-					resizing = false;
-					teardownResize = null;
-					onClose();
-					return;
-				}
-				finish();
-			},
+			// One resolution for both, because there is only one outcome a release can have: the size
+			// is already applied and already correct, so committing and abandoning agree. A swipe
+			// carried past the floor used to close the pane here instead — the ✕ is the only way out.
+			commit: finish,
 			cancel: finish
 		});
 	}

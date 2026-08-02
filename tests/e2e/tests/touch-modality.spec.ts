@@ -1,12 +1,11 @@
 import { test, expect } from '@playwright/test';
 import { waitForApp } from '../lib/app';
 import {
-	DISMISS_OVERSHOOT_PX,
 	dropNode,
 	editorHost,
+	expectDragPastTheFloorStillResizes,
 	expectEdgeDragFollowsThePointer,
 	expectRestingPill,
-	expectSwipeDismisses,
 	openInspector,
 	paneAxis,
 	paneMin,
@@ -69,11 +68,6 @@ test('the pane has real room between its floor and its ceiling', async ({ page }
 			room,
 			`${await paneAxis(page)}: ceiling − floor, with the floor at ${await paneMin(page)}`
 		).toBeGreaterThan(0);
-		// And more than a nudge: a pane whose entire range is shorter than the overshoot a dismiss
-		// has to clear is not resizable, it is a throw-away with a preamble.
-		expect(room, 'and more room than a dismiss has to be carried past').toBeGreaterThan(
-			DISMISS_OVERSHOOT_PX
-		);
 	} finally {
 		await dropNode(page, uid);
 	}
@@ -104,14 +98,11 @@ test('an edge drag by TOUCH moves the pane to where the pointer asked (D-I3/D-I4
 	}
 });
 
-test('a swipe carried past the floor dismisses the pane (D-I4)', async ({ page }) => {
+test('a drag carried past the floor is still a resize, never a dismiss (D-I4)', async ({ page }) => {
 	const uid = await openInspector(page);
 	try {
-		await expectSwipeDismisses(page);
+		await expectDragPastTheFloorStillResizes(page);
 	} finally {
-		// The dismiss flipped this editor's inspector off, which is per-PAGE state (`selection`'s
-		// `inspectorOn`, never the layout blob) — so the next spec's fresh page has it on again and
-		// there is nothing to hand back but the node.
 		await dropNode(page, uid);
 	}
 });
