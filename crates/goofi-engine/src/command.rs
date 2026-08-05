@@ -79,6 +79,12 @@ pub enum Command {
         exprs: Vec<(String, String, ExprState)>,
         /// Captured viewer view-state blob to restore; `None` for a user add (defaults to empty).
         viewers: Option<serde_json::Value>,
+        /// The sub-patch scope to create the node INSIDE (`None` = ROOT). Set when the user adds
+        /// while an editor has entered a scope. Deliberately NOT used by a `RemoveNode` inverse:
+        /// that restores membership with its own [`Command::SetScope`] child (see
+        /// [`capture_subtree_restore`]), so a restore leaves this `None` and nothing re-parents a
+        /// node the idempotent-reuse branch found already placed.
+        scope: Option<Uid>,
     },
     RemoveNode {
         uid: Uid,
@@ -191,7 +197,15 @@ impl Command {
                 Ok((last, Command::Compound(inverses)))
             }
 
-            Command::AddNode { type_name, pos, uid, name, params, exprs, viewers } => {
+            Command::AddNode { type_name, pos, uid, name, params, exprs, viewers, scope } => {
+                // Validate the destination BEFORE mutating anything: an add that cannot honour its
+                // scope must leave the graph exactly as it found it, else the caller is told the
+                // command failed while a stray node stays behind and the CRDT mirror disagrees.
+                if let Some(s) = scope {
+                    if g.scope(s).is_none() {
+                        return Err(format!("add_node: no such scope {s}"));
+                    }
+                }
                 let u = match uid {
                     // Idempotent: the uid is already present (a redo racing another client's add) — reuse it.
                     Some(u) if g.contains(u) => u,
@@ -204,6 +218,14 @@ impl Command {
                         u
                     }
                 };
+                // Register membership through the one validated re-parent seam — `scope_of` is the
+                // SSOT for parentage. ONLY when a scope was actually asked for: a `RemoveNode`
+                // inverse restores membership with its own `SetScope` child, and the idempotent
+                // branch above can hand back a node that is already placed, so an unconditional
+                // re-parent to ROOT would yank a live member out of its sub-patch.
+                if let Some(s) = scope {
+                    g.reparent(u, Some(s))?;
+                }
                 let _ = g.set_node_pos(u, pos);
                 // Re-apply captured expression bindings + viewer state (a RemoveNode inverse restores
                 // them; a user add carries none). Bindings are separate node state from param values.
@@ -630,6 +652,8 @@ fn capture_subtree_restore(g: &Graph, root: Uid) -> Command {
             params: g.params(u).cloned(),
             exprs,
             viewers,
+            // Membership is restored by the SetScope child below, not here — see the field's doc.
+            scope: None,
         });
     }
 
@@ -698,10 +722,9 @@ mod tests {
         g.params(uid).and_then(|p| param(p, "common", "max_frequency")).cloned()
     }
 
-    #[test]
-    fn add_node_round_trips_with_its_inverse() {
-        let mut g = Graph::new();
-        let (res, inverse) = Command::AddNode {
+    /// An `AddNode` for a fresh user add, parameterised only by where it lands.
+    fn add_into(scope: Option<Uid>) -> Command {
+        Command::AddNode {
             type_name: "Oscillator".into(),
             pos: [1.0, 2.0],
             uid: None,
@@ -709,9 +732,14 @@ mod tests {
             params: None,
             exprs: vec![],
             viewers: None,
+            scope,
         }
-        .execute(&mut g)
-        .unwrap();
+    }
+
+    #[test]
+    fn add_node_round_trips_with_its_inverse() {
+        let mut g = Graph::new();
+        let (res, inverse) = add_into(None).execute(&mut g).unwrap();
         let Outcome::Uid(uid) = res else { panic!("add_node returns a uid") };
         assert!(g.contains(uid), "node added");
         assert_eq!(g.pos(uid), Some([1.0, 2.0]));
@@ -720,6 +748,36 @@ mod tests {
         assert!(!g.contains(uid), "inverse removed the node");
         forward.execute(&mut g).unwrap();
         assert!(g.contains(uid), "redo restored the same uid");
+    }
+
+    #[test]
+    fn add_node_into_an_existing_scope_registers_membership() {
+        // A node added while the user has ENTERED a sub-patch belongs to THAT scope, not to ROOT.
+        // `scope_of` is the single source of truth for parentage, so its three readers must agree.
+        let mut g = Graph::new();
+        let sibling = g.add_node("Buffer", None).unwrap();
+        let scope = g.group_nodes(&[sibling], [0.0, 0.0]).unwrap();
+
+        let (res, _inv) = add_into(Some(scope)).execute(&mut g).unwrap();
+        let Outcome::Uid(added) = res else { panic!("add_node returns a uid") };
+
+        assert_eq!(g.scope_of(added), Some(scope), "scope_of names the entered scope");
+        assert!(g.scope_members(scope).contains(&added), "the scope lists it as a direct member");
+        let root: Vec<Uid> = g.node_uids().into_iter().filter(|u| g.scope_of(*u).is_none()).collect();
+        assert!(!root.contains(&added), "and it is NOT a root node; root = {root:?}");
+    }
+
+    #[test]
+    fn add_node_into_an_unknown_scope_errors_before_creating_anything() {
+        // Validated BEFORE the mutation: an add that cannot honour its scope leaves the graph
+        // untouched. Creating the node first and only then failing would leave a stray node at ROOT
+        // — the graph and its CRDT mirror disagreeing on a command the caller was told had failed.
+        let mut g = Graph::new();
+        let before = g.node_uids().len();
+
+        let err = add_into(Uid::from_hex("deadbeef")).execute(&mut g).unwrap_err();
+        assert!(err.contains("scope"), "the error names the scope; got {err}");
+        assert_eq!(g.node_uids().len(), before, "no node was created by the refused add");
     }
 
     #[test]
@@ -1232,6 +1290,7 @@ mod tests {
             params: None,
             exprs: vec![],
             viewers: None,
+            scope: None,
         }
     }
 

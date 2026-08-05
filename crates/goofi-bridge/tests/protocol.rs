@@ -1204,6 +1204,103 @@ async fn group_and_expand_project_the_instance_forest() {
     assert!(doc2.node_ids().iter().any(|u| *u == osc), "osc back as a top-level leaf");
 }
 
+/// The member uids of a scope, as the client reads them out of the doc forest.
+fn scope_members(doc: &goofi_crdt::GraphDoc, scope: &str) -> Vec<String> {
+    doc.to_json()["instances"][scope]["members"]
+        .as_object()
+        .map(|m| m.keys().cloned().collect())
+        .unwrap_or_default()
+}
+
+#[tokio::test]
+async fn add_node_with_inst_id_lands_inside_the_scope_and_survives_undo_redo() {
+    // A node added while the user has ENTERED a sub-patch must become a MEMBER of that scope, not a
+    // ROOT node: the canvas renders only the entered scope's children, so a dropped `inst_id` makes
+    // the node invisible exactly where it was placed. The placement rides on the COMMAND, so it has
+    // to survive undo→redo too — a missing command field shows up there first.
+    let base = start_server().await;
+    let (mut ws, _) = connect_async(format!("{base}/control")).await.unwrap();
+    let _hello = recv_text(&mut ws).await;
+
+    let uid = |v: &Value| v["result"].as_str().unwrap().to_string();
+    let osc = uid(&call_session(&mut ws, 1, "add_node", json!({ "type": "Oscillator" }), "s1").await);
+    let buf = uid(&call_session(&mut ws, 2, "add_node", json!({ "type": "Buffer" }), "s1").await);
+    let scope = call_session(&mut ws, 3, "group_nodes", json!({ "members": [osc, buf], "pos": [0.0, 0.0] }), "s1")
+        .await["result"]["inst_id"].as_str().unwrap().to_string();
+
+    // Add a third node INSIDE the scope — the payload an entered editor sends.
+    let inner = uid(
+        &call_session(
+            &mut ws,
+            4,
+            "add_node",
+            json!({ "type": "Buffer", "inst_id": scope, "pos": [10.0, 20.0] }),
+            "s1",
+        )
+        .await,
+    );
+    // Anchor every sync on the node's PRESENCE, never on the membership under test — an unsatisfiable
+    // predicate would drain the helper's frame budget and report a recv timeout instead of the
+    // assertion that actually failed. (A scope member stays in `node_ids`; only `members` moves.)
+    let present = |d: &goofi_crdt::GraphDoc| d.node_ids().iter().any(|u| *u == inner);
+    let doc = sync_replica(&mut ws, present).await;
+    assert!(
+        scope_members(&doc, &scope).contains(&inner),
+        "the new node is a DIRECT member of the entered scope; got {:?}",
+        scope_members(&doc, &scope)
+    );
+
+    // Undo drops it back out of the scope (and out of the graph).
+    call_session(&mut ws, 5, "undo", json!({}), "s1").await;
+    let gone = sync_replica(&mut ws, |d| {
+        d.instance_ids().iter().any(|u| *u == scope) && !present(d)
+    })
+    .await;
+    assert!(!gone.node_ids().iter().any(|u| *u == inner), "undo removed the node");
+
+    // Redo must put it back INSIDE the scope. A command that never carried the scope re-roots it here.
+    call_session(&mut ws, 6, "redo", json!({}), "s1").await;
+    let back = sync_replica(&mut ws, present).await;
+    assert!(back.node_ids().iter().any(|u| *u == inner), "redo restored the node");
+    assert!(
+        scope_members(&back, &scope).contains(&inner),
+        "redo restored it INSIDE the scope, not at ROOT; got {:?}",
+        scope_members(&back, &scope)
+    );
+}
+
+#[tokio::test]
+async fn add_node_rejects_an_inst_id_it_cannot_honour_and_creates_nothing() {
+    // No partial mutation, and no silent rooting: an `inst_id` that is malformed, names nothing, or
+    // names a plain node is REFUSED — before anything is created. Dropping it would put the node
+    // where the canvas cannot show it; creating it and THEN failing would leave the graph and its
+    // CRDT mirror disagreeing.
+    let base = start_server().await;
+    let (mut ws, _) = connect_async(format!("{base}/control")).await.unwrap();
+    let _hello = recv_text(&mut ws).await;
+
+    let osc = call(&mut ws, 1, "add_node", json!({ "type": "Oscillator" })).await["result"]
+        .as_str().unwrap().to_string();
+
+    // Well-formed hex, but no such scope.
+    let unknown = call(&mut ws, 2, "add_node", json!({ "type": "Buffer", "inst_id": "deadbeef" })).await;
+    assert!(unknown.get("error").is_some(), "an unknown scope is refused; got {unknown}");
+    // Not hex at all.
+    let malformed = call(&mut ws, 3, "add_node", json!({ "type": "Buffer", "inst_id": "not-a-uid" })).await;
+    assert!(malformed.get("error").is_some(), "a malformed inst_id is refused; got {malformed}");
+    // A live LEAF uid is not a scope either.
+    let leaf = call(&mut ws, 4, "add_node", json!({ "type": "Buffer", "inst_id": osc })).await;
+    assert!(leaf.get("error").is_some(), "a plain node uid is not a scope; got {leaf}");
+
+    let doc = sync_replica(&mut ws, |d| d.node_ids().iter().any(|u| *u == osc)).await;
+    assert_eq!(
+        doc.node_ids().len(),
+        1,
+        "no refused add left a node behind; got {:?}",
+        doc.node_ids()
+    );
+}
+
 #[tokio::test]
 async fn node_stats_broadcasts_the_measured_ufreq() {
     // Regression: `spawn_workers` (what the binary runs at startup) must wire `spawn_stats`,

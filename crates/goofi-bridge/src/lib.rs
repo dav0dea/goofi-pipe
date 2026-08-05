@@ -566,10 +566,20 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
                     .to_string();
                 // Redo-of-add / undo-of-delete replay the ORIGINAL uid (member_uid) + name so
                 // uid-keyed links + panels reconnect to the same node; a plain add mints a fresh uid.
-                // (inst_id sub-patch member placement is not yet restored here — ROOT nodes only.)
                 let restore = payload.get("member_uid").and_then(|v| v.as_str()).and_then(Uid::from_hex);
                 let name = payload.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
                 let pos = payload.get("pos").and_then(parse_pos).unwrap_or([0.0, 0.0]);
+                // `inst_id` is the sub-patch the editor has ENTERED: the node is born INSIDE it.
+                // Absent/null = ROOT. A malformed id is refused here and an id naming no live scope
+                // is refused by the command's pre-mutation check — never silently rooted, because
+                // the canvas draws only the entered scope's children, so a rooted node is invisible
+                // exactly where the user placed it (while the panel still selects it).
+                let scope = match payload.get("inst_id").filter(|v| !v.is_null()) {
+                    Some(v) => {
+                        Some(v.as_str().and_then(Uid::from_hex).ok_or("add_node: malformed inst_id")?)
+                    }
+                    None => None,
+                };
                 // Route through the command history so the add is undoable (its inverse is a
                 // RemoveNode). Inline params are applied AFTER (below): RemoveNode's inverse
                 // capture_restores the LIVE node — INCLUDING those params — so an undo→redo restores
@@ -582,6 +592,7 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
                     params: None,
                     exprs: vec![],
                     viewers: None,
+                    scope,
                 };
                 let uid = match state.history.lock().unwrap().apply(&mut g, &session, cmd)? {
                     goofi_engine::Outcome::Uid(u) => u,
