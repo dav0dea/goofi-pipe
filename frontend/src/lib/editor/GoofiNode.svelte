@@ -135,6 +135,7 @@
 			<div
 				class="conn in"
 				class:multi={port.multi}
+				class:cable-near={uiStore.isCableNear(node.uid, port.slot)}
 				style="top: {port.top}px; height: calc(var(--node-u) * {port.units}); --dtype: {dtypeColor(
 					port.dtype
 				)};"
@@ -374,16 +375,14 @@
 	.conn.in:hover .conn-label,
 	/* The pill is focusable (tabindex="0") but had no reveal of its own, so an input's name was
 	   unreachable by keyboard as well as by touch. */
-	.conn.in:focus-visible .conn-label {
+	.conn.in:focus-visible .conn-label,
+	/* PROXIMITY, and the door BOTH modalities get: while a cable is in flight, the inputs the
+	   pointer is closing on name themselves (`editor/slotProximity.ts` owns the arithmetic, the
+	   editor panel publishes the near set). It replaces the coarse always-open rule, which was the
+	   only way a finger could read an input's name and which therefore hung a name tag on every
+	   input on the canvas, permanently, for a question nobody had asked. A name is an ANSWER, so it
+	   arrives when the question does — and a mouse keeps its hover reveal on top of this. */
+	.conn.in.cable-near .conn-label {
 		opacity: 1;
-	}
-	/* Touch: this label is the ONLY rendering of an input slot's name, and a device with no hover
-	   has no way to ask for it — so it rests open. Purely additive: the label is an absolutely
-	   positioned overlay OUTSIDE the node's painted box (`.ports` is pointer-transparent and the
-	   label hangs left of it), so nothing nodeMetrics.ts/snap.ts measure moves. */
-	@media (hover: none) and (pointer: coarse) {
-		.conn-label {
-			opacity: 1;
-		}
 	}
 </style>

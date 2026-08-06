@@ -86,7 +86,7 @@ test('a tap is not a press — the control acts and no tooltip appears', async (
 	await expect(btn).toHaveAttribute('title', 'Maximize');
 });
 
-test('a node input names itself, and its update rate is legible, without hover', async ({ page }) => {
+test('a node’s update rate is legible without hover', async ({ page }) => {
 	await page.goto('/');
 	await waitForApp(page);
 	// Buffer for the input slot (Oscillator has none); Oscillator for the rate (it is the one that
@@ -96,10 +96,10 @@ test('a node input names itself, and its update rate is legible, without hover',
 	await waitForNode(page, buf);
 	await waitForNode(page, osc);
 	try {
-		// `.conn-label` is the ONLY rendering of an input slot's name. A fine pointer fades it in on
-		// hover; under coarse it must simply be there.
-		const label = page.locator(`.goofi-node .conn.in .conn-label`).first();
-		await expect(label).toHaveCSS('opacity', '1');
+		// The input NAME's coarse door used to be pinned here as "it rests open". It does not any
+		// more: resting it open put a name tag on every input on the canvas at all times, so the door
+		// is a proximity reveal scoped to a cable in flight — `touch-slot-name.spec.ts` owns both
+		// halves of it, and this file keeps the rate, whose door really is a resting form.
 
 		// The header rate sits at opacity .3 at rest and comes forward on hover — which on touch is
 		// never. It appears with the node's first stats push.

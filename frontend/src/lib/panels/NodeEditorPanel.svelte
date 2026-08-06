@@ -39,7 +39,7 @@
 	} from '$lib/editor/snap';
 	import { graph } from '$lib/stores/graph.svelte';
 	import { history } from '$lib/stores/history.svelte';
-	import { ui, type SlotClickSeed } from '$lib/stores/ui.svelte';
+	import { ui, slotKey, type SlotClickSeed } from '$lib/stores/ui.svelte';
 	import { selection } from '$lib/stores/selection.svelte';
 	import { workspace } from '$lib/workspace/workspace.svelte';
 	import { getPanelType, type PanelProps } from '$lib/workspace/registry';
@@ -63,6 +63,13 @@
 		parseBoundaryNodeId
 	} from '$lib/editor/subpatchScene';
 	import { nodeSurfaceSize, inputUnits, BOUNDARY } from '$lib/editor/nodeMetrics';
+	import {
+		inputAnchors,
+		nearSlots,
+		sameKeys,
+		SLOT_PROXIMITY_PX,
+		type SlotAnchor
+	} from '$lib/editor/slotProximity';
 	import { createLongPress } from '$lib/editor/longPress';
 	import { createDoubleTapZoom, zoomStep, type FlowViewport } from '$lib/editor/doubleTapZoom';
 	import { eventPoint } from '$lib/editor/eventPoint';
@@ -583,6 +590,62 @@
 	function onEdgeClick(args: { edge: Edge; event: MouseEvent }): void {
 		const e = args.event;
 		sel.clickEdge(panelId, args.edge.id, e.shiftKey || e.ctrlKey || e.metaKey);
+	}
+
+	// --- input names, revealed by proximity while a cable is in flight ---------------------------
+	//
+	// An input slot's name is drawn only on its connector pill, and only a hover asked for it — so
+	// touch rested every tag on the canvas open, permanently. The door is proximity now, and it is
+	// the SAME door on both modalities: while a cable is being dragged, the inputs the pointer is
+	// closing on name themselves. The arithmetic is in `editor/slotProximity.ts`, where a unit test
+	// can reach it; what is left here is the seam.
+	//
+	// Cheap by construction — the anchors are computed from state this panel already holds (node
+	// positions + `nodeMetrics`' connector pitch), so nothing measures the DOM on a pointermove. They
+	// are snapshotted ONCE per drag in FLOW space and the pointer is converted into that space per
+	// move, which is also why a canvas that pans or zooms mid-drag (auto-pan on connect does exactly
+	// that) needs no invalidation: the transform is read fresh every time, the anchors never move.
+	let cableAnchors: SlotAnchor[] = [];
+	let cableNear: ReadonlySet<string> = new Set();
+
+	function publishCableNear(next: ReadonlySet<string>): void {
+		if (sameKeys(next, cableNear)) return; // don't invalidate every node for an unchanged set
+		cableNear = next;
+		uiStore.setCableNear(next);
+	}
+
+	function onCableMove(e: PointerEvent): void {
+		const toFlow = screenToFlow;
+		if (!toFlow || cableAnchors.length === 0) return;
+		const zoom = getViewport?.().zoom ?? 1;
+		// The radius is a SCREEN distance (a fingertip is a physical size), so it is the radius that
+		// is converted into flow space, not the anchors out of it.
+		publishCableNear(
+			nearSlots(cableAnchors, toFlow({ x: e.clientX, y: e.clientY }), SLOT_PROXIMITY_PX / zoom)
+		);
+	}
+
+	function onCableStart(): void {
+		cableAnchors = inputAnchors(
+			flowNodes.flatMap((f) => {
+				// Boundary pills carry no name tag; only real nodes have a `.conn-label` to reveal.
+				const n = f.type === 'goofi' ? (f.data?.node as NodeInstanceInfo | undefined) : undefined;
+				if (!n) return [];
+				const multi = new Set(n.input_multi ?? []);
+				return [{ uid: f.id, x: f.position.x, y: f.position.y, slots: Object.keys(n.input_slots ?? {}), multi }];
+			}),
+			slotKey
+		);
+		publishCableNear(new Set());
+		// On `window`, not the panel: a cable dragged past the panel's edge is still in flight, and
+		// SvelteFlow's own connection listeners sit on the document for the same reason.
+		window.addEventListener('pointermove', onCableMove);
+	}
+
+	function onCableEnd(): void {
+		window.removeEventListener('pointermove', onCableMove);
+		cableAnchors = [];
+		publishCableNear(new Set());
 	}
 
 	/** A node's snap footprint when Svelte Flow hasn't measured it yet. Computed
@@ -1261,6 +1324,7 @@
 			rootEl?.removeEventListener('touchcancel', tapZoom.cancel, true);
 			canvasPress.cancel(); // a press in flight must not fire into an unmounted editor
 			tapZoom.cancel(); // …and neither may a zoom gesture keep writing a torn-down viewport
+			onCableEnd(); // …nor may a cable in flight leave name tags lit on a torn-down canvas
 			// NB: do NOT forget this panel's selection here — unmount also fires
 			// on a tab switch (the inactive tab's tree is torn down), and the
 			// selection must survive switching away and back. It only clears
@@ -1307,6 +1371,10 @@
 			deleteKey={['Delete', 'Backspace']}
 			onconnect={onConnect}
 			onreconnect={onReconnect}
+			onconnectstart={onCableStart}
+			onconnectend={onCableEnd}
+			onreconnectstart={onCableStart}
+			onreconnectend={onCableEnd}
 			onnodedragstart={onNodeDragStart}
 			onnodedrag={onNodeDrag}
 			onnodedragstop={onNodeDragStop}

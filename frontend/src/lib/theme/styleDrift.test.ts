@@ -633,6 +633,11 @@ const HOVER_ONLY_OK: { file: string; target: string; why: string }[] = [
 		why: 'split/join by corner is a fine-pointer power-user gesture R declined to grow — a --hit grip drops a 44px split-drag triangle over every panel corner, including the one the editor’s zoom cluster sits in — and D-R5 gives touch the header long-press menu as its door instead'
 	},
 	{
+		file: 'editor/GoofiNode.svelte',
+		target: 'conn-label',
+		why: 'its coarse door is a PROXIMITY reveal, not a resting form: `.conn.in.cable-near` (editor/slotProximity.ts, pinned by touch-slot-name.spec) names the inputs a cable in flight is closing on, for both modalities — the always-open coarse rule it replaced was the only way a finger could read an input name and therefore hung a name tag on every input on the canvas at all times'
+	},
+	{
 		file: 'panels/NodeEditorPanel.svelte',
 		target: 'inspector-toggle',
 		why: 'it RESTS at opacity .5 — visible and tappable with no hover; the hover only brightens an affordance that is already there, and R-Task 8 removes it outright while the pane it opens is up'

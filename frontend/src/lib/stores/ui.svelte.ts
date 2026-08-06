@@ -64,6 +64,21 @@ export class UIStore {
 	 * panel can show the active drop highlight. Null when over none. */
 	nodeDragTarget = $state<string | null>(null);
 
+	/** The input slots an in-flight cable drag is currently near — {@link slotKey} keys, EMPTY
+	 * whenever no cable is in flight. An input's name is drawn only on its connector pill, and this
+	 * is what asks for it: the editor publishes the near set on each pointermove of a connection
+	 * drag, GoofiNode reveals the tags it names. `$state.raw` because the whole Set is replaced (and
+	 * only when its membership really changed — see `sameKeys`), never mutated in place. */
+	cableNear = $state.raw<ReadonlySet<string>>(new Set());
+
+	setCableNear(keys: ReadonlySet<string>): void {
+		this.cableNear = keys;
+	}
+
+	isCableNear(node: string, slot: string): boolean {
+		return this.cableNear.has(slotKey(node, slot));
+	}
+
 	/** Register an open in-panel editor by a stable id (idempotent). */
 	openEditor(id: string): void {
 		if (this.#editors.has(id)) return;
