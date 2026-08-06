@@ -21,8 +21,8 @@ use tower_http::services::{ServeDir, ServeFile};
 use axum::extract::ws::{CloseFrame, Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path, State};
 use axum::response::Response;
-use axum::routing::{any, get};
-use axum::{Json, Router};
+use axum::routing::any;
+use axum::Router;
 use futures_util::{SinkExt, StreamExt};
 use goofi_engine::{Graph, Uid};
 use serde_json::{json, Value};
@@ -136,7 +136,6 @@ pub fn router(state: AppState) -> Router {
         // One stream per (node, slot) — the kind segment is gone; a single reduced stream
         // serves every viewer kind. Each connection sends its viewers' ViewSpecs inband.
         .route("/data/{node}/{slot}", any(data_ws))
-        .route("/api/healthz", get(healthz))
         .with_state(state)
 }
 
@@ -322,10 +321,6 @@ pub async fn serve_app(
     static_dir: Option<PathBuf>,
 ) -> std::io::Result<()> {
     axum::serve(listener, app(state, static_dir)).await
-}
-
-async fn healthz() -> Json<Value> {
-    Json(json!({ "ok": true }))
 }
 
 /// Native node type names visible in the catalog (`--list-nodes`; also ensures linkage).
