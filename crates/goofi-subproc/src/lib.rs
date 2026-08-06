@@ -145,7 +145,7 @@ impl Running {
     /// error the caller ([`RemoteNode::process`]) reaps the child so the next tick respawns a fresh one.
     fn roundtrip(&mut self, frame: &[u8], timeout: Duration) -> std::result::Result<Vec<u8>, String> {
         self.seq = self.seq.wrapping_add(1);
-        one_roundtrip(&self.ports.req_pub, &self.ports.resp_sub, self.seq, frame, timeout)
+        one_roundtrip(&self.ports.req_pub, &self.ports.resp_sub, &mut self.child, self.seq, frame, timeout)
             .map_err(|e| format!("subprocess io: {e}"))
     }
 
@@ -166,10 +166,12 @@ type ByteSubscriber = iceoryx2::port::subscriber::Subscriber<ipc_threadsafe::Ser
 /// One request/response: publish `[seq][frame]` and poll `<resp>` for the sample whose leading
 /// sequence matches. Re-publishes each idle millisecond (so the child gets it even if its
 /// subscriber was still connecting when we first published) and drops any stale/mismatched
-/// sample. Bounded by `timeout`.
+/// sample. Bounded by `timeout` — and by the child's own life: a process that has already died
+/// is not a hang, so it is reported as the exit it was rather than after the full deadline.
 fn one_roundtrip(
     req_pub: &BytePublisher,
     resp_sub: &ByteSubscriber,
+    child: &mut Child,
     seq: u32,
     frame: &[u8],
     timeout: Duration,
@@ -203,6 +205,13 @@ fn one_roundtrip(
                 Ok(None) => break, // drained; re-publish + wait
                 Err(e) => return Err(std::io::Error::other(format!("iox receive: {e}"))),
             }
+        }
+        // Checked AFTER draining the response port, so a child that answered and then exited still
+        // has its answer returned. An import crash, a C-extension segfault or an OOM kill leaves
+        // nobody to answer, and waiting out the deadline would both park a worker for the full
+        // production timeout and then name the wrong cause.
+        if let Ok(Some(status)) = child.try_wait() {
+            return Err(std::io::Error::other(format!("subprocess exited: {status}")));
         }
         if Instant::now() >= deadline {
             return Err(std::io::Error::other("subprocess did not respond in time"));
@@ -869,6 +878,39 @@ class Killer(goofi.Node):
         assert!(try_run(&mut node, arr(vec![1], &[-1.0], Meta::empty())).is_err(), "a dead child surfaces as an error");
         let out = try_run(&mut node, arr(vec![1], &[3.0], Meta::empty())).expect("must respawn on the next tick");
         assert_eq!(floats(&out), vec![6.0]);
+    }
+
+    #[test]
+    fn an_exited_child_is_noticed_at_once_instead_of_waiting_out_the_timeout() {
+        // A child that has ALREADY died — import crash, C-extension segfault, OOM kill — is not a
+        // hang: there is nobody left to answer. Watching only the response port made every such
+        // death cost the full production timeout (10 s of a parked worker) and then report
+        // "did not respond in time", which names the wrong cause. Run at the DEFAULT timeout so
+        // the assertion is about noticing the death, not about a short test timeout.
+        let py = require_python();
+        let src = r#"
+import os
+import goofi
+class Killer(goofi.Node):
+    @staticmethod
+    def config_input_slots():
+        return {"data": goofi.DataType.ARRAY}
+    @staticmethod
+    def config_output_slots():
+        return {"out": goofi.DataType.ARRAY}
+    def process(self, data):
+        os._exit(3)
+"#;
+        let mut node = RemoteNode::new(&*py, src, vec!["data"]);
+        assert_eq!(node.timeout, DEFAULT_TIMEOUT, "the production timeout, not a test-shortened one");
+        let t = std::time::Instant::now();
+        let err = try_run(&mut node, arr(vec![1], &[1.0], Meta::empty())).expect_err("a dead child is an error");
+        assert!(err.contains("subprocess exited"), "the error names the exit, not a timeout: {err}");
+        assert!(
+            t.elapsed() < Duration::from_secs(5),
+            "noticed on the child's death, not after the {DEFAULT_TIMEOUT:?} deadline (took {:?})",
+            t.elapsed()
+        );
     }
 
     #[test]
