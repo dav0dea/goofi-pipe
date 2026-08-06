@@ -140,9 +140,17 @@
 		min-height: 16px;
 		color: var(--text-muted);
 	}
-	.vs-anchor :global(.vs-cog:hover),
 	.vs-anchor :global(.vs-cog.on) {
 		color: var(--text);
+	}
+	/* The hover half, split off and gated on the device having a hover — `:hover` still MATCHES for a
+	   synthetic pointer on a phone, so ungated the cog brightened for a state a finger is never in.
+	   The OPEN half above stays unconditional: it reports state, which every pointer has. A
+	   hover-CAPABILITY query, not a pointer one — D-R7's coarse idiom below is untouched. */
+	@media (hover: hover) {
+		.vs-anchor :global(.vs-cog:hover) {
+			color: var(--text);
+		}
 	}
 	/* R closes the other half (C27). Two hosts, two answers, one hook.
 	   In REAL chrome — a docked ViewerPanel header, --hit tall, where the Unlink button and the kind

@@ -68,10 +68,19 @@
 		// it here at its mutation site (kind/settings persist via the binding).
 		g.pushNodeViewers(node);
 	}
-	function stopSelect(e: Event): void {
-		// SvelteFlow begins node selection/drag on pointerdown; keep that off the
-		// slot header bar. Its children (kind dropdown, cog, slot name) still get
-		// their own clicks — stopPropagation doesn't preventDefault.
+	function stopSelect(e: PointerEvent): void {
+		// Keeps a press on the header bar off the WINDOW-level bubble listeners the canvas sits
+		// under (`Popover`'s outside-press dismiss is the one that matters — see
+		// viewer-settings.spec). It does NOT keep SvelteFlow from starting a node drag, whatever
+		// this file used to claim: `@xyflow/svelte` drags by d3-drag, which binds `mousedown` and
+		// `touchstart`, neither of which a `pointerdown` handler can reach.
+		//
+		// Released for TOUCH — the live `pointerType`, D-R2's gate, not a media query. A viewer is
+		// most of a node's surface, so a finger landing on one is reaching for the NODE, and the
+		// header has to hand it the same press its body would. A mouse keeps the desktop path
+		// byte-for-byte; children (kind dropdown, cog, slot name) still get their own clicks either
+		// way, since stopPropagation doesn't preventDefault.
+		if (e.pointerType === 'touch') return;
 		e.stopPropagation();
 	}
 </script>
@@ -158,8 +167,23 @@
 	.slot-viewer:first-child header {
 		border-top: none;
 	}
-	header:hover {
-		background: color-mix(in srgb, var(--dtype, var(--accent)) 20%, var(--bg));
+	/* The viewer's hover chrome, gated on the device actually HAVING a hover.
+	   `:hover` still MATCHES on a phone — the browser resolves it for whatever synthetic pointer
+	   passes over — so without this the header tinted, the triangle brightened and the slot name
+	   washed for a state a finger can never be in, and each one had to be un-painted again on the
+	   press that followed. This is a hover-CAPABILITY query, not a pointer one: D-R7's single coarse
+	   idiom answers "is this a touch target" and is untouched (`theme/styleDrift.test.ts` scans
+	   every prelude that mentions `pointer`, and this one deliberately does not). */
+	@media (hover: hover) {
+		header:hover {
+			background: color-mix(in srgb, var(--dtype, var(--accent)) 20%, var(--bg));
+		}
+		.tri:hover svg {
+			fill: var(--text);
+		}
+		.slot-name:hover {
+			background: color-mix(in srgb, var(--dtype, var(--accent)) 22%, transparent);
+		}
 	}
 
 	/* A proper disclosure triangle: an SVG that rotates open/shut, vertically
@@ -190,9 +214,6 @@
 	.tri.open svg {
 		transform: rotate(90deg);
 	}
-	.tri:hover svg {
-		fill: var(--text);
-	}
 
 	.hspace {
 		flex: 1 1 auto;
@@ -205,9 +226,6 @@
 		border-radius: 3px;
 		padding: 0 2px;
 		transition: background var(--dur-fast) var(--ease);
-	}
-	.slot-name:hover {
-		background: color-mix(in srgb, var(--dtype, var(--accent)) 22%, transparent);
 	}
 	.body {
 		height: var(--node-viewer);

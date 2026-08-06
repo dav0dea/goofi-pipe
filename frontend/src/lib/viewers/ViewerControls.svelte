@@ -66,9 +66,14 @@
 		padding: 0 var(--space-2);
 		cursor: pointer;
 	}
-	.kind:hover {
-		color: var(--text);
-		border-color: var(--accent);
+	/* Hover feedback, gated on the device having a hover to give — `:hover` still MATCHES for a
+	   synthetic pointer on a phone, so ungated this lit the picker for a state a finger is never in.
+	   A hover-CAPABILITY query, not a pointer one: D-R7's coarse idiom below is untouched. */
+	@media (hover: hover) {
+		.kind:hover {
+			color: var(--text);
+			border-color: var(--accent);
+		}
 	}
 	/* Focus chrome is the app-wide base: the global `:focus-visible` accent ring, and nothing else —
 	   the old `.kind:focus { outline: none }` only suppressed that ring (0,2,0 beat the 0,1,0 global
