@@ -356,8 +356,15 @@ mod tests {
             .expect("an unloadable node is still listed");
 
         assert_eq!(ty["available"], json!(false));
-        assert_eq!(ty["missing_deps"], json!(["scipy"]), "the UI renders `missing dependency: X`");
-        assert!(ty["doc"].as_str().unwrap().contains("scipy"));
+        assert_eq!(ty["missing_deps"], json!(["scipy"]), "the machine-readable reason");
+        // `doc` is what the palette tooltip SHOWS, for an unavailable node as much as an
+        // available one — `reason` is a bare module name only for a ModuleNotFoundError, so
+        // the sentence has to be phrased here, where both cases are known.
+        assert_eq!(
+            ty["doc"],
+            json!("This node could not be loaded: scipy"),
+            "the reason arrives already phrased, so no client has to guess at it"
+        );
         // No slots or params are known — the probe never got far enough to report them.
         assert_eq!(ty["input_slots"], json!({}));
     }

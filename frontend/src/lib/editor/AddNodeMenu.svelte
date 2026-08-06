@@ -2,6 +2,7 @@
 	import { graph } from '$lib/stores/graph.svelte';
 	import { dtypeColor } from './categoryColor';
 	import { rankNodeTypes } from './nodeSearch';
+	import { nodeTypeTitle } from './nodeTypeTitle';
 	import type { NodeTypeInfo } from '$lib/api/control';
 	import type { SlotClickSeed } from '$lib/stores/ui.svelte';
 	import { onMount, tick } from 'svelte';
@@ -71,10 +72,6 @@
 		onPick(t);
 	}
 
-	function itemTitle(t: NodeTypeInfo): string {
-		return t.available ? t.doc : `missing dependency: ${t.missing_deps.join(', ')}`;
-	}
-
 	function onKeydown(e: KeyboardEvent): void {
 		if (e.key === 'Escape') {
 			e.preventDefault();
@@ -131,7 +128,7 @@
 						class="item"
 						class:hl={filtered[highlighted]?.type === t.type}
 						class:unavailable={!t.available}
-						title={itemTitle(t)}
+						title={nodeTypeTitle(t)}
 						onmouseenter={() => (highlighted = filtered.indexOf(t))}
 						onclick={() => pick(t)}
 					>
@@ -148,7 +145,7 @@
 					class="item"
 					class:hl={idx === highlighted}
 					class:unavailable={!t.available}
-					title={itemTitle(t)}
+					title={nodeTypeTitle(t)}
 					onmouseenter={() => (highlighted = idx)}
 					onclick={() => pick(t)}
 				>
