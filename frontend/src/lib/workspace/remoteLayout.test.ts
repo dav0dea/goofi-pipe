@@ -186,3 +186,30 @@ describe('the echo the peer’s layout must not cause', () => {
 		expect(ws.takeRemoteApplied()).toBe(false);
 	});
 });
+
+/**
+ * Hydrating a blob whose WORKSPACE id outruns its node ids — exactly what `dropPanelOnTabBar`
+ * saves, since it mints a fresh `uid('ws')` around a panel node that already existed. After a
+ * reload the module counter starts over, so the reseed is the only thing standing between the
+ * next `addTab` and a duplicate tab id — and a duplicate is worse than inert: `closeTab` and
+ * `renameTab` filter/map by id, so one ✕ closes both tabs.
+ */
+describe('adopting a saved layout whose tab id outruns its panel ids', () => {
+	beforeEach(() => {
+		workspace().reset();
+		history().reset();
+	});
+
+	it('mints a distinct id for the next tab', () => {
+		const ws = workspace();
+		ws.hydrate({
+			workspaces: [
+				{ id: 'ws-9000', name: 'Layout', root: { kind: 'panel', id: 'panel-8999', panelType: 'node-editor' } }
+			],
+			activeWorkspaceId: 'ws-9000'
+		});
+		ws.addTab();
+		const ids = ws.state.workspaces.map((w) => w.id);
+		expect(new Set(ids).size, `two tabs, two ids (got ${ids.join(', ')})`).toBe(ids.length);
+	});
+});

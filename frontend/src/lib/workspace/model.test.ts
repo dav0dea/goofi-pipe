@@ -11,6 +11,8 @@ import {
 	findPanel,
 	countPanels,
 	collectPanels,
+	reseedIds,
+	uid,
 	MIN_FRACTION,
 	MIN_PANEL_PX,
 	type LayoutNode,
@@ -269,5 +271,19 @@ describe('immutability', () => {
 		splitPanel(root, a.id, 'column', false, 'c');
 		closePanel(root, a.id);
 		expect(JSON.stringify(root)).toBe(before);
+	});
+});
+
+describe('reseedIds', () => {
+	// `dropPanelOnTabBar` mints a fresh `uid('ws')` around a PRE-EXISTING panel node, so a saved
+	// blob can carry a WORKSPACE suffix above every node suffix. Scanning only the layout nodes
+	// under each root leaves the counter below it, and the next `addTab` mints a duplicate tab id.
+	it('advances past a workspace id that sits above every node id', () => {
+		reseedIds({
+			workspaces: [{ id: 'ws-9000', name: 'Layout', root: makePanel('node-editor') }],
+			activeWorkspaceId: 'ws-9000'
+		});
+		const minted = uid('ws');
+		expect(Number(/-(\d+)$/.exec(minted)![1]), 'minted past every id the blob already used').toBeGreaterThan(9000);
 	});
 });

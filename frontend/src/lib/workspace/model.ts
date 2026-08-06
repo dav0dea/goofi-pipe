@@ -78,15 +78,24 @@ export function uid(prefix: string): string {
 }
 
 /** After hydrating a saved layout, advance the counter past every `*-<n>` id
- * already present so new ids stay unique. */
+ * already present so new ids stay unique. Workspace ids count too: `dropPanelOnTabBar`
+ * mints a tab around a panel node that already existed, so a saved blob's highest
+ * suffix can be a WORKSPACE id — scanning only the trees would leave the counter
+ * under it and the next `addTab` would mint a duplicate tab. */
 export function reseedIds(state: WorkspaceState): void {
 	let max = _seq;
-	const scan = (node: LayoutNode): void => {
-		const m = /-(\d+)$/.exec(node.id);
+	const bump = (id: string): void => {
+		const m = /-(\d+)$/.exec(id);
 		if (m) max = Math.max(max, parseInt(m[1], 10));
+	};
+	const scan = (node: LayoutNode): void => {
+		bump(node.id);
 		if (node.kind === 'split') node.children.forEach(scan);
 	};
-	for (const ws of state.workspaces) scan(ws.root);
+	for (const ws of state.workspaces) {
+		bump(ws.id);
+		scan(ws.root);
+	}
 	_seq = max;
 }
 
