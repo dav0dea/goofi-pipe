@@ -156,8 +156,19 @@ fn probe_reason(stderr: &str) -> String {
 /// a bad interpreter, a failed import (missing dep), no `Node` subclass, or malformed JSON — so
 /// the palette can say what is wrong instead of the node silently not existing.
 pub fn probe_introspect(path: &Path, python: &str) -> Result<probe::Introspection, String> {
-    const PROBE: &str =
-        "import goofi, os, sys; sys.stdout.write(goofi.introspect(os.environ['GOOFI_INTROSPECT_PATH']))";
+    // The payload channel is a DUP of fd 1 taken before fd 1 is rerouted to stderr, so a node
+    // whose dependency greets stdout on import (the pygame banner) cannot prepend itself to the
+    // JSON — that would exit 0 with an unparseable payload and grey out a working node. The
+    // reroute is at the fd level, not `redirect_stdout`, so a C extension writing straight to
+    // fd 1 is caught too. Same answer the child loop already gives itself (`goofi.serve`).
+    const PROBE: &str = "\
+import goofi, os, sys
+payload = os.fdopen(os.dup(1), 'wb')
+os.dup2(2, 1)
+sys.stdout = sys.stderr
+payload.write(goofi.introspect(os.environ['GOOFI_INTROSPECT_PATH']).encode())
+payload.close()
+";
     let out = Command::new(python)
         .arg("-c")
         .arg(PROBE)

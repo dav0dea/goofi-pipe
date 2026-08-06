@@ -132,6 +132,24 @@ fn missing_dep_greys_out_instead_of_crashing() {
 }
 
 #[test]
+fn a_node_whose_import_prints_still_discovers() {
+    // The probe child runs the node module AND emits the JSON payload, so a dependency that
+    // greets stdout on import (the pygame banner is the canonical one) would prepend itself to
+    // the payload: the child exits 0, the parse fails, and a perfectly good node is greyed out
+    // with "malformed introspection". The child loop already solved this for itself
+    // (goofi-pymod/src/serve.rs dup2's fd 1 to stderr before compiling the user module); the
+    // probe must too, or every node with a chatty dep silently becomes unavailable.
+    let py = test_python();
+    let Discovery::Found(d) =
+        discover_one(&fixtures().join("chatty.py"), &py, "python", Isolation::Subprocess)
+    else {
+        panic!("a node whose import prints to stdout still discovers")
+    };
+    assert_eq!(d.manifest.type_name, "Chatty");
+    assert_eq!(d.manifest.doc, "A node whose dependency prints on import.");
+}
+
+#[test]
 fn discover_dir_skips_hidden_and_broken() {
     let py = test_python();
     let found = discover(&fixtures(), &py, "python", Isolation::Subprocess).expect("scan");
