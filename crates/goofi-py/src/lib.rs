@@ -69,7 +69,7 @@ pub use host::{interpreter_path, PyNode};
 mod discover;
 
 #[cfg(feature = "embed")]
-pub use discover::{discover, discover_one, node_type_from, probe, PyNodeType};
+pub use discover::{discover, node_type_from, probe, PyNodeType};
 pub use goofi_node::discover::Discovery;
 
 #[cfg(feature = "embed")]
