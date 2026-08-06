@@ -53,6 +53,43 @@ pub struct AppState {
     /// applies through here (recording its inverse tagged with the caller's session); `undo`/`redo`
     /// replay the inverse/forward for that session. Locked AFTER `graph`, BEFORE `crdt`.
     pub history: Arc<Mutex<goofi_engine::CommandHistory>>,
+    /// Liveness policy for `/data` sockets. Injectable so a test need not sit through a
+    /// production-length deadline.
+    pub data_liveness: DataLiveness,
+}
+
+/// Timings that govern how a `/data` socket detects a **dead-but-not-closed** peer — a laptop that
+/// slept, a NAT that dropped the flow, a killed tab that never sent Close. Such a peer holds its
+/// connection (and therefore its share of the slot's reducer) open forever unless the bridge
+/// actively probes it, because a socket with no traffic produces no error.
+#[derive(Clone, Copy, Debug)]
+pub struct DataLiveness {
+    /// How often an otherwise-idle peer is probed with a WS Ping.
+    pub ping_interval: Duration,
+    /// How long an un-answered ping may stand before the peer is declared dead. Deliberately
+    /// several ping intervals, so a couple of lost round-trips on a bad mobile link do not
+    /// disconnect a healthy viewer.
+    pub pong_deadline: Duration,
+    /// The longest a single outgoing write may block before the loop gives up on it. This is a
+    /// *non-parking* bound, not a liveness verdict — see `handle_data`.
+    pub send_timeout: Duration,
+}
+
+impl DataLiveness {
+    /// Production timings: probe every 10 s, declare dead after 30 s (three missed round-trips),
+    /// never let one write park the loop for more than 5 s. A peer that walks out of WiFi is
+    /// reclaimed within [30 s, 40 s] — small next to a session, large next to a hiccup.
+    pub const DEFAULT: DataLiveness = DataLiveness {
+        ping_interval: Duration::from_secs(10),
+        pong_deadline: Duration::from_secs(30),
+        send_timeout: Duration::from_secs(5),
+    };
+}
+
+impl Default for DataLiveness {
+    fn default() -> Self {
+        DataLiveness::DEFAULT
+    }
 }
 
 impl Default for AppState {
@@ -88,6 +125,7 @@ impl AppState {
             dirty: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             reducers,
             history: Arc::new(Mutex::new(goofi_engine::CommandHistory::new())),
+            data_liveness: DataLiveness::DEFAULT,
         }
     }
 }
@@ -1149,6 +1187,77 @@ fn close(code: u16, reason: &str) -> Message {
     }))
 }
 
+/// Write one message to a `/data` socket, giving up after `bound`. Returns `false` only when the
+/// socket itself failed.
+///
+/// The bound is not a policy about slow viewers — it is what keeps the caller's `tokio::select!`
+/// from parking. An `.await` inside a select BRANCH BODY runs to completion with no other branch
+/// polled, so an unbounded write to a peer whose TCP window stopped draining would freeze the
+/// keepalive beat: the liveness probe would be dead code on exactly the socket it exists to catch.
+/// Giving up on a message costs one frame (latest-wins, as `Lagged` does); parking costs the
+/// connection forever.
+async fn send_bounded<S>(tx: &mut S, msg: Message, bound: Duration) -> bool
+where
+    S: futures_util::Sink<Message> + Unpin,
+{
+    // A timeout leaves at most this one message buffered: the sink's `poll_ready` gates the NEXT
+    // write on the same unfinished flush, so nothing accumulates behind a peer that stopped
+    // reading.
+    !matches!(tokio::time::timeout(bound, tx.send(msg)).await, Ok(Err(_)))
+}
+
+/// What the `/data` keepalive timer should do on this beat.
+#[derive(Debug, PartialEq, Eq)]
+enum Beat {
+    /// Probe the peer, and start (or keep) the pong deadline running.
+    Ping,
+    /// A ping is outstanding but still inside the deadline — say nothing, keep waiting.
+    Wait,
+    /// The deadline lapsed unanswered: the peer is gone. Leave the loop so the socket's
+    /// existing `unsubscribe` teardown runs.
+    Dead,
+}
+
+/// Whether the peer on one `/data` socket has shown, within the deadline, that its receive path is
+/// moving. A stalled *write* is not itself evidence of death — a slow phone stalls writes too —
+/// so the verdict rests on the peer failing to make **any** progress for a whole deadline.
+struct PeerLiveness {
+    cfg: DataLiveness,
+    /// When the oldest un-answered probe was sent; `None` while the peer is known to be moving.
+    awaiting_pong_since: Option<std::time::Instant>,
+}
+
+impl PeerLiveness {
+    fn new(cfg: DataLiveness) -> PeerLiveness {
+        PeerLiveness { cfg, awaiting_pong_since: None }
+    }
+
+    /// The verdict for this beat. A probe is marked outstanding on the ATTEMPT, not on a
+    /// successful write: a peer whose receive path is jammed cannot be pinged at all, and that is
+    /// precisely the condition the deadline exists to catch — crediting it for the write we could
+    /// not make would leave the stalled peer undetectable.
+    fn beat(&mut self, now: std::time::Instant) -> Beat {
+        match self.awaiting_pong_since {
+            // Measured from the OLDEST unanswered probe, so beating faster than the deadline
+            // (the normal case) cannot keep postponing the verdict.
+            Some(sent) if now.duration_since(sent) >= self.cfg.pong_deadline => Beat::Dead,
+            Some(_) => Beat::Wait,
+            None => {
+                self.awaiting_pong_since = Some(now);
+                Beat::Ping
+            }
+        }
+    }
+
+    /// The peer answered — it read our probe, so its receive path is moving. This is the ONLY
+    /// thing that keeps a connection alive: a *sent* probe cannot be its own proof of life, and a
+    /// flushed frame is not proof either (the socket buffer of a peer that stopped reading keeps
+    /// swallowing frames until it is full).
+    fn pong(&mut self) {
+        self.awaiting_pong_since = None;
+    }
+}
+
 async fn handle_data(socket: WebSocket, state: AppState, node: String, slot: String) {
     let (mut tx, mut rx) = socket.split();
 
@@ -1183,12 +1292,30 @@ async fn handle_data(socket: WebSocket, state: AppState, node: String, slot: Str
     let key: reducer::SlotKey = (stream_uid, stream_slot);
     let conn = state.reducers.new_conn();
     let mut frames = state.reducers.subscribe(key.clone(), conn);
+
+    // Peer liveness. A dead-but-not-closed peer (slept laptop, dropped NAT flow, killed tab that
+    // never sent Close) produces NO socket error, so without an active probe this connection —
+    // and its share of the shared slot reducer — would live forever.
+    let cfg = state.data_liveness;
+    let mut live = PeerLiveness::new(cfg);
+    let mut keepalive = tokio::time::interval(cfg.ping_interval);
+
     loop {
         tokio::select! {
             frame = frames.recv() => match frame {
                 Ok(bytes) => {
-                    if tx.send(Message::Binary(bytes)).await.is_err() {
-                        break;
+                    // BOUNDED (see `send_bounded`), because this `.await` sits in a select BRANCH
+                    // BODY: an unbounded write to a peer that stopped draining would park here
+                    // and starve the keepalive beat below.
+                    //
+                    // Giving up on a frame is deliberately NOT a liveness signal in either
+                    // direction. A timeout is not death — a slow phone stalls writes too, and
+                    // dropping the frame is the same latest-wins contract as `Lagged` just below.
+                    // A flush is not life either: the socket buffer of a peer that stopped reading
+                    // keeps swallowing frames until it is full, which on a low-rate slot takes
+                    // minutes. Only the pong decides.
+                    if !send_bounded(&mut tx, Message::Binary(bytes), cfg.send_timeout).await {
+                        break; // the socket really is gone
                     }
                 }
                 // A slow viewer that lagged the reducer's fan-out simply drops frames (latest-
@@ -1208,7 +1335,25 @@ async fn handle_data(socket: WebSocket, state: AppState, node: String, slot: Str
                         }
                     }
                 }
+                // The peer answered our probe: the one and only thing that clears the deadline.
+                Some(Ok(Message::Pong(_))) => live.pong(),
                 _ => {}
+            },
+            // The keepalive beat. Complementary to the bounded send above, not redundant with it:
+            // the bounded send stops the loop parking on a BACKED-UP peer, this catches an IDLE
+            // dead one — no frames means no send, so a write timeout alone would never fire.
+            _ = keepalive.tick() => match live.beat(std::time::Instant::now()) {
+                // Bounded for the same reason as the frame send: a jammed sink must not park us.
+                // The probe's own write succeeding proves nothing — only the answer does.
+                Beat::Ping => {
+                    if !send_bounded(&mut tx, Message::Ping(Default::default()), cfg.send_timeout).await {
+                        break;
+                    }
+                }
+                Beat::Wait => {}
+                // Fall out so the EXISTING unsubscribe below runs and the shared reducer is
+                // reclaimed once its last real viewer is gone.
+                Beat::Dead => break,
             },
         }
     }
@@ -1303,5 +1448,145 @@ mod param_coerce_tests {
         error_transitions(&[ev("b", None)], &mut last);
         assert!(!last.contains_key("a"), "removed node forgotten");
         assert_eq!(error_transitions(&[ev("a", Some("boom"))], &mut last), vec!["a".to_string()]);
+    }
+}
+
+#[cfg(test)]
+mod peer_liveness_tests {
+    use super::*;
+    use std::time::Instant;
+
+    fn cfg() -> DataLiveness {
+        DataLiveness {
+            ping_interval: Duration::from_millis(100),
+            pong_deadline: Duration::from_millis(300),
+            send_timeout: Duration::from_millis(200),
+        }
+    }
+
+    #[test]
+    fn an_idle_peer_is_probed_then_left_alone_until_the_deadline() {
+        // The first beat probes; subsequent beats inside the deadline stay quiet rather than
+        // stacking pings on a peer that may simply be between round-trips.
+        let t0 = Instant::now();
+        let mut live = PeerLiveness::new(cfg());
+        assert_eq!(live.beat(t0), Beat::Ping, "an unprobed peer is pinged");
+        assert_eq!(live.beat(t0 + Duration::from_millis(100)), Beat::Wait, "the probe stands");
+        assert_eq!(live.beat(t0 + Duration::from_millis(299)), Beat::Wait, "still inside deadline");
+    }
+
+    #[test]
+    fn a_probe_unanswered_past_the_deadline_declares_the_peer_dead() {
+        // The dead-but-not-closed case: nothing errored, nothing closed, the peer just stopped
+        // answering. Only the elapsed deadline can distinguish it from an idle healthy viewer.
+        let t0 = Instant::now();
+        let mut live = PeerLiveness::new(cfg());
+        assert_eq!(live.beat(t0), Beat::Ping);
+        assert_eq!(live.beat(t0 + Duration::from_millis(300)), Beat::Dead, "deadline lapsed");
+    }
+
+    #[test]
+    fn a_pong_clears_the_deadline_so_an_alive_peer_is_never_declared_dead() {
+        // The regression guard in pure form: however long a viewer is watched, as long as it
+        // answers it is only ever re-probed — never declared dead.
+        let t0 = Instant::now();
+        let mut live = PeerLiveness::new(cfg());
+        for cycle in 0..20 {
+            let now = t0 + Duration::from_millis(100 * cycle);
+            assert_eq!(live.beat(now), Beat::Ping, "cycle {cycle}: an answered peer is re-probed");
+            live.pong();
+        }
+    }
+
+    #[test]
+    fn a_pong_arriving_late_in_the_deadline_still_saves_the_peer() {
+        // A backlogged viewer answers only just before the deadline — it must be credited in
+        // full, not merely granted a stay: the clock restarts from the next probe.
+        let t0 = Instant::now();
+        let mut live = PeerLiveness::new(cfg());
+        assert_eq!(live.beat(t0), Beat::Ping);
+        live.pong();
+        let late = t0 + Duration::from_millis(299);
+        assert_eq!(live.beat(late), Beat::Ping, "the next beat re-probes rather than condemning");
+        assert_eq!(live.beat(late + Duration::from_millis(299)), Beat::Wait, "clock ran from `late`");
+    }
+
+    #[test]
+    fn the_deadline_runs_from_the_oldest_unanswered_probe_not_the_latest_beat() {
+        // A `Wait` beat must not refresh the clock, or the deadline could never expire on a peer
+        // that is beaten more often than the deadline is long — which is the normal case.
+        let t0 = Instant::now();
+        let mut live = PeerLiveness::new(cfg());
+        assert_eq!(live.beat(t0), Beat::Ping);
+        for step in 1..3 {
+            assert_eq!(live.beat(t0 + Duration::from_millis(100 * step)), Beat::Wait);
+        }
+        assert_eq!(live.beat(t0 + Duration::from_millis(300)), Beat::Dead, "measured from t0");
+    }
+}
+
+#[cfg(test)]
+mod send_bounded_tests {
+    use super::*;
+    use std::pin::Pin;
+    use std::task::{Context, Poll};
+
+    /// A sink that never becomes ready — a peer whose TCP window stopped draining, modelled
+    /// directly so the test does not depend on the OS socket-buffer sizes it would take to
+    /// reproduce that against a real socket.
+    struct StalledSink;
+
+    impl futures_util::Sink<Message> for StalledSink {
+        type Error = axum::Error;
+        fn poll_ready(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+            Poll::Pending
+        }
+        fn start_send(self: Pin<&mut Self>, _: Message) -> Result<(), Self::Error> {
+            unreachable!("a stalled sink is never ready to be given a message")
+        }
+        fn poll_flush(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+            Poll::Pending
+        }
+        fn poll_close(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+            Poll::Pending
+        }
+    }
+
+    #[tokio::test]
+    async fn a_write_to_a_stalled_peer_gives_up_instead_of_parking_the_loop() {
+        // The property the whole fix rests on. `handle_data`'s send sits in a select BRANCH BODY,
+        // so if it never returns no other branch is ever polled again — the keepalive beat would
+        // be starved on precisely the dead-but-not-closed socket it exists to catch. Bounding the
+        // write is what lets the loop go round.
+        // Small, so the test is fast; the outer bound is 40x it, so this asserts the PROPERTY
+        // (it returned) with room to spare rather than a tight window.
+        let bound = Duration::from_millis(50);
+        let mut sink = StalledSink;
+        // The outer bound makes an unbounded send FAIL cleanly rather than hang the suite.
+        let outcome = tokio::time::timeout(
+            bound * 40,
+            send_bounded(&mut sink, Message::Binary(Default::default()), bound),
+        )
+        .await;
+        assert_eq!(
+            outcome.ok(),
+            Some(true),
+            "a write to a stalled peer must return (and not report the socket dead) so the \
+             keepalive beat gets polled"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_probe_to_a_stalled_peer_gives_up_too() {
+        // The beat's own write is bounded for the same reason: a jammed sink must not park the
+        // loop on the very branch that is supposed to declare the peer dead.
+        let bound = Duration::from_millis(50);
+        let mut sink = StalledSink;
+        let outcome = tokio::time::timeout(
+            bound * 40,
+            send_bounded(&mut sink, Message::Ping(Default::default()), bound),
+        )
+        .await;
+        assert_eq!(outcome.ok(), Some(true), "the probe write is bounded as well");
     }
 }

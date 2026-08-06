@@ -2625,3 +2625,159 @@ async fn an_authored_layout_reaches_other_clients_and_names_its_author() {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// Data-plane peer liveness (audit item 10)
+// ---------------------------------------------------------------------------
+
+/// Serve with a deliberately tiny liveness policy, and hand the state back so the test can watch
+/// the shared reducer's refcount — the thing a stalled peer used to pin open forever.
+async fn start_server_with_liveness(live: goofi_bridge::DataLiveness) -> (String, AppState) {
+    let mut state = AppState::new();
+    state.data_liveness = live;
+    spawn_tick(state.graph.clone());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let served = state.clone();
+    tokio::spawn(async move {
+        serve_app(listener, served, None).await.unwrap();
+    });
+    (format!("ws://{addr}"), state)
+}
+
+/// A short policy: fast enough that the suite never waits on a production deadline, slow enough
+/// that it cannot be tripped by ordinary scheduler jitter.
+fn test_liveness() -> goofi_bridge::DataLiveness {
+    goofi_bridge::DataLiveness {
+        ping_interval: Duration::from_millis(100),
+        pong_deadline: Duration::from_millis(1000),
+        send_timeout: Duration::from_millis(200),
+    }
+}
+
+/// Poll `f` until it holds or `limit` elapses; returns whether it held. Asserting the PROPERTY
+/// ("torn down by T") rather than a window is what keeps this stable under cargo's parallel runner.
+async fn holds_within(limit: Duration, mut f: impl FnMut() -> bool) -> bool {
+    let deadline = std::time::Instant::now() + limit;
+    while std::time::Instant::now() < deadline {
+        if f() {
+            return true;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    f()
+}
+
+#[tokio::test]
+async fn a_data_peer_that_never_pongs_is_torn_down_and_its_reducer_reclaimed() {
+    // The dead-but-not-closed peer: a viewer that completed the handshake and then went silent —
+    // it never sends Close, never reads, never pongs. Nothing on the socket errors, so without an
+    // active probe the connection lives forever and the SHARED per-slot reducer keeps reducing and
+    // encoding for a viewer that is not there. The fix must reach the EXISTING `unsubscribe`.
+    let (base, state) = start_server_with_liveness(test_liveness()).await;
+    let osc = state.graph.lock().unwrap().add_node("Oscillator", None).unwrap();
+    let key = (osc, "out".to_string());
+
+    // `connect_async` performs the handshake but starts NO background task, so simply never
+    // polling this stream is a faithful frozen peer: no auto-pong, no reads, no Close.
+    let dead = connect_async(format!("{base}/data/{}/out", osc.to_hex())).await.unwrap().0;
+
+    assert!(
+        holds_within(Duration::from_secs(2), || state.reducers.subscribers(&key) == 1).await,
+        "the peer subscribed to the slot's reducer"
+    );
+
+    // Generous bound: ~10x the 300 ms deadline. The assertion is the property (reclaimed BY T),
+    // not a window, and never a median.
+    assert!(
+        holds_within(Duration::from_secs(3), || state.reducers.active_slots() == 0).await,
+        "a peer that never pongs must be torn down past the deadline and its reducer reclaimed \
+         (active_slots={}, subscribers={})",
+        state.reducers.active_slots(),
+        state.reducers.subscribers(&key),
+    );
+    drop(dead);
+}
+
+#[tokio::test]
+async fn an_idle_dead_peer_is_reclaimed_because_a_probe_is_not_its_own_proof_of_life() {
+    // The other half of the dead-peer case, and the one that constrains the design: a viewer of a
+    // slot that publishes NOTHING (an unwired Buffer). No frame write can ever vouch for this
+    // peer, and its socket buffer happily swallows every 2-byte ping — so if a sent probe were
+    // allowed to count as evidence, this connection would pin its reducer open forever. Only the
+    // ANSWER counts.
+    let (base, state) = start_server_with_liveness(test_liveness()).await;
+    let buf = state.graph.lock().unwrap().add_node("Buffer", None).unwrap();
+    let key = (buf, "out".to_string());
+
+    let dead = connect_async(format!("{base}/data/{}/out", buf.to_hex())).await.unwrap().0;
+    assert!(
+        holds_within(Duration::from_secs(2), || state.reducers.subscribers(&key) == 1).await,
+        "the idle peer subscribed to the slot's reducer"
+    );
+    assert!(
+        holds_within(Duration::from_secs(3), || state.reducers.active_slots() == 0).await,
+        "an idle peer that never pongs must still be reclaimed (active_slots={})",
+        state.reducers.active_slots(),
+    );
+    drop(dead);
+}
+
+#[tokio::test]
+async fn a_slow_but_alive_viewer_that_pongs_keeps_its_reducer_and_its_frames() {
+    // The regression this fix is most likely to cause: killing a HEALTHY viewer. Modelled on the
+    // real client — `dataWorker` drains the socket while `frames.ts` coalesces to rAF — as a tab
+    // that repeatedly stalls for longer than the reducer's 16-slot ring holds, then catches up.
+    // It must survive several deadlines, keep receiving, and still visibly LAG: dropping frames
+    // (latest-wins, the `Lagged` contract) is what a slow viewer is supposed to do; dropping the
+    // connection is not.
+    let (base, state) = start_server_with_liveness(test_liveness()).await;
+    let osc = state.graph.lock().unwrap().add_node("Oscillator", None).unwrap();
+    let key = (osc, "out".to_string());
+
+    let mut slow = connect_async(format!("{base}/data/{}/out", osc.to_hex())).await.unwrap().0;
+
+    let start = std::time::Instant::now();
+    let mut received = 0usize;
+    let mut received_past_the_deadline = 0usize;
+    // 5 rounds x 600 ms = 3 s, three times the 1 s deadline.
+    for _ in 0..5 {
+        // Stall ~400 ms: at the reducer's ~62 Hz that is ~25 frames against a 16-slot ring, so
+        // this viewer provably falls behind and provably backs the socket up.
+        tokio::time::sleep(Duration::from_millis(400)).await;
+        // Then drain, exactly as the real worker does. Draining is what makes tungstenite answer
+        // the pings that queued up behind the backlog.
+        let drain = std::time::Instant::now();
+        while drain.elapsed() < Duration::from_millis(200) {
+            match tokio::time::timeout(Duration::from_millis(50), slow.next()).await {
+                Ok(Some(Ok(Message::Binary(_)))) => {
+                    received += 1;
+                    if start.elapsed() > Duration::from_millis(1000) {
+                        received_past_the_deadline += 1;
+                    }
+                }
+                Ok(Some(Ok(_))) => {}
+                Ok(Some(Err(e))) => panic!("a slow-but-alive viewer was disconnected: {e}"),
+                Ok(None) => panic!("a slow-but-alive viewer's stream was closed by the bridge"),
+                Err(_) => {}
+            }
+        }
+    }
+
+    assert_eq!(state.reducers.subscribers(&key), 1, "the slow viewer is still subscribed");
+    assert_eq!(state.reducers.active_slots(), 1, "its reducer is still running");
+    assert!(
+        received_past_the_deadline > 0,
+        "a slow-but-alive viewer keeps receiving frames well past the pong deadline"
+    );
+    // …and it really was outpaced while it stalled: the reducer produced far more than the
+    // 16-slot ring holds during each pause, so this viewer was repeatedly behind rather than
+    // quietly keeping up. (How many frames it ultimately *lost* is not asserted — with small
+    // frames on loopback the socket buffers can absorb a whole stall — because pinning an
+    // environment-dependent drop count is exactly the kind of wall-clock assertion that flakes.)
+    let produced = state.reducers.reductions(&key);
+    assert!(
+        produced > 50 && received > 0,
+        "the reducer outpaced the stalling viewer ({received} received of {produced} produced)"
+    );
+}
