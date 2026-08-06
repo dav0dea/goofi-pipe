@@ -112,7 +112,12 @@ fn run_loop(
             }
         }
         let Some(sample) = latest else {
-            std::thread::sleep(Duration::from_micros(500)); // idle poll; a request wakes it ~0.5ms
+            // Idle poll; a request wakes it ~0.5ms. DETACHED: this loop is pure Rust between
+            // requests, so holding the GIL here would starve the node's own Python threads — and
+            // a receiver thread started in `setup()` (OSC/LSL/serial) is the canonical shape of
+            // the device-input nodes this tier exists to host. Unwired or slowly paced, such a
+            // node would otherwise get no scheduling at all.
+            py.detach(|| std::thread::sleep(Duration::from_micros(500)));
             continue;
         };
         let payload = sample.payload();

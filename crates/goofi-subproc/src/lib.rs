@@ -512,6 +512,54 @@ class Double(goofi.Node):
         Tier { py, _lock }
     }
 
+    /// Counts in a background Python thread started from `setup()` — the shape of every device
+    /// input node (an OSC/LSL/serial receiver `serve_forever`-ing off the tick). `process` just
+    /// reports the count, so the parent can see whether the thread ran between two ticks.
+    const TICKER: &str = r#"
+import threading, time
+import numpy as np
+import goofi
+class Ticker(goofi.Node):
+    @staticmethod
+    def config_input_slots():
+        return {"data": goofi.DataType.ARRAY}
+    @staticmethod
+    def config_output_slots():
+        return {"out": goofi.DataType.ARRAY}
+    def setup(self):
+        self.count = 0
+        def spin():
+            while True:
+                self.count += 1
+                time.sleep(0.001)
+        threading.Thread(target=spin, daemon=True).start()
+    def process(self, data):
+        return {"out": np.array([float(self.count)], dtype="float32")}
+"#;
+
+    #[test]
+    fn a_nodes_own_python_thread_runs_while_the_child_is_idle() {
+        // The subprocess tier exists to host GIL-bound libraries, and the canonical shape of a
+        // device input is a receiver thread started in `setup()`. The child's serve loop is pure
+        // Rust between requests, so if it holds the GIL across its idle sleep that thread is
+        // starved for exactly as long as the node is not being ticked — which for an unwired or
+        // slowly-paced node is forever.
+        let py = require_python();
+        let mut node = RemoteNode::new(&*py, TICKER, vec!["data"]);
+        let d = arr(vec![1], &[0.0], Meta::empty());
+
+        let first = floats(&run(&mut node, d.clone()))[0]; // cold start + setup + one tick
+        std::thread::sleep(Duration::from_millis(300)); // an idle gap: no request in flight
+        let second = floats(&run(&mut node, d))[0];
+
+        // 300 ms at a 1 ms cadence is ~300 increments; a starved thread manages a couple at most,
+        // stolen from the eval loop while `process` itself is running.
+        assert!(
+            second - first > 50.0,
+            "the node's thread must run while the child idles: {first} -> {second}"
+        );
+    }
+
     /// A `RemoteNode` holds its iceoryx2 ports directly (via `ipc_threadsafe::Service`), so it must
     /// stay `Send` for the scheduler. This compile-time guard fails loudly if the ports ever revert to
     /// the `!Send` `ipc::Service` — the whole reason the port-owning io thread could be removed.
