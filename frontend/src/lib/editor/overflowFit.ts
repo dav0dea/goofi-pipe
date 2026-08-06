@@ -32,8 +32,21 @@ export interface FitOpts {
 	gap: number;
 	/** Horizontal space the actions may occupy, in px. */
 	budget: number;
-	/** The overflow trigger's own width, in px — always charged (see below). */
+	/** The overflow trigger's own width, in px. */
 	trigger: number;
+	/**
+	 * Is the trigger on screen even when NOTHING has spilled? Default `true`.
+	 *
+	 * The app header's is: its menu carries the canvas commands at every width, so the button is
+	 * resident chrome and its width is simply always in the budget. The panel header's is not — its
+	 * menu holds the spilled actions and nothing else, so at a width where all of them fit there is
+	 * no menu to open and drawing a `⋯` beside them would be a door onto an empty room.
+	 *
+	 * Saying so is what keeps the plan HONEST rather than merely conservative: charged
+	 * unconditionally, a non-resident bar spills its first item at the width where everything would
+	 * still have fit without the trigger it is being charged for.
+	 */
+	residentTrigger?: boolean;
 }
 
 /**
@@ -42,11 +55,17 @@ export interface FitOpts {
  * `spillOrder` is the priority order LOWEST FIRST: the id named first is the first the bar gives
  * up. Ids it names that are not in `items` are ignored, so a caller may keep one constant order.
  *
- * `trigger` is charged unconditionally, because the menu is RESIDENT chrome — it carries the
- * canvas commands (delete, group, select-all, copy/paste/duplicate, multi-select) at every width,
- * since those have no bar slot to lose. So there is no width at which the trigger appears and
- * pushes the last item out, which is the second trap D-R6 names; it is designed away rather than
- * guarded against.
+ * `trigger` is charged whenever it is on screen — which for the app header is unconditionally,
+ * because that menu is RESIDENT chrome: it carries the canvas commands (delete, group, select-all,
+ * copy/paste/duplicate, multi-select) at every width, since those have no bar slot to lose. So
+ * there the second trap D-R6 names — a trigger that appears and pushes the last item out — is
+ * designed away rather than guarded against. A bar whose menu holds only the spilled items says
+ * `residentTrigger: false`, and pays that trap with the property below instead.
+ *
+ * What survives either way is MONOTONICITY: the answer is the first prefix of `spillOrder` that
+ * fits, and a prefix that fits at one budget still fits at a larger one — so a wider bar can never
+ * spill more. That is the whole non-oscillation argument, and it does not depend on the trigger
+ * being free.
  *
  * Deliberately NOT implementing D-R6's "never leave exactly one item in the overflow" hint: the
  * first thing to spill is the Save caret, and losing it alone degrades cleanly (the split control
@@ -56,13 +75,15 @@ export interface FitOpts {
 export function planOverflow(
 	items: OverflowItem[],
 	spillOrder: string[],
-	{ gap, budget, trigger }: FitOpts
+	{ gap, budget, trigger, residentTrigger = true }: FitOpts
 ): Set<string> {
 	const spilled = new Set<string>();
-	// n visible items sit in n+1 boxes with the trigger, so they are separated by n gaps.
+	// Counted as BOXES rather than as items plus a constant: n boxes are separated by n − 1 gaps,
+	// and whether the trigger is one of them is exactly what `residentTrigger` decides.
 	const fits = (): boolean => {
-		let used = trigger;
-		for (const it of items) if (!spilled.has(it.id)) used += it.width + gap;
+		const boxes = items.filter((it) => !spilled.has(it.id)).map((it) => it.width);
+		if (residentTrigger || spilled.size > 0) boxes.push(trigger);
+		const used = boxes.reduce((a, w) => a + w, 0) + gap * Math.max(0, boxes.length - 1);
 		return used <= budget;
 	};
 	const known = new Set(items.map((i) => i.id));

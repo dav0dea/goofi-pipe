@@ -1,4 +1,4 @@
-import { test, expect, type Page } from '@playwright/test';
+import { test, expect, type Locator, type Page } from '@playwright/test';
 import { waitForApp } from '../lib/app';
 import { touchSession } from '../lib/touch';
 
@@ -15,6 +15,12 @@ import { touchSession } from '../lib/touch';
  * `panel-corner-split.spec.ts` is this file's fine-pointer twin: it proves the same grips still
  * arm, preview and commit a split under a mouse. The pair is what makes "touch only" a measured
  * claim rather than a media query nobody reads.
+ *
+ * And the interlock at the bottom is the point of taking the grips away at all: the panel header
+ * carries Split Right and Split Down as real controls now (progressive overflow, `overflowFit.ts`),
+ * so a finger that lost the corner gesture did not lose the operation. That test asserts against
+ * the WORKSPACE TREE (`goofi.query.panels()`), not the DOM, because gaining a `.panel` element is
+ * not the same claim as gaining a panel.
  */
 
 type Corner = 'tl' | 'tr' | 'bl' | 'br';
@@ -79,4 +85,52 @@ test('a touch drag out of a panel corner splits nothing', async ({ page }) => {
 	await page.waitForTimeout(200);
 
 	expect(await panels.count(), 'the workspace is untouched').toBe(before);
+});
+
+/* ---------------------------------------------------------------------------------------------
+   The interlock: with the corner gesture gone, the header is what a finger splits with.
+   -------------------------------------------------------------------------------------------- */
+
+const hdr = (page: Page, n = 0): Locator => page.getByTestId('panel-header').nth(n);
+
+/** How many panels the WORKSPACE TREE holds — the claim, as opposed to how many `.panel` elements
+ *  happen to be mounted. */
+const treePanels = (page: Page): Promise<number> =>
+	page.evaluate(() => (window as any).goofi.query.panels().length as number);
+
+/** Tap Split Down wherever the header is currently keeping it: inline while it fits, and behind the
+ *  ⋯ once the panel is too narrow for it. Both are the same command (D-R2), and a phone will meet
+ *  whichever the width decides — so the door the test uses is the one the header is offering. */
+async function splitDownFromHeader(page: Page): Promise<void> {
+	const inline = hdr(page).getByTestId('panel-split-column');
+	if (await inline.isVisible()) {
+		await inline.tap();
+		return;
+	}
+	await hdr(page).getByTestId('panel-overflow').tap();
+	await expect(page.locator('.context-menu').first()).toBeVisible();
+	await page
+		.locator('.context-menu .item')
+		.filter({ has: page.locator('.label', { hasText: /^Split Down$/ }) })
+		.tap();
+}
+
+test('a finger can still split a panel — the header carries what the corner gave up', async ({
+	page
+}) => {
+	await page.goto('/');
+	await waitForApp(page);
+	expect(await treePanels(page), 'the workspace starts as one panel').toBe(1);
+
+	try {
+		await splitDownFromHeader(page);
+		await expect
+			.poll(() => treePanels(page), { message: 'the workspace tree really gained a panel' })
+			.toBe(2);
+		await expect(page.locator('.panel')).toHaveCount(2);
+	} finally {
+		await hdr(page, 1).getByRole('button', { name: 'Close panel' }).tap();
+		await expect(page.locator('.panel'), 'the workspace is handed back').toHaveCount(1);
+		await page.waitForTimeout(700); // past AppShell's 400ms set_layout debounce
+	}
 });

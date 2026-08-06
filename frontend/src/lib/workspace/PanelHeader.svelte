@@ -1,8 +1,29 @@
 <!--
-  Panel header: the content-type dropdown (left) plus maximize/close buttons,
-  and a right-click context menu exposing every structural action (split,
-  maximize, change content, close). The dropdown and the menu both build their
-  panel-type list from the registry, so new panel types appear automatically.
+  Panel header: the content-type dropdown (left), the structural actions (right), and a right-click
+  / long-press context menu exposing every structural action (split, maximize, change content,
+  close). The dropdown and the menu both build their panel-type list from the registry, so new
+  panel types appear automatically.
+
+  The right end is a progressive overflow (D-R6) sharing `editor/overflowFit.ts` with the app
+  header rather than restating its arithmetic: Split Right, Split Down and Maximize sit in the
+  header while they fit and give themselves up one at a time, lowest priority first, into a ⋯ menu.
+  A panel header is the harder case of the two — its width is the PANEL's, not the window's, so two
+  panels side by side on a laptop are already narrower than the app header ever gets on a phone.
+
+  Two things differ from the app header, and both are stated at the call site below:
+    · the ✕ is NOT in the plan. It is the one control that must be reachable at every width, so it
+      is charged off the budget rather than offered a slot in it.
+    · the ⋯ is NOT resident (`residentTrigger: false`). Its menu holds the spilled actions and
+      nothing else, so at a width where all three fit there is no menu to open and no trigger drawn.
+
+  Naming: the user's "split vertical / split horizontal" is deliberately not the wording used here.
+  Those two names mean opposite things in different apps — a "vertical split" is a vertical DIVIDER
+  in one editor and a vertical STACK in the next — while this header already had a vocabulary that
+  cannot be read two ways, in the context menu these very commands live in. So there is one wording
+  and it is the existing one: Split RIGHT is `'row'` (a vertical divider ▕, the new panel beside
+  this one) and Split DOWN is `'column'` (a horizontal divider ▁, the new panel under it). One
+  command, one name, two representations (D-R2) — the bar button and the menu row are built from
+  the same record below, so they cannot drift.
 -->
 <script lang="ts">
 	import { countPanels, type PanelNode } from './model';
@@ -11,8 +32,9 @@
 	import type { MenuItem } from './menu';
 	import ContextMenu from './ContextMenu.svelte';
 	import { createLongPress } from '$lib/editor/longPress';
+	import { createWidthCache, planOverflow, type OverflowItem } from '$lib/editor/overflowFit';
 	import { Button, IconButton } from '$lib/ui';
-	import { onDestroy } from 'svelte';
+	import { onDestroy, untrack } from 'svelte';
 
 	let { node }: { node: PanelNode } = $props();
 	const ws = workspace();
@@ -20,7 +42,9 @@
 	const isMax = $derived(ws.maximizedPanelId === node.id);
 	const canClose = $derived(countPanels(ws.active.root) > 1);
 
-	let menu = $state<{ x: number; y: number; items: MenuItem[] } | null>(null);
+	// `from` discriminates which surface opened this menu: three of them share the one ContextMenu,
+	// and only the ⋯ owns an `aria-expanded` that must not light up for the other two.
+	let menu = $state<{ x: number; y: number; items: MenuItem[]; from?: 'overflow' } | null>(null);
 
 	function contentItems(): MenuItem[] {
 		return listPanelTypes().map((t) => ({
@@ -36,16 +60,62 @@
 		menu = { x: r.left, y: r.bottom + 2, items: contentItems() };
 	}
 
-	function structuralItems(): MenuItem[] {
+	// --- the structural actions, in one place --------------------------------
+
+	interface HdrAction {
+		/** Stable id — the button's `data-testid`, and its key in the spill order. */
+		id: string;
+		icon: string;
+		/** The menu row's text. */
+		label: string;
+		/** The button's accessible name: a glyph says nothing on its own. */
+		name: string;
+		run: () => void;
+	}
+
+	/**
+	 * LOWEST PRIORITY FIRST — which is also the DOM order, so the header empties from the left and
+	 * whatever survives stays adjacent to the ⋯ it is spilling into.
+	 *
+	 * Maximize is kept longest on purpose: it is the small-screen mechanism (CLAUDE.md), so it is
+	 * the last action a narrowing panel should make a user open a menu for. Between the two splits,
+	 * a narrow panel is a tall one, so stacking (Split Down) outlives splitting beside it.
+	 */
+	function actions(): HdrAction[] {
 		return [
-			{ label: 'Split Right', icon: '▕', action: () => ws.split(node.id, 'row') },
-			{ label: 'Split Down', icon: '▁', action: () => ws.split(node.id, 'column') },
-			{ separator: true },
 			{
-				label: isMax ? 'Restore' : 'Maximize',
-				icon: '⤢',
-				action: () => ws.toggleMaximize(node.id)
+				id: 'panel-split-row',
+				icon: '▕',
+				label: 'Split Right',
+				name: 'Split panel right',
+				run: () => ws.split(node.id, 'row')
 			},
+			{
+				id: 'panel-split-column',
+				icon: '▁',
+				label: 'Split Down',
+				name: 'Split panel down',
+				run: () => ws.split(node.id, 'column')
+			},
+			{
+				id: 'panel-maximize',
+				icon: '⤢',
+				label: isMax ? 'Restore' : 'Maximize',
+				name: isMax ? 'Restore panel' : 'Maximize panel',
+				run: () => ws.toggleMaximize(node.id)
+			}
+		];
+	}
+
+	const asRow = (a: HdrAction): MenuItem => ({ label: a.label, icon: a.icon, action: a.run });
+
+	function structuralItems(): MenuItem[] {
+		const [right, down, max] = actions();
+		return [
+			asRow(right),
+			asRow(down),
+			{ separator: true },
+			asRow(max),
 			{ label: 'Change content', items: contentItems() },
 			{ separator: true },
 			{ label: 'Close Panel', icon: '✕', disabled: !canClose, action: () => ws.close(node.id) }
@@ -81,10 +151,129 @@
 
 	// A press in flight must not fire into an unmounted panel (a close, a tab switch, a split).
 	onDestroy(headerPress.cancel);
+
+	// --- progressive overflow (D-R6) -----------------------------------------
+
+	const TRIGGER = 'panel-overflow';
+	const CLOSE = 'panel-close';
+
+	let headerEl = $state<HTMLDivElement | null>(null);
+	let zoneEl = $state<HTMLDivElement | null>(null);
+	let spilled = $state<Set<string>>(new Set());
+
+	const isSpilled = (id: string): boolean => spilled.has(id);
+
+	function px(el: Element, prop: string): number {
+		return parseFloat(getComputedStyle(el).getPropertyValue(prop)) || 0;
+	}
+
+	/** The three actions' intrinsic widths and the trigger's, read with none of them hidden.
+	 *
+	 * The hide class is stripped and restored inside one synchronous block, so nothing is painted
+	 * mid-measurement and Svelte's own class bookkeeping stays correct (it re-applies from
+	 * `spilled` on the next update either way). Only runs when the root font size moved — which is
+	 * what the coarse `--hit` floor does to every one of these boxes at once. */
+	function measureWidths(): number[] {
+		const host = zoneEl;
+		if (!host) return [];
+		const hidden = [...host.querySelectorAll<HTMLElement>('.spilled')];
+		for (const el of hidden) el.classList.remove('spilled');
+		const widths = [...actions().map((a) => a.id), TRIGGER].map(
+			(id) =>
+				host.querySelector<HTMLElement>(`[data-testid="${id}"]`)?.getBoundingClientRect().width ?? 0
+		);
+		for (const el of hidden) el.classList.add('spilled');
+		return widths;
+	}
+
+	const widthCache = createWidthCache(measureWidths);
+
+	function replan(): void {
+		const bar = headerEl;
+		const host = zoneEl;
+		if (!bar || !host) return;
+		const content = bar.querySelector<HTMLElement>('.content-btn');
+		const close = host.querySelector<HTMLElement>(`[data-testid="${CLOSE}"]`);
+		if (!content || !close) return;
+		const widths = widthCache.widths(px(document.documentElement, 'font-size'));
+		if (widths.length === 0) return;
+		const ids = actions().map((a) => a.id);
+		const items: OverflowItem[] = ids.map((id, i) => ({ id, width: widths[i] }));
+
+		const gap = px(host, 'gap');
+		// MEASURED each replan, off the boxes that do not move when an action spills: the header's
+		// own inner width, less the content dropdown and the two gaps around the flexible spacer.
+		// Never the action zone's OWN width — that is exactly what shrinks the moment an item
+		// leaves, and reading it is the oscillation bug `overflowFit.ts` opens with.
+		const zone =
+			bar.clientWidth -
+			px(bar, 'padding-left') -
+			px(bar, 'padding-right') -
+			content.getBoundingClientRect().width -
+			px(bar, 'gap') * 2;
+		// …and the ✕ is charged off the top with the gap beside it, rather than given a slot in the
+		// plan. That IS the always-visible guarantee: an action can only ever spill into space the
+		// close button has already been paid out of.
+		const budget = zone - close.getBoundingClientRect().width - gap;
+
+		const next = planOverflow(items, ids, {
+			gap,
+			budget,
+			trigger: widths[widths.length - 1],
+			residentTrigger: false
+		});
+		// Write only on a real change: the observer re-fires on the layout this write causes, and an
+		// unconditional assignment would keep the effect alive forever though the plan has converged.
+		if (next.size !== spilled.size || [...next].some((id) => !spilled.has(id))) spilled = next;
+	}
+
+	$effect(() => {
+		const bar = headerEl;
+		if (!bar || !zoneEl) return;
+		const ro = new ResizeObserver(replan);
+		ro.observe(bar);
+		// …and the content dropdown, whose width is a term in the budget and moves on its own when
+		// the panel changes type ("Node Editor" is not "Console").
+		const content = bar.querySelector<HTMLElement>('.content-btn');
+		if (content) ro.observe(content);
+		// `untrack`: replan READS `spilled` to decide whether the plan changed, and writing it from
+		// inside a tracked call would make this effect its own dependency.
+		untrack(replan);
+		// The first measurement can land before the webfont does, and the dropdown is a text button
+		// — a different number of pixels in the fallback face, which no resize reports.
+		let live = true;
+		void document.fonts?.ready.then(() => {
+			if (!live) return;
+			widthCache.invalidate();
+			replan();
+		});
+		return () => {
+			live = false;
+			ro.disconnect();
+		};
+	});
+
+	/** The bar's own actions, but only the ones that no longer fit — same commands, second
+	 *  representation, one record (D-R2). */
+	const spilledItems = (): MenuItem[] =>
+		actions()
+			.filter((a) => isSpilled(a.id))
+			.map(asRow);
+
+	function openOverflow(e: MouseEvent): void {
+		const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
+		menu = {
+			x: Math.max(6, r.right - 180),
+			y: r.bottom + 4,
+			items: spilledItems(),
+			from: 'overflow'
+		};
+	}
 </script>
 
 <div
 	class="panel-header"
+	bind:this={headerEl}
 	draggable="true"
 	oncontextmenu={onHeaderContext}
 	onpointerdown={onHeaderPointerDown}
@@ -111,23 +300,41 @@
 		<span class="caret">▾</span>
 	</Button>
 	<div class="spacer"></div>
-	<IconButton
-		variant="ghost"
-		density="chrome"
-		class="hdr-btn"
-		title={isMax ? 'Restore' : 'Maximize'}
-		label={isMax ? 'Restore panel' : 'Maximize panel'}
-		onclick={() => ws.toggleMaximize(node.id)}>⤢</IconButton
-	>
-	<IconButton
-		variant="ghost"
-		density="chrome"
-		class="hdr-btn"
-		title="Close panel"
-		label="Close panel"
-		disabled={!canClose}
-		onclick={() => ws.close(node.id)}>✕</IconButton
-	>
+	<div class="hdr-actions" bind:this={zoneEl}>
+		{#each actions() as a (a.id)}
+			<IconButton
+				variant="ghost"
+				density="chrome"
+				class={`hdr-btn${isSpilled(a.id) ? ' spilled' : ''}`}
+				data-testid={a.id}
+				title={a.label}
+				label={a.name}
+				onclick={a.run}>{a.icon}</IconButton
+			>
+		{/each}
+		<!-- Not resident: it goes when there is nothing behind it. It stays in the DOM either way so
+		     its width can be measured, which is the one thing the plan needs from it. -->
+		<IconButton
+			variant="ghost"
+			density="chrome"
+			class={`hdr-btn${spilled.size ? '' : ' spilled'}`}
+			data-testid={TRIGGER}
+			aria-expanded={menu?.from === 'overflow'}
+			title="More panel actions"
+			label="More panel actions"
+			onclick={openOverflow}>⋯</IconButton
+		>
+		<IconButton
+			variant="ghost"
+			density="chrome"
+			class="hdr-btn"
+			data-testid={CLOSE}
+			title="Close panel"
+			label="Close panel"
+			disabled={!canClose}
+			onclick={() => ws.close(node.id)}>✕</IconButton
+		>
+	</div>
 </div>
 
 {#if menu}
@@ -159,11 +366,16 @@
 	   The `button` tag qualifier is load-bearing: without it this ties with the primitive's own
 	   `.ui-btn.s-md` padding, and the two rules live in separate built CSS chunks — a tie there
 	   is settled by the emitted <link> order, not by the source.
-	   (Button has no density axis: this pin is padding + gap geometry, not a hit floor.) */
+	   (Button has no density axis: this pin is padding + gap geometry, not a hit floor.)
+	   `min-width: 0` is the overflow's other half: the dropdown is the header's SHRINK ABSORBER, so
+	   a long panel-type name gives way to an ellipsis instead of pushing the ✕ out of the panel —
+	   the same trade the app header's brand cluster makes, and the reason the ✕ can be promised at
+	   every width rather than at every width anyone happened to test. */
 	.panel-header :global(button.content-btn) {
 		height: 20px;
 		padding: 0 var(--space-3);
 		gap: var(--space-2);
+		min-width: 0;
 	}
 	/* The icon buttons state only their box — `density="chrome"` owns the coarse-pointer floor. */
 	.panel-header :global(.hdr-btn) {
@@ -177,15 +389,33 @@
 	   (a hierarchy, not a disabled state); --disabled-opacity would read as "this header is inert". */
 	.ic {
 		opacity: 0.85;
+		flex: 0 0 auto;
 	}
 	.title {
 		font-weight: 500;
+		overflow: hidden;
+		text-overflow: ellipsis;
 	}
 	.caret {
 		opacity: 0.5;
 		font-size: var(--fs-micro);
+		flex: 0 0 auto;
 	}
 	.spacer {
 		flex: 1;
+	}
+	/* The overflow-able actions and the trigger they spill into, in one rigid box the budget above
+	   is measured AGAINST rather than FROM. */
+	.hdr-actions {
+		display: flex;
+		align-items: center;
+		gap: var(--space-1);
+		flex: 0 0 auto;
+	}
+	/* A spilled action is a row in the ⋯ menu instead; it stays in the DOM so its intrinsic width
+	   can be re-read when the responsive root size moves it. `:global`, because the class rides a
+	   primitive's `class` prop onto its inner <button>. */
+	.hdr-actions :global(.spilled) {
+		display: none;
 	}
 </style>

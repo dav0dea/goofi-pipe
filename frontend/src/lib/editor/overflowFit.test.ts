@@ -91,6 +91,58 @@ describe('planOverflow', () => {
 	});
 });
 
+/* The second consumer's one real difference (the panel header). Its `⋯` is NOT resident chrome:
+   the menu holds the spilled items and nothing else, so at a width where everything fits there is
+   no menu to open and no trigger drawn. `residentTrigger: false` says so, and the plan then charges
+   the trigger exactly where it is rendered.
+   That reintroduces trap 2 — a trigger that appears and pushes an item out — as a real case rather
+   than a designed-away one, so it is the property below that has to hold instead: the answer stays
+   MONOTONE in the budget, because the plan returns the first prefix of the spill order that fits
+   and "fits" only ever gets easier as the budget grows. */
+describe('a non-resident trigger', () => {
+	/** What a bar with no trigger measures a visible set at: n boxes, n − 1 gaps. */
+	function bare(ids: string[]): number {
+		const w = ids.reduce((a, id) => a + ITEMS.find((i) => i.id === id)!.width, 0);
+		return w + OPTS.gap * (ids.length - 1);
+	}
+
+	it('does not charge a trigger that is not on screen', () => {
+		expect(
+			planOverflow(ITEMS, SPILL, { ...OPTS, budget: bare(ALL), residentTrigger: false })
+		).toEqual(new Set());
+		// …and the resident default still charges it at that very width, unchanged.
+		expect(planOverflow(ITEMS, SPILL, { ...OPTS, budget: bare(ALL) })).not.toEqual(new Set());
+	});
+
+	it('charges the trigger from the moment the first item spills', () => {
+		// One pixel short of the bare fit. The caret leaves — and the `⋯` it leaves for is now on
+		// screen and costs more (44) than the caret freed (34 + a gap), so a second item goes with
+		// it. Two at once is the honest answer, not an oscillation: it is what one evaluation of the
+		// plan returns, and re-running it returns the same.
+		const spilled = planOverflow(ITEMS, SPILL, {
+			...OPTS,
+			budget: bare(ALL) - 1,
+			residentTrigger: false
+		});
+		expect(spilled).toEqual(new Set(['caret', 'load']));
+	});
+
+	it('spills everything when only the trigger fits', () => {
+		expect(
+			planOverflow(ITEMS, SPILL, { ...OPTS, budget: OPTS.trigger, residentTrigger: false })
+		).toEqual(new Set(ALL));
+	});
+
+	it('only ever grows the overflow as the budget shrinks, trigger appearing and all', () => {
+		let prev = new Set<string>();
+		for (let budget = used(ALL) + 20; budget >= 0; budget--) {
+			const now = planOverflow(ITEMS, SPILL, { ...OPTS, budget, residentTrigger: false });
+			for (const id of prev) expect(now.has(id), `budget ${budget} un-spilled ${id}`).toBe(true);
+			prev = now;
+		}
+	});
+});
+
 /* Trap 3: cached intrinsic widths go stale — the `html` base is a responsive clamp(), so the same
    button is a different number of pixels at a different root size. */
 describe('createWidthCache', () => {

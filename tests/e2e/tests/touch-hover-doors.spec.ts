@@ -37,9 +37,14 @@ async function centreOf(page: Page, selector: string): Promise<Pt> {
 	return { x: Math.round(box.x + box.width / 2), y: Math.round(box.y + box.height / 2) };
 }
 
-/** The panel header's maximize button: always present, always on screen, and it ACTS on tap —
- * while `maximizedPanelId` is provably not part of `WorkspaceState`, so nothing here persists. */
-const MAX_BTN = '[data-testid="panel-header"] .hdr-btn';
+/** The panel header's maximize button: on screen at this geometry, and it ACTS on tap — while
+ * `maximizedPanelId` is provably not part of `WorkspaceState`, so nothing here persists.
+ *
+ * Named by its own test id, not as "the first `.hdr-btn`": the header's right end is a progressive
+ * overflow now, so which control is first there is a function of the panel's width. Reaching for
+ * an ordinal picked up Split Right instead, which both asked the wrong tooltip and — one test
+ * later — really split the panel and left the arrangement behind. */
+const MAX_BTN = '[data-testid="panel-maximize"]';
 
 test('a long press reveals a title, and does not fire the control it asked about', async ({
 	page
