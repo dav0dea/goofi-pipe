@@ -9,7 +9,6 @@ function unavailable(reason: string): NodeTypeInfo {
 		category: 'unavailable',
 		doc: `This node could not be loaded: ${reason}`,
 		available: false,
-		dynamic: true,
 		missing_deps: [reason],
 		input_slots: {},
 		output_slots: {},

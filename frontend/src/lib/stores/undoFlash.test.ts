@@ -18,7 +18,6 @@ function catalog(): NodeTypeInfo[] {
 			category: 'inputs',
 			doc: '',
 			available: true,
-			dynamic: false,
 			missing_deps: [],
 			input_slots: {},
 			output_slots: { out: 'ARRAY' },

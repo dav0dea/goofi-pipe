@@ -11,7 +11,6 @@ function node(type: string, category: string, doc = ''): NodeTypeInfo {
 		output_slots: {},
 		params: {},
 		available: true,
-		dynamic: false,
 		missing_deps: []
 	};
 }

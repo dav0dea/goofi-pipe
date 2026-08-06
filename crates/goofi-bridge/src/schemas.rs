@@ -162,7 +162,6 @@ pub fn node_type_info(m: &NodeManifest) -> Value {
         "category": m.category,
         "doc": m.doc,
         "available": true,
-        "dynamic": false,
         "missing_deps": [],
         "input_slots": input_slots(m),
         "input_multi": input_multi(m),
@@ -195,7 +194,6 @@ pub fn catalog_types(g: &Graph) -> Value {
                 "category": "unavailable",
                 "doc": format!("This node could not be loaded: {reason}"),
                 "available": false,
-                "dynamic": true,
                 "missing_deps": [reason],
                 "input_slots": {},
                 "input_multi": [],
@@ -471,6 +469,22 @@ mod tests {
         assert_eq!(common["max_frequency"]["type"], json!("float"));
         assert_eq!(common["autotrigger"]["type"], json!("bool"));
         assert_eq!(common["frequency_mode"]["type"], json!("string"));
+    }
+
+    #[test]
+    fn a_type_descriptor_carries_no_unread_dynamic_flag() {
+        // `dynamic` was written by both catalog arms and read by nobody, and the two arms
+        // disagreed about its meaning (hardcoded false for the runtime-registered Python
+        // types, true for the ones that failed to load). Availability is the only
+        // palette-visible distinction; re-add a flag together with the consumer that reads it.
+        assert!(node_type_info(&T_MANIFEST).get("dynamic").is_none());
+
+        let mut g = Graph::new();
+        g.register_unavailable("PsdScipy".into(), "scipy".into());
+        let cat = catalog_types(&g);
+        for ty in cat.as_array().unwrap() {
+            assert!(ty.get("dynamic").is_none(), "{} carries a dynamic flag", ty["type"]);
+        }
     }
 
     #[test]

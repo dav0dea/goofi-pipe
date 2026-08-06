@@ -36,9 +36,6 @@ export interface NodeTypeInfo {
 	/** Unconditional top-level deps resolvable on this machine (registry probe).
 	 * Unavailable types render greyed/disabled in the add menu. */
 	available: boolean;
-	/** Config hooks reference runtime state (device lists) — the palette shows
-	 * the static declaration; options refresh from the live node. Informational. */
-	dynamic: boolean;
 	missing_deps: string[];
 	input_slots: Record<string, string>;
 	/** Names of the variadic (multi) input slots — static type shape the UI reads to
@@ -160,7 +157,6 @@ export const BOUNDARY_TYPES: NodeTypeInfo[] = (['In', 'Out'] as const).flatMap((
 			params: {},
 			// Virtual types have no implementation module — always addable.
 			available: true,
-			dynamic: false,
 			missing_deps: []
 		};
 	})

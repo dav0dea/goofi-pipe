@@ -12,7 +12,6 @@ function catalog(): NodeTypeInfo {
 		category: 'inputs',
 		doc: 'A sine generator',
 		available: true,
-		dynamic: false,
 		missing_deps: [],
 		input_slots: { in: 'ARRAY' },
 		input_multi: ['in'],

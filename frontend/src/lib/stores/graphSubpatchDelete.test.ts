@@ -16,7 +16,6 @@ function catalog(): NodeTypeInfo[] {
 			category: 'signal',
 			doc: '',
 			available: true,
-			dynamic: false,
 			missing_deps: [],
 			input_slots: { in: 'ARRAY' },
 			output_slots: { out: 'ARRAY' },
