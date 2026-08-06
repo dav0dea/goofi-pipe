@@ -46,6 +46,31 @@ impl SyncMsg {
     }
 }
 
+/// True when the leading LEB128 var-uint entry count of a v1 state vector is one the remaining
+/// bytes could actually back (every entry costs at least two bytes: a var-uint client id and a
+/// var-uint clock).
+///
+/// This must be checked BEFORE handing the bytes to `yrs`: `StateVector::decode_v1` allocates a
+/// `HashMap` from the DECLARED count before reading a single entry, so six bytes off the wire
+/// declaring ~4e9 entries abort the whole process through `handle_alloc_error` — which is neither
+/// an `Err` nor a catchable panic, and takes the engine, the tick thread and the unsaved patch
+/// with it. An unterminated or over-wide var-uint is rejected for the same reason.
+fn declared_len_is_backed(bytes: &[u8]) -> bool {
+    let mut declared: u64 = 0;
+    let mut shift = 0u32;
+    for (i, byte) in bytes.iter().enumerate() {
+        declared |= u64::from(byte & 0x7F) << shift;
+        if byte & 0x80 == 0 {
+            return declared <= (bytes.len() - i - 1) as u64 / 2;
+        }
+        shift += 7;
+        if shift >= 64 {
+            return false; // wider than the u64 it is being read into
+        }
+    }
+    false // ran out of bytes mid-var-uint (or empty input)
+}
+
 /// Insert a scalar json value (number/bool/string; anything else → Null) into a yrs map.
 fn insert_scalar(map: &MapRef, txn: &mut yrs::TransactionMut, key: &str, v: &serde_json::Value) {
     match v {
@@ -267,9 +292,14 @@ impl GraphDoc {
     }
 
     /// The minimal v1 update carrying everything this doc has that the peer (described by
-    /// its `state_vector`) lacks. `Err` if the state-vector bytes are malformed.
+    /// its `state_vector`) lacks. Malformed bytes degrade to the empty state vector — i.e. the
+    /// peer is sent everything — which is always correct, just larger.
     pub fn diff(&self, peer_state_vector: &[u8]) -> Vec<u8> {
-        let sv = yrs::StateVector::decode_v1(peer_state_vector).unwrap_or_default();
+        let sv = if declared_len_is_backed(peer_state_vector) {
+            yrs::StateVector::decode_v1(peer_state_vector).unwrap_or_default()
+        } else {
+            yrs::StateVector::default()
+        };
         self.doc.transact().encode_state_as_update_v1(&sv)
     }
 
@@ -442,6 +472,26 @@ mod tests {
         let diff2 = server.diff(&client.state_vector());
         client.apply_update(&diff2).unwrap();
         assert_eq!(nstr(&client, "1", "name").as_deref(), Some("osc2"));
+    }
+
+    #[test]
+    fn a_hostile_state_vector_degrades_instead_of_aborting() {
+        use serde_json::json;
+        let mut server = GraphDoc::new();
+        server.reconcile_root(&json!({ "nodes": {
+            "1": { "type": "Oscillator", "pos": {"x": 0.0, "y": 0.0}, "params": {} } },
+            "links": [], "instances": {} }));
+
+        // Six bytes off the wire declaring ~4e9 entries. yrs pre-allocates the map from the
+        // DECLARED count before reading a single entry, so an unvalidated decode aborts the
+        // WHOLE PROCESS via `handle_alloc_error` — not a catchable panic, not an `Err`.
+        let full = server.diff(&[]);
+        assert_eq!(server.diff(&[0xFF, 0xFF, 0xFF, 0xFF, 0x0F]), full, "count exceeds the bytes backing it");
+        assert_eq!(server.diff(&[0xFF; 12]), full, "var-uint that never terminates");
+        assert_eq!(server.diff(&[0x04, 0x01, 0x00]), full, "4 entries in 2 bytes");
+
+        // An honest state vector still computes a real (here: empty) diff.
+        assert!(server.diff(&server.state_vector()).len() < full.len(), "an up-to-date peer is owed nothing");
     }
 
     #[test]
