@@ -23,24 +23,33 @@ pub fn native_node_count() -> usize {
 
 #[cfg(test)]
 mod tests {
-    /// Catalog validation: every `default_expr` a node declares must target a param that actually
-    /// exists on that node — either one it declares, or a `common.*` scheduling param synthesized by
-    /// `with_common`. Otherwise the fresh-add seeding would silently no-op (`set_expression` rejects
-    /// an unknown param). Cheap, evaluator-free, and runs over the whole linked catalog.
+    /// Catalog validation: every `default_expr` a node declares must READ ONLY GLOBALS THAT EXIST
+    /// in a fresh patch — i.e. `goofi_core::globals::SYSTEM_GLOBALS`. Seeding runs on a fresh add
+    /// (`seed_default_expressions`), where the only globals in the store are the system ones, so a
+    /// typo'd `globals.defualt_ufreq` compiles, binds, and then errors at eval on every instance of
+    /// that node type — the param falls back to its literal and the node wears an error badge.
+    ///
+    /// The "targets a declared param" check this test used to make cannot fail and is gone: a
+    /// `default_expr` lives ON the decl it targets, and `with_common` keeps whatever `common.*`
+    /// keys a node declared, so the target always exists by construction.
+    ///
+    /// Cheap, evaluator-free, and runs over the whole linked catalog.
     #[test]
-    fn every_default_expr_targets_a_declared_param() {
+    fn every_default_expr_reads_only_system_globals() {
         for m in goofi_node::catalog() {
             for decl in m.params {
                 let Some(expr) = decl.default_expr else { continue };
                 assert!(!expr.trim().is_empty(), "{}: {}/{} has an empty default_expr", m.type_name, decl.group, decl.name);
-                let targets_declared = m.params.iter().any(|d| d.group == decl.group && d.name == decl.name);
-                assert!(
-                    targets_declared || decl.group == "common",
-                    "{}: default_expr on undeclared param {}/{}",
-                    m.type_name,
-                    decl.group,
-                    decl.name
-                );
+                for name in goofi_node::global_ref_names(expr) {
+                    assert!(
+                        goofi_core::globals::SYSTEM_GLOBALS.iter().any(|g| g.name == name),
+                        "{}: default_expr on {}/{} reads `globals.{}`, which no fresh patch has",
+                        m.type_name,
+                        decl.group,
+                        decl.name,
+                        name
+                    );
+                }
             }
         }
     }
