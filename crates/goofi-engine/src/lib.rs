@@ -240,8 +240,8 @@ struct ExprBinding {
     triggers_process: bool,
     /// Compiled handle owned by the evaluator (`None` if compile failed / no evaluator).
     id: Option<goofi_node::BindingId>,
-    /// Statically-extracted `nd()` references (empty for a ref-less/time expression).
-    refs: Vec<goofi_node::ExprRef>,
+    /// Statically-extracted `nd()` node names (empty for a ref-less/time expression).
+    refs: Vec<String>,
     /// Statically-extracted `globals.<name>` reads, so a change to one of those globals forces a
     /// re-eval of this binding (and only these) on the next tick — see [`Graph::apply_global_change`].
     global_refs: Vec<String>,
@@ -2291,7 +2291,7 @@ impl Graph {
                     continue;
                 }
                 for r in &b.refs {
-                    if let Some(prod) = self.uid_by_name(&r.node) {
+                    if let Some(prod) = self.uid_by_name(r) {
                         if prod != *host {
                             edges.push((prod, *host));
                         }
@@ -2428,7 +2428,7 @@ impl Graph {
                 // level this tick, else prev-tick (`last_outputs`) = 1-tick feedback.
                 let mut refs_map: HashMap<(String, Option<String>), Option<Data>> = HashMap::new();
                 let mut seen: HashMap<(String, Option<String>), Option<u64>> = HashMap::new();
-                let mut names: Vec<&str> = b.refs.iter().map(|r| r.node.as_str()).collect();
+                let mut names: Vec<&str> = b.refs.iter().map(|r| r.as_str()).collect();
                 names.sort_unstable();
                 names.dedup();
                 for nm in names {
@@ -5105,7 +5105,7 @@ mod tests {
             let (expr, refs) = if let Some(name) =
                 source.strip_prefix("nd('").and_then(|s| s.strip_suffix("')"))
             {
-                (MockExpr::Ref(name.to_string()), vec![goofi_node::ExprRef { node: name.to_string(), slot: None }])
+                (MockExpr::Ref(name.to_string()), vec![name.to_string()])
             } else if let Some(name) = source.strip_prefix("globals.") {
                 (MockExpr::Global(name.to_string()), vec![])
             } else {

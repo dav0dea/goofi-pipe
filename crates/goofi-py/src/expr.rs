@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 
 use goofi_core::{Data, Param, Value};
-use goofi_node::{BindingId, Compiled, EvalCtx, ExprError, ExprEvaluator, ExprRef};
+use goofi_node::{BindingId, Compiled, EvalCtx, ExprError, ExprEvaluator};
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict, PyModule, PyString};
 
@@ -129,18 +129,6 @@ impl PyExprEvaluator {
     }
 }
 
-/// Extract the distinct node names referenced by `nd('name')` / `nd("name")`, as
-/// `ExprRef`s with an unresolved `slot` (the engine resolves ALL of each referenced
-/// node's output slots — only the node NAME matters here; `.slot` vs `.method` is
-/// resolved at eval). Scanning lives in [`goofi_node::nd_ref_names`], the one source of
-/// truth shared with the rename rewriter, so extraction and rewriting can't disagree.
-fn extract_refs(source: &str) -> Vec<ExprRef> {
-    goofi_node::nd_ref_names(source)
-        .into_iter()
-        .map(|node| ExprRef { node, slot: None })
-        .collect()
-}
-
 /// Convert a resolved `Data` to a Python object for the eval namespace (array → numpy,
 /// string → str; tables are unsupported in v1 → None).
 fn data_to_py(py: Python<'_>, d: &Data) -> PyResult<Py<PyAny>> {
@@ -207,7 +195,10 @@ fn coerce(result: &Bound<'_, PyAny>, target: &Param) -> Result<Param, String> {
 
 impl ExprEvaluator for PyExprEvaluator {
     fn compile(&self, source: &str) -> Result<Compiled, ExprError> {
-        let refs = extract_refs(source);
+        // Only the node NAME matters here — the engine exposes every output slot of each
+        // referenced node at eval. Scanning lives in `goofi_node::nd_ref_names`, the one source
+        // of truth shared with the rename rewriter, so extraction and rewriting can't disagree.
+        let refs = goofi_node::nd_ref_names(source);
         // The `globals.<name>` reads, so the engine re-evaluates this binding exactly when one of
         // those globals changes. Same scan as the eval-namespace injection, so they can't disagree.
         let global_refs = goofi_node::global_ref_names(source);
@@ -274,15 +265,15 @@ mod tests {
     use crate::testlock::interp;
 
     #[test]
-    fn extract_refs_maps_scanned_names_to_slotless_refs() {
+    fn compile_reports_the_referenced_node_names() {
         let _interp = interp();
-        // The goofi-py-specific contract: extract_refs delegates the scan to
-        // goofi_node::nd_ref_names (whose word-boundary/quote behavior is tested there)
-        // and maps each name to an ExprRef with an unresolved slot.
-        let refs = extract_refs("nd('lfo') * 2 + nd(\"psd\").out.mean() + nd('lfo')[0]");
-        let names: Vec<&str> = refs.iter().map(|r| r.node.as_str()).collect();
-        assert_eq!(names, vec!["lfo", "psd"], "distinct node names, deduped");
-        assert!(refs.iter().all(|r| r.slot.is_none()), "slot resolution is engine-side");
+        // The goofi-py-specific contract: `compile` delegates the scan to
+        // goofi_node::nd_ref_names (whose word-boundary/quote behavior is tested there) and
+        // reports the distinct node NAMES — which slot each `nd()` lands on is engine-side.
+        let ev = PyExprEvaluator::new().expect("interpreter");
+        let c = ev.compile("nd('lfo') * 2 + nd(\"psd\").out.mean() + nd('lfo')[0]").expect("compile");
+        assert_eq!(c.refs, vec!["lfo".to_string(), "psd".to_string()], "distinct names, deduped");
+        ev.release(c.id);
     }
 
     // The tests below drive the real embedded interpreter (numpy required), matching

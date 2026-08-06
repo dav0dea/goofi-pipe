@@ -459,21 +459,15 @@ string_error!(
     ExprError
 );
 
-/// A reference an expression makes to another node's output: `nd('node').slot`, or a
-/// bare `nd('node')` (`slot` = `None` → the node's single output slot; a node with more
-/// than one output slot makes a bare `nd()` an error).
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ExprRef {
-    pub node: String,
-    pub slot: Option<String>,
-}
-
 /// The result of compiling an expression: the evaluator's opaque handle plus the
 /// statically-extracted references, so the engine knows the dependency set (for
 /// scheduling + dirty-tracking) without executing the snippet.
 pub struct Compiled {
     pub id: BindingId,
-    pub refs: Vec<ExprRef>,
+    /// The distinct node NAMES the snippet references as `nd('name')`. Which output slot
+    /// each `nd()` resolves to is decided engine-side at eval (it exposes every slot of the
+    /// referenced node, keyed in [`EvalCtx::refs`]), so a compiled ref carries only the name.
+    pub refs: Vec<String>,
     /// The distinct `globals.<name>` names the snippet reads, so the engine re-evaluates this
     /// binding exactly when one of those globals changes (an unrelated global edit costs nothing).
     pub global_refs: Vec<String>,
