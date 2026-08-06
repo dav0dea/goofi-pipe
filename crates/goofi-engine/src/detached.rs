@@ -5,7 +5,7 @@
 //! `docs/superpowers/specs/2026-07-19-isolated-node-tier-design.md`.
 
 use std::collections::HashMap;
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{Arc, Condvar, Mutex, OnceLock};
 
 use goofi_core::Data;
 use goofi_node::{Node, NodeCtx, NodeManifest, ParamGroups};
@@ -85,13 +85,31 @@ pub(crate) struct Done {
 /// `Done`s; it never runs the node's `process()` inline, so a blocking backend (a
 /// subprocess iceoryx2 roundtrip, a device read) can't stall the tick or the graph lock.
 pub(crate) struct DetachedHandle {
-    inbox: Arc<Mailbox<Job>>,
-    outbox: Arc<Mailbox<Done>>,
+    ch: Arc<Channels>,
+}
+
+/// Everything a handle and its worker share — the WHOLE seam between the tick thread and the
+/// worker, stated once so neither side can grow a channel the other does not know about.
+struct Channels {
+    inbox: Mailbox<Job>,
+    outbox: Mailbox<Done>,
     /// How far the worker has got through its own bootstrap. Unlike an inline node — seeded
     /// synchronously before `insert_node_at` returns — a detached node's `setup()` runs off-tick
     /// and can take a while (a Python child is spawn + import + setup, measured in hundreds of
     /// milliseconds), so the editor shows a spinner until this reaches `Ready`.
-    stage: Arc<std::sync::atomic::AtomicU8>,
+    stage: std::sync::atomic::AtomicU8,
+    /// A failed bootstrap, latched write-once by the worker before it reaches `STAGE_READY`.
+    ///
+    /// It cannot ride `outbox`: that is a latest-wins single slot, so the first successful job's
+    /// `Done` overwrites an un-drained bootstrap failure and the node reports healthy though its
+    /// `setup` failed — silently, when the failure was a param `seed_node` folded in rather than
+    /// a raise the following `process()` repeats.
+    ///
+    /// Sticky for THIS worker's lifetime, because `setup` runs exactly once per worker and never
+    /// re-runs: the fact stays true for as long as the instance it describes exists. That cannot
+    /// strand a healthy node, because the only way to get a new instance is
+    /// [`crate::Graph::restart_node`], which installs a whole new handle whose latch starts empty.
+    boot_error: OnceLock<String>,
 }
 
 /// `DetachedHandle::stage` values. Ordered: a worker only moves forward.
@@ -107,30 +125,41 @@ impl DetachedHandle {
         params0: ParamGroups,
         ctx0: NodeCtx,
     ) -> DetachedHandle {
-        let inbox = Arc::new(Mailbox::new());
-        let outbox = Arc::new(Mailbox::new());
-        let stage = Arc::new(std::sync::atomic::AtomicU8::new(STAGE_CREATING));
-        let (ib, ob, st) = (inbox.clone(), outbox.clone(), stage.clone());
+        let ch = Arc::new(Channels {
+            inbox: Mailbox::new(),
+            outbox: Mailbox::new(),
+            stage: std::sync::atomic::AtomicU8::new(STAGE_CREATING),
+            boot_error: OnceLock::new(),
+        });
+        let theirs = ch.clone();
         std::thread::Builder::new()
             .name(format!("goofi-detached-{}", manifest.type_name))
-            .spawn(move || worker(node, manifest, params0, ctx0, ib, ob, st))
+            .spawn(move || worker(node, manifest, params0, ctx0, theirs))
             .expect("spawn detached worker");
-        DetachedHandle { inbox, outbox, stage }
+        DetachedHandle { ch }
     }
 
     /// How far the worker's bootstrap has got (`STAGE_*`).
     pub(crate) fn stage(&self) -> u8 {
-        self.stage.load(std::sync::atomic::Ordering::Relaxed)
+        // Acquire, paired with the worker's Release store of `STAGE_READY`: a reader that sees
+        // READY also sees the `boot_error` latch, so a failed bootstrap can never be read as
+        // "ready, no error" in the window between the two writes.
+        self.ch.stage.load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    /// This worker's bootstrap failure, if its `setup` failed. See `Channels::boot_error`.
+    pub(crate) fn boot_error(&self) -> Option<&str> {
+        self.ch.boot_error.get().map(String::as_str)
     }
 
     /// Post fresh inputs (latest-wins — a still-pending job is overwritten).
     pub(crate) fn dispatch(&self, job: Job) {
-        self.inbox.post(job);
+        self.ch.inbox.post(job);
     }
 
     /// Non-blocking drain of a completed run.
     pub(crate) fn take_output(&self) -> Option<Done> {
-        self.outbox.take()
+        self.ch.outbox.take()
     }
 }
 
@@ -142,7 +171,7 @@ impl Drop for DetachedHandle {
         // teardown path — remove_node, clear, undo-of-add, load, restart — runs under the graph
         // mutex, so waiting here freezes the tick, every viewer and every other RPC. The worker
         // owns the boxed node and drops it on its own thread, which reaps any child process.
-        self.inbox.shutdown();
+        self.ch.inbox.shutdown();
     }
 }
 
@@ -154,24 +183,22 @@ fn worker(
     manifest: &'static NodeManifest,
     params0: ParamGroups,
     mut ctx: NodeCtx,
-    inbox: Arc<Mailbox<Job>>,
-    outbox: Arc<Mailbox<Done>>,
-    stage: Arc<std::sync::atomic::AtomicU8>,
+    ch: Arc<Channels>,
 ) {
     let mut index_counters: HashMap<&'static str, u64> = HashMap::new();
     let mut ufreq_meter = UfreqMeter::default();
     let mut outputs = manifest.output_buffer();
     let mut last_outputs: IndexMap<&'static str, Data> = IndexMap::new();
-    // Seed off-tick (its `setup` / first-tick spawn may block). A failure surfaces via an
-    // unsolicited Done so the node border reddens like an inline bootstrap error.
-    stage.store(STAGE_SETUP, std::sync::atomic::Ordering::Relaxed);
+    // Seed off-tick (its `setup` / first-tick spawn may block). A failure is LATCHED, not posted
+    // to `outbox` — the outbox is a per-tick latest-wins slot and would lose it (see `boot_error`).
+    ch.stage.store(STAGE_SETUP, std::sync::atomic::Ordering::Relaxed);
     if let Some(e) = seed_node(&mut *node, &params0, &mut ctx) {
-        outbox.post(Done { outputs: IndexMap::new(), error: Some(e) });
+        ch.boot_error.set(e).expect("the bootstrap latch is written once, by this thread only");
     }
-    // Bootstrapped either way — a failed setup reports through the error channel, not by
-    // leaving the node spinning forever.
-    stage.store(STAGE_READY, std::sync::atomic::Ordering::Relaxed);
-    while let Some(job) = inbox.wait() {
+    // Bootstrapped either way — a failed setup reports through the latch, not by leaving the node
+    // spinning forever. Release, so a reader that sees READY sees the latch (see `stage()`).
+    ch.stage.store(STAGE_READY, std::sync::atomic::Ordering::Release);
+    while let Some(job) = ch.inbox.wait() {
         ctx.now = job.now;
         let err = execute_node(
             manifest,
@@ -187,7 +214,7 @@ fn worker(
         );
         let emitted: IndexMap<&'static str, Option<Data>> =
             outputs.iter().map(|(k, v)| (*k, v.clone())).collect();
-        outbox.post(Done { outputs: emitted, error: err });
+        ch.outbox.post(Done { outputs: emitted, error: err });
     }
 }
 

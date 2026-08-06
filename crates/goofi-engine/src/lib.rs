@@ -447,6 +447,10 @@ impl Graph {
             Execution::Detached(h) => match h.stage() {
                 detached::STAGE_CREATING => "creating",
                 detached::STAGE_SETUP => "setup",
+                // A bootstrap failure is latched on the handle, never in `entry.last_error`
+                // (see [`Graph::last_error`]), so the bootstrapped arm must consult it — else a
+                // worker whose `setup` failed draws as healthy.
+                _ if h.boot_error().is_some() => "error",
                 _ => "ready",
             },
         }
@@ -510,13 +514,23 @@ impl Graph {
     }
 
     /// The node's current error, derived fresh on read so recovery is always surfaced.
-    /// A process / bootstrap error (`last_error`) wins; otherwise the errored expression
-    /// binding with the smallest `ParamKey` — a deterministic pick, since `bindings` is a
-    /// `HashMap` whose iteration order is randomized. Deriving on read (rather than caching
-    /// into `last_error`) means a binding that recovers on a node that never runs again
-    /// still clears, and the two channels can't drift apart.
+    /// A detached worker's bootstrap failure wins, then a process error (`last_error`), then the
+    /// errored expression binding with the smallest `ParamKey` — a deterministic pick, since
+    /// `bindings` is a `HashMap` whose iteration order is randomized. Deriving on read (rather
+    /// than caching into `last_error`) means a binding that recovers on a node that never runs
+    /// again still clears, and the channels can't drift apart.
     pub fn last_error(&self, uid: Uid) -> Option<&str> {
         let e = self.nodes.get(&uid)?;
+        // A detached worker's bootstrap failure lives on its handle, not in `last_error`, because
+        // the per-tick `Done` channel is latest-wins and a successful job erases an un-drained one
+        // (see `detached::DetachedHandle::boot_error`). It outranks a process error deliberately:
+        // it is the ROOT CAUSE, and it is a one-shot fact — a process error recurs on every tick
+        // and can be observed again, a failed `setup` never can.
+        if let Execution::Detached(h) = &e.exec {
+            if let Some(err) = h.boot_error() {
+                return Some(err);
+            }
+        }
         if let Some(err) = e.last_error.as_deref() {
             return Some(err);
         }
@@ -2592,6 +2606,15 @@ impl Graph {
                         ran.push(uid);
                     }
                 }
+                // Feed the worker only once it has bootstrapped. A job built mid-`setup` is a
+                // snapshot of PRE-setup state — stale by the time the worker could run it — and
+                // it lands the instant `setup` returns, which is what used to race the bootstrap
+                // error out of the latest-wins outbox. Skipping it costs nothing: `last_run` and
+                // `trigger_pending` are left untouched, so the node runs on the first tick after
+                // READY rather than losing its turn.
+                if !matches!(&entry.exec, Execution::Detached(h) if h.stage() == detached::STAGE_READY) {
+                    continue;
+                }
                 let since_last = entry.last_run.map(|t| now.saturating_duration_since(t).as_secs_f64());
                 if entry.run_policy.should_run(since_last, wants_run(entry, &uid, &wired)) {
                     entry.last_run = Some(now);
@@ -2692,8 +2715,8 @@ impl Graph {
 ///
 /// An InProcess node is seeded synchronously (replay `on_param_changed`, then `setup`) and
 /// runs inline. A Subprocess node is detached onto an off-tick worker that seeds ITSELF (its
-/// setup / first-tick spawn may block) and surfaces a bootstrap error via its first `Done` —
-/// so its `last_error` starts `None` here.
+/// setup / first-tick spawn may block) and latches a bootstrap failure on its handle, where
+/// [`Graph::last_error`] reads it — so its `last_error` starts, and stays, `None` here.
 fn make_exec(
     manifest: &'static NodeManifest,
     mut node: Box<dyn goofi_node::Node>,
@@ -4009,9 +4032,11 @@ mod tests {
     };
 
     /// A detached node that blocks inside `setup()` — the shape of a Python child paying its
-    /// spawn + import cost, which is what the boot spinner is for.
+    /// spawn + import cost, which is what the boot spinner is for. `fail` makes the bootstrap
+    /// end in an error once released, which is the other half of what that window is for.
     struct SeedingNode {
         gate: std::sync::Arc<Gate>,
+        fail: bool,
     }
     impl Node for SeedingNode {
         fn setup(&mut self, _c: &mut NodeCtx, _p: &Params<'_>) -> NodeResult {
@@ -4022,9 +4047,18 @@ mod tests {
                 g = self.gate.cv.wait(g).unwrap();
             }
             g.permits -= 1;
+            if self.fail {
+                return Err("boot failed".into());
+            }
             Ok(())
         }
-        fn process(&mut self, _i: &Inputs<'_>, _o: &mut Outputs<'_>, _c: &mut NodeCtx, _p: &Params<'_>) -> NodeResult {
+        fn process(&mut self, _i: &Inputs<'_>, out: &mut Outputs<'_>, _c: &mut NodeCtx, _p: &Params<'_>) -> NodeResult {
+            // 1.0 marks a dispatched JOB, distinct from setup's 0.0, so a test can tell whether a
+            // job ran at all — and the frame proves its `Done` was drained by a tick.
+            self.gate.mtx.lock().unwrap().calls.push(1.0);
+            let d = Data::array_f32(vec![1], 7.0f32.to_le_bytes().to_vec(), Meta::empty())
+                .map_err(|e| e.to_string())?;
+            out.set("out", d);
             Ok(())
         }
     }
@@ -4039,11 +4073,23 @@ mod tests {
         factory: rt_stub_factory,
     };
 
-    fn register_gate_seeding(g: &mut Graph, gate: std::sync::Arc<Gate>) {
+    fn register_gate_seeding(g: &mut Graph, gate: std::sync::Arc<Gate>, fail: bool) {
         g.register_dyn_type(
             &SEEDING_MANIFEST,
-            Box::new(move |_p| Box::new(SeedingNode { gate: gate.clone() })),
+            Box::new(move |_p| Box::new(SeedingNode { gate: gate.clone(), fail })),
         );
+    }
+
+    /// Block until a detached node's worker has finished bootstrapping. Job dispatch is gated on
+    /// `STAGE_READY`, so a test that ticks before its worker is up would silently skip its job.
+    fn wait_bootstrapped(g: &Graph, uid: Uid) {
+        for _ in 0..1000 {
+            if !matches!(g.node_stage(uid), "creating" | "setup") {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        panic!("worker never bootstrapped (stage {})", g.node_stage(uid));
     }
 
     fn register_gate(
@@ -4066,6 +4112,7 @@ mod tests {
         let src = g.add_node("_TestConst", None).unwrap();
         let det = g.add_node("GateSubproc", None).unwrap();
         g.add_link(src, "out", det, "data").unwrap();
+        wait_bootstrapped(&g, det); // dispatch is gated on READY
 
         let t0 = Instant::now();
         g.tick_at(t0); // dispatches a job; the worker will block on the permit
@@ -4096,6 +4143,7 @@ mod tests {
         g.update_param(src, "constant", "value", Param::float(1.0, -1.0e9, 1.0e9)).unwrap();
         let det = g.add_node("GateSubproc", None).unwrap();
         g.add_link(src, "out", det, "data").unwrap();
+        wait_bootstrapped(&g, det); // dispatch is gated on READY
 
         let t0 = Instant::now();
         g.tick_at(t0); // dispatch job(value=1); worker takes it and blocks
@@ -4148,6 +4196,7 @@ mod tests {
         let src = g.add_node("_TestConst", None).unwrap();
         let det = g.add_node("GateSubproc", None).unwrap();
         g.add_link(src, "out", det, "data").unwrap();
+        wait_bootstrapped(&g, det); // dispatch is gated on READY
         g.tick(); // dispatches a job; the worker blocks on the permit, inside process()
         gate.wait_calls(1);
 
@@ -4190,6 +4239,158 @@ mod tests {
             std::thread::sleep(Duration::from_millis(2));
         }
         assert_eq!(err.as_deref(), Some("gate failure"), "the detached process error surfaced");
+    }
+
+    #[test]
+    fn a_detached_bootstrap_error_survives_the_first_successful_job() {
+        // `outbox` is a latest-wins single slot, so a bootstrap failure posted THERE is erased by
+        // the first successful job's `Done` before any tick drains it — and the node then reports
+        // healthy though its `setup` failed (the silent case: a param `seed_node` folded in).
+        // Parking the worker inside `setup` makes the ordering exact rather than a race: the
+        // tick's job is queued FIRST, then the release makes the worker fail and immediately run it.
+        let gate = Gate::new();
+        let mut g = Graph::new();
+        register_gate_seeding(&mut g, gate.clone(), true);
+        let det = g.add_node("GateSeeding", None).unwrap();
+        gate.wait_calls(1); // parked inside setup()
+
+        let t0 = Instant::now();
+        g.tick_at(t0); // queues a job behind the still-booting worker
+        gate.open(); // setup returns Err; the queued job then runs and SUCCEEDS
+
+        let mut ran = false;
+        for i in 1..400 {
+            g.tick_at(t0 + Duration::from_millis(10 * i));
+            if g.latest_frame(det, "out").is_some() {
+                ran = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        assert!(ran, "the successful job's Done was drained by a tick");
+        assert_eq!(
+            g.last_error(det),
+            Some("boot failed"),
+            "the bootstrap failure outlived the successful job"
+        );
+        assert_eq!(g.node_stage(det), "error", "and the editor sees it as errored, not ready");
+    }
+
+    #[test]
+    fn no_job_is_dispatched_while_the_worker_is_still_in_setup() {
+        // A job built while `setup` is still running was snapshotted from PRE-setup state, so it is
+        // stale by the time the worker could run it — and racing it against the bootstrap is what
+        // lets a `Done` erase the failure. The gate makes that window observable.
+        let gate = Gate::new();
+        let mut g = Graph::new();
+        register_gate_seeding(&mut g, gate.clone(), false);
+        let det = g.add_node("GateSeeding", None).unwrap();
+        gate.wait_calls(1); // parked inside setup()
+        assert_eq!(g.node_stage(det), "setup", "still booting");
+
+        let t0 = Instant::now();
+        g.tick_at(t0);
+        g.tick_at(t0 + Duration::from_millis(10));
+
+        gate.open(); // setup completes — nothing may be queued behind it
+        wait_bootstrapped(&g, det);
+        std::thread::sleep(Duration::from_millis(100));
+        assert_eq!(gate.calls(), vec![0.0], "the bootstrap ran; no process() job followed it");
+
+        // ...and the node is not starved for it: the first tick after READY feeds the worker.
+        g.tick_at(t0 + Duration::from_millis(500));
+        gate.wait_calls(2);
+    }
+
+    #[test]
+    fn a_healthy_detached_node_never_reports_a_bootstrap_error() {
+        // The mirror-image of the latch's failure mode: making a failed `setup` visible must never
+        // make a working node look broken.
+        let gate = Gate::new();
+        gate.open();
+        let mut g = Graph::new();
+        register_gate_seeding(&mut g, gate.clone(), false);
+        let det = g.add_node("GateSeeding", None).unwrap();
+        wait_bootstrapped(&g, det);
+        assert_eq!(g.node_stage(det), "ready", "a clean bootstrap is ready, not errored");
+
+        let t0 = Instant::now();
+        for i in 0..400 {
+            g.tick_at(t0 + Duration::from_millis(10 * i));
+            if g.latest_frame(det, "out").is_some() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        assert!(g.latest_frame(det, "out").is_some(), "the worker ran a job");
+        assert_eq!(g.last_error(det), None, "a healthy worker reports no error");
+    }
+
+    /// A detached type whose FIRST instance fails `setup()` and whose later ones succeed — the
+    /// shape `restart_node` exists to rescue.
+    static BOOT_ONCE_MANIFEST: NodeManifest = NodeManifest {
+        type_name: "GateBootOnce",
+        category: "test",
+        doc: "detached node whose first instance fails setup()",
+        inputs: &[],
+        outputs: GATE_OUT,
+        params: NO_PARAMS,
+        isolation: Isolation::Subprocess,
+        factory: rt_stub_factory,
+    };
+    struct BootOnceNode {
+        fail: bool,
+    }
+    impl Node for BootOnceNode {
+        fn setup(&mut self, _c: &mut NodeCtx, _p: &Params<'_>) -> NodeResult {
+            if self.fail {
+                return Err("boot failed".into());
+            }
+            Ok(())
+        }
+        fn process(&mut self, _i: &Inputs<'_>, out: &mut Outputs<'_>, _c: &mut NodeCtx, _p: &Params<'_>) -> NodeResult {
+            let d = Data::array_f32(vec![1], 7.0f32.to_le_bytes().to_vec(), Meta::empty())
+                .map_err(|e| e.to_string())?;
+            out.set("out", d);
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn restarting_a_failed_detached_node_clears_its_bootstrap_error() {
+        // A bootstrap error that outlived the instance that earned it would leave a respawned,
+        // healthy node reporting a corpse's failure forever. It is sticky for the WORKER's
+        // lifetime only — `restart_node` installs a fresh handle, whose latch starts empty.
+        let builds = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let b = builds.clone();
+        let mut g = Graph::new();
+        g.register_dyn_type(
+            &BOOT_ONCE_MANIFEST,
+            Box::new(move |_p| {
+                let n = b.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Box::new(BootOnceNode { fail: n == 0 })
+            }),
+        );
+        let det = g.add_node("GateBootOnce", None).unwrap();
+        wait_bootstrapped(&g, det);
+        assert_eq!(g.last_error(det), Some("boot failed"), "the first instance failed to boot");
+
+        g.restart_node(det).unwrap();
+        wait_bootstrapped(&g, det);
+        assert_eq!(builds.load(std::sync::atomic::Ordering::SeqCst), 2, "a fresh instance was built");
+        assert_eq!(g.last_error(det), None, "the respawn does not inherit the corpse's error");
+        assert_eq!(g.node_stage(det), "ready");
+
+        let t0 = Instant::now();
+        for i in 0..400 {
+            g.tick_at(t0 + Duration::from_millis(10 * i));
+            if g.latest_frame(det, "out").is_some() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        assert_eq!(first_f32(&g.latest_frame(det, "out").unwrap()), 7.0, "the new instance runs");
+        assert_eq!(g.last_error(det), None, "and stays healthy");
     }
 
     // ---- restart_node (in-place respawn) ----
@@ -4360,7 +4561,7 @@ mod tests {
         // the worker inside setup, so the stage is observable rather than a race.
         let gate = Gate::new();
         let mut g = Graph::new();
-        register_gate_seeding(&mut g, gate.clone());
+        register_gate_seeding(&mut g, gate.clone(), false);
         let det = g.add_node("GateSeeding", None).unwrap();
 
         // The worker is parked in its `setup()`.
@@ -4399,6 +4600,7 @@ mod tests {
         let src = g.add_node("_TestConst", None).unwrap();
         let det = g.add_node("GateSubproc", None).unwrap();
         g.add_link(src, "out", det, "data").unwrap();
+        wait_bootstrapped(&g, det); // dispatch is gated on READY
         g.tick(); // dispatches a job; the worker blocks on the permit, inside process()
         gate.wait_calls(1);
 
