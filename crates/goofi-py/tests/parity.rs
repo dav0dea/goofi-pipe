@@ -73,6 +73,44 @@ fn tick(node: &mut dyn Node, input: Data, params: &ParamGroups) -> Data {
     outmap.get("out").unwrap().clone().expect("output frame")
 }
 
+/// Tick a node whose declared `data` slot carries NO frame — the shape `wants_run` produces for
+/// an unwired trigger input with `common.autotrigger` on. Returns the tick result and whatever
+/// landed in `out`.
+fn tick_absent(node: &mut dyn Node, params: &ParamGroups) -> (goofi_node::NodeResult, Option<Data>) {
+    let mut inmap: IndexMap<&'static str, Option<Data>> = IndexMap::new();
+    inmap.insert("data", None);
+    let inp = Inputs::new(&inmap);
+    let mut outmap: IndexMap<&'static str, Option<Data>> = IndexMap::new();
+    outmap.insert("out", None);
+    let mut ctx = NodeCtx::new();
+    let res = {
+        let mut out = Outputs::new(&mut outmap);
+        node.process(&inp, &mut out, &mut ctx, &Params::new(params))
+    };
+    (res, outmap.get("out").unwrap().clone())
+}
+
+#[test]
+fn both_tiers_no_op_when_a_declared_input_has_no_frame() {
+    let ft = goofi_py::interpreter_path().expect("no FT interpreter (PYO3_PYTHON) for the subprocess tier");
+    let subpy = std::env::var("GOOFI_SUBPROC_TEST_PYTHON").unwrap_or(ft);
+    let p = params();
+
+    let mut inproc = PyNode::from_source(SRC, vec!["data"], vec!["out"]).expect("PyNode");
+    inproc.setup(&mut NodeCtx::new(), &Params::new(&p)).expect("in-process setup");
+    let (a_res, a_out) = tick_absent(&mut inproc, &p);
+
+    let mut remote = RemoteNode::new(&subpy, SRC, vec!["data"]);
+    let (b_res, b_out) = tick_absent(&mut remote, &p);
+
+    // `process(self, data)` cannot be called with no `data`: without the guard the in-process
+    // tier raises TypeError every tick while the subprocess tier quietly no-ops — the same
+    // authored file behaving differently per tier, which is exactly what this seam forbids.
+    assert!(a_res.is_ok(), "in-process tier errored on an absent input: {:?}", a_res.err());
+    assert!(b_res.is_ok(), "subprocess tier errored on an absent input: {:?}", b_res.err());
+    assert!(a_out.is_none() && b_out.is_none(), "neither tier may emit without an input frame");
+}
+
 #[test]
 fn in_process_and_subprocess_produce_identical_output() {
     let ft = goofi_py::interpreter_path().expect("no FT interpreter (PYO3_PYTHON) for the subprocess tier");

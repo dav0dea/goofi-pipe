@@ -98,6 +98,13 @@ impl Node for PyNode {
         // Gather the present input slots (single-source; M2's manifests are all single).
         let present: Vec<(&str, &Data)> =
             self.in_slots.iter().filter_map(|name| inp.get(name).map(|d| (*name, d))).collect();
+        // Same guard as the subprocess tier: a node with inputs but no frame has nothing to tick.
+        // Without it `run_process` calls `process()` with an empty kwargs dict and the authored
+        // `def process(self, data)` raises TypeError every tick — the SAME file behaving
+        // differently per tier. A zero-input source node has empty `in_slots` and is unaffected.
+        if present.is_empty() && !self.in_slots.is_empty() {
+            return Ok(());
+        }
 
         let check_gil = !self.gil_checked;
         let (outs, tripped): (Vec<(String, Data)>, bool) = attach(|py| -> Result<_, String> {
