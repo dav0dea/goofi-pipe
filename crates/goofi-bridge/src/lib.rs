@@ -203,11 +203,14 @@ fn error_transitions(
 /// unrelated RPC or a reconnect. De-duped: one push per transition, not per tick.
 ///
 /// The transition push is the identity-only `error` event (node + error), NOT a
-/// full-params `state_update`: this async 2 Hz snapshot must never carry params, or a
-/// stale snapshot could arrive after — and clobber — a concurrent `update_param` edit on
-/// the same node (both ride the one broadcast channel, and the frontend replaces params
-/// wholesale). The per-param expression-error field refreshes on the next RPC; the node
-/// border + console update live here.
+/// full-params `state_update`: this async 2 Hz snapshot must never carry params. The
+/// original reason no longer holds — the frontend stopped replacing params wholesale at
+/// the doc cutover, so a stale snapshot can no longer clobber a concurrent `update_param`
+/// (values are doc-owned; `_mergeParamRuntime` takes only the runtime bits). The shape
+/// still stands on its own: a late snapshot would overwrite a fresher `expression_error`,
+/// and every param of every node twice a second is bandwidth for a payload neither the
+/// node border nor the console reads. The per-param expression-error field refreshes on
+/// the next RPC; the node border + console update live here.
 ///
 /// It also pushes the live values of expression-driven params as a `param_values` event,
 /// so the inspector preview tracks each re-evaluation instead of freezing at the
