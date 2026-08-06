@@ -487,14 +487,6 @@ export class ControlClient implements Control {
 		}
 	}
 
-	get connected(): boolean {
-		return this._connected;
-	}
-
-	get protocolMismatch(): boolean {
-		return this._protocolMismatch;
-	}
-
 	/** Issue an RPC. Returns a promise resolving to the server's result. */
 	call<T = unknown>(op: string, payload: Record<string, unknown> = {}): Promise<T> {
 		if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
