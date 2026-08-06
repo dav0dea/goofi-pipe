@@ -7,11 +7,24 @@
 	 * screenToFlowPosition to anchor in flow space, not screen space).
 	 */
 	import { useSvelteFlow } from '@xyflow/svelte';
+	import type { FlowViewport } from './doubleTapZoom';
 
 	type ScreenToFlow = (p: { x: number; y: number }) => { x: number; y: number };
 
-	let { screenToFlowPosition = $bindable() }: { screenToFlowPosition?: ScreenToFlow } = $props();
+	let {
+		screenToFlowPosition = $bindable(),
+		getViewport = $bindable(),
+		setViewport = $bindable()
+	}: {
+		screenToFlowPosition?: ScreenToFlow;
+		/** The pan/zoom matrix, and the way to write it — the double-tap zoom drives the viewport
+		 *  through SvelteFlow's own helpers rather than writing the transform behind its back. */
+		getViewport?: () => FlowViewport;
+		setViewport?: (v: FlowViewport) => void;
+	} = $props();
 
 	const flow = useSvelteFlow();
 	screenToFlowPosition = flow.screenToFlowPosition;
+	getViewport = flow.getViewport;
+	setViewport = flow.setViewport;
 </script>

@@ -64,6 +64,7 @@
 	} from '$lib/editor/subpatchScene';
 	import { nodeSurfaceSize, inputUnits, BOUNDARY } from '$lib/editor/nodeMetrics';
 	import { createLongPress } from '$lib/editor/longPress';
+	import { createDoubleTapZoom, zoomStep, type FlowViewport } from '$lib/editor/doubleTapZoom';
 	import { eventPoint } from '$lib/editor/eventPoint';
 	import { serializeClipboard, parseClipboard, clipToSpecs } from '$lib/editor/clipboard';
 	import { copyText } from '$lib/clipboard';
@@ -167,8 +168,74 @@
 	 * the one that produced the ghost. */
 	function onCanvasPointerDown(e: PointerEvent): void {
 		if (e.pointerType !== 'touch' || pendingPlacement) return;
-		if (!(e.target as HTMLElement | null)?.classList.contains('svelte-flow__pane')) return;
+		if (!onBareCanvas(e.target)) return;
 		canvasPress.start(e);
+	}
+
+	const onBareCanvas = (target: EventTarget | null): boolean =>
+		Boolean((target as HTMLElement | null)?.classList.contains('svelte-flow__pane'));
+
+	// --- double-tap-and-drag to zoom ------------------------------------------------------------
+	// The one-handed zoom, ADDED beside pinch: `zoomOnPinch` is still SvelteFlow's own and is not
+	// touched, and the seam this uses is `zoomOnDoubleClick={false}` below — a double tap that was
+	// already inert. The recognizer and the anchored viewport arithmetic are in
+	// `editor/doubleTapZoom.ts`, where a unit test can reach them; what is left here is the seam.
+	const tapZoom = createDoubleTapZoom();
+	// The viewport the gesture started from, and the FLOW point under the tap it is taken about.
+	// Sampled ONCE at the start, so every move is measured against the same origin and the drag
+	// cannot accumulate rounding.
+	let zoomFrom: FlowViewport | null = null;
+	let zoomAnchor: { x: number; y: number } | null = null;
+
+	/**
+	 * THE PAN BLOCK, and why it is on `touchstart` rather than on `pointerdown`.
+	 *
+	 * SvelteFlow pans by d3-zoom, which binds `touchstart` on its own pane wrapper — a pointerdown
+	 * blocker cannot reach it, however it is written. This is the same lesson (and the same shape)
+	 * as `PlacementPreview.svelte`'s blocker: a CAPTURE listener above the pane, and
+	 * `stopPropagation` — that is the half that stops the pan. `preventDefault` says the touch is
+	 * consumed, suppressing the compat mouse cascade and the browser's own double-tap default; what
+	 * keeps the add-node menu shut is not it but `canvasPress.cancel()` below, which is why that is
+	 * the line `touch-zoom.spec.ts` holds still for 600 ms to pin.
+	 *
+	 * Held back for EXACTLY the touch that starts the gesture — the second tap — and no other. The
+	 * first tap, and every touch that is not part of a double tap, reaches d3-zoom untouched, which
+	 * is what keeps one-finger panning and tap-to-select alive.
+	 */
+	function onCanvasTouchStart(e: TouchEvent): void {
+		// A second finger is a PINCH: hand the whole gesture back rather than compete with it.
+		if (pendingPlacement || e.touches.length > 1 || !onBareCanvas(e.target)) {
+			tapZoom.cancel();
+			return;
+		}
+		const p = eventPoint(e);
+		if (!p || !tapZoom.down(p, e.timeStamp)) return;
+
+		// A double tap held still would otherwise also fire the long-press door and open the add-node
+		// menu on top of the zoom. The press armed on this touch's `pointerdown`, which precedes
+		// `touchstart`, so disarming it here is in time.
+		canvasPress.cancel();
+		zoomFrom = getViewport?.() ?? null;
+		zoomAnchor = screenToFlow?.({ x: p.clientX, y: p.clientY }) ?? null;
+		e.stopPropagation();
+		e.preventDefault();
+	}
+
+	function onCanvasTouchMove(e: TouchEvent): void {
+		const p = eventPoint(e);
+		if (!p) return;
+		const factor = tapZoom.move(p);
+		if (factor === null || !zoomFrom || !zoomAnchor) return;
+		e.stopPropagation();
+		e.preventDefault();
+		setViewport?.(zoomStep(zoomFrom, zoomAnchor, factor, { min: MIN_ZOOM, max: MAX_ZOOM }));
+	}
+
+	function onCanvasTouchEnd(e: TouchEvent): void {
+		const p = eventPoint(e);
+		if (p) tapZoom.up(p, e.timeStamp);
+		zoomFrom = null;
+		zoomAnchor = null;
 	}
 
 	// ContextMenu's idiom: measure the mounted menu, then re-clamp. A spawn point is the degenerate
@@ -851,6 +918,11 @@
 	 * `fitViewOptions` prop) and the on-load fit in <FitToGraph>. */
 	const FIT_OPTIONS = { maxZoom: 1, padding: 0.18 } satisfies FitViewOptions;
 
+	/** How far the canvas may be zoomed. Stated once: <SvelteFlow> is told, and the double-tap zoom
+	 *  clamps itself to the same pair rather than discovering them by being refused. */
+	const MIN_ZOOM = 0.05;
+	const MAX_ZOOM = 4;
+
 	/** True when the CANVAS owns the keyboard rather than a control: nothing focused at all, the pane
 	 * itself, or a node's own wrapper — SvelteFlow gives that `tabindex="0"`, so a plain click on a
 	 * node parks focus there, and "select a node, then Tab to add the next one" is the whole point of
@@ -1130,6 +1202,9 @@
 	let screenToFlow = $state<((p: { x: number; y: number }) => { x: number; y: number }) | undefined>(
 		undefined
 	);
+	// Likewise the viewport itself, which the double-tap zoom reads and writes.
+	let getViewport = $state<(() => FlowViewport) | undefined>(undefined);
+	let setViewport = $state<((v: FlowViewport) => void) | undefined>(undefined);
 
 	function fitView(): void {
 		rootEl?.querySelector<HTMLButtonElement>('.svelte-flow__controls-fitview')?.click();
@@ -1164,6 +1239,15 @@
 		rootEl?.addEventListener('pointermove', canvasPress.move);
 		rootEl?.addEventListener('pointerup', canvasPress.cancel);
 		rootEl?.addEventListener('pointercancel', canvasPress.cancel);
+		// CAPTURE, so these run before d3-zoom's own listeners further in; `passive: false` so the
+		// `preventDefault` above is honoured. A touch is delivered to the element it STARTED on for
+		// its whole life, so a gesture that began on this canvas keeps reaching these even when the
+		// finger wanders off the panel.
+		const touchOpts = { capture: true, passive: false } as const;
+		rootEl?.addEventListener('touchstart', onCanvasTouchStart, touchOpts);
+		rootEl?.addEventListener('touchmove', onCanvasTouchMove, touchOpts);
+		rootEl?.addEventListener('touchend', onCanvasTouchEnd, touchOpts);
+		rootEl?.addEventListener('touchcancel', tapZoom.cancel, true);
 		return () => {
 			unregisterEditor(panelId);
 			rootEl?.removeEventListener('click', onCanvasClick, true);
@@ -1171,7 +1255,12 @@
 			rootEl?.removeEventListener('pointermove', canvasPress.move);
 			rootEl?.removeEventListener('pointerup', canvasPress.cancel);
 			rootEl?.removeEventListener('pointercancel', canvasPress.cancel);
+			rootEl?.removeEventListener('touchstart', onCanvasTouchStart, true);
+			rootEl?.removeEventListener('touchmove', onCanvasTouchMove, true);
+			rootEl?.removeEventListener('touchend', onCanvasTouchEnd, true);
+			rootEl?.removeEventListener('touchcancel', tapZoom.cancel, true);
 			canvasPress.cancel(); // a press in flight must not fire into an unmounted editor
+			tapZoom.cancel(); // …and neither may a zoom gesture keep writing a torn-down viewport
 			// NB: do NOT forget this panel's selection here — unmount also fires
 			// on a tab switch (the inactive tab's tree is torn down), and the
 			// selection must survive switching away and back. It only clears
@@ -1228,8 +1317,8 @@
 			onedgeclick={onEdgeClick}
 			ondelete={deleteElements}
 			fitViewOptions={FIT_OPTIONS}
-			minZoom={0.05}
-			maxZoom={4}
+			minZoom={MIN_ZOOM}
+			maxZoom={MAX_ZOOM}
 			initialViewport={{ x: 0, y: 0, zoom: 0.85 }}
 			zoomOnDoubleClick={false}
 			autoPanOnNodeDrag={false}
@@ -1240,7 +1329,7 @@
 			     as breakage rather than as a mode. -->
 			<Controls showLock={false} />
 			<FitToGraph options={FIT_OPTIONS} />
-			<FlowApi bind:screenToFlowPosition={screenToFlow} />
+			<FlowApi bind:screenToFlowPosition={screenToFlow} bind:getViewport bind:setViewport />
 			<SubpatchZoomExit {entered} onExit={() => exitToDepth(enteredPath.length - 1)} />
 			{#if pendingPlacement}
 				<PlacementPreview
