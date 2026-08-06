@@ -138,6 +138,10 @@ fn spawn_reducer(
     let (uid, slot) = key;
     tokio::spawn(async move {
         let mut ticker = tokio::time::interval(Duration::from_millis(16));
+        // Latest-wins: a deadline missed while the tick thread held the graph lock is a sample
+        // that no longer exists, not a debt. Tokio's default (Burst) would repay every one of
+        // them back-to-back over the same frame, the moment the worker is unblocked.
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
             ticker.tick().await;
             // Brief graph lock only for the latest-frame Arc clone; plan/reduce/encode run
@@ -232,6 +236,48 @@ mod tests {
 
         stop.store(true, Ordering::Relaxed);
         ticker.join().unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_starved_reducer_does_not_repay_the_deadlines_it_missed() {
+        // The tick thread holds the graph mutex for the whole of an inline node's `process()`,
+        // so a slow node starves this task past many 16 ms deadlines. A latest-wins sampler must
+        // resume at the next deadline — repaying the backlog would fire a burst of full
+        // reduce+encode+broadcast passes over ONE unchanged frame, on a worker that was just
+        // unblocked, which is precisely when the process is least able to afford them.
+        let mut g = Graph::new();
+        let osc = g.add_node("Oscillator", None).unwrap();
+        // The oscillator paces itself off the wall clock, so tick it until it has published.
+        for _ in 0..200 {
+            g.tick();
+            if g.latest_frame(osc, "out").is_some() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        assert!(g.latest_frame(osc, "out").is_some(), "the oscillator published a frame to sample");
+        let graph = Arc::new(Mutex::new(g));
+
+        let reducers = SlotReducers::new(graph.clone());
+        let key: SlotKey = (osc, "out".to_string());
+        let c = reducers.new_conn();
+        let _rx = reducers.subscribe(key.clone(), c);
+
+        // ~20 missed deadlines while the lock is held, then sample a short window after release.
+        let before = {
+            let held = graph.lock().unwrap();
+            std::thread::sleep(Duration::from_millis(320));
+            let n = reducers.reductions(&key);
+            drop(held);
+            n
+        };
+        tokio::time::sleep(Duration::from_millis(48)).await;
+        let burst = reducers.reductions(&key) - before;
+
+        // 48 ms of resumed 16 ms sampling is 3-4 passes; the backlog would add ~20 on top. The
+        // bound is one-sided on purpose — scheduler pressure can only make this SMALLER.
+        assert!(burst <= 8, "{burst} passes in 48 ms after starvation: the missed deadlines were repaid");
+        reducers.unsubscribe(&key, c);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
