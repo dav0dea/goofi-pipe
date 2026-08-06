@@ -21,57 +21,89 @@ fn default_subproc_python() -> String {
     }
 }
 
-#[tokio::main]
-async fn main() {
-    let mut port: u16 = 8000;
-    let mut bind = String::from("127.0.0.1");
-    let mut subproc_nodes: Option<String> = None;
-    let mut auto_nodes: Option<String> = None;
-    let mut subproc_python: Option<String> = None;
-    let mut list_nodes = false;
-    let mut args = std::env::args().skip(1);
+/// The parsed command line. `help` is a mode rather than a setting, so the caller decides what
+/// to do with it — which is also what keeps the parse itself pure and testable.
+#[derive(Debug)]
+struct Cli {
+    port: u16,
+    bind: String,
+    subproc_nodes: Option<String>,
+    auto_nodes: Option<String>,
+    subproc_python: Option<String>,
+    list_nodes: bool,
+    help: bool,
+}
+
+impl Default for Cli {
+    fn default() -> Self {
+        Self {
+            port: 8000,
+            bind: String::from("127.0.0.1"),
+            subproc_nodes: None,
+            auto_nodes: None,
+            subproc_python: None,
+            list_nodes: false,
+            help: false,
+        }
+    }
+}
+
+const USAGE: &str = "usage: goofi-pipe [--port N] [--bind HOST] \
+     [--subproc-nodes DIR] [--auto-nodes DIR] [--list-nodes] [--subproc-python BIN]";
+
+/// Parse the argument list (already skipping argv[0]). `Err` is the message to print before
+/// exiting 2 — every malformed invocation reports, none is silently ignored: a value-taking flag
+/// with its value missing used to fall through to the default, so `--subproc-nodes` with a typo'd
+/// directory silently switched the whole run to gil-gated auto-routing of `nodes/` instead.
+fn parse_args<I: Iterator<Item = String>>(mut args: I) -> Result<Cli, String> {
+    let mut cli = Cli::default();
     while let Some(arg) = args.next() {
+        // One shape for every value-taking flag, so a missing value is the same reported error
+        // everywhere instead of five independent silent fallbacks.
+        let need = |v: Option<String>| v.ok_or_else(|| format!("{arg} requires a value (try --help)"));
         match arg.as_str() {
             "--port" => {
-                if let Some(v) = args.next() {
-                    port = v.parse().unwrap_or_else(|_| {
-                        eprintln!("invalid --port `{v}`");
-                        std::process::exit(2);
-                    });
-                }
+                let v = need(args.next())?;
+                cli.port = v.parse().map_err(|_| format!("invalid --port `{v}`"))?;
             }
-            "--bind" => {
-                if let Some(v) = args.next() {
-                    bind = v;
-                }
-            }
-            "--subproc-nodes" => {
-                subproc_nodes = args.next();
-            }
-            "--auto-nodes" => {
-                auto_nodes = args.next();
-            }
-            "--subproc-python" => {
-                subproc_python = args.next();
-            }
-            "--list-nodes" => list_nodes = true,
-            "-h" | "--help" => {
-                println!(
-                    "usage: goofi-pipe [--port N] [--bind HOST] \
-                     [--subproc-nodes DIR] [--auto-nodes DIR] [--list-nodes] \
-                     [--subproc-python BIN]\n\
-                     \n  \
-                     With no --*-nodes flag, auto-discovers `{DEFAULT_NODES_DIR}/` (each node routed \
-                     in-process if free-threading-safe, else to a subprocess).\n  \
-                     --subproc-python defaults to `{DEFAULT_VENV_PYTHON}` when present, else `python3`."
-                );
-                return;
-            }
-            other => {
-                eprintln!("unknown argument `{other}` (try --help)");
-                std::process::exit(2);
-            }
+            "--bind" => cli.bind = need(args.next())?,
+            "--subproc-nodes" => cli.subproc_nodes = Some(need(args.next())?),
+            "--auto-nodes" => cli.auto_nodes = Some(need(args.next())?),
+            "--subproc-python" => cli.subproc_python = Some(need(args.next())?),
+            "--list-nodes" => cli.list_nodes = true,
+            "-h" | "--help" => cli.help = true,
+            other => return Err(format!("unknown argument `{other}` (try --help)")),
         }
+    }
+    Ok(cli)
+}
+
+#[tokio::main]
+async fn main() {
+    let Cli {
+        port,
+        bind,
+        subproc_nodes,
+        mut auto_nodes,
+        subproc_python,
+        list_nodes,
+        help,
+    } = match parse_args(std::env::args().skip(1)) {
+        Ok(cli) => cli,
+        Err(e) => {
+            eprintln!("{e}");
+            std::process::exit(2);
+        }
+    };
+    if help {
+        println!(
+            "{USAGE}\n\
+             \n  \
+             With no --*-nodes flag, auto-discovers `{DEFAULT_NODES_DIR}/` (each node routed \
+             in-process if free-threading-safe, else to a subprocess).\n  \
+             --subproc-python defaults to `{DEFAULT_VENV_PYTHON}` when present, else `python3`."
+        );
+        return;
     }
 
     // Resolve defaults: the repo-local `.venv` for the subprocess tier (the project convention),
@@ -246,4 +278,62 @@ fn register_auto(_state: &AppState, dir: Option<&str>, _subproc_python: &str) ->
         eprintln!("--auto-nodes ignored: this binary was built without the `python` feature");
     }
     Vec::new()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse(args: &[&str]) -> Result<Cli, String> {
+        parse_args(args.iter().map(|s| s.to_string()))
+    }
+
+    #[test]
+    fn defaults_with_no_arguments() {
+        let cli = parse(&[]).expect("no arguments is a valid invocation");
+        assert_eq!(cli.port, 8000);
+        assert_eq!(cli.bind, "127.0.0.1");
+        assert!(cli.subproc_nodes.is_none() && cli.auto_nodes.is_none());
+        assert!(!cli.list_nodes && !cli.help);
+    }
+
+    #[test]
+    fn reads_every_value_taking_flag() {
+        let cli = parse(&[
+            "--port", "9001", "--bind", "0.0.0.0", "--subproc-nodes", "a", "--auto-nodes", "b",
+            "--subproc-python", "py", "--list-nodes",
+        ])
+        .expect("a well-formed invocation");
+        assert_eq!(cli.port, 9001);
+        assert_eq!(cli.bind, "0.0.0.0");
+        assert_eq!(cli.subproc_nodes.as_deref(), Some("a"));
+        assert_eq!(cli.auto_nodes.as_deref(), Some("b"));
+        assert_eq!(cli.subproc_python.as_deref(), Some("py"));
+        assert!(cli.list_nodes);
+    }
+
+    /// A missing value is the same class of user error as an unknown flag, and used to be the
+    /// only one handled silently: `--bind` alone served on the default host, and
+    /// `--subproc-nodes` alone left the option `None`, which then satisfied the "no explicit node
+    /// source" guard and auto-routed `nodes/` — the opposite tier from the one asked for.
+    #[test]
+    fn a_value_taking_flag_without_its_value_is_an_error() {
+        for flag in ["--port", "--bind", "--subproc-nodes", "--auto-nodes", "--subproc-python"] {
+            let err = parse(&[flag]).expect_err(&format!("`{flag}` alone must not be ignored"));
+            assert!(err.contains(flag), "the message names the flag: {err}");
+        }
+    }
+
+    #[test]
+    fn rejects_an_unparseable_port_and_an_unknown_flag() {
+        assert!(parse(&["--port", "nope"]).unwrap_err().contains("--port"));
+        // `--python-nodes` never existed — the warning in build.rs used to name it.
+        assert!(parse(&["--python-nodes", "x"]).unwrap_err().contains("unknown argument"));
+    }
+
+    #[test]
+    fn help_is_a_mode_the_caller_handles() {
+        assert!(parse(&["--help"]).expect("help parses").help);
+        assert!(parse(&["-h"]).expect("help parses").help);
+    }
 }
