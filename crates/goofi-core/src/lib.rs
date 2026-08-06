@@ -236,29 +236,24 @@ pub enum Coord {
     Str(Arc<str>),
 }
 
-/// Labels for one array dimension. Both fields optional: an unlabeled dimension is
-/// `Axis::default()` (the "null entry"). `name` is the growth hook toward named-dim
-/// ops (transpose/insert-robust addressing); `coords`, when present, has one entry
-/// per index along the dimension. Coords are `Arc`-shared so large (kHz/HD) axes
-/// don't copy on fan-out.
+/// Labels for one array dimension. An unlabeled dimension is `Axis::default()` (the
+/// "null entry"); `coords`, when present, has one entry per index along the dimension.
+/// Coords are `Arc`-shared so large (kHz/HD) axes don't copy on fan-out. (An axis NAME
+/// belongs with the named-dim op that would read it — and with the codec and pymod wire
+/// mappings it would need — not ahead of one.)
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Axis {
-    pub name: Option<Arc<str>>,
     pub coords: Option<Arc<[Coord]>>,
 }
 
 impl Axis {
-    /// An axis with coords but no name.
+    /// An axis carrying coords.
     pub fn coords(c: impl Into<Arc<[Coord]>>) -> Axis {
-        Axis { name: None, coords: Some(c.into()) }
+        Axis { coords: Some(c.into()) }
     }
-    /// A named axis with coords.
-    pub fn named(name: impl Into<Arc<str>>, c: impl Into<Arc<[Coord]>>) -> Axis {
-        Axis { name: Some(name.into()), coords: Some(c.into()) }
-    }
-    /// Whether this axis carries neither a name nor coords (the "null entry").
+    /// Whether this axis carries no coords (the "null entry").
     pub fn is_empty(&self) -> bool {
-        self.name.is_none() && self.coords.is_none()
+        self.coords.is_none()
     }
 }
 
@@ -381,15 +376,6 @@ impl Meta {
     pub fn set(&mut self, key: impl Into<String>, v: MetaValue) {
         self.0.insert(key.into(), v);
     }
-    /// Clear `key`: a builtin resets to unset (`Null`/empty, stays present); an extra is removed.
-    pub fn remove(&mut self, key: &str) {
-        if BUILTIN_KEYS.contains(&key) {
-            let null = if key == META_CHANNELS { MetaValue::Axes(Axes::new()) } else { MetaValue::Null };
-            self.0.insert(key.to_string(), null);
-        } else {
-            self.0.shift_remove(key);
-        }
-    }
     /// Iterate ALL entries (builtins + extras), including `Null` builtins.
     pub fn iter(&self) -> impl Iterator<Item = (&String, &MetaValue)> {
         self.0.iter()
@@ -451,10 +437,6 @@ impl Meta {
     }
     pub fn with_channels(mut self, ch: Axes) -> Meta {
         self.set_channels(ch);
-        self
-    }
-    pub fn with_reduced(mut self, v: Option<MetaValue>) -> Meta {
-        self.set_reduced(v);
         self
     }
     pub fn with(mut self, key: impl Into<String>, v: MetaValue) -> Meta {
@@ -652,13 +634,6 @@ impl SlotType {
             _ => None,
         }
     }
-    pub fn tag(self) -> u8 {
-        match self {
-            SlotType::Array => 0,
-            SlotType::String => 1,
-            SlotType::Table => 2,
-        }
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -809,13 +784,6 @@ mod tests {
         let mut m = Meta::new();
         m.set(META_INDEX, MetaValue::Int(42));
         assert_eq!(m.index(), Some(42));
-        // remove() resets a builtin to unset (stays present) but drops an extra.
-        let mut m = Meta::new().with_sfreq(Some(1.0)).with("x", MetaValue::Bool(true));
-        m.remove(META_SFREQ);
-        m.remove("x");
-        assert_eq!(m.sfreq(), None);
-        assert!(m.iter().any(|(k, _)| k == META_SFREQ), "builtin stays present after remove");
-        assert!(!m.iter().any(|(k, _)| k == "x"), "extra is dropped");
     }
 
     #[test]
@@ -924,10 +892,10 @@ mod tests {
     }
 
     #[test]
-    fn slot_type_names_and_tags() {
+    fn slot_type_names() {
         assert_eq!(SlotType::Array.name(), "ARRAY");
         assert_eq!(SlotType::String.name(), "STRING");
-        assert_eq!(SlotType::Table.tag(), 2);
+        assert_eq!(SlotType::Table.name(), "TABLE");
     }
 
     #[test]

@@ -187,13 +187,6 @@ impl GlobalStore {
     pub fn contains(&self, name: &str) -> bool {
         self.values.contains_key(name)
     }
-    pub fn len(&self) -> usize {
-        self.values.len()
-    }
-    pub fn is_empty(&self) -> bool {
-        self.values.is_empty()
-    }
-
     /// A read-only snapshot for eval / node context.
     pub fn snapshot(&self) -> GlobalsSnapshot {
         GlobalsSnapshot::new(self.values.clone())
@@ -302,7 +295,7 @@ mod tests {
         let s = GlobalStore::new();
         assert_eq!(s.get("default_ufreq"), Some(&GlobalValue::Float(30.0)));
         assert!(s.is_system("default_ufreq"));
-        assert_eq!(s.len(), SYSTEM_GLOBALS.len());
+        assert_eq!(s.entries().count(), SYSTEM_GLOBALS.len());
     }
 
     #[test]
