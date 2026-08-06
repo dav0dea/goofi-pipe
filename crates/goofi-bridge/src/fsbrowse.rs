@@ -139,20 +139,12 @@ fn entries(base: &Path) -> Value {
         // collapse to the same replacement string). Skip it rather than show something broken.
         let Some(name) = entry.file_name().to_str().map(str::to_owned) else { continue };
         let is_dir = meta.is_dir();
-        let mtime = meta
-            .modified()
-            .ok()
-            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-            .map(|d| d.as_secs_f64())
-            .unwrap_or(0.0);
         let row = json!({
             "name": name,
             "path": display(&path),
             "kind": if is_dir { "dir" } else { "file" },
             "is_gfi": path.extension().is_some_and(|e| e == "gfi"),
             "hidden": name.starts_with('.'),
-            "size": meta.len(),
-            "mtime": mtime,
         });
         rows.push((!is_dir, name.to_lowercase(), row));
     }
@@ -295,12 +287,16 @@ mod tests {
         let listing = list_dir(Some(&tmp.path().to_string_lossy()));
         let entry = &listing["entries"][0];
 
-        for key in ["name", "path", "kind", "is_gfi", "hidden", "size", "mtime"] {
+        for key in ["name", "path", "kind", "is_gfi", "hidden"] {
             assert!(entry.get(key).is_some(), "entry is missing `{key}`");
         }
         assert_eq!(entry["kind"], json!("file"));
         assert_eq!(entry["path"], json!(display(&normalize(&tmp.path().join("a.txt")))));
-        assert!(entry["mtime"].as_f64().unwrap() > 0.0, "mtime is seconds since the epoch");
+        // The browser renders neither a size nor a date column, so the row carries neither.
+        // Re-add them together with the column that shows them.
+        for key in ["size", "mtime"] {
+            assert!(entry.get(key).is_none(), "entry carries an unrendered `{key}`");
+        }
     }
 
     #[test]

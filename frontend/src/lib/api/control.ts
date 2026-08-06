@@ -209,8 +209,6 @@ export interface FsEntry {
 	kind: 'dir' | 'file';
 	is_gfi: boolean;
 	hidden: boolean;
-	size: number;
-	mtime: number;
 }
 
 export interface FsRoot {
