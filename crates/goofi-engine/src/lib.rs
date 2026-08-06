@@ -2485,8 +2485,11 @@ impl Graph {
             let Some(entry) = self.nodes.get_mut(&uid) else { continue };
             match outcome {
                 Outcome::Value(p, seen) => {
+                    // A settled binding re-evaluates to the same value most ticks; only a real
+                    // change is worth propagating past `params`.
+                    let changed = entry.params.get(&key.group).and_then(|g| g.get(&key.name)) != Some(&p);
                     if let Some(g) = entry.params.get_mut(&key.group) {
-                        g.insert(key.name.clone(), p);
+                        g.insert(key.name.clone(), p.clone());
                     }
                     let triggers = entry.bindings.get(&key).is_some_and(|b| b.triggers_process);
                     if let Some(b) = entry.bindings.get_mut(&key) {
@@ -2495,7 +2498,24 @@ impl Graph {
                         b.error = None;
                     }
                     if key.group == "common" {
+                        // Scheduler metadata, not a node param — re-derive the run gate, exactly as
+                        // `update_param` does, and dispatch nothing.
                         entry.run_policy = RunPolicy::from_params(&entry.params);
+                    } else if changed {
+                        // The rest of `update_param`'s contract: `on_param_changed` is the SINGLE
+                        // source of truth for param→field, so a node that mirrors a hot param to a
+                        // field (Oscillator.sfreq) must hear its binding as well as a manual edit.
+                        // A detached node's instance lives on its worker and reads params cold off
+                        // each Job, so there is nothing to notify — same deferral as `update_param`.
+                        if let Execution::Inline(node) = &mut entry.exec {
+                            if let Err(e) = node.on_param_changed(&key, &p) {
+                                // The channel a runtime eval failure already uses, so a rejecting
+                                // hook surfaces on the field rather than vanishing.
+                                if let Some(b) = entry.bindings.get_mut(&key) {
+                                    b.error = Some(e.0);
+                                }
+                            }
+                        }
                     }
                     if triggers {
                         entry.trigger_pending = true;
@@ -3465,6 +3485,52 @@ mod tests {
             params: NO_PARAMS,
             isolation: Isolation::InProcess,
             factory: default_factory::<RefLenChange>,
+        }
+    }
+
+    // A source that MIRRORS its param to a field in `on_param_changed` and emits the FIELD — the
+    // documented hot-param authoring pattern (`Oscillator.sfreq` is the shipped instance). A node
+    // that read `p` live in `process` could not tell a dispatched hook from a skipped one; this one
+    // can. Slot 0 is the mirrored value, slot 1 the number of hook calls, so a test can also assert
+    // that a settled binding stops re-dispatching.
+    #[derive(Default)]
+    struct MirrorSource {
+        mirrored: f32,
+        calls: f32,
+    }
+    impl Node for MirrorSource {
+        fn on_param_changed(&mut self, key: &ParamKey, v: &Param) -> NodeResult {
+            if key.group == "mirror" && key.name == "value" {
+                self.mirrored = v.as_f64().unwrap_or(f64::NAN) as f32;
+                self.calls += 1.0;
+            }
+            Ok(())
+        }
+        fn process(&mut self, _i: &Inputs<'_>, out: &mut Outputs<'_>, _c: &mut NodeCtx, _p: &Params<'_>) -> NodeResult {
+            let mut buf = self.mirrored.to_le_bytes().to_vec();
+            buf.extend_from_slice(&self.calls.to_le_bytes());
+            let d = Data::array_f32(vec![2], buf, Meta::empty()).map_err(|e| e.to_string())?;
+            out.set("out", d);
+            Ok(())
+        }
+    }
+    static MIRROR_PARAMS: &[ParamDecl] = &[ParamDecl {
+        group: "mirror",
+        name: "value",
+        spec: ParamSpec::Float { default: 1.0, min: -1e9, max: 1e9 },
+        default_expr: None,
+        doc: None,
+    }];
+    inventory::submit! {
+        NodeManifest {
+            type_name: "_TestMirror",
+            category: "test",
+            doc: "mirrors mirror.value to a field via on_param_changed and emits [field, hook_calls]",
+            inputs: &[],
+            outputs: G_OUT,
+            params: MIRROR_PARAMS,
+            isolation: Isolation::InProcess,
+            factory: default_factory::<MirrorSource>,
         }
     }
 
@@ -5161,6 +5227,48 @@ mod tests {
         g.set_expression(n, "constant", "value", "5", true, false).unwrap();
         g.tick();
         assert_eq!(first_f32(&g.latest_frame(n, "out").unwrap()), 5.0);
+    }
+
+    #[test]
+    fn an_expression_reaches_a_param_the_node_mirrors_to_a_field() {
+        // `on_param_changed` is the documented single source of truth for param→field, and
+        // `update_param` dispatches it. The expression path wrote `entry.params` and stopped, so a
+        // hot param (Oscillator.sfreq is the shipped case) ignored its binding while the inspector
+        // showed the bound value.
+        let mut g = eval_graph();
+        let n = g.add_node("_TestMirror", None).unwrap();
+        g.set_expression(n, "mirror", "value", "9", true, false).unwrap();
+        g.tick();
+        let out = as_f32_vec(&g.latest_frame(n, "out").unwrap());
+        assert_eq!(out[0], 9.0, "the evaluated value reached the node's field");
+
+        // And a settled binding does not hammer the hook: the seed call plus exactly one for the
+        // expression, then nothing while the value is unchanged.
+        let calls = out[1];
+        g.tick();
+        g.tick();
+        assert_eq!(
+            as_f32_vec(&g.latest_frame(n, "out").unwrap())[1],
+            calls,
+            "an unchanged evaluated value re-dispatches nothing"
+        );
+    }
+
+    #[test]
+    fn binding_oscillator_sfreq_re_rates_the_shipped_hot_param() {
+        // The regression on a real node: `Oscillator.sfreq` is the library's one mirrored param,
+        // and it kept emitting its seeded 250 Hz while the inspector showed (and the .gfi saved)
+        // the bound value.
+        use std::time::Duration;
+        let mut g = eval_graph();
+        let osc = g.add_node("Oscillator", None).unwrap();
+        g.set_expression(osc, "oscillator", "sfreq", "200", true, false).unwrap();
+        let t0 = Instant::now();
+        g.tick_at(t0); // anchors pacing; a source emits nothing in its first zero-length interval
+        g.tick_at(t0 + Duration::from_millis(100));
+        let f = g.latest_frame(osc, "out").expect("frame");
+        assert_eq!(f.meta().sfreq(), Some(200.0), "the bound rate reached the mirrored field");
+        assert_eq!(as_f32_vec(&f).len(), 20, "and paced the block: 200 Hz over 100 ms");
     }
 
     #[test]
