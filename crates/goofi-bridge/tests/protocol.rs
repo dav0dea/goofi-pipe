@@ -1943,11 +1943,10 @@ async fn add_node_applies_inline_params_at_creation() {
 
 #[tokio::test]
 async fn add_node_restores_a_specific_uid_and_name() {
-    // Undo-of-delete and redo-of-add replay add_node with the ORIGINAL uid (member_uid) + display
-    // name so uid-keyed links/panels reconnect. Without honoring them the backend mints a FRESH uid
-    // and the follow-up add_link (which references the old uid) fails — the restored node comes back
-    // disconnected. Repro the delete→undo shape: add a node, remove it (freeing its uid), then
-    // restore at the same uid + a chosen name.
+    // `add_node` can be asked for a SPECIFIC uid + display name, so a caller reconstructing a known
+    // graph gets its uid-keyed links and panels to reconnect. Undo/redo do NOT come through here —
+    // they are manager-owned and restore via `capture_subtree_restore` — so this pins the RPC's own
+    // automation door: add a node, remove it (freeing its uid), then re-add at that uid and name.
     let base = start_server().await;
     let (mut ws, _) = connect_async(format!("{base}/control")).await.unwrap();
     let _hello = recv_text(&mut ws).await;
@@ -1958,7 +1957,7 @@ async fn add_node_restores_a_specific_uid_and_name() {
         .to_string();
     call(&mut ws, 2, "remove_node", json!({ "node": a })).await;
 
-    // Restore at the SAME uid + a specific name (what removeNode's inverse sends).
+    // Re-add at the SAME uid + a specific name.
     ws.send(Message::Text(
         json!({ "id": 3, "op": "add_node", "payload": {
             "type": "Oscillator", "member_uid": a, "name": "restored_osc"

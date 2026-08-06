@@ -597,8 +597,12 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
                     .and_then(|v| v.as_str())
                     .ok_or("add_node: missing type")?
                     .to_string();
-                // Redo-of-add / undo-of-delete replay the ORIGINAL uid (member_uid) + name so
-                // uid-keyed links + panels reconnect to the same node; a plain add mints a fresh uid.
+                // `member_uid` + `name` place the new node at a CHOSEN uid and display name instead
+                // of minting fresh ones. This is NOT the undo path — undo/redo are manager-owned
+                // and a restore goes through `Command::AddNode { uid: Some, name: Some }` built by
+                // `capture_subtree_restore`, never through this RPC. It is an automation/restore
+                // door: a caller reconstructing a known graph (a script, a fixture) gets the
+                // uid-keyed links and panels to reconnect to the same node.
                 let restore = payload.get("member_uid").and_then(|v| v.as_str()).and_then(Uid::from_hex);
                 let name = payload.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
                 let pos = payload.get("pos").and_then(parse_pos).unwrap_or([0.0, 0.0]);
