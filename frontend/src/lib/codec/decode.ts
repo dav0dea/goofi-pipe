@@ -64,18 +64,13 @@ function checkMagic(view: DataView, off: number): void {
 }
 
 /** Decode an encoded GOOF buffer into a DataFrame. */
-export function decodeData(buf: ArrayBuffer | Uint8Array, offset = 0, length?: number): DataFrame {
+export function decodeData(buf: ArrayBuffer | Uint8Array): DataFrame {
 	const bytes = buf instanceof Uint8Array ? buf : new Uint8Array(buf);
-	const view = new DataView(bytes.buffer, bytes.byteOffset + offset, length ?? bytes.byteLength - offset);
-	return decodeInto(view, 0).frame;
+	const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+	return decodeInto(view, 0);
 }
 
-interface DecodeStep {
-	frame: DataFrame;
-	consumed: number;
-}
-
-function decodeInto(view: DataView, off: number): DecodeStep {
+function decodeInto(view: DataView, off: number): DataFrame {
 	checkMagic(view, off);
 	const version = view.getUint8(off + 4);
 	if (version !== 2) throw new Error(`Unsupported GOOF version ${version}`);
@@ -103,7 +98,7 @@ function decodeInto(view: DataView, off: number): DecodeStep {
 	} else {
 		data = decodeTable(view, bodyStart);
 	}
-	return { frame: { dtype, data, meta }, consumed: bodyEnd - off };
+	return { dtype, data, meta };
 }
 
 function decodeArray(view: DataView, start: number, end: number): ArrayData {
@@ -136,8 +131,7 @@ function decodeTable(view: DataView, start: number): Record<string, DataFrame> {
 		off += keyLen;
 		const valueLen = view.getUint32(off, true);
 		off += 4;
-		const sub = decodeInto(view, off);
-		out[key] = sub.frame;
+		out[key] = decodeInto(view, off);
 		off += valueLen;
 	}
 	return out;
