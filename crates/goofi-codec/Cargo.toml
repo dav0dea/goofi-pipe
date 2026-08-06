@@ -12,6 +12,15 @@ rmpv = "1"
 # (Param derives Serialize/Deserialize) — no per-variant juggling, lossless by construction.
 rmp-serde = "1"
 
+# The parent-liveness pipe's cfg split: clearing FD_CLOEXEC in the forked child (unix) /
+# marking the read HANDLE inheritable (windows). Pipe creation itself is `std::io::pipe`,
+# so nothing else here is platform-specific.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation"] }
+
 [dev-dependencies]
 serde_json = "1"
 indexmap = "2"

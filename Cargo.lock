@@ -515,9 +515,11 @@ version = "0.0.0"
 dependencies = [
  "goofi-core",
  "indexmap",
+ "libc",
  "rmp-serde",
  "rmpv",
  "serde_json",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

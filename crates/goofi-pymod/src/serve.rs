@@ -12,6 +12,10 @@
 //!
 //! The transport-level `seq` (re-publish dedup) is the OUTER 4-byte prefix, matching the
 //! parent's `one_roundtrip`; the codec payload knows nothing about it.
+//!
+//! The child also holds the read end of the parent's liveness pipe
+//! ([`goofi_codec::liveness`]): a watcher thread ends this process the moment the parent's
+//! write end closes, so a Ctrl-C'd or crashed manager cannot leave it spinning forever.
 
 use std::collections::HashSet;
 use std::time::Duration;
@@ -32,6 +36,11 @@ const MAX_PAYLOAD: usize = 64 * 1024;
 /// so the parent sees the child exit and reaps + respawns it.
 #[pyfunction]
 pub fn serve(py: Python<'_>) -> PyResult<()> {
+    // The parent-liveness watcher goes up FIRST — before the user module is even compiled —
+    // so a child orphaned during a slow import still stops instead of reaching the poll loop.
+    goofi_codec::liveness::watch_parent(&env(goofi_codec::liveness::ENV_VAR)?)
+        .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("parent-liveness watcher: {e}")))?;
+
     // Route stdout -> stderr BEFORE compiling the user module, so any node/C-extension
     // write to stdout is harmless (the frame plane is SHM; there is no stdout protocol).
     let os = py.import("os")?;

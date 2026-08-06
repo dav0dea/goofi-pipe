@@ -8,7 +8,9 @@
 //!
 //! The child is the SAME `goofi.Node` class contract as the in-process tier, run by
 //! `goofi.serve()` from the abi3 wheel — a **Rust** iceoryx2 loop reusing the shared
-//! `goofi_pymod::exec` marshalling. The parent holds the other end of the transport.
+//! `goofi_pymod::exec` marshalling. The parent holds the other end of the transport — and the
+//! write end of a **parent-liveness pipe** ([`goofi_codec::liveness`]), which the child watches
+//! for EOF, so a Ctrl-C'd or crashed manager can never orphan a forever-spinning child.
 //!
 //! Each tick is one request/response over **iceoryx2 shared memory**. The parent encodes
 //! `[u32 seq][request]` where the request is the shared [`goofi_codec::encode_request`]
@@ -66,6 +68,11 @@ struct Running {
     child: Child,
     ports: Ports,
     seq: u32,
+    /// The parent's write end of the liveness pipe. Never written to: holding it open IS the
+    /// signal. It closes when this struct drops — on a node removal, on a reset, and (the
+    /// point of the exercise) when the OS tears this process down on a Ctrl-C or a crash,
+    /// where no `Drop` ever runs. The child reads EOF and exits itself.
+    parent_alive: Option<std::io::PipeWriter>,
 }
 
 /// Build the iceoryx2 node + `<id>_req` publisher + `<id>_resp` subscriber.
@@ -104,8 +111,8 @@ impl Running {
         let resp_name = format!("{id}_resp");
         // The child talks over iceoryx2; stdout/stderr are inherited so node prints/tracebacks
         // surface (the child routes its fd 1 to stderr, so a node print can't corrupt the SHM plane).
-        let mut child = Command::new(python)
-            .arg("-c")
+        let mut cmd = Command::new(python);
+        cmd.arg("-c")
             .arg("import goofi; goofi.serve()")
             .env("GOOFI_NODE_SRC", source)
             .env("GOOFI_IOX_REQ", &req_name)
@@ -116,11 +123,15 @@ impl Running {
             .env_remove("PYTHONPATH")
             .stdin(Stdio::null())
             .stdout(Stdio::inherit())
-            .stderr(Stdio::inherit())
-            .spawn()
-            .map_err(|e| format!("spawn `{python}`: {e}"))?;
+            .stderr(Stdio::inherit());
+        // Arm the liveness pipe BEFORE the spawn it guards: the child inherits the read end and
+        // stops itself the moment our write end closes, so a Ctrl-C or a crash here can't leave
+        // it orphaned, spinning its poll loop forever.
+        let armed = goofi_codec::liveness::arm(&mut cmd).map_err(|e| format!("liveness pipe: {e}"))?;
+        let mut child = cmd.spawn().map_err(|e| format!("spawn `{python}`: {e}"))?;
+        let parent_alive = Some(armed.into_writer());
         match build_ports(&req_name, &resp_name) {
-            Ok(ports) => Ok(Running { child, ports, seq: 0 }),
+            Ok(ports) => Ok(Running { child, ports, seq: 0, parent_alive }),
             // A port-setup failure would strand the child with no peer — reap it before erroring.
             Err(e) => {
                 let _ = child.kill();
@@ -140,6 +151,10 @@ impl Running {
 
     /// Kill + reap the child. The ports drop with `self`.
     fn shutdown(&mut self) {
+        // Close the liveness pipe first: that stop reaches the child even when a signal or a
+        // dead handle would defeat `kill`, and it is the same door a crashed parent uses.
+        // The kill+wait then ends and reaps it immediately rather than waiting on the poll.
+        drop(self.parent_alive.take());
         let _ = self.child.kill();
         let _ = self.child.wait();
     }
@@ -875,6 +890,129 @@ class Slow(goofi.Node):
         assert_eq!(got[1], 2.0, "1 * 2");
         assert_eq!(got[10], 20.0, "10 * 2");
         assert_eq!(got[n - 1], (n - 1) as f32 * 2.0, "last element doubled");
+    }
+
+    /// Bounded poll for a child to exit — never an unbounded wait that would hang the suite.
+    fn child_exits_within(child: &mut Child, bound: Duration) -> bool {
+        let deadline = Instant::now() + bound;
+        loop {
+            if matches!(child.try_wait(), Ok(Some(_)) | Err(_)) {
+                return true;
+            }
+            if Instant::now() >= deadline {
+                return false;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    #[test]
+    fn the_child_stops_when_the_parents_liveness_pipe_closes() {
+        // The mechanism itself, through the REAL spawn path: close only the parent's write end
+        // — no kill, no signal — and the child must reach EOF and exit on its own.
+        let py = require_python();
+        let mut node = RemoteNode::new(&*py, DOUBLE, vec!["data"]);
+        // A real tick first, so the child is fully up and inside its serve loop.
+        assert_eq!(floats(&run(&mut node, arr(vec![1], &[2.0], Meta::empty()))), vec![4.0]);
+
+        let running = node.proc.as_mut().expect("the tick spawned a child");
+        drop(running.parent_alive.take()); // the parent "dies"
+
+        let exited = child_exits_within(&mut running.child, Duration::from_secs(5));
+        if !exited {
+            // Never leave a spinning orphan behind, even when this test fails.
+            let _ = running.child.kill();
+            let _ = running.child.wait();
+        }
+        assert!(exited, "the child must exit on the liveness pipe's EOF; it was still alive after 5s");
+    }
+
+    /// Set on the helper process of [`a_hard_killed_parent_still_stops_the_child`]; its value
+    /// is the interpreter to spawn the grandchild with.
+    const HELPER_ENV: &str = "GOOFI_LIVENESS_HELPER_PYTHON";
+
+    /// The intermediate parent for the hard-kill test, re-entered as a separate process (this
+    /// test binary, one `#[test]` filtered in). With [`HELPER_ENV`] set it spawns a real child,
+    /// announces its pid and then blocks forever holding the liveness pipe, so the outer test
+    /// can `kill -9` a process that never gets to run a handler or a `Drop`. Unset — every
+    /// ordinary suite run — it does nothing.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn liveness_helper_process() {
+        let Ok(py) = std::env::var(HELPER_ENV) else { return };
+        let running = Running::spawn(&py, DOUBLE).expect("helper: spawn a child");
+        println!("HELPER_CHILD_PID={}", running.child.id());
+        std::io::Write::flush(&mut std::io::stdout()).expect("helper: flush the pid");
+        loop {
+            // Hold `running` — and with it the write end — until we are killed.
+            std::thread::sleep(Duration::from_secs(60));
+        }
+    }
+
+    /// Alive = present in /proc and not already a reaped-pending zombie.
+    #[cfg(target_os = "linux")]
+    fn pid_alive(pid: u32) -> bool {
+        let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) else { return false };
+        // `pid (comm) STATE …`, and comm may itself contain spaces or parens — scan past the last ')'.
+        stat.rsplit_once(')')
+            .and_then(|(_, rest)| rest.split_whitespace().next())
+            .is_some_and(|state| state != "Z")
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_hard_killed_parent_still_stops_the_child() {
+        // The fidelity case a ctrl_c handler cannot cover: SIGKILL the intermediate parent, which
+        // gets no chance to clean up. The OS closes its write end anyway, so the child still EOFs.
+        let py = require_python();
+        let mut helper = Command::new(std::env::current_exe().expect("test binary path"))
+            .args(["--exact", "tests::liveness_helper_process", "--nocapture", "--test-threads=1"])
+            .env(HELPER_ENV, &*py)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn the intermediate parent");
+
+        // Read the announced pid with a bound; a helper that never gets there must not hang us.
+        // libtest writes `test <name> ... ` without a newline, so the marker lands mid-line.
+        let out = helper.stdout.take().expect("helper stdout");
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            use std::io::BufRead;
+            for line in std::io::BufReader::new(out).lines().map_while(Result::ok) {
+                if let Some((_, pid)) = line.rsplit_once("HELPER_CHILD_PID=") {
+                    let _ = tx.send(pid.trim().to_string());
+                    return;
+                }
+            }
+        });
+        let announced = rx.recv_timeout(Duration::from_secs(30));
+        if announced.is_err() {
+            // Never strand the helper (and its child) when this test fails.
+            let _ = helper.kill();
+            let _ = helper.wait();
+        }
+        let child_pid: u32 =
+            announced.expect("the helper must announce its child's pid").parse().expect("a numeric pid");
+
+        // SIGKILL: no handler, no unwind, no Drop — only the OS closing the write end.
+        let killed = Command::new("kill").args(["-9", &helper.id().to_string()]).status();
+        assert!(killed.is_ok_and(|s| s.success()), "kill -9 the intermediate parent");
+        let _ = helper.wait();
+
+        let deadline = Instant::now() + Duration::from_secs(15);
+        while pid_alive(child_pid) && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        let orphaned = pid_alive(child_pid);
+        if orphaned {
+            // Never leave a spinning orphan behind, even when this test fails.
+            let _ = Command::new("kill").args(["-9", &child_pid.to_string()]).status();
+        }
+        assert!(
+            !orphaned,
+            "pid {child_pid} outlived its hard-killed parent by 15s — the liveness pipe did not fire"
+        );
     }
 
     #[test]
