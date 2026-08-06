@@ -4,6 +4,8 @@ import { GraphStore } from './graph.svelte';
 import { nodesMap, instancesMap } from '$lib/crdt/graphDoc';
 import { ROOT_ID } from '$lib/editor/subpatchScene';
 import type { NodeTypeInfo, GraphSnapshot } from '$lib/api/control';
+import { setInlineKind, rawInlineView } from '$lib/viewers/inlineView.svelte';
+import { ui } from './ui.svelte';
 import * as Y from 'yjs';
 
 /** Minimal catalog — its presence flips the store to doc-authoritative identity. */
@@ -187,5 +189,33 @@ describe('scope-forest read cutover — scopes built from the doc when the catal
 		// A change to an UNRELATED node must not churn the sub-patch synth node identity.
 		Y.transact(g.doc, () => nodesMap(g.doc).get('n0')!.set('name', 'osc0b'));
 		expect(g.nodeById('i1'), 'synth node reference stable when the scope is unchanged').toBe(before);
+	});
+});
+
+describe('a vanished scope is forgotten as thoroughly as a vanished node', () => {
+	it('drops the instance-keyed inline view and slot-expand state, not just the panel binding', () => {
+		const fc = new FakeControl();
+		const g = new GraphStore(fc);
+		g.nodeTypes = catalog();
+		Y.transact(g.doc, () => {
+			seedNode(nodesMap(g.doc), 'm9', 'Buffer', 'buffer9');
+			seedInstance(instancesMap(g.doc), 'i9', {
+				name: 'sp9',
+				members: { m9: false },
+				stubs: [{ bnd_id: 'out0', dir: 'out', dtype: 'ARRAY', name: 'wave', inner_node: 'm9', inner_slot: 'out' }]
+			});
+		});
+
+		// The user gives the collapsed sub-patch's boundary slot an inline viewer and collapses it.
+		setInlineKind('i9', 'out0', 'image');
+		ui().setSlotExpanded('i9', 'out0', false);
+		expect(rawInlineView('i9', 'out0').kind).toBe('image');
+
+		// Ungroup: the scope leaves the doc. Its uid can be re-minted by a later backend, so every
+		// store keyed by it must be cleared — exactly what `_reconcileNodes` does for a node.
+		Y.transact(g.doc, () => instancesMap(g.doc).delete('i9'));
+		expect(g.instances.i9).toBeUndefined();
+		expect(rawInlineView('i9', 'out0').kind, 'inline view forgotten with the scope').toBeUndefined();
+		expect(ui().isSlotExpanded('i9', 'out0'), 'slot-expand state forgotten with the scope').toBe(true);
 	});
 });

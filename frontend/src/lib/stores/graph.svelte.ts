@@ -768,14 +768,23 @@ export class GraphStore {
 	 * fully forget genuinely-vanished ones. The structural cure for the viewer flicker a
 	 * wholesale `this.nodes = snap.nodes` (plus a blanket forgetInlineView over every
 	 * node) caused on every group/expand/share/make-unique. */
+	/** Drop every uid-keyed store entry for something that has left the graph — a node OR a scope,
+	 * since a collapsed scope's synth node carries slots and an inline viewer just like a real one.
+	 * ONE teardown for both reconcilers: a uid is re-minted (the backend restarts at 1) while these
+	 * module-level stores survive the reconnect, so a half-teardown bleeds the old node's viewer
+	 * kind and collapse state onto whatever takes its uid next. */
+	private _forgetUid(uid: string): void {
+		ui().forget(uid);
+		forgetInlineView(uid);
+		workspace().clearNodeRefs(uid);
+	}
+
 	private _reconcileNodes(next: NodeInstanceInfo[]): void {
 		const byUid = new Map(this.nodes.map((n) => [n.uid, n]));
 		const nextUids = new Set(next.map((n) => n.uid));
 		for (const old of this.nodes) {
 			if (nextUids.has(old.uid)) continue;
-			ui().forget(old.uid);
-			forgetInlineView(old.uid);
-			workspace().clearNodeRefs(old.uid);
+			this._forgetUid(old.uid);
 		}
 		this.nodes = next.map((n) => {
 			const cur = byUid.get(n.uid);
@@ -887,10 +896,11 @@ export class GraphStore {
 		const doc = this._sync.doc;
 		const nodes = nodeViews(doc).map((n) => ({ uid: n.uid, name: n.name }));
 		const next = assembleInstances(instanceViews(doc), nodes, (uid) => this._realNode(uid)?.error ?? null);
-		// Vanished instances fire no per-node event — clear any panel still bound to one (mirror of the
-		// retired `subpatch_changed` wrap; `_reconcileInstances` itself drops the map entry + synth cache).
+		// Vanished instances fire no per-node event — tear them down exactly as `_reconcileNodes` tears
+		// down a vanished node (mirror of the retired `subpatch_changed` wrap; `_reconcileInstances`
+		// itself drops the map entry + synth cache).
 		const before = new Set(Object.keys(this.instances));
-		for (const iid of before) if (!(iid in next)) workspace().clearNodeRefs(iid);
+		for (const iid of before) if (!(iid in next)) this._forgetUid(iid);
 		this._reconcileInstances(next);
 		// Seed viewer state for a genuinely-NEW instance's output-boundary slots (its synth node carries
 		// the blob) — never a survivor (would clobber its live, un-pushed collapse/kind).
