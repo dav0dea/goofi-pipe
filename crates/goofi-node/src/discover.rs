@@ -138,8 +138,8 @@ pub struct Discovered {
 }
 
 /// Why a node file could not be introspected, phrased for the palette tooltip. A
-/// `ModuleNotFoundError` becomes just the module name (the UI renders "missing dependency: X");
-/// anything else keeps its first line, which is the exception line of the traceback.
+/// `ModuleNotFoundError` becomes just the module name; anything else keeps its LAST non-empty
+/// line, which is where Python prints the exception line of a traceback.
 fn probe_reason(stderr: &str) -> String {
     if let Some(rest) = stderr.split("No module named ").nth(1) {
         let name: String = rest.trim_start().trim_matches(['\'', '"']).chars()
