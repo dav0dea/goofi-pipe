@@ -154,10 +154,20 @@ export class GraphStore {
 		// Absent → an older backend; keep whatever the async fetch set.
 		if (snap.node_types?.length) this.nodeTypes = snap.node_types;
 		// The snapshot carries NO graph structure: nodes, links and the sub-patch forest all reach
-		// us through the CRDT doc, whose binary sync follows this event and drives `_syncFromDoc`.
-		// What it does carry is the runtime overlay — stash it so the reconcile can seed each node
-		// as it materializes from the doc (see `_seedRuntime`).
+		// us through the CRDT doc, whose binary sync drives `_syncFromDoc`. The two ride separate
+		// channels of one socket and the bridge sends them from separate `select!` branches, so
+		// their ORDER is not defined — on a load the delta routinely lands first. What the snapshot
+		// does carry is the runtime overlay: stash it so a node still to materialize seeds from it
+		// (`_seedRuntime`), and apply it now to every node the doc already produced. It is
+		// authoritative for runtime by definition, so applying it is correct in either order —
+		// without this half a freshly loaded errored node drew healthy until the 2 Hz sweep.
 		this._snapshotRuntime = snap.runtime ?? {};
+		for (const [uid, rt] of Object.entries(this._snapshotRuntime)) {
+			const node = this._realNode(uid);
+			if (!node) continue;
+			node.stage = rt.stage;
+			node.error = rt.error ?? null;
+		}
 		this.savePath = snap.save_path;
 		this.unsavedChanges = snap.unsaved_changes;
 

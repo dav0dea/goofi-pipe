@@ -238,6 +238,28 @@ describe('catalog-in-hello — the palette rides on the snapshot, no async list_
 		expect(n.stage).toBe('error');
 	});
 
+	it('applies the runtime overlay to nodes the doc delta already materialized', () => {
+		// A load sends the CRDT delta and the `graph_replaced` JSON on two channels of ONE socket,
+		// and the bridge's `select!` picks between two ready branches at random — so the delta can
+		// arrive FIRST, materializing every freshly minted uid before the overlay is in hand. The
+		// snapshot is authoritative for runtime by definition, so it has to apply to nodes that
+		// already exist, not only seed ones that materialize afterwards.
+		const fc = new FakeControl();
+		const g = new GraphStore(fc);
+		fc.emit({ event: 'hello', payload: helloSnap(catalog()) });
+		docSeedNode(g, 'n9', 'Oscillator', 'osc0', [0, 0]);
+		expect(g.nodeById('n9')!.error).toBeFalsy();
+
+		fc.emit({
+			event: 'graph_replaced',
+			payload: helloSnap(catalog(), { n9: { stage: 'error', error: 'ImportError: no scipy' } })
+		});
+
+		const n = g.nodeById('n9')!;
+		expect(n.stage, 'the overlay applies in the delta-first order too').toBe('error');
+		expect(n.error).toBe('ImportError: no scipy');
+	});
+
 	it('an older backend (hello without node_types) still fetches list_nodes async', () => {
 		const fc = new FakeControl();
 		fc.setCallResult('list_nodes', { types: catalog() });
