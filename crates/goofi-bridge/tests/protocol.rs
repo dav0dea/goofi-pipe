@@ -490,7 +490,7 @@ async fn add_boundary_is_undoable_over_the_wire() {
 #[tokio::test]
 async fn runtime_registered_type_reaches_the_palette_over_the_wire() {
     // The full serving path a browser sees: a runtime type registered into the
-    // live graph (as the CLI's --python-nodes does) surfaces via list_nodes.
+    // live graph (as the CLI's --auto-nodes does) surfaces via list_nodes.
     let base = start_server_with_runtime_type().await;
     let (mut ws, _) = connect_async(format!("{base}/control")).await.unwrap();
     let hello = recv_text(&mut ws).await;
