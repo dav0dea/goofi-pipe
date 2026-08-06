@@ -37,9 +37,16 @@ class _NdProxy:
             raise ValueError("nd('%s') is ambiguous: it has multiple outputs; use nd('%s').slot" % (self._name, self._name))
         raise ValueError("nd('%s') is not a known node reference" % self._name)
     def __getattr__(self, attr):
-        v = self._refs.get((self._name, attr))
-        if v is not None:
-            return v
+        # Key-absent and value-None are different answers, as in _bare: a DECLARED slot that
+        # has not emitted yet must name itself, not fall through to the bare value and tell
+        # the user to "use nd('x').slot" while they are using it. A numpy method name is
+        # never a refs key, so delegation is unaffected.
+        key = (self._name, attr)
+        if key in self._refs:
+            v = self._refs[key]
+            if v is not None:
+                return v
+            raise ValueError("nd('%s').%s is unavailable (no value yet)" % (self._name, attr))
         return getattr(self._bare(), attr)
     def __array__(self, dtype=None): return np.asarray(self._bare(), dtype=dtype)
     def __float__(self): return float(self._bare())
@@ -358,6 +365,22 @@ mod tests {
         refs.insert(("m".into(), Some("a".into())), Some(f32_1d(&[1.0])));
         refs.insert(("m".into(), Some("b".into())), Some(f32_1d(&[2.0])));
         assert!(eval_once("nd('m').mean()", 0.0, refs, &fparam()).is_err());
+    }
+
+    #[test]
+    fn an_unemitted_slot_names_itself_instead_of_claiming_ambiguity() {
+        let _interp = interp();
+        // A multi-output producer whose `a` is declared but has not emitted yet.
+        let mut refs = Refs::new();
+        refs.insert(("m".into(), Some("a".into())), None);
+        refs.insert(("m".into(), Some("b".into())), Some(f32_1d(&[2.0])));
+        let err = eval_once("nd('m').a + 1", 0.0, refs.clone(), &fparam()).unwrap_err();
+        assert!(err.0.contains("nd('m').a"), "the error must name the slot: {}", err.0);
+        assert!(!err.0.contains("ambiguous"), "the user IS using .slot — telling them to is nonsense: {}", err.0);
+
+        // A slot that does not exist at all is still the ambiguity/unknown message from `_bare`.
+        let typo = eval_once("nd('m').c + 1", 0.0, refs, &fparam()).unwrap_err();
+        assert!(typo.0.contains("ambiguous"), "an unknown attribute still falls through to the bare value: {}", typo.0);
     }
 
     #[test]
