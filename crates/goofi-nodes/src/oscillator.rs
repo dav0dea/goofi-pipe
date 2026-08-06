@@ -100,6 +100,12 @@ impl Node for Oscillator {
         let freq = p.f64("oscillator", "frequency").unwrap_or(1.0);
         let amp = p.f64("oscillator", "amplitude").unwrap_or(1.0);
         let wave = Waveform::parse(p.str("oscillator", "waveform").unwrap_or("sine"));
+        // A bound expression can yield inf/NaN (the Float coercion does not reject it). Refuse
+        // it BEFORE it reaches `self.phase`: `rem_euclid` maps ±inf and NaN alike to NaN, and
+        // nothing ever resets phase, so one bad tick would emit NaN for the node's lifetime.
+        if !freq.is_finite() || !amp.is_finite() {
+            return Err(format!("non-finite drive: frequency={freq}, amplitude={amp}").into());
+        }
         let step = TAU * freq / sfreq; // phase increment per sample
         let mut buf = Vec::with_capacity(n * 4);
         for _ in 0..n {
@@ -365,6 +371,30 @@ mod tests {
         let high = cycles_in_one_second(2000.0);
         assert_eq!(low, high, "cycles/sec must not depend on sfreq: {low} (80 Hz) vs {high} (2 kHz)");
         assert!((3..=4).contains(&low), "frequency=3 -> ~3 cycles per wall-second, got {low}");
+    }
+
+    #[test]
+    fn a_non_finite_drive_does_not_poison_the_phase() {
+        // A param expression can legitimately yield inf/NaN (`float('inf')`, or `nd()` on a node
+        // emitting NaN) — the Float coercion deliberately does not reject it. Folding that into
+        // `self.phase` would leave it NaN for the node's LIFETIME: `phase.rem_euclid(TAU)` maps
+        // both ±inf and NaN to NaN, and `on_param_changed` re-anchors pacing but never resets
+        // phase. So a non-finite drive is a boundary error, not new state.
+        let (mut node, m, mut params) = build(1.0, 1000.0, 1.0, "sine");
+        let inputs_map = IndexMap::new();
+        let inp = Inputs::new(&inputs_map);
+        let mut anchor = m.output_buffer();
+        node.process(&inp, &mut Outputs::new(&mut anchor), &mut NodeCtx { now: 0.0, ..Default::default() }, &Params::new(&params)).unwrap();
+
+        params["oscillator"].insert("frequency".into(), Param::float(f64::INFINITY, 0.0, 1e6));
+        let mut poisoned = m.output_buffer();
+        let r = node.process(&inp, &mut Outputs::new(&mut poisoned), &mut NodeCtx { now: 0.004, ..Default::default() }, &Params::new(&params));
+        assert!(r.is_err(), "a non-finite frequency is a per-tick node error, not a frame");
+
+        // The moment the expression yields a finite value again, the node emits real samples.
+        params["oscillator"].insert("frequency".into(), Param::float(250.0, 0.0, 1e6));
+        let v = run_at(&mut node, m, &params, 0.008).expect("a frame once the drive is finite again");
+        assert!(v.iter().all(|x| x.is_finite()), "phase survived the non-finite tick: {v:?}");
     }
 
     #[test]
