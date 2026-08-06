@@ -18,8 +18,9 @@ pub struct PyNode {
     /// engine's `Inputs`/`Outputs` use, so `process` knows which slots to gather/emit.
     in_slots: Vec<&'static str>,
     out_slots: Vec<&'static str>,
-    /// Whether the runtime GIL tripwire has run yet (checked once, on the first
-    /// `process`, so steady-state ticks pay nothing).
+    /// Whether the runtime GIL tripwire has run and come back CLEAN — set only then, so a
+    /// steady-state tick pays nothing while a serialized interpreter keeps being re-checked
+    /// (and keeps being reported) for as long as it is serialized.
     gil_checked: bool,
     /// Source dtypes already warned about (dedup for the ingest cast warning).
     cast_warned: HashSet<SrcDtype>,
@@ -128,10 +129,15 @@ impl Node for PyNode {
                     .unwrap_or(false);
             Ok((outs, tripped))
         })?;
-        self.gil_checked = true;
         if tripped {
+            // Deliberately do NOT latch: the condition is permanent (the interpreter stays
+            // serialized for every in-process node), so the error has to be permanent too.
+            // Latching here would leave one one-tick error the 2 Hz stats sweep — which diffs
+            // SAMPLED state, not tick edges — almost never observes. Re-checking keeps
+            // `last_error` set for as long as the GIL is on, and self-clears if it goes off.
             return Err("node re-enabled the GIL at runtime; quarantine it to the subprocess tier".into());
         }
+        self.gil_checked = true;
         for (slot, data) in outs {
             out.set(&slot, data);
         }
