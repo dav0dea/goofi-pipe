@@ -205,11 +205,15 @@ fn envelope_axis(bytes: &[u8], shape: &[usize], dim: usize, max: usize) -> Optio
                     }
                 }
             }
-            for &v in &mn {
-                write_f32(v, &mut out);
+            // An all-NaN bin wins no comparison, so both seeds survive untouched — emit NaN
+            // rather than the (+INF, -INF) pair, which is not in the input and would wreck
+            // a viewer's autoscale. A bin of real infinities always sets at least one seed.
+            let all_nan = |i: usize| mn[i] == f32::INFINITY && mx[i] == f32::NEG_INFINITY;
+            for i in 0..inner {
+                write_f32(if all_nan(i) { f32::NAN } else { mn[i] }, &mut out);
             }
-            for &v in &mx {
-                write_f32(v, &mut out);
+            for i in 0..inner {
+                write_f32(if all_nan(i) { f32::NAN } else { mx[i] }, &mut out);
             }
             if o == 0 {
                 let mid = (lo + hi.saturating_sub(1)) / 2;
@@ -303,6 +307,24 @@ mod tests {
         assert_eq!(r.new_len, 4);
         // c0: [min(0,2),max(0,2), min(1,3),max(1,3)] = [0,2,1,3]; c1: [5,9,6,8]
         assert_eq!(as_f32(&r.bytes), vec![0.0, 2.0, 1.0, 3.0, 5.0, 9.0, 6.0, 8.0]);
+    }
+
+    #[test]
+    fn envelope_all_nan_bin_stays_nan() {
+        // An all-NaN bin must not fabricate the ±INF seeds: a viewer draws NaN as a gap,
+        // but a single +INF destroys autoscale for every channel in the frame.
+        let d = f32_bytes(&[f32::NAN; 8]);
+        let r = reduce_axis(&d, &[8], 0, 2, ReduceMethod::Envelope).unwrap();
+        assert_eq!(r.new_len, 4);
+        assert!(as_f32(&r.bytes).iter().all(|v| v.is_nan()), "all-NaN bin reduces to NaN, got {:?}", as_f32(&r.bytes));
+    }
+
+    #[test]
+    fn envelope_skips_nan_when_the_bin_has_any_finite_value() {
+        // [NaN,5,NaN,3] and [NaN,NaN,2,NaN] → the finite values still win their bin.
+        let d = f32_bytes(&[f32::NAN, 5.0, f32::NAN, 3.0, f32::NAN, f32::NAN, 2.0, f32::NAN]);
+        let r = reduce_axis(&d, &[8], 0, 2, ReduceMethod::Envelope).unwrap();
+        assert_eq!(as_f32(&r.bytes), vec![3.0, 5.0, 2.0, 2.0], "NaN skipped where a finite value exists");
     }
 
     #[test]
