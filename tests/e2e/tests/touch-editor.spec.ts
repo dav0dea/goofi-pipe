@@ -56,9 +56,10 @@ test('a long press on empty canvas opens the add-node menu there', async ({ page
  * from both edges (a declared 20px plus Flow's own 15px panel margin), which put it well inside the
  * canvas rather than in its corner. Under coarse it tucks to `--space-6`.
  *
- * Still clear of the panel's corner grip, which is what any inset here is for: the grip is a 16px
- * box clipped to its lower-left triangle, so a cluster whose corner sits at (g, g) misses it
- * entirely once g + g > 16.
+ * Clearing the panel's corner grip used to be a term here too — it no longer is, because the grip
+ * is not rendered under this idiom at all (`Panel.svelte`, `touch-panel-split.spec.ts`). What is
+ * left is the tuck itself, which is the whole point on a phone: the cluster belongs in the corner,
+ * not floating 35px inside a 412px canvas.
  */
 test('the editor controls tuck into the corner under a coarse pointer', async ({ page }) => {
 	await page.goto('/');
@@ -66,7 +67,6 @@ test('the editor controls tuck into the corner under a coarse pointer', async ({
 	const { left, bottom, rem } = await controlsInset(page);
 	expect(left).toBeCloseTo(0.75 * rem, 0);
 	expect(bottom).toBeCloseTo(0.75 * rem, 0);
-	expect(left + bottom, 'and it still misses the clipped corner grip').toBeGreaterThan(16);
 	expect(left, 'a real tuck, not the fine-pointer inset').toBeLessThan(1.5 * rem);
 });
 

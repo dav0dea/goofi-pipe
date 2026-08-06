@@ -6,8 +6,10 @@
   Corner grips drive the Blender-style power-user gesture: drag a corner inward
   to SPLIT (axis follows the dominant drag direction), or drag it onto a sibling
   panel to JOIN (that sibling is absorbed). A live ghost previews the result.
-  The explicit header dropdown / right-click menu / draggable borders cover the
-  same operations for discoverability.
+  FINE POINTER ONLY — under the coarse idiom the grips are not rendered at all
+  (see the `.corner` rules). The explicit header actions / right-click menu /
+  draggable borders cover the same operations for discoverability, and are what
+  touch has instead.
 -->
 <script lang="ts">
 	import { findParent, type Direction, type PanelNode } from './model';
@@ -350,6 +352,21 @@
 	}
 	.corner:hover {
 		opacity: 1;
+	}
+	/* …and on a finger the grip is not merely left un-grown but taken off the board entirely.
+	   `display: none`, not `opacity: 0`: at rest it is ALREADY invisible, and what made it a
+	   liability on touch is the other half — a 16px box at `--z-chrome` still HIT-TESTS, so each
+	   panel corner carried a dead triangle that swallowed a tap over the panel's own content, one
+	   of them where the node editor's zoom cluster sits. It swallowed the tap to arm a gesture that
+	   cannot complete there anyway (the `touch-action` note above), which is the worst of both: an
+	   affordance you cannot see, cannot use, and cannot tap past. Removing the box is what makes
+	   D-R5's claim — the header carries the same operations — true rather than merely written down.
+	   Its fine-pointer twin is untouched, and both halves are measured: `panel-corner-split.spec.ts`
+	   drags a real split out of a corner, `touch-panel-split.spec.ts` proves nothing is there. */
+	@media (hover: none) and (pointer: coarse) {
+		.corner {
+			display: none;
+		}
 	}
 	.corner.tl {
 		top: 0;

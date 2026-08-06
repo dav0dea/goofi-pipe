@@ -630,7 +630,7 @@ const HOVER_ONLY_OK: { file: string; target: string; why: string }[] = [
 	{
 		file: 'workspace/Panel.svelte',
 		target: 'corner',
-		why: 'split/join by corner is a fine-pointer power-user gesture R declined to grow — a --hit grip drops a 44px split-drag triangle over every panel corner, including the one the editor’s zoom cluster sits in — and D-R5 gives touch the header long-press menu as its door instead'
+		why: 'split/join by corner is a fine-pointer power-user gesture, and under the coarse idiom it is `display: none` rather than given a resting form — a resting grip would be a --hit split-drag triangle over every panel corner (including the one the editor’s zoom cluster sits in) arming a drag the browser reclaims as a pan, so the honest coarse answer is no grip at all; the panel header carries the same split/maximize actions as its door (D-R5)'
 	},
 	{
 		file: 'editor/GoofiNode.svelte',
