@@ -44,8 +44,6 @@ export interface ExprEditorOptions {
 }
 
 export interface ExprEditorHandle {
-	/** The live document. */
-	value(): string;
 	/** Commit now, if the document has changed — what the expanded editor's `apply` control asks for.
 	 *  A code editor's document is not a bindable string, so the owner asks for the commit rather than
 	 *  mirroring every keystroke into its own state. */
@@ -147,7 +145,6 @@ export function createExprEditor(host: HTMLElement, opts: ExprEditorOptions): Ex
 	showError(opts.error);
 
 	return {
-		value: () => view.state.doc.toString(),
 		commit: () => commit(view),
 		setValue: (next) => {
 			if (next === view.state.doc.toString()) {
