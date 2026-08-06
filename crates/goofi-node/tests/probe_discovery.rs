@@ -231,3 +231,18 @@ fn the_probe_itself_is_the_gil_routing_gate() {
     };
     assert!(!gil.gil_safe, "a GIL interpreter can never host in-process → subprocess tier");
 }
+
+#[test]
+fn the_gil_sample_covers_the_config_hooks() {
+    // The gate must read the GIL state AFTER the `config_*` hooks have run. A hook is exactly
+    // where a node does its declaration-time imports (goofi-pymod's own `device_options.py`
+    // fixture documents that as intended usage), and importing a C extension built without
+    // free-threading support re-enables the GIL process-wide. Sampled before the hooks, such a
+    // node routes to the in-process tier and only fails on its first tick.
+    let Discovery::Found(d) =
+        discover_one(&fixtures().join("gil_flip.py"), &ft_python(), "python", Isolation::InProcess)
+    else {
+        panic!("gil_flip.py discovers on the free-threaded interpreter")
+    };
+    assert!(!d.gil_safe, "a hook that re-enabled the GIL must route to the subprocess tier");
+}

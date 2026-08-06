@@ -22,6 +22,14 @@ pub fn introspect(py: Python<'_>, path: &str) -> PyResult<String> {
     let cls = find_node_class(py, &module)?;
     let instance = cls.call0()?;
 
+    // Run the hooks FIRST, then sample the GIL. A hook is where a node does its
+    // declaration-time imports, and importing a C extension built without free-threading
+    // support re-enables the GIL process-wide — the routing gate has to see that. (Struct
+    // literal fields evaluate in written order, so this cannot be inlined below.)
+    let inputs = slots(&instance.call_method0("config_input_slots")?)?;
+    let outputs = out_slots(&instance.call_method0("config_output_slots")?)?;
+    let params = params(&instance.call_method0("config_params")?)?;
+
     let intro = Introspection {
         gil_safe: !py
             .import("sys")?
@@ -35,9 +43,9 @@ pub fn introspect(py: Python<'_>, path: &str) -> PyResult<String> {
             .and_then(|d| d.extract::<String>().ok())
             .map(|s| s.trim().to_string())
             .unwrap_or_default(),
-        inputs: slots(&instance.call_method0("config_input_slots")?)?,
-        outputs: out_slots(&instance.call_method0("config_output_slots")?)?,
-        params: params(&instance.call_method0("config_params")?)?,
+        inputs,
+        outputs,
+        params,
     };
     serde_json::to_string(&intro)
         .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))
