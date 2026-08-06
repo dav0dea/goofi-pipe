@@ -385,9 +385,9 @@ async fn handle_control(socket: WebSocket, state: AppState) {
                 Some(Ok(Message::Binary(b))) => {
                     // A CRDT sync frame from the client. The client replica is READ-ONLY (B3):
                     // every mutation is a command RPC, so a StateVector drives the pairwise sync
-                    // handshake (reply with the diff it lacks) and an Ephemeral relays presence —
-                    // a client `Update` is never expected and is IGNORED (the doc is manager-authored;
-                    // an out-of-band leaf write would just be reverted by the next re-mirror anyway).
+                    // handshake (reply with the diff it lacks), and a client `Update` is never
+                    // expected and is IGNORED (the doc is manager-authored; an out-of-band leaf
+                    // write would just be reverted by the next re-mirror anyway).
                     match goofi_crdt::SyncMsg::decode(&b) {
                         Some(msg @ goofi_crdt::SyncMsg::StateVector(_)) => {
                             let replies = state.crdt.lock().unwrap().on_sync(msg);
