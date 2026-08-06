@@ -86,6 +86,9 @@ fn encode_array_body(store: &ArrayStore, out: &mut Vec<u8>) {
 // Meta projection (typed Meta + derived shape/dtype -> msgpack map)
 // ---------------------------------------------------------------------------
 
+/// Meta names the wire *derives* from the `Data` itself, so they are never taken from `Meta`.
+const DERIVED_KEYS: [&str; 2] = ["shape", "dtype"];
+
 /// Serialize a `Data`'s `Meta` (channels/sfreq/index/extra) to the msgpack map used in a GOOF
 /// frame body. Inverse: [`parse_meta`]. (Module-internal.)
 fn pack_meta(d: &Data) -> Vec<u8> {
@@ -94,9 +97,11 @@ fn pack_meta(d: &Data) -> Vec<u8> {
 
     // Every meta entry (builtins + extras), skipping unset (`Null`) builtins — so an unset
     // ufreq/index stays off the wire. `channels` is projected per value-kind below (arrays
-    // only, matching the wire contract), never here.
+    // only, matching the wire contract), never here — and so are the derived names, which a
+    // node's own meta dict is free to carry (`dict_to_meta` accepts any string key); dropping
+    // them here is what keeps the map from carrying the same key twice.
     for (k, v) in meta.iter() {
-        if k == goofi_core::META_CHANNELS || matches!(v, MetaValue::Null) {
+        if k == goofi_core::META_CHANNELS || DERIVED_KEYS.contains(&k.as_str()) || matches!(v, MetaValue::Null) {
             continue;
         }
         entries.push((Mp::from(k.as_str()), mv_to_mp(v)));
@@ -524,6 +529,29 @@ mod decode_tests {
         fbody.extend_from_slice(&1.5f32.to_le_bytes());
         assert_eq!(arr_bytes(&decode_array_body(&fbody, Meta::empty()).unwrap()).1,
                    1.5f32.to_le_bytes().to_vec());
+    }
+
+    #[test]
+    fn a_meta_shadowing_a_derived_key_does_not_duplicate_it() {
+        // A Python node is free to put any string key in its meta dict (`dict_to_meta`
+        // special-cases only `channels`), so a node returning meta={'shape': …} used to
+        // emit a msgpack map with two `shape` entries — malformed, and left to each
+        // decoder to resolve. shape/dtype are derived; the derived value is the only one.
+        let mut meta = Meta::empty();
+        meta.set("shape", MetaValue::Str("user".into()));
+        meta.set("dtype", MetaValue::Str("userd".into()));
+        let buf: Vec<u8> = [1.0f32, 2.0].iter().flat_map(|x| x.to_le_bytes()).collect();
+        let d = Data::array_f32(vec![2], buf, meta).unwrap();
+
+        let packed = pack_meta(&d);
+        let map = match rmpv::decode::read_value(&mut &packed[..]).expect("msgpack meta") {
+            Mp::Map(m) => m,
+            other => panic!("meta is not a map: {other:?}"),
+        };
+        let count = |name: &str| map.iter().filter(|(k, _)| k.as_str() == Some(name)).count();
+        assert_eq!(count("shape"), 1, "exactly one shape entry, got {map:?}");
+        assert_eq!(count("dtype"), 1, "exactly one dtype entry, got {map:?}");
+        assert_eq!(decode(&encode(&d)).unwrap().meta().get("shape"), None, "shape is derived, never carried back");
     }
 
     #[test]
