@@ -317,6 +317,25 @@ class WorkspaceStore {
 		return true;
 	}
 
+	/** Like `_updateActiveRoot`, for a write addressed by PANEL id rather than by "what is in
+	 * front": panel ids are unique across tabs and every tree op is a no-op on a tree lacking the
+	 * id, so mapping `fn` over all of them lands it wherever the panel lives. The capture and the
+	 * clearing of node bindings already walk every tab (`panelsBoundTo` / `clearNodeRefs`), so the
+	 * undo restore has to as well — through the active root alone it silently dropped the re-bind
+	 * of any panel sitting in a background tab. */
+	private _updateAnyRoot(fn: (root: LayoutNode) => LayoutNode | null): boolean {
+		let changed = false;
+		const workspaces = this.state.workspaces.map((w) => {
+			const root = fn(w.root);
+			if (!root || root === w.root) return w;
+			changed = true;
+			return { ...w, root };
+		});
+		if (!changed) return false;
+		this.state = { ...this.state, workspaces };
+		return true;
+	}
+
 	// --- layout mutations --------------------------------------------------
 
 	/** Split a panel. The new panel is `empty` by default — the user picks its
@@ -380,7 +399,7 @@ class WorkspaceStore {
 	 * undo restores a whole `WorkspaceState`, so an unrecorded write landing after a tracked action
 	 * is in neither of its snapshots and the undo destroys it. That is what the two ops below are. */
 	setPanelState(panelId: string, state: unknown, intent: LayoutIntent = 'authored'): void {
-		if (this._updateActiveRoot((root) => setPanelState(root, panelId, state))) this._mark(intent);
+		if (this._updateAnyRoot((root) => setPanelState(root, panelId, state))) this._mark(intent);
 	}
 
 	/** Merge `patch` into a panel's state bag as one tracked, undoable edit. The shared body of the
@@ -392,7 +411,7 @@ class WorkspaceStore {
 		patch: (state: unknown) => Record<string, unknown>
 	): void {
 		this._tracked(kind, label, () => {
-			this._updateActiveRoot((root) => {
+			this._updateAnyRoot((root) => {
 				const p = findPanel(root, panelId);
 				if (!p) return root;
 				return setPanelState(root, panelId, patch(p.state));

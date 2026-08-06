@@ -111,6 +111,32 @@ describe('undo of a delete re-binds panels the delete emptied', () => {
 		await history().undo();
 		expect(ws.panelsBoundTo('osc0').map((p) => p.panelId)).toContain(panelId);
 	});
+
+	// The capture (`panelsBoundTo`) and the clearing (`clearNodeRefs`) both walk EVERY tab, so the
+	// restore has to as well — otherwise a panel bound in a background tab is emptied by the delete
+	// and never re-bound, and the undo silently loses it.
+	it('re-binds a panel that lives in a BACKGROUND layout tab', async () => {
+		const fc = new FakeControl();
+		const g = new GraphStore(fc);
+		const ws = workspace();
+		history().configureDeps(() => ({ control: fc, graph: g, workspace: ws }));
+
+		// Bind a Parameters panel in a second tab, then leave that tab.
+		const firstTab = ws.state.activeWorkspaceId;
+		ws.addTab('parameters');
+		const panelId = ws.activePanelId!;
+		ws.linkNodeToPanel(panelId, 'osc0');
+		ws.selectTab(firstTab);
+		expect(ws.panelsBoundTo('osc0').map((p) => p.panelId)).toContain(panelId);
+		history().reset();
+
+		await g.removeNode('osc0');
+		ws.clearNodeRefs('osc0');
+		expect(ws.panelsBoundTo('osc0')).toHaveLength(0);
+
+		await history().undo();
+		expect(ws.panelsBoundTo('osc0').map((p) => p.panelId)).toContain(panelId);
+	});
 });
 
 describe('deleting a collapsed sub-patch instance is undoable (manager owns the subtree capture)', () => {
