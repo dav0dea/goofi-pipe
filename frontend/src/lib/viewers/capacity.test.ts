@@ -29,13 +29,22 @@ describe('viewSpecForKind', () => {
 		});
 	});
 
-	it('trajectory → array 2-D, subsample the point axis', () => {
+	// TrajectoryViewer reads a (dims × points) frame — shape[0] is the SIGNAL rows it pairs
+	// i<j, shape[1] is the path length. So the axis worth reducing is the LAST one; capping
+	// dim 0 would only drop signal rows while shipping every sample of the long axis.
+	it('trajectory → array 2-D, subsample the point axis (the last one)', () => {
 		expect(viewSpecForKind('trajectory', 800, 800)).toEqual({
 			dtype: 'array',
 			ndim: [['eq', 2]],
 			dims: [],
-			reduce: [{ dim: 0, max: 800, method: 'subsample' }]
+			reduce: [{ dim: -1, max: 800, method: 'subsample' }]
 		});
+	});
+
+	it('trajectory caps the point axis at MAX_POINTS on a very wide panel', () => {
+		expect(viewSpecForKind('trajectory', 8000, 600).reduce).toEqual([
+			{ dim: -1, max: 4096, method: 'subsample' }
+		]);
 	});
 
 	it('topomap → array 1-D, no reduction', () => {

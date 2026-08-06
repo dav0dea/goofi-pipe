@@ -88,11 +88,16 @@ export function viewSpecForKind(kind: ViewerKind, width: number, height: number)
 		};
 	}
 	if (kind === 'trajectory') {
+		// A trajectory frame is (dims × points): TrajectoryViewer pairs ROWS i<j and walks
+		// shape[1] as the path, so the long axis — the one worth reducing — is the LAST one.
+		// Subsample, not envelope: a phase portrait has no min/max pairing to preserve, and
+		// the viewer ignores `meta.reduced`. The rows are left alone; capping them would drop
+		// whole signals, and a row count is small by construction.
 		return {
 			dtype: 'array',
 			ndim: [['eq', 2]],
 			dims: [],
-			reduce: [{ dim: 0, max: Math.min(w, MAX_POINTS), method: 'subsample' }]
+			reduce: [{ dim: -1, max: Math.min(w, MAX_POINTS), method: 'subsample' }]
 		};
 	}
 	if (kind === 'topomap') {
