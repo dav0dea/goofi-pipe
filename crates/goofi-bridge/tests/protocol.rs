@@ -1472,6 +1472,40 @@ async fn boundary_authoring_over_the_wire() {
 }
 
 #[tokio::test]
+async fn a_boundary_wires_to_a_nested_sub_patch_port_over_the_wire() {
+    // Inside an entered scope, a nested sub-patch shows its collapsed facade whose handles ARE its
+    // own StubIds — so dropping a cable from the parent's boundary pill onto one sends exactly this
+    // wire_boundary. `Command::WireStub` swallows a failed set_stub_inner as a recoverable no-op, so
+    // a refusal here replies ok:true and the cable silently vanishes on the next reconcile; the
+    // assertion that matters is therefore the mirrored inner, not the RPC's ok.
+    let base = start_server().await;
+    let (mut ws, _) = connect_async(format!("{base}/control")).await.unwrap();
+    let _hello = recv_text(&mut ws).await;
+
+    let uid = |v: &Value| v["result"].as_str().unwrap().to_string();
+    let inst_of = |v: &Value| v["result"]["inst_id"].as_str().unwrap().to_string();
+    let buf = uid(&call(&mut ws, 1, "add_node", json!({ "type": "Buffer" })).await);
+    let inner = inst_of(&call(&mut ws, 2, "group_nodes", json!({ "members": [buf], "pos": [0.0, 0.0] })).await);
+    let outer = inst_of(&call(&mut ws, 3, "group_nodes", json!({ "members": [inner], "pos": [0.0, 0.0] })).await);
+
+    // Expose the buffer on the nested scope, then expose THAT port on the outer one.
+    let ib = call(&mut ws, 4, "add_boundary", json!({ "inst_id": inner, "dir": "out", "dtype": "ARRAY", "pos": [0.0, 0.0] })).await
+        ["result"]["bnd_id"].as_str().unwrap().to_string();
+    call(&mut ws, 5, "wire_boundary", json!({ "inst_id": inner, "bnd_id": ib, "inner_node": buf, "inner_slot": "out" })).await;
+    let ob = call(&mut ws, 6, "add_boundary", json!({ "inst_id": outer, "dir": "out", "dtype": "ARRAY", "pos": [0.0, 0.0] })).await
+        ["result"]["bnd_id"].as_str().unwrap().to_string();
+    call(&mut ws, 7, "wire_boundary", json!({ "inst_id": outer, "bnd_id": ob, "inner_node": inner, "inner_slot": ib })).await;
+
+    let doc = sync_replica(&mut ws, |d| {
+        d.read_at(&["instances", outer.as_str(), "stubs", ob.as_str(), "dir"]).is_some()
+    })
+    .await;
+    let port = doc.read_at(&["instances", outer.as_str(), "stubs", ob.as_str()]).expect("outer stub");
+    assert_eq!(port["inner_node"], json!(inner), "wired to the nested scope's facade, not dropped");
+    assert_eq!(port["inner_slot"], json!(ib), "…at its own boundary port");
+}
+
+#[tokio::test]
 async fn unwiring_a_boundary_over_the_wire_prunes_its_inner_target() {
     // Deleting an In→member / member→Out edge is an UNWIRE: the pill survives, its inner target
     // clears. `Command::WireStub` models exactly that (`inner: Option<…>`, "an unwire always

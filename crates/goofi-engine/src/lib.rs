@@ -1351,9 +1351,16 @@ impl Graph {
                     .and_then(|s| s.stubs.get(stub))
                     .map(|st| st.dir)
                     .ok_or("set_stub_inner: no such stub")?;
-                let dtype = match dir {
-                    subpatch::Dir::In => self.input_slot_type(inner_node, &inner_slot),
-                    subpatch::Dir::Out => self.output_slot_type(inner_node, &inner_slot),
+                // A member may itself be a sub-patch, in which case its ports are that scope's own
+                // stubs, not slot decls — the `(facade uid, StubId)` shape `Stub.inner` documents
+                // and that `group_nodes` mints itself. `is_member_of` above already proved a DIRECT
+                // child, so chaining one port onto another cannot close a cycle.
+                let dtype = match self.scopes.get(&inner_node) {
+                    Some(nested) => nested.stubs.get(inner_slot.as_str()).filter(|st| st.dir == dir).map(|st| st.dtype),
+                    None => match dir {
+                        subpatch::Dir::In => self.input_slot_type(inner_node, &inner_slot),
+                        subpatch::Dir::Out => self.output_slot_type(inner_node, &inner_slot),
+                    },
                 }
                 .ok_or("set_stub_inner: no such inner slot")?;
                 let target = (inner_node, inner_slot);
@@ -5575,6 +5582,33 @@ mod tests {
         // wiring a non-member is rejected.
         let outsider = g.add_node("_TestConst", None).unwrap();
         assert!(g.set_stub_inner(s, &stub, Some((outsider, "in".to_string()))).is_err(), "non-member rejected");
+    }
+
+    #[test]
+    fn a_boundary_can_be_wired_to_a_nested_scopes_port() {
+        // `Stub.inner` is documented to hold a nested scope's `(facade uid, StubId)`, and
+        // `group_nodes`/`expose_in_nested_member` mint exactly that — but the wire path
+        // resolved the dtype through `self.nodes` only, so dragging a boundary pill onto a
+        // nested sub-patch's facade port was refused (and `Command::WireStub` swallows the
+        // refusal, so the cable just vanished on the next reconcile).
+        use subpatch::Dir;
+        let mut g = Graph::new();
+        let a = g.add_node("_TestEcho", None).unwrap();
+        let t = g.group_nodes(&[a], [0.0, 0.0]).unwrap(); // inner scope holding the leaf
+        let s = g.group_nodes(&[t], [0.0, 0.0]).unwrap(); // outer scope holding that scope
+
+        let t_out = g.add_boundary(t, Dir::Out, goofi_core::SlotType::Array, [0.0, 0.0]).unwrap();
+        g.set_stub_inner(t, &t_out, Some((a, "out".to_string()))).unwrap();
+
+        let s_out = g.add_boundary(s, Dir::Out, goofi_core::SlotType::String, [0.0, 0.0]).unwrap();
+        g.set_stub_inner(s, &s_out, Some((t, t_out.clone()))).expect("wiring to a nested scope's port");
+        assert_eq!(g.resolve_stub(s, &s_out), Some((a, "out".to_string())), "chains through T to the leaf");
+        assert_eq!(g.scope(s).unwrap().stubs[&s_out].dtype, goofi_core::SlotType::Array, "dtype taken from T's port");
+
+        // The nested port must exist and face the same way.
+        let s_in = g.add_boundary(s, Dir::In, goofi_core::SlotType::Array, [0.0, 0.0]).unwrap();
+        assert!(g.set_stub_inner(s, &s_in, Some((t, t_out.clone()))).is_err(), "an Out port cannot back an In pill");
+        assert!(g.set_stub_inner(s, &s_in, Some((t, "in7".to_string()))).is_err(), "no such nested port");
     }
 
     #[test]
