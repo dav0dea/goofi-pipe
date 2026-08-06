@@ -53,7 +53,9 @@ function px(v: number): number {
 
 /** The ViewSpec for a viewer `kind` at `width`×`height` device pixels. The `ndim`
  * range mirrors `isRenderable` in kind.ts so "compatible for the merge" agrees with
- * "the component will actually draw it". */
+ * "the component will actually draw it" — with one deliberate exception: line accepts
+ * `le 3` here but only draws `le 2`, so a 3-D frame is still reduced for the viewer
+ * that shows its HighDimFallback summary rather than shipped at full size. */
 export function viewSpecForKind(kind: ViewerKind, width: number, height: number): ViewSpec {
 	const w = px(width);
 	const h = px(height);

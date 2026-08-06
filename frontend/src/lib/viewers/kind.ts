@@ -28,7 +28,10 @@ export function resolveKind(dtype: string | null, stored: ViewerKind | undefined
 export function isRenderable(kind: ViewerKind, spec: ArrayData | null): boolean {
 	if (!spec) return true;
 	const s = spec.shape;
-	if (kind === 'line') return s.length <= 3;
+	// Exactly what ArrayViewer draws: 1-D (one series) or 2-D (C,N). It returns without touching
+	// uPlot above that, so admitting a 3-D shape here parked the DEFAULT viewer kind on a blank
+	// plot instead of the HighDimFallback a 4-D shape correctly gets.
+	if (kind === 'line') return s.length <= 2;
 	if (kind === 'image') return s.length === 2 || (s.length === 3 && [1, 2, 3, 4].includes(s[2]));
 	if (kind === 'trajectory') return s.length === 2 && s[0] >= 2;
 	if (kind === 'topomap') return s.length === 1;
