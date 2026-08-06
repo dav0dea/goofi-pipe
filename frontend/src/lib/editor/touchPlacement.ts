@@ -48,6 +48,39 @@ export interface TouchPlacement {
 	cancel(e: PlacementPointer): void;
 }
 
+/** How the ghost hangs off the point carrying it. */
+export type GhostAnchor = 'top-left' | 'centre';
+
+/**
+ * Where the ghost's TOP-LEFT goes, for a ghost of `size` carried by the point `at`.
+ *
+ * A CURSOR is a point the user can see, so the mouse ghost hangs off its top-left corner exactly
+ * where the arrow is — that is the reference and it is unchanged. A FINGER is an opaque disc over
+ * the corner it is on: dragging a card by an edge hidden under your own fingertip is what this
+ * fixes, so the touch ghost is carried by its MIDDLE, the way a physical object is.
+ *
+ * BOTH ARGUMENTS ARE IN FLOW UNITS, and that is the whole reason this is arithmetic on the position
+ * rather than a second CSS transform. The ghost is drawn inside `<ViewportPortal target="front">`,
+ * i.e. as a child of `.svelte-flow__viewport`, whose `translate(…) scale(zoom)` is applied to it;
+ * `offsetWidth`/`offsetHeight` report an element's own LAYOUT box and are not affected by an
+ * ancestor's transform, so the measured size is already in the same space as the `translate()` that
+ * positions it and no zoom factor enters here. Measured, not assumed: at the editor's initial 0.85
+ * zoom `touch-placement.spec.ts` saw a top-left-anchored ghost sitting 99.025 screen px left of the
+ * finger — exactly `233 × 0.85 / 2`, the flow half-width taken back through the zoom.
+ *
+ * Applied ONCE, to the anchored flow position, so `makeBounds`/`computeSnapDelta`, the drawing and
+ * the committed position are all the same number. Offsetting only the transform would draw a
+ * centred ghost and still commit the un-offset corner — half a card from where it was carried.
+ */
+export function ghostOrigin(
+	at: PlacementPoint,
+	size: { w: number; h: number },
+	anchor: GhostAnchor
+): PlacementPoint {
+	if (anchor === 'top-left') return { x: at.x, y: at.y };
+	return { x: at.x - size.w / 2, y: at.y - size.h / 2 };
+}
+
 export function createTouchPlacement(): TouchPlacement {
 	// The finger that took the gesture. Held by id so a SECOND finger landing mid-drag is ignored
 	// rather than allowed to teleport the ghost across the canvas.

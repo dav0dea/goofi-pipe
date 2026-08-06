@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { createTouchPlacement, type PlacementPointer } from './touchPlacement';
+import { createTouchPlacement, ghostOrigin, type PlacementPointer } from './touchPlacement';
 
 const at = (
 	x: number,
@@ -97,5 +97,22 @@ describe('createTouchPlacement', () => {
 		g.up(at(10, 10));
 		expect(g.down(at(50, 60), true)).toEqual({ x: 50, y: 60 });
 		expect(g.active).toBe(true);
+	});
+});
+
+describe('ghostOrigin', () => {
+	// A typical ghost, in the flow units both the position and the measured size are in.
+	const size = { w: 233, h: 168 };
+
+	it('hangs a MOUSE ghost off its top-left, at the cursor — the reference, byte-for-byte', () => {
+		expect(ghostOrigin({ x: 100, y: 200 }, size, 'top-left')).toEqual({ x: 100, y: 200 });
+	});
+
+	it('carries a TOUCH ghost by its middle, so the finger is over the node and not its corner', () => {
+		expect(ghostOrigin({ x: 100, y: 200 }, size, 'centre')).toEqual({ x: 100 - 116.5, y: 200 - 84 });
+	});
+
+	it('centres on the MEASURED size, so a node of any height is still carried by its middle', () => {
+		expect(ghostOrigin({ x: 0, y: 0 }, { w: 200, h: 400 }, 'centre')).toEqual({ x: -100, y: -200 });
 	});
 });

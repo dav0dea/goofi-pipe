@@ -19,6 +19,12 @@ import { touchSession, type TouchPoint } from '../lib/touch';
  * What pins it is the pair: the ghost's screen box tracks the finger, AND `.svelte-flow__viewport`'s
  * transform is byte-identical before and after.
  *
+ * AND THE GHOST IS CARRIED BY ITS MIDDLE, which is the other thing a finger changes: a cursor is a
+ * visible point, a finger is an opaque disc over the corner it is on, so the mouse ghost hangs off
+ * its top-left and the touch ghost is centred. Both the DRAWN box and the COMMITTED position are
+ * measured against that centre, because centring only the CSS transform would satisfy the first and
+ * drop the node half a card away from the second.
+ *
  * MODALITY, NOT ORIENTATION — the rule `panels/paneDrag.ts` and `touch-modality.spec.ts` are built
  * on: orientation decides an anchored axis, input modality decides a gesture. This gesture is
  * modality-gated (`pointerType === 'touch'`, asked per event so a hybrid device stays right on both
@@ -62,24 +68,47 @@ async function dragPoints(page: Page): Promise<{ from: TouchPoint; to: TouchPoin
 /** The pan/zoom matrix every flow-space thing is drawn through. */
 const viewport = (page: Page): Locator => page.locator('.svelte-flow__viewport');
 
-async function boxAt(ghost: Locator): Promise<{ x: number; y: number }> {
-	const b = (await ghost.boundingBox())!;
-	return { x: b.x, y: b.y };
+interface Box {
+	x: number;
+	y: number;
+	width: number;
+	height: number;
 }
 
+/** A rendered box, in SCREEN px — i.e. already through the viewport's zoom. */
+async function boxAt(loc: Locator): Promise<Box> {
+	return (await loc.boundingBox())!;
+}
+
+const topLeft = (b: Box): TouchPoint => ({ x: b.x, y: b.y });
+const centre = (b: Box): TouchPoint => ({ x: b.x + b.width / 2, y: b.y + b.height / 2 });
+
 /**
- * The ghost's top-left IS the point the finger is at: it is drawn at the flow position
- * `screenToFlowPosition` mapped that client point to, so the round trip lands back on it.
+ * THE FINGER IS OVER THE MIDDLE OF THE GHOST, not over its corner.
+ *
+ * A cursor is a point the user can see, so the mouse ghost hangs off its top-left exactly where the
+ * arrow is — that path is the reference and is unchanged, and `default`'s placement specs still
+ * measure it. A finger COVERS the corner it is on: dragging a card by an edge you cannot see is the
+ * bug this centring fixes, so on touch the anchor moves to the ghost's centre.
  *
  * The graph is emptied first, so there are no snap targets and the position is the finger's
  * unmodified — the few px of slack are the commit's rounding to whole flow units, taken back
  * through a 0.85 zoom.
  */
 const TOL = 4;
-function expectUnderTheFinger(box: { x: number; y: number }, at: TouchPoint, what: string): void {
-	expect(Math.abs(box.x - at.x), `${what}: horizontally (at ${box.x}, wanted ${at.x})`).toBeLessThanOrEqual(TOL);
-	expect(Math.abs(box.y - at.y), `${what}: vertically (at ${box.y}, wanted ${at.y})`).toBeLessThanOrEqual(TOL);
+function expectAt(p: TouchPoint, at: TouchPoint, what: string): void {
+	expect(Math.abs(p.x - at.x), `${what}: horizontally (at ${p.x}, wanted ${at.x})`).toBeLessThanOrEqual(TOL);
+	expect(Math.abs(p.y - at.y), `${what}: vertically (at ${p.y}, wanted ${at.y})`).toBeLessThanOrEqual(TOL);
 }
+
+/**
+ * The ghost is centred on the finger IN FLOW UNITS — one offset, applied to the anchored flow
+ * position, so the snap arithmetic, the drawing and the committed position are all the same number.
+ * Measured here at the editor's initial 0.85 zoom, which is what makes this an assertion about
+ * UNITS: a half-size subtracted in SCREEN px instead of flow units lands the centre
+ * `(1 - 0.85) * half` off — ~17px horizontally, four times this tolerance.
+ */
+const expectCentredOn = (b: Box, at: TouchPoint, what: string): void => expectAt(centre(b), at, what);
 
 test('a touch drag moves the GHOST and leaves the canvas exactly where it was', async ({ page }) => {
 	const ghost = await openGhost(page, 'Oscillator');
@@ -91,7 +120,7 @@ test('a touch drag moves the GHOST and leaves the canvas exactly where it was', 
 	const before = await viewport(page).evaluate((el) => getComputedStyle(el).transform);
 
 	await touch.down(from);
-	expectUnderTheFinger(await boxAt(ghost), from, 'the press put the ghost under the finger');
+	expectCentredOn(await boxAt(ghost), from, 'the press put the ghost under the finger');
 
 	for (let i = 1; i <= 5; i++) {
 		await touch.moveTo({
@@ -99,7 +128,8 @@ test('a touch drag moves the GHOST and leaves the canvas exactly where it was', 
 			y: Math.round(from.y + ((to.y - from.y) * i) / 5)
 		});
 	}
-	expectUnderTheFinger(await boxAt(ghost), to, 'and it tracked the finger across the canvas');
+	const held = await boxAt(ghost);
+	expectCentredOn(held, to, 'and it tracked the finger across the canvas');
 
 	// THE HALF THAT REGRESSES SILENTLY. Both a moving ghost and a panning canvas move the ghost's
 	// screen box by the drag delta, so the assertion above cannot tell them apart — this one can.
@@ -118,13 +148,23 @@ test('a touch drag moves the GHOST and leaves the canvas exactly where it was', 
 	await expect.poll(async () => (await nodes(page)).length, { message: 'a node landed' }).toBe(1);
 	const uid = (await nodes(page))[0].uid;
 	const card = page.locator(`.svelte-flow__node[data-id="${uid}"]`);
-	expectUnderTheFinger(await boxAt(card), to, 'and it landed where the finger was released');
+	// THE HALF-NODE-OFF BUG, stated as a measurement. Centring only the ghost's CSS transform would
+	// draw exactly the box asserted above and still COMMIT the un-offset position, dropping the node
+	// half a card away from where it was being carried. Comparing the card's top-left against the
+	// ghost's own — the last one it drew before the lift — is what tells those two apart.
+	// (And that is the whole chain: the ghost was centred on the finger, the card is where the ghost
+	// was, so the card is centred on the finger — without this spec having to assume a placed card
+	// and its ghost are the same height.)
+	expectAt(topLeft(await boxAt(card)), topLeft(held), 'the node landed where the ghost was');
 	await expect(viewport(page), 'and the canvas still has not moved').toHaveCSS('transform', before);
 });
 
 test('a plain tap places the node at the tap, on the same path as the drag', async ({ page }) => {
 	const ghost = await openGhost(page, 'Oscillator');
 	const { to } = await dragPoints(page);
+	// The ghost's rendered size, read while it still exists — the tap is what destroys it, and the
+	// committed corner is half of this up and left of where the finger went down.
+	const g = await boxAt(ghost);
 
 	// No move between down and up at all: a tap is a drag of zero length, which is the whole reason
 	// there is no tap-vs-drag threshold for it to fall on the wrong side of.
@@ -133,10 +173,10 @@ test('a plain tap places the node at the tap, on the same path as the drag', asy
 	await expect(ghost, 'the tap committed the placement').toHaveCount(0);
 	await expect.poll(async () => (await nodes(page)).length, { message: 'a node landed' }).toBe(1);
 	const uid = (await nodes(page))[0].uid;
-	expectUnderTheFinger(
-		await boxAt(page.locator(`.svelte-flow__node[data-id="${uid}"]`)),
-		to,
-		'placed at the tap'
+	expectAt(
+		topLeft(await boxAt(page.locator(`.svelte-flow__node[data-id="${uid}"]`))),
+		{ x: to.x - g.width / 2, y: to.y - g.height / 2 },
+		'placed centred on the tap'
 	);
 });
 

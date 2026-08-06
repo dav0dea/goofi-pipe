@@ -56,13 +56,24 @@ function links(page: Page): Promise<Array<Record<string, string>>> {
 	return page.evaluate(() => (window as any).goofi.query.graph().links);
 }
 
-/** Pick `type` from the open add-node menu and place it with a tap on the canvas. */
-async function pickAndPlace(page: Page, type: string, at: { x: number; y: number }): Promise<void> {
+/**
+ * Pick `type` from the open add-node menu and place it with a tap on the canvas. Answers the
+ * GHOST's rendered size, measured while it still exists: the finger carries the ghost by its middle,
+ * so the corner the node commits at is half of that up and left of the tap — and a placed card is
+ * NOT the same height as its ghost (it grows a viewer body), so its own box cannot stand in.
+ */
+async function pickAndPlace(
+	page: Page,
+	type: string,
+	at: { x: number; y: number }
+): Promise<{ width: number; height: number }> {
 	await paletteItem(page, type).tap();
 	const ghost = page.getByTestId('placement-ghost');
 	await expect(ghost, `the ${type} ghost is following the finger`).toBeVisible();
+	const size = (await ghost.boundingBox())!;
 	await page.touchscreen.tap(at.x, at.y);
 	await expect(ghost, 'the tap committed the placement').toHaveCount(0);
+	return size;
 }
 
 test('412px portrait: add a node, connect it, open its parameters, change one, and save', async ({
@@ -74,7 +85,7 @@ test('412px portrait: add a node, connect it, open its parameters, change one, a
 
 	// --- 1. ADD, through the coarse-pointer door -------------------------------------------
 	const spot = await openAddMenuByPress(page);
-	await pickAndPlace(page, 'Oscillator', spot);
+	const ghost = await pickAndPlace(page, 'Oscillator', spot);
 	await expect.poll(async () => (await nodes(page)).length, { message: 'a node landed' }).toBe(1);
 
 	const osc = (await nodes(page))[0];
@@ -82,9 +93,12 @@ test('412px portrait: add a node, connect it, open its parameters, change one, a
 	await expect(oscCard, 'the new node is on screen').toBeVisible();
 	// …and it landed where the finger did. A touch device never reports a mouse position, so a
 	// placement anchored on the last `mousemove` would drop every node at the viewport origin.
+	// The finger holds the ghost by its MIDDLE (`touchPlacement.ts`'s `ghostOrigin`), so the corner
+	// it commits at is half a GHOST up and left of the tap — `touch-placement.spec.ts` is where that
+	// anchor is measured to the px; this is the end-to-end sanity check around it.
 	const card = (await oscCard.boundingBox())!;
-	expect(Math.abs(card.x - spot.x), 'placed at the tap, horizontally').toBeLessThan(40);
-	expect(Math.abs(card.y - spot.y), 'placed at the tap, vertically').toBeLessThan(40);
+	expect(Math.abs(card.x - (spot.x - ghost.width / 2)), 'placed at the tap, horizontally').toBeLessThan(40);
+	expect(Math.abs(card.y - (spot.y - ghost.height / 2)), 'placed at the tap, vertically').toBeLessThan(40);
 
 	// --- 2. PARAMETERS — placing a node selects it, so its inspector is already up ------------
 	const inspector = page.getByTestId('auto-side-panel');

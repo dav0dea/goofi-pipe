@@ -10,7 +10,7 @@
 		DEFAULT_NODE_H,
 		type Bounds
 	} from './snap';
-	import { createTouchPlacement } from './touchPlacement';
+	import { createTouchPlacement, ghostOrigin, type GhostAnchor } from './touchPlacement';
 	import type { NodeTypeInfo } from '$lib/api/control';
 
 	interface Props {
@@ -34,16 +34,22 @@
 	let altKey = $state(false);
 	let ghostW = $state(DEFAULT_NODE_W);
 	let ghostH = $state(DEFAULT_NODE_H);
+	/** Which point of the ghost the input driving it is holding — asked of the EVENT, below, so a
+	 *  hybrid device answers separately for its trackpad and its screen. */
+	let anchor = $state<GhostAnchor>('top-left');
 
 	const flowPos = $derived(screenToFlowPosition({ x: mouseClient.x, y: mouseClient.y }));
+	// The anchor is spent HERE, once, on the flow position — everything downstream (the snap bounds,
+	// the transform, the commit) reads `origin` and so cannot disagree about where the ghost is.
+	const origin = $derived(ghostOrigin(flowPos, { w: ghostW, h: ghostH }, anchor));
 
 	const snap = $derived.by(() => {
-		const dragged = [makeBounds(flowPos.x, flowPos.y, ghostW, ghostH)];
+		const dragged = [makeBounds(origin.x, origin.y, ghostW, ghostH)];
 		return computeSnapDelta(dragged, targets, altKey);
 	});
 
-	const snappedX = $derived(flowPos.x + snap.dx);
-	const snappedY = $derived(flowPos.y + snap.dy);
+	const snappedX = $derived(origin.x + snap.dx);
+	const snappedY = $derived(origin.y + snap.dy);
 
 	const inputs = $derived(Object.entries(typeInfo.input_slots));
 	const outputs = $derived(Object.entries(typeInfo.output_slots));
@@ -51,6 +57,9 @@
 	function onMouseMove(e: MouseEvent): void {
 		mouseClient = { x: e.clientX, y: e.clientY };
 		altKey = e.altKey;
+		// A cursor is back on the ghost, so it hangs off its corner again — the same question the
+		// touch path asks, answered by the other input.
+		anchor = 'top-left';
 	}
 
 	function onKeyDown(e: KeyboardEvent): void {
@@ -93,7 +102,12 @@
 
 	function onPointerDown(e: PointerEvent): void {
 		const at = touch.down(e, inCanvas(e.target));
-		if (at) mouseClient = at;
+		if (!at) return;
+		// `down` answers non-null for a touch and nothing else, so this IS the modality gate — and it
+		// is the gesture, not the device, that decides: the flag then rides through `up`, whose commit
+		// must read the same anchor the ghost was last drawn with.
+		anchor = 'centre';
+		mouseClient = at;
 	}
 
 	function onPointerMove(e: PointerEvent): void {
