@@ -250,7 +250,7 @@ impl GraphDoc {
     /// common case — links change far less often than params/positions) it must produce no doc ops.
     /// An unguarded remove-all+re-push would churn the link array (new items + tombstones) on every
     /// unrelated edit, defeating the empty-diff broadcast-skip for any patch that has links.
-    pub fn replace_links(&mut self, links: &[serde_json::Value]) {
+    fn replace_links(&mut self, links: &[serde_json::Value]) {
         // Canonicalize the projection to exactly the four string leaves we store, in order, then
         // compare against the current array read through the generic `ToJson` bridge: order-sensitive
         // array equality, string leaves, no numeric normalization.
@@ -279,7 +279,7 @@ impl GraphDoc {
     }
 
     /// The full document state as a v1 update (what a joining client would receive).
-    pub fn encode_state(&self) -> Vec<u8> {
+    fn encode_state(&self) -> Vec<u8> {
         let txn = self.doc.transact();
         txn.encode_state_as_update_v1(&yrs::StateVector::default())
     }
@@ -304,7 +304,7 @@ impl GraphDoc {
     }
 
     /// Apply a peer's incremental v1 update into this replica. `Err` if it is malformed.
-    pub fn apply_update(&mut self, update: &[u8]) -> Result<(), String> {
+    fn apply_update(&mut self, update: &[u8]) -> Result<(), String> {
         let u = yrs::Update::decode_v1(update).map_err(|e| e.to_string())?;
         let mut txn = self.doc.transact_mut();
         txn.apply_update(u).map_err(|e| e.to_string())
