@@ -39,11 +39,12 @@
 	import { evalShowWhen, type ShowWhenPredicate } from './showWhen';
 	import ParamField from './ParamField.svelte';
 	import SubPatchInspector from '$lib/editor/SubPatchInspector.svelte';
-	import { Bar, Tabs, Badge, Disclosure, EmptyState, MODE_ATTRS } from '$lib/ui';
+	import { Bar, Tabs, Badge, Disclosure, EmptyState, Icon, IconButton, MODE_ATTRS } from '$lib/ui';
 
 	let {
 		node,
 		showHeader = true,
+		onClose,
 		showWhen = {},
 		class: klass = '',
 		...rest
@@ -52,6 +53,10 @@
 		/** Show the identity header (rename + state + docs). True in the editor's slide-in inspector;
 		 * false in the dedicated Parameters panel, which already names the node in its linkbar. */
 		showHeader?: boolean;
+		/** Renders a ✕ in the identity Bar, left of the state badge. Only the slide-in inspector
+		 * supplies one — the pane's close belongs to the header the user is already reading, not to
+		 * a strip of its own. The dedicated Parameters panel passes nothing and gets no ✕. */
+		onClose?: () => void;
 		/** Declarative field-dependency rules, keyed by param NAME (spec §5). Absent → the field
 		 * always shows.
 		 *
@@ -196,7 +201,7 @@
 		<SubPatchInspector {node} />
 	{:else}
 		{#if showHeader}
-			<Bar>
+			<Bar class="pf-identity-bar">
 				{#snippet start()}
 					<div class="pf-identity">
 						<div class="pf-title">
@@ -229,6 +234,17 @@
 					</div>
 				{/snippet}
 				{#snippet end()}
+					{#if onClose}
+						<IconButton
+							variant="ghost"
+							density="chrome"
+							class="pf-close"
+							label="Close inspector"
+							title="Close the inspector"
+							data-testid="inspector-close"
+							onclick={onClose}><Icon name="x" /></IconButton
+						>
+					{/if}
 					<Badge tone={node.error ? 'danger' : 'success'} data-testid="node-state">
 						{node.error ? 'error' : 'running'}
 					</Badge>
@@ -341,6 +357,15 @@
 		font-size: var(--fs-small);
 		color: var(--text-dim);
 		white-space: pre-wrap;
+	}
+	/* The pane's way out, resident in the identity Bar (migrated from the strip it used to own).
+	   Dim at rest so the badge beside it keeps the row's emphasis; text ink on hover. */
+	.pf-identity-bar :global(.pf-close) {
+		--icon-btn-size: 22px;
+		color: var(--text-dim);
+	}
+	.pf-identity-bar :global(.pf-close:hover) {
+		color: var(--text);
 	}
 	/* The active tab drops to --surface-1 (the Tabs `--tabs-body` default); the rows paint the SAME
 	   surface so the connected tab merges into the body flush beneath it — one piece, no seam line. */

@@ -20,7 +20,7 @@
 <script lang="ts">
 	import ParamForm from '$lib/inspector/ParamForm.svelte';
 	import MetadataPanel from '$lib/editor/MetadataPanel.svelte';
-	import { beginDrag, Button, Icon, IconButton, ScrollArea } from '$lib/ui';
+	import { beginDrag, Button, ScrollArea } from '$lib/ui';
 	import { graph } from '$lib/stores/graph.svelte';
 	import { onDestroy } from 'svelte';
 	import type { NodeInstanceInfo } from '$lib/api/control';
@@ -155,19 +155,8 @@
 			onpointerdown={startPanelResize}
 			data-testid="panel-resize-handle"
 		></div>
-		<div class="ins-head">
-			<IconButton
-				variant="ghost"
-				density="chrome"
-				class="ins-close"
-				label="Close inspector"
-				title="Close the inspector"
-				data-testid="inspector-close"
-				onclick={onClose}><Icon name="x" /></IconButton
-			>
-		</div>
 		<ScrollArea>
-			<ParamForm {node} />
+			<ParamForm {node} {onClose} />
 			{#if node && !node.subpatch}
 				<MetadataPanel {node} />
 				{#if node.error}
@@ -245,23 +234,6 @@
 	}
 	.side-panel.resizing * {
 		user-select: none;
-	}
-	/* The pane's own dismiss strip. A row rather than a floating corner button: the pane's top-right
-	   is where ParamForm's identity Bar puts the node's state badge, and a control laid over that
-	   would read as belonging to it. Right-aligned and background-free, so it reads as the pane's
-	   own title bar rather than as a third surface rung. */
-	.ins-head {
-		display: flex;
-		justify-content: flex-end;
-		flex: 0 0 auto;
-		padding: var(--space-2) var(--space-2) 0;
-	}
-	.ins-head :global(.ins-close) {
-		--icon-btn-size: 22px;
-		color: var(--text-dim);
-	}
-	.ins-head :global(.ins-close:hover) {
-		color: var(--text);
 	}
 	/* Current processing error for the selected node — a simple snapshot, shown
 	   only while the node is errored, after the metadata section. */
@@ -421,9 +393,11 @@
 			}
 			/* The coarse hit band turns with it — but it does NOT keep the landscape band's inward
 			   lean. 36px out + 8px handle + 0 in = --hit, entirely in the gutter above the sheet.
-			   Inward is where the pane's own top row is, and in this anchor that row is `.ins-head`:
-			   the band's 24px reach landed on the ✕ (measured: band bottom 418px, ✕ centre 416px) and
-			   swallowed the pane's one pointer door, which D-I4 says must never depend on a gesture.
+			   Inward is where the pane's own top row is, and in this anchor that row is ParamForm's
+			   identity Bar, which carries the ✕ (it lived in a strip of its own when this band was
+			   first measured: band bottom 418px, ✕ centre 416px — the reach swallowed the pane's one
+			   pointer door, which D-I4 says must never depend on a gesture; moving the ✕ into the
+			   Bar moves it DOWN, so leaning the band outward stays right).
 			   What it takes outward comes out of the 40% of canvas the cap hands back, where 36px is
 			   an eighth of what is there — the opposite of the landscape case, where outward is the
 			   scarce side. The band always leans away from whatever is scarce. */
