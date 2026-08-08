@@ -261,6 +261,15 @@
 	<!-- The coarse-pointer door onto every `title=` in the app. One layer, mounted once, so a
 	     tooltip anywhere below is reachable without hover. -->
 	<TitleTip />
+	{#if g.disconnected}
+		<!-- The loud half of the alarm (the chip in the TopBar is the quiet half): the WHOLE window
+		     wears the warning ring, because a lost backend is the app's problem, not the header's.
+		     A fixed, pointer-transparent overlay rather than an outline on any one element — panels
+		     establish their own stacking contexts and would paint over an inset ring on the shell,
+		     and an overlay can sit above them all without costing a pixel of layout or a single
+		     pointer event. -->
+		<div class="net-frame" data-testid="net-frame" aria-hidden="true"></div>
+	{/if}
 </div>
 
 <style>
@@ -276,6 +285,17 @@
 		   device-stamp.spec.ts). Padding rather than `inset`, so the app still paints edge to edge
 		   under a notch and only its CHROME steps clear. Zero on a desktop. */
 		padding: var(--safe-top) var(--safe-right) var(--safe-bottom) var(--safe-left);
+	}
+	/* The disconnection ring. `inset` box-shadow so it draws INWARD from the viewport edges —
+	   an outline would land outside the fixed box and clip to nothing. --z-toast: the alarm and a
+	   toast are the two things allowed above every panel, and the frame takes no events, so the
+	   toast (later in the DOM) still wins where they overlap. */
+	.net-frame {
+		position: fixed;
+		inset: 0;
+		pointer-events: none;
+		box-shadow: inset 0 0 0 3px var(--warning);
+		z-index: var(--z-toast);
 	}
 	.main {
 		position: relative;

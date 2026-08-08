@@ -60,9 +60,7 @@ test('says nothing at all while the connection is healthy', async ({ page }) => 
 	);
 });
 
-test('a LOST connection takes space in the bar and outlines it, without moving anything', async ({
-	page
-}) => {
+test('a LOST connection takes space in the bar and frames the whole window', async ({ page }) => {
 	await armControlCut(page);
 	await page.goto('/');
 	await waitForApp(page);
@@ -71,22 +69,37 @@ test('a LOST connection takes space in the bar and outlines it, without moving a
 
 	await page.evaluate(() => (window as any).__cutControl());
 
-	// (a) the chip, in the status cluster — where D-R6 keeps it out of the progressive overflow, so
-	// a warning can never spill into a menu the user has to open to find it.
-	const chip = page.locator('.topbar .status [data-testid="topbar-connection"]');
+	// (a) the chip, in the bar — kept out of the progressive overflow, so a warning can never
+	// spill into a menu the user has to open to find it.
+	const chip = page.locator('.topbar [data-testid="topbar-connection"]');
 	await expect(chip).toHaveText(/disconnected/i);
 	await expect(
 		page.locator('.topbar .actions [data-testid="topbar-connection"]'),
 		'it is not one of the spillable actions'
 	).toHaveCount(0);
 
-	// (b) the whole bar, outlined in the warning ink — thick enough to catch the eye that misses a
-	// 72px chip. Retrying `toHaveCSS`, never a one-shot evaluate.
-	await expect(bar).toHaveCSS('outline-style', 'solid');
-	await expect(bar).toHaveCSS('outline-width', '3px');
-	await expect(bar).toHaveCSS('outline-color', 'rgb(240, 192, 80)'); // --warning
+	// (b) the whole WINDOW, framed in the warning ink — the bar-only outline read as the bar's
+	// problem; a lost backend is the app's. The frame is a fixed, pointer-transparent overlay so
+	// it can sit above every panel without stealing a single event.
+	const frame = page.getByTestId('net-frame');
+	await expect(frame).toBeVisible();
+	await expect(frame, 'the frame spans the viewport').toHaveCSS('position', 'fixed');
+	await expect(frame).toHaveCSS('pointer-events', 'none');
+	await expect(frame, 'a thick warning ring, drawn inward').toHaveCSS(
+		'box-shadow',
+		/rgb\(240, 192, 80\).*inset|inset.*rgb\(240, 192, 80\)/ // --warning
+	);
+	const fb = await frame.boundingBox();
+	const vp = page.viewportSize()!;
+	expect(fb, 'the frame covers the whole window, not one bar').toEqual({
+		x: 0,
+		y: 0,
+		width: vp.width,
+		height: vp.height
+	});
 
-	// …and nothing moved. An outline is painted outside the box model, so the bar keeps its height
-	// and the workspace below it keeps its origin — the whole reason the alarm is not a border.
+	// …and nothing moved: the frame is an overlay, so the bar keeps its box and the workspace
+	// below it keeps its origin.
+	await expect(bar, 'the bar itself wears no outline any more').toHaveCSS('outline-style', 'none');
 	expect(await bar.boundingBox(), 'the alarm costs no layout').toEqual(before);
 });

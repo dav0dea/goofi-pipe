@@ -266,7 +266,7 @@
 	}
 </script>
 
-<div class="topbar" class:disconnected={g.disconnected} bind:this={barEl}>
+<div class="topbar" bind:this={barEl}>
 	<div class="status" bind:this={statusEl}>
 		<!-- The connection speaks ONLY when it needs attention. "Connected" was true in every
 		     screenshot of a working app and spent 72px of a 412px bar saying so; the alarm state
@@ -388,17 +388,6 @@
 		   <body>), so the stacking context it establishes traps nothing. */
 		container-type: inline-size;
 		container-name: topbar;
-	}
-	/* The other half of the alarm, and the loud half: a chip in a 412px bar is easy to miss, so the
-	   whole strip of constant chrome wears the fault ink.
-	   An OUTLINE with a negative offset — app.css's sanctioned "frame the whole box" ring form. It
-	   is painted last in its stacking context (above the bar's own children, no pseudo-element and
-	   no z-index) and it is painted OUTSIDE the box model, so it costs no layout: the 44px height,
-	   the workspace origin below it, and every rect `replan` measures are exactly what they were a
-	   frame earlier. A border-width would move all four. */
-	.topbar.disconnected {
-		outline: 3px solid var(--warning);
-		outline-offset: -3px;
 	}
 	/* Shrinkable, and it was not. The status cluster does not participate in the progressive
 	   overflow (D-R6) — but `flex: 0 0 auto` on a cluster whose widest member is a filename meant
