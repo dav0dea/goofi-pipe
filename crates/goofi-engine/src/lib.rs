@@ -431,6 +431,18 @@ impl Graph {
         goofi_node::find(type_name).is_some() || self.dyn_types.contains_key(type_name)
     }
 
+    /// The refusal message for a type `known_type` rejects — the ONE phrasing, shared by
+    /// `build_node` and the `.gfi` load gate so they cannot word the same rejection two ways. An
+    /// unavailable type names its missing dependency; anything else reads as a typo, which is what
+    /// it is. (`unavailable` is deliberately outside `known_type` — that is what makes such a type
+    /// unaddable — so this is the only place the two registries meet.)
+    fn reject_type(&self, type_name: &str) -> String {
+        match self.unavailable.get(type_name) {
+            Some(reason) => format!("node type `{type_name}` is unavailable: {reason}"),
+            None => format!("unknown node type `{type_name}`"),
+        }
+    }
+
     /// A node's lifecycle stage for the editor: `creating` / `setup` / `ready` / `error`.
     ///
     /// Only the DETACHED tier has a real bootstrap to report — an inline node is seeded
@@ -563,12 +575,8 @@ impl Graph {
             let p = goofi_node::with_common(params.unwrap_or_else(|| dt.manifest.default_params()));
             let n = (dt.factory)(&p);
             Ok((dt.manifest, p, n))
-        } else if let Some(reason) = self.unavailable.get(type_name) {
-            // Known, but unloadable — say why rather than "unknown type", which would send the
-            // user looking for a typo instead of a missing dependency.
-            Err(format!("node type `{type_name}` is unavailable: {reason}"))
         } else {
-            Err(format!("unknown node type `{type_name}`"))
+            Err(self.reject_type(type_name))
         }
     }
 
@@ -2103,7 +2111,7 @@ impl Graph {
         for rec in nodes.values() {
             let ty = rec.get("type").and_then(|v| v.as_str()).ok_or("node missing `type`")?;
             if !self.known_type(ty) {
-                return Err(format!("unknown node type `{ty}`"));
+                return Err(self.reject_type(ty));
             }
         }
 
@@ -4941,6 +4949,21 @@ mod tests {
         assert_eq!(g.unavailable_types().collect::<Vec<_>>(), [("PsdScipy", "scipy")]);
 
         let err = g.add_node("PsdScipy", None).unwrap_err();
+        assert!(err.contains("unavailable"), "names the state: {err}");
+        assert!(err.contains("scipy"), "names the missing dependency: {err}");
+    }
+
+    #[test]
+    fn loading_a_patch_using_an_unavailable_type_names_the_missing_dependency() {
+        // The same refusal, from the OTHER door: `load_doc` pre-validates types through
+        // `known_type`, which deliberately excludes the unavailable registry (that is what makes an
+        // unavailable type unaddable) — so its own message must still explain WHY, not send the user
+        // hunting for a typo. Lose a dependency, restart, reopen a patch that used the node.
+        let mut g = Graph::new();
+        assert!(g.register_unavailable("PsdScipy".into(), "scipy".into()));
+        let doc = "version: 6\nroot:\n  nodes:\n    n0:\n      type: PsdScipy\n  links: []\n";
+
+        let err = g.load_doc(doc).unwrap_err();
         assert!(err.contains("unavailable"), "names the state: {err}");
         assert!(err.contains("scipy"), "names the missing dependency: {err}");
     }
