@@ -351,6 +351,46 @@ test.describe('Inspector ParamForm', () => {
 		await expect(form.getByTestId('docstring'), 'toggling again collapses it').toHaveCount(0);
 	});
 
+	// The caret and the label BOXES were both flex-centered to the hundredth of a pixel — and the
+	// label still read as sitting high, because "docs" has no descenders: its ink stops AT the
+	// baseline while the line box reserves descent space below it, so glyphs ride above the box's
+	// centre by half that reserve. So this pins the INK, not the box: the visible glyph run's
+	// centre (canvas TextMetrics against the rendered font) must sit on the caret's centre.
+	test('the docs label is centered on the caret by its INK, not its line box', async ({ page }) => {
+		await page.goto('/dev/inspector');
+		await page.getByTestId('docs-toggle').waitFor({ state: 'visible' });
+		const d = await page.evaluate(() => {
+			const toggle = document.querySelector('[data-testid="docs-toggle"]') as HTMLElement;
+			const summary = toggle.closest('.ui-disclosure-summary') as HTMLElement;
+			const caret = summary.querySelector('.ui-disclosure-caret svg') as SVGElement;
+			const cr = caret.getBoundingClientRect();
+			const range = document.createRange();
+			range.selectNodeContents(toggle);
+			const tr = range.getBoundingClientRect();
+			const cs = getComputedStyle(toggle);
+			const cv = document.createElement('canvas').getContext('2d')!;
+			cv.font = `${cs.fontWeight} ${cs.fontSize} ${cs.fontFamily}`;
+			const m = cv.measureText(toggle.textContent ?? '');
+			// The Range rect is the font box (ascent+descent); the canvas font metrics locate the
+			// baseline inside it, and the actual* metrics locate the ink around the baseline.
+			const baseline = tr.top + m.fontBoundingBoxAscent;
+			const inkCenter =
+				baseline - (m.actualBoundingBoxAscent - m.actualBoundingBoxDescent) / 2;
+			return {
+				delta: inkCenter - (cr.top + cr.height / 2),
+				fontBoxCheck: m.fontBoundingBoxAscent + m.fontBoundingBoxDescent - tr.height
+			};
+		});
+		expect(
+			Math.abs(d.fontBoxCheck),
+			'canvas font metrics agree with the layout font box, so the baseline estimate is sound'
+		).toBeLessThanOrEqual(1);
+		expect(
+			Math.abs(d.delta),
+			`ink centre sits ${d.delta.toFixed(2)}px from the caret centre`
+		).toBeLessThanOrEqual(0.6);
+	});
+
 	// The inline rename null-first commit/cancel dance: Escape reverts (no commit); Enter runs the commit
 	// path then closes the editor (the unmount-blur it triggers is a null-guarded no-op — no double-commit).
 	test('inline rename opens on click; Escape reverts and Enter commits then closes the editor', async ({
