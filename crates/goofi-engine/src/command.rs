@@ -394,6 +394,16 @@ impl Command {
                 if !g.contains(uid) && g.scope(uid).is_none() {
                     return Ok((Outcome::Ok, Command::Compound(vec![])));
                 }
+                // Idempotent: the DESTINATION scope was dissolved (a peer's expand/delete racing this
+                // toggle). SetScope is never a user RPC — it exists only as the membership-restoring
+                // child of a `RemoveNode` inverse — so a missing destination is always a stale replay.
+                // Erroring would propagate through flip() and permanently wedge the session's undo
+                // stack, AND strand the Compound's already-executed AddNode live but unbroadcast (the
+                // bridge gates its re-mirror on `result.is_ok()`). Degrade like the sibling arms: the
+                // restored member simply lands at ROOT.
+                if scope.is_some_and(|s| g.scope(s).is_none()) {
+                    return Ok((Outcome::Ok, Command::Compound(vec![])));
+                }
                 let old = g.reparent(uid, scope)?;
                 Ok((Outcome::Ok, Command::SetScope { uid, scope: old }))
             }
@@ -1624,5 +1634,53 @@ mod tests {
         assert!(g.scope(scope).is_none(), "group undone");
         h.redo(&mut g, "s1").unwrap(); // redo the group → same uid
         assert!(g.scope(scope).is_some(), "group redone at the same scope uid");
+    }
+
+    #[test]
+    fn a_member_restore_whose_scope_a_peer_dissolved_does_not_wedge_the_session_stack() {
+        // Multi-tab: session A deletes a scope MEMBER — its inverse is
+        // `Compound[AddNode{member}, SetScope{member, Some(scope)}]`. Session B then dissolves that
+        // scope. A's undo must degrade gracefully (the member returns at ROOT) rather than Err
+        // through flip(), which would leave the entry applied — undo re-selecting it forever — and
+        // leave the Compound's already-executed AddNode live but unbroadcast (the bridge gates
+        // `resync_and_broadcast` on `result.is_ok()`).
+        let mut g = Graph::new();
+        let mut h = CommandHistory::new();
+        let a = g.add_node("Oscillator", None).unwrap();
+        let b = g.add_node("Buffer", None).unwrap();
+        let scope = g.group_nodes(&[a, b], [0.0, 0.0]).unwrap();
+
+        let earlier = g.add_node("Oscillator", None).unwrap();
+        h.apply(&mut g, "A", Command::EditNode { uid: earlier, name: Some("keep".into()), pos: None }).unwrap();
+        h.apply(&mut g, "A", Command::RemoveNode { uid: a }).unwrap();
+        h.apply(&mut g, "B", Command::Expand { scope }).unwrap();
+        assert!(g.scope(scope).is_none(), "the peer dissolved the scope");
+
+        assert!(h.undo(&mut g, "A").unwrap(), "the stale member-restore returns Ok(true), not Err");
+        assert!(g.contains(a), "the member is restored");
+        assert_eq!(g.scope_of(a), None, "its scope is gone, so it lands at ROOT");
+        assert!(h.undo(&mut g, "A").unwrap(), "the earlier step is still undoable — the stack is not wedged");
+        assert_eq!(g.name(earlier), Some("oscillator1"), "the earlier rename was undone");
+    }
+
+    #[test]
+    fn a_scope_restore_whose_parent_a_peer_dissolved_lands_at_root() {
+        // The sibling hole the same race opens on the structural side: a nested scope's delete-undo
+        // carries its captured parent through `Group{restore}` → `restore_scope`. If the peer
+        // dissolved that parent meanwhile, writing the captured parent verbatim installs a
+        // dangling-parent orphan — a scope whose `scope_of` names a scope that no longer exists,
+        // which nothing else in the graph can reach or clean up.
+        let mut g = Graph::new();
+        let mut h = CommandHistory::new();
+        let a = g.add_node("Oscillator", None).unwrap();
+        let inner = g.group_nodes(&[a], [0.0, 0.0]).unwrap();
+        let outer = g.group_nodes(&[inner], [1.0, 1.0]).unwrap();
+
+        h.apply(&mut g, "A", Command::RemoveNode { uid: inner }).unwrap(); // delete the nested scope
+        h.apply(&mut g, "B", Command::Expand { scope: outer }).unwrap(); // peer dissolves its parent
+
+        assert!(h.undo(&mut g, "A").unwrap(), "the stale scope-restore returns Ok(true)");
+        assert!(g.scope(inner).is_some(), "the nested scope is restored");
+        assert_eq!(g.scope_of(inner), None, "its parent is gone, so it lands at ROOT — not dangling");
     }
 }

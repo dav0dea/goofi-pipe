@@ -1187,7 +1187,11 @@ impl Graph {
                 self.set_member_scope(m, Some(scope_id));
             }
         }
-        self.scope_of.insert(scope_id, parent);
+        // A peer may have dissolved the captured parent since this restore was recorded (a nested
+        // scope's delete-undo racing an expand). Writing it verbatim would install a dangling-parent
+        // orphan — a scope whose parentage names a scope that no longer exists, which no member walk
+        // can reach. Degrade to ROOT, exactly as the membership-restoring `SetScope` child does.
+        self.set_member_scope(scope_id, parent.filter(|p| self.scopes.contains_key(p)));
         Ok(scope_id)
     }
 
