@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { metaEntries, formatMetaValue, metaPreview, isLarge } from './metaFormat';
+import { metaEntries, formatMetaValue, metaPreview } from './metaFormat';
 
 describe('metaEntries', () => {
 	it('returns top-level entries in insertion order', () => {
@@ -59,20 +59,16 @@ describe('formatMetaValue', () => {
 		expect(out.length).toBeLessThan(2000);
 	});
 
+	it('keeps full precision — the two-decimal cap is the header line only', () => {
+		expect(formatMetaValue(3.14159)).toBe('3.14159');
+		expect(formatMetaValue([1.23456, 2.5])).toBe('[1.23456, 2.5]');
+		expect(formatMetaValue({ highpass: 0.00001 })).toBe('highpass: 0.00001');
+	});
+
 	it('renders a typed array (msgpack bin → Uint8Array) like a plain list, not an indexed object', () => {
 		expect(formatMetaValue(new Uint8Array([1, 2, 3]))).toBe('[1, 2, 3]');
 		expect(formatMetaValue({ buf: new Float32Array([1.5, 2.5]) })).toBe('buf: [1.5, 2.5]');
 		expect(metaPreview(new Uint8Array([1, 2, 3]))).toBe('[3]');
-	});
-});
-
-describe('isLarge', () => {
-	it('flags big containers (collapsed by default) but not small ones or scalars', () => {
-		expect(isLarge(Array.from({ length: 64 }))).toBe(true);
-		expect(isLarge([1, 2, 3])).toBe(false);
-		expect(isLarge(new Float32Array(100))).toBe(true);
-		expect(isLarge({ a: 1 })).toBe(false);
-		expect(isLarge('hello')).toBe(false);
 	});
 });
 
@@ -85,6 +81,42 @@ describe('metaPreview', () => {
 	});
 	it('truncates a long scalar preview', () => {
 		expect(metaPreview('x'.repeat(100)).endsWith('…')).toBe(true);
+	});
+
+	it('caps a number at two decimals, trailing zeros trimmed', () => {
+		expect(metaPreview(3.14159)).toBe('3.14');
+		expect(metaPreview(3)).toBe('3');
+		expect(metaPreview(3.5)).toBe('3.5');
+		expect(metaPreview(-2.71828)).toBe('-2.72');
+		expect(metaPreview(333.333333)).toBe('333.33');
+		expect(metaPreview(1000)).toBe('1000');
+	});
+
+	it('renders a magnitude that rounds away as plain 0, never a signed zero', () => {
+		expect(metaPreview(-0.00001)).toBe('0');
+		expect(metaPreview(0.001)).toBe('0');
+		expect(metaPreview(-0)).toBe('0');
+		expect(metaPreview(0)).toBe('0');
+	});
+
+	it('leaves a magnitude extreme in the exponential form JS already chose', () => {
+		expect(metaPreview(1e-7)).toBe('1e-7');
+		expect(metaPreview(-1.23456e-9)).toBe('-1.23456e-9');
+		expect(metaPreview(1e21)).toBe('1e+21');
+	});
+
+	it('caps only numbers — a string, a bool, a bigint and a non-finite are untouched', () => {
+		expect(metaPreview('3.14159')).toBe('3.14159');
+		expect(metaPreview(true)).toBe('true');
+		expect(metaPreview(10n)).toBe('10');
+		expect(metaPreview(NaN)).toBe('NaN');
+		expect(metaPreview(Infinity)).toBe('Infinity');
+		expect(metaPreview(null)).toBe('null');
+	});
+
+	it('never reaches a container’s elements — a container previews as its size', () => {
+		expect(metaPreview([1.23456, 2.5])).toBe('[2]');
+		expect(metaPreview({ highpass: 0.123456 })).toBe('{1}');
 	});
 });
 

@@ -10,14 +10,14 @@
  *                never builds a megabyte string on every (rAF-rate) frame.
  *   - dicts    → indented multi-line `key: value` (arrays within still inline)
  *
- * `metaPreview` is the short hint shown on the collapsed header; `isLarge` decides
- * which fields start collapsed.
+ * `metaPreview` is the short hint shown on the collapsed header — every field starts
+ * collapsed, so it is the only thing most values ever show.
  */
 
 /** Max list elements rendered inline before truncating with a `… (+N more)` tail. */
 const ARRAY_CAP = 200;
-/** Container size beyond which a field starts collapsed. */
-const LARGE_AT = 16;
+/** Decimals a number keeps on the collapsed header line. */
+const PREVIEW_DECIMALS = 2;
 
 /** A numeric TypedArray (msgpack `bin` decodes to Uint8Array; a node may stash one
  * in meta). Render it like a plain list, not an indexed `{0:.., 1:..}` object. */
@@ -39,6 +39,20 @@ function formatScalar(v: unknown): string {
 	if (typeof v === 'bigint') return v.toString();
 	if (typeof v === 'string') return v;
 	return String(v);
+}
+
+/** Header-line form of a scalar: {@link formatScalar}, but a number written in plain
+ * decimal is capped at {@link PREVIEW_DECIMALS} places with trailing zeros trimmed.
+ * The header is a scannable hint — the expanded body is where the real value lives, so
+ * it keeps full precision. A magnitude JS already writes in exponential form (|x| < 1e-6
+ * or >= 1e21) is left alone: capping ITS decimals would drop the only digits it has. */
+function formatScalarPreview(v: unknown): string {
+	const s = formatScalar(v);
+	if (typeof v !== 'number' || !Number.isFinite(v) || s.includes('e')) return s;
+	const capped = v.toFixed(PREVIEW_DECIMALS).replace(/\.?0+$/, '');
+	// A value that rounds away reads as 0; a sign on that zero would be noise, since
+	// the header no longer carries the digit that earned it.
+	return capped === '-0' ? '0' : capped;
 }
 
 /** Compact single-line form — used for lists (and any object nested inside one),
@@ -123,13 +137,6 @@ export function formatMetaValue(value: unknown, indent = 0): string {
 export function metaPreview(value: unknown): string {
 	if (isList(value)) return `[${(value as ArrayLike<unknown>).length}]`;
 	if (isPlainObject(value)) return `{${Object.keys(value).length}}`;
-	const s = formatScalar(value);
+	const s = formatScalarPreview(value);
 	return s.length > 60 ? s.slice(0, 59) + '…' : s;
-}
-
-/** Whether a field is big enough to start collapsed (keeps the panel scannable). */
-export function isLarge(value: unknown): boolean {
-	if (isList(value)) return (value as ArrayLike<unknown>).length > LARGE_AT;
-	if (isPlainObject(value)) return Object.keys(value).length > LARGE_AT;
-	return false;
 }

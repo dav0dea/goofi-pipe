@@ -2,7 +2,7 @@
 	import type { NodeInstanceInfo } from '$lib/api/control';
 	import { subscribeFrames } from '$lib/api/frames';
 	import type { DataFrame } from '$lib/codec/decode';
-	import { metaEntries, formatMetaValue, metaPreview, isLarge } from './metaFormat';
+	import { metaEntries, formatMetaValue, metaPreview } from './metaFormat';
 	import { nodeStatsRows } from './nodeStats';
 	import { Icon, Select, EmptyState } from '$lib/ui';
 
@@ -47,33 +47,19 @@
 
 	// Derive the rendered fields ONCE per frame (the panel re-renders at the data
 	// rate). Each field's body/preview is precomputed so the template doesn't
-	// re-format — and the capped formatter bounds the cost. `defaultOpen` is only
-	// the INITIAL collapse state (large fields start collapsed).
+	// re-format — and the capped formatter bounds the cost.
 	const fields = $derived(
 		metaEntries(lastFrame?.meta).map(([key, value]) => ({
 			key,
 			body: formatMetaValue(value),
-			preview: metaPreview(value),
-			defaultOpen: !isLarge(value)
+			preview: metaPreview(value)
 		}))
 	);
-
-	// The user's per-field collapse choice, keyed by field name, persisted for the
-	// life of this viewer. Without it, binding `open` to the per-frame-derived
-	// default would re-expand a manually-collapsed field on the next node tick.
-	let manualOpen = $state<Record<string, boolean>>({});
 
 	// Node-level execution telemetry (the measured update rate), pushed on the status
 	// plane independent of the data frame — so it shows even while we're still waiting
 	// for the first frame. Empty until the node's first NODE_STATS.
 	const statsRows = $derived(nodeStatsRows(node.stats));
-
-	function isOpen(key: string, defaultOpen: boolean): boolean {
-		return manualOpen[key] ?? defaultOpen;
-	}
-	function onToggle(key: string, e: Event): void {
-		manualOpen[key] = (e.currentTarget as HTMLDetailsElement).open;
-	}
 </script>
 
 <section class="panel" class:bare={!showHeader}>
@@ -109,12 +95,14 @@
 			</EmptyState>
 		{:else}
 			<div class="meta-tree">
+				<!-- No `open` binding, deliberately. Every field starts collapsed, which is
+				     `<details>`'s own default, so the keyed element OWNS the user's choice from there
+				     on. A reactive `open` cannot: this panel re-renders at the data rate and Svelte
+				     re-assigns the attribute on every one of those renders, while the `toggle` event
+				     reporting a click fires ASYNCHRONOUSLY — a frame landing in that gap put the stale
+				     value back and silently undid the click. -->
 				{#each fields as f (f.key)}
-					<details
-						class="meta-field"
-						open={isOpen(f.key, f.defaultOpen)}
-						ontoggle={(e) => onToggle(f.key, e)}
-					>
+					<details class="meta-field">
 						<summary>
 							<span class="caret"><Icon name="chevron-right" /></span>
 							<span class="mk">{f.key}</span>
