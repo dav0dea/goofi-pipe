@@ -5,7 +5,7 @@ import path from 'node:path';
 import { waitForApp } from '../lib/app';
 import { outside, settledBox } from '../lib/geometry';
 import { addNode, waitForNode, waitForNoNode } from '../lib/goofi';
-import { AS_ROWS, PRIORITY, inBar, menuRow, openOverflow } from '../lib/topbar';
+import { AS_ROWS, PRIORITY, menuRow, openOverflow, settledBar } from '../lib/topbar';
 import { emptySpot } from '../lib/touch';
 
 /**
@@ -113,25 +113,6 @@ test('the header keeps every action reachable, in the bar or in the menu', async
 			.toBe(null);
 	}
 });
-
-/**
- * The header's action list, once its ResizeObserver-driven re-plan has stopped moving.
- *
- * Naming the patch changes the status cluster's width, which re-fires the observer that decides
- * what spills — so a read taken the instant the Save dialog closes can catch a plan mid-flight and
- * report an action as "in the bar" one frame before it is `display: none`. Two agreeing reads is
- * also the assertion that it settles at all, which is trap 1 (oscillation) seen from the outside.
- */
-async function settledBar(page: Page): Promise<string[]> {
-	let prev = (await inBar(page)).join();
-	for (let i = 0; i < 20; i++) {
-		await page.waitForTimeout(50);
-		const now = (await inBar(page)).join();
-		if (now === prev) return prev === '' ? [] : prev.split(',');
-		prev = now;
-	}
-	throw new Error(`the header's overflow plan never settled (last: ${prev})`);
-}
 
 async function checkHeaderFits(page: Page): Promise<void> {
 	const kept = await settledBar(page);

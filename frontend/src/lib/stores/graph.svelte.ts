@@ -65,6 +65,9 @@ export class GraphStore {
 	savePath = $state<string | null>(null);
 	unsavedChanges = $state(false);
 	connected = $state(false);
+	/** Has a control connection EVER been established in this tab? Latches on the first connect
+	 * and never clears — see {@link disconnected}. */
+	private _everConnected = $state(false);
 	hadHello = $state(false);
 
 	/** Patch globals (system + user), doc-authoritative, in system-first/creation order. Derived from
@@ -105,9 +108,25 @@ export class GraphStore {
 	 * drive them); other subtrees migrate onto the doc one at a time. */
 	private _sync: SyncClient;
 
+	/** The one thing the UI says about the connection: it was ESTABLISHED and is now gone.
+	 *
+	 * Not `!connected`. A healthy socket is not news — the app says nothing and spends no width on
+	 * it — and at boot `connected` is false for the few hundred ms before the socket opens, so a
+	 * bare negation would alarm on every page load. The trade, stated plainly: a boot whose socket
+	 * NEVER opens stays quiet too (`control.ts`'s reconnect loop keeps trying behind it). That is
+	 * the honest reading of a page which itself arrived over this very server — if the socket is
+	 * not there now, it was there a moment ago — and it is the boot the user cannot tell apart from
+	 * a slow one anyway. From the first connect on, the state is exact. */
+	get disconnected(): boolean {
+		return this._everConnected && !this.connected;
+	}
+
 	constructor(ctl: Control = getControl()) {
 		this.ctl = ctl;
-		ctl.onConnect((c) => (this.connected = c));
+		ctl.onConnect((c) => {
+			this.connected = c;
+			if (c) this._everConnected = true;
+		});
 		ctl.on((ev) => this._handle(ev));
 		// Mount the CRDT replica and source doc-owned subtrees from it. The manager mirrors every
 		// control mutation into the doc and syncs the delta, so a doc transaction (local seed or

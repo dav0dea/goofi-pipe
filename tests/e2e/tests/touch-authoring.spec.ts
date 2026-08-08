@@ -5,7 +5,7 @@ import path from 'node:path';
 import { waitForApp } from '../lib/app';
 import { nodes, nodeParams } from '../lib/goofi';
 import { openAddMenuByPress, paletteItem } from '../lib/placement';
-import { menuRow } from '../lib/topbar';
+import { settledBar } from '../lib/topbar';
 
 /**
  * **The headline test for sub-project R.** Its §5 success criterion, verbatim: at 412px portrait a
@@ -16,7 +16,7 @@ import { menuRow } from '../lib/topbar';
  * Every step goes through the REAL touch surface: a long press to open the add-node menu, taps to
  * pick and place, a tap on a connector pill to seed the next node (which is how a phone makes a
  * cable — dragging one is a fine-pointer gesture R deliberately does not re-implement), the
- * inspector's own rendered control for the param, and the app header's overflow menu for the save.
+ * inspector's own rendered control for the param, and the app header's own Save button for the save.
  * The `window.goofi` façade is used only to READ the result back.
  *
  * Hermeticity: the save lands in a per-run temp directory removed in afterAll, and the test hands
@@ -132,13 +132,17 @@ test('412px portrait: add a node, connect it, open its parameters, change one, a
 		.toBe(1);
 	expect((await links(page))[0].node_out).toBe(osc.uid);
 
-	// --- 5. SAVE — via the overflow menu, which is where Save lives at this width -------------
-	expect(
-		await page.getByTestId('topbar-save').isVisible(),
-		'at 412px Save has spilled out of the bar'
-	).toBe(false);
-	await page.getByTestId('topbar-overflow').tap();
-	await menuRow(page, 'Save').tap();
+	// --- 5. SAVE — from the bar, which is where Save lives at this width ----------------------
+	// It used to spill, and this step used to reach it through the overflow menu. What moved is not
+	// the overflow: the header carried an always-on "connected" chip whose 72px was exactly what
+	// pushed Save out at 412px, and with the connection silent unless it BREAKS the bar keeps
+	// Undo · Redo · Save · Load… here and gives up only the caret. Taking the door the user now has
+	// is the point of the journey; the menu route is still pinned where it belongs —
+	// `touch-reflow.spec.ts` asserts bar/menu parity at this very geometry, and
+	// `topbar-overflow.spec.ts` opens the menu and reads its rows.
+	const kept = await settledBar(page);
+	expect(kept, 'at 412px the bar keeps Save itself; only the caret spills').toContain('topbar-save');
+	await page.getByTestId('topbar-save').tap();
 
 	const modal = page.getByTestId('fs-browser');
 	await expect(modal, 'Save reached the file browser').toBeVisible();

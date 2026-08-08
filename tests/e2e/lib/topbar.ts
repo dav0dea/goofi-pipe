@@ -39,6 +39,27 @@ export function inBar(page: Page): Promise<string[]> {
 	);
 }
 
+/**
+ * The header's action list, once its ResizeObserver-driven re-plan has stopped moving.
+ *
+ * Naming the patch changes the status cluster's width, and so does resizing the window — either
+ * re-fires the observer that decides what spills, and where the header's flex line is already
+ * overflowing the cluster and the tab strip give way TOGETHER, so the plan can take several rounds
+ * to converge. A single read can therefore catch it mid-flight and report an action as "in the bar"
+ * a frame before it is `display: none`. Two agreeing reads is also the assertion that it settles at
+ * all, which is trap 1 (oscillation) seen from the outside.
+ */
+export async function settledBar(page: Page): Promise<string[]> {
+	let prev = (await inBar(page)).join();
+	for (let i = 0; i < 20; i++) {
+		await page.waitForTimeout(50);
+		const now = (await inBar(page)).join();
+		if (now === prev) return prev === '' ? [] : prev.split(',');
+		prev = now;
+	}
+	throw new Error(`the header's overflow plan never settled (last: ${prev})`);
+}
+
 export async function openOverflow(page: Page): Promise<void> {
 	await page.getByTestId('topbar-overflow').click();
 	await expect(page.locator('.context-menu').first()).toBeVisible();

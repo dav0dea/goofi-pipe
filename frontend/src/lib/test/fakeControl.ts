@@ -18,10 +18,17 @@ export class FakeControl implements Control {
 	private results = new Map<string, unknown>();
 	private failing = new Set<string>();
 	// Starts connected — matches the real ControlClient, whose `onConnect` fires immediately
-	// with the current state so a fresh subscriber learns it's already connected.
-	private _connected = true;
+	// with the current state so a fresh subscriber learns it's already connected. A test about
+	// BOOT asks for the other starting state (`new FakeControl({ connected: false })`): the real
+	// client is disconnected until its socket opens, and that window is where the difference
+	// between "not yet" and "lost" lives.
+	private _connected: boolean;
 	/** Binary sync frames the code under test sent via `sendSync` (for assertions). */
 	sentSyncFrames: Uint8Array[] = [];
+
+	constructor({ connected = true }: { connected?: boolean } = {}) {
+		this._connected = connected;
+	}
 
 	/** Make `call(op, …)` resolve to `value` (e.g. `add_node` → a display name). */
 	setCallResult(op: string, value: unknown): void {

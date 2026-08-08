@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { waitForApp } from '../lib/app';
-import { AS_ROWS, PRIORITY, inBar, menuRow, openOverflow } from '../lib/topbar';
+import { AS_ROWS, PRIORITY, inBar, menuRow, openOverflow, settledBar } from '../lib/topbar';
 
 /**
  * The app header's progressive overflow (D-R6) and the canvas commands it carries (D-R4).
@@ -29,11 +29,17 @@ const SPILL_ORDER = [...PRIORITY].reverse();
  * the patch has a NAME — which this file never established. It reached three only because
  * `dirty-taxonomy.spec.ts` and `fs-browser.spec.ts` sort earlier in the single-worker `default`
  * project and left the backend in a state nothing here asked for; standalone it measured two. So
- * the one test that counts spills brings its own precondition and hands the backend back unnamed
- * (a `loadText` — a load with no path — is what resets `save_path` to null).
+ * every test that needs a spill to EXIST brings its own precondition and hands the backend back
+ * unnamed (a `loadText` — a load with no path — is what resets `save_path` to null).
  *
- * The rest of the file is order-independent on purpose: declared order, boundary stability and
- * bar/menu parity are all statements about a bar at whatever width, not about a particular one.
+ * That is four tests now: two of them joined the list when the header stopped carrying a connection
+ * chip. "Connected" was up at every moment of the app's life, and its 72px was quietly what pushed
+ * an untitled patch's bar over the edge at 320px. Nothing about the overflow changed — the bar
+ * simply has 72px more to work with, so width alone no longer guarantees the spill those two are
+ * written to observe.
+ *
+ * The rest of the file is order-independent on purpose: declared order and bar/menu parity are
+ * statements about a bar at whatever width, not about a particular one.
  */
 const CROWDING_NAME = 'a-patch-with-a-deliberately-long-name-that-crowds-the-header';
 let scratch = '';
@@ -114,21 +120,27 @@ test('actions leave one at a time, lowest priority first', async ({ page }) => {
 test('every spilled action is reachable in the overflow menu — and only those', async ({ page }) => {
 	await page.goto('/');
 	await waitForApp(page);
-	await widthTo(page, 320);
-	const kept = await inBar(page);
-	expect(kept.length, 'something spilled at 320px').toBeLessThan(PRIORITY.length);
+	await withNamedPatch(page, async () => {
+		await widthTo(page, 320);
+		// SETTLED, not a single read: at a named patch the plan converges over several observer
+		// rounds (the cluster and the strip give way together), and a read taken mid-flight reports
+		// an action as kept one frame before it is `display: none` — which then fails against the
+		// menu, where it has already arrived. Caught at --repeat-each=20, ~10% of runs.
+		const kept = await settledBar(page);
+		expect(kept.length, 'something spilled at 320px').toBeLessThan(PRIORITY.length);
 
-	await openOverflow(page);
-	for (const id of PRIORITY) {
-		const spilledHere = !kept.includes(id);
-		for (const label of AS_ROWS[id]) {
-			// Present exactly when the bar gave it up: a row that duplicates a visible button is
-			// two doors onto one action, which is how the two representations drift apart.
-			await expect(menuRow(page, label), `${label} (${id} spilled: ${spilledHere})`).toHaveCount(
-				spilledHere ? 1 : 0
-			);
+		await openOverflow(page);
+		for (const id of PRIORITY) {
+			const spilledHere = !kept.includes(id);
+			for (const label of AS_ROWS[id]) {
+				// Present exactly when the bar gave it up: a row that duplicates a visible button is
+				// two doors onto one action, which is how the two representations drift apart.
+				await expect(menuRow(page, label), `${label} (${id} spilled: ${spilledHere})`).toHaveCount(
+					spilledHere ? 1 : 0
+				);
+			}
 		}
-	}
+	});
 });
 
 /* Trap 1, at the real bar rather than at the arithmetic: moving an item out changes the bar's
@@ -137,33 +149,34 @@ test('every spilled action is reachable in the overflow menu — and only those'
 test('the bar is stable across a boundary width, in both directions', async ({ page }) => {
 	await page.goto('/');
 	await waitForApp(page);
-
-	// Find the first width at which something spills, then straddle it.
-	let boundary = 0;
-	for (let w = 1400; w >= 320; w -= 4) {
-		await widthTo(page, w);
-		if ((await inBar(page)).length < PRIORITY.length) {
-			boundary = w;
-			break;
+	await withNamedPatch(page, async () => {
+		// Find the first width at which something spills, then straddle it.
+		let boundary = 0;
+		for (let w = 1400; w >= 320; w -= 4) {
+			await widthTo(page, w);
+			if ((await inBar(page)).length < PRIORITY.length) {
+				boundary = w;
+				break;
+			}
 		}
-	}
-	expect(boundary, 'the bar does overflow somewhere between 320 and 1400').toBeGreaterThan(0);
+		expect(boundary, 'the bar does overflow somewhere between 320 and 1400').toBeGreaterThan(0);
 
-	await widthTo(page, boundary);
-	const at = (await inBar(page)).join();
-	await widthTo(page, boundary + 24);
-	const above = (await inBar(page)).join();
-	for (let i = 0; i < 4; i++) {
 		await widthTo(page, boundary);
-		expect(await inBar(page), 'crossing back lands on the same answer').toEqual(at.split(','));
+		const at = (await inBar(page)).join();
 		await widthTo(page, boundary + 24);
-		expect(await inBar(page)).toEqual(above.split(','));
-	}
+		const above = (await inBar(page)).join();
+		for (let i = 0; i < 4; i++) {
+			await widthTo(page, boundary);
+			expect(await inBar(page), 'crossing back lands on the same answer').toEqual(at.split(','));
+			await widthTo(page, boundary + 24);
+			expect(await inBar(page)).toEqual(above.split(','));
+		}
 
-	// …and having settled, it stays settled with nobody touching it.
-	await widthTo(page, boundary);
-	await page.waitForTimeout(500);
-	expect(await inBar(page)).toEqual(at.split(','));
+		// …and having settled, it stays settled with nobody touching it.
+		await widthTo(page, boundary);
+		await page.waitForTimeout(500);
+		expect(await inBar(page)).toEqual(at.split(','));
+	});
 });
 
 test('the layout tab strip keeps a floor to spill against', async ({ page }) => {

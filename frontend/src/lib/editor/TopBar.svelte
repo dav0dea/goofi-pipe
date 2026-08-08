@@ -64,7 +64,8 @@
 	// `8596297` made it `flex: 0 1 auto` because a live patch's filename otherwise pushed the
 	// overflow trigger off the right edge at 412px). That is exactly why `replan` re-reads its rect
 	// and the observer below watches it. Deleting the brand made the cluster narrower, not fixed:
-	// the filename inside it is still unbounded, and the Badge beside it still cannot give an inch.
+	// the filename inside it is still unbounded, and the connection Badge — absent while the socket
+	// is healthy — comes back at its full width the moment it is not.
 	// The plan still converges: `.tabslot` is the only growable box and `.action-zone` is rigid, so
 	// a spilled action's width goes to the strip 1:1 — the fit condition reduces to a monotone width
 	// threshold. Where the line is ALREADY overflowing, cluster and strip shrink together, so two
@@ -265,11 +266,17 @@
 	}
 </script>
 
-<div class="topbar" bind:this={barEl}>
+<div class="topbar" class:disconnected={g.disconnected} bind:this={barEl}>
 	<div class="status" bind:this={statusEl}>
-		<Badge tone={g.connected ? 'success' : 'warning'}>
-			{g.connected ? 'connected' : 'connecting…'}
-		</Badge>
+		<!-- The connection speaks ONLY when it needs attention. "Connected" was true in every
+		     screenshot of a working app and spent 72px of a 412px bar saying so; the alarm state
+		     (established, then lost — `graph.disconnected`, which is what keeps a boot quiet) takes
+		     that width back at the moment it is worth something. It sits in `.status`, which D-R6
+		     keeps OUT of the progressive overflow, so it can never spill into a menu — a warning
+		     the user has to open a menu to find is not a warning. -->
+		{#if g.disconnected}
+			<Badge tone="warning" data-testid="topbar-connection">disconnected</Badge>
+		{/if}
 		<PerfHud />
 		{#if g.savePath}
 			<span class="path" title={g.savePath}
@@ -382,12 +389,24 @@
 		container-type: inline-size;
 		container-name: topbar;
 	}
+	/* The other half of the alarm, and the loud half: a chip in a 412px bar is easy to miss, so the
+	   whole strip of constant chrome wears the fault ink.
+	   An OUTLINE with a negative offset — app.css's sanctioned "frame the whole box" ring form. It
+	   is painted last in its stacking context (above the bar's own children, no pseudo-element and
+	   no z-index) and it is painted OUTSIDE the box model, so it costs no layout: the 44px height,
+	   the workspace origin below it, and every rect `replan` measures are exactly what they were a
+	   frame earlier. A border-width would move all four. */
+	.topbar.disconnected {
+		outline: 3px solid var(--warning);
+		outline-offset: -3px;
+	}
 	/* Shrinkable, and it was not. The status cluster does not participate in the progressive
 	   overflow (D-R6) — but `flex: 0 0 auto` on a cluster whose widest member is a filename meant
 	   that on a live patch at 412px it alone claimed ~375 of 391px and pushed the overflow trigger,
 	   the one control that must always be reachable, clean off the right edge. Deleting the brand
 	   took the ⟁ and the wordmark off that figure and none of its reason: the filename is unbounded.
-	   What is left here is the patch's own state — connection, live rate, name, dirty dot. */
+	   What is left here is the patch's own state — live rate, name, dirty dot, and the connection
+	   only while it is lost. */
 	.status {
 		display: flex;
 		align-items: center;
@@ -404,13 +423,14 @@
 		align-items: stretch;
 	}
 	/* Below this the perf HUD stands down. On a LIVE patch it is the widest box in this cluster
-	   (82px measured at 412px, against the Badge's 72) and the only one of them that is a dev
-	   diagnostic rather than the patch's own state — `styleDrift`'s own exemption calls it "sized to
-	   be unobtrusive". With it up, the filename — the cluster's sole shrink absorber, because both
-	   chips are `nowrap` with `min-width: auto` and cannot give an inch — was ellipsised to five or
-	   six characters of a sixty-character name. A width threshold, not a device class, and not a
-	   component swap, since D-R6 keeps the status cluster out of the progressive overflow and this
-	   is the only lever the narrow end has. */
+	   (82px measured at 412px, against the connection Badge's 72 — which now only appears when that
+	   connection is lost) and the only one of them that is a dev diagnostic rather than the patch's
+	   own state — `styleDrift`'s own exemption calls it "sized to be unobtrusive". With it up, the
+	   filename — the cluster's sole shrink absorber, because the HUD is `nowrap` with
+	   `min-width: auto` and cannot give an inch — was ellipsised to five or six characters of a
+	   sixty-character name. A width threshold, not a device class, and not a component swap, since
+	   D-R6 keeps the status cluster out of the progressive overflow and this is the only lever the
+	   narrow end has. */
 	@container topbar (max-width: 520px) {
 		.status :global(.hud) {
 			display: none;
