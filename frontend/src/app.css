@@ -87,6 +87,13 @@
 	   consoleRowHeight.ts, the same coupling its `PAD = 4` padding already documents. A guard over
 	   that family would need four exemptions to protect two sites. */
 	--lh-text: 1.35;
+	/* Optical ink centring for the mono ALL-LOWERCASE/ALL-CAPS labels (Badge, Chip, the
+	   Disclosure summary): their glyph ink stops at the baseline — no descenders — while the line
+	   box reserves descent space below it, so box-centred text reads ~0.14em high. Measured twice
+	   against the rendered font (1.58px @ 11.2px, 1.42px @ 9.85px — the same ratio), applied as a
+	   translateY on the label's INK (an inner span or the label element), never as padding: a
+	   transform costs no layout and stays out of the spacing vocabulary. */
+	--ink-nudge: 0.14em;
 	/* Motion — two durations, one curve. */
 	--dur-fast: 80ms;
 	--dur-slow: 120ms;

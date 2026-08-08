@@ -26,7 +26,10 @@
 </script>
 
 <span {...rest} class={`ui-badge t-${tone} ${klass}`.trim()}>
-	{@render children?.()}
+	<!-- The ink wrapper exists to be nudged: uppercase mono has no descenders, so box-centred
+	     text reads high by half the descent reserve (--ink-nudge). The transform moves the glyphs
+	     alone — the pill's fill, border and box stay exactly where flex centred them. -->
+	<span class="ui-badge-ink">{@render children?.()}</span>
 </span>
 
 <style>
@@ -44,6 +47,12 @@
 		text-transform: uppercase;
 		letter-spacing: 0.06em;
 		white-space: nowrap;
+	}
+	.ui-badge-ink {
+		display: inline-flex;
+		align-items: center;
+		gap: var(--space-2);
+		transform: translateY(var(--ink-nudge));
 	}
 	/* Neutral — the resting surface pill: dim text on a raised surface, hairline border. */
 	.ui-badge.t-neutral {

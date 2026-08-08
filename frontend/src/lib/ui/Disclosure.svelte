@@ -93,12 +93,11 @@
 		/* Optical centring, not box centring. Flex centres the label's LINE BOX to the hundredth of
 		   a pixel — and the text still reads high, because these labels are short lowercase mono
 		   words ("docs") whose ink stops at the baseline while the line box reserves descent space
-		   below it. Measured against the rendered font: the ink centre sat 1.58px above the caret's
-		   at an 11.2px label, so the correction is that measurement in em (1.58 / 11.2 ≈ 0.14),
-		   scaling with the responsive root. A label with real descenders would sit ~1px low under
-		   this nudge; every current consumer is a lowercase word, and the ink pin in
-		   `inspector-gallery.spec.ts` is what keeps this number honest. */
-		transform: translateY(0.14em);
+		   below it. --ink-nudge is that reserve, measured against the rendered font (app.css owns
+		   the number; Badge and Chip apply the same one). A label with real descenders would sit
+		   ~1px low under this nudge; every current consumer is a lowercase word, and the ink pin
+		   in `inspector-gallery.spec.ts` is what keeps the number honest. */
+		transform: translateY(var(--ink-nudge));
 	}
 	/* The caret points right when closed, rotates down when open. Reduced-motion is handled globally. */
 	.ui-disclosure-caret {

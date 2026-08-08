@@ -234,7 +234,12 @@
 					</div>
 				{/snippet}
 				{#snippet end()}
+					<Badge tone={node.error ? 'danger' : 'success'} data-testid="node-state">
+						{node.error ? 'error' : 'running'}
+					</Badge>
 					{#if onClose}
+						<!-- Right-most, after the badge: the way out sits at the bar's far corner,
+						     where every panel's ✕ already lives. -->
 						<IconButton
 							variant="ghost"
 							density="chrome"
@@ -245,9 +250,6 @@
 							onclick={onClose}><Icon name="x" /></IconButton
 						>
 					{/if}
-					<Badge tone={node.error ? 'danger' : 'success'} data-testid="node-state">
-						{node.error ? 'error' : 'running'}
-					</Badge>
 				{/snippet}
 			</Bar>
 

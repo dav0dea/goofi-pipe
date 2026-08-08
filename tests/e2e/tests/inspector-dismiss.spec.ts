@@ -76,7 +76,7 @@ test('the ✕ is a close, not an off-switch: the next selection brings the pane 
 	await expect(pane(page), 'disabled stays disabled across selections').toHaveCount(0);
 });
 
-test('the dismiss control lives IN the identity header, left of the state badge', async ({
+test('the dismiss control lives IN the identity header, right-most, after the state badge', async ({
 	page
 }) => {
 	await addAndSelect(page);
@@ -84,16 +84,22 @@ test('the dismiss control lives IN the identity header, left of the state badge'
 	// transition see the pane at two different positions, which once inverted this very assertion.
 	await expect(pane(page)).toHaveCSS('transform', 'matrix(1, 0, 0, 1, 0, 0)');
 	// The ✕ shares the identity Bar with the node's state badge — it does not get a strip of its
-	// own above the header (that strip spent a full row saying nothing else).
+	// own above the header (that strip spent a full row saying nothing else). It sits at the far
+	// corner, AFTER the badge, where every panel's ✕ already lives.
 	const bar = pane(page).locator('.ui-bar', { has: page.getByTestId('node-state') });
 	const close = bar.getByTestId('inspector-close');
 	await expect(close, 'the ✕ is a resident of the identity Bar').toBeVisible();
 	const closeBox = (await close.boundingBox())!;
 	const badgeBox = (await bar.getByTestId('node-state').boundingBox())!;
 	expect(
-		closeBox.x + closeBox.width,
-		'…sitting left of the running/error badge'
-	).toBeLessThanOrEqual(badgeBox.x + 1);
+		badgeBox.x + badgeBox.width,
+		'the running/error badge sits left of the ✕'
+	).toBeLessThanOrEqual(closeBox.x + 1);
+	const barBox = (await bar.boundingBox())!;
+	expect(
+		barBox.x + barBox.width - (closeBox.x + closeBox.width),
+		'…and the ✕ is the bar’s right-most element'
+	).toBeLessThanOrEqual(16);
 	const closeCenter = closeBox.y + closeBox.height / 2;
 	const badgeCenter = badgeBox.y + badgeBox.height / 2;
 	expect(Math.abs(closeCenter - badgeCenter), 'on the same row').toBeLessThanOrEqual(2);

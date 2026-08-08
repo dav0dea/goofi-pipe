@@ -24,7 +24,9 @@
 </script>
 
 <button {...rest} {type} class={`ui-chip t-${tone} ${klass}`.trim()}>
-	{@render children?.()}
+	<!-- Same ink nudge as Badge, same reason: uppercase mono ink stops at the baseline, so the
+	     box-centred label reads high by the descent reserve. -->
+	<span class="ui-chip-ink">{@render children?.()}</span>
 </button>
 
 <style>
@@ -48,6 +50,12 @@
 			background var(--dur-fast) var(--ease),
 			border-color var(--dur-fast) var(--ease),
 			color var(--dur-fast) var(--ease);
+	}
+	.ui-chip-ink {
+		display: inline-flex;
+		align-items: center;
+		gap: var(--space-2);
+		transform: translateY(var(--ink-nudge));
 	}
 	.ui-chip:disabled {
 		opacity: var(--disabled-opacity);

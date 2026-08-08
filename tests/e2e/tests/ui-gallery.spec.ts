@@ -752,6 +752,48 @@ test.describe('UI display primitives', () => {
 		}
 	});
 
+	// Badge and Chip labels are uppercase mono at line-height 1 — no descenders, so their ink
+	// stops at the baseline while the line box reserves descent space below it. Box-centred, the
+	// text read ~0.14em high (Phil caught it on "disconnected"/"running"). This pins the INK
+	// against the PILL: the glyph run's centre (canvas TextMetrics on the rendered font) must sit
+	// on the pill box's centre — the same measurement the docs-label pin makes in
+	// `inspector-gallery.spec.ts`, over the shared --ink-nudge.
+	for (const [kind, testid] of [
+		['Badge', 'ui-badge-neutral'],
+		['Chip', 'ui-chip-neutral']
+	] as const) {
+		test(`the ${kind} label's INK centres in its pill, not just its line box`, async ({ page }) => {
+			await page.goto('/dev/ui');
+			const d = await page.getByTestId(testid).evaluate((pill) => {
+				const ink = pill.querySelector('[class$="-ink"]') as HTMLElement;
+				const target = ink ?? (pill as HTMLElement);
+				const r = pill.getBoundingClientRect();
+				const cs = getComputedStyle(target);
+				const range = document.createRange();
+				range.selectNodeContents(target);
+				const tr = range.getBoundingClientRect();
+				const cv = document.createElement('canvas').getContext('2d')!;
+				cv.font = `${cs.fontWeight} ${cs.fontSize} ${cs.fontFamily}`;
+				const met = cv.measureText((target.textContent ?? '').trim().toUpperCase());
+				const baseline = tr.top + met.fontBoundingBoxAscent;
+				const inkCenter =
+					baseline - (met.actualBoundingBoxAscent - met.actualBoundingBoxDescent) / 2;
+				return {
+					delta: inkCenter - (r.top + r.height / 2),
+					fontBoxCheck: met.fontBoundingBoxAscent + met.fontBoundingBoxDescent - tr.height
+				};
+			});
+			expect(
+				Math.abs(d.fontBoxCheck),
+				'canvas font metrics agree with the layout font box'
+			).toBeLessThanOrEqual(1);
+			expect(
+				Math.abs(d.delta),
+				`${kind} ink centre sits ${d.delta.toFixed(2)}px from the pill centre`
+			).toBeLessThanOrEqual(0.6);
+		});
+	}
+
 	/* A Chip's RESTING tone is `neutral`, and `neutral` is the state most Chips in the app spend
 	   most of their life in — the inspector's `fx` chip sits on every parameter row, in every
 	   state, and the console's `out`/`err` filters rest off. Painted as a fill plus a hairline,
