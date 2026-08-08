@@ -164,7 +164,7 @@ fn param_value_json(p: &Param) -> serde_json::Value {
 }
 
 /// Coerce a JSON scalar into a `Param` of `existing`'s type, preserving its bounds/options — the
-/// inverse of [`param_value_json`], and the SSOT for the engine load path (`set_param_from_json`)
+/// inverse of [`param_value_json`], and the SSOT for the engine load path (`Graph::load_doc`)
 /// and the bridge's RPC/CRDT param writes. An Int rounds a fractional value to nearest (rather than
 /// zeroing it, which a hand-edited `.gfi` used to do). `fire_triggers` gates the Trigger arm: a live
 /// UI edit passes `true` (the trigger button fires), a `.gfi` load passes `false` (a persisted or
@@ -559,6 +559,20 @@ impl Graph {
         u
     }
 
+    /// The params a fresh instance of `type_name` starts from, resolved WITHOUT constructing the
+    /// node. The `.gfi` load path needs these first: it folds the saved values in before building,
+    /// so `setup()` sees what the user saved rather than the type's defaults.
+    fn default_params_of(&self, type_name: &str) -> Result<ParamGroups, String> {
+        let defaults = if let Some(m) = goofi_node::find(type_name) {
+            m.default_params()
+        } else if let Some(dt) = self.dyn_types.get(type_name) {
+            dt.manifest.default_params()
+        } else {
+            return Err(self.reject_type(type_name));
+        };
+        Ok(goofi_node::with_common(defaults))
+    }
+
     /// Construct (but do not insert) a node by type name — the shared front half of `add_node` /
     /// `add_node_at`. Resolves the compile-time catalog or a runtime-registered type and builds its
     /// params (defaulting to the type's defaults).
@@ -567,12 +581,13 @@ impl Graph {
         type_name: &str,
         params: Option<ParamGroups>,
     ) -> Result<(&'static NodeManifest, ParamGroups, Box<dyn goofi_node::Node>), String> {
+        let p = match params {
+            Some(p) => goofi_node::with_common(p),
+            None => self.default_params_of(type_name)?,
+        };
         if let Some(m) = goofi_node::find(type_name) {
-            let p = goofi_node::with_common(params.unwrap_or_else(|| m.default_params()));
-            let n = (m.factory)();
-            Ok((m, p, n))
+            Ok((m, p, (m.factory)()))
         } else if let Some(dt) = self.dyn_types.get(type_name) {
-            let p = goofi_node::with_common(params.unwrap_or_else(|| dt.manifest.default_params()));
             let n = (dt.factory)(&p);
             Ok((dt.manifest, p, n))
         } else {
@@ -1964,20 +1979,6 @@ impl Graph {
         }
     }
 
-    fn set_param_from_json(&mut self, uid: Uid, group: &str, name: &str, val: &serde_json::Value) {
-        let existing = self
-            .nodes
-            .get(&uid)
-            .and_then(|e| goofi_node::param(&e.params, group, name))
-            .cloned();
-        let Some(existing) = existing else {
-            return;
-        };
-        // Load path: never fire a trigger on load (fire_triggers = false).
-        let newp = param_from_json(&existing, val, false);
-        let _ = self.update_param(uid, group, name, newp);
-    }
-
     /// Serialize the graph to a `.gfi` v6 document (YAML text). v6 nests `nodes`/`links` under
     /// `root` alongside a flat `root.scopes` block (the organizational sub-patch overlay — scope
     /// metadata + member uid lists + stubs); top-level `globals`. A plain flat patch has an empty
@@ -2149,7 +2150,28 @@ impl Graph {
             // would re-synthesize a binding for any `default_expr` param the user had UNBOUND to a
             // literal — the reseed would then clobber the saved literal on the next tick. The doc's
             // own `expressions` block (restored below) round-trips every binding the user actually has.
-            let (manifest, params, node) = self.build_node(ty, None)?;
+            //
+            // The saved params are folded in BEFORE construction, because `insert_node` runs the
+            // node's `setup()` — a one-time init that reads its params (allocate a buffer of `size`,
+            // open device `name`) and never runs again. Applying them afterwards would boot every
+            // node against the type's defaults; on the detached tier, where a param edit is an
+            // explicit no-op, the child would never see them at all. This is the same order the
+            // undo/redo restore path uses (`Command::AddNode` carries the captured params).
+            let mut params = self.default_params_of(ty)?;
+            if let Some(groups) = rec.get("params").and_then(|v| v.as_object()) {
+                for (group, names) in groups {
+                    let Some(nm) = names.as_object() else { continue };
+                    let Some(g) = params.get_mut(group) else { continue };
+                    for (name, val) in nm {
+                        if let Some(existing) = g.get_mut(name) {
+                            // Never fire a trigger on load: a persisted or hand-edited value must
+                            // not trip the node's trigger as the patch opens.
+                            *existing = param_from_json(existing, val, false);
+                        }
+                    }
+                }
+            }
+            let (manifest, params, node) = self.build_node(ty, Some(params))?;
             let uid = self.insert_node(manifest, node, params);
             idmap.insert(old.clone(), uid);
             if let Some(name) = rec.get("name").and_then(|v| v.as_str()) {
@@ -2164,15 +2186,6 @@ impl Graph {
             }
             if let Some(v) = rec.get("viewers").filter(|v| v.is_object()) {
                 let _ = self.set_node_viewers(uid, v.clone());
-            }
-            if let Some(groups) = rec.get("params").and_then(|v| v.as_object()) {
-                for (group, names) in groups {
-                    if let Some(nm) = names.as_object() {
-                        for (name, val) in nm {
-                            self.set_param_from_json(uid, group, name, val);
-                        }
-                    }
-                }
             }
             // Reconstruct expression bindings (after literal params are applied).
             if let Some(exprs) = rec.get("expressions").and_then(|v| v.as_array()) {
@@ -3173,6 +3186,34 @@ mod tests {
     }
 
     #[test]
+    fn load_runs_setup_against_the_saved_params_not_the_type_defaults() {
+        // A node's one-time init reads its params — it allocates a buffer of `size`, opens device
+        // `name`. On load, `setup()` must therefore see the params the user SAVED. The load path
+        // built every node from the type's DEFAULTS and applied the saved values only afterwards,
+        // and nothing re-runs `setup`; on the detached tier `update_param` is an explicit no-op, so
+        // the child never saw them at all. The undo/redo restore path already gets this right
+        // (`Command::AddNode` carries the captured params) — the two paths must agree.
+        let mut g = Graph::new();
+        let n = g.add_node("_TestSetupLatch", None).unwrap();
+        g.update_param(n, "control", "value", Param::float(42.0, 0.0, 100.0)).unwrap();
+        let doc = g.serialize();
+
+        let mut g2 = Graph::new();
+        g2.load_doc(&doc).unwrap();
+        let restored = g2
+            .node_uids()
+            .into_iter()
+            .find(|u| g2.type_name(*u) == Some("_TestSetupLatch"))
+            .expect("node restored");
+        g2.tick();
+        assert_eq!(
+            first_f32(&g2.latest_frame(restored, "out").unwrap()),
+            42.0,
+            "setup() latched the saved value, not the type default"
+        );
+    }
+
+    #[test]
     fn param_from_json_coerces_each_type_and_gates_trigger_firing() {
         use serde_json::json;
         // Float: takes as_f64, preserves bounds.
@@ -3629,6 +3670,45 @@ mod tests {
             params: DEFAULT_EXPR_PARAMS,
             isolation: Isolation::InProcess,
             factory: default_factory::<DefaultExprSource>,
+        }
+    }
+
+    // A source that LATCHES a param in `setup()` and emits the latched value forever — the shape of
+    // every real one-time init (allocate a buffer of `size`, open device `name`), and the only way
+    // to observe which params `setup` actually saw.
+    #[derive(Default)]
+    struct SetupLatch {
+        latched: f32,
+    }
+    impl Node for SetupLatch {
+        fn setup(&mut self, _c: &mut NodeCtx, p: &Params<'_>) -> NodeResult {
+            self.latched = p.f64("control", "value").unwrap_or(-1.0) as f32;
+            Ok(())
+        }
+        fn process(&mut self, _i: &Inputs<'_>, out: &mut Outputs<'_>, _c: &mut NodeCtx, _p: &Params<'_>) -> NodeResult {
+            let d = Data::array_f32(vec![1], self.latched.to_le_bytes().to_vec(), Meta::empty())
+                .map_err(|e| e.to_string())?;
+            out.set("out", d);
+            Ok(())
+        }
+    }
+    static SETUP_LATCH_PARAMS: &[ParamDecl] = &[ParamDecl {
+        group: "control",
+        name: "value",
+        spec: ParamSpec::Float { default: 1.0, min: 0.0, max: 100.0 },
+        default_expr: None,
+        doc: None,
+    }];
+    inventory::submit! {
+        NodeManifest {
+            type_name: "_TestSetupLatch",
+            category: "test",
+            doc: "latches control.value in setup() and emits it",
+            inputs: &[],
+            outputs: G_OUT,
+            params: SETUP_LATCH_PARAMS,
+            isolation: Isolation::InProcess,
+            factory: default_factory::<SetupLatch>,
         }
     }
 
