@@ -15,6 +15,7 @@
  * signatures, so the viewer layer and agent surface are unchanged.
  */
 import { subscribeData } from './data';
+import { paintDelay } from './paintCap';
 import { perfStats } from './perfStats.svelte';
 import type { DataFrame } from '$lib/codec/decode';
 import { streamKey } from './streamKey';
@@ -46,15 +47,30 @@ const scheduleFlush =
 		? (fn: () => void): number => requestAnimationFrame(fn)
 		: (fn: () => void): number => setTimeout(fn, 16) as unknown as number;
 
-let rafId: number | null = null;
+let scheduled = false;
+/** When the last flush started — the paint cap's reference point. */
+let lastFlushStart = -Infinity;
 function requestFlush(): void {
-	if (rafId !== null) return;
-	rafId = scheduleFlush(flush);
+	if (scheduled) return;
+	scheduled = true;
+	// The cap (paintCap.ts): inside the cooldown, hold the latest-wins frames on a TIMER — an
+	// rAF here would fire at display rate just to decide "not yet", which is the exact battery
+	// spend the cap exists to stop. The timer lands the cooldown; the rAF after it aligns the
+	// actual paint to the next vsync.
+	const wait = paintDelay(lastFlushStart, nowMs());
+	const arm = (): void => {
+		scheduleFlush(() => {
+			scheduled = false;
+			flush();
+		});
+	};
+	if (wait > 0) setTimeout(arm, wait);
+	else arm();
 }
 
 function flush(): void {
-	rafId = null;
 	const start = nowMs();
+	lastFlushStart = start;
 	// Most-starved slot first (smallest lastFlush) so no slot is permanently
 	// deferred by the budget; new slots (lastFlush 0) lead.
 	const queue = [...dirty].sort((a, b) => a.lastFlush - b.lastFlush);
