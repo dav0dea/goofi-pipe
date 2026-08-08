@@ -13,7 +13,7 @@
  * boundary width. It reads cached intrinsic widths and a budget its caller measures off the OTHER
  * boxes in the header, so the second pass computes the first pass's answer and writes nothing.
  *
- * "The other boxes" is not "boxes that cannot move" — the brand cluster shrinks (see TopBar's own
+ * "The other boxes" is not "boxes that cannot move" — the status cluster shrinks (see TopBar's own
  * note), so the budget is re-measured rather than assumed constant. What makes it converge is that
  * the only growable box is the tab strip: a spilled action's width goes there 1:1, leaving the fit
  * condition a monotone threshold in the container width.

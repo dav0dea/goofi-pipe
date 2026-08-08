@@ -39,13 +39,16 @@ const hit = (page: Page): Promise<number> =>
  * A patch name long enough to crowd the header, and a scratch directory to keep it in.
  *
  * The name is not decoration. R-Task 6's after-screenshot caught what no measurement had: on a
- * LIVE patch the widest thing in the bar is the filename, and `.brand` was `flex: 0 0 auto`, so at
- * 412px the brand claimed ~375 of 391px and pushed the overflow trigger — the one control that
+ * LIVE patch the widest thing in the bar is the filename, and `.status` was `flex: 0 0 auto`, so at
+ * 412px the cluster claimed ~375 of 391px and pushed the overflow trigger — the one control that
  * must always be reachable — clean off the right edge. An unnamed empty patch cannot reproduce
  * that, so a guard written against the boot state would be green on the very defect it exists to
- * catch. Verified by mutation: with `.brand` put back to `flex: 0 0 auto`, this test fails at
- * 412px and at 712px on "the overflow trigger is inside the bar" (the brand measured 547.9px wide
- * in a 412px bar, the trigger's left edge at x=681) — and only because the patch is named.
+ * catch. Verified by mutation, and RE-verified after the header's brand was deleted — the ⟁ and the
+ * wordmark are gone but the filename is unbounded, so the rule is still load-bearing: with
+ * `.status` put back to `flex: 0 0 auto`, 412px fails on "the overflow trigger is inside the bar"
+ * (its left edge lands at x=579 in a 412px bar) and 712px on "the tab strip is at least a tap
+ * target wide". Only 863px survives it — and only because that geometry has the width to spare,
+ * which is exactly why one file runs at three.
  */
 const CROWDING_NAME = 'a-patch-with-a-deliberately-long-name-that-crowds-the-header';
 let scratch = '';
@@ -88,7 +91,7 @@ test('the header keeps every action reachable, in the bar or in the menu', async
 	await waitForApp(page);
 	await saveAsCrowdingName(page);
 	// A LIVE patch, not an idle one. `PerfHud` is `{#if active}` and shows nothing while no frames
-	// flow, so a header guard written against the boot state measures a brand cluster that is
+	// flow, so a header guard written against the boot state measures a status cluster that is
 	// missing its widest member — the same trap as measuring it unnamed.
 	const uid = await addNode(page, 'Oscillator', 'inputs', [40, 40]);
 	try {
@@ -114,8 +117,8 @@ test('the header keeps every action reachable, in the bar or in the menu', async
 /**
  * The header's action list, once its ResizeObserver-driven re-plan has stopped moving.
  *
- * Naming the patch changes the brand's width, which re-fires the observer that decides what
- * spills — so a read taken the instant the Save dialog closes can catch a plan mid-flight and
+ * Naming the patch changes the status cluster's width, which re-fires the observer that decides
+ * what spills — so a read taken the instant the Save dialog closes can catch a plan mid-flight and
  * report an action as "in the bar" one frame before it is `display: none`. Two agreeing reads is
  * also the assertion that it settles at all, which is trap 1 (oscillation) seen from the outside.
  */
@@ -153,26 +156,28 @@ async function checkHeaderFits(page: Page): Promise<void> {
 		`the overflow trigger is inside the bar (trigger ${JSON.stringify(t)} in ${JSON.stringify(bar)})`
 	).toBeLessThanOrEqual(1);
 
-	// The filename is where the brand's shrink is absorbed — R made `.path` the sole absorber
+	// The filename is where the cluster's shrink is absorbed — R made `.path` the sole absorber
 	// because it is "the only one an ellipsis still leaves readable". But the two chips beside it
 	// are `white-space: nowrap` with the default `min-width: auto`, so neither could give an inch,
 	// and at 412px — the width R was built for — the ellipsis left `.path` 68px of a 60-character
 	// name, five or six characters. `toHaveText` is green on that: it reads DOM text, not pixels.
-	// Eight rem is about a dozen monospace characters — enough to tell two patches apart.
+	// Eight rem is about a dozen monospace characters — enough to tell two patches apart. (Deleting
+	// the header's brand is where that 68px went: the same read is 176px now. The floor stays a
+	// floor — it is the property, not the slack that currently satisfies it.)
 	const rem = await page.evaluate(() => parseFloat(getComputedStyle(document.documentElement).fontSize));
 	const path = (await page.locator('.topbar .path').boundingBox())!;
 	expect(path.width, 'the patch name is still readable').toBeGreaterThanOrEqual(8 * rem);
 
 	// The tab strip is what the actions spill in favour of; squeezed to zero, no layout tab and not
 	// even the ＋ that makes one can be reached (o1). TopBar reserves `2 × --hit` for it in the
-	// overflow BUDGET, and the layout that follows does not honour that number: the brand competes
-	// for the same slack, so with a long filename the strip lands at 54.4px at 412px (88.1 at 863,
-	// 83.9 at 712). R's audit settled that as CORRECT rather than as a miss — the reservation is
-	// what decides when an ACTION gives up its slot, and pinning `.tabslot` to the same number would
-	// take those pixels back out of the filename, i.e. two mechanisms fighting over one budget. What
-	// the strip must never go below is ONE tap target, which is what is asserted here; the strip is
-	// its own `overflow-x` scroller with --hit-floored pills, so beyond that what does not fit is
-	// scrolled to rather than lost.
+	// overflow BUDGET, and the layout that follows does not honour that number: the status cluster
+	// competes for the same slack, so with a long filename the strip lands at 56.5px at 412px (92.0
+	// at 863, 93.9 at 712). R's audit settled that as CORRECT rather than as a miss — the
+	// reservation is what decides when an ACTION gives up its slot, and pinning `.tabslot` to the
+	// same number would take those pixels back out of the filename, i.e. two mechanisms fighting
+	// over one budget. What the strip must never go below is ONE tap target, which is what is
+	// asserted here; the strip is its own `overflow-x` scroller with --hit-floored pills, so beyond
+	// that what does not fit is scrolled to rather than lost.
 	const slot = (await page.locator('.topbar .tabslot').boundingBox())!;
 	expect(slot.width, 'the tab strip is at least a tap target wide').toBeGreaterThanOrEqual(
 		await hit(page)

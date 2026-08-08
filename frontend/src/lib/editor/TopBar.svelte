@@ -56,19 +56,21 @@
 	// lowest priority first, as the width runs out. `overflowFit.ts` owns the arithmetic (and its
 	// three traps); this file owns only the measuring — which boxes to read, and against what.
 	//
-	// The budget is MEASURED each replan: the header's own inner width, minus the brand cluster's
+	// The budget is MEASURED each replan: the header's own inner width, minus the status cluster's
 	// laid-out rect, minus a reservation for the tab strip. The one width it must never read is
 	// `.actions`' own — that shrinks the moment an item leaves, which is the oscillation bug.
 	//
-	// The brand is not a fixed term (it was `flex: 0 0 auto` when this comment was first written;
+	// The cluster is not a fixed term (it was `flex: 0 0 auto` when this comment was first written;
 	// `8596297` made it `flex: 0 1 auto` because a live patch's filename otherwise pushed the
 	// overflow trigger off the right edge at 412px). That is exactly why `replan` re-reads its rect
-	// and the observer below watches it. The plan still converges: `.tabslot` is the only growable
-	// box and `.action-zone` is rigid, so a spilled action's width goes to the strip 1:1 — the fit
-	// condition reduces to a monotone width threshold. Where the line is ALREADY overflowing, brand
-	// and strip shrink together, so two adjacent spill sets can both be self-consistent: a narrow
-	// band with hysteresis, settling on whichever direction the width was approached from.
-	// The brand's yielding is measured, not claimed here: `touch-reflow.spec.ts`'s crowding-name
+	// and the observer below watches it. Deleting the brand made the cluster narrower, not fixed:
+	// the filename inside it is still unbounded, and the Badge beside it still cannot give an inch.
+	// The plan still converges: `.tabslot` is the only growable box and `.action-zone` is rigid, so
+	// a spilled action's width goes to the strip 1:1 — the fit condition reduces to a monotone width
+	// threshold. Where the line is ALREADY overflowing, cluster and strip shrink together, so two
+	// adjacent spill sets can both be self-consistent: a narrow band with hysteresis, settling on
+	// whichever direction the width was approached from.
+	// The cluster's yielding is measured, not claimed here: `touch-reflow.spec.ts`'s crowding-name
 	// test fails at 412px with `flex: 0 0 auto` put back.
 
 	/** Lowest priority first — the order the bar gives its actions up. D-R6: Undo · Redo · Save ·
@@ -82,16 +84,16 @@
 	 *
 	 * It is a term in this BUDGET, and deliberately not a `min-width` on `.tabslot`. The two are
 	 * different questions: this one decides when an action gives up its slot, and the layout that
-	 * follows then shares what is left between a shrinkable brand and a shrinkable strip — which
-	 * lands the strip at 54.4px at 412px with a 60-character filename (measured in
-	 * `touch-reflow.spec.ts`, which asserts the property that actually matters: never below ONE tap
-	 * target, with `.tabs` its own `overflow-x` scroller for the rest). Pinning the layout to this
-	 * same number would take those 34px straight back out of the filename, so the two mechanisms
-	 * would be fighting over one budget. R's audit raised it; this is the verdict. */
+	 * follows then shares what is left between a shrinkable status cluster and a shrinkable strip,
+	 * which on a 60-character filename lands the strip BELOW this reservation (`touch-reflow.spec.ts`
+	 * asserts the property that actually matters instead: never below ONE tap target, with `.tabs`
+	 * its own `overflow-x` scroller for the rest). Pinning the layout to this same number would take
+	 * the difference straight back out of the filename, so the two mechanisms would be fighting over
+	 * one budget. R's audit raised it; this is the verdict. */
 	const TABSLOT_HITS = 2;
 
 	let barEl = $state<HTMLDivElement | null>(null);
-	let brandEl = $state<HTMLDivElement | null>(null);
+	let statusEl = $state<HTMLDivElement | null>(null);
 	let zoneEl = $state<HTMLDivElement | null>(null);
 	let actionsEl = $state<HTMLDivElement | null>(null);
 	let spilled = $state<Set<string>>(new Set());
@@ -130,10 +132,10 @@
 
 	function replan(): void {
 		const bar = barEl;
-		const brand = brandEl;
+		const status = statusEl;
 		const host = actionsEl;
 		const trigger = zoneEl?.querySelector<HTMLElement>('[data-testid="topbar-overflow"]');
-		if (!bar || !brand || !host || !trigger) return;
+		if (!bar || !status || !host || !trigger) return;
 		const rem = px(document.documentElement, 'font-size');
 		const widths = widthCache.widths(rem);
 		if (widths.length === 0) return;
@@ -141,7 +143,7 @@
 
 		const barGap = px(bar, 'gap');
 		const hit = px(document.documentElement, '--hit');
-		// The header's three sections are brand · tabs · action zone, so two gaps; the tab strip is
+		// The header's three sections are status · tabs · action zone, so two gaps; the tab strip is
 		// only rendered when a `tabs` snippet was given.
 		const sections = tabs ? 2 : 1;
 		const reserve = tabs ? TABSLOT_HITS * hit : 0;
@@ -149,7 +151,7 @@
 			bar.clientWidth -
 			px(bar, 'padding-left') -
 			px(bar, 'padding-right') -
-			brand.getBoundingClientRect().width -
+			status.getBoundingClientRect().width -
 			barGap * sections -
 			reserve;
 
@@ -166,13 +168,13 @@
 
 	$effect(() => {
 		const bar = barEl;
-		const brand = brandEl;
-		if (!bar || !brand || !zoneEl || !actionsEl) return;
+		const status = statusEl;
+		if (!bar || !status || !zoneEl || !actionsEl) return;
 		const ro = new ResizeObserver(replan);
 		ro.observe(bar);
-		// …and the brand cluster, whose width moves on its own (the filename, the dirty dot, the
+		// …and the status cluster, whose width moves on its own (the filename, the dirty dot, the
 		// connection badge) and is a term in the budget.
-		ro.observe(brand);
+		ro.observe(status);
 		// `untrack`: replan READS `spilled` to decide whether the plan changed, and writing it from
 		// inside a tracked call would make this effect its own dependency — tearing down and
 		// rebuilding the observer on every spill.
@@ -264,9 +266,7 @@
 </script>
 
 <div class="topbar" bind:this={barEl}>
-	<div class="brand" bind:this={brandEl}>
-		<span class="logo">⟁</span>
-		<span class="name">goofi-pipe</span>
+	<div class="status" bind:this={statusEl}>
 		<Badge tone={g.connected ? 'success' : 'warning'}>
 			{g.connected ? 'connected' : 'connecting…'}
 		</Badge>
@@ -375,7 +375,7 @@
 		height: 44px;
 		font-size: var(--fs-body);
 		z-index: 10;
-		/* The bar is its own query container, so the wordmark below can stand down on WIDTH rather
+		/* The bar is its own query container, so the perf HUD below can stand down on WIDTH rather
 		   than on device class — the same rule the progressive overflow follows (D-R6). Safe as
 		   containment: nothing inside this bar is positioned out of it (both menus portal to
 		   <body>), so the stacking context it establishes traps nothing. */
@@ -384,9 +384,11 @@
 	}
 	/* Shrinkable, and it was not. The status cluster does not participate in the progressive
 	   overflow (D-R6) — but `flex: 0 0 auto` on a cluster whose widest member is a filename meant
-	   that on a live patch at 412px the brand alone claimed ~375 of 391px and pushed the overflow
-	   trigger, the one control that must always be reachable, clean off the right edge. */
-	.brand {
+	   that on a live patch at 412px it alone claimed ~375 of 391px and pushed the overflow trigger,
+	   the one control that must always be reachable, clean off the right edge. Deleting the brand
+	   took the ⟁ and the wordmark off that figure and none of its reason: the filename is unbounded.
+	   What is left here is the patch's own state — connection, live rate, name, dirty dot. */
+	.status {
 		display: flex;
 		align-items: center;
 		gap: var(--space-6);
@@ -401,39 +403,20 @@
 		display: flex;
 		align-items: stretch;
 	}
-	.logo {
-		font-size: var(--fs-title);
-		color: var(--text);
-		font-weight: 600;
-	}
-	/* `nowrap` is not cosmetic: the brand shrinks now, and a wrapped wordmark is two lines inside a
-	   44px bar. */
-	.name {
-		font-weight: 600;
-		white-space: nowrap;
-		flex: 0 0 auto;
-	}
-	/* Below this the wordmark stands down and the ⟁ carries the identity alone — it is the one
-	   thing in the cluster that says nothing the rest does not, and the ~95px it costs is what the
-	   layout tab strip needs to keep more than its ＋. A width threshold, not a rung. */
+	/* Below this the perf HUD stands down. On a LIVE patch it is the widest box in this cluster
+	   (82px measured at 412px, against the Badge's 72) and the only one of them that is a dev
+	   diagnostic rather than the patch's own state — `styleDrift`'s own exemption calls it "sized to
+	   be unobtrusive". With it up, the filename — the cluster's sole shrink absorber, because both
+	   chips are `nowrap` with `min-width: auto` and cannot give an inch — was ellipsised to five or
+	   six characters of a sixty-character name. A width threshold, not a device class, and not a
+	   component swap, since D-R6 keeps the status cluster out of the progressive overflow and this
+	   is the only lever the narrow end has. */
 	@container topbar (max-width: 520px) {
-		.name {
-			display: none;
-		}
-		/* …and so does the perf HUD. On a LIVE patch it is the widest box in this cluster (82px
-		   measured at 412px, against the Badge's 72 and the ⟁'s 14) and the only one of them that is
-		   a dev diagnostic rather than the patch's own state — `styleDrift`'s own exemption calls it
-		   "sized to be unobtrusive". With it up, the filename — the cluster's sole shrink absorber,
-		   because both chips are `nowrap` with `min-width: auto` and cannot give an inch — was
-		   ellipsised to five or six characters of a sixty-character name. A width rule in the same
-		   query the wordmark stands down in: not a device class, and not a component swap, since
-		   D-R6 keeps the status cluster out of the progressive overflow and this is the only lever
-		   the narrow end has. */
-		.brand :global(.hud) {
+		.status :global(.hud) {
 			display: none;
 		}
 	}
-	/* …and the filename is where the brand's shrink is absorbed: it is the longest and by far the
+	/* …and the filename is where the cluster's shrink is absorbed: it is the longest and by far the
 	   most variable of the cluster, and the only one an ellipsis still leaves readable. */
 	.path {
 		color: var(--text-dim);

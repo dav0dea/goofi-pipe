@@ -25,7 +25,7 @@ import { AS_ROWS, PRIORITY, inBar, menuRow, openOverflow } from '../lib/topbar';
 const SPILL_ORDER = [...PRIORITY].reverse();
 
 /**
- * How many actions spill depends on the brand's width, and the brand's width depends on whether
+ * How many actions spill depends on the status cluster's width, and that depends on whether
  * the patch has a NAME — which this file never established. It reached three only because
  * `dirty-taxonomy.spec.ts` and `fs-browser.spec.ts` sort earlier in the single-worker `default`
  * project and left the backend in a state nothing here asked for; standalone it measured two. So
@@ -352,10 +352,10 @@ test('with multi-select on, a plain click adds instead of replacing', async ({ p
 });
 
 /* The hysteresis probe R's audit asked for: where the header's flex line is already overflowing,
-   the brand and the tab strip shrink TOGETHER, so two adjacent spill sets can both be
+   the status cluster and the tab strip shrink TOGETHER, so two adjacent spill sets can both be
    self-consistent and the settled bar could depend on which side the width was approached from.
    The boundary test above only ever approaches from one step away; this walks in from 40px out on
-   each side, at a named patch (the state where the brand is widest and the band, if there is one,
+   each side, at a named patch (the state where the cluster is widest and the band, if there is one,
    is widest with it). */
 test('one width has one answer, whichever side it is approached from', async ({ page }) => {
 	await page.goto('/');

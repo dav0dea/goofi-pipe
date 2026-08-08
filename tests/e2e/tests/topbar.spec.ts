@@ -33,3 +33,22 @@ test('the app header carries exactly the app-global actions', async ({ page }) =
 		.evaluateAll((els) => els.map((el) => el.getAttribute('data-testid')));
 	expect(ids, 'panel-local behaviour does not belong in the app header').toEqual(HEADER_ACTIONS);
 });
+
+/**
+ * …and what it is not allowed to carry: a brand.
+ *
+ * Phil's call, and both halves of it are the same point. The ⟁ is not goofi's logo — it never was —
+ * and the wordmark spends ~95px of a 412px bar restating what the browser tab already says, in the
+ * one strip of chrome that is on screen at every width. The bar is for what the user can DO here.
+ *
+ * Read off `textContent`, not `innerText`: the wordmark was hidden below 520px by a container
+ * query, so a visible-text assertion would already have been green on a phone while the brand was
+ * still in the DOM taking part in the layout.
+ */
+test('the app header carries no brand', async ({ page }) => {
+	await page.goto('/');
+	await waitForApp(page);
+	const text = (await page.locator('.topbar').textContent()) ?? '';
+	expect(text, 'the wordmark is the browser tab’s job').not.toContain('goofi-pipe');
+	expect(text, 'and the ⟁ was never the logo').not.toContain('⟁');
+});

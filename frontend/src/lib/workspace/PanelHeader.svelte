@@ -373,7 +373,7 @@
 	   (Button has no density axis: this pin is padding + gap geometry, not a hit floor.)
 	   `min-width: 0` is the overflow's other half: the dropdown is the header's SHRINK ABSORBER, so
 	   a long panel-type name gives way to an ellipsis instead of pushing the ✕ out of the panel —
-	   the same trade the app header's brand cluster makes, and the reason the ✕ can be promised at
+	   the same trade the app header's status cluster makes, and the reason the ✕ can be promised at
 	   every width rather than at every width anyone happened to test. */
 	.panel-header :global(button.content-btn) {
 		height: 20px;

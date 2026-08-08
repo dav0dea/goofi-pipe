@@ -8,9 +8,10 @@ import { createWidthCache, planOverflow, type OverflowItem } from './overflowFit
  * Moving an item into the overflow cannot change the cached widths, and it hands the freed space
  * to the tab strip rather than to either term of the budget — so the observer that re-fires after
  * the write computes the same answer and writes nothing. (Only where the header's flex line is
- * ALREADY overflowing do the brand and the strip shrink together, which leaves a narrow band of
- * widths with hysteresis rather than oscillation; TopBar's own note carries that trade.) The two
- * properties below — idempotence and monotonicity in the budget — are what the claim reduces to.
+ * ALREADY overflowing do the status cluster and the strip shrink together, which leaves a narrow
+ * band of widths with hysteresis rather than oscillation; TopBar's own note carries that trade.)
+ * The two properties below — idempotence and monotonicity in the budget — are what the claim
+ * reduces to.
  */
 
 const ITEMS: OverflowItem[] = [
