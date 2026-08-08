@@ -78,29 +78,46 @@ pub enum ReduceMethod {
     Area,
 }
 
-impl ReduceMethod {
-    /// Merge two reduction methods requested on the SAME axis by different viewers (the "reduce once,
-    /// fan out to all" invariant means one method must serve every subscriber). Within the LINE
-    /// family (subsample<->envelope) the richer wins — envelope is a superset a subsample viewer can
-    /// still draw. ACROSS families "richest" is meaningless: envelope doubles an axis into
-    /// interleaved [min,max] (uninterpretable as an image), and area is a block-MEAN (destroys the
-    /// exact samples a line/trajectory viewer needs). The only value- and position-preserving
-    /// reduction BOTH an image and a line/trajectory viewer can render is exact subsampling, so a
-    /// cross-family conflict degrades to Subsample — the safe common denominator.
-    fn merge(self, other: ReduceMethod) -> ReduceMethod {
-        use ReduceMethod::*;
-        match (self, other) {
-            (Area, Area) => Area,
-            // Line family only (neither is Area): richest wins.
-            (a, b) if a != Area && b != Area => {
-                if a == Envelope || b == Envelope {
-                    Envelope
-                } else {
-                    Subsample
-                }
+/// Which kernels the admitted viewers asked for on ONE axis. A SET, not a running pairwise
+/// merge: set-union is commutative and associative, so the fold cannot depend on the order the
+/// specs happen to arrive in. (A pairwise merge could not promise that — degrading a
+/// cross-family conflict to Subsample erased the fact that an Area viewer had been seen, and a
+/// third spec asking for Envelope then won the axis back.)
+#[derive(Clone, Copy, Default)]
+struct MethodSet {
+    envelope: bool,
+    subsample: bool,
+    area: bool,
+}
+
+impl MethodSet {
+    fn add(&mut self, m: ReduceMethod) {
+        match m {
+            ReduceMethod::Envelope => self.envelope = true,
+            ReduceMethod::Subsample => self.subsample = true,
+            ReduceMethod::Area => self.area = true,
+        }
+    }
+
+    /// The ONE method that must serve every subscriber (the "reduce once, fan out to all"
+    /// invariant). Within the LINE family (subsample<->envelope) the richer wins — envelope is a
+    /// superset a subsample viewer can still draw. ACROSS families "richest" is meaningless:
+    /// envelope doubles an axis into interleaved [min,max] (uninterpretable as an image), and
+    /// area is a block-MEAN (destroys the exact samples a line/trajectory viewer needs). The only
+    /// value- and position-preserving reduction BOTH an image and a line/trajectory viewer can
+    /// render is exact subsampling, so a cross-family conflict degrades to Subsample — the safe
+    /// common denominator.
+    fn resolve(self) -> ReduceMethod {
+        if self.area {
+            if self.envelope || self.subsample {
+                ReduceMethod::Subsample
+            } else {
+                ReduceMethod::Area
             }
-            // Cross-family (area vs a line-family method).
-            _ => Subsample,
+        } else if self.envelope {
+            ReduceMethod::Envelope
+        } else {
+            ReduceMethod::Subsample
         }
     }
 }
@@ -200,17 +217,19 @@ pub struct MergedViewSpec {
 /// Merge N viewers' specs into ONE concrete plan for THIS frame:
 ///  1. drop every spec that does not admit the frame (incompatible viewer drops out),
 ///  2. canonicalize each surviving `AxisReduce.dim` against the actual ndim,
-///  3. group by canonical dim → `max(max)`, richest method (largest-need-per-dim),
+///  3. group by canonical dim → `max(max)`, union of the requested kernels (largest-need-per-dim),
 ///  4. aspect-preserve: if ≥2 axes reduce via `Area` (an image's H,W), scale them by ONE
 ///     factor so a non-square source keeps its aspect ratio.
 ///
-/// The per-axis fold — `(max(a.max, b.max), richest(a.method, b.method))` — is applied at
-/// EVERY collision (multiple specs on one dim; a `-1` from one viewer and a `+1` from another
-/// folding onto the same physical axis after canonicalization), in one place.
+/// The per-axis accumulation — `(max(max), set-union of the methods)` — happens at EVERY
+/// collision (multiple specs on one dim; a `-1` from one viewer and a `+1` from another folding
+/// onto the same physical axis after canonicalization), in one place, and both halves are
+/// order-independent by construction. The kernel is chosen ONCE, by
+/// [`MethodSet::resolve`], from the full set.
 pub fn plan<R: Reducible + ?Sized>(specs: &[ViewSpec], frame: &R) -> MergedViewSpec {
     let ndim = frame.ndim();
     let mut order: Vec<usize> = Vec::new(); // first-seen dim order → stable output
-    let mut folded: HashMap<usize, (usize, ReduceMethod)> = HashMap::new();
+    let mut folded: HashMap<usize, (usize, MethodSet)> = HashMap::new();
     for spec in specs {
         if !spec.admits(frame) {
             continue;
@@ -219,23 +238,19 @@ pub fn plan<R: Reducible + ?Sized>(specs: &[ViewSpec], frame: &R) -> MergedViewS
             let Some(d) = canon_dim(r.dim, ndim) else {
                 continue;
             };
-            match folded.get_mut(&d) {
-                Some((mx, m)) => {
-                    *mx = (*mx).max(r.max);
-                    *m = m.merge(r.method);
-                }
-                None => {
-                    order.push(d);
-                    folded.insert(d, (r.max, r.method));
-                }
-            }
+            let entry = folded.entry(d).or_insert_with(|| {
+                order.push(d);
+                (0, MethodSet::default())
+            });
+            entry.0 = entry.0.max(r.max);
+            entry.1.add(r.method);
         }
     }
     let mut axes: Vec<PlannedAxis> = order
         .iter()
         .map(|&d| {
-            let (mx, m) = folded[&d];
-            PlannedAxis { dim: d, max: mx, method: m }
+            let (mx, set) = folded[&d];
+            PlannedAxis { dim: d, max: mx, method: set.resolve() }
         })
         .collect();
     aspect_preserve_area(&mut axes, frame.shape());
@@ -445,6 +460,36 @@ mod tests {
             vec![PlannedAxis { dim: 1, max: 500, method: ReduceMethod::Subsample }],
             "cross-family (envelope vs area) must degrade to the common denominator: subsample"
         );
+    }
+
+    #[test]
+    fn cross_family_degradation_does_not_depend_on_spec_order() {
+        // THREE co-viewers on one axis — two line panels and one image panel. The specs reach
+        // `plan` in whatever order the reducer's per-connection map yields (mount order within a
+        // socket, arbitrary across tabs), so the SAME multiset must always plan the same way.
+        // A pairwise fold cannot deliver that: it forgets that an Area viewer was ever present
+        // the moment the cross-family conflict degrades to Subsample.
+        let line = |max: usize| ViewSpec {
+            dtype: ViewDtype::Array,
+            ndim: vec![(DimCmp::Le, 3)],
+            dims: vec![],
+            reduce: vec![AxisReduce { dim: 1, max, method: ReduceMethod::Envelope }],
+        };
+        let image = ViewSpec {
+            dtype: ViewDtype::Array,
+            ndim: vec![(DimCmp::Ge, 2), (DimCmp::Le, 3)],
+            dims: vec![],
+            reduce: vec![AxisReduce { dim: 1, max: 300, method: ReduceMethod::Area }],
+        };
+        let expected = vec![PlannedAxis { dim: 1, max: 500, method: ReduceMethod::Subsample }];
+        let frame = Frame::array(&[8, 4000]);
+        for (label, specs) in [
+            ("image last", vec![line(500), line(400), image.clone()]),
+            ("image middle", vec![line(500), image.clone(), line(400)]),
+            ("image first", vec![image.clone(), line(500), line(400)]),
+        ] {
+            assert_eq!(plan(&specs, &frame).axes, expected, "{label}: an Area co-viewer must survive the fold");
+        }
     }
 
     #[test]
