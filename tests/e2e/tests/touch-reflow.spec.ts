@@ -137,17 +137,25 @@ async function checkHeaderFits(page: Page): Promise<void> {
 		`the overflow trigger is inside the bar (trigger ${JSON.stringify(t)} in ${JSON.stringify(bar)})`
 	).toBeLessThanOrEqual(1);
 
-	// The filename is where the cluster's shrink is absorbed — R made `.path` the sole absorber
-	// because it is "the only one an ellipsis still leaves readable". But the two chips beside it
-	// are `white-space: nowrap` with the default `min-width: auto`, so neither could give an inch,
-	// and at 412px — the width R was built for — the ellipsis left `.path` 68px of a 60-character
-	// name, five or six characters. `toHaveText` is green on that: it reads DOM text, not pixels.
-	// Eight rem is about a dozen monospace characters — enough to tell two patches apart. (Deleting
-	// the header's brand is where that 68px went: the same read is 176px now. The floor stays a
-	// floor — it is the property, not the slack that currently satisfies it.)
+	// The filename is readable in ONE of the two representations, never squeezed to nothing in
+	// between: as a chip it is capped at 32ch and either fits whole or spills whole (the plan's
+	// binary), and spilled it is a row in the ⋯ menu. The old form of this assertion — the chip
+	// ellipsised down to ≥8rem — measured the shrink-absorber model this bar no longer has.
 	const rem = await page.evaluate(() => parseFloat(getComputedStyle(document.documentElement).fontSize));
-	const path = (await page.locator('.topbar .path').boundingBox())!;
-	expect(path.width, 'the patch name is still readable').toBeGreaterThanOrEqual(8 * rem);
+	const pathBox = await page.locator('.topbar .path').boundingBox();
+	if (pathBox) {
+		expect(pathBox.width, 'kept in the bar, the patch name is readable').toBeGreaterThanOrEqual(
+			8 * rem
+		);
+	} else {
+		await openOverflow(page);
+		await expect(
+			page.locator('.context-menu .item', { hasText: CROWDING_NAME.slice(0, 24) }),
+			'spilled, the patch name is a row in the menu'
+		).toHaveCount(1);
+		await page.keyboard.press('Escape');
+		await expect(page.locator('.context-menu')).toHaveCount(0);
+	}
 
 	// The tab strip is what the actions spill in favour of; squeezed to zero, no layout tab and not
 	// even the ＋ that makes one can be reached (o1). TopBar reserves `2 × --hit` for it in the

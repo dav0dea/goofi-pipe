@@ -2,8 +2,10 @@
 	import { graph } from '$lib/stores/graph.svelte';
 	import { history } from '$lib/stores/history.svelte';
 	import { selection } from '$lib/stores/selection.svelte';
+	import { workspace } from '$lib/workspace/workspace.svelte';
+	import { perfStats } from '$lib/api/perfStats.svelte';
 	import { activeOrOnlyEditor } from '$lib/panels/editorCommands';
-	import { untrack, type Snippet } from 'svelte';
+	import { tick, untrack, type Snippet } from 'svelte';
 	import type { MenuItem } from '$lib/workspace/menu';
 	import ContextMenu from '$lib/workspace/ContextMenu.svelte';
 	import PerfHud from './PerfHud.svelte';
@@ -28,6 +30,13 @@
 	const g = graph();
 	const h = history();
 	const sel = selection();
+	const ws = workspace();
+	const p = perfStats();
+
+	// Mirror of PerfHud's own `{#if active}` gate, so the plan and the menu agree with the HUD
+	// about whether there is anything to show. A boolean derived, NOT `p.fps` read raw in an
+	// effect — fps ticks at 4Hz and would re-fire anything tracking it on every tick.
+	const hudActive = $derived(p.fps > 0.05 || p.dps > 0.05);
 
 	// Save split-button dropdown — opened via the shared ContextMenu, which
 	// portals to <body> at --z-menu so it stacks above side panels.
@@ -50,49 +59,45 @@
 
 	// --- progressive overflow (D-R6) -----------------------------------------
 	//
-	// The actions live in the bar and give themselves up to the overflow menu ONE AT A TIME,
-	// lowest priority first, as the width runs out. `overflowFit.ts` owns the arithmetic (and its
-	// three traps); this file owns only the measuring — which boxes to read, and against what.
+	// The bar's residents give themselves up to the overflow menu ONE AT A TIME, lowest priority
+	// first, as the width runs out. `overflowFit.ts` owns the arithmetic (and its three traps);
+	// this file owns only the measuring — which boxes to read, and against what.
 	//
-	// The budget is MEASURED each replan: the header's own inner width, minus the status cluster's
-	// laid-out rect, minus a reservation for the tab strip. The one width it must never read is
-	// `.actions`' own — that shrinks the moment an item leaves, which is the oscillation bug.
+	// The LAYOUT TAB STRIP is the header's first-class citizen (Phil, 2026-08-08): it owns the
+	// left edge, and the budget reserves its CONTENT width — so the identity chips and then the
+	// actions yield in the strip's favour, and the strip's own `overflow-x` scroller is the
+	// fallback only once even an otherwise-empty bar could not hold every tab.
 	//
-	// The cluster is not a fixed term (it was `flex: 0 0 auto` when this comment was first written;
-	// `8596297` made it `flex: 0 1 auto` because a live patch's filename otherwise pushed the
-	// overflow trigger off the right edge at 412px). That is exactly why `replan` re-reads its rect
-	// and the observer below watches it. Deleting the brand made the cluster narrower, not fixed:
-	// the filename inside it is still unbounded, and the connection Badge — absent while the socket
-	// is healthy — comes back at its full width the moment it is not.
-	// The plan still converges: `.tabslot` is the only growable box and `.action-zone` is rigid, so
-	// a spilled action's width goes to the strip 1:1 — the fit condition reduces to a monotone width
-	// threshold. Where the line is ALREADY overflowing, cluster and strip shrink together, so two
-	// adjacent spill sets can both be self-consistent: a narrow band with hysteresis, settling on
-	// whichever direction the width was approached from.
-	// The cluster's yielding is measured, not claimed here: `touch-reflow.spec.ts`'s crowding-name
-	// test fails at 412px with `flex: 0 0 auto` put back.
+	// Everything else sits right, in ONE spillable group: the patch identity (perf HUD, filename +
+	// dirty dot) yields FIRST — informational, so it outranks nothing — then the actions in the
+	// order below. The connection chip is deliberately NOT in the plan: a warning that overflows
+	// into a hidden menu is not a warning, so its width is subtracted from the budget instead.
+	//
+	// The budget is MEASURED each replan: the header's own inner width, minus the alarm chip's
+	// rect, minus the tab reservation. The one width it must never read is the zone's own — that
+	// shrinks the moment an item leaves, which is the oscillation bug. The plan converges because
+	// `.tabslot` is the only growable box: a spilled item's width goes to the strip 1:1, so the
+	// fit condition reduces to a monotone width threshold.
 
-	/** Lowest priority first — the order the bar gives its actions up. D-R6: Undo · Redo · Save ·
-	 * Load… · Save▾ is the keep order, so the caret goes first and the split degrades into a plain
-	 * Save button. */
-	const SPILL_ORDER = ['topbar-save-caret', 'topbar-load', 'topbar-save', 'topbar-redo', 'topbar-undo'];
-	/** The tab strip is not an action and does not participate — but it is what the actions used
-	 * to squeeze to zero width (o1), taking every layout tab and the ＋ with it. Two tap targets
-	 * is the floor they spill against, in the same token that decides what "tappable" means, so it
-	 * scales with the pointer rather than naming a phone.
-	 *
-	 * It is a term in this BUDGET, and deliberately not a `min-width` on `.tabslot`. The two are
-	 * different questions: this one decides when an action gives up its slot, and the layout that
-	 * follows then shares what is left between a shrinkable status cluster and a shrinkable strip,
-	 * which on a 60-character filename lands the strip BELOW this reservation (`touch-reflow.spec.ts`
-	 * asserts the property that actually matters instead: never below ONE tap target, with `.tabs`
-	 * its own `overflow-x` scroller for the rest). Pinning the layout to this same number would take
-	 * the difference straight back out of the filename, so the two mechanisms would be fighting over
-	 * one budget. R's audit raised it; this is the verdict. */
+	/** Lowest priority first — the order the bar gives its residents up. The identity chips go
+	 * before any action; then D-R6's keep order (Undo · Redo · Save · Load… · Save▾) unchanged,
+	 * so the caret goes first among actions and the split degrades into a plain Save button. */
+	const SPILL_ORDER = [
+		'topbar-hud',
+		'topbar-path',
+		'topbar-save-caret',
+		'topbar-load',
+		'topbar-save',
+		'topbar-redo',
+		'topbar-undo'
+	];
+	/** The FLOOR under the tab reservation, in tap targets. The reserve normally follows the
+	 * strip's measured content (tabs get their room before anything else keeps a slot), but a
+	 * strip with one tab must still never be squeezed below what a finger can hit (o1). */
 	const TABSLOT_HITS = 2;
 
 	let barEl = $state<HTMLDivElement | null>(null);
-	let statusEl = $state<HTMLDivElement | null>(null);
+	let tabslotEl = $state<HTMLDivElement | null>(null);
 	let zoneEl = $state<HTMLDivElement | null>(null);
 	let actionsEl = $state<HTMLDivElement | null>(null);
 	let spilled = $state<Set<string>>(new Set());
@@ -104,13 +109,16 @@
 		return parseFloat(getComputedStyle(el).getPropertyValue(prop)) || 0;
 	}
 
-	/** Every action's intrinsic width, read with none of them hidden.
+	/** Every resident's intrinsic width, read with none of them hidden.
 	 *
 	 * The hide class is stripped and restored inside one synchronous block, so nothing is ever
 	 * painted mid-measurement and Svelte's own class bookkeeping stays correct (it re-applies from
-	 * `spilled` on the next update either way). Only runs when the root font size moved. */
+	 * `spilled` on the next update either way). Scoped to the ZONE: the identity chips are
+	 * residents of the same plan as the actions, just lower priority. Re-runs when the root font
+	 * size moved — and when the chips' CONTENT moved (the filename, the HUD's presence), which the
+	 * invalidation effect below owns. */
 	function measureWidths(): number[] {
-		const host = actionsEl;
+		const host = zoneEl;
 		if (!host) return [];
 		const hidden = [...host.querySelectorAll<HTMLElement>('.spilled')];
 		for (const el of hidden) el.classList.remove('spilled');
@@ -120,7 +128,8 @@
 			if (!el) return 0;
 			const w = el.getBoundingClientRect().width;
 			// The caret shares the split control's flex slot with Save and introduces no gap of its
-			// own, so its cost nets out the one gap the plan charges every item.
+			// own, so its cost nets out the one gap the plan charges every item. (`.actions` and
+			// the zone share one gap token, so a single number serves both nesting levels.)
 			return id === 'topbar-save-caret' ? w - gap : w;
 		});
 		for (const el of hidden) el.classList.add('spilled');
@@ -131,31 +140,51 @@
 
 	function replan(): void {
 		const bar = barEl;
-		const status = statusEl;
-		const host = actionsEl;
-		const trigger = zoneEl?.querySelector<HTMLElement>('[data-testid="topbar-overflow"]');
-		if (!bar || !status || !host || !trigger) return;
+		const zone = zoneEl;
+		const trigger = zone?.querySelector<HTMLElement>('[data-testid="topbar-overflow"]');
+		if (!bar || !zone || !actionsEl || !trigger) return;
 		const rem = px(document.documentElement, 'font-size');
 		const widths = widthCache.widths(rem);
 		if (widths.length === 0) return;
 		const items: OverflowItem[] = SPILL_ORDER.map((id, i) => ({ id, width: widths[i] }));
 
 		const barGap = px(bar, 'gap');
+		const zoneGap = px(zone, 'gap');
 		const hit = px(document.documentElement, '--hit');
-		// The header's three sections are status · tabs · action zone, so two gaps; the tab strip is
-		// only rendered when a `tabs` snippet was given.
-		const sections = tabs ? 2 : 1;
-		const reserve = tabs ? TABSLOT_HITS * hit : 0;
+		// The header's two sections are tabs · zone, so one gap when the strip is rendered.
+		const sections = tabs ? 1 : 0;
+		// Tabs get their room FIRST: the reserve follows the strip's measured CONTENT, floored at
+		// two tap targets (o1). Content is summed from the scroller's children — NOT read off
+		// `scrollWidth`, because the strip is `flex: 1 1 auto`: a non-overflowing scroller's
+		// scrollWidth is its laid-out width, i.e. whatever slack the LAST plan left it, which is
+		// the self-read that put hysteresis into the plan (caught by the one-width-one-answer
+		// walk). The pills are `nowrap` with min-content floors, so their rects are the same
+		// number from either approach direction.
+		const strip = tabslotEl?.querySelector<HTMLElement>('[data-testid="workspace-tabs"]');
+		let tabsContent = 0;
+		if (strip) {
+			const kids = [...strip.children] as HTMLElement[];
+			tabsContent =
+				kids.reduce((a, el) => a + el.getBoundingClientRect().width, 0) +
+				px(strip, 'gap') * Math.max(0, kids.length - 1) +
+				px(strip, 'padding-left') +
+				px(strip, 'padding-right');
+		}
+		const reserve = tabs ? Math.max(TABSLOT_HITS * hit, tabsContent) : 0;
+		// The alarm chip is not in the plan (a warning must never land in a menu), so its width —
+		// plus the zone gap it introduces — comes off the budget whenever it is up.
+		const alarm = zone.querySelector<HTMLElement>('[data-testid="topbar-connection"]');
+		const alarmW = alarm ? alarm.getBoundingClientRect().width + zoneGap : 0;
 		const budget =
 			bar.clientWidth -
 			px(bar, 'padding-left') -
 			px(bar, 'padding-right') -
-			status.getBoundingClientRect().width -
+			alarmW -
 			barGap * sections -
 			reserve;
 
 		const next = planOverflow(items, SPILL_ORDER, {
-			gap: px(host, 'gap'),
+			gap: zoneGap,
 			budget,
 			trigger: trigger.getBoundingClientRect().width
 		});
@@ -167,13 +196,9 @@
 
 	$effect(() => {
 		const bar = barEl;
-		const status = statusEl;
-		if (!bar || !status || !zoneEl || !actionsEl) return;
+		if (!bar || !zoneEl || !actionsEl) return;
 		const ro = new ResizeObserver(replan);
 		ro.observe(bar);
-		// …and the status cluster, whose width moves on its own (the filename, the dirty dot, the
-		// connection badge) and is a term in the budget.
-		ro.observe(status);
 		// `untrack`: replan READS `spilled` to decide whether the plan changed, and writing it from
 		// inside a tracked call would make this effect its own dependency — tearing down and
 		// rebuilding the observer on every spill.
@@ -190,6 +215,23 @@
 			live = false;
 			ro.disconnect();
 		};
+	});
+
+	// The identity chips change width from CONTENT, which no bar resize reports: a save renames
+	// the patch, the dirty dot comes and goes, the HUD mounts with the first flowing frame. Their
+	// cached intrinsic widths go stale at exactly those moments — and the tab strip's content
+	// (the reserve) moves when a layout tab is added, closed or renamed. One effect owns all of
+	// it: track the inputs, drop the cache, replan AFTER the DOM settles. The `tick()` is
+	// load-bearing for the strip: WorkspaceTabs is a sibling tree (a snippet from AppShell), and
+	// this effect can run before its new pills exist — a synchronous replan then measures the OLD
+	// content and nothing re-fires it, leaving a stale plan (caught by the tabs-get-the-room e2e).
+	$effect(() => {
+		void g.savePath;
+		void g.unsavedChanges;
+		void hudActive;
+		void ws.state.workspaces;
+		widthCache.invalidate();
+		void tick().then(replan);
 	});
 
 	// --- the overflow menu ---------------------------------------------------
@@ -234,10 +276,23 @@
 		];
 	}
 
-	/** The bar's own actions, but only the ones that no longer fit. Same commands, second
-	 * representation — never a parallel implementation (D-R2). */
+	/** The bar's own residents, but only the ones that no longer fit. Same content, second
+	 * representation — never a parallel implementation (D-R2). The identity chips become
+	 * DISABLED rows: information relocates, it does not become clickable. */
 	function spilledItems(): MenuItem[] {
 		const items: MenuItem[] = [];
+		if (isSpilled('topbar-path') && (g.savePath || g.unsavedChanges)) {
+			// The same 32ch the chip caps at, applied to the DATA: a menu row does not ellipsize,
+			// and an uncapped 60-character name pushes the whole menu off a 412px screen.
+			const name = g.savePath?.split('/').pop() ?? 'untitled';
+			items.push({
+				label: `${g.unsavedChanges ? '● ' : ''}${name.length > 32 ? `${name.slice(0, 31)}…` : name}`,
+				disabled: true,
+				action: () => {}
+			});
+		}
+		if (isSpilled('topbar-hud') && hudActive)
+			items.push({ label: `${p.fps.toFixed(0)} fps`, disabled: true, action: () => {} });
 		if (isSpilled('topbar-undo'))
 			items.push({
 				label: 'Undo',
@@ -265,31 +320,43 @@
 </script>
 
 <div class="topbar" bind:this={barEl}>
-	<div class="status" bind:this={statusEl}>
-		<!-- The connection speaks ONLY when it needs attention. "Connected" was true in every
-		     screenshot of a working app and spent 72px of a 412px bar saying so; the alarm state
-		     (established, then lost — `graph.disconnected`, which is what keeps a boot quiet) takes
-		     that width back at the moment it is worth something. It sits in `.status`, which D-R6
-		     keeps OUT of the progressive overflow, so it can never spill into a menu — a warning
-		     the user has to open a menu to find is not a warning. -->
-		{#if g.disconnected}
-			<Badge tone="warning" data-testid="topbar-connection">disconnected</Badge>
-		{/if}
-		<PerfHud />
-		{#if g.savePath}
-			<span class="path" title={g.savePath}
-				>{g.unsavedChanges ? '● ' : ''}{g.savePath.split('/').pop()}</span
-			>
-		{:else if g.unsavedChanges}
-			<span class="path">● untitled</span>
-		{/if}
-	</div>
-
 	{#if tabs}
-		<div class="tabslot">{@render tabs()}</div>
+		<!-- First-class and first: the layout tab strip owns the left edge and the slack, and the
+		     budget reserves its content width — everything to the right yields in its favour. -->
+		<div class="tabslot" bind:this={tabslotEl}>{@render tabs()}</div>
 	{/if}
 
 	<div class="action-zone" bind:this={zoneEl}>
+		<!-- The connection speaks ONLY when it needs attention. "Connected" was true in every
+		     screenshot of a working app and spent 72px of a 412px bar saying so; the alarm state
+		     (established, then lost — `graph.disconnected`, which is what keeps a boot quiet) takes
+		     that width back at the moment it is worth something. Deliberately OUTSIDE the
+		     progressive overflow — its width is subtracted from the budget instead — so it can
+		     never spill into a menu: a warning the user has to open a menu to find is not a
+		     warning. -->
+		{#if g.disconnected}
+			<Badge tone="warning" data-testid="topbar-connection">disconnected</Badge>
+		{/if}
+		<!-- The patch identity: informational, so it is the FIRST thing the bar gives up. Each chip
+		     is a plan resident with a testid the measurement reads; spilled, it becomes a disabled
+		     row in the ⋯ menu. -->
+		<span
+			class="info"
+			class:spilled={isSpilled('topbar-hud')}
+			data-testid="topbar-hud"><PerfHud /></span
+		>
+		{#if g.savePath}
+			<span
+				class="info path"
+				class:spilled={isSpilled('topbar-path')}
+				data-testid="topbar-path"
+				title={g.savePath}>{g.unsavedChanges ? '● ' : ''}{g.savePath.split('/').pop()}</span
+			>
+		{:else if g.unsavedChanges}
+			<span class="info path" class:spilled={isSpilled('topbar-path')} data-testid="topbar-path"
+				>● untitled</span
+			>
+		{/if}
 		<div class="actions" bind:this={actionsEl}>
 			<IconButton
 				variant="ghost"
@@ -380,28 +447,10 @@
 		height: 44px;
 		font-size: var(--fs-body);
 		z-index: 10;
-		/* The bar is its own query container, so the perf HUD below can stand down on WIDTH rather
-		   than on device class — the same rule the progressive overflow follows (D-R6). Safe as
-		   containment: nothing inside this bar is positioned out of it (both menus portal to
-		   <body>), so the stacking context it establishes traps nothing. */
-		container-type: inline-size;
-		container-name: topbar;
 	}
-	/* Shrinkable, and it was not. The status cluster does not participate in the progressive
-	   overflow (D-R6) — but `flex: 0 0 auto` on a cluster whose widest member is a filename meant
-	   that on a live patch at 412px it alone claimed ~375 of 391px and pushed the overflow trigger,
-	   the one control that must always be reachable, clean off the right edge. Deleting the brand
-	   took the ⟁ and the wordmark off that figure and none of its reason: the filename is unbounded.
-	   What is left here is the patch's own state — live rate, name, dirty dot, and the connection
-	   only while it is lost. */
-	.status {
-		display: flex;
-		align-items: center;
-		gap: var(--space-6);
-		flex: 0 1 auto;
-		min-width: 0;
-	}
-	/* The tab strip fills the slack between the filename and the actions. */
+	/* The tab strip fills the slack between the bar's edges and the right-hand group — and the
+	   overflow budget reserves its CONTENT width, so the slack is genuinely its before anything
+	   else keeps a slot. */
 	.tabslot {
 		flex: 1 1 auto;
 		min-width: 0;
@@ -409,28 +458,25 @@
 		display: flex;
 		align-items: stretch;
 	}
-	/* Below this the perf HUD stands down. On a LIVE patch it is the widest box in this cluster
-	   (82px measured at 412px, against the connection Badge's 72 — which now only appears when that
-	   connection is lost) and the only one of them that is a dev diagnostic rather than the patch's
-	   own state — `styleDrift`'s own exemption calls it "sized to be unobtrusive". With it up, the
-	   filename — the cluster's sole shrink absorber, because the HUD is `nowrap` with
-	   `min-width: auto` and cannot give an inch — was ellipsised to five or six characters of a
-	   sixty-character name. A width threshold, not a device class, and not a component swap, since
-	   D-R6 keeps the status cluster out of the progressive overflow and this is the only lever the
-	   narrow end has. */
-	@container topbar (max-width: 520px) {
-		.status :global(.hud) {
-			display: none;
-		}
+	/* An identity chip. In the plan, so its hidden state is the same `.spilled` the actions use;
+	   never a shrink absorber — a chip either fits whole or moves to the menu whole, which is what
+	   keeps the plan's measured widths honest. */
+	.info {
+		display: inline-flex;
+		align-items: center;
+		min-width: 0;
 	}
-	/* …and the filename is where the cluster's shrink is absorbed: it is the longest and by far the
-	   most variable of the cluster, and the only one an ellipsis still leaves readable. */
+	.info.spilled {
+		display: none;
+	}
+	/* The filename. Ellipsis against its own CAP, not against the bar's pressure (the plan spills
+	   it long before the bar squeezes): 32ch keeps a long name readable while bounding what a
+	   60-character patch can claim of the zone. */
 	.path {
 		color: var(--text-dim);
 		font-family: var(--font-mono);
 		font-size: var(--fs-small);
-		flex: 0 1 auto;
-		min-width: 0;
+		max-width: 32ch;
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;
