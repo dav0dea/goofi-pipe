@@ -419,10 +419,26 @@ The trade, stated plainly: centralizing **added** production lines — a primiti
 galleries — and a great deal more test code. What it bought is a declarative inspector, no
 component-to-component style reach-ins, and an app usable on a phone. The 2026-07-29 capstone audit
 found **zero critical and zero correctness defects in the graph, data or CRDT planes**; its
-important-tier items are fixed. What it left open is recorded in
-`docs/analysis/2026-07-29-final-frontend-audit.md` §4 — chiefly **C38**, the bridge half of the
-save-path gap (the manager keeps no save-path state, so a second tab or a reload forgets it), which
-needs a design pass with the user rather than a patch.
+important-tier items are fixed.
+
+### The one thing still open — C38, the save-path gap
+
+Stated here in full rather than by reference, because the audit reports live in **gitignored**
+`docs/analysis/` and would not survive a fresh clone.
+
+**The manager keeps no save-path state.** `crates/goofi-bridge/src/schemas.rs` hard-codes
+`"save_path": Value::Null` into every snapshot, and `lib.rs` broadcasts `save_path_changed` from the
+**`load` arm only**. So a *save* never converges other open tabs, and a reload always forgets where
+the patch was saved. R fixed the **client** seam alone (`e20f405` — `GraphStore.save` remembers the
+path it wrote, pinned through the façade in `fs-browser.spec.ts`), which is why the single-tab case
+looks correct.
+
+**It is deliberately unfixed.** Making the manager authoritative means giving it the state, deciding
+load / save-as / browser-download semantics against it, and changing the snapshot shape — a design
+change, not a minor-tier patch. Half-doing it is *worse than nothing*: adding the missing broadcast
+without the rest would make the remaining inconsistency **less visible**, not smaller.
+
+**So: co-design it with the user before touching it.** Do not "just add the broadcast".
 
 The **node library is a deliberate tabula rasa** — Oscillator + Buffer only. Growing
 it (sinks, filters/PSD, real biosignal inputs, recording, array math) is the next
