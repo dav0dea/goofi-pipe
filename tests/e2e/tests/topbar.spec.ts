@@ -34,6 +34,21 @@ test('the app header carries exactly the app-global actions', async ({ page }) =
 	expect(ids, 'panel-local behaviour does not belong in the app header').toEqual(HEADER_ACTIONS);
 });
 
+test('the save menu offers Save As and nothing else', async ({ page }) => {
+	// "Save in browser" is gone (user decision, 2026-08-08): a save writes a backend file, full
+	// stop. The caret stays a menu so the split control keeps its shape and its spill behaviour.
+	await page.goto('/');
+	await waitForApp(page);
+	await page.getByTestId('topbar-save-caret').click();
+	const rows = page.locator('.context-menu [role="menuitem"]');
+	await expect(rows, 'one row: Save As…').toHaveCount(1);
+	await expect(rows.first()).toHaveText(/Save As/);
+	await expect(
+		page.locator('.context-menu').getByText(/browser/i),
+		'no browser-save row anywhere in it'
+	).toHaveCount(0);
+});
+
 /**
  * …and what it is not allowed to carry: a brand.
  *

@@ -21,12 +21,12 @@ export const PRIORITY = [
 ];
 
 /** The overflow-menu row(s) each bar action becomes once it spills. The Save caret is a submenu
- *  in the bar, so it spills as its two leaf rows rather than as one. */
+ *  in the bar, so it spills as its leaf row rather than as itself. */
 export const AS_ROWS: Record<string, string[]> = {
 	'topbar-undo': ['Undo'],
 	'topbar-redo': ['Redo'],
 	'topbar-save': ['Save'],
-	'topbar-save-caret': ['Save As…', 'Save in browser'],
+	'topbar-save-caret': ['Save As…'],
 	'topbar-load': ['Load…']
 };
 

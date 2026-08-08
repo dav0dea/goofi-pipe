@@ -1009,17 +1009,21 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
             // dropped in the flat-scope re-architecture (sub-patches are organizational facades now).
             "serialize" => Ok(json!({ "yaml": g.serialize() })),
             "save" => {
-                let yaml = g.serialize();
                 // Expand `~` exactly as the browser does, or a path the user could navigate to
-                // would not be writable — the two must agree on what a path means.
-                let path = payload.get("path").and_then(|v| v.as_str()).map(fsbrowse::resolve);
-                if let Some(p) = &path {
-                    std::fs::write(p, &yaml).map_err(|e| format!("save failed: {e}"))?;
-                    // Written to disk ⇒ clean. A save with no path is a browser download, which
-                    // does not give the patch a home, so it leaves the flag alone.
-                    events.extend(state.set_dirty(false));
-                }
-                Ok(json!({ "path": path, "yaml": yaml }))
+                // would not be writable — the two must agree on what a path means. The path is
+                // REQUIRED: the old no-path form quietly returned the YAML for a browser
+                // download ("Save in browser"), a second save semantics that left the dirty
+                // flag standing and that the save-path design (C38) would have had to carry.
+                // The user removed the feature; a save writes a file or it is malformed.
+                let path = payload
+                    .get("path")
+                    .and_then(|v| v.as_str())
+                    .map(fsbrowse::resolve)
+                    .ok_or("save: missing path")?;
+                std::fs::write(&path, g.serialize()).map_err(|e| format!("save failed: {e}"))?;
+                // Written to disk ⇒ clean.
+                events.extend(state.set_dirty(false));
+                Ok(json!({ "path": path }))
             }
             // One load path for both sources: `load_text` carries the YAML inline (a browser
             // upload), `load` names a file the BACKEND reads. Everything after the read — replace,

@@ -61,14 +61,15 @@
 	// `g.save` remembers the path it wrote to — the store is where BOTH doors onto a save learn the
 	// patch has a home (this one and `window.goofi.commands.save`), since the manager keeps no
 	// save-path state and its `save` arm broadcasts nothing.
-	async function saveBackend(path?: string): Promise<void> {
-		await g.save(path ?? g.savePath ?? undefined);
+	async function saveBackend(path: string): Promise<void> {
+		await g.save(path);
 	}
 
 	// Default Save: silent overwrite when the patch is named, else "Save As".
 	function triggerSave(): void {
-		if (g.savePath) {
-			void saveBackend().catch((e) => console.error('save failed', e));
+		const path = g.savePath;
+		if (path) {
+			void saveBackend(path).catch((e) => console.error('save failed', e));
 		} else {
 			fsMode = 'save';
 		}
@@ -76,24 +77,6 @@
 
 	function saveAs(): void {
 		fsMode = 'save';
-	}
-
-	// "Save in browser": download the patch YAML to the user's computer; no backend write.
-	async function saveInBrowser(): Promise<void> {
-		try {
-			const { yaml } = await g.serialize();
-			const blob = new Blob([yaml], { type: 'application/x-yaml' });
-			const url = URL.createObjectURL(blob);
-			const a = document.createElement('a');
-			const base = g.savePath ? (g.savePath.split('/').pop() ?? '') : '';
-			a.href = url;
-			a.download =
-				base || `${(window.prompt('Name this patch', 'patch') ?? 'patch').replace(/\.gfi$/, '')}.gfi`;
-			a.click();
-			setTimeout(() => URL.revokeObjectURL(url), 1000);
-		} catch (e) {
-			console.error('browser save failed', e);
-		}
 	}
 
 	function triggerLoad(): void {
@@ -233,12 +216,7 @@
 			<Button size="sm" onclick={() => location.reload()}>Reload</Button>
 		</div>
 	{/if}
-	<TopBar
-		onSave={triggerSave}
-		onSaveAs={saveAs}
-		onSaveInBrowser={saveInBrowser}
-		onLoad={triggerLoad}
-	>
+	<TopBar onSave={triggerSave} onSaveAs={saveAs} onLoad={triggerLoad}>
 		{#snippet tabs()}
 			<WorkspaceTabs />
 		{/snippet}

@@ -2080,6 +2080,25 @@ async fn list_dir_browses_the_backend_filesystem() {
 }
 
 #[tokio::test]
+async fn save_without_a_path_is_refused() {
+    // "Save in browser" is gone (user decision, 2026-08-08): a save's ONLY job is writing the
+    // patch to a backend path. The old no-path form quietly returned the YAML for a browser
+    // download and left the dirty flag standing — a second save semantics that C38's design
+    // work would have had to carry. A save with no path is now a malformed request, not a mode.
+    let base = start_server().await;
+    let (mut ws, _) = connect_async(format!("{base}/control")).await.unwrap();
+    let _hello = recv_text(&mut ws).await;
+
+    call(&mut ws, 1, "add_node", json!({ "type": "Oscillator" })).await;
+    let reply = call(&mut ws, 2, "save", json!({})).await;
+    let err = reply["error"].as_str().unwrap_or_default();
+    assert!(
+        err.contains("save") && err.contains("path"),
+        "a path-less save is refused by name, got: {reply}"
+    );
+}
+
+#[tokio::test]
 async fn load_reads_a_patch_from_a_backend_path() {
     let base = start_server().await;
     let (mut ws, _) = connect_async(format!("{base}/control")).await.unwrap();

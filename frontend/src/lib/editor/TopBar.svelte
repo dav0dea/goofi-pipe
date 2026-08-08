@@ -17,14 +17,13 @@
 	type Props = {
 		onSave: () => void;
 		onSaveAs: () => void;
-		onSaveInBrowser: () => void;
 		onLoad: () => void;
 		/** Workspace tab strip, rendered in the header's central gap between the
 		 * filename and the action buttons. */
 		tabs?: Snippet;
 	};
 
-	const { onSave, onSaveAs, onSaveInBrowser, onLoad, tabs }: Props = $props();
+	const { onSave, onSaveAs, onLoad, tabs }: Props = $props();
 
 	const g = graph();
 	const h = history();
@@ -43,11 +42,10 @@
 		};
 	}
 
+	// One row. It stays a menu (not a bare second button) so the split control keeps its shape and
+	// its spill behaviour — and so a future save option has a home that is not a fourth button.
 	function saveOptions(): MenuItem[] {
-		return [
-			{ label: 'Save As…', action: onSaveAs },
-			{ label: 'Save in browser', action: onSaveInBrowser }
-		];
+		return [{ label: 'Save As…', action: onSaveAs }];
 	}
 
 	// --- progressive overflow (D-R6) -----------------------------------------

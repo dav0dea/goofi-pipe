@@ -94,10 +94,10 @@ export const commands = {
 		graph().renameGlobal(oldName, newName),
 
 	// --- patch persistence -------------------------------------------------
-	// With a path this is the header's Save, whole: the file is written AND the patch is named, so
-	// `query.graph().savePath` reads it back. Without one it only serializes — `path` comes back
-	// null to say the patch got no home.
-	save: (path?: string): Promise<{ path: string | null; yaml: string }> => graph().save(path),
+	// The header's Save, whole: the file is written AND the patch is named, so
+	// `query.graph().savePath` reads it back. The path is required — the no-path serialize-only
+	// form went with "Save in browser" (removed 2026-08-08).
+	save: (path: string): Promise<{ path: string }> => graph().save(path),
 	loadText: (content: string): Promise<void> => graph().loadText(content),
 
 	// --- selection / focus -------------------------------------------------

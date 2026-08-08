@@ -634,17 +634,14 @@ export class GraphStore {
 	 * (its snapshot hard-codes `save_path: null`) and its `save` arm broadcasts no
 	 * `save_path_changed`, so this reply is the only thing that ever tells a client the patch has a
 	 * home. While it lived in `AppShell` the header's Save named the patch and
-	 * `window.goofi.commands.save` — the seam the whole e2e suite drives — could not.
-	 *
-	 * `path: null` comes back when none was given, which is a serialize-only save: no home, so
-	 * nothing to remember (the manager leaves the dirty flag alone for the same reason). */
-	async save(path?: string): Promise<{ path: string | null; yaml: string }> {
-		// `path` is the whole payload. The arm reads nothing else, and the layout is NOT sent here:
-		// it reaches the patch through AppShell's debounced `set_layout`, which is also what carries
-		// the `LayoutIntent` classification. A second writer on this path would bypass that and
-		// re-dirty a patch the moment it was saved. (`overwrite` rode along too and had no reader
-		// anywhere in `crates/` — a save has always been a silent overwrite.)
-		const res = await this.ctl.call<{ path: string | null; yaml: string }>('save', { path });
+	 * `window.goofi.commands.save` — the seam the whole e2e suite drives — could not. */
+	async save(path: string): Promise<{ path: string }> {
+		// `path` is the whole payload, and it is REQUIRED — the arm refuses a save with no path
+		// ("Save in browser", the no-path serialize-only form, was removed 2026-08-08). The layout
+		// is NOT sent here: it reaches the patch through AppShell's debounced `set_layout`, which
+		// is also what carries the `LayoutIntent` classification. A second writer on this path
+		// would bypass that and re-dirty a patch the moment it was saved.
+		const res = await this.ctl.call<{ path: string }>('save', { path });
 		if (res.path) this.savePath = res.path;
 		return res;
 	}
@@ -735,10 +732,6 @@ export class GraphStore {
 		await this.ctl.call('load', { path });
 	}
 
-	/** Current patch as `.gfi` YAML, without writing to disk (for browser download). */
-	async serialize(): Promise<{ yaml: string }> {
-		return this.ctl.call<{ yaml: string }>('serialize');
-	}
 	// ------------------------------------------------------------------
 	// reads
 	// ------------------------------------------------------------------
