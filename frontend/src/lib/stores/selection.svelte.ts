@@ -35,6 +35,13 @@ class SelectionStore {
 	/** Per-editor inspector visibility, keyed by panel id. Absent = enabled (the
 	 * default). Ephemeral — deliberately not persisted to any browser storage. */
 	private inspectorOn = $state<Record<string, boolean>>({});
+	/** Per-editor TRANSIENT dismissal — the ✕ in the pane's header. A close, not an off-switch:
+	 * it holds only until the panel's selection actually CHANGES (deselect+reselect, or another
+	 * node), which is why it clears inside `write()` — the one choke-point every real selection
+	 * change funnels through. The same-node re-click that drag-start suppresses is a skipped
+	 * write, so it leaves a dismissal standing by construction. `inspectorOn` above is the
+	 * standing preference (the ◧ toggle); this map never outlives a selection change. */
+	private inspectorDismissed = $state<Record<string, boolean>>({});
 	/** While on, a plain click adds to the selection instead of replacing it — the coarse-pointer
 	 * stand-in for shift/ctrl/meta, which a phone has none of (D-R4). A MODE, not a gesture: the
 	 * user asked for something you switch on and see, not a second way to tap. Session-wide and
@@ -56,6 +63,13 @@ class SelectionStore {
 		const cur = this.map[panelId];
 		if (cur && setEq(cur.nodes, next.nodes) && setEq(cur.edges, next.edges)) return;
 		this.map = { ...this.map, [panelId]: next };
+		// A REAL selection change re-arms a dismissed inspector (the ✕ is a close, not an
+		// off-switch). Here and nowhere else: every genuine change funnels through this write,
+		// and the no-op skip above keeps a drag-start's same-node re-click from reviving it.
+		if (this.inspectorDismissed[panelId]) {
+			const { [panelId]: _, ...rest } = this.inspectorDismissed;
+			this.inspectorDismissed = rest;
+		}
 	}
 
 	nodes(panelId: string | null): Set<string> {
@@ -89,6 +103,26 @@ class SelectionStore {
 	}
 	toggleInspectorFor(panelId: string): void {
 		this.inspectorOn = { ...this.inspectorOn, [panelId]: !this.inspectorEnabledFor(panelId) };
+	}
+	/** Close the pane until the selection next changes. The ✕'s verb — never the ◧'s. */
+	dismissInspectorFor(panelId: string): void {
+		this.inspectorDismissed = { ...this.inspectorDismissed, [panelId]: true };
+	}
+	/** Bring the pane back regardless of how it was hidden — the ◧'s "show" half: it clears a
+	 * dismissal AND flips the standing preference on, so one press always answers "show it". */
+	showInspectorFor(panelId: string): void {
+		this.inspectorOn = { ...this.inspectorOn, [panelId]: true };
+		if (this.inspectorDismissed[panelId]) {
+			const { [panelId]: _, ...rest } = this.inspectorDismissed;
+			this.inspectorDismissed = rest;
+		}
+	}
+	/** What the pane actually renders from: the standing preference minus a live dismissal. */
+	inspectorVisibleFor(panelId: string | null): boolean {
+		return (
+			this.inspectorEnabledFor(panelId) &&
+			!(panelId !== null && (this.inspectorDismissed[panelId] ?? false))
+		);
 	}
 
 	// --- node selection ----------------------------------------------------
@@ -159,6 +193,7 @@ class SelectionStore {
 	forgetAll(): void {
 		this.map = {};
 		this.inspectorOn = {};
+		this.inspectorDismissed = {};
 		this.activeEditorId = null;
 	}
 }

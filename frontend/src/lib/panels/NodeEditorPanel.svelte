@@ -107,8 +107,10 @@
 	// overlay reads it; standalone panels follow whichever editor is active.
 	const selectedNode = $derived(sel.selectedNode(panelId));
 
-	// Whether this editor's inspector pane is enabled (per-panel; default on).
-	const inspectorOn = $derived(sel.inspectorEnabledFor(panelId));
+	// Whether this editor's inspector pane actually shows (per-panel; default on). The visible
+	// state is the standing ◧ preference MINUS a live ✕ dismissal — the ✕ closes the pane only
+	// until the selection next changes, while the ◧ is the real off-switch.
+	const inspectorOn = $derived(sel.inspectorVisibleFor(panelId));
 
 	$effect(() => {
 		// When this editor becomes the active panel, mark it the active editor
@@ -1494,10 +1496,12 @@
 			</div>
 		{/if}
 
-		<!-- The affordance that turns this editor's inspector back ON. It is absent exactly while
+		<!-- The affordance that brings this editor's inspector back. It is absent exactly while
 		     the pane is open, because the pane covers this corner at every width — leaving it
 		     mounted meant an invisible, tabbable control under an opaque surface (D-R9's z-order
-		     half). While the pane is up, its own ✕ is the door, and it flips the same state. -->
+		     half). Hidden-by-any-means, one press answers "show it" (clearing a ✕ dismissal AND
+		     the ◧ preference); visible-but-parked (no node selected), it is the standing
+		     off-switch. -->
 		{#if !(inspectorOn && selectedNode)}
 			<IconButton
 				class="inspector-toggle"
@@ -1505,17 +1509,20 @@
 				title={inspectorOn ? 'Hide the inspector' : 'Show the inspector when a node is selected'}
 				aria-pressed={inspectorOn}
 				data-testid="inspector-toggle"
-				onclick={() => sel.toggleInspectorFor(panelId)}
+				onclick={() =>
+					inspectorOn ? sel.toggleInspectorFor(panelId) : sel.showInspectorFor(panelId)}
 			>
 				◧
 			</IconButton>
 		{/if}
 
-		<!-- Per-editor selection inspector — slides in within this panel. -->
+		<!-- Per-editor selection inspector — slides in within this panel. Its ✕ DISMISSES — a
+		     close that holds only until the selection changes — while the ◧ above is the standing
+		     off-switch. -->
 		<InspectorOverlay
 			node={selectedNode}
 			enabled={inspectorOn}
-			onClose={() => sel.toggleInspectorFor(panelId)}
+			onClose={() => sel.dismissInspectorFor(panelId)}
 		/>
 	</div>
 </SvelteFlowProvider>

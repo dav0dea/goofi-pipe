@@ -44,6 +44,38 @@ test('the inspector has a dismiss control, and it closes the pane', async ({ pag
 	await expect(pane(page), 'and it closes').toHaveCount(0);
 });
 
+test('the ✕ is a close, not an off-switch: the next selection brings the pane back', async ({
+	page
+}) => {
+	const uid = await addAndSelect(page);
+	await pane(page).getByTestId('inspector-close').click();
+	await expect(pane(page), 'dismissed').toHaveCount(0);
+
+	// Deselect, re-select the SAME node → the pane returns. A dismissal is scoped to the
+	// selection it was made in, not to the editor's lifetime.
+	await page.evaluate(() => (window as any).goofi.commands.select([]));
+	await page.evaluate((u) => (window as any).goofi.commands.select([u]), uid);
+	await expect(pane(page), 're-selecting revives the pane').toHaveClass(/open/);
+
+	// Dismiss again, then select a DIFFERENT node directly → the pane returns for it.
+	await pane(page).getByTestId('inspector-close').click();
+	await expect(pane(page)).toHaveCount(0);
+	const other = await addNode(page, 'Buffer', 'inputs');
+	await waitForNode(page, other);
+	await page.evaluate((u) => (window as any).goofi.commands.select([u]), other);
+	await expect(pane(page), 'a different node revives the pane').toHaveClass(/open/);
+
+	// The ◧, by contrast, IS the off-switch: turn the inspector off with it and selection
+	// changes stay silent.
+	await pane(page).getByTestId('inspector-close').click();
+	await page.getByTestId('inspector-toggle').click(); // shows (clears the dismissal)
+	await expect(pane(page)).toHaveClass(/open/);
+	await page.evaluate(() => (window as any).goofi.commands.select([]));
+	await page.getByTestId('inspector-toggle').click(); // parked + visible → this press disables
+	await page.evaluate((u) => (window as any).goofi.commands.select([u]), uid);
+	await expect(pane(page), 'disabled stays disabled across selections').toHaveCount(0);
+});
+
 test('the dismiss control lives IN the identity header, left of the state badge', async ({
 	page
 }) => {

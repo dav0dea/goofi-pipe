@@ -105,3 +105,65 @@ describe('multi-select mode', () => {
 		expect(sel.multiSelect).toBe(true);
 	});
 });
+
+/* The inspector's ✕ is a CLOSE, not a standing off-switch (Phil, 2026-08-08): dismissing the pane
+ * holds only until the selection actually changes — deselect+reselect or a different node brings
+ * it back — while the ◧ preference is the real off-switch that selection changes never flip. The
+ * dismissal clears inside `write()`, the one choke-point every real selection change funnels
+ * through, so the same-node re-click that drag-start suppresses (the no-op write above) leaves a
+ * dismissal standing by construction. */
+describe('dismissing the inspector holds only until the selection changes', () => {
+	beforeEach(() => selection().forgetAll());
+
+	it('dismiss closes the pane without touching the enabled preference', () => {
+		const sel = selection();
+		sel.clickNode('p', 'n1', false);
+		expect(sel.inspectorVisibleFor('p')).toBe(true);
+		sel.dismissInspectorFor('p');
+		expect(sel.inspectorVisibleFor('p')).toBe(false);
+		expect(sel.inspectorEnabledFor('p'), 'the ◧ preference is untouched').toBe(true);
+	});
+
+	it('deselecting and re-selecting the node brings the pane back', () => {
+		const sel = selection();
+		sel.clickNode('p', 'n1', false);
+		sel.dismissInspectorFor('p');
+		sel.clear('p');
+		sel.clickNode('p', 'n1', false);
+		expect(sel.inspectorVisibleFor('p')).toBe(true);
+	});
+
+	it('selecting a different node brings the pane back', () => {
+		const sel = selection();
+		sel.clickNode('p', 'n1', false);
+		sel.dismissInspectorFor('p');
+		sel.clickNode('p', 'n2', false);
+		expect(sel.inspectorVisibleFor('p')).toBe(true);
+	});
+
+	it('the ◧ preference is the real off-switch: selection changes never revive it', () => {
+		const sel = selection();
+		sel.clickNode('p', 'n1', false);
+		sel.toggleInspectorFor('p');
+		expect(sel.inspectorVisibleFor('p')).toBe(false);
+		sel.clickNode('p', 'n2', false);
+		expect(sel.inspectorVisibleFor('p'), 'disabled stays disabled').toBe(false);
+	});
+
+	it('a dismissal in one editor does not close another editor’s pane', () => {
+		const sel = selection();
+		sel.clickNode('a', 'n1', false);
+		sel.clickNode('b', 'n2', false);
+		sel.dismissInspectorFor('a');
+		expect(sel.inspectorVisibleFor('a')).toBe(false);
+		expect(sel.inspectorVisibleFor('b')).toBe(true);
+	});
+
+	it('forgetAll drops dismissals with the rest of the per-panel state', () => {
+		const sel = selection();
+		sel.clickNode('p', 'n1', false);
+		sel.dismissInspectorFor('p');
+		sel.forgetAll();
+		expect(sel.inspectorVisibleFor('p')).toBe(true);
+	});
+});
