@@ -38,6 +38,7 @@
 		Trigger,
 		Select,
 		TextInput,
+		Icon,
 		IconButton,
 		Chip,
 		type BadgeTone
@@ -278,13 +279,13 @@
 						onclick={openMultiline}
 						data-testid="param-expr-expand"
 					>
-						⤢
+						<Icon name="maximize-2" />
 					</IconButton>
 				</div>
 			{/if}
 			{#if descriptor.expression_error}
 				<div class="fx-error" title={descriptor.expression_error} data-testid="param-expr-error">
-					<span class="prefix" aria-hidden="true">⚠</span>
+					<span class="prefix"><Icon name="triangle-alert" /></span>
 					<span class="msg">{descriptor.expression_error}</span>
 				</div>
 			{:else}

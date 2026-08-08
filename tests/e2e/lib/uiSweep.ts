@@ -75,6 +75,9 @@ export const SAMPLES: Record<string, Sample> = {
 	},
 
 	// Static display / layout primitives (rendered, never a tap target of their own).
+	// Icon's sample is the whole vendored sheet — it draws every name in the table, so this one
+	// testid also proves each icon's geometry actually renders.
+	Icon: { testid: 'ui-icon-set', interactive: false },
 	ScrollArea: { testid: 'ui-scrollarea', interactive: false },
 	Bar: { testid: 'ui-bar', interactive: false },
 	Field: { testid: 'ui-field-single', interactive: false },

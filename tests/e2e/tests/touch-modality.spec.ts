@@ -178,11 +178,12 @@ test('the ✕ is still there, still hittable, and still closes the pane AT the f
 		const b = (await close.boundingBox())!;
 		expect(
 			await page.evaluate(
-				(p) => document.elementFromPoint(p.x, p.y)?.closest('[data-testid]')?.textContent?.trim(),
+				(p) =>
+					document.elementFromPoint(p.x, p.y)?.closest('[data-testid]')?.getAttribute('data-testid'),
 				{ x: b.x + b.width / 2, y: b.y + b.height / 2 }
 			),
 			'nothing is laid over it — a tap at its centre reaches the ✕ itself'
-		).toBe('✕');
+		).toBe('inspector-close');
 
 		await close.tap();
 		await expect(pane(page), 'and it closes the pane').toHaveCount(0);

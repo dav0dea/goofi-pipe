@@ -17,41 +17,41 @@ export function registerAppPanels(): void {
 	if (done) return;
 	done = true;
 
-	// Panel icons are text-presentation glyphs (Geometric Shapes / Misc Technical),
-	// NOT emoji — so they all render monochrome and honor the inherited grey.
-	// Avoid emoji-default codepoints (⛓ U+26D3, ⚠ U+26A0) here: the browser draws
-	// those from the colour-emoji font regardless of CSS.
+	// Panel icons are names from the app's one icon set ($lib/ui/icons), so they are drawn by the
+	// app at the app's weight. They used to be text-presentation glyphs picked to dodge the
+	// colour-emoji font (⛓ U+26D3 and ⚠ U+26A0 are emoji-default, and the browser draws those in
+	// colour regardless of CSS) — a constraint the icon set removes rather than works around.
 	registerPanel({
 		id: 'node-editor',
 		title: 'Node Editor',
-		icon: '◈',
+		icon: 'workflow',
 		component: NodeEditorPanel
 	});
 	registerPanel({
 		id: 'parameters',
 		title: 'Parameters',
-		icon: '☰',
+		icon: 'sliders-horizontal',
 		component: ParametersPanel,
 		acceptsNode: true
 	});
 	registerPanel({
 		id: 'viewer',
 		title: 'Viewer',
-		icon: '◫',
+		icon: 'activity',
 		component: ViewerPanel,
 		acceptsNode: true
 	});
 	registerPanel({
 		id: 'metadata',
 		title: 'Metadata',
-		icon: 'ⓘ',
+		icon: 'info',
 		component: MetadataInspectorPanel,
 		acceptsNode: true
 	});
 	registerPanel({
 		id: 'console',
 		title: 'Console',
-		icon: '▤',
+		icon: 'terminal',
 		component: ConsolePanel,
 		// Dropping a node filters the console to just that node's output.
 		acceptsNode: true
@@ -61,7 +61,7 @@ export function registerAppPanels(): void {
 	registerPanel({
 		id: 'globals',
 		title: 'Globals',
-		icon: '⧉',
+		icon: 'globe',
 		component: GlobalsPanel
 	});
 	// The old dockable "Errors" panel was removed — the Console (filterable,

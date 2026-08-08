@@ -19,7 +19,7 @@
 	import { untrack } from 'svelte';
 	import type { MenuItem } from './menu';
 	import { portal } from './portal';
-	import { clampToViewport, overlayViewport } from '$lib/ui';
+	import { clampToViewport, overlayViewport, Icon } from '$lib/ui';
 	import Self from './ContextMenu.svelte';
 
 	let {
@@ -129,9 +129,9 @@
 		{#if item.separator}
 			<div class="sep"></div>
 		{:else}
-			<!-- The three glyph spans are DECORATION: `aria-hidden` keeps them out of the row's
-			     accessible name, which is the label alone. Checked-ness is then said in the tree
-			     rather than drawn with a ✓ only a sighted user can read. -->
+			<!-- The three icon slots are DECORATION: `Icon` is `aria-hidden`, which keeps them out of
+			     the row's accessible name — that is the label alone. Checked-ness is then said in the
+			     tree rather than drawn with a mark only a sighted user can read. -->
 			<button
 				class="item"
 				disabled={item.disabled}
@@ -140,10 +140,10 @@
 				role={item.checked === undefined ? 'menuitem' : 'menuitemcheckbox'}
 				aria-checked={item.checked}
 			>
-				{#if checkable}<span class="check" aria-hidden="true">{item.checked ? '✓' : ''}</span>{/if}
-				{#if iconic}<span class="ic" aria-hidden="true">{item.icon ?? ''}</span>{/if}
+				{#if checkable}<span class="check">{#if item.checked}<Icon name="check" />{/if}</span>{/if}
+				{#if iconic}<span class="ic">{#if item.icon}<Icon name={item.icon} />{/if}</span>{/if}
 				<span class="label">{item.label}</span>
-				{#if item.items}<span class="arrow" aria-hidden="true">▸</span>{/if}
+				{#if item.items}<span class="arrow"><Icon name="chevron-right" /></span>{/if}
 			</button>
 		{/if}
 	{/each}
@@ -211,6 +211,13 @@
 		opacity: var(--disabled-opacity);
 		cursor: not-allowed;
 	}
+	/* Both gutters centre their icon in a fixed column, so every label in a menu starts in the same
+	   place whether or not its own row draws one. */
+	.check,
+	.ic {
+		display: flex;
+		justify-content: center;
+	}
 	.check {
 		width: 12px;
 		flex: 0 0 12px;
@@ -218,7 +225,6 @@
 	}
 	.ic {
 		width: 14px;
-		text-align: center;
 	}
 	.label {
 		flex: 1;

@@ -20,10 +20,14 @@
   Those two names mean opposite things in different apps — a "vertical split" is a vertical DIVIDER
   in one editor and a vertical STACK in the next — while this header already had a vocabulary that
   cannot be read two ways, in the context menu these very commands live in. So there is one wording
-  and it is the existing one: Split RIGHT is `'row'` (a vertical divider ▕, the new panel beside
-  this one) and Split DOWN is `'column'` (a horizontal divider ▁, the new panel under it). One
-  command, one name, two representations (D-R2) — the bar button and the menu row are built from
-  the same record below, so they cannot drift.
+  and it is the existing one: Split RIGHT is `'row'` (the new panel beside this one) and Split DOWN
+  is `'column'` (the new panel under it). One command, one name, two representations (D-R2) — the
+  bar button and the menu row are built from the same record below, so they cannot drift.
+
+  The two split ICONS are Lucide's `square-split-horizontal` / `square-split-vertical` as drawn,
+  never one of them rotated: Lucide names them for the axis the split runs ALONG, so the
+  `-horizontal` one carries the vertical divider (Split Right) and the `-vertical` one the
+  horizontal divider (Split Down).
 -->
 <script lang="ts">
 	import { countPanels, type PanelNode } from './model';
@@ -33,7 +37,7 @@
 	import ContextMenu from './ContextMenu.svelte';
 	import { createLongPress } from '$lib/editor/longPress';
 	import { createWidthCache, planOverflow, type OverflowItem } from '$lib/editor/overflowFit';
-	import { Button, IconButton } from '$lib/ui';
+	import { Button, IconButton, Icon, type IconName } from '$lib/ui';
 	import { onDestroy, untrack } from 'svelte';
 
 	let { node }: { node: PanelNode } = $props();
@@ -65,10 +69,10 @@
 	interface HdrAction {
 		/** Stable id — the button's `data-testid`, and its key in the spill order. */
 		id: string;
-		icon: string;
+		icon: IconName;
 		/** The menu row's text. */
 		label: string;
-		/** The button's accessible name: a glyph says nothing on its own. */
+		/** The button's accessible name: an icon says nothing on its own. */
 		name: string;
 		run: () => void;
 	}
@@ -85,21 +89,21 @@
 		return [
 			{
 				id: 'panel-split-row',
-				icon: '▕',
+				icon: 'square-split-horizontal',
 				label: 'Split Right',
 				name: 'Split panel right',
 				run: () => ws.split(node.id, 'row')
 			},
 			{
 				id: 'panel-split-column',
-				icon: '▁',
+				icon: 'square-split-vertical',
 				label: 'Split Down',
 				name: 'Split panel down',
 				run: () => ws.split(node.id, 'column')
 			},
 			{
 				id: 'panel-maximize',
-				icon: '⤢',
+				icon: 'maximize-2',
 				label: isMax ? 'Restore' : 'Maximize',
 				name: isMax ? 'Restore panel' : 'Maximize panel',
 				run: () => ws.toggleMaximize(node.id)
@@ -118,7 +122,7 @@
 			asRow(max),
 			{ label: 'Change content', items: contentItems() },
 			{ separator: true },
-			{ label: 'Close Panel', icon: '✕', disabled: !canClose, action: () => ws.close(node.id) }
+			{ label: 'Close Panel', icon: 'x', disabled: !canClose, action: () => ws.close(node.id) }
 		];
 	}
 
@@ -295,9 +299,9 @@
 	data-testid="panel-header"
 >
 	<Button variant="ghost" class="content-btn" onclick={openContent} title="Change panel content">
-		{#if type.icon}<span class="ic">{type.icon}</span>{/if}
+		{#if type.icon}<span class="ic"><Icon name={type.icon} /></span>{/if}
 		<span class="title">{type.title}</span>
-		<span class="caret">▾</span>
+		<span class="caret"><Icon name="chevron-down" /></span>
 	</Button>
 	<div class="spacer"></div>
 	<div class="hdr-actions" bind:this={zoneEl}>
@@ -309,7 +313,7 @@
 				data-testid={a.id}
 				title={a.label}
 				label={a.name}
-				onclick={a.run}>{a.icon}</IconButton
+				onclick={a.run}><Icon name={a.icon} /></IconButton
 			>
 		{/each}
 		<!-- Not resident: it goes when there is nothing behind it. It stays in the DOM either way so
@@ -322,7 +326,7 @@
 			aria-expanded={menu?.from === 'overflow'}
 			title="More panel actions"
 			label="More panel actions"
-			onclick={openOverflow}>⋯</IconButton
+			onclick={openOverflow}><Icon name="ellipsis" /></IconButton
 		>
 		<IconButton
 			variant="ghost"
@@ -332,7 +336,7 @@
 			title="Close panel"
 			label="Close panel"
 			disabled={!canClose}
-			onclick={() => ws.close(node.id)}>✕</IconButton
+			onclick={() => ws.close(node.id)}><Icon name="x" /></IconButton
 		>
 	</div>
 </div>
@@ -385,8 +389,15 @@
 	.panel-header :global(.hdr-btn:hover:not(:disabled)) {
 		color: var(--text);
 	}
-	/* opacity: intentional — the glyph and the caret are quieted BELOW the title they sit beside
-	   (a hierarchy, not a disabled state); --disabled-opacity would read as "this header is inert". */
+	/* opacity: intentional — the type icon and the caret are quieted BELOW the title they sit beside
+	   (a hierarchy, not a disabled state); --disabled-opacity would read as "this header is inert".
+	   `display: flex` collapses each span onto its icon's own box, so neither adds the line box a
+	   text glyph used to need inside a 20px header button. */
+	.ic,
+	.caret {
+		display: flex;
+		align-items: center;
+	}
 	.ic {
 		opacity: 0.85;
 		flex: 0 0 auto;

@@ -246,7 +246,7 @@ test('multi-select mode is a mode: it stays on, and the header says so', async (
 		'aria-checked',
 		'false'
 	);
-	// The ✓ and the ▦ / ✕ / ▣ glyphs are decoration: the row's NAME is its label alone.
+	// The check mark and the per-row icons are decoration: the row's NAME is its label alone.
 	await expect(off).toHaveAccessibleName('Multi-select mode');
 	await off.click();
 	await expect(trigger, 'the always-visible chrome carries the mode').toHaveClass(/multi-on/);
@@ -255,7 +255,7 @@ test('multi-select mode is a mode: it stays on, and the header says so', async (
 	// …and the row itself reads back as checked next time the menu is opened.
 	await openOverflow(page);
 	const row = menuRow(page, 'Multi-select mode');
-	await expect(row.locator('.check')).toHaveText('✓');
+	await expect(row.locator('.check svg')).toHaveAttribute('data-icon', 'check');
 	await expect(row).toHaveAttribute('aria-checked', 'true');
 	await expect(row).toHaveAccessibleName('Multi-select mode');
 	await row.click();

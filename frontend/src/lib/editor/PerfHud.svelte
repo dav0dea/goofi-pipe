@@ -8,6 +8,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { perfStats } from '$lib/api/perfStats.svelte';
+	import { Icon } from '$lib/ui';
 
 	const p = perfStats();
 
@@ -27,7 +28,7 @@
 	>
 		<span class="fps">{p.fps.toFixed(0)} fps</span>
 		{#if p.dps > 0.5}
-			<span class="drop">▾ {p.dps.toFixed(0)}/s</span>
+			<span class="drop"><Icon name="chevron-down" /> {p.dps.toFixed(0)}/s</span>
 		{/if}
 	</span>
 {/if}

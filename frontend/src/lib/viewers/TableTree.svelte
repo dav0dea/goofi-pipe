@@ -6,7 +6,7 @@
 <script lang="ts">
 	import type { DataFrame } from '$lib/codec/decode';
 	import { leafSummary, tableChildren } from './tableTree';
-	import { Badge } from '$lib/ui';
+	import { Badge, Icon } from '$lib/ui';
 	import Self from './TableTree.svelte';
 
 	type Props = { name: string; frame: DataFrame; decimals: number; depth?: number };
@@ -22,7 +22,7 @@
 <div class="node" style="padding-left: calc(var(--space-6) * {depth})">
 	{#if isTable}
 		<button class="row toggle" onclick={() => (toggled = !expanded)} aria-expanded={expanded}>
-			<span class="caret">{expanded ? '▾' : '▸'}</span>
+			<span class="caret"><Icon name={expanded ? 'chevron-down' : 'chevron-right'} /></span>
 			<span class="k">{name}</span>
 			<Badge>{children.length}</Badge>
 		</button>

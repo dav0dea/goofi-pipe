@@ -15,6 +15,7 @@
 -->
 <script lang="ts">
 	import type { HTMLAttributes } from 'svelte/elements';
+	import Icon from './Icon.svelte';
 	import IconButton from './IconButton.svelte';
 	import { claimFieldControlId } from './field';
 
@@ -74,7 +75,7 @@
 			{#if refreshing}
 				<span class="ui-select-spinner" aria-hidden="true"></span>
 			{:else}
-				⟳
+				<Icon name="refresh-cw" />
 			{/if}
 		</IconButton>
 	{/if}
@@ -98,8 +99,8 @@
 		opacity: var(--disabled-opacity);
 		cursor: default;
 	}
-	/* The ⟳ glyph is swapped for a CSS ring while spinning — a geometric circle rotates dead-centred
-	   where a text glyph pivots off its baseline (same ring as the node boot-spinner). */
+	/* The ⟳ icon is swapped for a CSS ring while spinning — a bare circle rotates dead-centred
+	   where an icon's own asymmetry wobbles (same ring as the node boot-spinner). */
 	.ui-select-spinner {
 		width: 0.85em;
 		height: 0.85em;

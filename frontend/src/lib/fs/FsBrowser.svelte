@@ -11,7 +11,7 @@
 	import { graph } from '$lib/stores/graph.svelte';
 	import { ui } from '$lib/stores/ui.svelte';
 	import type { FsEntry, FsRoot } from '$lib/api/control';
-	import { Bar, Button, Dialog, EmptyState, IconButton, ScrollArea, TextInput } from '$lib/ui';
+	import { Bar, Button, Dialog, EmptyState, Icon, IconButton, ScrollArea, TextInput } from '$lib/ui';
 	import { onMount, untrack } from 'svelte';
 
 	type Props = {
@@ -140,7 +140,9 @@
 				<span class="title">{title}</span>
 			{/snippet}
 			{#snippet end()}
-				<IconButton variant="ghost" size="sm" label="Close" onclick={onClose}>✕</IconButton>
+				<IconButton variant="ghost" size="sm" label="Close" onclick={onClose}
+					><Icon name="x" /></IconButton
+				>
 			{/snippet}
 		</Bar>
 

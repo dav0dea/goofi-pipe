@@ -8,7 +8,7 @@
 	import { listPanelTypes } from './registry';
 	import { EMPTY_PANEL_TYPE } from './model';
 	import { workspace } from './workspace.svelte';
-	import { EmptyState } from '$lib/ui';
+	import { EmptyState, Icon } from '$lib/ui';
 
 	let { panelId }: PanelProps = $props();
 	const ws = workspace();
@@ -29,7 +29,7 @@
 					title={t.title}
 					onclick={() => ws.setType(panelId, t.id)}
 				>
-					<span class="icon">{t.icon ?? '▢'}</span>
+					<span class="icon"><Icon name={t.icon ?? 'square-dashed'} /></span>
 					<span class="label">{t.title}</span>
 				</button>
 			{/each}
@@ -79,6 +79,7 @@
 		background: var(--surface-2);
 	}
 	.icon {
+		display: flex;
 		font-size: var(--fs-title);
 		line-height: 1;
 		color: var(--text-dim);

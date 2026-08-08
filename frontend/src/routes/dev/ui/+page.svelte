@@ -7,6 +7,8 @@
 <script lang="ts">
 	import {
 		Button,
+		Icon,
+		ICONS,
 		IconButton,
 		ScrollArea,
 		Bar,
@@ -25,6 +27,7 @@
 		Chip,
 		StatusDot,
 		EmptyState,
+		type IconName,
 		type ButtonVariant,
 		type ButtonSize,
 		type TabItem,
@@ -39,12 +42,13 @@
 	const badgeTones: BadgeTone[] = ['neutral', 'accent', 'success', 'warning', 'danger'];
 	const statusTones: StatusTone[] = ['ok', 'error', 'warn'];
 	const dotSizes: StatusDotSize[] = ['sm', 'md'];
-	// Single-character glyphs so the IconButton glyph stays visibly small.
-	const glyphs: Record<ButtonVariant, string> = {
-		default: '⚙', // gear
-		primary: '+',
-		ghost: '⟳', // refresh
-		danger: '×' // multiplication sign
+	// One icon per variant, from the app's single icon set — the gallery shows the primitive with
+	// the content it actually carries in the product, not a stand-in glyph.
+	const glyphs: Record<ButtonVariant, IconName> = {
+		default: 'settings',
+		primary: 'plus',
+		ghost: 'refresh-cw',
+		danger: 'x'
 	};
 
 	// --- Field-family demo state. Each control drives a piece of $state; the composition proves a
@@ -146,13 +150,26 @@
 						label={`${variant} ${size} action`}
 						data-testid={`ui-icon-${variant}-${size}`}
 					>
-						{glyphs[variant]}
+						<Icon name={glyphs[variant]} />
 					</IconButton>
 				{/each}
 			{/each}
 			<IconButton variant="default" size="md" disabled label="disabled action" data-testid="ui-icon-disabled">
-				{glyphs.default}
+				<Icon name={glyphs.default} />
 			</IconButton>
+		</div>
+	</section>
+
+	<section>
+		<h2>Icon (the whole vendored set)</h2>
+		<!-- Enumerated from `ICONS` rather than listed by hand, so the sheet cannot fall behind the
+		     table: vendoring an icon puts it on this page, and an icon the app stopped drawing is
+		     visible here as an orphan (`ui/icons.test.ts` fails it separately). Every tile inherits
+		     its size from the surrounding type, which is the whole of Icon's sizing contract. -->
+		<div class="grid" data-testid="ui-icon-set">
+			{#each Object.keys(ICONS) as IconName[] as name (name)}
+				<span class="icon-tile" title={name}><Icon {name} /></span>
+			{/each}
 		</div>
 	</section>
 
@@ -181,7 +198,7 @@
 			{#snippet end()}
 				<div class="grid" data-testid="ui-bar-end">
 					<Button size="sm">Save</Button>
-					<IconButton size="sm" label="Settings">⚙</IconButton>
+					<IconButton size="sm" label="Settings"><Icon name="settings" /></IconButton>
 				</div>
 			{/snippet}
 		</Bar>
@@ -235,7 +252,7 @@
 		>
 		<Chip
 			onclick={() => (swapMode = swapMode === 'raw' ? 'text' : 'raw')}
-			data-testid="ui-field-swap-expand">⤢</Chip
+			data-testid="ui-field-swap-expand"><Icon name="maximize-2" /></Chip
 		>
 	{/snippet}
 
@@ -642,6 +659,13 @@
 	}
 	.grid.end {
 		justify-content: flex-end;
+	}
+	/* One icon of the sheet. Icon sizes at 1em, so the tile's own type size IS the icon size —
+	   the sheet reads at the display scale while the product's copies stay at their control's. */
+	.icon-tile {
+		display: flex;
+		font-size: var(--fs-title);
+		color: var(--text-dim);
 	}
 	/* A status dot beside its name. */
 	.dot-label {

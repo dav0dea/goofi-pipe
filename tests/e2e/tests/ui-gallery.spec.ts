@@ -550,12 +550,23 @@ test.describe('UI Tabs + Disclosure', () => {
 		await summary.waitFor();
 		const content = page.getByTestId('ui-disclosure-content');
 		const toggles = page.getByTestId('ui-disclosure-toggles');
+		// The caret is the app's own icon, not a font glyph the OS picks a shape for. It is drawn
+		// pointing right and TURNED on open — one icon, two states — so `chevron-down` is never
+		// vendored for a rotation `chevron-right` already expresses.
+		const caret = page.getByTestId('ui-disclosure').locator('.ui-disclosure-caret');
+		await expect(caret.locator('svg')).toHaveAttribute('data-icon', 'chevron-right');
 
 		// Collapsed by default: content is not in the DOM, aria-expanded=false.
 		await expect(content, 'children hidden when closed').toBeHidden();
 		await expect(summary).toHaveAttribute('aria-expanded', 'false');
+		await expect(caret, 'the caret rests pointing right').toHaveCSS('transform', 'none');
 
 		await summary.click();
+		// Retried, not read once: the rotation is a --dur-slow transition.
+		await expect(caret, 'and turns a quarter-turn on open').toHaveCSS(
+			'transform',
+			'matrix(0, 1, -1, 0, 0, 0)'
+		);
 		await expect(content, 'children revealed on open').toBeVisible();
 		await expect(summary).toHaveAttribute('aria-expanded', 'true');
 		await expect(toggles, 'onToggle fired once').toHaveText('1');

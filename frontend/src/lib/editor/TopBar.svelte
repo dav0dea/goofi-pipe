@@ -8,7 +8,7 @@
 	import ContextMenu from '$lib/workspace/ContextMenu.svelte';
 	import PerfHud from './PerfHud.svelte';
 	import { createWidthCache, planOverflow, type OverflowItem } from './overflowFit';
-	import { Button, IconButton, Badge } from '$lib/ui';
+	import { Button, IconButton, Badge, Icon } from '$lib/ui';
 
 	// The header holds APP-GLOBAL actions only: session undo/redo and the patch's save/load.
 	// Anything that acts on one panel belongs to that panel — a node editor already carries its
@@ -209,7 +209,7 @@
 		const ed = activeOrOnlyEditor(sel.activeEditorId);
 		const has = ed?.hasSelection() ?? false;
 		return [
-			{ label: 'Select all', icon: '▦', disabled: !ed, action: () => ed?.selectAll() },
+			{ label: 'Select all', icon: 'square-dashed', disabled: !ed, action: () => ed?.selectAll() },
 			// Multi-select's way out. With the mode on, a tap on empty canvas no longer clears (it
 			// would wipe the selection the mode is for), and Escape is a keyboard's door only — so
 			// this row is what makes the fold in `clickPane` safe to ship.
@@ -220,10 +220,10 @@
 				action: () => sel.toggleMultiSelect()
 			},
 			{ separator: true },
-			{ label: 'Delete selection', icon: '✕', disabled: !has, action: () => ed?.deleteSelection() },
+			{ label: 'Delete selection', icon: 'x', disabled: !has, action: () => ed?.deleteSelection() },
 			{
 				label: 'Group into sub-patch',
-				icon: '▣',
+				icon: 'group',
 				disabled: !has,
 				action: () => ed?.groupSelection()
 			},
@@ -240,12 +240,12 @@
 		if (isSpilled('topbar-undo'))
 			items.push({
 				label: 'Undo',
-				icon: '↶',
+				icon: 'undo-2',
 				disabled: !h.canUndo,
 				action: () => void h.undo()
 			});
 		if (isSpilled('topbar-redo'))
-			items.push({ label: 'Redo', icon: '↷', disabled: !h.canRedo, action: () => void h.redo() });
+			items.push({ label: 'Redo', icon: 'redo-2', disabled: !h.canRedo, action: () => void h.redo() });
 		if (isSpilled('topbar-save')) items.push({ label: 'Save', action: onSave });
 		if (isSpilled('topbar-save-caret')) items.push(...saveOptions());
 		if (isSpilled('topbar-load')) items.push({ label: 'Load…', action: onLoad });
@@ -293,7 +293,7 @@
 				disabled={!h.canUndo}
 				title={h.undoLabel ? `Undo ${h.undoLabel}` : 'Nothing to undo'}
 				label="Undo"
-				onclick={() => void h.undo()}>↶</IconButton
+				onclick={() => void h.undo()}><Icon name="undo-2" /></IconButton
 			>
 			<IconButton
 				variant="ghost"
@@ -302,7 +302,7 @@
 				disabled={!h.canRedo}
 				title={h.redoLabel ? `Redo ${h.redoLabel}` : 'Nothing to redo'}
 				label="Redo"
-				onclick={() => void h.redo()}>↷</IconButton
+				onclick={() => void h.redo()}><Icon name="redo-2" /></IconButton
 			>
 			<!-- The split control degrades rather than disappearing: the caret is the first thing to
 			     spill, and `.no-caret` restores Save's own right-hand corners so the seam does not
@@ -316,7 +316,7 @@
 					class={`seg-caret ${isSpilled('topbar-save-caret') ? 'spilled' : ''}`}
 					data-testid="topbar-save-caret"
 					label="Save options"
-					onclick={openSaveMenu}>▾</IconButton
+					onclick={openSaveMenu}><Icon name="chevron-down" /></IconButton
 				>
 			</div>
 			<Button
@@ -338,7 +338,7 @@
 			aria-expanded={overflowMenu !== null}
 			title={sel.multiSelect ? 'More actions — multi-select mode is on' : 'More actions'}
 			label="More actions"
-			onclick={openOverflow}>⋯</IconButton
+			onclick={openOverflow}><Icon name="ellipsis" /></IconButton
 		>
 	</div>
 </div>

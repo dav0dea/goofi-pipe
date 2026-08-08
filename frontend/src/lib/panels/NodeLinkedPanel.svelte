@@ -16,7 +16,7 @@
 	import { ui } from '$lib/stores/ui.svelte';
 	import { linkedNodeName } from '$lib/workspace/panelState';
 	import { workspace } from '$lib/workspace/workspace.svelte';
-	import { Bar, IconButton, StatusDot, EmptyState } from '$lib/ui';
+	import { Bar, Icon, IconButton, StatusDot, EmptyState } from '$lib/ui';
 	import type { Snippet } from 'svelte';
 
 	let {
@@ -62,7 +62,9 @@
 				{/if}
 			{/snippet}
 			{#snippet end()}
-				<IconButton variant="ghost" size="sm" label="Unlink node" onclick={unlink}>✕</IconButton>
+				<IconButton variant="ghost" size="sm" label="Unlink node" onclick={unlink}
+					><Icon name="x" /></IconButton
+				>
 			{/snippet}
 		</Bar>
 		<div class="body">

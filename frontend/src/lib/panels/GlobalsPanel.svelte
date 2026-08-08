@@ -14,6 +14,7 @@
 	import { isValidGlobalName, type GlobalType, type GlobalView } from '$lib/crdt/graphDoc';
 	import {
 		Button,
+		Icon,
 		IconButton,
 		MODE_ATTRS,
 		NumberInput,
@@ -148,7 +149,7 @@
 										data-testid="global-delete"
 										title="Delete global"
 										label="Delete {gv.name}"
-										onclick={() => void g.removeGlobal(gv.name)}>✕</IconButton
+										onclick={() => void g.removeGlobal(gv.name)}><Icon name="x" /></IconButton
 									>
 								{/if}
 							</td>

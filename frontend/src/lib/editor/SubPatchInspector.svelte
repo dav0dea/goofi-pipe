@@ -7,7 +7,7 @@
 <script lang="ts">
 	import type { NodeInstanceInfo } from '$lib/api/control';
 	import { graph } from '$lib/stores/graph.svelte';
-	import { Button, Badge } from '$lib/ui';
+	import { Button, Badge, Icon } from '$lib/ui';
 
 	let { node }: { node: NodeInstanceInfo } = $props();
 
@@ -26,7 +26,7 @@
 
 <section class="panel" data-testid="subpatch-inspector">
 	<header>
-		<span class="glyph">▣</span>
+		<span class="glyph"><Icon name="group" /></span>
 		<div class="titles">
 			<div class="title">Sub-patch</div>
 			<div class="sub">{inst?.name ?? instId}</div>

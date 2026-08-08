@@ -21,7 +21,7 @@
 	import { workspace } from '$lib/workspace/workspace.svelte';
 	import { copyText } from '$lib/clipboard';
 	import { COLLAPSE_LINES, estimateRowHeight } from './consoleRowHeight';
-	import { Bar, Chip, Badge, IconButton, EmptyState } from '$lib/ui';
+	import { Bar, Chip, Badge, Icon, IconButton, EmptyState } from '$lib/ui';
 	import { onDestroy, tick } from 'svelte';
 
 	let { panelId, state: linkState }: PanelProps = $props();
@@ -262,7 +262,7 @@
 					size="sm"
 					title="Show all nodes"
 					label="Clear filter"
-					onclick={clearFilter}>✕</IconButton
+					onclick={clearFilter}><Icon name="x" /></IconButton
 				>
 			{/if}
 		{/snippet}
@@ -303,7 +303,11 @@
 					}}
 					use:measure={{ uid: row.e.uid, exp: row.exp }}
 				>
-					<span class="caret">{row.exp ? '▾' : row.canToggle ? '▸' : ''}</span>
+					<span class="caret"
+						>{#if row.exp}<Icon name="chevron-down" />{:else if row.canToggle}<Icon
+								name="chevron-right"
+							/>{/if}</span
+					>
 					{#if !filterName}
 						<button
 							class="node"
@@ -338,7 +342,7 @@
 							onclick={(ev) => {
 								ev.stopPropagation();
 								copy(row.e.text, row.e.uid);
-							}}>{copiedUid === row.e.uid ? '✓' : '⧉'}</IconButton
+							}}><Icon name={copiedUid === row.e.uid ? 'check' : 'copy'} /></IconButton
 						>
 					</div>
 				</div>

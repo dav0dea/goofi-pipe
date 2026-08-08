@@ -8,6 +8,11 @@ export { default as Button } from './Button.svelte';
 export { default as IconButton } from './IconButton.svelte';
 export { type ButtonVariant, type ButtonSize } from './variantClass';
 
+// The one icon renderer + the vendored Lucide names it draws. Every icon in the app comes from
+// here — there is no second path, and no OS font glyph standing in for one.
+export { default as Icon } from './Icon.svelte';
+export { ICONS, type IconName } from './icons';
+
 // Layout primitives (Task 2). `Stack`/`Row` were retired here (D-M6): a scoped `display: flex`
 // rule already says the same thing in the component that needs it, and 86 of the app's 104 flex
 // rules also carry position/overflow/padding a frame prop cannot own — adopting them would have

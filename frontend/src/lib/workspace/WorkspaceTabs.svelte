@@ -9,7 +9,7 @@
 -->
 <script lang="ts">
 	import { workspace } from './workspace.svelte';
-	import { IconButton, MODE_ATTRS } from '$lib/ui';
+	import { Icon, IconButton, MODE_ATTRS } from '$lib/ui';
 
 	const ws = workspace();
 	const tabs = $derived(ws.state.workspaces);
@@ -127,7 +127,7 @@
 						onclick={(e) => {
 							e.stopPropagation();
 							ws.closeTab(tab.id);
-						}}>✕</IconButton
+						}}><Icon name="x" /></IconButton
 					>
 				{/if}
 			{/if}
@@ -142,7 +142,7 @@
 		density="chrome"
 		class="add"
 		label="New tab"
-		onclick={() => ws.addTab()}>＋</IconButton
+		onclick={() => ws.addTab()}><Icon name="plus" /></IconButton
 	>
 </div>
 

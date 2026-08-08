@@ -20,7 +20,7 @@
 <script lang="ts">
 	import ParamForm from '$lib/inspector/ParamForm.svelte';
 	import MetadataPanel from '$lib/editor/MetadataPanel.svelte';
-	import { beginDrag, Button, IconButton, ScrollArea } from '$lib/ui';
+	import { beginDrag, Button, Icon, IconButton, ScrollArea } from '$lib/ui';
 	import { graph } from '$lib/stores/graph.svelte';
 	import { onDestroy } from 'svelte';
 	import type { NodeInstanceInfo } from '$lib/api/control';
@@ -163,7 +163,7 @@
 				label="Close inspector"
 				title="Close the inspector"
 				data-testid="inspector-close"
-				onclick={onClose}>✕</IconButton
+				onclick={onClose}><Icon name="x" /></IconButton
 			>
 		</div>
 		<ScrollArea>

@@ -4,7 +4,7 @@
 	import type { DataFrame } from '$lib/codec/decode';
 	import { metaEntries, formatMetaValue, metaPreview, isLarge } from './metaFormat';
 	import { nodeStatsRows } from './nodeStats';
-	import { Select, EmptyState } from '$lib/ui';
+	import { Icon, Select, EmptyState } from '$lib/ui';
 
 	type Props = {
 		node: NodeInstanceInfo;
@@ -116,6 +116,7 @@
 						ontoggle={(e) => onToggle(f.key, e)}
 					>
 						<summary>
+							<span class="caret"><Icon name="chevron-right" /></span>
 							<span class="mk">{f.key}</span>
 							<span class="mp">{f.preview}</span>
 						</summary>
@@ -182,7 +183,9 @@
 		flex-direction: column;
 		gap: 1px;
 	}
-	/* One collapsible section per top-level meta field. */
+	/* One collapsible section per top-level meta field. The native marker is off app-wide (app.css)
+	   — it was the last thing in the UI the BROWSER drew, in its own shape and its own ink — so the
+	   affordance is the app's chevron below, turned by the `[open]` state `<details>` already owns. */
 	.meta-field > summary {
 		display: flex;
 		align-items: baseline;
@@ -192,10 +195,23 @@
 		font-family: var(--font-mono);
 		font-size: var(--fs-small);
 		border-radius: var(--radius-sm);
-		list-style-position: inside;
 	}
 	.meta-field > summary:hover {
 		background: var(--surface-2);
+	}
+	/* `align-self`, so the row's own baseline alignment between the key and its preview — two
+	   different type sizes — survives an icon that has no baseline of its own. Reduced-motion is
+	   neutralised globally (F, app.css), so no per-component guard. */
+	.caret {
+		display: flex;
+		align-self: center;
+		flex: 0 0 auto;
+		font-size: var(--fs-micro);
+		color: var(--text-muted);
+		transition: transform var(--dur-slow) var(--ease);
+	}
+	.meta-field[open] > summary .caret {
+		transform: rotate(90deg);
 	}
 	.mk {
 		color: var(--text);

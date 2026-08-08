@@ -12,6 +12,7 @@
 <script lang="ts">
 	import type { Snippet } from 'svelte';
 	import type { HTMLAttributes } from 'svelte/elements';
+	import Icon from './Icon.svelte';
 
 	let {
 		open = $bindable(false),
@@ -43,7 +44,7 @@
 		aria-controls={bodyId}
 		onclick={toggle}
 	>
-		<span class="ui-disclosure-caret" class:open aria-hidden="true">▶</span>
+		<span class="ui-disclosure-caret" class:open><Icon name="chevron-right" /></span>
 		<span class="ui-disclosure-label">{@render summary()}</span>
 	</button>
 	{#if open}
@@ -93,7 +94,8 @@
 	/* The caret points right when closed, rotates down when open. Reduced-motion is handled globally. */
 	.ui-disclosure-caret {
 		flex-shrink: 0;
-		display: inline-block;
+		display: flex;
+		align-items: center;
 		font-size: var(--fs-micro);
 		color: var(--text-muted);
 		transition: transform var(--dur-slow) var(--ease);

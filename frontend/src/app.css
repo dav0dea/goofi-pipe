@@ -247,6 +247,19 @@ samp {
 	font: inherit;
 }
 
+/* The last thing in the UI the BROWSER still drew. A `<summary>`'s disclosure marker is a UA
+   `::marker` — a triangle in Chrome, a different one in Firefox, in an ink neither the palette nor
+   any component rule chose — which is the whole defect the app's own icon set ($lib/ui/Icon)
+   exists to remove. A RESET, like the two above: a `<details>` is still the right element for a
+   collapsible section, and what it draws is now the component's business, not the browser's.
+   `::-webkit-details-marker` is the legacy Safari spelling, which `list-style` does not reach. */
+summary {
+	list-style: none;
+}
+summary::-webkit-details-marker {
+	display: none;
+}
+
 input,
 select,
 textarea {

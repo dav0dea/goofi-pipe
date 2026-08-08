@@ -18,7 +18,7 @@ export function registerBuiltinPanels(): void {
 	registerPanel({
 		id: 'empty',
 		title: 'Empty',
-		icon: '▢',
+		icon: 'square-dashed',
 		component: EmptyPanel
 	});
 
