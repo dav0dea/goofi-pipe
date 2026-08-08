@@ -2,7 +2,8 @@ import { test, expect, type Page } from '@playwright/test';
 import { waitForApp } from '../lib/app';
 import { controlsInset } from '../lib/editor';
 import { addNode, waitForNode, waitForNoNode } from '../lib/goofi';
-import { emptySpot, touchSession } from '../lib/touch';
+import { openAddMenuByPress } from '../lib/placement';
+import { emptySpot, lowEmptySpot, touchSession } from '../lib/touch';
 
 /**
  * The node editor's coarse-pointer door for adding a node (R spec §3.2b).
@@ -46,6 +47,49 @@ test('a long press on empty canvas opens the add-node menu there', async ({ page
 	// Escape only reaches the menu through the editor's own keydown handler, which stands down
 	// unless its panel is active — so this closing also proves the press left `Panel`'s
 	// capture-phase `setActive` alone rather than swallowing the pointerdown that drives it.
+	await page.keyboard.press('Escape');
+	await expect(menu).toHaveCount(0);
+});
+
+/**
+ * The same door, in the geometry the test above deliberately avoids: a press LOW on the canvas.
+ *
+ * The menu opens under the finger, so when the press is within a menu's height of the bottom the
+ * shared clamp slides it UP — and the slid menu then covers the very point the finger is about to
+ * lift from. The one-shot swallow that keeps the opening release from dismissing the menu covered
+ * only the full-screen catcher underneath it, so in this geometry the release's compat click landed
+ * on the menu instead, hit a palette ROW, and left a placement ghost for a node type the user never
+ * chose. A press must open the menu and choose nothing.
+ *
+ * The press point is calibrated against the REAL menu height (the palette's contents decide it), not
+ * hardcoded — the assertions below would otherwise pass on a menu the clamp never touched.
+ */
+test('a long press low on the canvas does not pick the row under the finger', async ({ page }) => {
+	await page.goto('/');
+	await waitForApp(page);
+	const touch = await touchSession(page);
+	const menu = page.getByTestId('add-node-menu-anchor');
+
+	await openAddMenuByPress(page);
+	const menuHeight = (await menu.boundingBox())!.height;
+	await page.keyboard.press('Escape');
+	await expect(menu).toHaveCount(0);
+
+	const vh = page.viewportSize()!.height;
+	const at = await lowEmptySpot(page, vh - menuHeight);
+	await touch.down(at);
+	await expect(menu, 'the press opened the menu').toBeVisible();
+
+	const box = (await menu.boundingBox())!;
+	expect(box.y, 'the clamp slid the menu up past the press point').toBeLessThan(at.y);
+	expect(box.y + box.height, '…so the menu now covers it — the geometry under test').toBeGreaterThan(
+		at.y
+	);
+
+	await touch.up();
+	await expect(page.getByTestId('placement-ghost'), 'the release chose nothing').toHaveCount(0);
+	await expect(menu, 'and the menu still stands, waiting for a real choice').toBeVisible();
+
 	await page.keyboard.press('Escape');
 	await expect(menu).toHaveCount(0);
 });

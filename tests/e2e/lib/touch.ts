@@ -76,25 +76,47 @@ export const kbInset = (page: Page): Promise<string> =>
  * a full `--hit` as well as being provably bare.
  */
 export async function emptySpot(page: Page): Promise<TouchPoint> {
-	const spot = await page.locator('.svelte-flow__pane').first().evaluate((pane) => {
-		const hit = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--hit'));
-		const cards = [...document.querySelectorAll('.svelte-flow__node')].map((n) =>
-			n.getBoundingClientRect()
-		);
-		const clear = (x: number, y: number): boolean =>
-			cards.every(
-				(c) => x < c.left - hit || x > c.right + hit || y < c.top - hit || y > c.bottom + hit
-			);
-		const r = pane.getBoundingClientRect();
-		for (let fy = 0.25; fy <= 0.75; fy += 0.1) {
-			for (let fx = 0.2; fx <= 0.8; fx += 0.1) {
-				const x = Math.round(r.left + r.width * fx);
-				const y = Math.round(r.top + r.height * fy);
-				if (document.elementFromPoint(x, y) === pane && clear(x, y)) return { x, y };
-			}
-		}
-		return null;
-	});
+	const spot = await bareSpot(page, [0.25, 0.35, 0.45, 0.55, 0.65, 0.75], 0);
 	expect(spot, 'the canvas has some empty space to press on').not.toBeNull();
 	return spot!;
+}
+
+/**
+ * The same bare point, but as LOW on the canvas as one can be found — at or below `minY` in viewport
+ * coordinates. The add-node menu's clamp only engages when the press sits within a menu's height of
+ * the bottom, and that is the geometry in which the menu covers the finger, so a spec about the
+ * clamp has to be able to ask for a press point there rather than in the comfortable middle.
+ */
+export async function lowEmptySpot(page: Page, minY: number): Promise<TouchPoint> {
+	const spot = await bareSpot(page, [0.98, 0.93, 0.88, 0.83, 0.78, 0.73, 0.68], minY);
+	expect(spot, `the canvas has empty space below y=${minY} to press on`).not.toBeNull();
+	return spot!;
+}
+
+/** Scan `fys` (fractions of the pane's height, in order) for the first bare, card-clear point at or
+ * below `minY`. One copy of the bareness rule the doc comment above spells out. */
+async function bareSpot(page: Page, fys: number[], minY: number): Promise<TouchPoint | null> {
+	return page.locator('.svelte-flow__pane').first().evaluate(
+		(pane, { fys, minY }) => {
+			const hit = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--hit'));
+			const cards = [...document.querySelectorAll('.svelte-flow__node')].map((n) =>
+				n.getBoundingClientRect()
+			);
+			const clear = (x: number, y: number): boolean =>
+				cards.every(
+					(c) => x < c.left - hit || x > c.right + hit || y < c.top - hit || y > c.bottom + hit
+				);
+			const r = pane.getBoundingClientRect();
+			for (const fy of fys) {
+				for (let fx = 0.2; fx <= 0.8; fx += 0.1) {
+					const x = Math.round(r.left + r.width * fx);
+					const y = Math.round(r.top + r.height * fy);
+					if (y < minY) continue;
+					if (document.elementFromPoint(x, y) === pane && clear(x, y)) return { x, y };
+				}
+			}
+			return null;
+		},
+		{ fys, minY }
+	);
 }

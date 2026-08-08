@@ -129,9 +129,28 @@
 	let menuSeed = $state<SlotClickSeed | null>(null);
 	let menuEl = $state<HTMLDivElement | null>(null);
 	// A long press opens the menu with the finger still down, so the touchend ENDING that same
-	// gesture arrives as a click on the catcher the press just mounted. Exactly one such click is
-	// swallowed. Every `openAddMenu` sets this, so it can never leak into a later menu.
-	let swallowMenuDismiss = false;
+	// gesture arrives as a compat click — at the RELEASE point, which is wherever the clamp settled
+	// the menu. Exactly one such click is swallowed. Every `openAddMenu` sets this, so it can never
+	// leak into a later menu.
+	//
+	// At the WINDOW, in the capture phase, because WHICH layer that click lands on is not knowable:
+	// a press low on the screen makes the clamp slide the menu up over the press point, so the
+	// release hits a palette row (a node type the user never chose) rather than the catcher
+	// underneath. Consuming it before it reaches any target makes the swallow geometry-independent.
+	// TitleTip solves the same long-press/compat-click problem the same way. One click and the
+	// listener is gone, so a release that produces none can cost at most the next click — it can
+	// never leave the menu inert.
+	let swallowMenuClick = $state(false);
+	$effect(() => {
+		if (!swallowMenuClick) return;
+		const eat = (e: MouseEvent): void => {
+			e.stopPropagation();
+			swallowMenuClick = false;
+		};
+		const opts = { capture: true, once: true } as const;
+		window.addEventListener('click', eat, opts);
+		return () => window.removeEventListener('click', eat, opts);
+	});
 
 	/**
 	 * Open the add-node menu at a viewport point — the ONE placement path for all four entry points
@@ -150,7 +169,7 @@
 		menuAt = { x, y, align };
 		menuPos = { x, y }; // a known spawn point to start from, corrected below before paint
 		menuSeed = seed;
-		swallowMenuDismiss = swallowNextDismiss;
+		swallowMenuClick = swallowNextDismiss;
 		menuOpen = true;
 	}
 
@@ -1440,13 +1459,8 @@
 				class="menu-overlay"
 				use:portal
 				onclick={() => {
-					// A long press mounted this catcher mid-gesture; the release that ends that same
-					// press then lands here as a click. Swallow that one, or the menu closes on the
-					// very release that opened it.
-					if (swallowMenuDismiss) {
-						swallowMenuDismiss = false;
-						return;
-					}
+					// The opening press's own release never reaches here — the one-shot window-capture
+					// swallow above consumes it, wherever the clamp put the menu.
 					menuOpen = false;
 					menuSeed = null;
 				}}
