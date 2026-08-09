@@ -231,7 +231,6 @@
 		padding: var(--space-3) var(--space-6);
 		width: 100%;
 		text-align: left;
-		font-family: var(--font-mono);
 		font-size: var(--fs-small);
 		cursor: pointer;
 		transition: background var(--dur-fast) var(--ease);
@@ -271,7 +270,6 @@
 		background: color-mix(in srgb, var(--accent) 14%, transparent);
 		border-bottom: 1px solid var(--border);
 		font-size: var(--fs-micro);
-		font-family: var(--font-mono);
 	}
 	.seed-arrow {
 		color: var(--accent);

@@ -112,6 +112,12 @@
 		flex: 1;
 		min-width: 0;
 		min-height: calc(var(--lh-text) * 1em + var(--space-2) * 2 + 2px);
+		/* Source code, so mono — stated HERE rather than left to inheritance. `theme.ts` gives
+		   `.cm-scroller` a `fontFamily: 'inherit'`, so the editor's face is whatever this host's
+		   is; with the chrome around it now sans, the expression would read as prose unless the
+		   host says otherwise. The stand-in <pre> inherits the same way (app.css's `code, pre`
+		   reset), so both frames of the lazy swap render in one face. */
+		font-family: var(--font-mono);
 		background: var(--surface-1);
 		border: 1px solid var(--border);
 		border-radius: var(--radius-sm);

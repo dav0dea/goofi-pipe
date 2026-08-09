@@ -41,8 +41,10 @@
 		display: inline-flex;
 		align-items: center;
 		gap: var(--space-3);
-		font-family: var(--font-mono);
 		font-size: var(--fs-chrome);
+		/* The counters change every frame, and the bar reads as chrome (sans) — proportional digits
+		   would make the whole row twitch as they tick. Tabular figures hold each column still. */
+		font-variant-numeric: tabular-nums;
 		color: var(--text-dim);
 		white-space: nowrap;
 	}

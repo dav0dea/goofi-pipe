@@ -182,7 +182,7 @@
 		min-width: 0;
 		padding: var(--tabs-pad, var(--space-2) var(--space-2) 0);
 		background: var(--tabs-surface, var(--surface-2));
-		font-family: var(--font-mono);
+		font-family: var(--font-sans);
 	}
 	.ui-tab {
 		flex: 0 1 auto;

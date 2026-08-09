@@ -480,7 +480,6 @@
 	   60-character patch can claim of the zone. */
 	.path {
 		color: var(--text-dim);
-		font-family: var(--font-mono);
 		/* The bar's shared chrome size (see app.css) — every word in the header on one baseline. */
 		font-size: var(--fs-chrome);
 		max-width: 32ch;

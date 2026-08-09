@@ -93,7 +93,6 @@
 		min-height: 0;
 	}
 	.ln {
-		font-family: var(--font-mono);
 		font-size: var(--fs-small);
 		color: var(--text);
 		flex: 0 1 auto;

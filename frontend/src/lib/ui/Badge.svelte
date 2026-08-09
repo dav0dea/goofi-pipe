@@ -26,9 +26,9 @@
 </script>
 
 <span {...rest} class={`ui-badge t-${tone} ${klass}`.trim()}>
-	<!-- The ink wrapper exists to be nudged: uppercase mono has no descenders, so box-centred
-	     text reads high by half the descent reserve (--ink-nudge). The transform moves the glyphs
-	     alone — the pill's fill, border and box stay exactly where flex centred them. -->
+	<!-- The ink wrapper is the glyph run on its own — the seam the gallery's ink pin selects to
+	     measure where the visible ink sits against the pill box. It once carried a translateY
+	     correction; the real vendored faces centre by their own metrics, so it carries none. -->
 	<span class="ui-badge-ink">{@render children?.()}</span>
 </span>
 
@@ -40,7 +40,7 @@
 		padding: var(--space-1) var(--space-3);
 		border: 1px solid transparent;
 		border-radius: var(--radius-sm);
-		font-family: var(--font-mono);
+		font-family: var(--font-sans);
 		font-size: var(--fs-micro);
 		font-weight: 600;
 		line-height: 1;
@@ -52,7 +52,6 @@
 		display: inline-flex;
 		align-items: center;
 		gap: var(--space-2);
-		transform: translateY(var(--ink-nudge));
 	}
 	/* Neutral — the resting surface pill: dim text on a raised surface, hairline border. */
 	.ui-badge.t-neutral {

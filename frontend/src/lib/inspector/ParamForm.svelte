@@ -320,9 +320,13 @@
 		text-overflow: ellipsis;
 		white-space: nowrap;
 	}
-	/* The name reads as text until clicked; the dotted underline on hover hints it is editable. */
+	/* The name reads as text until clicked; the dotted underline on hover hints it is editable.
+	   Mono, stated after the `font: inherit` reset that would otherwise wipe it (D-T3): a node's
+	   name is the same identifier the canvas paints on the node itself, and the two must match —
+	   the inspector's surrounding chrome is sans. Same for the rename input it swaps with. */
 	.pf-name {
 		font: inherit;
+		font-family: var(--font-mono);
 		color: var(--text);
 		background: none;
 		border: none;
@@ -338,6 +342,7 @@
 	.pf-rename {
 		width: 100%;
 		font: inherit;
+		font-family: var(--font-mono);
 		font-size: var(--fs-strong);
 		font-weight: 600;
 		padding: var(--space-1) var(--space-2);

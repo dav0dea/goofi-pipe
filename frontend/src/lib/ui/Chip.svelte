@@ -24,8 +24,8 @@
 </script>
 
 <button {...rest} {type} class={`ui-chip t-${tone} ${klass}`.trim()}>
-	<!-- Same ink nudge as Badge, same reason: uppercase mono ink stops at the baseline, so the
-	     box-centred label reads high by the descent reserve. -->
+	<!-- Same ink wrapper as Badge, same reason: the glyph run on its own, so the gallery's ink pin
+	     has something to measure. No correction rides on it — the vendored faces centre themselves. -->
 	<span class="ui-chip-ink">{@render children?.()}</span>
 </button>
 
@@ -38,7 +38,7 @@
 		padding: var(--space-1) var(--space-4);
 		border: 1px solid transparent;
 		border-radius: var(--radius-sm);
-		font-family: var(--font-mono);
+		font-family: var(--font-sans);
 		font-size: var(--fs-micro);
 		font-weight: 600;
 		line-height: 1;
@@ -55,7 +55,6 @@
 		display: inline-flex;
 		align-items: center;
 		gap: var(--space-2);
-		transform: translateY(var(--ink-nudge));
 	}
 	.ui-chip:disabled {
 		opacity: var(--disabled-opacity);

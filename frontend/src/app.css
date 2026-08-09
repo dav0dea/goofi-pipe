@@ -1,8 +1,9 @@
 /* goofi-pipe — global styles. Single dark theme.
  *
  * Palette borrowed from `~/projects/goofi-next/goofi3/frontend/.../theme.ts`
- * (#111 background, #50d0a0 accent, JetBrains Mono throughout). The token
- * names match the earlier scheme so every component restyles automatically.
+ * (#111 background, #50d0a0 accent). Type is two-faced: Inter for chrome, JetBrains
+ * Mono for data (spec D-T2/D-T3, the faces below). The token names match the earlier
+ * scheme so every component restyles automatically.
  */
 
 /* The app's two typefaces — Inter (OFL) for chrome, JetBrains Mono (OFL) for data — vendored
@@ -112,13 +113,6 @@
 	   consoleRowHeight.ts, the same coupling its `PAD = 4` padding already documents. A guard over
 	   that family would need four exemptions to protect two sites. */
 	--lh-text: 1.35;
-	/* Optical ink centring for the mono ALL-LOWERCASE/ALL-CAPS labels (Badge, Chip, the
-	   Disclosure summary): their glyph ink stops at the baseline — no descenders — while the line
-	   box reserves descent space below it, so box-centred text reads ~0.14em high. Measured twice
-	   against the rendered font (1.58px @ 11.2px, 1.42px @ 9.85px — the same ratio), applied as a
-	   translateY on the label's INK (an inner span or the label element), never as padding: a
-	   transform costs no layout and stays out of the spacing vocabulary. */
-	--ink-nudge: 0.14em;
 	/* Motion — two durations, one curve. */
 	--dur-fast: 80ms;
 	--dur-slow: 120ms;
@@ -251,7 +245,7 @@ body {
 	padding: 0;
 	background: var(--bg);
 	color: var(--text);
-	font-family: var(--font-mono);
+	font-family: var(--font-sans);
 	/* Responsive base size — matches goofi3's clamp so the UI scales with
 	   the viewport without losing readability on small screens. */
 	font-size: clamp(11px, 0.9vw + 0.3vh, 14px);

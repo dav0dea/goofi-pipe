@@ -46,7 +46,6 @@
 	}
 	.kind {
 		appearance: none;
-		font-family: var(--font-mono);
 		font-size: var(--fs-small);
 		/* The value text rode high at this smaller font-size because the browser
 		   floors a <select>'s height (UA min-height), leaving the short line box

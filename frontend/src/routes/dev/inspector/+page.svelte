@@ -364,7 +364,6 @@
 	}
 	/* A committed-value read-out the e2e reads to observe commit timing/values. */
 	.readout {
-		font-family: var(--font-mono);
 		font-size: var(--fs-micro);
 		color: var(--text-muted);
 		font-variant-numeric: tabular-nums;
@@ -380,7 +379,6 @@
 	}
 	.mode-toggle {
 		align-self: flex-start;
-		font-family: var(--font-mono);
 		font-size: var(--fs-micro);
 		color: var(--text-dim);
 		background: var(--surface-2);

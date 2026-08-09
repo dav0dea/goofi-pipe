@@ -187,6 +187,5 @@
 		display: flex;
 		flex-direction: column;
 		backdrop-filter: blur(10px);
-		font-family: var(--font-mono);
 	}
 </style>

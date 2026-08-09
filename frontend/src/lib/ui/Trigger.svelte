@@ -28,7 +28,7 @@
 
 <style>
 	.ui-trigger {
-		font-family: var(--font-mono);
+		font-family: var(--font-sans);
 		display: inline-flex;
 		align-items: center;
 		justify-content: center;

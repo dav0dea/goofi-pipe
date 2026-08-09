@@ -36,7 +36,7 @@
 
 <style>
 	.ui-btn {
-		font-family: var(--font-mono);
+		font-family: var(--font-sans);
 		/* The app body ratio (app.css `body`), stated rather than inherited (C19). The box height IS
 		   this plus the padding and border, and app.css's base `button` rule keeps only a `font:
 		   inherit` reset — so leaving it implicit makes every Button's height a property of whatever
