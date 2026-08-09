@@ -547,6 +547,12 @@ describe('style vocabulary', () => {
 			scanned.flatMap((s) => fontFamilies(s.css)).length,
 			'the sweep still finds families to read'
 		).toBeGreaterThan(20);
+		// Counted separately, because the components alone satisfy the line above: `app.css` carries
+		// the app-wide `body` default, and it is only the @font-face BLOCKS that leave the scan.
+		expect(
+			fontFamilies(scanned.find((s) => s.rel === 'app.css')!.css).length,
+			'app.css’s own rules are read, not dropped with its @font-face blocks'
+		).toBeGreaterThan(0);
 		expect(scanned.flatMap((s) => familyDrift(s.rel, s.css))).toEqual([]);
 	});
 
@@ -567,6 +573,14 @@ describe('style vocabulary', () => {
 			familyDrift('app.css', "@font-face { font-family: 'Inter'; src: url('/f.woff2'); }"),
 			'a face being named'
 		).toEqual([]);
+		// What is removed is the BLOCK, not the file that carries it. Without this line a greedy
+		// strip — or a blanket `continue` on app.css — reads as covered: the case above expects `[]`
+		// either way, and the sweep count above is met by the components alone. The one declaration
+		// that would silently drop out is app.css's own `body` default.
+		expect(
+			familyDrift('app.css', `@font-face { font-family: 'Inter'; } body { font-family: ${RAW}; }`),
+			'the block is skipped, the file is not'
+		).toHaveLength(1);
 		// A custom property is a hook, not a rule — the same call the spacing scan gives --dialog-pad.
 		expect(familyDrift('x.svelte', `.a { --viewer-font-family: ${RAW}; }`), 'a hook').toEqual([]);
 	});
