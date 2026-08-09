@@ -24,6 +24,15 @@ export class SyncClient {
 	private unsub: (() => void) | null = null;
 	/** The graph-store's reactive doc-change observer — re-attached to the fresh doc on `reset()`. */
 	private docObserver: ((txn: Y.Transaction) => void) | null = null;
+	/** Whether this replica has pulled from the manager yet: true once an inbound UPDATE has been
+	 * applied (the manager's answer to our `syncHello` — an inbound SV is it asking, not answering),
+	 * false again after `reset()` swaps in a fresh session's empty doc. Until it flips, reads of the
+	 * doc describe an empty replica, not the graph — the automation façade exposes it as
+	 * `query.docSynced` so a driver can tell "empty" from "not yet delivered". */
+	private _synced = false;
+	get synced(): boolean {
+		return this._synced;
+	}
 
 	constructor(control: Control, doc: Y.Doc = new Y.Doc()) {
 		this.control = control;
@@ -48,6 +57,7 @@ export class SyncClient {
 	 * MUST run synchronously in the hello handler, before the client answers the server's binary SV. */
 	reset(): void {
 		const wasRunning = this.unsub !== null;
+		this._synced = false;
 		this.stop();
 		if (this.docObserver) this._doc.off('afterTransaction', this.docObserver);
 		this._doc.destroy();
@@ -89,6 +99,7 @@ export class SyncClient {
 		const msg = decodeSyncMsg(bytes);
 		if (!msg) return;
 		const replies = onSync(this.doc, msg, REMOTE_ORIGIN);
+		if (msg.kind === 'update') this._synced = true;
 		for (const r of replies) this.control.sendSync(r);
 	}
 }

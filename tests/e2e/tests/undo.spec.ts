@@ -14,15 +14,21 @@ test('undo removes an added node and redo restores it', async ({ page }) => {
 	const before = (await nodes(page)).length;
 
 	const uid = await addNode(page, 'Buffer', 'signal');
-	await waitForNode(page, uid);
-	await expect.poll(() => canUndo(page)).toBe(true);
+	try {
+		await waitForNode(page, uid);
+		await expect.poll(() => canUndo(page)).toBe(true);
 
-	await undo(page);
-	await waitForNoNode(page, uid);
-	expect((await nodes(page)).length).toBe(before);
+		await undo(page);
+		await waitForNoNode(page, uid);
+		expect((await nodes(page)).length).toBe(before);
 
-	await redo(page);
-	await waitForNode(page, uid);
+		// Redo restores the SAME uid (the history entry is uid-stable), so the finally can remove it.
+		await redo(page);
+		await waitForNode(page, uid);
+	} finally {
+		await page.evaluate((u) => (window as any).goofi.commands.removeNode(u), uid);
+		await waitForNoNode(page, uid);
+	}
 });
 
 /**

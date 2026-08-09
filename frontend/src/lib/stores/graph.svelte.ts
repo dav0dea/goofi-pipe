@@ -145,6 +145,12 @@ export class GraphStore {
 		return this._sync.doc;
 	}
 
+	/** Whether the replica has pulled from the manager yet (see `SyncClient.synced`) — until then
+	 * doc-derived reads describe an empty replica, not the graph. */
+	get docSynced(): boolean {
+		return this._sync.synced;
+	}
+
 	/** Re-derive every doc-owned subtree from the CRDT doc (Phase 2 read-path cutover). Runs on
 	 * every doc transaction (remote delta or local seed). Subtrees migrate here one at a time;
 	 * runtime state (error/stage/ufreq) and catalog metadata (slots/category) stay event-sourced. */

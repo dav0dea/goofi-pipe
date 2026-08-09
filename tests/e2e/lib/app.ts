@@ -1,9 +1,10 @@
 import { expect, type Page } from '@playwright/test';
 
-/** Resolve once the app is fully live: `window.goofi` is published (AppShell mounted) and the
- * node catalog has arrived over the control WS (`query.nodeTypes()` non-empty ⇒ `hello` landed).
- * This is the readiness gate every spec waits on before driving the façade. */
-export async function waitForApp(page: Page): Promise<void> {
+/** The bare readiness gate: `window.goofi` is published (AppShell mounted) and the node catalog
+ * has arrived over the control WS (`query.nodeTypes()` non-empty ⇒ `hello` landed). On its own
+ * this is only for a RELOAD mid-spec, where the spec's own state is legitimately still live —
+ * everything else enters through `waitForApp`, which adds the hermeticity backstop. */
+export async function appReady(page: Page): Promise<void> {
 	await page.waitForFunction(
 		() => {
 			const g = (window as any).goofi;
@@ -12,6 +13,12 @@ export async function waitForApp(page: Page): Promise<void> {
 		undefined,
 		{ timeout: 20_000 }
 	);
+}
+
+/** Resolve once the app is fully live AND the shared backend is pristine — the readiness gate
+ * every spec waits on before driving the façade. */
+export async function waitForApp(page: Page): Promise<void> {
+	await appReady(page);
 	await expectPristineWorkspace(page);
 }
 
@@ -42,6 +49,23 @@ export async function expectPristineWorkspace(page: Page): Promise<void> {
 		page.locator('.panel'),
 		'a previous spec left a split panel behind — hand it back in a `finally`'
 	).toHaveCount(1, settled);
+	// The third leakable global: GRAPH NODES. A leaked node is worse than a leaked panel — every
+	// later page renders its viewer and subscribes its stream, so it surfaced as an fps reading
+	// no single viewer could produce (viewer-fps-cap read 364 against a 30 cap: a dozen leaked
+	// viewers summed), red on the innocent file as ever. Unlike its two siblings this is an
+	// ABSENCE, and the leaked nodes arrive on the binary CRDT channel a beat after the JSON
+	// `hello` that `appReady` gates on — a count read in that gap sees an empty replica and the
+	// guard becomes a coin flip. `docSynced` is the positive signal that the replica has pulled;
+	// only after it does an empty node list mean an empty graph. Read from the store (synchronous
+	// with the doc), naming the leaked nodes so the red points at what was left, not just that
+	// something was.
+	await page.waitForFunction(() => (window as any).goofi.query.docSynced(), undefined, {
+		timeout: 2_000
+	});
+	const leaked = await page.evaluate(() =>
+		(window as any).goofi.query.graph().nodes.map((n: { type: string; uid: string }) => `${n.type}(${n.uid})`)
+	);
+	expect(leaked, 'a previous spec left graph nodes behind — remove them in a `finally`').toEqual([]);
 }
 
 /** Hand back a tab the spec added: close the last one and settle past AppShell's 400ms `set_layout`

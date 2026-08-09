@@ -1,6 +1,6 @@
 import { test, expect } from '@playwright/test';
 import { waitForApp } from '../lib/app';
-import { addNode, waitForNode } from '../lib/goofi';
+import { addNode, waitForNode, waitForNoNode } from '../lib/goofi';
 
 /**
  * The loudest line on a node card was internal to it.
@@ -24,24 +24,29 @@ test('the node card draws one line under its header, not two', async ({ page }) 
 	await page.goto('/');
 	await waitForApp(page);
 	const uid = await addNode(page, 'Oscillator', 'inputs');
-	await waitForNode(page, uid);
+	try {
+		await waitForNode(page, uid);
 
-	// The card carries no uid of its own; reach it through the slot that does.
-	const card = page
-		.locator('.goofi-node')
-		.filter({ has: page.locator(`.slot-viewer[data-node="${uid}"]`) })
-		.first();
-	const slotHeader = page.locator(`.slot-viewer[data-node="${uid}"] header`).first();
-	await expect(slotHeader, 'the node renders its output slot').toBeVisible();
+		// The card carries no uid of its own; reach it through the slot that does.
+		const card = page
+			.locator('.goofi-node')
+			.filter({ has: page.locator(`.slot-viewer[data-node="${uid}"]`) })
+			.first();
+		const slotHeader = page.locator(`.slot-viewer[data-node="${uid}"] header`).first();
+		await expect(slotHeader, 'the node renders its output slot').toBeVisible();
 
-	expect(
-		await slotHeader.evaluate((el) => getComputedStyle(el).borderTopWidth),
-		'the first slot row adds no second line under the node header'
-	).toBe('0px');
+		expect(
+			await slotHeader.evaluate((el) => getComputedStyle(el).borderTopWidth),
+			'the first slot row adds no second line under the node header'
+		).toBe('0px');
 
-	const nodeHeader = card.locator('.header').first();
-	expect(
-		await nodeHeader.evaluate((el) => getComputedStyle(el).borderBottomWidth),
-		'the separation is still drawn — once — so an output-less node keeps it'
-	).toBe('1px');
+		const nodeHeader = card.locator('.header').first();
+		expect(
+			await nodeHeader.evaluate((el) => getComputedStyle(el).borderBottomWidth),
+			'the separation is still drawn — once — so an output-less node keeps it'
+		).toBe('1px');
+	} finally {
+		await page.evaluate((u) => (window as any).goofi.commands.removeNode(u), uid);
+		await waitForNoNode(page, uid);
+	}
 });

@@ -88,6 +88,10 @@ export const query = {
 		};
 	},
 	nodeTypes: (): NodeTypeInfo[] | null => graph().nodeTypes,
+	/** Whether the doc replica has pulled from the manager yet. Until true, `graph()` reads
+	 * describe an EMPTY replica, not the patch — a driver that must distinguish "empty" from
+	 * "not yet delivered" (e.g. asserting absence) waits on this first. */
+	docSynced: (): boolean => graph().docSynced,
 	/** Every patch global (system + user), doc-authoritative, in system-first/creation order.
 	 * Each is `{name, value, type, system}` — expressions read them as `globals.<name>`. */
 	globals: (): GlobalView[] => graph().globals,

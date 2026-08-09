@@ -13,6 +13,20 @@ function panel(page: Page) {
 	return page.getByTestId('auto-side-panel');
 }
 
+// The shared-backend half of the hermeticity contract (`expectPristineWorkspace`): every node on
+// the backend at teardown is THIS file's creation — the guard proved the graph empty at entry — so
+// one remove-all here beats nine per-test `finally` blocks, and it still runs when a test fails.
+test.afterEach(async ({ page }) => {
+	const uids: string[] = await page.evaluate(() =>
+		(window as any).goofi.query.graph().nodes.map((n: { uid: string }) => n.uid)
+	);
+	if (uids.length === 0) return;
+	await page.evaluate((us) => (window as any).goofi.commands.removeNodes(us), uids);
+	await expect
+		.poll(() => page.evaluate(() => (window as any).goofi.query.graph().nodes.length))
+		.toBe(0);
+});
+
 /** A node's live name via the read façade. */
 function nodeName(page: Page, uid: string): Promise<string | undefined> {
 	return page.evaluate((u) => (window as any).goofi.query.node(u)?.name, uid);

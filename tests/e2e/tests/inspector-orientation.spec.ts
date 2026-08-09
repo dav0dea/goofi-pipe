@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test';
-import { closeSplit, splitRight, waitForApp } from '../lib/app';
+import { appReady, closeSplit, splitRight, waitForApp } from '../lib/app';
 import { settledBox } from '../lib/geometry';
 import { addNode, waitForNode } from '../lib/goofi';
 import {
@@ -183,7 +183,9 @@ test('an edge drag resizes the pane with a MOUSE, and the size outlives the relo
 		).toBe(String(Math.round(after.width)));
 
 		await page.reload();
-		await waitForApp(page);
+		// Readiness only: this spec's own node is legitimately still on the shared backend, which
+		// is exactly the state `waitForApp`'s hermeticity backstop exists to reject.
+		await appReady(page);
 		await page.evaluate((u) => (window as any).goofi.commands.select([u]), uid);
 		await expect(pane(page)).toHaveClass(/open/);
 		const restored = await settledBox(pane(page));

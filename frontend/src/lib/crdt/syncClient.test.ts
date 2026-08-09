@@ -127,6 +127,30 @@ describe('SyncClient', () => {
 		expect(fired).toBeGreaterThan(0);
 	});
 
+	it('synced is false until the manager\'s update lands, and an SV alone does not set it', () => {
+		// The flag answers "has this replica pulled from the manager yet" — the automation façade's
+		// door onto it (`query.docSynced`) is how a driver knows reads are trustworthy. An inbound
+		// SV is the manager ASKING, not answering; only an applied update flips it.
+		const ctl = new FakeControl();
+		const client = new SyncClient(ctl);
+		client.start();
+		expect(client.synced).toBe(false);
+		ctl.emitSync(syncHello(new Y.Doc())); // manager advertises — still no pull
+		expect(client.synced).toBe(false);
+		ctl.emitSync(encodeSyncMsg({ kind: 'update', payload: Y.encodeStateAsUpdate(serverWithNode()) }));
+		expect(client.synced).toBe(true);
+	});
+
+	it('reset() clears synced — the fresh session\'s replica has pulled nothing', () => {
+		const ctl = new FakeControl();
+		const client = new SyncClient(ctl);
+		client.start();
+		ctl.emitSync(encodeSyncMsg({ kind: 'update', payload: Y.encodeStateAsUpdate(serverWithNode()) }));
+		expect(client.synced).toBe(true);
+		client.reset();
+		expect(client.synced).toBe(false);
+	});
+
 	it('stamps applied remote updates with REMOTE_ORIGIN', () => {
 		const ctl = new FakeControl();
 		const client = new SyncClient(ctl);
