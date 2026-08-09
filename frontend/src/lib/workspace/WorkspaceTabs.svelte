@@ -107,6 +107,8 @@
 		   bottom edge they merge over. The inspector keeps the default bottom-hugged look. */
 		--tabs-align: stretch;
 		--tabs-pad: 0;
+		/* …and the labels take the bar's integer chrome size, one baseline row for the header. */
+		--tabs-fs: var(--fs-chrome);
 	}
 	.strip.dragover {
 		background: color-mix(in srgb, var(--accent) 7%, transparent);

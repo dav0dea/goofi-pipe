@@ -10,7 +10,7 @@
 	import ContextMenu from '$lib/workspace/ContextMenu.svelte';
 	import PerfHud from './PerfHud.svelte';
 	import { createWidthCache, planOverflow, type OverflowItem } from './overflowFit';
-	import { Button, IconButton, Badge, Icon } from '$lib/ui';
+	import { IconButton, Badge, Icon } from '$lib/ui';
 
 	// The header holds APP-GLOBAL actions only: session undo/redo and the patch's save/load.
 	// Anything that acts on one panel belongs to that panel — a node editor already carries its
@@ -302,9 +302,10 @@
 			});
 		if (isSpilled('topbar-redo'))
 			items.push({ label: 'Redo', icon: 'redo-2', disabled: !h.canRedo, action: () => void h.redo() });
-		if (isSpilled('topbar-save')) items.push({ label: 'Save', action: onSave });
+		if (isSpilled('topbar-save')) items.push({ label: 'Save', icon: 'save', action: onSave });
 		if (isSpilled('topbar-save-caret')) items.push(...saveOptions());
-		if (isSpilled('topbar-load')) items.push({ label: 'Load…', action: onLoad });
+		if (isSpilled('topbar-load'))
+			items.push({ label: 'Load…', icon: 'folder-open', action: onLoad });
 		return items;
 	}
 
@@ -380,8 +381,12 @@
 			     spill, and `.no-caret` restores Save's own right-hand corners so the seam does not
 			     hang off a button with nothing beside it. -->
 			<div class="split" class:spilled={isSpilled('topbar-save')} class:no-caret={isSpilled('topbar-save-caret')}>
-				<Button variant="ghost" class="seg-main" data-testid="topbar-save" onclick={onSave}
-					>Save</Button
+				<IconButton
+					variant="ghost"
+					class="seg-main"
+					data-testid="topbar-save"
+					label="Save"
+					onclick={onSave}><Icon name="save" /></IconButton
 				>
 				<IconButton
 					variant="ghost"
@@ -391,11 +396,12 @@
 					onclick={openSaveMenu}><Icon name="chevron-down" /></IconButton
 				>
 			</div>
-			<Button
+			<IconButton
 				variant="ghost"
 				data-testid="topbar-load"
 				class={isSpilled('topbar-load') ? 'spilled' : ''}
-				onclick={onLoad}>Load…</Button
+				label="Load…"
+				onclick={onLoad}><Icon name="folder-open" /></IconButton
 			>
 		</div>
 		<!-- Resident at every width: it carries the canvas commands, which have no bar slot to lose.
@@ -475,7 +481,8 @@
 	.path {
 		color: var(--text-dim);
 		font-family: var(--font-mono);
-		font-size: var(--fs-small);
+		/* The bar's shared chrome size (see app.css) — every word in the header on one baseline. */
+		font-size: var(--fs-chrome);
 		max-width: 32ch;
 		overflow: hidden;
 		text-overflow: ellipsis;

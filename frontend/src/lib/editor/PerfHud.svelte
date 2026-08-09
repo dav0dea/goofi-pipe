@@ -34,16 +34,16 @@
 {/if}
 
 <style>
+	/* Quiet text, exactly like the patch name beside it — the boxed pill is gone (Phil,
+	   2026-08-08: the bar reads calmer as one text row than as a row of mixed containers),
+	   and the size is the bar's shared integer chrome size so its baseline is the same one. */
 	.hud {
 		display: inline-flex;
 		align-items: center;
-		gap: 6px;
+		gap: var(--space-3);
 		font-family: var(--font-mono);
-		font-size: 10px;
+		font-size: var(--fs-chrome);
 		color: var(--text-dim);
-		padding: 2px 6px;
-		border-radius: 4px;
-		background: color-mix(in srgb, var(--text) 6%, transparent);
 		white-space: nowrap;
 	}
 	/* Weight, not a status ink. A "drop" is latest-wins coalescing — `frames.ts` states that it

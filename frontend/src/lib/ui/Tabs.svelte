@@ -192,7 +192,9 @@
 		white-space: nowrap;
 		min-height: var(--hit);
 		padding: var(--space-3) var(--space-6);
-		font-size: var(--fs-small);
+		/* `--tabs-fs`: the header's strip takes the bar's integer chrome size so its labels share
+		   the one baseline row (app.css --fs-chrome); the inspector keeps the fluid default. */
+		font-size: var(--tabs-fs, var(--fs-small));
 		/* Inactive tabs read as part of the header strip. */
 		background: var(--tabs-surface, var(--surface-2));
 		color: var(--text-dim);
@@ -320,7 +322,7 @@
 		width: 9ch;
 		padding: 1px var(--space-2);
 		font: inherit;
-		font-size: var(--fs-small);
+		font-size: var(--tabs-fs, var(--fs-small));
 	}
 
 	/* Touch (C17). The ✕ is hover-revealed, so on a device with no hover it is not merely

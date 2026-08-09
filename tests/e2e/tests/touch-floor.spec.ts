@@ -13,7 +13,8 @@ test('coarse pointer floors control height at 44px', async ({ page }) => {
 	// this viewport is as coarse as the default one).
 	await page.setViewportSize({ width: 1000, height: 800 });
 	await page.goto('/');
-	const btn = page.locator('button', { hasText: /save/i }).first();
+	// By testid, not text: Save is an icon button now (the header's one icon family).
+	const btn = page.getByTestId('topbar-save');
 	await btn.waitFor();
 	const h = await btn.evaluate((el) => el.getBoundingClientRect().height);
 	expect(h).toBeGreaterThanOrEqual(44);

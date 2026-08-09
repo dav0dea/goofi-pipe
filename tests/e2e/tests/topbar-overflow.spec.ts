@@ -103,9 +103,10 @@ test('actions leave one at a time, lowest priority first — and the identity le
 		let prev = new Set<string>(PRIORITY);
 		let pathLeftAt = 0;
 		let firstActionLeftAt = 0;
-		// Down to 280, not 320: the identity yields ~200px before any action does, so a named
-		// patch no longer forces an ACTION spill at 320 — that is the feature, not slack.
-		for (let w = 1400; w >= 280; w -= 20) {
+		// Down to 200 (was 280 when Save/Load carried words): every action still fits at 280 now
+		// that all five are icons, and the walk must reach a width where the bar genuinely gives
+		// actions up — probed: the caret leaves below 280, Load below 240, Save below 220.
+		for (let w = 1400; w >= 200; w -= 20) {
 			await widthTo(page, w);
 			const now = new Set(await inBar(page));
 			for (const id of now) {
@@ -132,10 +133,11 @@ test('every spilled action is reachable in the overflow menu — and only those'
 	await page.goto('/');
 	await waitForApp(page);
 	await withNamedPatch(page, async () => {
-		// 280, not 320: with the identity yielding its ~200px first, a named patch keeps all five
-		// actions at 320 — the mixed state this test wants (some actions in the bar, some in the
-		// menu, identity already gone) starts a step lower.
-		await widthTo(page, 280);
+		// 240 (was 280 when Save/Load carried words): the icon-only actions are ~130px narrower,
+		// so the mixed state this test wants (some actions in the bar, some in the menu, identity
+		// already gone) starts a step lower — probed: 240 keeps undo/redo/save and spills the
+		// caret and Load.
+		await widthTo(page, 240);
 		// SETTLED, not a single read: at a named patch the plan converges over several observer
 		// rounds (the cluster and the strip give way together), and a read taken mid-flight reports
 		// an action as kept one frame before it is `display: none` — which then fails against the

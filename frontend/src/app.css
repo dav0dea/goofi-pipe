@@ -75,6 +75,12 @@
 	--fs-body: 0.92rem;
 	--fs-strong: 1rem;
 	--fs-title: 1.15rem;
+	/* Chrome text — the header bar's one text size, --fs-small snapped to whole CSS pixels.
+	   The fluid html clamp makes the rem sizes fractional (0.82rem ≈ 11.48px), and a 44px bar
+	   full of separately-laid-out text elements snaps each fractional baseline to the device
+	   grid on its own — the ink scattered ±0.75px against the icons (Phil, 2026-08-08). One
+	   integer size means one baseline row for every word in the bar, by construction. */
+	--fs-chrome: round(nearest, var(--fs-small), 1px);
 	/* The app's text leading, and the ONE line-height that is a shared value rather than a local
 	   fact. `ui/Button` has to restate it — C19: a primitive that sizes its box from
 	   `line-height + padding + border` must not take that number by inheritance — so the number

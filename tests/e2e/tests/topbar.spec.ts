@@ -34,6 +34,63 @@ test('the app header carries exactly the app-global actions', async ({ page }) =
 	expect(ids, 'panel-local behaviour does not belong in the app header').toEqual(HEADER_ACTIONS);
 });
 
+test('the header is one icon family on one chrome text size (Phil: de-clutter)', async ({
+	page
+}) => {
+	await page.goto('/');
+	await waitForApp(page);
+
+	// Every bar action is a GLYPH with an accessible name — Save/Load joined undo/redo, so the
+	// action cluster reads as one family instead of two idioms side by side. The words live on
+	// in the tooltips and the overflow-menu rows.
+	for (const id of ['topbar-undo', 'topbar-redo', 'topbar-save', 'topbar-load']) {
+		const btn = page.getByTestId(id);
+		expect(
+			(await btn.textContent())?.trim(),
+			`${id} carries a glyph, not a word`
+		).toBe('');
+		await expect(btn.locator('svg'), `${id} renders its icon`).toHaveCount(1);
+		expect(await btn.getAttribute('aria-label'), `${id} keeps its name for AT`).toBeTruthy();
+	}
+
+	// The bar's remaining TEXT (the tab labels, the patch name, the fps) shares ONE chrome
+	// size — integer-snapped, so every baseline in the 44px bar lands on the same device row.
+	// The fluid clamp's fractional sizes snapped per element and scattered the ink ±0.75px.
+	const sizeOf = (sel: string): Promise<string> =>
+		page.locator(sel).first().evaluate((el) => getComputedStyle(el).fontSize);
+	const tab = await sizeOf('[data-testid="workspace-tabs"] .ui-tab-label');
+	expect(parseFloat(tab) % 1, `the chrome size (${tab}) snaps to whole pixels`).toBe(0);
+
+	// The name chip and the fps readout render once the patch is live — adding a node dirties
+	// it (● untitled) and starts frames flowing, which is both preconditions at once.
+	const uid = await page.evaluate(() =>
+		(window as any).goofi.commands.addNode('Oscillator', 'inputs', [40, 40])
+	);
+	try {
+		const path = page.getByTestId('topbar-path');
+		await path.waitFor({ state: 'attached' });
+		expect(
+			await path.evaluate((el) => getComputedStyle(el).fontSize),
+			'the patch name shares the chrome size'
+		).toBe(tab);
+
+		// The fps readout is quiet text like the name beside it — the boxed pill is gone.
+		const hud = page.getByTestId('perf-hud');
+		await hud.waitFor({ state: 'attached' });
+		const skin = await hud.evaluate((el) => {
+			const cs = getComputedStyle(el);
+			return { bg: cs.backgroundColor, fs: cs.fontSize };
+		});
+		expect(
+			/rgba\(0, 0, 0, 0\)|transparent/.test(skin.bg),
+			`the fps readout (${skin.bg}) is unboxed`
+		).toBe(true);
+		expect(skin.fs, 'the fps readout shares the chrome size').toBe(tab);
+	} finally {
+		await page.evaluate((u) => (window as any).goofi.commands.removeNode(u), uid);
+	}
+});
+
 test('the save menu offers Save As and nothing else', async ({ page }) => {
 	// "Save in browser" is gone (user decision, 2026-08-08): a save writes a backend file, full
 	// stop. The caret stays a menu so the split control keeps its shape and its spill behaviour.
