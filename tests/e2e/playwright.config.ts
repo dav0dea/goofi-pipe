@@ -70,8 +70,11 @@ export default defineConfig({
 		}
 	],
 	// Spawn the PREBUILT binary from the repo root (so it serves frontend/build/ correctly),
-	// clearing any stale iceoryx2 SHM first. `cargo build` happens via `npm run e2e` BEFORE
-	// this, since webServer starts ahead of globalSetup. Playwright kills the process on teardown.
+	// clearing any stale iceoryx2 SHM first. `build:backend` happens via `npm run e2e` BEFORE this,
+	// since webServer starts ahead of globalSetup — and it builds the SPA ITSELF rather than leaving
+	// that to `goofi-cli/build.rs`, whose contract is to degrade to a `cargo:warning` cargo may then
+	// replay: the suite would otherwise run green against a bundle older than the source it tests.
+	// Playwright kills the process on teardown.
 	webServer: {
 		command: `bash -c "rm -f /dev/shm/iox2* 2>/dev/null || true; exec target/debug/goofi-pipe --bind 127.0.0.1 --port ${PORT}"`,
 		cwd: REPO_ROOT,
