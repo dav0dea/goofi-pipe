@@ -101,6 +101,9 @@ const ALLOW_DUPLICATE: { sel: string; why: string }[] = [
 /** Geometric invariants that are not spacing at all: nothing, a hairline, full, a pill, a half. */
 const INVARIANT = new Set(['0', '1px', '100%', '999px', '50%']);
 
+/** Everything a `font-family` is allowed to say: the two faces by their token, or nothing at all. */
+const FONT_TOKEN = new Set(['var(--font-sans)', 'var(--font-mono)', 'inherit']);
+
 const PROPS = [
 	'font-size',
 	'gap',
@@ -320,6 +323,27 @@ function drift(): string[] {
 	return sources().flatMap(({ rel, css }) => driftIn(rel, css));
 }
 
+/** Every family a source DECLARES, `@font-face` blocks removed first: inside one, `font-family` is
+ *  the NAME being given to a file, not a use of a token, and it is the one place a bare `'Inter'`
+ *  belongs. The rest of `app.css` — `body`'s app-wide default above all — is read like any other
+ *  rule, because that default is the single most consequential family declaration in the tree. */
+function fontFamilies(css: string): string[] {
+	const decl = /(?:^|[;{}])\s*font-family\s*:\s*([^;}]+)/g;
+	// Anchored like `driftIn`'s: unanchored, this also reads a `--some-font-family` custom property,
+	// which is a hook rather than a rule — the same call `--dialog-pad` gets from the spacing scan.
+	return [...css.replace(/@font-face\s*\{[^}]*\}/g, ' ').matchAll(decl)].map((m) =>
+		m[1].replace(/\s+/g, ' ').trim()
+	);
+}
+
+/** One source's families that are not one of the two tokens. The fixture below drives THIS, so it
+ *  exercises the production scan rather than a copy of it. */
+function familyDrift(rel: string, css: string): string[] {
+	return fontFamilies(css)
+		.filter((v) => !FONT_TOKEN.has(v))
+		.map((v) => `${rel}  font-family: ${v}`);
+}
+
 /** A colour recipe reduced to its bytes: whitespace and case carry no meaning, so two spellings
  *  of the same mix compare equal. */
 const recipe = (mix: string): string => mix.replace(/\s+/g, '').toLowerCase();
@@ -508,6 +532,43 @@ describe('style vocabulary', () => {
 		expect(named.get(recipe('color-mix(in  SRGB,var(--accent)  18%,transparent)'))).toBe('--accent-fill');
 		expect(named.has(recipe('color-mix(in srgb, var(--accent) 17%, transparent)')), 'a different strength is a different tint').toBe(false);
 		expect(colorMixes('a { background: color-mix(in srgb, var(--x) 4%, transparent); }')).toHaveLength(1);
+	});
+
+	/* Two faces, two tokens (D-T5). The app now speaks Inter for chrome and JetBrains Mono for data,
+	   and that taxonomy is only worth something while it is the ONLY answer to "which face": a raw
+	   family literal ships the next label in whatever the author's machine happened to have, and
+	   reads as chrome or as data by accident. So `font-family` says `var(--font-sans)`,
+	   `var(--font-mono)` or `inherit` — the stacks themselves, webfont plus first-paint fallbacks,
+	   are stated once in `app.css` where the tokens are defined. Nothing else is a decision anyone
+	   made; it is a decision someone's fontconfig made for them. */
+	it('speaks type through --font-sans / --font-mono, never a raw family (D-T5)', () => {
+		const scanned = sources();
+		expect(
+			scanned.flatMap((s) => fontFamilies(s.css)).length,
+			'the sweep still finds families to read'
+		).toBeGreaterThan(20);
+		expect(scanned.flatMap((s) => familyDrift(s.rel, s.css))).toEqual([]);
+	});
+
+	// The guard above only earns its line if it fires on the spellings a raw family actually takes.
+	it('spots a raw family, and stays quiet on the two tokens', () => {
+		const RAW = "'Comic Sans MS', cursive";
+		expect(familyDrift('x.svelte', `.a { font-family: ${RAW}; }`), 'a declaration').toHaveLength(1);
+		// No trailing `;`: the last declaration in a block, and every inline `style=` attribute.
+		expect(familyDrift('x.svelte', `.a { font-family: ${RAW} }`), 'unterminated').toHaveLength(1);
+		expect(
+			familyDrift('x.svelte', componentCss(`<div style="font-family: ${RAW}"></div>`)),
+			'as an attribute'
+		).toHaveLength(1);
+		for (const ok of [...FONT_TOKEN])
+			expect(familyDrift('x.svelte', `.a {\n\tfont-family: ${ok};\n}`), ok).toEqual([]);
+		// …and on the one place a bare family name is the point rather than the drift.
+		expect(
+			familyDrift('app.css', "@font-face { font-family: 'Inter'; src: url('/f.woff2'); }"),
+			'a face being named'
+		).toEqual([]);
+		// A custom property is a hook, not a rule — the same call the spacing scan gives --dialog-pad.
+		expect(familyDrift('x.svelte', `.a { --viewer-font-family: ${RAW}; }`), 'a hook').toEqual([]);
 	});
 
 	/* The focus ring is ONE line, and it was written out five times — `app.css`'s app-wide rule
