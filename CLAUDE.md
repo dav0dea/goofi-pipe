@@ -58,9 +58,15 @@ These are hard expectations, in priority order. They override speed.
    quotes**. There is no rustfmt.toml and no Prettier config — **never run
    Prettier**, and hand-match style instead.
 
-6. **Zero warnings.** A task is not done at "Finished" — grep the build output for
-   `warning:` (dead_code, unused, clippy) and clear it. Remove the dead field or
-   function; do not silence it with a `_` prefix or an `#[allow]`.
+6. **Zero warnings.** A task is not done at "Finished" — run
+   `cargo build --workspace --all-targets 2>&1 | grep -n '^warning'` and clear what it prints.
+   Remove the dead field or function; do not silence it with a `_` prefix or an `#[allow]`.
+   **`--all-targets` is the load-bearing part**: a plain `cargo build` does not compile the
+   integration-test targets, so a warning in `tests/*.rs` sails through.
+   Clippy is a **separate, currently-unmet** bar: `cargo clippy --workspace --all-targets` has a
+   pre-existing backlog (~47 across `goofi-core`, `goofi-engine`, `goofi-bridge`, `goofi-node`).
+   The rule that binds today is: **add no new clippy warning in a file you touch.** Clearing the
+   backlog is its own task; until then do not claim "clippy clean" workspace-wide.
 
 7. **Honest reporting.** If tests fail, say so with the output. If a step was
    skipped, say that. State what is verified plainly; don't claim done what you
@@ -198,7 +204,11 @@ cargo run                       # launches the backend + bridge, prints the URL
 
 cargo test --workspace                      # must stay green, and warning-free
 cargo test -p goofi-py --features embed     # in-process Python host (needs .ftvenv)
-cargo build -p goofi-cli 2>&1 | grep warning:   # ALWAYS check before declaring done
+cargo build --workspace --all-targets 2>&1 | grep -n '^warning'   # ALWAYS check before declaring done
+#   `--all-targets` is load-bearing: a plain `cargo build` never compiles the integration-test
+#   targets, so a warning inside `tests/*.rs` (a non-snake-case test name, an unused import)
+#   passes the gate and ships. Anchor the grep to `^warning` — `warning:` alone also matches a
+#   runtime log line a test happens to print, which reads as a failing gate when it is not.
 
 # Frontend (from frontend/):
 npm run check    # svelte-check + tsc strict — keep 0 errors
