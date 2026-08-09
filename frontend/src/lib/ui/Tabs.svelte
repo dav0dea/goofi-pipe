@@ -228,25 +228,26 @@
 
 	/* --- the opt-in affordances ------------------------------------------------------------- */
 
-	/* The per-tab ✕: collapsed to zero width when hidden so an inactive tab stays evenly padded;
-	   expands (with its left gap) on hover / when active. `overflow: hidden` is what clips it
-	   away; the coarse door below rests it open instead (C17 — a hover reveal is unreachable on a
-	   device with no hover). */
+	/* The per-tab ✕ HOLDS ITS SEAT: its 16px box and left gap are reserved on every closable
+	   tab, hovered or not, so a tab never grows on hover and jumps its neighbours sideways
+	   (Phil, 2026-08-08). At rest only the INK is gone — `opacity` hides it and
+	   `pointer-events: none` keeps the invisible button from taking the tap a hybrid
+	   touchscreen aims at the tab itself; the coarse door below rests it fully open instead
+	   (C17 — a hover reveal is unreachable on a device with no hover). */
 	.ui-tab-close {
 		position: relative; /* anchor for the coarse-pointer hit-rect ::after */
 		display: inline-flex;
 		align-items: center;
 		justify-content: center;
-		width: 0;
-		min-width: 0;
+		width: 16px;
 		height: 16px;
-		margin-left: 0;
+		margin-left: var(--space-2);
 		padding: 0;
 		background: transparent;
 		border: none;
-		overflow: hidden;
 		color: var(--text-muted);
 		opacity: 0;
+		pointer-events: none;
 		cursor: pointer;
 		transition:
 			opacity var(--dur-fast) var(--ease),
@@ -254,9 +255,8 @@
 	}
 	.ui-tab:hover .ui-tab-close,
 	.ui-tab.active .ui-tab-close {
-		width: 16px;
-		margin-left: var(--space-2);
 		opacity: 1;
+		pointer-events: auto;
 	}
 	.ui-tab-close :global(svg) {
 		width: 12px;
@@ -323,16 +323,14 @@
 		font-size: var(--fs-small);
 	}
 
-	/* Touch (C17). The ✕ is hover-revealed, sub-floor AND clipped, so on a device with no hover it
-	   is not merely small — it is unreachable. Resting it open at its 16px paint and releasing the
-	   clip is the whole fix; the tab pill itself already carries the --hit floor. The rename input
-	   is raised to 16px so iOS does not force-zoom the page on focus. */
+	/* Touch (C17). The ✕ is hover-revealed, so on a device with no hover it is not merely
+	   invisible — it is unreachable. Resting its ink open (and its pointer live) is the whole
+	   fix; the box was already reserved above. The rename input is raised to 16px so iOS does
+	   not force-zoom the page on focus. */
 	@media (hover: none) and (pointer: coarse) {
 		.ui-tab-close {
-			width: 16px;
-			margin-left: var(--space-2);
-			overflow: visible;
 			opacity: 1;
+			pointer-events: auto;
 		}
 		/* The ✕ cannot grow — it sits inside the pill — so IconButton's hit-rect idiom carries its
 		   tap target out to --hit while the paint stays 16px. */

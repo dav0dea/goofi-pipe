@@ -83,32 +83,50 @@ test('the panel header dropdown opens the context menu and Escape dismisses it',
 	await expect(menu, 'Escape dismisses it').toHaveCount(0);
 });
 
-test('a collapsed tab close button occupies zero width (the even-padding invariant)', async ({
+test('a tab keeps one width — the ✕ holds its seat and only its INK comes and goes', async ({
 	page
 }) => {
 	await page.goto('/');
 	await waitForApp(page);
 
-	// A close ✕ only renders once there is more than one tab.
+	// A close ✕ only renders once there is more than one tab. The RESTED state under test is
+	// the INACTIVE tab's (an active tab shows its ✕ by design), with the mouse parked away —
+	// the ＋ click leaves the pointer where a tab now sits, which would hover-reveal it.
 	const tabs = page.getByTestId('workspace-tabs');
 	await tabs.getByRole('button', { name: 'New tab' }).click();
-	const close = tabs.getByRole('button', { name: 'Close tab' }).first();
+	const tab = tabs.locator('.ui-tab:not(.active)').first();
+	const close = tab.getByRole('button', { name: 'Close tab' });
 	await close.waitFor({ state: 'attached' });
+	await page.mouse.move(400, 300);
 
 	try {
-		// Its tab is neither hovered nor active, so the ✕ is collapsed: it must take NO
-		// horizontal space at all, or every inactive tab is padded wider than its neighbours.
-		// (A primitive with a 1px border clamps `width: 0` to 2px under border-box — the exact
-		// regression this guards.)
+		// Phil (2026-08-08): the ✕'s width is RESERVED on every closable tab, hovered or not —
+		// a tab that grows on hover jumps its neighbours sideways. At rest the ✕ is merely
+		// invisible (opacity) and inert (pointer-events), never absent: an invisible button
+		// that still took taps would close an inactive tab a hybrid touchscreen meant to
+		// select.
+		const rested = (await tab.boundingBox())!.width;
+		expect((await close.boundingBox())!.width, 'the rested ✕ keeps its 16px seat').toBe(16);
 		await expect
-			.poll(async () => (await close.boundingBox())?.width, {
-				message: 'the collapsed ✕ takes zero width'
+			.poll(() => close.evaluate((el) => getComputedStyle(el).opacity), {
+				message: 'the rested ✕ is invisible'
 			})
-			.toBe(0);
+			.toBe('0');
+		expect(
+			await close.evaluate((el) => getComputedStyle(el).pointerEvents),
+			'the invisible ✕ takes no taps'
+		).toBe('none');
 
-		// Hovering its tab reveals it at the frozen 16px reveal width.
-		await close.locator('xpath=..').hover();
-		await expect.poll(async () => (await close.boundingBox())?.width).toBe(16);
+		// Hovering reveals the ink — and moves NOTHING.
+		await tab.hover();
+		await expect
+			.poll(() => close.evaluate((el) => getComputedStyle(el).opacity), {
+				message: 'hover reveals the ✕'
+			})
+			.toBe('1');
+		expect((await tab.boundingBox())!.width, 'the tab width does not jump on hover').toBe(
+			rested
+		);
 	} finally {
 		// The tab half of the rule `closeSplit` states above — this file is the LAST of `default`,
 		// so a tab left behind here lands on `touch`, three files and a project away.
@@ -132,24 +150,46 @@ test('the tab strip ＋ keeps its frozen 22px box (not the primitive --hit floor
 	expect(box.height, 'the ＋ keeps its pre-migration 22px height').toBe(22);
 });
 
-test('the layout tab’s label sits on the header midline, level with the ＋', async ({ page }) => {
+test('the layout tab’s label INK sits on the header midline, level with the ＋', async ({
+	page
+}) => {
 	await page.goto('/');
 	await waitForApp(page);
 
-	// Phil (2026-08-08): the tab's TEXT centre-aligns with the ＋ — which is itself centred
-	// with everything else in the header — so the strip reads as one row, not a sunken pill.
-	// The pill still merges downward into the workspace (it stretches to the strip's bottom
-	// edge); what moved is the ink, which centres on the full strip height instead of a
-	// bottom-hugged content box.
+	// Phil (2026-08-08, twice): first the tab's text centre-aligns with the ＋ so the strip
+	// reads as one row — then the sharper cut: the ✕ and the row are RIGHT, the label's INK
+	// is what rides high. Same phenomenon Badge/Chip/docs carry --ink-nudge for: the line box
+	// reserves descent below the baseline, so box-centred mono text reads ~0.14em high. So
+	// this pins the INK (canvas TextMetrics, the ui-gallery idiom) against the ＋'s centre —
+	// the row's reference — not the label's line box.
 	const tabs = page.getByTestId('workspace-tabs');
-	const label = tabs.locator('.ui-tab-label').first();
 	const add = tabs.getByRole('button', { name: 'New tab' });
-	const lb = (await label.boundingBox())!;
 	const ab = (await add.boundingBox())!;
+	const d = await tabs
+		.locator('.ui-tab-label')
+		.first()
+		.evaluate((label) => {
+			const cs = getComputedStyle(label);
+			const range = document.createRange();
+			range.selectNodeContents(label);
+			const tr = range.getBoundingClientRect();
+			const cv = document.createElement('canvas').getContext('2d')!;
+			cv.font = `${cs.fontWeight} ${cs.fontSize} ${cs.fontFamily}`;
+			const met = cv.measureText((label.textContent ?? '').trim());
+			const baseline = tr.top + met.fontBoundingBoxAscent;
+			return {
+				inkCenter: baseline - (met.actualBoundingBoxAscent - met.actualBoundingBoxDescent) / 2,
+				fontBoxCheck: met.fontBoundingBoxAscent + met.fontBoundingBoxDescent - tr.height
+			};
+		});
 	expect(
-		Math.abs(lb.y + lb.height / 2 - (ab.y + ab.height / 2)),
-		'the tab label and the ＋ share a vertical centre'
+		Math.abs(d.fontBoxCheck),
+		'canvas font metrics agree with the layout font box'
 	).toBeLessThanOrEqual(1);
+	expect(
+		Math.abs(d.inkCenter - (ab.y + ab.height / 2)),
+		'the tab label’s ink and the ＋ share a vertical centre'
+	).toBeLessThanOrEqual(0.8);
 });
 
 // The two rows M deliberately kept bespoke (a context-menu item, an empty-panel tile) are
