@@ -218,6 +218,14 @@
 		border-bottom: 1px solid color-mix(in srgb, var(--border) 55%, transparent);
 		vertical-align: middle;
 	}
+	/* Names AND values are mono (D-T3): a name is an expression identifier (`globals.<name>`) and a
+	   value is what an expression resolves to. Stated on the CELLS, not on each control: the ui
+	   inputs carry `font: inherit` by design, so the cell is the seam that hands them a face — and
+	   `td` keeps the `th` above it (a column header, chrome) out of it. */
+	td.c-name,
+	td.c-val {
+		font-family: var(--font-mono);
+	}
 	.c-name {
 		width: 45%;
 	}

@@ -278,4 +278,24 @@ test.describe('Inspector (real node)', () => {
 		// And B's committed expression was never overwritten with A's.
 		expect((await nodeParams(page, b))?.oscillator?.amplitude?.expression).not.toContain('LEAK_FROM_A');
 	});
+
+	// A node's traceback is machine output — the same text the ErrorPanel shows in mono — so the
+	// inspector's copy reads in mono too (spec D-T3). It is a bare <pre>, i.e. an element whose only
+	// family came from app.css's `code, pre, kbd { font: inherit }` reset over a mono body: the
+	// two-face flip turned that inheritance sans without touching this file, which is exactly the
+	// class of regression this pins. `LempelZiv` added with nothing connected raises a missing-
+	// argument TypeError on its first tick (see error-panel.spec.ts for why that is permanent).
+	test('a node error renders its traceback in mono (D-T3)', async ({ page }) => {
+		await page.goto('/');
+		await waitForApp(page);
+		const uid = await addNode(page, 'LempelZiv', 'python');
+		await waitForNode(page, uid);
+		await page.evaluate((u) => (window as any).goofi.commands.select([u]), uid);
+		const pre = panel(page).getByTestId('inspector-error').locator('pre');
+		await expect(pre, 'the real per-tick error reached the inspector').toBeVisible();
+		expect(
+			await pre.evaluate((el) => getComputedStyle(el).fontFamily.split(',')[0].replace(/["']/g, '')),
+			'the traceback'
+		).toBe('JetBrains Mono');
+	});
 });

@@ -127,3 +127,29 @@ test('the Globals panel commits a typed number as the global’s declared type',
 		});
 	}
 });
+
+// A global's name AND its value are expression identifiers and machine-read data (spec D-T3), so
+// both read in mono — including the EDITABLE cells, which is where the two-face flip could lose
+// them silently: the `ui` inputs carry `font: inherit` by design, so they render whatever the cell
+// hands down, and body-level sans would take them without changing a line in this file. The column
+// headers above them are chrome and stay sans, which is what makes this a taxonomy assertion rather
+// than a "everything here is mono" one.
+test('a global’s editable name and value render mono, its column header sans (D-T3)', async ({
+	page
+}) => {
+	await page.goto('/');
+	await waitForApp(page);
+	await addGlobal(page, 'm19_face', 'AF7', 'string');
+	try {
+		await inGlobalsPanel(page, async () => {
+			const row = page.locator('tr[data-name="m19_face"]');
+			const face = (loc: ReturnType<typeof row.locator>) =>
+				loc.evaluate((el) => getComputedStyle(el).fontFamily.split(',')[0].replace(/["']/g, ''));
+			expect(await face(row.getByTestId('global-name')), 'the name input').toBe('JetBrains Mono');
+			expect(await face(row.getByTestId('global-value')), 'the value input').toBe('JetBrains Mono');
+			expect(await face(page.locator('th.c-name')), 'the column header').toBe('Inter');
+		});
+	} finally {
+		await page.evaluate(() => (window as any).goofi.commands.removeGlobal('m19_face'));
+	}
+});

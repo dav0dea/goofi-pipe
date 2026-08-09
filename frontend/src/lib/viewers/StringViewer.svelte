@@ -21,11 +21,16 @@
 {/if}
 
 <style>
+	/* String Data is a payload, so mono (D-T3) — the same face the node canvas paints it in, and
+	   stated here rather than inherited: `.text` is a bare <pre>, which app.css resets to `font:
+	   inherit`, and the panel around it is chrome. The markdown body inherits this too, including
+	   its `code`/`pre` runs (same reset), so the document reads in one face. */
 	.text,
 	.md {
 		width: 100%;
 		height: 100%;
 		min-height: 80px;
+		font-family: var(--font-mono);
 		font-size: var(--fs-small);
 		color: var(--text);
 		background: var(--surface-1);

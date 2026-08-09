@@ -264,7 +264,11 @@
 		font-size: var(--fs-small);
 		color: var(--danger);
 	}
+	/* A traceback is machine output, so mono (D-T3) — stated, not inherited: a bare <pre> takes only
+	   app.css's `font: inherit` reset, which now resolves to the chrome face. The ErrorPanel shows
+	   the same text; the two must not disagree about what it is. */
 	.node-error pre {
+		font-family: var(--font-mono);
 		font-size: var(--fs-micro);
 		color: var(--text-dim);
 		white-space: pre-wrap;
