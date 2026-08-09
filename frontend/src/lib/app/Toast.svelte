@@ -1,23 +1,25 @@
 <!--
-  Transient toast for undo/redo failures (#9). Watches history().lastError — set
-  when an undo/redo replay rejects (e.g. undo-of-delete onto a re-taken name) — shows
-  it for a few seconds, then clears it. Clicking dismisses immediately. Sits above all
-  other chrome (var(--z-toast)).
+  The app's transient alarm surface. Watches the shared `notify` channel — an undo/redo replay that
+  rejected (#9), a save that failed, a workspace whose watch was lost — shows it for a few seconds,
+  then clears it. Clicking dismisses immediately. Sits above all other chrome (var(--z-toast)).
+
+  It reads ONE store on purpose: the channel is where the three producers meet, so this component
+  never learns who raised the line it is showing.
 -->
 <script lang="ts">
-	import { history } from '$lib/stores/history.svelte';
+	import { notify } from '$lib/stores/notify.svelte';
 
-	const error = $derived(history().lastError);
+	const error = $derived(notify().message);
 
 	$effect(() => {
 		if (!error) return;
-		const t = setTimeout(() => history().clearError(), 4000);
+		const t = setTimeout(() => notify().clear(), 4000);
 		return () => clearTimeout(t);
 	});
 </script>
 
 {#if error}
-	<button class="toast" onclick={() => history().clearError()} title="Dismiss">
+	<button class="toast" data-testid="toast" onclick={() => notify().clear()} title="Dismiss">
 		{error}
 	</button>
 {/if}

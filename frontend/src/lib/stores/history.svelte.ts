@@ -19,6 +19,7 @@ import { layoutExecutors } from '$lib/workspace/layoutExecutors';
 import { viewExecutors } from '$lib/viewers/viewExecutors';
 import { restoreNavContext } from '$lib/workspace/navContext';
 import { pulseRestored } from './undoFlash';
+import { notify } from './notify.svelte';
 
 export type ActionDomain = 'graph' | 'layout' | 'view';
 
@@ -184,8 +185,6 @@ export class HistoryStore {
 	canRedo = $state(false);
 	undoLabel = $state<string | null>(null);
 	redoLabel = $state<string | null>(null);
-	/** Set when an undo/redo replay rejects; surfaced as a toast (Phase 6). */
-	lastError = $state<string | null>(null);
 
 	private undoStack: Action[] = [];
 	private redoStack: Action[] = [];
@@ -241,7 +240,7 @@ export class HistoryStore {
 	/** Move the top action of `from` to `to`, replaying it through `direction`
 	 * (inverse for undo, forward for redo): restore its nav context, run it with
 	 * recording suspended, then relocate it. Atomic — on RPC failure the action
-	 * stays on `from` and `lastError` is set; the stacks are untouched. */
+	 * stays on `from` and the failure is raised as a toast; the stacks are untouched. */
 	private async _replay(
 		from: Action[],
 		to: Action[],
@@ -257,7 +256,7 @@ export class HistoryStore {
 			await restoreNavContext(action.context);
 			await this.suspend(() => exec[direction](action, this.depsProvider()));
 		} catch (e) {
-			this.lastError = `${verb} failed: ${(e as Error).message ?? e}`;
+			notify().failure(verb, e);
 			return; // leave the stacks untouched (atomic-or-nothing)
 		} finally {
 			this.replaying = false;
@@ -340,19 +339,17 @@ export class HistoryStore {
 	}
 
 	/** Hard reset — only on a new backend session (see graph store). Drops the
-	 * stacks and any pending error; the deps provider is config, not state, so it
-	 * is left intact. */
+	 * stacks; the deps provider is config, not state, so it is left intact.
+	 *
+	 * It deliberately does NOT take down a showing toast, though it used to when the alarm was a
+	 * field here. The channel is SHARED now — a failed save or load raises on it too — so clearing
+	 * it here would silence an alarm this store never raised, over a reset it has no way to relate
+	 * to. A toast is transient and self-dismissing; a session reset need not police it. */
 	reset(): void {
 		this.undoStack = [];
 		this.redoStack = [];
 		this.suspendDepth = 0;
-		this.lastError = null;
 		this._recompute();
-	}
-
-	/** Dismiss the last undo/redo error (e.g. after its toast is shown). */
-	clearError(): void {
-		this.lastError = null;
 	}
 
 	private _recompute(): void {

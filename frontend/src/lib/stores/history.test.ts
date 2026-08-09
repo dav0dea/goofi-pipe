@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { history, type Action } from './history.svelte';
+import { notify } from './notify.svelte';
 import { FakeControl } from '$lib/test/fakeControl';
 import { GraphStore } from './graph.svelte';
 import { workspace } from '$lib/workspace/workspace.svelte';
@@ -106,14 +107,30 @@ describe('HistoryStore — re-entrancy (report B13: held Ctrl+Z)', () => {
 	});
 });
 
-describe('HistoryStore — lastError surface (#9)', () => {
-	beforeEach(() => history().reset());
+describe('HistoryStore — the failure surface (#9)', () => {
+	beforeEach(() => {
+		history().reset();
+		notify().clear();
+	});
 
-	it('clearError() resets lastError so a dismissed toast stays dismissed', () => {
+	it('a rejected replay raises the failure on the shared toast channel', async () => {
+		const fc = new FakeControl();
 		const h = history();
-		h.lastError = 'Undo failed: name taken';
-		h.clearError();
-		expect(h.lastError).toBe(null);
+		h.configureDeps(() => ({ control: fc, graph: new GraphStore(fc), workspace: workspace() }));
+		h.record(mk('Add node'));
+		fc.failNext('undo');
+		await h.undo();
+		expect(notify().message).toBe('Undo failed: fake control: undo failed');
+		// Atomic-or-nothing: the step stays put, so the user can try again.
+		expect(h.canUndo).toBe(true);
+	});
+
+	/** The reset drops the STACKS, not the alarm: the channel is shared, so a line this store never
+	 * raised (a failed save, say) is not its to take down. */
+	it('reset() leaves a showing toast alone', () => {
+		notify().raise('Save failed: Permission denied');
+		history().reset();
+		expect(notify().message).toBe('Save failed: Permission denied');
 	});
 });
 
