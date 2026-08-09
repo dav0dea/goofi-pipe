@@ -105,7 +105,9 @@ async fn main() {
 /// Everything the process does once it has a state, as a function that *returns* its exit code:
 /// the workspace mount is reclaimed here, on the one path every outcome takes. The alternative is
 /// three `std::process::exit` calls that each have to remember — and `exit` unwinds nothing, so a
-/// destructor would not save them either.
+/// destructor would not save them either. `shutdown` is only awaited once the server is up, so a
+/// signal that lands during boot still takes the default disposition and leaves the mount behind:
+/// one empty temp directory in a rare race, the same as any other crash.
 async fn run(cli: Cli, state: AppState, shutdown: impl Future<Output = ()>) -> i32 {
     let Cli { port, bind, subproc_nodes, mut auto_nodes, subproc_python, list_nodes, help: _ } = cli;
 
@@ -146,10 +148,12 @@ async fn run(cli: Cli, state: AppState, shutdown: impl Future<Output = ()>) -> i
                     Some(d) => println!("  serving SPA from {}", d.display()),
                     None => println!("  API only — no SPA build found (set GOOFI_FRONTEND_BUILD or build frontend/)"),
                 }
-                // A signal stops the server by DROPPING it, not by draining it: `/control` and
-                // `/data` sockets stay open for the life of a tab, so waiting for them to close
-                // would hang the exit — and with a handler installed, a second ctrl-C no longer
-                // reaches the default disposition that would have killed us.
+                // The stop lives here rather than inside `serve_app`: the mount reclaim below is
+                // the CLI's alone, and `serve_app`'s eight other callers are tests that want it to
+                // serve forever. Dropping the server and draining it behave alike here anyway —
+                // axum's per-connection task ends at the WS upgrade, so a `/control` socket held
+                // open for the life of a tab delays neither — and with a handler installed, a
+                // second ctrl-C no longer reaches the default disposition that would have killed us.
                 tokio::select! {
                     served = serve_app(listener, state.clone(), dir) => match served {
                         Ok(()) => 0,
@@ -381,7 +385,17 @@ mod tests {
         // Port 0 binds ephemerally; an already-resolved shutdown takes the same path ctrl-C does.
         let cli = Cli { port: 0, ..Cli::default() };
         assert_eq!(run(cli, state, std::future::ready(())).await, 0);
-        assert!(!mount.exists(), "the mount is gone after shutdown: {}", mount.display());
+        // The NONCE directory is what goes, not just `workspace` — else every run leaves an empty
+        // husk behind. Asserting on the parent covers the leaf too.
+        let husk = mount.parent().expect("the mount is nested under a nonce dir");
+        assert!(!husk.exists(), "the nonce directory goes too, not just workspace: {}", husk.display());
+
+        // `--list-nodes` returns before the server ever binds; the same tail must still reclaim.
+        let listed = AppState::new();
+        let m2 = listed.mount();
+        let cli = Cli { list_nodes: true, ..Cli::default() };
+        assert_eq!(run(cli, listed, std::future::pending()).await, 0);
+        assert!(!m2.exists(), "--list-nodes reclaims too: {}", m2.display());
     }
 
     #[test]

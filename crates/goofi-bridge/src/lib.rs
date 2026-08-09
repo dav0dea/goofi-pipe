@@ -144,8 +144,11 @@ impl AppState {
         self.mount.lock().unwrap().clone()
     }
 
-    /// Drop the workspace mount. Best-effort by decision: a failure leaves one directory in the
-    /// system temp dir, which a reboot clears — no registry, no retry, no reporting.
+    /// Drop the workspace mount, nonce directory and all. Deleting a *parent* needs no shape check
+    /// to be safe: the field is private and its only two writers — boot, and the load swap — both
+    /// store a `new_mount()` result, so what it names is always that nonce directory. Best-effort by
+    /// decision: a failure leaves one directory in the system temp dir, which a reboot clears — no
+    /// registry, no retry, no reporting.
     pub fn release_mount(&self) {
         remove_mount(&self.mount());
     }
@@ -172,7 +175,7 @@ fn remove_mount(mount: &std::path::Path) {
 fn nonce_hex() -> String {
     let mut nonce = [0u8; 16];
     getrandom::fill(&mut nonce).expect("the OS random source");
-    nonce.iter().map(|b| format!("{b:02x}")).collect()
+    format!("{:032x}", u128::from_be_bytes(nonce))
 }
 
 /// Pack the patch to `target` as a `.gfi`: `manifest` beside the live workspace `mount`.
