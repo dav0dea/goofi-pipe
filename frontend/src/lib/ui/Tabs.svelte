@@ -169,13 +169,18 @@
 </div>
 
 <style>
-	/* The strip sits at the header surface; the active tab drops out of it onto the body surface. */
+	/* The strip sits at the header surface; the active tab drops out of it onto the body surface.
+	   Two more per-instance hooks beside the surface pair: `--tabs-align` and `--tabs-pad`. The
+	   default (bottom-hugged pills under a breathing-room inset) is the inspector's strip look;
+	   the header's layout bar sets `stretch`/`0` so each pill spans the full strip and its LABEL
+	   centres on the bar's midline — level with the ＋ and the rest of the header row — while the
+	   pill still reaches the bottom edge it merges over (stretch touches both edges). */
 	.ui-tabs {
 		display: flex;
-		align-items: flex-end;
+		align-items: var(--tabs-align, flex-end);
 		gap: var(--space-1);
 		min-width: 0;
-		padding: var(--space-2) var(--space-2) 0;
+		padding: var(--tabs-pad, var(--space-2) var(--space-2) 0);
 		background: var(--tabs-surface, var(--surface-2));
 		font-family: var(--font-mono);
 	}

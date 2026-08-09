@@ -132,6 +132,26 @@ test('the tab strip ＋ keeps its frozen 22px box (not the primitive --hit floor
 	expect(box.height, 'the ＋ keeps its pre-migration 22px height').toBe(22);
 });
 
+test('the layout tab’s label sits on the header midline, level with the ＋', async ({ page }) => {
+	await page.goto('/');
+	await waitForApp(page);
+
+	// Phil (2026-08-08): the tab's TEXT centre-aligns with the ＋ — which is itself centred
+	// with everything else in the header — so the strip reads as one row, not a sunken pill.
+	// The pill still merges downward into the workspace (it stretches to the strip's bottom
+	// edge); what moved is the ink, which centres on the full strip height instead of a
+	// bottom-hugged content box.
+	const tabs = page.getByTestId('workspace-tabs');
+	const label = tabs.locator('.ui-tab-label').first();
+	const add = tabs.getByRole('button', { name: 'New tab' });
+	const lb = (await label.boundingBox())!;
+	const ab = (await add.boundingBox())!;
+	expect(
+		Math.abs(lb.y + lb.height / 2 - (ab.y + ab.height / 2)),
+		'the tab label and the ＋ share a vertical centre'
+	).toBeLessThanOrEqual(1);
+});
+
 // The two rows M deliberately kept bespoke (a context-menu item, an empty-panel tile) are
 // styled entirely by their own class — including the font. `app.css`'s base `button` rule is
 // what M-Task 7 strips, and buttons do NOT inherit font by default, so each must declare

@@ -96,12 +96,17 @@
 		min-width: 0;
 		overflow-x: auto;
 		overflow-y: hidden;
-		/* The primitive's two surface hooks, retuned for the HEADER context (the documented
-		   per-instance CSS-var escape hatch): the strip blends with the bar rather than painting
-		   its own header surface, and the ACTIVE page drops to the workspace ground below the
-		   bar — the same connected look the inspector's param tabs make with their panel body. */
+		/* The primitive's hooks, retuned for the HEADER context (the documented per-instance
+		   CSS-var escape hatch): the strip blends with the bar rather than painting its own
+		   header surface, and the ACTIVE page drops to the workspace ground below the bar —
+		   the same connected look the inspector's param tabs make with their panel body. */
 		--tabs-surface: transparent;
 		--tabs-body: var(--bg);
+		/* Pills span the strip so their labels centre on the bar's midline — one row with the
+		   ＋ and the header's other content (Phil, 2026-08-08) — while still touching the
+		   bottom edge they merge over. The inspector keeps the default bottom-hugged look. */
+		--tabs-align: stretch;
+		--tabs-pad: 0;
 	}
 	.strip.dragover {
 		background: color-mix(in srgb, var(--accent) 7%, transparent);
