@@ -2,7 +2,7 @@
 
 use std::fs::{self, File};
 use std::io::{Read, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use walkdir::WalkDir;
 use zip::write::SimpleFileOptions;
@@ -17,30 +17,32 @@ const WORKSPACE: &str = "workspace";
 /// every entry is stamped 1980-01-01, which leaves entry order as the only varying field.
 /// Anything that is not a regular file (directory, symlink, socket) is skipped.
 pub fn write_gfi(out: &Path, manifest: &str, workspace_dir: &Path) -> Result<(), String> {
-    let at = |e: std::io::Error| format!("{}: {e}", out.display());
-    let mut zip = ZipWriter::new(File::create(out).map_err(at)?);
+    // io and zip errors both land here, each named by the path it is actually about.
+    let at = |p: &Path, e: &dyn std::fmt::Display| format!("{}: {e}", p.display());
+    let mut zip = ZipWriter::new(File::create(out).map_err(|e| at(out, &e))?);
     let opts = SimpleFileOptions::default();
-    zip.start_file(MANIFEST, opts).map_err(|e| e.to_string())?;
-    zip.write_all(manifest.as_bytes()).map_err(at)?;
+    zip.start_file(MANIFEST, opts).map_err(|e| at(out, &e))?;
+    zip.write_all(manifest.as_bytes()).map_err(|e| at(out, &e))?;
 
     for entry in WalkDir::new(workspace_dir).sort_by_file_name() {
-        let entry = entry.map_err(|e| format!("{}: {e}", workspace_dir.display()))?;
+        let entry = entry.map_err(|e| at(workspace_dir, &e))?;
         if !entry.file_type().is_file() {
             continue;
         }
         let rel = entry.path().strip_prefix(workspace_dir).map_err(|e| e.to_string())?;
         // A zip entry name is bytes-as-UTF-8; refuse rather than mangle a name we cannot spell.
         let rel = rel.to_str().ok_or_else(|| format!("{}: name is not UTF-8", rel.display()))?;
-        zip.start_file(format!("{WORKSPACE}/{rel}"), opts).map_err(|e| e.to_string())?;
-        let mut src = File::open(entry.path()).map_err(|e| format!("{}: {e}", entry.path().display()))?;
-        std::io::copy(&mut src, &mut zip).map_err(at)?;
+        zip.start_file(format!("{WORKSPACE}/{rel}"), opts).map_err(|e| at(entry.path(), &e))?;
+        let mut src = File::open(entry.path()).map_err(|e| at(entry.path(), &e))?;
+        std::io::copy(&mut src, &mut zip).map_err(|e| at(entry.path(), &e))?;
     }
-    zip.finish().map_err(|e| e.to_string())?;
+    zip.finish().map_err(|e| at(out, &e))?;
     Ok(())
 }
 
-/// Unpack a `.gfi`: the workspace tree lands at `dest` (which must not already exist), and the
-/// manifest text is returned. Both are refused before any extraction if the archive is malformed.
+/// Unpack a `.gfi`: the workspace tree lands at `dest` (which must not already hold files), and the
+/// manifest text is returned. Both structural refusals — not a zip, no manifest — happen before any
+/// extraction; a failure part-way through extraction may leave the scratch sibling on disk.
 ///
 /// Extraction goes through `ZipArchive::extract`, whose `safe_prepare_path` is zip's own zip-slip
 /// containment — this must not hand-roll path sanitization. It creates symlinks verbatim and
@@ -55,8 +57,8 @@ pub fn read_gfi(archive: &Path, dest: &Path) -> Result<String, String> {
         .read_to_string(&mut manifest)
         .map_err(|e| named(e.to_string()))?;
 
-    // Scratch sits beside `dest` so the move below is a rename within one filesystem.
-    let scratch = dest.with_extension("unpack");
+    // Scratch sits beside `dest` (suffix appended, not substituted) so the move below is a same-fs rename.
+    let scratch = PathBuf::from({ let mut s = dest.as_os_str().to_owned(); s.push(".unpack"); s });
     let _ = fs::remove_dir_all(&scratch);
     zip.extract(&scratch).map_err(|e| named(e.to_string()))?;
     let packed = scratch.join(WORKSPACE);
@@ -73,11 +75,9 @@ pub fn read_gfi(archive: &Path, dest: &Path) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::fs;
-    use std::io::Write;
 
     /// A workspace with a file at the root and one in a sub-directory, plus the manifest.
-    fn sample(root: &Path) -> std::path::PathBuf {
+    fn sample(root: &Path) -> PathBuf {
         let ws = root.join("ws");
         fs::create_dir_all(ws.join("sub")).unwrap();
         fs::write(ws.join("a.txt"), b"alpha").unwrap();
@@ -86,7 +86,7 @@ mod tests {
     }
 
     #[test]
-    fn round_trips_a_two_file_workspace() {
+    fn round_trips_a_workspace() {
         let tmp = tempfile::tempdir().unwrap();
         let ws = sample(tmp.path());
         let gfi = tmp.path().join("patch.gfi");
@@ -97,6 +97,17 @@ mod tests {
         assert_eq!(manifest, "version: 7\n");
         assert_eq!(fs::read(dest.join("a.txt")).unwrap(), b"alpha");
         assert_eq!(fs::read(dest.join("sub/b.txt")).unwrap(), b"beta");
+        assert!(!tmp.path().join("unpacked.unpack").exists(), "the scratch sibling is cleaned up");
+
+        // A workspace with no regular files packs to the manifest alone, so `dest` is created rather
+        // than renamed into place — the path every new patch takes.
+        let empty = tmp.path().join("empty");
+        fs::create_dir(&empty).unwrap();
+        let bare = tmp.path().join("bare.gfi");
+        write_gfi(&bare, "version: 7\n", &empty).unwrap();
+        let dest = tmp.path().join("mounted");
+        assert_eq!(read_gfi(&bare, &dest).unwrap(), "version: 7\n");
+        assert!(dest.is_dir());
     }
 
     /// Entry order is the only field that varies between two packs of an unchanged tree (every
@@ -106,8 +117,8 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let ws = tmp.path().join("ws");
         fs::create_dir_all(&ws).unwrap();
-        // created in reverse order, so a walk that does not sort cannot be assumed to agree
-        for name in ["c.txt", "b.txt", "a.txt"] {
+        // names whose readdir order differs from their sorted order, so an unsorted walk fails here
+        for name in ["beta.txt", "a.txt", "gamma.md"] {
             fs::write(ws.join(name), name).unwrap();
         }
         let gfi = tmp.path().join("patch.gfi");
@@ -117,7 +128,7 @@ mod tests {
         let names: Vec<String> = (0..zip.len()).map(|i| zip.by_index(i).unwrap().name().to_owned()).collect();
         assert_eq!(
             names,
-            ["patch.yaml", "workspace/a.txt", "workspace/b.txt", "workspace/c.txt"]
+            ["patch.yaml", "workspace/a.txt", "workspace/beta.txt", "workspace/gamma.md"]
         );
     }
 
