@@ -23,6 +23,7 @@
 	import { graph } from '$lib/stores/graph.svelte';
 	import { ui } from '$lib/stores/ui.svelte';
 	import { history } from '$lib/stores/history.svelte';
+	import { notify } from '$lib/stores/notify.svelte';
 	import { undoKeyAction } from '$lib/app/undoKeys';
 	import { isTextEditingTarget } from '$lib/ui';
 	import { exposeAgentApi } from '$lib/agent';
@@ -58,18 +59,16 @@
 		return i > 0 ? p.slice(0, i) : null;
 	}
 
-	// `g.save` remembers the path it wrote to — the store is where BOTH doors onto a save learn the
-	// patch has a home (this one and `window.goofi.commands.save`), since the manager keeps no
-	// save-path state and its `save` arm broadcasts nothing.
-	async function saveBackend(path: string): Promise<void> {
-		await g.save(path);
-	}
-
-	// Default Save: silent overwrite when the patch is named, else "Save As".
+	// Default Save: silent overwrite when the patch is named, else "Save As". The name comes from
+	// the MANAGER now (the snapshot and `save_path_changed`), so it survives a reload and reaches
+	// every open tab — which is exactly what makes the failure below reachable.
 	function triggerSave(): void {
 		const path = g.savePath;
 		if (path) {
-			void saveBackend(path).catch((e) => console.error('save failed', e));
+			// A silent overwrite onto a remembered path is the one save with no dialog in front of
+			// it, so a rejection here has no other surface: the file may have been deleted, moved
+			// or made read-only since the manager learned the path. It used to be a console.error.
+			void g.save(path).catch((e) => notify().failure('Save', e));
 		} else {
 			fsMode = 'save';
 		}
@@ -83,32 +82,15 @@
 		fsMode = 'load';
 	}
 
-	// Secondary load path: upload a .gfi from the frontend computer.
-	function uploadLoad(): void {
-		fsMode = null;
-		const input = document.createElement('input');
-		input.type = 'file';
-		input.accept = '.gfi,.yaml,.yml';
-		input.onchange = async () => {
-			const f = input.files?.[0];
-			if (!f) return;
-			try {
-				await g.loadText(await f.text());
-			} catch (e) {
-				console.error('load failed', e);
-			}
-		};
-		input.click();
-	}
-
 	async function onFsPick(pickedPath: string): Promise<void> {
 		const mode = fsMode;
 		fsMode = null;
 		try {
-			if (mode === 'save') await saveBackend(pickedPath);
+			if (mode === 'save') await g.save(pickedPath);
 			else if (mode === 'load') await g.load(pickedPath);
 		} catch (e) {
-			console.error(`${mode} failed`, e);
+			// The browser has already closed by here, so the rejection has nowhere else to land.
+			notify().failure(mode === 'save' ? 'Save' : 'Load', e);
 		}
 	}
 
@@ -232,7 +214,6 @@
 			suggestedName={g.savePath ? (g.savePath.split('/').pop() ?? '').replace(/\.gfi$/, '') : ''}
 			onPick={onFsPick}
 			onClose={() => (fsMode = null)}
-			onUpload={uploadLoad}
 		/>
 	{/if}
 	<Toast />

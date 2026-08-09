@@ -95,10 +95,17 @@ export const commands = {
 
 	// --- patch persistence -------------------------------------------------
 	// The header's Save, whole: the file is written AND the patch is named, so
-	// `query.graph().savePath` reads it back. The path is required — the no-path serialize-only
-	// form went with "Save in browser" (removed 2026-08-08).
+	// `query.graph().savePath` reads it back — published by the MANAGER, so every tab converges.
+	// The path is required — the no-path serialize-only form went with "Save in browser"
+	// (removed 2026-08-08).
 	save: (path: string): Promise<{ path: string }> => graph().save(path),
-	loadText: (content: string): Promise<void> => graph().loadText(content),
+	// A `.gfi` is a zip archive, so a backend PATH is the only way in. The manager still answers
+	// `load_text` (YAML inline), but no client can reach it: a zip handed through `File.text()` is
+	// mojibake, so the browser-upload door that was its only caller is gone.
+	load: (path: string): Promise<void> => graph().load(path),
+	// Empty and unnamed, in one manager transaction — the reset door a driver needs to hand the
+	// shared backend back between specs. The façade is the only door: the header has no New button.
+	newPatch: (): Promise<void> => graph().newPatch(),
 
 	// --- selection / focus -------------------------------------------------
 	select: (names: string[], panelId: string | null = activeEditor()): void => {

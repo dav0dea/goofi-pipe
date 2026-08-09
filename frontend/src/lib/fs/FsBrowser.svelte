@@ -20,9 +20,8 @@
 		suggestedName?: string;
 		onPick: (path: string) => void;
 		onClose: () => void;
-		onUpload?: () => void;
 	};
-	const { mode, initialPath = null, suggestedName = '', onPick, onClose, onUpload }: Props = $props();
+	const { mode, initialPath = null, suggestedName = '', onPick, onClose }: Props = $props();
 
 	const g = graph();
 	let cwd = $state('');
@@ -222,10 +221,6 @@
 						data-testid="fs-filename"
 					/>
 					<span class="ext">.gfi</span>
-				{:else if onUpload}
-					<Button variant="ghost" onclick={onUpload} data-testid="fs-upload">
-						Upload from this computer…
-					</Button>
 				{/if}
 			{/snippet}
 			{#snippet end()}

@@ -73,7 +73,7 @@ describe('a wholesale load resets the client history (lockstep with the manager)
 		expect(history().canUndo).toBe(true);
 
 		// A load replaces the graph in the SAME backend session — the manager cleared its command
-		// history (load_text → CommandHistory::clear), so the client's stale entries would pop
+		// history (`load`/`new` → CommandHistory::clear), so the client's stale entries would pop
 		// mismatched. graph_replaced must reset the client history too.
 		fc.emit({ event: 'graph_replaced', payload: snapshot() });
 		expect(history().canUndo).toBe(false);
@@ -169,10 +169,10 @@ describe('deleting a collapsed sub-patch instance is undoable (manager owns the 
 
 		const undoCalls = fc.recordedCalls().slice(before);
 		// Undo just asks the manager to undo its session command (which restores the whole subtree
-		// from the inverse it captured) — never a client-side load_text checkpoint or a fragile
+		// from the inverse it captured) — never a client-side whole-patch checkpoint or a fragile
 		// add_node{Sub-patch} replay.
 		expect(undoCalls.some((c) => c.op === 'undo')).toBe(true);
-		expect(undoCalls.some((c) => c.op === 'load_text')).toBe(false);
+		expect(undoCalls.some((c) => c.op === 'load')).toBe(false);
 		expect(undoCalls.some((c) => c.op === 'add_node')).toBe(false);
 		expect(history().canRedo).toBe(true);
 	});
@@ -206,7 +206,7 @@ describe('deleting a collapsed sub-patch instance is undoable (manager owns the 
 		await history().undo();
 		const undoCalls = fc.recordedCalls().slice(before);
 		expect(undoCalls.filter((c) => c.op === 'undo')).toHaveLength(2);
-		expect(undoCalls.some((c) => c.op === 'load_text')).toBe(false);
+		expect(undoCalls.some((c) => c.op === 'load')).toBe(false);
 		expect(history().canRedo).toBe(true);
 
 		// Redo runs the compound FORWARD: one manager `redo` per child (two), re-deleting both.

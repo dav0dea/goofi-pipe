@@ -222,8 +222,9 @@ export class GraphStore {
 		this.loadEpoch += 1;
 		// The client's undo/redo stacks are meaningless across a wholesale load: a fresh backend
 		// session mints new uids, and an in-session load clears the manager's command history
-		// (load_text → CommandHistory::clear), so keeping client entries would pop mismatched. Reset
-		// here — this runs on a fresh session AND an in-session load, but NOT a same-session reconnect.
+		// (`load`/`new` → CommandHistory::clear), so keeping client entries would pop mismatched.
+		// Reset here — this runs on a fresh session AND an in-session load or New, but NOT on a
+		// same-session reconnect.
 		history().reset();
 		// …and the layout fold, for the same reason: it is about the graph that just went away.
 		// `hydrate`/`reset` drain it when the snapshot carries a layout, but a layout-less .gfi
@@ -634,29 +635,34 @@ export class GraphStore {
 		}
 	}
 
-	/** Write the patch, and — when it landed somewhere — remember where.
+	/** Write the patch. Where it landed comes back from the MANAGER, never from here.
 	 *
-	 * The `savePath` write belongs HERE, not at a call site: the manager keeps no save-path state
-	 * (its snapshot hard-codes `save_path: null`) and its `save` arm broadcasts no
-	 * `save_path_changed`, so this reply is the only thing that ever tells a client the patch has a
-	 * home. While it lived in `AppShell` the header's Save named the patch and
-	 * `window.goofi.commands.save` — the seam the whole e2e suite drives — could not. */
+	 * There used to be a `this.savePath = res.path` latch on this reply, because the manager kept
+	 * no save-path state of its own (its snapshot hard-coded `save_path: null` and its `save` arm
+	 * broadcast nothing). W made the manager the writer — the `save` arm stores the path and
+	 * publishes `save_path_changed`, and the snapshot carries it — so the latch went. It had to: it
+	 * only ever named the patch in the tab that did the saving, which is precisely the gap
+	 * (C38) that made a second tab, and every reload, forget where the patch lives. */
 	async save(path: string): Promise<{ path: string }> {
 		// `path` is the whole payload, and it is REQUIRED — the arm refuses a save with no path
 		// ("Save in browser", the no-path serialize-only form, was removed 2026-08-08). The layout
 		// is NOT sent here: it reaches the patch through AppShell's debounced `set_layout`, which
 		// is also what carries the `LayoutIntent` classification. A second writer on this path
 		// would bypass that and re-dirty a patch the moment it was saved.
-		const res = await this.ctl.call<{ path: string }>('save', { path });
-		if (res.path) this.savePath = res.path;
-		return res;
+		return this.ctl.call<{ path: string }>('save', { path });
 	}
 
-	/** Load a patch, replacing the current graph. Loading fully RESETS the session (the manager
-	 * clears its command history; the client's stacks reset on the `graph_replaced` wholesale-load),
-	 * so there is nothing to undo across it — no history entry (spec §3: no load command). */
-	async loadText(content: string): Promise<void> {
-		await this.ctl.call('load_text', { content });
+	/** Reset to an empty, unnamed patch. Like a load, this fully RESETS the session — the manager
+	 * clears its command history and the client's stacks reset on `graph_replaced` — so there is
+	 * no history entry to record.
+	 *
+	 * Nothing is written here on purpose, and the `graph_replaced` snapshot is why: a New emits NO
+	 * `save_path_changed` (the manager only announces a path it HAS, and this one is cleared), so
+	 * the snapshot is the sole carrier of the null path — and `_replaceSnapshot` applies it
+	 * wholesale, along with the cleared dirty flag. A client that listened only for the event would
+	 * keep showing the old patch's name over an empty graph. */
+	async newPatch(): Promise<void> {
+		await this.ctl.call('new', {});
 	}
 
 	/** Group the named nodes into a sub-patch. Returns its instance id. */
@@ -733,7 +739,9 @@ export class GraphStore {
 	}
 
 	/** Load a patch from a BACKEND filesystem path (destructive — replaces the graph). Like
-	 * {@link loadText}, a load resets the session, so it is not undoable (no history entry). */
+	 * {@link newPatch}, a load resets the session, so it is not undoable (no history entry).
+	 * A `.gfi` is an archive now, so a path is the only door the client has: the manager's inline
+	 * `load_text` survives, but a zip through `File.text()` is mojibake, so nothing calls it. */
 	async load(path: string): Promise<void> {
 		await this.ctl.call('load', { path });
 	}
