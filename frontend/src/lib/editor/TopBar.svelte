@@ -54,7 +54,7 @@
 	// One row. It stays a menu (not a bare second button) so the split control keeps its shape and
 	// its spill behaviour — and so a future save option has a home that is not a fourth button.
 	function saveOptions(): MenuItem[] {
-		return [{ label: 'Save As…', action: onSaveAs }];
+		return [{ label: 'Save As…', testid: 'topbar-save-as', action: onSaveAs }];
 	}
 
 	// --- progressive overflow (D-R6) -----------------------------------------
