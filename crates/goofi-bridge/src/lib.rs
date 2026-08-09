@@ -56,6 +56,10 @@ pub struct AppState {
     /// Liveness policy for `/data` sockets. Injectable so a test need not sit through a
     /// production-length deadline.
     pub data_liveness: DataLiveness,
+    /// Where the open patch's workspace files live while it is open — the tree a `.gfi` packs and
+    /// unpacks. Created at boot, dropped by [`AppState::release_mount`] on a graceful exit; after a
+    /// crash it simply stays, because a reboot clears the system temp directory.
+    pub mount: PathBuf,
 }
 
 /// Timings that govern how a `/data` socket detects a **dead-but-not-closed** peer — a laptop that
@@ -126,8 +130,29 @@ impl AppState {
             reducers,
             history: Arc::new(Mutex::new(goofi_engine::CommandHistory::new())),
             data_liveness: DataLiveness::DEFAULT,
+            mount: new_mount(),
         }
     }
+
+    /// Drop the workspace mount. Best-effort by decision: a failure leaves one directory in the
+    /// system temp dir, which a reboot clears — no registry, no retry, no reporting.
+    pub fn release_mount(&self) {
+        // The nonce directory, not just `workspace` — otherwise every run leaves an empty husk.
+        let _ = std::fs::remove_dir_all(self.mount.parent().unwrap_or(&self.mount));
+    }
+}
+
+/// A fresh, empty workspace mount: `<temp>/goofi-<128-bit hex>/workspace`. The nonce directory
+/// wraps it so that loading a patch can rename an extracted tree onto `workspace` wholesale, and
+/// so one `remove_dir_all` reclaims the pair. A failed mkdir is not worth reporting at boot: the
+/// first save into an unwritable temp dir surfaces the real IO error, naming the path.
+fn new_mount() -> PathBuf {
+    let mut nonce = [0u8; 16];
+    getrandom::fill(&mut nonce).expect("the OS random source");
+    let name: String = nonce.iter().map(|b| format!("{b:02x}")).collect();
+    let dir = std::env::temp_dir().join(format!("goofi-{name}")).join("workspace");
+    let _ = std::fs::create_dir_all(&dir);
+    dir
 }
 
 pub fn router(state: AppState) -> Router {

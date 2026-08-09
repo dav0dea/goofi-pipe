@@ -5,6 +5,8 @@
 //! `--*-nodes` flag it auto-discovers the default `nodes/` directory;
 //! `--subproc-python` defaults to the repo-local `.venv`.
 
+use std::future::Future;
+
 use goofi_bridge::{resolve_frontend_dir, serve_app, spawn_workers, AppState};
 
 /// The default node directory, auto-discovered (gil-gate routed) when no `--*-nodes` flag is given.
@@ -80,22 +82,14 @@ fn parse_args<I: Iterator<Item = String>>(mut args: I) -> Result<Cli, String> {
 
 #[tokio::main]
 async fn main() {
-    let Cli {
-        port,
-        bind,
-        subproc_nodes,
-        mut auto_nodes,
-        subproc_python,
-        list_nodes,
-        help,
-    } = match parse_args(std::env::args().skip(1)) {
+    let cli = match parse_args(std::env::args().skip(1)) {
         Ok(cli) => cli,
         Err(e) => {
             eprintln!("{e}");
             std::process::exit(2);
         }
     };
-    if help {
+    if cli.help {
         println!(
             "{USAGE}\n\
              \n  \
@@ -105,6 +99,15 @@ async fn main() {
         );
         return;
     }
+    std::process::exit(run(cli, AppState::new(), shutdown_signal()).await);
+}
+
+/// Everything the process does once it has a state, as a function that *returns* its exit code:
+/// the workspace mount is reclaimed here, on the one path every outcome takes. The alternative is
+/// three `std::process::exit` calls that each have to remember — and `exit` unwinds nothing, so a
+/// destructor would not save them either.
+async fn run(cli: Cli, state: AppState, shutdown: impl Future<Output = ()>) -> i32 {
+    let Cli { port, bind, subproc_nodes, mut auto_nodes, subproc_python, list_nodes, help: _ } = cli;
 
     // Resolve defaults: the repo-local `.venv` for the subprocess tier (the project convention),
     // and — when no explicit node source was given — auto-route the default `nodes/` directory.
@@ -115,7 +118,6 @@ async fn main() {
         auto_nodes = Some(DEFAULT_NODES_DIR.to_string());
     }
 
-    let state = AppState::new();
     if !list_nodes {
         register_evaluator(&state);
     }
@@ -123,33 +125,71 @@ async fn main() {
     // listing is what actually registered — not a hand-kept mirror of the routing rule.
     let mut discovered = register_subproc(&state, subproc_nodes.as_deref(), &subproc_python);
     discovered.extend(register_auto(&state, auto_nodes.as_deref(), &subproc_python));
-    if list_nodes {
+
+    let code = if list_nodes {
         let mut names = goofi_bridge::catalog_type_names();
         names.extend(discovered);
         println!("{} node types: {}", names.len(), names.join(", "));
-        return;
-    }
-    spawn_workers(&state); // adaptive tick loop + 2 Hz node-stats (header ufreq + error transitions)
-
-    let listener = match tokio::net::TcpListener::bind((bind.as_str(), port)).await {
-        Ok(l) => l,
-        Err(e) => {
-            eprintln!("failed to bind {bind}:{port}: {e}");
-            std::process::exit(1);
+        0
+    } else {
+        spawn_workers(&state); // adaptive tick loop + 2 Hz node-stats (header ufreq + errors)
+        match tokio::net::TcpListener::bind((bind.as_str(), port)).await {
+            Err(e) => {
+                eprintln!("failed to bind {bind}:{port}: {e}");
+                1
+            }
+            Ok(listener) => {
+                let addr = listener.local_addr().unwrap();
+                let dir = resolve_frontend_dir();
+                println!("goofi-pipe (rust backend) → http://{addr}");
+                match &dir {
+                    Some(d) => println!("  serving SPA from {}", d.display()),
+                    None => println!("  API only — no SPA build found (set GOOFI_FRONTEND_BUILD or build frontend/)"),
+                }
+                // A signal stops the server by DROPPING it, not by draining it: `/control` and
+                // `/data` sockets stay open for the life of a tab, so waiting for them to close
+                // would hang the exit — and with a handler installed, a second ctrl-C no longer
+                // reaches the default disposition that would have killed us.
+                tokio::select! {
+                    served = serve_app(listener, state.clone(), dir) => match served {
+                        Ok(()) => 0,
+                        Err(e) => {
+                            eprintln!("server error: {e}");
+                            1
+                        }
+                    },
+                    _ = shutdown => 0,
+                }
+            }
         }
     };
-    let addr = listener.local_addr().unwrap();
-    let dir = resolve_frontend_dir();
+    state.release_mount();
+    code
+}
 
-    println!("goofi-pipe (rust backend) → http://{addr}");
-    match &dir {
-        Some(d) => println!("  serving SPA from {}", d.display()),
-        None => println!("  API only — no SPA build found (set GOOFI_FRONTEND_BUILD or build frontend/)"),
-    }
-
-    if let Err(e) = serve_app(listener, state, dir).await {
-        eprintln!("server error: {e}");
-        std::process::exit(1);
+/// Resolve on the first request to stop: ctrl-C, or the SIGTERM a service manager sends. A door
+/// that cannot be installed must **never** resolve — an immediately-ready arm here would shut the
+/// server down at startup rather than merely leaving that one door closed.
+async fn shutdown_signal() {
+    let interrupt = async {
+        if tokio::signal::ctrl_c().await.is_err() {
+            std::future::pending::<()>().await;
+        }
+    };
+    let terminate = async {
+        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+            Ok(mut sig) => {
+                sig.recv().await;
+            }
+            Err(e) => {
+                eprintln!("SIGTERM handler unavailable: {e}");
+                std::future::pending::<()>().await;
+            }
+        }
+    };
+    tokio::select! {
+        _ = interrupt => {}
+        _ = terminate => {}
     }
 }
 
@@ -329,6 +369,19 @@ mod tests {
         assert!(parse(&["--port", "nope"]).unwrap_err().contains("--port"));
         // `--python-nodes` never existed — the warning in build.rs used to name it.
         assert!(parse(&["--python-nodes", "x"]).unwrap_err().contains("unknown argument"));
+    }
+
+    /// The workspace mount's lifetime is the run's: present while the server is up, gone once it
+    /// stops. Both ends live in `run` because main's exits unwind nothing.
+    #[tokio::test]
+    async fn the_mount_lives_exactly_as_long_as_the_run() {
+        let state = AppState::new();
+        let mount = state.mount.clone();
+        assert!(mount.is_dir(), "the mount exists after boot: {}", mount.display());
+        // Port 0 binds ephemerally; an already-resolved shutdown takes the same path ctrl-C does.
+        let cli = Cli { port: 0, ..Cli::default() };
+        assert_eq!(run(cli, state, std::future::ready(())).await, 0);
+        assert!(!mount.exists(), "the mount is gone after shutdown: {}", mount.display());
     }
 
     #[test]
