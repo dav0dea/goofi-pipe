@@ -131,6 +131,26 @@ test.describe('Inspector field gallery', () => {
 		await expect(display).toContainText('"channels"');
 		await expect(display).toContainText('Fz');
 	});
+
+	// The two-face taxonomy where it is hardest to see (spec D-T3): a param VALUE is data and reads in
+	// mono, the label naming it is chrome and reads in sans — inside one field, one row apart. The
+	// controls never declare a family (they carry `font: inherit`, so they resolve whatever the field
+	// hands down), which is exactly why this is pinned in the rendered app: nothing in the unit suite
+	// can see an inherited face, and a body-level flip would silently take the values with it.
+	test('a param VALUE renders mono while its LABEL renders sans (D-T3)', async ({ page }) => {
+		await page.goto('/dev/inspector');
+		const field = page.getByTestId('inspector-float');
+		await field.getByTestId('param-number').waitFor();
+		const face = (loc: ReturnType<typeof field.locator>) =>
+			loc.evaluate((el) => getComputedStyle(el).fontFamily.split(',')[0].replace(/["']/g, ''));
+		expect(await face(field.getByTestId('param-number')), 'the numeric value').toBe('JetBrains Mono');
+		expect(await face(field.locator('label.ui-field-label')), 'the label naming it').toBe('Inter');
+		// A text param's input too — the same inheritance seam, a different control.
+		expect(
+			await face(page.getByTestId('inspector-text').getByTestId('param-text')),
+			'a string value'
+		).toBe('JetBrains Mono');
+	});
 });
 
 // The fx (expression) binding (spec §3, D-N3/D-N4, N-Task 3): the always-present fx Chip adornment, the

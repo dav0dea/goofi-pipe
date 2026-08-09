@@ -241,89 +241,104 @@
 {/snippet}
 
 <Field label={paramName} doc={descriptor.doc ?? undefined} adornment={fx} class={klass} {...rest}>
-	{#if kind === 'expression'}
-		<!-- The fx editor takes over the control region (spec §3): the code surface (or, expanded, the
-		     same editor in its in-panel multi-line mode — D-N4, no modal), with a preview / error row
-		     below. Both branches are `ExprEditor`; only the mode differs (D-X1). -->
-		<div class="fx-region" bind:this={fxRegionEl}>
-			{#if multilineOpen}
-				<ExprEditor
-					multiline
-					value={descriptor.expression ?? ''}
-					error={descriptor.expression_error}
-					onCommit={applyMultiline}
-					onCancel={cancelMultiline}
-					bindCommit={(c) => (applyExpanded = c)}
-					label={`${paramName} expression`}
-					testid="param-expr-multiline"
-					autofocus
-				/>
-				<div class="fx-actions">
-					<span class="fx-kbd" aria-hidden="true">⌃⏎ apply · esc cancel</span>
-					<Chip onclick={cancelMultiline} data-testid="param-expr-collapse">collapse</Chip>
-					<Chip tone="accent" onclick={applyFromChip} data-testid="param-expr-apply">apply</Chip>
-				</div>
-			{:else}
-				<div class="fx-inline">
+	<!-- The value region, and the one place this component states its face (D-T3): what a control
+	     here shows IS data — a number, a string, an option, an expression — so it reads in mono,
+	     while the label above it and the fx Chips beside it are chrome and stay sans (they are
+	     outside this element; the primitives that are chrome, like Trigger, state sans themselves
+	     and win over this inheritance). `display: contents` so it inherits WITHOUT laying out:
+	     Field requires paired controls to be its direct children, and a real box here would take
+	     the Slider + NumberInput out of the @container column-flip's reach. -->
+	<div class="pf-value">
+		{#if kind === 'expression'}
+			<!-- The fx editor takes over the control region (spec §3): the code surface (or, expanded, the
+			     same editor in its in-panel multi-line mode — D-N4, no modal), with a preview / error row
+			     below. Both branches are `ExprEditor`; only the mode differs (D-X1). -->
+			<div class="fx-region" bind:this={fxRegionEl}>
+				{#if multilineOpen}
 					<ExprEditor
+						multiline
 						value={descriptor.expression ?? ''}
 						error={descriptor.expression_error}
-						onCommit={commitExpr}
+						onCommit={applyMultiline}
+						onCancel={cancelMultiline}
+						bindCommit={(c) => (applyExpanded = c)}
 						label={`${paramName} expression`}
-						placeholder="nd('oscillator0').out.data.mean()"
-						testid="param-expr-input"
+						testid="param-expr-multiline"
+						autofocus
 					/>
-					<IconButton
-						size="sm"
-						label="Open the multi-line editor"
-						onclick={openMultiline}
-						data-testid="param-expr-expand"
-					>
-						<Icon name="maximize-2" />
-					</IconButton>
-				</div>
-			{/if}
-			{#if descriptor.expression_error}
-				<div class="fx-error" title={descriptor.expression_error} data-testid="param-expr-error">
-					<span class="prefix"><Icon name="triangle-alert" /></span>
-					<span class="msg">{descriptor.expression_error}</span>
-				</div>
-			{:else}
-				<div class="fx-preview" title={String(descriptor.value)}>
-					<span class="prefix" aria-hidden="true">=</span>
-					<span class="value">{previewText()}</span>
-				</div>
-			{/if}
-		</div>
-	{:else if num}
-		<!-- SOFT bounds → Slider only (it auto-extends); the NumberInput is UNBOUNDED (no clamp on set). -->
-		<Slider value={num.value} onChange={onCommit} min={num.vmin} max={num.vmax} {step} data-testid="param-slider" />
-		<NumberInput value={num.value} onChange={onCommit} {step} scrub data-testid="param-number" />
-	{:else if kind === 'trigger'}
-		<Trigger onclick={() => onCommit(true)} data-testid="param-trigger">{paramName}</Trigger>
-	{:else if kind === 'toggle'}
-		<Toggle value={Boolean(descriptor.value)} onChange={onCommit} data-testid="param-toggle" />
-	{:else if kind === 'select'}
-		<!-- Delegate the ⟳ to the P Select (its built-in refresh affordance), gated on
-		     `descriptor.refreshable`: a non-refreshable dropdown passes `onRefresh={undefined}` so no ⟳
-		     renders (the engine rejects a refresh for a non-refreshable param by contract). -->
-		<Select
-			{options}
-			value={String(descriptor.value)}
-			onChange={onCommit}
-			onRefresh={descriptor.refreshable ? onRefresh : undefined}
-			{refreshing}
-			refreshTestid="param-refresh"
-			data-testid="param-select"
-		/>
-	{:else if kind === 'text'}
-		<TextInput value={String(descriptor.value)} onChange={onCommit} data-testid="param-text" />
-	{:else}
-		<code class="unknown" data-testid="param-unknown">{JSON.stringify(descriptor.value)}</code>
-	{/if}
+					<div class="fx-actions">
+						<span class="fx-kbd" aria-hidden="true">⌃⏎ apply · esc cancel</span>
+						<Chip onclick={cancelMultiline} data-testid="param-expr-collapse">collapse</Chip>
+						<Chip tone="accent" onclick={applyFromChip} data-testid="param-expr-apply">apply</Chip>
+					</div>
+				{:else}
+					<div class="fx-inline">
+						<ExprEditor
+							value={descriptor.expression ?? ''}
+							error={descriptor.expression_error}
+							onCommit={commitExpr}
+							label={`${paramName} expression`}
+							placeholder="nd('oscillator0').out.data.mean()"
+							testid="param-expr-input"
+						/>
+						<IconButton
+							size="sm"
+							label="Open the multi-line editor"
+							onclick={openMultiline}
+							data-testid="param-expr-expand"
+						>
+							<Icon name="maximize-2" />
+						</IconButton>
+					</div>
+				{/if}
+				{#if descriptor.expression_error}
+					<div class="fx-error" title={descriptor.expression_error} data-testid="param-expr-error">
+						<span class="prefix"><Icon name="triangle-alert" /></span>
+						<span class="msg">{descriptor.expression_error}</span>
+					</div>
+				{:else}
+					<div class="fx-preview" title={String(descriptor.value)}>
+						<span class="prefix" aria-hidden="true">=</span>
+						<span class="value">{previewText()}</span>
+					</div>
+				{/if}
+			</div>
+		{:else if num}
+			<!-- SOFT bounds → Slider only (it auto-extends); the NumberInput is UNBOUNDED (no clamp on set). -->
+			<Slider value={num.value} onChange={onCommit} min={num.vmin} max={num.vmax} {step} data-testid="param-slider" />
+			<NumberInput value={num.value} onChange={onCommit} {step} scrub data-testid="param-number" />
+		{:else if kind === 'trigger'}
+			<Trigger onclick={() => onCommit(true)} data-testid="param-trigger">{paramName}</Trigger>
+		{:else if kind === 'toggle'}
+			<Toggle value={Boolean(descriptor.value)} onChange={onCommit} data-testid="param-toggle" />
+		{:else if kind === 'select'}
+			<!-- Delegate the ⟳ to the P Select (its built-in refresh affordance), gated on
+			     `descriptor.refreshable`: a non-refreshable dropdown passes `onRefresh={undefined}` so no ⟳
+			     renders (the engine rejects a refresh for a non-refreshable param by contract). -->
+			<Select
+				{options}
+				value={String(descriptor.value)}
+				onChange={onCommit}
+				onRefresh={descriptor.refreshable ? onRefresh : undefined}
+				{refreshing}
+				refreshTestid="param-refresh"
+				data-testid="param-select"
+			/>
+		{:else if kind === 'text'}
+			<TextInput value={String(descriptor.value)} onChange={onCommit} data-testid="param-text" />
+		{:else}
+			<code class="unknown" data-testid="param-unknown">{JSON.stringify(descriptor.value)}</code>
+		{/if}
+	</div>
 </Field>
 
 <style>
+	/* Values are data; the label above them is chrome (D-T3). Box-less, so the controls inside stay
+	   Field's own direct children — this element inherits the face to them and lays out nothing. */
+	.pf-value {
+		display: contents;
+		font-family: var(--font-mono);
+	}
 	/* The fx editor occupies the whole control region as one column-flexed child (the Field row lays its
 	   children horizontally; a single full-width child stacks the input over the preview/error). */
 	.fx-region {

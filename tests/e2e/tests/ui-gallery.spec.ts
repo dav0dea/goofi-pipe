@@ -752,12 +752,19 @@ test.describe('UI display primitives', () => {
 		}
 	});
 
-	// Badge and Chip labels are uppercase mono at line-height 1 — no descenders, so their ink
-	// stops at the baseline while the line box reserves descent space below it. Box-centred, the
-	// text read ~0.14em high (Phil caught it on "disconnected"/"running"). This pins the INK
-	// against the PILL: the glyph run's centre (canvas TextMetrics on the rendered font) must sit
-	// on the pill box's centre — the same measurement the docs-label pin makes in
-	// `inspector-gallery.spec.ts`, over the shared --ink-nudge.
+	// Badge and Chip labels are uppercase at line-height 1 — no descenders, so their ink stops at
+	// the baseline while the line box reserves descent space below it. Box-centred, the text read
+	// ~0.14em high (Phil caught it on "disconnected"/"running"). This pins the INK against the
+	// PILL: the glyph run's centre (canvas TextMetrics on the rendered font) must sit on the pill
+	// box's centre — the same measurement the docs-label pin makes in `inspector-gallery.spec.ts`.
+	//
+	// The ink EXTENT is derived at a 400px reference size and scaled, never read at render size:
+	// Chrome rounds `actualBoundingBox*` to whole device pixels, so at a ~10px label the 7.2px cap
+	// band is reported as 8 and half that error (0.4px) lands straight in the delta — measurement
+	// noise, not ink position (DPR-8 screenshots of these pills put the real offset at 0.54px while
+	// the raw metrics claimed 0.92px). `fontBoundingBoxAscent` stays at render size on purpose: the
+	// LAYOUT font box is built from those same rounded integers, so the reference ratio would
+	// disagree with the box the baseline is measured from — which is what `fontBoxCheck` asserts.
 	for (const [kind, testid] of [
 		['Badge', 'ui-badge-neutral'],
 		['Chip', 'ui-chip-neutral']
@@ -773,11 +780,17 @@ test.describe('UI display primitives', () => {
 				range.selectNodeContents(target);
 				const tr = range.getBoundingClientRect();
 				const cv = document.createElement('canvas').getContext('2d')!;
+				const label = (target.textContent ?? '').trim().toUpperCase();
+				const size = parseFloat(cs.fontSize);
 				cv.font = `${cs.fontWeight} ${cs.fontSize} ${cs.fontFamily}`;
-				const met = cv.measureText((target.textContent ?? '').trim().toUpperCase());
+				const met = cv.measureText(label);
+				const REF = 400;
+				cv.font = `${cs.fontWeight} ${REF}px ${cs.fontFamily}`;
+				const ref = cv.measureText(label);
+				const inkExtent =
+					((ref.actualBoundingBoxAscent - ref.actualBoundingBoxDescent) / REF) * size;
 				const baseline = tr.top + met.fontBoundingBoxAscent;
-				const inkCenter =
-					baseline - (met.actualBoundingBoxAscent - met.actualBoundingBoxDescent) / 2;
+				const inkCenter = baseline - inkExtent / 2;
 				return {
 					delta: inkCenter - (r.top + r.height / 2),
 					fontBoxCheck: met.fontBoundingBoxAscent + met.fontBoundingBoxDescent - tr.height
