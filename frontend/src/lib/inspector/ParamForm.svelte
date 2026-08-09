@@ -234,7 +234,7 @@
 					</div>
 				{/snippet}
 				{#snippet end()}
-					<Badge tone={node.error ? 'danger' : 'success'} data-testid="node-state">
+					<Badge tone={node.error ? 'danger' : 'success'} class="pf-state" data-testid="node-state">
 						{node.error ? 'error' : 'running'}
 					</Badge>
 					{#if onClose}
@@ -361,13 +361,34 @@
 		white-space: pre-wrap;
 	}
 	/* The pane's way out, resident in the identity Bar (migrated from the strip it used to own).
-	   Dim at rest so the badge beside it keeps the row's emphasis; text ink on hover. */
-	.pf-identity-bar :global(.pf-close) {
+	   Dim at rest so the badge beside it keeps the row's emphasis; text ink on hover.
+	   Anchored on `.param-form` — a real element of THIS template — because `pf-identity-bar` is a
+	   class passed to the Bar COMPONENT: Svelte's scoping hash never reaches another component's
+	   markup, so a selector scoped on the passed class compiles to one that matches nothing. */
+	.param-form :global(.pf-identity-bar) {
+		/* The ✕ (and the badge while it fits) must never be squeezed into overflow past the pane's
+		   edge — the name is what ellipsizes. The badge's own yield point is the @container rule
+		   below. */
+		--bar-end-min: max-content;
+	}
+	.param-form :global(.pf-identity-bar .pf-close) {
 		--icon-btn-size: 22px;
 		color: var(--text-dim);
 	}
-	.pf-identity-bar :global(.pf-close:hover) {
+	.param-form :global(.pf-identity-bar .pf-close:hover) {
 		color: var(--text);
+	}
+	/* Dragged toward its floor, the pane cannot seat name + state + ✕ on one row, and a flex row
+	   whose items refuse to shrink puts the OVERFLOW on the right — which walked the ✕, the pane's
+	   one way out (D-I4), clean off a landscape phone's screen. The state badge is what yields: the
+	   name is the row's identity and the state survives elsewhere (the error section below, the
+	   node's own chrome). Asked of the PANE (InspectorOverlay's inline-size container), not the
+	   host panel — only the pane's width says how much room this row has. 180px is a structural
+	   threshold like Field's 240px: below it the badge would leave the name an unreadable sliver. */
+	@container (max-width: 180px) {
+		.param-form :global(.pf-identity-bar .pf-state) {
+			display: none;
+		}
 	}
 	/* The active tab drops to --surface-1 (the Tabs `--tabs-body` default); the rows paint the SAME
 	   surface so the connected tab merges into the body flush beneath it — one piece, no seam line. */

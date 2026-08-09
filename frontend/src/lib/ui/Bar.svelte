@@ -65,6 +65,11 @@
 	   ate the slack), so nothing moves in the default, non-wrapping bar. */
 	.ui-bar-group:last-child {
 		margin-left: auto;
+		/* Which group yields when the bar runs out: by default both shrink freely (the min-width: 0
+		   above), but a bar whose end group holds fixed-size actions — a close button is the case —
+		   sets `--bar-end-min: max-content` so the squeeze comes out of the start label (which
+		   ellipsizes) and never pushes an unshrinkable action into rightward overflow. */
+		min-width: var(--bar-end-min, 0);
 	}
 	/* The pusher: eats the slack between start and end, forcing end to the right edge. */
 	.ui-bar-spacer {

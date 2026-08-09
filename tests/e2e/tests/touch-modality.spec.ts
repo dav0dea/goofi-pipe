@@ -176,6 +176,12 @@ test('the ✕ is still there, still hittable, and still closes the pane AT the f
 		const close = pane(page).getByTestId('inspector-close');
 		await expect(close, 'the pane keeps its one door at its smallest size').toBeVisible();
 		const b = (await close.boundingBox())!;
+		// Inside the PANE, not merely on-screen: the pane hugs the screen edge in this anchor, so a
+		// ✕ pushed past its edge is a ✕ pushed off the device. It happened by flex arithmetic — the
+		// identity Bar's end group could shrink below its unshrinkable button, and the overflow
+		// walked right — so the box is asserted against the box that must contain it.
+		const pb = (await pane(page).boundingBox())!;
+		expect(b.x + b.width, 'the ✕ stays inside the pane').toBeLessThanOrEqual(pb.x + pb.width + 0.5);
 		expect(
 			await page.evaluate(
 				(p) =>

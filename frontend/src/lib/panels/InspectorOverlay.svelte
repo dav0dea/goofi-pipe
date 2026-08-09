@@ -209,6 +209,16 @@
 		   percent below it — so the resting size is unchanged on every geometry: 420px on a desktop,
 		   342px on the 854px host of a landscape phone. */
 		width: clamp(10%, var(--pane-w, min(40%, 30rem)), 90%);
+		/* The pane is a query container for ITS OWN width, so its content can yield as the user
+		   drags it toward the floor (ParamForm hides the state badge; a Field stacks a paired
+		   control) — the host panel's width says nothing about how much room the PANE has.
+		   `inline-size`, never `size`: an (orientation:) query needs the block axis contained, so
+		   this file's own portrait branch skips this container and keeps answering against
+		   `.panel-body` (D-I2) — `size` here would capture it, and an 86px-wide pane would call
+		   itself portrait. The layout containment this switches on also makes the pane the
+		   containing block for fixed descendants, which is moot: the one fixed overlay reachable
+		   from here (Popover) portals to <body>. */
+		container-type: inline-size;
 		background: color-mix(in srgb, var(--surface-1) 96%, transparent);
 		backdrop-filter: blur(8px);
 		border-left: 1px solid var(--border);
