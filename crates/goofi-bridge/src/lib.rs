@@ -234,10 +234,10 @@ fn save_archive(target: &std::path::Path, manifest: &str, mount: &std::path::Pat
     packed.map_err(|e| format!("save failed: {e}"))
 }
 
-/// The fallible half of a load, run against a mount that is not yet live: unpack (or, for
-/// `load_text`, simply accept) the patch and apply its manifest to `g`, reporting the file it came
-/// from. `load` unpacks the archive's workspace tree into `mount`; `load_text` is a browser upload
-/// that cannot carry a workspace, so its `mount` stays the empty one the caller made.
+/// The fallible half of a load, run against a mount that is not yet live: obtain the patch's
+/// manifest and apply it to `g`, reporting the file it came from. `load` unpacks the archive's
+/// workspace tree into `mount`; `load_text` (a browser upload) and `new` cannot carry a workspace,
+/// so their `mount` stays the empty one the caller made.
 ///
 /// Nothing here touches state the caller has not already agreed to lose: `g` is replaced only by
 /// `load_doc`, which is the last thing that can fail, and `mount` is not yet the live one. That is
@@ -248,7 +248,15 @@ fn load_into(
     op: &str,
     payload: &Value,
 ) -> Result<Option<String>, String> {
-    let (content, from_path) = if op == "load" {
+    let (content, from_path) = if op == "new" {
+        // A New patch IS a load — of an empty patch, from nowhere. Routing it through `load_doc`
+        // rather than `Graph::clear` is what stops the two from drifting: `clear` deliberately
+        // keeps the editor layout (it is not graph content, and only a load overwrites it), which
+        // is exactly how New used to inherit the previous patch's panels. Whatever a load resets,
+        // New resets, by construction. The live `g` is reused rather than replaced, so the
+        // catalog — runtime-registered Python types, the expression evaluator — survives.
+        (Graph::new().serialize(), None)
+    } else if op == "load" {
         // Expand `~` exactly as the browser does — the two must agree on what a path means.
         let path =
             fsbrowse::resolve(payload.get("path").and_then(|v| v.as_str()).ok_or("load: missing path")?);
@@ -1166,6 +1174,10 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
             // duplicate_shared / make_unique / re_share_instance are gone — sub-patch sharing was
             // dropped in the flat-scope re-architecture (sub-patches are organizational facades now).
             "serialize" => Ok(json!({ "yaml": g.serialize() })),
+            // Where this patch's workspace files live right now. The mount is a per-run temp
+            // directory under a random name, so a client — and the agent harness after it — cannot
+            // derive it; asking the manager is the only way to open a browser or a shell on it.
+            "open_workspace" => Ok(json!({ "path": state.mount().to_string_lossy() })),
             "save" => {
                 // Expand `~` exactly as the browser does, or a path the user could navigate to
                 // would not be writable — the two must agree on what a path means. The path is
@@ -1198,11 +1210,12 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
                 events.push(event("save_path_changed", json!({ "save_path": &path })));
                 Ok(json!({ "path": path }))
             }
-            // One load path for both sources: `load_text` carries the YAML inline (a browser
-            // upload), `load` names a `.gfi` the BACKEND reads. Everything after the read —
-            // replace, reset history, announce — must not drift between them, so they share an arm.
-            "load_text" | "load" => {
-                // Both sources mount FRESH, and the live mount is swapped for it only once the
+            // One load path for every source: `load_text` carries the YAML inline (a browser
+            // upload), `load` names a `.gfi` the BACKEND reads, and `new` brings an empty patch
+            // from nowhere. Everything after the read — replace, reset history, announce — must
+            // not drift between them, so they share an arm.
+            "load_text" | "load" | "new" => {
+                // Every source mounts FRESH, and the live mount is swapped for it only once the
                 // manifest has parsed. So a refused load leaves the open patch untouched on both
                 // planes — its graph AND its workspace files — and a loaded patch never inherits
                 // the files of the patch it replaced.
@@ -1222,8 +1235,8 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
                 // no load command / no checkpoint), so drop every session's command history.
                 state.history.lock().unwrap().clear();
                 events.extend(state.set_dirty(false));
-                // The loaded patch's home is the archive it came from — or NONE for `load_text`,
-                // an upload that has no file behind it. Inheriting the previous patch's path there
+                // The loaded patch's home is the archive it came from — or NONE for `load_text` (an
+                // upload) and `new`, neither of which has a file behind it. Inheriting a path there
                 // would aim the next silent Save at an unrelated `.gfi` and overwrite it with a
                 // patch that never came from it. Stored BEFORE the snapshot is built, so the
                 // snapshot carries it.
@@ -1267,14 +1280,21 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
     // `link_added`/`boundary_moved` events are retired). Read-only ops touch nothing and skip the
     // expensive full-graph walk; any other op re-mirrors (an unchanged re-mirror is a no-op empty
     // diff that broadcasts nothing, so defaulting a new op to re-mirror is safe).
-    let read_only = matches!(op.as_str(), "list_nodes" | "serialize" | "save" | "list_dir");
+    // `open_workspace` joins them: it answers where the mount is and writes nothing on either
+    // plane. Being here is also what keeps it out of the dirty tail below — the whole block is
+    // skipped — which is the right door for it, since it is a question, not an op that "did not
+    // happen to be an edit".
+    let read_only =
+        matches!(op.as_str(), "list_nodes" | "serialize" | "save" | "list_dir" | "open_workspace");
     if result.is_ok() && !read_only {
         resync_and_broadcast(state);
         // "Could this have changed the graph?" is a good enough answer to "does the patch now
         // differ from disk?" for most ops that the two share a gate — but it is an INFERENCE, and
         // these four are where it is wrong:
-        //   `load`/`load_text` clear the flag inside their arm, which runs first and is then
-        //     re-set here; re-clear it.
+        //   `load`/`load_text`/`new` clear the flag inside their arm, which runs first and is then
+        //     re-set here; re-clear it. `new` is the one where the tail's default is most clearly
+        //     wrong rather than merely conservative: an empty patch with nothing in it and no file
+        //     behind it would be born unsaved, offering to be written over the last real patch.
         //   `set_layout` — persistence and dirtiness are separate axes (`layout_write_is_authored`).
         //   `restart_node` respawns an instance in place, replaying the node's own ParamGroups
         //     verbatim and touching neither name, position, bindings, viewers, links nor scopes, so
@@ -1288,7 +1308,7 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
         //     prediction that it currently misfires.
         // Both stay OUT of `read_only`: neither is an edit, but both still need the re-mirror.
         match op.as_str() {
-            "load" | "load_text" => events.extend(state.set_dirty(false)),
+            "load" | "load_text" | "new" => events.extend(state.set_dirty(false)),
             "set_layout" if !layout_write_is_authored(&payload) => {}
             "restart_node" | "refresh_param" => {}
             _ => events.extend(state.set_dirty(true)),

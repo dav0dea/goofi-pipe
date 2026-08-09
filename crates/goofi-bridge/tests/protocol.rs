@@ -2248,9 +2248,9 @@ async fn load_restores_the_graph_and_the_workspace_from_an_archive() {
             _ => {}
         }
     }
-    // ORDER MATTERS: the graph_replaced snapshot carries `save_path: null` (the manager keeps no
-    // save-path state), and the client applies it wholesale — so announcing the path first would
-    // be immediately clobbered and the title bar would forget the file it just loaded.
+    // The order the two facts happen in. It stopped being load-bearing when the manager took
+    // ownership of the save path (C38, task 5): the snapshot the client applies wholesale now
+    // names the same file, so neither message can clobber the other.
     assert_eq!(order, ["graph_replaced", "save_path_changed"], "the path is announced last");
     assert!(replaced.unwrap()["payload"]["runtime"].is_object());
     // The replaced graph itself arrives through the doc (the snapshot carries no node list).
@@ -2308,6 +2308,67 @@ async fn a_refused_load_leaves_the_graph_and_the_workspace_untouched() {
     assert_eq!(state.mount(), mount, "the live mount is still the one the open patch was using");
     assert_eq!(std::fs::read(mount.join("agent.md")).unwrap(), b"notes");
     assert!(!mount.join("intruder.txt").exists(), "nothing from a refused archive landed in it");
+}
+
+/// New is reached from a patch that had grown all three things a patch can have — a graph, an
+/// editor arrangement and a file on disk — and it must inherit none of them. Each half fails
+/// separately: `clear()` alone leaves the layout standing (it is not graph content), and the
+/// dispatch tail dirties any op it does not recognise, so a New patch would be born asking to be
+/// saved over the last real one.
+#[tokio::test]
+async fn a_new_patch_is_empty_clean_and_unnamed() {
+    let base = start_server().await;
+    let (mut ws, _) = connect_async(format!("{base}/control")).await.unwrap();
+    let _hello = recv_text(&mut ws).await;
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("patch.gfi");
+    call(&mut ws, 1, "add_node", json!({ "type": "Oscillator" })).await;
+    call(&mut ws, 2, "set_layout", json!({ "layout": { "activeWorkspaceId": "ws-1" } })).await;
+    call(&mut ws, 3, "save", json!({ "path": path.to_string_lossy() })).await;
+
+    let reply = call(&mut ws, 4, "new", json!({})).await;
+    assert!(reply.get("error").is_none(), "New is accepted; got {reply}");
+
+    // Read back the way a joining client reads it — a fresh `hello`, as `is_dirty`/`save_path_on_connect`
+    // do, which also keeps the dirty assertion clear of the save's own `unsaved_changes` event.
+    let (mut next, _) = connect_async(format!("{base}/control")).await.unwrap();
+    let hello = recv_text(&mut next).await;
+    assert_eq!(hello["payload"]["unsaved_changes"], json!(false), "a New patch has nothing to save");
+    assert!(hello["payload"]["save_path"].is_null(), "…and no file behind it");
+    assert!(hello["payload"]["layout"].is_null(), "…and none of the previous patch's panels");
+    let ser = call(&mut next, 1, "serialize", json!({})).await;
+    let yaml = ser["result"]["yaml"].as_str().unwrap();
+    assert!(!yaml.contains("Oscillator"), "…and none of its nodes: {yaml}");
+}
+
+/// The workspace is half of what a patch is, so New mounts one of its own. `open_workspace` is how
+/// a client learns where that is at all: the mount is a per-run temp directory under a random
+/// name, so nothing outside the manager can derive it.
+#[tokio::test]
+async fn a_new_patch_mounts_an_empty_workspace_of_its_own() {
+    let (base, state) = start_server_with_state().await;
+    let (mut ws, _) = connect_async(format!("{base}/control")).await.unwrap();
+    let _hello = recv_text(&mut ws).await;
+
+    let before = std::path::PathBuf::from(
+        call(&mut ws, 1, "open_workspace", json!({})).await["result"]["path"].as_str().unwrap(),
+    );
+    assert_eq!(before, state.mount(), "open_workspace names the LIVE mount");
+    std::fs::write(before.join("agent.md"), b"notes").unwrap();
+
+    call(&mut ws, 2, "new", json!({})).await;
+
+    let after = std::path::PathBuf::from(
+        call(&mut ws, 3, "open_workspace", json!({})).await["result"]["path"].as_str().unwrap(),
+    );
+    assert_eq!(after, state.mount(), "…and follows it when New swaps it");
+    assert_ne!(after, before, "New mounts fresh");
+    assert!(!after.join("agent.md").exists(), "so nothing the previous patch wrote survives");
+    assert!(!before.exists(), "and the mount it replaced is released, not leaked");
+    // Asking where the workspace is is a question, not an edit — `read_only` is what keeps the
+    // dispatch tail from dirtying the patch for having been asked.
+    assert!(!is_dirty(&base).await, "and asking where it is did not dirty anything");
 }
 
 // A node whose FIRST instance fails to boot and whose second succeeds — so a restart is
@@ -2651,6 +2712,10 @@ async fn unsaved_changes_tracks_mutations_and_clears_on_save() {
     call(&mut ws, 3, "list_nodes", json!({})).await;
     let listing = call(&mut ws, 4, "serialize", json!({})).await;
     assert!(listing["result"]["yaml"].is_string());
+    // …and neither must the dispatch tail, which is why `save` is in `read_only` despite writing a
+    // file: the tail's default sets the flag on any op it does not recognise, including the one
+    // that just cleared it.
+    assert!(!is_dirty(&base).await, "and it STAYS clean — the dispatch tail must not re-dirty a save");
 
     let _ = std::fs::remove_file(&path);
 }
