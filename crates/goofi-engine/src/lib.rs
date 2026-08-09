@@ -50,6 +50,11 @@ impl std::fmt::Display for Uid {
 /// emit and a jittery one settles within ~10–15. Tunable in this one place.
 const UFREQ_EMA_ALPHA: f64 = 0.2;
 
+/// The `.gfi` manifest version: written by [`Graph::serialize`], the sole version
+/// [`Graph::load_doc`] accepts, and the number its refusal quotes. One literal for all three, so a
+/// bump cannot leave the error message lying about what this build actually reads.
+const MANIFEST_VERSION: i64 = 7;
+
 /// Per-NODE measured emit-rate state (see [`stamp_meta`]). Tracks the wall-clock
 /// (`ctx.now`) of the node's previous productive emit and the smoothed inter-emit
 /// interval; `ufreq = 1/ema`. `last_emit == None` until the first emit, `ema == None`
@@ -2078,7 +2083,7 @@ impl Graph {
             })
             .collect();
         let mut doc = json!({
-            "version": 7,
+            "version": MANIFEST_VERSION,
             "pillar_default": "signal",
             "globals": Value::Array(globals),
             "root": root,
@@ -2100,11 +2105,15 @@ impl Graph {
             // v7 is the archive era: nodes/links nested under `root`, a flat `root.scopes`
             // overlay, top-level `globals`, opaque top-level `layout`. The bare-YAML v3-v6
             // files predate the zip container and are deliberately not read (spec Decision 3).
-            Some(7) => {
+            Some(MANIFEST_VERSION) => {
                 let root = doc.get("root");
                 (root.and_then(|r| r.get("nodes")), root.and_then(|r| r.get("links")))
             }
-            _ => return Err("unsupported .gfi version (this build reads version 7)".into()),
+            _ => {
+                return Err(format!(
+                    "unsupported .gfi version (this build reads version {MANIFEST_VERSION})"
+                ))
+            }
         };
         let nodes = nodes_v.and_then(|v| v.as_object()).ok_or("missing `nodes`")?;
         for rec in nodes.values() {
@@ -5528,11 +5537,14 @@ mod tests {
         );
 
         // v3-v6 belonged to the bare-text era and go with it (spec Decision 3: no back-compat).
-        for legacy in [
+        // v8 pins the OTHER direction: the gate is an equality, so a future arm cannot widen it
+        // silently — enumerating only versions below 7 would never notice.
+        for other in [
             "version: 6\nroot:\n  nodes: {}\n  links: []\n",
             "version: 3\nnodes: {}\nlinks: []\n",
+            "version: 8\nroot:\n  nodes: {}\n  links: []\n",
         ] {
-            let err = g.load_doc(legacy).unwrap_err();
+            let err = g.load_doc(other).unwrap_err();
             assert!(err.contains('7'), "the error names the version this build reads, got: {err}");
         }
     }
