@@ -327,8 +327,9 @@ test('the kept-bespoke chrome buttons render from their own rules, not the base 
 
 	// 3+4. FsBrowser `.root` (sidebar shortcut) and `.entry` (file row) — both list rows whose
 	//      hover/selected fill is a rounded accent wash, so the radius is load-bearing here.
-	//      Opened in SAVE mode: the same modal, plus the filename field the load footer replaces
-	//      with an upload button — so both of this dialog's text fields are reachable from one open.
+	//      Opened in SAVE mode: the same modal, plus the filename field the load footer does not
+	//      carry — so both of this dialog's text fields are reachable from one open. (Save reaches
+	//      the modal at all because the patch is unnamed, which `waitForApp` above asserts.)
 	await page.getByTestId('topbar-save').click();
 	await page.getByTestId('fs-list').waitFor();
 	const root = await skin(page.locator('.roots .root:not(.active)').first());

@@ -33,9 +33,15 @@ export async function waitForApp(page: Page): Promise<void> {
  * every time the red landed on an innocent file measuring geometry — never on the file that leaked.
  *
  * Asserting it at ENTRY is what changes that: the failure names the cause, in the first spec after
- * the leak, instead of surfacing as a wrong bounding box in another project. Two counts against an
- * already-loaded page; nothing to do in the normal case. A spec that means to leave the arrangement
- * changed does not exist — the rule is that it hands the workspace back in a `finally`.
+ * the leak, instead of surfacing as a wrong bounding box in another project. A handful of reads
+ * against an already-loaded page; nothing to do in the normal case. A spec that means to leave the
+ * arrangement changed does not exist — the rule is that it hands the workspace back in a `finally`.
+ *
+ * What it deliberately does NOT check is the DIRTY flag. Editing anything sets it, so asserting it
+ * clean would force a patch reset into all 37 specs that touch the graph — and a universal reset
+ * would take the node guard above with it, since a reset can never leave a node behind to find.
+ * The four globals below are all leaks a spec chooses to make; `unsaved_changes` is a byproduct of
+ * doing any work at all.
  */
 export async function expectPristineWorkspace(page: Page): Promise<void> {
 	// The app is already live, so the default arrangement is on screen: a short budget keeps a leak
@@ -66,6 +72,35 @@ export async function expectPristineWorkspace(page: Page): Promise<void> {
 		(window as any).goofi.query.graph().nodes.map((n: { type: string; uid: string }) => `${n.type}(${n.uid})`)
 	);
 	expect(leaked, 'a previous spec left graph nodes behind — remove them in a `finally`').toEqual([]);
+	// The fourth leakable global, and the newest: the SAVE PATH. It is manager-owned since W, so it
+	// outlives the page that wrote it and reaches every later spec through `hello` — and a named
+	// patch changes what the app DOES, not just what it shows: `AppShell.triggerSave` overwrites
+	// silently instead of opening the file browser. That is what took eleven specs red the first
+	// time, none of them about saving. Unlike the dirty flag (a benign byproduct of any spec that
+	// edits anything), naming the patch is always deliberate — so it is always someone's `finally`
+	// to undo, with `resetPatch`.
+	const savePath = await page.evaluate(() => (window as any).goofi.query.graph().savePath);
+	expect(
+		savePath,
+		'a previous spec left the patch NAMED — hand it back with `resetPatch` in a `finally`'
+	).toBe(null);
+}
+
+/**
+ * Hand the shared backend back an empty, unnamed, clean patch — one manager transaction (`new`).
+ *
+ * The `finally` half of the save-path contract `expectPristineWorkspace` enforces at the other end,
+ * and the successor to the `loadText(<the file we just saved>)` trick five specs used to play: a
+ * `.gfi` is a zip archive now, so the façade carries no content-load door left to abuse for a reset.
+ */
+export async function resetPatch(page: Page): Promise<void> {
+	await page.evaluate(() => (window as any).goofi.commands.newPatch());
+	await expect
+		.poll(() => page.evaluate(() => (window as any).goofi.query.graph().savePath))
+		.toBe(null);
+	await expect
+		.poll(() => page.evaluate(() => (window as any).goofi.query.graph().nodes.length))
+		.toBe(0);
 }
 
 /** Hand back a tab the spec added: close the last one and settle past AppShell's 400ms `set_layout`

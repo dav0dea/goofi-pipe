@@ -2,7 +2,7 @@ import { test, expect, type Page } from '@playwright/test';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { waitForApp } from '../lib/app';
+import { waitForApp, resetPatch } from '../lib/app';
 import { outside, settledBox } from '../lib/geometry';
 import { addNode, waitForNode, waitForNoNode } from '../lib/goofi';
 import { AS_ROWS, PRIORITY, menuRow, openOverflow, settledBar } from '../lib/topbar';
@@ -61,14 +61,14 @@ test.afterAll(() => fs.rmSync(scratch, { recursive: true, force: true }));
 /**
  * Save the patch under `CROWDING_NAME`, through the real Save flow.
  *
- * The façade's `save(path)` would reach the same state — the store is what publishes the new path
- * now, since the `save` arm broadcasts no `save_path_changed` (only `load` does) — but this file's
- * subject is what the header does at a real geometry, so it takes the door a user takes. (It used
- * to be the ONLY door: the `savePath` write lived in `AppShell`, above the seam the façade calls.)
+ * The façade's `save(path)` would reach the same state — the manager publishes the path either way
+ * (the `save` arm → `save_path_changed`) — but this file's subject is what the header does at a real
+ * geometry, so it takes the door a user takes.
  *
  * `topbar-save` is dispatched rather than tapped because at 412px it has spilled out of the bar
  * and is `display: none`; reaching it through the overflow menu is `topbar-overflow.spec.ts`'s
- * question, not this file's.
+ * question, not this file's. It reaches the browser at all only because the patch is UNNAMED here
+ * — a named one overwrites silently — which `expectPristineWorkspace` now guarantees at entry.
  */
 async function saveAsCrowdingName(page: Page): Promise<void> {
 	await page.getByTestId('topbar-save').evaluate((el: HTMLElement) => el.click());
@@ -102,15 +102,10 @@ test('the header keeps every action reachable, in the bar or in the menu', async
 		await expect(page.getByTestId('perf-hud'), 'frames are flowing, so the HUD is live').toBeAttached();
 		await checkHeaderFits(page);
 	} finally {
-		// Hand the backend back unnamed: `loadText` (a load with no path) is what resets `save_path`
-		// to null, which later specs assume when they click Save expecting the browser.
-		await page.evaluate(
-			(y) => (window as any).goofi.commands.loadText(y),
-			fs.readFileSync(path.join(scratch, `${CROWDING_NAME}.gfi`), 'utf8')
-		);
-		await expect
-			.poll(() => page.evaluate(() => (window as any).goofi.query.graph().savePath))
-			.toBe(null);
+		// Hand the backend back unnamed AND empty, which `resetPatch` does in one manager `new` —
+		// later specs (and the next of this file's three projects) assume both when they click Save
+		// expecting the browser. It takes the node with it, so no separate removal is needed.
+		await resetPatch(page);
 	}
 });
 

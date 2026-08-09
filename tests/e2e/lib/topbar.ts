@@ -73,3 +73,20 @@ export function menuRow(page: Page, label: string): Locator {
 		.locator('.context-menu .item')
 		.filter({ has: page.locator('.label', { hasText: new RegExp(`^${label}$`) }) });
 }
+
+/**
+ * Open the file browser through **Save As**, which is the only door onto it once the patch has a
+ * name — a plain Save then overwrites silently.
+ *
+ * Save As has TWO doors and which one exists depends on the width: it is a row of the Save
+ * split-button's dropdown while the caret is in the bar, and a row of the ⋯ overflow menu after the
+ * caret spills — which it does FIRST among the actions, so at 320/412px only the ⋯ route is left.
+ * The row carries `topbar-save-as` in both, so this reaches it by opening whichever menu is
+ * available and clicking the same handle.
+ */
+export async function openSaveAs(page: Page): Promise<void> {
+	const caret = page.getByTestId('topbar-save-caret');
+	if (await caret.isVisible()) await caret.click();
+	else await openOverflow(page);
+	await page.getByTestId('topbar-save-as').click();
+}

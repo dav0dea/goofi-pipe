@@ -2,7 +2,7 @@ import { test, expect, type Page } from '@playwright/test';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { waitForApp } from '../lib/app';
+import { waitForApp, resetPatch } from '../lib/app';
 import { nodes, nodeParams } from '../lib/goofi';
 import { openAddMenuByPress, paletteItem } from '../lib/placement';
 import { settledBar } from '../lib/topbar';
@@ -20,7 +20,7 @@ import { settledBar } from '../lib/topbar';
  * The `window.goofi` façade is used only to READ the result back.
  *
  * Hermeticity: the save lands in a per-run temp directory removed in afterAll, and the test hands
- * the shared backend back unnamed and empty — `loadText` (a load with no path) is what resets
+ * the shared backend back unnamed and empty — `resetPatch` (a manager-side `new`) is what resets
  * `save_path` to null, which later specs assume when they click Save expecting the browser.
  */
 
@@ -34,23 +34,12 @@ test.afterAll(() => {
 	fs.rmSync(scratch, { recursive: true, force: true });
 });
 
-/** Hand the shared backend back empty even when the test fails partway — a leftover node changes
- * where the NEXT spec's `emptySpot` may press. */
+/** Hand the shared backend back empty AND unnamed even when the test fails partway — a leftover
+ * node changes where the NEXT spec's `emptySpot` may press, and a leftover NAME turns its Save
+ * into a silent overwrite. The journey saves the patch, so both are reachable failure states. */
 test.afterEach(async ({ page }) => {
-	await page
-		.evaluate(() => {
-			const g = (window as any).goofi;
-			const uids = g.query.graph().nodes.map((n: { uid: string }) => n.uid);
-			if (uids.length) return g.commands.removeNodes(uids);
-		})
-		.catch(() => {});
+	await page.evaluate(() => (window as any).goofi.commands.newPatch()).catch(() => {});
 });
-
-async function clearGraph(page: Page): Promise<void> {
-	const uids = (await nodes(page)).map((n) => n.uid);
-	if (uids.length) await page.evaluate((u) => (window as any).goofi.commands.removeNodes(u), uids);
-	await expect.poll(async () => (await nodes(page)).length).toBe(0);
-}
 
 function links(page: Page): Promise<Array<Record<string, string>>> {
 	return page.evaluate(() => (window as any).goofi.query.graph().links);
@@ -80,8 +69,7 @@ test('412px portrait: add a node, connect it, open its parameters, change one, a
 	page
 }) => {
 	await page.goto('/');
-	await waitForApp(page);
-	await clearGraph(page);
+	await waitForApp(page); // …which is itself the assertion that the graph is empty and unnamed.
 
 	// --- 1. ADD, through the coarse-pointer door -------------------------------------------
 	const spot = await openAddMenuByPress(page);
@@ -162,10 +150,6 @@ test('412px portrait: add a node, connect it, open its parameters, change one, a
 		.toBe(false);
 
 	// --- hand the shared backend back unnamed and empty ---------------------------------------
-	await page.evaluate(
-		(y) => (window as any).goofi.commands.loadText(y),
-		fs.readFileSync(patchFile, 'utf8')
-	);
-	await expect.poll(() => page.evaluate(() => (window as any).goofi.query.graph().savePath)).toBe(null);
-	await clearGraph(page);
+	// One `new` does both halves; the `afterEach` below is the backstop for a failure before here.
+	await resetPatch(page);
 });

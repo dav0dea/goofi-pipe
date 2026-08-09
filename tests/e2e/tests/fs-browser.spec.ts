@@ -2,8 +2,9 @@ import { test, expect, type Locator, type Page } from '@playwright/test';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { waitForApp } from '../lib/app';
+import { waitForApp, resetPatch } from '../lib/app';
 import { addNode, nodes, nodeParams, updateParam, waitForNode, waitForNoNode } from '../lib/goofi';
+import { openSaveAs } from '../lib/topbar';
 
 /**
  * The file browser is the app's ONLY persistence UI — Save/Load of `.gfi` patches — and it had
@@ -50,9 +51,16 @@ function browser(page: Page): Locator {
 	return page.getByTestId('fs-browser');
 }
 
-/** Open the browser the way a user does: the TopBar button. Save only reaches the modal while the
- * patch has no home on disk (a named patch silently overwrites), which is the state a fresh page
- * always starts in — the `hello` snapshot carries `save_path: null`. */
+/**
+ * Open the browser the way a user does: the TopBar button.
+ *
+ * Save only reaches the modal while the patch has no home on disk — a named patch overwrites
+ * silently. That used to be free ("a fresh page always starts unnamed"), and it is not: the save
+ * path is MANAGER-owned since W, so it outlives the page and reaches every later spec. What makes
+ * this door dependable now is the contract at the other end — `expectPristineWorkspace` asserts a
+ * null path at entry, and any spec that names the patch hands it back with `resetPatch`. Reaching
+ * the modal over a NAMED patch is Save As's job (`lib/topbar.ts`'s `openSaveAs`).
+ */
 async function openBrowser(page: Page, mode: 'save' | 'load'): Promise<Locator> {
 	await page.getByTestId(mode === 'save' ? 'topbar-save' : 'topbar-load').click();
 	const modal = browser(page);
@@ -90,95 +98,98 @@ function links(page: Page): Promise<Array<Record<string, string>>> {
 
 test('saves a patch through the UI and loads it back, restoring the real graph', async ({ page }) => {
 	await page.goto('/');
-	await waitForApp(page);
-	await clearGraph(page);
+	await waitForApp(page); // …which is itself the assertion that the graph is empty and unnamed.
+	try {
+		// --- a recognisable patch: two linked nodes and one edited param -------------------------
+		const osc = await addNode(page, 'Oscillator', 'inputs', [40, 40]);
+		await waitForNode(page, osc);
+		const buf = await addNode(page, 'Buffer', 'signal', [320, 40]);
+		await waitForNode(page, buf);
+		await page.evaluate(
+			([o, b]) =>
+				(window as any).goofi.commands.addLink({
+					node_out: o,
+					slot_out: 'out',
+					node_in: b,
+					slot_in: 'data'
+				}),
+			[osc, buf] as const
+		);
+		await expect.poll(async () => (await links(page)).length).toBe(1);
+		// A value no default would produce, so "the patch came back" cannot pass by accident.
+		await updateParam(page, osc, 'oscillator', 'amplitude', 0.4242);
+		await expect
+			.poll(async () => (await nodeParams(page, osc))?.oscillator?.amplitude?.value)
+			.toBeCloseTo(0.4242, 5);
+		// Names are minted by the manager and persisted into the .gfi — capture them to compare.
+		const savedNames = (await nodes(page)).map((n) => n.name).sort();
 
-	// --- a recognisable patch: two linked nodes and one edited param -------------------------
-	const osc = await addNode(page, 'Oscillator', 'inputs', [40, 40]);
-	await waitForNode(page, osc);
-	const buf = await addNode(page, 'Buffer', 'signal', [320, 40]);
-	await waitForNode(page, buf);
-	await page.evaluate(
-		([o, b]) =>
-			(window as any).goofi.commands.addLink({
-				node_out: o,
-				slot_out: 'out',
-				node_in: b,
-				slot_in: 'data'
-			}),
-		[osc, buf] as const
-	);
-	await expect.poll(async () => (await links(page)).length).toBe(1);
-	// A value no default would produce, so "the patch came back" cannot pass by accident.
-	await updateParam(page, osc, 'oscillator', 'amplitude', 0.4242);
-	await expect
-		.poll(async () => (await nodeParams(page, osc))?.oscillator?.amplitude?.value)
-		.toBeCloseTo(0.4242, 5);
-	// Names are minted by the manager and persisted into the .gfi — capture them to compare.
-	const savedNames = (await nodes(page)).map((n) => n.name).sort();
+		// --- SAVE through the real modal ---------------------------------------------------------
+		const saveModal = await openBrowser(page, 'save');
+		await navigateTo(page, saveModal, scratch);
+		await expect(saveModal.getByTestId('fs-list'), 'the fresh scratch dir lists its subdir').toContainText(
+			'nested'
+		);
+		await saveModal.getByTestId('fs-filename').fill(patchName);
+		await saveModal.getByTestId('fs-save').click();
+		await expect(saveModal, 'confirming Save closes the browser').toBeHidden();
 
-	// --- SAVE through the real modal ---------------------------------------------------------
-	const saveModal = await openBrowser(page, 'save');
-	await navigateTo(page, saveModal, scratch);
-	await expect(saveModal.getByTestId('fs-list'), 'the fresh scratch dir lists its subdir').toContainText(
-		'nested'
-	);
-	await saveModal.getByTestId('fs-filename').fill(patchName);
-	await saveModal.getByTestId('fs-save').click();
-	await expect(saveModal, 'confirming Save closes the browser').toBeHidden();
+		// The file really exists on the backend's disk, and the app now knows where the patch lives.
+		const patchFile = path.join(scratch, `${patchName}.gfi`);
+		await expect.poll(() => fs.existsSync(patchFile), { message: 'the .gfi landed on disk' }).toBe(true);
+		await expect
+			.poll(() => page.evaluate(() => (window as any).goofi.query.graph().savePath))
+			.toBe(patchFile);
+		// A backend write clears the dirty flag (bridge `save` → `set_dirty(false)`).
+		await expect
+			.poll(() => page.evaluate(() => (window as any).goofi.query.graph().unsavedChanges))
+			.toBe(false);
 
-	// The file really exists on the backend's disk, and the app now knows where the patch lives.
-	const patchFile = path.join(scratch, `${patchName}.gfi`);
-	await expect.poll(() => fs.existsSync(patchFile), { message: 'the .gfi landed on disk' }).toBe(true);
-	await expect
-		.poll(() => page.evaluate(() => (window as any).goofi.query.graph().savePath))
-		.toBe(patchFile);
-	// A backend write clears the dirty flag (bridge `save` → `set_dirty(false)`).
-	await expect
-		.poll(() => page.evaluate(() => (window as any).goofi.query.graph().unsavedChanges))
-		.toBe(false);
+		// --- wipe, then LOAD it back through the real modal ---------------------------------------
+		await clearGraph(page);
+		expect(await links(page), 'removing the nodes took the link with them').toEqual([]);
 
-	// --- wipe, then LOAD it back through the real modal ---------------------------------------
-	await clearGraph(page);
-	expect(await links(page), 'removing the nodes took the link with them').toEqual([]);
+		const loadModal = await openBrowser(page, 'load');
+		// The load browser opens beside the current patch (`initialPath = dirOf(savePath)`), so no
+		// navigation is needed — assert that rather than papering over it by re-typing the path.
+		await expect(
+			loadModal.getByTestId('fs-path-input'),
+			'the browser opens in the directory the patch lives in'
+		).toHaveValue(scratch);
+		// Open is disabled until a .gfi is selected; a single click selects it.
+		await expect(loadModal.getByTestId('fs-open'), 'Open is inert with nothing selected').toBeDisabled();
+		await loadModal.getByTestId('fs-entry').filter({ hasText: `${patchName}.gfi` }).click();
+		await expect(loadModal.getByTestId('fs-open'), 'selecting a .gfi arms Open').toBeEnabled();
+		await loadModal.getByTestId('fs-open').click();
+		await expect(loadModal, 'confirming Open closes the browser').toBeHidden();
 
-	const loadModal = await openBrowser(page, 'load');
-	// The load browser opens beside the current patch (`initialPath = dirOf(savePath)`), so no
-	// navigation is needed — assert that rather than papering over it by re-typing the path.
-	await expect(
-		loadModal.getByTestId('fs-path-input'),
-		'the browser opens in the directory the patch lives in'
-	).toHaveValue(scratch);
-	// Open is disabled until a .gfi is selected; a single click selects it.
-	await expect(loadModal.getByTestId('fs-open'), 'Open is inert with nothing selected').toBeDisabled();
-	await loadModal.getByTestId('fs-entry').filter({ hasText: `${patchName}.gfi` }).click();
-	await expect(loadModal.getByTestId('fs-open'), 'selecting a .gfi arms Open').toBeEnabled();
-	await loadModal.getByTestId('fs-open').click();
-	await expect(loadModal, 'confirming Open closes the browser').toBeHidden();
+		// --- the graph is genuinely restored -------------------------------------------------------
+		await expect.poll(async () => (await nodes(page)).length, { message: 'both nodes came back' }).toBe(2);
+		const restored = await nodes(page);
+		expect(restored.map((n) => n.type).sort()).toEqual(['Buffer', 'Oscillator']);
+		expect(restored.map((n) => n.name).sort()).toEqual(savedNames);
 
-	// --- the graph is genuinely restored -------------------------------------------------------
-	await expect.poll(async () => (await nodes(page)).length, { message: 'both nodes came back' }).toBe(2);
-	const restored = await nodes(page);
-	expect(restored.map((n) => n.type).sort()).toEqual(['Buffer', 'Oscillator']);
-	expect(restored.map((n) => n.name).sort()).toEqual(savedNames);
-
-	const rOsc = restored.find((n) => n.type === 'Oscillator')!;
-	const rBuf = restored.find((n) => n.type === 'Buffer')!;
-	await expect.poll(async () => (await links(page)).length, { message: 'the link came back' }).toBe(1);
-	expect((await links(page))[0]).toMatchObject({
-		node_out: rOsc.uid,
-		slot_out: 'out',
-		node_in: rBuf.uid,
-		slot_in: 'data'
-	});
-	// The edited param survived the round trip — the strongest signal that this is the saved patch
-	// and not a coincidentally-shaped fresh one.
-	await expect
-		.poll(async () => (await nodeParams(page, rOsc.uid))?.oscillator?.amplitude?.value)
-		.toBeCloseTo(0.4242, 5);
-
-	// Leave the shared backend graph as we found it.
-	await clearGraph(page);
+		const rOsc = restored.find((n) => n.type === 'Oscillator')!;
+		const rBuf = restored.find((n) => n.type === 'Buffer')!;
+		await expect.poll(async () => (await links(page)).length, { message: 'the link came back' }).toBe(1);
+		expect((await links(page))[0]).toMatchObject({
+			node_out: rOsc.uid,
+			slot_out: 'out',
+			node_in: rBuf.uid,
+			slot_in: 'data'
+		});
+		// The edited param survived the round trip — the strongest signal that this is the saved patch
+		// and not a coincidentally-shaped fresh one.
+		await expect
+			.poll(async () => (await nodeParams(page, rOsc.uid))?.oscillator?.amplitude?.value)
+			.toBeCloseTo(0.4242, 5);
+	} finally {
+		// This test both SAVES and LOADS, so it names the patch twice — and it is the file the
+		// hermeticity guard caught leaking: the `clearGraph` that used to sit here ran only on the
+		// happy path, so an abort above it left two nodes for nineteen later specs to trip over.
+		// A `finally` is the whole fix, and `resetPatch` is the reset that covers the name too.
+		await resetPatch(page);
+	}
 });
 
 test.describe('modal dismissal (the behaviours M-Task 6b re-homes onto Dialog)', () => {
@@ -377,11 +388,14 @@ test('the save dialog keeps its full-width filename field', async ({ page }) => 
 });
 
 /**
- * `window.goofi.commands.save(path)` is the seam the whole committed suite drives, and it could
- * not reach the state the UI's own Save reaches: the `savePath` write lived at ONE of the two call
- * sites (`AppShell.saveBackend`), not at the seam both go through. Nothing else supplies it — the
- * manager keeps no save-path state (its snapshot hard-codes `save_path: null`) and its `save` arm
- * broadcasts no `save_path_changed`, whatever `AppShell`'s comment used to claim.
+ * `window.goofi.commands.save(path)` is the seam the whole committed suite drives, and both doors
+ * onto a save now learn the patch's home the same way: from the MANAGER. There is no client-side
+ * latch left — the `save` arm publishes `save_path_changed` and the snapshot carries a real path —
+ * which is what makes the name survive a reload and reach a second tab (C38).
+ *
+ * The tail is the other half of that: once the patch is named, a plain Save overwrites in silence
+ * and **Save As is the only door back to the browser**. It is also the only door at a phone width,
+ * where the caret is the first action to spill — hence one testid on the row and two ways in.
  */
 test('saving through the automation façade names the patch, exactly as the header does', async ({
 	page
@@ -401,7 +415,14 @@ test('saving through the automation façade names the patch, exactly as the head
 		await expect(page.locator('.topbar .path')).toHaveText(new RegExp(`${patchName}-facade\\.gfi$`));
 		await page.getByTestId('topbar-save').click();
 		await expect(browser(page), 'a named patch saves without asking again').toBeHidden();
+
+		// Save As still reaches it — the re-home door, and the only one a named patch has.
+		await openSaveAs(page);
+		await expect(browser(page), 'Save As opens the browser over a named patch').toBeVisible();
+		await page.keyboard.press('Escape');
+		await expect(browser(page)).toBeHidden();
 	} finally {
 		fs.rmSync(target, { force: true });
+		await resetPatch(page);
 	}
 });

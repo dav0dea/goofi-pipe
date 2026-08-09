@@ -2,7 +2,7 @@ import { test, expect, type Page } from '@playwright/test';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { waitForApp } from '../lib/app';
+import { waitForApp, resetPatch } from '../lib/app';
 import { AS_ROWS, PRIORITY, inBar, menuRow, openOverflow, settledBar } from '../lib/topbar';
 
 /**
@@ -30,7 +30,7 @@ const SPILL_ORDER = [...PRIORITY].reverse();
  * `dirty-taxonomy.spec.ts` and `fs-browser.spec.ts` sort earlier in the single-worker `default`
  * project and left the backend in a state nothing here asked for; standalone it measured two. So
  * every test that needs a spill to EXIST brings its own precondition and hands the backend back
- * unnamed (a `loadText` — a load with no path — is what resets `save_path` to null).
+ * unnamed (`resetPatch` — a manager-side `new` — is what resets `save_path` to null).
  *
  * That is four tests now: two of them joined the list when the header stopped carrying a connection
  * chip. "Connected" was up at every moment of the app's life, and its 72px was quietly what pushed
@@ -58,13 +58,7 @@ async function withNamedPatch(page: Page, body: () => Promise<void>): Promise<vo
 	try {
 		await body();
 	} finally {
-		await page.evaluate(
-			(y) => (window as any).goofi.commands.loadText(y),
-			fs.readFileSync(file, 'utf8')
-		);
-		await expect
-			.poll(() => page.evaluate(() => (window as any).goofi.query.graph().savePath))
-			.toBe(null);
+		await resetPatch(page);
 	}
 }
 
@@ -554,22 +548,31 @@ test('layout tabs get the room the bar gives up', async ({ page }) => {
 		for (let i = 0; i < 6; i++) {
 			await page.getByRole('button', { name: 'New tab' }).click();
 		}
-		await expect(
-			page.getByTestId('topbar-path'),
-			'the identity handed its width to the tabs'
-		).toBeHidden();
-		await expect
-			.poll(async () => {
-				const m = await page
-					.locator('[data-testid="workspace-tabs"]')
-					.evaluate((el) => ({ content: el.scrollWidth, box: el.clientWidth }));
-				return m.content <= m.box + 1;
-			}, 'the strip fits its content — nothing is scrolled away')
-			.toBe(true);
-		// The actions keep their slots at this width — the room came out of the identity first,
-		// which is the declared order doing its job.
-		expect(new Set(await settledBar(page))).toEqual(new Set(PRIORITY));
+		try {
+			await expect(
+				page.getByTestId('topbar-path'),
+				'the identity handed its width to the tabs'
+			).toBeHidden();
+			await expect
+				.poll(async () => {
+					const m = await page
+						.locator('[data-testid="workspace-tabs"]')
+						.evaluate((el) => ({ content: el.scrollWidth, box: el.clientWidth }));
+					return m.content <= m.box + 1;
+				}, 'the strip fits its content — nothing is scrolled away')
+				.toBe(true);
+			// The actions keep their slots at this width — the room came out of the identity first,
+			// which is the declared order doing its job.
+			expect(new Set(await settledBar(page))).toEqual(new Set(PRIORITY));
+		} finally {
+			// The six tabs are this test's own to hand back. It used to get them collapsed for free,
+			// because the old reset was a LOAD of the patch saved before they existed. `resetPatch`
+			// resets the PATCH, and the arrangement is not part of it: a `new` snapshot carries no
+			// layout, so the client keeps what is on screen — and pushes it into the fresh patch.
+			const close = page.getByRole('button', { name: 'Close tab' });
+			for (let i = 0; i < 6; i++) await close.last().click();
+			await expect(page.getByTestId('workspace-tabs').locator('.ui-tab')).toHaveCount(1);
+			await page.waitForTimeout(700); // past AppShell's 400ms set_layout debounce
+		}
 	});
-	// `withNamedPatch`'s finally re-loads the patch saved BEFORE the tabs were added, so the
-	// layout collapses back to the single tab later specs assume.
 });

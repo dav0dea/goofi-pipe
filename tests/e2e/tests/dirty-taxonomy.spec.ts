@@ -2,8 +2,8 @@ import { test, expect, type Page } from '@playwright/test';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { waitForApp } from '../lib/app';
-import { addNode, nodes, waitForNode } from '../lib/goofi';
+import { waitForApp, resetPatch } from '../lib/app';
+import { addNode, waitForNode } from '../lib/goofi';
 
 /**
  * The dirty taxonomy (R spec §4 / D-R3): *navigation* must not mark the patch unsaved, *authoring*
@@ -38,21 +38,13 @@ async function saveClean(page: Page): Promise<void> {
 	await expect.poll(() => unsavedChanges(page), { message: 'a save makes it clean' }).toBe(false);
 }
 
-/** The shared backend graph, emptied. */
-async function clearGraph(page: Page): Promise<void> {
-	const uids = (await nodes(page)).map((n) => n.uid);
-	if (uids.length) await page.evaluate((u) => (window as any).goofi.commands.removeNodes(u), uids);
-	await expect.poll(async () => (await nodes(page)).length).toBe(0);
-}
-
 function firstPanelId(page: Page): Promise<string> {
 	return page.evaluate(() => (window as any).goofi.query.panels()[0].panelId);
 }
 
 test('entering and leaving a sub-patch never dirties the patch', async ({ page }) => {
 	await page.goto('/');
-	await waitForApp(page);
-	await clearGraph(page);
+	await waitForApp(page); // …which is itself the assertion that the graph is empty and unnamed.
 
 	const osc = await addNode(page, 'Oscillator', 'inputs', [40, 40]);
 	await waitForNode(page, osc);
@@ -84,13 +76,15 @@ test('entering and leaving a sub-patch never dirties the patch', async ({ page }
 	// empty instance behind, and a leaked sub-patch is a second `subpatch-node` for the next run.
 	await page.evaluate((i) => (window as any).goofi.commands.expandInstance(i), inst);
 	await expect(group, 'the sub-patch facade is gone').toHaveCount(0);
-	await clearGraph(page);
+	// `resetPatch`, not `clearGraph`: `saveClean` above NAMED the patch, and the name is the
+	// manager's now — it would otherwise ride into every later spec and turn its Save into a
+	// silent overwrite. (This file is #11 of the run; that is exactly how it happened.)
+	await resetPatch(page);
 });
 
 test('changing a docked viewer’s type DOES dirty the patch', async ({ page }) => {
 	await page.goto('/');
-	await waitForApp(page);
-	await clearGraph(page);
+	await waitForApp(page); // …which is itself the assertion that the graph is empty and unnamed.
 
 	const osc = await addNode(page, 'Oscillator', 'inputs', [40, 40]);
 	await waitForNode(page, osc);
@@ -127,5 +121,5 @@ test('changing a docked viewer’s type DOES dirty the patch', async ({ page }) 
 		panelId
 	);
 	await page.waitForTimeout(PAST_DEBOUNCE);
-	await clearGraph(page);
+	await resetPatch(page); // …and the NAME `saveClean` gave it.
 });
