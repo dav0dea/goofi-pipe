@@ -2099,6 +2099,26 @@ async fn save_without_a_path_is_refused() {
 }
 
 #[tokio::test]
+async fn save_writes_a_gfi_archive() {
+    // A `.gfi` is a zip holding the manifest beside the mounted workspace tree, so the saved file
+    // is readable only through `read_gfi` — a bare-YAML write would leave it "not a zip archive".
+    let base = start_server().await;
+    let (mut ws, _) = connect_async(format!("{base}/control")).await.unwrap();
+    let _hello = recv_text(&mut ws).await;
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("patch.gfi");
+    call(&mut ws, 1, "add_node", json!({ "type": "Oscillator" })).await;
+    let reply = call(&mut ws, 2, "save", json!({ "path": path.to_string_lossy() })).await;
+    assert!(reply.get("error").is_none(), "the save is accepted; got {reply}");
+
+    let dest = dir.path().join("unpacked");
+    let manifest = goofi_engine::archive::read_gfi(&path, &dest).unwrap();
+    assert!(manifest.contains("Oscillator"), "the manifest is the serialized patch: {manifest}");
+    assert!(dest.is_dir(), "the workspace tree rides along, empty or not");
+}
+
+#[tokio::test]
 async fn load_reads_a_patch_from_a_backend_path() {
     let base = start_server().await;
     let (mut ws, _) = connect_async(format!("{base}/control")).await.unwrap();
@@ -2106,7 +2126,10 @@ async fn load_reads_a_patch_from_a_backend_path() {
 
     let path = std::env::temp_dir().join(format!("goofi-load-{}.gfi", std::process::id()));
     call(&mut ws, 1, "add_node", json!({ "type": "Oscillator" })).await;
-    call(&mut ws, 2, "save", json!({ "path": path.to_string_lossy() })).await;
+    // The fixture is written directly rather than through `save`: save now packs an ARCHIVE and
+    // load still reads bare YAML. Round-tripping the two is what the load arm's own task restores.
+    let ser = call(&mut ws, 2, "serialize", json!({})).await;
+    std::fs::write(&path, ser["result"]["yaml"].as_str().unwrap()).unwrap();
 
     // Diverge from the saved patch, then load it back off disk.
     call(&mut ws, 3, "add_node", json!({ "type": "Buffer" })).await;

@@ -28,3 +28,4 @@ futures-util = "0.3"
 # Pin a tiny SO_RCVBUF on a test client so a stalled reader deterministically lags the
 # broadcast ring (the lag-recovery test) instead of the OS silently autotuning a huge buffer.
 socket2 = "0.6"
+tempfile = "3"

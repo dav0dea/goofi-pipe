@@ -147,12 +147,50 @@ impl AppState {
 /// so one `remove_dir_all` reclaims the pair. A failed mkdir is not worth reporting at boot: the
 /// first save into an unwritable temp dir surfaces the real IO error, naming the path.
 fn new_mount() -> PathBuf {
-    let mut nonce = [0u8; 16];
-    getrandom::fill(&mut nonce).expect("the OS random source");
-    let name: String = nonce.iter().map(|b| format!("{b:02x}")).collect();
-    let dir = std::env::temp_dir().join(format!("goofi-{name}")).join("workspace");
+    let dir = std::env::temp_dir().join(format!("goofi-{}", nonce_hex())).join("workspace");
     let _ = std::fs::create_dir_all(&dir);
     dir
+}
+
+/// A 128-bit random name, hex. Only has to be unguessable-enough to keep two concurrent goofis —
+/// or two concurrent saves onto one target — from colliding.
+fn nonce_hex() -> String {
+    let mut nonce = [0u8; 16];
+    getrandom::fill(&mut nonce).expect("the OS random source");
+    nonce.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// Pack the patch to `target` as a `.gfi`: `manifest` beside the live workspace `mount`.
+///
+/// The pack goes to a temp sibling and is renamed onto the target, so a write that dies part-way —
+/// a full disk, a workspace file that vanished mid-walk — leaves the PREVIOUS `.gfi` standing. The
+/// bare `fs::write` this replaces could mostly only lose the new content; a multi-entry zip
+/// truncates the old file first and then has many more chances to fail.
+///
+/// Runs under the graph lock the caller already holds, so the tick stalls for the duration (tens of
+/// ms for a workspace of code files) — accepted by decision, because taking the pack off-lock means
+/// guarding a graph-versus-workspace race that only exists once it is off-lock.
+fn save_archive(target: &std::path::Path, manifest: &str, mount: &std::path::Path) -> Result<(), String> {
+    // The mount's nonce directory is deleted when the patch closes, so a save into it is a save
+    // into nothing. Both sides go through `resolve` for the same reason the arm's path does: they
+    // must agree on what a path means, and only one of the two arrived normalized.
+    let owned = fsbrowse::resolve(&mount.parent().unwrap_or(mount).to_string_lossy());
+    if std::path::Path::new(&fsbrowse::resolve(&target.to_string_lossy())).starts_with(&owned) {
+        return Err("save failed: that folder is the patch's own temporary workspace".into());
+    }
+    // Suffix appended, not substituted, so the temp is a sibling of the target and the rename
+    // below stays within one filesystem.
+    let tmp = PathBuf::from({
+        let mut s = target.as_os_str().to_owned();
+        s.push(format!(".tmp-{}", nonce_hex()));
+        s
+    });
+    let packed = goofi_engine::archive::write_gfi(&tmp, manifest, mount)
+        .and_then(|()| std::fs::rename(&tmp, target).map_err(|e| format!("{}: {e}", target.display())));
+    if packed.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    packed.map_err(|e| format!("save failed: {e}"))
 }
 
 pub fn router(state: AppState) -> Router {
@@ -1045,7 +1083,7 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
                     .and_then(|v| v.as_str())
                     .map(fsbrowse::resolve)
                     .ok_or("save: missing path")?;
-                std::fs::write(&path, g.serialize()).map_err(|e| format!("save failed: {e}"))?;
+                save_archive(std::path::Path::new(&path), &g.serialize(), &state.mount)?;
                 // Written to disk ⇒ clean.
                 events.extend(state.set_dirty(false));
                 Ok(json!({ "path": path }))
@@ -1413,6 +1451,61 @@ async fn handle_data(socket: WebSocket, state: AppState, node: String, slot: Str
     }
     // Deregister so the reducer tears down when the last viewer of this slot leaves.
     state.reducers.unsubscribe(&key, conn);
+}
+
+#[cfg(test)]
+mod save_archive_tests {
+    use super::*;
+
+    /// The headline: a save packs the LIVE workspace mount, not merely some directory. Nothing
+    /// else pins which tree reaches `write_gfi` — the wire test's target has an empty mount, so it
+    /// cannot tell a correct one from a wrong one.
+    #[test]
+    fn packs_the_mount_alongside_the_manifest() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mount = tmp.path().join("goofi-0123").join("workspace");
+        std::fs::create_dir_all(&mount).unwrap();
+        std::fs::write(mount.join("agent.md"), b"notes").unwrap();
+
+        let target = tmp.path().join("patch.gfi");
+        save_archive(&target, "version: 7\n", &mount).unwrap();
+
+        let dest = tmp.path().join("unpacked");
+        assert_eq!(goofi_engine::archive::read_gfi(&target, &dest).unwrap(), "version: 7\n");
+        assert_eq!(std::fs::read(dest.join("agent.md")).unwrap(), b"notes");
+    }
+
+    #[test]
+    fn a_failed_pack_leaves_the_previous_archive_intact() {
+        let tmp = tempfile::tempdir().unwrap();
+        let target = tmp.path().join("patch.gfi");
+        std::fs::write(&target, b"the previous save").unwrap();
+
+        // A mount that is not on disk fails the workspace walk — which happens AFTER the zip's
+        // first entry is written, so it is exactly the window in which packing straight onto the
+        // target would truncate a good `.gfi` into a half-written one. It has to sit OUTSIDE the
+        // target's own directory, or the mount refusal answers first and the pack never runs
+        // (which is how this test first passed against a version that had no temp+rename at all).
+        let mount = tmp.path().join("mnt").join("gone").join("workspace");
+        let err = save_archive(&target, "version: 7\n", &mount).unwrap_err();
+        assert!(err.contains("save failed"), "the refusal names the operation: {err}");
+        assert_eq!(std::fs::read(&target).unwrap(), b"the previous save");
+        let left: Vec<_> = std::fs::read_dir(tmp.path()).unwrap().map(|e| e.unwrap().path()).collect();
+        assert_eq!(left, [target], "the half-written temp sibling is cleaned up too");
+    }
+
+    #[test]
+    fn refuses_a_target_inside_the_workspace_mount() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mount = tmp.path().join("goofi-0123").join("workspace");
+        std::fs::create_dir_all(&mount).unwrap();
+
+        for target in [mount.join("patch.gfi"), mount.parent().unwrap().join("patch.gfi")] {
+            let err = save_archive(&target, "version: 7\n", &mount).unwrap_err();
+            assert!(err.contains("temporary workspace"), "the refusal says why: {err}");
+            assert!(!target.exists(), "a refused save writes nothing");
+        }
+    }
 }
 
 #[cfg(test)]
