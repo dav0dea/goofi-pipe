@@ -1979,10 +1979,10 @@ impl Graph {
         }
     }
 
-    /// Serialize the graph to a `.gfi` v6 document (YAML text). v6 nests `nodes`/`links` under
-    /// `root` alongside a flat `root.scopes` block (the organizational sub-patch overlay — scope
-    /// metadata + member uid lists + stubs); top-level `globals`. A plain flat patch has an empty
-    /// `scopes` block. Supersedes the v4/v5 def/instance forest (no def bodies persisted).
+    /// Serialize the graph to a `.gfi` v7 document (YAML text) — the `patch.yaml` manifest inside the
+    /// archive container. v7 nests `nodes`/`links` under `root` alongside a flat `root.scopes` block
+    /// (the organizational sub-patch overlay — scope metadata + member uid lists + stubs); top-level
+    /// `globals`. A plain flat patch has an empty `scopes` block.
     pub fn serialize(&self) -> String {
         use serde_json::{json, Map, Value};
         let mut nodes = Map::new();
@@ -2078,7 +2078,7 @@ impl Graph {
             })
             .collect();
         let mut doc = json!({
-            "version": 6,
+            "version": 7,
             "pillar_default": "signal",
             "globals": Value::Array(globals),
             "root": root,
@@ -2092,21 +2092,19 @@ impl Graph {
         serde_yaml_ng::to_string(&doc).unwrap_or_default()
     }
 
-    /// Replace the graph from a `.gfi` document (v3–v6). Node types are validated before the current
-    /// graph is torn down (a rejected load is a no-op). v3 keeps `nodes`/`links` flat at the top
-    /// level; v4+ nest them under `root`; v6 adds the flat `root.scopes` overlay — all up-convert to
-    /// the same graph (a pre-v6 def/instance forest is not read; those patches predate this branch).
+    /// Replace the graph from a `.gfi` v7 manifest. Node types are validated before the current
+    /// graph is torn down (a rejected load is a no-op).
     pub fn load_doc(&mut self, text: &str) -> Result<(), String> {
         let doc: serde_json::Value = serde_yaml_ng::from_str(text).map_err(|e| e.to_string())?;
         let (nodes_v, links_v) = match doc.get("version").and_then(|v| v.as_i64()) {
-            Some(3) => (doc.get("nodes"), doc.get("links")),
-            // v4+ share the `root` nesting; v5 adds top-level `globals`; v6 replaces the def/instance
-            // forest with a flat `root.scopes` block (loaded below). All read `root.nodes`/`links`.
-            Some(4) | Some(5) | Some(6) => {
+            // v7 is the archive era: nodes/links nested under `root`, a flat `root.scopes`
+            // overlay, top-level `globals`, opaque top-level `layout`. The bare-YAML v3-v6
+            // files predate the zip container and are deliberately not read (spec Decision 3).
+            Some(7) => {
                 let root = doc.get("root");
                 (root.and_then(|r| r.get("nodes")), root.and_then(|r| r.get("links")))
             }
-            _ => return Err("unsupported .gfi version (expected 3-6)".into()),
+            _ => return Err("unsupported .gfi version (this build reads version 7)".into()),
         };
         let nodes = nodes_v.and_then(|v| v.as_object()).ok_or("missing `nodes`")?;
         for rec in nodes.values() {
@@ -2121,26 +2119,14 @@ impl Graph {
         // instantiation. `clear()` already re-seeded the system globals; each entry sets an existing
         // (system) global or adds a user one, IN FILE ORDER (so the observable order round-trips).
         // Malformed entries are skipped (best-effort load).
-        match doc.get("globals") {
-            // v6+ ordered array of `{name, value, type}`.
-            Some(serde_json::Value::Array(arr)) => {
-                for entry in arr {
-                    if let (Some(name), Some(value)) =
-                        (entry.get("name").and_then(|v| v.as_str()), global_from_json(entry))
-                    {
-                        let _ = self.globals.apply_change(name, Some(value));
-                    }
+        if let Some(serde_json::Value::Array(arr)) = doc.get("globals") {
+            for entry in arr {
+                if let (Some(name), Some(value)) =
+                    (entry.get("name").and_then(|v| v.as_str()), global_from_json(entry))
+                {
+                    let _ = self.globals.apply_change(name, Some(value));
                 }
             }
-            // Legacy `{name: {value, type}}` object (alphabetized; order was not preserved).
-            Some(serde_json::Value::Object(obj)) => {
-                for (name, entry) in obj {
-                    if let Some(value) = global_from_json(entry) {
-                        let _ = self.globals.apply_change(name, Some(value));
-                    }
-                }
-            }
-            _ => {}
         }
         let mut idmap: HashMap<String, Uid> = HashMap::new();
         for (old, rec) in nodes {
@@ -2219,7 +2205,7 @@ impl Graph {
                 }
             }
         }
-        // Reconstruct the flat sub-patch scopes (v6). The members are already live flat nodes; here
+        // Reconstruct the flat sub-patch scopes. The members are already live flat nodes; here
         // we mint fresh scope uids, re-tag membership from each scope's `nodes` list, and rebuild its
         // stubs (remapping the stored inner uid). No def bodies to rehydrate — the runtime is flat.
         let scopes_v = doc.get("root").and_then(|r| r.get("scopes")).and_then(|v| v.as_object());
@@ -2230,7 +2216,7 @@ impl Graph {
         Ok(())
     }
 
-    /// Rebuild `scopes`/`scope_of` from a loaded v6 document, after the flat nodes/links are live.
+    /// Rebuild `scopes`/`scope_of` from a loaded v7 document, after the flat nodes/links are live.
     /// Scope uids are minted fresh (remapped); a member uid resolves through `idmap` (a flat leaf) or
     /// the fresh scope map (a nested-scope member). A stub's stored `inner_uid` resolves the same way.
     fn reload_scopes(
@@ -4016,7 +4002,7 @@ mod tests {
         g.add_link(c, "out", echo, "in").unwrap();
 
         let yaml = g.serialize();
-        assert!(yaml.contains("version: 6"));
+        assert!(yaml.contains("version: 7"));
 
         let mut g2 = Graph::new();
         g2.load_doc(&yaml).unwrap();
@@ -4052,8 +4038,10 @@ mod tests {
         let mut g = Graph::new();
         g.add_node("_TestConst", None).unwrap();
         let before = g.node_count();
-        let bad = "version: 3\nnodes:\n  \"00000000000a\":\n    type: NotAReal Node\n    pos: [0, 0]\nlinks: []\n";
-        assert!(g.load_doc(bad).is_err());
+        let bad = "version: 7\nroot:\n  nodes:\n    \"00000000000a\":\n      type: NotAReal Node\n      pos: [0, 0]\n  links: []\n";
+        let err = g.load_doc(bad).unwrap_err();
+        // Name the type, so a future version-gate change can't make this pass for the wrong reason.
+        assert!(err.contains("NotAReal Node"), "rejected on the type, not the version: {err}");
         // validate-before-teardown: the existing graph is untouched on failure.
         assert_eq!(g.node_count(), before);
     }
@@ -5041,7 +5029,7 @@ mod tests {
         // hunting for a typo. Lose a dependency, restart, reopen a patch that used the node.
         let mut g = Graph::new();
         assert!(g.register_unavailable("PsdScipy".into(), "scipy".into()));
-        let doc = "version: 6\nroot:\n  nodes:\n    n0:\n      type: PsdScipy\n  links: []\n";
+        let doc = "version: 7\nroot:\n  nodes:\n    n0:\n      type: PsdScipy\n  links: []\n";
 
         let err = g.load_doc(doc).unwrap_err();
         assert!(err.contains("unavailable"), "names the state: {err}");
@@ -5519,14 +5507,14 @@ mod tests {
     }
 
     #[test]
-    fn serialize_emits_v6_root_nested_and_roundtrips() {
-        // .gfi v6: version 6, a `pillar_default`, nodes/links nested under `root`, plus a `globals`
+    fn serialize_emits_v7_root_nested_and_roundtrips() {
+        // .gfi v7: version 7, a `pillar_default`, nodes/links nested under `root`, plus a `globals`
         // block (and a flat `scopes` overlay). A signal-only patch round-trips.
         let mut g = Graph::new();
         let n = g.add_node("_TestConst", None).unwrap();
         g.update_param(n, "constant", "value", Param::float(7.0, -1.0e9, 1.0e9)).unwrap();
         let yaml = g.serialize();
-        assert!(yaml.contains("version: 6"), "emits v6; got:\n{yaml}");
+        assert!(yaml.contains("version: 7"), "emits v7; got:\n{yaml}");
         assert!(yaml.contains("pillar_default: signal"), "carries the default pillar");
         assert!(yaml.contains("root:"), "nodes/links nested under root");
         let mut g2 = Graph::new();
@@ -5536,12 +5524,21 @@ mod tests {
         assert_eq!(
             goofi_node::param(g2.params(uid2).unwrap(), "constant", "value").unwrap().as_f64(),
             Some(7.0),
-            "param round-trips through v6",
+            "param round-trips through v7",
         );
+
+        // v3-v6 belonged to the bare-text era and go with it (spec Decision 3: no back-compat).
+        for legacy in [
+            "version: 6\nroot:\n  nodes: {}\n  links: []\n",
+            "version: 3\nnodes: {}\nlinks: []\n",
+        ] {
+            let err = g.load_doc(legacy).unwrap_err();
+            assert!(err.contains('7'), "the error names the version this build reads, got: {err}");
+        }
     }
 
     #[test]
-    fn globals_round_trip_through_gfi_v5() {
+    fn globals_round_trip_through_gfi() {
         use goofi_core::globals::GlobalValue;
         let mut g = Graph::new();
         g.apply_global_change("default_ufreq", Some(GlobalValue::Float(60.0))).unwrap();
@@ -5583,12 +5580,12 @@ mod tests {
     }
 
     #[test]
-    fn v4_patch_loads_with_system_globals_seeded() {
-        // A pre-globals v4 patch (no `globals` block) loads fine — the system defaults are seeded.
-        let v4 = "version: 4\npillar_default: signal\ndefinitions: {}\nroot:\n  nodes:\n    n0: { type: _TestConst, name: c0, pos: [1.0, 2.0], params: {} }\n  links: []\n  instances: {}\n";
+    fn a_globals_less_patch_loads_with_system_globals_seeded() {
+        // A patch with no `globals` block loads fine — the system defaults are seeded.
+        let doc = "version: 7\npillar_default: signal\nroot:\n  nodes:\n    n0: { type: _TestConst, name: c0, pos: [1.0, 2.0], params: {} }\n  links: []\n";
         let mut g = Graph::new();
-        g.load_doc(v4).unwrap();
-        assert_eq!(g.node_uids().len(), 1, "v4 nodes load");
+        g.load_doc(doc).unwrap();
+        assert_eq!(g.node_uids().len(), 1, "nodes load");
         assert_eq!(
             g.globals().get("default_ufreq"),
             Some(&goofi_core::globals::GlobalValue::Float(30.0)),
@@ -6160,17 +6157,6 @@ mod tests {
         assert_eq!(g2.scope(s2).unwrap().stubs.len(), 2, "wired + half-wired stubs both restored");
         let dangling = g2.scope(s2).unwrap().stubs.values().filter(|st| st.inner.is_none()).count();
         assert_eq!(dangling, 1, "the half-wired stub round-trips as present-but-dangling");
-    }
-
-    #[test]
-    fn v3_document_upconverts_and_loads() {
-        // A legacy flat v3 document (nodes/links at the top level) still loads — the loader
-        // up-converts it (wraps under `root`) so old patches keep working.
-        let v3 = "version: 3\nnodes:\n  n0: { type: _TestConst, name: c0, pos: [1.0, 2.0], params: {} }\nlinks: []\n";
-        let mut g = Graph::new();
-        g.load_doc(v3).unwrap();
-        assert_eq!(g.node_uids().len(), 1, "v3 node loaded");
-        assert_eq!(g.name(g.node_uids()[0]), Some("c0"), "v3 name preserved");
     }
 
     #[test]
