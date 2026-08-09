@@ -59,7 +59,11 @@ pub struct AppState {
     /// Where the open patch's workspace files live while it is open — the tree a `.gfi` packs and
     /// unpacks. Created at boot, dropped by [`AppState::release_mount`] on a graceful exit; after a
     /// crash it simply stays, because a reboot clears the system temp directory.
-    pub mount: PathBuf,
+    ///
+    /// Shared and private because a load REPLACES it (the loaded patch brings its own workspace)
+    /// while every handler holds its own clone of the state — one stored path, read through
+    /// [`AppState::mount`], is the single source of truth for where the workspace is right now.
+    mount: Arc<Mutex<PathBuf>>,
 }
 
 /// Timings that govern how a `/data` socket detects a **dead-but-not-closed** peer — a laptop that
@@ -130,15 +134,20 @@ impl AppState {
             reducers,
             history: Arc::new(Mutex::new(goofi_engine::CommandHistory::new())),
             data_liveness: DataLiveness::DEFAULT,
-            mount: new_mount(),
+            mount: Arc::new(Mutex::new(new_mount())),
         }
+    }
+
+    /// Where the open patch's workspace files live *right now*. Copied out rather than borrowed:
+    /// the lock guards only the swap, and no filesystem walk may run while holding it.
+    pub fn mount(&self) -> PathBuf {
+        self.mount.lock().unwrap().clone()
     }
 
     /// Drop the workspace mount. Best-effort by decision: a failure leaves one directory in the
     /// system temp dir, which a reboot clears — no registry, no retry, no reporting.
     pub fn release_mount(&self) {
-        // The nonce directory, not just `workspace` — otherwise every run leaves an empty husk.
-        let _ = std::fs::remove_dir_all(self.mount.parent().unwrap_or(&self.mount));
+        remove_mount(&self.mount());
     }
 }
 
@@ -150,6 +159,12 @@ fn new_mount() -> PathBuf {
     let dir = std::env::temp_dir().join(format!("goofi-{}", nonce_hex())).join("workspace");
     let _ = std::fs::create_dir_all(&dir);
     dir
+}
+
+/// Reclaim a mount: the nonce directory, not just `workspace` — otherwise every released mount
+/// leaves an empty husk behind.
+fn remove_mount(mount: &std::path::Path) {
+    let _ = std::fs::remove_dir_all(mount.parent().unwrap_or(mount));
 }
 
 /// A 128-bit random name, hex. Only has to be unguessable-enough to keep two concurrent goofis —
@@ -191,6 +206,38 @@ fn save_archive(target: &std::path::Path, manifest: &str, mount: &std::path::Pat
         let _ = std::fs::remove_file(&tmp);
     }
     packed.map_err(|e| format!("save failed: {e}"))
+}
+
+/// The fallible half of a load, run against a mount that is not yet live: unpack (or, for
+/// `load_text`, simply accept) the patch and apply its manifest to `g`, reporting the file it came
+/// from. `load` unpacks the archive's workspace tree into `mount`; `load_text` is a browser upload
+/// that cannot carry a workspace, so its `mount` stays the empty one the caller made.
+///
+/// Nothing here touches state the caller has not already agreed to lose: `g` is replaced only by
+/// `load_doc`, which is the last thing that can fail, and `mount` is not yet the live one. That is
+/// what lets the caller commit unconditionally once this returns `Ok`.
+fn load_into(
+    mount: &std::path::Path,
+    g: &mut Graph,
+    op: &str,
+    payload: &Value,
+) -> Result<Option<String>, String> {
+    let (content, from_path) = if op == "load" {
+        // Expand `~` exactly as the browser does — the two must agree on what a path means.
+        let path =
+            fsbrowse::resolve(payload.get("path").and_then(|v| v.as_str()).ok_or("load: missing path")?);
+        let manifest = goofi_engine::archive::read_gfi(std::path::Path::new(&path), mount)
+            .map_err(|e| format!("load failed: {e}"))?;
+        (manifest, Some(path))
+    } else {
+        let content =
+            payload.get("content").and_then(|v| v.as_str()).ok_or("load_text: missing content")?;
+        (content.to_string(), None)
+    };
+    // Parse BEFORE the caller announces anything: a rejected patch must not leave the title bar
+    // naming a file the graph was never loaded from.
+    g.load_doc(&content)?;
+    Ok(from_path)
 }
 
 pub fn router(state: AppState) -> Router {
@@ -1083,32 +1130,27 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
                     .and_then(|v| v.as_str())
                     .map(fsbrowse::resolve)
                     .ok_or("save: missing path")?;
-                save_archive(std::path::Path::new(&path), &g.serialize(), &state.mount)?;
+                save_archive(std::path::Path::new(&path), &g.serialize(), &state.mount())?;
                 // Written to disk ⇒ clean.
                 events.extend(state.set_dirty(false));
                 Ok(json!({ "path": path }))
             }
             // One load path for both sources: `load_text` carries the YAML inline (a browser
-            // upload), `load` names a file the BACKEND reads. Everything after the read — replace,
-            // reset history, announce — must not drift between them, so they share an arm.
+            // upload), `load` names a `.gfi` the BACKEND reads. Everything after the read —
+            // replace, reset history, announce — must not drift between them, so they share an arm.
             "load_text" | "load" => {
-                let (content, from_path) = if op == "load" {
-                    let path = fsbrowse::resolve(
-                        payload.get("path").and_then(|v| v.as_str()).ok_or("load: missing path")?,
-                    );
-                    let yaml = std::fs::read_to_string(&path)
-                        .map_err(|e| format!("load failed: {e}"))?;
-                    (yaml, Some(path))
-                } else {
-                    let content = payload
-                        .get("content")
-                        .and_then(|v| v.as_str())
-                        .ok_or("load_text: missing content")?;
-                    (content.to_string(), None)
-                };
-                // Parse BEFORE announcing: a rejected patch must not leave the title bar naming
-                // a file the graph was never loaded from.
-                g.load_doc(&content)?;
+                // Both sources mount FRESH, and the live mount is swapped for it only once the
+                // manifest has parsed. So a refused load leaves the open patch untouched on both
+                // planes — its graph AND its workspace files — and a loaded patch never inherits
+                // the files of the patch it replaced.
+                let fresh = new_mount();
+                let from_path =
+                    load_into(&fresh, &mut g, &op, &payload).inspect_err(|_| remove_mount(&fresh))?;
+                // Commit, now that nothing left can fail: the loaded patch's workspace becomes the
+                // live one and the mount it replaced is reclaimed — after the lock drops, since
+                // deleting a tree is a walk and the lock guards only the swap.
+                let replaced = std::mem::replace(&mut *state.mount.lock().unwrap(), fresh);
+                remove_mount(&replaced);
                 // A load fully resets the session — there is nothing to undo across it (spec §3:
                 // no load command / no checkpoint), so drop every session's command history.
                 state.history.lock().unwrap().clear();

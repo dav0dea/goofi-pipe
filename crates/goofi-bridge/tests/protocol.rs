@@ -28,14 +28,22 @@ fn doc_node_pos(doc: &goofi_crdt::GraphDoc, uid: &str) -> Option<[f64; 2]> {
 }
 
 async fn start_server() -> String {
+    start_server_with_state().await.0
+}
+
+/// Like [`start_server`], but hands the state back as well — a test that reaches for the workspace
+/// mount has to read it from the very `AppState` the server is answering from, since a load
+/// REPLACES the path and a copy taken beforehand would name the mount that load just released.
+async fn start_server_with_state() -> (String, AppState) {
     let state = AppState::new();
     spawn_tick(state.graph.clone());
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
+    let served = state.clone();
     tokio::spawn(async move {
-        serve_app(listener, state, None).await.unwrap();
+        serve_app(listener, served, None).await.unwrap();
     });
-    format!("ws://{addr}")
+    (format!("ws://{addr}"), state)
 }
 
 // A runtime type registered before serving — stands in for a discovered Python
@@ -2118,21 +2126,26 @@ async fn save_writes_a_gfi_archive() {
     assert!(dest.is_dir(), "the workspace tree rides along, empty or not");
 }
 
+/// The round trip, which is the whole point of the container: a `.gfi` written by `save` loads
+/// back — both the graph and the workspace files the patch was saved with.
 #[tokio::test]
-async fn load_reads_a_patch_from_a_backend_path() {
-    let base = start_server().await;
+async fn load_restores_the_graph_and_the_workspace_from_an_archive() {
+    let (base, state) = start_server_with_state().await;
     let (mut ws, _) = connect_async(format!("{base}/control")).await.unwrap();
     let _hello = recv_text(&mut ws).await;
 
-    let path = std::env::temp_dir().join(format!("goofi-load-{}.gfi", std::process::id()));
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("patch.gfi");
     call(&mut ws, 1, "add_node", json!({ "type": "Oscillator" })).await;
-    // The fixture is written directly rather than through `save`: save now packs an ARCHIVE and
-    // load still reads bare YAML. Round-tripping the two is what the load arm's own task restores.
-    let ser = call(&mut ws, 2, "serialize", json!({})).await;
-    std::fs::write(&path, ser["result"]["yaml"].as_str().unwrap()).unwrap();
+    std::fs::write(state.mount().join("agent.md"), b"notes").unwrap();
+    call(&mut ws, 2, "save", json!({ "path": path.to_string_lossy() })).await;
 
-    // Diverge from the saved patch, then load it back off disk.
+    // Diverge from the saved patch on BOTH planes — a node it does not have, and a workspace that
+    // no longer matches the one it packed — then load it back off disk.
+    let stale = state.mount();
     call(&mut ws, 3, "add_node", json!({ "type": "Buffer" })).await;
+    std::fs::remove_file(stale.join("agent.md")).unwrap();
+    std::fs::write(stale.join("scratch.txt"), b"written since the save").unwrap();
     ws.send(Message::Text(
         json!({ "id": 4, "op": "load", "payload": { "path": path.to_string_lossy() } }).to_string(),
     ))
@@ -2144,6 +2157,7 @@ async fn load_reads_a_patch_from_a_backend_path() {
     let mut order: Vec<&str> = Vec::new();
     while replaced.is_none() || save_path.is_none() {
         let m = recv_text(&mut ws).await;
+        assert!(m.get("error").is_none(), "the archive loads; got {m}");
         match m.get("event").and_then(|v| v.as_str()) {
             Some("graph_replaced") => {
                 order.push("graph_replaced");
@@ -2172,32 +2186,50 @@ async fn load_reads_a_patch_from_a_backend_path() {
     // The title bar names the loaded patch, so the manager reports where it came from.
     assert_eq!(save_path.unwrap()["payload"]["save_path"].as_str(), path.to_str());
 
-    let _ = std::fs::remove_file(&path);
+    // The workspace came back with the patch, into a mount of the load's OWN — so nothing the
+    // diverged patch had written can survive into the one that replaced it.
+    let mount = state.mount();
+    assert_ne!(mount, stale, "a load mounts fresh");
+    assert_eq!(std::fs::read(mount.join("agent.md")).unwrap(), b"notes");
+    assert!(!mount.join("scratch.txt").exists(), "the diverged workspace did not follow");
+    assert!(!stale.exists(), "the mount the load replaced is released, not leaked");
 }
 
 #[tokio::test]
-async fn load_reports_a_missing_file_instead_of_replacing_the_graph() {
-    let base = start_server().await;
+async fn a_refused_load_leaves_the_graph_and_the_workspace_untouched() {
+    let (base, state) = start_server_with_state().await;
     let (mut ws, _) = connect_async(format!("{base}/control")).await.unwrap();
     let _hello = recv_text(&mut ws).await;
 
     call(&mut ws, 1, "add_node", json!({ "type": "Oscillator" })).await;
-    let reply = call(&mut ws, 2, "load", json!({ "path": "/definitely/not/a/patch.gfi" })).await;
+    let mount = state.mount();
+    std::fs::write(mount.join("agent.md"), b"notes").unwrap();
 
-    assert!(reply["error"].as_str().unwrap().contains("load failed"), "got {reply:?}");
-
-    // A readable file that is not a patch fails at the parse, leaving the graph untouched.
-    let junk = std::env::temp_dir().join(format!("goofi-junk-{}.gfi", std::process::id()));
+    // The three ways a load is refused, in the order the arm reaches them: no such file, a file
+    // that is not an archive, and — the one that pins commit-AFTER-parse — a perfectly good
+    // archive, workspace and all, whose manifest the engine will not accept.
+    let dir = tempfile::tempdir().unwrap();
+    let junk = dir.path().join("junk.gfi");
     std::fs::write(&junk, "this: is: not: a patch").unwrap();
-    let reply = call(&mut ws, 3, "load", json!({ "path": junk.to_string_lossy() })).await;
-    assert!(reply.get("error").is_some(), "a malformed patch is rejected; got {reply:?}");
+    let packed = dir.path().join("ws");
+    std::fs::create_dir(&packed).unwrap();
+    std::fs::write(packed.join("intruder.txt"), b"from the refused archive").unwrap();
+    let bad = dir.path().join("bad.gfi");
+    goofi_engine::archive::write_gfi(&bad, "this: is: not: a patch", &packed).unwrap();
 
-    let ser = call(&mut ws, 4, "serialize", json!({})).await;
+    for (id, target) in [(2, dir.path().join("absent.gfi")), (3, junk), (4, bad)] {
+        let reply = call(&mut ws, id, "load", json!({ "path": target.to_string_lossy() })).await;
+        assert!(reply.get("error").is_some(), "`{}` is refused; got {reply}", target.display());
+    }
+
+    let ser = call(&mut ws, 5, "serialize", json!({})).await;
     assert!(
         ser["result"]["yaml"].as_str().unwrap().contains("Oscillator"),
-        "the pre-load graph survives both failures"
+        "the pre-load graph survives every failure"
     );
-    let _ = std::fs::remove_file(&junk);
+    assert_eq!(state.mount(), mount, "the live mount is still the one the open patch was using");
+    assert_eq!(std::fs::read(mount.join("agent.md")).unwrap(), b"notes");
+    assert!(!mount.join("intruder.txt").exists(), "nothing from a refused archive landed in it");
 }
 
 // A node whose FIRST instance fails to boot and whose second succeeds — so a restart is

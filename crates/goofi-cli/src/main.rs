@@ -376,7 +376,7 @@ mod tests {
     #[tokio::test]
     async fn the_mount_lives_exactly_as_long_as_the_run() {
         let state = AppState::new();
-        let mount = state.mount.clone();
+        let mount = state.mount();
         assert!(mount.is_dir(), "the mount exists after boot: {}", mount.display());
         // Port 0 binds ephemerally; an already-resolved shutdown takes the same path ctrl-C does.
         let cli = Cli { port: 0, ..Cli::default() };
