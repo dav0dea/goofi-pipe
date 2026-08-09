@@ -92,7 +92,10 @@ describe('scale tokens exist and are ordered', () => {
 		for (let i = 1; i < steps.length; i++) expect(steps[i]).toBeGreaterThan(steps[i - 1]);
 	});
 	it('--radius-lg is deleted', () => expect(css).not.toMatch(/--radius-lg\s*:/));
-	it('--font-sans is deleted (collapsed to --font-mono)', () => expect(css).not.toMatch(/--font-sans\s*:/));
+	/* `--font-sans is deleted (collapsed to --font-mono)` used to sit here: at the time the app had
+	   exactly one face and an unused second token. The two-face design (D-T1) reverses that — sans
+	   is a real, shipped face with a real job. The token's contract now lives in `fonts.test.ts`,
+	   stated positively: it exists, and it leads with the vendored 'Inter'. */
 });
 
 describe('the success green is differentiated from the accent (D-M1)', () => {

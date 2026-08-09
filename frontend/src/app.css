@@ -5,6 +5,25 @@
  * names match the earlier scheme so every component restyles automatically.
  */
 
+/* The app's two typefaces — Inter (OFL) for chrome, JetBrains Mono (OFL) for data — vendored
+   like the Lucide icons: deterministic glyphs AND metrics on every machine. The stylesheet
+   named JetBrains Mono for weeks while no machine actually had it; every ink measurement was
+   calibrated against an unknown fontconfig substitute. `font-display` is `block`, never `swap`:
+   the files are same-origin and load in milliseconds, and a fallback flash would re-introduce
+   exactly the nondeterminism this block removes. */
+@font-face {
+	font-family: 'Inter';
+	src: url('/fonts/InterVariable.woff2') format('woff2');
+	font-weight: 100 900;
+	font-display: block;
+}
+@font-face {
+	font-family: 'JetBrains Mono';
+	src: url('/fonts/JetBrainsMono.woff2') format('woff2');
+	font-weight: 100 800;
+	font-display: block;
+}
+
 :root {
 	color-scheme: dark;
 
@@ -203,7 +222,16 @@
 	--z-tab-drag: 250; /* a tab being dragged to reorder */
 	--z-toast: 260; /* transient toast (undo/redo errors) — above everything */
 
-	/* JetBrains Mono throughout — goofi3 aesthetic. */
+	/* Chrome speaks Inter, data speaks JetBrains Mono (spec D-T2/D-T3): sans is the DEFAULT
+	   (body below), and a surface that shows identifiers, values, paths or output opts into
+	   mono deliberately. Both faces are shipped above, so these stacks are a formality for
+	   the first paint only. */
+	--font-sans:
+		'Inter',
+		system-ui,
+		-apple-system,
+		'Segoe UI',
+		sans-serif;
 	--font-mono:
 		'JetBrains Mono',
 		ui-monospace,
