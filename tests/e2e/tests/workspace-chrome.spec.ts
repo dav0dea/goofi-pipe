@@ -198,6 +198,8 @@ test('the layout tab’s label INK sits on the header midline, level with the �
 // `font: inherit` itself or fall back to the UA default (Arial 13.333px) the moment it goes.
 // The rule is still there today, so the guard SIMULATES its removal: `font: revert` at the same
 // (0,0,1) specificity, injected last, hands any button that declares no font back to the UA.
+// Both rows are CHROME (a menu row, a panel-choice tile), so the face they must come back holding
+// is the sans body face — what this asserts is that the app's own rule decides it, not the UA.
 test('the kept-bespoke menu row and panel tile declare their own font', async ({ page }) => {
 	await page.goto('/');
 	await waitForApp(page);
@@ -208,7 +210,7 @@ test('the kept-bespoke menu row and panel tile declare their own font', async ({
 	const item = page.locator('.context-menu .item').first();
 	await expect(item).toBeVisible();
 	const itemFont = await item.evaluate((el) => getComputedStyle(el).fontFamily);
-	expect(itemFont, 'the context-menu row renders in the app mono face').toContain('JetBrains Mono');
+	expect(itemFont, 'the context-menu row renders in the app chrome face').toContain('Inter');
 	await page.keyboard.press('Escape');
 
 	// A freshly split panel starts empty, which is what renders the choice tiles.
@@ -219,9 +221,7 @@ test('the kept-bespoke menu row and panel tile declare their own font', async ({
 		const choice = page.getByTestId('empty-panel').locator('.choice').first();
 		await expect(choice).toBeVisible();
 		const choiceFont = await choice.evaluate((el) => getComputedStyle(el).fontFamily);
-		expect(choiceFont, 'the empty-panel tile renders in the app mono face').toContain(
-			'JetBrains Mono'
-		);
+		expect(choiceFont, 'the empty-panel tile renders in the app chrome face').toContain('Inter');
 	} finally {
 		await closeSplit(page);
 	}
@@ -282,9 +282,16 @@ async function skin(loc: Locator) {
 	});
 }
 
-/** Every kept-bespoke button renders in the app face, never the UA's `400 13.333px Arial`. */
-function expectAppFace(s: { fontFamily: string }, who: string) {
-	expect(s.fontFamily, `${who} renders in the app mono face`).toContain('JetBrains Mono');
+/**
+ * Every kept-bespoke button renders in an APP face, never the UA's `400 13.333px Arial` — and in
+ * the one its surface is classified as (D-T3), since this population straddles the taxonomy: menu
+ * rows and tiles are chrome, a file path and a node name are data. Passing the side in is what
+ * keeps a bespoke rule that quietly changes face a red here rather than a screenshot nobody takes.
+ */
+function expectAppFace(s: { fontFamily: string }, who: string, face: 'sans' | 'mono') {
+	expect(s.fontFamily, `${who} renders in the app ${face} face`).toContain(
+		face === 'mono' ? 'JetBrains Mono' : 'Inter'
+	);
 }
 
 test('the kept-bespoke chrome buttons render from their own rules, not the base skin', async ({
@@ -299,7 +306,7 @@ test('the kept-bespoke chrome buttons render from their own rules, not the base 
 	//    accent hover fill has round corners, --space-3/--space-4 pads, its own bg+color transition.
 	await header.locator('.content-btn').click();
 	const item = await skin(page.locator('.context-menu .item').first());
-	expectAppFace(item, 'the context-menu row');
+	expectAppFace(item, 'the context-menu row', 'sans');
 	expect(item.fontSize, 'the row takes the menu --fs-small').toBeCloseTo(0.82 * item.rem, 0);
 	expect(item.background, 'the row is transparent at rest').toBe('rgba(0, 0, 0, 0)');
 	expect(item.borderWidth, 'the row is borderless').toBe('0px');
@@ -316,7 +323,7 @@ test('the kept-bespoke chrome buttons render from their own rules, not the base 
 	await page.evaluate(() => (window as any).goofi.commands.openAddMenu());
 	await page.getByTestId('add-menu-list').waitFor();
 	const addItem = await skin(page.locator('.add-menu .item:not(.hl)').first());
-	expectAppFace(addItem, 'the add-node row');
+	expectAppFace(addItem, 'the add-node row', 'sans');
 	expect(addItem.fontSize).toBeCloseTo(0.82 * addItem.rem, 0);
 	expect(addItem.background, 'unhighlighted rows are transparent').toBe('rgba(0, 0, 0, 0)');
 	expect(addItem.borderWidth).toBe('0px');
@@ -331,7 +338,7 @@ test('the kept-bespoke chrome buttons render from their own rules, not the base 
 	await page.getByTestId('topbar-load').click();
 	await page.getByTestId('fs-list').waitFor();
 	const root = await skin(page.locator('.roots .root:not(.active)').first());
-	expectAppFace(root, 'the fs sidebar root');
+	expectAppFace(root, 'the fs sidebar root', 'sans');
 	expect(root.fontSize).toBeCloseTo(0.82 * root.rem, 0);
 	expect(root.background, 'an inactive root is transparent').toBe('rgba(0, 0, 0, 0)');
 	expect(root.borderWidth).toBe('0px');
@@ -341,7 +348,7 @@ test('the kept-bespoke chrome buttons render from their own rules, not the base 
 	expect(root.transition).toContain('background');
 
 	const entry = await skin(page.getByTestId('fs-entry').first());
-	expectAppFace(entry, 'the fs file row');
+	expectAppFace(entry, 'the fs file row', 'mono');
 	expect(entry.fontSize).toBeCloseTo(0.82 * entry.rem, 0);
 	expect(entry.background, 'an unselected entry is transparent').toBe('rgba(0, 0, 0, 0)');
 	expect(entry.borderWidth).toBe('0px');
@@ -358,7 +365,7 @@ test('the kept-bespoke chrome buttons render from their own rules, not the base 
 	await page.locator('.context-menu .item', { hasText: 'Split Right' }).click();
 	try {
 		const choice = await skin(page.getByTestId('empty-panel').locator('.choice').first());
-		expectAppFace(choice, 'the empty-panel tile');
+		expectAppFace(choice, 'the empty-panel tile', 'sans');
 		expect(choice.fontSize, 'the tile takes the body size').toBeCloseTo(choice.rem, 0);
 		expect(choice.background, 'the tile face is --surface-1').toBe('rgb(28, 28, 28)');
 		expect(choice.borderWidth, 'a 1px border it colours only on hover').toBe('1px');
@@ -380,7 +387,7 @@ test('the kept-bespoke node-scoped buttons render from their own rules', async (
 	// 6. SlotViewer `.tri` — the disclosure triangle on a node's output slot. Frozen node-canvas
 	//    geometry: a 16px chromeless box at the canvas's fixed 10px type size.
 	const tri = await skin(page.locator('.slot-viewer .tri').first());
-	expectAppFace(tri, 'the slot disclosure triangle');
+	expectAppFace(tri, 'the slot disclosure triangle', 'mono');
 	expect(tri.fontSize, 'the node canvas is a fixed-px coordinate system').toBe(10);
 	expect(tri.background, 'no button chrome at all').toBe('rgba(0, 0, 0, 0)');
 	expect(tri.borderWidth).toBe('0px');
@@ -391,7 +398,7 @@ test('the kept-bespoke node-scoped buttons render from their own rules', async (
 	//    it replaced (600 weight, --fs-strong, no chrome), not as a button.
 	await page.evaluate((u) => (window as any).goofi.commands.select([u]), uid);
 	const name = await skin(page.getByTestId('auto-side-panel').getByTestId('node-name'));
-	expectAppFace(name, 'the inspector rename title');
+	expectAppFace(name, 'the inspector rename title', 'mono');
 	expect(name.fontSize, 'the title is --fs-strong').toBeCloseTo(name.rem, 0);
 	expect(name.fontWeight, 'it reads as a heading').toBe('600');
 	expect(name.background, 'it carries no button surface').toBe('rgba(0, 0, 0, 0)');
