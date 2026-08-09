@@ -2720,6 +2720,39 @@ async fn unsaved_changes_tracks_mutations_and_clears_on_save() {
     let _ = std::fs::remove_file(&path);
 }
 
+/// A save clears BOTH halves of the dirty flag, so it has to announce that on both.
+///
+/// `unsaved_changes` is a composite — the graph flag OR a workspace that drifted from its archive —
+/// but the announcement used to ride the *flag's transition* alone. So a patch dirtied only by a
+/// file written into the mount saved silently: the flag was already false, nothing was broadcast,
+/// and every tab that had read `unsaved_changes: true` kept its dot and its unload guard armed on a
+/// patch that was by then entirely on disk. (This is invisible to the mutation test above, whose
+/// `add_node` sets the flag and so gets the transition for free.)
+#[tokio::test]
+async fn a_save_announces_a_clean_patch_though_only_the_workspace_was_dirty() {
+    let (base, state) = start_server_with_state().await;
+    std::fs::write(state.mount().join("agent.md"), b"notes").unwrap();
+
+    let (mut ws, _) = connect_async(format!("{base}/control")).await.unwrap();
+    let hello = recv_text(&mut ws).await;
+    assert_eq!(hello["payload"]["unsaved_changes"], json!(true), "an unpacked file is unsaved work");
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("patch.gfi");
+    ws.send(Message::Text(
+        json!({ "id": 1, "op": "save", "payload": { "path": path.to_string_lossy() } }).to_string(),
+    ))
+    .await
+    .unwrap();
+    let clean = loop {
+        let m = recv_text(&mut ws).await;
+        if m.get("event").and_then(|v| v.as_str()) == Some("unsaved_changes") {
+            break m;
+        }
+    };
+    assert_eq!(clean["payload"]["unsaved_changes"], json!(false), "every tab is told it is saved");
+}
+
 #[tokio::test]
 async fn the_editor_layout_persists_into_the_patch_and_comes_back_on_hello() {
     let base = start_server().await;

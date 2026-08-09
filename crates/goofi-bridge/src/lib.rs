@@ -65,11 +65,9 @@ pub struct AppState {
     /// [`AppState::mount`], is the single source of truth for where the workspace is right now.
     mount: Arc<Mutex<PathBuf>>,
     /// What the workspace looked like when it was last packed into a `.gfi` or unpacked from one —
-    /// the baseline [`AppState::is_dirty`] compares the live mount against. Re-taken at BOTH ends
-    /// because `read_gfi` restores no mtimes: a freshly loaded tree resembles the tree the archive
-    /// was written from in content only, so a load that did not re-baseline would leave the patch
-    /// permanently dirty.
-    workspace: Arc<Mutex<std::collections::BTreeMap<PathBuf, (u64, std::time::SystemTime)>>>,
+    /// the fingerprint [`AppState::is_dirty`] compares the live mount against. Re-taken at BOTH
+    /// ends; the load end is the one that is easy to miss, and the `load` arm says why.
+    workspace_baseline: Arc<Mutex<std::collections::BTreeMap<PathBuf, (u64, std::time::SystemTime)>>>,
     /// Where the open patch lives on disk — `None` until it is saved somewhere or loaded from
     /// somewhere. MANAGER-owned (C38) rather than remembered per tab: it rides the snapshot every
     /// client connects with, so a tab that opens later and a tab that never pressed Save name the
@@ -137,7 +135,7 @@ impl AppState {
         // The baseline is the fingerprint of whatever mount the patch owns — stated that way even
         // at boot, where the mount is empty, so the invariant has one spelling everywhere.
         let mount = new_mount();
-        let workspace = goofi_engine::archive::fingerprint(&mount);
+        let workspace_baseline = goofi_engine::archive::fingerprint(&mount);
         AppState {
             graph,
             events,
@@ -150,7 +148,7 @@ impl AppState {
             history: Arc::new(Mutex::new(goofi_engine::CommandHistory::new())),
             data_liveness: DataLiveness::DEFAULT,
             mount: Arc::new(Mutex::new(mount)),
-            workspace: Arc::new(Mutex::new(workspace)),
+            workspace_baseline: Arc::new(Mutex::new(workspace_baseline)),
             save_path: Arc::new(Mutex::new(None)),
         }
     }
@@ -619,7 +617,7 @@ impl AppState {
     /// stat per file, and the tick holds that lock.
     pub fn is_dirty(&self) -> bool {
         self.dirty.load(std::sync::atomic::Ordering::Relaxed)
-            || goofi_engine::archive::fingerprint(&self.mount()) != *self.workspace.lock().unwrap()
+            || goofi_engine::archive::fingerprint(&self.mount()) != *self.workspace_baseline.lock().unwrap()
     }
 
     /// Set the dirty flag, returning an `unsaved_changes` event ONLY when it actually changed —
@@ -1197,9 +1195,14 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
                 // loses an edit rather than merely reporting a spurious one.
                 let packed = goofi_engine::archive::fingerprint(&mount);
                 save_archive(std::path::Path::new(&path), &g.serialize(), &mount)?;
-                // Written to disk ⇒ clean, on both planes.
-                *state.workspace.lock().unwrap() = packed;
-                events.extend(state.set_dirty(false));
+                // Written to disk ⇒ clean, on both planes — and said so UNCONDITIONALLY, not on the
+                // flag's transition: a patch dirtied solely by a file written into the mount leaves
+                // the flag already false, so no transition comes and every tab would keep its dot
+                // on a patch that is entirely on disk. The duplicate event the common case now gets
+                // is free — a save is one user action, and every client apply branch is idempotent.
+                *state.workspace_baseline.lock().unwrap() = packed;
+                state.set_dirty(false);
+                events.push(event("unsaved_changes", json!({ "unsaved_changes": false })));
                 // …and the patch now has a home the MANAGER knows (C38), so a later plain Save
                 // overwrites this file from any tab, and a reload still names it. Announced as
                 // well as stored: an already-connected peer gets no new snapshot to read it from.
@@ -1230,7 +1233,7 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
                 // The unpacked tree IS what the archive holds — but every file in it was written
                 // seconds ago (`read_gfi` restores no mtimes), so this baseline has to be taken
                 // HERE. Without it a patch would be dirty from the moment it finished loading.
-                *state.workspace.lock().unwrap() = goofi_engine::archive::fingerprint(&state.mount());
+                *state.workspace_baseline.lock().unwrap() = goofi_engine::archive::fingerprint(&state.mount());
                 // A load fully resets the session — there is nothing to undo across it (spec §3:
                 // no load command / no checkpoint), so drop every session's command history.
                 state.history.lock().unwrap().clear();
@@ -1677,12 +1680,28 @@ mod workspace_dirty_tests {
         assert!(!state.is_dirty(), "saving again re-baselines the workspace");
         std::fs::write(state.mount().join("agent.md"), b"notes, and then some more notes").unwrap();
         assert!(state.is_dirty(), "an edit to a packed file is an unsaved change too");
+
+        // …including one that leaves the LENGTH alone — an editor rewriting a line in place. That
+        // is the only edit the mtime half catches on its own, and the half a `(name, len)`
+        // fingerprint would silently drop.
+        save_to(&state, &target);
+        std::fs::write(state.mount().join("agent.md"), b"NOTES, AND THEN SOME MORE NOTES").unwrap();
+        assert!(state.is_dirty(), "a same-length in-place edit is an unsaved change");
+
+        // And a save that FAILED re-baselines nothing: it packed no file, so those edits still live
+        // only in the mount — a per-run temp tree that a graceful exit deletes. Calling them packed
+        // is the one direction that loses them (the arm's comment states the other half, the sample
+        // taken before the pack, which is a race against the zip write and cannot be pinned).
+        let nowhere = tmp.path().join("no-such-dir").join("patch.gfi");
+        let req = json!({ "id": 1, "op": "save", "payload": { "path": nowhere.to_string_lossy() } });
+        let reply = dispatch(&state, &req.to_string()).expect("a numeric id gets a reply");
+        assert!(reply.contains("error"), "the save fails; got {reply}");
+        assert!(state.is_dirty(), "a save that wrote nothing cannot call the workspace packed");
     }
 
-    /// The trap the container sets: a `.gfi` stores no mtimes, so every file `read_gfi` extracts is
-    /// newly written. A baseline taken only when a patch is SAVED would therefore declare a patch
-    /// unsaved the instant it finished loading — the dot on, the unload guard armed, on a graph
-    /// and a workspace that are byte-for-byte the file's.
+    /// What the `load` arm's re-baseline buys, and the trap it steps around: a freshly opened patch
+    /// has the dot off and the unload guard down, on a graph and a workspace that are byte-for-byte
+    /// the file's.
     #[test]
     fn a_freshly_loaded_patch_is_clean_though_every_file_in_it_was_just_written() {
         let state = AppState::new();
