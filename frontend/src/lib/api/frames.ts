@@ -121,6 +121,19 @@ export function subscribeFrames(node: string, slot: string, cb: FrameCallback): 
 		slots.set(k, s);
 	}
 	s.cbs.add(cb);
+	// A joiner of an already-open slot is invisible to the bridge — no worker traffic happens —
+	// and the bridge only sends when something changed, so nothing is coming to paint this
+	// consumer's first frame. The frame it needs is already cached here: replay it to the
+	// joiner alone (the settled consumers have painted it; re-marking the slot dirty would
+	// repaint them all). Without this, a metadata panel joining a slot viewer's stream showed
+	// its empty state until the producer's next emit — indefinitely for a stopped one.
+	if (s.current) {
+		try {
+			cb(s.current);
+		} catch (err) {
+			console.error('frame consumer crashed', err);
+		}
+	}
 	return () => {
 		const cur = slots.get(k);
 		if (!cur) return;

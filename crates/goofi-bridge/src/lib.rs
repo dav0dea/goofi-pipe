@@ -1193,23 +1193,36 @@ fn close(code: u16, reason: &str) -> Message {
     }))
 }
 
-/// Write one message to a `/data` socket, giving up after `bound`. Returns `false` only when the
-/// socket itself failed.
+/// How a bounded `/data` write ended: delivered, given up on (peer stalled past the bound), or
+/// the socket itself failed.
+#[derive(Debug, PartialEq)]
+enum SendOutcome {
+    Sent,
+    Dropped,
+    Gone,
+}
+
+/// Write one message to a `/data` socket, giving up after `bound`.
 ///
 /// The bound is not a policy about slow viewers — it is what keeps the caller's `tokio::select!`
 /// from parking. An `.await` inside a select BRANCH BODY runs to completion with no other branch
 /// polled, so an unbounded write to a peer whose TCP window stopped draining would freeze the
 /// keepalive beat: the liveness probe would be dead code on exactly the socket it exists to catch.
-/// Giving up on a message costs one frame (latest-wins, as `Lagged` does); parking costs the
-/// connection forever.
-async fn send_bounded<S>(tx: &mut S, msg: Message, bound: Duration) -> bool
+/// Giving up on a message costs one frame (latest-wins, as `Lagged` does) — the caller re-offers
+/// a `Dropped` frame through the reducer, since the skip-unchanged sweep will not send it again
+/// on its own; parking costs the connection forever.
+async fn send_bounded<S>(tx: &mut S, msg: Message, bound: Duration) -> SendOutcome
 where
     S: futures_util::Sink<Message> + Unpin,
 {
     // A timeout leaves at most this one message buffered: the sink's `poll_ready` gates the NEXT
     // write on the same unfinished flush, so nothing accumulates behind a peer that stopped
     // reading.
-    !matches!(tokio::time::timeout(bound, tx.send(msg)).await, Ok(Err(_)))
+    match tokio::time::timeout(bound, tx.send(msg)).await {
+        Ok(Ok(())) => SendOutcome::Sent,
+        Ok(Err(_)) => SendOutcome::Gone,
+        Err(_) => SendOutcome::Dropped,
+    }
 }
 
 /// What the `/data` keepalive timer should do on this beat.
@@ -1320,13 +1333,19 @@ async fn handle_data(socket: WebSocket, state: AppState, node: String, slot: Str
                     // A flush is not life either: the socket buffer of a peer that stopped reading
                     // keeps swallowing frames until it is full, which on a low-rate slot takes
                     // minutes. Only the pong decides.
-                    if !send_bounded(&mut tx, Message::Binary(bytes), cfg.send_timeout).await {
-                        break; // the socket really is gone
+                    match send_bounded(&mut tx, Message::Binary(bytes), cfg.send_timeout).await {
+                        SendOutcome::Sent => {}
+                        // The sweep will not resend an unchanged frame, so a dropped one must be
+                        // asked for again — otherwise the drop costs every frame until the next
+                        // emit (a one-shot join/spec serve would simply be lost).
+                        SendOutcome::Dropped => state.reducers.reoffer(&key),
+                        SendOutcome::Gone => break, // the socket really is gone
                     }
                 }
                 // A slow viewer that lagged the reducer's fan-out simply drops frames (latest-
-                // wins, like the node↔node plane) — never stalls the shared reducer.
-                Err(broadcast::error::RecvError::Lagged(_)) => {}
+                // wins, like the node↔node plane) — never stalls the shared reducer. Re-offer for
+                // the same reason as a Dropped write: the missed frame may have been the last.
+                Err(broadcast::error::RecvError::Lagged(_)) => state.reducers.reoffer(&key),
                 Err(broadcast::error::RecvError::Closed) => break,
             },
             incoming = rx.next() => match incoming {
@@ -1352,7 +1371,11 @@ async fn handle_data(socket: WebSocket, state: AppState, node: String, slot: Str
                 // Bounded for the same reason as the frame send: a jammed sink must not park us.
                 // The probe's own write succeeding proves nothing — only the answer does.
                 Beat::Ping => {
-                    if !send_bounded(&mut tx, Message::Ping(Default::default()), cfg.send_timeout).await {
+                    // A Dropped probe needs no re-offer — only the missing pong means anything,
+                    // and the deadline below is already counting.
+                    if send_bounded(&mut tx, Message::Ping(Default::default()), cfg.send_timeout).await
+                        == SendOutcome::Gone
+                    {
                         break;
                     }
                 }
@@ -1576,9 +1599,9 @@ mod send_bounded_tests {
         .await;
         assert_eq!(
             outcome.ok(),
-            Some(true),
-            "a write to a stalled peer must return (and not report the socket dead) so the \
-             keepalive beat gets polled"
+            Some(SendOutcome::Dropped),
+            "a write to a stalled peer must return as Dropped (not Gone — the socket is not \
+             dead) so the keepalive beat gets polled and the frame is re-offered"
         );
     }
 
@@ -1593,6 +1616,6 @@ mod send_bounded_tests {
             send_bounded(&mut sink, Message::Ping(Default::default()), bound),
         )
         .await;
-        assert_eq!(outcome.ok(), Some(true), "the probe write is bounded as well");
+        assert_eq!(outcome.ok(), Some(SendOutcome::Dropped), "the probe write is bounded as well");
     }
 }

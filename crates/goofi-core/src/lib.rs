@@ -518,6 +518,16 @@ impl Data {
         self.0.value.dtype_tag()
     }
 
+    /// Whether two handles are THE SAME emitted frame — pointer identity on the shared
+    /// allocation, never payload comparison. Every engine emit mints a fresh allocation
+    /// (`with_stamps` always rebuilds), so identity is exactly "has the producer emitted
+    /// since I last looked", which the data plane uses to skip re-broadcasting an
+    /// unchanged frame. Holding the older handle keeps its allocation alive, so the
+    /// comparison can never be confused by an address reuse.
+    pub fn same_frame(&self, other: &Data) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+
     /// A pre-normalized array `Data` (caller guarantees the invariants).
     pub fn array(store: ArrayStore, meta: Meta) -> Data {
         Data(Arc::new(DataInner {
@@ -732,6 +742,20 @@ impl Param {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn same_frame_is_identity_not_equality() {
+        // The data plane's change signal: every engine emit mints a fresh allocation
+        // (`with_stamps` builds a new `Arc`), so identity — not payload equality —
+        // distinguishes "the node emitted again" from "the same frame, re-read".
+        let a = Data::array_f32(vec![4], vec![0u8; 16], Meta::empty()).unwrap();
+        let same_handle = a.clone();
+        assert!(a.same_frame(&same_handle), "a clone is the same frame");
+        let same_bytes = Data::array_f32(vec![4], vec![0u8; 16], Meta::empty()).unwrap();
+        assert!(!a.same_frame(&same_bytes), "equal payload, different emit — not the same frame");
+        let restamped = a.with_stamps(1, None);
+        assert!(!a.same_frame(&restamped), "a re-stamp is a new emit");
+    }
 
     #[test]
     fn viewspec_admits_a_real_data_frame() {
