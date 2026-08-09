@@ -1,8 +1,10 @@
 //! The `.gfi` container: a zip holding `patch.yaml` beside a `workspace/` tree.
 
+use std::collections::BTreeMap;
 use std::fs::{self, File};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use std::time::SystemTime;
 
 use walkdir::WalkDir;
 use zip::write::SimpleFileOptions;
@@ -10,6 +12,36 @@ use zip::{ZipArchive, ZipWriter};
 
 const MANIFEST: &str = "patch.yaml";
 const WORKSPACE: &str = "workspace";
+
+/// Every regular file under `dir`, sorted. ONE walk serves both the pack and the [`fingerprint`]
+/// it is compared against — a second walk with its own idea of what counts as a workspace file
+/// would let the two disagree, and the disagreement would read as a patch that is dirty the
+/// instant it is saved. Anything that is not a regular file (directory, symlink, socket) is
+/// skipped; walk errors are kept, because only the pack can decide whether one is fatal.
+fn files(dir: &Path) -> impl Iterator<Item = walkdir::Result<walkdir::DirEntry>> {
+    WalkDir::new(dir)
+        .sort_by_file_name()
+        .into_iter()
+        .filter(|e| e.as_ref().map_or(true, |e| e.file_type().is_file()))
+}
+
+/// What the workspace at `mount` looked like: relative path → (length, mtime), for every regular
+/// file. Two fingerprints differing means a file was added, removed, resized or rewritten — which
+/// is the manager's ONLY way to notice an edit made outside goofi, since there is no filesystem
+/// watcher (decision, 2026-08-09) and the archive stores no mtimes to compare against.
+///
+/// A file whose metadata cannot be read is simply absent, so an unreadable file reads as a
+/// difference — the safe direction: it marks the patch unsaved rather than silently losing it.
+pub fn fingerprint(mount: &Path) -> BTreeMap<PathBuf, (u64, SystemTime)> {
+    files(mount)
+        .filter_map(|e| {
+            let entry = e.ok()?;
+            let rel = entry.path().strip_prefix(mount).ok()?.to_path_buf();
+            let md = entry.metadata().ok()?;
+            Some((rel, (md.len(), md.modified().ok()?)))
+        })
+        .collect()
+}
 
 /// Pack `manifest` plus every regular file under `workspace_dir` into a `.gfi` at `out`.
 ///
@@ -24,11 +56,8 @@ pub fn write_gfi(out: &Path, manifest: &str, workspace_dir: &Path) -> Result<(),
     zip.start_file(MANIFEST, opts).map_err(|e| at(out, &e))?;
     zip.write_all(manifest.as_bytes()).map_err(|e| at(out, &e))?;
 
-    for entry in WalkDir::new(workspace_dir).sort_by_file_name() {
+    for entry in files(workspace_dir) {
         let entry = entry.map_err(|e| at(workspace_dir, &e))?;
-        if !entry.file_type().is_file() {
-            continue;
-        }
         let rel = entry.path().strip_prefix(workspace_dir).map_err(|e| e.to_string())?;
         // A zip entry name is bytes-as-UTF-8; refuse rather than mangle a name we cannot spell.
         let rel = rel.to_str().ok_or_else(|| format!("{}: name is not UTF-8", rel.display()))?;

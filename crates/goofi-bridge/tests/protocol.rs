@@ -2126,6 +2126,84 @@ async fn save_writes_a_gfi_archive() {
     assert!(dest.is_dir(), "the workspace tree rides along, empty or not");
 }
 
+/// C38: the MANAGER owns where the patch lives, so every client agrees about it.
+///
+/// It used to own none — the snapshot hard-coded `save_path: null` and only the `load` arm ever
+/// announced one — so a save named the patch in the tab that performed it and nowhere else, and a
+/// reload forgot the file it had just written to. Both halves are pinned here, because they fail
+/// separately: the live broadcast converges the tabs that are already open, the snapshot converges
+/// the ones that connect afterwards.
+#[tokio::test]
+async fn a_save_names_the_patch_for_every_tab_and_for_the_next_one() {
+    let base = start_server().await;
+    let (mut a, _) = connect_async(format!("{base}/control")).await.unwrap();
+    let hello = recv_text(&mut a).await;
+    assert!(hello["payload"]["save_path"].is_null(), "an unsaved patch has no home yet");
+    let (mut b, _) = connect_async(format!("{base}/control")).await.unwrap();
+    let _hello_b = recv_text(&mut b).await;
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("patch.gfi");
+    let reply = call(&mut a, 1, "save", json!({ "path": path.to_string_lossy() })).await;
+    assert!(reply.get("error").is_none(), "the save is accepted; got {reply}");
+
+    // The other open tab learns it live…
+    let ev = loop {
+        let m = recv_text(&mut b).await;
+        if m.get("event").and_then(|v| v.as_str()) == Some("save_path_changed") {
+            break m;
+        }
+    };
+    assert_eq!(ev["payload"]["save_path"].as_str(), path.to_str(), "the peer is told where");
+
+    // …and a tab opened afterwards — a reload — learns it from the snapshot alone, with no event
+    // to catch. This is the half `save_path: null` made impossible.
+    let (mut c, _) = connect_async(format!("{base}/control")).await.unwrap();
+    let hello_c = recv_text(&mut c).await;
+    assert_eq!(hello_c["payload"]["save_path"].as_str(), path.to_str(), "a reload remembers");
+}
+
+/// The stored path always names a file this patch was really written to or read from — because a
+/// plain Save overwrites it silently, from any tab, with no second prompt. The two ways it could
+/// come to name something else are a save that did not happen and a patch that arrived without a
+/// file behind it at all.
+#[tokio::test]
+async fn only_a_patch_with_a_file_behind_it_keeps_a_name() {
+    let base = start_server().await;
+    let (mut ws, _) = connect_async(format!("{base}/control")).await.unwrap();
+    let _hello = recv_text(&mut ws).await;
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("patch.gfi");
+    call(&mut ws, 1, "add_node", json!({ "type": "Oscillator" })).await;
+    call(&mut ws, 2, "save", json!({ "path": path.to_string_lossy() })).await;
+
+    // A save that fails leaves the previous home standing: the patch has never been written to
+    // the file it was refused, so naming it would aim the next silent overwrite at it.
+    let nowhere = dir.path().join("no-such-dir").join("patch.gfi");
+    let refused = call(&mut ws, 3, "save", json!({ "path": nowhere.to_string_lossy() })).await;
+    assert!(refused.get("error").is_some(), "the save fails; got {refused}");
+    assert_eq!(save_path_on_connect(&base).await.as_deref(), path.to_str(), "the old home stands");
+
+    // An upload (`load_text`) carries no file, so the patch it replaces the open one with is
+    // UNNAMED. Inheriting the previous path here is the silent-overwrite hazard in its purest
+    // form: a different patch entirely, saved over a file it never came from.
+    let yaml = call(&mut ws, 4, "serialize", json!({})).await["result"]["yaml"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    call(&mut ws, 5, "load_text", json!({ "content": yaml })).await;
+    assert_eq!(save_path_on_connect(&base).await, None, "an uploaded patch has no home");
+}
+
+/// Where the manager says the patch lives, read the way a joining client reads it — a fresh
+/// `hello`. Peer of [`is_dirty`], and free of the same event-ordering race.
+async fn save_path_on_connect(base: &str) -> Option<String> {
+    let (mut ws, _) = connect_async(format!("{base}/control")).await.unwrap();
+    let hello = recv_text(&mut ws).await;
+    hello["payload"]["save_path"].as_str().map(str::to_string)
+}
+
 /// The round trip, which is the whole point of the container: a `.gfi` written by `save` loads
 /// back — both the graph and the workspace files the patch was saved with.
 #[tokio::test]

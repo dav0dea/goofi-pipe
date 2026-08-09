@@ -225,14 +225,20 @@ pub fn runtime_overlay(g: &Graph) -> Value {
 /// nodes, links and the sub-patch forest live in the CRDT doc alone (the client assembles them
 /// from doc + catalog). What it does carry is the session frame — instance id, palette, save
 /// path, layout — plus [`runtime_overlay`], the one piece of per-node truth the doc never holds.
-pub fn snapshot(g: &Graph, instance_id: &str, with_protocol: bool, unsaved: bool) -> Value {
+pub fn snapshot(
+    g: &Graph,
+    instance_id: &str,
+    with_protocol: bool,
+    unsaved: bool,
+    save_path: Option<&str>,
+) -> Value {
     let mut snap = json!({
         "instance_id": instance_id,
         // The pillars this backend build actually hosts — the frontend shows only these
         // editors. Signal-only for now; audio/video are added as their runtimes land.
         "pillars": ["signal"],
         "runtime": runtime_overlay(g),
-        "save_path": Value::Null,
+        "save_path": save_path,
         "unsaved_changes": unsaved,
         "layout": g.layout().clone(),
     });
@@ -411,7 +417,7 @@ mod tests {
         // hello / graph_replaced (with_protocol=true) carry the palette so the client needs no
         // async `list_nodes` round-trip before it can build nodes from the doc (retires the
         // catalog-loading fallback window).
-        let hello = snapshot(&g, "iid", true, false);
+        let hello = snapshot(&g, "iid", true, false, None);
         assert_eq!(
             hello["node_types"],
             catalog_types(&g),
@@ -420,7 +426,7 @@ mod tests {
         assert!(hello["node_types"].as_array().is_some_and(|a| !a.is_empty()));
         // A structural echo (subpatch_changed, with_protocol=false) must NOT re-ship the whole
         // catalog on every group/expand/share — it changes only when a runtime type registers.
-        let echo = snapshot(&g, "iid", false, false);
+        let echo = snapshot(&g, "iid", false, false, None);
         assert!(echo.get("node_types").is_none(), "structural echoes omit the catalog");
     }
 
@@ -435,10 +441,13 @@ mod tests {
         g.add_link(a, "out", b, "data").unwrap();
         g.set_expression(a, "common", "max_frequency", "@@@ not an expression @@@", true, false).unwrap();
 
-        let snap = snapshot(&g, "iid", true, false);
+        let snap = snapshot(&g, "iid", true, false, Some("/patches/demo.gfi"));
         for dead in ["nodes", "links", "instances"] {
             assert!(snap.get(dead).is_none(), "`{dead}` is the doc's job, not the snapshot's");
         }
+        // The session frame it DOES carry: where the patch lives, which the manager owns (C38)
+        // and every connecting client reads from here rather than remembering for itself.
+        assert_eq!(snap["save_path"], json!("/patches/demo.gfi"));
 
         let rt = &snap["runtime"];
         assert_eq!(rt.as_object().map(|m| m.len()), Some(2), "one entry per node");

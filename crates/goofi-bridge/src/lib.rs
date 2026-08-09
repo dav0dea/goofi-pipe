@@ -64,6 +64,17 @@ pub struct AppState {
     /// while every handler holds its own clone of the state — one stored path, read through
     /// [`AppState::mount`], is the single source of truth for where the workspace is right now.
     mount: Arc<Mutex<PathBuf>>,
+    /// What the workspace looked like when it was last packed into a `.gfi` or unpacked from one —
+    /// the baseline [`AppState::is_dirty`] compares the live mount against. Re-taken at BOTH ends
+    /// because `read_gfi` restores no mtimes: a freshly loaded tree resembles the tree the archive
+    /// was written from in content only, so a load that did not re-baseline would leave the patch
+    /// permanently dirty.
+    workspace: Arc<Mutex<std::collections::BTreeMap<PathBuf, (u64, std::time::SystemTime)>>>,
+    /// Where the open patch lives on disk — `None` until it is saved somewhere or loaded from
+    /// somewhere. MANAGER-owned (C38) rather than remembered per tab: it rides the snapshot every
+    /// client connects with, so a tab that opens later and a tab that never pressed Save name the
+    /// same file as the one that did.
+    save_path: Arc<Mutex<Option<String>>>,
 }
 
 /// Timings that govern how a `/data` socket detects a **dead-but-not-closed** peer — a laptop that
@@ -123,6 +134,10 @@ impl AppState {
         let last_sync_sv = Arc::new(Mutex::new(crdt.state_vector()));
         let graph = Arc::new(Mutex::new(graph_val));
         let reducers = reducer::SlotReducers::new(graph.clone());
+        // The baseline is the fingerprint of whatever mount the patch owns — stated that way even
+        // at boot, where the mount is empty, so the invariant has one spelling everywhere.
+        let mount = new_mount();
+        let workspace = goofi_engine::archive::fingerprint(&mount);
         AppState {
             graph,
             events,
@@ -134,8 +149,16 @@ impl AppState {
             reducers,
             history: Arc::new(Mutex::new(goofi_engine::CommandHistory::new())),
             data_liveness: DataLiveness::DEFAULT,
-            mount: Arc::new(Mutex::new(new_mount())),
+            mount: Arc::new(Mutex::new(mount)),
+            workspace: Arc::new(Mutex::new(workspace)),
+            save_path: Arc::new(Mutex::new(None)),
         }
+    }
+
+    /// Where the open patch lives on disk, if anywhere. Copied out for the same reason as
+    /// [`AppState::mount`]: the lock guards the swap, not the reader.
+    fn save_path(&self) -> Option<String> {
+        self.save_path.lock().unwrap().clone()
     }
 
     /// Where the open patch's workspace files live *right now*. Copied out rather than borrowed:
@@ -468,9 +491,16 @@ async fn handle_control(socket: WebSocket, state: AppState) {
     let mut events = state.events.subscribe();
     let mut sync_updates = state.sync_updates.subscribe();
 
+    // Answered BEFORE the graph lock is taken: it walks the workspace mount (see `is_dirty`), and
+    // no filesystem walk may run while the tick thread is waiting on that lock.
+    let unsaved = state.is_dirty();
+    let saved_at = state.save_path();
     let hello = {
         let g = state.graph.lock().unwrap();
-        event("hello", schemas::snapshot(&g, &state.instance_id, true, state.is_dirty()))
+        event(
+            "hello",
+            schemas::snapshot(&g, &state.instance_id, true, unsaved, saved_at.as_deref()),
+        )
     };
     if tx.send(Message::Text(hello.into())).await.is_err() {
         return;
@@ -531,9 +561,14 @@ async fn handle_control(socket: WebSocket, state: AppState) {
                 // applies it as a full reset; idempotent apply branches absorb any still-buffered
                 // events delivered after it).
                 Err(broadcast::error::RecvError::Lagged(_)) => {
+                    let unsaved = state.is_dirty(); // off the graph lock, as above
+                    let saved_at = state.save_path();
                     let hello = {
                         let g = state.graph.lock().unwrap();
-                        event("hello", schemas::snapshot(&g, &state.instance_id, true, state.is_dirty()))
+                        event(
+                            "hello",
+                            schemas::snapshot(&g, &state.instance_id, true, unsaved, saved_at.as_deref()),
+                        )
                     };
                     if tx.send(Message::Text(hello.into())).await.is_err() {
                         break;
@@ -564,9 +599,19 @@ async fn handle_control(socket: WebSocket, state: AppState) {
 }
 
 impl AppState {
-    /// Whether the patch differs from its last saved/loaded state.
+    /// Whether the patch differs from its last saved/loaded state — the title-bar dot and the
+    /// unload guard.
+    ///
+    /// TWO independent sources, because a patch is a graph AND a workspace tree. The graph half is
+    /// the flag every mutating op sets. The workspace half is a directory goofi does not own: the
+    /// agent it will host, or the user's editor, writes into it with no RPC to ride on. There is no
+    /// watcher (decision, 2026-08-09), so the question is answered by WALKING the mount at the
+    /// moment a client asks it — an external edit surfaces on the asker's next `hello`, and no
+    /// thread wakes up to hunt for one. Walk it OFF the graph lock: a workspace of code files is a
+    /// stat per file, and the tick holds that lock.
     pub fn is_dirty(&self) -> bool {
         self.dirty.load(std::sync::atomic::Ordering::Relaxed)
+            || goofi_engine::archive::fingerprint(&self.mount()) != *self.workspace.lock().unwrap()
     }
 
     /// Set the dirty flag, returning an `unsaved_changes` event ONLY when it actually changed —
@@ -1133,9 +1178,24 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
                     .and_then(|v| v.as_str())
                     .map(fsbrowse::resolve)
                     .ok_or("save: missing path")?;
-                save_archive(std::path::Path::new(&path), &g.serialize(), &state.mount())?;
-                // Written to disk ⇒ clean.
+                let mount = state.mount();
+                // Sampled BEFORE the pack and committed only once it succeeded. A file written
+                // while the zip is being built may or may not have made it in; baselining
+                // afterwards would call it packed either way, and that is the one direction that
+                // loses an edit rather than merely reporting a spurious one.
+                let packed = goofi_engine::archive::fingerprint(&mount);
+                save_archive(std::path::Path::new(&path), &g.serialize(), &mount)?;
+                // Written to disk ⇒ clean, on both planes.
+                *state.workspace.lock().unwrap() = packed;
                 events.extend(state.set_dirty(false));
+                // …and the patch now has a home the MANAGER knows (C38), so a later plain Save
+                // overwrites this file from any tab, and a reload still names it. Announced as
+                // well as stored: an already-connected peer gets no new snapshot to read it from.
+                // Only on success — a failed save wrote nothing, so whatever home the patch had
+                // (including none) is still the true one, and claiming this one would point the
+                // next silent overwrite at a file this patch has never been written to.
+                *state.save_path.lock().unwrap() = Some(path.clone());
+                events.push(event("save_path_changed", json!({ "save_path": &path })));
                 Ok(json!({ "path": path }))
             }
             // One load path for both sources: `load_text` carries the YAML inline (a browser
@@ -1154,20 +1214,31 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
                 // deleting a tree is a walk and the lock guards only the swap.
                 let replaced = std::mem::replace(&mut *state.mount.lock().unwrap(), fresh);
                 remove_mount(&replaced);
+                // The unpacked tree IS what the archive holds — but every file in it was written
+                // seconds ago (`read_gfi` restores no mtimes), so this baseline has to be taken
+                // HERE. Without it a patch would be dirty from the moment it finished loading.
+                *state.workspace.lock().unwrap() = goofi_engine::archive::fingerprint(&state.mount());
                 // A load fully resets the session — there is nothing to undo across it (spec §3:
                 // no load command / no checkpoint), so drop every session's command history.
                 state.history.lock().unwrap().clear();
                 events.extend(state.set_dirty(false));
+                // The loaded patch's home is the archive it came from — or NONE for `load_text`,
+                // an upload that has no file behind it. Inheriting the previous patch's path there
+                // would aim the next silent Save at an unrelated `.gfi` and overwrite it with a
+                // patch that never came from it. Stored BEFORE the snapshot is built, so the
+                // snapshot carries it.
+                *state.save_path.lock().unwrap() = from_path.clone();
                 events.push(event(
                     "graph_replaced",
-                    schemas::snapshot(&g, &state.instance_id, false, false),
+                    schemas::snapshot(&g, &state.instance_id, false, false, from_path.as_deref()),
                 ));
                 if let Some(path) = from_path {
-                    // The patch now has a home on disk — the title bar names it and a later plain
-                    // Save overwrites it without re-prompting. AFTER `graph_replaced`, whose
-                    // snapshot carries `save_path: null` (the manager keeps no save-path state)
-                    // and is applied wholesale by the client — announcing first would be
-                    // immediately clobbered.
+                    // The announcement the title bar reads. The ORDER no longer carries meaning:
+                    // the snapshot the client applies wholesale now names the same file, so
+                    // announcing first would be re-affirmed rather than clobbered. It is kept
+                    // after `graph_replaced` because that is the order the two facts happen in,
+                    // and kept at all because `save` — which ships no snapshot — needs the event
+                    // to exist, and one event shape is easier to be right about than two.
                     events.push(event("save_path_changed", json!({ "save_path": path })));
                 }
                 Ok(json!({ "ok": true }))
@@ -1550,6 +1621,64 @@ mod save_archive_tests {
             assert!(err.contains("temporary workspace"), "the refusal says why: {err}");
             assert!(!target.exists(), "a refused save writes nothing");
         }
+    }
+}
+
+#[cfg(test)]
+mod workspace_dirty_tests {
+    use super::*;
+
+    fn save_to(state: &AppState, target: &std::path::Path) {
+        let req = json!({ "id": 1, "op": "save", "payload": { "path": target.to_string_lossy() } });
+        let reply = dispatch(state, &req.to_string()).expect("a numeric id gets a reply");
+        assert!(reply.contains("result"), "the save is accepted; got {reply}");
+    }
+
+    /// A workspace file edited OUTSIDE goofi — by the agent the harness will run in it, or by the
+    /// user's own editor — makes the patch differ from its `.gfi` exactly as a moved node does.
+    /// There is no watcher (decision, 2026-08-09), so the manager notices by comparing the mount
+    /// against the fingerprint it took when it last packed one.
+    #[test]
+    fn an_external_workspace_edit_makes_the_patch_differ_from_its_archive() {
+        let state = AppState::new();
+        let tmp = tempfile::tempdir().unwrap();
+        let target = tmp.path().join("patch.gfi");
+        std::fs::write(state.mount().join("agent.md"), b"notes").unwrap();
+        save_to(&state, &target);
+        assert!(!state.is_dirty(), "the patch was just written to disk, workspace and all");
+
+        // A file the archive does not have — what an agent writing into the workspace does.
+        std::fs::write(state.mount().join("scratch.txt"), b"written since the save").unwrap();
+        assert!(state.is_dirty(), "a workspace file the archive lacks is an unsaved change");
+
+        // A file that was packed but whose CONTENT has since changed: the fingerprint has to carry
+        // more than the set of names, or the commonest edit of all goes unnoticed.
+        save_to(&state, &target);
+        assert!(!state.is_dirty(), "saving again re-baselines the workspace");
+        std::fs::write(state.mount().join("agent.md"), b"notes, and then some more notes").unwrap();
+        assert!(state.is_dirty(), "an edit to a packed file is an unsaved change too");
+    }
+
+    /// The trap the container sets: a `.gfi` stores no mtimes, so every file `read_gfi` extracts is
+    /// newly written. A baseline taken only when a patch is SAVED would therefore declare a patch
+    /// unsaved the instant it finished loading — the dot on, the unload guard armed, on a graph
+    /// and a workspace that are byte-for-byte the file's.
+    #[test]
+    fn a_freshly_loaded_patch_is_clean_though_every_file_in_it_was_just_written() {
+        let state = AppState::new();
+        let tmp = tempfile::tempdir().unwrap();
+        let target = tmp.path().join("patch.gfi");
+        std::fs::write(state.mount().join("agent.md"), b"notes").unwrap();
+        save_to(&state, &target);
+
+        // Loaded into a SECOND manager, which is the real case — the goofi that opens a patch is
+        // rarely the one that wrote it, and it has no baseline of its own to fall back on.
+        let opened = AppState::new();
+        let req = json!({ "id": 1, "op": "load", "payload": { "path": target.to_string_lossy() } });
+        let reply = dispatch(&opened, &req.to_string()).expect("a numeric id gets a reply");
+        assert!(reply.contains("result"), "the archive loads; got {reply}");
+        assert_eq!(std::fs::read(opened.mount().join("agent.md")).unwrap(), b"notes");
+        assert!(!opened.is_dirty(), "a patch is not unsaved the moment it finishes loading");
     }
 }
 
