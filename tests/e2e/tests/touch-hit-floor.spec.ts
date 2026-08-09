@@ -109,7 +109,7 @@ const SITES: Site[] = [
 	{
 		// Switching layout tabs is the strip's primary action; the pill is what takes that tap.
 		name: 'a workspace tab',
-		control: (p) => p.getByTestId('workspace-tabs').locator('.tab').first()
+		control: (p) => p.getByTestId('workspace-tabs').locator('.ui-tab').first()
 	},
 	{
 		// C17. The ✕ only exists once a second tab does, and it is collapsed to zero width on a fine
@@ -117,7 +117,7 @@ const SITES: Site[] = [
 		name: 'the tab strip ✕',
 		setup: async (page) => {
 			await page.evaluate(() => (window as any).goofi.commands.addTab());
-			await expect(page.getByTestId('workspace-tabs').locator('.tab')).toHaveCount(2);
+			await expect(page.getByTestId('workspace-tabs').locator('.ui-tab')).toHaveCount(2);
 			return async () => {
 				// Closing the tab we added (the last one) is the restore.
 				await page
@@ -125,7 +125,7 @@ const SITES: Site[] = [
 					.getByRole('button', { name: 'Close tab' })
 					.last()
 					.click();
-				await expect(page.getByTestId('workspace-tabs').locator('.tab')).toHaveCount(1);
+				await expect(page.getByTestId('workspace-tabs').locator('.ui-tab')).toHaveCount(1);
 				await settleLayout(page);
 			};
 		},
@@ -298,19 +298,19 @@ test('the layout-tab rename field clears the focus-zoom threshold', async ({ pag
 	await waitForApp(page);
 	await page.evaluate(() => (window as any).goofi.commands.addTab());
 	const tabs = page.getByTestId('workspace-tabs');
-	await expect(tabs.locator('.tab')).toHaveCount(2);
+	await expect(tabs.locator('.ui-tab')).toHaveCount(2);
 	try {
 		// Dispatched, not tapped: the tab is an HTML5 drag source, so a real double-click there also
 		// runs the strip's own drag/reorder handling. What is under test is the field's geometry.
-		const tab = tabs.locator('.tab').last();
+		const tab = tabs.locator('.ui-tab').last();
 		await tab.dispatchEvent('dblclick');
-		const rename = tab.locator('input.rename');
+		const rename = tab.locator('input.ui-tab-rename');
 		await expect(rename).toBeVisible();
 		expect(await fontSize(rename)).toBeGreaterThanOrEqual(16);
 		await page.keyboard.press('Escape');
 	} finally {
 		await tabs.getByRole('button', { name: 'Close tab' }).last().click();
-		await expect(tabs.locator('.tab')).toHaveCount(1);
+		await expect(tabs.locator('.ui-tab')).toHaveCount(1);
 		await settleLayout(page);
 	}
 });

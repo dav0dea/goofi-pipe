@@ -23,7 +23,7 @@ import { addNode, waitForNode, waitForNoNode } from '../lib/goofi';
 /** Comfortably past AppShell's 400ms layout debounce plus the RPC round trip. */
 const PAST_DEBOUNCE = 1200;
 
-const tabs = (page: Page) => page.getByTestId('workspace-tabs').locator('.tab');
+const tabs = (page: Page) => page.getByTestId('workspace-tabs').locator('.ui-tab');
 
 /** Count this page's OWN `set_layout` pushes. Must be attached before `goto` — `websocket` only
  * fires for sockets opened after the listener. */

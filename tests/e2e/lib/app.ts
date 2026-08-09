@@ -35,7 +35,7 @@ export async function expectPristineWorkspace(page: Page): Promise<void> {
 	// cheap to report instead of paying the 10s default on every spec after the one that leaked.
 	const settled = { timeout: 2_000 };
 	await expect(
-		page.getByTestId('workspace-tabs').locator('.tab'),
+		page.getByTestId('workspace-tabs').locator('.ui-tab'),
 		'a previous spec left an extra workspace tab behind — hand it back in a `finally`'
 	).toHaveCount(1, settled);
 	await expect(
@@ -50,7 +50,7 @@ export async function expectPristineWorkspace(page: Page): Promise<void> {
 export async function closeAddedTab(page: Page): Promise<void> {
 	const tabs = page.getByTestId('workspace-tabs');
 	await tabs.getByRole('button', { name: 'Close tab' }).last().click();
-	await expect(tabs.locator('.tab'), 'the workspace is back to one tab').toHaveCount(1);
+	await expect(tabs.locator('.ui-tab'), 'the workspace is back to one tab').toHaveCount(1);
 	await page.waitForTimeout(700);
 }
 

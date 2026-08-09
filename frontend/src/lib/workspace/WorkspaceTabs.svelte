@@ -1,44 +1,29 @@
 <!--
-  Workspace tab strip. Click to switch, double-click to rename inline, a small
-  × to close, `＋` to add.
-
-  Tabs and panels share one drag system (workspace store `dragging`): a tab
-  dragged onto another tab reorders; a tab or panel dragged onto a panel splits
-  it; and a panel dragged onto this bar becomes a new tab. The bar shows an
-  insertion marker at the drop index while a drag is over it.
+  Workspace tab strip — the ui `Tabs` primitive with its opt-in affordances switched on (Phil,
+  2026-08-08: one component for the layout pages AND the inspector's param groups, so the two can
+  never drift apart visually). Click to switch, double-click to rename inline, a hover-revealed ✕
+  to close, ＋ to add — all the primitive's; what stays HERE is the drag system, because it is one
+  half of the workspace-wide drag (a tab dragged onto another tab reorders; a tab or panel dragged
+  onto a panel splits it; a panel dragged onto this bar becomes a new tab), and that lives with the
+  workspace store the `$lib/ui` leaf layer must not import. The primitive's half of the seam is
+  `tabProps` (per-tab drag attributes) and `previewIndex` (the drop-slot placeholder).
 -->
 <script lang="ts">
 	import { workspace } from './workspace.svelte';
-	import { Icon, IconButton, MODE_ATTRS } from '$lib/ui';
+	import { Tabs } from '$lib/ui';
 
 	const ws = workspace();
 	const tabs = $derived(ws.state.workspaces);
 	const activeId = $derived(ws.state.activeWorkspaceId);
 
-	let editing = $state<string | null>(null);
-	let editValue = $state('');
 	let dropIndex = $state<number | null>(null);
 
-	// While a panel/tab is dragged over the bar, open a real placeholder slot at
-	// the drop index so it's clear where it'll land (and the ＋ shifts to make
-	// room) — rather than a thin insertion sliver.
+	// While a panel/tab is dragged over the bar, open a real placeholder slot at the drop index so
+	// it's clear where it'll land (and the ＋ shifts to make room) — not a thin insertion sliver.
 	const showPreview = $derived(!!ws.dragging && dropIndex !== null);
 
-	function startRename(id: string, name: string): void {
-		editing = id;
-		editValue = name;
-	}
-	function commitRename(): void {
-		if (editing) ws.renameTab(editing, editValue);
-		editing = null;
-	}
-	function focusInput(node: HTMLInputElement): void {
-		node.focus();
-		node.select();
-	}
-
 	function computeDropIndex(container: HTMLElement, clientX: number): number {
-		const els = Array.from(container.querySelectorAll('.tab')) as HTMLElement[];
+		const els = Array.from(container.querySelectorAll('.ui-tab')) as HTMLElement[];
 		for (let i = 0; i < els.length; i++) {
 			const r = els[i].getBoundingClientRect();
 			if (clientX < r.left + r.width / 2) return i;
@@ -71,202 +56,63 @@
 </script>
 
 <div
-	class="tabs thin-scrollbar"
-	data-testid="workspace-tabs"
+	class="strip thin-scrollbar"
 	class:dragover={!!ws.dragging}
 	ondragover={onBarDragOver}
 	ondragleave={onBarDragLeave}
 	ondrop={onBarDrop}
-	role="tablist"
-	tabindex="-1"
+	role="presentation"
 >
-	{#each tabs as tab, i (tab.id)}
-		{#if showPreview && dropIndex === i}
-			<div class="tab-preview" aria-hidden="true"></div>
-		{/if}
-		<div
-			class="tab"
-			class:active={tab.id === activeId}
-			draggable={editing !== tab.id}
-			onclick={() => ws.selectTab(tab.id)}
-			ondblclick={() => startRename(tab.id, tab.name)}
-			ondragstart={() => (ws.dragging = { kind: 'tab', workspaceId: tab.id })}
-			ondragend={() => {
+	<Tabs
+		class="wtabs"
+		data-testid="workspace-tabs"
+		items={tabs.map((t) => ({ id: t.id, label: t.name }))}
+		active={activeId}
+		onSelect={(id) => ws.selectTab(id)}
+		onAdd={() => ws.addTab()}
+		onRename={(id, name) => ws.renameTab(id, name)}
+		onClose={tabs.length > 1 ? (id) => ws.closeTab(id) : undefined}
+		previewIndex={showPreview ? dropIndex : null}
+		tabProps={(item) => ({
+			draggable: true,
+			ondragstart: () => (ws.dragging = { kind: 'tab', workspaceId: item.id }),
+			ondragend: () => {
 				ws.dragging = null;
 				dropIndex = null;
-			}}
-			onkeydown={(e) => {
-				if (e.key === 'Enter' || e.key === ' ') ws.selectTab(tab.id);
-			}}
-			role="tab"
-			tabindex="0"
-			aria-selected={tab.id === activeId}
-		>
-			{#if editing === tab.id}
-				<!-- svelte-ignore a11y_autofocus -->
-				<input
-					{...MODE_ATTRS.search}
-					class="rename"
-					value={editValue}
-					oninput={(e) => (editValue = e.currentTarget.value)}
-					onblur={commitRename}
-					onkeydown={(e) => {
-						if (e.key === 'Enter') commitRename();
-						else if (e.key === 'Escape') editing = null;
-					}}
-					use:focusInput
-				/>
-			{:else}
-				<span class="name">{tab.name}</span>
-				{#if tabs.length > 1}
-					<IconButton
-						variant="ghost"
-						size="sm"
-						class="close"
-						label="Close tab"
-						onclick={(e) => {
-							e.stopPropagation();
-							ws.closeTab(tab.id);
-						}}><Icon name="x" /></IconButton
-					>
-				{/if}
-			{/if}
-		</div>
-	{/each}
-	{#if showPreview && dropIndex === tabs.length}
-		<div class="tab-preview" aria-hidden="true"></div>
-	{/if}
-	<IconButton
-		variant="ghost"
-		size="sm"
-		density="chrome"
-		class="add"
-		label="New tab"
-		onclick={() => ws.addTab()}><Icon name="plus" /></IconButton
-	>
+			}
+		})}
+	/>
 </div>
 
 <style>
-	.tabs {
-		/* Lives inside the TopBar's central slot: fills the slack, blends with
-		   the header (no own background / bottom border), matches its height. */
+	/* The scroller around the strip: fills the TopBar's central slot and scrolls what the
+	   reserve-driven overflow plan could not keep (the plan reserves the strip's CONTENT width,
+	   so this scrolls only once even an otherwise-empty bar could not hold every tab). */
+	.strip {
 		display: flex;
-		align-items: center;
-		gap: var(--space-1);
+		align-items: stretch;
 		height: 100%;
 		flex: 1 1 auto;
 		min-width: 0;
-		padding: 0 var(--space-2);
-		background: transparent;
 		overflow-x: auto;
 		overflow-y: hidden;
+		/* The primitive's two surface hooks, retuned for the HEADER context (the documented
+		   per-instance CSS-var escape hatch): the strip blends with the bar rather than painting
+		   its own header surface, and the ACTIVE page drops to the workspace ground below the
+		   bar — the same connected look the inspector's param tabs make with their panel body. */
+		--tabs-surface: transparent;
+		--tabs-body: var(--bg);
 	}
-	.tabs.dragover {
+	.strip.dragover {
 		background: color-mix(in srgb, var(--accent) 7%, transparent);
 		border-radius: var(--radius-sm);
 	}
-	.tab {
-		display: flex;
-		align-items: center;
-		gap: 0;
-		/* Even padding on all sides; vertically centred in the header (no margin)
-		   so the pill sits neatly inside the bar rather than filling its height. */
-		padding: var(--space-3) var(--space-6);
-		border-radius: var(--radius-sm);
-		color: var(--text-dim);
-		font-size: var(--fs-small);
-		line-height: 1;
-		white-space: nowrap;
-		cursor: pointer;
-		user-select: none;
-		border: 1px solid transparent;
-	}
-	.tab:hover {
-		background: var(--surface-2);
-		color: var(--text);
-	}
-	.tab.active {
-		background: var(--surface-3);
-		color: var(--text);
-		border-color: var(--border);
-	}
-	/* Drop placeholder: a tab-sized slot that opens up at the drop index so the
-	   landing spot is obvious and the ＋ shifts over to make room. */
-	.tab-preview {
-		flex: 0 0 auto;
-		align-self: center;
-		width: 96px;
-		height: 26px;
-		border-radius: var(--radius-sm);
-		border: 1px dashed var(--accent);
-		background: color-mix(in srgb, var(--accent) 14%, transparent);
-	}
-	.rename {
-		width: 9ch;
-		padding: 1px var(--space-2);
-		font: inherit;
-		font-size: var(--fs-small);
-	}
-	/* Collapsed when hidden so an inactive tab stays evenly padded; expands (with its left
-	   gap) only on hover / when active. The collapse forces the box under the primitive's
-	   --hit floor, and `overflow: hidden` also clips IconButton's coarse hit-rect ::after.
-	   `border: 0` because under border-box a 1px border clamps `width: 0` to 2px — the ghost
-	   border is invisible anyway, and without this every inactive tab gains 2px.
-	   Deliberately NOT `density="chrome"` (which the ＋ above uses): that density means "dense on
-	   fine, floored back to --hit on coarse", and this control is sub-floor on BOTH pointers — the
-	   collapse needs `min-width: 0` to reach zero width, which the density's floor would undo.
-	   The coarse-pointer door this reveal needs is the additive block at the bottom of this file
-	   (C17) — it rests the ✕ open and releases the clip rather than touching anything here. */
-	.tab :global(.close) {
-		width: 0;
-		min-width: 0;
-		height: 16px;
-		min-height: 16px;
-		margin-left: 0;
-		border: 0;
-		overflow: hidden;
-		line-height: 1;
-		color: var(--text-muted);
-		opacity: 0;
-	}
-	.tab:hover :global(.close),
-	.tab.active :global(.close) {
-		width: 16px;
-		margin-left: var(--space-2);
-		opacity: 1;
-	}
-	/* Only the colour; the hover surface is the primitive's. */
-	.tab :global(.close:hover) {
-		color: var(--danger);
-	}
-	/* The frozen 22px box: the ~23px tab pills sit beside it, so the primitive's --hit floor
-	   (28px fine) would leave the ＋ standing taller than the strip it belongs to. Stating the
-	   box is all this strip does — `density="chrome"` restores the floor under a coarse pointer. */
-	.tabs :global(.add) {
-		--icon-btn-size: 22px;
-	}
-	/* Touch (C17). The ✕ is hover-revealed, sub-floor AND clipped, so on a device with no hover it
-	   is not merely small — it is unreachable. The door is ADDITIVE: every rule above is untouched,
-	   and `workspace-chrome.spec.ts` still pins the zero-width collapse on a fine pointer. Resting
-	   the ✕ open at its frozen 16px paint and releasing the clip is the whole fix — IconButton's own
-	   coarse `::after` is what carries the --hit target, and it was `overflow: hidden` that cut it
-	   off. The TopBar is exactly --hit tall, so the rect the ✕ grows into IS the bar.
-	   The pill takes the floor with it: selecting a tab is this strip's primary action, and a 23px
-	   pill is not a tap target. That also gives the rename input — floored to --hit by app.css, and
-	   raised to 16px below so iOS does not force-zoom the page on focus — somewhere to stand. */
-	@media (hover: none) and (pointer: coarse) {
-		.tab {
-			padding-block: 0;
-			min-height: var(--hit);
-		}
-		.tab :global(.close) {
-			width: 16px;
-			margin-left: var(--space-2);
-			overflow: visible;
-			opacity: 1;
-		}
-		.rename {
-			font-size: 16px;
-		}
+	/* Sizing the child's box is the parent's layout prerogative — through the class THIS component
+	   passes in (never the primitive's own .ui-* class): the strip is exactly the bar's height,
+	   and the tablist fills it so the bottom-aligned active tab lands flush on the bar's lower
+	   edge — where the workspace it merges with begins. */
+	.strip :global(.wtabs) {
+		height: 100%;
+		flex: 1 0 auto;
 	}
 </style>
