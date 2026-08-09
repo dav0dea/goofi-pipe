@@ -1,0 +1,149 @@
+//! The `.gfi` container: a zip holding `patch.yaml` beside a `workspace/` tree.
+
+use std::fs::{self, File};
+use std::io::{Read, Write};
+use std::path::Path;
+
+use walkdir::WalkDir;
+use zip::write::SimpleFileOptions;
+use zip::{ZipArchive, ZipWriter};
+
+const MANIFEST: &str = "patch.yaml";
+const WORKSPACE: &str = "workspace";
+
+/// Pack `manifest` plus every regular file under `workspace_dir` into a `.gfi` at `out`.
+///
+/// The walk is sorted so an unchanged tree packs byte-identically: with zip's `time` feature off
+/// every entry is stamped 1980-01-01, which leaves entry order as the only varying field.
+/// Anything that is not a regular file (directory, symlink, socket) is skipped.
+pub fn write_gfi(out: &Path, manifest: &str, workspace_dir: &Path) -> Result<(), String> {
+    let at = |e: std::io::Error| format!("{}: {e}", out.display());
+    let mut zip = ZipWriter::new(File::create(out).map_err(at)?);
+    let opts = SimpleFileOptions::default();
+    zip.start_file(MANIFEST, opts).map_err(|e| e.to_string())?;
+    zip.write_all(manifest.as_bytes()).map_err(at)?;
+
+    for entry in WalkDir::new(workspace_dir).sort_by_file_name() {
+        let entry = entry.map_err(|e| format!("{}: {e}", workspace_dir.display()))?;
+        if !entry.file_type().is_file() {
+            continue;
+        }
+        let rel = entry.path().strip_prefix(workspace_dir).map_err(|e| e.to_string())?;
+        // A zip entry name is bytes-as-UTF-8; refuse rather than mangle a name we cannot spell.
+        let rel = rel.to_str().ok_or_else(|| format!("{}: name is not UTF-8", rel.display()))?;
+        zip.start_file(format!("{WORKSPACE}/{rel}"), opts).map_err(|e| e.to_string())?;
+        let mut src = File::open(entry.path()).map_err(|e| format!("{}: {e}", entry.path().display()))?;
+        std::io::copy(&mut src, &mut zip).map_err(at)?;
+    }
+    zip.finish().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Unpack a `.gfi`: the workspace tree lands at `dest` (which must not already exist), and the
+/// manifest text is returned. Both are refused before any extraction if the archive is malformed.
+///
+/// Extraction goes through `ZipArchive::extract`, whose `safe_prepare_path` is zip's own zip-slip
+/// containment — this must not hand-roll path sanitization. It creates symlinks verbatim and
+/// enforces no size cap; both are accepted (a `.gfi` is a user's own file, not hostile input).
+pub fn read_gfi(archive: &Path, dest: &Path) -> Result<String, String> {
+    let named = |e: String| format!("{}: {e}", archive.display());
+    let file = File::open(archive).map_err(|e| named(e.to_string()))?;
+    let mut zip = ZipArchive::new(file).map_err(|e| named(format!("not a zip archive ({e})")))?;
+    let mut manifest = String::new();
+    zip.by_name(MANIFEST)
+        .map_err(|_| named(format!("archive has no {MANIFEST}")))?
+        .read_to_string(&mut manifest)
+        .map_err(|e| named(e.to_string()))?;
+
+    // Scratch sits beside `dest` so the move below is a rename within one filesystem.
+    let scratch = dest.with_extension("unpack");
+    let _ = fs::remove_dir_all(&scratch);
+    zip.extract(&scratch).map_err(|e| named(e.to_string()))?;
+    let packed = scratch.join(WORKSPACE);
+    let moved = if packed.is_dir() {
+        fs::rename(&packed, dest)
+    } else {
+        fs::create_dir_all(dest) // an archive may legitimately carry no workspace files
+    };
+    let _ = fs::remove_dir_all(&scratch);
+    moved.map_err(|e| format!("{}: {e}", dest.display()))?;
+    Ok(manifest)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use std::io::Write;
+
+    /// A workspace with a file at the root and one in a sub-directory, plus the manifest.
+    fn sample(root: &Path) -> std::path::PathBuf {
+        let ws = root.join("ws");
+        fs::create_dir_all(ws.join("sub")).unwrap();
+        fs::write(ws.join("a.txt"), b"alpha").unwrap();
+        fs::write(ws.join("sub/b.txt"), b"beta").unwrap();
+        ws
+    }
+
+    #[test]
+    fn round_trips_a_two_file_workspace() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = sample(tmp.path());
+        let gfi = tmp.path().join("patch.gfi");
+        write_gfi(&gfi, "version: 7\n", &ws).unwrap();
+
+        let dest = tmp.path().join("unpacked");
+        let manifest = read_gfi(&gfi, &dest).unwrap();
+        assert_eq!(manifest, "version: 7\n");
+        assert_eq!(fs::read(dest.join("a.txt")).unwrap(), b"alpha");
+        assert_eq!(fs::read(dest.join("sub/b.txt")).unwrap(), b"beta");
+    }
+
+    /// Entry order is the only field that varies between two packs of an unchanged tree (every
+    /// entry is stamped 1980-01-01), so sorted order IS the byte-identity guarantee.
+    #[test]
+    fn packs_entries_in_sorted_order() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path().join("ws");
+        fs::create_dir_all(&ws).unwrap();
+        // created in reverse order, so a walk that does not sort cannot be assumed to agree
+        for name in ["c.txt", "b.txt", "a.txt"] {
+            fs::write(ws.join(name), name).unwrap();
+        }
+        let gfi = tmp.path().join("patch.gfi");
+        write_gfi(&gfi, "version: 7\n", &ws).unwrap();
+
+        let mut zip = zip::ZipArchive::new(fs::File::open(&gfi).unwrap()).unwrap();
+        let names: Vec<String> = (0..zip.len()).map(|i| zip.by_index(i).unwrap().name().to_owned()).collect();
+        assert_eq!(
+            names,
+            ["patch.yaml", "workspace/a.txt", "workspace/b.txt", "workspace/c.txt"]
+        );
+    }
+
+    #[test]
+    fn refuses_an_archive_without_a_manifest() {
+        let tmp = tempfile::tempdir().unwrap();
+        let gfi = tmp.path().join("patch.gfi");
+        let mut zip = zip::ZipWriter::new(fs::File::create(&gfi).unwrap());
+        zip.start_file("workspace/a.txt", zip::write::SimpleFileOptions::default()).unwrap();
+        zip.write_all(b"alpha").unwrap();
+        zip.finish().unwrap();
+
+        let dest = tmp.path().join("unpacked");
+        let err = read_gfi(&gfi, &dest).unwrap_err();
+        assert!(err.contains("patch.yaml"), "{err}");
+        // refused before anything was written to disk
+        assert!(!dest.exists());
+    }
+
+    #[test]
+    fn refuses_a_file_that_is_not_a_zip() {
+        let tmp = tempfile::tempdir().unwrap();
+        let gfi = tmp.path().join("patch.gfi");
+        fs::write(&gfi, b"version: 7\n").unwrap();
+
+        let err = read_gfi(&gfi, &tmp.path().join("unpacked")).unwrap_err();
+        assert!(err.contains("not a zip archive"), "{err}");
+    }
+}

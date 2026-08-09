@@ -15,6 +15,9 @@ use goofi_node::{Inputs, NodeCtx, NodeManifest, Outputs, ParamGroups, ParamKey, 
 use indexmap::IndexMap;
 use rayon::prelude::*;
 
+/// The `.gfi` zip container: pack and unpack (see `archive.rs`).
+pub mod archive;
+
 /// Sub-patch forest model + stub resolution (see `subpatch.rs`).
 pub mod subpatch;
 
