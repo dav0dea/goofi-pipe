@@ -55,13 +55,18 @@
 		left: 12px;
 		bottom: 12px;
 		z-index: var(--z-chip);
-		font-family: var(--font-mono);
 	}
 	.chip-anchor {
 		display: inline-flex;
 	}
 	/* The popover surface + dismissal come from the Popover primitive; this just sizes and
-	   scrolls the error list inside it. */
+	   scrolls the error list inside it.
+
+	   The mono lives HERE, not on `.chip-host`: Popover portals its surface to <body>, so the rows
+	   are not DOM descendants of the chip at all and inherited the BODY face instead. That was
+	   invisible while the body was mono; the two-face flip made it visible as an error list in the
+	   chrome face while every other error surface (console, the inspector traceback) stayed mono.
+	   A node name and a traceback are data (D-T3), so the family is stated inside the portal. */
 	.error-list {
 		width: 320px;
 		max-height: 60dvh;
@@ -69,6 +74,7 @@
 		display: flex;
 		flex-direction: column;
 		gap: var(--space-1);
+		font-family: var(--font-mono);
 	}
 	.prow {
 		display: flex;
