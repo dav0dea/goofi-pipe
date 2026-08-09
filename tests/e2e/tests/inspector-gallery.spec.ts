@@ -376,6 +376,15 @@ test.describe('Inspector ParamForm', () => {
 	// baseline while the line box reserves descent space below it, so glyphs ride above the box's
 	// centre by half that reserve. So this pins the INK, not the box: the visible glyph run's
 	// centre (canvas TextMetrics against the rendered font) must sit on the caret's centre.
+	//
+	// This is the ONE ink pin not on `lib/ink.ts`'s shared probe, and deliberately so. The probe's
+	// reference-scaled extent is the honest measurement — Chrome rounds `actualBoundingBox*` to
+	// whole device pixels, which at this size is worth ~0.02px here — and it reads 0.602px against
+	// the 0.600px below, so switching the method turns this red by 0.002px. What that asks is a
+	// DESIGN ruling — accept a label riding 0.60px high and say so in the number, or move it down
+	// that 0.6px (the deleted --ink-nudge spent 1.5px here and overshot by 0.9, which is why it
+	// went) — not a tolerance to widen quietly on the way past. Until it is ruled on, the pin keeps
+	// the method it was calibrated against.
 	test('the docs label is centered on the caret by its INK, not its line box', async ({ page }) => {
 		await page.goto('/dev/inspector');
 		await page.getByTestId('docs-toggle').waitFor({ state: 'visible' });

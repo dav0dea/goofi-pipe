@@ -316,8 +316,18 @@ test('a ghost icon button on a content toolbar paints a visible hover fill', asy
 			[panelId, uid] as const
 		);
 
-		const btn = page.getByTestId('node-linked-panel').getByRole('button', { name: 'Unlink node' });
+		const panel = page.getByTestId('node-linked-panel');
+		const btn = panel.getByRole('button', { name: 'Unlink node' });
 		await expect(btn).toBeVisible();
+
+		// Free to assert here — this is the app's only linked-node header, and it is already up. The
+		// name in it is the identifier the CANVAS paints on the node, so it reads in mono wherever it
+		// appears (D-T3), exactly as `ParamForm`'s rename title does; the panel chrome around it is sans.
+		expect(
+			await panel.locator('.ln').evaluate((el) => getComputedStyle(el).fontFamily),
+			'the linked node’s name renders in the app mono face'
+		).toContain('JetBrains Mono');
+
 		const box = (await btn.boundingBox())!;
 		// A 4px corner square, clear of the centred glyph, so this reads the FILL and nothing else.
 		const corner = { x: box.x + 1, y: box.y + 1, width: 4, height: 4 };

@@ -211,7 +211,7 @@
 		     CONTRIBUTION collapses toward its own intrinsic size — an `<input>`'s default `size=20`
 		     — so the basis was not what the group asked for either. A definite width is.
 		     `flex: 0 1` + `min-width: 0` keep it shrinkable on the narrow line it wraps onto. -->
-		<Bar style="--bar-wrap: wrap">
+		<Bar class="fs-footer" style="--bar-wrap: wrap">
 			{#snippet start()}
 				{#if mode === 'save'}
 					<TextInput
@@ -299,11 +299,16 @@
 		flex-direction: column;
 		min-width: 0;
 	}
+	/* A path is DATA (D-T3) — the same string the rows below it hold, one directory further down —
+	   so the bar that carries it reads in mono. Stated HERE, on the strip, because `TextInput` is
+	   `font: inherit` by design: the seam that encloses the control is the only place a consumer can
+	   hand it a face. The ↑ beside it inherits the same mono, which is what the file rows do too. */
 	.pathbar {
 		display: flex;
 		align-items: center;
 		gap: var(--space-3);
 		padding: var(--space-4);
+		font-family: var(--font-mono);
 	}
 	.err {
 		color: var(--warning);
@@ -352,9 +357,16 @@
 		text-overflow: ellipsis;
 		white-space: nowrap;
 	}
+	/* The footer's own seam, and the same call as `.pathbar`: the name a patch is saved under is the
+	   file the list above will show, so it is data. The face has to be stated on the strip because
+	   the field inside it is `font: inherit` — and nothing else in the bar moves, since `Button`
+	   declares its sans itself. `:global`, because the class travels to `Bar` as a prop (the idiom
+	   `ParamForm` uses for `.pf-identity-bar`); `.frame` keeps it scoped to this component's tree. */
+	.frame :global(.fs-footer) {
+		font-family: var(--font-mono);
+	}
 	.ext {
 		color: var(--text-muted);
-		font-family: var(--font-mono);
 	}
 	/* Below the width where a fixed sidebar leaves a usable file list, the roots lie DOWN: a
 	   horizontal strip above the list instead of a column beside it. Same rows, same order, one less

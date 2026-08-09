@@ -272,9 +272,12 @@ button {
 }
 
 /* The same reset, for the same reason, on the elements whose UA `font` declaration is a monospace
-   FAMILY plus a `smaller` size: without it a <code>/<pre>/<kbd> renders in the browser's generic
-   monospace instead of --font-mono, no matter what its ancestors inherit. Element specificity
-   (0,0,1) keeps it a reset — every component rule that sizes one of these still wins. */
+   FAMILY plus a `smaller` size. What it buys is not a face — it is that the CASCADE decides the
+   face here, rather than the browser. Under two faces that cuts both ways: a <code> in a panel
+   message is chrome and must come out sans like the text around it, while a <pre> in the console is
+   data and takes the mono its own panel declares. The UA default would hand both the same generic
+   monospace. Element specificity (0,0,1) keeps it a reset — every component rule that sizes one of
+   these still wins. */
 code,
 pre,
 kbd,

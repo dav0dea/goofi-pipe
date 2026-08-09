@@ -1,6 +1,7 @@
 import { test, expect, type Locator, type Page } from '@playwright/test';
 import { closeAddedTab, waitForApp } from '../lib/app';
 import { addNode, waitForNode, waitForNoNode } from '../lib/goofi';
+import { installInkProbe } from '../lib/ink';
 
 /**
  * Put the workspace back after a Split Right. `ws.split` re-arms AppShell's 400ms `set_layout`
@@ -153,35 +154,26 @@ test('the tab strip ＋ keeps its frozen 22px box (not the primitive --hit floor
 test('the layout tab’s label INK sits on the header midline, level with the ＋', async ({
 	page
 }) => {
+	await installInkProbe(page);
 	await page.goto('/');
 	await waitForApp(page);
 
 	// Phil (2026-08-08, twice): first the tab's text centre-aligns with the ＋ so the strip
 	// reads as one row — then the sharper cut: the ✕ and the row are RIGHT, the label's INK
-	// is what rides high. Same phenomenon Badge/Chip/docs carry --ink-nudge for: the line box
-	// reserves descent below the baseline, so box-centred mono text reads ~0.14em high. So
-	// this pins the INK (canvas TextMetrics, the ui-gallery idiom) against the ＋'s centre —
-	// the row's reference — not the label's line box.
+	// is what rides high. A line box reserves ascent and descent the glyphs need not use, so
+	// centring the BOX is not centring what you see. Nothing compensates for that any more —
+	// the --ink-nudge token and the three transforms that spent it were deleted with the
+	// two-face flip, and this label renders in the chrome sans — which leaves the geometry to
+	// be right on its own and makes the MEASUREMENT the point: `lib/ink.ts`'s shared probe
+	// (canvas TextMetrics, extent derived at a reference size) against the ＋'s centre, the
+	// row's reference, never the label's line box.
 	const tabs = page.getByTestId('workspace-tabs');
 	const add = tabs.getByRole('button', { name: 'New tab' });
 	const ab = (await add.boundingBox())!;
 	const d = await tabs
 		.locator('.ui-tab-label')
 		.first()
-		.evaluate((label) => {
-			const cs = getComputedStyle(label);
-			const range = document.createRange();
-			range.selectNodeContents(label);
-			const tr = range.getBoundingClientRect();
-			const cv = document.createElement('canvas').getContext('2d')!;
-			cv.font = `${cs.fontWeight} ${cs.fontSize} ${cs.fontFamily}`;
-			const met = cv.measureText((label.textContent ?? '').trim());
-			const baseline = tr.top + met.fontBoundingBoxAscent;
-			return {
-				inkCenter: baseline - (met.actualBoundingBoxAscent - met.actualBoundingBoxDescent) / 2,
-				fontBoxCheck: met.fontBoundingBoxAscent + met.fontBoundingBoxDescent - tr.height
-			};
-		});
+		.evaluate((label) => window.__inkMetrics(label));
 	expect(
 		Math.abs(d.fontBoxCheck),
 		'canvas font metrics agree with the layout font box'
@@ -335,7 +327,9 @@ test('the kept-bespoke chrome buttons render from their own rules, not the base 
 
 	// 3+4. FsBrowser `.root` (sidebar shortcut) and `.entry` (file row) — both list rows whose
 	//      hover/selected fill is a rounded accent wash, so the radius is load-bearing here.
-	await page.getByTestId('topbar-load').click();
+	//      Opened in SAVE mode: the same modal, plus the filename field the load footer replaces
+	//      with an upload button — so both of this dialog's text fields are reachable from one open.
+	await page.getByTestId('topbar-save').click();
 	await page.getByTestId('fs-list').waitFor();
 	const root = await skin(page.locator('.roots .root:not(.active)').first());
 	expectAppFace(root, 'the fs sidebar root', 'sans');
@@ -356,6 +350,13 @@ test('the kept-bespoke chrome buttons render from their own rules, not the base 
 	expect(entry.padTop).toBeCloseTo(0.25 * entry.rem, 0);
 	expect(entry.padLeft).toBeCloseTo(0.75 * entry.rem, 0);
 	expect(entry.transition).toContain('background');
+
+	// The dialog's two TEXT FIELDS, on the same taxonomy as the rows above them (D-T3): a filesystem
+	// path and a patch's name are data, not chrome. `TextInput` declares no family by design (it is
+	// `font: inherit` all the way down), so the face can only come from the strip that encloses it —
+	// which is exactly the seam a restyle can drop without changing a line of the component.
+	expectAppFace(await skin(page.getByTestId('fs-path-input')), 'the fs path bar', 'mono');
+	expectAppFace(await skin(page.getByTestId('fs-filename')), 'the fs filename field', 'mono');
 	await page.keyboard.press('Escape');
 
 	// 5. EmptyPanel `.choice` — a tile, not a row: the --surface-1 face IS the affordance, the

@@ -92,7 +92,11 @@
 		height: 100%;
 		min-height: 0;
 	}
+	/* The name, and only the name — a node's name is the identifier the CANVAS paints on the node
+	   itself, so it reads in mono wherever it appears (D-T3) and the two always match. The panel
+	   chrome around it (the `label`, the controls, the unlink ✕) is chrome and stays sans. */
 	.ln {
+		font-family: var(--font-mono);
 		font-size: var(--fs-small);
 		color: var(--text);
 		flex: 0 1 auto;

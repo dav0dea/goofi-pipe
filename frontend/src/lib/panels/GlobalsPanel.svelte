@@ -254,7 +254,10 @@
 		opacity: 0.7;
 	}
 	/* The add-row name field is the one remaining native input (kept native for its live
-	   per-keystroke validation + Enter-to-add); the table cells are now ui primitives. */
+	   per-keystroke validation + Enter-to-add); the table cells are now ui primitives. Being native
+	   is also why it states its own mono rather than inheriting one: it sits OUTSIDE the table, so
+	   the `td` seam above cannot reach it — and a name being TYPED is the same identifier the cell
+	   will hold the moment Add is pressed (D-T3). */
 	input.name {
 		width: 100%;
 		box-sizing: border-box;

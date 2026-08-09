@@ -148,6 +148,11 @@ test('a global’s editable name and value render mono, its column header sans (
 			expect(await face(row.getByTestId('global-name')), 'the name input').toBe('JetBrains Mono');
 			expect(await face(row.getByTestId('global-value')), 'the value input').toBe('JetBrains Mono');
 			expect(await face(page.locator('th.c-name')), 'the column header').toBe('Inter');
+			// The add row sits OUTSIDE the table, so the cell seam above cannot reach it — and a name
+			// being typed is the same identifier the cell will hold the moment Add is pressed.
+			expect(await face(page.getByTestId('global-add-name')), 'the name being typed').toBe(
+				'JetBrains Mono'
+			);
 		});
 	} finally {
 		await page.evaluate(() => (window as any).goofi.commands.removeGlobal('m19_face'));
