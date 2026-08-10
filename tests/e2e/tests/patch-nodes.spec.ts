@@ -18,10 +18,10 @@ import { waitForApp } from '../lib/app';
  * backend hands back the palette it started with.
  */
 
-const SOURCE = `import goofi
+const source = (cls: string): string => `import goofi
 
 
-class E2ePatchNode(goofi.Node):
+class ${cls}(goofi.Node):
     """A node that came with the patch."""
 
     def config_output_slots(self):
@@ -59,7 +59,7 @@ test('a node file written into the patch workspace joins the palette, marked as 
 	try {
 		expect(await paletteRow(page, 'E2ePatchNode'), 'not there before it is written').toBeNull();
 
-		fs.writeFileSync(file, SOURCE);
+		fs.writeFileSync(file, source('E2ePatchNode'));
 		const diff = await rescan(page);
 		// ONLY the new file — the shipped `nodes/` tree was indexed by the boot scan, which runs
 		// this very function, so a refresh reports what changed rather than re-announcing goofi's
@@ -92,5 +92,43 @@ test('a node file written into the patch workspace joins the palette, marked as 
 		fs.rmSync(file, { force: true });
 		const gone = await rescan(page);
 		expect(gone.removed, 'the palette is handed back as it was found').toContain('E2ePatchNode');
+	}
+});
+
+test('the palette’s own refresh button rescans and says what moved', async ({ page }) => {
+	// The test above drives `rescanNodes` through the façade, which the BUTTON is not: it could be
+	// deleted, mis-wired or put behind `:hover` (D-R7) with the whole suite still green. This is the
+	// only door a human has onto a file they just wrote, so it is driven as a human drives it.
+	await page.goto('/');
+	await waitForApp(page);
+
+	const workspace: string = await page.evaluate(() =>
+		(window as any).goofi.commands.openWorkspace()
+	);
+	const dir = path.join(workspace, 'nodes');
+	const file = path.join(dir, 'e2e_button_node.py');
+	fs.mkdirSync(dir, { recursive: true });
+	fs.writeFileSync(file, source('E2eButtonNode'));
+
+	try {
+		await page.evaluate(() => (window as any).goofi.commands.openAddMenu());
+		const button = page.getByTestId('add-menu-rescan');
+		// Asserted before anything has hovered the menu: the refresh is not allowed to be revealed.
+		await expect(button, 'the refresh is there for a pointer that never hovered').toBeVisible();
+
+		await button.click();
+		await expect(page.getByTestId('toast'), 'the button reported the diff it got back').toContainText(
+			'1 added'
+		);
+
+		// And the row it added says where it came from — in the text a person reads, which is the
+		// only place provenance is rendered.
+		await expect(
+			page.getByTestId('add-menu-list').locator('.item', { hasText: 'E2eButtonNode' })
+		).toContainText('this patch');
+		await page.keyboard.press('Escape');
+	} finally {
+		fs.rmSync(file, { force: true });
+		await rescan(page);
 	}
 });
