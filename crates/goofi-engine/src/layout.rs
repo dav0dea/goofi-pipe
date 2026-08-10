@@ -911,6 +911,12 @@ impl Layout {
     /// `{type, state}` has to land the state afterwards, and why re-asserting the SAME type must not
     /// wipe (an agent passing `type` redundantly beside a state would otherwise destroy a live
     /// binding). Sizing is [`Self::resize_split`]'s, which sets a whole split at once.
+    ///
+    /// `state` MERGES key by key. Every caller of it reads the bag, edits one key and writes it back,
+    /// so two writes issued inside one round trip would have the second replace a bag that did not
+    /// yet carry the first's key — the bind lost to the slot picked right after it. Merging at the
+    /// one place the write lands kills that class rather than asking each caller to be careful; a key
+    /// is cleared with an explicit null, which is the spelling [`Self::unbind`] already uses.
     pub fn set_panel(
         &self,
         page: &str,
@@ -928,8 +934,10 @@ impl Layout {
             *pt = t.to_string();
             *st = Value::Null;
         }
-        if let Some(s) = state {
-            *st = s;
+        match (state, st.as_object_mut()) {
+            (Some(Value::Object(s)), Some(cur)) => cur.extend(s),
+            (Some(s), _) => *st = s,
+            (None, _) => {}
         }
         Ok(self.diff(&next))
     }
@@ -1364,6 +1372,23 @@ mod tests {
         let l3 = applied(&l, l.set_panel(&page, &a, Some("viewer"), None).unwrap());
         assert!(matches!(l3.get(&a), Some(Entry::Panel { state, .. }) if state["node"] == json!("osc0")));
 
+        // A state write MERGES. Every caller — the bind, the slot picker, a viewer's kind and each of
+        // its settings — reads the bag, edits one key and writes it back, so a second write issued
+        // inside the first's round trip replaced a bag that did not yet hold the first's key. Merging
+        // HERE makes that whole class impossible instead of asking each caller to be careful.
+        let l4 = applied(&l, l.set_panel(&page, &a, None, Some(json!({ "slot": "spectrum" }))).unwrap());
+        match l4.get(&a) {
+            Some(Entry::Panel { state, .. }) => {
+                assert_eq!(state["slot"], json!("spectrum"), "the key written landed");
+                assert_eq!(state["node"], json!("osc0"), "…without dropping the one it did not name");
+            }
+            other => panic!("expected a panel: {other:?}"),
+        }
+        // Which is also how a key is CLEARED: an explicit null, the spelling `withLinkedNode(s, null)`
+        // and the manager's own `unbind` already share.
+        let l5 = applied(&l4, l4.set_panel(&page, &a, None, Some(json!({ "node": null }))).unwrap());
+        assert!(matches!(l5.get(&a), Some(Entry::Panel { state, .. })
+            if state["node"].is_null() && state["slot"] == json!("spectrum")));
     }
 
     #[test]

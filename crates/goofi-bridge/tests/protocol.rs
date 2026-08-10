@@ -1147,6 +1147,27 @@ async fn page_set_panel_lands_a_combined_type_and_binding_and_refuses_an_unknown
         .expect("the state leaf");
     assert!(state.contains(&osc), "the binding survived the type change: {state}");
 
+    // Two state writes back to back, with no delta between them — the shape every panel-state caller
+    // has (read the bag, edit one key, write it back), and the one an agent driving the ops reaches
+    // at once. The second must not replace a bag it has not seen the first land in.
+    for (id, patch) in [(20, json!({ "kind": "line" })), (21, json!({ "slot": "out" }))] {
+        let r = call(&mut ws, id, "page_set_panel",
+            json!({ "page": "Layout", "panel": panel, "state": patch })).await;
+        assert_eq!(r["result"]["ok"], json!(true), "{r}");
+    }
+    let merged = sync_replica(&mut ws, |d| {
+        d.read_at(&["arrangement", panel.as_str(), "state"])
+            .and_then(|v| v.as_str().map(|s| s.contains("\"slot\":\"out\"")))
+            .unwrap_or(false)
+    })
+    .await;
+    let state = merged
+        .read_at(&["arrangement", panel.as_str(), "state"])
+        .and_then(|v| v.as_str().map(str::to_string))
+        .expect("the state leaf");
+    assert!(state.contains(&osc) && state.contains("line"),
+        "a state write merges, so neither earlier key was dropped: {state}");
+
     // A bind to a node that is not there renders an EMPTY panel and says nothing — so refuse it
     // where the answer can teach.
     let bad = call(

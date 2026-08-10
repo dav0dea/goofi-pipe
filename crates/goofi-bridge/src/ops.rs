@@ -135,7 +135,7 @@ pub static REGISTRY: &[Op] = &[
          result: "the new panel's uid" },
     Op { name: "page_set_panel", surface: Mcp, writes: true,
          args: "page:string! panel:string! type:string state:json",
-         doc: "Set a panel's type and/or its state (a viewer's `{node, slot}`). A new type clears the old type's state, so send both together to rebind. Sizing is page_resize_split's.",
+         doc: "Set a panel's type and/or its state (a viewer's `{node, slot}`). State MERGES key by key — send only what changes, and null to clear a key. A new type clears the old type's state, so send both together to rebind. Sizing is page_resize_split's.",
          result: "{ok: true}" },
     Op { name: "page_move_panel", surface: Mcp, writes: true,
          args: "page:string! panel:string! new_parent:string! order_index:int",
