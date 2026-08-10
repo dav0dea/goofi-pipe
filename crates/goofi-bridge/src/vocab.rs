@@ -113,11 +113,6 @@ pub fn panel_type(id: &str) -> Option<&'static PanelType> {
     PANEL_TYPES.iter().find(|p| p.id == id)
 }
 
-/// The row for `id`, if the viewer kind exists.
-pub fn viewer_kind(id: &str) -> Option<&'static ViewerKind> {
-    VIEWER_KINDS.iter().find(|k| k.id == id)
-}
-
 /// Every panel type's id — the JSON-Schema `enum` an agent's tool list carries, and the set a
 /// refusal names.
 pub fn panel_type_ids() -> Vec<&'static str> {

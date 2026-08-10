@@ -1207,6 +1207,44 @@ async fn page_set_panel_lands_a_combined_type_and_binding_and_refuses_an_unknown
 }
 
 #[tokio::test]
+async fn a_write_that_would_mean_something_else_is_refused_or_says_what_it_did() {
+    let base = start_server().await;
+    let (mut ws, _) = connect_async(format!("{base}/control")).await.unwrap();
+    let _ = recv_text(&mut ws).await;
+
+    // A global's TYPE is what every expression reading it depends on. `set_global` took the type
+    // off the wire, so re-typing `default_ufreq` as a string was accepted and broke the reference
+    // rather than the call. It edits a value; creating a global is add_global's, and so is choosing
+    // its type.
+    let retyped = call(&mut ws, 1, "set_global",
+        json!({ "name": "default_ufreq", "value": "fast", "type": "string" })).await;
+    let err = retyped["error"].as_str().unwrap_or_default().to_string();
+    assert!(err.contains("float") && err.contains("default_ufreq"), "{retyped}");
+    // …and the type it does hold still takes a value.
+    let set = call(&mut ws, 2, "set_global",
+        json!({ "name": "default_ufreq", "value": 12.5, "type": "float" })).await;
+    assert_eq!(set["result"]["value"], json!(12.5), "{set}");
+
+    // A harness name is a closed set the caller cannot see from here, so a refusal that does not
+    // name it leaves nothing to try next.
+    let bad = call(&mut ws, 3, "spawn_harness", json!({ "harness": "claude-code" })).await;
+    let err = bad["error"].as_str().unwrap_or_default().to_string();
+    assert!(err.contains("claude") && err.contains("codex"), "{bad}");
+
+    // Two idempotent removes. Both answered `{ok: true}` for having done nothing, which is why
+    // remove_node's own doc had to tell callers not to read `ok` as proof the node existed.
+    let osc = call(&mut ws, 4, "add_node", json!({ "type": "Oscillator" })).await["result"]["uid"]
+        .as_str().unwrap().to_string();
+    let gone = call(&mut ws, 5, "remove_node", json!({ "node": "deadbeefdeadbeef" })).await;
+    assert_eq!(gone["result"]["removed"], json!(false), "{gone}");
+    let real = call(&mut ws, 6, "remove_node", json!({ "node": osc })).await;
+    assert_eq!(real["result"]["removed"], json!(true), "{real}");
+    let unwired = call(&mut ws, 7, "remove_link", json!({ "node_out": osc, "slot_out": "out",
+        "node_in": osc, "slot_in": "data" })).await;
+    assert_eq!(unwired["result"]["removed"], json!(false), "{unwired}");
+}
+
+#[tokio::test]
 async fn a_graph_write_answers_with_what_it_actually_did() {
     // Three writes whose `{ok: true}` was not merely silent but MISLEADING — each one answered
     // success for a state other than the one the caller asked for.

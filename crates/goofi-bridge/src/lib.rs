@@ -1053,6 +1053,9 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
         if op == "spawn_harness" {
             let h = payload.get("harness").and_then(|v| v.as_str())
                 .ok_or("spawn_harness: missing harness")?;
+            // A closed set the caller cannot see from here, so a refusal that does not name it
+            // leaves nothing to try next. `list_harnesses` says which are actually INSTALLED; this
+            // says which words exist at all.
             let id = state.harnesses.spawn(h, &state.mount(), &state.mcp_url(),
                                            &term::parent_env(), state.events.clone())?;
             events.push(event("harness_changed", state.harnesses.roster()));
@@ -1163,12 +1166,17 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
                 // (members + params + links + stubs + membership) so its inverse restores it
                 // uid-stably (undoable; B3b closed the delete-undo gap). The result reaches clients
                 // via the post-dispatch re-mirror.
+                // Idempotent by design (a redo racing a peer's delete must converge, not wedge),
+                // which made `{ok: true}` on a uid naming nothing indistinguishable from a real
+                // delete — so the doc had to tell callers not to read `ok` as proof. Say it here
+                // instead, where it is a fact rather than a warning.
+                let existed = bindable_node(&g, &uid.to_hex());
                 state
                     .history
                     .lock()
                     .unwrap()
                     .apply(&mut g, &session, goofi_engine::Command::RemoveNode { uid })?;
-                Ok(json!({ "ok": true }))
+                Ok(json!({ "removed": existed }))
             }
             // Recovery, not an edit: respawn the node's instance in place, keeping its uid, name,
             // params, expressions, viewers, scope and links. NOT routed through the command history
@@ -1217,12 +1225,14 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
                 let (a, so, b, si) = parse_link(&payload)?;
                 let (a, so) = resolve_link_endpoint(&g, a, &so);
                 let (b, si) = resolve_link_endpoint(&g, b, &si);
+                // Idempotent for the same reason `remove_node` is, and answered the same way.
+                let existed = g.has_link(a, &so, b, &si);
                 state.history.lock().unwrap().apply(
                     &mut g,
                     &session,
                     goofi_engine::Command::RemoveLink { node_out: a, slot_out: so, node_in: b, slot_in: si },
                 )?;
-                Ok(json!({ "ok": true }))
+                Ok(json!({ "removed": existed }))
             }
             // The leaf edits (param value / expression / node+instance pos / rename / globals) route
             // through the command history so each is undoable (B3a). The mutation reaches clients via
@@ -1525,17 +1535,27 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
                 let name = parse_str(&payload, "name")?.to_string();
                 let val = payload.get("value").ok_or("set_global: missing value")?;
                 let ty = payload.get("type").and_then(|v| v.as_str()).ok_or("set_global: missing type")?;
-                if !g.globals().contains(&name) {
+                let Some(held) = g.globals().get(&name).map(goofi_engine::global_to_json) else {
                     return Err(format!("set_global: no such global `{name}`"));
+                };
+                // A global's TYPE is what every expression reading it depends on, so re-typing one
+                // through a value edit breaks the reference rather than the call. Choosing a type
+                // is `add_global`'s; this op edits what a global HOLDS.
+                let held_ty = held["type"].as_str().unwrap_or_default();
+                if held_ty != ty {
+                    return Err(format!("set_global: `{name}` is a {held_ty} — set_global edits a \
+                                        global's value, not its type"));
                 }
                 let value = goofi_engine::global_from_json(&json!({ "value": val, "type": ty }))
-                    .ok_or("set_global: malformed value")?;
+                    .ok_or_else(|| format!("set_global: `{val}` is not a {ty}"))?;
                 state.history.lock().unwrap().apply(
                     &mut g,
                     &session,
-                    goofi_engine::Command::EditGlobal { name, value: Some(value), at: None },
+                    goofi_engine::Command::EditGlobal { name, value: Some(value.clone()), at: None },
                 )?;
-                Ok(json!({ "ok": true }))
+                // As STORED: `global_from_json` is type-directed, so a fraction into an int global
+                // rounds — the same reason `update_param` answers its value.
+                Ok(json!({ "value": goofi_engine::global_to_json(&value)["value"] }))
             }
             "remove_global" => {
                 let name = parse_str(&payload, "name")?.to_string();

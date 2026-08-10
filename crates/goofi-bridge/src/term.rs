@@ -181,8 +181,14 @@ impl Harnesses {
         env: &[(OsString, OsString)],
         events: broadcast::Sender<String>,
     ) -> Result<String, String> {
-        let adapter = ADAPTERS.iter().find(|a| a.name == harness)
-            .ok_or_else(|| format!("unknown harness `{harness}`"))?;
+        let adapter = ADAPTERS.iter().find(|a| a.name == harness).ok_or_else(|| {
+            // Naming the set is the whole refusal: a harness name is a closed vocabulary the
+            // caller cannot see from where it is standing. The `_`-prefixed test adapters are
+            // spawnable but not advertised — `list_harnesses` hides them for the same reason.
+            let have: Vec<&str> =
+                ADAPTERS.iter().map(|a| a.name).filter(|n| !n.starts_with('_')).collect();
+            format!("unknown harness `{harness}` — this build knows: {}", have.join(", "))
+        })?;
         let bin = resolve(adapter.bin, std::env::var_os("PATH").as_deref(), &login_shell())
             .ok_or_else(|| format!("`{}` is not installed", adapter.bin))?;
         let id = crate::nonce_hex()[..12].to_string();

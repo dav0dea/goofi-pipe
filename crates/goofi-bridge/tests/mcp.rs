@@ -273,11 +273,14 @@ async fn undos_advertised_result_is_the_shape_its_arm_answers() {
 async fn remove_node_is_idempotent_and_says_so_where_an_agent_reads_it() {
     let addr = start_server().await;
     let answered = call_tool(&addr, 1, "remove_node", json!({ "node": "aaaaaaaaaaaa" })).await;
-    assert!(answered.contains("true"), "a uid naming no node is a no-op success: {answered}");
-    let described = tool_description(&addr, 2, "remove_node").await;
+    assert!(answered.contains("\"removed\": false"), "a no-op success has to SAY so: {answered}");
+    let existing = add_node(&addr, 2, "Oscillator").await;
+    let real = call_tool(&addr, 3, "remove_node", json!({ "node": existing })).await;
+    assert!(real.contains("\"removed\": true"), "…and a real delete is distinguishable: {real}");
+    let described = tool_description(&addr, 4, "remove_node").await;
     assert!(
-        described.contains("Idempotent"),
-        "an agent reading this would take `ok` for proof the node existed: {described}"
+        described.contains("Idempotent") && described.contains("removed"),
+        "an agent reading this would take a success for proof the node existed: {described}"
     );
 }
 
