@@ -964,6 +964,20 @@ fn apply_layout_move(
     Ok(json!({ "ok": true }))
 }
 
+/// Like [`apply_layout`], but for an op that edits what entries HOLD rather than where they sit (a
+/// panel's type/state, a split's shares). Its inverse re-reads each slot at flip time instead of
+/// restoring the whole entry — see [`goofi_engine::Command::LayoutContents`].
+fn apply_layout_contents(
+    state: &AppState,
+    g: &mut Graph,
+    session: &str,
+    writes: Vec<goofi_engine::layout::Write>,
+) -> Result<Value, String> {
+    let cmd = goofi_engine::Command::LayoutContents { writes };
+    state.history.lock().unwrap().apply(g, session, cmd)?;
+    Ok(json!({ "ok": true }))
+}
+
 /// Dispatch one control RPC. Mutates the graph, queues broadcast events, and
 /// returns the `{id,result}`/`{id,error}` reply (only when `id` is numeric).
 fn dispatch(state: &AppState, text: &str) -> Option<String> {
@@ -1262,7 +1276,9 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
             "session_rename_page" => {
                 let (from, to) = (parse_str(&payload, "from")?, parse_str(&payload, "to")?);
                 let writes = g.arrangement().rename_page(from, to)?;
-                apply_layout(state, &mut g, &session, writes, None)
+                // A name is contents; the tab index is the slot, and a peer's new page may hold the
+                // one this page had when the rename was planned.
+                apply_layout_contents(state, &mut g, &session, writes)
             }
             "session_reorder_page" => {
                 let name = parse_str(&payload, "name")?;
@@ -1301,7 +1317,7 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
                     }
                 }
                 let writes = g.arrangement().set_panel(&page, &panel, ty.as_deref(), panel_state)?;
-                apply_layout(state, &mut g, &session, writes, None)
+                apply_layout_contents(state, &mut g, &session, writes)
             }
             "page_move_panel" => {
                 let page = resolve_page(&g, &payload)?;
@@ -1340,7 +1356,7 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
                     .map(|v| v.as_f64().unwrap_or(f64::NAN))
                     .collect();
                 let writes = g.arrangement().resize_split(&page, &split, &fractions)?;
-                apply_layout(state, &mut g, &session, writes, None)
+                apply_layout_contents(state, &mut g, &session, writes)
             }
             "page_remove_panel" => {
                 let page = resolve_page(&g, &payload)?;

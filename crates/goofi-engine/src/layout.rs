@@ -724,6 +724,34 @@ impl Layout {
         Ok(self.diff(&back))
     }
 
+    /// Land `writes` as CONTENTS edits: what each entry HOLDS arrives, but WHERE it sits — its
+    /// `parent` and its `order` — is read off the arrangement as it stands and never off the write.
+    /// That is what makes the inverse of a type change or a set of shares safe: the slot an entry
+    /// held when the op was planned may be a peer's adjacent split's by undo time, and pinning it
+    /// back is exactly the stranding the re-planning rule exists to prevent. The shares that arrive
+    /// are re-asserted and the parent renormalized, so a peer's own child keeps its slice —
+    /// [`Self::re_home`]'s bargain, not a second one. An id that has since gone is skipped, so a
+    /// stale replay degrades instead of resurrecting an entry.
+    pub fn set_contents(&self, writes: &[Write]) -> Vec<Write> {
+        let mut next = self.clone();
+        let mut parents = std::collections::BTreeSet::new();
+        for (id, entry) in writes {
+            let (Some(mut e), Some(live)) = (entry.clone(), next.get(id).cloned()) else {
+                continue;
+            };
+            if let Some(p) = live.parent() {
+                e.set_parent(p);
+                parents.insert(p.to_string());
+            }
+            e.set_order(live.order());
+            next.insert(id.clone(), e);
+        }
+        for p in parents {
+            next.normalize(&p);
+        }
+        self.diff(&next)
+    }
+
     /// Set every child of `split` at once — what a resize drag commits on pointer-up, and the only
     /// op that sizes anything. Scaling ONE child and renormalizing its siblings would make N of them
     /// chase a moving target and never land on the fraction set the user drew.

@@ -575,6 +575,203 @@ async fn undoing_a_move_puts_the_panel_back_at_the_index_and_share_it_had() {
     assert_eq!(arrangement(&back), before, "one ctrl-Z put the panel back exactly where it was");
 }
 
+/// A panel's share of its split, as a replica reads it.
+fn size_of(doc: &goofi_crdt::GraphDoc, id: &str) -> f64 {
+    doc.read_at(&["arrangement", id, "size"]).and_then(|v| v.as_f64()).unwrap_or(f64::NAN)
+}
+
+/// The manager's own loader, asked to open what the manager just saved — `Null` when the arrangement
+/// is one it can. The judge every no-raw-restore test appeals to.
+async fn reload_warning(ws: &mut Ws, id: i64) -> Value {
+    let yaml =
+        call(ws, id, "serialize", json!({})).await["result"]["yaml"].as_str().unwrap().to_string();
+    call(ws, id + 1, "load_text", json!({ "content": yaml })).await["result"]["layout_warning"]
+        .clone()
+}
+
+#[tokio::test]
+async fn a_type_change_undone_after_a_peers_split_leaves_the_peer_its_slot() {
+    // The other half of the rule, and the half the guard FOUND. `page_set_panel` edits what a panel
+    // HOLDS, not where it sits — but its inverse restored the WHOLE entry, `order` among it, so the
+    // undo pinned the panel back into the slot a peer's adjacent split had since taken. Two children
+    // of one split at one order is an arrangement the manager's own loader refuses. A single session
+    // cannot see this, which is why it is two over the wire.
+    let base = start_server().await;
+    let (mut ws, _) = connect_async(format!("{base}/control")).await.unwrap();
+    let _ = recv_text(&mut ws).await;
+    let doc = sync_replica(&mut ws, |d| !panels(d).is_empty()).await;
+    let a = panels(&doc)[0].clone();
+    let b = call(&mut ws, 1, "page_split_panel",
+        json!({ "page": "Layout", "panel": a, "direction": "row" })).await["result"]
+        .as_str().expect("the split's new panel").to_string();
+
+    let r = call_session(&mut ws, 2, "page_set_panel",
+        json!({ "page": "Layout", "panel": b, "type": "console" }), "s1").await;
+    assert_eq!(r["result"]["ok"], json!(true), "{r}");
+    // The peer splits `a` along the same axis, so its new panel is inserted adjacent and takes the
+    // order `b` held — the slot the undo must not reclaim.
+    let peer = call_session(&mut ws, 3, "page_split_panel",
+        json!({ "page": "Layout", "panel": a, "direction": "row" }), "s2").await["result"]
+        .as_str().expect("the peer's panel").to_string();
+    let u = call_session(&mut ws, 4, "undo", json!({}), "s1").await;
+    assert_eq!(u["result"]["changed"], json!(true), "{u}");
+
+    let after = sync_replica(&mut ws, |d| {
+        d.read_at(&["arrangement", b.as_str(), "panel_type"]) == Some(json!("empty"))
+    })
+    .await;
+    let arr = arrangement(&after);
+    assert_eq!(
+        after.read_at(&["arrangement", b.as_str(), "panel_type"]),
+        Some(json!("empty")),
+        "the undo gave the panel back the type it had: {arr}"
+    );
+    assert_ne!(
+        after.read_at(&["arrangement", b.as_str(), "order"]),
+        after.read_at(&["arrangement", peer.as_str(), "order"]),
+        "and left the peer's panel the order it took: {arr}"
+    );
+    assert_eq!(
+        reload_warning(&mut ws, 5).await,
+        Value::Null,
+        "the manager saved an arrangement it cannot itself open: {arr}"
+    );
+}
+
+#[tokio::test]
+async fn a_resize_undone_after_a_peers_split_re_asserts_shares_without_re_pinning_slots() {
+    // `page_resize_split` is the same shape: a set of shares is CONTENTS too, and restoring each
+    // whole entry to undo them puts the orders back with them. The undo re-asserts the shares it
+    // found and renormalizes around whatever the peer added, so the split still divides one slot.
+    let base = start_server().await;
+    let (mut ws, _) = connect_async(format!("{base}/control")).await.unwrap();
+    let _ = recv_text(&mut ws).await;
+    let doc = sync_replica(&mut ws, |d| !panels(d).is_empty()).await;
+    let a = panels(&doc)[0].clone();
+    let b = call(&mut ws, 1, "page_split_panel",
+        json!({ "page": "Layout", "panel": a, "direction": "row" })).await["result"]
+        .as_str().expect("the split's new panel").to_string();
+    let d = sync_replica(&mut ws, |d| d.read_at(&["arrangement", b.as_str()]).is_some()).await;
+    let near = d.read_at(&["arrangement", b.as_str(), "parent"])
+        .and_then(|v| v.as_str().map(str::to_string)).expect("the wrapper split");
+
+    let r = call_session(&mut ws, 2, "page_resize_split",
+        json!({ "page": "Layout", "split": near, "fractions": [0.3, 0.7] }), "s1").await;
+    assert_eq!(r["result"]["ok"], json!(true), "{r}");
+    let peer = call_session(&mut ws, 3, "page_split_panel",
+        json!({ "page": "Layout", "panel": a, "direction": "row" }), "s2").await["result"]
+        .as_str().expect("the peer's panel").to_string();
+    let u = call_session(&mut ws, 4, "undo", json!({}), "s1").await;
+    assert_eq!(u["result"]["changed"], json!(true), "{u}");
+
+    let (a2, b2) = (a.clone(), b.clone());
+    let after =
+        sync_replica(&mut ws, |d| (size_of(d, &a2) - size_of(d, &b2)).abs() < 1e-9).await;
+    let arr = arrangement(&after);
+    assert!(
+        (size_of(&after, &a) - size_of(&after, &b)).abs() < 1e-9,
+        "the undo put back the equal shares it found: {arr}"
+    );
+    let total = size_of(&after, &a) + size_of(&after, &b) + size_of(&after, &peer);
+    assert!(
+        (total - 1.0).abs() < 1e-9,
+        "and the split still divides exactly one slot around the peer's own share: {arr}"
+    );
+    assert_eq!(
+        reload_warning(&mut ws, 5).await,
+        Value::Null,
+        "the manager saved an arrangement it cannot itself open: {arr}"
+    );
+}
+
+#[tokio::test]
+async fn a_contents_undo_follows_the_panel_a_peer_has_since_carried_off() {
+    // A slot is not only an order. A peer may have carried the panel to another split entirely — and
+    // the two-child split it left promoted away behind it. Restoring the entry's own `parent` hangs
+    // the panel off a container that is no longer there, which reaches no page at all.
+    let base = start_server().await;
+    let (mut ws, _) = connect_async(format!("{base}/control")).await.unwrap();
+    let _ = recv_text(&mut ws).await;
+    let doc = sync_replica(&mut ws, |d| !panels(d).is_empty()).await;
+    let a = panels(&doc)[0].clone();
+    let b = call(&mut ws, 1, "page_split_panel",
+        json!({ "page": "Layout", "panel": a, "direction": "row" })).await["result"]
+        .as_str().expect("the split's new panel").to_string();
+    call(&mut ws, 2, "session_add_page", json!({ "name": "Two" })).await;
+    let d = sync_replica(&mut ws, |d| panels(d).len() == 3).await;
+    let c = panels(&d).into_iter().find(|p| *p != a && *p != b).expect("the second page's panel");
+    let e = call(&mut ws, 3, "page_split_panel",
+        json!({ "page": "Two", "panel": c, "direction": "row" })).await["result"]
+        .as_str().expect("the second page's second panel").to_string();
+    let d = sync_replica(&mut ws, |d| d.read_at(&["arrangement", e.as_str()]).is_some()).await;
+    let far = d.read_at(&["arrangement", e.as_str(), "parent"])
+        .and_then(|v| v.as_str().map(str::to_string)).expect("the split on Two");
+
+    let r = call_session(&mut ws, 4, "page_set_panel",
+        json!({ "page": "Layout", "panel": b, "type": "console" }), "s1").await;
+    assert_eq!(r["result"]["ok"], json!(true), "{r}");
+    let r = call_session(&mut ws, 5, "page_move_panel",
+        json!({ "page": "Layout", "panel": b, "new_parent": far, "order_index": 0 }), "s2").await;
+    assert_eq!(r["result"]["ok"], json!(true), "{r}");
+    let u = call_session(&mut ws, 6, "undo", json!({}), "s1").await;
+    assert_eq!(u["result"]["changed"], json!(true), "{u}");
+
+    let after = sync_replica(&mut ws, |d| {
+        d.read_at(&["arrangement", b.as_str(), "panel_type"]) == Some(json!("empty"))
+    })
+    .await;
+    let arr = arrangement(&after);
+    assert_eq!(
+        after.read_at(&["arrangement", b.as_str(), "parent"]),
+        Some(json!(far)),
+        "the type came back where the peer had carried the panel to: {arr}"
+    );
+    assert_eq!(
+        reload_warning(&mut ws, 7).await,
+        Value::Null,
+        "the manager saved an arrangement it cannot itself open: {arr}"
+    );
+}
+
+#[tokio::test]
+async fn a_rename_undone_after_a_peers_reorder_keeps_the_tab_index_it_finds() {
+    // A page's NAME is contents and its tab index is the slot, so the same rule binds: a peer's
+    // reorder renumbers the strip, and restoring the whole page entry puts back an index another
+    // tab now holds. The guard's own interleaving never reaches this (an added page appends rather
+    // than renumbering), which is why it is drawn here explicitly.
+    let base = start_server().await;
+    let (mut ws, _) = connect_async(format!("{base}/control")).await.unwrap();
+    let _ = recv_text(&mut ws).await;
+    let ok = |r: &Value| assert_eq!(r["result"]["ok"], json!(true), "{r}");
+    ok(&call(&mut ws, 1, "session_add_page", json!({ "name": "Two" })).await);
+    ok(&call(&mut ws, 2, "session_add_page", json!({ "name": "Three" })).await);
+
+    ok(&call_session(&mut ws, 3, "session_rename_page",
+        json!({ "from": "Two", "to": "Deux" }), "s1").await);
+    // The peer pulls the last tab to the front, so every index behind it shifts by one.
+    ok(&call_session(&mut ws, 4, "session_reorder_page",
+        json!({ "name": "Three", "to_index": 0 }), "s2").await);
+    let u = call_session(&mut ws, 5, "undo", json!({}), "s1").await;
+    assert_eq!(u["result"]["changed"], json!(true), "{u}");
+
+    let after = sync_replica(&mut ws, |d| {
+        arrangement(d).as_object().is_some_and(|m| m.values().any(|e| e["name"] == json!("Two")))
+    })
+    .await;
+    let arr = arrangement(&after);
+    let mut tabs: Vec<i64> = arr.as_object().expect("the arrangement")
+        .values().filter(|e| e["kind"] == json!("page"))
+        .filter_map(|e| e["order"].as_i64()).collect();
+    tabs.sort_unstable();
+    tabs.dedup();
+    assert_eq!(tabs.len(), 3, "the undo renamed the page without taking a tab index twice: {arr}");
+    assert_eq!(
+        reload_warning(&mut ws, 6).await,
+        Value::Null,
+        "the manager saved an arrangement it cannot itself open: {arr}"
+    );
+}
+
 /// **The rule, enforced rather than remembered: no layout inverse restores raw state — every inverse
 /// re-plans through the forward planners.** Putting a slot back resurrects a container a peer's
 /// children no longer belong under, which strands them and corrupts the arrangement on the next
@@ -656,17 +853,16 @@ async fn no_layout_undo_puts_back_a_slot_a_peer_has_since_built_over() {
             stranded.push(*op);
         }
     }
-    // The two this guard FOUND and that fix round 3 did not fix, listed rather than skipped so the
-    // hole is loud: a contents edit (`type`/`state`, a set of shares) still inverts by restoring the
-    // WHOLE entry, so its undo puts back the `order` a peer's adjacent split has since taken. Their
-    // fix is one more re-planning command (~35 lines) and it is the user's to scope. The set is
-    // compared BOTH ways: a new stranding op fails here, and so does fixing one of these without
-    // striking it off.
-    let known = ["page_set_panel", "page_resize_split"];
+    // EMPTY, and it stays empty: the two this guard found (`page_set_panel`, `page_resize_split`)
+    // now invert through `Command::LayoutContents`, which re-reads each slot at flip time. The one
+    // op whose inverse still restores an `order` is `session_reorder_page` — where the order IS the
+    // content, so carrying the live one over would make its undo a no-op; it needs a re-planning
+    // command of its own and no interleaving here reaches it. It is driven above regardless, so the
+    // day it does strand, this list is what says so.
+    let empty: [&str; 0] = [];
     assert_eq!(
-        stranded, known,
-        "an undo left an arrangement the manager cannot itself open — or a known one was fixed \
-         without being struck off this list"
+        stranded, empty,
+        "an undo left an arrangement the manager cannot itself open"
     );
 }
 

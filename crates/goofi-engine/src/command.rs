@@ -179,6 +179,14 @@ pub enum Command {
         /// Where `root` sat before — captured by [`Command::execute`], so a forward carries `None`.
         home: Option<crate::layout::Home>,
     },
+    /// A layout op that edits what entries HOLD — a panel's type/state, a split's set of shares —
+    /// leaving where they sit alone. Its inverse is the contents they held, landed the same way:
+    /// through [`crate::layout::Layout::set_contents`], which reads each slot off the arrangement at
+    /// flip time. Restoring the whole entry instead puts back the `order` a peer's adjacent split
+    /// has since taken, which is the same stranding a move's slot-restore makes, one field along.
+    LayoutContents {
+        writes: Vec<crate::layout::Write>,
+    },
     /// Re-parent a node or scope into `scope` (`None` = ROOT). The one membership move — used inside
     /// a delete's inverse to restore a member back INSIDE its scope. Inverse re-parents to the old
     /// scope.
@@ -503,6 +511,18 @@ impl Command {
                 };
                 g.arrangement_mut().apply(plan);
                 Ok((Outcome::Ok, Command::LayoutMove { writes: None, root, home: Some(back) }))
+            }
+
+            Command::LayoutContents { writes } => {
+                let plan = g.arrangement().set_contents(&writes);
+                // What those slots hold RIGHT NOW, which is what the inverse lands — and it lands it
+                // the same way, so the pair is closed under inversion and a redo re-plans too.
+                let back = plan
+                    .iter()
+                    .map(|(id, _)| (id.clone(), g.arrangement().get(id).cloned()))
+                    .collect();
+                g.arrangement_mut().apply(plan);
+                Ok((Outcome::Ok, Command::LayoutContents { writes: back }))
             }
 
             Command::SetScope { uid, scope } => {
