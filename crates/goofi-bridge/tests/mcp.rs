@@ -66,6 +66,22 @@ async fn call_tool(addr: &str, id: i64, name: &str, args: Value) -> String {
     result["content"][0]["text"].as_str().expect("a text content block").to_string()
 }
 
+/// One served tool's description — the text a model actually reads, which is `op.doc` plus the
+/// `op.result` schema. A description that disagrees with the arm misinstructs the one consumer this
+/// endpoint exists for, so several tests below assert against it rather than against the registry.
+async fn tool_description(addr: &str, id: i64, name: &str) -> String {
+    let reply = rpc(addr, id, "tools/list", json!({})).await;
+    reply["result"]["tools"]
+        .as_array()
+        .expect("a tools array")
+        .iter()
+        .find(|t| t["name"] == json!(name))
+        .unwrap_or_else(|| panic!("`{name}` is a tool"))["description"]
+        .as_str()
+        .expect("every tool is described")
+        .to_string()
+}
+
 async fn tool_names(addr: &str) -> Vec<String> {
     let reply = rpc(addr, 1, "tools/list", json!({})).await;
     reply["result"]["tools"]
@@ -219,6 +235,41 @@ async fn two_concurrent_clients_share_the_one_server() {
     for uid in &a {
         assert!(patch.contains(uid), "{uid} is missing from the shared patch:\n{patch}");
     }
+}
+
+/// `undo` answers `changed` as a BOOL. Its description is where a model learns that, so the two
+/// have to agree — a description promising a list of changed uids has the model chaining a call
+/// against `true`.
+#[tokio::test]
+async fn undos_advertised_result_is_the_shape_its_arm_answers() {
+    let addr = start_server().await;
+    call_tool(&addr, 1, "add_node", json!({ "type": "Oscillator" })).await;
+    let answered: Value = serde_json::from_str(&call_tool(&addr, 2, "undo", json!({})).await)
+        .expect("undo answers a JSON object");
+    assert!(answered["changed"].is_boolean(), "undo's `changed` is a bool: {answered}");
+    let described = tool_description(&addr, 3, "undo").await;
+    assert!(
+        described.contains("changed: bool"),
+        "the description a model reads must state the shape the arm answers: {described}"
+    );
+}
+
+/// `remove_node` on a well-formed uid naming no node SUCCEEDS, and the description says so. The
+/// idempotence is load-bearing rather than sloppy: `RemoveNode` is `AddNode`'s inverse, so an
+/// undo-of-add after a peer deleted the same node has to be a benign no-op instead of an error that
+/// wedges the session's stack — and `CommandHistory::apply` records even a forward no-op to keep the
+/// delegating client's stack 1:1 with the manager's. What an agent needs is therefore not a refusal
+/// but the truth in front of it.
+#[tokio::test]
+async fn remove_node_is_idempotent_and_says_so_where_an_agent_reads_it() {
+    let addr = start_server().await;
+    let answered = call_tool(&addr, 1, "remove_node", json!({ "node": "aaaaaaaaaaaa" })).await;
+    assert!(answered.contains("true"), "a uid naming no node is a no-op success: {answered}");
+    let described = tool_description(&addr, 2, "remove_node").await;
+    assert!(
+        described.contains("Idempotent"),
+        "an agent reading this would take `ok` for proof the node existed: {described}"
+    );
 }
 
 /// `initialize` NEGOTIATES the revision rather than echoing whatever was asked for. Claiming one
