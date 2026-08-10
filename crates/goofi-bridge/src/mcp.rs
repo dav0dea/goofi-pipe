@@ -20,8 +20,15 @@
 //! MCP revisions split into two eras — `2025-11-25` and earlier open with an `initialize`
 //! handshake, `2026-07-28` and later carry version and identity per request and have no handshake
 //! at all — and a stateless tools-only server serves both by answering `initialize` when it comes
-//! and never requiring it. Nothing here behaves differently per revision, which is why the
-//! negotiated version is simply the one the client asked for.
+//! and never requiring it. Nothing behaves differently across the revisions in
+//! [`SUPPORTED_PROTOCOLS`], which is why one code path serves them all; a revision outside that set
+//! is negotiated DOWN rather than echoed, because claiming one this server does not implement only
+//! moves the failure later.
+//!
+//! **One deliberate deviation.** An unknown or withheld tool name comes back as a `CallToolResult`
+//! with `isError: true`, where the spec classes it as a protocol error (`-32602`). That is on
+//! purpose: `isError` puts the reason in front of the MODEL, which is the only party that can
+//! correct the call, whereas a JSON-RPC error is swallowed by the client's transport layer.
 
 use axum::extract::State;
 use axum::http::StatusCode;
@@ -44,6 +51,14 @@ const AGENT_SESSION: &str = "mcp";
 /// omits the field can be assumed to speak (the transport spec says to assume `2025-03-26` for a
 /// missing header, and every client that sends none at all predates the split).
 const DEFAULT_PROTOCOL: &str = "2025-06-18";
+
+/// The newest revision this server implements, and what an unsupported ask is answered with.
+const LATEST_PROTOCOL: &str = "2025-11-25";
+
+/// Every revision whose `initialize`/`tools/list`/`tools/call` shapes this server actually speaks.
+/// `2026-07-28` is deliberately absent: it requires `resultType` on every result, `ttlMs`/
+/// `cacheScope` on `tools/list` and a `server/discover` method, none of which are here.
+const SUPPORTED_PROTOCOLS: &[&str] = &["2024-11-05", "2025-03-26", "2025-06-18", LATEST_PROTOCOL];
 
 /// One registry argument type as JSON Schema. The list `ops.rs` admits is pinned by its own schema
 /// test, so the string arm is a genuine default (`uid` and `string` share it) rather than a
@@ -162,6 +177,12 @@ pub async fn endpoint(State(state): State<AppState>, body: String) -> Response {
         Ok(v) => v,
         Err(e) => return rpc_error(Value::Null, -32700, format!("parse error: {e}")),
     };
+    // A batch is a JSON ARRAY, and an array has no top-level `id` — so without this it would fall
+    // into the notification branch and every request in it would go unanswered. Batching was
+    // retired in 2025-06-18, so refusing it readably beats leaving a client waiting forever.
+    let Some(req) = req.as_object() else {
+        return rpc_error(Value::Null, -32600, "invalid request: expected one JSON-RPC object".into());
+    };
     // A notification carries no id and therefore has no reply. 202-with-no-body is what the
     // transport requires; a JSON-RPC object here leaves the client matching a response to nothing.
     let Some(id) = req.get("id").filter(|v| !v.is_null()).cloned() else {
@@ -169,14 +190,17 @@ pub async fn endpoint(State(state): State<AppState>, body: String) -> Response {
     };
     let params = req.get("params").cloned().unwrap_or_else(|| json!({}));
     match req.get("method").and_then(|v| v.as_str()).unwrap_or_default() {
-        // Answered for a legacy client, never required of a modern one. The version echoed back is
-        // the one asked for: this server's whole surface is `tools/list` + `tools/call`, which no
-        // revision that defines them shapes differently, so there is nothing to negotiate.
+        // Answered for a legacy client, never required of a modern one. A supported ask is echoed;
+        // anything else is answered with the newest revision this server really implements, which
+        // is what the spec asks of a server that cannot speak what it was offered.
         "initialize" => ok(
             id,
             json!({
-                "protocolVersion": params.get("protocolVersion").and_then(|v| v.as_str())
-                    .unwrap_or(DEFAULT_PROTOCOL),
+                "protocolVersion": match params.get("protocolVersion").and_then(|v| v.as_str()) {
+                    None => DEFAULT_PROTOCOL,
+                    Some(v) if SUPPORTED_PROTOCOLS.contains(&v) => v,
+                    Some(_) => LATEST_PROTOCOL,
+                },
                 "capabilities": { "tools": {} },
                 "serverInfo": { "name": "goofi-pipe", "version": env!("CARGO_PKG_VERSION") },
                 "instructions": "Build and inspect the running goofi patch. inspect_patch draws \

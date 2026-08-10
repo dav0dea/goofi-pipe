@@ -221,6 +221,49 @@ async fn two_concurrent_clients_share_the_one_server() {
     }
 }
 
+/// `initialize` NEGOTIATES the revision rather than echoing whatever was asked for. Claiming one
+/// this server does not implement is worse than declining it: `2026-07-28` requires `resultType` on
+/// every result, `ttlMs`/`cacheScope` on `tools/list` and a `server/discover` method — none of which
+/// are here — so a client told "yes" fails later on the missing fields instead of falling back now.
+#[tokio::test]
+async fn initialize_answers_with_a_revision_this_server_implements() {
+    let addr = start_server().await;
+    // A supported ask comes back unchanged — the half that makes this a negotiation, not a constant.
+    for asked in ["2024-11-05", "2025-03-26", "2025-06-18", "2025-11-25"] {
+        let reply = rpc(&addr, 1, "initialize", json!({ "protocolVersion": asked })).await;
+        assert_eq!(reply["result"]["protocolVersion"], json!(asked), "{reply}");
+    }
+    // A future or malformed ask is answered with the latest revision this server DOES implement.
+    for asked in ["2026-07-28", "not-a-version", "9999-99-99"] {
+        let reply = rpc(&addr, 2, "initialize", json!({ "protocolVersion": asked })).await;
+        assert_eq!(
+            reply["result"]["protocolVersion"],
+            json!("2025-11-25"),
+            "`{asked}` came back verbatim: {reply}"
+        );
+    }
+    // No ask at all keeps the documented default for a client that predates the version field.
+    let reply = rpc(&addr, 3, "initialize", json!({})).await;
+    assert_eq!(reply["result"]["protocolVersion"], json!("2025-06-18"), "{reply}");
+}
+
+/// A JSON-RPC batch is a JSON ARRAY, which carries no top-level `id` — so without a guard it takes
+/// the notification path and the client gets 202 and no replies, hanging on requests that will never
+/// be answered. Batching was removed in 2025-06-18; the honest answer is a readable refusal.
+#[tokio::test]
+async fn a_batch_body_is_refused_rather_than_swallowed_as_a_notification() {
+    let addr = start_server().await;
+    let batch = json!([
+        { "jsonrpc": "2.0", "id": 4, "method": "tools/list" },
+        { "jsonrpc": "2.0", "id": 5, "method": "ping" }
+    ]);
+    let (status, body) = request(&addr, "POST", &batch.to_string()).await;
+    assert_eq!(status, 200, "a batch is answered, not swallowed: {body}");
+    let reply: Value = serde_json::from_str(&body).expect("a JSON-RPC reply");
+    assert_eq!(reply["error"]["code"], json!(-32600), "{reply}");
+    assert!(reply["id"].is_null(), "a request that is not one object has no id to echo: {reply}");
+}
+
 /// The transport's edges. A GET is the retired standalone SSE stream — 405 says so, which is what
 /// the spec tells a server that does not offer one to answer. A notification carries no id and so
 /// has no reply: 202 with an empty body, or a client hangs waiting for one.
