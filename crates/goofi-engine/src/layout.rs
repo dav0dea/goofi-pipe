@@ -142,6 +142,34 @@ impl Entry {
     }
 }
 
+/// Where a subtree sat before it moved — everything [`Layout::re_home`] needs to plan a move BACK
+/// without restoring one slot of it. Recorded as IDS rather than positions: a peer's concurrent edit
+/// moves positions about, where an id either still stands or is gone.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Home {
+    /// Its old siblings and the shares they held, nearest first. The first one still standing is
+    /// what it lands beside, which puts the old pairing back whether or not the old split survived.
+    siblings: Vec<(Id, f64)>,
+    /// The old parent's id and axis. The id is handed back only to a wrapper that has to be minted
+    /// anyway, and only while it is free — an absent split is referenced by nothing, so reusing its
+    /// id strands nobody, where restoring its SLOT would.
+    parent: Id,
+    axis: Axis,
+    /// It sat before its nearest sibling, and held this share of its parent.
+    before: bool,
+    size: f64,
+    /// Its page's name and tab index — the last resort, for the frozen drag where the tab went with
+    /// its last panel and there is neither a sibling nor a page left to land on.
+    page: (String, usize),
+}
+
+impl Home {
+    /// The share `id` held before the move, if this home remembers it.
+    fn share(&self, id: &str) -> Option<f64> {
+        self.siblings.iter().find(|(s, _)| s == id).map(|(_, f)| *f)
+    }
+}
+
 /// The whole arrangement. Keyed by id, so a duplicate id is structurally impossible rather than a
 /// validation class — the flat model's one free correctness win.
 #[derive(Clone, Debug)]
@@ -501,10 +529,22 @@ impl Layout {
 
     /// Put `entry` beside `target`, splitting along `axis` — `insertNodeAtPanel`, and the ONE place
     /// split-or-wrap lives. A parent already running along `axis` gains an adjacent sibling taking
-    /// `f` of the target's slice; otherwise the target is wrapped in a fresh split inheriting its
-    /// slot. `before` puts the newcomer left/top. `entry`'s own parent/order/size are overwritten,
-    /// so a caller hands over a lifted subtree root or a brand-new panel indifferently.
-    fn insert_at(&mut self, id: &str, mut entry: Entry, target: &str, axis: Axis, before: bool, f: f64) {
+    /// the newcomer's share of the target's slice; otherwise the target is wrapped in a fresh split
+    /// inheriting its slot. `before` puts the newcomer left/top. `entry`'s own parent and order are
+    /// overwritten and its `size` is READ as the share it asks for, so a caller hands over a lifted
+    /// subtree root or a brand-new panel indifferently. `wrap` names the id a minted wrapper should
+    /// take if it is still free — how an undo gives the split its own forward promoted away its id
+    /// back without restoring its slot.
+    fn insert_at(
+        &mut self,
+        id: &str,
+        mut entry: Entry,
+        target: &str,
+        axis: Axis,
+        before: bool,
+        wrap: Option<&str>,
+    ) {
+        let f = entry.size();
         let Some((parent, slot, order)) = self
             .entries
             .get(target)
@@ -528,7 +568,10 @@ impl Layout {
             kids.insert(at, id.to_string());
             self.order_children(&kids);
         } else {
-            let wrap = self.mint("split");
+            let wrap = wrap
+                .filter(|w| !self.entries.contains_key(*w))
+                .map(str::to_string)
+                .unwrap_or_else(|| self.mint("split"));
             self.insert(wrap.clone(), Entry::Split { parent, order, size: slot, axis });
             // The newcomer always takes `f` and the target the rest; only their ORDER flips.
             for (child, o, size) in [(target, before as usize, 1.0 - f), (id, 1 - before as usize, f)]
@@ -572,8 +615,80 @@ impl Layout {
         let mut next = self.clone();
         // Lifted first, exactly as `_takeNode` runs before `insertNodeAtPanel`: closing up behind
         // the source can promote a sibling into the slot the newcomer is about to share.
-        let moved = next.take(subtree)?;
-        next.insert_at(subtree, moved, target, axis, before, f);
+        let mut moved = next.take(subtree)?;
+        moved.set_size(f);
+        next.insert_at(subtree, moved, target, axis, before, None);
+        Ok(self.diff(&next))
+    }
+
+    /// Where `root` sits now, in the terms [`Self::re_home`] needs to put it back. `None` for a page,
+    /// which is reordered rather than moved.
+    pub fn home_of(&self, root: &str) -> Option<Home> {
+        let e = self.entries.get(root)?;
+        let parent = e.parent()?.to_string();
+        let page = self.page_of(root)?;
+        let kids = self.children(&parent);
+        let i = kids.iter().position(|k| k == root)?;
+        // Nearest first: the neighbour that shared an edge with `root` is the one whose survival
+        // reconstructs the old pairing exactly.
+        let mut sibs: Vec<(usize, Id)> =
+            kids.into_iter().enumerate().filter(|(_, k)| k != root).collect();
+        sibs.sort_by_key(|(j, _)| j.abs_diff(i));
+        Some(Home {
+            siblings: sibs
+                .into_iter()
+                .map(|(_, k)| {
+                    let share = self.entries.get(&k).map_or(1.0, Entry::size);
+                    (k, share)
+                })
+                .collect(),
+            axis: match self.entries.get(&parent) {
+                Some(Entry::Split { axis, .. }) => *axis,
+                _ => Axis::Row,
+            },
+            parent,
+            before: i == 0,
+            size: e.size(),
+            page: (self.name_of(&page)?.to_string(), self.pages().iter().position(|p| *p == page)?),
+        })
+    }
+
+    /// Plan a move of `root` back to `home`, against the arrangement AS IT STANDS — the inverse of
+    /// every layout op that moves something. It lands beside the first old sibling still standing,
+    /// else beside its old page's current root, else inside a page re-born around it. What it never
+    /// does is restore its old parent's slot: the move may have promoted that split away, and a peer
+    /// may have built on whatever took its place, which a restore would strand.
+    pub fn re_home(&self, root: &str, home: &Home) -> Result<Vec<Write>, String> {
+        let mut next = self.clone();
+        // Lifted FIRST, so the landing is chosen among what survives closing up behind it.
+        let mut e = next.take(root)?;
+        let inside = self.subtree(root);
+        let landing = home
+            .siblings
+            .iter()
+            .map(|(s, _)| s.clone())
+            .find(|s| next.entries.contains_key(s) && !inside.contains(s))
+            .or_else(|| {
+                next.page_named(&home.page.0).and_then(|p| next.children(&p).into_iter().next())
+            });
+        let Some(landing) = landing else {
+            // Even the page went with it (the tab followed its last panel) — re-born AROUND the
+            // subtree, which is `add_page`'s own adopt branch rather than a raw restore.
+            return self.add_page(&home.page.0, Some(home.page.1), Some(root)).map(|(w, _)| w);
+        };
+        e.set_size(home.size);
+        next.insert_at(root, e, &landing, home.axis, home.before, Some(&home.parent));
+        // The shares it found, so an undisturbed undo is exact to the pixel; anything a peer has
+        // added keeps its own and the split renormalizes around it.
+        let parent =
+            next.entries.get(root).and_then(Entry::parent).unwrap_or_default().to_string();
+        for k in next.children(&parent) {
+            let share = if k == root { Some(home.size) } else { home.share(&k) };
+            if let (Some(s), Some(x)) = (share, next.entries.get_mut(&k)) {
+                x.set_size(s);
+            }
+        }
+        next.normalize(&parent);
         Ok(self.diff(&next))
     }
 
@@ -672,15 +787,16 @@ impl Layout {
         let f = fraction(ratio)?;
         let mut next = self.clone();
         let fresh = next.mint("panel");
-        // parent/order/size are `insert_at`'s to set; only the type and state are this op's.
+        // parent/order are `insert_at`'s to set and `size` is the share it asks for; only the type
+        // and state are this op's.
         let born = Entry::Panel {
             parent: String::new(),
             order: 0,
-            size: 1.0,
+            size: f,
             panel_type: EMPTY_PANEL_TYPE.into(),
             state: Value::Null,
         };
-        next.insert_at(&fresh, born, panel, axis, false, f);
+        next.insert_at(&fresh, born, panel, axis, false, None);
         Ok((self.diff(&next), fresh))
     }
 
@@ -1295,6 +1411,43 @@ mod tests {
         let l3 = applied(&l2, l2.add_page("Third", None, Some(&a)).unwrap().0);
         assert_eq!(l3.pages().len(), 2, "the emptied page went with its panel");
         assert!(l3.validate().is_ok());
+    }
+
+    #[test]
+    fn an_undone_move_re_plans_rather_than_putting_a_dead_container_back() {
+        // `re_home` is every move's inverse. It lands the subtree beside the first old sibling still
+        // standing — which puts the pairing back whether or not the old split survived — and, when
+        // even the page went with it, re-BIRTHS the page around it. What it never does is restore
+        // the old parent's slot, which is what strands a peer's concurrent children.
+        let l = Layout::default();
+        let p1 = l.pages()[0].clone();
+        let a = root_panel(&l);
+        let (w, b) = l.split_panel(&p1, &a, Axis::Row, 0.5).unwrap();
+        let l = applied(&l, w);
+        let split = l.get(&a).unwrap().parent().unwrap().to_string();
+        let (w, p2) = l.add_page("Second", None, None).unwrap();
+        let l = applied(&l, w);
+        let target = l.children(&p2)[0].clone();
+
+        // Dropping `b` away empties its split, so the split is promoted out of existence. The undo
+        // rebuilds the pairing beside `a` — reusing the dead split's ID, which strands nobody,
+        // rather than its SLOT, which would.
+        let home = l.home_of(&b).expect("`b` sits under something");
+        let dropped = applied(&l, l.insert_at_panel(&p2, &b, &target, Axis::Column, false, 0.5).unwrap());
+        assert_eq!(dropped.get(&split), None, "the emptied split was promoted away");
+        let back = applied(&dropped, dropped.re_home(&b, &home).unwrap());
+        assert_eq!(back, l, "an undisturbed undo draws exactly what the move found");
+
+        // The last rung: the panel was its page's only root, so the page went too and there is
+        // neither a sibling nor a page left to land on.
+        let home = l.home_of(&target).expect("the second page's only panel");
+        let torn = applied(&l, l.insert_at_panel(&p1, &target, &a, Axis::Row, false, 0.5).unwrap());
+        assert_eq!(torn.pages(), vec![p1.clone()], "the emptied page went with its panel");
+        let back = applied(&torn, torn.re_home(&target, &home).unwrap());
+        let reborn = back.page_named("Second").expect("the page is re-born around the subtree");
+        assert_eq!(back.children(&reborn), vec![target.clone()], "holding what it was born for");
+        assert_eq!(back.pages()[1], reborn, "at the tab index it had");
+        assert!(back.validate().is_ok());
     }
 
     #[test]

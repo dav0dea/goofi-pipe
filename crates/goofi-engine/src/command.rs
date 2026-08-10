@@ -155,6 +155,18 @@ pub enum Command {
         page: crate::layout::Id,
         born: crate::layout::Id,
     },
+    /// A layout op that MOVES a subtree. Its inverse is RE-PLANNED like a birth's, not restored:
+    /// another move, back to wherever `home` still lives. Restoring the slots a move displaced puts
+    /// back the split the move promoted away — on top of whatever a peer has since built in its
+    /// place, which leaves that page two roots and the peer's panel in the one nothing renders.
+    LayoutMove {
+        /// The forward plan, when this is the user's own op; `None` on an inverse, which is planned
+        /// from `home` against the arrangement as it stands at flip time.
+        writes: Option<Vec<crate::layout::Write>>,
+        root: crate::layout::Id,
+        /// Where `root` sat before — captured by [`Command::execute`], so a forward carries `None`.
+        home: Option<crate::layout::Home>,
+    },
     /// Re-parent a node or scope into `scope` (`None` = ROOT). The one membership move — used inside
     /// a delete's inverse to restore a member back INSIDE its scope. Inverse re-parents to the old
     /// scope.
@@ -452,6 +464,24 @@ impl Command {
                     .collect();
                 g.arrangement_mut().apply(writes);
                 Ok((Outcome::Ok, Command::LayoutBirth { writes: restore, page, born }))
+            }
+
+            Command::LayoutMove { writes, root, home } => {
+                // Captured BEFORE anything moves, because the inverse is "put it back where it is
+                // standing right now" — planned then, against the arrangement of that moment.
+                let back = g.arrangement().home_of(&root);
+                let plan = match (writes, &home) {
+                    (Some(w), _) => Some(w),
+                    (None, Some(h)) => g.arrangement().re_home(&root, h).ok(),
+                    (None, None) => None,
+                };
+                // A stale replay — a peer closed or carried it off first. Degrade to a no-op like
+                // `LayoutClose`: an `Err` inside `flip` wedges that session's undo stack.
+                let (Some(plan), Some(back)) = (plan, back) else {
+                    return Ok((Outcome::Ok, Command::Compound(vec![])));
+                };
+                g.arrangement_mut().apply(plan);
+                Ok((Outcome::Ok, Command::LayoutMove { writes: None, root, home: Some(back) }))
             }
 
             Command::SetScope { uid, scope } => {

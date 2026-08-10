@@ -930,6 +930,23 @@ fn apply_layout(
     Ok(json!({ "ok": true }))
 }
 
+/// Like [`apply_layout`], but for an op that MOVES the subtree rooted at `root`. Its inverse is
+/// another move, re-planned at undo time (see [`goofi_engine::Command::LayoutMove`]) — restoring the
+/// slots a move displaced resurrects the split it promoted away, and strands whatever a peer built
+/// where that split used to stand.
+fn apply_layout_move(
+    state: &AppState,
+    g: &mut Graph,
+    session: &str,
+    writes: Vec<goofi_engine::layout::Write>,
+    root: &str,
+) -> Result<Value, String> {
+    let cmd =
+        goofi_engine::Command::LayoutMove { writes: Some(writes), root: root.to_string(), home: None };
+    state.history.lock().unwrap().apply(g, session, cmd)?;
+    Ok(json!({ "ok": true }))
+}
+
 /// Dispatch one control RPC. Mutates the graph, queues broadcast events, and
 /// returns the `{id,result}`/`{id,error}` reply (only when `id` is numeric).
 fn dispatch(state: &AppState, text: &str) -> Option<String> {
@@ -1209,11 +1226,13 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
                 let index = payload.get("index").and_then(|v| v.as_u64()).map(|i| i as usize);
                 let subtree = payload.get("subtree").and_then(|v| v.as_str()).map(str::to_string);
                 let (writes, page) = g.arrangement().add_page(&name, index, subtree.as_deref())?;
-                // A page built AROUND an existing subtree is a move: its undo has to put the subtree
+                // A page built AROUND an existing subtree is a MOVE: its undo has to put the subtree
                 // back, where closing the page would delete it. A page born with its own fresh panel
                 // has nothing to give back, so it inverts by closing (see `Command::LayoutBirth`).
-                let born = subtree.is_none().then_some((page.as_str(), page.as_str()));
-                apply_layout(state, &mut g, &session, writes, born)
+                match subtree.as_deref() {
+                    Some(s) => apply_layout_move(state, &mut g, &session, writes, s),
+                    None => apply_layout(state, &mut g, &session, writes, Some((&page, &page))),
+                }
             }
             "session_remove_page" => {
                 let writes = g.arrangement().remove_page(parse_str(&payload, "name")?)?;
@@ -1271,7 +1290,7 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
                 let dest = parse_str(&payload, "new_parent")?.to_string();
                 let at = payload.get("order_index").and_then(|v| v.as_u64()).unwrap_or(0);
                 let writes = g.arrangement().move_subtree(&page, &panel, &dest, at as usize)?;
-                apply_layout(state, &mut g, &session, writes, None)
+                apply_layout_move(state, &mut g, &session, writes, &panel)
             }
             // The frozen drag gestures, each ONE op — a drop is one undo step and peers never see an
             // arrangement that was not on somebody's screen. Composed from the primitive ops they
@@ -1287,7 +1306,7 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
                 let ratio = payload.get("ratio").and_then(|v| v.as_f64()).unwrap_or(0.5);
                 let writes =
                     g.arrangement().insert_at_panel(&page, &subtree, &target, axis, before, ratio)?;
-                apply_layout(state, &mut g, &session, writes, None)
+                apply_layout_move(state, &mut g, &session, writes, &subtree)
             }
             "page_resize_split" => {
                 let page = resolve_page(&g, &payload)?;

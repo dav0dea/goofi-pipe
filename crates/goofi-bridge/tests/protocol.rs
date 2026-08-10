@@ -394,6 +394,187 @@ async fn a_layout_undo_leaves_a_peers_panel_standing() {
     );
 }
 
+/// The id of the entry the whole page hangs off, and how many there are — a page holds exactly one,
+/// so a second root IS the corruption a resurrected container makes.
+fn page_roots(doc: &goofi_crdt::GraphDoc, name: &str) -> Vec<String> {
+    let arr = arrangement(doc);
+    let obj = arr.as_object().expect("the arrangement root");
+    let page = obj.iter().find(|(_, e)| e["name"] == json!(name)).map(|(id, _)| id.clone());
+    let Some(page) = page else { return Vec::new() };
+    obj.iter().filter(|(_, e)| e["parent"] == json!(page)).map(|(id, _)| id.clone()).collect()
+}
+
+#[tokio::test]
+async fn a_layout_undo_moves_a_panel_back_rather_than_resurrecting_its_split() {
+    // The MOVE half of the class `a_layout_undo_leaves_a_peers_panel_standing` closed for a birth,
+    // and again only TWO sessions can see it. A move that empties a split promotes the survivor and
+    // drops the split; restoring the slots the move displaced puts that DEAD split back at the page
+    // root — while the wrapper a PEER has since hung its own panel off stays where it is, so the
+    // page ends up with two roots and an arrangement the manager's own loader refuses. The inverse
+    // is therefore another MOVE, planned at undo time against whatever still stands.
+    let base = start_server().await;
+    let (mut ws, _) = connect_async(format!("{base}/control")).await.unwrap();
+    let _ = recv_text(&mut ws).await;
+    let doc = sync_replica(&mut ws, |d| !panels(d).is_empty()).await;
+    let first = panels(&doc)[0].clone();
+    let ok = |r: &Value| assert_eq!(r["result"]["ok"], json!(true), "{r}");
+
+    // `Layout` holds a two-child split; `Signals` holds another, to move into.
+    let mine = call(&mut ws, 1, "page_split_panel",
+        json!({ "page": "Layout", "panel": first, "direction": "row" })).await["result"]
+        .as_str().unwrap().to_string();
+    ok(&call(&mut ws, 2, "session_add_page", json!({ "name": "Signals" })).await);
+    let d = sync_replica(&mut ws, |d| panels(d).len() == 3).await;
+    let theirs = panels(&d).into_iter().find(|p| *p != first && *p != mine).expect("its panel");
+    let far = call(&mut ws, 3, "page_split_panel",
+        json!({ "page": "Signals", "panel": theirs, "direction": "row" })).await["result"]
+        .as_str().unwrap().to_string();
+    let d = sync_replica(&mut ws, |d| d.read_at(&["arrangement", far.as_str()]).is_some()).await;
+    let dest = d.read_at(&["arrangement", far.as_str(), "parent"])
+        .and_then(|v| v.as_str().map(str::to_string)).expect("the split on Signals");
+
+    // s1 moves its panel across, which leaves `Layout`'s split one-armed: it is promoted away and
+    // `first` becomes the page's root.
+    ok(&call_session(&mut ws, 4, "page_move_panel",
+        json!({ "page": "Layout", "panel": mine, "new_parent": dest, "order_index": 0 }), "s1").await);
+    let moved = sync_replica(&mut ws, |d| {
+        d.read_at(&["arrangement", mine.as_str(), "parent"]) == Some(json!(dest))
+    })
+    .await;
+    assert_eq!(page_roots(&moved, "Layout"), vec![first.clone()], "the survivor took the page root");
+
+    // s2 then splits that survivor, so its panel hangs off a wrapper sitting in the very slot the
+    // dead split wants back.
+    let peers = call_session(&mut ws, 5, "page_split_panel",
+        json!({ "page": "Layout", "panel": first, "direction": "column" }), "s2").await["result"]
+        .as_str().expect("the peer's panel").to_string();
+
+    let u = call_session(&mut ws, 6, "undo", json!({}), "s1").await;
+    assert_eq!(u["result"]["changed"], json!(true), "undo flipped something: {u}");
+    let after = sync_replica(&mut ws, |d| {
+        d.read_at(&["arrangement", mine.as_str(), "parent"]).is_some_and(|v| v != json!(dest))
+    })
+    .await;
+    let arr = arrangement(&after);
+    assert_eq!(page_roots(&after, "Layout").len(), 1, "a dead split did not come back: {arr}");
+    assert!(panels(&after).contains(&peers), "the peer's panel survived a foreign undo: {arr}");
+    let table = call(&mut ws, 7, "page_list_panels", json!({ "page": "Layout" })).await["result"]
+        ["text"].as_str().unwrap().to_string();
+    assert!(table.contains(&mine), "and the undo did move the panel back: {table}");
+
+    // The manager's own loader is the judge of whether that page still holds together.
+    let yaml = call(&mut ws, 8, "serialize", json!({})).await["result"]["yaml"]
+        .as_str().unwrap().to_string();
+    let r = call(&mut ws, 9, "load_text", json!({ "content": yaml })).await;
+    assert_eq!(r["result"]["layout_warning"], Value::Null,
+        "the manager saved an arrangement it cannot itself open: {r}");
+}
+
+#[tokio::test]
+async fn each_frozen_drags_undo_leaves_a_peers_panel_standing_too() {
+    // The two gestures that CARRY a subtree — dropping it on a panel, and tearing it off onto the
+    // tab bar — are the same class: each lifts a subtree, which can promote its split away, and a
+    // slot-restore undo brings that dead split back on top of whatever the peer built where it stood.
+    let base = start_server().await;
+    let (mut ws, _) = connect_async(format!("{base}/control")).await.unwrap();
+    let _ = recv_text(&mut ws).await;
+    let doc = sync_replica(&mut ws, |d| !panels(d).is_empty()).await;
+    let first = panels(&doc)[0].clone();
+    let ok = |r: &Value| assert_eq!(r["result"]["ok"], json!(true), "{r}");
+
+    let mine = call(&mut ws, 1, "page_split_panel",
+        json!({ "page": "Layout", "panel": first, "direction": "row" })).await["result"]
+        .as_str().unwrap().to_string();
+    ok(&call(&mut ws, 2, "session_add_page", json!({ "name": "Signals" })).await);
+    let d = sync_replica(&mut ws, |d| panels(d).len() == 3).await;
+    let target = panels(&d).into_iter().find(|p| *p != first && *p != mine).expect("its panel");
+
+    ok(&call_session(&mut ws, 3, "page_insert_at_panel",
+        json!({ "page": "Signals", "subtree": mine, "target": target, "direction": "column" }),
+        "s1").await);
+    let dropped = sync_replica(&mut ws, |d| {
+        d.read_at(&["arrangement", mine.as_str(), "parent"])
+            .is_some_and(|p| d.read_at(&["arrangement", first.as_str(), "parent"]) != Some(p))
+    })
+    .await;
+    assert_eq!(page_roots(&dropped, "Layout"), vec![first.clone()], "the survivor took the page root");
+
+    let peers = call_session(&mut ws, 4, "page_split_panel",
+        json!({ "page": "Layout", "panel": first, "direction": "column" }), "s2").await["result"]
+        .as_str().expect("the peer's panel").to_string();
+    let u = call_session(&mut ws, 5, "undo", json!({}), "s1").await;
+    assert_eq!(u["result"]["changed"], json!(true), "{u}");
+    let after = sync_replica(&mut ws, |d| panels(d).contains(&peers) && panels(d).len() == 4).await;
+    let arr = arrangement(&after);
+    assert_eq!(page_roots(&after, "Layout").len(), 1, "a dead split did not come back: {arr}");
+    assert!(panels(&after).contains(&peers), "the peer's panel survived a foreign undo: {arr}");
+
+    // The tab-bar tear-off carries a subtree onto a page of its own, and lifting it can promote a
+    // split away just the same — so its undo is a move back, not the slots the tear-off displaced.
+    ok(&call_session(&mut ws, 6, "session_add_page",
+        json!({ "name": "Torn off", "subtree": mine }), "s1").await);
+    let torn = sync_replica(&mut ws, |d| {
+        d.read_at(&["arrangement", mine.as_str(), "size"]).and_then(|v| v.as_f64()) == Some(1.0)
+    })
+    .await;
+    let survivor = page_roots(&torn, "Layout");
+    assert_eq!(survivor.len(), 1, "the page it left kept exactly one root: {:?}", arrangement(&torn));
+    let theirs = call_session(&mut ws, 7, "page_split_panel",
+        json!({ "page": "Layout", "panel": first, "direction": "row" }), "s2").await["result"]
+        .as_str().expect("the peer's second panel").to_string();
+    let u = call_session(&mut ws, 8, "undo", json!({}), "s1").await;
+    assert_eq!(u["result"]["changed"], json!(true), "{u}");
+    let back = sync_replica(&mut ws, |d| panels(d).contains(&theirs) && panels(d).len() == 5).await;
+    let arr = arrangement(&back);
+    assert_eq!(page_roots(&back, "Layout").len(), 1, "a dead split did not come back: {arr}");
+    assert!(panels(&back).contains(&theirs), "the peer's panel survived the tear-off's undo: {arr}");
+
+    let yaml = call(&mut ws, 9, "serialize", json!({})).await["result"]["yaml"]
+        .as_str().unwrap().to_string();
+    let r = call(&mut ws, 10, "load_text", json!({ "content": yaml })).await;
+    assert_eq!(r["result"]["layout_warning"], Value::Null,
+        "the manager saved an arrangement it cannot itself open: {r}");
+}
+
+#[tokio::test]
+async fn undoing_a_move_puts_the_panel_back_at_the_index_and_share_it_had() {
+    // The plain move case, undisturbed: re-planning the inverse must not cost the single-session
+    // expectation that ctrl-Z puts a panel back exactly — same split, same position among its
+    // siblings, same shares for all three.
+    let base = start_server().await;
+    let (mut ws, _) = connect_async(format!("{base}/control")).await.unwrap();
+    let _ = recv_text(&mut ws).await;
+    let doc = sync_replica(&mut ws, |d| !panels(d).is_empty()).await;
+    let first = panels(&doc)[0].clone();
+    let ok = |r: &Value| assert_eq!(r["result"]["ok"], json!(true), "{r}");
+
+    // A THREE-child split, so the move leaves it standing and the inverse is a move back INTO it.
+    let last = call(&mut ws, 1, "page_split_panel",
+        json!({ "page": "Layout", "panel": first, "direction": "row" })).await["result"]
+        .as_str().unwrap().to_string();
+    let mid = call(&mut ws, 2, "page_split_panel",
+        json!({ "page": "Layout", "panel": first, "direction": "row" })).await["result"]
+        .as_str().unwrap().to_string();
+    ok(&call(&mut ws, 3, "session_add_page", json!({ "name": "Signals" })).await);
+    let d = sync_replica(&mut ws, |d| panels(d).len() == 4).await;
+    let theirs = panels(&d).into_iter()
+        .find(|p| *p != first && *p != mid && *p != last).expect("the new page's panel");
+    let far = call(&mut ws, 4, "page_split_panel",
+        json!({ "page": "Signals", "panel": theirs, "direction": "row" })).await["result"]
+        .as_str().unwrap().to_string();
+    let d = sync_replica(&mut ws, |d| d.read_at(&["arrangement", far.as_str()]).is_some()).await;
+    let dest = d.read_at(&["arrangement", far.as_str(), "parent"])
+        .and_then(|v| v.as_str().map(str::to_string)).expect("the split on Signals");
+    let before = arrangement(&d);
+
+    ok(&call_session(&mut ws, 5, "page_move_panel",
+        json!({ "page": "Layout", "panel": mid, "new_parent": dest, "order_index": 1 }), "s1").await);
+    let u = call_session(&mut ws, 6, "undo", json!({}), "s1").await;
+    assert_eq!(u["result"]["changed"], json!(true), "{u}");
+    let back = sync_replica(&mut ws, |d| entry_count(d) > 0 && arrangement(d) == before).await;
+    assert_eq!(arrangement(&back), before, "one ctrl-Z put the panel back exactly where it was");
+}
+
 #[tokio::test]
 async fn one_pass_over_every_session_and_page_write_op() {
     // The dispatch arms are pure argument plumbing over planners that are unit-tested, so what is
