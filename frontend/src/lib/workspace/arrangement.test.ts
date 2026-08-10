@@ -5,7 +5,14 @@
  */
 import { describe, expect, it } from 'vitest';
 import * as Y from 'yjs';
-import { buildWorkspaces, childIds, pageOf, splitFractions, type Arrangement } from './arrangement';
+import {
+	buildWorkspaces,
+	childIds,
+	firstPanelIn,
+	pageOf,
+	splitFractions,
+	type Arrangement
+} from './arrangement';
 import { arrangementEntries } from '$lib/crdt/graphDoc';
 
 /** The manager's default arrangement, as `Layout::to_json` writes it. */
@@ -107,6 +114,14 @@ describe('pageOf / childIds / splitFractions', () => {
 
 	it('reads a split’s current shares in child order — the resize commit’s baseline', () => {
 		expect(splitFractions(splitArr(), 'split-4')).toEqual([0.75, 0.25]);
+	});
+
+	it('finds the first panel inside a subtree — what a drop hands focus to', () => {
+		// A drag names a subtree: a panel is one of itself, a dragged TAB names its page's root
+		// split. Either way the panel the user is now working in is the first one inside it.
+		expect(firstPanelIn(splitArr(), 'panel-3')).toBe('panel-3');
+		expect(firstPanelIn(splitArr(), 'split-4')).toBe('panel-2');
+		expect(firstPanelIn(splitArr(), 'nope')).toBeNull();
 	});
 });
 

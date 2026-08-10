@@ -41,6 +41,9 @@ function boot(arr: Arrangement = oneP()): ReturnType<typeof workspace> {
 	return ws;
 }
 
+/** Drain every pending microtask — a command's reply and whatever its `.then` does with it. */
+const settle = (): Promise<void> => new Promise((r) => setTimeout(r, 0));
+
 /** The ops sent since boot, as `[op, payload]` pairs. */
 function sent(): Array<[string, Record<string, unknown>]> {
 	return fc.recordedCalls().map((c) => [c.op, c.payload]);
@@ -108,6 +111,29 @@ describe('a frozen gesture is a layout command', () => {
 		expect(sent()).toEqual([
 			['page_set_panel', { page: 'Second', panel: 'panel-8', state: { node: 'a1b2' } }]
 		]);
+	});
+
+	it('leaves the focus on the panel it dropped, not on the page’s first', async () => {
+		const ws = boot(split());
+		ws.setActive('panel-2');
+		ws.dragging = { kind: 'panel', workspaceId: 'page-1', panelId: 'panel-3' };
+		ws.dropOnPanel('panel-2', 'column', false);
+		await settle();
+		expect(ws.activePanelId, 'the panel the user just moved is the one they are in').toBe('panel-3');
+	});
+
+	it('brings a fresh tab forward off the ids the manager minted, once they arrive', async () => {
+		const ws = boot();
+		fc.setCallResult('session_add_page', { page: 'page-3', panel: 'panel-4' });
+		ws.addTab();
+		await settle();
+		expect(ws.state.activeWorkspaceId, 'not before the page exists to draw').toBe('page-1');
+		const two = oneP();
+		two['page-3'] = { kind: 'page', order: 1, name: 'Layout 2' };
+		two['panel-4'] = { kind: 'panel', order: 0, parent: 'page-3', size: 1, panel_type: 'node-editor' };
+		ws.syncFromDoc(two);
+		expect(ws.state.activeWorkspaceId).toBe('page-3');
+		expect(ws.activePanelId).toBe('panel-4');
 	});
 
 	it('moves a dragged panel with ONE op, so the drop is one undo step', async () => {
@@ -245,6 +271,7 @@ describe('a resize drag draws locally and commits once', () => {
 		await Promise.resolve();
 		expect(sent()).toEqual([]);
 	});
+
 });
 
 describe('viewpoint stays here', () => {

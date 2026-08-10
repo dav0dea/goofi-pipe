@@ -27,6 +27,7 @@ import {
 import {
 	buildWorkspaces,
 	childIds,
+	firstPanelIn,
 	pageOf,
 	splitFractions,
 	type Arrangement
@@ -57,6 +58,12 @@ export type DragRef =
  */
 export type LayoutIntent = 'navigation' | 'authored';
 
+/** What `session_add_page` answers: the ids it minted, which no client can otherwise know. */
+interface Page {
+	page: string;
+	panel: string;
+}
+
 /** What `set_viewpoint` stores for this client, and what a reload gets back. */
 export interface Viewpoint {
 	page?: string;
@@ -81,9 +88,10 @@ class WorkspaceStore {
 	 * shared state bag — that separation is what keeps peer isolation and navigation-must-not-dirty
 	 * true by construction rather than by classification. */
 	private _paths = $state<Record<string, string>>({});
-	/** The page a just-sent op is about to create, adopted when it appears (a page is addressed by
-	 * name, and its id is the manager's to mint). */
-	private _wantPage: string | null = null;
+	/** The page and root panel a just-accepted `session_add_page` minted, brought forward once the
+	 * doc catches up. The manager answers with the ids before the CRDT delta carrying them arrives,
+	 * so they are known first but cannot be drawn yet. */
+	private _wantPage: { page: string; panel: string } | null = null;
 	/** Page names claimed but not yet seen in the replica — see `_claimName`. */
 	private _claimed = new Set<string>();
 	/** Last-focused panel id — keyboard shortcuts scope to this. */
@@ -155,13 +163,11 @@ class WorkspaceStore {
 				this._dragSent = false;
 			}
 		}
-		if (this._wantPage !== null) {
-			const born = this._workspaces.find((w) => w.name === this._wantPage);
-			if (born) {
-				this._wantPage = null;
-				this._page = born.id;
-				this._focusFirst(born.root);
-			}
+		const want = this._wantPage;
+		if (want && arr[want.page]) {
+			this._wantPage = null;
+			this._page = want.page;
+			this._focus(want.panel);
 		}
 		// A claim's job is over the moment the name it reserved shows up in the replica.
 		if (this._claimed.size > 0) for (const w of this._workspaces) this._claimed.delete(w.name);
@@ -229,12 +235,16 @@ class WorkspaceStore {
 		}
 	}
 
-	/** After a structural layout change, drop the maximized view and focus the first panel of
-	 * `root` (firstPanelId returns '' when empty). */
-	private _focusFirst(root: LayoutNode): void {
+	/** After a structural layout change, drop the maximized view and focus `panelId`. */
+	private _focus(panelId: string): void {
 		this.maximizedPanelId = null;
-		this.activePanelId = firstPanelId(root);
+		this.activePanelId = panelId;
 		this._viewpointChanged();
+	}
+
+	/** The same, for a page arriving whole: its first panel (firstPanelId returns '' when empty). */
+	private _focusFirst(root: LayoutNode): void {
+		this._focus(firstPanelId(root));
 	}
 
 	// --- layout mutations ----------------------------------------------------
@@ -383,10 +393,10 @@ class WorkspaceStore {
 	 * entry whose two children pop the two manager commands in order. */
 	addTab(panelType?: string): void {
 		const name = this._claimName('Layout');
-		this._wantPage = name;
 		void history().transaction('Add tab', async () => {
-			const born = await this._cmd<{ panel: string }>('Add tab', 'session_add_page', { name });
+			const born = await this._cmd<Page>('Add tab', 'session_add_page', { name });
 			if (born === null) this._claimed.delete(name);
+			if (born) this._wantPage = born;
 			if (born && panelType && panelType !== DEFAULT_PANEL_TYPE) {
 				await this._cmd('Change panel', 'page_set_panel', {
 					page: name,
@@ -457,7 +467,9 @@ class WorkspaceStore {
 		const subtree = this._subtreeOf(d);
 		const page = this._pageName(targetPanelId);
 		if (!subtree || !page || subtree === targetPanelId) return;
-		this._wantPage = page;
+		// A drop lands on a page already in front, so only the FOCUS moves — onto the panel the user
+		// just carried there, which is the one they are now working in.
+		const focus = firstPanelIn(this._arr, subtree);
 		void this._cmd('Move panel', 'page_insert_at_panel', {
 			page,
 			subtree,
@@ -465,6 +477,8 @@ class WorkspaceStore {
 			direction,
 			place_before: placeBefore,
 			ratio: 0.5
+		}).then((ok) => {
+			if (ok !== null && focus !== null) this._focus(focus);
 		});
 	}
 
@@ -477,12 +491,14 @@ class WorkspaceStore {
 		const subtree = this._subtreeOf(d);
 		if (!subtree) return;
 		const name = this._claimName('Layout');
-		this._wantPage = name;
-		void this._cmd('Move panel to new tab', 'session_add_page', { name, index, subtree }).then(
-			(ok) => {
-				if (ok === null) this._claimed.delete(name);
-			}
-		);
+		void this._cmd<Page>('Move panel to new tab', 'session_add_page', {
+			name,
+			index,
+			subtree
+		}).then((born) => {
+			if (born === null) this._claimed.delete(name);
+			else if (born) this._wantPage = born;
+		});
 	}
 
 	/** Every panel currently bound to `uid`, for the agent façade and the e2e. */

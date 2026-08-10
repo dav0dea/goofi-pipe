@@ -56,6 +56,20 @@ export function childIds(arr: Arrangement, parent: string): string[] {
 		.sort((a, b) => arr[a].order - arr[b].order);
 }
 
+/** The first panel inside `id`, in document order — `id` itself when it is one. A drag names a
+ * SUBTREE (a dragged tab names its page's root split), and this is the panel the user is working in
+ * once it lands. Null when the id is unknown. */
+export function firstPanelIn(arr: Arrangement, id: string): string | null {
+	const e = arr[id];
+	if (!e) return null;
+	if (e.kind === 'panel') return id;
+	for (const k of childIds(arr, id)) {
+		const p = firstPanelIn(arr, k);
+		if (p !== null) return p;
+	}
+	return null;
+}
+
 /** A split's children's shares, in child order — the baseline a resize drag adjusts and commits. */
 export function splitFractions(arr: Arrangement, split: string): number[] {
 	return childIds(arr, split).map((id) => arr[id].size ?? 0);
