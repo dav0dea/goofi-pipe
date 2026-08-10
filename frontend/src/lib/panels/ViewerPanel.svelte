@@ -13,11 +13,8 @@
 	import ViewerFeed from '$lib/viewers/ViewerFeed.svelte';
 	import ViewerControls from '$lib/viewers/ViewerControls.svelte';
 	import { panelBinding, type ViewBinding } from '$lib/viewers/viewBinding';
-	import { recordViewChange } from '$lib/viewers/viewExecutors';
 	import { asStateObject } from '$lib/workspace/panelState';
 	import { workspace } from '$lib/workspace/workspace.svelte';
-	import type { ViewerKind } from '$lib/viewers/kind';
-	import type { SettingsMap } from '$lib/viewers/settingsSchema';
 	import { Select } from '$lib/ui';
 
 	interface ViewerState {

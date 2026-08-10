@@ -272,6 +272,40 @@ describe('a resize drag draws locally and commits once', () => {
 		expect(sent()).toEqual([]);
 	});
 
+	it('commits a second drag that lands back on the shares the REPLICA still shows', async () => {
+		// The "nothing changed" short-circuit has to compare against what was last SENT, not against
+		// the replica — the replica is the arrangement from before the previous commit, so a drag
+		// returning the split to those shares looks like a no-op and is dropped on the floor. Halves
+		// and quarters, because floating-point inexactness is what hides this in a fixture.
+		const even = split();
+		even['panel-2'].size = 0.5;
+		even['panel-3'].size = 0.5;
+		const ws = boot(even);
+		ws.resize('split-4', 0, 0.25);
+		ws.commitResize('split-4');
+		await Promise.resolve();
+		ws.resize('split-4', 0, -0.25);
+		ws.commitResize('split-4');
+		await Promise.resolve();
+		expect(sent(), 'the drag back is a change the user made and asked for').toHaveLength(2);
+		expect(sent()[1][1].fractions).toEqual([0.5, 0.5]);
+	});
+
+	it('does not retire the override under a finger still on the seam', () => {
+		// The previous commit's delta lands while the NEXT drag is live. Retiring the override then
+		// jumps the seam out from under the pointer and the gesture continues from the jump.
+		const ws = boot(split());
+		ws.resize('split-4', 0, 0.1);
+		ws.commitResize('split-4');
+		ws.resize('split-4', 0, 0.05);
+		const answered = split();
+		answered['panel-2'].size = 0.7;
+		answered['panel-3'].size = 0.3;
+		ws.syncFromDoc(answered);
+		const root = ws.active.root;
+		if (root.kind !== 'split') throw new Error('expected a split');
+		expect(root.sizes[0], 'the seam stays where the finger put it').toBeCloseTo(0.75, 6);
+	});
 });
 
 describe('viewpoint stays here', () => {

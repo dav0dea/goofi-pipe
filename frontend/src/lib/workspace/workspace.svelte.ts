@@ -78,9 +78,15 @@ class WorkspaceStore {
 	 * continuous gesture, so the override lives here for its duration and lands as ONE
 	 * `page_resize_split` on pointer-up — never a command per pointermove. */
 	private _drag = $state<{ split: string; sizes: number[] } | null>(null);
-	/** Set between a resize commit and the delta that answers it, so the drawn shares do not snap
-	 * back for the frame between the reply and the doc arriving (the reply is sent first). */
-	private _dragSent = false;
+	/** The shares a commit put on the wire, held until the delta answering it lands. It keeps the
+	 * drawn shares from snapping back in the frame between the reply and the doc arriving (the reply
+	 * is sent first), and it is what the NEXT commit's "nothing changed" check compares against — the
+	 * replica is still a commit behind, so a drag returning the split to its pre-commit shares would
+	 * otherwise read as a no-op and be dropped. */
+	private _sent: { split: string; sizes: number[] } | null = null;
+	/** Whether the pointer is still on the seam. A delta landing mid-gesture — the previous commit's
+	 * own, or a peer's — must not retire the override the finger is drawing with. */
+	private _dragLive = false;
 	/** Viewpoint: the page in front. Null falls back to the first, which is what a fresh client and
 	 * a page a peer closed both want. */
 	private _page = $state<string | null>(null);
@@ -154,13 +160,13 @@ class WorkspaceStore {
 		const prev = this._arr;
 		this._arr = arr;
 
-		const d = this._drag;
-		if (d && this._dragSent) {
-			const before = splitFractions(prev, d.split);
-			const after = splitFractions(arr, d.split);
-			if (before.length !== after.length || before.some((s, i) => s !== after[i])) {
-				this._drag = null;
-				this._dragSent = false;
+		const s = this._sent;
+		if (s) {
+			const before = splitFractions(prev, s.split);
+			const after = splitFractions(arr, s.split);
+			if (before.length !== after.length || before.some((v, i) => v !== after[i])) {
+				this._sent = null;
+				if (!this._dragLive) this._drag = null;
 			}
 		}
 		const want = this._wantPage;
@@ -280,31 +286,42 @@ class WorkspaceStore {
 		const base =
 			this._drag?.split === splitId ? this._drag.sizes : splitFractions(this._arr, splitId);
 		if (base.length === 0) return;
+		this._dragLive = true;
 		this._drag = { split: splitId, sizes: resizeFractions(base, dividerIndex, delta, containerPx) };
 	}
 
 	/** Pointer-up: the shares the drag drew become ONE command, and therefore one ctrl-Z. */
 	commitResize(splitId: string): void {
 		const d = this._drag;
+		// The pointer is up either way. `_sent` outlives the drop: it is still the last thing this
+		// client put on the wire for that split, and therefore still the honest baseline.
+		this._dragLive = false;
 		const drop = (): void => {
 			this._drag = null;
-			this._dragSent = false;
 		};
 		if (!d || d.split !== splitId) {
 			drop();
 			return;
 		}
 		const page = this._pageName(splitId);
-		const before = splitFractions(this._arr, splitId);
+		// What was last SENT for this split, falling back to the replica. Comparing against the
+		// replica alone would drop a second drag that returns the split to its pre-commit shares,
+		// because the replica is still showing exactly those.
+		const before =
+			this._sent?.split === splitId ? this._sent.sizes : splitFractions(this._arr, splitId);
 		const same = before.length === d.sizes.length && before.every((s, i) => s === d.sizes[i]);
 		if (!page || same) {
 			drop();
 			return;
 		}
-		this._dragSent = true;
+		this._sent = { split: splitId, sizes: d.sizes };
 		void this._cmd('Resize', 'page_resize_split', { page, split: splitId, fractions: d.sizes }).then(
 			(ok) => {
-				if (ok === null) drop();
+				// A refusal never landed, so it is not a baseline either.
+				if (ok === null) {
+					this._sent = null;
+					drop();
+				}
 			}
 		);
 	}
