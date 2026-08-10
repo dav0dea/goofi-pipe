@@ -88,14 +88,12 @@ pub fn patch(
             return Err(format!("inspect_patch: no sub-patch `{}`", s.to_hex()));
         }
     }
-    let mut out = String::new();
-    out.push_str(&format!("patch: {}\n", save_path.unwrap_or("(never saved)")));
-    out.push_str(&format!("workspace: {workspace}\n"));
-    out.push_str(&format!("unsaved changes: {}\n", if dirty { "yes" } else { "no" }));
-    out.push_str(&match scope {
-        Some(s) => format!("scope: {} ({})\n", scope_path(g, s), s.to_hex()),
-        None => "scope: root\n".to_string(),
-    });
+    let mut out = format!(
+        "patch: {}\nworkspace: {workspace}\nunsaved changes: {}\nscope: {}\n",
+        save_path.unwrap_or("(never saved)"),
+        if dirty { "yes" } else { "no" },
+        scope.map_or("root".to_string(), |s| format!("{} ({})", scope_path(g, s), s.to_hex())),
+    );
 
     let member = members(g, scope);
     let stubs = scope.and_then(|s| g.scope(s)).map(|s| &s.stubs);
@@ -176,30 +174,30 @@ pub fn patch(
 /// One param as the goldened inline form — the one an agent reads and then feeds straight back
 /// into `update_param` (`group.name` + value) or `set_expression` (the source + enabled).
 fn param_line(p: &goofi_core::Param, expr: Option<&goofi_engine::ExprInfo>) -> String {
-    let value = match p {
-        goofi_core::Param::Float { value, .. } => format!("{value}"),
-        goofi_core::Param::Int { value, .. } => format!("{value}"),
-        goofi_core::Param::Bool { value } => format!("{value}"),
-        goofi_core::Param::Trigger { fired } => format!("{fired}"),
-        goofi_core::Param::Str { value, .. } => format!("\"{value}\""),
+    use goofi_core::Param as P;
+    // Value and declared type in ONE match, so a variant cannot be described by one arm and
+    // rendered by another.
+    let (value, ty) = match p {
+        P::Float { value, vmin, vmax } => (format!("{value}"), format!("float {vmin}..{vmax}")),
+        P::Int { value, vmin, vmax } => (format!("{value}"), format!("int {vmin}..{vmax}")),
+        P::Bool { value } => (format!("{value}"), "bool".to_string()),
+        P::Trigger { fired } => (format!("{fired}"), "trigger".to_string()),
+        P::Str { value, options: Some(o), .. } => {
+            (format!("\"{value}\""), format!("string one of [{}]", o.join(", ")))
+        }
+        P::Str { value, .. } => (format!("\"{value}\""), "string".to_string()),
     };
-    if let Some(e) = expr {
-        let err = e.error.as_ref().map(|e| format!(" [error: {e}]")).unwrap_or_default();
-        return format!(
-            "expr: {} → {value} ({}){err}",
+    match expr {
+        // A bound param shows its SOURCE and what it currently evaluates to, which is what
+        // `set_expression` takes back; the declared range belongs to the literal it replaced.
+        Some(e) => format!(
+            "expr: {} → {value} ({}){}",
             e.source,
-            if e.enabled { "on" } else { "off" }
-        );
+            if e.enabled { "on" } else { "off" },
+            e.error.as_ref().map(|e| format!(" [error: {e}]")).unwrap_or_default(),
+        ),
+        None => format!("{value} ({ty})"),
     }
-    let ty = match p {
-        goofi_core::Param::Float { vmin, vmax, .. } => format!("float {vmin}..{vmax}"),
-        goofi_core::Param::Int { vmin, vmax, .. } => format!("int {vmin}..{vmax}"),
-        goofi_core::Param::Bool { .. } => "bool".into(),
-        goofi_core::Param::Trigger { .. } => "trigger".into(),
-        goofi_core::Param::Str { options: Some(o), .. } => format!("string one of [{}]", o.join(", ")),
-        goofi_core::Param::Str { .. } => "string".into(),
-    };
-    format!("{value} ({ty})")
 }
 
 /// The value-health line for one emitted frame: what it is, how much of it is a real number, and
@@ -219,12 +217,11 @@ fn health(d: &goofi_core::Data) -> String {
                 .collect();
             let finite: Vec<f32> = vals.iter().copied().filter(|v| v.is_finite()).collect();
             let shape: Vec<String> = a.shape().iter().map(|d| d.to_string()).collect();
-            let range = match (
-                finite.iter().copied().fold(f32::INFINITY, f32::min),
-                finite.iter().copied().fold(f32::NEG_INFINITY, f32::max),
-            ) {
-                _ if finite.is_empty() => "range=none".to_string(),
-                (lo, hi) => format!("range=[{lo},{hi}]"),
+            let range = if finite.is_empty() {
+                "range=none".to_string()
+            } else {
+                let lo = finite.iter().copied().fold(f32::INFINITY, f32::min);
+                format!("range=[{lo},{}]", finite.iter().copied().fold(f32::NEG_INFINITY, f32::max))
             };
             format!("f32[{}] finite={}/{} {range}", shape.join(","), finite.len(), vals.len())
         }
