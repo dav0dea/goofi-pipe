@@ -84,6 +84,32 @@ describe('a frozen gesture is a layout command', () => {
 		expect(sent()[2][1]).toEqual({ page: 'Layout', panel: 'panel-3', state: { node: 'a1b2' } });
 	});
 
+	it('names only the key a panel write changes, never the bag it read', async () => {
+		// A read-modify-write of the whole bag loses whatever a write still in flight put there:
+		// `page_set_panel` merges, so the client sends the DELTA and the two orders cannot fight.
+		const bound = split();
+		bound['panel-3'].state = '{"node":"a1b2","kind":"line"}';
+		const ws = boot(bound);
+		ws.setPanelSlot('panel-3', 'out');
+		ws.unlinkNodeFromPanel('panel-3');
+		await Promise.resolve();
+		expect(sent().map(([, p]) => p.state)).toEqual([{ slot: 'out' }, { node: null }]);
+	});
+
+	it('writes a panel that lives on a page in the background', async () => {
+		// The replica is page-agnostic, and the façade an agent drives addresses any panel. Scoping
+		// the lookup to the page in FRONT made a write to any other one silently do nothing.
+		const two = split();
+		two['page-7'] = { kind: 'page', order: 1, name: 'Second' };
+		two['panel-8'] = { kind: 'panel', order: 0, parent: 'page-7', size: 1, panel_type: 'viewer' };
+		const ws = boot(two);
+		ws.linkNodeToPanel('panel-8', 'a1b2');
+		await Promise.resolve();
+		expect(sent()).toEqual([
+			['page_set_panel', { page: 'Second', panel: 'panel-8', state: { node: 'a1b2' } }]
+		]);
+	});
+
 	it('moves a dragged panel with ONE op, so the drop is one undo step', async () => {
 		const ws = boot(split());
 		ws.dragging = { kind: 'panel', workspaceId: 'page-1', panelId: 'panel-3' };

@@ -7,13 +7,16 @@ describe('panelBinding', () => {
 		const b = panelBinding(
 			() => state,
 			(s) => {
-				state = s as Record<string, unknown>;
+				// `page_set_panel` MERGES the state it is handed, so the double does too — that is
+				// the seam, and a binding writes only the key it changed.
+				state = { ...state, ...(s as Record<string, unknown>) };
 			},
 			'ARRAY'
 		);
 		expect(b.kind).toBe('line'); // default
 		b.setKind('image');
 		expect(state.kind).toBe('image');
+		expect(state.node, 'a kind change names the kind and nothing else').toBe('n');
 		expect(b.kind).toBe('image'); // re-resolves from updated state
 		b.setSetting('colormap', 'viridis');
 		expect((state.settings as Record<string, unknown>).colormap).toBe('viridis');

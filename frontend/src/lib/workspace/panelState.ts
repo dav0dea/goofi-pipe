@@ -8,7 +8,7 @@
  *  - it coerces to a plain object (`asStateObject`)
  *  - node-linked panels (Parameters / Viewer / Metadata) store the bound node's
  *    uid (its stable identity, not the display name) under `node`
- *    (`linkedNodeName` / `withLinkedNode` — names kept for compatibility)
+ *    (`linkedNodeName` — the name is kept for compatibility)
  *  - a node editor stores its sub-patch depth under `subpatchPath`, encoded by
  *    `pathToArray` / `arrayToPath`
  *
@@ -25,12 +25,6 @@ export function asStateObject(state: unknown): Record<string, unknown> {
 export function linkedNodeName(state: unknown): string | null {
 	const v = asStateObject(state).node;
 	return typeof v === 'string' ? v : null;
-}
-
-/** Panel state with the linked node set (pass null to unlink), preserving the
- * rest of the bag (slot / kind / group). */
-export function withLinkedNode(state: unknown, node: string | null): Record<string, unknown> {
-	return { ...asStateObject(state), node };
 }
 
 // The sub-patch an editor is currently inside, as a path persisted in the

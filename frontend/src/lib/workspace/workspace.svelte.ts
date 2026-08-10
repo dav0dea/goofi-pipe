@@ -31,7 +31,7 @@ import {
 	splitFractions,
 	type Arrangement
 } from './arrangement';
-import { asStateObject, withLinkedNode } from './panelState';
+import { asStateObject } from './panelState';
 import { history } from '$lib/stores/history.svelte';
 import { captureNavContext } from './navContext';
 import { getControl, type Control } from '$lib/api/control';
@@ -337,31 +337,26 @@ class WorkspaceStore {
 		this._viewpointChanged();
 	}
 
-	/** Merge `patch` into a panel's state bag as one command. */
-	private _patchPanelState(
-		label: string,
-		panelId: string,
-		patch: (state: unknown) => Record<string, unknown>
-	): void {
-		const p = findPanel(this.active.root, panelId);
-		if (p) this.setPanelState(panelId, patch(p.state), 'authored', label);
-	}
+	/* The three panel-state edits below each name ONLY the key they change: `page_set_panel` merges,
+	 * so reading the bag back first would buy nothing and cost the class the merge exists to kill —
+	 * a second write inside the first's round trip replacing a bag it never saw the first land in.
+	 * Addressing is `setPanelState`'s, which resolves the page from the whole arrangement, so a panel
+	 * on a page in the background is written just like one in front. */
 
-	/** Bind a node to a linkable panel (merges `node` into its state, keeping any slot/kind).
-	 * Called when a node is dragged onto the panel. */
+	/** Bind a node to a linkable panel. Called when a node is dragged onto the panel. */
 	linkNodeToPanel(panelId: string, nodeUid: string): void {
-		this._patchPanelState('Bind node to panel', panelId, (s) => withLinkedNode(s, nodeUid));
+		this.setPanelState(panelId, { node: nodeUid }, 'authored', 'Bind node to panel');
 	}
 
 	/** Release a linkable panel's bound node — the ✕ in NodeLinkedPanel's bar and ConsolePanel's
-	 * filter chip. The exact inverse of `linkNodeToPanel`. */
+	 * filter chip. An explicit null is how a merged write clears a key. */
 	unlinkNodeFromPanel(panelId: string): void {
-		this._patchPanelState('Unbind node from panel', panelId, (s) => withLinkedNode(s, null));
+		this.setPanelState(panelId, { node: null }, 'authored', 'Unbind node from panel');
 	}
 
 	/** Pick the output slot a Viewer / Metadata panel reads from its bound node. */
 	setPanelSlot(panelId: string, slot: string): void {
-		this._patchPanelState('Select slot', panelId, (s) => ({ ...asStateObject(s), slot }));
+		this.setPanelState(panelId, { slot }, 'authored', 'Select slot');
 	}
 
 	toggleMaximize(panelId: string): void {
