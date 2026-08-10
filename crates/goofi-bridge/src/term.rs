@@ -435,6 +435,38 @@ impl Instance {
     }
 }
 
+/// Seed a NEW patch workspace with the orientation an agent harness reads. Absent-only, so it is
+/// written once and belongs to the patch from then on.
+///
+/// **Why a file at all.** `initialize.instructions` is answered to every MCP client, but reading a
+/// field is not acting on it: codex 0.147 surfaces it only as the description of the `mcp__goofi`
+/// tool NAMESPACE, and an agent given it there answered "add an oscillator" by shelling out to
+/// look for a framework, never calling a goofi tool. As `AGENTS.md` it lands in the model-visible
+/// prompt and the agent adds the node (measured 2026-08-10, real model, real backend).
+///
+/// **Why IN the workspace.** Only there. The same measurement, run against the nonce directory one
+/// level up, put the text in NO prompt — an agent that answered a question about it had simply
+/// read the file with a shell, which is not the same thing as being oriented by it. The project
+/// doc is found at the project root, so that is where it goes.
+///
+/// **Why these two names.** `AGENTS.md` is what codex and opencode read; Claude Code reads
+/// `CLAUDE.md`, whose documented `@` import points at the other — so ONE text serves all three, and
+/// a fourth harness following either convention is oriented with no adapter row at all.
+///
+/// **Why never rewritten.** The agent may edit it: what it learns about THIS patch belongs to this
+/// patch, rides the `.gfi` and comes back on load. Rewriting on spawn or on load would erase that,
+/// so an existing file is left exactly as it is — a patch saved before this existed picks up the
+/// default on its next load, having nothing to lose. Best-effort for [`new_mount`]'s reason: a temp
+/// dir that cannot be written to surfaces its real error at the first save, naming the path.
+pub fn seed_orientation(mount: &Path) {
+    for (name, body) in [("AGENTS.md", crate::mcp::INSTRUCTIONS), ("CLAUDE.md", "@AGENTS.md\n")] {
+        let at = mount.join(name);
+        if !at.exists() {
+            let _ = std::fs::write(at, body);
+        }
+    }
+}
+
 /// Where one instance's config is written: BESIDE the workspace, not inside it. Inside would pack a
 /// stale URL into every `.gfi` the patch is ever saved to, and would DIRTY the patch merely for
 /// launching an agent — the workspace fingerprint has no exclusion list, and growing one to buy this
@@ -541,6 +573,34 @@ fn parent_speaks_utf8(env: &[(OsString, OsString)]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A new workspace is seeded with the handshake's OWN text — shared, never restated, so the
+    /// file and `/mcp` cannot drift — under the two names the three harnesses read.
+    #[test]
+    fn a_new_workspace_is_seeded_with_the_orientation_the_handshake_returns() {
+        let tmp = tempfile::tempdir().expect("a temp dir");
+        seed_orientation(tmp.path());
+        assert_eq!(std::fs::read_to_string(tmp.path().join("AGENTS.md")).unwrap(),
+                   crate::mcp::INSTRUCTIONS, "AGENTS.md is the handshake's own string");
+        // Claude Code reads CLAUDE.md, and its `@` import is what points it at the other file.
+        assert_eq!(std::fs::read_to_string(tmp.path().join("CLAUDE.md")).unwrap(), "@AGENTS.md\n");
+    }
+
+    /// …and an orientation the agent has already edited is ITS OWN. This is the whole reason the
+    /// file lives in the patch: what an agent learns about this patch rides the `.gfi` and comes
+    /// back on load, so a seed that overwrote would erase exactly what it is there to carry.
+    #[test]
+    fn an_orientation_the_agent_has_edited_is_never_seeded_over() {
+        let tmp = tempfile::tempdir().expect("a temp dir");
+        let learned = "goofi-pipe patch notes: the EEG source is on channel 3.\n";
+        std::fs::write(tmp.path().join("AGENTS.md"), learned).unwrap();
+        std::fs::write(tmp.path().join("CLAUDE.md"), "@AGENTS.md\nand a note of its own\n").unwrap();
+
+        seed_orientation(tmp.path());
+
+        assert_eq!(std::fs::read_to_string(tmp.path().join("AGENTS.md")).unwrap(), learned);
+        assert!(std::fs::read_to_string(tmp.path().join("CLAUDE.md")).unwrap().contains("its own"));
+    }
 
     /// The PATH fallback, both halves. A binary the bare walk misses is still found through a login
     /// shell — that is the nvm case the module note names — and a name no shell can resolve stays

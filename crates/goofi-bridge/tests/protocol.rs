@@ -3553,6 +3553,10 @@ async fn load_restores_the_graph_and_the_workspace_from_an_archive() {
     let path = dir.path().join("patch.gfi");
     call(&mut ws, 1, "add_node", json!({ "type": "Oscillator" })).await;
     std::fs::write(state.mount().join("agent.md"), b"notes").unwrap();
+    // What an agent learned about THIS patch, written over the seeded orientation. It is workspace
+    // content like any other, so it packs — and the load below must not seed back over it.
+    let learned = b"goofi-pipe: this patch's EEG source is on channel 3.\n";
+    std::fs::write(state.mount().join("AGENTS.md"), learned).unwrap();
     call(&mut ws, 2, "save", json!({ "path": path.to_string_lossy() })).await;
 
     // Diverge from the saved patch on BOTH planes — a node it does not have, and a workspace that
@@ -3599,6 +3603,11 @@ async fn load_restores_the_graph_and_the_workspace_from_an_archive() {
     assert_ne!(mount, stale, "a load mounts fresh");
     assert_eq!(std::fs::read(mount.join("agent.md")).unwrap(), b"notes");
     assert!(!mount.join("scratch.txt").exists(), "the diverged workspace did not follow");
+    // The agent's own orientation came back as it left it. Seeding the default here instead would
+    // silently discard everything the agent had learned about this patch — the one thing keeping
+    // the file in the workspace is for.
+    assert_eq!(std::fs::read(mount.join("AGENTS.md")).unwrap(), learned,
+               "the load seeded over the orientation the patch was saved with");
     assert!(!stale.exists(), "the mount the load replaced is released, not leaked");
 }
 

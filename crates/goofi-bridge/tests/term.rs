@@ -374,6 +374,14 @@ async fn a_stopped_instances_address_refuses_while_the_central_one_stays_open() 
         .unwrap()
         .to_string();
 
+    // The harness's cwd IS the patch workspace, and the orientation is waiting in it — the only
+    // placement a harness actually reads as a project doc, and the one that rides the `.gfi`.
+    let mount = state.mount();
+    let agents = std::fs::read_to_string(mount.join("AGENTS.md"))
+        .expect("the workspace was seeded with the orientation");
+    assert!(agents.contains("goofi-pipe is a live"), "the orientation is the real one: {agents}");
+    assert_eq!(std::fs::read_to_string(mount.join("CLAUDE.md")).unwrap(), "@AGENTS.md\n");
+
     // goofi wrote the config, in this instance's own directory, naming this instance's URL.
     let cfg = std::fs::read_to_string(term::config_dir(&state.mount(), &id).join("mcp.json"))
         .expect("the spawn wrote the harness's MCP config");

@@ -157,8 +157,10 @@ impl AppState {
         let graph = Arc::new(Mutex::new(graph_val));
         let reducers = reducer::SlotReducers::new(graph.clone());
         // The baseline is the fingerprint of whatever mount the patch owns — stated that way even
-        // at boot, where the mount is empty, so the invariant has one spelling everywhere.
+        // at boot, so the invariant has one spelling everywhere. Seeded BEFORE it is taken, or the
+        // patch would be dirty from the moment it booted, having written the seed itself.
         let mount = new_mount();
+        term::seed_orientation(&mount);
         let workspace_baseline = goofi_engine::archive::fingerprint(&mount);
         AppState {
             graph,
@@ -1807,6 +1809,11 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
                 let fresh = new_mount();
                 let (content, from_path) =
                     stage_load(&fresh, &op, &payload).inspect_err(|_| remove_mount(&fresh))?;
+                // AFTER the archive is unpacked, and absent-only: an orientation the agent has
+                // edited comes back from the `.gfi` as the agent left it, and only a patch that
+                // carries none — a `new` one, or one saved before this existed — is given the
+                // default. Before the baseline below, so seeding cannot itself dirty the patch.
+                term::seed_orientation(&fresh);
                 // ORDERING, load-bearing: the types the patch SHIPS are registered before the
                 // manifest is resolved, or `load_doc`'s unknown-type gate fires on exactly the
                 // nodes the archive brought. They live in the tree just unpacked, so the scan runs

@@ -70,7 +70,12 @@ const LATEST_PROTOCOL: &str = "2025-11-25";
 /// followed a write with a read the write's own reply already contained. The live-co-edit fact is
 /// there because it changes how an agent should behave — a human is watching the same canvas, so
 /// small verified steps beat one large batch, and `inspect_patch` is how it checks its own work.
-const INSTRUCTIONS: &str = concat!(
+///
+/// **This is the ONE orientation.** The handshake is not the only channel that carries it:
+/// [`crate::term::write_orientation`] lays the same string beside the workspace as `AGENTS.md`,
+/// because a harness that reads this field weakly acts on it weakly. Shared, never restated, so
+/// the two cannot drift.
+pub(crate) const INSTRUCTIONS: &str = concat!(
     "goofi-pipe is a live signal-processing patch: a graph of nodes running right now. A human ",
     "has it open beside you and edits it with you, so your changes reach their editor at once and ",
     "theirs your next read. Call inspect_patch first, and again between steps: it draws the graph ",
