@@ -83,6 +83,40 @@ test('New hands back an empty, unnamed, clean patch', async ({ page }) => {
 	}
 });
 
+/**
+ * The failed-save toast, driven through the ONLY door that can raise it: the header's Save on an
+ * already-named patch, which overwrites silently with no dialog in front of it. The façade's
+ * `save()` rejects past `AppShell.triggerSave`'s catch, so this is a UI test or it is nothing —
+ * and it is the whole reason the surface exists (a save onto a path since deleted, moved or made
+ * read-only used to be a `console.error`).
+ */
+test('a save that fails says so, instead of failing in silence', async ({ page }) => {
+	await page.goto('/');
+	await waitForApp(page);
+	const doomed = path.join(scratch, 'doomed');
+	try {
+		fs.mkdirSync(doomed);
+		await page.evaluate(
+			(p) => (window as any).goofi.commands.save(p),
+			path.join(doomed, 'gone.gfi')
+		);
+		await expect
+			.poll(() => page.evaluate(() => (window as any).goofi.query.graph().savePath))
+			.not.toBe(null);
+
+		// Take the directory out from under the remembered path, then Save again.
+		fs.rmSync(doomed, { recursive: true, force: true });
+		await page.getByTestId('topbar-save').click();
+
+		await expect(page.getByTestId('toast'), 'the rejection reached the alarm surface').toContainText(
+			/Save failed/
+		);
+	} finally {
+		fs.rmSync(doomed, { recursive: true, force: true });
+		await resetPatch(page);
+	}
+});
+
 /** The content door is gone from the CLIENT. Asserting the façade no longer offers it is what keeps
  *  a well-meaning re-add from silently re-introducing a call that can only ever ship mojibake. */
 test('there is no content-load door left on the façade', async ({ page }) => {

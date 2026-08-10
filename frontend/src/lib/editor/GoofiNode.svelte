@@ -18,6 +18,10 @@
 	const inputs = $derived(Object.keys(node?.input_slots ?? {}));
 	const outputs = $derived(Object.keys(node?.output_slots ?? {}));
 	const uiStore = ui();
+	// Reached HERE, not inside the `flashing` derived below: both are lazy singletons, and a first
+	// call from inside a derived creates the store's `$state` in that tracking scope, where a later
+	// `pulse()` from outside can never re-run it. `singletonScope.test.ts` is the guard.
+	const flashStore = flash();
 
 	// A sub-patch instance is rendered by THIS component with no special-casing: its
 	// wired boundaries are its slots, its output viewers stream its inner members.
@@ -50,7 +54,7 @@
 	// spinner + stage label instead of the status dot, body slightly dimmed.
 	const isBooting = $derived(health.kind === 'booting');
 	// Brief "this just changed" pulse after an undo/redo reorients here (#19).
-	const flashing = $derived(flash().active(node?.uid));
+	const flashing = $derived(flashStore.active(node?.uid));
 	const healthColor = $derived(isError ? 'var(--danger)' : 'var(--success)');
 	// Glanceable update rate at the right of the header — faint by default, brought
 	// forward on hover. Null until the node's first NODE_STATS push. Adds no height.

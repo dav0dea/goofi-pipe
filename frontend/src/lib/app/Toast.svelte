@@ -1,25 +1,30 @@
 <!--
   The app's transient alarm surface. Watches the shared `notify` channel — an undo/redo replay that
-  rejected (#9), a save that failed, a workspace whose watch was lost — shows it for a few seconds,
-  then clears it. Clicking dismisses immediately. Sits above all other chrome (var(--z-toast)).
+  rejected (#9), a save or load that failed — shows it for a few seconds, then clears it. Clicking
+  dismisses immediately. Sits above all other chrome (var(--z-toast)).
 
-  It reads ONE store on purpose: the channel is where the three producers meet, so this component
+  It reads ONE store on purpose: the channel is where the two producers meet, so this component
   never learns who raised the line it is showing.
 -->
 <script lang="ts">
 	import { notify } from '$lib/stores/notify.svelte';
 
-	const error = $derived(notify().message);
+	// The singleton is reached HERE, above the derived. `notify()` constructs it lazily and this
+	// component is its first caller, so calling it INSIDE the derived created the store's `$state`
+	// in that tracking scope — where every later `raise()` set the message and re-rendered nothing.
+	// Both producers were silent for it. `stores/singletonScope.test.ts` is the guard.
+	const n = notify();
+	const error = $derived(n.message);
 
 	$effect(() => {
 		if (!error) return;
-		const t = setTimeout(() => notify().clear(), 4000);
+		const t = setTimeout(() => n.clear(), 4000);
 		return () => clearTimeout(t);
 	});
 </script>
 
 {#if error}
-	<button class="toast" data-testid="toast" onclick={() => notify().clear()} title="Dismiss">
+	<button class="toast" data-testid="toast" onclick={() => n.clear()} title="Dismiss">
 		{error}
 	</button>
 {/if}
