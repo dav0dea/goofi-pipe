@@ -87,6 +87,20 @@ async function sweep(page: Page, id: string): Promise<void> {
 	await expect(page.getByTestId('agent-launcher')).toBeVisible();
 }
 
+/** Hand the shared backend back, from a `finally`. Its OWN failure must not replace the failure
+ * that sent us here — masking one cost two rounds of debugging the wrong thing — but a run whose
+ * body passed still fails on a leak, which is what the contract in `lib/app.ts` is for. */
+async function handBack(page: Page, id: string, threw: boolean): Promise<void> {
+	try {
+		if (id) await sweep(page, id);
+		if ((await page.locator('.panel').count()) > 1) await closeSplit(page);
+		await resetPatch(page);
+	} catch (e) {
+		if (!threw) throw e;
+		console.error('agent-panel: cleanup after a failed body', e);
+	}
+}
+
 const unsaved = (page: Page): Promise<boolean> =>
 	page.evaluate(() => (window as any).goofi.query.graph().unsavedChanges);
 
@@ -102,6 +116,7 @@ test('a harness runs in a panel, and its transcript survives closing that panel'
 	await page.goto('/');
 	await waitForApp(page);
 	let id = '';
+	let threw = true;
 	try {
 		await splitRight(page);
 		await openAgentPanelLater(page);
@@ -143,10 +158,9 @@ test('a harness runs in a panel, and its transcript survives closing that panel'
 		await expect(page.getByTestId('agent-close-dialog')).toBeVisible();
 		await page.getByTestId('agent-kill').click();
 		await expect.poll(() => stateOf(page, id), { timeout: 15_000 }).toBe('exited');
+		threw = false;
 	} finally {
-		if (id) await sweep(page, id);
-		if ((await page.locator('.panel').count()) > 1) await closeSplit(page);
-		await resetPatch(page);
+		await handBack(page, id, threw);
 	}
 });
 
@@ -167,6 +181,7 @@ test('a second view of one harness is live, and both views see the same stream',
 	await page.goto('/');
 	await waitForApp(page);
 	let id = '';
+	let threw = true;
 	const second = await context.newPage();
 	try {
 		await splitRight(page);
@@ -184,10 +199,9 @@ test('a second view of one harness is live, and both views see the same stream',
 		// …and what it typed reaches the first view too, because one PTY has one stream and the
 		// manager fans it out rather than owning a screen per viewer.
 		await expect(page.getByTestId('agent-terminal')).toContainText('goofisecond');
+		threw = false;
 	} finally {
 		await second.close();
-		if (id) await sweep(page, id);
-		if ((await page.locator('.panel').count()) > 1) await closeSplit(page);
-		await resetPatch(page);
+		await handBack(page, id, threw);
 	}
 });
