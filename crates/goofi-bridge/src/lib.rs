@@ -948,7 +948,15 @@ fn apply_layout(
         ),
     };
     state.history.lock().unwrap().apply(g, session, cmd)?;
-    Ok(json!({ "ok": true }))
+    Ok(arrangement_reply(g))
+}
+
+/// What every layout write answers: the arrangement it just produced, drawn exactly as
+/// `inspect_layout` draws it. A bare `{ok: true}` said the write was accepted and nothing about
+/// what it made, so a caller with no screen — an agent — had to follow each op with an
+/// `inspect_layout` to see the tree it was building. The op is already holding it.
+fn arrangement_reply(g: &Graph) -> Value {
+    json!({ "text": inspect::layout_tree(g.arrangement()) })
 }
 
 /// Like [`apply_layout`], but for an op that CLOSES the subtree rooted at `born` (a page goes with
@@ -965,7 +973,7 @@ fn apply_layout_close(
 ) -> Result<Value, String> {
     let cmd = goofi_engine::Command::LayoutClose { page: page.to_string(), born: born.to_string() };
     state.history.lock().unwrap().apply(g, session, cmd)?;
-    Ok(json!({ "ok": true }))
+    Ok(arrangement_reply(g))
 }
 
 /// Like [`apply_layout`], but for an op that MOVES the subtree rooted at `root`. Its inverse is
@@ -982,7 +990,7 @@ fn apply_layout_move(
     let cmd =
         goofi_engine::Command::LayoutMove { writes: Some(writes), root: root.to_string(), home: None };
     state.history.lock().unwrap().apply(g, session, cmd)?;
-    Ok(json!({ "ok": true }))
+    Ok(arrangement_reply(g))
 }
 
 /// Like [`apply_layout`], but for an op that edits what entries HOLD rather than where they sit (a
@@ -996,7 +1004,7 @@ fn apply_layout_contents(
 ) -> Result<Value, String> {
     let cmd = goofi_engine::Command::LayoutContents { writes };
     state.history.lock().unwrap().apply(g, session, cmd)?;
-    Ok(json!({ "ok": true }))
+    Ok(arrangement_reply(g))
 }
 
 /// Dispatch one control RPC. Mutates the graph, queues broadcast events, and

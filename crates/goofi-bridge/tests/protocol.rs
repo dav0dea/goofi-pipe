@@ -188,6 +188,13 @@ fn entry_count(doc: &goofi_crdt::GraphDoc) -> usize {
     arrangement(doc).as_object().map_or(0, serde_json::Map::len)
 }
 
+/// A layout write ACCEPTED. Every one answers the arrangement it produced, so what a caller checks
+/// is that something came back and nothing was refused — the two ops that mint an id answer that
+/// instead, and one shape of "accepted" beats two.
+fn accepted(r: &Value) -> bool {
+    r.get("error").is_none() && r.get("result").is_some()
+}
+
 fn panels(doc: &goofi_crdt::GraphDoc) -> Vec<String> {
     doc.to_json()["arrangement"]
         .as_object()
@@ -465,7 +472,7 @@ async fn a_layout_undo_moves_a_panel_back_rather_than_resurrecting_its_split() {
     // with the ids it minted.
     let ok = |r: &Value| {
         assert!(r.get("error").is_none(), "{r}");
-        assert!(r["result"]["ok"] == json!(true) || r["result"]["page"].is_string(), "{r}");
+        assert!(accepted(r), "{r}");
     };
 
     // `Layout` holds a two-child split; `Signals` holds another, to move into.
@@ -533,7 +540,7 @@ async fn each_frozen_drags_undo_leaves_a_peers_panel_standing_too() {
     // with the ids it minted.
     let ok = |r: &Value| {
         assert!(r.get("error").is_none(), "{r}");
-        assert!(r["result"]["ok"] == json!(true) || r["result"]["page"].is_string(), "{r}");
+        assert!(accepted(r), "{r}");
     };
 
     let mine = call(&mut ws, 1, "page_split_panel",
@@ -604,7 +611,7 @@ async fn undoing_a_move_puts_the_panel_back_at_the_index_and_share_it_had() {
     // with the ids it minted.
     let ok = |r: &Value| {
         assert!(r.get("error").is_none(), "{r}");
-        assert!(r["result"]["ok"] == json!(true) || r["result"]["page"].is_string(), "{r}");
+        assert!(accepted(r), "{r}");
     };
 
     // A THREE-child split, so the move leaves it standing and the inverse is a move back INTO it.
@@ -666,7 +673,7 @@ async fn a_type_change_undone_after_a_peers_split_leaves_the_peer_its_slot() {
 
     let r = call_session(&mut ws, 2, "page_set_panel",
         json!({ "page": "Layout", "panel": b, "type": "console" }), "s1").await;
-    assert_eq!(r["result"]["ok"], json!(true), "{r}");
+    assert!(accepted(&r), "{r}");
     // The peer splits `a` along the same axis, so its new panel is inserted adjacent and takes the
     // order `b` held — the slot the undo must not reclaim.
     let peer = call_session(&mut ws, 3, "page_split_panel",
@@ -716,7 +723,7 @@ async fn a_resize_undone_after_a_peers_split_re_asserts_shares_without_re_pinnin
 
     let r = call_session(&mut ws, 2, "page_resize_split",
         json!({ "page": "Layout", "split": near, "fractions": [0.3, 0.7] }), "s1").await;
-    assert_eq!(r["result"]["ok"], json!(true), "{r}");
+    assert!(accepted(&r), "{r}");
     let peer = call_session(&mut ws, 3, "page_split_panel",
         json!({ "page": "Layout", "panel": a, "direction": "row" }), "s2").await["result"]
         .as_str().expect("the peer's panel").to_string();
@@ -768,10 +775,10 @@ async fn a_contents_undo_follows_the_panel_a_peer_has_since_carried_off() {
 
     let r = call_session(&mut ws, 4, "page_set_panel",
         json!({ "page": "Layout", "panel": b, "type": "console" }), "s1").await;
-    assert_eq!(r["result"]["ok"], json!(true), "{r}");
+    assert!(accepted(&r), "{r}");
     let r = call_session(&mut ws, 5, "page_move_panel",
         json!({ "page": "Layout", "panel": b, "new_parent": far, "order_index": 0 }), "s2").await;
-    assert_eq!(r["result"]["ok"], json!(true), "{r}");
+    assert!(accepted(&r), "{r}");
     let u = call_session(&mut ws, 6, "undo", json!({}), "s1").await;
     assert_eq!(u["result"]["changed"], json!(true), "{u}");
 
@@ -805,7 +812,7 @@ async fn a_rename_undone_after_a_peers_reorder_keeps_the_tab_index_it_finds() {
     // with the ids it minted.
     let ok = |r: &Value| {
         assert!(r.get("error").is_none(), "{r}");
-        assert!(r["result"]["ok"] == json!(true) || r["result"]["page"].is_string(), "{r}");
+        assert!(accepted(r), "{r}");
     };
     ok(&call(&mut ws, 1, "session_add_page", json!({ "name": "Two" })).await);
     ok(&call(&mut ws, 2, "session_add_page", json!({ "name": "Three" })).await);
@@ -985,7 +992,7 @@ async fn one_pass_over_every_session_and_page_write_op() {
     // with the ids it minted.
     let ok = |r: &Value| {
         assert!(r.get("error").is_none(), "{r}");
-        assert!(r["result"]["ok"] == json!(true) || r["result"]["page"].is_string(), "{r}");
+        assert!(accepted(r), "{r}");
     };
 
     ok(&call(&mut ws, 1, "session_add_page", json!({ "name": "Second" })).await);
@@ -1040,7 +1047,7 @@ async fn each_frozen_drag_gesture_is_one_op_and_therefore_one_undo() {
     // with the ids it minted.
     let ok = |r: &Value| {
         assert!(r.get("error").is_none(), "{r}");
-        assert!(r["result"]["ok"] == json!(true) || r["result"]["page"].is_string(), "{r}");
+        assert!(accepted(r), "{r}");
     };
 
     // Two panels on `Layout`, and a second page holding the drop target.
@@ -1136,7 +1143,7 @@ async fn page_set_panel_lands_a_combined_type_and_binding_and_refuses_an_unknown
                 "state": { "node": osc, "slot": "out" } }),
     )
     .await;
-    assert_eq!(r["result"]["ok"], json!(true), "{r}");
+    assert!(accepted(&r), "{r}");
     let d2 = sync_replica(&mut ws, |d| {
         d.read_at(&["arrangement", panel.as_str(), "panel_type"]) == Some(json!("viewer"))
     })
@@ -1153,7 +1160,7 @@ async fn page_set_panel_lands_a_combined_type_and_binding_and_refuses_an_unknown
     for (id, patch) in [(20, json!({ "kind": "line" })), (21, json!({ "slot": "out" }))] {
         let r = call(&mut ws, id, "page_set_panel",
             json!({ "page": "Layout", "panel": panel, "state": patch })).await;
-        assert_eq!(r["result"]["ok"], json!(true), "{r}");
+        assert!(accepted(&r), "{r}");
     }
     let merged = sync_replica(&mut ws, |d| {
         d.read_at(&["arrangement", panel.as_str(), "state"])
@@ -1197,6 +1204,37 @@ async fn page_set_panel_lands_a_combined_type_and_binding_and_refuses_an_unknown
         by_name["error"].as_str().is_some_and(|e| e.contains(&name)),
         "a panel binds by uid, never by name: {by_name}"
     );
+}
+
+#[tokio::test]
+async fn a_layout_write_answers_with_the_arrangement_it_produced() {
+    // `{ok: true}` told a caller its write was accepted and nothing about what it made, so an agent
+    // editing the layout had to follow every single op with an `inspect_layout` to see the tree it
+    // was building. The write already knows: it is holding the arrangement it just planned against.
+    let base = start_server().await;
+    let (mut ws, _) = connect_async(format!("{base}/control")).await.unwrap();
+    let _ = recv_text(&mut ws).await;
+    let doc = sync_replica(&mut ws, |d| !panels(d).is_empty()).await;
+    let panel = panels(&doc)[0].clone();
+
+    let typed = call(&mut ws, 1, "page_set_panel",
+        json!({ "page": "Layout", "panel": panel, "type": "console" })).await;
+    let text = typed["result"]["text"].as_str().unwrap_or_default().to_string();
+    assert!(text.contains("console") && text.contains(&panel), "{typed}");
+    // …and it is the arrangement AFTER the write, not the one the op was handed.
+    let renamed = call(&mut ws, 2, "session_rename_page", json!({ "from": "Layout", "to": "Signals" })).await;
+    let text = renamed["result"]["text"].as_str().unwrap_or_default().to_string();
+    assert!(text.contains("Signals") && !text.contains("Layout"), "{renamed}");
+    // Every family of layout write answers the same way — the close and move planners too, which
+    // are separate code paths from the contents one the two above take.
+    let page = call(&mut ws, 3, "session_add_page", json!({ "name": "Second" })).await;
+    let moved = call(&mut ws, 4, "page_insert_at_panel",
+        json!({ "page": "Second", "subtree": panel, "target": page["result"]["panel"] })).await;
+    assert!(moved["result"]["text"].as_str().is_some_and(|t| t.contains("Second")), "{moved}");
+    let _ = call(&mut ws, 5, "session_add_page", json!({ "name": "Third" })).await;
+    let closed = call(&mut ws, 6, "session_remove_page", json!({ "name": "Third" })).await;
+    let text = closed["result"]["text"].as_str().unwrap_or_default().to_string();
+    assert!(!text.contains("Third") && text.contains("Second"), "{closed}");
 }
 
 #[tokio::test]
