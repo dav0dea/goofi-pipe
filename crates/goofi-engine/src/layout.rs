@@ -281,8 +281,9 @@ impl Layout {
         self.entries.remove(id)
     }
 
-    /// Apply a planner's writes wholesale — a load and a test's shorthand; a command applies them
-    /// one at a time so each carries its own inverse.
+    /// Apply a planner's writes wholesale — what `LayoutBirth`/`LayoutClose` land, since those two
+    /// carry ONE re-planned inverse between them rather than one per slot. The commands that do
+    /// invert slot by slot apply the writes one at a time instead.
     pub fn apply(&mut self, writes: Vec<Write>) {
         for (id, entry) in writes {
             match entry {

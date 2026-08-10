@@ -900,18 +900,32 @@ fn bindable_node(g: &Graph, node: &str) -> bool {
 /// Route a layout planner's per-entry writes through the command history as ONE undo step. This is
 /// the whole of "layout reuses the graph machinery": persistence, the CRDT broadcast and per-session
 /// undo all follow from the write being an ordinary command.
+///
+/// `born` names the entry an op BRINGS INTO BEING (`(page, id)`), and changes what undo means: the
+/// slots the writes displaced are no longer the inverse — closing `born` with promote is. That is
+/// what keeps a foreign undo from deleting a subtree a peer grew under the newcomer. See
+/// [`goofi_engine::Command::LayoutBirth`]. An op that only rearranges what already exists passes
+/// `None` and inverts slot by slot.
 fn apply_layout(
     state: &AppState,
     g: &mut Graph,
     session: &str,
     writes: Vec<goofi_engine::layout::Write>,
+    born: Option<(&str, &str)>,
 ) -> Result<Value, String> {
-    let cmd = goofi_engine::Command::Compound(
-        writes
-            .into_iter()
-            .map(|(id, entry)| goofi_engine::Command::EditLayoutEntry { id, entry })
-            .collect(),
-    );
+    let cmd = match born {
+        Some((page, born)) => goofi_engine::Command::LayoutBirth {
+            writes,
+            page: page.to_string(),
+            born: born.to_string(),
+        },
+        None => goofi_engine::Command::Compound(
+            writes
+                .into_iter()
+                .map(|(id, entry)| goofi_engine::Command::EditLayoutEntry { id, entry })
+                .collect(),
+        ),
+    };
     state.history.lock().unwrap().apply(g, session, cmd)?;
     Ok(json!({ "ok": true }))
 }
@@ -1192,22 +1206,22 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
             }
             "session_add_page" => {
                 let writes = g.arrangement().add_page(parse_str(&payload, "name")?)?;
-                apply_layout(state, &mut g, &session, writes)
+                apply_layout(state, &mut g, &session, writes, None)
             }
             "session_remove_page" => {
                 let writes = g.arrangement().remove_page(parse_str(&payload, "name")?)?;
-                apply_layout(state, &mut g, &session, writes)
+                apply_layout(state, &mut g, &session, writes, None)
             }
             "session_rename_page" => {
                 let (from, to) = (parse_str(&payload, "from")?, parse_str(&payload, "to")?);
                 let writes = g.arrangement().rename_page(from, to)?;
-                apply_layout(state, &mut g, &session, writes)
+                apply_layout(state, &mut g, &session, writes, None)
             }
             "session_reorder_page" => {
                 let name = parse_str(&payload, "name")?;
                 let to = payload.get("to_index").and_then(|v| v.as_u64()).ok_or("missing to_index")?;
                 let writes = g.arrangement().reorder_page(name, to as usize)?;
-                apply_layout(state, &mut g, &session, writes)
+                apply_layout(state, &mut g, &session, writes, None)
             }
             "page_split_panel" => {
                 let page = resolve_page(&g, &payload)?;
@@ -1217,7 +1231,7 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
                     .ok_or("page_split_panel: direction is `row` or `column`")?;
                 let ratio = payload.get("ratio").and_then(|v| v.as_f64()).unwrap_or(0.5);
                 let (writes, fresh) = g.arrangement().split_panel(&page, &panel, axis, ratio)?;
-                apply_layout(state, &mut g, &session, writes)?;
+                apply_layout(state, &mut g, &session, writes, Some((&page, &fresh)))?;
                 // The uid, because a split births an EMPTY panel and the caller's next act is to
                 // give it content — which needs the id it cannot otherwise know.
                 Ok(json!(fresh))
@@ -1242,7 +1256,7 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
                 let mult = payload.get("size_mult").and_then(|v| v.as_f64());
                 let writes =
                     g.arrangement().set_panel(&page, &panel, ty.as_deref(), panel_state, mult)?;
-                apply_layout(state, &mut g, &session, writes)
+                apply_layout(state, &mut g, &session, writes, None)
             }
             "page_move_panel" => {
                 let page = resolve_page(&g, &payload)?;
@@ -1250,13 +1264,13 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
                 let dest = parse_str(&payload, "new_parent")?.to_string();
                 let at = payload.get("order_index").and_then(|v| v.as_u64()).unwrap_or(0);
                 let writes = g.arrangement().move_subtree(&page, &panel, &dest, at as usize)?;
-                apply_layout(state, &mut g, &session, writes)
+                apply_layout(state, &mut g, &session, writes, None)
             }
             "page_remove_panel" => {
                 let page = resolve_page(&g, &payload)?;
                 let panel = parse_str(&payload, "panel")?.to_string();
                 let writes = g.arrangement().remove_subtree(&page, &panel)?;
-                apply_layout(state, &mut g, &session, writes)
+                apply_layout(state, &mut g, &session, writes, None)
             }
             "set_node_viewers" => {
                 // Soft per-slot view-state (kind/settings/collapse) persisted to `.gfi` — NOT a

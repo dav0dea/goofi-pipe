@@ -134,6 +134,27 @@ pub enum Command {
         id: crate::layout::Id,
         entry: Option<crate::layout::Entry>,
     },
+    /// A layout op that BIRTHS `born` — a split's fresh panel, a session's new page. The writes land
+    /// like any other, but the inverse is NOT the slots they displaced: it is
+    /// [`Command::LayoutClose`], planned against the arrangement as it stands at undo time. Restoring
+    /// the slots would delete the wrapper a PEER has since hung a panel off, orphaning it — a lost
+    /// update no graph command can make, and an arrangement the manager's own loader refuses.
+    /// Close-with-promote already knows how to hand a split's survivors to its parent, so borrowing
+    /// it makes a foreign undo non-destructive by construction rather than by a guard.
+    LayoutBirth {
+        writes: Vec<crate::layout::Write>,
+        page: crate::layout::Id,
+        born: crate::layout::Id,
+    },
+    /// The inverse of [`Command::LayoutBirth`]: close `born` the way `page_remove_panel` does (a page
+    /// goes with its whole subtree, like `session_remove_page`). Never a user op — a forward close
+    /// must refuse teachably, where this must DEGRADE to a no-op when the plan no longer applies
+    /// (a peer already closed it), exactly as [`Command::SetScope`]'s stale-replay arms do: erroring
+    /// inside `flip` would wedge the session's undo stack.
+    LayoutClose {
+        page: crate::layout::Id,
+        born: crate::layout::Id,
+    },
     /// Re-parent a node or scope into `scope` (`None` = ROOT). The one membership move — used inside
     /// a delete's inverse to restore a member back INSIDE its scope. Inverse re-parents to the old
     /// scope.
@@ -405,6 +426,32 @@ impl Command {
                     None => g.arrangement_mut().remove(&id),
                 };
                 Ok((Outcome::Ok, Command::EditLayoutEntry { id, entry: old }))
+            }
+
+            Command::LayoutBirth { writes, page, born } => {
+                g.arrangement_mut().apply(writes);
+                Ok((Outcome::Ok, Command::LayoutClose { page, born }))
+            }
+
+            Command::LayoutClose { page, born } => {
+                // A page is closed whole (its panels are its own); anything else is closed with
+                // promote — the SAME planners the forward ops call, so there is one algebra, not a
+                // second subtly-different removal living in the inverse.
+                let plan = match g.arrangement().name_of(&born).map(str::to_string) {
+                    Some(name) => g.arrangement().remove_page(&name),
+                    None => g.arrangement().remove_subtree(&page, &born),
+                };
+                let Ok(writes) = plan else {
+                    return Ok((Outcome::Ok, Command::Compound(vec![])));
+                };
+                // What each touched slot holds right now IS the forward that puts it back, so the
+                // pair is closed under inversion and a redo re-mints nothing.
+                let restore = writes
+                    .iter()
+                    .map(|(id, _)| (id.clone(), g.arrangement().get(id).cloned()))
+                    .collect();
+                g.arrangement_mut().apply(writes);
+                Ok((Outcome::Ok, Command::LayoutBirth { writes: restore, page, born }))
             }
 
             Command::SetScope { uid, scope } => {
@@ -787,6 +834,44 @@ mod tests {
         assert_eq!(g.arrangement(), &before, "undo restores the arrangement entry for entry");
         forward.execute(&mut g).unwrap();
         assert!(g.arrangement().get(&fresh).is_some(), "redo re-splits at the SAME panel id");
+    }
+
+    /// A BIRTH inverts by CLOSING what it made — planned against the arrangement as it stands at
+    /// undo time — instead of restoring the slots it displaced. Undisturbed the two are the same
+    /// arrangement; disturbed they are the difference between a valid page and an orphan, which is
+    /// the whole reason the variant exists.
+    #[test]
+    fn a_layout_birth_inverts_by_closing_what_it_made() {
+        use crate::layout::{Axis, Layout};
+        let mut g = Graph::new();
+        let page = g.arrangement().pages()[0].clone();
+        let panel = g.arrangement().children(&page)[0].clone();
+        let before = g.arrangement().clone();
+        let (writes, fresh) = g.arrangement().split_panel(&page, &panel, Axis::Row, 0.5).unwrap();
+        let birth = Command::LayoutBirth { writes, page: page.clone(), born: fresh.clone() };
+
+        let (_out, close) = birth.execute(&mut g).unwrap();
+        let (_out, forward) = close.execute(&mut g).unwrap();
+        assert_eq!(g.arrangement(), &before, "an undisturbed undo restores the arrangement it found");
+        forward.execute(&mut g).unwrap();
+        assert!(g.arrangement().get(&fresh).is_some(), "redo re-splits at the SAME panel id");
+
+        // A peer hangs its own panel off the wrapper split between the birth and its undo.
+        let (peer, theirs) = g.arrangement().split_panel(&page, &fresh, Axis::Row, 0.5).unwrap();
+        g.arrangement_mut().apply(peer);
+        let close = Command::LayoutClose { page: page.clone(), born: fresh.clone() };
+        let (_out, _fwd) = close.clone().execute(&mut g).unwrap();
+        assert!(g.arrangement().get(&fresh).is_none(), "the birth is closed");
+        assert!(g.arrangement().get(&theirs).is_some(), "the peer's panel is not");
+        assert!(
+            Layout::from_json(&g.arrangement().to_json()).is_ok(),
+            "and the arrangement is one the loader still accepts"
+        );
+
+        // Replaying a close whose target is already gone must be a no-op, not an error: an error
+        // inside `flip` would leave the entry unflipped and wedge that session's undo stack.
+        let (_out, inv) = close.execute(&mut g).unwrap();
+        assert!(matches!(inv, Command::Compound(ref c) if c.is_empty()), "a stale close is a no-op");
     }
 
     #[test]

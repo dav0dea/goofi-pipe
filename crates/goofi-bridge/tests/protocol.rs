@@ -199,7 +199,7 @@ async fn a_layout_op_reaches_a_peers_replica_through_the_doc() {
 
     // B holds a replica and never asks again, so anything it learns below ARRIVED as a broadcast.
     let mut peer = GraphDoc::new();
-    b.send(Message::Binary(peer.sync_hello().into())).await.unwrap();
+    b.send(Message::Binary(peer.sync_hello())).await.unwrap();
     for _ in 0..10 {
         if let Some(m) = SyncMsg::decode(&recv_binary(&mut b).await) {
             peer.on_sync(m);
@@ -293,6 +293,73 @@ async fn undo_of_a_layout_op_restores_the_arrangement_it_found() {
     call_session(&mut ws, 3, "redo", json!({}), "s1").await;
     let redone = sync_replica(&mut ws, |d| d.read_at(&["arrangement", fresh.as_str()]).is_some()).await;
     assert!(redone.read_at(&["arrangement", fresh.as_str()]).is_some(), "redo re-splits at the SAME id");
+}
+
+#[tokio::test]
+async fn a_layout_undo_leaves_a_peers_panel_standing() {
+    // TWO sessions, which is where this bug lives: a single session's undo is provably clean, so
+    // nothing single-session can see it. Restoring the exact slots the split displaced deletes the
+    // wrapper split a PEER has since hung a panel off — its panel is orphaned, the live arrangement
+    // is one the manager's own loader refuses, and the peer's visible work is gone. The inverse is
+    // therefore planned through the same close-with-promote the remove path uses, against the
+    // arrangement as it stands at undo time.
+    let base = start_server().await;
+    let (mut ws, _) = connect_async(format!("{base}/control")).await.unwrap();
+    let _ = recv_text(&mut ws).await;
+    let doc = sync_replica(&mut ws, |d| !panels(d).is_empty()).await;
+    let panel = panels(&doc)[0].clone();
+
+    let mine = call_session(
+        &mut ws,
+        1,
+        "page_split_panel",
+        json!({ "page": "Layout", "panel": panel, "direction": "row" }),
+        "s1",
+    )
+    .await["result"]
+        .as_str()
+        .expect("the new panel's id")
+        .to_string();
+    // The peer splits the panel A just made, so its own panel hangs off A's wrapper split.
+    let theirs = call_session(
+        &mut ws,
+        2,
+        "page_split_panel",
+        json!({ "page": "Layout", "panel": mine, "direction": "row" }),
+        "s2",
+    )
+    .await["result"]
+        .as_str()
+        .expect("the peer's new panel id")
+        .to_string();
+
+    let u = call_session(&mut ws, 3, "undo", json!({}), "s1").await;
+    assert_eq!(u["result"]["changed"], json!(true), "undo flipped something: {u}");
+    let after = sync_replica(&mut ws, |d| {
+        !panels(d).is_empty() && d.read_at(&["arrangement", mine.as_str()]).is_none()
+    })
+    .await;
+    let arrangement = after.to_json()["arrangement"].clone();
+    let up = after
+        .read_at(&["arrangement", theirs.as_str(), "parent"])
+        .and_then(|v| v.as_str().map(str::to_string));
+    assert!(
+        up.as_deref().is_some_and(|p| arrangement.get(p).is_some()),
+        "the peer's panel survived a foreign undo, still hanging off something: {arrangement}"
+    );
+    assert!(panels(&after).contains(&panel), "and so did the panel that was split");
+
+    // …and it still REACHES a page. The manager's own loader is the judge: an orphan makes the
+    // patch it just saved open on the default arrangement instead.
+    let yaml =
+        call(&mut ws, 4, "serialize", json!({})).await["result"]["yaml"].as_str().unwrap().to_string();
+    let r = call(&mut ws, 5, "load_text", json!({ "content": yaml })).await;
+    assert_eq!(r["result"]["ok"], json!(true), "{r}");
+    assert_eq!(
+        r["result"]["layout_warning"],
+        Value::Null,
+        "the manager saved an arrangement it cannot itself open: {r}"
+    );
 }
 
 #[tokio::test]
