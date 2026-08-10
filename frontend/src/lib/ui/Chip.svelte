@@ -51,6 +51,15 @@
 			border-color var(--dur-fast) var(--ease),
 			color var(--dur-fast) var(--ease);
 	}
+	/* app.css's coarse floor is `min-height` ONLY — a blanket `min-width` there would widen the three
+	   frozen node-canvas exceptions. A Chip is chrome and none of those three is one, so the width
+	   floor belongs here: a chip whose content is a glyph and a digit measured 34 × 44. */
+	@media (hover: none) and (pointer: coarse) {
+		.ui-chip {
+			min-width: var(--hit);
+			justify-content: center;
+		}
+	}
 	.ui-chip-ink {
 		display: inline-flex;
 		align-items: center;

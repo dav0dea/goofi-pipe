@@ -1,6 +1,7 @@
 import { test, expect, type Locator, type Page } from '@playwright/test';
 import { waitForApp } from '../lib/app';
 import { addNode, waitForNode, waitForNoNode } from '../lib/goofi';
+import { dismiss, spawnSh } from '../lib/harness';
 
 /**
  * The PRODUCT hit-floor sweep (R spec §5.3, §6). `touch-ui-gallery.spec.ts` proves every `$lib/ui`
@@ -192,6 +193,21 @@ const SITES: Site[] = [
 		control: (p) => p.locator('.svelte-flow__controls button').first()
 	},
 	{
+		// The agent chip: one glyph and one digit, so its CONTENT never reaches the floor — and it
+		// is, by the code's own comment beside it, the only door onto detach and kill from outside
+		// the panel. The Task 2 report reasoned it was "the primitives' own, already pinned"; the
+		// primitives floor HEIGHT, and this measured 34.19 × 44.
+		name: 'the TopBar agent chip',
+		setup: withAgent,
+		control: (p) => p.getByTestId('topbar-agents')
+	},
+	{
+		// The destructive half of the question that chip asks. `Kill` is four characters wide.
+		name: 'the agent kill button',
+		setup: openAgentQuestion,
+		control: (p) => p.getByTestId('agent-kill')
+	},
+	{
 		name: 'the inspector resize handle',
 		setup: async (page) => {
 			const uid = await addNode(page, 'Oscillator', 'inputs');
@@ -217,6 +233,30 @@ async function openFileBrowser(page: Page): Promise<Teardown> {
 	return async () => {
 		await page.keyboard.press('Escape');
 		await expect(page.getByTestId('fs-browser')).toBeHidden();
+	};
+}
+
+/** Run an agent, so the chip that counts them exists at all. `_sh` is the hidden test adapter — a
+ *  plain `/bin/sh` — so nothing here needs a harness installed; handing it back dismisses it. */
+async function withAgent(page: Page): Promise<Teardown> {
+	const id = await spawnSh(page);
+	await expect(page.getByTestId('topbar-agents')).toBeVisible();
+	return async () => {
+		await dismiss(page, id);
+		await expect(page.getByTestId('topbar-agents')).toBeHidden();
+	};
+}
+
+/** …and ask the chip's question, which is the shell's dialog and needs no agent panel open. */
+async function openAgentQuestion(page: Page): Promise<Teardown> {
+	const end = await withAgent(page);
+	await page.getByTestId('topbar-agents').tap();
+	await page.locator('.context-menu .item').first().tap();
+	await expect(page.getByTestId('agent-close-dialog')).toBeVisible();
+	return async () => {
+		await page.keyboard.press('Escape');
+		await expect(page.getByTestId('agent-close-dialog')).toBeHidden();
+		await end();
 	};
 }
 

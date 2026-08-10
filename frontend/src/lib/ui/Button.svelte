@@ -58,6 +58,14 @@
 			border-color var(--dur-fast) var(--ease),
 			color var(--dur-fast) var(--ease);
 	}
+	/* The other axis. app.css floors the HEIGHT of every button under a coarse pointer, but a short
+	   label ("Kill") is 40px wide there — and the blanket rule cannot carry the width, because three
+	   frozen node-canvas controls defeat the floor on purpose. A Button is never one of them. */
+	@media (hover: none) and (pointer: coarse) {
+		.ui-btn {
+			min-width: var(--hit);
+		}
+	}
 	.ui-btn:disabled {
 		opacity: var(--disabled-opacity);
 		cursor: not-allowed;

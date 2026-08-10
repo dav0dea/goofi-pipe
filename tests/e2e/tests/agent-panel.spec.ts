@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { closeSplit, resetPatch, splitRight, waitForApp } from '../lib/app';
+import { dismiss, spawnSh, stateOf } from '../lib/harness';
 
 /**
  * The agent panel, driven end to end against a real PTY.
@@ -17,41 +18,6 @@ import { closeSplit, resetPatch, splitRight, waitForApp } from '../lib/app';
  * The markers are spelled `goofi''markN`, which the shell's own echo shows verbatim and only the
  * CHILD prints joined — so no assertion below can pass on the line discipline repeating the input.
  */
-
-/** One RPC over a raw `/control` socket (the `ua-reset.spec.ts` idiom): a spawn of the hidden test
- * adapter has no door in the UI, by design. */
-async function rawCall(page: Page, op: string, payload: unknown): Promise<any> {
-	return page.evaluate(
-		async ({ op, payload }) => {
-			const ws = new WebSocket(`ws://${location.host}/control`);
-			await new Promise((r) => (ws.onopen = r));
-			const reply = await new Promise<any>((res) => {
-				const id = Math.floor(Math.random() * 1e6);
-				const on = (e: MessageEvent): void => {
-					if (typeof e.data !== 'string') return;
-					const m = JSON.parse(e.data);
-					if (m.id !== id) return;
-					ws.removeEventListener('message', on);
-					res(m);
-				};
-				ws.addEventListener('message', on);
-				ws.send(JSON.stringify({ id, op, payload }));
-			});
-			ws.close();
-			return reply;
-		},
-		{ op, payload }
-	);
-}
-
-const spawnSh = async (page: Page): Promise<string> =>
-	(await rawCall(page, 'spawn_harness', { harness: '_sh' })).result.instance_id;
-
-/** An instance's state on the manager's roster, or 'gone' once it has been dismissed. */
-async function stateOf(page: Page, id: string): Promise<string> {
-	const roster = (await rawCall(page, 'list_harnesses', {})).result;
-	return roster.instances.find((i: { id: string }) => i.id === id)?.state ?? 'gone';
-}
 
 /** Make the last panel an agent panel and wait for it to attach. A fresh agent panel claims a
  * running instance no other panel is showing — which is what makes closing and reopening one a
@@ -75,15 +41,11 @@ async function say(page: Page, marker: string): Promise<void> {
 	});
 }
 
-/** Stop and then DISMISS an instance, leaving nothing for the next spec. The second stop is what
- * dismisses, and only an ALREADY-EXITED instance is dismissed by one — so it waits for the exit
- * first. The last assertion is the CLIENT agreeing: an exited-but-listed instance still fills the
- * panel, whose ✕ would then ask instead of closing, which is how this raced the first time. */
+/** Hand the instance back, and wait for the CLIENT to agree: an exited-but-listed instance still
+ * fills the panel, whose ✕ would then ask instead of closing, which is how this raced the first
+ * time. */
 async function sweep(page: Page, id: string): Promise<void> {
-	await rawCall(page, 'stop_harness', { instance: id });
-	await expect.poll(() => stateOf(page, id), { timeout: 15_000 }).toMatch(/exited|gone/);
-	if ((await stateOf(page, id)) === 'exited') await rawCall(page, 'stop_harness', { instance: id });
-	await expect.poll(() => stateOf(page, id), { timeout: 15_000 }).toBe('gone');
+	await dismiss(page, id);
 	await expect(page.getByTestId('agent-launcher')).toBeVisible();
 }
 
