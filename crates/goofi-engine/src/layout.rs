@@ -39,6 +39,15 @@ const MIN_FRACTION: f64 = 0.05;
 /// entry can ever claim this key — which is also how [`Layout::from_json`] knows to skip it.
 const SEQ_KEY: &str = "#seq";
 
+/// A newcomer's share of the slot it is taking over, clamped so neither side becomes ungrabbable —
+/// `insertNodeAtPanel`'s `Math.max(0.05, Math.min(0.95, fraction))`.
+fn fraction(ratio: f64) -> Result<f64, String> {
+    if !ratio.is_finite() {
+        return Err("ratio must be a number between 0 and 1".into());
+    }
+    Ok(ratio.clamp(MIN_FRACTION, 1.0 - MIN_FRACTION))
+}
+
 /// A split's axis. `Row` = children left→right, `Column` = top→bottom — the CSS `flex-direction`
 /// spelling the renderer maps straight through.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -414,7 +423,16 @@ impl Layout {
         self.normalize(parent);
     }
 
-    pub fn add_page(&self, name: &str) -> Result<Vec<Write>, String> {
+    /// Add a page and return its id. It holds one fresh node-editor panel — unless `subtree` names
+    /// an existing one, in which case the page is built AROUND it: the frozen drop-onto-the-tab-bar
+    /// gesture, which `session_add_page` + `page_move_panel` cannot express (a move needs a split to
+    /// land in, and a fresh page has none). `index` places it in the tab strip.
+    pub fn add_page(
+        &self,
+        name: &str,
+        index: Option<usize>,
+        subtree: Option<&str>,
+    ) -> Result<(Vec<Write>, Id), String> {
         let name = name.trim();
         if name.is_empty() {
             return Err("a page needs a name".into());
@@ -423,20 +441,175 @@ impl Layout {
             return Err(format!("a page named `{name}` already exists"));
         }
         let mut next = self.clone();
-        let order = self.pages().len();
+        // Lifted FIRST, because taking a page's last panel takes the page — which is what the new
+        // page's own position is counted against.
+        let adopted = match subtree {
+            Some(s) => Some((s.to_string(), next.take(s)?)),
+            None => None,
+        };
+        let order = next.pages().len();
         let page = next.mint("page");
         next.insert(page.clone(), Entry::Page { name: name.to_string(), order });
-        let panel = next.mint("panel");
-        next.insert(
-            panel,
-            Entry::Panel {
-                parent: page,
-                order: 0,
-                size: 1.0,
-                panel_type: DEFAULT_PANEL_TYPE.into(),
-                state: Value::Null,
-            },
-        );
+        let (root, mut entry) = adopted.unwrap_or_else(|| {
+            (
+                next.mint("panel"),
+                Entry::Panel {
+                    parent: String::new(),
+                    order: 0,
+                    size: 1.0,
+                    panel_type: DEFAULT_PANEL_TYPE.into(),
+                    state: Value::Null,
+                },
+            )
+        });
+        entry.set_parent(&page);
+        entry.set_order(0);
+        entry.set_size(1.0);
+        next.insert(root, entry);
+        if let Some(i) = index {
+            let mut order = next.pages();
+            order.retain(|p| *p != page);
+            order.insert(i.min(order.len()), page.clone());
+            next.order_children(&order);
+        }
+        Ok((self.diff(&next), page))
+    }
+
+    /// Lift a subtree out for re-homing. Normally a [`Self::detach`] — but when it is its page's ONLY
+    /// root the PAGE goes with it, which is the frozen "the panel was the tab's only node → the tab
+    /// goes with it" branch of `_takeNode`. The last page never goes.
+    fn take(&mut self, root: &str) -> Result<Entry, String> {
+        let parent = match self.entries.get(root) {
+            Some(e) => e.parent().map(str::to_string),
+            None => return Err(format!("no such panel `{root}`")),
+        };
+        let Some(parent) = parent else {
+            return Err("a page is not a subtree — reorder it with session_reorder_page".into());
+        };
+        if !matches!(self.entries.get(&parent), Some(Entry::Page { .. })) {
+            return self.detach(root);
+        }
+        if self.pages().len() <= 1 {
+            return Err(format!("`{root}` is the only panel on the only page — it has nowhere to go"));
+        }
+        let e = self.entries.remove(root).expect("looked up above");
+        self.entries.remove(&parent);
+        let rest = self.pages();
+        self.order_children(&rest);
+        Ok(e)
+    }
+
+    /// Put `entry` beside `target`, splitting along `axis` — `insertNodeAtPanel`, and the ONE place
+    /// split-or-wrap lives. A parent already running along `axis` gains an adjacent sibling taking
+    /// `f` of the target's slice; otherwise the target is wrapped in a fresh split inheriting its
+    /// slot. `before` puts the newcomer left/top. `entry`'s own parent/order/size are overwritten,
+    /// so a caller hands over a lifted subtree root or a brand-new panel indifferently.
+    fn insert_at(&mut self, id: &str, mut entry: Entry, target: &str, axis: Axis, before: bool, f: f64) {
+        let Some((parent, slot, order)) = self
+            .entries
+            .get(target)
+            .map(|t| (t.parent().unwrap_or_default().to_string(), t.size(), t.order()))
+        else {
+            return;
+        };
+        let same = matches!(self.entries.get(&parent), Some(Entry::Split { axis: a, .. }) if *a == axis);
+        entry.set_parent(&parent);
+        entry.set_order(order);
+        entry.set_size(slot * f);
+        self.insert(id.to_string(), entry);
+        if same {
+            if let Some(t) = self.entries.get_mut(target) {
+                t.set_size(slot - slot * f);
+            }
+            let mut kids = self.children(&parent);
+            kids.retain(|k| k != id);
+            let at =
+                kids.iter().position(|k| k == target).map_or(0, |i| if before { i } else { i + 1 });
+            kids.insert(at, id.to_string());
+            self.order_children(&kids);
+        } else {
+            let wrap = self.mint("split");
+            self.insert(wrap.clone(), Entry::Split { parent, order, size: slot, axis });
+            // The newcomer always takes `f` and the target the rest; only their ORDER flips.
+            for (child, o, size) in [(target, before as usize, 1.0 - f), (id, 1 - before as usize, f)]
+            {
+                if let Some(e) = self.entries.get_mut(child) {
+                    e.set_parent(&wrap);
+                    e.set_order(o);
+                    e.set_size(size);
+                }
+            }
+        }
+    }
+
+    /// Re-home the subtree rooted at `subtree` beside `target`, splitting along `axis` — `dropOnPanel`
+    /// as ONE plan. Three ops would cost the user three ctrl-Z for one drag and show every peer two
+    /// arrangements that were never on screen.
+    pub fn insert_at_panel(
+        &self,
+        page: &str,
+        subtree: &str,
+        target: &str,
+        axis: Axis,
+        before: bool,
+        ratio: f64,
+    ) -> Result<Vec<Write>, String> {
+        self.in_page(page, target)?;
+        // A PANEL target is what the gesture means AND what makes the plan safe: lifting the source
+        // can promote a split away, but never a panel, so the target still stands afterwards.
+        match self.entries.get(target) {
+            Some(Entry::Panel { .. }) => {}
+            Some(e) => return Err(format!("`{target}` is a {} — a drop lands on a panel", e.kind())),
+            None => return Err(format!("no such panel `{target}`")),
+        }
+        if subtree == target {
+            return Err(format!("`{subtree}` cannot be dropped onto itself"));
+        }
+        if self.subtree(subtree).iter().any(|d| d == target) {
+            return Err(format!("`{target}` is inside `{subtree}` — that would make a cycle"));
+        }
+        let f = fraction(ratio)?;
+        let mut next = self.clone();
+        // Lifted first, exactly as `_takeNode` runs before `insertNodeAtPanel`: closing up behind
+        // the source can promote a sibling into the slot the newcomer is about to share.
+        let moved = next.take(subtree)?;
+        next.insert_at(subtree, moved, target, axis, before, f);
+        Ok(self.diff(&next))
+    }
+
+    /// Set every child of `split` at once — what a resize drag commits on pointer-up. `set_panel`'s
+    /// `size_mult` scales ONE child and renormalizes its siblings, so N of them chase a moving
+    /// target and never land on the fraction set the user drew.
+    pub fn resize_split(
+        &self,
+        page: &str,
+        split: &str,
+        fractions: &[f64],
+    ) -> Result<Vec<Write>, String> {
+        self.in_page(page, split)?;
+        if !matches!(self.entries.get(split), Some(Entry::Split { .. })) {
+            let kind = self.entries.get(split).map_or("entry", Entry::kind);
+            return Err(format!("`{split}` is a {kind} — only a split divides its slot"));
+        }
+        let kids = self.children(split);
+        if kids.len() != fractions.len() {
+            return Err(format!(
+                "`{split}` has {} children, so it needs {} fractions, not {}",
+                kids.len(),
+                kids.len(),
+                fractions.len()
+            ));
+        }
+        if fractions.iter().any(|f| !f.is_finite() || *f <= 0.0) {
+            return Err("every fraction must be a positive number".into());
+        }
+        let mut next = self.clone();
+        for (k, f) in kids.iter().zip(fractions) {
+            if let Some(e) = next.entries.get_mut(k) {
+                e.set_size(f.max(MIN_FRACTION));
+            }
+        }
+        next.normalize(split);
         Ok(self.diff(&next))
     }
 
@@ -481,9 +654,8 @@ impl Layout {
         Ok(self.diff(&next))
     }
 
-    /// Split `panel` along `axis`, birthing an EMPTY panel that takes `ratio` of its slot. The
-    /// split-or-wrap of `insertNodeAtPanel`: a parent already running along `axis` gains an adjacent
-    /// sibling; otherwise the panel is wrapped in a fresh split that inherits its slot.
+    /// Split `panel` along `axis`, birthing an EMPTY panel that takes `ratio` of its slot — the same
+    /// [`Self::insert_at`] a drop uses, handed a brand-new panel instead of a lifted subtree.
     pub fn split_panel(
         &self,
         page: &str,
@@ -492,56 +664,23 @@ impl Layout {
         ratio: f64,
     ) -> Result<(Vec<Write>, Id), String> {
         self.in_page(page, panel)?;
-        let target = match self.entries.get(panel) {
-            Some(e @ Entry::Panel { .. }) => e.clone(),
+        match self.entries.get(panel) {
+            Some(Entry::Panel { .. }) => {}
             Some(e) => return Err(format!("`{panel}` is a {} — only a panel splits", e.kind())),
             None => return Err(format!("no such panel `{panel}`")),
-        };
-        if !ratio.is_finite() {
-            return Err("ratio must be a number between 0 and 1".into());
         }
-        let f = ratio.clamp(MIN_FRACTION, 1.0 - MIN_FRACTION);
-        let parent = target.parent().unwrap_or_default().to_string();
-        let slot = target.size();
-        let same_axis = matches!(self.entries.get(&parent), Some(Entry::Split { axis: a, .. }) if *a == axis);
-
+        let f = fraction(ratio)?;
         let mut next = self.clone();
         let fresh = next.mint("panel");
-        next.insert(
-            fresh.clone(),
-            Entry::Panel {
-                parent: parent.clone(),
-                order: target.order(),
-                size: slot * f,
-                panel_type: EMPTY_PANEL_TYPE.into(),
-                state: Value::Null,
-            },
-        );
-        if same_axis {
-            if let Some(t) = next.entries.get_mut(panel) {
-                t.set_size(slot - slot * f);
-            }
-            let mut kids = self.children(&parent);
-            let at = kids.iter().position(|k| k == panel).map_or(0, |i| i + 1);
-            kids.insert(at, fresh.clone());
-            next.order_children(&kids);
-        } else {
-            let wrap = next.mint("split");
-            next.insert(
-                wrap.clone(),
-                Entry::Split { parent: parent.clone(), order: target.order(), size: slot, axis },
-            );
-            if let Some(t) = next.entries.get_mut(panel) {
-                t.set_parent(&wrap);
-                t.set_order(0);
-                t.set_size(1.0 - f);
-            }
-            if let Some(n) = next.entries.get_mut(&fresh) {
-                n.set_parent(&wrap);
-                n.set_order(1);
-                n.set_size(f);
-            }
-        }
+        // parent/order/size are `insert_at`'s to set; only the type and state are this op's.
+        let born = Entry::Panel {
+            parent: String::new(),
+            order: 0,
+            size: 1.0,
+            panel_type: EMPTY_PANEL_TYPE.into(),
+            state: Value::Null,
+        };
+        next.insert_at(&fresh, born, panel, axis, false, f);
         Ok((self.diff(&next), fresh))
     }
 
@@ -942,7 +1081,7 @@ mod tests {
         let l = applied(&l, l.set_panel(&p1, &c, None, Some(json!({ "node": "osc0" })), None).unwrap());
 
         // A second page, so the move crosses pages.
-        let l = applied(&l, l.add_page("Second").unwrap());
+        let l = applied(&l, l.add_page("Second", None, None).unwrap().0);
         let p2 = l.page_named("Second").expect("the new page");
         let d = l.children(&p2)[0].clone();
         let (w, _e) = l.split_panel(&p2, &d, Axis::Row, 0.5).unwrap();
@@ -1002,8 +1141,8 @@ mod tests {
         let l = Layout::default();
         let p1 = l.pages()[0].clone();
         let a = root_panel(&l);
-        let l = applied(&l, l.add_page("Second").unwrap());
-        assert!(l.add_page("Second").is_err(), "a duplicate page name is refused teachably");
+        let l = applied(&l, l.add_page("Second", None, None).unwrap().0);
+        assert!(l.add_page("Second", None, None).is_err(), "a duplicate page name is refused teachably");
 
         let l = applied(&l, l.rename_page(DEFAULT_PAGE_NAME, "Main").unwrap());
         assert_eq!(l.page_named("Main"), Some(p1.clone()), "the id survived the rename");
@@ -1082,11 +1221,109 @@ mod tests {
         assert!(Layout::from_json(&json!({})).is_err(), "an arrangement with no page at all");
         assert!(Layout::from_json(&json!([])).is_err(), "not even an object");
         // Two pages sharing a name would make the name-addressed ops ambiguous.
-        let two = applied(&l, l.add_page("Second").unwrap());
+        let two = applied(&l, l.add_page("Second", None, None).unwrap().0);
         let dup = two.page_named("Second").unwrap();
         let mut v = two.to_json();
         v[&dup]["name"] = json!(DEFAULT_PAGE_NAME);
         assert!(Layout::from_json(&v).is_err(), "duplicate page names");
+    }
+
+    #[test]
+    fn a_drop_onto_a_panel_re_homes_a_subtree_in_one_plan() {
+        // `dropOnPanel` is ONE frozen gesture, so it is one plan: the source is lifted (`_takeNode`)
+        // and re-homed beside the target in the same step. Composed from split + move + close it
+        // would be three undo steps for one drag, and every peer would see two arrangements that
+        // were never on screen.
+        let l = Layout::default();
+        let p1 = l.pages()[0].clone();
+        let a = root_panel(&l);
+        let (w, b) = l.split_panel(&p1, &a, Axis::Row, 0.5).unwrap();
+        let l = applied(&l, w);
+        let l = applied(&l, l.set_panel(&p1, &b, None, Some(json!({ "node": "osc0" })), None).unwrap());
+        let (w, p2) = l.add_page("Second", None, None).unwrap();
+        let l = applied(&l, w);
+        let target = l.children(&p2)[0].clone();
+
+        let l2 = applied(&l, l.insert_at_panel(&p2, &b, &target, Axis::Column, false, 0.25).unwrap());
+        assert_eq!(l2.page_of(&b).as_deref(), Some(p2.as_str()), "the panel crossed pages");
+        assert!(
+            matches!(l2.get(&b), Some(Entry::Panel { state, .. }) if state["node"] == json!("osc0")),
+            "with its identity and its binding"
+        );
+        let wrap = l2.get(&b).unwrap().parent().unwrap().to_string();
+        assert!(matches!(l2.get(&wrap), Some(Entry::Split { axis: Axis::Column, .. })), "wrapped");
+        assert_eq!(l2.children(&wrap), vec![target.clone(), b.clone()], "landing AFTER the target");
+        assert!((l2.get(&b).unwrap().size() - 0.25).abs() < 1e-9, "taking the fraction asked for");
+        assert_eq!(l2.children(&p1), vec![a.clone()], "the page it left promoted its survivor");
+        assert!(l2.validate().is_ok());
+
+        // `placeBefore`, and the branch where a page's LAST panel leaves: the tab goes with it,
+        // which is why this cannot be a plain move (a move refuses to empty a page).
+        let l3 = applied(&l, l.insert_at_panel(&p1, &target, &a, Axis::Row, true, 0.5).unwrap());
+        assert_eq!(l3.pages(), vec![p1.clone()], "the emptied page went with its panel");
+        let row = l3.get(&a).unwrap().parent().unwrap().to_string();
+        assert_eq!(l3.children(&row), vec![target.clone(), a.clone(), b.clone()], "placed BEFORE");
+        assert!(l3.validate().is_ok());
+
+        assert!(l.insert_at_panel(&p2, &target, &target, Axis::Row, false, 0.5).is_err(), "onto itself");
+        let split = l.get(&a).unwrap().parent().unwrap().to_string();
+        assert!(l.insert_at_panel(&p1, &split, &a, Axis::Row, false, 0.5).is_err(), "a cycle is refused");
+    }
+
+    #[test]
+    fn a_drop_onto_the_tab_bar_builds_the_page_around_the_panel_it_carries() {
+        // `dropPanelOnTabBar`: a new tab whose root IS the dragged subtree. `session_add_page` plus a
+        // move cannot express it — a move needs a split to land in, and a fresh page has none.
+        let l = Layout::default();
+        let p1 = l.pages()[0].clone();
+        let a = root_panel(&l);
+        let (w, b) = l.split_panel(&p1, &a, Axis::Row, 0.5).unwrap();
+        let l = applied(&l, w);
+
+        let (w, p2) = l.add_page("Second", Some(0), Some(&b)).unwrap();
+        let l2 = applied(&l, w);
+        assert_eq!(l2.children(&p2), vec![b.clone()], "the page was built AROUND the dragged panel");
+        assert_eq!(l2.pages()[0], p2, "at the tab index asked for");
+        assert!((l2.get(&b).unwrap().size() - 1.0).abs() < 1e-9, "filling its new page");
+        assert_eq!(l2.children(&p1), vec![a.clone()], "the page it left promoted its survivor");
+        assert!(l2.validate().is_ok());
+
+        // The only panel of the only page has nowhere to go — there would be no page left.
+        let one = Layout::default();
+        assert!(one.add_page("Second", None, Some(&root_panel(&one))).is_err());
+        // With another page standing it may, and its emptied page goes with it.
+        let l3 = applied(&l2, l2.add_page("Third", None, Some(&a)).unwrap().0);
+        assert_eq!(l3.pages().len(), 2, "the emptied page went with its panel");
+        assert!(l3.validate().is_ok());
+    }
+
+    #[test]
+    fn a_resize_sets_every_child_of_a_split_at_once() {
+        // A drag commits FINAL fractions on pointer-up. `size_mult` scales one child and renormalizes
+        // its siblings, so N of them chase a moving target and never land on the set the user drew.
+        let l = Layout::default();
+        let page = l.pages()[0].clone();
+        let a = root_panel(&l);
+        let (w, b) = l.split_panel(&page, &a, Axis::Row, 0.5).unwrap();
+        let l = applied(&l, w);
+        let (w, c) = l.split_panel(&page, &b, Axis::Row, 0.5).unwrap();
+        let l = applied(&l, w);
+        let split = l.children(&page)[0].clone();
+        assert_eq!(l.children(&split), vec![a.clone(), b.clone(), c.clone()]);
+
+        let l2 = applied(&l, l.resize_split(&page, &split, &[0.2, 0.3, 0.5]).unwrap());
+        for (id, want) in [(&a, 0.2), (&b, 0.3), (&c, 0.5)] {
+            assert!((l2.get(id).unwrap().size() - want).abs() < 1e-9, "`{id}` got the share asked for");
+        }
+        assert!(l2.validate().is_ok());
+        // Fractions that do not add up are RATIOS: the drag hands over what it drew and the split
+        // still fills exactly its own slot.
+        let l3 = applied(&l, l.resize_split(&page, &split, &[1.0, 1.0, 2.0]).unwrap());
+        for (id, want) in [(&a, 0.25), (&b, 0.25), (&c, 0.5)] {
+            assert!((l3.get(id).unwrap().size() - want).abs() < 1e-9, "`{id}` renormalized");
+        }
+        assert!(l.resize_split(&page, &split, &[0.5, 0.5]).is_err(), "one fraction per child");
+        assert!(l.resize_split(&page, &a, &[1.0]).is_err(), "a panel has no children to size");
     }
 
     #[test]

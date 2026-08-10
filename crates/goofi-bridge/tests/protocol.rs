@@ -176,14 +176,16 @@ async fn call_session(ws: &mut Ws, id: i64, op: &str, payload: Value, session: &
 
 /// The panel ids in a synced replica's arrangement root, in id order — how a client reads the flat
 /// layout now that the manager owns it.
-/// How many ENTRIES the arrangement root holds. The root also carries the manager's monotone id
-/// counter under a reserved key, which no minted `{prefix}-{n}` id can take — a reader walks entries,
-/// not keys.
+/// The arrangement's ENTRIES. The root also carries the manager's monotone id counter under a
+/// reserved key, which no minted `{prefix}-{n}` id can take — a reader walks entries, not keys.
+fn arrangement(doc: &goofi_crdt::GraphDoc) -> Value {
+    let mut m = doc.to_json()["arrangement"].as_object().cloned().unwrap_or_default();
+    m.retain(|_, e| e.get("kind").is_some());
+    Value::Object(m)
+}
+
 fn entry_count(doc: &goofi_crdt::GraphDoc) -> usize {
-    doc.to_json()["arrangement"]
-        .as_object()
-        .map(|m| m.values().filter(|e| e.get("kind").is_some()).count())
-        .unwrap_or(0)
+    arrangement(doc).as_object().map_or(0, serde_json::Map::len)
 }
 
 fn panels(doc: &goofi_crdt::GraphDoc) -> Vec<String> {
@@ -359,6 +361,26 @@ async fn a_layout_undo_leaves_a_peers_panel_standing() {
     );
     assert!(panels(&after).contains(&panel), "and so did the panel that was split");
 
+    // The other birth is a PAGE, and there the semantics differ: undoing "add page" closes the page
+    // WHOLE, so a peer's panel on it goes too — a lost update, but a convergent one, where restoring
+    // the slots would leave the peer's panel hanging off a page that no longer exists.
+    let standing = panels(&after);
+    let entries = entry_count(&after);
+    call_session(&mut ws, 6, "session_add_page", json!({ "name": "Second" }), "s1").await;
+    let d = sync_replica(&mut ws, |d| panels(d).len() == standing.len() + 1).await;
+    let second = panels(&d).into_iter().find(|p| !standing.contains(p)).expect("the new page's panel");
+    call_session(&mut ws, 7, "page_split_panel",
+        json!({ "page": "Second", "panel": second, "direction": "row" }), "s2").await;
+    let u = call_session(&mut ws, 8, "undo", json!({}), "s1").await;
+    assert_eq!(u["result"]["changed"], json!(true), "{u}");
+    let closed = sync_replica(&mut ws, |d| {
+        !panels(d).is_empty() && d.read_at(&["arrangement", second.as_str()]).is_none()
+    })
+    .await;
+    let pages = call(&mut ws, 9, "session_list_pages", json!({})).await["result"]["pages"].clone();
+    assert_eq!(pages.as_array().map(Vec::len), Some(1), "the page went whole: {pages}");
+    assert_eq!(entry_count(&closed), entries, "and took the peer's split with it, leaving no orphan");
+
     // …and it still REACHES a page. The manager's own loader is the judge: an orphan makes the
     // patch it just saved open on the default arrangement instead.
     let yaml =
@@ -419,6 +441,90 @@ async fn one_pass_over_every_session_and_page_write_op() {
     // The last page and a page's last panel both refuse, rather than leaving nothing to look at.
     let last = call(&mut ws, 12, "session_remove_page", json!({ "name": "Layout" })).await;
     assert!(last["error"].as_str().is_some_and(|e| e.contains("last page")), "{last}");
+}
+
+#[tokio::test]
+async fn each_frozen_drag_gesture_is_one_op_and_therefore_one_undo() {
+    // The drag feel is FROZEN UX. Expressed as the primitive ops, a drop costs three to five
+    // commands — three to five ctrl-Z for one drag, and every peer watching two arrangements that
+    // were never on anybody's screen. Each gesture is one op, and undo puts back exactly what it
+    // found.
+    let base = start_server().await;
+    let (mut ws, _) = connect_async(format!("{base}/control")).await.unwrap();
+    let _ = recv_text(&mut ws).await;
+    let doc = sync_replica(&mut ws, |d| !panels(d).is_empty()).await;
+    let first = panels(&doc)[0].clone();
+    let ok = |r: &Value| assert_eq!(r["result"]["ok"], json!(true), "{r}");
+
+    // Two panels on `Layout`, and a second page holding the drop target.
+    let mine = call(&mut ws, 1, "page_split_panel",
+        json!({ "page": "Layout", "panel": first, "direction": "row" })).await["result"]
+        .as_str().unwrap().to_string();
+    ok(&call(&mut ws, 2, "session_add_page", json!({ "name": "Signals", "index": 0 })).await);
+    let d = sync_replica(&mut ws, |d| panels(d).len() == 3).await;
+    assert_eq!(
+        call(&mut ws, 3, "session_list_pages", json!({})).await["result"]["pages"][0]["name"],
+        json!("Signals"),
+        "the page landed at the tab index asked for"
+    );
+    let target = panels(&d).into_iter().find(|p| *p != first && *p != mine).expect("its panel");
+
+    // dropOnPanel — one op, and one undo.
+    let before = arrangement(&d);
+    ok(&call_session(&mut ws, 4, "page_insert_at_panel",
+        json!({ "page": "Signals", "subtree": mine, "target": target,
+                "direction": "column", "place_before": true, "ratio": 0.3 }), "s1").await);
+    // Positive about something: a fresh replica trivially "differs" from `before` on a doc it has
+    // not synced a single frame of.
+    let dropped = sync_replica(&mut ws, |d| {
+        !panels(d).is_empty()
+            && d.read_at(&["arrangement", mine.as_str(), "parent"])
+                != Some(before[&mine]["parent"].clone())
+    })
+    .await;
+    let table = call(&mut ws, 5, "page_list_panels", json!({ "page": "Signals" })).await["result"]
+        ["text"].as_str().unwrap().to_string();
+    assert!(table.contains(&mine), "the panel crossed pages in ONE op: {table}");
+    assert_ne!(arrangement(&dropped), before, "the drop actually moved something");
+
+    let u = call_session(&mut ws, 6, "undo", json!({}), "s1").await;
+    assert_eq!(u["result"]["changed"], json!(true), "{u}");
+    let back = sync_replica(&mut ws, |d| entry_count(d) > 0 && arrangement(d) == before).await;
+    assert_eq!(arrangement(&back), before, "ONE ctrl-Z put the whole drag back");
+
+    // dropPanelOnTabBar — a page built around an existing panel, also one op and one undo.
+    ok(&call_session(&mut ws, 7, "session_add_page",
+        json!({ "name": "Torn off", "index": 0, "subtree": mine }), "s1").await);
+    let torn = sync_replica(&mut ws, |d| {
+        d.read_at(&["arrangement", mine.as_str(), "size"]).and_then(|v| v.as_f64()) == Some(1.0)
+    })
+    .await;
+    assert_eq!(
+        torn.read_at(&["arrangement", mine.as_str(), "size"]).and_then(|v| v.as_f64()),
+        Some(1.0),
+        "the dragged panel is the new page's whole root"
+    );
+    call_session(&mut ws, 8, "undo", json!({}), "s1").await;
+    let back = sync_replica(&mut ws, |d| entry_count(d) > 0 && arrangement(d) == before).await;
+    assert_eq!(arrangement(&back), before, "and one ctrl-Z put that back too");
+
+    // page_resize_split — the drag-commit, which no number of `size_mult` calls converges on.
+    let split = back.read_at(&["arrangement", mine.as_str(), "parent"])
+        .and_then(|v| v.as_str().map(str::to_string)).expect("the wrapper split");
+    ok(&call(&mut ws, 9, "page_resize_split",
+        json!({ "page": "Layout", "split": split, "fractions": [0.2, 0.8] })).await);
+    let sized = sync_replica(&mut ws, |d| {
+        d.read_at(&["arrangement", first.as_str(), "size"]).and_then(|v| v.as_f64()) == Some(0.2)
+    })
+    .await;
+    assert_eq!(
+        sized.read_at(&["arrangement", mine.as_str(), "size"]).and_then(|v| v.as_f64()),
+        Some(0.8),
+        "both children landed on the fractions the drag drew"
+    );
+    let bad = call(&mut ws, 10, "page_resize_split",
+        json!({ "page": "Layout", "split": split, "fractions": [0.5] })).await;
+    assert!(bad["error"].as_str().is_some_and(|e| e.contains("children")), "{bad}");
 }
 
 #[tokio::test]

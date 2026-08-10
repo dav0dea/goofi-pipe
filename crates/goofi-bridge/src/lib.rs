@@ -1205,8 +1205,15 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
                 Ok(json!({ "text": inspect::panel_table(g.arrangement(), &page) }))
             }
             "session_add_page" => {
-                let writes = g.arrangement().add_page(parse_str(&payload, "name")?)?;
-                apply_layout(state, &mut g, &session, writes, None)
+                let name = parse_str(&payload, "name")?.to_string();
+                let index = payload.get("index").and_then(|v| v.as_u64()).map(|i| i as usize);
+                let subtree = payload.get("subtree").and_then(|v| v.as_str()).map(str::to_string);
+                let (writes, page) = g.arrangement().add_page(&name, index, subtree.as_deref())?;
+                // A page built AROUND an existing subtree is a move: its undo has to put the subtree
+                // back, where closing the page would delete it. A page born with its own fresh panel
+                // has nothing to give back, so it inverts by closing (see `Command::LayoutBirth`).
+                let born = subtree.is_none().then_some((page.as_str(), page.as_str()));
+                apply_layout(state, &mut g, &session, writes, born)
             }
             "session_remove_page" => {
                 let writes = g.arrangement().remove_page(parse_str(&payload, "name")?)?;
@@ -1264,6 +1271,37 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
                 let dest = parse_str(&payload, "new_parent")?.to_string();
                 let at = payload.get("order_index").and_then(|v| v.as_u64()).unwrap_or(0);
                 let writes = g.arrangement().move_subtree(&page, &panel, &dest, at as usize)?;
+                apply_layout(state, &mut g, &session, writes, None)
+            }
+            // The frozen drag gestures, each ONE op — a drop is one undo step and peers never see an
+            // arrangement that was not on somebody's screen. Composed from the primitive ops they
+            // would cost three to five of both.
+            "page_insert_at_panel" => {
+                let page = resolve_page(&g, &payload)?;
+                let subtree = parse_str(&payload, "subtree")?.to_string();
+                let target = parse_str(&payload, "target")?.to_string();
+                let dir = payload.get("direction").and_then(|v| v.as_str()).unwrap_or("row");
+                let axis = goofi_engine::layout::Axis::parse(dir)
+                    .ok_or("page_insert_at_panel: direction is `row` or `column`")?;
+                let before = payload.get("place_before").and_then(|v| v.as_bool()).unwrap_or(false);
+                let ratio = payload.get("ratio").and_then(|v| v.as_f64()).unwrap_or(0.5);
+                let writes =
+                    g.arrangement().insert_at_panel(&page, &subtree, &target, axis, before, ratio)?;
+                apply_layout(state, &mut g, &session, writes, None)
+            }
+            "page_resize_split" => {
+                let page = resolve_page(&g, &payload)?;
+                let split = parse_str(&payload, "split")?.to_string();
+                // A non-numeric entry becomes NaN and is refused by the planner alongside a zero or
+                // a negative one, so the whole "is this a fraction" answer is stated in one place.
+                let fractions: Vec<f64> = payload
+                    .get("fractions")
+                    .and_then(|v| v.as_array())
+                    .ok_or("page_resize_split: missing fractions")?
+                    .iter()
+                    .map(|v| v.as_f64().unwrap_or(f64::NAN))
+                    .collect();
+                let writes = g.arrangement().resize_split(&page, &split, &fractions)?;
                 apply_layout(state, &mut g, &session, writes, None)
             }
             "page_remove_panel" => {

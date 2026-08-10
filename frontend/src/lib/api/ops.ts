@@ -27,6 +27,8 @@ export type OpName =
 	| 'page_split_panel'
 	| 'page_set_panel'
 	| 'page_move_panel'
+	| 'page_insert_at_panel'
+	| 'page_resize_split'
 	| 'page_remove_panel'
 	| 'set_node_viewers'
 	| 'rename_node'

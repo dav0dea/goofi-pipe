@@ -117,8 +117,9 @@ pub static REGISTRY: &[Op] = &[
     Op { name: "session_list_pages", surface: Mcp, writes: false, args: "",
          doc: "The layout pages, in order, with the panel count of each. Pages are addressed by name everywhere else.",
          result: "{pages: [{name, id, index, panels}]}" },
-    Op { name: "session_add_page", surface: Mcp, writes: true, args: "name:string!",
-         doc: "Add a layout page holding one node-editor panel. The name must be free — it is how every page op addresses it.",
+    Op { name: "session_add_page", surface: Mcp, writes: true,
+         args: "name:string! index:int subtree:string",
+         doc: "Add a layout page at `index` in the tab strip. It holds one node-editor panel — or, with `subtree`, is built AROUND an existing panel or split, which is the drag-onto-the-tab-bar gesture. The name must be free: it is how every page op addresses it.",
          result: "{ok: true}" },
     Op { name: "session_remove_page", surface: Mcp, writes: true, args: "name:string!",
          doc: "Remove a page and every panel on it. The last page stays.",
@@ -143,6 +144,14 @@ pub static REGISTRY: &[Op] = &[
     Op { name: "page_move_panel", surface: Mcp, writes: true,
          args: "page:string! panel:string! new_parent:string! order_index:int",
          doc: "Move a panel — or the whole subtree under a split id — to sit at `order_index` inside another split, on any page. Identity and every descendant are preserved.",
+         result: "{ok: true}" },
+    Op { name: "page_insert_at_panel", surface: Mcp, writes: true,
+         args: "page:string! subtree:string! target:string! direction:string place_before:bool ratio:float",
+         doc: "Move an existing panel or split to sit beside `target` on `page`, splitting it along `row`/`column`. One op, so a drag is one undo step; taking a page's last panel takes the page with it.",
+         result: "{ok: true}" },
+    Op { name: "page_resize_split", surface: Mcp, writes: true,
+         args: "page:string! split:string! fractions:float[]!",
+         doc: "Set the shares of ALL of a split's children at once, in child order — what a resize drag commits. Renormalized to fill the slot.",
          result: "{ok: true}" },
     Op { name: "page_remove_panel", surface: Mcp, writes: true, args: "page:string! panel:string!",
          doc: "Close a panel (or a whole split's subtree). Its space goes to its siblings; a page keeps its last panel.",
@@ -257,7 +266,7 @@ mod tests {
     /// The argument types the schema DSL admits. A type outside this set is a typo, which
     /// [`every_row_declares_a_well_formed_schema`] refuses.
     const ARG_TYPES: &[&str] =
-        &["uid", "string", "float", "int", "bool", "float2", "json", "uid[]", "string[]"];
+        &["uid", "string", "float", "int", "bool", "float2", "json", "uid[]", "string[]", "float[]"];
 
     /// A name outside `[a-z0-9_]+`, or one long enough to push `mcp__goofi__<name>` past 64
     /// characters, makes Claude and OpenAI reject the ENTIRE tool list with a 400 — every tool,
