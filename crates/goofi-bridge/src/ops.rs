@@ -169,6 +169,22 @@ pub static REGISTRY: &[Op] = &[
     Op { name: "redo", surface: Mcp, writes: true, args: "",
          doc: "Redo this session's last undone graph command.",
          result: "{changed: [uid], can_undo: bool, can_redo: bool}" },
+    Op { name: "inspect_patch", surface: Mcp, writes: false, args: "scope:uid",
+         doc: "Read one scope as a mermaid flowchart — nodes, sub-patches, boundary ports and wires — plus the whole patch's standing errors and how long each has stood. No arg = the root scope.",
+         result: "{text: string}" },
+    Op { name: "inspect_node", surface: Mcp, writes: false,
+         args: "node:uid! slot:string params:bool meta:bool error:bool",
+         doc: "Read one node: its params (values, ranges, expression bindings), the health of each output slot's latest frame (shape, finite count, range), that frame's meta, and its error. `slot` narrows to one output.",
+         result: "{text: string}" },
+    Op { name: "get_patch", surface: Mcp, writes: false, args: "",
+         doc: "Where the open patch lives, where its workspace is, and whether it differs from disk.",
+         result: "{save_path: string | null, workspace: string, dirty: bool}" },
+    Op { name: "list_globals", surface: Mcp, writes: false, args: "",
+         doc: "Every patch global — what an expression can read and set_global can write.",
+         result: "{globals: [{name, type, value, system: bool}]}" },
+    Op { name: "read_node_source", surface: Mcp, writes: false, args: "type:string!",
+         doc: "A node type's source and provenance. A native type has no source text — copy a Python node into the patch workspace to modify it.",
+         result: "{type, language, tier, source: string | null, path: string | null, provenance, doc, inputs, outputs}" },
 ];
 
 /// The row for `name`, if the op exists.

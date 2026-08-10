@@ -36,4 +36,9 @@ export type OpName =
 	| 'load'
 	| 'new'
 	| 'undo'
-	| 'redo';
+	| 'redo'
+	| 'inspect_patch'
+	| 'inspect_node'
+	| 'get_patch'
+	| 'list_globals'
+	| 'read_node_source';
