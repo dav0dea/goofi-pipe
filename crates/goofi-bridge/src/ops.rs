@@ -20,8 +20,11 @@ pub enum Surface {
     Mcp,
     /// `/control` only. An agent calling `load` would replace the patch it is working in — and
     /// itself, once the harness lives inside that patch's workspace; `save`/`serialize`/`list_dir`
-    /// are the human file-browser's half of the same door. `set_layout` is here because the flat
-    /// layout ops supersede it (plan Task 2) and it should never become an agent tool on the way.
+    /// are the human file-browser's half of the same door. `new` shares that very arm: it empties
+    /// the patch AND clears the undo history, so an agent that called it could not take it back
+    /// (user, 2026-08-10 — a human who wants a fresh patch makes one). `set_layout` is here
+    /// because the flat layout ops supersede it (plan Task 2) and it should never become an agent
+    /// tool on the way.
     ControlOnly,
 }
 
@@ -160,7 +163,7 @@ pub static REGISTRY: &[Op] = &[
     Op { name: "load", surface: ControlOnly, writes: true, args: "path:string!",
          doc: "Replace the open patch with the `.gfi` at `path`, workspace and all.",
          result: "{ok: true}" },
-    Op { name: "new", surface: Mcp, writes: true, args: "",
+    Op { name: "new", surface: ControlOnly, writes: true, args: "",
          doc: "Replace the open patch with an empty one. Unsaved work is lost.",
          result: "{ok: true}" },
     Op { name: "undo", surface: Mcp, writes: true, args: "",
@@ -255,6 +258,11 @@ mod tests {
             }
             assert!(!op.doc.is_empty() && !op.result.is_empty(), "`{}` is undocumented", op.name);
         }
+        // The `!` itself has to reach the parse, or Task 4 would advertise every argument as
+        // optional and a model would omit the one the op cannot run without.
+        let add: Vec<_> = find("add_node").expect("add_node is registered").args().collect();
+        assert_eq!(add[0], ("type", "string", true));
+        assert_eq!(add[1], ("pos", "float2", false));
     }
 
     /// Uniqueness matters twice over: two rows of one name would give the MCP tool list a
@@ -265,6 +273,21 @@ mod tests {
         for op in REGISTRY {
             assert!(seen.insert(op.name), "`{}` is declared twice", op.name);
         }
+    }
+
+    /// `surface` is the one column with a SAFETY consequence, and Task 4 generates the agent's
+    /// whole tool list from it — so it is pinned as a set, not as a property. Every name here
+    /// either replaces the patch an agent is working inside (and, for the three that share the
+    /// `load` arm, its undo history with it) or is the human file browser's half of that door.
+    /// Adding a row to this list is a decision; the test is where it gets made deliberately.
+    #[test]
+    fn only_the_self_terminating_and_file_browser_ops_are_kept_off_the_agent_surface() {
+        let control_only: Vec<&str> =
+            REGISTRY.iter().filter(|o| o.surface == ControlOnly).map(|o| o.name).collect();
+        assert_eq!(
+            control_only,
+            ["list_dir", "set_layout", "serialize", "save", "load_text", "load", "new"]
+        );
     }
 
     /// The other half of the coverage claim. A row without a dispatch arm falls through to the
