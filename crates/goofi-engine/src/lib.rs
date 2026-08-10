@@ -20,6 +20,8 @@ pub mod archive;
 
 /// Sub-patch forest model + stub resolution (see `subpatch.rs`).
 pub mod subpatch;
+/// The flat, id-keyed editor arrangement (pages, splits, panels) — the fifth CRDT doc root.
+pub mod layout;
 
 /// Semantic patch commands with exact inverses — the manager's undo/redo unit.
 pub mod command;
