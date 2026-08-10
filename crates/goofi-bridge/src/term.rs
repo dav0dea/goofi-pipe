@@ -338,10 +338,6 @@ struct Sizes {
 }
 
 impl Sizes {
-    fn join(&mut self, seat: u64) {
-        self.seats.push((seat, None));
-    }
-
     /// `size` is `None` for a retraction. Moving the seat to the end is what makes "last writer"
     /// mean the last to have SPOKEN rather than the last to have arrived.
     fn propose(&mut self, seat: u64, size: Option<(u16, u16)>) -> Option<(u16, u16)> {
@@ -394,12 +390,12 @@ impl Instance {
         (self.output.subscribe(), self.exit.subscribe(), self.eof.subscribe())
     }
 
-    /// Take a seat in the size arbitration, and read the answer as it changes. The receiver is
-    /// taken here rather than through `attach` so a socket cannot hold one without a seat.
+    /// Take a seat number in the size arbitration, and read the answer as it changes. The seat
+    /// itself is materialised by its first PROPOSAL: an unseated view speaks for nothing, which is
+    /// what `current()` reads a seated `None` as anyway. The receiver is taken here rather than
+    /// through `attach` so a socket cannot hold one without a seat.
     pub fn join(&self) -> (u64, watch::Receiver<Option<(u16, u16)>>) {
-        let seat = self.seats.fetch_add(1, Ordering::Relaxed);
-        self.sizes.lock().unwrap().join(seat);
-        (seat, self.size.subscribe())
+        (self.seats.fetch_add(1, Ordering::Relaxed), self.size.subscribe())
     }
 
     /// This view's word on the size — `None` when it has nothing on screen to speak for. The lock
@@ -567,8 +563,6 @@ mod tests {
     #[test]
     fn the_last_view_to_speak_owns_the_size_and_hands_it_back_when_it_stops() {
         let mut s = Sizes::default();
-        s.join(1);
-        s.join(2);
         assert_eq!(s.current(), None, "a view that has not measured yet says nothing");
         assert_eq!(s.propose(1, Some((100, 30))), Some((100, 30)));
         assert_eq!(s.propose(2, Some((80, 24))), Some((80, 24)), "the last writer wins");
