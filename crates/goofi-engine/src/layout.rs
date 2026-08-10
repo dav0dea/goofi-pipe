@@ -147,9 +147,14 @@ impl Entry {
 /// moves positions about, where an id either still stands or is gone.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Home {
-    /// Its old siblings and the shares they held, nearest first. The first one still standing is
-    /// what it lands beside, which puts the old pairing back whether or not the old split survived.
-    siblings: Vec<(Id, f64)>,
+    /// Its old siblings, nearest first. The first one still standing is what it lands beside, which
+    /// puts the old pairing back whether or not the old split survived.
+    siblings: Vec<Id>,
+    /// What every entry's slot was worth before the move, by id. `siblings` decides WHERE the subtree
+    /// lands; this is what gives the arrangement its geometry back. A move renormalizes the split it
+    /// leaves AND the split it enters — and a promote pushes that another level up — so the set of
+    /// slices it disturbs is not knowable from one level of siblings.
+    shares: BTreeMap<Id, f64>,
     /// The old parent's id and axis. The id is handed back only to a wrapper that has to be minted
     /// anyway, and only while it is free — an absent split is referenced by nothing, so reusing its
     /// id strands nobody, where restoring its SLOT would.
@@ -166,7 +171,7 @@ pub struct Home {
 impl Home {
     /// The share `id` held before the move, if this home remembers it.
     fn share(&self, id: &str) -> Option<f64> {
-        self.siblings.iter().find(|(s, _)| s == id).map(|(_, f)| *f)
+        self.shares.get(id).copied()
     }
 }
 
@@ -635,13 +640,8 @@ impl Layout {
             kids.into_iter().enumerate().filter(|(_, k)| k != root).collect();
         sibs.sort_by_key(|(j, _)| j.abs_diff(i));
         Some(Home {
-            siblings: sibs
-                .into_iter()
-                .map(|(_, k)| {
-                    let share = self.entries.get(&k).map_or(1.0, Entry::size);
-                    (k, share)
-                })
-                .collect(),
+            siblings: sibs.into_iter().map(|(_, k)| k).collect(),
+            shares: self.entries.iter().map(|(id, e)| (id.clone(), e.size())).collect(),
             axis: match self.entries.get(&parent) {
                 Some(Entry::Split { axis, .. }) => *axis,
                 _ => Axis::Row,
@@ -666,30 +666,51 @@ impl Layout {
         let landing = home
             .siblings
             .iter()
-            .map(|(s, _)| s.clone())
-            .find(|s| next.entries.contains_key(s) && !inside.contains(s))
+            .find(|s| next.entries.contains_key(*s) && !inside.contains(s))
+            .cloned()
             .or_else(|| {
                 next.page_named(&home.page.0).and_then(|p| next.children(&p).into_iter().next())
             });
         let Some(landing) = landing else {
             // Even the page went with it (the tab followed its last panel) — re-born AROUND the
-            // subtree, which is `add_page`'s own adopt branch rather than a raw restore.
-            return self.add_page(&home.page.0, Some(home.page.1), Some(root)).map(|(w, _)| w);
+            // subtree, which is `add_page`'s own adopt branch rather than a raw restore. Lifting it
+            // out still widens the split it leaves, so the shares are given back the same way.
+            let (writes, _) = self.add_page(&home.page.0, Some(home.page.1), Some(root))?;
+            let mut born = self.clone();
+            born.apply(writes);
+            born.give_back_shares(self, home);
+            return Ok(self.diff(&born));
         };
         e.set_size(home.size);
         next.insert_at(root, e, &landing, home.axis, home.before, Some(&home.parent));
-        // The shares it found, so an undisturbed undo is exact to the pixel; anything a peer has
-        // added keeps its own and the split renormalizes around it.
-        let parent =
-            next.entries.get(root).and_then(Entry::parent).unwrap_or_default().to_string();
-        for k in next.children(&parent) {
-            let share = if k == root { Some(home.size) } else { home.share(&k) };
-            if let (Some(s), Some(x)) = (share, next.entries.get_mut(&k)) {
-                x.set_size(s);
-            }
-        }
-        next.normalize(&parent);
+        next.give_back_shares(self, home);
         Ok(self.diff(&next))
+    }
+
+    /// Re-assert the shares `home` remembers in every split whose children this plan disturbed, and
+    /// renormalize it — what makes an undisturbed undo exact to the pixel. It is SHARES only: where
+    /// an entry sits is still re-planned and never restored, so this is the same bargain
+    /// [`Self::re_home`] always struck, widened to the splits it was actually missing. A move
+    /// renormalizes the split it leaves and the one it enters, and a promote pushes that a level up
+    /// again, so re-asserting one level of siblings put back one level of a change that touched
+    /// several. A split the plan left alone keeps whatever it holds — a peer's resize elsewhere
+    /// survives — and an id `home` never saw keeps the share the plan gave it.
+    fn give_back_shares(&mut self, before: &Layout, home: &Home) {
+        let disturbed: std::collections::BTreeSet<Id> = self
+            .entries
+            .values()
+            .filter_map(Entry::parent)
+            .filter(|p| self.children(p) != before.children(p))
+            .map(str::to_string)
+            .collect();
+        for p in disturbed {
+            for k in self.children(&p) {
+                if let (Some(s), Some(x)) = (home.share(&k), self.entries.get_mut(&k)) {
+                    x.set_size(s);
+                }
+            }
+            self.normalize(&p);
+        }
     }
 
     /// Every entry of the subtree rooted at `root` — what a close carries into its own inverse. The
@@ -1342,6 +1363,7 @@ mod tests {
         // a state would silently destroy the live binding it is re-asserting around.
         let l3 = applied(&l, l.set_panel(&page, &a, Some("viewer"), None).unwrap());
         assert!(matches!(l3.get(&a), Some(Entry::Panel { state, .. }) if state["node"] == json!("osc0")));
+
     }
 
     #[test]
@@ -1545,6 +1567,47 @@ mod tests {
         assert_eq!(back.children(&reborn), vec![target.clone()], "holding what it was born for");
         assert_eq!(back.pages()[1], reborn, "at the tab index it had");
         assert!(back.validate().is_ok());
+    }
+
+    #[test]
+    fn an_undone_move_gives_back_the_shares_of_every_split_it_re_proportioned() {
+        // A drag renormalizes the split it LEAVES and the split it ENTERS, and those need not be the
+        // same one: lifting the source can promote its emptied parent away, which pushes the change a
+        // level up. An inverse that re-asserts only the source's own old siblings puts back one level
+        // of a change that touched two, so the panel comes home to the right slot at the wrong width
+        // — and a frozen gesture's ctrl-Z has to be exact to the pixel.
+        let l = Layout::default();
+        let page = l.pages()[0].clone();
+        let a = root_panel(&l);
+        let (w, b) = l.split_panel(&page, &a, Axis::Row, false, 0.5).unwrap();
+        let l = applied(&l, w);
+        let (w, c) = l.split_panel(&page, &b, Axis::Column, false, 0.5).unwrap();
+        let l = applied(&l, w);
+
+        // `c` leaves the column split (which dies) and lands in that split's own PARENT, beside `a`.
+        let column = l.get(&c).unwrap().parent().unwrap().to_string();
+        let home = l.home_of(&c).expect("`c` sits under the column split");
+        let moved = applied(&l, l.insert_at_panel(&page, &c, &a, Axis::Row, true, 0.5).unwrap());
+        assert_eq!(moved.get(&column), None, "the fixture really did promote the column split away");
+        let back = applied(&moved, moved.re_home(&c, &home).unwrap());
+        assert_eq!(back, l, "an undisturbed undo draws exactly what the drag found");
+
+        // The other half of the same rule: the destination's OWN siblings. A drop from another page
+        // takes its slice out of the target alone, so closing up behind the undo must give it back to
+        // the target alone rather than spreading it over everything standing.
+        let (w, d) = l.split_panel(&page, &a, Axis::Row, false, 0.5).unwrap();
+        let l = applied(&l, w);
+        let (w, p2) = l.add_page("Second", None, None).unwrap();
+        let l = applied(&l, w);
+        let far = l.children(&p2)[0].clone();
+        let home = l.home_of(&far).expect("the second page's only panel");
+        let moved = applied(&l, l.insert_at_panel(&page, &far, &d, Axis::Row, true, 0.5).unwrap());
+        let back = applied(&moved, moved.re_home(&far, &home).unwrap());
+        let row = back.get(&a).unwrap().parent().unwrap().to_string();
+        for id in back.children(&row) {
+            let (want, got) = (l.get(&id).unwrap().size(), back.get(&id).unwrap().size());
+            assert!((want - got).abs() < 1e-9, "`{id}` came back at {got}, not {want}");
+        }
     }
 
     #[test]
