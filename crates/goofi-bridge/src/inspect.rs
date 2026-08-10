@@ -135,8 +135,11 @@ pub fn patch(
             else {
                 continue;
             };
-            if a == b {
-                continue; // both ends INSIDE one collapsed sub-patch — a fact one level down
+            // Both ends folding onto ONE member means the wire is internal to a collapsed
+            // sub-patch — a fact one level down. Unless the member IS both endpoints: a node wired
+            // to its own input is a real self-loop at this level, and drawing it is the point.
+            if a == b && (l.node_out != a || l.node_in != b) {
+                continue;
             }
             let e = format!("  {} -- {}→{} --> {}\n", mid(a), l.slot_out, l.slot_in, mid(b));
             if !edges.contains(&e) {
@@ -506,6 +509,19 @@ errors (whole patch):
         let out = patch(&g, None, None, "/tmp/w", false).unwrap();
         assert!(out.contains("[["), "the facade is drawn: {out}");
         assert!(!out.contains("-->"), "…with no edge at all at this level: {out}");
+    }
+
+    #[test]
+    fn a_node_wired_to_itself_keeps_its_edge() {
+        // The fold above collapses an internal wire onto one facade, which is why `a == b` is
+        // skipped — but a node wired to its OWN input folds onto itself for the honest reason.
+        // `add_link` accepts that and the engine tolerates the cycle, so the diagram must show it:
+        // an agent debugging a feedback loop would otherwise read that the wire is not there.
+        let mut g = Graph::new();
+        let buf = g.add_node("Buffer", None).unwrap();
+        g.add_link(buf, "out", buf, "data").unwrap();
+        let out = patch(&g, None, None, "/tmp/w", false).unwrap();
+        assert!(out.contains(&format!("{0} -- out→data --> {0}\n", mid(buf))), "{out}");
     }
 
     #[test]
