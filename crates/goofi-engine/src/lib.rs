@@ -104,6 +104,13 @@ struct NodeEntry {
     bindings: HashMap<ParamKey, ExprBinding>,
     ctx: NodeCtx,
     last_error: Option<String>,
+    /// The message [`Graph::last_error`] last derived for this node, and WHEN it first read that
+    /// way. Re-stamped only when the message changes, so the instant is the error's *onset* — the
+    /// difference between a pipeline settling and one that is broken. Swept once per tick from the
+    /// derived error rather than written at each of the three places an error can arise (a process
+    /// failure, a binding, a detached bootstrap), so the two can never disagree about what the
+    /// node's error is.
+    error_since: Option<(String, Instant)>,
     /// Globally-unique display name (type-numbered), for the frontend/`.gfi`.
     name: String,
     /// Editor position `[x, y]`.
@@ -594,25 +601,15 @@ impl Graph {
     /// than caching into `last_error`) means a binding that recovers on a node that never runs
     /// again still clears, and the channels can't drift apart.
     pub fn last_error(&self, uid: Uid) -> Option<&str> {
-        let e = self.nodes.get(&uid)?;
-        // A detached worker's bootstrap failure lives on its handle, not in `last_error`, because
-        // the per-tick `Done` channel is latest-wins and a successful job erases an un-drained one
-        // (see `detached::DetachedHandle::boot_error`). It outranks a process error deliberately:
-        // it is the ROOT CAUSE, and it is a one-shot fact — a process error recurs on every tick
-        // and can be observed again, a failed `setup` never can.
-        if let Execution::Detached(h) = &e.exec {
-            if let Some(err) = h.boot_error() {
-                return Some(err);
-            }
-        }
-        if let Some(err) = e.last_error.as_deref() {
-            return Some(err);
-        }
-        e.bindings
-            .iter()
-            .filter_map(|(k, b)| b.error.as_deref().map(|s| (k, s)))
-            .min_by(|a, b| a.0.cmp(b.0))
-            .map(|(_, s)| s)
+        entry_error(self.nodes.get(&uid)?)
+    }
+
+    /// How long this node's CURRENT error has been standing, or `None` when it is healthy. The
+    /// clock restarts when the message changes, so a node cycling through different failures
+    /// always reads young — which is exactly the signal a reader wants.
+    pub fn error_age(&self, uid: Uid) -> Option<Duration> {
+        let (_, since) = self.nodes.get(&uid)?.error_since.as_ref()?;
+        Some(since.elapsed())
     }
 
     fn mint(&mut self) -> Uid {
@@ -771,6 +768,7 @@ impl Graph {
                 bindings: HashMap::new(),
                 ctx,
                 last_error,
+                error_since: None,
                 name,
                 pos: [0.0, 0.0],
                 viewers: serde_json::json!({}),
@@ -1948,6 +1946,26 @@ impl Graph {
         let slot_in = self
             .resolve_input(node_in, slot_in)
             .ok_or_else(|| format!("no input slot `{slot_in}` on {node_in}"))?;
+        // A cross-dtype cable can never carry data — propagation writes the producer's frame into
+        // an input the consumer reads with the wrong accessor, so the consumer sits empty forever.
+        // Refuse it here, at the one door every link authoring path goes through (the canvas, the
+        // boundary resolution, a `.gfi` restore, an agent), naming both ends and both dtypes.
+        let (out_kind, in_kind) = (
+            self.output_slot_type(node_out, slot_out).ok_or("unknown output slot")?,
+            self.input_slot_type(node_in, slot_in).ok_or("unknown input slot")?,
+        );
+        if out_kind != in_kind {
+            let label = |uid: Uid, slot: &str| {
+                format!("{}.{slot}", self.name(uid).unwrap_or("?"))
+            };
+            return Err(format!(
+                "cannot link {} ({}) to {} ({}): the slots carry different data types",
+                label(node_out, slot_out),
+                out_kind.name(),
+                label(node_in, slot_in),
+                in_kind.name(),
+            ));
+        }
 
         let new = Link {
             node_out,
@@ -2828,7 +2846,47 @@ impl Graph {
                 }
             }
         }
+        self.stamp_error_onsets(now);
     }
+
+    /// Note, for every node, when its current error first read the way it does now — the clock
+    /// [`Graph::error_age`] reports. Derived from [`Graph::last_error`] rather than written at
+    /// each site that can set one, so a process failure, a binding failure and a detached
+    /// bootstrap failure are all stamped by the same rule, and the stamp cannot outlive the error
+    /// it belongs to. Costs one comparison per node per tick and allocates only on a transition.
+    fn stamp_error_onsets(&mut self, now: Instant) {
+        for e in self.nodes.values_mut() {
+            let current = entry_error(e);
+            if e.error_since.as_ref().map(|(m, _)| m.as_str()) != current {
+                let stamped = current.map(|m| (m.to_string(), now));
+                e.error_since = stamped;
+            }
+        }
+    }
+}
+
+/// One node's current error, derived fresh from the three places one can arise — see
+/// [`Graph::last_error`], whose contract this is. A free function so the per-tick onset sweep can
+/// read it while holding a `&mut NodeEntry`, which keeps derivation and stamping on one rule.
+fn entry_error(e: &NodeEntry) -> Option<&str> {
+    // A detached worker's bootstrap failure lives on its handle, not in `last_error`, because
+    // the per-tick `Done` channel is latest-wins and a successful job erases an un-drained one
+    // (see `detached::DetachedHandle::boot_error`). It outranks a process error deliberately:
+    // it is the ROOT CAUSE, and it is a one-shot fact — a process error recurs on every tick
+    // and can be observed again, a failed `setup` never can.
+    if let Execution::Detached(h) = &e.exec {
+        if let Some(err) = h.boot_error() {
+            return Some(err);
+        }
+    }
+    if let Some(err) = e.last_error.as_deref() {
+        return Some(err);
+    }
+    e.bindings
+        .iter()
+        .filter_map(|(k, b)| b.error.as_deref().map(|s| (k, s)))
+        .min_by(|a, b| a.0.cmp(b.0))
+        .map(|(_, s)| s)
 }
 
 /// Route a constructed node onto its execution tier — the ONE place the isolation split
@@ -3544,6 +3602,34 @@ mod tests {
             params: NO_PARAMS,
             isolation: Isolation::InProcess,
             factory: default_factory::<Panicky>,
+        }
+    }
+
+    // The only STRING-slotted node in the catalog — it exists so a test can build the
+    // cross-dtype cable `add_link` must refuse.
+    #[derive(Default)]
+    struct Text;
+    impl Node for Text {
+        fn process(&mut self, _i: &Inputs<'_>, _o: &mut Outputs<'_>, _c: &mut NodeCtx, _p: &Params<'_>) -> NodeResult {
+            Ok(())
+        }
+    }
+    static TXT_IN: &[SlotDecl] = &[SlotDecl {
+        name: "words",
+        kind: SlotType::String,
+        trigger_process: true,
+        multi: false,
+    }];
+    inventory::submit! {
+        NodeManifest {
+            type_name: "_TestText",
+            category: "test",
+            doc: "string sink",
+            inputs: TXT_IN,
+            outputs: &[],
+            params: NO_PARAMS,
+            isolation: Isolation::InProcess,
+            factory: default_factory::<Text>,
         }
     }
 
@@ -6790,6 +6876,51 @@ mod tests {
             "panic must be captured as an error"
         );
         assert_eq!(first_f32(&g.latest_frame(ok, "out").unwrap()), 9.0);
+    }
+
+    /// A cable between two slots of different dtypes can never carry data — the consumer would
+    /// read an empty slot forever. Refuse it at the source, naming both ends AND both dtypes, so
+    /// the message teaches which end to change. Protects the canvas as much as an agent.
+    #[test]
+    fn add_link_refuses_a_dtype_mismatch_and_says_which_ends_disagree() {
+        let mut g = Graph::new();
+        let echo = g.add_node("_TestEcho", None).unwrap(); // out: ARRAY
+        let text = g.add_node("_TestText", None).unwrap(); // words: STRING
+
+        let err = g.add_link(echo, "out", text, "words").unwrap_err();
+        for needle in ["_testecho0.out", "ARRAY", "_testtext0.words", "STRING"] {
+            assert!(err.contains(needle), "the refusal must name `{needle}`: {err}");
+        }
+        assert!(!g.has_link(echo, "out", text, "words"), "and nothing was wired");
+
+        // The matching pair still links — the check refuses a mismatch, not a link.
+        let echo2 = g.add_node("_TestEcho", None).unwrap();
+        g.add_link(echo, "out", echo2, "in").unwrap();
+    }
+
+    /// An agent reading a patch has to tell a pipeline that is *settling* (a node that errored
+    /// 40 ms ago while its upstream warms up) from one that is *broken* (the same error standing
+    /// for a minute). That is only answerable if the engine records WHEN the error appeared.
+    #[test]
+    fn an_errored_node_records_how_long_its_error_has_stood() {
+        let prev = std::panic::take_hook();
+        std::panic::set_hook(Box::new(|_| {}));
+
+        let mut g = Graph::new();
+        let boom = g.add_node("_TestPanic", None).unwrap();
+        let ok = g.add_node("_TestEcho", None).unwrap();
+        g.tick();
+        std::panic::set_hook(prev);
+
+        let first = g.error_age(boom).expect("the error is stamped the moment it appears");
+        std::thread::sleep(Duration::from_millis(120));
+        g.tick();
+        let later = g.error_age(boom).expect("still errored");
+        assert!(
+            later >= first + Duration::from_millis(100),
+            "the age is the error's standing, not a constant: {first:?} then {later:?}",
+        );
+        assert_eq!(g.error_age(ok), None, "a healthy node has no error to age");
     }
 
 }
