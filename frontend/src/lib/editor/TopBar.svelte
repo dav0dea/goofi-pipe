@@ -11,7 +11,7 @@
 	import ContextMenu from '$lib/workspace/ContextMenu.svelte';
 	import PerfHud from './PerfHud.svelte';
 	import { createWidthCache, planOverflow, type OverflowItem } from './overflowFit';
-	import { IconButton, Badge, Chip, Icon } from '$lib/ui';
+	import { IconButton, Badge, Button, Icon } from '$lib/ui';
 
 	// The header holds APP-GLOBAL actions only: session undo/redo and the patch's save/load.
 	// Anything that acts on one panel belongs to that panel — a node editor already carries its
@@ -387,12 +387,18 @@
 		     about. Out of the spill plan for the same reason the alarm is — its width comes off the
 		     budget above instead. -->
 		{#if hs.running > 0}
-			<Chip
-				tone="accent"
+			<!-- Ghost, not a Chip: every other thing in this bar is ink without a fill, and a pill
+			     among them read as an alert rather than a count. The accent survives as the ink —
+			     that is what carries "an agent is running" — while the box stays the --hit target a
+			     finger needs, since dropping the fill must not shrink what it aims at. -->
+			<Button
+				variant="ghost"
+				size="sm"
+				style="--btn-ink: var(--accent)"
 				data-testid="topbar-agents"
 				aria-expanded={agentMenu !== null}
 				title="Running agents"
-				onclick={openAgents}><Icon name="bot" />{hs.running}</Chip
+				onclick={openAgents}><Icon name="bot" />{hs.running}</Button
 			>
 		{/if}
 		<div class="actions" bind:this={actionsEl}>

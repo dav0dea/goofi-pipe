@@ -100,6 +100,10 @@
 	.ui-btn.v-ghost {
 		background: transparent;
 		border-color: transparent;
+		/* A ghost is ink on someone else's surface, so its ink is the one thing a host may need to
+		   restate — a status glyph in a chrome strip carries its meaning in its colour, not in a
+		   fill. Per-instance hook, unset it resolves to the same `--text` every other variant uses. */
+		color: var(--btn-ink, var(--text));
 	}
 	/* A ghost has no surface of its own, so its hover LIFTS its host rather than naming a rung —
 	   `--surface-2` was invisible on every chrome strip these actually sit on (see app.css). */
