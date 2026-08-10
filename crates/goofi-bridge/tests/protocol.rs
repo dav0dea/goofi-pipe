@@ -176,6 +176,16 @@ async fn call_session(ws: &mut Ws, id: i64, op: &str, payload: Value, session: &
 
 /// The panel ids in a synced replica's arrangement root, in id order — how a client reads the flat
 /// layout now that the manager owns it.
+/// How many ENTRIES the arrangement root holds. The root also carries the manager's monotone id
+/// counter under a reserved key, which no minted `{prefix}-{n}` id can take — a reader walks entries,
+/// not keys.
+fn entry_count(doc: &goofi_crdt::GraphDoc) -> usize {
+    doc.to_json()["arrangement"]
+        .as_object()
+        .map(|m| m.values().filter(|e| e.get("kind").is_some()).count())
+        .unwrap_or(0)
+}
+
 fn panels(doc: &goofi_crdt::GraphDoc) -> Vec<String> {
     doc.to_json()["arrangement"]
         .as_object()
@@ -277,7 +287,7 @@ async fn undo_of_a_layout_op_restores_the_arrangement_it_found() {
         .unwrap()
         .to_string();
     let after = sync_replica(&mut ws, |d| d.read_at(&["arrangement", fresh.as_str()]).is_some()).await;
-    assert_eq!(after.to_json()["arrangement"].as_object().unwrap().len(), 4, "page + split + 2 panels");
+    assert_eq!(entry_count(&after), 4, "page + split + 2 panels");
 
     let u = call_session(&mut ws, 2, "undo", json!({}), "s1").await;
     assert_eq!(u["result"]["changed"], json!(true), "undo flipped the layout entry: {u}");
@@ -288,7 +298,7 @@ async fn undo_of_a_layout_op_restores_the_arrangement_it_found() {
     })
     .await;
     assert_eq!(panels(&undone), vec![panel.clone()], "the arrangement is exactly what it was");
-    assert_eq!(undone.to_json()["arrangement"].as_object().unwrap().len(), 2, "the wrapper split went too");
+    assert_eq!(entry_count(&undone), 2, "the wrapper split went too");
 
     call_session(&mut ws, 3, "redo", json!({}), "s1").await;
     let redone = sync_replica(&mut ws, |d| d.read_at(&["arrangement", fresh.as_str()]).is_some()).await;

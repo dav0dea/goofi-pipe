@@ -35,6 +35,10 @@ const DEFAULT_PAGE_NAME: &str = "Layout";
 /// Smallest share a split may hand a child, so a panel can always be grabbed again (`MIN_FRACTION`).
 const MIN_FRACTION: f64 = 0.05;
 
+/// Where the id counter rides in [`Layout::to_json`]. A minted id is always `{prefix}-{n}`, so no
+/// entry can ever claim this key — which is also how [`Layout::from_json`] knows to skip it.
+const SEQ_KEY: &str = "#seq";
+
 /// A split's axis. `Row` = children left→right, `Column` = top→bottom — the CSS `flex-direction`
 /// spelling the renderer maps straight through.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -131,20 +135,34 @@ impl Entry {
 
 /// The whole arrangement. Keyed by id, so a duplicate id is structurally impossible rather than a
 /// validation class — the flat model's one free correctness win.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug)]
 pub struct Layout {
     entries: BTreeMap<Id, Entry>,
+    /// The id counter, monotone: [`Self::insert`] raises it past every id it admits and nothing ever
+    /// lowers it, so a closed panel's id is never handed out again — `model.ts`'s `_seq`, which
+    /// likewise only counts up. It rides [`Self::to_json`] so a reopened patch keeps counting
+    /// forward. Recycling would silently give a fresh panel a dead one's client-side state, the
+    /// viewpoint's `subpatchPath` among it.
+    seq: u64,
+}
+
+/// Two arrangements are the same when they DRAW the same. The id counter is bookkeeping that only
+/// counts up — an undo deliberately does NOT wind it back, which is the whole point of it.
+impl PartialEq for Layout {
+    fn eq(&self, other: &Layout) -> bool {
+        self.entries == other.entries
+    }
 }
 
 impl Default for Layout {
     /// The arrangement a fresh patch opens with, matching `defaultWorkspaceState()`: one page
     /// holding one node-editor panel. Also the fallback a corrupt stored arrangement lands on.
     fn default() -> Layout {
-        let mut l = Layout { entries: BTreeMap::new() };
+        let mut l = Layout { entries: BTreeMap::new(), seq: 0 };
         let page = l.mint("page");
-        l.entries.insert(page.clone(), Entry::Page { name: DEFAULT_PAGE_NAME.into(), order: 0 });
+        l.insert(page.clone(), Entry::Page { name: DEFAULT_PAGE_NAME.into(), order: 0 });
         let panel = l.mint("panel");
-        l.entries.insert(
+        l.insert(
             panel,
             Entry::Panel {
                 parent: page,
@@ -162,16 +180,11 @@ impl Layout {
     pub fn get(&self, id: &str) -> Option<&Entry> {
         self.entries.get(id)
     }
-    /// A fresh id. One counter across all three kinds (like `model.ts`'s `_seq`), recovered from the
-    /// live ids rather than stored, so a loaded arrangement cannot mint a collision.
+    /// A fresh id — one counter across all three kinds, like `model.ts`'s `_seq`. Only [`Self::insert`]
+    /// advances it, so minting twice before inserting either would collide; every planner inserts
+    /// through it.
     fn mint(&self, prefix: &str) -> Id {
-        let n = self
-            .entries
-            .keys()
-            .filter_map(|k| k.rsplit_once('-').and_then(|(_, n)| n.parse::<u64>().ok()))
-            .max()
-            .unwrap_or(0);
-        format!("{prefix}-{}", n + 1)
+        format!("{prefix}-{}", self.seq + 1)
     }
 
     /// This parent's children, in order. Ties break by id so document order is total even mid-edit.
@@ -271,8 +284,13 @@ impl Layout {
     }
 
     /// Upsert one entry, handing back what it displaced — the primitive a layout command inverts
-    /// (`None` back means the inverse of this write is a removal).
+    /// (`None` back means the inverse of this write is a removal). Also the ONE place the id counter
+    /// advances: every id this arrangement has ever admitted stays spent, whether or not it is still
+    /// here.
     pub fn insert(&mut self, id: Id, entry: Entry) -> Option<Entry> {
+        if let Some(n) = id.rsplit_once('-').and_then(|(_, n)| n.parse::<u64>().ok()) {
+            self.seq = self.seq.max(n);
+        }
         self.entries.insert(id, entry)
     }
 
@@ -390,7 +408,7 @@ impl Layout {
         let mut kids = self.children(parent);
         entry.set_parent(parent);
         entry.set_size(if kids.is_empty() { 1.0 } else { 1.0 / kids.len() as f64 });
-        self.entries.insert(id.to_string(), entry);
+        self.insert(id.to_string(), entry);
         kids.insert(index.min(kids.len()), id.to_string());
         self.order_children(&kids);
         self.normalize(parent);
@@ -407,9 +425,9 @@ impl Layout {
         let mut next = self.clone();
         let order = self.pages().len();
         let page = next.mint("page");
-        next.entries.insert(page.clone(), Entry::Page { name: name.to_string(), order });
+        next.insert(page.clone(), Entry::Page { name: name.to_string(), order });
         let panel = next.mint("panel");
-        next.entries.insert(
+        next.insert(
             panel,
             Entry::Panel {
                 parent: page,
@@ -489,7 +507,7 @@ impl Layout {
 
         let mut next = self.clone();
         let fresh = next.mint("panel");
-        next.entries.insert(
+        next.insert(
             fresh.clone(),
             Entry::Panel {
                 parent: parent.clone(),
@@ -509,7 +527,7 @@ impl Layout {
             next.order_children(&kids);
         } else {
             let wrap = next.mint("split");
-            next.entries.insert(
+            next.insert(
                 wrap.clone(),
                 Entry::Split { parent: parent.clone(), order: target.order(), size: slot, axis },
             );
@@ -656,6 +674,7 @@ impl Layout {
             }
             m.insert(id.clone(), Value::Object(o));
         }
+        m.insert(SEQ_KEY.into(), Value::from(self.seq));
         Value::Object(m)
     }
 
@@ -664,8 +683,11 @@ impl Layout {
     /// is chrome.
     pub fn from_json(v: &Value) -> Result<Layout, String> {
         let obj = v.as_object().ok_or("arrangement: not an object")?;
-        let mut entries = BTreeMap::new();
-        for (id, rec) in obj {
+        let mut l = Layout {
+            entries: BTreeMap::new(),
+            seq: obj.get(SEQ_KEY).and_then(|v| v.as_u64()).unwrap_or(0),
+        };
+        for (id, rec) in obj.iter().filter(|(k, _)| *k != SEQ_KEY) {
             let order = rec
                 .get("order")
                 .and_then(|v| v.as_u64())
@@ -710,17 +732,22 @@ impl Layout {
                     size: size()?,
                     panel_type: text("panel_type")
                         .ok_or_else(|| format!("arrangement: panel `{id}` has no type"))?,
-                    state: match rec.get("state").and_then(|v| v.as_str()) {
-                        None => Value::Null,
-                        Some(s) => serde_json::from_str(s)
+                    // The state rides as a JSON STRING leaf (see `to_json`). A `state` written any
+                    // other way — the natural shape of a hand edit — is REFUSED rather than read as
+                    // absent, which would load the panel with its binding silently wiped.
+                    state: match rec.get("state") {
+                        None | Some(Value::Null) => Value::Null,
+                        Some(Value::String(s)) => serde_json::from_str(s)
                             .map_err(|e| format!("arrangement: panel `{id}` has malformed state: {e}"))?,
+                        Some(_) => {
+                            return Err(format!("arrangement: panel `{id}`'s state is not a JSON string"))
+                        }
                     },
                 },
                 other => return Err(format!("arrangement: `{id}` has unknown kind `{other}`")),
             };
-            entries.insert(id.clone(), e);
+            l.insert(id.clone(), e);
         }
-        let l = Layout { entries };
         l.validate()?;
         Ok(l)
     }
@@ -1038,6 +1065,12 @@ mod tests {
         assert!(corrupt(&|v| v[&b]["size"] = json!(0.0)).is_err(), "a zero-size child");
         assert!(corrupt(&|v| v[&b]["panel_type"] = json!("")).is_err(), "a panel with no type");
         assert!(corrupt(&|v| v[&b]["state"] = json!("{not json")).is_err(), "malformed panel state");
+        // A state written as a MAP — the natural shape of a hand-edited `.gfi` — must be refused,
+        // not read as absent: silently loading it would wipe the binding it was carrying.
+        assert!(
+            corrupt(&|v| v[&b]["state"] = json!({ "node": "osc0" })).is_err(),
+            "a panel state that is not a JSON string"
+        );
         assert!(corrupt(&|v| v[&b]["kind"] = json!("gadget")).is_err(), "an unknown entry kind");
         assert!(
             corrupt(&|v| {
@@ -1054,6 +1087,28 @@ mod tests {
         let mut v = two.to_json();
         v[&dup]["name"] = json!(DEFAULT_PAGE_NAME);
         assert!(Layout::from_json(&v).is_err(), "duplicate page names");
+    }
+
+    #[test]
+    fn a_closed_panels_id_is_never_minted_again() {
+        // `model.ts`'s `_seq` only counts up, and a client keys per-panel state by panel id — its
+        // viewpoint's `subpatchPath` among them. Handing a fresh panel a dead one's id silently
+        // gives it the dead one's navigation.
+        let l = Layout::default();
+        let page = l.pages()[0].clone();
+        let a = root_panel(&l);
+        let (w, b) = l.split_panel(&page, &a, Axis::Row, 0.5).unwrap();
+        let l = applied(&l, w);
+        let closed = applied(&l, l.remove_subtree(&page, &b).unwrap());
+        assert_eq!(closed.get(&b), None, "the fixture really did close it");
+        let (_w, next) = closed.split_panel(&page, &a, Axis::Row, 0.5).unwrap();
+        assert_ne!(next, b, "the closed panel's id is not handed out again");
+
+        // …and the counter rides the file, so a reopened patch keeps counting FORWARD rather than
+        // restarting from whatever survived.
+        let back = Layout::from_json(&closed.to_json()).expect("its own output is valid");
+        let (_w, later) = back.split_panel(&page, &a, Axis::Row, 0.5).unwrap();
+        assert_ne!(later, b, "a reopened arrangement does not restart the counter");
     }
 
     #[test]
