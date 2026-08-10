@@ -165,7 +165,7 @@ pub static REGISTRY: &[Op] = &[
          doc: "Close a panel (or a whole split's subtree). Its space goes to its siblings; a page keeps its last panel.",
          result: "{text} — the resulting arrangement, as inspect_layout draws it" },
     Op { name: "set_node_viewers", surface: Mcp, writes: true, args: "node:uid! viewers:json!",
-         doc: "Store a node's per-slot viewer view-state (chosen kind, settings, collapse).",
+         doc: "Store a node's per-slot viewer view-state: `{slot: {kind, settings, collapsed}}`, keyed by OUTPUT slot. `kind` is one of: {viewer_kinds}.",
          result: "{ok: true}" },
     Op { name: "rename_node", surface: Mcp, writes: true, args: "node:uid! name:string!",
          doc: "Rename a node. Display names are unique patch-wide, and `nd()` references are rewritten to follow.",
@@ -338,10 +338,17 @@ mod tests {
     /// and it does it by expansion rather than by a hand-copied list — which would be the very
     /// duplication `vocab.rs` exists to remove.
     #[test]
-    fn the_panel_op_names_the_vocabularies_a_caller_would_otherwise_guess() {
+    fn an_op_that_takes_a_vocabulary_word_names_the_set_in_its_own_description() {
         let doc = find("page_set_panel").expect("page_set_panel is registered").doc();
         for word in ["parameters", "node-editor", "viewer", "line", "trajectory", "topomap"] {
             assert!(doc.contains(word), "`{word}` is not offered by page_set_panel's doc: {doc}");
+        }
+        // The same vocabulary, one door over: a node's stored per-slot view names a kind too, and
+        // the manager refuses a guess at it — so the description has to offer the choices here as
+        // well, or the refusal is the only teacher.
+        let doc = find("set_node_viewers").expect("set_node_viewers is registered").doc();
+        for word in ["line", "topomap", "table"] {
+            assert!(doc.contains(word), "`{word}` is not offered by set_node_viewers's doc: {doc}");
         }
         for op in REGISTRY {
             let doc = op.doc();

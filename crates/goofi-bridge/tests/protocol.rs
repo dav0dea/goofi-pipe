@@ -319,6 +319,42 @@ async fn a_layout_op_reaches_a_peers_replica_through_the_doc() {
 }
 
 #[tokio::test]
+async fn inspect_layout_narrows_to_one_page_and_states_each_entrys_share() {
+    // `page_list_panels` was a SECOND read of the same fact in a second shape. What it genuinely
+    // carried was cheapness: on a four-page patch the whole tree costs a caller three pages it did
+    // not ask about. So the narrow read survives as an ARGUMENT — `inspect_layout {page}`, the
+    // idiom `inspect_patch {scope}` already set — and there is one layout read again.
+    let base = start_server().await;
+    let (mut ws, _) = connect_async(format!("{base}/control")).await.unwrap();
+    let _ = recv_text(&mut ws).await;
+    let doc = sync_replica(&mut ws, |d| !panels(d).is_empty()).await;
+    let first = panels(&doc)[0].clone();
+
+    call(&mut ws, 1, "session_add_page", json!({ "name": "Signals" })).await;
+    let fresh = call(&mut ws, 2, "page_split_panel",
+        json!({ "page": "Layout", "panel": first, "direction": "row", "ratio": 0.25 })).await
+        ["result"].as_str().expect("the new panel's id").to_string();
+
+    let text = |r: &Value| r["result"]["text"].as_str().expect("inspect_layout answers text").to_string();
+    let whole = text(&call(&mut ws, 3, "inspect_layout", json!({})).await);
+    assert!(whole.contains("Layout") && whole.contains("Signals"), "no arg is still every page: {whole}");
+
+    let one = text(&call(&mut ws, 4, "inspect_layout", json!({ "page": "Layout" })).await);
+    assert!(one.contains(&first) && one.contains(&fresh), "the page's own panels: {one}");
+    assert!(!one.contains("Signals"), "…and NOT a page the caller did not ask about: {one}");
+    // The share each entry takes of its parent — what `page_resize_split` sets, and the one thing
+    // about the arrangement that its shape does not say.
+    assert!(one.contains("0.25"), "each entry's share is annotated: {one}");
+
+    // A page that is not there is refused by naming the ones that are, exactly as the page ops are.
+    let miss = call(&mut ws, 5, "inspect_layout", json!({ "page": "Nope" })).await;
+    assert!(
+        miss["error"].as_str().is_some_and(|e| e.contains("Layout") && e.contains("Signals")),
+        "{miss}"
+    );
+}
+
+#[tokio::test]
 async fn undo_of_a_layout_op_restores_the_arrangement_it_found() {
     // Layout undo is manager-owned now, in the same per-session history as a graph edit — so a
     // split ping-pongs uid-stably, exactly like an add.
@@ -2881,6 +2917,54 @@ async fn set_node_viewers_persists_the_view_state() {
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
     assert!(persisted, "the client's viewer leaf write reached the graph and persisted to .gfi");
+}
+
+#[tokio::test]
+async fn set_node_viewers_refuses_a_word_outside_the_vocabulary_and_names_the_set() {
+    // The bug `page_set_panel` was taught out of, one door over. This bag carries the SAME viewer
+    // kinds, keyed by the SAME output slot names, and the manager stored both as free strings — so
+    // a plausible guess was answered `{ok: true}` and the stored view drew something else, or hung
+    // off a slot that does not exist.
+    let base = start_server().await;
+    let (mut ws, _) = connect_async(format!("{base}/control")).await.unwrap();
+    let _hello = recv_text(&mut ws).await;
+
+    let osc = call(&mut ws, 1, "add_node", json!({ "type": "Oscillator" })).await["result"]["uid"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let bad = call(&mut ws, 2, "set_node_viewers",
+        json!({ "node": osc, "viewers": { "out": { "kind": "waveform" } } })).await;
+    assert!(
+        bad["error"].as_str().is_some_and(|e| e.contains("waveform") && e.contains("line")
+            && e.contains("topomap")),
+        "the refusal names what was asked for AND the set it could have meant: {bad}"
+    );
+
+    // …and the slot the bag is keyed by, which is its other free string.
+    let slot = call(&mut ws, 3, "set_node_viewers",
+        json!({ "node": osc, "viewers": { "psd": { "kind": "line" } } })).await;
+    assert!(
+        slot["error"].as_str().is_some_and(|e| e.contains("psd") && e.contains("out")),
+        "an unknown slot is refused by naming the ones that exist: {slot}"
+    );
+
+    // A real kind on a real slot still lands, so the check is a gate and not a wall.
+    let ok = call(&mut ws, 4, "set_node_viewers",
+        json!({ "node": osc, "viewers": { "out": { "kind": "line" } } })).await;
+    assert_eq!(ok["result"]["ok"], json!(true), "{ok}");
+
+    // A uid naming no node stays the ENGINE's refusal, which says so by name — the slot check must
+    // not shadow it with "has no output slot" on a node that is not there at all.
+    let gone = call(&mut ws, 5, "set_node_viewers",
+        json!({ "node": "0000000000ff", "viewers": { "out": { "kind": "line" } } })).await;
+    assert!(gone["error"].as_str().is_some_and(|e| e.contains("no such node")), "{gone}");
+
+    // …and a bag that is not a map at all is refused by saying what one looks like, rather than
+    // being stored for the editor to trip over.
+    let junk = call(&mut ws, 6, "set_node_viewers", json!({ "node": osc, "viewers": 7 })).await;
+    assert!(junk["error"].as_str().is_some_and(|e| e.contains("map")), "{junk}");
 }
 
 #[tokio::test]

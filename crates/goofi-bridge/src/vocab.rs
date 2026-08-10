@@ -245,6 +245,44 @@ fn check(op: &str, field: &str, word: &str, valid: Vec<&'static str>) -> Result<
     }
 }
 
+/// Check one output slot name against the node it is addressed on, refusing with the ones that
+/// exist. Shared by the two ops that carry a slot name inside an opaque bag.
+fn check_slot(g: &goofi_engine::Graph, op: &str, uid: goofi_engine::Uid, slot: &str) -> Result<(), String> {
+    let slots = output_slots(g, uid);
+    if slots.iter().any(|(name, _)| name == slot) {
+        return Ok(());
+    }
+    let have: Vec<&str> = slots.iter().map(|(n, _)| n.as_str()).collect();
+    Err(format!("{op}: node `{}` has no output slot `{slot}` — it has: {}", uid.to_hex(), have.join(", ")))
+}
+
+/// Validate a `set_node_viewers` bag: `{slot: {kind, settings, collapsed}}`. The same two free
+/// strings [`check_panel`] refuses, one door over — a node's stored per-slot view carries the very
+/// vocabulary a viewer panel's `state.kind` does, and the manager kept this bag opaque, so a guess
+/// was answered `{ok: true}` and the editor drew something else.
+///
+/// A uid naming no node is left alone: the engine's own write refuses it, and by name.
+pub fn check_viewers(
+    g: &goofi_engine::Graph,
+    uid: goofi_engine::Uid,
+    viewers: &Value,
+) -> Result<(), String> {
+    const OP: &str = "set_node_viewers";
+    let bag = viewers
+        .as_object()
+        .ok_or_else(|| format!("{OP}: viewers is a {{slot: {{kind, settings, collapsed}}}} map"))?;
+    if g.manifest(uid).is_none() {
+        return Ok(());
+    }
+    for (slot, view) in bag {
+        check_slot(g, OP, uid, slot)?;
+        if let Some(kind) = view.get("kind").and_then(Value::as_str).filter(|k| !k.is_empty()) {
+            check(OP, "viewer kind", kind, viewer_kind_ids())?;
+        }
+    }
+    Ok(())
+}
+
 /// Validate a `page_set_panel` write against the vocabularies and the node it binds, BEFORE the
 /// layout is planned. Every one of these is a write that would otherwise succeed and mean something
 /// other than what was asked: an unknown type renders "Unknown panel type", an unknown kind falls
@@ -268,15 +306,7 @@ pub fn check_panel(
         check(OP, "viewer kind", kind, viewer_kind_ids())?;
     }
     if let (Some(slot), Some(uid)) = (key("slot"), bound) {
-        let slots = output_slots(g, uid);
-        if !slots.iter().any(|(name, _)| name == slot) {
-            let have: Vec<&str> = slots.iter().map(|(n, _)| n.as_str()).collect();
-            return Err(format!(
-                "{OP}: node `{}` has no output slot `{slot}` — it has: {}",
-                uid.to_hex(),
-                have.join(", ")
-            ));
-        }
+        check_slot(g, OP, uid, slot)?;
     }
     // A bind is refused against the type this write LEAVES the panel with, which is this write's
     // when it names one — a combined `{type, state}` is one act.

@@ -1478,6 +1478,10 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
                 // command (not undoable). Written to the graph; the re-mirror persists + broadcasts.
                 let uid = parse_uid(&payload, "node")?;
                 let viewers = payload.get("viewers").cloned().ok_or("set_node_viewers: missing viewers")?;
+                // Opaque to the ENGINE, which is why the words in it are checked here — the bag is
+                // keyed by output slot and each entry names a viewer kind, the same two
+                // vocabularies `page_set_panel` refuses a guess at.
+                vocab::check_viewers(&g, uid, &viewers)?;
                 g.set_node_viewers(uid, viewers)?;
                 Ok(json!({ "ok": true }))
             }
