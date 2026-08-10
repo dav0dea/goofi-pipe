@@ -13,6 +13,7 @@
 	import FsBrowser from '$lib/fs/FsBrowser.svelte';
 	import ErrorPanel from '$lib/editor/ErrorPanel.svelte';
 	import Toast from '$lib/app/Toast.svelte';
+	import AgentClose from '$lib/app/AgentClose.svelte';
 	import TitleTip from '$lib/app/TitleTip.svelte';
 	import WorkspaceTabs from '$lib/workspace/WorkspaceTabs.svelte';
 	import WorkspaceView from '$lib/workspace/WorkspaceView.svelte';
@@ -207,6 +208,10 @@
 		/>
 	{/if}
 	<Toast />
+	<!-- The detach-or-kill question. Shell chrome because it is about an INSTANCE, not a view: both
+	     doors onto it (a panel header's ✕ and the TopBar's badge) raise the same one, and neither
+	     has to open a panel — asking must not dirty the patch. -->
+	<AgentClose />
 	<!-- The coarse-pointer door onto every `title=` in the app. One layer, mounted once, so a
 	     tooltip anywhere below is reachable without hover. -->
 	<TitleTip />

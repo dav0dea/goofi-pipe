@@ -3,7 +3,7 @@
 	import { history } from '$lib/stores/history.svelte';
 	import { selection } from '$lib/stores/selection.svelte';
 	import { workspace } from '$lib/workspace/workspace.svelte';
-	import { harnesses } from '$lib/stores/harness.svelte';
+	import { harnesses, harnessLabel } from '$lib/stores/harness.svelte';
 	import { perfStats } from '$lib/api/perfStats.svelte';
 	import { activeOrOnlyEditor } from '$lib/panels/editorCommands';
 	import { tick, untrack, type Snippet } from 'svelte';
@@ -62,22 +62,21 @@
 	// --- the agent chip ------------------------------------------------------
 	//
 	// The one door onto a running harness from outside its panel. It counts, and it ACTS: each row
-	// is an instance, and choosing one asks — in the panel holding that terminal — whether to detach
-	// or kill. There is deliberately no LAUNCH here: launching is the agent panel's empty state, so
-	// the header never mints something it cannot then show.
+	// is an instance, and choosing one asks whether to detach or kill (the shell's dialog, which
+	// needs no panel of its own). There is deliberately no LAUNCH here: launching is the agent
+	// panel's empty state, so the header never mints something it cannot then show.
 	let agentMenu = $state<{ x: number; y: number; items: MenuItem[] } | null>(null);
 
-	/** Raise the detach-or-kill question where the terminal is: the panel showing that instance,
-	 * else any agent panel (pointed at it), else a new tab holding one — whose fresh panel claims
-	 * the instance being asked about. Focusing is the header's job because layout is; the store
-	 * only remembers what was asked. */
+	/** Raise the detach-or-kill question, and point the user at the terminal it is about when there
+	 * is one on screen: the panel showing that instance, else any agent panel. The question itself
+	 * needs no panel (the dialog is the shell's), which is what keeps this path free of a layout
+	 * write — it used to open a TAB to hold the dialog, dirtying the patch and pushing two undo
+	 * steps for what is only a question. Showing and focusing are viewpoint; asking is not even
+	 * that. */
 	function askClose(id: string): void {
 		hs.requestClose(id);
 		const panel = hs.panelShowing(id) ?? hs.firstPanel;
-		if (!panel) {
-			ws.addTab('agent');
-			return;
-		}
+		if (!panel) return;
 		hs.show(panel, id);
 		ws.maximizedPanelId = null;
 		ws.setActive(panel);
@@ -89,7 +88,7 @@
 			x: Math.max(6, r.right - 180),
 			y: r.bottom + 4,
 			items: hs.instances.map((i) => ({
-				label: `${i.harness} · ${i.id.slice(0, 6)}${i.state === 'running' ? '' : ` (${i.state})`}`,
+				label: `${harnessLabel(i)}${i.state === 'running' ? '' : ` (${i.state})`}`,
 				icon: 'x',
 				action: () => askClose(i.id)
 			}))

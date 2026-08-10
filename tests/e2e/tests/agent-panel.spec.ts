@@ -145,6 +145,25 @@ test('a harness runs in a panel, and its transcript survives closing that panel'
 		await expect(page.locator('.panel')).toHaveCount(1);
 		expect(await stateOf(page, id), 'a detach killed the harness').toBe('running');
 
+		// Name it again: closing that panel really WAS authoring (the layout changed), so the dot it
+		// left is correct and has to be cleared before the next question can be asked of it.
+		await page.evaluate(
+			(p) => (window as any).goofi.commands.save(p),
+			path.join(scratch, 'agent.gfi')
+		);
+		await expect.poll(() => unsaved(page)).toBe(false);
+
+		// The badge is the door onto an agent from outside its panel — including now, with NO agent
+		// panel open. That is where it used to open a TAB to hold the question: `session_add_page` +
+		// `page_set_panel`, an unsaved dot and two undo steps for asking. Asking is not authoring.
+		await page.getByTestId('topbar-agents').click();
+		await page.locator('.context-menu .item').first().click();
+		await expect(page.getByTestId('agent-close-dialog')).toBeVisible();
+		expect(await unsaved(page), 'asking about an agent dirtied the patch').toBe(false);
+		await expect(page.getByTestId('workspace-tabs').locator('.ui-tab')).toHaveCount(1);
+		await page.keyboard.press('Escape');
+		await expect(page.getByTestId('agent-close-dialog')).toBeHidden();
+
 		// …and reopening finds the transcript where it was. Nothing was replayed: the manager keeps
 		// no grid, so this can only be the Terminal object that outlived the panel.
 		await splitRight(page);

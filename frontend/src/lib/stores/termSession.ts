@@ -168,6 +168,12 @@ export function termSession(id: string, make: () => TerminalLike): TermSession {
 	return s;
 }
 
+/** Drop this instance's VIEW — the user's explicit Detach, answered wherever it was asked. The
+ * terminal and its scrollback stay, so re-attaching picks the transcript back up. */
+export function detachTermSession(id: string): void {
+	live.get(id)?.detach();
+}
+
 /** Drop an instance's session for good — what an instance leaving the roster means. */
 export function endTermSession(id: string): void {
 	live.get(id)?.dispose();

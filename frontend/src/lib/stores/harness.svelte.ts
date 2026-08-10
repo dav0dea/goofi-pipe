@@ -28,6 +28,12 @@ import { endTermSession, liveTermSessions } from './termSession';
 
 export type { HarnessRoster };
 
+/** How an instance is named wherever it is offered: the switcher, the launcher's attach button,
+ * the TopBar's menu and the close question. One spelling, so the four never drift. */
+export function harnessLabel(i: { harness: string; id: string }): string {
+	return `${i.harness} · ${i.id.slice(0, 6)}`;
+}
+
 export class HarnessStore {
 	instances = $state<HarnessInstanceInfo[]>([]);
 	detected = $state<DetectedHarness[]>([]);

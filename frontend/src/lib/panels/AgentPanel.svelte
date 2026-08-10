@@ -11,23 +11,22 @@
   the manager, so it cannot dirty the patch or enter undo.
 
   Closing this view is not killing the agent, so the ✕ asks — `register.ts` routes the panel
-  header's close here, and the TopBar's badge raises the same question in the panel that holds the
-  terminal it is about.
+  header's close into the store, which raises the question. The DIALOG is the shell's
+  (`app/AgentClose.svelte`): it is about an instance, not a view, and a question that needed a panel
+  made the TopBar's badge open one — an authoring write, for asking.
 -->
 <script lang="ts">
 	import { Terminal } from '@xterm/xterm';
 	import { FitAddon } from '@xterm/addon-fit';
 	import '@xterm/xterm/css/xterm.css';
 	import type { PanelProps } from '$lib/workspace/registry';
-	import { harnesses } from '$lib/stores/harness.svelte';
-	import { termSession, type TerminalLike, type TermSession } from '$lib/stores/termSession';
-	import { workspace } from '$lib/workspace/workspace.svelte';
-	import { Bar, Button, Dialog, EmptyState, Select, StatusDot } from '$lib/ui';
+	import { harnesses, harnessLabel } from '$lib/stores/harness.svelte';
+	import { termSession, type TerminalLike } from '$lib/stores/termSession';
+	import { Bar, Button, EmptyState, Select, StatusDot } from '$lib/ui';
 	import { untrack } from 'svelte';
 
 	let { panelId }: PanelProps = $props();
 	const hs = harnesses();
-	const ws = workspace();
 
 	// Mounted panels are what the store hands instances out against, so this registration is the
 	// panel's whole lifecycle. `untrack`: claiming WRITES the map it reads, and a tracked effect
@@ -40,12 +39,8 @@
 
 	const id = $derived(hs.instanceFor(panelId));
 	const inst = $derived(hs.instances.find((i) => i.id === id) ?? null);
-	/** The close question, when it is about the instance THIS panel is showing. */
-	const asking = $derived(hs.closing?.id === id ? hs.closing : null);
-	const label = (i: { harness: string; id: string }): string => `${i.harness} · ${i.id.slice(0, 6)}`;
 
 	let host = $state<HTMLDivElement | null>(null);
-	let session: TermSession | null = null;
 
 	const token = (n: string): string =>
 		getComputedStyle(document.documentElement).getPropertyValue(n).trim();
@@ -76,7 +71,6 @@
 		if (!el || !at) return;
 		const s = termSession(at, makeTerminal);
 		s.attach(el);
-		session = s;
 		// The ONLY thing that proposes a size. An inbound authoritative size sets the terminal
 		// directly (the store's invariant) — feeding one back through the fit addon would put two
 		// views of the same instance in a loop. The observer also covers the soft keyboard: the host
@@ -88,22 +82,8 @@
 			// Unmounting gives up the SIZE, not the stream: the socket stays open so the transcript
 			// keeps arriving for whoever shows this instance next.
 			s.retract();
-			session = null;
 		};
 	});
-
-	/** Detach or kill — the panel header's ✕ and the TopBar badge both land here. */
-	function answer(kill: boolean): void {
-		const at = hs.closing;
-		if (!at) return;
-		if (kill) {
-			hs.kill(at.id);
-		} else {
-			session?.detach();
-			hs.release(panelId);
-		}
-		if (at.closePanel) ws.close(at.closePanel);
-	}
 </script>
 
 <div class="agent">
@@ -119,7 +99,7 @@
 				<Select
 					value={inst.id}
 					options={hs.instances.map((i) => i.id)}
-					labels={Object.fromEntries(hs.instances.map((i) => [i.id, label(i)]))}
+					labels={Object.fromEntries(hs.instances.map((i) => [i.id, harnessLabel(i)]))}
 					onChange={(v) => hs.show(panelId, v)}
 					data-testid="agent-switcher"
 				/>
@@ -150,7 +130,7 @@
 			{/snippet}
 			<div class="choices">
 				{#each hs.instances as i (i.id)}
-					<Button size="sm" onclick={() => hs.show(panelId, i.id)}>Attach {label(i)}</Button>
+					<Button size="sm" onclick={() => hs.show(panelId, i.id)}>Attach {harnessLabel(i)}</Button>
 				{/each}
 				{#each hs.detected as d (d.harness)}
 					<Button
@@ -165,19 +145,6 @@
 		</EmptyState>
 	{/if}
 </div>
-
-<Dialog open={!!asking} onClose={() => hs.cancelClose()} data-testid="agent-close-dialog">
-	<h2>Close this agent view?</h2>
-	<p>
-		Detaching leaves {inst ? label(inst) : 'the harness'} running in the patch workspace — re-attach
-		it from any agent panel. Killing stops it.
-	</p>
-	<div class="choices">
-		<Button data-testid="agent-detach" onclick={() => answer(false)}>Detach</Button>
-		<Button variant="danger" data-testid="agent-kill" onclick={() => answer(true)}>Kill</Button>
-		<Button variant="ghost" onclick={() => hs.cancelClose()}>Cancel</Button>
-	</div>
-</Dialog>
 
 <style>
 	.agent {
@@ -209,15 +176,5 @@
 		gap: var(--space-3);
 		justify-content: center;
 		margin-top: var(--space-4);
-	}
-	h2 {
-		margin: 0 0 var(--space-4);
-		font-size: var(--fs-body);
-		font-weight: 600;
-	}
-	p {
-		margin: 0;
-		color: var(--text-dim);
-		font-size: var(--fs-small);
 	}
 </style>
