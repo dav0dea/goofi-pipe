@@ -11,6 +11,7 @@ mod fsbrowse;
 mod inspect;
 mod mcp;
 pub mod ops;
+mod origin;
 mod reducer;
 mod schemas;
 pub mod term;
@@ -310,7 +311,10 @@ fn stage_load(
     Ok((content, from_path))
 }
 
-pub fn router(state: AppState) -> Router {
+/// The API routes, unguarded. Private, and the ONLY caller is [`app`] — the [`origin`] layer is
+/// what a route must not be able to be added outside of, and `Router::layer` wraps only what is
+/// already on the router when it is applied.
+fn routes(state: AppState) -> Router {
     Router::new()
         .route("/control", any(control_ws))
         // One stream per (node, slot) — the kind segment is gone; a single reduced stream
@@ -465,17 +469,28 @@ pub fn spawn_stats(graph: Arc<Mutex<Graph>>, events: broadcast::Sender<String>, 
     });
 }
 
+/// The API router, with no SPA — `app(state, None)`, kept as a name because that is what it reads
+/// as at a call site.
+pub fn router(state: AppState) -> Router {
+    app(state, None)
+}
+
 /// The full router, optionally serving the built SPA (SPA-fallback to index.html)
 /// for any non-API path.
+///
+/// The [`origin`] guard goes on LAST, so it wraps the API routes, the SPA and the fallback alike —
+/// including the three WebSocket upgrades, which a CORS-based defence would miss entirely. There is
+/// exactly one place it is applied, and every server in this repo goes through here.
 pub fn app(state: AppState, static_dir: Option<PathBuf>) -> Router {
-    let base = router(state);
-    match static_dir {
+    let base = routes(state);
+    let served = match static_dir {
         Some(dir) => {
             let index = dir.join("index.html");
             base.fallback_service(ServeDir::new(&dir).not_found_service(ServeFile::new(index)))
         }
         None => base,
-    }
+    };
+    served.layer(axum::middleware::from_fn(origin::guard))
 }
 
 /// Resolve the built SPA directory: `$GOOFI_FRONTEND_BUILD` or `./frontend/build`.
