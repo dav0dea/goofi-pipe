@@ -43,8 +43,7 @@ async function withPanelType(page: Page, type: string, body: () => Promise<void>
 			panelId
 		);
 		await expect(page.locator('.canvas-wrap').first(), 'the editor panel is back').toBeVisible();
-		// AppShell's layout push is debounced 400ms and outlives the page.
-		await page.waitForTimeout(700);
+		// The restore is a command; the assertion above proves the manager already applied it.
 	}
 }
 

@@ -131,6 +131,5 @@ test('a finger can still split a panel — the header carries what the corner ga
 	} finally {
 		await hdr(page, 1).getByRole('button', { name: 'Close panel' }).tap();
 		await expect(page.locator('.panel'), 'the workspace is handed back').toHaveCount(1);
-		await page.waitForTimeout(700); // past AppShell's 400ms set_layout debounce
 	}
 });

@@ -54,7 +54,9 @@ test('the unlink ✕ earns its own undo step, which restores the binding', async
 			},
 			[panelId, uid] as const
 		);
-		expect(await boundNode(page)).toBe(uid);
+		// A panel write is a COMMAND now, so the binding appears when the manager's delta does —
+		// polled, like every other assertion in this test.
+		await expect.poll(() => boundNode(page), { message: 'the panel is bound' }).toBe(uid);
 
 		await page.getByTestId('node-linked-panel').getByRole('button', { name: 'Unlink node' }).click();
 		await expect.poll(() => boundNode(page), { message: 'the ✕ unbinds' }).toBe(null);
@@ -75,6 +77,5 @@ test('the unlink ✕ earns its own undo step, which restores the binding', async
 			panelId
 		);
 		await expect(page.locator('.canvas-wrap').first(), 'the editor panel is back').toBeVisible();
-		await page.waitForTimeout(700); // past AppShell's 400ms set_layout debounce
 	}
 });

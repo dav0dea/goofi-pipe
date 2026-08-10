@@ -125,6 +125,39 @@ describe('a frozen gesture is a layout command', () => {
 		]);
 	});
 
+	it('closing the tab in front moves to its NEIGHBOUR, not to the strip’s first', async () => {
+		const three: Arrangement = {
+			'page-1': { kind: 'page', order: 0, name: 'Layout' },
+			'panel-2': { kind: 'panel', order: 0, parent: 'page-1', size: 1, panel_type: 'node-editor' },
+			'page-3': { kind: 'page', order: 1, name: 'Two' },
+			'panel-4': { kind: 'panel', order: 0, parent: 'page-3', size: 1, panel_type: 'console' },
+			'page-5': { kind: 'page', order: 2, name: 'Three' },
+			'panel-6': { kind: 'panel', order: 0, parent: 'page-5', size: 1, panel_type: 'console' }
+		};
+		const ws = boot(three);
+		ws.selectTab('page-5');
+		ws.closeTab('page-5');
+		expect(ws.state.activeWorkspaceId, 'the neighbour, before the delta even lands').toBe('page-3');
+		await Promise.resolve();
+		expect(sent()).toEqual([['session_remove_page', { name: 'Three' }]]);
+	});
+
+	it('claims a fresh page name per tap, so a repeated gesture is not five refusals', async () => {
+		const ws = boot();
+		ws.addTab();
+		ws.addTab();
+		ws.addTab();
+		await Promise.resolve();
+		await Promise.resolve();
+		const names = sent().map(([, p]) => p.name as string);
+		expect(names, 'three taps, three requests').toHaveLength(3);
+		expect(
+			new Set(names).size,
+			'each asks for a name the last one did not — the replica cannot have caught up between taps'
+		).toBe(3);
+		expect(names, 'and none of them is the name the page already has').not.toContain('Layout');
+	});
+
 	it('addresses a tab by the name the manager holds', async () => {
 		const ws = boot(split());
 		ws.renameTab('page-1', 'Signals');

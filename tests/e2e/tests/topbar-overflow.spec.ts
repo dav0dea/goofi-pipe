@@ -572,7 +572,6 @@ test('layout tabs get the room the bar gives up', async ({ page }) => {
 			const close = page.getByRole('button', { name: 'Close tab' });
 			for (let i = 0; i < 6; i++) await close.last().click();
 			await expect(page.getByTestId('workspace-tabs').locator('.ui-tab')).toHaveCount(1);
-			await page.waitForTimeout(700); // past AppShell's 400ms set_layout debounce
 		}
 	});
 });

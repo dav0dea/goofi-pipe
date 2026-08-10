@@ -152,7 +152,6 @@ async function restoreEditor(page: Page, panelId: string): Promise<void> {
 		panelId
 	);
 	await expect(page.locator('.canvas-wrap').first(), 'the editor panel is back').toBeVisible();
-	await page.waitForTimeout(700); // past AppShell's 400ms set_layout debounce
 }
 
 /** The largest (green − red) the compositor produced over a CSS-px rect. --accent (#50d0a0) at

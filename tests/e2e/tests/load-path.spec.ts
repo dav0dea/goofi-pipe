@@ -65,7 +65,6 @@ test('New hands back an empty, unnamed, clean patch', async ({ page }) => {
 		// the fresh-session reset and left the previous patch's panels on screen — and then pushed
 		// them back down as the new patch's stored layout on the next split.
 		await splitRight(page);
-		await page.waitForTimeout(700); // past AppShell's 400ms set_layout debounce
 		await page.evaluate((p) => (window as any).goofi.commands.save(p), path.join(scratch, 'named.gfi'));
 		await expect
 			.poll(() => page.evaluate(() => (window as any).goofi.query.graph().savePath))

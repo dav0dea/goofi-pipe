@@ -103,14 +103,14 @@ export async function resetPatch(page: Page): Promise<void> {
 		.toBe(0);
 }
 
-/** Hand back a tab the spec added: close the last one and settle past AppShell's 400ms `set_layout`
- * debounce, so the arrangement never reaches the running patch. The `finally` half of the contract
- * `expectPristineWorkspace` enforces at the other end. */
+/** Hand back a tab the spec added: close the last one. The close IS the command — there is no
+ * debounced push to outwait any more — so the arrangement the manager keeps is pristine as soon as
+ * the tab strip says so. The `finally` half of the contract `expectPristineWorkspace` enforces at
+ * the other end. */
 export async function closeAddedTab(page: Page): Promise<void> {
 	const tabs = page.getByTestId('workspace-tabs');
 	await tabs.getByRole('button', { name: 'Close tab' }).last().click();
 	await expect(tabs.locator('.ui-tab'), 'the workspace is back to one tab').toHaveCount(1);
-	await page.waitForTimeout(700);
 }
 
 /** Split the sole default panel to the right, through the real header context menu. Two specs need
@@ -126,13 +126,12 @@ export async function splitRight(page: Page): Promise<void> {
 }
 
 /**
- * Put the workspace back, through the split panel's own ✕. `ws.split` re-arms AppShell's 400ms
- * `set_layout` debounce, which writes into the RUNNING PATCH — one backend for the whole run — so a
- * spec that splits and leaves early persists a 2-panel workspace that every later spec boots into.
- * It passes alone and depends on nothing but screenshot latency, which is why it must be a `finally`.
+ * Put the workspace back, through the split panel's own ✕. A split is a command against the RUNNING
+ * PATCH — one backend for the whole run — so a spec that splits and leaves early persists a 2-panel
+ * workspace that every later spec boots into. It passes alone and depends on nothing but screenshot
+ * latency, which is why it must be a `finally`.
  */
 export async function closeSplit(page: Page): Promise<void> {
 	await page.getByTestId('panel-header').nth(1).getByRole('button', { name: 'Close panel' }).click();
 	await expect(page.locator('.panel'), 'the workspace is back to one panel').toHaveCount(1);
-	await page.waitForTimeout(700); // past AppShell's 400ms set_layout debounce
 }

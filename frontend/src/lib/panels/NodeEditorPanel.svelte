@@ -336,8 +336,8 @@
 	let enteredPath = $state<string[]>(untrack(() => pathToArray(asStateObject(panelState).subpatchPath)));
 	const entered = $derived(enteredPath.length ? enteredPath[enteredPath.length - 1] : null);
 
-	/** Write the current path back into the panel's layout state (round-trips
-	 * through set_layout / the saved .gfi). Untracked so callers in effects don't
+	/** Write the current path back into the panel's state (viewpoint — it round-trips through
+	 * `set_viewpoint` and the saved .gfi). Untracked so callers in effects don't
 	 * pick up `state` as a dependency. Classified as NAVIGATION (D-R3): descending
 	 * into a sub-patch is looking, not editing — it is persisted so a reload lands
 	 * back where you were, but it must not mark the patch unsaved. */

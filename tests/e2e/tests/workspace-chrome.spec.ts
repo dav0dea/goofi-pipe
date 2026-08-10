@@ -4,7 +4,7 @@ import { addNode, waitForNode, waitForNoNode } from '../lib/goofi';
 import { installInkProbe } from '../lib/ink';
 
 /**
- * Put the workspace back after a Split Right. `ws.split` re-arms AppShell's 400ms `set_layout`
+ * Put the workspace back after a Split Right. `ws.split` is a command against the running patch,
  * debounce, which writes into the RUNNING PATCH — one backend for the whole run — so a spec that
  * splits and leaves early persists a 2-panel workspace that every later spec then boots into.
  * It passes alone and depends on nothing but timing, which is why it belongs in a `finally`.
@@ -12,7 +12,6 @@ import { installInkProbe } from '../lib/ink';
 async function closeSplit(page: Page): Promise<void> {
 	await page.getByTestId('panel-header').nth(1).getByRole('button', { name: 'Close panel' }).click();
 	await expect(page.locator('.panel'), 'the workspace is back to one panel').toHaveCount(1);
-	await page.waitForTimeout(700); // past AppShell's 400ms set_layout debounce
 }
 
 // The workspace panel system is FROZEN UX; sub-project M restyled its chrome onto the

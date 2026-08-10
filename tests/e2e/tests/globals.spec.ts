@@ -21,7 +21,6 @@ async function inGlobalsPanel(page: Page, body: () => Promise<void>): Promise<vo
 			panelId
 		);
 		await expect(page.locator('.canvas-wrap').first(), 'the editor panel is back').toBeVisible();
-		await page.waitForTimeout(700); // settle past the layout debounce before the page goes away
 	}
 }
 

@@ -1,38 +1,40 @@
 import { test, expect, type Page } from '@playwright/test';
-import { closeAddedTab, waitForApp } from '../lib/app';
+import { closeAddedTab, closeSplit, splitRight, waitForApp } from '../lib/app';
 import { addNode, waitForNode, waitForNoNode } from '../lib/goofi';
 
 /**
  * Two clients on one patch — a desktop and the phone next to it.
  *
- * The panel arrangement is not a CRDT doc root: it is opaque view state, deliberately not a
- * command, so it travels on the manager's `layout` event or not at all. What that event carries is
- * split along the same line the dirty taxonomy draws (R spec §4 / D-R3): an *authored* change —
- * splitting a panel, adding a tab — is what the patch IS, and reaches everyone; *navigation* is
- * where one client is LOOKING, and must move nobody else.
+ * The panel arrangement is the FIFTH CRDT doc root. Every gesture is a layout command the manager
+ * applies, mirrors and broadcasts as a delta, so a split on one screen appears on the other through
+ * the very machinery a node add already uses. Before the cutover this did not happen at all: the
+ * arrangement was the client's, pushed back as an opaque blob, and a peer merged what it could.
  *
- * The second half is the receiving side of the same rule. A peer's blob carries its viewpoint as
- * well as its structure, so applying it is a merge, never a hydrate — a phone three sub-patches
- * deep stays there while the desktop adds a panel around it.
+ * The other half is what does NOT travel. Where a client is looking — its front tab, its focused
+ * panel, how deep into a sub-patch each editor has gone — is viewpoint, never a doc root, so a
+ * phone three levels in stays there while the desktop rearranges around it, and neither client
+ * writes the arrangement in answer to the other.
  *
- * Two browser CONTEXTS, not two pages: the session id that lets a client skip its own echo lives
- * in `sessionStorage`, which a second page in the same context would share. One backend serves
- * both (`fullyParallel: false`, `workers: 1`), so every test here hands the workspace back.
+ * Two browser CONTEXTS, not two pages: the session id that scopes undo lives in `sessionStorage`,
+ * which a second page in the same context would share. One backend serves both
+ * (`fullyParallel: false`, `workers: 1`), so every test here hands the workspace back.
  */
 
-/** Comfortably past AppShell's 400ms layout debounce plus the RPC round trip. */
+/** Comfortably past a layout command and its delta coming back. */
 const PAST_DEBOUNCE = 1200;
 
 const tabs = (page: Page) => page.getByTestId('workspace-tabs').locator('.ui-tab');
+const panels = (page: Page) => page.locator('.panel');
 
-/** Count this page's OWN `set_layout` pushes. Must be attached before `goto` — `websocket` only
- * fires for sockets opened after the listener. */
-function countLayoutPushes(page: Page): () => number {
+/** Count this page's OWN writes to the arrangement. Must be attached before `goto` — `websocket`
+ * only fires for sockets opened after the listener. */
+function countLayoutWrites(page: Page): () => number {
 	let n = 0;
 	page.on('websocket', (ws) => {
 		if (!ws.url().endsWith('/control')) return;
 		ws.on('framesent', (f) => {
-			if (typeof f.payload === 'string' && f.payload.includes('"set_layout"')) n += 1;
+			if (typeof f.payload !== 'string') return;
+			if (/"(page|session)_[a-z_]+"/.test(f.payload)) n += 1;
 		});
 	});
 	return () => n;
@@ -52,25 +54,31 @@ async function makeSubPatch(page: Page): Promise<{ osc: string; buf: string; ins
 	return { osc, buf, inst };
 }
 
-test('an authored panel change reaches the other client, and is not echoed back', async ({
-	browser
-}) => {
+test('a layout change in one tab converges in another', async ({ browser }) => {
 	const ctxA = await browser.newContext();
 	const ctxB = await browser.newContext();
 	const a = await ctxA.newPage();
 	const b = await ctxB.newPage();
-	const pushesB = countLayoutPushes(b);
+	const writesB = countLayoutWrites(b);
 	try {
 		await a.goto('/');
 		await waitForApp(a);
 		await b.goto('/');
 		await waitForApp(b);
-		// Past B's own boot push, so what is counted below is only what the peer caused.
-		await b.waitForTimeout(PAST_DEBOUNCE);
-		const before = pushesB();
+		await expect(panels(b)).toHaveCount(1);
+		const before = writesB();
 
+		// A SPLIT, through the real header menu — the arrangement's own structure, not a tab. This is
+		// the change that used to reach nobody.
+		await splitRight(a);
+		await expect(panels(b), 'the split A made arrived through the doc').toHaveCount(2);
+
+		// A closes it again, and the close converges too — a delta, not a wholesale blob.
+		await closeSplit(a);
+		await expect(panels(b), '…and so does the close').toHaveCount(1);
+
+		// A tab, too — and B stays on its OWN tab, because which one is in front is viewpoint.
 		await a.evaluate(() => (window as any).goofi.commands.addTab());
-
 		await expect(tabs(b), 'the tab A added arrived').toHaveCount(2);
 		await expect(
 			tabs(b).first(),
@@ -81,10 +89,10 @@ test('an authored panel change reaches the other client, and is not echoed back'
 			'true'
 		);
 
-		// No echo, no storm: applying a peer's arrangement must schedule no push of its own. Waited
-		// well past the debounce, so a push that was merely slow would still be counted.
+		// No echo, no storm: converging on a peer's arrangement must write nothing back. Waited well
+		// past the round trip, so a write that was merely slow would still be counted.
 		await b.waitForTimeout(PAST_DEBOUNCE);
-		expect(pushesB() - before, 'B must not push a peer’s arrangement back').toBe(0);
+		expect(writesB() - before, 'B must not write the arrangement back at the manager').toBe(0);
 	} finally {
 		if ((await tabs(a).count()) > 1) await closeAddedTab(a);
 		await ctxA.close();

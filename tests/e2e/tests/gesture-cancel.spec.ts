@@ -96,6 +96,5 @@ test('a panel cannot be dragged below its pixel floor', async ({ page }) => {
 			.getByRole('button', { name: 'Close panel' })
 			.click();
 		await expect(panels(page), 'the workspace is back to one panel').toHaveCount(before);
-		await page.waitForTimeout(700);
 	}
 });

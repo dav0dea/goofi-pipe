@@ -7,17 +7,17 @@ import { addNode, waitForNode } from '../lib/goofi';
 
 /**
  * The dirty taxonomy (R spec §4 / D-R3): *navigation* must not mark the patch unsaved, *authoring*
- * must. Both halves ride the same debounced `set_layout` push — the whole point is that the write
- * is classified, not the device — so both are asserted here through the real UI on one platform,
- * and the frontend unit tests pin the classification itself.
+ * must. Since the arrangement became the manager's, the two halves are different OPS — authoring is
+ * a layout command, navigation is `set_viewpoint` — so the taxonomy holds by construction rather
+ * than by a flag the client sets. The assertions below are unchanged across that move, which is the
+ * point of having them: they are about the dot, not about the mechanism.
  *
- * Timing matters: the push is debounced 400ms, so "still clean" is only meaningful AFTER that
- * window has elapsed and the RPC has landed. Each assertion therefore waits past the debounce
- * rather than reading immediately — and each test leaves the workspace as it found it, because the
- * suite shares one backend and a leaked layout breaks later specs.
+ * The waits stay too. They were sized for a 400ms debounce that no longer exists, so they are now
+ * only slack — and slack is what makes "still clean" mean something rather than "not yet". Each
+ * test leaves the workspace as it found it, because the suite shares one backend.
  */
 
-/** Comfortably past AppShell's 400ms layout debounce plus the RPC round trip. */
+/** Comfortably past the write and its round trip. */
 const PAST_DEBOUNCE = 1200;
 
 let scratch = '';

@@ -84,6 +84,8 @@ class WorkspaceStore {
 	/** The page a just-sent op is about to create, adopted when it appears (a page is addressed by
 	 * name, and its id is the manager's to mint). */
 	private _wantPage: string | null = null;
+	/** Page names claimed but not yet seen in the replica — see `_claimName`. */
+	private _claimed = new Set<string>();
 	/** Last-focused panel id — keyboard shortcuts scope to this. */
 	activePanelId = $state<string | null>(null);
 	/** When set, only this panel renders, filling the workspace. */
@@ -161,6 +163,8 @@ class WorkspaceStore {
 				this._focusFirst(born.root);
 			}
 		}
+		// A claim's job is over the moment the name it reserved shows up in the replica.
+		if (this._claimed.size > 0) for (const w of this._workspaces) this._claimed.delete(w.name);
 		if (this._page !== null && !arr[this._page]) this._page = null;
 		const root = this.active?.root;
 		if (!root) return;
@@ -367,22 +371,27 @@ class WorkspaceStore {
 
 	// --- tabs --------------------------------------------------------------
 
-	private _uniqueName(base: string): string {
-		const names = new Set(this._workspaces.map((w) => w.name));
-		if (!names.has(base)) return base;
-		let i = 2;
-		while (names.has(`${base} ${i}`)) i += 1;
-		return `${base} ${i}`;
+	/** Claim a free page name. A page is addressed BY NAME, so the manager refuses a duplicate — and
+	 * the replica does not update until the round trip lands, so a gesture repeated faster than that
+	 * (six taps on ＋) would ask for the same free name six times and have five refused. The claim is
+	 * therefore remembered until the name is seen, or until the op it was claimed for is refused. */
+	private _claimName(base: string): string {
+		const names = new Set([...this._workspaces.map((w) => w.name), ...this._claimed]);
+		let name = base;
+		for (let i = 2; names.has(name); i += 1) name = `${base} ${i}`;
+		this._claimed.add(name);
+		return name;
 	}
 
 	/** Add a layout page. `panelType` is the agent façade's door onto "a tab showing X" — the tab
 	 * bar's own + button births the default editor. Two ops when it is given, grouped as one client
 	 * entry whose two children pop the two manager commands in order. */
 	addTab(panelType?: string): void {
-		const name = this._uniqueName('Layout');
+		const name = this._claimName('Layout');
 		this._wantPage = name;
 		void history().transaction('Add tab', async () => {
 			const born = await this._cmd<{ panel: string }>('Add tab', 'session_add_page', { name });
+			if (born === null) this._claimed.delete(name);
 			if (born && panelType && panelType !== DEFAULT_PANEL_TYPE) {
 				await this._cmd('Change panel', 'page_set_panel', {
 					page: name,
@@ -413,7 +422,20 @@ class WorkspaceStore {
 
 	closeTab(workspaceId: string): void {
 		const name = this._arr[workspaceId]?.name;
-		if (name) void this._cmd('Close tab', 'session_remove_page', { name });
+		if (!name) return;
+		// Closing the tab in front moves us to its NEIGHBOUR, not to the strip's first — the frozen
+		// behaviour, and viewpoint, so it lands now rather than waiting for the delta. Without it the
+		// fallback (`?? all[0]`) silently rewrote the gesture.
+		if (this._page === workspaceId || this._page === null) {
+			const rest = this._workspaces.filter((w) => w.id !== workspaceId);
+			const idx = this._workspaces.findIndex((w) => w.id === workspaceId);
+			const neighbor = rest[Math.min(idx, rest.length - 1)];
+			if (neighbor) {
+				this._page = neighbor.id;
+				this._focusFirst(neighbor.root);
+			}
+		}
+		void this._cmd('Close tab', 'session_remove_page', { name });
 	}
 
 	reorderTab(fromIndex: number, toIndex: number): void {
@@ -459,9 +481,13 @@ class WorkspaceStore {
 		if (!d || d.kind !== 'panel') return;
 		const subtree = this._subtreeOf(d);
 		if (!subtree) return;
-		const name = this._uniqueName('Layout');
+		const name = this._claimName('Layout');
 		this._wantPage = name;
-		void this._cmd('Move panel to new tab', 'session_add_page', { name, index, subtree });
+		void this._cmd('Move panel to new tab', 'session_add_page', { name, index, subtree }).then(
+			(ok) => {
+				if (ok === null) this._claimed.delete(name);
+			}
+		);
 	}
 
 	/** Every panel currently bound to `uid`, for the agent façade and the e2e. */

@@ -58,13 +58,19 @@ test('a node dragged onto a viewer panel binds it, under touch', async ({ page }
 		await touch.moveTo(to);
 		await touch.up(to);
 
-		const bound = await page.evaluate(
-			() =>
-				((window as any).goofi.query.panels() as Array<{ type: string; node: string | null }>).find(
-					(p) => p.type === 'viewer'
-				)?.node ?? null
-		);
-		expect(bound, 'the drop bound the node to the viewer panel').toBe(uid);
+		// The bind is a `page_set_panel` command, so it shows up when the manager's delta does.
+		await expect
+			.poll(
+				() =>
+					page.evaluate(
+						() =>
+							(
+								(window as any).goofi.query.panels() as Array<{ type: string; node: string | null }>
+							).find((p) => p.type === 'viewer')?.node ?? null
+					),
+				{ message: 'the drop bound the node to the viewer panel' }
+			)
+			.toBe(uid);
 	} finally {
 		await page.evaluate((u) => (window as any).goofi.commands.removeNode(u), uid);
 		await waitForNoNode(page, uid).catch(() => {});
@@ -74,6 +80,5 @@ test('a node dragged onto a viewer panel binds it, under touch', async ({ page }
 			.getByRole('button', { name: 'Close panel' })
 			.click();
 		await expect(panels(page)).toHaveCount(before);
-		await page.waitForTimeout(700);
 	}
 });

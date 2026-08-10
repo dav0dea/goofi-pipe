@@ -41,7 +41,6 @@ test('a <code> with no rule of its own inherits the chrome face, not the UA mono
 			panelId
 		);
 		await expect(page.locator('.canvas-wrap').first(), 'the editor panel is back').toBeVisible();
-		await page.waitForTimeout(700); // past AppShell's 400ms set_layout debounce
 	}
 });
 
@@ -86,6 +85,5 @@ test('the reset hands back family only — a component rule still owns the size'
 			panelId
 		);
 		await expect(page.locator('.canvas-wrap').first(), 'the editor panel is back').toBeVisible();
-		await page.waitForTimeout(700);
 	}
 });

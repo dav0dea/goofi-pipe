@@ -91,8 +91,7 @@ test('the slot pickers show a sub-patch port’s name and commit its boundary id
 		await page
 			.waitForFunction((u) => (window as any).goofi.query.node(u) === null, osc)
 			.catch(() => {});
-		// AppShell pushes the layout into the RUNNING PATCH on a 400ms debounce, and the patch
-		// outlives this page — settle past it so no later spec boots into a viewer-shaped workspace.
-		await page.waitForTimeout(700);
+		// The restore is a command against the RUNNING PATCH, which outlives this page — and the
+		// assertion above only passes once the manager's delta drew it back, so it has landed.
 	}
 });

@@ -14,7 +14,7 @@ import { touchSession } from '../lib/touch';
  * `mouseenter`-only and clicking a parent row was an explicit no-op. That is part of this item.
  *
  * `maximize` is what the action half is proved with on purpose: `maximizedPanelId` is a store
- * field outside `WorkspaceState`, so it provably cannot reach `set_layout` or the `.gfi` and this
+ * field outside the arrangement, so it provably cannot reach the manager or the `.gfi` and this
  * spec cannot leave a layout behind for a later one (the suite shares one backend).
  */
 
@@ -102,8 +102,8 @@ test('“Change content ▸” expands on tap, and picking a type switches the p
 		'console'
 	);
 
-	// Hand the panel back to the node editor, past AppShell's 400ms set_layout debounce.
+	// Hand the panel back to the node editor. The type change is a command, so the canvas coming
+	// back is proof the manager already holds the restore.
 	await page.evaluate((id) => (window as any).goofi.commands.setPanelType(id, 'node-editor'), panelId);
 	await expect(page.locator('.canvas-wrap').first()).toBeVisible();
-	await page.waitForTimeout(700);
 });

@@ -45,14 +45,10 @@ describe('GraphStore.newPatch — the reset door', () => {
 	});
 
 	/**
-	 * …and takes the panels down with it. A `graph_replaced` is never a reconnect — it is always a
-	 * wholesale patch swap — so a null `layout` on one means "this patch has no arrangement", not
-	 * "keep yours". The ambiguity it used to be read with belongs to `hello` alone.
-	 *
-	 * Left standing it is worse than a stale view: AppShell pushes `ws.serialize()` on the next
-	 * split or tab switch, and `set_layout` persists regardless of intent — so the previous patch's
-	 * arrangement becomes the new one's stored layout and rides into its `.gfi`. A layout-less
-	 * `.gfi` (the engine writes one, and the Load button reaches it today) lands here too.
+	 * …and takes the panels down with it — which is no longer the client's problem to get right.
+	 * The arrangement is the manager's, so `new` reloads it along with the graph and the replica
+	 * simply follows. There is nothing here for a stale client copy to ride into the fresh patch's
+	 * `.gfi`, because the client keeps no copy.
 	 */
 	// (That a New patch opens on the DEFAULT arrangement is the manager's now — `new` reloads an
 	// empty document, which restores the default layout with it. Pinned over the wire by

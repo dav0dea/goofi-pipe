@@ -62,13 +62,14 @@ type Teardown = () => Promise<void>;
 interface Site {
 	name: string;
 	/** Reveal the control; returns the restore. The suite shares ONE backend and AppShell pushes the
-	 *  layout on a 400ms debounce, so anything that touches the workspace must hand it back. */
+	 *  layout into the running patch, so anything that touches the workspace must hand it back. */
 	setup?: (page: Page) => Promise<Teardown>;
 	control: (page: Page) => Locator;
 }
 
-/** Past AppShell's 400ms `set_layout` debounce, so a borrowed workspace is really given back. */
-const settleLayout = (page: Page): Promise<void> => page.waitForTimeout(700);
+/** A borrowed workspace is given back by a command, so the restore has landed as soon as the panel
+ *  redraws — this is the one beat that lets the redraw happen. */
+const settleLayout = (page: Page): Promise<void> => page.waitForTimeout(50);
 
 const firstPanelId = (page: Page): Promise<string> =>
 	page.evaluate(() => (window as any).goofi.query.panels()[0].panelId);

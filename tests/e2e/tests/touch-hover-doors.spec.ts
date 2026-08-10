@@ -192,9 +192,8 @@ test('the console per-row copy button is reachable without hover', async ({ page
 			panelId
 		);
 		await expect(page.locator('.canvas-wrap').first(), 'the editor panel is back').toBeVisible();
-		// AppShell's layout push is debounced 400ms and outlives the page; settle past it or a later
-		// spec boots into a console-shaped workspace.
-		await page.waitForTimeout(700);
+		// The panel type is a command, and the assertion above only passes once the manager's own
+		// delta drew it back — so the running patch already holds the restore.
 	}
 });
 

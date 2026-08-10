@@ -70,6 +70,5 @@ test('a console row names its source node', async ({ page }) => {
 			panelId
 		);
 		await expect(page.locator('.canvas-wrap').first(), 'the editor panel is back').toBeVisible();
-		await page.waitForTimeout(700); // past AppShell's 400ms set_layout debounce
 	}
 });

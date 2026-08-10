@@ -67,7 +67,7 @@ async function collapseFully(page: Page): Promise<number> {
 	return 0;
 }
 
-/** Hand a workspace of any size back as one panel, past AppShell's 400ms `set_layout` debounce.
+/** Hand a workspace of any size back as one panel.
  *  `closeSplit` asserts its way down to one in a single step, so it cannot unwind three. */
 async function restoreSinglePanel(page: Page): Promise<void> {
 	while ((await panels(page).count()) > 1) {
@@ -75,7 +75,6 @@ async function restoreSinglePanel(page: Page): Promise<void> {
 		await page.waitForTimeout(100);
 	}
 	await expect(panels(page), 'the workspace is back to one panel').toHaveCount(1);
-	await page.waitForTimeout(700);
 }
 
 test('a wide panel keeps all three actions in its header, with no ⋯ beside them', async ({
@@ -154,7 +153,7 @@ test('the header actions act: Split Right, Split Down and Maximize', async ({ pa
 	expect(await inHeader(page), 'all three are inline at this width').toEqual(ACTIONS);
 
 	// Maximize — `maximizedPanelId` lives outside `WorkspaceState`, so this provably cannot reach
-	// `set_layout` or the `.gfi`, and it is read back through the button's own label flip.
+	// the arrangement or the `.gfi`, and it is read back through the button's own label flip.
 	await hdr(page).getByRole('button', { name: 'Maximize panel' }).click();
 	await expect(hdr(page).getByRole('button', { name: 'Restore panel' })).toBeVisible();
 	await hdr(page).getByRole('button', { name: 'Restore panel' }).click();
