@@ -25,6 +25,17 @@ const HEADER_ACTIONS = [
 	'topbar-load'
 ];
 
+test('the app header follows the fine-pointer control height', async ({ page }) => {
+	await page.goto('/');
+	await waitForApp(page);
+	const bar = (await page.locator('.topbar').boundingBox())!;
+	const control = (await page.getByTestId('topbar-overflow').boundingBox())!;
+	expect(bar.height, 'the bar adds no fixed vertical slack around its tallest control').toBe(
+		control.height
+	);
+	expect(bar.height, 'desktop chrome does not reserve the touch-sized height').toBeLessThan(44);
+});
+
 test('the app header carries exactly the app-global actions', async ({ page }) => {
 	await page.goto('/');
 	await waitForApp(page);
@@ -54,7 +65,7 @@ test('the header is one icon family on one chrome text size (Phil: de-clutter)',
 	}
 
 	// The bar's remaining TEXT (the tab labels, the patch name, the fps) shares ONE chrome
-	// size — integer-snapped, so every baseline in the 44px bar lands on the same device row.
+	// size — integer-snapped, so every baseline in the bar lands on the same device row.
 	// The fluid clamp's fractional sizes snapped per element and scattered the ink ±0.75px.
 	const sizeOf = (sel: string): Promise<string> =>
 		page.locator(sel).first().evaluate((el) => getComputedStyle(el).fontSize);
@@ -86,6 +97,49 @@ test('the header is one icon family on one chrome text size (Phil: de-clutter)',
 			`the fps readout (${skin.bg}) is unboxed`
 		).toBe(true);
 		expect(skin.fs, 'the fps readout shares the chrome size').toBe(tab);
+		const drops = hud.getByTestId('perf-drops');
+		await expect(drops, 'the drop-rate slot stays mounted instead of shifting FPS').toBeVisible();
+		await expect(drops).toHaveText(/^\s*\d+\/s\s*$/);
+
+		// Identity and action items share one overflow group and one visual rhythm. Measure the INK
+		// rather than the outer boxes: the text items deliberately borrow the clear space that each
+		// IconButton's square puts around its glyph.
+		const rhythm = await page.locator('.topbar .actions').evaluate((group) => {
+			const box = (selector: string): DOMRect =>
+				group.querySelector(selector)!.getBoundingClientRect();
+			const fps = box('[data-testid="perf-hud"]');
+			const name = box('.path-value');
+			const undo = box('[data-testid="topbar-undo"] svg');
+			const redo = box('[data-testid="topbar-redo"] svg');
+			return {
+				members: [
+					'topbar-hud',
+					'topbar-path',
+					'topbar-undo',
+					'topbar-redo',
+					'topbar-save',
+					'topbar-save-caret',
+					'topbar-load'
+				].every((id) => group.querySelector(`[data-testid="${id}"]`)),
+				gaps: [name.left - fps.right, undo.left - name.right, redo.left - undo.right]
+			};
+		});
+		expect(rhythm.members, 'fps, name and icon actions live in one spillable group').toBe(true);
+		expect(Math.min(...rhythm.gaps), 'no identity ink sits flush against its neighbour').toBeGreaterThan(
+			12
+		);
+		expect(
+			Math.max(...rhythm.gaps) - Math.min(...rhythm.gaps),
+			`text/text, text/icon and icon/icon gaps share one rhythm (${rhythm.gaps.join(', ')})`
+		).toBeLessThanOrEqual(2);
+
+		// The HUD is not merely in the same flex box; it participates in the same relocation plan.
+		await page.setViewportSize({ width: 320, height: 720 });
+		await expect(page.getByTestId('topbar-hud'), 'the FPS item spills as the group narrows').toBeHidden();
+		await page.getByTestId('topbar-overflow').click();
+		const fpsRow = page.getByRole('menuitem', { name: /^\d+ fps$/ });
+		await expect(fpsRow, 'the same FPS information moves into the overflow menu').toHaveCount(1);
+		await expect(fpsRow, 'information relocates without becoming an action').toBeDisabled();
 	} finally {
 		await page.evaluate((u) => (window as any).goofi.commands.removeNode(u), uid);
 	}

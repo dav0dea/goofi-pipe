@@ -192,7 +192,8 @@ test('the ✕ is still there, still hittable, and still closes the pane AT the f
 		).toBe('inspector-close');
 
 		await close.tap();
-		await expect(pane(page), 'and it closes the pane').toHaveCount(0);
+		await expect(pane(page), 'and it closes the pane').not.toHaveClass(/open/);
+		await expect(pane(page), 'the outro finishes hidden').toHaveCSS('visibility', 'hidden');
 	} finally {
 		await dropNode(page, uid);
 	}

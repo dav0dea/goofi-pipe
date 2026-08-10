@@ -300,7 +300,8 @@ test('the ✕ dismisses the pane in either anchor', async ({ page }) => {
 			)
 			.toBe('y');
 		await pane(page).getByTestId('inspector-close').click();
-		await expect(pane(page), 'the sheet closes').toHaveCount(0);
+		await expect(pane(page), 'the sheet closes').not.toHaveClass(/open/);
+		await expect(pane(page), 'and finishes parked off-screen').toHaveCSS('visibility', 'hidden');
 	} finally {
 		await drop(page, uid);
 	}

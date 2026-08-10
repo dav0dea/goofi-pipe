@@ -113,12 +113,11 @@
 	 *
 	 * The hide class is stripped and restored inside one synchronous block, so nothing is ever
 	 * painted mid-measurement and Svelte's own class bookkeeping stays correct (it re-applies from
-	 * `spilled` on the next update either way). Scoped to the ZONE: the identity chips are
-	 * residents of the same plan as the actions, just lower priority. Re-runs when the root font
-	 * size moved — and when the chips' CONTENT moved (the filename, the HUD's presence), which the
-	 * invalidation effect below owns. */
+	 * `spilled` on the next update either way). Scoped to the one ITEMS group shared by identity and
+	 * actions. Re-runs when the root font size moved — and when the chips' CONTENT moved (the
+	 * filename, the HUD's presence), which the invalidation effect below owns. */
 	function measureWidths(): number[] {
-		const host = zoneEl;
+		const host = actionsEl;
 		if (!host) return [];
 		const hidden = [...host.querySelectorAll<HTMLElement>('.spilled')];
 		for (const el of hidden) el.classList.remove('spilled');
@@ -128,8 +127,7 @@
 			if (!el) return 0;
 			const w = el.getBoundingClientRect().width;
 			// The caret shares the split control's flex slot with Save and introduces no gap of its
-			// own, so its cost nets out the one gap the plan charges every item. (`.actions` and
-			// the zone share one gap token, so a single number serves both nesting levels.)
+			// own, so its cost nets out the one gap the plan charges every item.
 			return id === 'topbar-save-caret' ? w - gap : w;
 		});
 		for (const el of hidden) el.classList.add('spilled');
@@ -150,6 +148,7 @@
 
 		const barGap = px(bar, 'gap');
 		const zoneGap = px(zone, 'gap');
+		const itemGap = px(actionsEl, 'gap');
 		const hit = px(document.documentElement, '--hit');
 		// The header's two sections are tabs · zone, so one gap when the strip is rendered.
 		const sections = tabs ? 1 : 0;
@@ -184,7 +183,7 @@
 			reserve;
 
 		const next = planOverflow(items, SPILL_ORDER, {
-			gap: zoneGap,
+			gap: itemGap,
 			budget,
 			trigger: trigger.getBoundingClientRect().width
 		});
@@ -281,6 +280,8 @@
 	 * DISABLED rows: information relocates, it does not become clickable. */
 	function spilledItems(): MenuItem[] {
 		const items: MenuItem[] = [];
+		if (isSpilled('topbar-hud') && hudActive)
+			items.push({ label: `${p.fps.toFixed(0)} fps`, disabled: true, action: () => {} });
 		if (isSpilled('topbar-path') && (g.savePath || g.unsavedChanges)) {
 			// The same 32ch the chip caps at, applied to the DATA: a menu row does not ellipsize,
 			// and an uncapped 60-character name pushes the whole menu off a 412px screen.
@@ -291,8 +292,6 @@
 				action: () => {}
 			});
 		}
-		if (isSpilled('topbar-hud') && hudActive)
-			items.push({ label: `${p.fps.toFixed(0)} fps`, disabled: true, action: () => {} });
 		if (isSpilled('topbar-undo'))
 			items.push({
 				label: 'Undo',
@@ -338,27 +337,36 @@
 		{#if g.disconnected}
 			<Badge tone="warning" data-testid="topbar-connection">disconnected</Badge>
 		{/if}
-		<!-- The patch identity: informational, so it is the FIRST thing the bar gives up. Each chip
-		     is a plan resident with a testid the measurement reads; spilled, it becomes a disabled
-		     row in the ⋯ menu. -->
-		<span
-			class="info"
-			class:spilled={isSpilled('topbar-hud')}
-			data-testid="topbar-hud"><PerfHud /></span
-		>
-		{#if g.savePath}
-			<span
-				class="info path"
-				class:spilled={isSpilled('topbar-path')}
-				data-testid="topbar-path"
-				title={g.savePath}>{g.unsavedChanges ? '● ' : ''}{g.savePath.split('/').pop()}</span
-			>
-		{:else if g.unsavedChanges}
-			<span class="info path" class:spilled={isSpilled('topbar-path')} data-testid="topbar-path"
-				>● untitled</span
-			>
-		{/if}
 		<div class="actions" bind:this={actionsEl}>
+			<!-- Identity and actions are ONE overflow group with ONE gap. The text items add the same
+			     clear space around their ink that IconButton's square adds around each glyph; they still
+			     spill first because information yields before actions. -->
+			<span
+				class="info hud-info"
+				class:active={hudActive}
+				class:spilled={isSpilled('topbar-hud')}
+				data-testid="topbar-hud"><PerfHud /></span
+			>
+			{#if g.savePath}
+				<span
+					class="info path"
+					class:spilled={isSpilled('topbar-path')}
+					data-testid="topbar-path"
+					title={g.savePath}
+				>
+					<span class="path-value"
+						>{g.unsavedChanges ? '● ' : ''}{g.savePath.split('/').pop()}</span
+					>
+				</span>
+			{:else if g.unsavedChanges}
+				<span
+					class="info path"
+					class:spilled={isSpilled('topbar-path')}
+					data-testid="topbar-path"
+				>
+					<span class="path-value">● untitled</span>
+				</span>
+			{/if}
 			<IconButton
 				variant="ghost"
 				data-testid="topbar-undo"
@@ -448,9 +456,8 @@
 		/* A surface step above the `--bg` workspace ground below it — that separates, so the hairline
 		   this used to draw is deleted (D5). */
 		background: var(--surface-1);
-		/* Frozen: 44px is the coarse --hit floor, so the bar already fits a touch-sized
-		   control without growing — a rem height would break that flush relationship. */
-		height: 44px;
+		/* No fixed height: the resident --hit-sized controls make this 28px on a fine pointer and
+		   grow it to the 44px touch floor under the coarse-pointer density rule. */
 		font-size: var(--fs-body);
 		z-index: 10;
 	}
@@ -464,15 +471,26 @@
 		display: flex;
 		align-items: stretch;
 	}
-	/* An identity chip. In the plan, so its hidden state is the same `.spilled` the actions use;
-	   never a shrink absorber — a chip either fits whole or moves to the menu whole, which is what
-	   keeps the plan's measured widths honest. */
+	/* An identity item in the same group and on the same rhythm as every action. IconButton centres
+	   a --fs-body glyph in a --hit square; the matching inline inset gives bare text the same clear
+	   space around its ink. Never a shrink absorber — an item either fits whole or moves to the menu
+	   whole, which is what keeps the plan's measured widths honest. */
 	.info {
 		display: inline-flex;
 		align-items: center;
+		min-height: var(--hit);
 		min-width: 0;
+		padding-inline: var(--topbar-info-inset);
+		font-size: var(--fs-chrome);
+		flex: 0 0 auto;
 	}
 	.info.spilled {
+		display: none;
+	}
+	/* PerfHud owns the timer that makes `hudActive` live, so its host stays mounted while idle.
+	   Remove that empty host from layout until the HUD has ink; otherwise a zero-width flex item
+	   still introduces a gap before the patch name. */
+	.hud-info:not(.active) {
 		display: none;
 	}
 	/* The filename. Ellipsis against its own CAP, not against the bar's pressure (the plan spills
@@ -480,31 +498,35 @@
 	   60-character patch can claim of the zone. */
 	.path {
 		color: var(--text-dim);
-		/* The bar's shared chrome size (see app.css) — every word in the header on one baseline. */
-		font-size: var(--fs-chrome);
+	}
+	.path-value {
+		display: block;
 		max-width: 32ch;
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;
 	}
-	/* The actions and the overflow trigger they spill into. Two boxes, because `.actions` is pinned
-	   by `topbar.spec.ts` as EXACTLY the five app-global actions — the trigger is chrome for the
-	   menu, not a sixth action. */
+	/* The spillable items and their resident overflow trigger are two boxes: `.actions` owns every
+	   item that can relocate (identity + the five app-global actions), while the trigger is chrome
+	   for the menu, not a sixth spillable action. One token keeps the inter-item and trigger gaps on
+	   the same rhythm. */
 	.action-zone {
+		--topbar-item-gap: var(--space-2);
+		--topbar-info-inset: calc((var(--hit) - var(--fs-body)) / 2);
 		display: flex;
 		align-items: center;
-		gap: var(--space-2);
+		gap: var(--topbar-item-gap);
 		flex: 0 0 auto;
 	}
 	.actions {
 		display: flex;
 		align-items: center;
-		gap: var(--space-2);
+		gap: var(--topbar-item-gap);
 	}
-	/* A spilled action is in the menu instead; it stays in the DOM so its intrinsic width can be
-	   re-read when the responsive root size moves it. `:global`, because the class rides a
-	   primitive's `class` prop onto its inner <button> — and that same global part is what also
-	   catches `.split.spilled`, the wrapper that goes when both its segments have. */
+	/* A spilled item is in the menu instead; it stays in the DOM so its intrinsic width can be
+	   re-read when the responsive root size moves it. `:global`, because action classes ride a
+	   primitive's `class` prop onto its inner <button> — and that same global part also catches
+	   `.split.spilled`, the wrapper that goes when both its segments have. */
 	.actions :global(.spilled) {
 		display: none;
 	}

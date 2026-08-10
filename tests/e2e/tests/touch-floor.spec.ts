@@ -18,6 +18,10 @@ test('coarse pointer floors control height at 44px', async ({ page }) => {
 	await btn.waitFor();
 	const h = await btn.evaluate((el) => el.getBoundingClientRect().height);
 	expect(h).toBeGreaterThanOrEqual(44);
+	const barH = await page
+		.locator('.topbar')
+		.evaluate((el) => el.getBoundingClientRect().height);
+	expect(barH, 'the natural-height bar grows with its coarse-pointer controls').toBe(h);
 });
 
 // The workspace chrome strips render deliberately dense icon buttons — the tab bar's ＋ at 22px

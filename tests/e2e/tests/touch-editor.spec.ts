@@ -227,7 +227,8 @@ test('a tap on a plain neighbour is that node’s tap, not the sub-patch’s sec
 	// Same reason as the sibling case below: with the inspector off nothing slides over the second
 	// node, so this measures the identity guard and only the identity guard.
 	await page.getByTestId('inspector-toggle').click();
-	await expect(page.getByTestId('auto-side-panel')).toHaveCount(0);
+	await expect(page.getByTestId('auto-side-panel')).not.toHaveClass(/open/);
+	await expect(page.getByTestId('auto-side-panel')).toHaveCSS('visibility', 'hidden');
 	const a = await groupOneNodeAt(page, [40, 60]);
 	const plain = await addNode(page, 'Oscillator', 'inputs', [40, 60]);
 	await waitForNode(page, plain);
@@ -293,7 +294,8 @@ test('two taps on two DIFFERENT sub-patches are not one gesture', async ({ page 
 	// With the inspector off, nothing slides over the second node — so this measures the slop and
 	// only the slop, which is what widening it put at risk.
 	await page.getByTestId('inspector-toggle').click();
-	await expect(page.getByTestId('auto-side-panel')).toHaveCount(0);
+	await expect(page.getByTestId('auto-side-panel')).not.toHaveClass(/open/);
+	await expect(page.getByTestId('auto-side-panel')).toHaveCSS('visibility', 'hidden');
 	const a = await groupOneNodeAt(page, [40, 60]);
 	const b = await groupOneNodeAt(page, [40, 260]);
 	try {

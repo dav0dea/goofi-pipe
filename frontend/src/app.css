@@ -96,7 +96,7 @@
 	--fs-strong: 1rem;
 	--fs-title: 1.15rem;
 	/* Chrome text — the header bar's one text size, --fs-small snapped to whole CSS pixels.
-	   The fluid html clamp makes the rem sizes fractional (0.82rem ≈ 11.48px), and a 44px bar
+	   The fluid html clamp makes the rem sizes fractional (0.82rem ≈ 11.48px), and a bar
 	   full of separately-laid-out text elements snaps each fractional baseline to the device
 	   grid on its own — the ink scattered ±0.75px against the icons (Phil, 2026-08-08). One
 	   integer size means one baseline row for every word in the bar, by construction. */

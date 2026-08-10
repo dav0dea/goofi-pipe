@@ -27,9 +27,11 @@
 		title="Frames painted per second across all visible viewers (drops = latest-wins coalesced frames)"
 	>
 		<span class="fps">{p.fps.toFixed(0)} fps</span>
-		{#if p.dps > 0.5}
-			<span class="drop"><Icon name="chevron-down" /> {p.dps.toFixed(0)}/s</span>
-		{/if}
+		<!-- This slot stays present at zero. Occasional coalescing is normal, and mounting/unmounting
+		     the counter made that normal fluctuation shove the FPS readout sideways every 500ms. -->
+		<span class="drop" data-testid="perf-drops"
+			><Icon name="chevron-down" /> {p.dps.toFixed(0)}/s</span
+		>
 	</span>
 {/if}
 
@@ -52,7 +54,8 @@
 	   costs nothing ("no viewer is starved and no queue grows") and the tooltip above says so to the
 	   user. This used to flip the whole HUD to `--warning`, the same amber the bar beside it paints
 	   on a LOST CONTROL CONNECTION, so a healthy 2-3 node patch sat amber at ~4% coalescing. There
-	   is no threshold that makes a designed behaviour a fault; pinned in theme/styleDrift.test.ts. */
+	   is no threshold that makes a designed behaviour a fault; pinned in theme/styleDrift.test.ts.
+	   It remains in the row at zero so its changing value cannot reflow the FPS counter. */
 	.drop {
 		font-weight: 600;
 	}

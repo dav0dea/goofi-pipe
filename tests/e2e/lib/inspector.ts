@@ -94,8 +94,8 @@ export const sizeOn = (axis: PaneAxis, b: { width: number; height: number }): nu
 /**
  * Add an Oscillator and select it, so the inspector slides in. Returns its uid.
  *
- * `.open`, not merely visible: the pane is MOUNTED at every moment and parked off-edge until a
- * selection lands, so `toBeVisible` resolves on a pane that is still off-screen.
+ * `.open`, not merely attached: the pane is MOUNTED at every moment and hidden off-edge until a
+ * selection lands, so attachment alone does not say that the slide has started.
  */
 export async function openInspector(page: Page): Promise<string> {
 	const uid = await addNode(page, 'Oscillator', 'inputs', [40, 40]);

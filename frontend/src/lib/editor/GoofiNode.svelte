@@ -57,7 +57,7 @@
 	const flashing = $derived(flashStore.active(node?.uid));
 	const healthColor = $derived(isError ? 'var(--danger)' : 'var(--success)');
 	// Glanceable update rate at the right of the header — faint by default, brought
-	// forward on hover. Null until the node's first NODE_STATS push. Adds no height.
+	// forward on hover or selection. Null until the node's first NODE_STATS push. Adds no height.
 	const rateLabel = $derived(formatUpdateRate(node?.stats));
 
 	// Inputs are bare connectors on the left edge, stepping down from the top. A
@@ -285,7 +285,7 @@
 		min-width: 0;
 	}
 	/* Glanceable update rate, right-aligned. Faint at rest so it doesn't compete
-	   with the name; brought forward when the node is hovered. Tabular so the 2 Hz
+	   with the name; brought forward when the node is hovered or selected. Tabular so the 2 Hz
 	   number updates don't jitter the layout. */
 	.rate {
 		flex: 0 0 auto;
@@ -295,7 +295,8 @@
 		opacity: 0.3;
 		transition: opacity var(--dur-slow) var(--ease);
 	}
-	.goofi-node:hover .rate {
+	.goofi-node:hover .rate,
+	.goofi-node.selected .rate {
 		opacity: 0.85;
 	}
 	/* Touch: 0.3 is a "there if you look for it" resting state that hover then resolves. With no

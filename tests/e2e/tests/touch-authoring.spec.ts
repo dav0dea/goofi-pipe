@@ -111,7 +111,8 @@ test('412px portrait: add a node, connect it, open its parameters, change one, a
 	// The dismiss is load-bearing here, not decoration: at 412px the pane covers the canvas, so
 	// without a way out the patch could not be grown past its first node (D-R9).
 	await inspector.getByTestId('inspector-close').tap();
-	await expect(inspector).toHaveCount(0);
+	await expect(inspector).not.toHaveClass(/open/);
+	await expect(inspector).toHaveCSS('visibility', 'hidden');
 	await oscCard.getByTestId('slot-output-pin').first().tap();
 	await expect(page.getByTestId('add-menu-seed'), 'the menu opened seeded from that slot').toBeVisible();
 	await pickAndPlace(page, 'Buffer', { x: spot.x, y: spot.y + 140 });

@@ -16,6 +16,11 @@ import { addNode, waitForNode } from '../lib/goofi';
 
 const pane = (page: Page) => page.getByTestId('auto-side-panel');
 
+async function expectParked(page: Page, message = 'the inspector is parked'): Promise<void> {
+	await expect(pane(page), message).not.toHaveClass(/open/);
+	await expect(pane(page), `${message} and is no longer painted`).toHaveCSS('visibility', 'hidden');
+}
+
 async function addAndSelect(page: Page): Promise<string> {
 	await page.goto('/');
 	await waitForApp(page);
@@ -36,12 +41,20 @@ test.afterEach(async ({ page }) => {
 
 test('the inspector has a dismiss control, and it closes the pane', async ({ page }) => {
 	await addAndSelect(page);
-	const close = pane(page).getByTestId('inspector-close');
+	const panel = pane(page);
+	const close = panel.getByTestId('inspector-close');
 	await expect(close, 'the pane carries its own way out').toBeVisible();
+	await expect(panel).toHaveCSS('transform', 'matrix(1, 0, 0, 1, 0, 0)');
+	const openingDuration = await panel.evaluate((el) => getComputedStyle(el).transitionDuration.split(',')[0]);
 	await close.click();
-	// Turning the inspector off unmounts the pane entirely (`{#if enabled}`) — it does not merely
-	// slide out, so the canvas underneath is genuinely handed back.
-	await expect(pane(page), 'and it closes').toHaveCount(0);
+	await expect(panel, 'closing starts the outgoing state').not.toHaveClass(/open/);
+	const outgoing = await panel.evaluate((el) => {
+		const cs = getComputedStyle(el);
+		return { visibility: cs.visibility, duration: cs.transitionDuration.split(',')[0] };
+	});
+	expect(outgoing.visibility, 'the pane remains painted while it slides out').toBe('visible');
+	expect(outgoing.duration, 'open and close use the same motion duration').toBe(openingDuration);
+	await expectParked(page, 'the completed outro hands the canvas back');
 });
 
 test('the ✕ is a close, not an off-switch: the next selection brings the pane back', async ({
@@ -49,7 +62,7 @@ test('the ✕ is a close, not an off-switch: the next selection brings the pane 
 }) => {
 	const uid = await addAndSelect(page);
 	await pane(page).getByTestId('inspector-close').click();
-	await expect(pane(page), 'dismissed').toHaveCount(0);
+	await expectParked(page, 'dismissed');
 
 	// Deselect, re-select the SAME node → the pane returns. A dismissal is scoped to the
 	// selection it was made in, not to the editor's lifetime.
@@ -59,7 +72,7 @@ test('the ✕ is a close, not an off-switch: the next selection brings the pane 
 
 	// Dismiss again, then select a DIFFERENT node directly → the pane returns for it.
 	await pane(page).getByTestId('inspector-close').click();
-	await expect(pane(page)).toHaveCount(0);
+	await expectParked(page);
 	const other = await addNode(page, 'Buffer', 'inputs');
 	await waitForNode(page, other);
 	await page.evaluate((u) => (window as any).goofi.commands.select([u]), other);
@@ -68,12 +81,13 @@ test('the ✕ is a close, not an off-switch: the next selection brings the pane 
 	// The ◧, by contrast, IS the off-switch: turn the inspector off with it and selection
 	// changes stay silent.
 	await pane(page).getByTestId('inspector-close').click();
+	await expectParked(page);
 	await page.getByTestId('inspector-toggle').click(); // shows (clears the dismissal)
 	await expect(pane(page)).toHaveClass(/open/);
 	await page.evaluate(() => (window as any).goofi.commands.select([]));
 	await page.getByTestId('inspector-toggle').click(); // parked + visible → this press disables
 	await page.evaluate((u) => (window as any).goofi.commands.select([u]), uid);
-	await expect(pane(page), 'disabled stays disabled across selections').toHaveCount(0);
+	await expectParked(page, 'disabled stays disabled across selections');
 });
 
 test('the dismiss control lives IN the identity header, right-most, after the state badge', async ({
@@ -138,19 +152,45 @@ test('Escape closes the inspector by clearing the selection', async ({ page }) =
 });
 
 /**
- * `{#if enabled}` mounts the pane whenever the inspector is ON, which is the default — so with
- * nothing selected it sits parked at `translateX(100%)`. The ✕ used to ride the pane itself (a
+ * The pane stays mounted so it can animate both directions; with nothing selected it sits hidden
+ * and parked at `translateX(100%)`. The ✕ used to ride the pane itself (a
  * strip of chrome above the header), which left a focusable control inside the parked subtree for
  * an AT virtual cursor and any split-layout Tab order to reach. It now lives in ParamForm's
  * identity Bar, which only exists WITH a node — so the parked subtree holds no authored focusable
  * control at all, by construction rather than by a pointer-events guard.
  */
-test('the parked inspector is out of reach, not merely invisible', async ({ page }) => {
+test('the parked inspector is neither painted nor reachable across an orientation change', async ({
+	page
+}) => {
 	await page.goto('/');
 	await waitForApp(page);
 	// The pane is mounted (the inspector is enabled by default) but has nothing to inspect.
 	await expect(pane(page), 'parked, not unmounted').toHaveCount(1);
 	await expect(pane(page)).not.toHaveClass(/open/);
+	await expect(pane(page), 'the parked box is not painted').toHaveCSS('visibility', 'hidden');
+
+	// Crossing the same portrait/landscape seam a phone rotation crosses changes the parked
+	// transform from Y to X. It must remain unpainted while that transform transition runs.
+	await page.setViewportSize({ width: 412, height: 915 });
+	await expect
+		.poll(() =>
+			pane(page).evaluate((el) =>
+				getComputedStyle(el).getPropertyValue('--pane-axis').trim()
+			)
+		)
+		.toBe('y');
+	await page.setViewportSize({ width: 915, height: 412 });
+	await expect
+		.poll(() =>
+			pane(page).evaluate((el) =>
+				getComputedStyle(el).getPropertyValue('--pane-axis').trim()
+			)
+		)
+		.toBe('x');
+	await expect(pane(page), 'rotation does not reveal the parked transition').toHaveCSS(
+		'visibility',
+		'hidden'
+	);
 
 	await expect(
 		pane(page).getByTestId('inspector-close'),

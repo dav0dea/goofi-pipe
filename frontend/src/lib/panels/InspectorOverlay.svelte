@@ -42,9 +42,9 @@
 	// error section is the home for this since the dockable Errors panel (which
 	// used to carry it) was removed.
 	function restart(): void {
-		if (!node) return;
+		if (!renderedNode) return;
 		void graph()
-			.restartNode(node.uid)
+			.restartNode(renderedNode.uid)
 			.catch((e) => console.warn('restart failed', e));
 	}
 
@@ -72,6 +72,20 @@
 	let resizing = $state(false);
 	/** The pane itself — the drag measures its RENDERED box, since both bounds are CSS's. */
 	let paneEl = $state<HTMLElement | null>(null);
+	/** Closing is a real outro, so keep the last node rendered until the transform finishes. The
+	 * pane itself stays mounted and parked; once hidden, dropping this snapshot makes the off-state
+	 * as cheap as the old unmounted one without taking the outgoing frame away. */
+	let renderedNode = $state<NodeInstanceInfo | null>(null);
+	const open = $derived(enabled && node !== null);
+
+	$effect(() => {
+		if (open) renderedNode = node;
+	});
+
+	function finishPanelTransition(e: TransitionEvent): void {
+		if (e.target !== e.currentTarget || e.propertyName !== 'transform' || open) return;
+		renderedNode = null;
+	}
 
 	/** The in-flight resize's teardown; non-null only between pointerdown and its resolution. */
 	let teardownResize: (() => void) | null = null;
@@ -126,22 +140,20 @@
 	onDestroy(() => teardownResize?.());
 </script>
 
-{#if enabled}
-	<!-- `inert` while there is nothing to inspect. The pane stays MOUNTED and parked off-screen so
-	     the slide plays on the next selection, and `pointer-events: none` already keeps a pointer
-	     out — but that says nothing about focus or the accessibility tree, so this ✕ was Tab-reachable
-	     in any layout where the editor is not the active panel, and an AT virtual cursor found it in
-	     every one. It flips state the user cannot see. -->
-	<aside
-		class="side-panel"
-		class:open={node !== null}
-		class:resizing
-		inert={node === null}
-		bind:this={paneEl}
-		style:--pane-w={paneSize.x === null ? null : `${paneSize.x}px`}
-		style:--pane-h={paneSize.y === null ? null : `${paneSize.y}px`}
-		data-testid="auto-side-panel"
-	>
+<!-- `inert` whenever closed. The pane stays MOUNTED and keeps its last content only through the
+     outgoing transform, so open and close are the same visible slide. Once parked it becomes
+     hidden and empty; an orientation change can update its X/Y park without painting a ghost. -->
+<aside
+	class="side-panel"
+	class:open
+	class:resizing
+	inert={!open}
+	bind:this={paneEl}
+	ontransitionend={finishPanelTransition}
+	style:--pane-w={paneSize.x === null ? null : `${paneSize.x}px`}
+	style:--pane-h={paneSize.y === null ? null : `${paneSize.y}px`}
+	data-testid="auto-side-panel"
+>
 		<!-- The size arrives as CUSTOM PROPERTIES rather than as a `width`, because which axis it
 		     feeds is the container query's decision below and an inline `width` cannot be beaten by
 		     any query. No `aria-orientation`: this separator takes no keyboard, and the axis it would
@@ -156,10 +168,10 @@
 			data-testid="panel-resize-handle"
 		></div>
 		<ScrollArea>
-			<ParamForm {node} {onClose} />
-			{#if node && !node.subpatch}
-				<MetadataPanel {node} />
-				{#if node.error}
+			<ParamForm node={renderedNode} {onClose} />
+			{#if renderedNode && !renderedNode.subpatch}
+				<MetadataPanel node={renderedNode} />
+				{#if renderedNode.error}
 					<section class="node-error" data-testid="inspector-error">
 						<div class="err-head">
 							<header>Error</header>
@@ -171,13 +183,12 @@
 								data-testid="inspector-restart">↻ Restart</Button
 							>
 						</div>
-						<pre>{node.error}</pre>
+						<pre>{renderedNode.error}</pre>
 					</section>
 				{/if}
 			{/if}
 		</ScrollArea>
 	</aside>
-{/if}
 
 <style>
 	.side-panel {
@@ -226,18 +237,28 @@
 		flex-direction: column;
 		min-width: 0;
 		transform: translateX(100%);
-		transition: transform var(--dur-slow) var(--ease);
+		transition:
+			transform var(--dur-slow) var(--ease),
+			visibility 0s;
 		box-shadow: var(--shadow-side);
 		z-index: var(--z-side-panel);
 	}
 	.side-panel.open {
 		transform: translateX(0);
 	}
-	/* When closed the panel is parked off-screen; its resize handle would
-	   otherwise still poke back into view at the right edge and show a
-	   col-resize cursor. Disable all interaction until it's actually open. */
+	/* When closed the panel is parked off-screen so the next open can still slide from its current
+	   anchor. Keep that parked box unpainted: when a host rotates, the park transform changes from
+	   X to Y and the transform transition would otherwise fly its ghost diagonally across the host.
+	   Its resize handle would also poke back into view and show a resize cursor, so disable all
+	   interaction until the pane is actually open. */
 	.side-panel:not(.open) {
+		visibility: hidden;
 		pointer-events: none;
+		/* Hold visibility through the outgoing transform, then hide on its final frame. Entering uses
+		   the zero-duration base declaration above, so the pane is visible before it slides in. */
+		transition:
+			transform var(--dur-slow) var(--ease),
+			visibility var(--dur-slow) step-end;
 	}
 	.side-panel.resizing {
 		transition: none;
@@ -381,7 +402,7 @@
 				border-top: 1px solid var(--border);
 				box-shadow: var(--shadow-sheet);
 				/* D-I8: the same motion tokens as the X slide above, a quarter turn round. The
-				   `:not(.open)` park rule and its `pointer-events: none` are axis-free and stand. */
+				   `:not(.open)` park rule remains hidden and inert on either axis. */
 				transform: translateY(100%);
 			}
 			.side-panel.open {

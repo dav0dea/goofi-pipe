@@ -231,10 +231,10 @@ test('the inspector leaves the canvas it overlays reachable', async ({ page }) =
 	try {
 		await page.evaluate((u) => (window as any).goofi.commands.select([u]), uid);
 		const pane = page.getByTestId('auto-side-panel');
-		// `.open`, not merely visible: the pane is MOUNTED at every moment (`{#if enabled}`) and
-		// parked at `translateX(100%)` until a selection lands, so `toBeVisible` resolves on a pane
-		// still sitting off the right edge — and every position measured below would be that parked
-		// one rather than the layout's. Then read it SETTLED: the class landing and the transform
+		// `.open`, not merely attached: the pane is MOUNTED at every moment (`{#if enabled}`) and
+		// hidden off-edge until a selection lands, so attachment can resolve before the pane opens —
+		// and every position measured below would be that parked one rather than the layout's. Then
+		// read it SETTLED: the class landing and the transform
 		// having been applied are two different frames.
 		await expect(pane).toHaveClass(/open/);
 		const p = await settledBox(pane);

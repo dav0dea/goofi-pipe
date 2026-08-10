@@ -107,7 +107,7 @@ test('Popover places against the visual viewport, not under the keyboard', async
 /**
  * The other inset the device seam owns, and the one F shipped as a no-op: the notch / rounded-corner
  * / home-indicator safe area. `viewport-fit=cover` (app.html) makes the app draw under all three, so
- * the padding is what keeps the 44px TopBar and the bottom-edge controls out from under them.
+ * the padding is what keeps the TopBar and the bottom-edge controls out from under them.
  *
  * It was stated on `body`. The shell is `position: fixed; inset: 0`, so it is laid out against the
  * INITIAL CONTAINING BLOCK — nothing on `body` can move it, and phase 1 below pins exactly that, so
