@@ -235,6 +235,39 @@ async fn a_stop_signals_first_and_kills_after_the_grace() {
     state.release_mount();
 }
 
+/// A harness belongs to the patch that spawned it: its cwd IS that patch's workspace and its MCP
+/// address edits that patch's graph. So opening another patch tears every one of them down through
+/// the same stop path. Without it a `new` swaps the mount underneath a live agent, which goes on
+/// editing a patch it was never launched for, from a directory that no longer exists, while the
+/// roster still calls it running.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_new_patch_tears_down_the_harnesses_the_old_one_spawned() {
+    let (addr, state) = start_server().await;
+    let (mut ctl, _) = connect_async(format!("ws://{addr}/control")).await.unwrap();
+    recv_text(&mut ctl).await;
+    let id = call(&mut ctl, 1, "spawn_harness", json!({ "harness": "_sh" })).await["instance_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let (mut term, _) = connect_async(format!("ws://{addr}/term/{id}")).await.unwrap();
+    // Wait for the child to answer before replacing the patch, so the teardown cannot be racing
+    // the spawn it is meant to undo.
+    term.send(Message::Binary(b"echo $((6*7))\n".to_vec())).await.unwrap();
+    read_until(&mut term, "42").await;
+
+    call(&mut ctl, 2, "new", json!({})).await;
+
+    let roster = call(&mut ctl, 3, "list_harnesses", json!({})).await;
+    assert_eq!(roster["instances"], json!([]), "the replaced patch's harnesses stayed: {roster}");
+    let (refused, err) =
+        tool(&addr, &format!("/mcp/{id}"), 1, "add_node", json!({ "type": "Oscillator" })).await;
+    assert!(err, "a harness from the replaced patch still edited the new one: {refused}");
+    // …and the child is gone, not merely forgotten: the socket that was watching it sees the exit.
+    let tail = read_until(&mut term, "exit_code").await;
+    assert!(tail.contains("exit_code"), "the child outlived the patch that spawned it: {tail:?}");
+    state.release_mount();
+}
+
 /// The design's centre: the address is MINTED by goofi and written into the harness's own config,
 /// so identity never travels through the agent. Stopping drops the route — teachably — while the
 /// central `/mcp` every external agent uses stays open, and the two undo stacks stay apart.

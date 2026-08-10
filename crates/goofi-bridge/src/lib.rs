@@ -1714,7 +1714,14 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
                 }
                 // Commit, now that nothing left can fail: the loaded patch's workspace becomes the
                 // live one and the mount it replaced is reclaimed — after the lock drops, since
-                // deleting a tree is a walk and the lock guards only the swap.
+                // deleting a tree is a walk and the lock guards only the swap. The harnesses the
+                // replaced patch spawned go with it: each was launched INTO that workspace and
+                // edits that graph through an address goofi minted for it, so one surviving here
+                // would go on editing a patch it was never launched for out of a directory the
+                // next line deletes. Announced too — `graph_replaced` below carries the emptied
+                // roster, but a client tracking only the transitions must not have to infer it.
+                state.harnesses.stop_all();
+                events.push(event("harness_changed", state.harnesses.roster()));
                 let replaced = std::mem::replace(&mut *state.mount.lock().unwrap(), fresh);
                 remove_mount(&replaced);
                 // The unpacked tree IS what the archive holds — but every file in it was written

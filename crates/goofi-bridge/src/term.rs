@@ -264,16 +264,36 @@ impl Harnesses {
             self.instances.lock().unwrap().retain(|(k, _)| k != id);
             return Ok(());
         }
-        // The address closes FIRST, so an in-flight tool call finishes while the next one is
-        // refused — the child is only signalled after.
-        inst.stopping.store(true, Ordering::Relaxed);
-        signal(&inst, libc::SIGTERM)?;
-        std::thread::spawn(move || {
-            std::thread::sleep(GRACE);
-            let _ = signal(&inst, libc::SIGKILL);
-        });
-        Ok(())
+        begin_stop(inst)
     }
+
+    /// Stop every instance and clear the roster — what opening another patch does. A harness
+    /// belongs to the patch that spawned it: its cwd IS that patch's workspace and its minted
+    /// address edits that patch's graph, so surviving a load would leave it editing a patch it was
+    /// never launched for from a directory that no longer exists. Through the same stop path, and
+    /// dropped from the roster at once rather than when each child is reaped, because the patch
+    /// they belonged to is already gone. The mount they ran in is reclaimed while the grace runs,
+    /// so a doomed child briefly lives on a deleted cwd — cheaper, and less surprising, than
+    /// holding a patch's workspace open behind someone else's five-second timer.
+    pub fn stop_all(&self) {
+        for (_, inst) in std::mem::take(&mut *self.instances.lock().unwrap()) {
+            if inst.exit_code().is_none() {
+                let _ = begin_stop(inst);
+            }
+        }
+    }
+}
+
+/// Ask a running instance to leave, and insist after the grace. The address closes FIRST, so an
+/// in-flight tool call finishes while the next one is refused — the child is only signalled after.
+fn begin_stop(inst: Arc<Instance>) -> Result<(), String> {
+    inst.stopping.store(true, Ordering::Relaxed);
+    signal(&inst, libc::SIGTERM)?;
+    std::thread::spawn(move || {
+        std::thread::sleep(GRACE);
+        let _ = signal(&inst, libc::SIGKILL);
+    });
+    Ok(())
 }
 
 /// One spawned harness: its PTY, its exit, and whether its MCP address is still open.
