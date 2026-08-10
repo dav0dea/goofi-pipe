@@ -1940,30 +1940,29 @@ impl Graph {
         node_in: Uid,
         slot_in: &str,
     ) -> Result<(), String> {
-        let slot_out = self
-            .resolve_output(node_out, slot_out)
+        // Each slot's DECL, taken once: it carries both the `&'static` name a link is keyed by and
+        // the dtype the check below needs, so there is no second lookup that could fail on its own.
+        let out = self
+            .find_output(node_out, slot_out)
             .ok_or_else(|| format!("no output slot `{slot_out}` on {node_out}"))?;
-        let slot_in = self
-            .resolve_input(node_in, slot_in)
+        let inp = self
+            .find_input(node_in, slot_in)
             .ok_or_else(|| format!("no input slot `{slot_in}` on {node_in}"))?;
+        let (slot_out, slot_in) = (out.name, inp.name);
         // A cross-dtype cable can never carry data — propagation writes the producer's frame into
         // an input the consumer reads with the wrong accessor, so the consumer sits empty forever.
         // Refuse it here, at the one door every link authoring path goes through (the canvas, the
         // boundary resolution, a `.gfi` restore, an agent), naming both ends and both dtypes.
-        let (out_kind, in_kind) = (
-            self.output_slot_type(node_out, slot_out).ok_or("unknown output slot")?,
-            self.input_slot_type(node_in, slot_in).ok_or("unknown input slot")?,
-        );
-        if out_kind != in_kind {
+        if out.kind != inp.kind {
             let label = |uid: Uid, slot: &str| {
                 format!("{}.{slot}", self.name(uid).unwrap_or("?"))
             };
             return Err(format!(
                 "cannot link {} ({}) to {} ({}): the slots carry different data types",
                 label(node_out, slot_out),
-                out_kind.name(),
+                out.kind.name(),
                 label(node_in, slot_in),
-                in_kind.name(),
+                inp.kind.name(),
             ));
         }
 

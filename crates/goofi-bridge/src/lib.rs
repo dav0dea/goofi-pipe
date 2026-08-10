@@ -911,8 +911,8 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
             }));
         }
         // …and `inspect_patch`'s header says the same thing, so its walk is taken here too, before
-        // the lock. Sampled only for that op; the arm errors rather than guessing if that drifts.
-        let dirty = (op == "inspect_patch").then(|| state.is_dirty());
+        // the lock — and only for that op, which is what the short circuit is for.
+        let dirty = op == "inspect_patch" && state.is_dirty();
         let mut g = state.graph.lock().unwrap();
         match op.as_str() {
             "list_nodes" => Ok(json!({ "types": schemas::catalog_types(&g) })),
@@ -1354,7 +1354,6 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
                     }
                     None => None,
                 };
-                let dirty = dirty.ok_or("inspect_patch: dirtiness must be sampled off the graph lock")?;
                 let workspace = state.mount();
                 let text =
                     inspect::patch(&g, scope, state.save_path().as_deref(), &workspace.to_string_lossy(), dirty)?;
