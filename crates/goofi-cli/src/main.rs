@@ -136,8 +136,8 @@ async fn run(cli: Cli, mut state: AppState, shutdown: impl Future<Output = ()>) 
     // `--list-nodes` runs the SAME registration the server does and reports its result, so the
     // listing is what actually registered — not a hand-kept mirror of the routing rule.
     let mut discovered = register_subproc(&state, subproc_nodes.as_deref(), &subproc_python);
-    if let Some(dir) = state.system_nodes.clone() {
-        discovered.extend(boot_scan(&state, &dir));
+    if state.system_nodes.is_some() {
+        discovered.extend(boot_scan(&state));
     }
 
     let code = if list_nodes {
@@ -368,14 +368,19 @@ const NO_PYTHON_NOTE: &str = "";
 #[cfg(not(feature = "python"))]
 const NO_PYTHON_NOTE: &str = " (built without the `python` feature — node discovery is off)";
 
-/// The boot scan, reported. It calls the seam every rescan calls, and does the talking the seam
-/// deliberately does not — including the collision warning, which is only TRUE here: the boot
-/// registry starts empty, so a `Replaced` can only be a second node file claiming a name an
-/// earlier one took. Returns the type names `--list-nodes` prints.
-fn boot_scan(state: &AppState, dir: &Path) -> Vec<String> {
-    let found = {
+/// The boot scan, reported. It runs the bridge's own `rescan` — not merely the same seam — so the
+/// baseline the palette's first refresh diffs against IS this scan, and pressing refresh with
+/// nothing edited says "no changes" instead of re-announcing the whole shipped tree. What it adds
+/// is the talking the seam deliberately does not do, including the collision warning, which is only
+/// TRUE here: the boot registry starts empty, so a `Replaced` can only be a second node file
+/// claiming a name an earlier one took. Returns the type names `--list-nodes` prints.
+fn boot_scan(state: &AppState) -> Vec<String> {
+    let (found, dir) = {
         let mut g = state.graph.lock().unwrap();
-        (state.scan_nodes)(&mut g, dir)
+        // The mount is empty at boot, so this is exactly the shipped directory — one call, and a
+        // patch loaded later re-derives through the same function.
+        let patch = state.mount();
+        (goofi_bridge::rescan(state, &mut g, &patch).1, state.system_nodes.clone())
     };
     let (mut n_in, mut n_sub, mut n_bad) = (0u32, 0u32, 0u32);
     let mut names = Vec::new();
@@ -403,7 +408,7 @@ fn boot_scan(state: &AppState, dir: &Path) -> Vec<String> {
     let bad = if n_bad > 0 { format!(", {n_bad} unavailable") } else { String::new() };
     println!(
         "  auto-routed {n_in} in-process + {n_sub} subprocess node type(s) from {}{bad}{NO_PYTHON_NOTE}",
-        dir.display()
+        dir.unwrap_or_default().display()
     );
     names
 }

@@ -61,7 +61,10 @@ test('a node file written into the patch workspace joins the palette, marked as 
 
 		fs.writeFileSync(file, SOURCE);
 		const diff = await rescan(page);
-		expect(diff.added, 'the rescan reports what it found').toContain('E2ePatchNode');
+		// ONLY the new file — the shipped `nodes/` tree was indexed by the boot scan, which runs
+		// this very function, so a refresh reports what changed rather than re-announcing goofi's
+		// own nodes as new.
+		expect(diff.added, 'the rescan reports exactly what it found').toEqual(['E2ePatchNode']);
 
 		// The catalog reaches this tab through the `node_types` broadcast, not a reply, so wait for
 		// the store rather than asserting on the round trip that produced it.

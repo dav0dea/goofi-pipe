@@ -546,22 +546,32 @@ pub struct ScanDiff {
 /// The previous scan's stamps are the baseline, so what comes back is a diff rather than a listing.
 /// Removal is driven by that baseline too, which is what keeps a type discovered some OTHER way —
 /// a `--subproc-nodes` directory, a test's direct registration — out of the blast radius.
-fn rescan(state: &AppState, g: &mut Graph, patch: &std::path::Path) -> ScanDiff {
+///
+/// `pub`, and returning the raw per-file outcomes beside the diff, for ONE caller: the CLI's boot
+/// scan runs this rather than the seam directly, so the baseline the first refresh diffs against is
+/// the boot scan itself (otherwise the first press of refresh re-announces the whole shipped tree as
+/// new) — and so boot reports outcomes the seam deliberately does not print.
+pub fn rescan(
+    state: &AppState,
+    g: &mut Graph,
+    patch: &std::path::Path,
+) -> (ScanDiff, Vec<ScannedType>) {
     let mut found: std::collections::BTreeMap<String, Option<Stamp>> = Default::default();
     let mut patch_types: HashSet<String> = HashSet::new();
+    let mut outcomes = Vec::new();
     let dirs = [(state.system_nodes.clone(), false), (Some(patch.join("nodes")), true)];
     for (dir, is_patch) in dirs {
         let Some(dir) = dir.filter(|d| d.is_dir()) else { continue };
         for t in (state.scan_nodes)(g, &dir) {
             // A refused name never reaches the palette (a built-in owns it), so it must not enter
             // the index either — it would report as `added` and, later, as `removed`.
-            if t.registration == goofi_engine::Registration::Refused {
-                continue;
+            if t.registration != goofi_engine::Registration::Refused {
+                if is_patch {
+                    patch_types.insert(t.type_name.clone());
+                }
+                found.insert(t.type_name.clone(), t.stamp);
             }
-            if is_patch {
-                patch_types.insert(t.type_name.clone());
-            }
-            found.insert(t.type_name, t.stamp);
+            outcomes.push(t);
         }
     }
     g.set_patch_types(patch_types);
@@ -580,7 +590,7 @@ fn rescan(state: &AppState, g: &mut Graph, patch: &std::path::Path) -> ScanDiff 
         g.remove_dyn_type(name);
     }
     *prev = found;
-    diff
+    (diff, outcomes)
 }
 
 /// Restart every live instance of a type whose file changed, so editing a node file makes the nodes
@@ -892,7 +902,7 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
             // a human presses the palette's refresh button. The diff comes back so either can say
             // what happened, and the instances of a type whose file changed restart onto it.
             "rescan_nodes" => {
-                let diff = rescan(state, &mut g, &state.mount());
+                let (diff, _) = rescan(state, &mut g, &state.mount());
                 restart_changed(&mut g, &diff);
                 events.push(node_types_event(&g));
                 Ok(json!({ "added": diff.added, "changed": diff.changed, "removed": diff.removed }))
@@ -1976,15 +1986,23 @@ mod node_scan_tests {
         write_node(&nodes, "my_thing.py", "1.0");
 
         let mut g = state.graph.lock().unwrap();
-        let diff = rescan(&state, &mut g, &state.mount());
+        let diff = rescan(&state, &mut g, &state.mount()).0;
         assert_eq!(diff.added, ["MyThing"], "the file becomes a type");
+        // Twice over an unchanged tree is a no-op: the baseline is what the LAST scan found, so
+        // pressing refresh with nothing edited says nothing changed. Boot seeds that baseline
+        // through this very function, which is why the first refresh of a session is quiet too.
+        let again = rescan(&state, &mut g, &state.mount()).0;
+        assert!(
+            again.added.is_empty() && again.changed.is_empty() && again.removed.is_empty(),
+            "a rescan of an unchanged tree changes nothing"
+        );
         let live = g.add_node("MyThing", None).expect("a patch node is addable");
         g.tick();
         assert_eq!(emitted(&g, live), 1.0);
 
         // Edited: the type is re-registered and the LIVE instance is restarted onto it.
         write_node(&nodes, "my_thing.py", "2.0");
-        let diff = rescan(&state, &mut g, &state.mount());
+        let diff = rescan(&state, &mut g, &state.mount()).0;
         assert_eq!(diff.changed, ["MyThing"], "an edited file reports as changed");
         assert!(diff.added.is_empty() && diff.removed.is_empty());
         restart_changed(&mut g, &diff);
@@ -1994,7 +2012,7 @@ mod node_scan_tests {
         // Deleted: unaddable, but the instance is left alone (removal closes the door, it does not
         // reach into the graph).
         std::fs::remove_file(nodes.join("my_thing.py")).unwrap();
-        let diff = rescan(&state, &mut g, &state.mount());
+        let diff = rescan(&state, &mut g, &state.mount()).0;
         assert_eq!(diff.removed, ["MyThing"]);
         assert!(g.add_node("MyThing", None).is_err(), "a vanished type is no longer addable");
         g.tick();
