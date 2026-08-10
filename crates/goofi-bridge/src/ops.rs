@@ -24,7 +24,8 @@ pub enum Surface {
     /// the patch AND clears the undo history, so an agent that called it could not take it back
     /// (user, 2026-08-10 — a human who wants a fresh patch makes one). `set_layout` is here
     /// because the flat layout ops supersede it (plan Task 2) and it should never become an agent
-    /// tool on the way.
+    /// tool on the way; `set_viewpoint` is here because a viewpoint belongs to a client that has a
+    /// screen — an agent has no camera to move, and moving the human's would be the whole hazard.
     ControlOnly,
 }
 
@@ -106,6 +107,45 @@ pub static REGISTRY: &[Op] = &[
          result: "{ok: true}" },
     Op { name: "set_layout", surface: ControlOnly, writes: true, args: "layout:json! intent:string",
          doc: "Store the editor's panel arrangement verbatim. `intent:\"navigation\"` means the user only looked around, so it must not dirty the patch.",
+         result: "{ok: true}" },
+    Op { name: "set_viewpoint", surface: ControlOnly, writes: true, args: "viewpoint:json!",
+         doc: "Store where this client is looking — active page, maximize, camera, each panel's sub-patch path. Persisted, never converged, never dirtying.",
+         result: "{ok: true}" },
+    Op { name: "inspect_layout", surface: Mcp, writes: false, args: "",
+         doc: "The whole arrangement as a tree: every page, split and panel with its id, order and share. How a caller discovers the split id it needs to name as a move target.",
+         result: "{text: string}" },
+    Op { name: "session_list_pages", surface: Mcp, writes: false, args: "",
+         doc: "The layout pages, in order, with the panel count of each. Pages are addressed by name everywhere else.",
+         result: "{pages: [{name, id, index, panels}]}" },
+    Op { name: "session_add_page", surface: Mcp, writes: true, args: "name:string!",
+         doc: "Add a layout page holding one node-editor panel. The name must be free — it is how every page op addresses it.",
+         result: "{ok: true}" },
+    Op { name: "session_remove_page", surface: Mcp, writes: true, args: "name:string!",
+         doc: "Remove a page and every panel on it. The last page stays.",
+         result: "{ok: true}" },
+    Op { name: "session_rename_page", surface: Mcp, writes: true, args: "from:string! to:string!",
+         doc: "Rename a page. A field edit: its id and every panel on it stand.",
+         result: "{ok: true}" },
+    Op { name: "session_reorder_page", surface: Mcp, writes: true, args: "name:string! to_index:int!",
+         doc: "Move a page to a position in the tab strip.",
+         result: "{ok: true}" },
+    Op { name: "page_list_panels", surface: Mcp, writes: false, args: "page:string!",
+         doc: "The panels on a page as a table: uid, type, the node each is bound to, and its share of the page.",
+         result: "{text: string}" },
+    Op { name: "page_split_panel", surface: Mcp, writes: true,
+         args: "page:string! panel:string! direction:string ratio:float",
+         doc: "Split a panel along `row`/`column`, birthing an EMPTY panel that takes `ratio` of its space (default half). Give the new panel content with page_set_panel.",
+         result: "the new panel's uid" },
+    Op { name: "page_set_panel", surface: Mcp, writes: true,
+         args: "page:string! panel:string! type:string state:json size_mult:float",
+         doc: "Set a panel's type and/or its state (a viewer's `{node, slot}`), and scale its share. A new type clears the old type's state, so send both together to rebind.",
+         result: "{ok: true}" },
+    Op { name: "page_move_panel", surface: Mcp, writes: true,
+         args: "page:string! panel:string! new_parent:string! order_index:int",
+         doc: "Move a panel — or the whole subtree under a split id — to sit at `order_index` inside another split, on any page. Identity and every descendant are preserved.",
+         result: "{ok: true}" },
+    Op { name: "page_remove_panel", surface: Mcp, writes: true, args: "page:string! panel:string!",
+         doc: "Close a panel (or a whole split's subtree). Its space goes to its siblings; a page keeps its last panel.",
          result: "{ok: true}" },
     Op { name: "set_node_viewers", surface: Mcp, writes: true, args: "node:uid! viewers:json!",
          doc: "Store a node's per-slot viewer view-state (chosen kind, settings, collapse).",
@@ -286,7 +326,16 @@ mod tests {
             REGISTRY.iter().filter(|o| o.surface == ControlOnly).map(|o| o.name).collect();
         assert_eq!(
             control_only,
-            ["list_dir", "set_layout", "serialize", "save", "load_text", "load", "new"]
+            [
+                "list_dir",
+                "set_layout",
+                "set_viewpoint",
+                "serialize",
+                "save",
+                "load_text",
+                "load",
+                "new"
+            ]
         );
     }
 

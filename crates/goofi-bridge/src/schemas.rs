@@ -240,7 +240,7 @@ pub fn runtime_overlay(g: &Graph) -> Value {
 /// The snapshot (`hello` / `graph_replaced` payload). Deliberately carries NO graph structure:
 /// nodes, links and the sub-patch forest live in the CRDT doc alone (the client assembles them
 /// from doc + catalog). What it does carry is the session frame — instance id, palette, save
-/// path, layout — plus [`runtime_overlay`], the one piece of per-node truth the doc never holds.
+/// path, layout, viewpoint — plus [`runtime_overlay`], the one per-node truth the doc never holds.
 pub fn snapshot(
     g: &Graph,
     instance_id: &str,
@@ -257,6 +257,9 @@ pub fn snapshot(
         "save_path": save_path,
         "unsaved_changes": unsaved,
         "layout": g.layout().clone(),
+        // Where the saver was looking. Client-local, so it is not a doc root — but it still has to
+        // arrive, or reopening a patch would forget which page and sub-patch it was left on.
+        "viewpoint": g.viewpoint().clone(),
     });
     if with_protocol {
         snap["protocol_version"] = json!(PROTOCOL_VERSION);

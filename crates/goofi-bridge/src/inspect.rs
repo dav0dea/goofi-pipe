@@ -390,6 +390,82 @@ pub fn node_source(g: &Graph, ty: &str, dirs: &[(std::path::PathBuf, &str)]) -> 
     Ok(info)
 }
 
+// ---------------------------------------------------------------------------
+// The arrangement — the flat layout read back as something a caller can navigate
+// ---------------------------------------------------------------------------
+
+use goofi_engine::layout::{Entry, Layout};
+
+/// One entry's line in the tree, and its children under it. A split names its axis, a panel its
+/// type and binding; both carry the share of their parent they take, which is the number a caller
+/// adjusts with `page_set_panel`'s `size_mult`.
+fn layout_line(l: &Layout, id: &str, depth: usize, out: &mut String) {
+    let pad = "  ".repeat(depth);
+    match l.get(id) {
+        Some(Entry::Page { name, .. }) => out.push_str(&format!("{pad}page `{name}`  [{id}]\n")),
+        Some(Entry::Split { size, axis, .. }) => {
+            out.push_str(&format!("{pad}{} split {size:.2}  [{id}]\n", axis.name()))
+        }
+        Some(Entry::Panel { size, panel_type, state, .. }) => {
+            let bound = state.get("node").and_then(|v| v.as_str()).map(|n| format!(" → {n}"));
+            out.push_str(&format!(
+                "{pad}{panel_type}{} {size:.2}  [{id}]\n",
+                bound.unwrap_or_default()
+            ))
+        }
+        None => {}
+    }
+    for c in l.children(id) {
+        layout_line(l, &c, depth + 1, out);
+    }
+}
+
+/// The whole arrangement as an indented tree. `page_list_panels` alone cannot express the shape, so
+/// without this a caller could never discover the split id it has to name as a move target.
+pub fn layout_tree(l: &Layout) -> String {
+    let mut out = String::from(
+        "The editor arrangement. Pages are addressed by NAME; panels and splits by the id in [].\n\n",
+    );
+    for p in l.pages() {
+        layout_line(l, &p, 0, &mut out);
+    }
+    out
+}
+
+/// The pages, in order, with what is on each — the one layout read that is structured rather than
+/// prose, because a caller resolves a name through it before every page op.
+pub fn layout_pages(l: &Layout) -> Value {
+    let pages: Vec<Value> = l
+        .pages()
+        .iter()
+        .enumerate()
+        .map(|(i, p)| json!({ "name": l.name_of(p), "id": p, "index": i, "panels": l.panels(p).len() }))
+        .collect();
+    json!(pages)
+}
+
+/// One page's panels as a markdown table. The share columns are the panel's fraction of the PAGE on
+/// each axis — a leaf has one size along its parent's axis, which alone would not say how big it
+/// looks.
+pub fn panel_table(l: &Layout, page: &str) -> String {
+    let mut out = format!(
+        "Panels on page `{}`\n\n| uid | type | node | width | height |\n|---|---|---|---|---|\n",
+        l.name_of(page).unwrap_or(page)
+    );
+    for id in l.panels(page) {
+        let (ty, node) = match l.get(&id) {
+            Some(Entry::Panel { panel_type, state, .. }) => (
+                panel_type.as_str(),
+                state.get("node").and_then(|v| v.as_str()).unwrap_or("—").to_string(),
+            ),
+            _ => continue,
+        };
+        let (w, h) = l.extent(&id);
+        out.push_str(&format!("| {id} | {ty} | {node} | {:.0}% | {:.0}% |\n", w * 100.0, h * 100.0));
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

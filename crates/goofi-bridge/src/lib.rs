@@ -875,6 +875,47 @@ fn layout_write_is_authored(payload: &Value) -> bool {
     payload.get("intent").and_then(|v| v.as_str()) != Some("navigation")
 }
 
+/// Resolve the `page` argument — a unique human name — to its stable id. A name is the ONLY way a
+/// caller addresses a page, so an unknown one has to say which ones exist rather than just refusing.
+fn resolve_page(g: &Graph, payload: &Value) -> Result<String, String> {
+    let name = parse_str(payload, "page")?;
+    g.arrangement().page_named(name).ok_or_else(|| {
+        let have: Vec<&str> = g.arrangement().pages().iter().filter_map(|p| g.arrangement().name_of(p)).collect();
+        // A leaked borrow would outlive the closure, so the names are collected before formatting.
+        format!("no page named `{name}` — this patch has: {}", have.join(", "))
+    })
+}
+
+/// Is `node` something a viewer/parameters/metadata panel could actually bind to? A uid OR a display
+/// name: the panel `state` bag carries names today and uids after the frontend cutover, and refusing
+/// either half would make one of the two wrong for a whole task.
+fn bindable_node(g: &Graph, node: &str) -> bool {
+    if Uid::from_hex(node).is_some_and(|u| g.contains(u) || g.scope(u).is_some()) {
+        return true;
+    }
+    g.node_uids().into_iter().any(|u| g.name(u) == Some(node))
+        || g.scope_uids().into_iter().any(|u| g.scope(u).is_some_and(|s| s.name == node))
+}
+
+/// Route a layout planner's per-entry writes through the command history as ONE undo step. This is
+/// the whole of "layout reuses the graph machinery": persistence, the CRDT broadcast and per-session
+/// undo all follow from the write being an ordinary command.
+fn apply_layout(
+    state: &AppState,
+    g: &mut Graph,
+    session: &str,
+    writes: Vec<goofi_engine::layout::Write>,
+) -> Result<Value, String> {
+    let cmd = goofi_engine::Command::Compound(
+        writes
+            .into_iter()
+            .map(|(id, entry)| goofi_engine::Command::EditLayoutEntry { id, entry })
+            .collect(),
+    );
+    state.history.lock().unwrap().apply(g, session, cmd)?;
+    Ok(json!({ "ok": true }))
+}
+
 /// Dispatch one control RPC. Mutates the graph, queues broadcast events, and
 /// returns the `{id,result}`/`{id,error}` reply (only when `id` is numeric).
 fn dispatch(state: &AppState, text: &str) -> Option<String> {
@@ -1130,6 +1171,92 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
                 }
                 g.set_layout(layout);
                 Ok(json!({ "ok": true }))
+            }
+            // Where THIS client is looking. Stored opaquely and NOT a doc root, so it can neither
+            // drag a peer nor raise the unsaved dot; it rides the `.gfi` and `hello` all the same,
+            // because persistence and dirtiness are separate axes.
+            "set_viewpoint" => {
+                g.set_viewpoint(payload.get("viewpoint").cloned().unwrap_or(Value::Null));
+                Ok(json!({ "ok": true }))
+            }
+
+            // ── The flat arrangement (the fifth doc root) ────────────────────────────────────
+            // Reads are served straight off the layout the manager holds. Writes are planned
+            // against it and applied as ordinary commands, so every op below is undoable, persisted
+            // and broadcast without a line of its own for any of the three.
+            "inspect_layout" => Ok(json!({ "text": inspect::layout_tree(g.arrangement()) })),
+            "session_list_pages" => Ok(json!({ "pages": inspect::layout_pages(g.arrangement()) })),
+            "page_list_panels" => {
+                let page = resolve_page(&g, &payload)?;
+                Ok(json!({ "text": inspect::panel_table(g.arrangement(), &page) }))
+            }
+            "session_add_page" => {
+                let writes = g.arrangement().add_page(parse_str(&payload, "name")?)?;
+                apply_layout(state, &mut g, &session, writes)
+            }
+            "session_remove_page" => {
+                let writes = g.arrangement().remove_page(parse_str(&payload, "name")?)?;
+                apply_layout(state, &mut g, &session, writes)
+            }
+            "session_rename_page" => {
+                let (from, to) = (parse_str(&payload, "from")?, parse_str(&payload, "to")?);
+                let writes = g.arrangement().rename_page(from, to)?;
+                apply_layout(state, &mut g, &session, writes)
+            }
+            "session_reorder_page" => {
+                let name = parse_str(&payload, "name")?;
+                let to = payload.get("to_index").and_then(|v| v.as_u64()).ok_or("missing to_index")?;
+                let writes = g.arrangement().reorder_page(name, to as usize)?;
+                apply_layout(state, &mut g, &session, writes)
+            }
+            "page_split_panel" => {
+                let page = resolve_page(&g, &payload)?;
+                let panel = parse_str(&payload, "panel")?.to_string();
+                let dir = payload.get("direction").and_then(|v| v.as_str()).unwrap_or("row");
+                let axis = goofi_engine::layout::Axis::parse(dir)
+                    .ok_or("page_split_panel: direction is `row` or `column`")?;
+                let ratio = payload.get("ratio").and_then(|v| v.as_f64()).unwrap_or(0.5);
+                let (writes, fresh) = g.arrangement().split_panel(&page, &panel, axis, ratio)?;
+                apply_layout(state, &mut g, &session, writes)?;
+                // The uid, because a split births an EMPTY panel and the caller's next act is to
+                // give it content — which needs the id it cannot otherwise know.
+                Ok(json!(fresh))
+            }
+            "page_set_panel" => {
+                let page = resolve_page(&g, &payload)?;
+                let panel = parse_str(&payload, "panel")?.to_string();
+                let ty = payload.get("type").and_then(|v| v.as_str()).map(str::to_string);
+                let panel_state = payload.get("state").cloned();
+                // A panel bound to a node that is not there renders empty and explains nothing, so
+                // the bind is checked HERE, where the answer can teach. Cheap: no graph mutation.
+                if let Some(node) = panel_state
+                    .as_ref()
+                    .and_then(|s| s.get("node"))
+                    .and_then(|v| v.as_str())
+                    .filter(|n| !n.is_empty())
+                {
+                    if !bindable_node(&g, node) {
+                        return Err(format!("page_set_panel: no node `{node}` in this patch"));
+                    }
+                }
+                let mult = payload.get("size_mult").and_then(|v| v.as_f64());
+                let writes =
+                    g.arrangement().set_panel(&page, &panel, ty.as_deref(), panel_state, mult)?;
+                apply_layout(state, &mut g, &session, writes)
+            }
+            "page_move_panel" => {
+                let page = resolve_page(&g, &payload)?;
+                let panel = parse_str(&payload, "panel")?.to_string();
+                let dest = parse_str(&payload, "new_parent")?.to_string();
+                let at = payload.get("order_index").and_then(|v| v.as_u64()).unwrap_or(0);
+                let writes = g.arrangement().move_subtree(&page, &panel, &dest, at as usize)?;
+                apply_layout(state, &mut g, &session, writes)
+            }
+            "page_remove_panel" => {
+                let page = resolve_page(&g, &payload)?;
+                let panel = parse_str(&payload, "panel")?.to_string();
+                let writes = g.arrangement().remove_subtree(&page, &panel)?;
+                apply_layout(state, &mut g, &session, writes)
             }
             "set_node_viewers" => {
                 // Soft per-slot view-state (kind/settings/collapse) persisted to `.gfi` — NOT a
@@ -1482,7 +1609,10 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
                     // to exist, and one event shape is easier to be right about than two.
                     events.push(event("save_path_changed", json!({ "save_path": path })));
                 }
-                Ok(json!({ "ok": true }))
+                // A stored arrangement the flat model admits but cannot render falls back to the
+                // default — the graph is the value, the arrangement is chrome. Say so here, or the
+                // patch would open on a layout the user did not save and nothing would explain it.
+                Ok(json!({ "ok": true, "layout_warning": g.arrangement_warning() }))
             }
             // Session-scoped undo/redo over the central command history. The graph mutation reaches
             // clients via the post-dispatch re-mirror (doc-authoritative); the reply carries the
@@ -1547,6 +1677,10 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
         match op.as_str() {
             "load" | "load_text" | "new" => events.extend(state.set_dirty(false)),
             "set_layout" if !layout_write_is_authored(&payload) => {}
+        //   `set_viewpoint` is the same axis stated once more, and this time by construction: a
+        //     viewpoint is where a client is LOOKING, so writing one is never authoring. It still
+        //     rides the `.gfi`, which is exactly why it needs an arm here and not `writes: false`.
+            "set_viewpoint" => {}
             "restart_node" | "refresh_param" | "rescan_nodes" => {}
             _ => events.extend(state.set_dirty(true)),
         }

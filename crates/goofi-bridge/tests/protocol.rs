@@ -174,6 +174,266 @@ async fn call_session(ws: &mut Ws, id: i64, op: &str, payload: Value, session: &
     }
 }
 
+/// The panel ids in a synced replica's arrangement root, in id order — how a client reads the flat
+/// layout now that the manager owns it.
+fn panels(doc: &goofi_crdt::GraphDoc) -> Vec<String> {
+    doc.to_json()["arrangement"]
+        .as_object()
+        .map(|m| {
+            m.iter().filter(|(_, e)| e["kind"] == json!("panel")).map(|(id, _)| id.clone()).collect()
+        })
+        .unwrap_or_default()
+}
+
+#[tokio::test]
+async fn a_layout_op_reaches_a_peers_replica_through_the_doc() {
+    // Layout used to be client-owned: a peer learned an arrangement only on `hello`. As the fifth
+    // doc root it rides the SAME delta broadcast as a node add — a LAYOUT-ONLY change ships, which
+    // is what makes the frontend's parallel write authority removable at all.
+    use goofi_crdt::{GraphDoc, SyncMsg};
+    let base = start_server().await;
+    let (mut a, _) = connect_async(format!("{base}/control")).await.unwrap();
+    let _ = recv_text(&mut a).await;
+    let (mut b, _) = connect_async(format!("{base}/control")).await.unwrap();
+    let _ = recv_text(&mut b).await;
+
+    // B holds a replica and never asks again, so anything it learns below ARRIVED as a broadcast.
+    let mut peer = GraphDoc::new();
+    b.send(Message::Binary(peer.sync_hello().into())).await.unwrap();
+    for _ in 0..10 {
+        if let Some(m) = SyncMsg::decode(&recv_binary(&mut b).await) {
+            peer.on_sync(m);
+        }
+        if !panels(&peer).is_empty() {
+            break;
+        }
+    }
+    let panel = panels(&peer).first().cloned().expect("the default page's one panel");
+
+    let fresh = call(
+        &mut a,
+        1,
+        "page_split_panel",
+        json!({ "page": "Layout", "panel": panel, "direction": "row", "ratio": 0.5 }),
+    )
+    .await["result"]
+        .as_str()
+        .expect("the new panel's uid")
+        .to_string();
+
+    for _ in 0..20 {
+        if let Some(m) = SyncMsg::decode(&recv_binary(&mut b).await) {
+            peer.on_sync(m);
+        }
+        if peer.read_at(&["arrangement", fresh.as_str()]).is_some() {
+            break;
+        }
+    }
+    assert_eq!(
+        peer.read_at(&["arrangement", fresh.as_str(), "panel_type"]),
+        Some(json!("empty")),
+        "the peer converged on the split, and a split births an EMPTY panel"
+    );
+    assert_eq!(panels(&peer).len(), 2);
+
+    // The two reads a caller navigates by: the tree, and the page's panels as a table.
+    let tree = call(&mut a, 2, "inspect_layout", json!({})).await["result"]["text"]
+        .as_str()
+        .expect("inspect_layout answers text")
+        .to_string();
+    assert!(tree.contains("Layout") && tree.contains(&fresh), "the tree names the page and the panel: {tree}");
+    let table = call(&mut a, 3, "page_list_panels", json!({ "page": "Layout" })).await["result"]["text"]
+        .as_str()
+        .expect("page_list_panels answers text")
+        .to_string();
+    assert!(table.contains(&fresh) && table.contains("empty"), "the table lists the new panel: {table}");
+    let pages = call(&mut a, 4, "session_list_pages", json!({})).await["result"]["pages"].clone();
+    assert_eq!(pages[0]["name"], json!("Layout"));
+    assert_eq!(pages[0]["panels"].as_u64(), Some(2));
+    // A page is addressed by NAME, so an unknown one has to say which exist.
+    let miss = call(&mut a, 5, "page_list_panels", json!({ "page": "Nope" })).await;
+    assert!(miss["error"].as_str().is_some_and(|e| e.contains("Layout")), "{miss}");
+}
+
+#[tokio::test]
+async fn undo_of_a_layout_op_restores_the_arrangement_it_found() {
+    // Layout undo is manager-owned now, in the same per-session history as a graph edit — so a
+    // split ping-pongs uid-stably, exactly like an add.
+    let base = start_server().await;
+    let (mut ws, _) = connect_async(format!("{base}/control")).await.unwrap();
+    let _ = recv_text(&mut ws).await;
+    let doc = sync_replica(&mut ws, |d| !panels(d).is_empty()).await;
+    let panel = panels(&doc)[0].clone();
+
+    let fresh = call_session(
+        &mut ws,
+        1,
+        "page_split_panel",
+        json!({ "page": "Layout", "panel": panel, "direction": "column" }),
+        "s1",
+    )
+    .await["result"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let after = sync_replica(&mut ws, |d| d.read_at(&["arrangement", fresh.as_str()]).is_some()).await;
+    assert_eq!(after.to_json()["arrangement"].as_object().unwrap().len(), 4, "page + split + 2 panels");
+
+    let u = call_session(&mut ws, 2, "undo", json!({}), "s1").await;
+    assert_eq!(u["result"]["changed"], json!(true), "undo flipped the layout entry: {u}");
+    // The predicate has to be POSITIVE about something: a fresh replica trivially "lacks" the new
+    // panel before it has synced a single frame, which would pass on an empty doc.
+    let undone = sync_replica(&mut ws, |d| {
+        !panels(d).is_empty() && d.read_at(&["arrangement", fresh.as_str()]).is_none()
+    })
+    .await;
+    assert_eq!(panels(&undone), vec![panel.clone()], "the arrangement is exactly what it was");
+    assert_eq!(undone.to_json()["arrangement"].as_object().unwrap().len(), 2, "the wrapper split went too");
+
+    call_session(&mut ws, 3, "redo", json!({}), "s1").await;
+    let redone = sync_replica(&mut ws, |d| d.read_at(&["arrangement", fresh.as_str()]).is_some()).await;
+    assert!(redone.read_at(&["arrangement", fresh.as_str()]).is_some(), "redo re-splits at the SAME id");
+}
+
+#[tokio::test]
+async fn one_pass_over_every_session_and_page_write_op() {
+    // The dispatch arms are pure argument plumbing over planners that are unit-tested, so what is
+    // NOT otherwise checked is that each arm reads the argument name its registry row advertises.
+    // One pass exercises all of them, including a subtree move across pages.
+    let base = start_server().await;
+    let (mut ws, _) = connect_async(format!("{base}/control")).await.unwrap();
+    let _ = recv_text(&mut ws).await;
+    let doc = sync_replica(&mut ws, |d| !panels(d).is_empty()).await;
+    let first = panels(&doc)[0].clone();
+    let ok = |r: &Value| assert_eq!(r["result"]["ok"], json!(true), "{r}");
+
+    ok(&call(&mut ws, 1, "session_add_page", json!({ "name": "Second" })).await);
+    ok(&call(&mut ws, 2, "session_rename_page", json!({ "from": "Second", "to": "Signals" })).await);
+    ok(&call(&mut ws, 3, "session_reorder_page", json!({ "name": "Signals", "to_index": 0 })).await);
+    let pages = call(&mut ws, 4, "session_list_pages", json!({})).await["result"]["pages"].clone();
+    assert_eq!(pages[0]["name"], json!("Signals"), "rename and reorder both landed: {pages}");
+    assert_eq!(pages[1]["name"], json!("Layout"));
+
+    // The new page's own panel, and a split on it to serve as a move destination.
+    let d = sync_replica(&mut ws, |d| panels(d).len() == 2).await;
+    let theirs = panels(&d).into_iter().find(|p| *p != first).expect("the new page's panel");
+    let sibling = call(&mut ws, 5, "page_split_panel",
+        json!({ "page": "Signals", "panel": theirs, "direction": "row" })).await["result"]
+        .as_str().unwrap().to_string();
+    let d = sync_replica(&mut ws, |d| d.read_at(&["arrangement", sibling.as_str()]).is_some()).await;
+    let dest = d.read_at(&["arrangement", sibling.as_str(), "parent"]).and_then(|v| v.as_str().map(str::to_string))
+        .expect("the wrapper split the wrap created");
+
+    // Move a panel off the OTHER page into that split — the cross-page subtree move.
+    let mine = call(&mut ws, 6, "page_split_panel",
+        json!({ "page": "Layout", "panel": first, "direction": "column", "ratio": 0.25 })).await["result"]
+        .as_str().unwrap().to_string();
+    ok(&call(&mut ws, 7, "page_move_panel",
+        json!({ "page": "Layout", "panel": mine, "new_parent": dest, "order_index": 0 })).await);
+    let table = call(&mut ws, 8, "page_list_panels", json!({ "page": "Signals" })).await["result"]["text"]
+        .as_str().unwrap().to_string();
+    assert!(table.contains(&mine), "the moved panel is on the destination page now: {table}");
+
+    ok(&call(&mut ws, 9, "page_remove_panel", json!({ "page": "Signals", "panel": mine })).await);
+    ok(&call(&mut ws, 10, "session_remove_page", json!({ "name": "Signals" })).await);
+    let left = call(&mut ws, 11, "session_list_pages", json!({})).await["result"]["pages"].clone();
+    assert_eq!(left.as_array().map(Vec::len), Some(1), "the page and its panels went: {left}");
+    assert_eq!(left[0]["name"], json!("Layout"));
+    // The last page and a page's last panel both refuse, rather than leaving nothing to look at.
+    let last = call(&mut ws, 12, "session_remove_page", json!({ "name": "Layout" })).await;
+    assert!(last["error"].as_str().is_some_and(|e| e.contains("last page")), "{last}");
+}
+
+#[tokio::test]
+async fn page_set_panel_lands_a_combined_type_and_binding_and_refuses_an_unknown_node() {
+    let base = start_server().await;
+    let (mut ws, _) = connect_async(format!("{base}/control")).await.unwrap();
+    let _ = recv_text(&mut ws).await;
+    let osc = call(&mut ws, 1, "add_node", json!({ "type": "Oscillator" })).await["result"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let doc = sync_replica(&mut ws, |d| !panels(d).is_empty()).await;
+    let panel = panels(&doc)[0].clone();
+
+    // Type is applied BEFORE state: switching type clears the old type's state, so a combined
+    // `{type, state}` that landed them the other way round would store a wiped binding.
+    let r = call(
+        &mut ws,
+        2,
+        "page_set_panel",
+        json!({ "page": "Layout", "panel": panel, "type": "viewer",
+                "state": { "node": osc, "slot": "out" } }),
+    )
+    .await;
+    assert_eq!(r["result"]["ok"], json!(true), "{r}");
+    let d2 = sync_replica(&mut ws, |d| {
+        d.read_at(&["arrangement", panel.as_str(), "panel_type"]) == Some(json!("viewer"))
+    })
+    .await;
+    let state = d2
+        .read_at(&["arrangement", panel.as_str(), "state"])
+        .and_then(|v| v.as_str().map(str::to_string))
+        .expect("the state leaf");
+    assert!(state.contains(&osc), "the binding survived the type change: {state}");
+
+    // A bind to a node that is not there renders an EMPTY panel and says nothing — so refuse it
+    // where the answer can teach.
+    let bad = call(
+        &mut ws,
+        3,
+        "page_set_panel",
+        json!({ "page": "Layout", "panel": panel, "state": { "node": "deadbeefdeadbeef" } }),
+    )
+    .await;
+    assert!(bad["error"].as_str().is_some_and(|e| e.contains("deadbeefdeadbeef")), "{bad}");
+}
+
+#[tokio::test]
+async fn the_viewpoint_persists_across_a_reload_without_dirtying_the_patch() {
+    // Where a client is LOOKING is per-client, so it is deliberately not a doc root — it cannot
+    // drag a peer or raise the unsaved dot. Persistence is the other axis: it still rides the
+    // `.gfi` and comes back on hello, so reopening a patch restores the saver's viewpoint.
+    let base = start_server().await;
+    let (mut ws, _) = connect_async(format!("{base}/control")).await.unwrap();
+    let _ = recv_text(&mut ws).await;
+    let vp = json!({ "activePage": "Layout", "maximized": null, "subpatchPath": { "panel-2": ["a1b2c3"] } });
+    call(&mut ws, 1, "set_viewpoint", json!({ "viewpoint": vp })).await;
+    assert!(!is_dirty(&base).await, "looking around is not authoring, on any platform");
+
+    let (mut fresh, _) = connect_async(format!("{base}/control")).await.unwrap();
+    assert_eq!(recv_text(&mut fresh).await["payload"]["viewpoint"], vp, "hello carries it back");
+    let ser = call(&mut ws, 2, "serialize", json!({})).await;
+    assert!(ser["result"]["yaml"].as_str().unwrap().contains("a1b2c3"), "and it rides the .gfi");
+}
+
+#[tokio::test]
+async fn a_corrupt_arrangement_still_opens_the_patch_and_says_what_it_dropped() {
+    // The graph is the value, the arrangement is chrome: a layout the flat model admits but cannot
+    // render must never make a patch unopenable — and the fallback must be stated, not silent.
+    let base = start_server().await;
+    let (mut ws, _) = connect_async(format!("{base}/control")).await.unwrap();
+    let _ = recv_text(&mut ws).await;
+    call(&mut ws, 1, "add_node", json!({ "type": "Oscillator" })).await;
+    let yaml = call(&mut ws, 2, "serialize", json!({})).await["result"]["yaml"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    // A panel parented to nothing — a class the nested tree could not even express.
+    let broken = yaml.replace("parent: page-1", "parent: gone");
+    assert_ne!(broken, yaml, "the fixture actually corrupted something");
+
+    let r = call(&mut ws, 3, "load_text", json!({ "content": broken })).await;
+    assert_eq!(r["result"]["ok"], json!(true), "the patch still opens: {r}");
+    assert!(
+        r["result"]["layout_warning"].as_str().is_some_and(|w| w.contains("reaches no page")),
+        "the reply says why the arrangement was dropped: {r}"
+    );
+    let d = sync_replica(&mut ws, |d| d.node_ids().len() == 1).await;
+    assert_eq!(panels(&d).len(), 1, "opened on the default arrangement");
+    assert_eq!(d.node_ids().len(), 1, "with the graph intact");
+}
+
 #[tokio::test]
 async fn add_undo_redo_over_the_wire_is_uid_stable() {
     // A command-backed add records an inverse; undo removes the node from the synced doc; redo

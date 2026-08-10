@@ -741,13 +741,9 @@ impl Layout {
             if !names.insert(n) {
                 return Err(format!("arrangement: two pages are both named `{n}`"));
             }
-            // A page holds exactly one root — the nested tree's `Workspace.root`. Zero or many is
-            // the shape flattening admits and rendering cannot.
-            let roots = self.children(p).len();
-            if roots != 1 {
-                return Err(format!("arrangement: page `{n}` has {roots} roots, not 1"));
-            }
         }
+        // The per-entry checks run FIRST, because an entry that reaches no page is the CAUSE of the
+        // page-root count being wrong, and a caller shown only the symptom cannot find the entry.
         for (id, e) in &self.entries {
             // Walking up to a page refuses a dangling parent AND a cycle in the same step.
             if self.page_of(id).is_none() {
@@ -768,6 +764,15 @@ impl Layout {
                         self.entries[&k].order()
                     ));
                 }
+            }
+        }
+        for p in &pages {
+            // A page holds exactly one root — the nested tree's `Workspace.root`. Zero or many is a
+            // shape flattening admits and rendering cannot.
+            let roots = self.children(p).len();
+            if roots != 1 {
+                let n = self.name_of(p).unwrap_or_default();
+                return Err(format!("arrangement: page `{n}` has {roots} roots, not 1"));
             }
         }
         Ok(())
