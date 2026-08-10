@@ -432,6 +432,38 @@ component-to-component style reach-ins, and an app usable on a phone. The 2026-0
 found **zero critical and zero correctness defects in the graph, data or CRDT planes**; its
 important-tier items are fixed.
 
+### A — one op vocabulary, and layout stops being the frontend's (2026-08-10)
+
+**The op registry** (`goofi-bridge/src/ops.rs`) is one row per op — name, doc, params/result schema,
+`surface` (`mcp` | `control-only`). A coverage test fails if a dispatch arm has no row **or** a row
+has no arm, and the table **generates** both the frontend's TS op constants (`api/ops.ts`, checked in
+with a drift test) and the MCP tool list. That is what closed the old hazard: `dispatch` was a
+string-keyed match with a silent missing arm, and `op` was a free string at scattered call sites.
+**`mcp__goofi__<name>` ≤ 64 chars is a loud test**, because busting it makes Claude and OpenAI reject
+the *entire* tool list with a 400. `control-only` keeps `load`, `save`, `new`, `serialize`,
+`list_dir`, `load_text`, `set_layout` away from agents — `new` would wipe the patch and the undo stack.
+
+**Layout is the fifth CRDT doc root**, flat and id-keyed like `nodes`: every page, split and panel is
+one entry with `parentId`, `orderIndex` and a `size` fraction. Flat because the reconciler mirrors
+nested *maps* but **erases nested arrays**; flat also makes move/reorder/reparent field edits with
+panel identity preserved. Persistence, undo and broadcast reuse the graph machinery — layout ops are
+ordinary `CommandHistory` commands. **The opaque `layout` blob is gone from the snapshot**, so layout
+has exactly one projection. The frontend is now purely a replica: that migration **deleted 225 more
+production lines than it added.**
+
+**The rule four fix rounds bought, and the guard that keeps it:** *no layout inverse restores raw
+state — every inverse re-plans through the forward planners.* A raw slot restore can pin an entry
+back into a position a concurrent peer has taken, stranding their panels and corrupting the
+arrangement on the next save. Every instance was found by **driving two sessions over the real WS**,
+never by reading. A guard test walks every layout write op **from the registry** and asserts the
+safe/unsafe sets **both ways**, so striking an op off without fixing it fails too. One recorded
+exception: `session_reorder_page`, where the order *is* the content.
+
+**`/mcp`** is a route on the existing axum server — **one server per goofi instance**, HTTP, because
+a stdio server is spawned per client and Claude never spawns one. goofi prints the URL at startup.
+`dispatch` stays **synchronous**: no tool awaits under the graph lock, and an async seam would force
+re-opening W's on-lock save (whose off-lock version once cost ~450 lines of race machinery).
+
 ### W — a patch is an archive, and the manager owns its name (2026-08-09)
 
 Stated here in full rather than by reference, because the plans and audit reports live in
