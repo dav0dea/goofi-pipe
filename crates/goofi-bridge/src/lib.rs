@@ -310,6 +310,13 @@ fn stage_load(
             payload.get("content").and_then(|v| v.as_str()).ok_or("load_text: missing content")?;
         (content.to_string(), None)
     };
+    // A workspace goofi minted empty is a NEW one, and it is the only kind it initialises: `new`
+    // and a browser upload leave `mount` exactly the empty directory the caller made, while `load`
+    // has just unpacked the patch's OWN workspace into it — orientation included, edits and all,
+    // or none at all if the patch predates seeding. goofi does not write into someone's patch.
+    if op != "load" {
+        term::seed_orientation(mount);
+    }
     Ok((content, from_path))
 }
 
@@ -1809,11 +1816,6 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
                 let fresh = new_mount();
                 let (content, from_path) =
                     stage_load(&fresh, &op, &payload).inspect_err(|_| remove_mount(&fresh))?;
-                // AFTER the archive is unpacked, and absent-only: an orientation the agent has
-                // edited comes back from the `.gfi` as the agent left it, and only a patch that
-                // carries none — a `new` one, or one saved before this existed — is given the
-                // default. Before the baseline below, so seeding cannot itself dirty the patch.
-                term::seed_orientation(&fresh);
                 // ORDERING, load-bearing: the types the patch SHIPS are registered before the
                 // manifest is resolved, or `load_doc`'s unknown-type gate fires on exactly the
                 // nodes the archive brought. They live in the tree just unpacked, so the scan runs

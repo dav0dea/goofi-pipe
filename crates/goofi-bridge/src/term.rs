@@ -435,8 +435,10 @@ impl Instance {
     }
 }
 
-/// Seed a NEW patch workspace with the orientation an agent harness reads. Absent-only, so it is
-/// written once and belongs to the patch from then on.
+/// Seed a NEW patch workspace with the orientation an agent harness reads — only ever a workspace
+/// goofi minted empty itself (boot, `new`, an upload that carries no files), never one a `.gfi` was
+/// unpacked into. Absent-only on top of that, so it is written once and belongs to the patch from
+/// then on.
 ///
 /// **Why a file at all.** `initialize.instructions` is answered to every MCP client, but reading a
 /// field is not acting on it: codex 0.147 surfaces it only as the description of the `mcp__goofi`
@@ -453,11 +455,13 @@ impl Instance {
 /// `CLAUDE.md`, whose documented `@` import points at the other — so ONE text serves all three, and
 /// a fourth harness following either convention is oriented with no adapter row at all.
 ///
-/// **Why never rewritten.** The agent may edit it: what it learns about THIS patch belongs to this
-/// patch, rides the `.gfi` and comes back on load. Rewriting on spawn or on load would erase that,
-/// so an existing file is left exactly as it is — a patch saved before this existed picks up the
-/// default on its next load, having nothing to lose. Best-effort for [`new_mount`]'s reason: a temp
-/// dir that cannot be written to surfaces its real error at the first save, naming the path.
+/// **Why never rewritten, and why a load never calls this at all.** The agent may edit it: what it
+/// learns about THIS patch belongs to this patch, rides the `.gfi` and comes back on load. A loaded
+/// patch therefore arrives with its own workspace complete, and goofi adds nothing to it — the
+/// accepted price being that a patch saved before this existed carries no orientation ever. Absent-
+/// only guards the remaining case, a spawn into a workspace already seeded. Best-effort for
+/// [`new_mount`]'s reason: a temp dir that cannot be written to surfaces its real error at the
+/// first save, naming the path.
 pub fn seed_orientation(mount: &Path) {
     for (name, body) in [("AGENTS.md", crate::mcp::INSTRUCTIONS), ("CLAUDE.md", "@AGENTS.md\n")] {
         let at = mount.join(name);

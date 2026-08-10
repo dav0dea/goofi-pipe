@@ -3553,10 +3553,13 @@ async fn load_restores_the_graph_and_the_workspace_from_an_archive() {
     let path = dir.path().join("patch.gfi");
     call(&mut ws, 1, "add_node", json!({ "type": "Oscillator" })).await;
     std::fs::write(state.mount().join("agent.md"), b"notes").unwrap();
-    // What an agent learned about THIS patch, written over the seeded orientation. It is workspace
-    // content like any other, so it packs — and the load below must not seed back over it.
+    // The orientation is workspace content like any other, so what the patch carries is whatever
+    // its own workspace holds: here an `AGENTS.md` the agent rewrote, and NO `CLAUDE.md` at all —
+    // deleted, as a patch saved before goofi ever seeded one would have none. The load below must
+    // return both exactly as the archive has them.
     let learned = b"goofi-pipe: this patch's EEG source is on channel 3.\n";
     std::fs::write(state.mount().join("AGENTS.md"), learned).unwrap();
+    std::fs::remove_file(state.mount().join("CLAUDE.md")).unwrap();
     call(&mut ws, 2, "save", json!({ "path": path.to_string_lossy() })).await;
 
     // Diverge from the saved patch on BOTH planes — a node it does not have, and a workspace that
@@ -3603,11 +3606,13 @@ async fn load_restores_the_graph_and_the_workspace_from_an_archive() {
     assert_ne!(mount, stale, "a load mounts fresh");
     assert_eq!(std::fs::read(mount.join("agent.md")).unwrap(), b"notes");
     assert!(!mount.join("scratch.txt").exists(), "the diverged workspace did not follow");
-    // The agent's own orientation came back as it left it. Seeding the default here instead would
-    // silently discard everything the agent had learned about this patch — the one thing keeping
-    // the file in the workspace is for.
+    // A load seeds NOTHING. The orientation is the patch's, not goofi's: the one the agent rewrote
+    // came back as it left it, and the file the patch does not have stays missing rather than being
+    // conjured — goofi initialises a workspace it created, never one it unpacked someone's patch
+    // into. Together these two are what stops the seed call being put back on this path.
     assert_eq!(std::fs::read(mount.join("AGENTS.md")).unwrap(), learned,
                "the load seeded over the orientation the patch was saved with");
+    assert!(!mount.join("CLAUDE.md").exists(), "the load invented a file the archive never held");
     assert!(!stale.exists(), "the mount the load replaced is released, not leaked");
 }
 
@@ -3721,6 +3726,13 @@ async fn a_new_patch_mounts_an_empty_workspace_of_its_own() {
     assert_ne!(after, before, "New mounts fresh");
     assert!(!after.join("agent.md").exists(), "so nothing the previous patch wrote survives");
     assert!(!before.exists(), "and the mount it replaced is released, not leaked");
+    // Empty of the previous patch, but not of the orientation: `new` mints the workspace, so `new`
+    // is exactly the case that initialises it. It shares its dispatch arm with `load`, which must
+    // NOT be seeded, and the two are one line apart — this is the half that says which is which.
+    let agents = std::fs::read_to_string(after.join("AGENTS.md"))
+        .expect("a New patch's workspace is seeded with the orientation");
+    assert!(agents.contains("goofi-pipe is a live"), "…the real one: {agents}");
+    assert_eq!(std::fs::read_to_string(after.join("CLAUDE.md")).unwrap(), "@AGENTS.md\n");
     // Asking where the workspace is is a question, not an edit — `read_only` is what keeps the
     // dispatch tail from dirtying the patch for having been asked.
     assert!(!is_dirty(&base).await, "and asking where it is did not dirty anything");
