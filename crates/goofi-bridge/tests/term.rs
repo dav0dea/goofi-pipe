@@ -146,6 +146,11 @@ async fn a_harness_spawns_carries_bytes_and_is_reaped_with_its_exit_code() {
     term.send(Message::Binary(b"exit 7\n".to_vec())).await.unwrap();
     let tail = read_until(&mut term, "exit_code").await;
     assert!(tail.contains("\"exit_code\":7"), "the exit frame carries the child's code: {tail:?}");
+    // A tab that opens the panel AFTER the harness died sees why, rather than an empty terminal:
+    // the exit is served to a socket that was never there for it, until the instance is dismissed.
+    let (mut late, _) = connect_async(format!("ws://{addr}/term/{id}")).await.unwrap();
+    let seen = read_until(&mut late, "exit_code").await;
+    assert!(seen.contains("\"exit_code\":7"), "a late attach was told nothing: {seen:?}");
 
     let roster = call(&mut ctl, 2, "list_harnesses", json!({})).await;
     let inst = &roster["instances"][0];
