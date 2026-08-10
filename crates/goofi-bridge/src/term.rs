@@ -51,44 +51,29 @@ struct Adapter {
 
 static ADAPTERS: &[Adapter] = &[
     // Claude Code loads MCP servers from the JSON config files named on its command line.
-    Adapter {
-        name: "claude",
-        bin: "claude",
-        file: Some(("mcp.json", r#"{"mcpServers":{"goofi":{"type":"http","url":"{url}"}}}"#)),
-        args: &["--mcp-config", "{file}"],
-        env: &[],
-    },
+    Adapter { name: "claude", bin: "claude", args: &["--mcp-config", "{file}"], env: &[],
+              file: Some(("mcp.json", r#"{"mcpServers":{"goofi":{"type":"http","url":"{url}"}}}"#)) },
     // Codex has no per-invocation config FILE — `CODEX_HOME` would move its credentials with it —
     // but `-c` overrides one dotted key whose value is parsed as TOML, which is exactly the shape
     // `codex mcp add goofi --url …` would otherwise have written into `config.toml`.
-    Adapter {
-        name: "codex",
-        bin: "codex",
-        file: None,
-        args: &["-c", "mcp_servers.goofi.url=\"{url}\""],
-        env: &[],
-    },
+    Adapter { name: "codex", bin: "codex", args: &["-c", "mcp_servers.goofi.url=\"{url}\""],
+              env: &[], file: None },
     // opencode reads the config file `$OPENCODE_CONFIG` names.
-    Adapter {
-        name: "opencode",
-        bin: "opencode",
-        file: Some((
-            "opencode.json",
-            r#"{"mcp":{"goofi":{"type":"remote","url":"{url}","enabled":true}}}"#,
-        )),
-        args: &[],
-        env: &[("OPENCODE_CONFIG", "{file}")],
-    },
+    Adapter { name: "opencode", bin: "opencode", args: &[], env: &[("OPENCODE_CONFIG", "{file}")],
+              file: Some(("opencode.json",
+                          r#"{"mcp":{"goofi":{"type":"remote","url":"{url}","enabled":true}}}"#)) },
     // The test adapter: a plain shell, so the PTY, the roster, the reaper and the minted address
     // are drivable on a machine with no harness installed. It writes the same config file a real
     // adapter does (and ignores it), so the minting path under test is the shipping one.
-    Adapter {
-        name: "_sh",
-        bin: "sh",
-        file: Some(("mcp.json", r#"{"mcpServers":{"goofi":{"type":"http","url":"{url}"}}}"#)),
-        args: &[],
-        env: &[],
-    },
+    Adapter { name: "_sh", bin: "sh", args: &[], env: &[],
+              file: Some(("mcp.json", r#"{"mcpServers":{"goofi":{"type":"http","url":"{url}"}}}"#)) },
+    // And one that REPORTS the SIGTERM and then refuses to leave, so a stop can be watched asking
+    // before it insists. It says `armed` on EVERY pass, not once: nothing here replays what a
+    // harness wrote before a socket attached, and a signal delivered before the trap was installed
+    // would prove nothing. The loop matters too — a bare `sleep` is a child of the same group and
+    // would die of the group signal, taking the shell with it when it returned.
+    Adapter { name: "_deaf", bin: "sh", env: &[], file: None,
+              args: &["-c", "trap 'echo GOT-TERM' TERM; while :; do echo armed; sleep 0.2; done"] },
 ];
 
 /// One installed harness binary: where it is, and what it calls itself.
@@ -131,13 +116,12 @@ impl Harnesses {
         for a in ADAPTERS.iter().filter(|a| !a.name.starts_with('_')) {
             let Some(bin) = resolve(a.bin, path.as_deref(), &shell) else { continue };
             let stamp = stamp(&bin);
-            let cached = self
-                .detected
-                .lock()
-                .unwrap()
+            let cache = self.detected.lock().unwrap();
+            let cached = cache
                 .iter()
                 .find(|d| d.name == a.name && d.path == bin && d.stamp == stamp)
                 .and_then(|d| d.version.clone());
+            drop(cache);
             let version = cached.or_else(|| probe_version(&bin));
             found.push(Detected { name: a.name, path: bin, stamp, version });
         }
@@ -148,11 +132,7 @@ impl Harnesses {
     /// the `runtime` overlay exists: the live stream carries only transitions, so a tab that joins
     /// after a spawn would otherwise draw an empty switcher over a running harness.
     pub fn roster(&self) -> Value {
-        let instances: Vec<Value> = self
-            .instances
-            .lock()
-            .unwrap()
-            .iter()
+        let instances: Vec<Value> = self.instances.lock().unwrap().iter()
             .map(|(id, i)| {
                 let exit = i.exit_code();
                 json!({
@@ -163,11 +143,7 @@ impl Harnesses {
                 })
             })
             .collect();
-        let detected: Vec<Value> = self
-            .detected
-            .lock()
-            .unwrap()
-            .iter()
+        let detected: Vec<Value> = self.detected.lock().unwrap().iter()
             .map(|d| json!({ "harness": d.name, "path": d.path.to_string_lossy(), "version": d.version }))
             .collect();
         json!({ "instances": instances, "detected": detected })
@@ -195,17 +171,13 @@ impl Harnesses {
         base_url: &str,
         events: broadcast::Sender<String>,
     ) -> Result<String, String> {
-        let adapter = ADAPTERS
-            .iter()
-            .find(|a| a.name == harness)
+        let adapter = ADAPTERS.iter().find(|a| a.name == harness)
             .ok_or_else(|| format!("unknown harness `{harness}`"))?;
         let bin = resolve(adapter.bin, std::env::var_os("PATH").as_deref(), &login_shell())
             .ok_or_else(|| format!("`{}` is not installed", adapter.bin))?;
         let id = crate::nonce_hex()[..12].to_string();
 
-        // The config goes under the WORKSPACE, one directory per instance, so a `.gfi` carries the
-        // record of what was launched — and so two harnesses on one patch never share a file.
-        let dir = cwd.join("harness").join(&id);
+        let dir = config_dir(cwd, &id);
         std::fs::create_dir_all(&dir).map_err(|e| format!("harness config directory: {e}"))?;
         let url = format!("{base_url}/mcp/{id}");
         let mut file = String::new();
@@ -338,6 +310,15 @@ impl Instance {
     }
 }
 
+/// Where one instance's config is written: BESIDE the workspace, not inside it. Inside would pack a
+/// stale URL into every `.gfi` the patch is ever saved to, and would DIRTY the patch merely for
+/// launching an agent — the workspace fingerprint has no exclusion list, and growing one to buy this
+/// would be worse than putting a file goofi owns where goofi already owns the ground. It is
+/// reclaimed with the mount, since `release_mount` takes the nonce directory both live under.
+pub fn config_dir(mount: &Path, id: &str) -> PathBuf {
+    mount.parent().unwrap_or(mount).join("harness").join(id)
+}
+
 /// Signal the instance's process GROUP: portable-pty makes each child a session leader, so its pid
 /// is its group id and one signal reaches everything the harness itself spawned. Skipped once the
 /// child has been reaped, since a recycled pid would name a stranger's group.
@@ -365,11 +346,8 @@ fn signal(inst: &Instance, sig: i32) -> Result<(), String> {
 /// `path` and `shell` are parameters rather than reads of the ambient environment so a test can
 /// drive the fallback without mutating it — cargo runs the suite as threads in ONE process.
 fn resolve(bin: &str, path: Option<&OsStr>, shell: &str) -> Option<PathBuf> {
-    let direct = path
-        .into_iter()
-        .flat_map(std::env::split_paths)
-        .map(|dir| dir.join(bin))
-        .find(|c| is_executable(c));
+    let direct =
+        path.into_iter().flat_map(std::env::split_paths).map(|d| d.join(bin)).find(|c| is_executable(c));
     if direct.is_some() {
         return direct;
     }
@@ -406,8 +384,7 @@ fn login_shell() -> String {
 /// Only when it has none is one imposed — overriding a deliberate non-UTF-8 choice would be worse
 /// than the mojibake it prevents.
 fn parent_speaks_utf8() -> bool {
-    ["LC_ALL", "LC_CTYPE", "LANG"]
-        .iter()
+    ["LC_ALL", "LC_CTYPE", "LANG"].iter()
         .find_map(|k| std::env::var(k).ok().filter(|v| !v.is_empty()))
         .is_some_and(|v| v.to_ascii_uppercase().replace('-', "").contains("UTF8"))
 }

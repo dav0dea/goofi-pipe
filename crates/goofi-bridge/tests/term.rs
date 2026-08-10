@@ -1,15 +1,15 @@
 //! The harness plane, driven the way the agent panel will: `/control` mints an instance,
 //! `/term/<id>` carries its PTY, and `/mcp/<id>` is the address goofi handed *that* harness.
 //!
-//! Nothing here needs Claude Code, Codex or opencode to be installed. The harness spawned is the
-//! hidden `_sh` adapter — the same `_`-prefixed idiom the node catalog uses for its test types —
-//! so the PTY, the roster, the reaper and the per-instance MCP route are all driven by `/bin/sh`,
-//! which every machine that can run this suite has.
+//! Nothing here needs Claude Code, Codex or opencode to be installed. The harnesses spawned are
+//! the hidden `_sh` and `_deaf` adapters — the same `_`-prefixed idiom the node catalog uses for
+//! its test types — so the PTY, the roster, the reaper, the stop escalation and the per-instance
+//! MCP route are all driven by `/bin/sh`, which every machine that can run this suite has.
 
 use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
-use goofi_bridge::{serve_app, AppState};
+use goofi_bridge::{serve_app, term, AppState};
 use serde_json::{json, Value};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio_tungstenite::connect_async;
@@ -35,8 +35,15 @@ async fn start_server() -> (String, AppState) {
 }
 
 async fn recv_text(ws: &mut Ws) -> Value {
+    recv_text_by(ws, tokio::time::Instant::now() + Duration::from_secs(5)).await
+}
+
+/// As [`recv_text`], but bounded by an absolute deadline — what a caller waiting on something the
+/// server only does after a grace period needs, since a per-message timeout shorter than that grace
+/// would fire on the silence in between.
+async fn recv_text_by(ws: &mut Ws, deadline: tokio::time::Instant) -> Value {
     loop {
-        let msg = tokio::time::timeout(Duration::from_secs(5), ws.next())
+        let msg = tokio::time::timeout_at(deadline, ws.next())
             .await
             .expect("recv timed out")
             .expect("stream ended")
@@ -100,11 +107,11 @@ async fn read_until(ws: &mut Ws, want: &str) -> String {
     let mut seen = String::new();
     let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
     while !seen.contains(want) {
-        let msg = tokio::time::timeout_at(deadline, ws.next())
-            .await
-            .unwrap_or_else(|_| panic!("{want:?} never arrived; the PTY said {seen:?}"))
-            .expect("stream ended")
-            .expect("ws error");
+        let msg = match tokio::time::timeout_at(deadline, ws.next()).await {
+            Err(_) => panic!("{want:?} never arrived; the PTY said {seen:?}"),
+            Ok(Some(Ok(m))) => m,
+            Ok(end) => panic!("the socket ended before {want:?} ({end:?}); the PTY said {seen:?}"),
+        };
         match msg {
             Message::Binary(b) => seen.push_str(&String::from_utf8_lossy(&b)),
             Message::Text(t) => seen.push_str(t.as_str()),
@@ -148,36 +155,44 @@ async fn a_harness_spawns_carries_bytes_and_is_reaped_with_its_exit_code() {
     state.release_mount();
 }
 
-/// A stop that does not wait for the child: `stop_harness` closes the address and returns at once,
-/// and the reaper announces the exit behind it — which is why the roster is WAITED FOR on the
-/// broadcast rather than read back from the reply.
+/// Wait on the control socket for the reaper's announcement that `id` has exited.
+async fn await_exit(ctl: &mut Ws, id: &str) -> Value {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    loop {
+        let ev = recv_text_by(ctl, deadline).await;
+        let inst = ev["payload"]["instances"][0].clone();
+        if ev["event"] == json!("harness_changed") && inst["state"] == json!("exited") {
+            assert_eq!(inst["id"], json!(id), "another instance exited: {ev}");
+            assert!(inst["exit_code"].is_number(), "no exit code captured: {ev}");
+            return inst;
+        }
+    }
+}
+
+/// A stop asks before it insists, and returns without waiting for either: `stop_harness` closes the
+/// address and answers at once, and the reaper announces the exit behind it — which is why the exit
+/// is WAITED FOR on the broadcast rather than read back from the reply.
 ///
-/// It also exercises the escalation, not merely the signal: a `sh` with a tty on both ends is an
-/// INTERACTIVE shell, and an interactive shell ignores SIGTERM. So this instance can only be
-/// reaped by the SIGKILL after the grace, and the test's duration is that grace.
+/// The `_deaf` harness reports the SIGTERM it was sent and then refuses to leave, so all three
+/// halves are watchable in one pass: the graceful signal arrives, it is not enough, and the SIGKILL
+/// after the grace reaps the child anyway. The test costs that grace — nothing shorter can prove
+/// the second signal fired. It waits for `armed` first: a signal delivered before the trap was
+/// installed would prove nothing at all.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn stopping_an_instance_reaps_the_child_it_signalled() {
+async fn a_stop_signals_first_and_kills_after_the_grace() {
     let (addr, state) = start_server().await;
     let (mut ctl, _) = connect_async(format!("ws://{addr}/control")).await.unwrap();
     recv_text(&mut ctl).await;
-    let id = call(&mut ctl, 1, "spawn_harness", json!({ "harness": "_sh" })).await["instance_id"]
+    let id = call(&mut ctl, 1, "spawn_harness", json!({ "harness": "_deaf" })).await["instance_id"]
         .as_str()
         .unwrap()
         .to_string();
-    call(&mut ctl, 2, "stop_harness", json!({ "instance": id })).await;
+    let (mut term, _) = connect_async(format!("ws://{addr}/term/{id}")).await.unwrap();
+    read_until(&mut term, "armed").await;
 
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
-    loop {
-        let ev = tokio::time::timeout_at(deadline, recv_text(&mut ctl))
-            .await
-            .expect("the reaper never announced the exit");
-        let inst = &ev["payload"]["instances"][0];
-        if ev["event"] == json!("harness_changed") && inst["state"] == json!("exited") {
-            assert_eq!(inst["id"], json!(id), "{ev}");
-            assert!(inst["exit_code"].is_number(), "no exit code captured: {ev}");
-            break;
-        }
-    }
+    call(&mut ctl, 2, "stop_harness", json!({ "instance": id })).await;
+    read_until(&mut term, "GOT-TERM").await;
+    await_exit(&mut ctl, &id).await;
     state.release_mount();
 }
 
@@ -194,8 +209,8 @@ async fn a_stopped_instances_address_refuses_while_the_central_one_stays_open() 
         .unwrap()
         .to_string();
 
-    // goofi wrote the config, under this instance's own directory, naming this instance's URL.
-    let cfg = std::fs::read_to_string(state.mount().join("harness").join(&id).join("mcp.json"))
+    // goofi wrote the config, in this instance's own directory, naming this instance's URL.
+    let cfg = std::fs::read_to_string(term::config_dir(&state.mount(), &id).join("mcp.json"))
         .expect("the spawn wrote the harness's MCP config");
     assert!(cfg.contains(&format!("/mcp/{id}")), "the config names the minted address: {cfg}");
     assert!(
@@ -247,6 +262,9 @@ async fn the_roster_survives_a_reconnect() {
     let instances = &hello["payload"]["harnesses"]["instances"];
     assert_eq!(instances[0]["id"], json!(id), "the roster was not seeded: {hello}");
     assert_eq!(instances[0]["state"], json!("running"), "{hello}");
+    // Launching an agent is not authoring, so it must not put the unsaved dot on an untouched
+    // patch — which is why the config goofi writes lands BESIDE the workspace and not in it.
+    assert_eq!(hello["payload"]["unsaved_changes"], json!(false), "a spawn dirtied the patch");
     // `detected` rides the same shape, so a joining tab can offer the launch buttons too.
     assert!(hello["payload"]["harnesses"]["detected"].is_array(), "{hello}");
     state.release_mount();

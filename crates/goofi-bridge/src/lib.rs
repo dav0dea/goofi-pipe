@@ -674,14 +674,8 @@ async fn handle_control(socket: WebSocket, state: AppState) {
         let g = state.graph.lock().unwrap();
         event(
             "hello",
-            schemas::snapshot(
-                &g,
-                &state.instance_id,
-                true,
-                unsaved,
-                saved_at.as_deref(),
-                state.harnesses.roster(),
-            ),
+            schemas::snapshot(&g, &state.instance_id, true, unsaved, saved_at.as_deref(),
+                              state.harnesses.roster()),
         )
     };
     if tx.send(Message::Text(hello.into())).await.is_err() {
@@ -749,14 +743,8 @@ async fn handle_control(socket: WebSocket, state: AppState) {
                         let g = state.graph.lock().unwrap();
                         event(
                             "hello",
-                            schemas::snapshot(
-                                &g,
-                                &state.instance_id,
-                                true,
-                                unsaved,
-                                saved_at.as_deref(),
-                                state.harnesses.roster(),
-                            ),
+                            schemas::snapshot(&g, &state.instance_id, true, unsaved,
+                                              saved_at.as_deref(), state.harnesses.roster()),
                         )
                     };
                     if tx.send(Message::Text(hello.into())).await.is_err() {
@@ -1054,21 +1042,15 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
             return Ok(state.harnesses.roster());
         }
         if op == "spawn_harness" {
-            let harness = payload
-                .get("harness")
-                .and_then(|v| v.as_str())
+            let h = payload.get("harness").and_then(|v| v.as_str())
                 .ok_or("spawn_harness: missing harness")?;
-            let id =
-                state.harnesses.spawn(harness, &state.mount(), &state.mcp_url(), state.events.clone())?;
+            let id = state.harnesses.spawn(h, &state.mount(), &state.mcp_url(), state.events.clone())?;
             events.push(event("harness_changed", state.harnesses.roster()));
             return Ok(json!({ "instance_id": id }));
         }
         if op == "stop_harness" {
-            let instance = payload
-                .get("instance")
-                .and_then(|v| v.as_str())
-                .ok_or("stop_harness: missing instance")?;
-            state.harnesses.stop(instance)?;
+            state.harnesses.stop(payload.get("instance").and_then(|v| v.as_str())
+                .ok_or("stop_harness: missing instance")?)?;
             events.push(event("harness_changed", state.harnesses.roster()));
             return Ok(json!({ "ok": true }));
         }
@@ -1751,14 +1733,8 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
                 *state.save_path.lock().unwrap() = from_path.clone();
                 events.push(event(
                     "graph_replaced",
-                    schemas::snapshot(
-                        &g,
-                        &state.instance_id,
-                        false,
-                        false,
-                        from_path.as_deref(),
-                        state.harnesses.roster(),
-                    ),
+                    schemas::snapshot(&g, &state.instance_id, false, false, from_path.as_deref(),
+                                      state.harnesses.roster()),
                 ));
                 // The patch brought its own node types (and dropped the last patch's), which
                 // `graph_replaced` does not carry — the snapshot's catalog rides `hello` alone.
@@ -1947,9 +1923,10 @@ async fn handle_term(socket: WebSocket, state: AppState, instance: String) {
             incoming = rx.next() => match incoming {
                 Some(Ok(Message::Binary(b))) => inst.write(&b),
                 Some(Ok(Message::Text(t))) => {
-                    match serde_json::from_str::<TermControl>(t.as_str()) {
-                        Ok(c) if c.op == "resize" => inst.resize(c.cols, c.rows),
-                        _ => {}
+                    if let Ok(c) = serde_json::from_str::<TermControl>(t.as_str()) {
+                        if c.op == "resize" {
+                            inst.resize(c.cols, c.rows);
+                        }
                     }
                 }
                 Some(Ok(_)) => {}
