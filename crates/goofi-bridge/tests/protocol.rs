@@ -575,6 +575,101 @@ async fn undoing_a_move_puts_the_panel_back_at_the_index_and_share_it_had() {
     assert_eq!(arrangement(&back), before, "one ctrl-Z put the panel back exactly where it was");
 }
 
+/// **The rule, enforced rather than remembered: no layout inverse restores raw state — every inverse
+/// re-plans through the forward planners.** Putting a slot back resurrects a container a peer's
+/// children no longer belong under, which strands them and corrupts the arrangement on the next
+/// save. Three rounds found three instances of it BY HAND, which is two too many, so every layout
+/// write op is driven here through the one interleaving that makes the class visible — a peer edits
+/// between the op and its undo — and the manager's own loader is the judge. The op list comes from
+/// the registry and the match below has no catch-all, so a NEW layout op is red until it is driven
+/// too.
+#[tokio::test]
+async fn no_layout_undo_puts_back_a_slot_a_peer_has_since_built_over() {
+    let ops: Vec<&str> = goofi_bridge::ops::REGISTRY
+        .iter()
+        .filter(|o| o.writes && (o.name.starts_with("page_") || o.name.starts_with("session_")))
+        .map(|o| o.name)
+        .collect();
+    assert!(
+        ops.contains(&"page_remove_panel") && ops.contains(&"session_remove_page"),
+        "the registry filter still finds the layout write ops: {ops:?}"
+    );
+    let mut stranded = Vec::new();
+    for op in &ops {
+        // A fresh manager per op, so each one meets the same arrangement: `Layout` holds a two-child
+        // split and `Two` holds another. Between them every op has an argument that exists, and each
+        // one leaves `a` standing for the peer to build on.
+        let base = start_server().await;
+        let (mut ws, _) = connect_async(format!("{base}/control")).await.unwrap();
+        let _ = recv_text(&mut ws).await;
+        let doc = sync_replica(&mut ws, |d| !panels(d).is_empty()).await;
+        let a = panels(&doc)[0].clone();
+        let b = call(&mut ws, 1, "page_split_panel",
+            json!({ "page": "Layout", "panel": a, "direction": "row" })).await["result"]
+            .as_str().expect("the split's new panel").to_string();
+        call(&mut ws, 2, "session_add_page", json!({ "name": "Two" })).await;
+        let d = sync_replica(&mut ws, |d| panels(d).len() == 3).await;
+        let c = panels(&d).into_iter().find(|p| *p != a && *p != b).expect("the second page's panel");
+        let e = call(&mut ws, 3, "page_split_panel",
+            json!({ "page": "Two", "panel": c, "direction": "row" })).await["result"]
+            .as_str().expect("the second page's second panel").to_string();
+        let d = sync_replica(&mut ws, |d| d.read_at(&["arrangement", e.as_str()]).is_some()).await;
+        let far = d.read_at(&["arrangement", e.as_str(), "parent"])
+            .and_then(|v| v.as_str().map(str::to_string)).expect("the split on Two");
+        let near = d.read_at(&["arrangement", b.as_str(), "parent"])
+            .and_then(|v| v.as_str().map(str::to_string)).expect("the split on Layout");
+
+        let payload = match *op {
+            "session_add_page" => json!({ "name": "Fresh" }),
+            "session_remove_page" => json!({ "name": "Two" }),
+            "session_rename_page" => json!({ "from": "Two", "to": "Deux" }),
+            "session_reorder_page" => json!({ "name": "Two", "to_index": 0 }),
+            "page_split_panel" => json!({ "page": "Layout", "panel": a }),
+            "page_set_panel" => json!({ "page": "Layout", "panel": b, "type": "console" }),
+            "page_move_panel" =>
+                json!({ "page": "Layout", "panel": b, "new_parent": far, "order_index": 0 }),
+            "page_insert_at_panel" => json!({ "page": "Two", "subtree": b, "target": c }),
+            "page_resize_split" =>
+                json!({ "page": "Layout", "split": near, "fractions": [0.3, 0.7] }),
+            "page_remove_panel" => json!({ "page": "Layout", "panel": b }),
+            new => panic!("`{new}` is a layout write op with no case here — drive it through this \
+                           guard, and say why if its inverse may restore a slot"),
+        };
+        let r = call_session(&mut ws, 4, op, payload, "s1").await;
+        assert!(r["error"].is_null(), "{op}: {r}");
+        // The peer then builds exactly where that op's slot-restore inverse would want to write: over
+        // the survivor `a` for a structural op, over the tab index the page ops renumber.
+        let (peer_op, peer) = if op.starts_with("session_") {
+            ("session_add_page", json!({ "name": "Peer" }))
+        } else {
+            ("page_split_panel", json!({ "page": "Layout", "panel": a }))
+        };
+        let r = call_session(&mut ws, 5, peer_op, peer, "s2").await;
+        assert!(r["error"].is_null(), "{op}, the peer's edit: {r}");
+        let u = call_session(&mut ws, 6, "undo", json!({}), "s1").await;
+        assert_eq!(u["result"]["changed"], json!(true), "{op}: the undo flipped nothing: {u}");
+
+        let yaml = call(&mut ws, 7, "serialize", json!({})).await["result"]["yaml"]
+            .as_str().unwrap().to_string();
+        let r = call(&mut ws, 8, "load_text", json!({ "content": yaml })).await;
+        if r["result"]["layout_warning"] != Value::Null {
+            stranded.push(*op);
+        }
+    }
+    // The two this guard FOUND and that fix round 3 did not fix, listed rather than skipped so the
+    // hole is loud: a contents edit (`type`/`state`, a set of shares) still inverts by restoring the
+    // WHOLE entry, so its undo puts back the `order` a peer's adjacent split has since taken. Their
+    // fix is one more re-planning command (~35 lines) and it is the user's to scope. The set is
+    // compared BOTH ways: a new stranding op fails here, and so does fixing one of these without
+    // striking it off.
+    let known = ["page_set_panel", "page_resize_split"];
+    assert_eq!(
+        stranded, known,
+        "an undo left an arrangement the manager cannot itself open — or a known one was fixed \
+         without being struck off this list"
+    );
+}
+
 #[tokio::test]
 async fn a_redo_after_a_peers_edit_re_plans_rather_than_replaying_the_slots_it_found() {
     // The narrower half of the same class, and the one an undo test cannot see: what a REDO replays
