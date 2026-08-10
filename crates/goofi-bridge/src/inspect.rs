@@ -637,4 +637,27 @@ errors (whole patch):
         assert_eq!(v["output_slots"]["out"], json!("ARRAY"));
         assert!(node_source(&g, "Nope", &[]).unwrap_err().contains("no node type `Nope`"));
     }
+
+    #[test]
+    fn read_node_source_finds_a_discovered_types_file_by_re_deriving_its_name() {
+        // The half a caller actually wants: the text to edit, the path to write it back to, and
+        // which tree it came from. The path is re-derived from the type name rather than recorded,
+        // so this pins the derivation — a scan stores no path for it to disagree with.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("boom.py"), "class Boom:\n    pass\n").unwrap();
+        let mut g = Graph::new();
+        g.register_dyn_type(&BOOM, Box::new(|_| Box::new(Boom)));
+
+        let v = node_source(&g, "Boom", &[(dir.path().to_path_buf(), "patch")]).unwrap();
+        assert_eq!(v["provenance"], json!("patch"), "{v}");
+        assert_eq!(v["path"], json!(dir.path().join("boom.py").to_string_lossy()), "{v}");
+        assert_eq!(v["source"], json!("class Boom:\n    pass\n"), "{v}");
+        assert_eq!(v["language"], json!("python"), "{v}");
+
+        // A tree that holds no file of that name leaves the discovery half empty and SAYS so,
+        // rather than handing back a bare null the caller has to interpret.
+        let v = node_source(&g, "Boom", &[(dir.path().join("nope"), "patch")]).unwrap();
+        assert_eq!(v["source"], Value::Null);
+        assert!(v["provenance"].as_str().unwrap().contains("compiled in"), "{v}");
+    }
 }

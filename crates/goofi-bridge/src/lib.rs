@@ -1918,6 +1918,87 @@ mod result_enrichment_tests {
     }
 }
 
+/// The inspect ARMS, as distinct from the formatters `inspect.rs` pins. Everything between the
+/// payload and the formatter's arguments lives only here: which scope was asked for, which
+/// sections default on, and the dirtiness that has to be sampled before the lock is taken.
+#[cfg(test)]
+mod inspect_dispatch_tests {
+    use super::*;
+
+    fn call(state: &AppState, op: &str, payload: Value) -> Value {
+        let req = json!({ "id": 1, "op": op, "payload": payload }).to_string();
+        let reply: Value =
+            serde_json::from_str(&dispatch(state, &req).expect("a numeric id is answered")).unwrap();
+        reply["result"].clone()
+    }
+
+    fn text(state: &AppState, op: &str, payload: Value) -> String {
+        call(state, op, payload)["text"].as_str().expect("the op answers with text").to_string()
+    }
+
+    #[test]
+    fn inspect_patch_reads_the_scope_it_was_asked_for_and_the_dirtiness_it_sampled() {
+        let state = AppState::new();
+        let (uid, scope) = {
+            let mut g = state.graph.lock().unwrap();
+            let n = g.add_node("Oscillator", None).unwrap();
+            let s = g.group_nodes(&[n], [0.0, 0.0]).unwrap();
+            (n, s)
+        };
+        // No mutation has gone through dispatch, so the patch matches disk.
+        let root = text(&state, "inspect_patch", json!({}));
+        assert!(root.contains("scope: root") && root.contains("unsaved changes: no"), "{root}");
+        // …and the scope argument reaches the formatter rather than being dropped.
+        let inner = text(&state, "inspect_patch", json!({ "scope": scope.to_hex() }));
+        assert!(inner.contains(&format!("({})", scope.to_hex())), "{inner}");
+        assert!(!inner.contains("scope: root"), "{inner}");
+        // A write through dispatch dirties the patch, and the header must follow it.
+        call(&state, "rename_node", json!({ "node": uid.to_hex(), "name": "src" }));
+        let after = text(&state, "inspect_patch", json!({}));
+        assert!(after.contains("unsaved changes: yes"), "{after}");
+        state.release_mount();
+    }
+
+    #[test]
+    fn get_patch_answers_with_the_live_dirty_flag_not_a_constant() {
+        let state = AppState::new();
+        let uid = state.graph.lock().unwrap().add_node("Oscillator", None).unwrap();
+        let before = call(&state, "get_patch", json!({}));
+        assert_eq!(before["dirty"], json!(false), "{before}");
+        assert_eq!(before["workspace"], json!(state.mount().to_string_lossy()), "{before}");
+        call(&state, "rename_node", json!({ "node": uid.to_hex(), "name": "src" }));
+        assert_eq!(call(&state, "get_patch", json!({}))["dirty"], json!(true));
+        state.release_mount();
+    }
+
+    #[test]
+    fn inspect_node_defaults_every_section_on_and_takes_a_no_for_each() {
+        let state = AppState::new();
+        let uid = state.graph.lock().unwrap().add_node("Oscillator", None).unwrap();
+        // The oscillator emits by wall clock, so the meta line needs time to pass, not just a tick.
+        for _ in 0..50 {
+            let mut g = state.graph.lock().unwrap();
+            g.tick();
+            if g.latest_frame(uid, "out").is_some() {
+                break;
+            }
+            drop(g);
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        let full = text(&state, "inspect_node", json!({ "node": uid.to_hex() }));
+        assert!(full.contains("params:"), "params default on: {full}");
+        assert!(full.contains("meta: "), "meta defaults on: {full}");
+        assert!(full.contains("error:"), "error defaults on: {full}");
+        let bare = text(
+            &state,
+            "inspect_node",
+            json!({ "node": uid.to_hex(), "params": false, "meta": false, "error": false }),
+        );
+        assert!(!bare.contains("params:") && !bare.contains("meta: ") && !bare.contains("error:"), "{bare}");
+        state.release_mount();
+    }
+}
+
 #[cfg(test)]
 mod save_archive_tests {
     use super::*;
@@ -2191,6 +2272,29 @@ mod node_scan_tests {
         assert_eq!(emitted(&g, uid), 9.0, "the patch's own file wins the name");
         assert!(g.is_patch_type("MyThing"), "…and says where it came from");
         assert!(!g.is_patch_type("OnlyShipped"), "the shipped tree's own node is not the patch's");
+    }
+
+    /// …and `read_node_source` reports the same precedence, because an agent that reads a type's
+    /// source is about to edit it: handing back the shipped file while the patch's own copy is the
+    /// one running would send the edit to a file nothing executes.
+    #[test]
+    fn read_node_source_hands_back_the_file_that_is_actually_running() {
+        let mut state = AppState::new();
+        scanning(&mut state);
+        let shipped = tempfile::tempdir().unwrap();
+        write_node(shipped.path(), "my_thing.py", "1.0");
+        state.system_nodes = Some(shipped.path().to_path_buf());
+        write_node(&state.mount().join("nodes"), "my_thing.py", "9.0");
+        rescan(&state, &mut state.graph.lock().unwrap(), &state.mount());
+
+        let req = json!({ "id": 1, "op": "read_node_source", "payload": { "type": "MyThing" } });
+        let reply: Value =
+            serde_json::from_str(&dispatch(&state, &req.to_string()).expect("answered")).unwrap();
+        let r = &reply["result"];
+        assert_eq!(r["provenance"], json!("patch"), "{r}");
+        assert_eq!(r["source"], json!("9.0"), "{r}");
+        assert_eq!(r["path"], json!(state.mount().join("nodes/my_thing.py").to_string_lossy()), "{r}");
+        state.release_mount();
     }
 
     /// A load swaps the workspace, so the registry must follow it — and the ORDER is load-bearing:
