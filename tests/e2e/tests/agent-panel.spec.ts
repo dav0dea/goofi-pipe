@@ -41,9 +41,8 @@ async function say(page: Page, marker: string): Promise<void> {
 	});
 }
 
-/** Hand the instance back, and wait for the CLIENT to agree: an exited-but-listed instance still
- * fills the panel, whose ✕ would then ask instead of closing, which is how this raced the first
- * time. */
+/** Hand the instance back, and wait for the CLIENT to agree: a panel still bound to it would keep
+ * a ✕ that asks instead of closing, which is how this raced the first time. */
 async function sweep(page: Page, id: string): Promise<void> {
 	await dismiss(page, id);
 	await expect(page.getByTestId('agent-launcher')).toBeVisible();
@@ -138,7 +137,9 @@ test('a harness runs in a panel, and its transcript survives closing that panel'
 		await page.locator('.context-menu .item').first().click();
 		await expect(page.getByTestId('agent-close-dialog')).toBeVisible();
 		await page.getByTestId('agent-kill').click();
-		await expect.poll(() => stateOf(page, id), { timeout: 15_000 }).toBe('exited');
+		// `gone`, not `exited`: a dead harness is dropped rather than kept, and the app asks the
+		// manager to drop it as soon as it sees the exit.
+		await expect.poll(() => stateOf(page, id), { timeout: 15_000 }).toMatch(/exited|gone/);
 		threw = false;
 	} finally {
 		await handBack(page, id, threw);
@@ -154,6 +155,105 @@ async function openAgentPanelLater(page: Page): Promise<void> {
 	);
 	await expect(page.getByTestId('agent-launcher')).toBeVisible();
 }
+
+/** The terminal's own grid box, and the box the panel gives it — both in CSS pixels, the host's
+ *  measured as a CONTENT box so its padding is not counted as unused screen. */
+const boxes = (page: Page): Promise<{ grid: [number, number]; host: [number, number] }> =>
+	page.evaluate(() => {
+		const host = document.querySelector('[data-testid="agent-terminal"]') as HTMLElement;
+		const hs = getComputedStyle(host);
+		const screen = host.querySelector('.xterm-screen') as HTMLElement;
+		return {
+			grid: [screen.getBoundingClientRect().width, screen.getBoundingClientRect().height],
+			host: [
+				parseFloat(hs.width) - parseFloat(hs.paddingLeft) - parseFloat(hs.paddingRight),
+				parseFloat(hs.height) - parseFloat(hs.paddingTop) - parseFloat(hs.paddingBottom)
+			]
+		};
+	});
+
+test('a freshly launched harness is sized to its panel, with no manual resize', async ({ page }) => {
+	await page.goto('/');
+	await waitForApp(page);
+	let id = '';
+	let threw = true;
+	try {
+		await splitRight(page);
+		await openAgentPanelLater(page);
+		id = await spawnSh(page);
+		await expect(page.getByTestId('agent-terminal')).toBeVisible();
+
+		// What the CHILD was told — the only reading that says whether the size reached the PTY, and
+		// the thing a full-screen TUI lays itself out against.
+		await page.getByTestId('agent-terminal').click();
+		await page.keyboard.type('stty size');
+		await page.keyboard.press('Enter');
+		// `innerText`, not `toContainText`: the assertion normalizes whitespace away and the answer
+		// is a LINE of its own — the only thing that tells it apart from the command that asked.
+		const answer = async (): Promise<string> =>
+			(await page.getByTestId('agent-terminal').innerText())
+				.split('\n')
+				.map((l) => l.trim())
+				.filter((l) => /^\d+ \d+$/.test(l))
+				.pop() ?? '';
+		await expect.poll(answer, { timeout: 15_000 }).toMatch(/^\d+ \d+$/);
+		const [rows, cols] = (await answer()).split(' ').map(Number);
+
+		// The child's grid IS the drawn grid (one cell each way), so the cell size follows from it —
+		// no font arithmetic, and nothing to drift when the face changes.
+		const { grid, host } = await boxes(page);
+		const cell = [grid[0] / cols, grid[1] / rows];
+		// …and that grid fills the panel: what is left over is less than one more column (plus
+		// xterm's own scrollbar) and less than one more row. A launch whose proposal never landed
+		// leaves the child at the PTY's 80×24 default, which in this panel is ~65px of dead space.
+		expect(host[0] - grid[0], `left ${host[0] - grid[0]}px unused across a ${cols}-col grid`)
+			.toBeLessThan(cell[0] + 20);
+		expect(host[1] - grid[1], `left ${host[1] - grid[1]}px unused down a ${rows}-row grid`)
+			.toBeLessThan(cell[1] + 1);
+		threw = false;
+	} finally {
+		await handBack(page, id, threw);
+	}
+});
+
+test('a harness that dies hands its panel back to the launcher, and says why', async ({ page }) => {
+	await page.goto('/');
+	await waitForApp(page);
+	let id = '';
+	let threw = true;
+	try {
+		await splitRight(page);
+		await openAgentPanelLater(page);
+		id = await spawnSh(page);
+		await expect(page.getByTestId('agent-terminal')).toBeVisible();
+
+		// A crash: nobody asked this child to stop and it did not end well.
+		await page.getByTestId('agent-terminal').click();
+		await page.keyboard.type('exit 7');
+		await page.keyboard.press('Enter');
+
+		// No frozen last screen and no dismiss button to press — the panel offers a new harness.
+		await expect(page.getByTestId('agent-launcher')).toBeVisible({ timeout: 15_000 });
+		await expect(page.getByTestId('toast')).toContainText('exited unexpectedly');
+		// …and nothing dead is left behind on the manager's roster either.
+		await expect.poll(() => stateOf(page, id), { timeout: 15_000 }).toBe('gone');
+		id = '';
+
+		// A CLEAN exit is the ordinary end of a shell session, and gets no alarm at all.
+		await page.getByTestId('toast').click();
+		id = await spawnSh(page);
+		await expect(page.getByTestId('agent-terminal')).toBeVisible();
+		await page.getByTestId('agent-terminal').click();
+		await page.keyboard.type('exit');
+		await page.keyboard.press('Enter');
+		await expect(page.getByTestId('agent-launcher')).toBeVisible({ timeout: 15_000 });
+		await expect(page.getByTestId('toast'), 'a clean exit is not an alarm').toBeHidden();
+		id = '';
+		threw = false;
+	} finally {
+		await handBack(page, id, threw);
+	}
+});
 
 test('a second view of one harness is live, and both views see the same stream', async ({
 	page,

@@ -10,10 +10,14 @@
   Which instance the panel shows is client-local viewpoint (see the store's note): it never reaches
   the manager, so it cannot dirty the patch or enter undo.
 
-  Closing this view is not killing the agent, so the ✕ asks — `register.ts` routes the panel
-  header's close into the store, which raises the question. The DIALOG is the shell's
-  (`app/AgentClose.svelte`): it is about an instance, not a view, and a question that needed a panel
-  made the TopBar's badge open one — an authoring write, for asking.
+  **One condition draws this panel**: with an instance it is a bar over a terminal, without one it is
+  the launcher — no bar, because a bar with nothing in it is chrome for its own sake. That is also
+  what makes the terminal's box FINAL at the moment it is attached: the bar cannot appear a frame
+  later (when the roster event lands) and reflow the host the fit addon just measured.
+
+  A harness that dies takes this panel back to its launcher — a dead agent has no interactivity and
+  no state to keep (user, 2026-08-10) — so nothing here draws an exited instance. Closing the view of
+  a LIVE one still asks (`app/AgentClose.svelte`): closing a view is not killing an agent.
 -->
 <script lang="ts">
 	import { Terminal } from '@xterm/xterm';
@@ -22,7 +26,7 @@
 	import type { PanelProps } from '$lib/workspace/registry';
 	import { harnesses, harnessLabel } from '$lib/stores/harness.svelte';
 	import { termSession, type TerminalLike } from '$lib/stores/termSession';
-	import { Bar, Button, EmptyState, Select, StatusDot } from '$lib/ui';
+	import { Bar, ChoiceGrid, EmptyState, Icon, IconButton, Select, type Choice } from '$lib/ui';
 	import { untrack } from 'svelte';
 
 	let { panelId }: PanelProps = $props();
@@ -38,7 +42,25 @@
 	});
 
 	const id = $derived(hs.instanceFor(panelId));
-	const inst = $derived(hs.instances.find((i) => i.id === id) ?? null);
+
+	/** The launcher's tiles, in the empty panel's own grid: attach a harness already running in this
+	 * patch, or start one of the harnesses found on this machine. */
+	const choices = $derived<Choice[]>([
+		...hs.instances.map((i) => ({
+			id: `attach:${i.id}`,
+			label: `Attach ${harnessLabel(i)}`,
+			icon: 'bot' as const,
+			choose: () => hs.show(panelId, i.id)
+		})),
+		...hs.detected.map((d) => ({
+			id: `launch:${d.harness}`,
+			label: d.harness,
+			icon: 'bot' as const,
+			title: d.version ?? d.path,
+			testid: `agent-launch-${d.harness}`,
+			choose: () => void hs.launch(panelId, d.harness)
+		}))
+	]);
 
 	let host = $state<HTMLDivElement | null>(null);
 
@@ -87,62 +109,43 @@
 </script>
 
 <div class="agent">
-	<Bar>
-		{#snippet start()}
-			{#if inst}
-				<StatusDot
-					tone={inst.state === 'running' ? 'ok' : inst.state === 'stopping' ? 'warn' : 'error'}
-					aria-label={inst.state}
-				/>
+	{#if id}
+		<Bar>
+			{#snippet start()}
 				<!-- The switcher: one panel, any instance. Two agent panels can already show two, but
 				     changing which one this panel watches must not cost a second panel. -->
 				<Select
-					value={inst.id}
+					density="chrome"
+					value={id}
 					options={hs.instances.map((i) => i.id)}
 					labels={Object.fromEntries(hs.instances.map((i) => [i.id, harnessLabel(i)]))}
 					onChange={(v) => hs.show(panelId, v)}
 					data-testid="agent-switcher"
 				/>
-			{/if}
-		{/snippet}
-		{#snippet end()}
-			{#if inst}
-				<Button
-					size="sm"
+			{/snippet}
+			{#snippet end()}
+				<IconButton
 					variant="ghost"
+					size="sm"
+					label="Close agent view"
 					data-testid="agent-close"
-					onclick={() => hs.requestClose(inst.id)}
+					onclick={() => hs.requestClose(id)}><Icon name="x" /></IconButton
 				>
-					{inst.state === 'exited' ? `Dismiss (exit ${inst.exit_code ?? '?'})` : 'Close…'}
-				</Button>
-			{/if}
-		{/snippet}
-	</Bar>
-	{#if id}
+			{/snippet}
+		</Bar>
 		<div class="host" bind:this={host} data-testid="agent-terminal"></div>
 	{:else}
-		<EmptyState data-testid="agent-launcher">
-			{#snippet title()}No agent running here{/snippet}
-			{#snippet hint()}
-				{hs.detected.length
-					? 'It runs in this patch workspace, editing the patch with you.'
-					: 'No agent harness found on PATH.'}
-			{/snippet}
-			<div class="choices">
-				{#each hs.instances as i (i.id)}
-					<Button size="sm" onclick={() => hs.show(panelId, i.id)}>Attach {harnessLabel(i)}</Button>
-				{/each}
-				{#each hs.detected as d (d.harness)}
-					<Button
-						size="sm"
-						variant="primary"
-						title={d.version ?? d.path}
-						data-testid={`agent-launch-${d.harness}`}
-						onclick={() => void hs.launch(panelId, d.harness)}>Launch {d.harness}</Button
-					>
-				{/each}
-			</div>
-		</EmptyState>
+		<div class="launcher" data-testid="agent-launcher">
+			<EmptyState>
+				{#snippet title()}No agent running here{/snippet}
+				{#snippet hint()}
+					{hs.detected.length
+						? 'It runs in this patch workspace, editing the patch with you.'
+						: 'No agent harness found on PATH.'}
+				{/snippet}
+				<ChoiceGrid {choices} />
+			</EmptyState>
+		</div>
 	{/if}
 </div>
 
@@ -170,11 +173,16 @@
 		/* Touch scroll belongs to xterm's own viewport; nothing here claims the gesture. */
 		touch-action: pan-y;
 	}
-	.choices {
+	/* The empty panel's own geometry, for the same reason it wears the empty panel's grid: the two
+	   are one surface asking one question. `--bg` is load-bearing rather than cosmetic — a tile is
+	   `--surface-1` and carries its separation by that step (D5), so a `--surface-1` ground would
+	   leave the choices with no edge at all. */
+	.launcher {
+		flex: 1;
 		display: flex;
-		flex-wrap: wrap;
-		gap: var(--space-3);
+		flex-direction: column;
 		justify-content: center;
-		margin-top: var(--space-4);
+		min-height: 0;
+		background: var(--bg);
 	}
 </style>

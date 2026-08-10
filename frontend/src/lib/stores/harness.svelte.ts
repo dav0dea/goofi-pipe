@@ -25,6 +25,7 @@ import type {
 	HarnessRoster
 } from '$lib/api/control';
 import { endTermSession, liveTermSessions } from './termSession';
+import { notify } from './notify.svelte';
 
 export type { HarnessRoster };
 
@@ -51,10 +52,9 @@ export class HarnessStore {
 		ctl.on((ev) => this.handle(ev));
 	}
 
-	/** What the badge counts: agents that can still answer. An exited instance stays on the roster
-	 * until it is dismissed, because its last screen is what says why it died. */
+	/** What the badge counts. Every instance here can still answer — see `adopt`. */
 	get running(): number {
-		return this.instances.filter((i) => i.state !== 'exited').length;
+		return this.instances.length;
 	}
 
 	/** Any mounted agent panel — where a question about an instance nothing is showing can be
@@ -69,14 +69,35 @@ export class HarnessStore {
 	}
 
 	private adopt(r: HarnessRoster | undefined): void {
-		this.instances = r?.instances ?? [];
+		const seen = r?.instances ?? [];
+		// A dead agent is GONE as far as this app is concerned (user, 2026-08-10): it has no
+		// interactivity and no state left, so the panel showing it goes back to its launcher rather
+		// than freezing on a corpse, and there is no dismissal to ask for. Everything below then
+		// follows from the roster being live-only — the badge counts it, the switcher offers it, a
+		// panel claims it.
+		for (const i of seen) if (i.state === 'exited') this.bury(i);
+		this.instances = seen.filter((i) => i.state !== 'exited');
 		this.detected = r?.detected ?? [];
-		// An instance that LEFT the roster (dismissed, or torn down with its patch) takes its
-		// terminal with it. An instance that merely exited keeps one.
+		// An instance that LEFT the roster (dismissed, torn down with its patch, or just buried)
+		// takes its terminal with it.
 		const known = new Set(this.instances.map((i) => i.id));
 		for (const id of liveTermSessions()) if (!known.has(id)) endTermSession(id);
 		if (this.closing && !known.has(this.closing.id)) this.closing = null;
 		for (const p of Object.keys(this.panels)) this.claim(p);
+	}
+
+	/** An instance that has just died, seen once: it is on the roster we are adopting and was on the
+	 * one before, alive. Only a death NOBODY ASKED FOR is worth interrupting for — and `stopping` is
+	 * exactly that distinction, broadcast the moment a stop is asked for, a whole grace before the
+	 * child goes. A clean exit is the user typing `exit`; the panel returning to its launcher is the
+	 * whole of that news. Then the manager is asked to drop it, so the two rosters agree; another
+	 * tab asking the same thing is answered with an error, which is nothing to report. */
+	private bury(i: HarnessInstanceInfo): void {
+		const was = this.instances.find((o) => o.id === i.id);
+		if (!was) return;
+		if (was.state === 'running' && i.exit_code)
+			notify().raise(`${harnessLabel(i)} exited unexpectedly (code ${i.exit_code})`);
+		void this.ctl.call('stop_harness', { instance: i.id }).catch(() => {});
 	}
 
 	mount(panelId: string): void {

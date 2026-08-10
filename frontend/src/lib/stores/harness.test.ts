@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { FakeControl } from '$lib/test/fakeControl';
 import { HarnessStore, type HarnessRoster } from './harness.svelte';
 import { endTermSession, liveTermSessions, termSession, type TerminalLike } from './termSession';
+import { notify } from './notify.svelte';
 import type { GraphSnapshot } from '$lib/api/control';
 
 /** A terminal that needs no DOM — the session store's own test drives the real behaviour. */
@@ -15,8 +16,10 @@ const fakeTerm = (): TerminalLike => ({
 	dispose: () => {}
 });
 
-const roster = (...ids: [string, HarnessRoster['instances'][number]['state']][]): HarnessRoster => ({
-	instances: ids.map(([id, state]) => ({ id, harness: '_sh', state })),
+type Row = [string, HarnessRoster['instances'][number]['state'], number?];
+
+const roster = (...ids: Row[]): HarnessRoster => ({
+	instances: ids.map(([id, state, exit_code]) => ({ id, harness: '_sh', state, exit_code })),
 	detected: [{ harness: 'claude', path: '/usr/bin/claude', version: 'claude 1.2.3' }]
 });
 
@@ -36,11 +39,65 @@ describe('the harness roster', () => {
 		expect(h.instances.map((i) => i.id)).toEqual(['a']);
 		expect(h.detected[0].harness).toBe('claude');
 
-		ctl.emit({ event: 'harness_changed', payload: roster(['a', 'exited'], ['b', 'running']) });
-		expect(h.instances.map((i) => i.state)).toEqual(['exited', 'running']);
-		// The badge counts what is ALIVE — an exited instance still on the roster is a screen to
-		// read, not an agent to answer for.
+		// A dead harness is not part of the app's roster: it has no interactivity and no state left,
+		// so it is dropped rather than kept as a frozen screen (user, 2026-08-10).
+		ctl.emit({ event: 'harness_changed', payload: roster(['a', 'exited', 0], ['b', 'running']) });
+		expect(h.instances.map((i) => i.id)).toEqual(['b']);
 		expect(h.running).toBe(1);
+	});
+
+	it('takes the panel of a harness that died back to its launcher, terminal and all', () => {
+		const ctl = new FakeControl();
+		const h = new HarnessStore(ctl);
+		ctl.emit(hello(roster(['a', 'running'])));
+		vi.stubGlobal(
+			'WebSocket',
+			class {
+				binaryType = '';
+				readyState = 3;
+				addEventListener(): void {}
+				send(): void {}
+				close(): void {}
+			}
+		);
+		vi.stubGlobal('location', { protocol: 'http:', host: 'h' });
+		termSession('a', fakeTerm);
+		h.mount('panel-1');
+		expect(h.instanceFor('panel-1')).toBe('a');
+
+		ctl.emit({ event: 'harness_changed', payload: roster(['a', 'exited', 0]) });
+		expect(h.instanceFor('panel-1'), 'the panel is back on its launcher').toBe(null);
+		expect(liveTermSessions(), 'and the dead terminal is gone with it').toEqual([]);
+		// …and the manager is told to drop it, so its roster and this one agree about what exists.
+		expect(ctl.recordedCalls().at(-1)).toEqual({
+			op: 'stop_harness',
+			payload: { instance: 'a' }
+		});
+		vi.unstubAllGlobals();
+	});
+
+	it('says a crash out loud, and says nothing about a clean exit or a kill', () => {
+		const ctl = new FakeControl();
+		const h = new HarnessStore(ctl);
+		ctl.emit(hello(roster(['a', 'running'], ['b', 'running'], ['c', 'running'])));
+		expect(h.running).toBe(3);
+
+		// Nobody asked it to stop and it did not end well: the one case worth interrupting for.
+		notify().clear();
+		ctl.emit({ event: 'harness_changed', payload: roster(['a', 'exited', 3], ['b', 'running'], ['c', 'running']) });
+		expect(notify().message).toMatch(/_sh.*3/);
+
+		// A clean exit is the user typing `exit` — an ordinary end, not an alarm.
+		notify().clear();
+		ctl.emit({ event: 'harness_changed', payload: roster(['b', 'exited', 0], ['c', 'running']) });
+		expect(notify().message).toBe(null);
+
+		// A kill was asked for, so its death is not news. `stopping` is what carries that: the
+		// manager broadcasts it the moment the stop is asked for, a whole grace before the child goes.
+		ctl.emit({ event: 'harness_changed', payload: roster(['c', 'stopping']) });
+		ctl.emit({ event: 'harness_changed', payload: roster(['c', 'exited', 143]) });
+		expect(notify().message).toBe(null);
+		expect(h.running).toBe(0);
 	});
 
 	it('gives each panel its own instance, and never takes one another panel is showing', () => {
@@ -102,7 +159,7 @@ describe('the harness roster', () => {
 		expect(ctl.recordedCalls()).toEqual([]);
 	});
 
-	it('ends a session only when its instance leaves the roster', () => {
+	it('ends a session when its instance leaves the roster', () => {
 		const ctl = new FakeControl();
 		const h = new HarnessStore(ctl);
 		ctl.emit(hello(roster(['a', 'running'])));
@@ -116,13 +173,10 @@ describe('the harness roster', () => {
 		vi.stubGlobal('location', { protocol: 'http:', host: 'h' });
 		termSession('a', fakeTerm);
 		h.mount('panel-1');
-
-		// An EXIT is not a departure: the last screen is what says why it died.
-		ctl.emit({ event: 'harness_changed', payload: roster(['a', 'exited']) });
 		expect(liveTermSessions()).toEqual(['a']);
-		expect(h.instanceFor('panel-1')).toBe('a');
 
-		// Dismissal is. The terminal goes with it, and the panel it was showing in lets go.
+		// A departure — the patch was torn down, or another tab dismissed it. The terminal goes with
+		// it, and the panel it was showing in lets go.
 		ctl.emit({ event: 'harness_changed', payload: roster() });
 		expect(liveTermSessions()).toEqual([]);
 		expect(h.instanceFor('panel-1')).toBe(null);

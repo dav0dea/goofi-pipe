@@ -10,6 +10,9 @@
 
   `hs.closing` is the whole state: which instance was asked about, and the panel to close once it is
   answered (the header's ✕ closes; the badge does not).
+
+  It asks about a LIVE agent only. A dead one is never on the roster to be asked about — it takes its
+  panel back to the launcher instead — so there is no hide-or-dismiss half to this question.
 -->
 <script lang="ts">
 	import { harnesses, harnessLabel } from '$lib/stores/harness.svelte';
@@ -21,9 +24,6 @@
 	const ws = workspace();
 
 	const inst = $derived(hs.instances.find((i) => i.id === hs.closing?.id) ?? null);
-	/** A dead child cannot be left running, so the same two doors mean different things for it:
-	 * letting go keeps its last screen on the roster, and the manager's stop DISMISSES it. */
-	const exited = $derived(inst?.state === 'exited');
 	const name = $derived(inst ? harnessLabel(inst) : 'the harness');
 
 	function answer(kill: boolean): void {
@@ -42,23 +42,14 @@
 </script>
 
 <Dialog open={!!hs.closing} onClose={() => hs.cancelClose()} data-testid="agent-close-dialog">
-	<h2>{exited ? 'Dismiss this agent?' : 'Close this agent view?'}</h2>
+	<h2>Close this agent view?</h2>
 	<p>
-		{#if exited}
-			{name} has already exited. Hiding it keeps its last screen — re-open it from any agent panel —
-			and dismissing drops it from the roster for good.
-		{:else}
-			Detaching leaves {name} running in the patch workspace — re-attach it from any agent panel. Killing
-			stops it.
-		{/if}
+		Detaching leaves {name} running in the patch workspace — re-attach it from any agent panel. Killing
+		stops it.
 	</p>
 	<div class="choices">
-		<Button data-testid="agent-detach" onclick={() => answer(false)}>
-			{exited ? 'Hide' : 'Detach'}
-		</Button>
-		<Button variant="danger" data-testid="agent-kill" onclick={() => answer(true)}>
-			{exited ? 'Dismiss' : 'Kill'}
-		</Button>
+		<Button data-testid="agent-detach" onclick={() => answer(false)}>Detach</Button>
+		<Button variant="danger" data-testid="agent-kill" onclick={() => answer(true)}>Kill</Button>
 		<Button variant="ghost" onclick={() => hs.cancelClose()}>Cancel</Button>
 	</div>
 </Dialog>
