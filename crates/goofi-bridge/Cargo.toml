@@ -20,6 +20,10 @@ futures-util = "0.3"
 getrandom = "0.3"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# The PTY the agent harness runs on (wezterm's crate).
+portable-pty = "0.9"
+# SIGTERM: `portable_pty::ChildKiller` only offers SIGHUP, and nothing offers SIGKILL.
+libc = "0.2"
 
 [dev-dependencies]
 tokio-tungstenite = "0.24"

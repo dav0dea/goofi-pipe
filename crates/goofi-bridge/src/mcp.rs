@@ -135,7 +135,7 @@ fn tool_result(text: String, is_error: bool) -> Value {
 }
 
 /// Run one tool by handing the registry op straight to the control-plane dispatcher.
-fn call_tool(state: &AppState, params: &Value) -> Value {
+fn call_tool(state: &AppState, session: &str, params: &Value) -> Value {
     let name = params.get("name").and_then(|v| v.as_str()).unwrap_or_default();
     let arguments = params.get("arguments").cloned().unwrap_or_else(|| json!({}));
     // The registry is the gate, checked BEFORE dispatch: `load`/`new`/`save` have live arms and
@@ -144,7 +144,7 @@ fn call_tool(state: &AppState, params: &Value) -> Value {
     if !ops::find(name).is_some_and(|op| op.surface == Surface::Mcp) {
         return tool_result(format!("unknown tool `{name}`"), true);
     }
-    let req = json!({ "id": 1, "op": name, "payload": arguments, "session": AGENT_SESSION });
+    let req = json!({ "id": 1, "op": name, "payload": arguments, "session": session });
     // Synchronous, exactly as the `/control` handler calls it — see the module note. `dispatch`
     // answers `None` only for a request with no numeric id, and this one always has one.
     let Some(reply) = crate::dispatch(state, &req.to_string()) else {
@@ -170,10 +170,33 @@ fn rpc_error(id: Value, code: i64, message: String) -> Response {
         .into_response()
 }
 
-/// The MCP endpoint. Registered with `post`, so axum answers the retired GET stream and the retired
-/// DELETE session-teardown with the 405 the transport spec asks a server without them to give.
+/// The central MCP endpoint — the address an external agent connects to, and the one that has no
+/// harness behind it. Registered with `post`, so axum answers the retired GET stream and the
+/// retired DELETE session-teardown with the 405 the transport spec asks a server without them to
+/// give.
 pub async fn endpoint(State(state): State<AppState>, body: String) -> Response {
-    let req: Value = match serde_json::from_str(&body) {
+    serve(&state, AGENT_SESSION, None, &body).await
+}
+
+/// The address `spawn_harness` minted for ONE harness and wrote into its config. Identity is the
+/// route itself: nothing about it travelled through the agent, so there is no id to spoof and none
+/// to validate — a stopped instance simply has no route, which is what `gone` says here. The undo
+/// session follows the address, so a harness's undo reaches its own edits and neither the central
+/// agent's nor a browser tab's.
+pub async fn instance_endpoint(
+    axum::extract::Path(id): axum::extract::Path<String>,
+    State(state): State<AppState>,
+    body: String,
+) -> Response {
+    let gone = !state.harnesses.serves_mcp(&id);
+    serve(&state, &id, gone.then_some(id.as_str()), &body).await
+}
+
+/// One JSON-RPC request, in the undo session the address names. `gone` names an instance whose
+/// address has been dropped — answered rather than 404'd, because a refusal a model can read is
+/// the only kind it can act on.
+async fn serve(state: &AppState, session: &str, gone: Option<&str>, body: &str) -> Response {
+    let req: Value = match serde_json::from_str(body) {
         Ok(v) => v,
         Err(e) => return rpc_error(Value::Null, -32700, format!("parse error: {e}")),
     };
@@ -189,7 +212,21 @@ pub async fn endpoint(State(state): State<AppState>, body: String) -> Response {
         return StatusCode::ACCEPTED.into_response();
     };
     let params = req.get("params").cloned().unwrap_or_else(|| json!({}));
-    match req.get("method").and_then(|v| v.as_str()).unwrap_or_default() {
+    let method = req.get("method").and_then(|v| v.as_str()).unwrap_or_default();
+    if let Some(instance) = gone {
+        let why = format!(
+            "harness instance `{instance}` has been stopped, so this address no longer serves \
+             goofi's tools. The patch itself is unchanged and still reachable at /mcp."
+        );
+        // A call is refused as a tool ERROR — the module note's deliberate deviation, and the only
+        // shape the MODEL reads — while anything else, which no model is waiting on, is a plain
+        // JSON-RPC error.
+        return match method {
+            "tools/call" => ok(id, tool_result(why, true)),
+            _ => rpc_error(id, -32001, why),
+        };
+    }
+    match method {
         // Answered for a legacy client, never required of a modern one. A supported ask is echoed;
         // anything else is answered with the newest revision this server really implements, which
         // is what the spec asks of a server that cannot speak what it was offered.
@@ -210,7 +247,7 @@ pub async fn endpoint(State(state): State<AppState>, body: String) -> Response {
             }),
         ),
         "tools/list" => ok(id, json!({ "tools": tools() })),
-        "tools/call" => ok(id, call_tool(&state, &params)),
+        "tools/call" => ok(id, call_tool(state, session, &params)),
         "ping" => ok(id, json!({})),
         method => rpc_error(id, -32601, format!("unknown method `{method}`")),
     }

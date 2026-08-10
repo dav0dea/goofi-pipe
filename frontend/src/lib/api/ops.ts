@@ -54,4 +54,7 @@ export type OpName =
 	| 'inspect_node'
 	| 'get_patch'
 	| 'list_globals'
+	| 'list_harnesses'
+	| 'spawn_harness'
+	| 'stop_harness'
 	| 'read_node_source';

@@ -230,6 +230,15 @@ pub static REGISTRY: &[Op] = &[
     Op { name: "list_globals", surface: Mcp, writes: false, args: "",
          doc: "Every patch global — what an expression can read and set_global can write.",
          result: "{globals: [{name, type, value, system: bool}]}" },
+    Op { name: "list_harnesses", surface: ControlOnly, writes: false, args: "",
+         doc: "The agent harnesses installed on this machine, and the ones goofi has running.",
+         result: "{instances: [{id, harness, state, exit_code}], detected: [{harness, path, version}]}" },
+    Op { name: "spawn_harness", surface: ControlOnly, writes: false, args: "harness:string!",
+         doc: "Launch an agent harness on a PTY with the patch workspace as its cwd, minting the MCP address it is handed. Read its terminal at /term/<instance_id>.",
+         result: "{instance_id: string}" },
+    Op { name: "stop_harness", surface: ControlOnly, writes: false, args: "instance:string!",
+         doc: "Stop a running harness (SIGTERM, then SIGKILL), or dismiss one that already exited. Its MCP address drops immediately; the exit code arrives on harness_changed.",
+         result: "{ok: true}" },
     Op { name: "read_node_source", surface: Mcp, writes: false, args: "type:string!",
          doc: "A node type's source and provenance. A native type has no source text — copy a Python node into the patch workspace to modify it.",
          result: "{type, language, tier, source: string | null, path: string | null, provenance, doc, inputs, outputs}" },
@@ -323,7 +332,9 @@ mod tests {
     /// `surface` is the one column with a SAFETY consequence, and Task 4 generates the agent's
     /// whole tool list from it — so it is pinned as a set, not as a property. Every name here
     /// either replaces the patch an agent is working inside (and, for the three that share the
-    /// `load` arm, its undo history with it) or is the human file browser's half of that door.
+    /// `load` arm, its undo history with it), is the human file browser's half of that door, or is
+    /// a harness op: an agent that could spawn or kill a harness could spawn itself a peer, or
+    /// terminate the very process it is speaking through (user, 2026-08-10).
     /// Adding a row to this list is a decision; the test is where it gets made deliberately.
     #[test]
     fn only_the_self_terminating_and_file_browser_ops_are_kept_off_the_agent_surface() {
@@ -338,7 +349,10 @@ mod tests {
                 "save",
                 "load_text",
                 "load",
-                "new"
+                "new",
+                "list_harnesses",
+                "spawn_harness",
+                "stop_harness"
             ]
         );
     }

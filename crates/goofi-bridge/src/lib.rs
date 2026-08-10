@@ -13,6 +13,7 @@ mod mcp;
 pub mod ops;
 mod reducer;
 mod schemas;
+pub mod term;
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -86,6 +87,14 @@ pub struct AppState {
     /// client connects with, so a tab that opens later and a tab that never pressed Save name the
     /// same file as the one that did.
     save_path: Arc<Mutex<Option<String>>>,
+    /// The port a spawned harness is told to reach this server's MCP surface on. Only the PORT is
+    /// carried, never the bind host: a harness is a CHILD of this process, so `127.0.0.1` is right
+    /// for it whatever `--bind` says — and a `--bind 0.0.0.0` would otherwise mint a URL
+    /// (`http://0.0.0.0/…`) that no client can connect to. Set by the CLI once it knows the bound
+    /// port; the default matches the CLI's own so a test that never sets it still mints a URL.
+    mcp_port: Arc<std::sync::atomic::AtomicU16>,
+    /// The spawned agent harnesses, their PTYs, and the detection cache. See [`term`].
+    pub harnesses: Arc<term::Harnesses>,
 }
 
 /// Timings that govern how a `/data` socket detects a **dead-but-not-closed** peer — a laptop that
@@ -166,7 +175,22 @@ impl AppState {
             mount: Arc::new(Mutex::new(mount)),
             workspace_baseline: Arc::new(Mutex::new(workspace_baseline)),
             save_path: Arc::new(Mutex::new(None)),
+            mcp_port: Arc::new(std::sync::atomic::AtomicU16::new(8000)),
+            harnesses: Arc::new(term::Harnesses::default()),
         }
+    }
+
+    /// Point a spawned harness's MCP config at the port this server actually bound. Called by the
+    /// CLI after the bind, since the port is only known there (and may be 0-assigned).
+    pub fn set_mcp_port(&self, port: u16) {
+        self.mcp_port.store(port, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// The base URL a spawned harness reaches this server's MCP surface at — see [`mcp_port`].
+    ///
+    /// [`mcp_port`]: AppState::mcp_port
+    fn mcp_url(&self) -> String {
+        format!("http://127.0.0.1:{}", self.mcp_port.load(std::sync::atomic::Ordering::Relaxed))
     }
 
     /// Where the open patch lives on disk, if anywhere. Copied out for the same reason as
@@ -209,7 +233,7 @@ fn remove_mount(mount: &std::path::Path) {
 
 /// A 128-bit random name, hex. Only has to be unguessable-enough to keep two concurrent goofis —
 /// or two concurrent saves onto one target — from colliding.
-fn nonce_hex() -> String {
+pub(crate) fn nonce_hex() -> String {
     let mut nonce = [0u8; 16];
     getrandom::fill(&mut nonce).expect("the OS random source");
     format!("{:032x}", u128::from_be_bytes(nonce))
@@ -295,6 +319,12 @@ pub fn router(state: AppState) -> Router {
         // here rather than in a client-spawned sidecar. `post` alone is deliberate: axum answers
         // the transport's retired GET stream and DELETE teardown with the 405 they expect.
         .route("/mcp", post(mcp::endpoint))
+        // …and one address per spawned harness, minted by `spawn_harness` and written into that
+        // harness's own config. Identity is the ROUTE, so there is no id to spoof and none to
+        // validate: `stop_harness` drops the instance and the address stops serving with it.
+        .route("/mcp/{instance}", post(mcp::instance_endpoint))
+        // A spawned harness's terminal: binary frames are PTY bytes, text frames JSON control.
+        .route("/term/{instance}", any(term_ws))
         .with_state(state)
 }
 
@@ -473,6 +503,9 @@ pub fn resolve_frontend_dir() -> Option<PathBuf> {
 pub fn spawn_workers(state: &AppState) {
     spawn_tick(state.graph.clone());
     spawn_stats(state.graph.clone(), state.events.clone(), 2);
+    // Prime the harness detection cache, so the first tab to connect already has the launch
+    // buttons its snapshot's roster describes rather than an empty list it must refresh out of.
+    state.harnesses.refresh_in_background(state.events.clone());
 }
 
 /// Serve on an already-bound listener with optional static SPA serving. Passing `None` serves the
@@ -641,7 +674,14 @@ async fn handle_control(socket: WebSocket, state: AppState) {
         let g = state.graph.lock().unwrap();
         event(
             "hello",
-            schemas::snapshot(&g, &state.instance_id, true, unsaved, saved_at.as_deref()),
+            schemas::snapshot(
+                &g,
+                &state.instance_id,
+                true,
+                unsaved,
+                saved_at.as_deref(),
+                state.harnesses.roster(),
+            ),
         )
     };
     if tx.send(Message::Text(hello.into())).await.is_err() {
@@ -709,7 +749,14 @@ async fn handle_control(socket: WebSocket, state: AppState) {
                         let g = state.graph.lock().unwrap();
                         event(
                             "hello",
-                            schemas::snapshot(&g, &state.instance_id, true, unsaved, saved_at.as_deref()),
+                            schemas::snapshot(
+                                &g,
+                                &state.instance_id,
+                                true,
+                                unsaved,
+                                saved_at.as_deref(),
+                                state.harnesses.roster(),
+                            ),
                         )
                     };
                     if tx.send(Message::Text(hello.into())).await.is_err() {
@@ -764,7 +811,7 @@ impl AppState {
     }
 }
 
-fn event(name: &str, payload: Value) -> String {
+pub(crate) fn event(name: &str, payload: Value) -> String {
     json!({ "event": name, "payload": payload }).to_string()
 }
 
@@ -997,6 +1044,33 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
                 "workspace": state.mount().to_string_lossy(),
                 "dirty": state.is_dirty(),
             }));
+        }
+        // The harness ops are here for the same reason and one more: they fork children and signal
+        // them, and none of it reads or writes the graph. `dispatch` stays synchronous throughout —
+        // detection and the stop grace both run on their own threads, and the roster converges
+        // through `harness_changed` rather than by making a caller wait.
+        if op == "list_harnesses" {
+            state.harnesses.refresh_in_background(state.events.clone());
+            return Ok(state.harnesses.roster());
+        }
+        if op == "spawn_harness" {
+            let harness = payload
+                .get("harness")
+                .and_then(|v| v.as_str())
+                .ok_or("spawn_harness: missing harness")?;
+            let id =
+                state.harnesses.spawn(harness, &state.mount(), &state.mcp_url(), state.events.clone())?;
+            events.push(event("harness_changed", state.harnesses.roster()));
+            return Ok(json!({ "instance_id": id }));
+        }
+        if op == "stop_harness" {
+            let instance = payload
+                .get("instance")
+                .and_then(|v| v.as_str())
+                .ok_or("stop_harness: missing instance")?;
+            state.harnesses.stop(instance)?;
+            events.push(event("harness_changed", state.harnesses.roster()));
+            return Ok(json!({ "ok": true }));
         }
         // …and `inspect_patch`'s header says the same thing, so its walk is taken here too, before
         // the lock — and only for that op, which is what the short circuit is for.
@@ -1677,7 +1751,14 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
                 *state.save_path.lock().unwrap() = from_path.clone();
                 events.push(event(
                     "graph_replaced",
-                    schemas::snapshot(&g, &state.instance_id, false, false, from_path.as_deref()),
+                    schemas::snapshot(
+                        &g,
+                        &state.instance_id,
+                        false,
+                        false,
+                        from_path.as_deref(),
+                        state.harnesses.roster(),
+                    ),
                 ));
                 // The patch brought its own node types (and dropped the last patch's), which
                 // `graph_replaced` does not carry — the snapshot's catalog rides `hello` alone.
@@ -1814,6 +1895,81 @@ fn resync_and_broadcast(state: &AppState) {
     let g = state.graph.lock().unwrap();
     let mut doc = state.crdt.lock().unwrap();
     remirror_and_broadcast_locked(state, &g, &mut doc);
+}
+
+// ---------------------------------------------------------------------------
+// Harness plane
+// ---------------------------------------------------------------------------
+
+async fn term_ws(
+    Path(instance): Path<String>,
+    ws: WebSocketUpgrade,
+    State(state): State<AppState>,
+) -> Response {
+    ws.on_upgrade(move |socket| handle_term(socket, state, instance))
+}
+
+/// The inband control a `/term` client sends. Resize is the only one there is: everything else a
+/// terminal needs already rides the byte stream.
+#[derive(serde::Deserialize)]
+struct TermControl {
+    op: String,
+    cols: u16,
+    rows: u16,
+}
+
+/// One `/term` socket. **Binary frames are PTY bytes** in both directions; **text frames are JSON
+/// control**: `{op:"resize", cols, rows}` inbound, `{exit_code}` outbound. An already-exited
+/// instance answers its code at once and closes, so a tab that opens the panel after the harness
+/// died sees why instead of an empty terminal.
+///
+/// Nothing is buffered here — see [`term`]'s module note: the client keeps its own terminal alive,
+/// so this socket is a pipe rather than a replayable log.
+async fn handle_term(socket: WebSocket, state: AppState, instance: String) {
+    let (mut tx, mut rx) = socket.split();
+    let Some(inst) = state.harnesses.get(&instance) else {
+        let _ = tx.send(close(4004, "unknown harness instance")).await;
+        return;
+    };
+    // Both halves are taken before the first await: a subscription made later would miss whatever
+    // the child wrote in between, and the exit is the only thing that ends this loop.
+    let (mut output, mut exit) = inst.attach();
+    loop {
+        // The sender lives in the instance this task holds an `Arc` of, so `changed()` cannot fail
+        // and this is the only place the loop reads the exit. Copied out of the guard rather than
+        // matched through it: a `watch` borrow is not `Send`, and the send below is an await.
+        let ended = *exit.borrow_and_update();
+        if let Some(code) = ended {
+            let _ = tx.send(Message::Text(json!({ "exit_code": code }).to_string().into())).await;
+            break;
+        }
+        tokio::select! {
+            incoming = rx.next() => match incoming {
+                Some(Ok(Message::Binary(b))) => inst.write(&b),
+                Some(Ok(Message::Text(t))) => {
+                    match serde_json::from_str::<TermControl>(t.as_str()) {
+                        Ok(c) if c.op == "resize" => inst.resize(c.cols, c.rows),
+                        _ => {}
+                    }
+                }
+                Some(Ok(_)) => {}
+                Some(Err(_)) | None => break,
+            },
+            bytes = output.recv() => match bytes {
+                Ok(b) => {
+                    if tx.send(Message::Binary(b.into())).await.is_err() {
+                        break;
+                    }
+                }
+                // A viewer that fell behind loses those bytes rather than the CHILD stalling behind
+                // it. The screen is garbled only until the next repaint, which is the trade the
+                // no-emulator decision already made.
+                Err(broadcast::error::RecvError::Lagged(_)) => {}
+                Err(broadcast::error::RecvError::Closed) => break,
+            },
+            _ = exit.changed() => {}
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

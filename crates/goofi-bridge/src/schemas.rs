@@ -240,13 +240,15 @@ pub fn runtime_overlay(g: &Graph) -> Value {
 /// The snapshot (`hello` / `graph_replaced` payload). Deliberately carries NO graph structure:
 /// nodes, links and the sub-patch forest live in the CRDT doc alone (the client assembles them
 /// from doc + catalog). What it does carry is the session frame — instance id, palette, save
-/// path, viewpoint — plus [`runtime_overlay`], the one per-node truth the doc never holds.
+/// path, viewpoint — plus [`runtime_overlay`] and the harness roster, the two truths the doc
+/// never holds.
 pub fn snapshot(
     g: &Graph,
     instance_id: &str,
     with_protocol: bool,
     unsaved: bool,
     save_path: Option<&str>,
+    harnesses: Value,
 ) -> Value {
     let mut snap = json!({
         "instance_id": instance_id,
@@ -254,6 +256,10 @@ pub fn snapshot(
         // editors. Signal-only for now; audio/video are added as their runtimes land.
         "pillars": ["signal"],
         "runtime": runtime_overlay(g),
+        // The spawned harnesses and the detected ones, seeded here for exactly the reason the
+        // runtime overlay is: `harness_changed` pushes only transitions, so a tab that joins after
+        // a spawn would otherwise draw an empty switcher over a running harness.
+        "harnesses": harnesses,
         "save_path": save_path,
         "unsaved_changes": unsaved,
         // Where the saver was looking. Client-local, so it is not a doc root — but it still has to
@@ -459,7 +465,7 @@ mod tests {
         // hello / graph_replaced (with_protocol=true) carry the palette so the client needs no
         // async `list_nodes` round-trip before it can build nodes from the doc (retires the
         // catalog-loading fallback window).
-        let hello = snapshot(&g, "iid", true, false, None);
+        let hello = snapshot(&g, "iid", true, false, None, json!({}));
         assert_eq!(
             hello["node_types"],
             catalog_types(&g),
@@ -468,7 +474,7 @@ mod tests {
         assert!(hello["node_types"].as_array().is_some_and(|a| !a.is_empty()));
         // A structural echo (subpatch_changed, with_protocol=false) must NOT re-ship the whole
         // catalog on every group/expand/share — it changes only when a runtime type registers.
-        let echo = snapshot(&g, "iid", false, false, None);
+        let echo = snapshot(&g, "iid", false, false, None, json!({}));
         assert!(echo.get("node_types").is_none(), "structural echoes omit the catalog");
     }
 
@@ -483,7 +489,7 @@ mod tests {
         g.add_link(a, "out", b, "data").unwrap();
         g.set_expression(a, "common", "max_frequency", "@@@ not an expression @@@", true, false).unwrap();
 
-        let snap = snapshot(&g, "iid", true, false, Some("/patches/demo.gfi"));
+        let snap = snapshot(&g, "iid", true, false, Some("/patches/demo.gfi"), json!({}));
         for dead in ["nodes", "links", "instances"] {
             assert!(snap.get(dead).is_none(), "`{dead}` is the doc's job, not the snapshot's");
         }

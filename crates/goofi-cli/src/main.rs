@@ -154,6 +154,10 @@ async fn run(cli: Cli, mut state: AppState, shutdown: impl Future<Output = ()>) 
             }
             Ok(listener) => {
                 let addr = listener.local_addr().unwrap();
+                // A spawned harness is a CHILD of this process, so it reaches the MCP surface on
+                // loopback whatever `--bind` says — only the port, which `--port 0` makes knowable
+                // nowhere else, has to be handed over.
+                state.set_mcp_port(addr.port());
                 let dir = resolve_frontend_dir();
                 println!("goofi-pipe (rust backend) → http://{addr}");
                 // Printed beside the app URL because it is what a user pastes into an MCP client's
