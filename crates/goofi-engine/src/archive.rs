@@ -13,15 +13,117 @@ use zip::{ZipArchive, ZipWriter};
 const MANIFEST: &str = "patch.yaml";
 const WORKSPACE: &str = "workspace";
 
-/// Every regular file under `dir`, sorted. ONE walk serves both the pack and the [`fingerprint`]
-/// it is compared against — a second walk with its own idea of what counts as a workspace file
-/// would let the two disagree, and the disagreement would read as a patch that is dirty the
-/// instant it is saved. Anything that is not a regular file (directory, symlink, socket) is
-/// skipped; walk errors are kept, because only the pack can decide whether one is fatal.
+/// The workspace's own list of what NOT to package, at its root. Named for goofi rather than the
+/// bare `.ignore` it was asked for, because that name is already taken where it would sit:
+/// ripgrep, fd and their kin read `.ignore` as a SEARCH ignore, and the workspace is exactly the
+/// cwd goofi spawns an agent harness into. A line added here to keep a cache out of the archive
+/// would have silently blinded the agent's own grep to it, and a line the agent added to be left
+/// alone would have silently dropped it from the patch. A tool-prefixed name — `.dockerignore`,
+/// `.npmignore` — says which tool reads it, and this one is read by goofi alone.
+pub const IGNORE_FILE: &str = ".goofiignore";
+
+/// What a new workspace's [`IGNORE_FILE`] says. Its header IS the syntax documentation, kept here
+/// so it cannot drift from the [`Rule`] implementing it. Every rule earns its line by naming a file
+/// that appears WITHOUT the author putting it there — which is what makes it both archive bloat
+/// and, until this existed, an unsaved change nobody made.
+pub const DEFAULT_IGNORE: &str = "\
+# What goofi keeps out of this patch's `.gfi` archive. The same list decides whether the workspace
+# has unsaved changes, so a rule here can never leave a patch dirty that a save cannot clean. Edit
+# it freely: it is packaged with the patch and travels with it.
+#
+# One rule per line, in one of three forms. A line whose FIRST character is `#` is a comment; a `#`
+# anywhere else is part of the name.
+#
+#   name     an entry called exactly that, at any depth
+#   name/    the same, but only a directory — everything under it goes too
+#   *.ext    any file whose name ends in `.ext`
+#
+# There is no `!`, no `**`, and no pattern with a `/` inside it. A line using one is SKIPPED rather
+# than guessed at, so a pattern can never quietly mean something other than it reads as.
+
+# CPython writes one beside every module it imports, and a node is imported with the workspace as
+# the working directory
+__pycache__/
+# the same bytecode, wherever it lands outside a __pycache__
+*.pyc
+# macOS Finder drops one into any directory it displays
+.DS_Store
+# an editor's swap file exists only while a node is being edited, and would otherwise flip the
+# patch to unsaved and back as it comes and goes
+*.swp
+";
+
+/// One line of [`IGNORE_FILE`]. The three forms are the whole grammar — see [`DEFAULT_IGNORE`],
+/// whose header is what a user reads — and a line none of them can spell parses to `None`, so an
+/// unimplemented glob excludes nothing rather than approximately something.
+enum Rule {
+    /// `name` — an entry called exactly that, at any depth.
+    Name(String),
+    /// `name/` — the same, but only a directory; the walk prunes everything below it.
+    Dir(String),
+    /// `*.ext` — any file whose name ends with the stored `.ext`, dot included.
+    Ext(String),
+}
+
+impl Rule {
+    fn parse(line: &str) -> Option<Rule> {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            return None;
+        }
+        let (body, dir_only) = line.strip_suffix('/').map_or((line, false), |b| (b, true));
+        // Every metacharacter this deliberately does not implement, in one place: `*` outside the
+        // leading `*.`, a `/` inside the pattern, gitignore's `!` negation, and glob's `?`/`[`.
+        let unspellable = |s: &str| s.is_empty() || s.contains(['*', '/', '!', '?', '[']);
+        match body.strip_prefix("*.") {
+            // `*.ext/` would be an extension that is also a directory — no form means that.
+            Some(ext) => (!dir_only && !unspellable(ext)).then(|| Rule::Ext(format!(".{ext}"))),
+            None if unspellable(body) => None,
+            None if dir_only => Some(Rule::Dir(body.to_string())),
+            None => Some(Rule::Name(body.to_string())),
+        }
+    }
+
+    fn matches(&self, entry: &walkdir::DirEntry) -> bool {
+        let name = entry.file_name().to_string_lossy();
+        match self {
+            Rule::Name(n) => *name == **n,
+            Rule::Dir(n) => entry.file_type().is_dir() && *name == **n,
+            Rule::Ext(dot_ext) => !entry.file_type().is_dir() && name.ends_with(dot_ext),
+        }
+    }
+}
+
+/// The rules in force for the workspace at `dir` — read inside the shared walk rather than passed
+/// in, because two callers that cannot name a list cannot be handed different ones. No ignore file
+/// (every patch saved before this existed) means no rules, so such a patch packs as it always did.
+fn rules(dir: &Path) -> Vec<Rule> {
+    fs::read_to_string(dir.join(IGNORE_FILE))
+        .map(|s| s.lines().filter_map(Rule::parse).collect())
+        .unwrap_or_default()
+}
+
+/// Every regular file under `dir` that [`IGNORE_FILE`] does not exclude, sorted. ONE walk serves
+/// both the pack and the [`fingerprint`] it is compared against — a second walk with its own idea
+/// of what counts as a workspace file would let the two disagree, and the disagreement would read
+/// as a patch that is dirty the instant it is saved — which is why the ignore rules are applied
+/// HERE and at neither call site: a `__pycache__` skipped by only one of the two would dirty a
+/// patch that no save could ever clean. Anything that is not a regular file (directory, symlink,
+/// socket) is skipped; walk errors are kept, because only the pack can decide whether one is fatal.
 fn files(dir: &Path) -> impl Iterator<Item = walkdir::Result<walkdir::DirEntry>> {
+    let rules = rules(dir);
     WalkDir::new(dir)
         .sort_by_file_name()
         .into_iter()
+        // Excluding a directory prunes its subtree, which is what makes `__pycache__/` one rule
+        // rather than one per file. Two entries are never excluded: the root, since a rule that
+        // matched the mount's own name would silently pack nothing at all, and the ignore file,
+        // which has to ride the archive or a loaded patch comes back without its own rules.
+        .filter_entry(move |e| {
+            e.depth() == 0
+                || e.file_name() == std::ffi::OsStr::new(IGNORE_FILE)
+                || !rules.iter().any(|r| r.matches(e))
+        })
         .filter(|e| e.as_ref().map_or(true, |e| e.file_type().is_file()))
 }
 
@@ -114,6 +216,21 @@ mod tests {
         ws
     }
 
+    /// Every entry name a `.gfi` actually holds, in the order it holds them.
+    fn entry_names(gfi: &Path) -> Vec<String> {
+        let mut zip = ZipArchive::new(fs::File::open(gfi).unwrap()).unwrap();
+        (0..zip.len()).map(|i| zip.by_index(i).unwrap().name().to_owned()).collect()
+    }
+
+    /// What a workspace packs to, given `ignore` as its [`IGNORE_FILE`] — the workspace-relative
+    /// half of the names, since `patch.yaml` and the `workspace/` prefix are the same either way.
+    fn packed_with(ws: &Path, tmp: &Path, ignore: &str) -> Vec<String> {
+        fs::write(ws.join(IGNORE_FILE), ignore).unwrap();
+        let gfi = tmp.join("packed.gfi");
+        write_gfi(&gfi, "version: 7\n", ws).unwrap();
+        entry_names(&gfi).iter().filter_map(|n| n.strip_prefix("workspace/").map(str::to_owned)).collect()
+    }
+
     #[test]
     fn round_trips_a_workspace() {
         let tmp = tempfile::tempdir().unwrap();
@@ -159,6 +276,82 @@ mod tests {
             names,
             ["patch.yaml", "workspace/a.txt", "workspace/beta.txt", "workspace/gamma.md"]
         );
+    }
+
+    /// The load-bearing pair, and the whole reason the ignore list is read INSIDE the shared walk:
+    /// a `__pycache__` appears unasked the first time a Python node is imported (nodes import with
+    /// the workspace as cwd), and it must reach NEITHER the archive nor the fingerprint. Were it
+    /// filtered from only one of them the patch would be dirty the instant it was saved, and no
+    /// save could ever clean it.
+    #[test]
+    fn what_the_pack_skips_the_fingerprint_skips_too() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = sample(tmp.path());
+        fs::write(ws.join(IGNORE_FILE), DEFAULT_IGNORE).unwrap();
+        let saved = fingerprint(&ws);
+
+        // What importing a node does to the workspace, unasked and in two places.
+        fs::create_dir_all(ws.join("sub/__pycache__")).unwrap();
+        fs::write(ws.join("sub/__pycache__/b.cpython-314.pyc"), b"bytecode").unwrap();
+        fs::write(ws.join("stray.pyc"), b"bytecode").unwrap();
+        assert_eq!(fingerprint(&ws), saved, "importing a node left the patch permanently dirty");
+
+        let packed = packed_with(&ws, tmp.path(), DEFAULT_IGNORE);
+        assert!(
+            !packed.iter().any(|n| n.contains("__pycache__") || n.ends_with(".pyc")),
+            "bytecode rode the archive: {packed:?}"
+        );
+        // …and the rules themselves ride it, or the patch loses them on the way back off disk.
+        assert!(packed.contains(&IGNORE_FILE.to_string()), "{packed:?}");
+        assert!(packed.contains(&"a.txt".to_string()), "{packed:?}");
+    }
+
+    /// The grammar's three forms and its refusal, stated as behaviour: `*.ext` is a suffix, a bare
+    /// name is the WHOLE name rather than a substring, a trailing `/` needs a directory — and a
+    /// line none of the three can spell (a path, a negation, a `**`) is skipped rather than
+    /// guessed at, so what it names is packed as if it had never been written.
+    #[test]
+    fn a_line_the_grammar_cannot_spell_is_skipped() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = sample(tmp.path());
+        fs::write(ws.join("notes.md"), b"md").unwrap();
+        fs::write(ws.join("keep.pycache"), b"named for it, but not it").unwrap();
+        fs::write(ws.join("build"), b"a file, not a directory").unwrap();
+
+        let packed = packed_with(
+            &ws,
+            tmp.path(),
+            "# a comment is not a pattern\n\n  *.md  \nbuild/\npycache\nsub/b.txt\n!a.txt\n**/keep*\n",
+        );
+
+        assert!(!packed.contains(&"notes.md".to_string()), "*.md matched nothing: {packed:?}");
+        for kept in ["a.txt", "sub/b.txt", "keep.pycache", "build", IGNORE_FILE] {
+            assert!(packed.contains(&kept.to_string()), "{kept} was dropped: {packed:?}");
+        }
+    }
+
+    /// The mount's own directory is never what a rule excludes. A workspace whose root happens to
+    /// share a name with a rule — `ws/`, here — would otherwise be pruned at depth 0 and pack
+    /// NOTHING: the one failure mode of an ignore list that loses a patch rather than bloating one.
+    #[test]
+    fn a_rule_matching_the_mount_itself_does_not_empty_the_patch() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = sample(tmp.path()); // …which `sample` names `ws`
+        let packed = packed_with(&ws, tmp.path(), "ws/\n");
+        assert!(packed.contains(&"a.txt".to_string()), "the mount pruned itself: {packed:?}");
+        assert!(!fingerprint(&ws).is_empty(), "…and so did the fingerprint");
+    }
+
+    /// The ignore file is never ignored, not even by itself. It is packaged like any other
+    /// workspace file — that is how a loaded patch arrives still knowing what to leave out — so a
+    /// line naming it would otherwise quietly delete the patch's own rules at the next save.
+    #[test]
+    fn the_ignore_file_is_packaged_even_when_it_names_itself() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = sample(tmp.path());
+        let packed = packed_with(&ws, tmp.path(), &format!("{IGNORE_FILE}\n"));
+        assert!(packed.contains(&IGNORE_FILE.to_string()), "{packed:?}");
+        assert!(fingerprint(&ws).contains_key(Path::new(IGNORE_FILE)), "…and the fingerprint has it");
     }
 
     #[test]
