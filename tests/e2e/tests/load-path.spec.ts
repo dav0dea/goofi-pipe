@@ -2,7 +2,7 @@ import { test, expect } from '@playwright/test';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { waitForApp, resetPatch } from '../lib/app';
+import { waitForApp, resetPatch, splitRight } from '../lib/app';
 import { addNode, nodes, waitForNode } from '../lib/goofi';
 
 /**
@@ -59,6 +59,13 @@ test('New hands back an empty, unnamed, clean patch', async ({ page }) => {
 	try {
 		const uid = await addNode(page, 'Oscillator');
 		await waitForNode(page, uid);
+		// A patch has a graph, a file AND an arrangement; New must inherit none of the three. The
+		// arrangement is the one that survived the manager fix: `graph_replaced` carries a null
+		// layout on the SAME instance id, so the client used to take neither the hydrate branch nor
+		// the fresh-session reset and left the previous patch's panels on screen — and then pushed
+		// them back down as the new patch's stored layout on the next split.
+		await splitRight(page);
+		await page.waitForTimeout(700); // past AppShell's 400ms set_layout debounce
 		await page.evaluate((p) => (window as any).goofi.commands.save(p), path.join(scratch, 'named.gfi'));
 		await expect
 			.poll(() => page.evaluate(() => (window as any).goofi.query.graph().savePath))
@@ -66,6 +73,9 @@ test('New hands back an empty, unnamed, clean patch', async ({ page }) => {
 
 		await page.evaluate(() => (window as any).goofi.commands.newPatch());
 		await expect.poll(async () => (await nodes(page)).length).toBe(0);
+		await expect(page.locator('.panel'), 'a New patch opens on the default arrangement').toHaveCount(
+			1
+		);
 		// All three halves, because a New that forgot any one of them would leave the shared backend
 		// in exactly the state this suite's other specs cannot start from.
 		await expect

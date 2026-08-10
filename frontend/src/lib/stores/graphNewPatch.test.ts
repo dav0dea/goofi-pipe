@@ -2,6 +2,8 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { FakeControl } from '$lib/test/fakeControl';
 import { GraphStore } from './graph.svelte';
 import { history } from './history.svelte';
+import { workspace } from '$lib/workspace/workspace.svelte';
+import { collectPanels } from '$lib/workspace/model';
 
 /**
  * `New` is a manager transaction, and the client's whole job is to *not* get in its way.
@@ -14,7 +16,10 @@ import { history } from './history.svelte';
  * — emits no `save_path_changed`: the manager only announces a path it HAS.
  */
 describe('GraphStore.newPatch — the reset door', () => {
-	beforeEach(() => history().reset());
+	beforeEach(() => {
+		history().reset();
+		workspace().reset();
+	});
 
 	it('sends `new` with an empty payload and records no undo step', async () => {
 		const fc = new FakeControl();
@@ -42,6 +47,30 @@ describe('GraphStore.newPatch — the reset door', () => {
 
 		expect(g.savePath).toBe(null);
 		expect(g.unsavedChanges).toBe(false);
+	});
+
+	/**
+	 * …and takes the panels down with it. A `graph_replaced` is never a reconnect — it is always a
+	 * wholesale patch swap — so a null `layout` on one means "this patch has no arrangement", not
+	 * "keep yours". The ambiguity it used to be read with belongs to `hello` alone.
+	 *
+	 * Left standing it is worse than a stale view: AppShell pushes `ws.serialize()` on the next
+	 * split or tab switch, and `set_layout` persists regardless of intent — so the previous patch's
+	 * arrangement becomes the new one's stored layout and rides into its `.gfi`. A layout-less
+	 * `.gfi` (the engine writes one, and the Load button reaches it today) lands here too.
+	 */
+	it('leaves none of the previous patch’s panels standing', async () => {
+		const fc = new FakeControl();
+		const g = new GraphStore(fc);
+		fc.emit({ event: 'hello', payload: snapshot('/patches/a.gfi') });
+		const ws = workspace();
+		ws.split(ws.activePanelId!, 'row');
+		expect(collectPanels(ws.active.root).length, 'the patch was arranged').toBe(2);
+
+		await g.newPatch();
+		fc.emit({ event: 'graph_replaced', payload: snapshot(null) });
+
+		expect(collectPanels(ws.active.root).length, 'a New patch opens on the default one').toBe(1);
 	});
 });
 

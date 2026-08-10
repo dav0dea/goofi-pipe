@@ -170,10 +170,13 @@ export class GraphStore {
 		this._reconcileInstancesFromDoc();
 	}
 
-	/** Apply a wholesale snapshot. Returns whether it came from a *new* backend
-	 * session (changed `instance_id`) — the caller uses that to decide whether to
-	 * re-fit / clear history (a same-session reconnect must leave both alone). */
-	private _replaceSnapshot(snap: GraphSnapshot): boolean {
+	/** Apply a wholesale snapshot. `wholesale` says the snapshot REPLACED the patch
+	 * (`graph_replaced`) rather than re-announcing it (`hello`, which a reconnect also
+	 * delivers) — the one thing that disambiguates a missing `layout`. Returns whether it
+	 * came from a *new* backend session (changed `instance_id`) — the caller uses that to
+	 * decide whether to re-fit / clear history (a same-session reconnect must leave both
+	 * alone). */
+	private _replaceSnapshot(snap: GraphSnapshot, wholesale: boolean): boolean {
 		// The node palette rides on hello/graph_replaced (Phase-2 read cutover) so the doc is
 		// authoritative for node identity from the first render — no async `list_nodes` window.
 		// Absent → an older backend; keep whatever the async fetch set.
@@ -198,14 +201,20 @@ export class GraphStore {
 
 		// Layout resolution. A snapshot carrying a layout always drives the panel
 		// arrangement (a patch loaded from disk, or the manager echoing what we
-		// pushed). A layout-less snapshot is ambiguous: from a *new* backend it
-		// means "blank session" (reset to default); from the *same* backend it's
-		// a transient reconnect whose layout already matches ours (keep it).
+		// pushed). A layout-less snapshot is ambiguous on `hello` ALONE: from a
+		// *new* backend it means "blank session" (reset to default); from the
+		// *same* backend it's a transient reconnect whose layout already matches
+		// ours (keep it). A `graph_replaced` is never a reconnect — the patch was
+		// swapped — so there a missing layout means the patch that ARRIVED has no
+		// arrangement. Keeping the previous one leaves it on screen and then rides
+		// it into the new patch's `.gfi`: AppShell pushes `ws.serialize()` on the
+		// next split or tab switch and `set_layout` persists regardless of intent.
+		// (New is one door onto this; a layout-less `.gfi` through Load is another.)
 		const freshSession = snap.instance_id !== this._lastInstanceId;
 		this._lastInstanceId = snap.instance_id;
 		if (snap.layout != null) {
 			workspace().hydrate(snap.layout);
-		} else if (freshSession) {
+		} else if (freshSession || wholesale) {
 			workspace().reset();
 		}
 		// (History reset happens in `_onWholesaleLoad`, which runs on BOTH a fresh session and an
@@ -285,7 +294,8 @@ export class GraphStore {
 	private _handle(ev: ControlEvent): void {
 		switch (ev.event) {
 			case 'hello': {
-				const fresh = this._replaceSnapshot(ev.payload);
+				// Not wholesale: a `hello` is also what a transient reconnect delivers.
+				const fresh = this._replaceSnapshot(ev.payload, false);
 				this.hadHello = true;
 				// A reconnect to the *same* backend must not re-fit the view or wipe
 				// the error history; a new backend session (or first connect) should.
@@ -306,7 +316,7 @@ export class GraphStore {
 			case 'graph_replaced':
 				// A patch was loaded/replaced wholesale — always re-fit + reset history (a load is
 				// not undoable across; the manager cleared its history too).
-				this._replaceSnapshot(ev.payload);
+				this._replaceSnapshot(ev.payload, true);
 				this._onWholesaleLoad();
 				break;
 			// Structure (node existence/name, the sub-patch forest, positions, links) is entirely
