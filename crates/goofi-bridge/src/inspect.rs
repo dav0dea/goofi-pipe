@@ -135,6 +135,9 @@ pub fn patch(
             else {
                 continue;
             };
+            if a == b {
+                continue; // both ends INSIDE one collapsed sub-patch — a fact one level down
+            }
             let e = format!("  {} -- {}→{} --> {}\n", mid(a), l.slot_out, l.slot_in, mid(b));
             if !edges.contains(&e) {
                 edges.push(e);
@@ -488,6 +491,21 @@ errors (whole patch):
   ⚠ boom0 (000000000002): the sensor is unplugged — for <age>
 "
         );
+    }
+
+    #[test]
+    fn a_wire_inside_a_collapsed_sub_patch_is_not_drawn_as_a_self_loop_on_its_facade() {
+        // Both ends of an internal wire fold onto the same facade. Drawing it would put a loop on
+        // the sub-patch that states nothing about the scope being read — the wire is a fact one
+        // level down, and `inspect_patch {scope}` is where it belongs.
+        let mut g = Graph::new();
+        let a = g.add_node("Oscillator", None).unwrap();
+        let b = g.add_node("Buffer", None).unwrap();
+        g.add_link(a, "out", b, "data").unwrap();
+        g.group_nodes(&[a, b], [0.0, 0.0]).unwrap();
+        let out = patch(&g, None, None, "/tmp/w", false).unwrap();
+        assert!(out.contains("[["), "the facade is drawn: {out}");
+        assert!(!out.contains("-->"), "…with no edge at all at this level: {out}");
     }
 
     #[test]
