@@ -15,7 +15,7 @@ import { touchSession } from '../lib/touch';
  *
  * `maximize` is what the action half is proved with on purpose: `maximizedPanelId` is a store
  * field outside the arrangement, so it provably cannot reach the manager or the `.gfi` and this
- * spec cannot leave a layout behind for a later one (the suite shares one backend).
+ * spec cannot leave a layout behind for a later one (a worker's specs share one backend).
  */
 
 const HOLD_MS = 700; // the recognizer fires at 500

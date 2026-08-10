@@ -64,9 +64,9 @@ export const kbInset = (page: Page): Promise<string> =>
 
 /**
  * A point where the flow pane really is the topmost element AND no node card is within a tap target
- * of it. One backend serves the whole run, so the patch may carry nodes left by an earlier spec — a
- * hardcoded centre point could land on a node card (which must NOT arm the long-press door) and
- * green a test for the wrong reason.
+ * of it. One backend serves this whole worker, so the patch may carry nodes left by an earlier
+ * spec — a hardcoded centre point could land on a node card (which must NOT arm the long-press
+ * door) and green a test for the wrong reason.
  *
  * `elementFromPoint` answers "is this bare canvas" exactly. A TOUCH does not ask it that way:
  * Chromium applies **touch adjustment**, snapping a tap within roughly a finger's radius onto a

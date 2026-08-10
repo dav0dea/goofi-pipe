@@ -27,8 +27,8 @@ import { openSaveAs } from '../lib/topbar';
  * real, unjailed filesystem — see crates/goofi-bridge/src/fsbrowse.rs).
  */
 
-/** Per-run scratch directory on the BACKEND's filesystem — same machine, since `webServer`
- * spawns the binary locally. `realpath` because the backend canonicalizes every path it echoes
+/** Per-run scratch directory on the BACKEND's filesystem — same machine, since `globalSetup`
+ * spawns the fleet locally. `realpath` because the backend canonicalizes every path it echoes
  * (`fsbrowse::normalize`), and the path bar is compared by string equality. */
 let scratch = '';
 /** A subdirectory, so the path-bar/up-navigation test has real structure to walk. */

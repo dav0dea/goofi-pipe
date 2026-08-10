@@ -14,15 +14,24 @@ npm run e2e                      # builds the backend, then runs the suite
 ```
 
 `npm run e2e` = `cargo build -p goofi-cli` (via the workspace) then `playwright test`.
-Playwright spawns `goofi-pipe` on port 8399 (override `GOOFI_E2E_PORT`), waits
-for it, runs the specs, and tears it down. One worker, headless browser, deterministic.
+
+**One backend per worker.** `globalSetup.ts` spawns a fleet of `goofi-pipe`s on
+`8500 + <worker slot>` (override the base with `GOOFI_E2E_PORT`, the width with
+`GOOFI_E2E_WORKERS`) and reaps them afterwards; each worker derives its own port from
+`TEST_PARALLEL_INDEX`, so no spec knows a port exists. That is what makes the suite parallel: a
+worker still owns its backend alone, so the hermeticity rules below are unchanged — what a spec
+leaks reaches the other specs on *its* worker. `--workers=1` still works and lands on the base port.
+Each backend's stdout goes to `test-results/backend/backend-<slot>.log` (it no longer interleaves
+into the report), and the stale-`iox2` sweep runs once in `globalSetup`, before the first spawn.
 
 ## Layout
-- `playwright.config.ts` — port, `webServer` spawn/teardown, iceoryx2 SHM hygiene, and the four
+- `playwright.config.ts` — the per-worker port arithmetic, the worker count, and the four
   projects: `default` (every spec except `touch-*`), `touch` (only `touch-*`, Pixel 7 portrait),
   and `touch-landscape` (863×360) + `tablet` (712×1138), which run **only**
   `tests/touch-reflow.spec.ts`. The narrow scope is the point: the coarse media query answers the
   same at every touch geometry, so only what FITS is worth re-running.
+- `globalSetup.ts` — the backend fleet: spawn, readiness, per-worker logs, iceoryx2 SHM hygiene,
+  and the reaper Playwright runs as global teardown.
 - `lib/app.ts` — `waitForApp` readiness gate (catalog arrived over the control WS).
 - `lib/goofi.ts` — typed thin wrappers over the `window.goofi` façade, plus `waitForNode` /
   `waitForNoNode` (the doc round-trip must land before a just-added/removed node is read).
@@ -37,9 +46,9 @@ for it, runs the specs, and tears it down. One worker, headless browser, determi
   the ui + inspector galleries, and the `touch-*` set.
 
 ## Notes
-- **The spawned backend runs without the pyo3 expression evaluator** (`numpy` isn't on its
+- **The spawned backends run without the pyo3 expression evaluator** (`numpy` isn't on their
   `PYTHONPATH`), so `param-expression evaluator unavailable` is expected and harmless — none
   of these flows evaluate expressions. A future spec that needs the evaluator must set
-  `PYO3_PYTHON` + a numpy-bearing `PYTHONPATH` on the `webServer` command.
+  `PYO3_PYTHON` + a numpy-bearing `PYTHONPATH` on the fleet's `spawn` in `globalSetup.ts`.
 - Reads through the façade are asynchronous w.r.t. the CRDT doc round-trip: wait on
   `waitForNode`/`waitForNoNode` or `expect.poll(...)` rather than reading once.

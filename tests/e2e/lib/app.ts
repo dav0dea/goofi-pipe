@@ -26,10 +26,11 @@ export async function waitForApp(page: Page): Promise<void> {
  * The hermeticity backstop, and it lives here because the readiness gate is the one line every
  * product spec runs before it touches anything.
  *
- * One backend serves the whole run (`fullyParallel: false`, `workers: 1`, no globalSetup) and
- * AppShell pushes the layout into the RUNNING PATCH on a 400ms debounce that can outlive the page.
- * So a spec that splits a panel or adds a tab and leaves early persists that arrangement, `hello`
- * echoes it, and every later spec boots into it. This suite has been bitten by it four times, and
+ * One backend serves every spec on this worker (`globalSetup.ts` spawns one per worker slot, and
+ * `fullyParallel: false` keeps a worker's files running one after another) while AppShell pushes the
+ * layout into the RUNNING PATCH on a 400ms debounce that can outlive the page. So a spec that splits
+ * a panel or adds a tab and leaves early persists that arrangement, `hello` echoes it, and every
+ * later spec on that worker boots into it. This suite has been bitten by it four times, and
  * every time the red landed on an innocent file measuring geometry — never on the file that leaked.
  *
  * Asserting it at ENTRY is what changes that: the failure names the cause, in the first spec after
@@ -127,9 +128,9 @@ export async function splitRight(page: Page): Promise<void> {
 
 /**
  * Put the workspace back, through the split panel's own ✕. A split is a command against the RUNNING
- * PATCH — one backend for the whole run — so a spec that splits and leaves early persists a 2-panel
- * workspace that every later spec boots into. It passes alone and depends on nothing but screenshot
- * latency, which is why it must be a `finally`.
+ * PATCH — one backend per worker — so a spec that splits and leaves early persists a 2-panel
+ * workspace that every later spec there boots into. It passes alone and depends on nothing but
+ * screenshot latency, which is why it must be a `finally`.
  */
 export async function closeSplit(page: Page): Promise<void> {
 	await page.getByTestId('panel-header').nth(1).getByRole('button', { name: 'Close panel' }).click();

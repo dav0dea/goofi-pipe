@@ -35,7 +35,7 @@ test('globals: default_ufreq is seeded, a user global adds, edits round-trip', a
 
 	// Add a user global + edit the system one (command ops — server-validated, resolve void);
 	// both round-trip through the doc. Handed back in a `finally` like every other resource this
-	// file borrows: globals live in the RUNNING PATCH, one backend for the whole suite, so a
+	// file borrows: globals live in the RUNNING PATCH, one backend per worker, so a
 	// leaked `subject` makes the very next `addGlobal` fail with "already exists" — invisible in a
 	// normal run and instant under `--repeat-each`.
 	try {

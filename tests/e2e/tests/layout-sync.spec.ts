@@ -16,8 +16,9 @@ import { addNode, waitForNode, waitForNoNode } from '../lib/goofi';
  * writes the arrangement in answer to the other.
  *
  * Two browser CONTEXTS, not two pages: the session id that scopes undo lives in `sessionStorage`,
- * which a second page in the same context would share. One backend serves both
- * (`fullyParallel: false`, `workers: 1`), so every test here hands the workspace back.
+ * which a second page in the same context would share. Both contexts reach the ONE backend this
+ * worker owns — the two clients converging on one manager is the whole point — so every test here
+ * hands the workspace back.
  */
 
 /** Comfortably past a layout command and its delta coming back. */

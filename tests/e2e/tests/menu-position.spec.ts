@@ -91,7 +91,7 @@ test('clicking an input port opens the add-node menu to the LEFT of the port', a
 	const uid = await addNode(page, 'Buffer', 'signal', [700, 200]);
 	await waitForNode(page, uid);
 
-	// The backend graph is shared across the whole run, so the node comes back out even if an
+	// The backend graph is shared across this worker's specs, so the node comes back out even if an
 	// assertion below throws — a leaked node breaks the fs-browser round trip further down the file.
 	try {
 		const port = page

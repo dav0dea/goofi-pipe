@@ -14,7 +14,7 @@ import { addNode, waitForNode } from '../lib/goofi';
  *
  * The waits stay too. They were sized for a 400ms debounce that no longer exists, so they are now
  * only slack — and slack is what makes "still clean" mean something rather than "not yet". Each
- * test leaves the workspace as it found it, because the suite shares one backend.
+ * test leaves the workspace as it found it, because a worker's specs share one backend.
  */
 
 /** Comfortably past the write and its round trip. */

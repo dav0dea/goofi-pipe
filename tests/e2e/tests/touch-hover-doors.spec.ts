@@ -85,7 +85,7 @@ test('a tap is not a press — the control acts and no tooltip appears', async (
 	await expect(btn, "a tap is still the control's own action").toHaveAttribute('title', 'Restore');
 	await expect(page.getByTestId('title-tip')).toHaveCount(0);
 
-	// Put it back — one backend serves the whole run.
+	// Put it back — one backend serves every spec on this worker.
 	await touch.down(await centreOf(page, MAX_BTN));
 	await touch.up();
 	await expect(btn).toHaveAttribute('title', 'Maximize');

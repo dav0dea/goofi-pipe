@@ -5,8 +5,8 @@ import { installInkProbe } from '../lib/ink';
 
 /**
  * Put the workspace back after a Split Right. `ws.split` is a command against the running patch,
- * debounce, which writes into the RUNNING PATCH — one backend for the whole run — so a spec that
- * splits and leaves early persists a 2-panel workspace that every later spec then boots into.
+ * debounce, which writes into the RUNNING PATCH — one backend per worker — so a spec that
+ * splits and leaves early persists a 2-panel workspace that every later spec there then boots into.
  * It passes alone and depends on nothing but timing, which is why it belongs in a `finally`.
  */
 async function closeSplit(page: Page): Promise<void> {
