@@ -13,7 +13,8 @@ export type PanelTypeId =
 	| 'viewer'
 	| 'metadata'
 	| 'console'
-	| 'globals';
+	| 'globals'
+	| 'agent';
 
 /** The panel type a brand-new page starts with. */
 export const DEFAULT_PANEL_TYPE = 'node-editor';
@@ -58,6 +59,7 @@ export const PANEL_TYPES: readonly PanelTypeInfo[] = [
 	{ id: 'metadata', title: 'Metadata', icon: 'info', acceptsNode: true, doc: 'frame metadata from one output slot (sfreq, channels, shape)' },
 	{ id: 'console', title: 'Console', icon: 'terminal', acceptsNode: true, doc: 'the patch log; a bound node filters it to that node' },
 	{ id: 'globals', title: 'Globals', icon: 'globe', acceptsNode: false, doc: 'the patch globals, which any expression can read' },
+	{ id: 'agent', title: 'Agent', icon: 'bot', acceptsNode: false, doc: 'a terminal on an agent harness, running in the patch workspace' },
 ];
 
 export const VIEWER_KINDS: readonly ViewerKindInfo[] = [

@@ -3,6 +3,7 @@
 	import { history } from '$lib/stores/history.svelte';
 	import { selection } from '$lib/stores/selection.svelte';
 	import { workspace } from '$lib/workspace/workspace.svelte';
+	import { harnesses } from '$lib/stores/harness.svelte';
 	import { perfStats } from '$lib/api/perfStats.svelte';
 	import { activeOrOnlyEditor } from '$lib/panels/editorCommands';
 	import { tick, untrack, type Snippet } from 'svelte';
@@ -10,7 +11,7 @@
 	import ContextMenu from '$lib/workspace/ContextMenu.svelte';
 	import PerfHud from './PerfHud.svelte';
 	import { createWidthCache, planOverflow, type OverflowItem } from './overflowFit';
-	import { IconButton, Badge, Icon } from '$lib/ui';
+	import { IconButton, Badge, Chip, Icon } from '$lib/ui';
 
 	// The header holds APP-GLOBAL actions only: session undo/redo and the patch's save/load.
 	// Anything that acts on one panel belongs to that panel — a node editor already carries its
@@ -32,6 +33,7 @@
 	const sel = selection();
 	const ws = workspace();
 	const p = perfStats();
+	const hs = harnesses();
 
 	// Mirror of PerfHud's own `{#if active}` gate, so the plan and the menu agree with the HUD
 	// about whether there is anything to show. A boolean derived, NOT `p.fps` read raw in an
@@ -55,6 +57,43 @@
 	// its spill behaviour — and so a future save option has a home that is not a fourth button.
 	function saveOptions(): MenuItem[] {
 		return [{ label: 'Save As…', action: onSaveAs }];
+	}
+
+	// --- the agent chip ------------------------------------------------------
+	//
+	// The one door onto a running harness from outside its panel. It counts, and it ACTS: each row
+	// is an instance, and choosing one asks — in the panel holding that terminal — whether to detach
+	// or kill. There is deliberately no LAUNCH here: launching is the agent panel's empty state, so
+	// the header never mints something it cannot then show.
+	let agentMenu = $state<{ x: number; y: number; items: MenuItem[] } | null>(null);
+
+	/** Raise the detach-or-kill question where the terminal is: the panel showing that instance,
+	 * else any agent panel (pointed at it), else a new tab holding one — whose fresh panel claims
+	 * the instance being asked about. Focusing is the header's job because layout is; the store
+	 * only remembers what was asked. */
+	function askClose(id: string): void {
+		hs.requestClose(id);
+		const panel = hs.panelShowing(id) ?? hs.firstPanel;
+		if (!panel) {
+			ws.addTab('agent');
+			return;
+		}
+		hs.show(panel, id);
+		ws.maximizedPanelId = null;
+		ws.setActive(panel);
+	}
+
+	function openAgents(e: MouseEvent): void {
+		const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
+		agentMenu = {
+			x: Math.max(6, r.right - 180),
+			y: r.bottom + 4,
+			items: hs.instances.map((i) => ({
+				label: `${i.harness} · ${i.id.slice(0, 6)}${i.state === 'running' ? '' : ` (${i.state})`}`,
+				icon: 'x',
+				action: () => askClose(i.id)
+			}))
+		};
 	}
 
 	// --- progressive overflow (D-R6) -----------------------------------------
@@ -170,10 +209,16 @@
 				px(strip, 'padding-right');
 		}
 		const reserve = tabs ? Math.max(TABSLOT_HITS * hit, tabsContent) : 0;
-		// The alarm chip is not in the plan (a warning must never land in a menu), so its width —
-		// plus the zone gap it introduces — comes off the budget whenever it is up.
-		const alarm = zone.querySelector<HTMLElement>('[data-testid="topbar-connection"]');
-		const alarmW = alarm ? alarm.getBoundingClientRect().width + zoneGap : 0;
+		// Neither live chip is in the plan, and for the same reason: a warning that spills into a
+		// hidden menu is not a warning, and the agent chip is the only door onto detach/kill from
+		// outside the panel. Their widths — plus the zone gap each introduces — come off the budget
+		// instead. Both are conditional, so each is MEASURED when it is up and costs nothing when
+		// it is not.
+		const unplanned = (id: string): number => {
+			const el = zone.querySelector<HTMLElement>(`[data-testid="${id}"]`);
+			return el ? el.getBoundingClientRect().width + zoneGap : 0;
+		};
+		const alarmW = unplanned('topbar-connection') + unplanned('topbar-agents');
 		const budget =
 			bar.clientWidth -
 			px(bar, 'padding-left') -
@@ -228,6 +273,7 @@
 		void g.savePath;
 		void g.unsavedChanges;
 		void hudActive;
+		void hs.running;
 		void ws.state.workspaces;
 		widthCache.invalidate();
 		void tick().then(replan);
@@ -435,6 +481,15 @@
 		y={saveMenu.y}
 		items={saveMenu.items}
 		onClose={() => (saveMenu = null)}
+	/>
+{/if}
+
+{#if agentMenu}
+	<ContextMenu
+		x={agentMenu.x}
+		y={agentMenu.y}
+		items={agentMenu.items}
+		onClose={() => (agentMenu = null)}
 	/>
 {/if}
 

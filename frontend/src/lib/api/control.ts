@@ -275,6 +275,33 @@ export interface GraphSnapshot {
 	 * sub-patch depth. Persisted with the patch but never converged to a peer and never dirtying;
 	 * the ARRANGEMENT itself is the fifth CRDT doc root, not a snapshot field. */
 	viewpoint?: unknown;
+	/** The spawned agent harnesses and the installed ones, seeded here for the reason the `runtime`
+	 * overlay is: `harness_changed` carries only transitions, so a tab joining a running patch
+	 * would otherwise draw an empty switcher over a live harness. Absent on an older backend. */
+	harnesses?: HarnessRoster;
+}
+
+/** One spawned harness. `stopping` is its own state: the address closes the moment a stop is
+ * asked for, which is a whole grace period before the child is gone. */
+export interface HarnessInstanceInfo {
+	id: string;
+	harness: string;
+	state: 'running' | 'stopping' | 'exited';
+	exit_code?: number | null;
+}
+
+/** One harness binary found on this machine. */
+export interface DetectedHarness {
+	harness: string;
+	path: string;
+	version: string | null;
+}
+
+/** The shape the snapshot seeds and `harness_changed` broadcasts — one shape, so a reconnecting
+ * tab and a live one read the same thing. */
+export interface HarnessRoster {
+	instances: HarnessInstanceInfo[];
+	detected: DetectedHarness[];
 }
 
 export type ControlEvent =
@@ -313,6 +340,9 @@ export type ControlEvent =
 	// The palette changed under a client that is already connected — a rescan re-derived it, or a
 	// load brought a patch's own node types. `hello` carries the same list to one that is arriving.
 	| { event: 'node_types'; payload: { types: NodeTypeInfo[] } }
+	// A harness was spawned, stopped or reaped — or the detection sweep landed. Carries the WHOLE
+	// roster, the same shape the snapshot seeds, so a client never has to diff transitions.
+	| { event: 'harness_changed'; payload: HarnessRoster }
 	// The panel arrangement has NO event: it is the fifth CRDT doc root, so a peer's edit converges
 	// through the same binary sync the graph does.
 	| { event: 'graph_replaced'; payload: GraphSnapshot };

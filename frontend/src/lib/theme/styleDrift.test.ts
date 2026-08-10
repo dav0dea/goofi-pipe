@@ -98,8 +98,9 @@ const ALLOW_DUPLICATE: { sel: string; why: string }[] = [
 	}
 ];
 
-/** Geometric invariants that are not spacing at all: nothing, a hairline, full, a pill, a half. */
-const INVARIANT = new Set(['0', '1px', '100%', '999px', '50%']);
+/** Geometric invariants that are not spacing at all: nothing (in both spellings — a `var()`
+ *  fallback inside `calc()` must carry a unit), a hairline, full, a pill, a half. */
+const INVARIANT = new Set(['0', '0px', '1px', '100%', '999px', '50%']);
 
 /** Everything a `font-family` is allowed to say: the two faces by their token, or nothing at all. */
 const FONT_TOKEN = new Set(['var(--font-sans)', 'var(--font-mono)', 'inherit']);
@@ -406,6 +407,19 @@ describe('style vocabulary', () => {
 		expect(inline[0], 'the number survives the interpolation').toContain('12');
 		// A custom property is a hook, not a spacing rung, and never was in scope.
 		expect(driftIn('x.svelte', componentCss('<div style="--dialog-pad: 0"></div>'))).toEqual([]);
+	});
+
+	/* `0px` reads as the nothing `0` already is — and it is the spelling a `var()` FALLBACK has to
+	   use: inside `calc()` a bare `0` is a <number>, not a length, so `calc(var(--space-2) + 0)` is
+	   invalid and the declaration would be dropped whenever the property is unset. Two files
+	   already write the idiom under properties this scan does not read (`bottom`); the agent
+	   panel's soft-keyboard padding writes it under one it does. The VALUE is blessed, never a
+	   file, so a real length in the same position still reads as drift. */
+	it('reads a `0px` var fallback as nothing, and still catches a real length beside it', () => {
+		const pad = (v: string) =>
+			componentCss(`<style>.n { padding-bottom: calc(var(--space-2) + var(--kb-inset, ${v})); }</style>`);
+		expect(driftIn('x.svelte', pad('0px'))).toEqual([]);
+		expect(driftIn('x.svelte', pad('4px')), 'a rung smuggled in as a fallback').toHaveLength(1);
 	});
 
 	/* Founding-census row 19: one affordance, written out in two components. `.drop-hint` — the

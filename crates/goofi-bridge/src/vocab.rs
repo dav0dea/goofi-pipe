@@ -91,6 +91,8 @@ pub static PANEL_TYPES: &[PanelType] = &[
                 doc: "the patch log; a bound node filters it to that node" },
     PanelType { id: "globals", title: "Globals", icon: "globe", accepts_node: false,
                 doc: "the patch globals, which any expression can read" },
+    PanelType { id: "agent", title: "Agent", icon: "bot", accepts_node: false,
+                doc: "a terminal on an agent harness, running in the patch workspace" },
 ];
 
 /// The four ARRAY kinds first, in the order the viewer's type dropdown offers them; the two

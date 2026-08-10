@@ -12,12 +12,14 @@
 import type { Component } from 'svelte';
 import { registerPanel, type PanelProps } from '$lib/workspace/registry';
 import { PANEL_TYPES, EMPTY_PANEL_TYPE, type PanelTypeId } from '$lib/api/vocab';
+import { harnesses } from '$lib/stores/harness.svelte';
 import NodeEditorPanel from './NodeEditorPanel.svelte';
 import ParametersPanel from './ParametersPanel.svelte';
 import ViewerPanel from './ViewerPanel.svelte';
 import MetadataInspectorPanel from './MetadataInspectorPanel.svelte';
 import ConsolePanel from './ConsolePanel.svelte';
 import GlobalsPanel from './GlobalsPanel.svelte';
+import AgentPanel from './AgentPanel.svelte';
 
 /** Every app panel type, exhaustively: a type added to the manager's table is a `npm run check`
  * error here until it has something to draw it. `empty` is the panel framework's own placeholder
@@ -28,7 +30,20 @@ const components: Record<Exclude<PanelTypeId, typeof EMPTY_PANEL_TYPE>, Componen
 	viewer: ViewerPanel,
 	metadata: MetadataInspectorPanel,
 	console: ConsolePanel,
-	globals: GlobalsPanel
+	globals: GlobalsPanel,
+	agent: AgentPanel
+};
+
+/** The panel types that answer their own ✕ (see `PanelType.confirmClose`). Closing an agent view
+ * must not silently kill a long-running agent, so the panel raises the detach-or-kill question
+ * instead — and only when there is a live instance in it to ask about. */
+const confirmClose: Partial<Record<PanelTypeId, (panelId: string) => boolean>> = {
+	agent: (panelId) => {
+		const id = harnesses().instanceFor(panelId);
+		if (!id) return false;
+		harnesses().requestClose(id, panelId);
+		return true;
+	}
 };
 
 let done = false;
@@ -59,7 +74,8 @@ export function registerAppPanels(): void {
 			component: components[t.id],
 			// Dropping a node onto a Parameters/Viewer/Metadata panel binds it; onto the Console it
 			// filters the log to that node.
-			acceptsNode: t.acceptsNode
+			acceptsNode: t.acceptsNode,
+			confirmClose: confirmClose[t.id]
 		});
 	}
 }

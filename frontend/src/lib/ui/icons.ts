@@ -19,6 +19,7 @@
 export const ICONS = {
 	activity:
 		'<path d="M22 12h-2.48a2 2 0 0 0-1.93 1.46l-2.35 8.36a.25.25 0 0 1-.48 0L9.24 2.18a.25.25 0 0 0-.48 0l-2.35 8.36A2 2 0 0 1 4.49 12H2"/>',
+	bot: '<path d="M12 8V4H8"/><rect width="16" height="12" x="4" y="8" rx="2"/><path d="M2 14h2"/><path d="M20 14h2"/><path d="M15 13v2"/><path d="M9 13v2"/>',
 	check: '<path d="M20 6 9 17l-5-5"/>',
 	'chevron-down': '<path d="m6 9 6 6 6-6"/>',
 	'chevron-right': '<path d="m9 18 6-6-6-6"/>',

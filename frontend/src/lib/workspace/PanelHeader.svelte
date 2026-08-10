@@ -50,6 +50,14 @@
 	// and only the ⋯ owns an `aria-expanded` that must not light up for the other two.
 	let menu = $state<{ x: number; y: number; items: MenuItem[]; from?: 'overflow' } | null>(null);
 
+	/** The ✕, and the menu row beside it. A panel type may TAKE OVER its own close (an agent panel
+	 * asks whether to detach or kill first, in the panel holding the terminal); everything else
+	 * closes here, as it always did. */
+	function requestClose(): void {
+		if (type.confirmClose?.(node.id)) return;
+		ws.close(node.id);
+	}
+
 	function contentItems(): MenuItem[] {
 		return listPanelTypes().map((t) => ({
 			label: t.title,
@@ -122,7 +130,7 @@
 			asRow(max),
 			{ label: 'Change content', items: contentItems() },
 			{ separator: true },
-			{ label: 'Close Panel', icon: 'x', disabled: !canClose, action: () => ws.close(node.id) }
+			{ label: 'Close Panel', icon: 'x', disabled: !canClose, action: requestClose }
 		];
 	}
 

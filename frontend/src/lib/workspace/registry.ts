@@ -37,6 +37,11 @@ export interface PanelType {
 	/** True if a node dragged from an editor can be dropped onto this panel to
 	 * bind it (Parameters / Viewer / Metadata). */
 	acceptsNode?: boolean;
+	/** A panel type's chance to answer its own ✕. Return true to say the close has been TAKEN
+	 * OVER — the panel raised its own question and will do the closing itself, or not at all.
+	 * Exists because closing an agent view is not the same act as killing the long-running agent
+	 * behind it, and the header must not decide that on the user's behalf. */
+	confirmClose?: (panelId: string) => boolean;
 }
 
 const registry = new Map<string, PanelType>();
