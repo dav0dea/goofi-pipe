@@ -462,8 +462,18 @@ impl Instance {
 /// only guards the remaining case, a spawn into a workspace already seeded. Best-effort for
 /// [`new_mount`]'s reason: a temp dir that cannot be written to surfaces its real error at the
 /// first save, naming the path.
+///
+/// **Why the packaging ignore list rides along.** It is not orientation, but it is the same act —
+/// what goofi lays into a workspace it minted, once, for its author to own from then on — and
+/// stating it as one loop is what keeps a second seeding path from growing beside this one with
+/// its own answer to "and on load?". Its name and body come from the engine, which is what reads
+/// them back: see [`goofi_engine::archive::IGNORE_FILE`].
 pub fn seed_orientation(mount: &Path) {
-    for (name, body) in [("AGENTS.md", crate::mcp::INSTRUCTIONS), ("CLAUDE.md", "@AGENTS.md\n")] {
+    for (name, body) in [
+        ("AGENTS.md", crate::mcp::INSTRUCTIONS),
+        ("CLAUDE.md", "@AGENTS.md\n"),
+        (goofi_engine::archive::IGNORE_FILE, goofi_engine::archive::DEFAULT_IGNORE),
+    ] {
         let at = mount.join(name);
         if !at.exists() {
             let _ = std::fs::write(at, body);
@@ -604,6 +614,24 @@ mod tests {
 
         assert_eq!(std::fs::read_to_string(tmp.path().join("AGENTS.md")).unwrap(), learned);
         assert!(std::fs::read_to_string(tmp.path().join("CLAUDE.md")).unwrap().contains("its own"));
+    }
+
+    /// The packaging ignore list is seeded on the same terms as the orientation and for the same
+    /// reason: goofi writes it into a workspace it minted, absent-only, and from then on it is the
+    /// patch's — its author's to edit, packaged into the `.gfi`, back on load. Its name and body
+    /// are the engine's, so the header documenting the syntax sits beside the parser implementing
+    /// it, and a `.gfi` is filtered by the very file it packages.
+    #[test]
+    fn a_new_workspace_is_seeded_with_the_packaging_ignore_list() {
+        let tmp = tempfile::tempdir().expect("a temp dir");
+        let at = tmp.path().join(goofi_engine::archive::IGNORE_FILE);
+        seed_orientation(tmp.path());
+        assert_eq!(std::fs::read_to_string(&at).unwrap(), goofi_engine::archive::DEFAULT_IGNORE);
+
+        // …and a list its author has made their own is never seeded over.
+        std::fs::write(&at, "*.wav\n").unwrap();
+        seed_orientation(tmp.path());
+        assert_eq!(std::fs::read_to_string(&at).unwrap(), "*.wav\n");
     }
 
     /// The PATH fallback, both halves. A binary the bare walk misses is still found through a login

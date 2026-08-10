@@ -3602,6 +3602,11 @@ async fn load_restores_the_graph_and_the_workspace_from_an_archive() {
     let learned = b"goofi-pipe: this patch's EEG source is on channel 3.\n";
     std::fs::write(state.mount().join("AGENTS.md"), learned).unwrap();
     std::fs::remove_file(state.mount().join("CLAUDE.md")).unwrap();
+    // The packaging ignore list is the patch's on the same terms, and it is the ONE file the pack
+    // consults as it packs: narrowed here to prove it rides its own archive rather than filtering
+    // itself out of it, and that a load returns the author's list rather than the seeded default.
+    let ignores = "*.wav\n";
+    std::fs::write(state.mount().join(goofi_engine::archive::IGNORE_FILE), ignores).unwrap();
     call(&mut ws, 2, "save", json!({ "path": path.to_string_lossy() })).await;
 
     // Diverge from the saved patch on BOTH planes — a node it does not have, and a workspace that
@@ -3655,6 +3660,11 @@ async fn load_restores_the_graph_and_the_workspace_from_an_archive() {
     assert_eq!(std::fs::read(mount.join("AGENTS.md")).unwrap(), learned,
                "the load seeded over the orientation the patch was saved with");
     assert!(!mount.join("CLAUDE.md").exists(), "the load invented a file the archive never held");
+    assert_eq!(
+        std::fs::read_to_string(mount.join(goofi_engine::archive::IGNORE_FILE)).unwrap(),
+        ignores,
+        "the patch's own ignore list did not survive its round trip through the archive"
+    );
     assert!(!stale.exists(), "the mount the load replaced is released, not leaked");
 }
 
