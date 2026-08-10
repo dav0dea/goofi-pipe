@@ -541,6 +541,7 @@ name = "goofi-cli"
 version = "0.0.0"
 dependencies = [
  "goofi-bridge",
+ "goofi-engine",
  "goofi-py",
  "goofi-subproc",
  "tokio",

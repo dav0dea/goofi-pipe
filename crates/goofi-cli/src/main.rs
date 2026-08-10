@@ -8,6 +8,7 @@
 use std::future::Future;
 
 use goofi_bridge::{resolve_frontend_dir, serve_app, spawn_workers, AppState};
+use goofi_engine::Registration;
 
 /// The default node directory, auto-discovered (gil-gate routed) when no `--*-nodes` flag is given.
 const DEFAULT_NODES_DIR: &str = "nodes";
@@ -220,6 +221,17 @@ fn register_evaluator(_state: &AppState) {
     println!("  param expressions DISABLED — rebuild with `--features python` to enable the evaluator");
 }
 
+/// One boot registration, reported. The boot registry starts EMPTY, so a `Replaced` here can only
+/// mean a second node file claimed a name an earlier one already took — the collision report that
+/// used to live in the engine, now stated where it is true: a *rescan* replaces types on purpose
+/// and says nothing. Returns whether the type is now registered.
+fn note_registration(name: &str, r: Registration) -> bool {
+    if r == Registration::Replaced {
+        eprintln!("warning: two node files claim the type name `{name}`; the later one wins");
+    }
+    r != Registration::Refused
+}
+
 /// Discover and register isolated-GIL subprocess Python node types (no build-time
 /// Python needed — only a `python` interpreter at run time). Always available.
 /// Returns the type names it actually registered (what `--list-nodes` reports).
@@ -233,13 +245,13 @@ fn register_subproc(state: &AppState, dir: Option<&str>, python: &str) -> Vec<St
         }
     };
     let mut g = state.graph.lock().unwrap();
-    // Only registrations that succeeded (a name colliding with a built-in or an earlier
-    // type is refused).
+    // Only registrations that succeeded (a name colliding with a built-in is refused).
     let names: Vec<String> = types
         .into_iter()
         .filter_map(|t| {
             let name = t.manifest.type_name;
-            g.register_dyn_type(t.manifest, t.factory).then(|| name.to_string())
+            let r = g.register_dyn_type(t.manifest, t.factory);
+            note_registration(name, r).then(|| name.to_string())
         })
         .collect();
     println!("  registered {} subprocess node type(s) from {dir} (python `{python}`)", names.len());
@@ -278,7 +290,8 @@ fn register_auto(state: &AppState, dir: Option<&str>, subproc_python: &str) -> V
         if let goofi_py::Discovery::Found(d) = ft.as_deref().map_or(goofi_py::Discovery::Skip, |ftp| goofi_py::probe(&path, ftp)) {
             if d.gil_safe {
                 let t = goofi_py::node_type_from(d);
-                if g.register_dyn_type(t.manifest, t.factory) {
+                let r = g.register_dyn_type(t.manifest, t.factory);
+                if note_registration(t.manifest.type_name, r) {
                     n_in += 1;
                     names.push(format!("{} (in-proc)", t.manifest.type_name));
                 }
@@ -293,7 +306,8 @@ fn register_auto(state: &AppState, dir: Option<&str>, subproc_python: &str) -> V
         match goofi_subproc::probe(&path, subproc_python) {
             goofi_subproc::Discovery::Found(d) => {
                 let t = goofi_subproc::node_type_from(subproc_python, d);
-                if g.register_dyn_type(t.manifest, t.factory) {
+                let r = g.register_dyn_type(t.manifest, t.factory);
+                if note_registration(t.manifest.type_name, r) {
                     n_sub += 1;
                     names.push(format!("{} (subproc)", t.manifest.type_name));
                 }

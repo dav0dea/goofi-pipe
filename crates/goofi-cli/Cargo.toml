@@ -10,6 +10,8 @@ path = "src/main.rs"
 
 [dependencies]
 goofi-bridge = { path = "../goofi-bridge" }
+# Direct, for the node-registration vocabulary (`Registration`) the tier routing below reads.
+goofi-engine = { path = "../goofi-engine" }
 goofi-subproc = { path = "../goofi-subproc" }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal"] }
 # In-process Python nodes + the param-expression evaluator (pyo3, free-threaded 3.14t).

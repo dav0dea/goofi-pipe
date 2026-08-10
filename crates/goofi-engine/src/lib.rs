@@ -239,6 +239,20 @@ struct DynType {
     factory: NodeFactory,
 }
 
+/// What one [`Graph::register_dyn_type`] call did to the runtime registry. The three are kept
+/// apart because only the CALLER can read them: a rescan re-registers every type it finds, so
+/// `Replaced` is an ordinary refresh there — while a boot scan starts from an empty registry, so
+/// the same value can only mean two node files claiming one name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Registration {
+    /// The name was free; the type entered the registry.
+    Added,
+    /// A runtime type of that name was already registered and has been replaced.
+    Replaced,
+    /// A built-in owns the name; the registry is unchanged.
+    Refused,
+}
+
 /// A param bound to an expression (engine-side record; the node stays oblivious — the
 /// engine writes the evaluated value into its params before it runs). See the
 /// param-expressions design.
@@ -410,27 +424,38 @@ impl Graph {
     /// (runtime types leak one manifest per type — bounded, catalog-lifetime); its
     /// `make` field is unused (instances come from `factory`).
     ///
-    /// A name that collides with a built-in catalog type or an already-registered
-    /// runtime type is refused (with a warning) rather than silently shadowed or
-    /// overwritten — a built-in always wins `add_node`/`load_doc` resolution, and a
-    /// blind overwrite would orphan the loser's leaked manifest and make its node
-    /// unreachable. Returns whether the type was registered.
+    /// A name that collides with a built-in catalog type is refused (with a warning): a built-in
+    /// always wins `add_node`/`load_doc` resolution, so a runtime type of that name could never be
+    /// reached. A name held by another RUNTIME type is **replaced**, because a rescan re-registers
+    /// every type it finds — refusing would make the second scan a silent no-op. The loser's
+    /// manifest stays leaked (the accepted price of `&'static` manifests) and LIVE INSTANCES of it
+    /// keep running: an entry owns its own manifest + node, so only the NEXT instance is built from
+    /// the new factory.
+    ///
+    /// A replace is deliberately silent here — see [`Registration`]: the engine cannot tell a
+    /// rescan's refresh from a boot-time name collision, and the caller can.
     pub fn register_dyn_type(
         &mut self,
         manifest: &'static NodeManifest,
         factory: NodeFactory,
-    ) -> bool {
+    ) -> Registration {
         let name = manifest.type_name;
         if goofi_node::find(name).is_some() {
             eprintln!("warning: runtime node type `{name}` collides with a built-in; ignoring it");
-            return false;
+            return Registration::Refused;
         }
-        if self.dyn_types.contains_key(name) {
-            eprintln!("warning: runtime node type `{name}` already registered; ignoring the duplicate");
-            return false;
+        match self.dyn_types.insert(name, DynType { manifest, factory }) {
+            Some(_) => Registration::Replaced,
+            None => Registration::Added,
         }
-        self.dyn_types.insert(name, DynType { manifest, factory });
-        true
+    }
+
+    /// Forget a runtime-registered type — a rescan whose file has vanished. Returns whether one
+    /// was removed (so a caller can report the diff); a name that was never registered is `false`.
+    /// LIVE INSTANCES ARE UNTOUCHED, for the same reason a replace leaves them alone: removal only
+    /// stops the NEXT `add_node` and the `.gfi` load gate.
+    pub fn remove_dyn_type(&mut self, type_name: &str) -> bool {
+        self.dyn_types.remove(type_name).is_some()
     }
 
     /// Whether a type name resolves to either the compile-time catalog or a
@@ -5057,20 +5082,54 @@ mod tests {
     }
 
     #[test]
-    fn register_dyn_type_refuses_collisions() {
+    fn register_dyn_type_refuses_a_built_in_collision() {
         let mut g = Graph::new();
         // Collides with the built-in "Oscillator": refused, and add_node still
         // resolves the native node (the dyn factory would panic via rt_stub_make).
-        assert!(!g.register_dyn_type(&COLLIDE_MANIFEST, Box::new(|_| unreachable!())));
+        let r = g.register_dyn_type(&COLLIDE_MANIFEST, Box::new(|_| unreachable!()));
+        assert_eq!(r, Registration::Refused);
         assert!(g.dyn_type_manifests().is_empty());
         let osc = g.add_node("Oscillator", None).unwrap();
         assert_eq!(g.manifest(osc).unwrap().category, "inputs"); // the native one
+    }
 
-        // A fresh name registers once; a second registration of the same name is
-        // refused rather than overwriting (which would orphan the first's manifest).
-        assert!(g.register_dyn_type(&RT_MANIFEST, Box::new(|_| Box::new(RtSource { base: 1.0 }))));
-        assert!(!g.register_dyn_type(&RT_MANIFEST, Box::new(|_| Box::new(RtSource { base: 2.0 }))));
-        assert_eq!(g.dyn_type_manifests().len(), 1);
+    #[test]
+    fn re_registering_a_dyn_type_swaps_the_factory_for_later_instances() {
+        // The rescan contract: edit a node file, re-register, and the NEXT instance runs the new
+        // code. An instance built BEFORE the swap keeps the old factory's node — nothing here
+        // restarts it (that is the auto-restart step, deliberately not this one).
+        let mut g = Graph::new();
+        let r = g.register_dyn_type(&RT_MANIFEST, Box::new(|_| Box::new(RtSource { base: 1.0 })));
+        assert_eq!(r, Registration::Added);
+        let old = g.add_node("_RuntimeDyn", None).unwrap();
+
+        let r = g.register_dyn_type(&RT_MANIFEST, Box::new(|_| Box::new(RtSource { base: 2.0 })));
+        assert_eq!(r, Registration::Replaced);
+        assert_eq!(g.dyn_type_manifests().len(), 1, "a replace does not add a second entry");
+
+        let new = g.add_node("_RuntimeDyn", None).unwrap();
+        g.tick();
+        assert_eq!(first_f32(&g.latest_frame(new, "out").unwrap()), 2.0, "new factory");
+        assert_eq!(first_f32(&g.latest_frame(old, "out").unwrap()), 1.0, "live instance untouched");
+    }
+
+    #[test]
+    fn removing_a_dyn_type_takes_it_out_of_the_catalog_and_out_of_resolution() {
+        // The other half of the rescan: the file vanished, so the type must stop being addable —
+        // while the instance that is already running stays running.
+        let mut g = Graph::new();
+        g.register_dyn_type(&RT_MANIFEST, Box::new(|_| Box::new(RtSource { base: 1.0 })));
+        let live = g.add_node("_RuntimeDyn", None).unwrap();
+
+        assert!(g.remove_dyn_type("_RuntimeDyn"));
+        assert!(g.dyn_type_manifests().is_empty(), "gone from the palette");
+        // `known_type` is private, and `add_node` is its door: the refusal must read as the
+        // vanished type it is, not as a dependency-missing "unavailable" one.
+        assert_eq!(g.add_node("_RuntimeDyn", None).unwrap_err(), "unknown node type `_RuntimeDyn`");
+        assert!(!g.remove_dyn_type("_RuntimeDyn"), "nothing left to remove");
+
+        g.tick();
+        assert_eq!(first_f32(&g.latest_frame(live, "out").unwrap()), 1.0, "the instance still runs");
     }
 
     #[test]
