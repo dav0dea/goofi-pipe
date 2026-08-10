@@ -29,12 +29,20 @@ use axum::http::{header, StatusCode};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 
-/// Whether a request bearing this `Origin` and `Host` may be served.
+/// Whether a request bearing these headers may be served.
 ///
 /// A missing `Origin` is a client that is not a browser — curl, an MCP client, a harness goofi
 /// spawned itself — and is served: it is not reachable from a web page, so there is nothing here
 /// to stop. Everything else must name a host the browser could only have reached deliberately.
-fn allowed(origin: Option<&str>, host: Option<&str>) -> bool {
+fn allowed(origin: Option<&str>, host: Option<&str>, fetch_site: Option<&str>) -> bool {
+    // `Origin` alone would leave one hole: a cross-site FORM POST is a page driving goofi, and a
+    // browser that omits `Origin` on one (Safari did until 15.4) reads as "not a browser" above.
+    // `Sec-Fetch-Site` closes it — every modern browser sends it on every request, it is a
+    // forbidden header name so script cannot set it, and nothing that is not a browser sends it at
+    // all. `none` is the user typing the address; `same-origin` is that page's own requests.
+    if matches!(fetch_site, Some("cross-site" | "same-site")) {
+        return false;
+    }
     let Some(origin) = origin else { return true };
     // An `Origin` is a scheme and an authority and nothing else. `null` — a sandboxed frame, a
     // `file://` page — has no authority at all, so it falls through to the parse below and fails.
@@ -63,8 +71,8 @@ pub(crate) async fn guard(req: Request, next: Next) -> Response {
     // Scoped so the borrow of `req` ends before it is moved into the handler.
     let ok = {
         let h = req.headers();
-        let get = |n| h.get(n).and_then(|v: &axum::http::HeaderValue| v.to_str().ok());
-        allowed(get(header::ORIGIN), get(header::HOST))
+        let get = |n: &str| h.get(n).and_then(|v: &axum::http::HeaderValue| v.to_str().ok());
+        allowed(get(header::ORIGIN.as_str()), get(header::HOST.as_str()), get("sec-fetch-site"))
     };
     if ok {
         return next.run(req).await;
@@ -89,26 +97,41 @@ mod tests {
     #[test]
     fn an_origin_is_judged_by_its_host_however_it_is_spelled() {
         let host = Some("127.0.0.1:8000");
-        assert!(allowed(None, host), "a client that is not a browser");
-        assert!(allowed(Some("http://localhost:5173"), host), "the dev server");
-        assert!(allowed(Some("http://127.0.0.1:8000"), host));
-        assert!(allowed(Some("http://[::1]:5173"), host), "the bracketed IPv6 loopback");
-        assert!(!allowed(Some("null"), host), "a sandboxed frame");
-        assert!(!allowed(Some("https://evil.example"), host));
+        let at = |o| allowed(o, host, None);
+        assert!(at(None), "a client that is not a browser");
+        assert!(at(Some("http://localhost:5173")), "the dev server");
+        assert!(at(Some("http://127.0.0.1:8000")));
+        assert!(at(Some("http://[::1]:5173")), "the bracketed IPv6 loopback");
+        assert!(!at(Some("null")), "a sandboxed frame");
+        assert!(!at(Some("https://evil.example")));
         // A subdomain of nothing in particular, and a name that merely CONTAINS a loopback one:
         // the check is on the parsed host, not on a substring anyone could arrange to include.
-        assert!(!allowed(Some("http://localhost.evil.example"), host));
-        assert!(!allowed(Some("http://127.0.0.1.evil.example"), host));
+        assert!(!at(Some("http://localhost.evil.example")));
+        assert!(!at(Some("http://127.0.0.1.evil.example")));
     }
 
     /// The two halves of the LAN rule, which is the whole of why this is not `origin == host`.
     #[test]
     fn a_lan_page_is_served_only_by_the_address_that_served_it() {
         let host = Some("192.168.7.5:8000");
-        assert!(allowed(Some("http://192.168.7.5:8000"), host), "goofi's own page");
-        assert!(!allowed(Some("http://192.168.7.9:8000"), host), "a neighbour on the LAN");
+        assert!(allowed(Some("http://192.168.7.5:8000"), host, None), "goofi's own page");
+        assert!(!allowed(Some("http://192.168.7.9:8000"), host, None), "a neighbour on the LAN");
         // The rebinding case, stated on its own: Origin and Host AGREE and it is still refused,
         // because a name is not an address and DNS is the attacker's to point.
-        assert!(!allowed(Some("http://evil.example:8000"), Some("evil.example:8000")));
+        assert!(!allowed(Some("http://evil.example:8000"), Some("evil.example:8000"), None));
+    }
+
+    /// `Sec-Fetch-Site` decides on its own, before the origin rules — which is the point: it is the
+    /// only header that answers "did a page cause this?" for a request carrying no `Origin`, and it
+    /// must not be overridable by one. The last case is the whole reason it is here.
+    #[test]
+    fn a_page_that_names_no_origin_is_still_a_page() {
+        let host = Some("127.0.0.1:8000");
+        assert!(allowed(None, host, Some("none")), "the user typed the address");
+        assert!(allowed(None, host, Some("same-origin")), "goofi's own page asking for more");
+        assert!(!allowed(None, host, Some("cross-site")), "a cross-site form POST");
+        assert!(!allowed(None, host, Some("same-site")), "a sibling subdomain");
+        // A page cannot buy its way back in by ALSO sending an origin the rules below would like.
+        assert!(!allowed(Some("http://127.0.0.1:8000"), host, Some("cross-site")));
     }
 }

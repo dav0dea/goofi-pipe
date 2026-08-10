@@ -73,6 +73,12 @@ async fn start_server() -> String {
 /// separate arguments because a DNS-rebound name makes them AGREE.
 async fn ask(addr: &str, path: &str, method: &str, origin: Option<&str>, host: &str) -> u16 {
     let o = origin.map(|o| format!("Origin: {o}\r\n")).unwrap_or_default();
+    ask_as(addr, path, method, &o, host).await
+}
+
+/// As [`ask`], but the caller writes the browser headers itself — for the request that carries no
+/// `Origin` at all and is a page's doing anyway.
+async fn ask_as(addr: &str, path: &str, method: &str, o: &str, host: &str) -> u16 {
     let (head, body) = match method {
         "WS" => (
             format!(
@@ -144,6 +150,32 @@ async fn every_route_serves_the_page_goofi_served_itself() {
     for (path, method) in ROUTES {
         let got = ask(&addr, path, method, Some(&format!("http://{addr}")), &addr).await;
         assert_eq!(got, served(method), "`{path}` refused its own page");
+    }
+}
+
+/// The hole an Origin-only guard leaves: a **cross-site form POST** is a page driving goofi, and a
+/// browser that does not put `Origin` on one would sail through the rule above as "not a browser".
+/// Safari did exactly that until 15.4. `Sec-Fetch-Site` is the answer — every modern browser sends
+/// it on every request, script cannot set it (it is forbidden), and no non-browser sends it at all,
+/// so it says "a page caused this" for the requests `Origin` is silent about.
+#[tokio::test]
+async fn a_cross_site_request_is_refused_even_when_it_names_no_origin() {
+    let addr = start_server().await;
+    for site in ["cross-site", "same-site"] {
+        for (path, method) in ROUTES {
+            let sent = format!("Sec-Fetch-Site: {site}\r\n");
+            let got = ask_as(&addr, path, method, &sent, &addr).await;
+            assert_eq!(got, 403, "`{path}` served a {site} request");
+        }
+    }
+    // …and the two a browser sends for goofi's OWN page: `none` is the user typing the address or
+    // opening a bookmark, `same-origin` is everything that page then asks for.
+    for site in ["none", "same-origin"] {
+        for (path, method) in ROUTES {
+            let sent = format!("Sec-Fetch-Site: {site}\r\n");
+            let got = ask_as(&addr, path, method, &sent, &addr).await;
+            assert_eq!(got, served(method), "`{path}` refused a {site} request");
+        }
     }
 }
 
