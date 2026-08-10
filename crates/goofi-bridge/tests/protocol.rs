@@ -3541,6 +3541,48 @@ async fn save_path_on_connect(base: &str) -> Option<String> {
     hello["payload"]["save_path"].as_str().map(str::to_string)
 }
 
+/// A viewer panel's binding is a node UID, and a load does not remap it — so the load has to bring
+/// the uid back. It must survive into an instance that has already held OTHER nodes, which is the
+/// only arrangement that can fail: a load into a fresh instance renumbers to the very values it
+/// saved, and looks perfect.
+#[tokio::test]
+async fn a_panel_binding_survives_a_load_into_an_instance_that_held_other_nodes() {
+    let base = start_server().await;
+    let (mut ws, _) = connect_async(format!("{base}/control")).await.unwrap();
+    let _hello = recv_text(&mut ws).await;
+
+    let osc = call(&mut ws, 1, "add_node", json!({ "type": "Oscillator" })).await["result"]["uid"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let doc = sync_replica(&mut ws, |d| !panels(d).is_empty()).await;
+    let panel = panels(&doc)[0].clone();
+    let r = call(&mut ws, 2, "page_set_panel",
+        json!({ "page": "Layout", "panel": panel, "type": "viewer",
+                "state": { "node": osc, "slot": "out" } })).await;
+    assert!(accepted(&r), "{r}");
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("patch.gfi");
+    call(&mut ws, 3, "save", json!({ "path": path.to_string_lossy() })).await;
+
+    // Now make the instance a USED one: three more nodes, whose uids the old load would have handed
+    // the saved patch on the way back in.
+    for id in 4..7 {
+        call(&mut ws, id, "add_node", json!({ "type": "Buffer" })).await;
+    }
+    let r = call(&mut ws, 7, "load", json!({ "path": path.to_string_lossy() })).await;
+    assert!(accepted(&r), "{r}");
+
+    let d = sync_replica(&mut ws, |d| d.node_ids().len() == 1).await;
+    assert_eq!(d.node_ids(), vec![osc.clone()], "the patch came back with the uid it was saved with");
+    let state = d
+        .read_at(&["arrangement", panel.as_str(), "state"])
+        .and_then(|v| v.as_str().map(str::to_string))
+        .expect("the panel's state leaf");
+    assert!(state.contains(&osc), "…so the viewer panel still names a node that exists: {state}");
+}
+
 /// The round trip, which is the whole point of the container: a `.gfi` written by `save` loads
 /// back — both the graph and the workspace files the patch was saved with.
 #[tokio::test]
