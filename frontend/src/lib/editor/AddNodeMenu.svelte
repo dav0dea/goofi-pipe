@@ -155,7 +155,6 @@
 				title={nodeTypeTitle(t)}
 				onmouseenter={() => (highlighted = idx)}
 				onclick={() => pick(t)}
-				data-source={t.source}
 			>
 				<span class="cat-dot"></span>
 				<span class="t-name">{t.type}</span>
@@ -197,9 +196,6 @@
 		padding: var(--space-5) var(--space-6);
 		border-radius: 0;
 		font-size: var(--fs-body);
-	}
-	input:focus {
-		border-color: transparent;
 	}
 	.list {
 		/* Viewport-relative as well as fixed: 360px is most of a phone's height, and this menu opens
