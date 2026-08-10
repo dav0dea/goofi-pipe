@@ -212,24 +212,27 @@ fn param_line(p: &goofi_core::Param, expr: Option<&goofi_engine::ExprInfo>) -> S
 ///
 /// The range is over the FINITE values deliberately: that a non-finite is present is already said
 /// by `finite=`, while a range that reads `nan` would hide the scale, which is the other half of
-/// the question.
+/// the question. `finite=` is one bucket, so it does not separate a NaN (0/0) from an overflow
+/// (∞) — the next question, and one an agent asks with `inspect_node slot=…` on the producer.
+///
+/// ONE streaming pass, deliberately: a 4K RGB frame is 25 M elements and this runs under the graph
+/// lock the tick thread needs — materializing it, twice, cost 317 ms and 189 MB of that lock.
 fn health(d: &goofi_core::Data) -> String {
     match d.value() {
         DataValue::Array(a) => {
-            let vals: Vec<f32> = a
-                .as_bytes()
-                .chunks_exact(4)
-                .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
-                .collect();
-            let finite: Vec<f32> = vals.iter().copied().filter(|v| v.is_finite()).collect();
+            let (mut n, mut finite) = (0usize, 0usize);
+            let (mut lo, mut hi) = (f32::INFINITY, f32::NEG_INFINITY);
+            for c in a.as_bytes().chunks_exact(4) {
+                let v = f32::from_le_bytes([c[0], c[1], c[2], c[3]]);
+                n += 1;
+                if v.is_finite() {
+                    (finite, lo, hi) = (finite + 1, lo.min(v), hi.max(v));
+                }
+            }
             let shape: Vec<String> = a.shape().iter().map(|d| d.to_string()).collect();
-            let range = if finite.is_empty() {
-                "range=none".to_string()
-            } else {
-                let lo = finite.iter().copied().fold(f32::INFINITY, f32::min);
-                format!("range=[{lo},{}]", finite.iter().copied().fold(f32::NEG_INFINITY, f32::max))
-            };
-            format!("f32[{}] finite={}/{} {range}", shape.join(","), finite.len(), vals.len())
+            let range =
+                if finite == 0 { "range=none".to_string() } else { format!("range=[{lo},{hi}]") };
+            format!("f32[{}] finite={finite}/{n} {range}", shape.join(","))
         }
         DataValue::Str(s) => format!("string len={}", s.chars().count()),
         DataValue::Table(t) => format!("table keys={}", t.len()),
@@ -547,6 +550,18 @@ errors (whole patch):
         let nans: Vec<u8> = [f32::NAN; 2].iter().flat_map(|v| v.to_le_bytes()).collect();
         let d = Data::array_f32(vec![2], nans, Meta::empty()).unwrap();
         assert_eq!(health(&d), "f32[2] finite=0/2 range=none");
+
+        // An overflow is non-finite too, and it must not drag the range out to infinity — the
+        // scale of the values that ARE real is the whole point of reporting one.
+        let mixed: Vec<u8> =
+            [f32::INFINITY, 2.0, f32::NEG_INFINITY, -1.0].iter().flat_map(|v| v.to_le_bytes()).collect();
+        let d = Data::array_f32(vec![4], mixed, Meta::empty()).unwrap();
+        assert_eq!(health(&d), "f32[4] finite=2/4 range=[-1,2]");
+
+        // An empty frame: no elements to fold, and so no scale — the degenerate case a running
+        // min/max has to answer without inventing `inf` as the range.
+        let d = Data::array_f32(vec![0], Vec::new(), Meta::empty()).unwrap();
+        assert_eq!(health(&d), "f32[0] finite=0/0 range=none");
     }
 
     #[test]
