@@ -7,6 +7,7 @@
  * rejected so callers can re-issue if appropriate.
  */
 import type { ParamDescriptor } from '$lib/api/types';
+import type { OpName } from '$lib/api/ops';
 
 /** Control-plane protocol version. The browser reconciles purely from echoed
  * events, so a stale `frontend/build/` against a newer backend would diverge
@@ -335,7 +336,7 @@ export interface Control {
 	 * reaches its own author too, so a client has to be able to recognize its own echo (the
 	 * `layout` event). */
 	readonly session: string;
-	call<T = unknown>(op: string, payload?: Record<string, unknown>): Promise<T>;
+	call<T = unknown>(op: OpName, payload?: Record<string, unknown>): Promise<T>;
 	on(fn: (ev: ControlEvent) => void): () => void;
 	onConnect(fn: (c: boolean) => void): () => void;
 	/** Subscribe to inbound binary CRDT sync frames. Returns an unsubscribe fn. */
@@ -506,7 +507,7 @@ export class ControlClient implements Control {
 	}
 
 	/** Issue an RPC. Returns a promise resolving to the server's result. */
-	call<T = unknown>(op: string, payload: Record<string, unknown> = {}): Promise<T> {
+	call<T = unknown>(op: OpName, payload: Record<string, unknown> = {}): Promise<T> {
 		if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
 			return Promise.reject(new Error('control socket not connected'));
 		}

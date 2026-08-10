@@ -8,6 +8,7 @@
 
 mod crdt_mirror;
 mod fsbrowse;
+pub mod ops;
 mod reducer;
 mod schemas;
 
@@ -884,11 +885,20 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
     // Absent ⇒ a single shared "default" session, so a client that never presents one still works.
     let session = req.get("session").and_then(|v| v.as_str()).unwrap_or("default").to_string();
 
+    // Every op is declared once, in `ops::REGISTRY`. Refusing an unregistered one HERE is what
+    // makes a dispatch arm without a row unreachable rather than a second, invisible declaration
+    // of the op set — and it is where `read_only` comes from below, so the classification a new op
+    // needs lives beside the op instead of in a parallel list that can disagree with it.
+    let spec = ops::find(&op);
     let mut events: Vec<String> = Vec::new();
     let result: Result<Value, String> = (|| {
+        if spec.is_none() {
+            return Err(format!("unknown op `{op}`"));
+        }
         // Ops that read no graph state are served WITHOUT the graph mutex. `list_dir` walks a
         // directory and stats every child, which can block for a long time on a huge or network
-        // path — under the lock that would stall the tick thread for the whole walk.
+        // path — under the lock that would stall the tick thread for the whole walk. `get_patch`
+        // is here for the same reason: `is_dirty` walks the workspace mount.
         if op == "list_dir" {
             return Ok(fsbrowse::list_dir(payload.get("path").and_then(|v| v.as_str())));
         }
@@ -1032,9 +1042,12 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
                 let uid = parse_uid(&payload, "node")?;
                 let group = parse_str(&payload, "group")?.to_string();
                 let name = parse_str(&payload, "name")?.to_string();
-                g.refresh_param(uid, &group, &name)?;
+                // The freshly-enumerated list rides the REPLY as well as the event: a caller that
+                // is not the editor (an agent picking a device) would otherwise have to guess
+                // which broadcast belongs to its request.
+                let options = g.refresh_param(uid, &group, &name)?;
                 events.push(param_state_update_refreshed(&g, uid, &[(&group, &name)]));
-                Ok(json!({ "ok": true }))
+                Ok(json!({ "options": options }))
             }
             "update_param" => {
                 let uid = parse_uid(&payload, "node")?;
@@ -1068,8 +1081,8 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
                     &session,
                     goofi_engine::Command::EditParam {
                         uid,
-                        group,
-                        name,
+                        group: group.clone(),
+                        name: name.clone(),
                         value: None,
                         expr: Some(goofi_engine::ExprState { source, enabled, triggers }),
                     },
@@ -1077,7 +1090,10 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
                 // The binding source rides the doc re-mirror; the runtime `expression_error` is
                 // doc-invisible, so echo the enriched descriptor (what the retired leaf path did).
                 events.push(param_state_update(&g, uid));
-                Ok(json!({ "ok": true }))
+                // A binding that does not compile is stored, not rejected — the source is kept so
+                // it can be fixed. So the REPLY has to carry the compile error, or a caller with no
+                // inspector open would read a plain `ok` and believe the binding took.
+                Ok(json!({ "error": g.param_expression(uid, &group, &name).and_then(|e| e.error) }))
             }
             "set_node_pos" => {
                 let uid = parse_uid(&payload, "node")?;
@@ -1454,8 +1470,10 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
     // happen to be an edit".
     // `new` is deliberately NOT here: it empties the graph, and the re-mirror is the only thing
     // that empties an already-open tab's canvas with it (`graph_replaced` carries no node list).
-    let read_only =
-        matches!(op.as_str(), "list_nodes" | "serialize" | "save" | "list_dir" | "open_workspace");
+    // The classification lives on the op's registry row, so declaring an op is what classifies it
+    // — there is no second list to forget. An unregistered op never reaches here (its result is
+    // the `unknown op` Err above).
+    let read_only = spec.is_some_and(|o| !o.writes);
     if result.is_ok() && !read_only {
         resync_and_broadcast(state);
         // "Could this have changed the graph?" is a good enough answer to "does the patch now
@@ -1762,6 +1780,97 @@ async fn handle_data(socket: WebSocket, state: AppState, node: String, slot: Str
     }
     // Deregister so the reducer tears down when the last viewer of this slot leaves.
     state.reducers.unsubscribe(&key, conn);
+}
+
+/// The two ops whose old bare `{ok:true}` left the caller unable to see what actually happened.
+/// Both answers exist only at runtime — neither reaches the CRDT doc — so without them in the
+/// reply a caller with no inspector open (an agent, a script) is simply blind.
+#[cfg(test)]
+mod result_enrichment_tests {
+    use super::*;
+
+    fn call(state: &AppState, op: &str, payload: Value) -> Value {
+        let req = json!({ "id": 1, "op": op, "payload": payload }).to_string();
+        serde_json::from_str(&dispatch(state, &req).expect("a numeric id is answered")).unwrap()
+    }
+
+    #[test]
+    fn set_expression_answers_with_the_binding_error_rather_than_a_bare_ok() {
+        let state = AppState::new();
+        let uid = state.graph.lock().unwrap().add_node("Oscillator", None).unwrap();
+        let bind = |expr: &str| {
+            call(
+                &state,
+                "set_expression",
+                json!({ "node": uid.to_hex(), "group": "oscillator", "name": "amplitude",
+                        "expression": expr, "enabled": true }),
+            )
+        };
+        // A binding that cannot compile is STORED (the source is kept so it can be fixed), so the
+        // refusal has to travel in the reply or it is invisible.
+        let bad = bind("@@ not an expression @@");
+        assert!(
+            bad["result"]["error"].as_str().is_some_and(|e| !e.is_empty()),
+            "the compile error must ride the reply: {bad}"
+        );
+        // An empty expression clears the binding — nothing left to report.
+        assert_eq!(bind("")["result"]["error"], Value::Null);
+        state.release_mount();
+    }
+
+    struct Picker;
+    impl goofi_node::Node for Picker {
+        fn process(
+            &mut self,
+            _i: &goofi_node::Inputs<'_>,
+            _o: &mut goofi_node::Outputs<'_>,
+            _c: &mut goofi_node::NodeCtx,
+            _p: &goofi_node::Params<'_>,
+        ) -> goofi_node::NodeResult {
+            Ok(())
+        }
+        fn on_param_refreshed(
+            &mut self,
+            _k: &goofi_node::ParamKey,
+            _p: &goofi_node::Params<'_>,
+        ) -> Option<Vec<String>> {
+            Some(vec!["mic-a".into(), "mic-b".into()])
+        }
+    }
+    static PICKER_PARAMS: &[goofi_node::ParamDecl] = &[goofi_node::ParamDecl {
+        group: "io",
+        name: "device",
+        spec: goofi_node::ParamSpec::Str { default: "", options: &[], refresh: true },
+        default_expr: None,
+        doc: None,
+    }];
+    static PICKER: goofi_node::NodeManifest = goofi_node::NodeManifest {
+        type_name: "Picker",
+        category: "test",
+        doc: "a refreshable device picker",
+        inputs: &[],
+        outputs: &[],
+        params: PICKER_PARAMS,
+        isolation: goofi_node::Isolation::InProcess,
+        factory: || Box::new(Picker),
+    };
+
+    #[test]
+    fn refresh_param_answers_with_the_options_it_just_enumerated() {
+        let state = AppState::new();
+        let uid = {
+            let mut g = state.graph.lock().unwrap();
+            g.register_dyn_type(&PICKER, Box::new(|_| Box::new(Picker)));
+            g.add_node("Picker", None).unwrap()
+        };
+        let r = call(
+            &state,
+            "refresh_param",
+            json!({ "node": uid.to_hex(), "group": "io", "name": "device" }),
+        );
+        assert_eq!(r["result"]["options"], json!(["mic-a", "mic-b"]), "{r}");
+        state.release_mount();
+    }
 }
 
 #[cfg(test)]

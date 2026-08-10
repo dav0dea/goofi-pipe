@@ -6,12 +6,13 @@
  * Law), instead of merely checking "an RPC was recorded".
  */
 import type { Control, ControlEvent } from '$lib/api/control';
+import type { OpName } from '$lib/api/ops';
 
 export class FakeControl implements Control {
 	/** A fixed stand-in for the tab's `sessionStorage` id — enough for a test to hand back "our
 	 * own" session and assert an echo is skipped. */
 	readonly session = 'fake-session';
-	private calls: Array<{ op: string; payload: Record<string, unknown> }> = [];
+	private calls: Array<{ op: OpName; payload: Record<string, unknown> }> = [];
 	private listeners = new Set<(ev: ControlEvent) => void>();
 	private connectListeners = new Set<(c: boolean) => void>();
 	private syncListeners = new Set<(bytes: Uint8Array) => void>();
@@ -31,16 +32,16 @@ export class FakeControl implements Control {
 	}
 
 	/** Make `call(op, …)` resolve to `value` (e.g. `add_node` → a display name). */
-	setCallResult(op: string, value: unknown): void {
+	setCallResult(op: OpName, value: unknown): void {
 		this.results.set(op, value);
 	}
 
 	/** Make the NEXT `call(op, …)` reject once — simulates a dispatch/transport error. */
-	failNext(op: string): void {
+	failNext(op: OpName): void {
 		this.failing.add(op);
 	}
 
-	call<T = unknown>(op: string, payload: Record<string, unknown> = {}): Promise<T> {
+	call<T = unknown>(op: OpName, payload: Record<string, unknown> = {}): Promise<T> {
 		this.calls.push({ op, payload });
 		if (this.failing.has(op)) {
 			this.failing.delete(op);
