@@ -54,6 +54,16 @@ export class TermSession {
 		const ws = new WebSocket(`${proto}//${location.host}/term/${encodeURIComponent(this.id)}`);
 		ws.binaryType = 'arraybuffer';
 		ws.addEventListener('message', (e: MessageEvent) => this.receive(e.data));
+		// The panel measures its container the moment it mounts, which is INSIDE this handshake — so
+		// the first proposal of every launch is written to a socket that cannot carry it. Measuring
+		// again here is what makes the arbitration, and the nudge that stands in for a server-side
+		// grid, engage on the ordinary first-launch path instead of leaving the child at 80×24.
+		ws.addEventListener('open', () => this.refit());
+		// A closed socket is not a socket. Nothing else nulls it, so without this `attach` reuses a
+		// dead connection for ever and only a page reload brings the terminal back.
+		ws.addEventListener('close', () => {
+			if (this.ws === ws) this.ws = null;
+		});
 		this.ws = ws;
 		this.said = '';
 	}
@@ -72,13 +82,18 @@ export class TermSession {
 		if (msg.op === 'size' && msg.cols && msg.rows) this.term.resize(msg.cols, msg.rows);
 	}
 
-	private send(bytes: Uint8Array | string): void {
-		if (this.ws?.readyState === WebSocket.OPEN) this.ws.send(bytes);
+	/** Whether it went out. A socket that is not yet OPEN silently drops what is written to it, so
+	 * nothing above may record having said something the manager never heard. */
+	private send(bytes: Uint8Array | string): boolean {
+		if (this.ws?.readyState !== WebSocket.OPEN) return false;
+		this.ws.send(bytes);
+		return true;
 	}
 
-	private resize(cols: number, rows: number): void {
-		this.said = `${cols}x${rows}`;
-		this.send(JSON.stringify({ op: 'resize', cols, rows }));
+	private resize(cols: number, rows: number): boolean {
+		const out = this.send(JSON.stringify({ op: 'resize', cols, rows }));
+		if (out) this.said = `${cols}x${rows}`;
+		return out;
 	}
 
 	/** Draw this session's terminal into `el` — on first mount, and on every remount after.
@@ -90,6 +105,11 @@ export class TermSession {
 	 * scrollback across, since they belong to the terminal that built it. */
 	attach(el: HTMLElement): void {
 		if (!this.ws) this.open();
+		// The host may still hold the terminal of the instance it WAS showing — a panel switching
+		// instances keeps its element, so appending beside would leave two live terminals stacked in
+		// one box. Clearing here rather than in the panel's cleanup keeps the host's contract with
+		// the session that draws into it; what is removed survives as that session's `term.element`.
+		el.replaceChildren();
 		const drawn = this.term.element;
 		if (drawn) el.appendChild(drawn);
 		else this.term.open(el);
@@ -98,9 +118,10 @@ export class TermSession {
 
 	/** The ONE writer path: what this view's container measured. */
 	propose(cols: number, rows: number): void {
+		// Consumed only once it has really gone out — an armed nudge dropped by a CONNECTING socket
+		// is the whole first launch, and there is no second attach to re-arm it.
 		if (this.nudge) {
-			this.nudge = false;
-			this.resize(Math.max(1, cols - 1), rows);
+			if (this.resize(Math.max(1, cols - 1), rows)) this.nudge = false;
 		} else if (this.said === `${cols}x${rows}`) {
 			return;
 		}
