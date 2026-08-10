@@ -18,7 +18,7 @@
 //! nudges the size so a full-screen TUI repaints itself. History across a page reload is allowed to
 //! be lost; that is what buys this module its size.
 
-use std::ffi::OsStr;
+use std::ffi::{OsStr, OsString};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -162,13 +162,15 @@ impl Harnesses {
     }
 
     /// Launch `harness` on a PTY with the patch workspace as its cwd, minting the MCP address it is
-    /// handed. `events` is the broadcast the reaper announces the exit on; the caller announces the
-    /// spawn, so one `harness_changed` follows each.
+    /// handed. `env` is the parent environment it inherits — see [`parent_env`]. `events` is the
+    /// broadcast the reaper announces the exit on; the caller announces the spawn, so one
+    /// `harness_changed` follows each.
     pub fn spawn(
         self: &Arc<Self>,
         harness: &str,
         cwd: &Path,
         base_url: &str,
+        env: &[(OsString, OsString)],
         events: broadcast::Sender<String>,
     ) -> Result<String, String> {
         let adapter = ADAPTERS.iter().find(|a| a.name == harness)
@@ -195,11 +197,16 @@ impl Harnesses {
             cmd.arg(expand(a));
         }
         cmd.cwd(cwd);
-        // `CommandBuilder` starts from the parent environment, so this OVERLAYS rather than
-        // replaces — see the module note on why that is the contract and not an oversight.
+        // The parent environment, then the terminal contract ON TOP of it — see the module note on
+        // why inheriting whole is the contract and not an oversight. `CommandBuilder` seeds itself
+        // from this process's environment, so what production passes here re-states what the child
+        // would inherit anyway; a test passes what it needs the parent to have said instead.
+        for (k, v) in env {
+            cmd.env(k, v);
+        }
         cmd.env("TERM", "xterm-256color");
         cmd.env("COLORTERM", "truecolor");
-        if !parent_speaks_utf8() {
+        if !parent_speaks_utf8(env) {
             cmd.env("LC_ALL", "C.UTF-8");
         }
         for (k, v) in adapter.env {
@@ -413,12 +420,28 @@ fn login_shell() -> String {
     std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into())
 }
 
-/// Whether the parent already has a UTF-8 locale, in the precedence the C library resolves them in.
-/// Only when it has none is one imposed — overriding a deliberate non-UTF-8 choice would be worse
-/// than the mojibake it prevents.
-fn parent_speaks_utf8() -> bool {
+/// The environment a spawned harness inherits: goofi's own, whole — so the harness's own login and
+/// auth work and its sessions land where it expects. A PARAMETER of [`Harnesses::spawn`] rather
+/// than a read inside it, the same way [`resolve`] takes its `path` and `shell`: cargo runs the
+/// suite as threads in ONE process, so a test that wanted to state what the parent had would
+/// otherwise have to change it for every other test at the same time.
+pub fn parent_env() -> Vec<(OsString, OsString)> {
+    std::env::vars_os().collect()
+}
+
+/// Whether the environment the child will actually see already names a UTF-8 locale, in the
+/// precedence the C library resolves them in — the parent it was handed first, then goofi's own,
+/// which together are what the child ends up with. Only when there is NONE is one imposed; a
+/// parent that named a non-UTF-8 locale deliberately is overridden too, because a TUI drawing
+/// mojibake in a panel is worse than a locale nobody asked for.
+fn parent_speaks_utf8(env: &[(OsString, OsString)]) -> bool {
     ["LC_ALL", "LC_CTYPE", "LANG"].iter()
-        .find_map(|k| std::env::var(k).ok().filter(|v| !v.is_empty()))
+        .find_map(|k| {
+            env.iter()
+                .find(|(n, v)| n.as_os_str() == OsStr::new(k) && !v.is_empty())
+                .map(|(_, v)| v.to_string_lossy().into_owned())
+                .or_else(|| std::env::var(k).ok().filter(|v| !v.is_empty()))
+        })
         .is_some_and(|v| v.to_ascii_uppercase().replace('-', "").contains("UTF8"))
 }
 

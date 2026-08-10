@@ -1044,7 +1044,8 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
         if op == "spawn_harness" {
             let h = payload.get("harness").and_then(|v| v.as_str())
                 .ok_or("spawn_harness: missing harness")?;
-            let id = state.harnesses.spawn(h, &state.mount(), &state.mcp_url(), state.events.clone())?;
+            let id = state.harnesses.spawn(h, &state.mount(), &state.mcp_url(),
+                                           &term::parent_env(), state.events.clone())?;
             events.push(event("harness_changed", state.harnesses.roster()));
             return Ok(json!({ "instance_id": id }));
         }

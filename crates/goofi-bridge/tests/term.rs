@@ -6,6 +6,7 @@
 //! its test types — so the PTY, the roster, the reaper, the stop escalation and the per-instance
 //! MCP route are all driven by `/bin/sh`, which every machine that can run this suite has.
 
+use std::ffi::OsString;
 use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
@@ -152,6 +153,85 @@ async fn a_harness_spawns_carries_bytes_and_is_reaped_with_its_exit_code() {
     assert_eq!(inst["harness"], json!("_sh"));
     assert_eq!(inst["state"], json!("exited"), "a reaped instance is exited: {roster}");
     assert_eq!(inst["exit_code"], json!(7), "{roster}");
+    state.release_mount();
+}
+
+/// Turn the line discipline's echo OFF, then have the child report where it is and what it was
+/// handed. Without `stty -echo` every assertion on the answer would pass on the terminal repeating
+/// the question — so even the readiness marker is spelled `REA''DY`, which the echo shows verbatim
+/// and only the child prints joined.
+async fn report(term: &mut Ws) -> String {
+    term.send(Message::Binary(b"stty -echo; echo REA''DY\n".to_vec())).await.unwrap();
+    read_until(term, "READY").await;
+    term.send(Message::Binary(
+        b"printf 'CWD[%s]TERM[%s]COLOR[%s]LC[%s]HOME[%s]KEPT[%s]END\\n' \"$(pwd -P)\" \
+          \"$TERM\" \"$COLORTERM\" \"$LC_ALL\" \"$HOME\" \"$STATED_BY_THE_TEST\"\n"
+            .to_vec(),
+    ))
+    .await
+    .unwrap();
+    read_until(term, "END").await
+}
+
+/// One `KEY[value]` field out of that report.
+fn field<'a>(seen: &'a str, key: &str) -> &'a str {
+    let rest = seen.split_once(key).unwrap_or_else(|| panic!("no {key} in {seen:?}")).1;
+    rest.split_once(']').expect("a closed field").0
+}
+
+/// The task's two headline behaviours, driven through a real child.
+///
+/// **The cwd is the patch's ephemeral workspace** — the whole reason the agent and the user edit
+/// one patch together — so that half goes through the `spawn_harness` RPC, mount and all.
+///
+/// **The environment is the parent's, with only the terminal contract overlaid.** That half states
+/// its own parent rather than reading the suite's: on a machine whose terminal already says
+/// `TERM=xterm-256color` an assertion against the ambient value would pass whether goofi overlaid
+/// anything or not, and cargo runs the suite as threads in one process, where no test may set a
+/// variable without setting it for every other.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_harness_runs_in_the_workspace_with_the_terminal_contract_overlaid() {
+    let (addr, state) = start_server().await;
+    let (mut ctl, _) = connect_async(format!("ws://{addr}/control")).await.unwrap();
+    recv_text(&mut ctl).await;
+    let id = call(&mut ctl, 1, "spawn_harness", json!({ "harness": "_sh" })).await["instance_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let (mut term, _) = connect_async(format!("ws://{addr}/term/{id}")).await.unwrap();
+    let seen = report(&mut term).await;
+    assert_eq!(
+        std::path::Path::new(field(&seen, "CWD[")),
+        std::fs::canonicalize(state.mount()).unwrap(),
+        "the harness does not run in the patch's workspace: {seen:?}"
+    );
+
+    // A stated parent: a `TERM` no TUI will draw on, a colour answer of `no`, a locale that is not
+    // UTF-8, and one variable goofi knows nothing about — which is also what proves the stated
+    // parent reached the child at all, and with it that each overlay really had something to beat.
+    let env: Vec<(OsString, OsString)> = vec![
+        ("TERM".into(), "dumb".into()),
+        ("COLORTERM".into(), "no".into()),
+        ("LANG".into(), "C".into()),
+        ("STATED_BY_THE_TEST".into(), "kept".into()),
+    ];
+    let stated = state
+        .harnesses
+        .spawn("_sh", &state.mount(), "http://127.0.0.1:1", &env, state.events.clone())
+        .expect("a spawn with a stated parent environment");
+    let (mut term, _) = connect_async(format!("ws://{addr}/term/{stated}")).await.unwrap();
+    let seen = report(&mut term).await;
+    assert_eq!(field(&seen, "TERM["), "xterm-256color", "a dumb TERM was not overlaid: {seen:?}");
+    assert_eq!(field(&seen, "COLOR["), "truecolor", "{seen:?}");
+    assert_eq!(field(&seen, "LC["), "C.UTF-8", "a parent with no UTF-8 locale gets one: {seen:?}");
+    assert_eq!(field(&seen, "KEPT["), "kept", "the stated parent never reached the child: {seen:?}");
+    // …and a variable goofi was never told about — `HOME`, the one the credentials follow — comes
+    // through untouched, which is the "inherited whole, no HOME redirection" half of the contract.
+    assert_eq!(field(&seen, "HOME["), std::env::var("HOME").unwrap_or_default(), "{seen:?}");
+
+    // Reap both: a leaked PTY child outlives the suite and corrupts every later measurement.
+    call(&mut ctl, 2, "stop_harness", json!({ "instance": id })).await;
+    state.harnesses.stop(&stated).unwrap();
     state.release_mount();
 }
 
