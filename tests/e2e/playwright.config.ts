@@ -27,6 +27,11 @@ const WORKERS = Number(
 	process.env.GOOFI_E2E_WORKERS ?? Math.max(1, Math.min(8, Math.floor(os.cpus().length / 2)))
 );
 
+// The gallery specs, named rather than pattern-matched, because what makes one is the ROUTE it
+// drives: `inspector.spec.ts` is a product spec and `touch-inspector.spec.ts` is a gallery one.
+const GALLERY = /\/(ui-gallery|inspector-gallery)\.spec\.ts$/;
+const GALLERY_TOUCH = /\/touch-(ui-gallery|inspector)\.spec\.ts$/;
+
 export default defineConfig({
 	testDir: './tests',
 	// Off at the top level, and that is load-bearing: a worker owns its backend alone, so the specs
@@ -46,7 +51,7 @@ export default defineConfig({
 		headless: true,
 		trace: 'on-first-retry'
 	},
-	// Four projects share the top-level `use`. `default` runs every existing spec EXCEPT the
+	// Six projects share the top-level `use`. `default` runs every existing spec EXCEPT the
 	// touch-scoped ones (fine-pointer desktop chrome); `touch` runs only `touch-*` under Pixel 7
 	// emulation, whose hasTouch+isMobile+viewport flip (pointer:coarse)/(hover:none) true so the
 	// coarse density floor engages.
@@ -76,11 +81,27 @@ export default defineConfig({
 	//
 	// Both new descriptors are Chromium ones (`iPad (gen 7)` would pull in WebKit, which nothing
 	// else in this suite needs and which would have to be downloaded before the suite could run).
+	//
+	// The two GALLERY projects are the only `fullyParallel` ones, because they are the only ones
+	// that can be: `/dev/ui` and `/dev/inspector` mount no AppShell, open no socket and name no
+	// patch, so the isolation the product specs get from a `finally` is theirs by construction.
+	// They are also ~90% fixed cost, so splitting them per TEST rather than per FILE is what lets
+	// the fleet fill its slots with them (33.0s → 7.3s standalone, measured). Two projects and not
+	// one because the touch pair proves the coarse doors and needs the Pixel 7 descriptor to do it;
+	// `npm run gallery` runs both, which is the inner loop while working on `$lib/ui`.
 	projects: [
-		{ name: 'default', testIgnore: /touch-.*\.spec\.ts/ },
+		{ name: 'default', testIgnore: [/touch-.*\.spec\.ts/, GALLERY] },
 		{
 			name: 'touch',
 			testMatch: /touch-.*\.spec\.ts/,
+			testIgnore: GALLERY_TOUCH,
+			use: { ...devices['Pixel 7'] }
+		},
+		{ name: 'gallery', testMatch: GALLERY, fullyParallel: true },
+		{
+			name: 'gallery-touch',
+			testMatch: GALLERY_TOUCH,
+			fullyParallel: true,
 			use: { ...devices['Pixel 7'] }
 		},
 		{

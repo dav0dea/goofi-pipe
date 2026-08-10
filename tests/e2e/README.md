@@ -11,6 +11,7 @@ cd tests/e2e
 npm install                      # first time
 npx playwright install chromium  # first time
 npm run e2e                      # builds the backend, then runs the suite
+npm run gallery                  # just the two backend-free gallery projects (~8s inner loop)
 ```
 
 `npm run e2e` = `cargo build -p goofi-cli` (via the workspace) then `playwright test`.
@@ -25,11 +26,13 @@ Each backend's stdout goes to `test-results/backend/backend-<slot>.log` (it no l
 into the report), and the stale-`iox2` sweep runs once in `globalSetup`, before the first spawn.
 
 ## Layout
-- `playwright.config.ts` — the per-worker port arithmetic, the worker count, and the four
-  projects: `default` (every spec except `touch-*`), `touch` (only `touch-*`, Pixel 7 portrait),
-  and `touch-landscape` (863×360) + `tablet` (712×1138), which run **only**
-  `tests/touch-reflow.spec.ts`. The narrow scope is the point: the coarse media query answers the
-  same at every touch geometry, so only what FITS is worth re-running.
+- `playwright.config.ts` — the per-worker port arithmetic, the worker count, and the six
+  projects: `default` (every spec except `touch-*` and the galleries), `touch` (only `touch-*`,
+  Pixel 7 portrait), `gallery` + `gallery-touch` (the four `/dev/*` gallery specs, the only
+  `fullyParallel` projects — they own no backend state), and `touch-landscape` (863×360) +
+  `tablet` (712×1138), which run **only** `tests/touch-reflow.spec.ts`. The narrow scope is the
+  point: the coarse media query answers the same at every touch geometry, so only what FITS is
+  worth re-running.
 - `globalSetup.ts` — the backend fleet: spawn, readiness, per-worker logs, iceoryx2 SHM hygiene,
   and the reaper Playwright runs as global teardown.
 - `lib/app.ts` — `waitForApp` readiness gate (catalog arrived over the control WS).
