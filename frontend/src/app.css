@@ -142,7 +142,14 @@
 	   (pointer: coarse), in the @media block at the end of this file. */
 	--hit: 28px; /* documentary default; the floor only applies under (pointer: coarse) below */
 	--splitter-size: 6px; /* larger under coarse */
+	/* The height of EVERY chrome strip a panel stacks: its header, and the content toolbar (Bar)
+	   flush beneath it. One token because the two must read as one band — a toolbar that sized
+	   itself off its content was 34.8px under a 26px header, and 53px under a 44px one. */
 	--panel-header-h: 26px;
+	/* …and the box a control wears inside one. A strip is shorter than --hit by construction, so its
+	   controls state this instead and take the touch floor back through their own `density="chrome"`
+	   (IconButton/Chip/Select own that restatement, never the strip). */
+	--chrome-control-h: 20px;
 
 	/* dtype palette — slot pins/labels colour-code at a glance. */
 	/* --dtype-array is byte-identical to --accent. Deliberate and safe: the two never co-occur on

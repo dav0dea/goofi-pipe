@@ -375,6 +375,9 @@
 		   edge — the name is what ellipsizes. The badge's own yield point is the @container rule
 		   below. */
 		--bar-end-min: max-content;
+		/* …and this bar stacks a name over a type, so it is two lines tall by construction and not a
+		   panel toolbar. It takes the padding back that a one-row strip has none of. */
+		--bar-pad-y: var(--space-2);
 	}
 	.param-form :global(.pf-identity-bar .pf-close) {
 		--icon-btn-size: 22px;

@@ -6,9 +6,11 @@
 
   Padding, height, gap and chrome are all F tokens, each exposed as a `var(--bar-*, <token>)` hook
   so a consumer can retune one instance from a wrapper — the spec §1 per-instance-theming mechanism.
-  Defaults give the panel-header look: a `--surface-2` strip one step above the `--surface-1` body
-  it sits on, which separates it WITHOUT a hairline (D5), at a `--panel-header-h` min-height that
-  grows to the touch floor under a coarse pointer.
+  Defaults give the panel-header look, and mean it literally: a `--surface-2` strip one step above
+  the `--surface-1` body it sits on, which separates it WITHOUT a hairline (D5), at EXACTLY the
+  `--panel-header-h` the panel header above it is — 26px on a fine pointer, the touch floor under a
+  coarse one. That leaves no vertical padding to spend, so the controls inside wear the dense chrome
+  box (`--chrome-control-h`) this strip publishes for them.
 -->
 <script lang="ts">
 	import type { Snippet } from 'svelte';
@@ -48,7 +50,17 @@
 		flex-wrap: var(--bar-wrap, nowrap);
 		min-width: 0;
 		min-height: var(--bar-height, var(--panel-header-h));
-		padding: var(--bar-pad-y, var(--space-2)) var(--bar-pad-x, var(--space-4));
+		/* No vertical padding, and that is the whole point: a panel's toolbar is EXACTLY as tall as
+		   the panel header above it, so the strip is its controls' box and has nothing left to spend
+		   on padding. The controls state the dense chrome box below instead. A bar whose content is
+		   not one control row — a dialog's header/footer, the inspector's two-line identity — asks
+		   for its padding back through `--bar-pad-y`. */
+		padding: var(--bar-pad-y, 0) var(--bar-pad-x, var(--space-4));
+		/* Inherited, not reached into: every `density="chrome"` control in this strip reads its own
+		   hook off here, so a bar's controls are dense by being IN a bar rather than by each call
+		   site remembering to say so. Each primitive still owns its coarse-pointer floor. */
+		--icon-btn-size: var(--chrome-control-h);
+		--chip-size: var(--chrome-control-h);
 		gap: var(--bar-gap, var(--space-4));
 		background: var(--bar-bg, var(--surface-2));
 		border-bottom: var(--bar-border, none);

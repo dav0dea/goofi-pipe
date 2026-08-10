@@ -152,7 +152,14 @@
 	   is frozen canvas geometry; every docked panel bar is real chrome and takes it. */
 	@media (hover: none) and (pointer: coarse) {
 		.ui-select.d-chrome .ui-select-input {
-			min-height: var(--select-min-h, var(--hit));
+			/* Less the 1px border on each side, because the box above is a CONTENT box: what has to
+			   measure --hit is the rendered control, and a chrome strip is exactly --panel-header-h
+			   tall under a coarse pointer — which IS --hit, so there is no room for a border outside
+			   the floor. Floored at --hit flat, this control was 46px in a 44px bar and every panel
+			   toolbar stood 2px taller than the panel header it matches. The subtrahend is this
+			   element's own border (app.css: `input, select, textarea`), not a spacing rung; if it
+			   ever moves, `touch-panel-bar.spec.ts` is what says so. */
+			min-height: var(--select-min-h, calc(var(--hit) - 2px));
 			font-size: var(--select-fs, 16px);
 		}
 	}

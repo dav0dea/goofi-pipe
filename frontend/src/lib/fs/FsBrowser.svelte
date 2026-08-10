@@ -134,7 +134,10 @@
 	data-testid="fs-browser"
 >
 	<div class="frame">
-		<Bar>
+		<!-- A dialog's own header is not a panel toolbar: it states a title beside a ✕ at the
+		     comfortable density the rest of this modal uses, so it asks for the vertical padding the
+		     Bar default (a panel-header-height strip) has none of. Same for the footer below. -->
+		<Bar style="--bar-pad-y: var(--space-2)">
 			{#snippet start()}
 				<span class="title">{title}</span>
 			{/snippet}
@@ -210,7 +213,7 @@
 		     CONTRIBUTION collapses toward its own intrinsic size — an `<input>`'s default `size=20`
 		     — so the basis was not what the group asked for either. A definite width is.
 		     `flex: 0 1` + `min-width: 0` keep it shrinkable on the narrow line it wraps onto. -->
-		<Bar class="fs-footer" style="--bar-wrap: wrap">
+		<Bar class="fs-footer" style="--bar-wrap: wrap; --bar-pad-y: var(--space-2)">
 			{#snippet start()}
 				{#if mode === 'save'}
 					<TextInput

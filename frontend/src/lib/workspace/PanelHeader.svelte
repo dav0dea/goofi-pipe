@@ -384,14 +384,14 @@
 	   the same trade the app header's status cluster makes, and the reason the ✕ can be promised at
 	   every width rather than at every width anyone happened to test. */
 	.panel-header :global(button.content-btn) {
-		height: 20px;
+		height: var(--chrome-control-h);
 		padding: 0 var(--space-3);
 		gap: var(--space-2);
 		min-width: 0;
 	}
 	/* The icon buttons state only their box — `density="chrome"` owns the coarse-pointer floor. */
 	.panel-header :global(.hdr-btn) {
-		--icon-btn-size: 20px;
+		--icon-btn-size: var(--chrome-control-h);
 		color: var(--text-dim);
 	}
 	.panel-header :global(.hdr-btn:hover:not(:disabled)) {
