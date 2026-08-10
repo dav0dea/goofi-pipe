@@ -1,8 +1,19 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { TerminalLike } from './termSession';
 
-/** A stand-in for xterm's `Terminal` — the four calls the session drives, recorded. */
+/** A stand-in for xterm's own element: what `open()` BUILDS and every later attach moves. */
+class FakeEl {
+	kids: unknown[] = [];
+	constructor(readonly name: string) {}
+	appendChild(c: unknown): void {
+		this.kids.push(c);
+	}
+}
+
+/** A stand-in for xterm's `Terminal` — the calls the session drives, recorded. `open` builds an
+ * element and, like the real one from 5.3 on, does nothing at all once it has. */
 class FakeTerm implements TerminalLike {
+	element: HTMLElement | undefined;
 	written: string[] = [];
 	opened: unknown[] = [];
 	size: [number, number] | null = null;
@@ -11,6 +22,7 @@ class FakeTerm implements TerminalLike {
 	private typed: ((d: string) => void) | null = null;
 	open(el: HTMLElement): void {
 		this.opened.push(el);
+		this.element ??= new FakeEl('xterm') as unknown as HTMLElement;
 	}
 	write(d: Uint8Array | string): void {
 		this.written.push(typeof d === 'string' ? d : new TextDecoder().decode(d));
@@ -83,7 +95,7 @@ afterEach(() => {
 	vi.unstubAllGlobals();
 });
 
-const el = (name: string): HTMLElement => ({ name }) as unknown as HTMLElement;
+const el = (name: string): HTMLElement => new FakeEl(name) as unknown as HTMLElement;
 const sock = (): FakeSocket => FakeSocket.all[FakeSocket.all.length - 1];
 
 describe('the terminal store', () => {
@@ -101,8 +113,15 @@ describe('the terminal store', () => {
 		// its element. Nothing was replayed: the scrollback is the Terminal object's own.
 		const again = mod.termSession('abc', () => new FakeTerm());
 		expect(again.term, 'a second ask mints a second terminal').toBe(term);
-		again.attach(el('panel-2'));
-		expect(term.opened).toEqual([el('panel-1'), el('panel-2')]);
+		const second = el('panel-2');
+		again.attach(second);
+		// xterm's `open()` is a no-op once the terminal HAS an element (5.3 onwards it only
+		// re-points the window), so a remount has to MOVE what the first open built. Opening again
+		// leaves the new panel with an empty box — which is precisely the panel that is supposed to
+		// have lost nothing.
+		expect((second as unknown as FakeEl).kids, 'the terminal was moved into the new panel')
+			.toEqual([term.element]);
+		expect(term.opened, 'and never opened twice').toHaveLength(1);
 		expect(term.written.join('')).toBe('hello agent — still running');
 		expect(FakeSocket.all).toHaveLength(1);
 	});

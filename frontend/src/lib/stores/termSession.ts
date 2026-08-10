@@ -18,6 +18,8 @@
  */
 export interface TerminalLike {
 	open(el: HTMLElement): void;
+	/** What `open` built — undefined until it has. xterm exposes this, and `attach` needs it. */
+	readonly element: HTMLElement | undefined;
 	write(data: Uint8Array | string): void;
 	resize(cols: number, rows: number): void;
 	onData(cb: (data: string) => void): { dispose(): void };
@@ -79,10 +81,18 @@ export class TermSession {
 		this.send(JSON.stringify({ op: 'resize', cols, rows }));
 	}
 
-	/** Draw this session's terminal into `el` — on first mount, and on every remount after. */
+	/** Draw this session's terminal into `el` — on first mount, and on every remount after.
+	 *
+	 * A remount MOVES the element the first open built rather than opening again: xterm's `open()`
+	 * does nothing at all once the terminal has an element (from 5.3 it only re-points the window),
+	 * so calling it a second time leaves the new panel with an empty box — the very panel that is
+	 * supposed to have lost nothing. Moving the element is also what carries the screen and the
+	 * scrollback across, since they belong to the terminal that built it. */
 	attach(el: HTMLElement): void {
 		if (!this.ws) this.open();
-		this.term.open(el);
+		const drawn = this.term.element;
+		if (drawn) el.appendChild(drawn);
+		else this.term.open(el);
 		this.nudge = true;
 	}
 

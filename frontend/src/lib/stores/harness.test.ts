@@ -6,6 +6,7 @@ import type { GraphSnapshot } from '$lib/api/control';
 
 /** A terminal that needs no DOM — the session store's own test drives the real behaviour. */
 const fakeTerm = (): TerminalLike => ({
+	element: undefined,
 	open: () => {},
 	write: () => {},
 	resize: () => {},

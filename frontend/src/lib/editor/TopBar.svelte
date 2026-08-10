@@ -383,6 +383,19 @@
 		{#if g.disconnected}
 			<Badge tone="warning" data-testid="topbar-connection">disconnected</Badge>
 		{/if}
+		<!-- Present only while an agent is. Pressable, not a Badge: it is the door onto detach and
+		     kill, and on a coarse pointer it is the only one that is not inside the panel it talks
+		     about. Out of the spill plan for the same reason the alarm is — its width comes off the
+		     budget above instead. -->
+		{#if hs.running > 0}
+			<Chip
+				tone="accent"
+				data-testid="topbar-agents"
+				aria-expanded={agentMenu !== null}
+				title="Running agents"
+				onclick={openAgents}><Icon name="bot" />{hs.running}</Chip
+			>
+		{/if}
 		<div class="actions" bind:this={actionsEl}>
 			<!-- Identity and actions are ONE overflow group with ONE gap. The text items add the same
 			     clear space around their ink that IconButton's square adds around each glyph; they still

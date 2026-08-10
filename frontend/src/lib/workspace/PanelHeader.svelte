@@ -344,7 +344,7 @@
 			title="Close panel"
 			label="Close panel"
 			disabled={!canClose}
-			onclick={() => ws.close(node.id)}><Icon name="x" /></IconButton
+			onclick={requestClose}><Icon name="x" /></IconButton
 		>
 	</div>
 </div>
