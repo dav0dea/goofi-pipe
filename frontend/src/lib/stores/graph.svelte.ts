@@ -15,7 +15,8 @@ import {
 	type InstanceInfo,
 	type LinkInfo,
 	type NodeInstanceInfo,
-	type NodeTypeInfo
+	type NodeTypeInfo,
+	type ScanDiff
 } from '$lib/api/control';
 import { ui } from './ui.svelte';
 import { consoleStore } from './console.svelte';
@@ -409,6 +410,12 @@ export class GraphStore {
 			case 'save_path_changed':
 				this.savePath = ev.payload.save_path;
 				break;
+			case 'node_types':
+				// The palette changed under us — a rescan re-derived it, or another tab loaded a
+				// patch that ships its own nodes. Applied through the same path `list_nodes` uses,
+				// because a type that vanished has to reach the assembled nodes too.
+				this._applyNodeTypes(ev.payload.types);
+				break;
 			case 'layout':
 				// Another client AUTHORED the arrangement — split a panel, added a tab, picked a
 				// viewer kind. The layout is not a doc root, so this event is the only way it
@@ -430,14 +437,34 @@ export class GraphStore {
 	private async _refreshNodeTypes(): Promise<void> {
 		try {
 			const result = await this.ctl.call<{ types: NodeTypeInfo[] }>('list_nodes');
-			this.nodeTypes = result.types;
-			// The catalog supplies node descriptors — with it in hand the doc becomes authoritative
-			// for node + sub-patch identity, so (re)build both from the doc now (Phase-2 read cutover).
-			this._reconcileNodesFromDoc();
-			this._reconcileInstancesFromDoc();
+			this._applyNodeTypes(result.types);
 		} catch (e) {
 			console.warn('list_nodes failed', e);
 		}
+	}
+
+	/** Adopt a palette catalog, whoever it came from (the `list_nodes` reply, or the `node_types`
+	 * event a rescan/load broadcasts). The catalog supplies node descriptors — with it in hand the
+	 * doc is authoritative for node + sub-patch identity, so both are (re)built from the doc here. */
+	private _applyNodeTypes(types: NodeTypeInfo[]): void {
+		this.nodeTypes = types;
+		this._reconcileNodesFromDoc();
+		this._reconcileInstancesFromDoc();
+	}
+
+	/** Re-derive the node registry from the directories that exist right now — goofi's own `nodes/`
+	 * and the patch's `<workspace>/nodes/` — and report what changed. Explicit by decision: there is
+	 * no watcher, so an agent calls this after writing a node file and a human presses refresh. The
+	 * fresh catalog arrives as a `node_types` event, here and in every other open tab. */
+	async rescanNodes(): Promise<ScanDiff> {
+		return this.ctl.call<ScanDiff>('rescan_nodes', {});
+	}
+
+	/** Where this patch's workspace files live right now — a per-run temp directory under a random
+	 * name, so asking the manager is the only way to find it. */
+	async openWorkspace(): Promise<string> {
+		const r = await this.ctl.call<{ path: string }>('open_workspace', {});
+		return r.path;
 	}
 
 	// ------------------------------------------------------------------

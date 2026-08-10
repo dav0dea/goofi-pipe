@@ -18,7 +18,7 @@ import { setInlineKind, setInlineSetting, rawInlineView } from '$lib/viewers/inl
 import { recordViewChange } from '$lib/viewers/viewExecutors';
 import type { SettingsMap } from '$lib/viewers/settingsSchema';
 import type { ViewerKind } from '$lib/viewers/kind';
-import type { LinkInfo } from '$lib/api/control';
+import type { LinkInfo, ScanDiff } from '$lib/api/control';
 import type { GlobalType } from '$lib/crdt/graphDoc';
 
 /** Raw (pre-resolution) inline view snapshot, for undo capture. */
@@ -106,6 +106,13 @@ export const commands = {
 	// Empty and unnamed, in one manager transaction — the reset door a driver needs to hand the
 	// shared backend back between specs. The façade is the only door: the header has no New button.
 	newPatch: (): Promise<void> => graph().newPatch(),
+	// Where this patch's workspace files live right now — a per-run temp directory under a random
+	// name, so asking the manager is the only way for an agent (or a driver) to find it.
+	openWorkspace: (): Promise<string> => graph().openWorkspace(),
+	// Re-derive the node registry from the files on disk and report what changed. The verb an agent
+	// calls straight after writing into `<workspace>/nodes/`; the palette's refresh button is the
+	// human's door onto the same op. There is no watcher by decision.
+	rescanNodes: (): Promise<ScanDiff> => graph().rescanNodes(),
 
 	// --- selection / focus -------------------------------------------------
 	select: (names: string[], panelId: string | null = activeEditor()): void => {

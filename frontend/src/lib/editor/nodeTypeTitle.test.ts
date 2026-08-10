@@ -8,6 +8,7 @@ function unavailable(reason: string): NodeTypeInfo {
 		type: 'Psd',
 		category: 'unavailable',
 		doc: `This node could not be loaded: ${reason}`,
+		source: 'builtin',
 		available: false,
 		missing_deps: [reason],
 		input_slots: {},

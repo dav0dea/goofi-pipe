@@ -1,12 +1,14 @@
 <script lang="ts">
 	import { graph } from '$lib/stores/graph.svelte';
+	import { notify } from '$lib/stores/notify.svelte';
 	import { dtypeColor } from './categoryColor';
 	import { rankNodeTypes } from './nodeSearch';
 	import { nodeTypeTitle } from './nodeTypeTitle';
+	import { nodeTypeSource } from './nodeTypeSource';
 	import type { NodeTypeInfo } from '$lib/api/control';
 	import type { SlotClickSeed } from '$lib/stores/ui.svelte';
 	import { onMount, tick } from 'svelte';
-	import { EmptyState, MODE_ATTRS } from '$lib/ui';
+	import { EmptyState, Icon, IconButton, MODE_ATTRS } from '$lib/ui';
 
 	type Props = {
 		onPick: (type: NodeTypeInfo) => void;
@@ -38,21 +40,34 @@
 
 	const filtered = $derived.by(() => {
 		const types = [...extraTypes, ...(g.nodeTypes ?? [])].filter(matchesSeed);
-		// Rank by match quality (name ≫ category ≫ doc) so the closest hit leads;
-		// an empty query is returned untouched and grouped by category below.
+		// Rank by match quality (name ≫ category ≫ doc) so the closest hit leads. ONE flat list,
+		// queried or not (the user's call): category headers split a short palette into shorter
+		// pieces and pushed the node you wanted below the fold. Category still ranks a search — it
+		// describes a node even where it no longer sorts it.
 		return rankNodeTypes(types, query);
 	});
 
-	// Group by category, but only when no query — when filtering, a flat
-	// list keeps result density high.
-	const groups = $derived.by(() => {
-		if (query) return null;
-		const out: Record<string, NodeTypeInfo[]> = {};
-		for (const t of filtered) {
-			(out[t.category] ??= []).push(t);
+	let rescanning = $state(false);
+
+	/** Re-derive the palette from the node files on disk and say what moved. There is no watcher
+	 * (decision, 2026-08-09), so this button is how a human picks up a file they just wrote or
+	 * edited; an agent calls the same op through the façade. */
+	async function rescan(): Promise<void> {
+		rescanning = true;
+		try {
+			const d = await g.rescanNodes();
+			const parts = [
+				d.added.length && `${d.added.length} added`,
+				d.changed.length && `${d.changed.length} reloaded`,
+				d.removed.length && `${d.removed.length} removed`
+			].filter(Boolean);
+			notify().raise(parts.length ? `Nodes: ${parts.join(', ')}` : 'Nodes: no changes');
+		} catch (e) {
+			notify().failure('Rescan', e);
+		} finally {
+			rescanning = false;
 		}
-		return out;
-	});
+	}
 
 	$effect(() => {
 		// Reset highlight whenever the filtered list changes.
@@ -101,64 +116,56 @@
 			</span>
 		</div>
 	{/if}
-	<!-- Native, not `TextInput`: this filters per keystroke and owns Enter/Arrow/Escape, which a
-	     commit-on-blur primitive cannot express. It still speaks the primitive's keyboard vocabulary
-	     rather than shipping the UA defaults (sentence caps + a spellcheck squiggle on a node type). -->
-	<input
-		{...MODE_ATTRS.search}
-		bind:this={inputEl}
-		bind:value={query}
-		onkeydown={onKeydown}
-		placeholder={seed
-			? `compatible with ${seed.dtype.toLowerCase()}…`
-			: 'Type to search nodes…'}
-		autocomplete="off"
-		data-testid="add-menu-search"
-	/>
+	<div class="search-row">
+		<!-- Native, not `TextInput`: this filters per keystroke and owns Enter/Arrow/Escape, which a
+		     commit-on-blur primitive cannot express. It still speaks the primitive's keyboard vocabulary
+		     rather than shipping the UA defaults (sentence caps + a spellcheck squiggle on a node type). -->
+		<input
+			{...MODE_ATTRS.search}
+			bind:this={inputEl}
+			bind:value={query}
+			onkeydown={onKeydown}
+			placeholder={seed
+				? `compatible with ${seed.dtype.toLowerCase()}…`
+				: 'Type to search nodes…'}
+			autocomplete="off"
+			data-testid="add-menu-search"
+		/>
+		<!-- Always visible, never hover-only (D-R7): this is the only door onto a node file written
+		     or edited since the app started, and touch has to reach it too. -->
+		<IconButton
+			label="Rescan node files"
+			size="sm"
+			density="chrome"
+			disabled={rescanning}
+			onclick={rescan}
+			data-testid="add-menu-rescan"
+		>
+			<Icon name="refresh-cw" />
+		</IconButton>
+	</div>
 
 	<div class="list" bind:this={listEl} data-testid="add-menu-list">
-		{#if groups}
-			{#each Object.entries(groups) as [cat, items] (cat)}
-				<div class="group-header">
-					<span class="dot"></span>{cat}
-				</div>
-				{#each items as t (t.type)}
-					<button
-						type="button"
-						class="item"
-						class:hl={filtered[highlighted]?.type === t.type}
-						class:unavailable={!t.available}
-						title={nodeTypeTitle(t)}
-						onmouseenter={() => (highlighted = filtered.indexOf(t))}
-						onclick={() => pick(t)}
-					>
-						<span class="cat-dot"></span>
-						<span class="t-name">{t.type}</span>
-						<span class="t-cat">{cat}</span>
-					</button>
-				{/each}
-			{/each}
-		{:else}
-			{#each filtered as t, idx (t.type)}
-				<button
-					type="button"
-					class="item"
-					class:hl={idx === highlighted}
-					class:unavailable={!t.available}
-					title={nodeTypeTitle(t)}
-					onmouseenter={() => (highlighted = idx)}
-					onclick={() => pick(t)}
-				>
-					<span class="cat-dot"></span>
-					<span class="t-name">{t.type}</span>
-					<span class="t-cat">{t.category}</span>
-				</button>
-			{/each}
-			{#if filtered.length === 0}
-				<EmptyState>
-					{#snippet hint()}No matches.{/snippet}
-				</EmptyState>
-			{/if}
+		{#each filtered as t, idx (t.type)}
+			<button
+				type="button"
+				class="item"
+				class:hl={idx === highlighted}
+				class:unavailable={!t.available}
+				title={nodeTypeTitle(t)}
+				onmouseenter={() => (highlighted = idx)}
+				onclick={() => pick(t)}
+				data-source={t.source}
+			>
+				<span class="cat-dot"></span>
+				<span class="t-name">{t.type}</span>
+				<span class="t-cat">{nodeTypeSource(t)}</span>
+			</button>
+		{/each}
+		{#if filtered.length === 0}
+			<EmptyState>
+				{#snippet hint()}No matches.{/snippet}
+			</EmptyState>
 		{/if}
 	</div>
 </div>
@@ -173,18 +180,26 @@
 		overflow: hidden;
 		font-size: var(--fs-body);
 	}
+	/* The search and its rescan share one strip, so the border below belongs to the row rather
+	   than to the field — the field would otherwise underline only its own width. */
+	.search-row {
+		display: flex;
+		align-items: center;
+		gap: var(--space-2);
+		padding-right: var(--space-4);
+		border-bottom: 1px solid var(--border);
+	}
 	input {
-		width: 100%;
+		flex: 1;
+		min-width: 0;
 		border: none;
 		background: transparent;
 		padding: var(--space-5) var(--space-6);
-		border-bottom: 1px solid var(--border);
 		border-radius: 0;
 		font-size: var(--fs-body);
 	}
 	input:focus {
 		border-color: transparent;
-		border-bottom-color: var(--accent);
 	}
 	.list {
 		/* Viewport-relative as well as fixed: 360px is most of a phone's height, and this menu opens
@@ -200,22 +215,6 @@
 		input {
 			font-size: 16px;
 		}
-	}
-	.group-header {
-		display: flex;
-		align-items: center;
-		gap: var(--space-3);
-		padding: var(--space-2) var(--space-6);
-		color: var(--text-muted);
-		font-size: var(--fs-micro);
-		text-transform: uppercase;
-		letter-spacing: 0.06em;
-	}
-	.group-header .dot {
-		width: 6px;
-		height: 6px;
-		border-radius: 50%;
-		background: var(--text-muted);
 	}
 	/* A full-bleed menu row, deliberately square (the wash runs edge to edge of the menu surface).
 	   The fade on that wash is declared here because M-Task 7 stripped the base `button` skin it
@@ -244,9 +243,8 @@
 		opacity: var(--disabled-opacity);
 		cursor: not-allowed;
 	}
-	/* Categories group the palette but no longer colour it (D4), so the dot is one neutral
-	   ink stated here — not a per-item inline style routed through a function that ignored
-	   its argument. */
+	/* One neutral ink, stated here — not a per-item inline style routed through a function that
+	   ignored its argument. Categories no longer colour the palette (D4) and no longer group it. */
 	.cat-dot {
 		width: 6px;
 		height: 6px;

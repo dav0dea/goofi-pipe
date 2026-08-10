@@ -15,6 +15,7 @@ function catalog(): NodeTypeInfo[] {
 			type: 'Buffer',
 			category: 'signal',
 			doc: '',
+			source: 'builtin',
 			available: true,
 			missing_deps: [],
 			input_slots: { in: 'ARRAY' },

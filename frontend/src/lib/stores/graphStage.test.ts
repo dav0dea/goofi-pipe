@@ -13,6 +13,7 @@ function catalog(): NodeTypeInfo[] {
 			type: 'PSD',
 			category: 'signal',
 			doc: '',
+			source: 'builtin',
 			available: true,
 			missing_deps: [],
 			input_slots: { data: 'ARRAY' },

@@ -14,6 +14,7 @@ function catalog(): NodeTypeInfo[] {
 		type,
 		category: 'array',
 		doc: '',
+		source: 'builtin',
 		available: true,
 		missing_deps: [],
 		input_slots: { in: 'ARRAY' },

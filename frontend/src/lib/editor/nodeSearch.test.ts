@@ -10,6 +10,7 @@ function node(type: string, category: string, doc = ''): NodeTypeInfo {
 		input_slots: {},
 		output_slots: {},
 		params: {},
+		source: 'builtin',
 		available: true,
 		missing_deps: []
 	};

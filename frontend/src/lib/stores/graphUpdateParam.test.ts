@@ -25,6 +25,7 @@ function catalog(): NodeTypeInfo[] {
 			type: 'Oscillator',
 			category: 'inputs',
 			doc: '',
+			source: 'builtin',
 			available: true,
 			missing_deps: [],
 			input_slots: { in: 'ARRAY' },

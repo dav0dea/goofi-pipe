@@ -32,6 +32,11 @@ export type NodeStage = 'creating' | 'setup' | 'ready' | 'error';
 export interface NodeTypeInfo {
 	type: string;
 	category: string;
+	/** Which tree the type came from: the patch you have open, or the goofi you are running.
+	 * Recorded by the scan (the only thing that knows the directory) and shown on every palette
+	 * row. A `--subproc-nodes` directory reads as `builtin` — a badge of its own is a design
+	 * question, not a fact the scan reports. */
+	source: 'builtin' | 'patch';
 	doc: string;
 	/** Unconditional top-level deps resolvable on this machine (registry probe).
 	 * Unavailable types render greyed/disabled in the add menu. */
@@ -43,6 +48,14 @@ export interface NodeTypeInfo {
 	input_multi?: string[];
 	output_slots: Record<string, string>;
 	params: Record<string, Record<string, ParamDescriptor>>;
+}
+
+/** What one `rescan_nodes` changed, by type name: node files that appeared, whose code changed
+ * (their live instances were restarted onto it), and that are gone. */
+export interface ScanDiff {
+	added: string[];
+	changed: string[];
+	removed: string[];
 }
 
 /** A node's self-reported execution telemetry (mirrors the backend NODE_STATS
@@ -155,8 +168,10 @@ export const BOUNDARY_TYPES: NodeTypeInfo[] = (['In', 'Out'] as const).flatMap((
 			input_slots: side === 'Out' ? slot : {},
 			output_slots: side === 'In' ? slot : {},
 			params: {},
-			// Virtual types have no implementation module — always addable.
+			// Virtual types have no implementation module — always addable, and they ship with the
+			// editor rather than with either tree.
 			available: true,
+			source: 'builtin',
 			missing_deps: []
 		};
 	})
@@ -294,6 +309,9 @@ export type ControlEvent =
 	  }
 	| { event: 'unsaved_changes'; payload: { unsaved_changes: boolean } }
 	| { event: 'save_path_changed'; payload: { save_path: string | null } }
+	// The palette changed under a client that is already connected — a rescan re-derived it, or a
+	// load brought a patch's own node types. `hello` carries the same list to one that is arriving.
+	| { event: 'node_types'; payload: { types: NodeTypeInfo[] } }
 	| { event: 'graph_replaced'; payload: GraphSnapshot }
 	// Another client AUTHORED the panel arrangement. The layout is not a CRDT doc root — it is
 	// opaque view state, not a command — so this event is the only way it reaches a live peer;
