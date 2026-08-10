@@ -105,6 +105,27 @@ async fn main() {
     std::process::exit(run(cli, AppState::new(), shutdown_signal()).await);
 }
 
+/// The warning a `--bind` beyond this machine earns, or `None` for the loopback default.
+///
+/// Said out loud because the consequence is not the one the flag looks like it has. goofi spawns
+/// agent harnesses on a PTY (`/term`) with the user's own environment, so a reachable goofi is a
+/// reachable **shell** — RCE-class rather than "someone could read my patch". The Origin guard
+/// stops a drive-by page in the user's own browser; it is not authentication, and there is none.
+/// A name that is not an address (`goofi.local`) warns too: it resolves to whatever DNS says, and
+/// the only address this function can prove is local is one it can parse.
+fn exposure_warning(bind: &str) -> Option<String> {
+    let local = bind == "localhost"
+        || bind.parse::<std::net::IpAddr>().is_ok_and(|ip| ip.is_loopback());
+    (!local).then(|| {
+        format!(
+            "WARNING: --bind {bind} serves goofi beyond this machine, and goofi runs agent \
+             harnesses on a shell with your environment. Anyone who can reach this port can run \
+             commands as you: there is no authentication, only a guard against a web page \
+             reaching it through your browser."
+        )
+    })
+}
+
 /// Everything the process does once it has a state, as a function that *returns* its exit code:
 /// the workspace mount is reclaimed here, on the one path every outcome takes. The alternative is
 /// three `std::process::exit` calls that each have to remember — and `exit` unwinds nothing, so a
@@ -168,6 +189,10 @@ async fn run(cli: Cli, mut state: AppState, shutdown: impl Future<Output = ()>) 
                 match &dir {
                     Some(d) => println!("  serving SPA from {}", d.display()),
                     None => println!("  API only — no SPA build found (set GOOFI_FRONTEND_BUILD or build frontend/)"),
+                }
+                // Last, and on stderr, so it is the line still on screen and survives a `> log`.
+                if let Some(warning) = exposure_warning(&bind) {
+                    eprintln!("{warning}");
                 }
                 // The stop lives here rather than inside `serve_app`: the mount reclaim below is
                 // the CLI's alone, and `serve_app`'s eight other callers are tests that want it to
@@ -463,6 +488,25 @@ mod tests {
         for flag in ["--port", "--bind", "--subproc-nodes", "--auto-nodes", "--subproc-python"] {
             let err = parse(&[flag]).expect_err(&format!("`{flag}` alone must not be ignored"));
             assert!(err.contains(flag), "the message names the flag: {err}");
+        }
+    }
+
+    /// A reachable goofi is a reachable SHELL: `/term` runs an agent harness on a PTY with the
+    /// user's own environment, so the exposure a non-loopback `--bind` opens is RCE-class and not
+    /// the "someone could see my patch" it looks like. The Origin guard stops a drive-by page in
+    /// the user's own browser and nothing else — it is not authentication, and there is none — so
+    /// the honest answer to `--bind 0.0.0.0` is to say out loud what was just agreed to.
+    #[test]
+    fn a_bind_beyond_this_machine_says_what_it_exposes() {
+        for safe in ["127.0.0.1", "localhost", "::1", "127.0.0.53"] {
+            assert!(exposure_warning(safe).is_none(), "`{safe}` is this machine");
+        }
+        for open in ["0.0.0.0", "::", "192.168.7.5", "goofi.local"] {
+            let warn = exposure_warning(open).unwrap_or_else(|| panic!("`{open}` warns"));
+            assert!(warn.contains(open), "the warning names the address: {warn}");
+            // The consequence, not the fact. "Listening on 0.0.0.0" is what a user already knows.
+            assert!(warn.contains("shell"), "the warning names the exposure: {warn}");
+            assert!(warn.contains("no authentication"), "…and that nothing else guards it: {warn}");
         }
     }
 
