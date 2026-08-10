@@ -305,6 +305,18 @@ pub struct Graph {
     /// round-trips but never interprets, exactly like a node's `viewers`. Patch-scoped UI state:
     /// which tabs exist and how their panels are split. `Null` until the editor sets one.
     layout: serde_json::Value,
+    /// The same arrangement, held FLAT and interpreted — the fifth CRDT doc root. Every mutation is
+    /// an ordinary command over it, which is what ends the frontend's parallel write authority.
+    /// (Task 2 runs it ALONGSIDE the opaque `layout` above; Task 3 deletes that one.)
+    arrangement: layout::Layout,
+    /// Why a stored arrangement was refused, if it was — read once by the load reply so a fallback
+    /// to the default is stated rather than silent. Cleared by every load.
+    arrangement_warning: Option<String>,
+    /// Where a client is LOOKING: active page, panel maximize, editor camera, and each panel's
+    /// sub-patch path. Opaque and per-client, so it is deliberately NOT a doc root (converging it
+    /// would drag peers and dirty the patch on mere navigation) — but persistence is the other
+    /// axis, so it rides the `.gfi` and the snapshot like the layout blob it was carved out of.
+    viewpoint: serde_json::Value,
     /// Node types that EXIST on disk but cannot load here, keyed by type name → reason (a
     /// missing module name, or the exception line). They appear in the palette, greyed, so a
     /// node that needs an uninstalled dependency explains itself instead of silently not
@@ -370,6 +382,9 @@ impl Graph {
             unavailable: std::collections::BTreeMap::new(),
             patch_types: std::collections::HashSet::new(),
             layout: serde_json::Value::Null,
+            arrangement: layout::Layout::default(),
+            arrangement_warning: None,
+            viewpoint: serde_json::Value::Null,
             start: None,
             evaluator: None,
             scopes: IndexMap::new(),
@@ -530,6 +545,31 @@ impl Graph {
     /// pillar logic (the `viewers` blob's rule).
     pub fn set_layout(&mut self, layout: serde_json::Value) {
         self.layout = layout;
+    }
+
+    /// The flat arrangement — pages, splits and panels. Reads plan against this; writes go through
+    /// a command, so undo/redo and the CRDT mirror come for free.
+    pub fn arrangement(&self) -> &layout::Layout {
+        &self.arrangement
+    }
+
+    /// The one write door, held by [`command::Command::EditLayoutEntry`] and by a load.
+    pub fn arrangement_mut(&mut self) -> &mut layout::Layout {
+        &mut self.arrangement
+    }
+
+    /// Why the last load fell back to the default arrangement, if it did.
+    pub fn arrangement_warning(&self) -> Option<&str> {
+        self.arrangement_warning.as_deref()
+    }
+
+    /// The client-local viewpoint blob (see the field).
+    pub fn viewpoint(&self) -> &serde_json::Value {
+        &self.viewpoint
+    }
+
+    pub fn set_viewpoint(&mut self, viewpoint: serde_json::Value) {
+        self.viewpoint = viewpoint;
     }
 
     /// Record a node type that could not be loaded, with the reason. Refused if a BUILT-IN owns the
@@ -2181,10 +2221,16 @@ impl Graph {
             "globals": Value::Array(globals),
             "root": root,
         });
-        // The editor layout rides along when there is one; an empty patch keeps the file clean.
-        if !self.layout.is_null() {
-            if let Value::Object(ref mut m) = doc {
+        if let Value::Object(ref mut m) = doc {
+            // The flat arrangement always exists (at worst the default), so it always rides.
+            m.insert("arrangement".to_string(), self.arrangement.to_json());
+            // The editor layout rides along when there is one; an empty patch keeps the file clean.
+            // (The opaque twin of `arrangement`, alive for exactly one task — see the field.)
+            if !self.layout.is_null() {
                 m.insert("layout".to_string(), self.layout.clone());
+            }
+            if !self.viewpoint.is_null() {
+                m.insert("viewpoint".to_string(), self.viewpoint.clone());
             }
         }
         serde_yaml_ng::to_string(&doc).unwrap_or_default()
@@ -2315,6 +2361,20 @@ impl Graph {
         // A patch without a stored layout clears the previous one rather than inheriting it — the
         // loaded patch's own arrangement (or the editor's default) is what should be shown.
         self.layout = doc.get("layout").cloned().unwrap_or(serde_json::Value::Null);
+        self.viewpoint = doc.get("viewpoint").cloned().unwrap_or(serde_json::Value::Null);
+        // A corrupt arrangement costs the CHROME, never the patch — the graph is the value, and a
+        // file that cannot be opened is the one outcome worse than a lost layout. The reason is kept
+        // for the load reply so the fallback is stated rather than silent. An ABSENT arrangement is
+        // not a corrupt one (a patch saved before this shape existed), so it warns about nothing.
+        let (arrangement, warning) = match doc.get("arrangement") {
+            None => (layout::Layout::default(), None),
+            Some(v) => match layout::Layout::from_json(v) {
+                Ok(l) => (l, None),
+                Err(e) => (layout::Layout::default(), Some(e)),
+            },
+        };
+        self.arrangement = arrangement;
+        self.arrangement_warning = warning;
         Ok(())
     }
 
@@ -5933,6 +5993,61 @@ mod tests {
         g3.set_layout(layout);
         g3.load_doc(&Graph::new().serialize()).unwrap();
         assert_eq!(g3.layout(), &serde_json::Value::Null);
+    }
+
+    #[test]
+    fn the_arrangement_rides_the_gfi_and_a_corrupt_one_never_costs_the_patch() {
+        use crate::layout::{Axis, Layout};
+        let mut g = Graph::new();
+        g.add_node("_TestConst", None).unwrap();
+        let page = g.arrangement().pages()[0].clone();
+        let panel = g.arrangement().children(&page)[0].clone();
+        let (w, fresh) = g.arrangement().split_panel(&page, &panel, Axis::Column, 0.25).unwrap();
+        g.arrangement_mut().apply(w);
+        let text = g.serialize();
+
+        let mut g2 = Graph::new();
+        g2.load_doc(&text).unwrap();
+        assert_eq!(g2.arrangement(), g.arrangement(), "the arrangement round-trips entry for entry");
+        assert!(g2.arrangement_warning().is_none(), "a valid arrangement loads silently");
+
+        // Flattening admits corruption the nested tree could not express. It must cost the CHROME,
+        // never the patch: the graph is the value, the arrangement is how it is looked at.
+        let mut doc: serde_json::Value = serde_yaml_ng::from_str(&text).unwrap();
+        doc["arrangement"][&fresh]["parent"] = serde_json::json!("gone");
+        let broken = serde_yaml_ng::to_string(&doc).unwrap();
+        let mut g3 = Graph::new();
+        g3.load_doc(&broken).expect("a corrupt arrangement does not refuse the patch");
+        assert_eq!(g3.node_uids().len(), 1, "the graph loaded regardless");
+        assert_eq!(g3.arrangement(), &Layout::default(), "the arrangement fell back to the default");
+        let warning = g3.arrangement_warning().expect("the fallback is stated, not silent");
+        assert!(warning.contains("reaches no page"), "and it says what was wrong: {warning}");
+
+        // A patch saved before this shape existed simply opens on the default, with nothing to say.
+        let mut g4 = Graph::new();
+        g4.load_doc(&Graph::new().serialize()).unwrap();
+        assert_eq!(g4.arrangement(), &Layout::default());
+        assert!(g4.arrangement_warning().is_none(), "an absent arrangement is not a corrupt one");
+        assert!(g4.load_doc(&text).is_ok() && g4.arrangement_warning().is_none(), "and the flag clears");
+    }
+
+    #[test]
+    fn the_viewpoint_persists_but_is_not_arrangement() {
+        // Where a client is LOOKING — active page, maximize, camera, and each panel's sub-patch path
+        // — is per-client, so it stays out of the shared doc. Persistence is the separate axis: it
+        // still rides the `.gfi`, so reopening a patch restores the saver's viewpoint.
+        let mut g = Graph::new();
+        assert_eq!(g.viewpoint(), &serde_json::Value::Null, "none until a client sets one");
+        let vp = serde_json::json!({ "activePage": "page-1", "subpatchPath": { "panel-2": ["a1b2"] } });
+        g.set_viewpoint(vp.clone());
+        let mut g2 = Graph::new();
+        g2.load_doc(&g.serialize()).unwrap();
+        assert_eq!(g2.viewpoint(), &vp, "stored verbatim, like the layout blob it was carved out of");
+
+        let mut g3 = Graph::new();
+        g3.set_viewpoint(vp);
+        g3.load_doc(&Graph::new().serialize()).unwrap();
+        assert_eq!(g3.viewpoint(), &serde_json::Value::Null, "a patch without one clears it");
     }
 
     #[test]

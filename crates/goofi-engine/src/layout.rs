@@ -274,12 +274,24 @@ impl Layout {
         (w, h)
     }
 
-    /// Apply a planner's writes. The one mutator, so a command, an undo and a load all share it.
+    /// Upsert one entry, handing back what it displaced — the primitive a layout command inverts
+    /// (`None` back means the inverse of this write is a removal).
+    pub fn insert(&mut self, id: Id, entry: Entry) -> Option<Entry> {
+        self.entries.insert(id, entry)
+    }
+
+    /// Remove one entry, handing it back for the same reason.
+    pub fn remove(&mut self, id: &str) -> Option<Entry> {
+        self.entries.remove(id)
+    }
+
+    /// Apply a planner's writes wholesale — a load and a test's shorthand; a command applies them
+    /// one at a time so each carries its own inverse.
     pub fn apply(&mut self, writes: Vec<Write>) {
         for (id, entry) in writes {
             match entry {
-                Some(e) => self.entries.insert(id, e),
-                None => self.entries.remove(&id),
+                Some(e) => self.insert(id, e),
+                None => self.remove(&id),
             };
         }
     }

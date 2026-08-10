@@ -127,6 +127,13 @@ pub enum Command {
         value: Option<GlobalValue>,
         at: Option<usize>,
     },
+    /// Write one flat-arrangement entry: `Some` upserts it, `None` removes it. A layout op plans its
+    /// change as a set of these and composes them with [`Command::Compound`], which is why the whole
+    /// tree algebra needs no command of its own and undo/redo of a split is undo/redo of a map write.
+    EditLayoutEntry {
+        id: crate::layout::Id,
+        entry: Option<crate::layout::Entry>,
+    },
     /// Re-parent a node or scope into `scope` (`None` = ROOT). The one membership move — used inside
     /// a delete's inverse to restore a member back INSIDE its scope. Inverse re-parents to the old
     /// scope.
@@ -387,6 +394,17 @@ impl Command {
                 // A delete's inverse re-adds at the removed index; add/edit inverses carry no slot.
                 let inv_at = if was_delete { old_index } else { None };
                 Ok((Outcome::Ok, Command::EditGlobal { name, value: old, at: inv_at }))
+            }
+
+            Command::EditLayoutEntry { id, entry } => {
+                // A map slot swap, so the inverse is simply what was there — including `None`, which
+                // is how the inverse of an add is a remove. Nothing here can fail, which is what lets
+                // a planner validate the whole op up front and hand over a Compound that lands whole.
+                let old = match entry {
+                    Some(e) => g.arrangement_mut().insert(id.clone(), e),
+                    None => g.arrangement_mut().remove(&id),
+                };
+                Ok((Outcome::Ok, Command::EditLayoutEntry { id, entry: old }))
             }
 
             Command::SetScope { uid, scope } => {
@@ -744,6 +762,31 @@ mod tests {
             viewers: None,
             scope,
         }
+    }
+
+    /// A layout op is an ordinary command: the planner's per-entry writes become a `Compound` whose
+    /// inverse restores the arrangement it found. Undo/redo of a split is therefore the same
+    /// machinery as undo/redo of an add, in the same per-session history.
+    #[test]
+    fn a_layout_edit_inverts_to_the_exact_arrangement_it_found() {
+        use crate::layout::Axis;
+        let mut g = Graph::new();
+        let page = g.arrangement().pages()[0].clone();
+        let panel = g.arrangement().children(&page)[0].clone();
+        let before = g.arrangement().clone();
+        let (writes, fresh) = g.arrangement().split_panel(&page, &panel, Axis::Row, 0.5).unwrap();
+        let cmd = Command::Compound(
+            writes.into_iter().map(|(id, entry)| Command::EditLayoutEntry { id, entry }).collect(),
+        );
+
+        let (_out, inverse) = cmd.execute(&mut g).unwrap();
+        assert!(g.arrangement().get(&fresh).is_some(), "the split landed");
+        assert_ne!(g.arrangement(), &before);
+
+        let (_out, forward) = inverse.execute(&mut g).unwrap();
+        assert_eq!(g.arrangement(), &before, "undo restores the arrangement entry for entry");
+        forward.execute(&mut g).unwrap();
+        assert!(g.arrangement().get(&fresh).is_some(), "redo re-splits at the SAME panel id");
     }
 
     #[test]
