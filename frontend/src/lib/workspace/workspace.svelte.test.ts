@@ -84,7 +84,22 @@ describe('a frozen gesture is a layout command', () => {
 			'page_set_panel',
 			'page_set_panel'
 		]);
-		expect(sent()[2][1]).toEqual({ page: 'Layout', panel: 'panel-3', state: { node: 'a1b2' } });
+		expect(sent()[2][1]).toEqual({
+			page: 'Layout',
+			panel: 'panel-3',
+			state: { node: 'a1b2', slot: null }
+		});
+	});
+
+	it('settles the slot as it binds, so a picked node is never shown through the old node’s slot', async () => {
+		// One write, so it is one undo step — and the SAME write for both doors onto the binding (a
+		// node dragged in, a node picked from the bar's dropdown), which is what keeps them honest.
+		const bound = split();
+		bound['panel-3'].state = '{"node":"a1b2","slot":"spectrum"}';
+		const ws = boot(bound);
+		ws.linkNodeToPanel('panel-3', 'c3d4');
+		await Promise.resolve();
+		expect(sent()[0][1].state).toEqual({ node: 'c3d4', slot: null });
 	});
 
 	it('names only the key a panel write changes, never the bag it read', async () => {
@@ -109,7 +124,7 @@ describe('a frozen gesture is a layout command', () => {
 		ws.linkNodeToPanel('panel-8', 'a1b2');
 		await Promise.resolve();
 		expect(sent()).toEqual([
-			['page_set_panel', { page: 'Second', panel: 'panel-8', state: { node: 'a1b2' } }]
+			['page_set_panel', { page: 'Second', panel: 'panel-8', state: { node: 'a1b2', slot: null } }]
 		]);
 	});
 

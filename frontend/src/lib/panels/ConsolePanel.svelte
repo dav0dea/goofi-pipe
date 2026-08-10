@@ -1,8 +1,8 @@
 <!-- Console panel — a Chrome-devtools-style log of every node's stdout/stderr. The lines arrive on
      the control WS like every other event and are buffered by `stores/console.svelte.ts`, so this
-     panel subscribes to a ring, never to a transport. Shows all nodes
-     by default; drag a node onto it to filter to just that node. stdout/stderr
-     chips filter by stream.
+     panel subscribes to a ring, never to a transport. Shows all nodes by default; the bar's node
+     picker — the same `NodeSelect` the node-linked panels wear — filters to one node, and so does
+     dragging a node onto the panel. stdout/stderr chips filter by stream.
 
      Every entry renders the same way: wrapped monospace text, clamped to 3 lines
      by default (CSS line-clamp). An entry that overflows 3 lines shows a caret
@@ -18,23 +18,21 @@
 	import { ui } from '$lib/stores/ui.svelte';
 	import { graph } from '$lib/stores/graph.svelte';
 	import { linkedNodeName } from '$lib/workspace/panelState';
-	import { workspace } from '$lib/workspace/workspace.svelte';
 	import { copyText } from '$lib/clipboard';
 	import { COLLAPSE_LINES, estimateRowHeight } from './consoleRowHeight';
+	import NodeSelect from './NodeSelect.svelte';
 	import { Bar, Chip, Badge, Icon, IconButton, EmptyState } from '$lib/ui';
 	import { onDestroy, tick } from 'svelte';
 
 	let { panelId, state: linkState }: PanelProps = $props();
 	const sel = selection();
-	const ws = workspace();
 	const uiStore = ui();
 	const cs = consoleStore();
 
 	const filterName = $derived(linkedNodeName(linkState)); // the bound node's uid (identity)
 	/** Every node the console names is keyed by uid (the store ingests what the bridge sends). A
-	 * label shows the display name — the filter chip, and each row's source button. */
+	 * label shows the display name — on each row's source button (the bar's picker builds its own). */
 	const nodeLabel = (uid: string): string => graph().nodeById(uid)?.name ?? uid;
-	const filterLabel = $derived(filterName ? nodeLabel(filterName) : null);
 	const dragActive = $derived(uiStore.nodeDrag !== null);
 	const over = $derived(uiStore.nodeDragTarget === panelId);
 
@@ -230,23 +228,20 @@
 	function focus(name: string): void {
 		if (sel.activeEditorId) sel.selectNodes(sel.activeEditorId, [name]);
 	}
-	// Through the store (see NodeLinkedPanel): dropping the filter is an edit, so it has to earn a
-	// history entry or the next layout undo silently restores the filter.
-	function clearFilter(): void {
-		ws.unlinkNodeFromPanel(panelId);
-	}
 </script>
 
 <div class="wrap" data-testid="console-panel">
 	<Bar>
 		{#snippet start()}
 			<Chip
+				density="chrome"
 				tone={showStdout ? 'accent' : 'neutral'}
 				aria-pressed={showStdout}
 				onclick={() => (showStdout = !showStdout)}
 				title="Show stdout">out</Chip
 			>
 			<Chip
+				density="chrome"
 				tone={showStderr ? 'danger' : 'neutral'}
 				aria-pressed={showStderr}
 				onclick={() => (showStderr = !showStderr)}
@@ -254,17 +249,10 @@
 			>
 		{/snippet}
 		{#snippet end()}
-			{#if filterName}
-				<span class="fl">filtering</span>
-				<span class="fn" title={filterLabel}>{filterLabel}</span>
-				<IconButton
-					variant="ghost"
-					size="sm"
-					title="Show all nodes"
-					label="Clear filter"
-					onclick={clearFilter}><Icon name="x" /></IconButton
-				>
-			{/if}
+			<!-- The same picker the node-linked panels wear, saying what a console means by a binding.
+			     It replaced a `filtering <name> ✕` readout, which could only ever CLEAR the filter a
+			     drag had set — this one can also set it, which is the whole point on a phone. -->
+			<NodeSelect {panelId} state={linkState} emptyLabel="All nodes" />
 		{/snippet}
 	</Bar>
 
@@ -373,19 +361,6 @@
 		display: flex;
 		flex-direction: column;
 		min-height: 0;
-	}
-	.fl {
-		color: var(--text-muted);
-		font-size: var(--fs-small);
-	}
-	.fn {
-		font-family: var(--font-mono);
-		font-size: var(--fs-small);
-		color: var(--text);
-		max-width: 140px;
-		overflow: hidden;
-		text-overflow: ellipsis;
-		white-space: nowrap;
 	}
 	/* The virtual scroller keeps its own DOM handle (scrollTop / measured heights / onscroll), so
 	   the container stays a native div rather than the ScrollArea component; it wears the shared

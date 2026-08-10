@@ -370,9 +370,16 @@ class WorkspaceStore {
 	 * Addressing is `setPanelState`'s, which resolves the page from the whole arrangement, so a panel
 	 * on a page in the background is written just like one in front. */
 
-	/** Bind a node to a linkable panel. Called when a node is dragged onto the panel. */
+	/** Bind a node to a linkable panel — a node dragged onto it, or one picked from the bar's
+	 * dropdown (`panels/NodeSelect`). Both doors land here, so they cannot behave differently.
+	 *
+	 * The slot goes with it: a Viewer/Metadata panel reads `state.slot` off the node it is bound to,
+	 * and the two names have nothing to do with each other across a rebind. Clearing it in the SAME
+	 * merged write settles the panel in one op (one undo step) on the slot each panel already falls
+	 * back to — its node's first output — instead of persisting a slot name the new node has never
+	 * had. */
 	linkNodeToPanel(panelId: string, nodeUid: string): void {
-		this.setPanelState(panelId, { node: nodeUid }, 'authored', 'Bind node to panel');
+		this.setPanelState(panelId, { node: nodeUid, slot: null }, 'authored', 'Bind node to panel');
 	}
 
 	/** Release a linkable panel's bound node — the ✕ in NodeLinkedPanel's bar and ConsolePanel's

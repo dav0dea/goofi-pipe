@@ -175,6 +175,29 @@ const SITES: Site[] = [
 		control: (p) => p.getByTestId('viewer-kind').locator('select')
 	},
 	{
+		// The node picker — the one control every node-binding panel wears, and the only door onto a
+		// binding a phone has. It is measured UNBOUND, which is the state it exists for.
+		name: 'the panel node picker',
+		setup: (page) => borrowPanel(page, 'metadata'),
+		control: (p) => p.getByTestId('panel-node').locator('select')
+	},
+	{
+		// A Chip took `--hit` flat until the toolbar it sits in became exactly --panel-header-h tall;
+		// it wears the strip's dense box now and has to win the floor back through `density="chrome"`,
+		// the same restatement IconButton and Select make. `out` is two glyphs, so nothing about its
+		// CONTENT would reach 44 in either axis.
+		name: 'the console stream chip',
+		setup: (page) => borrowPanel(page, 'console'),
+		control: (p) => p.getByTestId('console-panel').locator('.ui-chip').first()
+	},
+	{
+		// …and the other control the shortened bar re-boxed: the linked panel's unlink ✕, 20px on a
+		// fine pointer now instead of 28.
+		name: 'the panel unlink ✕',
+		setup: dockAViewer,
+		control: (p) => p.getByTestId('node-linked-panel').getByRole('button', { name: 'Unlink node' })
+	},
+	{
 		// The cog beside it, and the sole door to every per-viewer setting. R-Task 2/3 scoped its
 		// carve-out to SlotViewer's frozen 24px header, but `--node-u` is a `:root` token, so the
 		// 24px bound applied in BOTH hosts — including this 44px panel header, where both its
@@ -329,6 +352,23 @@ test('the docked viewer-kind select clears the focus-zoom threshold', async ({ p
 		expect(
 			await fontSize(page.getByTestId('viewer-kind').locator('select'))
 		).toBeGreaterThanOrEqual(16);
+	} finally {
+		await restore();
+	}
+});
+
+/* The node picker rides the same chrome density, and adds a mono face to it — a `font-family` on the
+   wrapper, which the <select>'s own `font: inherit` picks up. That is exactly the shape that could
+   drag a font-SIZE along with it, so the threshold is measured here too rather than assumed from the
+   kind picker's row above. */
+test('the panel node picker clears the focus-zoom threshold', async ({ page }) => {
+	await page.goto('/');
+	await waitForApp(page);
+	const restore = await borrowPanel(page, 'metadata');
+	try {
+		expect(await fontSize(page.getByTestId('panel-node').locator('select'))).toBeGreaterThanOrEqual(
+			16
+		);
 	} finally {
 		await restore();
 	}

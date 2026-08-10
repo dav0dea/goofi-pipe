@@ -321,9 +321,14 @@ test('a ghost icon button on a content toolbar paints a visible hover fill', asy
 
 		// Free to assert here — this is the app's only linked-node header, and it is already up. The
 		// name in it is the identifier the CANVAS paints on the node, so it reads in mono wherever it
-		// appears (D-T3), exactly as `ParamForm`'s rename title does; the panel chrome around it is sans.
+		// appears (D-T3), exactly as `ParamForm`'s rename title does; the panel chrome around it is
+		// sans. It is the node PICKER's selected option now — the face travels down to the <select>
+		// from the wrapper through app.css's `font: inherit`, so the <select> is what to measure.
 		expect(
-			await panel.locator('.ln').evaluate((el) => getComputedStyle(el).fontFamily),
+			await panel
+				.getByTestId('panel-node')
+				.locator('select')
+				.evaluate((el) => getComputedStyle(el).fontFamily),
 			'the linked node’s name renders in the app mono face'
 		).toContain('JetBrains Mono');
 

@@ -126,7 +126,7 @@
 			{#snippet end()}
 				<IconButton
 					variant="ghost"
-					size="sm"
+					density="chrome"
 					label="Close agent view"
 					data-testid="agent-close"
 					onclick={() => hs.requestClose(id)}><Icon name="x" /></IconButton

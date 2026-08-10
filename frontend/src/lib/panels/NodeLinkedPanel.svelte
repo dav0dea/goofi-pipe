@@ -1,13 +1,14 @@
 <!--
   Shared chrome for the node-linked panels (Parameters / Viewer / Metadata).
-  A node is linked by dragging it (by its grip) from any editor into the panel;
-  the link (node uid — stable across rename + save/load) is stored in the panel
-  state, so it persists in the .gfi and across selection changes — independent of
-  which editor is focused.
+  A node is linked either by picking it from the bar's dropdown (`NodeSelect`, the same control the
+  Console wears) or by dragging it (by its grip) from any editor into the panel; the link (node uid —
+  stable across rename + save/load) is stored in the panel state, so it persists in the .gfi and
+  across selection changes — independent of which editor is focused.
 
-  Empty until something is dropped; deleting the linked node empties it again
-  (the store clears stale refs on node removal). The `content` snippet renders
-  the panel's body once a node is resolved.
+  The bar is drawn either way — an unbound panel is one the picker can still bind, which matters most
+  where there is no editor to drag from (another layout page, a phone). Deleting the linked node
+  empties the panel again (the store clears stale refs on node removal). The `content` snippet
+  renders the panel's body once a node is resolved.
 -->
 <script lang="ts">
 	import type { PanelProps } from '$lib/workspace/registry';
@@ -17,6 +18,7 @@
 	import { linkedNodeName } from '$lib/workspace/panelState';
 	import { workspace } from '$lib/workspace/workspace.svelte';
 	import { Bar, Icon, IconButton, StatusDot, EmptyState } from '$lib/ui';
+	import NodeSelect from './NodeSelect.svelte';
 	import type { Snippet } from 'svelte';
 
 	let {
@@ -52,29 +54,33 @@
 </script>
 
 <div class="linked" role="group" data-testid="node-linked-panel">
-	{#if node}
-		<Bar>
-			{#snippet start()}
-				<StatusDot tone={node.error ? 'error' : 'ok'} size="sm" />
-				<span class="ln" title={node.type}>{node.name}</span>
-				{#if controls}
-					<div class="controls thin-scrollbar">{@render controls(node)}</div>
-				{/if}
-			{/snippet}
-			{#snippet end()}
-				<IconButton variant="ghost" size="sm" label="Unlink node" onclick={unlink}
+	<!-- The bar is here whether or not anything is bound: the picker in it is how an unbound panel
+	     gets bound without a drag, which is the only door a phone has. -->
+	<Bar>
+		{#snippet start()}
+			{#if node}<StatusDot tone={node.error ? 'error' : 'ok'} size="sm" />{/if}
+			<NodeSelect {panelId} state={linkState} emptyLabel="No node" />
+			{#if node && controls}
+				<div class="controls thin-scrollbar">{@render controls(node)}</div>
+			{/if}
+		{/snippet}
+		{#snippet end()}
+			{#if node}
+				<IconButton variant="ghost" density="chrome" label="Unlink node" onclick={unlink}
 					><Icon name="x" /></IconButton
 				>
-			{/snippet}
-		</Bar>
+			{/if}
+		{/snippet}
+	</Bar>
+	{#if node}
 		<div class="body">
 			{@render content(node)}
 		</div>
 	{:else}
 		<div class="empty">
 			<EmptyState>
-				{#snippet title()}Drag a node here{/snippet}
-				{#snippet hint()}to show its {label}{/snippet}
+				{#snippet title()}No node bound{/snippet}
+				{#snippet hint()}Pick one above, or drag a node here, to show its {label}{/snippet}
 			</EmptyState>
 		</div>
 	{/if}
@@ -91,18 +97,6 @@
 		flex-direction: column;
 		height: 100%;
 		min-height: 0;
-	}
-	/* The name, and only the name — a node's name is the identifier the CANVAS paints on the node
-	   itself, so it reads in mono wherever it appears (D-T3) and the two always match. The panel
-	   chrome around it (the `label`, the controls, the unlink ✕) is chrome and stays sans. */
-	.ln {
-		font-family: var(--font-mono);
-		font-size: var(--fs-small);
-		color: var(--text);
-		flex: 0 1 auto;
-		overflow: hidden;
-		text-overflow: ellipsis;
-		white-space: nowrap;
 	}
 	/* Host for the panel's own controls (group tabs / slot picker / viewer
 	   selector). Fills the slack between the node name and the unlink button and
