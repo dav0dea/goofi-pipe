@@ -1200,6 +1200,73 @@ async fn page_set_panel_lands_a_combined_type_and_binding_and_refuses_an_unknown
 }
 
 #[tokio::test]
+async fn page_set_panel_refuses_a_word_outside_the_vocabulary_and_names_the_set() {
+    // The user's own repro (2026-08-10), driving a real agent against the live system: it guessed
+    // `params` for the panel type — the real one is `parameters` — and was answered `{ok: true}`
+    // while the panel dropped into an "Unknown panel type: params" state. A plausible guess told it
+    // succeeded is worse than a refusal: nothing downstream can teach the caller it guessed.
+    let base = start_server().await;
+    let (mut ws, _) = connect_async(format!("{base}/control")).await.unwrap();
+    let _ = recv_text(&mut ws).await;
+    let osc = call(&mut ws, 1, "add_node", json!({ "type": "Oscillator" })).await["result"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let doc = sync_replica(&mut ws, |d| !panels(d).is_empty()).await;
+    let panel = panels(&doc)[0].clone();
+
+    let bad = call(
+        &mut ws,
+        2,
+        "page_set_panel",
+        json!({ "page": "Layout", "panel": panel, "type": "params", "state": { "node": osc } }),
+    )
+    .await;
+    let err = bad["error"].as_str().unwrap_or_default().to_string();
+    assert!(err.contains("params"), "the refusal names what was asked for: {bad}");
+    assert!(err.contains("parameters"), "…and the set it could have meant: {bad}");
+    // And it refused BEFORE writing: a panel left holding a type nothing renders is the whole bug.
+    let after = sync_replica(&mut ws, |_| true).await;
+    assert_ne!(
+        after.read_at(&["arrangement", panel.as_str(), "panel_type"]),
+        Some(json!("params")),
+        "the refused type was not stored"
+    );
+
+    // A viewer's `kind` is the same vocabulary problem one level down — a free string inside the
+    // state bag, and the one an agent reaches for right after binding the node.
+    let bad_kind = call(
+        &mut ws,
+        3,
+        "page_set_panel",
+        json!({ "page": "Layout", "panel": panel, "type": "viewer",
+                "state": { "node": osc, "kind": "waveform" } }),
+    )
+    .await;
+    let err = bad_kind["error"].as_str().unwrap_or_default().to_string();
+    assert!(err.contains("waveform") && err.contains("line"), "{bad_kind}");
+
+    // …and a slot the bound node does not have, which renders the panel's own empty state.
+    let bound = call(
+        &mut ws,
+        4,
+        "page_set_panel",
+        json!({ "page": "Layout", "panel": panel, "type": "viewer", "state": { "node": osc } }),
+    )
+    .await;
+    assert!(bound.get("error").is_none(), "{bound}");
+    let bad_slot = call(
+        &mut ws,
+        5,
+        "page_set_panel",
+        json!({ "page": "Layout", "panel": panel, "state": { "slot": "spectrum" } }),
+    )
+    .await;
+    let err = bad_slot["error"].as_str().unwrap_or_default().to_string();
+    assert!(err.contains("spectrum") && err.contains("out"), "{bad_slot}");
+}
+
+#[tokio::test]
 async fn the_viewpoint_persists_across_a_reload_without_dirtying_the_patch() {
     // Where a client is LOOKING is per-client, so it is deliberately not a doc root — it cannot
     // drag a peer or raise the unsaved dot. Persistence is the other axis: it still rides the

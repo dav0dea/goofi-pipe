@@ -1,15 +1,35 @@
 /**
- * Application panel registration. Maps the app's panel-type ids to their
- * content components. Called once at startup (AppShell). Mods can register
- * further panel types the same way via `registerPanel`.
+ * Application panel registration — the id→component half of a panel type.
+ *
+ * The vocabulary (which types exist, their titles, icons and whether each binds a
+ * node) is the manager's: declared in `crates/goofi-bridge/src/vocab.rs` and
+ * generated into `$lib/api/vocab`, so a panel type the manager will not accept
+ * cannot be registered here and one it mints cannot be missing. What stays here
+ * is the component, which is code and could not live anywhere else. Called once
+ * at startup (AppShell). Mods can register further panel types the same way via
+ * `registerPanel`.
  */
-import { registerPanel } from '$lib/workspace/registry';
+import type { Component } from 'svelte';
+import { registerPanel, type PanelProps } from '$lib/workspace/registry';
+import { PANEL_TYPES, EMPTY_PANEL_TYPE, type PanelTypeId } from '$lib/api/vocab';
 import NodeEditorPanel from './NodeEditorPanel.svelte';
 import ParametersPanel from './ParametersPanel.svelte';
 import ViewerPanel from './ViewerPanel.svelte';
 import MetadataInspectorPanel from './MetadataInspectorPanel.svelte';
 import ConsolePanel from './ConsolePanel.svelte';
 import GlobalsPanel from './GlobalsPanel.svelte';
+
+/** Every app panel type, exhaustively: a type added to the manager's table is a `npm run check`
+ * error here until it has something to draw it. `empty` is the panel framework's own placeholder
+ * and registers in `$lib/workspace/panels`, one layer down. */
+const components: Record<Exclude<PanelTypeId, typeof EMPTY_PANEL_TYPE>, Component<PanelProps>> = {
+	'node-editor': NodeEditorPanel,
+	parameters: ParametersPanel,
+	viewer: ViewerPanel,
+	metadata: MetadataInspectorPanel,
+	console: ConsolePanel,
+	globals: GlobalsPanel
+};
 
 let done = false;
 
@@ -21,51 +41,25 @@ export function registerAppPanels(): void {
 	// app at the app's weight. They used to be text-presentation glyphs picked to dodge the
 	// colour-emoji font (⛓ U+26D3 and ⚠ U+26A0 are emoji-default, and the browser draws those in
 	// colour regardless of CSS) — a constraint the icon set removes rather than works around.
-	registerPanel({
-		id: 'node-editor',
-		title: 'Node Editor',
-		icon: 'workflow',
-		component: NodeEditorPanel
-	});
-	registerPanel({
-		id: 'parameters',
-		title: 'Parameters',
-		icon: 'sliders-horizontal',
-		component: ParametersPanel,
-		acceptsNode: true
-	});
-	registerPanel({
-		id: 'viewer',
-		title: 'Viewer',
-		icon: 'activity',
-		component: ViewerPanel,
-		acceptsNode: true
-	});
-	registerPanel({
-		id: 'metadata',
-		title: 'Metadata',
-		icon: 'info',
-		component: MetadataInspectorPanel,
-		acceptsNode: true
-	});
-	registerPanel({
-		id: 'console',
-		title: 'Console',
-		icon: 'terminal',
-		component: ConsolePanel,
-		// Dropping a node filters the console to just that node's output.
-		acceptsNode: true
-	});
-	// Patch globals (default_ufreq + user-defined scalars). Not in the default layout —
-	// opened on demand from the panel-type menu (like a secondary inspector).
-	registerPanel({
-		id: 'globals',
-		title: 'Globals',
-		icon: 'globe',
-		component: GlobalsPanel
-	});
-	// The old dockable "Errors" panel was removed — the Console (filterable,
-	// accumulating, stderr-aware) supersedes it, and a legacy `errors` panel type
-	// migrates to `console` on load (see workspace.svelte.ts). Per-node current
-	// errors still surface on the floating chip and the inspector's error section.
+	//
+	// Registration order is the table's order, which is the order the panel menu and the empty
+	// panel's choice grid list them. Globals is not in the default layout — it is opened on demand
+	// from that menu, like a secondary inspector.
+	//
+	// The old dockable "Errors" panel was removed — the Console (filterable, accumulating,
+	// stderr-aware) supersedes it, and a legacy `errors` panel type migrates to `console` on load
+	// (see workspace.svelte.ts). Per-node current errors still surface on the floating chip and the
+	// inspector's error section.
+	for (const t of PANEL_TYPES) {
+		if (t.id === EMPTY_PANEL_TYPE) continue;
+		registerPanel({
+			id: t.id,
+			title: t.title,
+			icon: t.icon,
+			component: components[t.id],
+			// Dropping a node onto a Parameters/Viewer/Metadata panel binds it; onto the Console it
+			// filters the log to that node.
+			acceptsNode: t.acceptsNode
+		});
+	}
 }

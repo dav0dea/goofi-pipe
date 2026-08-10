@@ -78,6 +78,10 @@ fn json_schema(ty: &str) -> Value {
         // An opaque value the engine round-trips (a param value, a panel's state bag): any JSON.
         // An empty schema is how JSON Schema spells "anything", and the doc line says what it is.
         "json" => json!({}),
+        // A vocabulary word, advertised as the SET it may take. An enum is what stops the guess at
+        // the source — the model reads the choices instead of inventing a plausible one, and a
+        // client that validates against the schema never lets a wrong word leave.
+        "panel_type" => json!({ "type": "string", "enum": crate::vocab::panel_type_ids() }),
         _ => json!({ "type": "string" }),
     }
 }
@@ -100,7 +104,7 @@ pub fn tools() -> Vec<Value> {
                 "name": op.name,
                 // The result schema rides in the description: a model that knows the reply's shape
                 // chains the next call instead of probing for it.
-                "description": format!("{}\n\nReturns: {}", op.doc, op.result),
+                "description": format!("{}\n\nReturns: {}", op.doc(), op.result),
                 "inputSchema": {
                     "type": "object",
                     "properties": properties,
@@ -267,6 +271,28 @@ mod tests {
         // nothing a model could tell from an empty answer.
         assert_eq!(render(&json!({ "ok": true })), "{\n  \"ok\": true\n}");
         assert!(render(&json!({ "text": "x", "more": 1 })).contains("\"more\""));
+    }
+
+    /// Claude Code and Codex both truncate a tool description at 2 KB, so a description that grew
+    /// past it loses its TAIL — which is where `Returns:` lives, and where an enumerated vocabulary
+    /// would land next. Enumerating the choices is only worth doing if they arrive.
+    #[test]
+    fn a_tool_description_fits_the_2_kb_a_client_will_read() {
+        for t in tools() {
+            let (name, desc) = (t["name"].as_str().unwrap(), t["description"].as_str().unwrap());
+            assert!(desc.len() <= 2048, "`{name}`'s description is {} bytes", desc.len());
+        }
+    }
+
+    /// The strongest form of "do not guess": the schema itself carries the set, so a client that
+    /// validates arguments never lets a wrong word leave, and every model sees the choices beside
+    /// the field rather than buried in prose.
+    #[test]
+    fn the_panel_type_argument_advertises_its_vocabulary_as_an_enum() {
+        let t = tools().into_iter().find(|t| t["name"] == json!("page_set_panel")).expect("the tool");
+        let types = &t["inputSchema"]["properties"]["type"]["enum"];
+        assert_eq!(types, &json!(crate::vocab::panel_type_ids()));
+        assert!(types.as_array().is_some_and(|v| v.contains(&json!("parameters"))), "{types}");
     }
 
     /// A list type is the item type in an array — the shape a model has to produce for

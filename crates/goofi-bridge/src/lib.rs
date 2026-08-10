@@ -14,6 +14,7 @@ pub mod ops;
 mod reducer;
 mod schemas;
 pub mod term;
+pub mod vocab;
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -1338,16 +1339,30 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
                 let panel_state = payload.get("state").cloned();
                 // A panel bound to a node that is not there renders empty and explains nothing, so
                 // the bind is checked HERE, where the answer can teach. Cheap: no graph mutation.
-                if let Some(node) = panel_state
+                let named = panel_state
                     .as_ref()
                     .and_then(|s| s.get("node"))
                     .and_then(|v| v.as_str())
-                    .filter(|n| !n.is_empty())
-                {
+                    .filter(|n| !n.is_empty());
+                if let Some(node) = named {
                     if !bindable_node(&g, node) {
                         return Err(format!("page_set_panel: no node `{node}` in this patch"));
                     }
                 }
+                // …and the same argument, one word further in: the panel type and the viewer kind
+                // are vocabularies the manager stores as free strings, so a plausible GUESS at one
+                // used to be answered `{ok: true}`. The slot is checked against the node this write
+                // LEAVES the panel bound to — its own, or the one already stored, since state
+                // merges.
+                let bound = named
+                    .or_else(|| match g.arrangement().get(&panel) {
+                        Some(goofi_engine::layout::Entry::Panel { state, .. }) => {
+                            state.get("node").and_then(|v| v.as_str())
+                        }
+                        _ => None,
+                    })
+                    .and_then(Uid::from_hex);
+                vocab::check_panel(&g, ty.as_deref(), panel_state.as_ref(), bound)?;
                 let writes = g.arrangement().set_panel(&page, &panel, ty.as_deref(), panel_state)?;
                 apply_layout_contents(state, &mut g, &session, writes)
             }

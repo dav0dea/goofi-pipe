@@ -39,8 +39,11 @@ pub struct Op {
     pub writes: bool,
     /// The params schema: space-separated `name:type`, `!` marking a required one. Types are
     /// `uid`, `string`, `float`, `int`, `bool`, `float2` (an `[x, y]` pair), `json` (an opaque
-    /// value the engine round-trips), and the `[]` suffix for a list.
+    /// value the engine round-trips), `panel_type` (a string out of [`crate::vocab`], advertised
+    /// as a JSON-Schema `enum`), and the `[]` suffix for a list.
     pub args: &'static str,
+    /// The doc TEMPLATE. `{panel_types}` and `{viewer_kinds}` expand to the vocabularies — see
+    /// [`Op::doc`]. Read it through that, never as the raw field.
     pub doc: &'static str,
     /// The result schema, as the shape a caller gets back.
     pub result: &'static str,
@@ -53,6 +56,15 @@ impl Op {
             let (name, ty) = a.split_once(':')?;
             Some((name, ty.trim_end_matches('!'), ty.ends_with('!')))
         })
+    }
+
+    /// The doc with its vocabulary placeholders expanded. A caller reading this never has to GUESS
+    /// a panel type or a viewer kind — which is the point: the teachable refusal is the fallback,
+    /// and a description that enumerates the choices is the mechanism.
+    pub fn doc(&self) -> String {
+        self.doc
+            .replace("{panel_types}", &crate::vocab::panel_types_help())
+            .replace("{viewer_kinds}", &crate::vocab::viewer_kinds_help())
     }
 }
 
@@ -134,9 +146,9 @@ pub static REGISTRY: &[Op] = &[
          doc: "Split a panel along `row`/`column`, birthing an EMPTY panel that takes `ratio` of its space (default half) after the target, or before it with `place_before`. Give the new panel content with page_set_panel.",
          result: "the new panel's uid" },
     Op { name: "page_set_panel", surface: Mcp, writes: true,
-         args: "page:string! panel:string! type:string state:json",
-         doc: "Set a panel's type and/or its state (a viewer's `{node, slot}`). State MERGES key by key — send only what changes, and null to clear a key. A new type clears the old type's state, so send both together to rebind. Sizing is page_resize_split's.",
-         result: "{ok: true}" },
+         args: "page:string! panel:string! type:panel_type state:json",
+         doc: "Set a panel's type and/or its state (a viewer's `{node, slot, kind}`). State MERGES key by key — send only what changes, and null to clear a key. A new type clears the old type's state, so send both together to rebind. Sizing is page_resize_split's.\n\n`type` is one of: {panel_types}.\n\nA viewer panel's `state.kind` is one of: {viewer_kinds}; a STRING or TABLE slot ignores it and uses its own.",
+         result: "the resulting arrangement, as inspect_layout draws it" },
     Op { name: "page_move_panel", surface: Mcp, writes: true,
          args: "page:string! panel:string! new_parent:string! order_index:int",
          doc: "Move a panel — or the whole subtree under a split id — to sit at `order_index` inside another split, on any page. Identity and every descendant are preserved.",
@@ -270,8 +282,10 @@ mod tests {
 
     /// The argument types the schema DSL admits. A type outside this set is a typo, which
     /// [`every_row_declares_a_well_formed_schema`] refuses.
-    const ARG_TYPES: &[&str] =
-        &["uid", "string", "float", "int", "bool", "float2", "json", "uid[]", "string[]", "float[]"];
+    const ARG_TYPES: &[&str] = &[
+        "uid", "string", "float", "int", "bool", "float2", "json", "panel_type", "uid[]",
+        "string[]", "float[]",
+    ];
 
     /// A name outside `[a-z0-9_]+`, or one long enough to push `mcp__goofi__<name>` past 64
     /// characters, makes Claude and OpenAI reject the ENTIRE tool list with a 400 — every tool,
@@ -317,6 +331,26 @@ mod tests {
         let add: Vec<_> = find("add_node").expect("add_node is registered").args().collect();
         assert_eq!(add[0], ("type", "string", true));
         assert_eq!(add[1], ("pos", "float2", false));
+    }
+
+    /// A caller that has to guess a vocabulary word gets it wrong (`params` for `parameters`), and
+    /// the guess used to be answered `{ok: true}`. So the description ENUMERATES both vocabularies,
+    /// and it does it by expansion rather than by a hand-copied list — which would be the very
+    /// duplication `vocab.rs` exists to remove.
+    #[test]
+    fn the_panel_op_names_the_vocabularies_a_caller_would_otherwise_guess() {
+        let doc = find("page_set_panel").expect("page_set_panel is registered").doc();
+        for word in ["parameters", "node-editor", "viewer", "line", "trajectory", "topomap"] {
+            assert!(doc.contains(word), "`{word}` is not offered by page_set_panel's doc: {doc}");
+        }
+        for op in REGISTRY {
+            let doc = op.doc();
+            assert!(
+                !doc.contains("{panel_types}") && !doc.contains("{viewer_kinds}"),
+                "`{}` has an unexpanded placeholder — a model would read it verbatim",
+                op.name
+            );
+        }
     }
 
     /// Uniqueness matters twice over: two rows of one name would give the MCP tool list a

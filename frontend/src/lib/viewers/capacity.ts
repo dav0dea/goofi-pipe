@@ -16,6 +16,7 @@
  * image is 2-D or 3-D → [['ge',2],['le',3]].
  */
 import type { ViewerKind } from './kind';
+import { VIEWER_KINDS } from '$lib/api/vocab';
 
 export type ReduceMethod = 'envelope' | 'subsample' | 'area';
 export type DimCmp = 'lt' | 'le' | 'eq' | 'ge' | 'gt';
@@ -51,21 +52,31 @@ function px(v: number): number {
 	return Math.max(CAP_FLOOR, Math.round(v) || CAP_FLOOR);
 }
 
-/** The ViewSpec for a viewer `kind` at `width`×`height` device pixels. The `ndim`
- * range mirrors `isRenderable` in kind.ts so "compatible for the merge" agrees with
- * "the component will actually draw it" — with one deliberate exception: line accepts
- * `le 3` here but only draws `le 2`, so a 3-D frame is still reduced for the viewer
- * that shows its HighDimFallback summary rather than shipped at full size. */
+/** The dimension-count constraint a kind declares, read off the manager's vocabulary rather
+ * than restated here — `accepts` is the range whose whole purpose is this predicate, and it is
+ * deliberately wider than what the component `draws` for `line`, so a 3-D frame still arrives
+ * REDUCED for the HighDimFallback summary instead of at full size. A pinned (non-array) kind
+ * constrains nothing: its dtype already selected it. */
+function ndimOf(kind: ViewerKind): [DimCmp, number][] {
+	const a = VIEWER_KINDS.find((k) => k.id === kind)?.accepts;
+	if (!a) return [];
+	if (a[0] === a[1]) return [['eq', a[1]]];
+	return a[0] === 0 ? [['le', a[1]]] : [['ge', a[0]], ['le', a[1]]];
+}
+
+/** The ViewSpec for a viewer `kind` at `width`×`height` device pixels. What it can be handed is
+ * the vocabulary's (`ndimOf`); what it wants each drawable axis shrunk to is this module's. */
 export function viewSpecForKind(kind: ViewerKind, width: number, height: number): ViewSpec {
 	const w = px(width);
 	const h = px(height);
+	const ndim = ndimOf(kind);
 	if (kind === 'line') {
 		// 1-D data: dim 0 and -1 both canonicalize to dim 0 on the bridge; it resolves
 		// the collision by richness (envelope > subsample), so the waveform keeps its
 		// peaks. 2-D (C,N): dim 0 caps channels (subsample), dim -1 envelopes the samples.
 		return {
 			dtype: 'array',
-			ndim: [['le', 3]],
+			ndim,
 			dims: [],
 			reduce: [
 				{ dim: 0, max: Math.min(h, MAX_ROWS), method: 'subsample' },
@@ -76,10 +87,7 @@ export function viewSpecForKind(kind: ViewerKind, width: number, height: number)
 	if (kind === 'image') {
 		return {
 			dtype: 'array',
-			ndim: [
-				['ge', 2],
-				['le', 3]
-			],
+			ndim,
 			dims: [],
 			reduce: [
 				{ dim: 0, max: h, method: 'area' },
@@ -95,18 +103,18 @@ export function viewSpecForKind(kind: ViewerKind, width: number, height: number)
 		// whole signals, and a row count is small by construction.
 		return {
 			dtype: 'array',
-			ndim: [['eq', 2]],
+			ndim,
 			dims: [],
 			reduce: [{ dim: -1, max: Math.min(w, MAX_POINTS), method: 'subsample' }]
 		};
 	}
 	if (kind === 'topomap') {
 		// Per-channel scalars — already tiny; declare the shape, request no reduction.
-		return { dtype: 'array', ndim: [['eq', 1]], dims: [], reduce: [] };
+		return { dtype: 'array', ndim, dims: [], reduce: [] };
 	}
 	if (kind === 'string') {
-		return { dtype: 'string', ndim: [], dims: [], reduce: [] };
+		return { dtype: 'string', ndim, dims: [], reduce: [] };
 	}
 	// table
-	return { dtype: 'table', ndim: [], dims: [], reduce: [] };
+	return { dtype: 'table', ndim, dims: [], reduce: [] };
 }

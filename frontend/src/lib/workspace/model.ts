@@ -64,12 +64,11 @@ export interface WorkspaceState {
 	activeWorkspaceId: string;
 }
 
-/** The panel type a brand-new workspace / tab starts with. */
-export const DEFAULT_PANEL_TYPE = 'node-editor';
-
-/** The placeholder a split births: an empty panel whose in-panel buttons let
- * the user choose its content, so a split never assumes a type. */
-export const EMPTY_PANEL_TYPE = 'empty';
+/** The panel type a brand-new workspace / tab starts with, and the placeholder a split births —
+ * both re-exported from the manager's generated vocabulary rather than restated. The MANAGER mints
+ * these entries (`goofi_engine::layout`), so a client copy of either was a value that could quietly
+ * stop matching what actually arrives in the doc. */
+export { DEFAULT_PANEL_TYPE, EMPTY_PANEL_TYPE } from '$lib/api/vocab';
 
 // ---------------------------------------------------------------------------
 // Queries
