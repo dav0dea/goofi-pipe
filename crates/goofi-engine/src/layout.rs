@@ -299,32 +299,6 @@ impl Layout {
         }
     }
 
-    /// The panel ids inside `page`, in document order.
-    pub fn panels(&self, page: &str) -> Vec<Id> {
-        self.subtree(page)
-            .into_iter()
-            .filter(|i| matches!(self.entries.get(i), Some(Entry::Panel { .. })))
-            .collect()
-    }
-
-    /// An entry's fractional (width, height) within its page — the product of the axis-relative
-    /// sizes along the path up to the page. What `page_list_panels` reports.
-    pub fn extent(&self, id: &str) -> (f64, f64) {
-        let (mut w, mut h) = (1.0, 1.0);
-        let mut cur = id.to_string();
-        for _ in 0..=self.entries.len() {
-            let Some(e) = self.entries.get(&cur) else { break };
-            let Some(p) = e.parent() else { break };
-            match self.entries.get(p) {
-                Some(Entry::Split { axis: Axis::Row, .. }) => w *= e.size(),
-                Some(Entry::Split { axis: Axis::Column, .. }) => h *= e.size(),
-                _ => {} // a page: its single root fills it on both axes
-            }
-            cur = p.to_string();
-        }
-        (w, h)
-    }
-
     /// Upsert one entry, handing back what it displaced — the primitive a layout command inverts
     /// (`None` back means the inverse of this write is a removal). Also the ONE place the id counter
     /// advances: every id this arrangement has ever admitted stays spent, whether or not it is still
@@ -1684,22 +1658,5 @@ mod tests {
         let back = Layout::from_json(&closed.to_json()).expect("its own output is valid");
         let (_w, later) = back.split_panel(&page, &a, Axis::Row, false, 0.5).unwrap();
         assert_ne!(later, b, "a reopened arrangement does not restart the counter");
-    }
-
-    #[test]
-    fn extent_reports_a_panels_share_of_its_page_on_both_axes() {
-        let l = Layout::default();
-        let page = l.pages()[0].clone();
-        let a = root_panel(&l);
-        let (w, b) = l.split_panel(&page, &a, Axis::Row, false, 0.5).unwrap();
-        let l = applied(&l, w);
-        let (w, c) = l.split_panel(&page, &b, Axis::Column, false, 0.5).unwrap();
-        let l = applied(&l, w);
-        let (bw, bh) = l.extent(&b);
-        assert!((bw - 0.5).abs() < 1e-9 && (bh - 0.5).abs() < 1e-9, "half the width, half the height");
-        let (cw, ch) = l.extent(&c);
-        assert!((cw - 0.5).abs() < 1e-9 && (ch - 0.5).abs() < 1e-9);
-        assert_eq!(l.extent(&a), (0.5, 1.0), "a spans the full height of its column");
-        assert_eq!(l.panels(&page).len(), 3);
     }
 }

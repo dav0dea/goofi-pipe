@@ -956,7 +956,7 @@ fn apply_layout(
 /// what it made, so a caller with no screen — an agent — had to follow each op with an
 /// `inspect_layout` to see the tree it was building. The op is already holding it.
 fn arrangement_reply(g: &Graph) -> Value {
-    json!({ "text": inspect::layout_tree(g.arrangement()) })
+    json!({ "text": inspect::layout_tree(g.arrangement(), None) })
 }
 
 /// Like [`apply_layout`], but for an op that CLOSES the subtree rooted at `born` (a page goes with
@@ -1335,11 +1335,15 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
             // Reads are served straight off the layout the manager holds. Writes are planned
             // against it and applied as ordinary commands, so every op below is undoable, persisted
             // and broadcast without a line of its own for any of the three.
-            "inspect_layout" => Ok(json!({ "text": inspect::layout_tree(g.arrangement()) })),
-            "session_list_pages" => Ok(json!({ "pages": inspect::layout_pages(g.arrangement()) })),
-            "page_list_panels" => {
-                let page = resolve_page(&g, &payload)?;
-                Ok(json!({ "text": inspect::panel_table(g.arrangement(), &page) }))
+            // The one layout read. `page` narrows it, exactly as `inspect_patch {scope}` narrows
+            // the graph — the reason `page_list_panels` existed, without a second shape to keep
+            // honest or a second name to choose between.
+            "inspect_layout" => {
+                let page = match payload.get("page").filter(|v| !v.is_null()) {
+                    Some(_) => Some(resolve_page(&g, &payload)?),
+                    None => None,
+                };
+                Ok(json!({ "text": inspect::layout_tree(g.arrangement(), page.as_deref()) }))
             }
             "session_add_page" => {
                 let name = parse_str(&payload, "name")?.to_string();

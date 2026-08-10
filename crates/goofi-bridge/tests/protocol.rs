@@ -195,6 +195,18 @@ fn accepted(r: &Value) -> bool {
     r.get("error").is_none() && r.get("result").is_some()
 }
 
+/// The page names `inspect_layout` draws, in tab order — the read that used to have an op of its
+/// own. One line per page, `page \`name\`  [id]`, and the header holds no such line.
+async fn page_names(ws: &mut Ws, id: i64) -> Vec<String> {
+    let tree = call(ws, id, "inspect_layout", json!({})).await["result"]["text"]
+        .as_str()
+        .expect("inspect_layout answers text")
+        .to_string();
+    tree.lines()
+        .filter_map(|l| Some(l.trim().strip_prefix("page `")?.split_once('`')?.0.to_string()))
+        .collect()
+}
+
 fn panels(doc: &goofi_crdt::GraphDoc) -> Vec<String> {
     doc.to_json()["arrangement"]
         .as_object()
@@ -299,22 +311,15 @@ async fn a_layout_op_reaches_a_peers_replica_through_the_doc() {
     );
     assert_eq!(panels(&peer).len(), 2);
 
-    // The two reads a caller navigates by: the tree, and the page's panels as a table.
+    // The read a caller navigates by: the tree, which names the page, the panel and its type.
     let tree = call(&mut a, 2, "inspect_layout", json!({})).await["result"]["text"]
         .as_str()
         .expect("inspect_layout answers text")
         .to_string();
     assert!(tree.contains("Layout") && tree.contains(&fresh), "the tree names the page and the panel: {tree}");
-    let table = call(&mut a, 3, "page_list_panels", json!({ "page": "Layout" })).await["result"]["text"]
-        .as_str()
-        .expect("page_list_panels answers text")
-        .to_string();
-    assert!(table.contains(&fresh) && table.contains("empty"), "the table lists the new panel: {table}");
-    let pages = call(&mut a, 4, "session_list_pages", json!({})).await["result"]["pages"].clone();
-    assert_eq!(pages[0]["name"], json!("Layout"));
-    assert_eq!(pages[0]["panels"].as_u64(), Some(2));
+    assert!(tree.contains("empty"), "…and what a fresh split birthed there: {tree}");
     // A page is addressed by NAME, so an unknown one has to say which exist.
-    let miss = call(&mut a, 5, "page_list_panels", json!({ "page": "Nope" })).await;
+    let miss = call(&mut a, 3, "inspect_layout", json!({ "page": "Nope" })).await;
     assert!(miss["error"].as_str().is_some_and(|e| e.contains("Layout")), "{miss}");
 }
 
@@ -464,8 +469,8 @@ async fn a_layout_undo_leaves_a_peers_panel_standing() {
         !panels(d).is_empty() && d.read_at(&["arrangement", second.as_str()]).is_none()
     })
     .await;
-    let pages = call(&mut ws, 9, "session_list_pages", json!({})).await["result"]["pages"].clone();
-    assert_eq!(pages.as_array().map(Vec::len), Some(1), "the page went whole: {pages}");
+    let pages = page_names(&mut ws, 9).await;
+    assert_eq!(pages.len(), 1, "the page went whole: {pages:?}");
     assert_eq!(entry_count(&closed), entries, "and took the peer's split with it, leaving no orphan");
 
     // …and it still REACHES a page. The manager's own loader is the judge: an orphan makes the
@@ -550,9 +555,9 @@ async fn a_layout_undo_moves_a_panel_back_rather_than_resurrecting_its_split() {
     let arr = arrangement(&after);
     assert_eq!(page_roots(&after, "Layout").len(), 1, "a dead split did not come back: {arr}");
     assert!(panels(&after).contains(&peers), "the peer's panel survived a foreign undo: {arr}");
-    let table = call(&mut ws, 7, "page_list_panels", json!({ "page": "Layout" })).await["result"]
+    let page = call(&mut ws, 7, "inspect_layout", json!({ "page": "Layout" })).await["result"]
         ["text"].as_str().unwrap().to_string();
-    assert!(table.contains(&mine), "and the undo did move the panel back: {table}");
+    assert!(page.contains(&mine), "and the undo did move the panel back: {page}");
 
     // The manager's own loader is the judge of whether that page still holds together.
     let yaml = call(&mut ws, 8, "serialize", json!({})).await["result"]["yaml"]
@@ -1034,9 +1039,8 @@ async fn one_pass_over_every_session_and_page_write_op() {
     ok(&call(&mut ws, 1, "session_add_page", json!({ "name": "Second" })).await);
     ok(&call(&mut ws, 2, "session_rename_page", json!({ "from": "Second", "to": "Signals" })).await);
     ok(&call(&mut ws, 3, "session_reorder_page", json!({ "name": "Signals", "to_index": 0 })).await);
-    let pages = call(&mut ws, 4, "session_list_pages", json!({})).await["result"]["pages"].clone();
-    assert_eq!(pages[0]["name"], json!("Signals"), "rename and reorder both landed: {pages}");
-    assert_eq!(pages[1]["name"], json!("Layout"));
+    let pages = page_names(&mut ws, 4).await;
+    assert_eq!(pages, ["Signals", "Layout"], "rename and reorder both landed");
 
     // The new page's own panel, and a split on it to serve as a move destination.
     let d = sync_replica(&mut ws, |d| panels(d).len() == 2).await;
@@ -1054,15 +1058,14 @@ async fn one_pass_over_every_session_and_page_write_op() {
         .as_str().unwrap().to_string();
     ok(&call(&mut ws, 7, "page_move_panel",
         json!({ "page": "Layout", "panel": mine, "new_parent": dest, "order_index": 0 })).await);
-    let table = call(&mut ws, 8, "page_list_panels", json!({ "page": "Signals" })).await["result"]["text"]
+    let page = call(&mut ws, 8, "inspect_layout", json!({ "page": "Signals" })).await["result"]["text"]
         .as_str().unwrap().to_string();
-    assert!(table.contains(&mine), "the moved panel is on the destination page now: {table}");
+    assert!(page.contains(&mine), "the moved panel is on the destination page now: {page}");
 
     ok(&call(&mut ws, 9, "page_remove_panel", json!({ "page": "Signals", "panel": mine })).await);
     ok(&call(&mut ws, 10, "session_remove_page", json!({ "name": "Signals" })).await);
-    let left = call(&mut ws, 11, "session_list_pages", json!({})).await["result"]["pages"].clone();
-    assert_eq!(left.as_array().map(Vec::len), Some(1), "the page and its panels went: {left}");
-    assert_eq!(left[0]["name"], json!("Layout"));
+    let left = page_names(&mut ws, 11).await;
+    assert_eq!(left, ["Layout"], "the page and its panels went");
     // The last page and a page's last panel both refuse, rather than leaving nothing to look at.
     let last = call(&mut ws, 12, "session_remove_page", json!({ "name": "Layout" })).await;
     assert!(last["error"].as_str().is_some_and(|e| e.contains("last page")), "{last}");
@@ -1093,8 +1096,8 @@ async fn each_frozen_drag_gesture_is_one_op_and_therefore_one_undo() {
     ok(&call(&mut ws, 2, "session_add_page", json!({ "name": "Signals", "index": 0 })).await);
     let d = sync_replica(&mut ws, |d| panels(d).len() == 3).await;
     assert_eq!(
-        call(&mut ws, 3, "session_list_pages", json!({})).await["result"]["pages"][0]["name"],
-        json!("Signals"),
+        page_names(&mut ws, 3).await.first().map(String::as_str),
+        Some("Signals"),
         "the page landed at the tab index asked for"
     );
     let target = panels(&d).into_iter().find(|p| *p != first && *p != mine).expect("its panel");
@@ -1112,9 +1115,9 @@ async fn each_frozen_drag_gesture_is_one_op_and_therefore_one_undo() {
                 != Some(before[&mine]["parent"].clone())
     })
     .await;
-    let table = call(&mut ws, 5, "page_list_panels", json!({ "page": "Signals" })).await["result"]
+    let page = call(&mut ws, 5, "inspect_layout", json!({ "page": "Signals" })).await["result"]
         ["text"].as_str().unwrap().to_string();
-    assert!(table.contains(&mine), "the panel crossed pages in ONE op: {table}");
+    assert!(page.contains(&mine), "the panel crossed pages in ONE op: {page}");
     assert_ne!(arrangement(&dropped), before, "the drop actually moved something");
 
     let u = call_session(&mut ws, 6, "undo", json!({}), "s1").await;
@@ -3670,12 +3673,8 @@ async fn a_new_patch_is_empty_clean_and_unnamed() {
     let hello = recv_text(&mut next).await;
     assert_eq!(hello["payload"]["unsaved_changes"], json!(false), "a New patch has nothing to save");
     assert!(hello["payload"]["save_path"].is_null(), "…and no file behind it");
-    let pages = call(&mut next, 1, "session_list_pages", json!({})).await;
-    assert_eq!(
-        pages["result"]["pages"].as_array().map(Vec::len),
-        Some(1),
-        "…and none of the previous patch's panels: {pages}"
-    );
+    let pages = page_names(&mut next, 1).await;
+    assert_eq!(pages.len(), 1, "…and none of the previous patch's panels: {pages:?}");
     let ser = call(&mut next, 2, "serialize", json!({})).await;
     let yaml = ser["result"]["yaml"].as_str().unwrap();
     assert!(!yaml.contains("Oscillator"), "…and none of its nodes: {yaml}");

@@ -420,48 +420,20 @@ fn layout_line(l: &Layout, id: &str, depth: usize, out: &mut String) {
     }
 }
 
-/// The whole arrangement as an indented tree. `page_list_panels` alone cannot express the shape, so
-/// without this a caller could never discover the split id it has to name as a move target.
-pub fn layout_tree(l: &Layout) -> String {
+/// The arrangement as an indented tree — the ONE layout read. `page` narrows it to a single page,
+/// the way `inspect_patch {scope}` narrows the graph: a caller working on one page pays for one
+/// page, and a caller that needs the split id to name as a move target reads them all.
+pub fn layout_tree(l: &Layout, page: Option<&str>) -> String {
     let mut out = String::from(
-        "The editor arrangement. Pages are addressed by NAME; panels and splits by the id in [].\n\n",
+        "The editor arrangement. Pages are addressed by NAME; panels and splits by the id in []. \
+         The number on each entry is its share of its parent — what page_resize_split sets.\n\n",
     );
-    for p in l.pages() {
+    let pages = match page {
+        Some(p) => vec![p.to_string()],
+        None => l.pages(),
+    };
+    for p in pages {
         layout_line(l, &p, 0, &mut out);
-    }
-    out
-}
-
-/// The pages, in order, with what is on each — the one layout read that is structured rather than
-/// prose, because a caller resolves a name through it before every page op.
-pub fn layout_pages(l: &Layout) -> Value {
-    let pages: Vec<Value> = l
-        .pages()
-        .iter()
-        .enumerate()
-        .map(|(i, p)| json!({ "name": l.name_of(p), "id": p, "index": i, "panels": l.panels(p).len() }))
-        .collect();
-    json!(pages)
-}
-
-/// One page's panels as a markdown table. The share columns are the panel's fraction of the PAGE on
-/// each axis — a leaf has one size along its parent's axis, which alone would not say how big it
-/// looks.
-pub fn panel_table(l: &Layout, page: &str) -> String {
-    let mut out = format!(
-        "Panels on page `{}`\n\n| uid | type | node | width | height |\n|---|---|---|---|---|\n",
-        l.name_of(page).unwrap_or(page)
-    );
-    for id in l.panels(page) {
-        let (ty, node) = match l.get(&id) {
-            Some(Entry::Panel { panel_type, state, .. }) => (
-                panel_type.as_str(),
-                state.get("node").and_then(|v| v.as_str()).unwrap_or("—").to_string(),
-            ),
-            _ => continue,
-        };
-        let (w, h) = l.extent(&id);
-        out.push_str(&format!("| {id} | {ty} | {node} | {:.0}% | {:.0}% |\n", w * 100.0, h * 100.0));
     }
     out
 }
