@@ -6,7 +6,7 @@
 //! one of two execution tiers (see `make_exec`): inline, or detached onto an
 //! off-tick worker. Each node's latest output frame is exposed for the data plane.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -644,6 +644,27 @@ impl Graph {
         u
     }
 
+    /// The uid a loaded record restores at: the one the archive named — a `.gfi`'s node and scope
+    /// KEYS have always been uid hex — unless that key is unreadable or already `claimed` by an
+    /// earlier record of this same load, in which case it mints a fresh one so an odd file still
+    /// opens. `next_uid` is advanced past every restored uid, or the next `add_node` would mint
+    /// straight onto a node the load just brought back.
+    ///
+    /// Restoring rather than reminting is what makes a load a restore of IDENTITY. Everything keyed
+    /// by uid that the load does not itself remap depends on it: a viewer panel's `state.node`, an
+    /// editor panel's `subpatchPath`, the viewpoint. Reminting repointed all of them — and only
+    /// ever in an instance that had already held nodes, since a load into a fresh one renumbers to
+    /// the very values it saved.
+    fn restore_uid(&mut self, key: &str, claimed: &HashSet<Uid>) -> Uid {
+        match Uid::from_hex(key).filter(|u| !claimed.contains(u)) {
+            Some(u) => {
+                self.next_uid = self.next_uid.max(u.0 + 1);
+                u
+            }
+            None => self.mint(),
+        }
+    }
+
     /// The params a fresh instance of `type_name` starts from, resolved WITHOUT constructing the
     /// node. The `.gfi` load path needs these first: it folds the saved values in before building,
     /// so `setup()` sees what the user saved rather than the type's defaults.
@@ -739,21 +760,6 @@ impl Graph {
                 let _ = self.set_expression(uid, decl.group, decl.name, expr, true, false);
             }
         }
-    }
-
-    /// Build a `NodeEntry` from a manifest + a constructed node, run its `setup`,
-    /// seed its I/O buffers, assign a fresh name + minted uid, and insert it. Shared by the
-    /// catalog and runtime instantiation paths.
-    fn insert_node(
-        &mut self,
-        manifest: &'static NodeManifest,
-        node: Box<dyn goofi_node::Node>,
-        params: ParamGroups,
-    ) -> Uid {
-        let uid = self.mint();
-        let name = self.fresh_name(&manifest.type_name.to_lowercase());
-        self.insert_node_at(uid, name, manifest, node, params);
-        uid
     }
 
     /// Insert a constructed node at a SPECIFIC uid + display name — the reconcile path, which
@@ -2255,6 +2261,9 @@ impl Graph {
                 }
             }
         }
+        // Every uid this load hands out, restored or minted — what keeps two records from landing
+        // on one uid when a hand-written file spells the same number two ways.
+        let mut claimed: HashSet<Uid> = HashSet::new();
         let mut idmap: HashMap<String, Uid> = HashMap::new();
         for (old, rec) in nodes {
             let ty = rec["type"].as_str().unwrap();
@@ -2285,7 +2294,12 @@ impl Graph {
                 }
             }
             let (manifest, params, node) = self.build_node(ty, Some(params))?;
-            let uid = self.insert_node(manifest, node, params);
+            // The record's KEY is its uid — restored, not reminted (see `restore_uid`). The name is
+            // the type's fresh one only until the record's own `name` lands, just below.
+            let uid = self.restore_uid(old, &claimed);
+            claimed.insert(uid);
+            let name = self.fresh_name(&manifest.type_name.to_lowercase());
+            self.insert_node_at(uid, name, manifest, node, params);
             idmap.insert(old.clone(), uid);
             if let Some(name) = rec.get("name").and_then(|v| v.as_str()) {
                 self.force_set_name(uid, name);
@@ -2333,10 +2347,10 @@ impl Graph {
             }
         }
         // Reconstruct the flat sub-patch scopes. The members are already live flat nodes; here
-        // we mint fresh scope uids, re-tag membership from each scope's `nodes` list, and rebuild its
-        // stubs (remapping the stored inner uid). No def bodies to rehydrate — the runtime is flat.
+        // we restore each scope's uid, re-tag membership from its `nodes` list, and rebuild its
+        // stubs (resolving the stored inner uid). No def bodies to rehydrate — the runtime is flat.
         let scopes_v = doc.get("root").and_then(|r| r.get("scopes")).and_then(|v| v.as_object());
-        self.reload_scopes(scopes_v, &idmap);
+        self.reload_scopes(scopes_v, &idmap, &mut claimed);
         self.viewpoint = doc.get("viewpoint").cloned().unwrap_or(serde_json::Value::Null);
         // A corrupt arrangement costs the CHROME, never the patch — the graph is the value, and a
         // file that cannot be opened is the one outcome worse than a lost layout. The reason is kept
@@ -2355,21 +2369,26 @@ impl Graph {
     }
 
     /// Rebuild `scopes`/`scope_of` from a loaded v7 document, after the flat nodes/links are live.
-    /// Scope uids are minted fresh (remapped); a member uid resolves through `idmap` (a flat leaf) or
-    /// the fresh scope map (a nested-scope member). A stub's stored `inner_uid` resolves the same way.
+    /// A scope uid restores from its key like a node's does — an editor panel's `subpatchPath` names
+    /// scopes, and it is persisted beside the very scopes it points at. A member uid resolves through
+    /// `idmap` (a flat leaf) or the scope map (a nested-scope member); a stub's stored `inner_uid`
+    /// resolves the same way.
     fn reload_scopes(
         &mut self,
         scopes_v: Option<&serde_json::Map<String, serde_json::Value>>,
         idmap: &HashMap<String, Uid>,
+        claimed: &mut HashSet<Uid>,
     ) {
         use subpatch::{Dir, Scope, Stub};
         let Some(scopes) = scopes_v else { return };
 
-        // Mint fresh scope uids first, so parent refs + nested-member refs + stub inner refs resolve
-        // regardless of iteration order.
+        // Resolve every scope uid first, so parent refs + nested-member refs + stub inner refs
+        // resolve regardless of iteration order.
         let mut scopemap: HashMap<String, Uid> = HashMap::new();
         for old in scopes.keys() {
-            scopemap.insert(old.clone(), self.mint());
+            let uid = self.restore_uid(old, claimed);
+            claimed.insert(uid);
+            scopemap.insert(old.clone(), uid);
         }
         let resolve_uid = |s: &str| idmap.get(s).copied().or_else(|| scopemap.get(s).copied());
 
@@ -5887,6 +5906,92 @@ mod tests {
             let err = g.load_doc(other).unwrap_err();
             assert!(err.contains('7'), "the error names the version this build reads, got: {err}");
         }
+    }
+
+    /// A patch must come back with the uids it was saved with — INCLUDING when it loads into an
+    /// instance that has already held other nodes. Uid stability is what every by-uid reference a
+    /// load does NOT remap rests on: a viewer panel's `state.node`, an editor panel's
+    /// `subpatchPath`, the viewpoint. Reminting silently repointed all three — and only ever on the
+    /// SECOND patch, because a load into a fresh instance renumbers to the very values it saved.
+    #[test]
+    fn a_load_into_a_used_instance_keeps_the_saved_uids() {
+        let mut authored = Graph::new();
+        let a = authored.add_node("_TestEcho", None).unwrap();
+        let b = authored.add_node("_TestEcho", None).unwrap();
+        authored.add_link(a, "out", b, "in").unwrap();
+        let scope = authored.group_nodes(&[b], [0.0, 0.0]).unwrap();
+        // A viewer panel bound to `a`, exactly as the editor writes it.
+        let page = authored.arrangement().pages()[0].clone();
+        let panel = authored.arrangement().children(&page)[0].clone();
+        let w = authored
+            .arrangement()
+            .set_panel(
+                &page,
+                &panel,
+                Some("viewer"),
+                Some(serde_json::json!({ "node": a.to_hex(), "slot": "out" })),
+            )
+            .unwrap();
+        authored.arrangement_mut().apply(w);
+        let saved = authored.serialize();
+
+        // …into an instance that has already held OTHER nodes. This is the case the user hit, and
+        // the only one that can fail — a fixture loading into a fresh graph proves nothing here.
+        let mut used = Graph::new();
+        for _ in 0..3 {
+            used.add_node("_TestEcho", None).unwrap();
+        }
+        used.load_doc(&saved).unwrap();
+
+        let mut got = used.node_uids();
+        got.sort_by_key(|u| u.0);
+        assert_eq!(got, vec![a, b], "the saved node uids are restored, not reminted");
+        assert_eq!(used.scope_uids(), vec![scope], "and so is the scope uid `subpatchPath` names");
+        assert_eq!(used.scope_of(b), Some(scope), "membership still resolves");
+        assert_eq!(used.links.len(), 1, "the link survives");
+        let bound = match used.arrangement().get(&panel) {
+            Some(layout::Entry::Panel { state, .. }) => state["node"].as_str().unwrap().to_string(),
+            other => panic!("the viewer panel is gone: {other:?}"),
+        };
+        assert_eq!(Uid::from_hex(&bound), Some(a), "the panel still names a LIVE node");
+        assert!(used.contains(a), "…which is exactly the node it was bound to");
+    }
+
+    /// Restoring uids must advance the mint past them, or the next add collides with a node the
+    /// load just brought back.
+    #[test]
+    fn a_restored_uid_never_collides_with_the_next_mint() {
+        let mut authored = Graph::new();
+        for _ in 0..4 {
+            authored.add_node("_TestEcho", None).unwrap();
+        }
+        let saved = authored.serialize();
+
+        let mut fresh = Graph::new();
+        fresh.load_doc(&saved).unwrap();
+        let next = fresh.add_node("_TestEcho", None).unwrap();
+        assert!(!authored.contains(next), "the fresh mint is past every restored uid: {next}");
+        assert_eq!(fresh.node_count(), 5, "so the add landed rather than clobbering a restored node");
+    }
+
+    /// A manifest whose node keys are not uids — hand-written, or generated by another tool — still
+    /// opens: those nodes are minted fresh and the links keyed on the old names still resolve. Uid
+    /// restoration is an upgrade for files goofi itself wrote (their keys have always BEEN the uid),
+    /// never a new requirement on the format.
+    #[test]
+    fn a_manifest_with_non_uid_keys_still_loads() {
+        let doc = "version: 7\nroot:\n  nodes:\n    alpha: { type: _TestEcho }\n    beta: { type: _TestEcho }\n  links: [[alpha, out, beta, in]]\n";
+        let mut g = Graph::new();
+        g.add_node("_TestEcho", None).unwrap(); // a used instance here too
+        g.load_doc(doc).unwrap();
+        assert_eq!(g.node_count(), 2, "both nodes minted");
+        assert_eq!(g.links.len(), 1, "and the link between them resolved");
+
+        // Two keys spelling the SAME number are two records, so the second one mints rather than
+        // landing on — and silently replacing — the node the first restored.
+        let twinned = "version: 7\nroot:\n  nodes:\n    \"1\": { type: _TestEcho }\n    \"000000000001\": { type: _TestEcho }\n  links: []\n";
+        g.load_doc(twinned).unwrap();
+        assert_eq!(g.node_count(), 2, "both records survive a duplicated uid spelling");
     }
 
     #[test]
