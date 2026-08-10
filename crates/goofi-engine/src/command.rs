@@ -155,6 +155,18 @@ pub enum Command {
         page: crate::layout::Id,
         born: crate::layout::Id,
     },
+    /// The inverse of [`Command::LayoutClose`], and what a REDO of a close-then-undo replays. It puts
+    /// the closed subtree's own entries back — dead ids, referenced by nothing, so nothing is
+    /// stranded — and then RE-PLANS where its root belongs, through the same ladder a move's inverse
+    /// climbs. Restoring the slots the close's promote rewrote is precisely what it exists not to do:
+    /// that resurrects the split the promote dropped, on top of whatever a peer built in its place.
+    /// Degrades to a no-op like its twin rather than wedging a session's undo stack.
+    LayoutRevive {
+        dead: Vec<(crate::layout::Id, crate::layout::Entry)>,
+        born: crate::layout::Id,
+        /// Where `born` sat before the close. `None` for a page, which is put back by tab index.
+        home: Option<crate::layout::Home>,
+    },
     /// A layout op that MOVES a subtree. Its inverse is RE-PLANNED like a birth's, not restored:
     /// another move, back to wherever `home` still lives. Restoring the slots a move displaced puts
     /// back the split the move promoted away — on top of whatever a peer has since built in its
@@ -456,14 +468,23 @@ impl Command {
                 let Ok(writes) = plan else {
                     return Ok((Outcome::Ok, Command::Compound(vec![])));
                 };
-                // What each touched slot holds right now IS the forward that puts it back, so the
-                // pair is closed under inversion and a redo re-mints nothing.
-                let restore = writes
-                    .iter()
-                    .map(|(id, _)| (id.clone(), g.arrangement().get(id).cloned()))
-                    .collect();
+                // The subtree's own entries and where its root sat — the two things its revive needs,
+                // captured before anything moves. The slots the promote rewrote are NOT among them.
+                let dead = g.arrangement().dead_subtree(&born);
+                let home = g.arrangement().home_of(&born);
                 g.arrangement_mut().apply(writes);
-                Ok((Outcome::Ok, Command::LayoutBirth { writes: restore, page, born }))
+                Ok((Outcome::Ok, Command::LayoutRevive { dead, born, home }))
+            }
+
+            Command::LayoutRevive { dead, born, home } => {
+                let Ok(writes) = g.arrangement().revive(&dead, &born, home.as_ref()) else {
+                    return Ok((Outcome::Ok, Command::Compound(vec![])));
+                };
+                g.arrangement_mut().apply(writes);
+                // The page it LANDED on, which the ladder may well have changed — read back rather
+                // than carried, so the redo closes what is actually there.
+                let page = g.arrangement().page_of(&born).unwrap_or_default();
+                Ok((Outcome::Ok, Command::LayoutClose { page, born }))
             }
 
             Command::LayoutMove { writes, root, home } => {

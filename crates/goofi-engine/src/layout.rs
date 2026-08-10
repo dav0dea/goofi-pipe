@@ -265,7 +265,7 @@ impl Layout {
     /// The page an entry belongs to (itself, if it is one). `None` on a dangling parent or a cycle —
     /// the walk is bounded by the entry count, which is what makes [`Self::validate`] catch both in
     /// one step.
-    fn page_of(&self, id: &str) -> Option<Id> {
+    pub fn page_of(&self, id: &str) -> Option<Id> {
         let mut cur = id;
         for _ in 0..=self.entries.len() {
             match self.entries.get(cur)? {
@@ -692,6 +692,38 @@ impl Layout {
         Ok(self.diff(&next))
     }
 
+    /// Every entry of the subtree rooted at `root` — what a close carries into its own inverse. The
+    /// ids are dead the moment the close lands and nothing ever mints one again, so putting them back
+    /// strands nobody; WHERE the root lands is [`Self::revive`]'s question, not theirs.
+    pub fn dead_subtree(&self, root: &str) -> Vec<(Id, Entry)> {
+        self.subtree(root).into_iter().filter_map(|id| Some((id.clone(), self.get(&id)?.clone()))).collect()
+    }
+
+    /// Plan the inverse of a close: put `dead` back, then RE-PLAN where its root belongs —
+    /// [`Self::re_home`] for a subtree, the tab strip for a page. What it never does is pin the root
+    /// into the slot it held: the close promoted that split away, a peer may have built where it
+    /// stood, and a later undo may even have handed its id to a live wrapper.
+    pub fn revive(&self, dead: &[(Id, Entry)], root: &str, home: Option<&Home>) -> Result<Vec<Write>, String> {
+        let mut back = self.clone();
+        for (id, e) in dead {
+            let mut e = e.clone();
+            // The root's old parent is deliberately NOT restored, for the same reason its slot is not.
+            if id == root {
+                e.set_parent("");
+            }
+            back.insert(id.clone(), e);
+        }
+        let writes = match (back.get(root).cloned(), home) {
+            // A page hangs off nothing, so only its place in the tab strip needs re-planning — a
+            // peer's new page has taken an index since, and restoring the old one collides with it.
+            (Some(Entry::Page { name, order }), _) => back.reorder_page(&name, order)?,
+            (Some(_), Some(h)) => back.re_home(root, h)?,
+            _ => return Err(format!("`{root}` is not something a close can give back")),
+        };
+        back.apply(writes);
+        Ok(self.diff(&back))
+    }
+
     /// Set every child of `split` at once — what a resize drag commits on pointer-up, and the only
     /// op that sizes anything. Scaling ONE child and renormalizing its siblings would make N of them
     /// chase a moving target and never land on the fraction set the user drew.
@@ -1001,10 +1033,17 @@ impl Layout {
             return Err("arrangement: no pages".into());
         }
         let mut names = std::collections::HashSet::new();
+        let mut tabs = std::collections::HashSet::new();
         for p in &pages {
             let n = self.name_of(p).unwrap_or_default();
             if !names.insert(n) {
                 return Err(format!("arrangement: two pages are both named `{n}`"));
+            }
+            // The tab strip is the one child list no parent owns, so the per-entry order check
+            // below never reaches it — and a page restored into the slot it held collides here.
+            let tab = self.entries[p].order();
+            if !tabs.insert(tab) {
+                return Err(format!("arrangement: two pages share tab index {tab}"));
             }
         }
         // The per-entry checks run FIRST, because an entry that reaches no page is the CAUSE of the
@@ -1328,6 +1367,11 @@ mod tests {
         let mut v = two.to_json();
         v[&dup]["name"] = json!(DEFAULT_PAGE_NAME);
         assert!(Layout::from_json(&v).is_err(), "duplicate page names");
+        // The tab strip is the one child list no parent owns, so the per-parent order check above
+        // cannot see it — and a page put back into the slot it held is exactly what collides there.
+        let mut v = two.to_json();
+        v[&dup]["order"] = json!(0);
+        assert!(Layout::from_json(&v).is_err(), "two pages at one tab index");
     }
 
     #[test]

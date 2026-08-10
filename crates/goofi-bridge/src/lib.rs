@@ -930,6 +930,23 @@ fn apply_layout(
     Ok(json!({ "ok": true }))
 }
 
+/// Like [`apply_layout`], but for an op that CLOSES the subtree rooted at `born` (a page goes with
+/// its own, like `session_remove_page`). Its inverse restores those dead entries and then re-homes
+/// their root through the forward planners — pinning it back into the slot it held resurrects the
+/// split the close promoted away, on top of whatever a peer built there. See
+/// [`goofi_engine::Command::LayoutClose`].
+fn apply_layout_close(
+    state: &AppState,
+    g: &mut Graph,
+    session: &str,
+    page: &str,
+    born: &str,
+) -> Result<Value, String> {
+    let cmd = goofi_engine::Command::LayoutClose { page: page.to_string(), born: born.to_string() };
+    state.history.lock().unwrap().apply(g, session, cmd)?;
+    Ok(json!({ "ok": true }))
+}
+
 /// Like [`apply_layout`], but for an op that MOVES the subtree rooted at `root`. Its inverse is
 /// another move, re-planned at undo time (see [`goofi_engine::Command::LayoutMove`]) — restoring the
 /// slots a move displaced resurrects the split it promoted away, and strands whatever a peer built
@@ -1235,8 +1252,12 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
                 }
             }
             "session_remove_page" => {
-                let writes = g.arrangement().remove_page(parse_str(&payload, "name")?)?;
-                apply_layout(state, &mut g, &session, writes, None)
+                let name = parse_str(&payload, "name")?.to_string();
+                // Planned here only so a bad name answers teachably: `LayoutClose` re-plans it under
+                // this same lock, and DEGRADES rather than errors, which a user's own op must not.
+                g.arrangement().remove_page(&name)?;
+                let page = g.arrangement().page_named(&name).unwrap_or_default();
+                apply_layout_close(state, &mut g, &session, &page, &page)
             }
             "session_rename_page" => {
                 let (from, to) = (parse_str(&payload, "from")?, parse_str(&payload, "to")?);
@@ -1324,8 +1345,9 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
             "page_remove_panel" => {
                 let page = resolve_page(&g, &payload)?;
                 let panel = parse_str(&payload, "panel")?.to_string();
-                let writes = g.arrangement().remove_subtree(&page, &panel)?;
-                apply_layout(state, &mut g, &session, writes, None)
+                // Planned only for its teachable refusal — see `session_remove_page` above.
+                g.arrangement().remove_subtree(&page, &panel)?;
+                apply_layout_close(state, &mut g, &session, &page, &panel)
             }
             "set_node_viewers" => {
                 // Soft per-slot view-state (kind/settings/collapse) persisted to `.gfi` — NOT a

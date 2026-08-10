@@ -576,6 +576,47 @@ async fn undoing_a_move_puts_the_panel_back_at_the_index_and_share_it_had() {
 }
 
 #[tokio::test]
+async fn a_redo_after_a_peers_edit_re_plans_rather_than_replaying_the_slots_it_found() {
+    // The narrower half of the same class, and the one an undo test cannot see: what a REDO replays
+    // is the close's own inverse. Handing it the slots the close found puts the dead split back on
+    // top of whatever the peer built where it stood — undo, peer edit, redo, two roots on one page.
+    let base = start_server().await;
+    let (mut ws, _) = connect_async(format!("{base}/control")).await.unwrap();
+    let _ = recv_text(&mut ws).await;
+    let doc = sync_replica(&mut ws, |d| !panels(d).is_empty()).await;
+    let a = panels(&doc)[0].clone();
+
+    let born = call_session(&mut ws, 1, "page_split_panel",
+        json!({ "page": "Layout", "panel": a, "direction": "row" }), "s1").await["result"]
+        .as_str().expect("the new panel's id").to_string();
+    // The undo closes it with promote, so `a` takes the page root and the wrapper dies.
+    let u = call_session(&mut ws, 2, "undo", json!({}), "s1").await;
+    assert_eq!(u["result"]["changed"], json!(true), "{u}");
+    let gone = sync_replica(&mut ws, |d| {
+        !panels(d).is_empty() && d.read_at(&["arrangement", born.as_str()]).is_none()
+    })
+    .await;
+    assert_eq!(page_roots(&gone, "Layout"), vec![a.clone()], "the survivor took the page root");
+
+    let peer = call_session(&mut ws, 3, "page_split_panel",
+        json!({ "page": "Layout", "panel": a, "direction": "column" }), "s2").await["result"]
+        .as_str().expect("the peer's panel").to_string();
+    let r = call_session(&mut ws, 4, "redo", json!({}), "s1").await;
+    assert_eq!(r["result"]["changed"], json!(true), "{r}");
+
+    let after =
+        sync_replica(&mut ws, |d| panels(d).contains(&born) && panels(d).contains(&peer)).await;
+    let arr = arrangement(&after);
+    assert_eq!(page_roots(&after, "Layout").len(), 1, "a dead split did not come back: {arr}");
+    assert!(panels(&after).contains(&peer), "the peer's panel survived a foreign redo: {arr}");
+    let yaml = call(&mut ws, 5, "serialize", json!({})).await["result"]["yaml"]
+        .as_str().unwrap().to_string();
+    let r = call(&mut ws, 6, "load_text", json!({ "content": yaml })).await;
+    assert_eq!(r["result"]["layout_warning"], Value::Null,
+        "the manager saved an arrangement it cannot itself open: {r}");
+}
+
+#[tokio::test]
 async fn one_pass_over_every_session_and_page_write_op() {
     // The dispatch arms are pure argument plumbing over planners that are unit-tested, so what is
     // NOT otherwise checked is that each arm reads the argument name its registry row advertises.
