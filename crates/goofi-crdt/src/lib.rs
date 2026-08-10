@@ -174,7 +174,7 @@ fn canonical_link(v: &serde_json::Value) -> Option<serde_json::Value> {
     }))
 }
 
-/// The control-plane document: four roots — three maps keyed by uid/name, plus the ordered
+/// The control-plane document: five roots — four maps keyed by uid/name/id, plus the ordered
 /// `links` array. What each root's values contain is the projection's business, not this crate's.
 pub struct GraphDoc {
     doc: Doc,
@@ -184,6 +184,9 @@ pub struct GraphDoc {
     /// Patch globals — a Map<name, {value, type, system}>. System globals carry `system: true` (the
     /// panel disables their delete). Reconciled from the engine like `nodes`/`instances`.
     globals: MapRef,
+    /// The editor's panel arrangement — a Map<id, {kind, parent, order, size, …}>. Flat for exactly
+    /// the reason this crate erases nested arrays: an id-keyed map of scalars is what survives.
+    arrangement: MapRef,
 }
 
 impl GraphDoc {
@@ -193,7 +196,8 @@ impl GraphDoc {
         let links = doc.get_or_insert_array("links");
         let instances = doc.get_or_insert_map("instances");
         let globals = doc.get_or_insert_map("globals");
-        GraphDoc { doc, nodes, links, instances, globals }
+        let arrangement = doc.get_or_insert_map("arrangement");
+        GraphDoc { doc, nodes, links, instances, globals, arrangement }
     }
 
     /// The uids of all nodes currently in the doc.
@@ -204,7 +208,7 @@ impl GraphDoc {
 
     /// Reconcile the ENTIRE control-plane doc from one JSON projection of the engine graph — the
     /// generic mirror that replaces the typed writer zoo. `target` is `{nodes, links, instances,
-    /// globals}`, each root's contents opaque here. Idempotent and in-place (see
+    /// globals, arrangement}`, each root's contents opaque here. Idempotent and in-place (see
     /// [`reconcile_map`]); a key omitted from the projection (a cleared `expr`, an unwired
     /// boundary's `inner_node`) is pruned.
     pub fn reconcile_root(&mut self, target: &serde_json::Value) {
@@ -212,18 +216,21 @@ impl GraphDoc {
         let nodes = target.get("nodes").and_then(|v| v.as_object()).unwrap_or(&empty);
         let instances = target.get("instances").and_then(|v| v.as_object()).unwrap_or(&empty);
         let globals = target.get("globals").and_then(|v| v.as_object()).unwrap_or(&empty);
+        let arrangement = target.get("arrangement").and_then(|v| v.as_object()).unwrap_or(&empty);
         {
             let mut txn = self.doc.transact_mut();
             reconcile_map(&mut txn, &self.nodes, nodes);
             reconcile_map(&mut txn, &self.instances, instances);
             reconcile_map(&mut txn, &self.globals, globals);
+            reconcile_map(&mut txn, &self.arrangement, arrangement);
         }
         // Links are an ordered, manager-authoritative array (no client leaf-merge) → the idempotent
         // skip-if-equal wholesale replace, reused verbatim, straight from the projection's JSON array.
         self.replace_links(target.get("links").and_then(|v| v.as_array()).map(|a| a.as_slice()).unwrap_or(&[]));
     }
 
-    /// The entire control-plane doc as plain JSON (`{nodes, links, instances, globals}`) — the
+    /// The entire control-plane doc as plain JSON (`{nodes, links, instances, globals,
+    /// arrangement}`) — the
     /// generic reader, via yrs' own `ToJson`. The manager/tests navigate this instead of typed getters.
     pub fn to_json(&self) -> serde_json::Value {
         let txn = self.doc.transact();
@@ -232,6 +239,7 @@ impl GraphDoc {
             "links": any_to_json(self.links.to_json(&txn)),
             "instances": any_to_json(self.instances.to_json(&txn)),
             "globals": any_to_json(self.globals.to_json(&txn)),
+            "arrangement": any_to_json(self.arrangement.to_json(&txn)),
         })
     }
 
@@ -630,6 +638,37 @@ mod tests {
         let before = doc.to_json();
         doc.reconcile_root(&proj());
         assert_eq!(doc.to_json(), before, "re-mirroring identical globals is a no-op");
+    }
+
+    #[test]
+    fn reconcile_mirrors_the_flat_arrangement_root() {
+        use serde_json::json;
+        // The fifth root, and the whole reason the arrangement is flat: an id-keyed map of scalars
+        // is exactly the `nodes` shape this reconciler already handles. A NESTED panel tree would
+        // have lost its `children` arrays here, silently.
+        let proj = |ty: &str| json!({ "nodes": {}, "links": [], "instances": {},
+            "arrangement": {
+                "page-1": { "kind": "page", "name": "Layout", "order": 0 },
+                "split-3": { "kind": "split", "parent": "page-1", "order": 0, "size": 1.0, "axis": "row" },
+                "panel-2": { "kind": "panel", "parent": "split-3", "order": 0, "size": 0.5,
+                             "panel_type": ty, "state": "{\"node\":\"osc0\"}" },
+            }});
+        let mut doc = GraphDoc::new();
+        doc.reconcile_root(&proj("viewer"));
+        assert_eq!(doc.read_at(&["arrangement", "panel-2", "parent"]), Some(json!("split-3")));
+        assert_eq!(doc.read_at(&["arrangement", "split-3", "axis"]), Some(json!("row")));
+        assert_eq!(doc.read_at(&["arrangement", "panel-2", "size"]).and_then(|v| v.as_f64()), Some(0.5));
+        assert_eq!(doc.read_at(&["arrangement", "panel-2", "state"]), Some(json!("{\"node\":\"osc0\"}")));
+
+        let before = doc.to_json();
+        doc.reconcile_root(&proj("viewer"));
+        assert_eq!(doc.to_json(), before, "re-mirroring an unchanged arrangement writes nothing");
+        doc.reconcile_root(&proj("console"));
+        assert_ne!(doc.to_json(), before, "a real panel-type change is a logical change");
+
+        // Closing a panel prunes its entry, exactly as removing a global prunes its key.
+        doc.reconcile_root(&json!({ "nodes": {}, "links": [], "instances": {}, "arrangement": {} }));
+        assert!(doc.read_at(&["arrangement", "panel-2"]).is_none());
     }
 
     #[test]

@@ -120,7 +120,10 @@ pub fn sync_graph_to_doc(g: &Graph, doc: &mut GraphDoc) {
         globals.insert(name.to_string(), entry);
     }
 
-    doc.reconcile_root(&json!({ "nodes": nodes, "links": links, "instances": instances, "globals": globals }));
+    // The arrangement projects through the very `to_json` the `.gfi` uses — ONE shape for the
+    // persisted patch and the live replica, so a panel cannot mean two things.
+    doc.reconcile_root(&json!({ "nodes": nodes, "links": links, "instances": instances,
+        "globals": globals, "arrangement": g.arrangement().to_json() }));
 }
 
 #[cfg(test)]
@@ -178,6 +181,34 @@ mod tests {
         // User global carries system:false.
         assert_eq!(doc.read_at(&["globals", "subject", "system"]), Some(json!(false)));
         assert_eq!(doc.read_at(&["globals", "subject", "value"]).as_ref().and_then(|v| v.as_str()), Some("P07"));
+    }
+
+    #[test]
+    fn mirror_reflects_the_flat_arrangement() {
+        use goofi_engine::layout::Axis;
+        // The arrangement is the fifth root, projected through the very `to_json` the `.gfi` uses —
+        // one shape, so the persisted patch and the live replica cannot disagree about a panel.
+        let mut g = Graph::new();
+        let page = g.arrangement().pages()[0].clone();
+        let panel = g.arrangement().children(&page)[0].clone();
+        let (w, fresh) = g.arrangement().split_panel(&page, &panel, Axis::Row, 0.5).unwrap();
+        g.arrangement_mut().apply(w);
+
+        let mut doc = GraphDoc::new();
+        sync_graph_to_doc(&g, &mut doc);
+        assert_eq!(doc.read_at(&["arrangement", page.as_str(), "name"]), Some(json!("Layout")));
+        assert_eq!(doc.read_at(&["arrangement", fresh.as_str(), "panel_type"]), Some(json!("empty")));
+        // The pointers a client rebuilds the tree from.
+        let split = g.arrangement().get(&fresh).unwrap().parent().unwrap().to_string();
+        assert_eq!(doc.read_at(&["arrangement", split.as_str(), "axis"]), Some(json!("row")));
+        assert_eq!(doc.read_at(&["arrangement", panel.as_str(), "parent"]), Some(json!(split.clone())));
+        assert_eq!(doc.read_at(&["arrangement", fresh.as_str(), "order"]).and_then(|v| v.as_f64()), Some(1.0));
+
+        // Closing it again prunes the entry — the mirror is authoritative, not additive.
+        let w = g.arrangement().remove_subtree(&page, &fresh).unwrap();
+        g.arrangement_mut().apply(w);
+        sync_graph_to_doc(&g, &mut doc);
+        assert!(doc.read_at(&["arrangement", fresh.as_str()]).is_none(), "the closed panel is pruned");
     }
 
     #[test]
