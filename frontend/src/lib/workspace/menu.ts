@@ -9,11 +9,6 @@ export interface MenuItem {
 	 * way the bar button for the same command does. A glyph would be a second rendering path. */
 	icon?: IconName;
 	action?: () => void;
-	/** A stable handle for a row that has more than one door onto it. The header's `Save As…` is
-	 * the case: it is a row of the Save split-button's dropdown until the caret spills, and a row
-	 * of the ⋯ overflow menu after — so a driver that must reach it at ANY width cannot key on
-	 * which menu it is in, and keying on the label alone would break with the wording. */
-	testid?: string;
 	items?: MenuItem[];
 	separator?: boolean;
 	disabled?: boolean;

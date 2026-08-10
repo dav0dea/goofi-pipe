@@ -2,7 +2,7 @@ import { test, expect, type Page } from '@playwright/test';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { waitForApp, resetPatch } from '../lib/app';
+import { waitForApp } from '../lib/app';
 import { addNode, waitForNode } from '../lib/goofi';
 
 /**
@@ -27,6 +27,15 @@ test.beforeAll(() => {
 	scratch = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'goofi-e2e-dirty-')));
 });
 test.afterAll(() => fs.rmSync(scratch, { recursive: true, force: true }));
+
+/** Both tests below NAME the patch (`saveClean`), and the name is the manager's — it outlives the
+ * page and turns every later spec's Save into a silent overwrite of this file. Their own resets are
+ * the last statement of the body, which a red above never reaches, so one failure here cascades
+ * `a previous spec left the patch NAMED` through the rest of the run. Hand it back regardless,
+ * matching `touch-authoring.spec.ts`. */
+test.afterEach(async ({ page }) => {
+	await page.evaluate(() => (window as any).goofi.commands.newPatch()).catch(() => {});
+});
 
 function unsavedChanges(page: Page): Promise<boolean> {
 	return page.evaluate(() => (window as any).goofi.query.graph().unsavedChanges);
@@ -76,10 +85,6 @@ test('entering and leaving a sub-patch never dirties the patch', async ({ page }
 	// empty instance behind, and a leaked sub-patch is a second `subpatch-node` for the next run.
 	await page.evaluate((i) => (window as any).goofi.commands.expandInstance(i), inst);
 	await expect(group, 'the sub-patch facade is gone').toHaveCount(0);
-	// `resetPatch`, not `clearGraph`: `saveClean` above NAMED the patch, and the name is the
-	// manager's now — it would otherwise ride into every later spec and turn its Save into a
-	// silent overwrite. (This file is #11 of the run; that is exactly how it happened.)
-	await resetPatch(page);
 });
 
 test('changing a docked viewer’s type DOES dirty the patch', async ({ page }) => {
@@ -121,5 +126,4 @@ test('changing a docked viewer’s type DOES dirty the patch', async ({ page }) 
 		panelId
 	);
 	await page.waitForTimeout(PAST_DEBOUNCE);
-	await resetPatch(page); // …and the NAME `saveClean` gave it.
 });

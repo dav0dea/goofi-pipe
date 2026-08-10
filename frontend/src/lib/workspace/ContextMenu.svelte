@@ -134,7 +134,6 @@
 			     tree rather than drawn with a mark only a sighted user can read. -->
 			<button
 				class="item"
-				data-testid={item.testid}
 				disabled={item.disabled}
 				onclick={(e) => pick(item, i, e)}
 				onpointerenter={(e) => hover(item, i, e)}

@@ -81,12 +81,13 @@ export function menuRow(page: Page, label: string): Locator {
  * Save As has TWO doors and which one exists depends on the width: it is a row of the Save
  * split-button's dropdown while the caret is in the bar, and a row of the ⋯ overflow menu after the
  * caret spills — which it does FIRST among the actions, so at 320/412px only the ⋯ route is left.
- * The row carries `topbar-save-as` in both, so this reaches it by opening whichever menu is
- * available and clicking the same handle.
+ * It is the same DOM in both, so `menuRow` reaches it either way; the wording is already this
+ * suite's own, pinned by `AS_ROWS` and asserted for this very row in `topbar-overflow.spec.ts`, so
+ * a rename fails there by name rather than here as a missing element.
  */
 export async function openSaveAs(page: Page): Promise<void> {
 	const caret = page.getByTestId('topbar-save-caret');
 	if (await caret.isVisible()) await caret.click();
 	else await openOverflow(page);
-	await page.getByTestId('topbar-save-as').click();
+	await menuRow(page, 'Save As…').click();
 }
