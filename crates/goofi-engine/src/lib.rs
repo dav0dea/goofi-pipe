@@ -1607,13 +1607,17 @@ impl Graph {
         // Fold what the node HAS onto what its type declares NOW, rather than replaying the old map
         // verbatim: a rescan restart is usually prompted by an edit to the file, and an edit that
         // adds a param would otherwise leave the instance without it while the palette advertises
-        // it. Same order and same rule as the `.gfi` load — defaults first, saved values over them.
+        // it. Same order and same rule as the `.gfi` load — defaults first, and then only the
+        // saved VALUE over each: the declaration's bounds, options, `refresh` flag and variant are
+        // the edited file's to state. Replacing the whole `Param` would silently keep the instance
+        // on the old spec while the inspector already draws the new one from the catalog.
         let mut params = self.default_params_of(type_name)?;
         for (group, held) in &held {
             let Some(g) = params.get_mut(group) else { continue };
             for (name, value) in held {
                 if let Some(slot) = g.get_mut(name) {
-                    *slot = value.clone();
+                    // `fire_triggers: false` — a rescan must not trip a node's trigger.
+                    *slot = param_from_json(slot, &param_value_json(value), false);
                 }
             }
         }
@@ -5095,6 +5099,26 @@ mod tests {
         factory: rt_stub_factory,
     };
 
+    // The same type again, edited to WIDEN the param's bound rather than to add a param — the
+    // spec changed while the name did not.
+    static WIDENED_PARAMS: &[ParamDecl] = &[ParamDecl {
+        group: "shape",
+        name: "gain",
+        spec: ParamSpec::Float { default: 3.0, min: 0.0, max: 100.0 },
+        default_expr: None,
+        doc: None,
+    }];
+    static RT_WIDENED_MANIFEST: NodeManifest = NodeManifest {
+        type_name: "_RuntimeDyn",
+        category: "runtime",
+        doc: "runtime-registered node type, edited to widen a param's bound",
+        inputs: &[],
+        outputs: RT_OUT,
+        params: WIDENED_PARAMS,
+        isolation: Isolation::InProcess,
+        factory: rt_stub_factory,
+    };
+
     // A runtime manifest whose name collides with a built-in catalog type.
     static COLLIDE_MANIFEST: NodeManifest = NodeManifest {
         type_name: "Oscillator",
@@ -5247,6 +5271,19 @@ mod tests {
             p.get("common").unwrap().get("max_frequency").and_then(Param::as_f64),
             Some(11.0),
             "a value the user set survives the restart"
+        );
+
+        // The next edit changed the param's SPEC, not the set of names. Carrying the held `Param`
+        // over wholesale would revert the bound (and, for a `Str`, the `refresh` flag the palette
+        // now advertises) — so the fold must take the value only, exactly as the `.gfi` load does.
+        g.update_param(uid, "shape", "gain", Param::float(5.0, 0.0, 10.0)).unwrap();
+        g.register_dyn_type(&RT_WIDENED_MANIFEST, Box::new(|_| Box::new(RtSource { base: 1.0 })));
+        g.restart_node(uid).unwrap();
+
+        let gain = g.params(uid).unwrap().get("shape").unwrap().get("gain").cloned();
+        assert!(
+            matches!(gain, Some(Param::Float { value, vmax, .. }) if value == 5.0 && vmax == 100.0),
+            "the restart rebuilt against the type's current spec, carrying only the value: {gain:?}"
         );
     }
 
