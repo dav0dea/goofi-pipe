@@ -2230,28 +2230,20 @@ async fn load_restores_the_graph_and_the_workspace_from_an_archive() {
     .await
     .unwrap();
 
+    // Collected in whichever order they arrive: the order stopped being load-bearing when the
+    // manager took ownership of the save path (C38, task 5), because the snapshot the client
+    // applies wholesale now names the same file, so neither message can clobber the other.
     let mut replaced = None;
     let mut save_path = None;
-    let mut order: Vec<&str> = Vec::new();
     while replaced.is_none() || save_path.is_none() {
         let m = recv_text(&mut ws).await;
         assert!(m.get("error").is_none(), "the archive loads; got {m}");
         match m.get("event").and_then(|v| v.as_str()) {
-            Some("graph_replaced") => {
-                order.push("graph_replaced");
-                replaced = Some(m);
-            }
-            Some("save_path_changed") => {
-                order.push("save_path_changed");
-                save_path = Some(m);
-            }
+            Some("graph_replaced") => replaced = Some(m),
+            Some("save_path_changed") => save_path = Some(m),
             _ => {}
         }
     }
-    // The order the two facts happen in. It stopped being load-bearing when the manager took
-    // ownership of the save path (C38, task 5): the snapshot the client applies wholesale now
-    // names the same file, so neither message can clobber the other.
-    assert_eq!(order, ["graph_replaced", "save_path_changed"], "the path is announced last");
     assert!(replaced.unwrap()["payload"]["runtime"].is_object());
     // The replaced graph itself arrives through the doc (the snapshot carries no node list).
     let doc = sync_replica(&mut ws, |d| d.node_ids().len() == 1).await;
@@ -2330,6 +2322,14 @@ async fn a_new_patch_is_empty_clean_and_unnamed() {
     let reply = call(&mut ws, 4, "new", json!({})).await;
     assert!(reply.get("error").is_none(), "New is accepted; got {reply}");
 
+    // The canvas of a tab that was ALREADY open when New fired. `graph_replaced` carries no node
+    // list, so the only thing that empties it is the dispatch tail's re-mirror — which `new` gets
+    // solely by not being in `read_only`, a silent, string-keyed omission. Read on THIS socket
+    // rather than a fresh one: the broadcast deltas queued on it carry the Oscillator, so the
+    // replica has to be walked back to empty rather than merely starting there.
+    let doc = sync_replica(&mut ws, |d| d.node_ids().is_empty()).await;
+    assert!(doc.node_ids().is_empty(), "an open tab's canvas is emptied too: {:?}", doc.node_ids());
+
     // Read back the way a joining client reads it — a fresh `hello`, as `is_dirty`/`save_path_on_connect`
     // do, which also keeps the dirty assertion clear of the save's own `unsaved_changes` event.
     let (mut next, _) = connect_async(format!("{base}/control")).await.unwrap();
@@ -2340,6 +2340,14 @@ async fn a_new_patch_is_empty_clean_and_unnamed() {
     let ser = call(&mut next, 1, "serialize", json!({})).await;
     let yaml = ser["result"]["yaml"].as_str().unwrap();
     assert!(!yaml.contains("Oscillator"), "…and none of its nodes: {yaml}");
+
+    // The manager's command history goes with the patch too: an entry belonging to the graph that
+    // just went away has nothing left to flip against, and its redo would put the node back. Last,
+    // because the dispatch tail dirties any op it does not recognise as read-only — including an
+    // undo that changed nothing — which would otherwise perturb the assertions above.
+    let undo = call(&mut ws, 5, "undo", json!({})).await;
+    assert_eq!(undo["result"]["changed"], json!(false), "nothing to undo across a New; got {undo}");
+    assert_eq!(undo["result"]["can_undo"], json!(false), "…and none offered");
 }
 
 /// The workspace is half of what a patch is, so New mounts one of its own. `open_workspace` is how

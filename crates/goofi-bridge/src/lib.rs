@@ -1287,6 +1287,8 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
     // plane. Being here is also what keeps it out of the dirty tail below — the whole block is
     // skipped — which is the right door for it, since it is a question, not an op that "did not
     // happen to be an edit".
+    // `new` is deliberately NOT here: it empties the graph, and the re-mirror is the only thing
+    // that empties an already-open tab's canvas with it (`graph_replaced` carries no node list).
     let read_only =
         matches!(op.as_str(), "list_nodes" | "serialize" | "save" | "list_dir" | "open_workspace");
     if result.is_ok() && !read_only {
