@@ -6923,4 +6923,42 @@ mod tests {
         assert_eq!(g.error_age(ok), None, "a healthy node has no error to age");
     }
 
+    /// …and the clock belongs to the MESSAGE, not to the mere presence of an error. A node that
+    /// has been failing one way for a minute and one that just started failing a different way are
+    /// different diagnoses, and reporting the older onset for the newer fault would send a reader
+    /// looking at whatever changed a minute ago.
+    #[test]
+    fn a_different_failure_restarts_the_error_clock() {
+        struct Changing(usize);
+        impl Node for Changing {
+            fn process(&mut self, _i: &Inputs<'_>, _o: &mut Outputs<'_>, _c: &mut NodeCtx, _p: &Params<'_>) -> NodeResult {
+                self.0 += 1;
+                Err(format!("failure {}", self.0).into())
+            }
+        }
+        static CHANGING: NodeManifest = NodeManifest {
+            type_name: "_TestChangingError",
+            category: "test",
+            doc: "fails differently every tick",
+            inputs: &[],
+            outputs: P_OUT,
+            params: NO_PARAMS,
+            isolation: Isolation::InProcess,
+            factory: || Box::new(Changing(0)),
+        };
+        let mut g = Graph::new();
+        g.register_dyn_type(&CHANGING, Box::new(|_| Box::new(Changing(0))));
+        let uid = g.add_node("_TestChangingError", None).unwrap();
+        g.tick();
+        assert_eq!(g.last_error(uid), Some("failure 1"));
+
+        std::thread::sleep(Duration::from_millis(300));
+        g.tick();
+        assert_eq!(g.last_error(uid), Some("failure 2"), "the node is failing differently now");
+        let age = g.error_age(uid).expect("still errored");
+        assert!(
+            age < Duration::from_millis(150),
+            "a new message is a new error, not the old one still standing: {age:?}",
+        );
+    }
 }
