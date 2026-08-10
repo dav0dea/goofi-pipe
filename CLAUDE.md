@@ -309,10 +309,11 @@ multi-second device scan stalls the tick. Not yet wired for the subprocess tier.
 Plain top-level imports for all deps. The same file works on **both** Python tiers —
 the discovery probe imports it in a real interpreter and reports whether it is
 free-threading-safe; a node that isn't (or whose deps are missing on `.ftvenv`)
-routes to the subprocess tier, where the palette groups it under the `subprocess` category.
+routes to the subprocess tier. (The palette is one flat list and no longer groups by category —
+each row carries its *provenance*, builtin vs this patch, not its tier.)
 A node whose deps are missing on BOTH interpreters fails its probe and is registered as
-**unavailable**: it appears in the palette greyed and unclickable under the `unavailable`
-category, its tooltip naming the missing module — a node that cannot load explains itself
+**unavailable**: it appears in the palette greyed and unclickable, labelled `unavailable` and
+with its tooltip naming the missing module — a node that cannot load explains itself
 instead of silently vanishing. A raise inside `process()` is a per-tick error frame, not a
 crash.
 
