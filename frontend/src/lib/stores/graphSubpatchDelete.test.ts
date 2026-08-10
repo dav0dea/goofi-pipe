@@ -32,7 +32,7 @@ function snapshot(): GraphSnapshot {
 		save_path: null,
 		unsaved_changes: false,
 		instance_id: 'sess1',
-		layout: null
+		viewpoint: null
 	} as never;
 }
 
@@ -82,63 +82,9 @@ describe('a wholesale load resets the client history (lockstep with the manager)
 	});
 });
 
-describe('undo of a delete re-binds panels the delete emptied', () => {
-	beforeEach(() => {
-		history().reset();
-		workspace().reset();
-	});
-
-	it('captures bound panels on removeNode and re-binds them on undo', async () => {
-		const fc = new FakeControl();
-		const g = new GraphStore(fc);
-		const ws = workspace();
-		history().configureDeps(() => ({ control: fc, graph: g, workspace: ws }));
-
-		// Bind a Parameters panel to the node, then isolate the delete (drop the layout entry).
-		const panelId = ws.activePanelId!;
-		ws.setType(panelId, 'parameters');
-		ws.linkNodeToPanel(panelId, 'osc0');
-		expect(ws.panelsBoundTo('osc0').map((p) => p.panelId)).toContain(panelId);
-		history().reset();
-
-		// Delete: removeNode captures the bound panels BEFORE the RPC; the doc-reconcile then empties
-		// them when the node vanishes (simulated here — FakeControl doesn't mutate the doc).
-		await g.removeNode('osc0');
-		ws.clearNodeRefs('osc0');
-		expect(ws.panelsBoundTo('osc0')).toHaveLength(0);
-
-		// Undo delegates to the manager AND re-binds the emptied panel (the graph executor's only
-		// client-local side-effect).
-		await history().undo();
-		expect(ws.panelsBoundTo('osc0').map((p) => p.panelId)).toContain(panelId);
-	});
-
-	// The capture (`panelsBoundTo`) and the clearing (`clearNodeRefs`) both walk EVERY tab, so the
-	// restore has to as well — otherwise a panel bound in a background tab is emptied by the delete
-	// and never re-bound, and the undo silently loses it.
-	it('re-binds a panel that lives in a BACKGROUND layout tab', async () => {
-		const fc = new FakeControl();
-		const g = new GraphStore(fc);
-		const ws = workspace();
-		history().configureDeps(() => ({ control: fc, graph: g, workspace: ws }));
-
-		// Bind a Parameters panel in a second tab, then leave that tab.
-		const firstTab = ws.state.activeWorkspaceId;
-		ws.addTab('parameters');
-		const panelId = ws.activePanelId!;
-		ws.linkNodeToPanel(panelId, 'osc0');
-		ws.selectTab(firstTab);
-		expect(ws.panelsBoundTo('osc0').map((p) => p.panelId)).toContain(panelId);
-		history().reset();
-
-		await g.removeNode('osc0');
-		ws.clearNodeRefs('osc0');
-		expect(ws.panelsBoundTo('osc0')).toHaveLength(0);
-
-		await history().undo();
-		expect(ws.panelsBoundTo('osc0').map((p) => p.panelId)).toContain(panelId);
-	});
-});
+// (The panels a delete empties, and their re-binding on undo, moved to the MANAGER: `RemoveNode`
+// clears every panel bound to a uid it takes, so one inverse restores both. Pinned over the real
+// wire by `deleting_a_node_empties_the_panels_bound_to_it_and_an_undo_binds_them_back`.)
 
 describe('deleting a collapsed sub-patch instance is undoable (manager owns the subtree capture)', () => {
 	beforeEach(() => history().reset());

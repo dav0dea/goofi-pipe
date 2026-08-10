@@ -22,10 +22,9 @@ pub enum Surface {
     /// itself, once the harness lives inside that patch's workspace; `save`/`serialize`/`list_dir`
     /// are the human file-browser's half of the same door. `new` shares that very arm: it empties
     /// the patch AND clears the undo history, so an agent that called it could not take it back
-    /// (user, 2026-08-10 — a human who wants a fresh patch makes one). `set_layout` is here
-    /// because the flat layout ops supersede it (plan Task 2) and it should never become an agent
-    /// tool on the way; `set_viewpoint` is here because a viewpoint belongs to a client that has a
-    /// screen — an agent has no camera to move, and moving the human's would be the whole hazard.
+    /// (user, 2026-08-10 — a human who wants a fresh patch makes one). `set_viewpoint` is here
+    /// because a viewpoint belongs to a client that has a screen — an agent has no camera to move,
+    /// and moving the human's would be the whole hazard.
     ControlOnly,
 }
 
@@ -105,9 +104,6 @@ pub static REGISTRY: &[Op] = &[
     Op { name: "set_node_pos", surface: Mcp, writes: true, args: "node:uid! pos:float2!",
          doc: "Move a node on the canvas.",
          result: "{ok: true}" },
-    Op { name: "set_layout", surface: ControlOnly, writes: true, args: "layout:json! intent:string",
-         doc: "Store the editor's panel arrangement verbatim. `intent:\"navigation\"` means the user only looked around, so it must not dirty the patch.",
-         result: "{ok: true}" },
     Op { name: "set_viewpoint", surface: ControlOnly, writes: true, args: "viewpoint:json!",
          doc: "Store where this client is looking — active page, maximize, camera, each panel's sub-patch path. Persisted, never converged, never dirtying.",
          result: "{ok: true}" },
@@ -120,7 +116,7 @@ pub static REGISTRY: &[Op] = &[
     Op { name: "session_add_page", surface: Mcp, writes: true,
          args: "name:string! index:int subtree:string",
          doc: "Add a layout page at `index` in the tab strip. It holds one node-editor panel — or, with `subtree`, is built AROUND an existing panel or split, which is the drag-onto-the-tab-bar gesture. The name must be free: it is how every page op addresses it.",
-         result: "{ok: true}" },
+         result: "{page, panel} — the new page's id and its root panel's" },
     Op { name: "session_remove_page", surface: Mcp, writes: true, args: "name:string!",
          doc: "Remove a page and every panel on it. The last page stays.",
          result: "{ok: true}" },
@@ -134,8 +130,8 @@ pub static REGISTRY: &[Op] = &[
          doc: "The panels on a page as a table: uid, type, the node each is bound to, and its share of the page.",
          result: "{text: string}" },
     Op { name: "page_split_panel", surface: Mcp, writes: true,
-         args: "page:string! panel:string! direction:string ratio:float",
-         doc: "Split a panel along `row`/`column`, birthing an EMPTY panel that takes `ratio` of its space (default half). Give the new panel content with page_set_panel.",
+         args: "page:string! panel:string! direction:string place_before:bool ratio:float",
+         doc: "Split a panel along `row`/`column`, birthing an EMPTY panel that takes `ratio` of its space (default half) after the target, or before it with `place_before`. Give the new panel content with page_set_panel.",
          result: "the new panel's uid" },
     Op { name: "page_set_panel", surface: Mcp, writes: true,
          args: "page:string! panel:string! type:string state:json",
@@ -337,7 +333,6 @@ mod tests {
             control_only,
             [
                 "list_dir",
-                "set_layout",
                 "set_viewpoint",
                 "serialize",
                 "save",

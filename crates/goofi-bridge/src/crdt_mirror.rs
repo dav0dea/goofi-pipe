@@ -191,7 +191,7 @@ mod tests {
         let mut g = Graph::new();
         let page = g.arrangement().pages()[0].clone();
         let panel = g.arrangement().children(&page)[0].clone();
-        let (w, fresh) = g.arrangement().split_panel(&page, &panel, Axis::Row, 0.5).unwrap();
+        let (w, fresh) = g.arrangement().split_panel(&page, &panel, Axis::Row, false, 0.5).unwrap();
         g.arrangement_mut().apply(w);
 
         let mut doc = GraphDoc::new();

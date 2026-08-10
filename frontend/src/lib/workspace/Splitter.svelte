@@ -12,11 +12,15 @@
 
 	let {
 		direction,
-		onResize
+		onResize,
+		onCommit
 	}: {
 		direction: Direction;
 		/** `containerPx` is the split's measured size along the axis — the pixel floor's denominator. */
 		onResize: (deltaFraction: number, containerPx: number) => void;
+		/** The gesture is over. A resize is continuous, so `onResize` only DRAWS — this is where the
+		 * shares it drew become one command, and therefore one ctrl-Z. */
+		onCommit: () => void;
 	} = $props();
 
 	let el = $state<HTMLDivElement | null>(null);
@@ -34,13 +38,15 @@
 		dragging = true;
 		document.body.style.cursor = direction === 'row' ? 'col-resize' : 'row-resize';
 
-		// A seam applies its resize incrementally, so there is nothing to roll back — a cancelled
-		// drag and a released one both just stop. What matters is that a cancel STOPS: without it the
-		// listeners outlived the gesture and the next pointer motion kept resizing.
+		// A seam draws its resize incrementally, so there is nothing to roll back — a cancelled drag
+		// and a released one both just stop, and both COMMIT what they drew (a cancel is the pointer
+		// being taken away, not the user changing their mind). What matters is that a cancel stops:
+		// without it the listeners outlived the gesture and the next pointer motion kept resizing.
 		const finish = (): void => {
 			dragging = false;
 			document.body.style.cursor = '';
 			teardown = null;
+			onCommit();
 		};
 		teardown = beginDrag(el, e.pointerId, {
 			move: (m) => {

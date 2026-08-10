@@ -14,7 +14,7 @@ function helloSnap(node_types?: NodeTypeInfo[], runtime: GraphSnapshot['runtime'
 		save_path: null,
 		unsaved_changes: false,
 		instance_id: 'sess1',
-		layout: null
+		viewpoint: null
 	} as unknown as GraphSnapshot;
 }
 

@@ -1,27 +1,27 @@
 /**
- * Unified undo/redo history — one stack spanning the graph domain (replayed as
- * inverse/forward RPCs; the backend stays authoritative and never learns "undo"
- * exists) and the layout domain (restored as `WorkspaceState` snapshots).
+ * Unified undo/redo history — ONE client stack, and it is a stack of markers.
  *
- * Recording happens at the store-method layer (graph + workspace) behind the
- * `suspend` guard so replays don't re-record. Each action carries a
- * `NavContext` restored on undo/redo so the change is highlighted where it
- * happened. See `docs/superpowers/specs/2026-06-19-undo-redo-redesign-design.md`.
+ * Every mutation the user makes is a manager command: the graph's, and (since the arrangement
+ * became the fifth doc root) the layout's too. The manager captured the exact inverse in its
+ * per-session history, so an entry here carries no payload — it records that a step happened, with
+ * a label and a `NavContext`, and its undo/redo delegate. The one exception is a node's INLINE
+ * viewer state, which no command owns and which therefore still replays a snapshot.
+ *
+ * Recording happens at the store-method layer (graph + workspace) behind the `suspend` guard so
+ * replays don't re-record. See `docs/superpowers/specs/2026-06-19-undo-redo-redesign-design.md`.
  */
 import type { Control, ControlEvent, InstanceInfo } from '$lib/api/control';
 import { getControl } from '$lib/api/control';
-import type { WorkspaceState } from '$lib/workspace/model';
 import type { ViewerKind } from '$lib/viewers/kind';
 import type { SettingsMap } from '$lib/viewers/settingsSchema';
 import { graph } from './graph.svelte';
 import { workspace } from '$lib/workspace/workspace.svelte';
-import { layoutExecutors } from '$lib/workspace/layoutExecutors';
 import { viewExecutors } from '$lib/viewers/viewExecutors';
 import { restoreNavContext } from '$lib/workspace/navContext';
 import { pulseRestored } from './undoFlash';
 import { notify } from './notify.svelte';
 
-export type ActionDomain = 'graph' | 'layout' | 'view';
+export type ActionDomain = 'graph' | 'view';
 
 /** Where an action was performed — restored before its inverse/forward runs so
  * the undone/redone change is highlighted in the right tab/panel/sub-patch. */
@@ -40,45 +40,16 @@ export interface BaseAction {
 	label: string;
 	domain: ActionDomain;
 	context: NavContext;
-	/** When set, a freshly-recorded action whose key matches the current top of
-	 * the undo stack MERGES into it instead of pushing a new entry — so a
-	 * continuous gesture (a splitter drag firing resize() per mousemove)
-	 * collapses to a single undo step. Distinct from time-window coalescing:
-	 * any intervening action with a different key breaks the run. */
-	coalesceKey?: string;
 }
 
 // --- graph domain: the MANAGER owns the inverse; the client entry just marks the step -----------
-// Every graph mutation is applied by a manager command RPC (the manager captured its exact
-// pre-state and recorded the inverse in its per-session history). So a graph history entry carries
-// no inverse payload — its undo/redo DELEGATE to the manager's `undo`/`redo` and the UI re-renders
-// from the synced doc. The only client-local state is `boundPanels`: panels a delete emptied,
-// re-bound on undo (the doc-reconcile won't restore a binding the delete cleared).
+// Every mutation — of the graph AND of the layout, since the arrangement became the fifth doc root
+// — is applied by a manager command RPC (the manager captured its exact pre-state and recorded the
+// inverse in its per-session history). So the entry carries no inverse payload: its undo/redo
+// DELEGATE to the manager's `undo`/`redo` and the UI re-renders from the synced doc.
 export type GraphAction = BaseAction & {
 	kind: 'graph_cmd';
 	domain: 'graph';
-	boundPanels?: Array<{ panelId: string; state: unknown }>;
-};
-
-// --- layout domain: replayed as WorkspaceState snapshot restores -------------
-export type LayoutActionKind =
-	| 'split_panel'
-	| 'close_panel'
-	| 'resize_split'
-	| 'move_panel'
-	| 'set_panel_type'
-	| 'link_node_to_panel'
-	| 'unlink_node_from_panel'
-	| 'set_panel_slot'
-	| 'add_tab'
-	| 'close_tab'
-	| 'rename_tab'
-	| 'reorder_tab';
-
-export type LayoutAction = BaseAction & {
-	domain: 'layout';
-	kind: LayoutActionKind;
-	payload: { before: WorkspaceState; after: WorkspaceState };
 };
 
 /** Several primitive actions grouped into one undo step (e.g. a slot-click that
@@ -97,11 +68,10 @@ export interface ViewSnapshot {
 	settings: SettingsMap;
 }
 
-/** Where a viewer's view-state lives: on a node's inline body viewer, or in a
- * docked Viewer panel's layout state. */
-export type ViewTarget =
-	| { kind: 'inline'; node: string; slot: string }
-	| { kind: 'panel'; panelId: string };
+/** Where a viewer's view-state lives. Only the node's INLINE body viewer is client-local now — a
+ * docked Viewer panel's kind and settings ride its panel state, which the manager holds, so their
+ * undo step is an ordinary manager command. */
+export type ViewTarget = { kind: 'inline'; node: string; slot: string };
 
 export type ViewAction = BaseAction & {
 	domain: 'view';
@@ -109,7 +79,7 @@ export type ViewAction = BaseAction & {
 	payload: { target: ViewTarget; before: ViewSnapshot; after: ViewSnapshot };
 };
 
-export type Action = GraphAction | LayoutAction | CompoundAction | ViewAction;
+export type Action = GraphAction | CompoundAction | ViewAction;
 
 // --- executors ---------------------------------------------------------------
 export type GraphStoreT = ReturnType<typeof graph>;
@@ -146,28 +116,25 @@ const compoundExecutor: Executor = {
 	}
 };
 
-/** The one GRAPH executor (B3). The manager owns the exact inverse (it captured the pre-state), so
+/** The one MANAGER executor (B3). It owns the exact inverse (it captured the pre-state), so
  * undo/redo just DELEGATE to its per-session command history — the UI re-renders from the synced
- * doc. The client-local extra is re-binding panels a delete emptied (undo direction only; a redo's
- * re-delete empties them again via the doc-reconcile). One `graph_cmd` child inside a transaction's
- * compound maps to one manager undo/redo, and the N children pop the N contiguous session commands
- * in the right order. */
+ * doc, layout included. A delete's emptied panel bindings come back the same way: the manager
+ * clears them inside `RemoveNode`, so its inverse restores them. One `graph_cmd` child inside a
+ * transaction's compound maps to one manager undo/redo, and the N children pop the N contiguous
+ * session commands in the right order. */
 const graphExecutor: Executor = {
 	async forward(_action, deps) {
 		await deps.control.call('redo', {});
 	},
-	async inverse(action, deps) {
+	async inverse(_action, deps) {
 		await deps.control.call('undo', {});
-		const a = action as GraphAction;
-		for (const bp of a.boundPanels ?? []) deps.workspace.setPanelState(bp.panelId, bp.state);
 	}
 };
 
-/** The merged dispatch registry: the single graph executor (delegating to the manager) + the
- * client-local layout/view snapshot executors + the compound grouper. */
+/** The merged dispatch registry: the single manager executor + the client-local inline-view
+ * snapshot executor + the compound grouper. */
 export const executors: Record<string, Executor> = {
 	graph_cmd: graphExecutor,
-	...(layoutExecutors as Record<string, Executor>),
 	...viewExecutors,
 	compound: compoundExecutor
 };
@@ -215,21 +182,6 @@ export class HistoryStore {
 		// Inside a transaction: collect rather than push — flushed as one entry.
 		if (this.txBuffer) {
 			this.txBuffer.push(action);
-			return;
-		}
-		const top = this.undoStack[this.undoStack.length - 1];
-		// Gesture coalescing: merge into the matching top entry (keep its `before`,
-		// adopt the new `after`) rather than pushing a fresh step.
-		if (
-			action.coalesceKey &&
-			top &&
-			top.coalesceKey === action.coalesceKey &&
-			top.domain === 'layout' &&
-			action.domain === 'layout'
-		) {
-			top.payload.after = action.payload.after;
-			this.redoStack = [];
-			this._recompute();
 			return;
 		}
 		this.undoStack.push(action);

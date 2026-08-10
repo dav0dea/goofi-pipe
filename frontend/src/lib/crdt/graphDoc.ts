@@ -8,6 +8,7 @@
  * The reactive `.svelte.ts` layer subscribes to the doc and re-exposes these as runes.
  */
 import * as Y from 'yjs';
+import type { Arrangement } from '$lib/workspace/arrangement';
 
 export interface NodeView {
 	uid: string;
@@ -304,6 +305,46 @@ export function globalViews(doc: Y.Doc): GlobalView[] {
 		) {
 			out.push({ name, value, type, system: g.get('system') === true });
 		}
+	}
+	return out;
+}
+
+// ── The arrangement ────────────────────────────────────────────────────────────────────────────
+// The `arrangement` root map — the editor's panel layout, held FLAT and id-keyed (the fifth root).
+// Every page, split and panel is one entry naming its `parent` and its `order`; the tree is rebuilt
+// at render time by `$lib/workspace/arrangement`.
+
+/** The `arrangement` root map. */
+export function arrangementMap(doc: Y.Doc): Y.Map<unknown> {
+	return doc.getMap('arrangement');
+}
+
+/** Every arrangement ENTRY, by id. The manager's id counter rides the same root under `#seq` as a
+ * bare number, so an entry is recognised by carrying a `kind` — read the values, never the keys. */
+export function arrangementEntries(doc: Y.Doc): Arrangement {
+	const out: Arrangement = {};
+	for (const [id, raw] of arrangementMap(doc).entries()) {
+		if (!(raw instanceof Y.Map)) continue;
+		const e = raw as Y.Map<unknown>;
+		const kind = e.get('kind');
+		if (kind !== 'page' && kind !== 'split' && kind !== 'panel') continue;
+		const order = e.get('order');
+		if (typeof order !== 'number') continue;
+		const opt = (k: string): string | undefined => {
+			const v = e.get(k);
+			return typeof v === 'string' ? v : undefined;
+		};
+		const size = e.get('size');
+		out[id] = {
+			kind,
+			order,
+			name: opt('name'),
+			parent: opt('parent'),
+			size: typeof size === 'number' ? size : undefined,
+			axis: opt('axis'),
+			panel_type: opt('panel_type'),
+			state: opt('state')
+		};
 	}
 	return out;
 }

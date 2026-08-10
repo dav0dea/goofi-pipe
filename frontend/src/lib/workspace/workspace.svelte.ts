@@ -1,643 +1,478 @@
 /**
- * Reactive workspace store — the only stateful layer of the panel system.
+ * Reactive workspace store — the browser's REPLICA of the manager's panel arrangement.
  *
- * Holds the `WorkspaceState` (tabs + their layout trees) plus ephemeral UI
- * state (which panel is active, which is maximized). All structural changes go
- * through the pure ops in `model.ts`; this layer just owns the `$state` and
- * picks sensible follow-up selection.
+ * The arrangement is the fifth CRDT doc root, held flat and id-keyed by the manager. This store
+ * reads it (`syncFromDoc`) and rebuilds the tree the panel system draws (`arrangement.ts`); it
+ * never edits an entry. Every gesture — split, close, resize, move, tab — goes out as a layout
+ * COMMAND over `/control`, so the manager owns persistence, the broadcast to peers, and the undo
+ * step, exactly as it does for the graph. There is no second write authority.
  *
- * The layout is *not* persisted in the browser — no localStorage, no session
- * storage. It lives only in memory here, is pushed to the manager as it
- * changes (AppShell → `set_layout`), and is embedded in the `.gfi` on save. A
- * fresh manager session therefore starts at the default layout; `GraphStore`
- * detects a backend restart (via the snapshot `instance_id`) and calls
- * `reset()` so a stale layout never lingers across a kill/restart.
+ * What stays here is the VIEWPOINT: which page is in front, which panel is focused or maximized,
+ * and each editor's sub-patch depth. Those belong to this client alone — pushing them into the doc
+ * would drag a peer's phone out of the sub-patch it is three levels into, and would dirty a patch
+ * for looking around. They persist through `set_viewpoint`, which the manager stores and rides into
+ * the `.gfi` without ever converging or dirtying it. Persistence and dirtiness are separate axes.
  */
 import {
-	clearNodeRef,
-	closePanel,
 	collectPanels,
-	defaultWorkspaceState,
 	DEFAULT_PANEL_TYPE,
-	EMPTY_PANEL_TYPE,
-	extractPanel,
 	findPanel,
 	firstPanelId,
-	insertNodeAtPanel,
-	makeWorkspace,
-	reseedIds,
-	resizeSplit,
-	setPanelState,
-	setPanelType,
-	splitPanel,
-	uid,
+	resizeFractions,
 	type Direction,
 	type LayoutNode,
 	type Workspace,
 	type WorkspaceState
 } from './model';
-import { asStateObject, linkedNodeName, withLinkedNode } from './panelState';
-import { history, type LayoutActionKind } from '$lib/stores/history.svelte';
+import {
+	buildWorkspaces,
+	childIds,
+	pageOf,
+	splitFractions,
+	type Arrangement
+} from './arrangement';
+import { asStateObject, withLinkedNode } from './panelState';
+import { history } from '$lib/stores/history.svelte';
 import { captureNavContext } from './navContext';
+import { getControl, type Control } from '$lib/api/control';
+import type { OpName } from '$lib/api/ops';
 
-/** A drag in progress. A panel and a tab are both just a `LayoutNode` being
- * moved — the only difference is where it came from, which `_takeNode` knows
- * how to detach. */
+/** A drag in progress. A panel and a tab are both just a subtree being moved — the only difference
+ * is which id names it, which `_subtreeOf` knows how to answer. */
 export type DragRef =
 	| { kind: 'panel'; workspaceId: string; panelId: string }
 	| { kind: 'tab'; workspaceId: string };
 
 /**
- * Why a layout write happened — the axis that decides whether the patch now differs from the file
- * on disk. Persistence is a SEPARATE axis: every layout write is pushed to the manager and rides
- * the `.gfi` either way.
+ * Why a panel write happened — the axis that decides whether the patch now differs from the file on
+ * disk. Since the cutover it is not a classification the manager has to be told: it is WHICH OP the
+ * write becomes, so the taxonomy holds by construction.
  *
- * - `'authored'` — the user edited the arrangement: split/close/resize a panel, add or rename a
- *   tab, pick a viewer kind or an output slot, unlink a node. The patch really did change.
- * - `'navigation'` — the user only changed what they are LOOKING at (entering a sub-patch,
- *   switching layout tabs, an undo/redo re-orientation), or the manager echoed its own layout back
- *   at us on hello/load. Persisted, but the patch still matches disk, so it must not raise the
- *   unsaved dot or the unload guard.
+ * - `'authored'` — the user edited the arrangement (a viewer kind, a bound slot). It becomes a
+ *   `page_set_panel` command: undoable, converged to every peer, and it dirties.
+ * - `'navigation'` — the user only changed what they are LOOKING at (entering a sub-patch). It
+ *   becomes viewpoint: stored for this client, never converged, never dirtying.
  *
- * The classification follows the WRITE, never the device — phone and desktop share this one rule.
+ * The routing follows the WRITE, never the device — phone and desktop share this one rule.
  */
 export type LayoutIntent = 'navigation' | 'authored';
 
-function isValidState(s: unknown): s is WorkspaceState {
-	if (typeof s !== 'object' || s === null) return false;
-	const obj = s as Record<string, unknown>;
-	if (!Array.isArray(obj.workspaces) || obj.workspaces.length === 0) return false;
-	if (typeof obj.activeWorkspaceId !== 'string') return false;
-	return obj.workspaces.some((w) => (w as Workspace).id === obj.activeWorkspaceId);
+/** What `set_viewpoint` stores for this client, and what a reload gets back. */
+export interface Viewpoint {
+	page?: string;
+	panel?: string;
+	paths?: Record<string, string>;
 }
 
 class WorkspaceStore {
-	state = $state<WorkspaceState>(defaultWorkspaceState());
+	/** The manager's arrangement, mirrored from the doc root. Read-only: a write is a command. */
+	private _arr = $state<Arrangement>({});
+	/** The shares a splitter drag is currently drawing, before it commits. A resize is one
+	 * continuous gesture, so the override lives here for its duration and lands as ONE
+	 * `page_resize_split` on pointer-up — never a command per pointermove. */
+	private _drag = $state<{ split: string; sizes: number[] } | null>(null);
+	/** Set between a resize commit and the delta that answers it, so the drawn shares do not snap
+	 * back for the frame between the reply and the doc arriving (the reply is sent first). */
+	private _dragSent = false;
+	/** Viewpoint: the page in front. Null falls back to the first, which is what a fresh client and
+	 * a page a peer closed both want. */
+	private _page = $state<string | null>(null);
+	/** Viewpoint: per panel id, the sub-patch path that editor is inside. Held OUT of the panel's
+	 * shared state bag — that separation is what keeps peer isolation and navigation-must-not-dirty
+	 * true by construction rather than by classification. */
+	private _paths = $state<Record<string, string>>({});
+	/** The page a just-sent op is about to create, adopted when it appears (a page is addressed by
+	 * name, and its id is the manager's to mint). */
+	private _wantPage: string | null = null;
 	/** Last-focused panel id — keyboard shortcuts scope to this. */
 	activePanelId = $state<string | null>(null);
 	/** When set, only this panel renders, filling the workspace. */
 	maximizedPanelId = $state<string | null>(null);
-	/** The panel or tab currently being dragged. While set, panels show edge
-	 * drop zones and the tab bar accepts the drop, so the dragged node can be
-	 * repositioned in the layout or turned into a tab. */
+	/** The panel or tab currently being dragged. While set, panels show edge drop zones and the tab
+	 * bar accepts the drop. */
 	dragging = $state<DragRef | null>(null);
-	/** Folded intent of the layout writes not yet pushed to the manager. Plain (not `$state`) —
-	 * it is read once at push time and never rendered. */
-	private _pendingIntent: LayoutIntent = 'navigation';
-	/** Set when `this.state` was last replaced by a PEER's arrangement rather than by a local
-	 * write. Every state replacement re-triggers AppShell's debounced push, and pushing a peer's
-	 * layout back is both a pointless round trip and a way to overwrite the manager's copy with
-	 * THIS client's navigation fields — so the shell reads this at push time and drops that one
-	 * push. Any local write clears it (see `_mark`/`_replaced`), so a real edit landing inside the
-	 * same debounce window still reaches the manager. Plain (not `$state`) for the same reason as
-	 * `_pendingIntent`. */
-	private _remoteApplied = false;
+	/** Bumped whenever the viewpoint changes, so the shell can persist it debounced. */
+	viewpointEpoch = $state(0);
+	/** How a layout command reaches the manager. Defaults to the live socket; a test injects a
+	 * double, the way `history.configureDeps` already does. */
+	private _control: () => Control = getControl;
 
-	constructor() {
-		this.activePanelId = firstPanelId(this.active.root);
+	/** Test seam: send layout commands through an injected control. */
+	configureControl(provider: () => Control): void {
+		this._control = provider;
 	}
 
-	/** Classify the layout write that just happened. Authoring wins a mixed debounce window: if
-	 * anything in it was an edit, the patch really did change — so this can only RAISE. The two
-	 * wholesale replacements below assign instead (see `_replaced`). */
-	private _mark(intent: LayoutIntent): void {
-		// Any LOCAL write is this client's own and has to reach the manager — navigation included,
-		// since persistence is the other axis. So it always clears the remote-apply latch.
-		this._remoteApplied = false;
-		if (intent === 'authored') this._pendingIntent = 'authored';
-	}
+	/** The arrangement as drawn: the manager's, with the in-flight resize applied. */
+	private _effective = $derived.by(() => {
+		const d = this._drag;
+		if (!d) return this._arr;
+		const kids = childIds(this._arr, d.split);
+		if (kids.length !== d.sizes.length) return this._arr;
+		const next: Arrangement = { ...this._arr };
+		kids.forEach((id, i) => (next[id] = { ...next[id], size: d.sizes[i] }));
+		return next;
+	});
 
-	/** `hydrate`/`reset` replace `this.state` outright rather than editing it, so they discard any
-	 * pending edit ALONG WITH the state that carried it — the fold has nothing left to be about.
-	 * Marking (which can only raise) let that edit ride the next push and dirty a patch that
-	 * matches disk: on `load` the CRDT delta can beat the queued JSON events, and `clearNodeRefs`
-	 * then marks authored moments before `graph_replaced` hydrates. A write that lands the other
-	 * way round — after the replacement — edited the state that is now live and still counts. */
-	private _replaced(): void {
-		this._pendingIntent = 'navigation';
-		// A load / reset is still a local event the manager has to hear about, so the latch goes
-		// too. `applyRemoteLayout` re-arms it AFTER calling this.
-		this._remoteApplied = false;
-	}
+	private _workspaces = $derived.by(() => {
+		const paths = this._paths;
+		const overlay = (n: LayoutNode): LayoutNode => {
+			if (n.kind === 'split') return { ...n, children: n.children.map(overlay) };
+			const path = paths[n.id];
+			return path === undefined ? n : { ...n, state: { ...asStateObject(n.state), subpatchPath: path } };
+		};
+		return buildWorkspaces(this._effective).map((w) => ({ ...w, root: overlay(w.root) }));
+	});
 
-	/** A whole patch was loaded — a new backend session, or the Load button. The graph the pending
-	 * fold was about is gone, so whatever it recorded cannot describe a difference from the file
-	 * that just arrived.
-	 *
-	 * `hydrate`/`reset` already drain the fold, and cover the load whose layout applies. This is
-	 * for the loads where NEITHER runs: a layout-less `.gfi` (the engine supports one) landing on
-	 * a same-session `graph_replaced` takes no branch, and a malformed layout makes `hydrate`
-	 * refuse before it drains. Either way the load's own CRDT delta has already emptied every
-	 * panel bound to a vanished uid — `clearNodeRefs`, marking authored, correctly, for a node
-	 * DELETE that in this case is just the load. Called only from the graph store's wholesale-load
-	 * path, which a transient same-session reconnect deliberately does not reach: an edit made
-	 * while the socket was down is still an edit. */
-	patchLoaded(): void {
-		this._replaced();
-	}
-
-	/** The folded intent of every layout write since the last call, then reset. AppShell takes
-	 * this when it pushes `set_layout`, so the manager can tell an edit from a look. */
-	takeLayoutIntent(): LayoutIntent {
-		const intent = this._pendingIntent;
-		this._pendingIntent = 'navigation';
-		return intent;
-	}
-
-	/** Whether the pending push exists ONLY because a peer's arrangement was applied, then reset.
-	 * AppShell asks this before pushing: true means drop the push (see `_remoteApplied`). */
-	takeRemoteApplied(): boolean {
-		const remote = this._remoteApplied;
-		this._remoteApplied = false;
-		return remote;
-	}
-
-	/** After a structural layout change, drop the maximized view and focus the
-	 * first panel of `root` (firstPanelId returns '' when empty). */
-	private _focusFirst(root: LayoutNode): void {
-		this.maximizedPanelId = null;
-		this.activePanelId = firstPanelId(root);
-	}
-
-	/** Drop all layout state back to a single default panel. Called when a
-	 * fresh backend session connects without a layout of its own, so the panel
-	 * arrangement from the previous session doesn't linger in the open tab. */
-	reset(): void {
-		this.state = defaultWorkspaceState();
-		this._replaced(); // a blank session's default arrangement is nobody's edit
-		this._focusFirst(this.active.root);
-	}
+	/** The tree the panel system renders. Derived, not held — the manager's copy is the state. */
+	state = $derived<WorkspaceState>({
+		workspaces: this._workspaces,
+		activeWorkspaceId: this.active.id
+	});
 
 	get active(): Workspace {
-		return (
-			this.state.workspaces.find((w) => w.id === this.state.activeWorkspaceId) ??
-			this.state.workspaces[0]
-		);
+		const all = this._workspaces;
+		return all.find((w) => w.id === this._page) ?? all[0];
 	}
 
-	/** Plain (de-proxied) snapshot for embedding in a saved `.gfi` patch and
-	 * for pushing into the running patch. `$state.snapshot` unwraps Svelte's
-	 * reactive proxy — `structuredClone` chokes on it, and the result must be a
-	 * plain JSON object for the WS. */
-	serialize(): WorkspaceState {
-		return $state.snapshot(this.state) as WorkspaceState;
-	}
+	// --- the replica ---------------------------------------------------------
 
-	/** Restore an exact `WorkspaceState` snapshot for undo/redo. Unlike
-	 * `hydrate`, this does NOT reseed ids or migrate — the snapshot is replayed
-	 * verbatim so panel/tab ids (and the selections keyed to them) are preserved.
-	 * Ephemeral view state (maximize) is dropped; focus is reset to a sensible
-	 * default and then overridden by the action's NavContext. */
-	restore(state: WorkspaceState): void {
-		this.state = state;
-		this._mark('authored'); // undoing/redoing an edit to the arrangement is still an edit
-		this._focusFirst(this.active.root);
-	}
+	/** Adopt the arrangement the manager mirrored, and prune any viewpoint it invalidated — a panel
+	 * WE focused that a peer just closed, a page that went with it. This is also where an in-flight
+	 * resize override retires: the split's own shares moved, so the drawn tree is the manager's
+	 * again. */
+	syncFromDoc(arr: Arrangement): void {
+		const prev = this._arr;
+		this._arr = arr;
 
-	/** Ready a layout blob minted OUTSIDE this client — a `.gfi`, or a peer's push. Advances the id
-	 * counter past every id it already uses so a panel we mint next cannot collide, and migrates the
-	 * legacy "errors" panel onto the generalized "console". Shared by `hydrate` and
-	 * `applyRemoteLayout` so the two cannot drift. */
-	private _adopt(state: WorkspaceState): void {
-		reseedIds(state);
-		const migrate = (node: LayoutNode): void => {
-			if (node.kind === 'split') node.children.forEach(migrate);
-			else if (node.panelType === 'errors') node.panelType = 'console';
-		};
-		for (const ws of state.workspaces) migrate(ws.root);
-	}
-
-	/** Apply a layout restored from a `.gfi` patch (or any external source). */
-	hydrate(state: unknown): void {
-		if (!isValidState(state)) return;
-		this._adopt(state);
-		this.state = state;
-		// The manager's own arrangement coming back at us (hello / a loaded patch). Pushing the
-		// re-seeded ids back is an echo, not an edit — classifying it as authoring is what
-		// re-dirtied a patch moments after it was saved.
-		this._replaced();
-		this._focusFirst(this.active.root);
-	}
-
-	/**
-	 * Apply a PEER's authored arrangement — the manager's `layout` event, which fires when another
-	 * client splits a panel, adds a tab, picks a viewer kind. The layout is not a CRDT doc root, so
-	 * this event is the only way it travels between live clients.
-	 *
-	 * A merge, not a `hydrate`. The blob is opaque and carries two different things: the peer's
-	 * panel TREE, which is shared, and wherever that peer happened to be LOOKING when it authored,
-	 * which is not. Replacing wholesale would climb a phone out of the sub-patch it is three levels
-	 * into and drag it onto whichever layout tab the desktop had in front — the same "navigation is
-	 * not authoring" line the dirty taxonomy draws, on the other side of the wire. So this takes the
-	 * structure and keeps this client's viewpoint: the front tab, each surviving panel's sub-patch
-	 * depth, and the focused/maximized panel while it still exists.
-	 *
-	 * A panel we have never seen has no viewpoint of ours to keep, so it arrives as the peer left
-	 * it — a split made from inside a sub-patch opens there on both screens rather than diverging.
-	 */
-	applyRemoteLayout(remote: unknown): void {
-		if (!isValidState(remote)) return;
-		this._adopt(remote);
-
-		const myPath = new Map<string, unknown>();
-		for (const w of this.state.workspaces) {
-			for (const p of collectPanels(w.root)) myPath.set(p.id, asStateObject(p.state).subpatchPath);
-		}
-		const keepMyPath = (node: LayoutNode): void => {
-			if (node.kind === 'split') {
-				node.children.forEach(keepMyPath);
-				return;
+		const d = this._drag;
+		if (d && this._dragSent) {
+			const before = splitFractions(prev, d.split);
+			const after = splitFractions(arr, d.split);
+			if (before.length !== after.length || before.some((s, i) => s !== after[i])) {
+				this._drag = null;
+				this._dragSent = false;
 			}
-			if (!myPath.has(node.id)) return;
-			const path = myPath.get(node.id);
-			const state = asStateObject(node.state);
-			node.state =
-				path === undefined
-					? Object.fromEntries(Object.entries(state).filter(([k]) => k !== 'subpatchPath'))
-					: { ...state, subpatchPath: path };
-		};
-		for (const w of remote.workspaces) keepMyPath(w.root);
-
-		const mine = this.state.activeWorkspaceId;
-		this.state = {
-			...remote,
-			activeWorkspaceId: remote.workspaces.some((w) => w.id === mine) ? mine : remote.activeWorkspaceId
-		};
-		this._replaced(); // a peer's arrangement is nobody's local edit
-		this._remoteApplied = true; // …and must not be pushed back (AFTER `_replaced`, which clears it)
-
-		// Focus and maximize are viewpoint too — leave them where they are unless the peer closed
-		// the panel they name. (Ids are never reused, so a stale one can only ever miss.)
-		const root = this.active.root;
+		}
+		if (this._wantPage !== null) {
+			const born = this._workspaces.find((w) => w.name === this._wantPage);
+			if (born) {
+				this._wantPage = null;
+				this._page = born.id;
+				this._focusFirst(born.root);
+			}
+		}
+		if (this._page !== null && !arr[this._page]) this._page = null;
+		const root = this.active?.root;
+		if (!root) return;
 		if (!this.activePanelId || !findPanel(root, this.activePanelId)) {
 			this.activePanelId = firstPanelId(root);
 		}
-		if (this.maximizedPanelId && !findPanel(root, this.maximizedPanelId)) this.maximizedPanelId = null;
-	}
-
-	/** Run a tracked layout mutation `fn`, recording one history entry iff it
-	 * actually changed the state tree (a no-op split / blocked close records
-	 * nothing). `coalesceKey` merges a continuous gesture into one entry.
-	 * Undoable ⇒ authored: every mutation that earns a history entry is, by
-	 * definition, the user editing the arrangement. (The intent is marked even
-	 * while history is suspended — a redo still changes the saved layout.) */
-	private _tracked(kind: LayoutActionKind, label: string, fn: () => void, coalesceKey?: string): void {
-		const before = this.serialize();
-		const prev = this.state;
-		fn();
-		if (this.state === prev) return;
-		this._mark('authored');
-		if (!history().isSuspended) {
-			history().record({
-				kind,
-				domain: 'layout',
-				label,
-				context: captureNavContext(),
-				coalesceKey,
-				payload: { before, after: this.serialize() }
-			});
+		if (this.maximizedPanelId && !arr[this.maximizedPanelId]) this.maximizedPanelId = null;
+		for (const id of Object.keys(this._paths)) {
+			if (!arr[id]) delete this._paths[id];
 		}
 	}
 
-	private _setRoot(workspaceId: string, root: LayoutNode): void {
-		this.state = {
-			...this.state,
-			workspaces: this.state.workspaces.map((w) =>
-				w.id === workspaceId ? { ...w, root } : w
-			)
+	/** Restore the viewpoint this client last stored (it rides the `.gfi` and the snapshot, but is
+	 * never converged). Ids that no longer exist are simply not adopted. */
+	restoreViewpoint(vp: unknown): void {
+		const v = vp as Viewpoint | null;
+		if (!v || typeof v !== 'object') return;
+		if (typeof v.page === 'string') this._page = v.page;
+		if (typeof v.panel === 'string') this.activePanelId = v.panel;
+		if (v.paths && typeof v.paths === 'object') this._paths = { ...v.paths };
+	}
+
+	/** What `set_viewpoint` stores. Plain JSON: the shell pushes it debounced. */
+	viewpoint(): Viewpoint {
+		return {
+			page: this.active?.id,
+			panel: this.activePanelId ?? undefined,
+			paths: $state.snapshot(this._paths)
 		};
 	}
 
-	/** Returns whether the tree actually changed, so a caller can classify only real writes. */
-	private _updateActiveRoot(fn: (root: LayoutNode) => LayoutNode | null): boolean {
-		const ws = this.active;
-		const root = fn(ws.root);
-		if (!root || root === ws.root) return false;
-		this._setRoot(ws.id, root);
-		return true;
+	private _viewpointChanged(): void {
+		this.viewpointEpoch += 1;
 	}
 
-	/** Like `_updateActiveRoot`, for a write addressed by PANEL id rather than by "what is in
-	 * front": panel ids are unique across tabs and every tree op is a no-op on a tree lacking the
-	 * id, so mapping `fn` over all of them lands it wherever the panel lives. The capture and the
-	 * clearing of node bindings already walk every tab (`panelsBoundTo` / `clearNodeRefs`), so the
-	 * undo restore has to as well — through the active root alone it silently dropped the re-bind
-	 * of any panel sitting in a background tab. */
-	private _updateAnyRoot(fn: (root: LayoutNode) => LayoutNode | null): boolean {
-		let changed = false;
-		const workspaces = this.state.workspaces.map((w) => {
-			const root = fn(w.root);
-			if (!root || root === w.root) return w;
-			changed = true;
-			return { ...w, root };
-		});
-		if (!changed) return false;
-		this.state = { ...this.state, workspaces };
-		return true;
+	// --- commands ------------------------------------------------------------
+
+	/** The page NAME an entry lives on — how every page op addresses it. */
+	private _pageName(id: string): string | null {
+		const page = pageOf(this._arr, id);
+		return page === null ? null : (this._arr[page].name ?? null);
 	}
 
-	// --- layout mutations --------------------------------------------------
+	/** Send one layout command and record ONE undo step for it. The manager captured the exact
+	 * inverse, so the client entry only marks the step and delegates — the same contract every
+	 * graph mutation has used since the unified command API. A refusal (closing a page's last
+	 * panel) records nothing, so the two stacks stay 1:1. */
+	private async _cmd<T>(
+		label: string,
+		op: OpName,
+		payload: Record<string, unknown>
+	): Promise<T | null> {
+		try {
+			const res = await this._control().call<T>(op, payload);
+			if (!history().isSuspended) {
+				history().record({ kind: 'graph_cmd', domain: 'graph', label, context: captureNavContext() });
+			}
+			return res;
+		} catch (e) {
+			console.warn(`${op} refused`, e);
+			return null;
+		}
+	}
 
-	/** Split a panel. The new panel is `empty` by default — the user picks its
-	 * content from the empty panel's buttons rather than inheriting the source's
-	 * type. `fraction` is the new panel's share of the split (0.5 = even). */
-	split(
-		panelId: string,
-		direction: Direction,
-		placeBefore = false,
-		fraction = 0.5,
-		newType?: string
-	): void {
-		this._tracked('split_panel', 'Split panel', () => {
-			const ws = this.active;
-			const type = newType ?? EMPTY_PANEL_TYPE;
-			const { root, newPanelId } = splitPanel(ws.root, panelId, direction, placeBefore, type, fraction);
-			if (root === ws.root) return;
-			this._setRoot(ws.id, root);
-			if (newPanelId) this.activePanelId = newPanelId;
+	/** After a structural layout change, drop the maximized view and focus the first panel of
+	 * `root` (firstPanelId returns '' when empty). */
+	private _focusFirst(root: LayoutNode): void {
+		this.maximizedPanelId = null;
+		this.activePanelId = firstPanelId(root);
+		this._viewpointChanged();
+	}
+
+	// --- layout mutations ----------------------------------------------------
+
+	/** Split a panel. The new panel is `empty` — the user picks its content from the empty panel's
+	 * buttons rather than inheriting the source's type. `fraction` is the new panel's share. */
+	split(panelId: string, direction: Direction, placeBefore = false, fraction = 0.5): void {
+		const page = this._pageName(panelId);
+		if (!page) return;
+		void this._cmd<string>('Split panel', 'page_split_panel', {
+			page,
+			panel: panelId,
+			direction,
+			place_before: placeBefore,
+			ratio: fraction
+		}).then((fresh) => {
+			if (typeof fresh === 'string') {
+				this.activePanelId = fresh;
+				this._viewpointChanged();
+			}
 		});
 	}
 
 	close(panelId: string): void {
-		this._tracked('close_panel', 'Close panel', () => {
-			const ws = this.active;
-			const root = closePanel(ws.root, panelId);
-			if (!root) return;
-			this._setRoot(ws.id, root);
-			if (this.maximizedPanelId === panelId) this.maximizedPanelId = null;
-			if (this.activePanelId === panelId) this.activePanelId = firstPanelId(root);
-		});
+		const page = this._pageName(panelId);
+		if (page) void this._cmd('Close panel', 'page_remove_panel', { page, panel: panelId });
 	}
 
-	/** `containerPx` is the split's measured size along its axis — the denominator of the pixel
-	 * floor (D-R10). The splitter already measures it to convert px into a fraction; passing it on
-	 * is what lets the model floor a panel at a size rather than at a percentage. */
+	/** A splitter drag fires this per pointermove. It draws locally — `containerPx` is the split's
+	 * measured size along its axis, the denominator of the pixel floor (D-R10) — and nothing leaves
+	 * the client until `commitResize`. */
 	resize(splitId: string, dividerIndex: number, delta: number, containerPx = 0): void {
-		// A splitter drag fires this per mousemove — coalesce the whole drag into
-		// one undo step via a stable per-divider key.
-		this._tracked(
-			'resize_split',
-			'Resize',
-			() =>
-				this._updateActiveRoot((root) =>
-					resizeSplit(root, splitId, dividerIndex, delta, containerPx)
-				),
-			`resize:${splitId}:${dividerIndex}`
+		const base =
+			this._drag?.split === splitId ? this._drag.sizes : splitFractions(this._arr, splitId);
+		if (base.length === 0) return;
+		this._drag = { split: splitId, sizes: resizeFractions(base, dividerIndex, delta, containerPx) };
+	}
+
+	/** Pointer-up: the shares the drag drew become ONE command, and therefore one ctrl-Z. */
+	commitResize(splitId: string): void {
+		const d = this._drag;
+		const drop = (): void => {
+			this._drag = null;
+			this._dragSent = false;
+		};
+		if (!d || d.split !== splitId) {
+			drop();
+			return;
+		}
+		const page = this._pageName(splitId);
+		const before = splitFractions(this._arr, splitId);
+		const same = before.length === d.sizes.length && before.every((s, i) => s === d.sizes[i]);
+		if (!page || same) {
+			drop();
+			return;
+		}
+		this._dragSent = true;
+		void this._cmd('Resize', 'page_resize_split', { page, split: splitId, fractions: d.sizes }).then(
+			(ok) => {
+				if (ok === null) drop();
+			}
 		);
 	}
 
 	setType(panelId: string, panelType: string): void {
-		this._tracked('set_panel_type', 'Change panel', () => {
-			this._updateActiveRoot((root) => setPanelType(root, panelId, panelType));
-		});
+		const page = this._pageName(panelId);
+		if (page) void this._cmd('Change panel', 'page_set_panel', { page, panel: panelId, type: panelType });
 	}
 
-	/** Write a panel's opaque state WITHOUT a history entry of its own — for a write that is either
-	 * not an edit (`'navigation'`: the sub-patch path) or whose undo step another domain already
-	 * owns (the view domain's `set_view`, which carries a finer kind/settings payload than a layout
-	 * snapshot, and its own replay). Every OTHER authored panel write must be `_tracked`: layout
-	 * undo restores a whole `WorkspaceState`, so an unrecorded write landing after a tracked action
-	 * is in neither of its snapshots and the undo destroys it. That is what the two ops below are. */
-	setPanelState(panelId: string, state: unknown, intent: LayoutIntent = 'authored'): void {
-		if (this._updateAnyRoot((root) => setPanelState(root, panelId, state))) this._mark(intent);
+	/**
+	 * Write a panel's opaque state. `intent` routes it, and that routing IS the dirty taxonomy:
+	 * `'navigation'` (the sub-patch path) stays viewpoint and never leaves as a layout op, while an
+	 * authored write becomes `page_set_panel` — one command, one undo step, converged to peers.
+	 * `label` names that step so the undo button reads like the click.
+	 */
+	setPanelState(
+		panelId: string,
+		state: unknown,
+		intent: LayoutIntent = 'authored',
+		label = 'Change panel'
+	): void {
+		const bag = asStateObject(state);
+		if (intent === 'navigation') {
+			const path = bag.subpatchPath;
+			if (typeof path === 'string') this._paths[panelId] = path;
+			else delete this._paths[panelId];
+			this._viewpointChanged();
+			return;
+		}
+		const page = this._pageName(panelId);
+		if (!page) return;
+		// The sub-patch path is viewpoint and must not ride a shared write.
+		const { subpatchPath: _drop, ...shared } = bag;
+		void this._cmd(label, 'page_set_panel', { page, panel: panelId, state: shared });
 	}
 
-	/** Merge `patch` into a panel's state bag as one tracked, undoable edit. The shared body of the
-	 * authored panel-state ops — each names itself so the undo button reads like the click. */
+	setActive(panelId: string): void {
+		if (this.activePanelId === panelId) return;
+		this.activePanelId = panelId;
+		this._viewpointChanged();
+	}
+
+	/** Merge `patch` into a panel's state bag as one command. */
 	private _patchPanelState(
-		kind: LayoutActionKind,
 		label: string,
 		panelId: string,
 		patch: (state: unknown) => Record<string, unknown>
 	): void {
-		this._tracked(kind, label, () => {
-			this._updateAnyRoot((root) => {
-				const p = findPanel(root, panelId);
-				if (!p) return root;
-				return setPanelState(root, panelId, patch(p.state));
-			});
-		});
+		const p = findPanel(this.active.root, panelId);
+		if (p) this.setPanelState(panelId, patch(p.state), 'authored', label);
 	}
 
-	setActive(panelId: string): void {
-		if (this.activePanelId !== panelId) this.activePanelId = panelId;
-	}
-
-	/** Bind a node to a linkable panel (merges `node` into its state, keeping
-	 * any slot/kind). Called when a node is dragged onto the panel. */
-	linkNodeToPanel(panelId: string, nodeName: string): void {
-		this._patchPanelState('link_node_to_panel', 'Bind node to panel', panelId, (s) =>
-			withLinkedNode(s, nodeName)
-		);
+	/** Bind a node to a linkable panel (merges `node` into its state, keeping any slot/kind).
+	 * Called when a node is dragged onto the panel. */
+	linkNodeToPanel(panelId: string, nodeUid: string): void {
+		this._patchPanelState('Bind node to panel', panelId, (s) => withLinkedNode(s, nodeUid));
 	}
 
 	/** Release a linkable panel's bound node — the ✕ in NodeLinkedPanel's bar and ConsolePanel's
-	 * filter chip. The exact inverse of `linkNodeToPanel`, and tracked for the same reason. */
+	 * filter chip. The exact inverse of `linkNodeToPanel`. */
 	unlinkNodeFromPanel(panelId: string): void {
-		this._patchPanelState('unlink_node_from_panel', 'Unbind node from panel', panelId, (s) =>
-			withLinkedNode(s, null)
-		);
+		this._patchPanelState('Unbind node from panel', panelId, (s) => withLinkedNode(s, null));
 	}
 
 	/** Pick the output slot a Viewer / Metadata panel reads from its bound node. */
 	setPanelSlot(panelId: string, slot: string): void {
-		this._patchPanelState('set_panel_slot', 'Select slot', panelId, (s) => ({
-			...asStateObject(s),
-			slot
-		}));
-	}
-
-	/** Every panel currently bound to `nodeName`, with a snapshot of its state.
-	 * The undo system captures these before a node delete so undoing the delete
-	 * can re-bind the panels that `clearNodeRefs` emptied. */
-	panelsBoundTo(nodeName: string): Array<{ panelId: string; state: unknown }> {
-		const out: Array<{ panelId: string; state: unknown }> = [];
-		for (const w of this.state.workspaces) {
-			for (const p of collectPanels(w.root)) {
-				if (linkedNodeName(p.state) === nodeName) {
-					out.push({ panelId: p.id, state: $state.snapshot(p.state) });
-				}
-			}
-		}
-		return out;
-	}
-
-	/** Unlink a deleted node from every panel bound to it (empties them). */
-	clearNodeRefs(nodeName: string): void {
-		let changed = false;
-		const workspaces = this.state.workspaces.map((w) => {
-			const root = clearNodeRef(w.root, nodeName);
-			if (root === w.root) return w;
-			changed = true;
-			return { ...w, root };
-		});
-		if (!changed) return;
-		this.state = { ...this.state, workspaces };
-		this._mark('authored'); // the node delete that caused it already changed the patch
+		this._patchPanelState('Select slot', panelId, (s) => ({ ...asStateObject(s), slot }));
 	}
 
 	toggleMaximize(panelId: string): void {
 		this.maximizedPanelId = this.maximizedPanelId === panelId ? null : panelId;
+		this._viewpointChanged();
 	}
 
 	// --- tabs --------------------------------------------------------------
 
 	private _uniqueName(base: string): string {
-		const names = new Set(this.state.workspaces.map((w) => w.name));
+		const names = new Set(this._workspaces.map((w) => w.name));
 		if (!names.has(base)) return base;
 		let i = 2;
 		while (names.has(`${base} ${i}`)) i += 1;
 		return `${base} ${i}`;
 	}
 
-	addTab(panelType: string = DEFAULT_PANEL_TYPE): void {
-		this._tracked('add_tab', 'Add tab', () => {
-			const ws = makeWorkspace(this._uniqueName('Layout'), panelType);
-			this.state = {
-				workspaces: [...this.state.workspaces, ws],
-				activeWorkspaceId: ws.id
-			};
-			this._focusFirst(ws.root);
+	/** Add a layout page. `panelType` is the agent façade's door onto "a tab showing X" — the tab
+	 * bar's own + button births the default editor. Two ops when it is given, grouped as one client
+	 * entry whose two children pop the two manager commands in order. */
+	addTab(panelType?: string): void {
+		const name = this._uniqueName('Layout');
+		this._wantPage = name;
+		void history().transaction('Add tab', async () => {
+			const born = await this._cmd<{ panel: string }>('Add tab', 'session_add_page', { name });
+			if (born && panelType && panelType !== DEFAULT_PANEL_TYPE) {
+				await this._cmd('Change panel', 'page_set_panel', {
+					page: name,
+					panel: born.panel,
+					type: panelType
+				});
+			}
 		});
 	}
 
 	/** D-R11: switching layout tabs is NAVIGATION. It changes which arrangement is in front, not
-	 * what any panel holds — the same "looking elsewhere" as entering a sub-patch, and the move
-	 * `navContext` makes to re-orient an undo. Creating, renaming, reordering or closing a tab is
-	 * still authoring; only the selection is a look. */
+	 * what any panel holds — the same "looking elsewhere" as entering a sub-patch. Creating,
+	 * renaming, reordering or closing a tab is still authoring; only the selection is a look. */
 	selectTab(workspaceId: string): void {
-		if (this.state.activeWorkspaceId === workspaceId) return;
-		const ws = this.state.workspaces.find((w) => w.id === workspaceId);
+		if (this._page === workspaceId) return;
+		const ws = this._workspaces.find((w) => w.id === workspaceId);
 		if (!ws) return;
-		this.state = { ...this.state, activeWorkspaceId: workspaceId };
-		this._mark('navigation');
+		this._page = workspaceId;
 		this._focusFirst(ws.root);
 	}
 
 	renameTab(workspaceId: string, name: string): void {
-		this._tracked('rename_tab', 'Rename tab', () => {
-			const trimmed = name.trim();
-			if (!trimmed) return;
-			this.state = {
-				...this.state,
-				workspaces: this.state.workspaces.map((w) =>
-					w.id === workspaceId ? { ...w, name: trimmed } : w
-				)
-			};
-		});
+		const trimmed = name.trim();
+		const from = this._arr[workspaceId]?.name;
+		if (!trimmed || !from || trimmed === from) return;
+		void this._cmd('Rename tab', 'session_rename_page', { from, to: trimmed });
 	}
 
 	closeTab(workspaceId: string): void {
-		this._tracked('close_tab', 'Close tab', () => {
-			if (this.state.workspaces.length <= 1) return; // keep at least one tab
-			const idx = this.state.workspaces.findIndex((w) => w.id === workspaceId);
-			if (idx < 0) return;
-			const workspaces = this.state.workspaces.filter((w) => w.id !== workspaceId);
-			let activeWorkspaceId = this.state.activeWorkspaceId;
-			if (activeWorkspaceId === workspaceId) {
-				const neighbor = workspaces[Math.min(idx, workspaces.length - 1)];
-				activeWorkspaceId = neighbor.id;
-				this._focusFirst(neighbor.root);
-			}
-			this.state = { workspaces, activeWorkspaceId };
-		});
-	}
-
-	/**
-	 * Detach the dragged node (a panel or a whole tab) and return it plus the
-	 * state with the source removed. Shared by every drop target — this is what
-	 * makes a tab and a panel "the same thing": both yield a `LayoutNode` to
-	 * re-home, with ids preserved so editor selections carry over. Returns null
-	 * if the move would empty the last tab.
-	 */
-	private _takeNode(d: DragRef): { node: LayoutNode; state: WorkspaceState } | null {
-		if (d.kind === 'tab') {
-			const ws = this.state.workspaces.find((w) => w.id === d.workspaceId);
-			if (!ws) return null;
-			const state = this._removeWorkspace(d.workspaceId);
-			if (!state) return null;
-			return { node: ws.root, state };
-		}
-		const ws = this.state.workspaces.find((w) => w.id === d.workspaceId);
-		if (!ws) return null;
-		const { root, removed } = extractPanel(ws.root, d.panelId);
-		if (!removed) return null;
-		if (root === null) {
-			// the panel was the tab's only node → the tab goes with it
-			const state = this._removeWorkspace(d.workspaceId);
-			if (!state) return null;
-			return { node: removed, state };
-		}
-		const workspaces = this.state.workspaces.map((w) =>
-			w.id === d.workspaceId ? { ...w, root } : w
-		);
-		return { node: removed, state: { ...this.state, workspaces } };
-	}
-
-	/** Remove an entire workspace tab, choosing a fallback active tab. Returns null
-	 * when it's the last tab (which must be kept). The shared body of `_takeNode`'s
-	 * tab-drag and last-panel-removal branches. */
-	private _removeWorkspace(id: string): WorkspaceState | null {
-		if (this.state.workspaces.length <= 1) return null;
-		const workspaces = this.state.workspaces.filter((w) => w.id !== id);
-		const activeWorkspaceId =
-			this.state.activeWorkspaceId === id ? workspaces[0].id : this.state.activeWorkspaceId;
-		return { workspaces, activeWorkspaceId };
-	}
-
-	/** Drop the dragged node (panel or tab) into the active layout by splitting
-	 * `targetPanelId` along `direction`. Repositions a panel or merges a tab. */
-	dropOnPanel(targetPanelId: string, direction: Direction, placeBefore: boolean): void {
-		this._tracked('move_panel', 'Move panel', () => {
-			const d = this.dragging;
-			this.dragging = null;
-			if (!d) return;
-			if (d.kind === 'panel' && d.panelId === targetPanelId) return; // onto itself
-			const taken = this._takeNode(d);
-			if (!taken) return;
-			const { node, state } = taken;
-			const active = state.workspaces.find((w) => w.id === state.activeWorkspaceId);
-			if (!active) return;
-			const root = insertNodeAtPanel(active.root, targetPanelId, direction, placeBefore, node);
-			if (root === active.root) return; // target not in the active tree (e.g. self-drop)
-			this.state = {
-				...state,
-				workspaces: state.workspaces.map((w) => (w.id === active.id ? { ...w, root } : w))
-			};
-			this._focusFirst(node);
-		});
-	}
-
-	/** Drop the dragged panel onto the tab bar at `index` — it becomes a new
-	 * tab. (Tabs dropped on the bar reorder instead — see reorderTab.) */
-	dropPanelOnTabBar(index: number): void {
-		this._tracked('move_panel', 'Move panel to new tab', () => {
-			const d = this.dragging;
-			this.dragging = null;
-			if (!d || d.kind !== 'panel') return;
-			const taken = this._takeNode(d);
-			if (!taken) return;
-			const { node, state } = taken;
-			const tab: Workspace = {
-				id: uid('ws'),
-				name: this._uniqueName('Layout'),
-				root: node
-			};
-			const workspaces = state.workspaces.slice();
-			workspaces.splice(Math.max(0, Math.min(index, workspaces.length)), 0, tab);
-			this.state = { workspaces, activeWorkspaceId: tab.id };
-			this._focusFirst(node);
-		});
+		const name = this._arr[workspaceId]?.name;
+		if (name) void this._cmd('Close tab', 'session_remove_page', { name });
 	}
 
 	reorderTab(fromIndex: number, toIndex: number): void {
-		this._tracked('reorder_tab', 'Reorder tabs', () => {
-			const ws = this.state.workspaces.slice();
-			if (fromIndex < 0 || fromIndex >= ws.length || toIndex < 0 || toIndex >= ws.length) return;
-			const [moved] = ws.splice(fromIndex, 1);
-			ws.splice(toIndex, 0, moved);
-			this.state = { ...this.state, workspaces: ws };
+		const name = this._workspaces[fromIndex]?.name;
+		if (name === undefined || toIndex < 0 || toIndex >= this._workspaces.length) return;
+		void this._cmd('Reorder tabs', 'session_reorder_page', { name, to_index: toIndex });
+	}
+
+	/** The id of the subtree a drag names: a panel is a subtree of one, a tab drag carries the
+	 * page's whole root. Null when the drag's source has gone. */
+	private _subtreeOf(d: DragRef): string | null {
+		if (d.kind === 'panel') return this._arr[d.panelId] ? d.panelId : null;
+		return childIds(this._arr, d.workspaceId)[0] ?? null;
+	}
+
+	/** Drop the dragged node (panel or tab) into the layout by splitting `targetPanelId` along
+	 * `direction`. Repositions a panel or merges a tab — ONE op, so it is one undo step, and taking
+	 * a page's last panel takes the page with it. */
+	dropOnPanel(targetPanelId: string, direction: Direction, placeBefore: boolean): void {
+		const d = this.dragging;
+		this.dragging = null;
+		if (!d) return;
+		if (d.kind === 'panel' && d.panelId === targetPanelId) return; // onto itself
+		const subtree = this._subtreeOf(d);
+		const page = this._pageName(targetPanelId);
+		if (!subtree || !page || subtree === targetPanelId) return;
+		this._wantPage = page;
+		void this._cmd('Move panel', 'page_insert_at_panel', {
+			page,
+			subtree,
+			target: targetPanelId,
+			direction,
+			place_before: placeBefore,
+			ratio: 0.5
 		});
+	}
+
+	/** Drop the dragged panel onto the tab bar at `index` — it becomes a new tab, built AROUND the
+	 * panel it carries. (Tabs dropped on the bar reorder instead — see reorderTab.) */
+	dropPanelOnTabBar(index: number): void {
+		const d = this.dragging;
+		this.dragging = null;
+		if (!d || d.kind !== 'panel') return;
+		const subtree = this._subtreeOf(d);
+		if (!subtree) return;
+		const name = this._uniqueName('Layout');
+		this._wantPage = name;
+		void this._cmd('Move panel to new tab', 'session_add_page', { name, index, subtree });
+	}
+
+	/** Every panel currently bound to `uid`, for the agent façade and the e2e. */
+	panelsBoundTo(uid: string): string[] {
+		const out: string[] = [];
+		for (const w of this._workspaces) {
+			for (const p of collectPanels(w.root)) {
+				if (asStateObject(p.state).node === uid) out.push(p.id);
+			}
+		}
+		return out;
 	}
 }
 

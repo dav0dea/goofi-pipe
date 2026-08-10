@@ -221,7 +221,7 @@
 			<Content
 				panelId={node.id}
 				state={node.state}
-				setState={(s, intent) => ws.setPanelState(node.id, s, intent)}
+				setState={(s, intent, label) => ws.setPanelState(node.id, s, intent, label)}
 			/>
 		{:else}
 			<div class="missing">Unknown panel type: <code>{node.panelType}</code></div>

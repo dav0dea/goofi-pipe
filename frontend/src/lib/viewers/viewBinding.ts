@@ -23,10 +23,12 @@ export interface ViewBinding {
 	setSetting(key: string, value: SettingValue): void;
 }
 
-/** Docked Viewer panel: backed by the panel's own layout state blob. */
+/** Docked Viewer panel: backed by the panel's own state, which the MANAGER holds. Each setter names
+ * its own undo step — the write is one `page_set_panel` command, so the manager owns the inverse and
+ * the label is all the client has to supply. */
 export function panelBinding(
 	getState: () => unknown,
-	setState: (s: unknown) => void,
+	setState: (s: unknown, label: string) => void,
 	dtype: string | null
 ): ViewBinding {
 	const raw = () => asStateObject(getState());
@@ -39,10 +41,10 @@ export function panelBinding(
 			return resolveSettings(this.kind, rawSettings());
 		},
 		setKind(kind) {
-			setState({ ...raw(), kind });
+			setState({ ...raw(), kind }, `Viewer → ${kind}`);
 		},
 		setSetting(key, value) {
-			setState({ ...raw(), settings: { ...rawSettings(), [key]: value } });
+			setState({ ...raw(), settings: { ...rawSettings(), [key]: value } }, `Viewer ${key}`);
 		}
 	};
 }

@@ -5,28 +5,15 @@
  * (node body viewer) or a docked Viewer panel's layout state.
  */
 import { setInlineFullView } from './inlineView.svelte';
-import { findPanel } from '$lib/workspace/model';
-import { asStateObject } from '$lib/workspace/panelState';
 import { history } from '$lib/stores/history.svelte';
 import { captureNavContext } from '$lib/workspace/navContext';
 import type { SettingsMap } from './settingsSchema';
 import type { Executor, ExecutorDeps, ViewAction, ViewSnapshot } from '$lib/stores/history.svelte';
 
 function apply(target: ViewAction['payload']['target'], snap: ViewSnapshot, deps: ExecutorDeps): void {
-	if (target.kind === 'inline') {
-		setInlineFullView(target.node, target.slot, snap);
-		// Round-trip into node.viewers (debounced) like a click would. No-op if
-		// the node is gone.
-		deps.graph.pushNodeViewers(target.node);
-		return;
-	}
-	// Panel viewer: merge the snapshot's kind/settings into the panel's layout
-	// state, preserving unrelated keys (the bound node + slot). Suspended by the
-	// undo/redo caller, so this re-write doesn't record a layout action.
-	const panel = findPanel(deps.workspace.active.root, target.panelId);
-	if (!panel) return;
-	const cur = asStateObject(panel.state);
-	deps.workspace.setPanelState(target.panelId, { ...cur, kind: snap.kind, settings: snap.settings });
+	setInlineFullView(target.node, target.slot, snap);
+	// Round-trip into node.viewers (debounced) like a click would. No-op if the node is gone.
+	deps.graph.pushNodeViewers(target.node);
 }
 
 const setView: Executor = {

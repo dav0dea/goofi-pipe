@@ -21,8 +21,7 @@ import {
 import { ui } from './ui.svelte';
 import { consoleStore } from './console.svelte';
 import { selection } from './selection.svelte';
-import { workspace, type LayoutIntent } from '$lib/workspace/workspace.svelte';
-import type { WorkspaceState } from '$lib/workspace/model';
+import { workspace } from '$lib/workspace/workspace.svelte';
 import { seedInlineView, forgetInlineView, rawInlineView } from '$lib/viewers/inlineView.svelte';
 import { resolveKind } from '$lib/viewers/kind';
 import type { SettingsMap } from '$lib/viewers/settingsSchema';
@@ -38,6 +37,7 @@ import {
 	docParams,
 	viewersJson,
 	globalViews,
+	arrangementEntries,
 	type GlobalView,
 	type GlobalType
 } from '$lib/crdt/graphDoc';
@@ -91,10 +91,9 @@ export class GraphStore {
 	 * (`refreshed_params`) — not on the fire-and-forget RPC ack. */
 	private _refreshing = $state<Record<string, ReturnType<typeof setTimeout>>>({});
 
-	/** instance_id of the manager process we last hydrated from. A change means
-	 * the backend was restarted under our still-open tab — a fresh session,
-	 * not a transient reconnect — so a layout-less snapshot must reset the
-	 * layout instead of preserving the previous session's arrangement. */
+	/** instance_id of the manager process we last hydrated from. A change means the backend was
+	 * restarted under our still-open tab — a fresh session, not a transient reconnect, which is
+	 * what tells a wholesale load apart from a reconnect that must keep its history. */
 	private _lastInstanceId: string | null = null;
 
 	/** The last snapshot's per-node runtime overlay, consumed by `_seedRuntime` as each node
@@ -161,6 +160,9 @@ export class GraphStore {
 		this.links = linkViews(doc);
 		// globals: the whole set is replaced from the doc (system-first, then user).
 		this.globals = globalViews(doc);
+		// arrangement: the panel layout, flat and id-keyed. The workspace store rebuilds its tree
+		// from it — the client holds no second copy and authors none.
+		workspace().syncFromDoc(arrangementEntries(doc));
 		// The catalog is always present in production (it rides on `hello`), so the doc is authoritative
 		// for node AND sub-patch identity: build `this.nodes` + `this.instances` from the doc (+ catalog
 		// + runtime). Existence/type/name/pos/param value+expr and the whole sub-patch forest come from
@@ -200,24 +202,13 @@ export class GraphStore {
 		this.savePath = snap.save_path;
 		this.unsavedChanges = snap.unsaved_changes;
 
-		// Layout resolution. A snapshot carrying a layout always drives the panel
-		// arrangement (a patch loaded from disk, or the manager echoing what we
-		// pushed). A layout-less snapshot is ambiguous on `hello` ALONE: from a
-		// *new* backend it means "blank session" (reset to default); from the
-		// *same* backend it's a transient reconnect whose layout already matches
-		// ours (keep it). A `graph_replaced` is never a reconnect — the patch was
-		// swapped — so there a missing layout means the patch that ARRIVED has no
-		// arrangement. Keeping the previous one leaves it on screen and then rides
-		// it into the new patch's `.gfi`: AppShell pushes `ws.serialize()` on the
-		// next split or tab switch and `set_layout` persists regardless of intent.
-		// (New is one door onto this; a layout-less `.gfi` through Load is another.)
+		// The panel ARRANGEMENT is not here: it is the fifth doc root, and it reaches the workspace
+		// store through `_syncFromDoc` like nodes and links do. What the snapshot carries is the
+		// VIEWPOINT — the page in front, the focused panel, each editor's sub-patch depth — which is
+		// this client's alone, persisted but never converged, so a reload lands where it left off.
 		const freshSession = snap.instance_id !== this._lastInstanceId;
 		this._lastInstanceId = snap.instance_id;
-		if (snap.layout != null) {
-			workspace().hydrate(snap.layout);
-		} else if (freshSession || wholesale) {
-			workspace().reset();
-		}
+		if (snap.viewpoint != null) workspace().restoreViewpoint(snap.viewpoint);
 		// (History reset happens in `_onWholesaleLoad`, which runs on BOTH a fresh session and an
 		// in-session load — a same-session reconnect skips it and keeps its history.)
 		return freshSession;
@@ -236,12 +227,6 @@ export class GraphStore {
 		// Reset here — this runs on a fresh session AND an in-session load or New, but NOT on a
 		// same-session reconnect.
 		history().reset();
-		// …and the layout fold, for the same reason: it is about the graph that just went away.
-		// `hydrate`/`reset` drain it when the snapshot carries a layout, but a layout-less .gfi
-		// takes neither branch, and the load's CRDT delta has already marked authored by emptying
-		// every panel bound to a uid that vanished. Without this the freshly loaded patch pushes
-		// dirty and the user sees an unsaved dot on a file they just opened.
-		workspace().patchLoaded();
 		consoleStore().clear();
 		// Drop stale per-panel selection/inspector state: a loaded layout keeps
 		// its saved panel ids, which can collide with ids used earlier this
@@ -416,21 +401,6 @@ export class GraphStore {
 				// because a type that vanished has to reach the assembled nodes too.
 				this._applyNodeTypes(ev.payload.types);
 				break;
-			case 'layout':
-				// Another client AUTHORED the arrangement — split a panel, added a tab, picked a
-				// viewer kind. The layout is not a doc root, so this event is the only way it
-				// reaches a live peer (a late joiner gets it on `hello`).
-				//
-				// The manager broadcasts to every client including the author, because a broadcast
-				// channel has no other shape — so we skip our own echo here rather than re-adopting
-				// a blob we already have, which would re-seed our panel ids and drain our intent
-				// fold for nothing. And it MERGES: the blob carries the peer's viewpoint as well as
-				// its structure, and only the structure is shared (see `applyRemoteLayout`). Nothing
-				// was loaded, so `loadEpoch` stays put — a peer adding a panel must not re-fit our
-				// viewport, any more than it should move our selection.
-				if (ev.payload.session === this.ctl.session) break;
-				workspace().applyRemoteLayout(ev.payload.layout);
-				break;
 		}
 	}
 
@@ -480,11 +450,8 @@ export class GraphStore {
 	 * captured the pre-state), so this entry only marks the step — its undo/redo DELEGATE to the
 	 * manager's session history (B3) — and carries any client-local layout side-effect (panels
 	 * emptied when a node vanished) to re-bind on undo. */
-	private _recordGraphCmd(
-		label: string,
-		boundPanels: Array<{ panelId: string; state: unknown }> = []
-	): void {
-		this._record({ kind: 'graph_cmd', domain: 'graph', label, context: captureNavContext(), boundPanels });
+	private _recordGraphCmd(label: string): void {
+		this._record({ kind: 'graph_cmd', domain: 'graph', label, context: captureNavContext() });
 	}
 
 	async addNode(
@@ -508,14 +475,12 @@ export class GraphStore {
 
 	async removeNode(uid: string): Promise<void> {
 		// The manager's RemoveNode captures the WHOLE subtree (members, params, links, stubs,
-		// membership) for a leaf, a sub-patch member, OR a collapsed instance alike (B3b), so its
-		// inverse restores it uid-stably — the client just marks the step and carries the panels the
-		// delete will empty (re-bound on undo, since the doc-reconcile won't restore a binding). The
-		// label reads the (real or synthetic) node's name before it vanishes.
+		// membership) for a leaf, a sub-patch member, OR a collapsed instance alike (B3b) AND
+		// empties every panel bound to a uid it takes, so its inverse restores both uid-stably. The
+		// client just marks the step. The label reads the node's name before it vanishes.
 		const label = `Delete ${this.nodeById(uid)?.name ?? uid}`;
-		const boundPanels = history().isSuspended ? [] : workspace().panelsBoundTo(uid);
 		await this.ctl.call('remove_node', { node: uid });
-		this._recordGraphCmd(label, boundPanels);
+		this._recordGraphCmd(label);
 	}
 
 	/** Respawn a (typically crashed) node: the backend restarts its process IN PLACE,
@@ -657,16 +622,13 @@ export class GraphStore {
 		this._recordGraphCmd(`Rename ${oldName} → ${name}`);
 	}
 
-	/** Push the current workspace layout into the running patch (manager memory)
-	 * so it survives reloads and lands in the .gfi on save. Fire-and-forget:
-	 * layout is soft UI state, so a dropped push is harmless.
-	 *
-	 * `intent` is the dirty classification of the writes in this push (see
-	 * `LayoutIntent`): persistence and dirtiness are separate axes, so a purely
-	 * navigational push is stored without marking the patch unsaved. */
-	async setLayout(layout: unknown, intent: LayoutIntent): Promise<void> {
+	/** Store where THIS client is looking — the page in front, the focused panel, each editor's
+	 * sub-patch depth. Fire-and-forget: a viewpoint is soft, so a dropped push is harmless. It
+	 * rides the `.gfi` and comes back on `hello`, and it neither converges to a peer nor dirties
+	 * the patch — persistence and dirtiness are separate axes. */
+	async setViewpoint(viewpoint: unknown): Promise<void> {
 		try {
-			await this.ctl.call('set_layout', { layout, intent });
+			await this.ctl.call('set_viewpoint', { viewpoint });
 		} catch {
 			/* not connected / in flight — ignore */
 		}
@@ -682,10 +644,9 @@ export class GraphStore {
 	 * (C38) that made a second tab, and every reload, forget where the patch lives. */
 	async save(path: string): Promise<{ path: string }> {
 		// `path` is the whole payload, and it is REQUIRED — the arm refuses a save with no path
-		// ("Save in browser", the no-path serialize-only form, was removed 2026-08-08). The layout
-		// is NOT sent here: it reaches the patch through AppShell's debounced `set_layout`, which
-		// is also what carries the `LayoutIntent` classification. A second writer on this path
-		// would bypass that and re-dirty a patch the moment it was saved.
+		// ("Save in browser", the no-path serialize-only form, was removed 2026-08-08). The
+		// arrangement is NOT sent here: the manager holds it, and every edit to it already arrived
+		// as its own command.
 		return this.ctl.call<{ path: string }>('save', { path });
 	}
 
@@ -839,7 +800,6 @@ export class GraphStore {
 	private _forgetUid(uid: string): void {
 		ui().forget(uid);
 		forgetInlineView(uid);
-		workspace().clearNodeRefs(uid);
 	}
 
 	private _reconcileNodes(next: NodeInstanceInfo[]): void {

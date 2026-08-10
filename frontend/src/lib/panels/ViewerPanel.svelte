@@ -36,43 +36,22 @@
 		const names = Object.keys(node.output_slots);
 		return cur.slot && node.output_slots[cur.slot] ? cur.slot : (names[0] ?? null);
 	}
-	// Tracked (unlike the viewer kind/settings below, whose undo step the view domain owns): an
-	// unrecorded authored write is destroyed by a layout undo of anything that came before it.
 	function pick(slot: string): void {
 		ws.setPanelSlot(props.panelId, slot);
 	}
 
 	// Resolve the chosen slot, its dtype, and this panel's binding in one place so
 	// the controls and content snippets (separate scopes) don't each re-derive it.
-	// Raw (pre-resolution) snapshot of this panel's view state, for undo capture.
-	function snap(): { kind?: ViewerKind; settings: SettingsMap } {
-		const s = asStateObject(props.state);
-		return { kind: s.kind as ViewerKind | undefined, settings: (s.settings as SettingsMap) ?? {} };
-	}
+	// A kind/settings change is a `page_set_panel` command like any other panel write, so the
+	// binding's own labelled setter is the whole undo step — no client-side snapshot to capture.
 	function view(node: NodeInstanceInfo): { slot: string | null; dtype: string | null; binding: ViewBinding } {
 		const slot = curSlot(node);
 		const dtype = slot ? node.output_slots[slot] : null;
-		const inner = panelBinding(() => props.state, props.setState, dtype);
-		// Wrap the setters so a viewer-type/settings change records an undo step
-		// (the inner binding stays pure + unit-testable in viewBinding.ts).
-		const binding: ViewBinding = {
-			get kind() {
-				return inner.kind;
-			},
-			get settings() {
-				return inner.settings;
-			},
-			setKind(k) {
-				const before = snap();
-				inner.setKind(k);
-				recordViewChange({ kind: 'panel', panelId: props.panelId }, before, snap(), `Viewer → ${k}`);
-			},
-			setSetting(key, value) {
-				const before = snap();
-				inner.setSetting(key, value);
-				recordViewChange({ kind: 'panel', panelId: props.panelId }, before, snap(), `Viewer ${key}`);
-			}
-		};
+		const binding = panelBinding(
+			() => props.state,
+			(s, label) => props.setState(s, 'authored', label),
+			dtype
+		);
 		return { slot, dtype, binding };
 	}
 </script>

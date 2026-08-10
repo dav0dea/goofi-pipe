@@ -15,7 +15,6 @@ export type OpName =
 	| 'update_param'
 	| 'set_expression'
 	| 'set_node_pos'
-	| 'set_layout'
 	| 'set_viewpoint'
 	| 'inspect_layout'
 	| 'session_list_pages'

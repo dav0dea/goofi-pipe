@@ -2,8 +2,6 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { FakeControl } from '$lib/test/fakeControl';
 import { GraphStore } from './graph.svelte';
 import { history } from './history.svelte';
-import { workspace } from '$lib/workspace/workspace.svelte';
-import { collectPanels } from '$lib/workspace/model';
 
 /**
  * `New` is a manager transaction, and the client's whole job is to *not* get in its way.
@@ -16,10 +14,7 @@ import { collectPanels } from '$lib/workspace/model';
  * — emits no `save_path_changed`: the manager only announces a path it HAS.
  */
 describe('GraphStore.newPatch — the reset door', () => {
-	beforeEach(() => {
-		history().reset();
-		workspace().reset();
-	});
+	beforeEach(() => history().reset());
 
 	it('sends `new` with an empty payload and records no undo step', async () => {
 		const fc = new FakeControl();
@@ -59,19 +54,9 @@ describe('GraphStore.newPatch — the reset door', () => {
 	 * arrangement becomes the new one's stored layout and rides into its `.gfi`. A layout-less
 	 * `.gfi` (the engine writes one, and the Load button reaches it today) lands here too.
 	 */
-	it('leaves none of the previous patch’s panels standing', async () => {
-		const fc = new FakeControl();
-		const g = new GraphStore(fc);
-		fc.emit({ event: 'hello', payload: snapshot('/patches/a.gfi') });
-		const ws = workspace();
-		ws.split(ws.activePanelId!, 'row');
-		expect(collectPanels(ws.active.root).length, 'the patch was arranged').toBe(2);
-
-		await g.newPatch();
-		fc.emit({ event: 'graph_replaced', payload: snapshot(null) });
-
-		expect(collectPanels(ws.active.root).length, 'a New patch opens on the default one').toBe(1);
-	});
+	// (That a New patch opens on the DEFAULT arrangement is the manager's now — `new` reloads an
+	// empty document, which restores the default layout with it. Pinned over the wire by
+	// `a_new_patch_is_empty_clean_and_unnamed`.)
 });
 
 function snapshot(savePath: string | null) {
@@ -80,6 +65,6 @@ function snapshot(savePath: string | null) {
 		save_path: savePath,
 		unsaved_changes: false,
 		instance_id: 'sess1',
-		layout: null
+		viewpoint: null
 	} as never;
 }

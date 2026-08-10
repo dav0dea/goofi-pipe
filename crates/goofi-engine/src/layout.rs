@@ -836,6 +836,7 @@ impl Layout {
         page: &str,
         panel: &str,
         axis: Axis,
+        place_before: bool,
         ratio: f64,
     ) -> Result<(Vec<Write>, Id), String> {
         self.in_page(page, panel)?;
@@ -856,8 +857,32 @@ impl Layout {
             panel_type: EMPTY_PANEL_TYPE.into(),
             state: Value::Null,
         };
-        next.insert_at(&fresh, born, panel, axis, false, None);
+        next.insert_at(&fresh, born, panel, axis, place_before, None);
         Ok((self.diff(&next), fresh))
+    }
+
+    /// Clear the node binding of every panel naming a uid in `gone`, as the writes a
+    /// [`crate::Command::LayoutContents`] lands. A panel's `state` is opaque here save for this one
+    /// key, which the frontend and the bind validation already share (`page_set_panel`'s
+    /// `state.node`) — a panel pointing at a deleted node is the one arrangement the manager can
+    /// know is wrong.
+    pub fn unbind(&self, gone: &std::collections::HashSet<crate::Uid>) -> Vec<Write> {
+        let mut writes = Vec::new();
+        for (id, e) in &self.entries {
+            let Entry::Panel { state, .. } = e else { continue };
+            let bound = state.get("node").and_then(|v| v.as_str());
+            if !bound.and_then(crate::Uid::from_hex).is_some_and(|u| gone.contains(&u)) {
+                continue;
+            }
+            let mut next = e.clone();
+            if let Entry::Panel { state, .. } = &mut next {
+                if let Some(o) = state.as_object_mut() {
+                    o.insert("node".into(), Value::Null);
+                }
+            }
+            writes.push((id.clone(), Some(next)));
+        }
+        writes
     }
 
     /// Set a panel's type and/or state. `panel_type` is applied FIRST because changing it clears the
@@ -1147,19 +1172,33 @@ mod tests {
     }
 
     #[test]
+    fn a_split_can_land_the_fresh_panel_before_its_target() {
+        // The frozen corner-drag splits toward wherever the pointer went, LEFT and UP included, so
+        // `place_before` has to reach the op — planting the new panel after the target when the
+        // user dragged left is a different gesture, not a smaller one.
+        let l = Layout::default();
+        let page = l.pages()[0].clone();
+        let a = root_panel(&l);
+        let (w, b) = l.split_panel(&page, &a, Axis::Row, true, 0.5).expect("split before");
+        let l = applied(&l, w);
+        let split = l.children(&page)[0].clone();
+        assert_eq!(l.children(&split), vec![b.clone(), a.clone()], "the fresh panel sits first");
+    }
+
+    #[test]
     fn splitting_along_the_parents_own_axis_inserts_a_sibling_and_halves_the_slot() {
         // model.ts `insertNodeAtPanel`: when the target's parent already runs along `direction`, the
         // new node is inserted ADJACENT and takes `fraction` of the target's slice.
         let l = Layout::default();
         let page = l.pages()[0].clone();
         let a = root_panel(&l);
-        let (w, _b) = l.split_panel(&page, &a, Axis::Row, 0.5).expect("first split");
+        let (w, _b) = l.split_panel(&page, &a, Axis::Row, false, 0.5).expect("first split");
         let l = applied(&l, w);
         let split = l.children(&page)[0].clone();
         assert_eq!(l.get(&split).map(Entry::kind), Some("split"), "the panel got wrapped");
 
         // A second split of `a` along the SAME axis inserts into the existing split, no new wrapper.
-        let (w, c) = l.split_panel(&page, &a, Axis::Row, 0.5).expect("second split");
+        let (w, c) = l.split_panel(&page, &a, Axis::Row, false, 0.5).expect("second split");
         let l2 = applied(&l, w);
         assert_eq!(l2.children(&page)[0], split, "still the same split — no second wrapper");
         let kids = l2.children(&split);
@@ -1176,11 +1215,11 @@ mod tests {
         let l = Layout::default();
         let page = l.pages()[0].clone();
         let a = root_panel(&l);
-        let (w, _) = l.split_panel(&page, &a, Axis::Row, 0.5).unwrap();
+        let (w, _) = l.split_panel(&page, &a, Axis::Row, false, 0.5).unwrap();
         let l = applied(&l, w);
         let row = l.children(&page)[0].clone();
 
-        let (w, c) = l.split_panel(&page, &a, Axis::Column, 0.25).unwrap();
+        let (w, c) = l.split_panel(&page, &a, Axis::Column, false, 0.25).unwrap();
         let l = applied(&l, w);
         // `a` is now under a NEW column split that took `a`'s slot in the row.
         let wrap = l.get(&a).unwrap().parent().unwrap().to_string();
@@ -1200,10 +1239,10 @@ mod tests {
         let l = Layout::default();
         let page = l.pages()[0].clone();
         let a = root_panel(&l);
-        let (w, b) = l.split_panel(&page, &a, Axis::Row, 0.5).unwrap();
+        let (w, b) = l.split_panel(&page, &a, Axis::Row, false, 0.5).unwrap();
         let l = applied(&l, w);
         let split = l.children(&page)[0].clone();
-        let (w, c) = l.split_panel(&page, &b, Axis::Row, 0.5).unwrap();
+        let (w, c) = l.split_panel(&page, &b, Axis::Row, false, 0.5).unwrap();
         let l = applied(&l, w);
 
         // Three children: removing one leaves two — the split survives and the sizes renormalize.
@@ -1242,9 +1281,9 @@ mod tests {
         let l = Layout::default();
         let p1 = l.pages()[0].clone();
         let a = root_panel(&l);
-        let (w, b) = l.split_panel(&p1, &a, Axis::Row, 0.5).unwrap();
+        let (w, b) = l.split_panel(&p1, &a, Axis::Row, false, 0.5).unwrap();
         let l = applied(&l, w);
-        let (w, c) = l.split_panel(&p1, &b, Axis::Column, 0.5).unwrap();
+        let (w, c) = l.split_panel(&p1, &b, Axis::Column, false, 0.5).unwrap();
         let l = applied(&l, w);
         let sub = l.get(&b).unwrap().parent().unwrap().to_string(); // the column split holding b + c
         let l = applied(&l, l.set_panel(&p1, &c, None, Some(json!({ "node": "osc0" }))).unwrap());
@@ -1253,7 +1292,7 @@ mod tests {
         let l = applied(&l, l.add_page("Second", None, None).unwrap().0);
         let p2 = l.page_named("Second").expect("the new page");
         let d = l.children(&p2)[0].clone();
-        let (w, _e) = l.split_panel(&p2, &d, Axis::Row, 0.5).unwrap();
+        let (w, _e) = l.split_panel(&p2, &d, Axis::Row, false, 0.5).unwrap();
         let l = applied(&l, w);
         let dest = l.children(&p2)[0].clone();
 
@@ -1333,7 +1372,7 @@ mod tests {
         let l = Layout::default();
         let page = l.pages()[0].clone();
         let a = root_panel(&l);
-        let (w, _b) = l.split_panel(&page, &a, Axis::Column, 0.3).unwrap();
+        let (w, _b) = l.split_panel(&page, &a, Axis::Column, false, 0.3).unwrap();
         let l = applied(&l, w);
         let l = applied(&l, l.set_panel(&page, &a, Some("viewer"), Some(json!({ "node": "x" }))).unwrap());
         let back = Layout::from_json(&l.to_json()).expect("its own output is valid");
@@ -1347,7 +1386,7 @@ mod tests {
         let l = Layout::default();
         let page = l.pages()[0].clone();
         let a = root_panel(&l);
-        let (w, b) = l.split_panel(&page, &a, Axis::Row, 0.5).unwrap();
+        let (w, b) = l.split_panel(&page, &a, Axis::Row, false, 0.5).unwrap();
         let l = applied(&l, w);
         let split = l.children(&page)[0].clone();
         let good = l.to_json();
@@ -1411,7 +1450,7 @@ mod tests {
         let l = Layout::default();
         let p1 = l.pages()[0].clone();
         let a = root_panel(&l);
-        let (w, b) = l.split_panel(&p1, &a, Axis::Row, 0.5).unwrap();
+        let (w, b) = l.split_panel(&p1, &a, Axis::Row, false, 0.5).unwrap();
         let l = applied(&l, w);
         let l = applied(&l, l.set_panel(&p1, &b, None, Some(json!({ "node": "osc0" }))).unwrap());
         let (w, p2) = l.add_page("Second", None, None).unwrap();
@@ -1451,7 +1490,7 @@ mod tests {
         let l = Layout::default();
         let p1 = l.pages()[0].clone();
         let a = root_panel(&l);
-        let (w, b) = l.split_panel(&p1, &a, Axis::Row, 0.5).unwrap();
+        let (w, b) = l.split_panel(&p1, &a, Axis::Row, false, 0.5).unwrap();
         let l = applied(&l, w);
 
         let (w, p2) = l.add_page("Second", Some(0), Some(&b)).unwrap();
@@ -1480,7 +1519,7 @@ mod tests {
         let l = Layout::default();
         let p1 = l.pages()[0].clone();
         let a = root_panel(&l);
-        let (w, b) = l.split_panel(&p1, &a, Axis::Row, 0.5).unwrap();
+        let (w, b) = l.split_panel(&p1, &a, Axis::Row, false, 0.5).unwrap();
         let l = applied(&l, w);
         let split = l.get(&a).unwrap().parent().unwrap().to_string();
         let (w, p2) = l.add_page("Second", None, None).unwrap();
@@ -1515,9 +1554,9 @@ mod tests {
         let l = Layout::default();
         let page = l.pages()[0].clone();
         let a = root_panel(&l);
-        let (w, b) = l.split_panel(&page, &a, Axis::Row, 0.5).unwrap();
+        let (w, b) = l.split_panel(&page, &a, Axis::Row, false, 0.5).unwrap();
         let l = applied(&l, w);
-        let (w, c) = l.split_panel(&page, &b, Axis::Row, 0.5).unwrap();
+        let (w, c) = l.split_panel(&page, &b, Axis::Row, false, 0.5).unwrap();
         let l = applied(&l, w);
         let split = l.children(&page)[0].clone();
         assert_eq!(l.children(&split), vec![a.clone(), b.clone(), c.clone()]);
@@ -1545,17 +1584,17 @@ mod tests {
         let l = Layout::default();
         let page = l.pages()[0].clone();
         let a = root_panel(&l);
-        let (w, b) = l.split_panel(&page, &a, Axis::Row, 0.5).unwrap();
+        let (w, b) = l.split_panel(&page, &a, Axis::Row, false, 0.5).unwrap();
         let l = applied(&l, w);
         let closed = applied(&l, l.remove_subtree(&page, &b).unwrap());
         assert_eq!(closed.get(&b), None, "the fixture really did close it");
-        let (_w, next) = closed.split_panel(&page, &a, Axis::Row, 0.5).unwrap();
+        let (_w, next) = closed.split_panel(&page, &a, Axis::Row, false, 0.5).unwrap();
         assert_ne!(next, b, "the closed panel's id is not handed out again");
 
         // …and the counter rides the file, so a reopened patch keeps counting FORWARD rather than
         // restarting from whatever survived.
         let back = Layout::from_json(&closed.to_json()).expect("its own output is valid");
-        let (_w, later) = back.split_panel(&page, &a, Axis::Row, 0.5).unwrap();
+        let (_w, later) = back.split_panel(&page, &a, Axis::Row, false, 0.5).unwrap();
         assert_ne!(later, b, "a reopened arrangement does not restart the counter");
     }
 
@@ -1564,9 +1603,9 @@ mod tests {
         let l = Layout::default();
         let page = l.pages()[0].clone();
         let a = root_panel(&l);
-        let (w, b) = l.split_panel(&page, &a, Axis::Row, 0.5).unwrap();
+        let (w, b) = l.split_panel(&page, &a, Axis::Row, false, 0.5).unwrap();
         let l = applied(&l, w);
-        let (w, c) = l.split_panel(&page, &b, Axis::Column, 0.5).unwrap();
+        let (w, c) = l.split_panel(&page, &b, Axis::Column, false, 0.5).unwrap();
         let l = applied(&l, w);
         let (bw, bh) = l.extent(&b);
         assert!((bw - 0.5).abs() < 1e-9 && (bh - 0.5).abs() < 1e-9, "half the width, half the height");

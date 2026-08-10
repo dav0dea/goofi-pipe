@@ -131,43 +131,33 @@
 	}
 
 	function onBeforeUnload(e: BeforeUnloadEvent): void {
-		// Flush a pending layout push so a quick reload keeps the arrangement.
+		// Flush a pending viewpoint push so a quick reload lands where we left off.
 		if (pushTimer) {
 			clearTimeout(pushTimer);
 			pushTimer = null;
-			pushLayout();
+			void g.setViewpoint(ws.viewpoint());
 		}
 		if (!g.unsavedChanges) return;
 		e.preventDefault();
 		e.returnValue = '';
 	}
 
-	// Push layout changes into the running patch (debounced — a resize drag or
-	// rapid splits collapse into one push). Only after the initial sync, so we
-	// don't echo before the patch's own layout has arrived. The push carries the
-	// window's folded dirty classification (`takeLayoutIntent`), so navigating
-	// persists without marking the patch unsaved.
+	// The ARRANGEMENT is not pushed from here any more — every gesture is a layout command, and the
+	// manager holds it. What is left is the VIEWPOINT: which page is in front, which panel is
+	// focused, how deep each editor has navigated. It is this client's alone, so it is stored
+	// (debounced — tab-hopping collapses into one push) and never converged, and it cannot dirty
+	// the patch. Only after the initial sync, so a fresh client does not overwrite the stored
+	// viewpoint with its own default before that viewpoint has arrived.
 	let pushTimer: ReturnType<typeof setTimeout> | null = null;
 
-	// …with one exception: an arrangement a PEER authored is already what the manager holds, so
-	// pushing it back is a round trip that buys nothing and would overwrite the manager's copy with
-	// THIS client's navigation fields. The latch is spent on read, and any local write inside the
-	// same debounce window clears it, so a real edit still gets through.
-	function pushLayout(): void {
-		if (ws.takeRemoteApplied()) return;
-		void g.setLayout(ws.serialize(), ws.takeLayoutIntent());
-	}
-
 	$effect(() => {
-		void ws.state; // track: every layout mutation replaces this reference
+		void ws.viewpointEpoch; // track: bumped by every viewpoint change
 		if (!g.hadHello) return;
 		if (pushTimer) clearTimeout(pushTimer);
-		// Cleared as it fires, so `onBeforeUnload` flushes only a push that is genuinely still
-		// PENDING — a spent handle used to make it re-push, which after a remote apply meant
-		// echoing the peer's own arrangement back at the manager on the way out.
+		// Cleared as it fires, so `onBeforeUnload` flushes only a push that is genuinely pending.
 		pushTimer = setTimeout(() => {
 			pushTimer = null;
-			pushLayout();
+			void g.setViewpoint(ws.viewpoint());
 		}, 400);
 	});
 

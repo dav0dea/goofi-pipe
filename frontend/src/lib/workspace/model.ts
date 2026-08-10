@@ -1,18 +1,18 @@
 /**
- * Workspace layout model — the pure, framework-agnostic core of the panel
- * system.
+ * Workspace layout model — the pure, framework-agnostic shapes the panel system
+ * renders, and the queries over them.
  *
- * A workspace tab is a recursive tree. Leaves (`PanelNode`) host one
- * registered panel type; internal nodes (`SplitNode`) divide their space
- * between N children along one axis, with fractional `sizes` that sum to 1.
+ * A workspace tab is a recursive tree. Leaves (`PanelNode`) host one registered
+ * panel type; internal nodes (`SplitNode`) divide their space between N children
+ * along one axis, with fractional `sizes` that sum to 1.
  *
- * Everything here is a pure function over plain data: no Svelte, no DOM, no
- * IDs pulled from the environment beyond a deterministic counter. That keeps
- * the tree algebra unit-testable in isolation — the reactive store
- * (`workspace.svelte.ts`) is the only layer that holds state and reacts.
+ * The tree itself is no longer authored here: the manager holds the arrangement
+ * FLAT and id-keyed (the fifth CRDT doc root) and `arrangement.ts` rebuilds this
+ * shape from it at render time. What remains is the vocabulary, the read-only
+ * queries every component uses, and the one piece of geometry a client must own
+ * — the pixel floor a splitter drag is clamped to, which only the renderer can
+ * measure.
  */
-
-import { linkedNodeName, withLinkedNode } from './panelState';
 
 /** Smallest fraction a single child may shrink to, so a panel can always be
  * grabbed again after an aggressive resize. */
@@ -37,8 +37,8 @@ export interface PanelNode {
 	id: string;
 	/** Registry key of the content shown here (e.g. `'node-editor'`). */
 	panelType: string;
-	/** Opaque per-panel state, persisted with the layout (e.g. a Viewer
-	 * panel's chosen node/slot). The framework never inspects it. */
+	/** Opaque per-panel state, held by the manager (e.g. a Viewer panel's chosen
+	 * node/slot). The framework never inspects it. */
 	state?: unknown;
 }
 
@@ -64,44 +64,12 @@ export interface WorkspaceState {
 	activeWorkspaceId: string;
 }
 
-// ---------------------------------------------------------------------------
-// IDs — a monotonic counter, namespaced by prefix. Uniqueness only needs to
-// hold within a running session; `reseedIds` bumps the counter past any ids
-// hydrated from a saved layout so freshly-created nodes never collide.
-// ---------------------------------------------------------------------------
+/** The panel type a brand-new workspace / tab starts with. */
+export const DEFAULT_PANEL_TYPE = 'node-editor';
 
-let _seq = 0;
-
-export function uid(prefix: string): string {
-	_seq += 1;
-	return `${prefix}-${_seq}`;
-}
-
-/** After hydrating a saved layout, advance the counter past every `*-<n>` id
- * already present so new ids stay unique. Workspace ids count too: `dropPanelOnTabBar`
- * mints a tab around a panel node that already existed, so a saved blob's highest
- * suffix can be a WORKSPACE id — scanning only the trees would leave the counter
- * under it and the next `addTab` would mint a duplicate tab. */
-export function reseedIds(state: WorkspaceState): void {
-	let max = _seq;
-	const bump = (id: string): void => {
-		const m = /-(\d+)$/.exec(id);
-		if (m) max = Math.max(max, parseInt(m[1], 10));
-	};
-	const scan = (node: LayoutNode): void => {
-		bump(node.id);
-		if (node.kind === 'split') node.children.forEach(scan);
-	};
-	for (const ws of state.workspaces) {
-		bump(ws.id);
-		scan(ws.root);
-	}
-	_seq = max;
-}
-
-export function makePanel(panelType: string, state?: unknown): PanelNode {
-	return { kind: 'panel', id: uid('panel'), panelType, state };
-}
+/** The placeholder a split births: an empty panel whose in-panel buttons let
+ * the user choose its content, so a split never assumes a type. */
+export const EMPTY_PANEL_TYPE = 'empty';
 
 // ---------------------------------------------------------------------------
 // Queries
@@ -147,235 +115,47 @@ export function findParent(root: LayoutNode, nodeId: string): ParentRef | null {
 }
 
 // ---------------------------------------------------------------------------
-// Immutable transforms — every op returns a new tree (structural sharing on
-// the unchanged subtrees) so a plain store assignment triggers reactivity.
+// Resize geometry — the one thing the manager cannot plan
 // ---------------------------------------------------------------------------
 
-/** Replace the node whose id is `nodeId` with `fn(node)`, rebuilding only the
- * path to it. Returns the same reference if nothing matched. */
-function transform(root: LayoutNode, nodeId: string, fn: (n: LayoutNode) => LayoutNode): LayoutNode {
-	if (root.id === nodeId) return fn(root);
-	if (root.kind === 'panel') return root;
-	let changed = false;
-	const children = root.children.map((c) => {
-		const nc = transform(c, nodeId, fn);
-		if (nc !== c) changed = true;
-		return nc;
-	});
-	return changed ? { ...root, children } : root;
-}
-
-export function setPanelType(root: LayoutNode, panelId: string, panelType: string): LayoutNode {
-	// Switching type discards the old type's per-panel state — a new type can't
-	// interpret it.
-	return transform(root, panelId, (n) => (n.kind === 'panel' ? { ...n, panelType, state: undefined } : n));
-}
-
-export function setPanelState(root: LayoutNode, panelId: string, state: unknown): LayoutNode {
-	return transform(root, panelId, (n) => (n.kind === 'panel' ? { ...n, state } : n));
-}
-
-/** Adjust the boundary between children `dividerIndex` and `dividerIndex+1` of
- * the given split by `delta` (a fraction). Clamps both neighbours to the floor,
- * pushing the overflow onto the other side.
+/**
+ * Move the boundary between children `dividerIndex` and `dividerIndex+1` by `delta` (a fraction),
+ * clamping both neighbours to the floor and pushing the overflow onto the other side. The whole
+ * drag is drawn from this and lands as ONE `page_resize_split`.
  *
  * `containerPx` is the split's measured size along its axis, which is what turns MIN_FRACTION into
- * a real MIN_PANEL_PX floor (D-R10). 0 / omitted means "unmeasured" — an undo replay or a unit test
- * — and keeps the fraction floor alone. */
-export function resizeSplit(
-	root: LayoutNode,
-	splitId: string,
+ * a real MIN_PANEL_PX floor (D-R10) — a rendering-time fact the manager has no way to know. 0 /
+ * omitted means "unmeasured" and keeps the fraction floor alone.
+ */
+export function resizeFractions(
+	sizes: number[],
 	dividerIndex: number,
 	delta: number,
 	containerPx = 0
-): LayoutNode {
-	return transform(root, splitId, (n) => {
-		if (n.kind !== 'split') return n;
-		const i = dividerIndex;
-		const j = dividerIndex + 1;
-		if (i < 0 || j >= n.sizes.length) return n;
-		let a = n.sizes[i] + delta;
-		let b = n.sizes[j] - delta;
-		// The pair's total is invariant under a boundary move, so half of it is the largest floor
-		// both sides can satisfy — below 2 × MIN_PANEL_PX the seam simply locks to the middle rather
-		// than driving one neighbour negative.
-		const share = n.sizes[i] + n.sizes[j];
-		const floor =
-			containerPx > 0
-				? Math.min(share / 2, Math.max(MIN_FRACTION, MIN_PANEL_PX / containerPx))
-				: MIN_FRACTION;
-		if (a < floor) {
-			b -= floor - a;
-			a = floor;
-		}
-		if (b < floor) {
-			a -= floor - b;
-			b = floor;
-		}
-		const sizes = n.sizes.slice();
-		sizes[i] = a;
-		sizes[j] = b;
-		return { ...n, sizes };
-	});
-}
-
-/**
- * Insert an arbitrary `node` (a panel or a whole subtree) adjacent to the
- * target panel, splitting along `direction`.
- *
- * - If the target's parent split already runs along `direction`, the node is
- *   inserted as an adjacent sibling and the target's size slice is halved.
- * - Otherwise the target is wrapped in a fresh split with two equal children.
- *
- * `placeBefore` puts the inserted node before the target (left / top).
- * `fraction` is the inserted node's share of the target's current slot
- * (0.5 = even split); the target keeps the rest.
- */
-export function insertNodeAtPanel(
-	root: LayoutNode,
-	targetPanelId: string,
-	direction: Direction,
-	placeBefore: boolean,
-	node: LayoutNode,
-	fraction = 0.5
-): LayoutNode {
-	const target = findPanel(root, targetPanelId);
-	if (!target) return root;
-	const parent = findParent(root, targetPanelId);
-	const f = Math.max(0.05, Math.min(0.95, fraction));
-
-	if (parent && parent.parent.direction === direction) {
-		return transform(root, parent.parent.id, (n) => {
-			if (n.kind !== 'split') return n;
-			const idx = n.children.findIndex((c) => c.id === targetPanelId);
-			if (idx < 0) return n;
-			const slot = n.sizes[idx];
-			const newSize = slot * f;
-			const keepSize = slot - newSize;
-			const children = n.children.slice();
-			const sizes = n.sizes.slice();
-			children.splice(placeBefore ? idx : idx + 1, 0, node);
-			// Sizes must line up with the new child order at this position.
-			sizes.splice(idx, 1, ...(placeBefore ? [newSize, keepSize] : [keepSize, newSize]));
-			return { ...n, children, sizes };
-		});
+): number[] {
+	const i = dividerIndex;
+	const j = dividerIndex + 1;
+	if (i < 0 || j >= sizes.length) return sizes;
+	let a = sizes[i] + delta;
+	let b = sizes[j] - delta;
+	// The pair's total is invariant under a boundary move, so half of it is the largest floor both
+	// sides can satisfy — below 2 × MIN_PANEL_PX the seam simply locks to the middle rather than
+	// driving one neighbour negative.
+	const share = sizes[i] + sizes[j];
+	const floor =
+		containerPx > 0
+			? Math.min(share / 2, Math.max(MIN_FRACTION, MIN_PANEL_PX / containerPx))
+			: MIN_FRACTION;
+	if (a < floor) {
+		b -= floor - a;
+		a = floor;
 	}
-
-	const wrap: SplitNode = {
-		kind: 'split',
-		id: uid('split'),
-		direction,
-		children: placeBefore ? [node, target] : [target, node],
-		sizes: placeBefore ? [f, 1 - f] : [1 - f, f]
-	};
-	return transform(root, targetPanelId, () => wrap);
-}
-
-/**
- * Split `panelId` along `direction`, inserting a new panel of `newType`.
- * Returns the new tree and the id of the created panel.
- */
-export function splitPanel(
-	root: LayoutNode,
-	panelId: string,
-	direction: Direction,
-	placeBefore: boolean,
-	newType: string,
-	fraction = 0.5
-): { root: LayoutNode; newPanelId: string } {
-	if (!findPanel(root, panelId)) return { root, newPanelId: '' };
-	const newPanel = makePanel(newType);
-	return {
-		root: insertNodeAtPanel(root, panelId, direction, placeBefore, newPanel, fraction),
-		newPanelId: newPanel.id
-	};
-}
-
-/** Clear any panel whose state links the named node (`state.node === name`),
- * so deleting a node empties the Parameters / Viewer / Metadata panels bound to
- * it. Returns the same tree if nothing referenced it. */
-export function clearNodeRef(root: LayoutNode, nodeName: string): LayoutNode {
-	const visit = (n: LayoutNode): LayoutNode => {
-		if (n.kind === 'panel') {
-			return linkedNodeName(n.state) === nodeName
-				? { ...n, state: withLinkedNode(n.state, null) }
-				: n;
-		}
-		let changed = false;
-		const children = n.children.map((c) => {
-			const nc = visit(c);
-			if (nc !== c) changed = true;
-			return nc;
-		});
-		return changed ? { ...n, children } : n;
-	};
-	return visit(root);
-}
-
-function normalize(sizes: number[]): number[] {
-	const total = sizes.reduce((a, b) => a + b, 0) || 1;
-	return sizes.map((s) => s / total);
-}
-
-/**
- * Remove `panelId`, handing its space to its siblings (proportionally). If the
- * parent split is left with a single child, that child is promoted in the
- * parent's place. Returns null if the panel is the only one in the tree
- * (the last panel can't be closed).
- */
-export function closePanel(root: LayoutNode, panelId: string): LayoutNode | null {
-	if (countPanels(root) <= 1) return null;
-	const parent = findParent(root, panelId);
-	if (!parent) return null;
-	const split = parent.parent;
-	const idx = parent.index;
-	const removed = split.sizes[idx];
-
-	const children = split.children.filter((_, i) => i !== idx);
-	const kept = split.sizes.filter((_, i) => i !== idx);
-	const total = kept.reduce((a, b) => a + b, 0) || 1;
-	const sizes = normalize(kept.map((s) => s + removed * (s / total)));
-
-	const replacement: LayoutNode =
-		children.length === 1 ? children[0] : { ...split, children, sizes };
-
-	return transform(root, split.id, () => replacement);
-}
-
-/**
- * Remove `panelId` and return both the reduced tree and the removed panel, so
- * the panel can be re-inserted elsewhere (drag-to-reposition). `root` is null
- * when the panel was the entire tree.
- */
-export function extractPanel(
-	root: LayoutNode,
-	panelId: string
-): { root: LayoutNode | null; removed: PanelNode | null } {
-	if (root.kind === 'panel') {
-		return root.id === panelId ? { root: null, removed: root } : { root, removed: null };
+	if (b < floor) {
+		a -= floor - b;
+		b = floor;
 	}
-	const removed = findPanel(root, panelId);
-	if (!removed) return { root, removed: null };
-	// root is a split with >= 2 panels, so closePanel won't refuse.
-	return { root: closePanel(root, panelId), removed };
-}
-
-// ---------------------------------------------------------------------------
-// Defaults & deep clone (for tab duplication and hydration safety)
-// ---------------------------------------------------------------------------
-
-/** The panel type a brand-new workspace / tab starts with. */
-export const DEFAULT_PANEL_TYPE = 'node-editor';
-
-/** The placeholder a split births: an empty panel whose in-panel buttons let
- * the user choose its content, so a split never assumes a type. */
-export const EMPTY_PANEL_TYPE = 'empty';
-
-export function makeWorkspace(name: string, panelType: string = DEFAULT_PANEL_TYPE): Workspace {
-	return { id: uid('ws'), name, root: makePanel(panelType) };
-}
-
-export function defaultWorkspaceState(): WorkspaceState {
-	const ws = makeWorkspace('Layout');
-	return { workspaces: [ws], activeWorkspaceId: ws.id };
+	const next = sizes.slice();
+	next[i] = a;
+	next[j] = b;
+	return next;
 }

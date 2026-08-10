@@ -27,6 +27,7 @@
 				<Splitter
 					direction={node.direction}
 					onResize={(delta, containerPx) => ws.resize(node.id, i, delta, containerPx)}
+					onCommit={() => ws.commitResize(node.id)}
 				/>
 			{/if}
 		{/each}

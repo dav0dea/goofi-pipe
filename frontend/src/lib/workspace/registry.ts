@@ -17,14 +17,11 @@ export interface PanelProps {
 	panelId: string;
 	/** Opaque, persisted per-panel state — `undefined` until the panel sets it. */
 	state: unknown;
-	/** Persist new per-panel state back into the layout tree, WITHOUT a layout history entry.
-	 * `intent` classifies the write for the dirty flag: pass `'navigation'` when the user only
-	 * changed what the panel is LOOKING at (entering a sub-patch), and omit it for an edit whose
-	 * undo step another domain already records (the view domain's `set_view`, for a viewer kind or
-	 * a cog setting). An edit that owns no such entry must NOT come through here — a layout undo
-	 * restores a whole `WorkspaceState` snapshot and would destroy it; use the tracked store op
-	 * (`unlinkNodeFromPanel`, `setPanelSlot`, `linkNodeToPanel`) instead. */
-	setState: (s: unknown, intent?: LayoutIntent) => void;
+	/** Persist new per-panel state. `intent` routes it, and the routing IS the dirty taxonomy: pass
+	 * `'navigation'` when the user only changed what the panel is LOOKING at (entering a sub-patch)
+	 * and it stays this client's viewpoint; omit it for an edit, which becomes one `page_set_panel`
+	 * command — undoable, converged to peers, and dirtying. `label` names that undo step. */
+	setState: (s: unknown, intent?: LayoutIntent, label?: string) => void;
 }
 
 export interface PanelType {

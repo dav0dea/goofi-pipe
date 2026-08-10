@@ -858,23 +858,6 @@ fn resolve_link_endpoint(g: &goofi_engine::Graph, uid: Uid, slot: &str) -> (Uid,
     (uid, slot.to_string())
 }
 
-/// Did the user AUTHOR the editor arrangement, or merely navigate it? Persistence is a separate
-/// axis: the layout rides the `.gfi` whichever way it changed, but only *authoring* it — splitting
-/// a panel, picking a viewer kind or a slot — makes the patch differ from disk. Navigation
-/// (entering a sub-patch, switching a layout tab, an undo/redo re-orientation) and the manager's
-/// own layout echoed back on hello leave the file's meaning intact.
-///
-/// Two consumers read this one axis, which is why it names the classification rather than either
-/// effect: the unsaved dot (navigation must not raise it, nor the unload guard) and the `layout`
-/// broadcast (navigation must not move a peer's view — it is where *this* client is looking).
-///
-/// The client owns the classification — it is the only side that knows what the user did — and
-/// declares it as `intent`. A payload that declares nothing is authoring, so forgetting to
-/// classify can only cost a spurious dot, never a lost change.
-fn layout_write_is_authored(payload: &Value) -> bool {
-    payload.get("intent").and_then(|v| v.as_str()) != Some("navigation")
-}
-
 /// Resolve the `page` argument — a unique human name — to its stable id. A name is the ONLY way a
 /// caller addresses a page, so an unknown one has to say which ones exist rather than just refusing.
 fn resolve_page(g: &Graph, payload: &Value) -> Result<String, String> {
@@ -886,15 +869,12 @@ fn resolve_page(g: &Graph, payload: &Value) -> Result<String, String> {
     })
 }
 
-/// Is `node` something a viewer/parameters/metadata panel could actually bind to? A uid OR a display
-/// name: the panel `state` bag carries names today and uids after the frontend cutover, and refusing
-/// either half would make one of the two wrong for a whole task.
+/// Is `node` something a viewer/parameters/metadata panel could actually bind to? A UID, and only a
+/// uid: a display name resolves until somebody renames the node, at which point the panel is bound
+/// to nothing and says nothing about why. The uid is the identity, and it is what the frontend
+/// stores — which is also what lets `RemoveNode` clear the bindings it invalidates.
 fn bindable_node(g: &Graph, node: &str) -> bool {
-    if Uid::from_hex(node).is_some_and(|u| g.contains(u) || g.scope(u).is_some()) {
-        return true;
-    }
-    g.node_uids().into_iter().any(|u| g.name(u) == Some(node))
-        || g.scope_uids().into_iter().any(|u| g.scope(u).is_some_and(|s| s.name == node))
+    Uid::from_hex(node).is_some_and(|u| g.contains(u) || g.scope(u).is_some())
 }
 
 /// Route a layout planner's per-entry writes through the command history as ONE undo step. This is
@@ -1219,21 +1199,6 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
                 )?;
                 Ok(json!({ "ok": true }))
             }
-            // Patch-scoped editor layout, stored opaquely (the node-`viewers` rule). NOT a command
-            // — view state is not undoable — and both dirtying and broadcasting only when the
-            // client says the user AUTHORED the arrangement (`layout_write_is_authored`).
-            "set_layout" => {
-                let layout = payload.get("layout").cloned().unwrap_or(Value::Null);
-                // The layout is deliberately NOT a CRDT doc root, so the post-dispatch re-mirror
-                // cannot carry it and a peer would learn the arrangement only on `hello`. This
-                // event is how every other client converges live. It names its author so that
-                // client can ignore its own echo rather than re-applying it.
-                if layout_write_is_authored(&payload) {
-                    events.push(event("layout", json!({ "layout": layout, "session": session })));
-                }
-                g.set_layout(layout);
-                Ok(json!({ "ok": true }))
-            }
             // Where THIS client is looking. Stored opaquely and NOT a doc root, so it can neither
             // drag a peer nor raise the unsaved dot; it rides the `.gfi` and `hello` all the same,
             // because persistence and dirtiness are separate axes.
@@ -1261,9 +1226,13 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
                 // back, where closing the page would delete it. A page born with its own fresh panel
                 // has nothing to give back, so it inverts by closing (see `Command::LayoutBirth`).
                 match subtree.as_deref() {
-                    Some(s) => apply_layout_move(state, &mut g, &session, writes, s),
-                    None => apply_layout(state, &mut g, &session, writes, Some((&page, &page))),
-                }
+                    Some(s) => apply_layout_move(state, &mut g, &session, writes, s)?,
+                    None => apply_layout(state, &mut g, &session, writes, Some((&page, &page)))?,
+                };
+                // The page's id and its root panel's — a caller's next act is to give that panel
+                // content, which needs an id it cannot otherwise know (`page_split_panel`'s rule).
+                let panel = g.arrangement().children(&page).first().cloned().unwrap_or_default();
+                Ok(json!({ "page": page, "panel": panel }))
             }
             "session_remove_page" => {
                 let name = parse_str(&payload, "name")?.to_string();
@@ -1292,8 +1261,9 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
                 let dir = payload.get("direction").and_then(|v| v.as_str()).unwrap_or("row");
                 let axis = goofi_engine::layout::Axis::parse(dir)
                     .ok_or("page_split_panel: direction is `row` or `column`")?;
+                let before = payload.get("place_before").and_then(|v| v.as_bool()).unwrap_or(false);
                 let ratio = payload.get("ratio").and_then(|v| v.as_f64()).unwrap_or(0.5);
-                let (writes, fresh) = g.arrangement().split_panel(&page, &panel, axis, ratio)?;
+                let (writes, fresh) = g.arrangement().split_panel(&page, &panel, axis, before, ratio)?;
                 apply_layout(state, &mut g, &session, writes, Some((&page, &fresh)))?;
                 // The uid, because a split births an EMPTY panel and the caller's next act is to
                 // give it content — which needs the id it cannot otherwise know.
@@ -1764,7 +1734,6 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
         //     re-set here; re-clear it. `new` is the one where the tail's default is most clearly
         //     wrong rather than merely conservative: an empty patch with nothing in it and no file
         //     behind it would be born unsaved, offering to be written over the last real patch.
-        //   `set_layout` — persistence and dirtiness are separate axes (`layout_write_is_authored`).
         //   `restart_node` respawns an instance in place, replaying the node's own ParamGroups
         //     verbatim and touching neither name, position, bindings, viewers, links nor scopes, so
         //     `serialize()` is byte-identical. It is RECOVERY, not an edit, and it is reached by one
@@ -1780,13 +1749,14 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
         //     engine rejects the op for any param that does not, so the `Err` skips this gate
         //     entirely) — listed here because it is the same op-is-not-an-edit case, not a
         //     prediction that it currently misfires.
-        // Both stay OUT of `read_only`: neither is an edit, but both still need the re-mirror.
+        //   `set_viewpoint` is persistence-without-dirtiness, and by CONSTRUCTION rather than by a
+        //     classification the client has to get right: a viewpoint is where a client is LOOKING,
+        //     so writing one is never authoring. It still rides the `.gfi`, which is exactly why it
+        //     needs an arm here and not `writes: false`. Every op that edits the ARRANGEMENT is
+        //     authoring by the same construction, and so needs no arm at all.
+        // These stay OUT of `read_only`: none is an edit, but all still need the re-mirror.
         match op.as_str() {
             "load" | "load_text" | "new" => events.extend(state.set_dirty(false)),
-            "set_layout" if !layout_write_is_authored(&payload) => {}
-        //   `set_viewpoint` is the same axis stated once more, and this time by construction: a
-        //     viewpoint is where a client is LOOKING, so writing one is never authoring. It still
-        //     rides the `.gfi`, which is exactly why it needs an arm here and not `writes: false`.
             "set_viewpoint" => {}
             "restart_node" | "refresh_param" | "rescan_nodes" => {}
             _ => events.extend(state.set_dirty(true)),

@@ -1,124 +1,127 @@
 import { describe, it, expect, beforeEach } from 'vitest';
+import { FakeControl } from '$lib/test/fakeControl';
 import { workspace } from './workspace.svelte';
 import { history } from '$lib/stores/history.svelte';
+import type { Arrangement } from './arrangement';
 
 /**
- * The dirty taxonomy (R spec §4 / D-R3). Every layout mutation replaces `ws.state` and rides the
- * same debounced `set_layout` push, so the store — not the device, not the caller's platform — is
- * where a write is classified as *authoring* (the user edited the arrangement) or *navigation*
- * (the user changed what they are looking at, or the manager echoed its own layout back).
- * `takeLayoutIntent()` is what AppShell hands the manager with each push.
+ * The dirty taxonomy (R spec §4 / D-R3), after the arrangement became the manager's.
+ *
+ * It used to be a CLASSIFICATION the client folded and declared (`takeLayoutIntent` →
+ * `set_layout {intent}`). Now it is the ROUTING: an authored write leaves as a layout command,
+ * which the manager dirties like any other; a navigational one never leaves as one at all — it is
+ * viewpoint, and `set_viewpoint` is the one write op with an explicit exception from the dirty
+ * gate. The taxonomy is the same and the guarantees are the same; what changed is that they hold by
+ * construction rather than by the client getting a flag right. So these tests assert what a write
+ * BECOMES, which is the thing the manager acts on.
+ *
+ * `dirty-taxonomy.spec.ts` pins the same rule end to end, against the real dot.
  */
+
+const LAYOUT_OPS = [
+	'page_split_panel',
+	'page_remove_panel',
+	'page_set_panel',
+	'page_move_panel',
+	'page_insert_at_panel',
+	'page_resize_split',
+	'session_add_page',
+	'session_remove_page',
+	'session_rename_page',
+	'session_reorder_page'
+];
+
+function defaultArr(): Arrangement {
+	return {
+		'page-1': { kind: 'page', order: 0, name: 'Layout' },
+		'panel-2': { kind: 'panel', order: 0, parent: 'page-1', size: 1, panel_type: 'node-editor' }
+	};
+}
+
+let fc: FakeControl;
+
+/** Whether anything sent since boot was a write to the ARRANGEMENT — i.e. dirties the patch. */
+function dirtied(): boolean {
+	return fc.recordedCalls().some((c) => LAYOUT_OPS.includes(c.op));
+}
+
+function boot(arr: Arrangement = defaultArr()): ReturnType<typeof workspace> {
+	fc = new FakeControl();
+	const ws = workspace();
+	ws.configureControl(() => fc);
+	ws.commitResize('#none');
+	ws.syncFromDoc(arr);
+	return ws;
+}
+
 describe('layout write intent', () => {
-	beforeEach(() => {
-		workspace().reset();
-		history().reset();
-		workspace().takeLayoutIntent(); // drop whatever the reset itself classified
+	beforeEach(() => history().reset());
+
+	it('starts clean — nothing has been authored yet', () => {
+		boot();
+		expect(dirtied()).toBe(false);
 	});
 
-	it('starts at navigation — nothing has been authored yet', () => {
-		expect(workspace().takeLayoutIntent()).toBe('navigation');
+	it('makes a panel split an authoring write', async () => {
+		const ws = boot();
+		ws.split('panel-2', 'row');
+		await Promise.resolve();
+		expect(dirtied()).toBe(true);
 	});
 
-	it('classifies a panel split as authoring', () => {
-		const ws = workspace();
-		ws.split(ws.activePanelId!, 'row');
-		expect(ws.takeLayoutIntent()).toBe('authored');
+	it('does not let a REFUSED structural change count as an edit', async () => {
+		const ws = boot();
+		fc.failNext('page_remove_panel');
+		ws.close('panel-2'); // the last panel cannot be closed
+		await Promise.resolve();
+		await Promise.resolve();
+		expect(history().length, 'a refusal is not a step, and the manager never dirtied').toBe(0);
 	});
 
-	it('does not classify a REFUSED structural change as authoring', () => {
-		const ws = workspace();
-		ws.close(ws.activePanelId!); // the last panel cannot be closed
-		expect(ws.takeLayoutIntent()).toBe('navigation');
+	it('makes a panel-state write authoring by default — a viewer kind, a slot pick', async () => {
+		const ws = boot();
+		ws.setPanelState('panel-2', { node: 'osc0', kind: 'image' });
+		await Promise.resolve();
+		expect(dirtied()).toBe(true);
 	});
 
-	it('classifies a panel-state write as authoring by default — a viewer kind, a slot pick', () => {
-		const ws = workspace();
-		ws.setPanelState(ws.activePanelId!, { node: 'osc0', kind: 'image' });
-		expect(ws.takeLayoutIntent()).toBe('authored');
-	});
-
-	it('classifies an explicitly navigational panel-state write as navigation', () => {
-		const ws = workspace();
-		ws.setPanelState(ws.activePanelId!, { subpatchPath: '/inst0' }, 'navigation');
-		expect(ws.takeLayoutIntent()).toBe('navigation');
+	it('keeps an explicitly navigational panel-state write off the arrangement entirely', async () => {
+		const ws = boot();
+		ws.setPanelState('panel-2', { subpatchPath: '/inst0' }, 'navigation');
+		await Promise.resolve();
+		expect(dirtied(), 'entering a sub-patch must not dirty, on any platform').toBe(false);
+		expect(fc.recordedCalls(), 'and it is not sent at all — it is this client’s viewpoint').toEqual(
+			[]
+		);
 	});
 
 	// D-R11: switching layout tabs changes which arrangement is in front, not what any panel
 	// holds — the same "looking elsewhere" as entering a sub-patch, and the move `navContext`
 	// makes to re-orient an undo.
-	it('classifies switching layout tabs as navigation', () => {
-		const ws = workspace();
-		const first = ws.state.activeWorkspaceId;
+	it('keeps switching layout tabs off the arrangement', async () => {
+		const two = defaultArr();
+		two['page-7'] = { kind: 'page', order: 1, name: 'Second' };
+		two['panel-8'] = { kind: 'panel', order: 0, parent: 'page-7', size: 1, panel_type: 'console' };
+		const ws = boot(two);
+		ws.selectTab('page-7');
+		await Promise.resolve();
+		expect(dirtied()).toBe(false);
+		expect(ws.state.activeWorkspaceId, 'the tab did switch').toBe('page-7');
+	});
+
+	it('makes creating a tab authoring, and only the SELECTION a look', async () => {
+		const ws = boot();
 		ws.addTab();
-		ws.takeLayoutIntent(); // adding the tab IS authoring; isolate the switch
-		ws.selectTab(first);
-		expect(ws.state.activeWorkspaceId).toBe(first);
-		expect(ws.takeLayoutIntent()).toBe('navigation');
+		await Promise.resolve();
+		expect(dirtied(), 'creating a tab really does change the patch').toBe(true);
 	});
 
-	// The manager's own layout coming back on `hello`/`graph_replaced` is not a user write at all.
-	// Classifying it as authoring is what re-dirtied a patch moments after it was saved.
-	it('classifies the manager echoing a layout back as navigation', () => {
-		const ws = workspace();
-		const snapshot = ws.serialize();
-		ws.split(ws.activePanelId!, 'row');
-		ws.takeLayoutIntent();
-		ws.hydrate(snapshot);
-		expect(ws.takeLayoutIntent()).toBe('navigation');
-	});
-
-	/**
-	 * …and it must SURVIVE the echo: `_mark` can only raise, so an authored write still pending
-	 * when the manager's layout lands rode the next push and dirtied a patch that matches disk.
-	 * Reachable on `load`: the CRDT delta and the queued JSON events race in the bridge's
-	 * `tokio::select!`, and when the delta wins, `_reconcileNodes` calls `clearNodeRefs` for every
-	 * vanished node still bound to a panel — marking authored moments before `graph_replaced`
-	 * hydrates. A wholesale replacement discards the pending edit along with the state that
-	 * carried it.
-	 */
-	it('drops an authored mark the manager’s layout then throws away', () => {
-		const ws = workspace();
-		const snapshot = ws.serialize();
-		ws.split(ws.activePanelId!, 'row'); // authored, NOT drained
-		ws.hydrate(snapshot);
-		expect(ws.takeLayoutIntent()).toBe('navigation');
-	});
-
-	it('drops an authored mark a reset then throws away', () => {
-		const ws = workspace();
-		ws.split(ws.activePanelId!, 'row');
-		ws.reset();
-		expect(ws.takeLayoutIntent()).toBe('navigation');
-	});
-
-	// The other race order, stated so the fix above cannot be widened into swallowing it: a write
-	// that lands AFTER the hydrate changed the state that was just installed, so it is a real
-	// difference from disk and stays authored.
-	it('keeps a mark that lands after the hydrate — it edited the new state', () => {
-		const ws = workspace();
-		const snapshot = ws.serialize();
-		ws.hydrate(snapshot);
-		ws.split(ws.activePanelId!, 'row');
-		expect(ws.takeLayoutIntent()).toBe('authored');
-	});
-
-	it('lets authoring win a mixed debounce window, whichever order it lands in', () => {
-		const ws = workspace();
-		ws.setPanelState(ws.activePanelId!, { subpatchPath: '/inst0' }, 'navigation');
-		ws.split(ws.activePanelId!, 'row');
-		expect(ws.takeLayoutIntent()).toBe('authored');
-
-		ws.split(ws.activePanelId!, 'column');
-		ws.setPanelState(ws.activePanelId!, { subpatchPath: '/' }, 'navigation');
-		expect(ws.takeLayoutIntent()).toBe('authored');
-	});
-
-	it('resets on take, so one authored write cannot dirty every later push', () => {
-		const ws = workspace();
-		ws.split(ws.activePanelId!, 'row');
-		expect(ws.takeLayoutIntent()).toBe('authored');
-		ws.setPanelState(ws.activePanelId!, { subpatchPath: '/inst0' }, 'navigation');
-		expect(ws.takeLayoutIntent()).toBe('navigation');
+	// The other half of the axis, and the one that used to be a client-declared flag: a viewpoint
+	// still PERSISTS. Persistence and dirtiness are separate axes — the shell pushes this through
+	// `set_viewpoint`, which the manager stores into the `.gfi` without touching the dot.
+	it('still hands the viewpoint over to be persisted', () => {
+		const ws = boot();
+		ws.setPanelState('panel-2', { subpatchPath: '/inst0' }, 'navigation');
+		expect(ws.viewpoint()).toMatchObject({ paths: { 'panel-2': '/inst0' } });
 	});
 });

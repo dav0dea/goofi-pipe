@@ -304,7 +304,11 @@ impl Command {
                 if !g.contains(uid) && g.scope(uid).is_none() {
                     return Ok((Outcome::Ok, Command::Compound(vec![])));
                 }
-                let inverse = capture_subtree_restore(g, uid);
+                let (inverse, gone) = capture_subtree_restore(g, uid);
+                // A panel bound to a uid this delete takes renders empty and explains nothing, so
+                // the binding goes with the node — HERE, inside the one command, so it is one undo
+                // step and a peer's replica never holds a panel naming a node that is not there.
+                let unbind = g.arrangement().unbind(&gone);
                 // A scope MEMBER routes through remove_member (prunes the enclosing scope's stubs); a
                 // top-level scope tears down its subtree; a plain leaf is a single-node removal.
                 if g.scope_of(uid).is_some() {
@@ -314,7 +318,12 @@ impl Command {
                 } else {
                     g.remove_node(uid)?;
                 }
-                Ok((Outcome::Ok, inverse))
+                if unbind.is_empty() {
+                    return Ok((Outcome::Ok, inverse));
+                }
+                // Re-binding runs AFTER the nodes are back, which `Compound` replays in order.
+                let (_, rebind) = Command::LayoutContents { writes: unbind }.execute(g)?;
+                Ok((Outcome::Ok, Command::Compound(vec![inverse, rebind])))
             }
 
             Command::AddLink { node_out, slot_out, node_in, slot_in } => {
@@ -760,7 +769,7 @@ impl CommandHistory {
 /// (leaf or nested scope), or a top-level instance — BEFORE the caller removes it. The Compound
 /// recreates every node (uid + params), every scope (innermost-first), the deleted top's membership,
 /// any enclosing-scope stub the removal will prune, and every link touching the subtree — uid-stable.
-fn capture_subtree_restore(g: &Graph, root: Uid) -> Command {
+fn capture_subtree_restore(g: &Graph, root: Uid) -> (Command, std::collections::HashSet<Uid>) {
     // Where the restored top returns to: `None` = ROOT (a top-level instance / leaf).
     let orig_parent = g.scope_of(root);
 
@@ -845,6 +854,8 @@ fn capture_subtree_restore(g: &Graph, root: Uid) -> Command {
     }
 
     // 5. Recreate every link touching the subtree (internal + crossing), after all endpoints exist.
+    // The set is handed back too: it is exactly the uids the delete takes off the canvas, which is
+    // what a panel bound to one of them has to stop naming.
     let subtree: std::collections::HashSet<Uid> = leaves.iter().chain(scopes.iter()).copied().collect();
     for l in g.links_view() {
         if subtree.contains(&l.node_out) || subtree.contains(&l.node_in) {
@@ -857,7 +868,7 @@ fn capture_subtree_restore(g: &Graph, root: Uid) -> Command {
         }
     }
 
-    Command::Compound(cmds)
+    (Command::Compound(cmds), subtree)
 }
 
 #[cfg(test)]
@@ -892,7 +903,7 @@ mod tests {
         let page = g.arrangement().pages()[0].clone();
         let panel = g.arrangement().children(&page)[0].clone();
         let before = g.arrangement().clone();
-        let (writes, fresh) = g.arrangement().split_panel(&page, &panel, Axis::Row, 0.5).unwrap();
+        let (writes, fresh) = g.arrangement().split_panel(&page, &panel, Axis::Row, false, 0.5).unwrap();
         let cmd = Command::Compound(
             writes.into_iter().map(|(id, entry)| Command::EditLayoutEntry { id, entry }).collect(),
         );
@@ -918,7 +929,7 @@ mod tests {
         let page = g.arrangement().pages()[0].clone();
         let panel = g.arrangement().children(&page)[0].clone();
         let before = g.arrangement().clone();
-        let (writes, fresh) = g.arrangement().split_panel(&page, &panel, Axis::Row, 0.5).unwrap();
+        let (writes, fresh) = g.arrangement().split_panel(&page, &panel, Axis::Row, false, 0.5).unwrap();
         let birth = Command::LayoutBirth { writes, page: page.clone(), born: fresh.clone() };
 
         let (_out, close) = birth.execute(&mut g).unwrap();
@@ -928,7 +939,7 @@ mod tests {
         assert!(g.arrangement().get(&fresh).is_some(), "redo re-splits at the SAME panel id");
 
         // A peer hangs its own panel off the wrapper split between the birth and its undo.
-        let (peer, theirs) = g.arrangement().split_panel(&page, &fresh, Axis::Row, 0.5).unwrap();
+        let (peer, theirs) = g.arrangement().split_panel(&page, &fresh, Axis::Row, false, 0.5).unwrap();
         g.arrangement_mut().apply(peer);
         let close = Command::LayoutClose { page: page.clone(), born: fresh.clone() };
         let (_out, _fwd) = close.clone().execute(&mut g).unwrap();

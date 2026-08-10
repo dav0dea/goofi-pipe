@@ -1,11 +1,23 @@
 import { describe, it, expect, beforeEach } from 'vitest';
+import { FakeControl } from '$lib/test/fakeControl';
 import { workspace } from './workspace.svelte';
 import { selection } from '$lib/stores/selection.svelte';
 import { captureNavContext, restoreNavContext } from './navContext';
+import type { Arrangement } from './arrangement';
+
+/** The manager's default arrangement, mirrored into the replica. */
+function defaultArr(): Arrangement {
+	return {
+		'page-1': { kind: 'page', order: 0, name: 'Layout' },
+		'panel-2': { kind: 'panel', order: 0, parent: 'page-1', size: 1, panel_type: 'node-editor' }
+	};
+}
 
 describe('NavContext capture/restore', () => {
 	beforeEach(() => {
-		workspace().reset();
+		const ws = workspace();
+		ws.configureControl(() => new FakeControl());
+		ws.syncFromDoc(defaultArr());
 		selection().forgetAll();
 	});
 
@@ -36,9 +48,12 @@ describe('NavContext capture/restore', () => {
 		const oldPanel = ws.activePanelId!;
 		selection().selectNodes(oldPanel, ['osc0']);
 		const ctx = captureNavContext();
-		// The change being undone closed the recorded panel: a fresh workspace
-		// replaces it with a different panel id.
-		ws.reset();
+		// The change being undone closed the recorded panel: the manager's arrangement now holds a
+		// different one, and the replica follows.
+		const moved = defaultArr();
+		delete moved['panel-2'];
+		moved['panel-9'] = { kind: 'panel', order: 0, parent: 'page-1', size: 1, panel_type: 'node-editor' };
+		ws.syncFromDoc(moved);
 		const newPanel = ws.activePanelId!;
 		expect(newPanel).not.toBe(oldPanel);
 		await restoreNavContext(ctx);
@@ -50,10 +65,10 @@ describe('NavContext capture/restore', () => {
 	it('captures and restores a panel sub-patch path (enteredPath)', async () => {
 		const ws = workspace();
 		const panelId = ws.activePanelId!;
-		ws.setPanelState(panelId, { subpatchPath: '/subpatch0' });
+		ws.setPanelState(panelId, { subpatchPath: '/subpatch0' }, 'navigation');
 		const ctx = captureNavContext();
 		expect(ctx.enteredPath[panelId]).toEqual(['subpatch0']);
-		ws.setPanelState(panelId, { subpatchPath: '/' }); // navigate out
+		ws.setPanelState(panelId, { subpatchPath: '/' }, 'navigation'); // navigate out
 		await restoreNavContext(ctx);
 		const root = ws.active.root;
 		const state = root.kind === 'panel' ? (root.state as { subpatchPath?: string }) : {};

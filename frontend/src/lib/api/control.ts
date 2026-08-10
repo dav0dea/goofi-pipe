@@ -271,10 +271,10 @@ export interface GraphSnapshot {
 	node_types?: NodeTypeInfo[];
 	save_path: string | null;
 	unsaved_changes: boolean;
-	/** Opaque frontend workspace-layout blob restored from the .gfi patch.
-	 * Null/absent when the patch carries no layout (older patch, or blank
-	 * start) — a fresh session then falls back to the default layout. */
-	layout?: unknown;
+	/** Where THIS client was last looking — the page in front, the focused panel, each editor's
+	 * sub-patch depth. Persisted with the patch but never converged to a peer and never dirtying;
+	 * the ARRANGEMENT itself is the fifth CRDT doc root, not a snapshot field. */
+	viewpoint?: unknown;
 }
 
 export type ControlEvent =
@@ -313,12 +313,9 @@ export type ControlEvent =
 	// The palette changed under a client that is already connected — a rescan re-derived it, or a
 	// load brought a patch's own node types. `hello` carries the same list to one that is arriving.
 	| { event: 'node_types'; payload: { types: NodeTypeInfo[] } }
-	| { event: 'graph_replaced'; payload: GraphSnapshot }
-	// Another client AUTHORED the panel arrangement. The layout is not a CRDT doc root — it is
-	// opaque view state, not a command — so this event is the only way it reaches a live peer;
-	// a late joiner still gets it on `hello`. The manager stays silent on a NAVIGATION write, and
-	// tags this one with the session that made it so the author can skip its own echo.
-	| { event: 'layout'; payload: { layout: unknown; session?: string } };
+	// The panel arrangement has NO event: it is the fifth CRDT doc root, so a peer's edit converges
+	// through the same binary sync the graph does.
+	| { event: 'graph_replaced'; payload: GraphSnapshot };
 
 type EventHandler = (ev: ControlEvent) => void;
 
@@ -332,9 +329,8 @@ type Pending = {
  * substitute a fake (see `$lib/test/fakeControl`). `ControlClient` implements
  * it; nothing else needs to. */
 export interface Control {
-	/** This client's stable session tag, sent on every request. Readable here because a broadcast
-	 * reaches its own author too, so a client has to be able to recognize its own echo (the
-	 * `layout` event). */
+	/** This client's stable session tag, sent on every request. It scopes the manager's per-session
+	 * undo history. */
 	readonly session: string;
 	call<T = unknown>(op: OpName, payload?: Record<string, unknown>): Promise<T>;
 	on(fn: (ev: ControlEvent) => void): () => void;

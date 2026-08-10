@@ -198,6 +198,50 @@ fn panels(doc: &goofi_crdt::GraphDoc) -> Vec<String> {
 }
 
 #[tokio::test]
+async fn deleting_a_node_empties_the_panels_bound_to_it_and_an_undo_binds_them_back() {
+    // A panel bound to a node that is gone renders empty and explains nothing, so the binding has
+    // to go with the node. The manager does it INSIDE `RemoveNode` — the client used to, back when
+    // it owned the layout, and doing it there now would cost a second command per delete and leave
+    // a peer's copy of the panel pointing at a uid that no longer exists.
+    let base = start_server().await;
+    let (mut ws, _) = connect_async(format!("{base}/control")).await.unwrap();
+    let _ = recv_text(&mut ws).await;
+    let uid = call(&mut ws, 1, "add_node", json!({ "type": "Oscillator" })).await["result"]
+        .as_str()
+        .expect("the new node's uid")
+        .to_string();
+    let d = sync_replica(&mut ws, |d| !panels(d).is_empty()).await;
+    let panel = panels(&d).first().cloned().expect("the default page's one panel");
+    call(
+        &mut ws,
+        2,
+        "page_set_panel",
+        json!({ "page": "Layout", "panel": panel, "type": "viewer", "state": { "node": uid } }),
+    )
+    .await;
+
+    call(&mut ws, 3, "remove_node", json!({ "node": uid })).await;
+    let after = call(&mut ws, 4, "inspect_layout", json!({})).await;
+    let d = sync_replica(&mut ws, |d| d.node_ids().is_empty()).await;
+    let state = d.read_at(&["arrangement", panel.as_str(), "state"]);
+    assert_eq!(
+        state.as_ref().and_then(Value::as_str),
+        Some("{\"node\":null}"),
+        "the deleted node's binding went with it: {state:?} / {after}"
+    );
+
+    // …and comes back with it: the manager owns the inverse, so ONE undo restores both.
+    call(&mut ws, 5, "undo", json!({})).await;
+    let d = sync_replica(&mut ws, |d| !d.node_ids().is_empty()).await;
+    let state = d.read_at(&["arrangement", panel.as_str(), "state"]);
+    assert_eq!(
+        state.as_ref().and_then(Value::as_str),
+        Some(format!("{{\"node\":\"{uid}\"}}").as_str()),
+        "an undone delete re-binds the panel it emptied: {state:?}"
+    );
+}
+
+#[tokio::test]
 async fn a_layout_op_reaches_a_peers_replica_through_the_doc() {
     // Layout used to be client-owned: a peer learned an arrangement only on `hello`. As the fifth
     // doc root it rides the SAME delta broadcast as a node add — a LAYOUT-ONLY change ships, which
@@ -417,7 +461,12 @@ async fn a_layout_undo_moves_a_panel_back_rather_than_resurrecting_its_split() {
     let _ = recv_text(&mut ws).await;
     let doc = sync_replica(&mut ws, |d| !panels(d).is_empty()).await;
     let first = panels(&doc)[0].clone();
-    let ok = |r: &Value| assert_eq!(r["result"]["ok"], json!(true), "{r}");
+    // Accepted: every layout write answers `{ok:true}`, save `session_add_page`, which answers
+    // with the ids it minted.
+    let ok = |r: &Value| {
+        assert!(r.get("error").is_none(), "{r}");
+        assert!(r["result"]["ok"] == json!(true) || r["result"]["page"].is_string(), "{r}");
+    };
 
     // `Layout` holds a two-child split; `Signals` holds another, to move into.
     let mine = call(&mut ws, 1, "page_split_panel",
@@ -480,7 +529,12 @@ async fn each_frozen_drags_undo_leaves_a_peers_panel_standing_too() {
     let _ = recv_text(&mut ws).await;
     let doc = sync_replica(&mut ws, |d| !panels(d).is_empty()).await;
     let first = panels(&doc)[0].clone();
-    let ok = |r: &Value| assert_eq!(r["result"]["ok"], json!(true), "{r}");
+    // Accepted: every layout write answers `{ok:true}`, save `session_add_page`, which answers
+    // with the ids it minted.
+    let ok = |r: &Value| {
+        assert!(r.get("error").is_none(), "{r}");
+        assert!(r["result"]["ok"] == json!(true) || r["result"]["page"].is_string(), "{r}");
+    };
 
     let mine = call(&mut ws, 1, "page_split_panel",
         json!({ "page": "Layout", "panel": first, "direction": "row" })).await["result"]
@@ -546,7 +600,12 @@ async fn undoing_a_move_puts_the_panel_back_at_the_index_and_share_it_had() {
     let _ = recv_text(&mut ws).await;
     let doc = sync_replica(&mut ws, |d| !panels(d).is_empty()).await;
     let first = panels(&doc)[0].clone();
-    let ok = |r: &Value| assert_eq!(r["result"]["ok"], json!(true), "{r}");
+    // Accepted: every layout write answers `{ok:true}`, save `session_add_page`, which answers
+    // with the ids it minted.
+    let ok = |r: &Value| {
+        assert!(r.get("error").is_none(), "{r}");
+        assert!(r["result"]["ok"] == json!(true) || r["result"]["page"].is_string(), "{r}");
+    };
 
     // A THREE-child split, so the move leaves it standing and the inverse is a move back INTO it.
     let last = call(&mut ws, 1, "page_split_panel",
@@ -742,7 +801,12 @@ async fn a_rename_undone_after_a_peers_reorder_keeps_the_tab_index_it_finds() {
     let base = start_server().await;
     let (mut ws, _) = connect_async(format!("{base}/control")).await.unwrap();
     let _ = recv_text(&mut ws).await;
-    let ok = |r: &Value| assert_eq!(r["result"]["ok"], json!(true), "{r}");
+    // Accepted: every layout write answers `{ok:true}`, save `session_add_page`, which answers
+    // with the ids it minted.
+    let ok = |r: &Value| {
+        assert!(r.get("error").is_none(), "{r}");
+        assert!(r["result"]["ok"] == json!(true) || r["result"]["page"].is_string(), "{r}");
+    };
     ok(&call(&mut ws, 1, "session_add_page", json!({ "name": "Two" })).await);
     ok(&call(&mut ws, 2, "session_add_page", json!({ "name": "Three" })).await);
 
@@ -917,7 +981,12 @@ async fn one_pass_over_every_session_and_page_write_op() {
     let _ = recv_text(&mut ws).await;
     let doc = sync_replica(&mut ws, |d| !panels(d).is_empty()).await;
     let first = panels(&doc)[0].clone();
-    let ok = |r: &Value| assert_eq!(r["result"]["ok"], json!(true), "{r}");
+    // Accepted: every layout write answers `{ok:true}`, save `session_add_page`, which answers
+    // with the ids it minted.
+    let ok = |r: &Value| {
+        assert!(r.get("error").is_none(), "{r}");
+        assert!(r["result"]["ok"] == json!(true) || r["result"]["page"].is_string(), "{r}");
+    };
 
     ok(&call(&mut ws, 1, "session_add_page", json!({ "name": "Second" })).await);
     ok(&call(&mut ws, 2, "session_rename_page", json!({ "from": "Second", "to": "Signals" })).await);
@@ -967,7 +1036,12 @@ async fn each_frozen_drag_gesture_is_one_op_and_therefore_one_undo() {
     let _ = recv_text(&mut ws).await;
     let doc = sync_replica(&mut ws, |d| !panels(d).is_empty()).await;
     let first = panels(&doc)[0].clone();
-    let ok = |r: &Value| assert_eq!(r["result"]["ok"], json!(true), "{r}");
+    // Accepted: every layout write answers `{ok:true}`, save `session_add_page`, which answers
+    // with the ids it minted.
+    let ok = |r: &Value| {
+        assert!(r.get("error").is_none(), "{r}");
+        assert!(r["result"]["ok"] == json!(true) || r["result"]["page"].is_string(), "{r}");
+    };
 
     // Two panels on `Layout`, and a second page holding the drop target.
     let mine = call(&mut ws, 1, "page_split_panel",
@@ -1083,6 +1157,25 @@ async fn page_set_panel_lands_a_combined_type_and_binding_and_refuses_an_unknown
     )
     .await;
     assert!(bad["error"].as_str().is_some_and(|e| e.contains("deadbeefdeadbeef")), "{bad}");
+
+    // A DISPLAY NAME is not a binding. It resolves today and stops resolving the moment the node is
+    // renamed, which is a binding that silently empties a panel — the uid is the identity, and it
+    // is what the frontend stores.
+    let name = d2
+        .read_at(&["nodes", osc.as_str(), "name"])
+        .and_then(|v| v.as_str().map(str::to_string))
+        .expect("the node's display name");
+    let by_name = call(
+        &mut ws,
+        4,
+        "page_set_panel",
+        json!({ "page": "Layout", "panel": panel, "state": { "node": name } }),
+    )
+    .await;
+    assert!(
+        by_name["error"].as_str().is_some_and(|e| e.contains(&name)),
+        "a panel binds by uid, never by name: {by_name}"
+    );
 }
 
 #[tokio::test]
@@ -3260,9 +3353,8 @@ async fn a_refused_load_leaves_the_graph_and_the_workspace_untouched() {
 
 /// New is reached from a patch that had grown all three things a patch can have — a graph, an
 /// editor arrangement and a file on disk — and it must inherit none of them. Each half fails
-/// separately: `clear()` alone leaves the layout standing (it is not graph content), and the
-/// dispatch tail dirties any op it does not recognise, so a New patch would be born asking to be
-/// saved over the last real one.
+/// separately: the arrangement is not graph content, and the dispatch tail dirties any op it does
+/// not recognise, so a New patch would be born asking to be saved over the last real one.
 #[tokio::test]
 async fn a_new_patch_is_empty_clean_and_unnamed() {
     let base = start_server().await;
@@ -3272,7 +3364,8 @@ async fn a_new_patch_is_empty_clean_and_unnamed() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("patch.gfi");
     call(&mut ws, 1, "add_node", json!({ "type": "Oscillator" })).await;
-    call(&mut ws, 2, "set_layout", json!({ "layout": { "activeWorkspaceId": "ws-1" } })).await;
+    let page = call(&mut ws, 2, "session_add_page", json!({ "name": "Second" })).await;
+    assert!(page.get("error").is_none(), "the page is added; got {page}");
     call(&mut ws, 3, "save", json!({ "path": path.to_string_lossy() })).await;
 
     let reply = call(&mut ws, 4, "new", json!({})).await;
@@ -3292,8 +3385,13 @@ async fn a_new_patch_is_empty_clean_and_unnamed() {
     let hello = recv_text(&mut next).await;
     assert_eq!(hello["payload"]["unsaved_changes"], json!(false), "a New patch has nothing to save");
     assert!(hello["payload"]["save_path"].is_null(), "…and no file behind it");
-    assert!(hello["payload"]["layout"].is_null(), "…and none of the previous patch's panels");
-    let ser = call(&mut next, 1, "serialize", json!({})).await;
+    let pages = call(&mut next, 1, "session_list_pages", json!({})).await;
+    assert_eq!(
+        pages["result"]["pages"].as_array().map(Vec::len),
+        Some(1),
+        "…and none of the previous patch's panels: {pages}"
+    );
+    let ser = call(&mut next, 2, "serialize", json!({})).await;
     let yaml = ser["result"]["yaml"].as_str().unwrap();
     assert!(!yaml.contains("Oscillator"), "…and none of its nodes: {yaml}");
 
@@ -3717,26 +3815,6 @@ async fn a_save_announces_a_clean_patch_though_only_the_workspace_was_dirty() {
     assert_eq!(clean["payload"]["unsaved_changes"], json!(false), "every tab is told it is saved");
 }
 
-#[tokio::test]
-async fn the_editor_layout_persists_into_the_patch_and_comes_back_on_hello() {
-    let base = start_server().await;
-    let (mut ws, _) = connect_async(format!("{base}/control")).await.unwrap();
-    let hello = recv_text(&mut ws).await;
-    assert!(hello["payload"]["layout"].is_null(), "a fresh session has no stored layout");
-
-    let layout = json!({ "workspaces": [{ "id": "ws-1", "name": "Main" }], "activeWorkspaceId": "ws-1" });
-    call(&mut ws, 1, "set_layout", json!({ "layout": layout })).await;
-
-    // It rides the patch, so a save carries it…
-    let ser = call(&mut ws, 2, "serialize", json!({})).await;
-    assert!(ser["result"]["yaml"].as_str().unwrap().contains("ws-1"), "layout is in the .gfi");
-
-    // …and a fresh client sees it on connect, which is what makes it a per-patch arrangement.
-    let (mut ws2, _) = connect_async(format!("{base}/control")).await.unwrap();
-    let hello2 = recv_text(&mut ws2).await;
-    assert_eq!(hello2["payload"]["layout"]["activeWorkspaceId"], json!("ws-1"));
-}
-
 /// The manager's authoritative dirty flag, read the way a joining client reads it: a fresh
 /// `hello`. Free of the event-ordering race — an `unsaved_changes` broadcast reaches the socket
 /// through a separate task, so "no event arrived yet" is not the same as "the patch is clean".
@@ -3744,34 +3822,6 @@ async fn is_dirty(base: &str) -> bool {
     let (mut ws, _) = connect_async(format!("{base}/control")).await.unwrap();
     let hello = recv_text(&mut ws).await;
     hello["payload"]["unsaved_changes"].as_bool().expect("hello carries unsaved_changes")
-}
-
-#[tokio::test]
-async fn navigating_the_layout_persists_it_without_dirtying_the_patch() {
-    // Persistence and dirtiness are SEPARATE axes (R spec §4 / D-R3). The editor arrangement rides
-    // the `.gfi` however it changed, but only *authoring* it — splitting a panel, picking a viewer
-    // kind — makes the patch differ from disk. Entering a sub-patch, switching a layout tab, and
-    // the manager's own layout echoed back on hello are navigation: they must leave the flag
-    // alone, or a user who merely LOOKS around collects an unsaved dot and the unload guard.
-    let base = start_server().await;
-    let (mut ws, _) = connect_async(format!("{base}/control")).await.unwrap();
-    let hello = recv_text(&mut ws).await;
-    assert_eq!(hello["payload"]["unsaved_changes"], json!(false), "a fresh session is clean");
-
-    let nav = json!({ "workspaces": [{ "id": "ws-nav" }], "activeWorkspaceId": "ws-nav" });
-    call(&mut ws, 1, "set_layout", json!({ "layout": nav, "intent": "navigation" })).await;
-    assert!(!is_dirty(&base).await, "navigating the layout must not dirty the patch");
-    // It was stored all the same — the other axis is untouched.
-    let ser = call(&mut ws, 2, "serialize", json!({})).await;
-    assert!(
-        ser["result"]["yaml"].as_str().unwrap().contains("ws-nav"),
-        "a navigation write still rides the .gfi"
-    );
-
-    // The same blob, authored, DOES dirty the patch.
-    let authored = json!({ "workspaces": [{ "id": "ws-split" }], "activeWorkspaceId": "ws-split" });
-    call(&mut ws, 3, "set_layout", json!({ "layout": authored, "intent": "authored" })).await;
-    assert!(is_dirty(&base).await, "authoring the layout dirties the patch");
 }
 
 #[tokio::test]
@@ -3813,64 +3863,6 @@ async fn restarting_a_node_recovers_it_without_dirtying_the_patch() {
         .to_string();
     assert_eq!(before, after, "a restart changes nothing that reaches the .gfi");
     assert!(!is_dirty(&base).await, "recovering a node must not dirty the patch");
-}
-
-#[tokio::test]
-async fn an_unclassified_layout_write_still_dirties_the_patch() {
-    // The classification is the CLIENT's to make. A payload that makes none keeps the conservative
-    // behaviour, so a caller that forgets can never lose an unsaved change — only gain a spurious dot.
-    let base = start_server().await;
-    let (mut ws, _) = connect_async(format!("{base}/control")).await.unwrap();
-    let hello = recv_text(&mut ws).await;
-    assert_eq!(hello["payload"]["unsaved_changes"], json!(false), "a fresh session is clean");
-
-    let layout = json!({ "workspaces": [{ "id": "ws-1" }], "activeWorkspaceId": "ws-1" });
-    call(&mut ws, 1, "set_layout", json!({ "layout": layout })).await;
-    assert!(is_dirty(&base).await, "an unclassified layout write is treated as authoring");
-}
-
-#[tokio::test]
-async fn an_authored_layout_reaches_other_clients_and_names_its_author() {
-    // The arrangement is NOT a doc root — it is opaque view state, not a command — so the
-    // post-dispatch re-mirror cannot carry it and a peer would otherwise learn it only on `hello`.
-    // This event is how a second tab (or the phone next to the desktop) converges live.
-    //
-    // It rides the SAME axis as the dirty flag: only an *authored* write travels. Navigation is
-    // where the author is LOOKING, and moving a peer's view because someone else entered a
-    // sub-patch is precisely the yank the taxonomy exists to prevent. The originating session
-    // rides along so the author can ignore its own echo instead of re-applying it.
-    let base = start_server().await;
-    let (mut a, _) = connect_async(format!("{base}/control")).await.unwrap();
-    let _ = recv_text(&mut a).await;
-    let (mut b, _) = connect_async(format!("{base}/control")).await.unwrap();
-    let _ = recv_text(&mut b).await;
-
-    let authored = json!({ "workspaces": [{ "id": "ws-split" }], "activeWorkspaceId": "ws-split" });
-    call_session(&mut a, 1, "set_layout", json!({ "layout": authored, "intent": "authored" }), "sA")
-        .await;
-    let ev = loop {
-        let m = recv_text(&mut b).await;
-        if m.get("event").and_then(|v| v.as_str()) == Some("layout") {
-            break m;
-        }
-    };
-    assert_eq!(ev["payload"]["layout"], authored, "the peer receives the arrangement verbatim");
-    assert_eq!(ev["payload"]["session"], json!("sA"), "…tagged with the session that authored it");
-
-    // A navigation write is silent. Proven against a MARKER: the next event B sees after it must
-    // be the marker's, never a layout — an absence asserted by a timeout would only prove slowness.
-    let nav = json!({ "workspaces": [{ "id": "ws-nav" }], "activeWorkspaceId": "ws-nav" });
-    call_session(&mut a, 2, "set_layout", json!({ "layout": nav, "intent": "navigation" }), "sA")
-        .await;
-    call_session(&mut a, 3, "add_node", json!({ "type": "Oscillator" }), "sA").await;
-    loop {
-        let m = recv_text(&mut b).await;
-        match m.get("event").and_then(|v| v.as_str()) {
-            Some("layout") => panic!("a navigation write must not move a peer's view: {m}"),
-            Some("node_added") => break,
-            _ => {}
-        }
-    }
 }
 
 // ---------------------------------------------------------------------------

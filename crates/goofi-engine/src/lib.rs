@@ -301,13 +301,9 @@ pub struct Graph {
     /// Node types registered at runtime (e.g. discovered Python nodes), keyed by
     /// type name. Survives `clear()`/`load_doc` — these are catalog, not content.
     dyn_types: HashMap<&'static str, DynType>,
-    /// The editor's panel layout for this patch — an OPAQUE blob the engine stores, persists and
-    /// round-trips but never interprets, exactly like a node's `viewers`. Patch-scoped UI state:
-    /// which tabs exist and how their panels are split. `Null` until the editor sets one.
-    layout: serde_json::Value,
-    /// The same arrangement, held FLAT and interpreted — the fifth CRDT doc root. Every mutation is
-    /// an ordinary command over it, which is what ends the frontend's parallel write authority.
-    /// (Task 2 runs it ALONGSIDE the opaque `layout` above; Task 3 deletes that one.)
+    /// The editor's panel arrangement, held FLAT and interpreted — the fifth CRDT doc root. Every
+    /// mutation is an ordinary command over it, which is what ends the frontend's parallel write
+    /// authority: there is exactly ONE projection of the layout, as there is for nodes and links.
     arrangement: layout::Layout,
     /// Why a stored arrangement was refused, if it was — read once by the load reply so a fallback
     /// to the default is stated rather than silent. Cleared by every load.
@@ -315,7 +311,7 @@ pub struct Graph {
     /// Where a client is LOOKING: active page, panel maximize, editor camera, and each panel's
     /// sub-patch path. Opaque and per-client, so it is deliberately NOT a doc root (converging it
     /// would drag peers and dirty the patch on mere navigation) — but persistence is the other
-    /// axis, so it rides the `.gfi` and the snapshot like the layout blob it was carved out of.
+    /// axis, so it rides the `.gfi` and the snapshot all the same.
     viewpoint: serde_json::Value,
     /// Node types that EXIST on disk but cannot load here, keyed by type name → reason (a
     /// missing module name, or the exception line). They appear in the palette, greyed, so a
@@ -381,7 +377,6 @@ impl Graph {
             dyn_types: HashMap::new(),
             unavailable: std::collections::BTreeMap::new(),
             patch_types: std::collections::HashSet::new(),
-            layout: serde_json::Value::Null,
             arrangement: layout::Layout::default(),
             arrangement_warning: None,
             viewpoint: serde_json::Value::Null,
@@ -534,17 +529,6 @@ impl Graph {
                 _ => "ready",
             },
         }
-    }
-
-    /// The editor's stored panel layout (`Null` when the patch has none).
-    pub fn layout(&self) -> &serde_json::Value {
-        &self.layout
-    }
-
-    /// Store the editor's panel layout verbatim. Never interpreted — cross-cutting UI state, not
-    /// pillar logic (the `viewers` blob's rule).
-    pub fn set_layout(&mut self, layout: serde_json::Value) {
-        self.layout = layout;
     }
 
     /// The flat arrangement — pages, splits and panels. Reads plan against this; writes go through
@@ -2224,11 +2208,6 @@ impl Graph {
         if let Value::Object(ref mut m) = doc {
             // The flat arrangement always exists (at worst the default), so it always rides.
             m.insert("arrangement".to_string(), self.arrangement.to_json());
-            // The editor layout rides along when there is one; an empty patch keeps the file clean.
-            // (The opaque twin of `arrangement`, alive for exactly one task — see the field.)
-            if !self.layout.is_null() {
-                m.insert("layout".to_string(), self.layout.clone());
-            }
             if !self.viewpoint.is_null() {
                 m.insert("viewpoint".to_string(), self.viewpoint.clone());
             }
@@ -2358,9 +2337,6 @@ impl Graph {
         // stubs (remapping the stored inner uid). No def bodies to rehydrate — the runtime is flat.
         let scopes_v = doc.get("root").and_then(|r| r.get("scopes")).and_then(|v| v.as_object());
         self.reload_scopes(scopes_v, &idmap);
-        // A patch without a stored layout clears the previous one rather than inheriting it — the
-        // loaded patch's own arrangement (or the editor's default) is what should be shown.
-        self.layout = doc.get("layout").cloned().unwrap_or(serde_json::Value::Null);
         self.viewpoint = doc.get("viewpoint").cloned().unwrap_or(serde_json::Value::Null);
         // A corrupt arrangement costs the CHROME, never the patch — the graph is the value, and a
         // file that cannot be opened is the one outcome worse than a lost layout. The reason is kept
@@ -5970,39 +5946,13 @@ mod tests {
     }
 
     #[test]
-    fn the_editor_layout_round_trips_through_gfi_untouched() {
-        // Patch-scoped UI state, stored opaquely like a node's `viewers`: the backend persists and
-        // returns it verbatim and never looks inside.
-        let mut g = Graph::new();
-        assert_eq!(g.layout(), &serde_json::Value::Null, "no layout until the editor sets one");
-        assert!(!g.serialize().contains("layout"), "an unset layout stays out of the file");
-
-        let layout = serde_json::json!({
-            "workspaces": [{ "id": "ws-1", "name": "Main", "root": { "kind": "panel", "panel": "editor" } }],
-            "activeWorkspaceId": "ws-1"
-        });
-        g.set_layout(layout.clone());
-        let text = g.serialize();
-
-        let mut g2 = Graph::new();
-        g2.load_doc(&text).unwrap();
-        assert_eq!(g2.layout(), &layout, "stored verbatim, byte for byte");
-
-        // Loading a patch that has none clears it, rather than leaving the previous one showing.
-        let mut g3 = Graph::new();
-        g3.set_layout(layout);
-        g3.load_doc(&Graph::new().serialize()).unwrap();
-        assert_eq!(g3.layout(), &serde_json::Value::Null);
-    }
-
-    #[test]
     fn the_arrangement_rides_the_gfi_and_a_corrupt_one_never_costs_the_patch() {
         use crate::layout::{Axis, Layout};
         let mut g = Graph::new();
         g.add_node("_TestConst", None).unwrap();
         let page = g.arrangement().pages()[0].clone();
         let panel = g.arrangement().children(&page)[0].clone();
-        let (w, fresh) = g.arrangement().split_panel(&page, &panel, Axis::Column, 0.25).unwrap();
+        let (w, fresh) = g.arrangement().split_panel(&page, &panel, Axis::Column, false, 0.25).unwrap();
         g.arrangement_mut().apply(w);
         let text = g.serialize();
 
