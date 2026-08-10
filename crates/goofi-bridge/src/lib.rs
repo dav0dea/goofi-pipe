@@ -1143,7 +1143,18 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
                 // A bare uid announcement: the node itself arrives via the doc mirror, so anything
                 // more would be a second, drift-prone projection of it.
                 events.push(event("node_added", json!({ "uid": uid.to_hex() })));
-                Ok(json!(uid.to_hex()))
+                // The REPLY, though, answers a caller with no doc replica. Three of these it
+                // cannot derive from the type it just named: the display NAME the manager minted
+                // (which is how `nd()` addresses the node), the slots to wire, and the params as
+                // BORN — the inline ones above, and any seeded from a `default_expr`.
+                let m = g.manifest(uid);
+                Ok(json!({
+                    "uid": uid.to_hex(),
+                    "name": g.name(uid).unwrap_or_default(),
+                    "input_slots": m.map(schemas::input_slots).unwrap_or_else(|| json!({})),
+                    "output_slots": m.map(schemas::output_slots).unwrap_or_else(|| json!({})),
+                    "params": g.params(uid).map(schemas::param_value_map).unwrap_or_else(|| json!({})),
+                }))
             }
             "remove_node" => {
                 let uid = parse_uid(&payload, "node")?;
@@ -1181,9 +1192,26 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
                 state.history.lock().unwrap().apply(
                     &mut g,
                     &session,
-                    goofi_engine::Command::AddLink { node_out: a, slot_out: so, node_in: b, slot_in: si },
+                    goofi_engine::Command::AddLink {
+                        node_out: a,
+                        slot_out: so.clone(),
+                        node_in: b,
+                        slot_in: si.clone(),
+                    },
                 )?;
-                Ok(json!({ "ok": true }))
+                // The wire AS MADE. A boundary endpoint resolves to the flat inner leaf it exposes,
+                // so what got wired is not literally what was named; and the dtype the two slots
+                // agreed on is what decides whether the next link to the same output can be made
+                // at all. Neither is derivable from the request.
+                let dtype = vocab::output_slots(&g, a)
+                    .into_iter()
+                    .find(|(name, _)| *name == so)
+                    .map(|(_, dtype)| dtype);
+                Ok(json!({
+                    "node_out": a.to_hex(), "slot_out": so,
+                    "node_in": b.to_hex(), "slot_in": si,
+                    "dtype": dtype,
+                }))
             }
             "remove_link" => {
                 let (a, so, b, si) = parse_link(&payload)?;
@@ -1228,9 +1256,24 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
                 state.history.lock().unwrap().apply(
                     &mut g,
                     &session,
-                    goofi_engine::Command::EditParam { uid, group, name, value: Some(newp), expr: None },
+                    goofi_engine::Command::EditParam {
+                        uid,
+                        group: group.clone(),
+                        name: name.clone(),
+                        value: Some(newp),
+                        expr: None,
+                    },
                 )?;
-                Ok(json!({ "ok": true }))
+                // The value AS STORED, which is not always the value asked for: a literal is
+                // coerced to the param's declared type and clamped to its range. A bare `ok` for a
+                // 500 that became 100 does not merely say nothing — it asserts a state the patch
+                // is not in, and every later decision the caller makes is taken against it.
+                Ok(json!({
+                    "value": g
+                        .params(uid)
+                        .and_then(|p| goofi_node::param(p, &group, &name))
+                        .map(schemas::param_value_json)
+                }))
             }
             "set_expression" => {
                 let uid = parse_uid(&payload, "node")?;

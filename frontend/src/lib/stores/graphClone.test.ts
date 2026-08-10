@@ -83,7 +83,7 @@ describe('cloneNodes — identity is the uid, not the display name', () => {
 		const link: LinkInfo = { node_out: 'uidA', slot_out: 'out', node_in: 'uidB', slot_in: 'in' };
 		docAddLink(g, link);
 
-		fc.setCallResult('add_node', 'NEW'); // each clone resolves to this new uid
+		fc.setCallResult('add_node', { uid: 'NEW' }); // each clone resolves to this new uid
 
 		// The only callers (NodeEditorPanel.selectedNodeNames / agent surface) pass UIDS.
 		const rename = await g.cloneNodes(['uidA', 'uidB']);
@@ -105,7 +105,7 @@ describe('cloneNodes — identity is the uid, not the display name', () => {
 		docSeedNode(g, 'uidA', 'Oscillator', 'osc0', [0, 0]);
 		// A non-default param value the clone must carry (default is 30).
 		setParamValue(g.doc, 'uidA', 'common', 'max_frequency', 42);
-		fc.setCallResult('add_node', 'NEW');
+		fc.setCallResult('add_node', { uid: 'NEW' });
 
 		await g.cloneNodes(['uidA']);
 

@@ -66,6 +66,15 @@ async fn call_tool(addr: &str, id: i64, name: &str, args: Value) -> String {
     result["content"][0]["text"].as_str().expect("a text content block").to_string()
 }
 
+/// The uid out of a rendered `add_node` answer. The tool answers the node AS BORN — uid, minted
+/// name, slots and params — so a caller can wire and tune it without a second read; the tests below
+/// want only the identity out of it.
+async fn add_node(addr: &str, id: i64, ty: &str) -> String {
+    let text = call_tool(addr, id, "add_node", json!({ "type": ty })).await;
+    let born: Value = serde_json::from_str(&text).expect("add_node answers JSON");
+    born["uid"].as_str().expect("the new node's uid").to_string()
+}
+
 /// One served tool's description — the text a model actually reads, which is `op.doc` plus the
 /// `op.result` schema. A description that disagrees with the arm misinstructs the one consumer this
 /// endpoint exists for, so several tests below assert against it rather than against the registry.
@@ -176,8 +185,8 @@ async fn a_tool_call_round_trips_against_a_live_backend() {
     assert!(init["result"]["capabilities"]["tools"].is_object(), "tools are advertised: {init}");
     assert!(init["result"]["serverInfo"]["name"].as_str().is_some_and(|n| n.contains("goofi")));
 
-    let uid = call_tool(&addr, 2, "add_node", json!({ "type": "Oscillator" })).await;
-    assert!(!uid.is_empty() && !uid.contains('{'), "add_node answered a bare uid, got {uid:?}");
+    let uid = add_node(&addr, 2, "Oscillator").await;
+    assert!(!uid.is_empty(), "add_node answered no uid");
 
     // …and the engine really holds it: the patch read finds the node the tool created.
     let patch = call_tool(&addr, 3, "inspect_patch", json!({})).await;
@@ -210,7 +219,7 @@ async fn two_concurrent_clients_share_the_one_server() {
         tokio::spawn(async move {
             let mut uids = Vec::new();
             for i in 0..4 {
-                uids.push(call_tool(&addr, 100 + i, "add_node", json!({ "type": "Oscillator" })).await);
+                uids.push(add_node(&addr, 100 + i, "Oscillator").await);
             }
             uids
         })
@@ -220,7 +229,7 @@ async fn two_concurrent_clients_share_the_one_server() {
         tokio::spawn(async move {
             let mut uids = Vec::new();
             for i in 0..4 {
-                uids.push(call_tool(&addr, 200 + i, "add_node", json!({ "type": "Buffer" })).await);
+                uids.push(add_node(&addr, 200 + i, "Buffer").await);
             }
             uids
         })

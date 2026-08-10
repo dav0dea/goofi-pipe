@@ -213,7 +213,7 @@ async fn deleting_a_node_empties_the_panels_bound_to_it_and_an_undo_binds_them_b
     let base = start_server().await;
     let (mut ws, _) = connect_async(format!("{base}/control")).await.unwrap();
     let _ = recv_text(&mut ws).await;
-    let uid = call(&mut ws, 1, "add_node", json!({ "type": "Oscillator" })).await["result"]
+    let uid = call(&mut ws, 1, "add_node", json!({ "type": "Oscillator" })).await["result"]["uid"]
         .as_str()
         .expect("the new node's uid")
         .to_string();
@@ -1126,7 +1126,7 @@ async fn page_set_panel_lands_a_combined_type_and_binding_and_refuses_an_unknown
     let base = start_server().await;
     let (mut ws, _) = connect_async(format!("{base}/control")).await.unwrap();
     let _ = recv_text(&mut ws).await;
-    let osc = call(&mut ws, 1, "add_node", json!({ "type": "Oscillator" })).await["result"]
+    let osc = call(&mut ws, 1, "add_node", json!({ "type": "Oscillator" })).await["result"]["uid"]
         .as_str()
         .unwrap()
         .to_string();
@@ -1207,6 +1207,43 @@ async fn page_set_panel_lands_a_combined_type_and_binding_and_refuses_an_unknown
 }
 
 #[tokio::test]
+async fn a_graph_write_answers_with_what_it_actually_did() {
+    // Three writes whose `{ok: true}` was not merely silent but MISLEADING — each one answered
+    // success for a state other than the one the caller asked for.
+    let base = start_server().await;
+    let (mut ws, _) = connect_async(format!("{base}/control")).await.unwrap();
+    let _ = recv_text(&mut ws).await;
+
+    // 1. A node is born with a name the manager minted, slots and params the caller cannot know
+    //    from the type alone (a param may be seeded from a `default_expr`, and `nd()` addresses the
+    //    node by that name). Answering a bare uid made the next act an `inspect_node`.
+    let added = call(&mut ws, 1, "add_node", json!({ "type": "Oscillator" })).await["result"].clone();
+    let osc = added["uid"].as_str().expect("the new node's uid").to_string();
+    assert!(added["name"].as_str().is_some_and(|n| !n.is_empty()), "{added}");
+    assert_eq!(added["output_slots"]["out"], json!("ARRAY"), "{added}");
+    assert_eq!(added["params"]["oscillator"]["frequency"], json!(1.0), "{added}");
+
+    // 2. A literal is COERCED to the param's declared type, so the value stored is not always the
+    //    value asked for — and `{ok: true}` asserted the caller's own number had landed. A reply
+    //    that lies about the state the caller just made is worse than one that says nothing: every
+    //    later decision is taken against a patch that is not in that state.
+    let buf = call(&mut ws, 3, "add_node", json!({ "type": "Buffer" })).await["result"]["uid"]
+        .as_str().unwrap().to_string();
+    let coerced = call(&mut ws, 2, "update_param",
+        json!({ "node": buf, "group": "buffer", "name": "size", "value": 512.6 })).await;
+    assert_eq!(coerced["result"]["value"], json!(513), "an int param rounds: {coerced}");
+
+    // 3. A link's endpoints are RESOLVED (a boundary port becomes the flat leaf it exposes) and its
+    //    dtype is agreed between the two slots, so what got wired is not literally what was asked
+    //    for. Both come back.
+    let wired = call(&mut ws, 4, "add_link",
+        json!({ "node_out": osc, "slot_out": "out", "node_in": buf, "slot_in": "data" })).await;
+    assert_eq!(wired["result"]["node_out"], json!(osc), "{wired}");
+    assert_eq!(wired["result"]["slot_in"], json!("data"), "{wired}");
+    assert_eq!(wired["result"]["dtype"], json!("ARRAY"), "{wired}");
+}
+
+#[tokio::test]
 async fn a_layout_write_answers_with_the_arrangement_it_produced() {
     // `{ok: true}` told a caller its write was accepted and nothing about what it made, so an agent
     // editing the layout had to follow every single op with an `inspect_layout` to see the tree it
@@ -1246,7 +1283,7 @@ async fn page_set_panel_refuses_a_word_outside_the_vocabulary_and_names_the_set(
     let base = start_server().await;
     let (mut ws, _) = connect_async(format!("{base}/control")).await.unwrap();
     let _ = recv_text(&mut ws).await;
-    let osc = call(&mut ws, 1, "add_node", json!({ "type": "Oscillator" })).await["result"]
+    let osc = call(&mut ws, 1, "add_node", json!({ "type": "Oscillator" })).await["result"]["uid"]
         .as_str()
         .unwrap()
         .to_string();
@@ -1357,7 +1394,7 @@ async fn add_undo_redo_over_the_wire_is_uid_stable() {
     let (mut ws, _) = connect_async(format!("{base}/control")).await.unwrap();
     let _hello = recv_text(&mut ws).await;
 
-    let osc = call_session(&mut ws, 1, "add_node", json!({ "type": "Oscillator" }), "s1").await["result"]
+    let osc = call_session(&mut ws, 1, "add_node", json!({ "type": "Oscillator" }), "s1").await["result"]["uid"]
         .as_str()
         .unwrap()
         .to_string();
@@ -1387,9 +1424,9 @@ async fn undo_is_scoped_per_session() {
     let (mut ws, _) = connect_async(format!("{base}/control")).await.unwrap();
     let _hello = recv_text(&mut ws).await;
 
-    let a = call_session(&mut ws, 1, "add_node", json!({ "type": "Oscillator" }), "s1").await["result"]
+    let a = call_session(&mut ws, 1, "add_node", json!({ "type": "Oscillator" }), "s1").await["result"]["uid"]
         .as_str().unwrap().to_string();
-    let b = call_session(&mut ws, 2, "add_node", json!({ "type": "Buffer" }), "s2").await["result"]
+    let b = call_session(&mut ws, 2, "add_node", json!({ "type": "Buffer" }), "s2").await["result"]["uid"]
         .as_str().unwrap().to_string();
     let doc = sync_replica(&mut ws, |d| d.node_ids().len() == 2).await;
     assert!(doc.node_ids().iter().any(|u| *u == a) && doc.node_ids().iter().any(|u| *u == b));
@@ -1433,9 +1470,9 @@ async fn a_link_add_is_undoable_over_the_wire() {
     let (mut ws, _) = connect_async(format!("{base}/control")).await.unwrap();
     let _hello = recv_text(&mut ws).await;
 
-    let osc = call_session(&mut ws, 1, "add_node", json!({ "type": "Oscillator" }), "s1").await["result"]
+    let osc = call_session(&mut ws, 1, "add_node", json!({ "type": "Oscillator" }), "s1").await["result"]["uid"]
         .as_str().unwrap().to_string();
-    let buf = call_session(&mut ws, 2, "add_node", json!({ "type": "Buffer" }), "s1").await["result"]
+    let buf = call_session(&mut ws, 2, "add_node", json!({ "type": "Buffer" }), "s1").await["result"]["uid"]
         .as_str().unwrap().to_string();
     call_session(&mut ws, 3, "add_link", json!({ "node_out": osc, "slot_out": "out", "node_in": buf, "slot_in": "data" }), "s1").await;
     let doc = sync_replica(&mut ws, |d| d.read_at(&["links"]).and_then(|v| v.as_array().map(|a| a.len())) == Some(1)).await;
@@ -1462,7 +1499,7 @@ async fn a_param_edit_is_undoable_over_the_wire() {
     let (mut ws, _) = connect_async(format!("{base}/control")).await.unwrap();
     let _hello = recv_text(&mut ws).await;
 
-    let osc = call_session(&mut ws, 1, "add_node", json!({ "type": "Oscillator" }), "s1").await["result"]
+    let osc = call_session(&mut ws, 1, "add_node", json!({ "type": "Oscillator" }), "s1").await["result"]["uid"]
         .as_str().unwrap().to_string();
     call_session(&mut ws, 2, "update_param", json!({ "node": osc, "group": "common", "name": "max_frequency", "value": 20.0 }), "s1").await;
     call_session(&mut ws, 3, "update_param", json!({ "node": osc, "group": "common", "name": "max_frequency", "value": 33.0 }), "s1").await;
@@ -1577,9 +1614,9 @@ async fn deleting_a_sub_patch_instance_is_undoable_over_the_wire() {
     let (mut ws, _) = connect_async(format!("{base}/control")).await.unwrap();
     let _hello = recv_text(&mut ws).await;
 
-    let a = call_session(&mut ws, 1, "add_node", json!({ "type": "Oscillator" }), "s1").await["result"]
+    let a = call_session(&mut ws, 1, "add_node", json!({ "type": "Oscillator" }), "s1").await["result"]["uid"]
         .as_str().unwrap().to_string();
-    let b = call_session(&mut ws, 2, "add_node", json!({ "type": "Buffer" }), "s1").await["result"]
+    let b = call_session(&mut ws, 2, "add_node", json!({ "type": "Buffer" }), "s1").await["result"]["uid"]
         .as_str().unwrap().to_string();
     call_session(&mut ws, 3, "add_link", json!({ "node_out": a, "slot_out": "out", "node_in": b, "slot_in": "data" }), "s1").await;
     let inst = call_session(&mut ws, 4, "group_nodes", json!({ "members": [a, b], "pos": [0.0, 0.0] }), "s1").await
@@ -1612,7 +1649,7 @@ async fn group_undo_redo_over_the_wire_is_uid_stable() {
     let (mut ws, _) = connect_async(format!("{base}/control")).await.unwrap();
     let _hello = recv_text(&mut ws).await;
 
-    let uid = |v: &Value| v["result"].as_str().unwrap().to_string();
+    let uid = |v: &Value| v["result"]["uid"].as_str().unwrap().to_string();
     let osc = uid(&call_session(&mut ws, 1, "add_node", json!({ "type": "Oscillator" }), "s1").await);
     let buf = uid(&call_session(&mut ws, 2, "add_node", json!({ "type": "Buffer" }), "s1").await);
     let sink = uid(&call_session(&mut ws, 3, "add_node", json!({ "type": "Buffer" }), "s1").await);
@@ -1648,7 +1685,7 @@ async fn add_boundary_is_undoable_over_the_wire() {
     let (mut ws, _) = connect_async(format!("{base}/control")).await.unwrap();
     let _hello = recv_text(&mut ws).await;
 
-    let uid = |v: &Value| v["result"].as_str().unwrap().to_string();
+    let uid = |v: &Value| v["result"]["uid"].as_str().unwrap().to_string();
     let buf = uid(&call_session(&mut ws, 1, "add_node", json!({ "type": "Buffer" }), "s1").await);
     let scope = call_session(&mut ws, 2, "group_nodes", json!({ "members": [buf], "pos": [0.0, 0.0] }), "s1").await
         ["result"]["inst_id"].as_str().unwrap().to_string();
@@ -1745,7 +1782,7 @@ async fn control_and_data_plane_end_to_end() {
     for _ in 0..6 {
         let m = recv_text(&mut ws).await;
         if m.get("id").and_then(|v| v.as_i64()) == Some(2) {
-            uid = Some(m["result"].as_str().unwrap().to_string());
+            uid = Some(m["result"]["uid"].as_str().unwrap().to_string());
         } else if m["event"] == "node_added" {
             saw_added = true;
             // A bare uid announcement — the node's type/pos/params reach clients via the doc.
@@ -1797,7 +1834,7 @@ async fn native_chain_streams_frames_over_the_data_plane() {
     let (mut ws, _) = connect_async(format!("{base}/control")).await.unwrap();
     let _hello = recv_text(&mut ws).await;
 
-    let uid = |v: &Value| v["result"].as_str().unwrap().to_string();
+    let uid = |v: &Value| v["result"]["uid"].as_str().unwrap().to_string();
     let osc = uid(&call(&mut ws, 1, "add_node", json!({ "type": "Oscillator" })).await);
     let buf = uid(&call(&mut ws, 2, "add_node", json!({ "type": "Buffer" })).await);
 
@@ -1848,7 +1885,7 @@ async fn data_plane_sustains_streaming_over_a_window() {
     let base = start_server().await;
     let (mut ws, _) = connect_async(format!("{base}/control")).await.unwrap();
     let _hello = recv_text(&mut ws).await;
-    let uid = |v: &Value| v["result"].as_str().unwrap().to_string();
+    let uid = |v: &Value| v["result"]["uid"].as_str().unwrap().to_string();
     let osc = uid(&call(&mut ws, 1, "add_node", json!({ "type": "Oscillator" })).await);
     let buf = uid(&call(&mut ws, 2, "add_node", json!({ "type": "Buffer" })).await);
     call(&mut ws, 3, "add_link", json!({ "node_out": osc, "slot_out": "out", "node_in": buf, "slot_in": "data" })).await;
@@ -1878,7 +1915,7 @@ async fn data_plane_reduces_to_the_declared_viewspec() {
     let (mut ws, _) = connect_async(format!("{base}/control")).await.unwrap();
     let _hello = recv_text(&mut ws).await;
 
-    let uid = |v: &Value| v["result"].as_str().unwrap().to_string();
+    let uid = |v: &Value| v["result"]["uid"].as_str().unwrap().to_string();
     let osc = uid(&call(&mut ws, 1, "add_node", json!({ "type": "Oscillator" })).await);
     let buf = uid(&call(&mut ws, 2, "add_node", json!({ "type": "Buffer" })).await);
     // A 128-sample buffer is well over the 2·32 envelope floor, so once it fills the
@@ -1991,7 +2028,7 @@ async fn setting_an_expression_binds_and_echoes_the_descriptor() {
     let _sv = recv_binary(&mut ws).await;
 
     let osc = call(&mut ws, 1, "add_node", json!({ "type": "Oscillator" }))
-        .await["result"]
+        .await["result"]["uid"]
         .as_str()
         .unwrap()
         .to_string();
@@ -2068,7 +2105,7 @@ async fn a_client_replica_converges_via_the_binary_sync_relay() {
             Message::Text(t) => {
                 let v: Value = serde_json::from_str(t.as_str()).unwrap();
                 if v.get("id").and_then(|x| x.as_i64()) == Some(1) {
-                    uid = v["result"].as_str().map(str::to_string);
+                    uid = v["result"]["uid"].as_str().map(str::to_string);
                 }
             }
             Message::Binary(b) => {
@@ -2099,7 +2136,7 @@ async fn two_tabs_on_one_slot_share_the_reducer_over_the_wire() {
     let base = start_server().await;
     let (mut ws, _) = connect_async(format!("{base}/control")).await.unwrap();
     let _hello = recv_text(&mut ws).await;
-    let uid = |v: &Value| v["result"].as_str().unwrap().to_string();
+    let uid = |v: &Value| v["result"]["uid"].as_str().unwrap().to_string();
     let osc = uid(&call(&mut ws, 1, "add_node", json!({ "type": "Oscillator" })).await);
     let buf = uid(&call(&mut ws, 2, "add_node", json!({ "type": "Buffer" })).await);
     call(&mut ws, 3, "add_link", json!({ "node_out": osc, "slot_out": "out", "node_in": buf, "slot_in": "data" })).await;
@@ -2140,7 +2177,7 @@ async fn a_param_command_reaches_the_graph_and_other_clients() {
     let _ = recv_text(&mut w).await;
     let _ = recv_binary(&mut w).await; // server hello SV
 
-    let osc = call(&mut w, 1, "add_node", json!({ "type": "Oscillator" })).await["result"]
+    let osc = call(&mut w, 1, "add_node", json!({ "type": "Oscillator" })).await["result"]["uid"]
         .as_str()
         .unwrap()
         .to_string();
@@ -2188,7 +2225,7 @@ async fn a_position_command_reaches_the_graph_and_other_clients() {
     let _ = recv_text(&mut w).await;
     let _ = recv_binary(&mut w).await; // server hello SV
 
-    let osc = call(&mut w, 1, "add_node", json!({ "type": "Oscillator" })).await["result"]
+    let osc = call(&mut w, 1, "add_node", json!({ "type": "Oscillator" })).await["result"]["uid"]
         .as_str()
         .unwrap()
         .to_string();
@@ -2248,7 +2285,7 @@ async fn crdt_doc_tracks_an_rpc_node_add_and_param_edit() {
                 Message::Text(t) => {
                     let v: Value = serde_json::from_str(t.as_str()).unwrap();
                     if v.get("id").and_then(|x| x.as_i64()) == Some(1) {
-                        osc = v["result"].as_str().map(str::to_string);
+                        osc = v["result"]["uid"].as_str().map(str::to_string);
                     }
                 }
                 Message::Binary(b) => {
@@ -2292,7 +2329,7 @@ async fn renaming_a_node_rewrites_referrers_nd_expressions_over_the_wire() {
     let (mut ws, _) = connect_async(format!("{base}/control")).await.unwrap();
     let _hello = recv_text(&mut ws).await;
 
-    let uid = |v: &Value| v["result"].as_str().unwrap().to_string();
+    let uid = |v: &Value| v["result"]["uid"].as_str().unwrap().to_string();
     let producer = uid(&call(&mut ws, 1, "add_node", json!({ "type": "Oscillator" })).await);
     let consumer = uid(&call(&mut ws, 2, "add_node", json!({ "type": "Oscillator" })).await);
     call(&mut ws, 3, "rename_node", json!({ "node": producer, "name": "src" })).await;
@@ -2328,7 +2365,7 @@ async fn rename_node_rejects_a_duplicate_display_name_up_front() {
     let (mut ws, _) = connect_async(format!("{base}/control")).await.unwrap();
     let _hello = recv_text(&mut ws).await;
 
-    let uid = |v: &Value| v["result"].as_str().unwrap().to_string();
+    let uid = |v: &Value| v["result"]["uid"].as_str().unwrap().to_string();
     let a = uid(&call(&mut ws, 1, "add_node", json!({ "type": "Oscillator" })).await);
     let _b = uid(&call(&mut ws, 2, "add_node", json!({ "type": "Buffer" })).await); // "buffer0"
 
@@ -2348,7 +2385,7 @@ async fn group_and_expand_project_the_instance_forest() {
     let (mut ws, _) = connect_async(format!("{base}/control")).await.unwrap();
     let _hello = recv_text(&mut ws).await;
 
-    let uid = |v: &Value| v["result"].as_str().unwrap().to_string();
+    let uid = |v: &Value| v["result"]["uid"].as_str().unwrap().to_string();
     let osc = uid(&call(&mut ws, 1, "add_node", json!({ "type": "Oscillator" })).await);
     let buf = uid(&call(&mut ws, 2, "add_node", json!({ "type": "Buffer" })).await);
     call(
@@ -2405,7 +2442,7 @@ async fn add_node_with_inst_id_lands_inside_the_scope_and_survives_undo_redo() {
     let (mut ws, _) = connect_async(format!("{base}/control")).await.unwrap();
     let _hello = recv_text(&mut ws).await;
 
-    let uid = |v: &Value| v["result"].as_str().unwrap().to_string();
+    let uid = |v: &Value| v["result"]["uid"].as_str().unwrap().to_string();
     let osc = uid(&call_session(&mut ws, 1, "add_node", json!({ "type": "Oscillator" }), "s1").await);
     let buf = uid(&call_session(&mut ws, 2, "add_node", json!({ "type": "Buffer" }), "s1").await);
     let scope = call_session(&mut ws, 3, "group_nodes", json!({ "members": [osc, buf], "pos": [0.0, 0.0] }), "s1")
@@ -2462,7 +2499,7 @@ async fn add_node_rejects_an_inst_id_it_cannot_honour_and_creates_nothing() {
     let (mut ws, _) = connect_async(format!("{base}/control")).await.unwrap();
     let _hello = recv_text(&mut ws).await;
 
-    let osc = call(&mut ws, 1, "add_node", json!({ "type": "Oscillator" })).await["result"]
+    let osc = call(&mut ws, 1, "add_node", json!({ "type": "Oscillator" })).await["result"]["uid"]
         .as_str().unwrap().to_string();
 
     // Well-formed hex, but no such scope.
@@ -2501,7 +2538,7 @@ async fn node_stats_broadcasts_the_measured_ufreq() {
     let (mut ws, _) = connect_async(format!("{base}/control")).await.unwrap();
     let _hello = recv_text(&mut ws).await;
     // A free-running source measures a ufreq after a few ticks.
-    let src = call(&mut ws, 1, "add_node", json!({ "type": "Oscillator" })).await["result"]
+    let src = call(&mut ws, 1, "add_node", json!({ "type": "Oscillator" })).await["result"]["uid"]
         .as_str()
         .unwrap()
         .to_string();
@@ -2542,7 +2579,7 @@ async fn param_values_broadcasts_live_expression_values() {
     let (mut ws, _) = connect_async(format!("{base}/control")).await.unwrap();
     let _hello = recv_text(&mut ws).await;
 
-    let osc = call(&mut ws, 1, "add_node", json!({ "type": "Oscillator" })).await["result"]
+    let osc = call(&mut ws, 1, "add_node", json!({ "type": "Oscillator" })).await["result"]["uid"]
         .as_str()
         .unwrap()
         .to_string();
@@ -2576,7 +2613,7 @@ async fn connecting_to_a_boundary_creates_a_flat_leaf_link() {
     let (mut ws, _) = connect_async(format!("{base}/control")).await.unwrap();
     let _hello = recv_text(&mut ws).await;
 
-    let uid = |v: &Value| v["result"].as_str().unwrap().to_string();
+    let uid = |v: &Value| v["result"]["uid"].as_str().unwrap().to_string();
     let osc = uid(&call(&mut ws, 1, "add_node", json!({ "type": "Oscillator" })).await);
     let buf = uid(&call(&mut ws, 2, "add_node", json!({ "type": "Buffer" })).await);
     // Group the buffer alone (no links yet → no auto boundaries), then author an input port.
@@ -2621,7 +2658,7 @@ async fn boundary_authoring_over_the_wire() {
     let (mut ws, _) = connect_async(format!("{base}/control")).await.unwrap();
     let _hello = recv_text(&mut ws).await;
 
-    let uid = |v: &Value| v["result"].as_str().unwrap().to_string();
+    let uid = |v: &Value| v["result"]["uid"].as_str().unwrap().to_string();
     let osc = uid(&call(&mut ws, 1, "add_node", json!({ "type": "Oscillator" })).await);
     let buf = uid(&call(&mut ws, 2, "add_node", json!({ "type": "Buffer" })).await);
     call(&mut ws, 3, "add_link", json!({ "node_out": osc, "slot_out": "out", "node_in": buf, "slot_in": "data" })).await;
@@ -2665,7 +2702,7 @@ async fn a_boundary_wires_to_a_nested_sub_patch_port_over_the_wire() {
     let (mut ws, _) = connect_async(format!("{base}/control")).await.unwrap();
     let _hello = recv_text(&mut ws).await;
 
-    let uid = |v: &Value| v["result"].as_str().unwrap().to_string();
+    let uid = |v: &Value| v["result"]["uid"].as_str().unwrap().to_string();
     let inst_of = |v: &Value| v["result"]["inst_id"].as_str().unwrap().to_string();
     let buf = uid(&call(&mut ws, 1, "add_node", json!({ "type": "Buffer" })).await);
     let inner = inst_of(&call(&mut ws, 2, "group_nodes", json!({ "members": [buf], "pos": [0.0, 0.0] })).await);
@@ -2697,7 +2734,7 @@ async fn unwiring_a_boundary_over_the_wire_prunes_its_inner_target() {
     let (mut ws, _) = connect_async(format!("{base}/control")).await.unwrap();
     let _hello = recv_text(&mut ws).await;
 
-    let uid = |v: &Value| v["result"].as_str().unwrap().to_string();
+    let uid = |v: &Value| v["result"]["uid"].as_str().unwrap().to_string();
     let buf = uid(&call(&mut ws, 1, "add_node", json!({ "type": "Buffer" })).await);
     let inst = call(&mut ws, 2, "group_nodes", json!({ "members": [buf], "pos": [0.0, 0.0] })).await["result"]["inst_id"]
         .as_str()
@@ -2740,7 +2777,7 @@ async fn data_plane_streams_an_output_boundary_via_the_inner_leaf() {
     let (mut ws, _) = connect_async(format!("{base}/control")).await.unwrap();
     let _hello = recv_text(&mut ws).await;
 
-    let uid = |v: &Value| v["result"].as_str().unwrap().to_string();
+    let uid = |v: &Value| v["result"]["uid"].as_str().unwrap().to_string();
     let osc = uid(&call(&mut ws, 1, "add_node", json!({ "type": "Oscillator" })).await);
     let buf = uid(&call(&mut ws, 2, "add_node", json!({ "type": "Buffer" })).await);
     let sink = uid(&call(&mut ws, 3, "add_node", json!({ "type": "Buffer" })).await);
@@ -2783,7 +2820,7 @@ async fn set_node_viewers_persists_the_view_state() {
     let _hello = recv_text(&mut ws).await;
     let _sv = recv_binary(&mut ws).await;
 
-    let osc = call(&mut ws, 1, "add_node", json!({ "type": "Oscillator" })).await["result"]
+    let osc = call(&mut ws, 1, "add_node", json!({ "type": "Oscillator" })).await["result"]["uid"]
         .as_str()
         .unwrap()
         .to_string();
@@ -2886,7 +2923,7 @@ async fn a_lagged_control_client_recovers_via_a_fresh_snapshot() {
     let (mut b, _) = connect_async(format!("{base}/control")).await.unwrap();
     let _ = recv_text(&mut b).await;
     let _ = recv_binary(&mut b).await;
-    let osc = call(&mut b, 1, "add_node", json!({ "type": "Oscillator" })).await["result"]
+    let osc = call(&mut b, 1, "add_node", json!({ "type": "Oscillator" })).await["result"]["uid"]
         .as_str()
         .unwrap()
         .to_string();
@@ -2957,7 +2994,7 @@ async fn many_clients_concurrently_edit_params_and_all_converge() {
     let mut uids = Vec::new();
     for i in 0..N {
         let u = call(&mut setup, i as i64 + 1, "add_node", json!({ "type": "Oscillator" })).await
-            ["result"]
+            ["result"]["uid"]
             .as_str()
             .unwrap()
             .to_string();
@@ -3049,7 +3086,7 @@ async fn many_clients_concurrently_drag_and_all_converge() {
     let mut uids = Vec::new();
     for i in 0..N {
         let u = call(&mut setup, i as i64 + 1, "add_node", json!({ "type": "Oscillator" })).await
-            ["result"]
+            ["result"]["uid"]
             .as_str()
             .unwrap()
             .to_string();
@@ -3139,7 +3176,7 @@ async fn add_node_applies_inline_params_at_creation() {
     for _ in 0..20 {
         let m = recv_text(&mut ws).await;
         if m.get("id").and_then(|v| v.as_i64()) == Some(1) {
-            uid = m["result"].as_str().map(str::to_string);
+            uid = m["result"]["uid"].as_str().map(str::to_string);
         }
         if m["event"] == "node_added" {
             assert_eq!(m["payload"]["uid"], json!(uid.clone().unwrap_or_default()));
@@ -3168,7 +3205,7 @@ async fn add_node_restores_a_specific_uid_and_name() {
     let (mut ws, _) = connect_async(format!("{base}/control")).await.unwrap();
     let _hello = recv_text(&mut ws).await;
 
-    let a = call(&mut ws, 1, "add_node", json!({ "type": "Oscillator" })).await["result"]
+    let a = call(&mut ws, 1, "add_node", json!({ "type": "Oscillator" })).await["result"]["uid"]
         .as_str()
         .unwrap()
         .to_string();
@@ -3187,7 +3224,7 @@ async fn add_node_restores_a_specific_uid_and_name() {
     for _ in 0..20 {
         let m = recv_text(&mut ws).await;
         if m.get("id").and_then(|v| v.as_i64()) == Some(3) {
-            uid = m["result"].as_str().map(str::to_string);
+            uid = m["result"]["uid"].as_str().map(str::to_string);
             break;
         }
     }
@@ -3210,7 +3247,7 @@ async fn removing_a_grouped_member_updates_the_instance_forest_in_the_doc() {
     let (mut ws, _) = connect_async(format!("{base}/control")).await.unwrap();
     let _hello = recv_text(&mut ws).await;
 
-    let uid = |v: &Value| v["result"].as_str().unwrap().to_string();
+    let uid = |v: &Value| v["result"]["uid"].as_str().unwrap().to_string();
     let osc = uid(&call(&mut ws, 1, "add_node", json!({ "type": "Oscillator" })).await);
     let buf = uid(&call(&mut ws, 2, "add_node", json!({ "type": "Buffer" })).await);
     let inst = call(&mut ws, 3, "group_nodes", json!({ "members": [osc, buf], "pos": [0.0, 0.0] }))
@@ -3620,7 +3657,7 @@ async fn restart_node_rebuilds_the_instance_and_clears_the_error() {
     let (mut ws, _) = connect_async(format!("{base}/control")).await.unwrap();
     let _hello = recv_text(&mut ws).await;
 
-    let uid = call(&mut ws, 1, "add_node", json!({ "type": "FlakyBoot" })).await["result"]
+    let uid = call(&mut ws, 1, "add_node", json!({ "type": "FlakyBoot" })).await["result"]["uid"]
         .as_str()
         .unwrap()
         .to_string();
@@ -3648,11 +3685,11 @@ async fn restart_node_respawns_in_place_without_touching_undo() {
     let (mut ws, _) = connect_async(format!("{base}/control")).await.unwrap();
     let _hello = recv_text(&mut ws).await;
 
-    let osc = call(&mut ws, 1, "add_node", json!({ "type": "Oscillator" })).await["result"]
+    let osc = call(&mut ws, 1, "add_node", json!({ "type": "Oscillator" })).await["result"]["uid"]
         .as_str()
         .unwrap()
         .to_string();
-    let buf = call(&mut ws, 2, "add_node", json!({ "type": "Buffer" })).await["result"]
+    let buf = call(&mut ws, 2, "add_node", json!({ "type": "Buffer" })).await["result"]["uid"]
         .as_str()
         .unwrap()
         .to_string();
@@ -3779,7 +3816,7 @@ async fn refresh_param_echoes_fresh_options_and_clears_the_spinner() {
     let (mut ws, _) = connect_async(format!("{base}/control")).await.unwrap();
     let _hello = recv_text(&mut ws).await;
 
-    let uid = call(&mut ws, 1, "add_node", json!({ "type": "DevicePicker" })).await["result"]
+    let uid = call(&mut ws, 1, "add_node", json!({ "type": "DevicePicker" })).await["result"]["uid"]
         .as_str()
         .unwrap()
         .to_string();
@@ -3815,7 +3852,7 @@ async fn refresh_param_rejects_a_param_that_is_not_refreshable() {
     let (mut ws, _) = connect_async(format!("{base}/control")).await.unwrap();
     let _hello = recv_text(&mut ws).await;
 
-    let osc = call(&mut ws, 1, "add_node", json!({ "type": "Oscillator" })).await["result"]
+    let osc = call(&mut ws, 1, "add_node", json!({ "type": "Oscillator" })).await["result"]["uid"]
         .as_str()
         .unwrap()
         .to_string();
@@ -3835,7 +3872,7 @@ async fn refresh_param_reports_completion_even_when_the_node_offers_nothing() {
     let (mut ws, _) = connect_async(format!("{base}/control")).await.unwrap();
     let _hello = recv_text(&mut ws).await;
 
-    let uid = call(&mut ws, 1, "add_node", json!({ "type": "MutePicker" })).await["result"]
+    let uid = call(&mut ws, 1, "add_node", json!({ "type": "MutePicker" })).await["result"]["uid"]
         .as_str()
         .unwrap()
         .to_string();

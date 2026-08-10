@@ -134,12 +134,27 @@ pub fn expression_value_map(g: &Graph, uid: Uid) -> Value {
     Value::Object(groups)
 }
 
+/// A node instance's param VALUES, shaped `{group: {name: value}}` — what a caller that just
+/// created the node needs to see, without the descriptor metadata `describe_node_params` carries
+/// for the inspector.
+pub fn param_value_map(params: &goofi_node::ParamGroups) -> Value {
+    Value::Object(
+        params
+            .iter()
+            .map(|(gname, group)| {
+                let names = group.iter().map(|(n, p)| (n.clone(), param_value_json(p)));
+                (gname.clone(), Value::Object(names.collect()))
+            })
+            .collect(),
+    )
+}
+
 /// Project `(slot_name, dtype_name)` pairs into a `{name: dtype}` JSON object — shared by
 /// [`input_slots`] / [`output_slots`], whose only difference was the source collection.
 fn slot_map<'a>(slots: impl Iterator<Item = (&'a str, &'a str)>) -> Value {
     Value::Object(slots.map(|(name, dtype)| (name.to_string(), json!(dtype))).collect())
 }
-fn input_slots(m: &NodeManifest) -> Value {
+pub fn input_slots(m: &NodeManifest) -> Value {
     slot_map(m.inputs.iter().map(|s| (s.name, s.kind.name())))
 }
 
@@ -149,7 +164,7 @@ fn input_slots(m: &NodeManifest) -> Value {
 fn input_multi(m: &NodeManifest) -> Value {
     Value::Array(m.inputs.iter().filter(|s| s.multi).map(|s| json!(s.name)).collect())
 }
-fn output_slots(m: &NodeManifest) -> Value {
+pub fn output_slots(m: &NodeManifest) -> Value {
     slot_map(m.outputs.iter().map(|s| (s.name, s.kind.name())))
 }
 

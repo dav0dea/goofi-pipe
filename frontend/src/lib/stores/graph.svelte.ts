@@ -465,9 +465,16 @@ export class GraphStore {
 		// omitted, it goes in the root graph. `params` (paste/duplicate replay) are applied at
 		// creation UNDER THE GRAPH LOCK — a post-add leaf-write would no-op until the new node syncs
 		// into the replica, silently dropping the values.
-		const uid =
-			(await this.ctl.call<string>('add_node', { type, category, pos, inst_id: instId, params })) ??
-			'';
+		// The reply carries the node as BORN — uid, minted name, slots and params — for a caller with
+		// no doc replica. This one has one, so it reads the uid and lets the mirror bring the rest.
+		const born = await this.ctl.call<{ uid: string }>('add_node', {
+			type,
+			category,
+			pos,
+			inst_id: instId,
+			params
+		});
+		const uid = born?.uid ?? '';
 		// The manager recorded the add (its inverse is a subtree-capturing RemoveNode); mark the step.
 		if (uid) this._recordGraphCmd(`Add ${type}`);
 		return uid;
