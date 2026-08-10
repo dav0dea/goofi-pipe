@@ -403,6 +403,74 @@ async fn a_stopped_instances_address_refuses_while_the_central_one_stays_open() 
     state.release_mount();
 }
 
+/// Read `/term` text frames until an authoritative-size one arrives, answering `(cols, rows)`.
+async fn recv_size(ws: &mut Ws) -> (u64, u64) {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        let v = recv_text_by(ws, deadline).await;
+        if v["op"] == json!("size") {
+            return (v["cols"].as_u64().expect("cols"), v["rows"].as_u64().expect("rows"));
+        }
+    }
+}
+
+/// Several views of ONE terminal, and one size between them. A PTY has a single window: two panels
+/// showing the same harness cannot each have their own, so the size is arbitrated — **the last view
+/// to speak wins**, and the answer is broadcast to every view (the others letterbox against it).
+///
+/// The two halves that are easy to get wrong are both driven here. A view that **retracts** (its
+/// panel unmounted, so it has nothing on screen to speak for) and a view that **leaves** must both
+/// hand the terminal back to the survivors — otherwise closing the size-owning view strands every
+/// other at a size nobody can see. And a view that attaches LATE is told the current size at once,
+/// because there is no change event coming to tell it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn several_views_of_one_terminal_agree_on_one_size() {
+    let (addr, state) = start_server().await;
+    let (mut ctl, _) = connect_async(format!("ws://{addr}/control")).await.unwrap();
+    recv_text(&mut ctl).await;
+    let id = call(&mut ctl, 1, "spawn_harness", json!({ "harness": "_sh" })).await["instance_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let url = format!("ws://{addr}/term/{id}");
+    let (mut a, _) = connect_async(&url).await.unwrap();
+    let (mut b, _) = connect_async(&url).await.unwrap();
+
+    let resize = |cols: u16, rows: u16| {
+        Message::Text(json!({ "op": "resize", "cols": cols, "rows": rows }).to_string())
+    };
+    a.send(resize(100, 30)).await.unwrap();
+    assert_eq!(recv_size(&mut a).await, (100, 30), "the view that asked is told the answer");
+    assert_eq!(recv_size(&mut b).await, (100, 30), "a view that did not ask is told too");
+
+    b.send(resize(80, 24)).await.unwrap();
+    assert_eq!(recv_size(&mut b).await, (80, 24), "the last writer wins");
+    assert_eq!(recv_size(&mut a).await, (80, 24), "…for every view");
+
+    // A view whose panel unmounted keeps its socket (that is what keeps its scrollback flowing) but
+    // stops speaking for the terminal, which it says with a zero size.
+    b.send(resize(0, 0)).await.unwrap();
+    assert_eq!(recv_size(&mut a).await, (100, 30), "a retracted view hands the size back");
+    assert_eq!(recv_size(&mut b).await, (100, 30), "…and hears the answer it caused");
+
+    // A late attach is told the current size without waiting for anyone to resize.
+    let (mut c, _) = connect_async(&url).await.unwrap();
+    assert_eq!(recv_size(&mut c).await, (100, 30), "a late view starts at the current size");
+
+    c.send(resize(120, 40)).await.unwrap();
+    assert_eq!(recv_size(&mut a).await, (120, 40));
+    drop(c);
+    assert_eq!(recv_size(&mut a).await, (100, 30), "a view that left hands the size back");
+
+    // …and the arbitration reaches the KERNEL, not just the other views: the child's own idea of
+    // its window is what a TUI lays itself out against. `30 100` is nowhere in the input.
+    a.send(Message::Binary(b"stty size\n".to_vec())).await.unwrap();
+    read_until(&mut a, "30 100").await;
+
+    call(&mut ctl, 2, "stop_harness", json!({ "instance": id })).await;
+    state.release_mount();
+}
+
 /// The roster rides the snapshot, for the same reason the `runtime` overlay does: the live stream
 /// carries only transitions, so a tab that joins after a spawn would otherwise draw an empty
 /// switcher over a running harness.

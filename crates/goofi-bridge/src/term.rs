@@ -21,7 +21,7 @@
 use std::ffi::{OsStr, OsString};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtySize};
@@ -245,6 +245,9 @@ impl Harnesses {
             exit,
             eof,
             stopping: AtomicBool::new(false),
+            sizes: Mutex::default(),
+            size: watch::channel(None).0,
+            seats: AtomicU64::new(0),
         });
 
         // Drain the PTY unconditionally: a child whose output nobody reads eventually blocks on a
@@ -317,6 +320,46 @@ fn begin_stop(inst: Arc<Instance>) -> Result<(), String> {
     Ok(())
 }
 
+/// The terminal size every view of one instance shares, and who last spoke for it.
+///
+/// A PTY has ONE window, so two panels showing the same harness cannot each have their own: the
+/// size is arbitrated rather than negotiated, and **the last view to speak wins**. Each seat holds
+/// that view's most recent proposal, most-recently-proposed last, so the answer is simply the
+/// newest one still seated.
+///
+/// The two ways a proposal stops counting are the whole reason this is a structure and not a
+/// field. A view **retracts** when its panel unmounts — it keeps its socket, because that is what
+/// keeps its scrollback flowing, but it has nothing on screen to speak for — and a view **leaves**
+/// when its socket closes. Either way the terminal goes back to whichever survivor spoke last;
+/// without that, closing the size-owning view strands every other at a size nobody can see.
+#[derive(Default)]
+struct Sizes {
+    seats: Vec<(u64, Option<(u16, u16)>)>,
+}
+
+impl Sizes {
+    fn join(&mut self, seat: u64) {
+        self.seats.push((seat, None));
+    }
+
+    /// `size` is `None` for a retraction. Moving the seat to the end is what makes "last writer"
+    /// mean the last to have SPOKEN rather than the last to have arrived.
+    fn propose(&mut self, seat: u64, size: Option<(u16, u16)>) -> Option<(u16, u16)> {
+        self.seats.retain(|(s, _)| *s != seat);
+        self.seats.push((seat, size));
+        self.current()
+    }
+
+    fn leave(&mut self, seat: u64) -> Option<(u16, u16)> {
+        self.seats.retain(|(s, _)| *s != seat);
+        self.current()
+    }
+
+    fn current(&self) -> Option<(u16, u16)> {
+        self.seats.iter().rev().find_map(|(_, s)| *s)
+    }
+}
+
 /// One spawned harness: its PTY, its exit, and whether its MCP address is still open.
 pub struct Instance {
     harness: String,
@@ -337,6 +380,10 @@ pub struct Instance {
     eof: watch::Sender<bool>,
     /// Set the moment a stop begins, ahead of the signal.
     stopping: AtomicBool,
+    /// Every attached view's last word on the window size, and the answer they all draw against.
+    sizes: Mutex<Sizes>,
+    size: watch::Sender<Option<(u16, u16)>>,
+    seats: AtomicU64,
 }
 
 impl Instance {
@@ -347,16 +394,44 @@ impl Instance {
         (self.output.subscribe(), self.exit.subscribe(), self.eof.subscribe())
     }
 
+    /// Take a seat in the size arbitration, and read the answer as it changes. The receiver is
+    /// taken here rather than through `attach` so a socket cannot hold one without a seat.
+    pub fn join(&self) -> (u64, watch::Receiver<Option<(u16, u16)>>) {
+        let seat = self.seats.fetch_add(1, Ordering::Relaxed);
+        self.sizes.lock().unwrap().join(seat);
+        (seat, self.size.subscribe())
+    }
+
+    /// This view's word on the size — `None` when it has nothing on screen to speak for. The lock
+    /// is held across the settle so two views resizing at once cannot land out of order.
+    pub fn propose(&self, seat: u64, size: Option<(u16, u16)>) {
+        let mut sizes = self.sizes.lock().unwrap();
+        self.settle(sizes.propose(seat, size));
+    }
+
+    /// This view is gone; the terminal goes back to whichever survivor spoke last.
+    pub fn leave(&self, seat: u64) {
+        let mut sizes = self.sizes.lock().unwrap();
+        self.settle(sizes.leave(seat));
+    }
+
+    /// Apply an arbitrated answer once: the kernel first (which is what raises the child's
+    /// SIGWINCH), then the views. A `None` — nobody is speaking — leaves the window where it was
+    /// rather than resizing a live TUI to nothing.
+    fn settle(&self, now: Option<(u16, u16)>) {
+        let Some((cols, rows)) = now else { return };
+        if *self.size.borrow() == now {
+            return;
+        }
+        let size = PtySize { rows, cols, pixel_width: 0, pixel_height: 0 };
+        let _ = self.master.lock().unwrap().resize(size);
+        self.size.send_replace(now);
+    }
+
     /// Keystrokes (or a paste) from an attached `/term` socket.
     pub fn write(&self, bytes: &[u8]) {
         let mut w = self.writer.lock().unwrap();
         let _ = w.write_all(bytes).and_then(|()| w.flush());
-    }
-
-    /// Tell the kernel the window changed, which is what raises the child's SIGWINCH.
-    pub fn resize(&self, cols: u16, rows: u16) {
-        let size = PtySize { rows, cols, pixel_width: 0, pixel_height: 0 };
-        let _ = self.master.lock().unwrap().resize(size);
     }
 
     pub fn exit_code(&self) -> Option<u32> {
@@ -484,6 +559,27 @@ mod tests {
         // cannot resolve anything, so a hit proves the first branch rather than the second.
         let dir = found.parent().expect("an absolute path").as_os_str().to_owned();
         assert_eq!(resolve("sh", Some(&dir), "/bin/false").as_deref(), Some(found.as_path()));
+    }
+
+    /// The arbitration, without a socket in the way: last writer wins, and both ways of ceasing to
+    /// speak — a retraction and a departure — fall back to the newest SURVIVING proposal rather
+    /// than to nothing, to the oldest, or to the leaver's own.
+    #[test]
+    fn the_last_view_to_speak_owns_the_size_and_hands_it_back_when_it_stops() {
+        let mut s = Sizes::default();
+        s.join(1);
+        s.join(2);
+        assert_eq!(s.current(), None, "a view that has not measured yet says nothing");
+        assert_eq!(s.propose(1, Some((100, 30))), Some((100, 30)));
+        assert_eq!(s.propose(2, Some((80, 24))), Some((80, 24)), "the last writer wins");
+        assert_eq!(s.propose(2, None), Some((100, 30)), "a retraction hands it to the survivor");
+        assert_eq!(s.propose(2, Some((80, 24))), Some((80, 24)), "…and it can speak again");
+        assert_eq!(s.leave(2), Some((100, 30)), "so does leaving");
+        // A view that speaks twice does not thereby seat itself twice — the second word REPLACES
+        // the first, or leaving would strand the terminal at its own stale earlier proposal.
+        s.propose(1, Some((90, 20)));
+        s.propose(1, Some((70, 15)));
+        assert_eq!(s.leave(1), None, "the last view out leaves nobody speaking");
     }
 
     /// …and it understands a login shell whose profile had something to say first, which is the

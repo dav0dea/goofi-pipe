@@ -1997,9 +1997,15 @@ struct TermControl {
 }
 
 /// One `/term` socket. **Binary frames are PTY bytes** in both directions; **text frames are JSON
-/// control**: `{op:"resize", cols, rows}` inbound, `{exit_code}` outbound. An already-exited
-/// instance answers its code at once and closes, so a tab that opens the panel after the harness
-/// died sees why instead of an empty terminal.
+/// control**: `{op:"resize", cols, rows}` inbound, `{op:"size", cols, rows}` and `{exit_code}`
+/// outbound. An already-exited instance answers its code at once and closes, so a tab that opens
+/// the panel after the harness died sees why instead of an empty terminal.
+///
+/// A resize is a PROPOSAL, not an order: several views can watch one instance and a PTY has one
+/// window, so [`term::Sizes`] arbitrates and the answer is broadcast to every view — including the
+/// one that asked, which is what lets a client resize its terminal from the authoritative frame
+/// alone and never from its own measurement. A view that says `0` retracts (its panel unmounted);
+/// closing the socket leaves the seat, and both hand the terminal back to the survivors.
 ///
 /// Nothing is buffered here — see [`term`]'s module note: the client keeps its own terminal alive,
 /// so this socket is a pipe rather than a replayable log.
@@ -2012,6 +2018,13 @@ async fn handle_term(socket: WebSocket, state: AppState, instance: String) {
     // Both halves are taken before the first await: a subscription made later would miss whatever
     // the child wrote in between, and the exit is the only thing that ends this loop.
     let (mut output, mut exit, mut eof) = inst.attach();
+    let (seat, mut size) = inst.join();
+    // The current answer, sent up front: a view that arrives while the size is already settled has
+    // no change event coming to tell it, and would otherwise draw at its own default forever.
+    let settled = *size.borrow_and_update();
+    if let Some((cols, rows)) = settled {
+        let _ = tx.send(size_frame(cols, rows)).await;
+    }
     loop {
         // The exit frame is the LAST thing this socket sends, not the first thing it reaches for.
         // A dying harness writes its stack trace, its auth failure, its rate-limit message in the
@@ -2032,7 +2045,8 @@ async fn handle_term(socket: WebSocket, state: AppState, instance: String) {
                 Some(Ok(Message::Text(t))) => {
                     if let Ok(c) = serde_json::from_str::<TermControl>(t.as_str()) {
                         if c.op == "resize" {
-                            inst.resize(c.cols, c.rows);
+                            let some = c.cols > 0 && c.rows > 0;
+                            inst.propose(seat, some.then_some((c.cols, c.rows)));
                         }
                     }
                 }
@@ -2051,10 +2065,24 @@ async fn handle_term(socket: WebSocket, state: AppState, instance: String) {
                 Err(broadcast::error::RecvError::Lagged(_)) => {}
                 Err(broadcast::error::RecvError::Closed) => break,
             },
+            _ = size.changed() => {
+                // Copied out of the guard before the await: a `watch` borrow is not `Send`.
+                let now = *size.borrow_and_update();
+                if let Some((cols, rows)) = now {
+                    if tx.send(size_frame(cols, rows)).await.is_err() {
+                        break;
+                    }
+                }
+            }
             _ = exit.changed() => {}
             _ = eof.changed() => {}
         }
     }
+    inst.leave(seat);
+}
+
+fn size_frame(cols: u16, rows: u16) -> Message {
+    Message::Text(json!({ "op": "size", "cols": cols, "rows": rows }).to_string().into())
 }
 
 // ---------------------------------------------------------------------------
