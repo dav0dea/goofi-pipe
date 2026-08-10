@@ -252,7 +252,7 @@ processes outlive the test and corrupt every later latency measurement.
 | `goofi-codec` | the binary `Data` wire format (GOOF frame: header, msgpack meta, f32 body) + the subprocess request/response frames. Mirrored in `frontend/src/lib/codec/`. |
 | `goofi-node` | the `Node` trait, `NodeManifest`, `SlotDecl`/`OutputDecl`/`ParamDecl`, the `ExprEvaluator` seam, and `discover.rs` (the Python introspection probe → a rich multi-slot + param manifest). |
 | `goofi-nodes` | the native node library — deliberately **Oscillator + Buffer** (+ a test source) after the tabula-rasa reset. |
-| `goofi-engine` | `Graph`: nodes, links, scheduling (adaptive tick, `next_run_delay`), param expressions (`nd()`), `.gfi` v6 save/load (incl. the opaque frontend `layout` blob), `subpatch.rs` (flat scopes + stubs), `command.rs` (commands + inverses + `CommandHistory`), `detached.rs` (the off-tick worker tier). |
+| `goofi-engine` | `Graph`: nodes, links, scheduling (adaptive tick, `next_run_delay`), param expressions (`nd()`), `.gfi` v7 save/load — a zip of `patch.yaml` + `workspace/` (`archive.rs`), incl. the opaque frontend `layout` blob, `subpatch.rs` (flat scopes + stubs), `command.rs` (commands + inverses + `CommandHistory`), `detached.rs` (the off-tick worker tier). |
 | `goofi-view` | the payload-free ViewSpec algebra: `plan(specs, frame)` folds many viewers' constraints into one reduction. |
 | `goofi-crdt` | the yrs document: graph mirror, sync handshake, idempotent reconcile. |
 | `goofi-bridge` | the axum server: `/control` dispatch + CRDT mirror + `/data` reduction/fan-out + `schemas.rs` (wire shapes) + the tick/stats workers. |
@@ -329,7 +329,7 @@ relevant one before changing the area.
   — one stream per slot, constraint merge, reduce off the tick path.
 - **Flat sub-patch scopes** (`2026-07-18-flat-subpatch-scopes-design.md`) — a scope
   tree of uids + `Stub` symlinks; `scope_of` is the single SSOT; sharing was
-  deliberately **dropped**. `.gfi` v6.
+  deliberately **dropped**. `.gfi` v7.
 - **Unified command API** (`2026-07-18-unified-command-api-design.md`) — everything
   is a manager command with an exact inverse; per-session history; the client replica
   is read-only.
@@ -431,24 +431,42 @@ component-to-component style reach-ins, and an app usable on a phone. The 2026-0
 found **zero critical and zero correctness defects in the graph, data or CRDT planes**; its
 important-tier items are fixed.
 
-### The one thing still open — C38, the save-path gap
+### W — a patch is an archive, and the manager owns its name (2026-08-09)
 
-Stated here in full rather than by reference, because the audit reports live in **gitignored**
-`docs/analysis/` and would not survive a fresh clone.
+Stated here in full rather than by reference, because the plans and audit reports live in
+**gitignored** `docs/` and would not survive a fresh clone.
 
-**The manager keeps no save-path state.** `crates/goofi-bridge/src/schemas.rs` hard-codes
-`"save_path": Value::Null` into every snapshot, and `lib.rs` broadcasts `save_path_changed` from the
-**`load` arm only**. So a *save* never converges other open tabs, and a reload always forgets where
-the patch was saved. R fixed the **client** seam alone (`e20f405` — `GraphStore.save` remembers the
-path it wrote, pinned through the façade in `fs-browser.spec.ts`), which is why the single-tab case
-looks correct.
+**A `.gfi` is a zip**, manifest **v7**: `patch.yaml` beside a `workspace/` tree. At boot a run mints
+`<temp>/goofi-<128-bit hex>/workspace` — one `PathBuf` on `AppState`, deleted on a graceful exit and
+simply left behind after a crash, because a reboot clears `/tmp`. A save packs manifest + mount to a
+temp sibling and renames onto the target; a load extracts into a **fresh** mount, parses, and only
+then swaps — graph and workspace, or neither. Extraction uses `zip`'s own `extract()`; hand-rolling
+zip-slip checks duplicates `safe_prepare_path`. Symlink creation and the absence of a size cap are
+**accepted, by decision**. `goofi-engine/src/archive.rs` is the whole seam, at 74 production lines.
 
-**It is deliberately unfixed.** Making the manager authoritative means giving it the state, deciding
-load / save-as / browser-download semantics against it, and changing the snapshot shape — a design
-change, not a minor-tier patch. Half-doing it is *worse than nothing*: adding the missing broadcast
-without the rest would make the remaining inconsistency **less visible**, not smaller.
+**C38 is closed.** The manager holds `save_path`, `schemas::snapshot` carries it, and
+`save_path_changed` is broadcast from **save as well as load** — so a save converges other tabs and a
+reload remembers. `new` and `open_workspace` joined the op set; `new` is literally *a load of an
+empty patch* (it shares the `load` arm), which is why it cannot drift from load on the mount, the
+history clear, the dropped path or the layout reset.
 
-**So: co-design it with the user before touching it.** Do not "just add the broadcast".
+**Workspace dirtiness has no watcher** (decision): `archive::fingerprint` walks the mount and is
+compared inside `is_dirty()`, which runs at `hello` and lag-recovery only, **off the graph lock**. So
+an external edit surfaces on the asker's next snapshot and no thread hunts for one. The save stays
+**on** the graph lock; taking it off cost a previous attempt ~450 lines guarding a race that only
+exists once it is off-lock.
+
+**Deferred, wanted, not now:** autosave + a flocked registry of active patches + offer-reopen-on-
+startup. That is the answer to crash recovery here — not `read_stable`, RAII temp guards or fsync
+sequences, which buy nothing a user can see when the mount is disposable.
+
+**The cautionary tale, worth keeping:** the first W delivery shipped +6042/−621 for this and was
+**reset by the user on leanness grounds**. The rebuild is +1932/−542 for the same feature *plus* C38
+and two live bug fixes. The four inflation sources were: moving the save off-lock, a filesystem
+watcher with no consumer, hand-rolled hardening a dependency already did, and a mount lifecycle with
+registries and RAII where one `PathBuf` was wanted. Per-task audits could not catch it — every task
+was correct against a brief. **Nothing in a task loop reviews the plan against the feature; only the
+human does.**
 
 The **node library is a deliberate tabula rasa** — Oscillator + Buffer only. Growing
 it (sinks, filters/PSD, real biosignal inputs, recording, array math) is the next
