@@ -92,12 +92,12 @@ impl Entry {
             Entry::Split { parent, .. } | Entry::Panel { parent, .. } => Some(parent),
         }
     }
-    pub fn order(&self) -> usize {
+    fn order(&self) -> usize {
         match self {
             Entry::Page { order, .. } | Entry::Split { order, .. } | Entry::Panel { order, .. } => *order,
         }
     }
-    pub fn size(&self) -> f64 {
+    fn size(&self) -> f64 {
         match self {
             Entry::Page { .. } => 1.0,
             Entry::Split { size, .. } | Entry::Panel { size, .. } => *size,
@@ -120,7 +120,7 @@ impl Entry {
             Entry::Split { parent, .. } | Entry::Panel { parent, .. } => *parent = v.to_string(),
         }
     }
-    pub fn kind(&self) -> &'static str {
+    fn kind(&self) -> &'static str {
         match self {
             Entry::Page { .. } => "page",
             Entry::Split { .. } => "split",
@@ -162,10 +162,6 @@ impl Layout {
     pub fn get(&self, id: &str) -> Option<&Entry> {
         self.entries.get(id)
     }
-    pub fn entries(&self) -> impl Iterator<Item = (&Id, &Entry)> {
-        self.entries.iter()
-    }
-
     /// A fresh id. One counter across all three kinds (like `model.ts`'s `_seq`), recovered from the
     /// live ids rather than stored, so a loaded arrangement cannot mint a collision.
     fn mint(&self, prefix: &str) -> Id {
@@ -219,7 +215,7 @@ impl Layout {
     /// The page an entry belongs to (itself, if it is one). `None` on a dangling parent or a cycle —
     /// the walk is bounded by the entry count, which is what makes [`Self::validate`] catch both in
     /// one step.
-    pub fn page_of(&self, id: &str) -> Option<Id> {
+    fn page_of(&self, id: &str) -> Option<Id> {
         let mut cur = id;
         for _ in 0..=self.entries.len() {
             match self.entries.get(cur)? {
@@ -231,7 +227,7 @@ impl Layout {
     }
 
     /// `root` and every descendant, in document order (depth-first, parents before children).
-    pub fn subtree(&self, root: &str) -> Vec<Id> {
+    fn subtree(&self, root: &str) -> Vec<Id> {
         let mut out = Vec::new();
         self.walk(root, &mut out);
         out
@@ -730,7 +726,7 @@ impl Layout {
 
     /// Every invariant the flat model can violate but the nested tree could not. A duplicate ID is
     /// absent from the list because the id-keyed map makes it impossible to express.
-    pub fn validate(&self) -> Result<(), String> {
+    fn validate(&self) -> Result<(), String> {
         let pages = self.pages();
         if pages.is_empty() {
             return Err("arrangement: no pages".into());
