@@ -301,6 +301,10 @@ pub struct Graph {
     /// node that needs an uninstalled dependency explains itself instead of silently not
     /// existing. Catalog-only: they can never be instantiated.
     unavailable: std::collections::BTreeMap<String, String>,
+    /// The runtime types that came from the open patch's own workspace rather than the shipped
+    /// node directory — the palette's provenance badge, and the one thing about a type that only
+    /// the scan can know. Re-derived wholesale by each scan (see [`Graph::set_patch_types`]).
+    patch_types: std::collections::HashSet<String>,
     /// Wall-clock reference, anchored at the first tick, so `NodeCtx::now` is
     /// seconds-since-start (deterministic under an injected clock).
     start: Option<Instant>,
@@ -355,6 +359,7 @@ impl Graph {
             next_uid: 1,
             dyn_types: HashMap::new(),
             unavailable: std::collections::BTreeMap::new(),
+            patch_types: std::collections::HashSet::new(),
             layout: serde_json::Value::Null,
             start: None,
             evaluator: None,
@@ -535,6 +540,20 @@ impl Graph {
     /// The unloadable types, `(type_name, reason)`, sorted by name.
     pub fn unavailable_types(&self) -> impl Iterator<Item = (&str, &str)> {
         self.unavailable.iter().map(|(k, v)| (k.as_str(), v.as_str()))
+    }
+
+    /// Declare which runtime types came from the open patch's own workspace rather than the shipped
+    /// node directory — the palette's provenance badge. Written WHOLESALE by the scan, because the
+    /// scan is the only thing that knows which directory a type came from, and a rescan re-derives
+    /// the answer for every name at once.
+    pub fn set_patch_types(&mut self, names: std::collections::HashSet<String>) {
+        self.patch_types = names;
+    }
+
+    /// Whether `type_name` came from the open patch (see [`Graph::set_patch_types`]). Everything
+    /// else — built-ins and the shipped node directory alike — reads as shipped.
+    pub fn is_patch_type(&self, type_name: &str) -> bool {
+        self.patch_types.contains(type_name)
     }
 
     /// The manifests of all runtime-registered node types, sorted by type name

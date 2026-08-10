@@ -153,9 +153,22 @@ fn output_slots(m: &NodeManifest) -> Value {
     slot_map(m.outputs.iter().map(|s| (s.name, s.kind.name())))
 }
 
-pub fn node_type_info(m: &NodeManifest) -> Value {
+/// Where a palette row's type came from, for the badge the add-menu shows: the patch you have open,
+/// or the goofi you are running. Everything a scan did not attribute to the patch reads as
+/// `builtin` — compiled-in nodes, the shipped `nodes/` tree, and a `--subproc-nodes` directory
+/// alike. A separate badge for that last one is a design question, not a scan fact.
+fn source_of(g: &Graph, type_name: &str) -> &'static str {
+    if g.is_patch_type(type_name) {
+        "patch"
+    } else {
+        "builtin"
+    }
+}
+
+pub fn node_type_info(m: &NodeManifest, source: &str) -> Value {
     json!({
         "type": m.type_name,
+        "source": source,
         // A node's pillar (signal/audio/video) routes it to its editor panel. All current
         // node types are signal; audio/video manifests will declare their own (layering §9).
         "pillar": "signal",
@@ -179,7 +192,9 @@ pub fn catalog_types(g: &Graph) -> Value {
     let mut items: Vec<(String, String, Value)> = goofi_node::catalog()
         .chain(g.dyn_type_manifests())
         .filter(|m| !m.type_name.starts_with('_'))
-        .map(|m| (m.category.to_string(), m.type_name.to_string(), node_type_info(m)))
+        .map(|m| {
+            (m.category.to_string(), m.type_name.to_string(), node_type_info(m, source_of(g, m.type_name)))
+        })
         .collect();
     // Node files that exist but cannot load are listed too, greyed and with the reason. Dropping
     // them would leave the author of a node with an uninstalled dependency staring at a palette
@@ -190,6 +205,7 @@ pub fn catalog_types(g: &Graph) -> Value {
             name.to_string(),
             json!({
                 "type": name,
+                "source": source_of(g, name),
                 "pillar": "signal",
                 "category": "unavailable",
                 "doc": format!("This node could not be loaded: {reason}"),
@@ -411,6 +427,30 @@ mod tests {
         assert!(arr.iter().any(|v| ty(v).as_deref() == Some("Oscillator")));
     }
 
+    /// Provenance is a palette row's own fact — "this node came with the patch you opened" — and
+    /// the ONLY thing the scan knows that the catalog cannot re-derive. It has to reach every row,
+    /// including the greyed one for a file that could not load: a patch whose node needs a missing
+    /// dependency is exactly the case where "where did this come from" is the question.
+    #[test]
+    fn every_catalog_row_says_which_tree_its_type_came_from() {
+        let mut g = Graph::new();
+        g.register_dyn_type(&T_MANIFEST, Box::new(|_| unreachable!()));
+        g.register_unavailable("PsdScipy".into(), "scipy".into());
+        g.set_patch_types(["MyPyThing".to_string(), "PsdScipy".to_string()].into());
+        let cat = catalog_types(&g);
+        let source = |name: &str| {
+            cat.as_array()
+                .unwrap()
+                .iter()
+                .find(|v| v["type"] == name)
+                .unwrap_or_else(|| panic!("{name} is in the palette"))["source"]
+                .clone()
+        };
+        assert_eq!(source("MyPyThing"), json!("patch"));
+        assert_eq!(source("PsdScipy"), json!("patch"), "a greyed row is provenanced too");
+        assert_eq!(source("Oscillator"), json!("builtin"), "a compiled-in node ships with goofi");
+    }
+
     #[test]
     fn hello_snapshot_embeds_the_node_catalog() {
         let g = Graph::new();
@@ -464,16 +504,16 @@ mod tests {
     fn input_multi_lists_the_variadic_input_slots() {
         // A node's multi slots appear in input_multi (static shape the frontend reads
         // to render them tall); single slots do not.
-        assert_eq!(node_type_info(&MULTI_MANIFEST)["input_multi"], json!(["many"]));
+        assert_eq!(node_type_info(&MULTI_MANIFEST, "builtin")["input_multi"], json!(["many"]));
         // A node with only single inputs reports an empty list.
-        assert_eq!(node_type_info(&T_MANIFEST)["input_multi"], json!([]));
+        assert_eq!(node_type_info(&T_MANIFEST, "builtin")["input_multi"], json!([]));
     }
 
     #[test]
     fn catalog_projects_the_common_scheduling_group() {
         // The palette catalog must show the same universal `common` group every
         // instantiated node carries, so type-level and instance-level params agree.
-        let info = node_type_info(&T_MANIFEST); // STUB_PARAMS -> empty groups
+        let info = node_type_info(&T_MANIFEST, "builtin"); // STUB_PARAMS -> empty groups
         let common = &info["params"]["common"];
         assert_eq!(common["max_frequency"]["type"], json!("float"));
         assert_eq!(common["autotrigger"]["type"], json!("bool"));
@@ -486,7 +526,7 @@ mod tests {
         // disagreed about its meaning (hardcoded false for the runtime-registered Python
         // types, true for the ones that failed to load). Availability is the only
         // palette-visible distinction; re-add a flag together with the consumer that reads it.
-        assert!(node_type_info(&T_MANIFEST).get("dynamic").is_none());
+        assert!(node_type_info(&T_MANIFEST, "builtin").get("dynamic").is_none());
 
         let mut g = Graph::new();
         g.register_unavailable("PsdScipy".into(), "scipy".into());
@@ -500,6 +540,6 @@ mod tests {
     fn node_type_info_carries_the_signal_pillar() {
         // The pillar tag rides the control contract so the frontend can route a node to its
         // editor panel; every current type is signal.
-        assert_eq!(node_type_info(&T_MANIFEST)["pillar"], json!("signal"));
+        assert_eq!(node_type_info(&T_MANIFEST, "builtin")["pillar"], json!("signal"));
     }
 }

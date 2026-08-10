@@ -56,6 +56,16 @@ pub struct AppState {
     /// Liveness policy for `/data` sockets. Injectable so a test need not sit through a
     /// production-length deadline.
     pub data_liveness: DataLiveness,
+    /// How a directory of node files becomes registered node types. Injected by the CLI at boot
+    /// (see [`NodeScan`]); the default discovers nothing.
+    pub scan_nodes: NodeScan,
+    /// The shipped node directory — `nodes/`, or whatever `--auto-nodes` named. `None` when the
+    /// binary was launched with no auto-routed source. Boot-time config, set alongside the seam.
+    pub system_nodes: Option<PathBuf>,
+    /// What the last scan found, by type name → the file's stamp. The baseline the next [`rescan`]
+    /// diffs against, and the list it removes from — so a type registered some other way (a
+    /// `--subproc-nodes` directory, a test) is never swept up by a rescan of these two trees.
+    node_index: Arc<Mutex<std::collections::BTreeMap<String, Option<Stamp>>>>,
     /// Where the open patch's workspace files live while it is open — the tree a `.gfi` packs and
     /// unpacks. Created at boot, dropped by [`AppState::release_mount`] on a graceful exit; after a
     /// crash it simply stays, because a reboot clears the system temp directory.
@@ -147,6 +157,9 @@ impl AppState {
             reducers,
             history: Arc::new(Mutex::new(goofi_engine::CommandHistory::new())),
             data_liveness: DataLiveness::DEFAULT,
+            scan_nodes: Arc::new(|_, _| Vec::new()),
+            system_nodes: None,
+            node_index: Arc::new(Mutex::new(Default::default())),
             mount: Arc::new(Mutex::new(mount)),
             workspace_baseline: Arc::new(Mutex::new(workspace_baseline)),
             save_path: Arc::new(Mutex::new(None)),
@@ -232,20 +245,20 @@ fn save_archive(target: &std::path::Path, manifest: &str, mount: &std::path::Pat
     packed.map_err(|e| format!("save failed: {e}"))
 }
 
-/// The fallible half of a load, run against a mount that is not yet live: obtain the patch's
-/// manifest and apply it to `g`, reporting the file it came from. `load` unpacks the archive's
-/// workspace tree into `mount`; `load_text` (a browser upload) and `new` cannot carry a workspace,
-/// so their `mount` stays the empty one the caller made.
+/// The front half of a load, run against a mount that is not yet live: obtain the patch's manifest
+/// and the file it came from. `load` unpacks the archive's workspace tree into `mount`; `load_text`
+/// (a browser upload) and `new` cannot carry a workspace, so their `mount` stays the empty one the
+/// caller made.
 ///
-/// Nothing here touches state the caller has not already agreed to lose: `g` is replaced only by
-/// `load_doc`, which is the last thing that can fail, and `mount` is not yet the live one. That is
-/// what lets the caller commit unconditionally once this returns `Ok`.
-fn load_into(
+/// It stops at the manifest rather than applying it, because the patch's own node types live in the
+/// tree it just unpacked and have to be registered BEFORE `load_doc` resolves the graph — see the
+/// arm. Nothing here touches state the caller has not already agreed to lose: `mount` is not yet the
+/// live one, and the graph is untouched.
+fn stage_load(
     mount: &std::path::Path,
-    g: &mut Graph,
     op: &str,
     payload: &Value,
-) -> Result<Option<String>, String> {
+) -> Result<(String, Option<String>), String> {
     let (content, from_path) = if op == "new" {
         // A New patch IS a load — of an empty patch, from nowhere. Routing it through `load_doc`
         // rather than `Graph::clear` is what stops the two from drifting: `clear` deliberately
@@ -266,10 +279,7 @@ fn load_into(
             payload.get("content").and_then(|v| v.as_str()).ok_or("load_text: missing content")?;
         (content.to_string(), None)
     };
-    // Parse BEFORE the caller announces anything: a rejected patch must not leave the title bar
-    // naming a file the graph was never loaded from.
-    g.load_doc(&content)?;
-    Ok(from_path)
+    Ok((content, from_path))
 }
 
 pub fn router(state: AppState) -> Router {
@@ -479,6 +489,117 @@ pub fn catalog_type_names() -> Vec<String> {
 }
 
 // ---------------------------------------------------------------------------
+// Node discovery — one seam, called at boot and on every rescan
+// ---------------------------------------------------------------------------
+
+/// Which tier took a node file — and, when neither could, why. Reported rather than printed,
+/// because the seam below is shared: only the caller can tell a boot scan (whose registry starts
+/// empty, so any collision is two files claiming one name) from a rescan (which re-registers every
+/// type it finds on purpose, and must not spew to stderr for doing its job).
+#[derive(Clone, PartialEq, Debug)]
+pub enum Tier {
+    InProcess,
+    Subprocess,
+    /// Neither tier could load it. It is recorded as unloadable, so the palette lists it greyed
+    /// with this reason instead of letting the file silently not exist.
+    Unavailable(String),
+}
+
+/// A file's size and mtime — the "did this node's code change since the last scan?" test, the same
+/// one the workspace dirty check uses. `None` when the file could not be stat'd, which compares
+/// equal to itself and so reads as "unchanged".
+pub type Stamp = (u64, std::time::SystemTime);
+
+/// One node file's outcome from a scan of one directory.
+#[derive(Clone)]
+pub struct ScannedType {
+    pub type_name: String,
+    pub tier: Tier,
+    pub stamp: Option<Stamp>,
+    /// What the registry did with it. An unloadable file reports `Added`/`Refused` (it entered the
+    /// unavailable registry, or a built-in owns the name); `Replaced` is the boot-only warning.
+    pub registration: goofi_engine::Registration,
+}
+
+/// The node-discovery seam: scan ONE directory, registering every node file in it into `g`
+/// (replacing a type of the same name), and report what it did.
+///
+/// Injected by the CLI at boot — per-file TIER ROUTING lives in the binary, which owns the
+/// interpreters and the probe, not here — so boot and [`rescan`] re-derive the registry through the
+/// very same function rather than two implementations that can drift. The default is a no-op: a
+/// bridge with no discovery behind it (every test that does not inject one) discovers nothing.
+pub type NodeScan = Arc<dyn Fn(&mut Graph, &std::path::Path) -> Vec<ScannedType> + Send + Sync>;
+
+/// What a [`rescan`] changed, for the caller that asked — an agent that just wrote a node file, or
+/// the palette's refresh button.
+#[derive(Default, serde::Serialize)]
+pub struct ScanDiff {
+    pub added: Vec<String>,
+    pub changed: Vec<String>,
+    pub removed: Vec<String>,
+}
+
+/// Re-derive the runtime node registry from the directories that exist RIGHT NOW: the shipped node
+/// directory, then `<patch>/nodes` — in that order, so a patch-local node of the same name wins,
+/// which is what "patch node" means (it falls out of replace-on-register).
+///
+/// The previous scan's stamps are the baseline, so what comes back is a diff rather than a listing.
+/// Removal is driven by that baseline too, which is what keeps a type discovered some OTHER way —
+/// a `--subproc-nodes` directory, a test's direct registration — out of the blast radius.
+fn rescan(state: &AppState, g: &mut Graph, patch: &std::path::Path) -> ScanDiff {
+    let mut found: std::collections::BTreeMap<String, Option<Stamp>> = Default::default();
+    let mut patch_types: HashSet<String> = HashSet::new();
+    let dirs = [(state.system_nodes.clone(), false), (Some(patch.join("nodes")), true)];
+    for (dir, is_patch) in dirs {
+        let Some(dir) = dir.filter(|d| d.is_dir()) else { continue };
+        for t in (state.scan_nodes)(g, &dir) {
+            // A refused name never reaches the palette (a built-in owns it), so it must not enter
+            // the index either — it would report as `added` and, later, as `removed`.
+            if t.registration == goofi_engine::Registration::Refused {
+                continue;
+            }
+            if is_patch {
+                patch_types.insert(t.type_name.clone());
+            }
+            found.insert(t.type_name, t.stamp);
+        }
+    }
+    g.set_patch_types(patch_types);
+
+    let mut prev = state.node_index.lock().unwrap();
+    let mut diff = ScanDiff::default();
+    for (name, stamp) in &found {
+        match prev.get(name) {
+            None => diff.added.push(name.clone()),
+            Some(before) if before != stamp => diff.changed.push(name.clone()),
+            Some(_) => {}
+        }
+    }
+    diff.removed = prev.keys().filter(|n| !found.contains_key(*n)).cloned().collect();
+    for name in &diff.removed {
+        g.remove_dyn_type(name);
+    }
+    *prev = found;
+    diff
+}
+
+/// Restart every live instance of a type whose file changed, so editing a node file makes the nodes
+/// already on the canvas run the new code (decision, 2026-08-09). `setup()` re-runs — a buffer
+/// empties, a device reopens — which is the accepted price of that.
+///
+/// Deliberately NOT part of [`rescan`]: a load re-derives the registry for a graph that is about to
+/// be replaced wholesale, and restarting the outgoing patch's nodes there would be pure cost.
+fn restart_changed(g: &mut Graph, diff: &ScanDiff) {
+    for uid in g.node_uids() {
+        if g.type_name(uid).is_some_and(|t| diff.changed.iter().any(|c| c == t)) {
+            // Can only fail for a type that does not resolve, and every name in `changed` was just
+            // registered by the scan that produced it.
+            let _ = g.restart_node(uid);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Control plane
 // ---------------------------------------------------------------------------
 
@@ -632,6 +753,14 @@ fn event(name: &str, payload: Value) -> String {
     json!({ "event": name, "payload": payload }).to_string()
 }
 
+/// The palette catalog changed — a rescan re-derived it, or a load brought a patch's own node types
+/// with it. `hello` carries the catalog to a client that is CONNECTING; this is how one that is
+/// already connected learns the same thing, and it is what keeps a second tab from offering a node
+/// that no longer exists.
+fn node_types_event(g: &Graph) -> String {
+    event("node_types", json!({ "types": schemas::catalog_types(g) }))
+}
+
 /// A per-node `state_update` event carrying a node's current params + error. Emitted for every
 /// peer a §4.5 shared-member edit touches (param value, position, expression), so any observer
 /// reconciles each mirrored sibling.
@@ -758,6 +887,16 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
         let mut g = state.graph.lock().unwrap();
         match op.as_str() {
             "list_nodes" => Ok(json!({ "types": schemas::catalog_types(&g) })),
+            // Re-derive the node registry from the directories that exist RIGHT NOW. Explicit, not
+            // watched (decision, 2026-08-09): an agent calls it straight after writing a node file,
+            // a human presses the palette's refresh button. The diff comes back so either can say
+            // what happened, and the instances of a type whose file changed restart onto it.
+            "rescan_nodes" => {
+                let diff = rescan(state, &mut g, &state.mount());
+                restart_changed(&mut g, &diff);
+                events.push(node_types_event(&g));
+                Ok(json!({ "added": diff.added, "changed": diff.changed, "removed": diff.removed }))
+            }
             "add_node" => {
                 let ty = payload
                     .get("type")
@@ -1223,8 +1362,23 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
                 // planes — its graph AND its workspace files — and a loaded patch never inherits
                 // the files of the patch it replaced.
                 let fresh = new_mount();
-                let from_path =
-                    load_into(&fresh, &mut g, &op, &payload).inspect_err(|_| remove_mount(&fresh))?;
+                let (content, from_path) =
+                    stage_load(&fresh, &op, &payload).inspect_err(|_| remove_mount(&fresh))?;
+                // ORDERING, load-bearing: the types the patch SHIPS are registered before the
+                // manifest is resolved, or `load_doc`'s unknown-type gate fires on exactly the
+                // nodes the archive brought. They live in the tree just unpacked, so the scan runs
+                // against `fresh` — which is not the live mount yet.
+                rescan(state, &mut g, &fresh);
+                // Parse BEFORE anything is announced or committed: a rejected patch must not leave
+                // the title bar naming a file the graph was never loaded from.
+                if let Err(e) = g.load_doc(&content) {
+                    // Refused, so the open patch keeps its graph AND its workspace — and therefore
+                    // its registry, which the scan above swapped for the refused patch's. Re-derive
+                    // it from the mount that is still live.
+                    rescan(state, &mut g, &state.mount());
+                    remove_mount(&fresh);
+                    return Err(e);
+                }
                 // Commit, now that nothing left can fail: the loaded patch's workspace becomes the
                 // live one and the mount it replaced is reclaimed — after the lock drops, since
                 // deleting a tree is a walk and the lock guards only the swap.
@@ -1248,6 +1402,9 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
                     "graph_replaced",
                     schemas::snapshot(&g, &state.instance_id, false, false, from_path.as_deref()),
                 ));
+                // The patch brought its own node types (and dropped the last patch's), which
+                // `graph_replaced` does not carry — the snapshot's catalog rides `hello` alone.
+                events.push(node_types_event(&g));
                 if let Some(path) = from_path {
                     // The announcement the title bar reads. The ORDER no longer carries meaning:
                     // the snapshot the client applies wholesale now names the same file, so
@@ -1306,6 +1463,11 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
         //     `serialize()` is byte-identical. It is RECOVERY, not an edit, and it is reached by one
         //     click on the inspector's Restart button after a node raised — exactly where a spurious
         //     unsaved dot is least distinguishable from a real one.
+        //   `rescan_nodes` re-derives the CATALOG, which is not patch content. It still re-mirrors,
+        //     because restarting a node whose type gained a param changes that node's params — and
+        //     it still must not dirty: pressing refresh with nothing edited would otherwise put the
+        //     dot on an untouched patch, while a rescan that DID follow an edit is already dirty
+        //     through the workspace fingerprint (`is_dirty`), which is where a file edit belongs.
         //   `refresh_param` re-enumerates a device/stream picker's options, which are runtime-only
         //     and never persisted. Latent today (no shipped node declares `refresh: true`, and the
         //     engine rejects the op for any param that does not, so the `Err` skips this gate
@@ -1315,7 +1477,7 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
         match op.as_str() {
             "load" | "load_text" | "new" => events.extend(state.set_dirty(false)),
             "set_layout" if !layout_write_is_authored(&payload) => {}
-            "restart_node" | "refresh_param" => {}
+            "restart_node" | "refresh_param" | "rescan_nodes" => {}
             _ => events.extend(state.set_dirty(true)),
         }
     }
@@ -1720,6 +1882,191 @@ mod workspace_dirty_tests {
         assert!(reply.contains("result"), "the archive loads; got {reply}");
         assert_eq!(std::fs::read(opened.mount().join("agent.md")).unwrap(), b"notes");
         assert!(!opened.is_dirty(), "a patch is not unsaved the moment it finishes loading");
+    }
+}
+
+#[cfg(test)]
+mod node_scan_tests {
+    use super::*;
+    use goofi_core::{Data, Meta};
+    use goofi_node::{
+        Inputs, Isolation, Node, NodeCtx, NodeError, NodeManifest, NodeResult, OutputDecl, Outputs,
+        Params,
+    };
+    use serde_json::json;
+
+    static OUT: &[OutputDecl] = &[OutputDecl { name: "out", kind: goofi_core::SlotType::Array }];
+    fn never() -> Box<dyn Node> {
+        unreachable!("a scanned type is built by its registered factory, not manifest.factory")
+    }
+
+    /// A node that emits the number its file held WHEN THE SCAN RAN — the stand-in for a Python
+    /// node's source, which discovery likewise captures at scan time. That capture is what makes
+    /// "the running node is the NEW code" observable at all.
+    struct Emit(f32);
+    impl Node for Emit {
+        fn process(&mut self, _i: &Inputs<'_>, out: &mut Outputs<'_>, _c: &mut NodeCtx, _p: &Params<'_>) -> NodeResult {
+            let d = Data::array_f32(vec![1], self.0.to_le_bytes().to_vec(), Meta::empty())
+                .map_err(|e| NodeError(e.to_string()))?;
+            out.set("out", d);
+            Ok(())
+        }
+    }
+
+    /// A stand-in for the CLI's real tier-routing scan, faithful in the ways these tests turn on —
+    /// it reads each file's content at scan time, names the type after the file stem by the shared
+    /// rule, and reports one [`ScannedType`] per file — and it needs no Python interpreter, which is
+    /// the whole point of the seam being injectable.
+    fn stub_scan(g: &mut Graph, dir: &std::path::Path) -> Vec<ScannedType> {
+        let mut paths: Vec<_> =
+            std::fs::read_dir(dir).unwrap().filter_map(|e| e.ok().map(|e| e.path())).collect();
+        paths.sort();
+        let mut out = Vec::new();
+        for path in paths {
+            if path.extension().and_then(|e| e.to_str()) != Some("py") {
+                continue;
+            }
+            let name = goofi_node::discover::camel(&path.file_stem().unwrap().to_string_lossy());
+            let value: f32 =
+                std::fs::read_to_string(&path).unwrap_or_default().trim().parse().unwrap_or(0.0);
+            let manifest: &'static NodeManifest = Box::leak(Box::new(NodeManifest {
+                type_name: Box::leak(name.clone().into_boxed_str()),
+                category: "python",
+                doc: "a scanned node",
+                inputs: &[],
+                outputs: OUT,
+                params: &[],
+                isolation: Isolation::InProcess,
+                factory: never,
+            }));
+            out.push(ScannedType {
+                type_name: name,
+                tier: Tier::InProcess,
+                stamp: std::fs::metadata(&path).ok().map(|m| (m.len(), m.modified().unwrap())),
+                registration: g.register_dyn_type(manifest, Box::new(move |_| Box::new(Emit(value)))),
+            });
+        }
+        out
+    }
+
+    fn emitted(g: &Graph, uid: goofi_engine::Uid) -> f32 {
+        match g.latest_frame(uid, "out").expect("the node emitted").value() {
+            goofi_core::Value::Array(s) => f32::from_le_bytes(s.as_bytes()[0..4].try_into().unwrap()),
+            _ => panic!("not an array"),
+        }
+    }
+
+    fn write_node(dir: &std::path::Path, file: &str, body: &str) {
+        std::fs::create_dir_all(dir).unwrap();
+        std::fs::write(dir.join(file), body).unwrap();
+    }
+
+    fn scanning(state: &mut AppState) {
+        state.scan_nodes = Arc::new(stub_scan);
+    }
+
+    /// The whole of a patch node's life, in the order a user lives it: write the file, rescan, and
+    /// it is addable; edit it, rescan, and the node ALREADY ON THE CANVAS runs the new code; delete
+    /// it, rescan, and it stops being addable while the instance that exists keeps running.
+    #[test]
+    fn a_node_file_in_the_workspace_is_live_after_a_rescan_and_follows_its_edits() {
+        let mut state = AppState::new();
+        scanning(&mut state);
+        let nodes = state.mount().join("nodes");
+        write_node(&nodes, "my_thing.py", "1.0");
+
+        let mut g = state.graph.lock().unwrap();
+        let diff = rescan(&state, &mut g, &state.mount());
+        assert_eq!(diff.added, ["MyThing"], "the file becomes a type");
+        let live = g.add_node("MyThing", None).expect("a patch node is addable");
+        g.tick();
+        assert_eq!(emitted(&g, live), 1.0);
+
+        // Edited: the type is re-registered and the LIVE instance is restarted onto it.
+        write_node(&nodes, "my_thing.py", "2.0");
+        let diff = rescan(&state, &mut g, &state.mount());
+        assert_eq!(diff.changed, ["MyThing"], "an edited file reports as changed");
+        assert!(diff.added.is_empty() && diff.removed.is_empty());
+        restart_changed(&mut g, &diff);
+        g.tick();
+        assert_eq!(emitted(&g, live), 2.0, "the running node is the new code");
+
+        // Deleted: unaddable, but the instance is left alone (removal closes the door, it does not
+        // reach into the graph).
+        std::fs::remove_file(nodes.join("my_thing.py")).unwrap();
+        let diff = rescan(&state, &mut g, &state.mount());
+        assert_eq!(diff.removed, ["MyThing"]);
+        assert!(g.add_node("MyThing", None).is_err(), "a vanished type is no longer addable");
+        g.tick();
+        assert_eq!(emitted(&g, live), 2.0, "its instance still runs");
+    }
+
+    /// The two directories are one registry, and the patch is scanned SECOND so its own file wins a
+    /// name the shipped tree also uses — that is what "patch node" means. Provenance is recorded in
+    /// the same pass, because this is the only place that knows which tree a type came from.
+    #[test]
+    fn a_patch_local_node_wins_the_name_and_is_marked_as_the_patchs_own() {
+        let mut state = AppState::new();
+        scanning(&mut state);
+        let shipped = tempfile::tempdir().unwrap();
+        write_node(shipped.path(), "my_thing.py", "1.0");
+        write_node(shipped.path(), "only_shipped.py", "7.0");
+        state.system_nodes = Some(shipped.path().to_path_buf());
+        write_node(&state.mount().join("nodes"), "my_thing.py", "9.0");
+
+        let mut g = state.graph.lock().unwrap();
+        rescan(&state, &mut g, &state.mount());
+        let uid = g.add_node("MyThing", None).unwrap();
+        g.tick();
+        assert_eq!(emitted(&g, uid), 9.0, "the patch's own file wins the name");
+        assert!(g.is_patch_type("MyThing"), "…and says where it came from");
+        assert!(!g.is_patch_type("OnlyShipped"), "the shipped tree's own node is not the patch's");
+    }
+
+    /// A load swaps the workspace, so the registry must follow it — and the ORDER is load-bearing:
+    /// `load_doc` rejects a type it does not know, which is precisely the set of types the patch
+    /// ships. Pinned through the real op, because the ordering only exists inside that arm.
+    #[test]
+    fn loading_a_patch_registers_the_nodes_it_ships_before_resolving_them() {
+        let mut state = AppState::new();
+        scanning(&mut state);
+        let tmp = tempfile::tempdir().unwrap();
+        let target = tmp.path().join("patch.gfi");
+        write_node(&state.mount().join("nodes"), "my_thing.py", "5.0");
+        {
+            let mut g = state.graph.lock().unwrap();
+            rescan(&state, &mut g, &state.mount());
+            g.add_node("MyThing", None).unwrap();
+        }
+        save_to(&state, &target);
+
+        // A SECOND manager, which is the real case: it has never seen this type.
+        let mut opened = AppState::new();
+        scanning(&mut opened);
+        let req = json!({ "id": 1, "op": "load", "payload": { "path": target.to_string_lossy() } });
+        let reply = dispatch(&opened, &req.to_string()).expect("a numeric id gets a reply");
+        assert!(reply.contains("result"), "the patch's own node type resolves; got {reply}");
+        let mut g = opened.graph.lock().unwrap();
+        assert_eq!(g.node_count(), 1);
+        let uid = g.node_uids()[0];
+        g.tick();
+        assert_eq!(emitted(&g, uid), 5.0, "the instance runs the patch's code");
+        assert!(g.is_patch_type("MyThing"));
+        drop(g);
+
+        // …and the NEXT patch drops it again: `new` swaps in an empty workspace, so the type the
+        // previous patch brought must stop being addable rather than linger from a patch that is
+        // no longer open.
+        let req = json!({ "id": 2, "op": "new", "payload": {} });
+        dispatch(&opened, &req.to_string()).expect("a numeric id gets a reply");
+        let mut g = opened.graph.lock().unwrap();
+        assert!(g.add_node("MyThing", None).is_err(), "the previous patch's type is gone");
+    }
+
+    fn save_to(state: &AppState, target: &std::path::Path) {
+        let req = json!({ "id": 1, "op": "save", "payload": { "path": target.to_string_lossy() } });
+        let reply = dispatch(state, &req.to_string()).expect("a numeric id gets a reply");
+        assert!(reply.contains("result"), "the save is accepted; got {reply}");
     }
 }
 

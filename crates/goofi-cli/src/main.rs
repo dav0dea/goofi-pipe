@@ -6,9 +6,11 @@
 //! `--subproc-python` defaults to the repo-local `.venv`.
 
 use std::future::Future;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
-use goofi_bridge::{resolve_frontend_dir, serve_app, spawn_workers, AppState};
-use goofi_engine::Registration;
+use goofi_bridge::{resolve_frontend_dir, serve_app, spawn_workers, AppState, ScannedType, Tier};
+use goofi_engine::{Graph, Registration};
 
 /// The default node directory, auto-discovered (gil-gate routed) when no `--*-nodes` flag is given.
 const DEFAULT_NODES_DIR: &str = "nodes";
@@ -109,7 +111,7 @@ async fn main() {
 /// destructor would not save them either. `shutdown` is only awaited once the server is up, so a
 /// signal that lands during boot still takes the default disposition and leaves the mount behind:
 /// one empty temp directory in a rare race, the same as any other crash.
-async fn run(cli: Cli, state: AppState, shutdown: impl Future<Output = ()>) -> i32 {
+async fn run(cli: Cli, mut state: AppState, shutdown: impl Future<Output = ()>) -> i32 {
     let Cli { port, bind, subproc_nodes, mut auto_nodes, subproc_python, list_nodes, help: _ } = cli;
 
     // Resolve defaults: the repo-local `.venv` for the subprocess tier (the project convention),
@@ -124,10 +126,19 @@ async fn run(cli: Cli, state: AppState, shutdown: impl Future<Output = ()>) -> i
     if !list_nodes {
         register_evaluator(&state);
     }
+    // Install the discovery seam BEFORE anything scans, so the boot scan below and every later
+    // `rescan_nodes` (the palette's refresh, an agent that just wrote a node file) route each file
+    // through one function. The interpreter choice is boot-time config, so the closure carries it
+    // and the seam itself takes only a directory.
+    let python = subproc_python.clone();
+    state.scan_nodes = Arc::new(move |g, dir| register_auto(g, dir, &python));
+    state.system_nodes = auto_nodes.as_deref().map(PathBuf::from);
     // `--list-nodes` runs the SAME registration the server does and reports its result, so the
     // listing is what actually registered — not a hand-kept mirror of the routing rule.
     let mut discovered = register_subproc(&state, subproc_nodes.as_deref(), &subproc_python);
-    discovered.extend(register_auto(&state, auto_nodes.as_deref(), &subproc_python));
+    if let Some(dir) = state.system_nodes.clone() {
+        discovered.extend(boot_scan(&state, &dir));
+    }
 
     let code = if list_nodes {
         let mut names = goofi_bridge::catalog_type_names();
@@ -258,9 +269,9 @@ fn register_subproc(state: &AppState, dir: Option<&str>, python: &str) -> Vec<St
     names
 }
 
-/// Node files from `dir` that appear in a directory, newest-first, deterministic.
+/// The files in a node directory, in a deterministic order.
 #[cfg(feature = "python")]
-fn sorted_dir(dir: &str) -> Vec<std::path::PathBuf> {
+fn sorted_dir(dir: &Path) -> Vec<std::path::PathBuf> {
     match std::fs::read_dir(dir) {
         Ok(rd) => {
             let mut v: Vec<_> = rd.filter_map(|e| e.ok().map(|e| e.path())).collect();
@@ -268,21 +279,30 @@ fn sorted_dir(dir: &str) -> Vec<std::path::PathBuf> {
             v
         }
         Err(e) => {
-            eprintln!("failed to read {dir}: {e}");
+            eprintln!("failed to read {}: {e}", dir.display());
             Vec::new()
         }
     }
 }
 
-/// GIL-gate auto-router: probe each node file and register it in-process when its
-/// imports keep the free-threaded GIL disabled, else quarantine it to a subprocess.
+/// A node file's size + mtime — the stamp a rescan diffs to notice that its code changed.
 #[cfg(feature = "python")]
-fn register_auto(state: &AppState, dir: Option<&str>, subproc_python: &str) -> Vec<String> {
-    let Some(dir) = dir else { return Vec::new() };
+fn stamp(path: &Path) -> Option<goofi_bridge::Stamp> {
+    let m = std::fs::metadata(path).ok()?;
+    Some((m.len(), m.modified().ok()?))
+}
+
+/// GIL-gate auto-router: probe each node file and register it in-process when its imports keep the
+/// free-threaded GIL disabled, else quarantine it to a subprocess. THE node-discovery seam — the
+/// bridge holds it as `AppState::scan_nodes`, so the boot scan below and every later `rescan_nodes`
+/// route the same file the same way, by construction rather than by two implementations agreeing.
+///
+/// It reports and prints NOTHING: a rescan runs this same function whenever an agent writes a node
+/// file, and it must not spew to stderr for doing its job. `boot_scan` does the talking.
+#[cfg(feature = "python")]
+fn register_auto(g: &mut Graph, dir: &Path, subproc_python: &str) -> Vec<ScannedType> {
     let ft = goofi_py::interpreter_path(); // the embedded FT interpreter, for probing
-    let mut g = state.graph.lock().unwrap();
-    let (mut n_in, mut n_sub, mut n_bad) = (0u32, 0u32, 0u32);
-    let mut names = Vec::new();
+    let mut found = Vec::new();
     for path in sorted_dir(dir) {
         // ONE free-threaded probe answers both questions: it imports the module and constructs the
         // class (so a dep missing on the FT interpreter shows up as a failed probe), then reports
@@ -290,11 +310,12 @@ fn register_auto(state: &AppState, dir: Option<&str>, subproc_python: &str) -> V
         if let goofi_py::Discovery::Found(d) = ft.as_deref().map_or(goofi_py::Discovery::Skip, |ftp| goofi_py::probe(&path, ftp)) {
             if d.gil_safe {
                 let t = goofi_py::node_type_from(d);
-                let r = g.register_dyn_type(t.manifest, t.factory);
-                if note_registration(t.manifest.type_name, r) {
-                    n_in += 1;
-                    names.push(format!("{} (in-proc)", t.manifest.type_name));
-                }
+                found.push(ScannedType {
+                    type_name: t.manifest.type_name.to_string(),
+                    tier: Tier::InProcess,
+                    stamp: stamp(&path),
+                    registration: g.register_dyn_type(t.manifest, t.factory),
+                });
                 continue;
             }
             // Loading it re-enabled the GIL — quarantine it to the subprocess tier below. (So does a
@@ -306,36 +327,85 @@ fn register_auto(state: &AppState, dir: Option<&str>, subproc_python: &str) -> V
         match goofi_subproc::probe(&path, subproc_python) {
             goofi_subproc::Discovery::Found(d) => {
                 let t = goofi_subproc::node_type_from(subproc_python, d);
-                let r = g.register_dyn_type(t.manifest, t.factory);
-                if note_registration(t.manifest.type_name, r) {
-                    n_sub += 1;
-                    names.push(format!("{} (subproc)", t.manifest.type_name));
-                }
+                found.push(ScannedType {
+                    type_name: t.manifest.type_name.to_string(),
+                    tier: Tier::Subprocess,
+                    stamp: stamp(&path),
+                    registration: g.register_dyn_type(t.manifest, t.factory),
+                });
             }
             // Neither tier could load it. Register it as unavailable WITH the reason so the
             // palette explains itself — a node file that silently does not appear reads as
             // "goofi ignored my file" rather than "install this dependency".
             goofi_subproc::Discovery::Unavailable { type_name, reason } => {
-                eprintln!("  node `{type_name}` unavailable: {reason}");
-                names.push(format!("{type_name} (unavailable)"));
-                if g.register_unavailable(type_name, reason) {
-                    n_bad += 1;
-                }
+                let registration = if g.register_unavailable(type_name.clone(), reason.clone()) {
+                    Registration::Added
+                } else {
+                    Registration::Refused // a built-in owns the name
+                };
+                found.push(ScannedType {
+                    type_name,
+                    tier: Tier::Unavailable(reason),
+                    stamp: stamp(&path),
+                    registration,
+                });
             }
             goofi_subproc::Discovery::Skip => {}
         }
     }
-    let bad = if n_bad > 0 { format!(", {n_bad} unavailable") } else { String::new() };
-    println!("  auto-routed {n_in} in-process + {n_sub} subprocess node type(s) from {dir}{bad}");
-    names
+    found
 }
 
 #[cfg(not(feature = "python"))]
-fn register_auto(_state: &AppState, dir: Option<&str>, _subproc_python: &str) -> Vec<String> {
-    if dir.is_some() {
-        eprintln!("--auto-nodes ignored: this binary was built without the `python` feature");
-    }
+fn register_auto(_g: &mut Graph, _dir: &Path, _subproc_python: &str) -> Vec<ScannedType> {
     Vec::new()
+}
+
+/// Said once, by the boot summary: without the `python` feature there is no embedded interpreter,
+/// hence no probe, hence no tier routing — the seam above finds nothing at all.
+#[cfg(feature = "python")]
+const NO_PYTHON_NOTE: &str = "";
+#[cfg(not(feature = "python"))]
+const NO_PYTHON_NOTE: &str = " (built without the `python` feature — node discovery is off)";
+
+/// The boot scan, reported. It calls the seam every rescan calls, and does the talking the seam
+/// deliberately does not — including the collision warning, which is only TRUE here: the boot
+/// registry starts empty, so a `Replaced` can only be a second node file claiming a name an
+/// earlier one took. Returns the type names `--list-nodes` prints.
+fn boot_scan(state: &AppState, dir: &Path) -> Vec<String> {
+    let found = {
+        let mut g = state.graph.lock().unwrap();
+        (state.scan_nodes)(&mut g, dir)
+    };
+    let (mut n_in, mut n_sub, mut n_bad) = (0u32, 0u32, 0u32);
+    let mut names = Vec::new();
+    for t in found {
+        if !note_registration(&t.type_name, t.registration) {
+            continue;
+        }
+        let tier = match &t.tier {
+            Tier::InProcess => {
+                n_in += 1;
+                "in-proc"
+            }
+            Tier::Subprocess => {
+                n_sub += 1;
+                "subproc"
+            }
+            Tier::Unavailable(reason) => {
+                eprintln!("  node `{}` unavailable: {reason}", t.type_name);
+                n_bad += 1;
+                "unavailable"
+            }
+        };
+        names.push(format!("{} ({tier})", t.type_name));
+    }
+    let bad = if n_bad > 0 { format!(", {n_bad} unavailable") } else { String::new() };
+    println!(
+        "  auto-routed {n_in} in-process + {n_sub} subprocess node type(s) from {}{bad}{NO_PYTHON_NOTE}",
+        dir.display()
+    );
+    names
 }
 
 #[cfg(test)]
