@@ -278,6 +278,8 @@ mod tests {
     /// would land next. Enumerating the choices is only worth doing if they arrive.
     #[test]
     fn a_tool_description_fits_the_2_kb_a_client_will_read() {
+        // Or the loop below would pass by having nothing to check.
+        assert!(tools().len() > 30, "the agent surface is generated from the registry");
         for t in tools() {
             let (name, desc) = (t["name"].as_str().unwrap(), t["description"].as_str().unwrap());
             assert!(desc.len() <= 2048, "`{name}`'s description is {} bytes", desc.len());
