@@ -164,17 +164,32 @@ test('the bar is stable across a boundary width, in both directions', async ({ p
 	await page.goto('/');
 	await waitForApp(page);
 	await withNamedPatch(page, async () => {
-		// Find the first width at which an ACTION spills, then straddle it. Down to 260: the
+		// Find the widest width at which an ACTION spills, then straddle it. Down to 260: the
 		// identity yields first, so the action boundary sits lower than it used to.
-		let boundary = 0;
-		for (let w = 1400; w >= 260; w -= 4) {
+		//
+		// BISECTED on the same 4px grid, rather than walked down it: 285 resizes at ~52ms each was
+		// 4.9% of the whole suite in this one test, and ~10 probes answer the same question. What
+		// makes it sound is the invariant the linear walk already assumed — spill is monotone in
+		// width, which is the only reason stopping at the first one and calling it THE boundary was
+		// ever legitimate — plus the last test in this file, which is the one that proves a width has
+		// one answer however it is approached, so a probe that jumps reads the same bar a step would.
+		// `settledBar`, not `inBar`: a jump re-plans harder than a 4px step, and a single read taken
+		// mid-flight is how this file has been flaky before. The loop exits with `lo` spilling and
+		// `hi === lo + 4` not, so non-spill just above the boundary is proven on the way in.
+		const spills = async (w: number): Promise<boolean> => {
 			await widthTo(page, w);
-			if ((await inBar(page)).length < PRIORITY.length) {
-				boundary = w;
-				break;
-			}
+			return (await settledBar(page)).length < PRIORITY.length;
+		};
+		expect(await spills(260), 'the bar does overflow somewhere between 260 and 1400').toBe(true);
+		expect(await spills(1400), '…and 1400px still holds every action').toBe(false);
+		let lo = 260;
+		let hi = 1400;
+		while (hi - lo > 4) {
+			const mid = lo + 4 * Math.floor((hi - lo) / 8); // on the grid, strictly between the two
+			if (await spills(mid)) lo = mid;
+			else hi = mid;
 		}
-		expect(boundary, 'the bar does overflow somewhere between 260 and 1400').toBeGreaterThan(0);
+		const boundary = lo;
 
 		await widthTo(page, boundary);
 		const at = (await inBar(page)).join();
