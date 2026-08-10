@@ -155,6 +155,45 @@ async fn a_harness_spawns_carries_bytes_and_is_reaped_with_its_exit_code() {
     state.release_mount();
 }
 
+/// The end of a long transcript, for a failure message: 3 kB of `L1…L400` is unreadable.
+fn tail(seen: &str) -> String {
+    let end: Vec<char> = seen.chars().rev().take(120).collect();
+    format!("{} bytes ending {:?}", seen.len(), end.into_iter().rev().collect::<String>())
+}
+
+/// A dying harness's LAST words are the whole reason to watch one — the stack trace, the auth
+/// failure, the rate-limit message — and they are written in the instant before the exit. So the
+/// exit frame is the last thing this socket sends rather than the first thing it reaches for: the
+/// child's exit and the PTY's end-of-stream are two different events, and everything between them
+/// used to be thrown away. The burst is long enough that the socket cannot have drained it before
+/// `child.wait()` returns, which is exactly the race that dropped it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_dying_harness_delivers_its_last_output_before_its_exit_code() {
+    let (addr, state) = start_server().await;
+    let (mut ctl, _) = connect_async(format!("ws://{addr}/control")).await.unwrap();
+    recv_text(&mut ctl).await;
+    let id = call(&mut ctl, 1, "spawn_harness", json!({ "harness": "_sh" })).await["instance_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let (mut term, _) = connect_async(format!("ws://{addr}/term/{id}")).await.unwrap();
+    // `TAIL''MARK` is what the terminal echoes back, so `TAILMARK` can only come from the child
+    // having run — the assertion cannot pass on the line discipline repeating the command.
+    term.send(Message::Binary(
+        b"i=0; while [ $i -lt 400 ]; do i=$((i+1)); echo L$i; done; echo TAIL''MARK; exit 5\n"
+            .to_vec(),
+    ))
+    .await
+    .unwrap();
+
+    let seen = read_until(&mut term, "exit_code").await;
+    assert!(seen.contains("L400"), "the burst was truncated: {}", tail(&seen));
+    assert!(seen.contains("TAILMARK"), "the child's last line was dropped: {}", tail(&seen));
+    assert!(seen.contains("\"exit_code\":5"), "{}", tail(&seen));
+    state.release_mount();
+}
+
 /// Wait on the control socket for the reaper's announcement that `id` has exited.
 async fn await_exit(ctl: &mut Ws, id: &str) -> Value {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(30);

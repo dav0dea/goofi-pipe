@@ -213,6 +213,8 @@ impl Harnesses {
         let writer = pty.master.take_writer().map_err(|e| e.to_string())?;
         let (output, _) = broadcast::channel(OUTPUT_BACKLOG);
         let (exit, _) = watch::channel(None);
+        let (eof, _) = watch::channel(false);
+        let ended = eof.clone();
         let inst = Arc::new(Instance {
             harness: harness.to_string(),
             pid: child.process_id(),
@@ -220,6 +222,7 @@ impl Harnesses {
             master: Mutex::new(pty.master),
             output: output.clone(),
             exit,
+            eof,
             stopping: AtomicBool::new(false),
         });
 
@@ -234,6 +237,9 @@ impl Harnesses {
                 }
                 let _ = output.send(buf[..n].to_vec());
             }
+            // Announced AFTER the final send, which is what makes it a gate a viewer can trust: a
+            // socket that waits on this has provably been offered everything the child wrote.
+            ended.send_replace(true);
         });
 
         // Registered BEFORE the reaper starts, or a child that dies instantly would announce a
@@ -283,14 +289,21 @@ pub struct Instance {
     /// The child's exit code once reaped — and the channel a `/term` socket waits on, so the exit
     /// frame is pushed to an attached viewer rather than polled for.
     exit: watch::Sender<Option<u32>>,
+    /// Whether the PTY has reached end-of-stream. NOT the same event as the exit: `child.wait()`
+    /// returns while the words the child wrote on its way out are still in flight, and those are
+    /// exactly the ones worth having. The drain sets this after its last send, so a viewer that
+    /// announces the exit only once this is true cannot truncate a crash message.
+    eof: watch::Sender<bool>,
     /// Set the moment a stop begins, ahead of the signal.
     stopping: AtomicBool,
 }
 
 impl Instance {
-    /// The PTY's output, and the exit that ends it.
-    pub fn attach(&self) -> (broadcast::Receiver<Vec<u8>>, watch::Receiver<Option<u32>>) {
-        (self.output.subscribe(), self.exit.subscribe())
+    /// The PTY's output, the exit code, and the end-of-stream that says the output is complete.
+    pub fn attach(
+        &self,
+    ) -> (broadcast::Receiver<Vec<u8>>, watch::Receiver<Option<u32>>, watch::Receiver<bool>) {
+        (self.output.subscribe(), self.exit.subscribe(), self.eof.subscribe())
     }
 
     /// Keystrokes (or a paste) from an attached `/term` socket.

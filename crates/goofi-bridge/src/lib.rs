@@ -1909,13 +1909,18 @@ async fn handle_term(socket: WebSocket, state: AppState, instance: String) {
     };
     // Both halves are taken before the first await: a subscription made later would miss whatever
     // the child wrote in between, and the exit is the only thing that ends this loop.
-    let (mut output, mut exit) = inst.attach();
+    let (mut output, mut exit, mut eof) = inst.attach();
     loop {
-        // The sender lives in the instance this task holds an `Arc` of, so `changed()` cannot fail
-        // and this is the only place the loop reads the exit. Copied out of the guard rather than
-        // matched through it: a `watch` borrow is not `Send`, and the send below is an await.
-        let ended = *exit.borrow_and_update();
-        if let Some(code) = ended {
+        // The exit frame is the LAST thing this socket sends, not the first thing it reaches for.
+        // A dying harness writes its stack trace, its auth failure, its rate-limit message in the
+        // instant before it goes, and `child.wait()` returns while those bytes are still in flight
+        // — so the announcement waits for the PTY's own end-of-stream (set after the drain's final
+        // publish, which a `try_recv` sweep here would race) AND for this socket to have been
+        // handed everything published. The senders live in the instance this task holds an `Arc`
+        // of, so neither `changed()` can fail. Both are copied out of their guards rather than
+        // matched through them: a `watch` borrow is not `Send`, and the send below is an await.
+        let (ended, drained) = (*exit.borrow_and_update(), *eof.borrow_and_update());
+        if let (Some(code), true) = (ended, drained && output.is_empty()) {
             let _ = tx.send(Message::Text(json!({ "exit_code": code }).to_string().into())).await;
             break;
         }
@@ -1945,6 +1950,7 @@ async fn handle_term(socket: WebSocket, state: AppState, instance: String) {
                 Err(broadcast::error::RecvError::Closed) => break,
             },
             _ = exit.changed() => {}
+            _ = eof.changed() => {}
         }
     }
 }
