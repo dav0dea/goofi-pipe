@@ -138,7 +138,15 @@ impl Harnesses {
                 json!({
                     "id": id,
                     "harness": i.harness,
-                    "state": if exit.is_some() { "exited" } else { "running" },
+                    // A stop that has been asked for but not yet obeyed is its OWN state: the
+                    // address stops serving the moment it is asked, and a client that could only
+                    // read `running` would draw a live harness for the whole grace — which is
+                    // exactly as long as the harnesses the grace exists for take to leave.
+                    "state": match (exit, i.stopping.load(Ordering::Relaxed)) {
+                        (Some(_), _) => "exited",
+                        (None, true) => "stopping",
+                        (None, false) => "running",
+                    },
                     "exit_code": exit,
                 })
             })
@@ -394,7 +402,12 @@ fn resolve(bin: &str, path: Option<&OsStr>, shell: &str) -> Option<PathBuf> {
     // `bin` is a literal from `ADAPTERS`, never a caller's string, so there is nothing here for a
     // shell metacharacter to escape into.
     let out = std::process::Command::new(shell).args(["-lc", &format!("command -v {bin}")]).output();
-    let found = PathBuf::from(String::from_utf8_lossy(&out.ok()?.stdout).trim());
+    let stdout = String::from_utf8_lossy(&out.ok()?.stdout).into_owned();
+    // The LAST non-empty line, not the whole of stdout: a login shell runs the user's profile
+    // first, and a profile that greets — a banner, a version line, nvm's own chatter — would
+    // otherwise make every harness on the machine read as "not installed". nvm is the very setup
+    // this fallback exists for.
+    let found = PathBuf::from(stdout.lines().rev().find(|l| !l.trim().is_empty())?.trim());
     is_executable(&found).then_some(found)
 }
 
@@ -462,5 +475,24 @@ mod tests {
         // cannot resolve anything, so a hit proves the first branch rather than the second.
         let dir = found.parent().expect("an absolute path").as_os_str().to_owned();
         assert_eq!(resolve("sh", Some(&dir), "/bin/false").as_deref(), Some(found.as_path()));
+    }
+
+    /// …and it survives a login shell whose profile has something to say first, which is the setup
+    /// the fallback exists for in the first place: nvm greets, and a resolver that read all of
+    /// stdout would report every harness on such a machine as not installed.
+    #[test]
+    fn a_login_shell_that_greets_before_it_answers_still_resolves() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("goofi-{}", crate::nonce_hex()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let chatty = dir.join("chatty-shell");
+        std::fs::write(&chatty, "#!/bin/sh\necho 'nvm: Now using node v22'\nexec /bin/sh \"$@\"\n")
+            .unwrap();
+        std::fs::set_permissions(&chatty, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let nothing = OsStr::new("/goofi-no-such-directory");
+        let found = resolve("sh", Some(nothing), chatty.to_str().unwrap());
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert!(found.is_some_and(|p| is_executable(&p)), "a greeting hid the answer");
     }
 }

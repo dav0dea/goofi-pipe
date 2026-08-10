@@ -311,6 +311,14 @@ async fn a_stop_signals_first_and_kills_after_the_grace() {
 
     call(&mut ctl, 2, "stop_harness", json!({ "instance": id })).await;
     read_until(&mut term, "GOT-TERM").await;
+    // A stop that has been asked for but not yet obeyed is its own state. Without it the roster
+    // this arm broadcasts is byte-identical to the one before it — a vacuous event — and every
+    // client shows a live-looking harness whose address is already refusing, for as long as the
+    // grace runs against a harness that ignores SIGTERM. Which is the case the grace exists for,
+    // and the case this harness IS.
+    let roster = call(&mut ctl, 3, "list_harnesses", json!({})).await;
+    assert_eq!(roster["instances"][0]["state"], json!("stopping"), "{roster}");
+
     await_exit(&mut ctl, &id).await;
     state.release_mount();
 }
