@@ -27,14 +27,23 @@
 		Chip,
 		StatusDot,
 		EmptyState,
+		ChoiceGrid,
 		type IconName,
 		type ButtonVariant,
 		type ButtonSize,
 		type TabItem,
 		type BadgeTone,
 		type StatusTone,
-		type StatusDotSize
+		type StatusDotSize,
+		type Choice
 	} from '$lib/ui';
+
+	let chosen = $state('—');
+	const choices: Choice[] = [
+		{ id: 'wave', label: 'Waveform', icon: 'activity', choose: () => (chosen = 'wave') },
+		{ id: 'terminal', label: 'Terminal', icon: 'terminal', choose: () => (chosen = 'terminal') },
+		{ id: 'plain', label: 'No icon of its own', choose: () => (chosen = 'plain') }
+	];
 
 	const variants: ButtonVariant[] = ['default', 'primary', 'ghost', 'danger'];
 	const sizes: ButtonSize[] = ['sm', 'md'];
@@ -563,6 +572,15 @@
 				<StatusDot tone="ok" {size} data-testid={`ui-statusdot-size-${size}`} />
 			{/each}
 		</div>
+	</section>
+
+	<section>
+		<h2>ChoiceGrid (icon-over-label tiles)</h2>
+		<!-- The grid an empty surface offers its choices with — the empty panel's and the agent
+		     panel's launcher. A tile with no icon of its own falls back to `square-dashed`, and the
+		     readout proves `choose` fires (the tiles are the affordance, not a wrapper's click). -->
+		<ChoiceGrid {choices} data-testid="ui-choicegrid" />
+		<div class="readout" data-testid="ui-choicegrid-value">{chosen}</div>
 	</section>
 
 	<section>

@@ -73,6 +73,11 @@ export const SAMPLES: Record<string, Sample> = {
 		interactive: true,
 		control: (page) => page.getByTestId('ui-disclosure').getByRole('button')
 	},
+	ChoiceGrid: {
+		testid: 'ui-choicegrid',
+		interactive: true,
+		control: (page) => page.getByTestId('ui-choicegrid').locator('button').first()
+	},
 
 	// Static display / layout primitives (rendered, never a tap target of their own).
 	// Icon's sample is the whole vendored sheet — it draws every name in the table, so this one
