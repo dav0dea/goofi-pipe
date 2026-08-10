@@ -496,7 +496,6 @@ pub fn catalog_type_names() -> Vec<String> {
 /// because the seam below is shared: only the caller can tell a boot scan (whose registry starts
 /// empty, so any collision is two files claiming one name) from a rescan (which re-registers every
 /// type it finds on purpose, and must not spew to stderr for doing its job).
-#[derive(Clone, PartialEq, Debug)]
 pub enum Tier {
     InProcess,
     Subprocess,
@@ -511,7 +510,6 @@ pub enum Tier {
 pub type Stamp = (u64, std::time::SystemTime);
 
 /// One node file's outcome from a scan of one directory.
-#[derive(Clone)]
 pub struct ScannedType {
     pub type_name: String,
     pub tier: Tier,
@@ -532,7 +530,7 @@ pub type NodeScan = Arc<dyn Fn(&mut Graph, &std::path::Path) -> Vec<ScannedType>
 
 /// What a [`rescan`] changed, for the caller that asked — an agent that just wrote a node file, or
 /// the palette's refresh button.
-#[derive(Default, serde::Serialize)]
+#[derive(Default)]
 pub struct ScanDiff {
     pub added: Vec<String>,
     pub changed: Vec<String>,
