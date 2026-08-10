@@ -402,13 +402,16 @@ fn resolve(bin: &str, path: Option<&OsStr>, shell: &str) -> Option<PathBuf> {
     // `bin` is a literal from `ADAPTERS`, never a caller's string, so there is nothing here for a
     // shell metacharacter to escape into.
     let out = std::process::Command::new(shell).args(["-lc", &format!("command -v {bin}")]).output();
-    let stdout = String::from_utf8_lossy(&out.ok()?.stdout).into_owned();
-    // The LAST non-empty line, not the whole of stdout: a login shell runs the user's profile
-    // first, and a profile that greets — a banner, a version line, nvm's own chatter — would
-    // otherwise make every harness on the machine read as "not installed". nvm is the very setup
-    // this fallback exists for.
-    let found = PathBuf::from(stdout.lines().rev().find(|l| !l.trim().is_empty())?.trim());
+    let found = PathBuf::from(answer(&String::from_utf8_lossy(&out.ok()?.stdout))?);
     is_executable(&found).then_some(found)
+}
+
+/// What a login shell actually answered, out of everything its profile said first: the LAST
+/// non-empty line. Reading all of stdout instead would make a machine whose profile greets — a
+/// banner, a version line, nvm's own chatter — report every harness as "not installed", with no
+/// diagnostic. nvm is the very setup the fallback exists for.
+fn answer(stdout: &str) -> Option<&str> {
+    stdout.lines().rev().find(|l| !l.trim().is_empty()).map(str::trim)
 }
 
 fn is_executable(p: &Path) -> bool {
@@ -477,22 +480,15 @@ mod tests {
         assert_eq!(resolve("sh", Some(&dir), "/bin/false").as_deref(), Some(found.as_path()));
     }
 
-    /// …and it survives a login shell whose profile has something to say first, which is the setup
-    /// the fallback exists for in the first place: nvm greets, and a resolver that read all of
-    /// stdout would report every harness on such a machine as not installed.
+    /// …and it understands a login shell whose profile had something to say first, which is the
+    /// setup the fallback exists for in the first place. Driven on the text rather than on a real
+    /// chatty shell: writing an executable and running it is a race against every OTHER thread in
+    /// this process that forks, and a flaky test proves less than none.
     #[test]
-    fn a_login_shell_that_greets_before_it_answers_still_resolves() {
-        use std::os::unix::fs::PermissionsExt;
-        let dir = std::env::temp_dir().join(format!("goofi-{}", crate::nonce_hex()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let chatty = dir.join("chatty-shell");
-        std::fs::write(&chatty, "#!/bin/sh\necho 'nvm: Now using node v22'\nexec /bin/sh \"$@\"\n")
-            .unwrap();
-        std::fs::set_permissions(&chatty, std::fs::Permissions::from_mode(0o755)).unwrap();
-
-        let nothing = OsStr::new("/goofi-no-such-directory");
-        let found = resolve("sh", Some(nothing), chatty.to_str().unwrap());
-        std::fs::remove_dir_all(&dir).unwrap();
-        assert!(found.is_some_and(|p| is_executable(&p)), "a greeting hid the answer");
+    fn a_login_shell_that_greets_before_it_answers_is_still_understood() {
+        assert_eq!(answer("nvm: Now using node v22\n/usr/bin/claude\n"), Some("/usr/bin/claude"));
+        assert_eq!(answer("  /usr/bin/claude  \n"), Some("/usr/bin/claude"));
+        assert_eq!(answer("a banner\n\n"), Some("a banner"), "only EMPTY lines are skipped");
+        assert_eq!(answer("\n  \n"), None, "a shell that answered nothing resolves nothing");
     }
 }
