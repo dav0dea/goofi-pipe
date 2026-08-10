@@ -398,7 +398,7 @@ use goofi_engine::layout::{Entry, Layout};
 
 /// One entry's line in the tree, and its children under it. A split names its axis, a panel its
 /// type and binding; both carry the share of their parent they take, which is the number a caller
-/// adjusts with `page_set_panel`'s `size_mult`.
+/// adjusts with `page_resize_split`.
 fn layout_line(l: &Layout, id: &str, depth: usize, out: &mut String) {
     let pad = "  ".repeat(depth);
     match l.get(id) {

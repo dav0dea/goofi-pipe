@@ -689,7 +689,7 @@ async fn each_frozen_drag_gesture_is_one_op_and_therefore_one_undo() {
     let back = sync_replica(&mut ws, |d| entry_count(d) > 0 && arrangement(d) == before).await;
     assert_eq!(arrangement(&back), before, "and one ctrl-Z put that back too");
 
-    // page_resize_split — the drag-commit, which no number of `size_mult` calls converges on.
+    // page_resize_split — the drag-commit, and the only op that sizes anything.
     let split = back.read_at(&["arrangement", mine.as_str(), "parent"])
         .and_then(|v| v.as_str().map(str::to_string)).expect("the wrapper split");
     ok(&call(&mut ws, 9, "page_resize_split",

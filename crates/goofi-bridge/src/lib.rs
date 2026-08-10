@@ -1279,9 +1279,7 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
                         return Err(format!("page_set_panel: no node `{node}` in this patch"));
                     }
                 }
-                let mult = payload.get("size_mult").and_then(|v| v.as_f64());
-                let writes =
-                    g.arrangement().set_panel(&page, &panel, ty.as_deref(), panel_state, mult)?;
+                let writes = g.arrangement().set_panel(&page, &panel, ty.as_deref(), panel_state)?;
                 apply_layout(state, &mut g, &session, writes, None)
             }
             "page_move_panel" => {

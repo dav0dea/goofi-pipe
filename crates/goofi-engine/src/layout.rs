@@ -692,9 +692,9 @@ impl Layout {
         Ok(self.diff(&next))
     }
 
-    /// Set every child of `split` at once — what a resize drag commits on pointer-up. `set_panel`'s
-    /// `size_mult` scales ONE child and renormalizes its siblings, so N of them chase a moving
-    /// target and never land on the fraction set the user drew.
+    /// Set every child of `split` at once — what a resize drag commits on pointer-up, and the only
+    /// op that sizes anything. Scaling ONE child and renormalizing its siblings would make N of them
+    /// chase a moving target and never land on the fraction set the user drew.
     pub fn resize_split(
         &self,
         page: &str,
@@ -800,25 +800,19 @@ impl Layout {
         Ok((self.diff(&next), fresh))
     }
 
-    /// Set a panel's type, state and/or size. `panel_type` is applied FIRST because changing it
-    /// clears the old type's state (a new type cannot interpret it) — which is exactly why a
-    /// combined `{type, state}` has to land the state afterwards, and why re-asserting the SAME
-    /// type must not wipe (an agent passing `type` redundantly beside `size_mult` would otherwise
-    /// destroy a live binding).
+    /// Set a panel's type and/or state. `panel_type` is applied FIRST because changing it clears the
+    /// old type's state (a new type cannot interpret it) — which is exactly why a combined
+    /// `{type, state}` has to land the state afterwards, and why re-asserting the SAME type must not
+    /// wipe (an agent passing `type` redundantly beside a state would otherwise destroy a live
+    /// binding). Sizing is [`Self::resize_split`]'s, which sets a whole split at once.
     pub fn set_panel(
         &self,
         page: &str,
         panel: &str,
         panel_type: Option<&str>,
         state: Option<Value>,
-        size_mult: Option<f64>,
     ) -> Result<Vec<Write>, String> {
         self.in_page(page, panel)?;
-        if let Some(m) = size_mult {
-            if !m.is_finite() || m <= 0.0 {
-                return Err("size_mult must be a positive number".into());
-            }
-        }
         let mut next = self.clone();
         let Some(Entry::Panel { panel_type: pt, state: st, .. }) = next.entries.get_mut(panel) else {
             let kind = self.entries.get(panel).map_or("entry", Entry::kind);
@@ -830,14 +824,6 @@ impl Layout {
         }
         if let Some(s) = state {
             *st = s;
-        }
-        if let Some(m) = size_mult {
-            let parent = next.entries[panel].parent().unwrap_or_default().to_string();
-            let scaled = (next.entries[panel].size() * m).max(MIN_FRACTION);
-            if let Some(e) = next.entries.get_mut(panel) {
-                e.set_size(scaled);
-            }
-            next.normalize(&parent);
         }
         Ok(self.diff(&next))
     }
@@ -1194,7 +1180,7 @@ mod tests {
         let (w, c) = l.split_panel(&p1, &b, Axis::Column, 0.5).unwrap();
         let l = applied(&l, w);
         let sub = l.get(&b).unwrap().parent().unwrap().to_string(); // the column split holding b + c
-        let l = applied(&l, l.set_panel(&p1, &c, None, Some(json!({ "node": "osc0" })), None).unwrap());
+        let l = applied(&l, l.set_panel(&p1, &c, None, Some(json!({ "node": "osc0" }))).unwrap());
 
         // A second page, so the move crosses pages.
         let l = applied(&l, l.add_page("Second", None, None).unwrap().0);
@@ -1233,7 +1219,7 @@ mod tests {
         let a = root_panel(&l);
         let l = applied(
             &l,
-            l.set_panel(&page, &a, Some("viewer"), Some(json!({ "node": "osc0", "slot": "out" })), None)
+            l.set_panel(&page, &a, Some("viewer"), Some(json!({ "node": "osc0", "slot": "out" })))
                 .unwrap(),
         );
         match l.get(&a) {
@@ -1244,11 +1230,11 @@ mod tests {
             other => panic!("expected a panel: {other:?}"),
         }
         // A type change ALONE wipes the old type's state (it cannot interpret it)…
-        let l2 = applied(&l, l.set_panel(&page, &a, Some("console"), None, None).unwrap());
+        let l2 = applied(&l, l.set_panel(&page, &a, Some("console"), None).unwrap());
         assert!(matches!(l2.get(&a), Some(Entry::Panel { state, .. }) if state.is_null()));
         // …but re-asserting the SAME type must not, or an agent passing type redundantly alongside
-        // `size_mult` would silently destroy a live binding.
-        let l3 = applied(&l, l.set_panel(&page, &a, Some("viewer"), None, Some(2.0)).unwrap());
+        // a state would silently destroy the live binding it is re-asserting around.
+        let l3 = applied(&l, l.set_panel(&page, &a, Some("viewer"), None).unwrap());
         assert!(matches!(l3.get(&a), Some(Entry::Panel { state, .. }) if state["node"] == json!("osc0")));
     }
 
@@ -1282,7 +1268,7 @@ mod tests {
         let a = root_panel(&l);
         let (w, _b) = l.split_panel(&page, &a, Axis::Column, 0.3).unwrap();
         let l = applied(&l, w);
-        let l = applied(&l, l.set_panel(&page, &a, Some("viewer"), Some(json!({ "node": "x" })), None).unwrap());
+        let l = applied(&l, l.set_panel(&page, &a, Some("viewer"), Some(json!({ "node": "x" }))).unwrap());
         let back = Layout::from_json(&l.to_json()).expect("its own output is valid");
         assert_eq!(back, l, "byte-for-byte the same arrangement");
     }
@@ -1355,7 +1341,7 @@ mod tests {
         let a = root_panel(&l);
         let (w, b) = l.split_panel(&p1, &a, Axis::Row, 0.5).unwrap();
         let l = applied(&l, w);
-        let l = applied(&l, l.set_panel(&p1, &b, None, Some(json!({ "node": "osc0" })), None).unwrap());
+        let l = applied(&l, l.set_panel(&p1, &b, None, Some(json!({ "node": "osc0" }))).unwrap());
         let (w, p2) = l.add_page("Second", None, None).unwrap();
         let l = applied(&l, w);
         let target = l.children(&p2)[0].clone();
@@ -1452,8 +1438,8 @@ mod tests {
 
     #[test]
     fn a_resize_sets_every_child_of_a_split_at_once() {
-        // A drag commits FINAL fractions on pointer-up. `size_mult` scales one child and renormalizes
-        // its siblings, so N of them chase a moving target and never land on the set the user drew.
+        // A drag commits FINAL fractions on pointer-up: scaling one child and renormalizing its
+        // siblings would make N of them chase a moving target and never land on the set drawn.
         let l = Layout::default();
         let page = l.pages()[0].clone();
         let a = root_panel(&l);
