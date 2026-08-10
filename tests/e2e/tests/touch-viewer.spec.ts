@@ -173,11 +173,13 @@ test('a tap is not a drag — the cog, the kind picker and collapse still answer
 		await page.keyboard.press('Escape');
 		await expect(menu).toBeHidden();
 
-		await tap(`${sv} select.kind`);
+		await tap(`${sv} [data-testid="viewer-kind"] select`);
 		expect(
-			await page.evaluate(() => document.activeElement?.className ?? ''),
+			await page.evaluate(
+				() => document.activeElement?.closest('[data-testid]')?.getAttribute('data-testid') ?? ''
+			),
 			'the kind picker takes the tap'
-		).toContain('kind');
+		).toBe('viewer-kind');
 
 		// The disclosure triangle, which is the collapse control a keyboard user gets too.
 		await tap(`${sv} .tri`);

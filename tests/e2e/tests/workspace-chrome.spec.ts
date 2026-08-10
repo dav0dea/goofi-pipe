@@ -410,3 +410,45 @@ test('the kept-bespoke node-scoped buttons render from their own rules', async (
 	await page.evaluate((u) => (window as any).goofi.commands.removeNode(u), uid);
 	await waitForNoNode(page, uid);
 });
+
+/* One dropdown, worn by every panel bar. The viewer-TYPE picker used to hardcode the compact
+   toolbar face while every other dropdown took app.css's form-row box, so two controls in one bar
+   were two different heights. The face is the `Select` primitive's `density="chrome"` now; this is
+   what makes "they match" a rule rather than a coincidence between two files. */
+test('the dropdowns in one panel bar wear one box', async ({ page }) => {
+	await page.goto('/');
+	await waitForApp(page);
+	const uid = await addNode(page, 'Oscillator', 'inputs');
+	await waitForNode(page, uid);
+	const panelId: string = await page.evaluate(
+		() => (window as any).goofi.query.panels()[0].panelId
+	);
+	try {
+		await page.evaluate(
+			([id, u]) => {
+				(window as any).goofi.commands.setPanelType(id, 'viewer');
+				(window as any).goofi.commands.bindNodeToPanel(id, u);
+			},
+			[panelId, uid] as const
+		);
+		const slot = page.getByTestId('viewer-slot').locator('select');
+		const kind = page.getByTestId('viewer-kind').locator('select');
+		await expect(kind).toBeVisible();
+		const [a, b] = [(await slot.boundingBox())!, (await kind.boundingBox())!];
+		expect(a.height, 'the slot picker takes the viewer-type dropdown’s box').toBeCloseTo(
+			b.height,
+			1
+		);
+		// …and that box is a STRIP's: shorter than the bar it sits in, which the form-row box is not.
+		const bar = (await page.getByTestId('node-linked-panel').locator('.ui-bar').boundingBox())!;
+		expect(a.height, 'a bar dropdown is not the tallest thing in the bar').toBeLessThan(bar.height);
+	} finally {
+		await page.evaluate(
+			(id) => (window as any).goofi.commands.setPanelType(id, 'node-editor'),
+			panelId
+		);
+		await expect(page.locator('.canvas-wrap').first(), 'the editor panel is back').toBeVisible();
+		await page.evaluate((u) => (window as any).goofi.commands.removeNode(u), uid);
+		await waitForNoNode(page, uid);
+	}
+});

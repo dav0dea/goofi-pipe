@@ -57,6 +57,7 @@
 	{#snippet controls(node)}
 		{@const { slot, dtype, binding } = view(node)}
 		<Select
+			density="chrome"
 			value={slot ?? ''}
 			onChange={(v) => pick(v)}
 			options={Object.keys(node.output_slots)}

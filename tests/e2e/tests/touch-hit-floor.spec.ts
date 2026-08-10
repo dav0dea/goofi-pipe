@@ -169,10 +169,10 @@ const SITES: Site[] = [
 	},
 	{
 		// The SAME control the frozen node header pins compact — here in a docked panel header,
-		// which is real chrome and takes the floor. Both halves of ViewerControls' hook, tested.
+		// which is real chrome and takes the floor. Both halves of the Select primitive's hook, tested.
 		name: 'the docked viewer-kind select',
 		setup: dockAViewer,
-		control: (p) => p.getByTestId('node-linked-panel').locator('select.kind')
+		control: (p) => p.getByTestId('viewer-kind').locator('select')
 	},
 	{
 		// The cog beside it, and the sole door to every per-viewer setting. R-Task 2/3 scoped its
@@ -319,7 +319,7 @@ test('the globals add-row name field clears the focus-zoom threshold', async ({ 
 	}
 });
 
-/* The chrome half of ViewerControls' hook. Its canvas half keeps --fs-small by design — the
+/* The chrome half of the Select primitive's hook. Its canvas half keeps --fs-small by design — the
    frozen-exception test at the bottom of this file is what pins that. */
 test('the docked viewer-kind select clears the focus-zoom threshold', async ({ page }) => {
 	await page.goto('/');
@@ -327,7 +327,7 @@ test('the docked viewer-kind select clears the focus-zoom threshold', async ({ p
 	const restore = await dockAViewer(page);
 	try {
 		expect(
-			await fontSize(page.getByTestId('node-linked-panel').locator('select.kind'))
+			await fontSize(page.getByTestId('viewer-kind').locator('select'))
 		).toBeGreaterThanOrEqual(16);
 	} finally {
 		await restore();
@@ -488,7 +488,7 @@ test('the frozen slot-header controls stay inside the header they sit in', async
 		for (const [name, sel] of [
 			['the disclosure triangle', '.tri'],
 			['the viewer-settings cog', '[data-testid=viewer-settings-cog]'],
-			['the viewer-kind select', 'select.kind']
+			['the viewer-kind select', '[data-testid="viewer-kind"] select']
 		] as const) {
 			const box = (await header.locator(sel).boundingBox())!;
 			expect(box.height, `${name} does not outgrow the frozen slot header`).toBeLessThanOrEqual(

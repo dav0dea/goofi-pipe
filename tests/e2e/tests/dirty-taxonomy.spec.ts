@@ -104,7 +104,7 @@ test('changing a docked viewer’s type DOES dirty the patch', async ({ page }) 
 		},
 		[panelId, osc] as const
 	);
-	const kind = page.locator('.viewer-controls select.kind');
+	const kind = page.locator('.viewer-controls select');
 	await expect(kind, 'the panel is showing the oscillator with its type dropdown').toBeVisible();
 	// Let the SETUP's own push land before saving. Both calls above are authoring, and the folded
 	// intent only resets when the debounced push takes it — so without this wait a save clears the

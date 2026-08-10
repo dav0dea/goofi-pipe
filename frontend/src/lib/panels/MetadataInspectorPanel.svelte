@@ -29,6 +29,7 @@
 		{@const slots = Object.keys(node.output_slots ?? {})}
 		{#if slots.length > 0}
 			<Select
+				density="chrome"
 				value={curSlot(node) ?? ''}
 				onChange={(v) => ws.setPanelSlot(props.panelId, v)}
 				options={slots}

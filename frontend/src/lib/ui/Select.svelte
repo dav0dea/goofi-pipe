@@ -12,6 +12,13 @@
   a `data-testid` on that ⟳ button (a consumer delegating its own refresh affordance keeps its testid).
   The <select> claims the enclosing Field's label id. `class` merged, `data-testid` (and any other
   attribute) forwarded onto the wrapper.
+
+  `density="chrome"` is the compact face a toolbar strip wears — the same axis `IconButton` spends
+  `density` on, and for the same reason: a `Bar` is shorter than a form row, so a dropdown wearing the
+  form control's box is the tallest thing in it. It was the viewer-type dropdown's own hardcoded
+  `<select class="kind">`, which is why that one looked right and every other bar dropdown did not;
+  stated here, one dropdown wears it in every strip and the frozen node-slot header keeps its opt-out
+  through `--select-min-h` / `--select-fs`.
 -->
 <script lang="ts">
 	import type { HTMLAttributes } from 'svelte/elements';
@@ -27,12 +34,15 @@
 		onRefresh,
 		refreshing = false,
 		refreshTestid,
+		density = 'comfortable',
 		class: klass = '',
 		...rest
 	}: HTMLAttributes<HTMLDivElement> & {
 		value: string;
 		onChange: (v: string) => void;
 		options: string[];
+		/** Box density. `chrome` is the compact toolbar face; `comfortable` the form-row one. */
+		density?: 'comfortable' | 'chrome';
 		/** Optional display text per option value (`labels[opt] ?? opt`) — the committed value stays the
 		 * raw option key while the dropdown shows a friendlier label (e.g. a port's user name + dtype). */
 		labels?: Record<string, string>;
@@ -51,7 +61,7 @@
 	const items = $derived(!value || options.includes(value) ? options : [value, ...options]);
 </script>
 
-<div {...rest} class={`ui-select ${klass}`.trim()}>
+<div {...rest} class={`ui-select ${density === 'chrome' ? 'd-chrome ' : ''}${klass}`.trim()}>
 	<select
 		id={fieldId}
 		class="ui-select-input"
@@ -98,6 +108,53 @@
 	.ui-select-input:disabled {
 		opacity: var(--disabled-opacity);
 		cursor: default;
+	}
+	/* Chrome density: a toolbar dropdown is sized by its own line, not by the form-row box app.css
+	   gives every <select>. It also stops filling the row — a strip's controls sit side by side. */
+	.ui-select.d-chrome,
+	.ui-select.d-chrome .ui-select-input {
+		flex: 0 0 auto;
+	}
+	.ui-select.d-chrome .ui-select-input {
+		appearance: none;
+		font-size: var(--fs-small);
+		/* The value text rode high at this smaller font-size because the browser floors a <select>'s
+		   height (UA min-height), leaving the short line box top-aligned in an over-tall control. Pin
+		   the content box to exactly the line height (content-box so they match precisely) and release
+		   the UA floor, so the single value line is vertically centered at any font-size. */
+		box-sizing: content-box;
+		height: 1.5em;
+		line-height: 1.5em;
+		min-height: 0;
+		text-align: center;
+		text-align-last: center;
+		color: var(--text-dim);
+		background: color-mix(in srgb, var(--bg) 55%, transparent);
+		border-radius: var(--radius-sm);
+		padding: 0 var(--space-2);
+		cursor: pointer;
+	}
+	/* Hover feedback, gated on the device having a hover to give — `:hover` still MATCHES for a
+	   synthetic pointer on a phone, so ungated this lit the picker for a state a finger is never in.
+	   A hover-CAPABILITY query, not a pointer one: D-R7's coarse idiom below is untouched. */
+	@media (hover: hover) {
+		.ui-select.d-chrome .ui-select-input:hover {
+			color: var(--text);
+			border-color: var(--accent);
+		}
+	}
+	/* Touch: this rule out-specifies app.css's `select` floor (0,0,1) on BOTH counts — the
+	   `min-height: 0` above releases the --hit floor, and --fs-small is 11.5px at the coarse root
+	   size, which iOS force-zooms on focus. Restored here.
+	   `--select-*` is the frozen host's opt-out, the same seam IconButton spends `--icon-btn-size`
+	   on: a strip that is shorter than --hit BY CONSTRUCTION states the compact box, and every other
+	   host takes the floor. Exactly one host does — SlotViewer's 24px `--node-u` slot header, which
+	   is frozen canvas geometry; every docked panel bar is real chrome and takes it. */
+	@media (hover: none) and (pointer: coarse) {
+		.ui-select.d-chrome .ui-select-input {
+			min-height: var(--select-min-h, var(--hit));
+			font-size: var(--select-fs, 16px);
+		}
 	}
 	/* The ⟳ icon is swapped for a CSS ring while spinning — a bare circle rotates dead-centred
 	   where an icon's own asymmetry wobbles (same ring as the node boot-spinner). */

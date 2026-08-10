@@ -22,7 +22,7 @@ export const VIEWER_HOVER_SURFACES: HoverSurface[] = [
 	{ name: 'the header bar', sel: 'header', props: ['background-color'] },
 	{ name: 'the disclosure triangle', sel: '.tri svg', props: ['fill'] },
 	{ name: 'the slot name', sel: '[data-testid="slot-output"]', props: ['background-color'] },
-	{ name: 'the viewer-kind select', sel: 'select.kind', props: ['color', 'border-top-color'] },
+	{ name: 'the viewer-kind select', sel: '[data-testid="viewer-kind"] select', props: ['color', 'border-top-color'] },
 	{ name: 'the settings cog', sel: '[data-testid="viewer-settings-cog"]', props: ['color'] }
 ];
 

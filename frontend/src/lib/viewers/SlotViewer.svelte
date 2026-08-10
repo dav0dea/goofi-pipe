@@ -249,14 +249,14 @@
 	   the 44px control floor — a floored control is not a bigger target here, it is a control
 	   hanging out of the node with its bottom half cut off.
 	   `.tri` states `height`, not `min-height`, so app.css's coarse floor DID apply and did exactly
-	   that. Released, and the viewer-kind select re-pinned through ViewerControls' documented hook.
+	   that. Released, and the viewer-kind select re-pinned through the Select primitive's own hook.
 	   The stated exception: both keep their fine-pointer boxes on touch. What actually takes the tap
 	   is the header BAR — full node width, one unit tall, and already the collapse target — and the
 	   canvas is a pinch-zoomable surface, which no other strip in the app is. */
 	@media (hover: none) and (pointer: coarse) {
 		header {
-			--viewer-kind-min-h: 0;
-			--viewer-kind-fs: var(--fs-small);
+			--select-min-h: 0;
+			--select-fs: var(--fs-small);
 			/* …and the cog keeps its frozen 16px paint here for the same reason (its coarse target is
 			   carried outward by a `::after` bounded to this header instead). Every other host — a
 			   docked ViewerPanel header is the one there is — floors the box. */

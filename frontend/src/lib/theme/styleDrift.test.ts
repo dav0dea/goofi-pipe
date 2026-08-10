@@ -820,7 +820,7 @@ function fontTargets(sel: string, classes: Set<string>): string[] {
 }
 
 /** The largest px literal in a declaration value, or 0 when it names none. `16px` and
- *  `var(--viewer-kind-fs, 16px)` both answer 16; a bare `var(--fs-small)` answers 0, which is the
+ *  `var(--select-fs, 16px)` both answer 16; a bare `var(--fs-small)` answers 0, which is the
  *  honest answer — a rem rung cannot be proven to clear an absolute device threshold. */
 function maxPx(value: string): number {
 	return [...value.matchAll(/(\d*\.?\d+)px/g)].reduce((a, m) => Math.max(a, parseFloat(m[1])), 0);
