@@ -9,6 +9,7 @@
 mod crdt_mirror;
 mod fsbrowse;
 mod inspect;
+mod mcp;
 pub mod ops;
 mod reducer;
 mod schemas;
@@ -23,7 +24,7 @@ use tower_http::services::{ServeDir, ServeFile};
 use axum::extract::ws::{CloseFrame, Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path, State};
 use axum::response::Response;
-use axum::routing::any;
+use axum::routing::{any, post};
 use axum::Router;
 use futures_util::{SinkExt, StreamExt};
 use goofi_engine::{Graph, Uid};
@@ -290,6 +291,10 @@ pub fn router(state: AppState) -> Router {
         // One stream per (node, slot) — the kind segment is gone; a single reduced stream
         // serves every viewer kind. Each connection sends its viewers' ViewSpecs inband.
         .route("/data/{node}/{slot}", any(data_ws))
+        // The agent's mirror of the same op set — one MCP server per goofi instance, so it lives
+        // here rather than in a client-spawned sidecar. `post` alone is deliberate: axum answers
+        // the transport's retired GET stream and DELETE teardown with the 405 they expect.
+        .route("/mcp", post(mcp::endpoint))
         .with_state(state)
 }
 
