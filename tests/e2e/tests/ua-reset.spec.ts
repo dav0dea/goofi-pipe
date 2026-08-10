@@ -16,6 +16,37 @@ import { addNode, waitForNode, waitForNoNode } from '../lib/goofi';
 // The probe is the one `<code>` in the tree that declares no font of its own: Panel's unknown-type
 // fallback, which a `.gfi` layout naming a retired panel reaches for real. It is chrome (an
 // explanatory message in a panel body), so with no UA default leaking it renders the body sans.
+//
+// It is reached the way production reaches it — a STORED layout naming a type this build does not
+// have — because that is now the only way there is. `page_set_panel` refuses a panel type outside
+// the manager's vocabulary, so the shortcut this spec used to take (setPanelType with a made-up
+// name) is exactly the mistake the manager exists to catch. A load still admits one: the fallback's
+// whole reason to exist is a patch saved by a build that had the type.
+async function loadRetiredPanelType(page: import('@playwright/test').Page): Promise<void> {
+	await page.evaluate(async () => {
+		const ws = new WebSocket(`ws://${location.host}/control`);
+		await new Promise((r) => (ws.onopen = r));
+		const call = (op: string, payload: unknown): Promise<any> =>
+			new Promise((res) => {
+				const id = Math.floor(Math.random() * 1e6);
+				const on = (e: MessageEvent) => {
+					if (typeof e.data !== 'string') return;
+					const m = JSON.parse(e.data);
+					if (m.id !== id) return;
+					ws.removeEventListener('message', on);
+					res(m);
+				};
+				ws.addEventListener('message', on);
+				ws.send(JSON.stringify({ id, op, payload }));
+			});
+		const yaml: string = (await call('serialize', {})).result.yaml;
+		await call('load_text', {
+			content: yaml.replace(/panel_type: node-editor/g, 'panel_type: retired-panel-type')
+		});
+		ws.close();
+	});
+}
+
 test('a <code> with no rule of its own inherits the chrome face, not the UA monospace', async ({
 	page
 }) => {
@@ -26,10 +57,7 @@ test('a <code> with no rule of its own inherits the chrome face, not the UA mono
 		() => (window as any).goofi.query.panels()[0].panelId
 	);
 	try {
-		await page.evaluate(
-			(id) => (window as any).goofi.commands.setPanelType(id, 'retired-panel-type'),
-			panelId
-		);
+		await loadRetiredPanelType(page);
 		const code = page.locator('.panel .missing code');
 		await expect(code).toBeVisible();
 		const font = await code.evaluate((el) => getComputedStyle(el).fontFamily);
