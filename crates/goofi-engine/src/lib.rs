@@ -444,18 +444,24 @@ impl Graph {
             eprintln!("warning: runtime node type `{name}` collides with a built-in; ignoring it");
             return Registration::Refused;
         }
+        // A name that loads now is not unloadable any more: `unavailable` had no removal, so a
+        // rescan after a `pip install` would otherwise leave the greyed row standing beside the
+        // working type — two palette rows for one name.
+        self.unavailable.remove(name);
         match self.dyn_types.insert(name, DynType { manifest, factory }) {
             Some(_) => Registration::Replaced,
             None => Registration::Added,
         }
     }
 
-    /// Forget a runtime-registered type — a rescan whose file has vanished. Returns whether one
-    /// was removed (so a caller can report the diff); a name that was never registered is `false`.
+    /// Forget a runtime type ENTIRELY — a rescan whose file has vanished. ONE door for both
+    /// registries, because that caller knows only that the file is gone, not which of the two the
+    /// last scan put it in. Returns whether anything was removed (so it can report the diff).
     /// LIVE INSTANCES ARE UNTOUCHED, for the same reason a replace leaves them alone: removal only
     /// stops the NEXT `add_node` and the `.gfi` load gate.
     pub fn remove_dyn_type(&mut self, type_name: &str) -> bool {
-        self.dyn_types.remove(type_name).is_some()
+        let had_dyn = self.dyn_types.remove(type_name).is_some();
+        self.unavailable.remove(type_name).is_some() || had_dyn
     }
 
     /// Whether a type name resolves to either the compile-time catalog or a
@@ -512,12 +518,16 @@ impl Graph {
         self.layout = layout;
     }
 
-    /// Record a node type that could not be loaded, with the reason. Refused if a working type
-    /// already owns the name — a real node always wins over a broken one.
+    /// Record a node type that could not be loaded, with the reason. Refused if a BUILT-IN owns the
+    /// name — a compiled-in node always wins resolution, so a broken file of that name could never
+    /// be reached. A runtime type of the same name is displaced, the mirror of the clearing
+    /// `register_dyn_type` does: both registries answer "what is on disk under this name", and the
+    /// latest scan of that name is the answer.
     pub fn register_unavailable(&mut self, type_name: String, reason: String) -> bool {
-        if self.known_type(&type_name) {
+        if goofi_node::find(&type_name).is_some() {
             return false;
         }
+        self.dyn_types.remove(type_name.as_str());
         self.unavailable.insert(type_name, reason);
         true
     }
@@ -1567,14 +1577,27 @@ impl Graph {
     /// Deliberately **not** a `Command`: it changes no persisted patch state, so it has no
     /// meaningful inverse, and the client records no history entry for it.
     ///
-    /// Two limits worth knowing: a Python node re-runs the SOURCE CAPTURED AT DISCOVERY, so
-    /// editing the `.py` and restarting does not pick up the edit (rediscovery does); and the
-    /// `index_counters` carried over below are engine-side, so a Subprocess node's own child-side
-    /// numbering still restarts with its new process.
+    /// One limit worth knowing: a Python node re-runs the SOURCE CAPTURED AT DISCOVERY, so editing
+    /// the `.py` and restarting does not pick up the edit — a rescan (which re-registers the type)
+    /// does, and that is what drives the auto-restart. The `index_counters` carried over below are
+    /// engine-side, so a Subprocess node's own child-side numbering still restarts with its process.
     pub fn restart_node(&mut self, uid: Uid) -> Result<(), String> {
         let entry = self.nodes.get(&uid).ok_or_else(|| format!("no such node {uid}"))?;
         let type_name = entry.manifest.type_name;
-        let params = entry.params.clone();
+        let held = entry.params.clone();
+        // Fold what the node HAS onto what its type declares NOW, rather than replaying the old map
+        // verbatim: a rescan restart is usually prompted by an edit to the file, and an edit that
+        // adds a param would otherwise leave the instance without it while the palette advertises
+        // it. Same order and same rule as the `.gfi` load — defaults first, saved values over them.
+        let mut params = self.default_params_of(type_name)?;
+        for (group, held) in &held {
+            let Some(g) = params.get_mut(group) else { continue };
+            for (name, value) in held {
+                if let Some(slot) = g.get_mut(name) {
+                    *slot = value.clone();
+                }
+            }
+        }
         // Construct BEFORE touching the entry: a type that no longer resolves leaves the old
         // instance running rather than half-killing the node.
         let (manifest, params, node) = self.build_node(type_name, Some(params))?;
@@ -5033,6 +5056,26 @@ mod tests {
         factory: rt_stub_factory,
     };
 
+    // The SAME runtime type after its file was edited to declare a param — what a rescan
+    // re-registers under a name it already holds.
+    static GAINED_PARAMS: &[ParamDecl] = &[ParamDecl {
+        group: "shape",
+        name: "gain",
+        spec: ParamSpec::Float { default: 3.0, min: 0.0, max: 10.0 },
+        default_expr: None,
+        doc: None,
+    }];
+    static RT_GAINED_MANIFEST: NodeManifest = NodeManifest {
+        type_name: "_RuntimeDyn",
+        category: "runtime",
+        doc: "runtime-registered node type, edited to declare a param",
+        inputs: &[],
+        outputs: RT_OUT,
+        params: GAINED_PARAMS,
+        isolation: Isolation::InProcess,
+        factory: rt_stub_factory,
+    };
+
     // A runtime manifest whose name collides with a built-in catalog type.
     static COLLIDE_MANIFEST: NodeManifest = NodeManifest {
         type_name: "Oscillator",
@@ -5130,6 +5173,62 @@ mod tests {
 
         g.tick();
         assert_eq!(first_f32(&g.latest_frame(live, "out").unwrap()), 1.0, "the instance still runs");
+    }
+
+    /// The two registries are one answer to "what is on disk under this name", so the LATEST scan
+    /// of a name wins in both directions. Without this a rescan that fixes a broken node's
+    /// dependency leaves the greyed row standing beside the working type — two palette rows for
+    /// one name — because `unavailable` had no removal at all.
+    #[test]
+    fn the_latest_scan_of_a_name_wins_across_both_registries() {
+        let mut g = Graph::new();
+        // Deps installed: the file that could not load now loads.
+        assert!(g.register_unavailable("_RuntimeDyn".into(), "numpy".into()));
+        assert_eq!(
+            g.register_dyn_type(&RT_MANIFEST, Box::new(|_| Box::new(RtSource { base: 1.0 }))),
+            Registration::Added
+        );
+        assert_eq!(g.unavailable_types().count(), 0, "no stale greyed row beside the working type");
+        assert_eq!(g.dyn_type_manifests().len(), 1);
+
+        // …and back: the file is edited into something that no longer loads.
+        assert!(g.register_unavailable("_RuntimeDyn".into(), "SyntaxError".into()));
+        assert!(g.dyn_type_manifests().is_empty(), "a type that stopped loading is not addable");
+        assert_eq!(g.unavailable_types().collect::<Vec<_>>(), [("_RuntimeDyn", "SyntaxError")]);
+
+        // The file vanishes: ONE removal door, because a rescan knows only that it is gone —
+        // not which of the two registries the last scan put it in.
+        assert!(g.remove_dyn_type("_RuntimeDyn"));
+        assert_eq!(g.unavailable_types().count(), 0);
+    }
+
+    /// Auto-restart's sharp edge: the edit that prompts a rescan is often "I added a param". The
+    /// restart must therefore rebuild the instance against the type's CURRENT declarations, keeping
+    /// the values the user had set — exactly what the `.gfi` load does — rather than replaying a
+    /// param map captured before the file changed, which would leave the new param missing from the
+    /// instance while the palette advertises it.
+    #[test]
+    fn a_restart_rebuilds_against_the_types_current_params() {
+        let mut g = Graph::new();
+        g.register_dyn_type(&RT_MANIFEST, Box::new(|_| Box::new(RtSource { base: 1.0 })));
+        let uid = g.add_node("_RuntimeDyn", None).unwrap();
+        g.update_param(uid, "common", "max_frequency", Param::float(11.0, 0.0, 100.0)).unwrap();
+
+        // The file gained a param; the rescan re-registered the type and restarts the instance.
+        g.register_dyn_type(&RT_GAINED_MANIFEST, Box::new(|_| Box::new(RtSource { base: 1.0 })));
+        g.restart_node(uid).unwrap();
+
+        let p = g.params(uid).unwrap();
+        assert_eq!(
+            p.get("shape").and_then(|g| g.get("gain")).and_then(Param::as_f64),
+            Some(3.0),
+            "the param the edited file declares is on the restarted instance"
+        );
+        assert_eq!(
+            p.get("common").unwrap().get("max_frequency").and_then(Param::as_f64),
+            Some(11.0),
+            "a value the user set survives the restart"
+        );
     }
 
     #[test]
