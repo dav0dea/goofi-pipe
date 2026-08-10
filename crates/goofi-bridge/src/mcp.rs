@@ -55,6 +55,37 @@ const DEFAULT_PROTOCOL: &str = "2025-06-18";
 /// The newest revision this server implements, and what an unsupported ask is answered with.
 const LATEST_PROTOCOL: &str = "2025-11-25";
 
+/// The whole of an agent's orientation. H cut the skills corpus that would otherwise have carried
+/// it (a content project riding along with a code one), so this string is the only thing that says
+/// what goofi is and how to behave inside it — the 45 tool descriptions say what each op does.
+///
+/// **Two budgets, both a real client's.** Claude Code truncates server instructions at 2 KB, and
+/// Codex weights the first 512 characters, so the FIRST PARAGRAPH has to orient an agent on its
+/// own and everything after it is elaboration a longer-context client gets for free. It is written
+/// in plain sentences and no markdown for the same reason a tool description is: it is read as
+/// prose by a model, not rendered.
+///
+/// **What is in the first paragraph is decided by mistakes actually observed**, not by what reads
+/// well: an agent invented a panel type because nothing told it the set was enumerated, and it
+/// followed a write with a read the write's own reply already contained. The live-co-edit fact is
+/// there because it changes how an agent should behave — a human is watching the same canvas, so
+/// small verified steps beat one large batch, and `inspect_patch` is how it checks its own work.
+const INSTRUCTIONS: &str = concat!(
+    "goofi-pipe is a live signal-processing patch: a graph of nodes running right now. A human ",
+    "has it open beside you and edits it with you, so your changes reach their editor at once and ",
+    "theirs your next read. Call inspect_patch first, and again between steps: it draws the graph ",
+    "and lists standing errors. Every write answers with what it made, so read the reply rather ",
+    "than following it with another call. Never guess a name; node types, panel types and viewer ",
+    "kinds are enumerated by the tool that takes them.",
+    "\n\n",
+    "list_nodes is the palette and read_node_source shows how a type is written. add_link wires ",
+    "an output slot to an input slot and refuses a dtype mismatch, naming both ends. update_param ",
+    "sets a literal; set_expression binds one to nd('other_node').sfreq, globals.x or t. Write a ",
+    "node file into the patch workspace and rescan_nodes loads it. undo and redo are yours alone: ",
+    "they never reach the human's edits, nor theirs yours. Work in small steps, because someone ",
+    "is watching this happen.",
+);
+
 /// Every revision whose `initialize`/`tools/list`/`tools/call` shapes this server actually speaks.
 /// `2026-07-28` is deliberately absent: it requires `resultType` on every result, `ttlMs`/
 /// `cacheScope` on `tools/list` and a `server/discover` method, none of which are here.
@@ -244,10 +275,7 @@ async fn serve(state: &AppState, session: &str, gone: Option<&str>, body: &str) 
                 },
                 "capabilities": { "tools": {} },
                 "serverInfo": { "name": "goofi-pipe", "version": env!("CARGO_PKG_VERSION") },
-                "instructions": "Build and inspect the running goofi patch. inspect_patch draws \
-                                 the graph and lists standing errors; inspect_node reads one \
-                                 node's params, output health and error. Every edit is undoable \
-                                 with undo/redo.",
+                "instructions": INSTRUCTIONS,
             }),
         ),
         "tools/list" => ok(id, json!({ "tools": tools() })),
@@ -273,17 +301,21 @@ mod tests {
         assert!(render(&json!({ "text": "x", "more": 1 })).contains("\"more\""));
     }
 
-    /// Claude Code and Codex both truncate a tool description at 2 KB, so a description that grew
-    /// past it loses its TAIL — which is where `Returns:` lives, and where an enumerated vocabulary
-    /// would land next. Enumerating the choices is only worth doing if they arrive.
+    /// Claude Code and Codex truncate a tool description at 2 KB — and the server INSTRUCTIONS at
+    /// the same 2 KB — so a string that grew past it loses its TAIL. For a description that is
+    /// where `Returns:` lives, and where an enumerated vocabulary would land next; for the
+    /// instructions it is everything after the front-loaded paragraph. Enumerating the choices is
+    /// only worth doing if they arrive. Every string a client reads is checked here, in one place,
+    /// so a new one cannot be added with its own private idea of the budget.
     #[test]
-    fn a_tool_description_fits_the_2_kb_a_client_will_read() {
+    fn every_string_a_client_reads_fits_the_2_kb_it_truncates_at() {
         // Or the loop below would pass by having nothing to check.
         assert!(tools().len() > 30, "the agent surface is generated from the registry");
         for t in tools() {
             let (name, desc) = (t["name"].as_str().unwrap(), t["description"].as_str().unwrap());
             assert!(desc.len() <= 2048, "`{name}`'s description is {} bytes", desc.len());
         }
+        assert!(INSTRUCTIONS.len() <= 2048, "the instructions are {} bytes", INSTRUCTIONS.len());
     }
 
     /// The strongest form of "do not guess": the schema itself carries the set, so a client that

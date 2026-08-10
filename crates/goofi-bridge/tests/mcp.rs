@@ -310,6 +310,33 @@ async fn initialize_answers_with_a_revision_this_server_implements() {
     assert_eq!(reply["result"]["protocolVersion"], json!("2025-06-18"), "{reply}");
 }
 
+/// `initialize.instructions` is the ONLY thing that tells an agent what goofi is — H cut the skills
+/// corpus in favour of it — and both of its budgets belong to a real client: Claude Code truncates
+/// server instructions at 2 KB, and Codex weights the FIRST 512 characters. So the orientation has
+/// to stand alone inside one 512-byte paragraph, and what goes in it is decided by the mistakes an
+/// agent has actually made here: it invented a panel type nothing told it not to invent, and it
+/// followed a write with a read the write had already answered.
+#[tokio::test]
+async fn initialize_orients_an_agent_inside_its_first_paragraph() {
+    let addr = start_server().await;
+    let reply = rpc(&addr, 1, "initialize", json!({})).await;
+    let text = reply["result"]["instructions"].as_str().expect("a client is oriented");
+    assert!(text.len() <= 2048, "the instructions are {} bytes", text.len());
+    // The front-loaded paragraph, which is what a 512-weighting client reads and all it reads.
+    let head = text.split("\n\n").next().expect("a first paragraph");
+    assert!(head.len() <= 512, "the front-loaded paragraph is {} bytes", head.len());
+    for must in [
+        "goofi",           // what this even is
+        "human",           // …and that one is editing the same patch at the same time
+        "at once",         // …so an edit is visible to them immediately, not on some later sync
+        "inspect_patch",   // where to look first, and how to see what was built
+        "answers with what it made", // a write already told you; do not read it back
+        "guess",           // and never invent a vocabulary word
+    ] {
+        assert!(head.contains(must), "the orientation never says `{must}`: {head}");
+    }
+}
+
 /// A JSON-RPC batch is a JSON ARRAY, which carries no top-level `id` — so without a guard it takes
 /// the notification path and the client gets 202 and no replies, hanging on requests that will never
 /// be answered. Batching was removed in 2025-06-18; the honest answer is a readable refusal.
