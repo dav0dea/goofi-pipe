@@ -156,6 +156,11 @@ async fn run(cli: Cli, mut state: AppState, shutdown: impl Future<Output = ()>) 
                 let addr = listener.local_addr().unwrap();
                 let dir = resolve_frontend_dir();
                 println!("goofi-pipe (rust backend) → http://{addr}");
+                // Printed beside the app URL because it is what a user pastes into an MCP client's
+                // config, and what H's harness launcher passes to a spawned agent in its
+                // environment. There is one server per goofi instance, so this URL is the address
+                // of the whole agent surface — no client ever spawns one of its own.
+                println!("  MCP endpoint → http://{addr}/mcp");
                 match &dir {
                     Some(d) => println!("  serving SPA from {}", d.display()),
                     None => println!("  API only — no SPA build found (set GOOFI_FRONTEND_BUILD or build frontend/)"),
