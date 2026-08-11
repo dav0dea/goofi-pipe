@@ -132,10 +132,18 @@ impl DetachedHandle {
             boot_error: OnceLock::new(),
         });
         let theirs = ch.clone();
-        std::thread::Builder::new()
+        let spawned = std::thread::Builder::new()
             .name(format!("goofi-detached-{}", manifest.type_name))
-            .spawn(move || worker(node, manifest, params0, ctx0, theirs))
-            .expect("spawn detached worker");
+            .spawn(move || worker(node, manifest, params0, ctx0, theirs));
+        if let Err(e) = spawned {
+            // Thread creation fails under resource pressure — and this is called under the graph
+            // mutex, so panicking here poisons it and takes the whole control plane down with one
+            // node. Report it the way a failed bootstrap is already reported: latch the error and
+            // publish READY, which is this type's terminal state (see `stage`'s Acquire pairing —
+            // a reader that sees READY also sees the latch, so this can never read as healthy).
+            let _ = ch.boot_error.set(format!("could not start worker thread: {e}"));
+            ch.stage.store(STAGE_READY, std::sync::atomic::Ordering::Release);
+        }
         DetachedHandle { ch }
     }
 

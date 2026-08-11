@@ -166,6 +166,25 @@ struct Link {
 }
 
 /// Extract a readable message from a caught panic payload.
+/// Run a node LIFECYCLE hook, converting a panic into an error string — the same trade
+/// [`execute_node`] already makes for `process`, and for the same reason: a node is third-party
+/// code (a native crate registered through `inventory`, or a `.py` the user just edited).
+///
+/// The difference that makes this load-bearing is WHERE these run. `process` executes on the tick
+/// thread; `setup`, `on_param_changed` and `on_param_refreshed` execute under the graph mutex the
+/// bridge is holding, and this codebase locks with `.lock().unwrap()` throughout. An unguarded
+/// panic there poisons the mutex, so every subsequent lock in the bridge AND the tick thread
+/// panics too — one node's bug becomes total, permanent loss of the control plane.
+fn guard_lifecycle<T>(f: impl FnOnce() -> T) -> Result<T, String> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).map_err(panic_message)
+}
+
+/// Fold a caught lifecycle panic into the `NodeResult` the hook would have returned, so the two
+/// failure modes travel the one channel a caller already handles.
+fn fold_panic(panicked: String) -> goofi_node::NodeResult {
+    Err(goofi_node::NodeError(panicked))
+}
+
 fn panic_message(p: Box<dyn std::any::Any + Send>) -> String {
     if let Some(s) = p.downcast_ref::<&str>() {
         format!("panic: {s}")
@@ -1796,7 +1815,8 @@ impl Graph {
         }
         match &mut entry.exec {
             Execution::Inline(node) => {
-                node.on_param_changed(&ParamKey::new(group, name), &value).map_err(|e| e.0)
+                guard_lifecycle(|| node.on_param_changed(&ParamKey::new(group, name), &value))
+                    .and_then(|r| r.map_err(|e| e.0))
             }
             // A detached node's instance lives on its worker; the edit is stored in
             // `entry.params` and rides the next Job's cold read, which is how a param reaches
@@ -1839,7 +1859,11 @@ impl Graph {
         // Disjoint field borrows: the instance mutably, its live params immutably.
         let live = Params::new(&entry.params);
         let fresh = match &mut entry.exec {
-            Execution::Inline(node) => node.on_param_refreshed(&ParamKey::new(group, name), &live),
+            Execution::Inline(node) => {
+                // A device/stream scan is exactly the hook most likely to throw, and it runs under
+                // the graph lock — so its panic has to become a refusal, not a poisoned mutex.
+                guard_lifecycle(|| node.on_param_refreshed(&ParamKey::new(group, name), &live))?
+            }
             // A detached node's instance lives on its worker and the request/response codec has
             // no refresh op — the same deferral as live `on_param_changed` propagation. SAY SO
             // rather than returning Ok with the old list: a silent success would present stale
@@ -2742,9 +2766,11 @@ impl Graph {
                         // A detached node's instance lives on its worker and reads params cold off
                         // each Job, so there is nothing to notify — same deferral as `update_param`.
                         if let Execution::Inline(node) = &mut entry.exec {
-                            if let Err(e) = node.on_param_changed(&key, &p) {
+                            let hook =
+                                guard_lifecycle(|| node.on_param_changed(&key, &p)).unwrap_or_else(fold_panic);
+                            if let Err(e) = hook {
                                 // The channel a runtime eval failure already uses, so a rejecting
-                                // hook surfaces on the field rather than vanishing.
+                                // (or panicking) hook surfaces on the field rather than vanishing.
                                 if let Some(b) = entry.bindings.get_mut(&key) {
                                     b.error = Some(e.0);
                                 }
@@ -3047,12 +3073,17 @@ pub(crate) fn seed_node(
             continue;
         }
         for (name, value) in entries {
-            if let Err(e) = node.on_param_changed(&ParamKey::new(group.as_str(), name.as_str()), value) {
+            let key = ParamKey::new(group.as_str(), name.as_str());
+            if let Err(e) = guard_lifecycle(|| node.on_param_changed(&key, value)).unwrap_or_else(fold_panic) {
                 last_error.get_or_insert(e.0);
             }
         }
     }
-    if let Err(e) = node.setup(ctx, &goofi_node::Params::new(params)) {
+    // A panic in `setup` is this node's boot error, exactly as a returned `Err` is. Unguarded it
+    // unwound through `Graph::add_node` and out through the graph lock the caller was holding.
+    let started =
+        guard_lifecycle(|| node.setup(ctx, &goofi_node::Params::new(params))).unwrap_or_else(fold_panic);
+    if let Err(e) = started {
         last_error.get_or_insert(e.0);
     }
     last_error
@@ -5469,6 +5500,84 @@ mod tests {
             !g.links_view().iter().any(|l| l.node_in == uid && l.slot_in == "alpha"),
             "the link into the retired slot was pruned"
         );
+    }
+
+    // A node that panics in its LIFECYCLE hooks — the shape a third-party native crate or a
+    // freshly-edited `.py` can take. `process` panics were already contained (`_TestPanic`
+    // above); these were not.
+    struct PanickyHooks;
+    impl Node for PanickyHooks {
+        fn process(&mut self, _i: &Inputs<'_>, _o: &mut Outputs<'_>, _c: &mut NodeCtx, _p: &Params<'_>) -> NodeResult {
+            Ok(())
+        }
+        fn on_param_changed(&mut self, _k: &ParamKey, v: &Param) -> NodeResult {
+            if matches!(v, Param::Bool { value: true }) {
+                panic!("hook exploded");
+            }
+            Ok(())
+        }
+    }
+    static PANICKY_PARAMS: &[ParamDecl] = &[ParamDecl {
+        group: "danger",
+        name: "boom",
+        spec: ParamSpec::Bool { default: false },
+        default_expr: None,
+        doc: None,
+    }];
+    static PANICKY_MANIFEST: NodeManifest = NodeManifest {
+        type_name: "_Panicky",
+        category: "runtime",
+        doc: "panics in on_param_changed when danger.boom is set",
+        inputs: &[],
+        outputs: RT_OUT,
+        params: PANICKY_PARAMS,
+        isolation: Isolation::InProcess,
+        factory: rt_stub_factory,
+    };
+
+    #[test]
+    fn a_panicking_lifecycle_hook_becomes_a_node_error_and_leaves_the_lock_usable() {
+        // `execute_node` wraps `process` in catch_unwind precisely because a node is third-party
+        // code. The other hooks run under the SAME graph lock the bridge holds, and this codebase
+        // locks with `.lock().unwrap()` throughout — so an unguarded panic there poisons the mutex
+        // and every later lock in the bridge and the tick thread fails from then on. A node bug
+        // becomes total loss of the control plane. Containment has to be uniform, not per-hook.
+        let g = std::sync::Arc::new(std::sync::Mutex::new(Graph::new()));
+        let uid = {
+            let mut gg = g.lock().unwrap();
+            gg.register_dyn_type(&PANICKY_MANIFEST, Box::new(|_| Box::new(PanickyHooks)));
+            gg.add_node("_Panicky", None).unwrap()
+        };
+        {
+            let mut gg = g.lock().unwrap();
+            let r = gg.update_param(uid, "danger", "boom", Param::boolean(true));
+            assert!(r.is_err(), "the panic reaches the caller as an error: {r:?}");
+            assert!(r.unwrap_err().contains("panic"), "and says it was a panic");
+        }
+        // The lock IS the assertion: a poisoned mutex makes every later `.lock().unwrap()` panic.
+        assert!(g.lock().is_ok(), "the graph mutex is not poisoned");
+        assert!(g.lock().unwrap().contains(uid), "and the graph is still readable");
+    }
+
+    #[test]
+    fn a_panicking_setup_is_the_nodes_boot_error_not_a_lost_process() {
+        // `seed_node` runs `on_param_changed` then `setup` at construction — inside `add_node`,
+        // under the same lock. A panic here used to unwind straight through `Graph::add_node`.
+        let g = std::sync::Arc::new(std::sync::Mutex::new(Graph::new()));
+        {
+            let mut gg = g.lock().unwrap();
+            gg.register_dyn_type(&PANICKY_MANIFEST, Box::new(|_| Box::new(PanickyHooks)));
+            // A node born with the param already set panics during its seed replay.
+            let mut params = gg.default_params_of("_Panicky").unwrap();
+            params.get_mut("danger").unwrap().insert("boom".into(), Param::boolean(true));
+            let uid = gg.add_node("_Panicky", Some(params)).unwrap();
+            assert!(
+                gg.nodes[&uid].last_error.as_deref().is_some_and(|e| e.contains("panic")),
+                "the panic is the node's error: {:?}",
+                gg.nodes[&uid].last_error
+            );
+        }
+        assert!(g.lock().is_ok(), "the graph mutex is not poisoned");
     }
 
     #[test]
