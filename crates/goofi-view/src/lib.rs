@@ -122,7 +122,15 @@ impl MethodSet {
     }
 }
 
-/// Desired reduction of one axis to at most `max` entries via `method`.
+/// Desired reduction of one axis to `max` BINS via `method`.
+///
+/// Bins, not output entries — the distinction matters for `Envelope`, which emits a (min, max)
+/// pair per bin and so returns `2 * max` values. That is deliberate and is what the caller wants:
+/// `capacity.ts` sends `max` = the viewer's pixel WIDTH, and a waveform renders one min/max pair
+/// per pixel column. (This doc line used to say "at most `max` entries", which reads as a bug in
+/// `envelope_axis`. It is not — halving the bin count to satisfy that wording would halve every
+/// waveform's resolution.) `Subsample` and `Area` emit one value per bin, so for them bins and
+/// entries coincide.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AxisReduce {
     pub dim: i32,

@@ -176,8 +176,16 @@ inverse; `CommandHistory` stores one *toggle* per entry (its inverse when applie
 the forward when undone) so redo is uid-stable, filtered per session. The client
 records exactly one `graph_cmd` per successful mutating RPC and delegates
 undo/redo to the manager — **so `CommandHistory::apply` must record every command,
-including a forward no-op**, or the two stacks desync 1:1. Layout/view undo (panels,
-tabs, viewport) stays client-local.
+including a forward no-op**, or the two stacks desync 1:1. **Layout undo is manager-owned
+too** (A moved the arrangement onto the doc as an ordinary command); only the *viewpoint* —
+the page in front, the focused panel, each editor's sub-patch depth — stays client-local,
+because it is this client's alone and is never converged.
+
+`apply` also **gates on `Command::precondition`, and `flip` deliberately does not.** The
+idempotent guards inside `execute` exist so a stale toggle converges instead of wedging a
+session's undo stack; a first-hand RPC earns no such benefit of the doubt, and eight ops
+once answered `{ok:true}` for work they had not done. Tolerance belongs to replay,
+strictness to the fresh caller — separated at one seam rather than duplicated per call site.
 
 ### Data plane — `/data/<node>/<slot>` WS
 **One stream per (node, output slot)**, regardless of how many viewers watch it.
@@ -481,6 +489,50 @@ into an instance that had held other nodes renumbered everything and broke every
 links survived, because they are remapped inside the load. The uid was never missing: a node record's
 map *key* has always been its uid hex. `clear()` also resets the node clock, so a patch loaded an hour
 in behaves as it does at boot.
+
+### B — boundary hardening (2026-08-10)
+
+Driven by two external reviews (`gpt-5.6-terra`, one Rust and one frontend). Roughly half of
+what they raised was declined with reasons — the plan's exclusion table records which and why,
+and one `high` finding was built entirely on a **stale sentence in this file**, now fixed. What
+survived verification shared one shape: **a tolerant path reached by a strict caller.**
+
+**Tolerance belongs to replay; strictness belongs to the fresh caller.** `Command::execute`'s
+idempotent guards exist because an `Err` inside `CommandHistory::flip` permanently wedges a
+session's undo stack. But `apply` — the first-hand RPC path — called the same `execute`, so
+eight ops answered `{ok:true}` for work they had not done. The gate is `Command::precondition`,
+checked in `apply` and never in `flip`. `wire_boundary`'s inner check reuses `set_stub_inner`'s
+own algebra (extracted as `stub_wire_dtype`) rather than growing a second copy.
+
+**A `Compound` now rolls back.** It is the restoration unit undo replays, and the bridge gates
+its CRDT re-mirror on `is_ok()` — so a half-applied failure was a graph mutation no client was
+told about. Rollback, not preflight: a compound's later children are validated against a graph
+its earlier children build, so there is no pre-state to check them against.
+
+**A restarted node carries ONE manifest.** `restart_node` never assigned `entry.manifest`,
+defended by a comment that was true when it only served crash recovery — and made false by W1's
+live patch-node editing without a line of that function changing. Under rescan the `type_name`
+is stable while the *interface* is not. This is the cautionary shape of the whole pass: **a new
+feature can invalidate an old assumption at a distance, and nothing in the diff shows it.**
+
+**A lifecycle panic is a node error.** `process` was already contained; `setup`,
+`on_param_changed` and `on_param_refreshed` were not — and unlike `process` they run under the
+graph mutex the bridge holds, which is locked with `.lock().unwrap()` throughout. One node's
+panic poisoned it and took the control plane down permanently.
+
+**A fresh session is a generation boundary, not a document swap.** `SyncClient.reset()` installed
+an empty replica while `nodes`/`links`/`instances`/`globals` and the per-uid view stores stayed
+mounted — and an empty manager doc answers with a transaction that changes no Yjs type, so the
+observer never fired. Restarting the backend under an open tab left the old graph on screen.
+**The fixture had to deliver an empty transaction to catch it**; one that seeded the replacement
+doc passes against the bug.
+
+Also: `resolve_stub` carries a visited set (a self-referential stub in a hand-edited `.gfi`
+overflowed the stack, which *aborts* rather than panicking); `Uid::from_hex` admits only the
+canonical 12-hex domain, which makes `next_uid`'s `+ 1` total at every site; `rename_node`
+refuses quotes and backslashes, because a display name is spliced into `nd()` expression source;
+a refused cable no longer stays drawn; and the drop counter moved from the header to the stream
+that drops.
 
 ### A — one op vocabulary, and layout stops being the frontend's (2026-08-10)
 
