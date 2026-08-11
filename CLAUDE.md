@@ -72,6 +72,17 @@ These are hard expectations, in priority order. They override speed.
    skipped, say that. State what is verified plainly; don't claim done what you
    haven't run.
 
+8. **A double or fixture that cannot express the failure makes a mutation proof theatre.**
+   This cost six real defects in one day, including a Critical. `FakeSocket.readyState` was
+   hard-coded to `OPEN`, so a resize proposal dropped on a CONNECTING socket was invisible.
+   `FakeTerm.open` didn't insert its element, hiding two terminals stacked in one host. A
+   single-node fixture hid an fps counter summing across streams for two days. A uid test
+   loading into a *fresh* instance passed against code that renumbered every node.
+   The question is not "does this stand in for the real thing?" but **"can this reproduce the
+   failure I am trying to prevent?"** — and the way to answer it is to **run the broken variant
+   against your fixture and watch it pass**. Three implementers did exactly that and caught
+   their own hollow tests before shipping them.
+
 ### Audit-driven hardening (multi-agent)
 
 The proven way to harden a subsystem — or the whole codebase — is a **broad,
@@ -431,6 +442,45 @@ galleries — and a great deal more test code. What it bought is a declarative i
 component-to-component style reach-ins, and an app usable on a phone. The 2026-07-29 capstone audit
 found **zero critical and zero correctness defects in the graph, data or CRDT planes**; its
 important-tier items are fixed.
+
+### H — an agent runs inside the patch (2026-08-10)
+
+`spawn_harness` starts a harness (`claude`, `codex`, `opencode`) on a PTY with **cwd = the workspace
+mount**, streamed to an `agent` panel over `/term/<instance_id>` (binary frames are PTY bytes, text
+frames are JSON control). `list_harnesses`/`spawn_harness`/`stop_harness` are **control-only** — an
+agent must not spawn or kill agents.
+
+**Identity is structural: one MCP server, many addresses.** `/mcp` is the central endpoint any
+external agent uses; `spawn_harness` mints **`/mcp/<instance_id>`** and writes *that* URL into the
+config it hands its harness, so the address is minted by goofi and never travels through the agent —
+nothing to spoof, nothing to validate. `stop_harness` drops the route. A **path, not a port**: a port
+per harness buys the same property plus a listener, an accept loop and `TIME_WAIT` on relaunch.
+
+**Orientation is `AGENTS.md` alone.** Seeded into a **new** workspace only (never on load), beside a
+`CLAUDE.md` holding `@AGENTS.md` — one text for all three harnesses. The MCP `initialize.instructions`
+channel was **removed**: measurement showed codex *does* read it but surfaces it as one namespace
+blurb among ~180 tools, and never acted on it. Source is `goofi-bridge/src/orientation.md`,
+`include_str!`d. **Known gap:** a `.gfi` saved before this gets no orientation at all.
+
+**No server-side terminal emulator.** The spec's `wezterm-term` grid was cut: the xterm.js `Terminal`
+lives in a client store keyed by `instance_id`, so scrollback survives closing and reopening a panel,
+and a resize nudge makes a full-screen TUI repaint on a fresh attach. **History is allowed to be lost
+on a page reload** — for an alternate-screen TUI a replay reconstructs a stale screen the app is about
+to overwrite anyway. **Closing a view is not killing an agent**: the badge raises detach-or-kill.
+
+**The Origin/Host allowlist covers every route *and the WebSocket upgrades*.** `/control`'s WS is
+CORS-exempt and allowed full cross-origin read+write — strictly more exposure than `/mcp`. `/term`
+made it urgent. It is a drive-by guard, not auth; this app stays single-user and local by design.
+
+**`.goofiignore`** (not `.ignore` — ripgrep and fd read that as a *search* ignore, and the workspace is
+an agent's cwd) says what not to package. Its rules are read **inside** the one `files()` walk that
+serves both the pack and the fingerprint, so the two cannot be handed different lists.
+
+**A load restores the uids the patch was saved with.** `load_doc` used to mint fresh ones, so loading
+into an instance that had held other nodes renumbered everything and broke every panel binding — while
+links survived, because they are remapped inside the load. The uid was never missing: a node record's
+map *key* has always been its uid hex. `clear()` also resets the node clock, so a patch loaded an hour
+in behaves as it does at boot.
 
 ### A — one op vocabulary, and layout stops being the frontend's (2026-08-10)
 
