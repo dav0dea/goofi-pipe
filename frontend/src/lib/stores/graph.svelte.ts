@@ -199,6 +199,9 @@ export class GraphStore {
 			node.stage = rt.stage;
 			node.error = rt.error ?? null;
 		}
+		// The overlay just rewrote member errors, and a same-session reconnect fires no doc
+		// transaction — so nothing else would refresh the collapsed facades above them.
+		this._recomputeInstanceErrors();
 		this.savePath = snap.save_path;
 		this.unsavedChanges = snap.unsaved_changes;
 
@@ -358,7 +361,14 @@ export class GraphStore {
 					// healthy respawn's null clears the stale chip. Applied unconditionally
 					// when present so backend truth wins even when no diff-driven `error`
 					// event fired.
-					if ('error' in ev.payload) t.error = ev.payload.error ?? null;
+					if ('error' in ev.payload) {
+						t.error = ev.payload.error ?? null;
+						// A collapsed sub-patch's health is DERIVED from its descendants and cached, so
+						// every writer of a node's `error` has to invalidate it — not just the discrete
+						// `error` event. This plane in particular is the one that heals a MISSED
+						// transition, which made it the path where staleness survived longest.
+						this._recomputeInstanceErrors();
+					}
 				}
 				// A ⟳ refresh finished for these params on this very push (the node
 				// re-scanned and now carries fresh options) — lift each spinner exactly
@@ -374,7 +384,10 @@ export class GraphStore {
 				const t = this._realNode(ev.payload.node);
 				if (t) {
 					t.stage = ev.payload.stage;
-					if (ev.payload.error !== undefined) t.error = ev.payload.error;
+					if (ev.payload.error !== undefined) {
+						t.error = ev.payload.error;
+						this._recomputeInstanceErrors(); // derived facade health — see `state_update`
+					}
 				}
 				break;
 			}
@@ -918,11 +931,23 @@ export class GraphStore {
 
 	/** Derive a node's sub-patch membership from the doc's mirrored scope forest. Flat model:
 	 * `members` is keyed by uid, so `local_name` is just the uid (no template locals). ROOT → null. */
-	private _membershipFromDoc(uid: string): { instance: string; local_name: string } | null {
+	private _membershipFromDoc(
+		uid: string,
+		index: Map<string, string>
+	): { instance: string; local_name: string } | null {
+		const instance = index.get(uid);
+		return instance ? { instance, local_name: uid } : null;
+	}
+
+	/** uid -> owning instance id, built ONCE per reconcile. Read per node, this was a full walk of
+	 * every instance view for every node — an O(nodes x instances) term on a path that runs on every
+	 * single doc transaction, including ones that touched only a global or a layout entry. */
+	private _membershipIndex(): Map<string, string> {
+		const index = new Map<string, string>();
 		for (const iv of instanceViews(this._sync.doc)) {
-			if (uid in iv.members) return { instance: iv.uid, local_name: uid };
+			for (const member of Object.keys(iv.members)) index.set(member, iv.uid);
 		}
-		return null;
+		return index;
 	}
 
 	/** Build `this.nodes` from the CRDT doc (Phase-2 node-identity read cutover): each real node is
@@ -934,11 +959,15 @@ export class GraphStore {
 	private _reconcileNodesFromDoc(): void {
 		if (!this.nodeTypes?.length) return; // no catalog yet → keep the current nodes; rebuild when it lands
 		const doc = this._sync.doc;
+		// Both indexes are built ONCE per reconcile rather than per node: the catalog lookup was a
+		// linear `find` over every type, and membership was a full instance walk.
+		const byType = new Map(this.nodeTypes.map((t) => [t.type, t]));
+		const membership = this._membershipIndex();
 		const next: NodeInstanceInfo[] = nodeViews(doc).map((nv) => {
 			const existing = this._realNode(nv.uid);
-			const catalog = this.nodeTypes?.find((t) => t.type === nv.type);
+			const catalog = byType.get(nv.type);
 			const runtime: RuntimeOverlay = existing ? this._extractRuntime(existing) : this._seedRuntime(nv.uid);
-			runtime.membership = this._membershipFromDoc(nv.uid);
+			runtime.membership = this._membershipFromDoc(nv.uid, membership);
 			const viewers = (viewersJson(doc, nv.uid) ?? {}) as NodeInstanceInfo['viewers'];
 			return assembleNode(nv, docParams(doc, nv.uid), viewers, catalog, runtime);
 		});
