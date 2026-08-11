@@ -1720,13 +1720,27 @@ impl Graph {
         let entry = self.nodes.get_mut(&uid).expect("looked up above");
         // Dropping the old instance never waits: a `DetachedHandle`'s Drop only signals its
         // worker, which reaps itself off this thread.
+        //
+        // The MANIFEST goes with the instance. It is the graph's whole description of this node —
+        // link validation, schema projection, `/data` target checks and the scheduler's trigger
+        // policy all read it — and the rescan path re-registers a stable `type_name` over a
+        // possibly-reshaped interface. Keeping the old one here (which this did until the
+        // boundary-hardening pass) left the graph describing a node that is no longer running:
+        // a slot the edit added was unlinkable, and one it removed still accepted wires.
+        entry.manifest = manifest;
         entry.exec = exec;
         entry.params = params;
-        // `inputs` is left as it stands: the manifest is unchanged (same registered type), so its
-        // slots already match, and each holds the last frame delivered — same rationale as the
-        // multi cells above.
+        // Manifest-derived caches, REBUILT rather than carried. A slot that survived the reshape
+        // by name keeps its last frame (a live graph should not blink — same rationale as the
+        // multi cells above); one that did not is dropped, because its `&'static str` key no
+        // longer names anything the node will read.
+        let mut prior = std::mem::take(&mut entry.inputs);
+        entry.inputs =
+            manifest.inputs.iter().filter(|s| !s.multi).map(|s| (s.name, prior.shift_remove(s.name).flatten())).collect();
         entry.multi_inputs = multi_inputs;
         entry.outputs = manifest.output_buffer();
+        entry.last_outputs.retain(|slot, _| manifest.outputs.iter().any(|o| o.name == *slot));
+        entry.has_trigger_inputs = manifest.inputs.iter().any(|i| i.trigger_process);
         entry.ctx = ctx;
         entry.last_error = last_error;
         entry.trigger_pending = false;
@@ -1736,7 +1750,25 @@ impl Graph {
         // `index_counters` deliberately CARRY OVER: `meta["index"]` is a stream-position counter,
         // and restarting it at 0 would regress the index downstream consumers dirty-check on.
         // `bindings` are left untouched — their compiled handles are evaluator-owned and may only
-        // be dropped through `release_entry_bindings`. `last_outputs` stays so viewers don't blink.
+        // be dropped through `release_entry_bindings`.
+
+        // A wire into or out of a slot the reshape retired can never propagate, and cannot be
+        // repaired by the user either — the slot is not in the palette any more. Silently keeping
+        // it is the least diagnosable outcome: the editor draws a cable the runtime ignores. It
+        // goes here, under the same lock as the swap, through `remove_link` so the scheduler's
+        // derived state stays consistent.
+        let orphaned: Vec<(Uid, &'static str, Uid, &'static str)> = self
+            .links
+            .iter()
+            .filter(|l| {
+                (l.node_in == uid && self.input_slot_type(uid, l.slot_in).is_none())
+                    || (l.node_out == uid && self.output_slot_type(uid, l.slot_out).is_none())
+            })
+            .map(|l| (l.node_out, l.slot_out, l.node_in, l.slot_in))
+            .collect();
+        for (out, so, into, si) in orphaned {
+            let _ = self.remove_link(out, so, into, si);
+        }
         Ok(())
     }
 
@@ -5358,6 +5390,85 @@ mod tests {
         assert!(!g.register_unavailable("Oscillator".into(), "nope".into()));
         assert_eq!(g.unavailable_types().count(), 0);
         assert!(g.add_node("Oscillator", None).is_ok(), "the real type still instantiates");
+    }
+
+    // The same runtime type after its file was edited to RESHAPE it — the case `restart_node`
+    // exists for since live patch-node editing shipped. v1 takes a triggering `alpha`; v2 renames
+    // it to `beta`, drops the trigger, and adds an output. Same `type_name` throughout, because
+    // that is what a rescan re-registers under.
+    static RESHAPE_IN_V1: &[SlotDecl] = &[SlotDecl {
+        name: "alpha",
+        kind: SlotType::Array,
+        trigger_process: true,
+        multi: false,
+    }];
+    static RESHAPE_IN_V2: &[SlotDecl] = &[SlotDecl {
+        name: "beta",
+        kind: SlotType::Array,
+        trigger_process: false,
+        multi: false,
+    }];
+    static RESHAPE_OUT_V1: &[OutputDecl] = &[OutputDecl { name: "out", kind: SlotType::Array }];
+    static RESHAPE_OUT_V2: &[OutputDecl] = &[
+        OutputDecl { name: "out", kind: SlotType::Array },
+        OutputDecl { name: "extra", kind: SlotType::Array },
+    ];
+    static RESHAPE_V1: NodeManifest = NodeManifest {
+        type_name: "_Reshaper",
+        category: "runtime",
+        doc: "a runtime type whose interface changes between rescans",
+        inputs: RESHAPE_IN_V1,
+        outputs: RESHAPE_OUT_V1,
+        params: RT_PARAMS,
+        isolation: Isolation::InProcess,
+        factory: rt_stub_factory,
+    };
+    static RESHAPE_V2: NodeManifest = NodeManifest {
+        type_name: "_Reshaper",
+        category: "runtime",
+        doc: "a runtime type whose interface changes between rescans",
+        inputs: RESHAPE_IN_V2,
+        outputs: RESHAPE_OUT_V2,
+        params: RT_PARAMS,
+        isolation: Isolation::InProcess,
+        factory: rt_stub_factory,
+    };
+
+    #[test]
+    fn restart_node_adopts_the_new_manifest_after_a_rescan_reshapes_the_type() {
+        // `restart_node` served crash recovery, where "same registered type ⇒ same interface" held.
+        // Live patch-node editing broke that assumption without changing this code: rescan_nodes →
+        // register_dyn_type(Replaced) → restart_changed → restart_node, with a type_name that is
+        // stable while the INTERFACE is not. Carrying the old manifest through leaves the graph's
+        // link validation, schema projection and /data target checks describing a node that is no
+        // longer running.
+        let mut g = Graph::new();
+        g.register_dyn_type(&RESHAPE_V1, Box::new(|_| Box::new(RtSource { base: 1.0 })));
+        let uid = g.add_node("_Reshaper", None).unwrap();
+        let src = g.add_node("Oscillator", None).unwrap();
+        g.add_link(src, "out", uid, "alpha").unwrap();
+
+        g.register_dyn_type(&RESHAPE_V2, Box::new(|_| Box::new(RtSource { base: 2.0 })));
+        g.restart_node(uid).unwrap();
+
+        let m = g.manifest(uid).expect("a restarted node still has a manifest");
+        assert!(m.inputs.iter().any(|i| i.name == "beta"), "the graph reads the NEW manifest");
+        assert!(!m.inputs.iter().any(|i| i.name == "alpha"), "and not the old one");
+        assert!(m.outputs.iter().any(|o| o.name == "extra"), "a slot the rescan added is present");
+
+        // The manifest-derived caches followed it, which is what makes the new shape usable.
+        assert!(g.add_link(src, "out", uid, "beta").is_ok(), "the new input accepts a wire");
+        assert!(g.add_link(src, "out", uid, "alpha").is_err(), "the retired input does not");
+        // `has_trigger_inputs` is a CACHED field (set once at construction), and the scheduler's
+        // free-run decision reads it — so a stale one changes when the node runs. Read directly:
+        // a child module sees its parent's private fields, and production gains no test accessor.
+        assert!(!g.nodes[&uid].has_trigger_inputs, "the trigger flag was recomputed, not carried");
+        // The wire into the retired slot cannot propagate and cannot be repaired from the palette,
+        // so it goes with the slot rather than lingering as a cable the runtime ignores.
+        assert!(
+            !g.links_view().iter().any(|l| l.node_in == uid && l.slot_in == "alpha"),
+            "the link into the retired slot was pruned"
+        );
     }
 
     #[test]
