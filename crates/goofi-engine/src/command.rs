@@ -302,9 +302,28 @@ impl Command {
                 let mut inverses = Vec::with_capacity(cmds.len());
                 let mut last = Outcome::Ok;
                 for c in cmds {
-                    let (res, inv) = c.execute(g)?;
-                    last = res;
-                    inverses.push(inv);
+                    match c.execute(g) {
+                        Ok((res, inv)) => {
+                            last = res;
+                            inverses.push(inv);
+                        }
+                        // A Compound is a restoration UNIT (it is what `capture_subtree_restore`
+                        // hands to undo), and the bridge gates its CRDT re-mirror on `is_ok()` —
+                        // so abandoning a half-applied compound leaves a graph mutation no client
+                        // is ever told about, under a history entry that fails identically on
+                        // every retry. Unwind what landed, newest first, with the exact inverses
+                        // those children just handed back. `execute` runs wholly under the graph
+                        // lock, so nothing can race the rollback.
+                        Err(e) => {
+                            for inv in inverses.into_iter().rev() {
+                                // Best-effort by necessity: each inverse was minted moments ago
+                                // against this same graph, and stopping the unwind on one that
+                                // will not re-apply leaves strictly more wreckage than finishing.
+                                let _ = inv.execute(g);
+                            }
+                            return Err(e);
+                        }
+                    }
                 }
                 inverses.reverse(); // undo the children back-to-front
                 Ok((last, Command::Compound(inverses)))
@@ -1053,6 +1072,58 @@ mod tests {
         let err = add_into(Uid::from_hex("deadbeef")).execute(&mut g).unwrap_err();
         assert!(err.contains("scope"), "the error names the scope; got {err}");
         assert_eq!(g.node_uids().len(), before, "no node was created by the refused add");
+    }
+
+    #[test]
+    fn a_compound_that_fails_partway_rolls_its_landed_children_back_out() {
+        // A Compound is the restoration UNIT `capture_subtree_restore` hands to undo, and the
+        // bridge gates its CRDT re-mirror on `is_ok()` — so a partially applied failed compound is
+        // a graph mutation no client is ever told about, on top of a history entry that will fail
+        // the same way on every retry. The reachable case: delete a scope holding a Python
+        // patch-node, delete the node's file, rescan (the type leaves the catalog), then undo.
+        let mut g = Graph::new();
+        let before = g.node_uids().len();
+        let cmd = Command::Compound(vec![
+            add_into(None), // lands
+            Command::AddNode {
+                type_name: "NoSuchTypeAnywhere".into(), // fails: not in the catalog
+                pos: [0.0, 0.0],
+                uid: None,
+                name: None,
+                params: None,
+                exprs: vec![],
+                viewers: None,
+                scope: None,
+            },
+        ]);
+
+        assert!(cmd.execute(&mut g).is_err(), "the compound reports the child's failure");
+        assert_eq!(g.node_uids().len(), before, "and the first child's node did not survive it");
+    }
+
+    #[test]
+    fn a_compound_rollback_unwinds_newest_child_first() {
+        // The unwind order is the inverses' own: back-to-front, exactly as the successful path
+        // reverses them. A link restored by child 2 must come out before the node child 1 added,
+        // or the rollback trips over its own dangling endpoint.
+        let mut g = Graph::new();
+        let osc = g.add_node("Oscillator", None).unwrap();
+        let before_nodes = g.node_uids().len();
+        let before_links = g.links_view().len();
+        let cmd = Command::Compound(vec![
+            add_into(None),
+            Command::AddLink {
+                node_out: osc,
+                slot_out: "out".into(),
+                node_in: osc, // a self-link the graph refuses
+                slot_in: "out".into(),
+            },
+            Command::EditNode { uid: Uid::from_hex("ffffffffffff").unwrap(), name: None, pos: None },
+        ]);
+
+        assert!(cmd.execute(&mut g).is_err());
+        assert_eq!(g.node_uids().len(), before_nodes, "nodes unchanged");
+        assert_eq!(g.links_view().len(), before_links, "links unchanged");
     }
 
     #[test]
