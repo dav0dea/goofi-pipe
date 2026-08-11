@@ -2099,6 +2099,11 @@ impl Graph {
         // Globals are patch content: a load starts from a fresh system-seeded store (load_doc then
         // repopulates user globals from the `.gfi`). `dyn_types` stays (catalog, not content).
         self.globals = goofi_core::globals::GlobalStore::new();
+        // The node clock belongs to the PATCH, not the process: a patch loaded an hour in must
+        // compute what it would have computed at boot, so the next tick re-anchors it. Safe only
+        // because every node — and every `UfreqMeter`/`last_emit` reading this clock — was just
+        // dropped above; nothing survives to see the discontinuity.
+        self.start = None;
     }
 
     fn force_set_name(&mut self, uid: Uid, name: &str) {
@@ -6855,6 +6860,39 @@ mod tests {
         assert_eq!(first_f32(&g.latest_frame(n, "out").unwrap()), 0.0);
         g.tick_at(t0 + Duration::from_millis(250)); // 0.25 s later
         assert!((first_f32(&g.latest_frame(n, "out").unwrap()) - 0.25).abs() < 1e-4);
+    }
+
+    #[test]
+    fn a_load_restarts_the_node_clock() {
+        use std::time::Duration;
+        // A patch loaded five minutes into a session must behave like the same patch loaded at
+        // boot. The load happens at a genuinely ADVANCED clock — at t0 the broken code and the
+        // fixed one agree, so a fixture that loads at t≈0 proves nothing.
+        let mut g = Graph::new();
+        let n = g.add_node("_TestNow", None).unwrap();
+        let t0 = Instant::now();
+        g.tick_at(t0);
+        let t5m = t0 + Duration::from_secs(300);
+        g.tick_at(t5m);
+        assert_eq!(
+            first_f32(&g.latest_frame(n, "out").unwrap()),
+            300.0,
+            "the session clock genuinely advanced before the load"
+        );
+
+        let doc = g.serialize();
+        g.load_doc(&doc).unwrap();
+        g.tick_at(t5m); // the loaded patch's first tick re-anchors the reference
+        assert_eq!(
+            first_f32(&g.latest_frame(n, "out").unwrap()),
+            0.0,
+            "a loaded patch starts its clock at zero, whenever it was loaded"
+        );
+        g.tick_at(t5m + Duration::from_millis(250));
+        assert!(
+            (first_f32(&g.latest_frame(n, "out").unwrap()) - 0.25).abs() < 1e-4,
+            "and advances from there"
+        );
     }
 
     #[test]
