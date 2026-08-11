@@ -19,8 +19,19 @@ export function formatUpdateRate(stats: NodeStats | null | undefined): string | 
 	return `${fmtRate(stats.updates_per_second)} upd/s`;
 }
 
-/** Labelled rows for the metadata panel, or `[]` when no stats have arrived yet. */
-export function nodeStatsRows(stats: NodeStats | null | undefined): { label: string; value: string }[] {
+/** Labelled rows for the metadata panel, or `[]` when no stats have arrived yet.
+ *
+ * `drops` is the SELECTED SLOT's coalescing rate (`frames.dropRate`), which is why it sits here
+ * rather than in the app header: fps up there is one number for the whole page, so a drop total
+ * summed across streams could not be read against it. Null — no stream bound — omits the row
+ * entirely, while a running stream dropping nothing still shows `0.0/s`, because that reading is
+ * the one a user checks against and its absence would be ambiguous with "not running". */
+export function nodeStatsRows(
+	stats: NodeStats | null | undefined,
+	drops?: number | null
+): { label: string; value: string }[] {
 	if (!stats) return [];
-	return [{ label: 'Update rate', value: `${fmtRate(stats.updates_per_second)} upd/s` }];
+	const rows = [{ label: 'Update rate', value: `${fmtRate(stats.updates_per_second)} upd/s` }];
+	if (drops != null) rows.push({ label: 'Dropped', value: `${drops.toFixed(1)}/s` });
+	return rows;
 }

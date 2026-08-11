@@ -22,6 +22,7 @@ class MockWorker {
 }
 
 let subscribeFrames: typeof import('./frames').subscribeFrames;
+let dropRate: typeof import('./frames').dropRate;
 
 beforeEach(async () => {
 	vi.resetModules();
@@ -29,7 +30,7 @@ beforeEach(async () => {
 	MockWorker.instances = [];
 	vi.stubGlobal('Worker', MockWorker as unknown as typeof Worker);
 	vi.stubGlobal('URL', URL);
-	({ subscribeFrames } = await import('./frames'));
+	({ subscribeFrames, dropRate } = await import('./frames'));
 });
 
 afterEach(() => {
@@ -105,5 +106,36 @@ describe('subscribeFrames late join', () => {
 		const off = subscribeFrames('osc', 'out', (f) => got.push(f));
 		expect(got).toEqual([]);
 		off();
+	});
+});
+
+describe('per-stream drop accounting', () => {
+	it('attributes a coalesced frame to the stream that dropped it, not to the app', async () => {
+		// A "drop" is latest-wins coalescing: a frame overwritten before it painted. It was summed
+		// app-wide beside an fps counter that is emphatically NOT a sum, so the pair could not be
+		// read together. TWO streams is the smallest fixture that can tell "per stream" from
+		// "app-wide" — with one stream both arithmetics give the same number.
+		const offA = subscribeFrames('osc-a', 'out', () => {});
+		const offB = subscribeFrames('osc-b', 'out', () => {});
+		const w = MockWorker.instances[0];
+		// Two frames on A before any flush → the first is coalesced away. B gets one, so it drops none.
+		w.emit({ node: 'osc-a', slot: 'out', frame: { shape: [1] } as unknown as DataFrame });
+		w.emit({ node: 'osc-a', slot: 'out', frame: { shape: [2] } as unknown as DataFrame });
+		w.emit({ node: 'osc-b', slot: 'out', frame: { shape: [3] } as unknown as DataFrame });
+		await vi.advanceTimersByTimeAsync(600); // past the meter window
+
+		expect(dropRate('osc-a', 'out')).toBeGreaterThan(0);
+		expect(dropRate('osc-b', 'out'), 'the quiet stream is not charged for its neighbour').toBe(0);
+		offA();
+		offB();
+	});
+
+	it('reports null for a stream nobody is watching', () => {
+		// Absent is not zero: `0/s` for a stream that is not running asserts something false.
+		expect(dropRate('osc-a', 'out')).toBeNull();
+		const off = subscribeFrames('osc-a', 'out', () => {});
+		expect(dropRate('osc-a', 'out')).toBe(0);
+		off();
+		expect(dropRate('osc-a', 'out'), 'and null again once the last viewer leaves').toBeNull();
 	});
 });

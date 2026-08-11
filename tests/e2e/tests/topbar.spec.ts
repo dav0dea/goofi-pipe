@@ -97,9 +97,12 @@ test('the header is one icon family on one chrome text size (Phil: de-clutter)',
 			`the fps readout (${skin.bg}) is unboxed`
 		).toBe(true);
 		expect(skin.fs, 'the fps readout shares the chrome size').toBe(tab);
-		const drops = hud.getByTestId('perf-drops');
-		await expect(drops, 'the drop-rate slot stays mounted instead of shifting FPS').toBeVisible();
-		await expect(drops).toHaveText(/^\s*\d+\/s\s*$/);
+		// The HUD is the paint rate ALONE. The drop counter that used to sit here summed coalesced
+		// frames across every stream, which put a total beside a number that is not one; a drop
+		// belongs to the stream whose frame was overwritten, so it moved to the Metadata panel
+		// beside that node's update rate.
+		await expect(hud).toHaveText(/^\s*\d+ fps\s*$/);
+		await expect(hud.getByTestId('perf-drops')).toHaveCount(0);
 
 		// Identity and action items share one overflow group and one visual rhythm. Measure the INK
 		// rather than the outer boxes: the text items deliberately borrow the clear space that each

@@ -1,6 +1,6 @@
 <script lang="ts">
 	import type { NodeInstanceInfo } from '$lib/api/control';
-	import { subscribeFrames } from '$lib/api/frames';
+	import { subscribeFrames, dropRate } from '$lib/api/frames';
 	import type { DataFrame } from '$lib/codec/decode';
 	import { metaEntries, formatMetaValue, metaPreview } from './metaFormat';
 	import { nodeStatsRows } from './nodeStats';
@@ -56,10 +56,24 @@
 		}))
 	);
 
+	// The selected slot's coalescing rate, polled rather than derived: a RATE has to keep falling
+	// when frames stop arriving, and this panel only re-renders when one does. Same 250ms cadence
+	// the TopBar's paint counter uses, against the same 500ms meter window.
+	let drops = $state<number | null>(null);
+	$effect(() => {
+		const slot = activeSlot;
+		drops = null;
+		if (!slot) return;
+		const id = setInterval(() => (drops = dropRate(node.uid, slot)), 250);
+		return () => clearInterval(id);
+	});
+
 	// Node-level execution telemetry (the measured update rate), pushed on the status
 	// plane independent of the data frame — so it shows even while we're still waiting
-	// for the first frame. Empty until the node's first NODE_STATS.
-	const statsRows = $derived(nodeStatsRows(node.stats));
+	// for the first frame. Empty until the node's first NODE_STATS. The drop rate joins it
+	// here — per (node, slot), which is the granularity a drop actually has, and beside the
+	// other reading it wants comparing against.
+	const statsRows = $derived(nodeStatsRows(node.stats, drops));
 </script>
 
 <section class="panel" class:bare={!showHeader}>

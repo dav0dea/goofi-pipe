@@ -17,6 +17,7 @@
 import { subscribeData } from './data';
 import { paintDelay } from './paintCap';
 import { perfStats } from './perfStats.svelte';
+import { RateMeter } from './rateMeter';
 import type { DataFrame } from '$lib/codec/decode';
 import { streamKey } from './streamKey';
 
@@ -31,6 +32,10 @@ interface Slot {
 	unsub: () => void;
 	/** When this slot last delivered, for most-starved-first fairness. */
 	lastFlush: number;
+	/** This stream's own coalescing rate. Per slot rather than app-wide: a drop belongs to the
+	 * stream whose frame was overwritten, and summing them put a total beside an fps counter that
+	 * is emphatically not a total — two numbers that could not be read together. */
+	drops: RateMeter;
 }
 
 const slots = new Map<string, Slot>();
@@ -112,11 +117,18 @@ export function subscribeFrames(node: string, slot: string, cb: FrameCallback): 
 	const k = streamKey(node, slot);
 	let s = slots.get(k);
 	if (!s) {
-		const slot_: Slot = { pending: null, current: null, cbs: new Set(), unsub: () => {}, lastFlush: 0 };
+		const slot_: Slot = {
+			pending: null,
+			current: null,
+			cbs: new Set(),
+			unsub: () => {},
+			lastFlush: 0,
+			drops: new RateMeter(nowMs())
+		};
 		slot_.unsub = subscribeData(node, slot, (frame) => {
 			// A still-pending frame overwritten before it painted is a dropped frame
-			// (latest-wins) — surface that to the perf HUD.
-			if (slot_.pending !== null) perfStats().dropped();
+			// (latest-wins) — charged to THIS stream, which is the one that dropped it.
+			if (slot_.pending !== null) slot_.drops.dropped();
 			slot_.pending = frame; // overwrite — latest wins
 			dirty.add(slot_);
 			requestFlush();
@@ -147,6 +159,16 @@ export function subscribeFrames(node: string, slot: string, cb: FrameCallback): 
 		dirty.delete(cur);
 		slots.delete(k);
 	};
+}
+
+/** Coalesced-frame rate for ONE stream — frames overwritten latest-wins before they painted,
+ * measured per (node, slot). `null` for a slot with no live subscriber: absent is not zero, and a
+ * panel reading `0/s` for a stream that is not running asserts something false. */
+export function dropRate(node: string, slot: string): number | null {
+	const s = slots.get(streamKey(node, slot));
+	if (!s) return null;
+	s.drops.tick(nowMs());
+	return s.drops.dps;
 }
 
 /** The latest frame for a (node, slot) while it has at least one live subscriber.

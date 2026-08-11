@@ -1,10 +1,16 @@
 <!--
-  Perf HUD (backlog #12) — a compact frame-rate / drop indicator in the TopBar.
-  Reads the app-wide perf stats singleton, which the frame layer (frames.ts)
-  feeds once per PAINT — one rAF flush, however many streams it repainted — and on
-  every dropped frame. The word "fps" is kept because it is now literally what the
-  number is; it used to be bumped per SLOT, which made it the sum of the open
-  streams' rates (~30 x N) under a label naming the 30 fps cap.
+  Perf HUD (backlog #12) — the app-wide paint rate, in the TopBar.
+  Reads the perf stats singleton, which the frame layer (frames.ts) feeds once per
+  PAINT — one rAF flush, however many streams it repainted. The word "fps" is kept
+  because it is literally what the number is; it used to be bumped per SLOT, which
+  made it the sum of the open streams' rates (~30 x N) under a label naming the
+  30 fps cap.
+
+  The drop counter that sat beside it is GONE (Phil, 2026-08-10). It summed
+  coalesced frames across every stream, so it was a total standing next to a
+  number that is emphatically not a total — the two could not be read against each
+  other. A drop belongs to the stream whose frame was overwritten, so it now lives
+  per (node, slot) in the Metadata panel beside that node's update rate.
 
   We drive `tick()` on a 250ms timer (the meter's own window is 500ms) so the
   numbers refresh without a perpetual rAF. Hidden when idle (no frames flowing)
@@ -13,7 +19,6 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { perfStats } from '$lib/api/perfStats.svelte';
-	import { Icon } from '$lib/ui';
 
 	const p = perfStats();
 
@@ -22,21 +27,16 @@
 		return () => clearInterval(id);
 	});
 
-	const active = $derived(p.fps > 0.05 || p.dps > 0.05);
+	const active = $derived(p.fps > 0.05);
 </script>
 
 {#if active}
 	<span
 		class="hud"
 		data-testid="perf-hud"
-		title="Screen paints per second, app-wide — capped at 30, and it does not climb with node count. Drops: latest-wins frames coalesced away, counted per stream."
+		title="Screen paints per second, app-wide — capped at 30, and it does not climb with node count."
 	>
 		<span class="fps">{p.fps.toFixed(0)} fps</span>
-		<!-- This slot stays present at zero. Occasional coalescing is normal, and mounting/unmounting
-		     the counter made that normal fluctuation shove the FPS readout sideways every 500ms. -->
-		<span class="drop" data-testid="perf-drops"
-			><Icon name="chevron-down" /> {p.dps.toFixed(0)}/s</span
-		>
 	</span>
 {/if}
 
@@ -54,14 +54,5 @@
 		font-variant-numeric: tabular-nums;
 		color: var(--text-dim);
 		white-space: nowrap;
-	}
-	/* Weight, not a status ink. A "drop" is latest-wins coalescing — `frames.ts` states that it
-	   costs nothing ("no viewer is starved and no queue grows") and the tooltip above says so to the
-	   user. This used to flip the whole HUD to `--warning`, the same amber the bar beside it paints
-	   on a LOST CONTROL CONNECTION, so a healthy 2-3 node patch sat amber at ~4% coalescing. There
-	   is no threshold that makes a designed behaviour a fault; pinned in theme/styleDrift.test.ts.
-	   It remains in the row at zero so its changing value cannot reflow the FPS counter. */
-	.drop {
-		font-weight: 600;
 	}
 </style>

@@ -38,7 +38,7 @@
 	// Mirror of PerfHud's own `{#if active}` gate, so the plan and the menu agree with the HUD
 	// about whether there is anything to show. A boolean derived, NOT `p.fps` read raw in an
 	// effect — fps ticks at 4Hz and would re-fire anything tracking it on every tick.
-	const hudActive = $derived(p.fps > 0.05 || p.dps > 0.05);
+	const hudActive = $derived(p.fps > 0.05);
 
 	// Save split-button dropdown — opened via the shared ContextMenu, which
 	// portals to <body> at --z-menu so it stacks above side panels.
