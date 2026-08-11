@@ -219,6 +219,33 @@ export class GraphStore {
 	 * history, which belongs to the graph that just went away — without this it
 	 * would show errors for nodes that no longer exist and could even merge a
 	 * reused node name's count across sessions. */
+	/** Drop every projection assembled from the OUTGOING document. A fresh backend session is a
+	 * GENERATION boundary, not merely a document swap: `SyncClient.reset()` hands us an empty
+	 * replica, but `nodes`/`links`/`instances`/`globals` and the per-uid inline-view and expansion
+	 * stores are plain state that nothing else clears.
+	 *
+	 * Reconciliation runs only from the doc observer, and only when a transaction changed a Yjs
+	 * type — and a fresh manager whose graph is EMPTY answers our state vector with a transaction
+	 * that changes nothing. So without this the browser keeps rendering the graph that went away,
+	 * on uids the new engine is about to mint again from 1: stale viewer kind and collapse state
+	 * bleeding onto whatever node reuses each id. */
+	private _resetProjection(): void {
+		for (const n of this.nodes) this._forgetUid(n.uid);
+		for (const iid of Object.keys(this.instances)) this._forgetUid(iid);
+		this.nodes = [];
+		this.links = [];
+		this.instances = {};
+		this.globals = [];
+		// `_snapshotRuntime` is deliberately NOT cleared here: `_replaceSnapshot` runs first and has
+		// already replaced it with the INCOMING session's overlay, so clearing would discard the
+		// runtime state this very hello just delivered — an errored node in the new session drawing
+		// healthy until the 2 Hz sweep. It is overwritten wholesale on every snapshot, so it can
+		// never carry the old session's state forward anyway.
+		// The arrangement is doc-derived too, and its store is a separate singleton — so it needs
+		// the same boundary, not merely the same document.
+		workspace().syncFromDoc({});
+	}
+
 	private _onWholesaleLoad(): void {
 		this.loadEpoch += 1;
 		// The client's undo/redo stacks are meaningless across a wholesale load: a fresh backend
@@ -291,6 +318,10 @@ export class GraphStore {
 					// the reused uids (silent corruption), and the reconnect would merge new content
 					// into the stale doc (ghost edges). Reset to a fresh empty doc NOW, synchronously,
 					// so it happens before this connection answers the server's binary hello SV.
+					// Projections first, then the replica: `_resetProjection` reads `this.nodes` to
+					// forget each uid's view state, and both must fall before the fresh session's
+					// first delta can land.
+					this._resetProjection();
 					this._sync.reset();
 					this._onWholesaleLoad();
 				}

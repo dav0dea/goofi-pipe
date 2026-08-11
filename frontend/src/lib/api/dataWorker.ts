@@ -10,6 +10,7 @@
 import { decodeData, type DataFrame } from '$lib/codec/decode';
 import { dataUrl } from './dataUrl';
 import { streamKey } from './streamKey';
+import { DemandTicker } from './demandTicker';
 
 interface SlotState {
 	node: string;
@@ -86,6 +87,7 @@ self.addEventListener('message', (e: MessageEvent) => {
 			const url = dataUrl(proto, self.location.host, m.node, m.slot);
 			st = { node: m.node, slot: m.slot, ws: null, url, closed: false, reconnectMs: 250, latestRaw: null, refs: 0, specs: [] };
 			slots.set(k, st);
+			syncTicker();
 			openWs(st);
 		}
 		st.refs++;
@@ -107,11 +109,13 @@ self.addEventListener('message', (e: MessageEvent) => {
 			st.closed = true;
 			st.ws?.close();
 			slots.delete(k);
+			syncTicker();
 		}
 	}
 });
 
-setInterval(() => {
+/** Drain every slot's latest-wins frame to the main thread. Armed only while slots exist. */
+function drain(): void {
 	for (const st of slots.values()) {
 		const raw = st.latestRaw;
 		if (!raw) continue;
@@ -129,4 +133,11 @@ setInterval(() => {
 			Array.from(transfer) as Transferable[]
 		);
 	}
-}, TICK_MS);
+}
+
+/** The decode ticker services SUBSCRIBED slots, so it runs only while there are some. Call after
+ * every `slots` insert/delete; `DemandTicker.sync` is idempotent. */
+const ticker = new DemandTicker(drain, TICK_MS);
+function syncTicker(): void {
+	ticker.sync(slots.size);
+}

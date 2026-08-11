@@ -39,6 +39,7 @@
 	} from '$lib/editor/snap';
 	import { graph } from '$lib/stores/graph.svelte';
 	import { history } from '$lib/stores/history.svelte';
+	import { notify } from '$lib/stores/notify.svelte';
 	import { ui, slotKey, type SlotClickSeed } from '$lib/stores/ui.svelte';
 	import { selection } from '$lib/stores/selection.svelte';
 	import { workspace } from '$lib/workspace/workspace.svelte';
@@ -574,12 +575,23 @@
 		// Otherwise a normal link. A top-level wire to a collapsed sub-patch port
 		// (target/source is an instance id, handle is the boundary id) is sent
 		// as-is: the bridge splices it to the inner member's flat link.
-		void g.addLink({
-			node_out: c.source,
-			node_in: c.target,
-			slot_out: c.sourceHandle,
-			slot_in: c.targetHandle
-		});
+		void g
+			.addLink({
+				node_out: c.source,
+				node_in: c.target,
+				slot_out: c.sourceHandle,
+				slot_in: c.targetHandle
+			})
+			.catch((e) => {
+				// The same trade the boundary path above makes, and for the same reason: SvelteFlow
+				// drew this cable optimistically BEFORE we ran, and a REFUSED wire produces no doc
+				// echo to rebuild the edges from — so the ghost has to be stripped here or it hangs
+				// off the pill indefinitely, a cable the authoritative graph does not have. The
+				// manager's message names the actual reason (dtype, duplicate, an endpoint naming
+				// nothing wirable), which is the only place the user can learn it.
+				notify().failure('Connect', e);
+				reconcileTick++;
+			});
 	}
 
 	/** Drag an existing edge's endpoint to a new slot — re-target in place instead
@@ -597,15 +609,23 @@
 		const oldSo = oldEdge.sourceHandle;
 		const oldSi = oldEdge.targetHandle;
 		if (!c.source || !c.target || !c.sourceHandle || !c.targetHandle || !oldSo || !oldSi) return;
-		void history().transaction('Reconnect link', async () => {
-			await g.removeLink({ node_out: oldEdge.source, node_in: oldEdge.target, slot_out: oldSo, slot_in: oldSi });
-			await g.addLink({
-				node_out: c.source as string,
-				node_in: c.target as string,
-				slot_out: c.sourceHandle as string,
-				slot_in: c.targetHandle as string
+		void history()
+			.transaction('Reconnect link', async () => {
+				await g.removeLink({ node_out: oldEdge.source, node_in: oldEdge.target, slot_out: oldSo, slot_in: oldSi });
+				await g.addLink({
+					node_out: c.source as string,
+					node_in: c.target as string,
+					slot_out: c.sourceHandle as string,
+					slot_in: c.targetHandle as string
+				});
+			})
+			// `transaction` re-throws so the caller sees a refused move, which under a bare `void`
+			// was an unhandled rejection AND an edge left drawn where the drag dropped it. The
+			// rebuild puts every cable back where `g.links` actually says it is.
+			.catch((e) => {
+				notify().failure('Reconnect', e);
+				reconcileTick++;
 			});
-		});
 	}
 
 	function onEdgeClick(args: { edge: Edge; event: MouseEvent }): void {
