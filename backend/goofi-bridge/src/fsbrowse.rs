@@ -63,7 +63,7 @@ fn normalize(path: &Path) -> PathBuf {
     } else {
         std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/")).join(path)
     };
-    if let Ok(real) = abs.canonicalize() {
+    if let Ok(real) = goofi_core::path::canonical(&abs) {
         return real;
     }
     // Not on disk, so resolve `.`/`..` ourselves before walking ancestors: `Path::file_name()`
@@ -73,7 +73,7 @@ fn normalize(path: &Path) -> PathBuf {
     let mut cur = abs.as_path();
     while let Some(parent) = cur.parent() {
         tail.push(cur.file_name().unwrap_or_default().to_os_string());
-        if let Ok(mut real) = parent.canonicalize() {
+        if let Ok(mut real) = goofi_core::path::canonical(parent) {
             real.extend(tail.iter().rev());
             return real;
         }
@@ -105,8 +105,11 @@ fn home() -> PathBuf {
         .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/")))
 }
 
+/// The one place a browsed path becomes a string for the client. Every `path`, `parent` and root
+/// in a listing goes through here, which is what makes goofi's spelling — `/`, on every platform —
+/// something the sidebar's raw string-equality highlight can rely on.
 fn display(path: &Path) -> String {
-    path.to_string_lossy().into_owned()
+    goofi_core::path::to_slash(path)
 }
 
 /// The sidebar shortcuts. Normalized through the same function as `path`, or the "active"
@@ -155,6 +158,10 @@ fn entries(base: &Path) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+    // Expectations are built with these rather than with `display`/`normalize`: asserting with the
+    // function under test on both sides would accept, say, a `normalize` that reversed the segments
+    // it re-attaches. These state the SPELLING the contract promises, independently of it.
+    use goofi_core::path::{canonical, to_slash};
 
     /// A unique directory removed on drop. The workspace carries no `tempfile` dependency
     /// and one test-only fixture does not justify adding it.
@@ -221,16 +228,25 @@ mod tests {
         // Compare against a literal built from the temp dir itself, NOT against `normalize(..)`
         // — asserting with the function under test on both sides would accept, for example, a
         // normalize that reversed the path segments it re-attaches.
-        let expected = std::fs::canonicalize(tmp.path()).unwrap().to_string_lossy().into_owned();
+        let expected = to_slash(&canonical(tmp.path()).unwrap());
         assert_eq!(listing["path"].as_str().unwrap(), expected);
         assert_eq!(names(&listing), ["patch.gfi"]);
     }
 
+    /// The filesystem root, whatever this platform calls it. Derived from a real path rather than
+    /// written as `/`, because on Windows `/` is not a root at all: it absolutizes against the
+    /// current drive and comes back as `C:/`, so a hardcoded `/` tests nothing there.
+    fn root() -> String {
+        let real = canonical(&std::env::temp_dir()).expect("the temp dir canonicalizes");
+        to_slash(real.ancestors().last().expect("every path has a topmost ancestor"))
+    }
+
     #[test]
     fn parent_is_null_at_the_filesystem_root() {
-        let listing = list_dir(Some("/"));
+        let root = root();
+        let listing = list_dir(Some(&root));
 
-        assert_eq!(listing["path"].as_str().unwrap(), "/");
+        assert_eq!(listing["path"].as_str().unwrap(), root);
         assert!(listing["parent"].is_null(), "root has no parent to climb to");
     }
 
@@ -302,13 +318,15 @@ mod tests {
     #[test]
     fn an_unreadable_directory_lists_empty_instead_of_failing() {
         // Navigation must not error: the browser would keep showing the previous directory.
-        let listing = list_dir(Some("/definitely/not/a/directory"));
+        // Hung off a real root, so the path is genuinely absolute on every platform.
+        let missing = format!("{}definitely/not/a/directory", root());
+        let listing = list_dir(Some(&missing));
 
         assert_eq!(names(&listing), Vec::<String>::new());
         // The path echoes back EXACTLY, in order — this is the only test that reaches
         // `normalize`'s not-on-disk branch, so it has to pin the reassembled segments rather
         // than settle for "looks absolute".
-        assert_eq!(listing["path"].as_str().unwrap(), "/definitely/not/a/directory");
+        assert_eq!(listing["path"].as_str().unwrap(), missing);
     }
 
     #[test]
@@ -316,12 +334,12 @@ mod tests {
         // The Save-As case: the parent exists, the rest does not. `normalize` canonicalizes the
         // longest existing ancestor and re-attaches the tail — in the right order.
         let tmp = TempDir::new("newpath");
-        let real = std::fs::canonicalize(tmp.path()).unwrap();
+        let real = canonical(tmp.path()).unwrap();
         let target = tmp.path().join("new/deeper");
 
         let listing = list_dir(Some(&target.to_string_lossy()));
 
-        assert_eq!(listing["path"].as_str().unwrap(), real.join("new/deeper").to_string_lossy());
+        assert_eq!(listing["path"].as_str().unwrap(), to_slash(&real.join("new/deeper")));
     }
 
     #[test]
@@ -329,12 +347,12 @@ mod tests {
         // `..` has no `file_name()`, so the ancestor walk would silently drop it and land in a
         // different directory than the user typed.
         let tmp = TempDir::new("dotdot");
-        let real = std::fs::canonicalize(tmp.path()).unwrap();
+        let real = canonical(tmp.path()).unwrap();
         let target = tmp.path().join("missing/../also-missing");
 
         let listing = list_dir(Some(&target.to_string_lossy()));
 
-        assert_eq!(listing["path"].as_str().unwrap(), real.join("also-missing").to_string_lossy());
+        assert_eq!(listing["path"].as_str().unwrap(), to_slash(&real.join("also-missing")));
     }
 
     /// A file name this platform accepts but UTF-8 cannot express: raw bytes where names are bytes,
@@ -373,10 +391,16 @@ mod tests {
     #[test]
     fn resolve_expands_a_tilde_for_the_save_and_load_arms() {
         // `save`/`load` share this with the browser, so a path the user can navigate to is a
-        // path they can write to. Compared against the raw HOME string, not against `home()`.
+        // path they can write to. Compared against the raw HOME string, not against `home()` —
+        // only re-spelled, since HOME arrives in the platform's spelling and goofi answers in its
+        // own.
         let home = std::env::var("HOME").expect("HOME is set in the test environment");
+        let home = to_slash(Path::new(&home));
         assert_eq!(resolve("~/patches/x.gfi"), format!("{home}/patches/x.gfi"));
-        assert_eq!(resolve("/tmp"), "/tmp", "an absolute path is untouched");
+        // Hung off a real root: `/tmp` is absolute only where `/` is a root, and on Windows it
+        // resolves against the current drive instead.
+        let absolute = format!("{}tmp", root());
+        assert_eq!(resolve(&absolute), absolute, "an absolute path is untouched");
     }
 
     #[test]

@@ -106,8 +106,18 @@ async fn tool(addr: &str, path: &str, id: i64, name: &str, args: Value) -> (Stri
 /// hang with nothing to read.
 async fn read_until(ws: &mut Ws, want: &str) -> String {
     let mut seen = String::new();
+    let mut answered = false;
     let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
     while !seen.contains(want) {
+        // A real terminal answers ConPTY's cursor-position query, and the child stays BLOCKED
+        // until one does — goofi only answers on its behalf while nobody is attached, precisely so
+        // a live viewer can give the true position. This client is standing in for that viewer, so
+        // it has to behave like one; without this it is not a weak fixture but a wrong one, and
+        // every test here times out having seen exactly these four bytes.
+        if !answered && seen.contains('\u{1b}') && seen.contains("[6n") {
+            answered = true;
+            ws.send(Message::Binary(b"\x1b[1;1R".to_vec())).await.unwrap();
+        }
         let msg = match tokio::time::timeout_at(deadline, ws.next()).await {
             Err(_) => panic!("{want:?} never arrived; the PTY said {seen:?}"),
             Ok(Some(Ok(m))) => m,
@@ -169,7 +179,11 @@ async fn report(term: &mut Ws) -> String {
     term.send(Message::Binary(b"stty -echo; echo REA''DY\n".to_vec())).await.unwrap();
     read_until(term, "READY").await;
     term.send(Message::Binary(
-        b"printf 'CWD[%s]TERM[%s]COLOR[%s]LC[%s]HOME[%s]KEPT[%s]END\\n' \"$(pwd -P)\" \
+        // `E''ND` for the same reason `REA''DY` is spelled that way: the shell concatenates the
+        // quotes away so the OUTPUT ends in `END`, while the echoed command line shows `E''ND` and
+        // cannot satisfy the wait. Without it `read_until(…, "END")` returns on the echo — before
+        // the printf has run — and every field below reads the format string instead of a value.
+        b"printf 'CWD[%s]TERM[%s]COLOR[%s]LC[%s]HOME[%s]KEPT[%s]E''ND\\n' \"$(pwd -P)\" \
           \"$TERM\" \"$COLORTERM\" \"$LC_ALL\" \"$HOME\" \"$STATED_BY_THE_TEST\"\n"
             .to_vec(),
     ))
@@ -178,9 +192,16 @@ async fn report(term: &mut Ws) -> String {
     read_until(term, "END").await
 }
 
-/// One `KEY[value]` field out of that report.
+/// One `KEY[value]` field out of that report — the LAST such field, not the first.
+///
+/// The terminal echoes the `printf` line before the shell runs it, so `TERM[%s]` appears in the
+/// stream before `TERM[xterm-256color]` does. `stty -echo` cannot prevent that on every platform:
+/// ConPTY echoes on its own account, outside the line discipline `stty` speaks to. Reading the last
+/// occurrence is what makes this parser independent of whether the echo was suppressed, rather than
+/// dependent on a command that silently does nothing on Windows.
 fn field<'a>(seen: &'a str, key: &str) -> &'a str {
-    let rest = seen.split_once(key).unwrap_or_else(|| panic!("no {key} in {seen:?}")).1;
+    let at = seen.rfind(key).unwrap_or_else(|| panic!("no {key} in {seen:?}"));
+    let rest = &seen[at + key.len()..];
     rest.split_once(']').expect("a closed field").0
 }
 
@@ -205,10 +226,18 @@ async fn a_harness_runs_in_the_workspace_with_the_terminal_contract_overlaid() {
         .to_string();
     let (mut term, _) = connect_async(format!("ws://{addr}/term/{id}")).await.unwrap();
     let seen = report(&mut term).await;
-    assert_eq!(
-        std::path::Path::new(field(&seen, "CWD[")),
-        std::fs::canonicalize(state.mount()).unwrap(),
-        "the harness does not run in the patch's workspace: {seen:?}"
+    // The child reports its cwd in ITS OWN spelling: an MSYS `sh` maps `%TEMP%` onto `/tmp`, so the
+    // Windows path and this string name one directory under two schemes and can never compare
+    // equal. What IS comparable is the tail goofi minted — the nonce directory and the workspace
+    // inside it — which is unique to this run and so still proves the harness landed in this
+    // patch's workspace rather than merely in some directory.
+    let mount = state.mount();
+    let mut tail = mount.components().rev().map(|c| c.as_os_str().to_string_lossy().into_owned());
+    let (workspace, nonce) = (tail.next().unwrap(), tail.next().unwrap());
+    let want = format!("{nonce}/{workspace}");
+    assert!(
+        field(&seen, "CWD[").ends_with(&want),
+        "the harness does not run in the patch's workspace (wanted a cwd ending {want:?}): {seen:?}"
     );
 
     // A stated parent: a `TERM` no TUI will draw on, a colour answer of `no`, a locale that is not
@@ -230,9 +259,15 @@ async fn a_harness_runs_in_the_workspace_with_the_terminal_contract_overlaid() {
     assert_eq!(field(&seen, "COLOR["), "truecolor", "{seen:?}");
     assert_eq!(field(&seen, "LC["), "C.UTF-8", "a parent with no UTF-8 locale gets one: {seen:?}");
     assert_eq!(field(&seen, "KEPT["), "kept", "the stated parent never reached the child: {seen:?}");
-    // …and a variable goofi was never told about — `HOME`, the one the credentials follow — comes
-    // through untouched, which is the "inherited whole, no HOME redirection" half of the contract.
-    assert_eq!(field(&seen, "HOME["), std::env::var("HOME").unwrap_or_default(), "{seen:?}");
+    // …and `HOME` — the one the credentials follow — is NOT redirected into the workspace, which is
+    // the "inherited whole, no HOME redirection" half of the contract. Asserted by what it must not
+    // be, rather than against the parent's own string: an MSYS shell reports `/c/Users/philipp` for
+    // the directory Windows spells `C:\Users\philipp`, so byte equality would be testing that path
+    // translator instead of goofi. That the parent's environment reaches the child at all is
+    // already proven above by `KEPT`, on a variable no shell rewrites.
+    let home = field(&seen, "HOME[");
+    assert!(!home.is_empty(), "the child was handed no HOME at all: {seen:?}");
+    assert!(!home.contains(&nonce), "HOME was redirected into the workspace: {seen:?}");
 
     // Reap both: a leaked PTY child outlives the suite and corrupts every later measurement.
     call(&mut ctl, 2, "stop_harness", json!({ "instance": id })).await;
@@ -315,6 +350,13 @@ async fn a_stop_signals_first_and_kills_after_the_grace() {
     read_until(&mut term, "armed").await;
 
     call(&mut ctl, 2, "stop_harness", json!({ "instance": id })).await;
+    // The graceful ask is only OBSERVABLE where signals are. This harness traps SIGTERM and says
+    // so; on Windows there is no SIGTERM to trap — `taskkill` without `/F` is refused outright by a
+    // console process — so the harness leaves at the END of the grace rather than the start, and
+    // there is nothing to hear. Gated rather than deleted, because where the ask does happen it is
+    // a real guarantee worth keeping. What must hold on every platform is asserted below: the stop
+    // is announced, and the harness actually stops.
+    #[cfg(unix)]
     read_until(&mut term, "GOT-TERM").await;
     // A stop that has been asked for but not yet obeyed is its own state. Without it the roster
     // this arm broadcasts is byte-identical to the one before it — a vacuous event — and every
@@ -510,3 +552,35 @@ async fn the_roster_survives_a_reconnect() {
     assert!(hello["payload"]["harnesses"]["detected"].is_array(), "{hello}");
     state.release_mount();
 }
+
+
+/// A harness runs with NOBODY watching. That is not an edge case: an agent spawned over MCP has no
+/// panel open, and goofi is expected to work headless. On Windows ConPTY asks the terminal where
+/// the cursor is the moment the child starts and blocks it until something answers — so with no
+/// viewer attached there is nobody to answer, and the harness hangs before it runs a single
+/// command. Attaching afterwards cannot rescue it: the query went out to a broadcast with no
+/// subscribers and is gone.
+///
+/// `_deaf` prints on its own schedule and needs no input, so seeing its output through a socket
+/// that attached LATE proves the child was running the whole time it was unobserved.
+#[tokio::test]
+async fn a_harness_runs_with_nobody_watching_and_is_still_going_when_a_viewer_arrives() {
+    let (addr, state) = start_server().await;
+    let (mut ctl, _) = connect_async(format!("ws://{addr}/control")).await.unwrap();
+    recv_text(&mut ctl).await; // hello
+
+    let id = call(&mut ctl, 1, "spawn_harness", json!({ "harness": "_deaf" })).await["instance_id"]
+        .as_str()
+        .expect("a spawn answers an instance id")
+        .to_string();
+
+    // Deliberately no `/term` socket yet — this is the whole point of the test.
+    tokio::time::sleep(Duration::from_millis(600)).await;
+
+    let (mut term, _) = connect_async(format!("ws://{addr}/term/{id}")).await.unwrap();
+    read_until(&mut term, "armed").await;
+
+    call(&mut ctl, 2, "stop_harness", json!({ "instance": id })).await;
+    state.release_mount();
+}
+

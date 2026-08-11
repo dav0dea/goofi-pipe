@@ -16,6 +16,13 @@ type Ws = tokio_tungstenite::WebSocketStream<
     tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
 >;
 
+/// A path as goofi spells it back: `/` on every platform (see `goofi_core::path`). A test that
+/// compared against the platform's own spelling would pass on unix and pin the Windows bug — it
+/// once asserted `C:\Users\…` against the `C:/Users/…` the wire actually carries.
+fn spelled(p: &std::path::Path) -> String {
+    goofi_core::path::to_slash(p)
+}
+
 // Read leaves through the generic CRDT reader (the typed getters were removed). A whole-number
 // param comes back as an integer from `to_json`, so numeric reads compare via `as_f64`.
 fn doc_param_f64(doc: &goofi_crdt::GraphDoc, uid: &str, group: &str, name: &str) -> Option<f64> {
@@ -3586,7 +3593,10 @@ async fn list_dir_browses_the_backend_filesystem() {
     // No path ⇒ home, which is where the Save/Load modal opens on a fresh patch.
     let home = call(&mut ws, 1, "list_dir", json!({})).await;
     let home = &home["result"];
-    assert!(home["path"].as_str().unwrap().starts_with('/'), "an absolute path; got {home:?}");
+    assert!(
+        std::path::Path::new(home["path"].as_str().unwrap()).is_absolute(),
+        "an absolute path; got {home:?}"
+    );
     assert!(
         home["roots"].as_array().unwrap().iter().any(|r| r["label"] == "Home"),
         "the sidebar needs at least a Home root; got {:?}",
@@ -3601,7 +3611,8 @@ async fn list_dir_browses_the_backend_filesystem() {
     assert_eq!(src["kind"], json!("dir"));
     assert_eq!(src["is_gfi"], json!(false));
     assert_eq!(src["hidden"], json!(false));
-    assert_eq!(listing["result"]["parent"].as_str(), repo.parent().map(|p| p.to_str().unwrap()));
+    let parent = repo.parent().map(spelled);
+    assert_eq!(listing["result"]["parent"].as_str(), parent.as_deref());
 }
 
 #[tokio::test]
@@ -3671,13 +3682,13 @@ async fn a_save_names_the_patch_for_every_tab_and_for_the_next_one() {
             break m;
         }
     };
-    assert_eq!(ev["payload"]["save_path"].as_str(), path.to_str(), "the peer is told where");
+    assert_eq!(ev["payload"]["save_path"].as_str(), Some(spelled(&path).as_str()), "the peer is told where");
 
     // …and a tab opened afterwards — a reload — learns it from the snapshot alone, with no event
     // to catch. This is the half `save_path: null` made impossible.
     let (mut c, _) = connect_async(format!("{base}/control")).await.unwrap();
     let hello_c = recv_text(&mut c).await;
-    assert_eq!(hello_c["payload"]["save_path"].as_str(), path.to_str(), "a reload remembers");
+    assert_eq!(hello_c["payload"]["save_path"].as_str(), Some(spelled(&path).as_str()), "a reload remembers");
 }
 
 /// The stored path always names a file this patch was really written to or read from — because a
@@ -3700,7 +3711,7 @@ async fn only_a_patch_with_a_file_behind_it_keeps_a_name() {
     let nowhere = dir.path().join("no-such-dir").join("patch.gfi");
     let refused = call(&mut ws, 3, "save", json!({ "path": nowhere.to_string_lossy() })).await;
     assert!(refused.get("error").is_some(), "the save fails; got {refused}");
-    assert_eq!(save_path_on_connect(&base).await.as_deref(), path.to_str(), "the old home stands");
+    assert_eq!(save_path_on_connect(&base).await.as_deref(), Some(spelled(&path).as_str()), "the old home stands");
 
     // An upload (`load_text`) carries no file, so the patch it replaces the open one with is
     // UNNAMED. Inheriting the previous path here is the silent-overwrite hazard in its purest
@@ -3825,7 +3836,7 @@ async fn load_restores_the_graph_and_the_workspace_from_an_archive() {
         "the on-disk patch replaced the diverged graph"
     );
     // The title bar names the loaded patch, so the manager reports where it came from.
-    assert_eq!(save_path.unwrap()["payload"]["save_path"].as_str(), path.to_str());
+    assert_eq!(save_path.unwrap()["payload"]["save_path"].as_str(), Some(spelled(&path).as_str()));
 
     // The workspace came back with the patch, into a mount of the load's OWN — so nothing the
     // diverged patch had written can survive into the one that replaced it.

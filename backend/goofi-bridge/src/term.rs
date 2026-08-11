@@ -152,7 +152,13 @@ impl Harnesses {
             })
             .collect();
         let detected: Vec<Value> = self.detected.lock().unwrap().iter()
-            .map(|d| json!({ "harness": d.name, "path": d.path.to_string_lossy(), "version": d.version }))
+            .map(|d| {
+                json!({
+                    "harness": d.name,
+                    "path": goofi_core::path::to_slash(&d.path),
+                    "version": d.version,
+                })
+            })
             .collect();
         json!({ "instances": instances, "detected": detected })
     }
@@ -253,13 +259,14 @@ impl Harnesses {
         // Drain the PTY unconditionally: a child whose output nobody reads eventually blocks on a
         // full buffer, whether or not a panel is open. `send` failing means no socket is attached,
         // which is the normal state, so it is discarded rather than treated as an end.
+        let answering = inst.clone();
         std::thread::spawn(move || {
             let mut buf = [0u8; 8192];
             while let Ok(n) = reader.read(&mut buf) {
                 if n == 0 {
                     break;
                 }
-                let _ = output.send(buf[..n].to_vec());
+                let _ = output.send(answer_cursor_query(&answering, &buf[..n]));
             }
             // Announced AFTER the final send, which is what makes it a gate a viewer can trust: a
             // socket that waits on this has provably been offered everything the child wrote.
@@ -499,6 +506,42 @@ pub fn seed_orientation(mount: &Path) {
 /// reclaimed with the mount, since `release_mount` takes the nonce directory both live under.
 pub fn config_dir(mount: &Path, id: &str) -> PathBuf {
     mount.parent().unwrap_or(mount).join("harness").join(id)
+}
+
+/// The cursor-position query, and goofi's answer to it while nobody else can give one.
+///
+/// ConPTY asks the terminal where the cursor is the moment a child starts, and **blocks the child
+/// until something answers**. goofi keeps no terminal (see the module note), so with no viewer
+/// attached there is nobody to answer and the harness hangs before running a single command — and
+/// attaching later cannot rescue it, because the query went to a broadcast with no subscribers and
+/// is gone. That is not an edge case: an agent spawned over MCP has no panel open, and goofi is
+/// expected to run headless.
+///
+/// So goofi answers, but **only while no viewer is attached**. With one attached, xterm.js answers
+/// with the REAL cursor position, so a full-screen TUI asking the same question gets a true answer
+/// instead of this fiction — which is the whole reason this is conditional rather than blanket.
+/// The query goofi answers is also removed from what viewers receive: a socket attaching mid-query
+/// would otherwise answer it a second time, and the second reply arrives at the shell as typed
+/// input. A query split across two reads is not stitched back together; ConPTY emits these four
+/// bytes in one write, and the cost of missing one is a hang no worse than today's.
+fn answer_cursor_query(inst: &Instance, bytes: &[u8]) -> Vec<u8> {
+    const QUERY: &[u8] = b"\x1b[6n";
+    if inst.output.receiver_count() > 0 || !bytes.windows(QUERY.len()).any(|w| w == QUERY) {
+        return bytes.to_vec();
+    }
+    // Row 1, column 1 — a lie, but one only ever told when there is no screen to contradict it.
+    if let Ok(mut w) = inst.writer.lock() {
+        let _ = w.write_all(b"\x1b[1;1R");
+        let _ = w.flush();
+    }
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut rest = bytes;
+    while let Some(at) = rest.windows(QUERY.len()).position(|w| w == QUERY) {
+        out.extend_from_slice(&rest[..at]);
+        rest = &rest[at + QUERY.len()..];
+    }
+    out.extend_from_slice(rest);
+    out
 }
 
 /// Reach the instance with one of [`crate::proc`]'s two asks — skipped once the child has been

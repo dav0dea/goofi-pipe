@@ -381,7 +381,8 @@ pub fn node_source(g: &Graph, ty: &str, dirs: &[(std::path::PathBuf, &str)]) -> 
         Some((_, p)) => *p,
         None => "compiled in — no source file; copy a python node into the patch workspace to modify one",
     });
-    info["path"] = found.as_ref().map(|(p, _)| json!(p.to_string_lossy())).unwrap_or(Value::Null);
+    info["path"] =
+        found.as_ref().map(|(p, _)| json!(goofi_core::path::to_slash(p))).unwrap_or(Value::Null);
     info["source"] = found
         .as_ref()
         .and_then(|(p, _)| std::fs::read_to_string(p).ok())
@@ -698,7 +699,7 @@ errors (whole patch):
 
         let v = node_source(&g, "Boom", &[(dir.path().to_path_buf(), "patch")]).unwrap();
         assert_eq!(v["provenance"], json!("patch"), "{v}");
-        assert_eq!(v["path"], json!(dir.path().join("boom.py").to_string_lossy()), "{v}");
+        assert_eq!(v["path"], json!(goofi_core::path::to_slash(&dir.path().join("boom.py"))), "{v}");
         assert_eq!(v["source"], json!("class Boom:\n    pass\n"), "{v}");
         assert_eq!(v["language"], json!("python"), "{v}");
 

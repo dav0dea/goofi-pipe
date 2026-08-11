@@ -6,6 +6,10 @@ license.workspace = true
 
 [dependencies]
 indexmap = "2"
+# Canonicalisation WITHOUT the `\\?\` verbatim prefix that `std::fs::canonicalize` always returns
+# on Windows — see `src/path.rs`. It keeps the prefix on the paths that genuinely need it (past
+# MAX_PATH), which is the part a hand-rolled strip gets wrong.
+dunce = "1"
 serde = { version = "1", features = ["derive"] }
 # The shared, payload-free ViewSpec algebra. goofi-core (signal payload) implements its
 # `Reducible` seam for `Data` — the allowed signal→shared dependency direction; goofi-view

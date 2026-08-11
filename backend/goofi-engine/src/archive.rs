@@ -163,6 +163,12 @@ pub fn write_gfi(out: &Path, manifest: &str, workspace_dir: &Path) -> Result<(),
         let rel = entry.path().strip_prefix(workspace_dir).map_err(|e| e.to_string())?;
         // A zip entry name is bytes-as-UTF-8; refuse rather than mangle a name we cannot spell.
         let rel = rel.to_str().ok_or_else(|| format!("{}: name is not UTF-8", rel.display()))?;
+        // A zip entry name is `/`-separated BY SPEC, not by platform convention. On Windows `rel`
+        // arrives with `\`, which would store `workspace/nodes\thing.py` — a single flat entry
+        // whose NAME contains backslashes, making a `.gfi` written here unpack as a tree only on
+        // the OS that wrote it. Replacing `MAIN_SEPARATOR` rather than `\` keeps a unix file
+        // genuinely called `a\b` intact, since there `\` is a legal filename character.
+        let rel = rel.replace(std::path::MAIN_SEPARATOR, "/");
         zip.start_file(format!("{WORKSPACE}/{rel}"), opts).map_err(|e| at(entry.path(), &e))?;
         let mut src = File::open(entry.path()).map_err(|e| at(entry.path(), &e))?;
         std::io::copy(&mut src, &mut zip).map_err(|e| at(entry.path(), &e))?;

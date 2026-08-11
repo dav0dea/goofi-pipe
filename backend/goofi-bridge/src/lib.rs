@@ -23,6 +23,13 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+/// How long a `/term` socket waits for the PTY's own end-of-stream after the child has been reaped,
+/// before announcing the exit anyway. ConPTY keeps its pseudoconsole open past the child's death, so
+/// on Windows that end never comes; this bounds the wait without branching on the platform. Long
+/// enough for bytes already buffered to be published, short enough that a finished agent is reported
+/// as finished — which is the whole point when nothing is attached to notice.
+const EXIT_SETTLE: Duration = Duration::from_millis(250);
+
 use tower_http::services::{ServeDir, ServeFile};
 
 use axum::extract::ws::{CloseFrame, Message, WebSocket, WebSocketUpgrade};
@@ -512,7 +519,7 @@ pub fn resolve_frontend_dir() -> Option<PathBuf> {
         Err(_) => PathBuf::from("frontend/build"),
     };
     if candidate.is_dir() {
-        Some(std::fs::canonicalize(&candidate).unwrap_or(candidate))
+        Some(goofi_core::path::canonical(&candidate).unwrap_or(candidate))
     } else {
         None
     }
@@ -1089,7 +1096,7 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
         if op == "get_patch" {
             return Ok(json!({
                 "save_path": state.save_path(),
-                "workspace": state.mount().to_string_lossy(),
+                "workspace": goofi_core::path::to_slash(&state.mount()),
                 "dirty": state.is_dirty(),
             }));
         }
@@ -1779,7 +1786,7 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
                 };
                 let workspace = state.mount();
                 let text =
-                    inspect::patch(&g, scope, state.save_path().as_deref(), &workspace.to_string_lossy(), dirty)?;
+                    inspect::patch(&g, scope, state.save_path().as_deref(), &goofi_core::path::to_slash(&workspace), dirty)?;
                 Ok(json!({ "text": text }))
             }
             "inspect_node" => {
@@ -1805,7 +1812,7 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
             // Where this patch's workspace files live right now. The mount is a per-run temp
             // directory under a random name, so a client — and the agent harness after it — cannot
             // derive it; asking the manager is the only way to open a browser or a shell on it.
-            "open_workspace" => Ok(json!({ "path": state.mount().to_string_lossy() })),
+            "open_workspace" => Ok(json!({ "path": goofi_core::path::to_slash(&state.mount()) })),
             "save" => {
                 // Expand `~` exactly as the browser does, or a path the user could navigate to
                 // would not be writable — the two must agree on what a path means. The path is
@@ -2088,6 +2095,8 @@ async fn handle_term(socket: WebSocket, state: AppState, instance: String) {
     if let Some((cols, rows)) = settled {
         let _ = tx.send(size_frame(cols, rows)).await;
     }
+    // When the child was reaped, so the announcement below can bound its wait for the PTY.
+    let mut reaped_at: Option<tokio::time::Instant> = None;
     loop {
         // The exit frame is the LAST thing this socket sends, not the first thing it reaches for.
         // A dying harness writes its stack trace, its auth failure, its rate-limit message in the
@@ -2098,7 +2107,18 @@ async fn handle_term(socket: WebSocket, state: AppState, instance: String) {
         // of, so neither `changed()` can fail. Both are copied out of their guards rather than
         // matched through them: a `watch` borrow is not `Send`, and the send below is an await.
         let (ended, drained) = (*exit.borrow_and_update(), *eof.borrow_and_update());
-        if let (Some(code), true) = (ended, drained && output.is_empty()) {
+        if ended.is_some() && reaped_at.is_none() {
+            reaped_at = Some(tokio::time::Instant::now());
+        }
+        // …but the PTY's end-of-stream is not guaranteed to come. ConPTY keeps the pseudoconsole
+        // open after the child exits, so on Windows `drained` never turns true and a viewer waiting
+        // only for it would never be told the harness finished — on the very platform where a
+        // headless agent has nobody watching the screen to notice. So the wait is BOUNDED: the
+        // drain's own end when it arrives, or a short settle after the reap, which is ample for
+        // bytes already sitting in the buffer to be published. No platform branch: where EOF is
+        // real it wins the race every time and the settle never elapses.
+        let may_announce = drained || reaped_at.is_some_and(|t| t.elapsed() >= EXIT_SETTLE);
+        if let (Some(code), true) = (ended, may_announce && output.is_empty()) {
             let _ = tx.send(Message::Text(json!({ "exit_code": code }).to_string().into())).await;
             break;
         }
@@ -2139,6 +2159,10 @@ async fn handle_term(socket: WebSocket, state: AppState, instance: String) {
             }
             _ = exit.changed() => {}
             _ = eof.changed() => {}
+            // Wake to re-check the settle above. Armed only once the child has been reaped and the
+            // PTY has not ended on its own — where EOF is real this never runs.
+            _ = tokio::time::sleep_until(reaped_at.unwrap_or_else(tokio::time::Instant::now) + EXIT_SETTLE),
+                if reaped_at.is_some() && !drained => {}
         }
     }
     inst.leave(seat);
@@ -2512,7 +2536,7 @@ mod inspect_dispatch_tests {
         let uid = state.graph.lock().unwrap().add_node("Oscillator", None).unwrap();
         let before = call(&state, "get_patch", json!({}));
         assert_eq!(before["dirty"], json!(false), "{before}");
-        assert_eq!(before["workspace"], json!(state.mount().to_string_lossy()), "{before}");
+        assert_eq!(before["workspace"], json!(goofi_core::path::to_slash(&state.mount())), "{before}");
         call(&state, "rename_node", json!({ "node": uid.to_hex(), "name": "src" }));
         assert_eq!(call(&state, "get_patch", json!({}))["dirty"], json!(true));
         state.release_mount();
@@ -2840,7 +2864,7 @@ mod node_scan_tests {
         let r = &reply["result"];
         assert_eq!(r["provenance"], json!("patch"), "{r}");
         assert_eq!(r["source"], json!("9.0"), "{r}");
-        assert_eq!(r["path"], json!(state.mount().join("nodes/my_thing.py").to_string_lossy()), "{r}");
+        assert_eq!(r["path"], json!(goofi_core::path::to_slash(&state.mount().join("nodes/my_thing.py"))), "{r}");
         state.release_mount();
     }
 
