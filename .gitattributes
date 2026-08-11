@@ -1,0 +1,12 @@
+# Every file in this repo is stored AND checked out with LF endings — no CR, on any platform.
+#
+# `eol=lf` overrides `core.autocrlf`, which is on by default on Windows and is what put CRLF in
+# these blobs in the first place. That is not a cosmetic preference: `ops.rs` and `vocab.rs`
+# GENERATE files here and then compare what they generated against what is on disk, so a working
+# copy git handed back as CRLF failed the comparison on every Windows machine — and rewrote the
+# checked-in file as a side effect of failing.
+* text=auto eol=lf
+
+# …except the fonts, named explicitly because they are the files that actually contain CR bytes as
+# data and so are the ones an eol rule would corrupt. Anything else binary is caught by `text=auto`.
+*.woff2 binary
