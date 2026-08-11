@@ -12,6 +12,7 @@ mod inspect;
 mod mcp;
 pub mod ops;
 mod origin;
+mod proc;
 mod reducer;
 mod schemas;
 pub mod term;

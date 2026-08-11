@@ -4,8 +4,16 @@ build-backend = "maturin"
 
 [project]
 name = "goofi"
-version = "0.0.0"
+# NOT stated here: `dynamic` tells maturin to take the version from Cargo.toml, which takes it
+# from the workspace. A literal here would be a second place to forget — and the wheel's version
+# is what `uv pip install` records, so a stale one is invisible until someone reads it.
+dynamic = ["version"]
 requires-python = ">=3.8"
+# A node's `Data` is a numpy array on the Python side, so no interpreter can run a goofi node
+# without it. Declaring it HERE rather than listing it at each install site is what lets
+# provisioning be "install the goofi wheel" and nothing else — one statement of the runtime, in
+# the package that defines it.
+dependencies = ["numpy"]
 
 [tool.maturin]
 module-name = "goofi"

@@ -98,9 +98,9 @@ whose dependencies are missing everywhere fails its probe and is listed as `unav
 greyed out, naming the missing module — rather than silently vanishing. An exception inside
 `process()` surfaces on the node's error channel instead of taking anything down.
 
-The interpreters are conventionally `.ftvenv` (free-threaded 3.14t, in-process) and
-`.venv` (any GIL Python, subprocess); `scripts/provision-goofi-py.sh` builds and
-installs the `goofi` package into both.
+The interpreters are `.gfivenv-ft` (free-threaded 3.14t, in-process) and `.gfivenv` (a GIL
+Python, subprocess). goofi creates both and installs the `goofi` package into them itself,
+using `uv` — which is therefore a hard requirement. `--subproc-python` overrides the GIL one.
 
 ## Development
 

@@ -337,14 +337,32 @@ mod tests {
         assert_eq!(listing["path"].as_str().unwrap(), real.join("also-missing").to_string_lossy());
     }
 
+    /// A file name this platform accepts but UTF-8 cannot express: raw bytes where names are bytes,
+    /// a lone surrogate where they are UTF-16. There is no third way to write one — which is why
+    /// this helper is the only thing in this file that knows which OS it is on. What it feeds is
+    /// the same question on both: does [`list_dir`] SKIP such an entry rather than mangle it?
+    fn undecodable_name() -> std::ffi::OsString {
+        #[cfg(unix)]
+        {
+            use std::os::unix::ffi::OsStringExt;
+            // 0xFF starts no valid UTF-8 sequence.
+            std::ffi::OsString::from_vec(b"bad\xff".to_vec())
+        }
+        #[cfg(windows)]
+        {
+            use std::os::windows::ffi::OsStringExt;
+            // An unpaired high surrogate: storable as UTF-16, with no UTF-8 encoding at all.
+            std::ffi::OsString::from_wide(&[0x62, 0x61, 0x64, 0xD800])
+        }
+    }
+
     #[test]
     fn a_non_utf8_entry_name_is_skipped_rather_than_mangled() {
-        use std::os::unix::ffi::OsStrExt;
         let tmp = TempDir::new("badname");
         tmp.file("fine.txt");
-        // 0xFF is not valid UTF-8; lossy-encoding it would emit an entry that cannot be opened
-        // and whose `path` key can collide with another undecodable name.
-        let bad = tmp.path().join(std::ffi::OsStr::from_bytes(b"bad\xff"));
+        // Lossy-encoding such a name would emit an entry that cannot be opened, and whose `path`
+        // key can collide with another undecodable one.
+        let bad = tmp.path().join(undecodable_name());
         std::fs::write(&bad, b"x").unwrap();
 
         let listing = list_dir(Some(&tmp.path().to_string_lossy()));

@@ -16,7 +16,11 @@ members = [
 ]
 
 [workspace.package]
-version = "0.0.0"
+# THE version of goofi — the single source of truth. Every crate takes it via
+# `version.workspace = true`, `mcp.rs` reports it through `env!("CARGO_PKG_VERSION")`, and the
+# Python wheel derives it too (`goofi-pymod/pyproject.toml` declares the version `dynamic`, which
+# is what makes maturin read it from here instead of restating it).
+version = "3.0.0"
 edition = "2021"
 license = "MIT"
 rust-version = "1.89"

@@ -10,7 +10,7 @@
 //!   PYO3_PYTHON=<python3.14t> LD_LIBRARY_PATH=<base>/lib PYTHONPATH=<ft-sp> \
 //!     cargo run -p goofi-py --features embed --example backend_parity --release
 //! The subprocess tier talks iceoryx2, so point GOOFI_SUBPROC_PYTHON at an
-//! iceoryx2-capable interpreter (e.g. the repo .venv); it falls back to PYO3_PYTHON.
+//! iceoryx2-capable interpreter (e.g. the repo .gfivenv); it falls back to PYO3_PYTHON.
 
 use std::time::Instant;
 

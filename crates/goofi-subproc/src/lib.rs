@@ -121,6 +121,7 @@ impl Running {
             // tier's, injected by `.cargo/config.toml`) must not leak in and shadow the child's
             // numpy/goofi with an incompatible build. The child uses its interpreter's site-packages.
             .env_remove("PYTHONPATH")
+            .env_remove("PYTHONHOME")
             .stdin(Stdio::null())
             .stdout(Stdio::inherit())
             .stderr(Stdio::inherit());
@@ -454,7 +455,7 @@ class Double(goofi.Node):
     }
 
     /// A python with BOTH goofi (the abi3 wheel) and numpy (the subprocess child needs both),
-    /// or None. Prefers `$GOOFI_SUBPROC_TEST_PYTHON`, then the repo's `.venv`, then a PATH python.
+    /// or None. Prefers `$GOOFI_SUBPROC_TEST_PYTHON`, then the repo's `.gfivenv`, then a PATH python.
     /// The probe strips `PYTHONPATH` exactly like the real child spawn ([`Running::spawn`]), so a
     /// host/pyo3 `PYTHONPATH` can't produce a false negative (it once masked real bugs by making
     /// the venv python import an incompatible numpy → every tier test silently SKIPPED).
@@ -463,7 +464,11 @@ class Double(goofi.Node):
         if let Ok(p) = std::env::var("GOOFI_SUBPROC_TEST_PYTHON") {
             cands.push(p);
         }
-        cands.push(format!("{}/../../.venv/bin/python", env!("CARGO_MANIFEST_DIR")));
+        // Both venv layouts — `bin/` on unix, `Scripts/` on Windows — because the fallbacks below
+        // are worse than a miss on Windows: `python3` there is an App Execution Alias that answers
+        // every probe with a Microsoft Store advert instead of failing.
+        cands.push(format!("{}/../../.gfivenv/bin/python", env!("CARGO_MANIFEST_DIR")));
+        cands.push(format!("{}/../../.gfivenv/Scripts/python.exe", env!("CARGO_MANIFEST_DIR")));
         cands.push("python3".to_string());
         cands.push("python".to_string());
         for cand in cands {
@@ -471,6 +476,7 @@ class Double(goofi.Node):
                 .arg("-c")
                 .arg("import goofi, numpy")
                 .env_remove("PYTHONPATH")
+                .env_remove("PYTHONHOME")
                 .stdout(Stdio::null())
                 .stderr(Stdio::null())
                 .status()
@@ -513,8 +519,8 @@ class Double(goofi.Node):
         let py = usable_python().unwrap_or_else(|| {
             panic!(
                 "no python with goofi + numpy found (checked $GOOFI_SUBPROC_TEST_PYTHON, \
-                 ./.venv/bin/python, python3, python). Provision it with \
-                 ./scripts/provision-goofi-py.sh (builds + installs the goofi wheel into the \
+                 ./.gfivenv/bin/python, python3, python). Provision it with \
+                 goofi once — it builds and installs the goofi wheel into the \
                  repo venvs). The subprocess-tier tests require one."
             )
         });
@@ -1018,7 +1024,10 @@ class Slow(goofi.Node):
     }
 
     /// Set on the helper process of [`a_hard_killed_parent_still_stops_the_child`]; its value
-    /// is the interpreter to spawn the grandchild with.
+    /// is the interpreter to spawn the grandchild with. Gated with the two tests that read it —
+    /// they are `/proc`-and-signals work — or it is a constant declared everywhere and used on
+    /// one platform, which every other platform reports as dead code.
+    #[cfg(target_os = "linux")]
     const HELPER_ENV: &str = "GOOFI_LIVENESS_HELPER_PYTHON";
 
     /// The intermediate parent for the hard-kill test, re-entered as a separate process (this

@@ -550,7 +550,7 @@ checksum = "0cc23270f6e1808e30a928bdc84dea0b9b4136a8bc82338574f23baf47bbd280"
 
 [[package]]
 name = "goofi-bridge"
-version = "0.0.0"
+version = "3.0.0"
 dependencies = [
  "axum",
  "futures-util",
@@ -571,22 +571,24 @@ dependencies = [
  "tokio",
  "tokio-tungstenite 0.24.0",
  "tower-http",
+ "which",
 ]
 
 [[package]]
 name = "goofi-cli"
-version = "0.0.0"
+version = "3.0.0"
 dependencies = [
  "goofi-bridge",
  "goofi-engine",
  "goofi-py",
  "goofi-subproc",
+ "tempfile",
  "tokio",
 ]
 
 [[package]]
 name = "goofi-codec"
-version = "0.0.0"
+version = "3.0.0"
 dependencies = [
  "goofi-core",
  "indexmap",
@@ -599,7 +601,7 @@ dependencies = [
 
 [[package]]
 name = "goofi-core"
-version = "0.0.0"
+version = "3.0.0"
 dependencies = [
  "goofi-view",
  "indexmap",
@@ -608,7 +610,7 @@ dependencies = [
 
 [[package]]
 name = "goofi-crdt"
-version = "0.0.0"
+version = "3.0.0"
 dependencies = [
  "serde_json",
  "yrs",
@@ -616,7 +618,7 @@ dependencies = [
 
 [[package]]
 name = "goofi-engine"
-version = "0.0.0"
+version = "3.0.0"
 dependencies = [
  "goofi-codec",
  "goofi-core",
@@ -634,7 +636,7 @@ dependencies = [
 
 [[package]]
 name = "goofi-node"
-version = "0.0.0"
+version = "3.0.0"
 dependencies = [
  "goofi-core",
  "indexmap",
@@ -644,7 +646,7 @@ dependencies = [
 
 [[package]]
 name = "goofi-nodes"
-version = "0.0.0"
+version = "3.0.0"
 dependencies = [
  "goofi-core",
  "goofi-node",
@@ -654,7 +656,7 @@ dependencies = [
 
 [[package]]
 name = "goofi-py"
-version = "0.0.0"
+version = "3.0.0"
 dependencies = [
  "goofi-core",
  "goofi-engine",
@@ -667,7 +669,7 @@ dependencies = [
 
 [[package]]
 name = "goofi-pymod"
-version = "0.0.0"
+version = "3.0.0"
 dependencies = [
  "goofi-codec",
  "goofi-core",
@@ -680,7 +682,7 @@ dependencies = [
 
 [[package]]
 name = "goofi-subproc"
-version = "0.0.0"
+version = "3.0.0"
 dependencies = [
  "goofi-codec",
  "goofi-core",
@@ -691,7 +693,7 @@ dependencies = [
 
 [[package]]
 name = "goofi-view"
-version = "0.0.0"
+version = "3.0.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -2209,6 +2211,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dc1b4cb0cc549fcf58d7dfc081778139b3d283a081644e833e84682ad71cea24"
 dependencies = [
  "unicode-ident",
+]
+
+[[package]]
+name = "which"
+version = "8.0.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8f3ef584124b911bcc3875c2f1472e80f24361ceb789bd1c62b3e9a3df9ff43c"
+dependencies = [
+ "libc",
 ]
 
 [[package]]

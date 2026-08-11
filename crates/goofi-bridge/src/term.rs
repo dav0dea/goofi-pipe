@@ -312,10 +312,10 @@ impl Harnesses {
 /// in-flight tool call finishes while the next one is refused — the child is only signalled after.
 fn begin_stop(inst: Arc<Instance>) -> Result<(), String> {
     inst.stopping.store(true, Ordering::Relaxed);
-    signal(&inst, libc::SIGTERM)?;
+    signal(&inst, crate::proc::request_stop)?;
     std::thread::spawn(move || {
         std::thread::sleep(GRACE);
-        let _ = signal(&inst, libc::SIGKILL);
+        let _ = signal(&inst, crate::proc::force_kill);
     });
     Ok(())
 }
@@ -501,25 +501,14 @@ pub fn config_dir(mount: &Path, id: &str) -> PathBuf {
     mount.parent().unwrap_or(mount).join("harness").join(id)
 }
 
-/// Signal the instance's process GROUP: portable-pty makes each child a session leader, so its pid
-/// is its group id and one signal reaches everything the harness itself spawned. Skipped once the
-/// child has been reaped, since a recycled pid would name a stranger's group.
-fn signal(inst: &Instance, sig: i32) -> Result<(), String> {
+/// Reach the instance with one of [`crate::proc`]'s two asks — skipped once the child has been
+/// reaped, since a recycled pid would name a stranger. WHICH ask, and how hard it pushes, is that
+/// module's business; that a departed instance is never signalled at all is this one's.
+fn signal(inst: &Instance, how: fn(u32) -> Result<(), String>) -> Result<(), String> {
     if inst.exit_code().is_some() {
         return Ok(());
     }
-    let pid = inst.pid.ok_or("the harness reported no pid to signal")?;
-    // SAFETY: a plain syscall whose only fallible argument is the pid, and that pid names a child
-    // this process spawned and has not yet reaped.
-    if unsafe { libc::kill(-(pid as i32), sig) } == 0 {
-        return Ok(());
-    }
-    let err = std::io::Error::last_os_error();
-    // ESRCH means it left between the check above and the syscall — which is what was asked for.
-    match err.raw_os_error() {
-        Some(libc::ESRCH) => Ok(()),
-        _ => Err(err.to_string()),
-    }
+    how(inst.pid.ok_or("the harness reported no pid to signal")?)
 }
 
 /// Resolve `bin` to an executable path: a plain `PATH` walk first, then — only when that misses —
@@ -527,17 +516,22 @@ fn signal(inst: &Instance, sig: i32) -> Result<(), String> {
 /// inherits none of nvm's shims, and that already cost this repo's own build script an exit 127.
 /// `path` and `shell` are parameters rather than reads of the ambient environment so a test can
 /// drive the fallback without mutating it — cargo runs the suite as threads in ONE process.
+///
+/// The walk is `which`'s rather than this module's, so what counts as an executable is the
+/// platform's own answer — the mode bits where those decide, `PATHEXT` where that does — and a
+/// harness npm installed as `claude.cmd` answers to the same one word `claude` that finds it
+/// everywhere else. `which_in_global` rather than `which_in` is deliberate: it searches the named
+/// list ALONE, so nothing sitting in the patch workspace can shadow the harness that was asked for.
+/// An absolute path — what the shell fallback below produces — it validates directly instead.
 fn resolve(bin: &str, path: Option<&OsStr>, shell: &str) -> Option<PathBuf> {
-    let direct =
-        path.into_iter().flat_map(std::env::split_paths).map(|d| d.join(bin)).find(|c| is_executable(c));
-    if direct.is_some() {
-        return direct;
+    let found = |name: &OsStr| which::which_in_global(name, path).ok()?.next();
+    if let Some(direct) = found(OsStr::new(bin)) {
+        return Some(direct);
     }
     // `bin` is a literal from `ADAPTERS`, never a caller's string, so there is nothing here for a
     // shell metacharacter to escape into.
     let out = std::process::Command::new(shell).args(["-lc", &format!("command -v {bin}")]).output();
-    let found = PathBuf::from(answer(&String::from_utf8_lossy(&out.ok()?.stdout))?);
-    is_executable(&found).then_some(found)
+    found(OsStr::new(answer(&String::from_utf8_lossy(&out.ok()?.stdout))?))
 }
 
 /// What a login shell actually answered, out of everything its profile said first: the LAST
@@ -546,11 +540,6 @@ fn resolve(bin: &str, path: Option<&OsStr>, shell: &str) -> Option<PathBuf> {
 /// diagnostic. nvm is the very setup the fallback exists for.
 fn answer(stdout: &str) -> Option<&str> {
     stdout.lines().rev().find(|l| !l.trim().is_empty()).map(str::trim)
-}
-
-fn is_executable(p: &Path) -> bool {
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::metadata(p).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
 }
 
 fn stamp(p: &Path) -> Option<crate::Stamp> {
@@ -654,19 +643,44 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&at).unwrap(), "*.wav\n");
     }
 
-    /// The PATH fallback, both halves. A binary the bare walk misses is still found through a login
-    /// shell — that is the nvm case the module note names — and a name no shell can resolve stays
-    /// unresolved, so the fallback is a lookup rather than a rubber stamp.
+    /// A "shell" no platform has, so a resolution that still succeeds proves the direct walk rather
+    /// than the fallback.
+    const NO_SHELL: &str = "/goofi-no-such-shell";
+
+    /// The direct walk, on the terms the PLATFORM sets rather than the ones this module used to
+    /// assume. Driven against this test binary — the one executable guaranteed to exist wherever the
+    /// suite runs — and by its STEM, because on Windows it sits on disk as `…-<hash>.exe` while a
+    /// caller still types the stem. That is the same shape an npm-installed `claude.cmd` presents,
+    /// and it is precisely what the old hand-rolled walk got wrong: joining the typed name verbatim
+    /// finds this binary on unix and misses it on Windows.
+    #[test]
+    fn a_binary_is_found_by_the_name_a_caller_types_not_the_one_it_has_on_disk() {
+        let exe = std::env::current_exe().expect("this test binary's path");
+        let dir = exe.parent().expect("an absolute path").as_os_str().to_owned();
+        let stem = exe.file_stem().expect("a file name").to_string_lossy().into_owned();
+
+        let found = resolve(&stem, Some(&dir), NO_SHELL).expect("the test binary resolves by stem");
+
+        assert_eq!(
+            std::fs::canonicalize(&found).unwrap(),
+            std::fs::canonicalize(&exe).unwrap(),
+            "resolved {found:?}, wanted {exe:?}"
+        );
+        assert_eq!(resolve("goofi-not-a-real-binary", Some(&dir), NO_SHELL), None);
+    }
+
+    /// The other half of [`resolve`]: a binary the bare walk misses is still found through a LOGIN
+    /// shell — the nvm case the module note names — and a name no shell can resolve stays
+    /// unresolved, so the fallback is a lookup rather than a rubber stamp. Unix-only because the
+    /// MECHANISM is: it asks a POSIX shell a POSIX question. Where no such shell answers, the call
+    /// simply finds nothing, which is the same verdict by a shorter route.
+    #[cfg(unix)]
     #[test]
     fn a_binary_the_bare_path_lookup_misses_is_found_through_a_login_shell() {
         let nothing = OsStr::new("/goofi-no-such-directory");
         let found = resolve("sh", Some(nothing), "/bin/sh").expect("a login shell resolves `sh`");
-        assert!(is_executable(&found) && found.ends_with("sh"), "{found:?}");
+        assert!(found.ends_with("sh"), "{found:?}");
         assert_eq!(resolve("goofi-not-a-real-binary", Some(nothing), "/bin/sh"), None);
-        // …and the direct walk is what answers when PATH does contain it: the shell named here
-        // cannot resolve anything, so a hit proves the first branch rather than the second.
-        let dir = found.parent().expect("an absolute path").as_os_str().to_owned();
-        assert_eq!(resolve("sh", Some(&dir), "/bin/false").as_deref(), Some(found.as_path()));
     }
 
     /// The arbitration, without a socket in the way: last writer wins, and both ways of ceasing to

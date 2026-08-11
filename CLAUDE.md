@@ -219,10 +219,10 @@ cargo run                       # launches the backend + bridge, prints the URL
 #          --subproc-nodes DIR | --auto-nodes DIR,
 #          --subproc-python BIN, --list-nodes
 # With no --*-nodes flag it auto-discovers ./nodes/ and routes each node by tier.
-# --subproc-python defaults to the repo-local .venv when present.
+# --subproc-python defaults to .gfivenv, which goofi creates and provisions at startup.
 
 cargo test --workspace                      # must stay green, and warning-free
-cargo test -p goofi-py --features embed     # in-process Python host (needs .ftvenv)
+cargo test -p goofi-py --features embed     # in-process Python host (needs .gfivenv-ft)
 cargo build --workspace --all-targets 2>&1 | grep -n '^warning'   # ALWAYS check before declaring done
 #   `--all-targets` is load-bearing: a plain `cargo build` never compiles the integration-test
 #   targets, so a warning inside `tests/*.rs` (a non-snake-case test name, an unused import)
@@ -243,13 +243,25 @@ changed (skip with `GOOFI_SKIP_FRONTEND_BUILD=1`). Cargo **replays** a build scr
 `cargo:warning` lines on later no-op builds — the rebuild line is written in the past
 tense with its measured duration for exactly that reason.
 
-**Python interpreters (machine-local, gitignored, `uv` venvs — use `uv pip`, never `pip`):**
-- `.ftvenv` — free-threaded 3.14t: the in-process host **and** the introspection probe.
-- `.venv` — a GIL python: the subprocess child.
+**Python interpreters — goofi's OWN, created and filled by goofi. `uv` is a hard dependency**
+(machine-local, gitignored; use `uv pip`, never `pip`):
+- `.gfivenv-ft` — free-threaded 3.14t: the in-process host **and** the introspection probe.
+  Made by `goofi-cli/build.rs`, because pyo3 links against it before this crate can compile.
+- `.gfivenv` — a GIL python (pinned 3.12, since the subprocess tier exists precisely for packages
+  that are *not* free-threading-safe): the subprocess child. Made at startup.
 
-Both need the `goofi` wheel; provision reproducibly with `scripts/provision-goofi-py.sh`
-— **re-run it after any `goofi-pymod` change**, or the probe still runs the old wheel and a
-node using a new authoring feature (a `doc=` kwarg, say) silently disappears from the palette.
+Both get the `goofi` wheel at **startup** (`crates/goofi-cli/src/provision.rs`), built through
+`uv tool run maturin` — at runtime, where no cargo build lock is held, which is the whole reason
+this cannot live in `build.rs` — and installed with `uv pip`, numpy riding along as the wheel's
+own declared dependency. `--subproc-python` overrides the GIL side and takes ownership with it.
+The names are deliberate: a generic `.venv` is claimed by editors and by `uv` itself, and a stale
+one is not inert — this repo's own `.venv` once held an editable install of the OLD Python goofi,
+which answered `import goofi` perfectly well and then had no `introspect`.
+
+**Known gap:** provisioning reinstalls when `goofi` is *missing or broken*, never when it is merely
+*stale*. After changing `goofi-pymod`, delete the venv (or `uv pip uninstall goofi` from it), or the
+probe keeps running the old wheel and a node using a new authoring feature (a `doc=` kwarg, say)
+silently disappears from the palette.
 
 The cross-language tests find these interpreters themselves and **fail with an actionable
 message** when none can `import goofi` — they never skip, and nothing in the suite is
@@ -327,7 +339,7 @@ A `StringParam(..., refresh=True)` gets a ⟳ button in the UI; the node answers
 multi-second device scan stalls the tick. Not yet wired for the subprocess tier.
 Plain top-level imports for all deps. The same file works on **both** Python tiers —
 the discovery probe imports it in a real interpreter and reports whether it is
-free-threading-safe; a node that isn't (or whose deps are missing on `.ftvenv`)
+free-threading-safe; a node that isn't (or whose deps are missing on `.gfivenv-ft`)
 routes to the subprocess tier. (The palette is one flat list and no longer groups by category —
 each row carries its *provenance*, builtin vs this patch, not its tier.)
 A node whose deps are missing on BOTH interpreters fails its probe and is registered as
@@ -375,6 +387,13 @@ Analysis reports live in `docs/analysis/` (also gitignored).
 
 - **Work happens on `rust-rewrite`. Leave `main` alone.** Never push or force-push
   without explicit authorization; branch before committing on a default branch.
+- **The goofi version lives in ONE place: `[workspace.package] version` in the root `Cargo.toml`.**
+  Every crate inherits it (`version.workspace = true`), `mcp.rs` reports it through
+  `env!("CARGO_PKG_VERSION")`, and the Python wheel derives it because
+  `goofi-pymod/pyproject.toml` declares `dynamic = ["version"]` instead of restating it. Bumping it
+  also *re-provisions the venvs*: `provision.rs` compares the installed wheel's version against
+  this one, so an older build in `.gfivenv`/`.gfivenv-ft` is rebuilt rather than silently kept.
+  (An edit that does NOT change the version still needs the venv deleted.)
 - **`docs/` is gitignored on this branch** — specs and plans are on disk, not in git.
   Don't be surprised when `git status` ignores them, and don't "restore" them.
 - Commit in small, focused, readable steps at green checkpoints — not one mega-commit.

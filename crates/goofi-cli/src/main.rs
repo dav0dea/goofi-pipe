@@ -3,7 +3,7 @@
 //! 127.0.0.1), `--subproc-nodes DIR` (discover isolated-GIL subprocess Python nodes,
 //! run on `--subproc-python`), `--auto-nodes DIR` (gil-gate routed). With no
 //! `--*-nodes` flag it auto-discovers the default `nodes/` directory;
-//! `--subproc-python` defaults to the repo-local `.venv`.
+//! `--subproc-python` defaults to the repo-local `.gfivenv`.
 
 use std::future::Future;
 use std::path::{Path, PathBuf};
@@ -14,17 +14,7 @@ use goofi_engine::{Graph, Registration};
 
 /// The default node directory, auto-discovered (gil-gate routed) when no `--*-nodes` flag is given.
 const DEFAULT_NODES_DIR: &str = "nodes";
-/// The default subprocess-node interpreter — the repo-local `.venv` (the project convention).
-const DEFAULT_VENV_PYTHON: &str = ".venv/bin/python";
-
-/// The default subprocess interpreter: the repo-local `.venv` if present, else `python3`.
-fn default_subproc_python() -> String {
-    if std::path::Path::new(DEFAULT_VENV_PYTHON).is_file() {
-        DEFAULT_VENV_PYTHON.to_string()
-    } else {
-        "python3".to_string()
-    }
-}
+mod provision;
 
 /// The parsed command line. `help` is a mode rather than a setting, so the caller decides what
 /// to do with it — which is also what keeps the parse itself pure and testable.
@@ -85,7 +75,7 @@ fn parse_args<I: Iterator<Item = String>>(mut args: I) -> Result<Cli, String> {
 
 #[tokio::main]
 async fn main() {
-    let cli = match parse_args(std::env::args().skip(1)) {
+    let mut cli = match parse_args(std::env::args().skip(1)) {
         Ok(cli) => cli,
         Err(e) => {
             eprintln!("{e}");
@@ -98,11 +88,32 @@ async fn main() {
              \n  \
              With no --*-nodes flag, auto-discovers `{DEFAULT_NODES_DIR}/` (each node routed \
              in-process if free-threading-safe, else to a subprocess).\n  \
-             --subproc-python defaults to `{DEFAULT_VENV_PYTHON}` when present, else `python3`."
+             --subproc-python defaults to `{}`, which goofi creates and provisions itself.",
+            provision::GIL_VENV
         );
         return;
     }
+    if let Err(e) = provision_interpreters(&mut cli) {
+        eprintln!("{e}");
+        std::process::exit(1);
+    }
     std::process::exit(run(cli, AppState::new(), shutdown_signal()).await);
+}
+
+/// Make goofi's venvs real, and settle which interpreter the subprocess tier will run on. Here
+/// rather than inside [`run`], which the mount-lifetime test drives directly and must not be made
+/// to shell out to `uv`. `--subproc-python` overrides the GIL side and takes ownership with it;
+/// the free-threaded venv stays goofi's either way, because the introspection probe runs on it
+/// whoever ends up hosting the subprocess tier.
+fn provision_interpreters(cli: &mut Cli) -> Result<(), String> {
+    let root =
+        std::env::current_dir().map_err(|e| format!("cannot read the working directory: {e}"))?;
+    provision::require_uv()?;
+    provision::ensure_ft(&root)?;
+    if cli.subproc_python.is_none() {
+        cli.subproc_python = Some(provision::ensure_gil(&root)?.display().to_string());
+    }
+    Ok(())
 }
 
 /// The warning a `--bind` beyond this machine earns, or `None` for the loopback default.
@@ -135,9 +146,10 @@ fn exposure_warning(bind: &str) -> Option<String> {
 async fn run(cli: Cli, mut state: AppState, shutdown: impl Future<Output = ()>) -> i32 {
     let Cli { port, bind, subproc_nodes, mut auto_nodes, subproc_python, list_nodes, help: _ } = cli;
 
-    // Resolve defaults: the repo-local `.venv` for the subprocess tier (the project convention),
-    // and — when no explicit node source was given — auto-route the default `nodes/` directory.
-    let subproc_python = subproc_python.unwrap_or_else(default_subproc_python);
+    // `main` settles the interpreter before calling in (see `provision_interpreters`); a `None`
+    // here is a caller that never provisions — the mount-lifetime test, which spawns no node at
+    // all. When no explicit node source was given, auto-route the default `nodes/` directory.
+    let subproc_python = subproc_python.unwrap_or_else(|| "python3".to_string());
     if subproc_nodes.is_none() && auto_nodes.is_none()
         && std::path::Path::new(DEFAULT_NODES_DIR).is_dir()
     {
@@ -217,29 +229,52 @@ async fn run(cli: Cli, mut state: AppState, shutdown: impl Future<Output = ()>) 
     code
 }
 
-/// Resolve on the first request to stop: ctrl-C, or the SIGTERM a service manager sends. A door
-/// that cannot be installed must **never** resolve — an immediately-ready arm here would shut the
-/// server down at startup rather than merely leaving that one door closed.
+/// Resolve on the first request to stop: ctrl-C, or whatever else this platform's service manager
+/// knocks with. A door that cannot be installed must **never** resolve — an immediately-ready arm
+/// here would shut the server down at startup rather than merely leaving that one door closed.
 async fn shutdown_signal() {
     let interrupt = async {
         if tokio::signal::ctrl_c().await.is_err() {
             std::future::pending::<()>().await;
         }
     };
-    let terminate = async {
-        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
-            Ok(mut sig) => {
-                sig.recv().await;
-            }
-            Err(e) => {
-                eprintln!("SIGTERM handler unavailable: {e}");
-                std::future::pending::<()>().await;
-            }
+    tokio::select! {
+        _ = interrupt => {}
+        _ = managed_stop() => {}
+    }
+}
+
+/// The stop a SERVICE MANAGER sends, which ctrl-C does not cover — `SIGTERM` where signals exist.
+/// The whole reason it is worth a door of its own is [`AppState::release_mount`]: a run killed
+/// through this one still gets to delete its workspace mount.
+#[cfg(unix)]
+async fn managed_stop() {
+    match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+        Ok(mut sig) => {
+            sig.recv().await;
+        }
+        Err(e) => {
+            eprintln!("SIGTERM handler unavailable: {e}");
+            std::future::pending::<()>().await;
+        }
+    }
+}
+
+/// Windows has no SIGTERM. What stands in for it is the console window closing and the machine
+/// going down — two events rather than one, so both are doors and the first to open wins.
+#[cfg(windows)]
+async fn managed_stop() {
+    let doors = (tokio::signal::windows::ctrl_close(), tokio::signal::windows::ctrl_shutdown());
+    let (mut close, mut shutdown) = match doors {
+        (Ok(close), Ok(shutdown)) => (close, shutdown),
+        (Err(e), _) | (_, Err(e)) => {
+            eprintln!("Windows shutdown handlers unavailable: {e}");
+            return std::future::pending::<()>().await;
         }
     };
     tokio::select! {
-        _ = interrupt => {}
-        _ = terminate => {}
+        _ = close.recv() => {}
+        _ = shutdown.recv() => {}
     }
 }
 

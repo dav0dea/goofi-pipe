@@ -15,10 +15,14 @@ goofi-engine = { path = "../goofi-engine" }
 goofi-subproc = { path = "../goofi-subproc" }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal"] }
 # In-process Python nodes + the param-expression evaluator (pyo3, free-threaded 3.14t).
-# ON by default: the build script provisions a repo-local `.ftvenv` and a `.cargo/config.toml`
+# ON by default: the build script provisions a repo-local `.gfivenv-ft` and a `.cargo/config.toml`
 # that point pyo3 at it, so `cargo run` needs no env vars. Build a pure-native binary (no Python,
 # no interpreter needed) with `--no-default-features`.
 goofi-py = { path = "../goofi-py", optional = true }
+
+[dev-dependencies]
+# The venv-layout test writes stand-in interpreters into a throwaway tree.
+tempfile = "3"
 
 [features]
 default = ["python"]
