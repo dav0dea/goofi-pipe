@@ -1220,10 +1220,10 @@ async fn page_set_panel_lands_a_combined_type_and_binding_and_refuses_an_unknown
         &mut ws,
         3,
         "page_set_panel",
-        json!({ "page": "Layout", "panel": panel, "state": { "node": "deadbeefdeadbeef" } }),
+        json!({ "page": "Layout", "panel": panel, "state": { "node": "deadbeefdead" } }),
     )
     .await;
-    assert!(bad["error"].as_str().is_some_and(|e| e.contains("deadbeefdeadbeef")), "{bad}");
+    assert!(bad["error"].as_str().is_some_and(|e| e.contains("deadbeefdead")), "{bad}");
 
     // A DISPLAY NAME is not a binding. It resolves today and stops resolving the moment the node is
     // renamed, which is a binding that silently empties a panel — the uid is the identity, and it
@@ -1274,7 +1274,7 @@ async fn a_write_that_would_mean_something_else_is_refused_or_says_what_it_did()
     // remove_node's own doc had to tell callers not to read `ok` as proof the node existed.
     let osc = call(&mut ws, 4, "add_node", json!({ "type": "Oscillator" })).await["result"]["uid"]
         .as_str().unwrap().to_string();
-    let gone = call(&mut ws, 5, "remove_node", json!({ "node": "deadbeefdeadbeef" })).await;
+    let gone = call(&mut ws, 5, "remove_node", json!({ "node": "deadbeefdead" })).await;
     assert_eq!(gone["result"]["removed"], json!(false), "{gone}");
     let real = call(&mut ws, 6, "remove_node", json!({ "node": osc })).await;
     assert_eq!(real["result"]["removed"], json!(true), "{real}");
@@ -1332,9 +1332,9 @@ async fn add_link_refuses_an_endpoint_that_names_nothing_wirable() {
     let osc = uid(&call(&mut ws, 1, "add_node", json!({ "type": "Oscillator" })).await);
 
     let typo = call(&mut ws, 2, "add_link", json!({ "node_out": osc, "slot_out": "out",
-        "node_in": "deadbeefdeadbeef", "slot_in": "data" })).await;
+        "node_in": "deadbeefdead", "slot_in": "data" })).await;
     let err = typo["error"].as_str().unwrap_or_default().to_string();
-    assert!(err.contains("node_in") && err.contains("deadbeefdeadbeef"), "{typo}");
+    assert!(err.contains("node_in") && err.contains("deadbeefdead"), "{typo}");
     assert!(typo["result"].is_null(), "a refusal carries no result: {typo}");
 
     // The same hole one step over: an endpoint naming a REAL sub-patch instance whose boundary port

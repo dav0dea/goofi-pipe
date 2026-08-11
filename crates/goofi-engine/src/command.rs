@@ -1069,7 +1069,7 @@ mod tests {
         let mut g = Graph::new();
         let before = g.node_uids().len();
 
-        let err = add_into(Uid::from_hex("deadbeef")).execute(&mut g).unwrap_err();
+        let err = add_into(Uid::from_hex("deadbeefdead")).execute(&mut g).unwrap_err();
         assert!(err.contains("scope"), "the error names the scope; got {err}");
         assert_eq!(g.node_uids().len(), before, "no node was created by the refused add");
     }

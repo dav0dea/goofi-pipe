@@ -39,7 +39,15 @@ impl Uid {
     pub fn to_hex(self) -> String {
         format!("{:012x}", self.0)
     }
+    /// Parse the canonical 12-hex identity `to_hex` writes, and nothing wider. Accepting any
+    /// radix-16 `u64` let a hand-edited `.gfi` (or a non-browser control client) carry
+    /// `ffffffffffffffff`, whose `+ 1` in `restore_uid` / `add_node_at` overflows — a panic under
+    /// overflow checks, a corrupted `next_uid` in release. Bounding the DOMAIN is what makes that
+    /// arithmetic total, rather than checking each site.
     pub fn from_hex(s: &str) -> Option<Uid> {
+        if s.len() != 12 || !s.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return None;
+        }
         u64::from_str_radix(s, 16).ok().map(Uid)
     }
 }
@@ -658,6 +666,7 @@ impl Graph {
     fn restore_uid(&mut self, key: &str, claimed: &HashSet<Uid>) -> Uid {
         match Uid::from_hex(key).filter(|u| !claimed.contains(u)) {
             Some(u) => {
+                // `from_hex` admits only the 48-bit canonical domain, so `+ 1` cannot overflow.
                 self.next_uid = self.next_uid.max(u.0 + 1);
                 u
             }
@@ -3200,6 +3209,23 @@ mod tests {
 
     /// Empty param declaration, shared by the many test nodes with no own params.
     static NO_PARAMS: &[ParamDecl] = &[];
+
+    #[test]
+    fn uid_from_hex_accepts_only_the_canonical_12_hex_domain() {
+        // `to_hex` formats `{:012x}` and every comment calls this a 12-hex identity, but the parser
+        // took any radix-16 u64 — so a hand-edited `.gfi` keyed by 16 hex digits reached
+        // `restore_uid`'s `u.0 + 1` and overflowed. Bounding the domain here is what makes that
+        // arithmetic total everywhere downstream.
+        assert_eq!(Uid::from_hex("000000000001"), Some(Uid(1)));
+        assert_eq!(Uid::from_hex("ffffffffffff"), Some(Uid(0xffff_ffff_ffff)));
+        assert_eq!(Uid::from_hex("ffffffffffffffff"), None, "16 hex is outside the identity domain");
+        assert_eq!(Uid::from_hex("1"), None, "a short uid is not canonical either");
+        assert_eq!(Uid::from_hex("zzzzzzzzzzzz"), None);
+        assert_eq!(Uid::from_hex(""), None);
+        // Round-trip: whatever `to_hex` writes, `from_hex` must read.
+        let u = Uid(0x0000_0000_002a);
+        assert_eq!(Uid::from_hex(&u.to_hex()), Some(u));
+    }
 
     #[test]
     fn graph_seeds_and_edits_globals() {

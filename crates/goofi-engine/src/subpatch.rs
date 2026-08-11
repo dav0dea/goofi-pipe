@@ -66,14 +66,28 @@ pub struct Scope {
 /// exposes, walking through nested-scope stubs. `None` if the stub (or any stub in its chain) is
 /// unwired, or the ids don't resolve. This is the resolution the data plane performs before
 /// subscribing, and that link authoring uses to store a boundary wire as a flat leaf→leaf link.
+///
+/// The walk carries a visited set because it CANNOT assume the chain is acyclic: a `.gfi` is
+/// hand-editable and `reload_scopes` admits whatever stub graph it finds, so a stub pointing back
+/// into its own chain is representable persisted state. Recursing on it does not raise a
+/// recoverable panic — a Rust stack overflow aborts the process, taking the tick thread and every
+/// connected client with it, and `/data/<scope>/<stub>` reaches here from an ordinary subscribe.
+/// A cycle is malformed, so it answers `None`, the same answer an unknown stub already gives.
 pub fn resolve_stub(scopes: &IndexMap<Uid, Scope>, scope_uid: Uid, stub_id: &str) -> Option<(Uid, String)> {
-    let scope = scopes.get(&scope_uid)?;
-    let (inner_uid, inner_slot) = scope.stubs.get(stub_id)?.inner.as_ref()?;
-    if scopes.contains_key(inner_uid) {
-        // The inner member is itself a nested sub-patch — recurse through its exposing stub.
-        resolve_stub(scopes, *inner_uid, inner_slot)
-    } else {
-        Some((*inner_uid, inner_slot.clone()))
+    let mut seen: Vec<(Uid, &str)> = Vec::new();
+    let (mut scope_uid, mut stub_id) = (scope_uid, stub_id);
+    loop {
+        if seen.contains(&(scope_uid, stub_id)) {
+            return None;
+        }
+        seen.push((scope_uid, stub_id));
+        let (inner_uid, inner_slot) = scopes.get(&scope_uid)?.stubs.get(stub_id)?.inner.as_ref()?;
+        if !scopes.contains_key(inner_uid) {
+            return Some((*inner_uid, inner_slot.clone()));
+        }
+        // The inner member is itself a nested sub-patch — continue through its exposing stub.
+        scope_uid = *inner_uid;
+        stub_id = inner_slot.as_str();
     }
 }
 
@@ -98,6 +112,36 @@ mod tests {
         s.stubs.insert("out0".to_string(), out_stub(Uid(2), "out"));
         scopes.insert(Uid(10), s);
         scopes
+    }
+
+    /// One scope whose only stub points at ITSELF — the shape a hand-edited `.gfi` can carry,
+    /// since `reload_scopes` admits whatever stub graph it finds.
+    fn self_referential() -> IndexMap<Uid, Scope> {
+        let mut scopes = IndexMap::new();
+        let mut s = Scope { name: "loop".to_string(), pos: [0.0, 0.0], stubs: IndexMap::new() };
+        s.stubs.insert("out0".to_string(), out_stub(Uid(10), "out0"));
+        scopes.insert(Uid(10), s);
+        scopes
+    }
+
+    #[test]
+    fn a_self_referential_stub_resolves_to_none_instead_of_exhausting_the_stack() {
+        // A `.gfi` is hand-editable and `reload_scopes` validates no stub chain, so this walk
+        // cannot assume acyclicity. Recursing forever here does not panic recoverably — a Rust
+        // stack overflow ABORTS the process, taking the tick thread and every connected client
+        // with it, and `/data/<scope>/<stub>` reaches this from an ordinary subscribe.
+        assert_eq!(resolve_stub(&self_referential(), Uid(10), "out0"), None);
+    }
+
+    #[test]
+    fn mutually_recursive_stubs_resolve_to_none() {
+        let mut scopes = IndexMap::new();
+        for (a, b) in [(Uid(10), Uid(11)), (Uid(11), Uid(10))] {
+            let mut s = Scope { name: "s".to_string(), pos: [0.0, 0.0], stubs: IndexMap::new() };
+            s.stubs.insert("out0".to_string(), out_stub(b, "out0"));
+            scopes.insert(a, s);
+        }
+        assert_eq!(resolve_stub(&scopes, Uid(10), "out0"), None);
     }
 
     #[test]
