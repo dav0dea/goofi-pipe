@@ -1,4 +1,4 @@
-// GENERATED from crates/goofi-bridge/src/vocab.rs — do not edit by hand.
+// GENERATED from backend/goofi-bridge/src/vocab.rs — do not edit by hand.
 // Panel types and viewer kinds are declared ONCE, in the manager: naming one that is not
 // in the table is a type error here and a teachable refusal there. The BEHAVIOUR keyed off
 // a word stays client-side — which component renders a panel type (`panels/register.ts`),

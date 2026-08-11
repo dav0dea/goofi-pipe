@@ -96,7 +96,7 @@ fn ensure_goofi(root: &Path, venv: &Path, py: &Path) -> Result<(), String> {
         .arg("-o")
         .arg(&out)
         .arg("-m")
-        .arg(root.join("crates").join("goofi-pymod").join("Cargo.toml"))
+        .arg(root.join("backend").join("goofi-pymod").join("Cargo.toml"))
         // Run from OUTSIDE the repo. maturin shells out to a nested cargo, and cargo discovers
         // `.cargo/config.toml` by walking up from its working directory — so from in here that
         // nested build re-injects the `[env]` block naming the FREE-THREADED interpreter's home,

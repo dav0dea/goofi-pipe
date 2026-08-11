@@ -250,7 +250,7 @@ tense with its measured duration for exactly that reason.
 - `.gfivenv` — a GIL python (pinned 3.12, since the subprocess tier exists precisely for packages
   that are *not* free-threading-safe): the subprocess child. Made at startup.
 
-Both get the `goofi` wheel at **startup** (`crates/goofi-cli/src/provision.rs`), built through
+Both get the `goofi` wheel at **startup** (`backend/goofi-cli/src/provision.rs`), built through
 `uv tool run maturin` — at runtime, where no cargo build lock is held, which is the whole reason
 this cannot live in `build.rs` — and installed with `uv pip`, numpy riding along as the wheel's
 own declared dependency. `--subproc-python` overrides the GIL side and takes ownership with it.
@@ -275,7 +275,7 @@ processes outlive the test and corrupt every later latency measurement.
 
 ---
 
-## Backend map (`crates/`)
+## Backend map (`backend/`)
 
 | crate | owns |
 |---|---|

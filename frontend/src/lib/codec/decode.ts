@@ -1,7 +1,7 @@
 /**
  * TypeScript port of goofi.codec — decode side only.
  *
- * Mirrors the GOOF wire format, whose source of truth is crates/goofi-codec/src/lib.rs:
+ * Mirrors the GOOF wire format, whose source of truth is backend/goofi-codec/src/lib.rs:
  *
  *   offset  size  field
  *   ------  ----  ----------------------------------------------
@@ -159,7 +159,7 @@ function readTypedArray(
 	// frame (which may be reused by the runtime).
 	const slice = buffer.slice(byteOffset, byteOffset + nBytes);
 	if (kind + itemsize !== 'f4') {
-		// The canonical encoder (`crates/goofi-codec`) writes `<f4` for EVERY array — the engine
+		// The canonical encoder (`backend/goofi-codec`) writes `<f4` for EVERY array — the engine
 		// casts at ingest (`cast_to_f32`), so there is no other array dtype on the wire. Anything
 		// else means the encoder changed without this port; fail loudly rather than mis-read bytes.
 		throw new Error(`Unsupported numpy dtype: ${dtypeStr} (the wire is f32-only)`);

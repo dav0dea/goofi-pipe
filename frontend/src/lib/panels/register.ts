@@ -2,7 +2,7 @@
  * Application panel registration — the id→component half of a panel type.
  *
  * The vocabulary (which types exist, their titles, icons and whether each binds a
- * node) is the manager's: declared in `crates/goofi-bridge/src/vocab.rs` and
+ * node) is the manager's: declared in `backend/goofi-bridge/src/vocab.rs` and
  * generated into `$lib/api/vocab`, so a panel type the manager will not accept
  * cannot be registered here and one it mints cannot be missing. What stays here
  * is the component, which is code and could not live anywhere else. Called once

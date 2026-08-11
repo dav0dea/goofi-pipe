@@ -198,7 +198,7 @@ describe('globals. and np.', () => {
 	});
 });
 
-/* The four names the evaluator injects (`crates/goofi-py/src/expr.rs`) are the entire scope, and
+/* The four names the evaluator injects (`backend/goofi-py/src/expr.rs`) are the entire scope, and
  * nothing else in the app tells the user they exist. Offering them at a variable position is both
  * the most useful completion here AND the observable proof of the "trick": our entries and Python's
  * own keywords/builtins are collected for the SAME cursor, so they can only arrive in one popup. */

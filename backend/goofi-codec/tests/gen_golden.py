@@ -4,9 +4,9 @@
 Run with a Python env that has numpy + msgpack and can import the legacy `goofi`
 package from `src/` (e.g. the repo `.venv` or the back-reference checkout's venv):
 
-    PYTHONPATH=src <python> crates/goofi-codec/tests/gen_golden.py
+    PYTHONPATH=src <python> backend/goofi-codec/tests/gen_golden.py
 
-Writes crates/goofi-codec/tests/fixtures/goof_golden.json — a name -> {frame: [u8...],
+Writes backend/goofi-codec/tests/fixtures/goof_golden.json — a name -> {frame: [u8...],
 dtype_tag} map. The Rust codec test reconstructs the SAME cases natively, encodes them,
 and asserts body bytes are byte-identical and meta is semantically equal. The case list
 here is mirrored exactly in tests/goof_golden.rs; the two must agree by construction.

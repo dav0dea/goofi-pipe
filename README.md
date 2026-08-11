@@ -114,7 +114,7 @@ cd tests/e2e && npm run e2e               # Playwright against the real binary
 ### Layout
 
 ```
-crates/
+backend/
   goofi-core      Data (always f32) + Meta, params, reduction kernels, globals
   goofi-codec     the binary wire format (shared with the frontend decoder)
   goofi-node      the Node trait, manifests, Python introspection probe

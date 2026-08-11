@@ -263,7 +263,7 @@ pub fn find(name: &str) -> Option<&'static Op> {
 pub fn typescript() -> String {
     let names: Vec<String> = REGISTRY.iter().map(|o| format!("\t| '{}'", o.name)).collect();
     format!(
-        "// GENERATED from crates/goofi-bridge/src/ops.rs — do not edit by hand.\n\
+        "// GENERATED from backend/goofi-bridge/src/ops.rs — do not edit by hand.\n\
          // The manager's op registry is the only place an op name is declared: naming one that is\n\
          // not in it is a type error here and an `unknown op` refusal there. Regenerate by running\n\
          // `cargo test -p goofi-bridge`, which rewrites this file when it drifts.\n\

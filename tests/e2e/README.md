@@ -1,7 +1,7 @@
 # goofi e2e (Playwright)
 
 End-to-end tests that boot the real `goofi-pipe` backend and drive the real SPA through
-`window.goofi` (the agent façade). Committed, CI-runnable, isolated from `crates/` and
+`window.goofi` (the agent façade). Committed, CI-runnable, isolated from `backend/` and
 `frontend/`.
 
 ## Run

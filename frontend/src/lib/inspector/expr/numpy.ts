@@ -3,7 +3,7 @@
  *
  * **CURATED, NOT AUTHORITATIVE.** This is a hand-picked list of the numpy names an expression
  * realistically reaches for, not `dir(np)`. The real thing is reachable — the repo already runs a
- * live interpreter for node discovery (`crates/goofi-node/src/discover.rs`) and could answer a
+ * live interpreter for node discovery (`backend/goofi-node/src/discover.rs`) and could answer a
  * `complete_expr` RPC with the true namespace plus signatures — and D-X9 deliberately keeps that out
  * of v1: it crosses into Rust and the wire for a fraction of the value. So: a name missing here is
  * NOT a name missing from `np`, and nothing should ever treat this list as the namespace.

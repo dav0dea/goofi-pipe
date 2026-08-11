@@ -24,7 +24,7 @@ import { openSaveAs } from '../lib/topbar';
  *
  * Hermeticity: all writes land in a per-run temp directory created here and removed in afterAll,
  * so the file the round trip saves can never leak into a later run (the e2e backend serves the
- * real, unjailed filesystem — see crates/goofi-bridge/src/fsbrowse.rs).
+ * real, unjailed filesystem — see backend/goofi-bridge/src/fsbrowse.rs).
  */
 
 /** Per-run scratch directory on the BACKEND's filesystem — same machine, since `globalSetup`

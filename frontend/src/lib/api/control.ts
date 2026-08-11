@@ -12,7 +12,7 @@ import type { OpName } from '$lib/api/ops';
 /** Control-plane protocol version. The browser reconciles purely from echoed
  * events, so a stale `frontend/build/` against a newer backend would diverge
  * SILENTLY rather than erroring. The backend stamps its version into `hello`
- * (`crates/goofi-bridge/src/schemas.rs` PROTOCOL_VERSION) and the client asserts a match —
+ * (`backend/goofi-bridge/src/schemas.rs` PROTOCOL_VERSION) and the client asserts a match —
  * turning silent skew into an explicit "reload required". Bump BOTH sides
  * together whenever the wire shape or reconciliation rules change. */
 export const PROTOCOL_VERSION = 1;

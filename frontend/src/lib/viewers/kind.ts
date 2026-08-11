@@ -1,7 +1,7 @@
 /**
  * Viewer-kind BEHAVIOUR. The vocabulary itself — which kinds exist, which dtype
  * each serves and how many dimensions each takes — is the manager's, declared in
- * `crates/goofi-bridge/src/vocab.rs` and generated into `$lib/api/vocab`; this
+ * `backend/goofi-bridge/src/vocab.rs` and generated into `$lib/api/vocab`; this
  * module is what the app DOES with it, which is the half that depends on a live
  * frame and therefore stays here.
  *

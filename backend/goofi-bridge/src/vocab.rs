@@ -176,7 +176,7 @@ pub fn typescript() -> String {
         })
         .collect::<String>();
     format!(
-        "// GENERATED from crates/goofi-bridge/src/vocab.rs — do not edit by hand.\n\
+        "// GENERATED from backend/goofi-bridge/src/vocab.rs — do not edit by hand.\n\
          // Panel types and viewer kinds are declared ONCE, in the manager: naming one that is not\n\
          // in the table is a type error here and a teachable refusal there. The BEHAVIOUR keyed off\n\
          // a word stays client-side — which component renders a panel type (`panels/register.ts`),\n\
