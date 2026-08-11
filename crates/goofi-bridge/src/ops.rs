@@ -111,7 +111,9 @@ pub static REGISTRY: &[Op] = &[
          result: "{value} — the value as stored, which is what to read back rather than the one sent." },
     Op { name: "set_expression", surface: Mcp, writes: true,
          args: "node:uid! group:string! name:string! expression:string enabled:bool triggers:bool",
-         doc: "Bind a param to an expression — `nd('name').sfreq`, `globals.x`, `t`. An empty expression clears the binding.",
+         doc: "Bind a param to an expression — `nd('name').sfreq`, `globals.x`, `t`. An empty expression clears the binding.\n\n\
+               `enabled` defaults false, so pass `enabled: true` or the binding is stored dormant and the param keeps its literal.\n\n\
+               `triggers` defaults false, and that is almost always right: a binding re-evaluates on its own — when a referenced node emits, or every gated tick for a ref-less one — and the node reads the fresh value on its next normal run. `triggers: true` ALSO wakes the node's process() on every evaluation, making the reference its clock. Reach for it only when the node would otherwise not run (a trigger input with no wire into it) and you want the referenced node to drive it. Never on a ref-less expression (`t`, `globals.x`): that free-runs the node at its common.max_frequency.",
          result: "{error: string | null} — the compile/binding error, or null when it took" },
     Op { name: "set_node_pos", surface: Mcp, writes: true, args: "node:uid! pos:float2!",
          doc: "Move a node on the canvas.",
@@ -351,6 +353,19 @@ mod tests {
                 "`{}` has an unexpanded placeholder — a model would read it verbatim",
                 op.name
             );
+        }
+    }
+
+    /// Agents set `triggers: true` on every expression they bound. The tool description is the ONLY
+    /// text they read — [`crate::mcp::tools`] projects `doc` + `result`, and the input schema carries
+    /// no per-argument description — and this doc named NEITHER boolean, so both read as one "turn
+    /// the expression on" gesture; and `enabled` genuinely does have to be true. The description now
+    /// states each flag's default and what `triggers` costs. This is where that stays true.
+    #[test]
+    fn set_expressions_description_states_both_flags_defaults() {
+        let doc = find("set_expression").expect("set_expression is registered").doc();
+        for phrase in ["`enabled` defaults false", "`triggers` defaults false", "enabled: true"] {
+            assert!(doc.contains(phrase), "set_expression's doc does not say {phrase:?}: {doc}");
         }
     }
 
