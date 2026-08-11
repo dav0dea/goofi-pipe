@@ -96,7 +96,7 @@ pub static REGISTRY: &[Op] = &[
          result: "{ok: true}" },
     Op { name: "add_link", surface: Mcp, writes: true,
          args: "node_out:uid! slot_out:string! node_in:uid! slot_in:string!",
-         doc: "Wire an output slot to an input slot. Either end may name a sub-patch boundary port. Refuses a dtype mismatch, naming both ends.",
+         doc: "Wire an output slot to an input slot. Either end may name a sub-patch boundary port. Refuses a dtype mismatch, naming both ends; refuses an end that names no node, or a boundary port with no inner slot behind it — so a reply means the wire is really there.",
          result: "{node_out, slot_out, node_in, slot_in, dtype} — the wire as made, with a boundary endpoint resolved to the inner leaf it exposes." },
     Op { name: "remove_link", surface: Mcp, writes: true,
          args: "node_out:uid! slot_out:string! node_in:uid! slot_in:string!",

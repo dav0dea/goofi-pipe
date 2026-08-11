@@ -1321,6 +1321,81 @@ async fn a_graph_write_answers_with_what_it_actually_did() {
 }
 
 #[tokio::test]
+async fn add_link_refuses_an_endpoint_that_names_nothing_wirable() {
+    // `Command::AddLink` TOLERATES an endpoint naming no node — it must, being the toggle a
+    // `remove_link` undo replays. That tolerance answered a typo'd uid with a success reply and no
+    // wire, and an agent then built on a link that does not exist. A request is not a replay.
+    let base = start_server().await;
+    let (mut ws, _) = connect_async(format!("{base}/control")).await.unwrap();
+    let _ = recv_text(&mut ws).await;
+    let uid = |v: &Value| v["result"]["uid"].as_str().unwrap().to_string();
+    let osc = uid(&call(&mut ws, 1, "add_node", json!({ "type": "Oscillator" })).await);
+
+    let typo = call(&mut ws, 2, "add_link", json!({ "node_out": osc, "slot_out": "out",
+        "node_in": "deadbeefdeadbeef", "slot_in": "data" })).await;
+    let err = typo["error"].as_str().unwrap_or_default().to_string();
+    assert!(err.contains("node_in") && err.contains("deadbeefdeadbeef"), "{typo}");
+    assert!(typo["result"].is_null(), "a refusal carries no result: {typo}");
+
+    // The same hole one step over: an endpoint naming a REAL sub-patch instance whose boundary port
+    // has no inner slot behind it. There is nothing to wire, and the reply used to claim there was.
+    let buf = uid(&call(&mut ws, 3, "add_node", json!({ "type": "Buffer" })).await);
+    let inst = call(&mut ws, 4, "group_nodes", json!({ "members": [buf], "pos": [0.0, 0.0] }))
+        .await["result"]["inst_id"].as_str().unwrap().to_string();
+    let bnd = call(&mut ws, 5, "add_boundary",
+        json!({ "inst_id": inst, "dir": "in", "dtype": "ARRAY", "pos": [0.0, 0.0] }))
+        .await["result"]["bnd_id"].as_str().unwrap().to_string();
+    let unwired = call(&mut ws, 6, "add_link", json!({ "node_out": osc, "slot_out": "out",
+        "node_in": inst, "slot_in": bnd })).await;
+    assert!(
+        unwired["error"].as_str().is_some_and(|e| e.contains("wire_boundary")),
+        "an unwired port has to name the op that fills it: {unwired}"
+    );
+
+    // …and the wire the same call makes once the port IS wired still lands, so the refusal is a
+    // gate on the impossible rather than on sub-patch wiring itself.
+    call(&mut ws, 7, "wire_boundary",
+        json!({ "inst_id": inst, "bnd_id": bnd, "inner_node": buf, "inner_slot": "data" })).await;
+    let made = call(&mut ws, 8, "add_link", json!({ "node_out": osc, "slot_out": "out",
+        "node_in": inst, "slot_in": bnd })).await;
+    assert_eq!(made["result"]["node_in"], json!(buf), "the boundary resolves to its leaf: {made}");
+}
+
+#[tokio::test]
+async fn an_add_link_toggle_still_replays_after_a_peer_deleted_an_endpoint() {
+    // The invariant the refusal above could have broken. `AddLink` is the inverse of every
+    // `remove_link` and the trailing child of a `RemoveNode` inverse, so a session undoing a
+    // disconnect AFTER another session deleted an endpoint must converge to a benign no-op —
+    // erroring there propagates through `flip()` and wedges that session's undo stack forever
+    // (undo keeps re-selecting the un-flippable entry). Hence the refusal sits at the dispatch
+    // boundary and the command's replay path keeps its tolerance.
+    let base = start_server().await;
+    let (mut ws, _) = connect_async(format!("{base}/control")).await.unwrap();
+    let _ = recv_text(&mut ws).await;
+    let uid = |v: &Value| v["result"]["uid"].as_str().unwrap().to_string();
+    let osc = uid(&call_session(&mut ws, 1, "add_node", json!({ "type": "Oscillator" }), "s1").await);
+    let buf = uid(&call_session(&mut ws, 2, "add_node", json!({ "type": "Buffer" }), "s1").await);
+    let link = json!({ "node_out": osc, "slot_out": "out", "node_in": buf, "slot_in": "data" });
+    call_session(&mut ws, 3, "add_link", link.clone(), "s1").await;
+    call_session(&mut ws, 4, "remove_link", link, "s1").await;
+    // A peer takes the input end away. s1's newest toggle is now an AddLink onto a dead uid.
+    call_session(&mut ws, 5, "remove_node", json!({ "node": buf }), "s2").await;
+
+    let undo = call_session(&mut ws, 6, "undo", json!({}), "s1").await;
+    assert!(undo["error"].is_null(), "the stale toggle must flip, not error: {undo}");
+    assert_eq!(undo["result"]["changed"], json!(true), "{undo}");
+    let redo = call_session(&mut ws, 7, "redo", json!({}), "s1").await;
+    assert!(redo["error"].is_null(), "{redo}");
+    assert_eq!(redo["result"]["changed"], json!(true), "{redo}");
+    // …and the stack is still walkable, entry for entry, back to the empty patch.
+    for id in 8..12 {
+        let u = call_session(&mut ws, id, "undo", json!({}), "s1").await;
+        assert!(u["error"].is_null(), "undo {id}: {u}");
+        assert_eq!(u["result"]["changed"], json!(true), "undo {id}: {u}");
+    }
+}
+
+#[tokio::test]
 async fn a_layout_write_answers_with_the_arrangement_it_produced() {
     // `{ok: true}` told a caller its write was accepted and nothing about what it made, so an agent
     // editing the layout had to follow every single op with an `inspect_layout` to see the tree it

@@ -923,6 +923,32 @@ fn resolve_link_endpoint(g: &goofi_engine::Graph, uid: Uid, slot: &str) -> (Uid,
     (uid, slot.to_string())
 }
 
+/// Resolve a link endpoint AND refuse one that names nothing wirable — the check a caller-initiated
+/// `add_link` gets and a replay does not.
+///
+/// [`goofi_engine::Command::AddLink`] deliberately tolerates an endpoint naming no node: the same
+/// command is the inverse of every `remove_link` and the trailing child of a `RemoveNode` inverse, so
+/// a toggle replayed against a peer's delete must converge to a no-op rather than error through
+/// `flip()` and wedge that session's undo stack. A REQUEST is not a REPLAY, though — a typo'd uid was
+/// answered with the wire it did not make, dtype and all. So the request is checked here, at the
+/// dispatch boundary, where an `Err` short-circuits before `CommandHistory::apply` records anything
+/// (as a dtype mismatch already does) and the client records no `graph_cmd` for a failed RPC — the
+/// two stacks stay 1:1. The command's replay path keeps its tolerance untouched.
+fn wirable_endpoint(g: &Graph, uid: Uid, slot: &str, which: &str) -> Result<(Uid, String), String> {
+    let (node, slot) = resolve_link_endpoint(g, uid, slot);
+    if g.contains(node) {
+        return Ok((node, slot));
+    }
+    if g.scope(uid).is_some() {
+        return Err(format!(
+            "add_link: `{which}` names sub-patch {} port `{slot}`, which exposes no inner slot — \
+             wire_boundary it to a member's slot first",
+            uid.to_hex()
+        ));
+    }
+    Err(format!("add_link: `{which}` names no node in this patch: {}", uid.to_hex()))
+}
+
 /// Resolve the `page` argument — a unique human name — to its stable id. A name is the ONLY way a
 /// caller addresses a page, so an unknown one has to say which ones exist rather than just refusing.
 fn resolve_page(g: &Graph, payload: &Value) -> Result<String, String> {
@@ -1217,10 +1243,11 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
             // after dispatch. The old `link_added`/`link_removed` events had no client consumer.
             "add_link" => {
                 let (a, so, b, si) = parse_link(&payload)?;
-                // Resolve either endpoint through a sub-patch boundary → flat leaf→leaf, THEN route
-                // the resolved flat link through the history (undoable; inverse is a RemoveLink).
-                let (a, so) = resolve_link_endpoint(&g, a, &so);
-                let (b, si) = resolve_link_endpoint(&g, b, &si);
+                // Resolve either endpoint through a sub-patch boundary → flat leaf→leaf, REFUSING one
+                // that names nothing wirable, THEN route the resolved flat link through the history
+                // (undoable; inverse is a RemoveLink).
+                let (a, so) = wirable_endpoint(&g, a, &so, "node_out")?;
+                let (b, si) = wirable_endpoint(&g, b, &si, "node_in")?;
                 state.history.lock().unwrap().apply(
                     &mut g,
                     &session,
