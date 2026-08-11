@@ -310,31 +310,22 @@ async fn initialize_answers_with_a_revision_this_server_implements() {
     assert_eq!(reply["result"]["protocolVersion"], json!("2025-06-18"), "{reply}");
 }
 
-/// `initialize.instructions` is the ONLY thing that tells an agent what goofi is — H cut the skills
-/// corpus in favour of it — and both of its budgets belong to a real client: Claude Code truncates
-/// server instructions at 2 KB, and Codex weights the FIRST 512 characters. So the orientation has
-/// to stand alone inside one 512-byte paragraph, and what goes in it is decided by the mistakes an
-/// agent has actually made here: it invented a panel type nothing told it not to invent, and it
-/// followed a write with a read the write had already answered.
+/// The handshake orients nobody, on purpose (user, 2026-08-10 — "this should live purely in
+/// AGENTS.md"). `initialize.instructions` was the channel, and the measurement that killed it is in
+/// the design record: codex receives the field intact and surfaces it as ONE namespace blurb among
+/// ~180 tools, so it read the text and acted on none of it. `AGENTS.md` in the harness's cwd does
+/// reach the model-visible prompt, so it is the whole orientation and the handshake carries no
+/// second, silently-truncated copy of it to drift from.
 #[tokio::test]
-async fn initialize_orients_an_agent_inside_its_first_paragraph() {
+async fn initialize_carries_no_orientation_because_agents_md_is_the_only_channel() {
     let addr = start_server().await;
     let reply = rpc(&addr, 1, "initialize", json!({})).await;
-    let text = reply["result"]["instructions"].as_str().expect("a client is oriented");
-    assert!(text.len() <= 2048, "the instructions are {} bytes", text.len());
-    // The front-loaded paragraph, which is what a 512-weighting client reads and all it reads.
-    let head = text.split("\n\n").next().expect("a first paragraph");
-    assert!(head.len() <= 512, "the front-loaded paragraph is {} bytes", head.len());
-    for must in [
-        "goofi",           // what this even is
-        "human",           // …and that one is editing the same patch at the same time
-        "at once",         // …so an edit is visible to them immediately, not on some later sync
-        "inspect_patch",   // where to look first, and how to see what was built
-        "answers with what it made", // a write already told you; do not read it back
-        "guess",           // and never invent a vocabulary word
-    ] {
-        assert!(head.contains(must), "the orientation never says `{must}`: {head}");
-    }
+    let result = &reply["result"];
+    assert_eq!(result.get("instructions"), None, "the handshake still orients: {reply}");
+    // …and it is still a handshake — otherwise this would pass just as well against a broken one.
+    assert_eq!(result["protocolVersion"], json!("2025-06-18"), "{reply}");
+    assert_eq!(result["capabilities"]["tools"], json!({}), "{reply}");
+    assert_eq!(result["serverInfo"]["name"], json!("goofi-pipe"), "{reply}");
 }
 
 /// A JSON-RPC batch is a JSON ARRAY, which carries no top-level `id` — so without a guard it takes

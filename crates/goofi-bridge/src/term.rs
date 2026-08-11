@@ -435,16 +435,27 @@ impl Instance {
     }
 }
 
+/// The whole of an agent's orientation: what goofi is, that a human is editing the same patch at
+/// the same time, how to see it, how to build in it, and what is not the agent's to touch. It is a
+/// FILE rather than a string literal because it is documentation an agent reads as documentation —
+/// and because it is also the file [`seed_orientation`] lays in the workspace, so a reviewer edits
+/// the same bytes the agent gets. The tool descriptions say what each op does; this says how to
+/// behave. Nothing else claims to orient an agent — see [`seed_orientation`] for why the MCP
+/// handshake deliberately does not.
+pub(crate) const ORIENTATION: &str = include_str!("orientation.md");
+
 /// Seed a NEW patch workspace with the orientation an agent harness reads — only ever a workspace
 /// goofi minted empty itself (boot, `new`, an upload that carries no files), never one a `.gfi` was
 /// unpacked into. Absent-only on top of that, so it is written once and belongs to the patch from
 /// then on.
 ///
-/// **Why a file at all.** `initialize.instructions` is answered to every MCP client, but reading a
-/// field is not acting on it: codex 0.147 surfaces it only as the description of the `mcp__goofi`
-/// tool NAMESPACE, and an agent given it there answered "add an oscillator" by shelling out to
-/// look for a framework, never calling a goofi tool. As `AGENTS.md` it lands in the model-visible
-/// prompt and the agent adds the node (measured 2026-08-10, real model, real backend).
+/// **Why a file and nothing else.** The MCP handshake could answer `initialize.instructions`, and
+/// once did; reading a field is not acting on it. Codex 0.147 receives it intact and surfaces it
+/// only as the description of the `mcp__goofi` tool NAMESPACE — one blurb among ~180 tools — and an
+/// agent given it there answered "add an oscillator" by shelling out to look for a framework,
+/// never calling a goofi tool. As `AGENTS.md` it lands in the model-visible prompt and the agent
+/// adds the node (measured 2026-08-10, real model, real backend). So the field was dropped rather
+/// than kept as a second, 2 KB-truncated copy of a text that has one home (user, 2026-08-10).
 ///
 /// **Why IN the workspace.** Only there. The same measurement, run against the nonce directory one
 /// level up, put the text in NO prompt — an agent that answered a question about it had simply
@@ -470,7 +481,7 @@ impl Instance {
 /// them back: see [`goofi_engine::archive::IGNORE_FILE`].
 pub fn seed_orientation(mount: &Path) {
     for (name, body) in [
-        ("AGENTS.md", crate::mcp::INSTRUCTIONS),
+        ("AGENTS.md", ORIENTATION),
         ("CLAUDE.md", "@AGENTS.md\n"),
         (goofi_engine::archive::IGNORE_FILE, goofi_engine::archive::DEFAULT_IGNORE),
     ] {
@@ -588,16 +599,25 @@ fn parent_speaks_utf8(env: &[(OsString, OsString)]) -> bool {
 mod tests {
     use super::*;
 
-    /// A new workspace is seeded with the handshake's OWN text — shared, never restated, so the
-    /// file and `/mcp` cannot drift — under the two names the three harnesses read.
+    /// A new workspace is seeded with the WHOLE of [`ORIENTATION`], under the two names the three
+    /// harnesses read. Whole is the load-bearing word: this is the only channel, so a seed carrying
+    /// an abridged version of it would orient an agent with the sections missing.
     #[test]
-    fn a_new_workspace_is_seeded_with_the_orientation_the_handshake_returns() {
+    fn a_new_workspace_is_seeded_with_the_whole_orientation() {
         let tmp = tempfile::tempdir().expect("a temp dir");
         seed_orientation(tmp.path());
-        assert_eq!(std::fs::read_to_string(tmp.path().join("AGENTS.md")).unwrap(),
-                   crate::mcp::INSTRUCTIONS, "AGENTS.md is the handshake's own string");
+        assert_eq!(std::fs::read_to_string(tmp.path().join("AGENTS.md")).unwrap(), ORIENTATION);
         // Claude Code reads CLAUDE.md, and its `@` import is what points it at the other file.
         assert_eq!(std::fs::read_to_string(tmp.path().join("CLAUDE.md")).unwrap(), "@AGENTS.md\n");
+        // …and what was seeded is documentation, not a blurb: an agent needs the sections that
+        // answer "how do I see this", "how do I build" and "what is a patch node", and a file
+        // short enough to have lost them would still pass the equality above.
+        for section in ["\n## Seeing", "\n## Building", "\n## Custom Python nodes"] {
+            assert!(ORIENTATION.contains(section), "the orientation has no `{section}` section");
+        }
+        // It is read in EVERY turn of every agent working in this patch, so its size is a cost the
+        // patch pays continuously. The aim is ~6 KB; this is the ceiling that keeps it near it.
+        assert!(ORIENTATION.len() < 8192, "the orientation is {} bytes", ORIENTATION.len());
     }
 
     /// …and an orientation the agent has already edited is ITS OWN. This is the whole reason the
