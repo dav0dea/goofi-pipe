@@ -1,9 +1,10 @@
 /**
  * Reactive perf store backing the TopBar HUD (backlog #12). It owns a
- * {@link RateMeter} that the frame layer bumps on every delivered / dropped
- * frame, and mirrors the meter's per-second rates into `$state` fields each
- * `tick()` so the HUD updates. The HUD drives `tick()` on a timer while mounted;
- * frame delivery (`frames.ts`) drives `delivered()` / `dropped()`.
+ * {@link RateMeter} that the frame layer bumps once per PAINT (one rAF flush,
+ * whatever it repainted) and on every dropped frame, and mirrors the meter's
+ * per-second rates into `$state` fields each `tick()` so the HUD updates. The HUD
+ * drives `tick()` on a timer while mounted; the paint scheduler (`frames.ts`)
+ * drives `delivered()` / `dropped()`.
  */
 import { RateMeter } from './rateMeter';
 

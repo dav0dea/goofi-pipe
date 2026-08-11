@@ -37,6 +37,39 @@ afterEach(() => {
 	vi.unstubAllGlobals();
 });
 
+describe('paint-rate accounting', () => {
+	it('records one paint per flush, however many streams painted in it', async () => {
+		// The HUD's "fps" is the PAINT rate — flushes/s, which the cap (paintCap.ts) bounds at 30
+		// app-wide. It used to be bumped inside the per-slot loop, so it read the SUM of the open
+		// streams' delivery rates: ~30 x N, climbing by 30 with every node the user added while the
+		// cap it was being used to instrument never moved. TWO streams is the smallest fixture that
+		// can tell the two arithmetics apart — at N=1 the sum and the paint rate are the same number,
+		// which is exactly why the single-node `viewer-fps-cap.spec.ts` stayed green through it.
+		const { perfStats } = await import('./perfStats.svelte');
+		const delivered = vi.spyOn(perfStats(), 'delivered');
+		const gotA: DataFrame[] = [];
+		const gotB: DataFrame[] = [];
+		const offA = subscribeFrames('osc-a', 'out', (f) => gotA.push(f));
+		const offB = subscribeFrames('osc-b', 'out', (f) => gotB.push(f));
+		const w = MockWorker.instances[0];
+		w.emit({ node: 'osc-a', slot: 'out', frame: { shape: [1] } as unknown as DataFrame });
+		w.emit({ node: 'osc-b', slot: 'out', frame: { shape: [2] } as unknown as DataFrame });
+		await vi.advanceTimersByTimeAsync(40); // past the paint scheduler → ONE flush
+		// The fixture is only honest if both streams really painted in that one flush.
+		expect(gotA.length, 'stream A painted').toBe(1);
+		expect(gotB.length, 'stream B painted').toBe(1);
+		expect(delivered, 'one flush is one paint, not one per slot').toHaveBeenCalledTimes(1);
+
+		// …and it is a rate, not a latch: the next flush counts too.
+		w.emit({ node: 'osc-a', slot: 'out', frame: { shape: [3] } as unknown as DataFrame });
+		w.emit({ node: 'osc-b', slot: 'out', frame: { shape: [4] } as unknown as DataFrame });
+		await vi.advanceTimersByTimeAsync(40);
+		expect(delivered, 'a second flush is a second paint').toHaveBeenCalledTimes(2);
+		offA();
+		offB();
+	});
+});
+
 describe('subscribeFrames late join', () => {
 	it('replays the slot’s current frame to a late-joining consumer, immediately and once', async () => {
 		// The bridge only sends when something changed (an emit, a joiner IT can see, a spec

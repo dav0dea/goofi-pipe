@@ -1,9 +1,14 @@
 <!--
   Perf HUD (backlog #12) — a compact frame-rate / drop indicator in the TopBar.
   Reads the app-wide perf stats singleton, which the frame layer (frames.ts)
-  feeds on every delivered / dropped frame. We drive `tick()` on a 250ms timer
-  (the meter's own window is 500ms) so the numbers refresh without a perpetual
-  rAF. Hidden when idle (no frames flowing) so a static patch shows nothing.
+  feeds once per PAINT — one rAF flush, however many streams it repainted — and on
+  every dropped frame. The word "fps" is kept because it is now literally what the
+  number is; it used to be bumped per SLOT, which made it the sum of the open
+  streams' rates (~30 x N) under a label naming the 30 fps cap.
+
+  We drive `tick()` on a 250ms timer (the meter's own window is 500ms) so the
+  numbers refresh without a perpetual rAF. Hidden when idle (no frames flowing)
+  so a static patch shows nothing.
 -->
 <script lang="ts">
 	import { onMount } from 'svelte';
@@ -24,7 +29,7 @@
 	<span
 		class="hud"
 		data-testid="perf-hud"
-		title="Frames painted per second across all visible viewers (drops = latest-wins coalesced frames)"
+		title="Screen paints per second, app-wide — capped at 30, and it does not climb with node count. Drops: latest-wins frames coalesced away, counted per stream."
 	>
 		<span class="fps">{p.fps.toFixed(0)} fps</span>
 		<!-- This slot stays present at zero. Occasional coalescing is normal, and mounting/unmounting

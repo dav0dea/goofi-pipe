@@ -85,7 +85,6 @@ function flush(): void {
 		s.current = frame;
 		s.lastFlush = start;
 		painted++;
-		perfStats().delivered();
 		for (const consumer of s.cbs) {
 			try {
 				consumer(frame);
@@ -94,6 +93,11 @@ function flush(): void {
 			}
 		}
 	}
+	// ONE paint per flush, not one per slot. This is the quantity the cap bounds (paintCap.ts caps
+	// flush STARTS at 30/s) and the quantity the HUD names, so counting per slot made the readout
+	// the sum of the open streams' rates — ~30 x N, a staircase climbing with every node added
+	// while the cap itself never moved. A flush that painted nothing is not a paint.
+	if (painted > 0) perfStats().delivered();
 	if (dirty.size > 0) requestFlush(); // deferred slots → next frame
 }
 
