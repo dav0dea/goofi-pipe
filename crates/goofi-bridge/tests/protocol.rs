@@ -1362,6 +1362,111 @@ async fn add_link_refuses_an_endpoint_that_names_nothing_wirable() {
 }
 
 #[tokio::test]
+async fn a_fresh_rpc_naming_nothing_is_refused_rather_than_silently_ignored() {
+    // The same hole `add_link` closed, in the eight ops that still had it. `execute`'s idempotent
+    // guards are REPLAY tolerance: a toggle recorded before a peer's edit must converge when
+    // flipped into a world that moved on, because an `Err` inside `flip` wedges that session's
+    // undo stack forever. A first-hand RPC earns none of that — there a missing target is a caller
+    // mistake, and `{ok: true}` asserts a state the patch is not in.
+    let base = start_server().await;
+    let (mut ws, _) = connect_async(format!("{base}/control")).await.unwrap();
+    let _ = recv_text(&mut ws).await;
+    let uid = |v: &Value| v["result"]["uid"].as_str().unwrap().to_string();
+    let buf = uid(&call(&mut ws, 1, "add_node", json!({ "type": "Buffer" })).await);
+    let inst = call(&mut ws, 2, "group_nodes", json!({ "members": [buf], "pos": [0.0, 0.0] }))
+        .await["result"]["inst_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let ghost = "ffffffffffff"; // canonical 12-hex shape, names nothing
+
+    let cases = [
+        ("wire_boundary", json!({ "inst_id": inst, "bnd_id": "in9",
+                                  "inner_node": buf, "inner_slot": "data" })),
+        ("remove_boundary", json!({ "inst_id": inst, "bnd_id": "in9" })),
+        ("rename_boundary", json!({ "inst_id": inst, "bnd_id": "in9", "name": "left" })),
+        ("set_boundary_pos", json!({ "inst_id": inst, "bnd_id": "in9", "pos": [1.0, 2.0] })),
+        ("expand_instance", json!({ "inst_id": ghost })),
+        ("set_node_pos", json!({ "node": ghost, "pos": [1.0, 2.0] })),
+        ("rename_node", json!({ "node": ghost, "name": "renamed" })),
+        ("set_expression", json!({ "node": ghost, "group": "buffer", "name": "size",
+                                   "expression": "1", "enabled": true })),
+    ];
+    for (i, (op, payload)) in cases.into_iter().enumerate() {
+        let r = call(&mut ws, 100 + i as i64, op, payload).await;
+        assert!(r["error"].as_str().is_some(), "{op} must refuse a target that is not there: {r}");
+        assert!(r["result"].is_null(), "a refusal carries no result: {r}");
+    }
+
+    // The other half of `wire_boundary`: a stub that DOES exist, pointed at an inner target that
+    // cannot take the wire. `set_stub_inner` already refuses this; the command swallowed it.
+    let bnd = call(&mut ws, 200, "add_boundary",
+        json!({ "inst_id": inst, "dir": "in", "dtype": "ARRAY", "pos": [0.0, 0.0] }))
+        .await["result"]["bnd_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let no_slot = call(&mut ws, 201, "wire_boundary",
+        json!({ "inst_id": inst, "bnd_id": bnd, "inner_node": buf, "inner_slot": "nope" })).await;
+    assert!(no_slot["error"].as_str().is_some(), "an inner slot that does not exist: {no_slot}");
+}
+
+#[tokio::test]
+async fn a_boundary_toggle_still_replays_after_a_peer_removed_the_stub() {
+    // The invariant the refusals above could have broken, for the stub ops specifically: undoing
+    // a rename AFTER another session dropped the boundary must converge to a benign no-op. The
+    // strictness lives in `apply` (the fresh call); `flip` keeps its tolerance.
+    let base = start_server().await;
+    let (mut ws, _) = connect_async(format!("{base}/control")).await.unwrap();
+    let _ = recv_text(&mut ws).await;
+    let uid = |v: &Value| v["result"]["uid"].as_str().unwrap().to_string();
+    let buf = uid(&call_session(&mut ws, 1, "add_node", json!({ "type": "Buffer" }), "s1").await);
+    let inst = call_session(&mut ws, 2, "group_nodes",
+        json!({ "members": [buf], "pos": [0.0, 0.0] }), "s1")
+        .await["result"]["inst_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let bnd = call_session(&mut ws, 3, "add_boundary",
+        json!({ "inst_id": inst, "dir": "in", "dtype": "ARRAY", "pos": [0.0, 0.0] }), "s1")
+        .await["result"]["bnd_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    call_session(&mut ws, 4, "rename_boundary",
+        json!({ "inst_id": inst, "bnd_id": bnd, "name": "left" }), "s1").await;
+    // A peer takes the stub away. s1's newest toggle is now an EditStub onto a dead boundary.
+    call_session(&mut ws, 5, "remove_boundary",
+        json!({ "inst_id": inst, "bnd_id": bnd }), "s2").await;
+
+    let undo = call_session(&mut ws, 6, "undo", json!({}), "s1").await;
+    assert!(undo["error"].is_null(), "the stale toggle must flip, not error: {undo}");
+    let redo = call_session(&mut ws, 7, "redo", json!({}), "s1").await;
+    assert!(redo["error"].is_null(), "{redo}");
+}
+
+#[tokio::test]
+async fn rename_node_refuses_a_name_that_cannot_survive_nd_rewriting() {
+    // A display name is spliced into expression SOURCE by `rewrite_nd_refs`, which replaces the
+    // literal's content span in place. A quote or a backslash therefore yields `nd('a'b')` —
+    // invalid Python that the referring node carries as a binding error while the rename itself
+    // reports success. Constraining the name is one line; a quote-aware rewriter is a parser.
+    let base = start_server().await;
+    let (mut ws, _) = connect_async(format!("{base}/control")).await.unwrap();
+    let _ = recv_text(&mut ws).await;
+    let osc = call(&mut ws, 1, "add_node", json!({ "type": "Oscillator" })).await["result"]["uid"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    for (i, bad) in ["a'b", "a\\b", "a\"b"].into_iter().enumerate() {
+        let r = call(&mut ws, 10 + i as i64, "rename_node", json!({ "node": osc, "name": bad })).await;
+        assert!(r["error"].as_str().is_some(), "`{bad}` must be refused: {r}");
+    }
+    let ok = call(&mut ws, 20, "rename_node", json!({ "node": osc, "name": "a b-2" })).await;
+    assert!(ok["error"].is_null(), "ordinary names with spaces and dashes stay legal: {ok}");
+}
+
+#[tokio::test]
 async fn an_add_link_toggle_still_replays_after_a_peer_deleted_an_endpoint() {
     // The invariant the refusal above could have broken. `AddLink` is the inverse of every
     // `remove_link` and the trailing child of a `RemoveNode` inverse, so a session undoing a

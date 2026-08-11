@@ -1455,39 +1455,59 @@ impl Graph {
         Ok(id)
     }
 
+    /// Validate a candidate stub wire and resolve the port dtype it would take, without mutating.
+    /// Extracted from [`Graph::set_stub_inner`] so the forward-RPC precondition (`Command::
+    /// precondition`) and the mutation share ONE algebra — a second copy of "is this inner target
+    /// legal" is exactly the drift this codebase spends its unification budget avoiding.
+    pub fn stub_wire_dtype(
+        &self,
+        scope: Uid,
+        stub: &str,
+        inner: &(Uid, String),
+    ) -> Result<goofi_core::SlotType, String> {
+        let (inner_node, inner_slot) = inner;
+        if !self.is_member_of(scope, *inner_node) {
+            return Err("set_stub_inner: inner is not a member of this scope".into());
+        }
+        let dir = self
+            .scopes
+            .get(&scope)
+            .and_then(|s| s.stubs.get(stub))
+            .map(|st| st.dir)
+            .ok_or("set_stub_inner: no such stub")?;
+        // A member may itself be a sub-patch, in which case its ports are that scope's own
+        // stubs, not slot decls — the `(facade uid, StubId)` shape `Stub.inner` documents
+        // and that `group_nodes` mints itself. `is_member_of` above already proved a DIRECT
+        // child, so chaining one port onto another cannot close a cycle.
+        let dtype = match self.scopes.get(inner_node) {
+            Some(nested) => nested.stubs.get(inner_slot.as_str()).filter(|st| st.dir == dir).map(|st| st.dtype),
+            None => match dir {
+                subpatch::Dir::In => self.input_slot_type(*inner_node, inner_slot),
+                subpatch::Dir::Out => self.output_slot_type(*inner_node, inner_slot),
+            },
+        }
+        .ok_or("set_stub_inner: no such inner slot")?;
+        let s = self.scopes.get(&scope).ok_or("set_stub_inner: no such scope")?;
+        if s.stubs.iter().any(|(id, st)| id != stub && st.inner.as_ref() == Some(inner)) {
+            return Err("set_stub_inner: that inner slot is already exposed by another stub".into());
+        }
+        Ok(dtype)
+    }
+
     /// Set (`Some`) or clear (`None`) a stub's inner target — the canonical wire/unwire. Wiring
-    /// validates membership + one-stub-per-inner-slot and resolves the port dtype from the slot;
-    /// unwiring just clears it. The command layer captures the old inner for the exact inverse.
+    /// validates membership + one-stub-per-inner-slot and resolves the port dtype from the slot
+    /// (via [`Graph::stub_wire_dtype`], check-then-mutate so a refused attempt leaves the stub
+    /// untouched); unwiring just clears it. The command layer captures the old inner for the
+    /// exact inverse.
     pub fn set_stub_inner(&mut self, scope: Uid, stub: &str, inner: Option<(Uid, String)>) -> Result<(), String> {
         match inner {
-            Some((inner_node, inner_slot)) => {
-                if !self.is_member_of(scope, inner_node) {
-                    return Err("set_stub_inner: inner is not a member of this scope".into());
-                }
-                let dir = self
+            Some(target) => {
+                let dtype = self.stub_wire_dtype(scope, stub, &target)?;
+                let st = self
                     .scopes
-                    .get(&scope)
-                    .and_then(|s| s.stubs.get(stub))
-                    .map(|st| st.dir)
+                    .get_mut(&scope)
+                    .and_then(|s| s.stubs.get_mut(stub))
                     .ok_or("set_stub_inner: no such stub")?;
-                // A member may itself be a sub-patch, in which case its ports are that scope's own
-                // stubs, not slot decls — the `(facade uid, StubId)` shape `Stub.inner` documents
-                // and that `group_nodes` mints itself. `is_member_of` above already proved a DIRECT
-                // child, so chaining one port onto another cannot close a cycle.
-                let dtype = match self.scopes.get(&inner_node) {
-                    Some(nested) => nested.stubs.get(inner_slot.as_str()).filter(|st| st.dir == dir).map(|st| st.dtype),
-                    None => match dir {
-                        subpatch::Dir::In => self.input_slot_type(inner_node, &inner_slot),
-                        subpatch::Dir::Out => self.output_slot_type(inner_node, &inner_slot),
-                    },
-                }
-                .ok_or("set_stub_inner: no such inner slot")?;
-                let target = (inner_node, inner_slot);
-                let s = self.scopes.get_mut(&scope).ok_or("set_stub_inner: no such scope")?;
-                if s.stubs.iter().any(|(id, st)| id != stub && st.inner.as_ref() == Some(&target)) {
-                    return Err("set_stub_inner: that inner slot is already exposed by another stub".into());
-                }
-                let st = s.stubs.get_mut(stub).ok_or("set_stub_inner: no such stub")?;
                 st.inner = Some(target);
                 st.dtype = dtype;
                 Ok(())

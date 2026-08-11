@@ -242,6 +242,59 @@ pub enum Command {
 }
 
 impl Command {
+    /// What a FRESH caller must satisfy. The idempotent guards inside [`Command::execute`] are
+    /// REPLAY tolerance: a toggle recorded before a peer's edit has to converge when flipped into
+    /// a world that moved on, because an `Err` inside [`CommandHistory::flip`] permanently wedges
+    /// that session's undo stack (undo keeps re-selecting the un-flippable entry). A first-hand
+    /// RPC earns none of that — there a target that is not present is a caller mistake, and an
+    /// `{ok: true}` answer asserts a state the patch is not in, which every later decision the
+    /// caller makes is then taken against.
+    ///
+    /// Checked in [`CommandHistory::apply`] ONLY, so `flip` keeps its tolerance and multi-client
+    /// convergence is unchanged by construction — the split is the whole point, not a detail.
+    ///
+    /// `Compound` is deliberately absent: its later children are validated against a graph its
+    /// earlier children have not built yet (an `AddNode` followed by the `SetScope` that re-homes
+    /// it), so checking against the PRE state would refuse legal restores. Compounds reach `apply`
+    /// only from planners that already validated, or as inverses — which are replays.
+    fn precondition(&self, g: &Graph) -> Result<(), String> {
+        let stub = |scope: Uid, id: &str| -> Result<(), String> {
+            let s = g.scope(scope).ok_or_else(|| format!("no sub-patch {}", scope.to_hex()))?;
+            s.stubs
+                .contains_key(id)
+                .then_some(())
+                .ok_or_else(|| format!("sub-patch {} has no boundary `{id}`", scope.to_hex()))
+        };
+        match self {
+            Command::WireStub { scope, stub_id, inner, .. } => {
+                stub(*scope, stub_id)?;
+                match inner {
+                    Some(target) => g.stub_wire_dtype(*scope, stub_id, target).map(|_| ()),
+                    None => Ok(()), // an unwire always applies once the stub is known to exist
+                }
+            }
+            Command::RemoveStub { scope, stub_id } | Command::EditStub { scope, stub_id, .. } => {
+                stub(*scope, stub_id)
+            }
+            Command::Expand { scope } => {
+                g.scope(*scope).map(|_| ()).ok_or_else(|| format!("no sub-patch {}", scope.to_hex()))
+            }
+            // A collapsed sub-patch facade is editable here (name/pos), so either kind counts.
+            Command::EditNode { uid, .. } => (g.contains(*uid) || g.scope(*uid).is_some())
+                .then_some(())
+                .ok_or_else(|| format!("no node or sub-patch {}", uid.to_hex())),
+            // Stricter than `EditNode`: a scope facade has no params to edit.
+            Command::EditParam { uid, .. } => {
+                g.contains(*uid).then_some(()).ok_or_else(|| format!("no node {}", uid.to_hex()))
+            }
+            // RemoveNode/RemoveLink stay tolerant ON PURPOSE: removing something already gone is
+            // not a caller error, and both report `{removed: false}` so the caller is told the
+            // truth without one. AddLink is validated at the dispatch boundary by
+            // `wirable_endpoint`, which says far more than a generic existence check could.
+            _ => Ok(()),
+        }
+    }
+
     /// Apply this command to `g`, returning its result and the exact inverse command.
     pub fn execute(self, g: &mut Graph) -> Result<(Outcome, Command), String> {
         match self {
@@ -714,6 +767,8 @@ impl CommandHistory {
     /// A new command clears THIS session's redo run (its trailing undone entries) — a fresh edit
     /// invalidates that session's redo future, but never another session's.
     pub fn apply(&mut self, g: &mut Graph, session: &str, cmd: Command) -> Result<Outcome, String> {
+        // The fresh-caller gate. `flip` deliberately does NOT call this — see `Command::precondition`.
+        cmd.precondition(g)?;
         let (outcome, inverse) = cmd.execute(g)?;
         // Record EVERY successful command — including a forward no-op (an idempotent guard fired,
         // yielding an empty-Compound inverse). The delegating client records exactly one graph_cmd

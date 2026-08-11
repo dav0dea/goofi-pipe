@@ -1550,6 +1550,17 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
                 if g.name_taken(&name, uid) {
                     return Err(format!("rename_node: display name `{name}` already in use"));
                 }
+                // A display name is spliced into expression SOURCE by `rewrite_nd_refs`, which
+                // replaces the literal's content span in place — so a quote or backslash yields
+                // `nd('a'b')`, invalid Python that the REFERRING node then carries as a binding
+                // error while this rename reports success. Constraining the name is one line;
+                // making the rewriter quote-aware is a Python tokenizer.
+                if name.contains(['\'', '"', '\\']) {
+                    return Err(format!(
+                        "rename_node: `{name}` cannot contain a quote or backslash — a display \
+                         name is spliced into nd() expression source"
+                    ));
+                }
                 let out = state.history.lock().unwrap().apply(
                     &mut g,
                     &session,
