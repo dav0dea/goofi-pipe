@@ -98,17 +98,18 @@
 		height: 100%;
 		min-height: 0;
 	}
-	/* Host for the panel's own controls (group tabs / slot picker / viewer
-	   selector). Fills the slack between the node name and the unlink button and
-	   scrolls horizontally if its contents overflow. The left margin keeps the
-	   controls visually separated from the node name. */
+	/* Host for the panel's own controls (slot picker / viewer selector). It exists for ONE reason —
+	   it fills the slack between the node picker and the unlink ✕ and scrolls horizontally when its
+	   contents overflow, which they do on a phone (the viewer bar's controls are 215px in 184px of
+	   slack) — so it must not also be a spacing decision. `inherit` takes the bar group's own gap,
+	   so the picker and the controls beside it read as one row of siblings rather than two clusters
+	   (they were the bar's gap PLUS a margin apart, and then closer to each other than to it). */
 	.controls {
 		flex: 0 1 auto;
 		min-width: 0;
 		display: flex;
 		align-items: center;
-		gap: var(--space-3);
-		margin-left: var(--space-6);
+		gap: inherit;
 		overflow-x: auto;
 		overflow-y: hidden;
 	}
