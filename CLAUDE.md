@@ -397,7 +397,10 @@ Analysis reports live in `docs/analysis/` (also gitignored).
 - **`docs/` is gitignored on this branch** — specs and plans are on disk, not in git.
   Don't be surprised when `git status` ignores them, and don't "restore" them.
 - Commit in small, focused, readable steps at green checkpoints — not one mega-commit.
-- Commit messages end with: `Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>`.
+- Commit messages end with a `Co-Authored-By:` trailer naming the model that wrote them —
+  e.g. `Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>`. Use the model
+  actually in the session rather than copying this example, which was pinned to one version
+  and went stale the moment the next one shipped.
 - No auth on the WS endpoints — single-user, local/trusted-LAN app.
 - **Responsive and touch-capable across desktop, tablet and phone** (both orientations).
   Desktop is the primary target and its behaviour is the reference — but "desktop only"
