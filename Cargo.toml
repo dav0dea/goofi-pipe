@@ -1,6 +1,29 @@
 [workspace]
 resolver = "2"
 members = [
+    # First, because it is what makes the rest buildable: `cargo run -p goofi-init` provisions the
+    # interpreters pyo3 links against. It depends on nothing, so it can never trigger that build.
+    "backend/goofi-init",
+    "backend/goofi-core",
+    "backend/goofi-codec",
+    "backend/goofi-node",
+    "backend/goofi-py",
+    "backend/goofi-pymod",
+    "backend/goofi-nodes",
+    "backend/goofi-subproc",
+    "backend/goofi-engine",
+    "backend/goofi-view",
+    "backend/goofi-crdt",
+    "backend/goofi-bridge",
+    "backend/goofi-cli",
+]
+
+# Everything except `goofi-init`. Two binaries in the default set make a bare `cargo run`
+# ambiguous ("could not determine which binary to run"), and goofi-init is not something you run
+# by accident — it is `cargo run -p goofi-init`, named explicitly, once per clone. Listed the long
+# way rather than narrowed to `goofi-cli`, because narrowing would quietly shrink a bare
+# `cargo test` to one crate's handful of tests while still reporting success.
+default-members = [
     "backend/goofi-core",
     "backend/goofi-codec",
     "backend/goofi-node",

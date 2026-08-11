@@ -20,6 +20,14 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal
 # no interpreter needed) with `--no-default-features`.
 goofi-py = { path = "../goofi-py", optional = true }
 
+# The venv layout and the readiness check, shared with `cargo run -p goofi-init` so the build
+# demands exactly what that command provides — one definition, not two that can drift.
+[build-dependencies]
+goofi-init = { path = "../goofi-init" }
+
+[dependencies.goofi-init]
+path = "../goofi-init"
+
 [dev-dependencies]
 # The venv-layout test writes stand-in interpreters into a throwaway tree.
 tempfile = "3"

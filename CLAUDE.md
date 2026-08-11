@@ -243,20 +243,35 @@ changed (skip with `GOOFI_SKIP_FRONTEND_BUILD=1`). Cargo **replays** a build scr
 `cargo:warning` lines on later no-op builds — the rebuild line is written in the past
 tense with its measured duration for exactly that reason.
 
-**Python interpreters — goofi's OWN, created and filled by goofi. `uv` is a hard dependency**
-(machine-local, gitignored; use `uv pip`, never `pip`):
-- `.gfivenv-ft` — free-threaded 3.14t: the in-process host **and** the introspection probe.
-  Made by `goofi-cli/build.rs`, because pyo3 links against it before this crate can compile.
-- `.gfivenv` — a GIL python (pinned 3.12, since the subprocess tier exists precisely for packages
-  that are *not* free-threading-safe): the subprocess child. Made at startup.
+**Setup is ONE command, and it is not a shell script:**
 
-Both get the `goofi` wheel at **startup** (`backend/goofi-cli/src/provision.rs`), built through
-`uv tool run maturin` — at runtime, where no cargo build lock is held, which is the whole reason
-this cannot live in `build.rs` — and installed with `uv pip`, numpy riding along as the wheel's
-own declared dependency. `--subproc-python` overrides the GIL side and takes ownership with it.
-The names are deliberate: a generic `.venv` is claimed by editors and by `uv` itself, and a stale
-one is not inert — this repo's own `.venv` once held an editable install of the OLD Python goofi,
-which answered `import goofi` perfectly well and then had no `introspect`.
+```bash
+cargo run -p goofi-init     # once per clone; needs `uv` on PATH
+```
+
+`goofi-init` (`backend/goofi-init/`) creates both venvs, installs both wheels, and writes the
+gitignored `.cargo/config.toml` that points pyo3 at the free-threaded interpreter. After it,
+`cargo build`, `cargo test` and `cargo run` all work **first time**. Until it, `goofi-cli`'s
+build script fails with one line telling you to run it.
+
+**Why a crate and not a build script:** pyo3 reads `PYO3_PYTHON` from the environment, and cargo
+reads `.cargo/config.toml` exactly once, at startup. A build script writing that file cannot reach
+the build it is part of — so provisioning from `build.rs` made the first `cargo build` link against
+whatever interpreter was on `PATH`, or fail outright on a machine with none, and needed a second
+`cargo run` to come good. **Why Rust and not `.sh`:** one command in PowerShell, cmd, bash, zsh and
+fish alike, with no `.sh`/`.ps1` pair to keep in sync. It depends on no goofi crate and no pyo3, so
+`-p goofi-init` can never trigger the build it exists to configure. It is excluded from
+`default-members` so a bare `cargo run` stays unambiguous.
+
+**The two interpreters** (machine-local, gitignored; use `uv pip`, never `pip`):
+- `.gfivenv-ft` — free-threaded 3.14t: the in-process host pyo3 LINKS against, and the probe.
+- `.gfivenv` — a GIL python (pinned 3.12, since the subprocess tier exists precisely for packages
+  that are *not* free-threading-safe): the subprocess child. `--subproc-python` overrides it.
+
+Wheels are built through `uv tool run maturin`, numpy riding along as the wheel's own declared
+dependency. The names are deliberate: a generic `.venv` is claimed by editors and by `uv` itself,
+and a stale one is not inert — this repo's own `.venv` once held an editable install of the OLD
+Python goofi, which answered `import goofi` perfectly well and then had no `introspect`.
 
 **Known gap:** provisioning reinstalls when `goofi` is *missing or broken*, never when it is merely
 *stale*. After changing `goofi-pymod`, delete the venv (or `uv pip uninstall goofi` from it), or the

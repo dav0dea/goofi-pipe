@@ -48,8 +48,14 @@ Requires a Rust toolchain (1.89+) and Node.js. Python is optional — build with
 `--no-default-features` for a pure-native binary.
 
 ```bash
-cargo run          # builds the SPA if needed, starts the server, prints the URL
+cargo run -p goofi-init   # once per clone: provisions the Python interpreters (needs `uv`)
+cargo run                 # builds the SPA if needed, starts the server, prints the URL
 ```
+
+`goofi-init` is a workspace crate, not a shell script, so that first line is the same command in
+PowerShell, cmd, bash, zsh and fish. It is needed because pyo3 must be told which interpreter to
+link against *before cargo starts*, and cargo reads `.cargo/config.toml` only at startup — until
+it has run, the build stops with one line saying so.
 
 Flags: `--port N` (default 8000), `--bind HOST` (default 127.0.0.1),
 `--subproc-nodes DIR` / `--auto-nodes DIR`, `--subproc-python BIN`,
@@ -99,8 +105,9 @@ greyed out, naming the missing module — rather than silently vanishing. An exc
 `process()` surfaces on the node's error channel instead of taking anything down.
 
 The interpreters are `.gfivenv-ft` (free-threaded 3.14t, in-process) and `.gfivenv` (a GIL
-Python, subprocess). goofi creates both and installs the `goofi` package into them itself,
-using `uv` — which is therefore a hard requirement. `--subproc-python` overrides the GIL one.
+Python, subprocess). `cargo run -p goofi-init` creates both and installs the `goofi` package
+into them, using `uv` — which is therefore a hard requirement. `--subproc-python` overrides the
+GIL one. Re-run `goofi-init` after a version bump; it is idempotent.
 
 ## Development
 

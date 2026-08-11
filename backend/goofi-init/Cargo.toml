@@ -1,0 +1,14 @@
+[package]
+name = "goofi-init"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# Deliberately depends on NOTHING: no goofi crate, no pyo3, no python. This is the crate that
+# makes a Python build possible, so it must be buildable before one is — `cargo run -p goofi-init`
+# on a fresh clone compiles this and only this.
+[dependencies]
+
+[[bin]]
+name = "goofi-init"
+path = "src/main.rs"

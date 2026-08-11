@@ -14,7 +14,7 @@ use goofi_engine::{Graph, Registration};
 
 /// The default node directory, auto-discovered (gil-gate routed) when no `--*-nodes` flag is given.
 const DEFAULT_NODES_DIR: &str = "nodes";
-mod provision;
+
 
 /// The parsed command line. `help` is a mode rather than a setting, so the caller decides what
 /// to do with it — which is also what keeps the parse itself pure and testable.
@@ -88,32 +88,32 @@ async fn main() {
              \n  \
              With no --*-nodes flag, auto-discovers `{DEFAULT_NODES_DIR}/` (each node routed \
              in-process if free-threading-safe, else to a subprocess).\n  \
-             --subproc-python defaults to `{}`, which goofi creates and provisions itself.",
-            provision::GIL_VENV
+             --subproc-python defaults to `{}`, which `cargo run -p goofi-init` provisions.",
+            goofi_init::GIL_VENV
         );
         return;
     }
-    if let Err(e) = provision_interpreters(&mut cli) {
-        eprintln!("{e}");
-        std::process::exit(1);
+    if cli.subproc_python.is_none() {
+        match default_subproc_python() {
+            Ok(p) => cli.subproc_python = Some(p),
+            Err(e) => {
+                eprintln!("{e}");
+                std::process::exit(1);
+            }
+        }
     }
     std::process::exit(run(cli, AppState::new(), shutdown_signal()).await);
 }
 
-/// Make goofi's venvs real, and settle which interpreter the subprocess tier will run on. Here
-/// rather than inside [`run`], which the mount-lifetime test drives directly and must not be made
-/// to shell out to `uv`. `--subproc-python` overrides the GIL side and takes ownership with it;
-/// the free-threaded venv stays goofi's either way, because the introspection probe runs on it
-/// whoever ends up hosting the subprocess tier.
-fn provision_interpreters(cli: &mut Cli) -> Result<(), String> {
-    let root =
-        std::env::current_dir().map_err(|e| format!("cannot read the working directory: {e}"))?;
-    provision::require_uv()?;
-    provision::ensure_ft(&root)?;
-    if cli.subproc_python.is_none() {
-        cli.subproc_python = Some(provision::ensure_gil(&root)?.display().to_string());
-    }
-    Ok(())
+/// The interpreter the subprocess tier runs on — the venv `goofi-init` made, unless
+/// `--subproc-python` names another. goofi does NOT provision here: setup is one explicit command
+/// (`cargo run -p goofi-init`), so an absent venv is reported once, by name, rather than as a
+/// dozen Python nodes each failing their probe with their own version of the same news.
+fn default_subproc_python() -> Result<String, String> {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    goofi_init::venv_python(&root.join(goofi_init::GIL_VENV))
+        .map(|p| p.display().to_string())
+        .ok_or_else(|| format!("no {} — {}", goofi_init::GIL_VENV, goofi_init::RUN_ME))
 }
 
 /// The warning a `--bind` beyond this machine earns, or `None` for the loopback default.
@@ -146,9 +146,9 @@ fn exposure_warning(bind: &str) -> Option<String> {
 async fn run(cli: Cli, mut state: AppState, shutdown: impl Future<Output = ()>) -> i32 {
     let Cli { port, bind, subproc_nodes, mut auto_nodes, subproc_python, list_nodes, help: _ } = cli;
 
-    // `main` settles the interpreter before calling in (see `provision_interpreters`); a `None`
-    // here is a caller that never provisions — the mount-lifetime test, which spawns no node at
-    // all. When no explicit node source was given, auto-route the default `nodes/` directory.
+    // `main` settles the interpreter before calling in (see `default_subproc_python`); a `None`
+    // here is a caller that bypassed it — the mount-lifetime test, which spawns no node at all.
+    // When no explicit node source was given, auto-route the default `nodes/` directory.
     let subproc_python = subproc_python.unwrap_or_else(|| "python3".to_string());
     if subproc_nodes.is_none() && auto_nodes.is_none()
         && std::path::Path::new(DEFAULT_NODES_DIR).is_dir()
