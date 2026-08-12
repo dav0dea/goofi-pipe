@@ -15,22 +15,20 @@ goofi-engine = { path = "../goofi-engine" }
 goofi-subproc = { path = "../goofi-subproc" }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal"] }
 # In-process Python nodes + the param-expression evaluator (pyo3, free-threaded 3.14t).
-# ON by default: the build script provisions a repo-local `.gfivenv-ft` and a `.cargo/config.toml`
-# that point pyo3 at it, so `cargo run` needs no env vars. Build a pure-native binary (no Python,
-# no interpreter needed) with `--no-default-features`.
+# ON by default: `cargo run -p goofi-init` creates a repo-local `.gfivenv-ft` and the
+# `.cargo/config.toml` that points pyo3 at it, so `cargo run` needs no env vars. The build script
+# only CHECKS that this happened — it cannot provision, because cargo reads that config once, at
+# startup. Build a pure-native binary (no Python, no interpreter needed) with
+# `--no-default-features`.
 goofi-py = { path = "../goofi-py", optional = true }
-
-# The venv layout and the readiness check, shared with `cargo run -p goofi-init` so the build
-# demands exactly what that command provides — one definition, not two that can drift.
-[build-dependencies]
+# The venv layout and the interpreter lookup, shared with `cargo run -p goofi-init` so the binary's
+# default and that command's output are one definition rather than two that can drift.
 goofi-init = { path = "../goofi-init" }
 
-[dependencies.goofi-init]
-path = "../goofi-init"
-
-[dev-dependencies]
-# The venv-layout test writes stand-in interpreters into a throwaway tree.
-tempfile = "3"
+# The same crate again: the build script asks it which interpreter cargo resolved, so the build
+# demands exactly what that command provides.
+[build-dependencies]
+goofi-init = { path = "../goofi-init" }
 
 [features]
 default = ["python"]

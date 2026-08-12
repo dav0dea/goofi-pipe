@@ -93,16 +93,17 @@ async fn main() {
         );
         return;
     }
-    if cli.subproc_python.is_none() {
-        match default_subproc_python() {
-            Ok(p) => cli.subproc_python = Some(p),
-            Err(e) => {
-                eprintln!("{e}");
-                std::process::exit(1);
-            }
+    // Settled HERE, and handed to `run` as its own argument: resolving needs the filesystem, which
+    // `parse_args` must not touch, and passing it separately is what makes "no interpreter" a state
+    // `run` cannot be called in rather than one it has to invent a value for.
+    let python = match cli.subproc_python.take().map(Ok).unwrap_or_else(default_subproc_python) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("{e}");
+            std::process::exit(1);
         }
-    }
-    std::process::exit(run(cli, AppState::new(), shutdown_signal()).await);
+    };
+    std::process::exit(run(cli, python, AppState::new(), shutdown_signal()).await);
 }
 
 /// The interpreter the subprocess tier runs on — the venv `goofi-init` made, unless
@@ -110,8 +111,7 @@ async fn main() {
 /// (`cargo run -p goofi-init`), so an absent venv is reported once, by name, rather than as a
 /// dozen Python nodes each failing their probe with their own version of the same news.
 fn default_subproc_python() -> Result<String, String> {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    goofi_init::venv_python(&root.join(goofi_init::GIL_VENV))
+    goofi_init::venv_python(&goofi_init::repo_root().join(goofi_init::GIL_VENV))
         .map(|p| p.display().to_string())
         .ok_or_else(|| format!("no {} — {}", goofi_init::GIL_VENV, goofi_init::RUN_ME))
 }
@@ -143,13 +143,17 @@ fn exposure_warning(bind: &str) -> Option<String> {
 /// destructor would not save them either. `shutdown` is only awaited once the server is up, so a
 /// signal that lands during boot still takes the default disposition and leaves the mount behind:
 /// one empty temp directory in a rare race, the same as any other crash.
-async fn run(cli: Cli, mut state: AppState, shutdown: impl Future<Output = ()>) -> i32 {
-    let Cli { port, bind, subproc_nodes, mut auto_nodes, subproc_python, list_nodes, help: _ } = cli;
+async fn run(
+    cli: Cli,
+    subproc_python: String,
+    mut state: AppState,
+    shutdown: impl Future<Output = ()>,
+) -> i32 {
+    // `subproc_python` arrives resolved (see `main`), so the parsed field has already been taken.
+    let Cli { port, bind, subproc_nodes, mut auto_nodes, subproc_python: _, list_nodes, help: _ } =
+        cli;
 
-    // `main` settles the interpreter before calling in (see `default_subproc_python`); a `None`
-    // here is a caller that bypassed it — the mount-lifetime test, which spawns no node at all.
     // When no explicit node source was given, auto-route the default `nodes/` directory.
-    let subproc_python = subproc_python.unwrap_or_else(|| "python3".to_string());
     if subproc_nodes.is_none() && auto_nodes.is_none()
         && std::path::Path::new(DEFAULT_NODES_DIR).is_dir()
     {
@@ -561,7 +565,9 @@ mod tests {
         assert!(mount.is_dir(), "the mount exists after boot: {}", mount.display());
         // Port 0 binds ephemerally; an already-resolved shutdown takes the same path ctrl-C does.
         let cli = Cli { port: 0, ..Cli::default() };
-        assert_eq!(run(cli, state, std::future::ready(())).await, 0);
+        // The interpreter is named explicitly: this test spawns no Python node, and `run` no longer
+        // has a default to fall back on — which is the point, since the old one was `python3`.
+        assert_eq!(run(cli, "python3".into(), state, std::future::ready(())).await, 0);
         // The NONCE directory is what goes, not just `workspace` — else every run leaves an empty
         // husk behind. Asserting on the parent covers the leaf too.
         let husk = mount.parent().expect("the mount is nested under a nonce dir");
@@ -571,7 +577,7 @@ mod tests {
         let listed = AppState::new();
         let m2 = listed.mount();
         let cli = Cli { list_nodes: true, ..Cli::default() };
-        assert_eq!(run(cli, listed, std::future::pending()).await, 0);
+        assert_eq!(run(cli, "python3".into(), listed, std::future::pending()).await, 0);
         assert!(!m2.exists(), "--list-nodes reclaims too: {}", m2.display());
     }
 

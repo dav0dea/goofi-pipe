@@ -589,7 +589,6 @@ dependencies = [
  "goofi-init",
  "goofi-py",
  "goofi-subproc",
- "tempfile",
  "tokio",
 ]
 
