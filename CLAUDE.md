@@ -219,7 +219,7 @@ cargo run                       # launches the backend + bridge, prints the URL
 #          --subproc-nodes DIR | --auto-nodes DIR,
 #          --subproc-python BIN, --list-nodes
 # With no --*-nodes flag it auto-discovers ./nodes/ and routes each node by tier.
-# --subproc-python defaults to .gfivenv, which goofi creates and provisions at startup.
+# --subproc-python defaults to .gfivenv, which `cargo run -p goofi-init` provisions.
 
 cargo test --workspace                      # must stay green, and warning-free
 cargo test -p goofi-py --features embed     # in-process Python host (needs .gfivenv-ft)
@@ -253,6 +253,20 @@ cargo run -p goofi-init     # once per clone; needs `uv` on PATH
 gitignored `.cargo/config.toml` that points pyo3 at the free-threaded interpreter. After it,
 `cargo build`, `cargo test` and `cargo run` all work **first time**. Until it, `goofi-cli`'s
 build script fails with one line telling you to run it.
+
+**Never resolve the interpreter path.** The config names `.gfivenv-ft/bin/python` *relative*
+(`relative = true`, which cargo expands against the directory holding `.cargo/`) and canonicalizes
+nothing. On unix a venv's `python` is a symlink into uv's base install — and the base install is
+exactly where the `goofi` wheel is *not*, since it was installed into the venv. A `canonicalize` on
+that path therefore hands pyo3 and the discovery probe an interpreter that cannot `import goofi`:
+nothing errors, every Python node just silently drops to the subprocess tier (`--list-nodes` reports
+`0 in-process`). Windows venvs hold a real `python.exe`, which is why this reads as harmless there.
+`PYTHONHOME` and the rpath stay absolute because they name uv's install, outside the repo entirely.
+Readiness is likewise checked through the *environment* (`goofi_init::interpreter`), never by
+matching the config file's text — cargo has already expanded `[env]` by the time a build script runs.
+
+Upgrading a clone from before this: `.venv` and `.ftvenv` are superseded by `.gfivenv`/`.gfivenv-ft`
+and can be deleted (uv writes a `.gitignore` inside each, so git never mentions them).
 
 **Why a crate and not a build script:** pyo3 reads `PYO3_PYTHON` from the environment, and cargo
 reads `.cargo/config.toml` exactly once, at startup. A build script writing that file cannot reach
@@ -406,7 +420,7 @@ Analysis reports live in `docs/analysis/` (also gitignored).
   Every crate inherits it (`version.workspace = true`), `mcp.rs` reports it through
   `env!("CARGO_PKG_VERSION")`, and the Python wheel derives it because
   `goofi-pymod/pyproject.toml` declares `dynamic = ["version"]` instead of restating it. Bumping it
-  also *re-provisions the venvs*: `provision.rs` compares the installed wheel's version against
+  also *re-provisions the venvs*: `goofi-init` compares the installed wheel's version against
   this one, so an older build in `.gfivenv`/`.gfivenv-ft` is rebuilt rather than silently kept.
   (An edit that does NOT change the version still needs the venv deleted.)
 - **`docs/` is gitignored on this branch** — specs and plans are on disk, not in git.

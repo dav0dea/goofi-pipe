@@ -110,13 +110,17 @@ fn require_python_env() {
     if std::env::var_os("CARGO_FEATURE_PYTHON").is_none() {
         return;
     }
-    let root = goofi_init::repo_root();
-    println!("cargo:rerun-if-changed={}", goofi_init::config_path(&root).display());
-    assert!(goofi_init::ready(&root), "{}", goofi_init::RUN_ME);
+    // The variable, not the file that sets it: cargo has already expanded `[env]` by now, so this
+    // re-runs when the interpreter actually changes and not when the config is merely rewritten.
+    println!("cargo:rerun-if-env-changed=PYO3_PYTHON");
+    let Some(py) = goofi_init::interpreter() else {
+        // Not `assert!`/`panic!`: those wrap the one line a developer needs to read in a backtrace
+        // preamble naming this file and line, neither of which is where the problem is.
+        eprintln!("\n{}\n", goofi_init::RUN_ME);
+        std::process::exit(1);
+    };
     // The interpreter is known-good now, so its DLLs can be staged beside the executable.
-    if let Some(py) = goofi_init::venv_python(&root.join(goofi_init::FT_VENV)) {
-        copy_interpreter_dlls(&py);
-    }
+    copy_interpreter_dlls(&py);
 }
 
 /// Windows has no rpath: its loader searches the executable's own directory, the system

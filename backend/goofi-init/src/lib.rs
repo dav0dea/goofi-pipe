@@ -31,37 +31,58 @@ const GIL_PYTHON: &str = "3.12";
 pub const FT_VENV: &str = ".gfivenv-ft";
 const FT_PYTHON: &str = "3.14t";
 
-/// The repo root, canonical and without Windows' extended-length prefix — so what this crate
-/// prints, and what it hands to uv and maturin, reads like a path a person would type rather than
-/// `backend\goofi-init\../..\.gfivenv-ft`.
+/// The repo root. Reached by popping `backend/goofi-init` off this crate's compile-time manifest
+/// directory rather than joining `../..` onto it: the answer is absolute and has no `..` to print,
+/// and — unlike `canonicalize` — it resolves nothing, so a checkout reached through a symlink stays
+/// spelled the way the caller reached it.
 pub fn repo_root() -> PathBuf {
-    let raw = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    PathBuf::from(slashless(&raw))
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    manifest.ancestors().nth(2).unwrap_or(manifest).to_path_buf()
 }
 
-/// A venv's interpreter, or `None` when the venv is not there. Both layouts are candidates —
-/// `bin/` where venvs put it, `Scripts/` where Windows does — so this asks which is actually
-/// present rather than which platform this is.
+/// Where a venv keeps its interpreter, relative to the venv itself — `bin/` where venvs put it,
+/// `Scripts/` where Windows does. This asks which is actually present rather than which platform
+/// this is, and answers `None` for a directory that is no venv at all.
+fn python_in(venv: &Path) -> Option<&'static str> {
+    ["bin/python", "Scripts/python.exe"].into_iter().find(|rel| venv.join(rel).is_file())
+}
+
+/// A venv's interpreter as an absolute path, or `None` when the venv is not there.
 pub fn venv_python(venv: &Path) -> Option<PathBuf> {
-    [venv.join("bin").join("python"), venv.join("Scripts").join("python.exe")]
-        .into_iter()
-        .find(|p| p.is_file())
+    python_in(venv).map(|rel| venv.join(rel))
 }
 
-/// The generated cargo config. Machine-specific and gitignored — never committed, because it
-/// names absolute paths on one developer's disk.
-pub fn config_path(root: &Path) -> PathBuf {
+/// The interpreter of `venv`, spelled RELATIVE to the repo root — the value [`write_config`] hands
+/// cargo, which expands it back to an absolute path against the config's own repo.
+///
+/// Relative, and above all **unresolved**. On unix a venv's `python` is a symlink into the base
+/// install, so canonicalizing it names the base interpreter — which has no `goofi` wheel, because
+/// the wheel was installed into the venv. pyo3 then links that one, the discovery probe spawns it,
+/// `import goofi` fails, and every Python node silently drops to the subprocess tier with no error
+/// anywhere. Windows venvs hold a real `python.exe`, which is the whole reason resolving looked
+/// harmless. Spelling the path relative retires the question: there is nothing left to resolve.
+fn interpreter_rel(root: &Path, venv: &str) -> Option<String> {
+    python_in(&root.join(venv)).map(|rel| format!("{venv}/{rel}"))
+}
+
+/// The generated cargo config. Machine-specific and gitignored — never committed, because the
+/// interpreter's own home and libdir are absolute paths on one developer's disk.
+fn config_path(root: &Path) -> PathBuf {
     root.join(".cargo").join("config.toml")
 }
 
-/// Whether a build can proceed: the free-threaded venv exists and the config names it. This is
-/// what `goofi-cli/build.rs` asks, so a fresh clone fails with one actionable line instead of a
+/// The interpreter this build links against, as cargo resolved it — `None` until [`init`] has run.
+/// `goofi-cli/build.rs` asks this, so a fresh clone fails with one actionable line instead of a
 /// pyo3 error about an interpreter it could not find.
-pub fn ready(root: &Path) -> bool {
-    let Some(py) = venv_python(&root.join(FT_VENV)) else { return false };
-    std::fs::read_to_string(config_path(root))
-        .map(|text| text.contains(&pyo3_python_line(&py)))
-        .unwrap_or(false)
+///
+/// It reads the ENVIRONMENT rather than the config file's text. Cargo has already read
+/// `.cargo/config.toml` and expanded its `[env]` block by the time any build script runs, so this
+/// sees the answer instead of one spelling of it — which is what lets the file say
+/// `.gfivenv-ft/bin/python` while pyo3 still receives an absolute path. Matching on text could not:
+/// it would have to agree with the writer character for character, and would call an interpreter a
+/// developer manages by hand unprovisioned.
+pub fn interpreter() -> Option<PathBuf> {
+    std::env::var_os("PYO3_PYTHON").map(PathBuf::from).filter(|p| p.is_file())
 }
 
 /// The instruction printed wherever readiness is demanded, so the wording exists once.
@@ -75,8 +96,9 @@ pub fn init(root: &Path) -> Result<(), String> {
     let ft = ensure_venv(root, FT_VENV, FT_PYTHON)?;
     let gil = ensure_venv(root, GIL_VENV, GIL_PYTHON)?;
 
-    // The config BEFORE the wheels: building a wheel runs cargo, and a cargo that reads a config
-    // naming the interpreter is the one that produces a correctly linked artefact.
+    // The config BEFORE the wheels, so a failed wheel build still leaves a config a re-run can
+    // use. It is NOT that the wheel build reads it — that build deliberately runs from outside the
+    // repo precisely so it cannot (see `install_wheel`).
     write_config(root, &ft)?;
 
     for (venv, py) in [(FT_VENV, &ft), (GIL_VENV, &gil)] {
@@ -177,21 +199,26 @@ fn has_goofi(py: &Path) -> bool {
         .is_ok_and(|s| s.success())
 }
 
-fn pyo3_python_line(py: &Path) -> String {
-    format!("PYO3_PYTHON = {:?}", slashless(py))
-}
-
-/// A path without Windows' extended-length prefix. `canonicalize` adds it and pyo3 would carry it
-/// into every path derived from the interpreter; on unix it never appears, so this is a no-op.
-fn slashless(p: &Path) -> String {
-    let full = std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf()).display().to_string();
-    full.strip_prefix(r"\\?\").unwrap_or(&full).to_string()
-}
-
 /// Point pyo3 at the free-threaded venv, for every cargo command from here on.
+///
+/// The two repo-local values are written **relative** (`relative = true`, which cargo expands
+/// against the directory holding `.cargo/`), so renaming or moving the checkout does not strand
+/// them. The other two cannot be: the interpreter's home and its libdir live in uv's own install,
+/// outside this repo entirely, and there is no relative spelling of somewhere else.
 fn write_config(root: &Path, ft: &Path) -> Result<(), String> {
-    let purelib = query(ft, "import sysconfig;print(sysconfig.get_path('purelib'))")
-        .ok_or("could not ask the interpreter where its site-packages are")?;
+    let py = interpreter_rel(root, FT_VENV)
+        .ok_or_else(|| format!("{FT_VENV} holds no interpreter to point cargo at"))?;
+    // The interpreter is asked for its site-packages RELATIVE to the repo, spelled with `/`: Win32
+    // takes either separator, and it keeps the value clear of backslashes TOML would need escaped.
+    // `{root:?}` quotes and escapes the path into a Python string literal the same way `{h:?}`
+    // below quotes one into TOML.
+    let purelib = query(
+        ft,
+        &format!(
+            "import os,sysconfig;print(os.path.relpath(sysconfig.get_path('purelib'), {root:?}).replace(os.sep,'/'))"
+        ),
+    )
+    .ok_or("could not ask the interpreter where its site-packages are")?;
     // Windows has no rpath, and its loader finds `python3XX.dll` beside the executable instead —
     // which is why `goofi-cli/build.rs` copies it there. `-Wl,-rpath` is a GNU/Clang driver flag
     // that `link.exe` rejects outright, so it is keyed on the TARGET's linker rather than on
@@ -207,19 +234,24 @@ fn write_config(root: &Path, ft: &Path) -> Result<(), String> {
             format!("\n[target.{host}]\nrustflags = [\"-C\", {flag:?}]\n")
         })
         .unwrap_or_default();
+    // Windows' loader finds `python3XX.dll` beside the executable, where `goofi-cli/build.rs` puts
+    // it — and an interpreter loaded from there can no longer infer its own home, so it has to be
+    // told. Stated on every platform because it is the interpreter's true base prefix everywhere,
+    // and the unix build is unaffected by being told what it would have worked out for itself.
     let home = query(ft, "import sys;print(sys.base_prefix)")
         .map(|h| format!("PYTHONHOME = {h:?}\n"))
         .unwrap_or_default();
 
     let contents = format!(
         "# Generated by `cargo run -p goofi-init` — machine-specific, gitignored, never committed.\n\
-         # Points pyo3 at the repo-local free-threaded venv so cargo needs no env vars. Delete this\n\
-         # file (and {FT_VENV}) and re-run goofi-init to reprovision.\n\
+         # Points pyo3 at the repo-local free-threaded venv so cargo needs no env vars. The two\n\
+         # repo-local paths are relative to this checkout, so moving or renaming it keeps them\n\
+         # true; cargo expands both to absolute paths. Delete this file (and {FT_VENV}) and re-run\n\
+         # goofi-init to reprovision.\n\
          [env]\n\
-         {}\n\
-         PYTHONPATH = {purelib:?}\n\
+         PYO3_PYTHON = {{ value = {py:?}, relative = true }}\n\
+         PYTHONPATH = {{ value = {purelib:?}, relative = true }}\n\
          {home}{rpath}",
-        pyo3_python_line(ft),
     );
     let config = config_path(root);
     if let Some(parent) = config.parent() {
@@ -287,6 +319,39 @@ mod tests {
             assert_eq!(venv_python(&dir), Some(py.clone()), "{host}/{exe} layout");
             std::fs::remove_file(&py).unwrap();
         }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The value cargo is given for `PYO3_PYTHON` names the interpreter **inside the venv**, never
+    /// what that interpreter turns out to point at.
+    ///
+    /// On unix a venv's `python` is a symlink into the base install, and the base install is
+    /// exactly where the `goofi` wheel is NOT — it was installed into the venv. Resolving the link
+    /// therefore hands pyo3, and the discovery probe, an interpreter that cannot `import goofi`;
+    /// nothing errors, every Python node just quietly drops to the subprocess tier. The fixture
+    /// below is a symlink for that reason: against a plain file — which is what a Windows venv
+    /// holds, and why this went unseen there — it cannot tell a resolving implementation from a
+    /// correct one.
+    #[test]
+    fn the_interpreter_value_names_the_venv_not_what_it_points_at() {
+        let dir = std::env::temp_dir().join(format!("goofi-init-rel-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let venv_bin = dir.join("venv").join("bin");
+        std::fs::create_dir_all(&venv_bin).unwrap();
+
+        // The base interpreter the venv's `python` defers to, deliberately OUTSIDE the venv.
+        let base = dir.join("base-python");
+        std::fs::write(&base, b"").unwrap();
+        let link = venv_bin.join("python");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&base, &link).unwrap();
+        #[cfg(windows)]
+        std::fs::copy(&base, &link).unwrap(); // a Windows venv holds a real copy, not a link
+
+        assert_eq!(interpreter_rel(&dir, "venv").as_deref(), Some("venv/bin/python"));
+        // …and a directory that is no venv has no interpreter to name.
+        assert_eq!(interpreter_rel(&dir, "not-a-venv"), None);
+
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
