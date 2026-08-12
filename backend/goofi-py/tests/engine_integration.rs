@@ -194,8 +194,8 @@ fn renaming_a_producer_keeps_the_real_evaluator_expression_resolving() {
 }
 
 /// The FT interpreter with `goofi` importable, for the discovery probe. Prefers
-/// $GOOFI_PYMOD_TEST_PYTHON, else the build-time PYO3_PYTHON (the `.gfivenv-ft` build.rs points
-/// pyo3 at, which goofi installs `goofi` into when it starts).
+/// $GOOFI_PYMOD_TEST_PYTHON, else the build-time PYO3_PYTHON — the `.gfivenv-ft` interpreter
+/// `cargo run -p goofi-init` created, pointed cargo at, and installed the goofi wheel into.
 fn probe_python() -> String {
     let mut cands: Vec<String> = Vec::new();
     if let Ok(p) = std::env::var("GOOFI_PYMOD_TEST_PYTHON") {
@@ -222,7 +222,8 @@ fn probe_python() -> String {
     // result, which reads like a discovery bug rather than a missing wheel.
     panic!(
         "no python with `goofi` importable for the discovery probe (tried {cands:?}). \
-         Run goofi once — it provisions both venvs at startup — or set GOOFI_PYMOD_TEST_PYTHON."
+         Run `cargo run -p goofi-init`, which creates both venvs and installs the goofi wheel \
+         into them — or set GOOFI_PYMOD_TEST_PYTHON."
     )
 }
 

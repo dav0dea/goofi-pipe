@@ -519,9 +519,9 @@ class Double(goofi.Node):
         let py = usable_python().unwrap_or_else(|| {
             panic!(
                 "no python with goofi + numpy found (checked $GOOFI_SUBPROC_TEST_PYTHON, \
-                 ./.gfivenv/bin/python, python3, python). Provision it with \
-                 goofi once — it builds and installs the goofi wheel into the \
-                 repo venvs). The subprocess-tier tests require one."
+                 ./.gfivenv/bin/python, python3, python). Run `cargo run -p goofi-init`, which \
+                 creates the venvs and installs the goofi wheel into them. The subprocess-tier \
+                 tests require one."
             )
         });
         Tier { py, _lock }
