@@ -525,23 +525,37 @@ pub fn config_dir(mount: &Path, id: &str) -> PathBuf {
 /// input. A query split across two reads is not stitched back together; ConPTY emits these four
 /// bytes in one write, and the cost of missing one is a hang no worse than today's.
 fn answer_cursor_query(inst: &Instance, bytes: &[u8]) -> Vec<u8> {
-    const QUERY: &[u8] = b"\x1b[6n";
-    if inst.output.receiver_count() > 0 || !bytes.windows(QUERY.len()).any(|w| w == QUERY) {
+    if inst.output.receiver_count() > 0 {
         return bytes.to_vec();
     }
+    let Some(stripped) = take_cursor_queries(bytes) else { return bytes.to_vec() };
     // Row 1, column 1 — a lie, but one only ever told when there is no screen to contradict it.
     if let Ok(mut w) = inst.writer.lock() {
         let _ = w.write_all(b"\x1b[1;1R");
         let _ = w.flush();
     }
+    stripped
+}
+
+/// The bytes ConPTY sends to ask where the cursor is.
+const CURSOR_QUERY: &[u8] = b"\x1b[6n";
+
+/// `bytes` with every [`CURSOR_QUERY`] taken out, or `None` when there was none — so a stream that
+/// never asked is neither copied nor answered. Split out from [`answer_cursor_query`] because it is
+/// the half that can be reached from a test on any platform: only ConPTY sends this query, so on
+/// unix nothing else here exercises a single line of it.
+fn take_cursor_queries(bytes: &[u8]) -> Option<Vec<u8>> {
+    if !bytes.windows(CURSOR_QUERY.len()).any(|w| w == CURSOR_QUERY) {
+        return None;
+    }
     let mut out = Vec::with_capacity(bytes.len());
     let mut rest = bytes;
-    while let Some(at) = rest.windows(QUERY.len()).position(|w| w == QUERY) {
+    while let Some(at) = rest.windows(CURSOR_QUERY.len()).position(|w| w == CURSOR_QUERY) {
         out.extend_from_slice(&rest[..at]);
-        rest = &rest[at + QUERY.len()..];
+        rest = &rest[at + CURSOR_QUERY.len()..];
     }
     out.extend_from_slice(rest);
-    out
+    Some(out)
 }
 
 /// Reach the instance with one of [`crate::proc`]'s two asks — skipped once the child has been
@@ -684,6 +698,27 @@ mod tests {
         std::fs::write(&at, "*.wav\n").unwrap();
         seed_orientation(tmp.path());
         assert_eq!(std::fs::read_to_string(&at).unwrap(), "*.wav\n");
+    }
+
+    /// Taking the cursor query out of the stream — the half of [`answer_cursor_query`] a test can
+    /// reach anywhere. Only ConPTY sends `\x1b[6n`, so on unix no harness in this suite emits one
+    /// and every integration test here would pass unchanged with the loop below deleted; that makes
+    /// this the only thing standing between the stripping and a silent regression on Windows, where
+    /// a query left in the stream is answered twice and the second reply lands on the shell as
+    /// typed input.
+    #[test]
+    fn a_cursor_query_is_taken_out_of_the_stream_and_everything_else_survives() {
+        assert_eq!(take_cursor_queries(b"plain output"), None, "nothing asked, nothing to strip");
+        assert_eq!(take_cursor_queries(b"\x1b[6"), None, "half a query is not one");
+        assert_eq!(take_cursor_queries(b"\x1b[6n").as_deref(), Some(&b""[..]));
+        assert_eq!(take_cursor_queries(b"before\x1b[6nafter").as_deref(), Some(&b"beforeafter"[..]));
+        // The load-bearing one: a `while` downgraded to an `if` passes every case above and leaves
+        // the second query in the stream here.
+        assert_eq!(
+            take_cursor_queries(b"\x1b[6nmiddle\x1b[6nend").as_deref(),
+            Some(&b"middleend"[..]),
+            "every query, not just the first",
+        );
     }
 
     /// A "shell" no platform has, so a resolution that still succeeds proves the direct walk rather
