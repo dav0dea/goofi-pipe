@@ -107,13 +107,21 @@ mod tests {
     }
 
     fn spawn_sleeper() -> std::process::Child {
-        std::process::Command::new(std::env::current_exe().expect("this test binary's path"))
-            .args(["--exact", "proc::tests::proc_sleeper_process", "--test-threads=1"])
+        let mut cmd =
+            std::process::Command::new(std::env::current_exe().expect("this test binary's path"));
+        cmd.args(["--exact", "proc::tests::proc_sleeper_process", "--test-threads=1"])
             .env(SLEEPER_ENV, "1")
             .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn()
-            .expect("spawn the sleeping child")
+            .stderr(std::process::Stdio::null());
+        // A group of its own, because [`request_stop`] signals a process GROUP and a child that
+        // merely inherits the runner's is in no group named by its own pid: `kill(-pid)` then finds
+        // nothing, returns ESRCH, and ESRCH is — correctly — read as "already gone". The fixture
+        // would report every stop a success while the child slept on. `portable-pty` gives the real
+        // harness this for free by making it a session leader; a fixture that skips it is testing a
+        // path production never takes.
+        #[cfg(unix)]
+        std::os::unix::process::CommandExt::process_group(&mut cmd, 0);
+        cmd.spawn().expect("spawn the sleeping child")
     }
 
     /// The contract [`crate::term`]'s stop is built on, in the order that code performs it: ask,
