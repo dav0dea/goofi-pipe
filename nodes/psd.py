@@ -15,7 +15,9 @@ import goofi
 class Psd(goofi.Node):
     @staticmethod
     def config_input_slots():
-        return {"data": goofi.DataType.ARRAY}
+        # `required`: process() reads `data.data` unconditionally, so a tick with an empty slot
+        # cannot work. The engine refuses the tick before process() is entered.
+        return {"data": goofi.InputSlot(goofi.DataType.ARRAY, required=True)}
 
     @staticmethod
     def config_output_slots():

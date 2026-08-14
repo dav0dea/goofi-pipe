@@ -1,6 +1,6 @@
 import { test, expect } from '@playwright/test';
 import { waitForApp } from '../lib/app';
-import { addNode, waitForNode, waitForNoNode } from '../lib/goofi';
+import { addErroringNode, addNode, waitForNode, waitForNoNode } from '../lib/goofi';
 
 /**
  * `control.ts` states the split outright: the uid is the universal identity everything references
@@ -51,11 +51,10 @@ test('a console row names its source node', async ({ page }) => {
 	// Borrow the default editor panel and give it straight back (see console-rows.spec.ts).
 	await page.evaluate((id) => (window as any).goofi.commands.setPanelType(id, 'console'), panelId);
 
-	// A Python node whose process() needs a connected ARRAY input raises every tick — the cheapest
-	// real console content.
-	const uid = await addNode(page, 'LempelZiv', 'python');
+	// A node erroring on its empty required input (see `addErroringNode`) — the cheapest real
+	// console content.
+	const uid = await addErroringNode(page);
 	try {
-		await waitForNode(page, uid);
 		const name: string = await page.evaluate((u) => (window as any).goofi.query.node(u).name, uid);
 		expect(name, 'the display name is not the identity').not.toMatch(HEX_UID);
 

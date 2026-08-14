@@ -1,6 +1,6 @@
 import { test, expect } from '@playwright/test';
 import { waitForApp } from '../lib/app';
-import { addNode, waitForNode, waitForNoNode } from '../lib/goofi';
+import { addErroringNode, waitForNoNode } from '../lib/goofi';
 
 // app.css resets `button { font: inherit }` and `input, select, textarea { font: inherit }` for one
 // documented reason: a UA `font` DECLARATION beats inheritance, so those elements would otherwise
@@ -87,11 +87,10 @@ test('the reset hands back family only — a component rule still owns the size'
 	);
 	await page.evaluate((id) => (window as any).goofi.commands.setPanelType(id, 'console'), panelId);
 
-	// A Python node whose process() needs a connected ARRAY input raises on every tick; the graph
-	// store mirrors each raise into the console as a stderr line. The cheapest real console content.
-	const uid = await addNode(page, 'LempelZiv', 'python');
+	// A node erroring on its empty required input (see `addErroringNode`); the graph store mirrors
+	// the error into the console as a stderr line. The cheapest real console content.
+	const uid = await addErroringNode(page);
 	try {
-		await waitForNode(page, uid);
 		const txt = page.getByTestId('console-entry').first().locator('.txt');
 		await expect(txt, 'the node error reached the console').toBeVisible();
 

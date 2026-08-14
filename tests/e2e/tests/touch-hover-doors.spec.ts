@@ -1,6 +1,6 @@
 import { test, expect, type Page } from '@playwright/test';
 import { waitForApp } from '../lib/app';
-import { addNode, waitForNode, waitForNoNode } from '../lib/goofi';
+import { addErroringNode, addNode, waitForNode, waitForNoNode } from '../lib/goofi';
 
 /**
  * R Task 4 — no interaction and no information may exist SOLELY behind hover (CLAUDE.md).
@@ -158,11 +158,10 @@ test('the console per-row copy button is reachable without hover', async ({ page
 	);
 	await page.evaluate((id) => (window as any).goofi.commands.setPanelType(id, 'console'), panelId);
 
-	// Same content source as `console-rows.spec.ts`: a Python node whose process() needs a connected
-	// ARRAY input raises every tick, and the graph store mirrors each raise into the console.
-	const uid = await addNode(page, 'LempelZiv', 'python');
+	// Same content source as `console-rows.spec.ts`: a node erroring on its empty required input
+	// (see `addErroringNode`), which the graph store mirrors into the console.
+	const uid = await addErroringNode(page);
 	try {
-		await waitForNode(page, uid);
 		const copy = page.getByTestId('console-copy').first();
 		await expect(copy).toBeVisible();
 		await expect(copy, 'the copy control rests visible where there is no hover').toHaveCSS(

@@ -556,7 +556,7 @@ checksum = "0cc23270f6e1808e30a928bdc84dea0b9b4136a8bc82338574f23baf47bbd280"
 
 [[package]]
 name = "goofi-bridge"
-version = "3.0.0"
+version = "3.1.0"
 dependencies = [
  "axum",
  "futures-util",
@@ -582,7 +582,7 @@ dependencies = [
 
 [[package]]
 name = "goofi-cli"
-version = "3.0.0"
+version = "3.1.0"
 dependencies = [
  "goofi-bridge",
  "goofi-engine",
@@ -594,7 +594,7 @@ dependencies = [
 
 [[package]]
 name = "goofi-codec"
-version = "3.0.0"
+version = "3.1.0"
 dependencies = [
  "goofi-core",
  "indexmap",
@@ -607,7 +607,7 @@ dependencies = [
 
 [[package]]
 name = "goofi-core"
-version = "3.0.0"
+version = "3.1.0"
 dependencies = [
  "dunce",
  "goofi-view",
@@ -617,7 +617,7 @@ dependencies = [
 
 [[package]]
 name = "goofi-crdt"
-version = "3.0.0"
+version = "3.1.0"
 dependencies = [
  "serde_json",
  "yrs",
@@ -625,7 +625,7 @@ dependencies = [
 
 [[package]]
 name = "goofi-engine"
-version = "3.0.0"
+version = "3.1.0"
 dependencies = [
  "goofi-codec",
  "goofi-core",
@@ -643,11 +643,11 @@ dependencies = [
 
 [[package]]
 name = "goofi-init"
-version = "3.0.0"
+version = "3.1.0"
 
 [[package]]
 name = "goofi-node"
-version = "3.0.0"
+version = "3.1.0"
 dependencies = [
  "goofi-core",
  "indexmap",
@@ -657,7 +657,7 @@ dependencies = [
 
 [[package]]
 name = "goofi-nodes"
-version = "3.0.0"
+version = "3.1.0"
 dependencies = [
  "goofi-core",
  "goofi-node",
@@ -667,7 +667,7 @@ dependencies = [
 
 [[package]]
 name = "goofi-py"
-version = "3.0.0"
+version = "3.1.0"
 dependencies = [
  "goofi-core",
  "goofi-engine",
@@ -680,7 +680,7 @@ dependencies = [
 
 [[package]]
 name = "goofi-pymod"
-version = "3.0.0"
+version = "3.1.0"
 dependencies = [
  "goofi-codec",
  "goofi-core",
@@ -693,7 +693,7 @@ dependencies = [
 
 [[package]]
 name = "goofi-subproc"
-version = "3.0.0"
+version = "3.1.0"
 dependencies = [
  "goofi-codec",
  "goofi-core",
@@ -704,7 +704,7 @@ dependencies = [
 
 [[package]]
 name = "goofi-view"
-version = "3.0.0"
+version = "3.1.0"
 dependencies = [
  "serde",
  "serde_json",

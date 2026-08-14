@@ -1,6 +1,6 @@
 import { test, expect, type Page } from '@playwright/test';
 import { waitForApp } from '../lib/app';
-import { addNode, waitForNode, nodeParams } from '../lib/goofi';
+import { addNode, addErroringNode, waitForNode, nodeParams } from '../lib/goofi';
 
 // Characterization e2e for the rebuilt inspector (spec §7, N-Task 5): drive the REAL rendered
 // InspectorOverlay — the slide-in ParamForm — against a live Oscillator node, complementing the
@@ -283,13 +283,12 @@ test.describe('Inspector (real node)', () => {
 	// inspector's copy reads in mono too (spec D-T3). It is a bare <pre>, i.e. an element whose only
 	// family came from app.css's `code, pre, kbd { font: inherit }` reset over a mono body: the
 	// two-face flip turned that inheritance sans without touching this file, which is exactly the
-	// class of regression this pins. `LempelZiv` added with nothing connected raises a missing-
-	// argument TypeError on its first tick (see error-panel.spec.ts for why that is permanent).
+	// class of regression this pins. The error is a real per-tick one: a ticking node whose required
+	// input slot is empty (see `addErroringNode` for the whole mechanism).
 	test('a node error renders its traceback in mono (D-T3)', async ({ page }) => {
 		await page.goto('/');
 		await waitForApp(page);
-		const uid = await addNode(page, 'LempelZiv', 'python');
-		await waitForNode(page, uid);
+		const uid = await addErroringNode(page);
 		await page.evaluate((u) => (window as any).goofi.commands.select([u]), uid);
 		const pre = panel(page).getByTestId('inspector-error').locator('pre');
 		await expect(pre, 'the real per-tick error reached the inspector').toBeVisible();

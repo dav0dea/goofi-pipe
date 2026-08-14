@@ -40,7 +40,9 @@ class LempelZiv(goofi.Node):
     """LZ76 complexity of a signal."""
 
     def config_input_slots(self):
-        return {"data": goofi.DataType.ARRAY}
+        # `required`: process() reads `data.data` unconditionally, so a tick with an empty slot
+        # cannot work. The engine refuses the tick before process() is entered.
+        return {"data": goofi.InputSlot(goofi.DataType.ARRAY, required=True)}
 
     def config_output_slots(self):
         return {"out": goofi.DataType.ARRAY}

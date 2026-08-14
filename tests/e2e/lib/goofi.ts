@@ -58,6 +58,36 @@ export function updateParam(
 	);
 }
 
+/** Add a node that is permanently in error, and wait for it to reach the graph store.
+ *
+ * The mechanism, stated once here so no call site has to restate it: `LempelZiv` declares its
+ * `data` input **required** (`process()` reads `data.data` unconditionally), and it is added with
+ * nothing connected, so that slot's last-store is empty. `execute_node` refuses the tick and
+ * records the error BEFORE `process` is entered — the same per-node `error` field that drives the
+ * floating chip, the console rows and the inspector traceback. It is permanent (nothing here ever
+ * connects the slot) and environment-independent (no missing dependency; numpy is in both venvs).
+ *
+ * `autotrigger` is what makes it tick at all: the required check fires on a TICK, not on the
+ * configuration, and an unwired single-slot Python node has a trigger input with autotrigger off,
+ * so left alone it never runs — a disconnected node floating in space, silent by design.
+ *
+ * `common.max_frequency` is capped FIRST, before autotrigger, because it defaults to `0.0` =
+ * uncapped: an autotriggered unwired node otherwise free-runs at ~10 kHz (~12 % of a core) for the
+ * rest of the spec, and every one of those ticks enters Python. 2 Hz is ample — the error is
+ * permanent, and the console reports error TRANSITIONS rather than ticks.
+ *
+ * The caller removes the node when done: the backend graph is shared by every spec on the worker.
+ */
+export async function addErroringNode(page: Page): Promise<string> {
+	const uid = await addNode(page, 'LempelZiv', 'python');
+	// `waitForNode` first, and not merely to settle: the client's `updateParam` guards on the param
+	// EXISTING in its replica, so an edit sent before the doc round-trip is refused outright.
+	await waitForNode(page, uid);
+	await updateParam(page, uid, 'common', 'max_frequency', 2);
+	await updateParam(page, uid, 'common', 'autotrigger', true);
+	return uid;
+}
+
 /** Undo the last action. */
 export function undo(page: Page): Promise<void> {
 	return page.evaluate(() => (window as any).goofi.commands.undo());

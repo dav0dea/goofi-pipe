@@ -1,6 +1,6 @@
 import { test, expect } from '@playwright/test';
 import { waitForApp } from '../lib/app';
-import { addNode, waitForNode, waitForNoNode } from '../lib/goofi';
+import { addErroringNode, waitForNoNode } from '../lib/goofi';
 
 /**
  * The Console's virtual scroller keeps its own height model — `estimateH()` in the script mirrors
@@ -25,11 +25,10 @@ test('a console row is sized by its text, not by its action buttons', async ({ p
 	// inherits a console-shaped workspace.
 	await page.evaluate((id) => (window as any).goofi.commands.setPanelType(id, 'console'), panelId);
 
-	// A Python node whose process() needs a connected ARRAY input raises on every tick; the graph
-	// store mirrors each raise into the console as a stderr line. The cheapest real console content.
-	const uid = await addNode(page, 'LempelZiv', 'python');
+	// A node erroring on its empty required input (see `addErroringNode`); the graph store mirrors
+	// the error into the console as a stderr line. The cheapest real console content.
+	const uid = await addErroringNode(page);
 	try {
-		await waitForNode(page, uid);
 		const row = page.getByTestId('console-entry').first();
 		await expect(row, 'the node error reached the console').toBeVisible();
 

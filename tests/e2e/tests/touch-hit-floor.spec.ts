@@ -1,6 +1,6 @@
 import { test, expect, type Locator, type Page } from '@playwright/test';
 import { waitForApp } from '../lib/app';
-import { addNode, waitForNode, waitForNoNode } from '../lib/goofi';
+import { addErroringNode, addNode, waitForNode, waitForNoNode } from '../lib/goofi';
 import { dismiss, spawnSh } from '../lib/harness';
 
 /**
@@ -469,11 +469,10 @@ test('a console row on touch is what the scroller’s height model says it is', 
 	await page.goto('/');
 	await waitForApp(page);
 	const restore = await borrowPanel(page, 'console');
-	// A Python node whose process() needs a connected ARRAY input raises every tick; the graph store
-	// mirrors each raise into the console. The cheapest real console content.
-	const uid = await addNode(page, 'LempelZiv', 'python');
+	// A node erroring on its empty required input (see `addErroringNode`); the graph store mirrors
+	// the error into the console. The cheapest real console content.
+	const uid = await addErroringNode(page);
 	try {
-		await waitForNode(page, uid);
 		const row = page.getByTestId('console-entry').first();
 		await expect(row, 'the node error reached the console').toBeVisible();
 

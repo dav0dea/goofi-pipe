@@ -1,6 +1,6 @@
 import { test, expect, type Locator, type Page } from '@playwright/test';
 import { waitForApp } from '../lib/app';
-import { addGlobal, addNode, waitForNode, waitForNoNode } from '../lib/goofi';
+import { addErroringNode, addGlobal, waitForNoNode } from '../lib/goofi';
 
 /**
  * R Task 5 (§3.1e/f) — what a narrow viewport clips today.
@@ -116,9 +116,9 @@ test.describe('at 320px', () => {
 		await page.goto('/');
 		await waitForApp(page);
 		await withPanelType(page, 'console', async () => {
-			const uid = await addNode(page, 'LempelZiv', 'python');
+			// A node erroring on its empty required input (see `addErroringNode`) — one console row.
+			const uid = await addErroringNode(page);
 			try {
-				await waitForNode(page, uid);
 				await expect(page.getByTestId('console-entry').first()).toBeVisible();
 				// `.scroll` clips horizontally, so anything past its right edge is simply gone — the
 				// row's ~258px of fixed cost is what pushed the copy button out.

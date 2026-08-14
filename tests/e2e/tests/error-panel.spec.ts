@@ -1,19 +1,13 @@
 import { test, expect, type Page } from '@playwright/test';
 import { waitForApp } from '../lib/app';
-import { addNode, waitForNode, waitForNoNode } from '../lib/goofi';
+import { addErroringNode, waitForNoNode } from '../lib/goofi';
 
 // M-Task 2 gave the ErrorPanel the real dismissal it never had: the error dropdown used to only
 // toggle from the chip — no Escape, no outside-click. It now delegates to the Popover primitive,
-// so this asserts the NEW behaviour on the REAL panel, driven by a REAL node error.
-//
-// The error is reachable and environment-independent: the tier calls `node.process(**present)` with
-// only the CONNECTED inputs as kwargs (goofi-pymod exec.rs `run_process`), and `LempelZiv.process`
-// has a required `data` param — so a node added with nothing connected raises a missing-argument
-// TypeError on its first tick. That is a per-tick Python-node error, exactly the "a node that raises"
-// case the panel exists to surface (it sets the same `error` field that drives the floating chip).
-// It does NOT depend on any missing dependency (numpy is present in both venvs) — it is the
-// unconnected-required-input raise, which is permanent. The node is torn down after each test so the
-// shared backend graph stays clean for later specs.
+// so this asserts the NEW behaviour on the REAL panel, driven by a REAL node error: an unconnected
+// required input slot on a ticking node (see `addErroringNode`). That sets the same `error` field
+// that drives the floating chip. The node is torn down after each test so the shared backend graph
+// stays clean for later specs.
 test.describe('ErrorPanel dismissal (delegated to Popover)', () => {
 	let created: string[] = [];
 
@@ -28,11 +22,8 @@ test.describe('ErrorPanel dismissal (delegated to Popover)', () => {
 	async function summonErrorChip(page: Page) {
 		await page.goto('/');
 		await waitForApp(page);
-		// A Python node whose process() needs a connected ARRAY input; added with none, it raises on
-		// its first tick and the error surfaces as the floating chip.
-		const uid = await addNode(page, 'LempelZiv', 'python');
+		const uid = await addErroringNode(page); // its empty required input surfaces as the chip
 		created.push(uid);
-		await waitForNode(page, uid);
 		const chipHost = page.getByTestId('error-chip');
 		await expect(chipHost, 'a real node error raises the floating error chip').toBeVisible();
 		return chipHost;
@@ -124,9 +115,8 @@ test.describe('ErrorPanel dismissal (delegated to Popover)', () => {
 
 		// A second erroring node added WHILE the popover is open. `activeNodes` derives live from the
 		// control plane, so the list grows under a surface that was measured for one row.
-		const uid = await addNode(page, 'LempelZiv', 'python');
+		const uid = await addErroringNode(page);
 		created.push(uid);
-		await waitForNode(page, uid);
 		await expect(rows, 'the open list grew a row').toHaveCount(2);
 
 		const chipBox = (await chip.boundingBox())!;
