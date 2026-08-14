@@ -4331,6 +4331,59 @@ mod tests {
         }
     }
 
+    // The D1 shape — `Required`'s run counter behind a two-slot interface: a required slot that
+    // does NOT trigger, beside a triggering one that does. That is what lets a test wire the
+    // required slot to a producer and still tick the node while the slot is empty.
+    static REQ_PAIR_IN: &[SlotDecl] = &[
+        SlotDecl { name: "data", kind: SlotType::Array, trigger_process: false, multi: false, required: true },
+        SlotDecl { name: "tick", kind: SlotType::Array, trigger_process: true, multi: false, required: false },
+    ];
+    inventory::submit! {
+        NodeManifest {
+            type_name: "_TestRequiredPair",
+            category: "test",
+            doc: "a required non-triggering slot beside a triggering one",
+            inputs: REQ_PAIR_IN,
+            outputs: G_OUT,
+            params: NO_PARAMS,
+            isolation: Isolation::InProcess,
+            factory: default_factory::<Required>,
+        }
+    }
+
+    // The DETACHED analogue of `_TestRequired`, registered at runtime the way every detached
+    // fixture here is. The required check sits in `execute_node` BECAUSE that is the one seam the
+    // inline tick path and the detached worker share — and every other required-slot fixture is
+    // `Isolation::InProcess`, so lifting the check into `run_node` (the inline caller) would exempt
+    // this whole tier without reddening a single test.
+    struct RequiredDetached {
+        /// One entry per `process` entry, carrying the value it saw on `data` (`NaN` when it saw
+        /// none). Written on the worker, read by the test from the tick thread.
+        arrivals: std::sync::Arc<std::sync::Mutex<Vec<f32>>>,
+    }
+    impl Node for RequiredDetached {
+        fn process(&mut self, inp: &Inputs<'_>, out: &mut Outputs<'_>, _c: &mut NodeCtx, _p: &Params<'_>) -> NodeResult {
+            let seen = inp.get("data").map(first_f32).unwrap_or(f32::NAN);
+            self.arrivals.lock().unwrap().push(seen);
+            let d = Data::array_f32(vec![1], seen.to_le_bytes().to_vec(), Meta::empty())
+                .map_err(|e| e.to_string())?;
+            out.set("out", d);
+            Ok(())
+        }
+    }
+    static REQ_DET_IN: &[SlotDecl] =
+        &[SlotDecl { name: "data", kind: SlotType::Array, trigger_process: true, multi: false, required: true }];
+    static REQ_DET_MANIFEST: NodeManifest = NodeManifest {
+        type_name: "_TestRequiredDetached",
+        category: "test",
+        doc: "one required input, run on a detached worker",
+        inputs: REQ_DET_IN,
+        outputs: G_OUT,
+        params: NO_PARAMS,
+        isolation: Isolation::Subprocess,
+        factory: rt_stub_factory,
+    };
+
     // A node whose INITIALIZATION the test controls: `setup()` fails unless its `boot.ok` param
     // says otherwise, so correcting that param is a real retry door (D3) rather than a
     // fixture-only hook. Every `process` entry, every `on_param_changed` and every `setup` it
@@ -4652,6 +4705,98 @@ mod tests {
         }
         assert_eq!(g.last_error(n), None, "a node that never ran cannot be missing an input");
         assert!(g.latest_frame(n, "out").is_none(), "and it emitted nothing");
+    }
+
+    #[test]
+    fn a_required_slot_wired_to_a_producer_that_has_emitted_nothing_is_still_refused() {
+        // Invariant 1, which nothing else pins: the check reads the LAST-STORE, never the link
+        // table. Every other test here contrasts unwired-and-empty against wired-and-fed, and those
+        // two are indistinguishable under either rule — so a wiring test would pass them all.
+        //
+        // The discriminating part is the producer: `silent` is an autotriggered `_TestRequired`
+        // whose OWN required slot is empty, so it is refused every tick and emits nothing. `data` is
+        // therefore wired and empty at once, and the second slot is what makes the node tick at all
+        // (D1's headline case).
+        let mut g = Graph::new();
+        let silent = g.add_node("_TestRequired", None).unwrap();
+        g.update_param(silent, "common", "autotrigger", Param::boolean(true)).unwrap();
+        let n = g.add_node("_TestRequiredPair", None).unwrap();
+        g.add_link(silent, "out", n, "data").unwrap();
+        let src = const_src(&mut g, 1.0);
+        g.add_link(src, "out", n, "tick").unwrap();
+
+        g.tick();
+
+        assert_eq!(
+            g.last_error(n),
+            Some("required input slot `data` has no data"),
+            "a wire is not a frame"
+        );
+        assert!(g.latest_frame(n, "out").is_none(), "so `process` was never entered");
+    }
+
+    #[test]
+    fn a_required_input_is_refused_on_the_detached_tier_too() {
+        // The check is placed in the seam BOTH tiers share, and this is the only test that holds it
+        // there: hoist it into `run_node` and every inline required-slot test stays green while a
+        // detached node pays a full dispatch and fails inside its worker instead of the engine
+        // refusing the tick.
+        let mut g = Graph::new();
+        let arrivals: std::sync::Arc<std::sync::Mutex<Vec<f32>>> = Default::default();
+        let mine = arrivals.clone();
+        g.register_dyn_type(
+            &REQ_DET_MANIFEST,
+            Box::new(move |_p| Box::new(RequiredDetached { arrivals: mine.clone() })),
+        );
+        let n = g.add_node("_TestRequiredDetached", None).unwrap();
+        g.update_param(n, "common", "autotrigger", Param::boolean(true)).unwrap();
+        // One dispatch per second of the clock this test drives, so the positive control below can
+        // hold that clock still and count exactly one job rather than however many ticks the drain
+        // happened to take.
+        g.update_param(n, "common", "max_frequency", Param::float(1.0, 0.0, 1e9)).unwrap();
+        wait_bootstrapped(&g, n); // dispatch is gated on READY
+
+        // The worker's answer comes back through `Done` and is drained on a LATER tick, so the
+        // error is a bounded poll rather than the tick that dispatched it.
+        let t0 = Instant::now();
+        let mut err = None;
+        for i in 0..200 {
+            g.tick_at(t0 + Duration::from_millis(5 * i));
+            if let Some(e) = g.last_error(n) {
+                err = Some(e.to_string());
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        assert_eq!(
+            err.as_deref(),
+            Some("required input slot `data` has no data"),
+            "the detached tier names the empty required slot identically"
+        );
+        assert!(arrivals.lock().unwrap().is_empty(), "and `process` was never entered on the worker");
+
+        // The positive control. Without it both assertions above hold just as well for a job that
+        // was never dispatched at all — an unready worker, a `wants_run` that answered false — which
+        // is a test that proves nothing.
+        let src = const_src(&mut g, 4.0);
+        g.add_link(src, "out", n, "data").unwrap();
+        let t1 = t0 + Duration::from_secs(10); // held still: the 1 Hz cap admits exactly one dispatch
+        let mut ran = false;
+        for _ in 0..200 {
+            g.tick_at(t1);
+            if g.latest_frame(n, "out").is_some() {
+                ran = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        assert!(ran, "the fed node ran on its worker and its frame came back");
+        assert_eq!(g.last_error(n), None, "the fed slot clears the error");
+        assert_eq!(
+            *arrivals.lock().unwrap(),
+            vec![4.0],
+            "exactly one `process` entry, seeing the frame it was fed"
+        );
     }
 
     // ---- the initialization gate (D3) --------------------------------------
